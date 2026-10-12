@@ -1,3 +1,7 @@
+add_subdirectory(error_handling)
+add_subdirectory(log)
+add_subdirectory(diagnostics)
+
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.core
@@ -7,6 +11,9 @@ free_breakfast_add_cxx_module_library(
   version.cppm
   IMPORT_STD
   LINK_PUBLIC
+  free_breakfast::core::error_handling
+  free_breakfast::core::log
+  free_breakfast::core::diagnostics
   wwr::extension::common
   wwr::extension::memory_buffer
 )

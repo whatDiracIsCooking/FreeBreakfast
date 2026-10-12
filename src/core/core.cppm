@@ -12,6 +12,13 @@ export module free_breakfast.core;
 
 export import :version;
 
+// Separate modules rather than partitions: each has consumers that want it
+// without the rest (log has no reason to drag in the GPU layer), and the
+// macros in diagnostics/diagnostics.h name them individually.
+export import free_breakfast.core.error_handling;
+export import free_breakfast.core.log;
+export import free_breakfast.core.diagnostics;
+
 // The GPU layer comes from the WarpWraps submodule and is backend-neutral: the
 // same two imports resolve against src/cuda under a CUDA build and src/hip
 // under a HIP one. Re-exported so a consumer of free_breakfast.core gets the
