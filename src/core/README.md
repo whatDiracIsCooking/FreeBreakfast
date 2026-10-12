@@ -5,8 +5,15 @@ exercises the full chain rather than a tree that configures and builds nothing.
 
 | File | What it is |
 | ---- | ---------- |
-| `core.cppm` | The primary interface. Re-exports `:version` and the two WarpWraps modules. |
+| `core.cppm` | The primary interface. Re-exports `:version`, the three modules below, and the two WarpWraps modules. |
 | `version.cppm` | A partition holding the project version and `version_string()`. |
+| `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`. |
+| `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
+| `diagnostics/` | `free_breakfast.core.diagnostics` — `gpu_status`, `check_or_abort`; plus `diagnostics.h` (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`). |
+
+Each subdirectory is its own module library with its own README, and can be
+linked alone (`free_breakfast::core::log`, ...) by a consumer that does not
+want the rest.
 
 ```cpp
 import free_breakfast.core;

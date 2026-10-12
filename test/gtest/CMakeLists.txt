@@ -28,7 +28,7 @@ include(GoogleTest)
 # Host-only executable
 # ---------------------------------------------------------------------------
 # Add new host-only (no device needed at run time) TUs to this list.
-add_executable(free_breakfast_tests_host version_host.cpp)
+add_executable(free_breakfast_tests_host version_host.cpp diagnostics_host.cpp)
 
 # Both executables consume `import std` and this project's C++23 modules, so
 # they need the same module-scanning setup as the libraries they link. The
@@ -40,8 +40,9 @@ set_target_properties(
 )
 
 target_link_libraries(
-  free_breakfast_tests_host PRIVATE free_breakfast::core GTest::gtest
-                                    GTest::gtest_main
+  free_breakfast_tests_host
+  PRIVATE free_breakfast::core free_breakfast::core::diagnostics_macros
+          wwr::runtime_api GTest::gtest GTest::gtest_main
 )
 
 # ---------------------------------------------------------------------------

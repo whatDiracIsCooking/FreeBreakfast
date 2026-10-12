@@ -1,0 +1,13 @@
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.core.log
+  PRIMARY_INTERFACE
+  log.cppm
+  PARTITIONS
+  log_level.cppm
+  IMPLEMENTATION
+  log.cpp
+  LINK_PRIVATE
+  free_breakfast::third_party::spdlog
+  IMPORT_STD
+)
