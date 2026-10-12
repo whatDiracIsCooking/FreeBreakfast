@@ -1,0 +1,242 @@
+# The server-side gate. The pre-push hook (devtools/prepush-tests.sh) is the
+# same idea run locally and is bypassable with --no-verify; this is not.
+#
+# It runs the FAST tier only, for the same reason the push gate does: a
+# per-commit job that takes hours is one people learn to ignore. The expensive
+# tier belongs in the scheduled job below -- and on a self-hosted runner if it
+# needs a GPU or more RAM than a hosted runner has.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS FILE DOES NOT COVER, AND WHY
+# ---------------------------------------------------------------------------
+# The C++ tree is NOT built here by default -- the two `cpp` legs below are
+# `if: false`. What stops a GitHub-hosted runner is the TOOLCHAIN, not the
+# device: clang-20 with libc++'s module manifest, CMake 4.2, Ninja, and either
+# the CUDA toolkit or ROCm all have to be present, which is what
+# docker/Dockerfile.* exists to provide.
+#
+# The `ci-cuda` and `ci-hip` presets were built for exactly this job and need
+# NO GPU -- ci-cuda pins the architecture so configure never queries a driver,
+# and both exclude the `gpu` ctest label. So the only thing between this file
+# and a real server-side C++ gate is getting the image onto the runner; see the
+# `cpp` job's comment for the two ways.
+#
+# So, today: a PR touching only src/ is checked by nothing on the server.
+# Until one of those routes is set up, `devtools/cpp-tier.sh` before opening
+# the PR is the whole gate, and it is a human one. Know that rather than
+# discover it.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Manual runs from the Actions tab. Without this there is no dispatch button,
+  # and the `slow` job below is unreachable except by waiting for the cron.
+  workflow_dispatch:
+  schedule:
+    # Nightly slow tier, 03:17 UTC. Off the per-PR path on purpose.
+    - cron: "17 3 * * *"
+
+concurrency:
+  # A new push to a PR cancels the previous run for that PR; main is never
+  # cancelled, so every commit on it keeps a result.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      # --frozen: install the lock as committed, and fail rather than
+      # re-resolve. A CI that silently re-resolves is not testing what you ship.
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+      # cmake-lint over the files that define every target in the tree. Comes
+      # from the `cmakelang` dev dependency, so it is already in the lock;
+      # configured by .cmake-format.yaml. Lint only -- the formatter is not run
+      # in CI for the same reason it is not a pre-commit hook.
+      #
+      # Scoped with `:!deps/` so the WarpWraps submodule's CMake is not linted
+      # here: it is its repository's business, and its own CI already does it.
+      - name: cmake-lint
+        run: |
+          uv run cmake-lint CMakeLists.txt \
+            $(git ls-files '*/CMakeLists.txt' 'cmake/*.cmake' ':!:deps/WarpWraps/**')
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Match `requires-python` in pyproject.toml. The floor and the ceiling
+        # are the two that actually break.
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python }}
+      - run: uv sync --frozen
+      # -rs prints skip reasons: a suite that degrades-to-skip when a tool is
+      # missing looks green while testing nothing, and the log is the only
+      # place that shows it.
+      - name: fast tier
+        run: uv run pytest -m "not slow" -n auto -rs
+
+  cpp:
+    # THE REAL BUILD, AND BOTH LEGS ARE OFF -- so a PR touching only src/ is
+    # checked by nothing on the server.
+    #
+    # An explicit `name`, because the default for a matrix job is built from
+    # ALL of its matrix values, so every key added below would silently rewrite
+    # the check's name -- and a required check is matched by name.
+    name: cpp (${{ matrix.backend }})
+    # After lint, so a ruff finding does not cost a 20-minute module build
+    # before it is reported.
+    needs: [lint]
+    if: false
+    runs-on: ubuntu-latest  # EDIT: see route A below
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: cuda
+            preset: ci-cuda
+            target: cuda
+            # clang-tidy on this leg only -- the findings would otherwise be
+            # reported twice. It rides the build that is already happening, so
+            # the marginal cost is clang-tidy itself.
+            #
+            # ADVISORY BY CONSTRUCTION: cpp-tier.sh never lets it change the
+            # exit code, because clang-tidy's C++23-module support is still
+            # incomplete enough to emit the odd bogus diagnostic on a .cppm.
+            # Read it in the uploaded log, not in this job's colour.
+            tidy: '--tidy'
+          - backend: hip
+            preset: ci-hip
+            target: hip
+            tidy: ''
+    #
+    # ---------------------------------------------------------------------
+    # TURNING THIS ON -- two routes. Pick one; they are not complementary.
+    # ---------------------------------------------------------------------
+    # ROUTE A -- a self-hosted runner (what you want if you have the box).
+    #
+    #   1. On the machine, register a repository runner:
+    #        Settings -> Actions -> Runners -> New self-hosted runner
+    #      and follow the generated ./config.sh + ./run.sh (or install it as a
+    #      service with ./svc.sh install). Label it, e.g. `gpu`.
+    #   2. Check it shows as Idle in that same Settings page.
+    #   3. THEN in this file: `if: false` -> `if: true`, and
+    #      `runs-on: ubuntu-latest` -> `runs-on: [self-hosted, gpu]`.
+    #
+    # Do 1-2 BEFORE 3. Merging the flip with no runner registered does not
+    # fail the job -- it queues it forever, and every subsequent PR sits
+    # pending on a check that can never complete.
+    #
+    # A persistent runner also keeps the docker layers and the sccache store,
+    # which is what makes the build minutes rather than tens of minutes.
+    #
+    # ROUTE B -- hosted runners, with the image published to a registry.
+    #
+    #   Add a workflow that runs `docker/build.sh` with IMAGE_REGISTRY,
+    #   IMAGE_TAG_SUFFIX=-ci and BUILD_PUSH=1 (docker/build.sh's header
+    #   documents all three) on a schedule, then replace the two image steps
+    #   below with a `container:` block pointing at the published tag:
+    #
+    #     container:
+    #       image: ghcr.io/<owner>/free-breakfast:cuda-ci
+    #       # the image's USER is uid 1000 and the runner's /__w is not; root
+    #       # inside a throwaway container is the usual answer.
+    #       options: --user root
+    #
+    #   The CUDA leg works on a hosted runner this way. THE HIP LEG LIKELY WILL
+    #   NOT: ROCm is ~30GB installed, which does not fit a hosted runner's
+    #   disk, so route B realistically means `cuda` on hosted and `hip` on
+    #   route A (or nothing).
+    #
+    #   Building the image IN the job instead (the step below) is the
+    #   self-contained version of route B, and costs 20-40 min per run on a
+    #   4-vCPU runner because LLVM, CMake and spdlog are all compiled. Fine to
+    #   prove the thing works; too slow to leave on per-PR.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Load-bearing, not hygiene: deps/WarpWraps is a submodule and
+          # nothing configures without it -- deps/CMakeLists.txt fails with a
+          # FATAL_ERROR naming it.
+          submodules: recursive
+
+      # cpp-tier.sh puts `git rev-parse --short HEAD` in its log name, and git
+      # refuses to read a repository owned by a different uid. Without this the
+      # job dies on "detected dubious ownership", which reads like a checkout
+      # problem rather than a container one.
+      - name: trust the workspace
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      # build.sh walks the tag chain (base -> cuda, or base -> hip): each
+      # Dockerfile's `FROM ${PARENT_IMAGE}` needs its parent built and tagged
+      # first, and building a child alone fails with `pull access denied for
+      # free-breakfast` rather than building one. Drop this step under route B.
+      - name: build image
+        run: docker/build.sh ${{ matrix.target }}
+
+      # BUILD_JOBS rather than Ninja's default of cores+2. A hosted runner is
+      # 4 vCPU / 16GB and a C++23 module build is memory-hungry per job (the
+      # scanner plus a BMI cache); an OOM-killed compiler surfaces as a bare
+      # `ninja: build stopped` with nothing about memory in it. Lower this
+      # first if that appears.
+      #
+      # The preset is passed explicitly, so cpp-tier.sh moves the TEST preset
+      # with it -- both ci presets exclude the `gpu` label, so neither needs a
+      # device.
+      - name: cpp tier
+        run: |
+          docker run --rm \
+            -e BUILD_JOBS=4 \
+            -v "$PWD:/workspace" -w /workspace \
+            -u "$(id -u):$(id -g)" \
+            free-breakfast:${{ matrix.target }} \
+            devtools/cpp-tier.sh --preset ${{ matrix.preset }} ${{ matrix.tidy }}
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpp-tier-${{ matrix.backend }}
+          path: .slow-tier-reports/
+          # SLOW_TIER_REPORTS is a dotdir, and upload-artifact excludes hidden
+          # paths by default (since v4.4) -- without this the reports, the cuda
+          # leg's advisory clang-tidy log included, silently upload nothing.
+          include-hidden-files: true
+
+  slow:
+    # The nightly cron, plus a manual run from the Actions tab. Both event
+    # names are needed: a workflow_dispatch is not a schedule, so testing only
+    # for 'schedule' left the manual run silently skipping this job -- the run
+    # went green having executed none of it. This is the job
+    # devtools/slow-tier.sh does locally.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: slow tier
+        run: uv run pytest -m slow -n auto -rs

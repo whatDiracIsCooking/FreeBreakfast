@@ -1,0 +1,86 @@
+# --- CMake build output ----------------------------------------------------
+# One directory per preset (see CMakePresets.json).
+/build/
+/build-workstation/
+/build-asan/
+# The compose front end builds into its own directories -- it mounts the repo
+# at /workspace while the devcontainer mounts it at the host path, and a CMake
+# cache cannot be shared across the two. See CLAUDE.md.
+/build-compose/
+/build-compose-asan/
+/build-compose-compute-sanitizer/
+/build-compute-sanitizer/
+/build-debug/
+/build-hip/
+/build-hip-asan/
+/build-coverage/
+/build-experimental/
+/build-ci-cuda/
+/build-ci-hip/
+# devtools/cross-backend-check.sh gets its own, so it never reconfigures a
+# preset's directory back and forth.
+/build-cross-check/
+# Safety net for ad-hoc build dirs.
+/build*/
+/cmake-build-*/
+
+CMakeUserPresets.json
+compile_commands.json
+.cache/
+# Shared sccache store, bind-mounted into every worktree container (see
+# .devcontainer/devcontainer.json). Lives under the main checkout so all
+# worktrees point at one cache; never committed.
+/.sccache/
+
+# devtools/cuda-object-cache.sh's content-addressed CUDA object store. Lives
+# under the main checkout, same reasoning as .sccache/ above -- resolved via
+# PRIMARY_ROOT (devtools/lib.sh) so every worktree points at the one copy.
+/.build-object-cache/
+
+# --- Run artifacts ---------------------------------------------------------
+# docker/compose.yaml tees all configure/build/test output here.
+/.log/
+# devtools/slow-tier.sh and devtools/cpp-tier.sh write timestamped run logs here.
+.slow-tier-reports/
+
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.pyc
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+*.egg-info/
+
+# --- Local environment -----------------------------------------------------
+# docker/.env holds machine-specific overrides (image tag, UID/GID).
+docker/.env
+*.local
+scratch/
+
+# --- Agent -----------------------------------------------------------------
+# Lightweight agent worktrees (devtools/worktree.sh gc cleans up after them).
+.claude/worktrees/
+# Personal overrides -- .claude/settings.json is tracked, this is not.
+.claude/settings.local.json
+
+# --- Editors and OS --------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# --- Profiling output ------------------------------------------------------
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+*.sqlite
+
+# --- Vendored source being folded in (kept locally, never tracked) ---------
+# Contains its own nested .git; source is copied out into deps/ and src/.
+cuda_module.tmp/
+
+# Scratch space for material hoisted in from other checkouts. Never committed.
+/.temp/

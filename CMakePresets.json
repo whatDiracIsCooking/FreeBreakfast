@@ -1,0 +1,265 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 4,
+    "minor": 2,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "description": "Settings shared by every preset. Not selectable directly. Carries FREE_BREAKFAST_GPU_BACKEND=CUDA, which the hip presets override -- the root CMakeLists refuses to configure without it.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "native",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "FREE_BREAKFAST_GPU_BACKEND": "CUDA"
+      }
+    },
+    {
+      "name": "default",
+      "displayName": "Default (container, CUDA)",
+      "description": "Release build inside the project image, using its prebuilt /opt dependencies. The one preset the normal workflow uses.",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "/opt/spdlog;/opt/taskflow;/opt/tomlplusplus"
+      }
+    },
+    {
+      "name": "workstation",
+      "displayName": "Workstation (bare host, CUDA)",
+      "description": "The same configuration into build-workstation/, so a host build and a container build can coexist without reconfiguring each other. Dependencies come from the system package manager rather than /opt.",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-workstation"
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Debug build, CUDA backend",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "asan",
+      "displayName": "ASan",
+      "description": "Debug + AddressSanitizer on host code, into build-asan/",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build-asan",
+      "cacheVariables": {
+        "FREE_BREAKFAST_ENABLE_ASAN": "ON"
+      }
+    },
+    {
+      "name": "compute-sanitizer",
+      "displayName": "Compute Sanitizer",
+      "description": "Debug build for the NVIDIA compute-sanitizer memcheck/racecheck run. CUDA only -- ROCm's equivalent is a different tool.",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build-compute-sanitizer"
+    },
+    {
+      "name": "coverage",
+      "displayName": "Coverage",
+      "description": "Debug + clang source-based coverage for host code, into build-coverage/. Driven by devtools/coverage.sh.",
+      "inherits": "debug",
+      "binaryDir": "${sourceDir}/build-coverage",
+      "cacheVariables": {
+        "FREE_BREAKFAST_COVERAGE": "ON"
+      }
+    },
+    {
+      "name": "hip",
+      "displayName": "HIP (ROCm)",
+      "description": "The ROCm/HIP backend, into build-hip/. Needs ROCm and an AMD card, not CUDA -- use the hip or combined devcontainer.",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-hip",
+      "cacheVariables": {
+        "FREE_BREAKFAST_GPU_BACKEND": "HIP"
+      }
+    },
+    {
+      "name": "hip-asan",
+      "displayName": "HIP + ASan",
+      "description": "The HIP backend, Debug + AddressSanitizer on host code, into build-hip-asan/",
+      "inherits": "hip",
+      "binaryDir": "${sourceDir}/build-hip-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "FREE_BREAKFAST_ENABLE_ASAN": "ON"
+      }
+    },
+    {
+      "name": "experimental",
+      "displayName": "Experimental",
+      "description": "default plus FREE_BREAKFAST_BUILD_EXPERIMENTAL=ON",
+      "inherits": "default",
+      "binaryDir": "${sourceDir}/build-experimental",
+      "cacheVariables": {
+        "FREE_BREAKFAST_BUILD_EXPERIMENTAL": "ON"
+      }
+    },
+    {
+      "name": "ci-cuda",
+      "displayName": "CI (CUDA)",
+      "description": "What .github/workflows/ci.yml builds for CUDA: the whole tree with the architecture PINNED, so configure never queries a driver, and a test preset that excludes the gpu label. Runnable here to reproduce a CI failure exactly.",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/build-ci-cuda",
+      "cacheVariables": {
+        "CMAKE_CUDA_ARCHITECTURES": "86"
+      }
+    },
+    {
+      "name": "ci-hip",
+      "displayName": "CI (HIP)",
+      "description": "The HIP half, deliberately the SAME SHAPE as ci-cuda: the whole tree through clang's -x hip front end, then the same -LE gpu. Compiling the sources is the point -- clang is the stricter of the two front ends. Needs no device.",
+      "inherits": "hip",
+      "binaryDir": "${sourceDir}/build-ci-hip"
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default"
+    },
+    {
+      "name": "workstation",
+      "configurePreset": "workstation"
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan"
+    },
+    {
+      "name": "compute-sanitizer",
+      "configurePreset": "compute-sanitizer"
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage"
+    },
+    {
+      "name": "hip",
+      "configurePreset": "hip"
+    },
+    {
+      "name": "hip-asan",
+      "configurePreset": "hip-asan"
+    },
+    {
+      "name": "experimental",
+      "configurePreset": "experimental"
+    },
+    {
+      "name": "ci-cuda",
+      "configurePreset": "ci-cuda"
+    },
+    {
+      "name": "ci-hip",
+      "configurePreset": "ci-hip"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "default",
+      "configurePreset": "default",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "workstation",
+      "configurePreset": "workstation",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "no_sanitizer"
+        }
+      },
+      "environment": {
+        "ASAN_OPTIONS": "protect_shadow_gap=0"
+      },
+      "description": "Debug + AddressSanitizer. ASAN_OPTIONS=protect_shadow_gap=0 is REQUIRED, not tuning: ASan's reserved shadow gap collides with the GPU driver's own large virtual-address reservation, and without it the first device allocation fails as cudaErrorMemoryAllocation / hipErrorOutOfMemory on a card with plenty of free memory."
+    },
+    {
+      "name": "coverage",
+      "configurePreset": "coverage",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "hip",
+      "configurePreset": "hip",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "hip-asan",
+      "configurePreset": "hip-asan",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "no_sanitizer"
+        }
+      },
+      "environment": {
+        "ASAN_OPTIONS": "protect_shadow_gap=0"
+      },
+      "description": "Debug + AddressSanitizer. ASAN_OPTIONS=protect_shadow_gap=0 is REQUIRED, not tuning: ASan's reserved shadow gap collides with the GPU driver's own large virtual-address reservation, and without it the first device allocation fails as cudaErrorMemoryAllocation / hipErrorOutOfMemory on a card with plenty of free memory."
+    },
+    {
+      "name": "ci-cuda",
+      "configurePreset": "ci-cuda",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "gpu"
+        }
+      }
+    },
+    {
+      "name": "ci-hip",
+      "configurePreset": "ci-hip",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "gpu"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  // The GPU variant, and THE DEVELOPMENT CONTAINER FOR THIS REPO: clang-20
+  // with libc++, CMake 4.2, Ninja, nvcc, and a uv venv for the Python tooling.
+  // Nothing is prebuilt in /opt -- the project's only C++ dependency is
+  // GoogleTest, which deps/CMakeLists.txt fetches and builds at configure
+  // time.
+  //
+  // This is what DEVCONTAINER_CONFIG in devtools/config.sh points at, so
+  // `devtools/devcontainer.sh rebuild` gets you here with no extra ceremony.
+  // NOTE that the bare `devcontainer` CLI and an IDE's "Reopen in Container"
+  // look only for a top-level .devcontainer/devcontainer.json, which this repo
+  // does not have -- point them at this file explicitly, or they find no
+  // config to open at all.
+  //
+  // Identical to ../hip/ and ../combined/ apart from the SDK and the four
+  // EDIT sites below -- workspace mount, volume names and postCreate are the
+  // same, so the three GPU variants are A/B-able.
+  "name": "free-breakfast-cuda",                               // EDIT
+
+  // Builds the PARENT image first. docker/Dockerfile.cuda opens with
+  // `FROM ${PARENT_IMAGE}` (free-breakfast:base), and a devcontainer build is a single
+  // `docker build` with no way to produce that parent itself -- without this
+  // hook it fails on the first line with `pull access denied for free-breakfast`, which
+  // reads like a registry problem rather than a missing local build.
+  // initializeCommand runs on the HOST before the image is built, which is
+  // exactly the slot needed, and a fully cached parent build costs a second or
+  // two per `up`. See docker/Dockerfile.base, "WHY THE FOUR FILES CHAIN BY TAG".
+  "initializeCommand": "bash ${localWorkspaceFolder}/docker/build.sh base",
+
+  "build": {
+    "context": "../..",
+    "dockerfile": "../../docker/Dockerfile.cuda",
+    // No "target": every backend is its own file now, each with a single stage,
+    // so there is no last-stage-by-accident to guard against. Outside the
+    // devcontainer, `docker/build.sh cuda` walks base -> cuda.
+    "args": {
+      "PROJECT_NAME": "free-breakfast",                        // EDIT
+      // Widen for a mixed fleet, e.g. "80;86;90".
+      "CUDA_ARCH": "86"
+    }
+  },
+
+  // Hand the container the GPU. Requires nvidia-container-toolkit on the host
+  // (`docker info` lists an `nvidia` runtime when it is installed). Without it
+  // the container still builds and every CPU test still runs; only tests
+  // needing a live device are lost -- and device-COMPILE tests do not need one,
+  // since nvcc targets an arch rather than the card present.
+  "runArgs": ["--gpus", "all"],
+
+  // CLAUDE CODE IS NOT A FEATURE HERE, deliberately. The
+  // ghcr.io/anthropics/devcontainer-features/claude-code feature this used to
+  // declare npm-installs an UNPINNED @anthropic-ai/claude-code, and the
+  // lockfile beside this file pins the feature's DIGEST, not the version that
+  // feature installs -- so each image froze at whatever the registry had when
+  // its layer was first built, and `rebuild` (a new container from the same
+  // image) never moved it. docker/Dockerfile.cuda installs it at an explicit
+  // ARG CLAUDE_CODE_VERSION instead, as its last layer;
+  // docker/install-claude-code.sh has the whole story and
+  // devtools/claude-version.sh bumps the pin.
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "workspaceFolder": "${localWorkspaceFolder}",
+  "workspaceMount": "source=${localWorkspaceFolder},target=${localWorkspaceFolder},type=bind,consistency=cached",
+
+  "mounts": [
+    "source=${localEnv:HOME}/.claude,target=/home/ubuntu/.claude,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/.claude.json,target=/home/ubuntu/.claude.json.host,type=bind,readonly",
+    "source=free-breakfast-claude-plugins-${localWorkspaceFolderBasename},target=/home/ubuntu/.claude/plugins,type=volume",  // EDIT
+    "source=free-breakfast-claude-backups-${localWorkspaceFolderBasename},target=/home/ubuntu/.claude/backups,type=volume",  // EDIT
+    "source=free-breakfast-pytest-tmp-${localWorkspaceFolderBasename},target=/tmp/pytest-of-ubuntu,type=volume",             // EDIT
+    // The shared sccache compiler-cache store, bound onto the image's
+    // SCCACHE_DIR -- a FIXED path inside the container, not a workspace-
+    // relative one, which is what lets every checkout reach the SAME store even
+    // though
+    // each is mounted at its own host path: a .claude/worktrees/<name> mount
+    // does not contain the primary checkout's .sccache at all. Deliberately NOT
+    // suffixed by ${localWorkspaceFolderBasename} like the volumes above --
+    // sharing one store across worktrees is the entire point.
+    //
+    // Note what IS and IS NOT shared. The store is; HITS are not, between trees
+    // mounted at different absolute paths, because a restored BMI keeps the
+    // path it was built under. That is correct, not a misconfiguration -- see
+    // CMakeLists.txt's "Compiler cache" section. docker/compose.yaml mounts
+    // every service at /workspace instead, so hits DO cross worktrees there.
+    //
+    // Host path injected as FREE_BREAKFAST_SCCACHE_DIR by devtools/devcontainer.sh (up
+    // / rebuild), which creates the directory first -- docker would otherwise
+    // create a missing bind source as root and the first compile would die on a
+    // permission error that never mentions a mount. The literal after the colon
+    // is only a fallback for opening this config directly, as with the .git
+    // mount below; edit it to your own checkout then.
+    "source=${localEnv:FREE_BREAKFAST_SCCACHE_DIR:/absolute/path/to/your-root/main/.sccache},target=/home/ubuntu/.sccache,type=bind",
+    // Host path injected as FREE_BREAKFAST_GIT_DIR by devtools/devcontainer.sh (up /
+    // rebuild); the literal after the colon is only a fallback for opening this
+    // config directly (VS Code "Reopen in Container"), which you then edit to
+    // your own checkout's .git common dir. See ../README.md, "Per-project edits".
+    "source=${localEnv:FREE_BREAKFAST_GIT_DIR:/absolute/path/to/your-root/main/.git},target=${localEnv:FREE_BREAKFAST_GIT_DIR:/absolute/path/to/your-root/main/.git},type=bind"
+  ],
+
+  "remoteUser": "ubuntu",
+  "updateRemoteUserUID": false,
+
+  "containerEnv": {
+    "GH_TOKEN": "${localEnv:GH_TOKEN}",
+    "CUDA_ARCH": "86"
+  },
+
+  "postCreateCommand": "bash ${localWorkspaceFolder}/.devcontainer/post-create.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "nvidia.nsight-vscode-edition",
+        "ms-vscode.cpptools"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
+        "python.testing.pytestEnabled": true
+      }
+    }
+  }
+}

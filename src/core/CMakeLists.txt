@@ -1,0 +1,12 @@
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.core
+  PRIMARY_INTERFACE
+  core.cppm
+  PARTITIONS
+  version.cppm
+  IMPORT_STD
+  LINK_PUBLIC
+  wwr::extension::common
+  wwr::extension::memory_buffer
+)

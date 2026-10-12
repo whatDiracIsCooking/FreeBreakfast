@@ -1,0 +1,84 @@
+# The Python side of a C++23/CUDA project: the test runner, the linters and the
+# CMake formatter. There is no Python package here -- `src/` is C++ -- so this
+# file declares no [build-system] and nothing is installable. Its two halves
+# must stay in sync with devtools/config.sh: `testpaths` and the `slow` marker
+# are what FAST_TEST_ARGS, PREPUSH_PATHS and slow-tier.sh assume exist.
+#
+# bootstrap.sh rewrites `name` below along with every other free-breakfast
+# placeholder, and then runs `uv lock` -- the lock records the project name too.
+[project]
+name = "free-breakfast"
+version = "0.1.0"
+description = "GPU-first scientific computing in C++23 named modules, CUDA or HIP."
+requires-python = ">=3.11"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    # Parallel test execution. devtools/config.sh's JOBS is this plugin's -n
+    # flag; drop the dependency and set JOBS= empty if the suite is small
+    # enough not to need it.
+    "pytest-xdist>=3.6",
+    "ruff>=0.6",
+    "pre-commit>=3.7",
+    # cmake-format / cmake-lint, for the CMakeLists.txt and cmake/*.cmake that
+    # define every target in the tree. Configured by .cmake-format.yaml. Not a
+    # pre-commit hook on purpose -- see .pre-commit-config.yaml on why there is
+    # no formatter hook in this repo.
+    # The [yaml] extra is load-bearing: cmakelang keeps pyyaml behind it, and
+    # both cmake-format and cmake-lint abort with ModuleNotFoundError the
+    # moment they try to read .cmake-format.yaml without it. It resolves today
+    # only because pre-commit happens to pull pyyaml in -- drop pre-commit and
+    # the CI lint step breaks for a reason that points nowhere near here.
+    "cmakelang[yaml]>=0.6.13",
+]
+
+# The numeric stack the Python suite typically needs to validate GPU output
+# against a reference. Left out of `dev` because it is project-specific and
+# roughly triples the lock: add what you actually use, then `uv lock`.
+#
+#   [dependency-groups]
+#   science = ["numpy>=2.0", "scipy>=1.14", "matplotlib>=3.9"]
+
+# uv.lock is TRACKED, and it is the only place exact versions are written down:
+# pyproject says what is wanted, the lock says what satisfies it, and the
+# Dockerfile's `uv sync --frozen` installs that same lock, so the container and
+# the host cannot drift. After editing dependencies here, run `uv lock` and
+# commit the result -- never hand-install with `uv pip install`.
+
+[tool.pytest.ini_options]
+# One pytest root: test/pytest/, alongside the C++ suite in test/gtest/. The
+# hazard the template warns of is a second *config* under test/ -- a stray
+# pytest.ini/conftest.py next to the tests wins over this file for anything run
+# from that directory -- so the config stays here in pyproject and test/pytest/
+# is kept config-free.
+testpaths = ["test/pytest"]
+markers = [
+    # The fast/slow split the whole of devtools/ is built around: the push gate
+    # and the iteration loop run `-m "not slow"`, devtools/slow-tier.sh runs
+    # `-m slow` off the per-commit path. Mark a test slow when it is
+    # minutes-long, needs a big machine, or drives a compiler/GPU/network.
+    # docker/compose.yaml's `test` service deselects the same marker.
+    "slow: expensive tests, excluded from the default run and the push gate",
+    # Orthogonal to the tier: what the test NEEDS, not what it costs. A quick
+    # kernel launch is `gpu` but not `slow`; a long host-side sweep is `slow`
+    # but not `gpu`. Mark both when both are true.
+    "gpu: needs a live GPU device, either vendor (skipped, with a reason, when absent)",
+    # compute-sanitizer serialises and instruments every access, so a case that
+    # is merely slow under it becomes hours. docker/compose.yaml's
+    # compute-sanitizer service deselects this one.
+    "no_sanitizer: excluded from the compute-sanitizer run",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+# src/ is C++; there is nothing here for ruff to find, and pointing it at the
+# module tree only slows the walk.
+exclude = ["src", "deps", "build", "build-*"]
+
+[tool.ruff.lint]
+# Conservative on purpose: a broad ruleset on an existing tree buries real
+# findings under restyling. Widen it deliberately, not by default.
+select = ["E", "F", "I", "UP", "B"]
