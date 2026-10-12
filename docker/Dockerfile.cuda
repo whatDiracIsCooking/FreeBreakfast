@@ -114,6 +114,35 @@ ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 RUN --mount=type=bind,source=docker/install-claude-code.sh,target=/tmp/install-claude-code.sh \
     bash /tmp/install-claude-code.sh
 
+# The Antigravity CLI (`agy`), PINNED -- the same leaf-layer treatment as
+# Claude Code above, declared in all three GPU files and bumped in all three at
+# once by `devtools/agy-version.sh --apply`. docker/install-agy.sh carries the
+# rest: why not upstream's install.sh, and why the pin is a RELEASE (version
+# plus an opaque build id) rather than a version -- the manifest endpoint serves
+# only the CURRENT release, so a version on its own is not addressable and an
+# older one would be unfetchable.
+#
+# TWO lines to bump, not one: AGY_SHA512 belongs to the exact tarball
+# AGY_RELEASE names, and install-agy.sh verifies it rather than recording it.
+# devtools/agy-version.sh rewrites both, in every file, at once.
+#
+# ENV as well as ARG, exactly as with CLAUDE_CODE_VERSION above: it is what
+# lets doctor.sh tell the image's own pinned copy from something installed over
+# the top of it, which `agy --version` cannot -- that prints 1.3.3 and never
+# the build id.
+#
+# AGY_CLI_DISABLE_AUTO_UPDATE is the binary's own opt-out of the background
+# self-update it otherwise runs during normal use -- the counterpart of
+# `autoUpdates: false` in .devcontainer/seed-claude-config.sh. The install is
+# root-owned and the container runs as uid 1000, so an update attempt fails
+# regardless; what this stops is it being attempted behind the image's back.
+ARG AGY_RELEASE=1.3.3-5524738307653632
+ARG AGY_SHA512=abe3ddf5cf30d3adaa586acf505221aa19702f5ca71af3c8b1f9b1a5976bd8e5c151c41ea33b39c41675d25843462a3e8c382c054f580e9d7e1688919d3b5110
+ENV AGY_RELEASE=${AGY_RELEASE} \
+    AGY_CLI_DISABLE_AUTO_UPDATE=1
+RUN --mount=type=bind,source=docker/install-agy.sh,target=/tmp/install-agy.sh \
+    AGY_SHA512="${AGY_SHA512}" bash /tmp/install-agy.sh
+
 ENV PATH=/home/ubuntu/.local/bin:${PATH}
 
 USER ubuntu

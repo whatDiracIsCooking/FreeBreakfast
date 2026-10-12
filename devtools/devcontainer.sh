@@ -31,6 +31,13 @@
 # Unlike JOBS, which only bounds the test runner, these bound everything the
 # container runs -- compiles started from a `shell` included.
 #
+# HOST_MOUNTS / HOST_ENV_PASSTHROUGH (also from config.sh) add host state that
+# is deliberately NOT written into devcontainer.json -- a personal config
+# directory, an API key -- as `--mount` and `--remote-env` arguments. The
+# mounts need a `rebuild` to take effect, like any other mount; the env reaches
+# every `shell` and `test` too. host_mount_args and remote_env_args have the
+# reasoning, config.sh the defaults (both exist for the `agy` the images ship).
+#
 # The three configs, and what each is:
 #
 #   .devcontainer/cuda/devcontainer.json      CUDA 13 (the default)
@@ -320,6 +327,74 @@ ensure_host_bind_dirs() {
   done <<< "${HOST_BIND_DIRS:-}"
 }
 
+# The optional, personal host mounts from HOST_MOUNTS in config.sh, as
+# `--mount` arguments for the devcontainer CLI. Empty list, no arguments, no
+# behaviour change -- which is what lets a knob like this default to something
+# ($HOME/.gemini, for the `agy` the images install) without imposing it.
+#
+# WHY NOT IN devcontainer.json: config.sh's own comment has it in full. Short
+# version -- JSON cannot express "mount this only if it exists", an unresolved
+# `${localEnv:...}` source makes docker CREATE the placeholder path as root,
+# and a personal path in a tracked file is a path in git.
+#
+# A missing source is created here, before the CLI runs, for the same reason
+# ensure_host_bind_dirs exists: docker creates a missing bind source as root,
+# the container runs as uid 1000, and the tool inside then fails on a
+# permission error that never mentions a mount.
+#
+# These reach the CLI's `up` only. `exec` cannot add a mount to a container
+# that already exists, so editing HOST_MOUNTS needs `rebuild`, not `up` -- the
+# same trap as editing a Dockerfile, and the reason `up` reports what it
+# mounted.
+HOST_MOUNT_ARGS=()
+host_mount_args() {
+  HOST_MOUNT_ARGS=()
+  local entry src dst root=${PRIMARY_ROOT:-$REPO_ROOT}
+  config_lines "${HOST_MOUNTS:-}"
+  for entry in ${CONFIG_LINES[@]+"${CONFIG_LINES[@]}"}; do
+    src=${entry%%:*}
+    dst=${entry#*:}
+    if [ -z "$src" ] || [ -z "$dst" ] || [ "$dst" = "$entry" ]; then
+      echo "error: HOST_MOUNTS entry is not host_path:container_path -- $entry" >&2
+      exit 2
+    fi
+    case "$src" in
+      '~')   src=$HOME ;;
+      '~/'*) src=$HOME/${src#'~/'} ;;
+      /*)    ;;
+      *)     src=$root/$src ;;
+    esac
+    if [ ! -d "$src" ]; then
+      if ! mkdir -p "$src"; then
+        echo "error: cannot create mount source $src (HOST_MOUNTS)" >&2
+        exit 1
+      fi
+      echo "devcontainer: created mount source $src"
+    fi
+    HOST_MOUNT_ARGS+=(--mount "type=bind,source=$src,target=$dst")
+    echo "devcontainer: mounting $src -> $dst"
+  done
+}
+
+# HOST_ENV_PASSTHROUGH from config.sh, as `--remote-env NAME=value` arguments.
+# Only variables that are set AND non-empty are passed: an exported-but-empty
+# GEMINI_API_KEY is worse than an absent one, since a tool reads it as
+# configured-but-blank.
+#
+# Unlike the mounts above these work on `exec` too, so they apply to every
+# `shell` and `test` as well as to `up` -- a key rotated on the host reaches
+# the next command, with no rebuild. Values are redacted out of run_cli's
+# output; see the note there.
+REMOTE_ENV_ARGS=()
+remote_env_args() {
+  REMOTE_ENV_ARGS=()
+  local name
+  for name in ${HOST_ENV_PASSTHROUGH:-}; do
+    [ -n "${!name:-}" ] || continue
+    REMOTE_ENV_ARGS+=(--remote-env "$name=${!name}")
+  done
+}
+
 # Resolve ROCM_GROUPS to numeric HOST gids and export one FREE_BREAKFAST_<NAME>_GID
 # per group, which is what the `${localEnv:...}` references in the hip and
 # combined runArgs read.
@@ -550,9 +625,42 @@ report_claude_pin() {
   fi
 }
 
+# The same, for the other agent the images ship. Same reasoning, same silence
+# when there is nothing to say: `up`/`rebuild` is the only moment the `agy` in
+# the container can change, and an old pin is invisible otherwise -- more so
+# than claude's, since `agy` would normally keep itself current and the image
+# deliberately turns that off (AGY_CLI_DISABLE_AUTO_UPDATE).
+#
+# It reports VERSIONS while the pin is a release id (version plus build id --
+# docker/install-agy.sh has why); the ids are what get compared, the versions
+# what get printed, because the build id means nothing to a reader.
+report_agy_pin() {
+  local av out pinned pinned_v registry registry_v files
+  av="$REPO_ROOT/devtools/agy-version.sh"
+  [ -x "$av" ] || return 0
+  [ -n "${AGY_PIN_FILES:-}" ] || return 0
+  out=$(AGY_REGISTRY_TIMEOUT=${AGY_REGISTRY_TIMEOUT:-3} "$av" --porcelain 2>/dev/null)
+  pinned=$(printf '%s\n' "$out" | sed -n 's/^pinned //p')
+  pinned_v=$(printf '%s\n' "$out" | sed -n 's/^pinned_version //p')
+  registry=$(printf '%s\n' "$out" | sed -n 's/^registry //p')
+  registry_v=$(printf '%s\n' "$out" | sed -n 's/^registry_version //p')
+  files=$(printf '%s\n' "$out" | sed -n 's/^files //p')
+  if [ -z "$pinned" ] || [ "$pinned" = "-" ]; then
+    echo "agy: the release pin disagrees across the Dockerfiles -- $files" >&2
+    echo "     fix: devtools/agy-version.sh --apply" >&2
+  elif [ -n "$registry" ] && [ "$registry" != "-" ] && [ "$pinned" != "$registry" ]; then
+    echo "agy: image pins $pinned_v, upstream has $registry_v" >&2
+    echo "     bump: devtools/agy-version.sh --apply, then $0 rebuild" >&2
+  fi
+}
+
 # The CLI prints the whole `docker run` invocation on failure, GH_TOKEN and
 # all. Everything below routes through this so a secret cannot reach the
 # terminal; the exit status is the CLI's, not sed's.
+#
+# GEMINI_API_KEY is on the list for a second reason: remote_env_args puts it on
+# the CLI's own command line as a `--remote-env`, so it can be echoed back by
+# any error that quotes the invocation, not only by a failed `docker run`.
 #
 # `sed -u` is load-bearing, not a micro-optimisation. sed's own stdout is the
 # terminal, so without it sed is LINE-buffered: anything not terminated by a
@@ -563,8 +671,8 @@ report_claude_pin() {
 # Ubuntu.
 run_cli() {
   local rc=0
-  "${CLI[@]}" "$@" > >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN)=[A-Za-z0-9_-]+/\1=***REDACTED***/g') \
-    2> >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN)=[A-Za-z0-9_-]+/\1=***REDACTED***/g' >&2) || rc=$?
+  "${CLI[@]}" "$@" > >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g') \
+    2> >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g' >&2) || rc=$?
   # Let the redirections drain before the caller reads the next line.
   wait
   return "$rc"
@@ -576,7 +684,10 @@ case "${1:-}" in
     require_git_dir
     require_sccache_dir
     export_host_gids
-    run_cli up --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" "$@"
+    host_mount_args
+    remote_env_args
+    run_cli up --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" \
+      "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
     name_host_gids
     tag_variant_image
     apply_cpu_limits
@@ -584,6 +695,7 @@ case "${1:-}" in
     # reuse cannot restore it, so flag it here and point at `rebuild`.
     warn_if_gpu_revoked
     report_claude_pin
+    report_agy_pin
     ;;
   rebuild)
     # Needed after editing devcontainer.json or the Dockerfile: a plain `up`
@@ -595,8 +707,11 @@ case "${1:-}" in
     require_git_dir
     require_sccache_dir
     export_host_gids
+    host_mount_args
+    remote_env_args
     run_cli up --workspace-folder "$WORKSPACE" \
-      --remove-existing-container "${DC_CONFIG[@]}" "$@"
+      --remove-existing-container "${DC_CONFIG[@]}" \
+      "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
     # Again on `rebuild`, not only `up`: a fresh container means a fresh
     # /etc/group, so the entry has to be re-added rather than inherited.
     name_host_gids
@@ -606,6 +721,7 @@ case "${1:-}" in
     # host-side (driver/cgroup), not a stale container -- see doctor.sh.
     warn_if_gpu_revoked
     report_claude_pin
+    report_agy_pin
     ;;
   shell)
     shift
@@ -632,10 +748,13 @@ case "${1:-}" in
     # WITH arguments (`shell -c '...'`) it is a one-shot command rather than a
     # terminal session, so keep the filter: that is the path scripts and
     # agents use, and its output is what gets pasted into an issue.
+    remote_env_args
     if [ $# -eq 0 ]; then
-      exec "${CLI[@]}" exec --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" bash
+      exec "${CLI[@]}" exec --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" \
+        "${REMOTE_ENV_ARGS[@]}" bash
     fi
-    run_cli exec --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" bash "$@"
+    run_cli exec --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" \
+      "${REMOTE_ENV_ARGS[@]}" bash "$@"
     ;;
   test)
     shift
@@ -654,8 +773,9 @@ case "${1:-}" in
       *" -m "*) ;;
       *) config_args "$FAST_TEST_ARGS"; cmd+=("${CONFIG_ARGS[@]}") ;;
     esac
+    remote_env_args
     run_cli exec --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" \
-      "${cmd[@]}" "$@"
+      "${REMOTE_ENV_ARGS[@]}" "${cmd[@]}" "$@"
     ;;
   down)
     shift
