@@ -219,17 +219,10 @@ properly and every skip is named:
 devtools/cpp-tier.sh -- -R Version
 ```
 
-**`ctest` also runs the WarpWraps submodule's own suites** — 78 entries against
-this project's 4. Nesting it via `add_subdirectory` brings its `example/` and
-six test directories along; it adds them unconditionally and calls
-`enable_testing()` itself, with no "skip my tests" switch. Since the build cost
-is paid either way, the suites may as well be runnable, and they are free
-verification that the submodule pin is sound on this toolchain. Filter by label
-(`ctest -LE gpu`, `-L compile_time`) or by name when it is not what you want:
-
-```sh
-ctest --preset default -R '^(Version|Device)\.'   # just this project's
-```
+**`ctest` runs this project's suites only.** The WarpWraps submodule is nested
+via `add_subdirectory` with `WWR_BUILD_TESTS` and `WWR_BUILD_EXAMPLES` off (set
+in `deps/CMakeLists.txt`), so its own suites and examples are neither built nor
+registered here; they are verified by WarpWraps' own CI.
 
 **Python — `test/pytest/`, run by pytest** over the binaries the C++ side
 produces:

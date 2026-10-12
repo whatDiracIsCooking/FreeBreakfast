@@ -60,31 +60,29 @@ declares it, and FetchContent is first-declaration-wins, so declaring a second
 one here would not give this project a different GoogleTest — it would only make
 the pin look like it lived here.
 
-### What nesting WarpWraps costs
+### wwr's own tests are switched off
 
-`deps/CMakeLists.txt` adds it with `add_subdirectory`. wwr's root CMakeLists
-adds its own `example/` and six test directories **unconditionally** and calls
-`enable_testing()` itself; there is no "skip my tests" switch. So:
+`deps/CMakeLists.txt` adds it with `add_subdirectory` and sets
+`WWR_BUILD_TESTS` and `WWR_BUILD_EXAMPLES` **OFF** (both already default OFF
+for a nested build, like `WWR_INSTALL`; they are set explicitly so this does
+not depend on a default staying put). So wwr calls no `enable_testing()`, adds
+no `test/` or `example/` directory, and a top-level `ctest` lists only this
+project's entries. wwr's suites are wwr's CI's job, not this tree's.
 
-- a top-level `ctest` runs wwr's entries as well as this project's — **78
-  against this project's 4**. Filter by label (`-LE gpu`, `-L compile_time`) or
-  by name when that is not what you want.
-- coverage has to exclude them, which is what `COVERAGE_IGNORE_REGEX=/deps/`
-  in `devtools/config.sh` does.
+GoogleTest is **not** behind those switches — wwr's `deps/` is gated only by
+`WWR_COMPILE_TIME_ONLY` — which is what keeps the `GTest::*` targets this
+project's tests link.
 
-This is accepted, not a bug to fix: the build cost is paid either way, so the
-suites may as well be runnable, and they are free verification that the
-submodule pin is sound on this toolchain. Do not "fix" it by patching the
-submodule.
+Coverage still excludes `/deps/` (`COVERAGE_IGNORE_REGEX` in
+`devtools/config.sh`): wwr's libraries and GoogleTest are still compiled into
+this build.
 
-**`enable_testing()` is called before `add_subdirectory(deps)` for this reason,
-and must stay there.** CMake writes a `subdirs(...)` line into a directory's
-`CTestTestfile.cmake` only if testing was enabled when that directory was
-*processed*. With the call below the subdirectories,
-`build/deps/CTestTestfile.cmake` comes out empty — no `subdirs("WarpWraps")` —
-and wwr's suites still compile but become **unrunnable**, with nothing saying
-so: the top-level run reports 4 tests and passes green. That is the same trap
-the `experimental/` guard at the bottom of the root `CMakeLists.txt` documents.
+`enable_testing()` is still called before `add_subdirectory(deps)`. CMake
+writes a `subdirs(...)` line into a directory's `CTestTestfile.cmake` only if
+testing was enabled when that directory was *processed*, so a directory added
+above the call has its tests silently dropped — the same trap the
+`experimental/` guard at the bottom of the root `CMakeLists.txt` documents.
+Keeping the call first means every directory gets the same treatment.
 
 ## The backend switch, and why it is before `project()`
 
