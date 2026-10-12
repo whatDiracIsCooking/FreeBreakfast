@@ -474,6 +474,65 @@ if [ -n "${CLAUDE_PIN_FILES:-}" ] && [ -x "$CV" ]; then
   fi
 fi
 
+# --- antigravity cli pin (the other agent the image ships) -----------------
+# The same three failure modes as the Claude pin above, one check each. Two
+# differences, both from upstream rather than from choice: the pin is a RELEASE
+# id (version plus an opaque build id) because the updater endpoint serves only
+# the current release and the storage URL is the only addressable artifact; and
+# `agy` normally self-updates in the background, which the image turns off
+# (AGY_CLI_DISABLE_AUTO_UPDATE) precisely so that the pin means something --
+# which in turn makes an unnoticed old pin more likely here than for claude.
+# docker/install-agy.sh has the rest. AGY_PIN_FILES in config.sh is the list of
+# files carrying the pin; empty drops the section.
+AV="$TOP/devtools/agy-version.sh"
+if [ -n "${AGY_PIN_FILES:-}" ] && [ -x "$AV" ]; then
+  echo "antigravity cli pin"
+  av=$("$AV" --porcelain 2>/dev/null)
+  av_pinned=$(printf '%s\n' "$av" | sed -n 's/^pinned //p')
+  av_pinned_v=$(printf '%s\n' "$av" | sed -n 's/^pinned_version //p')
+  av_files=$(printf '%s\n' "$av" | sed -n 's/^files //p')
+  av_upstream=$(printf '%s\n' "$av" | sed -n 's/^registry //p')
+  av_upstream_v=$(printf '%s\n' "$av" | sed -n 's/^registry_version //p')
+  av_installed=$(printf '%s\n' "$av" | sed -n 's/^installed //p')
+
+  # 1. the copies agree with each other -- release AND sha512, since a release
+  #    pinned against another release's hash is a build that fails its
+  #    checksum, which reads as a corrupt download rather than as drift.
+  if [ -z "$av_pinned" ] || [ "$av_pinned" = "-" ]; then
+    warn "the Antigravity CLI pin disagrees across the Dockerfiles"
+    note "$av_files"
+    note "fix: devtools/agy-version.sh --apply"
+  # 2. and with upstream. Behind is a WARN, never a FAIL: a pin is a
+  #    deliberate choice, and the point is only that the gap is visible.
+  elif [ -z "$av_upstream" ] || [ "$av_upstream" = "-" ]; then
+    ok "Antigravity CLI pinned at $av_pinned_v"
+    note "the release manifest is unreachable from here -- cannot say whether it is current"
+  elif [ "$av_pinned" != "$av_upstream" ]; then
+    warn "Antigravity CLI pin $av_pinned_v is behind upstream ($av_upstream_v)"
+    note "bump: devtools/agy-version.sh --apply && docker/build.sh cuda"
+  else
+    ok "Antigravity CLI pinned at $av_pinned_v (current)"
+  fi
+
+  # 3. and, inside an image built from that pin, with what is on PATH.
+  #    AGY_RELEASE in the environment is the image's own ENV, so its presence
+  #    is what tells container from host -- and it is also the only place the
+  #    build id survives, since `agy --version` reports the version alone.
+  if [ -n "${AGY_RELEASE:-}" ]; then
+    if [ "$av_installed" != "${AGY_RELEASE%%-*}" ]; then
+      warn "agy on PATH is ${av_installed:-none}, this image pinned ${AGY_RELEASE%%-*}"
+      note "something installed over the image's copy (\`agy update\`?); rebuild the container"
+    elif [ -n "$av_pinned" ] && [ "$AGY_RELEASE" != "$av_pinned" ]; then
+      warn "this image was built at $AGY_RELEASE, the tree now pins $av_pinned"
+      note "rebuild: devtools/devcontainer.sh rebuild"
+    else
+      ok "agy in here is the pinned ${AGY_RELEASE%%-*}"
+    fi
+  else
+    note "agy here is ${av_installed:-not installed} (a host install, unrelated to the pin)"
+  fi
+fi
+
 # --- docker hygiene (report-only) -----------------------------------------
 # Worktree containers/volumes/images leak when a worktree is removed with plain
 # `git worktree remove` (bypassing worktree.sh rm), or via an agent's worktrees

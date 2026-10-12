@@ -194,6 +194,47 @@ way.
 JSON cannot source shell, which is why (2) and (3) are duplicated here rather
 than read from `devtools/config.sh`.
 
+## Host mounts that are *not* in the JSON
+
+Two knobs in `devtools/config.sh` add host state to the container without any of
+it being written into a tracked file. `devtools/devcontainer.sh` turns them into
+arguments for the devcontainer CLI on `up`/`rebuild`:
+
+| Knob | Becomes | For |
+| --- | --- | --- |
+| `HOST_MOUNTS` | one `--mount type=bind,…` per line | optional, personal directories — defaults to `~/.gemini:/home/ubuntu/.gemini` |
+| `HOST_ENV_PASSTHROUGH` | one `--remote-env NAME=value` per **non-empty** variable | `GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL` |
+
+**Why not in `devcontainer.json`, when the sccache and `.git` mounts are?**
+Those two are mounts the container cannot work without, so they are declared
+there and merely have their *host path* injected. These are optional and
+personal, and JSON cannot say "mount this only if it exists": a
+`${localEnv:FOO}` source with a placeholder fallback does not *skip* the mount
+when `FOO` is unset — docker **creates** the placeholder path, owned by root, and
+the tool inside then fails on a permission error that never mentions a mount.
+Keeping the list in shell means an empty value mounts nothing, a missing source
+is created as *you* before the CLI runs, and no host path or username is
+committed. `~` expands against the host's `$HOME`; a relative path resolves
+against the main checkout, as `HOST_BIND_DIRS` does.
+
+The default exists for `agy`, the Antigravity CLI the images install
+(`docker/install-agy.sh`): it keeps settings, hooks, plugins, skills and
+credential material in `$HOME/.gemini`, so binding the host's copy is what makes
+the `agy` in a container the same logged-in `agy` as the one outside — the
+counterpart of the `~/.claude` mount each `devcontainer.json` declares.
+
+`HOST_ENV_PASSTHROUGH` is `--remote-env` rather than `containerEnv` on purpose:
+a `containerEnv` entry is baked in at create time (which is how `GH_TOKEN` ends
+up in the `docker run` line the CLI prints on failure — `devcontainer.sh`
+redacts that, and these), while `--remote-env` reaches the process. So a key
+rotated on the host is picked up by the next `shell`, and an unset variable is
+simply not passed, where `${localEnv:FOO}` would define it as the empty string.
+
+**A mount applies only when the container is created.** Editing `HOST_MOUNTS`
+and running `up` reuses the running container and applies none of it, exactly as
+with a Dockerfile edit — use `rebuild`. `--remote-env` has no such caveat; it
+applies to every `shell` and `test`.
+
 ## Rebuilding
 
 ```bash

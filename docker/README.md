@@ -138,6 +138,53 @@ the version it installs: measured on this box before the change, four images
 off one lockfile carried claude 2.1.197 (×3, built over three days) and 2.1.289
 — the version was a function of build date, and nothing reported it.
 
+### The Antigravity CLI is pinned too — by *release*, not version
+
+Each GPU file also ends with `docker/install-agy.sh`, which installs Google's
+Antigravity CLI as `/usr/local/bin/agy`: download the pinned tarball, verify its
+sha512, extract the one binary, then check `agy --version` and that `agy` on
+`PATH` is the copy just installed. A 404 or a renamed archive member fails the
+build rather than producing a container with no `agy` in it.
+
+```bash
+devtools/agy-version.sh              # pinned / upstream / installed here
+devtools/agy-version.sh --apply      # rewrite the pin to upstream's current release
+devtools/agy-version.sh --apply 1.3.3-5524738307653632
+devtools/agy-version.sh --rebuild    # ...and rebuild the images already built here
+```
+
+**The pin is a release id — `1.3.3-5524738307653632` — and two lines, not one.**
+Upstream's updater endpoint serves only the *current* release, so a version on
+its own is not addressable the way `claude-code@2.1.296` is; what is addressable
+is the storage URL, whose path carries the version plus an opaque build id. So
+`ARG AGY_RELEASE` pins that segment and `ARG AGY_SHA512` pins the tarball it
+names, `install-agy.sh` verifies the hash, and `agy-version.sh --apply` rewrites
+both in all three files. The build then needs no manifest at all: an upstream
+release neither changes what the image installs nor breaks the build.
+
+Two consequences worth knowing:
+
+- **Rolling back needs a release id you already have** — a previous value of the
+  pin, which is in git. Upstream publishes no index of older releases.
+  `--apply <release>` downloads that tarball to hash it (~60MB), because the
+  manifest carries a hash for the current release only.
+- **`ENV AGY_CLI_DISABLE_AUTO_UPDATE=1` is load-bearing.** `agy` self-updates in
+  the background during normal runs, which would walk the container away from
+  its pin; the binary is root-owned so the attempt fails anyway, but failing
+  quietly on every run is not the same as not being attempted. This is the same
+  decision as `autoUpdates: false` in `.devcontainer/seed-claude-config.sh`.
+  Bump with `devtools/agy-version.sh`, not `agy update`.
+
+`Dockerfile.combined` runs the script on top of the `cuda` image, which already
+ran it, and the binary is 214MB — so `install-agy.sh` **inherits** a copy that is
+already at the pinned release instead of laying down a second 214MB layer. The
+early exit is keyed on the version matching, so a `combined` pinned to something
+other than its parent still gets its own.
+
+`agy`'s own config lives in `$HOME/.gemini`, which no image provides. The
+devcontainer binds the host's copy — `HOST_MOUNTS` in `devtools/config.sh`, see
+`.devcontainer/README.md`.
+
 ### The `-ci` variants, and the registry
 
 Three more environment knobs turn a local build into a published one. Only

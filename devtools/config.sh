@@ -267,6 +267,60 @@ CPUS=${CPUS:-}
 # a loud check in devcontainer.sh rather than a mkdir.
 HOST_BIND_DIRS=${HOST_BIND_DIRS:-.sccache}
 
+# Host directories to bind into the devcontainer that are NOT written into
+# devcontainer.json, one `host_path:container_path` per line. Applied by
+# devcontainer.sh on `up` and `rebuild` as `--mount` arguments to the
+# devcontainer CLI.
+#
+# WHY NOT IN THE JSON, like the sccache and .git mounts: those two are mounts
+# the container cannot work without, so they are declared there and merely have
+# their host path injected. These are OPTIONAL and personal -- a tool's config
+# directory under your own $HOME -- and JSON has no way to say "mount this only
+# if it exists". A `${localEnv:...}` entry with a placeholder fallback is worse
+# than nothing here: when the variable is unset docker does not skip the mount,
+# it CREATES the placeholder path as root. Keeping the list in shell means an
+# empty value mounts nothing, and no host path or username is ever committed.
+#
+# `~` is expanded against the HOST's $HOME. A relative path resolves against
+# the MAIN checkout (the one holding the common .git), not the calling
+# worktree, exactly as HOST_BIND_DIRS does. A missing source directory is
+# CREATED before the mount, for the same reason HOST_BIND_DIRS exists at all:
+# docker would otherwise create it as root and the container, running as uid
+# 1000, could not write in it.
+#
+# The default is the Antigravity CLI's config tree. `agy` is installed in the
+# images (docker/install-agy.sh) and keeps everything in $HOME/.gemini --
+# settings.json, hooks, plugins, skills, the project cache and whatever
+# credential material it can store outside a keyring. Binding the host's copy
+# is what makes the `agy` in a container the same logged-in `agy` as the one on
+# the host, and is the counterpart of the ~/.claude mount that each
+# devcontainer.json declares for Claude Code.
+#
+# NOTE a mount takes effect only when the container is CREATED. Editing this
+# list and running `up` reuses the running container and applies none of it --
+# the same trap as editing a Dockerfile. Use `rebuild`.
+HOST_MOUNTS=${HOST_MOUNTS:-"~/.gemini:/home/ubuntu/.gemini"}
+
+# Host environment variables to forward into commands run inside the container,
+# space-separated. devcontainer.sh passes each one that is NON-EMPTY as a
+# `--remote-env NAME=value`, on `up`/`rebuild` and on every `shell`/`test`.
+#
+# Deliberately not `containerEnv` in the JSON: an entry there is baked into the
+# container at CREATE time, which is how GH_TOKEN ends up in the `docker run`
+# line the CLI prints when a mount fails (run_cli in devcontainer.sh redacts
+# that, and these names too). `--remote-env` reaches the process instead of the
+# container, so a key rotated on the host is picked up by the next `shell`
+# rather than at the next rebuild, and an unset variable is simply not passed
+# -- where `${localEnv:FOO}` would define FOO as the empty string, which some
+# tools read as "configured, but blank".
+#
+# The two defaults are the Antigravity CLI's API-key path: with `modelProvider`
+# set to `gemini` in ~/.gemini/antigravity-cli/settings.json (mounted above),
+# GEMINI_API_KEY is what it authenticates with, and GOOGLE_GEMINI_BASE_URL
+# points it at a non-default endpoint. Neither is needed when `agy` is logged
+# in through a Google account.
+HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL"}
+
 # Where the cross-session GPU lock file lives (see with_gpu_lock() in lib.sh).
 # RUN_SERIAL in test/gtest/CMakeLists.txt only serializes test cases within one
 # ctest process -- it does nothing when a second worktree's cpp-tier.sh or
@@ -357,7 +411,8 @@ flock:cross-session GPU test serialization (with_gpu_lock in lib.sh); without it
 clang-tidy:the advisory lint pass (cpp-tier.sh --tidy, and CI's cuda leg)
 clang-format:the C++ formatting pass (see CLAUDE.md -- it is not a git hook)
 cmake-format:the CMake formatting pass; run by hand, not by any hook
-cmake-lint:the CMake lint pass CI runs on every PR"}
+cmake-lint:the CMake lint pass CI runs on every PR
+agy:the Antigravity CLI the GPU images ship (docker/install-agy.sh); absent on a bare host unless you installed it there yourself"}
 
 # Which GPU vendors doctor.sh probes for a LIVE DEVICE, space-separated:
 # `nvidia`, `amd`, or empty to drop the section entirely (a CPU-only repo).
@@ -406,3 +461,33 @@ docker/Dockerfile.combined"}
 # before giving up and reporting the pin alone.
 CLAUDE_NPM_PACKAGE=${CLAUDE_NPM_PACKAGE:-@anthropic-ai/claude-code}
 CLAUDE_REGISTRY_TIMEOUT=${CLAUDE_REGISTRY_TIMEOUT:-8}
+
+# The same three files carry the second agent's pin: `ARG AGY_RELEASE=` and
+# `ARG AGY_SHA512=`, the Antigravity CLI (`agy`) installed by
+# docker/install-agy.sh. devtools/agy-version.sh reads, compares and rewrites
+# exactly these -- BOTH lines, since the hash belongs to the release -- and
+# doctor.sh warns when they disagree or have fallen behind upstream. Set empty
+# to drop both checks.
+#
+# It is a separate list from CLAUDE_PIN_FILES on purpose, even though the two
+# name the same files today: dropping one agent from the images should not have
+# to mean dropping the other.
+AGY_PIN_FILES=${AGY_PIN_FILES:-"docker/Dockerfile.cuda
+docker/Dockerfile.hip
+docker/Dockerfile.combined"}
+
+# Where `agy` releases are published, and for which platform. There is no
+# version index -- the manifest endpoint serves only the CURRENT release, and
+# the tarball URL is the only thing that carries a release's build id -- which
+# is why the pin is a release id rather than a version. See
+# docker/install-agy.sh.
+#
+# MANIFEST_PLATFORM is the updater's own spelling (`linux_amd64`) and PLATFORM
+# is the storage path's (`linux-x64`); they differ upstream, not here. PLATFORM
+# must match the AGY_PLATFORM default in docker/install-agy.sh, or this script
+# would hash one tarball while the build downloads another.
+AGY_MANIFEST_BASE=${AGY_MANIFEST_BASE:-https://antigravity-cli-auto-updater-974169037036.us-central1.run.app}
+AGY_MANIFEST_PLATFORM=${AGY_MANIFEST_PLATFORM:-linux_amd64}
+AGY_URL_BASE=${AGY_URL_BASE:-https://storage.googleapis.com/antigravity-public/antigravity-cli}
+AGY_PLATFORM=${AGY_PLATFORM:-linux-x64}
+AGY_REGISTRY_TIMEOUT=${AGY_REGISTRY_TIMEOUT:-8}
