@@ -64,8 +64,32 @@ skip() {
 # The toolchain is in the image, not on a bare host.
 for tool in cmake ninja; do
   command -v "$tool" >/dev/null 2>&1 ||
-    skip "$tool not found -- the C++ toolchain lives in the CUDA container"
+    skip "$tool not found -- the C++ toolchain lives in the GPU container"
 done
+
+# PRESENT IS NOT THE SAME AS USABLE, and this gate runs on the HOST -- it is a
+# git pre-push hook, so it gets whatever cmake the distro installed. A cmake
+# older than the tree's floor fails in a way that looks nothing like a version
+# problem: it cannot even parse CMakePresets.json, because that file declares
+# `cmakeMinimumRequired` and an older cmake rejects the whole document with
+#
+#   Error: @4,14: "cmakeMinimumRequired" major version 4 must be less than 3
+#
+# so the gate reported BUILD FAILED and blocked the push on a machine that was
+# never expected to build at all. Checking only `command -v cmake` is what let
+# that through: Ubuntu 24.04 ships 3.28, which is present and unusable.
+#
+# The floor comes from CMakeLists.txt rather than being hardcoded here, so the
+# two cannot drift. `sort -V` does the comparison -- no bash arithmetic on
+# dotted versions.
+cmake_floor=$(sed -n 's/^cmake_minimum_required(VERSION \([0-9.]*\)).*/\1/p' \
+  "$REPO_ROOT/CMakeLists.txt" | head -1)
+cmake_have=$(cmake --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9.]*\).*/\1/p')
+if [ -n "$cmake_floor" ] && [ -n "$cmake_have" ] &&
+   [ "$(printf '%s\n%s\n' "$cmake_floor" "$cmake_have" | sort -V | head -1)" \
+     != "$cmake_floor" ]; then
+  skip "cmake $cmake_have is below this tree's $cmake_floor floor -- the C++ toolchain lives in the GPU container"
+fi
 # `default`'s native arch reads a live device at configure time, and the GPU
 # smoke needs one to run; without a card this gate cannot proceed. Probe the
 # driver device NODES, not nvidia-smi: NVML (nvidia-smi) routinely fails with
