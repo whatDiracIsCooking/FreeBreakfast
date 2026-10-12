@@ -1,0 +1,53 @@
+# Configuration for cmakelang, which provides two tools with one config file:
+#
+#   cmake-lint   run by CI over every tracked CMakeLists.txt and cmake/*.cmake
+#   cmake-format NOT run by anything -- see below
+#
+# Only the lint half is live. There is deliberately no formatter hook in this
+# repo (.pre-commit-config.yaml says why), so cmake-format is a by-hand tool:
+#
+#   .venv/bin/cmake-format -i $(git ls-files 'CMakeLists.txt' '*.cmake')
+#
+# and running it today rewrites most of the tree, because the tree was never
+# formatted by it. Adopt it on a day when you want that diff, or not at all.
+#
+# This file used to carry a `parse.additional_commands` block teaching
+# cmake-format the three free_breakfast_add_* macros. It was removed rather than
+# repaired: it served only the tool nobody runs, and it broke the tool CI does
+# run. cmakelang 0.6.13 parses a `flags:` entry as a *positional* group, so the
+# block's `pargs: 0` left IMPORT_STD with nowhere to land and both tools died
+# with `InternalError: parsed an empty subtree` on 18 of the 32 tracked files.
+# If cmake-format is ever adopted, the block comes back -- with `pargs: '*'` on
+# any macro that declares flags.
+
+format:
+  # 100 rather than cmakelang's default 80. `free_breakfast` is 14 characters
+  # and every macro and target name carries it twice over, so a single call --
+  #
+  #   free_breakfast_add_interface_library(NAME free_breakfast.core.bitutils)
+  #
+  # -- is most of a default-width line before anything is wrapped. The findings
+  # that forced this were lines containing the project name, not sprawl, so the
+  # width moves rather than the tree.
+  #
+  # (Keep the arithmetic in step with the project name if it ever changes.)
+  line_width: 100
+  tab_size: 2
+  use_tabchars: false
+  dangle_parens: true
+  max_subgroups_hwrap: 2
+  max_pargs_hwrap: 4
+
+markup:
+  # Doxygen-ish comment banners in the cmake/ helpers are hand-written; leaving
+  # bullet/enum detection on rewraps them into unreadable prose.
+  enable_markup: false
+
+lint:
+  # A leading underscore marks a local/private name throughout this tree --
+  # `_llvm_roots` in CMakeLists.txt, `_free_breakfast_*` for the helper functions
+  # in cmake/. cmake-lint's default argument_var_pattern rejects the prefix, so
+  # `foreach(_root ...)` trips C0103 while the identical convention on set()
+  # locals and function names does not. Widen the pattern rather than break the
+  # convention in one place.
+  argument_var_pattern: '_?[a-z][a-z0-9_]*'

@@ -1,0 +1,315 @@
+# The BATCH path: one-shot configure/build/test runs that bring their own
+# container, tee everything to .log/, and exit. The other path is the
+# devcontainer (.devcontainer/cuda/ + devtools/devcontainer.sh), which is the
+# interactive and agent-facing one. Both run the SAME image -- docker/Dockerfile.cuda
+# -- so a result here and a result in there mean the same thing.
+#
+#   # from the repo root; build.sh walks base -> cuda and tags :cuda and :latest
+#   docker/build.sh cuda
+#   export HOST_UID=$(id -u) HOST_GID=$(id -g)
+#   docker compose -f docker/compose.yaml run --rm test
+#
+# FREE_BREAKFAST_IMAGE below defaults to free-breakfast:latest, which is one of the two tags
+# build.sh gives the CUDA image -- so nothing here needs to know about the
+# base/cuda/hip/combined chain. Compose does not build; it only runs.
+#
+# Use these when you want a clean, logged, unattended run on THIS machine -- a
+# nightly, a sanitizer sweep, a batch build you want a transcript of. Use the
+# devcontainer when you want to stay in the container and iterate;
+# `devtools/cpp-tier.sh` is the same three phases from inside it.
+#
+# NOT WHAT CI RUNS, despite the overlap. .github/workflows/ci.yml declares a
+# `container:` and calls devtools/cpp-tier.sh directly, for two reasons neither
+# of which compose can meet: it needs a HIP service as well as a CUDA one, and
+# it mounts the workspace where the runner put it rather than at /workspace.
+# Every service here also reserves a GPU, which no hosted runner has. The
+# sanitizer services below are the part with no CI counterpart at all, and the
+# reason this file is still the right tool for an unattended local sweep.
+#
+# HOST_UID/HOST_GID are required (`:?` below) rather than defaulted, because a
+# default of 1000 on a host where you are not uid 1000 writes root-owned build
+# output into the bind mount and the failure surfaces much later. See
+# README.md in this directory.
+#
+# Every service reserves a GPU, the `build` service included: the presets use
+# CMAKE_CUDA_ARCHITECTURES=native, which asks the driver what card is present
+# at CONFIGURE time. On a build host with no GPU, use a pinned preset instead
+# (BUILD_PRESET=ci-cuda, which pins sm_86) and drop the `deploy`
+# block from that service.
+services:
+  build:
+    image: ${FREE_BREAKFAST_IMAGE:-free-breakfast:latest}
+    volumes:
+      - ..:/workspace
+      # The sccache store, as a bind of its own rather than something reached
+      # through /workspace: a worktree's own .sccache is not the shared one.
+      # The default IS the shared store when you run from the main checkout;
+      # from a worktree, point FREE_BREAKFAST_SCCACHE_HOST_DIR at main's (env.example
+      # has the line).
+      #
+      # create_host_path: false is the point of the long syntax. Docker's
+      # default is to CREATE a missing bind source, owned by root -- and the
+      # service runs as HOST_UID, so the first compile dies with `failed to
+      # create directory /sccache/preprocessor: Permission denied`, leaving a
+      # directory only sudo can clear. False turns that into compose refusing
+      # to start and naming the path it wanted. (The devcontainer cannot say
+      # this in JSON, so devtools/devcontainer.sh mkdirs it instead.)
+      - type: bind
+        source: ${FREE_BREAKFAST_SCCACHE_HOST_DIR:-../.sccache}
+        target: /sccache
+        bind:
+          create_host_path: false
+    working_dir: /workspace
+    user: "${HOST_UID:?Set HOST_UID via id -u}:${HOST_GID:?Set HOST_GID via id -g}"
+    environment:
+      # The store bound above, NOT the image's /home/ubuntu/.sccache: these
+      # services run as HOST_UID rather than ubuntu, so that home is not
+      # necessarily writable.
+      #
+      # Unlike the devcontainer -- which mounts each worktree at its own host
+      # path and so can share the store but not HITS -- every service here
+      # mounts the tree at the same /workspace. The paths baked into the
+      # command lines, the cache keys and the BMIs are identical whichever
+      # worktree you ran from, so one store gives real cross-worktree reuse.
+      #
+      # No SCCACHE_BASEDIRS, deliberately, and for the same reason as
+      # everywhere else in this repo: a restored BMI keeps the absolute path it
+      # was built under, so normalising keys across differing roots buys a
+      # broken build. /workspace is already identical everywhere.
+      - SCCACHE_DIR=/sccache
+      - BUILD_PRESET=${BUILD_PRESET:-default}
+      - BUILD_DIR=${BUILD_DIR:-build-compose}
+      - RECONFIGURE=${RECONFIGURE:-}
+      - CLEAN=${CLEAN:-}
+      - REBUILD=${REBUILD:-}
+      - BUILD_ONLY=${BUILD_ONLY:-}
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        preset="$$BUILD_PRESET"
+        build_dir="$$BUILD_DIR"
+        ts=$$(date +%Y%m%d-%H%M%S)
+        mkdir -p .log
+        if [ "$$BUILD_ONLY" != "1" ]; then
+          cmake --preset "$$preset" -B "$$build_dir" $${RECONFIGURE:+--fresh} $${REBUILD:+--fresh} \
+            > >(tee .log/configure.$$ts.out.txt) \
+            2> >(tee .log/configure.$$ts.err.txt >&2)
+        fi
+        cmake --build "$$build_dir" $${CLEAN:+--clean-first} $${REBUILD:+--clean-first} \
+          > >(tee .log/build.$$ts.out.txt) \
+          2> >(tee .log/build.$$ts.err.txt >&2)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  test:
+    image: ${FREE_BREAKFAST_IMAGE:-free-breakfast:latest}
+    volumes:
+      - ..:/workspace
+      # The shared sccache store; see the `build` service for the long syntax.
+      - type: bind
+        source: ${FREE_BREAKFAST_SCCACHE_HOST_DIR:-../.sccache}
+        target: /sccache
+        bind:
+          create_host_path: false
+    working_dir: /workspace
+    user: "${HOST_UID:?Set HOST_UID via id -u}:${HOST_GID:?Set HOST_GID via id -g}"
+    environment:
+      - SCCACHE_DIR=/sccache  # the store bound above; see the build service
+      - BUILD_PRESET=${BUILD_PRESET:-default}
+      - BUILD_DIR=${BUILD_DIR:-build-compose}
+      - CUDA_VISIBLE_DEVICES
+      - TIMEOUT_MULTIPLIER=${TIMEOUT_MULTIPLIER:-}
+      - TEST_FILTER=${TEST_FILTER:-}
+      - PYTEST_ARGS=${PYTEST_ARGS:-}
+      - SKIP_GTEST=${SKIP_GTEST:-}
+      - SKIP_PYTEST=${SKIP_PYTEST:-}
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        preset="$$BUILD_PRESET"
+        build_dir="$$BUILD_DIR"
+        ts=$$(date +%Y%m%d-%H%M%S)
+        mkdir -p .log
+        cmake --preset "$$preset" -B "$$build_dir" \
+          $${TIMEOUT_MULTIPLIER:+-DFREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER=$$TIMEOUT_MULTIPLIER} \
+          > >(tee .log/configure.$$ts.out.txt) \
+          2> >(tee .log/configure.$$ts.err.txt >&2)
+        cmake --build "$$build_dir" \
+          > >(tee .log/build.$$ts.out.txt) \
+          2> >(tee .log/build.$$ts.err.txt >&2)
+        gtest_rc=0
+        if [ -z "$$SKIP_GTEST" ]; then
+          ctest --test-dir "$$build_dir" --output-on-failure \
+            $${TEST_FILTER:+-R "$$TEST_FILTER"} \
+            --output-junit "$$PWD/.log/ctest.$$ts.xml" \
+            > >(tee .log/ctest.$$ts.out.txt) \
+            2> >(tee .log/ctest.$$ts.err.txt >&2) \
+            || gtest_rc=$$?
+        fi
+        pytest_rc=0
+        if [ -z "$$SKIP_PYTEST" ]; then
+          python3 -m pytest -rs $$PYTEST_ARGS -v \
+            --junitxml=.log/pytest.$$ts.xml \
+            > >(tee .log/pytest.$$ts.out.txt) \
+            2> >(tee .log/pytest.$$ts.err.txt >&2) \
+            || pytest_rc=$$?
+        fi
+        exit $$(( gtest_rc > 0 || pytest_rc > 0 ? 1 : 0 ))
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  asan:
+    image: ${FREE_BREAKFAST_IMAGE:-free-breakfast:latest}
+    volumes:
+      - ..:/workspace
+      # The shared sccache store; see the `build` service for the long syntax.
+      - type: bind
+        source: ${FREE_BREAKFAST_SCCACHE_HOST_DIR:-../.sccache}
+        target: /sccache
+        bind:
+          create_host_path: false
+    working_dir: /workspace
+    user: "${HOST_UID:?Set HOST_UID via id -u}:${HOST_GID:?Set HOST_GID via id -g}"
+    environment:
+      - SCCACHE_DIR=/sccache  # the store bound above; see the build service
+      - BUILD_PRESET=${BUILD_PRESET:-asan}
+      - BUILD_DIR=${BUILD_DIR:-build-compose-asan}
+      - CUDA_VISIBLE_DEVICES
+      - ASAN_OPTIONS=protect_shadow_gap=0
+      - TIMEOUT_MULTIPLIER=${TIMEOUT_MULTIPLIER:-}
+      - TEST_FILTER=${TEST_FILTER:-}
+      - PYTEST_ARGS=${PYTEST_ARGS:-}
+      - SKIP_GTEST=${SKIP_GTEST:-}
+      - SKIP_PYTEST=${SKIP_PYTEST:-}
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        preset="$$BUILD_PRESET"
+        build_dir="$$BUILD_DIR"
+        ts=$$(date +%Y%m%d-%H%M%S)
+        mkdir -p .log
+        cmake --preset "$$preset" -B "$$build_dir" \
+          $${TIMEOUT_MULTIPLIER:+-DFREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER=$$TIMEOUT_MULTIPLIER} \
+          > >(tee .log/configure.$$ts.out.txt) \
+          2> >(tee .log/configure.$$ts.err.txt >&2)
+        cmake --build "$$build_dir" \
+          > >(tee .log/build.$$ts.out.txt) \
+          2> >(tee .log/build.$$ts.err.txt >&2)
+        set +e
+        gtest_rc=0
+        pytest_rc=0
+        if [ -z "$$SKIP_GTEST" ]; then
+          ctest --test-dir "$$build_dir" --output-on-failure -LE no_sanitizer \
+            $${TEST_FILTER:+-R "$$TEST_FILTER"} \
+            --output-junit "$$PWD/.log/ctest.$$ts.xml" \
+            > >(tee .log/ctest.$$ts.out.txt) \
+            2> >(tee .log/ctest.$$ts.err.txt >&2)
+          gtest_rc=$$?
+        fi
+        if [ -z "$$SKIP_PYTEST" ]; then
+          python3 -m pytest -rs $$PYTEST_ARGS -v \
+            --junitxml=.log/pytest.$$ts.xml \
+            > >(tee .log/pytest.$$ts.out.txt) \
+            2> >(tee .log/pytest.$$ts.err.txt >&2)
+          pytest_rc=$$?
+        fi
+        exit $$(( gtest_rc || pytest_rc ))
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  compute-sanitizer:
+    image: ${FREE_BREAKFAST_IMAGE:-free-breakfast:latest}
+    volumes:
+      - ..:/workspace
+      # The shared sccache store; see the `build` service for the long syntax.
+      - type: bind
+        source: ${FREE_BREAKFAST_SCCACHE_HOST_DIR:-../.sccache}
+        target: /sccache
+        bind:
+          create_host_path: false
+    working_dir: /workspace
+    user: "${HOST_UID:?Set HOST_UID via id -u}:${HOST_GID:?Set HOST_GID via id -g}"
+    environment:
+      - SCCACHE_DIR=/sccache  # the store bound above; see the build service
+      - BUILD_PRESET=${BUILD_PRESET:-compute-sanitizer}
+      - BUILD_DIR=${BUILD_DIR:-build-compose-compute-sanitizer}
+      - COMPUTE_SANITIZER_TOOL=${COMPUTE_SANITIZER_TOOL:-memcheck}
+      - TEST_FILTER=${TEST_FILTER:-}
+      - PYTEST_ARGS=${PYTEST_ARGS:-}
+      - SKIP_GTEST=${SKIP_GTEST:-}
+      - SKIP_PYTEST=${SKIP_PYTEST:-}
+      - TIMEOUT_MULTIPLIER=${TIMEOUT_MULTIPLIER:-}  # preset default: 10
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        preset="$$BUILD_PRESET"
+        build_dir="$$BUILD_DIR"
+        tool="$$COMPUTE_SANITIZER_TOOL"
+        ts=$$(date +%Y%m%d-%H%M%S)
+        mkdir -p .log
+        cmake --preset "$$preset" -B "$$build_dir" \
+          $${TIMEOUT_MULTIPLIER:+-DFREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER=$$TIMEOUT_MULTIPLIER} \
+          -DFREE_BREAKFAST_COMPUTE_SANITIZER_TOOL="$$tool" \
+          > >(tee .log/configure.$$ts.out.txt) \
+          2> >(tee .log/configure.$$ts.err.txt >&2)
+        cmake --build "$$build_dir" \
+          > >(tee .log/build.$$ts.out.txt) \
+          2> >(tee .log/build.$$ts.err.txt >&2)
+        gtest_rc=0
+        pytest_rc=0
+        if [ -z "$$SKIP_GTEST" ]; then
+          # No compute-sanitizer prefix here: the compute-sanitizer preset sets
+          # CMAKE_TEST_LAUNCHER, so ctest already runs each suite under the
+          # tool (FREE_BREAKFAST_COMPUTE_SANITIZER_TOOL, passed at configure above).
+          # -LE no_sanitizer: the ctest analog of pytest's -m "not no_sanitizer"
+          # below. A suite that deliberately provokes a CUDA error (e.g. a forced
+          # cudaMalloc OOM) counts as an error under memcheck, so it opts out here
+          # while still running in every non-sanitized ctest.
+          ctest --test-dir "$$build_dir" --output-on-failure -LE no_sanitizer \
+            $${TEST_FILTER:+-R "$$TEST_FILTER"} \
+            --output-junit "$$PWD/.log/ctest.$$ts.xml" \
+            > >(tee .log/compute-sanitizer-gtest.$$ts.out.txt) \
+            2> >(tee .log/compute-sanitizer-gtest.$$ts.err.txt >&2)
+          gtest_rc=$$?
+        fi
+        if [ -z "$$SKIP_PYTEST" ]; then
+          # --require-cuda-init no: today's pytest suite never touches CUDA,
+          # which the tool otherwise counts as an error and exits non-zero.
+          compute-sanitizer --tool "$$tool" --error-exitcode 1 --require-cuda-init no \
+            python3 -m pytest -m "not no_sanitizer" -rs $$PYTEST_ARGS -v \
+            --junitxml=.log/pytest.$$ts.xml \
+            > >(tee .log/compute-sanitizer-pytest.$$ts.out.txt) \
+            2> >(tee .log/compute-sanitizer-pytest.$$ts.err.txt >&2)
+          pytest_rc=$$?
+        fi
+        exit $$(( gtest_rc || pytest_rc ))
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

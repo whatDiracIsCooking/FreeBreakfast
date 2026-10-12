@@ -1,0 +1,63 @@
+# The image ships clang-tidy-20 (aliased to clang-tidy). Requires
+# compile_commands.json, which every preset emits into its build directory:
+#
+#   clang-tidy -p build $(git ls-files '*.cpp' '*.cppm')
+#
+# Note: clang-tidy's support for C++23 named modules is still incomplete, so
+# expect noise on .cppm files. Start with .cpp implementation units.
+---
+Checks: >
+  bugprone-*,
+  clang-analyzer-*,
+  cppcoreguidelines-*,
+  misc-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*,
+  -bugprone-easily-swappable-parameters,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -misc-include-cleaner,
+  -misc-no-recursion,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*/src/.*'
+FormatStyle: file
+
+CheckOptions:
+  # Match the naming already used in src/: snake_case functions and variables,
+  # trailing-underscore private members, CamelCase types.
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  # CamelCase, not lower_case. This said lower_case while the comment above it
+  # said "CamelCase types", so every struct in the tree -- GpuInfo, SysEnv --
+  # was reported as an invalid case style. class and struct are the same thing
+  # here bar the default access; splitting their conventions was never
+  # intended.
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: lower_case
+  # A dropped Result/Status is the exact swallowed-error failure mode
+  # error-handling milestone #20 exists to kill. std::expected is not
+  # [[nodiscard]] per the standard (and the alias can't carry the attribute
+  # onto it), so this is the backstop: it canonicalizes through the Result<T>/
+  # Status aliases to flag a discarded std::expected call even where a
+  # declaration is missing [[nodiscard]]. This matches clang-tidy's own
+  # built-in default for CheckedReturnTypes -- listed explicitly so it does
+  # not silently change out from under us on a clang-tidy upgrade.
+  - key: bugprone-unused-return-value.CheckedReturnTypes
+    value: '::std::error_code;::std::error_condition;::std::errc;::std::expected;::boost::system::error_code'
