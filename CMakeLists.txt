@@ -472,18 +472,14 @@ option(FREE_BREAKFAST_BUILD_BENCH
 # ========================================================================
 # BEFORE any add_subdirectory, and that position is load-bearing. CMake records
 # a `subdirs(...)` line in a directory's CTestTestfile.cmake only if testing was
-# enabled when that directory was PROCESSED. With this call further down the
-# file -- after add_subdirectory(deps) -- build/deps/CTestTestfile.cmake was
-# generated empty, with no subdirs("WarpWraps") entry, so ctest never descended
-# into the submodule: wwr's suites were COMPILED (most of the build) and then
-# could not be run, which is the worst of both. Nothing said so; the top-level
-# run just reported this project's own handful of tests and passed.
-#
-# It is the same trap the experimental/ guard at the bottom of this file calls
-# out -- add_test() in a directory processed before enable_testing() is silently
-# dropped -- and the reason to fix it by moving the call up rather than by
-# reordering the subdirectories is that every directory then gets the same
+# enabled when that directory was PROCESSED, so add_test() in a directory added
+# above this call is silently dropped -- no error, just fewer tests and a green
+# run. It is the same trap the experimental/ guard at the bottom of this file
+# calls out; keeping the call first means every directory gets the same
 # treatment regardless of where it sits.
+#
+# (WarpWraps' own suites are NOT part of this: deps/CMakeLists.txt turns them
+# off with WWR_BUILD_TESTS.)
 enable_testing()
 
 # ========================================================================

@@ -64,29 +64,23 @@ set(WWR_INSTALL
     CACHE BOOL "" FORCE
 )
 
+# wwr's own test suites and examples. Both already default to OFF for a nested
+# build (PROJECT_IS_TOP_LEVEL), and are set explicitly for the same reason as
+# WWR_INSTALL above. OFF keeps wwr's ctest entries out of this project's run
+# and its examples out of `all`; wwr's suites are verified by wwr's own CI, not
+# here. GoogleTest is unaffected -- wwr still fetches it, see below.
+set(WWR_BUILD_TESTS
+    OFF
+    CACHE BOOL "" FORCE
+)
+set(WWR_BUILD_EXAMPLES
+    OFF
+    CACHE BOOL "" FORCE
+)
+
 # WWR_GPU_BACKEND is set from FREE_BREAKFAST_GPU_BACKEND in the root
 # CMakeLists, before project() -- it has to be, because it decides whether wwr
 # enables the CUDA language. Do not set it here.
-#
-# NOTE ON WHAT THIS add_subdirectory BRINGS WITH IT: wwr's root CMakeLists adds
-# its own example/ and test directories unconditionally and calls
-# enable_testing() itself. There is no "skip my tests" switch, so a nested wwr
-# builds and registers its own suites alongside this project's -- 78 ctest
-# entries against this project's 4. That is accepted rather than worked around:
-# the build cost is paid either way (there is no switch), so the suites may as
-# well be runnable, and they are free verification that the submodule pin is
-# sound on this toolchain. Three consequences to know about:
-#
-#   * `ctest` at the top level runs wwr's entries too. Filter with the labels
-#     (`ctest -L compile_time`, `-LE gpu`) or by name when that is not what you
-#     want.
-#   * coverage over this project has to exclude them, which is what
-#     COVERAGE_IGNORE_REGEX=/deps/ in devtools/config.sh does.
-#   * it only works because enable_testing() is called BEFORE this
-#     add_subdirectory, up in the root CMakeLists. Move it back down and
-#     build/deps/CTestTestfile.cmake loses its subdirs("WarpWraps") line: wwr's
-#     suites still COMPILE and silently become unrunnable, and the top-level run
-#     reports 4 tests and passes. See that call's comment.
 add_subdirectory(WarpWraps)
 
 # ==========================================================================
