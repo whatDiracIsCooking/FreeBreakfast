@@ -55,18 +55,33 @@ set(WWR_WITH_TENSOR
     CACHE BOOL "" FORCE
 )
 
-# wwr defaults WWR_INSTALL to PROJECT_IS_TOP_LEVEL, which is already OFF for a
-# nested build. Set explicitly anyway: it is the line that keeps wwr's headers
-# and module sources from following this project into ITS install tree, and it
-# should not depend on a default staying put.
+# What of wwr follows this project into ITS install tree: the core wwr* modules
+# (always shipped once WWR_INSTALL is ON) plus the wrappers layer, and NOT the
+# extension layer. wwr defaults WWR_INSTALL to PROJECT_IS_TOP_LEVEL -- OFF for a
+# nested build -- so it has to be turned on here; the two layer switches are set
+# explicitly both ways so this does not depend on wwr's defaults staying put.
+#
+# The extension is still BUILT (src/core links wwr::extension::*); this only
+# keeps it out of the installed package. The catch: an install(EXPORT) of a
+# free_breakfast target that links wwr::extension::* would be refused, because
+# its link targets are not in any export set. That is moot while this project
+# has no install rules of its own, and is the line to revisit when it does.
 set(WWR_INSTALL
+    ON
+    CACHE BOOL "" FORCE
+)
+set(WWR_INSTALL_WRAPPERS
+    ON
+    CACHE BOOL "" FORCE
+)
+set(WWR_INSTALL_EXTENSION
     OFF
     CACHE BOOL "" FORCE
 )
 
 # wwr's own test suites and examples. Both already default to OFF for a nested
-# build (PROJECT_IS_TOP_LEVEL), and are set explicitly for the same reason as
-# WWR_INSTALL above. OFF keeps wwr's ctest entries out of this project's run
+# build (PROJECT_IS_TOP_LEVEL), and are set explicitly so this does not depend
+# on a default staying put. OFF keeps wwr's ctest entries out of this project's run
 # and its examples out of `all`; wwr's suites are verified by wwr's own CI, not
 # here. GoogleTest is unaffected -- wwr still fetches it, see below.
 set(WWR_BUILD_TESTS
