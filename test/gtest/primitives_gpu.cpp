@@ -220,12 +220,12 @@ void check_case(const Case &c) {
 class PrimitivesGpu : public ::testing::TestWithParam<Case> {};
 
 TEST_P(PrimitivesGpu, FloatMatchesHost) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
   check_case<float>(GetParam());
 }
 
 TEST_P(PrimitivesGpu, DoubleMatchesHost) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
   check_case<double>(GetParam());
 }
 
@@ -254,19 +254,19 @@ void check_predicates() {
 }
 
 TEST(PrimitivesGpuPredicates, Float) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
   check_predicates<float>();
 }
 
 TEST(PrimitivesGpuPredicates, Double) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
   check_predicates<double>();
 }
 
 // fmin/fmax with one NaN operand return the other -- the property that makes
 // them more than `x < y ? x : y`, and one a device library could get wrong.
 TEST(PrimitivesGpuPredicates, FminFmaxIgnoreOneNaN) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
   const double nan = std::numeric_limits<double>::quiet_NaN();
   const std::vector<double> x{nan, 1.0};
   const std::vector<double> y{1.0, nan};
@@ -283,7 +283,7 @@ TEST(PrimitivesGpuPredicates, FminFmaxIgnoreOneNaN) {
 // result must equal the host's exactly -- and the host's is itself pinned by
 // core_vocabulary_host.cpp's static_asserts.
 TEST(PrimitivesGpuCombinatorics, MatchHostExactly) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
   std::vector<std::int32_t> n;
   std::vector<std::int32_t> k;
   for (std::int32_t a = -2; a <= 20; ++a) {
