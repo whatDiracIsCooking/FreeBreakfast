@@ -80,7 +80,8 @@ apt-get install -y --no-install-recommends \
 
 # --- ROCM_PRUNE: the compile-only variant -----------------------------------
 #
-# ROCm installs at ~20GB. .github/workflows/images.yml builds a second tag
+# ROCm installs at ~20GB. An image-publishing workflow (ROUTE B in
+# .github/workflows/ci.yml; not added yet) would build a second tag
 # (:hip-ci) with ROCM_PRUNE=1, which brings the image to 7.05GB; the dev image
 # is untouched, since the default is off.
 #

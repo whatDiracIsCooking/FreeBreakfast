@@ -18,10 +18,10 @@
 # devcontainer when you want to stay in the container and iterate;
 # `devtools/cpp-tier.sh` is the same three phases from inside it.
 #
-# NOT WHAT CI RUNS, despite the overlap. .github/workflows/ci.yml declares a
-# `container:` and calls devtools/cpp-tier.sh directly, for two reasons neither
-# of which compose can meet: it needs a HIP service as well as a CUDA one, and
-# it mounts the workspace where the runner put it rather than at /workspace.
+# NOT WHAT CI RUNS, despite the overlap. .github/workflows/ci.yml's `cpp` job
+# (currently `if: false`) builds the image in the job and calls
+# devtools/cpp-tier.sh through a plain `docker run`, once per matrix leg -- it
+# needs a HIP leg as well as a CUDA one, which no service here provides.
 # Every service here also reserves a GPU, which no hosted runner has. The
 # sanitizer services below are the part with no CI counterpart at all, and the
 # reason this file is still the right tool for an unattended local sweep.
@@ -281,9 +281,10 @@ services:
         gtest_rc=0
         pytest_rc=0
         if [ -z "$$SKIP_GTEST" ]; then
-          # No compute-sanitizer prefix here: the compute-sanitizer preset sets
-          # CMAKE_TEST_LAUNCHER, so ctest already runs each suite under the
-          # tool (FREE_BREAKFAST_COMPUTE_SANITIZER_TOOL, passed at configure above).
+          # No compute-sanitizer prefix here: FREE_BREAKFAST_COMPUTE_SANITIZER_TOOL,
+          # passed at configure above, sets CMAKE_TEST_LAUNCHER, so ctest
+          # already runs each suite under the tool. (The preset itself is
+          # only a Debug build.)
           # -LE no_sanitizer: the ctest analog of pytest's -m "not no_sanitizer"
           # below. A suite that deliberately provokes a CUDA error (e.g. a forced
           # cudaMalloc OOM) counts as an error under memcheck, so it opts out here

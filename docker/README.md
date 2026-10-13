@@ -187,9 +187,10 @@ devcontainer binds the host's copy — `HOST_MOUNTS` in `devtools/config.sh`, se
 
 ### The `-ci` variants, and the registry
 
-Three more environment knobs turn a local build into a published one. Only
-`.github/workflows/images.yml` sets them, and only to publish the two images
-CI pulls:
+Three more environment knobs turn a local build into a published one. Only an
+image-publishing workflow would set them, to publish the two images CI would
+pull — route B in `.github/workflows/ci.yml`'s `cpp` job comment, which this
+repo has not added yet:
 
 ```bash
 IMAGE_TAG_SUFFIX=-ci IMAGE_REGISTRY=ghcr.io/<owner> BUILD_PUSH=1 \
