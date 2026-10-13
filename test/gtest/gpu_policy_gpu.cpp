@@ -32,14 +32,19 @@ TEST(Gpu, WrappersConstructInsideCapture) {
     fb::Buffers::host<float> h(kCount);
     fb::BlasHandle blas(dev);
     fb::SolverHandle solver(dev);
-    return std::tuple{d.num_elements(), h.num_elements(), blas.valid(), solver.valid()};
+    fb::Event event;       // default: sync-only, timing disabled
+    fb::Event timed(0, 0); // flags = 0: timing-capable
+    return std::tuple{d.num_elements(), h.num_elements(), blas.valid(),
+                      solver.valid(),   event.valid(),    timed.valid()};
   });
   ASSERT_TRUE(r.has_value()) << r.error().message;
-  auto [d_n, h_n, blas_ok, solver_ok] = *r;
+  auto [d_n, h_n, blas_ok, solver_ok, event_ok, timed_ok] = *r;
   EXPECT_EQ(d_n, kCount);
   EXPECT_EQ(h_n, kCount);
   EXPECT_TRUE(blas_ok);
   EXPECT_TRUE(solver_ok);
+  EXPECT_TRUE(event_ok);
+  EXPECT_TRUE(timed_ok);
 }
 
 TEST(Gpu, DeviceAndBufferReturnThroughCapture) {

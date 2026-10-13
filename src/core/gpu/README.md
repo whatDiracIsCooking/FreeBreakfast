@@ -8,6 +8,7 @@ than a five-argument template.
 | --- | --- | --- |
 | `Device` | `kit::DeviceHandle` | One device: properties, an owned stream and memory pool. Hold as `std::shared_ptr`. |
 | `Stream` | `StreamWrapper` | A non-blocking stream. |
+| `Event` | `EventWrapper` | Default-constructed it is sync-only (timing disabled); pass `(dev_idx, 0)` for a timing-capable one. |
 | `Buffers` | `kit::device_buffer_suite<PolicyMap, Device>` | `::device<T>`, `::host<T>`, `::pinned<T>`, `::unified<T>` and their `_view`s. |
 | `BlasHandle` | `BlasHandleWrapper` | Bound to a `Device`'s stream. |
 | `SolverHandle` | `SolverDnHandleWrapper` | Bound to a `Device`'s stream. |
