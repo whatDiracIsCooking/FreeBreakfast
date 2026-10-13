@@ -12,7 +12,7 @@ namespace free_breakfast {
 /// Plain aggregate — the coordinates and the element are public with no
 /// invariant to protect, so callers brace-initialise directly
 /// (`Atom<double>{x, y, z, Element::C}`). A default-constructed @c Atom sits at
-/// the origin carrying @c Element::kSentinel, i.e. "no element yet".
+/// the origin carrying @c Element::Sentinel, i.e. "no element yet".
 ///
 /// @tparam T Scalar type of the coordinates (e.g. @c float or @c double), in
 ///           bohr.

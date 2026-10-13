@@ -110,19 +110,19 @@ TEST(DiagnosticsDeathTest, CheckOrAbortAbortsOnError) {
 
 TEST(Log, ShouldLogFollowsSetLevel) {
   using L = fb::log::LogLevel;
-  fb::log::set_level(L::warn);
-  EXPECT_FALSE(fb::log::should_log(L::info));
-  EXPECT_TRUE(fb::log::should_log(L::warn));
-  EXPECT_TRUE(fb::log::should_log(L::critical));
-  fb::log::set_level(L::info);
+  fb::log::set_level(L::Warn);
+  EXPECT_FALSE(fb::log::should_log(L::Info));
+  EXPECT_TRUE(fb::log::should_log(L::Warn));
+  EXPECT_TRUE(fb::log::should_log(L::Critical));
+  fb::log::set_level(L::Info);
 }
 
 TEST(Log, WarnCountsEvenWhenFiltered) {
   fb::log::reset_warning_count();
-  fb::log::set_level(fb::log::LogLevel::off);
+  fb::log::set_level(fb::log::LogLevel::Off);
   fb::log::warn("one");
   FBF_LOG_WARN("{}", "two");
-  fb::log::set_level(fb::log::LogLevel::info);
+  fb::log::set_level(fb::log::LogLevel::Info);
   // log::warn counts unconditionally; the macro short-circuits before calling
   // it when warn is filtered, so only the direct call counts.
   EXPECT_EQ(fb::log::warning_count(), 1U);
@@ -130,7 +130,7 @@ TEST(Log, WarnCountsEvenWhenFiltered) {
 }
 
 TEST(Log, MacrosDoNotFormatWhenFiltered) {
-  fb::log::set_level(fb::log::LogLevel::info);
+  fb::log::set_level(fb::log::LogLevel::Info);
   int evaluated = 0;
   auto const touch = [&] { return ++evaluated; };
   FBF_LOG_DEBUG("{}", touch());

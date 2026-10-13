@@ -302,7 +302,9 @@ if(FREE_BREAKFAST_SCCACHE)
   endif()
   message(STATUS "Compiler cache: ${FREE_BREAKFAST_SCCACHE}")
 else()
-  message(STATUS "Compiler cache: none (sccache not found; builds are uncached)")
+  message(
+    STATUS "Compiler cache: none (sccache not found; builds are uncached)"
+  )
 endif()
 
 # ========================================================================
@@ -473,7 +475,8 @@ endif()
 # so a Release build can still opt into ABORT to chase a failure.
 set(FREE_BREAKFAST_GPU_ERROR_POLICY
     ""
-    CACHE STRING "GPU wrapper error policy: ABORT, RECORD, or empty (by build type)"
+    CACHE STRING
+          "GPU wrapper error policy: ABORT, RECORD, or empty (by build type)"
 )
 set_property(
   CACHE FREE_BREAKFAST_GPU_ERROR_POLICY PROPERTY STRINGS "" ABORT RECORD

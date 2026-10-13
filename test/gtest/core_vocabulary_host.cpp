@@ -84,24 +84,24 @@ TEST(CoreConcepts, ConstrainTemplates) {
 // constants
 // ---------------------------------------------------------------------------
 
-static_assert(fb::zero<double> == 0.0);
-static_assert(fb::one<float> == 1.0f);
-static_assert(fb::two<int> == 2);
-static_assert(fb::neg_one<double> == -1.0);
-static_assert(fb::kilo<double> == 1e3);
-static_assert(fb::femto<double> == 1e-15);
+static_assert(fb::kZero<double> == 0.0);
+static_assert(fb::kOne<float> == 1.0f);
+static_assert(fb::kTwo<int> == 2);
+static_assert(fb::kNegOne<double> == -1.0);
+static_assert(fb::kKilo<double> == 1e3);
+static_assert(fb::kFemto<double> == 1e-15);
 
 TEST(CoreConstants, BohrConversionsAreReciprocal) {
-  EXPECT_DOUBLE_EQ(fb::angstrom_per_bohr<double> * fb::bohr_per_angstrom<double>, 1.0);
-  EXPECT_DOUBLE_EQ(fb::angstrom_per_bohr<double>, 0.529177210903);
+  EXPECT_DOUBLE_EQ(fb::kAngstromPerBohr<double> * fb::kBohrPerAngstrom<double>, 1.0);
+  EXPECT_DOUBLE_EQ(fb::kAngstromPerBohr<double>, 0.529177210903);
 }
 
 TEST(CoreConstants, FaradayIsAvogadroTimesElementaryCharge) {
   // Both factors are exact in the 2019 SI, so F = N_A * e to double precision.
-  EXPECT_NEAR(fb::avogadro<double> * fb::elementary_charge<double>, fb::faraday<double>,
-              1e-9 * fb::faraday<double>);
-  EXPECT_NEAR(fb::boltzmann<double> * fb::avogadro<double>, fb::gas_constant<double>,
-              1e-12 * fb::gas_constant<double>);
+  EXPECT_NEAR(fb::kAvogadro<double> * fb::kElementaryCharge<double>, fb::kFaraday<double>,
+              1e-9 * fb::kFaraday<double>);
+  EXPECT_NEAR(fb::kBoltzmann<double> * fb::kAvogadro<double>, fb::kGasConstant<double>,
+              1e-12 * fb::kGasConstant<double>);
 }
 
 // ---------------------------------------------------------------------------

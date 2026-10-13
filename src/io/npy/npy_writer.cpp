@@ -10,6 +10,7 @@ module free_breakfast.io.npy;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.io.base;
+import :format;
 
 #include "diagnostics.h"
 
@@ -17,8 +18,6 @@ namespace free_breakfast {
 
 static_assert(std::endian::native == std::endian::little,
               "the .npy module assumes a little-endian host");
-
-namespace {
 
 /// @brief A shape as the header spells it: "()", "(5,)", "(2, 3)".
 ///
@@ -40,8 +39,6 @@ namespace {
   return out;
 }
 
-} // namespace
-
 [[nodiscard]] Result<std::string> npy_to_bytes(const NpyArray &array) {
   auto count = FBF_TRY(element_count(array.shape));
   if (count != array.data.size()) {
@@ -62,7 +59,7 @@ namespace {
 
   std::string out;
   out.reserve(padded + array.data.size() * sizeof(double));
-  out.append("\x93NUMPY", 6);
+  out.append(kMagic);
   out.push_back('\x01'); // format version 1.0
   out.push_back('\x00');
   out.push_back(static_cast<char>(header_len & 0xff)); // little-endian uint16

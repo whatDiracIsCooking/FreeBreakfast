@@ -18,7 +18,7 @@ static_assert(std::is_same_v<std::underlying_type_t<fb::Element>, std::uint8_t>)
 static_assert(std::is_aggregate_v<fb::Atom<double>>);
 
 TEST(Atom, ElementValueIsAtomicNumber) {
-  EXPECT_EQ(static_cast<int>(fb::Element::kSentinel), 0);
+  EXPECT_EQ(static_cast<int>(fb::Element::Sentinel), 0);
   EXPECT_EQ(static_cast<int>(fb::Element::H), 1);
   EXPECT_EQ(static_cast<int>(fb::Element::C), 6);
   EXPECT_EQ(static_cast<int>(fb::Element::O), 8);
@@ -28,7 +28,7 @@ TEST(Atom, ElementValueIsAtomicNumber) {
 }
 
 TEST(Atom, DefaultElementIsSentinel) {
-  EXPECT_EQ(fb::Element{}, fb::Element::kSentinel);
+  EXPECT_EQ(fb::Element{}, fb::Element::Sentinel);
 }
 
 TEST(Atom, DefaultAtomSitsAtOriginWithNoElement) {
@@ -36,7 +36,7 @@ TEST(Atom, DefaultAtomSitsAtOriginWithNoElement) {
   EXPECT_EQ(atom.x, 0.0);
   EXPECT_EQ(atom.y, 0.0);
   EXPECT_EQ(atom.z, 0.0);
-  EXPECT_EQ(atom.element, fb::Element::kSentinel);
+  EXPECT_EQ(atom.element, fb::Element::Sentinel);
 }
 
 TEST(Atom, BraceInitialisesCoordinatesThenElement) {

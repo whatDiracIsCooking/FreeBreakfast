@@ -23,7 +23,7 @@
 ///   <x^a1 y^b1 z^c1, x^a2 y^b2 z^c2> = (a1+a2-1)!! (b1+b2-1)!! (c1+c2-1)!!
 /// @endcode
 /// (zero if any exponent sum is odd) -- the angular part of the Gaussian
-/// self-overlap moment (@ref detail::monomial_gram). The real solid harmonics
+/// self-overlap moment (@ref monomial_gram). The real solid harmonics
 /// are mutually orthogonal under this metric by construction, so after that
 /// per-column normalization the block @c B satisfies @c B^T G B = I. This is
 /// exactly the property @c cartesian_to_spherical relies on: multiplying by its
@@ -51,6 +51,7 @@ module;
 export module free_breakfast.basis:harmonics;
 
 import :ao;
+import :numeric;
 import std;
 
 export namespace free_breakfast {
@@ -68,17 +69,8 @@ export namespace free_breakfast {
 
 } // namespace free_breakfast
 
-namespace free_breakfast::detail {
-
-// (n-1)!! for odd n >= 1 (i.e. n = a1+a2-1 with a1+a2 even and >= 0); n < 0
-// means the empty product, 1.0, matching the a1=a2=0 case.
-[[nodiscard]] inline double double_factorial_odd(int n) {
-  double result = 1.0;
-  for (int k = n; k > 1; k -= 2) {
-    result *= static_cast<double>(k);
-  }
-  return result;
-}
+// Not exported: helpers of the inline solid_harmonic_c2s below.
+namespace free_breakfast {
 
 // The angular Gaussian-moment inner product between two same-degree Cartesian
 // monomials -- see this file's doc comment. Zero unless every per-axis exponent
@@ -92,28 +84,6 @@ namespace free_breakfast::detail {
     return 0.0;
   }
   return double_factorial_odd(sx - 1) * double_factorial_odd(sy - 1) * double_factorial_odd(sz - 1);
-}
-
-// n! as a double, exact for the small n a basis's l ever reaches.
-[[nodiscard]] inline double factorial(int n) {
-  double result = 1.0;
-  for (int k = 2; k <= n; ++k) {
-    result *= static_cast<double>(k);
-  }
-  return result;
-}
-
-// Binomial coefficient C(n, k) as a double, exact for the small n this ever
-// sees (n <= l; a basis's l is tiny). Zero outside 0 <= k <= n.
-[[nodiscard]] inline double binomial(int n, int k) {
-  if (k < 0 || k > n) {
-    return 0.0;
-  }
-  double result = 1.0;
-  for (int i = 0; i < k; ++i) {
-    result = result * static_cast<double>(n - i) / static_cast<double>(i + 1);
-  }
-  return result;
 }
 
 // Coefficients of the (unnormalized) real solid harmonic (l, m) over the
@@ -154,7 +124,7 @@ namespace free_breakfast::detail {
   return coeffs;
 }
 
-} // namespace free_breakfast::detail
+} // namespace free_breakfast
 
 export namespace free_breakfast {
 
@@ -183,7 +153,7 @@ export namespace free_breakfast {
   std::vector<double> block(static_cast<std::size_t>(ncart) * static_cast<std::size_t>(nsph), 0.0);
   for (int col = 0; col < nsph; ++col) {
     const int m = col - l;
-    for (const auto &[key, value] : detail::solid_harmonic_coeffs(l, m)) {
+    for (const auto &[key, value] : solid_harmonic_coeffs(l, m)) {
       block[(static_cast<std::size_t>(row_of.at(key)) * nsph) + col] = value;
     }
   }
@@ -203,9 +173,9 @@ export namespace free_breakfast {
         if (cb == 0.0) {
           continue;
         }
-        norm2 += ca * cb *
-                 detail::monomial_gram(powers[static_cast<std::size_t>(a)],
-                                       powers[static_cast<std::size_t>(b)]);
+        norm2 +=
+            ca * cb *
+            monomial_gram(powers[static_cast<std::size_t>(a)], powers[static_cast<std::size_t>(b)]);
       }
     }
     const double inv = 1.0 / std::sqrt(norm2);

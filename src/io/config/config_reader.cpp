@@ -12,8 +12,6 @@ import free_breakfast.io.toml;
 
 namespace free_breakfast {
 
-namespace {
-
 /// @brief Pull an integer keyed by @p key out of a TOML table, honouring
 /// @p fallback when the key is absent and reporting a type mismatch as an
 /// InvalidConfig error.
@@ -57,8 +55,6 @@ namespace {
   }
   return *value;
 }
-
-} // namespace
 
 [[nodiscard]] Result<Config> parse_config(std::string_view toml_text) {
   auto parsed = FBF_TRY(parse_toml(toml_text));

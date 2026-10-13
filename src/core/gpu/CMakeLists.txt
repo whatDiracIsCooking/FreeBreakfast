@@ -1,5 +1,5 @@
-# Everything PUBLIC: this module is aliases over wwr's templates plus re-exports,
-# so every name it hands out is instantiated in the consumer's TU.
+# Everything PUBLIC: this module is aliases over wwr's templates plus
+# re-exports, so every name it hands out is instantiated in the consumer's TU.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.core.gpu

@@ -1,0 +1,14 @@
+# Commits `git blame` should look through: whole-tree mechanical changes that
+# would otherwise be blamed for every line they touched.
+#
+# GitHub's blame view reads this file automatically. For local blame, once per
+# clone:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# An entry is only valid if the commit lands on main with this exact ID.
+# Squash and rebase merges rewrite IDs, so a branch carrying an entry has to
+# reach main by fast-forward.
+
+# Reformat the tree with clang-format 20.1.8 and ruff format
+d5bb6e3d8b9da75caa797237fc17d397a8357386

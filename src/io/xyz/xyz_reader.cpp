@@ -13,8 +13,6 @@ import free_breakfast.io.base;
 
 namespace free_breakfast {
 
-namespace {
-
 /// @brief Map an element symbol (e.g. "H", "He", "c") to its atomic number.
 ///
 /// Case-insensitive on the first letter's neighbours: XYZ files vary between
@@ -49,8 +47,6 @@ namespace {
   }
   return 0;
 }
-
-} // namespace
 
 [[nodiscard]] Result<Molecule> parse_xyz(std::string_view xyz_text, int charge, int multiplicity) {
   // Split into non-empty lines; a trailing newline or blank lines at the end
@@ -110,10 +106,9 @@ namespace {
       return err_io(std::format("XYZ atom line {} has unknown element '{}'", i + 1, symbol));
     }
     // XYZ coordinates are in Angstrom; Molecule stores bohr. Convert here.
-    atoms.push_back(Atom<double>{x * free_breakfast::bohr_per_angstrom<double>,
-                                 y * free_breakfast::bohr_per_angstrom<double>,
-                                 z * free_breakfast::bohr_per_angstrom<double>,
-                                 static_cast<Element>(number)});
+    atoms.push_back(Atom<double>{
+        x * free_breakfast::kBohrPerAngstrom<double>, y * free_breakfast::kBohrPerAngstrom<double>,
+        z * free_breakfast::kBohrPerAngstrom<double>, static_cast<Element>(number)});
   }
 
   if (static_cast<int>(atoms.size()) != declared_count) {

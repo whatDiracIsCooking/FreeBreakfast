@@ -36,8 +36,8 @@ void record(wwrError_t code) {
 }
 
 TEST(GpuPolicy, SwitchReachedTheModule) {
-  EXPECT_EQ(fb::aborts_on_error, FREE_BREAKFAST_TEST_EXPECT_GPU_ABORTS != 0);
-  if constexpr (fb::aborts_on_error) {
+  EXPECT_EQ(fb::kAbortsOnError, FREE_BREAKFAST_TEST_EXPECT_GPU_ABORTS != 0);
+  if constexpr (fb::kAbortsOnError) {
     EXPECT_TRUE((std::same_as<fb::CreatePolicy<wwrError_t>, fb::AbortPolicy<wwrError_t>>));
     EXPECT_TRUE((std::same_as<fb::DestroyPolicy<wwrError_t>, fb::AbortPolicy<wwrError_t>>));
   } else {

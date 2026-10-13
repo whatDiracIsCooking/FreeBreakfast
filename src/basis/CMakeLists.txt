@@ -15,6 +15,7 @@ free_breakfast_add_cxx_module_library(
   basis_set.cppm
   shell_stamp.cppm
   basis_stamp.cppm
+  numeric.cppm
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::basis::headers

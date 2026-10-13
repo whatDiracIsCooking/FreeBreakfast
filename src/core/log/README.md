@@ -13,7 +13,7 @@ by `free_breakfast.core`. spdlog is linked PRIVATE through the
 ```cpp
 import free_breakfast.core.log;
 
-free_breakfast::log::set_level(free_breakfast::log::LogLevel::info);
+free_breakfast::log::set_level(free_breakfast::log::LogLevel::Info);
 free_breakfast::log::info("run started");
 
 // Optionally add a file sink (one allowed; subsequent calls with a different path are ignored)

@@ -33,9 +33,9 @@ TEST(IoXyz, ParsesAtomsAndConvertsAngstromToBohr) {
   EXPECT_EQ(atoms[0].element, Element::O);
   EXPECT_EQ(atoms[1].element, Element::H);
   EXPECT_EQ(atoms[2].element, Element::H);
-  EXPECT_DOUBLE_EQ(atoms[0].z, 0.1173 * fb::bohr_per_angstrom<double>);
-  EXPECT_DOUBLE_EQ(atoms[1].y, 0.7572 * fb::bohr_per_angstrom<double>);
-  EXPECT_DOUBLE_EQ(atoms[2].z, -0.4692 * fb::bohr_per_angstrom<double>);
+  EXPECT_DOUBLE_EQ(atoms[0].z, 0.1173 * fb::kBohrPerAngstrom<double>);
+  EXPECT_DOUBLE_EQ(atoms[1].y, 0.7572 * fb::kBohrPerAngstrom<double>);
+  EXPECT_DOUBLE_EQ(atoms[2].z, -0.4692 * fb::kBohrPerAngstrom<double>);
   EXPECT_EQ(molecule->electron_count(), 10);
 }
 

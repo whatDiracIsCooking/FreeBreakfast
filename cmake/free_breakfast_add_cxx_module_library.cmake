@@ -1,5 +1,6 @@
 # FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY.cmake Provides
-# FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY macro for creating C++23 module libraries
+# FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY macro for creating C++23 module
+# libraries
 
 # ---------------------------------------------------------------------------
 # Internal helpers (underscore-prefixed — not part of the public API)
@@ -42,18 +43,25 @@ endfunction()
 # ...] [IMPORT_STD] [NO_GPU_DEVICE_LINKING] [INCLUDE_GPU_TOOLKIT
 # PUBLIC|PRIVATE] )
 #
-# Parameters: PRIMARY_INTERFACE    - The single primary module interface file
-# (export module M;) PARTITIONS           - Optional partition interface files
-# (export module M:P;) IMPLEMENTATION       - Optional module implementation
-# files (module M;) IMPORT_STD           - Optional flag to enable 'import std'
-# support (sets CXX_MODULE_STD 1) NO_GPU_DEVICE_LINKING - Optional flag: sets
-# CUDA_SEPARABLE_COMPILATION OFF and CUDA_RESOLVE_DEVICE_SYMBOLS OFF on the
-# target (CUDA backend only; inert under HIP) INCLUDE_GPU_TOOLKIT - Optional:
-# add the selected backend's toolkit include dirs as SYSTEM includes --
-# CUDAToolkit_INCLUDE_DIRS under CUDA, hip::host's under HIP; value is PUBLIC or
-# PRIVATE (default: PRIVATE) INCLUDE_DIRS_PUBLIC  - Optional: directories to add
-# as PUBLIC include paths INCLUDE_DIRS_PRIVATE - Optional: directories to add as
-# PRIVATE include paths
+# Parameters:
+#   PRIMARY_INTERFACE     the single primary module interface file
+#                         (export module M;)
+#   PARTITIONS            partition files of BOTH kinds: interface partitions
+#                         (export module M:P;) and internal partitions
+#                         (module M:P;). Both produce a BMI, so both belong in
+#                         the CXX_MODULES file set; docs/style.md says which
+#                         kind module-private code goes in.
+#   IMPLEMENTATION        module implementation units (module M;)
+#   IMPORT_STD            flag: enable 'import std' (sets CXX_MODULE_STD 1)
+#   NO_GPU_DEVICE_LINKING flag: CUDA_SEPARABLE_COMPILATION and
+#                         CUDA_RESOLVE_DEVICE_SYMBOLS OFF (CUDA backend only;
+#                         inert under HIP)
+#   INCLUDE_GPU_TOOLKIT   PUBLIC|PRIVATE (default PRIVATE): add the selected
+#                         backend's toolkit include dirs as SYSTEM includes --
+#                         CUDAToolkit_INCLUDE_DIRS under CUDA, hip::host's
+#                         under HIP
+#   INCLUDE_DIRS_PUBLIC   directories to add as PUBLIC include paths
+#   INCLUDE_DIRS_PRIVATE  directories to add as PRIVATE include paths
 macro(FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY)
   set(_bool_opts "IMPORT_STD;NO_GPU_DEVICE_LINKING")
   set(_single_opts "NAME;PRIMARY_INTERFACE;INCLUDE_GPU_TOOLKIT;WHOLE_ARCHIVE")
@@ -65,7 +73,9 @@ macro(FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY)
   )
 
   if(NOT ARG_NAME)
-    message(FATAL_ERROR "FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY: NAME is required")
+    message(
+      FATAL_ERROR "FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY: NAME is required"
+    )
   endif()
   if(NOT ARG_PRIMARY_INTERFACE)
     message(

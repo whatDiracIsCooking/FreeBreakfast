@@ -8,23 +8,21 @@ import std;
 
 namespace free_breakfast {
 
-namespace {
 // Per thread, because a policy has no other way to reach its capture: the
 // policies are empty (see :gpu_policy), and the error belongs to whichever
 // capture is running on the thread that made the failing call.
-struct Slot {
+struct CaptureSlot {
   std::optional<Error> error;
   int depth = 0; // active captures on this thread
 };
 
-Slot &slot() noexcept {
-  thread_local Slot s;
+CaptureSlot &capture_slot() noexcept {
+  thread_local CaptureSlot s;
   return s;
 }
-} // namespace
 
 void record_error(Error error) noexcept {
-  auto &s = slot();
+  auto &s = capture_slot();
   if (s.depth == 0) {
     try {
       log::error(error.message, error.origin);
@@ -37,19 +35,17 @@ void record_error(Error error) noexcept {
 }
 
 std::optional<Error> take_error() noexcept {
-  return std::exchange(slot().error, std::nullopt);
+  return std::exchange(capture_slot().error, std::nullopt);
 }
 
-namespace detail {
 CaptureScope::CaptureScope() noexcept : outer_(take_error()) {
-  ++slot().depth;
+  ++capture_slot().depth;
 }
 
 CaptureScope::~CaptureScope() {
-  auto &s = slot();
+  auto &s = capture_slot();
   --s.depth;
   s.error = std::move(outer_);
 }
-} // namespace detail
 
 } // namespace free_breakfast

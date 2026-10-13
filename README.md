@@ -358,18 +358,18 @@ the scripts.
 | `claude-version.sh` | Read/compare/bump the Claude Code pin across the three GPU Dockerfiles. |
 | `prepush-tests.sh` | The fast Python gate that `git push` runs. |
 
-`.clang-format`, `.clang-tidy`, `.cmake-format.yaml` and `.editorconfig` are
-configured; the tools are all in the image:
+The coding style is in [`docs/style.md`](docs/style.md). The mechanical half
+is enforced:
 
 ```sh
-clang-format -i $(git ls-files '*.cppm' '*.cpp' '*.cu' '*.cuh' '*.h')
-cmake-format  -i $(git ls-files 'CMakeLists.txt' '*.cmake')
-ruff check .
+devtools/format.sh            # clang-format + ruff format, in place
+devtools/format.sh --check    # what the commit hook and CI run
 ```
 
-**None of the formatters is a git hook, deliberately** — a formatter rewrites
-whole files and buries a real diff in restyling. `ruff check` and `cmake-lint`
-*are* enforced: the former on commit, both in CI. clang-tidy is advisory and
+**No hook rewrites a file** — a formatter run as a hook buries the real diff
+in restyling — so the commit hook and CI's `lint` job *check* the format and
+fail on drift, and you run `devtools/format.sh` to fix it. `ruff check` and
+`cmake-lint` (80 columns) are enforced the same way. clang-tidy is advisory and
 off by default (`cpp-tier.sh --tidy`); its handling of C++23 named modules is
 still incomplete, so expect noise on `.cppm` files.
 

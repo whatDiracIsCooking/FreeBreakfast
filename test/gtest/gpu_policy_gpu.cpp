@@ -75,11 +75,11 @@ TEST(Gpu, FailedAllocationComesBackAsError) {
   auto dev = fb::capture([] { return std::make_shared<fb::Device>(0); });
   ASSERT_TRUE(dev.has_value()) << dev.error().message;
 
-  constexpr auto too_many = std::numeric_limits<std::size_t>::max();
+  constexpr auto kTooMany = std::numeric_limits<std::size_t>::max();
   int line = 0;
   auto buf = fb::capture([&] {
     line = std::source_location::current().line() + 1;
-    return RecordingBuffers::device<float>(too_many, *dev);
+    return RecordingBuffers::device<float>(kTooMany, *dev);
   });
   ASSERT_FALSE(buf.has_value());
   EXPECT_EQ(buf.error().kind, fb::ErrorKind::GpuRuntime);

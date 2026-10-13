@@ -15,12 +15,12 @@ export namespace free_breakfast::core {
 // is deliberately no configure_file: a generated header would have to be
 // included from a global module fragment, and that is the one thing this tree
 // is organised to avoid.
-inline constexpr int version_major = 0;
-inline constexpr int version_minor = 1;
-inline constexpr int version_patch = 0;
+inline constexpr int kVersionMajor = 0;
+inline constexpr int kVersionMinor = 1;
+inline constexpr int kVersionPatch = 0;
 
 [[nodiscard]] inline std::string version_string() {
-  return std::format("{}.{}.{}", version_major, version_minor, version_patch);
+  return std::format("{}.{}.{}", kVersionMajor, kVersionMinor, kVersionPatch);
 }
 
 } // namespace free_breakfast::core

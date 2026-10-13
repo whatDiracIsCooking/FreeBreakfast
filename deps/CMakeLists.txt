@@ -81,9 +81,10 @@ set(WWR_INSTALL_EXTENSION
 
 # wwr's own test suites and examples. Both already default to OFF for a nested
 # build (PROJECT_IS_TOP_LEVEL), and are set explicitly so this does not depend
-# on a default staying put. OFF keeps wwr's ctest entries out of this project's run
-# and its examples out of `all`; wwr's suites are verified by wwr's own CI, not
-# here. GoogleTest is unaffected -- wwr still fetches it, see below.
+# on a default staying put. OFF keeps wwr's ctest entries out of this
+# project's run and its examples out of `all`; wwr's suites are verified by
+# wwr's own CI, not here. GoogleTest is unaffected -- wwr still fetches it,
+# see below.
 set(WWR_BUILD_TESTS
     OFF
     CACHE BOOL "" FORCE

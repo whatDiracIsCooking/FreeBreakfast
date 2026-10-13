@@ -14,8 +14,6 @@ import free_breakfast.io.json;
 
 namespace free_breakfast {
 
-namespace {
-
 /// @brief Convert one BSE decimal string to a double.
 ///
 /// BSE writes exponents and coefficients as strings ("0.1873113696E+02") to
@@ -177,8 +175,6 @@ namespace {
   }
   return shells;
 }
-
-} // namespace
 
 [[nodiscard]] Result<BasisStamp> parse_basis(std::string_view json_text) {
   auto parsed = FBF_TRY(parse_json(json_text));
