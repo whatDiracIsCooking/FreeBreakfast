@@ -102,6 +102,19 @@ TEST(Basis, EmptyBasisHasNoFunctions) {
   EXPECT_TRUE(fb::cartesian_to_spherical(basis).empty());
 }
 
+// Moving takes the offset vectors, trailing total included, so the counts must
+// not read past an empty one.
+TEST(Basis, MovedFromBasisHasNoFunctions) {
+  fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin), fb::Shell(2, {{1.0, 1.0}}, kOrigin)});
+  const fb::BasisSet taken = std::move(basis);
+  EXPECT_EQ(taken.nao(), 7U);
+  EXPECT_EQ(taken.spherical_nao(), 6U);
+  // NOLINTBEGIN(bugprone-use-after-move): the moved-from state is under test
+  EXPECT_EQ(basis.nao(), 0U);
+  EXPECT_EQ(basis.spherical_nao(), 0U);
+  // NOLINTEND(bugprone-use-after-move)
+}
+
 TEST(BasisDeathTest, AoOffsetAbortsOutOfRange) {
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin)});
   EXPECT_EQ(basis.ao_offset(0), 0U);

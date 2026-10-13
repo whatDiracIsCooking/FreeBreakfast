@@ -8,6 +8,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.basis;
 import free_breakfast.io.base;
 import free_breakfast.io.basis;
+import free_breakfast.core.nontransferrable;
 
 #include "scratch_dir.h"
 

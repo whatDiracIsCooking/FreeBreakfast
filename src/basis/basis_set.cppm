@@ -99,7 +99,10 @@ public:
 
   /// @brief Total number of atomic orbitals, Sum over shells of their
   /// function counts.
-  [[nodiscard]] uint32_t nao() const { return ao_offsets_.back(); }
+  ///
+  /// Zero for a moved-from basis: moving takes the offset vector, trailing
+  /// total included, so the empty check keeps this from reading past it.
+  [[nodiscard]] uint32_t nao() const { return ao_offsets_.empty() ? 0 : ao_offsets_.back(); }
 
   /// @brief First AO index owned by shell @p shell_index.
   ///
@@ -117,8 +120,10 @@ public:
 
   /// @brief Total number of AOs in the SPHERICAL layout: sum over shells of
   /// @ref Shell::spherical_function_count (2l+1). Equals @ref nao exactly when
-  /// no shell is above p.
-  [[nodiscard]] uint32_t spherical_nao() const { return spherical_ao_offsets_.back(); }
+  /// no shell is above p. Zero for a moved-from basis, as @ref nao is.
+  [[nodiscard]] uint32_t spherical_nao() const {
+    return spherical_ao_offsets_.empty() ? 0 : spherical_ao_offsets_.back();
+  }
 
   /// @brief First SPHERICAL-layout AO index owned by shell @p shell_index; the
   /// spherical-layout counterpart of @ref ao_offset.
@@ -135,7 +140,8 @@ private:
   std::vector<Shell> shells_{};
   // One offset per shell plus a trailing total, so nao() is the last element.
   // A default-constructed (empty) basis still needs the trailing 0 so nao()
-  // reads it -- hence a single-element {0}, not an empty vector.
+  // reads it -- hence a single-element {0}, not an empty vector. A moved-from
+  // basis is the one state where it IS empty; nao() checks for that.
   std::vector<uint32_t> ao_offsets_ = std::vector<uint32_t>(1, 0);
   // The same layout, sized by spherical_function_count() instead of
   // function_count() -- see spherical_nao()/spherical_ao_offset().

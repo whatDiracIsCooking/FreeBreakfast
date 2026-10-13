@@ -1,9 +1,10 @@
 /// @file
 /// @brief A per-test scratch directory for the I/O tests that touch disk.
 ///
-/// Include it AFTER `import std;`, like diagnostics.h: it includes no standard
-/// header itself and names `std::` only through the including TU's import, so
-/// the header build and the module build never overlap.
+/// Include it AFTER `import std;` and `import free_breakfast.core.nontransferrable;`,
+/// like diagnostics.h: it includes no standard header itself and names `std::`
+/// and the mixin only through the including TU's imports, so the header build
+/// and the module build never overlap.
 
 #pragma once
 
@@ -14,7 +15,10 @@ namespace free_breakfast::test {
 ///
 /// Named after the running gtest case plus a per-process counter, so parallel
 /// ctest entries -- one process per case -- never share a directory.
-class ScratchDir {
+///
+/// Neither copyable nor movable: the directory belongs to exactly one object,
+/// and a second owner would remove it out from under the first.
+class ScratchDir : private NonTransferable {
 public:
   explicit ScratchDir(std::string_view tag) {
     static std::int32_t counter = 0;
@@ -27,8 +31,6 @@ public:
     std::error_code ignored;
     std::filesystem::remove_all(path_, ignored);
   }
-  ScratchDir(const ScratchDir &) = delete;
-  ScratchDir &operator=(const ScratchDir &) = delete;
 
   [[nodiscard]] const std::filesystem::path &path() const { return path_; }
   [[nodiscard]] std::filesystem::path operator/(std::string_view name) const {
