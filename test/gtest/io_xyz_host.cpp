@@ -8,6 +8,7 @@ import free_breakfast.core.constants;
 import free_breakfast.molecule;
 import free_breakfast.io.base;
 import free_breakfast.io.xyz;
+import free_breakfast.core.nontransferrable;
 
 #include "scratch_dir.h"
 
