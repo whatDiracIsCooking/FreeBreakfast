@@ -1,0 +1,18 @@
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.io.config
+  PRIMARY_INTERFACE
+  config.cppm
+  PARTITIONS
+  config_shared.cppm
+  config_reader.cppm
+  IMPLEMENTATION
+  config_reader.cpp
+  LINK_PUBLIC
+  free_breakfast::core::error_handling
+  LINK_PRIVATE
+  free_breakfast::io::base
+  free_breakfast::io::toml
+  free_breakfast::core::diagnostics_macros
+  IMPORT_STD
+)
