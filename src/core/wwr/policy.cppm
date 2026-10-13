@@ -1,11 +1,11 @@
 /// @file
 /// @brief The tree-wide error policies for the wwr RAII wrappers
 
-export module free_breakfast.core.error_handling:gpu_policy;
+export module free_breakfast.core.wwr:policy;
 
 import std;
-import :error;
-import :gpu_status; // gpu_status, check_or_abort
+import :status;                            // gpu_status
+import free_breakfast.core.error_handling; // check_or_abort
 import free_breakfast.core.log;
 import wwr.extension.common; // error_type, success_code, policy concepts
 

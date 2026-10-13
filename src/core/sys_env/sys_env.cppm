@@ -11,7 +11,7 @@ export namespace free_breakfast {
 
 /// @brief Plain-data report of one physical GPU, for logging/inventory only
 ///
-/// Deliberately not a `Device` (`free_breakfast.core.gpu`): a `Device` owns a
+/// Deliberately not a `Device` (`free_breakfast.core.wwr`): a `Device` owns a
 /// stream and a memory pool, and this roster exists purely to report what is on
 /// the box at startup -- it must not create a stream and a pool per device just
 /// for that.

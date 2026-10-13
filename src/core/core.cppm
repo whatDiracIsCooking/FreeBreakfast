@@ -26,17 +26,17 @@ export import free_breakfast.core.nontransferrable;
 // Separate modules rather than partitions: each has consumers that want it
 // without the rest (log has no reason to drag in the GPU layer), and the
 // macros in diagnostics/diagnostics.h name them individually. error_handling
-// also carries gpu_status, check_or_abort and this build's GPU error policy.
+// also carries check_or_abort, the abort tier.
 export import free_breakfast.core.error_handling;
 export import free_breakfast.core.log;
 
-// The GPU layer: wwr's RAII wrappers (from the WarpWraps submodule, and
-// backend-neutral -- the same imports resolve against src/cuda under a CUDA
-// build and src/hip under a HIP one), bound to the error policy in
-// free_breakfast.core.error_handling. free_breakfast.core.gpu re-exports the
-// wwr.extension modules it binds, so a consumer of free_breakfast.core gets
-// them without naming wwr itself.
-export import free_breakfast.core.gpu;
+// The interface to WarpWraps (the submodule, backend-neutral -- the same
+// imports resolve against src/cuda under a CUDA build and src/hip under a HIP
+// one): gpu_status, this build's GPU error policies, and wwr's RAII wrappers
+// bound to them. free_breakfast.core.wwr re-exports every wwr module the tree
+// uses, so a consumer of free_breakfast.core gets them without naming wwr
+// itself.
+export import free_breakfast.core.wwr;
 
 // Startup hardware inventory: CPU cores, host RAM, disk, and a plain-data GPU
 // roster that deliberately creates no Device.

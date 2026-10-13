@@ -8,7 +8,6 @@
 
 import std;
 import free_breakfast.core;
-import wwr.runtime_api;
 
 namespace {
 

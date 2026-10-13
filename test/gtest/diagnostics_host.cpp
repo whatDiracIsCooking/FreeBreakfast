@@ -6,7 +6,6 @@
 
 import std;
 import free_breakfast.core;
-import wwr.runtime_api;
 
 // After the imports, because the macros expand against names they make visible.
 #include "diagnostics.h"

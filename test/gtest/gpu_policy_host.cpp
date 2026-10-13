@@ -1,4 +1,4 @@
-// Host-only cases for error_handling's :gpu_policy. The policies only ever look
+// Host-only cases for core/wwr's :policy. The policies only ever look
 // at an error code, so every case here drives them with codes constructed on
 // the host.
 
@@ -6,7 +6,6 @@
 
 import std;
 import free_breakfast.core;
-import wwr.runtime_api;
 
 namespace {
 

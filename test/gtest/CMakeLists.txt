@@ -64,8 +64,6 @@ target_link_libraries(
           free_breakfast::molecule
           free_breakfast::basis
           free_breakfast::io
-          wwr::runtime_api
-          wwr::vector_types
           GTest::gtest
           GTest::gtest_main
 )
@@ -91,7 +89,6 @@ target_link_libraries(
   free_breakfast_tests_gpu
   PRIVATE free_breakfast::core
           free_breakfast::test::gpu_kernels
-          wwr::runtime_api
           GTest::gtest
           GTest::gtest_main
 )

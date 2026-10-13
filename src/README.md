@@ -27,17 +27,22 @@ io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BS
 ## What the GPU layer is
 
 This project does not wrap the CUDA or HIP APIs itself — [WarpWraps](https://github.com/whatDiracIsCooking/WarpWraps)
-does, and it is a submodule at `deps/WarpWraps`. Import its backend-neutral
-modules rather than a vendor header:
+does, and it is a submodule at `deps/WarpWraps`. Code here reaches it through
+**one module**, [`free_breakfast.core.wwr`](core/wwr/README.md), which
+re-exports the backend-neutral wwr modules the tree uses and binds the RAII
+wrappers to this tree's error policies:
 
 ```cpp
-import wwr.extension.memory_buffer;   // DeviceBuffer, PinnedBuffer, ...
-import wwr.extension.runtime;         // RAII stream, event, graph
-import wwr.wrappers.blas;             // gemm<float>(...), either backend
+import free_breakfast.core.wwr;   // Device, Buffers, BlasHandle, gpu_status,
+                                  // and wwr::wwrGetDeviceCount, ...
 ```
 
-and link the matching target (`wwr::extension::memory_buffer`, …). A build
-targets exactly one backend, chosen by `FREE_BREAKFAST_GPU_BACKEND`; the `wwr*`
-names resolve to that backend's own, so code written against them builds for
-both. Reach for a vendor-only entry point through the low-level module
-(`import wwr.cuda.cublas_v2;`) and accept that the file is then CUDA-only.
+and link `free_breakfast::core::wwr`. Don't import `wwr.*` or link `wwr::*`
+from a new module; to use a wwr module the tree does not use yet, add it to
+`core/wwr`. The exceptions (`core/types`, header and `.cu` device code, a
+deliberately CUDA-only `import wwr.cuda.*`) and the reasons for them are in
+that README.
+
+A build targets exactly one backend, chosen by `FREE_BREAKFAST_GPU_BACKEND`; the
+`wwr*` names resolve to that backend's own, so code written against them builds
+for both.

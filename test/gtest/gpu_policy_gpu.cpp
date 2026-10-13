@@ -1,4 +1,4 @@
-// GPU cases for core/gpu: the wwr wrappers, bound to this tree's policies,
+// GPU cases for core/wwr: the wwr wrappers, bound to this tree's policies,
 // constructed on a real device. A failed creation aborts (AbortPolicy); that
 // path is covered on the host, in gpu_policy_host.cpp.
 
@@ -8,7 +8,6 @@
 
 import std;
 import free_breakfast.core;
-import wwr.runtime_api;
 
 namespace {
 

@@ -4,8 +4,12 @@
 # importing it. LINK_PUBLIC is not for the macros themselves -- the header
 # expects those names in scope from the includer's own imports -- it just makes
 # linking this one target enough to be able to write those imports:
-# error_handling (check_or_abort, gpu_status) and, through it, log
-# (log::should_log).
+# error_handling (check_or_abort) and, through it, log (log::should_log).
+#
+# Deliberately not free_breakfast::core::wwr, though FBF_GPU_MUST expands to
+# its gpu_status: io/ and basis/ link this for FBF_TRY and FBF_LOG_* and have no
+# GPU code, and a caller of FBF_GPU_MUST already holds a wwr error code, so it
+# already imports free_breakfast.core.wwr.
 free_breakfast_add_interface_library(
   NAME
   free_breakfast.core.diagnostics_macros
