@@ -12,11 +12,10 @@ export module free_breakfast.core;
 
 export import :version;
 
-// Vocabulary with no runtime of its own: fixed-width integers and the builtin
-// vector-type mapping, the scalar concepts (re-exported from wwr), typed
+// Vocabulary with no runtime of its own: fixed-width integers, the builtin
+// vector-type mapping and the scalar concepts (re-exported from wwr), typed
 // numeric / physical constants, and the copy/move mixins.
 export import free_breakfast.core.types;
-export import free_breakfast.core.concepts;
 export import free_breakfast.core.constants;
 export import free_breakfast.core.nontransferrable;
 

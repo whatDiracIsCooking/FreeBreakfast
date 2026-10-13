@@ -1,6 +1,6 @@
 # Types
 
-Two things, both reached through one `import free_breakfast.core.types;`:
+Three things, all reached through one `import free_breakfast.core.types;`:
 
 - **Builtin GPU vector types.** Maps a scalar type and an order `N` onto the
   corresponding builtin vector type: `Vec<double, 4>` is `double4`,
@@ -13,10 +13,14 @@ Two things, both reached through one `import free_breakfast.core.types;`:
 - **Fixed-width integer types.** The `:integral` partition re-exports
   `int8_t` … `uint64_t` and `size_t` into the global namespace, so a module can
   write bare `int32_t` / `size_t` after importing this module.
+- **Scalar concepts.** The `:concepts` partition re-exports WarpWraps'
+  `real_fp` and `int_type` (and `std::int64_t` / `std::size_t`) into
+  `free_breakfast`. See [Concepts](#concepts).
 
 ## Module
 
-`free_breakfast.core.types` (with the `:integral` interface partition) — target
+`free_breakfast.core.types` (with the `:integral` and `:concepts` interface
+partitions) — target
 `free_breakfast::core::types`, also re-exported by `free_breakfast.core`.
 
 ## Backend neutrality
@@ -46,6 +50,27 @@ exports nothing. Module code spells them `Vec<float, 3>`, or imports
 that name in angle brackets, and a same-named file here would make that include
 find itself.
 
+## Concepts
+
+**These are WarpWraps' concepts, re-exported, not a second definition.**
+`wwr.wrappers.common` already defines `real_fp` and `int_type`; the `:concepts`
+partition `using`-declares them into `free_breakfast`. Two definitions sharing
+a name would be two different concepts, and a template constrained on one could
+disagree with a template constrained on the other about the same type.
+
+- `real_fp<T>`: `T` is `float` or `double`.
+- `int_type<T>`: `T` is **exactly** `int` or `int64_t`. There is no
+  `convertible_to` arm: that arm let `std::size_t` through, but it let
+  `double`, `float` and `bool` through too. A `size_t` caller casts.
+- `std::int64_t` and `std::size_t` are re-exported alongside them, as
+  `free_breakfast::int64_t` / `free_breakfast::size_t` (the `:integral`
+  partition's are the global-namespace spellings of the same types).
+
+The GPU-bound concepts built on `real_fp` (`complex_fp`, `half_fp`,
+`usual_fp`, `ComplexToRealType`, ...) are not re-exported here; import
+`wwr.wrappers.common` for those. The concepts have no header counterpart:
+device code that needs them is out of reach of `import` either way.
+
 ## Files
 
 | File | Role |
@@ -54,12 +79,14 @@ find itself.
 | `integral.h` | `<cstdint>` + `<cstddef>` for the fixed-width integer types and `size_t`. Includable from a `.cu`. |
 | `types.cppm` | Primary module interface; GMF-includes `vec.h`, re-exports its names, and `export import :integral`. |
 | `integral.cppm` | The `:integral` partition; GMF-includes `integral.h` and re-exports the integer types. |
+| `concepts.cppm` | The `:concepts` partition; re-exports wwr's `real_fp` and `int_type`, plus `int64_t`/`size_t`, into `free_breakfast`. |
 | `CMakeLists.txt` | Build definitions for the module and the headers' interface target |
 
 ## Build targets
 
 - **`free_breakfast::core::types`**: the C++23 module library, for host code
-  that `import`s it. Links `wwr::vector_types::host` PUBLIC.
+  that `import`s it. Links `wwr::vector_types::host` and
+  `wwr::wrappers::common` PUBLIC.
 - **`free_breakfast::core::types_headers`**: an INTERFACE library exposing
   `vec.h` and `integral.h` to device translation units, which `#include` them
   directly (a named module cannot be imported into a `.cu`).
@@ -68,7 +95,8 @@ find itself.
 
 - **Host / module code:** `import free_breakfast.core.types;` (or
   `free_breakfast.core`) and use `free_breakfast::Vec` /
-  `free_breakfast::make_vec`, or the bare integer types (`uint32_t`, `size_t`).
+  `free_breakfast::make_vec`, the bare integer types (`uint32_t`, `size_t`), or
+  the concepts (`free_breakfast::real_fp`, `free_breakfast::int_type`).
 - **Device code:** link `free_breakfast::core::types_headers` from the
   `free_breakfast_add_gpu_device_library` target and `#include "vec.h"` and/or
   `#include "integral.h"`.
@@ -77,4 +105,7 @@ find itself.
 import free_breakfast.core.types;
 
 free_breakfast::Vec<double, 3> r = free_breakfast::make_vec<double>(0, 0, 1.4);
+
+template <free_breakfast::real_fp T>
+void axpy(T alpha, const T* x, T* y, free_breakfast::int_type auto n);
 ```

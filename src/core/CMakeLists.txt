@@ -1,5 +1,4 @@
 add_subdirectory(types)
-add_subdirectory(concepts)
 add_subdirectory(constants)
 add_subdirectory(nontransferrable)
 add_subdirectory(error_handling)
@@ -17,7 +16,6 @@ free_breakfast_add_cxx_module_library(
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types
-  free_breakfast::core::concepts
   free_breakfast::core::constants
   free_breakfast::core::nontransferrable
   free_breakfast::core::error_handling
