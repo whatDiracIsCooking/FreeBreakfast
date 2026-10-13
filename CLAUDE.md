@@ -6,9 +6,10 @@ free-breakfast is a GPU-first scientific computing project in C++23 named
 modules, targeting **either CUDA or HIP** from one source tree. `test/pytest/`
 and `devtools/` are a Python tooling layer around it, not a shippable package.
 
-It is currently a **starter**: the build system, containers, tooling and CI are
-real and exercised; `src/core` is one module whose job is to prove the toolchain
-works. Say so rather than describing the tree as if it had a domain.
+It is an early quantum-chemistry codebase. `src/` holds five modules: `core`
+(the GPU, error-handling and logging vocabulary over WarpWraps), `atom`,
+`molecule`, `basis` and `io`. `src/README.md` has the one-line summary of each.
+The build system, containers, tooling and CI around them are real and exercised.
 
 ## Setup
 
@@ -64,8 +65,9 @@ the pin look like it lived here.
 
 `deps/CMakeLists.txt` adds it with `add_subdirectory` and sets
 `WWR_BUILD_TESTS` and `WWR_BUILD_EXAMPLES` **OFF** (both already default OFF
-for a nested build, like `WWR_INSTALL`; they are set explicitly so this does
-not depend on a default staying put). So wwr calls no `enable_testing()`, adds
+for a nested build; they are set explicitly so this does not depend on a
+default staying put. `WWR_INSTALL` shares that nested default, but this build
+forces it **ON**). So wwr calls no `enable_testing()`, adds
 no `test/` or `example/` directory, and a top-level `ctest` lists only this
 project's entries. wwr's suites are wwr's CI's job, not this tree's.
 
@@ -108,14 +110,15 @@ names this project. Keep `CUDA_ARCH` in `docker/Dockerfile.cuda` at 80+.
 
 **`compute-sanitizer` the preset is only a Debug build.** What wraps the tests
 is `FREE_BREAKFAST_COMPUTE_SANITIZER_TOOL` (empty by default), which sets
-`CMAKE_TEST_LAUNCHER` so it covers the whole tree including the submodule. It
+`CMAKE_TEST_LAUNCHER` so it covers every test target in the tree (and would
+cover wwr's too, were `WWR_BUILD_TESTS` ever turned on). It
 must be set before the test targets are created — CMake snapshots it onto each
 target as `TEST_LAUNCHER` at creation time — which is why it lives near the top
 of the root `CMakeLists.txt` and not beside `add_subdirectory(test)`.
 
-`docker/compose.yaml`'s service passes it, and before the option existed that
-`-D` was accepted and ignored: the service built, ran plain ctest, and reported
-success having checked nothing. If you add another `-D` that compose passes,
+`docker/compose.yaml`'s `compute-sanitizer` service passes it, and before the
+option existed that `-D` was accepted and ignored: the service built, ran plain
+ctest, and reported success having checked nothing. If you add another `-D` that compose passes,
 check the option actually exists.
 
 `--error-exitcode=1` is load-bearing: compute-sanitizer exits 0 by default even
@@ -133,11 +136,11 @@ copies are deliberate; keep them in step.
 
 | | C++ | Python |
 |---|---|---|
-| Source | `src/`, `cmake/`, `deps/` | `test/pytest/` |
+| Source | `src/`, `cmake/`, `deps/` (+ opt-in `bench/`, `experimental/`) | `test/pytest/`, `devtools/hooks/*.py` |
 | Tests | `test/gtest/`, run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/cpp-tier.sh`, `cpp-slow-tier.sh` | `pytest`, `devtools/slow-tier.sh` |
-| Lint | `cmake-lint` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff` |
-| Gated by | `cmake-lint` at commit, `cpp-smoke.sh` at push; **nothing on the server** | pre-push hook + CI |
+| Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
+| Gated by | `cmake-lint` + format check at commit, `cpp-smoke.sh` at push; on the server **format + cmake-lint only, no build or test** | pre-push hook + CI |
 
 **A change under `src/` is verified by the C++ tier and by nothing else.** A
 green pytest run on it means the Python that would have exercised the *old*
@@ -154,9 +157,11 @@ module hierarchy to satisfy it.
 `devtools/cpp-smoke.sh` when it touches C++. CI runs lint + the fast pytest
 tier per PR.
 
-**The two `cpp` jobs in `.github/workflows/ci.yml` are `if: false`.** A PR
-touching only `src/` is checked by nothing on the server; `devtools/cpp-tier.sh`
-before opening it is the whole gate, and it is a human one. The `ci-cuda` and
+**The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix
+legs, cuda and hip. A PR touching only `src/` gets its formatting and CMake lint
+checked on the server and nothing else: nothing builds or runs it.
+`devtools/cpp-tier.sh` before opening it is the whole correctness gate, and it
+is a human one. The `ci-cuda` and
 `ci-hip` presets were built for that job and need **no GPU** — the only obstacle
 is getting the toolchain image onto a runner, and that file's comment has the
 two routes.
@@ -205,8 +210,9 @@ three `.devcontainer/*/devcontainer.json` files **must agree**, because JSON
 cannot source shell. It is `free-breakfast` — the hyphenated spelling — in both
 places, while the C++ namespace and CMake targets use `free_breakfast`. Get this
 wrong and `worktree.sh rm`/`gc` stop recognising this project's volumes as its
-own. `doctor.sh` checks the two agree and warns when they have drifted; it
-prints one `ok` line per variant.
+own. `doctor.sh` checks that each file's volume `source=` names carry
+`PROJECT_NAME` and warns when they have drifted; it prints one `ok` line per
+variant. It does not check the container `name` field.
 
 ## Reading a test run
 
@@ -245,7 +251,8 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   without it is not built with `CXX_MODULE_STD`, and the failure names the
   standard library rather than the flag.
 - **A `.cu` never goes into a test executable or a module library.** Those are
-  built with `CXX_MODULE_STD` and `CXX_SCAN_FOR_MODULES`, and nvcc neither
+  scanned for modules (and, with `IMPORT_STD`, built with `CXX_MODULE_STD`),
+  and nvcc neither
   understands `import std` nor participates in module dependency scanning. Put
   device code in its own `free_breakfast_add_gpu_device_library` target.
 - **`hip::device` is always PRIVATE**, never PUBLIC or INTERFACE: its `-x hip`
@@ -264,14 +271,18 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   units goes in a partition. `docs/style.md` "Module-private code" says which
   kind, and why an unexported name must still be unique module-wide.
 - **A failed GPU create/alloc aborts, in every build.** The wwr wrappers'
-  creation slots use `AbortPolicy` (log critical, `std::abort()` at the failing
-  call); destroy/free slots use `LogPolicy`. There is no recoverable mode and no
+  creation slots use free_breakfast's own `AbortPolicy` (via `CreatePolicy`: log
+  critical, `std::abort()` at the failing call); destroy/free slots use its
+  `LogPolicy` (via `DestroyPolicy`). Both live in
+  `src/core/error_handling/gpu_policy.cppm` — not wwr's unrelated
+  `kit::AbortPolicy`. There is no recoverable mode and no
   `Result` to check after constructing a wrapper — recovery was cut as YAGNI;
   if a site ever needs it, add a reporting policy for that site, not a
   tree-wide switch. Use the aliases in `free_breakfast.core.gpu` (`Device`,
   `Buffers`, …, directly in `free_breakfast`) rather than naming a wwr policy.
   See `src/core/error_handling/README.md`.
-- **`BUILD_JOBS` is lower than the core count on purpose.** A module build is
+- **`BUILD_JOBS` (default 12, `devtools/config.sh`) is capped below what Ninja
+  would pick, on purpose.** A module build is
   memory-hungry per job; an OOM-killed compiler surfaces as a bare
   `ninja: build stopped` with nothing about memory in it.
 
@@ -288,15 +299,30 @@ error — a guard bug must never brick editing.
 `devtools/hooks/session-env.py` runs at SessionStart and reports whether you are
 on the host or in the container.
 
+### Worktrees
+
+There are two kinds, and which one you can make depends on which side you are
+on:
+
+- **`.claude/worktrees/<name>`** — a lightweight `git worktree` inside the main
+  checkout, made and swept by the `worktree` skill. Works on both sides; the
+  only kind available inside the container.
+- **Sibling worktrees** (`<root>/<name>`, next to `main/`) — made by
+  `devtools/worktree.sh add`, each with its own devcontainer and named volumes
+  (the `devbox` skill). **Host-only**: it drives docker, which the container
+  does not have. `worktree.sh rm` tears down the container and volumes that
+  `git worktree remove` would leak.
+
 The seven skills in `.claude/skills/` are the tooling ones — `audit`, `devbox`,
 `doctor`, `milestone`, `pr`, `test`, `worktree` — and they apply to this tree as
 written.
 
 Three more came across in the hoist and were **removed**: `constants`,
-`error-handling` and `memory-buffer` documented
-`src/core/{constants,error_handling,memory_buffer}` APIs that do not exist here,
-and described the ancestor project's module tree in detail — which has no place
-in a public repo. Their equivalents live in the WarpWraps submodule
-(`wwr.extension.common`, `wwr.extension.memory_buffer`), which has its own docs.
-If you want skills for those, write them against the `wwr.*` surface rather than
-restoring the old ones.
+`error-handling` and `memory-buffer` documented the *ancestor* project's
+versions of those modules, and described its module tree in detail — which has
+no place in a public repo. `src/core/constants` and `src/core/error_handling`
+do exist here, with different APIs; each has its own README. There is no
+`src/core/memory_buffer`: buffers come from `wwr.extension.memory_buffer` in the
+WarpWraps submodule. If you want skills for these, write them against the local
+modules (and the `wwr.*` surface for buffers) rather than restoring the old
+ones.

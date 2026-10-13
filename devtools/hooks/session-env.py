@@ -34,9 +34,7 @@ def main() -> None:
             "repo's split host/container setup). Worktree consequence: "
             "`devtools/worktree.sh add` is host-only and will NOT run here -- "
             "use a lightweight `.claude/worktrees/<name>` checkout instead "
-            "(see CLAUDE.md 'Worktrees'). Other host/container differences "
-            "(git identity, gh token reach, build presets) are documented "
-            "there too."
+            "(see CLAUDE.md 'Worktrees')."
         )
     else:
         context = (
