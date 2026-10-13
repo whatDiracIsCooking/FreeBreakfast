@@ -11,11 +11,8 @@
 // Deliberately narrow. This exercises the runtime-query surface and nothing
 // else, because that is enough to prove what a starter needs to prove: the
 // submodule linked, the selected backend's runtime loaded, and the skip path
-// works on a device-less box. The buffer/stream/BLAS layers have their own
-// verified suites inside the submodule, and
-// deps/WarpWraps/example/buffer_suite/main.cpp is the worked usage to copy
-// from -- those types take error-policy template arguments and a device handle,
-// so a one-liner here would misrepresent the API.
+// works on a device-less box. The buffer/stream/BLAS layers, bound to this
+// build's error policy, are exercised in gpu_policy_gpu.cpp.
 
 // gtest's headers come FIRST, before any import -- see version_host.cpp for
 // why. gpu_requirement.h needs GTEST_SKIP, so it follows gtest.h.

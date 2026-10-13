@@ -37,6 +37,7 @@ add_executable(
   io_json_host.cpp
   io_npy_host.cpp
   io_toml_host.cpp
+  gpu_policy_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -58,7 +59,7 @@ target_link_libraries(
 # GPU executable
 # ---------------------------------------------------------------------------
 # Add new device-dependent TUs to this list.
-add_executable(free_breakfast_tests_gpu device_gpu.cpp)
+add_executable(free_breakfast_tests_gpu device_gpu.cpp gpu_policy_gpu.cpp)
 
 set_target_properties(
   free_breakfast_tests_gpu PROPERTIES CXX_MODULE_STD 1 CXX_SCAN_FOR_MODULES ON
@@ -76,6 +77,18 @@ target_include_directories(
 target_include_directories(
   free_breakfast_tests_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+# gpu_policy_host.cpp checks that the configure-time ABORT/RECORD switch reached
+# the module's gpu::aborts_on_error, so it needs the resolved value too.
+if(FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED STREQUAL "ABORT")
+  target_compile_definitions(
+    free_breakfast_tests_host PRIVATE FREE_BREAKFAST_TEST_EXPECT_GPU_ABORTS=1
+  )
+else()
+  target_compile_definitions(
+    free_breakfast_tests_host PRIVATE FREE_BREAKFAST_TEST_EXPECT_GPU_ABORTS=0
+  )
+endif()
 
 # ---------------------------------------------------------------------------
 # ctest registration

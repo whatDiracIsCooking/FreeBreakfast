@@ -256,6 +256,13 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
 - **No formatter is a git hook, deliberately.** A formatter rewrites whole files
   and buries a real diff in restyling. Run `clang-format`/`cmake-format` by
   hand. `ruff` and `cmake-lint` *are* enforced.
+- **GPU wrapper errors abort in Debug and are returned in Release.**
+  `FREE_BREAKFAST_GPU_ERROR_POLICY` (empty = by build type) picks ABORT or
+  RECORD tree-wide; use the `gpu::` aliases in `free_breakfast.core.gpu` rather
+  than naming a wwr policy, and construct inside `gpu::capture` so a RECORD
+  failure comes back as a `Result`. A test that must see the error value in
+  every build names `gpu::RecordPolicy` explicitly. See
+  `src/core/gpu_policy/README.md`.
 - **`BUILD_JOBS` is lower than the core count on purpose.** A module build is
   memory-hungry per job; an OOM-killed compiler surfaces as a bare
   `ninja: build stopped` with nothing about memory in it.
