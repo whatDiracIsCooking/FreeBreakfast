@@ -1,14 +1,25 @@
 /// @file
-/// @brief The wwr RAII wrappers, bound once to this build's GPU error policies
+/// @brief The interface between free_breakfast and WarpWraps: the wwr modules
+/// this tree uses, the GPU error bridge and policies, and the RAII wrappers
+/// bound to them
 
-export module free_breakfast.core.gpu;
+export module free_breakfast.core.wwr;
 
 export import free_breakfast.core.error_handling;
 
-// Re-exported so `import free_breakfast.core.gpu;` reaches the wrappers' own
-// members and free functions (copy, memset, views, ScopedRange, ...), not just
-// the aliases below.
+// gpu_status (:status) and the wwr error policies over it (:policy). Here, not
+// in error_handling, so that module never names wwr and the whole wwr binding
+// sits in one place.
+export import :status;
+export import :policy;
+
+// Re-exported so `import free_breakfast.core.wwr;` is the one import a module
+// above core/types needs for anything WarpWraps provides: the runtime API, the
+// vector types and scalar traits, and the wrappers' own members and free
+// functions (copy, memset, views, ScopedRange, ...), not just the aliases below.
 export import wwr.runtime_api;
+export import wwr.vector_types;
+export import wwr.wrappers.common;
 export import wwr.extension.common;
 export import wwr.extension.handle;
 export import wwr.extension.runtime;

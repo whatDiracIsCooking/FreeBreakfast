@@ -22,7 +22,7 @@ if (auto env = free_breakfast::query_sys_env()) {
 
 | File | Role |
 |------|------|
-| `sys_env.cppm` | Module interface exporting `SysEnv`, `GpuInfo`, `query_sys_env()`, `available_gpus()`, `logical_cpu_cores()`, `log_sys_env()`. The GPU roster is `vector<GpuInfo>` — plain data (index, name, memory, compute capability), deliberately not `Device` (`free_breakfast.core.gpu`), which owns a stream and a memory pool; a startup inventory snapshot must not create one per device just to report what is on the box |
+| `sys_env.cppm` | Module interface exporting `SysEnv`, `GpuInfo`, `query_sys_env()`, `available_gpus()`, `logical_cpu_cores()`, `log_sys_env()`. The GPU roster is `vector<GpuInfo>` — plain data (index, name, memory, compute capability), deliberately not `Device` (`free_breakfast.core.wwr`), which owns a stream and a memory pool; a startup inventory snapshot must not create one per device just to report what is on the box |
 | `sys_env.cpp` | Implementation: reads `/proc/cpuinfo` and `/proc/meminfo`; enumerates GPUs through WarpWraps' backend-neutral `wwrGetDeviceCount` / `wwrGetDeviceProperties`, so the same code serves a CUDA and a HIP build (graceful: no device yields an empty roster, not an error) |
 | `CMakeLists.txt` | Build definition for the module |
 

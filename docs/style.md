@@ -247,7 +247,7 @@ nlohmann_json) is caught where that library is called and turned into a
 calls something that can throw catches with `catch (...)` and gives up the
 lesser thing, such as a log line, rather than letting `std::terminate` run.
 Say why in a comment there (see `LogPolicy` in
-`src/core/error_handling/gpu_policy.cppm`).
+`src/core/wwr/policy.cppm`).
 
 ## Comments
 

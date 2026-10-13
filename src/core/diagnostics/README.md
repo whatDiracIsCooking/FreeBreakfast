@@ -2,8 +2,9 @@
 
 The macro header over `error_handling` and `log`: `FBF_TRY`, `FBF_GPU_MUST`
 and the lazily-formatted `FBF_LOG_*`. The functions they expand to
-(`gpu_status`, `check_or_abort`) live in `free_breakfast.core.error_handling`
-— see `../error_handling/README.md`.
+live in `free_breakfast.core.error_handling` (`check_or_abort`) and
+`free_breakfast.core.wwr` (`gpu_status`) — see `../error_handling/README.md`
+and `../wwr/README.md`.
 
 Value-tier errors are logged exactly **once**, at the top-level boundary that
 turns an `Error` into a process exit code (via `to_exit_code`) — not at every
@@ -23,8 +24,7 @@ need `free_breakfast::*` and `std` visible in the including TU.
 #include <gtest/gtest.h>   // any textual headers first
 
 import std;
-import free_breakfast.core;
-import wwr.runtime_api;
+import free_breakfast.core;   // re-exports core.wwr: gpu_status, wwr::wwr*
 
 #include "diagnostics.h"
 
@@ -58,5 +58,11 @@ FBF_LOG_DEBUG("iteration {} residual {:.3e}", iter, residual); // formats only i
 
 ## Dependencies
 
-- `free_breakfast::core::error_handling` — `gpu_status`, `check_or_abort`, and
-  (through it) `free_breakfast::core::log` for `log::should_log()`
+- `free_breakfast::core::error_handling` — `check_or_abort`, and (through it)
+  `free_breakfast::core::log` for `log::should_log()`
+
+Not `free_breakfast::core::wwr`, though `FBF_GPU_MUST` expands to its
+`gpu_status`: `io/` and `basis/` link this target for `FBF_TRY` and
+`FBF_LOG_*` and have no GPU code. A TU that calls `FBF_GPU_MUST` already holds
+a wwr error code, so it already imports `free_breakfast.core.wwr` and links its
+target.

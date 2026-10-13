@@ -54,7 +54,16 @@ Plus `nlohmann_json`, which is FetchContent because it is header-only and small.
 There is no `deps/cuda/` of hand-written `cuda_runtime_api.cppm` /
 `cublas_v2.cppm` shims here; that is exactly what wwr's `src/cuda` (and its
 `src/hip` mirror) is, and an earlier ancestor of this tree carried a narrower
-CUDA-only copy of it. Import `wwr.*` and link `wwr::*`.
+CUDA-only copy of it.
+
+**Inside `src/`, wwr is reached through `free_breakfast.core.wwr`**
+(`src/core/wwr`, target `free_breakfast::core::wwr`): import that, not `wwr.*`,
+and link it, not `wwr::*`. It re-exports every wwr module the tree uses, plus
+`gpu_status`, the GPU error policies, and the wrappers bound to them. To use a
+new wwr module, add it there. The exceptions, which link wwr directly, are
+`core/types` (it sits below the error layer `core.wwr` is built on), header
+and `.cu` device code (`wwr::device`; nvcc cannot import), and a deliberately
+CUDA-only `import wwr.cuda.*`. `src/core/wwr/README.md` has the reasons.
 
 **GoogleTest comes from WarpWraps too**, not from this tree. wwr's own `deps/`
 declares it, and FetchContent is first-declaration-wins, so declaring a second
@@ -274,13 +283,13 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   creation slots use free_breakfast's own `AbortPolicy` (via `CreatePolicy`: log
   critical, `std::abort()` at the failing call); destroy/free slots use its
   `LogPolicy` (via `DestroyPolicy`). Both live in
-  `src/core/error_handling/gpu_policy.cppm` — not wwr's unrelated
+  `src/core/wwr/policy.cppm` — not wwr's unrelated
   `kit::AbortPolicy`. There is no recoverable mode and no
   `Result` to check after constructing a wrapper — recovery was cut as YAGNI;
   if a site ever needs it, add a reporting policy for that site, not a
-  tree-wide switch. Use the aliases in `free_breakfast.core.gpu` (`Device`,
+  tree-wide switch. Use the aliases in `free_breakfast.core.wwr` (`Device`,
   `Buffers`, …, directly in `free_breakfast`) rather than naming a wwr policy.
-  See `src/core/error_handling/README.md`.
+  See `src/core/wwr/README.md`.
 - **`BUILD_JOBS` (default 12, `devtools/config.sh`) is capped below what Ninja
   would pick, on purpose.** A module build is
   memory-hungry per job; an OOM-killed compiler surfaces as a bare

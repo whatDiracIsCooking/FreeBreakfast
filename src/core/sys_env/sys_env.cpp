@@ -7,7 +7,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import wwr.runtime_api;
+import free_breakfast.core.wwr; // wwrGetDevice*, gpu_status
 
 #include "diagnostics.h"
 

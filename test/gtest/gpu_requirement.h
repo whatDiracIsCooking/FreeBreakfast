@@ -4,8 +4,8 @@
 /// This defines a MACRO, so it is expanded at the point of use and needs the
 /// wwr* runtime names visible THERE, not here -- which is why this header
 /// imports nothing and why its own include position does not matter. What does
-/// matter is that the using TU has `import wwr.runtime_api;` in scope at the
-/// call site. (Include it next to gtest.h, before the imports, the way every
+/// matter is that the using TU has `import free_breakfast.core.wwr;` (or
+/// `free_breakfast.core`, which re-exports it) in scope at the call site. (Include it next to gtest.h, before the imports, the way every
 /// test TU in deps/WarpWraps orders them.)
 ///
 /// Backend-neutral by construction: `wwrGetDeviceCount` is WarpWraps' neutral

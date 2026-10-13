@@ -8,7 +8,6 @@
 
 import std;
 import free_breakfast.core;
-import wwr.vector_types;
 
 namespace {
 

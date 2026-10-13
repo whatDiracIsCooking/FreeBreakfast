@@ -12,10 +12,10 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `primitives/` | `free_breakfast.core.primitives` — `math::sqrt`, `math::log`, `math::sin`, … templated on float/double, and `math::factorial` / `double_factorial_odd` / `binomial`, `math::idivup` / `align_up`; `primitives.h` gives a device `.cu` the same names (target `free_breakfast::core::primitives_header`). |
 | `kernel/` | `free_breakfast.core.kernel` — `kWarpSize` and the `NumWarps` launch-shape concept; device-only headers beside it (target `free_breakfast::core::kernel_headers`) give a `.cu` the `DeviceFunctor` concept and `device::warp_reduce` / `block_reduce`. |
 | `nontransferrable/` | `free_breakfast.core.nontransferrable` — the `NonCopyable` / `NonMovable` / `NonTransferable` mixins. |
-| `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `gpu_status`, `check_or_abort`; and the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy). |
+| `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `check_or_abort`. Names no wwr. |
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
 | `diagnostics/` | `diagnostics.h` only (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`), target `free_breakfast::core::diagnostics_macros`. |
-| `gpu/` | `free_breakfast.core.gpu` — wwr's RAII wrappers bound to those policies: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, … |
+| `wwr/` | `free_breakfast.core.wwr` — the interface to WarpWraps: re-exports every wwr module the tree uses, `gpu_status`, the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy), and the wrappers bound to them: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, … Import this rather than `wwr.*`; `wwr/README.md` lists the exceptions. |
 | `sys_env/` | `free_breakfast.core.sys_env` — the startup hardware inventory: `query_sys_env()` → `SysEnv` (CPU cores, host RAM, disk, a plain-data `GpuInfo` roster), `log_sys_env()`. |
 
 Each subdirectory is its own library with its own README — a module library,
@@ -28,10 +28,10 @@ import free_breakfast.core;
 auto v = free_breakfast::core::version_string();   // "0.1.0"
 ```
 
-The GPU layer comes along with that import: `free_breakfast.core.gpu`
-re-exports the `wwr.extension.*` modules it binds (used in place from the
+The GPU layer comes along with that import: `free_breakfast.core.wwr`
+re-exports the `wwr.*` modules the tree uses (used in place from the
 submodule, not copied), and its aliases already carry this build's error
-policy — see `error_handling/README.md`.
+policy — see `wwr/README.md`.
 
 Link it as `free_breakfast::core`.
 
