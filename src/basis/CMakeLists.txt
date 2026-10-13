@@ -21,10 +21,12 @@ free_breakfast_add_cxx_module_library(
   basis_set.cppm
   shell_stamp.cppm
   basis_stamp.cppm
-  numeric.cppm
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types
+  # math::double_factorial_odd / math::factorial for the harmonic table, the
+  # per-shell spherical scale and the primitive normalization.
+  free_breakfast::core::primitives
   free_breakfast::basis::headers
   free_breakfast::molecule
   # :basis_stamp's place() returns a Result over a classified Error.

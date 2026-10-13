@@ -17,6 +17,7 @@ export module free_breakfast.basis:shell_stamp;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.primitives;
 import free_breakfast.molecule;
 import free_breakfast.core.error_handling;
 import :shell;
@@ -104,10 +105,7 @@ public:
   /// @c cartesian_to_spherical forms inherit this same per-primitive scale
   /// (see @c src/basis/harmonics.cppm).
   [[nodiscard]] ShellStamp primitive_normalized() const {
-    double dfac = 1.0; // (2l-1)!!
-    for (int32_t m = (2 * l_) - 1; m > 1; m -= 2) {
-      dfac *= static_cast<double>(m);
-    }
+    const double dfac = math::double_factorial_odd((2 * l_) - 1);
     std::vector<Primitive> normalized = primitives_;
     for (Primitive &prim : normalized) {
       const double a = prim.exponent;

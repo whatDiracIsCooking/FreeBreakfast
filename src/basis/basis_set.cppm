@@ -28,10 +28,10 @@ export module free_breakfast.basis:basis_set;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.primitives;
 import :shell;
 import :ao;
 import :harmonics;
-import :numeric;
 import free_breakfast.core.error_handling;
 
 #include "diagnostics.h"
@@ -195,7 +195,7 @@ private:
     const uint32_t nsph = shell.spherical_function_count();
 
     const std::vector<double> block = solid_harmonic_c2s(l);
-    const double scale = std::sqrt(double_factorial_odd((2 * l) - 1));
+    const double scale = std::sqrt(math::double_factorial_odd((2 * l) - 1));
     for (uint32_t i = 0; i < ncart; ++i) {
       for (uint32_t j = 0; j < nsph; ++j) {
         u[((row0 + i) * ncol) + col0 + j] = block[(static_cast<size_t>(i) * nsph) + j] * scale;

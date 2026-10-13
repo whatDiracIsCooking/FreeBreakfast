@@ -49,9 +49,9 @@ module;
 export module free_breakfast.basis:harmonics;
 
 import :ao;
-import :numeric;
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.primitives;
 
 export namespace free_breakfast {
 
@@ -82,7 +82,8 @@ namespace free_breakfast {
   if ((sx % 2) != 0 || (sy % 2) != 0 || (sz % 2) != 0) {
     return 0.0;
   }
-  return double_factorial_odd(sx - 1) * double_factorial_odd(sy - 1) * double_factorial_odd(sz - 1);
+  return math::double_factorial_odd(sx - 1) * math::double_factorial_odd(sy - 1) *
+         math::double_factorial_odd(sz - 1);
 }
 
 // Coefficients of the (unnormalized) real solid harmonic (l, m) over the
@@ -98,8 +99,8 @@ namespace free_breakfast {
   std::map<std::array<int32_t, 3>, double> coeffs;
 
   const double prefactor =
-      (1.0 / (std::pow(2.0, l) * factorial(l))) *
-      std::sqrt(2.0 * factorial(l + ma) * factorial(l - ma) / (m == 0 ? 2.0 : 1.0));
+      (1.0 / (std::pow(2.0, l) * math::factorial(l))) *
+      std::sqrt(2.0 * math::factorial(l + ma) * math::factorial(l - ma) / (m == 0 ? 2.0 : 1.0));
 
   // two_v0 is 2*v's starting value: 0 for m >= 0, 1 for m < 0 (the half-integer
   // offset of the real-harmonic sine branch).
@@ -115,8 +116,8 @@ namespace free_breakfast {
         }
         const int32_t sign_power = t + ((two_v - two_v0) / 2);
         const double term = (((sign_power % 2) == 0) ? 1.0 : -1.0) * std::pow(0.25, t) *
-                            binomial(l, t) * binomial(l - t, ma + t) * binomial(t, u) *
-                            binomial(ma, two_v);
+                            math::binomial(l, t) * math::binomial(l - t, ma + t) *
+                            math::binomial(t, u) * math::binomial(ma, two_v);
         coeffs[std::array<int32_t, 3>{lx, ly, lz}] += prefactor * term;
       }
     }
