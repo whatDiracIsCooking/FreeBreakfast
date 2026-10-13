@@ -201,7 +201,7 @@ private:
 
     if (shell.harmonic() == Harmonic::Cartesian) {
       for (uint32_t i = 0; i < ncart; ++i) {
-        u[(static_cast<size_t>(row0 + i) * ncol) + col0 + i] = 1.0;
+        u[((row0 + i) * ncol) + col0 + i] = 1.0;
       }
       continue;
     }
@@ -211,8 +211,7 @@ private:
     const uint32_t nsph = spherical_function_count(l);
     for (uint32_t i = 0; i < ncart; ++i) {
       for (uint32_t j = 0; j < nsph; ++j) {
-        u[(static_cast<size_t>(row0 + i) * ncol) + col0 + j] =
-            block[(static_cast<size_t>(i) * nsph) + j] * scale;
+        u[((row0 + i) * ncol) + col0 + j] = block[(static_cast<size_t>(i) * nsph) + j] * scale;
       }
     }
   }
