@@ -36,7 +36,7 @@ export namespace free_breakfast {
 /// engines can raise angular momentum past d.
 [[nodiscard]] std::vector<std::array<int32_t, 3>> cartesian_powers(int32_t l) {
   std::vector<std::array<int32_t, 3>> out;
-  out.reserve(static_cast<size_t>(cartesian_function_count(l)));
+  out.reserve(cartesian_function_count(l));
   for (int32_t a = l; a >= 0; --a) {
     for (int32_t b = l - a; b >= 0; --b) {
       out.push_back({a, b, l - a - b});

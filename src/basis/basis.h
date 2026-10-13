@@ -25,6 +25,11 @@ namespace free_breakfast {
 ///
 /// A Cartesian shell of angular momentum L spans x^a y^b z^c with a+b+c = L,
 /// and there are (L+1)(L+2)/2 such triples: 1 (s), 3 (p), 6 (d), 10 (f), ...
+///
+/// This is where a signed angular momentum becomes an unsigned count; callers
+/// keep @p l signed for its arithmetic and the count unsigned for indexing.
+///
+/// @pre @p l >= 0 (@ref Shell and @ref ShellStamp abort on a negative one).
 [[nodiscard]] constexpr uint32_t cartesian_function_count(int32_t l) {
   const auto n = static_cast<uint32_t>(l);
   return ((n + 1) * (n + 2)) / 2;
@@ -32,6 +37,8 @@ namespace free_breakfast {
 
 /// @brief Number of real solid harmonic (spherical) functions in a shell of
 /// momentum @p l: 2l+1.
+///
+/// @pre @p l >= 0, as for @ref cartesian_function_count.
 [[nodiscard]] constexpr uint32_t spherical_function_count(int32_t l) {
   const auto n = static_cast<uint32_t>(l);
   return (2 * n) + 1;

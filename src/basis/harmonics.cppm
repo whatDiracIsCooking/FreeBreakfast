@@ -131,56 +131,56 @@ namespace free_breakfast {
 export namespace free_breakfast {
 
 [[nodiscard]] inline std::vector<double> solid_harmonic_c2s(int32_t l) {
-  const int32_t ncart = static_cast<int32_t>(cartesian_function_count(l));
-  const int32_t nsph = (2 * l) + 1;
+  const size_t ncart = cartesian_function_count(l);
+  const size_t nsph = spherical_function_count(l);
 
   // s and p: PySCF presents these as the bare Cartesian set (s trivially, p as
   // (x, y, z)), so the block is the identity -- the same block
   // cartesian_to_spherical applies to a Cartesian shell.
   if (l <= 1) {
-    std::vector<double> identity(static_cast<size_t>(ncart) * static_cast<size_t>(nsph), 0.0);
-    for (int32_t i = 0; i < ncart; ++i) {
-      identity[(static_cast<size_t>(i) * nsph) + i] = 1.0;
+    std::vector<double> identity(ncart * nsph, 0.0);
+    for (size_t i = 0; i < ncart; ++i) {
+      identity[(i * nsph) + i] = 1.0;
     }
     return identity;
   }
 
   const std::vector<std::array<int32_t, 3>> powers = cartesian_powers(l);
-  std::map<std::array<int32_t, 3>, int32_t> row_of;
-  for (int32_t i = 0; i < ncart; ++i) {
-    row_of[powers[static_cast<size_t>(i)]] = i;
+  std::map<std::array<int32_t, 3>, size_t> row_of;
+  for (size_t i = 0; i < ncart; ++i) {
+    row_of[powers[i]] = i;
   }
 
-  std::vector<double> block(static_cast<size_t>(ncart) * static_cast<size_t>(nsph), 0.0);
-  for (int32_t col = 0; col < nsph; ++col) {
-    const int32_t m = col - l;
+  std::vector<double> block(ncart * nsph, 0.0);
+  for (size_t col = 0; col < nsph; ++col) {
+    // The one signed quantity: columns run m = -l..+l.
+    const int32_t m = static_cast<int32_t>(col) - l;
     for (const auto &[key, value] : solid_harmonic_coeffs(l, m)) {
-      block[(static_cast<size_t>(row_of.at(key)) * nsph) + col] = value;
+      block[(row_of.at(key) * nsph) + col] = value;
     }
   }
 
   // G-normalize each column under the Gaussian-moment inner product, so
   // block^T G block = I and cartesian_to_spherical's single sqrt((2l-1)!!)
   // scale yields a uniform diagonal.
-  for (int32_t col = 0; col < nsph; ++col) {
+  for (size_t col = 0; col < nsph; ++col) {
     double norm2 = 0.0;
-    for (int32_t a = 0; a < ncart; ++a) {
-      const double ca = block[(static_cast<size_t>(a) * nsph) + col];
+    for (size_t a = 0; a < ncart; ++a) {
+      const double ca = block[(a * nsph) + col];
       if (ca == 0.0) {
         continue;
       }
-      for (int32_t b = 0; b < ncart; ++b) {
-        const double cb = block[(static_cast<size_t>(b) * nsph) + col];
+      for (size_t b = 0; b < ncart; ++b) {
+        const double cb = block[(b * nsph) + col];
         if (cb == 0.0) {
           continue;
         }
-        norm2 +=
-            ca * cb * monomial_gram(powers[static_cast<size_t>(a)], powers[static_cast<size_t>(b)]);
+        norm2 += ca * cb * monomial_gram(powers[a], powers[b]);
       }
     }
     const double inv = 1.0 / std::sqrt(norm2);
-    for (int32_t a = 0; a < ncart; ++a) {
-      block[(static_cast<size_t>(a) * nsph) + col] *= inv;
+    for (size_t a = 0; a < ncart; ++a) {
+      block[(a * nsph) + col] *= inv;
     }
   }
   return block;
