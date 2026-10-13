@@ -17,8 +17,8 @@ namespace {
 /// @brief Pull an integer keyed by @p key out of a TOML table, honouring
 /// @p fallback when the key is absent and reporting a type mismatch as an
 /// InvalidConfig error.
-[[nodiscard]] Result<int> table_int(const free_breakfast::toml::table &table,
-                                    std::string_view key, int fallback) {
+[[nodiscard]] Result<int> table_int(const free_breakfast::toml::table &table, std::string_view key,
+                                    int fallback) {
   const auto node = table[key];
   if (!node) {
     return fallback;
@@ -46,7 +46,7 @@ namespace {
 
 /// @brief As table_int, for a string value.
 [[nodiscard]] Result<std::string> table_string(const free_breakfast::toml::table &table,
-                                                std::string_view key, std::string fallback) {
+                                               std::string_view key, std::string fallback) {
   const auto node = table[key];
   if (!node) {
     return fallback;

@@ -27,7 +27,9 @@ TEST(Atom, ElementValueIsAtomicNumber) {
   EXPECT_EQ(static_cast<int>(fb::Element::Og), 118);
 }
 
-TEST(Atom, DefaultElementIsSentinel) { EXPECT_EQ(fb::Element{}, fb::Element::kSentinel); }
+TEST(Atom, DefaultElementIsSentinel) {
+  EXPECT_EQ(fb::Element{}, fb::Element::kSentinel);
+}
 
 TEST(Atom, DefaultAtomSitsAtOriginWithNoElement) {
   const fb::Atom<double> atom{};

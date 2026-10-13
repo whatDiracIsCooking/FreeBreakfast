@@ -20,7 +20,6 @@ AlwaysBreakTemplateDeclarations: Yes
 BreakBeforeBraces: Attach
 PointerAlignment: Right
 ReferenceAlignment: Right
-SpaceAfterTemplateKeyword: false
 
 # Doxygen banners in these files are hand-wrapped; leave them alone.
 ReflowComments: false

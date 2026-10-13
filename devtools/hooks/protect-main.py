@@ -22,6 +22,7 @@ Wired from the committed `.claude/settings.json` as a PreToolUse hook on
 Write|Edit|NotebookEdit. Fails OPEN on any error: a guard bug must never brick
 editing.
 """
+
 from __future__ import annotations
 
 import json
@@ -36,22 +37,26 @@ def _allow() -> None:
 
 
 def _deny(reason: str) -> None:
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": reason,
-        }
-    }))
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                }
+            }
+        )
+    )
     sys.exit(0)
 
 
 def _primary_worktree(start: str) -> str:
     """Parent of the shared git common dir == the primary (main) worktree."""
     common = subprocess.check_output(
-        ["git", "-C", start, "rev-parse",
-         "--path-format=absolute", "--git-common-dir"],
-        stderr=subprocess.DEVNULL, text=True,
+        ["git", "-C", start, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        stderr=subprocess.DEVNULL,
+        text=True,
     ).strip()
     return os.path.dirname(os.path.realpath(common))
 

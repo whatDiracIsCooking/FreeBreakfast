@@ -62,9 +62,9 @@ TEST(Gpu, DeviceAndBufferReturnThroughCapture) {
 // Named explicitly, not through fb::PolicyMap, so this case checks the
 // RECORD path in every build -- including a Debug one, where PolicyMap aborts.
 struct RecordMap {
-  template<typename E>
+  template <typename E>
   using alloc = fb::RecordPolicy<E>;
-  template<typename E>
+  template <typename E>
   using free = fb::LogPolicy<E>;
 };
 using RecordingBuffers = kit::device_buffer_suite<RecordMap, fb::Device>;

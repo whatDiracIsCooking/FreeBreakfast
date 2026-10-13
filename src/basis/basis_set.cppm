@@ -95,9 +95,7 @@ public:
   [[nodiscard]] const std::vector<AO> &aos() const { return aos_; }
 
   /// @brief Number of shells in the basis.
-  [[nodiscard]] std::uint32_t nshells() const {
-    return static_cast<std::uint32_t>(shells_.size());
-  }
+  [[nodiscard]] std::uint32_t nshells() const { return static_cast<std::uint32_t>(shells_.size()); }
 
   /// @brief Total number of atomic orbitals, Sum over shells of their
   /// function counts.

@@ -86,15 +86,14 @@ export namespace free_breakfast {
 ///
 /// A file that cannot be opened yields ErrorKind::IO; otherwise the contents
 /// flow through @ref parse_basis and carry its classification.
-[[nodiscard]] Result<BasisStamp>
-read_basis(const std::filesystem::path &path);
+[[nodiscard]] Result<BasisStamp> read_basis(const std::filesystem::path &path);
 
 /// @brief Parse a BSE JSON basis and @ref place it onto a molecule in one step.
 ///
 /// Convenience over @ref parse_basis followed by @ref place; the classification
 /// of whichever step fails is preserved.
 [[nodiscard]] Result<BasisSet> parse_and_assign_basis(std::string_view json_text,
-                                                            const Molecule &molecule);
+                                                      const Molecule &molecule);
 
 /// @brief Parse a density-fitting (auxiliary) BSE JSON basis and @ref place it
 /// onto the SAME molecule the orbital basis was built over.

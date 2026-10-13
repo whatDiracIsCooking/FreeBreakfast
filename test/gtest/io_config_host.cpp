@@ -69,10 +69,10 @@ TEST(IoConfig, WrongTypedKeyIsInvalidConfigNamingTheKey) {
     std::string_view text;
     std::string_view key;
   };
-  for (const auto &[text, key] : {Case{"charge = \"minus one\"", "charge"},
-                                  Case{"method = 3", "method"},
-                                  Case{"scf_energy_tolerance = \"tight\"", "scf_energy_tolerance"},
-                                  Case{"max_iterations = [1, 2]", "max_iterations"}}) {
+  for (const auto &[text, key] :
+       {Case{"charge = \"minus one\"", "charge"}, Case{"method = 3", "method"},
+        Case{"scf_energy_tolerance = \"tight\"", "scf_energy_tolerance"},
+        Case{"max_iterations = [1, 2]", "max_iterations"}}) {
     auto config = fb::parse_config(text);
     ASSERT_FALSE(config.has_value()) << "accepted: " << text;
     EXPECT_EQ(config.error().kind, fb::ErrorKind::InvalidConfig);

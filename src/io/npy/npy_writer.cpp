@@ -70,8 +70,7 @@ namespace {
   out += dict;
   out.append(header_len - dict.size() - 1, ' ');
   out.push_back('\n');
-  out.append(reinterpret_cast<const char *>(array.data.data()),
-             array.data.size() * sizeof(double));
+  out.append(reinterpret_cast<const char *>(array.data.data()), array.data.size() * sizeof(double));
   return out;
 }
 

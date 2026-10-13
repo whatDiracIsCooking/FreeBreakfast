@@ -70,7 +70,10 @@ static_assert(!fb::int_type<std::size_t>);
 static_assert(!fb::int_type<double>);
 static_assert(!fb::int_type<bool>);
 
-template <fb::real_fp T> constexpr T twice(T x) { return x + x; }
+template <fb::real_fp T>
+constexpr T twice(T x) {
+  return x + x;
+}
 
 TEST(CoreConcepts, ConstrainTemplates) {
   EXPECT_EQ(twice(1.5), 3.0);

@@ -19,6 +19,7 @@ than being shown once and lost.
 Wired from the committed `.claude/settings.json` as a SessionStart hook. Fails
 OPEN (silent, exit 0) on any error: a hook bug must never break session startup.
 """
+
 from __future__ import annotations
 
 import json
@@ -45,12 +46,16 @@ def main() -> None:
             "here; the C++ toolchain itself lives inside the container image."
         )
 
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": context,
-        }
-    }))
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": context,
+                }
+            }
+        )
+    )
     sys.exit(0)
 
 

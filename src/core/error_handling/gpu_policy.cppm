@@ -64,7 +64,7 @@ private:
 // needs: it default-constructs its device policy rather than taking one.
 
 /// @brief Log at critical with the failing call's location, then abort.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 struct AbortPolicy {
   using error_type = E;
   void handle_error(E code, std::source_location loc) noexcept {
@@ -76,7 +76,7 @@ struct AbortPolicy {
 ///
 /// The wrapper is left empty (a handle's valid() is false, a buffer has
 /// size 0), which is wwr's record-and-continue path.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 struct RecordPolicy {
   using error_type = E;
   void handle_error(E code, std::source_location loc) noexcept {
@@ -95,7 +95,7 @@ struct RecordPolicy {
 ///
 /// For the destruction slots in RECORD mode: a failed destroy/free runs in a
 /// destructor, after any capture that could have returned it has finished.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 struct LogPolicy {
   using error_type = E;
   void handle_error(E code, std::source_location loc) noexcept {
@@ -109,19 +109,19 @@ struct LogPolicy {
 };
 
 /// @brief This build's policy for creation, allocation and device-select slots.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 using CreatePolicy = std::conditional_t<aborts_on_error, AbortPolicy<E>, RecordPolicy<E>>;
 
 /// @brief This build's policy for destruction and free slots.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 using DestroyPolicy = std::conditional_t<aborts_on_error, AbortPolicy<E>, LogPolicy<E>>;
 
 /// @brief wwr policy map binding CreatePolicy to alloc and DestroyPolicy to free,
 /// for kit::buffer_suite / kit::device_buffer_suite.
 struct PolicyMap {
-  template<typename E>
+  template <typename E>
   using alloc = CreatePolicy<E>;
-  template<typename E>
+  template <typename E>
   using free = DestroyPolicy<E>;
 };
 
@@ -148,7 +148,7 @@ struct PolicyMap {
  *
  * @return Result<R> for a lambda returning R; Status for one returning void.
  */
-template<std::invocable F>
+template <std::invocable F>
 Result<std::invoke_result_t<F>> capture(F &&f) {
   using R = std::invoke_result_t<F>;
   detail::CaptureScope scope;

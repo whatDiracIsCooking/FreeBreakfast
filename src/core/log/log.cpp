@@ -37,9 +37,13 @@ void critical(std::string_view msg, std::source_location loc) {
   log_impl(LogLevel::critical, msg, loc);
 }
 
-std::uint64_t warning_count() { return warning_counter().load(std::memory_order_relaxed); }
+std::uint64_t warning_count() {
+  return warning_counter().load(std::memory_order_relaxed);
+}
 
-void reset_warning_count() { warning_counter().store(0, std::memory_order_relaxed); }
+void reset_warning_count() {
+  warning_counter().store(0, std::memory_order_relaxed);
+}
 
 void set_level(LogLevel lv) {
   get_logger().set_level(static_cast<spdlog::level_enum>(lv));

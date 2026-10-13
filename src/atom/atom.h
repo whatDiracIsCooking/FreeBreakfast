@@ -16,7 +16,8 @@ namespace free_breakfast {
 ///
 /// @tparam T Scalar type of the coordinates (e.g. @c float or @c double), in
 ///           bohr.
-template <typename T> struct Atom {
+template <typename T>
+struct Atom {
   T x{T{0}};
   T y{T{0}};
   T z{T{0}};

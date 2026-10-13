@@ -82,8 +82,8 @@ namespace {
     }
     return Harmonic::Cartesian;
   }
-  return err_config(
-      std::format("BSE shell function_type \"{}\" is not a supported Gaussian type", function_type));
+  return err_config(std::format("BSE shell function_type \"{}\" is not a supported Gaussian type",
+                                function_type));
 }
 
 /// @brief Turn one BSE electron_shells block into one or more ShellStamp.
@@ -143,8 +143,8 @@ namespace {
   const bool per_column_momentum = momenta.size() == ncols;
   const bool general_contraction = momenta.size() == 1;
   if (!per_column_momentum && !general_contraction) {
-    return err_config(std::format(
-        "BSE shell has {} angular momenta but {} coefficient columns", momenta.size(), ncols));
+    return err_config(std::format("BSE shell has {} angular momenta but {} coefficient columns",
+                                  momenta.size(), ncols));
   }
 
   std::vector<ShellStamp> shells;
@@ -155,9 +155,9 @@ namespace {
       return err_config("BSE coefficients column is not an array");
     }
     if (column.size() != exponents.size()) {
-      return err_config(std::format(
-          "BSE coefficients column has {} entries but there are {} exponents", column.size(),
-          exponents.size()));
+      return err_config(
+          std::format("BSE coefficients column has {} entries but there are {} exponents",
+                      column.size(), exponents.size()));
     }
     std::vector<double> coefficients;
     coefficients.reserve(column.size());
@@ -232,20 +232,19 @@ namespace {
   return BasisStamp{std::move(table)};
 }
 
-[[nodiscard]] Result<BasisStamp>
-read_basis(const std::filesystem::path &path) {
+[[nodiscard]] Result<BasisStamp> read_basis(const std::filesystem::path &path) {
   auto text = FBF_TRY(read_file(path));
   return parse_basis(text);
 }
 
 [[nodiscard]] Result<BasisSet> parse_and_assign_basis(std::string_view json_text,
-                                              const Molecule &molecule) {
+                                                      const Molecule &molecule) {
   auto basis_stamp = FBF_TRY(parse_basis(json_text));
   return place(basis_stamp, molecule);
 }
 
 [[nodiscard]] Result<BasisSet> parse_and_assign_aux_basis(std::string_view json_text,
-                                            const Molecule &molecule) {
+                                                          const Molecule &molecule) {
   // A fitting set is an ordinary BSE record placed onto the same molecule, so
   // this is parse_and_assign_basis with one difference: a coverage failure is
   // re-tagged as an *auxiliary* pairing error, so the message names the DF role
@@ -255,9 +254,9 @@ read_basis(const std::filesystem::path &path) {
   auto basis_stamp = FBF_TRY(parse_basis(json_text));
   auto placed = place(basis_stamp, molecule);
   if (!placed) {
-    return err_config(std::format(
-        "auxiliary (density-fitting) basis cannot be paired with the molecule: {}",
-        placed.error().message));
+    return err_config(
+        std::format("auxiliary (density-fitting) basis cannot be paired with the molecule: {}",
+                    placed.error().message));
   }
   return placed;
 }

@@ -20,8 +20,7 @@ namespace free_breakfast {
 // '<f8' is the native representation.
 static_assert(std::endian::native == std::endian::little,
               "the .npy module assumes a little-endian host");
-static_assert(std::numeric_limits<double>::is_iec559,
-              "the .npy module assumes IEEE-754 doubles");
+static_assert(std::numeric_limits<double>::is_iec559, "the .npy module assumes IEEE-754 doubles");
 
 namespace {
 
@@ -60,8 +59,7 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
 }
 
 /// @brief The quoted string value of @p key (e.g. descr's "<f8").
-[[nodiscard]] Result<std::string_view> quoted_value(std::string_view header,
-                                                    std::string_view key) {
+[[nodiscard]] Result<std::string_view> quoted_value(std::string_view header, std::string_view key) {
   const auto start = value_start(header, key);
   if (!start || header[*start] != '\'') {
     return err_io(std::format("NPY header has no quoted '{}'", key));

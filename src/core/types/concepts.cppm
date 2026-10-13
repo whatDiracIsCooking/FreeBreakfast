@@ -38,4 +38,4 @@ using wwr::real_fp;
 /// @brief T is exactly int or int64_t.
 using wwr::int_type;
 
-}  // namespace free_breakfast
+} // namespace free_breakfast

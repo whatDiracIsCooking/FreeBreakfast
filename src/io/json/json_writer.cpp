@@ -13,7 +13,8 @@ std::string json_to_string(const json &document, int indent) {
   return document.dump(indent);
 }
 
-[[nodiscard]] Status write_json(const std::filesystem::path &path, const json &document, int indent) {
+[[nodiscard]] Status write_json(const std::filesystem::path &path, const json &document,
+                                int indent) {
   return write_file(path, json_to_string(document, indent));
 }
 

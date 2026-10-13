@@ -23,8 +23,7 @@ TEST(Version, ComponentsAreNonNegative) {
 TEST(Version, StringMatchesComponents) {
   EXPECT_EQ(free_breakfast::core::version_string(),
             std::format("{}.{}.{}", free_breakfast::core::version_major,
-                        free_breakfast::core::version_minor,
-                        free_breakfast::core::version_patch));
+                        free_breakfast::core::version_minor, free_breakfast::core::version_patch));
 }
 
 } // namespace

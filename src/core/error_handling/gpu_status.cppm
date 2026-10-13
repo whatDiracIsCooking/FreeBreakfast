@@ -28,9 +28,9 @@ Status gpu_status(T code, std::source_location loc = std::source_location::curre
   if (code == wwr::extension::success_code<T>()) {
     return {};
   }
-  return err_gpu(std::format("{} ({})", wwr::extension::error_name(code),
-                             wwr::extension::error_string(code)),
-                 loc);
+  return err_gpu(
+      std::format("{} ({})", wwr::extension::error_name(code), wwr::extension::error_string(code)),
+      loc);
 }
 
 /**
@@ -39,7 +39,8 @@ Status gpu_status(T code, std::source_location loc = std::source_location::curre
  * @tparam T Success value type
  * @return The unwrapped success value
  */
-template <typename T> T check_or_abort(Result<T> result) {
+template <typename T>
+T check_or_abort(Result<T> result) {
   if (!result) {
     log::critical(result.error().message, result.error().origin);
     std::abort();

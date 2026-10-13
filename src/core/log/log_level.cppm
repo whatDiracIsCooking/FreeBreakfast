@@ -37,9 +37,9 @@ inline spdlog::logger &get_logger() {
 }
 
 inline void log_impl(LogLevel lv, std::string_view msg, std::source_location loc) {
-  get_logger().log(
-      spdlog::source_loc{loc.file_name(), static_cast<std::int32_t>(loc.line()), loc.function_name()},
-      static_cast<spdlog::level_enum>(lv), "{}", msg);
+  get_logger().log(spdlog::source_loc{loc.file_name(), static_cast<std::int32_t>(loc.line()),
+                                      loc.function_name()},
+                   static_cast<spdlog::level_enum>(lv), "{}", msg);
 }
 
 } // namespace free_breakfast::log

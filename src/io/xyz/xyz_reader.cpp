@@ -91,8 +91,8 @@ namespace {
   for (std::size_t i = 2; i < lines.size(); ++i) {
     const std::string_view line = lines[i];
     // A blank tail line after the atoms is not an atom.
-    const bool all_space =
-        std::ranges::all_of(line, [](char c) { return std::isspace(static_cast<unsigned char>(c)); });
+    const bool all_space = std::ranges::all_of(
+        line, [](char c) { return std::isspace(static_cast<unsigned char>(c)); });
     if (all_space) {
       continue;
     }
@@ -117,14 +117,15 @@ namespace {
   }
 
   if (static_cast<int>(atoms.size()) != declared_count) {
-    return err_io(std::format("XYZ declares {} atoms but {} were found", declared_count,
-                              atoms.size()));
+    return err_io(
+        std::format("XYZ declares {} atoms but {} were found", declared_count, atoms.size()));
   }
 
   return Molecule{std::move(atoms), charge, multiplicity};
 }
 
-[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, int charge, int multiplicity) {
+[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, int charge,
+                                        int multiplicity) {
   auto text = FBF_TRY(read_file(path));
   return parse_xyz(text, charge, multiplicity);
 }

@@ -83,7 +83,8 @@ namespace free_breakfast::detail {
 // The angular Gaussian-moment inner product between two same-degree Cartesian
 // monomials -- see this file's doc comment. Zero unless every per-axis exponent
 // SUM is even (an odd 1D moment of a centered Gaussian vanishes by parity).
-[[nodiscard]] inline double monomial_gram(const std::array<int, 3> &p, const std::array<int, 3> &q) {
+[[nodiscard]] inline double monomial_gram(const std::array<int, 3> &p,
+                                          const std::array<int, 3> &q) {
   const int sx = p[0] + q[0];
   const int sy = p[1] + q[1];
   const int sz = p[2] + q[2];
@@ -165,7 +166,8 @@ export namespace free_breakfast {
   // (x, y, z)), so the block is the identity -- the same block
   // cartesian_to_spherical applies to a Cartesian shell.
   if (l <= 1) {
-    std::vector<double> identity(static_cast<std::size_t>(ncart) * static_cast<std::size_t>(nsph), 0.0);
+    std::vector<double> identity(static_cast<std::size_t>(ncart) * static_cast<std::size_t>(nsph),
+                                 0.0);
     for (int i = 0; i < ncart; ++i) {
       identity[(static_cast<std::size_t>(i) * nsph) + i] = 1.0;
     }
@@ -202,7 +204,8 @@ export namespace free_breakfast {
           continue;
         }
         norm2 += ca * cb *
-                 detail::monomial_gram(powers[static_cast<std::size_t>(a)], powers[static_cast<std::size_t>(b)]);
+                 detail::monomial_gram(powers[static_cast<std::size_t>(a)],
+                                       powers[static_cast<std::size_t>(b)]);
       }
     }
     const double inv = 1.0 / std::sqrt(norm2);

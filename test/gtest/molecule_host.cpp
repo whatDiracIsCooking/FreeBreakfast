@@ -67,8 +67,8 @@ TEST(Molecule, SingleAtomHasNoRepulsion) {
 }
 
 TEST(Molecule, HydrogenMoleculeRepulsion) {
-  const fb::Molecule h2({Atom<double>{0.0, 0.0, 0.0, Element::H},
-                         Atom<double>{0.0, 0.0, 1.4, Element::H}});
+  const fb::Molecule h2(
+      {Atom<double>{0.0, 0.0, 0.0, Element::H}, Atom<double>{0.0, 0.0, 1.4, Element::H}});
   EXPECT_DOUBLE_EQ(fb::nuclear_repulsion_energy(h2), 1.0 / 1.4);
 }
 
@@ -84,10 +84,9 @@ TEST(Molecule, WaterRepulsionSumsEveryPairOnce) {
 
 TEST(Molecule, GradientMatchesCentralFiniteDifference) {
   // A non-symmetric geometry so no component vanishes by symmetry.
-  const std::vector<Atom<double>> atoms{Atom<double>{0.1, -0.2, 0.3, Element::N},
-                                        Atom<double>{1.9, 0.4, -0.1, Element::C},
-                                        Atom<double>{-0.7, 1.6, 0.8, Element::H},
-                                        Atom<double>{0.5, -1.3, 2.2, Element::F}};
+  const std::vector<Atom<double>> atoms{
+      Atom<double>{0.1, -0.2, 0.3, Element::N}, Atom<double>{1.9, 0.4, -0.1, Element::C},
+      Atom<double>{-0.7, 1.6, 0.8, Element::H}, Atom<double>{0.5, -1.3, 2.2, Element::F}};
   const std::vector<double> grad = fb::nuclear_repulsion_gradient(fb::Molecule(atoms));
   ASSERT_EQ(grad.size(), atoms.size() * 3);
 
