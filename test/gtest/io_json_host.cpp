@@ -17,7 +17,7 @@ TEST(IoJson, ParsesWellFormedDocument) {
   ASSERT_TRUE(doc.has_value()) << doc.error().message;
   EXPECT_EQ((*doc)["name"].get<std::string>(), "water");
   EXPECT_EQ((*doc)["atoms"].size(), 3U);
-  EXPECT_EQ((*doc)["charge"].get<int>(), 0);
+  EXPECT_EQ((*doc)["charge"].get<std::int32_t>(), 0);
 }
 
 TEST(IoJson, MalformedDocumentIsIoError) {

@@ -14,14 +14,14 @@ namespace fb = free_breakfast;
 using fb::Atom;
 using fb::Element;
 using fb::Harmonic;
-using Powers = std::array<int, 3>;
+using Powers = std::array<std::int32_t, 3>;
 
 const wwr::double3 kOrigin{0.0, 0.0, 0.0};
 
 // (n)!! over odd n, the empty product for n <= 1.
-double double_factorial(int n) {
+double double_factorial(std::int32_t n) {
   double result = 1.0;
-  for (int k = n; k > 1; k -= 2) {
+  for (std::int32_t k = n; k > 1; k -= 2) {
     result *= static_cast<double>(k);
   }
   return result;
@@ -31,8 +31,8 @@ double double_factorial(int n) {
 // under: prod over axes of (p+q-1)!!, zero if any axis sum is odd.
 double monomial_gram(const Powers &p, const Powers &q) {
   double result = 1.0;
-  for (int axis = 0; axis < 3; ++axis) {
-    const int s = p[axis] + q[axis];
+  for (std::int32_t axis = 0; axis < 3; ++axis) {
+    const std::int32_t s = p[axis] + q[axis];
     if (s % 2 != 0) {
       return 0.0;
     }
@@ -42,7 +42,7 @@ double monomial_gram(const Powers &p, const Powers &q) {
 }
 
 // Row index of the Cartesian monomial `p` within its shell.
-std::size_t row_of(int l, const Powers &p) {
+std::size_t row_of(std::int32_t l, const Powers &p) {
   const std::vector<Powers> powers = fb::cartesian_powers(l);
   const auto it = std::ranges::find(powers, p);
   return static_cast<std::size_t>(it - powers.begin());
@@ -51,7 +51,7 @@ std::size_t row_of(int l, const Powers &p) {
 TEST(Basis, FunctionCounts) {
   EXPECT_EQ(fb::kMaxAngularMomentum, 2);
   const std::array<std::uint32_t, 5> cart{1, 3, 6, 10, 15};
-  for (int l = 0; l < 5; ++l) {
+  for (std::int32_t l = 0; l < 5; ++l) {
     EXPECT_EQ(fb::cartesian_function_count(l), cart[l]) << "l=" << l;
     EXPECT_EQ(fb::spherical_function_count(l), static_cast<std::uint32_t>((2 * l) + 1));
   }
@@ -65,7 +65,7 @@ TEST(Basis, CartesianPowersCanonicalOrder) {
       fb::cartesian_powers(2),
       (std::vector<Powers>{{2, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 2, 0}, {0, 1, 1}, {0, 0, 2}}));
   // Defined past d, with every entry of degree l.
-  for (int l = 3; l <= 5; ++l) {
+  for (std::int32_t l = 3; l <= 5; ++l) {
     const std::vector<Powers> powers = fb::cartesian_powers(l);
     ASSERT_EQ(powers.size(), fb::cartesian_function_count(l));
     EXPECT_EQ(powers.front(), (Powers{l, 0, 0}));
@@ -162,7 +162,7 @@ TEST(Basis, SolidHarmonicsBelowDAreIdentity) {
 }
 
 TEST(Basis, SolidHarmonicsAreGOrthonormal) {
-  for (int l = 0; l <= 5; ++l) {
+  for (std::int32_t l = 0; l <= 5; ++l) {
     const std::vector<Powers> powers = fb::cartesian_powers(l);
     const std::size_t ncart = powers.size();
     const std::size_t nsph = (2 * static_cast<std::size_t>(l)) + 1;
@@ -211,7 +211,7 @@ TEST(Basis, SolidHarmonicDMatchesLibcintUpToOneScale) {
 
 TEST(Basis, SolidHarmonicFFollowsRealHarmonicConvention) {
   const std::vector<double> block = fb::solid_harmonic_c2s(3);
-  auto at = [&](const Powers &p, int m) { return block[(row_of(3, p) * 7) + (m + 3)]; };
+  auto at = [&](const Powers &p, std::int32_t m) { return block[(row_of(3, p) * 7) + (m + 3)]; };
   // m = -3: 3x^2 y - y^3
   EXPECT_GT(at({2, 1, 0}, -3), 0.0);
   EXPECT_NEAR(at({0, 3, 0}, -3) / at({2, 1, 0}, -3), -1.0 / 3.0, 1e-14);
@@ -227,7 +227,7 @@ TEST(Basis, SolidHarmonicFFollowsRealHarmonicConvention) {
 
 TEST(Basis, ShellStampNormalizesEachPrimitive) {
   const double pi = std::numbers::pi;
-  for (int l = 0; l <= 3; ++l) {
+  for (std::int32_t l = 0; l <= 3; ++l) {
     const fb::ShellStamp stamp =
         fb::ShellStamp(l, std::vector<double>{2.0, 0.3}, std::vector<double>{0.4, 0.6})
             .primitive_normalized();
@@ -246,7 +246,7 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
   // the identity on the spherical block: the property cartesian_to_spherical's
   // sqrt((2l-1)!!) scale exists to deliver.
   const double pi = std::numbers::pi;
-  for (int l = 2; l <= 4; ++l) {
+  for (std::int32_t l = 2; l <= 4; ++l) {
     const double alpha = 1.3;
     const fb::BasisSet basis({fb::ShellStamp(l, {{alpha, 1.0}}, Harmonic::Spherical)
                                   .primitive_normalized()
@@ -296,7 +296,7 @@ TEST(Basis, CartesianToSphericalPlacesBlocksAtOffsets) {
 }
 
 fb::BasisStamp water_stamp() {
-  std::map<int, std::vector<fb::ShellStamp>> table;
+  std::map<std::int32_t, std::vector<fb::ShellStamp>> table;
   table.emplace(1, std::vector<fb::ShellStamp>{fb::ShellStamp(0, {{1.2, 1.0}})});
   table.emplace(8, std::vector<fb::ShellStamp>{fb::ShellStamp(0, {{9.0, 1.0}}),
                                                fb::ShellStamp(1, {{2.0, 1.0}})});
@@ -316,7 +316,7 @@ TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   ASSERT_EQ(basis->nshells(), 4U);
   EXPECT_EQ(basis->nao(), 6U); // O: s + p, then two H s
-  const std::array<int, 4> momenta{0, 1, 0, 0};
+  const std::array<std::int32_t, 4> momenta{0, 1, 0, 0};
   const std::array<double, 4> center_y{0.0, 0.0, 1.4, -1.4};
   for (std::size_t s = 0; s < 4; ++s) {
     EXPECT_EQ(basis->shells()[s].angular_momentum(), momenta[s]);

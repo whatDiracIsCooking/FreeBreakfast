@@ -15,10 +15,10 @@ export namespace free_breakfast {
 
 /// @brief Serialize @p document to text, pretty-printed with @p indent spaces
 /// (the project convention; pass a negative indent for the compact form).
-[[nodiscard]] std::string json_to_string(const json &document, int indent = 2);
+[[nodiscard]] std::string json_to_string(const json &document, std::int32_t indent = 2);
 
 /// @brief Write @p document to @p path as pretty-printed JSON.
 [[nodiscard]] Status write_json(const std::filesystem::path &path, const json &document,
-                                int indent = 2);
+                                std::int32_t indent = 2);
 
 } // namespace free_breakfast

@@ -28,15 +28,15 @@ struct Config {
   /// every other @ref Config field.
   std::string aux_basis{};
   /// @brief Net molecular charge in units of the elementary charge.
-  int charge{0};
+  std::int32_t charge{0};
   /// @brief Spin multiplicity 2S+1 (1 = singlet).
-  int multiplicity{1};
+  std::int32_t multiplicity{1};
   /// @brief SCF energy-convergence threshold (hartree).
   double scf_energy_tolerance{1e-8};
   /// @brief SCF density/commutator-convergence threshold.
   double scf_density_tolerance{1e-6};
   /// @brief Maximum number of SCF iterations before giving up.
-  int max_iterations{100};
+  std::int32_t max_iterations{100};
 };
 
 } // namespace free_breakfast

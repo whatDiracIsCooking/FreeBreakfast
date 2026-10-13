@@ -27,7 +27,8 @@ static_assert(std::is_same_v<fb::size_t, std::size_t>);
 // spell ::float3 -- compare against wwr's exported aliases, which are the same
 // types.
 static_assert(std::is_same_v<fb::Vec<float, 3>, wwr::float3>);
-static_assert(std::is_same_v<fb::Vec<int, 2>, wwr::int2>);
+static_assert(std::is_same_v<fb::Vec<std::int32_t, 2>, wwr::int2>);
+// int-type-ok: long long is distinct from int64_t (long on LP64), and Vec maps both.
 static_assert(std::is_same_v<fb::Vec<long long, 1>, wwr::longlong1>);
 static_assert(std::is_same_v<fb::Vec<unsigned char, 4>, wwr::uchar4>);
 
@@ -60,11 +61,11 @@ TEST(CoreTypes, MakeVecConvertsEachComponent) {
 
 static_assert(fb::real_fp<float>);
 static_assert(fb::real_fp<double>);
-static_assert(!fb::real_fp<int>);
+static_assert(!fb::real_fp<std::int32_t>);
 static_assert(!fb::real_fp<long double>);
 
 // int_type is wwr's: exactly int and int64_t. size_t and double are both out.
-static_assert(fb::int_type<int>);
+static_assert(fb::int_type<std::int32_t>);
 static_assert(fb::int_type<std::int64_t>);
 static_assert(!fb::int_type<std::size_t>);
 static_assert(!fb::int_type<double>);
@@ -86,7 +87,7 @@ TEST(CoreConcepts, ConstrainTemplates) {
 
 static_assert(fb::kZero<double> == 0.0);
 static_assert(fb::kOne<float> == 1.0f);
-static_assert(fb::kTwo<int> == 2);
+static_assert(fb::kTwo<std::int32_t> == 2);
 static_assert(fb::kNegOne<double> == -1.0);
 static_assert(fb::kKilo<double> == 1e3);
 static_assert(fb::kFemto<double> == 1e-15);

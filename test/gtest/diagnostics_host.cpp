@@ -15,21 +15,21 @@ namespace {
 
 namespace fb = free_breakfast;
 
-fb::Result<int> half(int n) {
+fb::Result<std::int32_t> half(std::int32_t n) {
   if (n % 2 != 0) {
     return fb::err_config("{} is odd", n);
   }
   return n / 2;
 }
 
-fb::Status require_positive(int n) {
+fb::Status require_positive(std::int32_t n) {
   if (n <= 0) {
     return fb::err_numerical("not positive");
   }
   return {};
 }
 
-fb::Result<int> quarter_of_positive(int n) {
+fb::Result<std::int32_t> quarter_of_positive(std::int32_t n) {
   FBF_TRY(require_positive(n));
   auto h = FBF_TRY(half(n));
   return FBF_TRY(half(h));
@@ -147,7 +147,7 @@ TEST(Log, WarnCountsEvenWhenFiltered) {
 
 TEST(Log, MacrosDoNotFormatWhenFiltered) {
   fb::log::set_level(fb::log::LogLevel::Info);
-  int evaluated = 0;
+  std::int32_t evaluated = 0;
   auto const touch = [&] { return ++evaluated; };
   FBF_LOG_DEBUG("{}", touch());
   EXPECT_EQ(evaluated, 0);

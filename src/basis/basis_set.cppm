@@ -73,7 +73,7 @@ public:
       // aos_ and the ao_offsets_ slices describe the identical layout. This is
       // unconditional -- Cartesian or Spherical, the GPU kernels evaluate the
       // shell's Cartesian functions; see the file doc comment.
-      for (const std::array<int, 3> &p : cartesian_powers(shell.angular_momentum())) {
+      for (const std::array<std::int32_t, 3> &p : cartesian_powers(shell.angular_momentum())) {
         aos_.push_back(AO{s, static_cast<std::uint8_t>(p[0]), static_cast<std::uint8_t>(p[1]),
                           static_cast<std::uint8_t>(p[2])});
       }
@@ -193,7 +193,7 @@ private:
   const std::uint32_t nsh = basis.nshells();
   for (std::uint32_t s = 0; s < nsh; ++s) {
     const Shell &shell = basis.shells()[s];
-    const int l = shell.angular_momentum();
+    const std::int32_t l = shell.angular_momentum();
     const std::uint32_t row0 = basis.ao_offset(s);
     const std::uint32_t col0 = basis.spherical_ao_offset(s);
     const std::uint32_t ncart = shell.function_count();

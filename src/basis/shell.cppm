@@ -76,7 +76,7 @@ public:
   /// invariant (the one production caller, the BSE basis-set reader, already
   /// screens both conditions before constructing), not a
   /// value a caller could plausibly recover from.
-  Shell(int l, std::vector<Primitive> primitives, wwr::double3 center,
+  Shell(std::int32_t l, std::vector<Primitive> primitives, wwr::double3 center,
         Harmonic harmonic = Harmonic::Cartesian)
       : l_(l), primitives_(std::move(primitives)), center_(center), harmonic_(harmonic) {
     if (l_ < 0) {
@@ -102,12 +102,13 @@ public:
   ///
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ (see the other constructor).
-  Shell(int l, const std::vector<double> &exponents, const std::vector<double> &coefficients,
-        wwr::double3 center, Harmonic harmonic = Harmonic::Cartesian)
+  Shell(std::int32_t l, const std::vector<double> &exponents,
+        const std::vector<double> &coefficients, wwr::double3 center,
+        Harmonic harmonic = Harmonic::Cartesian)
       : Shell(l, zip(exponents, coefficients), center, harmonic) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
-  [[nodiscard]] int angular_momentum() const { return l_; }
+  [[nodiscard]] std::int32_t angular_momentum() const { return l_; }
 
   /// @brief The contracted primitives, in contraction order.
   [[nodiscard]] const std::vector<Primitive> &primitives() const { return primitives_; }
@@ -154,7 +155,7 @@ private:
     return out;
   }
 
-  int l_{0};
+  std::int32_t l_{0};
   std::vector<Primitive> primitives_{};
   wwr::double3 center_{};
   Harmonic harmonic_{Harmonic::Cartesian};

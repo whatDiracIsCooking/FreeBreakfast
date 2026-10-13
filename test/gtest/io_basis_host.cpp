@@ -67,7 +67,7 @@ TEST(IoBasis, SplitsSpAndGeneralContractionBlocks) {
   ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
   const std::vector<fb::ShellStamp> &o = *stamp->shells_for(8);
   // s, then sp -> s + p, then the general contraction -> s + s, then d.
-  const std::array<int, 6> momenta{0, 0, 1, 0, 0, 2};
+  const std::array<std::int32_t, 6> momenta{0, 0, 1, 0, 0, 2};
   ASSERT_EQ(o.size(), momenta.size());
   for (std::size_t i = 0; i < o.size(); ++i) {
     EXPECT_EQ(o[i].angular_momentum(), momenta[i]) << "shell " << i;
@@ -139,7 +139,7 @@ TEST(IoBasis, WrongContentIsInvalidConfig) {
 }
 
 TEST(IoBasis, HarmonicTypeResolution) {
-  auto shell_with = [](std::string_view function_type, int l) {
+  auto shell_with = [](std::string_view function_type, std::int32_t l) {
     const std::string tag =
         function_type.empty() ? "" : std::format(R"("function_type": "{}", )", function_type);
     return fb::parse_basis(std::format(
@@ -147,7 +147,7 @@ TEST(IoBasis, HarmonicTypeResolution) {
             "exponents": ["1.0"], "coefficients": [["1.0"]]}}]}}}}}})",
         tag, l));
   };
-  auto harmonic_of = [&](std::string_view function_type, int l) {
+  auto harmonic_of = [&](std::string_view function_type, std::int32_t l) {
     return (*shell_with(function_type, l)->shells_for(1))[0].harmonic();
   };
   // Explicit tags are honored at any l.

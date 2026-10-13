@@ -13,7 +13,7 @@ using fb::Atom;
 using fb::Element;
 
 // Water near its equilibrium geometry, in bohr.
-fb::Molecule water(int charge = 0, int multiplicity = 1) {
+fb::Molecule water(std::int32_t charge = 0, std::int32_t multiplicity = 1) {
   return fb::Molecule({Atom<double>{0.0, 0.0, 0.2217, Element::O},
                        Atom<double>{0.0, 1.4309, -0.8867, Element::H},
                        Atom<double>{0.0, -1.4309, -0.8867, Element::H}},
@@ -92,7 +92,7 @@ TEST(Molecule, GradientMatchesCentralFiniteDifference) {
 
   const double h = 1e-5;
   for (std::size_t a = 0; a < atoms.size(); ++a) {
-    for (int axis = 0; axis < 3; ++axis) {
+    for (std::int32_t axis = 0; axis < 3; ++axis) {
       auto displaced = [&](double step) {
         std::vector<Atom<double>> moved = atoms;
         double &coord = axis == 0 ? moved[a].x : (axis == 1 ? moved[a].y : moved[a].z);
@@ -107,7 +107,7 @@ TEST(Molecule, GradientMatchesCentralFiniteDifference) {
 
 TEST(Molecule, GradientIsTranslationallyInvariant) {
   const std::vector<double> grad = fb::nuclear_repulsion_gradient(water());
-  for (int axis = 0; axis < 3; ++axis) {
+  for (std::int32_t axis = 0; axis < 3; ++axis) {
     double sum = 0.0;
     for (std::size_t a = 0; a < 3; ++a) {
       sum += grad[(3 * a) + axis];

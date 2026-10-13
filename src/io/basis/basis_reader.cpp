@@ -50,7 +50,7 @@ namespace free_breakfast {
 /// harmonic type that would corrupt every downstream integral if wrong.
 /// @c sto and any other value are rejected outright: this reader only builds
 /// Gaussian shells.
-[[nodiscard]] Result<Harmonic> resolve_harmonic(const json &block, int l) {
+[[nodiscard]] Result<Harmonic> resolve_harmonic(const json &block, std::int32_t l) {
   const auto ft_it = block.find("function_type");
   if (ft_it == block.end()) {
     if (l >= 2) {
@@ -109,13 +109,13 @@ namespace free_breakfast {
   }
 
   // Angular momenta.
-  std::vector<int> momenta;
+  std::vector<std::int32_t> momenta;
   momenta.reserve(am_it->size());
   for (const json &l_node : *am_it) {
     if (!l_node.is_number_integer() && !l_node.is_number_unsigned()) {
       return err_config("BSE angular_momentum entry is not an integer");
     }
-    momenta.push_back(l_node.get<int>());
+    momenta.push_back(l_node.get<std::int32_t>());
   }
   if (momenta.empty()) {
     return err_config("BSE shell has an empty angular_momentum list");
@@ -162,7 +162,7 @@ namespace free_breakfast {
       coefficients.push_back(FBF_TRY(parse_decimal(c_node, "coefficients")));
     }
 
-    const int l = per_column_momentum ? momenta[col] : momenta.front();
+    const std::int32_t l = per_column_momentum ? momenta[col] : momenta.front();
     auto harmonic = FBF_TRY(resolve_harmonic(block, l));
     // ShellStamp's constructor aborts on a bad shape (negative L, empty or
     // mismatched primitive lists), rather than returning a value this parser
@@ -190,12 +190,12 @@ namespace free_breakfast {
     return err_config("BSE 'elements' is not an object");
   }
 
-  std::map<int, std::vector<ShellStamp>> table;
+  std::map<std::int32_t, std::vector<ShellStamp>> table;
   for (auto it = elements_it->begin(); it != elements_it->end(); ++it) {
     // The element key is the atomic number as a decimal string.
     const std::string &z_key = it.key();
     const json &element = it.value();
-    int z = 0;
+    std::int32_t z = 0;
     const char *first = z_key.data();
     const char *last = z_key.data() + z_key.size();
     const auto [ptr, ec] = std::from_chars(first, last, z);

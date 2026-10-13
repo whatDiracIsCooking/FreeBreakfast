@@ -48,7 +48,8 @@ public:
   /// contract as @ref Shell, and the same reasoning: the one
   /// production caller, the BSE basis-set reader, already screens both
   /// conditions before constructing.
-  ShellStamp(int l, std::vector<Primitive> primitives, Harmonic harmonic = Harmonic::Cartesian)
+  ShellStamp(std::int32_t l, std::vector<Primitive> primitives,
+             Harmonic harmonic = Harmonic::Cartesian)
       : l_(l), primitives_(std::move(primitives)), harmonic_(harmonic) {
     if (l_ < 0) {
       check_or_abort(err_config("ShellStamp: angular momentum must be non-negative"));
@@ -63,12 +64,12 @@ public:
   ///
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ.
-  ShellStamp(int l, const std::vector<double> &exponents, const std::vector<double> &coefficients,
-             Harmonic harmonic = Harmonic::Cartesian)
+  ShellStamp(std::int32_t l, const std::vector<double> &exponents,
+             const std::vector<double> &coefficients, Harmonic harmonic = Harmonic::Cartesian)
       : ShellStamp(l, zip(exponents, coefficients), harmonic) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
-  [[nodiscard]] int angular_momentum() const { return l_; }
+  [[nodiscard]] std::int32_t angular_momentum() const { return l_; }
 
   /// @brief The contracted primitives, in contraction order.
   [[nodiscard]] const std::vector<Primitive> &primitives() const { return primitives_; }
@@ -115,7 +116,7 @@ public:
   /// inherit this same per-primitive scale (see @c src/basis/harmonics.cppm).
   [[nodiscard]] ShellStamp primitive_normalized() const {
     double dfac = 1.0; // (2l-1)!!
-    for (int m = (2 * l_) - 1; m > 1; m -= 2) {
+    for (std::int32_t m = (2 * l_) - 1; m > 1; m -= 2) {
       dfac *= static_cast<double>(m);
     }
     std::vector<Primitive> normalized = primitives_;
@@ -145,7 +146,7 @@ private:
     return out;
   }
 
-  int l_{0};
+  std::int32_t l_{0};
   std::vector<Primitive> primitives_{};
   Harmonic harmonic_{Harmonic::Cartesian};
 };

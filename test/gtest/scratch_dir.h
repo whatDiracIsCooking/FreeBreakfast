@@ -17,7 +17,7 @@ namespace free_breakfast::test {
 class ScratchDir {
 public:
   explicit ScratchDir(std::string_view tag) {
-    static int counter = 0;
+    static std::int32_t counter = 0;
     path_ = std::filesystem::temp_directory_path() /
             std::format("free_breakfast-{}-{}-{}", tag,
                         std::chrono::steady_clock::now().time_since_epoch().count(), counter++);

@@ -30,14 +30,14 @@ export namespace free_breakfast {
 /// @param xyz_text       The XYZ document.
 /// @param charge         Net molecular charge to attach (XYZ carries none).
 /// @param multiplicity   Spin multiplicity to attach (XYZ carries none).
-[[nodiscard]] Result<Molecule> parse_xyz(std::string_view xyz_text, int charge = 0,
-                                         int multiplicity = 1);
+[[nodiscard]] Result<Molecule> parse_xyz(std::string_view xyz_text, std::int32_t charge = 0,
+                                         std::int32_t multiplicity = 1);
 
 /// @brief Parse an XYZ geometry from a file on disk.
 ///
 /// A file that cannot be opened yields ErrorKind::IO; otherwise the contents
 /// flow through parse_xyz.
-[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, int charge = 0,
-                                        int multiplicity = 1);
+[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, std::int32_t charge = 0,
+                                        std::int32_t multiplicity = 1);
 
 } // namespace free_breakfast

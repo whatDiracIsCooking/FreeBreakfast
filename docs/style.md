@@ -12,6 +12,7 @@ disagree, the config is what gets enforced.
 | Python layout (88 columns) | `ruff format` | `pyproject.toml` `[tool.ruff]` | commit hook, CI `lint` |
 | Python lint | `ruff check` | `pyproject.toml` `[tool.ruff.lint]` | commit hook, CI `lint` |
 | CMake lint (80 columns) | `cmake-lint` | [`.cmake-format.yaml`](../.cmake-format.yaml) | commit hook, CI `lint` |
+| Fixed-width integer types only (see [Integer types](#integer-types)) | `devtools/check-int-types.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
 | C++ naming, bug-prone patterns | clang-tidy | [`.clang-tidy`](../.clang-tidy) | **advisory** — `devtools/cpp-tier.sh --tidy` |
 | Whitespace, line endings, final newline | editor + pre-commit | [`.editorconfig`](../.editorconfig) | commit hook |
 
@@ -68,6 +69,45 @@ rule is in `.clang-tidy` as `ConstexprVariable*` and `GlobalConstant*`.
 the enum's name already qualifies each enumerator and a prefix would add
 nothing. Without the prefix, element symbols read as they should
 (`Element::Fe`, not `Element::kFe`).
+
+## Integer types
+
+**Every integer states its width.** Use `int8_t` … `int64_t`, `uint8_t` …
+`uint64_t` or `size_t`. Never use `int`, `unsigned`, `short`, `long` or
+`long long`. Choose the width deliberately: `int32_t` where 32 bits is enough
+and intended (angular momenta, charges, kernel-side counters), `int64_t` or
+`size_t` for anything that can grow with the problem. On a GPU, element counts
+of large buffers and pair indices pass 2³¹ sooner than they look like they will.
+Container indices stay `size_t`.
+
+On every target this tree builds for, `int32_t` *is* `int` and `uint32_t` *is*
+`unsigned int`, so the rule changes no ABI, overload or template match. An API
+declared with `int`, such as `wwrGetDeviceCount(int *)` or wwr's `int_type`
+concept (exactly `int` or `int64_t`), accepts the fixed-width spelling as is.
+What the rule buys is that each declaration says how wide it means to be.
+`long` is the one that actually differs across platforms (64 bits on Linux, 32
+on Windows), which is why it is banned too.
+
+Spell them `std::int32_t`, which is available everywhere (`import std;` in
+module units, `<cstdint>` in headers shared with device code).
+`free_breakfast::int32_t` is the same type; `free_breakfast.core.types`
+exports it for code that wants the unqualified name inside the namespace.
+
+Allowed:
+
+- `unsigned char` and `signed char`: character and raw-byte types, and what
+  `<cctype>` requires its argument to be cast to.
+- `long double`, which is a floating-point type.
+- `int main(`.
+- `src/core/types/vec.h`, whose job is to map every fundamental scalar type,
+  including `int`, `long` and `long long` as three distinct types.
+- A line marked `// int-type-ok: <reason>`, or the line after a comment-only
+  line carrying that marker, where code must name a distinct fundamental type
+  that no fixed-width alias spells (`Vec<long long, 1>`: `int64_t` is `long`
+  on LP64).
+
+`devtools/check-int-types.py` enforces this. It ignores comments and string
+literals, so prose and test data can still say "int".
 
 ## Module-private code
 

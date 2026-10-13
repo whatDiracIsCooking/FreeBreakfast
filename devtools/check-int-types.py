@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+"""Reject builtin integer types whose width the code does not state.
+
+docs/style.md "Integer types" is the rule: every integer is a fixed-width
+`int32_t` / `uint32_t` / `int64_t` / ... or `size_t`, never `int`, `unsigned`,
+`short`, `long` or `long long`. clang-tidy cannot gate it -- it is advisory
+here, and its `google-runtime-int` skips plain `int` anyway -- so this does.
+
+Comments and string/character literals are blanked before matching, so prose
+and test data that say "int" or "long" are not findings. Allowed spellings:
+
+  - `unsigned char` / `signed char`: character and raw-byte types, and what
+    <cctype> requires its argument cast to.
+  - `long double`: a floating-point type.
+  - `int main(`.
+  - A line carrying `int-type-ok:` and a reason, or the line after a
+    comment-only line that does, for code that must name the distinct
+    fundamental type (e.g. `Vec<long long, 1>`: `int64_t` is `long` on LP64
+    and cannot spell it).
+  - Files in EXEMPT_FILES, which exist to map every fundamental type.
+
+Same calling convention as the other commit hooks: pre-commit passes the
+staged files, CI's `lint` job passes every tracked C++ file outside deps/.
+Exits 1 with one `path:line:col: message` per finding, 0 when clean.
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+# vec.h maps every scalar family (`signed char` ... `unsigned long long`) onto
+# its builtin vector type. `int`, `long` and `long long` are three distinct
+# types there, and a fixed-width alias names only one of them.
+EXEMPT_FILES = frozenset({"src/core/types/vec.h"})
+
+SUPPRESS_MARKER = "int-type-ok:"
+
+_BANNED = re.compile(r"\b(?:int|unsigned|signed|short|long)\b")
+_ALLOWED = re.compile(
+    r"\b(?:unsigned|signed)\s+char\b"
+    r"|\blong\s+double\b"
+    r"|\bint\s+main\s*\("
+)
+_RAW_STRING = re.compile(r'R"([^ ()\\\t\n]{0,16})\(')
+
+
+def blank_comments_and_literals(text: str) -> str:
+    """Return `text` with comments and literals replaced by spaces.
+
+    Newlines are kept, so line and column numbers still match the source.
+    """
+    out: list[str] = []
+    i, n = 0, len(text)
+
+    def blank(segment: str) -> str:
+        return "".join(c if c == "\n" else " " for c in segment)
+
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            end = n if end == -1 else end
+            out.append(blank(text[i:end]))
+            i = end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end == -1 else end + 2
+            out.append(blank(text[i:end]))
+            i = end
+        elif (m := _RAW_STRING.match(text, i)) and (
+            i == 0 or not _is_ident(text[i - 1])
+        ):
+            close = ")" + m.group(1) + '"'
+            end = text.find(close, m.end())
+            end = n if end == -1 else end + len(close)
+            out.append(blank(text[i:end]))
+            i = end
+        elif c in "\"'":
+            # A digit separator (1'000) is not a character literal.
+            if c == "'" and i > 0 and text[i - 1].isalnum():
+                out.append(c)
+                i += 1
+                continue
+            j = i + 1
+            while j < n and text[j] != c and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            end = min(j + 1, n)
+            out.append(blank(text[i:end]))
+            i = end
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _is_ident(c: str) -> bool:
+    return c.isalnum() or c == "_"
+
+
+def is_suppressed(raw_lines: list[str], index: int) -> bool:
+    """True when line `index` carries the marker, or follows a comment-only
+    line that does (so the reason need not share an already-long line)."""
+    if SUPPRESS_MARKER in raw_lines[index]:
+        return True
+    if index == 0:
+        return False
+    above = raw_lines[index - 1].strip()
+    return above.startswith("//") and SUPPRESS_MARKER in above
+
+
+def find_violations(text: str) -> list[tuple[int, int, str]]:
+    """Return (line, column, word) for each banned type in `text`, 1-based."""
+    raw_lines = text.split("\n")
+    code_lines = blank_comments_and_literals(text).split("\n")
+    found = []
+    for lineno, code in enumerate(code_lines, 1):
+        if is_suppressed(raw_lines, lineno - 1):
+            continue
+        code = _ALLOWED.sub(lambda m: " " * len(m.group(0)), code)
+        for m in _BANNED.finditer(code):
+            found.append((lineno, m.start() + 1, m.group(0)))
+    return found
+
+
+def main(argv: list[str]) -> int:
+    status = 0
+    for name in argv:
+        path = Path(name)
+        if path.as_posix() in EXEMPT_FILES:
+            continue
+        text = path.read_text(encoding="utf-8")
+        for lineno, col, word in find_violations(text):
+            print(
+                f"{name}:{lineno}:{col}: `{word}` -- use a fixed-width type "
+                "(int32_t, uint32_t, int64_t, ...) or size_t; see docs/style.md "
+                '"Integer types"'
+            )
+            status = 1
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

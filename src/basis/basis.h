@@ -26,14 +26,14 @@ namespace free_breakfast {
 ///
 /// A Cartesian shell of angular momentum L spans x^a y^b z^c with a+b+c = L,
 /// and there are (L+1)(L+2)/2 such triples: 1 (s), 3 (p), 6 (d), 10 (f), ...
-[[nodiscard]] constexpr std::uint32_t cartesian_function_count(int l) {
+[[nodiscard]] constexpr std::uint32_t cartesian_function_count(std::int32_t l) {
   const auto n = static_cast<std::uint32_t>(l);
   return ((n + 1) * (n + 2)) / 2;
 }
 
 /// @brief Number of real solid harmonic (spherical) functions in a shell of
 /// momentum @p l: 2l+1.
-[[nodiscard]] constexpr std::uint32_t spherical_function_count(int l) {
+[[nodiscard]] constexpr std::uint32_t spherical_function_count(std::int32_t l) {
   const auto n = static_cast<std::uint32_t>(l);
   return (2 * n) + 1;
 }
