@@ -24,7 +24,9 @@ devtools/format.sh path/to/file # just these files
 devtools/format.sh --check      # what the hook and CI run
 ```
 
-No hook rewrites a file. A formatter running as a hook rewrites whole files
+No hook reformats a file. (The `ruff-check` hook does apply ruff's lint
+autofixes with `--fix`; formatting is never applied.) A formatter running as a
+hook rewrites whole files
 without you seeing it, and the real change gets lost among the restyling.
 Running it yourself means you see the diff before you commit it. The tool
 versions come from `uv.lock`, so the host and the image produce identical

@@ -16,7 +16,8 @@
 # Dockerfiles spell their COPY and bind-mount paths relative to it.
 #
 # Three environment knobs turn a local build into a published one, used only by
-# .github/workflows/images.yml -- see "variant tags and the registry" below:
+# an image-publishing workflow -- ROUTE B in .github/workflows/ci.yml, not
+# added yet. See "variant tags and the registry" below:
 #
 #   IMAGE_TAG_SUFFIX=-ci  IMAGE_REGISTRY=ghcr.io/owner  BUILD_PUSH=1 \
 #     ROCM_PRUNE=1 docker/build.sh hip
@@ -97,8 +98,9 @@ build_args_of() {
 
 # --- variant tags and the registry ------------------------------------------
 # Three environment knobs, none of which changes what is BUILT except through
-# the build args above. .github/workflows/images.yml is the only caller that
-# sets them; a local build sets none and behaves exactly as before.
+# the build args above. Only an image-publishing workflow would set them (ROUTE
+# B in .github/workflows/ci.yml; not added yet); a local build sets none and
+# behaves exactly as before.
 #
 #   IMAGE_TAG_SUFFIX=-ci   free-breakfast:hip        -> free-breakfast:hip-ci
 #   IMAGE_REGISTRY=ghcr.io/owner             also tag ghcr.io/owner/free_breakfast:...

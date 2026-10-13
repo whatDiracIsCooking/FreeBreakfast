@@ -382,9 +382,8 @@ if [ "${#CONFIG_LINES[@]}" -gt 0 ]; then
     rpath=${entry%%:*}
     what=${entry#*:}
     # Absolute entries are taken as-is, for a path that lives outside the
-    # checkout -- something baked into the image, say. This project has none
-    # (DOCTOR_REQUIRED_PATHS is empty; see config.sh for why), so the branch
-    # exists for the next repo to copy this into. Relative ones stay
+    # checkout -- something baked into the image, say: this project's three
+    # /opt trees (see config.sh for why they are listed). Relative ones stay
     # repo-relative (submodules, fixtures), so doctor works from any worktree.
     case "$rpath" in /*) abs=$rpath ;; *) abs="$TOP/$rpath" ;; esac
     if [ -e "$abs" ]; then
