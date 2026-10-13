@@ -1,5 +1,5 @@
 // Host-only cases for core/types (including its :concepts partition),
-// core/constants and core/nontransferrable. Most of what these modules promise is compile-time,
+// core/constants, core/primitives and core/nontransferrable. Most of what these modules promise is compile-time,
 // so most of the checks are static_asserts; the TESTs exist so each module has
 // a ctest entry and the vector types are exercised as values, not just names.
 
@@ -103,6 +103,79 @@ TEST(CoreConstants, FaradayIsAvogadroTimesElementaryCharge) {
               1e-9 * fb::kFaraday<double>);
   EXPECT_NEAR(fb::kBoltzmann<double> * fb::kAvogadro<double>, fb::kGasConstant<double>,
               1e-12 * fb::kGasConstant<double>);
+}
+
+// ---------------------------------------------------------------------------
+// primitives
+// ---------------------------------------------------------------------------
+
+// Each function keeps the argument's precision rather than promoting to double.
+static_assert(std::is_same_v<decltype(fb::math::sqrt(2.0f)), float>);
+static_assert(std::is_same_v<decltype(fb::math::sqrt(2.0)), double>);
+static_assert(std::is_same_v<decltype(fb::math::fma(1.0f, 2.0f, 3.0f)), float>);
+static_assert(std::is_same_v<decltype(fb::math::isnan(1.0)), bool>);
+
+// real_fp admits exactly float and double, matching the device templates'
+// static_assert: an int is rejected rather than promoted, as is long double.
+// (A concept, not a bare `requires { ... }`: outside a template the expression is
+// not dependent, so an ill-formed call is a hard error rather than false.)
+template <typename T>
+concept HasMathSqrt = requires(T x) { fb::math::sqrt(x); };
+template <typename T, typename U>
+concept HasMathPow = requires(T x, U y) { fb::math::pow(x, y); };
+
+static_assert(HasMathSqrt<float> && HasMathSqrt<double>);
+static_assert(!HasMathSqrt<std::int32_t>);
+static_assert(!HasMathSqrt<long double>);
+static_assert(!HasMathPow<double, float>);
+
+// The combinatorics are constexpr: the same definition a device TU compiles.
+static_assert(fb::math::double_factorial_odd(-1) == 1.0);
+static_assert(fb::math::double_factorial_odd(1) == 1.0);
+static_assert(fb::math::double_factorial_odd(7) == 105.0);
+static_assert(fb::math::factorial(0) == 1.0);
+static_assert(fb::math::factorial(5) == 120.0);
+static_assert(fb::math::binomial(5, 2) == 10.0);
+static_assert(fb::math::binomial(4, 0) == 1.0);
+static_assert(fb::math::binomial(4, 5) == 0.0);
+static_assert(fb::math::binomial(4, -1) == 0.0);
+
+TEST(CorePrimitives, CombinatoricsAgree) {
+  // (2n-1)!! = (2n)! / (2^n n!), and the binomial row sums to 2^n.
+  for (std::int32_t n = 0; n <= 10; ++n) {
+    EXPECT_EQ(fb::math::double_factorial_odd((2 * n) - 1),
+              fb::math::factorial(2 * n) / (std::ldexp(1.0, n) * fb::math::factorial(n)))
+        << "n = " << n;
+    double row = 0.0;
+    for (std::int32_t k = 0; k <= n; ++k) {
+      row += fb::math::binomial(n, k);
+    }
+    EXPECT_EQ(row, std::ldexp(1.0, n)) << "n = " << n;
+  }
+}
+
+TEST(CorePrimitives, MatchCmath) {
+  EXPECT_EQ(fb::math::sqrt(2.0), std::sqrt(2.0));
+  EXPECT_EQ(fb::math::sqrt(2.0f), std::sqrt(2.0f));
+  EXPECT_EQ(fb::math::log(10.0), std::log(10.0));
+  EXPECT_EQ(fb::math::exp(-0.5), std::exp(-0.5));
+  EXPECT_EQ(fb::math::sin(0.25), std::sin(0.25));
+  EXPECT_EQ(fb::math::cos(0.25f), std::cos(0.25f));
+  EXPECT_EQ(fb::math::atan2(1.0, -1.0), std::atan2(1.0, -1.0));
+  EXPECT_EQ(fb::math::pow(2.0, 0.5), std::pow(2.0, 0.5));
+  EXPECT_EQ(fb::math::fma(2.0, 3.0, 4.0), 10.0);
+  EXPECT_EQ(fb::math::round(2.5), 3.0);
+  EXPECT_DOUBLE_EQ(fb::math::rsqrt(4.0), 0.5);
+}
+
+TEST(CorePrimitives, NaNHandling) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(fb::math::isnan(nan));
+  EXPECT_FALSE(fb::math::isfinite(nan));
+  EXPECT_TRUE(fb::math::isinf(std::numeric_limits<double>::infinity()));
+  // fmin/fmax return the non-NaN operand, which `x < y ? x : y` would not.
+  EXPECT_EQ(fb::math::fmin(nan, 1.0), 1.0);
+  EXPECT_EQ(fb::math::fmax(1.0, nan), 1.0);
 }
 
 // ---------------------------------------------------------------------------

@@ -153,7 +153,7 @@ nothing, and `detail` is only a naming convention that nothing enforces. Both
 also hide duplication. Before this rule existed, `double_factorial_odd` was
 defined twice in the basis module, once in `:harmonics`' `detail` namespace and
 once in an anonymous namespace in `:basis_set`, and neither copy could see the
-other.
+other. (It now lives once, in `free_breakfast.core.primitives`.)
 
 Code that is private to a module goes in one of three places. Which one depends
 on who needs it:
@@ -162,7 +162,7 @@ on who needs it:
 | --- | --- | --- |
 | One implementation unit (`.cpp`) | An unexported declaration at namespace scope in that file | `table_int` in `src/io/config/config_reader.cpp` |
 | Several implementation units of one module | An **internal partition**, `module M:name;`, imported by those units | `src/io/npy/npy_format.cppm` (`kMagic`, used by both the reader and the writer) |
-| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | `src/basis/numeric.cppm` |
+| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | None in the tree today; `src/basis/numeric.cppm` was one until its helpers moved to `free_breakfast.core.primitives` |
 
 All partitions, of either kind, go under `PARTITIONS` in
 `free_breakfast_add_cxx_module_library`.
@@ -175,7 +175,7 @@ only for interface units, and leaves internal partitions unspecified. A private
 interface partition is reachable but exports nothing, so its contents stay
 unnameable. The primary interface still has to `export import :name;` it,
 because every interface partition must be re-exported. That line exposes
-nothing, so add a comment saying so (see `src/basis/basis.cppm`).
+nothing, so add a comment saying so.
 
 **An unexported name is shared across the whole module.** It has module linkage,
 not internal linkage, so two units of the same module that each define a helper
