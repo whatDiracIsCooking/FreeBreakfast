@@ -98,6 +98,7 @@ docker/
   compose.yaml          The batch path
 .devcontainer/{cuda,hip,combined}/   The interactive path, one per backend
 devtools/             Container, worktree, test-tier, coverage and doctor scripts
+tools/                Standalone Python: BSE basis download, aCD/acCD atomic Cholesky
 ```
 
 ---

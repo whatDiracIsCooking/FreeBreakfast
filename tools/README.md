@@ -1,0 +1,42 @@
+# `tools/`
+
+Standalone Python utilities around the C++ tree. Not tests, not a package, not
+on the push gate.
+
+```
+bse_download.py   Fetch basis sets from the Basis Set Exchange as the JSON
+                  src/io/basis reads. Standard library only.
+atomic_cd/        aCD / acCD atomic Cholesky decomposition over PySCF
+                  integrals; writes acCD auxiliary shells as BSE JSON.
+```
+
+## Running
+
+`bse_download.py` needs nothing beyond Python:
+
+```sh
+tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
+tools/bse_download.py --list
+```
+
+`atomic_cd` needs PySCF and numpy, which sit in the opt-in `tools` dependency
+group in `pyproject.toml` rather than in `dev`, so the image and the push gate
+do not carry them:
+
+```sh
+uv run --group tools python -m tools.atomic_cd.cli C sto-3g
+uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \
+    --bse-out c_ccpvdz_accd.bse.json
+```
+
+The two compose: an orbital basis fetched by `bse_download.py` can be fed back
+in with `--bse-in`, which makes the positional basis name a display label only.
+
+```sh
+tools/bse_download.py cc-pVDZ --elements C -o /tmp/basis
+uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ \
+    --bse-in /tmp/basis/cc-pVDZ.json
+```
+
+Each module's docstring carries the derivation and conventions;
+`atomic_cd/__init__.py` lists them in dependency order.
