@@ -88,10 +88,20 @@ What the rule buys is that each declaration says how wide it means to be.
 `long` is the one that actually differs across platforms (64 bits on Linux, 32
 on Windows), which is why it is banned too.
 
-Spell them `std::int32_t`, which is available everywhere (`import std;` in
-module units, `<cstdint>` in headers shared with device code).
-`free_breakfast::int32_t` is the same type; `free_breakfast.core.types`
-exports it for code that wants the unqualified name inside the namespace.
+**Inside `namespace free_breakfast`, write them unqualified**: `int32_t`,
+`uint64_t`, `size_t`. They are `free_breakfast::int32_t` and so on, declared by
+`src/core/types/integral_types.h` as the very same types as `std::int32_t`. To
+make them visible:
+
+- A module unit adds `import free_breakfast.core.types;`, and its library
+  links `free_breakfast::core::types`.
+- A header shared with device code includes `"integral_types.h"` (not
+  `<cstdint>`), and its headers target links
+  `free_breakfast::core::types_headers`, as `atom::headers` and
+  `basis::headers` do.
+
+Outside the namespace, as in `test/gtest/` where code goes through an `fb`
+alias, write `std::int32_t`.
 
 Allowed:
 

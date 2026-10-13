@@ -4,17 +4,18 @@
 module free_breakfast.io.json;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.io.base;
 
 namespace free_breakfast {
 
-std::string json_to_string(const json &document, std::int32_t indent) {
+std::string json_to_string(const json &document, int32_t indent) {
   return document.dump(indent);
 }
 
 [[nodiscard]] Status write_json(const std::filesystem::path &path, const json &document,
-                                std::int32_t indent) {
+                                int32_t indent) {
   return write_file(path, json_to_string(document, indent));
 }
 

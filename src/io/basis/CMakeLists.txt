@@ -10,6 +10,7 @@ free_breakfast_add_cxx_module_library(
   IMPLEMENTATION
   basis_reader.cpp
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::basis
   free_breakfast::molecule

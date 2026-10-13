@@ -10,6 +10,7 @@
 export module free_breakfast.molecule;
 
 import std;
+import free_breakfast.core.types;
 export import free_breakfast.atom;
 export import wwr.vector_types;
 
@@ -34,8 +35,8 @@ export namespace free_breakfast {
 }
 
 /// @brief The atomic number Z of @p atom (its nuclear charge).
-[[nodiscard]] std::int32_t nuclear_charge(const Atom<double> &atom) {
-  return static_cast<std::int32_t>(atom.element);
+[[nodiscard]] int32_t nuclear_charge(const Atom<double> &atom) {
+  return static_cast<int32_t>(atom.element);
 }
 
 /// @brief A collection of atoms with an overall charge and spin multiplicity.
@@ -52,25 +53,24 @@ public:
   /// @param atoms         The nuclei and their positions (bohr).
   /// @param charge        Net molecular charge (default neutral).
   /// @param multiplicity  Spin multiplicity 2S+1 (default singlet, 1).
-  explicit Molecule(std::vector<Atom<double>> atoms, std::int32_t charge = 0,
-                    std::int32_t multiplicity = 1)
+  explicit Molecule(std::vector<Atom<double>> atoms, int32_t charge = 0, int32_t multiplicity = 1)
       : atoms_(std::move(atoms)), charge_(charge), multiplicity_(multiplicity) {}
 
   /// @brief The atoms, in the order supplied.
   [[nodiscard]] const std::vector<Atom<double>> &atoms() const { return atoms_; }
 
   /// @brief Number of nuclei in the molecule.
-  [[nodiscard]] std::uint32_t natoms() const { return static_cast<std::uint32_t>(atoms_.size()); }
+  [[nodiscard]] uint32_t natoms() const { return static_cast<uint32_t>(atoms_.size()); }
 
   /// @brief Net molecular charge, in units of the elementary charge.
-  [[nodiscard]] std::int32_t charge() const { return charge_; }
+  [[nodiscard]] int32_t charge() const { return charge_; }
 
   /// @brief Spin multiplicity 2S+1.
-  [[nodiscard]] std::int32_t multiplicity() const { return multiplicity_; }
+  [[nodiscard]] int32_t multiplicity() const { return multiplicity_; }
 
   /// @brief Total nuclear charge, Sum Z_A over all atoms.
-  [[nodiscard]] std::int32_t total_nuclear_charge() const {
-    std::int32_t sum = 0;
+  [[nodiscard]] int32_t total_nuclear_charge() const {
+    int32_t sum = 0;
     for (const Atom<double> &atom : atoms_) {
       sum += nuclear_charge(atom);
     }
@@ -81,12 +81,12 @@ public:
   ///
   /// Removing an electron leaves a cation of charge +1, so the electron count
   /// falls as the charge rises -- hence the subtraction.
-  [[nodiscard]] std::int32_t electron_count() const { return total_nuclear_charge() - charge_; }
+  [[nodiscard]] int32_t electron_count() const { return total_nuclear_charge() - charge_; }
 
 private:
   std::vector<Atom<double>> atoms_{};
-  std::int32_t charge_{0};
-  std::int32_t multiplicity_{1};
+  int32_t charge_{0};
+  int32_t multiplicity_{1};
 };
 
 /// @brief Nuclear repulsion energy E_nn = Sum_{A<B} Z_A Z_B / R_AB, in hartree.
@@ -96,8 +96,8 @@ private:
 [[nodiscard]] double nuclear_repulsion_energy(const Molecule &molecule) {
   const std::vector<Atom<double>> &atoms = molecule.atoms();
   double energy = 0.0;
-  for (std::uint32_t a = 0; a < atoms.size(); ++a) {
-    for (std::uint32_t b = a + 1; b < atoms.size(); ++b) {
+  for (uint32_t a = 0; a < atoms.size(); ++a) {
+    for (uint32_t b = a + 1; b < atoms.size(); ++b) {
       const double r = distance(position(atoms[a]), position(atoms[b]));
       energy += static_cast<double>(nuclear_charge(atoms[a])) *
                 static_cast<double>(nuclear_charge(atoms[b])) / r;
@@ -122,9 +122,9 @@ private:
 /// no pairs and the gradient is all zeros.
 [[nodiscard]] std::vector<double> nuclear_repulsion_gradient(const Molecule &molecule) {
   const std::vector<Atom<double>> &atoms = molecule.atoms();
-  std::vector<double> grad(static_cast<std::size_t>(atoms.size()) * 3, 0.0);
-  for (std::uint32_t a = 0; a < atoms.size(); ++a) {
-    for (std::uint32_t b = a + 1; b < atoms.size(); ++b) {
+  std::vector<double> grad(static_cast<size_t>(atoms.size()) * 3, 0.0);
+  for (uint32_t a = 0; a < atoms.size(); ++a) {
+    for (uint32_t b = a + 1; b < atoms.size(); ++b) {
       const wwr::double3 ra = position(atoms[a]);
       const wwr::double3 rb = position(atoms[b]);
       const double r = distance(ra, rb);

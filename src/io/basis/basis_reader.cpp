@@ -4,6 +4,7 @@
 module free_breakfast.io.basis;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.basis;
 import free_breakfast.molecule;
@@ -50,7 +51,7 @@ namespace free_breakfast {
 /// harmonic type that would corrupt every downstream integral if wrong.
 /// @c sto and any other value are rejected outright: this reader only builds
 /// Gaussian shells.
-[[nodiscard]] Result<Harmonic> resolve_harmonic(const json &block, std::int32_t l) {
+[[nodiscard]] Result<Harmonic> resolve_harmonic(const json &block, int32_t l) {
   const auto ft_it = block.find("function_type");
   if (ft_it == block.end()) {
     if (l >= 2) {
@@ -109,13 +110,13 @@ namespace free_breakfast {
   }
 
   // Angular momenta.
-  std::vector<std::int32_t> momenta;
+  std::vector<int32_t> momenta;
   momenta.reserve(am_it->size());
   for (const json &l_node : *am_it) {
     if (!l_node.is_number_integer() && !l_node.is_number_unsigned()) {
       return err_config("BSE angular_momentum entry is not an integer");
     }
-    momenta.push_back(l_node.get<std::int32_t>());
+    momenta.push_back(l_node.get<int32_t>());
   }
   if (momenta.empty()) {
     return err_config("BSE shell has an empty angular_momentum list");
@@ -131,7 +132,7 @@ namespace free_breakfast {
     return err_config("BSE shell has no exponents");
   }
 
-  const std::uint32_t ncols = coef_it->size();
+  const uint32_t ncols = coef_it->size();
   if (ncols == 0) {
     return err_config("BSE shell has no coefficient columns");
   }
@@ -147,7 +148,7 @@ namespace free_breakfast {
 
   std::vector<ShellStamp> shells;
   shells.reserve(ncols);
-  for (std::uint32_t col = 0; col < ncols; ++col) {
+  for (uint32_t col = 0; col < ncols; ++col) {
     const json &column = (*coef_it)[col];
     if (!column.is_array()) {
       return err_config("BSE coefficients column is not an array");
@@ -162,7 +163,7 @@ namespace free_breakfast {
       coefficients.push_back(FBF_TRY(parse_decimal(c_node, "coefficients")));
     }
 
-    const std::int32_t l = per_column_momentum ? momenta[col] : momenta.front();
+    const int32_t l = per_column_momentum ? momenta[col] : momenta.front();
     auto harmonic = FBF_TRY(resolve_harmonic(block, l));
     // ShellStamp's constructor aborts on a bad shape (negative L, empty or
     // mismatched primitive lists), rather than returning a value this parser
@@ -190,12 +191,12 @@ namespace free_breakfast {
     return err_config("BSE 'elements' is not an object");
   }
 
-  std::map<std::int32_t, std::vector<ShellStamp>> table;
+  std::map<int32_t, std::vector<ShellStamp>> table;
   for (auto it = elements_it->begin(); it != elements_it->end(); ++it) {
     // The element key is the atomic number as a decimal string.
     const std::string &z_key = it.key();
     const json &element = it.value();
-    std::int32_t z = 0;
+    int32_t z = 0;
     const char *first = z_key.data();
     const char *last = z_key.data() + z_key.size();
     const auto [ptr, ec] = std::from_chars(first, last, z);

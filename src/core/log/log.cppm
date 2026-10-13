@@ -5,6 +5,7 @@ export module free_breakfast.core.log;
 
 export import :log_level;
 import std;
+import free_breakfast.core.types;
 
 export namespace free_breakfast::log {
 
@@ -58,7 +59,7 @@ void critical(std::string_view msg, std::source_location loc = std::source_locat
 /// a top-level handler can print at exit ("completed: 0 errors, N warnings")
 /// without grepping the log. Relaxed ordering: this is a diagnostic count,
 /// not a synchronization point.
-std::uint64_t warning_count();
+uint64_t warning_count();
 
 /// @brief Reset the warning counter to zero
 ///

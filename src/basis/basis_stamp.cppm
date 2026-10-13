@@ -24,6 +24,7 @@ module;
 export module free_breakfast.basis:basis_stamp;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.molecule;
 import :shell;
@@ -46,17 +47,17 @@ public:
   /// @param element_shells The element -> shells table (Z as returned by
   ///                       @c nuclear_charge). Elements a molecule does not use
   ///                       may be present; @ref place ignores them.
-  explicit BasisStamp(std::map<std::int32_t, std::vector<ShellStamp>> element_shells)
+  explicit BasisStamp(std::map<int32_t, std::vector<ShellStamp>> element_shells)
       : element_shells_(std::move(element_shells)) {}
 
   /// @brief The element -> shells table.
-  [[nodiscard]] const std::map<std::int32_t, std::vector<ShellStamp>> &element_shells() const {
+  [[nodiscard]] const std::map<int32_t, std::vector<ShellStamp>> &element_shells() const {
     return element_shells_;
   }
 
   /// @brief The shell stamps for element @p z, or @c nullptr if the stamp
   /// carries none.
-  [[nodiscard]] const std::vector<ShellStamp> *shells_for(std::int32_t z) const {
+  [[nodiscard]] const std::vector<ShellStamp> *shells_for(int32_t z) const {
     const auto it = element_shells_.find(z);
     return it == element_shells_.end() ? nullptr : &it->second;
   }
@@ -65,7 +66,7 @@ public:
   /// @ref ShellStamp::primitive_normalized). Center-independent, so it is done
   /// once on the stamp, not once per @ref place.
   [[nodiscard]] BasisStamp primitive_normalized() const {
-    std::map<std::int32_t, std::vector<ShellStamp>> out;
+    std::map<int32_t, std::vector<ShellStamp>> out;
     for (const auto &[z, shells] : element_shells_) {
       std::vector<ShellStamp> normalized;
       normalized.reserve(shells.size());
@@ -78,7 +79,7 @@ public:
   }
 
 private:
-  std::map<std::int32_t, std::vector<ShellStamp>> element_shells_{};
+  std::map<int32_t, std::vector<ShellStamp>> element_shells_{};
 };
 
 /// @brief Stamp a @ref BasisStamp onto a molecule's atoms to make a centered
@@ -98,7 +99,7 @@ private:
 [[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp, const Molecule &molecule) {
   std::vector<Shell> shells;
   for (const Atom<double> &atom : molecule.atoms()) {
-    const std::int32_t z = nuclear_charge(atom);
+    const int32_t z = nuclear_charge(atom);
     const std::vector<ShellStamp> *element = basis_stamp.shells_for(z);
     if (element == nullptr) {
       return err_config("basis has no shells for element Z={}", z);

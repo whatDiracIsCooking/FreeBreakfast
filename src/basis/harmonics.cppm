@@ -53,6 +53,7 @@ export module free_breakfast.basis:harmonics;
 import :ao;
 import :numeric;
 import std;
+import free_breakfast.core.types;
 
 export namespace free_breakfast {
 
@@ -65,7 +66,7 @@ export namespace free_breakfast {
 /// the single @c sqrt((2l-1)!!) scale @c cartesian_to_spherical applies
 /// reproduces a uniform diagonal with zero cross-m coupling. For @c l<=1 the
 /// block is the identity.
-[[nodiscard]] std::vector<double> solid_harmonic_c2s(std::int32_t l);
+[[nodiscard]] std::vector<double> solid_harmonic_c2s(int32_t l);
 
 } // namespace free_breakfast
 
@@ -75,11 +76,11 @@ namespace free_breakfast {
 // The angular Gaussian-moment inner product between two same-degree Cartesian
 // monomials -- see this file's doc comment. Zero unless every per-axis exponent
 // SUM is even (an odd 1D moment of a centered Gaussian vanishes by parity).
-[[nodiscard]] inline double monomial_gram(const std::array<std::int32_t, 3> &p,
-                                          const std::array<std::int32_t, 3> &q) {
-  const std::int32_t sx = p[0] + q[0];
-  const std::int32_t sy = p[1] + q[1];
-  const std::int32_t sz = p[2] + q[2];
+[[nodiscard]] inline double monomial_gram(const std::array<int32_t, 3> &p,
+                                          const std::array<int32_t, 3> &q) {
+  const int32_t sx = p[0] + q[0];
+  const int32_t sy = p[1] + q[1];
+  const int32_t sz = p[2] + q[2];
   if ((sx % 2) != 0 || (sy % 2) != 0 || (sz % 2) != 0) {
     return 0.0;
   }
@@ -93,10 +94,10 @@ namespace free_breakfast {
 // why v is tracked as 2*v internally). The absolute prefactor is irrelevant --
 // the caller G-normalizes each column -- but it is kept so the bare directions
 // already match PySCF's cart2sph to floating point, not merely up to scale.
-[[nodiscard]] inline std::map<std::array<std::int32_t, 3>, double>
-solid_harmonic_coeffs(std::int32_t l, std::int32_t m) {
-  const std::int32_t ma = std::abs(m);
-  std::map<std::array<std::int32_t, 3>, double> coeffs;
+[[nodiscard]] inline std::map<std::array<int32_t, 3>, double> solid_harmonic_coeffs(int32_t l,
+                                                                                    int32_t m) {
+  const int32_t ma = std::abs(m);
+  std::map<std::array<int32_t, 3>, double> coeffs;
 
   const double prefactor =
       (1.0 / (std::pow(2.0, l) * factorial(l))) *
@@ -104,21 +105,21 @@ solid_harmonic_coeffs(std::int32_t l, std::int32_t m) {
 
   // two_v0 is 2*v's starting value: 0 for m >= 0, 1 for m < 0 (the half-integer
   // offset of the real-harmonic sine branch).
-  const std::int32_t two_v0 = (m >= 0) ? 0 : 1;
-  for (std::int32_t t = 0; t <= (l - ma) / 2; ++t) {
-    for (std::int32_t u = 0; u <= t; ++u) {
-      for (std::int32_t two_v = two_v0; two_v <= ma; two_v += 2) {
-        const std::int32_t lx = (2 * t) + ma - (2 * u) - two_v;
-        const std::int32_t ly = (2 * u) + two_v;
-        const std::int32_t lz = l - (2 * t) - ma;
+  const int32_t two_v0 = (m >= 0) ? 0 : 1;
+  for (int32_t t = 0; t <= (l - ma) / 2; ++t) {
+    for (int32_t u = 0; u <= t; ++u) {
+      for (int32_t two_v = two_v0; two_v <= ma; two_v += 2) {
+        const int32_t lx = (2 * t) + ma - (2 * u) - two_v;
+        const int32_t ly = (2 * u) + two_v;
+        const int32_t lz = l - (2 * t) - ma;
         if (lx < 0 || ly < 0 || lz < 0) {
           continue;
         }
-        const std::int32_t sign_power = t + ((two_v - two_v0) / 2);
+        const int32_t sign_power = t + ((two_v - two_v0) / 2);
         const double term = (((sign_power % 2) == 0) ? 1.0 : -1.0) * std::pow(0.25, t) *
                             binomial(l, t) * binomial(l - t, ma + t) * binomial(t, u) *
                             binomial(ma, two_v);
-        coeffs[std::array<std::int32_t, 3>{lx, ly, lz}] += prefactor * term;
+        coeffs[std::array<int32_t, 3>{lx, ly, lz}] += prefactor * term;
       }
     }
   }
@@ -129,59 +130,57 @@ solid_harmonic_coeffs(std::int32_t l, std::int32_t m) {
 
 export namespace free_breakfast {
 
-[[nodiscard]] inline std::vector<double> solid_harmonic_c2s(std::int32_t l) {
-  const std::int32_t ncart = static_cast<std::int32_t>(cartesian_function_count(l));
-  const std::int32_t nsph = (2 * l) + 1;
+[[nodiscard]] inline std::vector<double> solid_harmonic_c2s(int32_t l) {
+  const int32_t ncart = static_cast<int32_t>(cartesian_function_count(l));
+  const int32_t nsph = (2 * l) + 1;
 
   // s and p: PySCF presents these as the bare Cartesian set (s trivially, p as
   // (x, y, z)), so the block is the identity -- the same block
   // cartesian_to_spherical applies to a Cartesian shell.
   if (l <= 1) {
-    std::vector<double> identity(static_cast<std::size_t>(ncart) * static_cast<std::size_t>(nsph),
-                                 0.0);
-    for (std::int32_t i = 0; i < ncart; ++i) {
-      identity[(static_cast<std::size_t>(i) * nsph) + i] = 1.0;
+    std::vector<double> identity(static_cast<size_t>(ncart) * static_cast<size_t>(nsph), 0.0);
+    for (int32_t i = 0; i < ncart; ++i) {
+      identity[(static_cast<size_t>(i) * nsph) + i] = 1.0;
     }
     return identity;
   }
 
-  const std::vector<std::array<std::int32_t, 3>> powers = cartesian_powers(l);
-  std::map<std::array<std::int32_t, 3>, std::int32_t> row_of;
-  for (std::int32_t i = 0; i < ncart; ++i) {
-    row_of[powers[static_cast<std::size_t>(i)]] = i;
+  const std::vector<std::array<int32_t, 3>> powers = cartesian_powers(l);
+  std::map<std::array<int32_t, 3>, int32_t> row_of;
+  for (int32_t i = 0; i < ncart; ++i) {
+    row_of[powers[static_cast<size_t>(i)]] = i;
   }
 
-  std::vector<double> block(static_cast<std::size_t>(ncart) * static_cast<std::size_t>(nsph), 0.0);
-  for (std::int32_t col = 0; col < nsph; ++col) {
-    const std::int32_t m = col - l;
+  std::vector<double> block(static_cast<size_t>(ncart) * static_cast<size_t>(nsph), 0.0);
+  for (int32_t col = 0; col < nsph; ++col) {
+    const int32_t m = col - l;
     for (const auto &[key, value] : solid_harmonic_coeffs(l, m)) {
-      block[(static_cast<std::size_t>(row_of.at(key)) * nsph) + col] = value;
+      block[(static_cast<size_t>(row_of.at(key)) * nsph) + col] = value;
     }
   }
 
   // G-normalize each column under the Gaussian-moment inner product, so
   // block^T G block = I and cartesian_to_spherical's single sqrt((2l-1)!!)
   // scale yields a uniform diagonal.
-  for (std::int32_t col = 0; col < nsph; ++col) {
+  for (int32_t col = 0; col < nsph; ++col) {
     double norm2 = 0.0;
-    for (std::int32_t a = 0; a < ncart; ++a) {
-      const double ca = block[(static_cast<std::size_t>(a) * nsph) + col];
+    for (int32_t a = 0; a < ncart; ++a) {
+      const double ca = block[(static_cast<size_t>(a) * nsph) + col];
       if (ca == 0.0) {
         continue;
       }
-      for (std::int32_t b = 0; b < ncart; ++b) {
-        const double cb = block[(static_cast<std::size_t>(b) * nsph) + col];
+      for (int32_t b = 0; b < ncart; ++b) {
+        const double cb = block[(static_cast<size_t>(b) * nsph) + col];
         if (cb == 0.0) {
           continue;
         }
         norm2 +=
-            ca * cb *
-            monomial_gram(powers[static_cast<std::size_t>(a)], powers[static_cast<std::size_t>(b)]);
+            ca * cb * monomial_gram(powers[static_cast<size_t>(a)], powers[static_cast<size_t>(b)]);
       }
     }
     const double inv = 1.0 / std::sqrt(norm2);
-    for (std::int32_t a = 0; a < ncart; ++a) {
-      block[(static_cast<std::size_t>(a) * nsph) + col] *= inv;
+    for (int32_t a = 0; a < ncart; ++a) {
+      block[(static_cast<size_t>(a) * nsph) + col] *= inv;
     }
   }
   return block;

@@ -10,7 +10,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include "integral_types.h"
 
 namespace free_breakfast {
 
@@ -20,6 +20,6 @@ namespace free_breakfast {
 /// GPU integral/Fock engines reject a basis with any higher shell. @ref Shell
 /// itself imposes no such cap -- the host reference engines evaluate arbitrary L
 /// -- so this is the GPU-kernel limit, not a basis-wide invariant.
-inline constexpr std::int32_t kMaxAngularMomentum = 2;
+inline constexpr int32_t kMaxAngularMomentum = 2;
 
 } // namespace free_breakfast

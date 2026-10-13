@@ -6,7 +6,13 @@
 #   * C++ modules: `import free_breakfast.atom;` -- atom.cppm includes the
 #     headers in its global module fragment and re-exports the names, so
 #     importers and #include-rs share one entity.
-free_breakfast_add_interface_library(NAME free_breakfast.atom.headers)
+# element.h names the fixed-width integer types through integral_types.h.
+free_breakfast_add_interface_library(
+  NAME
+  free_breakfast.atom.headers
+  LINK_PUBLIC
+  free_breakfast::core::types_headers
+)
 
 free_breakfast_add_cxx_module_library(
   NAME

@@ -11,6 +11,7 @@ free_breakfast_add_cxx_module_library(
   json_reader.cpp
   json_writer.cpp
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::third_party::nlohmann
   LINK_PRIVATE

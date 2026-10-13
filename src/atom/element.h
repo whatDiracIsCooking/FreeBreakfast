@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include <cstdint>
+#include "integral_types.h"
 
 namespace free_breakfast {
 
@@ -28,7 +28,7 @@ namespace free_breakfast {
 /// list covers hydrogen (Z=1) through oganesson (Z=118). @c Sentinel (Z=0) is
 /// the default-constructed "no element" value: it names no real nucleus and is
 /// what a default-constructed @c Element{} holds.
-enum class Element : std::uint8_t {
+enum class Element : uint8_t {
   Sentinel = 0, // No element; the default-constructed / "unset" value
   H = 1,        // Hydrogen
   He = 2,       // Helium

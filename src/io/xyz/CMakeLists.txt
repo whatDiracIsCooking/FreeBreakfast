@@ -9,6 +9,7 @@ free_breakfast_add_cxx_module_library(
   IMPLEMENTATION
   xyz_reader.cpp
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::molecule
   LINK_PRIVATE

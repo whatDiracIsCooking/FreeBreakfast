@@ -7,6 +7,8 @@ free_breakfast_add_cxx_module_library(
   log_level.cppm
   IMPLEMENTATION
   log.cpp
+  LINK_PUBLIC
+  free_breakfast::core::types
   LINK_PRIVATE
   free_breakfast::third_party::spdlog
   IMPORT_STD

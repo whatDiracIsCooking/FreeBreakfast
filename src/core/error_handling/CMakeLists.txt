@@ -12,6 +12,7 @@ free_breakfast_add_cxx_module_library(
   gpu_status.cppm
   gpu_policy.cppm
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::log
   wwr::extension::common
   IMPORT_STD

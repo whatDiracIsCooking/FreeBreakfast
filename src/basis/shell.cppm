@@ -32,6 +32,7 @@ export module free_breakfast.basis:shell;
 import free_breakfast.molecule;
 import free_breakfast.core.error_handling;
 import std;
+import free_breakfast.core.types;
 
 #include "diagnostics.h"
 
@@ -76,7 +77,7 @@ public:
   /// invariant (the one production caller, the BSE basis-set reader, already
   /// screens both conditions before constructing), not a
   /// value a caller could plausibly recover from.
-  Shell(std::int32_t l, std::vector<Primitive> primitives, wwr::double3 center,
+  Shell(int32_t l, std::vector<Primitive> primitives, wwr::double3 center,
         Harmonic harmonic = Harmonic::Cartesian)
       : l_(l), primitives_(std::move(primitives)), center_(center), harmonic_(harmonic) {
     if (l_ < 0) {
@@ -102,21 +103,18 @@ public:
   ///
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ (see the other constructor).
-  Shell(std::int32_t l, const std::vector<double> &exponents,
-        const std::vector<double> &coefficients, wwr::double3 center,
-        Harmonic harmonic = Harmonic::Cartesian)
+  Shell(int32_t l, const std::vector<double> &exponents, const std::vector<double> &coefficients,
+        wwr::double3 center, Harmonic harmonic = Harmonic::Cartesian)
       : Shell(l, zip(exponents, coefficients), center, harmonic) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
-  [[nodiscard]] std::int32_t angular_momentum() const { return l_; }
+  [[nodiscard]] int32_t angular_momentum() const { return l_; }
 
   /// @brief The contracted primitives, in contraction order.
   [[nodiscard]] const std::vector<Primitive> &primitives() const { return primitives_; }
 
   /// @brief Number of primitive Gaussians contracted into this shell.
-  [[nodiscard]] std::uint32_t nprimitives() const {
-    return static_cast<std::uint32_t>(primitives_.size());
-  }
+  [[nodiscard]] uint32_t nprimitives() const { return static_cast<uint32_t>(primitives_.size()); }
 
   /// @brief Shell center, in bohr.
   [[nodiscard]] const wwr::double3 &center() const { return center_; }
@@ -131,12 +129,12 @@ public:
   /// kernels and @ref BasisSet's Cartesian AO layout always use, regardless
   /// of @ref harmonic -- see @ref presented_function_count for the count a
   /// @c Spherical shell actually presents to the outside world.
-  [[nodiscard]] std::uint32_t function_count() const { return cartesian_function_count(l_); }
+  [[nodiscard]] uint32_t function_count() const { return cartesian_function_count(l_); }
 
   /// @brief Number of functions this shell actually presents: @ref
   /// function_count for a @c Cartesian shell, or 2l+1 (@ref
   /// spherical_function_count) for a @c Spherical one.
-  [[nodiscard]] std::uint32_t presented_function_count() const {
+  [[nodiscard]] uint32_t presented_function_count() const {
     return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_) : function_count();
   }
 
@@ -149,13 +147,13 @@ private:
     }
     std::vector<Primitive> out;
     out.reserve(exponents.size());
-    for (std::size_t p = 0; p < exponents.size(); ++p) {
+    for (size_t p = 0; p < exponents.size(); ++p) {
       out.push_back(Primitive{exponents[p], coefficients[p]});
     }
     return out;
   }
 
-  std::int32_t l_{0};
+  int32_t l_{0};
   std::vector<Primitive> primitives_{};
   wwr::double3 center_{};
   Harmonic harmonic_{Harmonic::Cartesian};
