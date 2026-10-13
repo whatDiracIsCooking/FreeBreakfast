@@ -1,6 +1,6 @@
 /// @file
-/// @brief Math primitives (sqrt, log, sin, cos, ..., factorial, binomial) for
-/// host module code.
+/// @brief Math primitives (sqrt, log, sin, cos, ..., factorial, binomial,
+/// idivup, align_up) for host module code.
 ///
 /// Usage:
 ///   import free_breakfast.core.primitives;
@@ -76,5 +76,9 @@ using free_breakfast::math::isnan;
 using free_breakfast::math::binomial;
 using free_breakfast::math::double_factorial_odd;
 using free_breakfast::math::factorial;
+
+// Integer rounding
+using free_breakfast::math::align_up;
+using free_breakfast::math::idivup;
 
 } // namespace free_breakfast::math
