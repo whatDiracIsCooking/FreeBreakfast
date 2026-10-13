@@ -31,25 +31,28 @@ export namespace free_breakfast {
 /// Parse-vs-IO is deliberately NOT split: parse failures stay folded into
 /// `IO`. See this module's README for the reasoning.
 enum class ErrorKind {
-  Allocation,
-  IO,
-  GpuRuntime,
-  InvalidConfig,
-  Divergence,
-  MaxIterationsExceeded,
-  Unsupported,
-  Numerical
+  Allocation,            ///< Host or device memory could not be obtained
+  IO,                    ///< A file, stream or parse operation failed
+  GpuRuntime,            ///< A GPU runtime or library call itself failed
+  InvalidConfig,         ///< Well-formed input that is semantically wrong
+  Divergence,            ///< An iterative process went bad
+  MaxIterationsExceeded, ///< Still converging, but out of iteration budget
+  Unsupported,           ///< Well-formed input asking for an unimplemented feature
+  Numerical              ///< Completed, but the result is mathematically invalid
 };
 
-/**
- * @brief Structured error value carrying a kind, message, and source location
- *
- * Errors are constructed via named factory functions rather than constructors.
- * The source location is captured automatically at the call site.
- */
+/// @brief Structured error value carrying a kind, message, and source location
+///
+/// Errors are constructed via named factory functions rather than constructors.
+/// The source location is captured automatically at the call site.
 struct Error {
+  /// @brief Failure category; decides the exit code via @ref to_exit_code.
   ErrorKind kind;
+  /// @brief Human-readable description, including any detail that @ref kind
+  /// does not distinguish (bad magic vs. unopenable path, for instance).
   std::string message;
+  /// @brief Where the error was first constructed. Propagation moves it
+  /// through unchanged, so this stays the detection site.
   std::source_location origin;
 
   /// @brief Create an Allocation error
@@ -118,9 +121,12 @@ inline std::unexpected<Error> err(Error e) {
 /// the format arguments alone, exactly as `std::format`'s own are.
 template <typename... Args>
 struct LocatedFormat {
+  /// @brief The compile-time-checked format string.
   std::format_string<Args...> fmt;
+  /// @brief Where the format string was written: the `err_*` call site.
   std::source_location loc;
 
+  /// @brief Implicitly convert a string literal, capturing the call site.
   template <typename S>
     requires std::convertible_to<const S &, std::string_view>
   consteval LocatedFormat( // NOLINT(google-explicit-constructor): converts at the call site
