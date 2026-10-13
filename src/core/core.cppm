@@ -19,9 +19,10 @@ export import free_breakfast.core.error_handling;
 export import free_breakfast.core.log;
 export import free_breakfast.core.diagnostics;
 
-// The GPU layer comes from the WarpWraps submodule and is backend-neutral: the
-// same two imports resolve against src/cuda under a CUDA build and src/hip
-// under a HIP one. Re-exported so a consumer of free_breakfast.core gets the
-// buffer types without naming wwr itself.
-export import wwr.extension.common;
-export import wwr.extension.memory_buffer;
+// The GPU layer: wwr's RAII wrappers (from the WarpWraps submodule, and
+// backend-neutral -- the same imports resolve against src/cuda under a CUDA
+// build and src/hip under a HIP one), bound to this build's error policy.
+// free_breakfast.core.gpu re-exports the wwr.extension modules it binds, so a
+// consumer of free_breakfast.core gets them without naming wwr itself.
+export import free_breakfast.core.gpu_policy;
+export import free_breakfast.core.gpu;

@@ -5,11 +5,13 @@ exercises the full chain rather than a tree that configures and builds nothing.
 
 | File | What it is |
 | ---- | ---------- |
-| `core.cppm` | The primary interface. Re-exports `:version`, the three modules below, and the two WarpWraps modules. |
+| `core.cppm` | The primary interface. Re-exports `:version` and the modules below. |
 | `version.cppm` | A partition holding the project version and `version_string()`. |
 | `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`. |
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
 | `diagnostics/` | `free_breakfast.core.diagnostics` — `gpu_status`, `check_or_abort`; plus `diagnostics.h` (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`). |
+| `gpu_policy/` | `free_breakfast.core.gpu_policy` — the ABORT/RECORD GPU error policies chosen by `FREE_BREAKFAST_GPU_ERROR_POLICY`, and `gpu::capture`. |
+| `gpu/` | `free_breakfast.core.gpu` — wwr's RAII wrappers bound to those policies: `gpu::Device`, `gpu::Buffers`, `gpu::BlasHandle`, `gpu::SolverHandle`, … |
 
 Each subdirectory is its own module library with its own README, and can be
 linked alone (`free_breakfast::core::log`, ...) by a consumer that does not
@@ -21,11 +23,10 @@ import free_breakfast.core;
 auto v = free_breakfast::core::version_string();   // "0.1.0"
 ```
 
-The two `wwr` modules it re-exports (`wwr.extension.common`,
-`wwr.extension.memory_buffer`) come along with that import, so a consumer gets
-the buffer and error-policy types without naming the submodule. Those types take
-error-policy template arguments and a device handle rather than a bare size —
-`deps/WarpWraps/example/buffer_suite/main.cpp` is the worked usage.
+The GPU layer comes along with that import: `free_breakfast.core.gpu`
+re-exports the `wwr.extension.*` modules it binds (used in place from the
+submodule, not copied), and its aliases already carry this build's error
+policy — see `gpu_policy/README.md` for ABORT vs RECORD and `gpu::capture`.
 
 Link it as `free_breakfast::core`.
 
