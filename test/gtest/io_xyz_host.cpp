@@ -33,9 +33,9 @@ TEST(IoXyz, ParsesAtomsAndConvertsAngstromToBohr) {
   EXPECT_EQ(atoms[0].element, Element::O);
   EXPECT_EQ(atoms[1].element, Element::H);
   EXPECT_EQ(atoms[2].element, Element::H);
-  EXPECT_DOUBLE_EQ(atoms[0].z, 0.1173 * fb::bohr_per_angstrom<double>);
-  EXPECT_DOUBLE_EQ(atoms[1].y, 0.7572 * fb::bohr_per_angstrom<double>);
-  EXPECT_DOUBLE_EQ(atoms[2].z, -0.4692 * fb::bohr_per_angstrom<double>);
+  EXPECT_DOUBLE_EQ(atoms[0].z, 0.1173 * fb::kBohrPerAngstrom<double>);
+  EXPECT_DOUBLE_EQ(atoms[1].y, 0.7572 * fb::kBohrPerAngstrom<double>);
+  EXPECT_DOUBLE_EQ(atoms[2].z, -0.4692 * fb::kBohrPerAngstrom<double>);
   EXPECT_EQ(molecule->electron_count(), 10);
 }
 
@@ -63,15 +63,15 @@ TEST(IoXyz, EmptyGeometryIsAnEmptyMolecule) {
 
 TEST(IoXyz, MalformedInputIsIoError) {
   for (const std::string_view text : {
-           std::string_view{"3\n"},                              // no comment line
-           std::string_view{"three\ncomment\n"},                 // count not a number
-           std::string_view{"-1\ncomment\n"},                    // negative count
-           std::string_view{"1\ncomment\nH 0 0\n"},              // missing coordinate
-           std::string_view{"1\ncomment\nH 0 zero 0\n"},         // non-numeric coordinate
-           std::string_view{"1\ncomment\nXx 0 0 0\n"},           // unknown element
-           std::string_view{"1\ncomment\nHel 0 0 0\n"},          // symbol too long
-           std::string_view{"2\ncomment\nH 0 0 0\n"},            // count too high
-           std::string_view{"1\ncomment\nH 0 0 0\nH 0 0 1\n"},   // count too low
+           std::string_view{"3\n"},                            // no comment line
+           std::string_view{"three\ncomment\n"},               // count not a number
+           std::string_view{"-1\ncomment\n"},                  // negative count
+           std::string_view{"1\ncomment\nH 0 0\n"},            // missing coordinate
+           std::string_view{"1\ncomment\nH 0 zero 0\n"},       // non-numeric coordinate
+           std::string_view{"1\ncomment\nXx 0 0 0\n"},         // unknown element
+           std::string_view{"1\ncomment\nHel 0 0 0\n"},        // symbol too long
+           std::string_view{"2\ncomment\nH 0 0 0\n"},          // count too high
+           std::string_view{"1\ncomment\nH 0 0 0\nH 0 0 1\n"}, // count too low
        }) {
     auto molecule = fb::parse_xyz(text);
     ASSERT_FALSE(molecule.has_value()) << text;

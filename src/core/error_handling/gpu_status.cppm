@@ -28,11 +28,9 @@ Status gpu_status(T code, std::source_location loc = std::source_location::curre
   if (code == wwr::extension::success_code<T>()) {
     return {};
   }
-  // Error::gpu, not err_gpu: the location is the caller's, forwarded in `loc`,
-  // which err_gpu's call-site-capturing format string has no way to take.
-  return err(Error::gpu(std::format("{} ({})", wwr::extension::error_name(code),
-                                    wwr::extension::error_string(code)),
-                        loc));
+  return err_gpu(
+      std::format("{} ({})", wwr::extension::error_name(code), wwr::extension::error_string(code)),
+      loc);
 }
 
 /**
@@ -41,7 +39,8 @@ Status gpu_status(T code, std::source_location loc = std::source_location::curre
  * @tparam T Success value type
  * @return The unwrapped success value
  */
-template <typename T> T check_or_abort(Result<T> result) {
+template <typename T>
+T check_or_abort(Result<T> result) {
   if (!result) {
     log::critical(result.error().message, result.error().origin);
     std::abort();

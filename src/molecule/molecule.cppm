@@ -59,9 +59,7 @@ public:
   [[nodiscard]] const std::vector<Atom<double>> &atoms() const { return atoms_; }
 
   /// @brief Number of nuclei in the molecule.
-  [[nodiscard]] std::uint32_t natoms() const {
-    return static_cast<std::uint32_t>(atoms_.size());
-  }
+  [[nodiscard]] std::uint32_t natoms() const { return static_cast<std::uint32_t>(atoms_.size()); }
 
   /// @brief Net molecular charge, in units of the elementary charge.
   [[nodiscard]] int charge() const { return charge_; }

@@ -7,12 +7,14 @@
 #           fast Python tier (devtools/prepush-tests.sh) on a .py change, and
 #           the C++ smoke gate (devtools/cpp-smoke.sh) on a C++/build change.
 #
-# There is deliberately no formatter hook -- not ruff-format, not clang-format,
-# not cmake-format, though all three are configured (.clang-format,
-# .cmake-format.yaml) and installed in the image. A formatter rewrites whole
-# files, so on an existing tree it buries real diffs in restyling. Add them here
-# on day one of a new project, or not at all. Until then they are run by hand;
-# CLAUDE.md has the three commands.
+# No hook REWRITES a file. A formatter run as a hook rewrites whole files
+# behind your back and buries the real diff in restyling. The format is still
+# enforced, by CHECKING: the `format` hook below runs devtools/format.sh --check
+# (clang-format and ruff format, the versions uv.lock pins) on the staged files
+# and fails on drift; you run devtools/format.sh to fix, and see the diff
+# before committing it. CI's `lint` job runs the same check over the tree.
+# cmake-format is not part of it -- cmake-lint covers CMake. docs/style.md has
+# the parts of the style no tool checks.
 #
 # The C++ push gate is a SMOKE gate, not the full tier, and that distinction is
 # the whole point. A full C++23 named-module build plus every reference test
@@ -75,6 +77,17 @@ repos:
         entry: devtools/cmake-lint.sh
         language: script
         files: '(^|/)CMakeLists\.txt$|\.cmake$'
+
+  # Formatting, checked not applied -- see the header. devtools/format.sh
+  # resolves both tools through VENV_PATHS, like cmake-lint above, so it runs
+  # the uv.lock versions on the host and in the image alike.
+  - repo: local
+    hooks:
+      - id: format
+        name: format check (clang-format, ruff format; staged files)
+        entry: devtools/format.sh --check
+        language: script
+        files: '\.(cppm|cpp|cu|cuh|h|hpp|py)$'
 
   # The fast test gate. `stages: [pre-push]` means it runs at `git push`, not
   # on commit; `files: \.py$` is the entire "only when Python changed"

@@ -1,6 +1,7 @@
 # FREE_BREAKFAST_ADD_GPU_DEVICE_LIBRARY.cmake Provides
 # FREE_BREAKFAST_ADD_GPU_DEVICE_LIBRARY for a STATIC library of device-compiled
-# `.cu` sources, built for whichever backend FREE_BREAKFAST_GPU_BACKEND selected.
+# `.cu` sources, built for whichever backend FREE_BREAKFAST_GPU_BACKEND
+# selected.
 #
 # This replaced an earlier FREE_BREAKFAST_ADD_CUDA_LIBRARY, which hardcoded the
 # CUDA language and CUDAToolkit_INCLUDE_DIRS and so could only ever build one
@@ -22,9 +23,10 @@
 #   [GPU_OPTIONS          <opt ...>]      compile options, device pass only
 #   [INCLUDE_DIRS_PUBLIC  <dir ...>]
 #   [INCLUDE_DIRS_PRIVATE <dir ...>]
-#   [NO_DEVICE_LINKING]                   separable compilation and device-symbol
-#                                         resolution OFF. CUDA only -- a HIP
-#                                         build never enables either.
+#   [NO_DEVICE_LINKING]                   separable compilation and
+#                                         device-symbol resolution OFF. CUDA
+#                                         only -- a HIP build never enables
+#                                         either.
 # )
 macro(FREE_BREAKFAST_ADD_GPU_DEVICE_LIBRARY)
   set(_bool_opts "NO_DEVICE_LINKING")

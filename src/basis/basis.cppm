@@ -58,3 +58,7 @@ export import :harmonics;
 export import :basis_set;
 export import :shell_stamp;
 export import :basis_stamp;
+
+// Exports nothing. Listed only because every interface partition must be
+// re-exported by the primary interface; its helpers stay unnameable.
+export import :numeric;

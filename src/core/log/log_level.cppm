@@ -10,13 +10,13 @@ namespace free_breakfast::log {
 
 /// @brief Severity levels for log filtering, matching spdlog's enum values
 export enum class LogLevel : std::int32_t {
-  trace = 0,    ///< Fine-grained diagnostic events for development
-  debug = 1,    ///< Detailed information useful during debugging
-  info = 2,     ///< General informational messages about program progress
-  warn = 3,     ///< Potentially harmful situations that merit attention
-  error = 4,    ///< Error events that may still allow continued execution
-  critical = 5, ///< Severe errors likely followed by program abort
-  off = 6       ///< Disable all logging output
+  Trace = 0,    ///< Fine-grained diagnostic events for development
+  Debug = 1,    ///< Detailed information useful during debugging
+  Info = 2,     ///< General informational messages about program progress
+  Warn = 3,     ///< Potentially harmful situations that merit attention
+  Error = 4,    ///< Error events that may still allow continued execution
+  Critical = 5, ///< Severe errors likely followed by program abort
+  Off = 6       ///< Disable all logging output
 };
 
 inline spdlog::logger &get_logger() {
@@ -37,9 +37,9 @@ inline spdlog::logger &get_logger() {
 }
 
 inline void log_impl(LogLevel lv, std::string_view msg, std::source_location loc) {
-  get_logger().log(
-      spdlog::source_loc{loc.file_name(), static_cast<std::int32_t>(loc.line()), loc.function_name()},
-      static_cast<spdlog::level_enum>(lv), "{}", msg);
+  get_logger().log(spdlog::source_loc{loc.file_name(), static_cast<std::int32_t>(loc.line()),
+                                      loc.function_name()},
+                   static_cast<spdlog::level_enum>(lv), "{}", msg);
 }
 
 } // namespace free_breakfast::log

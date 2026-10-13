@@ -77,9 +77,8 @@ struct Error {
   /// @brief Create a MaxIterationsExceeded error -- still converging normally,
   /// ran out of iteration budget (not a numerical blow-up; see @ref divergence
   /// for that)
-  static Error
-  max_iterations_exceeded(std::string msg,
-                          std::source_location loc = std::source_location::current()) {
+  static Error max_iterations_exceeded(std::string msg,
+                                       std::source_location loc = std::source_location::current()) {
     return {ErrorKind::MaxIterationsExceeded, std::move(msg), loc};
   }
   /// @brief Create an Unsupported error -- well-formed input requesting
@@ -97,7 +96,8 @@ struct Error {
 };
 
 /// @brief Alias for std::expected<T, Error> used as a failable return type
-template <typename T> using Result = std::expected<T, Error>;
+template <typename T>
+using Result = std::expected<T, Error>;
 
 /// @brief Alias for Result<void>, used when no value is returned on success
 using Status = std::expected<void, Error>;

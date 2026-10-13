@@ -41,11 +41,11 @@ export namespace free_breakfast {
 // fragment). The using-declarations must sit inside `namespace free_breakfast`
 // so importers can form declarations with them; at global scope the names would
 // be visible but unusable.
-using free_breakfast::kMaxAngularMomentum;
 using free_breakfast::cartesian_function_count;
-using free_breakfast::spherical_function_count;
 using free_breakfast::Harmonic;
+using free_breakfast::kMaxAngularMomentum;
 using free_breakfast::Primitive;
+using free_breakfast::spherical_function_count;
 
 /// @brief One contracted Gaussian shell: an angular momentum, a set of
 /// primitives (@ref Primitive) and a center.
@@ -78,8 +78,7 @@ public:
   /// value a caller could plausibly recover from.
   Shell(int l, std::vector<Primitive> primitives, wwr::double3 center,
         Harmonic harmonic = Harmonic::Cartesian)
-      : l_(l), primitives_(std::move(primitives)), center_(center),
-        harmonic_(harmonic) {
+      : l_(l), primitives_(std::move(primitives)), center_(center), harmonic_(harmonic) {
     if (l_ < 0) {
       check_or_abort(err_config("Shell: angular momentum must be non-negative"));
     }
@@ -103,18 +102,15 @@ public:
   ///
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ (see the other constructor).
-  Shell(int l, const std::vector<double> &exponents,
-        const std::vector<double> &coefficients, wwr::double3 center,
-        Harmonic harmonic = Harmonic::Cartesian)
+  Shell(int l, const std::vector<double> &exponents, const std::vector<double> &coefficients,
+        wwr::double3 center, Harmonic harmonic = Harmonic::Cartesian)
       : Shell(l, zip(exponents, coefficients), center, harmonic) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
   [[nodiscard]] int angular_momentum() const { return l_; }
 
   /// @brief The contracted primitives, in contraction order.
-  [[nodiscard]] const std::vector<Primitive> &primitives() const {
-    return primitives_;
-  }
+  [[nodiscard]] const std::vector<Primitive> &primitives() const { return primitives_; }
 
   /// @brief Number of primitive Gaussians contracted into this shell.
   [[nodiscard]] std::uint32_t nprimitives() const {
@@ -134,23 +130,19 @@ public:
   /// kernels and @ref BasisSet's Cartesian AO layout always use, regardless
   /// of @ref harmonic -- see @ref presented_function_count for the count a
   /// @c Spherical shell actually presents to the outside world.
-  [[nodiscard]] std::uint32_t function_count() const {
-    return cartesian_function_count(l_);
-  }
+  [[nodiscard]] std::uint32_t function_count() const { return cartesian_function_count(l_); }
 
   /// @brief Number of functions this shell actually presents: @ref
   /// function_count for a @c Cartesian shell, or 2l+1 (@ref
   /// spherical_function_count) for a @c Spherical one.
   [[nodiscard]] std::uint32_t presented_function_count() const {
-    return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_)
-                                             : function_count();
+    return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_) : function_count();
   }
 
 private:
   /// @brief Pair two equal-length arrays into primitives, or abort.
-  [[nodiscard]] static std::vector<Primitive>
-  zip(const std::vector<double> &exponents,
-      const std::vector<double> &coefficients) {
+  [[nodiscard]] static std::vector<Primitive> zip(const std::vector<double> &exponents,
+                                                  const std::vector<double> &coefficients) {
     if (exponents.size() != coefficients.size()) {
       check_or_abort(err_config("Shell: exponent and coefficient counts must match"));
     }

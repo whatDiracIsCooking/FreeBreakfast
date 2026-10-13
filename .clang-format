@@ -1,7 +1,12 @@
-# Matches the formatting already present in src/. The image ships
-# clang-format-20 (aliased to clang-format).
+# Enforced: devtools/format.sh --check runs at commit (staged files) and in
+# CI's `lint` job, and fails on any drift. Fix with devtools/format.sh, which
+# rewrites in place. The binary is the clang-format wheel pinned in uv.lock, so
+# host and image agree byte for byte. docs/style.md has the rest of the style --
+# the parts no formatter can check.
 #
-#   clang-format -i $(git ls-files '*.cppm' '*.cpp' '*.cu' '*.cuh' '*.h')
+# `// clang-format off` / `// clang-format on` is the one escape, for a table
+# whose column alignment carries meaning (vec.h's specializations). Nothing
+# else.
 ---
 Language: Cpp
 BasedOnStyle: LLVM
@@ -20,7 +25,6 @@ AlwaysBreakTemplateDeclarations: Yes
 BreakBeforeBraces: Attach
 PointerAlignment: Right
 ReferenceAlignment: Right
-SpaceAfterTemplateKeyword: false
 
 # Doxygen banners in these files are hand-wrapped; leave them alone.
 ReflowComments: false

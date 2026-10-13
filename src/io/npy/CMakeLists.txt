@@ -7,6 +7,7 @@ free_breakfast_add_cxx_module_library(
   npy_shared.cppm
   npy_reader.cppm
   npy_writer.cppm
+  npy_format.cppm
   IMPLEMENTATION
   npy_shared.cpp
   npy_reader.cpp

@@ -49,8 +49,26 @@ CheckOptions:
     value: lower_case
   - key: readability-identifier-naming.PrivateMemberSuffix
     value: _
+  # Constants are kCamelCase: every constexpr variable (namespace scope, class
+  # static, local, variable template) and every namespace-scope const. See
+  # docs/style.md.
   - key: readability-identifier-naming.ConstexprVariableCase
-    value: lower_case
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariablePrefix
+    value: k
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantPrefix
+    value: k
+  # Enumerators are CamelCase with no k: every enum is an `enum class`, whose
+  # scope already does what a prefix would, and the periodic table reads as
+  # Element::Fe, not Element::kFe.
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ScopedEnumConstantCase
+    value: CamelCase
   # A dropped Result/Status is the exact swallowed-error failure mode
   # error-handling milestone #20 exists to kill. std::expected is not
   # [[nodiscard]] per the standard (and the alias can't carry the attribute

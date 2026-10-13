@@ -20,7 +20,7 @@ export module free_breakfast.atom;
 
 export namespace free_breakfast {
 
-using free_breakfast::Element;
 using free_breakfast::Atom;
+using free_breakfast::Element;
 
 } // namespace free_breakfast

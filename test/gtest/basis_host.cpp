@@ -61,12 +61,9 @@ TEST(Basis, CartesianPowersCanonicalOrder) {
   EXPECT_EQ(fb::cartesian_powers(0), (std::vector<Powers>{{0, 0, 0}}));
   EXPECT_EQ(fb::cartesian_powers(1), (std::vector<Powers>{{1, 0, 0}, {0, 1, 0}, {0, 0, 1}}));
   // xx, xy, xz, yy, yz, zz
-  EXPECT_EQ(fb::cartesian_powers(2), (std::vector<Powers>{{2, 0, 0},
-                                                           {1, 1, 0},
-                                                           {1, 0, 1},
-                                                           {0, 2, 0},
-                                                           {0, 1, 1},
-                                                           {0, 0, 2}}));
+  EXPECT_EQ(
+      fb::cartesian_powers(2),
+      (std::vector<Powers>{{2, 0, 0}, {1, 1, 0}, {1, 0, 1}, {0, 2, 0}, {0, 1, 1}, {0, 0, 2}}));
   // Defined past d, with every entry of degree l.
   for (int l = 3; l <= 5; ++l) {
     const std::vector<Powers> powers = fb::cartesian_powers(l);
@@ -98,8 +95,7 @@ TEST(Basis, ShellZipsParallelArrays) {
 TEST(BasisDeathTest, ShellAbortsOnBadShape) {
   EXPECT_DEATH(fb::Shell(-1, {{1.0, 1.0}}, kOrigin), "");
   EXPECT_DEATH(fb::Shell(0, std::vector<fb::Primitive>{}, kOrigin), "");
-  EXPECT_DEATH(fb::Shell(0, std::vector<double>{1.0, 2.0}, std::vector<double>{1.0}, kOrigin),
-               "");
+  EXPECT_DEATH(fb::Shell(0, std::vector<double>{1.0, 2.0}, std::vector<double>{1.0}, kOrigin), "");
   EXPECT_DEATH(fb::ShellStamp(-1, {{1.0, 1.0}}), "");
 }
 
@@ -195,10 +191,10 @@ TEST(Basis, SolidHarmonicDMatchesLibcintUpToOneScale) {
   const double c = std::sqrt(15.0 / (16.0 * pi)); // 0.5462742152960396
   // Rows xx, xy, xz, yy, yz, zz.
   const std::array<double, 30> libcint{
-      0.0, 0.0, -b,      0.0, c,  //
+      0.0, 0.0, -b,      0.0, c,   //
       a,   0.0, 0.0,     0.0, 0.0, //
       0.0, 0.0, 0.0,     a,   0.0, //
-      0.0, 0.0, -b,      0.0, -c, //
+      0.0, 0.0, -b,      0.0, -c,  //
       0.0, a,   0.0,     0.0, 0.0, //
       0.0, 0.0, 2.0 * b, 0.0, 0.0, //
   };
@@ -252,8 +248,9 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
   const double pi = std::numbers::pi;
   for (int l = 2; l <= 4; ++l) {
     const double alpha = 1.3;
-    const fb::BasisSet basis(
-        {fb::ShellStamp(l, {{alpha, 1.0}}, Harmonic::Spherical).primitive_normalized().at(kOrigin)});
+    const fb::BasisSet basis({fb::ShellStamp(l, {{alpha, 1.0}}, Harmonic::Spherical)
+                                  .primitive_normalized()
+                                  .at(kOrigin)});
     const double c = basis.shells()[0].primitives()[0].coefficient;
     const std::vector<Powers> powers = fb::cartesian_powers(l);
     const std::size_t ncart = basis.nao();
@@ -328,8 +325,8 @@ TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
 }
 
 TEST(Basis, PlaceOntoUncoveredElementIsInvalidConfig) {
-  const fb::Molecule nh({Atom<double>{0.0, 0.0, 0.0, Element::N},
-                         Atom<double>{0.0, 0.0, 1.9, Element::H}});
+  const fb::Molecule nh(
+      {Atom<double>{0.0, 0.0, 0.0, Element::N}, Atom<double>{0.0, 0.0, 1.9, Element::H}});
   auto basis = fb::place(water_stamp(), nh);
   ASSERT_FALSE(basis.has_value());
   EXPECT_EQ(basis.error().kind, fb::ErrorKind::InvalidConfig);
@@ -338,10 +335,10 @@ TEST(Basis, PlaceOntoUncoveredElementIsInvalidConfig) {
 
 TEST(Basis, PlacingOneStampAtTwoGeometriesAgreesOnLayout) {
   const fb::BasisStamp stamp = water_stamp().primitive_normalized();
-  const fb::Molecule a({Atom<double>{0.0, 0.0, 0.0, Element::O},
-                        Atom<double>{0.0, 0.0, 1.8, Element::H}});
-  const fb::Molecule b({Atom<double>{0.5, 0.0, 0.0, Element::O},
-                        Atom<double>{0.5, 0.0, 2.1, Element::H}});
+  const fb::Molecule a(
+      {Atom<double>{0.0, 0.0, 0.0, Element::O}, Atom<double>{0.0, 0.0, 1.8, Element::H}});
+  const fb::Molecule b(
+      {Atom<double>{0.5, 0.0, 0.0, Element::O}, Atom<double>{0.5, 0.0, 2.1, Element::H}});
   auto ba = fb::place(stamp, a);
   auto bb = fb::place(stamp, b);
   ASSERT_TRUE(ba.has_value() && bb.has_value());

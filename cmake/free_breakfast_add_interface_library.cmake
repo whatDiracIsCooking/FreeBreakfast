@@ -1,6 +1,6 @@
 # FREE_BREAKFAST_ADD_INTERFACE_LIBRARY.cmake Provides
-# FREE_BREAKFAST_ADD_INTERFACE_LIBRARY macro for creating INTERFACE libraries that
-# expose header files (.h/.cuh) to consumers
+# FREE_BREAKFAST_ADD_INTERFACE_LIBRARY macro for creating INTERFACE libraries
+# that expose header files (.h/.cuh) to consumers
 
 # ---------------------------------------------------------------------------
 # Public macro
@@ -16,7 +16,9 @@ macro(FREE_BREAKFAST_ADD_INTERFACE_LIBRARY)
   cmake_parse_arguments(ARG "" "${_single_opts}" "${_multi_opts}" ${ARGN})
 
   if(NOT ARG_NAME)
-    message(FATAL_ERROR "FREE_BREAKFAST_ADD_INTERFACE_LIBRARY: NAME is required")
+    message(
+      FATAL_ERROR "FREE_BREAKFAST_ADD_INTERFACE_LIBRARY: NAME is required"
+    )
   endif()
 
   add_library(${ARG_NAME} INTERFACE)

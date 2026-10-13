@@ -156,9 +156,8 @@ TEST(IoNpy, WriteOfMismatchedArrayLeavesNoFile) {
 TEST(IoNpy, AcceptsFormatVersionsTwoAndThree) {
   const std::array values{1.0, 2.0};
   for (const unsigned major : {2U, 3U}) {
-    auto array =
-        fb::parse_npy(make_npy("{'descr': '<f8', 'fortran_order': False, 'shape': (2,), }",
-                               doubles_as_bytes(values), major));
+    auto array = fb::parse_npy(make_npy("{'descr': '<f8', 'fortran_order': False, 'shape': (2,), }",
+                                        doubles_as_bytes(values), major));
     ASSERT_TRUE(array.has_value()) << "v" << major << ": " << array.error().message;
     EXPECT_EQ(array->data, (std::vector<double>{1.0, 2.0}));
   }
@@ -166,8 +165,8 @@ TEST(IoNpy, AcceptsFormatVersionsTwoAndThree) {
 
 TEST(IoNpy, ToleratesKeyOrderAndSpacing) {
   const std::array values{1.0, 2.0, 3.0, 4.0};
-  auto array = fb::parse_npy(make_npy(
-      "{'shape':(2,2),'fortran_order':False,'descr':'<f8'}", doubles_as_bytes(values)));
+  auto array = fb::parse_npy(
+      make_npy("{'shape':(2,2),'fortran_order':False,'descr':'<f8'}", doubles_as_bytes(values)));
   ASSERT_TRUE(array.has_value()) << array.error().message;
   EXPECT_EQ(array->shape, (std::vector<std::size_t>{2, 2}));
 }
@@ -190,17 +189,17 @@ TEST(IoNpy, RejectsTruncation) {
 
 TEST(IoNpy, RejectsOtherDtypes) {
   for (const std::string_view descr : {"<f4", ">f8", "<i8", "|b1"}) {
-    expect_io_error(make_npy(std::format("{{'descr': '{}', 'fortran_order': False, 'shape': (1,), }}",
-                                         descr),
-                             std::string(8, '\0')),
-                    std::format("unsupported NPY dtype '{}'", descr));
+    expect_io_error(
+        make_npy(std::format("{{'descr': '{}', 'fortran_order': False, 'shape': (1,), }}", descr),
+                 std::string(8, '\0')),
+        std::format("unsupported NPY dtype '{}'", descr));
   }
 }
 
 TEST(IoNpy, RejectsFortranOrder) {
-  expect_io_error(make_npy("{'descr': '<f8', 'fortran_order': True, 'shape': (1,), }",
-                           std::string(8, '\0')),
-                  "Fortran-order");
+  expect_io_error(
+      make_npy("{'descr': '<f8', 'fortran_order': True, 'shape': (1,), }", std::string(8, '\0')),
+      "Fortran-order");
 }
 
 TEST(IoNpy, RejectsMalformedHeaderFields) {
@@ -215,7 +214,8 @@ TEST(IoNpy, RejectsMalformedHeaderFields) {
 
 TEST(IoNpy, RejectsPayloadLengthMismatch) {
   const auto dict = "{'descr': '<f8', 'fortran_order': False, 'shape': (2,), }";
-  expect_io_error(make_npy(dict, std::string(8, '\0')), "payload is 8 bytes but the shape needs 16");
+  expect_io_error(make_npy(dict, std::string(8, '\0')),
+                  "payload is 8 bytes but the shape needs 16");
   expect_io_error(make_npy(dict, std::string(24, '\0')), "payload is 24 bytes");
 }
 

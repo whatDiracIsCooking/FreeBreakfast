@@ -27,20 +27,6 @@
 
 namespace free_breakfast {
 
-namespace detail {
-
-/// @brief Selects the @p N-th (1-based) type from four candidates.
-///
-/// The primary template is intentionally left undefined, so an @p N outside
-/// 1..4 is a compile error rather than a silent pick.
-template <int N, typename T1, typename T2, typename T3, typename T4> struct nth_type;
-template <typename T1, typename T2, typename T3, typename T4> struct nth_type<1, T1, T2, T3, T4> { using type = T1; };
-template <typename T1, typename T2, typename T3, typename T4> struct nth_type<2, T1, T2, T3, T4> { using type = T2; };
-template <typename T1, typename T2, typename T3, typename T4> struct nth_type<3, T1, T2, T3, T4> { using type = T3; };
-template <typename T1, typename T2, typename T3, typename T4> struct nth_type<4, T1, T2, T3, T4> { using type = T4; };
-
-} // namespace detail
-
 /// @brief Trait mapping a scalar type @c T and an order @c N (1..4) to the
 /// matching builtin vector type, exposed as the nested @c type.
 ///
@@ -48,9 +34,10 @@ template <typename T1, typename T2, typename T3, typename T4> struct nth_type<4,
 /// combination (an order outside 1..4, or a scalar with no builtin vector type)
 /// is a compile error rather than a silent fallback. Each scalar row below
 /// names all four builtins because their identifiers cannot be synthesised from
-/// the scalar type; @c detail::nth_type then keeps the N axis DRY.
+/// the scalar type.
 
-template <typename T, int N> struct vector_type;
+template <typename T, int N>
+struct vector_type;
 
 // CUDA 13 deprecates the 32-byte builtins (double4, long4, longlong4, ulong4,
 // ulonglong4) in favour of explicit _16a / _32a alignment variants, which HIP
@@ -68,18 +55,71 @@ template <typename T, int N> struct vector_type;
 // Scalar-to-builtin rows follow the toolkits' own naming: charN carries a
 // `signed char`, ucharN an `unsigned char`, and `long` / `long long` map to the
 // distinct longN / longlongN families even where they share a width.
-template <int N> struct vector_type<signed char, N>        { using type = typename detail::nth_type<N, char1,      char2,      char3,      char4>::type; };
-template <int N> struct vector_type<unsigned char, N>      { using type = typename detail::nth_type<N, uchar1,     uchar2,     uchar3,     uchar4>::type; };
-template <int N> struct vector_type<short, N>              { using type = typename detail::nth_type<N, short1,     short2,     short3,     short4>::type; };
-template <int N> struct vector_type<unsigned short, N>     { using type = typename detail::nth_type<N, ushort1,    ushort2,    ushort3,    ushort4>::type; };
-template <int N> struct vector_type<int, N>                { using type = typename detail::nth_type<N, int1,       int2,       int3,       int4>::type; };
-template <int N> struct vector_type<unsigned int, N>       { using type = typename detail::nth_type<N, uint1,      uint2,      uint3,      uint4>::type; };
-template <int N> struct vector_type<long, N>               { using type = typename detail::nth_type<N, long1,      long2,      long3,      long4>::type; };
-template <int N> struct vector_type<unsigned long, N>      { using type = typename detail::nth_type<N, ulong1,     ulong2,     ulong3,     ulong4>::type; };
-template <int N> struct vector_type<long long, N>          { using type = typename detail::nth_type<N, longlong1,  longlong2,  longlong3,  longlong4>::type; };
-template <int N> struct vector_type<unsigned long long, N> { using type = typename detail::nth_type<N, ulonglong1, ulonglong2, ulonglong3, ulonglong4>::type; };
-template <int N> struct vector_type<float, N>              { using type = typename detail::nth_type<N, float1,     float2,     float3,     float4>::type; };
-template <int N> struct vector_type<double, N>             { using type = typename detail::nth_type<N, double1,    double2,    double3,    double4>::type; };
+//
+// Spelled out in full rather than factored through a helper metafunction: this
+// header is #included by device code, where no module partition can keep a
+// helper private, so any helper declared here would be public API.
+// clang-format off
+template <> struct vector_type<signed char,        1> { using type = char1; };
+template <> struct vector_type<signed char,        2> { using type = char2; };
+template <> struct vector_type<signed char,        3> { using type = char3; };
+template <> struct vector_type<signed char,        4> { using type = char4; };
+
+template <> struct vector_type<unsigned char,      1> { using type = uchar1; };
+template <> struct vector_type<unsigned char,      2> { using type = uchar2; };
+template <> struct vector_type<unsigned char,      3> { using type = uchar3; };
+template <> struct vector_type<unsigned char,      4> { using type = uchar4; };
+
+template <> struct vector_type<short,              1> { using type = short1; };
+template <> struct vector_type<short,              2> { using type = short2; };
+template <> struct vector_type<short,              3> { using type = short3; };
+template <> struct vector_type<short,              4> { using type = short4; };
+
+template <> struct vector_type<unsigned short,     1> { using type = ushort1; };
+template <> struct vector_type<unsigned short,     2> { using type = ushort2; };
+template <> struct vector_type<unsigned short,     3> { using type = ushort3; };
+template <> struct vector_type<unsigned short,     4> { using type = ushort4; };
+
+template <> struct vector_type<int,                1> { using type = int1; };
+template <> struct vector_type<int,                2> { using type = int2; };
+template <> struct vector_type<int,                3> { using type = int3; };
+template <> struct vector_type<int,                4> { using type = int4; };
+
+template <> struct vector_type<unsigned int,       1> { using type = uint1; };
+template <> struct vector_type<unsigned int,       2> { using type = uint2; };
+template <> struct vector_type<unsigned int,       3> { using type = uint3; };
+template <> struct vector_type<unsigned int,       4> { using type = uint4; };
+
+template <> struct vector_type<long,               1> { using type = long1; };
+template <> struct vector_type<long,               2> { using type = long2; };
+template <> struct vector_type<long,               3> { using type = long3; };
+template <> struct vector_type<long,               4> { using type = long4; };
+
+template <> struct vector_type<unsigned long,      1> { using type = ulong1; };
+template <> struct vector_type<unsigned long,      2> { using type = ulong2; };
+template <> struct vector_type<unsigned long,      3> { using type = ulong3; };
+template <> struct vector_type<unsigned long,      4> { using type = ulong4; };
+
+template <> struct vector_type<long long,          1> { using type = longlong1; };
+template <> struct vector_type<long long,          2> { using type = longlong2; };
+template <> struct vector_type<long long,          3> { using type = longlong3; };
+template <> struct vector_type<long long,          4> { using type = longlong4; };
+
+template <> struct vector_type<unsigned long long, 1> { using type = ulonglong1; };
+template <> struct vector_type<unsigned long long, 2> { using type = ulonglong2; };
+template <> struct vector_type<unsigned long long, 3> { using type = ulonglong3; };
+template <> struct vector_type<unsigned long long, 4> { using type = ulonglong4; };
+
+template <> struct vector_type<float,              1> { using type = float1; };
+template <> struct vector_type<float,              2> { using type = float2; };
+template <> struct vector_type<float,              3> { using type = float3; };
+template <> struct vector_type<float,              4> { using type = float4; };
+
+template <> struct vector_type<double,             1> { using type = double1; };
+template <> struct vector_type<double,             2> { using type = double2; };
+template <> struct vector_type<double,             3> { using type = double3; };
+template <> struct vector_type<double,             4> { using type = double4; };
+// clang-format on
 
 #if defined(__clang__)
 #pragma clang diagnostic pop
@@ -88,7 +128,8 @@ template <int N> struct vector_type<double, N>             { using type = typena
 /// @brief The builtin vector type with scalar @c T and @c N components.
 ///
 /// Example: @c Vec<double,4> is @c double4, @c Vec<float,3> is @c float3.
-template <typename T, int N> using Vec = typename vector_type<T, N>::type;
+template <typename T, int N>
+using Vec = typename vector_type<T, N>::type;
 
 /// @brief Construct a @c Vec<T, sizeof...(Args)> by brace initialisation,
 /// usable from host or device code.

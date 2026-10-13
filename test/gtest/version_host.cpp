@@ -15,16 +15,15 @@ import free_breakfast.core;
 namespace {
 
 TEST(Version, ComponentsAreNonNegative) {
-  EXPECT_GE(free_breakfast::core::version_major, 0);
-  EXPECT_GE(free_breakfast::core::version_minor, 0);
-  EXPECT_GE(free_breakfast::core::version_patch, 0);
+  EXPECT_GE(free_breakfast::core::kVersionMajor, 0);
+  EXPECT_GE(free_breakfast::core::kVersionMinor, 0);
+  EXPECT_GE(free_breakfast::core::kVersionPatch, 0);
 }
 
 TEST(Version, StringMatchesComponents) {
   EXPECT_EQ(free_breakfast::core::version_string(),
-            std::format("{}.{}.{}", free_breakfast::core::version_major,
-                        free_breakfast::core::version_minor,
-                        free_breakfast::core::version_patch));
+            std::format("{}.{}.{}", free_breakfast::core::kVersionMajor,
+                        free_breakfast::core::kVersionMinor, free_breakfast::core::kVersionPatch));
 }
 
 } // namespace

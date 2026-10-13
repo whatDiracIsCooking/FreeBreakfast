@@ -253,9 +253,16 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   up transitively starts compiling its plain C++ as HIP.
 - **Link the `::` alias, not the dotted target name.** The alias makes a typo a
   configure error.
-- **No formatter is a git hook, deliberately.** A formatter rewrites whole files
-  and buries a real diff in restyling. Run `clang-format`/`cmake-format` by
-  hand. `ruff` and `cmake-lint` *are* enforced.
+- **Style is `docs/style.md`; read it before writing C++.** The format is
+  *checked*, never applied, by a hook: `devtools/format.sh --check`
+  (clang-format + ruff format, pinned by `uv.lock`) runs at commit and in CI's
+  `lint` job; `devtools/format.sh` fixes. `cmake-lint` holds CMake to 80
+  columns. Constants are `kCamelCase`.
+- **No anonymous namespaces, no `detail` namespaces** — except anonymous
+  namespaces in `.cu` and `test/gtest/*.cpp`, which are not module units. In a
+  module, not exporting *is* the privacy; module-private code shared between
+  units goes in a partition. `docs/style.md` "Module-private code" says which
+  kind, and why an unexported name must still be unique module-wide.
 - **GPU wrapper errors abort in Debug and are returned in Release.**
   `FREE_BREAKFAST_GPU_ERROR_POLICY` (empty = by build type) picks ABORT or
   RECORD tree-wide; use the aliases in `free_breakfast.core.gpu` (`Device`,

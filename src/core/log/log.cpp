@@ -2,7 +2,7 @@ module free_breakfast.core.log;
 
 import free_breakfast.third_party.spdlog;
 
-namespace {
+namespace free_breakfast::log {
 
 // Process-global, function-local static so its initialization is safe under
 // concurrent first use (like get_logger() in log_level.cppm). Relaxed
@@ -13,33 +13,33 @@ std::atomic<std::uint64_t> &warning_counter() {
   return counter;
 }
 
-} // namespace
-
-namespace free_breakfast::log {
-
 void trace(std::string_view msg, std::source_location loc) {
-  log_impl(LogLevel::trace, msg, loc);
+  log_impl(LogLevel::Trace, msg, loc);
 }
 void debug(std::string_view msg, std::source_location loc) {
-  log_impl(LogLevel::debug, msg, loc);
+  log_impl(LogLevel::Debug, msg, loc);
 }
 void info(std::string_view msg, std::source_location loc) {
-  log_impl(LogLevel::info, msg, loc);
+  log_impl(LogLevel::Info, msg, loc);
 }
 void warn(std::string_view msg, std::source_location loc) {
   warning_counter().fetch_add(1, std::memory_order_relaxed);
-  log_impl(LogLevel::warn, msg, loc);
+  log_impl(LogLevel::Warn, msg, loc);
 }
 void error(std::string_view msg, std::source_location loc) {
-  log_impl(LogLevel::error, msg, loc);
+  log_impl(LogLevel::Error, msg, loc);
 }
 void critical(std::string_view msg, std::source_location loc) {
-  log_impl(LogLevel::critical, msg, loc);
+  log_impl(LogLevel::Critical, msg, loc);
 }
 
-std::uint64_t warning_count() { return warning_counter().load(std::memory_order_relaxed); }
+std::uint64_t warning_count() {
+  return warning_counter().load(std::memory_order_relaxed);
+}
 
-void reset_warning_count() { warning_counter().store(0, std::memory_order_relaxed); }
+void reset_warning_count() {
+  warning_counter().store(0, std::memory_order_relaxed);
+}
 
 void set_level(LogLevel lv) {
   get_logger().set_level(static_cast<spdlog::level_enum>(lv));
@@ -59,7 +59,7 @@ void add_file_sink(std::filesystem::path const &path, std::source_location loc) 
   static std::optional<std::filesystem::path> registered;
   if (registered) {
     if (*registered != path) {
-      log_impl(LogLevel::warn,
+      log_impl(LogLevel::Warn,
                std::format("file sink already set to '{}', ignoring '{}'", registered->string(),
                            path.string()),
                loc);

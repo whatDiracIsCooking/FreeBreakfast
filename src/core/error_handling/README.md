@@ -15,7 +15,7 @@ the one before:
 |-----------|---------|
 | `:error` | `Error`, `ErrorKind`, `Result<T>`, `Status`, `LocatedFormat`, the `err_*` helpers, `to_exit_code` |
 | `:gpu_status` | `gpu_status`, `check_or_abort` |
-| `:gpu_policy` | `AbortPolicy` / `RecordPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap`, `aborts_on_error`, `capture`, `take_error` |
+| `:gpu_policy` | `AbortPolicy` / `RecordPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap`, `kAbortsOnError`, `capture`, `take_error` |
 
 ## Usage
 
@@ -117,7 +117,7 @@ concepts). `:gpu_policy` supplies ours, and a switch between two behaviours:
 | *(empty, default)* | `ABORT` for `CMAKE_BUILD_TYPE=Debug`, `RECORD` otherwise | |
 
 The resolved mode is printed at configure (`-- GPU error policy: …`) and is
-readable in code as `aborts_on_error`.
+readable in code as `kAbortsOnError`.
 
 ### Using it
 
@@ -166,7 +166,7 @@ happens first, at the call that failed — so callers are written once.
   to whichever capture is running on the thread that made the call.
 - **The switch is a compile definition on this target only**, read once by
   `:gpu_policy` into
-  the `constexpr` `aborts_on_error`. Every importer gets that value through
+  the `constexpr` `kAbortsOnError`. Every importer gets that value through
   the BMI, so no TU can be built against the other mode.
 - **Not `NDEBUG`.** That is `assert`'s switch, invisible in presets and the
   configure log; this one is a cache variable, so a Release build can opt into

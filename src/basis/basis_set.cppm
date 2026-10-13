@@ -32,6 +32,7 @@ import std;
 import :shell;
 import :ao;
 import :harmonics;
+import :numeric;
 import free_breakfast.core.error_handling;
 
 #include "diagnostics.h"
@@ -95,9 +96,7 @@ public:
   [[nodiscard]] const std::vector<AO> &aos() const { return aos_; }
 
   /// @brief Number of shells in the basis.
-  [[nodiscard]] std::uint32_t nshells() const {
-    return static_cast<std::uint32_t>(shells_.size());
-  }
+  [[nodiscard]] std::uint32_t nshells() const { return static_cast<std::uint32_t>(shells_.size()); }
 
   /// @brief Total number of atomic orbitals, Sum over shells of their
   /// function counts.
@@ -146,31 +145,6 @@ private:
   // One AO per Cartesian function, global AO order; empty for an empty basis.
   std::vector<AO> aos_{};
 };
-
-} // namespace free_breakfast
-
-namespace free_breakfast {
-namespace {
-
-// (n-1)!! for odd n >= 1; n <= 0 is the empty product, 1.0. The SAME
-// combinatorial quantity ShellStamp::primitive_normalized computes inline for
-// its own purpose (folding it into a primitive's coefficient); here it
-// rescales the harmonic block by the reciprocal amount instead, so the two
-// duplicate the formula rather than sharing it -- see cartesian_to_spherical's
-// doc comment for why that reciprocal relationship is exactly what makes U
-// correct against THIS repo's Cartesian normalization convention.
-[[nodiscard]] inline double double_factorial_odd(int n) {
-  double result = 1.0;
-  for (int k = n; k > 1; k -= 2) {
-    result *= static_cast<double>(k);
-  }
-  return result;
-}
-
-} // namespace
-} // namespace free_breakfast
-
-export namespace free_breakfast {
 
 /// @brief The Cartesian-to-spherical transform @c U for @p basis: a
 /// @c basis.nao() x @c basis.spherical_nao() row-major matrix such that

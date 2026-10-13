@@ -21,7 +21,7 @@ export namespace free_breakfast {
 /// @brief True when this build's wrappers abort on a GPU failure (ABORT), false
 /// when they record it for capture (RECORD). Follows
 /// FREE_BREAKFAST_GPU_ERROR_POLICY, which defaults by build type.
-inline constexpr bool aborts_on_error = FREE_BREAKFAST_GPU_POLICY_ABORTS != 0;
+inline constexpr bool kAbortsOnError = FREE_BREAKFAST_GPU_POLICY_ABORTS != 0;
 
 // ============================================================================
 // The recording slot behind RecordPolicy and capture
@@ -39,7 +39,12 @@ void record_error(Error error) noexcept;
 /// @brief Take (and clear) the error recorded on this thread, if any.
 std::optional<Error> take_error() noexcept;
 
-namespace detail {
+} // namespace free_breakfast
+
+// Not exported: capture() below names it, so it must be reachable from the
+// importer's instantiation, but no importer can spell it.
+namespace free_breakfast {
+
 /// Brackets one capture: stashes any error already pending for an outer
 /// capture, and puts it back on the way out -- so an inner capture neither
 /// reports its caller's error nor wipes it.
@@ -53,7 +58,10 @@ public:
 private:
   std::optional<Error> outer_;
 };
-} // namespace detail
+
+} // namespace free_breakfast
+
+export namespace free_breakfast {
 
 // ============================================================================
 // Policies
@@ -64,7 +72,7 @@ private:
 // needs: it default-constructs its device policy rather than taking one.
 
 /// @brief Log at critical with the failing call's location, then abort.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 struct AbortPolicy {
   using error_type = E;
   void handle_error(E code, std::source_location loc) noexcept {
@@ -76,7 +84,7 @@ struct AbortPolicy {
 ///
 /// The wrapper is left empty (a handle's valid() is false, a buffer has
 /// size 0), which is wwr's record-and-continue path.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 struct RecordPolicy {
   using error_type = E;
   void handle_error(E code, std::source_location loc) noexcept {
@@ -95,7 +103,7 @@ struct RecordPolicy {
 ///
 /// For the destruction slots in RECORD mode: a failed destroy/free runs in a
 /// destructor, after any capture that could have returned it has finished.
-template<wwr::extension::error_type E>
+template <wwr::extension::error_type E>
 struct LogPolicy {
   using error_type = E;
   void handle_error(E code, std::source_location loc) noexcept {
@@ -109,19 +117,19 @@ struct LogPolicy {
 };
 
 /// @brief This build's policy for creation, allocation and device-select slots.
-template<wwr::extension::error_type E>
-using CreatePolicy = std::conditional_t<aborts_on_error, AbortPolicy<E>, RecordPolicy<E>>;
+template <wwr::extension::error_type E>
+using CreatePolicy = std::conditional_t<kAbortsOnError, AbortPolicy<E>, RecordPolicy<E>>;
 
 /// @brief This build's policy for destruction and free slots.
-template<wwr::extension::error_type E>
-using DestroyPolicy = std::conditional_t<aborts_on_error, AbortPolicy<E>, LogPolicy<E>>;
+template <wwr::extension::error_type E>
+using DestroyPolicy = std::conditional_t<kAbortsOnError, AbortPolicy<E>, LogPolicy<E>>;
 
 /// @brief wwr policy map binding CreatePolicy to alloc and DestroyPolicy to free,
 /// for kit::buffer_suite / kit::device_buffer_suite.
 struct PolicyMap {
-  template<typename E>
+  template <typename E>
   using alloc = CreatePolicy<E>;
-  template<typename E>
+  template <typename E>
   using free = DestroyPolicy<E>;
 };
 
@@ -144,14 +152,14 @@ struct PolicyMap {
  *
  * Under ABORT nothing is ever recorded -- a failure aborts inside `f` -- so the
  * result is always a value, and the same caller code builds in both modes.
- * Nesting is safe; see detail::CaptureScope.
+ * Nesting is safe; see CaptureScope.
  *
  * @return Result<R> for a lambda returning R; Status for one returning void.
  */
-template<std::invocable F>
+template <std::invocable F>
 Result<std::invoke_result_t<F>> capture(F &&f) {
   using R = std::invoke_result_t<F>;
-  detail::CaptureScope scope;
+  CaptureScope scope;
   if constexpr (std::is_void_v<R>) {
     std::invoke(std::forward<F>(f));
     if (auto e = take_error()) {

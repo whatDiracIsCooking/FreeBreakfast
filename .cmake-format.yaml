@@ -21,17 +21,11 @@
 # any macro that declares flags.
 
 format:
-  # 100 rather than cmakelang's default 80. `free_breakfast` is 14 characters
-  # and every macro and target name carries it twice over, so a single call --
-  #
-  #   free_breakfast_add_interface_library(NAME free_breakfast.core.bitutils)
-  #
-  # -- is most of a default-width line before anything is wrapped. The findings
-  # that forced this were lines containing the project name, not sprawl, so the
-  # width moves rather than the tree.
-  #
-  # (Keep the arithmetic in step with the project name if it ever changes.)
-  line_width: 100
+  # 80, cmakelang's default, and the width .editorconfig declares for CMake.
+  # cmake-lint enforces it (C0301), at commit and in CI. Where the 14-character
+  # `free_breakfast` prefix pushes a call past it, wrap the arguments one per
+  # line rather than widening this.
+  line_width: 80
   tab_size: 2
   use_tabchars: false
   dangle_parens: true

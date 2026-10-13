@@ -11,6 +11,7 @@ module free_breakfast.io.npy;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.io.base;
+import :format;
 
 #include "diagnostics.h"
 
@@ -20,12 +21,7 @@ namespace free_breakfast {
 // '<f8' is the native representation.
 static_assert(std::endian::native == std::endian::little,
               "the .npy module assumes a little-endian host");
-static_assert(std::numeric_limits<double>::is_iec559,
-              "the .npy module assumes IEEE-754 doubles");
-
-namespace {
-
-constexpr std::string_view kMagic{"\x93NUMPY", 6};
+static_assert(std::numeric_limits<double>::is_iec559, "the .npy module assumes IEEE-754 doubles");
 
 /// @brief A little-endian unsigned integer of @p nbytes bytes at @p offset.
 [[nodiscard]] std::uint64_t read_le(std::string_view bytes, std::size_t offset,
@@ -60,8 +56,7 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
 }
 
 /// @brief The quoted string value of @p key (e.g. descr's "<f8").
-[[nodiscard]] Result<std::string_view> quoted_value(std::string_view header,
-                                                    std::string_view key) {
+[[nodiscard]] Result<std::string_view> quoted_value(std::string_view header, std::string_view key) {
   const auto start = value_start(header, key);
   if (!start || header[*start] != '\'') {
     return err_io("NPY header has no quoted '{}'", key);
@@ -116,8 +111,6 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
   }
   return shape;
 }
-
-} // namespace
 
 [[nodiscard]] Result<NpyArray> parse_npy(std::string_view npy_bytes) {
   if (npy_bytes.size() < 8 || npy_bytes.substr(0, 6) != kMagic) {

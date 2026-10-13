@@ -1,5 +1,5 @@
 # The Python side of a C++23/CUDA project: the test runner, the linters and the
-# CMake formatter. There is no Python package here -- `src/` is C++ -- so this
+# formatters. There is no Python package here -- `src/` is C++ -- so this
 # file declares no [build-system] and nothing is installable. Its two halves
 # must stay in sync with devtools/config.sh: `testpaths` and the `slow` marker
 # are what FAST_TEST_ARGS, PREPUSH_PATHS and slow-tier.sh assume exist.
@@ -23,15 +23,22 @@ dev = [
     "ruff>=0.6",
     "pre-commit>=3.7",
     # cmake-format / cmake-lint, for the CMakeLists.txt and cmake/*.cmake that
-    # define every target in the tree. Configured by .cmake-format.yaml. Not a
-    # pre-commit hook on purpose -- see .pre-commit-config.yaml on why there is
-    # no formatter hook in this repo.
+    # define every target in the tree. Configured by .cmake-format.yaml. Only
+    # cmake-lint is used (a commit hook and CI); cmake-format is not part of
+    # devtools/format.sh -- cmake-lint covers CMake.
     # The [yaml] extra is load-bearing: cmakelang keeps pyyaml behind it, and
     # both cmake-format and cmake-lint abort with ModuleNotFoundError the
     # moment they try to read .cmake-format.yaml without it. It resolves today
     # only because pre-commit happens to pull pyyaml in -- drop pre-commit and
     # the CI lint step breaks for a reason that points nowhere near here.
     "cmakelang[yaml]>=0.6.13",
+    # The C++ formatter, as the PyPI wheel rather than the image's apt package,
+    # so the lock pins it and host and container format byte-identically (two
+    # clang-format minors can disagree on the same file). Exact, not >=: a bump
+    # can reformat the tree, so it is a deliberate commit of its own. Keep the
+    # major in step with the image's clang (docker/Dockerfile.base).
+    # devtools/format.sh runs it; .clang-format configures it.
+    "clang-format==20.1.8",
 ]
 
 # The numeric stack the Python suite typically needs to validate GPU output

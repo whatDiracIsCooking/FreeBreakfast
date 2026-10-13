@@ -15,9 +15,9 @@ The chemical element (`Element`) and a single positioned atom (`Atom<T>`), defin
 
 The re-export in `atom.cppm` is written with `using free_breakfast::Element;` / `using free_breakfast::Atom;` *inside* `namespace free_breakfast` (not `export using` at global scope): a name brought in from the global module fragment is only usable by importers when the re-exporting using-declaration sits in the namespace that owns the name.
 
-`Element` is a strong enum over `std::uint8_t` whose enumerator value is exactly the nuclear charge Z, covering `H` (1) through `Og` (118). `kSentinel` (0) is the default "no element" value. The headers include `<cstdint>` rather than relying on `import std`, so they work unchanged in device code.
+`Element` is a strong enum over `std::uint8_t` whose enumerator value is exactly the nuclear charge Z, covering `H` (1) through `Og` (118). `Sentinel` (0) is the default "no element" value. The headers include `<cstdint>` rather than relying on `import std`, so they work unchanged in device code.
 
-`Atom<T>` is a plain aggregate — public `x`, `y`, `z` coordinates in bohr plus an `Element`, with no invariant — so callers brace-initialise directly. A default-constructed `Atom` sits at the origin carrying `Element::kSentinel`.
+`Atom<T>` is a plain aggregate — public `x`, `y`, `z` coordinates in bohr plus an `Element`, with no invariant — so callers brace-initialise directly. A default-constructed `Atom` sits at the origin carrying `Element::Sentinel`.
 
 ## Usage
 

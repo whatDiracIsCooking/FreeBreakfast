@@ -96,7 +96,7 @@
 /// trace level would actually be emitted.
 #define FBF_LOG_TRACE(...)                                                                         \
   do {                                                                                             \
-    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::trace)) {               \
+    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::Trace)) {               \
       ::free_breakfast::log::trace(::std::format(__VA_ARGS__));                                    \
     }                                                                                              \
   } while (0)
@@ -105,7 +105,7 @@
 /// debug level would actually be emitted.
 #define FBF_LOG_DEBUG(...)                                                                         \
   do {                                                                                             \
-    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::debug)) {               \
+    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::Debug)) {               \
       ::free_breakfast::log::debug(::std::format(__VA_ARGS__));                                    \
     }                                                                                              \
   } while (0)
@@ -114,7 +114,7 @@
 /// level would actually be emitted.
 #define FBF_LOG_INFO(...)                                                                          \
   do {                                                                                             \
-    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::info)) {                \
+    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::Info)) {                \
       ::free_breakfast::log::info(::std::format(__VA_ARGS__));                                     \
     }                                                                                              \
   } while (0)
@@ -123,7 +123,7 @@
 /// level would actually be emitted.
 #define FBF_LOG_WARN(...)                                                                          \
   do {                                                                                             \
-    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::warn)) {                \
+    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::Warn)) {                \
       ::free_breakfast::log::warn(::std::format(__VA_ARGS__));                                     \
     }                                                                                              \
   } while (0)
@@ -132,7 +132,7 @@
 /// error level would actually be emitted.
 #define FBF_LOG_ERROR(...)                                                                         \
   do {                                                                                             \
-    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::error)) {               \
+    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::Error)) {               \
       ::free_breakfast::log::error(::std::format(__VA_ARGS__));                                    \
     }                                                                                              \
   } while (0)
@@ -141,7 +141,7 @@
 /// critical level would actually be emitted.
 #define FBF_LOG_CRITICAL(...)                                                                      \
   do {                                                                                             \
-    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::critical)) {            \
+    if (::free_breakfast::log::should_log(::free_breakfast::log::LogLevel::Critical)) {            \
       ::free_breakfast::log::critical(::std::format(__VA_ARGS__));                                 \
     }                                                                                              \
   } while (0)

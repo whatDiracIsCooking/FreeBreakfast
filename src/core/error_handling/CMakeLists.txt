@@ -21,7 +21,7 @@ free_breakfast_add_cxx_module_library(
 
 # The ABORT/RECORD switch, resolved in the root CMakeLists. PRIVATE is enough --
 # and is the point: :gpu_policy reads it once into
-# free_breakfast::aborts_on_error, so consumers get the value through the BMI,
+# free_breakfast::kAbortsOnError, so consumers get the value through the BMI,
 # never by seeing the macro themselves.
 if(FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED STREQUAL "ABORT")
   set(_fb_gpu_policy_aborts 1)

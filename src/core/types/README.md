@@ -8,8 +8,8 @@ Three things, all reached through one `import free_breakfast.core.types;`:
   (`signed char` … `double`), `N` in `1..4`. `make_vec` constructs one from its
   components in either host or device code. The builtin identifiers cannot be
   synthesised from `(scalar, N)` in the language, so each scalar row names its
-  four builtins explicitly; `detail::nth_type` keeps the `N` axis DRY without a
-  macro.
+  four builtins explicitly -- a 48-line table, with no helper metafunction
+  (a header shared with device code cannot keep one private).
 - **Fixed-width integer types.** The `:integral` partition re-exports
   `int8_t` … `uint64_t` and `size_t` into the global namespace, so a module can
   write bare `int32_t` / `size_t` after importing this module.

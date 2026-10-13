@@ -62,15 +62,14 @@ protected:
 } // namespace free_breakfast
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Compile-Time Verification (Non-Exported Namespace)
+// Compile-Time Verification (not exported)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // We cannot directly verify base class semantics with type traits (protected
 // destructors), but we can verify via minimal test-derived classes with public
 // destructors
 
-namespace { // Anonymous namespace - not exported
-using namespace free_breakfast;
+namespace free_breakfast {
 
 // Test classes for verification
 struct VerifyNonCopyable : private NonCopyable {};
@@ -98,4 +97,4 @@ static_assert(!std::movable<VerifyNonTransferable>);
 
 // Note: std::copyable/movable concepts work correctly even with protected
 // destructors
-} // namespace
+} // namespace free_breakfast

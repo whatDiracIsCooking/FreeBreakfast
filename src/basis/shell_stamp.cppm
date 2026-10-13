@@ -48,8 +48,7 @@ public:
   /// contract as @ref Shell, and the same reasoning: the one
   /// production caller, the BSE basis-set reader, already screens both
   /// conditions before constructing.
-  ShellStamp(int l, std::vector<Primitive> primitives,
-             Harmonic harmonic = Harmonic::Cartesian)
+  ShellStamp(int l, std::vector<Primitive> primitives, Harmonic harmonic = Harmonic::Cartesian)
       : l_(l), primitives_(std::move(primitives)), harmonic_(harmonic) {
     if (l_ < 0) {
       check_or_abort(err_config("ShellStamp: angular momentum must be non-negative"));
@@ -64,8 +63,7 @@ public:
   ///
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ.
-  ShellStamp(int l, const std::vector<double> &exponents,
-             const std::vector<double> &coefficients,
+  ShellStamp(int l, const std::vector<double> &exponents, const std::vector<double> &coefficients,
              Harmonic harmonic = Harmonic::Cartesian)
       : ShellStamp(l, zip(exponents, coefficients), harmonic) {}
 
@@ -73,9 +71,7 @@ public:
   [[nodiscard]] int angular_momentum() const { return l_; }
 
   /// @brief The contracted primitives, in contraction order.
-  [[nodiscard]] const std::vector<Primitive> &primitives() const {
-    return primitives_;
-  }
+  [[nodiscard]] const std::vector<Primitive> &primitives() const { return primitives_; }
 
   /// @brief Number of primitive Gaussians contracted into this shell.
   [[nodiscard]] std::uint32_t nprimitives() const {
@@ -88,16 +84,13 @@ public:
 
   /// @brief Number of Cartesian AO functions this shell contributes:
   /// (L+1)(L+2)/2, i.e. 1 (s), 3 (p), 6 (d).
-  [[nodiscard]] std::uint32_t function_count() const {
-    return cartesian_function_count(l_);
-  }
+  [[nodiscard]] std::uint32_t function_count() const { return cartesian_function_count(l_); }
 
   /// @brief Number of functions this shell actually presents to a basis:
   /// @ref function_count for a @c Cartesian shell, or @ref
   /// spherical_function_count (2l+1) for a @c Spherical one.
   [[nodiscard]] std::uint32_t presented_function_count() const {
-    return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_)
-                                             : function_count();
+    return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_) : function_count();
   }
 
   /// @brief This shell centered at @p center: a @ref Shell carrying the same
@@ -128,9 +121,8 @@ public:
     std::vector<Primitive> normalized = primitives_;
     for (Primitive &prim : normalized) {
       const double a = prim.exponent;
-      const double norm =
-          std::pow(2.0 * a / std::numbers::pi, 0.75) *
-          std::pow(4.0 * a, static_cast<double>(l_) / 2.0) / std::sqrt(dfac);
+      const double norm = std::pow(2.0 * a / std::numbers::pi, 0.75) *
+                          std::pow(4.0 * a, static_cast<double>(l_) / 2.0) / std::sqrt(dfac);
       prim.coefficient *= norm;
     }
     return ShellStamp{l_, std::move(normalized), harmonic_};
@@ -140,9 +132,8 @@ private:
   /// @brief Pair two equal-length arrays into primitives, or abort. Mirrors the
   /// @ref Shell zipping constructor's check -- the one place the two lists must
   /// agree in length.
-  [[nodiscard]] static std::vector<Primitive>
-  zip(const std::vector<double> &exponents,
-      const std::vector<double> &coefficients) {
+  [[nodiscard]] static std::vector<Primitive> zip(const std::vector<double> &exponents,
+                                                  const std::vector<double> &coefficients) {
     if (exponents.size() != coefficients.size()) {
       check_or_abort(err_config("ShellStamp: exponent and coefficient counts must match"));
     }

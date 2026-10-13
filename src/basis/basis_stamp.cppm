@@ -50,8 +50,7 @@ public:
       : element_shells_(std::move(element_shells)) {}
 
   /// @brief The element -> shells table.
-  [[nodiscard]] const std::map<int, std::vector<ShellStamp>> &
-  element_shells() const {
+  [[nodiscard]] const std::map<int, std::vector<ShellStamp>> &element_shells() const {
     return element_shells_;
   }
 
@@ -96,14 +95,13 @@ private:
 /// @returns The centered basis, or ErrorKind::InvalidConfig if any atom's element
 ///   is absent from the stamp -- a basis that cannot cover the molecule is a
 ///   configuration error, not a silently smaller basis.
-[[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp,
-                                     const Molecule &molecule) {
+[[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp, const Molecule &molecule) {
   std::vector<Shell> shells;
   for (const Atom<double> &atom : molecule.atoms()) {
     const int z = nuclear_charge(atom);
     const std::vector<ShellStamp> *element = basis_stamp.shells_for(z);
     if (element == nullptr) {
-      return err_config("basis has no shells for element Z={}", z);
+      return err_config(std::format("basis has no shells for element Z={}", z));
     }
     const wwr::double3 center = position(atom);
     for (const ShellStamp &proto : *element) {
