@@ -192,17 +192,14 @@ cmd_add() {
   # so without this the `next:` hint below leads straight to a failed configure
   # in a worktree that looks fully set up.
   #
-  # Guarded on .gitmodules so this stays a no-op in a checkout that has no
-  # submodules (the scripts here are meant to survive being copied into the next
-  # repo unchanged). Non-fatal: a worktree with an uninitialised submodule is
+  # Eager here, unlike the lazy call in build.sh's cpp_build: a sibling worktree
+  # is the full container-backed kind, made to build. init_submodules (lib.sh)
+  # is a no-op in a checkout with no .gitmodules. Non-fatal: a worktree with an uninitialised submodule is
   # still a usable checkout for editing, and the configure error that follows
   # names the fix, so a network failure here should not undo the worktree.
-  if [ -f "$path/.gitmodules" ]; then
-    echo "initialising submodules..."
-    if ! git -C "$path" submodule update --init --recursive; then
-      echo "worktree: WARNING -- submodule init failed; run it again in $path" >&2
-      echo "worktree:   git -C $path submodule update --init --recursive" >&2
-    fi
+  if ! init_submodules "$path"; then
+    echo "worktree: WARNING -- submodule init failed; run it again in $path" >&2
+    echo "worktree:   git -C $path submodule update --init --recursive" >&2
   fi
 
   echo

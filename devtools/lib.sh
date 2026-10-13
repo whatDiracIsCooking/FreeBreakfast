@@ -170,3 +170,31 @@ find_venv() {
   done
   return 1
 }
+
+# Initialise every submodule that has never been initialised, and touch nothing
+# else. Returns git's status, or 0 when there was nothing to do.
+#
+#   init_submodules <checkout>
+#
+# `git worktree add` gives a new checkout the gitlink and an EMPTY directory,
+# and a .claude/worktrees/ checkout gets no setup step -- so the C++ entry
+# points call this before configuring instead of relying on whoever made the
+# worktree to remember. Lazy on purpose: initialising in every worktree would
+# clone into docs- and Python-only checkouts too, and a worktree with an
+# initialised submodule can only be removed with --force.
+#
+# Only the `-` (uninitialised) entries of `git submodule status` are passed on.
+# A bare `git submodule update --init` would also check an INITIALISED
+# submodule back out at the pinned commit, detaching whatever branch or commits
+# someone has in it -- the state a build must not disturb. No-op without
+# .gitmodules, so this survives being copied into a repo that has none.
+init_submodules() {
+  local root=$1
+  local -a paths
+  [ -f "$root/.gitmodules" ] || return 0
+  mapfile -t paths < <(git -C "$root" submodule status 2>/dev/null |
+    sed -n 's/^-[0-9a-f]* \([^ ]*\).*/\1/p')
+  [ "${#paths[@]}" -gt 0 ] || return 0
+  echo "initialising submodules: ${paths[*]}"
+  git -C "$root" submodule update --init --recursive -- "${paths[@]}"
+}
