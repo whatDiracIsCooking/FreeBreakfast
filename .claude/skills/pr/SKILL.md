@@ -55,61 +55,47 @@ git push -u origin <branch>
 
 ```bash
 gh pr create --title "<concise title>" --body "<what and why>"
-gh pr edit <number> --add-label automerge    # opt this PR into server-side merge
 ```
 
 Summarise what changed and why, and note any test implications. The harness's
 PR-body footer rules apply.
 
-The `automerge` label is the opt-in for `.github/workflows/automerge.yml`: when
-`ci` finishes green on this PR, that workflow squash-merges it server-side and
-deletes the branch, with no local permission prompt. Add it on every PR you
-intend to land unattended; **leave it off** for the "stop after step 4" cases in
-"When NOT to merge" below (CI expected red, a ratchet/reference touch, or the
-user asked for a PR but not a merge).
-
-**If `ci.yml` is manually disabled** (check with `gh workflow list --all` —
-see CLAUDE.md's "What is gated, and what is not"), skip the label: `automerge`
-fires on `ci` completing, and a disabled workflow never completes, so a
-labelled PR would sit open forever with no CI check to satisfy it. Merge by
-hand instead, per step 5 below.
-
-## 5. Merge
-
-If you added the `automerge` label in step 4, **you are done** — the
-`automerge` workflow squash-merges the PR the moment `ci` goes green and deletes
-the branch, no local action needed. Watch it land with `gh pr checks <number>
---watch` and confirm with `gh pr view <number> --json state`; do not also run
-`gh pr merge`, which would race the workflow.
-
-To merge by hand instead (label not applied, or you want it merged now):
+## 5. Merge — GitHub's native auto-merge
 
 ```bash
-gh pr merge <number> --squash
-git push origin --delete <branch>     # remote branch cleanup
+gh pr merge <number> --auto --squash
 ```
 
-- **Wait for CI — unless it's disabled.** `.github/workflows/ci.yml` runs lint
-  and the fast tier on every PR; the local pre-push gate is a subset of it.
-  Check with `gh pr checks <number> --watch` before merging, and do not merge
-  red. If `ci.yml` is manually disabled (`gh workflow list --all`), there is no
-  check to wait for — `gh pr checks` will show nothing — so merge on the
-  strength of the local gates alone and say so.
+`--auto` hands the merge to GitHub: it squash-merges server-side the moment the
+checks the `main` ruleset requires (`lint`, `test (3.11)`, `test (3.13)` from
+`ci.yml`) pass, and the repo's "delete branch on merge" setting removes the
+remote branch. If they have already passed, it merges immediately. Do it for
+every PR you intend to land; **skip it** for the "stop after step 4" cases in
+"When NOT to merge" below (CI expected red, a ratchet/reference touch, or the
+user asked for a PR but not a merge). `gh pr merge <number> --disable-auto`
+takes it back.
+
+- **Only required checks gate it.** Auto-merge waits for what the ruleset
+  requires and nothing else. A job missing from that list, or renamed in
+  `ci.yml` so it no longer matches the ruleset's name, is not waited for — and
+  a required name that no job produces any more blocks every PR forever.
+- **If `ci.yml` is manually disabled** (`gh workflow list --all` — see
+  CLAUDE.md's "What is gated, and what is not"), the required checks never
+  report and an auto-merge PR sits open indefinitely. Merging then needs an
+  admin bypass in the GitHub UI; say so rather than working around it.
 - **Never pass `--delete-branch` to a local `gh pr merge`**: it attempts a local
   `git checkout main`, which fails when `main` is held by another worktree.
-  Delete the remote branch with `git push origin --delete` instead, as above.
-  (The `automerge` *workflow* does pass `--delete-branch`, which is safe there —
-  it runs server-side with no local checkout to disturb.)
-- If GitHub reports the PR as not yet mergeable, wait a moment and re-check
-  with `gh pr view <number> --json mergeable,mergeStateStatus` before retrying
-  — do not force.
+  The server deletes the branch on merge; if it ever does not, use
+  `git push origin --delete <branch>`.
+- If `gh` reports the PR as not mergeable (conflicts), fix the branch and push
+  again — auto-merge stays armed across pushes. Do not force.
 
 ## 6. After the merge
 
-**First confirm the PR actually merged** — `gh pr view <number> --json state`
-must read `MERGED`. For a labelled PR that means *waiting* for the `automerge`
-workflow, which lands it a short while **after** CI goes green; green CI alone is
-not "merged". Everything below assumes `origin/main` has already advanced, so
+**First confirm the PR actually merged** — watch with `gh pr checks <number>
+--watch`, then `gh pr view <number> --json state` must read `MERGED`. Auto-merge
+lands it a short while **after** the checks go green; green CI alone is not
+"merged", and armed auto-merge is not merged either. Everything below assumes `origin/main` has already advanced, so
 doing it before the merge lands is a no-op at best.
 
 `origin/main` has moved but local `main` has not — and `worktree.sh add` forks
