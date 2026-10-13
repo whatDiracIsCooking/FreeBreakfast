@@ -77,8 +77,7 @@ class AuxPrimitive:
 class AuxShell:
     """One acCD auxiliary shell: angular momentum ell plus its primitive
     contraction, applying identically to each of the 2*ell+1 real solid
-    harmonic components of that ell -- NOT a Cartesian src/basis Shell (see
-    module docstring)."""
+    harmonic components of that ell (see module docstring)."""
 
     ell: int
     primitives: list[AuxPrimitive]

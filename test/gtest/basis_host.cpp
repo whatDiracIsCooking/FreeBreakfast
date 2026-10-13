@@ -13,7 +13,6 @@ namespace {
 namespace fb = free_breakfast;
 using fb::Atom;
 using fb::Element;
-using fb::Harmonic;
 using Powers = std::array<std::int32_t, 3>;
 
 const fb::Vec<double, 3> kOrigin{0.0, 0.0, 0.0};
@@ -77,19 +76,14 @@ TEST(Basis, CartesianPowersCanonicalOrder) {
 }
 
 TEST(Basis, ShellZipsParallelArrays) {
-  const fb::Shell shell(2, {3.0, 0.5}, {0.25, 0.75}, fb::Vec<double, 3>{1.0, 2.0, 3.0},
-                        Harmonic::Spherical);
+  const fb::Shell shell(2, {3.0, 0.5}, {0.25, 0.75}, fb::Vec<double, 3>{1.0, 2.0, 3.0});
   EXPECT_EQ(shell.angular_momentum(), 2);
   ASSERT_EQ(shell.nprimitives(), 2U);
   EXPECT_EQ(shell.primitives()[1].exponent, 0.5);
   EXPECT_EQ(shell.primitives()[1].coefficient, 0.75);
   EXPECT_EQ(shell.center().z, 3.0);
-  EXPECT_EQ(shell.harmonic(), Harmonic::Spherical);
-  EXPECT_EQ(shell.function_count(), 6U);           // always Cartesian
-  EXPECT_EQ(shell.presented_function_count(), 5U); // 2l+1
-  const fb::Shell cart(2, {{1.0, 1.0}}, kOrigin);
-  EXPECT_EQ(cart.harmonic(), Harmonic::Cartesian);
-  EXPECT_EQ(cart.presented_function_count(), 6U);
+  EXPECT_EQ(shell.function_count(), 6U);           // Cartesian, what the kernels evaluate
+  EXPECT_EQ(shell.spherical_function_count(), 5U); // 2l+1, what the shell means
 }
 
 TEST(BasisDeathTest, ShellAbortsOnBadShape) {
@@ -116,12 +110,12 @@ TEST(BasisDeathTest, AoOffsetAbortsOutOfRange) {
 }
 
 TEST(Basis, LayoutsConcatenateShellsInOrder) {
-  // s (Cartesian), p (Cartesian), d (Spherical).
+  // s, p, d.
   const fb::BasisSet basis({fb::Shell(0, {{3.42, 0.15}}, kOrigin),
                             fb::Shell(1, {{0.62, 1.0}}, kOrigin),
-                            fb::Shell(2, {{0.8, 1.0}}, kOrigin, Harmonic::Spherical)});
+                            fb::Shell(2, {{0.8, 1.0}}, kOrigin)});
   EXPECT_EQ(basis.nshells(), 3U);
-  EXPECT_EQ(basis.nao(), 10U);          // 1 + 3 + 6: the d shell is Cartesian here
+  EXPECT_EQ(basis.nao(), 10U);          // 1 + 3 + 6: the d shell's Cartesian functions
   EXPECT_EQ(basis.spherical_nao(), 9U); // 1 + 3 + 5
   EXPECT_EQ(basis.ao_offset(0), 0U);
   EXPECT_EQ(basis.ao_offset(1), 1U);
@@ -140,10 +134,11 @@ TEST(Basis, LayoutsConcatenateShellsInOrder) {
   }
 }
 
-TEST(Basis, CartesianToSphericalIsIdentityForCartesianBasis) {
+TEST(Basis, CartesianToSphericalIsIdentityBelowD) {
+  // s and p are the same functions in either convention.
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin),
-                            fb::Shell(2, {{1.0, 1.0}}, kOrigin),
-                            fb::Shell(3, {{1.0, 1.0}}, kOrigin)});
+                            fb::Shell(1, {{1.0, 1.0}}, kOrigin),
+                            fb::Shell(0, {{0.5, 1.0}}, kOrigin)});
   const std::size_t n = basis.nao();
   ASSERT_EQ(basis.spherical_nao(), n);
   const std::vector<double> u = fb::cartesian_to_spherical(basis);
@@ -248,9 +243,8 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
   const double pi = std::numbers::pi;
   for (std::int32_t l = 2; l <= 4; ++l) {
     const double alpha = 1.3;
-    const fb::BasisSet basis({fb::ShellStamp(l, {{alpha, 1.0}}, Harmonic::Spherical)
-                                  .primitive_normalized()
-                                  .at(kOrigin)});
+    const fb::BasisSet basis(
+        {fb::ShellStamp(l, {{alpha, 1.0}}).primitive_normalized().at(kOrigin)});
     const double c = basis.shells()[0].primitives()[0].coefficient;
     const std::vector<Powers> powers = fb::cartesian_powers(l);
     const std::size_t ncart = basis.nao();
@@ -275,9 +269,9 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
 }
 
 TEST(Basis, CartesianToSphericalPlacesBlocksAtOffsets) {
-  // s (Cartesian) then d (Spherical): U is 7 x 6, block-diagonal.
-  const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin),
-                            fb::Shell(2, {{1.0, 1.0}}, kOrigin, Harmonic::Spherical)});
+  // s then d: U is 7 x 6, block-diagonal.
+  const fb::BasisSet basis(
+      {fb::Shell(0, {{1.0, 1.0}}, kOrigin), fb::Shell(2, {{1.0, 1.0}}, kOrigin)});
   const std::size_t ncol = basis.spherical_nao();
   ASSERT_EQ(basis.nao(), 7U);
   ASSERT_EQ(ncol, 6U);

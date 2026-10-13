@@ -124,8 +124,7 @@ def _write_aux_basis(
         "convention": (
             "real solid harmonic (spherical) auxiliary shells -- one radial "
             "contraction of raw-monomial-embedded, unnormalized primitives "
-            "applies identically to each of the 2l+1 components of that l. "
-            "Not a Cartesian src/basis Shell."
+            "applies identically to each of the 2l+1 components of that l."
         ),
         "element": element,
         "basis": basis_name,
@@ -147,8 +146,8 @@ def to_bse_spherical(
     electron_shell per accepted Cholesky vector: ``AuxShell`` already IS the
     spherical (real solid harmonic) shape BSE's own "gto_spherical" means --
     one radial contraction shared by every 2l+1 component of that l (see
-    compact.py's module docstring for why this, and not this repo's Cartesian
-    src/basis reader, is the right target). BSE's validator rejects
+    compact.py's module docstring), and the only kind of shell this repo's
+    src/io/basis reader accepts. BSE's validator rejects
     "gto_spherical"/"gto_cartesian" for ell<2 (spherical and Cartesian
     coincide there), so those shells are tagged plain "gto" instead.
 

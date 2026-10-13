@@ -16,7 +16,6 @@ namespace {
 namespace fb = free_breakfast;
 using fb::Atom;
 using fb::Element;
-using fb::Harmonic;
 
 // STO-3G hydrogen; oxygen with a plain s, an sp block (one column per
 // momentum), a two-column general contraction, and a tagged spherical d.
@@ -79,9 +78,6 @@ TEST(IoBasis, SplitsSpAndGeneralContractionBlocks) {
   EXPECT_EQ(o[3].primitives()[0].coefficient, 1.0);
   EXPECT_EQ(o[4].primitives()[0].coefficient, 0.0);
   EXPECT_EQ(o[4].primitives()[1].coefficient, 1.0);
-  // Only the d shell is spherical.
-  EXPECT_EQ(o[5].harmonic(), Harmonic::Spherical);
-  EXPECT_EQ(o[1].harmonic(), Harmonic::Cartesian);
 }
 
 TEST(IoBasis, ParseAndAssignLaysTheBasisOverTheMolecule) {
@@ -91,6 +87,9 @@ TEST(IoBasis, ParseAndAssignLaysTheBasisOverTheMolecule) {
   EXPECT_EQ(basis->nshells(), 8U);
   EXPECT_EQ(basis->nao(), 1U + 1U + 3U + 1U + 1U + 6U + 1U + 1U);
   EXPECT_EQ(basis->spherical_nao(), basis->nao() - 1U); // d: 5, not 6
+  // U maps the Cartesian AOs the kernels evaluate onto the spherical layout.
+  EXPECT_EQ(fb::cartesian_to_spherical(*basis).size(),
+            std::size_t{basis->nao()} * basis->spherical_nao());
   EXPECT_EQ(basis->shells()[6].center().y, 1.4309);
   EXPECT_EQ(basis->shells()[7].center().y, -1.4309);
 }
@@ -138,7 +137,7 @@ TEST(IoBasis, WrongContentIsInvalidConfig) {
   }
 }
 
-TEST(IoBasis, HarmonicTypeResolution) {
+TEST(IoBasis, OnlySphericalFunctionTypesAreAccepted) {
   auto shell_with = [](std::string_view function_type, std::int32_t l) {
     const std::string tag =
         function_type.empty() ? "" : std::format(R"("function_type": "{}", )", function_type);
@@ -147,15 +146,20 @@ TEST(IoBasis, HarmonicTypeResolution) {
             "exponents": ["1.0"], "coefficients": [["1.0"]]}}]}}}}}})",
         tag, l));
   };
-  auto harmonic_of = [&](std::string_view function_type, std::int32_t l) {
-    return (*shell_with(function_type, l)->shells_for(1))[0].harmonic();
-  };
-  // Explicit tags are honored at any l.
-  EXPECT_EQ(harmonic_of("gto_spherical", 2), Harmonic::Spherical);
-  EXPECT_EQ(harmonic_of("gto_cartesian", 2), Harmonic::Cartesian);
-  // Untagged or bare "gto" is exact as Cartesian for s and p ...
-  EXPECT_EQ(harmonic_of("", 1), Harmonic::Cartesian);
-  EXPECT_EQ(harmonic_of("gto", 0), Harmonic::Cartesian);
+  // An explicit spherical tag is accepted at any l.
+  for (const std::int32_t l : {0, 2, 3}) {
+    auto stamp = shell_with("gto_spherical", l);
+    ASSERT_TRUE(stamp.has_value()) << "gto_spherical, l=" << l << ": " << stamp.error().message;
+  }
+  // Cartesian functions are not supported, at any l.
+  for (const std::int32_t l : {0, 1, 2, 3}) {
+    auto stamp = shell_with("gto_cartesian", l);
+    ASSERT_FALSE(stamp.has_value()) << "gto_cartesian, l=" << l;
+    EXPECT_EQ(stamp.error().kind, fb::ErrorKind::InvalidConfig);
+  }
+  // Untagged or bare "gto" is exact as spherical for s and p ...
+  EXPECT_TRUE(shell_with("", 1).has_value());
+  EXPECT_TRUE(shell_with("gto", 0).has_value());
   // ... and ambiguous from d up.
   for (const std::string_view ambiguous : {"", "gto"}) {
     auto stamp = shell_with(ambiguous, 2);

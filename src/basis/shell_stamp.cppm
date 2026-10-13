@@ -40,17 +40,13 @@ public:
   ///                    the GPU engines separately reject L > @ref
   ///                    kMaxAngularMomentum.
   /// @param primitives  The contracted primitives, in contraction order.
-  /// @param harmonic    Which functions this shell means: @c Cartesian (the
-  ///                    default -- every existing caller gets today's
-  ///                    behavior unchanged) or @c Spherical. For @p l <= 1 the
-  ///                    two coincide, so the tag only matters from d upward.
   ///
   /// Aborts if @p l is negative or there are no primitives -- the same shape
   /// contract as @ref Shell, and the same reasoning: the one
   /// production caller, the BSE basis-set reader, already screens both
   /// conditions before constructing.
-  ShellStamp(int32_t l, std::vector<Primitive> primitives, Harmonic harmonic = Harmonic::Cartesian)
-      : l_(l), primitives_(std::move(primitives)), harmonic_(harmonic) {
+  ShellStamp(int32_t l, std::vector<Primitive> primitives)
+      : l_(l), primitives_(std::move(primitives)) {
     if (l_ < 0) {
       check_or_abort(err_config("ShellStamp: angular momentum must be non-negative"));
     }
@@ -65,8 +61,8 @@ public:
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ.
   ShellStamp(int32_t l, const std::vector<double> &exponents,
-             const std::vector<double> &coefficients, Harmonic harmonic = Harmonic::Cartesian)
-      : ShellStamp(l, zip(exponents, coefficients), harmonic) {}
+             const std::vector<double> &coefficients)
+      : ShellStamp(l, zip(exponents, coefficients)) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
   [[nodiscard]] int32_t angular_momentum() const { return l_; }
@@ -77,25 +73,20 @@ public:
   /// @brief Number of primitive Gaussians contracted into this shell.
   [[nodiscard]] uint32_t nprimitives() const { return static_cast<uint32_t>(primitives_.size()); }
 
-  /// @brief Which functions this shell means: @ref Harmonic::Cartesian or
-  /// @ref Harmonic::Spherical.
-  [[nodiscard]] Harmonic harmonic() const { return harmonic_; }
-
   /// @brief Number of Cartesian AO functions this shell contributes:
   /// (L+1)(L+2)/2, i.e. 1 (s), 3 (p), 6 (d).
   [[nodiscard]] uint32_t function_count() const { return cartesian_function_count(l_); }
 
-  /// @brief Number of functions this shell actually presents to a basis:
-  /// @ref function_count for a @c Cartesian shell, or @ref
-  /// spherical_function_count (2l+1) for a @c Spherical one.
-  [[nodiscard]] uint32_t presented_function_count() const {
-    return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_) : function_count();
+  /// @brief Number of real solid harmonic functions this shell presents to a
+  /// basis: 2l+1.
+  [[nodiscard]] uint32_t spherical_function_count() const {
+    return free_breakfast::spherical_function_count(l_);
   }
 
   /// @brief This shell centered at @p center: a @ref Shell carrying the same
-  /// L, primitives and harmonic tag.
+  /// L and primitives.
   [[nodiscard]] Shell at(const Vec<double, 3> &center) const {
-    return Shell{l_, primitives_, center, harmonic_};
+    return Shell{l_, primitives_, center};
   }
 
   /// @brief A copy with the per-primitive normalization folded into the
@@ -108,10 +99,10 @@ public:
   ///   N(alpha, l) = (2 alpha / pi)^{3/4} (4 alpha)^{l/2} / sqrt((2l-1)!!),
   /// the (l,0,0) primitive normalization. It depends only on the exponent and L,
   /// never the center, so it is a property of the *stamp*: computed once here
-  /// rather than once per placed geometry. Applies identically regardless of
-  /// @ref harmonic: every Cartesian component of a shell shares the same
-  /// radial contraction, so a @c Spherical shell's harmonic combinations
-  /// inherit this same per-primitive scale (see @c src/basis/harmonics.cppm).
+  /// rather than once per placed geometry. Every Cartesian component of a
+  /// shell shares the same radial contraction, so the harmonic combinations
+  /// @c cartesian_to_spherical forms inherit this same per-primitive scale
+  /// (see @c src/basis/harmonics.cppm).
   [[nodiscard]] ShellStamp primitive_normalized() const {
     double dfac = 1.0; // (2l-1)!!
     for (int32_t m = (2 * l_) - 1; m > 1; m -= 2) {
@@ -124,7 +115,7 @@ public:
                           std::pow(4.0 * a, static_cast<double>(l_) / 2.0) / std::sqrt(dfac);
       prim.coefficient *= norm;
     }
-    return ShellStamp{l_, std::move(normalized), harmonic_};
+    return ShellStamp{l_, std::move(normalized)};
   }
 
 private:
@@ -146,7 +137,6 @@ private:
 
   int32_t l_{0};
   std::vector<Primitive> primitives_{};
-  Harmonic harmonic_{Harmonic::Cartesian};
 };
 
 } // namespace free_breakfast

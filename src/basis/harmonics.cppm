@@ -13,9 +13,7 @@
 /// orthogonalization and no linear solve. Columns are ordered by @c m ascending,
 /// @c -l..+l, the PySCF/libcint convention (pinned in
 /// @c test/gtest/basis_host.cpp); for @c l<=1 the block is the identity (PySCF
-/// presents @c p as the bare Cartesian @c (x,y,z), and @c s is trivial),
-/// matching the identity block
-/// @c cartesian_to_spherical already applies to a @c Cartesian shell.
+/// presents @c p as the bare Cartesian @c (x,y,z), and @c s is trivial).
 ///
 /// **G-orthonormal, so the per-shell scale is a single scalar.** Each column is
 /// normalized to unit length under the Gaussian-moment inner product

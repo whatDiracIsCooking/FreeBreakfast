@@ -12,10 +12,16 @@ turns a BSE document into a geometry-free `BasisStamp` (from
 
 Each `electron_shells` block maps to shells by pairing momentum *i* with
 coefficient column *i* (an sp / spd block), or — with one momentum and several
-columns — one shell per column (a general contraction). `function_type`
-decides the `Harmonic` tag: `gto_spherical` / `gto_cartesian` are explicit;
-bare `gto` or no tag is Cartesian for l ≤ 1 (where the two coincide) and
-rejected as ambiguous from d up; `sto` and anything else are rejected.
+columns — one shell per column (a general contraction).
+
+**Only spherical basis sets are accepted**, because every shell in
+`free_breakfast.basis` is spherical. `function_type` decides whether a block is
+admitted:
+`gto_spherical` is; `gto_cartesian` is rejected (`InvalidConfig`) at any l;
+bare `gto` or no tag is spherical for l ≤ 1 (where the two coincide) and
+rejected as ambiguous from d up; `sto` and anything else are rejected. The
+Cartesian functions the integral kernels evaluate map onto this layout through
+`cartesian_to_spherical` in `free_breakfast.basis`.
 
 Classification follows the I/O layer's split: malformed JSON or an unreadable
 file is `ErrorKind::IO`; a missing or wrong-typed field, a non-numeric

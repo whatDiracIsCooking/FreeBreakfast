@@ -28,12 +28,16 @@
 ///   * @c function_type -- OPTIONAL. BSE's own enum is
 ///     `["gto", "gto_spherical", "gto_cartesian", "sto"]`; there is no separate
 ///     harmonic-type field, this is the only place BSE says whether a shell
-///     means Cartesian or real-spherical functions (@ref free_breakfast::Harmonic).
-///     See @ref resolve_harmonic for the exact resolution table -- in short,
-///     `gto_spherical`/`gto_cartesian` are explicit, bare `gto` (or the field's
-///     absence) is exact as Cartesian for `angular_momentum <= 1` (the two
-///     conventions coincide there) and rejected as ambiguous otherwise, and
-///     `sto` (or anything else) is rejected outright.
+///     means Cartesian or real-spherical functions.
+///     **Only spherical input is accepted**, because every @ref
+///     free_breakfast::ShellStamp is spherical. See @ref check_spherical for
+///     the exact table -- in short, `gto_spherical` is accepted,
+///     `gto_cartesian` is rejected, bare `gto` (or the field's absence) is
+///     spherical for `angular_momentum <= 1` (the two conventions coincide
+///     there) and rejected as ambiguous otherwise, and `sto` (or anything
+///     else) is rejected outright. @ref free_breakfast::cartesian_to_spherical
+///     bridges the Cartesian functions the integral kernels evaluate onto the
+///     spherical layout.
 ///
 /// This module turns that document into a geometry-free @ref
 /// free_breakfast::BasisStamp -- a per-element table of centerless shell
