@@ -4,6 +4,7 @@
 export module free_breakfast.core.error_handling:error;
 
 import std;
+import free_breakfast.core.types;
 
 export namespace free_breakfast {
 
@@ -183,7 +184,7 @@ std::unexpected<Error> err_numerical(LocatedFormat<std::type_identity_t<Args>...
 ///
 /// The numbers are pinned: a shell script branching on `$?` is an API
 /// consumer, so a new kind extends this mapping rather than renumbering it.
-inline std::int32_t to_exit_code(ErrorKind kind) {
+inline int32_t to_exit_code(ErrorKind kind) {
   switch (kind) {
   case ErrorKind::Allocation:
     return 2;

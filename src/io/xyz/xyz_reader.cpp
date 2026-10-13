@@ -4,6 +4,7 @@
 module free_breakfast.io.xyz;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.constants;
 import free_breakfast.molecule;
@@ -19,7 +20,7 @@ namespace free_breakfast {
 /// "CL" and "Cl", so the lookup normalises to a leading capital and a trailing
 /// lowercase before matching. Returns 0 for an unrecognised symbol, which the
 /// caller turns into an IO error.
-[[nodiscard]] std::int32_t atomic_number(std::string_view symbol) {
+[[nodiscard]] int32_t atomic_number(std::string_view symbol) {
   // Index 0 is a placeholder so element E sits at index Z.
   static constexpr std::array<std::string_view, 119> kSymbols{
       "",   "H",  "He", "Li", "Be", "B",  "C",  "N",  "O",  "F",  "Ne", "Na", "Mg", "Al", "Si",
@@ -40,23 +41,23 @@ namespace free_breakfast {
   if (normalised.size() == 2) {
     normalised[1] = static_cast<char>(std::tolower(static_cast<unsigned char>(normalised[1])));
   }
-  for (std::int32_t z = 1; z < static_cast<std::int32_t>(kSymbols.size()); ++z) {
-    if (kSymbols[static_cast<std::size_t>(z)] == normalised) {
+  for (int32_t z = 1; z < static_cast<int32_t>(kSymbols.size()); ++z) {
+    if (kSymbols[static_cast<size_t>(z)] == normalised) {
       return z;
     }
   }
   return 0;
 }
 
-[[nodiscard]] Result<Molecule> parse_xyz(std::string_view xyz_text, std::int32_t charge,
-                                         std::int32_t multiplicity) {
+[[nodiscard]] Result<Molecule> parse_xyz(std::string_view xyz_text, int32_t charge,
+                                         int32_t multiplicity) {
   // Split into non-empty lines; a trailing newline or blank lines at the end
   // of the file are tolerated rather than counted as atoms.
   std::vector<std::string_view> lines;
-  std::size_t pos = 0;
+  size_t pos = 0;
   while (pos <= xyz_text.size()) {
-    const std::size_t next = xyz_text.find('\n', pos);
-    const std::size_t end = (next == std::string_view::npos) ? xyz_text.size() : next;
+    const size_t next = xyz_text.find('\n', pos);
+    const size_t end = (next == std::string_view::npos) ? xyz_text.size() : next;
     std::string_view line = xyz_text.substr(pos, end - pos);
     if (!line.empty() && line.back() == '\r') {
       line.remove_suffix(1);
@@ -73,7 +74,7 @@ namespace free_breakfast {
   }
 
   // Line 1: the declared atom count.
-  std::int32_t declared_count = 0;
+  int32_t declared_count = 0;
   {
     std::string first(lines[0]);
     std::istringstream stream(first);
@@ -84,8 +85,8 @@ namespace free_breakfast {
 
   // Lines 3.. : one atom each. Line 2 is a free-form comment and is skipped.
   std::vector<Atom<double>> atoms;
-  atoms.reserve(static_cast<std::size_t>(declared_count));
-  for (std::size_t i = 2; i < lines.size(); ++i) {
+  atoms.reserve(static_cast<size_t>(declared_count));
+  for (size_t i = 2; i < lines.size(); ++i) {
     const std::string_view line = lines[i];
     // A blank tail line after the atoms is not an atom.
     const bool all_space = std::ranges::all_of(
@@ -102,7 +103,7 @@ namespace free_breakfast {
     if (!(stream >> symbol >> x >> y >> z)) {
       return err_io("XYZ atom line {} is malformed: '{}'", i + 1, record);
     }
-    const std::int32_t number = atomic_number(symbol);
+    const int32_t number = atomic_number(symbol);
     if (number == 0) {
       return err_io("XYZ atom line {} has unknown element '{}'", i + 1, symbol);
     }
@@ -112,15 +113,15 @@ namespace free_breakfast {
         z * free_breakfast::kBohrPerAngstrom<double>, static_cast<Element>(number)});
   }
 
-  if (static_cast<std::int32_t>(atoms.size()) != declared_count) {
+  if (static_cast<int32_t>(atoms.size()) != declared_count) {
     return err_io("XYZ declares {} atoms but {} were found", declared_count, atoms.size());
   }
 
   return Molecule{std::move(atoms), charge, multiplicity};
 }
 
-[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, std::int32_t charge,
-                                        std::int32_t multiplicity) {
+[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, int32_t charge,
+                                        int32_t multiplicity) {
   auto text = FBF_TRY(read_file(path));
   return parse_xyz(text, charge, multiplicity);
 }

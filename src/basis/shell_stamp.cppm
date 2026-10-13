@@ -16,6 +16,7 @@ module;
 export module free_breakfast.basis:shell_stamp;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.molecule;
 import free_breakfast.core.error_handling;
 import :shell;
@@ -48,8 +49,7 @@ public:
   /// contract as @ref Shell, and the same reasoning: the one
   /// production caller, the BSE basis-set reader, already screens both
   /// conditions before constructing.
-  ShellStamp(std::int32_t l, std::vector<Primitive> primitives,
-             Harmonic harmonic = Harmonic::Cartesian)
+  ShellStamp(int32_t l, std::vector<Primitive> primitives, Harmonic harmonic = Harmonic::Cartesian)
       : l_(l), primitives_(std::move(primitives)), harmonic_(harmonic) {
     if (l_ < 0) {
       check_or_abort(err_config("ShellStamp: angular momentum must be non-negative"));
@@ -64,20 +64,18 @@ public:
   ///
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ.
-  ShellStamp(std::int32_t l, const std::vector<double> &exponents,
+  ShellStamp(int32_t l, const std::vector<double> &exponents,
              const std::vector<double> &coefficients, Harmonic harmonic = Harmonic::Cartesian)
       : ShellStamp(l, zip(exponents, coefficients), harmonic) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
-  [[nodiscard]] std::int32_t angular_momentum() const { return l_; }
+  [[nodiscard]] int32_t angular_momentum() const { return l_; }
 
   /// @brief The contracted primitives, in contraction order.
   [[nodiscard]] const std::vector<Primitive> &primitives() const { return primitives_; }
 
   /// @brief Number of primitive Gaussians contracted into this shell.
-  [[nodiscard]] std::uint32_t nprimitives() const {
-    return static_cast<std::uint32_t>(primitives_.size());
-  }
+  [[nodiscard]] uint32_t nprimitives() const { return static_cast<uint32_t>(primitives_.size()); }
 
   /// @brief Which functions this shell means: @ref Harmonic::Cartesian or
   /// @ref Harmonic::Spherical.
@@ -85,12 +83,12 @@ public:
 
   /// @brief Number of Cartesian AO functions this shell contributes:
   /// (L+1)(L+2)/2, i.e. 1 (s), 3 (p), 6 (d).
-  [[nodiscard]] std::uint32_t function_count() const { return cartesian_function_count(l_); }
+  [[nodiscard]] uint32_t function_count() const { return cartesian_function_count(l_); }
 
   /// @brief Number of functions this shell actually presents to a basis:
   /// @ref function_count for a @c Cartesian shell, or @ref
   /// spherical_function_count (2l+1) for a @c Spherical one.
-  [[nodiscard]] std::uint32_t presented_function_count() const {
+  [[nodiscard]] uint32_t presented_function_count() const {
     return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_) : function_count();
   }
 
@@ -116,7 +114,7 @@ public:
   /// inherit this same per-primitive scale (see @c src/basis/harmonics.cppm).
   [[nodiscard]] ShellStamp primitive_normalized() const {
     double dfac = 1.0; // (2l-1)!!
-    for (std::int32_t m = (2 * l_) - 1; m > 1; m -= 2) {
+    for (int32_t m = (2 * l_) - 1; m > 1; m -= 2) {
       dfac *= static_cast<double>(m);
     }
     std::vector<Primitive> normalized = primitives_;
@@ -140,13 +138,13 @@ private:
     }
     std::vector<Primitive> out;
     out.reserve(exponents.size());
-    for (std::size_t p = 0; p < exponents.size(); ++p) {
+    for (size_t p = 0; p < exponents.size(); ++p) {
       out.push_back(Primitive{exponents[p], coefficients[p]});
     }
     return out;
   }
 
-  std::int32_t l_{0};
+  int32_t l_{0};
   std::vector<Primitive> primitives_{};
   Harmonic harmonic_{Harmonic::Cartesian};
 };

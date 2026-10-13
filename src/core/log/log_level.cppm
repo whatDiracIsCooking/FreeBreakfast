@@ -4,12 +4,13 @@
 export module free_breakfast.core.log:log_level;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.third_party.spdlog;
 
 namespace free_breakfast::log {
 
 /// @brief Severity levels for log filtering, matching spdlog's enum values
-export enum class LogLevel : std::int32_t {
+export enum class LogLevel : int32_t {
   Trace = 0,    ///< Fine-grained diagnostic events for development
   Debug = 1,    ///< Detailed information useful during debugging
   Info = 2,     ///< General informational messages about program progress
@@ -37,9 +38,9 @@ inline spdlog::logger &get_logger() {
 }
 
 inline void log_impl(LogLevel lv, std::string_view msg, std::source_location loc) {
-  get_logger().log(spdlog::source_loc{loc.file_name(), static_cast<std::int32_t>(loc.line()),
-                                      loc.function_name()},
-                   static_cast<spdlog::level_enum>(lv), "{}", msg);
+  get_logger().log(
+      spdlog::source_loc{loc.file_name(), static_cast<int32_t>(loc.line()), loc.function_name()},
+      static_cast<spdlog::level_enum>(lv), "{}", msg);
 }
 
 } // namespace free_breakfast::log

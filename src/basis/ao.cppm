@@ -22,6 +22,7 @@ module;
 export module free_breakfast.basis:ao;
 
 import std;
+import free_breakfast.core.types;
 
 export namespace free_breakfast {
 
@@ -33,11 +34,11 @@ export namespace free_breakfast {
 /// the GPU kernels' Cartesian tiles and the per-AO normalization diagonal are
 /// laid out against it. Defined for arbitrary @p l >= 0, so the host reference
 /// engines can raise angular momentum past d.
-[[nodiscard]] std::vector<std::array<std::int32_t, 3>> cartesian_powers(std::int32_t l) {
-  std::vector<std::array<std::int32_t, 3>> out;
-  out.reserve(static_cast<std::size_t>(cartesian_function_count(l)));
-  for (std::int32_t a = l; a >= 0; --a) {
-    for (std::int32_t b = l - a; b >= 0; --b) {
+[[nodiscard]] std::vector<std::array<int32_t, 3>> cartesian_powers(int32_t l) {
+  std::vector<std::array<int32_t, 3>> out;
+  out.reserve(static_cast<size_t>(cartesian_function_count(l)));
+  for (int32_t a = l; a >= 0; --a) {
+    for (int32_t b = l - a; b >= 0; --b) {
       out.push_back({a, b, l - a - b});
     }
   }
@@ -53,10 +54,10 @@ export namespace free_breakfast {
 /// AO list a @ref BasisSet lays out (@ref BasisSet::aos), an orbital's position
 /// is its global AO index, so none is stored here.
 struct AO {
-  std::uint32_t shell_index{0};
-  std::uint8_t a{0};
-  std::uint8_t b{0};
-  std::uint8_t c{0};
+  uint32_t shell_index{0};
+  uint8_t a{0};
+  uint8_t b{0};
+  uint8_t c{0};
 };
 
 } // namespace free_breakfast

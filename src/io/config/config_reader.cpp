@@ -4,6 +4,7 @@
 module free_breakfast.io.config;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.io.base;
 import free_breakfast.io.toml;
@@ -15,17 +16,17 @@ namespace free_breakfast {
 /// @brief Pull an integer keyed by @p key out of a TOML table, honouring
 /// @p fallback when the key is absent and reporting a type mismatch as an
 /// InvalidConfig error.
-[[nodiscard]] Result<std::int32_t> table_int(const free_breakfast::toml::table &table,
-                                             std::string_view key, std::int32_t fallback) {
+[[nodiscard]] Result<int32_t> table_int(const free_breakfast::toml::table &table,
+                                        std::string_view key, int32_t fallback) {
   const auto node = table[key];
   if (!node) {
     return fallback;
   }
-  const auto value = node.value<std::int64_t>();
+  const auto value = node.value<int64_t>();
   if (!value) {
     return err_config("config key '{}' is not an integer", key);
   }
-  return static_cast<std::int32_t>(*value);
+  return static_cast<int32_t>(*value);
 }
 
 /// @brief As table_int, for a floating-point value.

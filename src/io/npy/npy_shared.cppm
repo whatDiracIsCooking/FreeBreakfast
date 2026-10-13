@@ -4,6 +4,7 @@
 export module free_breakfast.io.npy:shared;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 
 export namespace free_breakfast {
@@ -15,7 +16,7 @@ export namespace free_breakfast {
 /// matrix. @c data holds the elements flattened in C order, so a matrix's
 /// element (i, j) sits at `data[i * shape[1] + j]`.
 struct NpyArray {
-  std::vector<std::size_t> shape{};
+  std::vector<size_t> shape{};
   std::vector<double> data{};
 };
 
@@ -24,6 +25,6 @@ struct NpyArray {
 ///
 /// Overflow of the product yields ErrorKind::InvalidConfig -- such a shape
 /// cannot describe a real in-memory array.
-[[nodiscard]] Result<std::size_t> element_count(std::span<const std::size_t> shape);
+[[nodiscard]] Result<size_t> element_count(std::span<const size_t> shape);
 
 } // namespace free_breakfast

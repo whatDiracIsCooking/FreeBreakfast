@@ -13,6 +13,7 @@ free_breakfast_add_cxx_module_library(
   npy_reader.cpp
   npy_writer.cpp
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::error_handling
   LINK_PRIVATE
   free_breakfast::io::base

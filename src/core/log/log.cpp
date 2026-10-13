@@ -1,6 +1,7 @@
 module free_breakfast.core.log;
 
 import free_breakfast.third_party.spdlog;
+import free_breakfast.core.types;
 
 namespace free_breakfast::log {
 
@@ -8,8 +9,8 @@ namespace free_breakfast::log {
 // concurrent first use (like get_logger() in log_level.cppm). Relaxed
 // ordering throughout: this counts warnings for a health summary, it does not
 // guard access to anything else.
-std::atomic<std::uint64_t> &warning_counter() {
-  static std::atomic<std::uint64_t> counter{0};
+std::atomic<uint64_t> &warning_counter() {
+  static std::atomic<uint64_t> counter{0};
   return counter;
 }
 
@@ -33,7 +34,7 @@ void critical(std::string_view msg, std::source_location loc) {
   log_impl(LogLevel::Critical, msg, loc);
 }
 
-std::uint64_t warning_count() {
+uint64_t warning_count() {
   return warning_counter().load(std::memory_order_relaxed);
 }
 

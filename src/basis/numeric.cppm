@@ -9,6 +9,7 @@
 export module free_breakfast.basis:numeric;
 
 import std;
+import free_breakfast.core.types;
 
 namespace free_breakfast {
 
@@ -17,18 +18,18 @@ namespace free_breakfast {
 // per-shell sqrt((2l-1)!!) spherical scale. ShellStamp::primitive_normalized
 // computes the same quantity inline to fold it into a primitive's coefficient;
 // :basis_set rescales by the reciprocal amount, which is why the two agree.
-[[nodiscard]] inline double double_factorial_odd(std::int32_t n) {
+[[nodiscard]] inline double double_factorial_odd(int32_t n) {
   double result = 1.0;
-  for (std::int32_t k = n; k > 1; k -= 2) {
+  for (int32_t k = n; k > 1; k -= 2) {
     result *= static_cast<double>(k);
   }
   return result;
 }
 
 // n! as a double, exact for the small n a basis's l ever reaches.
-[[nodiscard]] inline double factorial(std::int32_t n) {
+[[nodiscard]] inline double factorial(int32_t n) {
   double result = 1.0;
-  for (std::int32_t k = 2; k <= n; ++k) {
+  for (int32_t k = 2; k <= n; ++k) {
     result *= static_cast<double>(k);
   }
   return result;
@@ -36,12 +37,12 @@ namespace free_breakfast {
 
 // Binomial coefficient C(n, k) as a double, exact for the small n this ever
 // sees (n <= l; a basis's l is tiny). Zero outside 0 <= k <= n.
-[[nodiscard]] inline double binomial(std::int32_t n, std::int32_t k) {
+[[nodiscard]] inline double binomial(int32_t n, int32_t k) {
   if (k < 0 || k > n) {
     return 0.0;
   }
   double result = 1.0;
-  for (std::int32_t i = 0; i < k; ++i) {
+  for (int32_t i = 0; i < k; ++i) {
     result = result * static_cast<double>(n - i) / static_cast<double>(i + 1);
   }
   return result;

@@ -7,6 +7,7 @@ free_breakfast_add_cxx_module_library(
   molecule.cppm
   IMPORT_STD
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::atom
   wwr::vector_types
 )

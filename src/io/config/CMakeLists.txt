@@ -9,6 +9,7 @@ free_breakfast_add_cxx_module_library(
   IMPLEMENTATION
   config_reader.cpp
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::error_handling
   LINK_PRIVATE
   free_breakfast::io::base
