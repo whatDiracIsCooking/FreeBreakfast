@@ -3,6 +3,8 @@ add_subdirectory(json)
 add_subdirectory(npy)
 add_subdirectory(toml)
 add_subdirectory(config)
+add_subdirectory(basis)
+add_subdirectory(xyz)
 
 # The aggregate: one import for the file-level I/O layer.
 free_breakfast_add_cxx_module_library(
@@ -13,8 +15,10 @@ free_breakfast_add_cxx_module_library(
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::io::base
+  free_breakfast::io::basis
   free_breakfast::io::config
   free_breakfast::io::json
   free_breakfast::io::npy
   free_breakfast::io::toml
+  free_breakfast::io::xyz
 )
