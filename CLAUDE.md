@@ -218,7 +218,7 @@ variant. It does not check the container `name` field.
 
 **A green run means nothing until you know what skipped.**
 
-- C++ GPU cases call `FREE_BREAKFAST_REQUIRE_GPU()` (see
+- C++ GPU cases call `FBF_REQUIRE_GPU()` (see
   `test/gtest/gpu_requirement.h`) and `GTEST_SKIP` with a reason rather than
   failing, so the suite stays usable on a device-less host. Read the
   `***Skipped` list.

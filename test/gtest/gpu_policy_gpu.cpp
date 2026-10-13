@@ -17,7 +17,7 @@ namespace fb = free_breakfast;
 constexpr std::size_t kCount = 1024;
 
 TEST(Gpu, WrappersConstruct) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
 
   fb::ScopedRange range{"gpu_policy_gpu"};
   auto dev = std::make_shared<fb::Device>(0);

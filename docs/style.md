@@ -56,7 +56,7 @@ to prefer.
 | Constant | `kCamelCase` | `kMaxAngularMomentum`, `kPi<T>` |
 | Enum | `enum class`, `CamelCase` | `ErrorKind`, `LogLevel` |
 | Enumerator | `CamelCase`, no `k` | `ErrorKind::InvalidConfig`, `LogLevel::Warn`, `Element::Fe` |
-| Macro | `UPPER_CASE`, project-prefixed (see below) | `FBF_TRY`, `FREE_BREAKFAST_REQUIRE_GPU` |
+| Macro | `FBF_UPPER_CASE` | `FBF_TRY`, `FBF_REQUIRE_GPU` |
 | Module | dotted, mirroring `src/` | `free_breakfast.io.npy` |
 | Module partition | `:lower_case` | `:basis_set`, `:format` |
 
@@ -70,13 +70,17 @@ the enum's name already qualifies each enumerator and a prefix would add
 nothing. Without the prefix, element symbols read as they should
 (`Element::Fe`, not `Element::kFe`).
 
-**Macros** take one of two project prefixes, depending on where they live.
-Macros in `src/` use the short `FBF_` (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*` in
-`src/core/diagnostics/diagnostics.h`). Test-support macros in `test/gtest/` use
-the full `FREE_BREAKFAST_` (`FREE_BREAKFAST_REQUIRE_GPU`,
-`FREE_BREAKFAST_SKIP_IF_FAST_TESTS`). Either prefix keeps a macro clear of
-anything an including file, or a third-party header it pulls in, might also call
-`TRY` or `MUST`. A bare `UPPER_CASE` macro has no such protection.
+**Macros** all start with `FBF_`, wherever they are defined: `src/`
+(`FBF_TRY`, `FBF_HOST_DEVICE`), `test/gtest/` (`FBF_REQUIRE_GPU`) or anywhere
+else. The prefix keeps a macro clear of any name that an including file, or a
+third-party header it pulls in, might also define, such as `TRY` or `MUST`.
+A bare `UPPER_CASE` macro gets no such protection.
+
+The prefix is for preprocessor macros only. CMake options and cache variables
+(`FREE_BREAKFAST_GPU_BACKEND`) and environment variables
+(`FREE_BREAKFAST_FAST_TESTS`) keep the full `FREE_BREAKFAST_` prefix. They live
+in a global namespace shared with every other project, where the short prefix
+would be ambiguous.
 
 ## Integer types
 

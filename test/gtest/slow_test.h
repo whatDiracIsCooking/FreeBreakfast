@@ -7,7 +7,7 @@
 /// FREE_BREAKFAST_FAST_TESTS. Default -- the variable unset -- runs everything,
 /// so nothing changes for a bare ctest run.
 ///
-/// Put the macro at the TOP of a test body, after FREE_BREAKFAST_REQUIRE_GPU():
+/// Put the macro at the TOP of a test body, after FBF_REQUIRE_GPU():
 /// a slow test is also a GPU test, so it should still skip cleanly on a
 /// device-less host.
 ///
@@ -18,7 +18,7 @@
 
 #include <gtest/gtest.h>
 
-#define FREE_BREAKFAST_SKIP_IF_FAST_TESTS()                                                        \
+#define FBF_SKIP_IF_FAST_TESTS()                                                                   \
   do {                                                                                             \
     if (const char *fb_fast = std::getenv("FREE_BREAKFAST_FAST_TESTS");                            \
         fb_fast != nullptr && fb_fast[0] != '\0' && fb_fast[0] != '0') {                           \

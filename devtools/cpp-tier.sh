@@ -13,7 +13,7 @@
 #
 # ALWAYS runs with FREE_BREAKFAST_FAST_TESTS=1 -- the same env var
 # cpp-smoke.sh sets -- so every case guarded by
-# FREE_BREAKFAST_SKIP_IF_FAST_TESTS() (test/gtest/slow_test.h) GTEST_SKIPs.
+# FBF_SKIP_IF_FAST_TESTS() (test/gtest/slow_test.h) GTEST_SKIPs.
 # That guard is for reference-grade and end-to-end validation: cases that check
 # a result against an external oracle to tight tolerance, or re-run a
 # production-scale solve to compare timing or convergence. In a mature tree

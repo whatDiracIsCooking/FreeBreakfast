@@ -48,7 +48,7 @@
 // free_breakfast::int32_t, the width the combinatorics take their counts in.
 #include "integral_types.h"
 
-// FREE_BREAKFAST_HOST_DEVICE: __host__ __device__ __forceinline__ in a device
+// FBF_HOST_DEVICE: __host__ __device__ __forceinline__ in a device
 // pass; nothing in a host compile, where none of the three exists.
 // __forceinline__ matches wwr's device math: these are a few instructions,
 // called from inner loops, and a call would cost more than the body.
@@ -64,24 +64,24 @@
 #else
 #include <hip/hip_runtime.h>
 #endif
-#define FREE_BREAKFAST_HOST_DEVICE __host__ __device__ __forceinline__
+#define FBF_HOST_DEVICE __host__ __device__ __forceinline__
 #else
-#define FREE_BREAKFAST_HOST_DEVICE
+#define FBF_HOST_DEVICE
 #endif
 
 // The leading part of every element-wise declaration: a template over float or
 // double only, host and device. #undef'd at the end of this file, with the
 // generators below -- this header is #included as text, so anything left
 // defined would leak into every includer.
-#define FREE_BREAKFAST_MATH_FP_TEMPLATE                                                            \
+#define FBF_MATH_FP_TEMPLATE                                                                       \
   template <typename T>                                                                            \
     requires(std::is_same_v<T, float> || std::is_same_v<T, double>)                                \
-  [[nodiscard]] FREE_BREAKFAST_HOST_DEVICE
+  [[nodiscard]] FBF_HOST_DEVICE
 
 // T -> T, T x T -> T and T x T x T -> T: the f-suffixed C function for float,
 // the bare one for double, chosen at compile time.
-#define FREE_BREAKFAST_MATH_UNARY(fn, ffn, dfn)                                                    \
-  FREE_BREAKFAST_MATH_FP_TEMPLATE T fn(const T x) {                                                \
+#define FBF_MATH_UNARY(fn, ffn, dfn)                                                               \
+  FBF_MATH_FP_TEMPLATE T fn(const T x) {                                                           \
     if constexpr (std::is_same_v<T, float>) {                                                      \
       return ::ffn(x);                                                                             \
     } else {                                                                                       \
@@ -89,8 +89,8 @@
     }                                                                                              \
   }
 
-#define FREE_BREAKFAST_MATH_BINARY(fn, ffn, dfn)                                                   \
-  FREE_BREAKFAST_MATH_FP_TEMPLATE T fn(const T x, const T y) {                                     \
+#define FBF_MATH_BINARY(fn, ffn, dfn)                                                              \
+  FBF_MATH_FP_TEMPLATE T fn(const T x, const T y) {                                                \
     if constexpr (std::is_same_v<T, float>) {                                                      \
       return ::ffn(x, y);                                                                          \
     } else {                                                                                       \
@@ -98,8 +98,8 @@
     }                                                                                              \
   }
 
-#define FREE_BREAKFAST_MATH_TERNARY(fn, ffn, dfn)                                                  \
-  FREE_BREAKFAST_MATH_FP_TEMPLATE T fn(const T x, const T y, const T z) {                          \
+#define FBF_MATH_TERNARY(fn, ffn, dfn)                                                             \
+  FBF_MATH_FP_TEMPLATE T fn(const T x, const T y, const T z) {                                     \
     if constexpr (std::is_same_v<T, float>) {                                                      \
       return ::ffn(x, y, z);                                                                       \
     } else {                                                                                       \
@@ -109,10 +109,10 @@
 
 // T -> bool. No f-suffixed spelling: C++'s <math.h> and both vendors provide a
 // single overloaded ::isnan (etc.) for float and double alike.
-#define FREE_BREAKFAST_MATH_PREDICATE(fn)                                                          \
+#define FBF_MATH_PREDICATE(fn)                                                                     \
   template <typename T>                                                                            \
     requires(std::is_same_v<T, float> || std::is_same_v<T, double>)                                \
-  [[nodiscard]] FREE_BREAKFAST_HOST_DEVICE bool fn(const T x) {                                    \
+  [[nodiscard]] FBF_HOST_DEVICE bool fn(const T x) {                                               \
     return ::fn(x);                                                                                \
   }
 
@@ -125,20 +125,20 @@ namespace free_breakfast::math {
 // and `log(1 + x)` lose.
 // ========================================================================
 
-FREE_BREAKFAST_MATH_UNARY(exp, expf, exp)
-FREE_BREAKFAST_MATH_UNARY(exp2, exp2f, exp2)
-FREE_BREAKFAST_MATH_UNARY(expm1, expm1f, expm1)
-FREE_BREAKFAST_MATH_UNARY(log, logf, log)
-FREE_BREAKFAST_MATH_UNARY(log2, log2f, log2)
-FREE_BREAKFAST_MATH_UNARY(log10, log10f, log10)
-FREE_BREAKFAST_MATH_UNARY(log1p, log1pf, log1p)
+FBF_MATH_UNARY(exp, expf, exp)
+FBF_MATH_UNARY(exp2, exp2f, exp2)
+FBF_MATH_UNARY(expm1, expm1f, expm1)
+FBF_MATH_UNARY(log, logf, log)
+FBF_MATH_UNARY(log2, log2f, log2)
+FBF_MATH_UNARY(log10, log10f, log10)
+FBF_MATH_UNARY(log1p, log1pf, log1p)
 
 // ========================================================================
 // Powers and roots
 // ========================================================================
 
-FREE_BREAKFAST_MATH_BINARY(pow, powf, pow)
-FREE_BREAKFAST_MATH_UNARY(sqrt, sqrtf, sqrt)
+FBF_MATH_BINARY(pow, powf, pow)
+FBF_MATH_UNARY(sqrt, sqrtf, sqrt)
 
 /// @brief Reciprocal square root of @p x
 ///
@@ -148,7 +148,7 @@ FREE_BREAKFAST_MATH_UNARY(sqrt, sqrtf, sqrt)
 /// a host and a device result for exact equality. The branch is on the device
 /// *sub*-pass macros, since a __host__ __device__ body is compiled twice within
 /// one .cu and only the device half may name ::rsqrtf.
-FREE_BREAKFAST_MATH_FP_TEMPLATE T rsqrt(const T x) {
+FBF_MATH_FP_TEMPLATE T rsqrt(const T x) {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
   if constexpr (std::is_same_v<T, float>) {
     return ::rsqrtf(x);
@@ -164,26 +164,26 @@ FREE_BREAKFAST_MATH_FP_TEMPLATE T rsqrt(const T x) {
 // Trigonometric, inverse trigonometric, hyperbolic
 // ========================================================================
 
-FREE_BREAKFAST_MATH_UNARY(sin, sinf, sin)
-FREE_BREAKFAST_MATH_UNARY(cos, cosf, cos)
-FREE_BREAKFAST_MATH_UNARY(tan, tanf, tan)
-FREE_BREAKFAST_MATH_UNARY(asin, asinf, asin)
-FREE_BREAKFAST_MATH_UNARY(acos, acosf, acos)
-FREE_BREAKFAST_MATH_UNARY(atan, atanf, atan)
-FREE_BREAKFAST_MATH_BINARY(atan2, atan2f, atan2)
-FREE_BREAKFAST_MATH_UNARY(sinh, sinhf, sinh)
-FREE_BREAKFAST_MATH_UNARY(cosh, coshf, cosh)
-FREE_BREAKFAST_MATH_UNARY(tanh, tanhf, tanh)
+FBF_MATH_UNARY(sin, sinf, sin)
+FBF_MATH_UNARY(cos, cosf, cos)
+FBF_MATH_UNARY(tan, tanf, tan)
+FBF_MATH_UNARY(asin, asinf, asin)
+FBF_MATH_UNARY(acos, acosf, acos)
+FBF_MATH_UNARY(atan, atanf, atan)
+FBF_MATH_BINARY(atan2, atan2f, atan2)
+FBF_MATH_UNARY(sinh, sinhf, sinh)
+FBF_MATH_UNARY(cosh, coshf, cosh)
+FBF_MATH_UNARY(tanh, tanhf, tanh)
 
 // ========================================================================
 // Rounding to integral values (still returning the floating type)
 // ========================================================================
 
-FREE_BREAKFAST_MATH_UNARY(floor, floorf, floor)
-FREE_BREAKFAST_MATH_UNARY(ceil, ceilf, ceil)
-FREE_BREAKFAST_MATH_UNARY(trunc, truncf, trunc)
-FREE_BREAKFAST_MATH_UNARY(round, roundf, round)
-FREE_BREAKFAST_MATH_UNARY(rint, rintf, rint)
+FBF_MATH_UNARY(floor, floorf, floor)
+FBF_MATH_UNARY(ceil, ceilf, ceil)
+FBF_MATH_UNARY(trunc, truncf, trunc)
+FBF_MATH_UNARY(round, roundf, round)
+FBF_MATH_UNARY(rint, rintf, rint)
 
 // ========================================================================
 // Magnitude, sign, remainder, min/max, fused multiply-add
@@ -193,21 +193,21 @@ FREE_BREAKFAST_MATH_UNARY(rint, rintf, rint)
 // rounded twice under -ffp-contract=off.
 // ========================================================================
 
-FREE_BREAKFAST_MATH_UNARY(fabs, fabsf, fabs)
-FREE_BREAKFAST_MATH_BINARY(hypot, hypotf, hypot)
-FREE_BREAKFAST_MATH_BINARY(copysign, copysignf, copysign)
-FREE_BREAKFAST_MATH_BINARY(fmod, fmodf, fmod)
-FREE_BREAKFAST_MATH_BINARY(fmin, fminf, fmin)
-FREE_BREAKFAST_MATH_BINARY(fmax, fmaxf, fmax)
-FREE_BREAKFAST_MATH_TERNARY(fma, fmaf, fma)
+FBF_MATH_UNARY(fabs, fabsf, fabs)
+FBF_MATH_BINARY(hypot, hypotf, hypot)
+FBF_MATH_BINARY(copysign, copysignf, copysign)
+FBF_MATH_BINARY(fmod, fmodf, fmod)
+FBF_MATH_BINARY(fmin, fminf, fmin)
+FBF_MATH_BINARY(fmax, fmaxf, fmax)
+FBF_MATH_TERNARY(fma, fmaf, fma)
 
 // ========================================================================
 // Classification
 // ========================================================================
 
-FREE_BREAKFAST_MATH_PREDICATE(isnan)
-FREE_BREAKFAST_MATH_PREDICATE(isinf)
-FREE_BREAKFAST_MATH_PREDICATE(isfinite)
+FBF_MATH_PREDICATE(isnan)
+FBF_MATH_PREDICATE(isinf)
+FBF_MATH_PREDICATE(isfinite)
 
 // ========================================================================
 // Small exact-in-double combinatorics
@@ -224,7 +224,7 @@ FREE_BREAKFAST_MATH_PREDICATE(isfinite)
 ///
 /// The (2l-1)!! of a Gaussian primitive's normalization and of the per-shell
 /// spherical scale sqrt((2l-1)!!).
-[[nodiscard]] FREE_BREAKFAST_HOST_DEVICE constexpr double double_factorial_odd(const int32_t n) {
+[[nodiscard]] FBF_HOST_DEVICE constexpr double double_factorial_odd(const int32_t n) {
   double result = 1.0;
   for (int32_t k = n; k > 1; k -= 2) {
     result *= static_cast<double>(k);
@@ -233,7 +233,7 @@ FREE_BREAKFAST_MATH_PREDICATE(isfinite)
 }
 
 /// @brief n! as a double; 1.0 for n <= 1
-[[nodiscard]] FREE_BREAKFAST_HOST_DEVICE constexpr double factorial(const int32_t n) {
+[[nodiscard]] FBF_HOST_DEVICE constexpr double factorial(const int32_t n) {
   double result = 1.0;
   for (int32_t k = 2; k <= n; ++k) {
     result *= static_cast<double>(k);
@@ -242,8 +242,7 @@ FREE_BREAKFAST_MATH_PREDICATE(isfinite)
 }
 
 /// @brief Binomial coefficient C(n, k) as a double; zero outside 0 <= k <= n
-[[nodiscard]] FREE_BREAKFAST_HOST_DEVICE constexpr double binomial(const int32_t n,
-                                                                   const int32_t k) {
+[[nodiscard]] FBF_HOST_DEVICE constexpr double binomial(const int32_t n, const int32_t k) {
   if (k < 0 || k > n) {
     return 0.0;
   }
@@ -256,9 +255,9 @@ FREE_BREAKFAST_MATH_PREDICATE(isfinite)
 
 } // namespace free_breakfast::math
 
-#undef FREE_BREAKFAST_MATH_PREDICATE
-#undef FREE_BREAKFAST_MATH_TERNARY
-#undef FREE_BREAKFAST_MATH_BINARY
-#undef FREE_BREAKFAST_MATH_UNARY
-#undef FREE_BREAKFAST_MATH_FP_TEMPLATE
-#undef FREE_BREAKFAST_HOST_DEVICE
+#undef FBF_MATH_PREDICATE
+#undef FBF_MATH_TERNARY
+#undef FBF_MATH_BINARY
+#undef FBF_MATH_UNARY
+#undef FBF_MATH_FP_TEMPLATE
+#undef FBF_HOST_DEVICE
