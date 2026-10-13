@@ -12,6 +12,14 @@ export module free_breakfast.core;
 
 export import :version;
 
+// Vocabulary with no runtime of its own: fixed-width integers and the builtin
+// vector-type mapping, the scalar concepts (re-exported from wwr), typed
+// numeric / physical constants, and the copy/move mixins.
+export import free_breakfast.core.types;
+export import free_breakfast.core.concepts;
+export import free_breakfast.core.constants;
+export import free_breakfast.core.nontransferrable;
+
 // Separate modules rather than partitions: each has consumers that want it
 // without the rest (log has no reason to drag in the GPU layer), and the
 // macros in diagnostics/diagnostics.h name them individually.
