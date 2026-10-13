@@ -263,14 +263,14 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   module, not exporting *is* the privacy; module-private code shared between
   units goes in a partition. `docs/style.md` "Module-private code" says which
   kind, and why an unexported name must still be unique module-wide.
-- **GPU wrapper errors abort in Debug and are returned in Release.**
-  `FREE_BREAKFAST_GPU_ERROR_POLICY` (empty = by build type) picks ABORT or
-  RECORD tree-wide; use the aliases in `free_breakfast.core.gpu` (`Device`,
-  `Buffers`, …, directly in `free_breakfast`) rather than naming a wwr policy,
-  and construct inside `free_breakfast::capture` so a RECORD failure comes back
-  as a `Result`. A test that must see the error value in every build names
-  `RecordPolicy` explicitly. See
-  `src/core/error_handling/README.md`.
+- **A failed GPU create/alloc aborts, in every build.** The wwr wrappers'
+  creation slots use `AbortPolicy` (log critical, `std::abort()` at the failing
+  call); destroy/free slots use `LogPolicy`. There is no recoverable mode and no
+  `Result` to check after constructing a wrapper — recovery was cut as YAGNI;
+  if a site ever needs it, add a reporting policy for that site, not a
+  tree-wide switch. Use the aliases in `free_breakfast.core.gpu` (`Device`,
+  `Buffers`, …, directly in `free_breakfast`) rather than naming a wwr policy.
+  See `src/core/error_handling/README.md`.
 - **`BUILD_JOBS` is lower than the core count on purpose.** A module build is
   memory-hungry per job; an OOM-killed compiler surfaces as a bare
   `ninja: build stopped` with nothing about memory in it.

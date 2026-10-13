@@ -92,19 +92,6 @@ target_include_directories(
   free_breakfast_tests_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-# gpu_policy_host.cpp checks that the configure-time ABORT/RECORD switch
-# reached the module's free_breakfast::kAbortsOnError, so it needs the
-# resolved value too.
-if(FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED STREQUAL "ABORT")
-  target_compile_definitions(
-    free_breakfast_tests_host PRIVATE FREE_BREAKFAST_TEST_EXPECT_GPU_ABORTS=1
-  )
-else()
-  target_compile_definitions(
-    free_breakfast_tests_host PRIVATE FREE_BREAKFAST_TEST_EXPECT_GPU_ABORTS=0
-  )
-endif()
-
 # ---------------------------------------------------------------------------
 # ctest registration
 # ---------------------------------------------------------------------------

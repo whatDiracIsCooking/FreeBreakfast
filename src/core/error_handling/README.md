@@ -3,7 +3,7 @@
 Central error type and result aliases for the project. Uses C++23
 `std::expected` to propagate typed errors with automatic source location
 capture. It also turns WarpWraps' GPU error codes into those errors, and holds
-the tree-wide policy for what a failed GPU call inside a wwr RAII wrapper does.
+the policy for what a failed GPU call inside a wwr RAII wrapper does.
 
 ## Module
 
@@ -15,7 +15,7 @@ the one before:
 |-----------|---------|
 | `:error` | `Error`, `ErrorKind`, `Result<T>`, `Status`, `LocatedFormat`, the `err_*` helpers, `to_exit_code` |
 | `:gpu_status` | `gpu_status`, `check_or_abort` |
-| `:gpu_policy` | `AbortPolicy` / `RecordPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap`, `kAbortsOnError`, `capture`, `take_error` |
+| `:gpu_policy` | `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap` |
 
 ## Usage
 
@@ -103,74 +103,47 @@ same call. The macros over both (`FBF_TRY`, `FBF_GPU_MUST`) are in
 
 ## GPU error policy
 
-What a failed GPU call inside a wwr RAII wrapper does — decided once, at
-configure time, for the whole tree.
+What a failed GPU call inside a wwr RAII wrapper does. WarpWraps' extension
+layer forces no error policy: every wrapper takes its policies as template
+arguments (`wwr.extension.common`'s `error_policy` concepts). `:gpu_policy`
+supplies ours:
 
-WarpWraps' extension layer forces no error policy: every wrapper takes its
-policies as template arguments (`wwr.extension.common`'s `error_policy`
-concepts). `:gpu_policy` supplies ours, and a switch between two behaviours:
+| Slot | Alias | Policy | On failure |
+| --- | --- | --- | --- |
+| Create / alloc / device-select | `CreatePolicy<E>` | `AbortPolicy` | Log at critical with the failing call's location, `std::abort()` |
+| Destroy / free | `DestroyPolicy<E>` | `LogPolicy` | Log at error, carry on |
 
-| `FREE_BREAKFAST_GPU_ERROR_POLICY` | Create / alloc / device-select slots | Destroy / free slots |
-| --- | --- | --- |
-| `ABORT` | `AbortPolicy` — log critical, `std::abort()` at the failing call | `AbortPolicy` |
-| `RECORD` | `RecordPolicy` — record for the enclosing `capture` | `LogPolicy` — log at error |
-| *(empty, default)* | `ABORT` for `CMAKE_BUILD_TYPE=Debug`, `RECORD` otherwise | |
+`PolicyMap` binds the two to wwr's `alloc` / `free` slots for the buffer suites.
+Name the aliases rather than a concrete policy — or, in practice, neither:
+`free_breakfast.core.gpu` has the wrappers already bound (`Device`, `Buffers`,
+`BlasHandle`, …).
 
-The resolved mode is printed at configure (`-- GPU error policy: …`) and is
-readable in code as `kAbortsOnError`.
-
-### Using it
-
-Name the switched aliases — `CreatePolicy<E>`, `DestroyPolicy<E>`,
-`PolicyMap` — rather than a concrete policy. In practice you rarely do even
-that: `free_breakfast.core.gpu` has the wrappers already bound (`Device`,
-`Buffers`, `BlasHandle`, …).
-
-Construct inside `capture`, which turns a recorded failure into a `Result`:
+Because a failed creation aborts at the call that failed, a wrapper that exists
+is a valid one: there is no empty-wrapper state to check for, and no error
+value to propagate.
 
 ```cpp
 import free_breakfast.core;
 namespace fb = free_breakfast;
 
-fb::Result<fb::Buffers::device<float>> make_buffer(std::size_t n) {
-  auto dev = FBF_TRY(fb::capture([] { return std::make_shared<fb::Device>(0); }));
-  return fb::capture([&] { return fb::Buffers::device<float>(n, dev); });
-}
+auto dev = std::make_shared<fb::Device>(0);
+fb::Buffers::device<float> buf(n, dev);   // aborts here if the allocation fails
 ```
-
-Under `ABORT` the same code compiles and never sees an error value — the abort
-happens first, at the call that failed — so callers are written once.
-
-### Behaviour worth knowing
-
-- **Write the construction inside the lambda.** A wrapper's defaulted
-  `std::source_location` is then your line, and that is what the returned
-  `Error::origin` points at.
-- **First error wins** within a capture: later failures are usually knock-on
-  effects of the first.
-- **Captures nest.** An inner capture neither reports nor wipes an error its
-  outer one has pending — also when the inner lambda throws.
-- **A `RECORD` failure outside any capture is logged at error**, since nobody
-  is there to return it to. It is also kept for `take_error()`.
-- **Destroy/free failures are logged, not returned** in `RECORD`: they happen in
-  a destructor, after any capture that could have returned them has finished.
-- A failed create leaves the wrapper empty — `valid()` is false for a handle,
-  `num_elements()` is 0 for a buffer — which is wwr's record-and-continue path.
 
 ### Why it is shaped like this
 
-- **Per-thread recording, not a stateful policy.** The policies are empty so
-  they fit every wwr slot and collapse to zero size (`policy_slot`), and because
-  `kit::DeviceHandle` default-constructs its device policy — a policy holding a
-  pointer to "its" error could not be threaded through there. The error belongs
-  to whichever capture is running on the thread that made the call.
-- **The switch is a compile definition on this target only**, read once by
-  `:gpu_policy` into
-  the `constexpr` `kAbortsOnError`. Every importer gets that value through
-  the BMI, so no TU can be built against the other mode.
-- **Not `NDEBUG`.** That is `assert`'s switch, invisible in presets and the
-  configure log; this one is a cache variable, so a Release build can opt into
-  `ABORT` to chase a failure.
+- **Abort, not recover.** For this code, the answer to a failed device
+  allocation or handle creation is "rerun with a smaller problem or on another
+  device", not an in-process fallback. Nothing in the tree recovers, so a
+  recoverable path would be machinery with no caller. If one is ever needed,
+  add it for that site — wrap that one construction with a policy that
+  reports instead of aborting — rather than as a tree-wide mode.
+- **Destroy/free logs instead.** It runs in a destructor, often during
+  teardown after an earlier failure, where aborting would bury the root cause
+  under the knock-on one.
+- **Both policies are empty**, so they fit every wwr slot and collapse to zero
+  size (`policy_slot`), and `kit::DeviceHandle` can default-construct its
+  device policy.
 
 ## Files
 
@@ -179,9 +152,8 @@ happens first, at the call that failed — so callers are written once.
 | `error_handling.cppm` | Primary module interface; re-exports the three partitions |
 | `error.cppm` | `:error` — `Error`, `ErrorKind`, `Result<T>`, `Status`, the `err_*` helpers and `to_exit_code` |
 | `gpu_status.cppm` | `:gpu_status` — `gpu_status`, `check_or_abort` |
-| `gpu_policy.cppm` | `:gpu_policy` — the policies, the ABORT/RECORD switch, `capture` |
-| `gpu_policy.cpp` | The per-thread recording slot behind `RecordPolicy` and `capture` |
-| `CMakeLists.txt` | The module library, and the ABORT/RECORD compile definition |
+| `gpu_policy.cppm` | `:gpu_policy` — `AbortPolicy`, `LogPolicy` and the aliases over them |
+| `CMakeLists.txt` | The module library |
 
 ## Dependencies
 

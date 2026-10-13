@@ -461,45 +461,6 @@ if(NOT FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER MATCHES "^[1-9][0-9]*$")
   )
 endif()
 
-# ========================================================================
-# GPU error policy
-# ========================================================================
-# What a failed GPU call inside a wwr RAII wrapper does, tree-wide. ABORT logs
-# at critical and aborts at the failing call; RECORD hands the failure to the
-# nearest enclosing free_breakfast::capture, which returns it as std::expected
-# (see src/core/error_handling/README.md). Empty -- the default -- follows the
-# build type: ABORT for Debug, RECORD for everything else.
-#
-# Not tied to NDEBUG on purpose: that is assert's switch, invisible in a preset
-# and in the configure log. This one is printed below and is a cache variable,
-# so a Release build can still opt into ABORT to chase a failure.
-set(FREE_BREAKFAST_GPU_ERROR_POLICY
-    ""
-    CACHE STRING
-          "GPU wrapper error policy: ABORT, RECORD, or empty (by build type)"
-)
-set_property(
-  CACHE FREE_BREAKFAST_GPU_ERROR_POLICY PROPERTY STRINGS "" ABORT RECORD
-)
-if(FREE_BREAKFAST_GPU_ERROR_POLICY STREQUAL "")
-  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-    set(FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED ABORT)
-  else()
-    set(FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED RECORD)
-  endif()
-elseif(FREE_BREAKFAST_GPU_ERROR_POLICY MATCHES "^(ABORT|RECORD)$")
-  set(FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED
-      ${FREE_BREAKFAST_GPU_ERROR_POLICY}
-  )
-else()
-  message(
-    FATAL_ERROR
-      "FREE_BREAKFAST_GPU_ERROR_POLICY must be ABORT, RECORD or empty, got "
-      "'${FREE_BREAKFAST_GPU_ERROR_POLICY}'"
-  )
-endif()
-message(STATUS "GPU error policy: ${FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED}")
-
 option(FREE_BREAKFAST_BUILD_EXPERIMENTAL "Build experimental modules and tests"
        OFF
 )
