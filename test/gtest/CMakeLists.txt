@@ -31,6 +31,7 @@ include(GoogleTest)
 add_executable(
   free_breakfast_tests_host
   version_host.cpp
+  core_vocabulary_host.cpp
   diagnostics_host.cpp
   io_base_host.cpp
   io_config_host.cpp
@@ -52,7 +53,8 @@ set_target_properties(
 target_link_libraries(
   free_breakfast_tests_host
   PRIVATE free_breakfast::core free_breakfast::core::diagnostics_macros
-          free_breakfast::io wwr::runtime_api GTest::gtest GTest::gtest_main
+          free_breakfast::io wwr::runtime_api wwr::vector_types GTest::gtest
+          GTest::gtest_main
 )
 
 # ---------------------------------------------------------------------------

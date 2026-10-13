@@ -1,3 +1,7 @@
+add_subdirectory(types)
+add_subdirectory(concepts)
+add_subdirectory(constants)
+add_subdirectory(nontransferrable)
 add_subdirectory(error_handling)
 add_subdirectory(log)
 add_subdirectory(diagnostics)
@@ -13,6 +17,10 @@ free_breakfast_add_cxx_module_library(
   version.cppm
   IMPORT_STD
   LINK_PUBLIC
+  free_breakfast::core::types
+  free_breakfast::core::concepts
+  free_breakfast::core::constants
+  free_breakfast::core::nontransferrable
   free_breakfast::core::error_handling
   free_breakfast::core::log
   free_breakfast::core::diagnostics
