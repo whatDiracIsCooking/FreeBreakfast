@@ -464,9 +464,9 @@ endif()
 # ========================================================================
 # What a failed GPU call inside a wwr RAII wrapper does, tree-wide. ABORT logs
 # at critical and aborts at the failing call; RECORD hands the failure to the
-# nearest enclosing gpu::capture, which returns it as std::expected (see
-# src/core/gpu_policy/README.md). Empty -- the default -- follows the build
-# type: ABORT for Debug, RECORD for everything else.
+# nearest enclosing free_breakfast::capture, which returns it as std::expected
+# (see src/core/error_handling/README.md). Empty -- the default -- follows the
+# build type: ABORT for Debug, RECORD for everything else.
 #
 # Not tied to NDEBUG on purpose: that is assert's switch, invisible in a preset
 # and in the configure log. This one is printed below and is a cache variable,

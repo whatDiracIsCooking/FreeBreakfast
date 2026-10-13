@@ -93,7 +93,7 @@ target_include_directories(
 )
 
 # gpu_policy_host.cpp checks that the configure-time ABORT/RECORD switch reached
-# the module's gpu::aborts_on_error, so it needs the resolved value too.
+# the module's free_breakfast::aborts_on_error, so it needs the resolved value too.
 if(FREE_BREAKFAST_GPU_ERROR_POLICY_RESOLVED STREQUAL "ABORT")
   target_compile_definitions(
     free_breakfast_tests_host PRIVATE FREE_BREAKFAST_TEST_EXPECT_GPU_ABORTS=1

@@ -6,7 +6,7 @@ free_breakfast_add_cxx_module_library(
   PRIMARY_INTERFACE
   gpu.cppm
   LINK_PUBLIC
-  free_breakfast::core::gpu_policy
+  free_breakfast::core::error_handling
   wwr::runtime_api
   wwr::extension::common
   wwr::extension::handle

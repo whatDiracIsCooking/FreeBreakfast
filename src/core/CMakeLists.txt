@@ -5,7 +5,6 @@ add_subdirectory(nontransferrable)
 add_subdirectory(error_handling)
 add_subdirectory(log)
 add_subdirectory(diagnostics)
-add_subdirectory(gpu_policy)
 add_subdirectory(gpu)
 
 free_breakfast_add_cxx_module_library(
@@ -23,7 +22,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::nontransferrable
   free_breakfast::core::error_handling
   free_breakfast::core::log
-  free_breakfast::core::diagnostics
-  free_breakfast::core::gpu_policy
   free_breakfast::core::gpu
 )

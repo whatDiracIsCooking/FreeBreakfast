@@ -1,9 +1,9 @@
 /// @file
-/// @brief Diagnostic utilities bridging error handling and logging
+/// @brief GPU error codes to Status, and the abort tier over Result/Status
 
-export module free_breakfast.core.diagnostics;
+export module free_breakfast.core.error_handling:gpu_status;
 
-import free_breakfast.core.error_handling;
+import :error;
 import free_breakfast.core.log;
 import wwr.extension.common; // error_type, success_code, error_name, error_string
 import std;

@@ -1,4 +1,4 @@
-// Host-only cases for core/error_handling, core/log and core/diagnostics. None
+// Host-only cases for core/error_handling, core/log and diagnostics.h. None
 // of these touch a device: gpu_status is exercised with codes constructed on
 // the host, which is all it ever looks at.
 

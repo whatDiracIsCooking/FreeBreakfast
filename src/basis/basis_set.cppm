@@ -32,7 +32,6 @@ import std;
 import :shell;
 import :ao;
 import :harmonics;
-import free_breakfast.core.diagnostics;
 import free_breakfast.core.error_handling;
 
 #include "diagnostics.h"

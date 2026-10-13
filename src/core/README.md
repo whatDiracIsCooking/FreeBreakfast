@@ -11,15 +11,14 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `concepts/` | `free_breakfast.core.concepts` — wwr's `real_fp` and `int_type`, re-exported into `free_breakfast`. |
 | `constants/` | `free_breakfast.core.constants` — typed `zero`/`one`/…, physical constants, bohr ↔ Angstrom, SI prefixes. |
 | `nontransferrable/` | `free_breakfast.core.nontransferrable` — the `NonCopyable` / `NonMovable` / `NonTransferable` mixins. |
-| `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`. |
+| `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `gpu_status`, `check_or_abort`; and the ABORT/RECORD GPU error policies chosen by `FREE_BREAKFAST_GPU_ERROR_POLICY`, with `capture`. |
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
-| `diagnostics/` | `free_breakfast.core.diagnostics` — `gpu_status`, `check_or_abort`; plus `diagnostics.h` (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`). |
-| `gpu_policy/` | `free_breakfast.core.gpu_policy` — the ABORT/RECORD GPU error policies chosen by `FREE_BREAKFAST_GPU_ERROR_POLICY`, and `gpu::capture`. |
-| `gpu/` | `free_breakfast.core.gpu` — wwr's RAII wrappers bound to those policies: `gpu::Device`, `gpu::Buffers`, `gpu::BlasHandle`, `gpu::SolverHandle`, … |
+| `diagnostics/` | `diagnostics.h` only (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`), target `free_breakfast::core::diagnostics_macros`. |
+| `gpu/` | `free_breakfast.core.gpu` — wwr's RAII wrappers bound to those policies: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, … |
 
-Each subdirectory is its own module library with its own README, and can be
-linked alone (`free_breakfast::core::log`, ...) by a consumer that does not
-want the rest.
+Each subdirectory is its own library with its own README — a module library,
+except `diagnostics/`, which is a macro header — and can be linked alone
+(`free_breakfast::core::log`, ...) by a consumer that does not want the rest.
 
 ```cpp
 import free_breakfast.core;
@@ -30,7 +29,7 @@ auto v = free_breakfast::core::version_string();   // "0.1.0"
 The GPU layer comes along with that import: `free_breakfast.core.gpu`
 re-exports the `wwr.extension.*` modules it binds (used in place from the
 submodule, not copied), and its aliases already carry this build's error
-policy — see `gpu_policy/README.md` for ABORT vs RECORD and `gpu::capture`.
+policy — see `error_handling/README.md` for ABORT vs RECORD and `capture`.
 
 Link it as `free_breakfast::core`.
 

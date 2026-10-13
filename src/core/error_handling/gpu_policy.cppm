@@ -1,25 +1,25 @@
 /// @file
 /// @brief Tree-wide error policies for the wwr RAII wrappers, chosen at build time
 
-export module free_breakfast.core.gpu_policy;
+export module free_breakfast.core.error_handling:gpu_policy;
 
-import free_breakfast.core.error_handling;
-import free_breakfast.core.diagnostics; // gpu_status, check_or_abort
+import :error;
+import :gpu_status; // gpu_status, check_or_abort
 import free_breakfast.core.log;
 import wwr.extension.common; // error_type, success_code, policy concepts
 import std;
 
-// Set on this target only (src/core/gpu_policy/CMakeLists.txt). It is read once,
+// Set on this target only (src/core/error_handling/CMakeLists.txt). It is read once,
 // here, into a constexpr that lands in this module's BMI -- so every importer sees
 // the same value and no consumer TU can be compiled against the other one.
 #ifndef FREE_BREAKFAST_GPU_POLICY_ABORTS
-#error "FREE_BREAKFAST_GPU_POLICY_ABORTS is set by src/core/gpu_policy/CMakeLists.txt"
+#error "FREE_BREAKFAST_GPU_POLICY_ABORTS is set by src/core/error_handling/CMakeLists.txt"
 #endif
 
-export namespace free_breakfast::gpu {
+export namespace free_breakfast {
 
 /// @brief True when this build's wrappers abort on a GPU failure (ABORT), false
-/// when they record it for gpu::capture (RECORD). Follows
+/// when they record it for capture (RECORD). Follows
 /// FREE_BREAKFAST_GPU_ERROR_POLICY, which defaults by build type.
 inline constexpr bool aborts_on_error = FREE_BREAKFAST_GPU_POLICY_ABORTS != 0;
 
@@ -27,7 +27,7 @@ inline constexpr bool aborts_on_error = FREE_BREAKFAST_GPU_POLICY_ABORTS != 0;
 // The recording slot behind RecordPolicy and capture
 // ============================================================================
 
-/// @brief Hand an error to the innermost active gpu::capture on this thread.
+/// @brief Hand an error to the innermost active capture on this thread.
 ///
 /// First error wins: a later failure in the same capture is usually a
 /// consequence of the first (a stream that was never created cannot bind a
@@ -40,7 +40,7 @@ void record_error(Error error) noexcept;
 std::optional<Error> take_error() noexcept;
 
 namespace detail {
-/// Brackets one gpu::capture: stashes any error already pending for an outer
+/// Brackets one capture: stashes any error already pending for an outer
 /// capture, and puts it back on the way out -- so an inner capture neither
 /// reports its caller's error nor wipes it.
 class CaptureScope {
@@ -72,7 +72,7 @@ struct AbortPolicy {
   }
 };
 
-/// @brief Record the failure for the enclosing gpu::capture and carry on.
+/// @brief Record the failure for the enclosing capture and carry on.
 ///
 /// The wrapper is left empty (a handle's valid() is false, a buffer has
 /// size 0), which is wwr's record-and-continue path.
@@ -138,7 +138,7 @@ struct PolicyMap {
  * origin points at your code rather than at this function.
  *
  * ```cpp
- * auto dev = gpu::capture([] { return std::make_shared<gpu::Device>(0); });
+ * auto dev = capture([] { return std::make_shared<Device>(0); });
  * if (!dev) return std::unexpected(std::move(dev).error());
  * ```
  *
@@ -167,4 +167,4 @@ Result<std::invoke_result_t<F>> capture(F &&f) {
   }
 }
 
-} // namespace free_breakfast::gpu
+} // namespace free_breakfast
