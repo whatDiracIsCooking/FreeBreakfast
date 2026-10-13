@@ -36,50 +36,60 @@ namespace free_breakfast {
   return value;
 }
 
-/// @brief Resolve a BSE shell's harmonic type from its optional
-/// @c function_type string and its angular momentum @p l.
+/// @brief Admit a BSE shell of angular momentum @p l only if its optional
+/// @c function_type says it is spherical.
 ///
 /// BSE's own enum (@c electron_shell_function_type) is
 /// @c ["gto", "gto_spherical", "gto_cartesian", "sto"]; there is no separate
-/// @c harmonic_type field -- @c function_type carries it. @c gto_spherical and
-/// @c gto_cartesian are unambiguous. Bare @c "gto" (or the field being
-/// absent) is exact as Cartesian for @c l <= 1 (the two conventions coincide
-/// there), but genuinely ambiguous at @c l >= 2 -- real BSE data tags that
-/// case explicitly (e.g. cc-pVDZ's own d shell is @c gto_spherical while its
-/// s/p are bare @c gto), so rejecting the untagged case here only rejects
-/// input that was already underspecified, rather than silently guessing a
-/// harmonic type that would corrupt every downstream integral if wrong.
-/// @c sto and any other value are rejected outright: this reader only builds
-/// Gaussian shells.
-[[nodiscard]] Result<Harmonic> resolve_harmonic(const json &block, int32_t l) {
+/// @c harmonic_type field -- @c function_type carries it.
+///
+/// **Only spherical input is accepted**, because every @ref ShellStamp is
+/// spherical. @c gto_spherical is admitted, explicitly.
+/// @c gto_cartesian is rejected at any @c l -- BSE's own validator only allows
+/// it from d up, so it always marks a genuinely Cartesian basis set (a
+/// Pople-style 6-31G* d shell, say). Bare @c "gto" (or the field being absent)
+/// is spherical for @c l <= 1, where the two conventions coincide, but
+/// ambiguous at @c l >= 2 -- real BSE data tags that case explicitly (e.g.
+/// cc-pVDZ's own d shell is @c gto_spherical while its s/p are bare @c gto),
+/// so rejecting the untagged case only rejects input that was already
+/// underspecified, rather than silently guessing a harmonic type that would
+/// corrupt every downstream integral if wrong. @c sto and any other value are
+/// rejected outright: this reader only builds Gaussian shells.
+///
+/// The Cartesian functions the integral kernels evaluate are still reachable:
+/// @ref cartesian_to_spherical maps a Cartesian-AO matrix onto this spherical
+/// layout.
+[[nodiscard]] Status check_spherical(const json &block, int32_t l) {
   const auto ft_it = block.find("function_type");
   if (ft_it == block.end()) {
     if (l >= 2) {
-      return err_config(
-          "BSE shell has no function_type and angular_momentum={} >= 2 is ambiguous between "
-          "Cartesian and spherical; tag it \"gto_cartesian\" or \"gto_spherical\"",
-          l);
+      return err_config("BSE shell has no function_type and angular_momentum={} >= 2 is "
+                        "ambiguous between Cartesian and spherical; only \"gto_spherical\" "
+                        "is supported",
+                        l);
     }
-    return Harmonic::Cartesian;
+    return {};
   }
   if (!ft_it->is_string()) {
     return err_config("BSE shell function_type is not a string");
   }
   const std::string function_type = ft_it->get<std::string>();
   if (function_type == "gto_spherical") {
-    return Harmonic::Spherical;
+    return {};
   }
   if (function_type == "gto_cartesian") {
-    return Harmonic::Cartesian;
+    return err_config("BSE shell function_type \"gto_cartesian\" (angular_momentum={}): "
+                      "Cartesian basis functions are not supported; only \"gto_spherical\" is",
+                      l);
   }
   if (function_type == "gto") {
     if (l >= 2) {
-      return err_config(
-          "BSE shell function_type \"gto\" with angular_momentum={} >= 2 is ambiguous between "
-          "Cartesian and spherical; tag it \"gto_cartesian\" or \"gto_spherical\"",
-          l);
+      return err_config("BSE shell function_type \"gto\" with angular_momentum={} >= 2 is "
+                        "ambiguous between Cartesian and spherical; only \"gto_spherical\" "
+                        "is supported",
+                        l);
     }
-    return Harmonic::Cartesian;
+    return {};
   }
   return err_config("BSE shell function_type \"{}\" is not a supported Gaussian type",
                     function_type);
@@ -92,7 +102,7 @@ namespace free_breakfast {
 /// uses column i. With a single momentum and several columns it is a general
 /// contraction: every column becomes a shell of that one momentum. The stamps
 /// are geometry-free -- place() supplies the centers. @c function_type (see
-/// @ref resolve_harmonic) is a property of the whole block, so it is resolved
+/// @ref check_spherical) is a property of the whole block, so it is checked
 /// once per emitted shell against that shell's own @c l.
 [[nodiscard]] Result<std::vector<ShellStamp>> shells_from_block(const json &block) {
   if (!block.is_object()) {
@@ -164,14 +174,14 @@ namespace free_breakfast {
     }
 
     const int32_t l = per_column_momentum ? momenta[col] : momenta.front();
-    auto harmonic = FBF_TRY(resolve_harmonic(block, l));
+    FBF_TRY(check_spherical(block, l));
     // ShellStamp's constructor aborts on a bad shape (negative L, empty or
     // mismatched primitive lists), rather than returning a value this parser
     // could catch -- every condition it checks is already screened above
     // (non-empty angular_momentum entries, non-empty exponents, and the
     // column-length check just above), so by the time this constructs, the
     // shape is provably valid and the abort path is unreachable.
-    shells.emplace_back(l, exponents, coefficients, harmonic);
+    shells.emplace_back(l, exponents, coefficients);
   }
   return shells;
 }

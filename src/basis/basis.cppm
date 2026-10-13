@@ -11,12 +11,12 @@
 /// The aggregate is split into six partitions: @c :shell defines @ref
 /// free_breakfast::Shell (and re-exports the center-independent names @ref
 /// free_breakfast::kMaxAngularMomentum, @ref free_breakfast::cartesian_function_count,
-/// @ref free_breakfast::spherical_function_count, @ref free_breakfast::Harmonic
-/// and @ref free_breakfast::Primitive from @c basis.h); @c :ao defines the
+/// @ref free_breakfast::spherical_function_count and @ref
+/// free_breakfast::Primitive from @c basis.h); @c :ao defines the
 /// atomic-orbital view -- @ref free_breakfast::cartesian_powers (the canonical
 /// Cartesian ordering) and @ref free_breakfast::AO; @c :harmonics defines the
 /// closed-form real solid harmonic table (@ref free_breakfast::solid_harmonic_c2s)
-/// that a @c Spherical shell's Cartesian-to-spherical transform is built from;
+/// that each shell's Cartesian-to-spherical transform is built from;
 /// @c :basis_set defines
 /// @ref free_breakfast::BasisSet over those shells, laying out its @ref
 /// free_breakfast::AO list in that order; @c :shell_stamp defines the
@@ -32,19 +32,18 @@
 /// share one center and one angular momentum L; each primitive is an
 /// (exponent, coefficient) pair (@ref free_breakfast::Primitive).
 ///
-/// **Function convention: Cartesian at the kernel, Cartesian-or-spherical at
-/// the shell.** A shell of angular momentum L spans the Cartesian Gaussians
-/// x^a y^b z^c with a+b+c = L, of which there are (L+1)(L+2)/2 -- so 1 for
-/// L=0 (s), 3 for L=1 (p), 6 for L=2 (d). The working target is up to d, i.e.
+/// **Function convention: Cartesian at the kernel, spherical at the shell.**
+/// Every @ref free_breakfast::Shell means the 2L+1 real solid harmonics of
+/// its angular momentum L. The GPU integral engines evaluate the Cartesian
+/// Gaussians x^a y^b z^c with a+b+c = L those harmonics are embedded in, of
+/// which there are (L+1)(L+2)/2 -- so 1 for L=0 (s), 3 for L=1 (p), 6 for L=2
+/// (d); the two sets coincide for L <= 1. The working target is up to d, i.e.
 /// L in {0, 1, 2}. The Cartesian ordering within a shell is the canonical
 /// lexicographic-on-(a,b,c)-with-a-highest order used by most integral
 /// libraries; for p it is (x, y, z), and for d it is (xx, xy, xz, yy, yz, zz).
-/// The GPU integral engines only ever evaluate these Cartesian functions.
-/// @ref free_breakfast::Harmonic tags a @ref free_breakfast::Shell as meaning
-/// either that Cartesian set directly, or the 2L+1 real solid harmonics
-/// embedded in it (identical to the Cartesian set for L <= 1); a @c Spherical
-/// shell's harmonic combination is formed afterward via @c :harmonics'
-/// transform, applied at the @ref free_breakfast::BasisSet level.
+/// The harmonic combination is formed afterward via @c :harmonics' transform,
+/// applied at the @ref free_breakfast::BasisSet level by @ref
+/// free_breakfast::cartesian_to_spherical.
 
 export module free_breakfast.basis;
 

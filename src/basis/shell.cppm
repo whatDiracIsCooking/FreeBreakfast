@@ -15,13 +15,15 @@
 /// share one center and one angular momentum L; each primitive is an
 /// (exponent, coefficient) pair (@ref free_breakfast::Primitive).
 ///
-/// **Function convention: Cartesian.** A shell of angular momentum L spans the
-/// Cartesian Gaussians x^a y^b z^c with a+b+c = L, of which there are
-/// (L+1)(L+2)/2 -- so 1 for L=0 (s), 3 for L=1 (p), 6 for L=2 (d). The working
-/// target is up to d, i.e. L in {0, 1, 2}. The Cartesian ordering within a
-/// shell is the canonical lexicographic-on-(a,b,c)-with-a-highest order used by
-/// most integral libraries; for p it is (x, y, z), and for d it is
-/// (xx, xy, xz, yy, yz, zz).
+/// **Function convention: spherical, evaluated as Cartesian.** A shell of
+/// angular momentum L means the 2L+1 real solid harmonics. The GPU kernels
+/// evaluate it over the Cartesian Gaussians x^a y^b z^c with a+b+c = L, of
+/// which there are (L+1)(L+2)/2 -- so 1 for L=0 (s), 3 for L=1 (p), 6 for L=2
+/// (d) -- and @c cartesian_to_spherical combines those into the harmonics
+/// afterward. The working target is up to d, i.e. L in {0, 1, 2}. The
+/// Cartesian ordering within a shell is the canonical
+/// lexicographic-on-(a,b,c)-with-a-highest order used by most integral
+/// libraries; for p it is (x, y, z), and for d it is (xx, xy, xz, yy, yz, zz).
 module;
 
 #include "angular_momentum.h"
@@ -43,7 +45,6 @@ export namespace free_breakfast {
 // so importers can form declarations with them; at global scope the names would
 // be visible but unusable.
 using free_breakfast::cartesian_function_count;
-using free_breakfast::Harmonic;
 using free_breakfast::kMaxAngularMomentum;
 using free_breakfast::Primitive;
 using free_breakfast::spherical_function_count;
@@ -66,20 +67,13 @@ public:
   ///                    engines separately reject L > @ref kMaxAngularMomentum.
   /// @param primitives  The contracted primitives, in contraction order.
   /// @param center      Shell center, in bohr.
-  /// @param harmonic    Which functions this shell means: @c Cartesian (the
-  ///                    default) or @c Spherical. The GPU kernels evaluate
-  ///                    this shell's Cartesian functions either way; a
-  ///                    @c Spherical tag says a @ref BasisSet-level transform
-  ///                    (@c cartesian_to_spherical) should combine them into
-  ///                    2l+1 real solid harmonics afterward.
   ///
   /// Aborts if @p l is negative or there are no primitives -- a caller-side
   /// invariant (the one production caller, the BSE basis-set reader, already
   /// screens both conditions before constructing), not a
   /// value a caller could plausibly recover from.
-  Shell(int32_t l, std::vector<Primitive> primitives, Vec<double, 3> center,
-        Harmonic harmonic = Harmonic::Cartesian)
-      : l_(l), primitives_(std::move(primitives)), center_(center), harmonic_(harmonic) {
+  Shell(int32_t l, std::vector<Primitive> primitives, Vec<double, 3> center)
+      : l_(l), primitives_(std::move(primitives)), center_(center) {
     if (l_ < 0) {
       check_or_abort(err_config("Shell: angular momentum must be non-negative"));
     }
@@ -99,13 +93,12 @@ public:
   /// @param exponents     Primitive Gaussian exponents, in inverse bohr^2.
   /// @param coefficients  Contraction coefficients, one per exponent.
   /// @param center        Shell center, in bohr.
-  /// @param harmonic      See the other constructor.
   ///
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ (see the other constructor).
   Shell(int32_t l, const std::vector<double> &exponents, const std::vector<double> &coefficients,
-        Vec<double, 3> center, Harmonic harmonic = Harmonic::Cartesian)
-      : Shell(l, zip(exponents, coefficients), center, harmonic) {}
+        Vec<double, 3> center)
+      : Shell(l, zip(exponents, coefficients), center) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
   [[nodiscard]] int32_t angular_momentum() const { return l_; }
@@ -119,23 +112,16 @@ public:
   /// @brief Shell center, in bohr.
   [[nodiscard]] const Vec<double, 3> &center() const { return center_; }
 
-  /// @brief Which functions this shell means: @ref Harmonic::Cartesian or
-  /// @ref Harmonic::Spherical.
-  [[nodiscard]] Harmonic harmonic() const { return harmonic_; }
-
   /// @brief Number of Cartesian AO functions this shell contributes.
   ///
   /// (L+1)(L+2)/2: 1 for s, 3 for p, 6 for d. This is the count the GPU
-  /// kernels and @ref BasisSet's Cartesian AO layout always use, regardless
-  /// of @ref harmonic -- see @ref presented_function_count for the count a
-  /// @c Spherical shell actually presents to the outside world.
+  /// kernels and @ref BasisSet's Cartesian AO layout use -- see @ref
+  /// spherical_function_count for the count the shell presents.
   [[nodiscard]] uint32_t function_count() const { return cartesian_function_count(l_); }
 
-  /// @brief Number of functions this shell actually presents: @ref
-  /// function_count for a @c Cartesian shell, or 2l+1 (@ref
-  /// spherical_function_count) for a @c Spherical one.
-  [[nodiscard]] uint32_t presented_function_count() const {
-    return harmonic_ == Harmonic::Spherical ? spherical_function_count(l_) : function_count();
+  /// @brief Number of real solid harmonic functions this shell presents: 2l+1.
+  [[nodiscard]] uint32_t spherical_function_count() const {
+    return free_breakfast::spherical_function_count(l_);
   }
 
 private:
@@ -156,7 +142,6 @@ private:
   int32_t l_{0};
   std::vector<Primitive> primitives_{};
   Vec<double, 3> center_{};
-  Harmonic harmonic_{Harmonic::Cartesian};
 };
 
 } // namespace free_breakfast

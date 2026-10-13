@@ -10,18 +10,16 @@
 /// global @c std::uint32_t used by the AO-count accessors; the center-independent
 /// basis names are re-exported by @c :shell.
 ///
-/// **The Cartesian AO layout (@ref BasisSet::aos, @ref BasisSet::ao_offset) is
-/// unconditional** -- every shell, @c Cartesian or @c Spherical, contributes
-/// its full @c cartesian_function_count(l) Cartesian functions there, because
-/// that is what the GPU kernels evaluate. A @c Spherical shell ADDITIONALLY
-/// gets a slot in a second, parallel layout (@ref BasisSet::spherical_nao,
-/// @ref BasisSet::spherical_ao_offset) sized 2l+1 instead of (l+1)(l+2)/2.
-/// @ref cartesian_to_spherical bridges the two: a block-diagonal matrix @c U
-/// (Cartesian rows x spherical columns), identity for a @c Cartesian shell's
-/// block and the (normalization-reconciled) real solid harmonic embedding
-/// (@c :harmonics) for a @c Spherical one -- so @c U^T M U converts any
-/// Cartesian-basis matrix @c M into the same quantity over the spherical
-/// basis.
+/// **Two parallel AO layouts.** Every shell is spherical, but the GPU kernels
+/// evaluate its @c cartesian_function_count(l) Cartesian functions, so each
+/// shell has a slot in the Cartesian layout (@ref BasisSet::aos, @ref
+/// BasisSet::ao_offset) sized (l+1)(l+2)/2 AND one in the spherical layout
+/// (@ref BasisSet::spherical_nao, @ref BasisSet::spherical_ao_offset) sized
+/// 2l+1. @ref cartesian_to_spherical bridges the two: a block-diagonal matrix
+/// @c U (Cartesian rows x spherical columns) holding each shell's
+/// (normalization-reconciled) real solid harmonic embedding (@c :harmonics) --
+/// so @c U^T M U converts any Cartesian-basis matrix @c M into the same
+/// quantity over the spherical basis.
 module;
 
 #include "basis.h"
@@ -71,15 +69,15 @@ public:
       ao_offsets_.push_back(offset);
       spherical_ao_offsets_.push_back(spherical_offset);
       // One AO per Cartesian function, in the canonical order (:ao owns it), so
-      // aos_ and the ao_offsets_ slices describe the identical layout. This is
-      // unconditional -- Cartesian or Spherical, the GPU kernels evaluate the
-      // shell's Cartesian functions; see the file doc comment.
+      // aos_ and the ao_offsets_ slices describe the identical layout. The GPU
+      // kernels evaluate the shell's Cartesian functions; see the file doc
+      // comment.
       for (const std::array<int32_t, 3> &p : cartesian_powers(shell.angular_momentum())) {
         aos_.push_back(AO{s, static_cast<uint8_t>(p[0]), static_cast<uint8_t>(p[1]),
                           static_cast<uint8_t>(p[2])});
       }
       offset += shell.function_count();
-      spherical_offset += shell.presented_function_count();
+      spherical_offset += shell.spherical_function_count();
     }
     ao_offsets_.push_back(offset);
     spherical_ao_offsets_.push_back(spherical_offset);
@@ -118,9 +116,8 @@ public:
   }
 
   /// @brief Total number of AOs in the SPHERICAL layout: sum over shells of
-  /// @ref Shell::presented_function_count (2l+1 for a @c Spherical shell,
-  /// (l+1)(l+2)/2 -- the same as @ref nao's contribution -- for a @c Cartesian
-  /// one). Equals @ref nao exactly when every shell is @c Cartesian.
+  /// @ref Shell::spherical_function_count (2l+1). Equals @ref nao exactly when
+  /// no shell is above p.
   [[nodiscard]] uint32_t spherical_nao() const { return spherical_ao_offsets_.back(); }
 
   /// @brief First SPHERICAL-layout AO index owned by shell @p shell_index; the
@@ -140,7 +137,7 @@ private:
   // A default-constructed (empty) basis still needs the trailing 0 so nao()
   // reads it -- hence a single-element {0}, not an empty vector.
   std::vector<uint32_t> ao_offsets_ = std::vector<uint32_t>(1, 0);
-  // The same layout, sized by presented_function_count() instead of
+  // The same layout, sized by spherical_function_count() instead of
   // function_count() -- see spherical_nao()/spherical_ao_offset().
   std::vector<uint32_t> spherical_ao_offsets_ = std::vector<uint32_t>(1, 0);
   // One AO per Cartesian function, global AO order; empty for an empty basis.
@@ -153,9 +150,8 @@ private:
 /// matrix, ...) into the same quantity over @p basis's spherical AO layout.
 ///
 /// Block-diagonal, one block per shell at (@ref BasisSet::ao_offset, @ref
-/// BasisSet::spherical_ao_offset): an identity block for a @c Cartesian
-/// shell (no change of basis), and for a @c Spherical shell of momentum @c l,
-/// the closed-form real solid harmonic table @c solid_harmonic_c2s(l)
+/// BasisSet::spherical_ao_offset): for a shell of momentum @c l, the
+/// closed-form real solid harmonic table @c solid_harmonic_c2s(l)
 /// (@c :harmonics) -- ncart(l) x (2l+1), the purely angular change of basis
 /// from Cartesian monomials to the 2l+1 real solid harmonics (@c m = -l..+l,
 /// PySCF/libcint convention) -- SCALED by @c sqrt((2l-1)!!).
@@ -182,10 +178,8 @@ private:
 /// off-diagonal (cross-m) entries exactly zero either way. Pinned
 /// numerically in @c test/gtest/basis_host.cpp.
 ///
-/// For l <= 1 a @c Spherical shell's block is already an identity (the
-/// harmonic embedding of s/p IS the Cartesian set, and @c sqrt((2*0-1)!!) =
-/// @c sqrt((2*1-1)!!) = 1), so it is indistinguishable from a @c Cartesian
-/// shell's block there.
+/// For l <= 1 a shell's block is an identity (the harmonic embedding of s/p
+/// IS the Cartesian set, and @c sqrt((2*0-1)!!) = @c sqrt((2*1-1)!!) = 1).
 [[nodiscard]] inline std::vector<double> cartesian_to_spherical(const BasisSet &basis) {
   const size_t nrow = basis.nao();
   const size_t ncol = basis.spherical_nao();
@@ -198,17 +192,10 @@ private:
     const uint32_t row0 = basis.ao_offset(s);
     const uint32_t col0 = basis.spherical_ao_offset(s);
     const uint32_t ncart = shell.function_count();
-
-    if (shell.harmonic() == Harmonic::Cartesian) {
-      for (uint32_t i = 0; i < ncart; ++i) {
-        u[((row0 + i) * ncol) + col0 + i] = 1.0;
-      }
-      continue;
-    }
+    const uint32_t nsph = shell.spherical_function_count();
 
     const std::vector<double> block = solid_harmonic_c2s(l);
     const double scale = std::sqrt(double_factorial_odd((2 * l) - 1));
-    const uint32_t nsph = spherical_function_count(l);
     for (uint32_t i = 0; i < ncart; ++i) {
       for (uint32_t j = 0; j < nsph; ++j) {
         u[((row0 + i) * ncol) + col0 + j] = block[(static_cast<size_t>(i) * nsph) + j] * scale;
