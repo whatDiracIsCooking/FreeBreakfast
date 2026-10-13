@@ -14,11 +14,13 @@ export import :version;
 
 // Vocabulary with no runtime of its own: fixed-width integers, the builtin
 // vector-type mapping and the scalar concepts (re-exported from wwr), typed
-// numeric / physical constants, the float/double math primitives in
-// free_breakfast::math, and the copy/move mixins.
+// numeric / physical constants, the math and integer-rounding primitives in
+// free_breakfast::math, the launch-shape constants (kWarpSize, NumWarps), and
+// the copy/move mixins.
 export import free_breakfast.core.types;
 export import free_breakfast.core.constants;
 export import free_breakfast.core.primitives;
+export import free_breakfast.core.kernel;
 export import free_breakfast.core.nontransferrable;
 
 // Separate modules rather than partitions: each has consumers that want it

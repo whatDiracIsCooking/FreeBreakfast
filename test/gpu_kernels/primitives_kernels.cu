@@ -10,9 +10,8 @@
 // runtime header, which under HIP must not precede libc++ (see its comments).
 #include "primitives.h"
 
-// wwr's runtime surface for a device TU -- wwr::wwrMalloc, wwrMemcpy, ... --
-// so the launchers below need no backend #if.
-#include "runtime.h"
+// DeviceArray and launched_cleanly, over wwr's runtime surface.
+#include "device_array.cuh"
 
 #include "primitives_kernels.h"
 
@@ -129,49 +128,8 @@ __global__ void combinatoric_kernel(const CombinatoricOp op, const int32_t *n, c
   }
 }
 
-// A device allocation that frees itself, so a launcher's early return on a
-// failed call does not leak the arrays already allocated.
-template <typename T>
-class DeviceArray {
-public:
-  explicit DeviceArray(const size_t count) : bytes_(count * sizeof(T)) {
-    void *ptr = nullptr;
-    ok_ = wwr::wwrMalloc(&ptr, bytes_) == wwr::wwrSuccess;
-    data_ = static_cast<T *>(ptr);
-  }
-  DeviceArray(const DeviceArray &) = delete;
-  DeviceArray &operator=(const DeviceArray &) = delete;
-  ~DeviceArray() {
-    if (data_ != nullptr) {
-      static_cast<void>(wwr::wwrFree(data_));
-    }
-  }
-
-  [[nodiscard]] bool ok() const { return ok_; }
-  [[nodiscard]] T *data() const { return data_; }
-
-  [[nodiscard]] bool upload(const T *host) const {
-    return wwr::wwrMemcpy(data_, host, bytes_, wwr::wwrMemcpyHostToDevice) == wwr::wwrSuccess;
-  }
-  [[nodiscard]] bool download(T *host) const {
-    return wwr::wwrMemcpy(host, data_, bytes_, wwr::wwrMemcpyDeviceToHost) == wwr::wwrSuccess;
-  }
-
-private:
-  size_t bytes_;
-  T *data_ = nullptr;
-  bool ok_ = false;
-};
-
 uint32_t blocks_for(const size_t count) {
-  return static_cast<uint32_t>((count + kThreadsPerBlock - 1) / kThreadsPerBlock);
-}
-
-// The launch itself reports nothing; a bad configuration surfaces from
-// wwrGetLastError, and a fault inside the kernel from the synchronize.
-bool launched_cleanly() {
-  return wwr::wwrGetLastError() == wwr::wwrSuccess &&
-         wwr::wwrDeviceSynchronize() == wwr::wwrSuccess;
+  return static_cast<uint32_t>(math::idivup(count, static_cast<size_t>(kThreadsPerBlock)));
 }
 
 template <typename T>

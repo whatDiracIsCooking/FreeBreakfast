@@ -1,6 +1,7 @@
 /// @file
 /// @brief Math primitives in free_breakfast::math -- sqrt, log, sin, cos, ...,
-/// factorial, binomial -- written once for host and device code.
+/// factorial, binomial, idivup, align_up -- written once for host and device
+/// code.
 ///
 /// Every function here is a single definition that compiles on both sides:
 ///   - a device `.cu` #includes this header, and each function is
@@ -43,6 +44,7 @@
 // what declares.
 #include <math.h>
 
+#include <concepts>
 #include <type_traits>
 
 // free_breakfast::int32_t, the width the combinatorics take their counts in.
@@ -251,6 +253,32 @@ FBF_MATH_PREDICATE(isfinite)
     result = result * static_cast<double>(n - i) / static_cast<double>(i + 1);
   }
   return result;
+}
+
+// ========================================================================
+// Integer rounding
+//
+// Grid and block sizing, and padding a count to a multiple: the host sizes a
+// launch with the same arithmetic a kernel uses to bound its loop. Any integral
+// type, so a size_t byte count and a uint32_t thread count both pass unconverted.
+// ========================================================================
+
+/// @brief Ceiling of @p a / @p b: the number of @p b -sized chunks needed to
+/// cover @p a
+///
+/// Assumes non-negative operands; undefined for @p b == 0, and @p a + @p b may
+/// overflow near the top of T's range.
+template <std::integral T>
+[[nodiscard]] FBF_HOST_DEVICE constexpr T idivup(const T a, const T b) {
+  return (a + b - 1) / b;
+}
+
+/// @brief Round @p a up to the next multiple of @p b
+///
+/// Same domain as idivup: non-negative operands, undefined for @p b == 0.
+template <std::integral T>
+[[nodiscard]] FBF_HOST_DEVICE constexpr T align_up(const T a, const T b) {
+  return idivup(a, b) * b;
 }
 
 } // namespace free_breakfast::math

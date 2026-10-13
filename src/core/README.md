@@ -9,7 +9,8 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `version.cppm` | A partition holding the project version and `version_string()`. |
 | `types/` | `free_breakfast.core.types` — fixed-width integers in the global namespace, `Vec<T, N>` / `make_vec` over the builtin GPU vector types, and wwr's `real_fp` / `int_type` concepts re-exported into `free_breakfast`. |
 | `constants/` | `free_breakfast.core.constants` — typed `zero`/`one`/…, physical constants, bohr ↔ Angstrom, SI prefixes. |
-| `primitives/` | `free_breakfast.core.primitives` — `math::sqrt`, `math::log`, `math::sin`, … templated on float/double, and `math::factorial` / `double_factorial_odd` / `binomial`; `primitives.h` gives a device `.cu` the same names (target `free_breakfast::core::primitives_header`). |
+| `primitives/` | `free_breakfast.core.primitives` — `math::sqrt`, `math::log`, `math::sin`, … templated on float/double, and `math::factorial` / `double_factorial_odd` / `binomial`, `math::idivup` / `align_up`; `primitives.h` gives a device `.cu` the same names (target `free_breakfast::core::primitives_header`). |
+| `kernel/` | `free_breakfast.core.kernel` — `kWarpSize` and the `NumWarps` launch-shape concept; device-only headers beside it (target `free_breakfast::core::kernel_headers`) give a `.cu` the `DeviceFunctor` concept and `device::warp_reduce` / `block_reduce`. |
 | `nontransferrable/` | `free_breakfast.core.nontransferrable` — the `NonCopyable` / `NonMovable` / `NonTransferable` mixins. |
 | `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `gpu_status`, `check_or_abort`; and the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy). |
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |

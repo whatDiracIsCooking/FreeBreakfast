@@ -8,16 +8,20 @@
 # devtools/cross-backend-check.sh compiles these kernels for the backend this
 # build is not targeting.
 #
-# primitives_kernels.cu includes primitives.h, which links wwr::device (the
-# vendor runtime header and wwr's runtime.h, whose device section supplies the
-# wwr* allocation / copy / launch names) and types_headers.
+# primitives_kernels.cu includes primitives.h, and reduce_kernels.cu the
+# kernel headers (block_reduce.cuh, warp_reduce.cuh); both targets link
+# wwr::device (the vendor runtime header and wwr's runtime.h, whose device
+# section supplies the wwr* allocation / copy / launch names that
+# device_array.cuh uses) and types_headers.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.test.gpu_kernels
   SOURCES
   primitives_kernels.cu
+  reduce_kernels.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   LINK_PRIVATE
   free_breakfast::core::primitives_header
+  free_breakfast::core::kernel_headers
 )

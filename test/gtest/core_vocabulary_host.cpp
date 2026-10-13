@@ -1,7 +1,8 @@
 // Host-only cases for core/types (including its :concepts partition),
-// core/constants, core/primitives and core/nontransferrable. Most of what these modules promise is compile-time,
-// so most of the checks are static_asserts; the TESTs exist so each module has
-// a ctest entry and the vector types are exercised as values, not just names.
+// core/constants, core/primitives, core/kernel and core/nontransferrable. Most
+// of what these modules promise is compile-time, so most of the checks are
+// static_asserts; the TESTs exist so each module has a ctest entry and the
+// vector types are exercised as values, not just names.
 
 #include <gtest/gtest.h>
 
@@ -154,6 +155,37 @@ TEST(CorePrimitives, CombinatoricsAgree) {
   }
 }
 
+// Integer rounding keeps the argument's type, so a size_t byte count is not
+// narrowed, and is constexpr like the combinatorics.
+static_assert(
+    std::is_same_v<decltype(fb::math::idivup(std::size_t{7}, std::size_t{2})), std::size_t>);
+static_assert(fb::math::idivup(0, 4) == 0);
+static_assert(fb::math::idivup(1, 4) == 1);
+static_assert(fb::math::idivup(8, 4) == 2);
+static_assert(fb::math::idivup(9, 4) == 3);
+static_assert(fb::math::align_up(0, 4) == 0);
+static_assert(fb::math::align_up(9, 4) == 12);
+static_assert(fb::math::align_up(12, 4) == 12);
+
+template <typename T>
+concept HasIdivup = requires(T x) { fb::math::idivup(x, x); };
+
+static_assert(HasIdivup<std::int32_t> && HasIdivup<std::uint64_t>);
+static_assert(!HasIdivup<double>);
+
+TEST(CorePrimitives, IntegerRoundingCoversEveryRemainder) {
+  for (std::uint32_t a = 0; a <= 100; ++a) {
+    for (std::uint32_t b = 1; b <= 9; ++b) {
+      const std::uint32_t q = fb::math::idivup(a, b);
+      const std::uint32_t r = fb::math::align_up(a, b);
+      // q is the smallest count of b-chunks covering a; r is that many b's.
+      EXPECT_GE(q * b, a) << a << " / " << b;
+      EXPECT_LT((q * b) - a, b) << a << " / " << b;
+      EXPECT_EQ(r, q * b) << a << " / " << b;
+    }
+  }
+}
+
 TEST(CorePrimitives, MatchCmath) {
   EXPECT_EQ(fb::math::sqrt(2.0), std::sqrt(2.0));
   EXPECT_EQ(fb::math::sqrt(2.0f), std::sqrt(2.0f));
@@ -176,6 +208,25 @@ TEST(CorePrimitives, NaNHandling) {
   // fmin/fmax return the non-NaN operand, which `x < y ? x : y` would not.
   EXPECT_EQ(fb::math::fmin(nan, 1.0), 1.0);
   EXPECT_EQ(fb::math::fmax(1.0, nan), 1.0);
+}
+
+// ---------------------------------------------------------------------------
+// kernel
+// ---------------------------------------------------------------------------
+
+static_assert(std::is_same_v<std::remove_const_t<decltype(fb::kWarpSize)>, std::uint32_t>);
+static_assert(fb::kWarpSize == 32 || fb::kWarpSize == 64);
+
+// NumWarps constrains a value: >= 1, a power of two, and a block of at most
+// 1024 threads -- checked without overflowing for a 64-bit count.
+static_assert(fb::NumWarps<1> && fb::NumWarps<2U> && fb::NumWarps<1024 / fb::kWarpSize>);
+static_assert(!fb::NumWarps<0> && !fb::NumWarps<-1> && !fb::NumWarps<3>);
+static_assert(!fb::NumWarps<2048 / fb::kWarpSize>);
+static_assert(!fb::NumWarps<std::uint64_t{1} << 32>);
+static_assert(!fb::NumWarps<1.0>);
+
+TEST(CoreKernel, WarpSizeDividesTheBlockCap) {
+  EXPECT_EQ(1024 % fb::kWarpSize, 0U);
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 add_subdirectory(types)
 add_subdirectory(constants)
 add_subdirectory(primitives)
+add_subdirectory(kernel)
 add_subdirectory(nontransferrable)
 add_subdirectory(error_handling)
 add_subdirectory(log)
@@ -20,6 +21,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::constants
   free_breakfast::core::primitives
+  free_breakfast::core::kernel
   free_breakfast::core::nontransferrable
   free_breakfast::core::error_handling
   free_breakfast::core::log

@@ -1,8 +1,9 @@
 # Primitives
 
 Element-wise math (`sqrt`, `log`, `sin`, `cos`, …) templated on `float` /
-`double`, and small exact combinatorics (`factorial`, `double_factorial_odd`,
-`binomial`), under the same names in host module code and in device code.
+`double`, small exact combinatorics (`factorial`, `double_factorial_odd`,
+`binomial`), and integer rounding (`idivup`, `align_up`), under the same names
+in host module code and in device code.
 
 ## Module
 
@@ -46,6 +47,20 @@ set reaches (angular momenta).
 | `factorial(n)` | n!; 1 for n <= 1 |
 | `binomial(n, k)` | C(n, k); 0 outside 0 <= k <= n |
 
+### Integer rounding
+
+Templated on any integral `T` and returning `T`, `constexpr`: grid and block
+sizing, and padding a count to a multiple, with the same arithmetic on the host
+that sizes a launch and in the kernel that bounds its loop.
+
+| Function | Value |
+|----------|-------|
+| `idivup(a, b)` | ceil(a / b): the number of `b`-sized chunks covering `a` |
+| `align_up(a, b)` | `a` rounded up to a multiple of `b` |
+
+Both assume non-negative operands and are undefined for `b == 0`; `a + b` may
+overflow near the top of `T`'s range.
+
 ## One definition, both sides
 
 Every function is written **once**, in `primitives.h`, marked
@@ -77,8 +92,8 @@ __device__ float f(float x) { return free_breakfast::math::exp(-x * x); }
 
 ## Tests
 
-- Host: `test/gtest/core_vocabulary_host.cpp` pins the host results to `std::`
-  and the float/double-only constraint.
+- Host: `test/gtest/core_vocabulary_host.cpp` pins the host results to `std::`,
+  the float/double-only constraint, and the integer rounding.
 - Device: `test/gtest/primitives_gpu.cpp` runs every function on the GPU
   through `test/gpu_kernels/primitives_kernels.cu` (the `.cu` that includes
   this header) and compares against the host standard library: bit-exact for
