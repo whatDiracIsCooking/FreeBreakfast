@@ -33,7 +33,12 @@ add_executable(
   version_host.cpp
   core_vocabulary_host.cpp
   diagnostics_host.cpp
+  atom_host.cpp
+  molecule_host.cpp
+  basis_host.cpp
   io_base_host.cpp
+  io_basis_host.cpp
+  io_xyz_host.cpp
   io_config_host.cpp
   io_json_host.cpp
   io_npy_host.cpp
@@ -52,8 +57,15 @@ set_target_properties(
 
 target_link_libraries(
   free_breakfast_tests_host
-  PRIVATE free_breakfast::core free_breakfast::core::diagnostics_macros
-          free_breakfast::io wwr::runtime_api wwr::vector_types GTest::gtest
+  PRIVATE free_breakfast::core
+          free_breakfast::core::diagnostics_macros
+          free_breakfast::atom
+          free_breakfast::molecule
+          free_breakfast::basis
+          free_breakfast::io
+          wwr::runtime_api
+          wwr::vector_types
+          GTest::gtest
           GTest::gtest_main
 )
 

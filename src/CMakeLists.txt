@@ -9,4 +9,7 @@
 # `import std`, and the GPU backend switch. Delete it once this project has real
 # modules of its own, or grow it; nothing else depends on it staying small.
 add_subdirectory(core)
+add_subdirectory(atom)
+add_subdirectory(molecule)
+add_subdirectory(basis)
 add_subdirectory(io)

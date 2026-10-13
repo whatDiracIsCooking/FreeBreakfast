@@ -1,0 +1,19 @@
+# molecule is PUBLIC: the reader's signatures name Molecule.
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.io.xyz
+  PRIMARY_INTERFACE
+  xyz.cppm
+  PARTITIONS
+  xyz_reader.cppm
+  IMPLEMENTATION
+  xyz_reader.cpp
+  LINK_PUBLIC
+  free_breakfast::core::error_handling
+  free_breakfast::molecule
+  LINK_PRIVATE
+  free_breakfast::core::constants
+  free_breakfast::io::base
+  free_breakfast::core::diagnostics_macros
+  IMPORT_STD
+)
