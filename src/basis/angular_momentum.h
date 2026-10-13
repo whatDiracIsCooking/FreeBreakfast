@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 namespace free_breakfast {
 
 /// @brief The largest angular momentum the GPU kernels currently support (d).
@@ -18,6 +20,6 @@ namespace free_breakfast {
 /// GPU integral/Fock engines reject a basis with any higher shell. @ref Shell
 /// itself imposes no such cap -- the host reference engines evaluate arbitrary L
 /// -- so this is the GPU-kernel limit, not a basis-wide invariant.
-inline constexpr int kMaxAngularMomentum = 2;
+inline constexpr std::int32_t kMaxAngularMomentum = 2;
 
 } // namespace free_breakfast

@@ -34,8 +34,8 @@ export namespace free_breakfast {
 }
 
 /// @brief The atomic number Z of @p atom (its nuclear charge).
-[[nodiscard]] int nuclear_charge(const Atom<double> &atom) {
-  return static_cast<int>(atom.element);
+[[nodiscard]] std::int32_t nuclear_charge(const Atom<double> &atom) {
+  return static_cast<std::int32_t>(atom.element);
 }
 
 /// @brief A collection of atoms with an overall charge and spin multiplicity.
@@ -52,7 +52,8 @@ public:
   /// @param atoms         The nuclei and their positions (bohr).
   /// @param charge        Net molecular charge (default neutral).
   /// @param multiplicity  Spin multiplicity 2S+1 (default singlet, 1).
-  explicit Molecule(std::vector<Atom<double>> atoms, int charge = 0, int multiplicity = 1)
+  explicit Molecule(std::vector<Atom<double>> atoms, std::int32_t charge = 0,
+                    std::int32_t multiplicity = 1)
       : atoms_(std::move(atoms)), charge_(charge), multiplicity_(multiplicity) {}
 
   /// @brief The atoms, in the order supplied.
@@ -62,14 +63,14 @@ public:
   [[nodiscard]] std::uint32_t natoms() const { return static_cast<std::uint32_t>(atoms_.size()); }
 
   /// @brief Net molecular charge, in units of the elementary charge.
-  [[nodiscard]] int charge() const { return charge_; }
+  [[nodiscard]] std::int32_t charge() const { return charge_; }
 
   /// @brief Spin multiplicity 2S+1.
-  [[nodiscard]] int multiplicity() const { return multiplicity_; }
+  [[nodiscard]] std::int32_t multiplicity() const { return multiplicity_; }
 
   /// @brief Total nuclear charge, Sum Z_A over all atoms.
-  [[nodiscard]] int total_nuclear_charge() const {
-    int sum = 0;
+  [[nodiscard]] std::int32_t total_nuclear_charge() const {
+    std::int32_t sum = 0;
     for (const Atom<double> &atom : atoms_) {
       sum += nuclear_charge(atom);
     }
@@ -80,12 +81,12 @@ public:
   ///
   /// Removing an electron leaves a cation of charge +1, so the electron count
   /// falls as the charge rises -- hence the subtraction.
-  [[nodiscard]] int electron_count() const { return total_nuclear_charge() - charge_; }
+  [[nodiscard]] std::int32_t electron_count() const { return total_nuclear_charge() - charge_; }
 
 private:
   std::vector<Atom<double>> atoms_{};
-  int charge_{0};
-  int multiplicity_{1};
+  std::int32_t charge_{0};
+  std::int32_t multiplicity_{1};
 };
 
 /// @brief Nuclear repulsion energy E_nn = Sum_{A<B} Z_A Z_B / R_AB, in hartree.

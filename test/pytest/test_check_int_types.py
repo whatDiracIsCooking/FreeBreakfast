@@ -1,0 +1,82 @@
+"""devtools/check-int-types.py: what it flags, and what it must leave alone.
+
+The checker is the only gate on docs/style.md "Integer types", so a regression
+in its comment/literal blanking would either block clean commits or wave banned
+types through. These cases pin both directions.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+_SCRIPT = Path(__file__).resolve().parents[2] / "devtools" / "check-int-types.py"
+_spec = importlib.util.spec_from_file_location("check_int_types", _SCRIPT)
+assert _spec is not None and _spec.loader is not None
+check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check)
+
+
+def words(source: str) -> list[str]:
+    return [word for _, _, word in check.find_violations(source)]
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("int x = 0;", ["int"]),
+        ("unsigned n;", ["unsigned"]),
+        ("unsigned int n;", ["unsigned", "int"]),
+        ("long long big;", ["long", "long"]),
+        ("short s;", ["short"]),
+        ("std::vector<int> v;", ["int"]),
+        ("for (int i = 0; i < n; ++i) {}", ["int"]),
+    ],
+)
+def test_flags_builtin_integer_types(source: str, expected: list[str]) -> None:
+    assert words(source) == expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "std::int32_t x = 0;",
+        "std::uint64_t y; size_t z; int_type<T> c; uint32_t w;",
+        "auto c = static_cast<unsigned char>(s[0]);",
+        "signed char b;",
+        "long double ld;",
+        "int main() {}",
+        "// an int in a comment\nstd::int32_t x;",
+        "/* long\n   short */ std::int32_t x;",
+        'auto s = "int long short";',
+        "auto c = 'x'; auto n = 1'000'000;",
+        'auto r = R"(int "quoted" long)";',
+        "Vec<long long, 1> v;  // int-type-ok: distinct fundamental type",
+        "// int-type-ok: distinct fundamental type\nVec<long long, 1> v;",
+    ],
+)
+def test_leaves_allowed_spellings_alone(source: str) -> None:
+    assert words(source) == []
+
+
+def test_marker_on_a_code_line_does_not_cover_the_next_line() -> None:
+    source = "f();  // int-type-ok: not a comment-only line\nint x;"
+    assert words(source) == ["int"]
+
+
+def test_reports_line_and_column() -> None:
+    assert check.find_violations("// header\n  long n;\n") == [(2, 3, "long")]
+
+
+def test_exempt_file_is_skipped(tmp_path: Path, monkeypatch, capsys) -> None:
+    monkeypatch.chdir(tmp_path)
+    exempt = Path("src/core/types/vec.h")
+    exempt.parent.mkdir(parents=True)
+    exempt.write_text("template <> struct vector_type<int, 2> {};\n")
+    other = Path("other.h")
+    other.write_text("int x;\n")
+    assert check.main([str(exempt)]) == 0
+    assert check.main([str(other)]) == 1
+    assert "other.h:1:1: `int`" in capsys.readouterr().out

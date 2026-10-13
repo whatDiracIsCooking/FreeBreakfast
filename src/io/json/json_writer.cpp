@@ -9,12 +9,12 @@ import free_breakfast.io.base;
 
 namespace free_breakfast {
 
-std::string json_to_string(const json &document, int indent) {
+std::string json_to_string(const json &document, std::int32_t indent) {
   return document.dump(indent);
 }
 
 [[nodiscard]] Status write_json(const std::filesystem::path &path, const json &document,
-                                int indent) {
+                                std::int32_t indent) {
   return write_file(path, json_to_string(document, indent));
 }
 

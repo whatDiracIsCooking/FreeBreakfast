@@ -15,8 +15,8 @@ namespace free_breakfast {
 /// @brief Pull an integer keyed by @p key out of a TOML table, honouring
 /// @p fallback when the key is absent and reporting a type mismatch as an
 /// InvalidConfig error.
-[[nodiscard]] Result<int> table_int(const free_breakfast::toml::table &table, std::string_view key,
-                                    int fallback) {
+[[nodiscard]] Result<std::int32_t> table_int(const free_breakfast::toml::table &table,
+                                             std::string_view key, std::int32_t fallback) {
   const auto node = table[key];
   if (!node) {
     return fallback;
@@ -25,7 +25,7 @@ namespace free_breakfast {
   if (!value) {
     return err_config("config key '{}' is not an integer", key);
   }
-  return static_cast<int>(*value);
+  return static_cast<std::int32_t>(*value);
 }
 
 /// @brief As table_int, for a floating-point value.

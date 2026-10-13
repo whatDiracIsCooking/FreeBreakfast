@@ -29,7 +29,7 @@ namespace {
 TEST(Device, RuntimeReportsADevice) {
   FREE_BREAKFAST_REQUIRE_GPU();
 
-  int count = 0;
+  std::int32_t count = 0;
   ASSERT_EQ(wwr::wwrGetDeviceCount(&count), wwr::wwrSuccess);
   EXPECT_GE(count, 1);
 }

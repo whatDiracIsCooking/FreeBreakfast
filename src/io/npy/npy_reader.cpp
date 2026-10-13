@@ -116,7 +116,7 @@ static_assert(std::numeric_limits<double>::is_iec559, "the .npy module assumes I
   if (npy_bytes.size() < 8 || npy_bytes.substr(0, 6) != kMagic) {
     return err_io("not an NPY file: bad magic");
   }
-  const unsigned major = static_cast<unsigned char>(npy_bytes[6]);
+  const std::uint32_t major = static_cast<unsigned char>(npy_bytes[6]);
   if (major < 1 || major > 3) {
     return err_io("unsupported NPY format version {}", major);
   }

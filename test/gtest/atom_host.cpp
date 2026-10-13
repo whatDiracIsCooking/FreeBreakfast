@@ -18,13 +18,13 @@ static_assert(std::is_same_v<std::underlying_type_t<fb::Element>, std::uint8_t>)
 static_assert(std::is_aggregate_v<fb::Atom<double>>);
 
 TEST(Atom, ElementValueIsAtomicNumber) {
-  EXPECT_EQ(static_cast<int>(fb::Element::Sentinel), 0);
-  EXPECT_EQ(static_cast<int>(fb::Element::H), 1);
-  EXPECT_EQ(static_cast<int>(fb::Element::C), 6);
-  EXPECT_EQ(static_cast<int>(fb::Element::O), 8);
-  EXPECT_EQ(static_cast<int>(fb::Element::Fe), 26);
-  EXPECT_EQ(static_cast<int>(fb::Element::U), 92);
-  EXPECT_EQ(static_cast<int>(fb::Element::Og), 118);
+  EXPECT_EQ(static_cast<std::int32_t>(fb::Element::Sentinel), 0);
+  EXPECT_EQ(static_cast<std::int32_t>(fb::Element::H), 1);
+  EXPECT_EQ(static_cast<std::int32_t>(fb::Element::C), 6);
+  EXPECT_EQ(static_cast<std::int32_t>(fb::Element::O), 8);
+  EXPECT_EQ(static_cast<std::int32_t>(fb::Element::Fe), 26);
+  EXPECT_EQ(static_cast<std::int32_t>(fb::Element::U), 92);
+  EXPECT_EQ(static_cast<std::int32_t>(fb::Element::Og), 118);
 }
 
 TEST(Atom, DefaultElementIsSentinel) {

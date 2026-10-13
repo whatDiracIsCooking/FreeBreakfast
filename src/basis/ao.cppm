@@ -33,11 +33,11 @@ export namespace free_breakfast {
 /// the GPU kernels' Cartesian tiles and the per-AO normalization diagonal are
 /// laid out against it. Defined for arbitrary @p l >= 0, so the host reference
 /// engines can raise angular momentum past d.
-[[nodiscard]] std::vector<std::array<int, 3>> cartesian_powers(int l) {
-  std::vector<std::array<int, 3>> out;
+[[nodiscard]] std::vector<std::array<std::int32_t, 3>> cartesian_powers(std::int32_t l) {
+  std::vector<std::array<std::int32_t, 3>> out;
   out.reserve(static_cast<std::size_t>(cartesian_function_count(l)));
-  for (int a = l; a >= 0; --a) {
-    for (int b = l - a; b >= 0; --b) {
+  for (std::int32_t a = l; a >= 0; --a) {
+    for (std::int32_t b = l - a; b >= 0; --b) {
       out.push_back({a, b, l - a - b});
     }
   }

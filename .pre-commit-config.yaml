@@ -89,6 +89,18 @@ repos:
         language: script
         files: '\.(cppm|cpp|cu|cuh|h|hpp|py)$'
 
+  # Fixed-width integer types only -- docs/style.md "Integer types". A checker,
+  # not a fixer: clang-tidy is advisory here and its google-runtime-int does not
+  # flag plain `int`, so this script is what holds the rule. Stdlib-only
+  # Python, so it needs nothing from the venv.
+  - repo: local
+    hooks:
+      - id: int-types
+        name: fixed-width integer types (staged C++)
+        entry: devtools/check-int-types.py
+        language: script
+        files: '\.(cppm|cpp|cu|cuh|h|hpp)$'
+
   # The fast test gate. `stages: [pre-push]` means it runs at `git push`, not
   # on commit; `files: \.py$` is the entire "only when Python changed"
   # condition -- push a docs-only change and it does not fire.

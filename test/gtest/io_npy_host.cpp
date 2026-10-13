@@ -15,7 +15,7 @@ namespace fb = free_breakfast;
 
 /// @brief Hand-assemble a .npy document: any version, any header dict, any
 /// payload -- for the reader's rejection cases, which the writer cannot make.
-std::string make_npy(std::string_view dict, std::string_view payload, unsigned major = 1) {
+std::string make_npy(std::string_view dict, std::string_view payload, std::uint32_t major = 1) {
   std::string header{dict};
   header.push_back('\n');
   std::string out{"\x93NUMPY", 6};
@@ -155,7 +155,7 @@ TEST(IoNpy, WriteOfMismatchedArrayLeavesNoFile) {
 
 TEST(IoNpy, AcceptsFormatVersionsTwoAndThree) {
   const std::array values{1.0, 2.0};
-  for (const unsigned major : {2U, 3U}) {
+  for (const std::uint32_t major : {2U, 3U}) {
     auto array = fb::parse_npy(make_npy("{'descr': '<f8', 'fortran_order': False, 'shape': (2,), }",
                                         doubles_as_bytes(values), major));
     ASSERT_TRUE(array.has_value()) << "v" << major << ": " << array.error().message;
