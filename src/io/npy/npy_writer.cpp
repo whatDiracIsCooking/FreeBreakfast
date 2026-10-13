@@ -45,8 +45,8 @@ namespace {
 [[nodiscard]] Result<std::string> npy_to_bytes(const NpyArray &array) {
   auto count = FBF_TRY(element_count(array.shape));
   if (count != array.data.size()) {
-    return err_config(std::format("NPY shape {} describes {} elements but data has {}",
-                                  format_shape(array.shape), count, array.data.size()));
+    return err_config("NPY shape {} describes {} elements but data has {}",
+                      format_shape(array.shape), count, array.data.size());
   }
 
   // The canonical dict, then space padding so magic + version + length field

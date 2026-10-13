@@ -81,7 +81,7 @@ namespace {
     std::string first(lines[0]);
     std::istringstream stream(first);
     if (!(stream >> declared_count) || declared_count < 0) {
-      return err_io(std::format("XYZ line 1 is not a non-negative atom count: '{}'", first));
+      return err_io("XYZ line 1 is not a non-negative atom count: '{}'", first);
     }
   }
 
@@ -103,11 +103,11 @@ namespace {
     double y = 0.0;
     double z = 0.0;
     if (!(stream >> symbol >> x >> y >> z)) {
-      return err_io(std::format("XYZ atom line {} is malformed: '{}'", i + 1, record));
+      return err_io("XYZ atom line {} is malformed: '{}'", i + 1, record);
     }
     const int number = atomic_number(symbol);
     if (number == 0) {
-      return err_io(std::format("XYZ atom line {} has unknown element '{}'", i + 1, symbol));
+      return err_io("XYZ atom line {} has unknown element '{}'", i + 1, symbol);
     }
     // XYZ coordinates are in Angstrom; Molecule stores bohr. Convert here.
     atoms.push_back(Atom<double>{x * free_breakfast::bohr_per_angstrom<double>,
@@ -117,8 +117,7 @@ namespace {
   }
 
   if (static_cast<int>(atoms.size()) != declared_count) {
-    return err_io(std::format("XYZ declares {} atoms but {} were found", declared_count,
-                              atoms.size()));
+    return err_io("XYZ declares {} atoms but {} were found", declared_count, atoms.size());
   }
 
   return Molecule{std::move(atoms), charge, multiplicity};

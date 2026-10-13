@@ -103,8 +103,7 @@ private:
     const int z = nuclear_charge(atom);
     const std::vector<ShellStamp> *element = basis_stamp.shells_for(z);
     if (element == nullptr) {
-      return err_config(
-          std::format("basis has no shells for element Z={}", z));
+      return err_config("basis has no shells for element Z={}", z);
     }
     const wwr::double3 center = position(atom);
     for (const ShellStamp &proto : *element) {

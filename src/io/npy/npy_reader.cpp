@@ -64,11 +64,11 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
                                                     std::string_view key) {
   const auto start = value_start(header, key);
   if (!start || header[*start] != '\'') {
-    return err_io(std::format("NPY header has no quoted '{}'", key));
+    return err_io("NPY header has no quoted '{}'", key);
   }
   const auto close = header.find('\'', *start + 1);
   if (close == std::string_view::npos) {
-    return err_io(std::format("NPY header '{}' quote is unterminated", key));
+    return err_io("NPY header '{}' quote is unterminated", key);
   }
   return header.substr(*start + 1, close - *start - 1);
 }
@@ -82,7 +82,7 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
   if (start && header.substr(*start).starts_with("False")) {
     return false;
   }
-  return err_io(std::format("NPY header has no boolean '{}'", key));
+  return err_io("NPY header has no boolean '{}'", key);
 }
 
 /// @brief The shape tuple, e.g. "()" -> {}, "(5,)" -> {5}, "(2, 3)" -> {2, 3}.
@@ -125,7 +125,7 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
   }
   const unsigned major = static_cast<unsigned char>(npy_bytes[6]);
   if (major < 1 || major > 3) {
-    return err_io(std::format("unsupported NPY format version {}", major));
+    return err_io("unsupported NPY format version {}", major);
   }
   const std::size_t len_bytes = (major == 1) ? 2 : 4;
   if (npy_bytes.size() < 8 + len_bytes) {
@@ -140,7 +140,7 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
 
   auto descr = FBF_TRY(quoted_value(header, "descr"));
   if (descr != "<f8") {
-    return err_io(std::format("unsupported NPY dtype '{}' (only '<f8')", descr));
+    return err_io("unsupported NPY dtype '{}' (only '<f8')", descr);
   }
   auto fortran = FBF_TRY(bool_value(header, "fortran_order"));
   if (fortran) {
@@ -155,7 +155,7 @@ constexpr std::string_view kMagic{"\x93NUMPY", 6};
   const std::size_t expected = count * sizeof(double);
   const std::size_t actual = npy_bytes.size() - data_offset;
   if (actual != expected) {
-    return err_io(std::format("NPY payload is {} bytes but the shape needs {}", actual, expected));
+    return err_io("NPY payload is {} bytes but the shape needs {}", actual, expected);
   }
 
   NpyArray array;

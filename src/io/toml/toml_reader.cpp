@@ -19,8 +19,8 @@ namespace free_breakfast {
     return toml::parse(toml_text);
   } catch (const toml::parse_error &e) {
     const auto &region = e.source();
-    return err_io(std::format("malformed TOML at line {}, column {}: {}", region.begin.line,
-                              region.begin.column, e.description()));
+    return err_io("malformed TOML at line {}, column {}: {}", region.begin.line,
+                  region.begin.column, e.description());
   }
 }
 

@@ -107,49 +107,75 @@ inline std::unexpected<Error> err(Error e) {
   return std::unexpected(std::move(e));
 }
 
-/// @brief Construct an unexpected Allocation error for direct return from a Result/Status function
-inline std::unexpected<Error>
-err_allocation(std::string msg, std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::allocation(std::move(msg), loc));
+/// @brief A `std::format_string` that also records where it was written
+///
+/// The first parameter of every `err_*` helper below. A defaulted
+/// `std::source_location` cannot follow a parameter pack, so the location
+/// rides on the format string instead: this constructor's default argument is
+/// evaluated where the string literal is converted -- the `err_*` call site.
+/// `Args` reach it through `std::type_identity_t`, so they are deduced from
+/// the format arguments alone, exactly as `std::format`'s own are.
+template <typename... Args> struct LocatedFormat {
+  std::format_string<Args...> fmt;
+  std::source_location loc;
+
+  template <typename S>
+    requires std::convertible_to<const S &, std::string_view>
+  consteval LocatedFormat( // NOLINT(google-explicit-constructor): converts at the call site
+      const S &s, std::source_location l = std::source_location::current())
+      : fmt(s), loc(l) {}
+};
+
+/// @brief Format a message and return it as an unexpected Allocation error
+template <typename... Args>
+std::unexpected<Error> err_allocation(LocatedFormat<std::type_identity_t<Args>...> fmt,
+                                      Args &&...args) {
+  return std::unexpected(
+      Error::allocation(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
-/// @brief Construct an unexpected IO error for direct return from a Result/Status function
-inline std::unexpected<Error> err_io(std::string msg,
-                                     std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::io(std::move(msg), loc));
+/// @brief Format a message and return it as an unexpected IO error
+template <typename... Args>
+std::unexpected<Error> err_io(LocatedFormat<std::type_identity_t<Args>...> fmt, Args &&...args) {
+  return std::unexpected(Error::io(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
-/// @brief Construct an unexpected GpuRuntime error for direct return from a Result/Status function
-inline std::unexpected<Error> err_gpu(std::string msg,
-                                      std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::gpu(std::move(msg), loc));
+/// @brief Format a message and return it as an unexpected GpuRuntime error
+template <typename... Args>
+std::unexpected<Error> err_gpu(LocatedFormat<std::type_identity_t<Args>...> fmt, Args &&...args) {
+  return std::unexpected(Error::gpu(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
-/// @brief Construct an unexpected InvalidConfig error for direct return from a Result/Status
-/// function
-inline std::unexpected<Error>
-err_config(std::string msg, std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::config(std::move(msg), loc));
+/// @brief Format a message and return it as an unexpected InvalidConfig error
+template <typename... Args>
+std::unexpected<Error> err_config(LocatedFormat<std::type_identity_t<Args>...> fmt,
+                                  Args &&...args) {
+  return std::unexpected(Error::config(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
-/// @brief Construct an unexpected Divergence error for direct return from a Result/Status function
-inline std::unexpected<Error>
-err_divergence(std::string msg, std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::divergence(std::move(msg), loc));
+/// @brief Format a message and return it as an unexpected Divergence error
+template <typename... Args>
+std::unexpected<Error> err_divergence(LocatedFormat<std::type_identity_t<Args>...> fmt,
+                                      Args &&...args) {
+  return std::unexpected(
+      Error::divergence(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
-/// @brief Construct an unexpected MaxIterationsExceeded error for direct return from a
-/// Result/Status function
-inline std::unexpected<Error>
-err_max_iterations_exceeded(std::string msg,
-                            std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::max_iterations_exceeded(std::move(msg), loc));
+/// @brief Format a message and return it as an unexpected MaxIterationsExceeded error
+template <typename... Args>
+std::unexpected<Error> err_max_iterations_exceeded(LocatedFormat<std::type_identity_t<Args>...> fmt,
+                                                   Args &&...args) {
+  return std::unexpected(
+      Error::max_iterations_exceeded(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
-/// @brief Construct an unexpected Unsupported error for direct return from a Result/Status
-/// function
-inline std::unexpected<Error>
-err_unsupported(std::string msg, std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::unsupported(std::move(msg), loc));
+/// @brief Format a message and return it as an unexpected Unsupported error
+template <typename... Args>
+std::unexpected<Error> err_unsupported(LocatedFormat<std::type_identity_t<Args>...> fmt,
+                                       Args &&...args) {
+  return std::unexpected(
+      Error::unsupported(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
-/// @brief Construct an unexpected Numerical error for direct return from a Result/Status function
-inline std::unexpected<Error>
-err_numerical(std::string msg, std::source_location loc = std::source_location::current()) {
-  return std::unexpected(Error::numerical(std::move(msg), loc));
+/// @brief Format a message and return it as an unexpected Numerical error
+template <typename... Args>
+std::unexpected<Error> err_numerical(LocatedFormat<std::type_identity_t<Args>...> fmt,
+                                     Args &&...args) {
+  return std::unexpected(
+      Error::numerical(std::format(fmt.fmt, std::forward<Args>(args)...), fmt.loc));
 }
 
 /// @brief Map an ErrorKind to a process exit code

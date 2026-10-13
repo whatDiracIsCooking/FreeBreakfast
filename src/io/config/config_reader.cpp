@@ -25,7 +25,7 @@ namespace {
   }
   const auto value = node.value<std::int64_t>();
   if (!value) {
-    return err_config(std::format("config key '{}' is not an integer", key));
+    return err_config("config key '{}' is not an integer", key);
   }
   return static_cast<int>(*value);
 }
@@ -39,7 +39,7 @@ namespace {
   }
   const auto value = node.value<double>();
   if (!value) {
-    return err_config(std::format("config key '{}' is not a number", key));
+    return err_config("config key '{}' is not a number", key);
   }
   return *value;
 }
@@ -53,7 +53,7 @@ namespace {
   }
   const auto value = node.value<std::string>();
   if (!value) {
-    return err_config(std::format("config key '{}' is not a string", key));
+    return err_config("config key '{}' is not a string", key);
   }
   return *value;
 }

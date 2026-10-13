@@ -28,9 +28,11 @@ Status gpu_status(T code, std::source_location loc = std::source_location::curre
   if (code == wwr::extension::success_code<T>()) {
     return {};
   }
-  return err_gpu(std::format("{} ({})", wwr::extension::error_name(code),
-                             wwr::extension::error_string(code)),
-                 loc);
+  // Error::gpu, not err_gpu: the location is the caller's, forwarded in `loc`,
+  // which err_gpu's call-site-capturing format string has no way to take.
+  return err(Error::gpu(std::format("{} ({})", wwr::extension::error_name(code),
+                                    wwr::extension::error_string(code)),
+                        loc));
 }
 
 /**

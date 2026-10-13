@@ -17,7 +17,7 @@ namespace free_breakfast {
   try {
     return json::parse(json_text);
   } catch (const std::exception &e) {
-    return err_io(std::format("malformed JSON: {}", e.what()));
+    return err_io("malformed JSON: {}", e.what());
   }
 }
 

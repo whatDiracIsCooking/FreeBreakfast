@@ -13,7 +13,7 @@ the one before:
 
 | Partition | Exports |
 |-----------|---------|
-| `:error` | `Error`, `ErrorKind`, `Result<T>`, `Status`, the `err_*` helpers, `to_exit_code` |
+| `:error` | `Error`, `ErrorKind`, `Result<T>`, `Status`, `LocatedFormat`, the `err_*` helpers, `to_exit_code` |
 | `:gpu_status` | `gpu_status`, `check_or_abort` |
 | `:gpu_policy` | `AbortPolicy` / `RecordPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap`, `aborts_on_error`, `capture`, `take_error` |
 
@@ -35,6 +35,20 @@ free_breakfast::Status allocate_buffer(std::size_t n) {
   return {};
 }
 ```
+
+The `err_*` helpers take a `std::format` string and its arguments directly,
+so there is no `std::format(...)` to wrap around the message:
+
+```cpp
+return free_breakfast::err_io("cannot open '{}'", path.string());
+```
+
+The format string is checked at compile time, as `std::format`'s is, and a
+plain message with no arguments still works. The call-site location rides on
+the format string's own type (`LocatedFormat`), because a defaulted
+`std::source_location` cannot follow a parameter pack. One consequence: a
+caller that must forward somebody else's location (as `gpu_status` does)
+cannot use `err_*` and writes `err(Error::gpu(msg, loc))` instead.
 
 `err_*` factories construct; they do not log. Log a value-tier error once, at
 the boundary that turns it into an exit code — see `../diagnostics/`.
