@@ -10,16 +10,16 @@ Three things, all reached through one `import free_breakfast.core.types;`:
   synthesised from `(scalar, N)` in the language, so each scalar row names its
   four builtins explicitly -- a 48-line table, with no helper metafunction
   (a header shared with device code cannot keep one private).
-- **Fixed-width integer types.** The `:integral` partition re-exports
-  `int8_t` … `uint64_t` and `size_t` into the global namespace, so a module can
-  write bare `int32_t` / `size_t` after importing this module.
+- **Fixed-width integer types.** The `:integral_types` partition exports
+  `int8_t` … `uint64_t` and `size_t` from `free_breakfast`, so code inside that
+  namespace can write bare `int32_t` / `size_t` after importing this module.
+  Nothing is exported into the global namespace.
 - **Scalar concepts.** The `:concepts` partition re-exports WarpWraps'
-  `real_fp` and `int_type` (and `std::int64_t` / `std::size_t`) into
-  `free_breakfast`. See [Concepts](#concepts).
+  `real_fp` and `int_type` into `free_breakfast`. See [Concepts](#concepts).
 
 ## Module
 
-`free_breakfast.core.types` (with the `:integral` and `:concepts` interface
+`free_breakfast.core.types` (with the `:integral_types` and `:concepts` interface
 partitions) — target
 `free_breakfast::core::types`, also re-exported by `free_breakfast.core`.
 
@@ -62,9 +62,8 @@ disagree with a template constrained on the other about the same type.
 - `int_type<T>`: `T` is **exactly** `int` or `int64_t`. There is no
   `convertible_to` arm: that arm let `std::size_t` through, but it let
   `double`, `float` and `bool` through too. A `size_t` caller casts.
-- `std::int64_t` and `std::size_t` are re-exported alongside them, as
-  `free_breakfast::int64_t` / `free_breakfast::size_t` (the `:integral`
-  partition's are the global-namespace spellings of the same types).
+- `free_breakfast::int64_t` and `free_breakfast::size_t`, used alongside them,
+  come from the `:integral_types` partition.
 
 The GPU-bound concepts built on `real_fp` (`complex_fp`, `half_fp`,
 `usual_fp`, `ComplexToRealType`, ...) are not re-exported here; import
@@ -76,10 +75,10 @@ device code that needs them is out of reach of `import` either way.
 | File | Role |
 |------|------|
 | `vec.h` | The vector mapping: `vector_type` trait, `Vec` alias, `make_vec` factory. Includable from a `.cu`. |
-| `integral.h` | `<cstdint>` + `<cstddef>` for the fixed-width integer types and `size_t`. Includable from a `.cu`. |
-| `types.cppm` | Primary module interface; GMF-includes `vec.h`, re-exports its names, and `export import :integral`. |
-| `integral.cppm` | The `:integral` partition; GMF-includes `integral.h` and re-exports the integer types. |
-| `concepts.cppm` | The `:concepts` partition; re-exports wwr's `real_fp` and `int_type`, plus `int64_t`/`size_t`, into `free_breakfast`. |
+| `integral_types.h` | `using`-declares the fixed-width integer types and `size_t` from `<cstdint>` / `<cstddef>` into `free_breakfast`. Includable from a `.cu`. |
+| `types.cppm` | Primary module interface; GMF-includes `vec.h`, re-exports its names, and `export import :integral_types`. |
+| `integral_types.cppm` | The `:integral_types` partition; GMF-includes `integral_types.h` and exports its integer types. |
+| `concepts.cppm` | The `:concepts` partition; re-exports wwr's `real_fp` and `int_type` into `free_breakfast`. |
 | `CMakeLists.txt` | Build definitions for the module and the headers' interface target |
 
 ## Build targets
@@ -88,18 +87,19 @@ device code that needs them is out of reach of `import` either way.
   that `import`s it. Links `wwr::vector_types::host` and
   `wwr::wrappers::common` PUBLIC.
 - **`free_breakfast::core::types_headers`**: an INTERFACE library exposing
-  `vec.h` and `integral.h` to device translation units, which `#include` them
+  `vec.h` and `integral_types.h` to device translation units, which `#include` them
   directly (a named module cannot be imported into a `.cu`).
 
 ## Usage
 
 - **Host / module code:** `import free_breakfast.core.types;` (or
   `free_breakfast.core`) and use `free_breakfast::Vec` /
-  `free_breakfast::make_vec`, the bare integer types (`uint32_t`, `size_t`), or
+  `free_breakfast::make_vec`, the integer types (`free_breakfast::uint32_t`,
+  `free_breakfast::size_t`), or
   the concepts (`free_breakfast::real_fp`, `free_breakfast::int_type`).
 - **Device code:** link `free_breakfast::core::types_headers` from the
   `free_breakfast_add_gpu_device_library` target and `#include "vec.h"` and/or
-  `#include "integral.h"`.
+  `#include "integral_types.h"`.
 
 ```cpp
 import free_breakfast.core.types;
