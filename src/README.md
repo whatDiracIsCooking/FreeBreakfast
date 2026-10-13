@@ -6,7 +6,7 @@ from [`cmake/`](../cmake/README.md) and named with dots, aliased to `::` —
 
 ```
 core/      The starting set: one module library over WarpWraps and `import std`
-atom/      The Element enum and Atom<T>, shared by #include and import
+atom/      The Element enum and Atom, shared by #include and import
 molecule/  Molecule, nuclear repulsion energy and gradient
 basis/     Gaussian basis description: shells, AO layouts, cart->sph, BasisStamp/place
 io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BSE basis and XYZ geometry readers

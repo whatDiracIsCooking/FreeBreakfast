@@ -1,4 +1,4 @@
-// Host-only cases for atom: the Element enum and the Atom<T> aggregate.
+// Host-only cases for atom: the Element enum and the Atom aggregate.
 
 #include <gtest/gtest.h>
 
@@ -15,7 +15,8 @@ namespace fb = free_breakfast;
 
 static_assert(sizeof(fb::Element) == 1, "Element's underlying type is one byte");
 static_assert(std::is_same_v<std::underlying_type_t<fb::Element>, std::uint8_t>);
-static_assert(std::is_aggregate_v<fb::Atom<double>>);
+static_assert(std::is_aggregate_v<fb::Atom>);
+static_assert(std::is_same_v<decltype(fb::Atom::position), fb::Vec<double, 3>>);
 
 TEST(Atom, ElementValueIsAtomicNumber) {
   EXPECT_EQ(static_cast<std::int32_t>(fb::Element::Sentinel), 0);
@@ -32,18 +33,18 @@ TEST(Atom, DefaultElementIsSentinel) {
 }
 
 TEST(Atom, DefaultAtomSitsAtOriginWithNoElement) {
-  const fb::Atom<double> atom{};
-  EXPECT_EQ(atom.x, 0.0);
-  EXPECT_EQ(atom.y, 0.0);
-  EXPECT_EQ(atom.z, 0.0);
+  const fb::Atom atom{};
+  EXPECT_EQ(atom.position.x, 0.0);
+  EXPECT_EQ(atom.position.y, 0.0);
+  EXPECT_EQ(atom.position.z, 0.0);
   EXPECT_EQ(atom.element, fb::Element::Sentinel);
 }
 
-TEST(Atom, BraceInitialisesCoordinatesThenElement) {
-  const fb::Atom<float> atom{1.0F, -2.5F, 3.25F, fb::Element::N};
-  EXPECT_EQ(atom.x, 1.0F);
-  EXPECT_EQ(atom.y, -2.5F);
-  EXPECT_EQ(atom.z, 3.25F);
+TEST(Atom, BraceInitialisesPositionThenElement) {
+  const fb::Atom atom{{1.0, -2.5, 3.25}, fb::Element::N};
+  EXPECT_EQ(atom.position.x, 1.0);
+  EXPECT_EQ(atom.position.y, -2.5);
+  EXPECT_EQ(atom.position.z, 3.25);
   EXPECT_EQ(atom.element, fb::Element::N);
 }
 

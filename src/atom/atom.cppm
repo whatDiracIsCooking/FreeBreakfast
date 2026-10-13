@@ -1,6 +1,6 @@
 /// @file
 /// @brief The `import` front end for the atom types: re-exports Element and
-///        Atom<T> from the headers.
+///        Atom from the headers.
 ///
 /// element.h / atom.h hold the single definitions (for CUDA `#include`). This
 /// module includes them in its global module fragment and re-exports the names.
