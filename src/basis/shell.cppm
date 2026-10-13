@@ -30,7 +30,6 @@ module;
 export module free_breakfast.basis:shell;
 
 import free_breakfast.molecule;
-import free_breakfast.core.diagnostics;
 import free_breakfast.core.error_handling;
 import std;
 

@@ -1,8 +1,9 @@
 # Diagnostics
 
-Bridges `error_handling`, `log` and WarpWraps' GPU error codes. Two targets: a
-C++23 module (`gpu_status`, `check_or_abort`) and a plain header of macros that
-build on it.
+The macro header over `error_handling` and `log`: `FBF_TRY`, `FBF_GPU_MUST`
+and the lazily-formatted `FBF_LOG_*`. The functions they expand to
+(`gpu_status`, `check_or_abort`) live in `free_breakfast.core.error_handling`
+— see `../error_handling/README.md`.
 
 Value-tier errors are logged exactly **once**, at the top-level boundary that
 turns an `Error` into a process exit code (via `to_exit_code`) — not at every
@@ -10,19 +11,6 @@ propagation hop in between. `err_*` factories stay pure (they construct, they
 do not log); only `check_or_abort`'s abort tier logs at the point of detection,
 because there the point of detection and the process boundary are the same
 call.
-
-## Module
-
-`free_breakfast.core.diagnostics` — target `free_breakfast::core::diagnostics`,
-also re-exported by `free_breakfast.core`.
-
-- `gpu_status(code)` — converts any WarpWraps `error_type` (`wwrError_t`, which
-  is `cudaError_t` or `hipError_t` depending on the build, or a library status
-  code) to a `Status`. A failure becomes `ErrorKind::GpuRuntime` carrying the
-  code's name and description, located at the caller. Not named `gpu_check`,
-  which is `wwr::extension::gpu_check` (policy-driven, returns `bool`).
-- `check_or_abort(result_or_status)` — on error, logs at `critical` with the
-  error's original location and calls `std::abort()`; otherwise unwraps.
 
 ## Header (macros)
 
@@ -65,14 +53,10 @@ FBF_LOG_DEBUG("iteration {} residual {:.3e}", iter, residual); // formats only i
 
 | File | Role |
 |------|------|
-| `diagnostics.cppm` | Primary module interface; exports `gpu_status` and `check_or_abort` |
 | `diagnostics.h` | Plain header: `FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*` |
-| `CMakeLists.txt` | The module library and the `diagnostics_macros` interface library for the header |
+| `CMakeLists.txt` | The `diagnostics_macros` interface library for the header |
 
 ## Dependencies
 
-- `free_breakfast::core::error_handling` — `Error`, `Result<T>`, `Status`
-- `free_breakfast::core::log` — `log::critical()`, and (for the header) `log::should_log()`
-- `wwr::extension::common` — `error_type`, `success_code`, `error_name`,
-  `error_string`. PUBLIC, because `gpu_status` is a template instantiated in
-  the consumer's TU.
+- `free_breakfast::core::error_handling` — `gpu_status`, `check_or_abort`, and
+  (through it) `free_breakfast::core::log` for `log::should_log()`

@@ -17,7 +17,6 @@ export module free_breakfast.basis:shell_stamp;
 
 import std;
 import free_breakfast.molecule;
-import free_breakfast.core.diagnostics;
 import free_breakfast.core.error_handling;
 import :shell;
 

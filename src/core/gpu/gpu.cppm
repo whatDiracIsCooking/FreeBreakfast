@@ -3,7 +3,7 @@
 
 export module free_breakfast.core.gpu;
 
-export import free_breakfast.core.gpu_policy;
+export import free_breakfast.core.error_handling;
 
 // Re-exported so `import free_breakfast.core.gpu;` reaches the wrappers' own
 // members and free functions (copy, memset, views, ScopedRange, ...), not just
@@ -19,9 +19,13 @@ export import wwr.extension.tx;
 
 import std;
 
-export namespace free_breakfast::gpu {
-
+// Not exported: inside the export block below it would leak into every
+// importer as free_breakfast::ext.
+namespace free_breakfast {
 namespace ext = wwr::extension;
+}
+
+export namespace free_breakfast {
 
 /// @brief A non-blocking stream on one device.
 using Stream = ext::StreamWrapper<CreatePolicy<wwr::wwrError_t>, DestroyPolicy<wwr::wwrError_t>,
@@ -48,7 +52,7 @@ using SolverHandle = ext::SolverDnHandleWrapper<CreatePolicy<wwr::wwrsolverStatu
                                                 DestroyPolicy<wwr::wwrsolverStatus_t>, Device,
                                                 CreatePolicy<wwr::wwrError_t>>;
 
-/// @brief Scoped NVTX / rocTX range (wwr's, re-exported under this namespace).
+/// @brief Scoped NVTX / rocTX range (wwr's, re-exported under free_breakfast).
 using ScopedRange = ext::ScopedRange;
 
-} // namespace free_breakfast::gpu
+} // namespace free_breakfast

@@ -1,17 +1,16 @@
 /// @file
-/// @brief The per-thread recording slot behind gpu::RecordPolicy and gpu::capture
+/// @brief The per-thread recording slot behind RecordPolicy and capture
 
-module free_breakfast.core.gpu_policy;
+module free_breakfast.core.error_handling;
 
-import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import std;
 
-namespace free_breakfast::gpu {
+namespace free_breakfast {
 
 namespace {
 // Per thread, because a policy has no other way to reach its capture: the
-// policies are empty (see gpu_policy.cppm), and the error belongs to whichever
+// policies are empty (see :gpu_policy), and the error belongs to whichever
 // capture is running on the thread that made the failing call.
 struct Slot {
   std::optional<Error> error;
@@ -53,4 +52,4 @@ CaptureScope::~CaptureScope() {
 }
 } // namespace detail
 
-} // namespace free_breakfast::gpu
+} // namespace free_breakfast
