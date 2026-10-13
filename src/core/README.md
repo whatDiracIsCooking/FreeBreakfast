@@ -7,8 +7,7 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | ---- | ---------- |
 | `core.cppm` | The primary interface. Re-exports `:version` and the modules below. |
 | `version.cppm` | A partition holding the project version and `version_string()`. |
-| `types/` | `free_breakfast.core.types` — fixed-width integers in the global namespace, and `Vec<T, N>` / `make_vec` over the builtin GPU vector types. |
-| `concepts/` | `free_breakfast.core.concepts` — wwr's `real_fp` and `int_type`, re-exported into `free_breakfast`. |
+| `types/` | `free_breakfast.core.types` — fixed-width integers in the global namespace, `Vec<T, N>` / `make_vec` over the builtin GPU vector types, and wwr's `real_fp` / `int_type` concepts re-exported into `free_breakfast`. |
 | `constants/` | `free_breakfast.core.constants` — typed `zero`/`one`/…, physical constants, bohr ↔ Angstrom, SI prefixes. |
 | `nontransferrable/` | `free_breakfast.core.nontransferrable` — the `NonCopyable` / `NonMovable` / `NonTransferable` mixins. |
 | `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `gpu_status`, `check_or_abort`; and the ABORT/RECORD GPU error policies chosen by `FREE_BREAKFAST_GPU_ERROR_POLICY`, with `capture`. |

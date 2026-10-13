@@ -1,5 +1,5 @@
-// Host-only cases for core/types, core/concepts, core/constants and
-// core/nontransferrable. Most of what these modules promise is compile-time,
+// Host-only cases for core/types (including its :concepts partition),
+// core/constants and core/nontransferrable. Most of what these modules promise is compile-time,
 // so most of the checks are static_asserts; the TESTs exist so each module has
 // a ctest entry and the vector types are exercised as values, not just names.
 
@@ -55,7 +55,7 @@ TEST(CoreTypes, MakeVecConvertsEachComponent) {
 }
 
 // ---------------------------------------------------------------------------
-// concepts
+// types:concepts
 // ---------------------------------------------------------------------------
 
 static_assert(fb::real_fp<float>);

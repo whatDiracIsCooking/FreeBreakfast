@@ -1,14 +1,15 @@
 /// @file
-/// @brief Module wrapper re-exporting the GPU vector-type mapping and the
-/// fixed-width integer types.
+/// @brief Module wrapper re-exporting the GPU vector-type mapping, the
+/// fixed-width integer types and the scalar concepts.
 ///
 /// The vector-type mapping lives in vec.h so a device translation unit can
 /// `#include` it directly -- a C++23 named module cannot be imported into a
 /// .cu. This interface GMF-includes that header and re-exports its names, giving
 /// host module code `import free_breakfast.core.types;` over the same
 /// definitions. The fixed-width integer types and `size_t` come from the
-/// `:integral` partition (integral.cppm over integral.h), re-exported here so a
-/// single import covers both.
+/// `:integral` partition (integral.cppm over integral.h), and wwr's real_fp /
+/// int_type from the `:concepts` partition; both are re-exported here so a
+/// single import covers all three.
 
 module;
 
@@ -17,6 +18,7 @@ module;
 export module free_breakfast.core.types;
 
 export import :integral;
+export import :concepts;
 
 namespace free_breakfast {
 

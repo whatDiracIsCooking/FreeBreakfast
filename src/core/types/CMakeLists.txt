@@ -4,7 +4,9 @@
 # include root, and the vendor header's include path. PUBLIC, as wwr's own
 # wwr.vector_types does: a consumer naming Vec<float, 3> names ::float3. The
 # :integral partition re-exports the fixed-width integer types and size_t from
-# integral.h.
+# integral.h. The :concepts partition re-exports wwr's real_fp / int_type rather
+# than redefining them, so wwr::wrappers::common is PUBLIC too: the concepts are
+# evaluated in the consumer's TU.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.core.types
@@ -12,8 +14,10 @@ free_breakfast_add_cxx_module_library(
   types.cppm
   PARTITIONS
   integral.cppm
+  concepts.cppm
   LINK_PUBLIC
   wwr::vector_types::host
+  wwr::wrappers::common
   IMPORT_STD
 )
 
