@@ -16,6 +16,10 @@
 # no_sanitizer) that the push gate and the compose services both filter on
 # would then depend on which directory pytest was started from.
 #
+# gpu_kernels/ -- the .cu kernels the GPU binary links -- is NOT added here but
+# from the root CMakeLists, outside the FREE_BREAKFAST_COMPILE_TIME_ONLY gate
+# that skips this whole directory, so cross-backend-check.sh still compiles it.
+#
 # NOTE: `ctest` here also runs the WarpWraps submodule's own suites -- it adds
 # them itself from deps/ (see deps/CMakeLists.txt). Scope a run to this
 # project's cases by name, or use the labels.

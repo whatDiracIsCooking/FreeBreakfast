@@ -76,15 +76,23 @@ target_link_libraries(
 # Add new device-dependent TUs to this list.
 add_executable(
   free_breakfast_tests_gpu device_gpu.cpp gpu_policy_gpu.cpp sys_env_gpu.cpp
+                           primitives_gpu.cpp
 )
 
 set_target_properties(
   free_breakfast_tests_gpu PROPERTIES CXX_MODULE_STD 1 CXX_SCAN_FOR_MODULES ON
 )
 
+# free_breakfast::test::gpu_kernels is the device library (test/gpu_kernels)
+# primitives_gpu.cpp launches through: its .cu stays out of this executable, and
+# only its plain-C++ launcher header is #included here.
 target_link_libraries(
   free_breakfast_tests_gpu
-  PRIVATE free_breakfast::core wwr::runtime_api GTest::gtest GTest::gtest_main
+  PRIVATE free_breakfast::core
+          free_breakfast::test::gpu_kernels
+          wwr::runtime_api
+          GTest::gtest
+          GTest::gtest_main
 )
 
 # gpu_requirement.h and slow_test.h are #included by the TUs in this directory.

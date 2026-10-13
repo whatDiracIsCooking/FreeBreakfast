@@ -168,11 +168,11 @@ CROSS_CHECK_IMAGE=${CROSS_CHECK_IMAGE:-${PROJECT_NAME}:hip}
 CROSS_CHECK_BUILD_DIR=${CROSS_CHECK_BUILD_DIR:-build-cross-check}
 
 # The device-kernel libraries, one per line -- what --device-only builds when
-# you want the narrow check instead of the whole tree. Empty, because this tree
-# ships no `.cu` yet: --device-only refuses rather than building nothing and
-# reporting PASS. Add the umbrella target here when the first
-# free_breakfast_add_gpu_device_library() call lands.
-CROSS_CHECK_DEVICE_TARGETS=${CROSS_CHECK_DEVICE_TARGETS-}
+# you want the narrow check instead of the whole tree. The umbrella target
+# collects every free_breakfast_add_gpu_device_library() target (the macro adds
+# each one), so a new .cu needs no edit here. Overridden to empty,
+# --device-only refuses rather than building nothing and reporting PASS.
+CROSS_CHECK_DEVICE_TARGETS=${CROSS_CHECK_DEVICE_TARGETS-free_breakfast_device_libraries}
 
 # --- the ROCm runtime tier -------------------------------------------------
 #

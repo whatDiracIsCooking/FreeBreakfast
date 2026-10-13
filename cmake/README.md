@@ -87,6 +87,10 @@ is also why a `.cu` never goes into a test executable directly: those are built
 with `CXX_MODULE_STD` and `CXX_SCAN_FOR_MODULES`, and nvcc neither understands
 `import std` nor participates in module dependency scanning.
 
+Every device library also joins the `free_breakfast_device_libraries` umbrella
+target, which `devtools/cross-backend-check.sh --device-only` builds — so a new
+`.cu` library is cross-checked for the other backend with no list to update.
+
 `GPU_OPTIONS` passes compile options to the device pass only. By default
 separable compilation and device-symbol resolution are **ON** under CUDA; pass
 `NO_DEVICE_LINKING` to turn both off.

@@ -490,6 +490,12 @@ enable_testing()
 add_subdirectory(deps)
 add_subdirectory(src)
 
+# The device kernels the GPU tests drive. Outside the gate below on purpose:
+# they need no GoogleTest, and devtools/cross-backend-check.sh (which configures
+# with FREE_BREAKFAST_COMPILE_TIME_ONLY) exists precisely to compile .cu code
+# for the other backend.
+add_subdirectory(test/gpu_kernels)
+
 # Skipped under FREE_BREAKFAST_COMPILE_TIME_ONLY: there is no GoogleTest to
 # link against in that configuration (see the option's comment).
 if(NOT FREE_BREAKFAST_COMPILE_TIME_ONLY)
