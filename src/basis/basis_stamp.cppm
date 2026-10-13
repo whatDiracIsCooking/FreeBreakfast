@@ -104,7 +104,7 @@ private:
     if (element == nullptr) {
       return err_config("basis has no shells for element Z={}", z);
     }
-    const wwr::double3 center = atom.position;
+    const Vec<double, 3> center = atom.position;
     for (const ShellStamp &proto : *element) {
       shells.push_back(proto.at(center));
     }

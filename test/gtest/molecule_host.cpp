@@ -21,8 +21,10 @@ fb::Molecule water(std::int32_t charge = 0, std::int32_t multiplicity = 1) {
 }
 
 TEST(Molecule, DistanceIsEuclidean) {
-  EXPECT_DOUBLE_EQ(fb::distance(wwr::double3{0.0, 0.0, 0.0}, wwr::double3{3.0, 4.0, 12.0}), 13.0);
-  EXPECT_DOUBLE_EQ(fb::distance(wwr::double3{1.0, 2.0, 3.0}, wwr::double3{1.0, 2.0, 3.0}), 0.0);
+  EXPECT_DOUBLE_EQ(
+      fb::distance(fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Vec<double, 3>{3.0, 4.0, 12.0}), 13.0);
+  EXPECT_DOUBLE_EQ(
+      fb::distance(fb::Vec<double, 3>{1.0, 2.0, 3.0}, fb::Vec<double, 3>{1.0, 2.0, 3.0}), 0.0);
 }
 
 TEST(Molecule, NuclearChargeReadsTheAtom) {

@@ -10,19 +10,18 @@
 export module free_breakfast.molecule;
 
 import std;
-import free_breakfast.core.types;
+export import free_breakfast.core.types;
 export import free_breakfast.atom;
-export import wwr.vector_types;
 
 export namespace free_breakfast {
 
 /// @brief Euclidean distance between two points @p a and @p b, in bohr.
 ///
-/// A point or displacement in 3D space is a @c wwr::double3 -- the backend's own
-/// @c double3, so a host-built value and a kernel-built one share a layout. Its
-/// components are public, so callers brace-initialise it directly
-/// (`wwr::double3{x, y, z}`).
-[[nodiscard]] double distance(const wwr::double3 &a, const wwr::double3 &b) {
+/// A point or displacement in 3D space is a @c Vec<double, 3> -- the backend's
+/// own @c double3, so a host-built value and a kernel-built one share a layout.
+/// Its components are public, so callers brace-initialise it directly
+/// (`Vec<double, 3>{x, y, z}`).
+[[nodiscard]] double distance(const Vec<double, 3> &a, const Vec<double, 3> &b) {
   const double dx = a.x - b.x;
   const double dy = a.y - b.y;
   const double dz = a.z - b.z;
@@ -120,8 +119,8 @@ private:
   std::vector<double> grad(static_cast<size_t>(atoms.size()) * 3, 0.0);
   for (uint32_t a = 0; a < atoms.size(); ++a) {
     for (uint32_t b = a + 1; b < atoms.size(); ++b) {
-      const wwr::double3 ra = atoms[a].position;
-      const wwr::double3 rb = atoms[b].position;
+      const Vec<double, 3> ra = atoms[a].position;
+      const Vec<double, 3> rb = atoms[b].position;
       const double r = distance(ra, rb);
       const double zz = static_cast<double>(nuclear_charge(atoms[a])) *
                         static_cast<double>(nuclear_charge(atoms[b]));

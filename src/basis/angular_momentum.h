@@ -3,7 +3,7 @@
 /// @ref free_breakfast::kMaxAngularMomentum.
 ///
 /// A center-independent scalar, like the pieces in @c basis.h: it carries no
-/// @c wwr::double3, so it lives in a plain header both CUDA
+/// @c Vec<double, 3>, so it lives in a plain header both CUDA
 /// `#include`rs and the `basis` module share (included in the module's global
 /// module fragment, its name re-exported from within the namespace so importers
 /// and CUDA code see one entity).
