@@ -111,6 +111,12 @@ cpp_build() {
   # tree reads these vars, so unsetting is safe.
   unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 
+  # After the unset, for the same reason: a leaked GIT_DIR would point
+  # `git submodule` at the hook's repo. A failed init is not fatal here --
+  # deps/CMakeLists.txt then stops the configure with an error naming the fix.
+  init_submodules "$REPO_ROOT" 2>&1 | tee -a "$BUILD_LOG" ||
+    echo "build: WARNING -- submodule init failed; configuring anyway" >&2
+
   local configure=(cmake --preset "$preset")
   [ "$fresh" -eq 1 ] && configure+=(--fresh)
   run_phase configure "${configure[@]}" || return $?

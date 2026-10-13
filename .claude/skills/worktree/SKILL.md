@@ -74,16 +74,21 @@ Notes on the tool half:
 ### Initialise the submodule before building
 
 `git worktree add` checks out the tree but **not** its submodules, so
-`deps/WarpWraps` starts empty and the first configure stops with
-`deps/WarpWraps is empty -- the submodule has not been initialised`. From
-inside the worktree, before `devtools/cpp-tier.sh` or any `cmake`:
+`deps/WarpWraps` starts empty. You normally do nothing about it: the C++ entry
+points (`devtools/build.sh`, `cpp-tier.sh`, `cpp-slow-tier.sh`,
+`cpp-smoke.sh`) all configure through `cpp_build`, which calls
+`init_submodules` (`devtools/lib.sh`) first and initialises any submodule that
+never has been. It is lazy on purpose, so a docs-only or Python-only worktree
+never clones it. It never touches an *initialised* submodule, so commits or a
+branch you have inside `deps/WarpWraps` survive a build.
 
-```bash
-git submodule update --init --recursive
-```
+A bare `cmake --preset …` skips that step and stops with
+`deps/WarpWraps is empty -- the submodule has not been initialised`; run
+`git submodule update --init --recursive` from inside the worktree, or go
+through one of the scripts.
 
-A docs-only or Python-only worktree can skip it. If you do run it, removing the
-worktree later needs `--force`; see "Clean up" below.
+Either way, once the submodule is initialised, removing the worktree needs
+`--force`; see "Clean up" below.
 
 ## List
 
