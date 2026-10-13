@@ -33,3 +33,7 @@ export import free_breakfast.core.log;
 // wwr.extension modules it binds, so a consumer of free_breakfast.core gets
 // them without naming wwr itself.
 export import free_breakfast.core.gpu;
+
+// Startup hardware inventory: CPU cores, host RAM, disk, and a plain-data GPU
+// roster that deliberately creates no Device.
+export import free_breakfast.core.sys_env;
