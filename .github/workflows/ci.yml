@@ -47,6 +47,11 @@ concurrency:
 permissions:
   contents: read
 
+# `lint`, `test (3.11)` and `test (3.13)` are REQUIRED checks in the `main`
+# ruleset (Settings -> Rules), which is what GitHub's native auto-merge waits on
+# (`gh pr merge --auto`). A required check is matched by name: renaming a job or
+# changing the python matrix means editing the ruleset in the same breath, or
+# every PR blocks on a check that never reports.
 jobs:
   lint:
     runs-on: ubuntu-latest
