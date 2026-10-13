@@ -29,7 +29,7 @@
 
 #include <gtest/gtest.h>
 
-#define FREE_BREAKFAST_REQUIRE_GPU()                                                               \
+#define FBF_REQUIRE_GPU()                                                                          \
   do {                                                                                             \
     std::int32_t fb_device_count = 0;                                                              \
     if (::wwr::wwrGetDeviceCount(&fb_device_count) != ::wwr::wwrSuccess || fb_device_count < 1) {  \

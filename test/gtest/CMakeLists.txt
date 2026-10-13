@@ -7,7 +7,7 @@
 #     at run time. Every case runs (none skip) on a device-less box, so a green
 #     run here is meaningful coverage even off a GPU host.
 #   * free_breakfast_tests_gpu  -- the *_gpu.cpp TUs, which drive the device.
-#     Each guards itself with FREE_BREAKFAST_REQUIRE_GPU() and SKIPS rather
+#     Each guards itself with FBF_REQUIRE_GPU() and SKIPS rather
 #     than fails when no device is visible.
 #
 # The split is by *what the test needs at run time*, not by file extension: the

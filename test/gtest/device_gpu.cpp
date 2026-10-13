@@ -1,5 +1,5 @@
 // GPU cases: these drive a real device, so each one opens with
-// FREE_BREAKFAST_REQUIRE_GPU() and SKIPS rather than fails where there is none.
+// FBF_REQUIRE_GPU() and SKIPS rather than fails where there is none.
 // Add new device-dependent TUs as `*_gpu.cpp` and list them in CMakeLists.txt's
 // gpu executable.
 //
@@ -27,7 +27,7 @@ import wwr.runtime_api;
 namespace {
 
 TEST(Device, RuntimeReportsADevice) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
 
   std::int32_t count = 0;
   ASSERT_EQ(wwr::wwrGetDeviceCount(&count), wwr::wwrSuccess);
@@ -38,7 +38,7 @@ TEST(Device, RuntimeReportsADevice) {
 // binary -- the combination that breaks first when the module graph or the
 // backend switch is wrong.
 TEST(Device, ProjectModuleLinksBesideTheRuntime) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
 
   EXPECT_FALSE(free_breakfast::core::version_string().empty());
 }

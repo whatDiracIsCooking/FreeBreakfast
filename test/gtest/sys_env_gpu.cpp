@@ -15,7 +15,7 @@ namespace {
 namespace fb = free_breakfast;
 
 TEST(SysEnvGpu, RosterListsEveryDeviceWithItsProperties) {
-  FREE_BREAKFAST_REQUIRE_GPU();
+  FBF_REQUIRE_GPU();
 
   std::int32_t count = 0;
   ASSERT_EQ(wwr::wwrGetDeviceCount(&count), wwr::wwrSuccess);

@@ -205,7 +205,7 @@ Two suites, and neither covers the other.
 **C++ — `test/gtest/`, run by ctest.** Two binaries split by device
 requirement: `free_breakfast_tests_host` (the `*_host.cpp` TUs, which need no
 device and all run everywhere) and `free_breakfast_tests_gpu` (the `*_gpu.cpp`
-TUs, which drive the device). The GPU cases call `FREE_BREAKFAST_REQUIRE_GPU()`
+TUs, which drive the device). The GPU cases call `FBF_REQUIRE_GPU()`
 and **skip with a reason** rather than failing, so the suite stays usable on a
 device-less build host — read the skip list before calling a run green.
 
