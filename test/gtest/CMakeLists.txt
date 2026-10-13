@@ -44,6 +44,7 @@ add_executable(
   io_npy_host.cpp
   io_toml_host.cpp
   gpu_policy_host.cpp
+  sys_env_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -73,7 +74,9 @@ target_link_libraries(
 # GPU executable
 # ---------------------------------------------------------------------------
 # Add new device-dependent TUs to this list.
-add_executable(free_breakfast_tests_gpu device_gpu.cpp gpu_policy_gpu.cpp)
+add_executable(
+  free_breakfast_tests_gpu device_gpu.cpp gpu_policy_gpu.cpp sys_env_gpu.cpp
+)
 
 set_target_properties(
   free_breakfast_tests_gpu PROPERTIES CXX_MODULE_STD 1 CXX_SCAN_FOR_MODULES ON

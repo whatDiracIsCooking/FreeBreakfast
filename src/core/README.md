@@ -14,6 +14,7 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
 | `diagnostics/` | `diagnostics.h` only (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`), target `free_breakfast::core::diagnostics_macros`. |
 | `gpu/` | `free_breakfast.core.gpu` — wwr's RAII wrappers bound to those policies: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, … |
+| `sys_env/` | `free_breakfast.core.sys_env` — the startup hardware inventory: `query_sys_env()` → `SysEnv` (CPU cores, host RAM, disk, a plain-data `GpuInfo` roster), `log_sys_env()`. |
 
 Each subdirectory is its own library with its own README — a module library,
 except `diagnostics/`, which is a macro header — and can be linked alone
