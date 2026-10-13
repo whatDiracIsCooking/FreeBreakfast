@@ -31,6 +31,10 @@ export namespace free_breakfast {
 using Stream = ext::StreamWrapper<CreatePolicy<wwr::wwrError_t>, DestroyPolicy<wwr::wwrError_t>,
                                   CreatePolicy<wwr::wwrError_t>>;
 
+/// @brief An event on one device; default-constructed it is sync-only (timing disabled).
+using Event = ext::EventWrapper<CreatePolicy<wwr::wwrError_t>, DestroyPolicy<wwr::wwrError_t>,
+                                CreatePolicy<wwr::wwrError_t>>;
+
 /// @brief One device's context: its properties, an owned stream and memory pool.
 ///
 /// Hold it as a std::shared_ptr -- buffers and library handles retain their
