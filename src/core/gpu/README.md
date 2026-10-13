@@ -26,12 +26,13 @@ to `CreatePolicy` / `DestroyPolicy` the same way.
 ```cpp
 namespace fb = free_breakfast;
 
-auto r = fb::capture([] {
-  auto dev = std::make_shared<fb::Device>(0);
-  fb::Buffers::device<float> a(n * n, dev);
-  fb::BlasHandle blas(dev);
-  // ...
-});
+auto dev = std::make_shared<fb::Device>(0);
+fb::Buffers::device<float> a(n * n, dev);
+fb::BlasHandle blas(dev);
+// ...
 ```
+
+A failed create or allocation aborts at that line, so a wrapper that exists is
+a valid one — see `../error_handling/README.md`.
 
 Link it as `free_breakfast::core::gpu`.

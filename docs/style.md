@@ -89,7 +89,7 @@ on who needs it:
 | --- | --- | --- |
 | One implementation unit (`.cpp`) | An unexported declaration at namespace scope in that file | `table_int` in `src/io/config/config_reader.cpp` |
 | Several implementation units of one module | An **internal partition**, `module M:name;`, imported by those units | `src/io/npy/npy_format.cppm` (`kMagic`, used by both the reader and the writer) |
-| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | `CaptureScope` in `:gpu_policy`; `src/basis/numeric.cppm` |
+| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | `src/basis/numeric.cppm` |
 
 All partitions, of either kind, go under `PARTITIONS` in
 `free_breakfast_add_cxx_module_library`.

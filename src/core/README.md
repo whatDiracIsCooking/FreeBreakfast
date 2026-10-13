@@ -10,7 +10,7 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `types/` | `free_breakfast.core.types` — fixed-width integers in the global namespace, `Vec<T, N>` / `make_vec` over the builtin GPU vector types, and wwr's `real_fp` / `int_type` concepts re-exported into `free_breakfast`. |
 | `constants/` | `free_breakfast.core.constants` — typed `zero`/`one`/…, physical constants, bohr ↔ Angstrom, SI prefixes. |
 | `nontransferrable/` | `free_breakfast.core.nontransferrable` — the `NonCopyable` / `NonMovable` / `NonTransferable` mixins. |
-| `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `gpu_status`, `check_or_abort`; and the ABORT/RECORD GPU error policies chosen by `FREE_BREAKFAST_GPU_ERROR_POLICY`, with `capture`. |
+| `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `gpu_status`, `check_or_abort`; and the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy). |
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
 | `diagnostics/` | `diagnostics.h` only (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`), target `free_breakfast::core::diagnostics_macros`. |
 | `gpu/` | `free_breakfast.core.gpu` — wwr's RAII wrappers bound to those policies: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, … |
@@ -28,7 +28,7 @@ auto v = free_breakfast::core::version_string();   // "0.1.0"
 The GPU layer comes along with that import: `free_breakfast.core.gpu`
 re-exports the `wwr.extension.*` modules it binds (used in place from the
 submodule, not copied), and its aliases already carry this build's error
-policy — see `error_handling/README.md` for ABORT vs RECORD and `capture`.
+policy — see `error_handling/README.md`.
 
 Link it as `free_breakfast::core`.
 
