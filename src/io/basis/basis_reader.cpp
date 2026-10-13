@@ -22,7 +22,7 @@ namespace free_breakfast {
 /// dropped, and the whole token must be consumed.
 [[nodiscard]] Result<double> parse_decimal(const json &node, std::string_view field) {
   if (!node.is_string()) {
-    return err_config(std::format("BSE '{}' entry is not a string", field));
+    return err_config("BSE '{}' entry is not a string", field);
   }
   const auto text = node.get<std::string>();
   double value = 0.0;
@@ -30,7 +30,7 @@ namespace free_breakfast {
   const char *last = text.data() + text.size();
   const auto [ptr, ec] = std::from_chars(first, last, value);
   if (ec != std::errc{} || ptr != last) {
-    return err_config(std::format("BSE '{}' entry '{}' is not a number", field, text));
+    return err_config("BSE '{}' entry '{}' is not a number", field, text);
   }
   return value;
 }
@@ -54,10 +54,10 @@ namespace free_breakfast {
   const auto ft_it = block.find("function_type");
   if (ft_it == block.end()) {
     if (l >= 2) {
-      return err_config(std::format(
+      return err_config(
           "BSE shell has no function_type and angular_momentum={} >= 2 is ambiguous between "
           "Cartesian and spherical; tag it \"gto_cartesian\" or \"gto_spherical\"",
-          l));
+          l);
     }
     return Harmonic::Cartesian;
   }
@@ -73,15 +73,15 @@ namespace free_breakfast {
   }
   if (function_type == "gto") {
     if (l >= 2) {
-      return err_config(std::format(
+      return err_config(
           "BSE shell function_type \"gto\" with angular_momentum={} >= 2 is ambiguous between "
           "Cartesian and spherical; tag it \"gto_cartesian\" or \"gto_spherical\"",
-          l));
+          l);
     }
     return Harmonic::Cartesian;
   }
-  return err_config(std::format("BSE shell function_type \"{}\" is not a supported Gaussian type",
-                                function_type));
+  return err_config("BSE shell function_type \"{}\" is not a supported Gaussian type",
+                    function_type);
 }
 
 /// @brief Turn one BSE electron_shells block into one or more ShellStamp.
@@ -141,8 +141,8 @@ namespace free_breakfast {
   const bool per_column_momentum = momenta.size() == ncols;
   const bool general_contraction = momenta.size() == 1;
   if (!per_column_momentum && !general_contraction) {
-    return err_config(std::format("BSE shell has {} angular momenta but {} coefficient columns",
-                                  momenta.size(), ncols));
+    return err_config("BSE shell has {} angular momenta but {} coefficient columns", momenta.size(),
+                      ncols);
   }
 
   std::vector<ShellStamp> shells;
@@ -153,9 +153,8 @@ namespace free_breakfast {
       return err_config("BSE coefficients column is not an array");
     }
     if (column.size() != exponents.size()) {
-      return err_config(
-          std::format("BSE coefficients column has {} entries but there are {} exponents",
-                      column.size(), exponents.size()));
+      return err_config("BSE coefficients column has {} entries but there are {} exponents",
+                        column.size(), exponents.size());
     }
     std::vector<double> coefficients;
     coefficients.reserve(column.size());
@@ -201,18 +200,18 @@ namespace free_breakfast {
     const char *last = z_key.data() + z_key.size();
     const auto [ptr, ec] = std::from_chars(first, last, z);
     if (ec != std::errc{} || ptr != last || z <= 0) {
-      return err_config(std::format("BSE element key '{}' is not an atomic number", z_key));
+      return err_config("BSE element key '{}' is not an atomic number", z_key);
     }
 
     if (!element.is_object()) {
-      return err_config(std::format("BSE element '{}' is not an object", z_key));
+      return err_config("BSE element '{}' is not an object", z_key);
     }
     const auto shells_it = element.find("electron_shells");
     if (shells_it == element.end()) {
-      return err_config(std::format("BSE element '{}' has no electron_shells", z_key));
+      return err_config("BSE element '{}' has no electron_shells", z_key);
     }
     if (!shells_it->is_array()) {
-      return err_config(std::format("BSE element '{}' electron_shells is not an array", z_key));
+      return err_config("BSE element '{}' electron_shells is not an array", z_key);
     }
 
     std::vector<ShellStamp> shells;
@@ -250,9 +249,8 @@ namespace free_breakfast {
   auto basis_stamp = FBF_TRY(parse_basis(json_text));
   auto placed = place(basis_stamp, molecule);
   if (!placed) {
-    return err_config(
-        std::format("auxiliary (density-fitting) basis cannot be paired with the molecule: {}",
-                    placed.error().message));
+    return err_config("auxiliary (density-fitting) basis cannot be paired with the molecule: {}",
+                      placed.error().message);
   }
   return placed;
 }

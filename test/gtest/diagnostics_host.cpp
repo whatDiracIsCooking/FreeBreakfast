@@ -17,7 +17,7 @@ namespace fb = free_breakfast;
 
 fb::Result<int> half(int n) {
   if (n % 2 != 0) {
-    return fb::err_config(std::format("{} is odd", n));
+    return fb::err_config("{} is odd", n);
   }
   return n / 2;
 }
@@ -49,6 +49,22 @@ TEST(ErrorHandling, OriginIsTheCallSite) {
   auto e = fb::Error::allocation("oom");
   EXPECT_EQ(e.origin.line(), line);
   EXPECT_TRUE(std::string_view(e.origin.file_name()).ends_with("diagnostics_host.cpp"));
+}
+
+// err_* takes its location from the format string's converting constructor,
+// not a defaulted trailing parameter -- check that still lands on the caller.
+TEST(ErrorHandling, ErrHelpersFormatAndLocateAtTheCallSite) {
+  auto const plain_line = std::source_location::current().line() + 1;
+  auto const plain = fb::err_io("no arguments").error();
+  EXPECT_EQ(plain.message, "no arguments");
+  EXPECT_EQ(plain.origin.line(), plain_line);
+
+  auto const formatted_line = std::source_location::current().line() + 1;
+  auto const formatted = fb::err_unsupported("{} of {}", 3, std::string("seven")).error();
+  EXPECT_EQ(formatted.kind, fb::ErrorKind::Unsupported);
+  EXPECT_EQ(formatted.message, "3 of seven");
+  EXPECT_EQ(formatted.origin.line(), formatted_line);
+  EXPECT_TRUE(std::string_view(formatted.origin.file_name()).ends_with("diagnostics_host.cpp"));
 }
 
 TEST(ErrorHandling, ExitCodesArePinnedAndDistinct) {
