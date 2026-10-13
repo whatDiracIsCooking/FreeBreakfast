@@ -71,6 +71,20 @@ Notes on the tool half:
 - To hop into an already-existing worktree, the same
   `EnterWorktree {"path": …}` call is the way in.
 
+### Initialise the submodule before building
+
+`git worktree add` checks out the tree but **not** its submodules, so
+`deps/WarpWraps` starts empty and the first configure stops with
+`deps/WarpWraps is empty -- the submodule has not been initialised`. From
+inside the worktree, before `devtools/cpp-tier.sh` or any `cmake`:
+
+```bash
+git submodule update --init --recursive
+```
+
+A docs-only or Python-only worktree can skip it. If you do run it, removing the
+worktree later needs `--force`; see "Clean up" below.
+
 ## List
 
 ```bash
@@ -102,6 +116,33 @@ If `-d` refuses, the branch has commits not merged anywhere. Do **not** reach
 for `-D` reflexively: surface it to the user (or push the branch / open a PR)
 before discarding.
 
+### A worktree with an initialised submodule needs `--force`
+
+Once `git submodule update --init` has run in a worktree, a plain
+`git worktree remove` always refuses, however clean the checkout is:
+
+```
+fatal: working trees containing submodules cannot be moved or removed
+```
+
+That is a git limitation, not a sign of uncommitted work. But `--force` also
+throws away uncommitted work, so check before using it. Check the submodule
+too: a bare `status --porcelain` can miss changes or commits inside it,
+depending on `diff.ignoreSubmodules`/`status.submoduleSummary` config.
+
+```bash
+git -C .claude/worktrees/<name> status --porcelain --ignore-submodules=none
+```
+
+Empty output means nothing tracked or untracked is pending, in the worktree or
+in `deps/WarpWraps` (including commits made inside the submodule). Ignored
+files such as build output are not counted, and `--force` deletes them along
+with the checkout. Only then:
+
+```bash
+git worktree remove --force .claude/worktrees/<name>
+```
+
 ## Sweep worktrees already merged into main
 
 When asked to clean up merged worktrees, sweep every entry under
@@ -115,8 +156,9 @@ git fetch origin main --quiet
 Then, for each worktree directory `wt` (from `git worktree list --porcelain`,
 paths under `.claude/worktrees/` only):
 
-1. **Skip if dirty.** `git -C "$wt" status --porcelain` non-empty means
-   uncommitted work — leave it alone and report it.
+1. **Skip if dirty.** `git -C "$wt" status --porcelain --ignore-submodules=none`
+   non-empty means uncommitted work, in the worktree or its submodule. Leave it
+   alone and report it.
 2. **Classify the branch tip** (`git -C "$wt" rev-parse HEAD`):
    - *Merged:* `git merge-base --is-ancestor <tip> origin/main` succeeds.
    - *Squash-merged:* not an ancestor, but every commit is patch-equivalent
@@ -134,10 +176,16 @@ git branch -D <name>              # squash-merged only: -d refuses because the
                                   # confirmed the patches are upstream
 ```
 
+If `remove` refuses with `working trees containing submodules cannot be moved
+or removed`, use `--force`. Step 1 has already shown the worktree is clean,
+submodule included (see "A worktree with an initialised submodule needs
+`--force`" above).
+
 Finish with a one-line-per-worktree report: removed (merged), removed
 (squash-merged), kept (dirty), kept (unmerged). Never remove a dirty or
 unmerged worktree during a sweep, even with `--force` — that is a user
-decision, not a cleanup.
+decision, not a cleanup. The submodule refusal is the only case where a
+sweep uses `--force`, and only on a worktree that step 1 showed is clean.
 
 ## `/pr full` — ship, then tear the worktree down
 
@@ -157,6 +205,8 @@ After the merge (the `pr` skill's steps 1–6), if the session ran inside a
 2. **Remove it** from the main checkout, exactly as "Sweep … merged into main"
    above: the branch is merged or squash-merged, so `git worktree remove` then
    `git branch -d <name>` (`-D` after a squash merge, since the SHAs differ).
+   If the session initialised the submodule to build, `remove` needs `--force`.
+   Run the `--ignore-submodules=none` status check from "Clean up" first.
 
 If the branch did *not* merge — the `pr` skill stopped before merging (its
 "When NOT to merge" cases) — there is nothing to reclaim: leave the worktree in
