@@ -29,13 +29,8 @@ export namespace free_breakfast {
   return std::sqrt((dx * dx) + (dy * dy) + (dz * dz));
 }
 
-/// @brief The position of @p atom as a @c wwr::double3, in bohr.
-[[nodiscard]] wwr::double3 position(const Atom<double> &atom) {
-  return wwr::double3{atom.x, atom.y, atom.z};
-}
-
 /// @brief The atomic number Z of @p atom (its nuclear charge).
-[[nodiscard]] int32_t nuclear_charge(const Atom<double> &atom) {
+[[nodiscard]] int32_t nuclear_charge(const Atom &atom) {
   return static_cast<int32_t>(atom.element);
 }
 
@@ -44,8 +39,8 @@ export namespace free_breakfast {
 /// The geometry is fixed at construction; @c charge is the net molecular charge
 /// in units of the elementary charge (positive for a cation) and @c
 /// multiplicity is 2S+1, defaulting to a singlet. Each nucleus is an
-/// @ref free_breakfast::Atom<double> -- flat x, y, z in bohr plus an Element;
-/// read them with @ref position and @ref nuclear_charge above.
+/// @ref free_breakfast::Atom -- a @c double3 position in bohr plus an
+/// Element; Z is read with @ref nuclear_charge above.
 class Molecule {
 public:
   Molecule() = default;
@@ -53,11 +48,11 @@ public:
   /// @param atoms         The nuclei and their positions (bohr).
   /// @param charge        Net molecular charge (default neutral).
   /// @param multiplicity  Spin multiplicity 2S+1 (default singlet, 1).
-  explicit Molecule(std::vector<Atom<double>> atoms, int32_t charge = 0, int32_t multiplicity = 1)
+  explicit Molecule(std::vector<Atom> atoms, int32_t charge = 0, int32_t multiplicity = 1)
       : atoms_(std::move(atoms)), charge_(charge), multiplicity_(multiplicity) {}
 
   /// @brief The atoms, in the order supplied.
-  [[nodiscard]] const std::vector<Atom<double>> &atoms() const { return atoms_; }
+  [[nodiscard]] const std::vector<Atom> &atoms() const { return atoms_; }
 
   /// @brief Number of nuclei in the molecule.
   [[nodiscard]] uint32_t natoms() const { return static_cast<uint32_t>(atoms_.size()); }
@@ -71,7 +66,7 @@ public:
   /// @brief Total nuclear charge, Sum Z_A over all atoms.
   [[nodiscard]] int32_t total_nuclear_charge() const {
     int32_t sum = 0;
-    for (const Atom<double> &atom : atoms_) {
+    for (const Atom &atom : atoms_) {
       sum += nuclear_charge(atom);
     }
     return sum;
@@ -84,7 +79,7 @@ public:
   [[nodiscard]] int32_t electron_count() const { return total_nuclear_charge() - charge_; }
 
 private:
-  std::vector<Atom<double>> atoms_{};
+  std::vector<Atom> atoms_{};
   int32_t charge_{0};
   int32_t multiplicity_{1};
 };
@@ -94,11 +89,11 @@ private:
 /// Each unordered pair of nuclei is counted once. With fewer than two atoms
 /// there are no pairs and the energy is zero.
 [[nodiscard]] double nuclear_repulsion_energy(const Molecule &molecule) {
-  const std::vector<Atom<double>> &atoms = molecule.atoms();
+  const std::vector<Atom> &atoms = molecule.atoms();
   double energy = 0.0;
   for (uint32_t a = 0; a < atoms.size(); ++a) {
     for (uint32_t b = a + 1; b < atoms.size(); ++b) {
-      const double r = distance(position(atoms[a]), position(atoms[b]));
+      const double r = distance(atoms[a].position, atoms[b].position);
       energy += static_cast<double>(nuclear_charge(atoms[a])) *
                 static_cast<double>(nuclear_charge(atoms[b])) / r;
     }
@@ -121,12 +116,12 @@ private:
 /// of separately accumulated large terms. With fewer than two atoms there are
 /// no pairs and the gradient is all zeros.
 [[nodiscard]] std::vector<double> nuclear_repulsion_gradient(const Molecule &molecule) {
-  const std::vector<Atom<double>> &atoms = molecule.atoms();
+  const std::vector<Atom> &atoms = molecule.atoms();
   std::vector<double> grad(static_cast<size_t>(atoms.size()) * 3, 0.0);
   for (uint32_t a = 0; a < atoms.size(); ++a) {
     for (uint32_t b = a + 1; b < atoms.size(); ++b) {
-      const wwr::double3 ra = position(atoms[a]);
-      const wwr::double3 rb = position(atoms[b]);
+      const wwr::double3 ra = atoms[a].position;
+      const wwr::double3 rb = atoms[b].position;
       const double r = distance(ra, rb);
       const double zz = static_cast<double>(nuclear_charge(atoms[a])) *
                         static_cast<double>(nuclear_charge(atoms[b]));

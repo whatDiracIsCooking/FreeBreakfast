@@ -84,7 +84,7 @@ namespace free_breakfast {
   }
 
   // Lines 3.. : one atom each. Line 2 is a free-form comment and is skipped.
-  std::vector<Atom<double>> atoms;
+  std::vector<Atom> atoms;
   atoms.reserve(static_cast<size_t>(declared_count));
   for (size_t i = 2; i < lines.size(); ++i) {
     const std::string_view line = lines[i];
@@ -108,9 +108,10 @@ namespace free_breakfast {
       return err_io("XYZ atom line {} has unknown element '{}'", i + 1, symbol);
     }
     // XYZ coordinates are in Angstrom; Molecule stores bohr. Convert here.
-    atoms.push_back(Atom<double>{
-        x * free_breakfast::kBohrPerAngstrom<double>, y * free_breakfast::kBohrPerAngstrom<double>,
-        z * free_breakfast::kBohrPerAngstrom<double>, static_cast<Element>(number)});
+    atoms.push_back(Atom{{x * free_breakfast::kBohrPerAngstrom<double>,
+                          y * free_breakfast::kBohrPerAngstrom<double>,
+                          z * free_breakfast::kBohrPerAngstrom<double>},
+                         static_cast<Element>(number)});
   }
 
   if (static_cast<int32_t>(atoms.size()) != declared_count) {

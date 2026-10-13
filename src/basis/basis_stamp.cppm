@@ -98,13 +98,13 @@ private:
 ///   configuration error, not a silently smaller basis.
 [[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp, const Molecule &molecule) {
   std::vector<Shell> shells;
-  for (const Atom<double> &atom : molecule.atoms()) {
+  for (const Atom &atom : molecule.atoms()) {
     const int32_t z = nuclear_charge(atom);
     const std::vector<ShellStamp> *element = basis_stamp.shells_for(z);
     if (element == nullptr) {
       return err_config("basis has no shells for element Z={}", z);
     }
-    const wwr::double3 center = position(atom);
+    const wwr::double3 center = atom.position;
     for (const ShellStamp &proto : *element) {
       shells.push_back(proto.at(center));
     }

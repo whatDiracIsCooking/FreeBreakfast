@@ -305,9 +305,8 @@ fb::BasisStamp water_stamp() {
 }
 
 TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
-  const fb::Molecule water({Atom<double>{0.0, 0.0, 0.2, Element::O},
-                            Atom<double>{0.0, 1.4, -0.9, Element::H},
-                            Atom<double>{0.0, -1.4, -0.9, Element::H}});
+  const fb::Molecule water({Atom{{0.0, 0.0, 0.2}, Element::O}, Atom{{0.0, 1.4, -0.9}, Element::H},
+                            Atom{{0.0, -1.4, -0.9}, Element::H}});
   const fb::BasisStamp stamp = water_stamp();
   ASSERT_NE(stamp.shells_for(8), nullptr);
   EXPECT_EQ(stamp.shells_for(7), nullptr);
@@ -325,8 +324,7 @@ TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
 }
 
 TEST(Basis, PlaceOntoUncoveredElementIsInvalidConfig) {
-  const fb::Molecule nh(
-      {Atom<double>{0.0, 0.0, 0.0, Element::N}, Atom<double>{0.0, 0.0, 1.9, Element::H}});
+  const fb::Molecule nh({Atom{{0.0, 0.0, 0.0}, Element::N}, Atom{{0.0, 0.0, 1.9}, Element::H}});
   auto basis = fb::place(water_stamp(), nh);
   ASSERT_FALSE(basis.has_value());
   EXPECT_EQ(basis.error().kind, fb::ErrorKind::InvalidConfig);
@@ -335,10 +333,8 @@ TEST(Basis, PlaceOntoUncoveredElementIsInvalidConfig) {
 
 TEST(Basis, PlacingOneStampAtTwoGeometriesAgreesOnLayout) {
   const fb::BasisStamp stamp = water_stamp().primitive_normalized();
-  const fb::Molecule a(
-      {Atom<double>{0.0, 0.0, 0.0, Element::O}, Atom<double>{0.0, 0.0, 1.8, Element::H}});
-  const fb::Molecule b(
-      {Atom<double>{0.5, 0.0, 0.0, Element::O}, Atom<double>{0.5, 0.0, 2.1, Element::H}});
+  const fb::Molecule a({Atom{{0.0, 0.0, 0.0}, Element::O}, Atom{{0.0, 0.0, 1.8}, Element::H}});
+  const fb::Molecule b({Atom{{0.5, 0.0, 0.0}, Element::O}, Atom{{0.5, 0.0, 2.1}, Element::H}});
   auto ba = fb::place(stamp, a);
   auto bb = fb::place(stamp, b);
   ASSERT_TRUE(ba.has_value() && bb.has_value());

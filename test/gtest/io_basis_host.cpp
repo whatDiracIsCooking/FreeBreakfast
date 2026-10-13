@@ -43,9 +43,9 @@ constexpr std::string_view kBasis = R"({
 })";
 
 fb::Molecule water() {
-  return fb::Molecule({Atom<double>{0.0, 0.0, 0.2217, Element::O},
-                       Atom<double>{0.0, 1.4309, -0.8867, Element::H},
-                       Atom<double>{0.0, -1.4309, -0.8867, Element::H}});
+  return fb::Molecule({Atom{{0.0, 0.0, 0.2217}, Element::O},
+                       Atom{{0.0, 1.4309, -0.8867}, Element::H},
+                       Atom{{0.0, -1.4309, -0.8867}, Element::H}});
 }
 
 TEST(IoBasis, ParsesElementsIntoShellStamps) {
@@ -167,8 +167,7 @@ TEST(IoBasis, HarmonicTypeResolution) {
 }
 
 TEST(IoBasis, UncoveredElementIsInvalidConfig) {
-  const fb::Molecule co(
-      {Atom<double>{0.0, 0.0, 0.0, Element::C}, Atom<double>{0.0, 0.0, 2.1, Element::O}});
+  const fb::Molecule co({Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.1}, Element::O}});
   auto basis = fb::parse_and_assign_basis(kBasis, co);
   ASSERT_FALSE(basis.has_value());
   EXPECT_EQ(basis.error().kind, fb::ErrorKind::InvalidConfig);
@@ -180,8 +179,7 @@ TEST(IoBasis, AuxBasisNamesTheFittingRoleOnCoverageFailure) {
   ASSERT_TRUE(ok.has_value()) << ok.error().message;
   EXPECT_EQ(ok->nshells(), 8U);
 
-  const fb::Molecule ch(
-      {Atom<double>{0.0, 0.0, 0.0, Element::C}, Atom<double>{0.0, 0.0, 2.0, Element::H}});
+  const fb::Molecule ch({Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.0}, Element::H}});
   auto bad = fb::parse_and_assign_aux_basis(kBasis, ch);
   ASSERT_FALSE(bad.has_value());
   EXPECT_EQ(bad.error().kind, fb::ErrorKind::InvalidConfig);

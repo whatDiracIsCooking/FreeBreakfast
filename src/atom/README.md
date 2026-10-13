@@ -1,6 +1,6 @@
 # Atom
 
-The chemical element (`Element`) and a single positioned atom (`Atom<T>`), defined once and offered to both CUDA / HIP `#include` and C++ `import`.
+The chemical element (`Element`) and a single positioned atom (`Atom`), defined once and offered to both CUDA / HIP `#include` and C++ `import`.
 
 ## Module
 
@@ -17,7 +17,7 @@ The re-export in `atom.cppm` is written with `using free_breakfast::Element;` / 
 
 `Element` is a strong enum over `std::uint8_t` whose enumerator value is exactly the nuclear charge Z, covering `H` (1) through `Og` (118). `Sentinel` (0) is the default "no element" value. The headers include `<cstdint>` rather than relying on `import std`, so they work unchanged in device code.
 
-`Atom<T>` is a plain aggregate — public `x`, `y`, `z` coordinates in bohr plus an `Element`, with no invariant — so callers brace-initialise directly. A default-constructed `Atom` sits at the origin carrying `Element::Sentinel`.
+`Atom` is a plain aggregate — a public `position` (`Vec<double, 3>`, i.e. the backend's `double3`, in bohr) plus an `Element`, with no invariant — so callers brace-initialise directly. A default-constructed `Atom` sits at the origin carrying `Element::Sentinel`.
 
 ## Usage
 
@@ -25,7 +25,7 @@ The re-export in `atom.cppm` is written with `using free_breakfast::Element;` / 
 import free_breakfast.atom;
 
 // Carbon at the origin; coordinates are in bohr.
-free_breakfast::Atom<double> c{0.0, 0.0, 0.0, free_breakfast::Element::C};
+free_breakfast::Atom c{{0.0, 0.0, 0.0}, free_breakfast::Element::C};
 
 // The enumerator value is Z directly.
 auto z = static_cast<std::uint8_t>(c.element);   // 6
@@ -40,6 +40,6 @@ auto z = static_cast<std::uint8_t>(c.element);   // 6
 | File | Role |
 |------|------|
 | `element.h` | Single definition of the `Element` strong enum (Z=0..118) |
-| `atom.h` | Single definition of the `Atom<T>` aggregate; includes `element.h` |
+| `atom.h` | Single definition of the `Atom` aggregate; includes `element.h` and `vec.h` |
 | `atom.cppm` | Module interface: includes the headers and re-exports `Element` / `Atom` |
 | `CMakeLists.txt` | The `free_breakfast.atom.headers` interface library and the `free_breakfast.atom` module library |

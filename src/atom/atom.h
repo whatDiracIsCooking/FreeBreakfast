@@ -4,23 +4,20 @@
 #pragma once
 
 #include "element.h"
+#include "vec.h"
 
 namespace free_breakfast {
 
 /// @brief One atom: a nucleus of a given element at a Cartesian position.
 ///
-/// Plain aggregate — the coordinates and the element are public with no
-/// invariant to protect, so callers brace-initialise directly
-/// (`Atom<double>{x, y, z, Element::C}`). A default-constructed @c Atom sits at
-/// the origin carrying @c Element::Sentinel, i.e. "no element yet".
-///
-/// @tparam T Scalar type of the coordinates (e.g. @c float or @c double), in
-///           bohr.
-template <typename T>
+/// Plain aggregate — the position and the element are public with no invariant
+/// to protect, so callers brace-initialise directly
+/// (`Atom{{x, y, z}, Element::C}`). The position is the backend's own
+/// @c double3 (@c Vec<double, 3>), in bohr, so a host-built atom and a
+/// kernel-built one share a layout. A default-constructed @c Atom sits at the
+/// origin carrying @c Element::Sentinel, i.e. "no element yet".
 struct Atom {
-  T x{T{0}};
-  T y{T{0}};
-  T z{T{0}};
+  Vec<double, 3> position{0.0, 0.0, 0.0};
   Element element{Element{0}};
 };
 

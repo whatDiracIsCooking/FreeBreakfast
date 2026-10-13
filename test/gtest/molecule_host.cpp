@@ -14,9 +14,9 @@ using fb::Element;
 
 // Water near its equilibrium geometry, in bohr.
 fb::Molecule water(std::int32_t charge = 0, std::int32_t multiplicity = 1) {
-  return fb::Molecule({Atom<double>{0.0, 0.0, 0.2217, Element::O},
-                       Atom<double>{0.0, 1.4309, -0.8867, Element::H},
-                       Atom<double>{0.0, -1.4309, -0.8867, Element::H}},
+  return fb::Molecule({Atom{{0.0, 0.0, 0.2217}, Element::O},
+                       Atom{{0.0, 1.4309, -0.8867}, Element::H},
+                       Atom{{0.0, -1.4309, -0.8867}, Element::H}},
                       charge, multiplicity);
 }
 
@@ -25,12 +25,8 @@ TEST(Molecule, DistanceIsEuclidean) {
   EXPECT_DOUBLE_EQ(fb::distance(wwr::double3{1.0, 2.0, 3.0}, wwr::double3{1.0, 2.0, 3.0}), 0.0);
 }
 
-TEST(Molecule, PositionAndNuclearChargeReadTheAtom) {
-  const Atom<double> atom{1.5, -2.0, 0.25, Element::Cl};
-  const wwr::double3 r = fb::position(atom);
-  EXPECT_EQ(r.x, 1.5);
-  EXPECT_EQ(r.y, -2.0);
-  EXPECT_EQ(r.z, 0.25);
+TEST(Molecule, NuclearChargeReadsTheAtom) {
+  const Atom atom{{1.5, -2.0, 0.25}, Element::Cl};
   EXPECT_EQ(fb::nuclear_charge(atom), 17);
 }
 
@@ -56,19 +52,18 @@ TEST(Molecule, AtomsKeepSuppliedOrder) {
   const fb::Molecule mol = water();
   ASSERT_EQ(mol.natoms(), 3U);
   EXPECT_EQ(mol.atoms()[0].element, Element::O);
-  EXPECT_EQ(mol.atoms()[1].y, 1.4309);
-  EXPECT_EQ(mol.atoms()[2].y, -1.4309);
+  EXPECT_EQ(mol.atoms()[1].position.y, 1.4309);
+  EXPECT_EQ(mol.atoms()[2].position.y, -1.4309);
 }
 
 TEST(Molecule, SingleAtomHasNoRepulsion) {
-  const fb::Molecule he({Atom<double>{1.0, 2.0, 3.0, Element::He}});
+  const fb::Molecule he({Atom{{1.0, 2.0, 3.0}, Element::He}});
   EXPECT_EQ(fb::nuclear_repulsion_energy(he), 0.0);
   EXPECT_EQ(fb::nuclear_repulsion_gradient(he), (std::vector<double>{0.0, 0.0, 0.0}));
 }
 
 TEST(Molecule, HydrogenMoleculeRepulsion) {
-  const fb::Molecule h2(
-      {Atom<double>{0.0, 0.0, 0.0, Element::H}, Atom<double>{0.0, 0.0, 1.4, Element::H}});
+  const fb::Molecule h2({Atom{{0.0, 0.0, 0.0}, Element::H}, Atom{{0.0, 0.0, 1.4}, Element::H}});
   EXPECT_DOUBLE_EQ(fb::nuclear_repulsion_energy(h2), 1.0 / 1.4);
 }
 
@@ -84,9 +79,9 @@ TEST(Molecule, WaterRepulsionSumsEveryPairOnce) {
 
 TEST(Molecule, GradientMatchesCentralFiniteDifference) {
   // A non-symmetric geometry so no component vanishes by symmetry.
-  const std::vector<Atom<double>> atoms{
-      Atom<double>{0.1, -0.2, 0.3, Element::N}, Atom<double>{1.9, 0.4, -0.1, Element::C},
-      Atom<double>{-0.7, 1.6, 0.8, Element::H}, Atom<double>{0.5, -1.3, 2.2, Element::F}};
+  const std::vector<Atom> atoms{
+      Atom{{0.1, -0.2, 0.3}, Element::N}, Atom{{1.9, 0.4, -0.1}, Element::C},
+      Atom{{-0.7, 1.6, 0.8}, Element::H}, Atom{{0.5, -1.3, 2.2}, Element::F}};
   const std::vector<double> grad = fb::nuclear_repulsion_gradient(fb::Molecule(atoms));
   ASSERT_EQ(grad.size(), atoms.size() * 3);
 
@@ -94,8 +89,9 @@ TEST(Molecule, GradientMatchesCentralFiniteDifference) {
   for (std::size_t a = 0; a < atoms.size(); ++a) {
     for (std::int32_t axis = 0; axis < 3; ++axis) {
       auto displaced = [&](double step) {
-        std::vector<Atom<double>> moved = atoms;
-        double &coord = axis == 0 ? moved[a].x : (axis == 1 ? moved[a].y : moved[a].z);
+        std::vector<Atom> moved = atoms;
+        double &coord = axis == 0 ? moved[a].position.x
+                                  : (axis == 1 ? moved[a].position.y : moved[a].position.z);
         coord += step;
         return fb::nuclear_repulsion_energy(fb::Molecule(moved));
       };

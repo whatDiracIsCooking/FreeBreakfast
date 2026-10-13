@@ -1,4 +1,4 @@
-# The chemical element enum (Element) and an atom (Atom<T>), offered two ways
+# The chemical element enum (Element) and an atom (Atom), offered two ways
 # from a single definition in element.h / atom.h:
 #
 #   * CUDA / HIP / plain headers: `#include <atom.h>` (or <element.h>), reached
