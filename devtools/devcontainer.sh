@@ -37,6 +37,8 @@
 # mounts need a `rebuild` to take effect, like any other mount; the env reaches
 # every `shell` and `test` too. host_mount_args and remote_env_args have the
 # reasoning, config.sh the defaults (both exist for the `agy` the images ship).
+# The host's git user.name/user.email always go in this way too, as
+# GIT_AUTHOR_*/GIT_COMMITTER_*, so commits made inside are attributed.
 #
 # The three configs, and what each is:
 #
@@ -385,11 +387,33 @@ host_mount_args() {
 # `shell` and `test` as well as to `up` -- a key rotated on the host reaches
 # the next command, with no rebuild. Values are redacted out of run_cli's
 # output; see the note there.
+#
+# The host's git identity rides along the same way, always, whatever
+# HOST_ENV_PASSTHROUGH says. The container's ~/.gitconfig is its own (only
+# post-create.sh's safe.directory and gh's credential helper are in it), so
+# without this every commit made inside dies with `Author identity unknown`.
+# It goes in as git's own GIT_AUTHOR_*/GIT_COMMITTER_* variables, read from
+# the host's `git config` here, rather than written into the container's
+# config: that keeps a personal name and email out of the tracked files, and a
+# changed host identity reaches the next `shell` with no rebuild. A variable
+# already set on the host wins over the config it would be read from.
+GIT_IDENTITY_ENV="GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL"
+export_git_identity() {
+  local user_name user_email
+  user_name=$(git -C "$REPO_ROOT" config --get user.name 2>/dev/null || true)
+  user_email=$(git -C "$REPO_ROOT" config --get user.email 2>/dev/null || true)
+  export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-$user_name}"
+  export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-$user_name}"
+  export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-$user_email}"
+  export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-$user_email}"
+}
+
 REMOTE_ENV_ARGS=()
 remote_env_args() {
   REMOTE_ENV_ARGS=()
+  export_git_identity
   local name
-  for name in ${HOST_ENV_PASSTHROUGH:-}; do
+  for name in ${HOST_ENV_PASSTHROUGH:-} $GIT_IDENTITY_ENV; do
     [ -n "${!name:-}" ] || continue
     REMOTE_ENV_ARGS+=(--remote-env "$name=${!name}")
   done
