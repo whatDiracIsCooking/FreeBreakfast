@@ -17,10 +17,10 @@ namespace fb = free_breakfast;
 // types
 // ---------------------------------------------------------------------------
 
-// The :integral partition puts the fixed-width types in the global namespace.
-static_assert(std::is_same_v<::int32_t, std::int32_t>);
-static_assert(std::is_same_v<::uint64_t, std::uint64_t>);
-static_assert(std::is_same_v<::size_t, std::size_t>);
+// The :integral_types partition exports the fixed-width types from free_breakfast.
+static_assert(std::is_same_v<fb::int32_t, std::int32_t>);
+static_assert(std::is_same_v<fb::uint64_t, std::uint64_t>);
+static_assert(std::is_same_v<fb::size_t, std::size_t>);
 
 // Vec maps onto the builtins on either backend. The builtin names themselves
 // arrive through types.cppm's global module fragment, so an importer cannot

@@ -17,20 +17,9 @@
 /// for those.
 export module free_breakfast.core.types:concepts;
 
-import std;
 import wwr.wrappers.common;
 
 export namespace free_breakfast {
-
-// ========================================================================
-// Re-export standard integer types used alongside int_type
-// ========================================================================
-using std::int64_t;
-using std::size_t;
-
-// ========================================================================
-// Concepts
-// ========================================================================
 
 /// @brief T is float or double.
 using wwr::real_fp;

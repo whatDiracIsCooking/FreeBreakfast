@@ -7,9 +7,9 @@
 /// .cu. This interface GMF-includes that header and re-exports its names, giving
 /// host module code `import free_breakfast.core.types;` over the same
 /// definitions. The fixed-width integer types and `size_t` come from the
-/// `:integral` partition (integral.cppm over integral.h), and wwr's real_fp /
-/// int_type from the `:concepts` partition; both are re-exported here so a
-/// single import covers all three.
+/// `:integral_types` partition (integral_types.cppm over integral_types.h),
+/// and wwr's real_fp / int_type from the `:concepts` partition; both are
+/// re-exported here so a single import covers all three.
 
 module;
 
@@ -17,7 +17,7 @@ module;
 
 export module free_breakfast.core.types;
 
-export import :integral;
+export import :integral_types;
 export import :concepts;
 
 namespace free_breakfast {
