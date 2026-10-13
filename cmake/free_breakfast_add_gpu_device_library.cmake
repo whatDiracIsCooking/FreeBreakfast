@@ -142,4 +142,8 @@ macro(FREE_BREAKFAST_ADD_GPU_DEVICE_LIBRARY)
 
   _free_breakfast_create_alias(${ARG_NAME})
 
+  # Joins the free_breakfast_device_libraries umbrella that
+  # devtools/cross-backend-check.sh --device-only builds.
+  _free_breakfast_join_device_umbrella(${ARG_NAME})
+
 endmacro()

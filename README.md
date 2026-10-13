@@ -88,6 +88,7 @@ deps/
   nlohmann/           ...and one FetchContent header-only library
 src/core/             The starting set: one module over wwr and `import std`
 test/gtest/           C++ tests, two binaries split by device requirement
+test/gpu_kernels/     `.cu` kernels the GPU tests launch, as their own device library
 test/pytest/          Python tests over the built binaries
 docker/
   Dockerfile.base       Vendor-neutral toolchain + the three /opt deps
@@ -208,6 +209,12 @@ device and all run everywhere) and `free_breakfast_tests_gpu` (the `*_gpu.cpp`
 TUs, which drive the device). The GPU cases call `FBF_REQUIRE_GPU()`
 and **skip with a reason** rather than failing, so the suite stays usable on a
 device-less build host — read the skip list before calling a run green.
+
+Kernel code a GPU test needs lives in `test/gpu_kernels/`, a device library
+the GPU binary links, never in the test executable itself (see
+[`cmake/README.md`](cmake/README.md#a-device-library)). The root CMakeLists adds
+that directory even under `FREE_BREAKFAST_COMPILE_TIME_ONLY`, so
+`devtools/cross-backend-check.sh` compiles those kernels for the other backend.
 
 Tests are registered one ctest entry per gtest case via
 `gtest_discover_tests(… DISCOVERY_MODE PRE_TEST)`. `PRE_TEST` defers enumeration

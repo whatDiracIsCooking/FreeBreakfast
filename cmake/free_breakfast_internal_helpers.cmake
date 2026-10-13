@@ -40,3 +40,19 @@ function(_free_breakfast_configure_link_libraries target)
   endif()
   target_link_libraries(${target} ${args})
 endfunction()
+
+# Add a device library to the free_breakfast_device_libraries umbrella -- the
+# target devtools/cross-backend-check.sh --device-only builds
+# (CROSS_CHECK_DEVICE_TARGETS in devtools/config.sh), so a new .cu library is
+# cross-checked without editing that list. Created by the first call, so a tree
+# with no .cu has no umbrella, and --device-only fails there rather than
+# building nothing and reporting PASS.
+function(_free_breakfast_join_device_umbrella target)
+  if(NOT TARGET free_breakfast_device_libraries)
+    add_custom_target(
+      free_breakfast_device_libraries
+      COMMENT "Every free_breakfast_add_gpu_device_library target"
+    )
+  endif()
+  add_dependencies(free_breakfast_device_libraries ${target})
+endfunction()
