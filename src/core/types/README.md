@@ -43,8 +43,10 @@ warning back at each use of `D4`; spell `Vec<double, 4>` instead.
 
 The builtin names themselves (`::float3`, `::double4`) are **not** visible to
 an importer: they arrive through `types.cppm`'s global module fragment, which
-exports nothing. Module code spells them `Vec<float, 3>`, or imports
-`wwr.vector_types` for `wwr::float3`.
+exports nothing. Module code spells them `Vec<float, 3>`, never wwr's
+`wwr::float3` aliases (see `docs/style.md`, "Vector types"); the one place
+those appear is `test/gtest/core_vocabulary_host.cpp`, which checks that the
+mapping lands on the same types.
 
 `vec.h` is not named `vector_types.h` on purpose. It includes wwr's header by
 that name in angle brackets, and a same-named file here would make that include

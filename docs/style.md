@@ -119,6 +119,27 @@ Allowed:
 `devtools/check-int-types.py` enforces this. It ignores comments and string
 literals, so prose and test data can still say "int".
 
+## Vector types
+
+**Spell a GPU vector type `Vec<T, N>`**, from `src/core/types/vec.h`: a
+point in space is `Vec<double, 3>`, not `wwr::double3`, `double3` or
+`make_double3`. Build one by brace initialisation or with `make_vec<T>(…)`.
+Both are in `free_breakfast`, so code inside the namespace writes them
+unqualified. To make them visible:
+
+- A module unit adds `import free_breakfast.core.types;`, and its library
+  links `free_breakfast::core::types`. Don't import `wwr.vector_types` or
+  link `wwr::vector_types` for this.
+- A header shared with device code, or a `.cu`, includes `"vec.h"`, and its
+  target links `free_breakfast::core::types_headers`.
+
+`Vec` names the same builtin types as wwr's aliases, so there is no layout or
+ABI change. The reasons for the rule are that the scalar and width are
+parameters, so generic code can write `Vec<T, 3>`, and that `Vec` covers the
+64-bit 4-vectors (`double4`, `long4`, …) that wwr leaves out. The one place
+wwr's aliases appear on purpose is `test/gtest/core_vocabulary_host.cpp`,
+which checks that `Vec` maps onto them.
+
 ## Module-private code
 
 **There are no anonymous namespaces and no `detail` namespaces**, with two

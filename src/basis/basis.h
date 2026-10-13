@@ -2,10 +2,9 @@
 /// @brief The center-independent pieces of the Gaussian basis description: the
 /// Cartesian function count and the primitive.
 ///
-/// These carry no @c wwr::double3, so they live in a plain header that
-/// both CUDA `#include`rs and the `basis` module share. @c Shell and @c BasisSet
-/// embed a center and stay in @c basis.cppm, which reaches @c wwr::double3 by
-/// importing @c free_breakfast.molecule; this header is included in that
+/// These carry no center, so they live in a plain header that both CUDA
+/// `#include`rs and the `basis` module share. @c Shell and @c BasisSet embed a
+/// @c Vec<double, 3> center and stay in the module; this header is included in that
 /// module's global module fragment and its names re-exported from within the
 /// namespace, so importers and CUDA code see one entity, not two.
 ///

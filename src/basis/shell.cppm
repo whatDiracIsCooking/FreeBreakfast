@@ -7,10 +7,10 @@
 /// @ref free_breakfast::Primitive (in @c basis.h) -- are included in this
 /// partition's global module fragment and re-exported from within the namespace,
 /// so importers and CUDA `#include`rs share one entity. @ref free_breakfast::Shell
-/// embeds a center and reaches @c wwr::double3 through the molecule import.
+/// embeds a center, a @c Vec<double, 3> from @c free_breakfast.core.types.
 ///
 /// Everything is in atomic units: shell centers are in bohr (a @c
-/// wwr::double3), and primitive exponents are in inverse
+/// Vec<double, 3>), and primitive exponents are in inverse
 /// bohr squared. A shell is a fixed contraction of primitive Gaussians that all
 /// share one center and one angular momentum L; each primitive is an
 /// (exponent, coefficient) pair (@ref free_breakfast::Primitive).
@@ -77,7 +77,7 @@ public:
   /// invariant (the one production caller, the BSE basis-set reader, already
   /// screens both conditions before constructing), not a
   /// value a caller could plausibly recover from.
-  Shell(int32_t l, std::vector<Primitive> primitives, wwr::double3 center,
+  Shell(int32_t l, std::vector<Primitive> primitives, Vec<double, 3> center,
         Harmonic harmonic = Harmonic::Cartesian)
       : l_(l), primitives_(std::move(primitives)), center_(center), harmonic_(harmonic) {
     if (l_ < 0) {
@@ -104,7 +104,7 @@ public:
   /// Aborts on the conditions above, or if the exponent and coefficient
   /// counts differ (see the other constructor).
   Shell(int32_t l, const std::vector<double> &exponents, const std::vector<double> &coefficients,
-        wwr::double3 center, Harmonic harmonic = Harmonic::Cartesian)
+        Vec<double, 3> center, Harmonic harmonic = Harmonic::Cartesian)
       : Shell(l, zip(exponents, coefficients), center, harmonic) {}
 
   /// @brief Angular momentum L of this shell (0 = s, 1 = p, 2 = d).
@@ -117,7 +117,7 @@ public:
   [[nodiscard]] uint32_t nprimitives() const { return static_cast<uint32_t>(primitives_.size()); }
 
   /// @brief Shell center, in bohr.
-  [[nodiscard]] const wwr::double3 &center() const { return center_; }
+  [[nodiscard]] const Vec<double, 3> &center() const { return center_; }
 
   /// @brief Which functions this shell means: @ref Harmonic::Cartesian or
   /// @ref Harmonic::Spherical.
@@ -155,7 +155,7 @@ private:
 
   int32_t l_{0};
   std::vector<Primitive> primitives_{};
-  wwr::double3 center_{};
+  Vec<double, 3> center_{};
   Harmonic harmonic_{Harmonic::Cartesian};
 };
 

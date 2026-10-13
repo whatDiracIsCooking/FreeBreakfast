@@ -23,11 +23,11 @@
 /// geometry-free @ref free_breakfast::ShellStamp; and @c :basis_stamp defines
 /// the per-element @ref free_breakfast::BasisStamp with @ref
 /// free_breakfast::place, which stamps one onto a molecule to make a @ref
-/// free_breakfast::BasisSet. @c :shell, @c :basis_set, @c :shell_stamp and
-/// @c :basis_stamp reach @c wwr::double3 through the molecule import.
+/// free_breakfast::BasisSet. A shell center is a @c Vec<double, 3> from
+/// @c free_breakfast.core.types.
 ///
 /// Everything is in atomic units: shell centers are in bohr (a @c
-/// wwr::double3), and primitive exponents are in inverse
+/// Vec<double, 3>), and primitive exponents are in inverse
 /// bohr squared. A shell is a fixed contraction of primitive Gaussians that all
 /// share one center and one angular momentum L; each primitive is an
 /// (exponent, coefficient) pair (@ref free_breakfast::Primitive).
@@ -49,7 +49,8 @@
 export module free_breakfast.basis;
 
 // Re-exported so one import is enough to build a basis: a shell center is a
-// wwr::double3 and place() stamps onto a Molecule, both of which come from here.
+// Vec<double, 3> and place() stamps onto a Molecule, both of which come from
+// here.
 export import free_breakfast.molecule;
 
 export import :shell;

@@ -16,7 +16,7 @@ using fb::Element;
 using fb::Harmonic;
 using Powers = std::array<std::int32_t, 3>;
 
-const wwr::double3 kOrigin{0.0, 0.0, 0.0};
+const fb::Vec<double, 3> kOrigin{0.0, 0.0, 0.0};
 
 // (n)!! over odd n, the empty product for n <= 1.
 double double_factorial(std::int32_t n) {
@@ -77,7 +77,7 @@ TEST(Basis, CartesianPowersCanonicalOrder) {
 }
 
 TEST(Basis, ShellZipsParallelArrays) {
-  const fb::Shell shell(2, {3.0, 0.5}, {0.25, 0.75}, wwr::double3{1.0, 2.0, 3.0},
+  const fb::Shell shell(2, {3.0, 0.5}, {0.25, 0.75}, fb::Vec<double, 3>{1.0, 2.0, 3.0},
                         Harmonic::Spherical);
   EXPECT_EQ(shell.angular_momentum(), 2);
   ASSERT_EQ(shell.nprimitives(), 2U);

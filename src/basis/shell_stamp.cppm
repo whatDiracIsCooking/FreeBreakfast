@@ -94,7 +94,7 @@ public:
 
   /// @brief This shell centered at @p center: a @ref Shell carrying the same
   /// L, primitives and harmonic tag.
-  [[nodiscard]] Shell at(const wwr::double3 &center) const {
+  [[nodiscard]] Shell at(const Vec<double, 3> &center) const {
     return Shell{l_, primitives_, center, harmonic_};
   }
 
