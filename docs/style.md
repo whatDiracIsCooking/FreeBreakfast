@@ -56,7 +56,7 @@ to prefer.
 | Constant | `kCamelCase` | `kMaxAngularMomentum`, `kPi<T>` |
 | Enum | `enum class`, `CamelCase` | `ErrorKind`, `LogLevel` |
 | Enumerator | `CamelCase`, no `k` | `ErrorKind::InvalidConfig`, `LogLevel::Warn`, `Element::Fe` |
-| Macro | `UPPER_CASE`, project-prefixed | `FREE_BREAKFAST_REQUIRE_GPU` |
+| Macro | `UPPER_CASE`, project-prefixed (see below) | `FBF_TRY`, `FREE_BREAKFAST_REQUIRE_GPU` |
 | Module | dotted, mirroring `src/` | `free_breakfast.io.npy` |
 | Module partition | `:lower_case` | `:basis_set`, `:format` |
 
@@ -69,6 +69,14 @@ rule is in `.clang-tidy` as `ConstexprVariable*` and `GlobalConstant*`.
 the enum's name already qualifies each enumerator and a prefix would add
 nothing. Without the prefix, element symbols read as they should
 (`Element::Fe`, not `Element::kFe`).
+
+**Macros** take one of two project prefixes, depending on where they live.
+Macros in `src/` use the short `FBF_` (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*` in
+`src/core/diagnostics/diagnostics.h`). Test-support macros in `test/gtest/` use
+the full `FREE_BREAKFAST_` (`FREE_BREAKFAST_REQUIRE_GPU`,
+`FREE_BREAKFAST_SKIP_IF_FAST_TESTS`). Either prefix keeps a macro clear of
+anything an including file, or a third-party header it pulls in, might also call
+`TRY` or `MUST`. A bare `UPPER_CASE` macro has no such protection.
 
 ## Integer types
 
@@ -203,11 +211,53 @@ A `.cu` is never a module unit. Use an anonymous namespace there for file-local
 kernels and helpers, because it is the only way to keep them out of the
 device-link namespace.
 
+## Errors
+
+A failure is handled in one of three ways. Pick the tier by what a caller can
+do about the failure, not by where it was detected. The mechanics are in
+[`src/core/error_handling/README.md`](../src/core/error_handling/README.md) and
+[`src/core/diagnostics/README.md`](../src/core/diagnostics/README.md).
+
+| Tier | Use it when | Spelling |
+| --- | --- | --- |
+| Value | The caller can act on it: bad input, a missing file, a solver that did not converge | Return `Result<T>` or `Status`. Build the error with `err_*` and pass it up with `FBF_TRY` |
+| Abort | Nothing in the process can recover, and passing a `Status` up would only move the abort to the caller | `FBF_GPU_MUST(call)`, or `check_or_abort(…)` |
+| Wrapper | A wwr RAII wrapper is created or destroyed | Nothing to write. `CreatePolicy` aborts on a failed create or alloc, and `DestroyPolicy` logs a failed destroy or free |
+
+- **Log a value-tier error once,** at the boundary that turns it into an exit
+  code with `to_exit_code`. Don't log it at each hop on the way up: the `err_*`
+  helpers only construct the error, and `FBF_TRY` passes it along unchanged,
+  with its original `source_location`.
+- **There is no recoverable wrapper.** A wrapper that exists is valid, so don't
+  check one after constructing it. If a site ever needs to recover, give that
+  one site a reporting policy rather than adding a tree-wide mode.
+- **Choose the `ErrorKind` by what the caller should do next**, not by which
+  stage failed (a parse error is `IO`). The exit codes are pinned. A new kind
+  adds a new code and never renumbers the existing ones.
+
+### Exceptions
+
+This code does not throw. An exception from a third-party library (toml++,
+nlohmann_json) is caught where that library is called and turned into a
+`Result`, as `src/io/toml/toml_reader.cpp` does. A `noexcept` function that
+calls something that can throw catches with `catch (...)` and gives up the
+lesser thing, such as a log line, rather than letting `std::terminate` run.
+Say why in a comment there (see `LogPolicy` in
+`src/core/error_handling/gpu_policy.cppm`).
+
 ## Comments
 
 - Use `///` Doxygen comments with `@brief` on everything exported, and `//` for
-  everything else.
+  everything else. Don't use `/** … */`. "Exported" includes the public members
+  of an exported type: data members, member functions, member aliases and
+  constructors (see `Config` in `src/io/config/config_shared.cppm`). It also
+  includes enumerators, which take a trailing `///<` (see `LogLevel`). The one
+  exception is special members that are only `= default` or `= delete`.
 - Explain *why*: the constraint, the failure the code avoids, or the
   alternative that was rejected. Don't restate what the code says.
 - When a comment no longer matches the code, fix the comment in the same
   change.
+- Suppress a clang-tidy diagnostic on the line it fires on, naming the check
+  and giving a reason:
+  `// NOLINT(google-explicit-constructor): converts at the call site`. Never
+  write a bare `NOLINT` or a `NOLINTBEGIN` block.

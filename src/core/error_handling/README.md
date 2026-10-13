@@ -21,19 +21,26 @@ the one before:
 
 ```cpp
 import free_breakfast.core.error_handling;
+import free_breakfast.core.types; // int32_t, size_t
 
-free_breakfast::Result<int> parse_count(int raw) {
-  if (raw <= 0)
-    return free_breakfast::err_config("count must be positive");
+namespace free_breakfast {
+
+Result<int32_t> parse_count(int32_t raw) {
+  if (raw <= 0) {
+    return err_config("count must be positive");
+  }
   return raw;
 }
 
 // Source location is auto-captured at the call site
-free_breakfast::Status allocate_buffer(std::size_t n) {
-  if (n == 0)
-    return std::unexpected(free_breakfast::Error::allocation("zero-size allocation"));
+Status allocate_buffer(size_t n) {
+  if (n == 0) {
+    return std::unexpected(Error::allocation("zero-size allocation"));
+  }
   return {};
 }
+
+} // namespace free_breakfast
 ```
 
 The `err_*` helpers take a `std::format` string and its arguments directly,

@@ -9,12 +9,10 @@ import std;
 
 export namespace free_breakfast {
 
-/**
- * @brief Mixin that deletes copy operations while allowing moves
- *
- * Inherit privately. The protected destructor prevents polymorphic deletion
- * through a base pointer.
- */
+/// @brief Mixin that deletes copy operations while allowing moves
+///
+/// Inherit privately. The protected destructor prevents polymorphic deletion
+/// through a base pointer.
 class NonCopyable {
 public:
   // Public special members (matches std::unique_ptr convention)
@@ -30,12 +28,10 @@ protected:
   ~NonCopyable() = default; // Protected: prevents deletion through base pointer
 };
 
-/**
- * @brief Mixin that deletes move operations while allowing copies
- *
- * Symmetric to NonCopyable. Inherit privately. Protected destructor prevents
- * polymorphic deletion through a base pointer.
- */
+/// @brief Mixin that deletes move operations while allowing copies
+///
+/// Symmetric to NonCopyable. Inherit privately. Protected destructor prevents
+/// polymorphic deletion through a base pointer.
 class NonMovable {
 public:
   // Public special members (symmetric to NonCopyable)
