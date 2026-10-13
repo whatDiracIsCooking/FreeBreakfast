@@ -115,7 +115,8 @@ inline std::unexpected<Error> err(Error e) {
 /// evaluated where the string literal is converted -- the `err_*` call site.
 /// `Args` reach it through `std::type_identity_t`, so they are deduced from
 /// the format arguments alone, exactly as `std::format`'s own are.
-template <typename... Args> struct LocatedFormat {
+template <typename... Args>
+struct LocatedFormat {
   std::format_string<Args...> fmt;
   std::source_location loc;
 

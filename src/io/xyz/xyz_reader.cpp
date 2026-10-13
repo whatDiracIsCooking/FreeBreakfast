@@ -112,8 +112,7 @@ namespace free_breakfast {
   }
 
   if (static_cast<int>(atoms.size()) != declared_count) {
-    return err_io(
-        std::format("XYZ declares {} atoms but {} were found", declared_count, atoms.size()));
+    return err_io("XYZ declares {} atoms but {} were found", declared_count, atoms.size());
   }
 
   return Molecule{std::move(atoms), charge, multiplicity};
