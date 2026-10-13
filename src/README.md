@@ -6,6 +6,7 @@ from [`cmake/`](../cmake/README.md) and named with dots, aliased to `::` —
 
 ```
 core/    The starting set: one module library over WarpWraps and `import std`
+io/      File-level I/O: whole-file primitives, JSON / TOML / .npy, the TOML config reader
 ```
 
 ## Adding a module

@@ -1,0 +1,15 @@
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.io.base
+  PRIMARY_INTERFACE
+  base.cppm
+  PARTITIONS
+  base_reader.cppm
+  base_writer.cppm
+  IMPLEMENTATION
+  base_reader.cpp
+  base_writer.cpp
+  LINK_PUBLIC
+  free_breakfast::core::error_handling
+  IMPORT_STD
+)

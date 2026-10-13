@@ -1,0 +1,20 @@
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.io.npy
+  PRIMARY_INTERFACE
+  npy.cppm
+  PARTITIONS
+  npy_shared.cppm
+  npy_reader.cppm
+  npy_writer.cppm
+  IMPLEMENTATION
+  npy_shared.cpp
+  npy_reader.cpp
+  npy_writer.cpp
+  LINK_PUBLIC
+  free_breakfast::core::error_handling
+  LINK_PRIVATE
+  free_breakfast::io::base
+  free_breakfast::core::diagnostics_macros
+  IMPORT_STD
+)

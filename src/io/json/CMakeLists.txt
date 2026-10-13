@@ -1,0 +1,20 @@
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.io.json
+  PRIMARY_INTERFACE
+  json.cppm
+  PARTITIONS
+  json_shared.cppm
+  json_reader.cppm
+  json_writer.cppm
+  IMPLEMENTATION
+  json_reader.cpp
+  json_writer.cpp
+  LINK_PUBLIC
+  free_breakfast::core::error_handling
+  free_breakfast::third_party::nlohmann
+  LINK_PRIVATE
+  free_breakfast::io::base
+  free_breakfast::core::diagnostics_macros
+  IMPORT_STD
+)

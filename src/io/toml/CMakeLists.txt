@@ -1,0 +1,18 @@
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.io.toml
+  PRIMARY_INTERFACE
+  toml.cppm
+  PARTITIONS
+  toml_shared.cppm
+  toml_reader.cppm
+  IMPLEMENTATION
+  toml_reader.cpp
+  LINK_PUBLIC
+  free_breakfast::core::error_handling
+  free_breakfast::third_party::tomlplusplus
+  LINK_PRIVATE
+  free_breakfast::io::base
+  free_breakfast::core::diagnostics_macros
+  IMPORT_STD
+)
