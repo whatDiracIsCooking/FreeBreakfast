@@ -12,8 +12,9 @@ free_breakfast_add_cxx_module_library(
 
 # INTERFACE library exposing primitives.h to device translation units, which
 # #include it directly (a named module cannot be imported into a .cu). In a
-# device pass the header includes the vendor runtime header, whose include path
-# wwr::device carries (CUDA::cudart or hip::host, never hip::device).
+# device pass the header includes wwr's runtime.h, which selects the vendor
+# runtime header; wwr::device carries both include paths (CUDA::cudart or
+# hip::host, never hip::device).
 free_breakfast_add_interface_library(
   NAME
   free_breakfast.core.primitives_header

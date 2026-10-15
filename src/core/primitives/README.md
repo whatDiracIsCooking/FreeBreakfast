@@ -106,4 +106,4 @@ __device__ float f(float x) { return free_breakfast::math::exp(-x * x); }
 |------|------|
 | `primitives.h` | Every definition, host+device. Include it from a `.cu` |
 | `primitives.cppm` | Host module: GMF-includes `primitives.h` and re-exports its names. Must list everything the header defines |
-| `CMakeLists.txt` | The module, and `free_breakfast::core::primitives_header` (links `wwr::device` for the vendor runtime header, and `types_headers`) for device code |
+| `CMakeLists.txt` | The module, and `free_breakfast::core::primitives_header` (links `wwr::device` for wwr's `runtime.h`, and `types_headers`) for device code |
