@@ -73,9 +73,14 @@ target_link_libraries(
 # ---------------------------------------------------------------------------
 # Add new device-dependent TUs to this list.
 add_executable(
-  free_breakfast_tests_gpu device_gpu.cpp gpu_policy_gpu.cpp sys_env_gpu.cpp
-                           primitives_gpu.cpp reduce_gpu.cpp
-                           device_resources_gpu.cpp
+  free_breakfast_tests_gpu
+  device_gpu.cpp
+  gpu_policy_gpu.cpp
+  sys_env_gpu.cpp
+  primitives_gpu.cpp
+  reduce_gpu.cpp
+  device_resources_gpu.cpp
+  fork_stream_gpu.cpp
 )
 
 set_target_properties(

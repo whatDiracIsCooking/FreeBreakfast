@@ -13,6 +13,11 @@ export import free_breakfast.core.error_handling;
 export import :status;
 export import :policy;
 
+// Stream, Event and ForkStream (:fork_stream). The stream-level wrappers live in
+// the partition because ForkStream is built from them, and a partition cannot
+// import the primary interface to reach an alias defined here.
+export import :fork_stream;
+
 // Re-exported so `import free_breakfast.core.wwr;` is the one import a module
 // above core/types needs for anything WarpWraps provides: the runtime API, the
 // vector types and scalar traits, and the wrappers' own members and free
@@ -37,14 +42,6 @@ namespace ext = wwr::extension;
 }
 
 export namespace free_breakfast {
-
-/// @brief A non-blocking stream on one device.
-using Stream = ext::StreamWrapper<CreatePolicy<wwr::wwrError_t>, DestroyPolicy<wwr::wwrError_t>,
-                                  CreatePolicy<wwr::wwrError_t>>;
-
-/// @brief An event on one device; default-constructed it is sync-only (timing disabled).
-using Event = ext::EventWrapper<CreatePolicy<wwr::wwrError_t>, DestroyPolicy<wwr::wwrError_t>,
-                                CreatePolicy<wwr::wwrError_t>>;
 
 /// @brief One device's context: its properties, an owned stream and memory pool.
 ///
