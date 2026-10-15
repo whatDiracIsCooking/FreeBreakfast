@@ -38,6 +38,10 @@ export import free_breakfast.core.log;
 // itself.
 export import free_breakfast.core.wwr;
 
+// One device's working set: a shared Device plus the BLAS and solver handles
+// bound to its stream.
+export import free_breakfast.core.device_resources;
+
 // Startup hardware inventory: CPU cores, host RAM, disk, and a plain-data GPU
 // roster that deliberately creates no Device.
 export import free_breakfast.core.sys_env;
