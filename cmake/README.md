@@ -51,7 +51,6 @@ free_breakfast_add_cxx_module_library(
 | `IMPORT_STD` | Set this whenever the module says `import std;`. |
 | `LINK_PUBLIC` / `LINK_PRIVATE` | Link dependencies. |
 | `INCLUDE_DIRS_PUBLIC` / `INCLUDE_DIRS_PRIVATE` | Extra include directories. |
-| `INCLUDE_GPU_TOOLKIT` | `PUBLIC` or `PRIVATE`. Adds the selected backend's toolkit includes as SYSTEM. |
 | `NO_GPU_DEVICE_LINKING` | Separable compilation + device-symbol resolution OFF. CUDA only; inert under HIP. |
 | `WHOLE_ARCHIVE` | `--whole-archive` the named target into consumers (for self-registering symbols a linker would otherwise drop). |
 
@@ -59,11 +58,11 @@ free_breakfast_add_cxx_module_library(
 built with `CXX_MODULE_STD`, and `import std;` fails to resolve — with an error
 that names the standard library, not this flag.
 
-**`INCLUDE_GPU_TOOLKIT` is backend-aware.** Under CUDA it adds
-`CUDAToolkit_INCLUDE_DIRS`; under HIP it reads the same directories off
-`hip::host`. It was `INCLUDE_CUDA_TOOLKIT` and named `CUDAToolkit_INCLUDE_DIRS`
-unconditionally, which expanded to *nothing* in a HIP build and dropped the
-include silently.
+**There is no option to add the vendor toolkit's include directories.** A
+module reaches the vendor headers only through a WarpWraps target
+(`free_breakfast::core::wwr`, or `wwr::vector_types::host` / `wwr::device` for
+the exceptions `src/core/wwr/README.md` lists), so there is one route to them
+and it is wwr's.
 
 ## A device library
 

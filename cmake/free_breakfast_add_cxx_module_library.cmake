@@ -6,31 +6,12 @@
 # Internal helpers (underscore-prefixed — not part of the public API)
 # ---------------------------------------------------------------------------
 
-# Add the selected GPU backend's toolkit include directories, with validated
-# visibility. SYSTEM, so vendor headers never produce warnings this project is
-# expected to fix.
-#
-# Backend-aware rather than CUDA-only: CUDAToolkit_INCLUDE_DIRS does not exist
-# in a HIP build (no find_package(CUDAToolkit) runs), so naming it
-# unconditionally expanded to nothing there and the include silently went
-# missing. The HIP side reads the same directories off hip::host -- hip::host
-# and not hip::device, because this is a HOST module compile and hip::device
-# would drag `-x hip` onto it.
-function(_free_breakfast_configure_gpu_toolkit target visibility)
-  if(NOT visibility)
-    set(visibility "PRIVATE")
-  elseif(NOT visibility STREQUAL "PUBLIC" AND NOT visibility STREQUAL "PRIVATE")
-    message(FATAL_ERROR "FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY:"
-                        " INCLUDE_GPU_TOOLKIT must be PUBLIC or PRIVATE"
-    )
-  endif()
-  if(FREE_BREAKFAST_GPU_BACKEND STREQUAL "CUDA")
-    set(gpu_inc "${CUDAToolkit_INCLUDE_DIRS}")
-  else()
-    get_target_property(gpu_inc hip::host INTERFACE_INCLUDE_DIRECTORIES)
-  endif()
-  target_include_directories(${target} SYSTEM ${visibility} ${gpu_inc})
-endfunction()
+# There is deliberately no option that adds the vendor toolkit's include
+# directories to a module library. A module reaches WarpWraps, and through it
+# the vendor headers, by linking a wwr::* target (free_breakfast::core::wwr for
+# the module tree, wwr::vector_types::host / wwr::device for the exceptions
+# src/core/wwr/README.md lists); a direct include path would be a second,
+# unmanaged route to the same headers.
 
 # ---------------------------------------------------------------------------
 # Public macro
@@ -40,8 +21,7 @@ endfunction()
 # FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY( NAME library_name PRIMARY_INTERFACE
 # file.cppm [PARTITIONS partition1.cppm partition2.cppm ...] [IMPLEMENTATION
 # impl1.cpp impl2.cpp ...] [LINK_PUBLIC lib1 lib2 ...] [LINK_PRIVATE lib3 lib4
-# ...] [IMPORT_STD] [NO_GPU_DEVICE_LINKING] [INCLUDE_GPU_TOOLKIT
-# PUBLIC|PRIVATE] )
+# ...] [IMPORT_STD] [NO_GPU_DEVICE_LINKING] )
 #
 # Parameters:
 #   PRIMARY_INTERFACE     the single primary module interface file
@@ -56,15 +36,11 @@ endfunction()
 #   NO_GPU_DEVICE_LINKING flag: CUDA_SEPARABLE_COMPILATION and
 #                         CUDA_RESOLVE_DEVICE_SYMBOLS OFF (CUDA backend only;
 #                         inert under HIP)
-#   INCLUDE_GPU_TOOLKIT   PUBLIC|PRIVATE (default PRIVATE): add the selected
-#                         backend's toolkit include dirs as SYSTEM includes --
-#                         CUDAToolkit_INCLUDE_DIRS under CUDA, hip::host's
-#                         under HIP
 #   INCLUDE_DIRS_PUBLIC   directories to add as PUBLIC include paths
 #   INCLUDE_DIRS_PRIVATE  directories to add as PRIVATE include paths
 macro(FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY)
   set(_bool_opts "IMPORT_STD;NO_GPU_DEVICE_LINKING")
-  set(_single_opts "NAME;PRIMARY_INTERFACE;INCLUDE_GPU_TOOLKIT;WHOLE_ARCHIVE")
+  set(_single_opts "NAME;PRIMARY_INTERFACE;WHOLE_ARCHIVE")
   set(_multi_opts "PARTITIONS;IMPLEMENTATION;LINK_PUBLIC;LINK_PRIVATE"
                   ";INCLUDE_DIRS_PUBLIC;INCLUDE_DIRS_PRIVATE"
   )
@@ -109,12 +85,6 @@ macro(FREE_BREAKFAST_ADD_CXX_MODULE_LIBRARY)
     set_target_properties(
       ${ARG_NAME} PROPERTIES CUDA_SEPARABLE_COMPILATION OFF
                              CUDA_RESOLVE_DEVICE_SYMBOLS OFF
-    )
-  endif()
-
-  if(DEFINED ARG_INCLUDE_GPU_TOOLKIT)
-    _free_breakfast_configure_gpu_toolkit(
-      ${ARG_NAME} "${ARG_INCLUDE_GPU_TOOLKIT}"
     )
   endif()
 

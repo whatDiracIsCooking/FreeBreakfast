@@ -33,13 +33,14 @@
 /// cannot share its name.
 ///
 /// Link free_breakfast::core::primitives_header from device code; it brings
-/// wwr::device for the vendor runtime header's include path.
+/// wwr::device for the include path of WarpWraps' runtime.h.
 
 #pragma once
 
-// Standard headers first, before the vendor runtime header below: under HIP,
-// host_defines.h poisons __noinline__ for libc++'s __config, so a libc++ header
-// reached after it fails to compile (the same ordering wwr's math.cuh keeps).
+// Standard headers first, before wwr's runtime.h below pulls in the vendor
+// runtime header: under HIP, host_defines.h poisons __noinline__ for libc++'s
+// __config, so a libc++ header reached after it fails to compile (the same
+// ordering wwr's math.cuh keeps).
 // <math.h>, not <cmath>: the bodies call the global C names, which <math.h> is
 // what declares.
 #include <math.h>
@@ -55,17 +56,19 @@
 // __forceinline__ matches wwr's device math: these are a few instructions,
 // called from inner loops, and a call would cost more than the body.
 //
-// The runtime header is included explicitly because clang's HIP mode
+// The runtime header is needed explicitly because clang's HIP mode
 // pre-includes only __host__/__device__; __forceinline__ comes from
 // hip_runtime.h, and without it every definition below fails with "unknown type
 // name '__forceinline__'" -- on HIP only, since nvcc pre-includes the whole CUDA
-// runtime.
+// runtime. It is reached through WarpWraps' runtime.h -- the one neutral
+// include point for the vendor runtime, as block_reduce.cuh and the test
+// kernels already use it -- rather than by naming <cuda_runtime.h> or
+// <hip/hip_runtime.h> here: selecting the backend is wwr's job, and this tree
+// does not duplicate it. It stays inside the device gate: the host module build
+// of primitives.cppm needs nothing from it and links only types_headers, so
+// wwr's include root is not even on that target's path.
 #if defined(__CUDACC__) || defined(__HIP__) || defined(__HIPCC__)
-#if defined(__CUDACC__)
-#include <cuda_runtime.h>
-#else
-#include <hip/hip_runtime.h>
-#endif
+#include <runtime.h>
 #define FBF_HOST_DEVICE __host__ __device__ __forceinline__
 #else
 #define FBF_HOST_DEVICE
