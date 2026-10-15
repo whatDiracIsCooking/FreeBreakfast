@@ -11,7 +11,10 @@ free_breakfast_add_cxx_module_library(
   PARTITIONS
   status.cppm
   policy.cppm
+  fork_stream.cppm
   LINK_PUBLIC
+  free_breakfast::core::types
+  free_breakfast::core::nontransferrable
   free_breakfast::core::error_handling
   free_breakfast::core::log
   wwr::runtime_api
