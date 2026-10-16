@@ -28,6 +28,10 @@ export import :device;
 // other shape calls wwr::gemm directly.
 export import :gemm;
 
+// gemmwich (:gemmwich): the sandwich product op(X) F op(X)^T -- X^T F X by
+// default -- as two square gemms through a caller-supplied work matrix.
+export import :gemmwich;
+
 // Re-exported so `import free_breakfast.core.wwr;` is the one import a module
 // above core/types needs for anything WarpWraps provides: the runtime API, the
 // vector types and scalar traits, and the wrappers' own members and free

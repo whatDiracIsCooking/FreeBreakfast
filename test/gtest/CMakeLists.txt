@@ -88,6 +88,7 @@ add_executable(
   orthogonalize_gpu.cpp
   diis_gpu.cpp
   gemm_gpu.cpp
+  gemmwich_gpu.cpp
 )
 
 set_target_properties(

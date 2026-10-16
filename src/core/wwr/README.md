@@ -13,7 +13,8 @@ with the exceptions listed below. It holds four things:
   back into a parent stream, for fanning work out inside one graph capture;
   and `Device`, this tree's pool-tier device handle, whose work stream is a
   `ForkStream`;
-- `gemm`, `wwr::gemm` for square, contiguous operands.
+- `gemm`, `wwr::gemm` for square, contiguous operands, and `gemmwich`, the
+  sandwich product `Xᵀ F X` (and its general rectangular form) as two gemms.
 
 It re-exports, binds and composes. It does not wrap wwr functions under
 free_breakfast names: this tree does not duplicate WarpWraps. `ForkStream`'s
@@ -21,12 +22,14 @@ members are the fork/join protocol, not renamed runtime calls; the raw
 operations stay wwr's free functions (`record`, `wait_event`, `sync`, ...).
 `free_breakfast::gemm` is the one function over a wwr call. It fixes arguments rather
 than renaming the call: it forwards to `wwr::gemm` with those arguments filled
-in, and every other gemm still calls `wwr::gemm` itself.
+in, and every other gemm still calls `wwr::gemm` itself. `gemmwich` is the
+second: two `wwr::gemm` calls under wwr's `ScopedPointerMode`, a composition
+rather than a renamed call.
 
 ## Module
 
 `free_breakfast.core.wwr`, target `free_breakfast::core::wwr`, also re-exported
-by `free_breakfast.core`. Five partitions under the primary interface:
+by `free_breakfast.core`. Six partitions under the primary interface:
 
 | Partition | Exports |
 |-----------|---------|
@@ -34,7 +37,8 @@ by `free_breakfast.core`. Five partitions under the primary interface:
 | `:policy` | `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap` |
 | `:fork_stream` | `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
 | `:device` | `MemPool`, `Device` |
-| `:gemm` | `gemm` (two overloads) |
+| `:gemm` | `gemm` (three overloads) |
+| `:gemmwich` | `gemmwich` |
 | *(primary)* | the other aliases below, and the re-exports |
 
 `Stream` and `Event` live in `:fork_stream` rather than the primary interface
@@ -240,6 +244,55 @@ FBF_GPU_MUST(fb::gemm(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, &kOne<doubl
 
 For a rectangular shape or a padded leading dimension, call `wwr::gemm`.
 
+## gemmwich
+
+`gemmwich` is the sandwich product, two `wwr::gemm`s through a caller-supplied
+work matrix. Three overloads, each the one above it with arguments filled in:
+
+| Call | Computes |
+| --- | --- |
+| `gemmwich(handle, op_x, op_f, m, n, x, f, work, c)` | `C = op_x(X)ᵀ op_f(F) op_x(X)` |
+| `gemmwich(handle, op, n, x, f, work, c)` | `C = op(X)ᵀ F op(X)`: `op_x = op`, `op_f = N`, `m = n` |
+| `gemmwich(handle, n, x, f, work, c)` | `C = Xᵀ F X`: `op = WWRBLAS_OP_N` |
+
+In the general form `op_x(X)` is `n x m`, F is `n x n` and C is `m x m`, through
+an `n x m` work matrix: `work = op_f(F) op_x(X)`, then `C = op_x(X)ᵀ work`.
+Every matrix is column-major and contiguous, so its leading dimension is its
+stored row count:
+
+| Matrix | Stored as | Leading dimension |
+| --- | --- | --- |
+| X, `op_x = N` | `n x m` | `n` |
+| X, `op_x = T` | `m x n` | `m` |
+| F | `n x n` | `n` |
+| work | `n x m` | `n` |
+| C | `m x m` | `m` |
+
+`op_x = N` with X stored `n x m` is `Xᵀ op_f(F) X`, the projection of F onto
+X's `m` columns. `op_x` and `op_f` are each `WWRBLAS_OP_N` or `_T`; anything
+else returns `WWRBLAS_STATUS_INVALID_VALUE` without enqueuing anything.
+
+```cpp
+fb::Buffers::device<double> work(n * n, dev);
+FBF_GPU_MUST(fb::gemmwich(blas, n, x, f, work.data(), c));  // C = X^T F X
+
+fb::Buffers::device<double> rect_work(n * m, dev);           // X stored n x m
+FBF_GPU_MUST(fb::gemmwich(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, m, n, x, f,
+                          rect_work.data(), c));             // C (m x m) = X^T F X
+```
+
+- `T` is `float` or `double` (`wwr::real_fp`): for complex operands the useful
+  sandwich is `Xᴴ F X`, which this does not offer.
+- `work` is scratch, ignored on entry and left holding `op_f(F) op_x(X)`. It
+  must not alias X, F or C, and C must not alias X or F. C is overwritten
+  (`beta = 0`), not accumulated into.
+- The scalars are `kOne` / `kZero` in host memory, so the handle is held in
+  host pointer mode for the call by wwr's `ScopedPointerMode` (bound to
+  `CreatePolicy`) and handed back in whatever mode it had. A failure to read or
+  set the mode means a bad handle and aborts, as `ScopedDeviceIndex` does.
+- It returns the first failing gemm's `wwrblasStatus_t`; there is no host
+  synchronisation between the two gemms.
+
 ## gpu_status
 
 `gpu_status(code)` converts any WarpWraps `error_type` (`wwrError_t`, which is
@@ -293,6 +346,7 @@ value to propagate.
 | `fork_stream.cppm` | `:fork_stream`: `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
 | `device.cppm` | `:device`: `MemPool`, `Device` |
 | `gemm.cppm` | `:gemm`: `gemm` |
+| `gemmwich.cppm` | `:gemmwich`: `gemmwich` |
 | `CMakeLists.txt` | The module library, and the one list of wwr module targets it links |
 
 ## Dependencies
@@ -301,6 +355,7 @@ All PUBLIC: `gpu_status`, the policies and the aliases are templates
 instantiated in the consumer's TU.
 
 - `free_breakfast::core::types`: the fixed-width integers in `ForkStreamConfig`
+- `free_breakfast::core::constants`: `kOne` / `kZero`, `gemmwich`'s scalars
 - `free_breakfast::core::nontransferrable`: `NonCopyable`, `ForkStream`'s and `Device`'s base
 - `free_breakfast::core::error_handling`: `Error`, `Status`, `check_or_abort`
 - `free_breakfast::core::log`: `log::critical()` / `log::error()` from the
