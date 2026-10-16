@@ -12,17 +12,21 @@ with the exceptions listed below. It holds four things:
 - `ForkStream`, a `Stream` plus the two `Event`s that fork it from and join it
   back into a parent stream, for fanning work out inside one graph capture;
   and `Device`, this tree's pool-tier device handle, whose work stream is a
-  `ForkStream`.
+  `ForkStream`;
+- `gemm`, `wwr::gemm` for square, contiguous operands.
 
 It re-exports, binds and composes. It does not wrap wwr functions under
 free_breakfast names: this tree does not duplicate WarpWraps. `ForkStream`'s
 members are the fork/join protocol, not renamed runtime calls; the raw
 operations stay wwr's free functions (`record`, `wait_event`, `sync`, ...).
+`free_breakfast::gemm` is the one function over a wwr call. It fixes arguments rather
+than renaming the call: it forwards to `wwr::gemm` with those arguments filled
+in, and every other gemm still calls `wwr::gemm` itself.
 
 ## Module
 
 `free_breakfast.core.wwr`, target `free_breakfast::core::wwr`, also re-exported
-by `free_breakfast.core`. Four partitions under the primary interface:
+by `free_breakfast.core`. Five partitions under the primary interface:
 
 | Partition | Exports |
 |-----------|---------|
@@ -30,6 +34,7 @@ by `free_breakfast.core`. Four partitions under the primary interface:
 | `:policy` | `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap` |
 | `:fork_stream` | `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
 | `:device` | `MemPool`, `Device` |
+| `:gemm` | `gemm` (two overloads) |
 | *(primary)* | the other aliases below, and the re-exports |
 
 `Stream` and `Event` live in `:fork_stream` rather than the primary interface
@@ -194,6 +199,47 @@ A vendor-only entry point (`import wwr.cuda.cublas_v2;`) is a fourth,
 deliberate exception: import it where it is used, and that file is then
 CUDA-only.
 
+## gemm
+
+`free_breakfast::gemm` is `wwr::gemm<T, int32_t>` for square, contiguous
+operands: A, B and C all `n x n`, column-major, `m = n = k = n` and every
+leading dimension `n`. Three overloads, each the one above it with arguments
+filled in:
+
+| Call | Computes |
+| --- | --- |
+| `gemm(handle, op_a, op_b, n, alpha, a, b, beta, c)` | `C = alpha*op_a(A)*op_b(B) + beta*C` |
+| `gemm(handle, op_both, n, alpha, a, b, beta, c)` | `C = alpha*op(A)*op(B) + beta*C`, one `op` for both |
+| `gemm(handle, n, alpha, a, b, beta, c)` | `C = alpha*A*B + beta*C`: `op_both = WWRBLAS_OP_N` |
+
+`op_a` / `op_b` are `WWRBLAS_OP_N`, `_T` or `_C` (conjugate transpose, the same
+as `_T` for a real `T`). With `op_both = WWRBLAS_OP_T` the product is
+`A^T B^T = (B A)^T`, the transpose of the product in the other order.
+
+```cpp
+fb::BlasHandle blas(dev);
+FBF_GPU_MUST(fb::gemm(blas, n, &kOne<double>, a, b, &kZero<double>, c));
+FBF_GPU_MUST(fb::gemm(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, &kOne<double>, m, u,
+                      &kZero<double>, x));
+```
+
+- `T` is any `wwr::usual_fp` (float, double and the two complex types); sizes
+  are `int32_t`.
+- `handle` is anything satisfying `wwr::extension::blas_handle`: a `BlasHandle`
+  or a raw `wwrblasHandle_t`, so there is no `.get()` to write.
+- `alpha` / `beta` are pointers, read as the handle's pointer mode says (host by
+  default). There is deliberately no by-value overload: on a handle in device
+  pointer mode it would hand the library a host address to read as a device
+  one.
+- It returns the `wwrblasStatus_t`, like `wwr::gemm`, so the caller picks
+  `FBF_GPU_MUST` or `gpu_status`. Like every BLAS call it runs on the calling
+  thread's current device (see `ScopedDeviceIndex`).
+- The name is `wwr::gemm`'s too. They never collide: wwr's takes 14 arguments
+  and is reached qualified, and these take 7, 8 or 9. Inside `free_breakfast`,
+  write `wwr::gemm` for the general call and plain `gemm` for these.
+
+For a rectangular shape or a padded leading dimension, call `wwr::gemm`.
+
 ## gpu_status
 
 `gpu_status(code)` converts any WarpWraps `error_type` (`wwrError_t`, which is
@@ -246,6 +292,7 @@ value to propagate.
 | `policy.cppm` | `:policy`: `AbortPolicy`, `LogPolicy` and the aliases over them |
 | `fork_stream.cppm` | `:fork_stream`: `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
 | `device.cppm` | `:device`: `MemPool`, `Device` |
+| `gemm.cppm` | `:gemm`: `gemm` |
 | `CMakeLists.txt` | The module library, and the one list of wwr module targets it links |
 
 ## Dependencies
