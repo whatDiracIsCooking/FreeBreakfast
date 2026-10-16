@@ -85,6 +85,7 @@ add_executable(
   device_resources_gpu.cpp
   fork_stream_gpu.cpp
   scoped_device_index_gpu.cpp
+  orthogonalize_gpu.cpp
 )
 
 set_target_properties(
@@ -99,6 +100,7 @@ target_link_libraries(
   free_breakfast_tests_gpu
   PRIVATE free_breakfast::core
           free_breakfast::core::resources
+          free_breakfast::linalg
           free_breakfast::test::gpu_kernels
           GTest::gtest
           GTest::gtest_main

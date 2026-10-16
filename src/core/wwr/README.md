@@ -37,7 +37,9 @@ because `ForkStream` is built from them and a partition cannot import the
 primary interface; `Device` is in `:device` for the same reason, being built
 from `ForkStream`. Importers see no difference: every partition is re-exported.
 
-Re-exported: `wwr.runtime_api`, `wwr.vector_types`, `wwr.wrappers.common`, and
+Re-exported: `wwr.runtime_api`, `wwr.vector_types`,
+`wwr.wrappers.{common,blas,solver}` (the typed BLAS and dense-solver dispatch:
+`gemm<T>`, `dgmm<T>`, `syevd<T>`, …), and
 `wwr.extension.{common,handle,runtime,memory_buffer,blas,solver,tx}`, so their
 free functions (copy, memset, views, pointer-mode guards, …) come with it.
 

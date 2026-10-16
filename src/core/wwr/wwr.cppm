@@ -27,9 +27,13 @@ export import :device;
 // above core/types needs for anything WarpWraps provides: the runtime API, the
 // vector types and scalar traits, and the wrappers' own members and free
 // functions (copy, memset, views, ScopedRange, ...), not just the aliases below.
+// wwr.wrappers.{blas,solver} are the typed dispatch over them (gemm<T>,
+// syevd<T>, ...), which the handles above only create and bind.
 export import wwr.runtime_api;
 export import wwr.vector_types;
 export import wwr.wrappers.common;
+export import wwr.wrappers.blas;
+export import wwr.wrappers.solver;
 export import wwr.extension.common;
 export import wwr.extension.handle;
 export import wwr.extension.runtime;
