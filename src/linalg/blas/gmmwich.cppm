@@ -2,17 +2,14 @@
 /// @brief gmmwich: the diagonal sandwich C = op_x(X)^T diag(d) op_x(X), as a dgmm
 /// and a gemm
 
-export module free_breakfast.core.wwr:gmmwich;
+export module free_breakfast.linalg.blas:gmmwich;
 
 import std;
 import :gemm;     // raw_blas_handle
 import :gemmwich; // is_n_or_t
-import :policy;   // CreatePolicy
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero
-import wwr.wrappers.common;           // real_fp
-import wwr.wrappers.blas;             // gemm<T, IntT>, dgmm<T, IntT>
-import wwr.extension.blas;            // blas_handle, ScopedPointerMode, wwrblasOperation_t
+import free_breakfast.core.wwr;       // CreatePolicy, real_fp, gemm, dgmm, ScopedPointerMode
 
 export namespace free_breakfast {
 

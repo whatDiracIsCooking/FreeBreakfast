@@ -1,3 +1,4 @@
+add_subdirectory(blas)
 add_subdirectory(diis)
 add_subdirectory(orthogonalize)
 
@@ -9,6 +10,7 @@ free_breakfast_add_cxx_module_library(
   linalg.cppm
   IMPORT_STD
   LINK_PUBLIC
+  free_breakfast::linalg::blas
   free_breakfast::linalg::diis
   free_breakfast::linalg::orthogonalize
 )

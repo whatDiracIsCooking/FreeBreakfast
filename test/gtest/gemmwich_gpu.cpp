@@ -1,4 +1,4 @@
-// GPU cases for core/wwr's :gemmwich: the general op_x(X)^T op_f(F) op_x(X)
+// GPU cases for linalg/blas's :gemmwich: the general op_x(X)^T op_f(F) op_x(X)
 // with a rectangular X, and the square X^T F X / X F X^T, against a host
 // reference, with non-symmetric X and F (so the two orders, or a transpose on
 // the wrong side, cannot pass), plus the argument check and the pointer-mode
@@ -10,6 +10,7 @@
 
 import std;
 import free_breakfast.core;
+import free_breakfast.linalg.blas;
 
 namespace {
 
