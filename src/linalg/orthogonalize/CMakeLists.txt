@@ -32,7 +32,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::resources
   LINK_PRIVATE
-  free_breakfast::core::constants
   free_breakfast::core::log
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros

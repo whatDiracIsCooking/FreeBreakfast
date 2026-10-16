@@ -89,6 +89,7 @@ add_executable(
   diis_gpu.cpp
   gemm_gpu.cpp
   gemmwich_gpu.cpp
+  gmmwich_gpu.cpp
 )
 
 set_target_properties(

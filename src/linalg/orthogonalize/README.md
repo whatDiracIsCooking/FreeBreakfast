@@ -1,6 +1,6 @@
 # Orthogonalize
 
-The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, on the GPU: a dense-solver `syevd`, BLAS `dgmm` and `gemm`, and a small `inverse_sqrt` kernel, through WarpWraps so one source builds for CUDA and HIP.
+The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, on the GPU: a dense-solver `syevd`, the diagonal sandwich `gmmwich` (a BLAS `dgmm` and `gemm`), and a small `inverse_sqrt` kernel, through WarpWraps so one source builds for CUDA and HIP.
 
 ## Module
 
@@ -20,14 +20,15 @@ The computation, all queued on `res.stream()`:
 
 1. `syevd(S)` → ascending eigenvalues λ_j and eigenvectors U. syevd overwrites its input, so S is first copied into the caller's scratch U, and S itself is left untouched.
 2. `inverse_sqrt` kernel: Λ ← diag(λ_j^{-1/2}), in place on the caller's eigenvalue buffer, with eigenvalues at or below `eigenvalue_floor` set to 0 (see Conditioning).
-3. M = U diag(Λ^{-1/2}) (`dgmm`, right side): scales column j of U by λ_j^{-1/2}, in O(n²) where a `gemm` against a dense diagonal would be O(n³).
-4. X = M Uᵀ (`gemm`, `transb = T`).
+3. X = U diag(Λ^{-1/2}) Uᵀ, as one `gmmwich(res.blas(), WWRBLAS_OP_T, n, U, Λ^{-1/2}, M, X)` (`free_breakfast.core.wwr:gmmwich`), which is two library calls:
+   - M = U diag(Λ^{-1/2}) (`dgmm`, right side) into the caller's scratch M: scales column j of U by λ_j^{-1/2}, in O(n²) where a `gemm` against a dense diagonal would be O(n³);
+   - X = M Uᵀ (`gemm`, `transb = T`), symmetric by construction.
 
 Every matrix is a raw column-major device pointer with packed leading dimension n. There is no matrix type in between.
 
 **It allocates nothing.** Every intermediate is passed in by the caller: U, M, the eigenvalue buffer, the syevd workspace and syevd's device convergence flag. The routine is a one-shot setup step, but its natural caller is an SCF driver that already holds n×n scratch and a syevd workspace for its own loop. That scratch is idle before the loop starts, so lending it here means the driver allocates nothing extra, on a first run or a repeat. A version that sized and allocated its own workspace would undo that. `orthogonalize_workspace_size<T>` is the one query: it reports syevd's workspace for n, using the same eigenvector mode and triangle the call uses, so the two cannot disagree.
 
-**One host round-trip.** After syevd, the routine copies back the convergence flag and the extreme eigenvalues (first and last, since they are ascending), and synchronizes once. A non-converged eigendecomposition becomes `ErrorKind::Numerical` instead of quietly corrupting X; an `info < 0` (a rejected argument, so a bug here) is `GpuRuntime`. The same read logs cond(S) = λ_max / λ_min, at `debug` always and at `warn` above 1e10 or for a non-positive λ_min. 1e10 is the threshold GPU4PySCF's `check_linear_dependency` warns at. Steps 2-4 never synchronize.
+**One host round-trip.** After syevd, the routine copies back the convergence flag and the extreme eigenvalues (first and last, since they are ascending), and synchronizes once. A non-converged eigendecomposition becomes `ErrorKind::Numerical` instead of quietly corrupting X; an `info < 0` (a rejected argument, so a bug here) is `GpuRuntime`. The same read logs cond(S) = λ_max / λ_min, at `debug` always and at `warn` above 1e10 or for a non-positive λ_min. 1e10 is the threshold GPU4PySCF's `check_linear_dependency` warns at. Steps 2-3 never synchronize.
 
 **Conditioning.** The kernel *floors*: an eigenvalue at or below `eigenvalue_floor` (default `kOrthogonalizeEigenvalueFloor<T>`, 1e-10) contributes 0 instead of λ^{-1/2}, which drops that mode. The test comes before the square root, so X is free of NaN and Inf even for a zero or negative eigenvalue. The trade-off: `Xᵀ S X == I` only when every eigenvalue clears the floor (a positive-definite, well-conditioned S). For a singular or indefinite S the dropped modes make `Xᵀ S X` a rank-deficient projector, which is expected, because such an S has no true S^{-1/2}.
 

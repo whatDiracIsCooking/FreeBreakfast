@@ -15,6 +15,7 @@ free_breakfast_add_cxx_module_library(
   device.cppm
   gemm.cppm
   gemmwich.cppm
+  gmmwich.cppm
   LINK_PUBLIC
   free_breakfast::core::types
   free_breakfast::core::constants
