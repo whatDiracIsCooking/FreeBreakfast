@@ -35,7 +35,7 @@
 ///     `gto_cartesian` is rejected, bare `gto` (or the field's absence) is
 ///     spherical for `angular_momentum <= 1` (the two conventions coincide
 ///     there) and rejected as ambiguous otherwise, and `sto` (or anything
-///     else) is rejected outright. @ref free_breakfast::cartesian_to_spherical
+///     else) is rejected outright. @ref free_breakfast::spherical_transform_matrix
 ///     bridges the Cartesian functions the integral kernels evaluate onto the
 ///     spherical layout.
 ///

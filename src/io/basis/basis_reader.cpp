@@ -57,7 +57,7 @@ namespace free_breakfast {
 /// rejected outright: this reader only builds Gaussian shells.
 ///
 /// The Cartesian functions the integral kernels evaluate are still reachable:
-/// @ref cartesian_to_spherical maps a Cartesian-AO matrix onto this spherical
+/// @ref spherical_transform_matrix maps a Cartesian-AO matrix onto this spherical
 /// layout.
 [[nodiscard]] Status check_spherical(const json &block, int32_t l) {
   const auto ft_it = block.find("function_type");

@@ -34,18 +34,18 @@ std::vector<double> atomic_diagonal(int32_t z, std::span<const Shell> shells) {
   // order; the k-th subshell of momentum l goes on shells_of_l[l][k].
   std::vector<std::vector<size_t>> shells_of_l;
   std::vector<size_t> ao_offset(shells.size(), 0);
-  size_t nao = 0;
+  size_t nao_sphe = 0;
   for (size_t s = 0; s < shells.size(); ++s) {
     const auto l = static_cast<size_t>(shells[s].angular_momentum());
     if (l >= shells_of_l.size()) {
       shells_of_l.resize(l + 1);
     }
     shells_of_l[l].push_back(s);
-    ao_offset[s] = nao;
-    nao += shells[s].spherical_function_count();
+    ao_offset[s] = nao_sphe;
+    nao_sphe += shells[s].spherical_function_count();
   }
 
-  std::vector<double> diagonal(nao, 0.0);
+  std::vector<double> diagonal(nao_sphe, 0.0);
   std::vector<size_t> next_of_l(shells_of_l.size(), 0);
   const std::vector<int32_t> occupation = subshell_occupation(z);
   for (size_t k = 0; k < occupation.size(); ++k) {
@@ -67,7 +67,7 @@ Result<std::vector<double>> sad_diagonal(const BasisSet &basis, const Molecule &
                       "has {}; the basis was not placed over this molecule",
                       basis.natoms(), molecule.natoms());
   }
-  std::vector<double> diagonal(basis.spherical_nao(), 0.0);
+  std::vector<double> diagonal(basis.nao_sphe(), 0.0);
   const std::vector<Atom> &atoms = molecule.atoms();
   for (uint32_t a = 0; a < basis.natoms(); ++a) {
     const uint32_t count = basis.atom_shell_count(a);
@@ -88,7 +88,7 @@ Result<std::vector<double>> sad_density(const BasisSet &basis, const Molecule &m
   const size_t n = diagonal.size();
   std::vector<double> density(n * n, 0.0);
   for (size_t i = 0; i < n; ++i) {
-    density[(i * n) + i] = diagonal[i];
+    density[i + (i * n)] = diagonal[i];
   }
   return density;
 }

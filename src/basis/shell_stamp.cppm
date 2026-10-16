@@ -102,7 +102,7 @@ public:
   /// never the center, so it is a property of the *stamp*: computed once here
   /// rather than once per placed geometry. Every Cartesian component of a
   /// shell shares the same radial contraction, so the harmonic combinations
-  /// @c cartesian_to_spherical forms inherit this same per-primitive scale
+  /// @c spherical_transform_matrix forms inherit this same per-primitive scale
   /// (see @c src/basis/harmonics.cppm).
   [[nodiscard]] ShellStamp primitive_normalized() const {
     const double dfac = math::double_factorial_odd((2 * l_) - 1);

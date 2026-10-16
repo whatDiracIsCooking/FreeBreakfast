@@ -21,7 +21,7 @@ admitted:
 bare `gto` or no tag is spherical for l ≤ 1 (where the two coincide) and
 rejected as ambiguous from d up; `sto` and anything else are rejected. The
 Cartesian functions the integral kernels evaluate map onto this layout through
-`cartesian_to_spherical` in `free_breakfast.basis`.
+`spherical_transform_matrix` in `free_breakfast.basis`.
 
 Classification follows the I/O layer's split: malformed JSON or an unreadable
 file is `ErrorKind::IO`; a missing or wrong-typed field, a non-numeric

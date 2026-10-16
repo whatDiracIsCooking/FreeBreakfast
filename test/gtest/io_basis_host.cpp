@@ -86,11 +86,11 @@ TEST(IoBasis, ParseAndAssignLaysTheBasisOverTheMolecule) {
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   // O: 6 shells (s, s, p, s, s, d), then one s per H.
   EXPECT_EQ(basis->nshells(), 8U);
-  EXPECT_EQ(basis->nao(), 1U + 1U + 3U + 1U + 1U + 6U + 1U + 1U);
-  EXPECT_EQ(basis->spherical_nao(), basis->nao() - 1U); // d: 5, not 6
+  EXPECT_EQ(basis->nao_cart(), 1U + 1U + 3U + 1U + 1U + 6U + 1U + 1U);
+  EXPECT_EQ(basis->nao_sphe(), basis->nao_cart() - 1U); // d: 5, not 6
   // U maps the Cartesian AOs the kernels evaluate onto the spherical layout.
-  EXPECT_EQ(fb::cartesian_to_spherical(*basis).size(),
-            std::size_t{basis->nao()} * basis->spherical_nao());
+  EXPECT_EQ(fb::spherical_transform_matrix(*basis).size(),
+            std::size_t{basis->nao_cart()} * basis->nao_sphe());
   EXPECT_EQ(basis->shells()[6].center().y, 1.4309);
   EXPECT_EQ(basis->shells()[7].center().y, -1.4309);
 }

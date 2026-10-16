@@ -15,7 +15,7 @@
 /// free_breakfast::Primitive from @c basis.h); @c :ao defines the
 /// atomic-orbital view -- @ref free_breakfast::cartesian_powers (the canonical
 /// Cartesian ordering) and @ref free_breakfast::AO; @c :harmonics defines the
-/// closed-form real solid harmonic table (@ref free_breakfast::solid_harmonic_c2s)
+/// closed-form real solid harmonic table (@ref free_breakfast::solid_harmonic_block)
 /// that each shell's Cartesian-to-spherical transform is built from;
 /// @c :basis_set defines
 /// @ref free_breakfast::BasisSet over those shells, laying out its @ref
@@ -43,7 +43,7 @@
 /// libraries; for p it is (x, y, z), and for d it is (xx, xy, xz, yy, yz, zz).
 /// The harmonic combination is formed afterward via @c :harmonics' transform,
 /// applied at the @ref free_breakfast::BasisSet level by @ref
-/// free_breakfast::cartesian_to_spherical.
+/// free_breakfast::spherical_transform_matrix.
 
 export module free_breakfast.basis;
 

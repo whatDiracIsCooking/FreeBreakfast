@@ -96,10 +96,10 @@ TEST(BasisDeathTest, ShellAbortsOnBadShape) {
 TEST(Basis, EmptyBasisHasNoFunctions) {
   const fb::BasisSet basis;
   EXPECT_EQ(basis.nshells(), 0U);
-  EXPECT_EQ(basis.nao(), 0U);
-  EXPECT_EQ(basis.spherical_nao(), 0U);
+  EXPECT_EQ(basis.nao_cart(), 0U);
+  EXPECT_EQ(basis.nao_sphe(), 0U);
   EXPECT_TRUE(basis.aos().empty());
-  EXPECT_TRUE(fb::cartesian_to_spherical(basis).empty());
+  EXPECT_TRUE(fb::spherical_transform_matrix(basis).empty());
 }
 
 // Moving takes the offset vectors, trailing total included, so the counts must
@@ -107,11 +107,11 @@ TEST(Basis, EmptyBasisHasNoFunctions) {
 TEST(Basis, MovedFromBasisHasNoFunctions) {
   fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin), fb::Shell(2, {{1.0, 1.0}}, kOrigin)});
   const fb::BasisSet taken = std::move(basis);
-  EXPECT_EQ(taken.nao(), 7U);
-  EXPECT_EQ(taken.spherical_nao(), 6U);
+  EXPECT_EQ(taken.nao_cart(), 7U);
+  EXPECT_EQ(taken.nao_sphe(), 6U);
   // NOLINTBEGIN(bugprone-use-after-move): the moved-from state is under test
-  EXPECT_EQ(basis.nao(), 0U);
-  EXPECT_EQ(basis.spherical_nao(), 0U);
+  EXPECT_EQ(basis.nao_cart(), 0U);
+  EXPECT_EQ(basis.nao_sphe(), 0U);
   // NOLINTEND(bugprone-use-after-move)
 }
 
@@ -159,15 +159,15 @@ TEST(Basis, LayoutsConcatenateShellsInOrder) {
                             fb::Shell(1, {{0.62, 1.0}}, kOrigin),
                             fb::Shell(2, {{0.8, 1.0}}, kOrigin)});
   EXPECT_EQ(basis.nshells(), 3U);
-  EXPECT_EQ(basis.nao(), 10U);          // 1 + 3 + 6: the d shell's Cartesian functions
-  EXPECT_EQ(basis.spherical_nao(), 9U); // 1 + 3 + 5
+  EXPECT_EQ(basis.nao_cart(), 10U); // 1 + 3 + 6: the d shell's Cartesian functions
+  EXPECT_EQ(basis.nao_sphe(), 9U);  // 1 + 3 + 5
   EXPECT_EQ(basis.ao_offset(0), 0U);
   EXPECT_EQ(basis.ao_offset(1), 1U);
   EXPECT_EQ(basis.ao_offset(2), 4U);
   EXPECT_EQ(basis.spherical_ao_offset(2), 4U);
 
   const std::vector<fb::AO> &aos = basis.aos();
-  ASSERT_EQ(aos.size(), basis.nao());
+  ASSERT_EQ(aos.size(), basis.nao_cart());
   for (std::uint32_t s = 0; s < basis.nshells(); ++s) {
     const std::vector<Powers> powers = fb::cartesian_powers(basis.shells()[s].angular_momentum());
     for (std::size_t i = 0; i < powers.size(); ++i) {
@@ -178,25 +178,25 @@ TEST(Basis, LayoutsConcatenateShellsInOrder) {
   }
 }
 
-TEST(Basis, CartesianToSphericalIsIdentityBelowD) {
+TEST(Basis, SphericalTransformMatrixIsIdentityBelowD) {
   // s and p are the same functions in either convention.
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin),
                             fb::Shell(1, {{1.0, 1.0}}, kOrigin),
                             fb::Shell(0, {{0.5, 1.0}}, kOrigin)});
-  const std::size_t n = basis.nao();
-  ASSERT_EQ(basis.spherical_nao(), n);
-  const std::vector<double> u = fb::cartesian_to_spherical(basis);
+  const std::size_t n = basis.nao_cart();
+  ASSERT_EQ(basis.nao_sphe(), n);
+  const std::vector<double> u = fb::spherical_transform_matrix(basis);
   ASSERT_EQ(u.size(), n * n);
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t j = 0; j < n; ++j) {
-      EXPECT_EQ(u[(i * n) + j], i == j ? 1.0 : 0.0) << i << "," << j;
+      EXPECT_EQ(u[i + (j * n)], i == j ? 1.0 : 0.0) << i << "," << j;
     }
   }
 }
 
 TEST(Basis, SolidHarmonicsBelowDAreIdentity) {
-  EXPECT_EQ(fb::solid_harmonic_c2s(0), (std::vector<double>{1.0}));
-  EXPECT_EQ(fb::solid_harmonic_c2s(1),
+  EXPECT_EQ(fb::solid_harmonic_block(0), (std::vector<double>{1.0}));
+  EXPECT_EQ(fb::solid_harmonic_block(1),
             (std::vector<double>{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0}));
 }
 
@@ -205,14 +205,14 @@ TEST(Basis, SolidHarmonicsAreGOrthonormal) {
     const std::vector<Powers> powers = fb::cartesian_powers(l);
     const std::size_t ncart = powers.size();
     const std::size_t nsph = (2 * static_cast<std::size_t>(l)) + 1;
-    const std::vector<double> b = fb::solid_harmonic_c2s(l);
+    const std::vector<double> b = fb::solid_harmonic_block(l);
     ASSERT_EQ(b.size(), ncart * nsph);
     for (std::size_t m1 = 0; m1 < nsph; ++m1) {
       for (std::size_t m2 = 0; m2 < nsph; ++m2) {
         double dot = 0.0;
         for (std::size_t p = 0; p < ncart; ++p) {
           for (std::size_t q = 0; q < ncart; ++q) {
-            dot += b[(p * nsph) + m1] * monomial_gram(powers[p], powers[q]) * b[(q * nsph) + m2];
+            dot += b[p + (m1 * ncart)] * monomial_gram(powers[p], powers[q]) * b[q + (m2 * ncart)];
           }
         }
         EXPECT_NEAR(dot, m1 == m2 ? 1.0 : 0.0, 1e-12) << "l=" << l << " m1=" << m1 << " m2=" << m2;
@@ -228,7 +228,7 @@ TEST(Basis, SolidHarmonicDMatchesLibcintUpToOneScale) {
   const double a = std::sqrt(15.0 / (4.0 * pi));  // 1.0925484305920792
   const double b = std::sqrt(5.0 / (16.0 * pi));  // 0.31539156525252005
   const double c = std::sqrt(15.0 / (16.0 * pi)); // 0.5462742152960396
-  // Rows xx, xy, xz, yy, yz, zz.
+  // Rows xx, xy, xz, yy, yz, zz, written row by row (the block is column-major).
   const std::array<double, 30> libcint{
       0.0, 0.0, -b,      0.0, c,   //
       a,   0.0, 0.0,     0.0, 0.0, //
@@ -237,20 +237,22 @@ TEST(Basis, SolidHarmonicDMatchesLibcintUpToOneScale) {
       0.0, a,   0.0,     0.0, 0.0, //
       0.0, 0.0, 2.0 * b, 0.0, 0.0, //
   };
-  const std::vector<double> block = fb::solid_harmonic_c2s(2);
+  const std::vector<double> block = fb::solid_harmonic_block(2);
   ASSERT_EQ(block.size(), libcint.size());
   // The two differ only in the overall normalization, so one positive scalar
   // maps every column of libcint's onto ours -- same order, same phases.
-  const double scale = block[row_of(2, {1, 1, 0}) * 5] / a;
+  const double scale = block[row_of(2, {1, 1, 0})] / a;
   EXPECT_GT(scale, 0.0);
-  for (std::size_t i = 0; i < block.size(); ++i) {
-    EXPECT_NEAR(block[i], scale * libcint[i], 1e-14) << "entry " << i;
+  for (std::size_t r = 0; r < 6; ++r) {
+    for (std::size_t c = 0; c < 5; ++c) {
+      EXPECT_NEAR(block[r + (c * 6)], scale * libcint[(r * 5) + c], 1e-14) << r << "," << c;
+    }
   }
 }
 
 TEST(Basis, SolidHarmonicFFollowsRealHarmonicConvention) {
-  const std::vector<double> block = fb::solid_harmonic_c2s(3);
-  auto at = [&](const Powers &p, std::int32_t m) { return block[(row_of(3, p) * 7) + (m + 3)]; };
+  const std::vector<double> block = fb::solid_harmonic_block(3);
+  auto at = [&](const Powers &p, std::int32_t m) { return block[row_of(3, p) + ((m + 3) * 10)]; };
   // m = -3: 3x^2 y - y^3
   EXPECT_GT(at({2, 1, 0}, -3), 0.0);
   EXPECT_NEAR(at({0, 3, 0}, -3) / at({2, 1, 0}, -3), -1.0 / 3.0, 1e-14);
@@ -282,7 +284,7 @@ TEST(Basis, ShellStampNormalizesEachPrimitive) {
 TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
   // For one normalized primitive at a single center, the Cartesian overlap is
   // S_pq = c^2 (pi/2a)^{3/2} G(p,q) / (4a)^l in closed form. U^T S U must be
-  // the identity on the spherical block: the property cartesian_to_spherical's
+  // the identity on the spherical block: the property spherical_transform_matrix's
   // sqrt((2l-1)!!) scale exists to deliver.
   const double pi = std::numbers::pi;
   for (std::int32_t l = 2; l <= 4; ++l) {
@@ -291,11 +293,11 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
         {fb::ShellStamp(l, {{alpha, 1.0}}).primitive_normalized().at(kOrigin)});
     const double c = basis.shells()[0].primitives()[0].coefficient;
     const std::vector<Powers> powers = fb::cartesian_powers(l);
-    const std::size_t ncart = basis.nao();
-    const std::size_t nsph = basis.spherical_nao();
+    const std::size_t ncart = basis.nao_cart();
+    const std::size_t nsph = basis.nao_sphe();
     ASSERT_EQ(nsph, (2 * static_cast<std::size_t>(l)) + 1);
 
-    const std::vector<double> u = fb::cartesian_to_spherical(basis);
+    const std::vector<double> u = fb::spherical_transform_matrix(basis);
     for (std::size_t m1 = 0; m1 < nsph; ++m1) {
       for (std::size_t m2 = 0; m2 < nsph; ++m2) {
         double s = 0.0;
@@ -303,7 +305,7 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
           for (std::size_t q = 0; q < ncart; ++q) {
             const double s_pq = c * c * std::pow(pi / (2.0 * alpha), 1.5) *
                                 monomial_gram(powers[p], powers[q]) / std::pow(4.0 * alpha, l);
-            s += u[(p * nsph) + m1] * s_pq * u[(q * nsph) + m2];
+            s += u[p + (m1 * ncart)] * s_pq * u[q + (m2 * ncart)];
           }
         }
         EXPECT_NEAR(s, m1 == m2 ? 1.0 : 0.0, 1e-12) << "l=" << l << " m1=" << m1 << " m2=" << m2;
@@ -312,25 +314,55 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
   }
 }
 
-TEST(Basis, CartesianToSphericalPlacesBlocksAtOffsets) {
-  // s then d: U is 7 x 6, block-diagonal.
+TEST(Basis, SphericalTransformMatrixPlacesBlocksAtOffsets) {
+  // s then d: U is 7 x 6, block-diagonal, column-major.
   const fb::BasisSet basis(
       {fb::Shell(0, {{1.0, 1.0}}, kOrigin), fb::Shell(2, {{1.0, 1.0}}, kOrigin)});
-  const std::size_t ncol = basis.spherical_nao();
-  ASSERT_EQ(basis.nao(), 7U);
+  const std::size_t ncol = basis.nao_sphe();
+  ASSERT_EQ(basis.nao_cart(), 7U);
   ASSERT_EQ(ncol, 6U);
-  const std::vector<double> u = fb::cartesian_to_spherical(basis);
-  const std::vector<double> d = fb::solid_harmonic_c2s(2);
+  const std::vector<double> u = fb::spherical_transform_matrix(basis);
+  const std::vector<double> d = fb::solid_harmonic_block(2);
   EXPECT_EQ(u[0], 1.0);
   for (std::size_t j = 1; j < ncol; ++j) {
-    EXPECT_EQ(u[j], 0.0); // s row, d columns
+    EXPECT_EQ(u[j * 7], 0.0); // s row, d columns
   }
   for (std::size_t i = 1; i < 7; ++i) {
-    EXPECT_EQ(u[i * ncol], 0.0); // d rows, s column
+    EXPECT_EQ(u[i], 0.0); // d rows, s column
     for (std::size_t j = 0; j < 5; ++j) {
-      EXPECT_NEAR(u[(i * ncol) + 1 + j], std::sqrt(3.0) * d[((i - 1) * 5) + j], 1e-15);
+      EXPECT_NEAR(u[i + ((1 + j) * 7)], std::sqrt(3.0) * d[(i - 1) + (j * 6)], 1e-15);
     }
   }
+}
+
+// U's columns are orthonormal under the Cartesian overlap, not the plain dot
+// product, so U^T U != I and spherical -> Cartesian -> spherical is no round
+// trip. The d_xy column (m = -2) is sqrt(3) in the xy row and zero elsewhere,
+// so its U^T U diagonal is 3.
+TEST(Basis, SphericalTransformMatrixIsNotOrthonormal) {
+  const fb::BasisSet basis({fb::Shell(2, {{1.0, 1.0}}, kOrigin)});
+  const std::size_t ncart = basis.nao_cart();
+  const std::size_t nsph = basis.nao_sphe();
+  const std::vector<double> u = fb::spherical_transform_matrix(basis);
+  ASSERT_EQ(u.size(), ncart * nsph);
+
+  std::vector<double> utu(nsph * nsph, 0.0);
+  for (std::size_t a = 0; a < nsph; ++a) {
+    for (std::size_t b = 0; b < nsph; ++b) {
+      for (std::size_t i = 0; i < ncart; ++i) {
+        utu[a + (b * nsph)] += u[i + (a * ncart)] * u[i + (b * ncart)];
+      }
+    }
+  }
+  EXPECT_NEAR(u[row_of(2, {1, 1, 0})], std::sqrt(3.0), 1e-15);
+  EXPECT_NEAR(utu[0], 3.0, 1e-14);
+  double off_identity = 0.0;
+  for (std::size_t a = 0; a < nsph; ++a) {
+    for (std::size_t b = 0; b < nsph; ++b) {
+      off_identity = std::max(off_identity, std::abs(utu[a + (b * nsph)] - (a == b ? 1.0 : 0.0)));
+    }
+  }
+  EXPECT_GT(off_identity, 1.0);
 }
 
 fb::BasisStamp water_stamp() {
@@ -352,7 +384,7 @@ TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
   auto basis = fb::place(stamp, water);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   ASSERT_EQ(basis->nshells(), 4U);
-  EXPECT_EQ(basis->nao(), 6U); // O: s + p, then two H s
+  EXPECT_EQ(basis->nao_cart(), 6U); // O: s + p, then two H s
   const std::array<std::int32_t, 4> momenta{0, 1, 0, 0};
   const std::array<double, 4> center_y{0.0, 0.0, 1.4, -1.4};
   for (std::size_t s = 0; s < 4; ++s) {
@@ -383,7 +415,7 @@ TEST(Basis, PlacingOneStampAtTwoGeometriesAgreesOnLayout) {
   auto ba = fb::place(stamp, a);
   auto bb = fb::place(stamp, b);
   ASSERT_TRUE(ba.has_value() && bb.has_value());
-  ASSERT_EQ(ba->nao(), bb->nao());
+  ASSERT_EQ(ba->nao_cart(), bb->nao_cart());
   for (std::uint32_t s = 0; s < ba->nshells(); ++s) {
     EXPECT_EQ(ba->ao_offset(s), bb->ao_offset(s));
     EXPECT_EQ(ba->shells()[s].primitives()[0].coefficient,

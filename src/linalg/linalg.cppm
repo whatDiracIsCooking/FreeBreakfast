@@ -8,4 +8,5 @@ export module free_breakfast.linalg;
 
 export import free_breakfast.linalg.blas;
 export import free_breakfast.linalg.diis;
+export import free_breakfast.linalg.matrix_ao;
 export import free_breakfast.linalg.orthogonalize;

@@ -19,7 +19,7 @@
 /// angular momentum L means the 2L+1 real solid harmonics. The GPU kernels
 /// evaluate it over the Cartesian Gaussians x^a y^b z^c with a+b+c = L, of
 /// which there are (L+1)(L+2)/2 -- so 1 for L=0 (s), 3 for L=1 (p), 6 for L=2
-/// (d) -- and @c cartesian_to_spherical combines those into the harmonics
+/// (d) -- and @c spherical_transform_matrix combines those into the harmonics
 /// afterward. The working target is up to d, i.e. L in {0, 1, 2}. The
 /// Cartesian ordering within a shell is the canonical
 /// lexicographic-on-(a,b,c)-with-a-highest order used by most integral
