@@ -14,8 +14,10 @@ free_breakfast_add_cxx_module_library(
   fork_stream.cppm
   device.cppm
   gemm.cppm
+  gemmwich.cppm
   LINK_PUBLIC
   free_breakfast::core::types
+  free_breakfast::core::constants
   free_breakfast::core::nontransferrable
   free_breakfast::core::error_handling
   free_breakfast::core::log
