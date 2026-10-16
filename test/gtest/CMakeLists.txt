@@ -81,6 +81,7 @@ add_executable(
   reduce_gpu.cpp
   device_resources_gpu.cpp
   fork_stream_gpu.cpp
+  scoped_device_index_gpu.cpp
 )
 
 set_target_properties(

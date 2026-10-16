@@ -52,6 +52,7 @@ free functions (copy, memset, views, pointer-mode guards, …) come with it.
 | `BlasHandle` | `BlasHandleWrapper` | Bound to a `Device`'s stream. |
 | `SolverHandle` | `SolverDnHandleWrapper` | Bound to a `Device`'s stream. |
 | `ScopedRange` | `ScopedRange` | NVTX / rocTX range. |
+| `ScopedDeviceIndex` | `ScopedDeviceIndex` | Makes a device current on this thread, restores the previous one on exit. See below. |
 
 To reach for another wwr module (`fft`, `sparse`, …), link
 `wwr::extension::<name>` in this directory's `CMakeLists.txt`, `export import`
@@ -137,6 +138,29 @@ that is how much freed memory the pool keeps cached across stream syncs
 instead of returning to the driver, not a cap on allocation. The pool is
 declared before the `ForkStream`, so the stream — which synchronizes before
 destroying — is torn down first and no queued free outlives its pool.
+
+## ScopedDeviceIndex
+
+The current device is per-thread runtime state, and wwr sets it in only two
+places. Creating a device-bound handle (`Stream`, `Event`, `MemPool`,
+`BlasHandle`, …) selects its device and **leaves it current**. A buffer
+allocates and frees under its own `ScopedDeviceIndex`, which restores the
+previous device. Nothing else selects one: BLAS and solver calls, kernel
+launches and the raw runtime calls all use whatever the calling thread has
+current. Code that drives more than one device, or runs on a pool thread that
+may have touched another device last, opens a guard first:
+
+```cpp
+{
+  fb::ScopedDeviceIndex on{res.dev_idx()};  // res's device is current
+  // ... BLAS / solver calls, kernel launches on res.stream() ...
+}                                           // previous device restored
+```
+
+Both the switch and the restore go through `CreatePolicy` (abort). The restore
+runs in a `noexcept` destructor, so a policy that threw would terminate there.
+A restore that only logged would leave later work running on the wrong device
+without any error.
 
 ## Where it sits, and the exceptions
 
