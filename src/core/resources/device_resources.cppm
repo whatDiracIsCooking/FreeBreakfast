@@ -19,6 +19,14 @@ export namespace free_breakfast {
 /// docs/architecture.md section 18). Buffers draw from device(), so allocation,
 /// library calls and frees are all ordered on the one stream.
 ///
+/// **One driving thread at a time.** The BLAS and solver handles, the stream
+/// and the ForkStream's events are not safe to use from two threads at once
+/// (cuBLAS / hipBLAS forbid concurrent use of one handle), and nothing here
+/// locks. Whichever thread drives an instance must also have its device
+/// current: open a ScopedDeviceIndex on dev_idx(), or set it once on a thread
+/// that only ever drives this device. Library calls and kernel launches do not
+/// select it; only buffer allocation and free do.
+///
 /// Movable, not copyable. A moved-from DeviceResources holds no Device.
 class DeviceResources : private NonCopyable {
 public:
