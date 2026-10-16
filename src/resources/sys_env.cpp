@@ -1,13 +1,15 @@
 /// @file
-/// @brief Implementation of the system environment query.
+/// @brief Implementation of the :sys_env host queries.
 
 module free_breakfast.resources;
+
+import :sys_env;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // wwrGetDevice*, gpu_status
+import free_breakfast.core.wwr; // wwrGetDeviceCount
 
 #include "diagnostics.h"
 
@@ -96,39 +98,6 @@ namespace free_breakfast {
   return err_io("MemTotal not found in '/proc/meminfo'");
 }
 
-[[nodiscard]] Result<size_t> read_disk_space() {
-  std::error_code ec;
-  const auto info = std::filesystem::space("/", ec);
-  if (ec) {
-    return err_io("failed to query disk space: {}", ec.message());
-  }
-  return static_cast<size_t>(info.available);
-}
-
-constexpr double bytes_to_gib(size_t bytes) {
-  return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-}
-
-// Enumerates every device the runtime can see, as plain data -- no Device, no
-// stream. A runtime with no usable device yields an empty vector, not an error.
-// Only a device that counts yet fails to report its properties is a genuine
-// error.
-[[nodiscard]] Result<std::vector<GpuInfo>> read_gpu_info() {
-  const int32_t count = available_gpus();
-
-  std::vector<GpuInfo> gpus;
-  gpus.reserve(static_cast<size_t>(count));
-  for (int32_t i = 0; i < count; ++i) {
-    wwr::wwrDeviceProp prop{};
-    if (auto status = gpu_status(wwr::wwrGetDeviceProperties(&prop, i)); !status) {
-      return err_gpu("cannot read properties of device {}: {}", i, status.error().message);
-    }
-    gpus.push_back(GpuInfo{i, std::string(static_cast<const char *>(prop.name)),
-                           prop.totalGlobalMem, prop.major, prop.minor});
-  }
-  return gpus;
-}
-
 int32_t available_gpus() {
   int32_t count = 0;
   if (wwr::wwrGetDeviceCount(&count) != wwr::wwrSuccess) {
@@ -140,34 +109,6 @@ int32_t available_gpus() {
 int32_t logical_cpu_cores() {
   const auto n = static_cast<int32_t>(std::thread::hardware_concurrency());
   return (n > 0) ? n : 1;
-}
-
-[[nodiscard]] Result<SysEnv> query_sys_env() {
-  SysEnv env{};
-
-  env.cpu_logical_cores = logical_cpu_cores();
-  env.cpu_physical_cores = FBF_TRY(read_physical_cores());
-  env.host_ram_bytes = FBF_TRY(read_host_ram());
-  env.disk_available_bytes = FBF_TRY(read_disk_space());
-  env.gpus = FBF_TRY(read_gpu_info());
-  env.gpu_count = static_cast<int32_t>(env.gpus.size());
-
-  return env;
-}
-
-void log_sys_env(const SysEnv &env) {
-  log::info("--- system environment ---");
-  FBF_LOG_INFO("CPU logical cores:  {}", env.cpu_logical_cores);
-  FBF_LOG_INFO("CPU physical cores: {}", env.cpu_physical_cores);
-  FBF_LOG_INFO("Host RAM:           {:.2f} GiB", bytes_to_gib(env.host_ram_bytes));
-  FBF_LOG_INFO("Disk available:     {:.2f} GiB", bytes_to_gib(env.disk_available_bytes));
-  FBF_LOG_INFO("GPU count:          {}", env.gpu_count);
-  for (const auto &g : env.gpus) {
-    FBF_LOG_INFO("  GPU {}: {} | {:.2f} GiB | compute {}.{}", g.index, g.name,
-                 bytes_to_gib(g.total_memory_bytes), g.compute_capability_major,
-                 g.compute_capability_minor);
-  }
-  log::info("--------------------------");
 }
 
 } // namespace free_breakfast
