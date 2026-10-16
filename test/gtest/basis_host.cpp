@@ -51,8 +51,8 @@ TEST(Basis, FunctionCounts) {
   EXPECT_EQ(fb::kMaxAngularMomentum, 2);
   const std::array<std::uint32_t, 5> cart{1, 3, 6, 10, 15};
   for (std::int32_t l = 0; l < 5; ++l) {
-    EXPECT_EQ(fb::cartesian_function_count(l), cart[l]) << "l=" << l;
-    EXPECT_EQ(fb::spherical_function_count(l), static_cast<std::uint32_t>((2 * l) + 1));
+    EXPECT_EQ(fb::function_count_cart(l), cart[l]) << "l=" << l;
+    EXPECT_EQ(fb::function_count_sphe(l), static_cast<std::uint32_t>((2 * l) + 1));
   }
 }
 
@@ -66,7 +66,7 @@ TEST(Basis, CartesianPowersCanonicalOrder) {
   // Defined past d, with every entry of degree l.
   for (std::int32_t l = 3; l <= 5; ++l) {
     const std::vector<Powers> powers = fb::cartesian_powers(l);
-    ASSERT_EQ(powers.size(), fb::cartesian_function_count(l));
+    ASSERT_EQ(powers.size(), fb::function_count_cart(l));
     EXPECT_EQ(powers.front(), (Powers{l, 0, 0}));
     EXPECT_EQ(powers.back(), (Powers{0, 0, l}));
     for (const Powers &p : powers) {
@@ -82,8 +82,8 @@ TEST(Basis, ShellZipsParallelArrays) {
   EXPECT_EQ(shell.primitives()[1].exponent, 0.5);
   EXPECT_EQ(shell.primitives()[1].coefficient, 0.75);
   EXPECT_EQ(shell.center().z, 3.0);
-  EXPECT_EQ(shell.function_count(), 6U);           // Cartesian, what the kernels evaluate
-  EXPECT_EQ(shell.spherical_function_count(), 5U); // 2l+1, what the shell means
+  EXPECT_EQ(shell.function_count_cart(), 6U); // Cartesian, what the kernels evaluate
+  EXPECT_EQ(shell.function_count_sphe(), 5U); // 2l+1, what the shell means
 }
 
 TEST(BasisDeathTest, ShellAbortsOnBadShape) {
@@ -98,7 +98,7 @@ TEST(Basis, EmptyBasisHasNoFunctions) {
   EXPECT_EQ(basis.nshells(), 0U);
   EXPECT_EQ(basis.nao_cart(), 0U);
   EXPECT_EQ(basis.nao_sphe(), 0U);
-  EXPECT_TRUE(basis.aos().empty());
+  EXPECT_TRUE(basis.aos_cart().empty());
   EXPECT_TRUE(fb::spherical_transform_matrix(basis).empty());
 }
 
@@ -148,9 +148,9 @@ TEST(BasisDeathTest, AtomShellOffsetsAbortOnBadPartition) {
 
 TEST(BasisDeathTest, AoOffsetAbortsOutOfRange) {
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin)});
-  EXPECT_EQ(basis.ao_offset(0), 0U);
-  EXPECT_DEATH((void)basis.ao_offset(1), "");
-  EXPECT_DEATH((void)basis.spherical_ao_offset(1), "");
+  EXPECT_EQ(basis.ao_offset_cart(0), 0U);
+  EXPECT_DEATH((void)basis.ao_offset_cart(1), "");
+  EXPECT_DEATH((void)basis.ao_offset_sphe(1), "");
 }
 
 TEST(Basis, LayoutsConcatenateShellsInOrder) {
@@ -161,17 +161,17 @@ TEST(Basis, LayoutsConcatenateShellsInOrder) {
   EXPECT_EQ(basis.nshells(), 3U);
   EXPECT_EQ(basis.nao_cart(), 10U); // 1 + 3 + 6: the d shell's Cartesian functions
   EXPECT_EQ(basis.nao_sphe(), 9U);  // 1 + 3 + 5
-  EXPECT_EQ(basis.ao_offset(0), 0U);
-  EXPECT_EQ(basis.ao_offset(1), 1U);
-  EXPECT_EQ(basis.ao_offset(2), 4U);
-  EXPECT_EQ(basis.spherical_ao_offset(2), 4U);
+  EXPECT_EQ(basis.ao_offset_cart(0), 0U);
+  EXPECT_EQ(basis.ao_offset_cart(1), 1U);
+  EXPECT_EQ(basis.ao_offset_cart(2), 4U);
+  EXPECT_EQ(basis.ao_offset_sphe(2), 4U);
 
-  const std::vector<fb::AO> &aos = basis.aos();
-  ASSERT_EQ(aos.size(), basis.nao_cart());
+  const std::vector<fb::AO> &aos_cart = basis.aos_cart();
+  ASSERT_EQ(aos_cart.size(), basis.nao_cart());
   for (std::uint32_t s = 0; s < basis.nshells(); ++s) {
     const std::vector<Powers> powers = fb::cartesian_powers(basis.shells()[s].angular_momentum());
     for (std::size_t i = 0; i < powers.size(); ++i) {
-      const fb::AO &ao = aos[basis.ao_offset(s) + i];
+      const fb::AO &ao = aos_cart[basis.ao_offset_cart(s) + i];
       EXPECT_EQ(ao.shell_index, s);
       EXPECT_EQ((Powers{ao.a, ao.b, ao.c}), powers[i]);
     }
@@ -417,7 +417,7 @@ TEST(Basis, PlacingOneStampAtTwoGeometriesAgreesOnLayout) {
   ASSERT_TRUE(ba.has_value() && bb.has_value());
   ASSERT_EQ(ba->nao_cart(), bb->nao_cart());
   for (std::uint32_t s = 0; s < ba->nshells(); ++s) {
-    EXPECT_EQ(ba->ao_offset(s), bb->ao_offset(s));
+    EXPECT_EQ(ba->ao_offset_cart(s), bb->ao_offset_cart(s));
     EXPECT_EQ(ba->shells()[s].primitives()[0].coefficient,
               bb->shells()[s].primitives()[0].coefficient);
   }

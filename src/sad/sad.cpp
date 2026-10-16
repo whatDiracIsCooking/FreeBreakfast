@@ -33,7 +33,7 @@ std::vector<double> atomic_diagonal(int32_t z, std::span<const Shell> shells) {
   // shells_of_l[l] lists the indices of this atom's shells of momentum l, in
   // order; the k-th subshell of momentum l goes on shells_of_l[l][k].
   std::vector<std::vector<size_t>> shells_of_l;
-  std::vector<size_t> ao_offset(shells.size(), 0);
+  std::vector<size_t> ao_offset_sphe(shells.size(), 0);
   size_t nao_sphe = 0;
   for (size_t s = 0; s < shells.size(); ++s) {
     const auto l = static_cast<size_t>(shells[s].angular_momentum());
@@ -41,8 +41,8 @@ std::vector<double> atomic_diagonal(int32_t z, std::span<const Shell> shells) {
       shells_of_l.resize(l + 1);
     }
     shells_of_l[l].push_back(s);
-    ao_offset[s] = nao_sphe;
-    nao_sphe += shells[s].spherical_function_count();
+    ao_offset_sphe[s] = nao_sphe;
+    nao_sphe += shells[s].function_count_sphe();
   }
 
   std::vector<double> diagonal(nao_sphe, 0.0);
@@ -54,9 +54,9 @@ std::vector<double> atomic_diagonal(int32_t z, std::span<const Shell> shells) {
       continue; // No shell of this momentum left: these electrons are dropped.
     }
     const size_t s = shells_of_l[l][next_of_l[l]++];
-    const uint32_t nfun = shells[s].spherical_function_count();
+    const uint32_t nfun = shells[s].function_count_sphe();
     const double per_ao = static_cast<double>(occupation[k]) / static_cast<double>(nfun);
-    std::fill_n(diagonal.begin() + static_cast<std::ptrdiff_t>(ao_offset[s]), nfun, per_ao);
+    std::fill_n(diagonal.begin() + static_cast<std::ptrdiff_t>(ao_offset_sphe[s]), nfun, per_ao);
   }
   return diagonal;
 }
@@ -77,7 +77,7 @@ Result<std::vector<double>> sad_diagonal(const BasisSet &basis, const Molecule &
     const uint32_t first = basis.atom_shell_offset(a);
     const std::span<const Shell> shells(basis.shells().data() + first, count);
     const std::vector<double> block = atomic_diagonal(nuclear_charge(atoms[a]), shells);
-    const auto offset = static_cast<std::ptrdiff_t>(basis.spherical_ao_offset(first));
+    const auto offset = static_cast<std::ptrdiff_t>(basis.ao_offset_sphe(first));
     std::ranges::copy(block, diagonal.begin() + offset);
   }
   return diagonal;

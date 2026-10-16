@@ -134,8 +134,8 @@ namespace free_breakfast {
 export namespace free_breakfast {
 
 [[nodiscard]] inline std::vector<double> solid_harmonic_block(int32_t l) {
-  const size_t ncart = cartesian_function_count(l);
-  const size_t nsph = spherical_function_count(l);
+  const size_t ncart = function_count_cart(l);
+  const size_t nsph = function_count_sphe(l);
 
   // s and p: PySCF presents these as the bare Cartesian set (s trivially, p as
   // (x, y, z)), so the block is the identity -- the same block

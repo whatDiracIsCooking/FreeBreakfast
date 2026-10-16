@@ -51,7 +51,7 @@ to prefer.
 | --- | --- | --- |
 | Namespace | `lower_case` | `free_breakfast::log` |
 | Class, struct, alias, concept | `CamelCase` | `BasisSet`, `Result<T>` |
-| Function, variable, parameter | `lower_case` | `element_count`, `ao_offset` |
+| Function, variable, parameter | `lower_case` | `element_count`, `ao_offset_cart` |
 | Private data member | `lower_case_` | `outer_`, `aos_` |
 | Constant | `kCamelCase` | `kMaxAngularMomentum`, `kPi<T>` |
 | Enum | `enum class`, `CamelCase` | `ErrorKind`, `LogLevel` |

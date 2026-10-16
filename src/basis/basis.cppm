@@ -10,8 +10,8 @@
 ///
 /// The aggregate is split into six partitions: @c :shell defines @ref
 /// free_breakfast::Shell (and re-exports the center-independent names @ref
-/// free_breakfast::kMaxAngularMomentum, @ref free_breakfast::cartesian_function_count,
-/// @ref free_breakfast::spherical_function_count and @ref
+/// free_breakfast::kMaxAngularMomentum, @ref free_breakfast::function_count_cart,
+/// @ref free_breakfast::function_count_sphe and @ref
 /// free_breakfast::Primitive from @c basis.h); @c :ao defines the
 /// atomic-orbital view -- @ref free_breakfast::cartesian_powers (the canonical
 /// Cartesian ordering) and @ref free_breakfast::AO; @c :harmonics defines the

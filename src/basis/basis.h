@@ -30,7 +30,7 @@ namespace free_breakfast {
 /// keep @p l signed for its arithmetic and the count unsigned for indexing.
 ///
 /// @pre @p l >= 0 (@ref Shell and @ref ShellStamp abort on a negative one).
-[[nodiscard]] constexpr uint32_t cartesian_function_count(int32_t l) {
+[[nodiscard]] constexpr uint32_t function_count_cart(int32_t l) {
   const auto n = static_cast<uint32_t>(l);
   return ((n + 1) * (n + 2)) / 2;
 }
@@ -40,11 +40,11 @@ namespace free_breakfast {
 ///
 /// Every shell in this tree is spherical: this is the count a shell presents
 /// to the outside world, while the GPU kernels evaluate its @ref
-/// cartesian_function_count Cartesian functions and @c BasisSet's
+/// function_count_cart Cartesian functions and @c BasisSet's
 /// @c spherical_transform_matrix combines them (see @c src/basis/harmonics.cppm).
 ///
-/// @pre @p l >= 0, as for @ref cartesian_function_count.
-[[nodiscard]] constexpr uint32_t spherical_function_count(int32_t l) {
+/// @pre @p l >= 0, as for @ref function_count_cart.
+[[nodiscard]] constexpr uint32_t function_count_sphe(int32_t l) {
   const auto n = static_cast<uint32_t>(l);
   return (2 * n) + 1;
 }

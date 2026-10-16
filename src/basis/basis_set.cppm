@@ -11,10 +11,10 @@
 /// basis names are re-exported by @c :shell.
 ///
 /// **Two parallel AO layouts.** Every shell is spherical, but the GPU kernels
-/// evaluate its @c cartesian_function_count(l) Cartesian functions, so each
-/// shell has a slot in the Cartesian layout (@ref BasisSet::aos, @ref
-/// BasisSet::ao_offset) sized (l+1)(l+2)/2 AND one in the spherical layout
-/// (@ref BasisSet::nao_sphe, @ref BasisSet::spherical_ao_offset) sized
+/// evaluate its @c function_count_cart(l) Cartesian functions, so each
+/// shell has a slot in the Cartesian layout (@ref BasisSet::aos_cart, @ref
+/// BasisSet::ao_offset_cart) sized (l+1)(l+2)/2 AND one in the spherical layout
+/// (@ref BasisSet::nao_sphe, @ref BasisSet::ao_offset_sphe) sized
 /// 2l+1. @ref spherical_transform_matrix bridges the two: a block-diagonal matrix
 /// @c U (Cartesian rows x spherical columns) holding each shell's
 /// (normalization-reconciled) real solid harmonic embedding (@c :harmonics) --
@@ -43,9 +43,9 @@ export namespace free_breakfast {
 /// The shells are held in the order supplied, and the atomic orbitals (AOs) are
 /// laid out by concatenating each shell's Cartesian functions in that same
 /// order: shell 0 owns AOs [0, n0), shell 1 owns [n0, n0 + n1), and so on,
-/// where n_i is shell i's @ref Shell::function_count. @ref ao_offset returns
+/// where n_i is shell i's @ref Shell::function_count_cart. @ref ao_offset_cart returns
 /// the first AO index of a shell and @ref nao_cart the total across all shells;
-/// @ref aos enumerates the same layout one @ref AO (shell plus Cartesian
+/// @ref aos_cart enumerates the same layout one @ref AO (shell plus Cartesian
 /// powers) at a time.
 ///
 /// A basis made by @ref place also records which atom owns which shells
@@ -88,7 +88,7 @@ public:
   /// @brief First shell owned by atom @p atom; the atom owns shells
   /// [atom_shell_offset(atom), atom_shell_offset(atom) + atom_shell_count(atom)).
   ///
-  /// Aborts if @p atom is not below @ref natoms (see @ref ao_offset).
+  /// Aborts if @p atom is not below @ref natoms (see @ref ao_offset_cart).
   [[nodiscard]] uint32_t atom_shell_offset(uint32_t atom) const {
     if (atom >= natoms()) {
       check_or_abort(err_config("BasisSet::atom_shell_offset: atom index out of range"));
@@ -114,7 +114,7 @@ public:
   /// owning shell and its (a, b, c) its Cartesian powers. Concatenates each
   /// shell's @ref cartesian_powers in shell order, so it matches the @ref
   /// ao_offset layout exactly.
-  [[nodiscard]] const std::vector<AO> &aos() const { return aos_; }
+  [[nodiscard]] const std::vector<AO> &aos_cart() const { return aos_cart_; }
 
   /// @brief Number of shells in the basis.
   [[nodiscard]] uint32_t nshells() const { return static_cast<uint32_t>(shells_.size()); }
@@ -124,38 +124,40 @@ public:
   ///
   /// Zero for a moved-from basis: moving takes the offset vector, trailing
   /// total included, so the empty check keeps this from reading past it.
-  [[nodiscard]] uint32_t nao_cart() const { return ao_offsets_.empty() ? 0 : ao_offsets_.back(); }
+  [[nodiscard]] uint32_t nao_cart() const {
+    return ao_offsets_cart_.empty() ? 0 : ao_offsets_cart_.back();
+  }
 
   /// @brief First AO index owned by shell @p shell_index.
   ///
-  /// Shell i owns AOs [ao_offset(i), ao_offset(i) + shells()[i].function_count()).
+  /// Shell i owns AOs [ao_offset(i), ao_offset(i) + shells()[i].function_count_cart()).
   /// Aborts if @p shell_index is not a valid shell -- every call site in this
   /// tree loops over @c 0..nshells() itself (never a raw index from outside
   /// the basis), so out-of-range here is a caller bug, the same posture as
   /// @c std::vector::at.
-  [[nodiscard]] uint32_t ao_offset(uint32_t shell_index) const {
+  [[nodiscard]] uint32_t ao_offset_cart(uint32_t shell_index) const {
     if (shell_index >= shells_.size()) {
-      check_or_abort(err_config("BasisSet::ao_offset: shell index out of range"));
+      check_or_abort(err_config("BasisSet::ao_offset_cart: shell index out of range"));
     }
-    return ao_offsets_[shell_index];
+    return ao_offsets_cart_[shell_index];
   }
 
   /// @brief Total number of AOs in the SPHERICAL layout: sum over shells of
-  /// @ref Shell::spherical_function_count (2l+1). Equals @ref nao_cart exactly when
+  /// @ref Shell::function_count_sphe (2l+1). Equals @ref nao_cart exactly when
   /// no shell is above p. Zero for a moved-from basis, as @ref nao_cart is.
   [[nodiscard]] uint32_t nao_sphe() const {
-    return spherical_ao_offsets_.empty() ? 0 : spherical_ao_offsets_.back();
+    return ao_offsets_sphe_.empty() ? 0 : ao_offsets_sphe_.back();
   }
 
   /// @brief First SPHERICAL-layout AO index owned by shell @p shell_index; the
-  /// spherical-layout counterpart of @ref ao_offset.
+  /// spherical-layout counterpart of @ref ao_offset_cart.
   ///
-  /// Aborts if @p shell_index is not a valid shell (see @ref ao_offset).
-  [[nodiscard]] uint32_t spherical_ao_offset(uint32_t shell_index) const {
+  /// Aborts if @p shell_index is not a valid shell (see @ref ao_offset_cart).
+  [[nodiscard]] uint32_t ao_offset_sphe(uint32_t shell_index) const {
     if (shell_index >= shells_.size()) {
-      check_or_abort(err_config("BasisSet::spherical_ao_offset: shell index out of range"));
+      check_or_abort(err_config("BasisSet::ao_offset_sphe: shell index out of range"));
     }
-    return spherical_ao_offsets_[shell_index];
+    return ao_offsets_sphe_[shell_index];
   }
 
 private:
@@ -164,31 +166,31 @@ private:
     // Rebuild from scratch: the default member initializer seeds a single
     // trailing 0, which is right for an empty basis but must not remain in
     // front of the offsets computed here.
-    ao_offsets_.clear();
-    ao_offsets_.reserve(shells_.size() + 1);
-    spherical_ao_offsets_.clear();
-    spherical_ao_offsets_.reserve(shells_.size() + 1);
-    aos_.clear();
+    ao_offsets_cart_.clear();
+    ao_offsets_cart_.reserve(shells_.size() + 1);
+    ao_offsets_sphe_.clear();
+    ao_offsets_sphe_.reserve(shells_.size() + 1);
+    aos_cart_.clear();
     const uint32_t nsh = static_cast<uint32_t>(shells_.size());
     uint32_t offset = 0;
     uint32_t spherical_offset = 0;
     for (uint32_t s = 0; s < nsh; ++s) {
       const Shell &shell = shells_[s];
-      ao_offsets_.push_back(offset);
-      spherical_ao_offsets_.push_back(spherical_offset);
+      ao_offsets_cart_.push_back(offset);
+      ao_offsets_sphe_.push_back(spherical_offset);
       // One AO per Cartesian function, in the canonical order (:ao owns it), so
-      // aos_ and the ao_offsets_ slices describe the identical layout. The GPU
+      // aos_cart_ and the ao_offsets_cart_ slices describe the identical layout. The GPU
       // kernels evaluate the shell's Cartesian functions; see the file doc
       // comment.
       for (const std::array<int32_t, 3> &p : cartesian_powers(shell.angular_momentum())) {
-        aos_.push_back(AO{s, static_cast<uint8_t>(p[0]), static_cast<uint8_t>(p[1]),
-                          static_cast<uint8_t>(p[2])});
+        aos_cart_.push_back(AO{s, static_cast<uint8_t>(p[0]), static_cast<uint8_t>(p[1]),
+                               static_cast<uint8_t>(p[2])});
       }
-      offset += shell.function_count();
-      spherical_offset += shell.spherical_function_count();
+      offset += shell.function_count_cart();
+      spherical_offset += shell.function_count_sphe();
     }
-    ao_offsets_.push_back(offset);
-    spherical_ao_offsets_.push_back(spherical_offset);
+    ao_offsets_cart_.push_back(offset);
+    ao_offsets_sphe_.push_back(spherical_offset);
   }
 
   std::vector<Shell> shells_{};
@@ -196,12 +198,12 @@ private:
   // A default-constructed (empty) basis still needs the trailing 0 so nao_cart()
   // reads it -- hence a single-element {0}, not an empty vector. A moved-from
   // basis is the one state where it IS empty; nao_cart() checks for that.
-  std::vector<uint32_t> ao_offsets_ = std::vector<uint32_t>(1, 0);
-  // The same layout, sized by spherical_function_count() instead of
-  // function_count() -- see nao_sphe()/spherical_ao_offset().
-  std::vector<uint32_t> spherical_ao_offsets_ = std::vector<uint32_t>(1, 0);
+  std::vector<uint32_t> ao_offsets_cart_ = std::vector<uint32_t>(1, 0);
+  // The same layout, sized by function_count_sphe() instead of
+  // function_count_cart() -- see nao_sphe()/ao_offset_sphe().
+  std::vector<uint32_t> ao_offsets_sphe_ = std::vector<uint32_t>(1, 0);
   // One AO per Cartesian function, global AO order; empty for an empty basis.
-  std::vector<AO> aos_{};
+  std::vector<AO> aos_cart_{};
   // One offset per atom plus a trailing total; empty when the basis carries no
   // per-atom map. See natoms().
   std::vector<uint32_t> atom_shell_offsets_{};
@@ -213,8 +215,8 @@ private:
 /// @c U^T M U converts a Cartesian-AO-basis matrix @p M (an overlap, a Fock
 /// matrix, ...) into the same quantity over @p basis's spherical AO layout.
 ///
-/// Block-diagonal, one block per shell at (@ref BasisSet::ao_offset, @ref
-/// BasisSet::spherical_ao_offset): for a shell of momentum @c l, the
+/// Block-diagonal, one block per shell at (@ref BasisSet::ao_offset_cart, @ref
+/// BasisSet::ao_offset_sphe): for a shell of momentum @c l, the
 /// closed-form real solid harmonic table @c solid_harmonic_block(l)
 /// (@c :harmonics) -- ncart(l) x (2l+1), the purely angular change of basis
 /// from Cartesian monomials to the 2l+1 real solid harmonics (@c m = -l..+l,
@@ -253,10 +255,10 @@ private:
   for (uint32_t s = 0; s < nsh; ++s) {
     const Shell &shell = basis.shells()[s];
     const int32_t l = shell.angular_momentum();
-    const uint32_t row0 = basis.ao_offset(s);
-    const uint32_t col0 = basis.spherical_ao_offset(s);
-    const uint32_t ncart = shell.function_count();
-    const uint32_t nsph = shell.spherical_function_count();
+    const uint32_t row0 = basis.ao_offset_cart(s);
+    const uint32_t col0 = basis.ao_offset_sphe(s);
+    const uint32_t ncart = shell.function_count_cart();
+    const uint32_t nsph = shell.function_count_sphe();
 
     const std::vector<double> block = solid_harmonic_block(l);
     const double scale = std::sqrt(math::double_factorial_odd((2 * l) - 1));
