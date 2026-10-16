@@ -84,7 +84,7 @@ inline constexpr std::array<SubshellFill, 19> kAufbauOrder{{
 ///
 /// @param z      Atomic number of the atom, as for @ref subshell_occupation.
 /// @param shells The shells the atom owns, in basis order.
-/// @return Length Sum of each shell's @c spherical_function_count(). The values
+/// @return Length Sum of each shell's @c function_count_sphe(). The values
 ///   sum to @p z when the basis has a shell for every occupied subshell; a
 ///   subshell with no shell left to sit on is dropped, and the sum falls short
 ///   by its electrons (an under-covered basis, not an error).

@@ -3,7 +3,7 @@
 /// center-independent basis primitives it is built from.
 ///
 /// The center-independent pieces -- @ref free_breakfast::kMaxAngularMomentum (in
-/// @c angular_momentum.h), and @ref free_breakfast::cartesian_function_count and
+/// @c angular_momentum.h), and @ref free_breakfast::function_count_cart and
 /// @ref free_breakfast::Primitive (in @c basis.h) -- are included in this
 /// partition's global module fragment and re-exported from within the namespace,
 /// so importers and CUDA `#include`rs share one entity. @ref free_breakfast::Shell
@@ -44,10 +44,10 @@ export namespace free_breakfast {
 // fragment). The using-declarations must sit inside `namespace free_breakfast`
 // so importers can form declarations with them; at global scope the names would
 // be visible but unusable.
-using free_breakfast::cartesian_function_count;
+using free_breakfast::function_count_cart;
+using free_breakfast::function_count_sphe;
 using free_breakfast::kMaxAngularMomentum;
 using free_breakfast::Primitive;
-using free_breakfast::spherical_function_count;
 
 /// @brief One contracted Gaussian shell: an angular momentum, a set of
 /// primitives (@ref Primitive) and a center.
@@ -116,12 +116,14 @@ public:
   ///
   /// (L+1)(L+2)/2: 1 for s, 3 for p, 6 for d. This is the count the GPU
   /// kernels and @ref BasisSet's Cartesian AO layout use -- see @ref
-  /// spherical_function_count for the count the shell presents.
-  [[nodiscard]] uint32_t function_count() const { return cartesian_function_count(l_); }
+  /// function_count_sphe for the count the shell presents.
+  [[nodiscard]] uint32_t function_count_cart() const {
+    return free_breakfast::function_count_cart(l_);
+  }
 
   /// @brief Number of real solid harmonic functions this shell presents: 2l+1.
-  [[nodiscard]] uint32_t spherical_function_count() const {
-    return free_breakfast::spherical_function_count(l_);
+  [[nodiscard]] uint32_t function_count_sphe() const {
+    return free_breakfast::function_count_sphe(l_);
   }
 
 private:

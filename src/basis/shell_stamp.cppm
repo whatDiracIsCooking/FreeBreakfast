@@ -76,12 +76,14 @@ public:
 
   /// @brief Number of Cartesian AO functions this shell contributes:
   /// (L+1)(L+2)/2, i.e. 1 (s), 3 (p), 6 (d).
-  [[nodiscard]] uint32_t function_count() const { return cartesian_function_count(l_); }
+  [[nodiscard]] uint32_t function_count_cart() const {
+    return free_breakfast::function_count_cart(l_);
+  }
 
   /// @brief Number of real solid harmonic functions this shell presents to a
   /// basis: 2l+1.
-  [[nodiscard]] uint32_t spherical_function_count() const {
-    return free_breakfast::spherical_function_count(l_);
+  [[nodiscard]] uint32_t function_count_sphe() const {
+    return free_breakfast::function_count_sphe(l_);
   }
 
   /// @brief This shell centered at @p center: a @ref Shell carrying the same
