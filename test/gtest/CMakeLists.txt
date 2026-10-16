@@ -44,7 +44,7 @@ add_executable(
   io_npy_host.cpp
   io_toml_host.cpp
   gpu_policy_host.cpp
-  sys_env_host.cpp
+  node_resources_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -77,7 +77,7 @@ add_executable(
   free_breakfast_tests_gpu
   device_gpu.cpp
   gpu_policy_gpu.cpp
-  sys_env_gpu.cpp
+  node_resources_gpu.cpp
   primitives_gpu.cpp
   reduce_gpu.cpp
   device_resources_gpu.cpp

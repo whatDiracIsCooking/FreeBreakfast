@@ -1,6 +1,6 @@
 # `free_breakfast.resources`
 
-The machine's compute resources, and what this process gets of them.
+The node's compute resources, and what this process gets of them.
 
 ## Module
 
@@ -10,16 +10,19 @@ The machine's compute resources, and what this process gets of them.
 | Partition | Exports |
 |-----------|---------|
 | `:device_resources` | `DeviceResources` |
-| `:sys_env` | `SysEnv`, `GpuInfo`, `query_sys_env()`, `available_gpus()`, `logical_cpu_cores()`, `log_sys_env()` |
+| `:node_resources` | `NodeResources`, `NodeResourcesConfig`; re-exports `free_breakfast.third_party.taskflow` (`tf::Executor`, `tf::Taskflow`) |
+| `:sys_env` | nothing: an internal partition, the host queries `NodeResources` is built from |
 
 ## Files
 
 | File | Role |
 |------|------|
-| `resources.cppm` | Primary interface: re-exports both partitions |
+| `resources.cppm` | Primary interface: re-exports the two interface partitions |
 | `device_resources.cppm` | `:device_resources`: `DeviceResources`, defined inline |
-| `sys_env.cppm` | `:sys_env`: the startup hardware inventory's declarations |
-| `sys_env.cpp` | Its implementation: `/proc/cpuinfo`, `/proc/meminfo`, and the GPU roster through wwr's backend-neutral `wwrGetDeviceCount` / `wwrGetDeviceProperties` |
+| `node_resources.cppm` | `:node_resources`: `NodeResources` and its config; accessors and `on_device()` inline |
+| `node_resources.cpp` | Its constructor and `log()`, the only code that reaches `:sys_env` |
+| `sys_env.cppm` | `:sys_env`: declarations of the host queries |
+| `sys_env.cpp` | Their implementation: `/proc/cpuinfo`, `/proc/meminfo`, and wwr's backend-neutral `wwrGetDeviceCount` |
 | `CMakeLists.txt` | The module library |
 
 ## DeviceResources
@@ -87,23 +90,71 @@ one device opens a `ScopedDeviceIndex` (`free_breakfast.core.wwr`) first.
 Movable, not copyable (the handles are move-only). A moved-from
 `DeviceResources` holds no `Device`.
 
-## sys_env
+## NodeResources
 
-Queries system hardware at startup: CPU cores, GPU devices, host RAM, and disk
-space.
+The whole node: a `DeviceResources` per device and a taskflow `tf::Executor`
+(`free_breakfast.third_party.taskflow`) whose workers drive them.
 
 ```cpp
-if (auto env = free_breakfast::query_sys_env()) {
-  free_breakfast::log_sys_env(*env);
+import free_breakfast.core;
+import free_breakfast.resources;
+namespace fb = free_breakfast;
+
+fb::NodeResources node;           // every visible device; physical cores - 2 workers
+node.log();                       // cores, RAM, workers, each device
+
+fb::tf::Taskflow flow;
+for (std::size_t i = 0; i < node.device_count(); ++i) {
+  flow.emplace([&node, i] {
+    node.on_device(i, [](fb::DeviceResources &res) {
+      // res's device is current on this worker: allocate from res.device(),
+      // BLAS / solver calls on res.blas() / res.solver(), all on res.stream()
+    });
+  });
 }
+node.executor().run(flow).wait();
 ```
 
-The GPU roster is `vector<GpuInfo>`: plain data (index, name, memory, compute
-capability), deliberately not `Device`, which owns a stream and a memory pool.
-A startup inventory must not create one per device just to report what is on
-the box. A runtime with no usable device yields an empty roster, not an error.
+`NodeResourcesConfig` narrows it. Every field defaults to "all of it":
+
+| Field | Default | |
+|---|---|---|
+| `devices` | every device the runtime sees, in index order | An empty vector holds none, for host-only use. `device(i)` is position `i` in this list, not runtime index `i`. |
+| `num_threads` | physical cores − `kReservedCores` (2), at least 1 | Leaves a core for the thread that submits work and one for the driver's own threads. A configured count below 1 aborts. |
+| `pool_release_threshold` | 1 GiB | Passed to every `DeviceResources`. |
+
+**Tasks reach a device through `on_device()`.** BLAS and solver calls and
+kernel launches run on the calling thread's current device, and an executor
+worker may last have run another device's work. `on_device(i, f)` calls
+`f(device(i))` under a `ScopedDeviceIndex`, so the device is current for the
+call and the worker's previous one is restored after. Buffers select their own
+device, but the work done on them does not.
+
+**Construction leaves the caller's current device alone.** Creating a
+device's handles leaves that device current, so the constructor puts back the
+device that was current before it built the first one. With no devices it
+makes no device call at all, since a device-less runtime fails even the query.
+
+**The executor is destroyed first.** It is declared after the devices, so its
+destructor, which waits for running tasks, runs while the devices they use
+still exist.
+
+**Neither copyable nor movable.** The executor's workers hold its address.
+Hold one per process and pass it by reference.
+
+**Construction aborts** if a device fails to create (`CreatePolicy`, as for
+any wrapper), if `/proc` cannot be read, or on a configured worker count below 1.
+No `NodeResources` is ever left half-built.
+
+### What it reads from the host
+
+The internal `:sys_env` partition supplies the CPU and RAM figures, read once
+at construction and exposed as `logical_cores()`, `physical_cores()` and
+`host_ram_bytes()`. It also supplies the device count used when no device list
+is given. The per-device figures that `log()` prints (name, memory, compute
+capability) come from each `Device`'s own `props()`.
 
 Linux-only: the CPU and RAM figures come from `/proc`. Where `/proc/cpuinfo`
-carries no `physical id` / `core id` lines (as on most aarch64 kernels),
-`cpu_physical_cores` falls back to the logical count rather than failing the
-query, and a debug-level line says so.
+carries no `physical id` / `core id` lines (as on most aarch64 kernels), the
+physical count falls back to the logical one rather than failing, and a
+debug-level line says so.

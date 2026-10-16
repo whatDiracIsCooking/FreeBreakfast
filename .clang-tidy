@@ -37,7 +37,7 @@ CheckOptions:
   - key: readability-identifier-naming.ClassCase
     value: CamelCase
   # CamelCase, not lower_case. This said lower_case while the comment above it
-  # said "CamelCase types", so every struct in the tree -- GpuInfo, SysEnv --
+  # said "CamelCase types", so every struct in the tree -- ForkStreamConfig, NodeResourcesConfig --
   # was reported as an invalid case style. class and struct are the same thing
   # here bar the default access; splitting their conventions was never
   # intended.
