@@ -1,7 +1,7 @@
 // GPU cases for NodeResources: one DeviceResources per visible device, the
-// caller's current device left alone by construction, and on_device()
-// selecting the device on whichever executor worker runs the task. Skips where
-// there is no device; the host half is covered in node_resources_host.cpp.
+// caller's current device left alone by construction, and executor tasks each
+// driving one device under a ScopedDeviceIndex. Skips where there is no
+// device; the host half is covered in node_resources_host.cpp.
 
 #include <gtest/gtest.h>
 
@@ -80,54 +80,41 @@ TEST(NodeResourcesGpu, ConstructionLeavesTheCurrentDeviceAlone) {
   ASSERT_EQ(wwr::wwrSetDevice(0), wwr::wwrSuccess);
 }
 
-TEST(NodeResourcesGpu, OnDeviceSelectsTheDeviceOnAWorker) {
-  FBF_REQUIRE_GPU();
-
-  fb::NodeResources node{{.num_threads = kWorkers}};
-
-  for (std::size_t i = 0; i < node.device_count(); ++i) {
-    auto seen = node.executor()
-                    .async([&node, i] {
-                      const std::int32_t inside =
-                          node.on_device(i, [](fb::DeviceResources &) { return current_device(); });
-                      return std::pair{inside, node.device(i).dev_idx()};
-                    })
-                    .get();
-    EXPECT_EQ(seen.first, seen.second) << "device position " << i;
-  }
-}
-
-// The point of the executor: real device work fanned out from host tasks. Each
-// task round-trips a buffer through its device on that device's stream.
-TEST(NodeResourcesGpu, TasksDriveEveryDevice) {
+// The single-driver pattern: one task per device, each the only thread driving
+// its DeviceResources, selecting the device before it works. Each task
+// round-trips a buffer through its device on that device's stream.
+TEST(NodeResourcesGpu, OneTaskDrivesEachDevice) {
   FBF_REQUIRE_GPU();
 
   fb::NodeResources node{{.num_threads = kWorkers}};
   constexpr std::size_t kCount = 1024;
 
   std::vector<std::vector<float>> results(node.device_count());
+  std::vector<std::int32_t> selected(node.device_count(), -1);
   fb::tf::Taskflow flow;
   for (std::size_t i = 0; i < node.device_count(); ++i) {
-    flow.emplace([&node, &results, i] {
-      node.on_device(i, [&](fb::DeviceResources &res) {
-        fb::Buffers::host<float> in(kCount);
-        fb::Buffers::host<float> out(kCount);
-        for (std::size_t k = 0; k < kCount; ++k)
-          in.data()[k] = static_cast<float>(k + i);
-        fb::Buffers::device<float> d(kCount, res.device());
+    flow.emplace([&res = node.device(i), &out_host = results[i], &seen = selected[i], i] {
+      const fb::ScopedDeviceIndex on{res.dev_idx()};
+      seen = current_device();
 
-        // Qualified: a bare wwrStream_t carries no ADL into wwr::extension.
-        const wwr::wwrStream_t stream = res.stream();
-        EXPECT_EQ(ext::copy(d, in, stream), wwr::wwrSuccess);
-        EXPECT_EQ(ext::copy(out, d, stream), wwr::wwrSuccess);
-        EXPECT_EQ(ext::sync(stream), wwr::wwrSuccess);
-        results[i].assign(out.data(), out.data() + kCount);
-      });
+      fb::Buffers::host<float> in(kCount);
+      fb::Buffers::host<float> out(kCount);
+      for (std::size_t k = 0; k < kCount; ++k)
+        in.data()[k] = static_cast<float>(k + i);
+      fb::Buffers::device<float> d(kCount, res.device());
+
+      // Qualified: a bare wwrStream_t carries no ADL into wwr::extension.
+      const wwr::wwrStream_t stream = res.stream();
+      EXPECT_EQ(ext::copy(d, in, stream), wwr::wwrSuccess);
+      EXPECT_EQ(ext::copy(out, d, stream), wwr::wwrSuccess);
+      EXPECT_EQ(ext::sync(stream), wwr::wwrSuccess);
+      out_host.assign(out.data(), out.data() + kCount);
     });
   }
   node.executor().run(flow).wait();
 
   for (std::size_t i = 0; i < results.size(); ++i) {
+    EXPECT_EQ(selected[i], node.device(i).dev_idx()) << "device position " << i;
     ASSERT_EQ(results[i].size(), kCount) << "device position " << i;
     for (std::size_t k = 0; k < kCount; ++k)
       ASSERT_EQ(results[i][k], static_cast<float>(k + i)) << "device " << i << " at " << k;

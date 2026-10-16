@@ -21,7 +21,7 @@ taskflow into every unit that does. Import and link it explicitly.
 |------|------|
 | `resources.cppm` | Primary interface: re-exports the two interface partitions |
 | `device_resources.cppm` | `:device_resources`: `DeviceResources`, defined inline |
-| `node_resources.cppm` | `:node_resources`: `NodeResources` and its config; accessors and `on_device()` inline |
+| `node_resources.cppm` | `:node_resources`: `NodeResources` and its config; accessors inline |
 | `node_resources.cpp` | Its constructor and `log()`, the only code that reaches `:sys_env` |
 | `sys_env.cppm` | `:sys_env`: declarations of the host queries |
 | `sys_env.cpp` | Their implementation: `/proc/cpuinfo`, `/proc/meminfo`, and wwr's backend-neutral `wwrGetDeviceCount` |
@@ -84,10 +84,28 @@ given, to the `Device` as its pool's release threshold. That is how much freed
 memory the pool holds across stream syncs instead of returning to the driver —
 not a cap on allocation. wwr's default is 1 MiB.
 
-**Constructing one leaves its device current** on the calling thread: wwr's
-handle creation selects the device and does not restore it. BLAS and solver
-calls use the calling thread's current device, so code that drives more than
-one device opens a `ScopedDeviceIndex` (`free_breakfast.core.wwr`) first.
+**One driving thread at a time.** The BLAS and solver handles, the stream and
+the `ForkStream`'s events must not be used from two threads at once: cuBLAS and
+hipBLAS forbid concurrent use of one handle, and nothing here locks. That is a
+contract, not a limitation worth working around: a `DeviceResources` given
+enough work to be worth having is kept busy by one submitting thread, and the
+stream serialises its GPU work anyway. A second thread that wants to overlap
+work on the same GPU builds its own `DeviceResources` (and so its own stream
+and handles), not a share of this one.
+
+**The driving thread selects the device.** BLAS and solver calls and kernel
+launches run on the calling thread's current device; only buffer allocation
+and free select their own. So the driver either
+
+| Driver | Selects the device |
+|---|---|
+| a thread that only ever drives this device | once, at thread start |
+| a thread that drives several devices in turn | with a `ScopedDeviceIndex{res.dev_idx()}` per switch |
+| a taskflow task (any worker, any device last) | with a `ScopedDeviceIndex{res.dev_idx()}` in the task |
+
+`ScopedDeviceIndex` is `free_breakfast.core.wwr`'s. Constructing a
+`DeviceResources` leaves its device current on the calling thread: wwr's handle
+creation selects the device and does not restore it.
 
 Movable, not copyable (the handles are move-only). A moved-from
 `DeviceResources` holds no `Device`.
@@ -95,7 +113,8 @@ Movable, not copyable (the handles are move-only). A moved-from
 ## NodeResources
 
 The whole node: a `DeviceResources` per device and a taskflow `tf::Executor`
-(`free_breakfast.third_party.taskflow`) whose workers drive them.
+(`free_breakfast.third_party.taskflow`) for host-side work, including handing
+each device to its one driving task.
 
 ```cpp
 import free_breakfast.core;
@@ -105,13 +124,13 @@ namespace fb = free_breakfast;
 fb::NodeResources node;           // every visible device; physical cores - 2 workers
 node.log();                       // cores, RAM, workers, each device
 
+// One task per device: each is the only thread driving its DeviceResources.
 fb::tf::Taskflow flow;
-for (std::size_t i = 0; i < node.device_count(); ++i) {
-  flow.emplace([&node, i] {
-    node.on_device(i, [](fb::DeviceResources &res) {
-      // res's device is current on this worker: allocate from res.device(),
-      // BLAS / solver calls on res.blas() / res.solver(), all on res.stream()
-    });
+for (auto &res : node.devices()) {
+  flow.emplace([&res] {
+    const fb::ScopedDeviceIndex on{res.dev_idx()};
+    // allocate from res.device(), BLAS / solver calls on res.blas() /
+    // res.solver(), all on res.stream()
   });
 }
 node.executor().run(flow).wait();
@@ -125,12 +144,10 @@ node.executor().run(flow).wait();
 | `num_threads` | physical cores − `kReservedCores` (2), at least 1 | Leaves a core for the thread that submits work and one for the driver's own threads. A configured count below 1 aborts. |
 | `pool_release_threshold` | 1 GiB | Passed to every `DeviceResources`. |
 
-**Tasks reach a device through `on_device()`.** BLAS and solver calls and
-kernel launches run on the calling thread's current device, and an executor
-worker may last have run another device's work. `on_device(i, f)` calls
-`f(device(i))` under a `ScopedDeviceIndex`, so the device is current for the
-call and the worker's previous one is restored after. Buffers select their own
-device, but the work done on them does not.
+**Tasks follow `DeviceResources`' single-driver rule.** At most one task
+drives a given device at a time, and it opens a `ScopedDeviceIndex` before it
+works, since a worker may last have run another device's work. Nothing in
+`NodeResources` enforces either; schedule the task graph so it holds.
 
 **Construction leaves the caller's current device alone.** Creating a
 device's handles leaves that device current, so the constructor puts back the

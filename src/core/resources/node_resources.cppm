@@ -8,7 +8,6 @@ import std;
 import :device_resources;
 import free_breakfast.core.types;
 import free_breakfast.core.nontransferrable;
-import free_breakfast.core.wwr;
 
 // Re-exported: executor() hands out a tf::Executor, and running work on it
 // takes tf::Taskflow, so a caller needs taskflow wherever it has a node.
@@ -30,11 +29,12 @@ struct NodeResourcesConfig {
 };
 
 /// @brief One node's working set: a DeviceResources per device, and a taskflow
-/// executor whose workers drive them.
+/// executor for host-side work.
 ///
-/// A worker may last have run work for any device, and BLAS and solver calls
-/// and kernel launches use the calling thread's current device, so a task
-/// reaches a device through on_device(), which selects it for the call.
+/// Each DeviceResources is driven by one thread at a time (see its class
+/// note). A task that drives one -- or any thread that drives several in turn
+/// -- selects the device first with a ScopedDeviceIndex: an executor worker may
+/// last have run work for any device.
 ///
 /// Neither copyable nor movable: the executor's workers hold its address. Hold
 /// one per process and pass it by reference.
@@ -60,15 +60,6 @@ public:
   DeviceResources &device(size_t i) { return devices_.at(i); }
   /// @copydoc device()
   const DeviceResources &device(size_t i) const { return devices_.at(i); }
-
-  /// @brief Run `f(device(i))` with that device current on this thread, then
-  /// restore the device that was current before. Safe on any executor worker.
-  template <typename F>
-  decltype(auto) on_device(size_t i, F &&f) {
-    DeviceResources &res = devices_.at(i);
-    const ScopedDeviceIndex on{res.dev_idx()};
-    return std::invoke(std::forward<F>(f), res);
-  }
 
   /// @brief The executor for host-side task graphs.
   tf::Executor &executor() noexcept { return executor_; }
