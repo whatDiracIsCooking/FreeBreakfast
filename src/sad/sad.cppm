@@ -10,7 +10,7 @@
 /// functions. The real solid harmonics of one shell are mutually orthogonal and
 /// share a norm, so an equal weight per m is a true spherical average -- which
 /// it would not be over the Cartesian components, whose self-overlaps differ
-/// (see @ref cartesian_to_spherical). Off-diagonal entries are zero.
+/// (see @ref spherical_transform_matrix). Off-diagonal entries are zero.
 ///
 /// **What the trace means.** Every electron placed lands on the diagonal, so
 /// trace(D) is the placed electron count exactly. That is the orthonormal-AO
@@ -23,7 +23,7 @@
 ///
 /// **Cartesian consumers.** The guess is spherical because every shell in this
 /// tree is. A Cartesian-layout density is @c U D @c U^T with
-/// @c U = cartesian_to_spherical(basis) -- density transforms contravariantly,
+/// @c U = spherical_transform_matrix(basis) -- density transforms contravariantly,
 /// the opposite way to the @c U^T M U used for Fock and overlap matrices.
 export module free_breakfast.sad;
 
@@ -96,7 +96,7 @@ inline constexpr std::array<SubshellFill, 19> kAufbauOrder{{
 /// @param basis    A basis made by @ref place over @p molecule, so it carries
 ///                 the per-atom shell grouping (@ref BasisSet::natoms).
 /// @param molecule The molecule whose atomic numbers key the occupations.
-/// @return Length @c basis.spherical_nao(); its sum is the placed electron
+/// @return Length @c basis.nao_sphe(); its sum is the placed electron
 ///   count. ErrorKind::InvalidConfig if @c basis.natoms() differs from
 ///   @c molecule.natoms() -- including a basis built from a bare shell list,
 ///   which carries no grouping at all.
@@ -104,9 +104,9 @@ inline constexpr std::array<SubshellFill, 19> kAufbauOrder{{
                                                        const Molecule &molecule);
 
 /// @brief The SAD initial-guess density: @ref sad_diagonal on the diagonal of
-/// an n x n matrix, n = @c basis.spherical_nao(), zeros elsewhere.
+/// an n x n matrix, n = @c basis.nao_sphe(), zeros elsewhere.
 ///
-/// Flat row-major, element (i, j) at index i*n + j. Fails exactly when @ref
+/// Flat column-major, element (i, j) at index i + j*n. Fails exactly when @ref
 /// sad_diagonal does.
 [[nodiscard]] Result<std::vector<double>> sad_density(const BasisSet &basis,
                                                       const Molecule &molecule);

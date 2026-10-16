@@ -7,6 +7,7 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 | Directory | Module | Role |
 |-----------|--------|------|
 | `diis/` | `free_breakfast.linalg.diis` | Pulay DIIS extrapolation over a device-resident ring of iterates and residuals. |
+| `matrix_ao/` | `free_breakfast.linalg.matrix_ao` | AO-basis matrices tagged Cartesian or spherical, and a pair holding both that converts through a shared transform. |
 | `orthogonalize/` | `free_breakfast.linalg.orthogonalize` | The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, with every intermediate caller-owned. |
 
 Routines take a `DeviceResources` (`free_breakfast.core.resources`) for their stream and library handles, so the BLAS and solver calls are ordered on one stream by construction. Each routine returns `Result`/`Status`.

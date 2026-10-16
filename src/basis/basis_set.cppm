@@ -1,7 +1,7 @@
 /// @file
 /// @brief An ordered collection of shells with atomic-orbital indexing
 /// (@ref free_breakfast::BasisSet), and the Cartesian-to-spherical transform
-/// (@ref free_breakfast::cartesian_to_spherical) built from it.
+/// (@ref free_breakfast::spherical_transform_matrix) built from it.
 ///
 /// @ref free_breakfast::BasisSet is built over @ref free_breakfast::Shell,
 /// imported from the @c :shell partition, and its @ref free_breakfast::AO list
@@ -14,8 +14,8 @@
 /// evaluate its @c cartesian_function_count(l) Cartesian functions, so each
 /// shell has a slot in the Cartesian layout (@ref BasisSet::aos, @ref
 /// BasisSet::ao_offset) sized (l+1)(l+2)/2 AND one in the spherical layout
-/// (@ref BasisSet::spherical_nao, @ref BasisSet::spherical_ao_offset) sized
-/// 2l+1. @ref cartesian_to_spherical bridges the two: a block-diagonal matrix
+/// (@ref BasisSet::nao_sphe, @ref BasisSet::spherical_ao_offset) sized
+/// 2l+1. @ref spherical_transform_matrix bridges the two: a block-diagonal matrix
 /// @c U (Cartesian rows x spherical columns) holding each shell's
 /// (normalization-reconciled) real solid harmonic embedding (@c :harmonics) --
 /// so @c U^T M U converts any Cartesian-basis matrix @c M into the same
@@ -44,7 +44,7 @@ export namespace free_breakfast {
 /// laid out by concatenating each shell's Cartesian functions in that same
 /// order: shell 0 owns AOs [0, n0), shell 1 owns [n0, n0 + n1), and so on,
 /// where n_i is shell i's @ref Shell::function_count. @ref ao_offset returns
-/// the first AO index of a shell and @ref nao the total across all shells;
+/// the first AO index of a shell and @ref nao_cart the total across all shells;
 /// @ref aos enumerates the same layout one @ref AO (shell plus Cartesian
 /// powers) at a time.
 ///
@@ -108,7 +108,7 @@ public:
   /// @brief The shells, in the order supplied.
   [[nodiscard]] const std::vector<Shell> &shells() const { return shells_; }
 
-  /// @brief The atomic orbitals, in global AO order (length @ref nao).
+  /// @brief The atomic orbitals, in global AO order (length @ref nao_cart).
   ///
   /// Entry @c mu is the AO at global index @c mu: its @c shell_index names the
   /// owning shell and its (a, b, c) its Cartesian powers. Concatenates each
@@ -124,7 +124,7 @@ public:
   ///
   /// Zero for a moved-from basis: moving takes the offset vector, trailing
   /// total included, so the empty check keeps this from reading past it.
-  [[nodiscard]] uint32_t nao() const { return ao_offsets_.empty() ? 0 : ao_offsets_.back(); }
+  [[nodiscard]] uint32_t nao_cart() const { return ao_offsets_.empty() ? 0 : ao_offsets_.back(); }
 
   /// @brief First AO index owned by shell @p shell_index.
   ///
@@ -141,9 +141,9 @@ public:
   }
 
   /// @brief Total number of AOs in the SPHERICAL layout: sum over shells of
-  /// @ref Shell::spherical_function_count (2l+1). Equals @ref nao exactly when
-  /// no shell is above p. Zero for a moved-from basis, as @ref nao is.
-  [[nodiscard]] uint32_t spherical_nao() const {
+  /// @ref Shell::spherical_function_count (2l+1). Equals @ref nao_cart exactly when
+  /// no shell is above p. Zero for a moved-from basis, as @ref nao_cart is.
+  [[nodiscard]] uint32_t nao_sphe() const {
     return spherical_ao_offsets_.empty() ? 0 : spherical_ao_offsets_.back();
   }
 
@@ -192,13 +192,13 @@ private:
   }
 
   std::vector<Shell> shells_{};
-  // One offset per shell plus a trailing total, so nao() is the last element.
-  // A default-constructed (empty) basis still needs the trailing 0 so nao()
+  // One offset per shell plus a trailing total, so nao_cart() is the last element.
+  // A default-constructed (empty) basis still needs the trailing 0 so nao_cart()
   // reads it -- hence a single-element {0}, not an empty vector. A moved-from
-  // basis is the one state where it IS empty; nao() checks for that.
+  // basis is the one state where it IS empty; nao_cart() checks for that.
   std::vector<uint32_t> ao_offsets_ = std::vector<uint32_t>(1, 0);
   // The same layout, sized by spherical_function_count() instead of
-  // function_count() -- see spherical_nao()/spherical_ao_offset().
+  // function_count() -- see nao_sphe()/spherical_ao_offset().
   std::vector<uint32_t> spherical_ao_offsets_ = std::vector<uint32_t>(1, 0);
   // One AO per Cartesian function, global AO order; empty for an empty basis.
   std::vector<AO> aos_{};
@@ -208,13 +208,14 @@ private:
 };
 
 /// @brief The Cartesian-to-spherical transform @c U for @p basis: a
-/// @c basis.nao() x @c basis.spherical_nao() row-major matrix such that
+/// @c basis.nao_cart() x @c basis.nao_sphe() column-major matrix (element
+/// (i, j) at @c i + j*nao_cart(), so it goes straight into a BLAS call) such that
 /// @c U^T M U converts a Cartesian-AO-basis matrix @p M (an overlap, a Fock
 /// matrix, ...) into the same quantity over @p basis's spherical AO layout.
 ///
 /// Block-diagonal, one block per shell at (@ref BasisSet::ao_offset, @ref
 /// BasisSet::spherical_ao_offset): for a shell of momentum @c l, the
-/// closed-form real solid harmonic table @c solid_harmonic_c2s(l)
+/// closed-form real solid harmonic table @c solid_harmonic_block(l)
 /// (@c :harmonics) -- ncart(l) x (2l+1), the purely angular change of basis
 /// from Cartesian monomials to the 2l+1 real solid harmonics (@c m = -l..+l,
 /// PySCF/libcint convention) -- SCALED by @c sqrt((2l-1)!!).
@@ -224,7 +225,7 @@ private:
 /// primitive list for the whole shell), so the harmonic embedding combines
 /// them correctly regardless of how that shared radial part is normalized --
 /// no per-Cartesian-component correction is needed. What DOES need
-/// reconciling is a single per-shell scale: @c solid_harmonic_c2s's columns
+/// reconciling is a single per-shell scale: @c solid_harmonic_block's columns
 /// are orthonormal under the RAW (unnormalized) monomial Gaussian-moment inner
 /// product, while this repo's actual Cartesian AOs carry @ref
 /// ShellStamp::primitive_normalized's scale, which normalizes the (l,0,0)
@@ -243,9 +244,9 @@ private:
 ///
 /// For l <= 1 a shell's block is an identity (the harmonic embedding of s/p
 /// IS the Cartesian set, and @c sqrt((2*0-1)!!) = @c sqrt((2*1-1)!!) = 1).
-[[nodiscard]] inline std::vector<double> cartesian_to_spherical(const BasisSet &basis) {
-  const size_t nrow = basis.nao();
-  const size_t ncol = basis.spherical_nao();
+[[nodiscard]] inline std::vector<double> spherical_transform_matrix(const BasisSet &basis) {
+  const size_t nrow = basis.nao_cart();
+  const size_t ncol = basis.nao_sphe();
   std::vector<double> u(nrow * ncol, 0.0);
 
   const uint32_t nsh = basis.nshells();
@@ -257,11 +258,11 @@ private:
     const uint32_t ncart = shell.function_count();
     const uint32_t nsph = shell.spherical_function_count();
 
-    const std::vector<double> block = solid_harmonic_c2s(l);
+    const std::vector<double> block = solid_harmonic_block(l);
     const double scale = std::sqrt(math::double_factorial_odd((2 * l) - 1));
     for (uint32_t i = 0; i < ncart; ++i) {
       for (uint32_t j = 0; j < nsph; ++j) {
-        u[((row0 + i) * ncol) + col0 + j] = block[(static_cast<size_t>(i) * nsph) + j] * scale;
+        u[row0 + i + ((col0 + j) * nrow)] = block[i + (static_cast<size_t>(j) * ncart)] * scale;
       }
     }
   }

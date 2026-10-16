@@ -112,8 +112,8 @@ TEST(Sad, DensityOverPlacedWaterIsBlockDiagonalInTheSphericalLayout) {
   const fb::Molecule molecule = water();
   auto basis = fb::place(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
-  ASSERT_EQ(basis->spherical_nao(), 12U); // O: 1 + 1 + 3 + 5, then two H s
-  ASSERT_NE(basis->nao(), basis->spherical_nao());
+  ASSERT_EQ(basis->nao_sphe(), 12U); // O: 1 + 1 + 3 + 5, then two H s
+  ASSERT_NE(basis->nao_cart(), basis->nao_sphe());
 
   auto diagonal = fb::sad_diagonal(*basis, molecule);
   ASSERT_TRUE(diagonal.has_value()) << diagonal.error().message;
@@ -131,7 +131,7 @@ TEST(Sad, DensityOverPlacedWaterIsBlockDiagonalInTheSphericalLayout) {
   ASSERT_EQ(density->size(), n * n);
   for (std::size_t i = 0; i < n; ++i) {
     for (std::size_t j = 0; j < n; ++j) {
-      EXPECT_DOUBLE_EQ((*density)[(i * n) + j], i == j ? expected[i] : 0.0) << i << "," << j;
+      EXPECT_DOUBLE_EQ((*density)[i + (j * n)], i == j ? expected[i] : 0.0) << i << "," << j;
     }
   }
 }

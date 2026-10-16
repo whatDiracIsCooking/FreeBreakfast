@@ -87,6 +87,7 @@ add_executable(
   scoped_device_index_gpu.cpp
   orthogonalize_gpu.cpp
   diis_gpu.cpp
+  matrix_ao_gpu.cpp
   gemm_gpu.cpp
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp

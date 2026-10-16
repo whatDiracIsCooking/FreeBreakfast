@@ -1,6 +1,6 @@
 /// @file
 /// @brief Closed-form Cartesian-to-spherical transform for one shell's angular
-/// momentum @c l -- the per-l block @c BasisSet::cartesian_to_spherical builds
+/// momentum @c l -- the per-l block @c BasisSet::spherical_transform_matrix builds
 /// from, giving the 2l+1 real solid harmonics as combinations of the ncart(l)
 /// Cartesian monomials in @ref free_breakfast::cartesian_powers order.
 ///
@@ -24,7 +24,7 @@
 /// self-overlap moment (@ref monomial_gram). The real solid harmonics
 /// are mutually orthogonal under this metric by construction, so after that
 /// per-column normalization the block @c B satisfies @c B^T G B = I. This is
-/// exactly the property @c cartesian_to_spherical relies on: multiplying by its
+/// exactly the property @c spherical_transform_matrix relies on: multiplying by its
 /// single per-shell scale @c sqrt((2l-1)!!) then reconciles this repo's
 /// Cartesian normalization with a unit-normalized spherical AO, yielding a
 /// uniform @c x*I diagonal with every cross-@c m term exactly zero.
@@ -36,11 +36,11 @@
 /// regardless of how those AOs are normalized -- the shared radial factor just
 /// rides along. Reconciling this repo's Cartesian normalization convention with
 /// a unit-normalized spherical AO is therefore a single overall per-l scalar,
-/// applied where the transform is used (@c BasisSet::cartesian_to_spherical),
+/// applied where the transform is used (@c BasisSet::spherical_transform_matrix),
 /// not here.
 ///
-/// **Storage convention.** The returned block is row-major, ncart(l) x (2l+1):
-/// element (row, col) lives at @c data[row*(2l+1) + col]; rows run over
+/// **Storage convention.** The returned block is column-major, ncart(l) x
+/// (2l+1): element (row, col) lives at @c data[row + col*ncart(l)]; rows run over
 /// @ref cartesian_powers(l), columns over @c m = -l..+l.
 module;
 
@@ -56,19 +56,23 @@ import free_breakfast.core.primitives;
 export namespace free_breakfast {
 
 /// @brief The closed-form Cartesian-to-spherical transform block for angular
-/// momentum @p l (>= 0): ncart(l) x (2l+1), row-major, rows over
+/// momentum @p l (>= 0): ncart(l) x (2l+1), column-major, rows over
 /// @ref cartesian_powers(l) and columns the 2l+1 real solid harmonics in
 /// @c m = -l..+l (PySCF/libcint) order.
 ///
 /// G-orthonormal under the Gaussian-moment inner product (@c B^T G B = I), so
-/// the single @c sqrt((2l-1)!!) scale @c cartesian_to_spherical applies
+/// the single @c sqrt((2l-1)!!) scale @c spherical_transform_matrix applies
 /// reproduces a uniform diagonal with zero cross-m coupling. For @c l<=1 the
 /// block is the identity.
-[[nodiscard]] std::vector<double> solid_harmonic_c2s(int32_t l);
+///
+/// **Unscaled.** This is the purely angular block, without that
+/// @c sqrt((2l-1)!!) factor, so it is not a shell's block of @c U: transform
+/// a matrix with @c spherical_transform_matrix, never with this.
+[[nodiscard]] std::vector<double> solid_harmonic_block(int32_t l);
 
 } // namespace free_breakfast
 
-// Not exported: helpers of the inline solid_harmonic_c2s below.
+// Not exported: helpers of the inline solid_harmonic_block below.
 namespace free_breakfast {
 
 // The angular Gaussian-moment inner product between two same-degree Cartesian
@@ -129,17 +133,17 @@ namespace free_breakfast {
 
 export namespace free_breakfast {
 
-[[nodiscard]] inline std::vector<double> solid_harmonic_c2s(int32_t l) {
+[[nodiscard]] inline std::vector<double> solid_harmonic_block(int32_t l) {
   const size_t ncart = cartesian_function_count(l);
   const size_t nsph = spherical_function_count(l);
 
   // s and p: PySCF presents these as the bare Cartesian set (s trivially, p as
   // (x, y, z)), so the block is the identity -- the same block
-  // cartesian_to_spherical applies to a Cartesian shell.
+  // spherical_transform_matrix applies to a Cartesian shell.
   if (l <= 1) {
     std::vector<double> identity(ncart * nsph, 0.0);
     for (size_t i = 0; i < ncart; ++i) {
-      identity[(i * nsph) + i] = 1.0;
+      identity[i + (i * ncart)] = 1.0;
     }
     return identity;
   }
@@ -155,22 +159,22 @@ export namespace free_breakfast {
     // The one signed quantity: columns run m = -l..+l.
     const int32_t m = static_cast<int32_t>(col) - l;
     for (const auto &[key, value] : solid_harmonic_coeffs(l, m)) {
-      block[(row_of.at(key) * nsph) + col] = value;
+      block[row_of.at(key) + (col * ncart)] = value;
     }
   }
 
   // G-normalize each column under the Gaussian-moment inner product, so
-  // block^T G block = I and cartesian_to_spherical's single sqrt((2l-1)!!)
+  // block^T G block = I and spherical_transform_matrix's single sqrt((2l-1)!!)
   // scale yields a uniform diagonal.
   for (size_t col = 0; col < nsph; ++col) {
     double norm2 = 0.0;
     for (size_t a = 0; a < ncart; ++a) {
-      const double ca = block[(a * nsph) + col];
+      const double ca = block[a + (col * ncart)];
       if (ca == 0.0) {
         continue;
       }
       for (size_t b = 0; b < ncart; ++b) {
-        const double cb = block[(b * nsph) + col];
+        const double cb = block[b + (col * ncart)];
         if (cb == 0.0) {
           continue;
         }
@@ -179,7 +183,7 @@ export namespace free_breakfast {
     }
     const double inv = 1.0 / std::sqrt(norm2);
     for (size_t a = 0; a < ncart; ++a) {
-      block[(a * nsph) + col] *= inv;
+      block[a + (col * ncart)] *= inv;
     }
   }
   return block;

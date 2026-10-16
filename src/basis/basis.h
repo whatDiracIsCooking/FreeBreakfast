@@ -41,7 +41,7 @@ namespace free_breakfast {
 /// Every shell in this tree is spherical: this is the count a shell presents
 /// to the outside world, while the GPU kernels evaluate its @ref
 /// cartesian_function_count Cartesian functions and @c BasisSet's
-/// @c cartesian_to_spherical combines them (see @c src/basis/harmonics.cppm).
+/// @c spherical_transform_matrix combines them (see @c src/basis/harmonics.cppm).
 ///
 /// @pre @p l >= 0, as for @ref cartesian_function_count.
 [[nodiscard]] constexpr uint32_t spherical_function_count(int32_t l) {
