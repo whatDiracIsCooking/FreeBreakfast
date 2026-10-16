@@ -35,6 +35,26 @@ TEST(DeviceResources, HandlesShareTheDeviceStream) {
   EXPECT_EQ(res.solver().stream(), res.stream());
 }
 
+// The Device's pool caches up to the requested release threshold: 1 GiB by
+// default, overriding wwr's 1 MiB, or whatever the caller passes.
+TEST(DeviceResources, PoolReleaseThreshold) {
+  FBF_REQUIRE_GPU();
+
+  const auto threshold = [](const fb::DeviceResources &res) {
+    std::uint64_t value = 0;
+    EXPECT_EQ(wwr::wwrMemPoolGetAttribute(res.device()->pool(), wwr::wwrMemPoolAttrReleaseThreshold,
+                                          &value),
+              wwr::wwrSuccess);
+    return value;
+  };
+
+  EXPECT_EQ(threshold(fb::DeviceResources{0}), std::uint64_t{1} << 30);
+  EXPECT_EQ(fb::DeviceResources::kDefaultPoolReleaseThreshold, std::uint64_t{1} << 30);
+
+  constexpr std::uint64_t kCustom = std::uint64_t{256} << 20;
+  EXPECT_EQ(threshold(fb::DeviceResources{0, kCustom}), kCustom);
+}
+
 // A buffer drawn from device() retains the Device, so it stays usable -- its
 // pool and stream alive -- after the DeviceResources is gone.
 TEST(DeviceResources, BufferOutlivesResources) {
