@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the :sys_env host queries.
 
-module free_breakfast.resources;
+module free_breakfast.core.resources;
 
 import :sys_env;
 

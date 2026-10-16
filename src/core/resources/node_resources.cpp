@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of NodeResources' constructor and log().
 
-module free_breakfast.resources;
+module free_breakfast.core.resources;
 
 import :sys_env;
 

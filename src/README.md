@@ -10,7 +10,6 @@ atom/      The Element enum and Atom, shared by #include and import
 molecule/  Molecule, nuclear repulsion energy and gradient
 basis/     Gaussian basis description: shells, AO layouts, cart->sph, BasisStamp/place
 io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BSE basis and XYZ geometry readers
-resources/ NodeResources: a DeviceResources (Device + BLAS + solver) per GPU and a taskflow executor
 ```
 
 ## Adding a module

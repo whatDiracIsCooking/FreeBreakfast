@@ -2,7 +2,7 @@
 /// @brief DeviceResources: one device's context and the library handles bound
 /// to its stream
 
-export module free_breakfast.resources:device_resources;
+export module free_breakfast.core.resources:device_resources;
 
 import std;
 import free_breakfast.core.types;

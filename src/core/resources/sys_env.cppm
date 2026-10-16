@@ -4,7 +4,7 @@
 
 // An internal partition: nothing here is exported. What a caller needs of it
 // reaches them through NodeResources' accessors.
-module free_breakfast.resources:sys_env;
+module free_breakfast.core.resources:sys_env;
 
 import std;
 import free_breakfast.core.types;

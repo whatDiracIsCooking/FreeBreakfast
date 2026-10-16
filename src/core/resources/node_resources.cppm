@@ -2,7 +2,7 @@
 /// @brief NodeResources: every device's DeviceResources plus a taskflow
 /// executor for host-side work
 
-export module free_breakfast.resources:node_resources;
+export module free_breakfast.core.resources:node_resources;
 
 import std;
 import :device_resources;

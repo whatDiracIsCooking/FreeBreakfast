@@ -37,3 +37,7 @@ export import free_breakfast.core.log;
 // uses, so a consumer of free_breakfast.core gets them without naming wwr
 // itself.
 export import free_breakfast.core.wwr;
+
+// Deliberately absent: free_breakfast.core.resources (NodeResources). It
+// re-exports taskflow, which every importer of this module would then compile
+// against. Import it explicitly where it is used.

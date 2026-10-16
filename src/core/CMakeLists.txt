@@ -7,6 +7,7 @@ add_subdirectory(error_handling)
 add_subdirectory(log)
 add_subdirectory(diagnostics)
 add_subdirectory(wwr)
+add_subdirectory(resources)
 
 free_breakfast_add_cxx_module_library(
   NAME
