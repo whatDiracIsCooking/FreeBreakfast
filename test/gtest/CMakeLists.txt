@@ -86,6 +86,7 @@ add_executable(
   fork_stream_gpu.cpp
   scoped_device_index_gpu.cpp
   orthogonalize_gpu.cpp
+  diis_gpu.cpp
 )
 
 set_target_properties(
