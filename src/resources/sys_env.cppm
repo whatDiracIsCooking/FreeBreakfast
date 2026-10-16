@@ -1,7 +1,7 @@
 /// @file
 /// @brief System environment query -- CPU, GPU, RAM, and disk discovery
 
-export module free_breakfast.core.sys_env;
+export module free_breakfast.resources:sys_env;
 
 import std;
 import free_breakfast.core.types;

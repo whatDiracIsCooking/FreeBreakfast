@@ -1,7 +1,7 @@
 /// @file
 /// @brief Implementation of the system environment query.
 
-module free_breakfast.core.sys_env;
+module free_breakfast.resources;
 
 import std;
 import free_breakfast.core.types;

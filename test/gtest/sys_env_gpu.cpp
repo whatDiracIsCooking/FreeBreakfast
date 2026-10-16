@@ -1,4 +1,4 @@
-// GPU cases for core/sys_env: on a box with a device, the GPU roster reports
+// GPU cases for resources:sys_env: on a box with a device, the GPU roster reports
 // every device the runtime counts, with real properties. Skips where there is
 // no device; the device-less path is covered in sys_env_host.cpp.
 
@@ -8,6 +8,7 @@
 
 import std;
 import free_breakfast.core;
+import free_breakfast.resources;
 
 namespace {
 

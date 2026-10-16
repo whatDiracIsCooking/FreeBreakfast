@@ -1,4 +1,4 @@
-// Host-only cases for core/sys_env: the startup hardware inventory. These need
+// Host-only cases for resources:sys_env: the startup hardware inventory. These need
 // no device -- a device-less runtime yields an empty GPU roster, not an error --
 // so they run everywhere. The roster's contents on a real device are checked in
 // sys_env_gpu.cpp.
@@ -6,7 +6,7 @@
 #include <gtest/gtest.h>
 
 import std;
-import free_breakfast.core.sys_env;
+import free_breakfast.resources;
 
 namespace {
 
