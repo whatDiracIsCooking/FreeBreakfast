@@ -64,6 +64,7 @@ target_link_libraries(
           free_breakfast::molecule
           free_breakfast::basis
           free_breakfast::io
+          free_breakfast::resources
           GTest::gtest
           GTest::gtest_main
 )
@@ -95,6 +96,7 @@ set_target_properties(
 target_link_libraries(
   free_breakfast_tests_gpu
   PRIVATE free_breakfast::core
+          free_breakfast::resources
           free_breakfast::test::gpu_kernels
           GTest::gtest
           GTest::gtest_main

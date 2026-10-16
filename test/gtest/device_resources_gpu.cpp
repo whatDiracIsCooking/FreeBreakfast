@@ -1,4 +1,4 @@
-// GPU smoke cases for core/device_resources: DeviceResources constructed on a
+// GPU smoke cases for resources:device_resources: DeviceResources constructed on a
 // real device, its handles bound to the Device's stream, and the one-way
 // ownership that lets a buffer outlive the bundle that handed out its Device.
 
@@ -8,6 +8,7 @@
 
 import std;
 import free_breakfast.core;
+import free_breakfast.resources;
 
 namespace {
 
