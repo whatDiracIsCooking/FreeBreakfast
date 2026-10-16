@@ -65,4 +65,13 @@ using SolverHandle = ext::SolverDnHandleWrapper<CreatePolicy<wwr::wwrsolverStatu
 /// @brief Scoped NVTX / rocTX range (wwr's, re-exported under free_breakfast).
 using ScopedRange = ext::ScopedRange;
 
+/// @brief Make a device current on this thread for the guard's lifetime, then
+/// restore the device that was current before.
+///
+/// Library calls and kernel launches run on whatever device the calling thread
+/// has current; only wwr's buffers select theirs. Both the switch and the
+/// restore abort on failure: a restore that only logged would leave later work
+/// silently running on the wrong device.
+using ScopedDeviceIndex = ext::ScopedDeviceIndex<CreatePolicy<wwr::wwrError_t>>;
+
 } // namespace free_breakfast
