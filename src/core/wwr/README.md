@@ -10,7 +10,9 @@ with the exceptions listed below. It holds four things:
 - those wrappers, bound once to the policies, so the rest of the tree names a
   type rather than a five-argument template;
 - `ForkStream`, a `Stream` plus the two `Event`s that fork it from and join it
-  back into a parent stream, for fanning work out inside one graph capture.
+  back into a parent stream, for fanning work out inside one graph capture;
+  and `Device`, this tree's pool-tier device handle, whose work stream is a
+  `ForkStream`.
 
 It re-exports, binds and composes. It does not wrap wwr functions under
 free_breakfast names: this tree does not duplicate WarpWraps. `ForkStream`'s
@@ -20,18 +22,20 @@ operations stay wwr's free functions (`record`, `wait_event`, `sync`, ...).
 ## Module
 
 `free_breakfast.core.wwr`, target `free_breakfast::core::wwr`, also re-exported
-by `free_breakfast.core`. Three partitions under the primary interface:
+by `free_breakfast.core`. Four partitions under the primary interface:
 
 | Partition | Exports |
 |-----------|---------|
 | `:status` | `gpu_status` |
 | `:policy` | `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap` |
 | `:fork_stream` | `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
+| `:device` | `MemPool`, `Device` |
 | *(primary)* | the other aliases below, and the re-exports |
 
 `Stream` and `Event` live in `:fork_stream` rather than the primary interface
 because `ForkStream` is built from them and a partition cannot import the
-primary interface. Importers see no difference: every partition is re-exported.
+primary interface; `Device` is in `:device` for the same reason, being built
+from `ForkStream`. Importers see no difference: every partition is re-exported.
 
 Re-exported: `wwr.runtime_api`, `wwr.vector_types`, `wwr.wrappers.common`, and
 `wwr.extension.{common,handle,runtime,memory_buffer,blas,solver,tx}`, so their
@@ -39,7 +43,8 @@ free functions (copy, memset, views, pointer-mode guards, …) come with it.
 
 | Alias | wwr type | Notes |
 | --- | --- | --- |
-| `Device` | `kit::DeviceHandle` | One device: properties, an owned stream and memory pool. Hold as `std::shared_ptr`. |
+| `Device` | *(composed here)* | One device: properties, an owned `ForkStream` as its work stream, and a memory pool (1 GiB release threshold by default). Hold as `std::shared_ptr`. See below. |
+| `MemPool` | `MemPoolWrapper` | A memory pool on one device; `Device` owns one. |
 | `Stream` | `StreamWrapper` | A non-blocking stream. |
 | `Event` | `EventWrapper` | Default-constructed it is sync-only (timing disabled); pass `(dev_idx, 0)` for a timing-capable one. |
 | `ForkStream` | *(composed here)* | A `Stream` and a fork / join `Event` pair; see below. |
@@ -91,7 +96,8 @@ through `CreatePolicy`, as every wrapper here does.
 
 `ForkStream` exposes `dev_idx()` and `stream()`, so it satisfies wwr's
 `device_handle_stream` and can back a `kit::device_buffer_suite` directly, the
-way a bare `Stream` can; it has no pool, so `Buffers` stays bound to `Device`.
+way a bare `Stream` can; it has no pool, so `Buffers` stays bound to `Device`
+— whose own work stream is a `ForkStream` (next section).
 A `ForkStream` must outlive any capture or launch it is part of: `Stream`
 synchronises before destroying, but a graph that still references a destroyed
 stream's events is not something the runtime recovers from.
@@ -104,6 +110,33 @@ in its destructor and move-assignment: otherwise the destroy path would log
 two errors and leave one as the runtime's *last error*, which the next
 unrelated `wwrGetLastError()` would report as its own. Do not wait on
 `fork_event()` / `join_event()` yourself after a captured fork/join.
+
+## Device
+
+`Device` is this tree's own pool-tier device handle, in place of wwr's
+`kit::DeviceHandle`: the device's properties, a memory pool, and a
+`ForkStream` whose stream is the work stream. It exposes `dev_idx()`,
+`stream()` and `pool()`, so it satisfies wwr's `device_handle_pool`, and
+`Buffers`, `BlasHandle` and `SolverHandle` bind to it as they did to
+`kit::DeviceHandle`. What the `ForkStream` adds is `fork_stream()`: everything
+queued on the device's stream — allocations, frees, BLAS and solver calls — can
+be forked from a parent stream and joined back into it, inside a graph capture
+or out of one.
+
+```cpp
+auto dev = std::make_shared<fb::Device>(0);
+FBF_GPU_MUST(dev->fork_stream().fork_from(parent));
+// ... allocate from dev, BLAS / solver calls on handles bound to dev ...
+FBF_GPU_MUST(dev->fork_stream().record_join());
+FBF_GPU_MUST(dev->fork_stream().join_into(parent));
+```
+
+The pool's release threshold is the second constructor argument, 1 GiB
+(`Device::kDefaultPoolReleaseThreshold`) by default rather than wwr's 1 MiB:
+that is how much freed memory the pool keeps cached across stream syncs
+instead of returning to the driver, not a cap on allocation. The pool is
+declared before the `ForkStream`, so the stream — which synchronizes before
+destroying — is torn down first and no queued free outlives its pool.
 
 ## Where it sits, and the exceptions
 
@@ -176,8 +209,7 @@ value to propagate.
   teardown after an earlier failure, where aborting would bury the root cause
   under the knock-on one.
 - **Both policies are empty**, so they fit every wwr slot and collapse to zero
-  size (`policy_slot`), and `kit::DeviceHandle` can default-construct its
-  device policy.
+  size (`policy_slot`).
 
 ## Files
 
@@ -187,6 +219,7 @@ value to propagate.
 | `status.cppm` | `:status`: `gpu_status` |
 | `policy.cppm` | `:policy`: `AbortPolicy`, `LogPolicy` and the aliases over them |
 | `fork_stream.cppm` | `:fork_stream`: `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
+| `device.cppm` | `:device`: `MemPool`, `Device` |
 | `CMakeLists.txt` | The module library, and the one list of wwr module targets it links |
 
 ## Dependencies
@@ -195,7 +228,7 @@ All PUBLIC: `gpu_status`, the policies and the aliases are templates
 instantiated in the consumer's TU.
 
 - `free_breakfast::core::types`: the fixed-width integers in `ForkStreamConfig`
-- `free_breakfast::core::nontransferrable`: `NonCopyable`, `ForkStream`'s base
+- `free_breakfast::core::nontransferrable`: `NonCopyable`, `ForkStream`'s and `Device`'s base
 - `free_breakfast::core::error_handling`: `Error`, `Status`, `check_or_abort`
 - `free_breakfast::core::log`: `log::critical()` / `log::error()` from the
   policies

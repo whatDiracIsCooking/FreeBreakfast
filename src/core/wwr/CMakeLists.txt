@@ -12,6 +12,7 @@ free_breakfast_add_cxx_module_library(
   status.cppm
   policy.cppm
   fork_stream.cppm
+  device.cppm
   LINK_PUBLIC
   free_breakfast::core::types
   free_breakfast::core::nontransferrable
