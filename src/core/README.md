@@ -5,7 +5,7 @@ exercises the full chain rather than a tree that configures and builds nothing.
 
 | File | What it is |
 | ---- | ---------- |
-| `core.cppm` | The primary interface. Re-exports `:version` and the modules below. |
+| `core.cppm` | The primary interface. Re-exports `:version` and the modules below, except `resources/`. |
 | `version.cppm` | A partition holding the project version and `version_string()`. |
 | `types/` | `free_breakfast.core.types` — fixed-width integers in the global namespace, `Vec<T, N>` / `make_vec` over the builtin GPU vector types, and wwr's `real_fp` / `int_type` concepts re-exported into `free_breakfast`. |
 | `constants/` | `free_breakfast.core.constants` — typed `zero`/`one`/…, physical constants, bohr ↔ Angstrom, SI prefixes. |
@@ -16,6 +16,7 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
 | `diagnostics/` | `diagnostics.h` only (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`), target `free_breakfast::core::diagnostics_macros`. |
 | `wwr/` | `free_breakfast.core.wwr` — the interface to WarpWraps: re-exports every wwr module the tree uses, `gpu_status`, the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy), and the wrappers bound to them: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, …; plus `ForkStream`, a `Stream` with fork / join `Event`s for fanning work out inside a graph capture, and `Device`, whose work stream is one. Import this rather than `wwr.*`; `wwr/README.md` lists the exceptions. |
+| `resources/` | `free_breakfast.core.resources` — `NodeResources`: a `DeviceResources` (a `Device` plus BLAS and solver handles bound to its stream) per GPU, and a taskflow executor whose workers drive them through `on_device()`. **Not** re-exported by `core.cppm`, so taskflow stays out of every `import free_breakfast.core`; import it explicitly. |
 
 Each subdirectory is its own library with its own README — a module library,
 except `diagnostics/`, which is a macro header — and can be linked alone

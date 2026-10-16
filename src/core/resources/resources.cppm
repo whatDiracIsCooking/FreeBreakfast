@@ -2,7 +2,7 @@
 /// @brief The node's compute resources: NodeResources, and the DeviceResources
 /// it holds per device
 
-export module free_breakfast.resources;
+export module free_breakfast.core.resources;
 
 // One device's working set: a shared Device plus the BLAS and solver handles
 // bound to its stream.

@@ -1,11 +1,13 @@
-# `free_breakfast.resources`
+# `free_breakfast.core.resources`
 
 The node's compute resources, and what this process gets of them.
 
 ## Module
 
-`free_breakfast.resources`, target `free_breakfast::resources`. It sits above
-`free_breakfast.core` and is not re-exported by it.
+`free_breakfast.core.resources`, target `free_breakfast::core::resources`.
+It is one of `core`'s libraries, **not re-exported by `free_breakfast.core`**:
+it pulls in taskflow, and importing `free_breakfast.core` should not pull
+taskflow into every unit that does. Import and link it explicitly.
 
 | Partition | Exports |
 |-----------|---------|
@@ -32,7 +34,7 @@ memory pool) plus a `BlasHandle` and a `SolverHandle` bound to that stream.
 
 ```cpp
 import free_breakfast.core;
-import free_breakfast.resources;
+import free_breakfast.core.resources;
 namespace fb = free_breakfast;
 
 fb::DeviceResources res{0};                      // Device + BLAS + solver on device 0
@@ -97,7 +99,7 @@ The whole node: a `DeviceResources` per device and a taskflow `tf::Executor`
 
 ```cpp
 import free_breakfast.core;
-import free_breakfast.resources;
+import free_breakfast.core.resources;
 namespace fb = free_breakfast;
 
 fb::NodeResources node;           // every visible device; physical cores - 2 workers

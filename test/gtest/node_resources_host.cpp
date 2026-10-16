@@ -6,7 +6,7 @@
 #include <gtest/gtest.h>
 
 import std;
-import free_breakfast.resources;
+import free_breakfast.core.resources;
 
 namespace {
 
