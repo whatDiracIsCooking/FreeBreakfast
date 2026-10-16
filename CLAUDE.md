@@ -6,9 +6,10 @@ free-breakfast is a GPU-first scientific computing project in C++23 named
 modules, targeting **either CUDA or HIP** from one source tree. `test/pytest/`
 and `devtools/` are a Python tooling layer around it, not a shippable package.
 
-It is an early quantum-chemistry codebase. `src/` holds five modules: `core`
+It is an early quantum-chemistry codebase. `src/` holds six modules: `core`
 (the GPU, error-handling and logging vocabulary over WarpWraps), `atom`,
-`molecule`, `basis` and `io`. `src/README.md` has the one-line summary of each.
+`molecule`, `basis`, `io` and `sad` (the SAD initial guess). `src/README.md`
+has the one-line summary of each.
 The build system, containers, tooling and CI around them are real and exercised.
 
 ## Setup

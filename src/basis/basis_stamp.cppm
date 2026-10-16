@@ -88,8 +88,8 @@ private:
 /// For each atom, in molecule order, the element's shell stamps (@ref
 /// BasisStamp::shells_for) are placed at that atom's center and appended to the
 /// basis. The AO layout therefore follows atom order, then the stamp's shell
-/// order. This is the cheap, behavior-preserving successor to the old
-/// parse-then-assign path: build one stamp, @c place it at each geometry.
+/// order, and the basis records that grouping (@ref BasisSet::natoms, @ref
+/// BasisSet::atom_shell_offset). Build one stamp, @c place it at each geometry.
 ///
 /// @param basis_stamp The geometry-free definition.
 /// @param molecule    The atoms (positions in bohr) to stamp onto.
@@ -98,6 +98,8 @@ private:
 ///   configuration error, not a silently smaller basis.
 [[nodiscard]] Result<BasisSet> place(const BasisStamp &basis_stamp, const Molecule &molecule) {
   std::vector<Shell> shells;
+  std::vector<uint32_t> atom_shell_offsets{0};
+  atom_shell_offsets.reserve(molecule.atoms().size() + 1);
   for (const Atom &atom : molecule.atoms()) {
     const int32_t z = nuclear_charge(atom);
     const std::vector<ShellStamp> *element = basis_stamp.shells_for(z);
@@ -108,8 +110,9 @@ private:
     for (const ShellStamp &proto : *element) {
       shells.push_back(proto.at(center));
     }
+    atom_shell_offsets.push_back(static_cast<uint32_t>(shells.size()));
   }
-  return BasisSet{std::move(shells)};
+  return BasisSet{std::move(shells), std::move(atom_shell_offsets)};
 }
 
 } // namespace free_breakfast
