@@ -10,6 +10,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
+import free_breakfast.linalg.blas;
 
 #include "diagnostics.h"
 
