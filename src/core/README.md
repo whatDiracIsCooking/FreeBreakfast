@@ -15,8 +15,8 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `error_handling/` | `free_breakfast.core.error_handling` — `Error`, `ErrorKind`, `Result<T>`, `Status`, `err_*`, `to_exit_code`; `check_or_abort`. Names no wwr. |
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
 | `diagnostics/` | `diagnostics.h` only (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`), target `free_breakfast::core::diagnostics_macros`. |
-| `wwr/` | `free_breakfast.core.wwr` — the interface to WarpWraps: re-exports every wwr module the tree uses, `gpu_status`, the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy), and the wrappers bound to them: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, …; plus `ForkStream`, a `Stream` with fork / join `Event`s for fanning work out inside a graph capture. Import this rather than `wwr.*`; `wwr/README.md` lists the exceptions. |
-| `device_resources/` | `free_breakfast.core.device_resources` — `DeviceResources`: a shared `Device` plus a `BlasHandle` and `SolverHandle` bound to its stream; buffers draw from `device()`. |
+| `wwr/` | `free_breakfast.core.wwr` — the interface to WarpWraps: re-exports every wwr module the tree uses, `gpu_status`, the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy), and the wrappers bound to them: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, …; plus `ForkStream`, a `Stream` with fork / join `Event`s for fanning work out inside a graph capture, and `Device`, whose work stream is one. Import this rather than `wwr.*`; `wwr/README.md` lists the exceptions. |
+| `device_resources/` | `free_breakfast.core.device_resources` — `DeviceResources`: a shared `Device` (whose work stream is a `ForkStream`) plus a `BlasHandle` and `SolverHandle` bound to its stream; buffers draw from `device()`. |
 | `sys_env/` | `free_breakfast.core.sys_env` — the startup hardware inventory: `query_sys_env()` → `SysEnv` (CPU cores, host RAM, disk, a plain-data `GpuInfo` roster), `log_sys_env()`. |
 
 Each subdirectory is its own library with its own README — a module library,

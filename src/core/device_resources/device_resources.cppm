@@ -11,7 +11,7 @@ import free_breakfast.core.wwr;
 
 export namespace free_breakfast {
 
-/// @brief One device's working set: a shared Device (stream + memory pool) and
+/// @brief One device's working set: a shared Device (ForkStream + memory pool) and
 /// the BLAS and dense-solver handles bound to that Device's stream.
 ///
 /// The handles anchor to the Device, never to this class: a handle member
@@ -22,28 +22,17 @@ export namespace free_breakfast {
 /// Movable, not copyable. A moved-from DeviceResources holds no Device.
 class DeviceResources : private NonCopyable {
 public:
-  /// @brief Default release threshold of the Device's memory pool: 1 GiB.
-  ///
-  /// The bytes of freed memory the pool keeps cached across stream syncs
-  /// instead of returning to the driver -- not a cap on allocation. wwr's own
-  /// default is 1 MiB, which hands nearly every free back at the next sync and
-  /// makes the following allocation pay the driver round trip again.
-  static constexpr uint64_t kDefaultPoolReleaseThreshold = uint64_t{1} << 30;
+  /// @brief Default release threshold of the Device's memory pool: 1 GiB
+  /// (Device::kDefaultPoolReleaseThreshold).
+  static constexpr uint64_t kDefaultPoolReleaseThreshold = Device::kDefaultPoolReleaseThreshold;
 
-  /// @brief Create a Device on `dev_idx`, set its pool's release threshold to
-  /// `pool_release_threshold` bytes, and bind a BLAS and a solver handle to its
-  /// stream. A failed creation aborts (CreatePolicy).
+  /// @brief Create a Device on `dev_idx` whose pool keeps up to
+  /// `pool_release_threshold` bytes cached, and bind a BLAS and a solver handle
+  /// to its stream. A failed creation aborts (CreatePolicy).
   explicit DeviceResources(int32_t dev_idx = 0,
                            uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold)
-      : device_(std::make_shared<Device>(dev_idx)), blas_(device_), solver_(device_) {
-    // kit::DeviceHandle builds its pool with wwr's fixed 1 MiB threshold and
-    // takes no override, so set the attribute on the live pool. 64-bit on both
-    // backends: wwrMemPoolSetAttribute reads 8 bytes through the pointer.
-    // A failure aborts, like the creation it completes.
-    uint64_t threshold = pool_release_threshold;
-    check_or_abort(gpu_status(wwr::wwrMemPoolSetAttribute(
-        device_->pool(), wwr::wwrMemPoolAttrReleaseThreshold, &threshold)));
-  }
+      : device_(std::make_shared<Device>(dev_idx, pool_release_threshold)), blas_(device_),
+        solver_(device_) {}
 
   /// @brief The shared Device; pass it to Buffers to allocate from its pool.
   const std::shared_ptr<Device> &device() const noexcept { return device_; }
@@ -51,6 +40,11 @@ public:
   int32_t dev_idx() const noexcept { return device_->dev_idx(); }
   /// @brief The one work stream: allocations, BLAS and solver calls all queue here.
   wwr::wwrStream_t stream() const noexcept { return device_->stream(); }
+  /// @brief The ForkStream that owns stream(): fork it from a parent stream to
+  /// order -- or graph-capture -- everything queued here after the parent's work.
+  ForkStream &fork_stream() noexcept { return device_->fork_stream(); }
+  /// @copydoc fork_stream()
+  const ForkStream &fork_stream() const noexcept { return device_->fork_stream(); }
 
   /// @brief The BLAS handle bound to stream().
   BlasHandle &blas() noexcept { return blas_; }

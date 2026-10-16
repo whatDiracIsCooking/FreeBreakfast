@@ -18,6 +18,11 @@ export import :policy;
 // import the primary interface to reach an alias defined here.
 export import :fork_stream;
 
+// Device (:device): this tree's own pool-tier device handle, with a ForkStream
+// as its work stream. A partition rather than a class here for the same reason:
+// it is built from ForkStream.
+export import :device;
+
 // Re-exported so `import free_breakfast.core.wwr;` is the one import a module
 // above core/types needs for anything WarpWraps provides: the runtime API, the
 // vector types and scalar traits, and the wrappers' own members and free
@@ -42,13 +47,6 @@ namespace ext = wwr::extension;
 }
 
 export namespace free_breakfast {
-
-/// @brief One device's context: its properties, an owned stream and memory pool.
-///
-/// Hold it as a std::shared_ptr -- buffers and library handles retain their
-/// device so its stream and pool outlive them.
-using Device = ext::kit::DeviceHandle<CreatePolicy<wwr::wwrError_t>, DestroyPolicy<wwr::wwrError_t>,
-                                      CreatePolicy<wwr::wwrError_t>>;
 
 /// @brief Every buffer kind and its view, allocated from a Device's pool:
 /// `Buffers::device<T>`, `::host<T>`, `::pinned<T>`, `::unified<T>`, `::device_view<T>`, ...

@@ -16,6 +16,12 @@ namespace ext = wwr::extension;
 
 constexpr std::size_t kCount = 1024;
 
+// Device is this tree's own pool-tier handle: the full wwr ladder, so Buffers,
+// BlasHandle and SolverHandle can bind to it.
+static_assert(ext::device_handle_pool<fb::Device>);
+static_assert(std::is_move_constructible_v<fb::Device>);
+static_assert(!std::is_copy_constructible_v<fb::Device>);
+
 // Both handles live on the Device's device and are bound to its one stream.
 TEST(DeviceResources, HandlesShareTheDeviceStream) {
   FBF_REQUIRE_GPU();
@@ -33,6 +39,64 @@ TEST(DeviceResources, HandlesShareTheDeviceStream) {
   EXPECT_TRUE(res.solver().valid());
   EXPECT_EQ(res.solver().dev_idx(), res.dev_idx());
   EXPECT_EQ(res.solver().stream(), res.stream());
+}
+
+// The work stream every handle is bound to is the Device's ForkStream's.
+TEST(DeviceResources, WorkStreamIsTheForkStream) {
+  FBF_REQUIRE_GPU();
+
+  const fb::DeviceResources res{0};
+
+  EXPECT_EQ(res.fork_stream().dev_idx(), res.dev_idx());
+  EXPECT_EQ(static_cast<wwr::wwrStream_t>(res.fork_stream().stream()), res.stream());
+  EXPECT_EQ(&res.fork_stream(), &res.device()->fork_stream());
+  EXPECT_GT(res.device()->props().totalGlobalMem, 0U);
+}
+
+// The whole working set joins another stream's capture through its ForkStream:
+// a copy queued on res.stream() between fork_from and join_into lands in the
+// parent's graph, and runs only when that graph is launched. The destructors
+// run inside the inner scope so the final check sees any error they leave.
+TEST(DeviceResources, ForksIntoAParentCapture) {
+  FBF_REQUIRE_GPU();
+
+  {
+    fb::Stream parent{0};
+    fb::DeviceResources res{0};
+
+    fb::Buffers::device<float> d(kCount, res.device());
+    fb::Buffers::pinned<float> in(kCount);
+    fb::Buffers::pinned<float> out(kCount);
+    for (std::size_t i = 0; i < kCount; ++i) {
+      in.data()[i] = static_cast<float>(3 * i);
+      out.data()[i] = -1.0F;
+    }
+    ASSERT_EQ(ext::sync(res.stream()), wwr::wwrSuccess); // the allocation, outside capture
+
+    fb::ForkStream &fork = res.fork_stream();
+    ASSERT_EQ(ext::begin_capture(parent), wwr::wwrSuccess);
+    ASSERT_EQ(fork.fork_from(parent), wwr::wwrSuccess);
+    ASSERT_EQ(ext::copy(d, in, res.stream()), wwr::wwrSuccess);
+    ASSERT_EQ(ext::copy(out, d, res.stream()), wwr::wwrSuccess);
+    ASSERT_EQ(fork.record_join(), wwr::wwrSuccess);
+    ASSERT_EQ(fork.join_into(parent), wwr::wwrSuccess);
+    auto graph = parent.end_capture();
+    ASSERT_TRUE(graph.valid());
+
+    ASSERT_EQ(ext::sync(res.stream()), wwr::wwrSuccess);
+    EXPECT_EQ(out.data()[0], -1.0F); // captured, not run
+
+    auto exec = graph.instantiate();
+    ASSERT_TRUE(exec.valid());
+    ASSERT_EQ(ext::launch(exec, parent), wwr::wwrSuccess);
+    ASSERT_EQ(ext::sync(parent), wwr::wwrSuccess);
+
+    for (std::size_t i = 0; i < kCount; ++i) {
+      ASSERT_EQ(out.data()[i], static_cast<float>(3 * i)) << "at " << i;
+    }
+  }
+
+  EXPECT_EQ(wwr::wwrGetLastError(), wwr::wwrSuccess);
 }
 
 // The Device's pool caches up to the requested release threshold: 1 GiB by

@@ -13,9 +13,7 @@ export namespace free_breakfast {
 
 // Both policies are empty and noexcept, so each fits every wwr slot --
 // including the destruction slots (nothrow_error_policy) -- and the wrappers'
-// policy_slot collapses repeated ones to nothing. Empty is also what
-// kit::DeviceHandle needs: it default-constructs its device policy rather than
-// taking one.
+// policy_slot collapses repeated ones to nothing.
 
 /// @brief Log at critical with the failing call's location, then abort.
 template <wwr::extension::error_type E>
