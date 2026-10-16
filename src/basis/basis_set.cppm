@@ -47,40 +47,62 @@ export namespace free_breakfast {
 /// the first AO index of a shell and @ref nao the total across all shells;
 /// @ref aos enumerates the same layout one @ref AO (shell plus Cartesian
 /// powers) at a time.
+///
+/// A basis made by @ref place also records which atom owns which shells
+/// (@ref natoms, @ref atom_shell_offset, @ref atom_shell_count), so per-atom
+/// work -- the SAD guess, population analysis -- reads the grouping instead of
+/// re-deriving it from shell centers.
 class BasisSet {
 public:
   BasisSet() = default;
 
-  /// @param shells The shells, in the order that fixes the AO layout.
-  explicit BasisSet(std::vector<Shell> shells) : shells_(std::move(shells)) {
-    // Rebuild from scratch: the default member initializer seeds a single
-    // trailing 0, which is right for an empty basis but must not remain in
-    // front of the offsets computed here.
-    ao_offsets_.clear();
-    ao_offsets_.reserve(shells_.size() + 1);
-    spherical_ao_offsets_.clear();
-    spherical_ao_offsets_.reserve(shells_.size() + 1);
-    aos_.clear();
-    const uint32_t nsh = static_cast<uint32_t>(shells_.size());
-    uint32_t offset = 0;
-    uint32_t spherical_offset = 0;
-    for (uint32_t s = 0; s < nsh; ++s) {
-      const Shell &shell = shells_[s];
-      ao_offsets_.push_back(offset);
-      spherical_ao_offsets_.push_back(spherical_offset);
-      // One AO per Cartesian function, in the canonical order (:ao owns it), so
-      // aos_ and the ao_offsets_ slices describe the identical layout. The GPU
-      // kernels evaluate the shell's Cartesian functions; see the file doc
-      // comment.
-      for (const std::array<int32_t, 3> &p : cartesian_powers(shell.angular_momentum())) {
-        aos_.push_back(AO{s, static_cast<uint8_t>(p[0]), static_cast<uint8_t>(p[1]),
-                          static_cast<uint8_t>(p[2])});
-      }
-      offset += shell.function_count();
-      spherical_offset += shell.spherical_function_count();
+  /// @param shells The shells, in the order that fixes the AO layout. The basis
+  ///               carries no per-atom shell map (@ref natoms is 0).
+  explicit BasisSet(std::vector<Shell> shells) : shells_(std::move(shells)) { build_layouts(); }
+
+  /// @param shells             The shells, in the order that fixes the AO layout.
+  /// @param atom_shell_offsets One entry per atom plus a trailing total: atom
+  ///                           @c a owns shells [offsets[a], offsets[a + 1]). It
+  ///                           must start at 0, never decrease and end at
+  ///                           @c shells.size(); anything else aborts, since the
+  ///                           one producer (@ref place) builds it from the same
+  ///                           loop that builds @p shells.
+  BasisSet(std::vector<Shell> shells, std::vector<uint32_t> atom_shell_offsets)
+      : shells_(std::move(shells)), atom_shell_offsets_(std::move(atom_shell_offsets)) {
+    const bool valid = !atom_shell_offsets_.empty() && atom_shell_offsets_.front() == 0 &&
+                       atom_shell_offsets_.back() == shells_.size() &&
+                       std::ranges::is_sorted(atom_shell_offsets_);
+    if (!valid) {
+      check_or_abort(err_config("BasisSet: atom shell offsets do not partition the shells"));
     }
-    ao_offsets_.push_back(offset);
-    spherical_ao_offsets_.push_back(spherical_offset);
+    build_layouts();
+  }
+
+  /// @brief Number of atoms the shells are grouped by: the molecule's atom count
+  /// for a basis made by @ref place, 0 for one built from a bare shell list (or
+  /// moved from).
+  [[nodiscard]] uint32_t natoms() const {
+    return atom_shell_offsets_.empty() ? 0 : static_cast<uint32_t>(atom_shell_offsets_.size() - 1);
+  }
+
+  /// @brief First shell owned by atom @p atom; the atom owns shells
+  /// [atom_shell_offset(atom), atom_shell_offset(atom) + atom_shell_count(atom)).
+  ///
+  /// Aborts if @p atom is not below @ref natoms (see @ref ao_offset).
+  [[nodiscard]] uint32_t atom_shell_offset(uint32_t atom) const {
+    if (atom >= natoms()) {
+      check_or_abort(err_config("BasisSet::atom_shell_offset: atom index out of range"));
+    }
+    return atom_shell_offsets_[atom];
+  }
+
+  /// @brief Number of shells owned by atom @p atom. Aborts if @p atom is not
+  /// below @ref natoms.
+  [[nodiscard]] uint32_t atom_shell_count(uint32_t atom) const {
+    if (atom >= natoms()) {
+      check_or_abort(err_config("BasisSet::atom_shell_count: atom index out of range"));
+    }
+    return atom_shell_offsets_[atom + 1] - atom_shell_offsets_[atom];
   }
 
   /// @brief The shells, in the order supplied.
@@ -137,6 +159,38 @@ public:
   }
 
 private:
+  // Fills the Cartesian and spherical AO layouts from shells_.
+  void build_layouts() {
+    // Rebuild from scratch: the default member initializer seeds a single
+    // trailing 0, which is right for an empty basis but must not remain in
+    // front of the offsets computed here.
+    ao_offsets_.clear();
+    ao_offsets_.reserve(shells_.size() + 1);
+    spherical_ao_offsets_.clear();
+    spherical_ao_offsets_.reserve(shells_.size() + 1);
+    aos_.clear();
+    const uint32_t nsh = static_cast<uint32_t>(shells_.size());
+    uint32_t offset = 0;
+    uint32_t spherical_offset = 0;
+    for (uint32_t s = 0; s < nsh; ++s) {
+      const Shell &shell = shells_[s];
+      ao_offsets_.push_back(offset);
+      spherical_ao_offsets_.push_back(spherical_offset);
+      // One AO per Cartesian function, in the canonical order (:ao owns it), so
+      // aos_ and the ao_offsets_ slices describe the identical layout. The GPU
+      // kernels evaluate the shell's Cartesian functions; see the file doc
+      // comment.
+      for (const std::array<int32_t, 3> &p : cartesian_powers(shell.angular_momentum())) {
+        aos_.push_back(AO{s, static_cast<uint8_t>(p[0]), static_cast<uint8_t>(p[1]),
+                          static_cast<uint8_t>(p[2])});
+      }
+      offset += shell.function_count();
+      spherical_offset += shell.spherical_function_count();
+    }
+    ao_offsets_.push_back(offset);
+    spherical_ao_offsets_.push_back(spherical_offset);
+  }
+
   std::vector<Shell> shells_{};
   // One offset per shell plus a trailing total, so nao() is the last element.
   // A default-constructed (empty) basis still needs the trailing 0 so nao()
@@ -148,6 +202,9 @@ private:
   std::vector<uint32_t> spherical_ao_offsets_ = std::vector<uint32_t>(1, 0);
   // One AO per Cartesian function, global AO order; empty for an empty basis.
   std::vector<AO> aos_{};
+  // One offset per atom plus a trailing total; empty when the basis carries no
+  // per-atom map. See natoms().
+  std::vector<uint32_t> atom_shell_offsets_{};
 };
 
 /// @brief The Cartesian-to-spherical transform @c U for @p basis: a

@@ -115,6 +115,37 @@ TEST(Basis, MovedFromBasisHasNoFunctions) {
   // NOLINTEND(bugprone-use-after-move)
 }
 
+TEST(Basis, AtomShellOffsetsGroupShells) {
+  const fb::BasisSet bare({fb::Shell(0, {{1.0, 1.0}}, kOrigin)});
+  EXPECT_EQ(bare.natoms(), 0U);
+
+  // Atom 0: s + p, atom 1: no shells, atom 2: s.
+  const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin),
+                            fb::Shell(1, {{1.0, 1.0}}, kOrigin),
+                            fb::Shell(0, {{1.0, 1.0}}, kOrigin)},
+                           {0, 2, 2, 3});
+  ASSERT_EQ(basis.natoms(), 3U);
+  EXPECT_EQ(basis.atom_shell_offset(0), 0U);
+  EXPECT_EQ(basis.atom_shell_count(0), 2U);
+  EXPECT_EQ(basis.atom_shell_count(1), 0U);
+  EXPECT_EQ(basis.atom_shell_offset(2), 2U);
+  EXPECT_EQ(basis.atom_shell_count(2), 1U);
+}
+
+TEST(BasisDeathTest, AtomShellOffsetsAbortOnBadPartition) {
+  const auto shells = [] {
+    return std::vector<fb::Shell>{fb::Shell(0, {{1.0, 1.0}}, kOrigin),
+                                  fb::Shell(0, {{1.0, 1.0}}, kOrigin)};
+  };
+  EXPECT_DEATH(fb::BasisSet(shells(), {}), "");           // no trailing total
+  EXPECT_DEATH(fb::BasisSet(shells(), {1, 2}), "");       // does not start at 0
+  EXPECT_DEATH(fb::BasisSet(shells(), {0, 1}), "");       // does not end at nshells
+  EXPECT_DEATH(fb::BasisSet(shells(), {0, 2, 1, 2}), ""); // decreases
+  const fb::BasisSet basis(shells(), {0, 2});
+  EXPECT_DEATH((void)basis.atom_shell_offset(1), "");
+  EXPECT_DEATH((void)basis.atom_shell_count(1), "");
+}
+
 TEST(BasisDeathTest, AoOffsetAbortsOutOfRange) {
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, kOrigin)});
   EXPECT_EQ(basis.ao_offset(0), 0U);
@@ -327,6 +358,13 @@ TEST(Basis, PlaceFollowsAtomOrderThenStampOrder) {
   for (std::size_t s = 0; s < 4; ++s) {
     EXPECT_EQ(basis->shells()[s].angular_momentum(), momenta[s]);
     EXPECT_EQ(basis->shells()[s].center().y, center_y[s]);
+  }
+  ASSERT_EQ(basis->natoms(), 3U);
+  const std::array<std::uint32_t, 3> first_shell{0, 2, 3};
+  const std::array<std::uint32_t, 3> shell_count{2, 1, 1};
+  for (std::uint32_t a = 0; a < 3; ++a) {
+    EXPECT_EQ(basis->atom_shell_offset(a), first_shell[a]);
+    EXPECT_EQ(basis->atom_shell_count(a), shell_count[a]);
   }
 }
 
