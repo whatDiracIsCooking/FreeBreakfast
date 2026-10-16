@@ -46,5 +46,12 @@ stream is a silent use-after-free. If concurrent work is needed later, add
 compute streams with their own handles and explicit event ordering rather than
 splitting allocation off.
 
+**The pool keeps 1 GiB cached by default.** The constructor sets the
+`Device` pool's release threshold to `kDefaultPoolReleaseThreshold` (1 GiB) or
+its second argument. That is how much freed memory the pool holds across stream
+syncs instead of returning to the driver — not a cap on allocation. wwr's
+default is 1 MiB, and `kit::DeviceHandle` takes no override, so it is set on the
+live pool after construction.
+
 Movable, not copyable (the handles are move-only). A moved-from
 `DeviceResources` holds no `Device`.

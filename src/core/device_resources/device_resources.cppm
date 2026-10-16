@@ -22,10 +22,28 @@ export namespace free_breakfast {
 /// Movable, not copyable. A moved-from DeviceResources holds no Device.
 class DeviceResources : private NonCopyable {
 public:
-  /// @brief Create a Device on `dev_idx` and bind a BLAS and a solver handle to
-  /// its stream. A failed creation aborts (CreatePolicy).
-  explicit DeviceResources(int32_t dev_idx = 0)
-      : device_(std::make_shared<Device>(dev_idx)), blas_(device_), solver_(device_) {}
+  /// @brief Default release threshold of the Device's memory pool: 1 GiB.
+  ///
+  /// The bytes of freed memory the pool keeps cached across stream syncs
+  /// instead of returning to the driver -- not a cap on allocation. wwr's own
+  /// default is 1 MiB, which hands nearly every free back at the next sync and
+  /// makes the following allocation pay the driver round trip again.
+  static constexpr uint64_t kDefaultPoolReleaseThreshold = uint64_t{1} << 30;
+
+  /// @brief Create a Device on `dev_idx`, set its pool's release threshold to
+  /// `pool_release_threshold` bytes, and bind a BLAS and a solver handle to its
+  /// stream. A failed creation aborts (CreatePolicy).
+  explicit DeviceResources(int32_t dev_idx = 0,
+                           uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold)
+      : device_(std::make_shared<Device>(dev_idx)), blas_(device_), solver_(device_) {
+    // kit::DeviceHandle builds its pool with wwr's fixed 1 MiB threshold and
+    // takes no override, so set the attribute on the live pool. 64-bit on both
+    // backends: wwrMemPoolSetAttribute reads 8 bytes through the pointer.
+    // A failure aborts, like the creation it completes.
+    uint64_t threshold = pool_release_threshold;
+    check_or_abort(gpu_status(wwr::wwrMemPoolSetAttribute(
+        device_->pool(), wwr::wwrMemPoolAttrReleaseThreshold, &threshold)));
+  }
 
   /// @brief The shared Device; pass it to Buffers to allocate from its pool.
   const std::shared_ptr<Device> &device() const noexcept { return device_; }
