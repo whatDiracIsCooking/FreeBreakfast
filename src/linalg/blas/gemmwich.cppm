@@ -1,16 +1,13 @@
 /// @file
 /// @brief gemmwich: the sandwich product C = op_x(X)^T op_f(F) op_x(X), as two gemms
 
-export module free_breakfast.core.wwr:gemmwich;
+export module free_breakfast.linalg.blas:gemmwich;
 
 import std;
-import :gemm;   // raw_blas_handle
-import :policy; // CreatePolicy
+import :gemm; // raw_blas_handle
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero
-import wwr.wrappers.common;           // real_fp
-import wwr.wrappers.blas;             // gemm<T, IntT>
-import wwr.extension.blas;            // blas_handle, ScopedPointerMode, wwrblasOperation_t
+import free_breakfast.core.wwr;       // CreatePolicy, real_fp, gemm<T, IntT>, ScopedPointerMode
 
 namespace free_breakfast {
 

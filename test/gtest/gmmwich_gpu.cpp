@@ -1,7 +1,7 @@
-// GPU cases for core/wwr's :gmmwich: op_x(X)^T diag(d) op_x(X) against a host
-// reference that forms the dense diagonal, square and rectangular, for both
-// op_x, with a non-symmetric X and a d of distinct mixed-sign entries (so a
-// diagonal on the wrong side of X, or a transpose in the wrong place, cannot
+// GPU cases for linalg/blas's :gmmwich: op_x(X)^T diag(d) op_x(X) against a
+// host reference that forms the dense diagonal, square and rectangular, for
+// both op_x, with a non-symmetric X and a d of distinct mixed-sign entries (so
+// a diagonal on the wrong side of X, or a transpose in the wrong place, cannot
 // pass), plus the argument check and the pointer-mode restore.
 
 #include <gtest/gtest.h>
@@ -10,6 +10,7 @@
 
 import std;
 import free_breakfast.core;
+import free_breakfast.linalg.blas;
 
 namespace {
 

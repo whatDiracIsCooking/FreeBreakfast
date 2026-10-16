@@ -20,7 +20,7 @@ The computation, all queued on `res.stream()`:
 
 1. `syevd(S)` → ascending eigenvalues λ_j and eigenvectors U. syevd overwrites its input, so S is first copied into the caller's scratch U, and S itself is left untouched.
 2. `inverse_sqrt` kernel: Λ ← diag(λ_j^{-1/2}), in place on the caller's eigenvalue buffer, with eigenvalues at or below `eigenvalue_floor` set to 0 (see Conditioning).
-3. X = U diag(Λ^{-1/2}) Uᵀ, as one `gmmwich(res.blas(), WWRBLAS_OP_T, n, U, Λ^{-1/2}, M, X)` (`free_breakfast.core.wwr:gmmwich`), which is two library calls:
+3. X = U diag(Λ^{-1/2}) Uᵀ, as one `gmmwich(res.blas(), WWRBLAS_OP_T, n, U, Λ^{-1/2}, M, X)` (`free_breakfast.linalg.blas:gmmwich`), which is two library calls:
    - M = U diag(Λ^{-1/2}) (`dgmm`, right side) into the caller's scratch M: scales column j of U by λ_j^{-1/2}, in O(n²) where a `gemm` against a dense diagonal would be O(n³);
    - X = M Uᵀ (`gemm`, `transb = T`), symmetric by construction.
 

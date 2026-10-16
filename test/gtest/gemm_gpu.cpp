@@ -1,4 +1,4 @@
-// GPU cases for core/wwr's :gemm: the three gemm overloads against a host
+// GPU cases for linalg/blas's :gemm: the three gemm overloads against a host
 // reference, with non-symmetric operands (so a swapped or wrongly transposed
 // operand cannot pass) and a non-zero beta (so C's prior contents must be
 // accumulated, not overwritten), through both a BlasHandle and a raw
@@ -10,6 +10,7 @@
 
 import std;
 import free_breakfast.core;
+import free_breakfast.linalg.blas;
 
 namespace {
 

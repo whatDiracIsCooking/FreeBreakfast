@@ -1,13 +1,11 @@
 /// @file
 /// @brief gemm: wwr's gemm for square, contiguous operands
 
-export module free_breakfast.core.wwr:gemm;
+export module free_breakfast.linalg.blas:gemm;
 
 import std;
 import free_breakfast.core.types;
-import wwr.wrappers.common; // usual_fp
-import wwr.wrappers.blas;   // gemm<T, IntT>
-import wwr.extension.blas;  // blas_handle, wwrblasHandle_t, wwrblasOperation_t
+import free_breakfast.core.wwr; // usual_fp, gemm<T, IntT>, blas_handle, wwrblasOperation_t
 
 namespace free_breakfast {
 
