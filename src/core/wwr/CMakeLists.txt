@@ -21,6 +21,8 @@ free_breakfast_add_cxx_module_library(
   wwr::runtime_api
   wwr::vector_types
   wwr::wrappers::common
+  wwr::wrappers::blas
+  wwr::wrappers::solver
   wwr::extension::common
   wwr::extension::handle
   wwr::extension::runtime
