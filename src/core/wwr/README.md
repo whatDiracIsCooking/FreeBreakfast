@@ -13,8 +13,10 @@ with the exceptions listed below. It holds four things:
   back into a parent stream, for fanning work out inside one graph capture;
   and `Device`, this tree's pool-tier device handle, whose work stream is a
   `ForkStream`;
-- `gemm`, `wwr::gemm` for square, contiguous operands, and `gemmwich`, the
-  sandwich product `Xᵀ F X` (and its general rectangular form) as two gemms.
+- `gemm`, `wwr::gemm` for square, contiguous operands; `gemmwich`, the
+  sandwich product `Xᵀ F X` (and its general rectangular form) as two gemms;
+  and `gmmwich`, the same sandwich with a diagonal middle, `Xᵀ diag(d) X`, as
+  a dgmm and a gemm.
 
 It re-exports, binds and composes. It does not wrap wwr functions under
 free_breakfast names: this tree does not duplicate WarpWraps. `ForkStream`'s
@@ -24,12 +26,13 @@ operations stay wwr's free functions (`record`, `wait_event`, `sync`, ...).
 than renaming the call: it forwards to `wwr::gemm` with those arguments filled
 in, and every other gemm still calls `wwr::gemm` itself. `gemmwich` is the
 second: two `wwr::gemm` calls under wwr's `ScopedPointerMode`, a composition
-rather than a renamed call.
+rather than a renamed call. `gmmwich` is the third, the same composition with a
+`wwr::dgmm` in place of the first gemm.
 
 ## Module
 
 `free_breakfast.core.wwr`, target `free_breakfast::core::wwr`, also re-exported
-by `free_breakfast.core`. Six partitions under the primary interface:
+by `free_breakfast.core`. Seven partitions under the primary interface:
 
 | Partition | Exports |
 |-----------|---------|
@@ -39,6 +42,7 @@ by `free_breakfast.core`. Six partitions under the primary interface:
 | `:device` | `MemPool`, `Device` |
 | `:gemm` | `gemm` (three overloads) |
 | `:gemmwich` | `gemmwich` |
+| `:gmmwich` | `gmmwich` |
 | *(primary)* | the other aliases below, and the re-exports |
 
 `Stream` and `Event` live in `:fork_stream` rather than the primary interface
@@ -293,6 +297,46 @@ FBF_GPU_MUST(fb::gemmwich(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, m, n, x, f
 - It returns the first failing gemm's `wwrblasStatus_t`; there is no host
   synchronisation between the two gemms.
 
+## gmmwich
+
+`gmmwich` is `gemmwich` with F = diag(d), where the diagonal is never formed:
+a `wwr::dgmm` scales X in O(nm), where a gemm against a dense diagonal would
+be O(n²m), and one `wwr::gemm` finishes. There is no `op_f`, since a diagonal
+is its own transpose. Three overloads, as for `gemmwich`:
+
+| Call | Computes |
+| --- | --- |
+| `gmmwich(handle, op_x, m, n, x, d, work, c)` | `C = op_x(X)ᵀ diag(d) op_x(X)` |
+| `gmmwich(handle, op, n, x, d, work, c)` | `C = op(X)ᵀ diag(d) op(X)`: `op_x = op`, `m = n` |
+| `gmmwich(handle, n, x, d, work, c)` | `C = Xᵀ diag(d) X`: `op = WWRBLAS_OP_N` |
+
+`op_x(X)` is `n x m`, d has `n` elements (stride 1) and C is `m x m`. `work`
+always has X's stored shape, because the diagonal goes on whichever side of X
+needs no transpose:
+
+| `op_x` | X stored as | `work =` | `C =` |
+| --- | --- | --- | --- |
+| `N` | `n x m`, ld `n` | `diag(d) X` | `Xᵀ work` |
+| `T` | `m x n`, ld `m` | `X diag(d)` | `work Xᵀ` |
+
+`op_x = T` with an eigenvector matrix U is the spectral recombination
+`U f(Λ) Uᵀ`, which is how `linalg.orthogonalize` assembles `S^{-1/2}`:
+
+```cpp
+// X = U diag(lambda^{-1/2}) U^T; m_scratch is left holding U diag(lambda^{-1/2})
+FBF_TRY(fb::gpu_status(fb::gmmwich(res.blas(), wwr::WWRBLAS_OP_T, n, u, inv_sqrt_lambda,
+                                   m_scratch, x)));
+```
+
+- `T` is `float` or `double` (`wwr::real_fp`), as for `gemmwich`.
+- `work` is scratch, ignored on entry and left as in the table. It must not
+  alias X, d or C, and C must not alias X or d. C is overwritten (`beta = 0`).
+- The dgmm takes no scalars. The gemm's `kOne` / `kZero` are in host memory,
+  under the same `ScopedPointerMode` guard as `gemmwich`.
+- `op_x` other than `N` / `T` returns `WWRBLAS_STATUS_INVALID_VALUE` without
+  enqueuing anything. Otherwise it returns the first failing status; there is no
+  host synchronisation between the two calls.
+
 ## gpu_status
 
 `gpu_status(code)` converts any WarpWraps `error_type` (`wwrError_t`, which is
@@ -347,6 +391,7 @@ value to propagate.
 | `device.cppm` | `:device`: `MemPool`, `Device` |
 | `gemm.cppm` | `:gemm`: `gemm` |
 | `gemmwich.cppm` | `:gemmwich`: `gemmwich` |
+| `gmmwich.cppm` | `:gmmwich`: `gmmwich` |
 | `CMakeLists.txt` | The module library, and the one list of wwr module targets it links |
 
 ## Dependencies
@@ -355,7 +400,7 @@ All PUBLIC: `gpu_status`, the policies and the aliases are templates
 instantiated in the consumer's TU.
 
 - `free_breakfast::core::types`: the fixed-width integers in `ForkStreamConfig`
-- `free_breakfast::core::constants`: `kOne` / `kZero`, `gemmwich`'s scalars
+- `free_breakfast::core::constants`: `kOne` / `kZero`, `gemmwich`'s and `gmmwich`'s scalars
 - `free_breakfast::core::nontransferrable`: `NonCopyable`, `ForkStream`'s and `Device`'s base
 - `free_breakfast::core::error_handling`: `Error`, `Status`, `check_or_abort`
 - `free_breakfast::core::log`: `log::critical()` / `log::error()` from the

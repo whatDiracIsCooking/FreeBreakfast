@@ -12,7 +12,6 @@ module free_breakfast.linalg.orthogonalize;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
@@ -115,19 +114,15 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x, T 
   log_orthogonalize_condition(lambda_min, lambda_max, eigenvalue_floor);
 
   // 2. Lambda <- Lambda^{-1/2} in place, dropping modes at or below the floor.
-  //    Per element in the kernel, so steps 2-4 never synchronize.
+  //    Per element in the kernel, so steps 2-3 never synchronize.
   FBF_TRY(gpu_status(static_cast<wwr::wwrError_t>(
       device::inverse_sqrt<T>(stream, n, eigenvalues, eigenvalue_floor))));
 
-  // 3. M = U diag(Lambda^{-1/2}): scale column j of U by lambda_j^{-1/2}, in
-  //    O(n^2) rather than a gemm against a dense diagonal.
-  FBF_TRY(gpu_status(wwr::dgmm<T, int32_t>(res.blas().get(), wwr::WWRBLAS_SIDE_RIGHT, n, n,
-                                           u_scratch, n, eigenvalues, 1, m_scratch, n)));
-
-  // 4. X = M U^T, symmetric by construction.
-  return gpu_status(wwr::gemm<T, int32_t>(res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n,
-                                          n, n, &kOne<T>, m_scratch, n, u_scratch, n, &kZero<T>, x,
-                                          n));
+  // 3. X = U diag(Lambda^{-1/2}) U^T, symmetric by construction: gmmwich's
+  //    op_x = T form, a dgmm (M = U diag(Lambda^{-1/2}), in O(n^2) rather than a
+  //    gemm against a dense diagonal) into m_scratch, then X = M U^T.
+  return gpu_status(
+      gmmwich(res.blas(), wwr::WWRBLAS_OP_T, n, u_scratch, eigenvalues, m_scratch, x));
 }
 
 template Result<int32_t> orthogonalize_workspace_size<float>(DeviceResources &, int32_t);

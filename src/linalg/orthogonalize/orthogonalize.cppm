@@ -46,8 +46,8 @@ template <real_fp T>
 /// @brief Build the symmetric (Loewdin) orthogonalizer X = S^{-1/2} on the GPU.
 ///
 /// Diagonalizes @p s with syevd, maps the eigenvalues to Lambda^{-1/2} with a
-/// kernel, and assembles X = U Lambda^{-1/2} U^T with a dgmm (column scaling)
-/// and a gemm. On success @p x holds the n x n orthogonalizer, which satisfies
+/// kernel, and assembles X = U Lambda^{-1/2} U^T with gmmwich (a dgmm for the
+/// column scaling, then a gemm). On success @p x holds the n x n orthogonalizer, which satisfies
 /// X^T S X == I to rounding for a well-conditioned S. @p s is not modified.
 ///
 /// Every matrix is a column-major device pointer with packed leading dimension

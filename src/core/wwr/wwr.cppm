@@ -32,6 +32,10 @@ export import :gemm;
 // default -- as two square gemms through a caller-supplied work matrix.
 export import :gemmwich;
 
+// gmmwich (:gmmwich): the same sandwich with a diagonal middle, op(X)^T diag(d)
+// op(X), as a dgmm and a gemm, so the diagonal is never formed.
+export import :gmmwich;
+
 // Re-exported so `import free_breakfast.core.wwr;` is the one import a module
 // above core/types needs for anything WarpWraps provides: the runtime API, the
 // vector types and scalar traits, and the wrappers' own members and free
