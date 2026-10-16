@@ -23,6 +23,11 @@ export import :fork_stream;
 // it is built from ForkStream.
 export import :device;
 
+// gemm (:gemm): wwr::gemm for n x n operands with every leading dimension n,
+// transposed or not. A convenience over wwr's call, not a replacement: any
+// other shape calls wwr::gemm directly.
+export import :gemm;
+
 // Re-exported so `import free_breakfast.core.wwr;` is the one import a module
 // above core/types needs for anything WarpWraps provides: the runtime API, the
 // vector types and scalar traits, and the wrappers' own members and free

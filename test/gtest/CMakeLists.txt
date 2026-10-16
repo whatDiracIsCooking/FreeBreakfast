@@ -87,6 +87,7 @@ add_executable(
   scoped_device_index_gpu.cpp
   orthogonalize_gpu.cpp
   diis_gpu.cpp
+  gemm_gpu.cpp
 )
 
 set_target_properties(
