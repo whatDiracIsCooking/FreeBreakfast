@@ -9,14 +9,18 @@
 // (FelizJueves's wide Boys function), so six of them at namespace scope in one
 // TU would define it six times. A namespace keeps the emitted text untouched;
 // the kernels' extern "C" names are distinct already, so it changes nothing
-// about them. Each file's own `#include <runtime.h>` is a no-op here, the
-// bridge having included it (it is #pragma once) before the first namespace
-// opens.
+// about them. Each file's own `#include "felizjueves/runtime.h"` is a no-op
+// here, this file having included it (it is #pragma once) before the first
+// namespace opens -- which it must: that header includes the vendor runtime
+// under HIP, and a first inclusion inside a namespace would declare the runtime
+// there.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
 // libc++ header must not follow it (see primitives.h). The bridge includes
 // integral_types.h first.
 #include "one_electron_bridge.h"
+
+#include "felizjueves/runtime.h"
 
 namespace free_breakfast::device::nuclear_00 {
 #include "potential_en/kernels/v_00.cu"

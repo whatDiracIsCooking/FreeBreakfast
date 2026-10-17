@@ -100,6 +100,37 @@ set(WWR_BUILD_EXAMPLES
 add_subdirectory(WarpWraps)
 
 # ==========================================================================
+# FelizJueves -- the kernel generator's headers
+# ==========================================================================
+# A submodule, and NOT built: it is a Python generator, run by hand
+# (tools/emit_one_electron_kernels.py), whose output is committed under src/.
+# What the build needs of it is its include/ -- felizjueves/runtime.h, which
+# every kernel its `gpu` backend writes includes, and which selects the vendor
+# runtime from the compiler's own macros, so it needs nothing of wwr.
+#
+# FJ_WAVEFRONT is what each generated unit with a shuffle static-asserts its
+# width against. It is wwr's warp size by definition -- one tree, one target
+# arch -- so it is mirrored from WWR_WARP_SIZE here rather than set anywhere
+# else.
+set(_felizjueves_include "${CMAKE_CURRENT_SOURCE_DIR}/FelizJueves/include")
+if(NOT EXISTS "${_felizjueves_include}/felizjueves/runtime.h")
+  message(
+    FATAL_ERROR
+      "deps/FelizJueves is empty or predates its include/ -- the submodule "
+      "has not been initialised, or is pinned too old. Run "
+      "`git submodule update --init --recursive` and configure again."
+  )
+endif()
+add_library(felizjueves_headers INTERFACE)
+add_library(felizjueves::headers ALIAS felizjueves_headers)
+target_include_directories(
+  felizjueves_headers INTERFACE "${_felizjueves_include}"
+)
+target_compile_definitions(
+  felizjueves_headers INTERFACE FJ_WAVEFRONT=${WWR_WARP_SIZE}
+)
+
+# ==========================================================================
 # GoogleTest
 # ==========================================================================
 # NOT declared here. wwr's own deps/CMakeLists.txt fetches it (v1.17.0, stock,

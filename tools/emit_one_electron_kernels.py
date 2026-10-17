@@ -6,11 +6,11 @@ so a build never runs Python. Run this after bumping that submodule:
 
     tools/emit_one_electron_kernels.py
 
-Only the CUDA spelling is written, as a `.cu` that both backends compile: nvcc
-under CUDA and clang `-x hip` under HIP. FelizJueves's HIP spelling differs
-from it only by `#include <hip/hip_runtime.h>`, so instead every file gets
-wwr's backend-neutral `#include <runtime.h>`, which pulls in whichever vendor
-runtime header the compiling front end needs.
+They are FelizJueves's `gpu` spelling, written as a `.cu` that both backends
+compile as emitted: nvcc under CUDA and clang `-x hip` under HIP. Each file
+includes FelizJueves's own `felizjueves/runtime.h` (deps/FelizJueves/include,
+the `felizjueves::headers` target), which pulls in whichever vendor runtime
+the compiling front end needs. Nothing is added to the text here.
 
 Each `v_*.cu` defines its own non-static `__device__ fj_boys` (FelizJueves's
 wide Boys function, #266), so the six cannot share a translation unit as
@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
 from felizjueves.device import by_name  # noqa: E402
-from felizjueves.emit import cuda  # noqa: E402
+from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.kernel_s import build_s_kernel  # noqa: E402
 from felizjueves.kernel_t import build_t_kernel  # noqa: E402
 from felizjueves.kernel_v import build_v_kernel  # noqa: E402
@@ -43,8 +43,8 @@ from felizjueves.kernel_v import build_v_kernel  # noqa: E402
 # (src/basis/angular_momentum.h), the repo's one limit: every family's launcher
 # sizes its kernel table by it and names one kernel per la <= lb <= it.
 MAX_L = 2
-# FelizJueves declares one NVIDIA arch. Its CUDA text does not depend on the
-# arch beyond the banner, and the build compiles it for CMAKE_CUDA_ARCHITECTURES.
+# The gpu backend reads only the arch's wavefront, and these kernels have no
+# shuffle, so their text names neither: any wave32 arch writes the same files.
 ARCH = "sm_86"
 
 # One directory per family: the overlap S, the kinetic energy T and the
@@ -58,16 +58,6 @@ FAMILIES = {
 }
 
 
-def with_runtime_include(text: str) -> str:
-    """Insert wwr's runtime.h below the generated banner."""
-    banner, body = text.split("\n\n", 1)
-    return (
-        f"{banner}\n"
-        f"// {Path(__file__).relative_to(ROOT)} added the include below.\n\n"
-        f"#include <runtime.h>\n\n{body}"
-    )
-
-
 def main() -> int:
     arch = by_name(ARCH)
     for family, build in FAMILIES.items():
@@ -77,7 +67,7 @@ def main() -> int:
             for lb in range(la, MAX_L + 1):
                 kernel = build((la, lb))
                 path = out / f"{kernel.name}.cu"
-                path.write_text(with_runtime_include(cuda.emit(kernel, arch)))
+                path.write_text(gpu.emit(kernel, arch))
                 print(path.relative_to(ROOT))
     return 0
 

@@ -10,7 +10,9 @@ add_subdirectory(overlap)
 # extern "C" kernels would be defined twice). The bridge header they share with
 # the module names int32_t, kMaxAngularMomentum, the device views and
 # wwrStream_t, hence types_headers, basis::headers, upload::headers and
-# wwr::device PUBLIC.
+# wwr::device PUBLIC. The kernels include FelizJueves's
+# felizjueves/runtime.h, which only the two launchers see, hence
+# felizjueves::headers PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.one_electron.device
@@ -22,6 +24,8 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::basis::headers
   free_breakfast::integrals::one_electron::upload::headers
   wwr::device
+  LINK_PRIVATE
+  felizjueves::headers
 )
 
 # The module. DeviceResources, DevicePrimitivePairClass, DeviceNuclei and
