@@ -28,9 +28,10 @@
 # open the PR and by CI on a runner that has the toolchain -- same reasoning
 # that keeps `-m slow` off the Python gate.
 
-# deps/WarpWraps is a submodule -- its own hooks are its repository's business,
-# and rewriting files in there would show up as submodule drift.
-exclude: '^(vendor/|third_party/|deps/WarpWraps/)'
+# deps/WarpWraps and deps/FelizJueves are submodules -- their own hooks are
+# their repositories' business, and rewriting files in there would show up as
+# submodule drift.
+exclude: '^(vendor/|third_party/|deps/WarpWraps/|deps/FelizJueves/)'
 
 # `pre-commit install` installs BOTH hook types from this list, so one install
 # wires up the commit-time lint and the pre-push gate. The hook bakes an

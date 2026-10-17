@@ -2,3 +2,7 @@
 	path = deps/WarpWraps
 	url = https://github.com/whatDiracIsCooking/WarpWraps.git
 	branch = main
+[submodule "deps/FelizJueves"]
+	path = deps/FelizJueves
+	url = https://github.com/whatDiracIsCooking/FelizJueves.git
+	branch = main
