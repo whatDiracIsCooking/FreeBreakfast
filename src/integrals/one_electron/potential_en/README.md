@@ -3,6 +3,10 @@
 The Cartesian electron-nuclear potential (nuclear attraction) matrix V on the
 GPU, over the `v_{la}{lb}` kernels FelizJueves generates. Point nuclei.
 
+> **Currently disabled.** This module is not built, linked or re-exported,
+> and its test (`test/gtest/core_hamiltonian_gpu.cpp`) is off; the sources
+> are kept. See `../CMakeLists.txt` for what to uncomment to restore it.
+
 ## Module
 
 `free_breakfast.integrals.one_electron.potential_en`, also re-exported by
