@@ -7,8 +7,11 @@
 // the same TU.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
-// libc++ header must not follow it (see primitives.h). The bridge includes
-// integral_types.h first.
+// libc++ header must not follow it (see primitives.h). block_params.h and
+// primitives.h include theirs first, as the bridge does integral_types.h.
+#include "block_params.h"
+#include "primitives.h"
+
 #include "kinetic_bridge.h"
 
 #include "kernels/t_00.cu"
@@ -21,9 +24,6 @@
 namespace free_breakfast::device {
 
 namespace {
-
-// One thread per record, as the overlap's.
-constexpr int32_t kKineticBlockSize = 128;
 
 // The generated kernels share one signature (FelizJueves's Target.T parameter
 // block: Target.S's plus eb_ket), spelled `int` for int32_t as the overlap's.
@@ -47,9 +47,11 @@ int32_t kinetic_class(const wwr::wwrStream_t stream, const PrimitivePairClassVie
     return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
   }
   const KineticKernel kernel = kKineticKernels[cls.la][cls.lb];
-  const int32_t blocks = (cls.n_rec + kKineticBlockSize - 1) / kKineticBlockSize;
-  kernel<<<blocks, kKineticBlockSize, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb,
-                                                   cls.s, cls.eb, cls.off_a, cls.off_b, t);
+  // One thread per record, kFourWarps to a block; a whole number of warps keeps
+  // every block's lanes in step.
+  const uint32_t blocks = math::idivup(static_cast<uint32_t>(cls.n_rec), kFourWarps);
+  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb, cls.s,
+                                            cls.eb, cls.off_a, cls.off_b, t);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 

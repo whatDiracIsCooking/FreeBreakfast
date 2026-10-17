@@ -5,7 +5,8 @@
 # it shares with the module names int32_t, kMaxAngularMomentum, the device views
 # and wwrStream_t, hence types_headers, basis::headers, upload::headers and
 # wwr::device PUBLIC. The kernels include FelizJueves's felizjueves/runtime.h,
-# which only the launcher sees, hence felizjueves::headers PRIVATE.
+# which only the launcher sees, hence felizjueves::headers PRIVATE; so is its
+# block sizing (block_params.h, primitives.h), hence core::kernel_headers.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.one_electron.potential_en.device
@@ -17,6 +18,7 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::integrals::one_electron::upload::headers
   wwr::device
   LINK_PRIVATE
+  free_breakfast::core::kernel_headers
   felizjueves::headers
 )
 
