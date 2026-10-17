@@ -10,6 +10,7 @@ export module free_breakfast.integrals.one_electron;
 
 export import free_breakfast.integrals.one_electron.upload;
 export import free_breakfast.integrals.one_electron.overlap;
-export import free_breakfast.integrals.one_electron.kinetic;
-export import free_breakfast.integrals.one_electron.potential_en;
-export import free_breakfast.integrals.one_electron.core_hamiltonian;
+// Disabled at the CMake level (CMakeLists.txt): these modules are not built.
+// export import free_breakfast.integrals.one_electron.kinetic;
+// export import free_breakfast.integrals.one_electron.potential_en;
+// export import free_breakfast.integrals.one_electron.core_hamiltonian;

@@ -4,6 +4,11 @@ One-electron integral matrices on the GPU, over kernels FelizJueves generates:
 the overlap S, the kinetic energy T, the nuclear attraction V, and the core
 Hamiltonian H = T + V.
 
+> **Currently disabled:** `kinetic/`, `potential_en/` and `core_hamiltonian/`
+> are not built, linked or re-exported, and `core_hamiltonian_gpu.cpp` is off;
+> only `upload/` and `overlap/` are live. The sources are kept, and
+> `CMakeLists.txt` says what to uncomment to restore them.
+
 ## Module
 
 `free_breakfast.integrals.one_electron`, a convenience module that re-exports
