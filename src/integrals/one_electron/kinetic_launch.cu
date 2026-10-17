@@ -11,12 +11,12 @@
 // integral_types.h first.
 #include "one_electron_bridge.h"
 
-#include "t_kinetic/t_00.cu"
-#include "t_kinetic/t_01.cu"
-#include "t_kinetic/t_02.cu"
-#include "t_kinetic/t_11.cu"
-#include "t_kinetic/t_12.cu"
-#include "t_kinetic/t_22.cu"
+#include "kinetic/kernels/t_00.cu"
+#include "kinetic/kernels/t_01.cu"
+#include "kinetic/kernels/t_02.cu"
+#include "kinetic/kernels/t_11.cu"
+#include "kinetic/kernels/t_12.cu"
+#include "kinetic/kernels/t_22.cu"
 
 namespace free_breakfast::device {
 
@@ -33,26 +33,23 @@ using KineticKernel = void (*)(int32_t, int32_t, const double *, const double *,
 
 // Indexed [la][lb]; the la > lb half is empty because the host swaps every
 // shell pair into la <= lb (free_breakfast.integrals.mmd).
-constexpr KineticKernel kKineticKernels[kOneElectronMaxAngularMomentum + 1]
-                                       [kOneElectronMaxAngularMomentum + 1] = {
-                                           {t_00, t_01, t_02},
-                                           {nullptr, t_11, t_12},
-                                           {nullptr, nullptr, t_22},
+constexpr KineticKernel kKineticKernels[kMaxAngularMomentum + 1][kMaxAngularMomentum + 1] = {
+    {t_00, t_01, t_02},
+    {nullptr, t_11, t_12},
+    {nullptr, nullptr, t_22},
 };
 
 } // namespace
 
-int32_t kinetic_class(const wwr::wwrStream_t stream, const int32_t la, const int32_t lb,
-                      const int32_t n_rec, const int32_t n_ao, const double *zeta,
-                      const double *xpa, const double *xpb, const double *s_rec, const double *eb,
-                      const int32_t *off_a, const int32_t *off_b, double *t) {
-  if (la < 0 || lb < la || lb > kOneElectronMaxAngularMomentum || n_rec < 1) {
+int32_t kinetic_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
+                      const int32_t n_ao, double *t) {
+  if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum || cls.n_rec < 1) {
     return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
   }
-  const KineticKernel kernel = kKineticKernels[la][lb];
-  const int32_t blocks = (n_rec + kKineticBlockSize - 1) / kKineticBlockSize;
-  kernel<<<blocks, kKineticBlockSize, 0, stream>>>(n_rec, n_ao, zeta, xpa, xpb, s_rec, eb, off_a,
-                                                   off_b, t);
+  const KineticKernel kernel = kKineticKernels[cls.la][cls.lb];
+  const int32_t blocks = (cls.n_rec + kKineticBlockSize - 1) / kKineticBlockSize;
+  kernel<<<blocks, kKineticBlockSize, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb,
+                                                   cls.s, cls.eb, cls.off_a, cls.off_b, t);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 

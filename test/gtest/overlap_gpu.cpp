@@ -1,4 +1,4 @@
-// GPU cases for integrals.one_electron's overlap: the Cartesian S of H2O in
+// GPU cases for integrals.one_electron.overlap: the Cartesian S of H2O in
 // STO-3G (s, p; O's p shell precedes the H s shells, so the la <= lb swap is
 // exercised) and cc-pVDZ (s, p, d) against libcint's int1e_ovlp, recorded by
 // PySCF (test/gtest/data/one_electron/, copied from FelizJueves's fixtures by

@@ -39,18 +39,22 @@ from felizjueves.kernel_s import build_s_kernel  # noqa: E402
 from felizjueves.kernel_t import build_t_kernel  # noqa: E402
 from felizjueves.kernel_v import build_v_kernel  # noqa: E402
 
-# The kernels' own L limit: d, as basis's kMaxAngularMomentum.
+# The kernels' L limit: d. It must equal kMaxAngularMomentum
+# (src/basis/angular_momentum.h), the repo's one limit: every family's launcher
+# sizes its kernel table by it and names one kernel per la <= lb <= it.
 MAX_L = 2
 # FelizJueves declares one NVIDIA arch. Its CUDA text does not depend on the
 # arch beyond the banner, and the build compiles it for CMAKE_CUDA_ARCHITECTURES.
 ARCH = "sm_86"
 
-# One directory per family: the overlap S, the kinetic energy T and the nuclear
-# attraction V. T + V is the core Hamiltonian.
+# One directory per family: the overlap S, the kinetic energy T and the
+# electron-nuclear potential V (potential_en). T + V is the core Hamiltonian.
+# The kernels go in the family's kernels/ subdirectory, whose .clang-format
+# turns formatting off without reaching the hand-written code beside it.
 FAMILIES = {
-    "s_overlap": build_s_kernel,
-    "t_kinetic": build_t_kernel,
-    "v_nuclear": build_v_kernel,
+    "overlap": build_s_kernel,
+    "kinetic": build_t_kernel,
+    "potential_en": build_v_kernel,
 }
 
 
@@ -67,7 +71,7 @@ def with_runtime_include(text: str) -> str:
 def main() -> int:
     arch = by_name(ARCH)
     for family, build in FAMILIES.items():
-        out = ROOT / "src/integrals/one_electron" / family
+        out = ROOT / "src/integrals/one_electron" / family / "kernels"
         out.mkdir(parents=True, exist_ok=True)
         for la in range(MAX_L + 1):
             for lb in range(la, MAX_L + 1):
