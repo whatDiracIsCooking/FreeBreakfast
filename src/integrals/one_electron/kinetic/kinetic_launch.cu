@@ -1,6 +1,6 @@
-// The device half of the kinetic energy in free_breakfast.integrals.one_electron:
-// the launcher over the generated t_{la}{lb} kernels. One source for both
-// backends -- nvcc under CUDA, clang -x hip under HIP.
+// The device half of free_breakfast.integrals.one_electron.kinetic: the
+// launcher over the generated t_{la}{lb} kernels. One source for both backends
+// -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are #included rather than compiled as sources of their
 // own, as overlap_launch.cu does: the launches below see their definitions in
@@ -9,14 +9,14 @@
 // Standard headers before anything that reaches the vendor runtime: under HIP a
 // libc++ header must not follow it (see primitives.h). The bridge includes
 // integral_types.h first.
-#include "one_electron_bridge.h"
+#include "kinetic_bridge.h"
 
-#include "kinetic/kernels/t_00.cu"
-#include "kinetic/kernels/t_01.cu"
-#include "kinetic/kernels/t_02.cu"
-#include "kinetic/kernels/t_11.cu"
-#include "kinetic/kernels/t_12.cu"
-#include "kinetic/kernels/t_22.cu"
+#include "kernels/t_00.cu"
+#include "kernels/t_01.cu"
+#include "kernels/t_02.cu"
+#include "kernels/t_11.cu"
+#include "kernels/t_12.cu"
+#include "kernels/t_22.cu"
 
 namespace free_breakfast::device {
 

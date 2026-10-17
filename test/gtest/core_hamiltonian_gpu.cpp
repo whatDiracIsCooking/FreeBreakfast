@@ -1,10 +1,11 @@
-// GPU cases for integrals.one_electron's kinetic, nuclear_attraction and
-// core_hamiltonian: the Cartesian T, V and H = T + V of H2O in STO-3G (s, p; O's
-// p shell precedes the H s shells, so the la <= lb swap is exercised) and
-// cc-pVDZ (s, p, d) against libcint's int1e_kin and int1e_nuc (point nuclei)
-// and PySCF's hcore, recorded by PySCF (test/gtest/data/one_electron/, copied
-// from FelizJueves's fixtures by tools/extract_one_electron_golden.py), plus,
-// as overlap_gpu.cpp, the zeroing and the class-range refusal of each.
+// GPU cases for integrals.one_electron's kinetic, potential_en and
+// core_hamiltonian modules: the Cartesian T, V and H = T + V of H2O in STO-3G
+// (s, p; O's p shell precedes the H s shells, so the la <= lb swap is
+// exercised) and cc-pVDZ (s, p, d) against libcint's int1e_kin and int1e_nuc
+// (point nuclei) and PySCF's hcore, recorded by PySCF
+// (test/gtest/data/one_electron/, copied from FelizJueves's fixtures by
+// tools/extract_one_electron_golden.py), plus, as overlap_gpu.cpp, the zeroing
+// and the class-range refusal of each.
 
 #include <gtest/gtest.h>
 
