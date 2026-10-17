@@ -23,8 +23,13 @@ import free_breakfast.basis;
 export namespace free_breakfast {
 
 /// @brief Every primitive-pair record of one shell-pair class (la, lb), with
-/// la <= lb, as parallel arrays (one entry per record; three, x y z, for the
-/// vector fields).
+/// la <= lb, as parallel arrays: one entry per record, and each vector field
+/// split per axis (xpa, ypa, zpa rather than one interleaved array).
+///
+/// That is the layout the kernels read: structure of arrays, so with one
+/// thread per record a warp's loads are contiguous, and on the device the
+/// arrays travel as one FelizJueves @c PrimPairSoA
+/// (free_breakfast.integrals.one_electron.upload).
 ///
 /// **The class is always la <= lb.** A shell pair whose bra has the higher
 /// angular momentum is stored swapped, B as the bra and A as the ket, so the
@@ -43,12 +48,24 @@ struct PrimitivePairClass {
   int32_t lb{0};
   /// @brief zeta = alpha + beta.
   std::vector<double> zeta;
-  /// @brief P, the product centre (3 per record).
-  std::vector<double> p;
-  /// @brief P - A (3 per record).
+  /// @brief P, the product centre: x.
+  std::vector<double> xp;
+  /// @brief P: y.
+  std::vector<double> yp;
+  /// @brief P: z.
+  std::vector<double> zp;
+  /// @brief P - A: x.
   std::vector<double> xpa;
-  /// @brief P - B (3 per record).
+  /// @brief P - A: y.
+  std::vector<double> ypa;
+  /// @brief P - A: z.
+  std::vector<double> zpa;
+  /// @brief P - B: x.
   std::vector<double> xpb;
+  /// @brief P - B: y.
+  std::vector<double> ypb;
+  /// @brief P - B: z.
+  std::vector<double> zpb;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   std::vector<double> s;
   /// @brief beta, the ket primitive's exponent.

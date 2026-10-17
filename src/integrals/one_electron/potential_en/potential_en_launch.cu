@@ -48,10 +48,10 @@ namespace free_breakfast::device {
 namespace {
 
 // The generated kernels share one signature (FelizJueves's Target.V parameter
-// block), spelled `int` for int32_t as the overlap's.
-using PotentialEnKernel = void (*)(int32_t, int32_t, int32_t, const double *, const double *,
-                                   const double *, const double *, const double *, const int32_t *,
-                                   const int32_t *, const double *, const double *, double *);
+// block, its record arrays one PrimPairSoA, P among them), int32_t throughout
+// as the overlap's.
+using PotentialEnKernel = void (*)(int32_t, int32_t, int32_t, PrimPairSoA, const double *,
+                                   const double *, double *);
 
 // Indexed [la][lb]; the la > lb half is empty because the host swaps every
 // shell pair into la <= lb (free_breakfast.integrals.mmd).
@@ -74,8 +74,7 @@ int32_t potential_en_class(const wwr::wwrStream_t stream, const PrimitivePairCla
   // One thread per record, the nuclei serial inside it, kFourWarps to a block; a
   // whole number of warps keeps every block's lanes in step.
   const uint32_t blocks = math::idivup(static_cast<uint32_t>(cls.n_rec), kFourWarps);
-  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, nuclei.n_nuc, cls.zeta, cls.p, cls.xpa,
-                                            cls.xpb, cls.s, cls.off_a, cls.off_b, nuclei.z,
+  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, nuclei.n_nuc, cls.recs, nuclei.z,
                                             nuclei.c, v);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
