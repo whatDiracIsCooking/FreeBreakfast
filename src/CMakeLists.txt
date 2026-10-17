@@ -15,3 +15,5 @@ add_subdirectory(basis)
 add_subdirectory(io)
 add_subdirectory(sad)
 add_subdirectory(linalg)
+# After linalg: one_electron writes into linalg.matrix_ao's CartesianMatrixAO.
+add_subdirectory(integrals)
