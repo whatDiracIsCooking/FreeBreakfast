@@ -36,6 +36,7 @@ add_executable(
   atom_host.cpp
   molecule_host.cpp
   basis_host.cpp
+  mmd_host.cpp
   sad_host.cpp
   io_base_host.cpp
   io_basis_host.cpp
@@ -66,6 +67,7 @@ target_link_libraries(
           free_breakfast::basis
           free_breakfast::sad
           free_breakfast::io
+          free_breakfast::integrals::mmd
           free_breakfast::core::resources
           GTest::gtest
           GTest::gtest_main
@@ -91,6 +93,7 @@ add_executable(
   gemm_gpu.cpp
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp
+  overlap_gpu.cpp
 )
 
 set_target_properties(
@@ -106,6 +109,8 @@ target_link_libraries(
   PRIVATE free_breakfast::core
           free_breakfast::core::resources
           free_breakfast::linalg
+          free_breakfast::integrals
+          free_breakfast::io
           free_breakfast::test::gpu_kernels
           GTest::gtest
           GTest::gtest_main
@@ -117,6 +122,13 @@ target_include_directories(
 )
 target_include_directories(
   free_breakfast_tests_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+# Golden reference data (data/README.md). An absolute path, so a test finds it
+# whatever directory ctest runs it from.
+target_compile_definitions(
+  free_breakfast_tests_gpu
+  PRIVATE FBF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
 )
 
 # ---------------------------------------------------------------------------

@@ -8,7 +8,7 @@ Gaussian basis-set description: contracted shells, a basis set with AO indexing,
 
 ## Design
 
-This module carries only the *description* of a Gaussian basis — the data an integral engine consumes — and evaluates no integrals itself. **No integral engine exists in this tree yet**; where the docs say "the GPU kernels", they mean the consumer this layout is designed for. Everything is in atomic units: shell centers in bohr (a `Vec<double, 3>`), primitive exponents in inverse bohr².
+This module carries only the *description* of a Gaussian basis — the data an integral engine consumes — and evaluates no integrals itself. The integral engine is `src/integrals` (today the overlap); where these docs say "the GPU kernels", they mean its consumers of this layout. Everything is in atomic units: shell centers in bohr (a `Vec<double, 3>`), primitive exponents in inverse bohr².
 
 **Spherical basis, evaluated as Cartesian.** Every shell means the `2L+1` real solid harmonics of its angular momentum — there is no Cartesian-basis mode, and the BSE reader (`io/basis`) rejects Cartesian input. A shell of angular momentum L is nonetheless evaluated over the Cartesian Gaussians `x^a y^b z^c` with `a+b+c = L`, giving `(L+1)(L+2)/2` functions — 1 (s), 3 (p), 6 (d) — in the canonical lexicographic-on-(a,b,c)-with-a-highest order: `(x, y, z)` for p, `(xx, xy, xz, yy, yz, zz)` for d. `cartesian_powers(l)` enumerates those `(a, b, c)` triples in that order, for arbitrary L. `kMaxAngularMomentum` is 2 (the intended GPU-kernel L limit; nothing here enforces it); `function_count_cart(l)` returns the Cartesian count.
 
