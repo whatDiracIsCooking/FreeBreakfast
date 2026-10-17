@@ -15,9 +15,19 @@ and `upload_nuclei` a molecule's nuclei (Z and position) once per geometry. Both
 synchronize the stream once, after the copies, so the host data may be released
 on return.
 
-**One record set serves every family.** S reads `zeta`, `xpa`, `xpb`, `s` and
-the offsets; T reads those and `eb`, the ket exponent; V reads those and `p`,
+**One record set serves every family.** S reads `zeta`, P − A, P − B, `s` and
+the offsets; T reads those and `eb`, the ket exponent; V reads those and P,
 the product centre. The upload copies them all, whichever matrix is wanted.
+
+**The kernels take the records as one struct.** `PrimitivePairClassView::recs`
+is FelizJueves's `PrimPairSoA` (`felizjueves/prim_pair.h`, from
+`deps/FelizJueves/include`): one pointer per field, every vector split per axis,
+passed to each generated kernel by value. It is the superset all three families
+read, and each kernel leaves the fields it does not need unread, so a launcher
+hands `cls.recs` through unchanged: `s_01(n_rec, n_ao, cls.recs, s)`.
+`device_views.h` includes the header at file scope, ahead of any launcher's
+namespaced `#include` of a kernel, which is why `upload::headers` links
+`felizjueves::headers` PUBLIC.
 
 **Owners in the module, views in a header.** `DevicePrimitivePairClass` and
 `DeviceNuclei` own wwr device buffers, which only a module can name, so they

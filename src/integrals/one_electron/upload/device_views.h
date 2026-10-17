@@ -17,13 +17,20 @@
 
 #include "integral_types.h"
 
+// PrimPairSoA, FelizJueves's record struct (deps/FelizJueves/include). At
+// file scope, ahead of any launcher's namespaced #include of a generated
+// kernel, whose own include of it is then a no-op (prim_pair.h's note).
+#include "felizjueves/prim_pair.h"
+
 namespace free_breakfast {
 
 /// @brief One primitive-pair class on the device: the record arrays of a
 /// @c DevicePrimitivePairClass, by pointer.
 ///
-/// Every array has @ref n_rec entries, except @ref p, @ref xpa and @ref xpb,
-/// which have three per record.
+/// The arrays are @ref recs, a FelizJueves @c PrimPairSoA: one flat array of
+/// @ref n_rec entries per field, every vector split per axis (XPA, YPA, ZPA).
+/// It is the struct every generated one-electron kernel takes by value, and
+/// the superset all of them read, so a launcher passes it through unchanged.
 struct PrimitivePairClassView {
   /// @brief The bra shell's angular momentum, <= @ref lb.
   int32_t la;
@@ -31,22 +38,9 @@ struct PrimitivePairClassView {
   int32_t lb;
   /// @brief The number of records, positive.
   int32_t n_rec;
-  /// @brief zeta = alpha + beta.
-  const double *zeta;
-  /// @brief P.
-  const double *p;
-  /// @brief P - A.
-  const double *xpa;
-  /// @brief P - B.
-  const double *xpb;
-  /// @brief c_a c_b (pi / zeta)^{3/2}.
-  const double *s;
-  /// @brief beta, the ket primitive's exponent.
-  const double *eb;
-  /// @brief The bra shell's first Cartesian AO.
-  const int32_t *off_a;
-  /// @brief The ket shell's first Cartesian AO.
-  const int32_t *off_b;
+  /// @brief The record arrays: zeta, s, eb, P, P - A, P - B (per axis) and
+  /// the two AO offsets (felizjueves/prim_pair.h has each field).
+  PrimPairSoA recs;
 };
 
 /// @brief A molecule's nuclei on the device: the arrays of a @c DeviceNuclei,
