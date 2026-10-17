@@ -1,5 +1,6 @@
 /// @file
-/// @brief upload_primitive_pairs, upload_nuclei and check_one_electron_build.
+/// @brief upload_primitive_pairs, upload_nuclei, check_one_electron_build and
+/// check_nuclei.
 
 module free_breakfast.integrals.one_electron.upload;
 
@@ -107,6 +108,15 @@ Status check_one_electron_build(const DeviceResources &res,
       return err_config("{}: no kernel for class ({}, {}); the kernels cover la <= lb <= {}", what,
                         cls.la, cls.lb, kMaxAngularMomentum);
     }
+  }
+  return {};
+}
+
+Status check_nuclei(const DeviceResources &res, const DeviceNuclei &nuclei,
+                    const std::string_view what) {
+  if (res.dev_idx() != nuclei.dev_idx) {
+    return err_config("{}: the nuclei are on device {}, but the call passed device {}", what,
+                      nuclei.dev_idx, res.dev_idx());
   }
   return {};
 }

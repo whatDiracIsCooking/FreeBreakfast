@@ -128,4 +128,12 @@ struct DeviceNuclei {
                                               std::span<const DevicePrimitivePairClass> classes,
                                               const CartesianMatrixAO &m, std::string_view what);
 
+/// @brief What a build that reads the nuclei checks beyond
+/// @ref check_one_electron_build: @p nuclei on @p res's device. @p what names
+/// the build in the message.
+///
+/// @return Success, or InvalidConfig if the nuclei are on another device.
+[[nodiscard]] Status check_nuclei(const DeviceResources &res, const DeviceNuclei &nuclei,
+                                  std::string_view what);
+
 } // namespace free_breakfast

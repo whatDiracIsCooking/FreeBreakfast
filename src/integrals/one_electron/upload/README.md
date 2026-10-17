@@ -1,6 +1,6 @@
 # Upload
 
-The device inputs every one-electron build reads, and the check every build runs
+The device inputs every one-electron build reads, and the checks every build runs
 before it launches anything.
 
 ## Module
@@ -28,12 +28,14 @@ pointers; this module includes it in its global module fragment and re-exports
 the names, so the two sides share one entity (the `atom` pattern). A view is
 valid while its owner is alive and unmoved.
 
-**The shared check.** `check_one_electron_build` is what each family's build
-(`overlap`, and T, V and H in `one_electron`) runs first: the matrix on the
-call's device, its order within the kernels' 32-bit `m * n_ao + n` index
-(`n_ao² ≤ INT32_MAX`, about 46k Cartesian AOs), and every class `la <= lb <=
-kMaxAngularMomentum`. That limit is `basis`'s, one for the whole repo: every
-family is generated to it, and the launchers' kernel tables are sized by it.
+**The shared checks.** `check_one_electron_build` is what every build
+(`overlap`, `kinetic`, `potential_en`, `core_hamiltonian`) runs first: the
+matrix on the call's device, its order within the kernels' 32-bit
+`m * n_ao + n` index (`n_ao² ≤ INT32_MAX`, about 46k Cartesian AOs), and every
+class `la <= lb <= kMaxAngularMomentum`. That limit is `basis`'s, one for the
+whole repo: every family is generated to it, and the launchers' kernel tables
+are sized by it. `check_nuclei` is the extra one for the builds that read the
+nuclei (V and H): the nuclei on the call's device.
 
 No device code: this module copies and validates, and each family's module
 launches.
@@ -48,12 +50,13 @@ launches.
 | `PrimitivePairClassView`, `NucleiView` | Non-owning pointer views, from `device_views.h`, for the launchers |
 | `upload_nuclei(res, molecule)` | `Result<DeviceNuclei>`, in atom order. `InvalidConfig` for a molecule with no atoms. Synchronizes once |
 | `check_one_electron_build(res, classes, m, what)` | `Status`: `InvalidConfig` naming the first refused input, `what` naming the build |
+| `check_nuclei(res, nuclei, what)` | `Status`: `InvalidConfig` if the nuclei are on another device |
 
 ## Files
 
 | File | Role |
 |------|------|
 | `device_views.h` | The single definition of the two views, for `#include` and `import` alike |
-| `upload.cppm` | Module interface: the owners, the uploads, the check, and the views re-exported |
+| `upload.cppm` | Module interface: the owners, the uploads, the checks, and the views re-exported |
 | `upload.cpp` | Implementation |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.one_electron.upload.headers` and the module |

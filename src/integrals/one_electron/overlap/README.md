@@ -24,15 +24,11 @@ formatting off, reaches them and not the hand-written code here.
 their own, so it launches kernels whose definitions it can see; listing them as
 sources too would define each `extern "C"` kernel twice.
 
-**The layout this directory proves** for each one-electron family:
-
-- `<family>.cppm` / `<family>.cpp`: the module and its build;
-- `<family>_bridge.h` (here `overlap_bridge.h`): the launcher's declaration,
-  shared by the `.cu` and the implementation unit's GMF. The launcher takes
-  `upload`'s `PrimitivePairClassView`, not loose pointers, and is bounded by
-  `basis`'s `kMaxAngularMomentum`, the one limit for every family;
-- `<launcher>.cu`: the device library, over `kernels/`;
-- the device inputs and the pre-launch check come from `upload`.
+**The family layout.** `kinetic/` and `potential_en/` are the same files under
+their own names; the parent README's "One layout per kernel family" has the
+table. The launcher takes `upload`'s `PrimitivePairClassView`, not loose
+pointers, and is bounded by `basis`'s `kMaxAngularMomentum`, the one limit for
+every family.
 
 **Limits.** d per shell (`kMaxAngularMomentum`), and `n_ao² ≤ INT32_MAX`;
 either is `InvalidConfig` before anything is launched. The records' AO offsets

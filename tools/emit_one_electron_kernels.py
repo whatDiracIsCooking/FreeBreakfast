@@ -15,7 +15,7 @@ the compiling front end needs. Nothing is added to the text here.
 Each `v_*.cu` defines its own non-static `__device__ fj_boys` (FelizJueves's
 wide Boys function, #266), so the six cannot share a translation unit as
 emitted: the launcher that includes them gives each a namespace of its own
-(src/integrals/one_electron/nuclear_launch.cu).
+(src/integrals/one_electron/potential_en/potential_en_launch.cu).
 
 Only the classes `la <= lb` are written. The host pair builder
 (free_breakfast.integrals.mmd) swaps every shell pair into that order, so a
