@@ -51,6 +51,12 @@ They are wired differently and the difference matters.
 | **Python** | `.venv` / `/opt/venv` | `uv sync --frozen` from `uv.lock` |
 
 Plus `nlohmann_json`, which is FetchContent because it is header-only and small.
+And `deps/FelizJueves`, a submodule that is **not built**: it is the Python
+generator `tools/emit_one_electron_kernels.py` runs by hand, its kernels
+committed under `src/integrals/`. The build takes only its `include/`, as the
+INTERFACE target `felizjueves::headers` (`deps/CMakeLists.txt`): the
+vendor-neutral `felizjueves/runtime.h` every generated kernel includes, with
+`FJ_WAVEFRONT` mirrored from `WWR_WARP_SIZE`.
 
 **WarpWraps is the GPU API layer, and this project does not duplicate it.**
 There is no `deps/cuda/` of hand-written `cuda_runtime_api.cppm` /

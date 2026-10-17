@@ -4,7 +4,9 @@
 # their own (their extern "C" kernels would be defined twice). The bridge header
 # it shares with the module names int32_t, kMaxAngularMomentum,
 # PrimitivePairClassView and wwrStream_t, hence types_headers, basis::headers,
-# upload::headers and wwr::device PUBLIC.
+# upload::headers and wwr::device PUBLIC. The kernels include FelizJueves's
+# felizjueves/runtime.h, which only the launcher sees, hence
+# felizjueves::headers PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.one_electron.overlap.device
@@ -15,6 +17,8 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::basis::headers
   free_breakfast::integrals::one_electron::upload::headers
   wwr::device
+  LINK_PRIVATE
+  felizjueves::headers
 )
 
 # The module. DeviceResources, DevicePrimitivePairClass and CartesianMatrixAO

@@ -187,7 +187,12 @@ they link wwr directly:
    every `.cu` library. nvcc cannot import a module, so these link
    `wwr::device` for wwr's `runtime.h` and `WWR_WARP_SIZE`. They include that
    header, never `<cuda_runtime.h>` or `<hip/hip_runtime.h>` themselves:
-   selecting the vendor runtime is wwr's job too.
+   selecting the vendor runtime is wwr's job too. The one carve-out is the
+   kernels FelizJueves generates (`src/integrals/one_electron/*/kernels/`): they
+   include FelizJueves's own `felizjueves/runtime.h`, which selects the vendor
+   runtime from the compiler's macros the same way, because a generator that
+   is not built against wwr cannot spell wwr's header. Their launchers still
+   include wwr's first, through the bridge.
 3. **`diagnostics_macros` does not link this module**, although `FBF_GPU_MUST`
    expands to `gpu_status`. `io/` and `basis/` link it for `FBF_TRY` and
    `FBF_LOG_*` and have no GPU code. Code that calls `FBF_GPU_MUST` already
