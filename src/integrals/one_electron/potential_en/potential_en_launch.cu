@@ -15,8 +15,11 @@
 // there.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
-// libc++ header must not follow it (see primitives.h). The bridge includes
-// integral_types.h first.
+// libc++ header must not follow it (see primitives.h). block_params.h and
+// primitives.h include theirs first, as the bridge does integral_types.h.
+#include "block_params.h"
+#include "primitives.h"
+
 #include "potential_en_bridge.h"
 
 #include "felizjueves/runtime.h"
@@ -44,9 +47,6 @@ namespace free_breakfast::device {
 
 namespace {
 
-// One thread per record, as the overlap's. The nuclei are serial inside it.
-constexpr int32_t kPotentialEnBlockSize = 128;
-
 // The generated kernels share one signature (FelizJueves's Target.V parameter
 // block), spelled `int` for int32_t as the overlap's.
 using PotentialEnKernel = void (*)(int32_t, int32_t, int32_t, const double *, const double *,
@@ -71,10 +71,12 @@ int32_t potential_en_class(const wwr::wwrStream_t stream, const PrimitivePairCla
     return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
   }
   const PotentialEnKernel kernel = kPotentialEnKernels[cls.la][cls.lb];
-  const int32_t blocks = (cls.n_rec + kPotentialEnBlockSize - 1) / kPotentialEnBlockSize;
-  kernel<<<blocks, kPotentialEnBlockSize, 0, stream>>>(cls.n_rec, n_ao, nuclei.n_nuc, cls.zeta,
-                                                       cls.p, cls.xpa, cls.xpb, cls.s, cls.off_a,
-                                                       cls.off_b, nuclei.z, nuclei.c, v);
+  // One thread per record, the nuclei serial inside it, kFourWarps to a block; a
+  // whole number of warps keeps every block's lanes in step.
+  const uint32_t blocks = math::idivup(static_cast<uint32_t>(cls.n_rec), kFourWarps);
+  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, nuclei.n_nuc, cls.zeta, cls.p, cls.xpa,
+                                            cls.xpb, cls.s, cls.off_a, cls.off_b, nuclei.z,
+                                            nuclei.c, v);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 

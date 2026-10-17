@@ -1,5 +1,5 @@
 /// @file
-/// @brief Launch-shape constants (kWarpSize, NumWarps) for host module code.
+/// @brief Launch-shape constants (kWarpSize, kFourWarps, NumWarps) for host module code.
 ///
 /// Usage:
 ///   import free_breakfast.core.kernel;
@@ -23,6 +23,7 @@ export module free_breakfast.core.kernel;
 
 export namespace free_breakfast {
 
+using free_breakfast::kFourWarps;
 using free_breakfast::kWarpSize;
 using free_breakfast::NumWarps;
 

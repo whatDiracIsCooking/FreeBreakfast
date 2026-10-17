@@ -1,5 +1,6 @@
 /// @file
-/// @brief Launch-shape constants and constraints (kWarpSize, NumWarps), written
+/// @brief Launch-shape constants and constraints (kWarpSize, kFourWarps,
+/// NumWarps), written
 /// once for host and device code.
 ///
 /// A plain header, as primitives.h is: block sizing is wanted by device
@@ -35,6 +36,12 @@ namespace free_breakfast {
 /// `inline` gives it external linkage, which kernel.cppm needs to export it (a
 /// plain namespace-scope constexpr is internal).
 inline constexpr uint32_t kWarpSize = static_cast<uint32_t>(WWR_WARP_SIZE);
+
+/// @brief Four warps' worth of threads: 128 on NVIDIA and RDNA, 256 on CDNA
+///
+/// The block size of a one-thread-per-item launch, such as the one-electron
+/// integral launchers: a whole number of warps keeps every block's lanes in step.
+inline constexpr uint32_t kFourWarps = 4 * kWarpSize;
 
 static_assert(kWarpSize == 32 || kWarpSize == 64,
               "WWR_WARP_SIZE must be 32 (NVIDIA, RDNA) or 64 (CDNA)");

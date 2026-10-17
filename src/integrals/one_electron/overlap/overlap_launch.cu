@@ -8,8 +8,11 @@
 // extern "C" names reach no other TU of this library.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
-// libc++ header must not follow it (see primitives.h). The bridge includes
-// integral_types.h first.
+// libc++ header must not follow it (see primitives.h). block_params.h and
+// primitives.h include theirs first, as the bridge does integral_types.h.
+#include "block_params.h"
+#include "primitives.h"
+
 #include "overlap_bridge.h"
 
 #include "kernels/s_00.cu"
@@ -22,10 +25,6 @@
 namespace free_breakfast::device {
 
 namespace {
-
-// One thread per record, so any size works; a multiple of the warp and the
-// wavefront keeps every block's lanes in step.
-constexpr int32_t kOverlapBlockSize = 128;
 
 // The generated kernels share one signature (FelizJueves's Target.S parameter
 // block), which is what lets one table cover every class. They spell their
@@ -50,9 +49,11 @@ int32_t overlap_class(const wwr::wwrStream_t stream, const PrimitivePairClassVie
     return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
   }
   const OverlapKernel kernel = kOverlapKernels[cls.la][cls.lb];
-  const int32_t blocks = (cls.n_rec + kOverlapBlockSize - 1) / kOverlapBlockSize;
-  kernel<<<blocks, kOverlapBlockSize, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb,
-                                                   cls.s, cls.off_a, cls.off_b, s);
+  // One thread per record, kFourWarps to a block; a whole number of warps keeps
+  // every block's lanes in step.
+  const uint32_t blocks = math::idivup(static_cast<uint32_t>(cls.n_rec), kFourWarps);
+  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb, cls.s,
+                                            cls.off_a, cls.off_b, s);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 
