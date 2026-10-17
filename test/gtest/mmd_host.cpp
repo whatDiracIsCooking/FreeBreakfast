@@ -29,24 +29,22 @@ fb::BasisSet p_then_s() {
 
 TEST(Mmd, ClassesAreReachedOnlyAndAscending) {
   const auto classes = fb::primitive_pair_classes(p_then_s());
-  ASSERT_TRUE(classes);
-  ASSERT_EQ(classes->size(), 3U);
+  ASSERT_EQ(classes.size(), 3U);
   const std::vector<std::pair<std::int32_t, std::int32_t>> want{{0, 0}, {0, 1}, {1, 1}};
   for (std::size_t c = 0; c < want.size(); ++c) {
-    EXPECT_EQ((*classes)[c].la, want[c].first) << "class " << c;
-    EXPECT_EQ((*classes)[c].lb, want[c].second) << "class " << c;
+    EXPECT_EQ(classes[c].la, want[c].first) << "class " << c;
+    EXPECT_EQ(classes[c].lb, want[c].second) << "class " << c;
   }
   // (s|s): 1 x 1 primitives; (s|p): 1 x 2; (p|p): 2 x 2.
-  EXPECT_EQ((*classes)[0].size(), 1U);
-  EXPECT_EQ((*classes)[1].size(), 2U);
-  EXPECT_EQ((*classes)[2].size(), 4U);
+  EXPECT_EQ(classes[0].size(), 1U);
+  EXPECT_EQ(classes[1].size(), 2U);
+  EXPECT_EQ(classes[2].size(), 4U);
 }
 
 TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
   const fb::BasisSet basis = p_then_s();
   const auto classes = fb::primitive_pair_classes(basis);
-  ASSERT_TRUE(classes);
-  const fb::PrimitivePairClass &sp = (*classes)[1];
+  const fb::PrimitivePairClass &sp = classes[1];
   ASSERT_EQ(sp.la, 0);
   ASSERT_EQ(sp.lb, 1);
 
@@ -84,14 +82,13 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
 
 TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
   const auto classes = fb::primitive_pair_classes(p_then_s());
-  ASSERT_TRUE(classes);
-  for (const fb::PrimitivePairClass *cls : {&(*classes)[0], &(*classes)[2]}) {
+  for (const fb::PrimitivePairClass *cls : {&classes[0], &classes[2]}) {
     for (std::size_t k = 0; k < cls->size(); ++k) {
       EXPECT_EQ(cls->off_a[k], cls->off_b[k]) << "(" << cls->la << ", " << cls->lb << ")";
     }
   }
   // Records are bra-primitive-major: (alpha_0, alpha_0), (alpha_0, alpha_1), ...
-  const fb::PrimitivePairClass &pp = (*classes)[2];
+  const fb::PrimitivePairClass &pp = classes[2];
   EXPECT_NEAR(pp.zeta[0], 4.0, kTol);
   EXPECT_NEAR(pp.zeta[1], 2.5, kTol);
   EXPECT_NEAR(pp.zeta[2], 2.5, kTol);
@@ -100,8 +97,7 @@ TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
 
 TEST(Mmd, EmptyBasisHasNoClasses) {
   const auto classes = fb::primitive_pair_classes(fb::BasisSet{});
-  ASSERT_TRUE(classes);
-  EXPECT_TRUE(classes->empty());
+  EXPECT_TRUE(classes.empty());
 }
 
 } // namespace

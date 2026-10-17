@@ -50,7 +50,7 @@ import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
 const auto classes = fb::primitive_pair_classes(basis);       // host
-const auto device = fb::upload_primitive_pairs(res, *classes); // once per basis
+const auto device = fb::upload_primitive_pairs(res, classes);  // once per basis
 fb::CartesianMatrixAO s(res, basis);
 fb::Status status = fb::overlap(res, *device, s);
 ```

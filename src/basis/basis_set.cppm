@@ -52,6 +52,10 @@ export namespace free_breakfast {
 /// (@ref natoms, @ref atom_shell_offset, @ref atom_shell_count), so per-atom
 /// work -- the SAD guess, population analysis -- reads the grouping instead of
 /// re-deriving it from shell centers.
+///
+/// Construction aborts if the Cartesian AO count passes @c INT32_MAX, so
+/// @ref nao_cart and every @ref ao_offset_cart fit an @c int32_t -- what the
+/// integral kernels' AO offsets and 32-bit BLAS dimensions need.
 class BasisSet {
 public:
   BasisSet() = default;
@@ -161,7 +165,9 @@ public:
   }
 
 private:
-  // Fills the Cartesian and spherical AO layouts from shells_.
+  // Fills the Cartesian and spherical AO layouts from shells_. Aborts if the
+  // Cartesian AO count passes INT32_MAX: the integral kernels carry AO offsets
+  // as int32_t, so every consumer can take nao_cart() as fitting one.
   void build_layouts() {
     // Rebuild from scratch: the default member initializer seeds a single
     // trailing 0, which is right for an empty basis but must not remain in
@@ -188,6 +194,13 @@ private:
       }
       offset += shell.function_count_cart();
       spherical_offset += shell.function_count_sphe();
+      // Checked per shell, not once after the loop, so a uint32_t wrap cannot
+      // hide an oversized basis: one shell adds far less than 2^31.
+      if (offset > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
+        check_or_abort(
+            err_config("BasisSet: more than {} Cartesian AOs does not fit a 32-bit AO offset",
+                       std::numeric_limits<int32_t>::max()));
+      }
     }
     ao_offsets_cart_.push_back(offset);
     ao_offsets_sphe_.push_back(spherical_offset);

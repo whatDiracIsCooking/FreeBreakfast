@@ -97,8 +97,7 @@ void PrintTo(const Build which, std::ostream *os) {
 // The matrix on the device for g: records, upload, launch.
 std::vector<double> device_build(fb::DeviceResources &res, const Golden &g, const Build which) {
   const auto classes = fb::primitive_pair_classes(g.basis);
-  EXPECT_TRUE(classes);
-  const auto device = fb::upload_primitive_pairs(res, *classes);
+  const auto device = fb::upload_primitive_pairs(res, classes);
   EXPECT_TRUE(device);
   const auto nuclei = fb::upload_nuclei(res, g.molecule);
   EXPECT_TRUE(nuclei);
@@ -215,8 +214,7 @@ TEST_P(OneElectronBuild, RefusesAClassAboveD) {
   fb::DeviceResources res{0};
   const fb::BasisSet basis = one_shell(3);
   const auto classes = fb::primitive_pair_classes(basis);
-  ASSERT_TRUE(classes);
-  const auto device = fb::upload_primitive_pairs(res, *classes);
+  const auto device = fb::upload_primitive_pairs(res, classes);
   ASSERT_TRUE(device);
   const auto nuclei = fb::upload_nuclei(res, one_hydrogen());
   ASSERT_TRUE(nuclei);
