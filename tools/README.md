@@ -9,9 +9,9 @@ bse_download.py   Fetch basis sets from the Basis Set Exchange as the JSON
 atomic_cd/        aCD / acCD atomic Cholesky decomposition over PySCF
                   integrals; writes acCD auxiliary shells as BSE JSON.
 emit_one_electron_kernels.py
-                  Regenerate src/integrals/one_electron/{s_overlap,t_kinetic,
-                  v_nuclear}/ from the FelizJueves submodule. Standard
-                  library only.
+                  Regenerate src/integrals/one_electron/{overlap,kinetic,
+                  potential_en}/kernels/ from the FelizJueves submodule.
+                  Standard library only.
 extract_one_electron_golden.py
                   Copy the libcint golden data test/gtest/data/one_electron/
                   holds out of FelizJueves's fixtures. Standard library only.

@@ -1,4 +1,4 @@
-// The device half of the overlap in free_breakfast.integrals.one_electron: the
+// The device half of free_breakfast.integrals.one_electron.overlap: the
 // launcher over the generated s_{la}{lb} kernels. One source for both backends
 // -- nvcc under CUDA, clang -x hip under HIP.
 //
@@ -10,14 +10,14 @@
 // Standard headers before anything that reaches the vendor runtime: under HIP a
 // libc++ header must not follow it (see primitives.h). The bridge includes
 // integral_types.h first.
-#include "one_electron_bridge.h"
+#include "overlap_bridge.h"
 
-#include "s_overlap/s_00.cu"
-#include "s_overlap/s_01.cu"
-#include "s_overlap/s_02.cu"
-#include "s_overlap/s_11.cu"
-#include "s_overlap/s_12.cu"
-#include "s_overlap/s_22.cu"
+#include "kernels/s_00.cu"
+#include "kernels/s_01.cu"
+#include "kernels/s_02.cu"
+#include "kernels/s_11.cu"
+#include "kernels/s_12.cu"
+#include "kernels/s_22.cu"
 
 namespace free_breakfast::device {
 
@@ -36,26 +36,23 @@ using OverlapKernel = void (*)(int32_t, int32_t, const double *, const double *,
 
 // Indexed [la][lb]; the la > lb half is empty because the host swaps every
 // shell pair into la <= lb (free_breakfast.integrals.mmd).
-constexpr OverlapKernel kOverlapKernels[kOneElectronMaxAngularMomentum + 1]
-                                       [kOneElectronMaxAngularMomentum + 1] = {
-                                           {s_00, s_01, s_02},
-                                           {nullptr, s_11, s_12},
-                                           {nullptr, nullptr, s_22},
+constexpr OverlapKernel kOverlapKernels[kMaxAngularMomentum + 1][kMaxAngularMomentum + 1] = {
+    {s_00, s_01, s_02},
+    {nullptr, s_11, s_12},
+    {nullptr, nullptr, s_22},
 };
 
 } // namespace
 
-int32_t overlap_class(const wwr::wwrStream_t stream, const int32_t la, const int32_t lb,
-                      const int32_t n_rec, const int32_t n_ao, const double *zeta,
-                      const double *xpa, const double *xpb, const double *s_rec,
-                      const int32_t *off_a, const int32_t *off_b, double *s) {
-  if (la < 0 || lb < la || lb > kOneElectronMaxAngularMomentum || n_rec < 1) {
+int32_t overlap_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
+                      const int32_t n_ao, double *s) {
+  if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum || cls.n_rec < 1) {
     return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
   }
-  const OverlapKernel kernel = kOverlapKernels[la][lb];
-  const int32_t blocks = (n_rec + kOverlapBlockSize - 1) / kOverlapBlockSize;
-  kernel<<<blocks, kOverlapBlockSize, 0, stream>>>(n_rec, n_ao, zeta, xpa, xpb, s_rec, off_a, off_b,
-                                                   s);
+  const OverlapKernel kernel = kOverlapKernels[cls.la][cls.lb];
+  const int32_t blocks = (cls.n_rec + kOverlapBlockSize - 1) / kOverlapBlockSize;
+  kernel<<<blocks, kOverlapBlockSize, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb,
+                                                   cls.s, cls.off_a, cls.off_b, s);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 

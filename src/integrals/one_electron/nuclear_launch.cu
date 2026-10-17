@@ -19,22 +19,22 @@
 #include "one_electron_bridge.h"
 
 namespace free_breakfast::device::nuclear_00 {
-#include "v_nuclear/v_00.cu"
+#include "potential_en/kernels/v_00.cu"
 } // namespace free_breakfast::device::nuclear_00
 namespace free_breakfast::device::nuclear_01 {
-#include "v_nuclear/v_01.cu"
+#include "potential_en/kernels/v_01.cu"
 } // namespace free_breakfast::device::nuclear_01
 namespace free_breakfast::device::nuclear_02 {
-#include "v_nuclear/v_02.cu"
+#include "potential_en/kernels/v_02.cu"
 } // namespace free_breakfast::device::nuclear_02
 namespace free_breakfast::device::nuclear_11 {
-#include "v_nuclear/v_11.cu"
+#include "potential_en/kernels/v_11.cu"
 } // namespace free_breakfast::device::nuclear_11
 namespace free_breakfast::device::nuclear_12 {
-#include "v_nuclear/v_12.cu"
+#include "potential_en/kernels/v_12.cu"
 } // namespace free_breakfast::device::nuclear_12
 namespace free_breakfast::device::nuclear_22 {
-#include "v_nuclear/v_22.cu"
+#include "potential_en/kernels/v_22.cu"
 } // namespace free_breakfast::device::nuclear_22
 
 namespace free_breakfast::device {
@@ -52,27 +52,25 @@ using NuclearKernel = void (*)(int32_t, int32_t, int32_t, const double *, const 
 
 // Indexed [la][lb]; the la > lb half is empty because the host swaps every
 // shell pair into la <= lb (free_breakfast.integrals.mmd).
-constexpr NuclearKernel kNuclearKernels[kOneElectronMaxAngularMomentum + 1]
-                                       [kOneElectronMaxAngularMomentum + 1] = {
-                                           {nuclear_00::v_00, nuclear_01::v_01, nuclear_02::v_02},
-                                           {nullptr, nuclear_11::v_11, nuclear_12::v_12},
-                                           {nullptr, nullptr, nuclear_22::v_22},
+constexpr NuclearKernel kNuclearKernels[kMaxAngularMomentum + 1][kMaxAngularMomentum + 1] = {
+    {nuclear_00::v_00, nuclear_01::v_01, nuclear_02::v_02},
+    {nullptr, nuclear_11::v_11, nuclear_12::v_12},
+    {nullptr, nullptr, nuclear_22::v_22},
 };
 
 } // namespace
 
-int32_t nuclear_class(const wwr::wwrStream_t stream, const int32_t la, const int32_t lb,
-                      const int32_t n_rec, const int32_t n_ao, const int32_t n_nuc,
-                      const double *zeta, const double *p, const double *xpa, const double *xpb,
-                      const double *s_rec, const int32_t *off_a, const int32_t *off_b,
-                      const double *z, const double *c, double *v) {
-  if (la < 0 || lb < la || lb > kOneElectronMaxAngularMomentum || n_rec < 1 || n_nuc < 1) {
+int32_t nuclear_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
+                      const NucleiView &nuclei, const int32_t n_ao, double *v) {
+  if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum || cls.n_rec < 1 ||
+      nuclei.n_nuc < 1) {
     return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
   }
-  const NuclearKernel kernel = kNuclearKernels[la][lb];
-  const int32_t blocks = (n_rec + kNuclearBlockSize - 1) / kNuclearBlockSize;
-  kernel<<<blocks, kNuclearBlockSize, 0, stream>>>(n_rec, n_ao, n_nuc, zeta, p, xpa, xpb, s_rec,
-                                                   off_a, off_b, z, c, v);
+  const NuclearKernel kernel = kNuclearKernels[cls.la][cls.lb];
+  const int32_t blocks = (cls.n_rec + kNuclearBlockSize - 1) / kNuclearBlockSize;
+  kernel<<<blocks, kNuclearBlockSize, 0, stream>>>(cls.n_rec, n_ao, nuclei.n_nuc, cls.zeta, cls.p,
+                                                   cls.xpa, cls.xpb, cls.s, cls.off_a, cls.off_b,
+                                                   nuclei.z, nuclei.c, v);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 
