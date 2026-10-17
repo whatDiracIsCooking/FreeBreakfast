@@ -24,8 +24,8 @@ a kernel needs of that pair and cannot form itself:
 
 The kernels build the Hermite expansion E from these, including its
 exp(−αβ/ζ |A−B|²) prefactor (as exp(ζ X_PA X_PB) per axis), so the host forms
-neither. `p` and `eb` are unused by the overlap; they are there so the kinetic
-and nuclear-attraction kernels read the same records.
+neither. `eb` is read by the kinetic kernels only and `p` by the
+nuclear-attraction kernels only, so one record set serves S, T and V.
 
 **Classes are `la <= lb`.** A shell pair whose bra has the higher momentum is
 stored swapped (B as the bra), so a basis whose p shells precede its s shells,

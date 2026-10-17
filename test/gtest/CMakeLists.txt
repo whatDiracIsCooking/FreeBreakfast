@@ -94,6 +94,7 @@ add_executable(
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp
   overlap_gpu.cpp
+  core_hamiltonian_gpu.cpp
 )
 
 set_target_properties(

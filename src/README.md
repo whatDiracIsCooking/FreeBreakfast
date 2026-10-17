@@ -12,7 +12,7 @@ basis/     Gaussian basis description: shells, AO layouts, cart->sph, BasisStamp
 io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BSE basis and XYZ geometry readers
 sad/       The SAD initial-guess density over a placed basis, in the spherical layout
 linalg/    Dense GPU linear algebra: square gemm and the sandwich products, the symmetric orthogonalizer S^{-1/2}, and DIIS extrapolation
-integrals/ Gaussian integrals on the GPU over FelizJueves-generated kernels: MMD primitive-pair records and the overlap S
+integrals/ Gaussian integrals on the GPU over FelizJueves-generated kernels: MMD primitive-pair records, S, T, V and the core Hamiltonian H = T + V
 ```
 
 ## Adding a module
