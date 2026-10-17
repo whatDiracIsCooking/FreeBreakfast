@@ -62,8 +62,7 @@ std::vector<double> download(fb::DeviceResources &res, const fb::CartesianMatrix
 // S on the device for basis: records, upload, launch.
 std::vector<double> device_overlap(fb::DeviceResources &res, const fb::BasisSet &basis) {
   const auto classes = fb::primitive_pair_classes(basis);
-  EXPECT_TRUE(classes);
-  const auto device = fb::upload_primitive_pairs(res, *classes);
+  const auto device = fb::upload_primitive_pairs(res, classes);
   EXPECT_TRUE(device);
   fb::CartesianMatrixAO s(res, basis);
   const fb::Status status = fb::overlap(res, *device, s);
@@ -121,8 +120,7 @@ TEST(Overlap, RefusesAClassAboveD) {
   fb::DeviceResources res{0};
   const fb::BasisSet basis({fb::Shell(3, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const auto classes = fb::primitive_pair_classes(basis);
-  ASSERT_TRUE(classes);
-  const auto device = fb::upload_primitive_pairs(res, *classes);
+  const auto device = fb::upload_primitive_pairs(res, classes);
   ASSERT_TRUE(device);
   fb::CartesianMatrixAO s(res, basis);
   const fb::Status status = fb::overlap(res, *device, s);

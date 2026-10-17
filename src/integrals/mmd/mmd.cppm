@@ -18,7 +18,6 @@ export module free_breakfast.integrals.mmd;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.error_handling;
 import free_breakfast.basis;
 
 export namespace free_breakfast {
@@ -72,8 +71,8 @@ struct PrimitivePairClass {
 /// offsets equal, which is how the kernels recognise it. Only reached classes
 /// appear, so no class is empty. No pair is screened out.
 ///
-/// @return The classes; or InvalidConfig if @p basis has more Cartesian AOs
-///         than a 32-bit offset holds.
-[[nodiscard]] Result<std::vector<PrimitivePairClass>> primitive_pair_classes(const BasisSet &basis);
+/// The AO offsets are int32_t; @ref BasisSet already guarantees its Cartesian
+/// AO count fits one, so this cannot fail.
+[[nodiscard]] std::vector<PrimitivePairClass> primitive_pair_classes(const BasisSet &basis);
 
 } // namespace free_breakfast

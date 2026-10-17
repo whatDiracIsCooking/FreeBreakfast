@@ -45,7 +45,7 @@ Host only; no GPU is linked, so it builds and is tested on a device-less box.
 | Symbol | Role |
 |---|---|
 | `PrimitivePairClass` | One class `(la, lb)`'s records as parallel arrays; `size()` is the record count |
-| `primitive_pair_classes(basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty. `InvalidConfig` above 2³¹ Cartesian AOs |
+| `primitive_pair_classes(basis)` | `std::vector<PrimitivePairClass>`: every reached class, ascending, none empty. Infallible: `BasisSet` already bounds `nao_cart()` to `INT32_MAX` |
 
 ## Tests
 

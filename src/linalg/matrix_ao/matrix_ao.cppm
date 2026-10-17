@@ -97,8 +97,9 @@ using SphericalMatrixAO = MatrixAO<BasisLayout::Spherical>;
 /// Otherwise synchronizes res.stream() once, so the host staging copy can be
 /// released.
 ///
-/// @return U; InvalidConfig if nao_cart does not fit a 32-bit BLAS dimension;
-///         or the GpuRuntime error of the upload. A failed allocation aborts
+/// nao_cart always fits a 32-bit BLAS dimension: @ref BasisSet bounds it.
+///
+/// @return U; or the GpuRuntime error of the upload. A failed allocation aborts
 ///         (CreatePolicy).
 [[nodiscard]] Result<std::shared_ptr<const Buffers::device<double>>>
 upload_spherical_transform_matrix(DeviceResources &res, const BasisSet &basis);

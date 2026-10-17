@@ -23,10 +23,6 @@ upload_spherical_transform_matrix(DeviceResources &res, const BasisSet &basis) {
   if (nao_cart == nao_sphe) {
     return std::shared_ptr<const Buffers::device<double>>{};
   }
-  if (nao_cart > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
-    return err_config(
-        "upload_spherical_transform_matrix: nao_cart {} exceeds a 32-bit BLAS dimension", nao_cart);
-  }
 
   const std::vector<double> staging = spherical_transform_matrix(basis);
   auto u = std::make_shared<Buffers::device<double>>(staging.size(), res.device());

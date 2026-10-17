@@ -7,7 +7,6 @@ module free_breakfast.integrals.mmd;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants;
-import free_breakfast.core.error_handling;
 import free_breakfast.basis;
 
 namespace free_breakfast {
@@ -35,11 +34,8 @@ void append_shell_pair_records(PrimitivePairClass &cls, const Shell &a, const in
   }
 }
 
-Result<std::vector<PrimitivePairClass>> primitive_pair_classes(const BasisSet &basis) {
-  if (basis.nao_cart() > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())) {
-    return err_config("primitive_pair_classes: nao_cart {} exceeds a 32-bit AO offset",
-                      basis.nao_cart());
-  }
+std::vector<PrimitivePairClass> primitive_pair_classes(const BasisSet &basis) {
+  // BasisSet guarantees nao_cart() fits an int32_t, so the offset casts below are exact.
   // Keyed by (la, lb), so the result comes out in ascending class order.
   std::map<std::pair<int32_t, int32_t>, PrimitivePairClass> classes;
   const std::vector<Shell> &shells = basis.shells();
