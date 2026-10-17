@@ -5,7 +5,8 @@ FelizJueves tracks PySCF / libcint fixtures (deps/FelizJueves/test/oracle/
 fixtures/, provenance in each file). This takes what test/gtest needs of a few
 of them -- the basis as Cartesian shells over unnormalised primitives (the
 fixture's `converted` block, which is the convention free_breakfast's Shell and
-the generated kernels use) and libcint's `int1e_ovlp` -- and writes it to
+the generated kernels use), the nuclei, libcint's `int1e_ovlp`, `int1e_kin` and
+`int1e_nuc`, and PySCF's `hcore` -- and writes it to
 test/gtest/data/one_electron/, so the tests read a small file of their own and
 PySCF is needed by neither.
 
@@ -29,7 +30,8 @@ OUT = ROOT / "test/gtest/data/one_electron"
 # The molecule's fixture -> the golden file's stem. h2o_sto3g puts O's p shell
 # before the H s shells (the la > lb swap); h2o_ccpvdz reaches d.
 FIXTURES = {"h2o_sto3g_j": "h2o_sto3g", "h2o_ccpvdz_j": "h2o_ccpvdz"}
-ARRAYS = ("int1e_ovlp",)
+# libcint's S, T and V (point nuclei), and PySCF's hcore = T + V.
+ARRAYS = ("int1e_ovlp", "int1e_kin", "int1e_nuc", "hcore")
 
 
 def felizjueves_commit() -> str:
@@ -49,6 +51,8 @@ def extract(fixture: dict, source: str, commit: str) -> dict:
         "source": {"felizjueves": commit, "fixture": source},
         "provenance": fixture["provenance"],
         "nao": fixture["nao"],
+        # The nuclei V attracts to: symbol, charge Z, coord (bohr).
+        "atoms": fixture["atoms"],
         # One shell per contraction, in AO order; coefficients multiply
         # unnormalised Cartesian primitives x^a y^b z^c exp(-alpha r^2).
         "shells": [

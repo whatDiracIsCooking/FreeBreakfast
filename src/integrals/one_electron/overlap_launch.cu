@@ -10,7 +10,7 @@
 // Standard headers before anything that reaches the vendor runtime: under HIP a
 // libc++ header must not follow it (see primitives.h). The bridge includes
 // integral_types.h first.
-#include "overlap_bridge.h"
+#include "one_electron_bridge.h"
 
 #include "s_overlap/s_00.cu"
 #include "s_overlap/s_01.cu"
@@ -36,8 +36,8 @@ using OverlapKernel = void (*)(int32_t, int32_t, const double *, const double *,
 
 // Indexed [la][lb]; the la > lb half is empty because the host swaps every
 // shell pair into la <= lb (free_breakfast.integrals.mmd).
-constexpr OverlapKernel kOverlapKernels[kOverlapMaxAngularMomentum + 1]
-                                       [kOverlapMaxAngularMomentum + 1] = {
+constexpr OverlapKernel kOverlapKernels[kOneElectronMaxAngularMomentum + 1]
+                                       [kOneElectronMaxAngularMomentum + 1] = {
                                            {s_00, s_01, s_02},
                                            {nullptr, s_11, s_12},
                                            {nullptr, nullptr, s_22},
@@ -49,7 +49,7 @@ int32_t overlap_class(const wwr::wwrStream_t stream, const int32_t la, const int
                       const int32_t n_rec, const int32_t n_ao, const double *zeta,
                       const double *xpa, const double *xpb, const double *s_rec,
                       const int32_t *off_a, const int32_t *off_b, double *s) {
-  if (la < 0 || lb < la || lb > kOverlapMaxAngularMomentum || n_rec < 1) {
+  if (la < 0 || lb < la || lb > kOneElectronMaxAngularMomentum || n_rec < 1) {
     return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
   }
   const OverlapKernel kernel = kOverlapKernels[la][lb];
