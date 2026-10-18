@@ -27,10 +27,9 @@ namespace free_breakfast::device {
 namespace {
 
 // The generated kernels share one signature (FelizJueves's Target.S parameter
-// block, its record arrays one PrimPairSoA), which is what lets one table cover
-// every class. FelizJueves's gpu backend spells every integer int32_t, so the
-// kernels are this type exactly.
-using OverlapKernel = void (*)(int32_t, int32_t, PrimPairSoA, double *);
+// block), which is what lets one table cover every class.
+using OverlapKernel = void (*)(int32_t, int32_t, const double *, const double *, const double *,
+                               const double *, const int32_t *, const int32_t *, double *);
 
 // Indexed [la][lb]; the la > lb half is empty because the host swaps every
 // shell pair into la <= lb (free_breakfast.integrals.mmd).
@@ -51,7 +50,8 @@ int32_t overlap_class(const wwr::wwrStream_t stream, const PrimitivePairClassVie
   // One thread per record, kFourWarps to a block; a whole number of warps keeps
   // every block's lanes in step.
   const uint32_t blocks = math::idivup(static_cast<uint32_t>(cls.n_rec), kFourWarps);
-  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, cls.recs, s);
+  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb, cls.s,
+                                            cls.off_a, cls.off_b, s);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 
