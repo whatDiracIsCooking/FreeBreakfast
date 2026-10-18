@@ -41,7 +41,9 @@ TEST(Mmd, ClassesAreReachedOnlyAndAscending) {
   EXPECT_EQ(classes[2].n_rec, 4);
   for (const fb::PrimitivePairClass &cls : classes) {
     EXPECT_EQ(cls.zeta.size(), static_cast<std::size_t>(cls.n_rec));
-    EXPECT_EQ(cls.p.size(), 3U * static_cast<std::size_t>(cls.n_rec));
+    EXPECT_EQ(cls.p_x.size(), static_cast<std::size_t>(cls.n_rec));
+    EXPECT_EQ(cls.pa_y.size(), static_cast<std::size_t>(cls.n_rec));
+    EXPECT_EQ(cls.pb_z.size(), static_cast<std::size_t>(cls.n_rec));
     EXPECT_EQ(cls.off_b.size(), static_cast<std::size_t>(cls.n_rec));
   }
 }
@@ -72,13 +74,13 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
     EXPECT_EQ(sp.off_b[k], p_off) << "record " << k;
     EXPECT_NEAR(sp.zeta[k], zeta, kTol) << "record " << k;
     EXPECT_NEAR(sp.eb[k], beta, kTol) << "record " << k;
-    EXPECT_NEAR(sp.p[3 * k + 2], pz, kTol) << "record " << k;
-    EXPECT_NEAR(sp.xpa[3 * k + 2], pz - z_a, kTol) << "record " << k;
-    EXPECT_NEAR(sp.xpb[3 * k + 2], pz - z_b, kTol) << "record " << k;
-    for (std::size_t d = 0; d < 2; ++d) { // x and y: every center is on the z axis
-      EXPECT_EQ(sp.p[3 * k + d], 0.0);
-      EXPECT_EQ(sp.xpa[3 * k + d], 0.0);
-      EXPECT_EQ(sp.xpb[3 * k + d], 0.0);
+    EXPECT_NEAR(sp.p_z[k], pz, kTol) << "record " << k;
+    EXPECT_NEAR(sp.pa_z[k], pz - z_a, kTol) << "record " << k;
+    EXPECT_NEAR(sp.pb_z[k], pz - z_b, kTol) << "record " << k;
+    // x and y: every center is on the z axis
+    for (const std::vector<double> *axis :
+         {&sp.p_x, &sp.p_y, &sp.pa_x, &sp.pa_y, &sp.pb_x, &sp.pb_y}) {
+      EXPECT_EQ((*axis)[k], 0.0) << "record " << k;
     }
     const double s = c_a * ket[k].coefficient * std::pow(std::numbers::pi / zeta, 1.5);
     EXPECT_NEAR(sp.s[k], s, kTol * s) << "record " << k;

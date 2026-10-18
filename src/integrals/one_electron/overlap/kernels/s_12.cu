@@ -6,8 +6,12 @@ extern "C" __global__ void s_12(
     int32_t n_rec,
     int32_t n_ao,
     const double* zeta_ab,
-    const double* XPA,
-    const double* XPB,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
     const double* s,
     const int32_t* off_a,
     const int32_t* off_b,
@@ -30,12 +34,12 @@ extern "C" __global__ void s_12(
         double E0[18];
         {
             // fragment e_overlap_12
-            const auto PA_x = XPA[(rec * 3 + 0)];
-            const auto PB_x = XPB[(rec * 3 + 0)];
-            const auto PA_y = XPA[(rec * 3 + 1)];
-            const auto PB_y = XPB[(rec * 3 + 1)];
-            const auto PA_z = XPA[(rec * 3 + 2)];
-            const auto PB_z = XPB[(rec * 3 + 2)];
+            const auto PA_x = pa_x[rec];
+            const auto PB_x = pb_x[rec];
+            const auto PA_y = pa_y[rec];
+            const auto PB_y = pb_y[rec];
+            const auto PA_z = pa_z[rec];
+            const auto PB_z = pb_z[rec];
             // McMurchie & Davidson report UCRL-13791 (docs/references.md entry 46), eqs.
             // 2.20-2.21: E^{i+1,j}_t and E^{i,j+1}_t from E^{00}_0 = exp(zeta X_PA X_PB);
             // undressed

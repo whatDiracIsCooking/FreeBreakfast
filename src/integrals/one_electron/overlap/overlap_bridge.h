@@ -27,9 +27,9 @@ namespace free_breakfast::device {
 /// @brief Add one class's overlap contributions into the n_ao x n_ao matrix
 /// @p s, on @p stream: the generated kernel s_{la}{lb}, one thread per record.
 ///
-/// Reads @p cls's zeta, xpa, xpb, s and offsets. Each value is atomically added
-/// at (m, n) and at (n, m), so @p s must be zeroed before the first class of a
-/// build and is symmetric after the last.
+/// Reads @p cls's zeta, pa_{x,y,z}, pb_{x,y,z}, s and offsets. Each value is
+/// atomically added at (m, n) and at (n, m), so @p s must be zeroed before the
+/// first class of a build and is symmetric after the last.
 ///
 /// cls.n_rec must be positive, and cls.la <= cls.lb <= kMaxAngularMomentum. The
 /// kernels index @p s as a 32-bit `m * n_ao + n`, so n_ao * n_ao must fit an

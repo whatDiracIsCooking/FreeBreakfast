@@ -26,10 +26,9 @@ namespace free_breakfast::device {
 namespace {
 
 // The generated kernels share one signature (FelizJueves's Target.T parameter
-// block: Target.S's plus eb_ket).
-using KineticKernel = void (*)(int32_t, int32_t, const double *, const double *, const double *,
-                               const double *, const double *, const int32_t *, const int32_t *,
-                               double *);
+// block: Target.S's plus eb_ket). Taken from a kernel, not transcribed, so it
+// follows whatever the generator emits.
+using KineticKernel = decltype(&t_00);
 
 // Indexed [la][lb]; the la > lb half is empty because the host swaps every
 // shell pair into la <= lb (free_breakfast.integrals.mmd).
@@ -50,8 +49,9 @@ int32_t kinetic_class(const wwr::wwrStream_t stream, const PrimitivePairClassVie
   // One thread per record, kFourWarps to a block; a whole number of warps keeps
   // every block's lanes in step.
   const uint32_t blocks = math::idivup(static_cast<uint32_t>(cls.n_rec), kFourWarps);
-  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.xpa, cls.xpb, cls.s,
-                                            cls.eb, cls.off_a, cls.off_b, t);
+  kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.pa_x, cls.pa_y, cls.pa_z,
+                                            cls.pb_x, cls.pb_y, cls.pb_z, cls.s, cls.eb, cls.off_a,
+                                            cls.off_b, t);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 

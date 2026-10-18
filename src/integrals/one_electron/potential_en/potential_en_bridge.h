@@ -29,7 +29,8 @@ namespace free_breakfast::device {
 /// matrix @p v, on @p stream: the generated kernel v_{la}{lb}, one thread per
 /// record, the @p nuclei serial inside it.
 ///
-/// Reads @p cls's zeta, p (the product centre), xpa, xpb, s and offsets, and
+/// Reads @p cls's zeta, p_{x,y,z} (the product centre), pa_{x,y,z}, pb_{x,y,z},
+/// s and offsets, and
 /// @p nuclei's charges and positions. Each value is atomically added at (m, n)
 /// and at (n, m), so @p v must be zeroed before the first class of a build and
 /// is symmetric after the last.

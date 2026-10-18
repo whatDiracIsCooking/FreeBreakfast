@@ -43,12 +43,24 @@ struct DevicePrimitivePairClass {
   int32_t n_rec;
   /// @brief zeta = alpha + beta.
   Buffers::device<double> zeta;
-  /// @brief P (3 per record).
-  Buffers::device<double> p;
-  /// @brief P - A (3 per record).
-  Buffers::device<double> xpa;
-  /// @brief P - B (3 per record).
-  Buffers::device<double> xpb;
+  /// @brief P: x.
+  Buffers::device<double> p_x;
+  /// @brief P: y.
+  Buffers::device<double> p_y;
+  /// @brief P: z.
+  Buffers::device<double> p_z;
+  /// @brief P - A: x.
+  Buffers::device<double> pa_x;
+  /// @brief P - A: y.
+  Buffers::device<double> pa_y;
+  /// @brief P - A: z.
+  Buffers::device<double> pa_z;
+  /// @brief P - B: x.
+  Buffers::device<double> pb_x;
+  /// @brief P - B: y.
+  Buffers::device<double> pb_y;
+  /// @brief P - B: z.
+  Buffers::device<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   Buffers::device<double> s;
   /// @brief beta, the ket primitive's exponent.
@@ -66,9 +78,15 @@ struct DevicePrimitivePairClass {
         .lb = lb,
         .n_rec = n_rec,
         .zeta = zeta.data(),
-        .p = p.data(),
-        .xpa = xpa.data(),
-        .xpb = xpb.data(),
+        .p_x = p_x.data(),
+        .p_y = p_y.data(),
+        .p_z = p_z.data(),
+        .pa_x = pa_x.data(),
+        .pa_y = pa_y.data(),
+        .pa_z = pa_z.data(),
+        .pb_x = pb_x.data(),
+        .pb_y = pb_y.data(),
+        .pb_z = pb_z.data(),
         .s = s.data(),
         .eb = eb.data(),
         .off_a = off_a.data(),
