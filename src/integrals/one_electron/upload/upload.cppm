@@ -33,8 +33,7 @@ using free_breakfast::NucleiView;
 using free_breakfast::PrimitivePairClassView;
 
 /// @brief One @ref PrimitivePairClass on the device: the same fields, the same
-/// layout (one flat array per field, vectors split per axis), @ref n_rec
-/// records.
+/// layout, @ref n_rec records.
 struct DevicePrimitivePairClass {
   /// @brief The bra shell's angular momentum, <= @ref lb.
   int32_t la;
@@ -44,24 +43,12 @@ struct DevicePrimitivePairClass {
   int32_t n_rec;
   /// @brief zeta = alpha + beta.
   Buffers::device<double> zeta;
-  /// @brief P, the product centre: x.
-  Buffers::device<double> xp;
-  /// @brief P: y.
-  Buffers::device<double> yp;
-  /// @brief P: z.
-  Buffers::device<double> zp;
-  /// @brief P - A: x.
+  /// @brief P (3 per record).
+  Buffers::device<double> p;
+  /// @brief P - A (3 per record).
   Buffers::device<double> xpa;
-  /// @brief P - A: y.
-  Buffers::device<double> ypa;
-  /// @brief P - A: z.
-  Buffers::device<double> zpa;
-  /// @brief P - B: x.
+  /// @brief P - B (3 per record).
   Buffers::device<double> xpb;
-  /// @brief P - B: y.
-  Buffers::device<double> ypb;
-  /// @brief P - B: z.
-  Buffers::device<double> zpb;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   Buffers::device<double> s;
   /// @brief beta, the ket primitive's exponent.
@@ -78,23 +65,14 @@ struct DevicePrimitivePairClass {
         .la = la,
         .lb = lb,
         .n_rec = n_rec,
-        .recs =
-            {
-                .zeta = zeta.data(),
-                .s = s.data(),
-                .eb = eb.data(),
-                .XP = xp.data(),
-                .YP = yp.data(),
-                .ZP = zp.data(),
-                .XPA = xpa.data(),
-                .YPA = ypa.data(),
-                .ZPA = zpa.data(),
-                .XPB = xpb.data(),
-                .YPB = ypb.data(),
-                .ZPB = zpb.data(),
-                .off_a = off_a.data(),
-                .off_b = off_b.data(),
-            },
+        .zeta = zeta.data(),
+        .p = p.data(),
+        .xpa = xpa.data(),
+        .xpb = xpb.data(),
+        .s = s.data(),
+        .eb = eb.data(),
+        .off_a = off_a.data(),
+        .off_b = off_b.data(),
     };
   }
 };

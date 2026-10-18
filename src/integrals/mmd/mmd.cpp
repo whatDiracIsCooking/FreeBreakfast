@@ -23,15 +23,9 @@ void append_shell_pair_records(PrimitivePairClass &cls, const Shell &a, const in
       const double py = ((pa.exponent * ca.y) + (pb.exponent * cb.y)) / zeta;
       const double pz = ((pa.exponent * ca.z) + (pb.exponent * cb.z)) / zeta;
       cls.zeta.push_back(zeta);
-      cls.xp.push_back(px);
-      cls.yp.push_back(py);
-      cls.zp.push_back(pz);
-      cls.xpa.push_back(px - ca.x);
-      cls.ypa.push_back(py - ca.y);
-      cls.zpa.push_back(pz - ca.z);
-      cls.xpb.push_back(px - cb.x);
-      cls.ypb.push_back(py - cb.y);
-      cls.zpb.push_back(pz - cb.z);
+      cls.p.insert(cls.p.end(), {px, py, pz});
+      cls.xpa.insert(cls.xpa.end(), {px - ca.x, py - ca.y, pz - ca.z});
+      cls.xpb.insert(cls.xpb.end(), {px - cb.x, py - cb.y, pz - cb.z});
       cls.s.push_back(pa.coefficient * pb.coefficient * std::pow(kPi<double> / zeta, 1.5));
       cls.eb.push_back(pb.exponent);
       cls.off_a.push_back(off_a);

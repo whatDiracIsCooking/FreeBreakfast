@@ -16,22 +16,16 @@ a kernel needs of that pair and cannot form itself:
 | Field | Value |
 |---|---|
 | `zeta` | ζ = α + β |
-| `xp`, `yp`, `zp` | P, one array per axis |
-| `xpa` … `zpa`, `xpb` … `zpb` | P − A, P − B, one array per axis |
+| `p` | P (3 per record) |
+| `xpa`, `xpb` | P − A, P − B (3 per record) |
 | `s` | c_a c_b (π/ζ)^{3/2} |
 | `eb` | β, the ket exponent (the kinetic kernel's) |
 | `off_a`, `off_b` | the two shells' first Cartesian AO |
 
 The kernels build the Hermite expansion E from these, including its
 exp(−αβ/ζ |A−B|²) prefactor (as exp(ζ X_PA X_PB) per axis), so the host forms
-neither. `eb` is read by the kinetic kernels only and P by the
+neither. `eb` is read by the kinetic kernels only and `p` by the
 nuclear-attraction kernels only, so one record set serves S, T and V.
-
-**Structure of arrays.** Every field is one flat array with an entry per
-record, and a vector is split per axis rather than interleaved `x y z`. The
-kernels run one thread per record, so a warp's lanes then read consecutive
-doubles of one array on every load. On the device the arrays travel as one
-FelizJueves `PrimPairSoA` (`upload`).
 
 **Classes are `la <= lb`.** A shell pair whose bra has the higher momentum is
 stored swapped (B as the bra), so a basis whose p shells precede its s shells,

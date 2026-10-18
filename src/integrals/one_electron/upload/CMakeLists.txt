@@ -1,15 +1,12 @@
 # The non-owning device views, offered two ways from one definition in
 # device_views.h: `#include <device_views.h>` for the launchers, through this
 # include path, and `import free_breakfast.integrals.one_electron.upload;`,
-# which includes it in its GMF and re-exports the names. The class view holds
-# FelizJueves's PrimPairSoA (felizjueves/prim_pair.h, plain C++), the struct the
-# generated kernels take, hence felizjueves::headers PUBLIC.
+# which includes it in its GMF and re-exports the names.
 free_breakfast_add_interface_library(
   NAME
   free_breakfast.integrals.one_electron.upload.headers
   LINK_PUBLIC
   free_breakfast::core::types_headers
-  felizjueves::headers
 )
 
 # The device inputs and the shared pre-launch check. No device code of its own:
