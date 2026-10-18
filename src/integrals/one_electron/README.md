@@ -43,13 +43,13 @@ are each the same set of files, named after the directory:
 | `<family>.cppm` / `<family>.cpp` | The module and its build |
 | `<family>_bridge.h` | The launcher's declaration, over `upload`'s device views, shared by the `.cu` and the implementation unit's global module fragment |
 | `<family>_launch.cu` | The launcher, the family's own device library |
-| `kernels/` | The generated kernels, `<family>.h`, `<family>_classes.h` and `units.h`, and the `.clang-format` that leaves them unformatted |
-| `CMakeLists.txt` | The device library `….<family>.device` and the module |
+| `kernels/` | The generated kernels and their header `<family>.h`, and the `.clang-format` that leaves them unformatted |
+| `CMakeLists.txt` | The device library `….<family>.device` (the launcher and every kernel) and the module |
 
 Every family takes its inputs, and its pre-launch checks
 (`check_one_electron_build`, `check_nuclei`), from `upload`, its kernel table
-from `kernel_table/`, and is bounded by `basis`'s `kMaxAngularMomentum`, the
-one limit for the repo. `core_hamiltonian/` has no kernels of its own, so it is
+from its generated header, and is bounded by `basis`'s `kMaxAngularMomentum`,
+the one limit for the repo. `core_hamiltonian/` has no kernels of its own, so it is
 only the module.
 
 **H is built in place.** `core_hamiltonian` checks every input, then
@@ -66,24 +66,25 @@ runtime from the compiler's own macros, so the same text compiles under nvcc
 and clang `-x hip` with nothing of wwr in it. They have no warp shuffle, so no
 wavefront is written into them either.
 
-**One kernel template per family, and a table built from it.** Each class is
-written as one explicit specialization of the family's kernel template
-(`overlap<0, 1>`), never as a C name per class. The generator also writes the
-template's primary once (`kernels/<family>.h`, `template <uint8_t La,
-uint8_t Lb>`, which every unit includes and nothing defines), the classes it
-emitted (`kernels/<family>_classes.h`), and `kernels/units.h`, which includes
-those two and every unit. Each launcher includes `units.h` into an
-anonymous namespace rather than compiling the units as sources of their own, so
-it launches kernels whose definitions it can see, and builds its `[la][lb]`
-table at compile time (`kernel_table/`): no class is named by hand, a class
-list that is not every `la <= lb <= kMaxAngularMomentum` is a compile error,
-and a listed class with no unit is a link error.
+**One kernel template per family, and its table.** Each class is written as
+one explicit specialization of the family's kernel template (`overlap<0, 1>`),
+never as a C name per class. The generator also writes one header,
+`kernels/<family>.h`, which every unit includes: the template's primary
+(`template <uint8_t La, uint8_t Lb>`, defined nowhere), each class's
+specialization declared, and `<family>_kernels`, the `[la][lb]` table, null
+where `la > lb`. Each unit is a source of the family's device library,
+compiled on its own; the launcher includes only the header,
+`static_assert`s the table's extents against `kMaxAngularMomentum`, and
+indexes it. No class is named by hand, and a class the table names with no
+unit is a link error. Launching a specialization another TU defines wants
+relocatable device code under nvcc (warning #20280 otherwise), which is the
+device library's default; hipcc takes it either way.
 
-**V's kernels share one Boys function.** Every `v_*.cu` carries the same
-`__device__ double fj_boys(int32_t, double)` (FelizJueves's wide one: the
-Kummer series below T = 125, the asymptote above, because a point charge has no
-exponent to damp `T = ζ|P − C|²`), behind an include guard, so the six share a
-TU and define it once.
+**Each of V's kernels has its own Boys function.** Every `v_*.cu` carries the
+same `static __device__ double fj_boys(int32_t, double)` (FelizJueves's wide
+one: the Kummer series below T = 125, the asymptote above, because a point
+charge has no exponent to damp `T = ζ|P − C|²`). `static` keeps the six copies
+from colliding at the device link.
 
 **Limits.**
 
@@ -143,5 +144,4 @@ status = fb::core_hamiltonian(res, *device, *nuclei, h);
 |------|------|
 | `one_electron.cppm` | The convenience module: re-exports the five sub-modules |
 | `upload/`, `overlap/`, `kinetic/`, `potential_en/`, `core_hamiltonian/` | The sub-modules; each has its own README |
-| `kernel_table/` | The launchers' compile-time `[la][lb]` table (header-only, no module); its own README |
 | `CMakeLists.txt` | The sub-directories and the aggregate module |

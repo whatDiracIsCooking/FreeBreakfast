@@ -1,18 +1,26 @@
 # The T launcher. Device code in its own library, so its language and -x hip
-# never reach the module compiles. Only kinetic_launch.cu is a source: it
-# #includes the generated kernels (kernels/), which must not also be compiled on
-# their own (their kernels would be defined twice). The bridge header it shares
-# with the module names int32_t, kMaxAngularMomentum, PrimitivePairClassView and
-# wwrStream_t, hence types_headers, basis::headers, upload::headers and
-# wwr::device PUBLIC. The kernels include FelizJueves's felizjueves/runtime.h,
-# which only the launcher sees, hence felizjueves::headers PRIVATE; so are its
-# block sizing (block_params.h, primitives.h), hence core::kernel_headers, and
-# its table (kernel_table.h), hence one_electron::kernel_table.
+# never reach the module compiles. Its sources are the launcher and the
+# generated kernels (kernels/), one per class, each compiled on its own: the
+# launcher includes only kernels/kinetic.h and launches through its table.
+# Under CUDA that wants relocatable device code, this library's default, so it
+# must never pass NO_DEVICE_LINKING (nvcc warns #20280 without it). The bridge
+# header it shares with the module names int32_t, kMaxAngularMomentum,
+# PrimitivePairClassView and wwrStream_t, hence types_headers, basis::headers,
+# upload::headers and wwr::device PUBLIC. The kernels include FelizJueves's
+# felizjueves/runtime.h, which nothing outside this library sees, hence
+# felizjueves::headers PRIVATE; so is the launcher's block sizing
+# (block_params.h, primitives.h), hence core::kernel_headers.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.one_electron.kinetic.device
   SOURCES
   kinetic_launch.cu
+  kernels/t_00.cu
+  kernels/t_01.cu
+  kernels/t_02.cu
+  kernels/t_11.cu
+  kernels/t_12.cu
+  kernels/t_22.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::basis::headers
@@ -21,7 +29,6 @@ free_breakfast_add_gpu_device_library(
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
   felizjueves::headers
-  free_breakfast::integrals::one_electron::kernel_table
 )
 
 # The module. DeviceResources, DevicePrimitivePairClass and CartesianMatrixAO
