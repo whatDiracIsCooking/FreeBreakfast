@@ -13,4 +13,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   LINK_PRIVATE
   free_breakfast::core::constants
+  free_breakfast::core::error_handling
 )

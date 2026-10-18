@@ -41,6 +41,8 @@ struct PrimitivePairClass {
   int32_t la{0};
   /// @brief The ket shell's angular momentum.
   int32_t lb{0};
+  /// @brief The number of records: the length of every per-record field.
+  int32_t n_rec{0};
   /// @brief zeta = alpha + beta.
   std::vector<double> zeta;
   /// @brief P, the product centre (3 per record).
@@ -57,9 +59,6 @@ struct PrimitivePairClass {
   std::vector<int32_t> off_a;
   /// @brief The ket shell's first Cartesian AO.
   std::vector<int32_t> off_b;
-
-  /// @brief The number of records.
-  [[nodiscard]] size_t size() const noexcept { return zeta.size(); }
 };
 
 /// @brief The primitive-pair records of @p basis, one class per (la, lb)
@@ -72,7 +71,8 @@ struct PrimitivePairClass {
 /// appear, so no class is empty. No pair is screened out.
 ///
 /// The AO offsets are int32_t; @ref BasisSet already guarantees its Cartesian
-/// AO count fits one, so this cannot fail.
+/// AO count fits one. A class of more than INT32_MAX records, which
+/// @ref PrimitivePairClass::n_rec cannot count, logs and aborts.
 [[nodiscard]] std::vector<PrimitivePairClass> primitive_pair_classes(const BasisSet &basis);
 
 } // namespace free_breakfast
