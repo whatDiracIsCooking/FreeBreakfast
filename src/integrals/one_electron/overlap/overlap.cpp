@@ -31,8 +31,8 @@ Status overlap(DeviceResources &res, const std::span<const DevicePrimitivePairCl
   // The kernels only add, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(s.data(), 0, sizeof(double) * s.num_elements(), stream)));
   for (const DevicePrimitivePairClass &cls : classes) {
-    FBF_TRY(gpu_status(static_cast<wwr::wwrError_t>(
-        device::overlap_class(stream, cls.view(), static_cast<int32_t>(s.n()), s.data()))));
+    FBF_TRY(gpu_status(
+        device::overlap_class(stream, cls.view(), static_cast<int32_t>(s.n()), s.data())));
   }
   return {};
 }
