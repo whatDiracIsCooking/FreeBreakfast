@@ -23,6 +23,10 @@ export import :fork_stream;
 // it is built from ForkStream.
 export import :device;
 
+// DeviceStream (:device_stream): another work stream on a Device, allocating
+// from its pool. A partition because it is built from Device.
+export import :device_stream;
+
 // Re-exported so `import free_breakfast.core.wwr;` is the one import a module
 // above core/types needs for anything WarpWraps provides: the runtime API, the
 // vector types and scalar traits, and the wrappers' own members and free
@@ -55,6 +59,10 @@ export namespace free_breakfast {
 /// @brief Every buffer kind and its view, allocated from a Device's pool:
 /// `Buffers::device<T>`, `::host<T>`, `::pinned<T>`, `::unified<T>`, `::device_view<T>`, ...
 using Buffers = ext::kit::device_buffer_suite<PolicyMap, Device>;
+
+/// @brief The same buffer kinds as Buffers, bound to a DeviceStream: allocated
+/// from its Device's pool, ordered on the DeviceStream's own stream.
+using StreamBuffers = ext::kit::device_buffer_suite<PolicyMap, DeviceStream>;
 
 /// @brief A BLAS handle bound to a Device's stream.
 using BlasHandle =

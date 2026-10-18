@@ -11,8 +11,9 @@ with the exceptions listed below. It holds four things:
   type rather than a five-argument template;
 - `ForkStream`, a `Stream` plus the two `Event`s that fork it from and join it
   back into a parent stream, for fanning work out inside one graph capture;
-  and `Device`, this tree's pool-tier device handle, whose work stream is a
-  `ForkStream`.
+  `Device`, this tree's pool-tier device handle, whose work stream is a
+  `ForkStream`; and `DeviceStream`, one more work stream on a `Device`,
+  allocating from its pool.
 
 It re-exports, binds and composes. It does not wrap wwr functions under
 free_breakfast names: this tree does not duplicate WarpWraps. `ForkStream`'s
@@ -25,7 +26,7 @@ sandwiches `gemmwich` and `gmmwich`) are numerics, not binding, and live in
 ## Module
 
 `free_breakfast.core.wwr`, target `free_breakfast::core::wwr`, also re-exported
-by `free_breakfast.core`. Four partitions under the primary interface:
+by `free_breakfast.core`. Five partitions under the primary interface:
 
 | Partition | Exports |
 |-----------|---------|
@@ -33,12 +34,14 @@ by `free_breakfast.core`. Four partitions under the primary interface:
 | `:policy` | `AbortPolicy` / `LogPolicy`, `CreatePolicy` / `DestroyPolicy` / `PolicyMap` |
 | `:fork_stream` | `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
 | `:device` | `MemPool`, `Device` |
+| `:device_stream` | `DeviceStream` |
 | *(primary)* | the other aliases below, and the re-exports |
 
 `Stream` and `Event` live in `:fork_stream` rather than the primary interface
 because `ForkStream` is built from them and a partition cannot import the
 primary interface; `Device` is in `:device` for the same reason, being built
-from `ForkStream`. Importers see no difference: every partition is re-exported.
+from `ForkStream`, and `DeviceStream` in `:device_stream`, being built from
+`Device`. Importers see no difference: every partition is re-exported.
 
 Re-exported: `wwr.runtime_api`, `wwr.vector_types`,
 `wwr.wrappers.{common,blas,solver}` (the typed BLAS and dense-solver dispatch:
@@ -49,11 +52,13 @@ free functions (copy, memset, views, pointer-mode guards, …) come with it.
 | Alias | wwr type | Notes |
 | --- | --- | --- |
 | `Device` | *(composed here)* | One device: properties, an owned `ForkStream` as its work stream, and a memory pool (1 GiB release threshold by default). Hold as `std::shared_ptr`. See below. |
+| `DeviceStream` | *(composed here)* | Another work stream on a `Device`: its own `ForkStream`, the `Device`'s pool. Hold as `std::shared_ptr`. See below. |
 | `MemPool` | `MemPoolWrapper` | A memory pool on one device; `Device` owns one. |
 | `Stream` | `StreamWrapper` | A non-blocking stream. |
 | `Event` | `EventWrapper` | Default-constructed it is sync-only (timing disabled); pass `(dev_idx, 0)` for a timing-capable one. |
 | `ForkStream` | *(composed here)* | A `Stream` and a fork / join `Event` pair; see below. |
 | `Buffers` | `kit::device_buffer_suite<PolicyMap, Device>` | `::device<T>`, `::host<T>`, `::pinned<T>`, `::unified<T>` and their `_view`s. |
+| `StreamBuffers` | `kit::device_buffer_suite<PolicyMap, DeviceStream>` | The same kinds, bound to a `DeviceStream`: the `Device`'s pool, that stream's order. |
 | `BlasHandle` | `BlasHandleWrapper` | Bound to a `Device`'s stream. |
 | `SolverHandle` | `SolverDnHandleWrapper` | Bound to a `Device`'s stream. |
 | `ScopedRange` | `ScopedRange` | NVTX / rocTX range. |
@@ -102,8 +107,10 @@ through `CreatePolicy`, as every wrapper here does.
 
 `ForkStream` exposes `dev_idx()` and `stream()`, so it satisfies wwr's
 `device_handle_stream` and can back a `kit::device_buffer_suite` directly, the
-way a bare `Stream` can; it has no pool, so `Buffers` stays bound to `Device`
-— whose own work stream is a `ForkStream` (next section).
+way a bare `Stream` can; it has no pool, so a buffer bound to it would draw
+from the device's default pool. `Buffers` stays bound to `Device`, whose own
+work stream is a `ForkStream` (next section), and a further stream that should
+allocate from the same pool is a `DeviceStream`.
 A `ForkStream` must outlive any capture or launch it is part of: `Stream`
 synchronises before destroying, but a graph that still references a destroyed
 stream's events is not something the runtime recovers from.
@@ -143,6 +150,37 @@ that is how much freed memory the pool keeps cached across stream syncs
 instead of returning to the driver, not a cap on allocation. The pool is
 declared before the `ForkStream`, so the stream — which synchronizes before
 destroying — is torn down first and no queued free outlives its pool.
+
+## DeviceStream
+
+A `Device`'s pool paired with a `ForkStream` of its own: another work stream
+on the same device. It exposes `dev_idx()`, `stream()` and `pool()`, so it is a
+`device_handle_pool` like `Device`, and `StreamBuffers` bind to it: their
+blocks come from the `Device`'s pool, and their allocation, zero-fill and free
+are ordered on the `DeviceStream`'s stream.
+
+```cpp
+auto dev = std::make_shared<fb::Device>(0);
+auto a = std::make_shared<fb::DeviceStream>(dev);
+auto b = std::make_shared<fb::DeviceStream>(dev);   // independent of a
+fb::StreamBuffers::device<double> x(n, a);          // dev's pool, a's stream
+```
+
+Ownership runs one way. Each `DeviceStream` retains its `Device`, and the
+`Device` keeps no list of them, so any number can be made from one, and the
+pool outlives every stream that allocates from it. The `Device` pointer is
+declared before the `ForkStream`, so the stream, which synchronizes before
+destroying, drains its queued frees into the pool before the `DeviceStream`
+can drop the last reference to the `Device`.
+
+Why not bind buffers to a bare `ForkStream`: that satisfies only
+`device_handle_stream`, and wwr's device buffer then allocates with
+`wwrMallocAsync` from the device's *default* pool. That loses `Device`'s
+release threshold, and does it silently.
+
+A `DeviceStream` orders nothing against the `Device`'s own stream, or another
+`DeviceStream`'s. Work that crosses between them goes through
+`fork_stream()`'s fork/join, as above.
 
 ## ScopedDeviceIndex
 
@@ -254,6 +292,7 @@ value to propagate.
 | `policy.cppm` | `:policy`: `AbortPolicy`, `LogPolicy` and the aliases over them |
 | `fork_stream.cppm` | `:fork_stream`: `Stream`, `Event`, `ForkStreamConfig`, `ForkStream` |
 | `device.cppm` | `:device`: `MemPool`, `Device` |
+| `device_stream.cppm` | `:device_stream`: `DeviceStream` |
 | `CMakeLists.txt` | The module library, and the one list of wwr module targets it links |
 
 ## Dependencies
@@ -262,7 +301,7 @@ All PUBLIC: `gpu_status`, the policies and the aliases are templates
 instantiated in the consumer's TU.
 
 - `free_breakfast::core::types`: the fixed-width integers in `ForkStreamConfig`
-- `free_breakfast::core::nontransferrable`: `NonCopyable`, `ForkStream`'s and `Device`'s base
+- `free_breakfast::core::nontransferrable`: `NonCopyable`, the base of `ForkStream`, `Device` and `DeviceStream`
 - `free_breakfast::core::error_handling`: `Error`, `Status`, `check_or_abort`
 - `free_breakfast::core::log`: `log::critical()` / `log::error()` from the
   policies
