@@ -16,6 +16,7 @@ exercises the full chain rather than a tree that configures and builds nothing.
 | `log/` | `free_breakfast.core.log` — the spdlog-backed logging facade. |
 | `diagnostics/` | `diagnostics.h` only (`FBF_TRY`, `FBF_GPU_MUST`, `FBF_LOG_*`), target `free_breakfast::core::diagnostics_macros`. |
 | `wwr/` | `free_breakfast.core.wwr` — the interface to WarpWraps: re-exports every wwr module the tree uses, `gpu_status`, the GPU error policies for the wwr wrappers (abort on a failed create, log on a failed destroy), and the wrappers bound to them: `Device`, `Buffers`, `BlasHandle`, `SolverHandle`, …; plus `ForkStream`, a `Stream` with fork / join `Event`s for fanning work out inside a graph capture, and `Device`, whose work stream is one. Import this rather than `wwr.*`; `wwr/README.md` lists the exceptions. |
+| `mirrored_buffer/` | `free_breakfast.core.mirrored_buffer` — `MirroredBuffer<T>`: a `Buffers::device<T>` and a `Buffers::pinned<T>` of equal size, with `to_device` / `to_pinned` (and `_sync` variants) queued on the `Device`'s work stream. |
 | `resources/` | `free_breakfast.core.resources` — `NodeResources`: a `DeviceResources` (a `Device` plus BLAS and solver handles bound to its stream) per GPU, and a taskflow executor; each `DeviceResources` is driven by one thread at a time. **Not** re-exported by `core.cppm`, so taskflow stays out of every `import free_breakfast.core`; import it explicitly. |
 
 Each subdirectory is its own library with its own README — a module library,
