@@ -33,9 +33,9 @@ upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePair
   std::vector<DevicePrimitivePairClass> out;
   out.reserve(classes.size());
   for (const PrimitivePairClass &cls : classes) {
-    if (cls.size() == 0 || cls.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+    if (cls.n_rec < 1) {
       return err_config("upload_primitive_pairs: class ({}, {}) has {} records", cls.la, cls.lb,
-                        cls.size());
+                        cls.n_rec);
     }
     auto zeta = FBF_TRY(upload_pair_field(res, cls.zeta));
     auto p = FBF_TRY(upload_pair_field(res, cls.p));
@@ -48,7 +48,7 @@ upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePair
     out.push_back(DevicePrimitivePairClass{
         .la = cls.la,
         .lb = cls.lb,
-        .n_rec = static_cast<int32_t>(cls.size()),
+        .n_rec = cls.n_rec,
         .zeta = std::move(zeta),
         .p = std::move(p),
         .xpa = std::move(xpa),

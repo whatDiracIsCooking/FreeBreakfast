@@ -36,9 +36,14 @@ TEST(Mmd, ClassesAreReachedOnlyAndAscending) {
     EXPECT_EQ(classes[c].lb, want[c].second) << "class " << c;
   }
   // (s|s): 1 x 1 primitives; (s|p): 1 x 2; (p|p): 2 x 2.
-  EXPECT_EQ(classes[0].size(), 1U);
-  EXPECT_EQ(classes[1].size(), 2U);
-  EXPECT_EQ(classes[2].size(), 4U);
+  EXPECT_EQ(classes[0].n_rec, 1);
+  EXPECT_EQ(classes[1].n_rec, 2);
+  EXPECT_EQ(classes[2].n_rec, 4);
+  for (const fb::PrimitivePairClass &cls : classes) {
+    EXPECT_EQ(cls.zeta.size(), static_cast<std::size_t>(cls.n_rec));
+    EXPECT_EQ(cls.p.size(), 3U * static_cast<std::size_t>(cls.n_rec));
+    EXPECT_EQ(cls.off_b.size(), static_cast<std::size_t>(cls.n_rec));
+  }
 }
 
 TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
@@ -83,7 +88,7 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
 TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
   const auto classes = fb::primitive_pair_classes(p_then_s());
   for (const fb::PrimitivePairClass *cls : {&classes[0], &classes[2]}) {
-    for (std::size_t k = 0; k < cls->size(); ++k) {
+    for (std::size_t k = 0; k < static_cast<std::size_t>(cls->n_rec); ++k) {
       EXPECT_EQ(cls->off_a[k], cls->off_b[k]) << "(" << cls->la << ", " << cls->lb << ")";
     }
   }

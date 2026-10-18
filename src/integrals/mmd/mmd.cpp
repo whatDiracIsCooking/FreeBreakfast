@@ -7,6 +7,7 @@ module free_breakfast.integrals.mmd;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants;
+import free_breakfast.core.error_handling;
 import free_breakfast.basis;
 
 namespace free_breakfast {
@@ -16,6 +17,13 @@ void append_shell_pair_records(PrimitivePairClass &cls, const Shell &a, const in
                                const Shell &b, const int32_t off_b) {
   const Vec<double, 3> &ca = a.center();
   const Vec<double, 3> &cb = b.center();
+  const int64_t n_new =
+      static_cast<int64_t>(a.primitives().size()) * static_cast<int64_t>(b.primitives().size());
+  if (n_new > std::numeric_limits<int32_t>::max() - cls.n_rec) {
+    check_or_abort(Status{err_config("primitive_pair_classes: class ({}, {}) exceeds {} records",
+                                     cls.la, cls.lb, std::numeric_limits<int32_t>::max())});
+  }
+  cls.n_rec += static_cast<int32_t>(n_new);
   for (const Primitive &pa : a.primitives()) {
     for (const Primitive &pb : b.primitives()) {
       const double zeta = pa.exponent + pb.exponent;
