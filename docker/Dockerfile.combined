@@ -95,8 +95,8 @@ RUN --mount=type=bind,source=docker/install-claude-code.sh,target=/tmp/install-c
 # `autoUpdates: false` in .devcontainer/seed-claude-config.sh. The install is
 # root-owned and the container runs as uid 1000, so an update attempt fails
 # regardless; what this stops is it being attempted behind the image's back.
-ARG AGY_RELEASE=1.4.0-5281842794987520
-ARG AGY_SHA512=6c4b298c2a69b6bd0f58567031cc56d8097a32be54c4b633aa80ad395871b389618ab3860d4ba0a12599831b8226b51b03e258ee2ec7fae105a45b8e0fce2188
+ARG AGY_RELEASE=1.4.2-4835981233356800
+ARG AGY_SHA512=4a393afc1369cee94e817c1b430c9128d02b12ebd4d5703ace5cd47b2333e216d673fb0097cbf7195f757b110163ba9850e9eea3fdbbaddd4b25668b82c03f05
 ENV AGY_RELEASE=${AGY_RELEASE} \
     AGY_CLI_DISABLE_AUTO_UPDATE=1
 RUN --mount=type=bind,source=docker/install-agy.sh,target=/tmp/install-agy.sh \
