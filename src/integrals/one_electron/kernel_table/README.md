@@ -21,5 +21,7 @@ and writes the classes it emitted as `kernels/<family>_classes.h`
   `la <= lb`.
 
 No kernel is named per class anywhere by hand. A class the list names but no
-included unit defines fails to link: the template's primary is declared in
-every unit and defined in none.
+included unit defines fails to link: the template's primary
+(`template <uint8_t La, uint8_t Lb>`) is declared once, in
+`kernels/<family>.h`, and defined nowhere. A unit whose parameters drift from
+that header fails to compile.

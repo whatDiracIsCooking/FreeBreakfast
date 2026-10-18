@@ -43,7 +43,7 @@ are each the same set of files, named after the directory:
 | `<family>.cppm` / `<family>.cpp` | The module and its build |
 | `<family>_bridge.h` | The launcher's declaration, over `upload`'s device views, shared by the `.cu` and the implementation unit's global module fragment |
 | `<family>_launch.cu` | The launcher, the family's own device library |
-| `kernels/` | The generated kernels, `<family>_classes.h` and `units.h`, and the `.clang-format` that leaves them unformatted |
+| `kernels/` | The generated kernels, `<family>.h`, `<family>_classes.h` and `units.h`, and the `.clang-format` that leaves them unformatted |
 | `CMakeLists.txt` | The device library `….<family>.device` and the module |
 
 Every family takes its inputs, and its pre-launch checks
@@ -68,9 +68,11 @@ wavefront is written into them either.
 
 **One kernel template per family, and a table built from it.** Each class is
 written as one explicit specialization of the family's kernel template
-(`overlap<0, 1>`), never as a C name per class, and the generator writes the
-classes it emitted (`kernels/<family>_classes.h`) and `kernels/units.h`, which
-includes that list and every unit. Each launcher includes `units.h` into an
+(`overlap<0, 1>`), never as a C name per class. The generator also writes the
+template's primary once (`kernels/<family>.h`, `template <uint8_t La,
+uint8_t Lb>`, which every unit includes and nothing defines), the classes it
+emitted (`kernels/<family>_classes.h`), and `kernels/units.h`, which includes
+those two and every unit. Each launcher includes `units.h` into an
 anonymous namespace rather than compiling the units as sources of their own, so
 it launches kernels whose definitions it can see, and builds its `[la][lb]`
 table at compile time (`kernel_table/`): no class is named by hand, a class
