@@ -1,65 +1,55 @@
 // The device half of free_breakfast.integrals.one_electron.potential_en: the
-// launcher over the generated v_{la}{lb} kernels. One source for both backends
-// -- nvcc under CUDA, clang -x hip under HIP.
+// launcher over the generated potential_en<la, lb> kernels. One source for both
+// backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are #included rather than compiled as sources of their
-// own, as overlap_launch.cu does, but each inside a namespace of its own: every
-// v_*.cu defines the same non-static `__device__ double fj_boys(int, double)`
-// (FelizJueves's wide Boys function), so six of them at namespace scope in one
-// TU would define it six times. A namespace keeps the emitted text untouched;
-// the kernels' extern "C" names are distinct already, so it changes nothing
-// about them. Each file's own `#include "felizjueves/runtime.h"` is a no-op
-// here, this file having included it (it is #pragma once) before the first
-// namespace opens -- which it must: that header includes the vendor runtime
-// under HIP, and a first inclusion inside a namespace would declare the runtime
-// there.
+// own, so the launches below see their definitions in the same TU: no
+// cross-TU kernel declaration to keep in step with the generator. Each is one
+// explicit specialization of the kernel template `potential_en`, and kernels/units.h
+// includes every one beside the class list, so nothing here names a class: the
+// table is built from the template (kernel_table.h), and a class the list names
+// but no unit defines fails to link. They sit in an anonymous namespace, so no
+// name of theirs reaches the device link.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
-// libc++ header must not follow it (see primitives.h). block_params.h and
-// primitives.h include theirs first, as the bridge does integral_types.h.
+// libc++ header must not follow it (see primitives.h). block_params.h,
+// kernel_table.h and primitives.h include theirs first, as the bridge does
+// integral_types.h. The runtime itself comes in through felizjueves/runtime.h
+// before the namespace opens, as a first inclusion inside one would declare the
+// runtime there; each unit's own include of it is then a no-op (#pragma once).
 #include "block_params.h"
+#include "kernel_table.h"
 #include "primitives.h"
 
 #include "potential_en_bridge.h"
 
 #include "felizjueves/runtime.h"
 
-namespace free_breakfast::device::potential_en_00 {
-#include "kernels/v_00.cu"
-} // namespace free_breakfast::device::potential_en_00
-namespace free_breakfast::device::potential_en_01 {
-#include "kernels/v_01.cu"
-} // namespace free_breakfast::device::potential_en_01
-namespace free_breakfast::device::potential_en_02 {
-#include "kernels/v_02.cu"
-} // namespace free_breakfast::device::potential_en_02
-namespace free_breakfast::device::potential_en_11 {
-#include "kernels/v_11.cu"
-} // namespace free_breakfast::device::potential_en_11
-namespace free_breakfast::device::potential_en_12 {
-#include "kernels/v_12.cu"
-} // namespace free_breakfast::device::potential_en_12
-namespace free_breakfast::device::potential_en_22 {
-#include "kernels/v_22.cu"
-} // namespace free_breakfast::device::potential_en_22
-
 namespace free_breakfast::device {
 
 namespace {
 
+#include "kernels/units.h"
+
+static_assert(lists_every_class(potential_en_classes),
+              "kernels/ is not every la <= lb <= kMaxAngularMomentum: rerun "
+              "tools/emit_one_electron_kernels.py");
+
 // The generated kernels share one signature (FelizJueves's Target.V parameter
 // block). Taken from a kernel, not transcribed, so it follows whatever the
 // generator emits.
-using PotentialEnKernel = decltype(&potential_en_00::v_00);
+using PotentialEnKernel = decltype(&potential_en<0, 0>);
 
-// Indexed [la][lb]; the la > lb half is empty because the host swaps every
-// shell pair into la <= lb (free_breakfast.integrals.mmd).
-constexpr PotentialEnKernel kPotentialEnKernels[kMaxAngularMomentum + 1][kMaxAngularMomentum + 1] =
-    {
-        {potential_en_00::v_00, potential_en_01::v_01, potential_en_02::v_02},
-        {nullptr, potential_en_11::v_11, potential_en_12::v_12},
-        {nullptr, nullptr, potential_en_22::v_22},
+// The family, as kernel_table names it per class.
+struct PotentialEnFamily {
+  template <int32_t la, int32_t lb>
+  static constexpr PotentialEnKernel kernel() {
+    return &potential_en<la, lb>;
+  }
 };
+
+constexpr KernelTable<PotentialEnKernel> kPotentialEnKernels =
+    kernel_table<PotentialEnKernel, PotentialEnFamily>();
 
 } // namespace
 

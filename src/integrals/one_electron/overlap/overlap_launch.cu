@@ -1,43 +1,54 @@
 // The device half of free_breakfast.integrals.one_electron.overlap: the
-// launcher over the generated s_{la}{lb} kernels. One source for both backends
-// -- nvcc under CUDA, clang -x hip under HIP.
+// launcher over the generated overlap<la, lb> kernels. One source for both
+// backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are #included rather than compiled as sources of their
 // own, so the launches below see their definitions in the same TU: no
-// cross-TU kernel declaration to keep in step with the generator, and their
-// extern "C" names reach no other TU of this library.
+// cross-TU kernel declaration to keep in step with the generator. Each is one
+// explicit specialization of the kernel template `overlap`, and kernels/units.h
+// includes every one beside the class list, so nothing here names a class: the
+// table is built from the template (kernel_table.h), and a class the list names
+// but no unit defines fails to link. They sit in an anonymous namespace, so no
+// name of theirs reaches the device link.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
-// libc++ header must not follow it (see primitives.h). block_params.h and
-// primitives.h include theirs first, as the bridge does integral_types.h.
+// libc++ header must not follow it (see primitives.h). block_params.h,
+// kernel_table.h and primitives.h include theirs first, as the bridge does
+// integral_types.h. The runtime itself comes in through felizjueves/runtime.h
+// before the namespace opens, as a first inclusion inside one would declare the
+// runtime there; each unit's own include of it is then a no-op (#pragma once).
 #include "block_params.h"
+#include "kernel_table.h"
 #include "primitives.h"
 
 #include "overlap_bridge.h"
 
-#include "kernels/s_00.cu"
-#include "kernels/s_01.cu"
-#include "kernels/s_02.cu"
-#include "kernels/s_11.cu"
-#include "kernels/s_12.cu"
-#include "kernels/s_22.cu"
+#include "felizjueves/runtime.h"
 
 namespace free_breakfast::device {
 
 namespace {
 
-// The generated kernels share one signature (FelizJueves's Target.S parameter
-// block), which is what lets one table cover every class. Taken from a kernel,
-// not transcribed, so it follows whatever the generator emits.
-using OverlapKernel = decltype(&s_00);
+#include "kernels/units.h"
 
-// Indexed [la][lb]; the la > lb half is empty because the host swaps every
-// shell pair into la <= lb (free_breakfast.integrals.mmd).
-constexpr OverlapKernel kOverlapKernels[kMaxAngularMomentum + 1][kMaxAngularMomentum + 1] = {
-    {s_00, s_01, s_02},
-    {nullptr, s_11, s_12},
-    {nullptr, nullptr, s_22},
+static_assert(lists_every_class(overlap_classes),
+              "kernels/ is not every la <= lb <= kMaxAngularMomentum: rerun "
+              "tools/emit_one_electron_kernels.py");
+
+// The generated kernels share one signature (FelizJueves's Target.S parameter
+// block). Taken from a kernel, not transcribed, so it follows whatever the
+// generator emits.
+using OverlapKernel = decltype(&overlap<0, 0>);
+
+// The family, as kernel_table names it per class.
+struct OverlapFamily {
+  template <int32_t la, int32_t lb>
+  static constexpr OverlapKernel kernel() {
+    return &overlap<la, lb>;
+  }
 };
+
+constexpr KernelTable<OverlapKernel> kOverlapKernels = kernel_table<OverlapKernel, OverlapFamily>();
 
 } // namespace
 
