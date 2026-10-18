@@ -13,7 +13,7 @@
 // whose relative truncation Q(m+1/2, T) is under 4e-19 there for m <= 40.
 // Its accuracy on reference.boys's domain is a kernel-tier question, not
 // this file's.
-__device__ double fj_boys(int32_t m, double T) {
+static __device__ double fj_boys(int32_t m, double T) {
     if (T >= 125.0) {
         double a = 0.5 * sqrt(3.141592653589793 / T);
         for (int32_t k = 1; k <= m; ++k) {

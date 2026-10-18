@@ -1,5 +1,4 @@
 add_subdirectory(upload)
-add_subdirectory(kernel_table)
 add_subdirectory(overlap)
 # kinetic, potential_en and core_hamiltonian are disabled: their sources stay in
 # the tree but are not built, linked or re-exported (one_electron.cppm), and
