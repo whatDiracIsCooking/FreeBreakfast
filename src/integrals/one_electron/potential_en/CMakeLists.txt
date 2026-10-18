@@ -1,12 +1,13 @@
 # The V launcher. Device code in its own library, so its language and -x hip
 # never reach the module compiles. Only potential_en_launch.cu is a source: it
 # #includes the generated kernels (kernels/), which must not also be compiled on
-# their own (their extern "C" kernels would be defined twice). The bridge header
-# it shares with the module names int32_t, kMaxAngularMomentum, the device views
-# and wwrStream_t, hence types_headers, basis::headers, upload::headers and
+# their own (their kernels would be defined twice). The bridge header it shares
+# with the module names int32_t, kMaxAngularMomentum, the device views and
+# wwrStream_t, hence types_headers, basis::headers, upload::headers and
 # wwr::device PUBLIC. The kernels include FelizJueves's felizjueves/runtime.h,
-# which only the launcher sees, hence felizjueves::headers PRIVATE; so is its
-# block sizing (block_params.h, primitives.h), hence core::kernel_headers.
+# which only the launcher sees, hence felizjueves::headers PRIVATE; so are its
+# block sizing (block_params.h, primitives.h), hence core::kernel_headers, and
+# its table (kernel_table.h), hence one_electron::kernel_table.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.one_electron.potential_en.device
@@ -20,6 +21,7 @@ free_breakfast_add_gpu_device_library(
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
   felizjueves::headers
+  free_breakfast::integrals::one_electron::kernel_table
 )
 
 # The module. DeviceResources, DevicePrimitivePairClass, DeviceNuclei and

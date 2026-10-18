@@ -1,42 +1,54 @@
 // The device half of free_breakfast.integrals.one_electron.kinetic: the
-// launcher over the generated t_{la}{lb} kernels. One source for both backends
-// -- nvcc under CUDA, clang -x hip under HIP.
+// launcher over the generated kinetic<la, lb> kernels. One source for both
+// backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are #included rather than compiled as sources of their
-// own, as overlap_launch.cu does: the launches below see their definitions in
-// the same TU.
+// own, so the launches below see their definitions in the same TU: no
+// cross-TU kernel declaration to keep in step with the generator. Each is one
+// explicit specialization of the kernel template `kinetic`, and kernels/units.h
+// includes every one beside the class list, so nothing here names a class: the
+// table is built from the template (kernel_table.h), and a class the list names
+// but no unit defines fails to link. They sit in an anonymous namespace, so no
+// name of theirs reaches the device link.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
-// libc++ header must not follow it (see primitives.h). block_params.h and
-// primitives.h include theirs first, as the bridge does integral_types.h.
+// libc++ header must not follow it (see primitives.h). block_params.h,
+// kernel_table.h and primitives.h include theirs first, as the bridge does
+// integral_types.h. The runtime itself comes in through felizjueves/runtime.h
+// before the namespace opens, as a first inclusion inside one would declare the
+// runtime there; each unit's own include of it is then a no-op (#pragma once).
 #include "block_params.h"
+#include "kernel_table.h"
 #include "primitives.h"
 
 #include "kinetic_bridge.h"
 
-#include "kernels/t_00.cu"
-#include "kernels/t_01.cu"
-#include "kernels/t_02.cu"
-#include "kernels/t_11.cu"
-#include "kernels/t_12.cu"
-#include "kernels/t_22.cu"
+#include "felizjueves/runtime.h"
 
 namespace free_breakfast::device {
 
 namespace {
 
+#include "kernels/units.h"
+
+static_assert(lists_every_class(kinetic_classes),
+              "kernels/ is not every la <= lb <= kMaxAngularMomentum: rerun "
+              "tools/emit_one_electron_kernels.py");
+
 // The generated kernels share one signature (FelizJueves's Target.T parameter
 // block: Target.S's plus eb_ket). Taken from a kernel, not transcribed, so it
 // follows whatever the generator emits.
-using KineticKernel = decltype(&t_00);
+using KineticKernel = decltype(&kinetic<0, 0>);
 
-// Indexed [la][lb]; the la > lb half is empty because the host swaps every
-// shell pair into la <= lb (free_breakfast.integrals.mmd).
-constexpr KineticKernel kKineticKernels[kMaxAngularMomentum + 1][kMaxAngularMomentum + 1] = {
-    {t_00, t_01, t_02},
-    {nullptr, t_11, t_12},
-    {nullptr, nullptr, t_22},
+// The family, as kernel_table names it per class.
+struct KineticFamily {
+  template <int32_t la, int32_t lb>
+  static constexpr KineticKernel kernel() {
+    return &kinetic<la, lb>;
+  }
 };
+
+constexpr KernelTable<KineticKernel> kKineticKernels = kernel_table<KineticKernel, KineticFamily>();
 
 } // namespace
 
