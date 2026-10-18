@@ -7,6 +7,7 @@ add_subdirectory(error_handling)
 add_subdirectory(log)
 add_subdirectory(diagnostics)
 add_subdirectory(wwr)
+add_subdirectory(mirrored_buffer)
 add_subdirectory(resources)
 
 free_breakfast_add_cxx_module_library(
@@ -26,4 +27,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::log
   free_breakfast::core::wwr
+  free_breakfast::core::mirrored_buffer
 )
