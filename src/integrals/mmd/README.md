@@ -56,5 +56,5 @@ Host only; no GPU is linked, so it builds and is tested on a device-less box.
 | File | Role |
 |------|------|
 | `mmd.cppm` | Module interface: `PrimitivePairClass`, `primitive_pair_classes` |
-| `mmd.cpp` | The shell-pair sweep, the swap, the per-record arithmetic |
+| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the per-record arithmetic |
 | `CMakeLists.txt` | The module library |
