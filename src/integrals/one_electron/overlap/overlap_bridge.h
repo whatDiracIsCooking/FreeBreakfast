@@ -7,9 +7,14 @@
 /// purview gets module linkage and can never bind to a definition compiled in a
 /// plain TU, which a .cu is (wwr docs/architecture.md, section 14).
 ///
-/// wwrStream_t comes from wwr's runtime.h, whose always-on part is that one type
-/// and is host-safe; it is the same type wwr.runtime_api exports, so the module
-/// passes its stream straight through.
+/// wwrStream_t and wwrError_t come from a different wwr header in each pass: in
+/// the .cu, runtime.h, whose device section carries the whole runtime surface;
+/// in the host GMF, wwr/runtime_api.h, wwr's non-module host include of that same
+/// surface (runtime.h's host part has only the stream). Both alias the vendor's
+/// own types, the ones wwr.runtime_api exports, so the module passes its stream
+/// in and takes the status back with no cast. The GMF copy of the surface also
+/// redeclares names overlap.cpp imports (wwrMemsetAsync, ...); clang accepts the
+/// pair and both backends build, but that is the cost of this include.
 
 #pragma once
 
@@ -20,7 +25,13 @@
 #include "angular_momentum.h"
 #include "device_views.h"
 
+// wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
+// wwrError_t: see the file header.
+#if defined(__CUDACC__) || defined(__HIP__) || defined(__HIPCC__)
 #include "runtime.h"
+#else
+#include "wwr/runtime_api.h"
+#endif
 
 namespace free_breakfast::device {
 
@@ -35,12 +46,10 @@ namespace free_breakfast::device {
 /// kernels index @p s as a 32-bit `m * n_ao + n`, so n_ao * n_ao must fit an
 /// int32_t.
 ///
-/// @return The launch status, as the integer value of `wwrError_t`
-///         (wwrErrorInvalidValue for a class with no kernel). The enum itself is
-///         only in runtime.h's device section, which a host GMF does not see;
-///         the caller casts it back. Launch errors only: the kernel's own faults
-///         surface at the next synchronization.
-[[nodiscard]] int32_t overlap_class(wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                                    int32_t n_ao, double *s);
+/// @return The launch status (wwrErrorInvalidValue for a class with no kernel).
+///         Launch errors only: the kernel's own faults surface at the next
+///         synchronization.
+[[nodiscard]] wwr::wwrError_t
+overlap_class(wwr::wwrStream_t stream, const PrimitivePairClassView &cls, int32_t n_ao, double *s);
 
 } // namespace free_breakfast::device
