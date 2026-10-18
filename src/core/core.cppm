@@ -38,9 +38,9 @@ export import free_breakfast.core.log;
 // itself.
 export import free_breakfast.core.wwr;
 
-// MirroredBuffer: a device and a pinned buffer paired for h2d / d2h. Its own
-// module, not a partition of core.wwr, because it is built from Buffers, which
-// core.wwr's primary interface defines.
+// MirroredBuffer: a device and a pinned buffer paired for h2d / d2h on a
+// DeviceStream. Its own module, not a partition of core.wwr, because it is
+// built from StreamBuffers, which core.wwr's primary interface defines.
 export import free_breakfast.core.mirrored_buffer;
 
 // Deliberately absent: free_breakfast.core.resources (NodeResources). It
