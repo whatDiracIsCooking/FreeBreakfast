@@ -28,8 +28,8 @@ namespace free_breakfast::device {
 /// matrix @p t, on @p stream: the generated kernel t_{la}{lb}, one thread per
 /// record.
 ///
-/// Reads @p cls's zeta, xpa, xpb, s, eb and offsets. Each value is atomically
-/// added at (m, n) and at (n, m), so @p t must be zeroed before the first class
+/// Reads @p cls's zeta, pa_{x,y,z}, pb_{x,y,z}, s, eb and offsets. Each value is
+/// atomically added at (m, n) and at (n, m), so @p t must be zeroed before the first class
 /// of a build and is symmetric after the last.
 ///
 /// cls.n_rec must be positive, and cls.la <= cls.lb <= kMaxAngularMomentum. The

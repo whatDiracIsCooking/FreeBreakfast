@@ -36,9 +36,15 @@ extern "C" __global__ void v_22(
     int32_t n_ao,
     int32_t n_nuc,
     const double* zeta_ab,
-    const double* P,
-    const double* XPA,
-    const double* XPB,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
     const double* s_ab,
     const int32_t* off_a,
     const int32_t* off_b,
@@ -59,21 +65,21 @@ extern "C" __global__ void v_22(
         double sk = s_ab[rec];
         int32_t oa = off_a[rec];
         int32_t ob = off_b[rec];
-        double P0 = P[(rec * 3 + 0)];
-        double P1 = P[(rec * 3 + 1)];
-        double P2 = P[(rec * 3 + 2)];
+        double P0 = p_x[rec];
+        double P1 = p_y[rec];
+        double P2 = p_z[rec];
         // the undressed block E^{ab}_t of this record, from the fragment: rows
         // cartesians(la) x cartesians(lb), columns hermite_order(la + lb); a
         // structurally zero entry is never written nor read
         double E[36][35];
         {
             // fragment e_block_22
-            const auto PA_x = XPA[(rec * 3 + 0)];
-            const auto PB_x = XPB[(rec * 3 + 0)];
-            const auto PA_y = XPA[(rec * 3 + 1)];
-            const auto PB_y = XPB[(rec * 3 + 1)];
-            const auto PA_z = XPA[(rec * 3 + 2)];
-            const auto PB_z = XPB[(rec * 3 + 2)];
+            const auto PA_x = pa_x[rec];
+            const auto PB_x = pb_x[rec];
+            const auto PA_y = pa_y[rec];
+            const auto PB_y = pb_y[rec];
+            const auto PA_z = pa_z[rec];
+            const auto PB_z = pb_z[rec];
             // McMurchie & Davidson report UCRL-13791 (docs/references.md entry 46), eqs.
             // 2.20-2.21: E^{i+1,j}_t and E^{i,j+1}_t from E^{00}_0 = exp(zeta X_PA X_PB);
             // undressed

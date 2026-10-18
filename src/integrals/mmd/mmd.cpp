@@ -29,9 +29,10 @@ std::pair<uint32_t, uint32_t> bra_ket_order(const std::vector<Shell> &shells, co
 void resize_records(PrimitivePairClass &cls) {
   const auto n = static_cast<size_t>(cls.n_rec);
   cls.zeta.resize(n);
-  cls.p.resize(3 * n);
-  cls.xpa.resize(3 * n);
-  cls.xpb.resize(3 * n);
+  for (std::vector<double> *axis : {&cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z,
+                                    &cls.pb_x, &cls.pb_y, &cls.pb_z}) {
+    axis->resize(n);
+  }
   cls.s.resize(n);
   cls.eb.resize(n);
   cls.off_a.resize(n);
@@ -51,17 +52,16 @@ int32_t write_shell_pair_records(PrimitivePairClass &cls, const int32_t rec, con
       const double px = ((pa.exponent * ca.x) + (pb.exponent * cb.x)) / zeta;
       const double py = ((pa.exponent * ca.y) + (pb.exponent * cb.y)) / zeta;
       const double pz = ((pa.exponent * ca.z) + (pb.exponent * cb.z)) / zeta;
-      const size_t v = 3 * r;
       cls.zeta[r] = zeta;
-      cls.p[v] = px;
-      cls.p[v + 1] = py;
-      cls.p[v + 2] = pz;
-      cls.xpa[v] = px - ca.x;
-      cls.xpa[v + 1] = py - ca.y;
-      cls.xpa[v + 2] = pz - ca.z;
-      cls.xpb[v] = px - cb.x;
-      cls.xpb[v + 1] = py - cb.y;
-      cls.xpb[v + 2] = pz - cb.z;
+      cls.p_x[r] = px;
+      cls.p_y[r] = py;
+      cls.p_z[r] = pz;
+      cls.pa_x[r] = px - ca.x;
+      cls.pa_y[r] = py - ca.y;
+      cls.pa_z[r] = pz - ca.z;
+      cls.pb_x[r] = px - cb.x;
+      cls.pb_y[r] = py - cb.y;
+      cls.pb_z[r] = pz - cb.z;
       cls.s[r] = pa.coefficient * pb.coefficient * std::pow(kPi<double> / zeta, 1.5);
       cls.eb[r] = pb.exponent;
       cls.off_a[r] = off_a;

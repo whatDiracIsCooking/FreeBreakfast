@@ -38,9 +38,15 @@ upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePair
                         cls.n_rec);
     }
     auto zeta = FBF_TRY(upload_pair_field(res, cls.zeta));
-    auto p = FBF_TRY(upload_pair_field(res, cls.p));
-    auto xpa = FBF_TRY(upload_pair_field(res, cls.xpa));
-    auto xpb = FBF_TRY(upload_pair_field(res, cls.xpb));
+    auto p_x = FBF_TRY(upload_pair_field(res, cls.p_x));
+    auto p_y = FBF_TRY(upload_pair_field(res, cls.p_y));
+    auto p_z = FBF_TRY(upload_pair_field(res, cls.p_z));
+    auto pa_x = FBF_TRY(upload_pair_field(res, cls.pa_x));
+    auto pa_y = FBF_TRY(upload_pair_field(res, cls.pa_y));
+    auto pa_z = FBF_TRY(upload_pair_field(res, cls.pa_z));
+    auto pb_x = FBF_TRY(upload_pair_field(res, cls.pb_x));
+    auto pb_y = FBF_TRY(upload_pair_field(res, cls.pb_y));
+    auto pb_z = FBF_TRY(upload_pair_field(res, cls.pb_z));
     auto s = FBF_TRY(upload_pair_field(res, cls.s));
     auto eb = FBF_TRY(upload_pair_field(res, cls.eb));
     auto off_a = FBF_TRY(upload_pair_field(res, cls.off_a));
@@ -50,9 +56,15 @@ upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePair
         .lb = cls.lb,
         .n_rec = cls.n_rec,
         .zeta = std::move(zeta),
-        .p = std::move(p),
-        .xpa = std::move(xpa),
-        .xpb = std::move(xpb),
+        .p_x = std::move(p_x),
+        .p_y = std::move(p_y),
+        .p_z = std::move(p_z),
+        .pa_x = std::move(pa_x),
+        .pa_y = std::move(pa_y),
+        .pa_z = std::move(pa_z),
+        .pb_x = std::move(pb_x),
+        .pb_y = std::move(pb_y),
+        .pb_z = std::move(pb_z),
         .s = std::move(s),
         .eb = std::move(eb),
         .off_a = std::move(off_a),

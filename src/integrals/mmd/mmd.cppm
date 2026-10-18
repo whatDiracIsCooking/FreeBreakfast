@@ -23,8 +23,9 @@ import free_breakfast.basis;
 export namespace free_breakfast {
 
 /// @brief Every primitive-pair record of one shell-pair class (la, lb), with
-/// la <= lb, as parallel arrays (one entry per record; three, x y z, for the
-/// vector fields).
+/// la <= lb, as parallel arrays of one entry per record. A vector is three
+/// arrays, one per axis (P - A is @ref pa_x, @ref pa_y, @ref pa_z), named and
+/// laid out as the generated kernels take them.
 ///
 /// **The class is always la <= lb.** A shell pair whose bra has the higher
 /// angular momentum is stored swapped, B as the bra and A as the ket, so the
@@ -45,12 +46,24 @@ struct PrimitivePairClass {
   int32_t n_rec{0};
   /// @brief zeta = alpha + beta.
   std::vector<double> zeta;
-  /// @brief P, the product centre (3 per record).
-  std::vector<double> p;
-  /// @brief P - A (3 per record).
-  std::vector<double> xpa;
-  /// @brief P - B (3 per record).
-  std::vector<double> xpb;
+  /// @brief P, the product centre: x.
+  std::vector<double> p_x;
+  /// @brief P: y.
+  std::vector<double> p_y;
+  /// @brief P: z.
+  std::vector<double> p_z;
+  /// @brief P - A: x.
+  std::vector<double> pa_x;
+  /// @brief P - A: y.
+  std::vector<double> pa_y;
+  /// @brief P - A: z.
+  std::vector<double> pa_z;
+  /// @brief P - B: x.
+  std::vector<double> pb_x;
+  /// @brief P - B: y.
+  std::vector<double> pb_y;
+  /// @brief P - B: z.
+  std::vector<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   std::vector<double> s;
   /// @brief beta, the ket primitive's exponent.
