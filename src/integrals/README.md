@@ -15,6 +15,7 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
   potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
+coulomb/       the Coulomb matrix J: so far only its generated kernels, compiled, no module
 ```
 
 ## How the pieces fit
@@ -29,9 +30,10 @@ Molecule(res, atoms)                  nuclei on the device          (molecule, o
 ```
 
 **Generated kernels are committed, not built.** `tools/emit_one_electron_kernels.py`
-writes them from the FelizJueves submodule; a build never runs Python. Re-run it
-after bumping the submodule. Each family has its own directory
-(`one_electron/{overlap,kinetic,potential_en}/kernels/`), whose
+and `tools/emit_coulomb_kernels.py` write them from the FelizJueves submodule; a
+build never runs Python. Re-run both after bumping the submodule. Each family
+has its own directory (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
+`coulomb/kernels/{dq,e_hermite,jab}/`), whose
 `.clang-format` turns formatting off, and
 `devtools/check-int-types.py` skips a file by FelizJueves's first-line banner:
 the files stay byte-for-byte as emitted, so a fix belongs in the generator.
