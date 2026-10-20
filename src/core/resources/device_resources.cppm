@@ -55,6 +55,15 @@ public:
   /// so a reinterpret_buffer_view of a whole workspace as any of them succeeds.
   static constexpr size_t kWorkspaceAlignment = 256;
 
+  /// @brief kWorkspaceAlignment in elements of T: the step a routine carving
+  /// the workspace into T-typed regions rounds each region up to. Constrained
+  /// to a T whose size divides kWorkspaceAlignment, which rules out a step
+  /// that truncates (regions off the boundary) or is 0 (align_up divides by
+  /// it).
+  template <typename T>
+    requires(kWorkspaceAlignment % sizeof(T) == 0)
+  static constexpr size_t kWorkspaceAlignmentIn = kWorkspaceAlignment / sizeof(T);
+
   /// @brief Create a Device on `dev_idx` whose pool keeps up to
   /// `pool_release_threshold` bytes cached, and bind a BLAS and a solver handle
   /// to its stream. A failed creation aborts (CreatePolicy).
