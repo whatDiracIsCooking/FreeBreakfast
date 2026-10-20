@@ -5,11 +5,11 @@
 # kMaxAngularMomentum, the limit the check holds every class to.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.integrals.one_electron.upload
+  free_breakfast.integrals.one_electron.launch
   PRIMARY_INTERFACE
-  upload.cppm
+  launch.cppm
   IMPLEMENTATION
-  upload.cpp
+  launch.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types

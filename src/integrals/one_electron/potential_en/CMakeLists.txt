@@ -35,7 +35,7 @@ free_breakfast_add_gpu_device_library(
 
 # The module. DeviceResources, PrimitivePairClass, Molecule and
 # CartesianMatrixAO are in its signatures, so core::resources, molecule,
-# one_electron::upload and linalg::matrix_ao are PUBLIC. The device library is
+# one_electron::launch and linalg::matrix_ao are PUBLIC. The device library is
 # PRIVATE: the implementation unit includes the bridge header in its GMF and
 # calls the launcher, and a static library's private link dependencies still
 # reach the final link.
@@ -50,7 +50,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::error_handling
   free_breakfast::core::resources
-  free_breakfast::integrals::one_electron::upload
+  free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::mmd
   free_breakfast::molecule
   free_breakfast::linalg::matrix_ao

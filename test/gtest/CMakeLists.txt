@@ -98,7 +98,7 @@ add_executable(
   sad_gpu.cpp
   io_basis_gpu.cpp
   io_xyz_gpu.cpp
-  upload_gpu.cpp
+  launch_gpu.cpp
   overlap_gpu.cpp
   # Disabled with kinetic, potential_en and core_hamiltonian
   # (src/integrals/one_electron/CMakeLists.txt).

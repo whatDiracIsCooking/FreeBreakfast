@@ -14,7 +14,7 @@ kernels FelizJueves generates.
 
 ## Design
 
-`kinetic` runs `check_one_electron_build` (`upload`), zeroes the
+`kinetic` runs `check_one_electron_build` (`launch`), zeroes the
 `CartesianMatrixAO`, and launches one generated kernel per class, one thread per
 record. The kernels read the overlap's record fields plus `eb`, the ket
 exponent. Each thread adds its values at `(m, n)` and `(n, m)` with fp64
@@ -47,7 +47,7 @@ basis the matrix was made for.
 ## Usage
 
 ```cpp
-import free_breakfast.integrals.one_electron.upload;
+import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.kinetic;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;

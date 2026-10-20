@@ -10,7 +10,7 @@ FelizJueves generates.
 
 ## Design
 
-`overlap` runs `check_one_electron_build` (`upload`), zeroes the
+`overlap` runs `check_one_electron_build` (`launch`), zeroes the
 `CartesianMatrixAO`, and launches one generated kernel per class, one thread per
 record. Each thread adds its values at `(m, n)` and `(n, m)` with fp64 atomics,
 so S is symmetric to rounding (the two mirror positions are summed in different
@@ -29,7 +29,7 @@ holds `overlap_kernels`, the `[la][lb]` table it launches through.
 
 **The family layout.** `kinetic/` and `potential_en/` are the same files under
 their own names; the parent README's "One layout per kernel family" has the
-table. The launcher takes `upload`'s `PrimitivePairClassView`, not loose
+table. The launcher takes `mmd`'s `PrimitivePairClassView`, not loose
 pointers, and is bounded by `basis`'s `kMaxAngularMomentum`, the one limit for
 every family.
 
@@ -47,7 +47,7 @@ basis the matrix was made for.
 ## Usage
 
 ```cpp
-import free_breakfast.integrals.one_electron.upload;
+import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.overlap;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;

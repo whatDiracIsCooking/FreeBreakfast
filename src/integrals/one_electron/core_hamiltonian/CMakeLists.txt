@@ -1,7 +1,7 @@
 # The module. No device code of its own: H is kinetic's T plus potential_en's
 # add-only V, both launched by their own modules. DeviceResources,
 # PrimitivePairClass, Molecule and CartesianMatrixAO are in its signature, so
-# core::resources, molecule, one_electron::upload and linalg::matrix_ao are
+# core::resources, molecule, one_electron::launch and linalg::matrix_ao are
 # PUBLIC; kinetic and potential_en are only called, so PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -14,7 +14,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::error_handling
   free_breakfast::core::resources
-  free_breakfast::integrals::one_electron::upload
+  free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::mmd
   free_breakfast::molecule
   free_breakfast::linalg::matrix_ao

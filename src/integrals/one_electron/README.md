@@ -6,7 +6,7 @@ Hamiltonian H = T + V.
 
 > **Currently disabled:** `kinetic/`, `potential_en/` and `core_hamiltonian/`
 > are not built, linked or re-exported, and `core_hamiltonian_gpu.cpp` is off;
-> only `upload/` and `overlap/` are live. The sources are kept, and
+> only `launch/` and `overlap/` are live. The sources are kept, and
 > `CMakeLists.txt` says what to uncomment to restore them.
 
 ## Module
@@ -15,7 +15,7 @@ Hamiltonian H = T + V.
 the five below (and is itself re-exported by `free_breakfast.integrals`):
 
 ```
-upload/            free_breakfast.integrals.one_electron.upload: the per-class launch and the shared pre-launch checks
+launch/            free_breakfast.integrals.one_electron.launch: the per-class launch and the shared pre-launch checks
 overlap/           free_breakfast.integrals.one_electron.overlap: the overlap S
 kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
 potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
@@ -37,7 +37,7 @@ result.
 
 **One stream per class.** `primitive_pair_classes` gives every class its own
 `DeviceStream` on `res.device()`, and its records are allocated and copied
-there. A build zeroes the matrix on `res.stream()`, then `upload`'s
+there. A build zeroes the matrix on `res.stream()`, then `launch`'s
 `launch_each` forks every class's stream from it, launches each class on its
 own stream, and joins them all back, so the classes run concurrently and
 whatever follows on `res.stream()` sees the whole matrix. The atomics are what
@@ -50,13 +50,13 @@ are each the same set of files, named after the directory:
 | File | Role |
 |---|---|
 | `<family>.cppm` / `<family>.cpp` | The module and its build |
-| `<family>_bridge.h` | The launcher's declaration, over `upload`'s device views, shared by the `.cu` and the implementation unit's global module fragment |
+| `<family>_bridge.h` | The launcher's declaration, over `mmd`'s and `molecule`'s device views, shared by the `.cu` and the implementation unit's global module fragment |
 | `<family>_launch.cu` | The launcher, the family's own device library |
 | `kernels/` | The generated kernels and their header `<family>.h`, and the `.clang-format` that leaves them unformatted |
 | `CMakeLists.txt` | The device library `….<family>.device` (the launcher and every kernel) and the module |
 
 Every family takes its inputs, and its pre-launch checks
-(`check_one_electron_build`, `check_nuclei`), from `upload`, its kernel table
+(`check_one_electron_build`, `check_nuclei`), from `launch`, its kernel table
 from its generated header, and is bounded by `basis`'s `kMaxAngularMomentum`,
 the one limit for the repo. `core_hamiltonian/` has no kernels of its own, so it is
 only the module.
@@ -114,7 +114,7 @@ Everything the five sub-modules export; each README has its own table.
 
 | Symbol | Module |
 |---|---|
-| `launch_each`, the checks | `upload` |
+| `launch_each`, the checks | `launch` |
 | `overlap(res, classes, s)` | `overlap` |
 | `kinetic(res, classes, t)` | `kinetic` |
 | `nuclear_attraction(res, classes, molecule, v)`, `add_nuclear_attraction(…)` | `potential_en` |
@@ -146,7 +146,7 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
   against libcint's `int1e_kin` and `int1e_nuc` and PySCF's `hcore`, at the
   same tolerance, plus each build's zeroing and class-range refusal (off,
   with the three modules).
-- `test/gtest/upload_gpu.cpp`: `check_nuclei` accepting nuclei on the call's
+- `test/gtest/launch_gpu.cpp`: `check_nuclei` accepting nuclei on the call's
   device. The nuclei themselves are `molecule`'s, tested in
   `test/gtest/molecule_gpu.cpp`.
 
@@ -155,5 +155,5 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
 | File | Role |
 |------|------|
 | `one_electron.cppm` | The convenience module: re-exports the five sub-modules |
-| `upload/`, `overlap/`, `kinetic/`, `potential_en/`, `core_hamiltonian/` | The sub-modules; each has its own README |
+| `launch/`, `overlap/`, `kinetic/`, `potential_en/`, `core_hamiltonian/` | The sub-modules; each has its own README |
 | `CMakeLists.txt` | The sub-directories and the aggregate module |

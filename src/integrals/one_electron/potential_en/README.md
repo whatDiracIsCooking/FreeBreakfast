@@ -15,7 +15,7 @@ GPU, over the `v_{la}{lb}` kernels FelizJueves generates. Point nuclei.
 ## Design
 
 `nuclear_attraction` runs `check_one_electron_build` and `check_nuclei`
-(`upload`), zeroes the `CartesianMatrixAO`, and launches one generated kernel
+(`launch`), zeroes the `CartesianMatrixAO`, and launches one generated kernel
 per class, one thread per record, with every nucleus serial inside it. The
 kernels read the overlap's record fields plus `p`, the product centre, and the
 molecule's nuclear charges and positions (`NucleiView`). Each thread adds its values at
