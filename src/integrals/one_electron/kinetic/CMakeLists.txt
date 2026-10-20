@@ -6,7 +6,7 @@
 # must never pass NO_DEVICE_LINKING (nvcc warns #20280 without it). The bridge
 # header it shares with the module names int32_t, kMaxAngularMomentum,
 # PrimitivePairClassView and wwrStream_t, hence types_headers, basis::headers,
-# upload::headers and wwr::device PUBLIC. The kernels include FelizJueves's
+# mmd::headers and wwr::device PUBLIC. The kernels include FelizJueves's
 # felizjueves/runtime.h, which nothing outside this library sees, hence
 # felizjueves::headers PRIVATE; so is the launcher's block sizing
 # (block_params.h, primitives.h), hence core::kernel_headers.
@@ -24,7 +24,7 @@ free_breakfast_add_gpu_device_library(
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::basis::headers
-  free_breakfast::integrals::one_electron::upload::headers
+  free_breakfast::integrals::mmd::headers
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers

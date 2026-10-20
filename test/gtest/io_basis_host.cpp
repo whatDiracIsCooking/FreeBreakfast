@@ -1,5 +1,5 @@
-// Host-only cases for io/basis: the BSE JSON reader and its placement onto a
-// molecule.
+// Host-only cases for io/basis: the BSE JSON reader. Its placement onto a
+// molecule is io_basis_gpu.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -10,43 +10,13 @@ import free_breakfast.io.base;
 import free_breakfast.io.basis;
 import free_breakfast.core.nontransferrable;
 
+#include "io_basis_json.h"
 #include "scratch_dir.h"
 
 namespace {
 
 namespace fb = free_breakfast;
-using fb::Atom;
-using fb::Element;
-
-// STO-3G hydrogen; oxygen with a plain s, an sp block (one column per
-// momentum), a two-column general contraction, and a tagged spherical d.
-constexpr std::string_view kBasis = R"({
-  "elements": {
-    "1": {"electron_shells": [
-      {"function_type": "gto", "angular_momentum": [0],
-       "exponents": ["3.42525091", "0.62391373", "0.16885540"],
-       "coefficients": [["0.15432897", "0.53532814", "0.44463454"]]}
-    ]},
-    "8": {"electron_shells": [
-      {"angular_momentum": [0],
-       "exponents": ["130.7093200"], "coefficients": [["1.0"]]},
-      {"function_type": "gto", "angular_momentum": [0, 1],
-       "exponents": ["5.0331513", "1.1695961"],
-       "coefficients": [["-0.09996723", "0.39951283"], ["0.15591627", "0.60768372"]]},
-      {"function_type": "gto", "angular_momentum": [0],
-       "exponents": ["0.38", "0.12"],
-       "coefficients": [["1.0", "0.0"], ["0.0", "1.0"]]},
-      {"function_type": "gto_spherical", "angular_momentum": [2],
-       "exponents": ["1.185"], "coefficients": [["1.0E+00"]]}
-    ]}
-  }
-})";
-
-fb::Molecule water() {
-  return fb::Molecule({Atom{{0.0, 0.0, 0.2217}, Element::O},
-                       Atom{{0.0, 1.4309, -0.8867}, Element::H},
-                       Atom{{0.0, -1.4309, -0.8867}, Element::H}});
-}
+using fb::test::kBasis;
 
 TEST(IoBasis, ParsesElementsIntoShellStamps) {
   auto stamp = fb::parse_basis(kBasis);
@@ -79,20 +49,6 @@ TEST(IoBasis, SplitsSpAndGeneralContractionBlocks) {
   EXPECT_EQ(o[3].primitives()[0].coefficient, 1.0);
   EXPECT_EQ(o[4].primitives()[0].coefficient, 0.0);
   EXPECT_EQ(o[4].primitives()[1].coefficient, 1.0);
-}
-
-TEST(IoBasis, ParseAndAssignLaysTheBasisOverTheMolecule) {
-  auto basis = fb::parse_and_assign_basis(kBasis, water());
-  ASSERT_TRUE(basis.has_value()) << basis.error().message;
-  // O: 6 shells (s, s, p, s, s, d), then one s per H.
-  EXPECT_EQ(basis->nshells(), 8U);
-  EXPECT_EQ(basis->nao_cart(), 1U + 1U + 3U + 1U + 1U + 6U + 1U + 1U);
-  EXPECT_EQ(basis->nao_sphe(), basis->nao_cart() - 1U); // d: 5, not 6
-  // U maps the Cartesian AOs the kernels evaluate onto the spherical layout.
-  EXPECT_EQ(fb::spherical_transform_matrix(*basis).size(),
-            std::size_t{basis->nao_cart()} * basis->nao_sphe());
-  EXPECT_EQ(basis->shells()[6].center().y, 1.4309);
-  EXPECT_EQ(basis->shells()[7].center().y, -1.4309);
 }
 
 TEST(IoBasis, ReadBasisFromFile) {
@@ -169,28 +125,6 @@ TEST(IoBasis, OnlySphericalFunctionTypesAreAccepted) {
   }
   // Slater-type orbitals are not Gaussian shells.
   EXPECT_FALSE(shell_with("sto", 0).has_value());
-}
-
-TEST(IoBasis, UncoveredElementIsInvalidConfig) {
-  const fb::Molecule co({Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.1}, Element::O}});
-  auto basis = fb::parse_and_assign_basis(kBasis, co);
-  ASSERT_FALSE(basis.has_value());
-  EXPECT_EQ(basis.error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_NE(basis.error().message.find("Z=6"), std::string::npos) << basis.error().message;
-}
-
-TEST(IoBasis, AuxBasisNamesTheFittingRoleOnCoverageFailure) {
-  auto ok = fb::parse_and_assign_aux_basis(kBasis, water());
-  ASSERT_TRUE(ok.has_value()) << ok.error().message;
-  EXPECT_EQ(ok->nshells(), 8U);
-
-  const fb::Molecule ch({Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.0}, Element::H}});
-  auto bad = fb::parse_and_assign_aux_basis(kBasis, ch);
-  ASSERT_FALSE(bad.has_value());
-  EXPECT_EQ(bad.error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_TRUE(bad.error().message.starts_with("auxiliary (density-fitting) basis"))
-      << bad.error().message;
-  EXPECT_NE(bad.error().message.find("Z=6"), std::string::npos);
 }
 
 } // namespace

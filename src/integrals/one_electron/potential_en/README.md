@@ -18,7 +18,7 @@ GPU, over the `v_{la}{lb}` kernels FelizJueves generates. Point nuclei.
 (`upload`), zeroes the `CartesianMatrixAO`, and launches one generated kernel
 per class, one thread per record, with every nucleus serial inside it. The
 kernels read the overlap's record fields plus `p`, the product centre, and the
-nuclei's charges and positions (`NucleiView`). Each thread adds its values at
+molecule's nuclear charges and positions (`NucleiView`). Each thread adds its values at
 `(m, n)` and `(n, m)` with fp64 atomics, so V is symmetric to rounding, not
 bitwise. Queued on `res.stream()`, each class on its own stream, forked from it
 and joined back into it (`launch_each`), with no host
@@ -55,21 +55,22 @@ FelizJueves's named follow-up.
 
 | Symbol | Role |
 |---|---|
-| `nuclear_attraction(res, classes, nuclei, v)` | `Status`: the Cartesian V into `v` |
-| `add_nuclear_attraction(res, classes, nuclei, m)` | `Status`: V added into `m`, which is not zeroed first |
+| `nuclear_attraction(res, classes, molecule, v)` | `Status`: the Cartesian V into `v` |
+| `add_nuclear_attraction(res, classes, molecule, m)` | `Status`: V added into `m`, which is not zeroed first |
 
 ## Usage
 
 ```cpp
-import free_breakfast.integrals.one_electron.upload;
+import free_breakfast.integrals.mmd;
+import free_breakfast.molecule;
 import free_breakfast.integrals.one_electron.potential_en;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
 const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis
-const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
+const fb::Molecule molecule(res, atoms);                       // nuclei: once per geometry
 fb::CartesianMatrixAO v(res, basis);
-fb::Status status = fb::nuclear_attraction(res, *classes, *nuclei, v);
+fb::Status status = fb::nuclear_attraction(res, *classes, molecule, v);
 ```
 
 ## Tests

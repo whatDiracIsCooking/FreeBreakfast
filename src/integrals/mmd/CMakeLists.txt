@@ -1,6 +1,6 @@
 # PrimitivePairClassView, the launchers' view of a class, offered two ways from
-# one definition in primitive_pair_class_view.h: `#include` (through
-# one_electron.upload's device_views.h, for the launchers) through this include
+# one definition in primitive_pair_class_view.h: `#include` (through the
+# launchers' bridge headers) through this include
 # path, and `import free_breakfast.integrals.mmd;`, which includes it in its
 # GMF and re-exports the name.
 free_breakfast_add_interface_library(

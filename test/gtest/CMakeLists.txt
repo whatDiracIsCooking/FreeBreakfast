@@ -39,7 +39,6 @@ add_executable(
   sad_host.cpp
   io_base_host.cpp
   io_basis_host.cpp
-  io_xyz_host.cpp
   io_config_host.cpp
   io_json_host.cpp
   io_npy_host.cpp
@@ -94,6 +93,11 @@ add_executable(
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp
   mmd_gpu.cpp
+  molecule_gpu.cpp
+  basis_gpu.cpp
+  sad_gpu.cpp
+  io_basis_gpu.cpp
+  io_xyz_gpu.cpp
   upload_gpu.cpp
   overlap_gpu.cpp
   # Disabled with kinetic, potential_en and core_hamiltonian
@@ -113,6 +117,9 @@ target_link_libraries(
   free_breakfast_tests_gpu
   PRIVATE free_breakfast::core
           free_breakfast::core::resources
+          free_breakfast::molecule
+          free_breakfast::basis
+          free_breakfast::sad
           free_breakfast::linalg
           free_breakfast::integrals
           free_breakfast::io

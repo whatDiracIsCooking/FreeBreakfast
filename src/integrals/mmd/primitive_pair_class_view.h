@@ -3,7 +3,7 @@
 /// device, by pointer, for the launchers.
 ///
 /// This header is the single definition. The launchers (`*_launch.cu`, through
-/// their bridge headers and device_views.h) reach it by `#include`; C++ modules
+/// their bridge headers) reach it by `#include`; C++ modules
 /// reach the very same entity by `import free_breakfast.integrals.mmd;`, which
 /// includes this header in its global module fragment and re-exports the name
 /// (the `atom` pattern).

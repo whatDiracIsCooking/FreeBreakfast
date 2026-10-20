@@ -19,7 +19,8 @@
 #include "integral_types.h"
 
 #include "angular_momentum.h"
-#include "device_views.h"
+#include "nuclei_view.h"
+#include "primitive_pair_class_view.h"
 
 #include "runtime.h"
 

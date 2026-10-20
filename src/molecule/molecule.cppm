@@ -6,14 +6,31 @@
 /// That choice is what keeps the nuclear repulsion a bare Sum Z_A Z_B / R_AB
 /// with no physical constants in front -- in Hartree atomic units the Coulomb
 /// prefactor 1/(4*pi*epsilon_0) is exactly 1.
+///
+/// A Molecule also owns its nuclei on the device, uploaded once at
+/// construction: its geometry is fixed for its lifetime, so one upload serves
+/// every build that reads it. The non-owning view, NucleiView, is
+/// nuclei_view.h's, included in the global module fragment and re-exported so
+/// importers and the launchers' #include share one entity (atom.cppm has the
+/// why of the in-namespace using-declaration).
+
+module;
+
+#include "nuclei_view.h"
 
 export module free_breakfast.molecule;
 
 import std;
 export import free_breakfast.core.types;
 export import free_breakfast.atom;
+import free_breakfast.core.error_handling;
+import free_breakfast.core.wwr;
+import free_breakfast.core.mirrored_buffer;
+import free_breakfast.core.resources;
 
 export namespace free_breakfast {
+
+using free_breakfast::NucleiView;
 
 /// @brief Euclidean distance between two points @p a and @p b, in bohr.
 ///
@@ -33,22 +50,40 @@ export namespace free_breakfast {
   return static_cast<int32_t>(atom.element);
 }
 
-/// @brief A collection of atoms with an overall charge and spin multiplicity.
+/// @brief A collection of atoms with an overall charge and spin multiplicity,
+/// and their nuclei on the device.
 ///
 /// The geometry is fixed at construction; @c charge is the net molecular charge
 /// in units of the elementary charge (positive for a cation) and @c
 /// multiplicity is 2S+1, defaulting to a singlet. Each nucleus is an
 /// @ref free_breakfast::Atom -- a @c double3 position in bohr plus an
 /// Element; Z is read with @ref nuclear_charge above.
+///
+/// The nuclei -- Z and the positions, in atom order, the point charges V
+/// attracts to -- are copied to the device once, at construction, one
+/// @c MirroredBuffer per field on a new @c DeviceStream of res.device(). The
+/// pinned side they were written into is kept for the Molecule's lifetime.
+/// Movable, not copyable.
 class Molecule {
 public:
-  Molecule() = default;
-
+  /// @brief Hold @p atoms and copy their nuclei to @p res's device.
+  ///
+  /// The device res.dev_idx() names is made current for the call and the
+  /// previous one restored. The copies' stream is synchronized once, after
+  /// them: every class's stream reads the nuclei, and none is ordered after
+  /// that stream. A molecule with no atoms, or more than an int32_t counts,
+  /// aborts; so does a failed allocation (CreatePolicy) or copy. The copies
+  /// only move data just created, so their failure means a broken context, not
+  /// a bad input.
+  ///
+  /// @param res           The device the nuclei go to.
   /// @param atoms         The nuclei and their positions (bohr).
   /// @param charge        Net molecular charge (default neutral).
   /// @param multiplicity  Spin multiplicity 2S+1 (default singlet, 1).
-  explicit Molecule(std::vector<Atom> atoms, int32_t charge = 0, int32_t multiplicity = 1)
-      : atoms_(std::move(atoms)), charge_(charge), multiplicity_(multiplicity) {}
+  Molecule(DeviceResources &res, std::vector<Atom> atoms, int32_t charge = 0,
+           int32_t multiplicity = 1)
+      : atoms_(std::move(atoms)), charge_(charge), multiplicity_(multiplicity),
+        nuclei_(upload(res, atoms_)) {}
 
   /// @brief The atoms, in the order supplied.
   [[nodiscard]] const std::vector<Atom> &atoms() const { return atoms_; }
@@ -77,10 +112,57 @@ public:
   /// falls as the charge rises -- hence the subtraction.
   [[nodiscard]] int32_t electron_count() const { return total_nuclear_charge() - charge_; }
 
+  /// @brief The nuclei's own work stream: they were allocated and copied on
+  /// it, and its dev_idx() is the device they are on.
+  [[nodiscard]] const std::shared_ptr<DeviceStream> &device_stream() const noexcept {
+    return nuclei_.z.handle();
+  }
+
+  /// @brief The nuclei on the device by pointer, for a launcher. Valid while
+  /// this is alive.
+  [[nodiscard]] NucleiView view() const {
+    return {.n_nuc = static_cast<int32_t>(atoms_.size()),
+            .z = nuclei_.z.device().data(),
+            .c = nuclei_.c.device().data()};
+  }
+
 private:
-  std::vector<Atom> atoms_{};
-  int32_t charge_{0};
-  int32_t multiplicity_{1};
+  struct Nuclei {
+    MirroredBuffer<double> z;
+    MirroredBuffer<double> c;
+  };
+
+  // Write the nuclei into the pinned side and copy them to the device, on a
+  // stream of their own.
+  [[nodiscard]] static Nuclei upload(DeviceResources &res, const std::vector<Atom> &atoms) {
+    if (atoms.empty() || atoms.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
+      check_or_abort(err_config("Molecule: a molecule of {} atoms", atoms.size()));
+    }
+    const ScopedDeviceIndex on{res.dev_idx()};
+    const auto ds = std::make_shared<DeviceStream>(res.device());
+    Nuclei out{
+        .z = MirroredBuffer<double>(atoms.size(), ds),
+        .c = MirroredBuffer<double>(3 * atoms.size(), ds),
+    };
+    double *z = out.z.pinned().data();
+    double *c = out.c.pinned().data();
+    for (size_t a = 0; a < atoms.size(); ++a) {
+      z[a] = static_cast<double>(nuclear_charge(atoms[a]));
+      c[(3 * a) + 0] = atoms[a].position.x;
+      c[(3 * a) + 1] = atoms[a].position.y;
+      c[(3 * a) + 2] = atoms[a].position.z;
+    }
+    check_or_abort(gpu_status(out.z.to_device()));
+    // Both copies are on one stream, so this one sync covers z's as well.
+    check_or_abort(gpu_status(out.c.to_device_sync()));
+    return out;
+  }
+
+  std::vector<Atom> atoms_;
+  int32_t charge_;
+  int32_t multiplicity_;
+  // After atoms_: it is uploaded from them.
+  Nuclei nuclei_;
 };
 
 /// @brief Nuclear repulsion energy E_nn = Sum_{A<B} Z_A Z_B / R_AB, in hartree.

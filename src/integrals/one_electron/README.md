@@ -15,7 +15,7 @@ Hamiltonian H = T + V.
 the five below (and is itself re-exported by `free_breakfast.integrals`):
 
 ```
-upload/            free_breakfast.integrals.one_electron.upload: the device records and nuclei, and the shared pre-launch checks
+upload/            free_breakfast.integrals.one_electron.upload: the per-class launch and the shared pre-launch checks
 overlap/           free_breakfast.integrals.one_electron.overlap: the overlap S
 kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
 potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
@@ -25,7 +25,7 @@ core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T
 ## Design
 
 `mmd`'s `primitive_pair_classes` puts a basis's records on the device once per
-basis, and `upload`'s `upload_nuclei` a molecule's nuclei (Z and position) once
+basis, and a `Molecule` its nuclei (Z and position) at construction, so once
 per geometry. A build then zeroes a `CartesianMatrixAO` and launches one generated
 kernel per class, one thread per record: `overlap<la, lb>` for S,
 `kinetic<la, lb>` for T, `potential_en<la, lb>` for V (the nuclei serial inside
@@ -114,11 +114,11 @@ Everything the five sub-modules export; each README has its own table.
 
 | Symbol | Module |
 |---|---|
-| `launch_each`, `DeviceNuclei` and its view, `upload_nuclei`, the checks | `upload` |
+| `launch_each`, the checks | `upload` |
 | `overlap(res, classes, s)` | `overlap` |
 | `kinetic(res, classes, t)` | `kinetic` |
-| `nuclear_attraction(res, classes, nuclei, v)`, `add_nuclear_attraction(…)` | `potential_en` |
-| `core_hamiltonian(res, classes, nuclei, h)` | `core_hamiltonian` |
+| `nuclear_attraction(res, classes, molecule, v)`, `add_nuclear_attraction(…)` | `potential_en` |
+| `core_hamiltonian(res, classes, molecule, h)` | `core_hamiltonian` |
 
 Every build is queued on `res.stream()`, each class on its own stream forked
 from it and joined back into it, with no host synchronization.
@@ -131,11 +131,11 @@ import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
 const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis
-const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
+const fb::Molecule molecule(res, atoms);                       // nuclei: once per geometry
 fb::CartesianMatrixAO s(res, basis);
 fb::CartesianMatrixAO h(res, basis);
 fb::Status status = fb::overlap(res, *classes, s);
-status = fb::core_hamiltonian(res, *classes, *nuclei, h);
+status = fb::core_hamiltonian(res, *classes, molecule, h);
 ```
 
 ## Tests
@@ -146,9 +146,9 @@ status = fb::core_hamiltonian(res, *classes, *nuclei, h);
   against libcint's `int1e_kin` and `int1e_nuc` and PySCF's `hcore`, at the
   same tolerance, plus each build's zeroing and class-range refusal (off,
   with the three modules).
-- `test/gtest/upload_gpu.cpp`: `upload_nuclei`'s nuclei in atom order on the
-  pinned side, the device side matching it, the call's device, and the refusal
-  of an empty molecule.
+- `test/gtest/upload_gpu.cpp`: `check_nuclei` accepting nuclei on the call's
+  device. The nuclei themselves are `molecule`'s, tested in
+  `test/gtest/molecule_gpu.cpp`.
 
 ## Files
 

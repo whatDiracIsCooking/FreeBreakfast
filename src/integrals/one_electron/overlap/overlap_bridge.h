@@ -23,7 +23,7 @@
 #include "integral_types.h"
 
 #include "angular_momentum.h"
-#include "device_views.h"
+#include "primitive_pair_class_view.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see the file header.

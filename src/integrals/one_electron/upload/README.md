@@ -1,8 +1,8 @@
 # Upload
 
-What every one-electron build shares beyond `mmd`'s primitive-pair records: the
-nuclei, the per-class launch over the records' streams, and the checks every
-build runs before it launches anything.
+What every one-electron build shares beyond `mmd`'s primitive-pair records and
+the molecule's nuclei: the per-class launch over the records' streams, and the
+checks every build runs before it launches anything.
 
 ## Module
 
@@ -13,10 +13,9 @@ build runs before it launches anything.
 
 The primitive-pair records are `mmd`'s: `primitive_pair_classes(res, basis)`
 puts them on the device once per basis, each class on its own `DeviceStream`.
-This module adds `upload_nuclei`, a molecule's nuclei (Z and position) on the
-device once per geometry: `DeviceNuclei` is `n_nuc` and one `MirroredBuffer`
-per field (`z`, `c`), on a new `DeviceStream` of `res.device()`, the nuclei
-written straight into the pinned side, as `mmd` writes its records.
+The nuclei are `molecule`'s: a `Molecule` copies its Z and positions to the
+device once, at construction, on a `DeviceStream` of its own, and hands the
+launchers a `NucleiView`.
 
 **One stream per class.** `launch_each(classes, parent, launch)` is how a build
 runs the classes: it forks every class's stream from `parent`, calls
@@ -24,23 +23,13 @@ runs the classes: it forks every class's stream from `parent`, calls
 `parent`. After the first failed fork or launch it launches nothing more, but
 still joins every stream it forked, so `parent` never runs ahead of a kernel in
 flight. The nuclei are not forked: every class reads them, and none is
-ordered after their stream, so `upload_nuclei` synchronizes it once, after
-the copies, before any build can launch.
+ordered after their stream, so the `Molecule` constructor synchronizes it once,
+after the copies, before any build can launch.
 
 **One record set serves every family.** S reads `zeta`, `pa_{x,y,z}`,
 `pb_{x,y,z}`, `s` and the offsets; T reads those and `eb`, the ket exponent; V
 reads those and `p_{x,y,z}`, the product centre. `mmd` copies them all,
 whichever matrix is wanted.
-
-**Owners in modules, views in a header.** `DeviceNuclei` (here) and
-`PrimitivePairClass` (`mmd`) own `MirroredBuffer`s, which only a module can name.
-Each hands out a non-owning `view()`: `NucleiView` and `PrimitivePairClassView`,
-plain pointer aggregates. `device_views.h` defines `NucleiView` and includes
-`mmd`'s `primitive_pair_class_view.h`, so it is the launchers' one include for
-both. They `#include` it and take a view instead of a dozen loose pointers;
-this module includes it in its global module fragment and re-exports the names,
-so the two sides share one entity (the `atom` pattern). A view is valid while
-its owner is alive.
 
 **The shared checks.** `check_one_electron_build` is what every build
 (`overlap`, `kinetic`, `potential_en`, `core_hamiltonian`) runs first: the
@@ -49,27 +38,23 @@ kernels' 32-bit `m * n_ao + n` index (`n_ao² ≤ INT32_MAX`, about 46k Cartesia
 AOs), and every class `la <= lb <= kMaxAngularMomentum`. That limit is
 `basis`'s, one for the whole repo: every family is generated to it, and the
 launchers' kernel tables are sized by it. `check_nuclei` is the extra one for
-the builds that read the nuclei (V and H): the nuclei on the call's device.
+the builds that read the nuclei (V and H): the molecule's nuclei on the call's
+device.
 
-No device code: this module copies and validates, and each family's module
-launches.
+No device code: this module validates, and each family's module launches.
 
 ## Public API
 
 | Symbol | Role |
 |---|---|
 | `launch_each(classes, parent, launch)` | Each class's launch on its own stream, between a fork from and a join into `parent`; the first error of a fork, launch or join |
-| `DeviceNuclei` | A molecule's nuclei on the device: `n_nuc` and a `MirroredBuffer` each for `z` and `c` (bohr), on one stream, `device_stream()`, whose `dev_idx()` is the device they are on; `view()` gives a `NucleiView` |
-| `PrimitivePairClassView`, `NucleiView` | Non-owning pointer views, through `device_views.h`, for the launchers |
-| `upload_nuclei(res, molecule)` | `Result<DeviceNuclei>`, in atom order. `InvalidConfig` for a molecule with no atoms. Synchronizes once |
 | `check_one_electron_build(res, classes, m, what)` | `Status`: `InvalidConfig` naming the first refused input, `what` naming the build |
-| `check_nuclei(res, nuclei, what)` | `Status`: `InvalidConfig` if the nuclei are on another device |
+| `check_nuclei(res, molecule, what)` | `Status`: `InvalidConfig` if the molecule's nuclei are on another device |
 
 ## Files
 
 | File | Role |
 |------|------|
-| `device_views.h` | `NucleiView`'s single definition, and the launchers' one include for both views |
-| `upload.cppm` | Module interface: `launch_each`, the nuclei, the checks, and the views re-exported |
+| `upload.cppm` | Module interface: `launch_each` and the checks |
 | `upload.cpp` | Implementation |
-| `CMakeLists.txt` | The interface library `free_breakfast.integrals.one_electron.upload.headers` and the module |
+| `CMakeLists.txt` | The module |
