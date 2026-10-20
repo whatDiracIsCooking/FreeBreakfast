@@ -10,7 +10,7 @@
 /// which includes this header in its global module fragment and re-exports the
 /// names from within the namespace.
 ///
-/// The owners, @c PrimitivePairClass and @c DeviceNuclei, hold wwr buffers and
+/// The owners, @c PrimitivePairClass and @c DeviceNuclei, hold MirroredBuffers and
 /// so live only in modules; each hands out one of these with @c view(). A view
 /// is valid while its owner is alive.
 

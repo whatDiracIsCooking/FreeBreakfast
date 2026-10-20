@@ -14,15 +14,18 @@ build runs before it launches anything.
 The primitive-pair records are `mmd`'s: `primitive_pair_classes(res, basis)`
 puts them on the device once per basis, each class on its own `DeviceStream`.
 This module adds `upload_nuclei`, a molecule's nuclei (Z and position) on the
-device once per geometry. It copies from pageable memory and synchronizes once.
+device once per geometry: `DeviceNuclei` is `n_nuc` and one `MirroredBuffer`
+per field (`z`, `c`), on a new `DeviceStream` of `res.device()`, the nuclei
+written straight into the pinned side, as `mmd` writes its records.
 
 **One stream per class.** `launch_each(classes, parent, launch)` is how a build
 runs the classes: it forks every class's stream from `parent`, calls
 `launch(stream, cls)` with the class's stream, and joins every stream back into
 `parent`. After the first failed fork or launch it launches nothing more, but
 still joins every stream it forked, so `parent` never runs ahead of a kernel in
-flight. The nuclei stay on `res.device()`'s own stream: every class reads them,
-and `upload_nuclei` has synchronized before any build can.
+flight. The nuclei are not forked: every class reads them, and none is
+ordered after their stream, so `upload_nuclei` synchronizes it once, after
+the copies, before any build can launch.
 
 **One record set serves every family.** S reads `zeta`, `pa_{x,y,z}`,
 `pb_{x,y,z}`, `s` and the offsets; T reads those and `eb`, the ket exponent; V
@@ -30,7 +33,7 @@ reads those and `p_{x,y,z}`, the product centre. `mmd` copies them all,
 whichever matrix is wanted.
 
 **Owners in modules, views in a header.** `DeviceNuclei` (here) and
-`PrimitivePairClass` (`mmd`) own wwr buffers, which only a module can name.
+`PrimitivePairClass` (`mmd`) own `MirroredBuffer`s, which only a module can name.
 Each hands out a non-owning `view()`: `NucleiView` and `PrimitivePairClassView`,
 plain pointer aggregates. `device_views.h` defines `NucleiView` and includes
 `mmd`'s `primitive_pair_class_view.h`, so it is the launchers' one include for
@@ -56,7 +59,7 @@ launches.
 | Symbol | Role |
 |---|---|
 | `launch_each(classes, parent, launch)` | Each class's launch on its own stream, between a fork from and a join into `parent`; the first error of a fork, launch or join |
-| `DeviceNuclei` | A molecule's nuclei on the device: `z`, `c` (bohr), `n_nuc`, and the `dev_idx` they are on; `view()` gives a `NucleiView` |
+| `DeviceNuclei` | A molecule's nuclei on the device: `n_nuc` and a `MirroredBuffer` each for `z` and `c` (bohr), on one stream, `device_stream()`, whose `dev_idx()` is the device they are on; `view()` gives a `NucleiView` |
 | `PrimitivePairClassView`, `NucleiView` | Non-owning pointer views, through `device_views.h`, for the launchers |
 | `upload_nuclei(res, molecule)` | `Result<DeviceNuclei>`, in atom order. `InvalidConfig` for a molecule with no atoms. Synchronizes once |
 | `check_one_electron_build(res, classes, m, what)` | `Status`: `InvalidConfig` naming the first refused input, `what` naming the build |

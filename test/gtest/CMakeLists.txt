@@ -94,6 +94,7 @@ add_executable(
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp
   mmd_gpu.cpp
+  upload_gpu.cpp
   overlap_gpu.cpp
   # Disabled with kinetic, potential_en and core_hamiltonian
   # (src/integrals/one_electron/CMakeLists.txt).
