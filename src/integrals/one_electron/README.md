@@ -35,6 +35,15 @@ to rounding (the two mirror positions are summed in different orders), not
 bitwise. The spherical matrix is `MatrixAOPair::cartesian_to_spherical` of the
 result.
 
+**One stream per class.** `upload_primitive_pairs` gives every class its own
+`DeviceStream` on `res.device()`, and its records are allocated and copied
+there. A build zeroes the matrix on `res.stream()`, forks every class's stream
+from it, launches each class on its own stream, and joins them all back
+(`DevicePrimitivePairs::launch_each`), so the classes run concurrently and
+whatever follows on `res.stream()` sees the whole matrix. The atomics are what
+make that safe: classes adding into one matrix at once do not race. H is still
+T then V: each build joins before the next forks.
+
 **One layout per kernel family.** `overlap/`, `kinetic/` and `potential_en/`
 are each the same set of files, named after the directory:
 
@@ -105,13 +114,14 @@ Everything the five sub-modules export; each README has its own table.
 
 | Symbol | Module |
 |---|---|
-| `DevicePrimitivePairClass`, `DeviceNuclei`, their views, the uploads and checks | `upload` |
-| `overlap(res, classes, s)` | `overlap` |
-| `kinetic(res, classes, t)` | `kinetic` |
-| `nuclear_attraction(res, classes, nuclei, v)`, `add_nuclear_attraction(…)` | `potential_en` |
-| `core_hamiltonian(res, classes, nuclei, h)` | `core_hamiltonian` |
+| `DevicePrimitivePairs`, `DevicePrimitivePairClass`, `DeviceNuclei`, their views, the uploads and checks | `upload` |
+| `overlap(res, pairs, s)` | `overlap` |
+| `kinetic(res, pairs, t)` | `kinetic` |
+| `nuclear_attraction(res, pairs, nuclei, v)`, `add_nuclear_attraction(…)` | `potential_en` |
+| `core_hamiltonian(res, pairs, nuclei, h)` | `core_hamiltonian` |
 
-Every build is queued on `res.stream()`, with no host synchronization.
+Every build is queued on `res.stream()`, each class on its own stream forked
+from it and joined back into it, with no host synchronization.
 
 ## Usage
 

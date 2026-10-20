@@ -20,9 +20,8 @@ import free_breakfast.linalg.matrix_ao;
 
 namespace free_breakfast {
 
-Status overlap(DeviceResources &res, const std::span<const DevicePrimitivePairClass> classes,
-               CartesianMatrixAO &s) {
-  FBF_TRY(check_one_electron_build(res, classes, s, "overlap"));
+Status overlap(DeviceResources &res, const DevicePrimitivePairs &pairs, CartesianMatrixAO &s) {
+  FBF_TRY(check_one_electron_build(res, pairs, s, "overlap"));
   if (s.n() == 0) {
     return {};
   }
@@ -30,11 +29,11 @@ Status overlap(DeviceResources &res, const std::span<const DevicePrimitivePairCl
   const wwr::wwrStream_t stream = res.stream();
   // The kernels only add, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(s.data(), 0, sizeof(double) * s.num_elements(), stream)));
-  for (const DevicePrimitivePairClass &cls : classes) {
-    FBF_TRY(gpu_status(
-        device::overlap_class(stream, cls.view(), static_cast<int32_t>(s.n()), s.data())));
-  }
-  return {};
+  const auto n_ao = static_cast<int32_t>(s.n());
+  return gpu_status(pairs.launch_each(
+      stream, [&](const wwr::wwrStream_t cls_stream, const DevicePrimitivePairClass &cls) {
+        return device::overlap_class(cls_stream, cls.view(), n_ao, s.data());
+      }));
 }
 
 } // namespace free_breakfast
