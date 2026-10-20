@@ -122,8 +122,8 @@ TEST(LaunchEach, StopsAtTheFirstFailure) {
   ASSERT_TRUE(classes);
   ASSERT_GE(classes->size(), 2U);
   std::size_t launched = 0;
-  const wwr::wwrError_t code = fb::launch_each(
-      *classes, res.stream(), [&](wwr::wwrStream_t, const fb::PrimitivePairClass &) {
+  const wwr::wwrError_t code =
+      fb::launch_each(*classes, res.stream(), [&](const fb::PrimitivePairClass &) {
         return ++launched == 1 ? wwr::wwrSuccess : wwr::wwrErrorInvalidValue;
       });
   EXPECT_EQ(code, wwr::wwrErrorInvalidValue);

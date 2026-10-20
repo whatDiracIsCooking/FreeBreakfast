@@ -19,12 +19,13 @@ launchers a `NucleiView`.
 
 **One stream per class.** `launch_each(classes, parent, launch)` is how a build
 runs the classes: it forks every class's stream from `parent`, calls
-`launch(stream, cls)` with the class's stream, and joins every stream back into
-`parent`. After the first failed fork or launch it launches nothing more, but
-still joins every stream it forked, so `parent` never runs ahead of a kernel in
-flight. The nuclei are not forked: every class reads them, and none is
-ordered after their stream, so the `Molecule` constructor synchronizes it once,
-after the copies, before any build can launch.
+`launch(cls)`, which enqueues on `cls.device_stream()->stream()`, and joins
+every stream back into `parent`. After the first failed fork or launch it
+launches nothing more, but still joins every stream it forked, so `parent`
+never runs ahead of a kernel in flight. The nuclei are not forked: every class
+reads them, and none is ordered after their stream, so the `Molecule`
+constructor synchronizes it once, after the copies, before any build can
+launch.
 
 **One record set serves every family.** S reads `zeta`, `pa_{x,y,z}`,
 `pb_{x,y,z}`, `s` and the offsets; T reads those and `eb`, the ket exponent; V

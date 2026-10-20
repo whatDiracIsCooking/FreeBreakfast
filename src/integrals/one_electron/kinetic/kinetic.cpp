@@ -32,11 +32,10 @@ Status kinetic(DeviceResources &res, const std::span<const PrimitivePairClass> c
   // The kernels only add, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(t.data(), 0, sizeof(double) * t.num_elements(), stream)));
   const auto n_ao = static_cast<int32_t>(t.n());
-  return gpu_status(launch_each(
-      classes, stream, [&](const wwr::wwrStream_t cls_stream, const PrimitivePairClass &cls) {
-        return static_cast<wwr::wwrError_t>(
-            device::kinetic_class(cls_stream, cls.view(), n_ao, t.data()));
-      }));
+  return gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
+    return static_cast<wwr::wwrError_t>(
+        device::kinetic_class(cls.device_stream()->stream(), cls.view(), n_ao, t.data()));
+  }));
 }
 
 } // namespace free_breakfast
