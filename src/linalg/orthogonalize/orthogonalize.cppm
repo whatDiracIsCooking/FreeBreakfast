@@ -40,14 +40,11 @@ inline constexpr T kOrthogonalizeEigenvalueFloor = T{1e-10};
 /// Every matrix is a column-major device pointer with packed leading dimension
 /// n (element (i, j) at i + j*n). Only the lower triangle of @p s is read.
 ///
-/// The matrix-shaped intermediates are caller-owned scratch:
-///   - @p u_scratch, @p m_scratch: n*n elements each, for U and
-///     M = U diag(Lambda^{-1/2});
-///   - @p eigenvalues: n elements, overwritten with Lambda and then
-///     Lambda^{-1/2}.
-/// syevd's workspace and convergence flag are @p res's:
-/// res.device_workspace() grows to syevd's size for n if it is smaller, the one
-/// allocation this can make, and res.info() takes the flag.
+/// Every intermediate -- U, M = U diag(Lambda^{-1/2}), the eigenvalues and
+/// syevd's workspace -- is carved from res.device_workspace(), which grows to
+/// n*n + n + max(syevd's size, n*n) elements of T (each region rounded up) if
+/// it is smaller: the one allocation this can make. res.info() takes syevd's flag. Neither @p s nor @p x may
+/// point into res.device_workspace().
 ///
 /// Everything is queued on res.stream(), and the call synchronizes that stream
 /// once, to read syevd's convergence flag and the extreme eigenvalues. The
@@ -55,21 +52,17 @@ inline constexpr T kOrthogonalizeEigenvalueFloor = T{1e-10};
 /// restored.
 ///
 /// @param res               Supplies the stream, the BLAS and solver handles,
-///                          syevd's workspace and its convergence flag.
+///                          the scratch workspace and syevd's convergence flag.
 /// @param n                 Matrix order. n <= 0 is an empty X and succeeds.
 /// @param s                 The symmetric operand (n x n).
 /// @param x                 Out: the orthogonalizer (n x n).
-/// @param u_scratch         Scratch for U (n x n).
-/// @param m_scratch         Scratch for M (n x n).
-/// @param eigenvalues       Scratch for the eigenvalues (n).
 /// @param eigenvalue_floor  Eigenvalues at or below this drop their mode
 ///                          (contribute 0). Should be non-negative.
 /// @return Success; a Numerical error if syevd did not converge on @p s; or
 ///         the GpuRuntime error of the first runtime, solver, BLAS or launch
 ///         call that failed. A mode under the floor is dropped, not an error.
 template <real_fp T>
-[[nodiscard]] Status orthogonalize(DeviceResources &res, int32_t n, const T *s, T *x, T *u_scratch,
-                                   T *m_scratch, T *eigenvalues,
+[[nodiscard]] Status orthogonalize(DeviceResources &res, int32_t n, const T *s, T *x,
                                    T eigenvalue_floor = kOrthogonalizeEigenvalueFloor<T>);
 
 } // namespace free_breakfast

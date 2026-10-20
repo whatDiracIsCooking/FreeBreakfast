@@ -37,6 +37,12 @@ export namespace free_breakfast {
 /// that uses it, and never hold its pointer across another request. Pass the
 /// routine its own lwork, not the buffer's size, which may be larger.
 ///
+/// **One routine owns the device workspace at a time.** A routine may carve all
+/// of its device scratch from it -- a solver's work and its own intermediates
+/// alike -- by asking once for the total and splitting the result. So nothing
+/// nests: a routine that uses it calls no other that does, and no argument to
+/// one may point into it.
+///
 /// Movable, not copyable. A moved-from DeviceResources holds no Device.
 class DeviceResources : private NonCopyable {
 public:

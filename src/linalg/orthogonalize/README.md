@@ -18,15 +18,21 @@ where S = U Λ Uᵀ is the symmetric eigendecomposition (the columns of U are ei
 
 The computation, all queued on `res.stream()`:
 
-1. `syevd(S)` → ascending eigenvalues λ_j and eigenvectors U. syevd overwrites its input, so S is first copied into the caller's scratch U, and S itself is left untouched.
-2. `inverse_sqrt` kernel: Λ ← diag(λ_j^{-1/2}), in place on the caller's eigenvalue buffer, with eigenvalues at or below `eigenvalue_floor` set to 0 (see Conditioning).
+1. `syevd(S)` → ascending eigenvalues λ_j and eigenvectors U. syevd overwrites its input, so S is first copied into U, and S itself is left untouched.
+2. `inverse_sqrt` kernel: Λ ← diag(λ_j^{-1/2}), in place, with eigenvalues at or below `eigenvalue_floor` set to 0 (see Conditioning).
 3. X = U diag(Λ^{-1/2}) Uᵀ, as one `gmmwich(res.blas(), WWRBLAS_OP_T, n, U, Λ^{-1/2}, M, X)` (`free_breakfast.linalg.blas:gmmwich`), which is two library calls:
-   - M = U diag(Λ^{-1/2}) (`dgmm`, right side) into the caller's scratch M: scales column j of U by λ_j^{-1/2}, in O(n²) where a `gemm` against a dense diagonal would be O(n³);
+   - M = U diag(Λ^{-1/2}) (`dgmm`, right side) into M: scales column j of U by λ_j^{-1/2}, in O(n²) where a `gemm` against a dense diagonal would be O(n³);
    - X = M Uᵀ (`gemm`, `transb = T`), symmetric by construction.
 
 Every matrix is a raw column-major device pointer with packed leading dimension n. There is no matrix type in between.
 
-**The caller owns the matrices; `res` owns the solver scratch.** U, M and the eigenvalue buffer are passed in. The routine is a one-shot setup step, but its natural caller is an SCF driver that already holds n×n scratch for its own loop, idle before the loop starts, so lending it here costs the driver nothing extra. syevd's workspace and convergence flag are `DeviceResources`' own (`device_workspace`, `info`, `fetch_info`): the routine queries syevd's size for n, with the same eigenvector mode and triangle the call uses, and grows `res.device_workspace()` to it if it is smaller. That growth is the only allocation it can make, and a `res` that has already served an n this large makes none.
+**The caller passes S and X; every intermediate is `res`'s.** U, M, the eigenvalues and syevd's workspace are all carved from `res.device_workspace()`, and syevd's flag is `res.info()`. The routine queries syevd's size for n, with the same eigenvector mode and triangle the call uses, then asks for the whole layout in one request:
+
+```
+[ U: n² | eigenvalues: n | syevd's work: lwork, then M: n² ]
+```
+
+U and the eigenvalues are syevd's outputs and live to the end. M is first written by gmmwich, after syevd is done with its work on the same stream, so the two share a region: n² + n + max(lwork, n²) elements of T, each region rounded up to `kWorkspaceAlignment`. Growing the workspace to that is the only allocation the routine can make, and a `res` that has already served an n this large makes none. The workspace then stays with `res` for the next solver call, such as the SCF loop's own syevd of the same n. Neither S nor X may point into the workspace (see `DeviceResources`' "One routine owns the device workspace at a time").
 
 **One host round-trip.** After syevd, the routine copies back the extreme eigenvalues (first and last, since they are ascending) and then the convergence flag through `res.fetch_info()`, whose stream sync completes all three: one synchronization. A non-converged eigendecomposition becomes `ErrorKind::Numerical` instead of quietly corrupting X; an `info < 0` (a rejected argument, so a bug here) is `GpuRuntime`. The same read logs cond(S) = λ_max / λ_min, at `debug` always and at `warn` above 1e10 or for a non-positive λ_min. 1e10 is the threshold GPU4PySCF's `check_linear_dependency` warns at. Steps 2-3 never synchronize.
 
@@ -43,7 +49,7 @@ Every matrix is a raw column-major device pointer with packed leading dimension 
 | Symbol | Role |
 |---|---|
 | `kOrthogonalizeEigenvalueFloor<T>` | The default floor, 1e-10. |
-| `orthogonalize<T>(res, n, s, x, u_scratch, m_scratch, eigenvalues, floor)` | `Status`: X = S^{-1/2} into `x`. Instantiated for `float` and `double`. |
+| `orthogonalize<T>(res, n, s, x, floor)` | `Status`: X = S^{-1/2} into `x`. Instantiated for `float` and `double`. |
 
 ## Usage
 
@@ -55,14 +61,11 @@ namespace fb = free_breakfast;
 
 fb::DeviceResources res{0};
 
-// Allocate once per n, and reuse across calls. syevd's scratch is res's.
 const auto nn = static_cast<size_t>(n) * n;
 fb::Buffers::device<double> s(nn, res.device());  // filled with the operand
-fb::Buffers::device<double> x(nn, res.device()), u(nn, res.device()), m(nn, res.device());
-fb::Buffers::device<double> eigenvalues(n, res.device());
+fb::Buffers::device<double> x(nn, res.device());
 
-fb::Status status = fb::orthogonalize<double>(res, n, s.data(), x.data(), u.data(), m.data(),
-                                              eigenvalues.data());
+fb::Status status = fb::orthogonalize<double>(res, n, s.data(), x.data());
 ```
 
 ## Tests

@@ -13,6 +13,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
+import free_breakfast.core.primitives;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.linalg.blas;
@@ -56,31 +57,49 @@ void log_orthogonalize_condition(const T lambda_min, const T lambda_max, const T
 }
 
 template <real_fp T>
-Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x, T *u_scratch,
-                     T *m_scratch, T *eigenvalues, const T eigenvalue_floor) {
+Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x,
+                     const T eigenvalue_floor) {
   if (n <= 0) {
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  const size_t matrix_bytes = sizeof(T) * static_cast<size_t>(n) * static_cast<size_t>(n);
+  const size_t nn = static_cast<size_t>(n) * static_cast<size_t>(n);
 
-  // syevd's workspace, from res's, grown if this n needs more than it holds.
-  // The legacy API ignores the matrix and eigenvalue pointers in a size query.
+  // syevd's workspace size for n. The legacy API ignores the matrix and
+  // eigenvalue pointers in a size query.
   int32_t lwork = 0;
   FBF_TRY(
       gpu_status(wwr::syevd_bufferSize<T>(res.solver().get(), kOrthogonalizeEigMode,
                                           kOrthogonalizeFillMode, n, nullptr, n, nullptr, &lwork)));
-  auto work = wwr::extension::reinterpret_buffer_view<T>(
-      res.device_workspace(static_cast<size_t>(lwork) * sizeof(T)));
+
+  // Every intermediate is carved from res's workspace, requested once, in full,
+  // so no later request can grow it and free a region still in use:
+  //
+  //   [ U: n*n | eigenvalues: n | syevd's work: lwork, then M: n*n ]
+  //
+  // U and the eigenvalues are syevd's outputs and live to the end. M is first
+  // written by gmmwich, after syevd is done with its work on the same stream,
+  // so the two share a region. Each region starts on a kWorkspaceAlignment
+  // boundary, as a fresh allocation would.
+  constexpr size_t kAlign = DeviceResources::kWorkspaceAlignment / sizeof(T);
+  const size_t u_len = math::align_up(nn, kAlign);
+  const size_t eigenvalues_len = math::align_up(static_cast<size_t>(n), kAlign);
+  const size_t work_len = std::max(static_cast<size_t>(lwork), nn);
+  auto workspace = wwr::extension::reinterpret_buffer_view<T>(
+      res.device_workspace((u_len + eigenvalues_len + work_len) * sizeof(T)));
+  T *const u = workspace.data();
+  T *const eigenvalues = u + u_len;
+  T *const work = eigenvalues + eigenvalues_len;
+  T *const m = work;
 
   // 1. S = U Lambda U^T. syevd overwrites its input with the eigenvectors, so it
   //    runs on a copy of S in U, leaving the caller's S untouched.
-  FBF_TRY(gpu_status(
-      wwr::wwrMemcpyAsync(u_scratch, s, matrix_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(u, s, nn * sizeof(T), wwr::wwrMemcpyDeviceToDevice, stream)));
   FBF_TRY(
       gpu_status(wwr::syevd<T>(res.solver().get(), kOrthogonalizeEigMode, kOrthogonalizeFillMode, n,
-                               u_scratch, n, eigenvalues, work.data(), lwork, res.info().data())));
+                               u, n, eigenvalues, work, lwork, res.info().data())));
 
   // The one host round-trip: the extreme eigenvalues for the condition log
   // (ascending order, so first and last), read here because step 2 overwrites
@@ -111,14 +130,11 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x, T 
 
   // 3. X = U diag(Lambda^{-1/2}) U^T, symmetric by construction: gmmwich's
   //    op_x = T form, a dgmm (M = U diag(Lambda^{-1/2}), in O(n^2) rather than a
-  //    gemm against a dense diagonal) into m_scratch, then X = M U^T.
-  return gpu_status(
-      gmmwich(res.blas(), wwr::WWRBLAS_OP_T, n, u_scratch, eigenvalues, m_scratch, x));
+  //    gemm against a dense diagonal) into M, then X = M U^T.
+  return gpu_status(gmmwich(res.blas(), wwr::WWRBLAS_OP_T, n, u, eigenvalues, m, x));
 }
 
-template Status orthogonalize<float>(DeviceResources &, int32_t, const float *, float *, float *,
-                                     float *, float *, float);
-template Status orthogonalize<double>(DeviceResources &, int32_t, const double *, double *,
-                                      double *, double *, double *, double);
+template Status orthogonalize<float>(DeviceResources &, int32_t, const float *, float *, float);
+template Status orthogonalize<double>(DeviceResources &, int32_t, const double *, double *, double);
 
 } // namespace free_breakfast

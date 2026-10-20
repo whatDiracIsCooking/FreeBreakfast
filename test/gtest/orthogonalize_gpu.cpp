@@ -57,8 +57,8 @@ HostMatrix<T> well_conditioned_spd(std::int32_t n) {
   return s;
 }
 
-// The caller-owned scratch orthogonalize needs for one n, allocated once, plus
-// host staging. syevd's workspace and flag are res's.
+// orthogonalize's operand and result for one n, plus host staging. Every
+// intermediate is res's.
 template <typename T>
 struct Orthogonalizer {
   fb::DeviceResources &res;
@@ -66,9 +66,6 @@ struct Orthogonalizer {
   std::size_t nn = static_cast<std::size_t>(n) * n;
   fb::Buffers::device<T> s{nn, res.device()};
   fb::Buffers::device<T> x{nn, res.device()};
-  fb::Buffers::device<T> u{nn, res.device()};
-  fb::Buffers::device<T> m{nn, res.device()};
-  fb::Buffers::device<T> eigenvalues{static_cast<std::size_t>(n), res.device()};
 
   void upload(const HostMatrix<T> &host) {
     ASSERT_EQ(wwr::wwrMemcpyAsync(s.data(), host.data(), nn * sizeof(T), wwr::wwrMemcpyHostToDevice,
@@ -87,8 +84,7 @@ struct Orthogonalizer {
   }
 
   fb::Status operator()(T floor = fb::kOrthogonalizeEigenvalueFloor<T>) {
-    return fb::orthogonalize<T>(res, n, s.data(), x.data(), u.data(), m.data(), eigenvalues.data(),
-                                floor);
+    return fb::orthogonalize<T>(res, n, s.data(), x.data(), floor);
   }
 };
 
@@ -96,11 +92,11 @@ TEST(Orthogonalize, EmptyOperandSucceedsWithoutTouchingAnything) {
   FBF_REQUIRE_GPU();
 
   fb::DeviceResources res{0};
-  EXPECT_TRUE(fb::orthogonalize<double>(res, 0, nullptr, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_TRUE(fb::orthogonalize<double>(res, 0, nullptr, nullptr));
   EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
 }
 
-// syevd's workspace comes from res and grows with n: one DeviceResources serves
+// Every intermediate comes from res's workspace, which grows with n: one DeviceResources serves
 // a small operand and then a larger one, in either precision.
 TEST(Orthogonalize, GrowsTheResourcesWorkspaceWithTheOperand) {
   FBF_REQUIRE_GPU();
