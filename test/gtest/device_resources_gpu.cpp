@@ -24,6 +24,16 @@ static_assert(ext::device_handle_pool<fb::Device>);
 static_assert(std::is_move_constructible_v<fb::Device>);
 static_assert(!std::is_copy_constructible_v<fb::Device>);
 
+// kWorkspaceAlignmentIn<T> is the 256 B step in elements of T, and exists only
+// for a T whose size divides it.
+template <typename T>
+concept HasWorkspaceAlignmentIn = requires { fb::DeviceResources::kWorkspaceAlignmentIn<T>; };
+static_assert(fb::DeviceResources::kWorkspaceAlignmentIn<float> == 64);
+static_assert(fb::DeviceResources::kWorkspaceAlignmentIn<double> == 32);
+static_assert(fb::DeviceResources::kWorkspaceAlignmentIn<std::complex<double>> == 16);
+static_assert(!HasWorkspaceAlignmentIn<std::array<char, 24>>);
+static_assert(!HasWorkspaceAlignmentIn<std::array<char, 512>>);
+
 // Both handles live on the Device's device and are bound to its one stream.
 TEST(DeviceResources, HandlesShareTheDeviceStream) {
   FBF_REQUIRE_GPU();

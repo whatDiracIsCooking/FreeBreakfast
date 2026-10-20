@@ -82,7 +82,7 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x,
   // written by gmmwich, after syevd is done with its work on the same stream,
   // so the two share a region. Each region starts on a kWorkspaceAlignment
   // boundary, as a fresh allocation would.
-  constexpr size_t kAlign = DeviceResources::kWorkspaceAlignment / sizeof(T);
+  constexpr size_t kAlign = DeviceResources::kWorkspaceAlignmentIn<T>;
   const size_t u_len = math::align_up(nn, kAlign);
   const size_t eigenvalues_len = math::align_up(static_cast<size_t>(n), kAlign);
   const size_t work_len = std::max(static_cast<size_t>(lwork), nn);

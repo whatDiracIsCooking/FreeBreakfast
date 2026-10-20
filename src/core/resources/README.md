@@ -143,7 +143,9 @@ back the block as it is. The rounding is load-bearing:
 of `sizeof(T)`, and refuses through the buffer's allocation policy, which here
 aborts. Without it, a 1004-byte request followed by a `complex<double>` view
 would abort. 256 is a multiple of every solver element type and the pool's own
-alignment.
+alignment. `kWorkspaceAlignmentIn<T>` is the same step in elements of `T`, for
+a routine carving the workspace into typed regions; it is constrained to a `T`
+whose size divides 256, so the step can neither truncate nor be 0.
 
 **Fetch the buffer just before the call; never keep its pointer.** A growth
 frees the old block — on `stream()` for the device workspace, so work already
