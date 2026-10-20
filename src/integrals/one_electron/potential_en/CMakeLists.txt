@@ -4,9 +4,10 @@
 # launcher includes only kernels/potential_en.h and launches through its table.
 # Under CUDA that wants relocatable device code, this library's default, so it
 # must never pass NO_DEVICE_LINKING (nvcc warns #20280 without it). The bridge
-# header it shares with the module names int32_t, kMaxAngularMomentum, the
-# device views and wwrStream_t, hence types_headers, basis::headers,
-# upload::headers and wwr::device PUBLIC. The kernels include FelizJueves's
+# header it shares with the module names int32_t, kMaxAngularMomentum,
+# PrimitivePairClassView, NucleiView and wwrStream_t, hence types_headers,
+# basis::headers, mmd::headers, molecule::headers and wwr::device PUBLIC. The
+# kernels include FelizJueves's
 # felizjueves/runtime.h, which nothing outside this library sees, hence
 # felizjueves::headers PRIVATE; so is the launcher's block sizing
 # (block_params.h, primitives.h), hence core::kernel_headers.
@@ -24,15 +25,16 @@ free_breakfast_add_gpu_device_library(
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::basis::headers
-  free_breakfast::integrals::one_electron::upload::headers
+  free_breakfast::integrals::mmd::headers
+  free_breakfast::molecule::headers
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
   felizjueves::headers
 )
 
-# The module. DeviceResources, PrimitivePairClass, DeviceNuclei and
-# CartesianMatrixAO are in its signatures, so core::resources,
+# The module. DeviceResources, PrimitivePairClass, Molecule and
+# CartesianMatrixAO are in its signatures, so core::resources, molecule,
 # one_electron::upload and linalg::matrix_ao are PUBLIC. The device library is
 # PRIVATE: the implementation unit includes the bridge header in its GMF and
 # calls the launcher, and a static library's private link dependencies still
@@ -50,6 +52,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::integrals::one_electron::upload
   free_breakfast::integrals::mmd
+  free_breakfast::molecule
   free_breakfast::linalg::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::wwr

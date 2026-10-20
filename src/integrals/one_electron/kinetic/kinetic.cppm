@@ -2,7 +2,7 @@
 /// @brief The Cartesian kinetic-energy matrix T on the GPU, over the
 /// t_{la}{lb} kernels FelizJueves generates.
 ///
-/// The records come from free_breakfast.integrals.one_electron.upload; T is one
+/// The records come from free_breakfast.integrals.mmd; T is one
 /// kernel launch per shell-pair class into a @c CartesianMatrixAO.
 
 export module free_breakfast.integrals.one_electron.kinetic;

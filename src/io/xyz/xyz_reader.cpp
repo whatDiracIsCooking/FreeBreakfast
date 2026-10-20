@@ -7,6 +7,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.constants;
+import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.io.base;
 
@@ -49,8 +50,8 @@ namespace free_breakfast {
   return 0;
 }
 
-[[nodiscard]] Result<Molecule> parse_xyz(std::string_view xyz_text, int32_t charge,
-                                         int32_t multiplicity) {
+[[nodiscard]] Result<Molecule> parse_xyz(DeviceResources &res, std::string_view xyz_text,
+                                         int32_t charge, int32_t multiplicity) {
   // Split into non-empty lines; a trailing newline or blank lines at the end
   // of the file are tolerated rather than counted as atoms.
   std::vector<std::string_view> lines;
@@ -73,13 +74,13 @@ namespace free_breakfast {
     return err_io("XYZ input is too short: expected a count line and a comment line");
   }
 
-  // Line 1: the declared atom count.
+  // Line 1: the declared atom count. A Molecule needs at least one atom.
   int32_t declared_count = 0;
   {
     std::string first(lines[0]);
     std::istringstream stream(first);
-    if (!(stream >> declared_count) || declared_count < 0) {
-      return err_io("XYZ line 1 is not a non-negative atom count: '{}'", first);
+    if (!(stream >> declared_count) || declared_count < 1) {
+      return err_io("XYZ line 1 is not a positive atom count: '{}'", first);
     }
   }
 
@@ -118,13 +119,13 @@ namespace free_breakfast {
     return err_io("XYZ declares {} atoms but {} were found", declared_count, atoms.size());
   }
 
-  return Molecule{std::move(atoms), charge, multiplicity};
+  return Molecule{res, std::move(atoms), charge, multiplicity};
 }
 
-[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, int32_t charge,
-                                        int32_t multiplicity) {
+[[nodiscard]] Result<Molecule> read_xyz(DeviceResources &res, const std::filesystem::path &path,
+                                        int32_t charge, int32_t multiplicity) {
   auto text = FBF_TRY(read_file(path));
-  return parse_xyz(text, charge, multiplicity);
+  return parse_xyz(res, text, charge, multiplicity);
 }
 
 } // namespace free_breakfast

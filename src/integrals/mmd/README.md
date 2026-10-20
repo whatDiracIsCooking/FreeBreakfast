@@ -47,7 +47,7 @@ where the tests read what was written.
 which only a module can name, so `view()` hands the launchers a
 `PrimitivePairClassView`: the same fields as plain `const` pointers, defined
 once in `primitive_pair_class_view.h`. The launchers `#include` it (through
-`one_electron.upload`'s `device_views.h`); this module includes it in its
+their bridge headers); this module includes it in its
 global module fragment and re-exports the name, so the two sides share one
 entity (the `atom` pattern).
 

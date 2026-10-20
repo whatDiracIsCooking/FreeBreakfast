@@ -31,7 +31,7 @@ constexpr double kRelTol = 1e-12;
 
 struct Golden {
   fb::BasisSet basis;
-  fb::Molecule molecule;
+  std::vector<fb::Atom> atoms;
   std::vector<double> kin; // nao x nao, row-major; each is symmetric
   std::vector<double> nuc;
   std::vector<double> hcore;
@@ -58,7 +58,7 @@ Golden read_golden(const std::string &stem) {
                              fb::Element{at["charge"].get<std::uint8_t>()}});
   }
   const auto &arrays = (*doc)["arrays"];
-  Golden g{fb::BasisSet(std::move(shells)), fb::Molecule(std::move(atoms)),
+  Golden g{fb::BasisSet(std::move(shells)), std::move(atoms),
            arrays["int1e_kin"]["values"].get<std::vector<double>>(),
            arrays["int1e_nuc"]["values"].get<std::vector<double>>(),
            arrays["hcore"]["values"].get<std::vector<double>>()};
@@ -98,8 +98,7 @@ void PrintTo(const Build which, std::ostream *os) {
 std::vector<double> device_build(fb::DeviceResources &res, const Golden &g, const Build which) {
   const auto device = fb::primitive_pair_classes(res, g.basis);
   EXPECT_TRUE(device);
-  const auto nuclei = fb::upload_nuclei(res, g.molecule);
-  EXPECT_TRUE(nuclei);
+  const fb::Molecule molecule(res, g.atoms);
   fb::CartesianMatrixAO m(res, g.basis);
   fb::Status status;
   switch (which) {
@@ -107,10 +106,10 @@ std::vector<double> device_build(fb::DeviceResources &res, const Golden &g, cons
     status = fb::kinetic(res, *device, m);
     break;
   case Build::Nuclear:
-    status = fb::nuclear_attraction(res, *device, *nuclei, m);
+    status = fb::nuclear_attraction(res, *device, molecule, m);
     break;
   case Build::Core:
-    status = fb::core_hamiltonian(res, *device, *nuclei, m);
+    status = fb::core_hamiltonian(res, *device, molecule, m);
     break;
   }
   EXPECT_TRUE(status) << (status ? "" : status.error().message);
@@ -174,8 +173,8 @@ fb::BasisSet one_shell(const std::int32_t l) {
   return fb::BasisSet({fb::Shell(l, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
 }
 
-fb::Molecule one_hydrogen() {
-  return fb::Molecule({fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Element::H}});
+fb::Molecule one_hydrogen(fb::DeviceResources &res) {
+  return fb::Molecule(res, {fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, fb::Element::H}});
 }
 
 class OneElectronBuild : public ::testing::TestWithParam<Build> {};
@@ -184,8 +183,7 @@ TEST_P(OneElectronBuild, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::BasisSet basis = one_shell(0);
-  const auto nuclei = fb::upload_nuclei(res, one_hydrogen());
-  ASSERT_TRUE(nuclei);
+  const fb::Molecule molecule = one_hydrogen(res);
   fb::CartesianMatrixAO m(res, basis);
   const double stale = 42.0;
   ASSERT_EQ(wwr::wwrMemcpyAsync(m.data(), &stale, sizeof(double), wwr::wwrMemcpyHostToDevice,
@@ -198,10 +196,10 @@ TEST_P(OneElectronBuild, ZeroesTheMatrixFirst) {
     status = fb::kinetic(res, {}, m);
     break;
   case Build::Nuclear:
-    status = fb::nuclear_attraction(res, {}, *nuclei, m);
+    status = fb::nuclear_attraction(res, {}, molecule, m);
     break;
   case Build::Core:
-    status = fb::core_hamiltonian(res, {}, *nuclei, m);
+    status = fb::core_hamiltonian(res, {}, molecule, m);
     break;
   }
   ASSERT_TRUE(status);
@@ -214,8 +212,7 @@ TEST_P(OneElectronBuild, RefusesAClassAboveD) {
   const fb::BasisSet basis = one_shell(3);
   const auto device = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(device);
-  const auto nuclei = fb::upload_nuclei(res, one_hydrogen());
-  ASSERT_TRUE(nuclei);
+  const fb::Molecule molecule = one_hydrogen(res);
   fb::CartesianMatrixAO m(res, basis);
   fb::Status status;
   switch (GetParam()) {
@@ -223,10 +220,10 @@ TEST_P(OneElectronBuild, RefusesAClassAboveD) {
     status = fb::kinetic(res, *device, m);
     break;
   case Build::Nuclear:
-    status = fb::nuclear_attraction(res, *device, *nuclei, m);
+    status = fb::nuclear_attraction(res, *device, molecule, m);
     break;
   case Build::Core:
-    status = fb::core_hamiltonian(res, *device, *nuclei, m);
+    status = fb::core_hamiltonian(res, *device, molecule, m);
     break;
   }
   ASSERT_FALSE(status);

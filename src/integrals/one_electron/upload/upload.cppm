@@ -1,18 +1,9 @@
 /// @file
 /// @brief What every one-electron build shares beyond mmd's primitive-pair
-/// records: the nuclei, once per geometry; the per-class launch over the
-/// records' streams; and the check every build runs before it launches
-/// anything, so each family's module (overlap, ...) refuses the same inputs
-/// with the same messages.
-///
-/// The nuclei's owner here holds MirroredBuffers; the non-owning views are
-/// device_views.h's, included in the global module fragment and re-exported so
-/// importers and the launchers' #include share one entity (atom.cppm has the
-/// why of the in-namespace using-declarations).
-
-module;
-
-#include "device_views.h"
+/// records and the molecule's nuclei: the per-class launch over the records'
+/// streams, and the checks every build runs before it launches anything, so
+/// each family's module (overlap, ...) refuses the same inputs with the same
+/// messages.
 
 export module free_breakfast.integrals.one_electron.upload;
 
@@ -20,16 +11,12 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
-import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
 import free_breakfast.linalg.matrix_ao;
 
 export namespace free_breakfast {
-
-using free_breakfast::NucleiView;
-using free_breakfast::PrimitivePairClassView;
 
 /// @brief Call `launch(stream, cls)` for every class of @p classes, with that
 /// class's own stream, between a fork from and a join into @p parent.
@@ -77,44 +64,6 @@ template <typename Launch>
   return first;
 }
 
-/// @brief A molecule's nuclei on the device: the point charges V attracts
-/// to, one @c MirroredBuffer per field, both on the nuclei's own work stream.
-///
-/// The pinned side is what the nuclei were written into, and is kept for the
-/// nuclei's lifetime. Movable, not copyable.
-struct DeviceNuclei {
-  /// @brief The number of nuclei, positive.
-  int32_t n_nuc;
-  /// @brief Z_C, each nucleus's charge (its atomic number).
-  MirroredBuffer<double> z;
-  /// @brief C, each nucleus's position in bohr (3 per nucleus).
-  MirroredBuffer<double> c;
-
-  /// @brief The nuclei's own work stream: they were allocated and copied on
-  /// it, and its dev_idx() is the device they are on.
-  const std::shared_ptr<DeviceStream> &device_stream() const noexcept { return z.handle(); }
-
-  /// @brief The nuclei on the device by pointer, for a launcher. Valid while
-  /// this is alive.
-  [[nodiscard]] NucleiView view() const {
-    return {.n_nuc = n_nuc, .z = z.device().data(), .c = c.device().data()};
-  }
-};
-
-/// @brief Copy @p molecule's nuclei, in atom order, to @p res's device, on a
-/// new @c DeviceStream of res.device().
-///
-/// The nuclei are written into the pinned side and copied on their own
-/// stream, which is synchronized once, after the copies: every class's stream
-/// reads them, and none is ordered after that stream. The device
-/// res.dev_idx() names is made current for the call and the previous one
-/// restored.
-///
-/// @return The device nuclei; InvalidConfig for a molecule with no atoms, or
-///         more than an int32_t counts; or the GpuRuntime error of the first
-///         copy that failed.
-[[nodiscard]] Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecule);
-
 /// @brief What every one-electron build checks before it launches anything.
 ///
 /// @p m and every class of @p classes must be on @p res's device, @p m's order
@@ -129,11 +78,11 @@ struct DeviceNuclei {
                                               const CartesianMatrixAO &m, std::string_view what);
 
 /// @brief What a build that reads the nuclei checks beyond
-/// @ref check_one_electron_build: @p nuclei on @p res's device. @p what names
-/// the build in the message.
+/// @ref check_one_electron_build: @p molecule's nuclei on @p res's device.
+/// @p what names the build in the message.
 ///
 /// @return Success, or InvalidConfig if the nuclei are on another device.
-[[nodiscard]] Status check_nuclei(const DeviceResources &res, const DeviceNuclei &nuclei,
+[[nodiscard]] Status check_nuclei(const DeviceResources &res, const Molecule &molecule,
                                   std::string_view what);
 
 } // namespace free_breakfast

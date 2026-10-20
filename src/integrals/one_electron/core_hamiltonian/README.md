@@ -27,20 +27,21 @@ module and its implementation unit are the whole directory.
 
 | Symbol | Role |
 |---|---|
-| `core_hamiltonian(res, classes, nuclei, h)` | `Status`: the Cartesian H = T + V into `h` |
+| `core_hamiltonian(res, classes, molecule, h)` | `Status`: the Cartesian H = T + V into `h` |
 
 ## Usage
 
 ```cpp
-import free_breakfast.integrals.one_electron.upload;
+import free_breakfast.integrals.mmd;
+import free_breakfast.molecule;
 import free_breakfast.integrals.one_electron.core_hamiltonian;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
 const auto classes = fb::primitive_pair_classes(res, basis); // once per basis
-const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
+const fb::Molecule molecule(res, atoms);                       // nuclei: once per geometry
 fb::CartesianMatrixAO h(res, basis);
-fb::Status status = fb::core_hamiltonian(res, *classes, *nuclei, h);
+fb::Status status = fb::core_hamiltonian(res, *classes, molecule, h);
 ```
 
 ## Tests

@@ -15,6 +15,7 @@ export module free_breakfast.io.xyz:reader;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.resources;
 import free_breakfast.molecule;
 
 export namespace free_breakfast {
@@ -24,21 +25,22 @@ export namespace free_breakfast {
 /// The standard XYZ layout is honoured: line 1 is the atom count, line 2 is a
 /// free-form comment, and each subsequent line is `symbol x y z` with the
 /// coordinates in Angstrom. Coordinates are converted to bohr on the way into
-/// the Molecule. A count that disagrees with the number of atom lines, an
-/// unknown element symbol, or a non-numeric coordinate each yields
-/// ErrorKind::IO.
+/// the Molecule, whose nuclei go to @p res's device. A count of zero, a count
+/// that disagrees with the number of atom lines, an unknown element symbol, or
+/// a non-numeric coordinate each yields ErrorKind::IO.
 ///
+/// @param res            The device the Molecule's nuclei go to.
 /// @param xyz_text       The XYZ document.
 /// @param charge         Net molecular charge to attach (XYZ carries none).
 /// @param multiplicity   Spin multiplicity to attach (XYZ carries none).
-[[nodiscard]] Result<Molecule> parse_xyz(std::string_view xyz_text, int32_t charge = 0,
-                                         int32_t multiplicity = 1);
+[[nodiscard]] Result<Molecule> parse_xyz(DeviceResources &res, std::string_view xyz_text,
+                                         int32_t charge = 0, int32_t multiplicity = 1);
 
 /// @brief Parse an XYZ geometry from a file on disk.
 ///
 /// A file that cannot be opened yields ErrorKind::IO; otherwise the contents
 /// flow through parse_xyz.
-[[nodiscard]] Result<Molecule> read_xyz(const std::filesystem::path &path, int32_t charge = 0,
-                                        int32_t multiplicity = 1);
+[[nodiscard]] Result<Molecule> read_xyz(DeviceResources &res, const std::filesystem::path &path,
+                                        int32_t charge = 0, int32_t multiplicity = 1);
 
 } // namespace free_breakfast

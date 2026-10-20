@@ -2,7 +2,7 @@
 /// @brief The Cartesian overlap matrix S on the GPU, over the s_{la}{lb}
 /// kernels FelizJueves generates.
 ///
-/// The records come from free_breakfast.integrals.one_electron.upload; S is one
+/// The records come from free_breakfast.integrals.mmd; S is one
 /// kernel launch per shell-pair class into a @c CartesianMatrixAO.
 
 export module free_breakfast.integrals.one_electron.overlap;

@@ -1,9 +1,13 @@
-// Host-only cases for io/xyz: the XYZ geometry reader.
+// GPU cases for io/xyz: the XYZ geometry reader. It builds a Molecule, which
+// owns its nuclei on the device, so even a refusal needs a DeviceResources.
 
 #include <gtest/gtest.h>
 
+#include "gpu_requirement.h"
+
 import std;
-import free_breakfast.core.error_handling;
+import free_breakfast.core;
+import free_breakfast.core.resources;
 import free_breakfast.core.constants;
 import free_breakfast.molecule;
 import free_breakfast.io.base;
@@ -24,7 +28,9 @@ constexpr std::string_view kWater = "3\n"
                                     "H   0.000000  -0.757200  -0.469200\n";
 
 TEST(IoXyz, ParsesAtomsAndConvertsAngstromToBohr) {
-  auto molecule = fb::parse_xyz(kWater);
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  auto molecule = fb::parse_xyz(res, kWater);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   ASSERT_EQ(molecule->natoms(), 3U);
   EXPECT_EQ(molecule->charge(), 0);
@@ -41,7 +47,9 @@ TEST(IoXyz, ParsesAtomsAndConvertsAngstromToBohr) {
 }
 
 TEST(IoXyz, AttachesChargeAndMultiplicity) {
-  auto molecule = fb::parse_xyz(kWater, 1, 2);
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  auto molecule = fb::parse_xyz(res, kWater, 1, 2);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   EXPECT_EQ(molecule->charge(), 1);
   EXPECT_EQ(molecule->multiplicity(), 2);
@@ -49,20 +57,27 @@ TEST(IoXyz, AttachesChargeAndMultiplicity) {
 }
 
 TEST(IoXyz, ToleratesCrlfTrailingBlanksAndSymbolCase) {
-  auto molecule = fb::parse_xyz("2\r\ncomment\r\nCL 0 0 0\r\nna 0 0 2.5\r\n\r\n   \n");
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  auto molecule = fb::parse_xyz(res, "2\r\ncomment\r\nCL 0 0 0\r\nna 0 0 2.5\r\n\r\n   \n");
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   ASSERT_EQ(molecule->natoms(), 2U);
   EXPECT_EQ(molecule->atoms()[0].element, Element::Cl);
   EXPECT_EQ(molecule->atoms()[1].element, Element::Na);
 }
 
-TEST(IoXyz, EmptyGeometryIsAnEmptyMolecule) {
-  auto molecule = fb::parse_xyz("0\nnothing here\n");
-  ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
-  EXPECT_EQ(molecule->natoms(), 0U);
+TEST(IoXyz, EmptyGeometryIsIoError) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  // A Molecule needs at least one atom, so the reader refuses before building one.
+  auto molecule = fb::parse_xyz(res, "0\nnothing here\n");
+  ASSERT_FALSE(molecule.has_value());
+  EXPECT_EQ(molecule.error().kind, fb::ErrorKind::IO);
 }
 
 TEST(IoXyz, MalformedInputIsIoError) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
   for (const std::string_view text : {
            std::string_view{"3\n"},                            // no comment line
            std::string_view{"three\ncomment\n"},               // count not a number
@@ -74,25 +89,29 @@ TEST(IoXyz, MalformedInputIsIoError) {
            std::string_view{"2\ncomment\nH 0 0 0\n"},          // count too high
            std::string_view{"1\ncomment\nH 0 0 0\nH 0 0 1\n"}, // count too low
        }) {
-    auto molecule = fb::parse_xyz(text);
+    auto molecule = fb::parse_xyz(res, text);
     ASSERT_FALSE(molecule.has_value()) << text;
     EXPECT_EQ(molecule.error().kind, fb::ErrorKind::IO) << text;
   }
 }
 
 TEST(IoXyz, ReadsFromDisk) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
   const fb::test::ScratchDir dir("io_xyz");
   const auto path = dir / "water.xyz";
   ASSERT_TRUE(fb::write_file(path, kWater).has_value());
 
-  auto molecule = fb::read_xyz(path);
+  auto molecule = fb::read_xyz(res, path);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   EXPECT_EQ(molecule->natoms(), 3U);
 }
 
 TEST(IoXyz, ReadOfMissingFileIsIoError) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
   const fb::test::ScratchDir dir("io_xyz");
-  auto molecule = fb::read_xyz(dir / "absent.xyz");
+  auto molecule = fb::read_xyz(res, dir / "absent.xyz");
   ASSERT_FALSE(molecule.has_value());
   EXPECT_EQ(molecule.error().kind, fb::ErrorKind::IO);
 }
