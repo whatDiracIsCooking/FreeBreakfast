@@ -1,6 +1,5 @@
 /// @file
-/// @brief orthogonalize and its workspace query, and their float / double
-/// instantiations.
+/// @brief orthogonalize, and its float / double instantiations.
 
 module;
 
@@ -57,23 +56,8 @@ void log_orthogonalize_condition(const T lambda_min, const T lambda_max, const T
 }
 
 template <real_fp T>
-Result<int32_t> orthogonalize_workspace_size(DeviceResources &res, const int32_t n) {
-  if (n <= 0) {
-    return 0;
-  }
-  const ScopedDeviceIndex on{res.dev_idx()};
-  // The legacy API ignores the matrix and eigenvalue pointers in a size query.
-  int32_t lwork = 0;
-  FBF_TRY(
-      gpu_status(wwr::syevd_bufferSize<T>(res.solver().get(), kOrthogonalizeEigMode,
-                                          kOrthogonalizeFillMode, n, nullptr, n, nullptr, &lwork)));
-  return lwork;
-}
-
-template <real_fp T>
 Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x, T *u_scratch,
-                     T *m_scratch, T *eigenvalues, T *syevd_work, const int32_t syevd_lwork,
-                     int32_t *info, const T eigenvalue_floor) {
+                     T *m_scratch, T *eigenvalues, const T eigenvalue_floor) {
   if (n <= 0) {
     return {};
   }
@@ -81,29 +65,35 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x, T 
   const wwr::wwrStream_t stream = res.stream();
   const size_t matrix_bytes = sizeof(T) * static_cast<size_t>(n) * static_cast<size_t>(n);
 
+  // syevd's workspace, from res's, grown if this n needs more than it holds.
+  // The legacy API ignores the matrix and eigenvalue pointers in a size query.
+  int32_t lwork = 0;
+  FBF_TRY(
+      gpu_status(wwr::syevd_bufferSize<T>(res.solver().get(), kOrthogonalizeEigMode,
+                                          kOrthogonalizeFillMode, n, nullptr, n, nullptr, &lwork)));
+  auto work = wwr::extension::reinterpret_buffer_view<T>(
+      res.device_workspace(static_cast<size_t>(lwork) * sizeof(T)));
+
   // 1. S = U Lambda U^T. syevd overwrites its input with the eigenvectors, so it
   //    runs on a copy of S in U, leaving the caller's S untouched.
   FBF_TRY(gpu_status(
       wwr::wwrMemcpyAsync(u_scratch, s, matrix_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
   FBF_TRY(
       gpu_status(wwr::syevd<T>(res.solver().get(), kOrthogonalizeEigMode, kOrthogonalizeFillMode, n,
-                               u_scratch, n, eigenvalues, syevd_work, syevd_lwork, info)));
+                               u_scratch, n, eigenvalues, work.data(), lwork, res.info().data())));
 
-  // The one host round-trip: the convergence flag, plus the extreme eigenvalues
-  // for the condition log (ascending order, so first and last). They are read
-  // here because step 2 overwrites them. Host locals, not caller scratch: a
-  // pageable destination only makes the copy synchronous, and the stream is
-  // synchronized next anyway.
-  int32_t info_host = 0;
+  // The one host round-trip: the extreme eigenvalues for the condition log
+  // (ascending order, so first and last), read here because step 2 overwrites
+  // them, then the convergence flag, whose fetch synchronizes the stream and so
+  // completes all three. Host locals for the eigenvalues: a pageable
+  // destination only makes the copy synchronous.
   T lambda_min = T{0};
   T lambda_max = T{0};
-  FBF_TRY(gpu_status(
-      wwr::wwrMemcpyAsync(&info_host, info, sizeof(int32_t), wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&lambda_min, eigenvalues, sizeof(T),
                                          wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&lambda_max, eigenvalues + (n - 1), sizeof(T),
                                          wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(stream)));
+  const int32_t info_host = FBF_TRY(res.fetch_info());
   // info < 0 names a bad argument (a bug here, not in S); info > 0 is
   // non-convergence, which is S's doing.
   if (info_host < 0) {
@@ -126,13 +116,9 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x, T 
       gmmwich(res.blas(), wwr::WWRBLAS_OP_T, n, u_scratch, eigenvalues, m_scratch, x));
 }
 
-template Result<int32_t> orthogonalize_workspace_size<float>(DeviceResources &, int32_t);
-template Result<int32_t> orthogonalize_workspace_size<double>(DeviceResources &, int32_t);
-
 template Status orthogonalize<float>(DeviceResources &, int32_t, const float *, float *, float *,
-                                     float *, float *, float *, int32_t, int32_t *, float);
+                                     float *, float *, float);
 template Status orthogonalize<double>(DeviceResources &, int32_t, const double *, double *,
-                                      double *, double *, double *, double *, int32_t, int32_t *,
-                                      double);
+                                      double *, double *, double *, double);
 
 } // namespace free_breakfast

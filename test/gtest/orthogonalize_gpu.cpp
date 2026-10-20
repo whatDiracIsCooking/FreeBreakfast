@@ -57,20 +57,18 @@ HostMatrix<T> well_conditioned_spd(std::int32_t n) {
   return s;
 }
 
-// Everything orthogonalize needs for one n, allocated once, plus host staging.
+// The caller-owned scratch orthogonalize needs for one n, allocated once, plus
+// host staging. syevd's workspace and flag are res's.
 template <typename T>
 struct Orthogonalizer {
   fb::DeviceResources &res;
   std::int32_t n;
   std::size_t nn = static_cast<std::size_t>(n) * n;
-  std::int32_t lwork = fb::orthogonalize_workspace_size<T>(res, n).value();
   fb::Buffers::device<T> s{nn, res.device()};
   fb::Buffers::device<T> x{nn, res.device()};
   fb::Buffers::device<T> u{nn, res.device()};
   fb::Buffers::device<T> m{nn, res.device()};
   fb::Buffers::device<T> eigenvalues{static_cast<std::size_t>(n), res.device()};
-  fb::Buffers::device<T> work{static_cast<std::size_t>(std::max(lwork, 1)), res.device()};
-  fb::Buffers::device<std::int32_t> info{1, res.device()};
 
   void upload(const HostMatrix<T> &host) {
     ASSERT_EQ(wwr::wwrMemcpyAsync(s.data(), host.data(), nn * sizeof(T), wwr::wwrMemcpyHostToDevice,
@@ -90,25 +88,35 @@ struct Orthogonalizer {
 
   fb::Status operator()(T floor = fb::kOrthogonalizeEigenvalueFloor<T>) {
     return fb::orthogonalize<T>(res, n, s.data(), x.data(), u.data(), m.data(), eigenvalues.data(),
-                                work.data(), lwork, info.data(), floor);
+                                floor);
   }
 };
-
-TEST(Orthogonalize, WorkspaceSizeIsZeroOnlyForAnEmptyOperand) {
-  FBF_REQUIRE_GPU();
-
-  fb::DeviceResources res{0};
-  EXPECT_EQ(fb::orthogonalize_workspace_size<double>(res, 0).value(), 0);
-  EXPECT_GT(fb::orthogonalize_workspace_size<double>(res, 16).value(), 0);
-  EXPECT_GT(fb::orthogonalize_workspace_size<float>(res, 16).value(), 0);
-}
 
 TEST(Orthogonalize, EmptyOperandSucceedsWithoutTouchingAnything) {
   FBF_REQUIRE_GPU();
 
   fb::DeviceResources res{0};
-  EXPECT_TRUE(fb::orthogonalize<double>(res, 0, nullptr, nullptr, nullptr, nullptr, nullptr,
-                                        nullptr, 0, nullptr));
+  EXPECT_TRUE(fb::orthogonalize<double>(res, 0, nullptr, nullptr, nullptr, nullptr, nullptr));
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+}
+
+// syevd's workspace comes from res and grows with n: one DeviceResources serves
+// a small operand and then a larger one, in either precision.
+TEST(Orthogonalize, GrowsTheResourcesWorkspaceWithTheOperand) {
+  FBF_REQUIRE_GPU();
+
+  fb::DeviceResources res{0};
+
+  Orthogonalizer<float> small{res, 4};
+  small.upload(well_conditioned_spd<float>(4));
+  ASSERT_TRUE(small());
+  const std::size_t small_bytes = res.device_workspace(0).num_elements();
+  EXPECT_GT(small_bytes, 0U);
+
+  Orthogonalizer<double> large{res, 64};
+  large.upload(well_conditioned_spd<double>(64));
+  ASSERT_TRUE(large());
+  EXPECT_GT(res.device_workspace(0).num_elements(), small_bytes);
 }
 
 // A diagonal S's eigenvectors are the unit vectors, so X = diag(d^{-1/2}).

@@ -30,7 +30,8 @@ taskflow into every unit that does. Import and link it explicitly.
 ## DeviceResources
 
 One device's working set: a shared `Device` (its `ForkStream` work stream and
-memory pool) plus a `BlasHandle` and a `SolverHandle` bound to that stream.
+memory pool) plus a `BlasHandle` and a `SolverHandle` bound to that stream, and
+the solver scratch they share (see "Solver scratch" below).
 
 ```cpp
 import free_breakfast.core;
@@ -106,6 +107,60 @@ and free select their own. So the driver either
 `ScopedDeviceIndex` is `free_breakfast.core.wwr`'s. Constructing a
 `DeviceResources` leaves its device current on the calling thread: wwr's handle
 creation selects the device and does not restore it.
+
+### Solver scratch
+
+A dense-solver call wants a workspace and reports through an `info` flag.
+`DeviceResources` holds one of each, so a routine that runs a solver takes
+them from `res` instead of from its caller:
+
+| Member | What | Kind |
+|---|---|---|
+| `device_workspace(bytes)` | `Buffers::device<std::byte>&`, grown to hold `bytes` | from the `Device`'s pool, on `stream()` |
+| `host_workspace(bytes)` | `Buffers::host<std::byte>&`, grown to hold `bytes`: a generic (`X`) routine's `bufferOnHost` | plain host |
+| `info()` | `Buffers::device<int32_t>&`, one element, for `devInfo` | from the pool |
+| `fetch_info()` | `Result<int32_t>`: copies `info()` to a pinned slot on `stream()`, syncs, returns it | |
+
+```cpp
+int32_t lwork = 0;
+FBF_TRY(gpu_status(wwr::syevd_bufferSize<double>(res.solver().get(), ..., &lwork)));
+auto work = wwr::extension::reinterpret_buffer_view<double>(
+    res.device_workspace(static_cast<size_t>(lwork) * sizeof(double)));
+FBF_TRY(gpu_status(wwr::syevd<double>(res.solver().get(), ..., work.data(), lwork,
+                                      res.info().data())));
+const int32_t info = FBF_TRY(res.fetch_info());  // < 0: bad argument; > 0: numerical
+```
+
+**Bytes, not a solver type.** The legacy API sizes workspace in elements of
+`T`, the generic API in bytes, and one routine's `T` is not the next one's, so
+the workspaces hold `std::byte` and a caller views them as its own type with
+wwr's `reinterpret_buffer_view<T>`.
+
+**Grow-only, in `kWorkspaceAlignment` (256 B) steps.** A request larger than
+the current block replaces it with `align_up(bytes, 256)`; a smaller one hands
+back the block as it is. The rounding is load-bearing:
+`reinterpret_buffer_view` refuses a source whose size is not a whole multiple
+of `sizeof(T)`, and refuses through the buffer's allocation policy, which here
+aborts. Without it, a 1004-byte request followed by a `complex<double>` view
+would abort. 256 is a multiple of every solver element type and the pool's own
+alignment.
+
+**Fetch the buffer just before the call; never keep its pointer.** A growth
+frees the old block — on `stream()` for the device workspace, so work already
+queued against it is safe, but a pointer or view held across another request
+dangles. Pass the routine its own `lwork`, not the buffer's size, which may be
+larger.
+
+**The host workspace is plain, not pinned.** The solver reads and writes it
+from the CPU and never copies it to or from the device, so pinning buys
+nothing and costs a page-locking allocation on every growth. Its free is
+immediate, not stream-ordered.
+
+**`info` is on the work stream.** The solver handle writes `info()` on
+`stream()`, and `fetch_info()` copies on that same stream, so the read is
+ordered after the write. That is why these live here rather than in a
+`MirroredBuffer`, which is bound to a `DeviceStream` — a different stream —
+and would race the solver's write.
 
 Movable, not copyable (the handles are move-only). A moved-from
 `DeviceResources` holds no `Device`.
