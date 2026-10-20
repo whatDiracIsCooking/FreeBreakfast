@@ -3,10 +3,6 @@
 The Cartesian kinetic-energy matrix T on the GPU, over the `t_{la}{lb}`
 kernels FelizJueves generates.
 
-> **Currently disabled.** This module is not built, linked or re-exported,
-> and its test (`test/gtest/core_hamiltonian_gpu.cpp`) is off; the sources
-> are kept. See `../CMakeLists.txt` for what to uncomment to restore it.
-
 ## Module
 
 `free_breakfast.integrals.one_electron.kinetic`, also re-exported by
