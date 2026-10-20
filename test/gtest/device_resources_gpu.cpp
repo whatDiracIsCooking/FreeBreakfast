@@ -1,6 +1,7 @@
 // GPU smoke cases for resources:device_resources: DeviceResources constructed on a
-// real device, its handles bound to the Device's stream, and the one-way
-// ownership that lets a buffer outlive the bundle that handed out its Device.
+// real device, its handles bound to the Device's stream, the one-way
+// ownership that lets a buffer outlive the bundle that handed out its Device,
+// and the solver scratch: grow-only workspaces and the info flag.
 
 #include <gtest/gtest.h>
 
@@ -147,6 +148,58 @@ TEST(DeviceResources, BufferOutlivesResources) {
 
   for (std::size_t i = 0; i < kCount; ++i)
     ASSERT_EQ(out.data()[i], static_cast<float>(i)) << "at " << i;
+}
+
+// Both workspaces start empty, grow in kWorkspaceAlignment steps, and never
+// shrink: a smaller request hands back the same block.
+TEST(DeviceResources, WorkspacesGrowAlignedAndNeverShrink) {
+  FBF_REQUIRE_GPU();
+
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  fb::DeviceResources res{0};
+
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.device_workspace(1).num_elements(), kAlign);
+  EXPECT_EQ(res.device_workspace(kAlign + 1).num_elements(), 2 * kAlign);
+  const std::byte *grown = res.device_workspace(0).data();
+  EXPECT_EQ(res.device_workspace(kAlign).data(), grown);
+  EXPECT_EQ(res.device_workspace(kAlign).num_elements(), 2 * kAlign);
+
+  EXPECT_EQ(res.host_workspace(0).num_elements(), 0U);
+  EXPECT_EQ(res.host_workspace(3 * kAlign - 1).num_elements(), 3 * kAlign);
+  const std::byte *host = res.host_workspace(0).data();
+  EXPECT_EQ(res.host_workspace(1).data(), host);
+}
+
+// The rounding is what lets one byte workspace serve every solver element type:
+// a request that is no multiple of 16 still views whole as complex<double>.
+TEST(DeviceResources, WorkspaceViewsAsAnyElementType) {
+  FBF_REQUIRE_GPU();
+
+  fb::DeviceResources res{0};
+  auto &ws = res.device_workspace(1004);
+
+  EXPECT_EQ(ext::reinterpret_buffer_view<std::complex<double>>(ws).num_elements(),
+            ws.num_elements() / sizeof(std::complex<double>));
+  EXPECT_EQ(ext::reinterpret_buffer_view<float>(ws).num_elements(),
+            ws.num_elements() / sizeof(float));
+  EXPECT_GE(ext::reinterpret_buffer_view<double>(ws).num_elements() * sizeof(double), 1004U);
+}
+
+// fetch_info() reads back what was last written to info() on the work stream:
+// zero from the allocation, then whatever a later write leaves.
+TEST(DeviceResources, FetchInfoReadsTheDeviceFlag) {
+  FBF_REQUIRE_GPU();
+
+  fb::DeviceResources res{0};
+  ASSERT_EQ(res.info().num_elements(), 1U);
+  EXPECT_EQ(res.fetch_info().value(), 0);
+
+  const std::int32_t flag = -3;
+  ASSERT_EQ(wwr::wwrMemcpyAsync(res.info().data(), &flag, sizeof(flag), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_EQ(res.fetch_info().value(), -3);
 }
 
 // Moving hands over the same Device and handles; the source keeps nothing.

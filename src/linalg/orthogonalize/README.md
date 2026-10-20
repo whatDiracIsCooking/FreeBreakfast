@@ -26,9 +26,9 @@ The computation, all queued on `res.stream()`:
 
 Every matrix is a raw column-major device pointer with packed leading dimension n. There is no matrix type in between.
 
-**It allocates nothing.** Every intermediate is passed in by the caller: U, M, the eigenvalue buffer, the syevd workspace and syevd's device convergence flag. The routine is a one-shot setup step, but its natural caller is an SCF driver that already holds n×n scratch and a syevd workspace for its own loop. That scratch is idle before the loop starts, so lending it here means the driver allocates nothing extra, on a first run or a repeat. A version that sized and allocated its own workspace would undo that. `orthogonalize_workspace_size<T>` is the one query: it reports syevd's workspace for n, using the same eigenvector mode and triangle the call uses, so the two cannot disagree.
+**The caller owns the matrices; `res` owns the solver scratch.** U, M and the eigenvalue buffer are passed in. The routine is a one-shot setup step, but its natural caller is an SCF driver that already holds n×n scratch for its own loop, idle before the loop starts, so lending it here costs the driver nothing extra. syevd's workspace and convergence flag are `DeviceResources`' own (`device_workspace`, `info`, `fetch_info`): the routine queries syevd's size for n, with the same eigenvector mode and triangle the call uses, and grows `res.device_workspace()` to it if it is smaller. That growth is the only allocation it can make, and a `res` that has already served an n this large makes none.
 
-**One host round-trip.** After syevd, the routine copies back the convergence flag and the extreme eigenvalues (first and last, since they are ascending), and synchronizes once. A non-converged eigendecomposition becomes `ErrorKind::Numerical` instead of quietly corrupting X; an `info < 0` (a rejected argument, so a bug here) is `GpuRuntime`. The same read logs cond(S) = λ_max / λ_min, at `debug` always and at `warn` above 1e10 or for a non-positive λ_min. 1e10 is the threshold GPU4PySCF's `check_linear_dependency` warns at. Steps 2-3 never synchronize.
+**One host round-trip.** After syevd, the routine copies back the extreme eigenvalues (first and last, since they are ascending) and then the convergence flag through `res.fetch_info()`, whose stream sync completes all three: one synchronization. A non-converged eigendecomposition becomes `ErrorKind::Numerical` instead of quietly corrupting X; an `info < 0` (a rejected argument, so a bug here) is `GpuRuntime`. The same read logs cond(S) = λ_max / λ_min, at `debug` always and at `warn` above 1e10 or for a non-positive λ_min. 1e10 is the threshold GPU4PySCF's `check_linear_dependency` warns at. Steps 2-3 never synchronize.
 
 **Conditioning.** The kernel *floors*: an eigenvalue at or below `eigenvalue_floor` (default `kOrthogonalizeEigenvalueFloor<T>`, 1e-10) contributes 0 instead of λ^{-1/2}, which drops that mode. The test comes before the square root, so X is free of NaN and Inf even for a zero or negative eigenvalue. The trade-off: `Xᵀ S X == I` only when every eigenvalue clears the floor (a positive-definite, well-conditioned S). For a singular or indefinite S the dropped modes make `Xᵀ S X` a rank-deficient projector, which is expected, because such an S has no true S^{-1/2}.
 
@@ -43,8 +43,7 @@ Every matrix is a raw column-major device pointer with packed leading dimension 
 | Symbol | Role |
 |---|---|
 | `kOrthogonalizeEigenvalueFloor<T>` | The default floor, 1e-10. |
-| `orthogonalize_workspace_size<T>(res, n)` | `Result<int32_t>`: syevd's workspace for n, in elements of T. 0 for n ≤ 0. |
-| `orthogonalize<T>(res, n, s, x, u_scratch, m_scratch, eigenvalues, syevd_work, syevd_lwork, info, floor)` | `Status`: X = S^{-1/2} into `x`. Instantiated for `float` and `double`. |
+| `orthogonalize<T>(res, n, s, x, u_scratch, m_scratch, eigenvalues, floor)` | `Status`: X = S^{-1/2} into `x`. Instantiated for `float` and `double`. |
 
 ## Usage
 
@@ -55,30 +54,26 @@ import free_breakfast.linalg;
 namespace fb = free_breakfast;
 
 fb::DeviceResources res{0};
-const auto lwork = fb::orthogonalize_workspace_size<double>(res, n);  // Result<int32_t>
 
-// Allocate once per n, and reuse across calls.
+// Allocate once per n, and reuse across calls. syevd's scratch is res's.
 const auto nn = static_cast<size_t>(n) * n;
 fb::Buffers::device<double> s(nn, res.device());  // filled with the operand
 fb::Buffers::device<double> x(nn, res.device()), u(nn, res.device()), m(nn, res.device());
 fb::Buffers::device<double> eigenvalues(n, res.device());
-fb::Buffers::device<double> work(std::max(*lwork, 1), res.device());
-fb::Buffers::device<int32_t> info(1, res.device());
 
 fb::Status status = fb::orthogonalize<double>(res, n, s.data(), x.data(), u.data(), m.data(),
-                                              eigenvalues.data(), work.data(), *lwork,
-                                              info.data());
+                                              eigenvalues.data());
 ```
 
 ## Tests
 
-`test/gtest/orthogonalize_gpu.cpp` covers the workspace query, an empty operand, a diagonal S (X is the elementwise inverse root), a dense well-conditioned S in `double` and `float` (X symmetric, `Xᵀ S X == I`, S unchanged), and a singular S (X finite, and `Xᵀ S X` an idempotent of trace 2).
+`test/gtest/orthogonalize_gpu.cpp` covers an empty operand, one `res` growing its workspace across a small `float` and a larger `double` operand, a diagonal S (X is the elementwise inverse root), a dense well-conditioned S in `double` and `float` (X symmetric, `Xᵀ S X == I`, S unchanged), and a singular S (X finite, and `Xᵀ S X` an idempotent of trace 2).
 
 ## Files
 
 | File | Role |
 |------|------|
-| `orthogonalize.cppm` | Module interface: `orthogonalize`, `orthogonalize_workspace_size`, the default floor |
+| `orthogonalize.cppm` | Module interface: `orthogonalize` and the default floor |
 | `orthogonalize.cpp` | Implementation, the cond(S) log, and the `float`/`double` instantiations |
 | `inverse_sqrt.cu` | The `inverse_sqrt` kernel, over wwr's `parallel_for` |
 | `inverse_sqrt_bridge.h` | The launcher's declaration, shared by the `.cu` and the implementation unit's GMF |
