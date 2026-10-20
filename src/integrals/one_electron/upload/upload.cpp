@@ -38,24 +38,27 @@ Result<DevicePrimitivePairs> upload_primitive_pairs(DeviceResources &res, const 
   for (const PrimitivePairClass &cls : classes) {
     const auto ds = std::make_shared<DeviceStream>(res.device());
     const auto n = static_cast<size_t>(cls.n_rec);
+    // One record's field types, mapped to one n-long buffer per field.
+    PairFieldBuffers buffers =
+        map_pair_fields([&]<typename T>(const T &) { return MirroredBuffer<T>(n, ds); },
+                        PairFields<double, int32_t>{});
     DevicePrimitivePairClass &dev = out.emplace_back(DevicePrimitivePairClass{
-        .la = cls.la,
-        .lb = cls.lb,
-        .n_rec = cls.n_rec,
-        .reals = MirroredBuffer<double>(kPairReals * n, ds),
-        .offsets = MirroredBuffer<int32_t>(kPairOffsets * n, ds),
-    });
+        .la = cls.la, .lb = cls.lb, .n_rec = cls.n_rec, .fields = std::move(buffers)});
     // A buffer's storage does not move with it, so these spans survive out
     // growing (reserved anyway).
-    records.push_back({
-        .reals = {dev.reals.pinned().data(), dev.reals.size()},
-        .offsets = {dev.offsets.pinned().data(), dev.offsets.size()},
-    });
+    records.push_back(map_pair_fields(
+        [](auto &buf) { return std::span{buf.pinned().data(), buf.size()}; }, dev.fields));
   }
   write_primitive_pairs(basis, classes, records);
   for (DevicePrimitivePairClass &dev : out) {
-    FBF_TRY(gpu_status(dev.reals.to_device()));
-    FBF_TRY(gpu_status(dev.offsets.to_device()));
+    wwr::wwrError_t code = wwr::wwrSuccess;
+    apply_pair_fields(
+        // Stops at the first failure, which code then holds.
+        [&code](auto &...buf) {
+          static_cast<void>((((code = buf.to_device()) == wwr::wwrSuccess) && ...));
+        },
+        dev.fields);
+    FBF_TRY(gpu_status(code));
   }
   return DevicePrimitivePairs{res.dev_idx(), std::move(out)};
 }

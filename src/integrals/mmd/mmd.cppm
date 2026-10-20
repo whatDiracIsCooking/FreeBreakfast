@@ -15,6 +15,13 @@
 /// record storage: the caller sizes it from @ref primitive_pair_classes and
 /// @ref write_primitive_pairs fills it, so free_breakfast.integrals.one_electron
 /// can hand it pinned memory and copy it to the device as written.
+///
+/// The fields are named once, by @ref PairFields (pair_fields.h, included in the
+/// global module fragment and re-exported, as atom.cppm does).
+
+module;
+
+#include "pair_fields.h"
 
 export module free_breakfast.integrals.mmd;
 
@@ -24,46 +31,34 @@ import free_breakfast.basis;
 
 export namespace free_breakfast {
 
-/// @brief The real-valued fields of a primitive-pair record, in their order
-/// within a class's @ref PrimitivePairRecords::reals block. A vector is three
-/// fields, one per axis, as the generated kernels take it.
-enum class PairReal : uint8_t {
-  Zeta, ///< zeta = alpha + beta.
-  PX,   ///< P, the product centre: x.
-  PY,   ///< P: y.
-  PZ,   ///< P: z.
-  PaX,  ///< P - A: x.
-  PaY,  ///< P - A: y.
-  PaZ,  ///< P - A: z.
-  PbX,  ///< P - B: x.
-  PbY,  ///< P - B: y.
-  PbZ,  ///< P - B: z.
-  S,    ///< c_a c_b (pi / zeta)^{3/2}.
-  Eb,   ///< beta, the ket primitive's exponent.
-};
+using free_breakfast::PairFields;
 
-/// @brief The number of @ref PairReal fields.
-constexpr int32_t kPairReals = 12;
+/// @brief The number of fields in a @ref PairFields.
+constexpr size_t kPairFields = 14;
 
-/// @brief The integer fields of a primitive-pair record, in their order within
-/// a class's @ref PrimitivePairRecords::offsets block.
-enum class PairOffset : uint8_t {
-  A, ///< The bra shell's first Cartesian AO (@c BasisSet::ao_offset_cart).
-  B, ///< The ket shell's first Cartesian AO.
-};
-
-/// @brief The number of @ref PairOffset fields.
-constexpr int32_t kPairOffsets = 2;
-
-/// @brief Where field @p f of a class of @p n_rec records starts within its
-/// block: every field is @p n_rec consecutive values, one per record.
-[[nodiscard]] constexpr size_t field_offset(const PairReal f, const int32_t n_rec) noexcept {
-  return static_cast<size_t>(f) * static_cast<size_t>(n_rec);
+/// @brief `f(fields.zeta, fields.p_x, ..., fields.off_b)`: every field of
+/// @p fields, in declaration order, as one call.
+///
+/// The one place besides pair_fields.h that lists the fields; everything that
+/// walks them goes through here or @ref map_pair_fields.
+template <typename F, typename Fields>
+constexpr decltype(auto) apply_pair_fields(F &&f, Fields &&fields) {
+  static_assert(sizeof(PairFields<char, char>) == kPairFields,
+                "a field was added to PairFields but not here");
+  return std::forward<F>(f)(fields.zeta, fields.p_x, fields.p_y, fields.p_z, fields.pa_x,
+                            fields.pa_y, fields.pa_z, fields.pb_x, fields.pb_y, fields.pb_z,
+                            fields.s, fields.eb, fields.off_a, fields.off_b);
 }
 
-/// @copydoc field_offset(PairReal, int32_t)
-[[nodiscard]] constexpr size_t field_offset(const PairOffset f, const int32_t n_rec) noexcept {
-  return static_cast<size_t>(f) * static_cast<size_t>(n_rec);
+/// @brief A @ref PairFields of `f(field)` for every field of @p fields: the
+/// real fields become `decltype(f(fields.zeta))`, the offsets
+/// `decltype(f(fields.off_a))`.
+template <typename F, typename Fields>
+constexpr auto map_pair_fields(F &&f, Fields &&fields) {
+  using Real = decltype(f(fields.zeta));
+  using Offset = decltype(f(fields.off_a));
+  return apply_pair_fields([&f](auto &&...field) { return PairFields<Real, Offset>{f(field)...}; },
+                           fields);
 }
 
 /// @brief One shell-pair class (la, lb), with la <= lb, and its record count:
@@ -80,18 +75,14 @@ struct PrimitivePairClass {
   int32_t la{0};
   /// @brief The ket shell's angular momentum.
   int32_t lb{0};
-  /// @brief The number of records, positive.
+  /// @brief The number of records, positive: the length of every field.
   int32_t n_rec{0};
 };
 
-/// @brief One class's record storage, owned by the caller: field @c f of record
-/// @c k is at `reals[field_offset(f, n_rec) + k]` (and likewise @ref offsets).
-struct PrimitivePairRecords {
-  /// @brief kPairReals * n_rec values, laid out by @ref PairReal.
-  std::span<double> reals;
-  /// @brief kPairOffsets * n_rec values, laid out by @ref PairOffset.
-  std::span<int32_t> offsets;
-};
+/// @brief One class's record storage, owned by the caller: one span per field,
+/// each @ref PrimitivePairClass::n_rec long, record @c k of a field at index
+/// @c k.
+using PrimitivePairRecords = PairFields<std::span<double>, std::span<int32_t>>;
 
 /// @brief The primitive-pair classes of @p basis, one per (la, lb) reached, in
 /// ascending (la, lb) order, each with its record count.
@@ -108,11 +99,11 @@ struct PrimitivePairRecords {
 /// @brief Write the records of @p basis into @p records, one entry per class
 /// of @p classes.
 ///
-/// @p classes must be @ref primitive_pair_classes of @p basis, and each entry
-/// of @p records sized for its class; anything else logs and aborts. Each
-/// class's records are in shell-pair order, alpha-major within a pair; a
-/// diagonal pair (i == j) is the shell against itself, its two AO offsets
-/// equal, which is how the kernels recognise it.
+/// @p classes must be @ref primitive_pair_classes of @p basis, and every span
+/// of each entry of @p records its class's n_rec long; anything else logs and
+/// aborts. Each class's records are in shell-pair order, alpha-major within a
+/// pair; a diagonal pair (i == j) is the shell against itself, its two AO
+/// offsets equal, which is how the kernels recognise it.
 ///
 /// Coefficients are taken from the basis as given (see @ref Shell), so a basis
 /// that wants normalized primitives is placed from

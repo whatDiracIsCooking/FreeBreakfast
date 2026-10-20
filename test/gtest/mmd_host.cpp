@@ -1,7 +1,7 @@
 // Host cases for integrals.mmd: the primitive-pair records a basis turns into,
 // checked field by field against the Gaussian product theorem, the la <= lb
-// swap that lets one kernel serve both (s|p) and (p|s), and the refusal of
-// storage that does not fit the basis.
+// swap that lets one kernel serve both (s|p) and (p|s), the PairFields walkers,
+// and the refusal of storage that does not fit the basis.
 
 #include <gtest/gtest.h>
 
@@ -16,30 +16,34 @@ namespace fb = free_breakfast;
 
 constexpr double kTol = 1e-15;
 
-// A basis's records in host memory, the storage owned here as a caller of
-// write_primitive_pairs would own it.
+// One class's records in host memory, owned here as a caller of
+// write_primitive_pairs would own them.
+using HostFields = fb::PairFields<std::vector<double>, std::vector<std::int32_t>>;
+
+// Every field n long.
+HostFields host_fields(const std::size_t n) {
+  return fb::map_pair_fields([n]<typename T>(const T &) { return std::vector<T>(n); },
+                             fb::PairFields<double, std::int32_t>{});
+}
+
+// Spans over every field of h, for write_primitive_pairs.
+fb::PrimitivePairRecords spans_of(HostFields &h) {
+  return fb::map_pair_fields([](auto &v) { return std::span{v}; }, h);
+}
+
 struct HostRecords {
   std::vector<fb::PrimitivePairClass> classes;
-  std::vector<std::vector<double>> reals;
-  std::vector<std::vector<std::int32_t>> offsets;
-
-  double real(const std::size_t c, const fb::PairReal f, const std::size_t k) const {
-    return reals[c][fb::field_offset(f, classes[c].n_rec) + k];
-  }
-  std::int32_t offset(const std::size_t c, const fb::PairOffset f, const std::size_t k) const {
-    return offsets[c][fb::field_offset(f, classes[c].n_rec) + k];
-  }
+  std::vector<HostFields> fields;
 };
 
 HostRecords host_records(const fb::BasisSet &basis) {
   HostRecords h{.classes = fb::primitive_pair_classes(basis)};
-  std::vector<fb::PrimitivePairRecords> records;
   for (const fb::PrimitivePairClass &cls : h.classes) {
-    h.reals.emplace_back(static_cast<std::size_t>(fb::kPairReals * cls.n_rec));
-    h.offsets.emplace_back(static_cast<std::size_t>(fb::kPairOffsets * cls.n_rec));
+    h.fields.push_back(host_fields(static_cast<std::size_t>(cls.n_rec)));
   }
-  for (std::size_t c = 0; c < h.classes.size(); ++c) {
-    records.push_back({.reals = h.reals[c], .offsets = h.offsets[c]});
+  std::vector<fb::PrimitivePairRecords> records;
+  for (HostFields &f : h.fields) {
+    records.push_back(spans_of(f));
   }
   fb::write_primitive_pairs(basis, h.classes, records);
   return h;
@@ -71,23 +75,33 @@ TEST(Mmd, ClassesAreReachedOnlyAndAscending) {
   EXPECT_EQ(classes[2].n_rec, 4);
 }
 
-TEST(Mmd, FieldsAreLaidOutOneBlockOfNRecEach) {
-  EXPECT_EQ(fb::field_offset(fb::PairReal::Zeta, 5), 0U);
-  EXPECT_EQ(fb::field_offset(fb::PairReal::PX, 5), 5U);
-  EXPECT_EQ(fb::field_offset(fb::PairReal::Eb, 5), 55U);
-  EXPECT_EQ(static_cast<std::int32_t>(fb::PairReal::Eb) + 1, fb::kPairReals);
-  EXPECT_EQ(fb::field_offset(fb::PairOffset::A, 5), 0U);
-  EXPECT_EQ(fb::field_offset(fb::PairOffset::B, 5), 5U);
-  EXPECT_EQ(static_cast<std::int32_t>(fb::PairOffset::B) + 1, fb::kPairOffsets);
+// apply_pair_fields visits every field once, in declaration order, and
+// map_pair_fields keeps each value in its own field.
+TEST(Mmd, PairFieldsWalkersVisitEveryFieldInOrder) {
+  fb::PairFields<std::int32_t, std::int32_t> f{};
+  std::int32_t next = 0;
+  fb::apply_pair_fields([&next](auto &...field) { ((field = next++), ...); }, f);
+  EXPECT_EQ(static_cast<std::size_t>(next), fb::kPairFields);
+  EXPECT_EQ(f.zeta, 0);
+  EXPECT_EQ(f.p_x, 1);
+  EXPECT_EQ(f.pb_z, 9);
+  EXPECT_EQ(f.eb, 11);
+  EXPECT_EQ(f.off_a, 12);
+  EXPECT_EQ(f.off_b, 13);
+
+  const auto doubled = fb::map_pair_fields([](const std::int32_t v) { return 2.0 * v; }, f);
+  static_assert(std::same_as<decltype(doubled), const fb::PairFields<double, double>>);
+  EXPECT_EQ(doubled.zeta, 0.0);
+  EXPECT_EQ(doubled.s, 20.0);
+  EXPECT_EQ(doubled.off_b, 26.0);
 }
 
 TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
-  using R = fb::PairReal;
   const fb::BasisSet basis = p_then_s();
   const HostRecords h = host_records(basis);
-  constexpr std::size_t kSp = 1;
-  ASSERT_EQ(h.classes[kSp].la, 0);
-  ASSERT_EQ(h.classes[kSp].lb, 1);
+  ASSERT_EQ(h.classes[1].la, 0);
+  ASSERT_EQ(h.classes[1].lb, 1);
+  const HostFields &sp = h.fields[1];
 
   // The bra is the s shell (shell 1, AO 3), the ket the p shell (AOs 0..2).
   const std::int32_t s_off = static_cast<std::int32_t>(basis.ao_offset_cart(1));
@@ -104,19 +118,20 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
     const double beta = ket[k].exponent;
     const double zeta = alpha + beta;
     const double pz = (alpha * z_a + beta * z_b) / zeta;
-    EXPECT_EQ(h.offset(kSp, fb::PairOffset::A, k), s_off) << "record " << k;
-    EXPECT_EQ(h.offset(kSp, fb::PairOffset::B, k), p_off) << "record " << k;
-    EXPECT_NEAR(h.real(kSp, R::Zeta, k), zeta, kTol) << "record " << k;
-    EXPECT_NEAR(h.real(kSp, R::Eb, k), beta, kTol) << "record " << k;
-    EXPECT_NEAR(h.real(kSp, R::PZ, k), pz, kTol) << "record " << k;
-    EXPECT_NEAR(h.real(kSp, R::PaZ, k), pz - z_a, kTol) << "record " << k;
-    EXPECT_NEAR(h.real(kSp, R::PbZ, k), pz - z_b, kTol) << "record " << k;
+    EXPECT_EQ(sp.off_a[k], s_off) << "record " << k;
+    EXPECT_EQ(sp.off_b[k], p_off) << "record " << k;
+    EXPECT_NEAR(sp.zeta[k], zeta, kTol) << "record " << k;
+    EXPECT_NEAR(sp.eb[k], beta, kTol) << "record " << k;
+    EXPECT_NEAR(sp.p_z[k], pz, kTol) << "record " << k;
+    EXPECT_NEAR(sp.pa_z[k], pz - z_a, kTol) << "record " << k;
+    EXPECT_NEAR(sp.pb_z[k], pz - z_b, kTol) << "record " << k;
     // x and y: every center is on the z axis
-    for (const R axis : {R::PX, R::PY, R::PaX, R::PaY, R::PbX, R::PbY}) {
-      EXPECT_EQ(h.real(kSp, axis, k), 0.0) << "record " << k;
+    for (const std::vector<double> *axis :
+         {&sp.p_x, &sp.p_y, &sp.pa_x, &sp.pa_y, &sp.pb_x, &sp.pb_y}) {
+      EXPECT_EQ((*axis)[k], 0.0) << "record " << k;
     }
     const double s = c_a * ket[k].coefficient * std::pow(std::numbers::pi / zeta, 1.5);
-    EXPECT_NEAR(h.real(kSp, R::S, k), s, kTol * s) << "record " << k;
+    EXPECT_NEAR(sp.s[k], s, kTol * s) << "record " << k;
   }
 }
 
@@ -124,16 +139,16 @@ TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
   const HostRecords h = host_records(p_then_s());
   for (const std::size_t c : {0U, 2U}) {
     for (std::size_t k = 0; k < static_cast<std::size_t>(h.classes[c].n_rec); ++k) {
-      EXPECT_EQ(h.offset(c, fb::PairOffset::A, k), h.offset(c, fb::PairOffset::B, k))
+      EXPECT_EQ(h.fields[c].off_a[k], h.fields[c].off_b[k])
           << "(" << h.classes[c].la << ", " << h.classes[c].lb << ")";
     }
   }
   // Records are bra-primitive-major: (alpha_0, alpha_0), (alpha_0, alpha_1), ...
-  constexpr std::size_t kPp = 2;
-  EXPECT_NEAR(h.real(kPp, fb::PairReal::Zeta, 0), 4.0, kTol);
-  EXPECT_NEAR(h.real(kPp, fb::PairReal::Zeta, 1), 2.5, kTol);
-  EXPECT_NEAR(h.real(kPp, fb::PairReal::Zeta, 2), 2.5, kTol);
-  EXPECT_NEAR(h.real(kPp, fb::PairReal::Zeta, 3), 1.0, kTol);
+  const HostFields &pp = h.fields[2];
+  EXPECT_NEAR(pp.zeta[0], 4.0, kTol);
+  EXPECT_NEAR(pp.zeta[1], 2.5, kTol);
+  EXPECT_NEAR(pp.zeta[2], 2.5, kTol);
+  EXPECT_NEAR(pp.zeta[3], 1.0, kTol);
 }
 
 TEST(Mmd, EmptyBasisHasNoClasses) {
@@ -147,16 +162,26 @@ TEST(Mmd, EmptyBasisHasNoClasses) {
 TEST(MmdDeathTest, WriteRefusesMismatchedStorage) {
   const fb::BasisSet basis = p_then_s();
   const auto classes = fb::primitive_pair_classes(basis);
-  std::vector<double> reals(static_cast<std::size_t>(fb::kPairReals * classes[0].n_rec));
-  std::vector<std::int32_t> offsets(static_cast<std::size_t>(fb::kPairOffsets * classes[0].n_rec));
-  const std::vector<fb::PrimitivePairRecords> one{{.reals = reals, .offsets = offsets}};
+  HostFields first = host_fields(static_cast<std::size_t>(classes[0].n_rec));
+  const std::vector<fb::PrimitivePairRecords> one{spans_of(first)};
   // One record set for three classes.
   EXPECT_DEATH(fb::write_primitive_pairs(basis, classes, one), "");
-  // The right count, but class 1 sized for class 0.
+  // The right count, but every class sized for class 0.
   const std::vector<fb::PrimitivePairRecords> short_sets(classes.size(), one[0]);
   EXPECT_DEATH(fb::write_primitive_pairs(basis, classes, short_sets), "");
   // Classes that are not this basis's.
   EXPECT_DEATH(fb::write_primitive_pairs(basis, std::span{classes}.first(1), one), "");
+  // The right sizes but for one field.
+  std::vector<HostFields> fields;
+  for (const fb::PrimitivePairClass &cls : classes) {
+    fields.push_back(host_fields(static_cast<std::size_t>(cls.n_rec)));
+  }
+  fields[2].eb.pop_back();
+  std::vector<fb::PrimitivePairRecords> one_short;
+  for (HostFields &f : fields) {
+    one_short.push_back(spans_of(f));
+  }
+  EXPECT_DEATH(fb::write_primitive_pairs(basis, classes, one_short), "");
 }
 
 } // namespace

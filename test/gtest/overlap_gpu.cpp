@@ -137,14 +137,20 @@ TEST(PrimitivePairs, DeviceRecordsMatchTheHostWrite) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const Golden g = read_golden("h2o_ccpvdz");
+  using HostFields = fb::PairFields<std::vector<double>, std::vector<std::int32_t>>;
+  const auto as_tuple = [](const HostFields &f) {
+    return fb::apply_pair_fields([](const auto &...field) { return std::tuple{field...}; }, f);
+  };
   const auto classes = fb::primitive_pair_classes(g.basis);
-  std::vector<std::vector<double>> reals;
-  std::vector<std::vector<std::int32_t>> offsets;
+  std::vector<HostFields> host;
   std::vector<fb::PrimitivePairRecords> records;
   for (const fb::PrimitivePairClass &cls : classes) {
-    reals.emplace_back(static_cast<std::size_t>(fb::kPairReals * cls.n_rec));
-    offsets.emplace_back(static_cast<std::size_t>(fb::kPairOffsets * cls.n_rec));
-    records.push_back({.reals = reals.back(), .offsets = offsets.back()});
+    const auto n = static_cast<std::size_t>(cls.n_rec);
+    host.push_back(fb::map_pair_fields([n]<typename T>(const T &) { return std::vector<T>(n); },
+                                       fb::PairFields<double, std::int32_t>{}));
+  }
+  for (HostFields &h : host) {
+    records.push_back(fb::map_pair_fields([](auto &v) { return std::span{v}; }, h));
   }
   fb::write_primitive_pairs(g.basis, classes, records);
 
@@ -154,19 +160,20 @@ TEST(PrimitivePairs, DeviceRecordsMatchTheHostWrite) {
   for (std::size_t c = 0; c < classes.size(); ++c) {
     const fb::DevicePrimitivePairClass &cls = pairs->classes()[c];
     const wwr::wwrStream_t stream = cls.device_stream()->stream();
-    std::vector<double> got_reals(reals[c].size());
-    std::vector<std::int32_t> got_offsets(offsets[c].size());
-    ASSERT_EQ(wwr::wwrMemcpyAsync(got_reals.data(), cls.reals.device().data(),
-                                  sizeof(double) * got_reals.size(), wwr::wwrMemcpyDeviceToHost,
-                                  stream),
-              wwr::wwrSuccess);
-    ASSERT_EQ(wwr::wwrMemcpyAsync(got_offsets.data(), cls.offsets.device().data(),
-                                  sizeof(std::int32_t) * got_offsets.size(),
-                                  wwr::wwrMemcpyDeviceToHost, stream),
-              wwr::wwrSuccess);
+    bool copied = true;
+    const HostFields got = fb::map_pair_fields(
+        [&](const auto &buf) {
+          using T = std::remove_cvref_t<decltype(*buf.device().data())>;
+          std::vector<T> out(buf.size());
+          copied =
+              copied && wwr::wwrMemcpyAsync(out.data(), buf.device().data(), sizeof(T) * out.size(),
+                                            wwr::wwrMemcpyDeviceToHost, stream) == wwr::wwrSuccess;
+          return out;
+        },
+        cls.fields);
+    ASSERT_TRUE(copied);
     ASSERT_EQ(wwr::wwrStreamSynchronize(stream), wwr::wwrSuccess);
-    EXPECT_EQ(got_reals, reals[c]) << "class (" << cls.la << ", " << cls.lb << ")";
-    EXPECT_EQ(got_offsets, offsets[c]) << "class (" << cls.la << ", " << cls.lb << ")";
+    EXPECT_TRUE(as_tuple(got) == as_tuple(host[c])) << "class (" << cls.la << ", " << cls.lb << ")";
   }
 }
 

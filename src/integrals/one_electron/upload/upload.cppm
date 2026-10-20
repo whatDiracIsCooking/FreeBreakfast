@@ -33,14 +33,16 @@ export namespace free_breakfast {
 using free_breakfast::NucleiView;
 using free_breakfast::PrimitivePairClassView;
 
+/// @brief Every field of a class's records as a @c MirroredBuffer, @c n_rec
+/// long, on the device and in pinned host memory.
+using PairFieldBuffers = PairFields<MirroredBuffer<double>, MirroredBuffer<int32_t>>;
+
 /// @brief One @ref PrimitivePairClass's records, on the device and in pinned
 /// host memory, on the class's own work stream.
 ///
-/// Two blocks, laid out as @c PrimitivePairRecords: every @ref PairReal field
-/// in @ref reals and both @ref PairOffset fields in @ref offsets, each field
-/// @ref n_rec consecutive values. The pinned side is what the records were
-/// written into; it is kept for the class's lifetime, so the upload's copy
-/// never needs a host synchronization to protect it.
+/// The pinned side is what the records were written into; it is kept for the
+/// class's lifetime, so the upload's copy never needs a host synchronization
+/// to protect it.
 struct DevicePrimitivePairClass {
   /// @brief The bra shell's angular momentum, <= @ref lb.
   int32_t la;
@@ -48,46 +50,19 @@ struct DevicePrimitivePairClass {
   int32_t lb;
   /// @brief The number of records, positive.
   int32_t n_rec;
-  /// @brief kPairReals * n_rec values, laid out by @ref PairReal.
-  MirroredBuffer<double> reals;
-  /// @brief kPairOffsets * n_rec values, laid out by @ref PairOffset.
-  MirroredBuffer<int32_t> offsets;
+  /// @brief One buffer per field, every one on @ref device_stream.
+  PairFieldBuffers fields;
 
   /// @brief The class's own work stream on the Device: the records were
   /// allocated and copied on it, and every build launches the class on it.
-  const std::shared_ptr<DeviceStream> &device_stream() const noexcept { return reals.handle(); }
-
-  /// @brief Field @p f on the device.
-  [[nodiscard]] const double *device_field(const PairReal f) const {
-    return reals.device().data() + field_offset(f, n_rec);
-  }
-  /// @copydoc device_field(PairReal) const
-  [[nodiscard]] const int32_t *device_field(const PairOffset f) const {
-    return offsets.device().data() + field_offset(f, n_rec);
+  const std::shared_ptr<DeviceStream> &device_stream() const noexcept {
+    return fields.zeta.handle();
   }
 
-  /// @brief The records by pointer, for a launcher. Valid while this is alive
-  /// and unmoved.
+  /// @brief The records by pointer, for a launcher. Valid while this is alive.
   [[nodiscard]] PrimitivePairClassView view() const {
-    return {
-        .la = la,
-        .lb = lb,
-        .n_rec = n_rec,
-        .zeta = device_field(PairReal::Zeta),
-        .p_x = device_field(PairReal::PX),
-        .p_y = device_field(PairReal::PY),
-        .p_z = device_field(PairReal::PZ),
-        .pa_x = device_field(PairReal::PaX),
-        .pa_y = device_field(PairReal::PaY),
-        .pa_z = device_field(PairReal::PaZ),
-        .pb_x = device_field(PairReal::PbX),
-        .pb_y = device_field(PairReal::PbY),
-        .pb_z = device_field(PairReal::PbZ),
-        .s = device_field(PairReal::S),
-        .eb = device_field(PairReal::Eb),
-        .off_a = device_field(PairOffset::A),
-        .off_b = device_field(PairOffset::B),
-    };
+    return {map_pair_fields([](const auto &buf) { return buf.device().data(); }, fields), la, lb,
+            n_rec};
   }
 };
 

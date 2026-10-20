@@ -25,22 +25,9 @@ std::pair<uint32_t, uint32_t> bra_ket_order(const std::vector<Shell> &shells, co
   return {i, j};
 }
 
-// One class's caller-owned records, addressed by field and record index.
-struct RecordWriter {
-  int32_t n_rec;
-  PrimitivePairRecords records;
-
-  double &operator()(const PairReal f, const size_t r) const {
-    return records.reals[field_offset(f, n_rec) + r];
-  }
-  int32_t &operator()(const PairOffset f, const size_t r) const {
-    return records.offsets[field_offset(f, n_rec) + r];
-  }
-};
-
 // Write the records of shell pair (a, b), already in la <= lb order, into w
 // from record index rec; return the index one past the last record written.
-int32_t write_shell_pair_records(const RecordWriter &w, const int32_t rec, const Shell &a,
+int32_t write_shell_pair_records(const PrimitivePairRecords &w, const int32_t rec, const Shell &a,
                                  const int32_t off_a, const Shell &b, const int32_t off_b) {
   const Vec<double, 3> &ca = a.center();
   const Vec<double, 3> &cb = b.center();
@@ -51,20 +38,20 @@ int32_t write_shell_pair_records(const RecordWriter &w, const int32_t rec, const
       const double px = ((pa.exponent * ca.x) + (pb.exponent * cb.x)) / zeta;
       const double py = ((pa.exponent * ca.y) + (pb.exponent * cb.y)) / zeta;
       const double pz = ((pa.exponent * ca.z) + (pb.exponent * cb.z)) / zeta;
-      w(PairReal::Zeta, r) = zeta;
-      w(PairReal::PX, r) = px;
-      w(PairReal::PY, r) = py;
-      w(PairReal::PZ, r) = pz;
-      w(PairReal::PaX, r) = px - ca.x;
-      w(PairReal::PaY, r) = py - ca.y;
-      w(PairReal::PaZ, r) = pz - ca.z;
-      w(PairReal::PbX, r) = px - cb.x;
-      w(PairReal::PbY, r) = py - cb.y;
-      w(PairReal::PbZ, r) = pz - cb.z;
-      w(PairReal::S, r) = pa.coefficient * pb.coefficient * std::pow(kPi<double> / zeta, 1.5);
-      w(PairReal::Eb, r) = pb.exponent;
-      w(PairOffset::A, r) = off_a;
-      w(PairOffset::B, r) = off_b;
+      w.zeta[r] = zeta;
+      w.p_x[r] = px;
+      w.p_y[r] = py;
+      w.p_z[r] = pz;
+      w.pa_x[r] = px - ca.x;
+      w.pa_y[r] = py - ca.y;
+      w.pa_z[r] = pz - ca.z;
+      w.pb_x[r] = px - cb.x;
+      w.pb_y[r] = py - cb.y;
+      w.pb_z[r] = pz - cb.z;
+      w.s[r] = pa.coefficient * pb.coefficient * std::pow(kPi<double> / zeta, 1.5);
+      w.eb[r] = pb.exponent;
+      w.off_a[r] = off_a;
+      w.off_b[r] = off_b;
       ++r;
     }
   }
@@ -118,18 +105,17 @@ void write_primitive_pairs(const BasisSet &basis, const std::span<const Primitiv
                    classes.size(), records.size(), want.size())});
   }
   std::map<ClassKey, size_t> slot;
-  std::vector<RecordWriter> writers;
-  writers.reserve(classes.size());
   for (size_t c = 0; c < classes.size(); ++c) {
     const auto n = static_cast<size_t>(classes[c].n_rec);
-    if (records[c].reals.size() != kPairReals * n ||
-        records[c].offsets.size() != kPairOffsets * n) {
-      check_or_abort(Status{err_config(
-          "write_primitive_pairs: class ({}, {}) of {} records given {} reals and {} offsets",
-          classes[c].la, classes[c].lb, n, records[c].reals.size(), records[c].offsets.size())});
+    const bool fits = apply_pair_fields(
+        [n](const auto &...field) { return ((field.size() == n) && ...); }, records[c]);
+    if (!fits) {
+      check_or_abort(
+          Status{err_config("write_primitive_pairs: class ({}, {}) of {} records given a field "
+                            "of another length",
+                            classes[c].la, classes[c].lb, n)});
     }
     slot.emplace(ClassKey{classes[c].la, classes[c].lb}, c);
-    writers.push_back({.n_rec = classes[c].n_rec, .records = records[c]});
   }
 
   // BasisSet guarantees nao_cart() fits an int32_t, so the offset casts below
@@ -143,7 +129,7 @@ void write_primitive_pairs(const BasisSet &basis, const std::span<const Primitiv
       const auto [bra, ket] = bra_ket_order(shells, i, j);
       const size_t c = slot.at({shells[bra].angular_momentum(), shells[ket].angular_momentum()});
       cursor[c] = write_shell_pair_records(
-          writers[c], cursor[c], shells[bra], static_cast<int32_t>(basis.ao_offset_cart(bra)),
+          records[c], cursor[c], shells[bra], static_cast<int32_t>(basis.ao_offset_cart(bra)),
           shells[ket], static_cast<int32_t>(basis.ao_offset_cart(ket)));
     }
   }
