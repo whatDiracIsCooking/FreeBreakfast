@@ -18,8 +18,9 @@ import free_breakfast.linalg.matrix_ao;
 
 export namespace free_breakfast {
 
-/// @brief Call `launch(stream, cls)` for every class of @p classes, with that
-/// class's own stream, between a fork from and a join into @p parent.
+/// @brief Call `launch(cls)` for every class of @p classes, between a fork of
+/// the class's own stream from, and a join of it into, @p parent; @p launch
+/// enqueues on `cls.device_stream()->stream()`.
 ///
 /// Every class's work is ordered after everything already queued on
 /// @p parent -- the matrix's zeroing -- and everything queued on @p parent
@@ -36,6 +37,7 @@ export namespace free_breakfast {
 ///
 /// @return wwrSuccess, or the first error of a fork, launch or join.
 template <typename Launch>
+  requires std::is_invocable_r_v<wwr::wwrError_t, Launch &, const PrimitivePairClass &>
 [[nodiscard]] wwr::wwrError_t launch_each(std::span<const PrimitivePairClass> classes,
                                           const wwr::wwrStream_t parent, Launch &&launch) {
   wwr::wwrError_t first = wwr::wwrSuccess;
@@ -46,8 +48,7 @@ template <typename Launch>
       break;
     }
     ++forked;
-    if (first = launch(static_cast<wwr::wwrStream_t>(fork.stream()), cls);
-        first != wwr::wwrSuccess) {
+    if (first = launch(cls); first != wwr::wwrSuccess) {
       break;
     }
   }

@@ -32,10 +32,9 @@ Status overlap(DeviceResources &res, const std::span<const PrimitivePairClass> c
   // The kernels only add, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(s.data(), 0, sizeof(double) * s.num_elements(), stream)));
   const auto n_ao = static_cast<int32_t>(s.n());
-  return gpu_status(launch_each(
-      classes, stream, [&](const wwr::wwrStream_t cls_stream, const PrimitivePairClass &cls) {
-        return device::overlap_class(cls_stream, cls.view(), n_ao, s.data());
-      }));
+  return gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
+    return device::overlap_class(cls.device_stream()->stream(), cls.view(), n_ao, s.data());
+  }));
 }
 
 } // namespace free_breakfast
