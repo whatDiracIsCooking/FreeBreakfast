@@ -27,7 +27,7 @@ module and its implementation unit are the whole directory.
 
 | Symbol | Role |
 |---|---|
-| `core_hamiltonian(res, pairs, nuclei, h)` | `Status`: the Cartesian H = T + V into `h` |
+| `core_hamiltonian(res, classes, nuclei, h)` | `Status`: the Cartesian H = T + V into `h` |
 
 ## Usage
 
@@ -37,10 +37,10 @@ import free_breakfast.integrals.one_electron.core_hamiltonian;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto device = fb::upload_primitive_pairs(res, basis); // once per basis
+const auto classes = fb::primitive_pair_classes(res, basis); // once per basis
 const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
 fb::CartesianMatrixAO h(res, basis);
-fb::Status status = fb::core_hamiltonian(res, *device, *nuclei, h);
+fb::Status status = fb::core_hamiltonian(res, *classes, *nuclei, h);
 ```
 
 ## Tests

@@ -21,7 +21,7 @@ kernels read the overlap's record fields plus `p`, the product centre, and the
 nuclei's charges and positions (`NucleiView`). Each thread adds its values at
 `(m, n)` and `(n, m)` with fp64 atomics, so V is symmetric to rounding, not
 bitwise. Queued on `res.stream()`, each class on its own stream, forked from it
-and joined back into it (`DevicePrimitivePairs::launch_each`), with no host
+and joined back into it (`launch_each`), with no host
 synchronization.
 
 **`add_nuclear_attraction`** is the same build without the zeroing: it adds V
@@ -55,8 +55,8 @@ FelizJueves's named follow-up.
 
 | Symbol | Role |
 |---|---|
-| `nuclear_attraction(res, pairs, nuclei, v)` | `Status`: the Cartesian V into `v` |
-| `add_nuclear_attraction(res, pairs, nuclei, m)` | `Status`: V added into `m`, which is not zeroed first |
+| `nuclear_attraction(res, classes, nuclei, v)` | `Status`: the Cartesian V into `v` |
+| `add_nuclear_attraction(res, classes, nuclei, m)` | `Status`: V added into `m`, which is not zeroed first |
 
 ## Usage
 
@@ -66,10 +66,10 @@ import free_breakfast.integrals.one_electron.potential_en;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto device = fb::upload_primitive_pairs(res, basis);  // once per basis
+const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis
 const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
 fb::CartesianMatrixAO v(res, basis);
-fb::Status status = fb::nuclear_attraction(res, *device, *nuclei, v);
+fb::Status status = fb::nuclear_attraction(res, *classes, *nuclei, v);
 ```
 
 ## Tests

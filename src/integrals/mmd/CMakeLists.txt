@@ -1,12 +1,18 @@
-# PairFields, the record's fields named once, offered two ways from one
-# definition in pair_fields.h: `#include <pair_fields.h>` (through
+# PrimitivePairClassView, the launchers' view of a class, offered two ways from
+# one definition in primitive_pair_class_view.h: `#include` (through
 # one_electron.upload's device_views.h, for the launchers) through this include
 # path, and `import free_breakfast.integrals.mmd;`, which includes it in its
 # GMF and re-exports the name.
-free_breakfast_add_interface_library(NAME free_breakfast.integrals.mmd.headers)
+free_breakfast_add_interface_library(
+  NAME
+  free_breakfast.integrals.mmd.headers
+  LINK_PUBLIC
+  free_breakfast::core::types_headers
+)
 
-# Pure host data: no GPU link, so the records build and are tested on a
-# device-less box. basis is PUBLIC because the interface takes a BasisSet.
+# The records, built on the host and copied to the device. MirroredBuffer,
+# DeviceStream, DeviceResources, Result and BasisSet are in its interface, so
+# their modules are PUBLIC.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.mmd
@@ -17,9 +23,13 @@ free_breakfast_add_cxx_module_library(
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types
+  free_breakfast::core::error_handling
+  free_breakfast::core::wwr
+  free_breakfast::core::mirrored_buffer
+  free_breakfast::core::resources
   free_breakfast::basis
   free_breakfast::integrals::mmd::headers
   LINK_PRIVATE
   free_breakfast::core::constants
-  free_breakfast::core::error_handling
+  free_breakfast::core::diagnostics_macros
 )

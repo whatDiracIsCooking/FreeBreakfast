@@ -7,6 +7,7 @@ export module free_breakfast.integrals.one_electron.core_hamiltonian;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.upload;
 import free_breakfast.linalg.matrix_ao;
 
@@ -24,7 +25,8 @@ export namespace free_breakfast {
 ///         la <= lb), or if h.n() is too large for the kernels' 32-bit index;
 ///         or the GpuRuntime error of the first memset or launch that failed,
 ///         which leaves @p h unspecified.
-[[nodiscard]] Status core_hamiltonian(DeviceResources &res, const DevicePrimitivePairs &pairs,
+[[nodiscard]] Status core_hamiltonian(DeviceResources &res,
+                                      std::span<const PrimitivePairClass> classes,
                                       const DeviceNuclei &nuclei, CartesianMatrixAO &h);
 
 } // namespace free_breakfast

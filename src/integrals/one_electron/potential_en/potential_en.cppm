@@ -10,6 +10,7 @@ export module free_breakfast.integrals.one_electron.potential_en;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.upload;
 import free_breakfast.linalg.matrix_ao;
 
@@ -22,7 +23,8 @@ export namespace free_breakfast {
 ///
 /// @return As @ref add_nuclear_attraction; a GpuRuntime error from the memset
 ///         too.
-[[nodiscard]] Status nuclear_attraction(DeviceResources &res, const DevicePrimitivePairs &pairs,
+[[nodiscard]] Status nuclear_attraction(DeviceResources &res,
+                                        std::span<const PrimitivePairClass> classes,
                                         const DeviceNuclei &nuclei, CartesianMatrixAO &v);
 
 /// @brief Add the Cartesian nuclear attraction into @p m, without zeroing it
@@ -31,21 +33,22 @@ export namespace free_breakfast {
 /// Launches the generated kernel of each class, which loops over @p nuclei
 /// serially inside each record and adds its contributions at (m, n) and (n, m).
 /// This is how @c core_hamiltonian forms T + V in place: @c kinetic zeroes the
-/// matrix and writes T, and this adds V on top. @p pairs must come from the
+/// matrix and writes T, and this adds V on top. @p classes must come from the
 /// basis @p m was made for: a record's AO offsets are not checked against
 /// m.n().
 ///
 /// Queued on res.stream(), each class on its own stream, forked from it and
-/// joined back into it (@c DevicePrimitivePairs::launch_each), with no host
+/// joined back into it (@c launch_each), with no host
 /// synchronization. The device res.dev_idx() names is made current for the
 /// call and the previous one restored.
 ///
-/// @return Success; InvalidConfig if @p res is not on @p m's, @p pairs's or
+/// @return Success; InvalidConfig if @p res is not on @p m's, @p classes' or
 ///         @p nuclei's device, if a class is above d (or not la <= lb), or if
 ///         m.n() is too large for the kernels' 32-bit index (m.n()^2 above
 ///         INT32_MAX, about 46k AOs); or the GpuRuntime error of the first
 ///         fork, launch or join that failed, which leaves @p m unspecified.
-[[nodiscard]] Status add_nuclear_attraction(DeviceResources &res, const DevicePrimitivePairs &pairs,
+[[nodiscard]] Status add_nuclear_attraction(DeviceResources &res,
+                                            std::span<const PrimitivePairClass> classes,
                                             const DeviceNuclei &nuclei, CartesianMatrixAO &m);
 
 } // namespace free_breakfast

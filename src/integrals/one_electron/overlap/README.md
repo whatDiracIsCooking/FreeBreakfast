@@ -15,7 +15,7 @@ FelizJueves generates.
 record. Each thread adds its values at `(m, n)` and `(n, m)` with fp64 atomics,
 so S is symmetric to rounding (the two mirror positions are summed in different
 orders), not bitwise. Queued on `res.stream()`, each class on its own stream,
-forked from it and joined back into it (`DevicePrimitivePairs::launch_each`),
+forked from it and joined back into it (`launch_each`),
 with no host synchronization.
 
 **The kernels.** `kernels/s_{00,01,02,11,12,22}.cu` (every `la <= lb <= 2`),
@@ -42,7 +42,7 @@ basis the matrix was made for.
 
 | Symbol | Role |
 |---|---|
-| `overlap(res, pairs, s)` | `Status`: the Cartesian S into `s` |
+| `overlap(res, classes, s)` | `Status`: the Cartesian S into `s` |
 
 ## Usage
 
@@ -52,9 +52,9 @@ import free_breakfast.integrals.one_electron.overlap;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto device = fb::upload_primitive_pairs(res, basis);  // once per basis
+const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis
 fb::CartesianMatrixAO s(res, basis);
-fb::Status status = fb::overlap(res, *device, s);
+fb::Status status = fb::overlap(res, *classes, s);
 ```
 
 ## Tests

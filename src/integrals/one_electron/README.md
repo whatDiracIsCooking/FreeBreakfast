@@ -24,9 +24,9 @@ core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T
 
 ## Design
 
-`upload_primitive_pairs` has `mmd` write a basis's records into pinned memory
-and copies them to the device, once per basis, and `upload_nuclei` a molecule's nuclei (Z and position) once per geometry (both
-`upload`). A build then zeroes a `CartesianMatrixAO` and launches one generated
+`mmd`'s `primitive_pair_classes` puts a basis's records on the device once per
+basis, and `upload`'s `upload_nuclei` a molecule's nuclei (Z and position) once
+per geometry. A build then zeroes a `CartesianMatrixAO` and launches one generated
 kernel per class, one thread per record: `overlap<la, lb>` for S,
 `kinetic<la, lb>` for T, `potential_en<la, lb>` for V (the nuclei serial inside
 each record). Each thread adds
@@ -35,11 +35,11 @@ to rounding (the two mirror positions are summed in different orders), not
 bitwise. The spherical matrix is `MatrixAOPair::cartesian_to_spherical` of the
 result.
 
-**One stream per class.** `upload_primitive_pairs` gives every class its own
+**One stream per class.** `primitive_pair_classes` gives every class its own
 `DeviceStream` on `res.device()`, and its records are allocated and copied
-there. A build zeroes the matrix on `res.stream()`, forks every class's stream
-from it, launches each class on its own stream, and joins them all back
-(`DevicePrimitivePairs::launch_each`), so the classes run concurrently and
+there. A build zeroes the matrix on `res.stream()`, then `upload`'s
+`launch_each` forks every class's stream from it, launches each class on its
+own stream, and joins them all back, so the classes run concurrently and
 whatever follows on `res.stream()` sees the whole matrix. The atomics are what
 make that safe: classes adding into one matrix at once do not race. H is still
 T then V: each build joins before the next forks.
@@ -114,11 +114,11 @@ Everything the five sub-modules export; each README has its own table.
 
 | Symbol | Module |
 |---|---|
-| `DevicePrimitivePairs`, `DevicePrimitivePairClass`, `DeviceNuclei`, their views, the uploads and checks | `upload` |
-| `overlap(res, pairs, s)` | `overlap` |
-| `kinetic(res, pairs, t)` | `kinetic` |
-| `nuclear_attraction(res, pairs, nuclei, v)`, `add_nuclear_attraction(…)` | `potential_en` |
-| `core_hamiltonian(res, pairs, nuclei, h)` | `core_hamiltonian` |
+| `launch_each`, `DeviceNuclei` and its view, `upload_nuclei`, the checks | `upload` |
+| `overlap(res, classes, s)` | `overlap` |
+| `kinetic(res, classes, t)` | `kinetic` |
+| `nuclear_attraction(res, classes, nuclei, v)`, `add_nuclear_attraction(…)` | `potential_en` |
+| `core_hamiltonian(res, classes, nuclei, h)` | `core_hamiltonian` |
 
 Every build is queued on `res.stream()`, each class on its own stream forked
 from it and joined back into it, with no host synchronization.
@@ -130,12 +130,12 @@ import free_breakfast.integrals;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto device = fb::upload_primitive_pairs(res, basis);  // once per basis
+const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis
 const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
 fb::CartesianMatrixAO s(res, basis);
 fb::CartesianMatrixAO h(res, basis);
-fb::Status status = fb::overlap(res, *device, s);
-status = fb::core_hamiltonian(res, *device, *nuclei, h);
+fb::Status status = fb::overlap(res, *classes, s);
+status = fb::core_hamiltonian(res, *classes, *nuclei, h);
 ```
 
 ## Tests
