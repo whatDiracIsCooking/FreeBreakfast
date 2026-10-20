@@ -20,7 +20,7 @@ record. The kernels read the overlap's record fields plus `eb`, the ket
 exponent. Each thread adds its values at `(m, n)` and `(n, m)` with fp64
 atomics, so T is symmetric to rounding, not bitwise. Queued on `res.stream()`,
 each class on its own stream, forked from it and joined back into it
-(`DevicePrimitivePairs::launch_each`), with no host synchronization.
+(`launch_each`), with no host synchronization.
 
 `core_hamiltonian` calls `kinetic` to zero H and write T, then adds V on top.
 
@@ -42,7 +42,7 @@ basis the matrix was made for.
 
 | Symbol | Role |
 |---|---|
-| `kinetic(res, pairs, t)` | `Status`: the Cartesian T into `t` |
+| `kinetic(res, classes, t)` | `Status`: the Cartesian T into `t` |
 
 ## Usage
 
@@ -52,9 +52,9 @@ import free_breakfast.integrals.one_electron.kinetic;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto device = fb::upload_primitive_pairs(res, basis);  // once per basis
+const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis
 fb::CartesianMatrixAO t(res, basis);
-fb::Status status = fb::kinetic(res, *device, t);
+fb::Status status = fb::kinetic(res, *classes, t);
 ```
 
 ## Tests

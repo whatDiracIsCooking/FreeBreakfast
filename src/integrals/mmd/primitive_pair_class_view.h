@@ -1,0 +1,63 @@
+/// @file
+/// @brief PrimitivePairClassView: one primitive-pair class's records on the
+/// device, by pointer, for the launchers.
+///
+/// This header is the single definition. The launchers (`*_launch.cu`, through
+/// their bridge headers and device_views.h) reach it by `#include`; C++ modules
+/// reach the very same entity by `import free_breakfast.integrals.mmd;`, which
+/// includes this header in its global module fragment and re-exports the name
+/// (the `atom` pattern).
+///
+/// The owner, @c PrimitivePairClass, holds wwr buffers and so lives only in the
+/// module; it hands out one of these with @c view(). A view is valid while its
+/// owner is alive.
+
+#pragma once
+
+#include "integral_types.h"
+
+namespace free_breakfast {
+
+/// @brief One primitive-pair class on the device: the record arrays of a
+/// @c PrimitivePairClass, by pointer.
+///
+/// Every array has @ref n_rec entries; a vector is three arrays, one per axis,
+/// as the generated kernels take it.
+struct PrimitivePairClassView {
+  /// @brief The bra shell's angular momentum, <= @ref lb.
+  int32_t la;
+  /// @brief The ket shell's angular momentum.
+  int32_t lb;
+  /// @brief The number of records, positive.
+  int32_t n_rec;
+  /// @brief zeta = alpha + beta.
+  const double *zeta;
+  /// @brief P: x.
+  const double *p_x;
+  /// @brief P: y.
+  const double *p_y;
+  /// @brief P: z.
+  const double *p_z;
+  /// @brief P - A: x.
+  const double *pa_x;
+  /// @brief P - A: y.
+  const double *pa_y;
+  /// @brief P - A: z.
+  const double *pa_z;
+  /// @brief P - B: x.
+  const double *pb_x;
+  /// @brief P - B: y.
+  const double *pb_y;
+  /// @brief P - B: z.
+  const double *pb_z;
+  /// @brief c_a c_b (pi / zeta)^{3/2}.
+  const double *s;
+  /// @brief beta, the ket primitive's exponent.
+  const double *eb;
+  /// @brief The bra shell's first Cartesian AO.
+  const int32_t *off_a;
+  /// @brief The ket shell's first Cartesian AO.
+  const int32_t *off_b;
+};
+
+} // namespace free_breakfast

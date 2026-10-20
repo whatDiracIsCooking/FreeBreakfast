@@ -1,6 +1,5 @@
 /// @file
-/// @brief upload_primitive_pairs, upload_nuclei, check_one_electron_build and
-/// check_nuclei.
+/// @brief upload_nuclei, check_one_electron_build and check_nuclei.
 
 module free_breakfast.integrals.one_electron.upload;
 
@@ -8,7 +7,6 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
-import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
@@ -26,41 +24,6 @@ Result<Buffers::device<T>> upload_field(DeviceResources &res, const std::vector<
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.data(), host.data(), sizeof(T) * host.size(),
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
   return out;
-}
-
-Result<DevicePrimitivePairs> upload_primitive_pairs(DeviceResources &res, const BasisSet &basis) {
-  const ScopedDeviceIndex on{res.dev_idx()};
-  const std::vector<PrimitivePairClass> classes = primitive_pair_classes(basis);
-  std::vector<DevicePrimitivePairClass> out;
-  std::vector<PrimitivePairRecords> records;
-  out.reserve(classes.size());
-  records.reserve(classes.size());
-  for (const PrimitivePairClass &cls : classes) {
-    const auto ds = std::make_shared<DeviceStream>(res.device());
-    const auto n = static_cast<size_t>(cls.n_rec);
-    // One record's field types, mapped to one n-long buffer per field.
-    PairFieldBuffers buffers =
-        map_pair_fields([&]<typename T>(const T &) { return MirroredBuffer<T>(n, ds); },
-                        PairFields<double, int32_t>{});
-    DevicePrimitivePairClass &dev = out.emplace_back(DevicePrimitivePairClass{
-        .la = cls.la, .lb = cls.lb, .n_rec = cls.n_rec, .fields = std::move(buffers)});
-    // A buffer's storage does not move with it, so these spans survive out
-    // growing (reserved anyway).
-    records.push_back(map_pair_fields(
-        [](auto &buf) { return std::span{buf.pinned().data(), buf.size()}; }, dev.fields));
-  }
-  write_primitive_pairs(basis, classes, records);
-  for (DevicePrimitivePairClass &dev : out) {
-    wwr::wwrError_t code = wwr::wwrSuccess;
-    apply_pair_fields(
-        // Stops at the first failure, which code then holds.
-        [&code](auto &...buf) {
-          static_cast<void>((((code = buf.to_device()) == wwr::wwrSuccess) && ...));
-        },
-        dev.fields);
-    FBF_TRY(gpu_status(code));
-  }
-  return DevicePrimitivePairs{res.dev_idx(), std::move(out)};
 }
 
 Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecule) {
@@ -89,22 +52,23 @@ Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecul
   };
 }
 
-Status check_one_electron_build(const DeviceResources &res, const DevicePrimitivePairs &pairs,
+Status check_one_electron_build(const DeviceResources &res,
+                                const std::span<const PrimitivePairClass> classes,
                                 const CartesianMatrixAO &m, const std::string_view what) {
   if (res.dev_idx() != m.dev_idx()) {
     return err_config("{}: the matrix is on device {}, but the call passed device {}", what,
                       m.dev_idx(), res.dev_idx());
-  }
-  if (res.dev_idx() != pairs.dev_idx()) {
-    return err_config("{}: the primitive pairs are on device {}, but the call passed device {}",
-                      what, pairs.dev_idx(), res.dev_idx());
   }
   const uint32_t n = m.n();
   // The generated kernels index the matrix as a 32-bit m * n_ao + n.
   if (static_cast<uint64_t>(n) * n > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
     return err_config("{}: {} Cartesian AOs is too many for the kernels' 32-bit index", what, n);
   }
-  for (const DevicePrimitivePairClass &cls : pairs.classes()) {
+  for (const PrimitivePairClass &cls : classes) {
+    if (const int32_t dev = cls.device_stream()->dev_idx(); dev != res.dev_idx()) {
+      return err_config("{}: class ({}, {}) is on device {}, but the call passed device {}", what,
+                        cls.la, cls.lb, dev, res.dev_idx());
+    }
     if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum) {
       return err_config("{}: no kernel for class ({}, {}); the kernels cover la <= lb <= {}", what,
                         cls.la, cls.lb, kMaxAngularMomentum);

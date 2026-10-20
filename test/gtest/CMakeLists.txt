@@ -36,7 +36,6 @@ add_executable(
   atom_host.cpp
   molecule_host.cpp
   basis_host.cpp
-  mmd_host.cpp
   sad_host.cpp
   io_base_host.cpp
   io_basis_host.cpp
@@ -67,7 +66,6 @@ target_link_libraries(
           free_breakfast::basis
           free_breakfast::sad
           free_breakfast::io
-          free_breakfast::integrals::mmd
           free_breakfast::core::resources
           GTest::gtest
           GTest::gtest_main
@@ -95,6 +93,7 @@ add_executable(
   gemm_gpu.cpp
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp
+  mmd_gpu.cpp
   overlap_gpu.cpp
   # Disabled with kinetic, potential_en and core_hamiltonian
   # (src/integrals/one_electron/CMakeLists.txt).

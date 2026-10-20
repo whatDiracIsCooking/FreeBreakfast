@@ -1,8 +1,8 @@
-# The non-owning device views, offered two ways from one definition in
-# device_views.h: `#include <device_views.h>` for the launchers, through this
-# include path, and `import free_breakfast.integrals.one_electron.upload;`,
-# which includes it in its GMF and re-exports the names. The pair view is built
-# on mmd's PairFields (pair_fields.h).
+# The non-owning device views, offered two ways from one header, device_views.h:
+# `#include <device_views.h>` for the launchers, through this include path, and
+# `import free_breakfast.integrals.one_electron.upload;`, which includes it in
+# its GMF and re-exports the names. PrimitivePairClassView is mmd's
+# (primitive_pair_class_view.h), which device_views.h includes.
 free_breakfast_add_interface_library(
   NAME
   free_breakfast.integrals.one_electron.upload.headers
@@ -11,11 +11,11 @@ free_breakfast_add_interface_library(
   free_breakfast::integrals::mmd::headers
 )
 
-# The device inputs and the shared pre-launch check. No device code of its own:
-# it copies and validates, and every family's module launches. DeviceResources,
-# Buffers, MirroredBuffer, BasisSet, the mmd record layout, Molecule and
+# The nuclei, the per-class launch and the shared pre-launch check. No device
+# code of its own: it copies and validates, and every family's module launches.
+# DeviceResources, Buffers, ForkStream, PrimitivePairClass, Molecule and
 # CartesianMatrixAO are in its signatures, so all of their modules are PUBLIC;
-# basis also for kMaxAngularMomentum, the limit the check holds every class to.
+# basis for kMaxAngularMomentum, the limit the check holds every class to.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.one_electron.upload
@@ -28,7 +28,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
-  free_breakfast::core::mirrored_buffer
   free_breakfast::core::resources
   free_breakfast::integrals::one_electron::upload::headers
   free_breakfast::basis
