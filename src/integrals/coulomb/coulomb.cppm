@@ -1,6 +1,6 @@
 /// @file
 /// @brief The Cartesian Coulomb matrix J on the GPU, by McMurchie-Davidson,
-/// over the dq, e_hermite and jab kernels FelizJueves generates.
+/// over the pair_bound, dq, e_hermite and jab kernels FelizJueves generates.
 ///
 /// The records come from free_breakfast.integrals.mmd: every class is both a
 /// ket class (its density pre-contracted) and a bra class (its J_p contracted
@@ -19,9 +19,12 @@ export namespace free_breakfast {
 /// @brief The Cartesian Coulomb matrix J_mn = sum_ls (mn|ls) D_ls of the AO
 /// density @p density into @p j.
 ///
-/// Unscreened: every shell quartet is contracted. Zeroes @p j, then, per class
-/// on that class's own stream, pre-contracts the density into the class's
-/// Hermite basis (dq), contracts each bra class against every ket class
+/// Unscreened: every shell quartet is contracted. Each record's Schwarz bound
+/// is computed (pair_bound) and handed to e_hermite as its Ip and Iq, but at
+/// tau = 0 its screen never fires: the kets are not sorted, and the screen
+/// breaks. Zeroes @p j, then, per class on that class's own stream, computes
+/// the bounds and pre-contracts the density into the class's Hermite basis
+/// (dq), contracts each bra class against every ket class
 /// (e_hermite, J_p added atomically) and scatters J_p into @p j (jab, added at
 /// (m, n) and (n, m)). @p density must be symmetric; it is not checked. The
 /// classes must come from the basis @p density and @p j were made for: a
@@ -29,7 +32,7 @@ export namespace free_breakfast {
 ///
 /// Queued on res.stream(), each phase's classes forked from it and joined back
 /// (@c launch_each), with no host synchronization; the scratch (per class
-/// n_rec x n_hermite(la + lb) doubles twice, and 2 n_rec more) is drawn from
+/// n_rec x n_hermite(la + lb) doubles twice, and 3 n_rec more) is drawn from
 /// res.device()'s pool and returned to it in res.stream()'s order. The device
 /// res.dev_idx() names is made current for the call and the previous one
 /// restored.
