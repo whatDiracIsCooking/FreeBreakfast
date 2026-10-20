@@ -14,15 +14,17 @@ before it launches anything.
 once per basis, and `upload_nuclei` a molecule's nuclei (Z and position) once
 per geometry.
 
-**Records written straight into pinned memory.** Each class's records are two
-`MirroredBuffer`s on the class's stream: `reals` (`kPairReals · n_rec`, laid out
-by `PairReal`) and `offsets` (`kPairOffsets · n_rec`, by `PairOffset`), the
-layout `mmd` defines once. The upload sizes them from `primitive_pair_classes`,
-has `write_primitive_pairs` fill their pinned sides in place, and queues
-`to_device()` on each class's stream, ahead of anything a build launches there.
-It never synchronizes: the pinned side is kept for the class's lifetime (a
-`MirroredBuffer`'s destructor waits out its copies), at the cost of a host
-mirror of the records, which are small next to any matrix they build.
+**Records written straight into pinned memory.** Each class's records are one
+`n_rec`-long `MirroredBuffer` per field, on the class's stream:
+`PairFieldBuffers`, mmd's `PairFields` over `MirroredBuffer`s. The upload sizes
+them from `primitive_pair_classes`, has `write_primitive_pairs` fill their
+pinned sides in place (through `map_pair_fields` to spans), and queues every
+field's `to_device()` on the class's stream, ahead of anything a build launches
+there. It never synchronizes: the pinned side is kept for the class's lifetime
+(a `MirroredBuffer`'s destructor waits out its copies), at the cost of a host
+mirror of the records, which are small next to any matrix they build. One
+buffer per field is fourteen small pinned allocations per class rather than
+two large ones; that is a once-per-basis cost, chosen for the plainer code.
 `upload_nuclei` still copies from pageable memory and synchronizes once.
 
 **One stream per class.** `upload_primitive_pairs` returns a
@@ -44,7 +46,9 @@ whichever matrix is wanted.
 **Owners in the module, views in a header.** `DevicePrimitivePairClass` and
 `DeviceNuclei` own wwr buffers, which only a module can name, so they
 stay here. Each hands out a non-owning `view()`: `PrimitivePairClassView` and
-`NucleiView`, plain pointer aggregates defined once in `device_views.h`. The
+`NucleiView`, plain pointer aggregates defined once in `device_views.h`
+(`PrimitivePairClassView` is `PairFields` of `const` pointers plus the class's
+`la`, `lb` and `n_rec`, so the launchers still read `cls.zeta`). The
 launchers `#include` that header and take a view instead of a dozen loose
 pointers; this module includes it in its global module fragment and re-exports
 the names, so the two sides share one entity (the `atom` pattern). A view is
@@ -66,7 +70,8 @@ launches.
 
 | Symbol | Role |
 |---|---|
-| `DevicePrimitivePairClass` | One class's records: `la`, `lb`, `n_rec`, the `reals` and `offsets` `MirroredBuffer`s, `device_stream()`, `device_field(f)`; `view()` gives a `PrimitivePairClassView` |
+| `PairFieldBuffers` | `PairFields<MirroredBuffer<double>, MirroredBuffer<int32_t>>`: one buffer per field |
+| `DevicePrimitivePairClass` | One class's records: `la`, `lb`, `n_rec`, `fields` (a `PairFieldBuffers`), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
 | `DevicePrimitivePairs` | Every class of a basis on one device: `dev_idx()`, `classes()`, and `launch_each(parent, launch)` |
 | `upload_primitive_pairs(res, basis)` | `Result<DevicePrimitivePairs>`, one new `DeviceStream` per class (none for an empty basis). Queues each class's copy on its stream; no host synchronization |
 | `DeviceNuclei` | A molecule's nuclei on the device: `z`, `c` (bohr), `n_nuc`, and the `dev_idx` they are on; `view()` gives a `NucleiView` |

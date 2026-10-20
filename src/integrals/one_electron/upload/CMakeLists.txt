@@ -1,12 +1,14 @@
 # The non-owning device views, offered two ways from one definition in
 # device_views.h: `#include <device_views.h>` for the launchers, through this
 # include path, and `import free_breakfast.integrals.one_electron.upload;`,
-# which includes it in its GMF and re-exports the names.
+# which includes it in its GMF and re-exports the names. The pair view is built
+# on mmd's PairFields (pair_fields.h).
 free_breakfast_add_interface_library(
   NAME
   free_breakfast.integrals.one_electron.upload.headers
   LINK_PUBLIC
   free_breakfast::core::types_headers
+  free_breakfast::integrals::mmd::headers
 )
 
 # The device inputs and the shared pre-launch check. No device code of its own:
