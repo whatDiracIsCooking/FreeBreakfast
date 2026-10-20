@@ -5,7 +5,7 @@
 /// anything, so each family's module (overlap, ...) refuses the same inputs
 /// with the same messages.
 ///
-/// The nuclei's owner here holds wwr buffers; the non-owning views are
+/// The nuclei's owner here holds MirroredBuffers; the non-owning views are
 /// device_views.h's, included in the global module fragment and re-exported so
 /// importers and the launchers' #include share one entity (atom.cppm has the
 /// why of the in-namespace using-declarations).
@@ -20,6 +20,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
+import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
@@ -77,26 +78,37 @@ template <typename Launch>
 }
 
 /// @brief A molecule's nuclei on the device: the point charges V attracts
-/// to.
+/// to, one @c MirroredBuffer per field, both on the nuclei's own work stream.
+///
+/// The pinned side is what the nuclei were written into, and is kept for the
+/// nuclei's lifetime. Movable, not copyable.
 struct DeviceNuclei {
-  /// @brief The device the buffers are on (@c DeviceResources::dev_idx).
-  int32_t dev_idx;
   /// @brief The number of nuclei, positive.
   int32_t n_nuc;
   /// @brief Z_C, each nucleus's charge (its atomic number).
-  Buffers::device<double> z;
+  MirroredBuffer<double> z;
   /// @brief C, each nucleus's position in bohr (3 per nucleus).
-  Buffers::device<double> c;
+  MirroredBuffer<double> c;
 
-  /// @brief The nuclei by pointer, for a launcher. Valid while this is alive
-  /// and unmoved.
-  [[nodiscard]] NucleiView view() const { return {.n_nuc = n_nuc, .z = z.data(), .c = c.data()}; }
+  /// @brief The nuclei's own work stream: they were allocated and copied on
+  /// it, and its dev_idx() is the device they are on.
+  const std::shared_ptr<DeviceStream> &device_stream() const noexcept { return z.handle(); }
+
+  /// @brief The nuclei on the device by pointer, for a launcher. Valid while
+  /// this is alive.
+  [[nodiscard]] NucleiView view() const {
+    return {.n_nuc = n_nuc, .z = z.device().data(), .c = c.device().data()};
+  }
 };
 
-/// @brief Copy @p molecule's nuclei, in atom order, to @p res's device.
+/// @brief Copy @p molecule's nuclei, in atom order, to @p res's device, on a
+/// new @c DeviceStream of res.device().
 ///
-/// Synchronizes res.stream() once, after the copies. The device res.dev_idx()
-/// names is made current for the call and the previous one restored.
+/// The nuclei are written into the pinned side and copied on their own
+/// stream, which is synchronized once, after the copies: every class's stream
+/// reads them, and none is ordered after that stream. The device
+/// res.dev_idx() names is made current for the call and the previous one
+/// restored.
 ///
 /// @return The device nuclei; InvalidConfig for a molecule with no atoms, or
 ///         more than an int32_t counts; or the GpuRuntime error of the first

@@ -144,8 +144,11 @@ status = fb::core_hamiltonian(res, *classes, *nuclei, h);
   `int1e_ovlp` at 1e-12 · max|S|, plus the zeroing and the class-range refusal.
 - `test/gtest/core_hamiltonian_gpu.cpp`: the same two molecules' T, V and H
   against libcint's `int1e_kin` and `int1e_nuc` and PySCF's `hcore`, at the
-  same tolerance, plus each build's zeroing and class-range refusal, and
-  `upload_nuclei`'s refusal of an empty molecule.
+  same tolerance, plus each build's zeroing and class-range refusal (off,
+  with the three modules).
+- `test/gtest/upload_gpu.cpp`: `upload_nuclei`'s nuclei in atom order on the
+  pinned side, the device side matching it, the call's device, and the refusal
+  of an empty molecule.
 
 ## Files
 

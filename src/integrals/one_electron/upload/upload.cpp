@@ -7,6 +7,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
+import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
@@ -17,39 +18,30 @@ import free_breakfast.linalg.matrix_ao;
 
 namespace free_breakfast {
 
-// Copy a host vector into a fresh device buffer of the same length, on stream.
-template <typename T>
-Result<Buffers::device<T>> upload_field(DeviceResources &res, const std::vector<T> &host) {
-  Buffers::device<T> out(host.size(), res.device());
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.data(), host.data(), sizeof(T) * host.size(),
-                                         wwr::wwrMemcpyHostToDevice, res.stream())));
-  return out;
-}
-
 Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecule) {
   const std::vector<Atom> &atoms = molecule.atoms();
   if (atoms.empty() || atoms.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max())) {
     return err_config("upload_nuclei: a molecule of {} atoms", atoms.size());
   }
-  std::vector<double> z;
-  std::vector<double> c;
-  z.reserve(atoms.size());
-  c.reserve(3 * atoms.size());
-  for (const Atom &atom : atoms) {
-    z.push_back(static_cast<double>(nuclear_charge(atom)));
-    c.insert(c.end(), {atom.position.x, atom.position.y, atom.position.z});
-  }
   const ScopedDeviceIndex on{res.dev_idx()};
-  auto z_dev = FBF_TRY(upload_field(res, z));
-  auto c_dev = FBF_TRY(upload_field(res, c));
-  // z and c are pageable and die on return, so the copies must finish first.
-  FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(res.stream())));
-  return DeviceNuclei{
-      .dev_idx = res.dev_idx(),
+  const auto ds = std::make_shared<DeviceStream>(res.device());
+  DeviceNuclei out{
       .n_nuc = static_cast<int32_t>(atoms.size()),
-      .z = std::move(z_dev),
-      .c = std::move(c_dev),
+      .z = MirroredBuffer<double>(atoms.size(), ds),
+      .c = MirroredBuffer<double>(3 * atoms.size(), ds),
   };
+  double *z = out.z.pinned().data();
+  double *c = out.c.pinned().data();
+  for (size_t a = 0; a < atoms.size(); ++a) {
+    z[a] = static_cast<double>(nuclear_charge(atoms[a]));
+    c[(3 * a) + 0] = atoms[a].position.x;
+    c[(3 * a) + 1] = atoms[a].position.y;
+    c[(3 * a) + 2] = atoms[a].position.z;
+  }
+  FBF_TRY(gpu_status(out.z.to_device()));
+  // Both copies are on one stream, so this one sync covers z's as well.
+  FBF_TRY(gpu_status(out.c.to_device_sync()));
+  return out;
 }
 
 Status check_one_electron_build(const DeviceResources &res,
@@ -79,9 +71,9 @@ Status check_one_electron_build(const DeviceResources &res,
 
 Status check_nuclei(const DeviceResources &res, const DeviceNuclei &nuclei,
                     const std::string_view what) {
-  if (res.dev_idx() != nuclei.dev_idx) {
-    return err_config("{}: the nuclei are on device {}, but the call passed device {}", what,
-                      nuclei.dev_idx, res.dev_idx());
+  if (const int32_t dev = nuclei.device_stream()->dev_idx(); dev != res.dev_idx()) {
+    return err_config("{}: the nuclei are on device {}, but the call passed device {}", what, dev,
+                      res.dev_idx());
   }
   return {};
 }

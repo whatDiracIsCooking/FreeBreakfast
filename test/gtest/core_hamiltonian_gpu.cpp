@@ -236,12 +236,4 @@ TEST_P(OneElectronBuild, RefusesAClassAboveD) {
 INSTANTIATE_TEST_SUITE_P(TVH, OneElectronBuild,
                          ::testing::Values(Build::Kinetic, Build::Nuclear, Build::Core));
 
-TEST(UploadNuclei, RefusesAMoleculeWithNoAtoms) {
-  FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
-  const auto nuclei = fb::upload_nuclei(res, fb::Molecule{});
-  ASSERT_FALSE(nuclei);
-  EXPECT_EQ(nuclei.error().kind, fb::ErrorKind::InvalidConfig);
-}
-
 } // namespace
