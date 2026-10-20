@@ -3,10 +3,6 @@
 The Cartesian core Hamiltonian H = T + V on the GPU, formed in place from the
 `kinetic` and `potential_en` builds.
 
-> **Currently disabled.** This module is not built, linked or re-exported,
-> and its test (`test/gtest/core_hamiltonian_gpu.cpp`) is off; the sources
-> are kept. See `../CMakeLists.txt` for what to uncomment to restore it.
-
 ## Module
 
 `free_breakfast.integrals.one_electron.core_hamiltonian`, also re-exported by
