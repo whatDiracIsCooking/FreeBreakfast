@@ -1,6 +1,6 @@
 add_subdirectory(mmd)
 add_subdirectory(one_electron)
-# Device code only so far: the J-build kernels, compiled, launched by nothing.
+# After one_electron: J reuses its per-class launch and checks.
 add_subdirectory(coulomb)
 
 # The aggregate: one import for the integral layer.
@@ -13,4 +13,5 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::integrals::mmd
   free_breakfast::integrals::one_electron
+  free_breakfast::integrals::coulomb
 )

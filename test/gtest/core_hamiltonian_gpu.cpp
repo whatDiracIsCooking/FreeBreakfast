@@ -4,7 +4,7 @@
 // exercised) and cc-pVDZ (s, p, d) against libcint's int1e_kin and int1e_nuc
 // (point nuclei) and PySCF's hcore, recorded by PySCF
 // (test/gtest/data/one_electron/, copied from FelizJueves's fixtures by
-// tools/extract_one_electron_golden.py), plus, as overlap_gpu.cpp, the zeroing
+// tools/extract_integral_golden.py), plus, as overlap_gpu.cpp, the zeroing
 // and the class-range refusal of each.
 
 #include <gtest/gtest.h>

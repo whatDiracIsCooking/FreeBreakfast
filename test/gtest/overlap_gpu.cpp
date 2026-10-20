@@ -2,7 +2,7 @@
 // STO-3G (s, p; O's p shell precedes the H s shells, so the la <= lb swap is
 // exercised) and cc-pVDZ (s, p, d) against libcint's int1e_ovlp, recorded by
 // PySCF (test/gtest/data/one_electron/, copied from FelizJueves's fixtures by
-// tools/extract_one_electron_golden.py), plus the zeroing and the class-range
+// tools/extract_integral_golden.py), plus the zeroing and the class-range
 // refusal.
 
 #include <gtest/gtest.h>

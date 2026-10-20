@@ -101,6 +101,7 @@ add_executable(
   launch_gpu.cpp
   overlap_gpu.cpp
   core_hamiltonian_gpu.cpp
+  coulomb_gpu.cpp
 )
 
 set_target_properties(
