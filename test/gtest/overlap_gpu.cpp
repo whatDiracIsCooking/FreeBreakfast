@@ -61,8 +61,7 @@ std::vector<double> download(fb::DeviceResources &res, const fb::CartesianMatrix
 
 // S on the device for basis: records, upload, launch.
 std::vector<double> device_overlap(fb::DeviceResources &res, const fb::BasisSet &basis) {
-  const auto classes = fb::primitive_pair_classes(basis);
-  const auto device = fb::upload_primitive_pairs(res, classes);
+  const auto device = fb::upload_primitive_pairs(res, basis);
   EXPECT_TRUE(device);
   fb::CartesianMatrixAO s(res, basis);
   const fb::Status status = fb::overlap(res, *device, s);
@@ -111,7 +110,7 @@ TEST(Overlap, ZeroesTheMatrixFirst) {
                                 res.stream()),
             wwr::wwrSuccess);
   // No classes: the only work left is the zeroing.
-  const auto none = fb::upload_primitive_pairs(res, {});
+  const auto none = fb::upload_primitive_pairs(res, fb::BasisSet{});
   ASSERT_TRUE(none);
   ASSERT_TRUE(fb::overlap(res, *none, s));
   EXPECT_EQ(download(res, s)[0], 0.0);
@@ -121,15 +120,53 @@ TEST(PrimitivePairs, EachClassHasItsOwnStream) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const Golden g = read_golden("h2o_ccpvdz");
-  const auto classes = fb::primitive_pair_classes(g.basis);
-  const auto pairs = fb::upload_primitive_pairs(res, classes);
+  const auto pairs = fb::upload_primitive_pairs(res, g.basis);
   ASSERT_TRUE(pairs);
   EXPECT_EQ(pairs->dev_idx(), res.dev_idx());
-  ASSERT_EQ(pairs->classes().size(), classes.size());
+  ASSERT_EQ(pairs->classes().size(), fb::primitive_pair_classes(g.basis).size());
   std::set<wwr::wwrStream_t> streams{res.stream()};
   for (const fb::DevicePrimitivePairClass &cls : pairs->classes()) {
-    EXPECT_TRUE(streams.insert(cls.device_stream->stream()).second)
+    EXPECT_TRUE(streams.insert(cls.device_stream()->stream()).second)
         << "class (" << cls.la << ", " << cls.lb << ") shares a stream";
+  }
+}
+
+// What reaches the device is what write_primitive_pairs writes on the host,
+// bit for bit: the copy is the whole of the upload.
+TEST(PrimitivePairs, DeviceRecordsMatchTheHostWrite) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const Golden g = read_golden("h2o_ccpvdz");
+  const auto classes = fb::primitive_pair_classes(g.basis);
+  std::vector<std::vector<double>> reals;
+  std::vector<std::vector<std::int32_t>> offsets;
+  std::vector<fb::PrimitivePairRecords> records;
+  for (const fb::PrimitivePairClass &cls : classes) {
+    reals.emplace_back(static_cast<std::size_t>(fb::kPairReals * cls.n_rec));
+    offsets.emplace_back(static_cast<std::size_t>(fb::kPairOffsets * cls.n_rec));
+    records.push_back({.reals = reals.back(), .offsets = offsets.back()});
+  }
+  fb::write_primitive_pairs(g.basis, classes, records);
+
+  const auto pairs = fb::upload_primitive_pairs(res, g.basis);
+  ASSERT_TRUE(pairs);
+  ASSERT_EQ(pairs->classes().size(), classes.size());
+  for (std::size_t c = 0; c < classes.size(); ++c) {
+    const fb::DevicePrimitivePairClass &cls = pairs->classes()[c];
+    const wwr::wwrStream_t stream = cls.device_stream()->stream();
+    std::vector<double> got_reals(reals[c].size());
+    std::vector<std::int32_t> got_offsets(offsets[c].size());
+    ASSERT_EQ(wwr::wwrMemcpyAsync(got_reals.data(), cls.reals.device().data(),
+                                  sizeof(double) * got_reals.size(), wwr::wwrMemcpyDeviceToHost,
+                                  stream),
+              wwr::wwrSuccess);
+    ASSERT_EQ(wwr::wwrMemcpyAsync(got_offsets.data(), cls.offsets.device().data(),
+                                  sizeof(std::int32_t) * got_offsets.size(),
+                                  wwr::wwrMemcpyDeviceToHost, stream),
+              wwr::wwrSuccess);
+    ASSERT_EQ(wwr::wwrStreamSynchronize(stream), wwr::wwrSuccess);
+    EXPECT_EQ(got_reals, reals[c]) << "class (" << cls.la << ", " << cls.lb << ")";
+    EXPECT_EQ(got_offsets, offsets[c]) << "class (" << cls.la << ", " << cls.lb << ")";
   }
 }
 
@@ -137,7 +174,7 @@ TEST(PrimitivePairs, LaunchEachStopsAtTheFirstFailure) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const Golden g = read_golden("h2o_sto3g");
-  const auto pairs = fb::upload_primitive_pairs(res, fb::primitive_pair_classes(g.basis));
+  const auto pairs = fb::upload_primitive_pairs(res, g.basis);
   ASSERT_TRUE(pairs);
   ASSERT_GE(pairs->classes().size(), 2U);
   std::size_t launched = 0;
@@ -154,8 +191,7 @@ TEST(Overlap, RefusesAClassAboveD) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::BasisSet basis({fb::Shell(3, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
-  const auto classes = fb::primitive_pair_classes(basis);
-  const auto device = fb::upload_primitive_pairs(res, classes);
+  const auto device = fb::upload_primitive_pairs(res, basis);
   ASSERT_TRUE(device);
   fb::CartesianMatrixAO s(res, basis);
   const fb::Status status = fb::overlap(res, *device, s);

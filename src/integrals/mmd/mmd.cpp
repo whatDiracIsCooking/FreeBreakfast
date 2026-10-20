@@ -1,6 +1,6 @@
 /// @file
-/// @brief primitive_pair_classes: the shell-pair sweep, the la <= lb swap and
-/// the per-record arithmetic.
+/// @brief primitive_pair_classes and write_primitive_pairs: the shell-pair
+/// sweep, the la <= lb swap and the per-record arithmetic.
 
 module free_breakfast.integrals.mmd;
 
@@ -25,23 +25,22 @@ std::pair<uint32_t, uint32_t> bra_ket_order(const std::vector<Shell> &shells, co
   return {i, j};
 }
 
-// Size every per-record field of cls for its n_rec records.
-void resize_records(PrimitivePairClass &cls) {
-  const auto n = static_cast<size_t>(cls.n_rec);
-  cls.zeta.resize(n);
-  for (std::vector<double> *axis : {&cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z,
-                                    &cls.pb_x, &cls.pb_y, &cls.pb_z}) {
-    axis->resize(n);
-  }
-  cls.s.resize(n);
-  cls.eb.resize(n);
-  cls.off_a.resize(n);
-  cls.off_b.resize(n);
-}
+// One class's caller-owned records, addressed by field and record index.
+struct RecordWriter {
+  int32_t n_rec;
+  PrimitivePairRecords records;
 
-// Write the records of shell pair (a, b), already in la <= lb order, into cls
+  double &operator()(const PairReal f, const size_t r) const {
+    return records.reals[field_offset(f, n_rec) + r];
+  }
+  int32_t &operator()(const PairOffset f, const size_t r) const {
+    return records.offsets[field_offset(f, n_rec) + r];
+  }
+};
+
+// Write the records of shell pair (a, b), already in la <= lb order, into w
 // from record index rec; return the index one past the last record written.
-int32_t write_shell_pair_records(PrimitivePairClass &cls, const int32_t rec, const Shell &a,
+int32_t write_shell_pair_records(const RecordWriter &w, const int32_t rec, const Shell &a,
                                  const int32_t off_a, const Shell &b, const int32_t off_b) {
   const Vec<double, 3> &ca = a.center();
   const Vec<double, 3> &cb = b.center();
@@ -52,20 +51,20 @@ int32_t write_shell_pair_records(PrimitivePairClass &cls, const int32_t rec, con
       const double px = ((pa.exponent * ca.x) + (pb.exponent * cb.x)) / zeta;
       const double py = ((pa.exponent * ca.y) + (pb.exponent * cb.y)) / zeta;
       const double pz = ((pa.exponent * ca.z) + (pb.exponent * cb.z)) / zeta;
-      cls.zeta[r] = zeta;
-      cls.p_x[r] = px;
-      cls.p_y[r] = py;
-      cls.p_z[r] = pz;
-      cls.pa_x[r] = px - ca.x;
-      cls.pa_y[r] = py - ca.y;
-      cls.pa_z[r] = pz - ca.z;
-      cls.pb_x[r] = px - cb.x;
-      cls.pb_y[r] = py - cb.y;
-      cls.pb_z[r] = pz - cb.z;
-      cls.s[r] = pa.coefficient * pb.coefficient * std::pow(kPi<double> / zeta, 1.5);
-      cls.eb[r] = pb.exponent;
-      cls.off_a[r] = off_a;
-      cls.off_b[r] = off_b;
+      w(PairReal::Zeta, r) = zeta;
+      w(PairReal::PX, r) = px;
+      w(PairReal::PY, r) = py;
+      w(PairReal::PZ, r) = pz;
+      w(PairReal::PaX, r) = px - ca.x;
+      w(PairReal::PaY, r) = py - ca.y;
+      w(PairReal::PaZ, r) = pz - ca.z;
+      w(PairReal::PbX, r) = px - cb.x;
+      w(PairReal::PbY, r) = py - cb.y;
+      w(PairReal::PbZ, r) = pz - cb.z;
+      w(PairReal::S, r) = pa.coefficient * pb.coefficient * std::pow(kPi<double> / zeta, 1.5);
+      w(PairReal::Eb, r) = pb.exponent;
+      w(PairOffset::A, r) = off_a;
+      w(PairOffset::B, r) = off_b;
       ++r;
     }
   }
@@ -73,13 +72,12 @@ int32_t write_shell_pair_records(PrimitivePairClass &cls, const int32_t rec, con
 }
 
 std::vector<PrimitivePairClass> primitive_pair_classes(const BasisSet &basis) {
-  // BasisSet guarantees nao_cart() fits an int32_t, so the offset casts below are exact.
   const std::vector<Shell> &shells = basis.shells();
   const uint32_t nsh = basis.nshells();
 
-  // Pass 1: every reached class's record count, in int64_t so a class past
-  // INT32_MAX is caught before it is sized. Keyed by (la, lb), so the result
-  // comes out in ascending class order.
+  // Every reached class's record count, in int64_t so a class past INT32_MAX
+  // is caught before anything is sized for it. Keyed by (la, lb), so the
+  // result comes out in ascending class order.
   std::map<ClassKey, int64_t> counts;
   for (uint32_t i = 0; i < nsh; ++i) {
     for (uint32_t j = i; j < nsh; ++j) {
@@ -90,10 +88,8 @@ std::vector<PrimitivePairClass> primitive_pair_classes(const BasisSet &basis) {
     }
   }
 
-  // Size each class once, at its final record count.
   std::vector<PrimitivePairClass> out;
   out.reserve(counts.size());
-  std::map<ClassKey, size_t> slot;
   for (const auto &[key, n] : counts) {
     if (n > std::numeric_limits<int32_t>::max()) {
       check_or_abort(
@@ -101,27 +97,56 @@ std::vector<PrimitivePairClass> primitive_pair_classes(const BasisSet &basis) {
                             "past {}",
                             key.first, key.second, n, std::numeric_limits<int32_t>::max())});
     }
-    slot.emplace(key, out.size());
-    PrimitivePairClass &cls = out.emplace_back();
-    cls.la = key.first;
-    cls.lb = key.second;
-    cls.n_rec = static_cast<int32_t>(n);
-    resize_records(cls);
+    out.push_back({.la = key.first, .lb = key.second, .n_rec = static_cast<int32_t>(n)});
+  }
+  return out;
+}
+
+void write_primitive_pairs(const BasisSet &basis, const std::span<const PrimitivePairClass> classes,
+                           const std::span<const PrimitivePairRecords> records) {
+  // The sweep below writes by index into caller-sized spans, so a stale class
+  // list or a short span would write out of bounds: refuse both up front.
+  const std::vector<PrimitivePairClass> want = primitive_pair_classes(basis);
+  const bool same_classes = std::ranges::equal(
+      classes, want, [](const PrimitivePairClass &a, const PrimitivePairClass &b) {
+        return a.la == b.la && a.lb == b.lb && a.n_rec == b.n_rec;
+      });
+  if (!same_classes || records.size() != classes.size()) {
+    check_or_abort(Status{
+        err_config("write_primitive_pairs: {} classes and {} record sets given, for a basis of {} "
+                   "classes, or the classes are not this basis's",
+                   classes.size(), records.size(), want.size())});
+  }
+  std::map<ClassKey, size_t> slot;
+  std::vector<RecordWriter> writers;
+  writers.reserve(classes.size());
+  for (size_t c = 0; c < classes.size(); ++c) {
+    const auto n = static_cast<size_t>(classes[c].n_rec);
+    if (records[c].reals.size() != kPairReals * n ||
+        records[c].offsets.size() != kPairOffsets * n) {
+      check_or_abort(Status{err_config(
+          "write_primitive_pairs: class ({}, {}) of {} records given {} reals and {} offsets",
+          classes[c].la, classes[c].lb, n, records[c].reals.size(), records[c].offsets.size())});
+    }
+    slot.emplace(ClassKey{classes[c].la, classes[c].lb}, c);
+    writers.push_back({.n_rec = classes[c].n_rec, .records = records[c]});
   }
 
-  // Pass 2: the same sweep, each shell pair's records written at its class's
-  // cursor, so records keep their shell-pair, then bra-primitive-major, order.
-  std::vector<int32_t> cursor(out.size(), 0);
+  // BasisSet guarantees nao_cart() fits an int32_t, so the offset casts below
+  // are exact. Each shell pair's records go at its class's cursor, so records
+  // keep their shell-pair, then bra-primitive-major, order.
+  const std::vector<Shell> &shells = basis.shells();
+  const uint32_t nsh = basis.nshells();
+  std::vector<int32_t> cursor(classes.size(), 0);
   for (uint32_t i = 0; i < nsh; ++i) {
     for (uint32_t j = i; j < nsh; ++j) {
       const auto [bra, ket] = bra_ket_order(shells, i, j);
       const size_t c = slot.at({shells[bra].angular_momentum(), shells[ket].angular_momentum()});
       cursor[c] = write_shell_pair_records(
-          out[c], cursor[c], shells[bra], static_cast<int32_t>(basis.ao_offset_cart(bra)),
+          writers[c], cursor[c], shells[bra], static_cast<int32_t>(basis.ao_offset_cart(bra)),
           shells[ket], static_cast<int32_t>(basis.ao_offset_cart(ket)));
     }
   }
-  return out;
 }
 
 } // namespace free_breakfast

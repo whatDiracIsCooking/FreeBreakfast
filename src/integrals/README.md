@@ -26,8 +26,8 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
 ## How the pieces fit
 
 ```
-BasisSet --primitive_pair_classes--> PrimitivePairClass[]          (mmd, host)
-         --upload_primitive_pairs--> DevicePrimitivePairs          (one_electron.upload, once per basis)
+BasisSet --upload_primitive_pairs--> DevicePrimitivePairs          (one_electron.upload, once per basis;
+                                                                    mmd writes the records into pinned memory)
          --overlap / kinetic-->      CartesianMatrixAO S, T        (one launch per class, each on its own stream)
 Molecule --upload_nuclei-->          DeviceNuclei                  (one_electron.upload, once per geometry)
          --nuclear_attraction-->     CartesianMatrixAO V           (one launch per class)
