@@ -193,16 +193,18 @@ TEST_P(OneElectronBuild, ZeroesTheMatrixFirst) {
                                 res.stream()),
             wwr::wwrSuccess);
   // No classes: the only work left is the zeroing.
+  const auto none = fb::upload_primitive_pairs(res, {});
+  ASSERT_TRUE(none);
   fb::Status status;
   switch (GetParam()) {
   case Build::Kinetic:
-    status = fb::kinetic(res, {}, m);
+    status = fb::kinetic(res, *none, m);
     break;
   case Build::Nuclear:
-    status = fb::nuclear_attraction(res, {}, *nuclei, m);
+    status = fb::nuclear_attraction(res, *none, *nuclei, m);
     break;
   case Build::Core:
-    status = fb::core_hamiltonian(res, {}, *nuclei, m);
+    status = fb::core_hamiltonian(res, *none, *nuclei, m);
     break;
   }
   ASSERT_TRUE(status);

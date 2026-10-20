@@ -111,8 +111,43 @@ TEST(Overlap, ZeroesTheMatrixFirst) {
                                 res.stream()),
             wwr::wwrSuccess);
   // No classes: the only work left is the zeroing.
-  ASSERT_TRUE(fb::overlap(res, {}, s));
+  const auto none = fb::upload_primitive_pairs(res, {});
+  ASSERT_TRUE(none);
+  ASSERT_TRUE(fb::overlap(res, *none, s));
   EXPECT_EQ(download(res, s)[0], 0.0);
+}
+
+TEST(PrimitivePairs, EachClassHasItsOwnStream) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const Golden g = read_golden("h2o_ccpvdz");
+  const auto classes = fb::primitive_pair_classes(g.basis);
+  const auto pairs = fb::upload_primitive_pairs(res, classes);
+  ASSERT_TRUE(pairs);
+  EXPECT_EQ(pairs->dev_idx(), res.dev_idx());
+  ASSERT_EQ(pairs->classes().size(), classes.size());
+  std::set<wwr::wwrStream_t> streams{res.stream()};
+  for (const fb::DevicePrimitivePairClass &cls : pairs->classes()) {
+    EXPECT_TRUE(streams.insert(cls.device_stream->stream()).second)
+        << "class (" << cls.la << ", " << cls.lb << ") shares a stream";
+  }
+}
+
+TEST(PrimitivePairs, LaunchEachStopsAtTheFirstFailure) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const Golden g = read_golden("h2o_sto3g");
+  const auto pairs = fb::upload_primitive_pairs(res, fb::primitive_pair_classes(g.basis));
+  ASSERT_TRUE(pairs);
+  ASSERT_GE(pairs->classes().size(), 2U);
+  std::size_t launched = 0;
+  const wwr::wwrError_t code =
+      pairs->launch_each(res.stream(), [&](wwr::wwrStream_t, const fb::DevicePrimitivePairClass &) {
+        return ++launched == 1 ? wwr::wwrSuccess : wwr::wwrErrorInvalidValue;
+      });
+  EXPECT_EQ(code, wwr::wwrErrorInvalidValue);
+  EXPECT_EQ(launched, 2U);
+  EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);
 }
 
 TEST(Overlap, RefusesAClassAboveD) {

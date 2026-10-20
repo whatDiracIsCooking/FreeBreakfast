@@ -27,7 +27,7 @@ module and its implementation unit are the whole directory.
 
 | Symbol | Role |
 |---|---|
-| `core_hamiltonian(res, classes, nuclei, h)` | `Status`: the Cartesian H = T + V into `h` |
+| `core_hamiltonian(res, pairs, nuclei, h)` | `Status`: the Cartesian H = T + V into `h` |
 
 ## Usage
 

@@ -24,8 +24,7 @@ export namespace free_breakfast {
 ///         la <= lb), or if h.n() is too large for the kernels' 32-bit index;
 ///         or the GpuRuntime error of the first memset or launch that failed,
 ///         which leaves @p h unspecified.
-[[nodiscard]] Status core_hamiltonian(DeviceResources &res,
-                                      std::span<const DevicePrimitivePairClass> classes,
+[[nodiscard]] Status core_hamiltonian(DeviceResources &res, const DevicePrimitivePairs &pairs,
                                       const DeviceNuclei &nuclei, CartesianMatrixAO &h);
 
 } // namespace free_breakfast

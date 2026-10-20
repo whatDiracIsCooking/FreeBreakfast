@@ -19,7 +19,8 @@ kernels FelizJueves generates.
 record. The kernels read the overlap's record fields plus `eb`, the ket
 exponent. Each thread adds its values at `(m, n)` and `(n, m)` with fp64
 atomics, so T is symmetric to rounding, not bitwise. Queued on `res.stream()`,
-with no host synchronization.
+each class on its own stream, forked from it and joined back into it
+(`DevicePrimitivePairs::launch_each`), with no host synchronization.
 
 `core_hamiltonian` calls `kinetic` to zero H and write T, then adds V on top.
 
@@ -41,7 +42,7 @@ basis the matrix was made for.
 
 | Symbol | Role |
 |---|---|
-| `kinetic(res, classes, t)` | `Status`: the Cartesian T into `t` |
+| `kinetic(res, pairs, t)` | `Status`: the Cartesian T into `t` |
 
 ## Usage
 

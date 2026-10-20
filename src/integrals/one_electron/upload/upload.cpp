@@ -18,16 +18,18 @@ import free_breakfast.linalg.matrix_ao;
 
 namespace free_breakfast {
 
-// Copy a host vector into a fresh device buffer of the same length, on stream.
-template <typename T>
-Result<Buffers::device<T>> upload_pair_field(DeviceResources &res, const std::vector<T> &host) {
-  Buffers::device<T> out(host.size(), res.device());
+// Copy a host vector into a fresh Suite device buffer of the same length,
+// allocated from handle's pool and copied on handle's stream.
+template <typename Suite, typename T, typename Handle>
+Result<typename Suite::template device<T>> upload_field(const std::shared_ptr<Handle> &handle,
+                                                        const std::vector<T> &host) {
+  typename Suite::template device<T> out(host.size(), handle);
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.data(), host.data(), sizeof(T) * host.size(),
-                                         wwr::wwrMemcpyHostToDevice, res.stream())));
+                                         wwr::wwrMemcpyHostToDevice, handle->stream())));
   return out;
 }
 
-Result<std::vector<DevicePrimitivePairClass>>
+Result<DevicePrimitivePairs>
 upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePairClass> classes) {
   const ScopedDeviceIndex on{res.dev_idx()};
   std::vector<DevicePrimitivePairClass> out;
@@ -37,24 +39,26 @@ upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePair
       return err_config("upload_primitive_pairs: class ({}, {}) has {} records", cls.la, cls.lb,
                         cls.n_rec);
     }
-    auto zeta = FBF_TRY(upload_pair_field(res, cls.zeta));
-    auto p_x = FBF_TRY(upload_pair_field(res, cls.p_x));
-    auto p_y = FBF_TRY(upload_pair_field(res, cls.p_y));
-    auto p_z = FBF_TRY(upload_pair_field(res, cls.p_z));
-    auto pa_x = FBF_TRY(upload_pair_field(res, cls.pa_x));
-    auto pa_y = FBF_TRY(upload_pair_field(res, cls.pa_y));
-    auto pa_z = FBF_TRY(upload_pair_field(res, cls.pa_z));
-    auto pb_x = FBF_TRY(upload_pair_field(res, cls.pb_x));
-    auto pb_y = FBF_TRY(upload_pair_field(res, cls.pb_y));
-    auto pb_z = FBF_TRY(upload_pair_field(res, cls.pb_z));
-    auto s = FBF_TRY(upload_pair_field(res, cls.s));
-    auto eb = FBF_TRY(upload_pair_field(res, cls.eb));
-    auto off_a = FBF_TRY(upload_pair_field(res, cls.off_a));
-    auto off_b = FBF_TRY(upload_pair_field(res, cls.off_b));
+    auto ds = std::make_shared<DeviceStream>(res.device());
+    auto zeta = FBF_TRY(upload_field<StreamBuffers>(ds, cls.zeta));
+    auto p_x = FBF_TRY(upload_field<StreamBuffers>(ds, cls.p_x));
+    auto p_y = FBF_TRY(upload_field<StreamBuffers>(ds, cls.p_y));
+    auto p_z = FBF_TRY(upload_field<StreamBuffers>(ds, cls.p_z));
+    auto pa_x = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pa_x));
+    auto pa_y = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pa_y));
+    auto pa_z = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pa_z));
+    auto pb_x = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pb_x));
+    auto pb_y = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pb_y));
+    auto pb_z = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pb_z));
+    auto s = FBF_TRY(upload_field<StreamBuffers>(ds, cls.s));
+    auto eb = FBF_TRY(upload_field<StreamBuffers>(ds, cls.eb));
+    auto off_a = FBF_TRY(upload_field<StreamBuffers>(ds, cls.off_a));
+    auto off_b = FBF_TRY(upload_field<StreamBuffers>(ds, cls.off_b));
     out.push_back(DevicePrimitivePairClass{
         .la = cls.la,
         .lb = cls.lb,
         .n_rec = cls.n_rec,
+        .device_stream = std::move(ds),
         .zeta = std::move(zeta),
         .p_x = std::move(p_x),
         .p_y = std::move(p_y),
@@ -73,8 +77,10 @@ upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePair
   }
   // A pageable source does not promise the copy has finished reading it until
   // the stream does, and the caller may release classes on return.
-  FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(res.stream())));
-  return out;
+  for (DevicePrimitivePairClass &cls : out) {
+    FBF_TRY(gpu_status(cls.device_stream->fork_stream().sync()));
+  }
+  return DevicePrimitivePairs{res.dev_idx(), std::move(out)};
 }
 
 Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecule) {
@@ -91,8 +97,8 @@ Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecul
     c.insert(c.end(), {atom.position.x, atom.position.y, atom.position.z});
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  auto z_dev = FBF_TRY(upload_pair_field(res, z));
-  auto c_dev = FBF_TRY(upload_pair_field(res, c));
+  auto z_dev = FBF_TRY(upload_field<Buffers>(res.device(), z));
+  auto c_dev = FBF_TRY(upload_field<Buffers>(res.device(), c));
   // As upload_primitive_pairs: z and c are pageable and die on return.
   FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(res.stream())));
   return DeviceNuclei{
@@ -103,19 +109,22 @@ Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecul
   };
 }
 
-Status check_one_electron_build(const DeviceResources &res,
-                                const std::span<const DevicePrimitivePairClass> classes,
+Status check_one_electron_build(const DeviceResources &res, const DevicePrimitivePairs &pairs,
                                 const CartesianMatrixAO &m, const std::string_view what) {
   if (res.dev_idx() != m.dev_idx()) {
     return err_config("{}: the matrix is on device {}, but the call passed device {}", what,
                       m.dev_idx(), res.dev_idx());
+  }
+  if (res.dev_idx() != pairs.dev_idx()) {
+    return err_config("{}: the primitive pairs are on device {}, but the call passed device {}",
+                      what, pairs.dev_idx(), res.dev_idx());
   }
   const uint32_t n = m.n();
   // The generated kernels index the matrix as a 32-bit m * n_ao + n.
   if (static_cast<uint64_t>(n) * n > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
     return err_config("{}: {} Cartesian AOs is too many for the kernels' 32-bit index", what, n);
   }
-  for (const DevicePrimitivePairClass &cls : classes) {
+  for (const DevicePrimitivePairClass &cls : pairs.classes()) {
     if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum) {
       return err_config("{}: no kernel for class ({}, {}); the kernels cover la <= lb <= {}", what,
                         cls.la, cls.lb, kMaxAngularMomentum);

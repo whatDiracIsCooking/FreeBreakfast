@@ -12,8 +12,19 @@ before it launches anything.
 
 `upload_primitive_pairs` copies `mmd`'s records to the device once per basis,
 and `upload_nuclei` a molecule's nuclei (Z and position) once per geometry. Both
-synchronize the stream once, after the copies, so the host data may be released
-on return.
+synchronize once the copies are queued, so the host data may be released on
+return.
+
+**One stream per class.** `upload_primitive_pairs` returns a
+`DevicePrimitivePairs`: every class with its own `DeviceStream` on
+`res.device()`, its records allocated and copied on that stream (from the
+Device's one pool). `launch_each(parent, launch)` is how a build uses them: it
+forks every class's stream from `parent`, calls `launch(stream, cls)` with the
+class's stream, and joins every stream back into `parent`. After the first
+failed fork or launch it launches nothing more, but still joins every stream it
+forked, so `parent` never runs ahead of a kernel in flight. The nuclei stay on
+`res.device()`'s own stream: every class reads them, and `upload_nuclei` has
+synchronized before any build can.
 
 **One record set serves every family.** S reads `zeta`, `pa_{x,y,z}`,
 `pb_{x,y,z}`, `s` and the offsets; T reads those and `eb`, the ket exponent; V
@@ -30,7 +41,7 @@ valid while its owner is alive and unmoved.
 
 **The shared checks.** `check_one_electron_build` is what every build
 (`overlap`, `kinetic`, `potential_en`, `core_hamiltonian`) runs first: the
-matrix on the call's device, its order within the kernels' 32-bit
+matrix and the primitive pairs on the call's device, its order within the kernels' 32-bit
 `m * n_ao + n` index (`n_ao² ≤ INT32_MAX`, about 46k Cartesian AOs), and every
 class `la <= lb <= kMaxAngularMomentum`. That limit is `basis`'s, one for the
 whole repo: every family is generated to it, and the launchers' kernel tables
@@ -44,12 +55,13 @@ launches.
 
 | Symbol | Role |
 |---|---|
-| `DevicePrimitivePairClass` | One class's records on the device, the same fields as `PrimitivePairClass`; `view()` gives a `PrimitivePairClassView` |
-| `upload_primitive_pairs(res, classes)` | `Result<std::vector<DevicePrimitivePairClass>>`. `InvalidConfig` for an empty class. Synchronizes once |
+| `DevicePrimitivePairClass` | One class's records on the device, the same fields as `PrimitivePairClass`, and its `device_stream`; `view()` gives a `PrimitivePairClassView` |
+| `DevicePrimitivePairs` | Every class of a basis on one device: `dev_idx()`, `classes()`, and `launch_each(parent, launch)` |
+| `upload_primitive_pairs(res, classes)` | `Result<DevicePrimitivePairs>`, one new `DeviceStream` per class. `InvalidConfig` for an empty class. Synchronizes each class's stream once |
 | `DeviceNuclei` | A molecule's nuclei on the device: `z`, `c` (bohr), `n_nuc`, and the `dev_idx` they are on; `view()` gives a `NucleiView` |
 | `PrimitivePairClassView`, `NucleiView` | Non-owning pointer views, from `device_views.h`, for the launchers |
 | `upload_nuclei(res, molecule)` | `Result<DeviceNuclei>`, in atom order. `InvalidConfig` for a molecule with no atoms. Synchronizes once |
-| `check_one_electron_build(res, classes, m, what)` | `Status`: `InvalidConfig` naming the first refused input, `what` naming the build |
+| `check_one_electron_build(res, pairs, m, what)` | `Status`: `InvalidConfig` naming the first refused input, `what` naming the build |
 | `check_nuclei(res, nuclei, what)` | `Status`: `InvalidConfig` if the nuclei are on another device |
 
 ## Files

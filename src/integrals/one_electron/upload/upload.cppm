@@ -33,7 +33,7 @@ using free_breakfast::NucleiView;
 using free_breakfast::PrimitivePairClassView;
 
 /// @brief One @ref PrimitivePairClass on the device: the same fields, the same
-/// layout, @ref n_rec records.
+/// layout, @ref n_rec records, and the work stream they live on.
 struct DevicePrimitivePairClass {
   /// @brief The bra shell's angular momentum, <= @ref lb.
   int32_t la;
@@ -41,34 +41,37 @@ struct DevicePrimitivePairClass {
   int32_t lb;
   /// @brief The number of records, positive.
   int32_t n_rec;
+  /// @brief The class's own work stream on the Device: the records were
+  /// allocated and copied on it, and every build launches the class on it.
+  std::shared_ptr<DeviceStream> device_stream;
   /// @brief zeta = alpha + beta.
-  Buffers::device<double> zeta;
+  StreamBuffers::device<double> zeta;
   /// @brief P: x.
-  Buffers::device<double> p_x;
+  StreamBuffers::device<double> p_x;
   /// @brief P: y.
-  Buffers::device<double> p_y;
+  StreamBuffers::device<double> p_y;
   /// @brief P: z.
-  Buffers::device<double> p_z;
+  StreamBuffers::device<double> p_z;
   /// @brief P - A: x.
-  Buffers::device<double> pa_x;
+  StreamBuffers::device<double> pa_x;
   /// @brief P - A: y.
-  Buffers::device<double> pa_y;
+  StreamBuffers::device<double> pa_y;
   /// @brief P - A: z.
-  Buffers::device<double> pa_z;
+  StreamBuffers::device<double> pa_z;
   /// @brief P - B: x.
-  Buffers::device<double> pb_x;
+  StreamBuffers::device<double> pb_x;
   /// @brief P - B: y.
-  Buffers::device<double> pb_y;
+  StreamBuffers::device<double> pb_y;
   /// @brief P - B: z.
-  Buffers::device<double> pb_z;
+  StreamBuffers::device<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
-  Buffers::device<double> s;
+  StreamBuffers::device<double> s;
   /// @brief beta, the ket primitive's exponent.
-  Buffers::device<double> eb;
+  StreamBuffers::device<double> eb;
   /// @brief The bra shell's first Cartesian AO.
-  Buffers::device<int32_t> off_a;
+  StreamBuffers::device<int32_t> off_a;
   /// @brief The ket shell's first Cartesian AO.
-  Buffers::device<int32_t> off_b;
+  StreamBuffers::device<int32_t> off_b;
 
   /// @brief The records by pointer, for a launcher. Valid while this is alive
   /// and unmoved.
@@ -95,16 +98,86 @@ struct DevicePrimitivePairClass {
   }
 };
 
-/// @brief Copy @p classes to @p res's device.
+/// @brief Every primitive-pair class of a basis on one device, each on its own
+/// work stream, so a build runs the classes concurrently.
 ///
-/// Synchronizes res.stream() once, after the copies, so @p classes may be
-/// released when this returns. The device res.dev_idx() names is made current
-/// for the call and the previous one restored.
+/// A build forks every class's stream from its own (@ref launch_each), so the
+/// classes start after what is already queued there -- the matrix's zeroing --
+/// and joins them back, so what follows on that stream sees every class's
+/// contributions. The kernels add atomically, so classes running at once into
+/// one matrix do not race.
+///
+/// Held once per basis. Movable, not copyable.
+class DevicePrimitivePairs {
+public:
+  /// @brief @p classes, every one on device @p dev_idx.
+  DevicePrimitivePairs(int32_t dev_idx, std::vector<DevicePrimitivePairClass> classes)
+      : dev_idx_(dev_idx), classes_(std::move(classes)) {}
+
+  /// @brief The device every class is on (@c DeviceResources::dev_idx).
+  int32_t dev_idx() const noexcept { return dev_idx_; }
+
+  /// @brief The classes, in @ref primitive_pair_classes order.
+  std::span<const DevicePrimitivePairClass> classes() const noexcept { return classes_; }
+
+  /// @brief Call `launch(stream, cls)` for every class, with that class's own
+  /// stream, between a fork from and a join into @p parent.
+  ///
+  /// Every class's work is ordered after everything already queued on
+  /// @p parent, and everything queued on @p parent afterwards after every
+  /// class's work. The classes are not ordered among themselves.
+  ///
+  /// After the first failure no further class is launched, but every stream
+  /// already forked is still joined back, so @p parent never runs ahead of a
+  /// kernel in flight: a matrix freed on it afterwards is not freed under one.
+  /// The forks and joins record events on the classes' streams, which are
+  /// shared, so this mutates them although it is const.
+  ///
+  /// @return wwrSuccess, or the first error of a fork, launch or join.
+  template <typename Launch>
+  [[nodiscard]] wwr::wwrError_t launch_each(wwr::wwrStream_t parent, Launch &&launch) const {
+    wwr::wwrError_t first = wwr::wwrSuccess;
+    size_t forked = 0;
+    for (const DevicePrimitivePairClass &cls : classes_) {
+      ForkStream &fork = cls.device_stream->fork_stream();
+      if (first = fork.fork_from(parent); first != wwr::wwrSuccess) {
+        break;
+      }
+      ++forked;
+      if (first = launch(static_cast<wwr::wwrStream_t>(fork.stream()), cls);
+          first != wwr::wwrSuccess) {
+        break;
+      }
+    }
+    for (size_t i = 0; i < forked; ++i) {
+      ForkStream &fork = classes_[i].device_stream->fork_stream();
+      wwr::wwrError_t code = fork.record_join();
+      if (code == wwr::wwrSuccess) {
+        code = fork.join_into(parent);
+      }
+      if (first == wwr::wwrSuccess) {
+        first = code;
+      }
+    }
+    return first;
+  }
+
+private:
+  int32_t dev_idx_;
+  std::vector<DevicePrimitivePairClass> classes_;
+};
+
+/// @brief Copy @p classes to @p res's device, each class on a new
+/// @c DeviceStream of res.device().
+///
+/// Synchronizes every class's stream once, after the copies, so @p classes may
+/// be released when this returns. The device res.dev_idx() names is made
+/// current for the call and the previous one restored.
 ///
 /// @return The device classes, in the same order; InvalidConfig for an empty
-///         class or one with more records than an int32_t counts; or the
-///         GpuRuntime error of the first copy that failed.
-[[nodiscard]] Result<std::vector<DevicePrimitivePairClass>>
+///         class; or the GpuRuntime error of the first copy or synchronization
+///         that failed.
+[[nodiscard]] Result<DevicePrimitivePairs>
 upload_primitive_pairs(DeviceResources &res, std::span<const PrimitivePairClass> classes);
 
 /// @brief A molecule's nuclei on the device: the point charges V attracts
@@ -136,14 +209,15 @@ struct DeviceNuclei {
 
 /// @brief What every one-electron build checks before it launches anything.
 ///
-/// @p m must be on @p res's device, its order within the generated kernels'
-/// 32-bit `m * n_ao + n` index (n_ao^2 <= INT32_MAX, about 46k AOs), and every
-/// class one with a kernel: la <= lb <= @c kMaxAngularMomentum, the one limit
-/// every family is generated to. @p what names the build in the messages.
+/// @p m and @p pairs must be on @p res's device, @p m's order within the
+/// generated kernels' 32-bit `m * n_ao + n` index (n_ao^2 <= INT32_MAX, about
+/// 46k AOs), and every class one with a kernel: la <= lb <=
+/// @c kMaxAngularMomentum, the one limit every family is generated to. @p what
+/// names the build in the messages.
 ///
 /// @return Success, or InvalidConfig naming the first input refused.
 [[nodiscard]] Status check_one_electron_build(const DeviceResources &res,
-                                              std::span<const DevicePrimitivePairClass> classes,
+                                              const DevicePrimitivePairs &pairs,
                                               const CartesianMatrixAO &m, std::string_view what);
 
 /// @brief What a build that reads the nuclei checks beyond

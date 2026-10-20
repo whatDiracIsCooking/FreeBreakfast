@@ -20,9 +20,8 @@ import free_breakfast.linalg.matrix_ao;
 
 namespace free_breakfast {
 
-Status kinetic(DeviceResources &res, const std::span<const DevicePrimitivePairClass> classes,
-               CartesianMatrixAO &t) {
-  FBF_TRY(check_one_electron_build(res, classes, t, "kinetic"));
+Status kinetic(DeviceResources &res, const DevicePrimitivePairs &pairs, CartesianMatrixAO &t) {
+  FBF_TRY(check_one_electron_build(res, pairs, t, "kinetic"));
   if (t.n() == 0) {
     return {};
   }
@@ -30,11 +29,12 @@ Status kinetic(DeviceResources &res, const std::span<const DevicePrimitivePairCl
   const wwr::wwrStream_t stream = res.stream();
   // The kernels only add, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(t.data(), 0, sizeof(double) * t.num_elements(), stream)));
-  for (const DevicePrimitivePairClass &cls : classes) {
-    FBF_TRY(gpu_status(static_cast<wwr::wwrError_t>(
-        device::kinetic_class(stream, cls.view(), static_cast<int32_t>(t.n()), t.data()))));
-  }
-  return {};
+  const auto n_ao = static_cast<int32_t>(t.n());
+  return gpu_status(pairs.launch_each(
+      stream, [&](const wwr::wwrStream_t cls_stream, const DevicePrimitivePairClass &cls) {
+        return static_cast<wwr::wwrError_t>(
+            device::kinetic_class(cls_stream, cls.view(), n_ao, t.data()));
+      }));
 }
 
 } // namespace free_breakfast
