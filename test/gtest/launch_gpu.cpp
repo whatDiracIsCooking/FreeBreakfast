@@ -1,4 +1,4 @@
-// GPU cases for integrals.one_electron.upload's checks: check_nuclei accepts a
+// GPU cases for integrals.one_electron.launch's checks: check_nuclei accepts a
 // molecule whose nuclei are on the call's device.
 
 #include <gtest/gtest.h>

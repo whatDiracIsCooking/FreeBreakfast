@@ -1,4 +1,4 @@
-add_subdirectory(upload)
+add_subdirectory(launch)
 add_subdirectory(overlap)
 # kinetic, potential_en and core_hamiltonian are disabled: their sources stay in
 # the tree but are not built, linked or re-exported (one_electron.cppm), and
@@ -17,7 +17,7 @@ free_breakfast_add_cxx_module_library(
   one_electron.cppm
   IMPORT_STD
   LINK_PUBLIC
-  free_breakfast::integrals::one_electron::upload
+  free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::one_electron::overlap
   # free_breakfast::integrals::one_electron::kinetic
   # free_breakfast::integrals::one_electron::potential_en

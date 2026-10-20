@@ -1,4 +1,4 @@
-# Upload
+# Launch
 
 What every one-electron build shares beyond `mmd`'s primitive-pair records and
 the molecule's nuclei: the per-class launch over the records' streams, and the
@@ -6,7 +6,7 @@ checks every build runs before it launches anything.
 
 ## Module
 
-`free_breakfast.integrals.one_electron.upload`, also re-exported by
+`free_breakfast.integrals.one_electron.launch`, also re-exported by
 `free_breakfast.integrals.one_electron` and `free_breakfast.integrals`.
 
 ## Design
@@ -55,6 +55,6 @@ No device code: this module validates, and each family's module launches.
 
 | File | Role |
 |------|------|
-| `upload.cppm` | Module interface: `launch_each` and the checks |
-| `upload.cpp` | Implementation |
+| `launch.cppm` | Module interface: `launch_each` and the checks |
+| `launch.cpp` | Implementation |
 | `CMakeLists.txt` | The module |

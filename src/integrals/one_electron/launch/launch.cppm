@@ -5,7 +5,7 @@
 /// each family's module (overlap, ...) refuses the same inputs with the same
 /// messages.
 
-export module free_breakfast.integrals.one_electron.upload;
+export module free_breakfast.integrals.one_electron.launch;
 
 import std;
 import free_breakfast.core.types;

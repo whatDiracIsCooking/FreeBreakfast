@@ -1,7 +1,7 @@
 /// @file
 /// @brief check_one_electron_build and check_nuclei.
 
-module free_breakfast.integrals.one_electron.upload;
+module free_breakfast.integrals.one_electron.launch;
 
 import std;
 import free_breakfast.core.types;

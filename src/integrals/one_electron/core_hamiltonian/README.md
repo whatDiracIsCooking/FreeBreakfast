@@ -15,7 +15,7 @@ The Cartesian core Hamiltonian H = T + V on the GPU, formed in place from the
 ## Design
 
 `core_hamiltonian` runs `check_one_electron_build` and `check_nuclei`
-(`upload`) first, so a refused input launches nothing. Then `kinetic` zeroes H
+(`launch`) first, so a refused input launches nothing. Then `kinetic` zeroes H
 and writes T, and `add_nuclear_attraction` adds V on top. Both kernels only add,
 so T + V is formed without a T or V matrix of its own and without a separate
 addition.
