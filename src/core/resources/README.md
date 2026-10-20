@@ -156,6 +156,15 @@ from the CPU and never copies it to or from the device, so pinning buys
 nothing and costs a page-locking allocation on every growth. Its free is
 immediate, not stream-ordered.
 
+**One routine owns the device workspace at a time.** It is not only for the
+solver's own work: a routine can carve all of its device scratch from it,
+asking once for the total and splitting the result, so its caller lends
+nothing. `orthogonalize` lays U, the eigenvalues and syevd's work end to end
+and puts M over syevd's work once syevd is done with it. Ask for the total in
+one request, since a second could grow it and free the first's region. And
+nothing nests: a routine that uses the workspace calls no other that does,
+and no argument to one may point into it.
+
 **`info` is on the work stream.** The solver handle writes `info()` on
 `stream()`, and `fetch_info()` copies on that same stream, so the read is
 ordered after the write. That is why these live here rather than in a
