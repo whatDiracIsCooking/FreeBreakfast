@@ -144,24 +144,6 @@ public:
   [[nodiscard]] SphericalMatrixAO &spherical() noexcept { return spherical_; }
   [[nodiscard]] const SphericalMatrixAO &spherical() const noexcept { return spherical_; }
 
-  /// @brief The member in layout @p L, for code generic over the layout.
-  template <BasisLayout L>
-  [[nodiscard]] MatrixAO<L> &get() noexcept {
-    if constexpr (L == BasisLayout::Cartesian) {
-      return cartesian_;
-    } else {
-      return spherical_;
-    }
-  }
-  template <BasisLayout L>
-  [[nodiscard]] const MatrixAO<L> &get() const noexcept {
-    if constexpr (L == BasisLayout::Cartesian) {
-      return cartesian_;
-    } else {
-      return spherical_;
-    }
-  }
-
   /// @brief The device both members live on.
   [[nodiscard]] int32_t dev_idx() const noexcept { return cartesian_.dev_idx(); }
 

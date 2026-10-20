@@ -140,8 +140,6 @@ TEST(MatrixAO, OrdersFollowTheLayout) {
   const fb::MatrixAOPair pair = fx.pair();
   EXPECT_EQ(pair.cartesian().n(), 11U);
   EXPECT_EQ(pair.spherical().n(), 10U);
-  EXPECT_EQ(pair.get<fb::BasisLayout::Cartesian>().n(), 11U);
-  EXPECT_EQ(pair.get<fb::BasisLayout::Spherical>().n(), 10U);
   EXPECT_EQ(pair.cartesian().num_elements(), 121U);
   EXPECT_EQ(pair.dev_idx(), fx.res.dev_idx());
 
