@@ -21,6 +21,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
+import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
@@ -32,8 +33,14 @@ export namespace free_breakfast {
 using free_breakfast::NucleiView;
 using free_breakfast::PrimitivePairClassView;
 
-/// @brief One @ref PrimitivePairClass on the device: the same fields, the same
-/// layout, @ref n_rec records, and the work stream they live on.
+/// @brief One @ref PrimitivePairClass's records, on the device and in pinned
+/// host memory, on the class's own work stream.
+///
+/// Two blocks, laid out as @c PrimitivePairRecords: every @ref PairReal field
+/// in @ref reals and both @ref PairOffset fields in @ref offsets, each field
+/// @ref n_rec consecutive values. The pinned side is what the records were
+/// written into; it is kept for the class's lifetime, so the upload's copy
+/// never needs a host synchronization to protect it.
 struct DevicePrimitivePairClass {
   /// @brief The bra shell's angular momentum, <= @ref lb.
   int32_t la;
@@ -41,37 +48,23 @@ struct DevicePrimitivePairClass {
   int32_t lb;
   /// @brief The number of records, positive.
   int32_t n_rec;
+  /// @brief kPairReals * n_rec values, laid out by @ref PairReal.
+  MirroredBuffer<double> reals;
+  /// @brief kPairOffsets * n_rec values, laid out by @ref PairOffset.
+  MirroredBuffer<int32_t> offsets;
+
   /// @brief The class's own work stream on the Device: the records were
   /// allocated and copied on it, and every build launches the class on it.
-  std::shared_ptr<DeviceStream> device_stream;
-  /// @brief zeta = alpha + beta.
-  StreamBuffers::device<double> zeta;
-  /// @brief P: x.
-  StreamBuffers::device<double> p_x;
-  /// @brief P: y.
-  StreamBuffers::device<double> p_y;
-  /// @brief P: z.
-  StreamBuffers::device<double> p_z;
-  /// @brief P - A: x.
-  StreamBuffers::device<double> pa_x;
-  /// @brief P - A: y.
-  StreamBuffers::device<double> pa_y;
-  /// @brief P - A: z.
-  StreamBuffers::device<double> pa_z;
-  /// @brief P - B: x.
-  StreamBuffers::device<double> pb_x;
-  /// @brief P - B: y.
-  StreamBuffers::device<double> pb_y;
-  /// @brief P - B: z.
-  StreamBuffers::device<double> pb_z;
-  /// @brief c_a c_b (pi / zeta)^{3/2}.
-  StreamBuffers::device<double> s;
-  /// @brief beta, the ket primitive's exponent.
-  StreamBuffers::device<double> eb;
-  /// @brief The bra shell's first Cartesian AO.
-  StreamBuffers::device<int32_t> off_a;
-  /// @brief The ket shell's first Cartesian AO.
-  StreamBuffers::device<int32_t> off_b;
+  const std::shared_ptr<DeviceStream> &device_stream() const noexcept { return reals.handle(); }
+
+  /// @brief Field @p f on the device.
+  [[nodiscard]] const double *device_field(const PairReal f) const {
+    return reals.device().data() + field_offset(f, n_rec);
+  }
+  /// @copydoc device_field(PairReal) const
+  [[nodiscard]] const int32_t *device_field(const PairOffset f) const {
+    return offsets.device().data() + field_offset(f, n_rec);
+  }
 
   /// @brief The records by pointer, for a launcher. Valid while this is alive
   /// and unmoved.
@@ -80,20 +73,20 @@ struct DevicePrimitivePairClass {
         .la = la,
         .lb = lb,
         .n_rec = n_rec,
-        .zeta = zeta.data(),
-        .p_x = p_x.data(),
-        .p_y = p_y.data(),
-        .p_z = p_z.data(),
-        .pa_x = pa_x.data(),
-        .pa_y = pa_y.data(),
-        .pa_z = pa_z.data(),
-        .pb_x = pb_x.data(),
-        .pb_y = pb_y.data(),
-        .pb_z = pb_z.data(),
-        .s = s.data(),
-        .eb = eb.data(),
-        .off_a = off_a.data(),
-        .off_b = off_b.data(),
+        .zeta = device_field(PairReal::Zeta),
+        .p_x = device_field(PairReal::PX),
+        .p_y = device_field(PairReal::PY),
+        .p_z = device_field(PairReal::PZ),
+        .pa_x = device_field(PairReal::PaX),
+        .pa_y = device_field(PairReal::PaY),
+        .pa_z = device_field(PairReal::PaZ),
+        .pb_x = device_field(PairReal::PbX),
+        .pb_y = device_field(PairReal::PbY),
+        .pb_z = device_field(PairReal::PbZ),
+        .s = device_field(PairReal::S),
+        .eb = device_field(PairReal::Eb),
+        .off_a = device_field(PairOffset::A),
+        .off_b = device_field(PairOffset::B),
     };
   }
 };
@@ -139,7 +132,7 @@ public:
     wwr::wwrError_t first = wwr::wwrSuccess;
     size_t forked = 0;
     for (const DevicePrimitivePairClass &cls : classes_) {
-      ForkStream &fork = cls.device_stream->fork_stream();
+      ForkStream &fork = cls.device_stream()->fork_stream();
       if (first = fork.fork_from(parent); first != wwr::wwrSuccess) {
         break;
       }
@@ -150,7 +143,7 @@ public:
       }
     }
     for (size_t i = 0; i < forked; ++i) {
-      ForkStream &fork = classes_[i].device_stream->fork_stream();
+      ForkStream &fork = classes_[i].device_stream()->fork_stream();
       wwr::wwrError_t code = fork.record_join();
       if (code == wwr::wwrSuccess) {
         code = fork.join_into(parent);
@@ -167,18 +160,20 @@ private:
   std::vector<DevicePrimitivePairClass> classes_;
 };
 
-/// @brief Copy @p classes to @p res's device, each class on a new
-/// @c DeviceStream of res.device().
+/// @brief The primitive-pair records of @p basis on @p res's device, each class
+/// on a new @c DeviceStream of res.device().
 ///
-/// Synchronizes every class's stream once, after the copies, so @p classes may
-/// be released when this returns. The device res.dev_idx() names is made
-/// current for the call and the previous one restored.
+/// Each class's records are written straight into its pinned side
+/// (@c write_primitive_pairs) and the copy to the device is queued on its own
+/// stream, ahead of anything a build launches there. No host synchronization:
+/// the pinned side lives as long as the class, and its destructor waits out
+/// the copy. The device res.dev_idx() names is made current for the call and
+/// the previous one restored.
 ///
-/// @return The device classes, in the same order; InvalidConfig for an empty
-///         class; or the GpuRuntime error of the first copy or synchronization
-///         that failed.
-[[nodiscard]] Result<DevicePrimitivePairs>
-upload_primitive_pairs(DeviceResources &res, std::span<const PrimitivePairClass> classes);
+/// @return The device classes, in @c primitive_pair_classes order (none for an
+///         empty basis); or the GpuRuntime error of the first copy that failed.
+[[nodiscard]] Result<DevicePrimitivePairs> upload_primitive_pairs(DeviceResources &res,
+                                                                  const BasisSet &basis);
 
 /// @brief A molecule's nuclei on the device: the point charges V attracts
 /// to.

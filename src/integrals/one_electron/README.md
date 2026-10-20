@@ -24,8 +24,8 @@ core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T
 
 ## Design
 
-`upload_primitive_pairs` copies `mmd`'s records to the device once per basis,
-and `upload_nuclei` a molecule's nuclei (Z and position) once per geometry (both
+`upload_primitive_pairs` has `mmd` write a basis's records into pinned memory
+and copies them to the device, once per basis, and `upload_nuclei` a molecule's nuclei (Z and position) once per geometry (both
 `upload`). A build then zeroes a `CartesianMatrixAO` and launches one generated
 kernel per class, one thread per record: `overlap<la, lb>` for S,
 `kinetic<la, lb>` for T, `potential_en<la, lb>` for V (the nuclei serial inside
@@ -130,8 +130,7 @@ import free_breakfast.integrals;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto classes = fb::primitive_pair_classes(basis);       // host
-const auto device = fb::upload_primitive_pairs(res, classes);  // once per basis
+const auto device = fb::upload_primitive_pairs(res, basis);  // once per basis
 const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
 fb::CartesianMatrixAO s(res, basis);
 fb::CartesianMatrixAO h(res, basis);

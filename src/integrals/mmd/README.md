@@ -33,6 +33,20 @@ axis, named as the generated kernels name their parameters, so with one thread
 per record a warp's lanes read consecutive doubles on every load. The kernels
 take them as plain positional pointers.
 
+**Two blocks per class, laid out once.** A class's twelve real fields are one
+block of `kPairReals · n_rec` doubles, in `PairReal` order, and its two AO
+offsets one block of `kPairOffsets · n_rec` `int32_t`, in `PairOffset` order;
+`field_offset(f, n_rec)` is where field `f` starts. Those enums are the only
+place the layout is written down: the host writer, the device owner
+(`one_electron.upload`) and the tests all address fields through them.
+
+**The caller owns the storage.** `primitive_pair_classes` counts each class's
+records; the caller sizes a `PrimitivePairRecords` (two spans) per class from
+that, and `write_primitive_pairs` fills them. That is what lets the upload hand
+it pinned memory and copy it to the device as written, while this module links
+no GPU. Storage that does not fit the basis (the wrong class list, or a span of
+the wrong length) aborts before anything is written: the writer indexes into it.
+
 **Classes are `la <= lb`.** A shell pair whose bra has the higher momentum is
 stored swapped (B as the bra), so a basis whose p shells precede its s shells,
 as H₂O's do, still lands in `(s|p)`.
@@ -50,8 +64,11 @@ Host only; no GPU is linked, so it builds and is tested on a device-less box.
 
 | Symbol | Role |
 |---|---|
-| `PrimitivePairClass` | One class `(la, lb)`'s records as parallel arrays; `n_rec` is the record count |
+| `PairReal`, `kPairReals`, `PairOffset`, `kPairOffsets`, `field_offset(f, n_rec)` | The record layout |
+| `PrimitivePairClass` | One class: `la`, `lb` and its record count `n_rec` |
+| `PrimitivePairRecords` | One class's caller-owned storage: `reals` and `offsets` spans |
 | `primitive_pair_classes(basis)` | `std::vector<PrimitivePairClass>`: every reached class, ascending, none empty. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records aborts |
+| `write_primitive_pairs(basis, classes, records)` | Fills each class's storage; aborts if it does not fit the basis |
 
 ## Tests
 
@@ -61,6 +78,6 @@ Host only; no GPU is linked, so it builds and is tested on a device-less box.
 
 | File | Role |
 |------|------|
-| `mmd.cppm` | Module interface: `PrimitivePairClass`, `primitive_pair_classes` |
-| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the per-record arithmetic |
+| `mmd.cppm` | Module interface: the layout, `PrimitivePairClass`, `PrimitivePairRecords`, `primitive_pair_classes`, `write_primitive_pairs` |
+| `mmd.cpp` | The shell-pair sweep (one pass to count each class, one to write its records by index into the caller's storage), the swap, the per-record arithmetic |
 | `CMakeLists.txt` | The module library |

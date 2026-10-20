@@ -8,6 +8,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
+import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
@@ -18,67 +19,43 @@ import free_breakfast.linalg.matrix_ao;
 
 namespace free_breakfast {
 
-// Copy a host vector into a fresh Suite device buffer of the same length,
-// allocated from handle's pool and copied on handle's stream.
-template <typename Suite, typename T, typename Handle>
-Result<typename Suite::template device<T>> upload_field(const std::shared_ptr<Handle> &handle,
-                                                        const std::vector<T> &host) {
-  typename Suite::template device<T> out(host.size(), handle);
+// Copy a host vector into a fresh device buffer of the same length, on stream.
+template <typename T>
+Result<Buffers::device<T>> upload_field(DeviceResources &res, const std::vector<T> &host) {
+  Buffers::device<T> out(host.size(), res.device());
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.data(), host.data(), sizeof(T) * host.size(),
-                                         wwr::wwrMemcpyHostToDevice, handle->stream())));
+                                         wwr::wwrMemcpyHostToDevice, res.stream())));
   return out;
 }
 
-Result<DevicePrimitivePairs>
-upload_primitive_pairs(DeviceResources &res, const std::span<const PrimitivePairClass> classes) {
+Result<DevicePrimitivePairs> upload_primitive_pairs(DeviceResources &res, const BasisSet &basis) {
   const ScopedDeviceIndex on{res.dev_idx()};
+  const std::vector<PrimitivePairClass> classes = primitive_pair_classes(basis);
   std::vector<DevicePrimitivePairClass> out;
+  std::vector<PrimitivePairRecords> records;
   out.reserve(classes.size());
+  records.reserve(classes.size());
   for (const PrimitivePairClass &cls : classes) {
-    if (cls.n_rec < 1) {
-      return err_config("upload_primitive_pairs: class ({}, {}) has {} records", cls.la, cls.lb,
-                        cls.n_rec);
-    }
-    auto ds = std::make_shared<DeviceStream>(res.device());
-    auto zeta = FBF_TRY(upload_field<StreamBuffers>(ds, cls.zeta));
-    auto p_x = FBF_TRY(upload_field<StreamBuffers>(ds, cls.p_x));
-    auto p_y = FBF_TRY(upload_field<StreamBuffers>(ds, cls.p_y));
-    auto p_z = FBF_TRY(upload_field<StreamBuffers>(ds, cls.p_z));
-    auto pa_x = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pa_x));
-    auto pa_y = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pa_y));
-    auto pa_z = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pa_z));
-    auto pb_x = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pb_x));
-    auto pb_y = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pb_y));
-    auto pb_z = FBF_TRY(upload_field<StreamBuffers>(ds, cls.pb_z));
-    auto s = FBF_TRY(upload_field<StreamBuffers>(ds, cls.s));
-    auto eb = FBF_TRY(upload_field<StreamBuffers>(ds, cls.eb));
-    auto off_a = FBF_TRY(upload_field<StreamBuffers>(ds, cls.off_a));
-    auto off_b = FBF_TRY(upload_field<StreamBuffers>(ds, cls.off_b));
-    out.push_back(DevicePrimitivePairClass{
+    const auto ds = std::make_shared<DeviceStream>(res.device());
+    const auto n = static_cast<size_t>(cls.n_rec);
+    DevicePrimitivePairClass &dev = out.emplace_back(DevicePrimitivePairClass{
         .la = cls.la,
         .lb = cls.lb,
         .n_rec = cls.n_rec,
-        .device_stream = std::move(ds),
-        .zeta = std::move(zeta),
-        .p_x = std::move(p_x),
-        .p_y = std::move(p_y),
-        .p_z = std::move(p_z),
-        .pa_x = std::move(pa_x),
-        .pa_y = std::move(pa_y),
-        .pa_z = std::move(pa_z),
-        .pb_x = std::move(pb_x),
-        .pb_y = std::move(pb_y),
-        .pb_z = std::move(pb_z),
-        .s = std::move(s),
-        .eb = std::move(eb),
-        .off_a = std::move(off_a),
-        .off_b = std::move(off_b),
+        .reals = MirroredBuffer<double>(kPairReals * n, ds),
+        .offsets = MirroredBuffer<int32_t>(kPairOffsets * n, ds),
+    });
+    // A buffer's storage does not move with it, so these spans survive out
+    // growing (reserved anyway).
+    records.push_back({
+        .reals = {dev.reals.pinned().data(), dev.reals.size()},
+        .offsets = {dev.offsets.pinned().data(), dev.offsets.size()},
     });
   }
-  // A pageable source does not promise the copy has finished reading it until
-  // the stream does, and the caller may release classes on return.
-  for (DevicePrimitivePairClass &cls : out) {
-    FBF_TRY(gpu_status(cls.device_stream->fork_stream().sync()));
+  write_primitive_pairs(basis, classes, records);
+  for (DevicePrimitivePairClass &dev : out) {
+    FBF_TRY(gpu_status(dev.reals.to_device()));
+    FBF_TRY(gpu_status(dev.offsets.to_device()));
   }
   return DevicePrimitivePairs{res.dev_idx(), std::move(out)};
 }
@@ -97,9 +74,9 @@ Result<DeviceNuclei> upload_nuclei(DeviceResources &res, const Molecule &molecul
     c.insert(c.end(), {atom.position.x, atom.position.y, atom.position.z});
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  auto z_dev = FBF_TRY(upload_field<Buffers>(res.device(), z));
-  auto c_dev = FBF_TRY(upload_field<Buffers>(res.device(), c));
-  // As upload_primitive_pairs: z and c are pageable and die on return.
+  auto z_dev = FBF_TRY(upload_field(res, z));
+  auto c_dev = FBF_TRY(upload_field(res, c));
+  // z and c are pageable and die on return, so the copies must finish first.
   FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(res.stream())));
   return DeviceNuclei{
       .dev_idx = res.dev_idx(),

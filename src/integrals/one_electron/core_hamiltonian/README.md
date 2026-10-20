@@ -37,7 +37,7 @@ import free_breakfast.integrals.one_electron.core_hamiltonian;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto device = fb::upload_primitive_pairs(res, *classes); // once per basis
+const auto device = fb::upload_primitive_pairs(res, basis); // once per basis
 const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
 fb::CartesianMatrixAO h(res, basis);
 fb::Status status = fb::core_hamiltonian(res, *device, *nuclei, h);

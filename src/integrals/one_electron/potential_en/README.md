@@ -66,8 +66,7 @@ import free_breakfast.integrals.one_electron.potential_en;
 import free_breakfast.linalg.matrix_ao;
 namespace fb = free_breakfast;
 
-const auto classes = fb::primitive_pair_classes(basis);       // host
-const auto device = fb::upload_primitive_pairs(res, classes);  // once per basis
+const auto device = fb::upload_primitive_pairs(res, basis);  // once per basis
 const auto nuclei = fb::upload_nuclei(res, molecule);          // once per geometry
 fb::CartesianMatrixAO v(res, basis);
 fb::Status status = fb::nuclear_attraction(res, *device, *nuclei, v);
