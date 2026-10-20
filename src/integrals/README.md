@@ -35,7 +35,7 @@ CartesianMatrixAO D                   an AO density
 and `tools/emit_coulomb_kernels.py` write them from the FelizJueves submodule; a
 build never runs Python. Re-run both after bumping the submodule. Each family
 has its own directory (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
-`coulomb/kernels/{dq,e_hermite,jab}/`), whose
+`coulomb/kernels/{pair_bound,dq,e_hermite,jab}/`), whose
 `.clang-format` turns formatting off, and
 `devtools/check-int-types.py` skips a file by FelizJueves's first-line banner:
 the files stay byte-for-byte as emitted, so a fix belongs in the generator.

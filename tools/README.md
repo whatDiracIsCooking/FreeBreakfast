@@ -13,8 +13,9 @@ emit_one_electron_kernels.py
                   potential_en}/kernels/ from the FelizJueves submodule.
                   Standard library only.
 emit_coulomb_kernels.py
-                  Regenerate src/integrals/coulomb/kernels/{dq,e_hermite,jab}/
-                  from the FelizJueves submodule. Standard library only.
+                  Regenerate src/integrals/coulomb/kernels/{pair_bound,dq,
+                  e_hermite,jab}/ from the FelizJueves submodule. Standard
+                  library only.
 extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/one_electron/
                   and test/gtest/data/coulomb/ hold out of FelizJueves's

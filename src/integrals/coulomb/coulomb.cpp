@@ -28,10 +28,12 @@ size_t coulomb_hermite_count(const int32_t l) {
   return (n + 1) * (n + 2) * (n + 3) / 6;
 }
 
-// One class's scratch: its records' weights and, as a ket, D_q and Dmax; as a
-// bra, J_p. D_q and J_p share the class's Hermite order, la + lb.
+// One class's scratch: its records' weights and Schwarz bounds (Ip as a bra,
+// Iq as a ket) and, as a ket, D_q and Dmax; as a bra, J_p. D_q and J_p share
+// the class's Hermite order, la + lb.
 struct CoulombScratch {
   Buffers::device<double> w;
+  Buffers::device<double> bound;
   Buffers::device<double> dq;
   Buffers::device<double> dmax;
   Buffers::device<double> jp;
@@ -65,17 +67,17 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
   for (const PrimitivePairClass &cls : classes) {
     max_rec = std::max(max_rec, cls.n_rec);
   }
-  Buffers::device<double> ones(static_cast<size_t>(max_rec), res.device());
   Buffers::device<int32_t> rows(static_cast<size_t>(max_rec), res.device());
-  FBF_TRY(gpu_status(device::coulomb_constants(stream, max_rec, ones.data(), rows.data())));
+  FBF_TRY(gpu_status(device::coulomb_rows(stream, max_rec, rows.data())));
   std::vector<CoulombScratch> scratch;
   scratch.reserve(classes.size());
   for (const PrimitivePairClass &cls : classes) {
     const auto n_rec = static_cast<size_t>(cls.n_rec);
     const size_t n = n_rec * coulomb_hermite_count(cls.la + cls.lb);
     CoulombScratch &sc = scratch.emplace_back(CoulombScratch{
-        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n, res.device()),
-        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n, res.device())});
+        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n_rec, res.device()),
+        Buffers::device<double>(n, res.device()), Buffers::device<double>(n_rec, res.device()),
+        Buffers::device<double>(n, res.device())});
     // e_hermite adds every ket class into J_p.
     FBF_TRY(gpu_status(wwr::wwrMemsetAsync(sc.jp.data(), 0, sizeof(double) * n, stream)));
   }
@@ -84,12 +86,13 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
   };
   const auto n_ao = static_cast<int32_t>(j.n());
 
-  // Every class as a ket: its D_q and Dmax, which every bra class reads, so
-  // the join closes the phase before any of them starts.
+  // Every class's inputs: its weights, its bounds and, as a ket, its D_q and
+  // Dmax, which every bra class reads, so the join closes the phase before any
+  // of them starts.
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
     CoulombScratch &k = of(cls);
-    return device::coulomb_dq(cls.device_stream()->stream(), cls.view(), n_ao, density.data(),
-                              k.w.data(), k.dq.data(), k.dmax.data());
+    return device::coulomb_prepare(cls.device_stream()->stream(), cls.view(), n_ao, density.data(),
+                                   k.w.data(), k.bound.data(), k.dq.data(), k.dmax.data());
   })));
 
   // Every class as a bra: J_p over every ket class, then its scatter into J,
@@ -99,8 +102,9 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
     CoulombScratch &b = of(bra);
     for (const PrimitivePairClass &ket : classes) {
       const CoulombScratch &k = of(ket);
-      if (const wwr::wwrError_t code = device::coulomb_e_hermite(
-              s, bra.view(), ket.view(), ones.data(), k.dq.data(), k.dmax.data(), b.jp.data());
+      if (const wwr::wwrError_t code =
+              device::coulomb_e_hermite(s, bra.view(), ket.view(), b.bound.data(), k.bound.data(),
+                                        k.dq.data(), k.dmax.data(), b.jp.data());
           code != wwr::wwrSuccess) {
         return code;
       }

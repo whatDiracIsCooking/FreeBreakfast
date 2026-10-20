@@ -27,56 +27,55 @@
 
 namespace free_breakfast::device {
 
-/// @brief Fill @p ones[k] = 1 and @p rows[k] = k for k < @p n, on @p stream.
-///
-/// The inputs of the generated kernels a build without screening has no values
-/// for: e_hermite's Schwarz bounds Ip and Iq (any finite, non-negative value
-/// leaves `Dmax * Ip * Iq < tau` false at tau = 0) and jab's record-to-row map
-/// of J_p, the identity with one batch per class.
+/// @brief Fill @p rows[k] = k for k < @p n, on @p stream: jab's record-to-row
+/// map of J_p, the identity with one batch per class.
 ///
 /// @return The launch status (wwrErrorInvalidValue if @p n is not positive).
-[[nodiscard]] wwr::wwrError_t coulomb_constants(wwr::wwrStream_t stream, int32_t n, double *ones,
-                                                int32_t *rows);
+[[nodiscard]] wwr::wwrError_t coulomb_rows(wwr::wwrStream_t stream, int32_t n, int32_t *rows);
 
-/// @brief The pre-contraction of one ket class into @p dq and @p dmax, on
-/// @p stream: each record's weight w (2 for a shell pair of two shells, 1 for a
-/// shell against itself, read off its offsets) into @p w, then the generated
-/// dq<la, lb> over the AO @p density.
+/// @brief One class's inputs to every later step, on @p stream: each record's
+/// weight w (2 for a shell pair of two shells, 1 for a shell against itself,
+/// read off its offsets) into @p w; its Schwarz bound I =
+/// pair_bound(zeta, la + lb) into @p bound (the generated pair_bound<la, lb>),
+/// e_hermite's Ip when the class is a bra and Iq when it is a ket; then the
+/// pre-contraction of the AO @p density into @p dq and @p dmax (the generated
+/// dq<la, lb>).
 ///
 /// @p density is n_ao x n_ao and symmetric (it is read at one orientation of
-/// each block); @p dq is n_rec x n_hermite(la + lb) and @p dmax n_rec, both
-/// written whole. cls.n_rec must be positive, cls.la <= cls.lb <=
-/// kMaxAngularMomentum, and n_ao * n_ao must fit an int32_t.
+/// each block); @p dq is n_rec x n_hermite(la + lb), and @p w, @p bound and
+/// @p dmax n_rec, all written whole. cls.n_rec must be positive, cls.la <=
+/// cls.lb <= kMaxAngularMomentum, and n_ao * n_ao must fit an int32_t.
 ///
 /// @return The first launch status (wwrErrorInvalidValue for a class with no
 ///         kernel). Launch errors only, as overlap_class.
-[[nodiscard]] wwr::wwrError_t coulomb_dq(wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                                         int32_t n_ao, const double *density, double *w, double *dq,
-                                         double *dmax);
+[[nodiscard]] wwr::wwrError_t coulomb_prepare(wwr::wwrStream_t stream,
+                                              const PrimitivePairClassView &cls, int32_t n_ao,
+                                              const double *density, double *w, double *bound,
+                                              double *dq, double *dmax);
 
 /// @brief Add the [p|q] contraction of bra class @p bra against ket class
 /// @p ket into the bra's @p jp, on @p stream: the generated
 /// e_hermite<bra.la + bra.lb, ket.la + ket.lb>, one warp per bra record.
 ///
-/// @p dq and @p dmax are @p ket's, from @ref coulomb_dq; @p jp is
-/// bra.n_rec x n_hermite(bra.la + bra.lb), added to atomically, so it must be
-/// zeroed before the first ket class and then holds the sum over all of them.
-/// @p ones holds at least max(bra.n_rec, ket.n_rec) ones (@ref
-/// coulomb_constants). Unscreened: tau = 0, so the kets' order is free.
+/// @p ip is @p bra's bound and @p iq, @p dq and @p dmax are @p ket's, all from
+/// @ref coulomb_prepare; @p jp is bra.n_rec x n_hermite(bra.la + bra.lb),
+/// added to atomically, so it must be zeroed before the first ket class and
+/// then holds the sum over all of them. Unscreened: tau = 0, so the screen
+/// `Dmax * Ip * Iq < tau` never fires and the kets' order is free.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no
 ///         kernel). Launch errors only.
 [[nodiscard]] wwr::wwrError_t coulomb_e_hermite(wwr::wwrStream_t stream,
                                                 const PrimitivePairClassView &bra,
-                                                const PrimitivePairClassView &ket,
-                                                const double *ones, const double *dq,
+                                                const PrimitivePairClassView &ket, const double *ip,
+                                                const double *iq, const double *dq,
                                                 const double *dmax, double *jp);
 
 /// @brief Add one bra class's back-transform of @p jp into the n_ao x n_ao
 /// matrix @p j, on @p stream: the generated jab<la, lb>, one thread per record.
 ///
 /// @p jp is complete (every ket class added, @ref coulomb_e_hermite); @p rows
-/// holds at least cls.n_rec entries, rows[k] = k (@ref coulomb_constants). Each
+/// holds at least cls.n_rec entries, rows[k] = k (@ref coulomb_rows). Each
 /// value is atomically added at (m, n) and (n, m), a shell against itself
 /// writing its block's lower triangle and mirror once, so @p j must be zeroed
 /// before the first class and is symmetric after the last. The kernels index

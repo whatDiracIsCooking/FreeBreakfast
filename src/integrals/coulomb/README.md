@@ -18,6 +18,7 @@ is the contract the kernels were built against. Every class of
 
 | Step | Template | One per | Computes |
 |---|---|---|---|
+| record bound | `pair_bound<la, lb>` | pair class | each record's Schwarz bound `I = pair_bound(ζ, la + lb)`, `e_hermite`'s `Ip` as a bra and `Iq` as a ket |
 | ket pre-contraction | `dq<lc, ld>` | ket pair class, `lc <= ld` | `D_q = w Σ_cd D_cd s E^cd_q` and `Dmax = max_q \|D_q\|`, reading the AO density in place |
 | `[p\|q]` | `e_hermite<lp, lq>` | (bra class, ket class), `lp = la + lb`, `lq = lc + ld` | `J_p += Σ_q [p\|q] D_q`, one warp per bra record, kets strip-mined, `J_p` added atomically |
 | bra transform + scatter | `jab<la, lb>` | bra pair class | `J_ab += Σ_p s E^ab_p J_p`, added atomically into `J_µν` at (m, n) and (n, m) |
@@ -26,11 +27,10 @@ is the contract the kernels were built against. Every class of
 `launch_each` (the one-electron builds' per-class launch, reused with their
 pre-launch checks from `free_breakfast.integrals.one_electron.launch`):
 
-1. On `res.stream()`: zero `J` and every class's `J_p`, and fill the two
-   constant arrays below.
-2. **Every class as a ket**, each on its own stream: its records' weights `w`,
-   then `dq`. The join closes the phase, because every bra class reads every
-   ket class's `D_q` and `Dmax`.
+1. On `res.stream()`: zero `J` and every class's `J_p`, and fill `row` below.
+2. **Every class's inputs**, each on its own stream: its records' weights `w`,
+   its bounds (`pair_bound`), then `dq`. The join closes the phase, because
+   every bra class reads every ket class's bounds, `D_q` and `Dmax`.
 3. **Every class as a bra**, each on its own stream: `e_hermite` against every
    ket class into the bra's `J_p`, then `jab` into `J`, in that order.
 
@@ -39,13 +39,14 @@ What the kernels leave to the launcher, and how it is supplied:
 | Input | Value | Why |
 |---|---|---|
 | `w` | 2 for a shell pair of two shells, 1 for a shell against itself (`off_a == off_b`, as `mmd` records it) | `mmd` stores each unique shell pair once; the sum over all `(c, d)` counts the others twice. A one-thread kernel in `coulomb_launch.cu` writes it per build |
-| `Ip`, `Iq` | 1 | The Schwarz bounds of a screen this build does not run: at `tau = 0`, `Dmax · Ip · Iq < tau` never holds, so the kets' order is free too |
+| `Ip`, `Iq` | the bra's and the ket's `pair_bound` | Computed and passed, but at `tau = 0` the screen `Dmax · Ip · Iq < tau` never holds, so the kets' order is free too |
+| `tau` | 0 | The screen `break`s on the first record under `tau`, which is right only for kets sorted descending by `Iq · Dmax`; they are in record order, so any `tau > 0` would be a wrong answer, not a slow one |
 | `row` | the record index | `jab` reads record `k`'s row of `J_p`; with one batch per class that row is `k` |
 | `J`, `J_p` | zeroed | Both are only added to |
 | the block | `e_hermite_block_dim`, `{1, FJ_WAVEFRONT}` | `e_hermite`'s shared `J_p` accumulator is sized for exactly that block |
 
 The scratch, per class `n_rec × n_hermite(la + lb)` doubles for `D_q` and as
-many for `J_p`, plus `2 n_rec` for `w` and `Dmax`, is drawn from
+many for `J_p`, plus `3 n_rec` for `w`, the bound and `Dmax`, is drawn from
 `res.device()`'s pool in `res.stream()`'s order and returned in its order once
 both phases are joined back, so there is no host synchronization.
 
@@ -56,8 +57,8 @@ orientation is ever transposed.
 
 **One text serves both warp widths.** `e_hermite` is emitted `any_wavefront`:
 its shuffles and its shared array read `FJ_WAVEFRONT`, which
-`deps/CMakeLists.txt` sets from `WWR_WARP_SIZE`. `dq` and `jab` have no
-shuffle. Record vectors are three flat arrays per axis, named as `mmd` names its
+`deps/CMakeLists.txt` sets from `WWR_WARP_SIZE`. `pair_bound`, `dq` and `jab`
+have no shuffle. Record vectors are three flat arrays per axis, named as `mmd` names its
 fields.
 
 **Generated kernels are committed, not built.** `tools/emit_coulomb_kernels.py`
@@ -68,8 +69,10 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 ## Not done
 
-- **Screening.** The Schwarz bound per record, `Dmax` read back, and the kets
-  sorted by `Iq · Dmax` so `e_hermite`'s screen can `break`.
+- **Screening.** The bounds are computed and passed; what is missing is each
+  ket class sorted descending by `Iq · Dmax` (with its records' `D_q`,
+  `Dmax` and bounds permuted to match) and a `tau` above 0. Until then
+  nothing is skipped.
 - **Reuse across SCF iterations.** The scratch is allocated per call.
 - **Batching.** One `e_hermite` kernel per class, as FelizJueves ships it.
 
@@ -83,7 +86,10 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 `test/gtest/coulomb_gpu.cpp`: `J` of H₂O in STO-3G and cc-pVDZ against
 libcint's `vj` of the same density at `1e-12 · max|J|`, through the golden data
-in `test/gtest/data/coulomb/`; the zeroing; and the refusals.
+in `test/gtest/data/coulomb/`; the zeroing; and the refusals. At `tau = 0` the
+bounds cannot move `J`, so nothing here checks their values; FelizJueves holds
+the `pair_bound` kernel to its host bound at 16 eps, interpreted and on the
+RTX 3080 (its `test_kernel_pair_bound.py`, `test_pair_bound_device.py`).
 
 ## Files
 
@@ -92,6 +98,6 @@ in `test/gtest/data/coulomb/`; the zeroing; and the refusals.
 | `coulomb.cppm` | Module interface: `coulomb` |
 | `coulomb.cpp` | The build: the checks, the scratch, the two phases |
 | `coulomb_bridge.h` | The launchers, declared once for the module and the device TU |
-| `coulomb_launch.cu` | The launchers; the `w`/ones/rows kernels; the compile-time checks of the tables against `kMaxAngularMomentum` and of `e_hermite_block_dim` against `kWarpSize` |
+| `coulomb_launch.cu` | The launchers; the `w` and rows kernels; the compile-time checks of the tables against `kMaxAngularMomentum` and of `e_hermite_block_dim` against `kWarpSize` |
 | `kernels/` | The generated units and their three template headers |
 | `CMakeLists.txt` | The device library and the module |

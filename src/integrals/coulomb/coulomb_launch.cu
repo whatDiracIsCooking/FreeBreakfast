@@ -1,7 +1,8 @@
 // The device half of free_breakfast.integrals.coulomb: the launchers over the
-// generated dq<la, lb>, e_hermite<lp, lq> and jab<la, lb> kernels, and the two
-// small kernels that make their inputs a build without screening has no values
-// for. One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
+// generated pair_bound<la, lb>, dq<la, lb>, e_hermite<lp, lq> and jab<la, lb>
+// kernels, and the two small kernels that make the inputs the generated ones
+// leave to their caller (each record's weight, and jab's row map). One source
+// for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/),
 // each one explicit specialization of its family's template. Each family's
@@ -24,14 +25,14 @@
 #include "kernels/dq/dq.h"
 #include "kernels/e_hermite/e_hermite.h"
 #include "kernels/jab/jab.h"
+#include "kernels/pair_bound/pair_bound.h"
 
 namespace {
 
-// ones[k] = 1, rows[k] = k: see coulomb_constants.
-__global__ void coulomb_constants_kernel(const int32_t n, double *ones, int32_t *rows) {
+// rows[k] = k: see coulomb_rows.
+__global__ void coulomb_rows_kernel(const int32_t n, int32_t *rows) {
   const auto k = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (k < n) {
-    ones[k] = 1.0;
     rows[k] = k;
   }
 }
@@ -56,6 +57,10 @@ namespace free_breakfast::device {
 constexpr auto kPairExtent = static_cast<size_t>(kMaxAngularMomentum + 1);
 constexpr auto kHermiteExtent = static_cast<size_t>(2 * kMaxAngularMomentum + 1);
 
+static_assert(std::extent_v<decltype(pair_bound_kernels), 0> == kPairExtent &&
+                  std::extent_v<decltype(pair_bound_kernels), 1> == kPairExtent,
+              "kernels/pair_bound was not emitted for kMaxAngularMomentum: rerun "
+              "tools/emit_coulomb_kernels.py");
 static_assert(std::extent_v<decltype(dq_kernels), 0> == kPairExtent &&
                   std::extent_v<decltype(dq_kernels), 1> == kPairExtent,
               "kernels/dq was not emitted for kMaxAngularMomentum: rerun "
@@ -90,23 +95,26 @@ uint32_t record_blocks(const int32_t n_rec) {
 
 } // namespace
 
-wwr::wwrError_t coulomb_constants(const wwr::wwrStream_t stream, const int32_t n, double *ones,
-                                  int32_t *rows) {
+wwr::wwrError_t coulomb_rows(const wwr::wwrStream_t stream, const int32_t n, int32_t *rows) {
   if (n < 1) {
     return wwr::wwrErrorInvalidValue;
   }
-  coulomb_constants_kernel<<<record_blocks(n), kFourWarps, 0, stream>>>(n, ones, rows);
+  coulomb_rows_kernel<<<record_blocks(n), kFourWarps, 0, stream>>>(n, rows);
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t coulomb_dq(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                           const int32_t n_ao, const double *density, double *w, double *dq,
-                           double *dmax) {
+wwr::wwrError_t coulomb_prepare(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
+                                const int32_t n_ao, const double *density, double *w, double *bound,
+                                double *dq, double *dmax) {
   if (!has_pair_kernel(cls)) {
     return wwr::wwrErrorInvalidValue;
   }
   const uint32_t blocks = record_blocks(cls.n_rec);
   coulomb_weights_kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, cls.off_a, cls.off_b, w);
+  if (const wwr::wwrError_t code = wwr::wwrGetLastError(); code != wwr::wwrSuccess) {
+    return code;
+  }
+  pair_bound_kernels[cls.la][cls.lb]<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, cls.zeta, bound);
   if (const wwr::wwrError_t code = wwr::wwrGetLastError(); code != wwr::wwrSuccess) {
     return code;
   }
@@ -118,8 +126,9 @@ wwr::wwrError_t coulomb_dq(const wwr::wwrStream_t stream, const PrimitivePairCla
 }
 
 wwr::wwrError_t coulomb_e_hermite(const wwr::wwrStream_t stream, const PrimitivePairClassView &bra,
-                                  const PrimitivePairClassView &ket, const double *ones,
-                                  const double *dq, const double *dmax, double *jp) {
+                                  const PrimitivePairClassView &ket, const double *ip,
+                                  const double *iq, const double *dq, const double *dmax,
+                                  double *jp) {
   if (!has_pair_kernel(bra) || !has_pair_kernel(ket)) {
     return wwr::wwrErrorInvalidValue;
   }
@@ -127,10 +136,12 @@ wwr::wwrError_t coulomb_e_hermite(const wwr::wwrStream_t stream, const Primitive
   // One warp per bra record, the kets strip-mined across its lanes; no dynamic
   // shared memory, J_p's accumulator is sized for this block in the text.
   const dim3 block(e_hermite_block_dim[0], e_hermite_block_dim[1]);
-  constexpr double kTau = 0.0; // unscreened
+  // Unscreened: the kets are in record order, not sorted by Iq * Dmax, and
+  // the screen breaks, so any tau > 0 would be a wrong answer, not a slow one.
+  constexpr double kTau = 0.0;
   kernel<<<static_cast<uint32_t>(bra.n_rec), block, 0, stream>>>(
-      bra.n_rec, ket.n_rec, kTau, bra.p_x, bra.p_y, bra.p_z, bra.zeta, ones, ket.p_x, ket.p_y,
-      ket.p_z, ket.zeta, ones, dmax, dq, jp);
+      bra.n_rec, ket.n_rec, kTau, bra.p_x, bra.p_y, bra.p_z, bra.zeta, ip, ket.p_x, ket.p_y,
+      ket.p_z, ket.zeta, iq, dmax, dq, jp);
   return wwr::wwrGetLastError();
 }
 
