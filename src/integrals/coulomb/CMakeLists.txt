@@ -73,10 +73,12 @@ free_breakfast_add_gpu_device_library(
 # its signature, so core::resources, mmd and linalg::matrix_ao are PUBLIC. The
 # per-class launch and the pre-launch checks are the one-electron builds' own
 # (one_electron::launch), the ket sort is sort_bounds', and the device library
-# is PRIVATE: the
-# implementation unit includes the bridge header in its GMF and calls the
-# launchers, and a static library's private link dependencies still reach the
-# final link.
+# is PRIVATE: the implementation unit includes the bridge header in its GMF and
+# calls the launchers, and a static library's private link dependencies still
+# reach the final link. coulomb_pair_classes' dressed bound is exchange/pairs'
+# launcher (exchange::pairs::device, the same arrangement: one kernel family
+# for both builds), its copies MirroredBuffers (core::mirrored_buffer), its
+# Cartesian count and momentum limit basis's.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.coulomb
@@ -91,9 +93,13 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::mmd
   free_breakfast::linalg::matrix_ao
   LINK_PRIVATE
+  free_breakfast::core::types
   free_breakfast::core::wwr
+  free_breakfast::core::mirrored_buffer
   free_breakfast::core::diagnostics_macros
+  free_breakfast::basis
   free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::coulomb::sort_bounds
   free_breakfast::integrals::coulomb::device
+  free_breakfast::integrals::exchange::pairs::device
 )

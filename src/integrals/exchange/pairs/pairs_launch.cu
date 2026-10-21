@@ -85,6 +85,23 @@ uint32_t record_blocks(const int32_t n_rec) {
   return fb::math::idivup(static_cast<uint32_t>(n_rec), fb::kFourWarps);
 }
 
+// record_bound<la, lb> over a class view of either kind: the ordered classes'
+// and mmd's name the fields it reads alike.
+template <typename View>
+wwr::wwrError_t launch_record_bound(const wwr::wwrStream_t stream, const View &cls, double *bound) {
+  if (cls.n_rec < 1 || !valid_momentum(cls.la) || !valid_momentum(cls.lb)) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  // One thread per record in 32-thread blocks, as FelizJueves's launch_shape
+  // states it; the mapping is not part of the numerical contract.
+  constexpr uint32_t kThreads = 32;
+  record_bound_kernels[cls.la][cls.lb]<<<
+      fb::math::idivup(static_cast<uint32_t>(cls.n_rec), kThreads), kThreads, 0, stream>>>(
+      cls.n_rec, cls.zeta, cls.pa_x, cls.pa_y, cls.pa_z, cls.pb_x, cls.pb_y, cls.pb_z, cls.s,
+      bound);
+  return wwr::wwrGetLastError();
+}
+
 template <typename T>
 wwr::wwrError_t permute_field(const wwr::wwrStream_t stream, const int32_t n_rec,
                               const uint32_t *perm, T *field, T *tmp) {
@@ -106,17 +123,12 @@ namespace free_breakfast::device {
 
 wwr::wwrError_t ordered_pair_bound(const wwr::wwrStream_t stream, const OrderedPairClassView &cls,
                                    double *bound) {
-  if (cls.n_rec < 1 || !valid_momentum(cls.la) || !valid_momentum(cls.lb)) {
-    return wwr::wwrErrorInvalidValue;
-  }
-  // One thread per record in 32-thread blocks, as FelizJueves's launch_shape
-  // states it; the mapping is not part of the numerical contract.
-  constexpr uint32_t kThreads = 32;
-  record_bound_kernels[cls.la][cls.lb]<<<math::idivup(static_cast<uint32_t>(cls.n_rec), kThreads),
-                                         kThreads, 0, stream>>>(cls.n_rec, cls.zeta, cls.pa_x,
-                                                                cls.pa_y, cls.pa_z, cls.pb_x,
-                                                                cls.pb_y, cls.pb_z, cls.s, bound);
-  return wwr::wwrGetLastError();
+  return launch_record_bound(stream, cls, bound);
+}
+
+wwr::wwrError_t ordered_pair_bound(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
+                                   double *bound) {
+  return launch_record_bound(stream, cls, bound);
 }
 
 wwr::wwrError_t ordered_pair_order(const wwr::wwrStream_t stream, const int32_t n_rec,

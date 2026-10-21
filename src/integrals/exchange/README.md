@@ -216,12 +216,33 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
   H₁₀ chain it is 1.3% of the blocks at the default `1e-13` (4% at `1e-10`, 7%
   at `1e-6`); on H₂O none. The gain is for molecules well past 50 bohr, and
   its wall-clock is unmeasured.
-- **Primitive-pair pruning** (#132's second part, arXiv:2407.21445 §3.2): the
-  ordered classes hold every record, a far pair's exactly-zero bound among
-  them. With the groups sorted by the dressed bound `kb` stops at the first
-  record under the cutoff, so a pruned record would never be visited; what
-  pruning could still save (memory, the per-call passes over every record) is
-  unmeasured.
+- **Primitive-pair pruning** (#132's second part, arXiv:2407.21445 §3.2):
+  measured, and no gain, so the ordered classes still hold every record, a far
+  pair's exactly-zero bound among them. With the groups sorted by the dressed
+  bound `kb` stops at the first record under the cutoff, so a pruned record
+  is never visited, and K's time is in its blocks, whose number pruning does
+  not change (no group empties: each holds its shell against itself, whose
+  pair factor is 1). The prototype cut
+  each group after its last record with `I · max I · 2 >= tau`: under
+  `|D| <= 2` (the cap J's pruning states, `../coulomb/README.md`, "Pruning")
+  no skipped term of a pruned record could pass `kb`'s screen. On the
+  RX 9060 XT, K at the default `1e-13`, median of 11 runs, over the H₂ chains
+  and densities that section describes:
+
+  | Chain | Ordered records kept | K, every record | K, pruned | Change |
+  |---|---|---|---|---|
+  | H₁₀ | 1,526 of 2,500 (61%) | 6.56 ms | 6.50 ms | −0.9% |
+  | H₂₀ | 3,546 of 10,000 (35%) | 18.4 ms | 18.3 ms | −0.6% |
+  | H₅₀ | 9,606 of 62,500 (15%) | 78.9 ms | 76.5 ms | −3.0% |
+  | H₁₀₀ | 19,706 of 250,000 (7.9%) | 183 ms | 182 ms | −0.3% |
+  | H₂₀₀ | 39,906 of 1,000,000 (4.0%) | 401 ms | 399 ms | −0.5% |
+
+  Run to run, K varies by a few percent at H₁₀ and H₂₀, so none of these is a
+  gain. K moved by at most 2e-16 · max|K|. What pruning would save is memory:
+  the records grow quadratically with the chain, about 108 bytes each on each
+  side, 108 MB pinned and as much on the device at H₂₀₀, against 4 MB pruned.
+  J does prune (`coulomb_pair_classes`): its bras are screened on `mmd`'s
+  undressed bound, so there pruning saves most of its time (91% at H₁₀₀).
 - **The swap inside the diagonal blocks.** An `a == b` block is computed
   whole, so its quartets are still visited twice: `O(n_shells)` blocks of
   `O(n_shells^2)`.
@@ -231,8 +252,9 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
   tables and `Dcd` are allocated and rebuilt per call. The tables' ranges are
   fixed per basis, their factors are not; the AO centres and `G_max` are, and
   are recomputed anyway.
-- **Nothing is measured.** FelizJueves has not timed `kb` against `kernel_k`
-  either (its `measure.sh kblock` run was refused by the card gate).
+- **`kb` is not measured against `kernel_k`.** Only the pruning above timed
+  K at all; FelizJueves has not timed `kb` against `kernel_k` either (its
+  `measure.sh kblock` run was refused by the card gate).
 
 ## Public API
 

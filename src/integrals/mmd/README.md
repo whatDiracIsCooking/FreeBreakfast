@@ -91,7 +91,9 @@ the kernels tell them apart: they write the lower triangle of the block once and
 mirror it.
 
 **Coefficients are taken as given** (see `Shell`): normalisation is the basis's
-business (`BasisStamp::primitive_normalized`). Nothing is screened.
+business (`BasisStamp::primitive_normalized`). Nothing is screened: S, T and
+V read every record. J prunes a copy of them
+(`coulomb_pair_classes`, [`../coulomb/`](../coulomb/README.md)).
 
 ## Public API
 

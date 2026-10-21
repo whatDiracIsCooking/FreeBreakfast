@@ -6,13 +6,19 @@ module;
 // The kernel launchers, defined in coulomb_launch.cu: declared in the GMF so
 // they keep external linkage (see the header).
 #include "coulomb_bridge.h"
+// The dressed record bound's launcher (exchange/pairs' device library), which
+// coulomb_pair_classes runs over mmd's records: the same arrangement.
+#include "pairs_bridge.h"
 
 module free_breakfast.integrals.coulomb;
 
 import std;
+import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
+import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
+import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.coulomb.sort_bounds;
 import free_breakfast.integrals.one_electron.launch;
@@ -127,6 +133,136 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
     }
     return device::coulomb_jab(s, v, n_ao, rows.data(), b.jp.data(), j.data());
   }));
+}
+
+// The density cap coulomb_pair_classes assumes: |D_cd| <= this for every
+// density its classes are used with (its doc says why 2, and that it is an
+// assumption).
+constexpr double kCoulombPruneDensityCap = 2.0;
+
+// Each record's dressed bound B (ordered_pair_bound over the class as mmd
+// stores it), read back to the host.
+Result<std::vector<double>> coulomb_record_bounds(const PrimitivePairClass &cls) {
+  const std::shared_ptr<DeviceStream> &ds = cls.device_stream();
+  MirroredBuffer<double> bound(static_cast<size_t>(cls.n_rec), ds);
+  FBF_TRY(gpu_status(device::ordered_pair_bound(ds->stream(), cls.view(), bound.device().data())));
+  FBF_TRY(gpu_status(bound.to_pinned_sync()));
+  const double *b = bound.pinned().data();
+  return std::vector<double>(b, b + cls.n_rec);
+}
+
+// A copy of cls holding only the records keep names, in that order, on a new
+// stream of res's Device, its copy to the device queued there.
+Result<PrimitivePairClass> coulomb_pruned_class(DeviceResources &res, const PrimitivePairClass &cls,
+                                                const std::vector<int32_t> &keep) {
+  const auto ds = std::make_shared<DeviceStream>(res.device());
+  const size_t n = keep.size();
+  PrimitivePairClass out{
+      .la = cls.la,
+      .lb = cls.lb,
+      .n_rec = static_cast<int32_t>(n),
+      .zeta = MirroredBuffer<double>(n, ds),
+      .p_x = MirroredBuffer<double>(n, ds),
+      .p_y = MirroredBuffer<double>(n, ds),
+      .p_z = MirroredBuffer<double>(n, ds),
+      .pa_x = MirroredBuffer<double>(n, ds),
+      .pa_y = MirroredBuffer<double>(n, ds),
+      .pa_z = MirroredBuffer<double>(n, ds),
+      .pb_x = MirroredBuffer<double>(n, ds),
+      .pb_y = MirroredBuffer<double>(n, ds),
+      .pb_z = MirroredBuffer<double>(n, ds),
+      .s = MirroredBuffer<double>(n, ds),
+      .eb = MirroredBuffer<double>(n, ds),
+      .bound = MirroredBuffer<double>(n, ds),
+      .off_a = MirroredBuffer<int32_t>(n, ds),
+      .off_b = MirroredBuffer<int32_t>(n, ds),
+  };
+  const auto copy = [&keep, n](auto &to, const auto &from) {
+    for (size_t r = 0; r < n; ++r) {
+      to.pinned().data()[r] = from.pinned().data()[static_cast<size_t>(keep[r])];
+    }
+    return gpu_status(to.to_device());
+  };
+  FBF_TRY(copy(out.zeta, cls.zeta));
+  FBF_TRY(copy(out.p_x, cls.p_x));
+  FBF_TRY(copy(out.p_y, cls.p_y));
+  FBF_TRY(copy(out.p_z, cls.p_z));
+  FBF_TRY(copy(out.pa_x, cls.pa_x));
+  FBF_TRY(copy(out.pa_y, cls.pa_y));
+  FBF_TRY(copy(out.pa_z, cls.pa_z));
+  FBF_TRY(copy(out.pb_x, cls.pb_x));
+  FBF_TRY(copy(out.pb_y, cls.pb_y));
+  FBF_TRY(copy(out.pb_z, cls.pb_z));
+  FBF_TRY(copy(out.s, cls.s));
+  FBF_TRY(copy(out.eb, cls.eb));
+  FBF_TRY(copy(out.bound, cls.bound));
+  FBF_TRY(copy(out.off_a, cls.off_a));
+  FBF_TRY(copy(out.off_b, cls.off_b));
+  return out;
+}
+
+Result<std::vector<PrimitivePairClass>>
+coulomb_pair_classes(DeviceResources &res, const std::span<const PrimitivePairClass> classes,
+                     const double tau) {
+  // Written so that NaN fails too.
+  if (!(tau >= 0.0)) {
+    return err_config("coulomb_pair_classes: the threshold tau is {}, but must be 0 or above", tau);
+  }
+  for (const PrimitivePairClass &cls : classes) {
+    if (cls.la > kMaxAngularMomentum || cls.lb > kMaxAngularMomentum) {
+      return err_config("coulomb_pair_classes: class ({}, {}) is above d, the largest momentum "
+                        "the kernels support",
+                        cls.la, cls.lb);
+    }
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+
+  // Each record's B as a bra and K = w ncart(la) B as a ket, and their maxima.
+  std::vector<std::vector<double>> bra(classes.size());
+  std::vector<std::vector<double>> ket(classes.size());
+  double max_bra = 0.0;
+  double max_ket = 0.0;
+  for (size_t c = 0; c < classes.size(); ++c) {
+    const PrimitivePairClass &cls = classes[c];
+    // mmd's pinned side is final only once its queued order and refresh have
+    // run; the copies below read it.
+    FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(cls.device_stream()->stream())));
+    Result<std::vector<double>> bounds = coulomb_record_bounds(cls);
+    if (!bounds) {
+      return std::unexpected(bounds.error());
+    }
+    bra[c] = std::move(*bounds);
+    const auto ncart = static_cast<double>(function_count_cart(cls.la));
+    ket[c].resize(bra[c].size());
+    for (size_t r = 0; r < bra[c].size(); ++r) {
+      const double w = cls.off_a.pinned().data()[r] == cls.off_b.pinned().data()[r] ? 1.0 : 2.0;
+      ket[c][r] = w * ncart * bra[c][r];
+      max_bra = std::max(max_bra, bra[c][r]);
+      max_ket = std::max(max_ket, ket[c][r]);
+    }
+  }
+
+  std::vector<PrimitivePairClass> out;
+  for (size_t c = 0; c < classes.size(); ++c) {
+    std::vector<int32_t> keep;
+    for (size_t r = 0; r < bra[c].size(); ++r) {
+      // Pruned only when under tau both as a bra and as a ket; tau = 0 keeps
+      // every record.
+      if (bra[c][r] * kCoulombPruneDensityCap * max_ket >= tau ||
+          ket[c][r] * kCoulombPruneDensityCap * max_bra >= tau) {
+        keep.push_back(static_cast<int32_t>(r));
+      }
+    }
+    if (keep.empty()) {
+      continue;
+    }
+    Result<PrimitivePairClass> pruned = coulomb_pruned_class(res, classes[c], keep);
+    if (!pruned) {
+      return std::unexpected(pruned.error());
+    }
+    out.push_back(std::move(*pruned));
+  }
+  return out;
 }
 
 } // namespace free_breakfast

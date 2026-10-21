@@ -1,5 +1,6 @@
 /// @file
-/// @brief The ordered classes' record-bound and record-order launchers,
+/// @brief The ordered classes' record-bound and record-order launchers (the
+/// bound also over mmd's own records, for J's pruning),
 /// declared once for the module that calls them and the device TU that
 /// defines them.
 ///
@@ -19,6 +20,7 @@
 #include "integral_types.h"
 
 #include "ordered_pair_class_view.h"
+#include "primitive_pair_class_view.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see overlap_bridge.h.
@@ -46,6 +48,14 @@ namespace free_breakfast::device {
 ///         records or no kernel: la and lb at most kMaxAngularMomentum).
 [[nodiscard]] wwr::wwrError_t ordered_pair_bound(wwr::wwrStream_t stream,
                                                  const OrderedPairClassView &cls, double *bound);
+
+/// @brief The same bound of each of mmd's records, in its stored orientation:
+/// "a" its bra shell, of the lower momentum, so record_bound<cls.la, cls.lb>.
+/// J's pruning reads it (coulomb_pair_classes): a record's max over its bra
+/// Cartesians, and so, times ncart(la), its sum over all of them. Otherwise as
+/// above.
+[[nodiscard]] wwr::wwrError_t ordered_pair_bound(wwr::wwrStream_t stream,
+                                                 const PrimitivePairClassView &cls, double *bound);
 
 /// @brief The order that puts each of a class's groups in descending @p bound,
 /// on @p stream: record perm[k] is the k-th, the groups (@p group_start,
