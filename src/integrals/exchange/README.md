@@ -97,9 +97,15 @@ its module docstring has the proof. Per call, at the screen's `tau`, with
 A visited bra `(a, c)` has `|AC| <= R_a`, and a ket `(b, d)` `|BD| <= R_b`, so
 `|CD| >= d`: past `d > 0` every visited `(c, d)` is off-centre (the same-atom
 element, which the paper's Figure 4 shows above its fitted line, never enters
-such a block) and `|D_cd| <= H_off e^{-Λ d}`. A skipped term is then under
-`tau` either way, so `tau` stays the screen's whole contract (the paper's
-looser `τ* = τ/N*` is not taken). Two centres closer than `10^-6` bohr are
+such a block) and `|D_cd| <= H_off e^{-Λ d}`. With FelizJueves's **dressed**
+record bound (`ao.k.record_bounds`) as `Ip` and `Iq`, a skipped term is then
+under `tau` either way (the paper's looser `τ* = τ/N*` is not taken). **That is
+not what this build reads yet** (#132): `kb`'s `Ip` and `Iq` are `mmd`'s
+undressed `bound`, which can fall short of the dressed one (by up to 1.2× on
+H₂O/cc-pVDZ), so a skipped term can exceed `tau` by up to about that factor
+squared; and it does not decay with distance, so every reach covers the
+molecule and **`F_ab` is `max|D|` for every block of the goldens** — the factor
+is built, tested and correct, and does not yet fire. Two centres closer than `10^-6` bohr are
 **one centre** here (`kExchangeSameCentre`): a centre is recomputed from a
 record as `P - (P - A)`, which can miss `A` by an ulp, and FelizJueves's exact
 equality would split an atom's AOs; hence the `2 · 10^-6` cut on `d` where
@@ -174,9 +180,11 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 - **The paper's looser threshold.** `τ* = τ/N*` for K (§4.3.1 reports
   `5e-6`, its benchmarks run `1e-5`) is not taken: `tau` is a guarantee here.
   A looser K threshold would be its own change, measured.
-- **The decay pays only at length.** A group's reach is set by its most
-  diffuse primitive pair, 16–22 bohr for hydrogen in STO-3G or cc-pVDZ at
-  `tau = 1e-10`, so `F_ab` drops below `max|D|` only for shells more than
+- **The dressed record bound** (#132): until `kb` reads it, the factor never
+  fires and the screen's guarantee holds only to about 1.4× (above).
+- **The decay pays only at length.** With the dressed bound, a group's reach is
+  set by its most diffuse primitive pair, 16–22 bohr for hydrogen in STO-3G or
+  cc-pVDZ at `tau = 1e-10`, so `F_ab` drops below `max|D|` only for shells more than
   about twice that apart; and an RHF density in cc-pVDZ falls only about three
   orders over 20 bohr. On H₂O it is `max|D|` throughout; the gain is for
   molecules well past 50 bohr, and is unmeasured.
@@ -203,9 +211,10 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 `test/gtest/exchange_gpu.cpp`: `K` of H₂O in STO-3G and cc-pVDZ (their
 Hilbert densities) and of an H₁₀ chain in cc-pVDZ (five H₂ 4 bohr apart, its
-converged RHF density, which decays: at `tau = 1e-10` FelizJueves's
-`density_decay` puts 144 of its 3,600 block factors under `max|D|`, down to
-4% of it) against libcint's `vk` of the same density at `1e-12 · max|K|`,
+converged RHF density, which decays; with the dressed bound FelizJueves's
+`density_decay` puts 144 of its 3,600 block factors under `max|D|` at
+`tau = 1e-10`, with this build's undressed one none, #132) against libcint's
+`vk` of the same density at `1e-12 · max|K|`,
 through the golden data in `test/gtest/data/exchange/`, both at `tau = 0` and
 at the default (each run
 records its worst error, and how far the screen moved `K`); `K` symmetric to
