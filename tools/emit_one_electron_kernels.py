@@ -26,10 +26,11 @@ Only the classes `la <= lb` are written. The host pair builder
 (free_breakfast.integrals.mmd) swaps every shell pair into that order, so a
 `(1, 0)` kernel would be `(0, 1)`'s mirror and nothing would launch it.
 
-The device Boys routine the units with a fundamental include, `eval_boys.h`
-(`gpu.emit_boys()`), is written once, to src/integrals/shared/, by this tool
-and tools/emit_coulomb_kernels.py alike: it is one text, so either
-leaves it as the other would.
+The device Boys routine the units with a fundamental include, `eval_boys.h`,
+and the per-order `eval_boys_{M}.h` it includes for M in 0..20 (all of
+`gpu.emit_boys()`), are written once, to src/integrals/shared/, by this tool
+and tools/emit_coulomb_kernels.py alike: they are one text, so either leaves
+them as the other would.
 
 FelizJueves imports nothing outside the standard library, so this needs no
 virtualenv.
@@ -82,7 +83,8 @@ def main() -> int:
             write(out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
         # Any class's kernel spells the primary: one family, one parameter block.
         write(out / spec.header, gpu.emit_template(kernel, arch, spec, classes))
-    write(ROOT / "src/integrals/shared" / gpu.BOYS_HEADER, gpu.emit_boys())
+    for name, text in gpu.emit_boys().items():
+        write(ROOT / "src/integrals/shared" / name, text)
     return 0
 
 

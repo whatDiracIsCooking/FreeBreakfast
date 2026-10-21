@@ -40,7 +40,9 @@ build never runs Python. Re-run both after bumping the submodule. Each family
 has its own directory (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
 `coulomb/kernels/{pair_bound,dq,e_hermite,jab}/`), and the device Boys
 routine every unit with a fundamental includes, `eval_boys<M>`, is generated
-once into `shared/eval_boys.h` rather than carried in each unit. Each of those
+once into `shared/eval_boys.h` rather than carried in each unit, beside the
+`shared/eval_boys_{M}.h` it includes: below its switch, one fixed `fma` chain
+per order M <= 20 in place of a summed loop. Each of those
 directories has a `.clang-format` that turns formatting off, and
 `devtools/check-int-types.py` skips a file by FelizJueves's first-line banner:
 the files stay byte-for-byte as emitted, so a fix belongs in the generator.
