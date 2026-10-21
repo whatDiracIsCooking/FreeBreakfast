@@ -1,6 +1,7 @@
 /// @file
 /// @brief The Cartesian Coulomb matrix J on the GPU, by McMurchie-Davidson,
-/// over the pair_bound, dq, e_hermite and jab kernels FelizJueves generates.
+/// over the dq, e_hermite and jab kernels FelizJueves generates, screened by
+/// the record bound mmd forms (PrimitivePairClass::bound).
 ///
 /// The records come from free_breakfast.integrals.mmd: every class is both a
 /// ket class (its density pre-contracted, its records sorted by the screen's
@@ -22,7 +23,7 @@ export namespace free_breakfast {
 ///
 /// Screened by e_hermite's Schwarz bound: a primitive quartet's [p|q] D_q is
 /// skipped when `Dmax * Ip * Iq < tau`, Ip and Iq being the bra's and the
-/// ket's record bounds (pair_bound) and Dmax the ket's max_q |D_q|. That bounds
+/// ket's record bounds (mmd's bound field) and Dmax the ket's max_q |D_q|. That bounds
 /// each term of the bra's J_p, not of J: what jab then scatters is weighted by
 /// the bra's E^ab_p. @p tau = 0 skips nothing. The default, 1e-10, is the J
 /// threshold of EXESS's J engine (Palethorpe and Barca), whose [p|q] kernel and

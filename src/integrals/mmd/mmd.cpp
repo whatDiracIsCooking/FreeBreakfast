@@ -1,10 +1,11 @@
 /// @file
 /// @brief primitive_pair_classes: the shell-pair sweep, the la <= lb swap, the
-/// per-record arithmetic, the copy to the device and the order there.
+/// per-record arithmetic, the copy to the device, the order there and the
+/// record bound.
 
 module;
 
-// The record-order launchers, defined in mmd_launch.cu: declared in the GMF so
+// The record-order and record-bound launchers, defined in mmd_launch.cu: declared in the GMF so
 // they keep external linkage (see the header).
 #include "mmd_bridge.h"
 
@@ -56,6 +57,7 @@ PrimitivePairClass make_class(DeviceResources &res, const ClassKey key, const in
       .pb_z = MirroredBuffer<double>(len, ds),
       .s = MirroredBuffer<double>(len, ds),
       .eb = MirroredBuffer<double>(len, ds),
+      .bound = MirroredBuffer<double>(len, ds),
       .off_a = MirroredBuffer<int32_t>(len, ds),
       .off_b = MirroredBuffer<int32_t>(len, ds),
   };
@@ -96,7 +98,8 @@ int32_t write_shell_pair_records(PrimitivePairClass &cls, const int32_t rec, con
   return static_cast<int32_t>(r);
 }
 
-// Queue every field's pinned-to-device copy on cls's stream.
+// Queue every host-written field's pinned-to-device copy on cls's stream (all
+// but bound, which form_bounds writes on the device).
 Status copy_to_device(PrimitivePairClass &cls) {
   for (MirroredBuffer<double> *field :
        {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
@@ -111,8 +114,8 @@ Status copy_to_device(PrimitivePairClass &cls) {
 
 // Put cls's records in descending zeta order on its stream, after their copy
 // to the device: the order, then every field permuted to it in place, then the
-// pinned side refreshed from the device. Within a class the record bound Ip =
-// pair_bound(zeta, la + lb) rises with zeta, so this is descending Ip: a J
+// pinned side refreshed from the device. Within a class the record bound
+// (form_bounds) rises with zeta, so this is descending Ip: a J
 // build's bras with the longest ket loops launch first. Every kernel
 // accumulates, so none depends on the order. The scratch is drawn on cls's
 // stream and returned in its order.
@@ -141,6 +144,20 @@ Status order_by_zeta(PrimitivePairClass &cls) {
     FBF_TRY(gpu_status(field->to_pinned()));
   }
   return {};
+}
+
+// Each record's Schwarz bound I = pair_bound(zeta, la + lb) from its zeta, on
+// cls's stream after order_by_zeta, so the bound is in record order, then the
+// pinned side refreshed. It rises with zeta, so it is non-increasing in record
+// order. A class above kMaxAngularMomentum has no kernel and keeps its zeroed
+// bound: every build refuses such a class, so nothing reads it.
+Status form_bounds(PrimitivePairClass &cls) {
+  if (cls.lb > kMaxAngularMomentum) {
+    return {};
+  }
+  FBF_TRY(gpu_status(device::mmd_bound(cls.device_stream()->stream(), cls.la, cls.lb, cls.n_rec,
+                                       cls.zeta.device().data(), cls.bound.device().data())));
+  return gpu_status(cls.bound.to_pinned());
 }
 
 Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
@@ -195,6 +212,7 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
   for (PrimitivePairClass &cls : out) {
     FBF_TRY(copy_to_device(cls));
     FBF_TRY(order_by_zeta(cls));
+    FBF_TRY(form_bounds(cls));
   }
   return out;
 }

@@ -9,7 +9,9 @@
 /// s = c_a c_b (pi / zeta)^{3/2}, the ket exponent beta and the two shells' AO
 /// offsets. The kernels form the Hermite expansion E from those, including its
 /// exp(-alpha beta / zeta |A - B|^2) prefactor (as exp(zeta X_PA X_PB) per axis),
-/// so the host forms neither.
+/// so the host forms neither. One field is formed on the device, once per
+/// basis: the record's Schwarz bound I = pair_bound(zeta, la + lb), which the
+/// two-electron screens read.
 ///
 /// The launchers' view of a class is primitive_pair_class_view.h's, included
 /// in the global module fragment and re-exported (atom.cppm has the why).
@@ -81,6 +83,13 @@ struct PrimitivePairClass {
   MirroredBuffer<double> s;
   /// @brief beta, the ket primitive's exponent.
   MirroredBuffer<double> eb;
+  /// @brief The record's Schwarz bound I = pair_bound(zeta, la + lb), formed
+  /// on the device by the generated pair_bound<la, lb> after the zeta order:
+  /// a J or K screen's Ip as a bra and Iq as a ket. It depends on zeta and
+  /// la + lb only, and rises with zeta, so it is non-increasing in record order.
+  /// Zero in a class above kMaxAngularMomentum, which has no kernel and which
+  /// every build refuses.
+  MirroredBuffer<double> bound;
   /// @brief The bra shell's first Cartesian AO (@c BasisSet::ao_offset_cart).
   MirroredBuffer<int32_t> off_a;
   /// @brief The ket shell's first Cartesian AO.
@@ -109,6 +118,7 @@ struct PrimitivePairClass {
         .pb_z = pb_z.device().data(),
         .s = s.device().data(),
         .eb = eb.device().data(),
+        .bound = bound.device().data(),
         .off_a = off_a.device().data(),
         .off_b = off_b.device().data(),
     };
@@ -126,16 +136,16 @@ struct PrimitivePairClass {
 /// so no class is empty. No pair is screened out.
 ///
 /// **Each class's records are in descending zeta order**, equal zetas in
-/// shell-pair, then alpha-major, order. Within a class the record bound Ip =
-/// pair_bound(zeta, la + lb) rises with zeta, so a J build's bras with the
-/// longest ket loops launch first. No kernel depends on the order: each
-/// accumulates.
+/// shell-pair, then alpha-major, order. Within a class the record bound
+/// @ref PrimitivePairClass::bound rises with zeta, so it is non-increasing in
+/// record order and a J build's bras with the longest ket loops launch first.
+/// No kernel depends on the order: each accumulates.
 ///
 /// The records are written into each class's pinned side, copied to the
 /// device, ordered there (a stable merge sort on -zeta, every field permuted
-/// in place), and the pinned side refreshed from the device, all queued on the
-/// class's stream, ahead of anything a build launches there; no host
-/// synchronization. So the pinned side holds the final records only once that
+/// in place), each record's bound formed from its ordered zeta, and the pinned
+/// side refreshed from the device, all queued on the class's stream, ahead of
+/// anything a build launches there; no host synchronization. So the pinned side holds the final records only once that
 /// stream has been synchronized. The device res.dev_idx() names is made current for
 /// the call and the previous one restored.
 ///

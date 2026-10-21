@@ -10,12 +10,13 @@ atomic_cd/        aCD / acCD atomic Cholesky decomposition over PySCF
                   integrals; writes acCD auxiliary shells as BSE JSON.
 emit_one_electron_kernels.py
                   Regenerate src/integrals/one_electron/{overlap,kinetic,
-                  potential_en}/kernels/ from the FelizJueves submodule.
-                  Standard library only.
+                  potential_en}/kernels/, and the mmd record bound
+                  src/integrals/mmd/kernels/pair_bound/, from the
+                  FelizJueves submodule. Standard library only.
 emit_coulomb_kernels.py
-                  Regenerate src/integrals/coulomb/kernels/{pair_bound,dq,
-                  e_hermite,jab}/ from the FelizJueves submodule. Standard
-                  library only.
+                  Regenerate src/integrals/coulomb/kernels/{dq,e_hermite,
+                  jab}/ from the FelizJueves submodule. Standard library
+                  only.
 extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,
                   coulomb,exchange}/ hold out of FelizJueves's fixtures.

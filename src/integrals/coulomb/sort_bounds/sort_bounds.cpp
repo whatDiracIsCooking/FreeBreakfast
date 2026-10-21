@@ -52,6 +52,7 @@ PrimitivePairClassView SortedKets::view() const {
       .pb_z = nullptr,
       .s = nullptr,
       .eb = nullptr,
+      .bound = bound_.data(),
       .off_a = nullptr,
       .off_b = nullptr,
   };

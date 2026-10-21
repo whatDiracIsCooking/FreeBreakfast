@@ -4,7 +4,9 @@
 // (p|s), one stream per class, the device side matching the pinned side, and
 // each class's records in descending zeta order, equal zetas in the order the
 // host wrote them: on shells whose exponents ascend, so the sort has to move
-// records, and on a class past the merge sort's 2816-key tile.
+// records, and on a class past the merge sort's 2816-key tile; and each
+// record's Schwarz bound, formed on the device, against a host evaluation of
+// its closed form for every class of H2O/cc-pVDZ.
 
 #include <gtest/gtest.h>
 
@@ -14,6 +16,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
+import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 
 namespace {
@@ -186,7 +189,7 @@ TEST(Mmd, DeviceSideMatchesThePinnedSide) {
   for (const fb::PrimitivePairClass &cls : classes) {
     for (const fb::MirroredBuffer<double> *field :
          {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-          &cls.pb_y, &cls.pb_z, &cls.s, &cls.eb}) {
+          &cls.pb_y, &cls.pb_z, &cls.s, &cls.eb, &cls.bound}) {
       EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
     }
     for (const fb::MirroredBuffer<std::int32_t> *field : {&cls.off_a, &cls.off_b}) {
@@ -279,6 +282,78 @@ TEST(Mmd, RecordsAreInDescendingZetaOrderPastOneSortTile) {
     exponents.push_back(0.1 * std::pow(1.2, i));
   }
   expect_s_records(fb::BasisSet({s_shell(exponents, 0.4)}));
+}
+
+// k!!, with (-1)!! = 1.
+double double_factorial(const std::int32_t k) {
+  double out = 1.0;
+  for (std::int32_t i = k; i > 1; i -= 2) {
+    out *= i;
+  }
+  return out;
+}
+
+// The record bound I = pair_bound(zeta, l) in its closed form at PQ = 0
+// (FelizJueves's kernel_pair_bound.py): with x = sqrt(zeta),
+// I = sqrt(x) SUM_{n <= l} D_n x^n, D_n = (2 / sqrt(pi))^{1/2} 2^{-1/4}
+// SUM_{|p| = n} sqrt(PROD_d (2 p_d - 1)!! / (2n + 1)), p every Hermite index.
+// Summed term by term here, not by the kernel's Horner fold of folded D_n.
+double host_pair_bound(const double zeta, const std::int32_t l) {
+  const double x = std::sqrt(zeta);
+  const double k = std::sqrt(2.0 / std::sqrt(std::numbers::pi)) * std::pow(2.0, -0.25);
+  double sum = 0.0;
+  for (std::int32_t px = 0; px <= l; ++px) {
+    for (std::int32_t py = 0; px + py <= l; ++py) {
+      for (std::int32_t pz = 0; px + py + pz <= l; ++pz) {
+        const std::int32_t n = px + py + pz;
+        const double d = std::sqrt(double_factorial((2 * px) - 1) * double_factorial((2 * py) - 1) *
+                                   double_factorial((2 * pz) - 1) / ((2.0 * n) + 1.0));
+        sum += d * std::pow(x, n);
+      }
+    }
+  }
+  return k * std::sqrt(x) * sum;
+}
+
+// H2O/cc-pVDZ (s, p, d: all six classes), as coulomb_gpu.cpp reads it.
+fb::BasisSet h2o_ccpvdz() {
+  const auto doc =
+      fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "coulomb" / "h2o_ccpvdz.json");
+  EXPECT_TRUE(doc);
+  if (!doc) {
+    return {};
+  }
+  std::vector<fb::Shell> shells;
+  for (const auto &sh : (*doc)["shells"]) {
+    const auto c = sh["centre"].get<std::vector<double>>();
+    shells.emplace_back(sh["l"].get<std::int32_t>(), sh["exponents"].get<std::vector<double>>(),
+                        sh["coefficients"].get<std::vector<double>>(),
+                        fb::Vec<double, 3>{c[0], c[1], c[2]});
+  }
+  return fb::BasisSet(std::move(shells));
+}
+
+// Each record's bound, read on the pinned side (refreshed from the device),
+// within 16 eps of the host's closed form, and non-increasing within each
+// class: the bound rises with zeta, and the records are in descending zeta.
+TEST(Mmd, BoundMatchesTheClosedFormAndFollowsTheZetaOrder) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto classes = classes_of(res, h2o_ccpvdz());
+  ASSERT_EQ(classes.size(), 6U);
+  constexpr double kBoundTol = 16.0 * std::numeric_limits<double>::epsilon();
+  for (const fb::PrimitivePairClass &cls : classes) {
+    const std::int32_t l = cls.la + cls.lb;
+    for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
+      const double want = host_pair_bound(at(cls.zeta, k), l);
+      ASSERT_NEAR(at(cls.bound, k), want, kBoundTol * want)
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      if (k > 0) {
+        ASSERT_LE(at(cls.bound, k), at(cls.bound, k - 1))
+            << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      }
+    }
+  }
 }
 
 } // namespace

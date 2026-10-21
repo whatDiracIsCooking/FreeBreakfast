@@ -1,7 +1,8 @@
 # MMD
 
 McMurchie–Davidson primitive-pair records: a `BasisSet` turned into the
-per-class arrays the generated one-electron kernels read, on the device.
+per-class arrays the generated one-electron kernels read, on the device, with
+each record's Schwarz bound, which the two-electron screens read.
 
 ## Module
 
@@ -22,6 +23,7 @@ a kernel needs of that pair and cannot form itself:
 | `s` | c_a c_b (π/ζ)^{3/2} |
 | `eb` | β, the ket exponent (the kinetic kernel's) |
 | `off_a`, `off_b` | the two shells' first Cartesian AO |
+| `bound` | I = pair_bound(ζ, la + lb), the record's Schwarz bound: a J or K screen's `Ip` as a bra and `Iq` as a ket. Formed on the device (below) |
 
 The kernels build the Hermite expansion E from these, including its
 exp(−αβ/ζ |A−B|²) prefactor (as exp(ζ X_PA X_PB) per axis), so the host forms
@@ -49,12 +51,25 @@ the upload: key `-ζ`, a stable merge sort carrying each record's index
 ([`src/integrals/sort`](../sort/README.md)), then every field permuted to that
 order in place (`mmd_launch.cu`), and the pinned side refreshed. Equal ζ keep
 the order the host wrote (shell pair, then bra primitive). Within a class the
-J screen's record bound `Ip = pair_bound(ζ, la + lb)` rises with ζ, so this is
-descending `Ip`: a bra's ket loop runs until `Dmax · Ip · Iq < τ`, so the
+record bound rises with ζ, so this is descending `Ip`: a bra's ket loop runs until `Dmax · Ip · Iq < τ`, so the
 longest loops launch first and a build's tail is short. No kernel depends on
 the order (each accumulates), and it is fixed per basis, so it costs one sort
 per class, once. It also spreads a shell pair's records across warps, so
 `jab`'s and the one-electron scatters' atomic adds collide less.
+
+**The bound is a field, formed once per basis.** `I = pair_bound(ζ, la + lb)`,
+the pair-factor-free Schwarz bound of FelizJueves's `Target.PAIR_BOUND`, depends
+on ζ and the class's `la + lb` only, so it belongs to the record, not to a
+build: on the class's stream, after the order, the generated
+`pair_bound<la, lb>` (`kernels/pair_bound/`, one thread per record, a Horner
+fold of its closed form in √ζ) writes it from the ordered ζ, and its pinned
+side is refreshed. It is the one field the host never writes. Because it rises
+with ζ, it is non-increasing in record order. A class above
+`kMaxAngularMomentum` has no kernel, so its bound stays zero; every build
+refuses such a class, and `primitive_pair_classes` itself still accepts it. The J build reads it (bras in
+record order, kets through `sort_bounds`' sorted copy), as the K build will.
+`tools/emit_one_electron_kernels.py` writes the kernels (its small `mmd`
+section); `kernels/.clang-format` turns formatting off so they stay as emitted.
 
 **The launchers' view is a header.** `PrimitivePairClass` holds wwr buffers,
 which only a module can name, so `view()` hands the launchers a
@@ -79,7 +94,7 @@ business (`BasisStamp::primitive_normalized`). Nothing is screened.
 
 | Symbol | Role |
 |---|---|
-| `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field, `device_stream()`; `view()` gives a `PrimitivePairClassView` |
+| `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field (`bound` among them), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
 | `PrimitivePairClassView` | The class's device fields by pointer, for the launchers (`primitive_pair_class_view.h`, re-exported) |
 | `primitive_pair_classes(res, basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty, each on a new `DeviceStream`. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records aborts |
 
@@ -89,7 +104,9 @@ business (`BasisStamp::primitive_normalized`). Nothing is screened.
 theorem, the swap, the streams, and the device side against the pinned side;
 the order, on a shell whose exponents ascend (so the sort has to move them)
 and on a class past one sort tile (2816 records), each record matched by its
-fields to the one the host wrote.
+fields to the one the host wrote; and the bound, for every class of
+H₂O/cc-pVDZ, within 16 eps of a host evaluation of its closed form (summed term
+by term, not by the kernel's Horner fold) and non-increasing within each class.
 
 ## Files
 
@@ -97,7 +114,8 @@ fields to the one the host wrote.
 |------|------|
 | `primitive_pair_class_view.h` | `PrimitivePairClassView`, the single definition, for `#include` and `import` alike |
 | `mmd.cppm` | Module interface: `PrimitivePairClass`, `primitive_pair_classes`, the view re-exported |
-| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the per-record arithmetic, the copies and the order |
-| `mmd_bridge.h` | The order's launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
-| `mmd_launch.cu` | The key and gather kernels, and the launchers: `mmd_order` (key and sort), `mmd_permute` (one field, in place) |
+| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the per-record arithmetic, the copies, the order and the bound |
+| `mmd_bridge.h` | The order's and the bound's launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
+| `mmd_launch.cu` | The key and gather kernels, and the launchers: `mmd_order` (key and sort), `mmd_permute` (one field, in place), `mmd_bound` (the generated `pair_bound<la, lb>`, its table checked against `kMaxAngularMomentum`) |
+| `kernels/pair_bound/` | The generated `pair_bound<la, lb>` units and their template header (`tools/emit_one_electron_kernels.py`) |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.mmd.headers`, the device library and the module library |

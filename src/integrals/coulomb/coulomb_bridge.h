@@ -35,31 +35,29 @@ namespace free_breakfast::device {
 
 /// @brief One class's inputs to every later step, on @p stream: each record's
 /// weight w (2 for a shell pair of two shells, 1 for a shell against itself,
-/// read off its offsets) into @p w; its Schwarz bound I =
-/// pair_bound(zeta, la + lb) into @p bound (the generated pair_bound<la, lb>),
-/// e_hermite's Ip when the class is a bra and Iq when it is a ket; then the
-/// pre-contraction of the AO @p density into @p dq and @p dmax (the generated
-/// dq<la, lb>).
+/// read off its offsets) into @p w, then the pre-contraction of the AO
+/// @p density into @p dq and @p dmax (the generated dq<la, lb>). The record
+/// bound, e_hermite's Ip and Iq, is the class's own (cls.bound, mmd's).
 ///
 /// @p density is n_ao x n_ao and symmetric (it is read at one orientation of
 /// each block); @p dq is q-major, n_hermite(la + lb) x n_rec (so e_hermite's
-/// lanes, consecutive kets, read it contiguously), and @p w, @p bound and
-/// @p dmax n_rec, all written whole. cls.n_rec must be positive, cls.la <=
+/// lanes, consecutive kets, read it contiguously), and @p w and @p dmax
+/// n_rec, all written whole. cls.n_rec must be positive, cls.la <=
 /// cls.lb <= kMaxAngularMomentum, and n_ao * n_ao must fit an int32_t.
 ///
 /// @return The first launch status (wwrErrorInvalidValue for a class with no
 ///         kernel). Launch errors only, as overlap_class.
 [[nodiscard]] wwr::wwrError_t coulomb_prepare(wwr::wwrStream_t stream,
                                               const PrimitivePairClassView &cls, int32_t n_ao,
-                                              const double *density, double *w, double *bound,
-                                              double *dq, double *dmax);
+                                              const double *density, double *w, double *dq,
+                                              double *dmax);
 
 /// @brief Add the [p|q] contraction of bra class @p bra against ket class
 /// @p ket into the bra's @p jp, on @p stream: the generated
 /// e_hermite<bra.la + bra.lb, ket.la + ket.lb>, one warp per bra record.
 ///
-/// @p ip is @p bra's bound and @p iq, @p dq and @p dmax are @p ket's, all from
-/// @ref coulomb_prepare, @p dq q-major; @p jp is bra.n_rec x
+/// @p ip is @p bra's bound (bra.bound) and @p iq, @p dq and @p dmax are
+/// @p ket's, the last two from @ref coulomb_prepare, @p dq q-major; @p jp is bra.n_rec x
 /// n_hermite(bra.la + bra.lb), record-major,
 /// added to atomically, so it must be zeroed before the first ket class and
 /// then holds the sum over all of them. Each lane stops at its first ket with

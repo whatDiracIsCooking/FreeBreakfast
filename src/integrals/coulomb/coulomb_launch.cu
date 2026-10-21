@@ -1,6 +1,5 @@
 // The device half of free_breakfast.integrals.coulomb: the launchers over the
-// generated pair_bound<la, lb>, dq<la, lb>, e_hermite<lp, lq> and jab<la, lb>
-// kernels, and the two small kernels that make the inputs the generated ones
+// generated dq<la, lb>, e_hermite<lp, lq> and jab<la, lb> kernels, and the two small kernels that make the inputs the generated ones
 // leave to their caller (each record's weight, and jab's row map). One source
 // for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
@@ -25,7 +24,6 @@
 #include "kernels/dq/dq.h"
 #include "kernels/e_hermite/e_hermite.h"
 #include "kernels/jab/jab.h"
-#include "kernels/pair_bound/pair_bound.h"
 
 namespace {
 
@@ -57,10 +55,6 @@ namespace free_breakfast::device {
 constexpr auto kPairExtent = static_cast<size_t>(kMaxAngularMomentum + 1);
 constexpr auto kHermiteExtent = static_cast<size_t>(2 * kMaxAngularMomentum + 1);
 
-static_assert(std::extent_v<decltype(pair_bound_kernels), 0> == kPairExtent &&
-                  std::extent_v<decltype(pair_bound_kernels), 1> == kPairExtent,
-              "kernels/pair_bound was not emitted for kMaxAngularMomentum: rerun "
-              "tools/emit_coulomb_kernels.py");
 static_assert(std::extent_v<decltype(dq_kernels), 0> == kPairExtent &&
                   std::extent_v<decltype(dq_kernels), 1> == kPairExtent,
               "kernels/dq was not emitted for kMaxAngularMomentum: rerun "
@@ -104,17 +98,13 @@ wwr::wwrError_t coulomb_rows(const wwr::wwrStream_t stream, const int32_t n, int
 }
 
 wwr::wwrError_t coulomb_prepare(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                                const int32_t n_ao, const double *density, double *w, double *bound,
-                                double *dq, double *dmax) {
+                                const int32_t n_ao, const double *density, double *w, double *dq,
+                                double *dmax) {
   if (!has_pair_kernel(cls)) {
     return wwr::wwrErrorInvalidValue;
   }
   const uint32_t blocks = record_blocks(cls.n_rec);
   coulomb_weights_kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, cls.off_a, cls.off_b, w);
-  if (const wwr::wwrError_t code = wwr::wwrGetLastError(); code != wwr::wwrSuccess) {
-    return code;
-  }
-  pair_bound_kernels[cls.la][cls.lb]<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, cls.zeta, bound);
   if (const wwr::wwrError_t code = wwr::wwrGetLastError(); code != wwr::wwrSuccess) {
     return code;
   }
