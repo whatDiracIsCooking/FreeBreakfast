@@ -4,8 +4,11 @@
 // every e_hermite class through (4, 4)) against libcint's J of the same
 // density, recorded by PySCF (test/gtest/data/coulomb/, copied from
 // FelizJueves's fixtures by tools/extract_integral_golden.py), both unscreened
-// (tau = 0) and at the default screen; that a tau no bound reaches screens
-// everything; plus, as overlap_gpu.cpp, the zeroing and the refusals.
+// (tau = 0) and at the default screen; J from coulomb_pair_classes' pruned
+// records against the same goldens (the H10 chain's too, unscreened), their
+// count pinned, and the pruned records a subsequence of mmd's; that a tau no
+// bound reaches screens everything; plus, as overlap_gpu.cpp, the zeroing and
+// the refusals.
 
 #include <gtest/gtest.h>
 
@@ -131,6 +134,203 @@ TEST_P(CoulombGolden, MatchesLibcint) {
 }
 
 INSTANTIATE_TEST_SUITE_P(H2O, CoulombGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
+
+std::size_t record_count(const std::vector<fb::PrimitivePairClass> &classes) {
+  std::size_t n = 0;
+  for (const fb::PrimitivePairClass &cls : classes) {
+    n += static_cast<std::size_t>(cls.n_rec);
+  }
+  return n;
+}
+
+// J of g's density at tau from coulomb_pair_classes' records pruned at prune
+// (its default unless given), downloaded, and the record counts before and
+// after.
+struct PrunedJ {
+  std::vector<double> j;
+  std::size_t before;
+  std::size_t after;
+};
+
+PrunedJ pruned_j(const Golden &g, const double tau, const double prune = 1e-13) {
+  fb::DeviceResources res{0};
+  const auto classes = fb::primitive_pair_classes(res, g.basis);
+  EXPECT_TRUE(classes);
+  if (!classes) {
+    return {};
+  }
+  const auto pruned = fb::coulomb_pair_classes(res, *classes, prune);
+  EXPECT_TRUE(pruned) << (pruned ? "" : pruned.error().message);
+  if (!pruned) {
+    return {};
+  }
+  fb::CartesianMatrixAO density(res, g.basis);
+  upload(res, g.density, density);
+  fb::CartesianMatrixAO j(res, g.basis);
+  const fb::Status status = fb::coulomb(res, *pruned, density, j, tau);
+  EXPECT_TRUE(status) << (status ? "" : status.error().message);
+  return {download(res, j), record_count(*classes), record_count(*pruned)};
+}
+
+struct PruneCase {
+  const char *stem;
+  // The records coulomb_pair_classes keeps at its default, of mmd's.
+  std::size_t kept;
+  std::size_t records;
+};
+
+// The molecule, not the struct's bytes, in the test's name and in ctest's.
+void PrintTo(const PruneCase &c, std::ostream *os) {
+  *os << c.stem;
+}
+
+class CoulombPruned : public ::testing::TestWithParam<PruneCase> {};
+
+// The pruned records give libcint's J to the same bar as every record: at
+// tau = 0 on all three molecules, and at the default screen on H2O (the H10
+// chain's screened J misses the bar with every record too, #132's "Not in
+// scope"). The record counts are pinned; how far pruning moved J (against
+// every record, both at tau = 0) is recorded.
+TEST_P(CoulombPruned, MatchesLibcint) {
+  FBF_REQUIRE_GPU();
+  const PruneCase c = GetParam();
+  const Golden g = read_golden(c.stem);
+  ASSERT_FALSE(g.vj.empty());
+  double scale = 0.0;
+  for (const double v : g.vj) {
+    scale = std::max(scale, std::abs(v));
+  }
+  const bool chain = std::string_view{c.stem} == "h10_chain_ccpvdz";
+  const PrunedJ unscreened = pruned_j(g, 0.0);
+  EXPECT_EQ(unscreened.before, c.records);
+  EXPECT_EQ(unscreened.after, c.kept);
+  std::vector<std::pair<const char *, const std::vector<double> *>> runs{
+      {"unscreened", &unscreened.j}};
+  PrunedJ screened;
+  if (!chain) {
+    screened = pruned_j(g, 1e-10);
+    runs.emplace_back("screened", &screened.j);
+  }
+  const std::size_t n = g.basis.nao_cart();
+  for (const auto &[name, got] : runs) {
+    ASSERT_EQ(got->size(), g.vj.size()) << name;
+    double worst = 0.0;
+    for (std::size_t i = 0; i < n * n; ++i) {
+      const double err = std::abs((*got)[i] - g.vj[i]);
+      worst = std::max(worst, err);
+      EXPECT_LE(err, kRelTol * scale) << name << " J(" << i / n << ", " << i % n << ")";
+    }
+    RecordProperty(std::format("{}_worst_abs_error", name), std::format("{:.3e}", worst));
+  }
+  const std::vector<double> every = golden_j(g, 0.0);
+  double moved = 0.0;
+  for (std::size_t i = 0; i < n * n; ++i) {
+    moved = std::max(moved, std::abs(unscreened.j[i] - every[i]));
+  }
+  RecordProperty("prune_max_abs_change", std::format("{:.3e}", moved));
+}
+
+INSTANTIATE_TEST_SUITE_P(Molecules, CoulombPruned,
+                         ::testing::Values(PruneCase{"h2o_sto3g", 135, 135},
+                                           PruneCase{"h2o_ccpvdz", 572, 593},
+                                           PruneCase{"h10_chain_ccpvdz", 842, 1305}),
+                         [](const auto &info) { return std::string{info.param.stem}; });
+
+// Every kept record is one of mmd's, every field carried, in mmd's order; at
+// tau = 0 every record is kept, and a tau above every bound keeps none (and
+// leaves out every emptied class).
+TEST(CoulombPairClasses, KeepsASubsequenceOfMmdsRecords) {
+  FBF_REQUIRE_GPU();
+  const Golden g = read_golden("h10_chain_ccpvdz");
+  ASSERT_FALSE(g.vj.empty());
+  fb::DeviceResources res{0};
+  auto classes = fb::primitive_pair_classes(res, g.basis);
+  ASSERT_TRUE(classes);
+  for (fb::PrimitivePairClass &cls : *classes) {
+    ASSERT_EQ(wwr::wwrStreamSynchronize(cls.device_stream()->stream()), wwr::wwrSuccess);
+  }
+  auto pruned = fb::coulomb_pair_classes(res, *classes);
+  ASSERT_TRUE(pruned);
+  ASSERT_LE(pruned->size(), classes->size());
+  std::size_t from = 0;
+  for (fb::PrimitivePairClass &out : *pruned) {
+    // The device side, not the pinned one the copy was written from.
+    std::vector<double> zeta(static_cast<std::size_t>(out.n_rec));
+    std::vector<double> p_z(zeta.size());
+    std::vector<double> pa_z(zeta.size());
+    std::vector<double> pb_z(zeta.size());
+    std::vector<double> s(zeta.size());
+    std::vector<double> eb(zeta.size());
+    std::vector<double> bound(zeta.size());
+    std::vector<std::int32_t> off_a(zeta.size());
+    std::vector<std::int32_t> off_b(zeta.size());
+    const auto get = [&](auto &host, const auto &field) {
+      ASSERT_EQ(wwr::wwrMemcpy(host.data(), field.device().data(), sizeof(host[0]) * host.size(),
+                               wwr::wwrMemcpyDeviceToHost),
+                wwr::wwrSuccess);
+    };
+    ASSERT_EQ(wwr::wwrStreamSynchronize(out.device_stream()->stream()), wwr::wwrSuccess);
+    get(zeta, out.zeta);
+    get(p_z, out.p_z);
+    get(pa_z, out.pa_z);
+    get(pb_z, out.pb_z);
+    get(s, out.s);
+    get(eb, out.eb);
+    get(bound, out.bound);
+    get(off_a, out.off_a);
+    get(off_b, out.off_b);
+    // The class it came from: the first of the same momenta at or after from.
+    while (from < classes->size() &&
+           ((*classes)[from].la != out.la || (*classes)[from].lb != out.lb)) {
+      ++from;
+    }
+    ASSERT_LT(from, classes->size()) << out.la << out.lb;
+    fb::PrimitivePairClass &src = (*classes)[from++];
+    std::int32_t k = 0;
+    for (std::size_t r = 0; r < zeta.size(); ++r) {
+      // Advance through src to the record r was copied from.
+      const auto same = [&](const std::int32_t q) {
+        const auto at = [q](auto &field) { return field.pinned().data()[q]; };
+        return at(src.zeta) == zeta[r] && at(src.p_z) == p_z[r] && at(src.pa_z) == pa_z[r] &&
+               at(src.pb_z) == pb_z[r] && at(src.s) == s[r] && at(src.eb) == eb[r] &&
+               at(src.bound) == bound[r] && at(src.off_a) == off_a[r] && at(src.off_b) == off_b[r];
+      };
+      while (k < src.n_rec && !same(k)) {
+        ++k;
+      }
+      ASSERT_LT(k, src.n_rec) << "class (" << out.la << ", " << out.lb << ") record " << r
+                              << " is not one of mmd's, in order";
+      ++k;
+    }
+  }
+
+  const auto all = fb::coulomb_pair_classes(res, *classes, 0.0);
+  ASSERT_TRUE(all);
+  EXPECT_EQ(all->size(), classes->size());
+  EXPECT_EQ(record_count(*all), record_count(*classes));
+  const auto none = fb::coulomb_pair_classes(res, *classes, 1e300);
+  ASSERT_TRUE(none);
+  EXPECT_TRUE(none->empty());
+}
+
+TEST(CoulombPairClasses, RefusesANegativeOrNaNTauAndAClassAboveD) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::BasisSet s_shell({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
+  const auto classes = fb::primitive_pair_classes(res, s_shell);
+  ASSERT_TRUE(classes);
+  for (const double tau : {-1e-13, std::numeric_limits<double>::quiet_NaN()}) {
+    const auto out = fb::coulomb_pair_classes(res, *classes, tau);
+    ASSERT_FALSE(out) << tau;
+    EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig) << tau;
+  }
+  const fb::BasisSet f_shell({fb::Shell(3, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
+  const auto f_classes = fb::primitive_pair_classes(res, f_shell);
+  ASSERT_TRUE(f_classes);
+  const auto out = fb::coulomb_pair_classes(res, *f_classes);
+  ASSERT_FALSE(out);
+  EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig);
+}
 
 TEST(Coulomb, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();

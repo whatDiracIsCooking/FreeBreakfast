@@ -138,7 +138,7 @@ displacements and both offsets with the bound.
 | `ordered_pair_class_view.h` | `OrderedPairClassView`, the single definition, for `#include` and `import` alike |
 | `pairs.cppm` | Module interface: `OrderedPairClass`, `OrderedPairGroup`, `ordered_pair_classes`, the view re-exported |
 | `pairs.cpp` | The host gather (the sync, the orientations, the groups, the ranks, the copies), then the bound, the sort, the permutation and the refresh on the device |
-| `pairs_bridge.h` | The bound's, the order's and the permutation's launchers, declared once for `pairs.cpp`'s GMF and the `.cu` |
-| `pairs_launch.cu` | The key and gather kernels, and the launchers: `ordered_pair_bound` (the generated `record_bound<la, lb>`, its table checked against `kMaxAngularMomentum`), `ordered_pair_order` (the two sorts), `ordered_pair_permute` (one field, in place) |
+| `pairs_bridge.h` | The bound's, the order's and the permutation's launchers, declared once for `pairs.cpp`'s GMF and the `.cu`, and the bound's for `../../coulomb/coulomb.cpp`'s GMF |
+| `pairs_launch.cu` | The key and gather kernels, and the launchers: `ordered_pair_bound` (the generated `record_bound<la, lb>`, its table checked against `kMaxAngularMomentum`; also over `mmd`'s own records, as stored, for J's pruning, `coulomb_pair_classes`), `ordered_pair_order` (the two sorts), `ordered_pair_permute` (one field, in place) |
 | `kernels/record_bound/` | The generated `record_bound<la, lb>` units, all nine ordered classes through d, and their template header (`tools/emit_exchange_kernels.py`) |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.exchange.pairs.headers`, the device library and the module library |

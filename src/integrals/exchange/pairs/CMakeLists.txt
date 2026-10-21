@@ -16,13 +16,15 @@ free_breakfast_add_interface_library(
 # own, and each group sorted by it, once per basis. Device code in its own
 # library, so its language and -x hip never reach the module compiles. Under
 # CUDA launching another unit's specialization wants relocatable device code,
-# this library's default, so it must never pass NO_DEVICE_LINKING. The bridge
-# header names int32_t, OrderedPairClassView, wwrStream_t and wwrError_t, hence
-# types_headers, headers and wwr::device PUBLIC; the launcher reads
-# kFourWarps and idivup (core::kernel_headers) and kMaxAngularMomentum
-# (basis::headers), sorts with src/integrals/sort's merge sort, and the
-# generated units include felizjueves/runtime.h (felizjueves::headers); all
-# PRIVATE.
+# this library's default, so it must never pass NO_DEVICE_LINKING. The bound
+# also runs over mmd's own records, for J's pruning (coulomb_pair_classes, whose
+# module links this library). The bridge header names int32_t,
+# OrderedPairClassView, PrimitivePairClassView, wwrStream_t and wwrError_t,
+# hence types_headers, headers, mmd::headers and wwr::device PUBLIC; the
+# launcher reads kFourWarps and idivup (core::kernel_headers) and
+# kMaxAngularMomentum (basis::headers), sorts with src/integrals/sort's merge
+# sort, and the generated units include felizjueves/runtime.h
+# (felizjueves::headers); all PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.exchange.pairs.device
@@ -40,6 +42,7 @@ free_breakfast_add_gpu_device_library(
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::exchange::pairs::headers
+  free_breakfast::integrals::mmd::headers
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers

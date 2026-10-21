@@ -16,7 +16,7 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
   potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
-coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened
+coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened, over mmd's records with the negligible primitive pairs pruned
   sort_bounds/       free_breakfast.integrals.coulomb.sort_bounds: each ket class sorted by its screen bound Iq * Dmax
 exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, screened by the Schwarz bound and the density's decay
   helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table and its density factors, the decay they are cut from, the shell starts and the mirror kb leaves to its launcher
@@ -34,6 +34,7 @@ BasisSet --primitive_pair_classes--> PrimitivePairClass[]          (mmd, on the 
 Molecule(res, atoms)                  nuclei on the device          (molecule, once per geometry)
          --nuclear_attraction-->     CartesianMatrixAO V           (one launch per class)
          --core_hamiltonian-->       CartesianMatrixAO H = T + V   (two launches per class, one matrix)
+PrimitivePairClass[] --coulomb_pair_classes--> PrimitivePairClass[]  (coulomb, a copy without the pairs J cannot need, assuming |D| <= 2, once per basis)
 CartesianMatrixAO D                   an AO density
          --coulomb-->                CartesianMatrixAO J           (dq and the ket sort per class, then e_hermite per class pair and jab per class)
 PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, the dressed bound and each group's sort on the device, once per basis)
