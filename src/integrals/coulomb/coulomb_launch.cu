@@ -126,9 +126,9 @@ wwr::wwrError_t coulomb_prepare(const wwr::wwrStream_t stream, const PrimitivePa
 }
 
 wwr::wwrError_t coulomb_e_hermite(const wwr::wwrStream_t stream, const PrimitivePairClassView &bra,
-                                  const PrimitivePairClassView &ket, const double *ip,
-                                  const double *iq, const double *dq, const double *dmax,
-                                  double *jp) {
+                                  const PrimitivePairClassView &ket, const double tau,
+                                  const double *ip, const double *iq, const double *dq,
+                                  const double *dmax, double *jp) {
   if (!has_pair_kernel(bra) || !has_pair_kernel(ket)) {
     return wwr::wwrErrorInvalidValue;
   }
@@ -136,12 +136,9 @@ wwr::wwrError_t coulomb_e_hermite(const wwr::wwrStream_t stream, const Primitive
   // One warp per bra record, the kets strip-mined across its lanes; no dynamic
   // shared memory, J_p's accumulator is sized for this block in the text.
   const dim3 block(e_hermite_block_dim[0], e_hermite_block_dim[1]);
-  // Unscreened: the kets are in record order, not sorted by Iq * Dmax, and
-  // the screen breaks, so any tau > 0 would be a wrong answer, not a slow one.
-  constexpr double kTau = 0.0;
   kernel<<<static_cast<uint32_t>(bra.n_rec), block, 0, stream>>>(
-      bra.n_rec, ket.n_rec, kTau, bra.p_x, bra.p_y, bra.p_z, bra.zeta, ip, ket.p_x, ket.p_y,
-      ket.p_z, ket.zeta, iq, dmax, dq, jp);
+      bra.n_rec, ket.n_rec, tau, bra.p_x, bra.p_y, bra.p_z, bra.zeta, ip, ket.p_x, ket.p_y, ket.p_z,
+      ket.zeta, iq, dmax, dq, jp);
   return wwr::wwrGetLastError();
 }
 

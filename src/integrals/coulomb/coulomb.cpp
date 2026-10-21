@@ -14,6 +14,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.integrals.mmd;
+import free_breakfast.integrals.coulomb.sort_bounds;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.linalg.matrix_ao;
 
@@ -29,19 +30,25 @@ size_t coulomb_hermite_count(const int32_t l) {
 }
 
 // One class's scratch: its records' weights and Schwarz bounds (Ip as a bra,
-// Iq as a ket) and, as a ket, D_q and Dmax; as a bra, J_p. D_q and J_p share
-// the class's Hermite order, la + lb.
+// Iq as a ket) and, as a ket, D_q and Dmax, in record order and sorted by
+// Iq * Dmax; as a bra, J_p. D_q and J_p share the class's Hermite order,
+// la + lb.
 struct CoulombScratch {
   Buffers::device<double> w;
   Buffers::device<double> bound;
   Buffers::device<double> dq;
   Buffers::device<double> dmax;
   Buffers::device<double> jp;
+  SortedKets kets;
 };
 
 Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> classes,
-               const CartesianMatrixAO &density, CartesianMatrixAO &j) {
+               const CartesianMatrixAO &density, CartesianMatrixAO &j, const double tau) {
   FBF_TRY(check_one_electron_build(res, classes, j, "coulomb"));
+  // Written so that NaN fails too: a NaN tau would never screen, silently.
+  if (!(tau >= 0.0)) {
+    return err_config("coulomb: the screening threshold tau is {}, but must be 0 or above", tau);
+  }
   if (density.dev_idx() != res.dev_idx()) {
     return err_config("coulomb: the density is on device {}, but the call passed device {}",
                       density.dev_idx(), res.dev_idx());
@@ -73,11 +80,13 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
   scratch.reserve(classes.size());
   for (const PrimitivePairClass &cls : classes) {
     const auto n_rec = static_cast<size_t>(cls.n_rec);
-    const size_t n = n_rec * coulomb_hermite_count(cls.la + cls.lb);
+    const size_t n_hermite = coulomb_hermite_count(cls.la + cls.lb);
+    const size_t n = n_rec * n_hermite;
     CoulombScratch &sc = scratch.emplace_back(CoulombScratch{
         Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n_rec, res.device()),
         Buffers::device<double>(n, res.device()), Buffers::device<double>(n_rec, res.device()),
-        Buffers::device<double>(n, res.device())});
+        Buffers::device<double>(n, res.device()),
+        SortedKets(res.device(), cls, static_cast<int32_t>(n_hermite))});
     // e_hermite adds every ket class into J_p.
     FBF_TRY(gpu_status(wwr::wwrMemsetAsync(sc.jp.data(), 0, sizeof(double) * n, stream)));
   }
@@ -87,24 +96,31 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
   const auto n_ao = static_cast<int32_t>(j.n());
 
   // Every class's inputs: its weights, its bounds and, as a ket, its D_q and
-  // Dmax, which every bra class reads, so the join closes the phase before any
-  // of them starts.
+  // Dmax, then the class sorted by Iq * Dmax as a ket, which every bra class
+  // reads, so the join closes the phase before any of them starts.
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
+    const wwr::wwrStream_t s = cls.device_stream()->stream();
     CoulombScratch &k = of(cls);
-    return device::coulomb_prepare(cls.device_stream()->stream(), cls.view(), n_ao, density.data(),
-                                   k.w.data(), k.bound.data(), k.dq.data(), k.dmax.data());
+    if (const wwr::wwrError_t code =
+            device::coulomb_prepare(s, cls.view(), n_ao, density.data(), k.w.data(), k.bound.data(),
+                                    k.dq.data(), k.dmax.data());
+        code != wwr::wwrSuccess) {
+      return code;
+    }
+    return k.kets.sort(s, k.bound.data(), k.dmax.data(), k.dq.data());
   })));
 
-  // Every class as a bra: J_p over every ket class, then its scatter into J,
-  // in that order on the bra's own stream.
+  // Every class as a bra: J_p over every ket class, sorted, then its scatter
+  // into J, in that order on the bra's own stream. The bra side reads the
+  // class in record order, so jab's rows stay the identity.
   return gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &bra) {
     const wwr::wwrStream_t s = bra.device_stream()->stream();
     CoulombScratch &b = of(bra);
     for (const PrimitivePairClass &ket : classes) {
-      const CoulombScratch &k = of(ket);
+      const SortedKets &k = of(ket).kets;
       if (const wwr::wwrError_t code =
-              device::coulomb_e_hermite(s, bra.view(), ket.view(), b.bound.data(), k.bound.data(),
-                                        k.dq.data(), k.dmax.data(), b.jp.data());
+              device::coulomb_e_hermite(s, bra.view(), k.view(), tau, b.bound.data(), k.bound(),
+                                        k.dq(), k.dmax(), b.jp.data());
           code != wwr::wwrSuccess) {
         return code;
       }

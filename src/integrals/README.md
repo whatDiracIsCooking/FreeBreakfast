@@ -15,7 +15,8 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
   potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
-coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, unscreened
+coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened
+  sort_bounds/       free_breakfast.integrals.coulomb.sort_bounds: each ket class sorted by its screen bound Iq * Dmax
 ```
 
 ## How the pieces fit
@@ -27,7 +28,7 @@ Molecule(res, atoms)                  nuclei on the device          (molecule, o
          --nuclear_attraction-->     CartesianMatrixAO V           (one launch per class)
          --core_hamiltonian-->       CartesianMatrixAO H = T + V   (two launches per class, one matrix)
 CartesianMatrixAO D                   an AO density
-         --coulomb-->                CartesianMatrixAO J           (dq per class, then e_hermite per class pair and jab per class)
+         --coulomb-->                CartesianMatrixAO J           (dq and the ket sort per class, then e_hermite per class pair and jab per class)
          --MatrixAOPair::cartesian_to_spherical-->  spherical      (linalg.matrix_ao)
 ```
 

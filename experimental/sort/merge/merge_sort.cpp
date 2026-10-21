@@ -4,8 +4,10 @@
 
 module;
 
-// The launchers, defined in merge_sort.cu and cub_merge_sort.cu: declared in
-// the GMF so they keep external linkage (see the header).
+// The launchers, defined in merge_sort.cu (src/integrals/coulomb/sort_bounds)
+// and cub_merge_sort.cu: declared in the GMF so they keep external linkage (see
+// the headers).
+#include "cub_merge_sort_bridge.h"
 #include "merge_sort_bridge.h"
 
 module free_breakfast.experimental.sort.merge;

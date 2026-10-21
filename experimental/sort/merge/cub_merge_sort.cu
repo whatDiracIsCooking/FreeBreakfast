@@ -17,7 +17,7 @@
 
 #include <cub.h>
 
-#include "merge_sort_bridge.h"
+#include "cub_merge_sort_bridge.h"
 
 namespace free_breakfast::device {
 

@@ -1,21 +1,22 @@
-# The merge-sort kernels, and the vendor reference over CUB / hipCUB. Device
-# code in its own library, so its language and -x hip never reach the module
-# compiles. The bridge header it shares with the module names wwrStream_t, and
-# merge_sort.cu reads kWarpSize (block_params.h), hence kernel_headers PUBLIC:
-# it brings types_headers and wwr::device with it. wwr::device also carries
-# cub.h and the vendor's CUB or hipCUB include path, as for sort/radix.
+# The vendor reference over CUB / hipCUB. Device code in its own library, so
+# its language and -x hip never reach the module compiles. The merge sort
+# itself is src/integrals/coulomb/sort_bounds' merge_sort.cu, which the J
+# build sorts its kets with; this tree links it rather than keeping a copy.
+# The bridge header this library shares with the module names wwrStream_t,
+# hence kernel_headers PUBLIC: it brings types_headers and wwr::device with it.
+# wwr::device also carries cub.h and the vendor's CUB or hipCUB include path,
+# as for sort/radix.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.experimental.sort.merge.device
   SOURCES
-  merge_sort.cu
   cub_merge_sort.cu
   LINK_PUBLIC
   free_breakfast::core::kernel_headers
 )
 
-# The module. The device library is PRIVATE: the implementation unit includes
-# the bridge header in its GMF and calls the launcher.
+# The module. Both device libraries are PRIVATE: the implementation unit
+# includes their bridge headers in its GMF and calls the launchers.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.experimental.sort.merge
@@ -33,6 +34,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::experimental::sort::merge::device
+  free_breakfast::integrals::coulomb::sort_bounds::device
 )
 
 # merge_sort against radix_sort and the vendor's merge and radix sorts, wall
