@@ -54,6 +54,9 @@ struct PrimitivePairClassView {
   const double *s;
   /// @brief beta, the ket primitive's exponent.
   const double *eb;
+  /// @brief The record's Schwarz bound I = pair_bound(zeta, la + lb): a J or
+  /// K screen's Ip as a bra and Iq as a ket.
+  const double *bound;
   /// @brief The bra shell's first Cartesian AO.
   const int32_t *off_a;
   /// @brief The ket shell's first Cartesian AO.

@@ -29,13 +29,12 @@ size_t coulomb_hermite_count(const int32_t l) {
   return (n + 1) * (n + 2) * (n + 3) / 6;
 }
 
-// One class's scratch: its records' weights and Schwarz bounds (Ip as a bra,
-// Iq as a ket) and, as a ket, D_q and Dmax, in record order and sorted by
-// Iq * Dmax; as a bra, J_p. D_q and J_p share the class's Hermite order,
-// la + lb.
+// One class's scratch: its records' weights and, as a ket, D_q and Dmax, in
+// record order, and those with zeta, P and the Schwarz bound Iq (the class's
+// own bound field) sorted by Iq * Dmax; as a bra, J_p. D_q and J_p share the
+// class's Hermite order, la + lb.
 struct CoulombScratch {
   Buffers::device<double> w;
-  Buffers::device<double> bound;
   Buffers::device<double> dq;
   Buffers::device<double> dmax;
   Buffers::device<double> jp;
@@ -83,9 +82,8 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
     const size_t n_hermite = coulomb_hermite_count(cls.la + cls.lb);
     const size_t n = n_rec * n_hermite;
     CoulombScratch &sc = scratch.emplace_back(CoulombScratch{
-        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n_rec, res.device()),
-        Buffers::device<double>(n, res.device()), Buffers::device<double>(n_rec, res.device()),
-        Buffers::device<double>(n, res.device()),
+        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n, res.device()),
+        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n, res.device()),
         SortedKets(res.device(), cls, static_cast<int32_t>(n_hermite))});
     // e_hermite adds every ket class into J_p.
     FBF_TRY(gpu_status(wwr::wwrMemsetAsync(sc.jp.data(), 0, sizeof(double) * n, stream)));
@@ -95,37 +93,39 @@ Status coulomb(DeviceResources &res, const std::span<const PrimitivePairClass> c
   };
   const auto n_ao = static_cast<int32_t>(j.n());
 
-  // Every class's inputs: its weights, its bounds and, as a ket, its D_q and
-  // Dmax, then the class sorted by Iq * Dmax as a ket, which every bra class
-  // reads, so the join closes the phase before any of them starts.
+  // Every class's inputs: its weights and, as a ket, its D_q and Dmax, then
+  // the class sorted by Iq * Dmax as a ket (Iq its records' bound, mmd's),
+  // which every bra class reads, so the join closes the phase before any of
+  // them starts.
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
     const wwr::wwrStream_t s = cls.device_stream()->stream();
     CoulombScratch &k = of(cls);
-    if (const wwr::wwrError_t code =
-            device::coulomb_prepare(s, cls.view(), n_ao, density.data(), k.w.data(), k.bound.data(),
-                                    k.dq.data(), k.dmax.data());
+    const PrimitivePairClassView v = cls.view();
+    if (const wwr::wwrError_t code = device::coulomb_prepare(s, v, n_ao, density.data(), k.w.data(),
+                                                             k.dq.data(), k.dmax.data());
         code != wwr::wwrSuccess) {
       return code;
     }
-    return k.kets.sort(s, k.bound.data(), k.dmax.data(), k.dq.data());
+    return k.kets.sort(s, v.bound, k.dmax.data(), k.dq.data());
   })));
 
   // Every class as a bra: J_p over every ket class, sorted, then its scatter
   // into J, in that order on the bra's own stream. The bra side reads the
-  // class in record order, so jab's rows stay the identity.
+  // class in record order, its Ip the class's own bound, so jab's rows stay
+  // the identity.
   return gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &bra) {
     const wwr::wwrStream_t s = bra.device_stream()->stream();
     CoulombScratch &b = of(bra);
+    const PrimitivePairClassView v = bra.view();
     for (const PrimitivePairClass &ket : classes) {
       const SortedKets &k = of(ket).kets;
-      if (const wwr::wwrError_t code =
-              device::coulomb_e_hermite(s, bra.view(), k.view(), tau, b.bound.data(), k.bound(),
-                                        k.dq(), k.dmax(), b.jp.data());
+      if (const wwr::wwrError_t code = device::coulomb_e_hermite(
+              s, v, k.view(), tau, v.bound, k.bound(), k.dq(), k.dmax(), b.jp.data());
           code != wwr::wwrSuccess) {
         return code;
       }
     }
-    return device::coulomb_jab(s, bra.view(), n_ao, rows.data(), b.jp.data(), j.data());
+    return device::coulomb_jab(s, v, n_ao, rows.data(), b.jp.data(), j.data());
   }));
 }
 

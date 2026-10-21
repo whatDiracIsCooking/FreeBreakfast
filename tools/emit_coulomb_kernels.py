@@ -8,11 +8,11 @@ so a build never runs Python. Run this after bumping that submodule:
 
 They are the three generated steps of FelizJueves's McMurchie-Davidson J
 build (its docs/implementation/j_engine.md, "The J chain as device code"),
-and the record bound its screen reads, one kernel template per family:
+one kernel template per family. The record bound its screen reads,
+`pair_bound<la, lb>`, is not here: it is a field of every mmd record, computed
+once per basis, so tools/emit_one_electron_kernels.py writes it, to
+src/integrals/mmd/kernels/pair_bound/.
 
-- `pair_bound<la, lb>`, each record's pair-factor-free Schwarz bound
-  I = ao.pairs.pair_bound(zeta, la + lb), the [p|q] kernel's Ip as a bra
-  and Iq as a ket (FelizJueves's Target.PAIR_BOUND);
 - `dq<lc, ld>`, the ket pre-contraction D_q = w SUM_cd D_cd s E^cd_q and
   Dmax, reading the AO density in place (`density="ao"`: Dao[off_c + i,
   off_d + j], so no gather and no transposed copy for a swapped pair);
@@ -33,7 +33,7 @@ nvcc under CUDA and clang `-x hip` under HIP. `e_hermite` is emitted
 `any_wavefront`: its shuffles and its block-sized shared J_p accumulator read
 FJ_WAVEFRONT, which deps/CMakeLists.txt sets from WWR_WARP_SIZE, so one text
 serves a 32- and a 64-lane build; its header's `e_hermite_block_dim` is the
-block to launch it with, {1, FJ_WAVEFRONT}. `pair_bound`, `dq` and `jab`
+block to launch it with, {1, FJ_WAVEFRONT}. `dq` and `jab`
 have no shuffle, so their text has no width at all. Nothing is added to the text here.
 
 As tools/emit_one_electron_kernels.py does, each class is one explicit
@@ -67,7 +67,6 @@ from felizjueves.emit.gpu import WAVEFRONT, Specialization  # noqa: E402
 from felizjueves.kernel import build_pq_kernel  # noqa: E402
 from felizjueves.kernel_dq import build_dq_kernel  # noqa: E402
 from felizjueves.kernel_jab import build_jab_kernel  # noqa: E402
-from felizjueves.kernel_pair_bound import build_pair_bound_kernel  # noqa: E402
 from felizjueves.passes import atomize, split_axes, transpose  # noqa: E402
 from felizjueves.spec import Operator, Spec, Target  # noqa: E402
 
@@ -98,11 +97,6 @@ def hermite_classes() -> list[tuple[int, int]]:
     return [(lp, lq) for lp in range(top + 1) for lq in range(top + 1)]
 
 
-def pair_bound(cls: tuple[int, int]):
-    # One record vector: the exponent. No [n, 3] array to split.
-    return build_pair_bound_kernel(cls)
-
-
 def dq(cls: tuple[int, int]):
     lc, ld = cls
     k = build_dq_kernel(cls, density="ao", name=f"dq_{lc}{ld}")
@@ -127,7 +121,6 @@ def e_hermite(cls: tuple[int, int]):
 
 # family -> (its classes, its builder, the emitter's options)
 FAMILIES = {
-    "pair_bound": (pair_classes, pair_bound, {}),
     "dq": (pair_classes, dq, {}),
     "e_hermite": (
         hermite_classes,

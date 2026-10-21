@@ -21,12 +21,6 @@ free_breakfast_add_gpu_device_library(
   free_breakfast.integrals.coulomb.device
   SOURCES
   coulomb_launch.cu
-  kernels/pair_bound/pair_bound_00.cu
-  kernels/pair_bound/pair_bound_01.cu
-  kernels/pair_bound/pair_bound_02.cu
-  kernels/pair_bound/pair_bound_11.cu
-  kernels/pair_bound/pair_bound_12.cu
-  kernels/pair_bound/pair_bound_22.cu
   kernels/dq/dq_00.cu
   kernels/dq/dq_01.cu
   kernels/dq/dq_02.cu

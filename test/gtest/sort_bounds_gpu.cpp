@@ -100,6 +100,7 @@ TEST(SortBounds, SortsAKetClassDescendingAndGathersEveryArray) {
   EXPECT_EQ(view.lb, cls.lb);
   EXPECT_EQ(view.n_rec, cls.n_rec);
   EXPECT_EQ(view.s, nullptr);
+  EXPECT_EQ(view.bound, kets.bound());
   const auto zeta = pinned(cls.zeta, n);
   const auto p_x = pinned(cls.p_x, n);
   const auto p_y = pinned(cls.p_y, n);

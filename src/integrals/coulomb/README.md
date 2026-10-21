@@ -16,11 +16,14 @@ first ket under `tau`.
 
 FelizJueves's `docs/implementation/j_engine.md`, "The J chain as device code",
 is the contract the kernels were built against. Every class of
-`free_breakfast.integrals.mmd`'s records is both a ket class and a bra class:
+`free_breakfast.integrals.mmd`'s records is both a ket class and a bra class.
+Each record's Schwarz bound `I = pair_bound(ζ, la + lb)`, `e_hermite`'s `Ip`
+as a bra and `Iq` as a ket, is not formed here: it depends on ζ and `la + lb`
+only, so it is `mmd`'s `bound` field, formed once per basis
+([`../mmd/`](../mmd/README.md)), and a build reads it.
 
 | Step | Template | One per | Computes |
 |---|---|---|---|
-| record bound | `pair_bound<la, lb>` | pair class | each record's Schwarz bound `I = pair_bound(ζ, la + lb)`, `e_hermite`'s `Ip` as a bra and `Iq` as a ket |
 | ket pre-contraction | `dq<lc, ld>` | ket pair class, `lc <= ld` | `D_q = w Σ_cd D_cd s E^cd_q` and `Dmax = max_q \|D_q\|`, reading the AO density in place |
 | ket sort | `SortedKets::sort` (not generated) | ket pair class | the class's records sorted descending by `Iq · Dmax`, and `zeta`, P, `Iq`, `Dmax` and `D_q` gathered into that order |
 | `[p\|q]` | `e_hermite<lp, lq>` | (bra class, ket class), `lp = la + lb`, `lq = lc + ld` | `J_p += Σ_q [p\|q] D_q`, one warp per bra record, kets strip-mined, `J_p` added atomically |
@@ -32,7 +35,7 @@ pre-launch checks from `free_breakfast.integrals.one_electron.launch`):
 
 1. On `res.stream()`: zero `J` and every class's `J_p`, and fill `row` below.
 2. **Every class's inputs**, each on its own stream: its records' weights `w`,
-   its bounds (`pair_bound`), then `dq`, then the ket sort. The join closes
+   then `dq`, then the ket sort (keyed on the class's `bound` times `Dmax`). The join closes
    the phase, because every bra class reads every ket class's sorted bounds,
    `D_q` and `Dmax`.
 3. **Every class as a bra**, each on its own stream: `e_hermite` against every
@@ -46,14 +49,14 @@ What the kernels leave to the launcher, and how it is supplied:
 | Input | Value | Why |
 |---|---|---|
 | `w` | 2 for a shell pair of two shells, 1 for a shell against itself (`off_a == off_b`, as `mmd` records it) | `mmd` stores each unique shell pair once; the sum over all `(c, d)` counts the others twice. A one-thread kernel in `coulomb_launch.cu` writes it per build |
-| `Ip`, `Iq` | the bra's `pair_bound` in record order, the ket's sorted | The screen is `Dmax · Ip · Iq < tau` |
+| `Ip`, `Iq` | the bra's `bound` field (`mmd`'s) in record order, the ket's sorted copy (`SortedKets::bound`) | The screen is `Dmax · Ip · Iq < tau` |
 | `tau` | `coulomb`'s, default `1e-10` | The screen `break`s on a lane's first ket under `tau`, which is right only for kets sorted descending by `Iq · Dmax`: so they are |
 | `row` | the record index | `jab` reads record `k`'s row of `J_p`; with one batch per class that row is `k` |
 | `J`, `J_p` | zeroed | Both are only added to |
 | the block | `e_hermite_block_dim`, `{1, FJ_WAVEFRONT}` | `e_hermite`'s shared `J_p` accumulator is sized for exactly that block |
 
 The scratch, per class `n_rec × n_hermite(la + lb)` doubles for `D_q`, as many
-for the sorted `D_q` and as many for `J_p`, plus `3 n_rec` for `w`, the bound
+for the sorted `D_q` and as many for `J_p`, plus `2 n_rec` for `w`
 and `Dmax` and `10 n_rec` for the sort (its keys, its permutation, each with an
 alternate, and the six sorted per-record arrays), is drawn from
 `res.device()`'s pool in `res.stream()`'s order and returned in its order once
@@ -66,7 +69,7 @@ orientation is ever transposed.
 
 **One text serves both warp widths.** `e_hermite` is emitted `any_wavefront`:
 its shuffles and its shared array read `FJ_WAVEFRONT`, which
-`deps/CMakeLists.txt` sets from `WWR_WARP_SIZE`. `pair_bound`, `dq` and `jab`
+`deps/CMakeLists.txt` sets from `WWR_WARP_SIZE`. `dq` and `jab`
 have no shuffle. Record vectors are three flat arrays per axis, named as `mmd` names its
 fields.
 
@@ -104,9 +107,8 @@ records its worst error, and how far the screen moved `J`); a `tau` above every
 bound gives exactly zero, which shows the screen reaches the kernel and fires;
 the zeroing; and the refusals. `tau` bounds each skipped term of a `J_p`, not
 the error in `J`, so the screened bar is the same measured `1e-12`, not one
-derived from `tau`. FelizJueves holds the `pair_bound` kernel to its host bound
-at 16 eps, interpreted and on the RTX 3080 (its `test_kernel_pair_bound.py`,
-`test_pair_bound_device.py`). The sort itself is
+derived from `tau`. The bound the screen reads is `mmd`'s, and
+`mmd_gpu.cpp`'s test. The sort itself is
 [`sort_bounds/`](sort_bounds/README.md)'s test.
 
 ## Files
@@ -117,6 +119,6 @@ at 16 eps, interpreted and on the RTX 3080 (its `test_kernel_pair_bound.py`,
 | `coulomb.cpp` | The build: the checks, the scratch, the two phases |
 | `coulomb_bridge.h` | The launchers, declared once for the module and the device TU |
 | `coulomb_launch.cu` | The launchers; the `w` and rows kernels; the compile-time checks of the tables against `kMaxAngularMomentum` and of `e_hermite_block_dim` against `kWarpSize` |
-| `kernels/` | The generated units and their four template headers |
+| `kernels/` | The generated units and their three template headers |
 | `sort_bounds/` | The ket sort: its own module and device library, and the merge sort it sorts with |
 | `CMakeLists.txt` | The device library and the module |

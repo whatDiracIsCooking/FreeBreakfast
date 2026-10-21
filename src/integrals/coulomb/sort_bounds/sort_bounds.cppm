@@ -36,16 +36,16 @@ public:
   /// zeta, P, @p bound, @p dmax and @p dq into that order, on @p stream.
   ///
   /// @p bound, @p dmax and @p dq are the class's own, in record order: its
-  /// pair_bound, and dq's Dmax and D_q (q-major, n_hermite x n_rec). Records of equal
+  /// bound field (mmd's pair_bound), and dq's Dmax and D_q (q-major, n_hermite x n_rec). Records of equal
   /// bound keep their record order. Queued only, no synchronization.
   ///
   /// @return The first launch status. Launch errors only.
   [[nodiscard]] wwr::wwrError_t sort(wwr::wwrStream_t stream, const double *bound,
                                      const double *dmax, const double *dq);
 
-  /// @brief The class as e_hermite's ket: its la, lb and n_rec, and zeta and
-  /// P in the sorted order. The other fields are null; e_hermite does not
-  /// read them of a ket.
+  /// @brief The class as e_hermite's ket: its la, lb and n_rec, and zeta, P
+  /// and the bound (Iq) in the sorted order. The other fields are null;
+  /// e_hermite does not read them of a ket.
   [[nodiscard]] PrimitivePairClassView view() const;
   /// @brief Iq, sorted.
   [[nodiscard]] const double *bound() const noexcept { return bound_.data(); }

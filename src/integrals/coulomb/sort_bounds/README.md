@@ -17,7 +17,7 @@ ket with `Dmax · Ip · Iq < tau`. That skips only kets under `tau` when the ket
 arrive in descending `Iq · Dmax`. In any other order a `tau` above 0 gives a
 wrong answer, not a slow one.
 
-The key is the product, not `Iq` alone. `Iq` (`pair_bound`) depends only on
+The key is the product, not `Iq` alone. `Iq` (the class's `bound` field, `mmd`'s `pair_bound`) depends only on
 `zeta` and `la + lb`. The pair's Gaussian prefactor `exp(-μ R_AB²)` enters
 through `dq`'s `E^{00}_0`, and the contraction and the density come in with it,
 so all three are in `Dmax`. `Dmax` changes with the density, so the sort is

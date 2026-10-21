@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Regenerate the one-electron kernels under src/integrals/one_electron/.
+"""Regenerate the one-electron kernels under src/integrals/one_electron/,
+and the mmd record bound under src/integrals/mmd/kernels/.
 
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
@@ -26,6 +27,14 @@ Only the classes `la <= lb` are written. The host pair builder
 (free_breakfast.integrals.mmd) swaps every shell pair into that order, so a
 `(1, 0)` kernel would be `(0, 1)`'s mirror and nothing would launch it.
 
+One more family is not a one-electron integral but rides along because it
+is per pair class, keyed and laid out the same way: `pair_bound<la, lb>`
+(FelizJueves's Target.PAIR_BOUND), each record's pair-factor-free Schwarz
+bound I = ao.pairs.pair_bound(zeta, la + lb). It is a field of every
+free_breakfast.integrals.mmd record, computed once per basis after the zeta
+sort, so it is written to src/integrals/mmd/kernels/pair_bound/; the J and K
+screens read it as Ip (a bra) and Iq (a ket).
+
 The device Boys routine the units with a fundamental include, `eval_boys.h`,
 and the per-order `eval_boys_{M}.h` it includes for M in 0..20 (all of
 `gpu.emit_boys()`), are written once, to src/integrals/shared/, by this tool
@@ -47,6 +56,7 @@ sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 from felizjueves.device import by_name  # noqa: E402
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import Specialization  # noqa: E402
+from felizjueves.kernel_pair_bound import build_pair_bound_kernel  # noqa: E402
 from felizjueves.kernel_s import build_s_kernel  # noqa: E402
 from felizjueves.kernel_t import build_t_kernel  # noqa: E402
 from felizjueves.kernel_v import build_v_kernel  # noqa: E402
@@ -70,22 +80,33 @@ FAMILIES = {
     "potential_en": build_v_kernel,
 }
 
+# The mmd section: the record bound, one directory of its own under mmd's
+# kernels/ (whose .clang-format is the same DisableFormat). One record vector,
+# the exponent, so no [n, 3] array to split.
+MMD_FAMILIES = {"pair_bound": build_pair_bound_kernel}
+
 
 def main() -> int:
     arch = by_name(ARCH)
     for family, build in FAMILIES.items():
         out = ROOT / "src/integrals/one_electron" / family / "kernels"
-        out.mkdir(parents=True, exist_ok=True)
-        classes = [(la, lb) for la in range(MAX_L + 1) for lb in range(la, MAX_L + 1)]
-        for cls in classes:
-            kernel = build(cls)
-            spec = Specialization(family, cls)
-            write(out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
-        # Any class's kernel spells the primary: one family, one parameter block.
-        write(out / spec.header, gpu.emit_template(kernel, arch, spec, classes))
+        emit_family(arch, family, build, out)
+    for family, build in MMD_FAMILIES.items():
+        emit_family(arch, family, build, ROOT / "src/integrals/mmd/kernels" / family)
     for name, text in gpu.emit_boys().items():
         write(ROOT / "src/integrals/shared" / name, text)
     return 0
+
+
+def emit_family(arch, family: str, build, out: Path) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    classes = [(la, lb) for la in range(MAX_L + 1) for lb in range(la, MAX_L + 1)]
+    for cls in classes:
+        kernel = build(cls)
+        spec = Specialization(family, cls)
+        write(out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec))
+    # Any class's kernel spells the primary: one family, one parameter block.
+    write(out / spec.header, gpu.emit_template(kernel, arch, spec, classes))
 
 
 def write(path: Path, text: str) -> None:

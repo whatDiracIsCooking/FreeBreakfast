@@ -1,5 +1,5 @@
 /// @file
-/// @brief The record-order launchers, declared once for the module that calls
+/// @brief The record-order and record-bound launchers, declared once for the module that calls
 /// them and the device TU that defines them.
 ///
 /// Included by mmd.cpp in its GLOBAL MODULE FRAGMENT, and by mmd_launch.cu
@@ -52,5 +52,18 @@ namespace free_breakfast::device {
 /// @copydoc mmd_permute
 [[nodiscard]] wwr::wwrError_t mmd_permute(wwr::wwrStream_t stream, int32_t n_rec,
                                           const uint32_t *perm, int32_t *field, int32_t *tmp);
+
+/// @brief Each record's Schwarz bound I = pair_bound(zeta, la + lb) into
+/// @p bound, on @p stream: the generated pair_bound<la, lb>
+/// (kernels/pair_bound/), one thread per record.
+///
+/// @p zeta and @p bound are @p n_rec long, @p bound written whole; they must
+/// not overlap.
+///
+/// @return The launch status (wwrErrorInvalidValue if @p n_rec is not
+///         positive or (la, lb) has no kernel: la <= lb <= kMaxAngularMomentum).
+///         Launch errors only.
+[[nodiscard]] wwr::wwrError_t mmd_bound(wwr::wwrStream_t stream, int32_t la, int32_t lb,
+                                        int32_t n_rec, const double *zeta, double *bound);
 
 } // namespace free_breakfast::device
