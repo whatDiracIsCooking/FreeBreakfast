@@ -2,8 +2,9 @@
 /// @brief The merge-sort launcher, declared once for the device TUs that call
 /// it and merge_sort.cu, which defines it.
 ///
-/// Included by sort_bounds_launch.cu and merge_sort.cu directly, and by
-/// experimental/sort/merge's merge_sort.cpp in its GLOBAL MODULE FRAGMENT: a
+/// Included by mmd_launch.cu, sort_bounds_launch.cu and merge_sort.cu
+/// directly, and by experimental/sort/merge's merge_sort.cpp in its GLOBAL
+/// MODULE FRAGMENT: a
 /// declaration in a module's purview would get module linkage and never bind
 /// to the definition in the .cu (see
 /// src/linalg/orthogonalize/inverse_sqrt_bridge.h).

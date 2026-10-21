@@ -37,7 +37,9 @@ pre-launch checks from `free_breakfast.integrals.one_electron.launch`):
    `D_q` and `Dmax`.
 3. **Every class as a bra**, each on its own stream: `e_hermite` against every
    ket class, sorted, into the bra's `J_p`, then `jab` into `J`, in that order.
-   The bra side reads its class in record order.
+   The bra side reads its class in record order, which `mmd` makes
+   descending ζ, so descending `Ip`: the bras with the longest ket loops
+   launch first, once per basis and at no cost per build.
 
 What the kernels leave to the launcher, and how it is supplied:
 
@@ -84,10 +86,6 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 ## Not done
 
-- **Bras sorted by `Ip`.** EXESS's J engine also sorts each bra class by its
-  own bound, so warps of similar trip counts sit together. It changes no
-  result. `Ip` depends only on `zeta`, so it is a sort per basis, and `jab`'s
-  `row` input is where the bra permutation would go.
 - **Reuse across SCF iterations.** The scratch is allocated per call.
 - **Batching.** One `e_hermite` kernel per class, as FelizJueves ships it.
 
