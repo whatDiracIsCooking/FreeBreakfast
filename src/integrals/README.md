@@ -17,6 +17,7 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
 coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened
   sort_bounds/       free_breakfast.integrals.coulomb.sort_bounds: each ket class sorted by its screen bound Iq * Dmax
+shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 ```
 
 ## How the pieces fit
@@ -36,8 +37,10 @@ CartesianMatrixAO D                   an AO density
 and `tools/emit_coulomb_kernels.py` write them from the FelizJueves submodule; a
 build never runs Python. Re-run both after bumping the submodule. Each family
 has its own directory (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
-`coulomb/kernels/{pair_bound,dq,e_hermite,jab}/`), whose
-`.clang-format` turns formatting off, and
+`coulomb/kernels/{pair_bound,dq,e_hermite,jab}/`), and the device Boys
+routine every unit with a fundamental includes, `eval_boys<M>`, is generated
+once into `shared/eval_boys.h` rather than carried in each unit. Each of those
+directories has a `.clang-format` that turns formatting off, and
 `devtools/check-int-types.py` skips a file by FelizJueves's first-line banner:
 the files stay byte-for-byte as emitted, so a fix belongs in the generator.
 
