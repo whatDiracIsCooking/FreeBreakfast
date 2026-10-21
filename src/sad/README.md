@@ -39,7 +39,9 @@ Every integral of the atomic SCF has all four centers at the nucleus, so in McMu
 - the Hermite expansion of `x^n exp(−p x²)` about its own center obeys `E^{n+1}_t = E^n_{t−1} / 2p + (t+1) E^n_{t+1}`;
 - the Boys function is only ever needed at 0, `F_n(0) = 1/(2n+1)`, and the Hermite Coulomb integrals collapse to `R_{tuv}(α) = (t−1)!! (u−1)!! (v−1)!! (−2α)^{N/2} / (N+1)` for even t, u, v (zero otherwise), `N = t+u+v`.
 
-So S, T, V and `(ij|kl)` are closed form, with no quadrature or table. They are computed over the Cartesian components, all shell quartets with no permutational symmetry, then carried to the spherical layout with `spherical_transform_matrix`, the tree's normalization convention. The whole n⁴ tensor is held; an atom past 96 Cartesian AOs (≈680 MB) is refused as `ErrorKind::Unsupported`.
+So S, T, V and `(ij|kl)` are closed form, with no quadrature or table. They are computed over the Cartesian components, then carried to the spherical layout with `spherical_transform_matrix`, the tree's normalization convention. The whole n⁴ tensor is held; an atom past 96 Cartesian AOs (≈680 MB) is refused as `ErrorKind::Unsupported`.
+
+`(ij|kl)` uses its 8-fold permutational symmetry: only the canonical shell quartets are evaluated (`a ≥ b`, `c ≥ d`, pair `ab ≥` pair `cd`), each contracted over its primitives and then written to all eight permutations of its indices, so the held tensor is exactly symmetric and its evaluation costs about an eighth of the full loop. The spherical transform and the Fock build still run over the whole tensor.
 
 ## Public API
 
@@ -80,7 +82,7 @@ The reference data is `test/gtest/data/sad/atomic_scf.json`, written by `tools/e
 
 - Parallelism inside one atom's SCF (its ERI, transform and Fock loops): the task form runs the atoms in parallel, so the heaviest element sets the time.
 - Charged atoms, ECPs, and the configurations where PySCF's table departs from Madelung.
-- Permutational symmetry and screening in the two-electron integrals.
+- Screening in the two-electron integrals, and permutational symmetry past their evaluation (the spherical transform, the Fock build).
 
 ## Files
 
