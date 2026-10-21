@@ -47,7 +47,7 @@ std::vector<fb::Shell> reference_shells(const std::string &basis, std::int32_t z
   std::vector<fb::Shell> shells;
   if (element != nullptr) {
     for (const fb::ShellStamp &s : *element) {
-      shells.push_back(s.at(kOrigin));
+      shells.push_back(fb::place(s, kOrigin));
     }
   }
   return shells;

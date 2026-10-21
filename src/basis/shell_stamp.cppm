@@ -5,8 +5,8 @@
 /// A @ref Shell embeds a center, so it describes a shell *over one geometry*.
 /// The information a basis-set file actually carries per shell is
 /// center-independent: an angular momentum and its primitives. @ref ShellStamp
-/// is that centerless shell; @ref ShellStamp::at stamps it onto a real position
-/// to produce a @ref Shell.
+/// is that centerless shell; @ref place stamps it onto a real position to
+/// produce a @ref Shell.
 ///
 /// Everything stays in atomic units: primitive exponents in inverse bohr^2.
 module;
@@ -30,8 +30,8 @@ export namespace free_breakfast {
 /// and its primitives (@ref Primitive), the part of a @ref Shell that a basis-set
 /// file specifies per element rather than per atom.
 ///
-/// A @ref ShellStamp is a @ref Shell with the center removed. @ref at turns it
-/// into a @ref Shell by supplying a center; @ref primitive_normalized folds the
+/// A @ref ShellStamp is a @ref Shell with the center removed. @ref place turns
+/// it into a @ref Shell by supplying a center; @ref primitive_normalized folds the
 /// per-primitive normalization into the coefficients (a center-independent
 /// operation, so it belongs here and is computed once per stamp rather than
 /// once per geometry).
@@ -86,12 +86,6 @@ public:
     return free_breakfast::function_count_sphe(l_);
   }
 
-  /// @brief This shell centered at @p center: a @ref Shell carrying the same
-  /// L and primitives.
-  [[nodiscard]] Shell at(const Vec<double, 3> &center) const {
-    return Shell{l_, primitives_, center};
-  }
-
   /// @brief A copy with the per-primitive normalization folded into the
   /// contraction coefficients.
   ///
@@ -138,5 +132,11 @@ private:
   int32_t l_{0};
   std::vector<Primitive> primitives_{};
 };
+
+/// @brief @p stamp centered at @p center: a @ref Shell carrying the same L and
+/// primitives.
+[[nodiscard]] Shell place(const ShellStamp &stamp, const Vec<double, 3> &center) {
+  return Shell{stamp.angular_momentum(), stamp.primitives(), center};
+}
 
 } // namespace free_breakfast
