@@ -512,6 +512,14 @@ endif()
 # enable_testing() -- add_test() in a directory processed before that call is
 # silently dropped (no CTestTestfile entry). Guarded, so it configures only
 # under the `experimental` preset.
+#
+# test/experimental -- the tests of what experimental/ builds -- sits behind
+# both guards: experimental's, because the targets it links exist only under
+# it, and test/'s, because it needs GoogleTest, which a
+# FREE_BREAKFAST_COMPILE_TIME_ONLY configure does not fetch.
 if(FREE_BREAKFAST_BUILD_EXPERIMENTAL)
   add_subdirectory(experimental)
+  if(NOT FREE_BREAKFAST_COMPILE_TIME_ONLY)
+    add_subdirectory(test/experimental)
+  endif()
 endif()

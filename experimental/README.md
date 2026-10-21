@@ -18,7 +18,16 @@ Two things still apply:
   cheap to run, so run it before you leave something in here.
 - **ctest entries work.** `enable_testing()` is called before any
   `add_subdirectory` in the root `CMakeLists.txt`, so an `add_test()` here is
-  recorded normally.
+  recorded normally. GoogleTest cases go in `test/experimental/`. The root
+  `CMakeLists.txt` adds that directory under this same option, and skips it
+  under `FREE_BREAKFAST_COMPILE_TIME_ONLY`, which has no GoogleTest. It builds
+  its own binary, `free_breakfast_tests_experimental_gpu`.
 
-Promote something by moving it under `src/`, wiring it into
-`src/CMakeLists.txt`, and deleting it from here.
+## What is here
+
+| Directory | What |
+|-----------|------|
+| [`sort/radix/`](sort/radix/README.md) | Stable LSD radix sort of `double` keys (with optional `uint32_t` values), in IEEE-754 total order, over `core/kernel`'s `block_reduce` |
+
+Promote something by moving it under `src/` (its tests into `test/gtest/`),
+wiring it into `src/CMakeLists.txt`, and deleting it from here.
