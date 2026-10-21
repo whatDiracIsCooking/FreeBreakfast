@@ -41,7 +41,8 @@ struct ExchangeShell {
 // One class's scratch: as a density class (lc, ld), its Dcd gather; as a bra,
 // its Ip with max|D| folded in, its Dcd rows per ld (kExchangeMomenta x n_rec),
 // and its (bra class, b) blocks for every shell b, n_rec x n_x(la) x n_ao in
-// all, shell b's block at n_rec n_x(la) times b's AO offset.
+// all, shell b's block at n_rec n_x(la) times b's AO offset (the symmetric
+// sweep writes only the rows of a <= b, about half).
 struct ExchangeScratch {
   Buffers::device<double> dcd;
   Buffers::device<double> ip;
@@ -49,8 +50,17 @@ struct ExchangeScratch {
   Buffers::device<double> blocks;
 };
 
+// The records of @p bra whose first shell is at most @p shell: a prefix, the
+// groups being in basis order and covering the records in order.
+int32_t exchange_prefix(const OrderedPairClass &bra, const int32_t shell) {
+  const auto past = std::ranges::partition_point(
+      bra.groups, [shell](const OrderedPairGroup &g) { return g.shell <= shell; });
+  return past == bra.groups.begin() ? 0 : std::prev(past)->start + std::prev(past)->count;
+}
+
 Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> classes,
-                const CartesianMatrixAO &density, CartesianMatrixAO &k, const double tau) {
+                const CartesianMatrixAO &density, CartesianMatrixAO &k, const double tau,
+                const bool symmetric) {
   // Written so that NaN fails too: a NaN tau would never screen, silently.
   if (!(tau >= 0.0)) {
     return err_config("exchange: the screening threshold tau is {}, but must be 0 or above", tau);
@@ -173,13 +183,17 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
 
   // Every class as a bra (a, c): its inputs, then k against every ket class
   // (b, d) and every b group of it, then its blocks scattered into K, in that
-  // order on the bra's own stream.
+  // order on the bra's own stream. The symmetric sweep cuts each launch and
+  // scatter to the bra's records with a <= b, and the scatter mirrors a < b.
   return gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &bra) {
     const wwr::wwrStream_t s = bra.device_stream()->stream();
     ExchangeScratch &b = of(bra);
     const OrderedPairClassView v = bra.view();
     const auto n_rec = static_cast<size_t>(bra.n_rec);
     const size_t row = n_rec * static_cast<size_t>(exchange_cartesian_count(bra.la));
+    const auto n_bra = [&](const int32_t shell) {
+      return symmetric ? exchange_prefix(bra, shell) : bra.n_rec;
+    };
     if (const wwr::wwrError_t code = device::exchange_bra_bound(s, v, dmax.data(), b.ip.data());
         code != wwr::wwrSuccess) {
       return code;
@@ -205,23 +219,29 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
       const int32_t n_dc = n_shells[lc] * n_shells[ld];
       const OrderedPairClassView w = ket.view();
       for (const OrderedPairGroup &g : ket.groups) {
+        const int32_t cut = n_bra(g.shell);
+        if (cut == 0) {
+          continue;
+        }
         const auto off_b = static_cast<size_t>(shells[static_cast<size_t>(g.shell)].offset);
         if (const wwr::wwrError_t code =
-                device::exchange_k(s, v, b.ip.data(), b.dc.data() + ld * n_rec, w, g.start, g.count,
-                                   n_dc, tau, dcd, b.blocks.data() + row * off_b);
+                device::exchange_k(s, v, cut, b.ip.data(), b.dc.data() + ld * n_rec, w, g.start,
+                                   g.count, n_dc, tau, dcd, b.blocks.data() + row * off_b);
             code != wwr::wwrSuccess) {
           return code;
         }
       }
     }
-    for (const ExchangeShell &sh : shells) {
-      if (sh.momentum < 0) {
+    for (size_t shell = 0; shell < shells.size(); ++shell) {
+      const ExchangeShell &sh = shells[shell];
+      const int32_t cut = n_bra(static_cast<int32_t>(shell));
+      if (sh.momentum < 0 || cut == 0) {
         continue;
       }
       const auto off_b = static_cast<size_t>(sh.offset);
       if (const wwr::wwrError_t code =
-              device::exchange_scatter_block(s, bra.la, sh.momentum, n_ao, bra.n_rec, v.off_a,
-                                             sh.offset, b.blocks.data() + row * off_b, k.data());
+              device::exchange_scatter_block(s, bra.la, sh.momentum, n_ao, cut, v.off_a, sh.offset,
+                                             symmetric, b.blocks.data() + row * off_b, k.data());
           code != wwr::wwrSuccess) {
         return code;
       }

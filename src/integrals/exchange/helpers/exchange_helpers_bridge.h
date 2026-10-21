@@ -81,7 +81,13 @@ namespace free_breakfast::device {
 ///
 ///     k[off_a[r] + i][off_b + j] += block[r][i * n_x(lb) + j]
 ///
-/// No mirroring: the ordered sweep computes K[a][b] and K[b][a] each directly.
+/// With @p mirror, a row whose a shell is not the b shell (@p off_a[r] !=
+/// @p off_b) also adds its transpose, `k[off_b + j][off_a[r] + i]`: the
+/// symmetric sweep computes the a < b blocks only, K_ba = K_ab^T. A row of the
+/// b shell itself is its diagonal block, computed whole, and is added once
+/// either way. Without @p mirror nothing is transposed: the full sweep
+/// computes K[a][b] and K[b][a] each directly.
+///
 /// Each element is added atomically, so blocks may be scattered from several
 /// streams at once, and @p k must be zeroed before the first.
 ///
@@ -92,6 +98,6 @@ namespace free_breakfast::device {
 [[nodiscard]] wwr::wwrError_t exchange_scatter_block(wwr::wwrStream_t stream, int32_t la,
                                                      int32_t lb, int32_t n_ao, int32_t n_bra,
                                                      const int32_t *off_a, int32_t off_b,
-                                                     const double *block, double *k);
+                                                     bool mirror, const double *block, double *k);
 
 } // namespace free_breakfast::device

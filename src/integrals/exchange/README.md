@@ -45,10 +45,33 @@ as `Ip` on the bra and `Iq` on the ket.
    closes the phase: every bra class reads them.
 4. **Every class as a bra**, each on its own stream: its `Ip` and its `Dcd`
    rows; then, for every ket class and every `b` group of it, one `k` launch
-   of **all** of the bra's records against **the group's** kets (`n_ket` the
-   group's count, every ket pointer offset by its start) into the
-   `(bra class, b)` block; then its blocks scattered into `K`
+   of the bra's records **of first shell `a <= b`** against **the group's**
+   kets (`n_bra` that prefix's length, `n_ket` the group's count, every ket
+   pointer offset by its start) into the `(bra class, b)` block, none when the
+   prefix is empty; then its blocks scattered into `K`, mirrored
    (`exchange_scatter_block`), in that order.
+
+**The bra-ket swap.** `(ac|bd) = (bd|ac)`, so for a symmetric `D`,
+`K_ba = K_ab^T`: only the shell blocks `a <= b` need computing. The ordered
+classes make that free of any kernel change: each class's records are grouped
+by first shell, the groups in basis order, so the bras with `a <= b` are a
+**prefix** of every bra class whatever its momenta, cut on the host per
+(bra class, `b`) from the class's groups and passed as `kernel_k`'s `n_bra`.
+The scatter then adds each `a < b` block **and its transpose** into `K`; an
+`a == b` block is computed whole (both members of each of its orbits are in
+it) and added once, untransposed. What is left of the duplication is inside the
+`a == b` blocks: `O(n_shells)` of `O(n_shells^2)`. This is the K build of
+Palethorpe, Stocks & Barca (arXiv:2407.21445, §4.3.1), and FelizJueves's
+`ao/k.py` "THE TWO SWEEPS" has the identity and the unique-sweep reference.
+
+**The precondition is a contract, not a check.** The symmetric sweep is only
+`K` for a symmetric `D`, and `exchange` does not verify it: refusing would
+cost a device pass over `D` *and* a host synchronization to read the verdict
+back into the `Status`, where the build is otherwise fully asynchronous. So
+`symmetric` (default `true`) is the switch: `false` launches every bra record
+against every ket group and mirrors nothing, `K_ab` and `K_ba` each computed
+directly, correct for any `D` at twice the work. Handed a non-symmetric `D`,
+the symmetric sweep returns its `K`'s `a <= b` blocks, mirrored.
 
 What the kernels leave to the launcher, and how it is supplied:
 
@@ -72,8 +95,9 @@ What the kernels leave to the launcher, and how it is supplied:
 
 **The blocks.** A bra class's blocks are one buffer, `n_rec × n_x(la) × n_ao`
 doubles, shell `b`'s block at `n_rec · n_x(la) · off(b)`, so the AO offsets
-lay them out with no table. A block is scattered once, by its `b` shell, with
-no mirroring: the ordered sweep computes `K_ab` and `K_ba` each directly.
+lay them out with no table. A block is scattered once, by its `b` shell, its
+`a <= b` prefix only; the symmetric sweep leaves the other rows zero, so about
+half of the buffer is written.
 
 The scratch (the blocks, `n_rec` doubles of `Ip` and `(l_max + 1) n_rec`
 `int32`s of `dc` per bra class; one `Dcd` per class; one rank table per
@@ -95,9 +119,12 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 ## Not done
 
-- **The bra-ket swap.** `(ac|bd)` and `(bd|ac)` are one integral, but the
-  ordered sweep visits every quartet twice, once per orientation of each
-  pair of pairs: about twice the necessary work.
+- **The swap inside the diagonal blocks.** An `a == b` block is computed
+  whole, so its quartets are still visited twice: `O(n_shells)` blocks of
+  `O(n_shells^2)`.
+- **Half-sized blocks.** The symmetric sweep writes only the `a <= b` rows of
+  a bra class's `n_rec × n_x(la) × n_ao` blocks; a layout holding only those
+  would about halve that scratch.
 - **Batching.** One `k` launch per (bra class, ket class, `b` group), all of the
   bra's records at once, as FelizJueves ships it; no split class, and the
   blocks are `n_rec × n_x(la) × n_ao` per bra class with no batching of bras
@@ -109,7 +136,7 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 | Symbol | Role |
 |---|---|
-| `exchange(res, classes, density, k, tau = 1e-10)` | `Status`: the Cartesian K of `density` into `k`, from `ordered_pair_classes` of the same basis, screened at `tau` (`0` screens nothing). InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, a shell past `k`'s order, or `k.n()^2` past `INT32_MAX` |
+| `exchange(res, classes, density, k, tau = 1e-10, symmetric = true)` | `Status`: the Cartesian K of `density` into `k`, from `ordered_pair_classes` of the same basis, screened at `tau` (`0` screens nothing), by the `a <= b` blocks mirrored (`symmetric`, which requires a symmetric `density`, unchecked) or every block directly. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, a shell past `k`'s order, or `k.n()^2` past `INT32_MAX` |
 | `OrderedPairClass`, `ordered_pair_classes`, ... | re-exported from [`pairs/`](pairs/README.md) |
 
 ## Tests
@@ -118,7 +145,13 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 libcint's `vk` of the same density at `1e-12 · max|K|`, through the golden data
 in `test/gtest/data/exchange/`, both at `tau = 0` and at the default (each run
 records its worst error, and how far the screen moved `K`); `K` symmetric to
-the same bar; a `tau` above every bound gives exactly zero, which shows the
+the same bar; the symmetric sweep against the full one at both `tau`s, with
+the share of the full sweep's (bra, ket) record pairs it launches recorded
+(0.58 in cc-pVDZ, 0.60 in STO-3G: the diagonal blocks weigh more in a small
+basis, and the share falls toward a half as the shells grow in number); on a
+non-symmetric density, the symmetric `K` equal to the full one's `a <= b`
+blocks and their transposes, not its own `a > b` blocks, which shows those are
+mirrored, never computed; a `tau` above every bound gives exactly zero, which shows the
 screen reaches the kernel and fires; the zeroing; and the refusals. The
 helpers are `exchange_helpers_gpu.cpp`'s test and the classes
 `exchange_pairs_gpu.cpp`'s.

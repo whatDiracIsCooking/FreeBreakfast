@@ -37,7 +37,7 @@ Molecule(res, atoms)                  nuclei on the device          (molecule, o
 CartesianMatrixAO D                   an AO density
          --coulomb-->                CartesianMatrixAO J           (dq and the ket sort per class, then e_hermite per class pair and jab per class)
 PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, once per basis)
-CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (Dcd per class, then k per (bra class, ket class, b group) and the block scatter per bra class)
+CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (Dcd per class, then k per (bra class, ket class, b group) over the bras of a <= b, and the mirrored block scatter per bra class)
          --MatrixAOPair::cartesian_to_spherical-->  spherical      (linalg.matrix_ao)
 ```
 
@@ -63,9 +63,9 @@ matrices are symmetric and the kernels write each value at `(m, n)` and
 
 **Not done, in J and K alike: batching and reuse across SCF iterations.** Each
 build allocates its scratch per call and launches one kernel per class (or
-class pair, or ket group) as FelizJueves ships it. K also visits every quartet
-twice: its ordered sweep does not apply the bra-ket swap
-([`exchange/`](exchange/README.md)).
+class pair, or ket group) as FelizJueves ships it. K applies the bra-ket swap
+by its shell blocks, computing `a <= b` and mirroring, so it still visits the
+quartets inside its `a == b` blocks twice ([`exchange/`](exchange/README.md)).
 
 ## Tests
 

@@ -84,10 +84,11 @@ __global__ void gather_dcd_kernel(const int64_t n, const int32_t nc, const int32
   dcd[e] = density[m * n_ao + q];
 }
 
-// One thread per element of the block.
+// One thread per element of the block, adding its transpose too when mirrored
+// and off the b shell's own rows.
 __global__ void scatter_block_kernel(const int64_t n, const int32_t na, const int32_t nb,
                                      const int64_t n_ao, const int32_t *off_a, const int32_t off_b,
-                                     const double *block, double *k) {
+                                     const bool mirror, const double *block, double *k) {
   const int64_t e = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (e >= n) {
     return;
@@ -98,6 +99,9 @@ __global__ void scatter_block_kernel(const int64_t n, const int32_t na, const in
   const int64_t m = off_a[row] + col / nb;
   const int64_t q = off_b + col % nb;
   atomicAdd(&k[m * n_ao + q], block[e]);
+  if (mirror && off_a[row] != off_b) {
+    atomicAdd(&k[q * n_ao + m], block[e]);
+  }
 }
 
 } // namespace
@@ -134,7 +138,7 @@ wwr::wwrError_t exchange_gather_dcd(const wwr::wwrStream_t stream, const int32_t
 
 wwr::wwrError_t exchange_scatter_block(const wwr::wwrStream_t stream, const int32_t la,
                                        const int32_t lb, const int32_t n_ao, const int32_t n_bra,
-                                       const int32_t *off_a, const int32_t off_b,
+                                       const int32_t *off_a, const int32_t off_b, const bool mirror,
                                        const double *block, double *k) {
   if (!valid_momentum(la) || !valid_momentum(lb) || n_ao < 1 || n_bra < 1 || off_b < 0) {
     return wwr::wwrErrorInvalidValue;
@@ -146,7 +150,7 @@ wwr::wwrError_t exchange_scatter_block(const wwr::wwrStream_t stream, const int3
     return wwr::wwrErrorInvalidValue;
   }
   scatter_block_kernel<<<element_blocks(n), kFourWarps, 0, stream>>>(n, na, nb, n_ao, off_a, off_b,
-                                                                     block, k);
+                                                                     mirror, block, k);
   return wwr::wwrGetLastError();
 }
 

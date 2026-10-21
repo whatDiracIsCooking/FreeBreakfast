@@ -18,7 +18,8 @@ export import free_breakfast.integrals.exchange.pairs;
 export namespace free_breakfast {
 
 /// @brief The Cartesian exchange matrix K_ab = sum_cd D_cd (ac|bd) of the AO
-/// density @p density into @p k, screened at @p tau.
+/// density @p density into @p k, screened at @p tau, by the a <= b shell
+/// blocks mirrored unless @p symmetric is false.
 ///
 /// @p classes are @c ordered_pair_classes(res, basis, primitive_pair_classes)
 /// of the basis @p density and @p k were made for, built once per basis.
@@ -35,9 +36,19 @@ export namespace free_breakfast {
 /// join, each class as a bra on its own stream: for every ket class and every
 /// first-shell group b of it, one k<la, lc, lb, ld> launch of all of the bra's
 /// records against the group's kets into the (bra class, b) block, then the
-/// bra's blocks scattered into @p k. The ordered sweep computes K_ab and K_ba
-/// each directly: nothing is mirrored, and every quartet is visited twice (the
-/// bra-ket swap is not done). @p density must be symmetric; it is not checked.
+/// bra's blocks scattered into @p k.
+///
+/// **@p symmetric (the default) is a contract: @p density must be symmetric,
+/// and it is not checked** (refusing would need a device pass and a host
+/// synchronization to read the verdict back). It halves the work by the
+/// bra-ket swap `(ac|bd) = (bd|ac)`: for a symmetric D, K_ba = K_ab^T, so each
+/// launch takes only the bra records of first shell a <= b (a prefix of the
+/// class, its groups being in basis order), and the scatter adds each a < b
+/// block and its transpose; an a == b block is computed whole and added once.
+/// With @p symmetric false every launch takes all of the bra's records and
+/// nothing is mirrored: K_ab and K_ba are each computed directly, for any D,
+/// at twice the work. For a non-symmetric D the symmetric sweep returns the
+/// a <= b blocks of its K, mirrored.
 ///
 /// Queued on res.stream(), each phase's classes forked from it and joined back
 /// (@c launch_each), with no host synchronization; the scratch (per bra class
@@ -56,6 +67,6 @@ export namespace free_breakfast {
 ///         @p k unspecified.
 [[nodiscard]] Status exchange(DeviceResources &res, std::span<const OrderedPairClass> classes,
                               const CartesianMatrixAO &density, CartesianMatrixAO &k,
-                              double tau = 1e-10);
+                              double tau = 1e-10, bool symmetric = true);
 
 } // namespace free_breakfast
