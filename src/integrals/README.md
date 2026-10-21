@@ -18,8 +18,8 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
 coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened
   sort_bounds/       free_breakfast.integrals.coulomb.sort_bounds: each ket class sorted by its screen bound Iq * Dmax
-exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, Schwarz-screened
-  helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table, the shell starts and the mirror kb leaves to its launcher
+exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, screened by the Schwarz bound and the density's decay
+  helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table and its density factors, the decay they are cut from, the shell starts and the mirror kb leaves to its launcher
   kernels/kb/        free_breakfast::integrals::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
   pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
@@ -37,7 +37,7 @@ Molecule(res, atoms)                  nuclei on the device          (molecule, o
 CartesianMatrixAO D                   an AO density
          --coulomb-->                CartesianMatrixAO J           (dq and the ket sort per class, then e_hermite per class pair and jab per class)
 PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, once per basis)
-CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (Dcd per class, then k per (bra class, ket class, b group) over the bras of a <= b, and the mirrored block scatter per bra class)
+CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (the decay and Dcd per class, then kb per (bra class, ket class), one warp per a <= b block, and the mirror)
          --MatrixAOPair::cartesian_to_spherical-->  spherical      (linalg.matrix_ao)
 ```
 

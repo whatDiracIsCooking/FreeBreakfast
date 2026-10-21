@@ -72,6 +72,198 @@ __global__ void __launch_bounds__(kMaxThreads)
   }
 }
 
+// A double's bits, as the vendors' atomicMax takes them: a non-negative double
+// orders as its bits, so a maximum of |x| or of a bound is an integer one.
+// int-type-ok: atomicMax and __double_as_longlong are declared on this type
+using DoubleBits = unsigned long long;
+
+__device__ DoubleBits bits_of(const double x) {
+  return static_cast<DoubleBits>(__double_as_longlong(x));
+}
+
+__device__ double double_of(const DoubleBits b) {
+  return __longlong_as_double(static_cast<int64_t>(b));
+}
+
+// The larger of two.
+struct MaxOp {
+  __device__ double operator()(const double a, const double b) const { return a > b ? a : b; }
+};
+
+// A record vector's three segments, passed by value into a kernel.
+struct Xyz {
+  const double *x;
+  const double *y;
+  const double *z;
+};
+
+Xyz xyz(const double *const v[3]) {
+  return {v[0], v[1], v[2]};
+}
+
+// One thread per record folds into its block, and the block's thread 0 into
+// g_max as DoubleBits: a maximum, so the result does not depend on the order.
+__global__ void __launch_bounds__(fb::kFourWarps)
+    bound_max_kernel(const int32_t n_rec, const double *bound, double *g_max) {
+  __shared__ double partials[kTableWarps];
+  const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  double v = r < n_rec ? bound[r] : 0.0;
+  v = fb::device::block_reduce<kTableWarps>(cg::this_thread_block(), partials, v, MaxOp{});
+  if (threadIdx.x == 0) {
+    atomicMax(reinterpret_cast<DoubleBits *>(g_max), bits_of(v));
+  }
+}
+
+// One thread per group: see exchange_ao_centres.
+__global__ void ao_centres_kernel(const int32_t n_groups, const int32_t *group_start,
+                                  const int32_t nx, const int32_t *off_a, const Xyz p, const Xyz pa,
+                                  const int32_t n_ao, double *centre) {
+  const auto g = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (g >= n_groups) {
+    return;
+  }
+  const int32_t r = group_start[g];
+  const double x = p.x[r] - pa.x[r];
+  const double y = p.y[r] - pa.y[r];
+  const double z = p.z[r] - pa.z[r];
+  for (int32_t i = 0; i < nx; ++i) {
+    const int32_t m = off_a[r] + i;
+    centre[m] = x;
+    centre[n_ao + m] = y;
+    centre[2 * n_ao + m] = z;
+  }
+}
+
+// One block per group: its records' reach folded by the block, and its first
+// record's centre. See exchange_group_geometry.
+__global__ void __launch_bounds__(fb::kFourWarps)
+    group_geometry_kernel(const int32_t n_groups, const int32_t *group_start, const double *bound,
+                          const Xyz p, const Xyz pa, const Xyz pb, const double tau,
+                          const double *g_max, const double *decay, double *geom) {
+  __shared__ double partials[kTableWarps];
+  const auto g = static_cast<int32_t>(blockIdx.x);
+  const int32_t r0 = group_start[g];
+  const int32_t r1 = group_start[g + 1];
+  const double scale = *g_max * decay[0];
+  const double cut = tau * (1.0 - fb::device::kExchangeDecayMargin);
+  double reach = -1.0;
+  for (int32_t r = r0 + static_cast<int32_t>(threadIdx.x); r < r1;
+       r += static_cast<int32_t>(blockDim.x)) {
+    if (bound[r] * scale >= cut) {
+      // |AC| = |(P - C) - (P - A)|.
+      const double dx = pb.x[r] - pa.x[r];
+      const double dy = pb.y[r] - pa.y[r];
+      const double dz = pb.z[r] - pa.z[r];
+      const double d = fb::math::sqrt(dx * dx + dy * dy + dz * dz);
+      reach = d > reach ? d : reach;
+    }
+  }
+  reach = fb::device::block_reduce<kTableWarps>(cg::this_thread_block(), partials, reach, MaxOp{});
+  if (threadIdx.x == 0) {
+    geom[g] = p.x[r0] - pa.x[r0];
+    geom[n_groups + g] = p.y[r0] - pa.y[r0];
+    geom[2 * n_groups + g] = p.z[r0] - pa.z[r0];
+    geom[3 * n_groups + g] = reach;
+  }
+}
+
+// The decay fit's bins: 1 bohr wide, the last taking everything past it.
+constexpr int32_t kDecayBins = 1024;
+constexpr double kDecayBinWidth = 1.0;
+
+__device__ double distance(const double ax, const double ay, const double az, const double bx,
+                           const double by, const double bz) {
+  const double dx = ax - bx;
+  const double dy = ay - by;
+  const double dz = az - bz;
+  return fb::math::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// The distance between the centres of AOs m and q, from the three segments.
+__device__ double ao_distance(const int64_t n_ao, const double *centre, const int64_t m,
+                              const int64_t q) {
+  return distance(centre[m], centre[n_ao + m], centre[2 * n_ao + m], centre[q], centre[n_ao + q],
+                  centre[2 * n_ao + q]);
+}
+
+// Λ from the bins' maxima, |D| as the bits of a non-negative double (0 for an
+// empty bin): the least-squares slope of log(max) against the bin's centre,
+// negated and clamped, two-pass about the means. One thread.
+__device__ double decay_slope(const DoubleBits *bins) {
+  int32_t n = 0;
+  double sx = 0.0;
+  double sy = 0.0;
+  for (int32_t k = 0; k < kDecayBins; ++k) {
+    const double v = double_of(bins[k]);
+    if (v > 0.0) {
+      ++n;
+      sx += (k + 0.5) * kDecayBinWidth;
+      sy += fb::math::log(v);
+    }
+  }
+  if (n < 2) {
+    return 0.0;
+  }
+  const double mx = sx / n;
+  const double my = sy / n;
+  double sxx = 0.0;
+  double sxy = 0.0;
+  for (int32_t k = 0; k < kDecayBins; ++k) {
+    const double v = double_of(bins[k]);
+    if (v > 0.0) {
+      const double x = (k + 0.5) * kDecayBinWidth - mx;
+      sxx += x * x;
+      sxy += x * (fb::math::log(v) - my);
+    }
+  }
+  const double slope = -sxy / sxx;
+  return slope > 0.0 ? slope : 0.0;
+}
+
+// One block strides the whole matrix twice: the off-centre elements' maxima
+// into shared bins (DoubleBits), the slope from them, then H_off as density_max_kernel
+// folds max|D|. Every step a maximum or one thread's loop, so deterministic.
+__global__ void __launch_bounds__(kMaxThreads)
+    density_decay_kernel(const int64_t n_ao, const double *density, const double *centre,
+                         double *decay) {
+  __shared__ DoubleBits bins[kDecayBins];
+  __shared__ double partials[kMaxWarps];
+  __shared__ double slope;
+  for (auto k = static_cast<int32_t>(threadIdx.x); k < kDecayBins;
+       k += static_cast<int32_t>(blockDim.x)) {
+    bins[k] = 0;
+  }
+  __syncthreads();
+  const int64_t n = n_ao * n_ao;
+  for (int64_t e = threadIdx.x; e < n; e += blockDim.x) {
+    const double r = ao_distance(n_ao, centre, e / n_ao, e % n_ao);
+    if (r >= fb::device::kExchangeSameCentre) {
+      const double bin = r / kDecayBinWidth;
+      const int32_t k = bin < kDecayBins - 1 ? static_cast<int32_t>(bin) : kDecayBins - 1;
+      atomicMax(&bins[k], bits_of(fb::math::fabs(density[e])));
+    }
+  }
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    slope = decay_slope(bins);
+  }
+  __syncthreads();
+  const double lambda = slope;
+  const MaxNanOp op{};
+  double h = 0.0;
+  for (int64_t e = threadIdx.x; e < n; e += blockDim.x) {
+    const double r = ao_distance(n_ao, centre, e / n_ao, e % n_ao);
+    if (r >= fb::device::kExchangeSameCentre) {
+      h = op(h, fb::math::fabs(density[e]) * fb::math::exp(lambda * r));
+    }
+  }
+  h = fb::device::block_reduce<kMaxWarps>(cg::this_thread_block(), partials, h, op);
+  if (threadIdx.x == 0) {
+    decay[1] = lambda;
+    decay[2] = h;
+  }
+}
+
 // One thread per element of Dcd, in its row-major order, so the writes
 // coalesce.
 __global__ void gather_dcd_kernel(const int64_t n, const int32_t nc, const int32_t nd,
@@ -109,13 +301,34 @@ __device__ int32_t first_ket_group(const int32_t n_b, const int32_t *b_start, co
   return lo;
 }
 
+// F_ab of bra group ga against ket group gb: see exchange_blocks.
+__device__ double block_factor(const int32_t n_a, const double *a_geom, const int32_t ga,
+                               const int32_t n_b, const double *b_geom, const int32_t gb,
+                               const double *decay) {
+  const double dm = decay[0];
+  const double ra = a_geom[3 * n_a + ga];
+  const double rb = b_geom[3 * n_b + gb];
+  if (ra < 0.0 || rb < 0.0) {
+    return dm;
+  }
+  const double d = distance(a_geom[ga], a_geom[n_a + ga], a_geom[2 * n_a + ga], b_geom[gb],
+                            b_geom[n_b + gb], b_geom[2 * n_b + gb]) -
+                   ra - rb;
+  if (!(d > 2.0 * fb::device::kExchangeSameCentre)) {
+    return dm;
+  }
+  return fb::math::fmin(dm, decay[2] * fb::math::exp(-decay[1] * d) *
+                                (1.0 + fb::device::kExchangeDecayMargin));
+}
+
 // One block per bra group ga. Its blocks start after every earlier bra group's,
 // n_b - first(g) each, which the block's threads sum, and its threads then
-// write its own, one per ket group from first(ga) on.
+// write its own, one per ket group from first(ga) on, and each one's factor.
 __global__ void __launch_bounds__(fb::kFourWarps)
-    blocks_kernel(const int32_t *a_start, const int32_t *a_off, const int32_t n_b,
-                  const int32_t *b_start, const int32_t *b_off, const bool symmetric,
-                  const int32_t n_blk, int32_t *blocks) {
+    blocks_kernel(const int32_t n_a, const int32_t *a_start, const int32_t *a_off,
+                  const double *a_geom, const int32_t n_b, const int32_t *b_start,
+                  const int32_t *b_off, const double *b_geom, const double *decay,
+                  const bool symmetric, const int32_t n_blk, int32_t *blocks, double *factor) {
   __shared__ int32_t partials[kTableWarps];
   const auto ga = static_cast<int32_t>(blockIdx.x);
   const auto first = [&](const int32_t g) {
@@ -139,6 +352,7 @@ __global__ void __launch_bounds__(fb::kFourWarps)
     blocks[3 * n_blk + blk] = b_start[gb + 1];
     blocks[4 * n_blk + blk] = a_off[bra0];
     blocks[5 * n_blk + blk] = b_off[ket0];
+    factor[blk] = block_factor(n_a, a_geom, ga, n_b, b_geom, gb, decay);
   }
 }
 
@@ -199,16 +413,61 @@ wwr::wwrError_t exchange_gather_dcd(const wwr::wwrStream_t stream, const int32_t
   return wwr::wwrGetLastError();
 }
 
+wwr::wwrError_t exchange_bound_max(const wwr::wwrStream_t stream, const int32_t n_rec,
+                                   const double *bound, double *g_max) {
+  if (n_rec < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  bound_max_kernel<<<element_blocks(n_rec), kFourWarps, 0, stream>>>(n_rec, bound, g_max);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t exchange_ao_centres(const wwr::wwrStream_t stream, const int32_t n_groups,
+                                    const int32_t *group_start, const int32_t nx,
+                                    const int32_t *off_a, const double *const p[3],
+                                    const double *const pa[3], const int32_t n_ao, double *centre) {
+  if (n_groups < 1 || nx < 1 || n_ao < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  ao_centres_kernel<<<element_blocks(n_groups), kFourWarps, 0, stream>>>(
+      n_groups, group_start, nx, off_a, xyz(p), xyz(pa), n_ao, centre);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t exchange_group_geometry(const wwr::wwrStream_t stream, const int32_t n_groups,
+                                        const int32_t *group_start, const double *bound,
+                                        const double *const p[3], const double *const pa[3],
+                                        const double *const pb[3], const double tau,
+                                        const double *g_max, const double *decay, double *geom) {
+  if (n_groups < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  group_geometry_kernel<<<static_cast<uint32_t>(n_groups), kFourWarps, 0, stream>>>(
+      n_groups, group_start, bound, xyz(p), xyz(pa), xyz(pb), tau, g_max, decay, geom);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t exchange_density_decay(const wwr::wwrStream_t stream, const int32_t n_ao,
+                                       const double *density, const double *centre, double *decay) {
+  if (n_ao < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  density_decay_kernel<<<1, kMaxThreads, 0, stream>>>(n_ao, density, centre, decay);
+  return wwr::wwrGetLastError();
+}
+
 wwr::wwrError_t exchange_blocks(const wwr::wwrStream_t stream, const int32_t n_a,
-                                const int32_t *a_start, const int32_t *a_off, const int32_t n_b,
-                                const int32_t *b_start, const int32_t *b_off, const bool symmetric,
-                                const int32_t n_blk, int32_t *blocks) {
+                                const int32_t *a_start, const int32_t *a_off, const double *a_geom,
+                                const int32_t n_b, const int32_t *b_start, const int32_t *b_off,
+                                const double *b_geom, const double *decay, const bool symmetric,
+                                const int32_t n_blk, int32_t *blocks, double *factor) {
   if (n_a < 1 || n_b < 1 || n_blk < 1 ||
       static_cast<int64_t>(n_blk) * kExchangeBlockFields > kMaxElements) {
     return wwr::wwrErrorInvalidValue;
   }
   blocks_kernel<<<static_cast<uint32_t>(n_a), kFourWarps, 0, stream>>>(
-      a_start, a_off, n_b, b_start, b_off, symmetric, n_blk, blocks);
+      n_a, a_start, a_off, a_geom, n_b, b_start, b_off, b_geom, decay, symmetric, n_blk, blocks,
+      factor);
   return wwr::wwrGetLastError();
 }
 

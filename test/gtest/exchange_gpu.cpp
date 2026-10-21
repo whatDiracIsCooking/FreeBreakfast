@@ -199,6 +199,8 @@ TEST_P(ExchangeGolden, SymmetricSweepMatchesTheFullOne) {
 }
 
 INSTANTIATE_TEST_SUITE_P(H2O, ExchangeGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
+// Five H2 4 bohr apart in cc-pVDZ, with a converged RHF density.
+INSTANTIATE_TEST_SUITE_P(Chain, ExchangeGolden, ::testing::Values("h10_chain_ccpvdz"));
 
 // A non-symmetric density tells the two sweeps apart: the full one computes
 // every block directly, so its K is not symmetric, while the symmetric one

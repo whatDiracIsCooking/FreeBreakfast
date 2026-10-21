@@ -12,13 +12,13 @@ __global__ void kb<2, 2, 1, 1>(
     int32_t n_dc,
     int32_t n_ao,
     double tau,
-    double maxD,
     const int32_t* bra0,
     const int32_t* bra1,
     const int32_t* ket0,
     const int32_t* ket1,
     const int32_t* ko_a,
     const int32_t* ko_b,
+    const double* dmax,
     const double* p_x,
     const double* p_y,
     const double* p_z,
@@ -56,10 +56,11 @@ __global__ void kb<2, 2, 1, 1>(
     // (2,2|1,1), lp=4 lq=2 (L=6), one batch: kernel_k's staged contraction on opt-
     // UM's mapping, one block per contracted K_AB block ([Fock, §4.3]; #481)
     // PRECONDITION: a block's bras [bra0, bra1) arrive sorted by Ip ALONE and its
-    // kets [ket0, ket1) by Iq ALONE, each descending. Both screens are breaks:
-    // once Ib * Iq * maxD < tau every later ket is under it, and once Ib *
-    // Iq[ket0] * maxD < tau every later bra is. Unsorted groups make a break a
-    // wrong answer, not a slow one (launch_kblock's plan sorts them)
+    // kets [ket0, ket1) by Iq ALONE, each descending. Both screens are breaks on
+    // the block's own factor maxD = dmax[blk]: once Ib * Iq * maxD < tau every
+    // later ket is under it, and once Ib * Iq[ket0] * maxD < tau every later bra
+    // is. Unsorted groups make a break a wrong answer, not a slow one
+    // (launch_kblock's plan sorts them)
     // The J engine's ket key I_ket * Dmax_ket is UNAVAILABLE to K: D_cd straddles
     // the two records (c on the bra, d on the ket), so no ket order can track it,
     // and the bound carries the global maxD instead. Prior art, [Fock, §4.3.1]:
@@ -76,6 +77,9 @@ __global__ void kb<2, 2, 1, 1>(
         int32_t k1 = ket1[blk];
         int32_t ka = ko_a[blk];
         int32_t kb = ko_b[blk];
+        // the block's density factor, read once: both breaks test against it,
+        // kernel_k's per-pair statement by its name maxD (#484)
+        double maxD = dmax[blk];
         // the block's largest ket bound: its kets are sorted, and a block in the
         // launch has at least one
         double Iq0 = Iq[k0];
