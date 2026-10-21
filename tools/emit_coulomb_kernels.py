@@ -43,6 +43,11 @@ declaration and `<family>_kernels`, the table a launcher indexes. Pair
 classes are written `la <= lb` only, for the reason that tool gives; the
 Hermite classes are every (lp, lq) with both at most 2 kMaxAngularMomentum.
 
+The device Boys routine the units with a fundamental include, `eval_boys.h`
+(`gpu.emit_boys()`), is written once, to src/integrals/shared/, by this tool
+and tools/emit_one_electron_kernels.py alike: it is one text, so either
+leaves it as the other would.
+
 FelizJueves needs only the standard library to import, so this needs no
 virtualenv.
 """
@@ -74,6 +79,7 @@ MAX_L = 2
 ARCH = "sm_86"
 
 OUT = ROOT / "src/integrals/coulomb/kernels"
+SHARED = ROOT / "src/integrals/shared"
 
 # The record vectors, as mmd names them.
 PAIR_AXES = {"XPA": ("pa_x", "pa_y", "pa_z"), "XPB": ("pb_x", "pb_y", "pb_z")}
@@ -144,6 +150,7 @@ def main() -> int:
         # Any class's kernel spells the primary: one family, one parameter block.
         header = gpu.emit_template(kernel, arch, spec, classes, **options)
         write(out / spec.header, header)
+    write(SHARED / gpu.BOYS_HEADER, gpu.emit_boys())
     return 0
 
 

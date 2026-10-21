@@ -13,8 +13,9 @@ add_subdirectory(sort_bounds)
 # wwrStream_t and wwrError_t, hence types_headers, basis::headers,
 # mmd::headers and wwr::device PUBLIC. The kernels include FelizJueves's
 # felizjueves/runtime.h (felizjueves::headers, which also carries FJ_WAVEFRONT
-# = WWR_WARP_SIZE), and the launcher's block sizing reads kWarpSize
-# (block_params.h, primitives.h), hence core::kernel_headers; both PRIVATE.
+# = WWR_WARP_SIZE), e_hermite's the shared eval_boys.h (shared::headers), and
+# the launcher's block sizing reads kWarpSize (block_params.h, primitives.h),
+# hence core::kernel_headers; all three PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.coulomb.device
@@ -71,6 +72,7 @@ free_breakfast_add_gpu_device_library(
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
   felizjueves::headers
+  free_breakfast::integrals::shared::headers
 )
 
 # The module. DeviceResources, PrimitivePairClass and CartesianMatrixAO are in

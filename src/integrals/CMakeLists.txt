@@ -1,4 +1,6 @@
 add_subdirectory(mmd)
+# Before the families whose kernels include its headers.
+add_subdirectory(shared)
 add_subdirectory(one_electron)
 # After one_electron: J reuses its per-class launch and checks.
 add_subdirectory(coulomb)
