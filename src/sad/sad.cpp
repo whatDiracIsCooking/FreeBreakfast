@@ -1,6 +1,7 @@
 /// @file
 /// @brief Implementation of the SAD initial guess: one @c AtomicDensityStamp
-/// per distinct (Z, shells), each placed on its atoms' diagonal blocks.
+/// per distinct (Z, shells), each placed on its atoms' diagonal blocks -- one
+/// after another, or as one task per stamp in a subflow.
 
 module free_breakfast.sad;
 
@@ -8,6 +9,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.basis;
+import free_breakfast.third_party.taskflow;
 import :scf;
 
 #include "diagnostics.h"
@@ -49,16 +51,25 @@ void place(const AtomicDensityStamp &stamp, size_t offset, size_t n, std::span<d
   }
 }
 
-Result<std::vector<double>> sad_density(const BasisSet &basis, std::span<const Atom> atoms) {
+// One distinct (Z, shells) of a molecule and where it goes: its stamp, whose
+// density stays empty until its SCF runs, and the first AO of each atom that
+// wears it.
+struct StampSites {
+  AtomicDensityStamp stamp;
+  std::vector<size_t> offsets;
+};
+
+// The distinct (Z, shells) of @p atoms over @p basis, in order of each one's
+// first atom: the first of them to fail is the one the first failing atom
+// wears, so both forms of sad_density report the same error.
+Result<std::vector<StampSites>> distinct_stamps(const BasisSet &basis,
+                                                std::span<const Atom> atoms) {
   if (basis.natoms() != atoms.size()) {
     return err_config("sad_density: the basis groups its shells over {} atoms but {} were given; "
                       "the basis was not placed over these atoms",
                       basis.natoms(), atoms.size());
   }
-  const size_t n = basis.nao_sphe();
-  std::vector<double> density(n * n, 0.0);
-  std::vector<AtomicDensityStamp> stamps;
-
+  std::vector<StampSites> sites;
   for (uint32_t a = 0; a < basis.natoms(); ++a) {
     const uint32_t count = basis.atom_shell_count(a);
     if (count == 0) {
@@ -67,17 +78,78 @@ Result<std::vector<double>> sad_density(const BasisSet &basis, std::span<const A
     const uint32_t first = basis.atom_shell_offset(a);
     const std::span<const Shell> shells(basis.shells().data() + first, count);
     const int32_t z = nuclear_charge(atoms[a]);
-    auto it = std::ranges::find_if(stamps, [&](const AtomicDensityStamp &s) {
-      return s.z == z && same_shells(s.shells, shells);
+    auto it = std::ranges::find_if(sites, [&](const StampSites &s) {
+      return s.stamp.z == z && same_shells(s.stamp.shells, shells);
     });
-    if (it == stamps.end()) {
-      AtomicScf scf = FBF_TRY(atomic_scf(z, shells));
-      stamps.push_back(AtomicDensityStamp{z, shells, std::move(scf.density)});
-      it = std::prev(stamps.end());
+    if (it == sites.end()) {
+      sites.push_back(StampSites{AtomicDensityStamp{z, shells, {}}, {}});
+      it = std::prev(sites.end());
     }
-    place(*it, basis.ao_offset_sphe(first), n, density);
+    it->offsets.push_back(basis.ao_offset_sphe(first));
+  }
+  return sites;
+}
+
+// Run @p site's SCF into its stamp, then place the stamp on each of its atoms'
+// blocks of the n x n @p density. Every atom's block is its own, so sites
+// placed concurrently never write the same element.
+Status stamp_and_place(StampSites &site, size_t n, std::span<double> density) {
+  AtomicScf scf = FBF_TRY(atomic_scf(site.stamp.z, site.stamp.shells));
+  site.stamp.density = std::move(scf.density);
+  for (const size_t offset : site.offsets) {
+    place(site.stamp, offset, n, density);
+  }
+  return {};
+}
+
+// stamp_and_place as a task of @p flow, its outcome in @p status. @p site,
+// @p density's storage and @p status are written when the task runs, not when
+// this returns, so they must outlive it.
+tf::Task atomic_density_stamp(tf::FlowBuilder &flow, StampSites &site, size_t n,
+                              std::span<double> density, Status &status) {
+  return flow.emplace([&site, n, density, &status] { status = stamp_and_place(site, n, density); });
+}
+
+Result<std::vector<double>> sad_density(const BasisSet &basis, std::span<const Atom> atoms) {
+  std::vector<StampSites> sites = FBF_TRY(distinct_stamps(basis, atoms));
+  const size_t n = basis.nao_sphe();
+  std::vector<double> density(n * n, 0.0);
+  for (StampSites &site : sites) {
+    FBF_TRY(stamp_and_place(site, n, density));
   }
   return density;
+}
+
+tf::Task sad_density(tf::FlowBuilder &flow, const BasisSet &basis, std::span<const Atom> atoms,
+                     Result<std::vector<double>> &out) {
+  return flow.emplace([&basis, atoms, &out](tf::Subflow &subflow) {
+    auto sites = distinct_stamps(basis, atoms);
+    if (!sites) {
+      out = std::unexpected(std::move(sites.error()));
+      return;
+    }
+    const size_t n = basis.nao_sphe();
+    std::vector<double> density(n * n, 0.0);
+    // Sized once, before any task exists: each task holds a reference to its
+    // site and its status, which a reallocation would leave dangling.
+    std::vector<Status> statuses(sites->size());
+    for (size_t k = 0; k < sites->size(); ++k) {
+      atomic_density_stamp(subflow, (*sites)[k], n, density, statuses[k]);
+    }
+    // Join here, explicitly. Taskflow's implicit join runs the subflow only
+    // after this lambda returns, by which point sites, density and statuses --
+    // locals of this frame -- are gone.
+    subflow.join();
+    // In stamp order, which is first-atom order: the error the serial form
+    // stops at.
+    for (Status &status : statuses) {
+      if (!status) {
+        out = std::unexpected(std::move(status.error()));
+        return;
+      }
+    }
+    out = std::move(density);
+  });
 }
 
 } // namespace free_breakfast
