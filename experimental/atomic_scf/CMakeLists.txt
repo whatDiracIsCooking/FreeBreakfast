@@ -3,9 +3,9 @@
 # Atom (basis re-exports molecule, which re-exports atom); sad is PRIVATE, for
 # the aufbau fill the l blocks reuse.
 #
-# Three exported partitions (integrals, scf, density) and seven internal ones,
-# each with its implementation unit; the README's Files table says which is
-# which.
+# Three exported partitions (integrals, scf, density) and seven private ones,
+# each declared and defined in its one .cppm; the README's Files table says
+# which is which.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.experimental.atomic_scf
@@ -22,17 +22,6 @@ free_breakfast_add_cxx_module_library(
   eigen.cppm
   diis.cppm
   angular_block.cppm
-  IMPLEMENTATION
-  integrals.cpp
-  scf.cpp
-  density.cpp
-  hermite.cpp
-  one_electron.cpp
-  eri.cpp
-  gemm.cpp
-  eigen.cpp
-  diis.cpp
-  angular_block.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types

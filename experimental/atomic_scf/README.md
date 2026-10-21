@@ -103,22 +103,26 @@ uv run --group tools experimental/atomic_scf/emit_reference.py
 
 ## Files
 
-Each class and each concern is its own partition, declared in a `.cppm` and
-defined in the `.cpp` of the same name (`docs/style.md`, "Module-private
-code"). Only the three exported partitions reach an importer.
+Each class and each concern is its own partition, declared and defined in one
+`.cppm` (`docs/style.md`, "Module-private code"); there are no implementation
+units. Only the three exported partitions export anything, and their helpers
+sit unexported ahead of their `export namespace` block. The other seven are
+private interface partitions, not internal ones: the exported partitions import
+them, and an interface unit may only import another interface unit and still
+have its names reachable.
 
 | File | Partition | Role |
 |------|-----------|------|
-| `atomic_scf.cppm` | primary | Module interface: re-exports the three below |
-| `integrals.cppm` / `.cpp` | `:integrals`, exported | `AtomicIntegrals` and `atomic_integrals`: checks the shells, calls the two families below, carries them to the spherical layout |
-| `scf.cppm` / `.cpp` | `:scf`, exported | `AtomicScf` and `atomic_scf`: the Fock build, the energy, the per-l commutators, the iteration |
-| `density.cppm` / `.cpp` | `:density`, exported | `atomic_scf_density`: one SCF per distinct (Z, shells), each on its atom's block |
-| `hermite.cppm` / `.cpp` | `:hermite`, internal | The same-center Hermite expansion and the zero-distance Hermite Coulomb integrals both families build on |
-| `one_electron.cppm` / `.cpp` | `:one_electron`, internal | S, T and V over the Cartesian layout |
-| `eri.cppm` / `.cpp` | `:eri`, internal | `(ab\|cd)` over the Cartesian layout |
-| `gemm.cppm` / `.cpp` | `:gemm`, internal | `gemm_tn` and `gemm_nn`, the l blocks' matrix products |
-| `eigen.cppm` / `.cpp` | `:eigen`, internal | `SymmetricEigen` and `jacobi_eigen`, cyclic Jacobi |
-| `diis.cppm` / `.cpp` | `:diis`, internal | `AtomicDiis`, Pulay DIIS over flat vectors |
-| `angular_block.cppm` / `.cpp` | `:angular_block`, internal | `AngularBlock` (its m-average and diagonalization), `angular_blocks` (orthogonalizer and aufbau seating per l) and `angular_density` (the scatter back to the full layout) |
+| `atomic_scf.cppm` | primary | Module interface: re-exports the three exported partitions, and the seven private ones because every interface partition must be |
+| `integrals.cppm` | `:integrals`, exported | `AtomicIntegrals` and `atomic_integrals`: checks the shells, calls the two families below, carries them to the spherical layout |
+| `scf.cppm` | `:scf`, exported | `AtomicScf` and `atomic_scf`: the Fock build, the energy, the per-l commutators, the iteration |
+| `density.cppm` | `:density`, exported | `atomic_scf_density`: one SCF per distinct (Z, shells), each on its atom's block |
+| `hermite.cppm` | `:hermite`, private | The same-center Hermite expansion and the zero-distance Hermite Coulomb integrals both families build on |
+| `one_electron.cppm` | `:one_electron`, private | S, T and V over the Cartesian layout |
+| `eri.cppm` | `:eri`, private | `(ab\|cd)` over the Cartesian layout |
+| `gemm.cppm` | `:gemm`, private | `gemm_tn` and `gemm_nn`, the l blocks' matrix products |
+| `eigen.cppm` | `:eigen`, private | `SymmetricEigen` and `jacobi_eigen`, cyclic Jacobi |
+| `diis.cppm` | `:diis`, private | `AtomicDiis`, Pulay DIIS over flat vectors |
+| `angular_block.cppm` | `:angular_block`, private | `AngularBlock` (its m-average and diagonalization), `angular_blocks` (orthogonalizer and aufbau seating per l) and `angular_density` (the scatter back to the full layout) |
 | `emit_reference.py` | | Writes the PySCF reference data the tests read |
 | `CMakeLists.txt` | | Build configuration |
