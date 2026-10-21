@@ -2,7 +2,7 @@
 
 McMurchie–Davidson primitive-pair records: a `BasisSet` turned into the
 per-class arrays the generated one-electron kernels read, on the device, with
-each record's Schwarz bound, which the two-electron screens read.
+each record's Schwarz bound, which J's screen reads.
 
 ## Module
 
@@ -23,7 +23,7 @@ a kernel needs of that pair and cannot form itself:
 | `s` | c_a c_b (π/ζ)^{3/2} |
 | `eb` | β, the ket exponent (the kinetic kernel's) |
 | `off_a`, `off_b` | the two shells' first Cartesian AO |
-| `bound` | I = pair_bound(ζ, la + lb), the record's Schwarz bound: a J or K screen's `Ip` as a bra and `Iq` as a ket. Formed on the device (below) |
+| `bound` | I = pair_bound(ζ, la + lb), the record's undressed Schwarz bound: J's screen's `Ip` as a bra and `Iq` as a ket. Formed on the device (below). K reads its own, dressed bound instead ([`exchange/pairs`](../exchange/pairs/README.md)) |
 
 The kernels build the Hermite expansion E from these, including its
 exp(−αβ/ζ |A−B|²) prefactor (as exp(ζ X_PA X_PB) per axis), so the host forms
@@ -67,7 +67,10 @@ side is refreshed. It is the one field the host never writes. Because it rises
 with ζ, it is non-increasing in record order. A class above
 `kMaxAngularMomentum` has no kernel, so its bound stays zero; every build
 refuses such a class, and `primitive_pair_classes` itself still accepts it. The J build reads it (bras in
-record order, kets through `sort_bounds`' sorted copy), as the K build will.
+record order, kets through `sort_bounds`' sorted copy). The K build does not:
+its screen is proved against the DRESSED bound (contraction coefficients and
+pair factor in), which depends on the pair's orientation, so the ordered
+classes carry it ([`exchange/pairs`](../exchange/pairs/README.md)).
 `tools/emit_one_electron_kernels.py` writes the kernels (its small `mmd`
 section); `kernels/.clang-format` turns formatting off so they stay as emitted.
 

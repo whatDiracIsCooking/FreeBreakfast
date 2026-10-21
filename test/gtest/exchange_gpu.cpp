@@ -3,8 +3,11 @@
 // both reached) and cc-pVDZ (s, p, d, so every k class through (dd|dd))
 // against libcint's K of the same density, recorded by PySCF
 // (test/gtest/data/exchange/, copied from FelizJueves's fixtures by
-// tools/extract_integral_golden.py), both unscreened (tau = 0) and at the
-// default screen; the symmetric sweep against the full one, and on a
+// tools/extract_integral_golden.py), unscreened (tau = 0) and screened at the
+// default and at 1e-6 (each skipped pair under tau, so the bar widens by tau
+// per covering record pair); the H10 chain's block factors, as the build makes
+// them, a pinned share of them under max|D|; the symmetric sweep against the
+// full one, and on a
 // non-symmetric density, that it mirrors rather than computes the a > b
 // blocks; that a tau no bound reaches screens everything; plus, as
 // coulomb_gpu.cpp, the zeroing and the refusals.
@@ -116,42 +119,78 @@ double max_abs(const std::vector<double> &m) {
 
 class ExchangeGolden : public ::testing::TestWithParam<const char *> {};
 
-// At tau = 0 nothing is screened; at the default each skipped primitive
-// quartet's bound is under 1e-10, and the screened K must still meet the same
-// bar against libcint. How far the screen moved K is recorded, not bounded.
+// The record pairs covering each element, R(a) R(b), a and b the shells of its
+// row and column and R(x) the ordered primitive-pair records whose first shell
+// is x: a (bra, ket) record pair the screen skips moves an element of its
+// block by less than tau (FelizJueves #200's bound, with the dressed record
+// bound and the block's density factor), so a K screened at tau is within
+// tau R(a) R(b) of the unscreened one. FelizJueves's test_kblock_ondevice.py
+// holds its own screened K to libcint by the same bar.
+std::vector<double> pairs_covering(const fb::BasisSet &basis) {
+  const std::vector<fb::Shell> &shells = basis.shells();
+  std::vector<double> r(shells.size(), 0.0);
+  for (std::size_t a = 0; a < shells.size(); ++a) {
+    for (const fb::Shell &b : shells) {
+      r[a] += static_cast<double>(shells[a].primitives().size() * b.primitives().size());
+    }
+  }
+  const auto &aos = basis.aos_cart();
+  const std::size_t n = aos.size();
+  std::vector<double> out(n * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      out[i * n + j] = r[aos[i].shell_index] * r[aos[j].shell_index];
+    }
+  }
+  return out;
+}
+
+// At tau = 0 nothing is screened, and K meets libcint at 1e-12 max|K|. At the
+// default and at 1e-6 every skipped term is under tau, which the dressed bound
+// makes true as written, and the bar widens by tau R(a) R(b) (pairs_covering):
+// a sum of skipped terms each under tau can exceed 1e-12 max|K|, and with the
+// dressed bound it does (FelizJueves's own screened host K, ao.k at 1e-10,
+// misses H2O/STO-3G's vk by 6.2e-11 against a 5.7e-12 bar, and cc-pVDZ's by
+// 3.2e-9 against 4.7e-12, as this build does). The screened K is
+// held to the unscreened one by tau R(a) R(b) too. Each run's worst error is
+// recorded.
 TEST_P(ExchangeGolden, MatchesLibcint) {
   FBF_REQUIRE_GPU();
   const Golden g = read_golden(GetParam());
   ASSERT_FALSE(g.vk.empty());
-  double scale = 0.0;
-  for (const double v : g.vk) {
-    scale = std::max(scale, std::abs(v));
-  }
+  const double scale = max_abs(g.vk);
   const std::size_t n = g.basis.nao_cart();
+  const std::vector<double> covering = pairs_covering(g.basis);
   const std::vector<double> unscreened = golden_k(g, 0.0);
-  const std::vector<double> screened = golden_k(g, 1e-10);
-  for (const auto &[name, got] : {std::pair{"unscreened", &unscreened}, {"screened", &screened}}) {
-    ASSERT_EQ(got->size(), g.vk.size()) << name;
+  ASSERT_EQ(unscreened.size(), g.vk.size());
+  for (const double tau : {0.0, 1e-10, 1e-6}) {
+    const std::vector<double> got = tau == 0.0 ? unscreened : golden_k(g, tau);
+    ASSERT_EQ(got.size(), g.vk.size()) << "tau " << tau;
     double worst = 0.0;
+    double moved = 0.0;
     for (std::size_t i = 0; i < n; ++i) {
       for (std::size_t j = 0; j < n; ++j) {
-        const double err = std::abs((*got)[i * n + j] - g.vk[i * n + j]);
+        const std::size_t e = i * n + j;
+        const double err = std::abs(got[e] - g.vk[e]);
         worst = std::max(worst, err);
-        EXPECT_LE(err, kRelTol * scale) << name << " K(" << i << ", " << j << ")";
+        moved = std::max(moved, std::abs(got[e] - unscreened[e]));
+        EXPECT_LE(err, kRelTol * scale + tau * covering[e])
+            << "tau " << tau << ", K(" << i << ", " << j << ")";
+        EXPECT_LE(std::abs(got[e] - unscreened[e]), kRelTol * scale + tau * covering[e])
+            << "tau " << tau << ", K(" << i << ", " << j << ") against the unscreened K";
         // An a < b block is mirrored, but K_ab and K_ba still collect their
         // adds in the atomics' order, and an a == b block is computed whole:
         // symmetric to rounding, not bitwise.
-        EXPECT_LE(std::abs((*got)[i * n + j] - (*got)[j * n + i]), kRelTol * scale) << name;
+        EXPECT_LE(std::abs(got[e] - got[j * n + i]), kRelTol * scale) << "tau " << tau;
       }
     }
-    RecordProperty(std::format("{}_worst_abs_error", name), std::format("{:.3e}", worst));
-    RecordProperty(std::format("{}_worst_rel_error", name), std::format("{:.3e}", worst / scale));
+    std::cout << "[ libcint  ] " << GetParam() << " tau " << tau << ": worst " << worst << " ("
+              << worst / scale << " of max|K|), the screen moved K by " << moved << "\n";
+    RecordProperty(std::format("tau_{}_worst_abs_error", tau), std::format("{:.3e}", worst));
+    RecordProperty(std::format("tau_{}_worst_rel_error", tau),
+                   std::format("{:.3e}", worst / scale));
+    RecordProperty(std::format("tau_{}_screen_max_abs_change", tau), std::format("{:.3e}", moved));
   }
-  double moved = 0.0;
-  for (std::size_t i = 0; i < n * n; ++i) {
-    moved = std::max(moved, std::abs(screened[i] - unscreened[i]));
-  }
-  RecordProperty("screen_max_abs_change", std::format("{:.3e}", moved));
 }
 
 // The symmetric sweep against the full one, unscreened and at the default, to
@@ -201,6 +240,46 @@ TEST_P(ExchangeGolden, SymmetricSweepMatchesTheFullOne) {
 INSTANTIATE_TEST_SUITE_P(H2O, ExchangeGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
 // Five H2 4 bohr apart in cc-pVDZ, with a converged RHF density.
 INSTANTIATE_TEST_SUITE_P(Chain, ExchangeGolden, ::testing::Values("h10_chain_ccpvdz"));
+
+// The H10 chain's RHF density decays, and with the dressed record bound a
+// group's reach stops well short of the 23-bohr chain, so the density factor
+// fires: a share of the block factors exchange makes (every block, the full
+// sweep: 30 shells squared times the four (lc, ld) of s and p) falls below
+// max|D|, and none is above it. The counts are recorded and pinned: 144 of
+// the 3,600 at tau = 1e-10, the count FelizJueves's own density_decay gives
+// over its host record bounds, and 242 at 1e-6 (measured on the RX 9060 XT).
+// A count is a sum of comparisons against the reach's cutoff, so a backend
+// whose exp or sqrt rounds differently could move it by a block at a boundary;
+// the nonzero share is the property, the pin a regression check.
+TEST(Exchange, TheChainsBlockFactorsFallBelowTheDensityMaximum) {
+  FBF_REQUIRE_GPU();
+  const Golden g = read_golden("h10_chain_ccpvdz");
+  ASSERT_FALSE(g.vk.empty());
+  fb::DeviceResources res{0};
+  const auto classes = ordered(res, g.basis);
+  ASSERT_TRUE(classes);
+  fb::CartesianMatrixAO density(res, g.basis);
+  upload(res, g.density, density);
+  const double dmax = max_abs(g.density);
+  for (const auto &[tau, pinned] : {std::pair{1e-10, std::int64_t{144}}, {1e-6, 242}}) {
+    const auto factors = fb::exchange_block_factors(res, *classes, density, tau, false);
+    ASSERT_TRUE(factors) << factors.error().message;
+    ASSERT_EQ(factors->size(), std::size_t{3600});
+    std::int64_t below = 0;
+    double least = dmax;
+    for (const double f : *factors) {
+      ASSERT_LE(f, dmax) << "tau " << tau;
+      ASSERT_GT(f, 0.0) << "tau " << tau;
+      below += f < dmax ? 1 : 0;
+      least = std::min(least, f);
+    }
+    std::cout << "[ factors  ] tau " << tau << ": " << below << " of " << factors->size()
+              << " below max|D| " << dmax << ", least " << least << "\n";
+    EXPECT_GT(below, 0) << "tau " << tau;
+    EXPECT_EQ(below, pinned) << "tau " << tau;
+    RecordProperty(std::format("tau_{}_below_max_d", tau), std::format("{}", below));
+  }
+}
 
 // A non-symmetric density tells the two sweeps apart: the full one computes
 // every block directly, so its K is not symmetric, while the symmetric one

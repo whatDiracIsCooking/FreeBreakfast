@@ -50,14 +50,16 @@ struct OrderedPairGroup {
 ///
 /// The fields are mmd's, named as there, with "a" the record's first shell and
 /// "b" its second: a record taken from mmd's (b, a) is stored with its P - A
-/// and P - B, and its two AO offsets, swapped; zeta, P, s and the bound are
+/// and P - B, and its two AO offsets, swapped; zeta, P and s are
 /// orientation-free and copied as they are. mmd's ket exponent `eb` is not
 /// carried (kb does not read it, and the swapped orientation would want
-/// the other exponent). @ref rank_b is new.
+/// the other exponent), nor is mmd's undressed `bound`, which K does not read.
+/// Two fields are new: @ref record_bound, K's dressed Schwarz bound, which
+/// depends on the orientation, and @ref rank_b.
 ///
 /// **The records are grouped by first shell**, the groups in basis order, and
-/// within a group in mmd's record order: descending zeta, so non-increasing
-/// @ref bound, the order kb's screen `break`s need of its bras and kets.
+/// each group sorted by @ref record_bound, non-increasing: the order kb's
+/// screen `break`s need of its bras and kets.
 ///
 /// Movable, not copyable.
 struct OrderedPairClass {
@@ -89,9 +91,14 @@ struct OrderedPairClass {
   MirroredBuffer<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   MirroredBuffer<double> s;
-  /// @brief The record's Schwarz bound, mmd's: kb's Ip as a bra and Iq
-  /// as a ket. Non-increasing within each group.
-  MirroredBuffer<double> bound;
+  /// @brief The record's DRESSED Schwarz bound, FelizJueves's
+  /// ao.k.record_bounds: `max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p|
+  /// I_p(zeta)`, the max over the first shell's Cartesians, so it depends on
+  /// the orientation. kb's Ip as a bra and Iq as a ket, and what the K build's
+  /// reach and bound maximum read. Non-increasing within each group; exactly
+  /// 0.0 for a pair whose pair factor underflows. Zero in a class above d,
+  /// which has no kernel and which the K build refuses.
+  MirroredBuffer<double> record_bound;
   /// @brief The first shell's first Cartesian AO (@c BasisSet::ao_offset_cart).
   MirroredBuffer<int32_t> off_a;
   /// @brief The second shell's first Cartesian AO.
@@ -131,7 +138,7 @@ struct OrderedPairClass {
         .pb_y = pb_y.device().data(),
         .pb_z = pb_z.device().data(),
         .s = s.device().data(),
-        .bound = bound.device().data(),
+        .record_bound = record_bound.device().data(),
         .off_a = off_a.device().data(),
         .off_b = off_b.device().data(),
         .rank_b = rank_b.device().data(),
@@ -154,19 +161,24 @@ struct OrderedPairClass {
 ///
 /// The gather is on the host, once per basis: each mmd class's stream is
 /// synchronized first (the pinned side holds mmd's final, zeta-ordered records
-/// only after), then each record is appended to its first shell's group in
-/// mmd's record order, so a group keeps the descending zeta, and its bound
-/// stays non-increasing, with no sort. The ordered records are written into
-/// each class's pinned side and copied to the device on its stream, queued
-/// only, as is each class's @ref OrderedPairClass::group_start, written from
-/// its groups. The device res.dev_idx() names is made current for the call and the
-/// previous one restored. A class of more than INT32_MAX records logs and
+/// only after), then each record is appended to its first shell's group. The
+/// ordered records are written into each class's pinned side and copied to the
+/// device on its stream, as is each class's @ref OrderedPairClass::group_start,
+/// written from its groups. Then, on that stream, each record's
+/// @ref OrderedPairClass::record_bound (the generated record_bound<la, lb>),
+/// the order that sorts each group by it, non-increasing, equal bounds in
+/// gather order (two stable device sorts), every field put in that order on
+/// the device, and the pinned side refreshed from it. **kb's screen `break`s
+/// depend on that order**: an unsorted group is a wrong K, not a slow one.
+/// Every class's stream is synchronized before the return, so the pinned side
+/// is final. The device res.dev_idx() names is made current for the call and
+/// the previous one restored. A class of more than INT32_MAX records logs and
 /// aborts.
 ///
 /// @return The ordered classes (none for no @p classes), the GpuRuntime error
-///         of the first synchronization or copy that failed, or an InvalidConfig error
-///         if a record's AO offset names no shell of @p basis (the classes are
-///         of another basis).
+///         of the first synchronization, copy or launch that failed, or an
+///         InvalidConfig error if a record's AO offset names no shell of
+///         @p basis (the classes are of another basis).
 [[nodiscard]] Result<std::vector<OrderedPairClass>>
 ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
                      const std::vector<PrimitivePairClass> &classes);

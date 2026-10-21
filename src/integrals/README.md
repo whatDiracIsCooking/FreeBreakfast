@@ -21,9 +21,9 @@ coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO d
 exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, screened by the Schwarz bound and the density's decay
   helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table and its density factors, the decay they are cut from, the shell starts and the mirror kb leaves to its launcher
   kernels/kb/        free_breakfast::integrals::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
-  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell
+  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (kernels/record_bound/), each group sorted by it
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
-sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd and coulomb/sort_bounds sort with
+sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd, coulomb/sort_bounds and exchange/pairs sort with
 ```
 
 ## How the pieces fit
@@ -36,7 +36,7 @@ Molecule(res, atoms)                  nuclei on the device          (molecule, o
          --core_hamiltonian-->       CartesianMatrixAO H = T + V   (two launches per class, one matrix)
 CartesianMatrixAO D                   an AO density
          --coulomb-->                CartesianMatrixAO J           (dq and the ket sort per class, then e_hermite per class pair and jab per class)
-PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, once per basis)
+PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, the dressed bound and each group's sort on the device, once per basis)
 CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (the decay and Dcd per class, then kb per (bra class, ket class), one warp per a <= b block, and the mirror)
          --MatrixAOPair::cartesian_to_spherical-->  spherical      (linalg.matrix_ao)
 ```
@@ -47,7 +47,7 @@ from the FelizJueves submodule; a build never runs Python. Re-run all three afte
 bumping the submodule. Each family has its own directory
 (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
 `mmd/kernels/pair_bound/`, `coulomb/kernels/{dq,e_hermite,jab}/`,
-`exchange/kernels/kb/`), and the device Boys
+`exchange/kernels/kb/`, `exchange/pairs/kernels/record_bound/`), and the device Boys
 routine every unit with a fundamental includes, `eval_boys<M>`, is generated
 once into `shared/eval_boys.h` rather than carried in each unit, beside the
 `shared/eval_boys_{M}.h` it includes: below its switch, one fixed `fma` chain
@@ -57,7 +57,9 @@ directories has a `.clang-format` that turns formatting off, and
 the files stay byte-for-byte as emitted, so a fix belongs in the generator.
 
 **One class per unordered pair of momenta.** `mmd` swaps every shell pair into
-`la <= lb`, so `(s|p)` has a kernel and `(p|s)` does not need one. The
+`la <= lb`, so `(s|p)` has a kernel and `(p|s)` does not need one. K is the
+exception: it is not symmetric inside a pair, so `exchange/pairs` holds both
+orientations, and its record bound has a kernel per ordered class. The
 matrices are symmetric and the kernels write each value at `(m, n)` and
 `(n, m)`, so the swap changes nothing about the result.
 

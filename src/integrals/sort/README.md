@@ -28,6 +28,7 @@ keys: total order puts `-0.0` after every negative key.
 |---|---|---|
 | [`mmd`](../mmd/README.md) | each class's records, once per basis | `-zeta` |
 | [`coulomb/sort_bounds`](../coulomb/sort_bounds/README.md) | each ket class, every J build | `-(Iq · Dmax)` |
+| [`exchange/pairs`](../exchange/pairs/README.md) | each ordered class, once per basis, twice: by bound, then by group (stable, so each group ends sorted by bound) | `-I_rec`, then the group index |
 | [`experimental/sort/merge`](../../../experimental/sort/merge/README.md) | its module wrapper, benchmark and tests | any |
 
 ## Where it came from, and what checks it
