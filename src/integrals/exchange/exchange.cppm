@@ -24,19 +24,26 @@ export namespace free_breakfast {
 /// @p classes are @c ordered_pair_classes(res, basis, primitive_pair_classes)
 /// of the basis @p density and @p k were made for, built once per basis.
 ///
-/// Screened by kb's Schwarz bound: a primitive quartet is skipped when
-/// `Ip * Iq * max|D| < tau`, Ip and Iq the bra's and the ket's record bounds
-/// (mmd's bound field) and max|D| the whole density's (the density straddles
-/// bra and ket, so no per-ket factor exists). @p tau = 0 skips nothing. The
-/// default, 1e-10, is @c coulomb's.
+/// Screened by kb's bound: a primitive quartet is skipped when
+/// `Ip * Iq * F_ab < tau`, Ip and Iq the bra's and the ket's record bounds
+/// (mmd's bound field) and F_ab the block's DENSITY FACTOR, a bound on every
+/// |D_cd| its K_ab block can visit, from the density's decay with distance
+/// (arXiv:2407.21445 §4.3.1; FelizJueves #484): max|D| for a block whose shells are
+/// close, and down to `H_off e^{-Λ d}` for one whose shells are d bohr further
+/// apart than their pairs reach. Every skipped term is under @p tau either way
+/// (FelizJueves's ao.k proves it), so @p tau is the screen's whole contract.
+/// @p tau = 0 skips nothing. The default, 1e-10, is @c coulomb's.
 ///
 /// Zeroes @p k and, on res.stream(), computes max|D|; then, per class on that
-/// class's own stream, its momentum's rank-to-AO table (a class (l, l)) and,
-/// after a join, the (la, lb) gather of the density into Dcd; then, after a
-/// join, each class as a bra on its own stream: for every ket class, its block
-/// table, one block per (bra first shell a, ket first shell b), and one
-/// kb<la, lc, lb, ld> launch over it, one warp per block adding its contracted
-/// K_ab straight into @p k.
+/// class's own stream, its largest record bound and, from a class (l, l), its
+/// momentum's rank-to-AO table and AO centres; after a join, on res.stream(),
+/// the density's decay (Λ, H_off) from the centres; then per class the (la, lb)
+/// gather of the density into Dcd and its group geometry (each first shell's
+/// centre and reach); then, after a join, each class as a bra on its own
+/// stream: for every ket class, its block table and the blocks' factors, one
+/// block per (bra first shell a, ket first shell b), and one
+/// kb<la, lc, lb, ld> launch over them, one warp per block adding its
+/// contracted K_ab straight into @p k.
 ///
 /// **@p symmetric (the default) is a contract: @p density must be symmetric,
 /// and it is not checked** (refusing would need a device pass and a host
@@ -50,10 +57,11 @@ export namespace free_breakfast {
 /// a <= b blocks of its K, mirrored.
 ///
 /// Queued on res.stream(), each phase's classes forked from it and joined back
-/// (@c launch_each), with no host synchronization; the scratch (per bra class
-/// n_rec doubles, (l_max + 1) n_rec int32s and 6 int32s per block of its
-/// tables; one Dcd per class; one rank table per momentum; n_ao int32s of
-/// shell starts) is drawn from
+/// (@c launch_each), with no host synchronization; the scratch (per class 4
+/// doubles per group, (l_max + 1) n_rec int32s, and 6 int32s and a double per
+/// block of its tables; one Dcd per class; one rank table per momentum; 3 n_ao
+/// doubles of AO centres and n_ao int32s of shell starts; four doubles of
+/// decay and bound maximum) is drawn from
 /// res.device()'s pool and returned to it in res.stream()'s order. The device
 /// res.dev_idx() names is made current for the call and the previous one
 /// restored.

@@ -38,15 +38,17 @@ struct ExchangeShell {
   int32_t offset = 0;
 };
 
-// One class's scratch: as a density class (lc, ld), its Dcd gather; as a bra,
-// its Ip with max|D| folded in, its Dcd rows per ld (kExchangeMomenta x n_rec),
-// and its kb block tables, one per ket class in class order, each
-// kExchangeBlockFields x n_blk.
+// One class's scratch: as a density class (lc, ld), its Dcd gather; as a bra
+// or a ket, its group geometry (kExchangeGroupFields x n_groups); as a bra, its
+// Dcd rows per ld (kExchangeMomenta x n_rec), and its kb block tables, one per
+// ket class in class order, each kExchangeBlockFields x n_blk, with their
+// blocks' density factors beside them, n_blk each.
 struct ExchangeScratch {
   Buffers::device<double> dcd;
-  Buffers::device<double> ip;
+  Buffers::device<double> geom;
   Buffers::device<int32_t> dc;
   Buffers::device<int32_t> blocks;
+  Buffers::device<double> factor;
 };
 
 // The blocks of one kb launch of @p bra against @p ket: one per (a group, b
@@ -158,7 +160,9 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
   // Drawn from res.device()'s pool in stream's order, so every class's fork
   // from stream sees them allocated, and returned in its order at the end,
   // after every phase's join.
-  Buffers::device<double> dmax(1, res.device());
+  Buffers::device<double> decay(device::kExchangeDecayFields, res.device());
+  Buffers::device<double> g_max(1, res.device());
+  Buffers::device<double> centre(size_t{3} * n, res.device());
   Buffers::device<int32_t> starts(symmetric ? n : 1, res.device());
   std::vector<Buffers::device<int32_t>> offsets;
   offsets.reserve(kExchangeMomenta);
@@ -174,29 +178,52 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
                        static_cast<size_t>(n_shells[static_cast<size_t>(cls.lb)]) *
                        static_cast<size_t>(exchange_cartesian_count(cls.la)) *
                        static_cast<size_t>(exchange_cartesian_count(cls.lb));
-    size_t n_table = 0;
+    size_t n_blocks = 0;
     for (size_t b = 0; b < n_classes; ++b) {
-      n_table += static_cast<size_t>(n_blk[a * n_classes + b]) * device::kExchangeBlockFields;
+      n_blocks += static_cast<size_t>(n_blk[a * n_classes + b]);
     }
+    const size_t n_geom = static_cast<size_t>(device::kExchangeGroupFields) * cls.groups.size();
     scratch.push_back(ExchangeScratch{
-        Buffers::device<double>(n_dcd, res.device()), Buffers::device<double>(n_rec, res.device()),
+        Buffers::device<double>(n_dcd, res.device()), Buffers::device<double>(n_geom, res.device()),
         Buffers::device<int32_t>(kExchangeMomenta * n_rec, res.device()),
-        Buffers::device<int32_t>(std::max(n_table, size_t{1}), res.device())});
+        Buffers::device<int32_t>(std::max(n_blocks * device::kExchangeBlockFields, size_t{1}),
+                                 res.device()),
+        Buffers::device<double>(std::max(n_blocks, size_t{1}), res.device())});
   }
   const auto index_of = [&](const OrderedPairClass &cls) {
     return static_cast<size_t>(&cls - classes.data());
   };
-  FBF_TRY(gpu_status(device::exchange_density_max(stream, n_ao, density.data(), dmax.data())));
+  // The decay's max|D|, and the largest record bound's zero, which every class
+  // folds into.
+  FBF_TRY(gpu_status(device::exchange_density_max(stream, n_ao, density.data(), decay.data())));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(g_max.data(), 0, sizeof(double), stream)));
 
-  // Every momentum's rank-to-AO table, from its class (l, l): the gathers of
-  // every (lc, ld) read two of them, so the join closes the phase.
+  // Every class's largest bound into g_max; and from every class (l, l), its
+  // momentum's rank-to-AO table and its AOs' centres. The gathers of every
+  // (lc, ld) read two tables, the decay every centre and every geometry g_max,
+  // so the join closes the phase.
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &cls) {
-    if (cls.la != cls.lb) {
-      return wwr::wwrSuccess;
+    const wwr::wwrStream_t s = cls.device_stream()->stream();
+    const OrderedPairClassView v = cls.view();
+    if (const wwr::wwrError_t code = device::exchange_bound_max(s, v.n_rec, v.bound, g_max.data());
+        code != wwr::wwrSuccess || cls.la != cls.lb) {
+      return code;
     }
-    return device::exchange_rank_offsets(cls.device_stream()->stream(), cls.view(),
-                                         offsets[static_cast<size_t>(cls.la)].data());
+    if (const wwr::wwrError_t code =
+            device::exchange_rank_offsets(s, v, offsets[static_cast<size_t>(cls.la)].data());
+        code != wwr::wwrSuccess) {
+      return code;
+    }
+    const std::array p{v.p_x, v.p_y, v.p_z};
+    const std::array pa{v.pa_x, v.pa_y, v.pa_z};
+    return device::exchange_ao_centres(s, v.n_groups, v.group_start,
+                                       exchange_cartesian_count(cls.la), v.off_a, p.data(),
+                                       pa.data(), n_ao, centre.data());
   })));
+  // The density's decay with distance, from the centres: with max|D|, what
+  // every block's factor is made from.
+  FBF_TRY(gpu_status(
+      device::exchange_density_decay(stream, n_ao, density.data(), centre.data(), decay.data())));
   // The first AO of each AO's shell, from the tables, for the mirror at the
   // end.
   if (symmetric) {
@@ -209,28 +236,38 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
   }
 
   // Every class's density block, Dcd of (lc, ld) = (la, lb), which every bra
-  // class of second momentum lc reads: the join closes this phase too.
+  // class of second momentum lc reads, and its group geometry, which every
+  // block table it is a side of reads: the join closes this phase too.
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &cls) {
+    const wwr::wwrStream_t s = cls.device_stream()->stream();
     const auto lc = static_cast<size_t>(cls.la);
     const auto ld = static_cast<size_t>(cls.lb);
-    return device::exchange_gather_dcd(
-        cls.device_stream()->stream(), cls.la, cls.lb, n_ao, density.data(), n_shells[lc],
-        offsets[lc].data(), n_shells[ld], offsets[ld].data(), scratch[index_of(cls)].dcd.data());
+    ExchangeScratch &c = scratch[index_of(cls)];
+    if (const wwr::wwrError_t code = device::exchange_gather_dcd(
+            s, cls.la, cls.lb, n_ao, density.data(), n_shells[lc], offsets[lc].data(), n_shells[ld],
+            offsets[ld].data(), c.dcd.data());
+        code != wwr::wwrSuccess) {
+      return code;
+    }
+    const OrderedPairClassView v = cls.view();
+    const std::array p{v.p_x, v.p_y, v.p_z};
+    const std::array pa{v.pa_x, v.pa_y, v.pa_z};
+    const std::array pb{v.pb_x, v.pb_y, v.pb_z};
+    return device::exchange_group_geometry(s, v.n_groups, v.group_start, v.bound, p.data(),
+                                           pa.data(), pb.data(), tau, g_max.data(), decay.data(),
+                                           c.geom.data());
   })));
 
-  // Every class as a bra (a, c): its inputs, then for every ket class (b, d)
-  // its block table and one kb launch over it, in that order on the bra's own
-  // stream. The symmetric sweep's tables hold the a <= b blocks only.
+  // Every class as a bra (a, c): its Dcd rows, then for every ket class (b, d)
+  // its block table and factors and one kb launch over them, in that order on
+  // the bra's own stream. The symmetric sweep's tables hold the a <= b blocks
+  // only.
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &bra) {
     const wwr::wwrStream_t s = bra.device_stream()->stream();
     const size_t a = index_of(bra);
     ExchangeScratch &b = scratch[a];
     const OrderedPairClassView v = bra.view();
     const auto n_rec = static_cast<size_t>(bra.n_rec);
-    if (const wwr::wwrError_t code = device::exchange_bra_bound(s, v, dmax.data(), b.ip.data());
-        code != wwr::wwrSuccess) {
-      return code;
-    }
     for (size_t ld = 0; ld < kExchangeMomenta; ++ld) {
       if (n_shells[ld] == 0) {
         continue;
@@ -243,6 +280,7 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
     }
     const auto lc = static_cast<size_t>(bra.lb);
     int32_t *table = b.blocks.data();
+    double *factor = b.factor.data();
     for (const OrderedPairClass &ket : classes) {
       const int32_t count = n_blk[a * n_classes + index_of(ket)];
       if (count == 0) {
@@ -254,19 +292,21 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
         return wwr::wwrErrorInvalidValue;
       }
       const OrderedPairClassView w = ket.view();
-      if (const wwr::wwrError_t code =
-              device::exchange_blocks(s, v.n_groups, v.group_start, v.off_a, w.n_groups,
-                                      w.group_start, w.off_a, symmetric, count, table);
+      if (const wwr::wwrError_t code = device::exchange_blocks(
+              s, v.n_groups, v.group_start, v.off_a, b.geom.data(), w.n_groups, w.group_start,
+              w.off_a, scratch[index_of(ket)].geom.data(), decay.data(), symmetric, count, table,
+              factor);
           code != wwr::wwrSuccess) {
         return code;
       }
       if (const wwr::wwrError_t code = device::exchange_k(
-              s, v, b.ip.data(), b.dc.data() + ld * n_rec, w, n_shells[lc] * n_shells[ld], tau,
-              scratch[index_of(*density_class)].dcd.data(), count, table, n_ao, k.data());
+              s, v, b.dc.data() + ld * n_rec, w, n_shells[lc] * n_shells[ld], tau,
+              scratch[index_of(*density_class)].dcd.data(), count, table, factor, n_ao, k.data());
           code != wwr::wwrSuccess) {
         return code;
       }
       table += static_cast<size_t>(count) * device::kExchangeBlockFields;
+      factor += count;
     }
     return wwr::wwrSuccess;
   })));

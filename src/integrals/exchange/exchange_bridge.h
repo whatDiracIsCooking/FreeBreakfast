@@ -1,6 +1,6 @@
 /// @file
 /// @brief The K build's launcher over the generated kb<la, lc, lb, ld>, and the
-/// three small kernels that make its per-record inputs, declared once for the
+/// two small kernels that make its per-record inputs, declared once for the
 /// module that calls them and the device TU that defines them.
 ///
 /// Included by exchange.cpp in its GLOBAL MODULE FRAGMENT, and by
@@ -45,21 +45,6 @@ namespace free_breakfast::device {
 [[nodiscard]] wwr::wwrError_t exchange_rank_offsets(wwr::wwrStream_t stream,
                                                     const OrderedPairClassView &cls, int32_t *off);
 
-/// @brief One bra class's screen bound with the density factor folded in,
-/// `ip[r] = bra.bound[r] * *dmax`, on @p stream; @p ip is bra.n_rec doubles,
-/// written whole.
-///
-/// kb takes maxD by value, a host double, but max|D| is on the device
-/// (exchange_density_max), and reading it back would synchronize the host; so
-/// kb is launched with maxD = 1 and the bra's Ip carries it. The screen
-/// `Ip * Iq * maxD < tau` is the same product.
-///
-/// @return The launch status (wwrErrorInvalidValue for a class with no
-///         records).
-[[nodiscard]] wwr::wwrError_t exchange_bra_bound(wwr::wwrStream_t stream,
-                                                 const OrderedPairClassView &bra,
-                                                 const double *dmax, double *ip);
-
 /// @brief One bra class's rows of the (bra.lb, ld) Dcd, `dc[r] =
 /// bra.rank_b[r] * n_d`, on @p stream, @p n_d the number of shells of
 /// momentum ld; @p dc is bra.n_rec int32_ts, written whole. It depends on the
@@ -78,13 +63,14 @@ namespace free_breakfast::device {
 ///
 /// @p blocks is the launch's table, @p n_blk blocks (exchange_blocks): each a
 /// range of bra records of one first shell a and a range of ket records of one
-/// first shell b, and their AO offsets. Every range must be non-increasing in
-/// bound, as each of the classes' groups is: the kernel breaks out of its bra
-/// loop at the first bra with `Ip * Iq[ket0] < tau`, and each lane out of its
-/// ket loop at its first ket with `Ip * Iq < tau`. @p ip and @p dc are
-/// @p bra's, from @ref exchange_bra_bound and @ref exchange_bra_rows (for ld =
-/// ket.lb); the kets' `dd` is ket.rank_b. @p dcd is the (bra.lb, ket.lb)
-/// gather (exchange_gather_dcd), @p n_dc its row count.
+/// first shell b, and their AO offsets; @p factor, the table's, is each block's
+/// density factor F_ab. Every range must be non-increasing in bound, as each of
+/// the classes' groups is: the kernel breaks out of its bra loop at the first
+/// bra with `Ip * Iq[ket0] * F_ab < tau`, and each lane out of its ket loop at
+/// its first ket with `Ip * Iq * F_ab < tau`, Ip and Iq the records' bounds.
+/// @p dc is @p bra's, from @ref exchange_bra_rows (for ld = ket.lb); the kets'
+/// `dd` is ket.rank_b. @p dcd is the (bra.lb, ket.lb) gather
+/// (exchange_gather_dcd), @p n_dc its row count.
 ///
 /// The adds are atomic, so launches of several class pairs into one @p k need
 /// no ordering among them; zero @p k before the first.
@@ -92,9 +78,9 @@ namespace free_breakfast::device {
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no
 ///         kernel, a non-positive @p n_blk or a non-positive @p n_ao).
 [[nodiscard]] wwr::wwrError_t exchange_k(wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                                         const double *ip, const int32_t *dc,
-                                         const OrderedPairClassView &ket, int32_t n_dc, double tau,
-                                         const double *dcd, int32_t n_blk, const int32_t *blocks,
-                                         int32_t n_ao, double *k);
+                                         const int32_t *dc, const OrderedPairClassView &ket,
+                                         int32_t n_dc, double tau, const double *dcd, int32_t n_blk,
+                                         const int32_t *blocks, const double *factor, int32_t n_ao,
+                                         double *k);
 
 } // namespace free_breakfast::device

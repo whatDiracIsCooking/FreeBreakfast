@@ -166,6 +166,8 @@ TEST_P(OneElectronGolden, CoreHamiltonianMatchesPyscf) {
 }
 
 INSTANTIATE_TEST_SUITE_P(H2O, OneElectronGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
+// Five H2 4 bohr apart in cc-pVDZ, with a converged RHF density.
+INSTANTIATE_TEST_SUITE_P(Chain, OneElectronGolden, ::testing::Values("h10_chain_ccpvdz"));
 
 // One shell of momentum l at the origin, and one hydrogen there: the smallest
 // basis and molecule a build takes.

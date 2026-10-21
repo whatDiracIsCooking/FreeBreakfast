@@ -272,5 +272,7 @@ TEST(ExchangePairsMismatch, ClassesOfAnotherBasisAreRefused) {
 }
 
 INSTANTIATE_TEST_SUITE_P(H2O, ExchangePairs, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
+// Five H2 4 bohr apart in cc-pVDZ, with a converged RHF density.
+INSTANTIATE_TEST_SUITE_P(Chain, ExchangePairs, ::testing::Values("h10_chain_ccpvdz"));
 
 } // namespace

@@ -1,8 +1,7 @@
 // The device half of free_breakfast.integrals.exchange: the launcher over the
 // generated kb<la, lc, lb, ld>, and the small kernels that make the per-record
-// inputs it leaves to its caller (the rank-to-AO table, the bra's Ip with
-// max|D| folded in, and its Dcd rows). One source for both backends -- nvcc
-// under CUDA, clang -x hip under HIP.
+// inputs it leaves to its caller (the rank-to-AO table and the bra's Dcd rows).
+// One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/kb/),
 // each one explicit specialization of the template kernels/kb/kb.h declares with
@@ -38,15 +37,6 @@ __global__ void rank_offsets_kernel(const int32_t n_rec, const int32_t *rank_b,
   const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (r < n_rec) {
     off[rank_b[r]] = off_b[r];
-  }
-}
-
-// ip[r] = bound[r] * *dmax: see exchange_bra_bound.
-__global__ void bra_bound_kernel(const int32_t n_rec, const double *bound, const double *dmax,
-                                 double *ip) {
-  const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (r < n_rec) {
-    ip[r] = bound[r] * *dmax;
   }
 }
 
@@ -120,16 +110,6 @@ wwr::wwrError_t exchange_rank_offsets(const wwr::wwrStream_t stream,
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t exchange_bra_bound(const wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                                   const double *dmax, double *ip) {
-  if (!has_records(bra)) {
-    return wwr::wwrErrorInvalidValue;
-  }
-  bra_bound_kernel<<<record_blocks(bra.n_rec), kFourWarps, 0, stream>>>(bra.n_rec, bra.bound, dmax,
-                                                                        ip);
-  return wwr::wwrGetLastError();
-}
-
 wwr::wwrError_t exchange_bra_rows(const wwr::wwrStream_t stream, const OrderedPairClassView &bra,
                                   const int32_t n_d, int32_t *dc) {
   if (!has_records(bra) || n_d < 0) {
@@ -141,9 +121,9 @@ wwr::wwrError_t exchange_bra_rows(const wwr::wwrStream_t stream, const OrderedPa
 }
 
 wwr::wwrError_t exchange_k(const wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                           const double *ip, const int32_t *dc, const OrderedPairClassView &ket,
-                           const int32_t n_dc, const double tau, const double *dcd,
-                           const int32_t n_blk, const int32_t *blocks, const int32_t n_ao,
+                           const int32_t *dc, const OrderedPairClassView &ket, const int32_t n_dc,
+                           const double tau, const double *dcd, const int32_t n_blk,
+                           const int32_t *blocks, const double *factor, const int32_t n_ao,
                            double *k) {
   if (!has_records(bra) || !has_records(ket) || n_blk < 1 || n_ao < 1) {
     return wwr::wwrErrorInvalidValue;
@@ -153,14 +133,14 @@ wwr::wwrError_t exchange_k(const wwr::wwrStream_t stream, const OrderedPairClass
   const auto kernel = kb_kernels[bra.la][bra.lb][ket.la][ket.lb];
   const auto seg = [&](const int32_t field) { return blocks + static_cast<size_t>(field) * n_blk; };
   // One warp per block; no dynamic shared memory, Ksh is sized for this block
-  // in the text. maxD = 1: max|D| is in ip (exchange_bra_bound).
+  // in the text. Ip and Iq are the records' own bounds, the density in factor.
   const dim3 grid(static_cast<uint32_t>(n_blk));
   const dim3 lanes(kb_block_dim[0], kb_block_dim[1]);
   kernel<<<grid, lanes, 0, stream>>>(
-      n_blk, bra.n_rec, ket.n_rec, n_dc, n_ao, tau, 1.0, seg(0), seg(1), seg(2), seg(3), seg(4),
-      seg(5), bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y, bra.pa_z, bra.pb_x, bra.pb_y,
-      bra.pb_z, bra.s, ip, dc, ket.p_x, ket.p_y, ket.p_z, ket.zeta, ket.pa_x, ket.pa_y, ket.pa_z,
-      ket.pb_x, ket.pb_y, ket.pb_z, ket.s, ket.bound, ket.rank_b, dcd, k);
+      n_blk, bra.n_rec, ket.n_rec, n_dc, n_ao, tau, seg(0), seg(1), seg(2), seg(3), seg(4), seg(5),
+      factor, bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y, bra.pa_z, bra.pb_x, bra.pb_y,
+      bra.pb_z, bra.s, bra.bound, dc, ket.p_x, ket.p_y, ket.p_z, ket.zeta, ket.pa_x, ket.pa_y,
+      ket.pa_z, ket.pb_x, ket.pb_y, ket.pb_z, ket.s, ket.bound, ket.rank_b, dcd, k);
   return wwr::wwrGetLastError();
 }
 

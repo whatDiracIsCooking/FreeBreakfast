@@ -11,8 +11,9 @@ tests read a small file of their own and PySCF is needed by neither:
 
 - one_electron/: libcint's `int1e_ovlp`, `int1e_kin` and `int1e_nuc`, and
   PySCF's `hcore`;
-- coulomb/: the fixture's AO `density` (a Hilbert matrix, its
-  `density_recipe`) and libcint's Coulomb matrix `vj` of it;
+- coulomb/: the fixture's AO `density` (a Hilbert matrix, or for the H10
+  chain a converged RHF density, recorded; its `density_recipe`) and
+  libcint's Coulomb matrix `vj` of it;
 - exchange/: the same `density` and libcint's exchange matrix `vk` of it
   (PySCF `get_jk`, vk_il = sum_jk (ij|kl) D_jk), from the molecule's `_k`
   fixture. That fixture was computed on its `_j` sibling's inputs, and this
@@ -41,8 +42,10 @@ OUT = ROOT / "test/gtest/data"
 
 # The molecules, each the golden files' stem and its fixtures' prefix.
 # h2o_sto3g puts O's p shell before the H s shells (the la > lb swap);
-# h2o_ccpvdz reaches d.
-MOLECULES = ("h2o_sto3g", "h2o_ccpvdz")
+# h2o_ccpvdz reaches d; h10_chain_ccpvdz (five H2 4 bohr apart) carries an RHF
+# density, which decays with distance as the Hilbert one does not, so K's
+# density-decay factor drops below max|D| there.
+MOLECULES = ("h2o_sto3g", "h2o_ccpvdz", "h10_chain_ccpvdz")
 # Per family, its directory under OUT, the fixture suffix it reads, and the
 # fixture arrays it keeps: libcint's S, T and V (point nuclei) and PySCF's
 # hcore = T + V; the AO density with libcint's J of it; and the same density
