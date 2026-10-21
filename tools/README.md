@@ -18,19 +18,27 @@ emit_coulomb_kernels.py
                   jab}/ from the FelizJueves submodule. Standard library
                   only.
 emit_exchange_kernels.py
-                  Regenerate src/integrals/exchange/kernels/kb/ from the
-                  FelizJueves submodule. Standard library only.
+                  Regenerate src/integrals/exchange/kernels/kb/, and K's
+                  dressed record bound src/integrals/exchange/pairs/kernels/
+                  record_bound/, from the FelizJueves submodule. Standard
+                  library only.
 extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,
                   coulomb,exchange}/ hold out of FelizJueves's fixtures.
                   Standard library only.
+emit_record_bound_golden.py
+                  Write test/gtest/data/record_bound/: FelizJueves's host
+                  ao.k.record_bounds for every ordered shell pair of the
+                  exchange goldens' bases. Needs numpy (FelizJueves's
+                  reference Boys).
 emit_sad_reference.py
                   Write test/gtest/data/sad/atomic_scf.json: PySCF's
                   spherically averaged atomic RHF densities, the reference
                   src/sad's guess is tested against. Needs PySCF.
 ```
 
-Re-run the three `emit_*_kernels.py` and `extract_integral_golden.py` after
+Re-run the three `emit_*_kernels.py`, `extract_integral_golden.py` and then
+`emit_record_bound_golden.py` (it reads the exchange goldens' shells) after
 bumping `deps/FelizJueves`. Everything but `bse_download.py` and `atomic_cd`
 writes tracked files, so the diff is the review.
 
@@ -51,6 +59,7 @@ venv rather than the image's `/opt/venv`:
 
 ```sh
 uv run --group tools tools/emit_sad_reference.py
+uv run --group tools tools/emit_record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \
     --bse-out c_ccpvdz_accd.bse.json

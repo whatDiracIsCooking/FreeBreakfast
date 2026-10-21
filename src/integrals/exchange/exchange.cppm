@@ -1,7 +1,7 @@
 /// @file
 /// @brief The Cartesian exchange matrix K on the GPU, by McMurchie-Davidson,
-/// over the kb kernels FelizJueves generates, screened by the record bound mmd
-/// forms (PrimitivePairClass::bound).
+/// over the kb kernels FelizJueves generates, screened by the dressed record
+/// bound the ordered classes carry (OrderedPairClass::record_bound).
 ///
 /// The records are free_breakfast.integrals.exchange.pairs's ordered classes,
 /// re-exported here, so one import gives both the classes and the build: every
@@ -25,17 +25,19 @@ export namespace free_breakfast {
 /// of the basis @p density and @p k were made for, built once per basis.
 ///
 /// Screened by kb's bound: a primitive quartet is skipped when
-/// `Ip * Iq * F_ab < tau`, Ip and Iq the bra's and the ket's record bounds
-/// (mmd's bound field) and F_ab the block's DENSITY FACTOR, a bound on every
-/// |D_cd| its K_ab block can visit, from the density's decay with distance
-/// (arXiv:2407.21445 §4.3.1; FelizJueves #484): max|D| for a block whose shells are
-/// close, and down to `H_off e^{-Λ d}` for one whose shells are d bohr further
-/// apart than their pairs reach. FelizJueves's ao.k proves every skipped term
-/// under @p tau with its DRESSED record bound; mmd's bound is undressed, can
-/// fall short of it (up to 1.2x on H2O/cc-pVDZ), and does not decay with
-/// distance, so for now a skipped term can exceed @p tau by about that factor
-/// squared and F_ab is max|D| throughout (#132).
-/// @p tau = 0 skips nothing. The default, 1e-10, is @c coulomb's.
+/// `Ip * Iq * F_ab < tau`, Ip and Iq the bra's and the ket's DRESSED record
+/// bounds (OrderedPairClass::record_bound, FelizJueves's ao.k.record_bounds)
+/// and F_ab the block's DENSITY FACTOR, a bound on every |D_cd| its K_ab block
+/// can visit, from the density's decay with distance (arXiv:2407.21445
+/// §4.3.1; FelizJueves #484): max|D| for a block whose shells are close, and
+/// down to `H_off e^{-Λ d}` for one whose shells are d bohr further apart than
+/// their pairs reach. FelizJueves's ao.k proves every skipped term under
+/// @p tau with exactly that bound and factor.
+/// @p tau = 0 skips nothing. The default is 1e-13, not @c coulomb's 1e-10:
+/// each skipped term is under tau, but an element sums many, their number
+/// growing with the record pairs that cover it, and at 1e-10 K misses libcint
+/// by up to 6.9e-10 of max|K| (H2O/cc-pVDZ). 1e-13 is the largest round tau
+/// at which H2O in STO-3G and cc-pVDZ and the H10 chain all meet 1e-12 max|K|.
 ///
 /// Zeroes @p k and, on res.stream(), computes max|D|; then, per class on that
 /// class's own stream, its largest record bound and, from a class (l, l), its
@@ -79,6 +81,24 @@ export namespace free_breakfast {
 ///         @p k unspecified.
 [[nodiscard]] Status exchange(DeviceResources &res, std::span<const OrderedPairClass> classes,
                               const CartesianMatrixAO &density, CartesianMatrixAO &k,
-                              double tau = 1e-10, bool symmetric = true);
+                              double tau = 1e-13, bool symmetric = true);
+
+/// @brief The density factor F_ab of every block @c exchange would launch for
+/// the same arguments, read back to the host: the decay, the reaches and the
+/// block tables made exactly as @c exchange makes them, and nothing of K
+/// itself (no zeroing, no kb launch, no mirror).
+///
+/// For diagnostics and tests: how many blocks the decay screens below max|D|
+/// is what decides whether it pays. The factors are bra class major (in
+/// @p classes' order), then ket class, then each table's own order, bra group
+/// major. Unlike @c exchange it synchronizes res.stream() before returning.
+///
+/// @return The factors (none for no @p classes or an empty basis); the
+///         InvalidConfig errors of @c exchange that do not concern K; or the
+///         GpuRuntime error of the first launch, copy or synchronization that
+///         failed.
+[[nodiscard]] Result<std::vector<double>>
+exchange_block_factors(DeviceResources &res, std::span<const OrderedPairClass> classes,
+                       const CartesianMatrixAO &density, double tau = 1e-13, bool symmetric = true);
 
 } // namespace free_breakfast

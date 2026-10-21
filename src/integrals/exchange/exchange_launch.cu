@@ -133,14 +133,16 @@ wwr::wwrError_t exchange_k(const wwr::wwrStream_t stream, const OrderedPairClass
   const auto kernel = kb_kernels[bra.la][bra.lb][ket.la][ket.lb];
   const auto seg = [&](const int32_t field) { return blocks + static_cast<size_t>(field) * n_blk; };
   // One warp per block; no dynamic shared memory, Ksh is sized for this block
-  // in the text. Ip and Iq are the records' own bounds, the density in factor.
+  // in the text. Ip and Iq are the records' own dressed bounds, the density in
+  // factor.
   const dim3 grid(static_cast<uint32_t>(n_blk));
   const dim3 lanes(kb_block_dim[0], kb_block_dim[1]);
   kernel<<<grid, lanes, 0, stream>>>(
       n_blk, bra.n_rec, ket.n_rec, n_dc, n_ao, tau, seg(0), seg(1), seg(2), seg(3), seg(4), seg(5),
       factor, bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y, bra.pa_z, bra.pb_x, bra.pb_y,
-      bra.pb_z, bra.s, bra.bound, dc, ket.p_x, ket.p_y, ket.p_z, ket.zeta, ket.pa_x, ket.pa_y,
-      ket.pa_z, ket.pb_x, ket.pb_y, ket.pb_z, ket.s, ket.bound, ket.rank_b, dcd, k);
+      bra.pb_z, bra.s, bra.record_bound, dc, ket.p_x, ket.p_y, ket.p_z, ket.zeta, ket.pa_x,
+      ket.pa_y, ket.pa_z, ket.pb_x, ket.pb_y, ket.pb_z, ket.s, ket.record_bound, ket.rank_b, dcd,
+      k);
   return wwr::wwrGetLastError();
 }
 

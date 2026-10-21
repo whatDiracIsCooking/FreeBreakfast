@@ -1,7 +1,7 @@
 {
  "description": "#86's d case (slow): H2O in cc-pVDZ, Cartesian (six d components), no atom on an axis, general contractions on O. Records the converted basis and PySCF's get_jk J for the recorded density. -- the basis and the one-electron arrays only, copied by tools/extract_integral_golden.py",
  "source": {
-  "felizjueves": "c6a17f020e51a912cdfcefb71c5798c53019dad5",
+  "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
   "fixture": "test/oracle/fixtures/h2o_ccpvdz_j.json"
  },
  "provenance": {

@@ -82,8 +82,8 @@ inline constexpr double kExchangeSameCentre = 1e-6;
 /// @brief Fold the largest of @p n_rec record bounds into @p g_max, on
 /// @p stream: `*g_max = max(*g_max, max_r bound[r])`, atomically, so every
 /// class of a basis can fold into one @p g_max from its own stream. Zero
-/// @p g_max first. The bounds must be non-negative and not NaN, as mmd's are:
-/// the atomic max compares their bits.
+/// @p g_max first. The bounds must be non-negative and not NaN, as the ordered
+/// classes' record bounds are: the atomic max compares their bits.
 ///
 /// @return The launch status (wwrErrorInvalidValue if @p n_rec is not
 ///         positive).

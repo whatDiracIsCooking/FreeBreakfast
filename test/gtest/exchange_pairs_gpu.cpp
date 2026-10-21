@@ -1,12 +1,15 @@
 // GPU cases for integrals.exchange.pairs: the ordered pair classes K's bras
 // and kets are drawn from, on H2O in STO-3G (O's p shell precedes the H s
 // shells, so (p, s) is reached only by swapping mmd's (s|p)) and cc-pVDZ (s,
-// p, d: all nine ordered classes). Each class's record count against a host
-// count of ordered primitive pairs; its groups contiguous, one first shell
-// each, in basis order and non-increasing in bound, and their bounds on the
-// device side as group_start; each record's rank_b; the
-// (la, lb) and (lb, la) records the same multiset with P - A and P - B
-// swapped; and the device side matching the pinned side.
+// p, d: all nine ordered classes), and the H10 chain. Each class's record
+// count against a host count of ordered primitive pairs; its groups
+// contiguous, one first shell each, in basis order and non-increasing in the
+// dressed record bound, and their bounds on the device side as group_start;
+// each record's rank_b; the (la, lb) and (lb, la) records the same multiset
+// with P - A and P - B swapped; the device side matching the pinned side; and
+// each record's dressed bound against FelizJueves's ao.k.record_bounds
+// (test/gtest/data/record_bound/, tools/emit_record_bound_golden.py), on
+// H2O/cc-pVDZ and the chain, with its centres those of its two shells.
 
 #include <gtest/gtest.h>
 
@@ -42,6 +45,11 @@ fb::BasisSet h2o(const std::string &stem) {
                         fb::Vec<double, 3>{c[0], c[1], c[2]});
   }
   return fb::BasisSet(std::move(shells));
+}
+
+// A point as three doubles, x, y, z.
+std::array<double, 3> coords(const fb::Vec<double, 3> &v) {
+  return {v.x, v.y, v.z};
 }
 
 // Record k of a field's pinned side.
@@ -154,7 +162,7 @@ TEST_P(ExchangePairs, RecordCountsAreTheOrderedPrimitivePairs) {
   for (const fb::OrderedPairClass &cls : o.ordered) {
     EXPECT_EQ(ClassKey(cls.la, cls.lb), w->first);
     EXPECT_EQ(cls.n_rec, w->second) << "(" << cls.la << ", " << cls.lb << ")";
-    for (const fb::MirroredBuffer<double> *field : {&cls.zeta, &cls.pb_z, &cls.bound}) {
+    for (const fb::MirroredBuffer<double> *field : {&cls.zeta, &cls.pb_z, &cls.record_bound}) {
       EXPECT_EQ(field->size(), static_cast<std::size_t>(cls.n_rec));
     }
     EXPECT_EQ(cls.rank_b.size(), static_cast<std::size_t>(cls.n_rec));
@@ -201,10 +209,12 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
       for (std::int32_t k = g.start; k < g.start + g.count; ++k) {
         const auto r = static_cast<std::size_t>(k);
         EXPECT_EQ(at(cls.off_a, r), a_off) << name << " record " << k;
+        // kb's sorted breaks need it; a far pair's bound may be exactly 0.
         if (k > g.start) {
-          EXPECT_LE(at(cls.bound, r), at(cls.bound, r - 1)) << name << " record " << k;
+          EXPECT_LE(at(cls.record_bound, r), at(cls.record_bound, r - 1))
+              << name << " record " << k;
         }
-        EXPECT_GT(at(cls.bound, r), 0.0) << name << " record " << k;
+        EXPECT_GE(at(cls.record_bound, r), 0.0) << name << " record " << k;
         // The second shell has momentum lb and its host rank.
         const auto b = by_offset.find(at(cls.off_b, r));
         ASSERT_NE(b, by_offset.end()) << name << " record " << k;
@@ -246,7 +256,7 @@ TEST_P(ExchangePairs, DeviceSideMatchesThePinnedSide) {
     EXPECT_EQ(v.group_start, cls.group_start.device().data());
     for (const fb::MirroredBuffer<double> *field :
          {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-          &cls.pb_y, &cls.pb_z, &cls.s, &cls.bound}) {
+          &cls.pb_y, &cls.pb_z, &cls.s, &cls.record_bound}) {
       EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
     }
     for (const fb::MirroredBuffer<std::int32_t> *field :
@@ -255,6 +265,97 @@ TEST_P(ExchangePairs, DeviceSideMatchesThePinnedSide) {
     }
   }
 }
+
+// Every record's dressed bound against FelizJueves's ao.k.record_bounds of the
+// same ordered shell pair, matched by its two shells and its zeta (the two
+// sides order their records differently): to a few ulps, a host zero (a pair
+// factor that underflowed) exactly zero. And every record's centres, P - (P -
+// A) and P - (P - B), those of its two shells, so the sort that put the bound
+// in order carried P, P - A, P - B and both offsets with it.
+class ExchangeRecordBound : public ::testing::TestWithParam<std::string> {};
+
+// FelizJueves holds the generated kernel to its host within 16 eps per record
+// (test_kernel_record_bound.py); the same bar here. The kernel forms each I_p in
+// closed form and sums plainly, the host by the [p|q] recurrence and fsum.
+constexpr double kBoundUlps = 16.0;
+
+TEST_P(ExchangeRecordBound, MatchesFelizJuevesRecordBounds) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::BasisSet basis = h2o(GetParam());
+  const auto doc = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "record_bound" /
+                                 (GetParam() + ".json"));
+  ASSERT_TRUE(doc) << GetParam();
+  ASSERT_EQ((*doc)["n_shells"].get<std::uint32_t>(), basis.nshells());
+  // Per ordered shell pair, its records as (zeta, bound), sorted.
+  using Recs = std::vector<std::pair<double, double>>;
+  std::map<std::pair<std::int32_t, std::int32_t>, Recs> want;
+  for (const auto &pair : (*doc)["pairs"]) {
+    Recs &recs = want[{pair["a"].get<std::int32_t>(), pair["b"].get<std::int32_t>()}];
+    for (const auto &rec : pair["records"]) {
+      recs.emplace_back(rec[0].get<double>(), rec[1].get<double>());
+    }
+  }
+  std::map<std::int32_t, std::int32_t> shell_at;
+  for (std::uint32_t i = 0; i < basis.nshells(); ++i) {
+    shell_at[static_cast<std::int32_t>(basis.ao_offset_cart(i))] = static_cast<std::int32_t>(i);
+  }
+  const Ordered o = ordered_of(res, basis);
+  std::map<std::pair<std::int32_t, std::int32_t>, Recs> got;
+  std::int64_t n_rec = 0;
+  std::int64_t n_zero = 0;
+  for (const fb::OrderedPairClass &cls : o.ordered) {
+    for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
+      const std::int32_t a = shell_at.at(at(cls.off_a, k));
+      const std::int32_t b = shell_at.at(at(cls.off_b, k));
+      const auto ca = coords(basis.shells()[static_cast<std::size_t>(a)].center());
+      const auto cb = coords(basis.shells()[static_cast<std::size_t>(b)].center());
+      const std::array p{at(cls.p_x, k), at(cls.p_y, k), at(cls.p_z, k)};
+      const std::array pa{at(cls.pa_x, k), at(cls.pa_y, k), at(cls.pa_z, k)};
+      const std::array pb{at(cls.pb_x, k), at(cls.pb_y, k), at(cls.pb_z, k)};
+      for (std::size_t x = 0; x < 3; ++x) {
+        ASSERT_NEAR(p[x] - pa[x], ca[x], 1e-12)
+            << "record " << k << " of shells " << a << ", " << b;
+        ASSERT_NEAR(p[x] - pb[x], cb[x], 1e-12)
+            << "record " << k << " of shells " << a << ", " << b;
+      }
+      got[{a, b}].emplace_back(at(cls.zeta, k), at(cls.record_bound, k));
+      ++n_rec;
+    }
+  }
+  ASSERT_EQ(n_rec, (*doc)["n_records"].get<std::int64_t>());
+  ASSERT_EQ(got.size(), want.size());
+  double worst = 0.0;
+  for (auto &[key, recs] : want) {
+    const auto it = got.find(key);
+    ASSERT_NE(it, got.end()) << "shells " << key.first << ", " << key.second;
+    Recs &mine = it->second;
+    std::ranges::sort(recs);
+    std::ranges::sort(mine);
+    ASSERT_EQ(mine.size(), recs.size()) << "shells " << key.first << ", " << key.second;
+    for (std::size_t r = 0; r < recs.size(); ++r) {
+      const auto &[zeta, bound] = recs[r];
+      ASSERT_EQ(mine[r].first, zeta) << "shells " << key.first << ", " << key.second;
+      if (bound == 0.0) {
+        EXPECT_EQ(mine[r].second, 0.0) << "shells " << key.first << ", " << key.second;
+        ++n_zero;
+        continue;
+      }
+      const double ulps =
+          std::abs(mine[r].second - bound) / (std::numeric_limits<double>::epsilon() * bound);
+      worst = std::max(worst, ulps);
+      EXPECT_LE(ulps, kBoundUlps) << "shells " << key.first << ", " << key.second << ", zeta "
+                                  << zeta;
+    }
+  }
+  std::cout << "[ bound    ] " << GetParam() << ": " << n_rec << " records, worst " << worst
+            << " eps, " << n_zero << " exact zeros\n";
+  RecordProperty("worst_eps", std::format("{:.2f}", worst));
+  RecordProperty("exact_zeros", std::format("{}", n_zero));
+}
+
+INSTANTIATE_TEST_SUITE_P(Golden, ExchangeRecordBound,
+                         ::testing::Values("h2o_ccpvdz", "h10_chain_ccpvdz"));
 
 // The ordered classes of one basis built from another basis's mmd classes are
 // refused: an AO offset that starts no shell is an InvalidConfig error, not a garbage

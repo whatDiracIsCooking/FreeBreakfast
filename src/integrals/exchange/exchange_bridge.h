@@ -64,10 +64,11 @@ namespace free_breakfast::device {
 /// @p blocks is the launch's table, @p n_blk blocks (exchange_blocks): each a
 /// range of bra records of one first shell a and a range of ket records of one
 /// first shell b, and their AO offsets; @p factor, the table's, is each block's
-/// density factor F_ab. Every range must be non-increasing in bound, as each of
-/// the classes' groups is: the kernel breaks out of its bra loop at the first
-/// bra with `Ip * Iq[ket0] * F_ab < tau`, and each lane out of its ket loop at
-/// its first ket with `Ip * Iq * F_ab < tau`, Ip and Iq the records' bounds.
+/// density factor F_ab. Every range must be non-increasing in record_bound, as
+/// each of the classes' groups is: the kernel breaks out of its bra loop at the
+/// first bra with `Ip * Iq[ket0] * F_ab < tau`, and each lane out of its ket
+/// loop at its first ket with `Ip * Iq * F_ab < tau`, Ip and Iq the records'
+/// dressed bounds.
 /// @p dc is @p bra's, from @ref exchange_bra_rows (for ld = ket.lb); the kets'
 /// `dd` is ket.rank_b. @p dcd is the (bra.lb, ket.lb) gather
 /// (exchange_gather_dcd), @p n_dc its row count.

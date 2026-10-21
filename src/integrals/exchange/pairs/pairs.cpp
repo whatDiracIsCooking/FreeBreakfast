@@ -1,6 +1,14 @@
 /// @file
 /// @brief ordered_pair_classes: mmd's records in both orientations, gathered
-/// on the host into one class per ordered (la, lb), grouped by first shell.
+/// on the host into one class per ordered (la, lb), grouped by first shell;
+/// then on the device each record's dressed bound, and each group sorted by
+/// it.
+
+module;
+
+// The record-bound and record-order launchers, defined in pairs_launch.cu:
+// declared in the GMF so they keep external linkage (see the header).
+#include "pairs_bridge.h"
 
 module free_breakfast.integrals.exchange.pairs;
 
@@ -50,7 +58,7 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
       .pb_y = MirroredBuffer<double>(len, ds),
       .pb_z = MirroredBuffer<double>(len, ds),
       .s = MirroredBuffer<double>(len, ds),
-      .bound = MirroredBuffer<double>(len, ds),
+      .record_bound = MirroredBuffer<double>(len, ds),
       .off_a = MirroredBuffer<int32_t>(len, ds),
       .off_b = MirroredBuffer<int32_t>(len, ds),
       .rank_b = MirroredBuffer<int32_t>(len, ds),
@@ -84,21 +92,69 @@ void write_ordered_record(OrderedPairClass &out, const size_t r, const OrderedPa
   to(out.pb_y) = from(pb_y);
   to(out.pb_z) = from(pb_z);
   to(out.s) = from(c.s);
-  to(out.bound) = from(c.bound);
+  // Formed on the device (form_ordered_bounds); zero until then, and in a
+  // class above d, which has no kernel.
+  to(out.record_bound) = 0.0;
   to(out.off_a) = from(off_a);
   to(out.off_b) = from(off_b);
   to(out.rank_b) = rank_of[static_cast<size_t>(from(off_b))];
 }
 
+// Every per-record field, the ones the order permutes.
+std::array<MirroredBuffer<double> *, 12> ordered_doubles(OrderedPairClass &cls) {
+  return {&cls.zeta, &cls.p_x,  &cls.p_y,  &cls.p_z,  &cls.pa_x, &cls.pa_y,
+          &cls.pa_z, &cls.pb_x, &cls.pb_y, &cls.pb_z, &cls.s,    &cls.record_bound};
+}
+
+std::array<MirroredBuffer<int32_t> *, 3> ordered_ints(OrderedPairClass &cls) {
+  return {&cls.off_a, &cls.off_b, &cls.rank_b};
+}
+
 // Queue every field's pinned-to-device copy on cls's stream.
 Status copy_ordered_to_device(OrderedPairClass &cls) {
-  for (MirroredBuffer<double> *field :
-       {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-        &cls.pb_y, &cls.pb_z, &cls.s, &cls.bound}) {
+  for (MirroredBuffer<double> *field : ordered_doubles(cls)) {
     FBF_TRY(gpu_status(field->to_device()));
   }
-  for (MirroredBuffer<int32_t> *field : {&cls.off_a, &cls.off_b, &cls.rank_b, &cls.group_start}) {
+  for (MirroredBuffer<int32_t> *field : ordered_ints(cls)) {
     FBF_TRY(gpu_status(field->to_device()));
+  }
+  return gpu_status(cls.group_start.to_device());
+}
+
+// Each record's dressed bound, then each group sorted by it, non-increasing,
+// on cls's stream after its copy to the device: the order, every field
+// permuted to it in place, and the pinned side refreshed from the device. The
+// groups do not move, so neither do group_start, the host's groups or any
+// record's first shell. A class above d has no kernel and keeps its zero
+// bounds and gather order: every build refuses such a class. The scratch is
+// drawn on cls's stream and returned in its order.
+Status form_ordered_bounds(OrderedPairClass &cls) {
+  if (cls.la > kMaxAngularMomentum || cls.lb > kMaxAngularMomentum) {
+    return {};
+  }
+  const std::shared_ptr<DeviceStream> &ds = cls.device_stream();
+  const wwr::wwrStream_t stream = ds->stream();
+  const OrderedPairClassView v = cls.view();
+  FBF_TRY(gpu_status(device::ordered_pair_bound(stream, v, cls.record_bound.device().data())));
+  const auto n = static_cast<size_t>(cls.n_rec);
+  StreamBuffers::device<double> key(n, ds);
+  StreamBuffers::device<double> key_alt(n, ds);
+  StreamBuffers::device<uint32_t> perm(n, ds);
+  StreamBuffers::device<uint32_t> perm_alt(n, ds);
+  StreamBuffers::device<double> tmp(n, ds);
+  StreamBuffers::device<int32_t> tmp_int(n, ds);
+  FBF_TRY(gpu_status(device::ordered_pair_order(stream, cls.n_rec, v.n_groups, v.group_start,
+                                                v.record_bound, key.data(), key_alt.data(),
+                                                perm.data(), perm_alt.data())));
+  for (MirroredBuffer<double> *field : ordered_doubles(cls)) {
+    FBF_TRY(gpu_status(device::ordered_pair_permute(stream, cls.n_rec, perm.data(),
+                                                    field->device().data(), tmp.data())));
+    FBF_TRY(gpu_status(field->to_pinned()));
+  }
+  for (MirroredBuffer<int32_t> *field : ordered_ints(cls)) {
+    FBF_TRY(gpu_status(device::ordered_pair_permute(stream, cls.n_rec, perm.data(),
+                                                    field->device().data(), tmp_int.data())));
+    FBF_TRY(gpu_status(field->to_pinned()));
   }
   return {};
 }
@@ -176,6 +232,12 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
     }
     cls.group_start.pinned().data()[cls.groups.size()] = static_cast<int32_t>(r);
     FBF_TRY(copy_ordered_to_device(cls));
+    FBF_TRY(form_ordered_bounds(cls));
+  }
+  // The pinned side is final only once every class's refresh has run; the K
+  // build reads it on the host (its shells' AO offsets).
+  for (const OrderedPairClass &cls : out) {
+    FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(cls.device_stream()->stream())));
   }
   return out;
 }

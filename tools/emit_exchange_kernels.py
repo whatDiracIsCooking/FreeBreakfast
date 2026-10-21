@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Regenerate the exchange-build kernels under src/integrals/exchange/kernels/.
+"""Regenerate the exchange-build kernels under src/integrals/exchange/kernels/,
+and the ordered pairs' record bound under src/integrals/exchange/pairs/kernels/.
 
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
 
     tools/emit_exchange_kernels.py
 
-There is one family, `kb<la, lc, lb, ld>`: FelizJueves's `Target.K` on
+The K build's family is `kb<la, lc, lb, ld>`: FelizJueves's `Target.K` on
 opt-UM's mapping (`kernel_kblock.py`), K_ab += SUM_cd D_cd (ac|bd) on the J
 engine's recurrence, one warp per contracted shell block K_AB, its lanes over
 the block's kets, every lane walking its bras, and lane 0 adding the block
@@ -44,6 +45,21 @@ the table a launcher indexes. The device Boys routine the units include is
 src/integrals/shared/eval_boys.h, written by the other two tools; this one
 writes nothing there.
 
+One more family rides along because K is its only reader:
+`record_bound<la, lb>`, FelizJueves's `Target.RECORD_BOUND`
+(`kernel_record_bound.py`), K's DRESSED per-record Schwarz bound
+
+    I = ao.k.record_bounds = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
+
+one thread per record, the max over the FIRST shell's Cartesians. It is a
+field of every free_breakfast.integrals.exchange.pairs record, computed once
+per basis, so it is written to src/integrals/exchange/pairs/kernels/
+record_bound/. The class is an ORDERED pair, so unlike mmd's `pair_bound`
+every `(la, lb)` with each l at most 2 is written: 9 classes. Its two record
+vectors are split as mmd names them, `pa_*` = P - A (A the first shell) and
+`pb_*` = P - B. It has no shuffle, so it is emitted with the default options
+and its text has no width.
+
 FelizJueves needs only the standard library to import, so this needs no
 virtualenv.
 """
@@ -60,6 +76,7 @@ from felizjueves.device import by_name  # noqa: E402
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import WAVEFRONT, Specialization  # noqa: E402
 from felizjueves.kernel_kblock import build_kblock_kernel  # noqa: E402
+from felizjueves.kernel_record_bound import build_record_bound_kernel  # noqa: E402
 from felizjueves.passes import split_axes  # noqa: E402
 
 # The kernels' L limit: d. It must equal kMaxAngularMomentum
@@ -83,28 +100,48 @@ AXES = {
 }
 OPTIONS = {"block_dim": (1, WAVEFRONT), "any_wavefront": True}
 
+# The record bound: its own directory under pairs/kernels/ (whose
+# .clang-format is the same DisableFormat), its two record vectors split.
+PAIRS_OUT = ROOT / "src/integrals/exchange/pairs/kernels"
+BOUND_FAMILY = "record_bound"
+BOUND_AXES = {"XPA": ("pa_x", "pa_y", "pa_z"), "XPB": ("pb_x", "pb_y", "pb_z")}
+
 
 def classes() -> list[tuple[int, int, int, int]]:
     ls = range(MAX_L + 1)
     return [(la, lc, lb, ld) for la in ls for lc in ls for lb in ls for ld in ls]
 
 
+def bound_classes() -> list[tuple[int, int]]:
+    ls = range(MAX_L + 1)
+    return [(la, lb) for la in ls for lb in ls]
+
+
 def kb(cls: tuple[int, int, int, int]):
     return split_axes(build_kblock_kernel(cls), AXES)
 
 
+def record_bound(cls: tuple[int, int]):
+    return split_axes(build_record_bound_kernel(cls), BOUND_AXES)
+
+
 def main() -> int:
     arch = by_name(ARCH)
-    out = OUT / FAMILY
-    out.mkdir(parents=True, exist_ok=True)
-    every = classes()
-    for cls in every:
-        kernel = kb(cls)
-        spec = Specialization(FAMILY, cls)
-        write(out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec, **OPTIONS))
-    # Any class's kernel spells the primary: one family, one parameter block.
-    write(out / spec.header, gpu.emit_template(kernel, arch, spec, every, **OPTIONS))
+    emit_family(arch, OUT / FAMILY, FAMILY, classes(), kb, OPTIONS)
+    emit_family(
+        arch, PAIRS_OUT / BOUND_FAMILY, BOUND_FAMILY, bound_classes(), record_bound, {}
+    )
     return 0
+
+
+def emit_family(arch, out: Path, family: str, every, build, options) -> None:
+    out.mkdir(parents=True, exist_ok=True)
+    for cls in every:
+        kernel = build(cls)
+        spec = Specialization(family, cls)
+        write(out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec, **options))
+    # Any class's kernel spells the primary: one family, one parameter block.
+    write(out / spec.header, gpu.emit_template(kernel, arch, spec, every, **options))
 
 
 def write(path: Path, text: str) -> None:

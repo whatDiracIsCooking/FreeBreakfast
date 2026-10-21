@@ -69,25 +69,31 @@ int64_t exchange_block_count(const OrderedPairClass &bra, const OrderedPairClass
   return n;
 }
 
-Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> classes,
-                const CartesianMatrixAO &density, CartesianMatrixAO &k, const double tau,
-                const bool symmetric) {
+// The build of exchange(), or with @p k null everything but K itself (the
+// zeroing, the kb launches and the mirror) and, into @p factors, every block's
+// density factor, bra class major, then ket class, then each table's order
+// (exchange_block_factors). Reads only what exchange() reads, so the factors
+// are the ones its kb launches are given.
+Status exchange_build(DeviceResources &res, const std::span<const OrderedPairClass> classes,
+                      const CartesianMatrixAO &density, CartesianMatrixAO *k, const double tau,
+                      const bool symmetric, std::vector<double> *factors) {
   // Written so that NaN fails too: a NaN tau would never screen, silently.
   if (!(tau >= 0.0)) {
     return err_config("exchange: the screening threshold tau is {}, but must be 0 or above", tau);
   }
-  if (k.dev_idx() != res.dev_idx()) {
-    return err_config("exchange: K is on device {}, but the call passed device {}", k.dev_idx(),
+  if (k != nullptr && k->dev_idx() != res.dev_idx()) {
+    return err_config("exchange: K is on device {}, but the call passed device {}", k->dev_idx(),
                       res.dev_idx());
   }
   if (density.dev_idx() != res.dev_idx()) {
     return err_config("exchange: the density is on device {}, but the call passed device {}",
                       density.dev_idx(), res.dev_idx());
   }
-  if (density.n() != k.n()) {
-    return err_config("exchange: the density is {0} x {0}, but K is {1} x {1}", density.n(), k.n());
+  if (k != nullptr && density.n() != k->n()) {
+    return err_config("exchange: the density is {0} x {0}, but K is {1} x {1}", density.n(),
+                      k->n());
   }
-  const uint32_t n = k.n();
+  const uint32_t n = density.n();
   // The kernels and the helpers index the matrices as a 32-bit m * n_ao + n.
   if (static_cast<uint64_t>(n) * n > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
     return err_config("exchange: {} Cartesian AOs is too many for the kernels' 32-bit index", n);
@@ -152,7 +158,10 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   // kb only adds, so the build starts from zero.
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(k.data(), 0, sizeof(double) * k.num_elements(), stream)));
+  if (k != nullptr) {
+    FBF_TRY(
+        gpu_status(wwr::wwrMemsetAsync(k->data(), 0, sizeof(double) * k->num_elements(), stream)));
+  }
   if (classes.empty()) {
     return {};
   }
@@ -205,7 +214,8 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &cls) {
     const wwr::wwrStream_t s = cls.device_stream()->stream();
     const OrderedPairClassView v = cls.view();
-    if (const wwr::wwrError_t code = device::exchange_bound_max(s, v.n_rec, v.bound, g_max.data());
+    if (const wwr::wwrError_t code =
+            device::exchange_bound_max(s, v.n_rec, v.record_bound, g_max.data());
         code != wwr::wwrSuccess || cls.la != cls.lb) {
       return code;
     }
@@ -253,7 +263,7 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
     const std::array p{v.p_x, v.p_y, v.p_z};
     const std::array pa{v.pa_x, v.pa_y, v.pa_z};
     const std::array pb{v.pb_x, v.pb_y, v.pb_z};
-    return device::exchange_group_geometry(s, v.n_groups, v.group_start, v.bound, p.data(),
+    return device::exchange_group_geometry(s, v.n_groups, v.group_start, v.record_bound, p.data(),
                                            pa.data(), pb.data(), tau, g_max.data(), decay.data(),
                                            c.geom.data());
   })));
@@ -299,11 +309,14 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
           code != wwr::wwrSuccess) {
         return code;
       }
-      if (const wwr::wwrError_t code = device::exchange_k(
-              s, v, b.dc.data() + ld * n_rec, w, n_shells[lc] * n_shells[ld], tau,
-              scratch[index_of(*density_class)].dcd.data(), count, table, factor, n_ao, k.data());
-          code != wwr::wwrSuccess) {
-        return code;
+      if (k != nullptr) {
+        if (const wwr::wwrError_t code =
+                device::exchange_k(s, v, b.dc.data() + ld * n_rec, w, n_shells[lc] * n_shells[ld],
+                                   tau, scratch[index_of(*density_class)].dcd.data(), count, table,
+                                   factor, n_ao, k->data());
+            code != wwr::wwrSuccess) {
+          return code;
+        }
       }
       table += static_cast<size_t>(count) * device::kExchangeBlockFields;
       factor += count;
@@ -313,10 +326,43 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
 
   // The symmetric sweep computed the a <= b blocks: after the join, every
   // launch is in, and the a > b blocks are their transposes.
-  if (symmetric) {
-    FBF_TRY(gpu_status(device::exchange_mirror(stream, n_ao, starts.data(), k.data())));
+  if (symmetric && k != nullptr) {
+    FBF_TRY(gpu_status(device::exchange_mirror(stream, n_ao, starts.data(), k->data())));
+  }
+  // Every bra class's factors, in class order, read back after the join.
+  if (factors != nullptr) {
+    factors->clear();
+    for (size_t a = 0; a < n_classes; ++a) {
+      size_t count = 0;
+      for (size_t b = 0; b < n_classes; ++b) {
+        count += static_cast<size_t>(n_blk[a * n_classes + b]);
+      }
+      const size_t at = factors->size();
+      factors->resize(at + count);
+      if (count > 0) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(factors->data() + at, scratch[a].factor.data(),
+                                               sizeof(double) * count, wwr::wwrMemcpyDeviceToHost,
+                                               stream)));
+      }
+    }
+    FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(stream)));
   }
   return {};
+}
+
+Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> classes,
+                const CartesianMatrixAO &density, CartesianMatrixAO &k, const double tau,
+                const bool symmetric) {
+  return exchange_build(res, classes, density, &k, tau, symmetric, nullptr);
+}
+
+Result<std::vector<double>> exchange_block_factors(DeviceResources &res,
+                                                   const std::span<const OrderedPairClass> classes,
+                                                   const CartesianMatrixAO &density,
+                                                   const double tau, const bool symmetric) {
+  std::vector<double> factors;
+  FBF_TRY(exchange_build(res, classes, density, nullptr, tau, symmetric, &factors));
+  return factors;
 }
 
 } // namespace free_breakfast

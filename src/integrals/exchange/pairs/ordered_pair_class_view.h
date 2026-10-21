@@ -52,8 +52,10 @@ struct OrderedPairClassView {
   const double *pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   const double *s;
-  /// @brief The record's Schwarz bound: kb's Ip as a bra, Iq as a ket.
-  const double *bound;
+  /// @brief The record's dressed Schwarz bound (ao.k.record_bounds, the max
+  /// over the first shell): kb's Ip as a bra, Iq as a ket. Non-increasing
+  /// within each group.
+  const double *record_bound;
   /// @brief The first shell's first Cartesian AO.
   const int32_t *off_a;
   /// @brief The second shell's first Cartesian AO.
