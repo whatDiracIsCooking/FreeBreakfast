@@ -68,7 +68,7 @@ ENV GPU_TARGETS=${GPU_TARGETS} \
 # container (`printenv CLAUDE_CODE_VERSION`), not merely inferable from the
 # binary: that is what lets doctor.sh tell "pinned and installed" apart from
 # "someone npm-installed over the top".
-ARG CLAUDE_CODE_VERSION=2.1.302
+ARG CLAUDE_CODE_VERSION=2.1.306
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 RUN --mount=type=bind,source=docker/install-claude-code.sh,target=/tmp/install-claude-code.sh \
     bash /tmp/install-claude-code.sh
@@ -95,8 +95,8 @@ RUN --mount=type=bind,source=docker/install-claude-code.sh,target=/tmp/install-c
 # `autoUpdates: false` in .devcontainer/seed-claude-config.sh. The install is
 # root-owned and the container runs as uid 1000, so an update attempt fails
 # regardless; what this stops is it being attempted behind the image's back.
-ARG AGY_RELEASE=1.4.2-4835981233356800
-ARG AGY_SHA512=4a393afc1369cee94e817c1b430c9128d02b12ebd4d5703ace5cd47b2333e216d673fb0097cbf7195f757b110163ba9850e9eea3fdbbaddd4b25668b82c03f05
+ARG AGY_RELEASE=1.4.4-4783783166214144
+ARG AGY_SHA512=7ce149d350344c1046c7b59b6659bcc5d659f351bf3a07c6c085887d93427ceb89d927752e4ccd0844b53ffb91d33d6a49f72835ceb276c7cffdd13cfb8023b8
 ENV AGY_RELEASE=${AGY_RELEASE} \
     AGY_CLI_DISABLE_AUTO_UPDATE=1
 RUN --mount=type=bind,source=docker/install-agy.sh,target=/tmp/install-agy.sh \
