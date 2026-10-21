@@ -12,7 +12,7 @@ taskflow into every unit that does. Import and link it explicitly.
 | Partition | Exports |
 |-----------|---------|
 | `:device_resources` | `DeviceResources` |
-| `:node_resources` | `NodeResources`, `NodeResourcesConfig`; re-exports `free_breakfast.third_party.taskflow` (`tf::Executor`, `tf::Taskflow`) |
+| `:node_resources` | `NodeResources`, `NodeResourcesConfig`; re-exports `free_breakfast.third_party.taskflow` (`tf::Executor`, `tf::Taskflow`, `tf::Task`, `tf::FlowBuilder`, `tf::Subflow`) |
 | `:sys_env` | nothing: an internal partition, the host queries `NodeResources` is built from |
 
 ## Files

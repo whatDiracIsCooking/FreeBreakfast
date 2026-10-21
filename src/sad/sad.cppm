@@ -41,6 +41,10 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.basis;
 
+// Re-exported: the task form of sad_density takes a tf::FlowBuilder and hands
+// back a tf::Task, so a caller of it needs taskflow.
+export import free_breakfast.third_party.taskflow;
+
 export namespace free_breakfast {
 
 /// @brief The SAD initial-guess density: each atom's spherically averaged
@@ -65,5 +69,30 @@ export namespace free_breakfast {
 ///   ErrorKind::MaxIterationsExceeded if an atomic SCF does not converge.
 [[nodiscard]] Result<std::vector<double>> sad_density(const BasisSet &basis,
                                                       std::span<const Atom> atoms);
+
+/// @brief The same guess as one task of @p flow, its atomic SCFs run in
+/// parallel: when it runs, it spawns a subflow with one task per distinct
+/// (Z, shells), each placing its stamp on its own atoms' blocks as soon as its
+/// SCF converges.
+///
+/// The result is bitwise the serial form's, error included: each SCF is
+/// independent of the others, and when several fail, @p out holds the error of
+/// the first atom in order -- though, unlike the serial form, every other SCF
+/// has still run.
+///
+/// **Lifetimes.** Nothing is read when this is called. @p basis, the atoms
+/// @p atoms views and @p out are captured by reference and used when the task
+/// runs, so they must outlive the run; @p basis may still be filled in by a
+/// predecessor of the returned task. @p out is final once the task completes,
+/// and is the only thing it writes.
+///
+/// @param flow  The graph to add the task to: a @c tf::Taskflow, or the
+///              @c tf::Subflow of an enclosing task.
+/// @param basis As for the serial form.
+/// @param atoms As for the serial form.
+/// @param out   Where the guess, or the serial form's error, is written.
+/// @return The task, for the caller to order against the rest of @p flow.
+tf::Task sad_density(tf::FlowBuilder &flow, const BasisSet &basis, std::span<const Atom> atoms,
+                     Result<std::vector<double>> &out);
 
 } // namespace free_breakfast

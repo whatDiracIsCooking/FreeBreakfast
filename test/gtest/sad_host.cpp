@@ -1,7 +1,8 @@
 // Host-only cases for the SAD initial guess: each atom's block against PySCF's
 // AtomSphAverageRHF density (data/sad/atomic_scf.json, written by
-// tools/emit_sad_reference.py), the block-diagonal assembly, and the refusals.
-// The guess over a basis placed on a Molecule is sad_gpu.cpp's.
+// tools/emit_sad_reference.py), the block-diagonal assembly, the task form
+// against the serial one, and the refusals. The guess over a basis placed on a
+// Molecule is sad_gpu.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -59,6 +60,44 @@ fb::Result<std::vector<double>> atom_density(Element element, std::vector<fb::Sh
   const fb::BasisSet basis(std::move(shells), {0, count});
   const std::vector<Atom> atoms{Atom{kOrigin, element}};
   return fb::sad_density(basis, atoms);
+}
+
+// A basis over @p atoms laid out as place would: each atom's shells, from
+// @p shells_of its element, moved to its position and grouped per atom.
+fb::BasisSet grouped_basis(std::span<const Atom> atoms,
+                           const std::function<std::vector<fb::Shell>(Element)> &shells_of) {
+  std::vector<fb::Shell> shells;
+  std::vector<std::uint32_t> offsets{0};
+  for (const Atom &atom : atoms) {
+    for (const fb::Shell &s : shells_of(atom.element)) {
+      shells.emplace_back(s.angular_momentum(), s.primitives(), atom.position);
+    }
+    offsets.push_back(static_cast<std::uint32_t>(shells.size()));
+  }
+  return fb::BasisSet(shells, offsets);
+}
+
+// H2CO, C2v in the yz plane, bohr: C=O 1.205 A, C-H 1.111 A, HCH 116.1 deg.
+// Three elements and a repeated one, all with cc-pVDZ reference data.
+const std::vector<Atom> kFormaldehyde{
+    Atom{kOrigin, Element::C},
+    Atom{fb::Vec<double, 3>{0.0, 0.0, 2.2771}, Element::O},
+    Atom{fb::Vec<double, 3>{0.0, 1.7817, -1.1111}, Element::H},
+    Atom{fb::Vec<double, 3>{0.0, -1.7817, -1.1111}, Element::H},
+};
+
+std::vector<fb::Shell> ccpvdz(Element element) {
+  return reference_shells("cc-pvdz", static_cast<std::int32_t>(element));
+}
+
+// The task form of sad_density, run to completion on its own executor.
+fb::Result<std::vector<double>> run_task(const fb::BasisSet &basis, std::span<const Atom> atoms) {
+  fb::tf::Executor executor(4);
+  fb::tf::Taskflow flow;
+  fb::Result<std::vector<double>> out;
+  fb::sad_density(flow, basis, atoms, out);
+  executor.run(flow).wait();
+  return out;
 }
 
 // <a|b> for one m of two same-l shells on one center, in this tree's
@@ -141,15 +180,8 @@ TEST(Sad, IsBlockDiagonalOverTheAtoms) {
   };
   const std::vector<fb::Shell> o = reference_shells("sto-3g", 8);
   const std::vector<fb::Shell> h = reference_shells("sto-3g", 1);
-  std::vector<fb::Shell> shells;
-  std::vector<std::uint32_t> offsets{0};
-  for (const Atom &atom : atoms) {
-    for (const fb::Shell &s : (atom.element == Element::O) ? o : h) {
-      shells.emplace_back(s.angular_momentum(), s.primitives(), atom.position);
-    }
-    offsets.push_back(static_cast<std::uint32_t>(shells.size()));
-  }
-  const fb::BasisSet basis(shells, offsets);
+  const fb::BasisSet basis =
+      grouped_basis(atoms, [&](Element element) { return element == Element::O ? o : h; });
 
   const auto density = fb::sad_density(basis, atoms);
   ASSERT_TRUE(density) << density.error().message;
@@ -188,6 +220,91 @@ TEST(Sad, SeatsSubshellsByMomentumNotShellPosition) {
           << i << ", " << j;
     }
   }
+}
+
+// --- The task form ----------------------------------------------------------
+
+// Each SCF is independent, so running them concurrently changes no bit. Each
+// block is also the atom's guess alone, which
+// AtomBlockMatchesPyscfAtomSphAverageRhf holds to PySCF.
+TEST(Sad, TaskMatchesSerialBitwiseOverFormaldehyde) {
+  const fb::BasisSet basis = grouped_basis(kFormaldehyde, ccpvdz);
+  const std::size_t n = basis.nao_sphe();
+  ASSERT_EQ(n, 38U); // C and O: 3s 2p 1d = 14 each; each H: 2s 1p = 5
+
+  const auto serial = fb::sad_density(basis, kFormaldehyde);
+  ASSERT_TRUE(serial) << serial.error().message;
+  const auto task = run_task(basis, kFormaldehyde);
+  ASSERT_TRUE(task) << task.error().message;
+  EXPECT_EQ(*task, *serial);
+
+  // C [0, 14), O [14, 28), H [28, 33) and [33, 38); nothing between atoms.
+  const std::array<std::size_t, 5> bounds{0, 14, 28, 33, 38};
+  std::vector<std::vector<double>> alone;
+  for (const Atom &atom : kFormaldehyde) {
+    const auto density = atom_density(atom.element, ccpvdz(atom.element));
+    ASSERT_TRUE(density) << density.error().message;
+    alone.push_back(*density);
+  }
+  const auto atom_of = [&](std::size_t ao) {
+    return static_cast<std::size_t>(std::ranges::upper_bound(bounds, ao) - bounds.begin()) - 1;
+  };
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t i = 0; i < n; ++i) {
+      const std::size_t a = atom_of(i);
+      double expected = 0.0;
+      if (a == atom_of(j)) {
+        const std::size_t m = bounds[a + 1] - bounds[a];
+        expected = alone[a][(i - bounds[a]) + (m * (j - bounds[a]))];
+      }
+      EXPECT_EQ((*task)[i + (n * j)], expected) << i << ", " << j;
+    }
+  }
+}
+
+// The basis is read when the task runs, so a predecessor may build it.
+TEST(Sad, TaskReadsTheBasisWhenItRuns) {
+  fb::BasisSet basis;
+  fb::Result<std::vector<double>> out;
+  fb::tf::Executor executor(4);
+  fb::tf::Taskflow flow;
+  fb::tf::Task build = flow.emplace([&basis] { basis = grouped_basis(kFormaldehyde, ccpvdz); });
+  fb::tf::Task guess = fb::sad_density(flow, basis, kFormaldehyde, out);
+  build.precede(guess);
+  executor.run(flow).wait();
+
+  ASSERT_TRUE(out) << out.error().message;
+  const auto serial = fb::sad_density(grouped_basis(kFormaldehyde, ccpvdz), kFormaldehyde);
+  ASSERT_TRUE(serial) << serial.error().message;
+  EXPECT_EQ(*out, *serial);
+}
+
+// Every SCF runs, but the error is the serial form's: the first failing atom's.
+TEST(Sad, TaskReportsTheFirstFailingAtomsError) {
+  // H seats; O and then N need a p orbital, and two s shells have none.
+  const std::vector<Atom> atoms{
+      Atom{kOrigin, Element::H},
+      Atom{fb::Vec<double, 3>{0.0, 0.0, 2.0}, Element::O},
+      Atom{fb::Vec<double, 3>{0.0, 0.0, 4.0}, Element::N},
+  };
+  const std::vector<fb::Shell> h = ccpvdz(Element::H);
+  const std::vector<fb::Shell> s_only{fb::Shell(0, {{10.0, 1.0}}, kOrigin),
+                                      fb::Shell(0, {{1.0, 1.0}}, kOrigin)};
+  const fb::BasisSet basis =
+      grouped_basis(atoms, [&](Element element) { return element == Element::H ? h : s_only; });
+
+  const auto serial = fb::sad_density(basis, atoms);
+  ASSERT_FALSE(serial);
+  ASSERT_NE(serial.error().message.find("Z=8"), std::string::npos) << serial.error().message;
+  const auto task = run_task(basis, atoms);
+  ASSERT_FALSE(task);
+  EXPECT_EQ(task.error().kind, serial.error().kind);
+  EXPECT_EQ(task.error().message, serial.error().message);
+
+  // A refusal before any SCF reaches out the same way.
+  const auto mismatched = run_task(basis, std::span(atoms).first(2));
+  ASSERT_FALSE(mismatched);
+  EXPECT_EQ(mismatched.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 TEST(Sad, GhostAtomIsEmpty) {
