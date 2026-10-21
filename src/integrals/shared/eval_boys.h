@@ -5,14 +5,40 @@
 #include "felizjueves/runtime.h"
 
 // F_m(T) = integral_0^1 u^(2m) exp(-T u^2) du ([JEngine, v2, eqs. 13, 18]),
-// F[m] for every m in 0..M (#301). From T = M + 8: F_0 = (1/2) sqrt(pi/T)
-// erf(sqrt(T)) and upward, F_(m+1) = ((2m+1) F_m - exp(-T)) / (2T). Below:
-// the Kummer series F_M = exp(-T) SUM_k (2T)^k / ((2M+1)(2M+3)...(2M+2k+1)),
-// every term positive, summed until it no longer changes the sum, and
-// downward, F_m = (2T F_(m+1) + exp(-T)) / (2m+1). Its accuracy on
-// reference.boys's domain is a kernel-tier question, not this file's.
+// F[m] for every m in 0..M, M <= 20. From T = M + 8: F_0 = (1/2)
+// sqrt(pi/T) erf(sqrt(T)) and upward, F_(m+1) = ((2m+1) F_m - exp(-T)) / (2T).
+// Below: F_M = exp(-T) eval_boys_series<M>(2T), the Kummer series
+// SUM_k x^k / ((2M+1)(2M+3)...(2M+2k+1)) as a polynomial of fixed degree
+// (eval_boys_M.h), and downward, F_m = (2T F_(m+1) + exp(-T)) / (2m+1).
+template <int32_t M>
+static __device__ __forceinline__ double eval_boys_series(double x);
+
+#include "eval_boys_0.h"
+#include "eval_boys_1.h"
+#include "eval_boys_2.h"
+#include "eval_boys_3.h"
+#include "eval_boys_4.h"
+#include "eval_boys_5.h"
+#include "eval_boys_6.h"
+#include "eval_boys_7.h"
+#include "eval_boys_8.h"
+#include "eval_boys_9.h"
+#include "eval_boys_10.h"
+#include "eval_boys_11.h"
+#include "eval_boys_12.h"
+#include "eval_boys_13.h"
+#include "eval_boys_14.h"
+#include "eval_boys_15.h"
+#include "eval_boys_16.h"
+#include "eval_boys_17.h"
+#include "eval_boys_18.h"
+#include "eval_boys_19.h"
+#include "eval_boys_20.h"
+
 template <int32_t M>
 static __device__ __forceinline__ void eval_boys(double T, double (&F)[M + 1]) {
+    static_assert(M >= 0 && M <= 20,
+                  "eval_boys_M.h is written for M in 0..20");
     const double e = exp(-T);
     if (T >= static_cast<double>(M + 8)) {
         const double h = 0.5 / T;
@@ -25,17 +51,7 @@ static __device__ __forceinline__ void eval_boys(double T, double (&F)[M + 1]) {
         }
         return;
     }
-    double term = 1.0 / static_cast<double>(2 * M + 1);
-    double sum = term;
-    for (int32_t k = 1; k < 4096; ++k) {
-        term = term * ((2.0 * T) / static_cast<double>(2 * M + 2 * k + 1));
-        double next = sum + term;
-        if (next == sum) {
-            break;
-        }
-        sum = next;
-    }
-    double f = e * sum;
+    double f = e * eval_boys_series<M>(2.0 * T);
     F[M] = f;
 #pragma unroll
     for (int32_t m = M - 1; m >= 0; --m) {
