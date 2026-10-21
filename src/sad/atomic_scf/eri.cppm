@@ -1,9 +1,9 @@
 /// @file
 /// @brief One atom's two-electron integrals over the Cartesian layout.
 
-// A private interface partition: nothing here is exported. atomic_integrals
+// An internal partition of free_breakfast.sad. atomic_integrals
 // calls it and carries the tensor to the spherical layout.
-export module free_breakfast.experimental.atomic_scf:eri;
+module free_breakfast.sad:eri;
 
 import std;
 import free_breakfast.core.types;

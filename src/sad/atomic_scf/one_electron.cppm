@@ -2,9 +2,9 @@
 /// @brief One atom's one-electron matrices over the Cartesian layout: S, T and
 /// the attraction V to its own nucleus.
 
-// A private interface partition: nothing here is exported. atomic_integrals
+// An internal partition of free_breakfast.sad. atomic_integrals
 // calls these and carries their results to the spherical layout.
-export module free_breakfast.experimental.atomic_scf:one_electron;
+module free_breakfast.sad:one_electron;
 
 import std;
 import free_breakfast.core.types;

@@ -3,9 +3,9 @@
 /// families share: the same-center Hermite expansion and the zero-distance
 /// Hermite Coulomb integrals.
 
-// A private interface partition: nothing here is exported. :one_electron and
+// An internal partition of free_breakfast.sad. :one_electron and
 // :eri build every integral from these two.
-export module free_breakfast.experimental.atomic_scf:hermite;
+module free_breakfast.sad:hermite;
 
 import std;
 import free_breakfast.core.types;

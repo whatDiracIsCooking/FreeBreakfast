@@ -24,10 +24,15 @@ extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,
                   coulomb,exchange}/ hold out of FelizJueves's fixtures.
                   Standard library only.
+emit_sad_reference.py
+                  Write test/gtest/data/sad/atomic_scf.json: PySCF's
+                  spherically averaged atomic RHF densities, the reference
+                  src/sad's guess is tested against. Needs PySCF.
 ```
 
-Re-run the last four after bumping `deps/FelizJueves`; all write tracked files,
-so the diff is the review.
+Re-run the three `emit_*_kernels.py` and `extract_integral_golden.py` after
+bumping `deps/FelizJueves`. Everything but `bse_download.py` and `atomic_cd`
+writes tracked files, so the diff is the review.
 
 ## Running
 
@@ -38,11 +43,14 @@ tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
 tools/bse_download.py --list
 ```
 
-`atomic_cd` needs PySCF and numpy, which sit in the opt-in `tools` dependency
-group in `pyproject.toml` rather than in `dev`, so the image and the push gate
-do not carry them:
+`atomic_cd` and `emit_sad_reference.py` need PySCF and numpy, which sit in the
+opt-in `tools` dependency group in `pyproject.toml` rather than in `dev`, so the
+image and the push gate do not carry them. Inside the devcontainer, add
+`UV_PROJECT_ENVIRONMENT=$PWD/.venv` so the group goes into a worktree-local
+venv rather than the image's `/opt/venv`:
 
 ```sh
+uv run --group tools tools/emit_sad_reference.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \
     --bse-out c_ccpvdz_accd.bse.json

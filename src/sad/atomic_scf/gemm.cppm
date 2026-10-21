@@ -1,9 +1,9 @@
 /// @file
 /// @brief The two host matrix products the SCF's l blocks need.
 
-// A private interface partition: nothing here is exported. The blocks are a
+// An internal partition of free_breakfast.sad. The blocks are a
 // handful of shells across, so plain loops, not BLAS.
-export module free_breakfast.experimental.atomic_scf:gemm;
+module free_breakfast.sad:gemm;
 
 import std;
 import free_breakfast.core.types;

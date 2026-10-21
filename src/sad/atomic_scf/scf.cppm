@@ -1,7 +1,7 @@
 /// @file
 /// @brief One atom's SCF: @ref free_breakfast::AtomicScf and @ref
 /// free_breakfast::atomic_scf.
-export module free_breakfast.experimental.atomic_scf:scf;
+module free_breakfast.sad:scf;
 
 import std;
 import free_breakfast.core.types;
@@ -41,10 +41,6 @@ std::vector<double> rhf_fock(const std::vector<double> &hcore, const std::vector
   return fock;
 }
 
-} // namespace free_breakfast
-
-export namespace free_breakfast {
-
 /// @brief A converged atomic SCF.
 struct AtomicScf {
   double energy{0.0};    ///< Total electronic energy, hartree (an atom has no nuclear repulsion).
@@ -72,8 +68,8 @@ struct AtomicScf {
 /// @param max_iterations Fock builds before giving up.
 /// @return ErrorKind::InvalidConfig, as @ref atomic_integrals, or if some l
 ///   has more occupied subshells than linearly independent orbitals to seat
-///   them (free_breakfast.sad drops those electrons; an SCF over the rest would
-///   be of a different ion). ErrorKind::Unsupported as @ref atomic_integrals.
+///   them (an SCF over the rest would be of a different ion).
+///   ErrorKind::Unsupported as @ref atomic_integrals.
 ///   ErrorKind::MaxIterationsExceeded if it has not converged by then.
 [[nodiscard]] Result<AtomicScf> atomic_scf(int32_t z, std::span<const Shell> shells,
                                            double tolerance = 1e-9, int32_t max_iterations = 128) {

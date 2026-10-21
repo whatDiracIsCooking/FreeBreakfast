@@ -1,7 +1,7 @@
 /// @file
 /// @brief One atom's integrals over the spherical layout of its shells: @ref
 /// free_breakfast::AtomicIntegrals and @ref free_breakfast::atomic_integrals.
-export module free_breakfast.experimental.atomic_scf:integrals;
+module free_breakfast.sad:integrals;
 
 import std;
 import free_breakfast.core.types;
@@ -45,10 +45,6 @@ std::vector<double> to_spherical(std::vector<double> m, const std::vector<double
   }
   return m;
 }
-
-} // namespace free_breakfast
-
-export namespace free_breakfast {
 
 /// @brief One atom's integrals over the spherical layout of its shells:
 /// @c n = Sum of each shell's @c function_count_sphe(), every matrix flat and

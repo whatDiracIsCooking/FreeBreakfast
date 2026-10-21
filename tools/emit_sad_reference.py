@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Write the reference data experimental/atomic_scf's tests read.
+"""Write the reference data free_breakfast.sad's tests read.
 
 For each (basis, element) below, PySCF's spherically averaged atomic RHF
 (`pyscf.scf.atom_hf.AtomSphAverageRHF`, the atomic SCF behind PySCF's own SAD
-guess) is run to a tight tolerance, and its total energy and per-l orbital
-energies are recorded beside the basis it ran in. The basis is written in Basis
-Set Exchange JSON form, raw coefficients over primitive-normalised Gaussians,
-so the tests read it with free_breakfast.io.basis exactly as a production run
-would.
+guess) is run to a tight tolerance, and its density is recorded beside the
+basis it ran in: per l, the block over that momentum's shells for one m (the
+density is the same for every m and zero between different m), over PySCF's
+unit-normalised spherical AOs. The energy is recorded too, for a reader; no
+test compares it. The basis is written in Basis Set Exchange JSON form, raw
+coefficients over primitive-normalised Gaussians, so the tests read it with
+free_breakfast.io.basis exactly as a production run would.
 
 Every element is one whose per-l electron counts in PySCF's
 NRSRHF_CONFIGURATION equal the plain Madelung fill free_breakfast.sad uses; the
 two differ from Sc onwards for some transition metals and lanthanides, where a
 comparison would test the configuration table rather than the SCF.
 
-    uv run --group tools experimental/atomic_scf/emit_reference.py
+    uv run --group tools tools/emit_sad_reference.py
 
-writes test/experimental/data/atomic_scf.json. Re-run it to regenerate; the
-file is never hand-edited.
+writes test/gtest/data/sad/atomic_scf.json. Re-run it to regenerate; the file
+is never hand-edited.
 """
 
 from __future__ import annotations
@@ -38,10 +40,11 @@ CASES: dict[str, list[str]] = {
 }
 
 OUT = (
-    pathlib.Path(__file__).resolve().parents[2]
+    pathlib.Path(__file__).resolve().parents[1]
     / "test"
-    / "experimental"
+    / "gtest"
     / "data"
+    / "sad"
     / "atomic_scf.json"
 )
 
@@ -72,27 +75,32 @@ def atomic_scf(name: str, symbol: str) -> dict:
     """PySCF's spherically averaged atomic RHF for one element."""
     z = gto.charge(symbol)
     mol = gto.M(atom=f"{symbol} 0 0 0", basis=name, spin=z % 2, verbose=0)
+    # The density blocks are over unit-normalised AOs; the test rescales them to
+    # free_breakfast's normalisation from S's diagonal.
+    assert numpy.allclose(numpy.diag(mol.intor("int1e_ovlp")), 1.0, atol=1e-12)
     atm = atom_hf.AtomSphAverageRHF(mol)
-    atm.conv_tol = 1e-12
+    atm.conv_tol = 1e-14
+    atm.conv_tol_grad = 1e-10
     atm.max_cycle = 200
     atm.kernel()
     assert atm.converged, f"{symbol}/{name} did not converge"
-    ao_l = atom_hf._angular_momentum_for_each_ao(mol)
-    # eig() returns each l's eigenvalues repeated over its 2l+1 m, l by l, in
-    # the order mo_energy is laid out: take one m's worth per l.
-    orbital_energies = []
-    start = 0
-    for ang in range(int(ao_l.max()) + 1):
-        count = int(numpy.count_nonzero(ao_l == ang))
-        degen = 2 * ang + 1
-        block = atm.mo_energy[start : start + count]
-        orbital_energies.append([float(e) for e in block[::degen]])
-        start += count
+    density = atm.make_rdm1()
+    # Per l, the first AO (one m) of each shell of that momentum, in shell order.
+    firsts: list[list[int]] = []
+    for shell in range(mol.nbas):
+        ang = mol.bas_angular(shell)
+        firsts.extend([] for _ in range(ang + 1 - len(firsts)))
+        start = int(mol.ao_loc_nr()[shell])
+        for k in range(mol.bas_nctr(shell)):
+            firsts[ang].append(start + k * (2 * ang + 1))
+    density_blocks = [
+        [[float(density[i, j]) for j in idx] for i in idx] for idx in firsts
+    ]
     return {
         "z": z,
         "symbol": symbol,
         "energy": float(atm.e_tot),
-        "orbital_energies": orbital_energies,
+        "density_blocks": density_blocks,
     }
 
 
@@ -108,14 +116,15 @@ def main() -> None:
             atoms.append({"basis": name, **atomic_scf(name, symbol)})
         bases[name] = {"elements": elements}
     doc = {
-        "description": "PySCF AtomSphAverageRHF energies and per-l orbital energies "
-        "(conv_tol 1e-12), and the BSE-form bases they were computed in",
+        "description": "PySCF AtomSphAverageRHF densities, per l over one m and "
+        "unit-normalised spherical AOs (conv_tol 1e-14, conv_tol_grad 1e-10), their "
+        "energies, and the BSE-form bases they were computed in",
         "provenance": {
             "pyscf": pyscf.__version__,
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools experimental/atomic_scf/emit_reference.py",
+            "command": "uv run --group tools tools/emit_sad_reference.py",
         },
         "bases": bases,
         "atoms": atoms,

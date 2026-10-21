@@ -1,9 +1,9 @@
 /// @file
 /// @brief Pulay DIIS on the host, over flat vectors.
 
-// A private interface partition: nothing here is exported. src/linalg/diis is
+// An internal partition of free_breakfast.sad. src/linalg/diis is
 // the device-resident one; this one holds a few hundred doubles per iterate.
-export module free_breakfast.experimental.atomic_scf:diis;
+module free_breakfast.sad:diis;
 
 import std;
 import free_breakfast.core.types;

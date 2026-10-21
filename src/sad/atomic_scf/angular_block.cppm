@@ -1,14 +1,14 @@
 /// @file
 /// @brief One momentum's radial block of the atomic SCF.
 
-// A private interface partition: nothing here is exported.
-export module free_breakfast.experimental.atomic_scf:angular_block;
+// An internal partition of free_breakfast.sad.
+module free_breakfast.sad:angular_block;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.basis;
-import free_breakfast.sad;
+import :aufbau;
 import :integrals;
 import :gemm;
 import :eigen;
