@@ -55,7 +55,10 @@ gtest_discover_tests(
 # As test/gtest's host binary: nothing in it needs a device, so every case runs
 # on a device-less box and none skips. Labelled `experimental` only, so the
 # ci-* presets' `gpu` exclusion leaves it in.
-add_executable(free_breakfast_tests_experimental_host atomic_scf_host.cpp)
+add_executable(
+  free_breakfast_tests_experimental_host
+  atomic_integrals_host.cpp atomic_scf_host.cpp atomic_scf_density_host.cpp
+)
 
 set_target_properties(
   free_breakfast_tests_experimental_host PROPERTIES CXX_MODULE_STD 1

@@ -64,7 +64,7 @@ whole n⁴ tensor is held; past 96 Cartesian AOs (≈680 MB) it is refused as
 
 | Symbol | Role |
 |---|---|
-| `AtomicIntegrals` | One atom's S, T, V and `(ij\|kl)` over its spherical layout. |
+| `AtomicIntegrals` | One atom's S, T, V and the two-electron integrals `eri`, `(ij\|kl)`, over its spherical layout. |
 | `atomic_integrals(z, shells)` | Those integrals for shells on one center. |
 | `AtomicScf` | Energy, iterations, the spin-summed density and the per-l orbital energies. |
 | `atomic_scf(z, shells, tolerance, max_iterations)` | The atomic SCF. |
@@ -75,16 +75,18 @@ which would need a device for its nuclei; the whole module is host-only.
 
 ## Tests
 
-`test/experimental/atomic_scf_host.cpp`, in the host binary
-`free_breakfast_tests_experimental_host`:
+One file per exported partition, all in the host binary
+`free_breakfast_tests_experimental_host`, sharing the reference document
+through `atomic_scf_reference.h`:
 
-- the integrals against closed forms for one s primitive, their 8-fold and
-  translational symmetry, and the oxygen block of
-  `test/gtest/data/one_electron/h2o_{sto3g,ccpvdz}.json`;
-- the SCF against PySCF 2.14's `AtomSphAverageRHF` for H–Ar and Zn in STO-3G
-  and H, He, C, O, Ne in cc-pVDZ (energy to 1e-8, orbital energies to 1e-6),
-  the trace and symmetry of the density, and idempotency for closed-shell Ne;
-- the block-diagonal assembly and the refusals.
+- `atomic_integrals_host.cpp` — the integrals against closed forms for one s
+  primitive, their 8-fold and translational symmetry, the oxygen block of
+  `test/gtest/data/one_electron/h2o_{sto3g,ccpvdz}.json`, and the refusals;
+- `atomic_scf_host.cpp` — the SCF against PySCF 2.14's `AtomSphAverageRHF` for
+  H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ (energy to 1e-8, orbital
+  energies to 1e-6), the trace and symmetry of the density, idempotency for
+  closed-shell Ne, and the refusals;
+- `atomic_scf_density_host.cpp` — the block-diagonal assembly and its refusal.
 
 The reference data is `test/experimental/data/atomic_scf.json`, written by
 
@@ -101,9 +103,22 @@ uv run --group tools experimental/atomic_scf/emit_reference.py
 
 ## Files
 
-| File | Role |
-|------|------|
-| `atomic_scf.cppm` | Module interface |
-| `atomic_scf.cpp` | The integrals, the SCF and the assembly |
-| `emit_reference.py` | Writes the PySCF reference data the tests read |
-| `CMakeLists.txt` | Build configuration |
+Each class and each concern is its own partition, declared in a `.cppm` and
+defined in the `.cpp` of the same name (`docs/style.md`, "Module-private
+code"). Only the three exported partitions reach an importer.
+
+| File | Partition | Role |
+|------|-----------|------|
+| `atomic_scf.cppm` | primary | Module interface: re-exports the three below |
+| `integrals.cppm` / `.cpp` | `:integrals`, exported | `AtomicIntegrals` and `atomic_integrals`: checks the shells, calls the two families below, carries them to the spherical layout |
+| `scf.cppm` / `.cpp` | `:scf`, exported | `AtomicScf` and `atomic_scf`: the Fock build, the energy, the per-l commutators, the iteration |
+| `density.cppm` / `.cpp` | `:density`, exported | `atomic_scf_density`: one SCF per distinct (Z, shells), each on its atom's block |
+| `hermite.cppm` / `.cpp` | `:hermite`, internal | The same-center Hermite expansion and the zero-distance Hermite Coulomb integrals both families build on |
+| `one_electron.cppm` / `.cpp` | `:one_electron`, internal | S, T and V over the Cartesian layout |
+| `eri.cppm` / `.cpp` | `:eri`, internal | `(ab\|cd)` over the Cartesian layout |
+| `gemm.cppm` / `.cpp` | `:gemm`, internal | `gemm_tn` and `gemm_nn`, the l blocks' matrix products |
+| `eigen.cppm` / `.cpp` | `:eigen`, internal | `SymmetricEigen` and `jacobi_eigen`, cyclic Jacobi |
+| `diis.cppm` / `.cpp` | `:diis`, internal | `AtomicDiis`, Pulay DIIS over flat vectors |
+| `angular_block.cppm` / `.cpp` | `:angular_block`, internal | `AngularBlock` (its m-average and diagonalization), `angular_blocks` (orthogonalizer and aufbau seating per l) and `angular_density` (the scatter back to the full layout) |
+| `emit_reference.py` | | Writes the PySCF reference data the tests read |
+| `CMakeLists.txt` | | Build configuration |
