@@ -20,6 +20,7 @@ coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO d
 exchange/      the exchange matrix K (in progress)
   helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather and the block scatter kernel_k leaves to its launcher
   kernels/k/         free_breakfast::integrals::exchange::device: the generated K kernels k<la, lc, lb, ld>, 81 classes through d
+  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd and coulomb/sort_bounds sort with
 ```

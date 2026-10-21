@@ -100,3 +100,6 @@ free_breakfast_add_gpu_device_library(
   felizjueves::headers
   free_breakfast::integrals::shared::headers
 )
+
+# The ordered pair classes K's bras and kets are drawn from (pairs/).
+add_subdirectory(pairs)
