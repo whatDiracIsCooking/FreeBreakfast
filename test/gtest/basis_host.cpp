@@ -289,7 +289,7 @@ TEST(Basis, SphericalShellOverlapTransformsToIdentity) {
   for (std::int32_t l = 2; l <= 4; ++l) {
     const double alpha = 1.3;
     const fb::BasisSet basis(
-        {fb::ShellStamp(l, {{alpha, 1.0}}).primitive_normalized().at(kOrigin)});
+        {fb::place(fb::ShellStamp(l, {{alpha, 1.0}}).primitive_normalized(), kOrigin)});
     const double c = basis.shells()[0].primitives()[0].coefficient;
     const std::vector<Powers> powers = fb::cartesian_powers(l);
     const std::size_t ncart = basis.nao_cart();

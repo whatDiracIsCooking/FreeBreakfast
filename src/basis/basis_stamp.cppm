@@ -108,7 +108,7 @@ private:
     }
     const Vec<double, 3> center = atom.position;
     for (const ShellStamp &proto : *element) {
-      shells.push_back(proto.at(center));
+      shells.push_back(place(proto, center));
     }
     atom_shell_offsets.push_back(static_cast<uint32_t>(shells.size()));
   }

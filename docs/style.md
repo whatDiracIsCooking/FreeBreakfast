@@ -152,6 +152,27 @@ parameters, so generic code can write `Vec<T, 3>`, and that `Vec` covers the
 wwr's aliases appear on purpose is `test/gtest/core_vocabulary_host.cpp`,
 which checks that `Vec` maps onto them.
 
+## Stamps
+
+A **stamp** is a geometry-free definition, a type named `…Stamp`: a
+`ShellStamp` is a `Shell` without its center, a `BasisStamp` is a basis-set
+file's per-element table of them. Putting one somewhere follows one pattern:
+
+- **The verb is `place`, a free function overloaded per stamp**, with the stamp
+  first and where it goes second: `place(shell_stamp, center)`,
+  `place(basis_stamp, molecule)`. Not a member such as `stamp.at(center)`. A
+  free overload lets every level of the hierarchy read the same, and `.at()`
+  already means a bounds-checked index to every C++ reader.
+- **`place` returns what it builds, or writes into the target it is given.**
+  Placing a shell or a basis makes a new object, so it is returned (wrapped in
+  `Result` when placement can fail). Placing a block that several stamps share,
+  such as one atom's block of a molecular matrix, writes into that target. The
+  target comes last and is a `std::span`, so `place` cannot resize it.
+- **`place` never computes.** It copies a stamp to where it goes. Work that
+  solves or allocates for real, such as computing the stamps in the first
+  place, gets a name of its own (`sad_density`), so that seeing `place` says
+  the call is cheap.
+
 ## Module-private code
 
 **There are no anonymous namespaces and no `detail` namespaces**, with two
