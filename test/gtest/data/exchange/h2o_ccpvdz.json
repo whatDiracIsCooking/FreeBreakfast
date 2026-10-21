@@ -1,7 +1,7 @@
 {
  "description": "#199: h2o_ccpvdz_j's molecule, basis and recorded density, with PySCF's get_jk exchange matrix K (vk_il = sum_jk (ij|kl) D_jk) in place of J. -- the basis and the exchange arrays only, copied by tools/extract_integral_golden.py",
  "source": {
-  "felizjueves": "c6a17f020e51a912cdfcefb71c5798c53019dad5",
+  "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
   "fixture": "test/oracle/fixtures/h2o_ccpvdz_k.json"
  },
  "provenance": {
