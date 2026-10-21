@@ -42,7 +42,8 @@ namespace free_breakfast::device {
 /// dq<la, lb>).
 ///
 /// @p density is n_ao x n_ao and symmetric (it is read at one orientation of
-/// each block); @p dq is n_rec x n_hermite(la + lb), and @p w, @p bound and
+/// each block); @p dq is q-major, n_hermite(la + lb) x n_rec (so e_hermite's
+/// lanes, consecutive kets, read it contiguously), and @p w, @p bound and
 /// @p dmax n_rec, all written whole. cls.n_rec must be positive, cls.la <=
 /// cls.lb <= kMaxAngularMomentum, and n_ao * n_ao must fit an int32_t.
 ///
@@ -58,7 +59,8 @@ namespace free_breakfast::device {
 /// e_hermite<bra.la + bra.lb, ket.la + ket.lb>, one warp per bra record.
 ///
 /// @p ip is @p bra's bound and @p iq, @p dq and @p dmax are @p ket's, all from
-/// @ref coulomb_prepare; @p jp is bra.n_rec x n_hermite(bra.la + bra.lb),
+/// @ref coulomb_prepare, @p dq q-major; @p jp is bra.n_rec x
+/// n_hermite(bra.la + bra.lb), record-major,
 /// added to atomically, so it must be zeroed before the first ket class and
 /// then holds the sum over all of them. Each lane stops at its first ket with
 /// `Dmax * Ip * Iq < tau`, so for any @p tau above 0 the kets (@p ket's zeta

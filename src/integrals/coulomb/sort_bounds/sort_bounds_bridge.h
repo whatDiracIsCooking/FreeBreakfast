@@ -33,13 +33,14 @@ namespace free_breakfast::device {
 /// Writes key[k] = -(bound[k] * dmax[k]) and perm[k] = k, sorts the keys
 /// ascending with perm carried (merge_sort_passes: -0.0, a bound of zero, sorts
 /// after every negative key, so last), then gathers record perm[k] of each
-/// array e_hermite reads of a ket into row k of its sorted copy: zeta, P,
-/// bound (Iq), dmax and dq's n_hermite-wide rows.
+/// array e_hermite reads of a ket into place k of its sorted copy: zeta, P,
+/// bound (Iq), dmax, and column k of each of dq's n_hermite rows.
 ///
 /// @p bound, @p dmax and @p dq are the class's own, from coulomb_prepare.
 /// @p key, @p key_alt, @p perm and @p perm_alt are cls.n_rec-long scratch; the
 /// alts are touched only past one tile of the sort (2816 records). The sorted
-/// copies are cls.n_rec long, @p dq_sorted cls.n_rec x @p n_hermite. No array
+/// copies are cls.n_rec long. @p dq and @p dq_sorted are q-major, @p n_hermite
+/// x cls.n_rec, as dq writes D_q and e_hermite reads it. No array
 /// may overlap another. cls.n_rec must be positive.
 ///
 /// @return The first launch status (wwrErrorInvalidValue for no records or a

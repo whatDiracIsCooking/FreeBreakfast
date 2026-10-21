@@ -68,6 +68,14 @@ its shuffles and its shared array read `FJ_WAVEFRONT`, which
 have no shuffle. Record vectors are three flat arrays per axis, named as `mmd` names its
 fields.
 
+**`D_q` is q-major.** `dq` writes `D_q` as `D[n_hermite, n_rec]` and
+`e_hermite` reads it so (FelizJueves's `passes.transpose` on both, applied by
+the emitter): `e_hermite`'s lanes are consecutive kets, so a warp reads
+`D[q * n_ket + k]` contiguously, where record-major put each lane `n_q`
+doubles apart. EXESS's J engine transposes `D_q` for the same reason
+(`[Fock]` §4.2). The ket gather keeps the layout, moving columns. `J_p`
+stays record-major: each warp owns one bra's row.
+
 **Generated kernels are committed, not built.** `tools/emit_coulomb_kernels.py`
 writes `kernels/` from the FelizJueves submodule; re-run it after bumping the
 submodule. `kernels/.clang-format` turns formatting off, and
@@ -80,10 +88,6 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
   own bound, so warps of similar trip counts sit together. It changes no
   result. `Ip` depends only on `zeta`, so it is a sort per basis, and `jab`'s
   `row` input is where the bra permutation would go.
-- **`D_q` transposed.** `e_hermite` reads `D[k * n_q + q]`, so a warp's lanes
-  (consecutive kets) read `n_q` apart; EXESS transposes `D_q` so they
-  coalesce. The ket gather is where that would happen, but the layout is the
-  generated kernel's: it starts as a FelizJueves generator change.
 - **Reuse across SCF iterations.** The scratch is allocated per call.
 - **Batching.** One `e_hermite` kernel per class, as FelizJueves ships it.
 

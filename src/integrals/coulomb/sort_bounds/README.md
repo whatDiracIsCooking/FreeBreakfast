@@ -39,7 +39,7 @@ scratch and a sorted copy of each array `e_hermite` reads of a ket.
 |---|---|---|
 | key | `sort_bounds_key_kernel`, one thread per record | `key[k] = -(Iq · Dmax)`, `perm[k] = k` |
 | sort | `merge_sort_passes` (`merge_sort.cu`) | `key` ascending in IEEE-754 total order, `perm` carried, stably |
-| gather | `sort_bounds_gather_kernel`, one thread per `D_q` element | row `k` of each sorted copy from record `perm[k]`: `zeta`, P, `Iq`, `Dmax`, `D_q` |
+| gather | `sort_bounds_gather_kernel`, one thread per `D_q` element | place `k` of each sorted copy from record `perm[k]`: `zeta`, P, `Iq`, `Dmax`, and column `k` of each q-major `D_q` row |
 
 - **Descending for free.** The sort only ascends. The bound is never
   negative, so negating it gives the descending order. A bound of exactly 0
@@ -71,10 +71,10 @@ If a second user appears, it moves up a level.
 
 | Symbol | Role |
 |---|---|
-| `SortedKets(device, cls, n_hermite)` | Scratch and sorted copies for `cls`, `D_q` rows `n_hermite` wide. Allocates and launches nothing. Movable. `cls` must outlive it |
+| `SortedKets(device, cls, n_hermite)` | Scratch and sorted copies for `cls`, whose `D_q` (q-major, `n_hermite × n_rec`) has `n_hermite` Hermite functions. Allocates and launches nothing. Movable. `cls` must outlive it |
 | `SortedKets::sort(stream, bound, dmax, dq)` | `wwrError_t`: queues the key, the sort and the gather on `stream`. Launch errors only |
 | `SortedKets::view()` | The class as `e_hermite`'s ket: `zeta` and P sorted, the other pointers null |
-| `SortedKets::bound()`, `dmax()`, `dq()` | `Iq`, `Dmax` and `D_q`, sorted |
+| `SortedKets::bound()`, `dmax()`, `dq()` | `Iq`, `Dmax` and `D_q` (q-major), sorted |
 
 ## Tests
 

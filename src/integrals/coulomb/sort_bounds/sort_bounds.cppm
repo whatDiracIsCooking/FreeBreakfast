@@ -27,8 +27,8 @@ export namespace free_breakfast {
 /// so the class must outlive it.
 class SortedKets {
 public:
-  /// @brief Scratch and sorted copies for @p cls, whose D_q rows are
-  /// @p n_hermite wide. Allocates; launches nothing.
+  /// @brief Scratch and sorted copies for @p cls, whose D_q has @p n_hermite
+  /// Hermite functions. Allocates; launches nothing.
   SortedKets(const std::shared_ptr<Device> &device, const PrimitivePairClass &cls,
              int32_t n_hermite);
 
@@ -36,7 +36,7 @@ public:
   /// zeta, P, @p bound, @p dmax and @p dq into that order, on @p stream.
   ///
   /// @p bound, @p dmax and @p dq are the class's own, in record order: its
-  /// pair_bound, and dq's Dmax and D_q (n_rec x n_hermite). Records of equal
+  /// pair_bound, and dq's Dmax and D_q (q-major, n_hermite x n_rec). Records of equal
   /// bound keep their record order. Queued only, no synchronization.
   ///
   /// @return The first launch status. Launch errors only.
@@ -51,7 +51,7 @@ public:
   [[nodiscard]] const double *bound() const noexcept { return bound_.data(); }
   /// @brief Dmax, sorted.
   [[nodiscard]] const double *dmax() const noexcept { return dmax_.data(); }
-  /// @brief D_q, its rows sorted: n_rec x n_hermite.
+  /// @brief D_q, each row's records sorted: q-major, n_hermite x n_rec.
   [[nodiscard]] const double *dq() const noexcept { return dq_.data(); }
 
 private:

@@ -23,7 +23,10 @@ and the record bound its screen reads, one kernel template per family:
 
 Every [n, 3] record vector is split into three flat arrays (`passes.
 split_axes`) named as free_breakfast.integrals.mmd names its fields: pa_*,
-pb_*, and p_* / q_* for the [p|q] bra and ket centres.
+pb_*, and p_* / q_* for the [p|q] bra and ket centres. D_q is stored q-major,
+D[n_q, n_rec] (`passes.transpose`), in both kernels that touch it: dq writes
+it and e_hermite reads it, its lanes consecutive kets, so a warp's read is
+contiguous.
 
 They are FelizJueves's `gpu` spelling, compiled as emitted by both backends:
 nvcc under CUDA and clang `-x hip` under HIP. `e_hermite` is emitted
@@ -59,7 +62,7 @@ from felizjueves.kernel import build_pq_kernel  # noqa: E402
 from felizjueves.kernel_dq import build_dq_kernel  # noqa: E402
 from felizjueves.kernel_jab import build_jab_kernel  # noqa: E402
 from felizjueves.kernel_pair_bound import build_pair_bound_kernel  # noqa: E402
-from felizjueves.passes import atomize, split_axes  # noqa: E402
+from felizjueves.passes import atomize, split_axes, transpose  # noqa: E402
 from felizjueves.spec import Operator, Spec, Target  # noqa: E402
 
 # The kernels' L limit: d. It must equal kMaxAngularMomentum
@@ -75,6 +78,8 @@ OUT = ROOT / "src/integrals/coulomb/kernels"
 # The record vectors, as mmd names them.
 PAIR_AXES = {"XPA": ("pa_x", "pa_y", "pa_z"), "XPB": ("pb_x", "pb_y", "pb_z")}
 PQ_AXES = {"P": ("p_x", "p_y", "p_z"), "Q": ("q_x", "q_y", "q_z")}
+# D_q, q-major in dq and e_hermite alike.
+Q_MAJOR = ("D",)
 
 
 def pair_classes() -> list[tuple[int, int]]:
@@ -94,7 +99,7 @@ def pair_bound(cls: tuple[int, int]):
 def dq(cls: tuple[int, int]):
     lc, ld = cls
     k = build_dq_kernel(cls, density="ao", name=f"dq_{lc}{ld}")
-    return split_axes(k, PAIR_AXES)
+    return transpose(split_axes(k, PAIR_AXES), Q_MAJOR)
 
 
 def jab(cls: tuple[int, int]):
@@ -110,7 +115,7 @@ def e_hermite(cls: tuple[int, int]):
     k = build_pq_kernel(
         Spec(Operator.COULOMB, 0, am, Target.J), name=f"e_hermite_{lp}{lq}"
     )
-    return split_axes(atomize(k), PQ_AXES)
+    return transpose(split_axes(atomize(k), PQ_AXES), Q_MAJOR)
 
 
 # family -> (its classes, its builder, the emitter's options)

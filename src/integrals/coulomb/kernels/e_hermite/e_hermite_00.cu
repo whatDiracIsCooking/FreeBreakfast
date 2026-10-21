@@ -108,7 +108,7 @@ __global__ void e_hermite<0, 0>(
             double R0_0_0_0 = (W0 * boys[0]);
             // J_p += SUM_q (-1)^|q| [p+q]^(0) D_q, [JEngine, v2, eqs. 7-9, 20-22]: the
             // only shell-quartet-level contraction; [ab|cd] is never formed
-            Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_0_0 * D[(k * 1 + 0)]));
+            Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = (Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_0_0 * D[(0 * n_ket + k)]));
         }
         // reduce J_p across the warp: every lane sees the sum
         double Jp0;
