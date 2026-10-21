@@ -26,8 +26,10 @@ redone in every build, after `dq`.
 Lane `y` of a warp visits kets `y, y + W, …`, a subsequence of the sorted
 order, so it is descending too, and a per-lane `break` is right.
 
-Only kets are sorted. Bra order has no effect on the result, so the bra side,
-`jab` and its `row` input read the class in record order.
+Only kets are sorted here. Bra order has no effect on the result, so the bra
+side, `jab` and its `row` input read the class in record order, which
+[`mmd`](../../mmd/README.md) already makes descending ζ, so descending `Ip`,
+once per basis.
 
 ## Design
 
@@ -38,7 +40,7 @@ scratch and a sorted copy of each array `e_hermite` reads of a ket.
 | Step | Kernel | Does |
 |---|---|---|
 | key | `sort_bounds_key_kernel`, one thread per record | `key[k] = -(Iq · Dmax)`, `perm[k] = k` |
-| sort | `merge_sort_passes` (`merge_sort.cu`) | `key` ascending in IEEE-754 total order, `perm` carried, stably |
+| sort | `merge_sort_passes` ([`src/integrals/sort`](../../sort/README.md)) | `key` ascending in IEEE-754 total order, `perm` carried, stably |
 | gather | `sort_bounds_gather_kernel`, one thread per `D_q` element | place `k` of each sorted copy from record `perm[k]`: `zeta`, P, `Iq`, `Dmax`, and column `k` of each q-major `D_q` row |
 
 - **Descending for free.** The sort only ascends. The bound is never
@@ -55,17 +57,8 @@ scratch and a sorted copy of each array `e_hermite` reads of a ket.
   the sorted copies, which is all `e_hermite` reads of a ket. Its other
   pointers are null.
 
-## The merge sort lives here
-
-`merge_sort.cu` is the stable merge sort of `double` keys, optionally carrying
-`uint32_t` values, that was developed in
-[`experimental/sort/merge`](../../../../experimental/sort/merge/README.md).
-That README has its algorithm and its timings against `radix_sort` and the
-vendor sorts. It moved here when the J screen became its first production user.
-`experimental/sort/merge` now links this directory's device library rather than
-keep a copy, and its tests (`test/experimental/merge_sort_gpu.cpp`) and
-benchmark still cover it, against `std::strong_order`, `radix_sort` and CUB.
-If a second user appears, it moves up a level.
+The merge sort is [`src/integrals/sort`](../../sort/README.md)'s, shared with
+`mmd`, which orders each class's records with it.
 
 ## Public API
 
@@ -93,6 +86,4 @@ screen is [`coulomb`](../README.md)'s tests.
 | `sort_bounds.cppm` / `.cpp` | The module: `SortedKets`, its scratch, and the launcher's arguments |
 | `sort_bounds_bridge.h` | `sort_bounds_kets`, declared once for the module's GMF and the `.cu` |
 | `sort_bounds_launch.cu` | The key and gather kernels and `sort_bounds_kets` |
-| `merge_sort_bridge.h` | `merge_sort_passes`, declared for `sort_bounds_launch.cu`, `merge_sort.cu` and `experimental/sort/merge` |
-| `merge_sort.cu` | The merge sort's kernels and launch sequence |
 | `CMakeLists.txt` | The device library and the module |

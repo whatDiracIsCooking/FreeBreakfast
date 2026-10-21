@@ -1,24 +1,22 @@
-# The ket sort's device code: the key and gather kernels and their launcher,
-# and the merge sort they sort with. Device code in its own library, so its
-# language and -x hip never reach the module compiles. Its source directory is
-# its public include path, so merge_sort_bridge.h reaches
-# experimental/sort/merge too, which links this rather than keeping a copy of
-# merge_sort.cu. The bridge headers name int32_t, PrimitivePairClassView,
+# The ket sort's device code: the key and gather kernels and their launcher.
+# Device code in its own library, so its language and -x hip never reach the
+# module compiles. The bridge header names int32_t, PrimitivePairClassView,
 # wwrStream_t and wwrError_t, hence types_headers, mmd::headers and
 # wwr::device PUBLIC; the kernels read kWarpSize (block_params.h) and idivup
-# (primitives.h), hence core::kernel_headers, PUBLIC as merge_sort.cu's
-# experimental library had it.
+# (primitives.h), hence core::kernel_headers. The merge sort the launcher sorts
+# with is src/integrals/sort's, PRIVATE: only the .cu includes its bridge.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.coulomb.sort_bounds.device
   SOURCES
   sort_bounds_launch.cu
-  merge_sort.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::core::kernel_headers
   free_breakfast::integrals::mmd::headers
   wwr::device
+  LINK_PRIVATE
+  free_breakfast::integrals::sort::device
 )
 
 # The module. Device, Buffers and PrimitivePairClass are in its interface, so

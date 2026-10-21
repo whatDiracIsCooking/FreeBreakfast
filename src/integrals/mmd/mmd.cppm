@@ -119,15 +119,24 @@ struct PrimitivePairClass {
 /// per (la, lb) reached, in ascending (la, lb) order, each on a new
 /// @c DeviceStream of res.device().
 ///
-/// Every shell pair i <= j (in basis order) contributes alpha-major records
-/// for each of its primitive pairs, to the class of its momenta in la <= lb
-/// order; a diagonal pair (i == j) is the shell against itself, its two AO
-/// offsets equal, which is how the kernels recognise it. Only reached classes
-/// appear, so no class is empty. No pair is screened out.
+/// Every shell pair i <= j (in basis order) contributes one record for each of
+/// its primitive pairs, to the class of its momenta in la <= lb order; a
+/// diagonal pair (i == j) is the shell against itself, its two AO offsets
+/// equal, which is how the kernels recognise it. Only reached classes appear,
+/// so no class is empty. No pair is screened out.
 ///
-/// The records are written into each class's pinned side and the copy to the
-/// device queued on its stream, ahead of anything a build launches there; no
-/// host synchronization. The device res.dev_idx() names is made current for
+/// **Each class's records are in descending zeta order**, equal zetas in
+/// shell-pair, then alpha-major, order. Within a class the record bound Ip =
+/// pair_bound(zeta, la + lb) rises with zeta, so a J build's bras with the
+/// longest ket loops launch first. No kernel depends on the order: each
+/// accumulates.
+///
+/// The records are written into each class's pinned side, copied to the
+/// device, ordered there (a stable merge sort on -zeta, every field permuted
+/// in place), and the pinned side refreshed from the device, all queued on the
+/// class's stream, ahead of anything a build launches there; no host
+/// synchronization. So the pinned side holds the final records only once that
+/// stream has been synchronized. The device res.dev_idx() names is made current for
 /// the call and the previous one restored.
 ///
 /// Coefficients are taken from the basis as given (see @ref Shell), so a basis

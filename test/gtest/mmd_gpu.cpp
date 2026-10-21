@@ -1,7 +1,10 @@
 // GPU cases for integrals.mmd: the primitive-pair records a basis turns into,
 // checked field by field (on each class's pinned side) against the Gaussian
 // product theorem, the la <= lb swap that lets one kernel serve both (s|p) and
-// (p|s), one stream per class, and the device side matching the pinned side.
+// (p|s), one stream per class, the device side matching the pinned side, and
+// each class's records in descending zeta order, equal zetas in the order the
+// host wrote them: on shells whose exponents ascend, so the sort has to move
+// records, and on a class past the merge sort's 2816-key tile.
 
 #include <gtest/gtest.h>
 
@@ -44,11 +47,20 @@ std::vector<T> pinned(const fb::MirroredBuffer<T> &field) {
   return {p, p + field.size()};
 }
 
+// The classes, each stream synchronized: the order and the pinned side's
+// refresh from the device are queued on it, so the pinned side holds the final
+// records only after.
 std::vector<fb::PrimitivePairClass> classes_of(fb::DeviceResources &res,
                                                const fb::BasisSet &basis) {
   auto classes = fb::primitive_pair_classes(res, basis);
   EXPECT_TRUE(classes);
-  return classes ? std::move(*classes) : std::vector<fb::PrimitivePairClass>{};
+  if (!classes) {
+    return {};
+  }
+  for (const fb::PrimitivePairClass &cls : *classes) {
+    EXPECT_EQ(wwr::wwrStreamSynchronize(cls.device_stream()->stream()), wwr::wwrSuccess);
+  }
+  return std::move(*classes);
 }
 
 // A two-primitive p shell on A, then a one-primitive s shell on B: the p
@@ -101,6 +113,8 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
   ASSERT_EQ(s_off, 3);
   ASSERT_EQ(p_off, 0);
 
+  // The p shell's exponents descend, so its records' zetas do too: record k is
+  // ket primitive k.
   const double z_a = 1.5; // the s shell's center: the bra's, after the swap
   const double z_b = 0.0;
   const double alpha = 1.2;
@@ -137,7 +151,8 @@ TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
       EXPECT_EQ(at(cls->off_a, k), at(cls->off_b, k)) << "(" << cls->la << ", " << cls->lb << ")";
     }
   }
-  // Records are bra-primitive-major: (alpha_0, alpha_0), (alpha_0, alpha_1), ...
+  // Descending zeta, the tie (alpha_0, alpha_1) / (alpha_1, alpha_0) in the
+  // order the host wrote it.
   const fb::PrimitivePairClass &pp = classes[2];
   EXPECT_NEAR(at(pp.zeta, 0), 4.0, kTol);
   EXPECT_NEAR(at(pp.zeta, 1), 2.5, kTol);
@@ -178,6 +193,92 @@ TEST(Mmd, DeviceSideMatchesThePinnedSide) {
       EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
     }
   }
+}
+
+// One record of an s-only basis, as the host writes it.
+struct SRecord {
+  double zeta;
+  double p_z;
+  double pa_z;
+  double pb_z;
+  double s;
+  double eb;
+  std::int32_t off_a;
+  std::int32_t off_b;
+};
+
+// An s shell on the z axis at z, its exponents as given, coefficients 1.
+fb::Shell s_shell(const std::vector<double> &exponents, const double z) {
+  return fb::Shell(0, exponents, std::vector<double>(exponents.size(), 1.0),
+                   fb::Vec<double, 3>{0.0, 0.0, z});
+}
+
+// The (s|s) class's records in the order the device must give: every shell
+// pair i <= j, alpha-major, as the host writes them, then stably sorted by
+// zeta, descending.
+std::vector<SRecord> want_s_records(const fb::BasisSet &basis) {
+  std::vector<SRecord> out;
+  const std::vector<fb::Shell> &shells = basis.shells();
+  for (std::size_t i = 0; i < shells.size(); ++i) {
+    for (std::size_t j = i; j < shells.size(); ++j) {
+      const double za = shells[i].center().z;
+      const double zb = shells[j].center().z;
+      for (const fb::Primitive &pa : shells[i].primitives()) {
+        for (const fb::Primitive &pb : shells[j].primitives()) {
+          const double zeta = pa.exponent + pb.exponent;
+          const double pz = ((pa.exponent * za) + (pb.exponent * zb)) / zeta;
+          out.push_back({zeta, pz, pz - za, pz - zb,
+                         pa.coefficient * pb.coefficient * std::pow(std::numbers::pi / zeta, 1.5),
+                         pb.exponent, static_cast<std::int32_t>(basis.ao_offset_cart(i)),
+                         static_cast<std::int32_t>(basis.ao_offset_cart(j))});
+        }
+      }
+    }
+  }
+  std::ranges::stable_sort(out, std::greater<>{}, &SRecord::zeta);
+  return out;
+}
+
+void expect_s_records(const fb::BasisSet &basis) {
+  fb::DeviceResources res{0};
+  const auto classes = classes_of(res, basis);
+  ASSERT_EQ(classes.size(), 1U);
+  const fb::PrimitivePairClass &ss = classes[0];
+  const std::vector<SRecord> want = want_s_records(basis);
+  ASSERT_EQ(static_cast<std::size_t>(ss.n_rec), want.size());
+  for (std::size_t k = 0; k < want.size(); ++k) {
+    // zeta is a + b in either order, so exactly the host's; the order of
+    // equal zetas is pinned by the offsets and eb.
+    ASSERT_EQ(at(ss.zeta, k), want[k].zeta) << "record " << k;
+    ASSERT_EQ(at(ss.off_a, k), want[k].off_a) << "record " << k;
+    ASSERT_EQ(at(ss.off_b, k), want[k].off_b) << "record " << k;
+    ASSERT_EQ(at(ss.eb, k), want[k].eb) << "record " << k;
+    ASSERT_NEAR(at(ss.p_z, k), want[k].p_z, kTol) << "record " << k;
+    ASSERT_NEAR(at(ss.pa_z, k), want[k].pa_z, kTol) << "record " << k;
+    ASSERT_NEAR(at(ss.pb_z, k), want[k].pb_z, kTol) << "record " << k;
+    ASSERT_NEAR(at(ss.s, k), want[k].s, kTol * want[k].s) << "record " << k;
+  }
+  // The device side was permuted, and the pinned side refreshed from it.
+  EXPECT_EQ(download(ss.zeta), pinned(ss.zeta));
+  EXPECT_EQ(download(ss.off_b), pinned(ss.off_b));
+}
+
+TEST(Mmd, RecordsAreInDescendingZetaOrder) {
+  FBF_REQUIRE_GPU();
+  // Ascending exponents, so the order the host writes is ascending in zeta
+  // within each shell pair, and the sort must move nearly every record.
+  expect_s_records(fb::BasisSet({s_shell({0.3, 1.1, 4.0}, 0.0), s_shell({0.7, 2.5}, 1.2)}));
+}
+
+TEST(Mmd, RecordsAreInDescendingZetaOrderPastOneSortTile) {
+  FBF_REQUIRE_GPU();
+  // One s shell of 60 ascending exponents against itself: 3600 records, past
+  // the merge sort's 2816-key tile, so its merge pass runs.
+  std::vector<double> exponents;
+  for (std::int32_t i = 0; i < 60; ++i) {
+    exponents.push_back(0.1 * std::pow(1.2, i));
+  }
+  expect_s_records(fb::BasisSet({s_shell(exponents, 0.4)}));
 }
 
 } // namespace

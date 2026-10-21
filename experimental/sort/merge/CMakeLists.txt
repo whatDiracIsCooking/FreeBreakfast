@@ -1,7 +1,7 @@
 # The vendor reference over CUB / hipCUB. Device code in its own library, so
 # its language and -x hip never reach the module compiles. The merge sort
-# itself is src/integrals/coulomb/sort_bounds' merge_sort.cu, which the J
-# build sorts its kets with; this tree links it rather than keeping a copy.
+# itself is src/integrals/sort's merge_sort.cu, which the integral builds sort
+# with; this tree links it rather than keeping a copy.
 # The bridge header this library shares with the module names wwrStream_t,
 # hence kernel_headers PUBLIC: it brings types_headers and wwr::device with it.
 # wwr::device also carries cub.h and the vendor's CUB or hipCUB include path,
@@ -34,7 +34,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::experimental::sort::merge::device
-  free_breakfast::integrals::coulomb::sort_bounds::device
+  free_breakfast::integrals::sort::device
 )
 
 # merge_sort against radix_sort and the vendor's merge and radix sorts, wall

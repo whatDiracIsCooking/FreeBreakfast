@@ -38,10 +38,23 @@ one `n_rec`-long `MirroredBuffer` per field, all on the class's own
 `DeviceStream`. `primitive_pair_classes(res, basis)` counts each class's
 records, allocates it on a new stream of `res.device()`, writes the records
 straight into the pinned side, and queues every field's copy to the device on
-that stream. It never synchronizes: the pinned side is kept for the class's
-lifetime (a `MirroredBuffer`'s destructor waits out its copies), and a build
-launches the class on the same stream, after the copy. The pinned side is also
-where the tests read what was written.
+that stream, then the order below and the copy back to the pinned side. It
+never synchronizes: the pinned side is kept for the class's lifetime (a
+`MirroredBuffer`'s destructor waits out its copies), and a build launches the
+class on the same stream, after them. The pinned side is where the tests read
+the records, once that stream is synchronized.
+
+**Records are in descending ζ order, per class.** On the class's stream, after
+the upload: key `-ζ`, a stable merge sort carrying each record's index
+([`src/integrals/sort`](../sort/README.md)), then every field permuted to that
+order in place (`mmd_launch.cu`), and the pinned side refreshed. Equal ζ keep
+the order the host wrote (shell pair, then bra primitive). Within a class the
+J screen's record bound `Ip = pair_bound(ζ, la + lb)` rises with ζ, so this is
+descending `Ip`: a bra's ket loop runs until `Dmax · Ip · Iq < τ`, so the
+longest loops launch first and a build's tail is short. No kernel depends on
+the order (each accumulates), and it is fixed per basis, so it costs one sort
+per class, once. It also spreads a shell pair's records across warps, so
+`jab`'s and the one-electron scatters' atomic adds collide less.
 
 **The launchers' view is a header.** `PrimitivePairClass` holds wwr buffers,
 which only a module can name, so `view()` hands the launchers a
@@ -72,7 +85,11 @@ business (`BasisStamp::primitive_normalized`). Nothing is screened.
 
 ## Tests
 
-`test/gtest/mmd_gpu.cpp`.
+`test/gtest/mmd_gpu.cpp`: each record's fields against the Gaussian product
+theorem, the swap, the streams, and the device side against the pinned side;
+the order, on a shell whose exponents ascend (so the sort has to move them)
+and on a class past one sort tile (2816 records), each record matched by its
+fields to the one the host wrote.
 
 ## Files
 
@@ -80,5 +97,7 @@ business (`BasisStamp::primitive_normalized`). Nothing is screened.
 |------|------|
 | `primitive_pair_class_view.h` | `PrimitivePairClassView`, the single definition, for `#include` and `import` alike |
 | `mmd.cppm` | Module interface: `PrimitivePairClass`, `primitive_pair_classes`, the view re-exported |
-| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the per-record arithmetic, the copies |
-| `CMakeLists.txt` | The interface library `free_breakfast.integrals.mmd.headers` and the module library |
+| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the per-record arithmetic, the copies and the order |
+| `mmd_bridge.h` | The order's launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
+| `mmd_launch.cu` | The key and gather kernels, and the launchers: `mmd_order` (key and sort), `mmd_permute` (one field, in place) |
+| `CMakeLists.txt` | The interface library `free_breakfast.integrals.mmd.headers`, the device library and the module library |

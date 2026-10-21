@@ -1,6 +1,12 @@
 /// @file
 /// @brief primitive_pair_classes: the shell-pair sweep, the la <= lb swap, the
-/// per-record arithmetic and the copy to the device.
+/// per-record arithmetic, the copy to the device and the order there.
+
+module;
+
+// The record-order launchers, defined in mmd_launch.cu: declared in the GMF so
+// they keep external linkage (see the header).
+#include "mmd_bridge.h"
 
 module free_breakfast.integrals.mmd;
 
@@ -103,6 +109,40 @@ Status copy_to_device(PrimitivePairClass &cls) {
   return {};
 }
 
+// Put cls's records in descending zeta order on its stream, after their copy
+// to the device: the order, then every field permuted to it in place, then the
+// pinned side refreshed from the device. Within a class the record bound Ip =
+// pair_bound(zeta, la + lb) rises with zeta, so this is descending Ip: a J
+// build's bras with the longest ket loops launch first. Every kernel
+// accumulates, so none depends on the order. The scratch is drawn on cls's
+// stream and returned in its order.
+Status order_by_zeta(PrimitivePairClass &cls) {
+  const std::shared_ptr<DeviceStream> &ds = cls.device_stream();
+  const wwr::wwrStream_t stream = ds->stream();
+  const auto n = static_cast<size_t>(cls.n_rec);
+  StreamBuffers::device<double> key(n, ds);
+  StreamBuffers::device<double> key_alt(n, ds);
+  StreamBuffers::device<uint32_t> perm(n, ds);
+  StreamBuffers::device<uint32_t> perm_alt(n, ds);
+  StreamBuffers::device<double> tmp(n, ds);
+  StreamBuffers::device<int32_t> tmp_offsets(n, ds);
+  FBF_TRY(gpu_status(device::mmd_order(stream, cls.n_rec, cls.zeta.device().data(), key.data(),
+                                       key_alt.data(), perm.data(), perm_alt.data())));
+  for (MirroredBuffer<double> *field :
+       {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
+        &cls.pb_y, &cls.pb_z, &cls.s, &cls.eb}) {
+    FBF_TRY(gpu_status(
+        device::mmd_permute(stream, cls.n_rec, perm.data(), field->device().data(), tmp.data())));
+    FBF_TRY(gpu_status(field->to_pinned()));
+  }
+  for (MirroredBuffer<int32_t> *field : {&cls.off_a, &cls.off_b}) {
+    FBF_TRY(gpu_status(device::mmd_permute(stream, cls.n_rec, perm.data(), field->device().data(),
+                                           tmp_offsets.data())));
+    FBF_TRY(gpu_status(field->to_pinned()));
+  }
+  return {};
+}
+
 Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
                                                                const BasisSet &basis) {
   // BasisSet guarantees nao_cart() fits an int32_t, so the offset casts below are exact.
@@ -139,7 +179,8 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
   }
 
   // Pass 2: the same sweep, each shell pair's records written at its class's
-  // cursor, so records keep their shell-pair, then bra-primitive-major, order.
+  // cursor, in shell-pair, then bra-primitive-major, order: the order the host
+  // writes them in, before order_by_zeta reorders them on the device.
   std::vector<int32_t> cursor(out.size(), 0);
   for (uint32_t i = 0; i < nsh; ++i) {
     for (uint32_t j = i; j < nsh; ++j) {
@@ -153,6 +194,7 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
 
   for (PrimitivePairClass &cls : out) {
     FBF_TRY(copy_to_device(cls));
+    FBF_TRY(order_by_zeta(cls));
   }
   return out;
 }

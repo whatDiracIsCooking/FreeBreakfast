@@ -6,8 +6,7 @@
 /// cub_merge_sort.cu directly: a declaration in a module's purview would get
 /// module linkage and never bind to the definition in the .cu (see
 /// src/linalg/orthogonalize/inverse_sqrt_bridge.h). merge_sort itself is
-/// src/integrals/coulomb/sort_bounds' merge_sort.cu, declared by its
-/// merge_sort_bridge.h.
+/// src/integrals/sort's merge_sort.cu, declared by its merge_sort_bridge.h.
 
 #pragma once
 
