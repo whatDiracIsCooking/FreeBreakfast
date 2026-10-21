@@ -16,7 +16,7 @@ A density spread evenly over m is spherical, so its Fock matrix is block-diagona
 
 Core-Hamiltonian start, Pulay DIIS on the stacked per-l commutators `F P S − S P F`, canonical orthogonalization within each l block. The tolerance (1e-9) bounds both the largest commutator element and the energy change.
 
-One SCF runs per distinct (Z, shells) pair, so a molecule pays for its elements, not its atoms. Each result goes on its atom's diagonal block; between atoms the guess is zero.
+One SCF runs per distinct (Z, shells) pair, so a molecule pays for its elements, not its atoms. Its density is an `AtomicDensityStamp`: one-center, so geometry-free, the same block for every atom with that Z and those shells. `place` writes it onto each such atom's diagonal block (`docs/style.md`, "Stamps"); between atoms the guess is zero.
 
 **Configurations.** The plain Madelung fill. PySCF's `NRSRHF_CONFIGURATION` agrees with it per l through Z = 20 and for Ti, V, Cr and Zn, and differs from Sc onward for most of the open-d and open-f elements (Fe: Madelung 4s² 3d⁶, PySCF's table 4s⁰ 3d⁸ in its spherical average). The reference data sticks to elements where the two agree.
 
@@ -78,7 +78,7 @@ Each class and each concern is its own internal partition (`module free_breakfas
 | File | Partition | Role |
 |------|-----------|------|
 | `sad.cppm` | primary | Module interface: `sad_density` |
-| `sad.cpp` | implementation | `sad_density`: one atomic SCF per distinct (Z, shells), each on its atom's block |
+| `sad.cpp` | implementation | `AtomicDensityStamp`, its `place`, and `sad_density`: one stamp per distinct (Z, shells), placed on each of its atoms' blocks |
 | `aufbau.cppm` | `:aufbau` | `kAufbauOrder` and `subshell_occupation`, the Madelung fill |
 | `atomic_scf/scf.cppm` | `:scf` | `AtomicScf` and `atomic_scf`: the Fock build, the energy, the per-l commutators, the iteration |
 | `atomic_scf/integrals.cppm` | `:integrals` | `AtomicIntegrals` and `atomic_integrals`: checks the shells, calls the two families below, carries them to the spherical layout |

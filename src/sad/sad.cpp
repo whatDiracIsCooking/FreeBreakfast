@@ -1,6 +1,6 @@
 /// @file
-/// @brief Implementation of the SAD initial guess: the block-diagonal assembly
-/// of atomic SCF densities.
+/// @brief Implementation of the SAD initial guess: one @c AtomicDensityStamp
+/// per distinct (Z, shells), each placed on its atoms' diagonal blocks.
 
 module free_breakfast.sad;
 
@@ -26,6 +26,29 @@ bool same_shells(std::span<const Shell> a, std::span<const Shell> b) {
   });
 }
 
+// One atom's converged SCF density over its own spherical AOs, column-major.
+// Every integral of the atomic SCF is one-center, so the block is
+// geometry-free: every atom with this Z and these shells wears the same one.
+struct AtomicDensityStamp {
+  int32_t z;
+  std::span<const Shell> shells;
+  std::vector<double> density;
+};
+
+// Write @p stamp's block onto the diagonal of the n x n column-major
+// @p density, starting at AO @p offset.
+void place(const AtomicDensityStamp &stamp, size_t offset, size_t n, std::span<double> density) {
+  size_t block = 0;
+  for (const Shell &shell : stamp.shells) {
+    block += shell.function_count_sphe();
+  }
+  for (size_t j = 0; j < block; ++j) {
+    for (size_t i = 0; i < block; ++i) {
+      density[(offset + i) + (n * (offset + j))] = stamp.density[i + (block * j)];
+    }
+  }
+}
+
 Result<std::vector<double>> sad_density(const BasisSet &basis, std::span<const Atom> atoms) {
   if (basis.natoms() != atoms.size()) {
     return err_config("sad_density: the basis groups its shells over {} atoms but {} were given; "
@@ -34,13 +57,7 @@ Result<std::vector<double>> sad_density(const BasisSet &basis, std::span<const A
   }
   const size_t n = basis.nao_sphe();
   std::vector<double> density(n * n, 0.0);
-
-  struct Solved {
-    int32_t z;
-    std::span<const Shell> shells;
-    std::vector<double> density;
-  };
-  std::vector<Solved> solved;
+  std::vector<AtomicDensityStamp> stamps;
 
   for (uint32_t a = 0; a < basis.natoms(); ++a) {
     const uint32_t count = basis.atom_shell_count(a);
@@ -50,21 +67,15 @@ Result<std::vector<double>> sad_density(const BasisSet &basis, std::span<const A
     const uint32_t first = basis.atom_shell_offset(a);
     const std::span<const Shell> shells(basis.shells().data() + first, count);
     const int32_t z = nuclear_charge(atoms[a]);
-    auto it = std::ranges::find_if(
-        solved, [&](const Solved &s) { return s.z == z && same_shells(s.shells, shells); });
-    if (it == solved.end()) {
+    auto it = std::ranges::find_if(stamps, [&](const AtomicDensityStamp &s) {
+      return s.z == z && same_shells(s.shells, shells);
+    });
+    if (it == stamps.end()) {
       AtomicScf scf = FBF_TRY(atomic_scf(z, shells));
-      solved.push_back(Solved{z, shells, std::move(scf.density)});
-      it = std::prev(solved.end());
+      stamps.push_back(AtomicDensityStamp{z, shells, std::move(scf.density)});
+      it = std::prev(stamps.end());
     }
-    const size_t offset = basis.ao_offset_sphe(first);
-    const size_t block = basis.ao_offset_sphe(first + count - 1) +
-                         basis.shells()[first + count - 1].function_count_sphe() - offset;
-    for (size_t j = 0; j < block; ++j) {
-      for (size_t i = 0; i < block; ++i) {
-        density[(offset + i) + (n * (offset + j))] = it->density[i + (block * j)];
-      }
-    }
+    place(*it, basis.ao_offset_sphe(first), n, density);
   }
   return density;
 }

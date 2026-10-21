@@ -165,8 +165,9 @@ file's per-element table of them. Putting one somewhere follows one pattern:
   already means a bounds-checked index to every C++ reader.
 - **`place` returns what it builds, or writes into the target it is given.**
   Placing a shell or a basis makes a new object, so it is returned (wrapped in
-  `Result` when placement can fail). Placing a block that several stamps share,
-  such as one atom's block of a molecular matrix, writes into that target. The
+  `Result` when placement can fail). Placing into a target that several stamps
+  share writes into it instead: `place(atomic_density_stamp, offset, n, density)`
+  in `src/sad/sad.cpp` writes one atom's block of the molecular density. The
   target comes last and is a `std::span`, so `place` cannot resize it.
 - **`place` never computes.** It copies a stamp to where it goes. Work that
   solves or allocates for real, such as computing the stamps in the first
