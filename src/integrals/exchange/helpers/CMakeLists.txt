@@ -1,5 +1,6 @@
-# The exchange build's hand-written device steps -- max|D|, the Dcd gather and
-# the block scatter -- as plain-pointer launchers in a device library of their
+# The exchange build's hand-written device steps -- max|D|, the Dcd gather, the
+# block table, the shell starts and the mirror -- as plain-pointer launchers in
+# a device library of their
 # own, so their language and -x hip never reach the module compiles. Nothing
 # here launches another TU's kernel, so the library needs no relocatable
 # device code, but keeps the default as coulomb's does. The bridge header names

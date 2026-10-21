@@ -1,11 +1,11 @@
 // The device half of free_breakfast.integrals.exchange: the launcher over the
-// generated k<la, lc, lb, ld>, and the small kernels that make the per-record
+// generated kb<la, lc, lb, ld>, and the small kernels that make the per-record
 // inputs it leaves to its caller (the rank-to-AO table, the bra's Ip with
 // max|D| folded in, and its Dcd rows). One source for both backends -- nvcc
 // under CUDA, clang -x hip under HIP.
 //
-// The generated kernels are sources of this library of their own (kernels/k/),
-// each one explicit specialization of the template kernels/k/k.h declares with
+// The generated kernels are sources of this library of their own (kernels/kb/),
+// each one explicit specialization of the template kernels/kb/kb.h declares with
 // its table, so nothing here names a class: a class the table names but no
 // unit defines fails to link. Launching a specialization another TU defines
 // wants relocatable device code under nvcc (CMakeLists.txt).
@@ -22,7 +22,7 @@
 
 #include "exchange_bridge.h"
 
-#include "kernels/k/k.h"
+#include "kernels/kb/kb.h"
 
 namespace {
 
@@ -61,20 +61,20 @@ __global__ void bra_rows_kernel(const int32_t n_rec, const int32_t *rank_b, cons
 
 constexpr size_t kExtent = static_cast<size_t>(fb::kMaxAngularMomentum + 1);
 
-static_assert(std::extent_v<decltype(k_kernels), 0> == kExtent &&
-                  std::extent_v<decltype(k_kernels), 1> == kExtent &&
-                  std::extent_v<decltype(k_kernels), 2> == kExtent &&
-                  std::extent_v<decltype(k_kernels), 3> == kExtent,
-              "kernels/k was not emitted for kMaxAngularMomentum: rerun "
+static_assert(std::extent_v<decltype(kb_kernels), 0> == kExtent &&
+                  std::extent_v<decltype(kb_kernels), 1> == kExtent &&
+                  std::extent_v<decltype(kb_kernels), 2> == kExtent &&
+                  std::extent_v<decltype(kb_kernels), 3> == kExtent,
+              "kernels/kb was not emitted for kMaxAngularMomentum: rerun "
               "tools/emit_exchange_kernels.py");
 
-// One warp per bra record: blockDim = (1, warp width), the block k's Ksh was
+// One warp per K_ab block: blockDim = (1, warp width), the block kb's Ksh was
 // sized for. FJ_WAVEFRONT comes from WWR_WARP_SIZE (deps/CMakeLists.txt), so
 // this holds unless the two have been split.
-static_assert(k_block_dim[0] == 1 && k_block_dim[1] == fb::kWarpSize,
-              "k's block is not (1, kWarpSize): FJ_WAVEFRONT and WWR_WARP_SIZE disagree");
+static_assert(kb_block_dim[0] == 1 && kb_block_dim[1] == fb::kWarpSize,
+              "kb's block is not (1, kWarpSize): FJ_WAVEFRONT and WWR_WARP_SIZE disagree");
 
-// k's shared memory is static, `Ksh[(n_p + n_a n_b) * blockDim.y]` doubles,
+// kb's shared memory is static, `Ksh[(n_p + n_a n_b) * blockDim.y]` doubles,
 // n_p = (lp + 1)(lp + 2)(lp + 3) / 6 Hermite functions of lp = la + lc and n_a
 // n_b the class's Cartesian block; it is launched with no dynamic bytes. So
 // the budget is checked on that formula at the largest class, (d d | d d):
@@ -86,12 +86,12 @@ constexpr size_t k_shared_bytes(const int32_t la, const int32_t lc, const int32_
   const auto lp = static_cast<size_t>(la + lc);
   const auto na = static_cast<size_t>((la + 1) * (la + 2) / 2);
   const auto nb = static_cast<size_t>((lb + 1) * (lb + 2) / 2);
-  return ((lp + 1) * (lp + 2) * (lp + 3) / 6 + na * nb) * k_block_dim[1] * sizeof(double);
+  return ((lp + 1) * (lp + 2) * (lp + 3) / 6 + na * nb) * kb_block_dim[1] * sizeof(double);
 }
 
 static_assert(k_shared_bytes(fb::kMaxAngularMomentum, fb::kMaxAngularMomentum,
                              fb::kMaxAngularMomentum) <= kSharedBudget,
-              "k's static shared memory at kMaxAngularMomentum is over 48 KiB");
+              "kb's static shared memory at kMaxAngularMomentum is over 48 KiB");
 
 bool valid_momentum(const int32_t l) {
   return l >= 0 && l <= fb::kMaxAngularMomentum;
@@ -141,28 +141,26 @@ wwr::wwrError_t exchange_bra_rows(const wwr::wwrStream_t stream, const OrderedPa
 }
 
 wwr::wwrError_t exchange_k(const wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                           const int32_t n_bra, const double *ip, const int32_t *dc,
-                           const OrderedPairClassView &ket, const int32_t start,
-                           const int32_t count, const int32_t n_dc, const double tau,
-                           const double *dcd, double *block) {
-  if (!has_records(bra) || !has_records(ket) || n_bra < 1 || n_bra > bra.n_rec || start < 0 ||
-      count < 1 || count > ket.n_rec - start) {
+                           const double *ip, const int32_t *dc, const OrderedPairClassView &ket,
+                           const int32_t n_dc, const double tau, const double *dcd,
+                           const int32_t n_blk, const int32_t *blocks, const int32_t n_ao,
+                           double *k) {
+  if (!has_records(bra) || !has_records(ket) || n_blk < 1 || n_ao < 1) {
     return wwr::wwrErrorInvalidValue;
   }
   // The table is indexed as the template's parameters mean: bra (a, c), ket
   // (b, d).
-  const auto kernel = k_kernels[bra.la][bra.lb][ket.la][ket.lb];
-  const auto s = static_cast<size_t>(start);
-  // One warp per bra record of the prefix; no dynamic shared memory, Ksh is
-  // sized for this block in the text. maxD = 1: max|D| is in ip
-  // (exchange_bra_bound).
-  const dim3 grid(static_cast<uint32_t>(n_bra));
-  const dim3 lanes(k_block_dim[0], k_block_dim[1]);
+  const auto kernel = kb_kernels[bra.la][bra.lb][ket.la][ket.lb];
+  const auto seg = [&](const int32_t field) { return blocks + static_cast<size_t>(field) * n_blk; };
+  // One warp per block; no dynamic shared memory, Ksh is sized for this block
+  // in the text. maxD = 1: max|D| is in ip (exchange_bra_bound).
+  const dim3 grid(static_cast<uint32_t>(n_blk));
+  const dim3 lanes(kb_block_dim[0], kb_block_dim[1]);
   kernel<<<grid, lanes, 0, stream>>>(
-      n_bra, count, n_dc, tau, 1.0, bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y,
-      bra.pa_z, bra.pb_x, bra.pb_y, bra.pb_z, bra.s, ip, dc, ket.p_x + s, ket.p_y + s, ket.p_z + s,
-      ket.zeta + s, ket.pa_x + s, ket.pa_y + s, ket.pa_z + s, ket.pb_x + s, ket.pb_y + s,
-      ket.pb_z + s, ket.s + s, ket.bound + s, ket.rank_b + s, dcd, block);
+      n_blk, bra.n_rec, ket.n_rec, n_dc, n_ao, tau, 1.0, seg(0), seg(1), seg(2), seg(3), seg(4),
+      seg(5), bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y, bra.pa_z, bra.pb_x, bra.pb_y,
+      bra.pb_z, bra.s, ip, dc, ket.p_x, ket.p_y, ket.p_z, ket.zeta, ket.pa_x, ket.pa_y, ket.pa_z,
+      ket.pb_x, ket.pb_y, ket.pb_z, ket.s, ket.bound, ket.rank_b, dcd, k);
   return wwr::wwrGetLastError();
 }
 

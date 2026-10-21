@@ -20,8 +20,8 @@ namespace free_breakfast {
 /// @brief One ordered pair class on the device: the record arrays of an
 /// @c OrderedPairClass, by pointer.
 ///
-/// Every array has @ref n_rec entries; a vector is three arrays, one per axis.
-/// "a" is the record's first shell, the output index K is built on (kernel_k's
+/// Every record array has @ref n_rec entries; a vector is three arrays, one per axis.
+/// "a" is the record's first shell, the output index K is built on (kb's
 /// `a` on a bra, `b` on a ket), and "b" its second.
 struct OrderedPairClassView {
   /// @brief The first shell's angular momentum.
@@ -52,7 +52,7 @@ struct OrderedPairClassView {
   const double *pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   const double *s;
-  /// @brief The record's Schwarz bound: kernel_k's Ip as a bra, Iq as a ket.
+  /// @brief The record's Schwarz bound: kb's Ip as a bra, Iq as a ket.
   const double *bound;
   /// @brief The first shell's first Cartesian AO.
   const int32_t *off_a;
@@ -61,6 +61,12 @@ struct OrderedPairClassView {
   /// @brief The second shell's rank: its index among the basis's shells of
   /// momentum @ref lb, in basis order (exchange_helpers_bridge.h's RANK).
   const int32_t *rank_b;
+  /// @brief The number of groups by first shell, positive.
+  int32_t n_groups;
+  /// @brief The groups' bounds, @ref n_groups + 1 entries: group g is records
+  /// [group_start[g], group_start[g + 1]), all of one first shell, the groups
+  /// in basis order.
+  const int32_t *group_start;
 };
 
 } // namespace free_breakfast

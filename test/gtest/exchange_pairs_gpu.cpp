@@ -3,7 +3,8 @@
 // shells, so (p, s) is reached only by swapping mmd's (s|p)) and cc-pVDZ (s,
 // p, d: all nine ordered classes). Each class's record count against a host
 // count of ordered primitive pairs; its groups contiguous, one first shell
-// each, in basis order and non-increasing in bound; each record's rank_b; the
+// each, in basis order and non-increasing in bound, and their bounds on the
+// device side as group_start; each record's rank_b; the
 // (la, lb) and (lb, la) records the same multiset with P - A and P - B
 // swapped; and the device side matching the pinned side.
 
@@ -171,11 +172,14 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
   for (const fb::OrderedPairClass &cls : o.ordered) {
     const std::string name = std::format("({}, {})", cls.la, cls.lb);
     ASSERT_FALSE(cls.groups.empty()) << name;
+    ASSERT_EQ(cls.group_start.size(), cls.groups.size() + 1) << name;
     std::int32_t next = 0;
     std::int32_t prev_shell = -1;
-    for (const fb::OrderedPairGroup &g : cls.groups) {
+    for (std::size_t gi = 0; gi < cls.groups.size(); ++gi) {
+      const fb::OrderedPairGroup &g = cls.groups[gi];
       // Contiguous and in basis order; the groups cover the class exactly.
       EXPECT_EQ(g.start, next) << name;
+      EXPECT_EQ(at(cls.group_start, gi), g.start) << name << " group " << gi;
       EXPECT_GT(g.count, 0) << name;
       EXPECT_GT(g.shell, prev_shell) << name;
       next = g.start + g.count;
@@ -209,6 +213,7 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
       }
     }
     EXPECT_EQ(next, cls.n_rec) << name;
+    EXPECT_EQ(at(cls.group_start, cls.groups.size()), cls.n_rec) << name;
   }
 }
 
@@ -237,12 +242,15 @@ TEST_P(ExchangePairs, DeviceSideMatchesThePinnedSide) {
     const fb::OrderedPairClassView v = cls.view();
     EXPECT_EQ(v.n_rec, cls.n_rec);
     EXPECT_EQ(v.rank_b, cls.rank_b.device().data());
+    EXPECT_EQ(v.n_groups, static_cast<std::int32_t>(cls.groups.size()));
+    EXPECT_EQ(v.group_start, cls.group_start.device().data());
     for (const fb::MirroredBuffer<double> *field :
          {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
           &cls.pb_y, &cls.pb_z, &cls.s, &cls.bound}) {
       EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
     }
-    for (const fb::MirroredBuffer<std::int32_t> *field : {&cls.off_a, &cls.off_b, &cls.rank_b}) {
+    for (const fb::MirroredBuffer<std::int32_t> *field :
+         {&cls.off_a, &cls.off_b, &cls.rank_b, &cls.group_start}) {
       EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
     }
   }

@@ -19,7 +19,7 @@ ordered records, this moves into `mmd` as a partition.
 
 ## Design
 
-K_ab = Σ_cd D_cd (ac|bd), by FelizJueves's `kernel_k`: its bra `(a, c)` and
+K_ab = Σ_cd D_cd (ac|bd), by FelizJueves's `kernel_kblock`: its bra `(a, c)` and
 ket `(b, d)` are **ordered** shell pairs, and the first shell of each is an
 output index (`a` the row, `b` the column). So:
 
@@ -33,32 +33,35 @@ output index (`a` the row, `b` the column). So:
   of its momenta: all nine classes through d, (p, s) as well as (s, p).
 
 The fields keep `mmd`'s names, with "a" the record's **first** shell and "b"
-its second. As the generated `k<la, lc, lb, ld>` (`../kernels/k/`) names its
+its second. As the generated `kb<la, lc, lb, ld>` (`../kernels/kb/`) names its
 parameters, a bra class passes `p_*`, `zeta`, `pa_*`, `pb_*`, `s` and `bound`
 as `p_*`, `zeta_ac`, `pa_*`, `pc_*`, `s_ac` and `Ip`; a ket class the same
-fields as `q_*`, `eta`, `qb_*`, `qd_*`, `s_bd` and `Iq`. `mmd`'s `eb` is not carried (kernel_k does not read it). One
+fields as `q_*`, `eta`, `qb_*`, `qd_*`, `s_bd` and `Iq`. `mmd`'s `eb` is not carried (kb does not read it). One
 field is new:
 
 | Field | Value |
 |---|---|
 | `rank_b` | the second shell's rank: its index among the basis's shells of momentum `lb`, in basis order |
 
-kernel_k's `Dcd` row is `dc[bra] + dd[ket]`, and the exchange helpers' gather
+kb's `Dcd` row is `dc[bra] + dd[ket]`, and the exchange helpers' gather
 (`../helpers/exchange_helpers_bridge.h`) lays `Dcd` out so that is
 `rank_c * n_shells(ld) + rank_d`: a bra's `dc` is its `rank_b` times the number
 of `ld` shells, a ket's `dd` its `rank_b`. The first shell's rank is not
-stored: a launch is per first shell (below), and that shell is the group's.
+stored: a K block is per first shell (below), and that shell is the group's.
 
 **Grouped by first shell.** Each class's records are stably grouped by their
 first shell, the groups in basis order, each group's records in `mmd`'s record
 order: descending ζ. `bound` rises with ζ (and depends on nothing else within
 a class), so each group is non-increasing in `bound`, which is the order
-kernel_k's screen `break` (`Ip · Iq · maxD < τ`, kets sorted descending by
-`Iq`) needs, with no sort per build. A K launch takes one ket group whole,
-since all its kets share the `b` shell whose column the block is. The group
-table is on the host, one `OrderedPairGroup {shell, start, count}` per group:
-`shell` the first shell's index in `BasisSet::shells()`, the records
-`[start, start + count)`, `count` the launch's `n_ket`.
+both of kb's screen `break`s (`Ip · Iq · maxD < τ` down a block's kets, and
+`Ip · Iq[ket0] · maxD < τ` down its bras) need, with no sort per build. A K
+block takes one bra group and one ket group whole, since all its bras share
+the `a` shell whose row the block is, and its kets the `b` shell whose column.
+The group table is on the host, one `OrderedPairGroup {shell, start, count}`
+per group: `shell` the first shell's index in `BasisSet::shells()`, the
+records `[start, start + count)`. Its bounds are also on the device, as
+`group_start` (`groups.size() + 1` entries, the last `n_rec`), from which the
+K build makes its block tables there.
 
 **The gather is on the host, once per basis.** `ordered_pair_classes`
 synchronizes each `mmd` class's stream (its pinned side holds the
@@ -75,7 +78,7 @@ another basis's) is an `InvalidConfig` error.
 
 | Symbol | Role |
 |---|---|
-| `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field (`rank_b` among them), `groups`, `device_stream()`; `view()` gives an `OrderedPairClassView` |
+| `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field (`rank_b` among them), `groups` and their bounds `group_start`, `device_stream()`; `view()` gives an `OrderedPairClassView` |
 | `OrderedPairGroup` | One group: `shell`, `start`, `count` |
 | `OrderedPairClassView` | The class's device fields by pointer, for the launchers (`ordered_pair_class_view.h`, re-exported) |
 | `ordered_pair_classes(res, basis, classes)` | `Result<std::vector<OrderedPairClass>>` from `primitive_pair_classes(res, basis)`: every reached ordered class, ascending `(la, lb)`, none empty, each on a new `DeviceStream` |
@@ -85,7 +88,8 @@ another basis's) is an `InvalidConfig` error.
 `test/gtest/exchange_pairs_gpu.cpp`, on H₂O in STO-3G and cc-pVDZ: each
 class's record count against a host count of ordered primitive pairs; each
 group contiguous, one first shell of momentum `la`, the groups in basis order,
-each group's count right and its `bound` non-increasing; each record's
+each group's count right and its `bound` non-increasing, and `group_start`
+its bounds; each record's
 `rank_b`; the `(la, lb)` and `(lb, la)` records the same multiset of
 (ζ, P, P − A, P − B, `s`, offsets) with the two orientations swapped; the
 device side matching the pinned side; and another basis's classes refused.
