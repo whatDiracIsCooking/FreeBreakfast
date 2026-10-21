@@ -33,7 +33,11 @@ export namespace free_breakfast {
 /// down to `H_off e^{-Λ d}` for one whose shells are d bohr further apart than
 /// their pairs reach. FelizJueves's ao.k proves every skipped term under
 /// @p tau with exactly that bound and factor.
-/// @p tau = 0 skips nothing. The default, 1e-10, is @c coulomb's.
+/// @p tau = 0 skips nothing. The default is 1e-13, not @c coulomb's 1e-10:
+/// each skipped term is under tau, but an element sums many, their number
+/// growing with the record pairs that cover it, and at 1e-10 K misses libcint
+/// by up to 6.9e-10 of max|K| (H2O/cc-pVDZ). 1e-13 is the largest round tau
+/// at which H2O in STO-3G and cc-pVDZ and the H10 chain all meet 1e-12 max|K|.
 ///
 /// Zeroes @p k and, on res.stream(), computes max|D|; then, per class on that
 /// class's own stream, its largest record bound and, from a class (l, l), its
@@ -77,7 +81,7 @@ export namespace free_breakfast {
 ///         @p k unspecified.
 [[nodiscard]] Status exchange(DeviceResources &res, std::span<const OrderedPairClass> classes,
                               const CartesianMatrixAO &density, CartesianMatrixAO &k,
-                              double tau = 1e-10, bool symmetric = true);
+                              double tau = 1e-13, bool symmetric = true);
 
 /// @brief The density factor F_ab of every block @c exchange would launch for
 /// the same arguments, read back to the host: the decay, the reaches and the
@@ -95,6 +99,6 @@ export namespace free_breakfast {
 ///         failed.
 [[nodiscard]] Result<std::vector<double>>
 exchange_block_factors(DeviceResources &res, std::span<const OrderedPairClass> classes,
-                       const CartesianMatrixAO &density, double tau = 1e-10, bool symmetric = true);
+                       const CartesianMatrixAO &density, double tau = 1e-13, bool symmetric = true);
 
 } // namespace free_breakfast
