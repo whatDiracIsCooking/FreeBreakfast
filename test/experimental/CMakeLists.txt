@@ -12,7 +12,9 @@
 # case calls FBF_REQUIRE_GPU() and skips without a device.
 include(GoogleTest)
 
-add_executable(free_breakfast_tests_experimental_gpu radix_sort_gpu.cpp)
+add_executable(
+  free_breakfast_tests_experimental_gpu radix_sort_gpu.cpp merge_sort_gpu.cpp
+)
 
 set_target_properties(
   free_breakfast_tests_experimental_gpu PROPERTIES CXX_MODULE_STD 1
@@ -24,6 +26,7 @@ target_link_libraries(
   PRIVATE free_breakfast::core
           free_breakfast::core::resources
           free_breakfast::experimental::sort::radix
+          free_breakfast::experimental::sort::merge
           GTest::gtest
           GTest::gtest_main
 )
