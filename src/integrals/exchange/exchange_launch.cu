@@ -141,23 +141,25 @@ wwr::wwrError_t exchange_bra_rows(const wwr::wwrStream_t stream, const OrderedPa
 }
 
 wwr::wwrError_t exchange_k(const wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                           const double *ip, const int32_t *dc, const OrderedPairClassView &ket,
-                           const int32_t start, const int32_t count, const int32_t n_dc,
-                           const double tau, const double *dcd, double *block) {
-  if (!has_records(bra) || !has_records(ket) || start < 0 || count < 1 ||
-      count > ket.n_rec - start) {
+                           const int32_t n_bra, const double *ip, const int32_t *dc,
+                           const OrderedPairClassView &ket, const int32_t start,
+                           const int32_t count, const int32_t n_dc, const double tau,
+                           const double *dcd, double *block) {
+  if (!has_records(bra) || !has_records(ket) || n_bra < 1 || n_bra > bra.n_rec || start < 0 ||
+      count < 1 || count > ket.n_rec - start) {
     return wwr::wwrErrorInvalidValue;
   }
   // The table is indexed as the template's parameters mean: bra (a, c), ket
   // (b, d).
   const auto kernel = k_kernels[bra.la][bra.lb][ket.la][ket.lb];
   const auto s = static_cast<size_t>(start);
-  // One warp per bra record; no dynamic shared memory, Ksh is sized for this
-  // block in the text. maxD = 1: max|D| is in ip (exchange_bra_bound).
-  const dim3 grid(static_cast<uint32_t>(bra.n_rec));
+  // One warp per bra record of the prefix; no dynamic shared memory, Ksh is
+  // sized for this block in the text. maxD = 1: max|D| is in ip
+  // (exchange_bra_bound).
+  const dim3 grid(static_cast<uint32_t>(n_bra));
   const dim3 lanes(k_block_dim[0], k_block_dim[1]);
   kernel<<<grid, lanes, 0, stream>>>(
-      bra.n_rec, count, n_dc, tau, 1.0, bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y,
+      n_bra, count, n_dc, tau, 1.0, bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y,
       bra.pa_z, bra.pb_x, bra.pb_y, bra.pb_z, bra.s, ip, dc, ket.p_x + s, ket.p_y + s, ket.p_z + s,
       ket.zeta + s, ket.pa_x + s, ket.pa_y + s, ket.pa_z + s, ket.pb_x + s, ket.pb_y + s,
       ket.pb_z + s, ket.s + s, ket.bound + s, ket.rank_b + s, dcd, block);

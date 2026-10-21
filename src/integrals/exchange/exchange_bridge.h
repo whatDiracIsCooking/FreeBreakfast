@@ -71,10 +71,14 @@ namespace free_breakfast::device {
                                                 const OrderedPairClassView &bra, int32_t n_d,
                                                 int32_t *dc);
 
-/// @brief Add k<bra.la, bra.lb, ket.la, ket.lb> of every record of @p bra
-/// against the ket records [@p start, @p start + @p count) of @p ket into
-/// @p block, on @p stream: one warp per bra record, the kets strip-mined
-/// across its lanes.
+/// @brief Add k<bra.la, bra.lb, ket.la, ket.lb> of the first @p n_bra records
+/// of @p bra against the ket records [@p start, @p start + @p count) of @p ket
+/// into @p block, on @p stream: one warp per bra record, the kets
+/// strip-mined across its lanes.
+///
+/// @p n_bra is a prefix of the bra class: the symmetric sweep passes the
+/// records whose first shell a is at most the kets' b (a prefix, the groups
+/// being in basis order), and the block's later rows are left untouched.
 ///
 /// The kets must all have one first shell b (one of ket's groups) and be
 /// non-increasing in bound: each lane breaks at its first ket with
@@ -85,9 +89,10 @@ namespace free_breakfast::device {
 /// row-major, added to atomically: zero it before the first launch into it.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no
-///         kernel, or an empty or out-of-range ket range).
+///         kernel, an @p n_bra outside [1, bra.n_rec], or an empty or
+///         out-of-range ket range).
 [[nodiscard]] wwr::wwrError_t exchange_k(wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                                         const double *ip, const int32_t *dc,
+                                         int32_t n_bra, const double *ip, const int32_t *dc,
                                          const OrderedPairClassView &ket, int32_t start,
                                          int32_t count, int32_t n_dc, double tau, const double *dcd,
                                          double *block);
