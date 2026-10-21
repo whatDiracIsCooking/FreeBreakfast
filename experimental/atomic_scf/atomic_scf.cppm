@@ -26,10 +26,22 @@
 /// The integrals are exact, closed form, with no quadrature or table.
 ///
 /// The exported surface is three partitions: @c :integrals, @c :scf and
-/// @c :density. Everything else is an internal partition, imported only by
-/// this module's implementation units.
+/// @c :density. Everything else is a private interface partition: an interface
+/// unit, so the exported partitions that build on it may import it, but one
+/// that exports nothing.
 export module free_breakfast.experimental.atomic_scf;
 
 export import :integrals;
 export import :scf;
 export import :density;
+
+// Every interface partition must be re-exported. These export nothing, so the
+// lines below expose nothing to an importer (docs/style.md, "Module-private
+// code").
+export import :hermite;
+export import :one_electron;
+export import :eri;
+export import :gemm;
+export import :eigen;
+export import :diis;
+export import :angular_block;
