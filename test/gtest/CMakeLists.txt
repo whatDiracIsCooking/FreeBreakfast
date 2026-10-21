@@ -105,6 +105,7 @@ add_executable(
   sort_bounds_gpu.cpp
   exchange_helpers_gpu.cpp
   exchange_pairs_gpu.cpp
+  exchange_gpu.cpp
 )
 
 set_target_properties(
