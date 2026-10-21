@@ -1,3 +1,7 @@
+# The ket sort the screen needs (its own module and device library), first:
+# the module below links it.
+add_subdirectory(sort_bounds)
+
 # The J launchers. Device code in its own library, so its language and -x hip
 # never reach the module compiles. Its sources are the launcher and the
 # generated kernels (kernels/, written by tools/emit_coulomb_kernels.py), one
@@ -72,7 +76,8 @@ free_breakfast_add_gpu_device_library(
 # The module. DeviceResources, PrimitivePairClass and CartesianMatrixAO are in
 # its signature, so core::resources, mmd and linalg::matrix_ao are PUBLIC. The
 # per-class launch and the pre-launch checks are the one-electron builds' own
-# (one_electron::launch), and the device library is PRIVATE: the
+# (one_electron::launch), the ket sort is sort_bounds', and the device library
+# is PRIVATE: the
 # implementation unit includes the bridge header in its GMF and calls the
 # launchers, and a static library's private link dependencies still reach the
 # final link.
@@ -93,5 +98,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::one_electron::launch
+  free_breakfast::integrals::coulomb::sort_bounds
   free_breakfast::integrals::coulomb::device
 )

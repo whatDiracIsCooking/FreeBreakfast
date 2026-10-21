@@ -60,16 +60,19 @@ namespace free_breakfast::device {
 /// @p ip is @p bra's bound and @p iq, @p dq and @p dmax are @p ket's, all from
 /// @ref coulomb_prepare; @p jp is bra.n_rec x n_hermite(bra.la + bra.lb),
 /// added to atomically, so it must be zeroed before the first ket class and
-/// then holds the sum over all of them. Unscreened: tau = 0, so the screen
-/// `Dmax * Ip * Iq < tau` never fires and the kets' order is free.
+/// then holds the sum over all of them. Each lane stops at its first ket with
+/// `Dmax * Ip * Iq < tau`, so for any @p tau above 0 the kets (@p ket's zeta
+/// and P, and @p iq, @p dq and @p dmax with them) must be sorted descending by
+/// Iq * Dmax (SortedKets); at @p tau = 0 the screen never fires and their order
+/// is free.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no
 ///         kernel). Launch errors only.
 [[nodiscard]] wwr::wwrError_t coulomb_e_hermite(wwr::wwrStream_t stream,
                                                 const PrimitivePairClassView &bra,
-                                                const PrimitivePairClassView &ket, const double *ip,
-                                                const double *iq, const double *dq,
-                                                const double *dmax, double *jp);
+                                                const PrimitivePairClassView &ket, double tau,
+                                                const double *ip, const double *iq,
+                                                const double *dq, const double *dmax, double *jp);
 
 /// @brief Add one bra class's back-transform of @p jp into the n_ao x n_ao
 /// matrix @p j, on @p stream: the generated jab<la, lb>, one thread per record.

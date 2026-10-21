@@ -7,6 +7,13 @@ than `radix_sort` and than CUB's `DeviceMergeSort` at every measured size.
 Built only under
 `FREE_BREAKFAST_BUILD_EXPERIMENTAL` (the `experimental` preset).
 
+**The kernels now live in `src/`.** The J build's screen sorts its kets with
+this sort, so `merge_sort.cu` and its `merge_sort_bridge.h` moved to
+[`src/integrals/coulomb/sort_bounds/`](../../../src/integrals/coulomb/sort_bounds/README.md).
+This directory links that device library rather than keeping a copy. What
+stays here is the module wrapper, the vendor reference, the benchmark and the
+tests.
+
 ## Module
 
 `free_breakfast.experimental.sort.merge`, target
@@ -187,8 +194,8 @@ Every case compares bits:
 | File | Role |
 |------|------|
 | `merge_sort.cppm` / `.cpp` | The module: each sort carves its scratch and calls its launcher |
-| `merge_sort_bridge.h` | Launcher declarations, shared by the module's GMF and the two `.cu` files |
-| `merge_sort.cu` | The block-sort and merge-pass kernels, and the launch sequence |
+| `cub_merge_sort_bridge.h` | The vendor reference's launcher declarations, shared by the module's GMF and `cub_merge_sort.cu` |
+| `../../../src/integrals/coulomb/sort_bounds/merge_sort.cu` | The block-sort and merge-pass kernels, and the launch sequence, declared by that directory's `merge_sort_bridge.h` |
 | `cub_merge_sort.cu` | The vendor reference: stable `DeviceMergeSort` through `wwr::wwrcub`, with a total-order comparator |
 | `merge_sort_bench.cpp` | `free_breakfast_merge_sort_bench`: this sort, `radix_sort`, and the vendor's merge and radix sorts side by side |
-| `CMakeLists.txt` | The device library (`kernel_headers` PUBLIC, which also brings `cub.h`), the module and the benchmark |
+| `CMakeLists.txt` | The vendor reference's device library (`kernel_headers` PUBLIC, which also brings `cub.h`), the module (which also links `sort_bounds`' device library) and the benchmark |

@@ -1,10 +1,16 @@
-// The device half of free_breakfast.experimental.sort.merge: a block sort of
-// each tile on chip, then merge passes over global memory. One source for both
-// backends -- nvcc under CUDA, clang -x hip under HIP.
+// A stable merge sort of double keys, optionally carrying uint32_t values: a
+// block sort of each tile on chip, then merge passes over global memory. One
+// source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
-// As in radix_sort.cu, the kernels move each key's 64 bits as a uint64_t and
-// compare ordered_bits() of them, whose unsigned order is IEEE-754 total order.
-// Keys are remapped as they are loaded and mapped back as they are stored.
+// sort_bounds_launch.cu sorts each ket class with it; it is also the device
+// half of free_breakfast.experimental.sort.merge, whose README has the
+// algorithm's timings against radix_sort and the vendor sorts, and whose tests
+// (test/experimental/merge_sort_gpu.cpp) hold it to std::strong_order.
+//
+// As in experimental/sort/radix's radix_sort.cu, the kernels move each key's 64
+// bits as a uint64_t and compare ordered_bits() of them, whose unsigned order
+// is IEEE-754 total order. Keys are remapped as they are loaded and mapped back
+// as they are stored.
 //
 //   1. block_sort_kernel: each block sorts a tile of kTile keys. Each thread
 //      sorts its kItems keys in registers (odd-even transposition, which swaps

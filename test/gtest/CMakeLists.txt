@@ -102,6 +102,7 @@ add_executable(
   overlap_gpu.cpp
   core_hamiltonian_gpu.cpp
   coulomb_gpu.cpp
+  sort_bounds_gpu.cpp
 )
 
 set_target_properties(
@@ -121,6 +122,7 @@ target_link_libraries(
           free_breakfast::sad
           free_breakfast::linalg
           free_breakfast::integrals
+          free_breakfast::integrals::coulomb::sort_bounds
           free_breakfast::io
           free_breakfast::test::gpu_kernels
           GTest::gtest
