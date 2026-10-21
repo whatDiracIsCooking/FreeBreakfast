@@ -18,7 +18,7 @@ emit_coulomb_kernels.py
                   jab}/ from the FelizJueves submodule. Standard library
                   only.
 emit_exchange_kernels.py
-                  Regenerate src/integrals/exchange/kernels/k/ from the
+                  Regenerate src/integrals/exchange/kernels/kb/ from the
                   FelizJueves submodule. Standard library only.
 extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,

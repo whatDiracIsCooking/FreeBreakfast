@@ -6,22 +6,20 @@ so a build never runs Python. Run this after bumping that submodule:
 
     tools/emit_exchange_kernels.py
 
-There is one family, `k<la, lc, lb, ld>`: FelizJueves's `Target.K`
-(`kernel_k.py`), K_ab += SUM_cd D_cd (ac|bd) on the J engine's recurrence,
-one warp per bra pair record. The class is the Hermite pairing, bra `(a, c)`
+There is one family, `kb<la, lc, lb, ld>`: FelizJueves's `Target.K` on
+opt-UM's mapping (`kernel_kblock.py`), K_ab += SUM_cd D_cd (ac|bd) on the J
+engine's recurrence, one warp per contracted shell block K_AB, its lanes over
+the block's kets, every lane walking its bras, and lane 0 adding the block
+straight into K. The class is the Hermite pairing, bra `(a, c)`
 first and ket `(b, d)` second, not the AO quartet order; `(lp, lq) =
 (la + lc, lb + ld)`. Every ordered `(la, lc)` x ordered `(lb, ld)` with each
 l at most 2 (kMaxAngularMomentum) is written: 81 classes. K has no symmetry
 inside a pair, so unlike the J and one-electron tools nothing is written
 `la <= lb` only.
 
-Each class is `build_k_kernel(am)`, then:
+Each class is `build_kblock_kernel(am)`, whose write into K is already an
+atomic add (several classes add into one K), then:
 
-- `passes.atomize(array="K")`: lane 0's write of the bra record's `K[a, b]`
-  block becomes an atomic add. The launch adds every ket group of a `b`
-  shell into one per-(bra class, b shell) block, as FelizJueves's
-  `k_driver` does with `k_accumulating`, so the block is zeroed first and
-  never plainly overwritten.
 - `passes.split_axes`: each [n, 3] record vector becomes three flat arrays,
   named as free_breakfast.integrals.mmd names its fields: `p_*` for the bra
   centre P and `q_*` for the ket centre Q (as the J kernel's), and the two
@@ -36,12 +34,12 @@ nvcc under CUDA and clang `-x hip` under HIP. Each is emitted `any_wavefront`
 with `block_dim=(1, WAVEFRONT)`: its shuffles and its shared `Ksh[n_p +
 n_a n_b, FJ_WAVEFRONT]` read FJ_WAVEFRONT, which deps/CMakeLists.txt sets
 from WWR_WARP_SIZE, so one text serves a 32- and a 64-lane build; the
-header's `k_block_dim` is the block to launch with, {1, FJ_WAVEFRONT}.
+header's `kb_block_dim` is the block to launch with, {1, FJ_WAVEFRONT}.
 Nothing is added to the text here.
 
 As tools/emit_coulomb_kernels.py does, each class is one explicit
-specialization of the template, and the directory gets one header, `k.h`,
-every unit includes: the primary, each class's declaration and `k_kernels`,
+specialization of the template, and the directory gets one header, `kb.h`,
+every unit includes: the primary, each class's declaration and `kb_kernels`,
 the table a launcher indexes. The device Boys routine the units include is
 src/integrals/shared/eval_boys.h, written by the other two tools; this one
 writes nothing there.
@@ -61,8 +59,8 @@ sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 from felizjueves.device import by_name  # noqa: E402
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import WAVEFRONT, Specialization  # noqa: E402
-from felizjueves.kernel_k import build_k_kernel  # noqa: E402
-from felizjueves.passes import atomize, split_axes  # noqa: E402
+from felizjueves.kernel_kblock import build_kblock_kernel  # noqa: E402
+from felizjueves.passes import split_axes  # noqa: E402
 
 # The kernels' L limit: d. It must equal kMaxAngularMomentum
 # (src/basis/angular_momentum.h).
@@ -72,7 +70,7 @@ MAX_L = 2
 ARCH = "sm_86"
 
 OUT = ROOT / "src/integrals/exchange/kernels"
-FAMILY = "k"
+FAMILY = "kb"
 
 # The record vectors, as mmd names them (module docstring).
 AXES = {
@@ -91,8 +89,8 @@ def classes() -> list[tuple[int, int, int, int]]:
     return [(la, lc, lb, ld) for la in ls for lc in ls for lb in ls for ld in ls]
 
 
-def k(cls: tuple[int, int, int, int]):
-    return split_axes(atomize(build_k_kernel(cls), array="K"), AXES)
+def kb(cls: tuple[int, int, int, int]):
+    return split_axes(build_kblock_kernel(cls), AXES)
 
 
 def main() -> int:
@@ -101,7 +99,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     every = classes()
     for cls in every:
-        kernel = k(cls)
+        kernel = kb(cls)
         spec = Specialization(FAMILY, cls)
         write(out / f"{kernel.name}.cu", gpu.emit(kernel, arch, spec, **OPTIONS))
     # Any class's kernel spells the primary: one family, one parameter block.

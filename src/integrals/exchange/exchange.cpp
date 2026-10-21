@@ -40,22 +40,31 @@ struct ExchangeShell {
 
 // One class's scratch: as a density class (lc, ld), its Dcd gather; as a bra,
 // its Ip with max|D| folded in, its Dcd rows per ld (kExchangeMomenta x n_rec),
-// and its (bra class, b) blocks for every shell b, n_rec x n_x(la) x n_ao in
-// all, shell b's block at n_rec n_x(la) times b's AO offset (the symmetric
-// sweep writes only the rows of a <= b, about half).
+// and its kb block tables, one per ket class in class order, each
+// kExchangeBlockFields x n_blk.
 struct ExchangeScratch {
   Buffers::device<double> dcd;
   Buffers::device<double> ip;
   Buffers::device<int32_t> dc;
-  Buffers::device<double> blocks;
+  Buffers::device<int32_t> blocks;
 };
 
-// The records of @p bra whose first shell is at most @p shell: a prefix, the
-// groups being in basis order and covering the records in order.
-int32_t exchange_prefix(const OrderedPairClass &bra, const int32_t shell) {
-  const auto past = std::ranges::partition_point(
-      bra.groups, [shell](const OrderedPairGroup &g) { return g.shell <= shell; });
-  return past == bra.groups.begin() ? 0 : std::prev(past)->start + std::prev(past)->count;
+// The blocks of one kb launch of @p bra against @p ket: one per (a group, b
+// group), or with @p symmetric only those of a <= b. The groups are in basis
+// order, so a shell's AO offset, which exchange_blocks compares on the device,
+// rises with its index, which this compares.
+int64_t exchange_block_count(const OrderedPairClass &bra, const OrderedPairClass &ket,
+                             const bool symmetric) {
+  if (!symmetric) {
+    return static_cast<int64_t>(bra.groups.size()) * static_cast<int64_t>(ket.groups.size());
+  }
+  int64_t n = 0;
+  for (const OrderedPairGroup &a : bra.groups) {
+    n += std::ranges::end(ket.groups) -
+         std::ranges::partition_point(
+             ket.groups, [&a](const OrderedPairGroup &b) { return b.shell < a.shell; });
+  }
+  return n;
 }
 
 Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> classes,
@@ -122,9 +131,25 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
     }
   }
 
+  // Every launch's block count, bra-major; kb and the table index a block in
+  // 32 bits.
+  const size_t n_classes = classes.size();
+  std::vector<int32_t> n_blk(n_classes * n_classes);
+  for (size_t a = 0; a < n_classes; ++a) {
+    for (size_t b = 0; b < n_classes; ++b) {
+      const int64_t count = exchange_block_count(classes[a], classes[b], symmetric);
+      if (count * device::kExchangeBlockFields > std::numeric_limits<int32_t>::max()) {
+        return err_config("exchange: classes ({}, {}) and ({}, {}) make {} blocks, too many for "
+                          "the kernels' 32-bit index",
+                          classes[a].la, classes[a].lb, classes[b].la, classes[b].lb, count);
+      }
+      n_blk[a * n_classes + b] = static_cast<int32_t>(count);
+    }
+  }
+
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // The scatter only adds, so the build starts from zero.
+  // kb only adds, so the build starts from zero.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(k.data(), 0, sizeof(double) * k.num_elements(), stream)));
   if (classes.empty()) {
     return {};
@@ -134,30 +159,32 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
   // from stream sees them allocated, and returned in its order at the end,
   // after every phase's join.
   Buffers::device<double> dmax(1, res.device());
+  Buffers::device<int32_t> starts(symmetric ? n : 1, res.device());
   std::vector<Buffers::device<int32_t>> offsets;
   offsets.reserve(kExchangeMomenta);
   for (const int32_t count : n_shells) {
     offsets.emplace_back(static_cast<size_t>(std::max(count, 1)), res.device());
   }
   std::vector<ExchangeScratch> scratch;
-  scratch.reserve(classes.size());
-  for (const OrderedPairClass &cls : classes) {
+  scratch.reserve(n_classes);
+  for (size_t a = 0; a < n_classes; ++a) {
+    const OrderedPairClass &cls = classes[a];
     const auto n_rec = static_cast<size_t>(cls.n_rec);
     const auto n_dcd = static_cast<size_t>(n_shells[static_cast<size_t>(cls.la)]) *
                        static_cast<size_t>(n_shells[static_cast<size_t>(cls.lb)]) *
                        static_cast<size_t>(exchange_cartesian_count(cls.la)) *
                        static_cast<size_t>(exchange_cartesian_count(cls.lb));
-    const size_t n_blocks = n_rec * static_cast<size_t>(exchange_cartesian_count(cls.la)) * n;
-    ExchangeScratch &sc = scratch.emplace_back(ExchangeScratch{
+    size_t n_table = 0;
+    for (size_t b = 0; b < n_classes; ++b) {
+      n_table += static_cast<size_t>(n_blk[a * n_classes + b]) * device::kExchangeBlockFields;
+    }
+    scratch.push_back(ExchangeScratch{
         Buffers::device<double>(n_dcd, res.device()), Buffers::device<double>(n_rec, res.device()),
         Buffers::device<int32_t>(kExchangeMomenta * n_rec, res.device()),
-        Buffers::device<double>(n_blocks, res.device())});
-    // k adds every ket class and group of a b shell into its block.
-    FBF_TRY(
-        gpu_status(wwr::wwrMemsetAsync(sc.blocks.data(), 0, sizeof(double) * n_blocks, stream)));
+        Buffers::device<int32_t>(std::max(n_table, size_t{1}), res.device())});
   }
-  const auto of = [&](const OrderedPairClass &cls) -> ExchangeScratch & {
-    return scratch[static_cast<size_t>(&cls - classes.data())];
+  const auto index_of = [&](const OrderedPairClass &cls) {
+    return static_cast<size_t>(&cls - classes.data());
   };
   FBF_TRY(gpu_status(device::exchange_density_max(stream, n_ao, density.data(), dmax.data())));
 
@@ -170,30 +197,36 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
     return device::exchange_rank_offsets(cls.device_stream()->stream(), cls.view(),
                                          offsets[static_cast<size_t>(cls.la)].data());
   })));
+  // The first AO of each AO's shell, from the tables, for the mirror at the
+  // end.
+  if (symmetric) {
+    for (size_t l = 0; l < kExchangeMomenta; ++l) {
+      if (n_shells[l] > 0) {
+        FBF_TRY(gpu_status(device::exchange_shell_starts(
+            stream, static_cast<int32_t>(l), n_shells[l], offsets[l].data(), starts.data())));
+      }
+    }
+  }
 
   // Every class's density block, Dcd of (lc, ld) = (la, lb), which every bra
   // class of second momentum lc reads: the join closes this phase too.
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &cls) {
     const auto lc = static_cast<size_t>(cls.la);
     const auto ld = static_cast<size_t>(cls.lb);
-    return device::exchange_gather_dcd(cls.device_stream()->stream(), cls.la, cls.lb, n_ao,
-                                       density.data(), n_shells[lc], offsets[lc].data(),
-                                       n_shells[ld], offsets[ld].data(), of(cls).dcd.data());
+    return device::exchange_gather_dcd(
+        cls.device_stream()->stream(), cls.la, cls.lb, n_ao, density.data(), n_shells[lc],
+        offsets[lc].data(), n_shells[ld], offsets[ld].data(), scratch[index_of(cls)].dcd.data());
   })));
 
-  // Every class as a bra (a, c): its inputs, then k against every ket class
-  // (b, d) and every b group of it, then its blocks scattered into K, in that
-  // order on the bra's own stream. The symmetric sweep cuts each launch and
-  // scatter to the bra's records with a <= b, and the scatter mirrors a < b.
-  return gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &bra) {
+  // Every class as a bra (a, c): its inputs, then for every ket class (b, d)
+  // its block table and one kb launch over it, in that order on the bra's own
+  // stream. The symmetric sweep's tables hold the a <= b blocks only.
+  FBF_TRY(gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &bra) {
     const wwr::wwrStream_t s = bra.device_stream()->stream();
-    ExchangeScratch &b = of(bra);
+    const size_t a = index_of(bra);
+    ExchangeScratch &b = scratch[a];
     const OrderedPairClassView v = bra.view();
     const auto n_rec = static_cast<size_t>(bra.n_rec);
-    const size_t row = n_rec * static_cast<size_t>(exchange_cartesian_count(bra.la));
-    const auto n_bra = [&](const int32_t shell) {
-      return symmetric ? exchange_prefix(bra, shell) : bra.n_rec;
-    };
     if (const wwr::wwrError_t code = device::exchange_bra_bound(s, v, dmax.data(), b.ip.data());
         code != wwr::wwrSuccess) {
       return code;
@@ -209,45 +242,41 @@ Status exchange(DeviceResources &res, const std::span<const OrderedPairClass> cl
       }
     }
     const auto lc = static_cast<size_t>(bra.lb);
+    int32_t *table = b.blocks.data();
     for (const OrderedPairClass &ket : classes) {
+      const int32_t count = n_blk[a * n_classes + index_of(ket)];
+      if (count == 0) {
+        continue;
+      }
       const auto ld = static_cast<size_t>(ket.lb);
       const OrderedPairClass *density_class = by_momenta[lc][ld];
       if (density_class == nullptr) {
         return wwr::wwrErrorInvalidValue;
       }
-      const double *dcd = of(*density_class).dcd.data();
-      const int32_t n_dc = n_shells[lc] * n_shells[ld];
       const OrderedPairClassView w = ket.view();
-      for (const OrderedPairGroup &g : ket.groups) {
-        const int32_t cut = n_bra(g.shell);
-        if (cut == 0) {
-          continue;
-        }
-        const auto off_b = static_cast<size_t>(shells[static_cast<size_t>(g.shell)].offset);
-        if (const wwr::wwrError_t code =
-                device::exchange_k(s, v, cut, b.ip.data(), b.dc.data() + ld * n_rec, w, g.start,
-                                   g.count, n_dc, tau, dcd, b.blocks.data() + row * off_b);
-            code != wwr::wwrSuccess) {
-          return code;
-        }
-      }
-    }
-    for (size_t shell = 0; shell < shells.size(); ++shell) {
-      const ExchangeShell &sh = shells[shell];
-      const int32_t cut = n_bra(static_cast<int32_t>(shell));
-      if (sh.momentum < 0 || cut == 0) {
-        continue;
-      }
-      const auto off_b = static_cast<size_t>(sh.offset);
       if (const wwr::wwrError_t code =
-              device::exchange_scatter_block(s, bra.la, sh.momentum, n_ao, cut, v.off_a, sh.offset,
-                                             symmetric, b.blocks.data() + row * off_b, k.data());
+              device::exchange_blocks(s, v.n_groups, v.group_start, v.off_a, w.n_groups,
+                                      w.group_start, w.off_a, symmetric, count, table);
           code != wwr::wwrSuccess) {
         return code;
       }
+      if (const wwr::wwrError_t code = device::exchange_k(
+              s, v, b.ip.data(), b.dc.data() + ld * n_rec, w, n_shells[lc] * n_shells[ld], tau,
+              scratch[index_of(*density_class)].dcd.data(), count, table, n_ao, k.data());
+          code != wwr::wwrSuccess) {
+        return code;
+      }
+      table += static_cast<size_t>(count) * device::kExchangeBlockFields;
     }
     return wwr::wwrSuccess;
-  }));
+  })));
+
+  // The symmetric sweep computed the a <= b blocks: after the join, every
+  // launch is in, and the a > b blocks are their transposes.
+  if (symmetric) {
+    FBF_TRY(gpu_status(device::exchange_mirror(stream, n_ao, starts.data(), k.data())));
+  }
+  return {};
 }
 
 } // namespace free_breakfast

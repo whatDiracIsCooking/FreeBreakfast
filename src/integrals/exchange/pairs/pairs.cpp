@@ -29,9 +29,10 @@ struct OrderedPairSource {
 // order.
 using OrderedPairPlan = std::map<int32_t, std::vector<OrderedPairSource>>;
 
-// An ordered class of n records on a new stream of res's Device.
+// An ordered class of n records in n_groups groups on a new stream of res's
+// Device.
 OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, const int32_t lb,
-                                    const int32_t n) {
+                                    const int32_t n, const size_t n_groups) {
   const auto ds = std::make_shared<DeviceStream>(res.device());
   const auto len = static_cast<size_t>(n);
   return {
@@ -54,6 +55,7 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
       .off_b = MirroredBuffer<int32_t>(len, ds),
       .rank_b = MirroredBuffer<int32_t>(len, ds),
       .groups = {},
+      .group_start = MirroredBuffer<int32_t>(n_groups + 1, ds),
   };
 }
 
@@ -95,7 +97,7 @@ Status copy_ordered_to_device(OrderedPairClass &cls) {
         &cls.pb_y, &cls.pb_z, &cls.s, &cls.bound}) {
     FBF_TRY(gpu_status(field->to_device()));
   }
-  for (MirroredBuffer<int32_t> *field : {&cls.off_a, &cls.off_b, &cls.rank_b}) {
+  for (MirroredBuffer<int32_t> *field : {&cls.off_a, &cls.off_b, &cls.rank_b, &cls.group_start}) {
     FBF_TRY(gpu_status(field->to_device()));
   }
   return {};
@@ -160,10 +162,11 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
                             "past {}",
                             key.first, key.second, n, std::numeric_limits<int32_t>::max())});
     }
-    OrderedPairClass &cls =
-        out.emplace_back(make_ordered_class(res, key.first, key.second, static_cast<int32_t>(n)));
+    OrderedPairClass &cls = out.emplace_back(
+        make_ordered_class(res, key.first, key.second, static_cast<int32_t>(n), groups.size()));
     size_t r = 0;
     for (const auto &[shell, recs] : groups) {
+      cls.group_start.pinned().data()[cls.groups.size()] = static_cast<int32_t>(r);
       cls.groups.push_back({.shell = shell,
                             .start = static_cast<int32_t>(r),
                             .count = static_cast<int32_t>(recs.size())});
@@ -171,6 +174,7 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
         write_ordered_record(cls, r++, src, rank_of);
       }
     }
+    cls.group_start.pinned().data()[cls.groups.size()] = static_cast<int32_t>(r);
     FBF_TRY(copy_ordered_to_device(cls));
   }
   return out;

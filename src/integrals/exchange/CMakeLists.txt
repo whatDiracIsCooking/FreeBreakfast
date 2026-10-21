@@ -7,9 +7,9 @@ add_subdirectory(pairs)
 
 # The K launchers. Device code in its own library, so its language and -x hip
 # never reach a module compile. Its sources are the launcher and the generated
-# kernels k<la, lc, lb, ld> (kernels/k/, written by
+# kernels kb<la, lc, lb, ld> (kernels/kb/, written by
 # tools/emit_exchange_kernels.py), one per K class through d, 81 in all, each
-# compiled on its own: the launcher includes only kernels/k/k.h and launches
+# compiled on its own: the launcher includes only kernels/kb/kb.h and launches
 # through its table. Under CUDA that wants relocatable device code, this
 # library's default, so it must never pass NO_DEVICE_LINKING (nvcc warns #20280
 # without it). The bridge header it shares with the module names int32_t,
@@ -25,87 +25,87 @@ free_breakfast_add_gpu_device_library(
   free_breakfast.integrals.exchange.device
   SOURCES
   exchange_launch.cu
-  kernels/k/k_00_00.cu
-  kernels/k/k_00_01.cu
-  kernels/k/k_00_02.cu
-  kernels/k/k_00_10.cu
-  kernels/k/k_00_11.cu
-  kernels/k/k_00_12.cu
-  kernels/k/k_00_20.cu
-  kernels/k/k_00_21.cu
-  kernels/k/k_00_22.cu
-  kernels/k/k_01_00.cu
-  kernels/k/k_01_01.cu
-  kernels/k/k_01_02.cu
-  kernels/k/k_01_10.cu
-  kernels/k/k_01_11.cu
-  kernels/k/k_01_12.cu
-  kernels/k/k_01_20.cu
-  kernels/k/k_01_21.cu
-  kernels/k/k_01_22.cu
-  kernels/k/k_02_00.cu
-  kernels/k/k_02_01.cu
-  kernels/k/k_02_02.cu
-  kernels/k/k_02_10.cu
-  kernels/k/k_02_11.cu
-  kernels/k/k_02_12.cu
-  kernels/k/k_02_20.cu
-  kernels/k/k_02_21.cu
-  kernels/k/k_02_22.cu
-  kernels/k/k_10_00.cu
-  kernels/k/k_10_01.cu
-  kernels/k/k_10_02.cu
-  kernels/k/k_10_10.cu
-  kernels/k/k_10_11.cu
-  kernels/k/k_10_12.cu
-  kernels/k/k_10_20.cu
-  kernels/k/k_10_21.cu
-  kernels/k/k_10_22.cu
-  kernels/k/k_11_00.cu
-  kernels/k/k_11_01.cu
-  kernels/k/k_11_02.cu
-  kernels/k/k_11_10.cu
-  kernels/k/k_11_11.cu
-  kernels/k/k_11_12.cu
-  kernels/k/k_11_20.cu
-  kernels/k/k_11_21.cu
-  kernels/k/k_11_22.cu
-  kernels/k/k_12_00.cu
-  kernels/k/k_12_01.cu
-  kernels/k/k_12_02.cu
-  kernels/k/k_12_10.cu
-  kernels/k/k_12_11.cu
-  kernels/k/k_12_12.cu
-  kernels/k/k_12_20.cu
-  kernels/k/k_12_21.cu
-  kernels/k/k_12_22.cu
-  kernels/k/k_20_00.cu
-  kernels/k/k_20_01.cu
-  kernels/k/k_20_02.cu
-  kernels/k/k_20_10.cu
-  kernels/k/k_20_11.cu
-  kernels/k/k_20_12.cu
-  kernels/k/k_20_20.cu
-  kernels/k/k_20_21.cu
-  kernels/k/k_20_22.cu
-  kernels/k/k_21_00.cu
-  kernels/k/k_21_01.cu
-  kernels/k/k_21_02.cu
-  kernels/k/k_21_10.cu
-  kernels/k/k_21_11.cu
-  kernels/k/k_21_12.cu
-  kernels/k/k_21_20.cu
-  kernels/k/k_21_21.cu
-  kernels/k/k_21_22.cu
-  kernels/k/k_22_00.cu
-  kernels/k/k_22_01.cu
-  kernels/k/k_22_02.cu
-  kernels/k/k_22_10.cu
-  kernels/k/k_22_11.cu
-  kernels/k/k_22_12.cu
-  kernels/k/k_22_20.cu
-  kernels/k/k_22_21.cu
-  kernels/k/k_22_22.cu
+  kernels/kb/kb_00_00.cu
+  kernels/kb/kb_00_01.cu
+  kernels/kb/kb_00_02.cu
+  kernels/kb/kb_00_10.cu
+  kernels/kb/kb_00_11.cu
+  kernels/kb/kb_00_12.cu
+  kernels/kb/kb_00_20.cu
+  kernels/kb/kb_00_21.cu
+  kernels/kb/kb_00_22.cu
+  kernels/kb/kb_01_00.cu
+  kernels/kb/kb_01_01.cu
+  kernels/kb/kb_01_02.cu
+  kernels/kb/kb_01_10.cu
+  kernels/kb/kb_01_11.cu
+  kernels/kb/kb_01_12.cu
+  kernels/kb/kb_01_20.cu
+  kernels/kb/kb_01_21.cu
+  kernels/kb/kb_01_22.cu
+  kernels/kb/kb_02_00.cu
+  kernels/kb/kb_02_01.cu
+  kernels/kb/kb_02_02.cu
+  kernels/kb/kb_02_10.cu
+  kernels/kb/kb_02_11.cu
+  kernels/kb/kb_02_12.cu
+  kernels/kb/kb_02_20.cu
+  kernels/kb/kb_02_21.cu
+  kernels/kb/kb_02_22.cu
+  kernels/kb/kb_10_00.cu
+  kernels/kb/kb_10_01.cu
+  kernels/kb/kb_10_02.cu
+  kernels/kb/kb_10_10.cu
+  kernels/kb/kb_10_11.cu
+  kernels/kb/kb_10_12.cu
+  kernels/kb/kb_10_20.cu
+  kernels/kb/kb_10_21.cu
+  kernels/kb/kb_10_22.cu
+  kernels/kb/kb_11_00.cu
+  kernels/kb/kb_11_01.cu
+  kernels/kb/kb_11_02.cu
+  kernels/kb/kb_11_10.cu
+  kernels/kb/kb_11_11.cu
+  kernels/kb/kb_11_12.cu
+  kernels/kb/kb_11_20.cu
+  kernels/kb/kb_11_21.cu
+  kernels/kb/kb_11_22.cu
+  kernels/kb/kb_12_00.cu
+  kernels/kb/kb_12_01.cu
+  kernels/kb/kb_12_02.cu
+  kernels/kb/kb_12_10.cu
+  kernels/kb/kb_12_11.cu
+  kernels/kb/kb_12_12.cu
+  kernels/kb/kb_12_20.cu
+  kernels/kb/kb_12_21.cu
+  kernels/kb/kb_12_22.cu
+  kernels/kb/kb_20_00.cu
+  kernels/kb/kb_20_01.cu
+  kernels/kb/kb_20_02.cu
+  kernels/kb/kb_20_10.cu
+  kernels/kb/kb_20_11.cu
+  kernels/kb/kb_20_12.cu
+  kernels/kb/kb_20_20.cu
+  kernels/kb/kb_20_21.cu
+  kernels/kb/kb_20_22.cu
+  kernels/kb/kb_21_00.cu
+  kernels/kb/kb_21_01.cu
+  kernels/kb/kb_21_02.cu
+  kernels/kb/kb_21_10.cu
+  kernels/kb/kb_21_11.cu
+  kernels/kb/kb_21_12.cu
+  kernels/kb/kb_21_20.cu
+  kernels/kb/kb_21_21.cu
+  kernels/kb/kb_21_22.cu
+  kernels/kb/kb_22_00.cu
+  kernels/kb/kb_22_01.cu
+  kernels/kb/kb_22_02.cu
+  kernels/kb/kb_22_10.cu
+  kernels/kb/kb_22_11.cu
+  kernels/kb/kb_22_12.cu
+  kernels/kb/kb_22_20.cu
+  kernels/kb/kb_22_21.cu
+  kernels/kb/kb_22_22.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::exchange::pairs::headers

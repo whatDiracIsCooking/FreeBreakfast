@@ -3,7 +3,7 @@
 /// orientations, one class per ordered (la, lb), grouped by first shell, for
 /// the exchange build.
 ///
-/// K_ab = sum_cd D_cd (ac|bd) has no symmetry inside a pair: kernel_k's bra
+/// K_ab = sum_cd D_cd (ac|bd) has no symmetry inside a pair: kb's bra
 /// (a, c) and ket (b, d) are ordered shell pairs whose first shell is the
 /// output index. So each stored off-diagonal mmd record contributes both
 /// orientations, (a, b) and (b, a), and a diagonal one (a shell against
@@ -32,8 +32,8 @@ export namespace free_breakfast {
 using free_breakfast::OrderedPairClassView;
 
 /// @brief The records of one ordered class whose first shell is one shell: a
-/// contiguous run of an @ref OrderedPairClass, which a K launch takes whole
-/// (its @c n_ket).
+/// contiguous run of an @ref OrderedPairClass, which a K block takes whole
+/// (its bra or its ket range).
 struct OrderedPairGroup {
   /// @brief The first shell, as an index into @c BasisSet::shells().
   int32_t shell;
@@ -45,18 +45,19 @@ struct OrderedPairGroup {
 
 /// @brief Every ordered primitive-pair record of one class (la, lb), in either
 /// order of la and lb, one @ref n_rec long @c MirroredBuffer per field, all on
-/// the class's own work stream, and its groups by first shell on the host.
+/// the class's own work stream, and its groups by first shell on the host and,
+/// as their bounds, on the device.
 ///
 /// The fields are mmd's, named as there, with "a" the record's first shell and
 /// "b" its second: a record taken from mmd's (b, a) is stored with its P - A
 /// and P - B, and its two AO offsets, swapped; zeta, P, s and the bound are
 /// orientation-free and copied as they are. mmd's ket exponent `eb` is not
-/// carried (kernel_k does not read it, and the swapped orientation would want
+/// carried (kb does not read it, and the swapped orientation would want
 /// the other exponent). @ref rank_b is new.
 ///
 /// **The records are grouped by first shell**, the groups in basis order, and
 /// within a group in mmd's record order: descending zeta, so non-increasing
-/// @ref bound, the order kernel_k's screen `break` needs of its kets.
+/// @ref bound, the order kb's screen `break`s need of its bras and kets.
 ///
 /// Movable, not copyable.
 struct OrderedPairClass {
@@ -88,7 +89,7 @@ struct OrderedPairClass {
   MirroredBuffer<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   MirroredBuffer<double> s;
-  /// @brief The record's Schwarz bound, mmd's: kernel_k's Ip as a bra and Iq
+  /// @brief The record's Schwarz bound, mmd's: kb's Ip as a bra and Iq
   /// as a ket. Non-increasing within each group.
   MirroredBuffer<double> bound;
   /// @brief The first shell's first Cartesian AO (@c BasisSet::ao_offset_cart).
@@ -96,13 +97,17 @@ struct OrderedPairClass {
   /// @brief The second shell's first Cartesian AO.
   MirroredBuffer<int32_t> off_b;
   /// @brief The second shell's rank: its index among the basis's shells of
-  /// momentum @ref lb, in basis order. kernel_k's Dcd row is
+  /// momentum @ref lb, in basis order. kb's Dcd row is
   /// `rank_c * n_shells(ld) + rank_d` (exchange_helpers_bridge.h), so a bra's
   /// `dc` and a ket's `dd` are formed from it.
   MirroredBuffer<int32_t> rank_b;
   /// @brief The groups by first shell, in basis order, covering the records
   /// exactly: group g is records [start, start + count).
   std::vector<OrderedPairGroup> groups;
+  /// @brief The groups' bounds on the device, groups.size() + 1 entries: group
+  /// g is records [group_start[g], group_start[g + 1]), the last entry n_rec.
+  /// The K build makes its block table from it on the device.
+  MirroredBuffer<int32_t> group_start;
 
   /// @brief The class's own work stream: the records were allocated and copied
   /// on it.
@@ -130,6 +135,8 @@ struct OrderedPairClass {
         .off_a = off_a.device().data(),
         .off_b = off_b.device().data(),
         .rank_b = rank_b.device().data(),
+        .n_groups = static_cast<int32_t>(groups.size()),
+        .group_start = group_start.device().data(),
     };
   }
 };
@@ -151,7 +158,8 @@ struct OrderedPairClass {
 /// mmd's record order, so a group keeps the descending zeta, and its bound
 /// stays non-increasing, with no sort. The ordered records are written into
 /// each class's pinned side and copied to the device on its stream, queued
-/// only. The device res.dev_idx() names is made current for the call and the
+/// only, as is each class's @ref OrderedPairClass::group_start, written from
+/// its groups. The device res.dev_idx() names is made current for the call and the
 /// previous one restored. A class of more than INT32_MAX records logs and
 /// aborts.
 ///

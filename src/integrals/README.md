@@ -19,8 +19,8 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
 coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened
   sort_bounds/       free_breakfast.integrals.coulomb.sort_bounds: each ket class sorted by its screen bound Iq * Dmax
 exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, Schwarz-screened
-  helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather and the block scatter kernel_k leaves to its launcher
-  kernels/k/         free_breakfast::integrals::exchange::device: the generated K kernels k<la, lc, lb, ld>, 81 classes through d
+  helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table, the shell starts and the mirror kb leaves to its launcher
+  kernels/kb/        free_breakfast::integrals::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
   pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd and coulomb/sort_bounds sort with
@@ -47,7 +47,7 @@ from the FelizJueves submodule; a build never runs Python. Re-run all three afte
 bumping the submodule. Each family has its own directory
 (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
 `mmd/kernels/pair_bound/`, `coulomb/kernels/{dq,e_hermite,jab}/`,
-`exchange/kernels/k/`), and the device Boys
+`exchange/kernels/kb/`), and the device Boys
 routine every unit with a fundamental includes, `eval_boys<M>`, is generated
 once into `shared/eval_boys.h` rather than carried in each unit, beside the
 `shared/eval_boys_{M}.h` it includes: below its switch, one fixed `fma` chain

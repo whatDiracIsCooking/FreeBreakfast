@@ -1,12 +1,10 @@
 // GPU cases for the exchange build's hand-written device steps
-// (src/integrals/exchange/helpers): max|D|, the Dcd gather and the block
-// scatter, each against a host loop. max|D| and the gather move or compare
-// doubles and nothing else, so they are checked bit for bit, on H2O/cc-pVDZ's
-// recorded density and shells (s, p and d, interleaved by atom, so a shell's
-// rank among its momentum differs from its index). The scatter adds, in the
-// atomics' order, so it is held to 1e-15 relative on a synthetic block whose
-// records repeat shells, as a bra class's primitive pairs do, mirrored and
-// not.
+// (src/integrals/exchange/helpers): max|D|, the Dcd gather, the block table,
+// and the shell starts and mirror, each against a host loop. Each moves,
+// compares or counts and does no arithmetic on a double, so each is checked
+// exactly, on H2O/cc-pVDZ's recorded density and shells (s, p and d,
+// interleaved by atom, so a shell's rank among its momentum differs from its
+// index, and the shells of two momenta interleave in AO order).
 //
 // The launchers are reached through their bridge header, which brings in wwr's
 // textual runtime surface (wwr/runtime_api.h). clang rejects that next to the
@@ -215,12 +213,101 @@ TEST(ExchangeHelpers, GathersEveryDensityClassByRank) {
   }
 }
 
-// Every (la, lb), mirrored and not: records cycling over the la shells, several
-// to a shell, so atomics collide on one element; every lb shell its own block,
-// scattered into a K that already holds values, which the scatter must add to.
-// At la == lb the records include the b shell's own, which a mirrored scatter
-// must add once, untransposed.
-TEST(ExchangeHelpers, ScattersABlockIntoK) {
+std::vector<std::int32_t> download_ints(const Stream &stream, const std::int32_t *device,
+                                        std::size_t n) {
+  std::vector<std::int32_t> host(n);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), device, sizeof(std::int32_t) * n,
+                                wwr::wwrMemcpyDeviceToHost, stream.get()),
+            wwr::wwrSuccess);
+  EXPECT_EQ(wwr::wwrStreamSynchronize(stream.get()), wwr::wwrSuccess);
+  return host;
+}
+
+// One side of a kb launch, as a class's groups are: one group per shell, in
+// basis order, of 1 + (shell's rank % 3) records, each record holding its
+// first shell's AO offset.
+struct Side {
+  std::vector<std::int32_t> start; // groups + 1
+  std::vector<std::int32_t> off;   // per record
+};
+
+Side side_of(const std::vector<std::int32_t> &shell_offsets) {
+  Side out;
+  for (std::size_t r = 0; r < shell_offsets.size(); ++r) {
+    out.start.push_back(static_cast<std::int32_t>(out.off.size()));
+    out.off.insert(out.off.end(), 1 + r % 3, shell_offsets[r]);
+  }
+  out.start.push_back(static_cast<std::int32_t>(out.off.size()));
+  return out;
+}
+
+// Every (la, lb), symmetric and not: the table against a host enumeration of
+// the same blocks, bra-major, a <= b by AO offset when symmetric. cc-pVDZ's
+// shells of two momenta interleave by atom, so the symmetric cut falls inside
+// the ket groups at a different place for each bra group.
+TEST(ExchangeHelpers, BuildsTheBlockTable) {
+  FBF_REQUIRE_GPU();
+  const Stream stream;
+  const Golden g = read_golden("h2o_ccpvdz");
+  ASSERT_FALSE(g.density.empty());
+  const auto by_l = offsets_by_momentum(g.basis);
+  constexpr auto kFields = static_cast<std::size_t>(fb::device::kExchangeBlockFields);
+  for (const bool symmetric : {false, true}) {
+    for (std::int32_t la = 0; la < kMomenta; ++la) {
+      for (std::int32_t lb = 0; lb < kMomenta; ++lb) {
+        const Side a = side_of(by_l.at(static_cast<std::size_t>(la)));
+        const Side b = side_of(by_l.at(static_cast<std::size_t>(lb)));
+        const auto n_a = static_cast<std::int32_t>(a.start.size() - 1);
+        const auto n_b = static_cast<std::int32_t>(b.start.size() - 1);
+        std::vector<std::array<std::int32_t, kFields>> want;
+        for (std::int32_t ga = 0; ga < n_a; ++ga) {
+          for (std::int32_t gb = 0; gb < n_b; ++gb) {
+            const std::int32_t ko_a = a.off[static_cast<std::size_t>(a.start[ga])];
+            const std::int32_t ko_b = b.off[static_cast<std::size_t>(b.start[gb])];
+            if (!symmetric || ko_a <= ko_b) {
+              want.push_back(
+                  {a.start[ga], a.start[ga + 1], b.start[gb], b.start[gb + 1], ko_a, ko_b});
+            }
+          }
+        }
+        const std::string name =
+            std::format("symmetric {}, (la, lb) = ({}, {})", symmetric, la, lb);
+        // Off the diagonal of momenta some of each, so the cut is exercised.
+        if (symmetric && la != lb) {
+          ASSERT_GT(want.size(), 0U) << name;
+          ASSERT_LT(want.size(), static_cast<std::size_t>(n_a) * n_b) << name;
+        }
+        if (want.empty()) {
+          continue;
+        }
+        const auto n_blk = static_cast<std::int32_t>(want.size());
+        const auto a_start = upload(stream, a.start);
+        const auto a_off = upload(stream, a.off);
+        const auto b_start = upload(stream, b.start);
+        const auto b_off = upload(stream, b.off);
+        DeviceArray<std::int32_t> table(kFields * want.size());
+        ASSERT_EQ(fb::device::exchange_blocks(stream.get(), n_a, a_start.data(), a_off.data(), n_b,
+                                              b_start.data(), b_off.data(), symmetric, n_blk,
+                                              table.data()),
+                  wwr::wwrSuccess)
+            << name;
+        const auto got = download_ints(stream, table.data(), kFields * want.size());
+        for (std::size_t blk = 0; blk < want.size(); ++blk) {
+          for (std::size_t f = 0; f < kFields; ++f) {
+            ASSERT_EQ(got[f * want.size() + blk], want[blk][f])
+                << name << ", block " << blk << ", field " << f;
+          }
+        }
+      }
+    }
+  }
+}
+
+// The shell starts of every momentum, against the basis's; then the mirror of
+// a K with a distinct value in every element: the lower shell blocks are the
+// upper ones' transposes, and everything else, the diagonal blocks whole among
+// it, is untouched.
+TEST(ExchangeHelpers, MirrorsTheLowerShellBlocks) {
   FBF_REQUIRE_GPU();
   const Stream stream;
   const Golden g = read_golden("h2o_ccpvdz");
@@ -228,62 +315,39 @@ TEST(ExchangeHelpers, ScattersABlockIntoK) {
   const auto n_ao = static_cast<std::int32_t>(g.basis.nao_cart());
   const auto nn = static_cast<std::size_t>(n_ao) * n_ao;
   const auto by_l = offsets_by_momentum(g.basis);
-  constexpr std::int32_t kRecordsPerShell = 5;
+  std::vector<std::int32_t> want_start(static_cast<std::size_t>(n_ao));
+  for (std::uint32_t sh = 0; sh < g.basis.nshells(); ++sh) {
+    const auto o = static_cast<std::int32_t>(g.basis.ao_offset_cart(sh));
+    for (std::int32_t i = 0; i < cartesians(g.basis.shells()[sh].angular_momentum()); ++i) {
+      want_start[static_cast<std::size_t>(o + i)] = o;
+    }
+  }
+  DeviceArray<std::int32_t> start(static_cast<std::size_t>(n_ao));
+  std::vector<DeviceArray<std::int32_t>> offs;
+  for (std::int32_t l = 0; l < kMomenta; ++l) {
+    const auto &off = by_l.at(static_cast<std::size_t>(l));
+    offs.push_back(upload(stream, off));
+    ASSERT_EQ(fb::device::exchange_shell_starts(stream.get(), l,
+                                                static_cast<std::int32_t>(off.size()),
+                                                offs.back().data(), start.data()),
+              wwr::wwrSuccess);
+  }
+  EXPECT_EQ(download_ints(stream, start.data(), want_start.size()), want_start);
 
-  for (const bool mirror : {false, true}) {
-    for (std::int32_t la = 0; la < kMomenta; ++la) {
-      for (std::int32_t lb = 0; lb < kMomenta; ++lb) {
-        const auto &shells_a = by_l.at(static_cast<std::size_t>(la));
-        const auto &shells_b = by_l.at(static_cast<std::size_t>(lb));
-        const std::int32_t na = cartesians(la);
-        const std::int32_t nb = cartesians(lb);
-        std::vector<std::int32_t> off_a;
-        for (std::int32_t r = 0; r < kRecordsPerShell; ++r) {
-          off_a.insert(off_a.end(), shells_a.begin(), shells_a.end());
-        }
-        const auto n_bra = static_cast<std::int32_t>(off_a.size());
-        const auto width = static_cast<std::size_t>(na) * nb;
-
-        // Positive, so the sums do not cancel and 1e-15 relative is a bar on the
-        // adds alone.
-        std::vector<double> want(nn);
-        for (std::size_t e = 0; e < nn; ++e) {
-          want[e] = 1.0 + 0.001 * static_cast<double>(e % 97);
-        }
-        DeviceArray<double> k = upload(stream, want);
-        const auto off_a_d = upload(stream, off_a);
-        std::vector<DeviceArray<double>> blocks;
-        for (std::size_t b = 0; b < shells_b.size(); ++b) {
-          std::vector<double> block(static_cast<std::size_t>(n_bra) * width);
-          for (std::size_t e = 0; e < block.size(); ++e) {
-            block[e] = std::sqrt(2.0 + static_cast<double>(e) + 7.0 * static_cast<double>(b));
-          }
-          for (std::int32_t r = 0; r < n_bra; ++r) {
-            for (std::int32_t i = 0; i < na; ++i) {
-              for (std::int32_t j = 0; j < nb; ++j) {
-                const auto m = static_cast<std::size_t>(off_a[r] + i);
-                const auto q = static_cast<std::size_t>(shells_b[b] + j);
-                const double v = block[static_cast<std::size_t>(r) * width + i * nb + j];
-                want[m * n_ao + q] += v;
-                if (mirror && off_a[r] != shells_b[b]) {
-                  want[q * n_ao + m] += v;
-                }
-              }
-            }
-          }
-          // Kept alive to the download: the scatters are asynchronous.
-          blocks.push_back(upload(stream, block));
-          ASSERT_EQ(fb::device::exchange_scatter_block(stream.get(), la, lb, n_ao, n_bra,
-                                                       off_a_d.data(), shells_b[b], mirror,
-                                                       blocks.back().data(), k.data()),
-                    wwr::wwrSuccess);
-        }
-        const auto got = download(stream, k.data(), nn);
-        for (std::size_t e = 0; e < nn; ++e) {
-          ASSERT_LE(std::abs(got[e] - want[e]), 1e-15 * std::abs(want[e]))
-              << "mirror " << mirror << ", (la, lb) = (" << la << ", " << lb << "), element " << e;
-        }
-      }
+  std::vector<double> k(nn);
+  for (std::size_t e = 0; e < nn; ++e) {
+    k[e] = 1.0 + static_cast<double>(e);
+  }
+  DeviceArray<double> k_d = upload(stream, k);
+  ASSERT_EQ(fb::device::exchange_mirror(stream.get(), n_ao, start.data(), k_d.data()),
+            wwr::wwrSuccess);
+  const auto got = download(stream, k_d.data(), nn);
+  const auto &aos = g.basis.aos_cart();
+  for (std::size_t m = 0; m < static_cast<std::size_t>(n_ao); ++m) {
+    for (std::size_t q = 0; q < static_cast<std::size_t>(n_ao); ++q) {
+      const bool lower = aos[q].shell_index < aos[m].shell_index;
+      const double want = lower ? k[q * n_ao + m] : k[m * n_ao + q];
+      ASSERT_EQ(bits(got[m * n_ao + q]), bits(want)) << "K(" << m << ", " << q << ")";
     }
   }
 }
@@ -306,16 +370,22 @@ TEST(ExchangeHelpers, RefusesWhatTheyCannotLaunch) {
               wwr::wwrErrorInvalidValue)
         << lc << " " << ld << " " << n_ao << " " << n_c << " " << n_d;
   }
-  for (const auto &[la, lb, n_ao, n_bra, off_b] : {std::array{kAboveD, 0, 2, 1, 0},
-                                                   {0, -1, 2, 1, 0},
-                                                   {0, 0, 0, 1, 0},
-                                                   {0, 0, 2, 0, 0},
-                                                   {0, 0, 2, 1, -1}}) {
-    EXPECT_EQ(fb::device::exchange_scatter_block(stream.get(), la, lb, n_ao, n_bra, off.data(),
-                                                 off_b, false, d.data(), d.data()),
+  for (const auto &[n_a, n_b, n_blk] : {std::array{0, 1, 1},
+                                        {1, 0, 1},
+                                        {1, 1, 0},
+                                        {1, 1, std::numeric_limits<std::int32_t>::max() / 2}}) {
+    EXPECT_EQ(fb::device::exchange_blocks(stream.get(), n_a, off.data(), off.data(), n_b,
+                                          off.data(), off.data(), true, n_blk, off.data()),
               wwr::wwrErrorInvalidValue)
-        << la << " " << lb << " " << n_ao << " " << n_bra << " " << off_b;
+        << n_a << " " << n_b << " " << n_blk;
   }
+  for (const auto &[l, n_s] : {std::array{kAboveD, 1}, {-1, 1}, {0, 0}}) {
+    EXPECT_EQ(fb::device::exchange_shell_starts(stream.get(), l, n_s, off.data(), off.data()),
+              wwr::wwrErrorInvalidValue)
+        << l << " " << n_s;
+  }
+  EXPECT_EQ(fb::device::exchange_mirror(stream.get(), 0, off.data(), d.data()),
+            wwr::wwrErrorInvalidValue);
   EXPECT_EQ(wwr::wwrStreamSynchronize(stream.get()), wwr::wwrSuccess);
 }
 

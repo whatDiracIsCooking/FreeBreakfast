@@ -1,5 +1,5 @@
 /// @file
-/// @brief The K build's launchers over the generated k<la, lc, lb, ld>, and the
+/// @brief The K build's launcher over the generated kb<la, lc, lb, ld>, and the
 /// three small kernels that make its per-record inputs, declared once for the
 /// module that calls them and the device TU that defines them.
 ///
@@ -49,9 +49,9 @@ namespace free_breakfast::device {
 /// `ip[r] = bra.bound[r] * *dmax`, on @p stream; @p ip is bra.n_rec doubles,
 /// written whole.
 ///
-/// kernel_k takes maxD by value, a host double, but max|D| is on the device
+/// kb takes maxD by value, a host double, but max|D| is on the device
 /// (exchange_density_max), and reading it back would synchronize the host; so
-/// k is launched with maxD = 1 and the bra's Ip carries it. The screen
+/// kb is launched with maxD = 1 and the bra's Ip carries it. The screen
 /// `Ip * Iq * maxD < tau` is the same product.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class with no
@@ -71,30 +71,30 @@ namespace free_breakfast::device {
                                                 const OrderedPairClassView &bra, int32_t n_d,
                                                 int32_t *dc);
 
-/// @brief Add k<bra.la, bra.lb, ket.la, ket.lb> of the first @p n_bra records
-/// of @p bra against the ket records [@p start, @p start + @p count) of @p ket
-/// into @p block, on @p stream: one warp per bra record, the kets
-/// strip-mined across its lanes.
+/// @brief Add kb<bra.la, bra.lb, ket.la, ket.lb> of @p bra against @p ket into
+/// the n_ao x n_ao @p k, on @p stream: one warp per block of @p blocks, the
+/// block's kets strip-mined across its lanes, every lane walking its bras, and
+/// lane 0 adding the contracted K_ab block into @p k at the block's AO offsets.
 ///
-/// @p n_bra is a prefix of the bra class: the symmetric sweep passes the
-/// records whose first shell a is at most the kets' b (a prefix, the groups
-/// being in basis order), and the block's later rows are left untouched.
+/// @p blocks is the launch's table, @p n_blk blocks (exchange_blocks): each a
+/// range of bra records of one first shell a and a range of ket records of one
+/// first shell b, and their AO offsets. Every range must be non-increasing in
+/// bound, as each of the classes' groups is: the kernel breaks out of its bra
+/// loop at the first bra with `Ip * Iq[ket0] < tau`, and each lane out of its
+/// ket loop at its first ket with `Ip * Iq < tau`. @p ip and @p dc are
+/// @p bra's, from @ref exchange_bra_bound and @ref exchange_bra_rows (for ld =
+/// ket.lb); the kets' `dd` is ket.rank_b. @p dcd is the (bra.lb, ket.lb)
+/// gather (exchange_gather_dcd), @p n_dc its row count.
 ///
-/// The kets must all have one first shell b (one of ket's groups) and be
-/// non-increasing in bound: each lane breaks at its first ket with
-/// `Ip * Iq < tau`. @p ip and @p dc are @p bra's, from
-/// @ref exchange_bra_bound and @ref exchange_bra_rows (for ld = ket.lb); @p dcd is the
-/// (bra.lb, ket.lb) gather (exchange_gather_dcd), @p n_dc its row count.
-/// @p block is the (bra class, b) block, bra.n_rec x n_x(bra.la) n_x(ket.la),
-/// row-major, added to atomically: zero it before the first launch into it.
+/// The adds are atomic, so launches of several class pairs into one @p k need
+/// no ordering among them; zero @p k before the first.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no
-///         kernel, an @p n_bra outside [1, bra.n_rec], or an empty or
-///         out-of-range ket range).
+///         kernel, a non-positive @p n_blk or a non-positive @p n_ao).
 [[nodiscard]] wwr::wwrError_t exchange_k(wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                                         int32_t n_bra, const double *ip, const int32_t *dc,
-                                         const OrderedPairClassView &ket, int32_t start,
-                                         int32_t count, int32_t n_dc, double tau, const double *dcd,
-                                         double *block);
+                                         const double *ip, const int32_t *dc,
+                                         const OrderedPairClassView &ket, int32_t n_dc, double tau,
+                                         const double *dcd, int32_t n_blk, const int32_t *blocks,
+                                         int32_t n_ao, double *k);
 
 } // namespace free_breakfast::device
