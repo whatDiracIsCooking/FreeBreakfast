@@ -28,6 +28,7 @@ Two things still apply:
 | Directory | What |
 |-----------|------|
 | [`sort/radix/`](sort/radix/README.md) | Stable LSD radix sort of `double` keys (with optional `uint32_t` values), in IEEE-754 total order, over `core/kernel`'s `block_reduce` |
+| [`sort/merge/`](sort/merge/README.md) | Stable merge sort with `radix_sort`'s contract and order; faster than it and than CUB's `DeviceMergeSort` at every measured size, and than CUB's radix sort below 2^20 keys |
 
 Promote something by moving it under `src/` (its tests into `test/gtest/`),
 wiring it into `src/CMakeLists.txt`, and deleting it from here.

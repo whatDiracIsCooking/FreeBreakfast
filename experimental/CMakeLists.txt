@@ -25,3 +25,7 @@
 # GPU test is test/experimental, which the root CMakeLists adds under this
 # same option.
 add_subdirectory(sort/radix)
+
+# Stable merge sort of double keys, radix_sort's contract and order. Its
+# benchmark times it against radix_sort, so it comes after sort/radix.
+add_subdirectory(sort/merge)
