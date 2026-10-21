@@ -21,7 +21,8 @@ Two things still apply:
   recorded normally. GoogleTest cases go in `test/experimental/`. The root
   `CMakeLists.txt` adds that directory under this same option, and skips it
   under `FREE_BREAKFAST_COMPILE_TIME_ONLY`, which has no GoogleTest. It builds
-  its own binary, `free_breakfast_tests_experimental_gpu`.
+  its own two binaries, `free_breakfast_tests_experimental_gpu` and
+  `free_breakfast_tests_experimental_host`.
 
 ## What is here
 
@@ -29,6 +30,7 @@ Two things still apply:
 |-----------|------|
 | [`sort/radix/`](sort/radix/README.md) | Stable LSD radix sort of `double` keys (with optional `uint32_t` values), in IEEE-754 total order, over `core/kernel`'s `block_reduce` |
 | [`sort/merge/`](sort/merge/README.md) | Stable merge sort with `radix_sort`'s contract and order; faster than it and than CUB's `DeviceMergeSort` at every measured size, and than CUB's radix sort below 2^20 keys |
+| [`atomic_scf/`](atomic_scf/README.md) | The spherically averaged atomic SCF behind a production SAD guess, on the host, over closed-form one-center integrals; matches PySCF's `AtomSphAverageRHF` |
 
 Promote something by moving it under `src/` (its tests into `test/gtest/`),
 wiring it into `src/CMakeLists.txt`, and deleting it from here.

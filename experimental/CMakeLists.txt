@@ -29,3 +29,7 @@ add_subdirectory(sort/radix)
 # Stable merge sort of double keys, radix_sort's contract and order. Its
 # benchmark times it against radix_sort, so it comes after sort/radix.
 add_subdirectory(sort/merge)
+
+# The spherically averaged atomic SCF a production SAD guess is made of, on the
+# host. Its test is test/experimental's host binary.
+add_subdirectory(atomic_scf)

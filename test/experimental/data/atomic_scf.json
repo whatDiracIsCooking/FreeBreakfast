@@ -1,0 +1,1414 @@
+{
+ "description": "PySCF AtomSphAverageRHF energies and per-l orbital energies (conv_tol 1e-12), and the BSE-form bases they were computed in",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "numpy": "2.5.4",
+  "date": "2026-10-21",
+  "host": "b831165f5c63",
+  "command": "uv run --group tools experimental/atomic_scf/emit_reference.py"
+ },
+ "bases": {
+  "sto-3g": {
+   "elements": {
+    "1": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "3.42525091",
+        "0.62391373",
+        "0.1688554"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      }
+     ]
+    },
+    "2": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "6.36242139",
+        "1.158923",
+        "0.31364979"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      }
+     ]
+    },
+    "3": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "16.119575",
+        "2.9362007",
+        "0.7946505"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "0.6362897",
+        "0.1478601",
+        "0.0480887"
+       ],
+       "coefficients": [
+        [
+         "-0.09996723",
+         "0.39951283",
+         "0.70011547"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "0.6362897",
+        "0.1478601",
+        "0.0480887"
+       ],
+       "coefficients": [
+        [
+         "0.15591627",
+         "0.60768372",
+         "0.39195739"
+        ]
+       ]
+      }
+     ]
+    },
+    "4": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "30.167871",
+        "5.4951153",
+        "1.4871927"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "1.3148331",
+        "0.3055389",
+        "0.0993707"
+       ],
+       "coefficients": [
+        [
+         "-0.09996723",
+         "0.39951283",
+         "0.70011547"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "1.3148331",
+        "0.3055389",
+        "0.0993707"
+       ],
+       "coefficients": [
+        [
+         "0.15591627",
+         "0.60768372",
+         "0.39195739"
+        ]
+       ]
+      }
+     ]
+    },
+    "6": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "71.616837",
+        "13.045096",
+        "3.5305122"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "2.9412494",
+        "0.6834831",
+        "0.2222899"
+       ],
+       "coefficients": [
+        [
+         "-0.09996723",
+         "0.39951283",
+         "0.70011547"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "2.9412494",
+        "0.6834831",
+        "0.2222899"
+       ],
+       "coefficients": [
+        [
+         "0.15591627",
+         "0.60768372",
+         "0.39195739"
+        ]
+       ]
+      }
+     ]
+    },
+    "7": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "99.106169",
+        "18.052312",
+        "4.8856602"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "3.7804559",
+        "0.8784966",
+        "0.2857144"
+       ],
+       "coefficients": [
+        [
+         "-0.09996723",
+         "0.39951283",
+         "0.70011547"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "3.7804559",
+        "0.8784966",
+        "0.2857144"
+       ],
+       "coefficients": [
+        [
+         "0.15591627",
+         "0.60768372",
+         "0.39195739"
+        ]
+       ]
+      }
+     ]
+    },
+    "8": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "130.70932",
+        "23.808861",
+        "6.4436083"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "5.0331513",
+        "1.1695961",
+        "0.380389"
+       ],
+       "coefficients": [
+        [
+         "-0.09996723",
+         "0.39951283",
+         "0.70011547"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "5.0331513",
+        "1.1695961",
+        "0.380389"
+       ],
+       "coefficients": [
+        [
+         "0.15591627",
+         "0.60768372",
+         "0.39195739"
+        ]
+       ]
+      }
+     ]
+    },
+    "10": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "207.01561",
+        "37.708151",
+        "10.205297"
+       ],
+       "coefficients": [
+        [
+         "0.15432897",
+         "0.53532814",
+         "0.44463454"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "8.2463151",
+        "1.9162662",
+        "0.6232293"
+       ],
+       "coefficients": [
+        [
+         "-0.09996723",
+         "0.39951283",
+         "0.70011547"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "8.2463151",
+        "1.9162662",
+        "0.6232293"
+       ],
+       "coefficients": [
+        [
+         "0.15591627",
+         "0.60768372",
+         "0.39195739"
+        ]
+       ]
+      }
+     ]
+    },
+    "11": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "250.77243",
+        "45.678511",
+        "12.362388"
+       ],
+       "coefficients": [
+        [
+         "0.1543289673",
+         "0.5353281423",
+         "0.4446345422"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "12.040193",
+        "2.7978819",
+        "0.909958"
+       ],
+       "coefficients": [
+        [
+         "-0.09996722919",
+         "0.3995128261",
+         "0.7001154689"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "1.4787406",
+        "0.4125649",
+        "0.1614751"
+       ],
+       "coefficients": [
+        [
+         "-0.219620369",
+         "0.2255954336",
+         "0.900398426"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "12.040193",
+        "2.7978819",
+        "0.909958"
+       ],
+       "coefficients": [
+        [
+         "0.155916275",
+         "0.6076837186",
+         "0.3919573931"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "1.4787406",
+        "0.4125649",
+        "0.1614751"
+       ],
+       "coefficients": [
+        [
+         "0.01058760429",
+         "0.5951670053",
+         "0.462001012"
+        ]
+       ]
+      }
+     ]
+    },
+    "18": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "674.4465184",
+        "122.8512753",
+        "33.24834945"
+       ],
+       "coefficients": [
+        [
+         "0.1543289673",
+         "0.5353281423",
+         "0.4446345422"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "45.16424392",
+        "10.495199",
+        "3.413364448"
+       ],
+       "coefficients": [
+        [
+         "-0.09996722919",
+         "0.3995128261",
+         "0.7001154689"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "2.621366518",
+        "0.731354605",
+        "0.2862472356"
+       ],
+       "coefficients": [
+        [
+         "-0.219620369",
+         "0.2255954336",
+         "0.900398426"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "45.16424392",
+        "10.495199",
+        "3.413364448"
+       ],
+       "coefficients": [
+        [
+         "0.155916275",
+         "0.6076837186",
+         "0.3919573931"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "2.621366518",
+        "0.731354605",
+        "0.2862472356"
+       ],
+       "coefficients": [
+        [
+         "0.01058760429",
+         "0.5951670053",
+         "0.462001012"
+        ]
+       ]
+      }
+     ]
+    },
+    "30": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "1929.432301",
+        "351.4485021",
+        "95.11568021"
+       ],
+       "coefficients": [
+        [
+         "0.1543289673",
+         "0.5353281423",
+         "0.4446345422"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "155.8416755",
+        "36.21425391",
+        "11.77799934"
+       ],
+       "coefficients": [
+        [
+         "-0.0999672292",
+         "0.3995128261",
+         "0.7001154689"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "12.28152744",
+        "3.746257327",
+        "1.445422541"
+       ],
+       "coefficients": [
+        [
+         "-0.2277635023",
+         "0.2175436044",
+         "0.9166769611"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "0.8897138854",
+        "0.328360379",
+        "0.1450074055"
+       ],
+       "coefficients": [
+        [
+         "-0.3088441215",
+         "0.0196064117",
+         "1.131034442"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "155.8416755",
+        "36.21425391",
+        "11.77799934"
+       ],
+       "coefficients": [
+        [
+         "0.155916275",
+         "0.6076837186",
+         "0.3919573931"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "12.28152744",
+        "3.746257327",
+        "1.445422541"
+       ],
+       "coefficients": [
+        [
+         "0.0049515112",
+         "0.5777664691",
+         "0.4846460366"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "0.8897138854",
+        "0.328360379",
+        "0.1450074055"
+       ],
+       "coefficients": [
+        [
+         "-0.12154686",
+         "0.5715227604",
+         "0.5498949471"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        2
+       ],
+       "exponents": [
+        "10.94737077",
+        "3.339297018",
+        "1.288404602"
+       ],
+       "coefficients": [
+        [
+         "0.2197679508",
+         "0.6555473627",
+         "0.286573259"
+        ]
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "cc-pvdz": {
+   "elements": {
+    "1": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "13.01",
+        "1.962",
+        "0.4446"
+       ],
+       "coefficients": [
+        [
+         "0.019685",
+         "0.137977",
+         "0.478148"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "0.122"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "0.727"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      }
+     ]
+    },
+    "2": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "38.36",
+        "5.77",
+        "1.24"
+       ],
+       "coefficients": [
+        [
+         "0.023809",
+         "0.154891",
+         "0.469987"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "0.2976"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "1.275"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      }
+     ]
+    },
+    "6": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "6665.0",
+        "1000.0",
+        "228.0",
+        "64.71",
+        "21.06",
+        "7.495",
+        "2.797",
+        "0.5215"
+       ],
+       "coefficients": [
+        [
+         "0.000692",
+         "0.005329",
+         "0.027077",
+         "0.101718",
+         "0.27474",
+         "0.448564",
+         "0.285074",
+         "0.015204"
+        ],
+        [
+         "-0.000146",
+         "-0.001154",
+         "-0.005725",
+         "-0.023312",
+         "-0.063955",
+         "-0.149981",
+         "-0.127262",
+         "0.544529"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "0.1596"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "9.439",
+        "2.002",
+        "0.5456"
+       ],
+       "coefficients": [
+        [
+         "0.038109",
+         "0.20948",
+         "0.508557"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "0.1517"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        2
+       ],
+       "exponents": [
+        "0.55"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      }
+     ]
+    },
+    "8": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "11720.0",
+        "1759.0",
+        "400.8",
+        "113.7",
+        "37.03",
+        "13.27",
+        "5.025",
+        "1.013"
+       ],
+       "coefficients": [
+        [
+         "0.00071",
+         "0.00547",
+         "0.027837",
+         "0.1048",
+         "0.283062",
+         "0.448719",
+         "0.270952",
+         "0.015458"
+        ],
+        [
+         "-0.00016",
+         "-0.001263",
+         "-0.006267",
+         "-0.025716",
+         "-0.070924",
+         "-0.165411",
+         "-0.116955",
+         "0.557368"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "0.3023"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "17.7",
+        "3.854",
+        "1.046"
+       ],
+       "coefficients": [
+        [
+         "0.043018",
+         "0.228913",
+         "0.508728"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "0.2753"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        2
+       ],
+       "exponents": [
+        "1.185"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      }
+     ]
+    },
+    "10": {
+     "electron_shells": [
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "17880.0",
+        "2683.0",
+        "611.5",
+        "173.5",
+        "56.64",
+        "20.42",
+        "7.81",
+        "1.653"
+       ],
+       "coefficients": [
+        [
+         "0.000738",
+         "0.005677",
+         "0.028883",
+         "0.10854",
+         "0.290907",
+         "0.448324",
+         "0.258026",
+         "0.015063"
+        ],
+        [
+         "-0.000172",
+         "-0.001357",
+         "-0.006737",
+         "-0.027663",
+         "-0.076208",
+         "-0.175227",
+         "-0.107038",
+         "0.56705"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        0
+       ],
+       "exponents": [
+        "0.4869"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "28.39",
+        "6.27",
+        "1.695"
+       ],
+       "coefficients": [
+        [
+         "0.046087",
+         "0.240181",
+         "0.508744"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        1
+       ],
+       "exponents": [
+        "0.4317"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      },
+      {
+       "function_type": "gto_spherical",
+       "angular_momentum": [
+        2
+       ],
+       "exponents": [
+        "2.202"
+       ],
+       "coefficients": [
+        [
+         "1.0"
+        ]
+       ]
+      }
+     ]
+    }
+   }
+  }
+ },
+ "atoms": [
+  {
+   "basis": "sto-3g",
+   "z": 1,
+   "symbol": "H",
+   "energy": -0.2729303635773009,
+   "orbital_energies": [
+    [
+     -0.07927887759732644
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 2,
+   "symbol": "He",
+   "energy": -2.807783957539974,
+   "orbital_energies": [
+    [
+     -0.8760355074024508
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 3,
+   "symbol": "Li",
+   "energy": -7.244931982012997,
+   "orbital_energies": [
+    [
+     -2.3530673877146504,
+     -0.038923627202725124
+    ],
+    [
+     0.16058411379918433
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 4,
+   "symbol": "Be",
+   "energy": -14.351880476202023,
+   "orbital_energies": [
+    [
+     -4.483992106533369,
+     -0.25403769379675517
+    ],
+    [
+     0.2210859572591719
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 6,
+   "symbol": "C",
+   "energy": -36.761926963861455,
+   "orbital_energies": [
+    [
+     -10.910122901140838,
+     -0.597606141672668
+    ],
+    [
+     0.10843855932870339
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 7,
+   "symbol": "N",
+   "energy": -53.0852289821519,
+   "orbital_energies": [
+    [
+     -15.310969784064262,
+     -0.8622737464657144
+    ],
+    [
+     -0.053850650406406984
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 8,
+   "symbol": "O",
+   "energy": -73.2331923193787,
+   "orbital_energies": [
+    [
+     -20.285333694624647,
+     -1.1207840875476287
+    ],
+    [
+     -0.1936984188794678
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 10,
+   "symbol": "Ne",
+   "energy": -126.60452499680486,
+   "orbital_energies": [
+    [
+     -32.2125194514448,
+     -1.7060964846967506
+    ],
+    [
+     -0.5430527785475601
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 11,
+   "symbol": "Na",
+   "energy": -159.56107550287814,
+   "orbital_energies": [
+    [
+     -40.03906574392458,
+     -2.6269944389605424,
+     0.32284654985146116
+    ],
+    [
+     -1.2655824133861433,
+     0.8021325893967501
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 18,
+   "symbol": "Ar",
+   "energy": -521.2228808035306,
+   "orbital_energies": [
+    [
+     -117.26321789642434,
+     -12.05486567511855,
+     -1.1544321619080813
+    ],
+    [
+     -9.308430511730872,
+     -0.4959414565379565
+    ]
+   ]
+  },
+  {
+   "basis": "sto-3g",
+   "z": 30,
+   "symbol": "Zn",
+   "energy": -1756.5340827246914,
+   "orbital_energies": [
+    [
+     -348.3585635486809,
+     -42.116065718215815,
+     -4.514596129408993,
+     -0.13583904673806368
+    ],
+    [
+     -37.46016124791001,
+     -2.7759778273911646,
+     0.422053583569226
+    ],
+    [
+     0.6066719867138713
+    ]
+   ]
+  },
+  {
+   "basis": "cc-pvdz",
+   "z": 1,
+   "symbol": "H",
+   "energy": -0.35368756442139193,
+   "orbital_energies": [
+    [
+     -0.21744456473889698,
+     0.6283512530221252
+    ],
+    [
+     1.4688172333046314
+    ]
+   ]
+  },
+  {
+   "basis": "cc-pvdz",
+   "z": 2,
+   "symbol": "He",
+   "energy": -2.85516047724274,
+   "orbital_energies": [
+    [
+     -0.9141479259421206,
+     1.3974417042274112
+    ],
+    [
+     2.5243720258806173
+    ]
+   ]
+  },
+  {
+   "basis": "cc-pvdz",
+   "z": 6,
+   "symbol": "C",
+   "energy": -37.327421827178135,
+   "orbital_energies": [
+    [
+     -11.451488720819212,
+     -0.7558897468203657,
+     0.716648202880407
+    ],
+    [
+     -0.10252464283564809,
+     0.6755096410492354
+    ],
+    [
+     1.3709182895738892
+    ]
+   ]
+  },
+  {
+   "basis": "cc-pvdz",
+   "z": 8,
+   "symbol": "O",
+   "energy": -74.26918712563436,
+   "orbital_energies": [
+    [
+     -20.792847585530424,
+     -1.2898757947017352,
+     1.33870482083545
+    ],
+    [
+     -0.40239171038542754,
+     1.1248264592877162
+    ],
+    [
+     2.852561426016539
+    ]
+   ]
+  },
+  {
+   "basis": "cc-pvdz",
+   "z": 10,
+   "symbol": "Ne",
+   "energy": -128.48877555174082,
+   "orbital_energies": [
+    [
+     -32.76563541855711,
+     -1.9187982340164953,
+     2.1594249508233085
+    ],
+    [
+     -0.8320972519921406,
+     1.694557728268817
+    ],
+    [
+     5.196711401431169
+    ]
+   ]
+  }
+ ]
+}
