@@ -17,6 +17,8 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
 coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened
   sort_bounds/       free_breakfast.integrals.coulomb.sort_bounds: each ket class sorted by its screen bound Iq * Dmax
+exchange/      the exchange matrix K (in progress)
+  helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather and the block scatter kernel_k leaves to its launcher
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd and coulomb/sort_bounds sort with
 ```

@@ -6,6 +6,7 @@ add_subdirectory(shared)
 add_subdirectory(one_electron)
 # After one_electron: J reuses its per-class launch and checks.
 add_subdirectory(coulomb)
+add_subdirectory(exchange)
 
 # The aggregate: one import for the integral layer.
 free_breakfast_add_cxx_module_library(

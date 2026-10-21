@@ -103,6 +103,7 @@ add_executable(
   core_hamiltonian_gpu.cpp
   coulomb_gpu.cpp
   sort_bounds_gpu.cpp
+  exchange_helpers_gpu.cpp
 )
 
 set_target_properties(
@@ -112,7 +113,9 @@ set_target_properties(
 # free_breakfast::test::gpu_kernels is the device library (test/gpu_kernels)
 # primitives_gpu.cpp and reduce_gpu.cpp launch through: its .cu files stay out
 # of this executable, and only their plain-C++ launcher headers are #included
-# here.
+# here. free_breakfast::integrals::exchange::helpers is the same arrangement
+# for exchange_helpers_gpu.cpp: a device library with no module face, driven
+# through its bridge header.
 target_link_libraries(
   free_breakfast_tests_gpu
   PRIVATE free_breakfast::core
@@ -123,6 +126,7 @@ target_link_libraries(
           free_breakfast::linalg
           free_breakfast::integrals
           free_breakfast::integrals::coulomb::sort_bounds
+          free_breakfast::integrals::exchange::helpers
           free_breakfast::io
           free_breakfast::test::gpu_kernels
           GTest::gtest
