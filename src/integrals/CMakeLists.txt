@@ -19,4 +19,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::mmd
   free_breakfast::integrals::one_electron
   free_breakfast::integrals::coulomb
+  free_breakfast::integrals::exchange
 )

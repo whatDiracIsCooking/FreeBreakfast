@@ -20,7 +20,9 @@ launchers a `NucleiView`.
 **One stream per class.** `launch_each(classes, parent, launch)` is how a build
 runs the classes: it forks every class's stream from `parent`, calls
 `launch(cls)`, which enqueues on `cls.device_stream()->stream()`, and joins
-every stream back into `parent`. After the first failed fork or launch it
+every stream back into `parent`. It takes any random-access range of classes
+that carry a `device_stream()`, so the exchange build runs its
+`OrderedPairClass`es through it too. After the first failed fork or launch it
 launches nothing more, but still joins every stream it forked, so `parent`
 never runs ahead of a kernel in flight. The nuclei are not forked: every class
 reads them, and none is ordered after their stream, so the `Molecule`

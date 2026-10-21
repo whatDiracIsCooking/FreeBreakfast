@@ -22,6 +22,10 @@ export namespace free_breakfast {
 /// the class's own stream from, and a join of it into, @p parent; @p launch
 /// enqueues on `cls.device_stream()->stream()`.
 ///
+/// Any random-access range of classes that carry a @c device_stream() will
+/// do: mmd's @c PrimitivePairClass, and the exchange build's
+/// @c OrderedPairClass.
+///
 /// Every class's work is ordered after everything already queued on
 /// @p parent -- the matrix's zeroing -- and everything queued on @p parent
 /// afterwards after every class's work, so the classes run concurrently and
@@ -36,13 +40,14 @@ export namespace free_breakfast {
 /// shared, so this mutates them although @p classes is const.
 ///
 /// @return wwrSuccess, or the first error of a fork, launch or join.
-template <typename Launch>
-  requires std::is_invocable_r_v<wwr::wwrError_t, Launch &, const PrimitivePairClass &>
-[[nodiscard]] wwr::wwrError_t launch_each(std::span<const PrimitivePairClass> classes,
-                                          const wwr::wwrStream_t parent, Launch &&launch) {
+template <std::ranges::random_access_range Classes, typename Launch>
+  requires std::is_invocable_r_v<wwr::wwrError_t, Launch &,
+                                 std::ranges::range_reference_t<const Classes>>
+[[nodiscard]] wwr::wwrError_t launch_each(const Classes &classes, const wwr::wwrStream_t parent,
+                                          Launch &&launch) {
   wwr::wwrError_t first = wwr::wwrSuccess;
   size_t forked = 0;
-  for (const PrimitivePairClass &cls : classes) {
+  for (const auto &cls : classes) {
     ForkStream &fork = cls.device_stream()->fork_stream();
     if (first = fork.fork_from(parent); first != wwr::wwrSuccess) {
       break;
