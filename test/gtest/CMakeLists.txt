@@ -104,6 +104,7 @@ add_executable(
   coulomb_gpu.cpp
   sort_bounds_gpu.cpp
   exchange_helpers_gpu.cpp
+  exchange_pairs_gpu.cpp
 )
 
 set_target_properties(
@@ -127,6 +128,7 @@ target_link_libraries(
           free_breakfast::integrals
           free_breakfast::integrals::coulomb::sort_bounds
           free_breakfast::integrals::exchange::helpers
+          free_breakfast::integrals::exchange::pairs
           free_breakfast::io
           free_breakfast::test::gpu_kernels
           GTest::gtest
