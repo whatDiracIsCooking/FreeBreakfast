@@ -32,7 +32,9 @@ free_breakfast::log::reset_warning_count(); // test-only: zero it back out
 ```
 
 Output goes to **stdout**, formatted
-`[YYYY-MM-DD HH:MM:SS.mmm] [level] [file:line] message`. Messages at `error` and
+`[YYYY-MM-DD HH:MM:SS.mmm] [tid] [level] [file:line] message`, where `tid` is
+the OS thread id (what gdb, `perf` and compute-sanitizer print), not
+`std::thread::id`. Messages at `error` and
 above flush immediately; lower levels stay buffered until `log::flush()`.
 
 ## Level semantics

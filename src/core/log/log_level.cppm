@@ -24,7 +24,10 @@ inline spdlog::logger &get_logger() {
   static auto instance = [] {
     auto sink = std::make_shared<spdlog::stdout_color_sink_mt>();
     auto lg = spdlog::logger("free_breakfast", sink);
-    lg.set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] [%s:%#] %v");
+    // %t is the OS thread id (gettid on Linux): the number gdb, perf and
+    // compute-sanitizer print, so a line from a taskflow worker can be matched
+    // to the thread those tools name.
+    lg.set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%t] [%l] [%s:%#] %v");
     // Flush anything at error or above immediately. Without this the logger
     // buffers everything, and the messages lost to a crash are precisely the
     // ones written just before it -- the ones explaining the crash. Trace
