@@ -30,8 +30,11 @@ export namespace free_breakfast {
 /// |D_cd| its K_ab block can visit, from the density's decay with distance
 /// (arXiv:2407.21445 §4.3.1; FelizJueves #484): max|D| for a block whose shells are
 /// close, and down to `H_off e^{-Λ d}` for one whose shells are d bohr further
-/// apart than their pairs reach. Every skipped term is under @p tau either way
-/// (FelizJueves's ao.k proves it), so @p tau is the screen's whole contract.
+/// apart than their pairs reach. FelizJueves's ao.k proves every skipped term
+/// under @p tau with its DRESSED record bound; mmd's bound is undressed, can
+/// fall short of it (up to 1.2x on H2O/cc-pVDZ), and does not decay with
+/// distance, so for now a skipped term can exceed @p tau by about that factor
+/// squared and F_ab is max|D| throughout (#132).
 /// @p tau = 0 skips nothing. The default, 1e-10, is @c coulomb's.
 ///
 /// Zeroes @p k and, on res.stream(), computes max|D|; then, per class on that
