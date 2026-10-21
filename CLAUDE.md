@@ -52,9 +52,10 @@ They are wired differently and the difference matters.
 
 Plus `nlohmann_json`, which is FetchContent because it is header-only and small.
 And `deps/FelizJueves`, a submodule that is **not built**: it is the Python
-generator `tools/emit_one_electron_kernels.py` and
-`tools/emit_coulomb_kernels.py` run by hand, their kernels committed under
-`src/integrals/`; re-run both after bumping it. The build takes only its `include/`, as the
+generator `tools/emit_one_electron_kernels.py`,
+`tools/emit_coulomb_kernels.py` and `tools/emit_exchange_kernels.py` run by
+hand, their kernels committed under `src/integrals/`; re-run all three after
+bumping it. The build takes only its `include/`, as the
 INTERFACE target `felizjueves::headers` (`deps/CMakeLists.txt`): the
 vendor-neutral `felizjueves/runtime.h` every generated kernel includes, with
 `FJ_WAVEFRONT` mirrored from `WWR_WARP_SIZE`.

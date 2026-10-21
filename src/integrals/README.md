@@ -19,6 +19,7 @@ coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO d
   sort_bounds/       free_breakfast.integrals.coulomb.sort_bounds: each ket class sorted by its screen bound Iq * Dmax
 exchange/      the exchange matrix K (in progress)
   helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather and the block scatter kernel_k leaves to its launcher
+  kernels/k/         free_breakfast::integrals::exchange::device: the generated K kernels k<la, lc, lb, ld>, 81 classes through d
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd and coulomb/sort_bounds sort with
 ```
@@ -36,11 +37,13 @@ CartesianMatrixAO D                   an AO density
          --MatrixAOPair::cartesian_to_spherical-->  spherical      (linalg.matrix_ao)
 ```
 
-**Generated kernels are committed, not built.** `tools/emit_one_electron_kernels.py`
-and `tools/emit_coulomb_kernels.py` write them from the FelizJueves submodule; a
-build never runs Python. Re-run both after bumping the submodule. Each family
-has its own directory (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
-`mmd/kernels/pair_bound/`, `coulomb/kernels/{dq,e_hermite,jab}/`), and the device Boys
+**Generated kernels are committed, not built.** `tools/emit_one_electron_kernels.py`,
+`tools/emit_coulomb_kernels.py` and `tools/emit_exchange_kernels.py` write them
+from the FelizJueves submodule; a build never runs Python. Re-run all three after
+bumping the submodule. Each family has its own directory
+(`one_electron/{overlap,kinetic,potential_en}/kernels/`,
+`mmd/kernels/pair_bound/`, `coulomb/kernels/{dq,e_hermite,jab}/`,
+`exchange/kernels/k/`), and the device Boys
 routine every unit with a fundamental includes, `eval_boys<M>`, is generated
 once into `shared/eval_boys.h` rather than carried in each unit, beside the
 `shared/eval_boys_{M}.h` it includes: below its switch, one fixed `fma` chain
