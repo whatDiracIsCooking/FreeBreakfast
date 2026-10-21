@@ -17,9 +17,9 @@ emit_coulomb_kernels.py
                   e_hermite,jab}/ from the FelizJueves submodule. Standard
                   library only.
 extract_integral_golden.py
-                  Copy the libcint golden data test/gtest/data/one_electron/
-                  and test/gtest/data/coulomb/ hold out of FelizJueves's
-                  fixtures. Standard library only.
+                  Copy the libcint golden data test/gtest/data/{one_electron,
+                  coulomb,exchange}/ hold out of FelizJueves's fixtures.
+                  Standard library only.
 ```
 
 Re-run the last three after bumping `deps/FelizJueves`; all write tracked files,
