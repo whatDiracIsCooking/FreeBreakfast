@@ -21,7 +21,7 @@ namespace {
 namespace fb = free_breakfast;
 
 constexpr std::int32_t kPrimitives = 60;
-// Any row width will do: the sort only moves rows.
+// Any number of Hermite functions will do: the sort only moves columns.
 constexpr std::int32_t kHermite = 10;
 
 std::vector<double> download(fb::DeviceResources &res, const double *device, std::size_t n) {
@@ -63,8 +63,9 @@ TEST(SortBounds, SortsAKetClassDescendingAndGathersEveryArray) {
   for (std::size_t k = 0; k < n; ++k) {
     bound[k] = 1.0 + static_cast<double>(k % 13);
     dmax[k] = k % 7 == 0 ? 0.0 : std::ldexp(1.0, -static_cast<std::int32_t>(k % 29));
+    // q-major, as dq writes D_q: row q, column k.
     for (std::size_t q = 0; q < kHermite; ++q) {
-      dq[k * kHermite + q] = static_cast<double>(k) + 0.01 * static_cast<double>(q);
+      dq[q * n + k] = static_cast<double>(k) + 0.01 * static_cast<double>(q);
     }
   }
   fb::Buffers::device<double> bound_d(n, res.device());
@@ -122,7 +123,7 @@ TEST(SortBounds, SortsAKetClassDescendingAndGathersEveryArray) {
     ASSERT_EQ(p_y_s[k], p_y[from]) << "row " << k;
     ASSERT_EQ(p_z_s[k], p_z[from]) << "row " << k;
     for (std::size_t q = 0; q < kHermite; ++q) {
-      ASSERT_EQ(dq_s[k * kHermite + q], dq[from * kHermite + q]) << "row " << k << ", q " << q;
+      ASSERT_EQ(dq_s[q * n + k], dq[q * n + from]) << "row " << k << ", q " << q;
     }
     if (k > 0) {
       ASSERT_GE(bound_s[k - 1] * dmax_s[k - 1], bound_s[k] * dmax_s[k]) << "row " << k;

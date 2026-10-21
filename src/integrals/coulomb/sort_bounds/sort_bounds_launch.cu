@@ -25,8 +25,9 @@ __global__ void sort_bounds_key_kernel(const int32_t n_rec, const double *bound,
   }
 }
 
-// One thread per element of the sorted D_q, row k = record perm[k], so the
-// stores coalesce; the row's first thread also moves the record's scalars.
+// One thread per element of the sorted D_q, q-major as dq writes it and
+// e_hermite reads it: column k of each row q is record perm[k]'s, so the stores
+// coalesce. Row 0's threads also move each record's scalars.
 __global__ void sort_bounds_gather_kernel(const int32_t n_rec, const int32_t n_hermite,
                                           const uint32_t *perm, const double *zeta,
                                           const double *p_x, const double *p_y, const double *p_z,
@@ -39,10 +40,10 @@ __global__ void sort_bounds_gather_kernel(const int32_t n_rec, const int32_t n_h
   if (i >= static_cast<int64_t>(n_rec) * n_hermite) {
     return;
   }
-  const auto k = static_cast<int32_t>(i / n_hermite);
-  const auto q = static_cast<int32_t>(i % n_hermite);
+  const auto q = static_cast<int32_t>(i / n_rec);
+  const auto k = static_cast<int32_t>(i % n_rec);
   const auto from = static_cast<int64_t>(perm[k]);
-  dq_sorted[i] = dq[from * n_hermite + q];
+  dq_sorted[i] = dq[static_cast<int64_t>(q) * n_rec + from];
   if (q == 0) {
     zeta_sorted[k] = zeta[from];
     p_x_sorted[k] = p_x[from];

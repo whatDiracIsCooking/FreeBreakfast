@@ -128,10 +128,10 @@ __global__ void e_hermite<1, 1>(
             double R2_0_0_0 = ((PQ_x * R1_0_0_1) + R0_0_0_1);
             // J_p += SUM_q (-1)^|q| [p+q]^(0) D_q, [JEngine, v2, eqs. 7-9, 20-22]: the
             // only shell-quartet-level contraction; [ab|cd] is never formed
-            Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_0_0 * D[(k * 4 + 0)])) - ((R1_0_0_0 * D[(k * 4 + 1)]) + ((R0_1_0_0 * D[(k * 4 + 2)]) + (R0_0_1_0 * D[(k * 4 + 3)]))));
-            Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_0_0_0 * D[(k * 4 + 0)])) - ((R2_0_0_0 * D[(k * 4 + 1)]) + ((R1_1_0_0 * D[(k * 4 + 2)]) + (R1_0_1_0 * D[(k * 4 + 3)]))));
-            Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_1_0_0 * D[(k * 4 + 0)])) - ((R1_1_0_0 * D[(k * 4 + 1)]) + ((R0_2_0_0 * D[(k * 4 + 2)]) + (R0_1_1_0 * D[(k * 4 + 3)]))));
-            Jsh[(3 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(3 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_1_0 * D[(k * 4 + 0)])) - ((R1_0_1_0 * D[(k * 4 + 1)]) + ((R0_1_1_0 * D[(k * 4 + 2)]) + (R0_0_2_0 * D[(k * 4 + 3)]))));
+            Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_0_0 * D[(0 * n_ket + k)])) - ((R1_0_0_0 * D[(1 * n_ket + k)]) + ((R0_1_0_0 * D[(2 * n_ket + k)]) + (R0_0_1_0 * D[(3 * n_ket + k)]))));
+            Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(1 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R1_0_0_0 * D[(0 * n_ket + k)])) - ((R2_0_0_0 * D[(1 * n_ket + k)]) + ((R1_1_0_0 * D[(2 * n_ket + k)]) + (R1_0_1_0 * D[(3 * n_ket + k)]))));
+            Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(2 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_1_0_0 * D[(0 * n_ket + k)])) - ((R1_1_0_0 * D[(1 * n_ket + k)]) + ((R0_2_0_0 * D[(2 * n_ket + k)]) + (R0_1_1_0 * D[(3 * n_ket + k)]))));
+            Jsh[(3 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(3 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (R0_0_1_0 * D[(0 * n_ket + k)])) - ((R1_0_1_0 * D[(1 * n_ket + k)]) + ((R0_1_1_0 * D[(2 * n_ket + k)]) + (R0_0_2_0 * D[(3 * n_ket + k)]))));
         }
         // reduce J_p across the warp: every lane sees the sum
         double Jp0;

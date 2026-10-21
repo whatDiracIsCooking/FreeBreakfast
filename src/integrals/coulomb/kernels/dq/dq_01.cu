@@ -89,13 +89,13 @@ __global__ void dq<0, 1>(
         acc3 = (acc3 + (Dao[((oc + 0) * n_ao + (od + 2))] * (sk * E[2][3])));
         // D[k, q] = w[k] * acc_q: the host's weight, applied last
         double dq0 = (wk * acc0);
-        D[(k * 4 + 0)] = dq0;
+        D[(0 * n_rec + k)] = dq0;
         double dq1 = (wk * acc1);
-        D[(k * 4 + 1)] = dq1;
+        D[(1 * n_rec + k)] = dq1;
         double dq2 = (wk * acc2);
-        D[(k * 4 + 2)] = dq2;
+        D[(2 * n_rec + k)] = dq2;
         double dq3 = (wk * acc3);
-        D[(k * 4 + 3)] = dq3;
+        D[(3 * n_rec + k)] = dq3;
         // Dmax[k] = max_q |D[k, q]|, over the weighted, dressed D_q -- not the AO
         // density's largest element
         double dmax = 0.0;

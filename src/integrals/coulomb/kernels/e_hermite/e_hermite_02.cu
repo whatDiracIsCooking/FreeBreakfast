@@ -125,7 +125,7 @@ __global__ void e_hermite<0, 2>(
             double R2_0_0_0 = ((PQ_x * R1_0_0_1) + R0_0_0_1);
             // J_p += SUM_q (-1)^|q| [p+q]^(0) D_q, [JEngine, v2, eqs. 7-9, 20-22]: the
             // only shell-quartet-level contraction; [ab|cd] is never formed
-            Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (((R0_0_0_0 * D[(k * 10 + 0)]) + ((R2_0_0_0 * D[(k * 10 + 4)]) + (R1_1_0_0 * D[(k * 10 + 5)]))) + (((R1_0_1_0 * D[(k * 10 + 6)]) + (R0_2_0_0 * D[(k * 10 + 7)])) + ((R0_1_1_0 * D[(k * 10 + 8)]) + (R0_0_2_0 * D[(k * 10 + 9)]))))) - ((R1_0_0_0 * D[(k * 10 + 1)]) + ((R0_1_0_0 * D[(k * 10 + 2)]) + (R0_0_1_0 * D[(k * 10 + 3)]))));
+            Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] = ((Jsh[(0 * static_cast<int32_t>(blockDim.y) + static_cast<int32_t>(threadIdx.y))] + (((R0_0_0_0 * D[(0 * n_ket + k)]) + ((R2_0_0_0 * D[(4 * n_ket + k)]) + (R1_1_0_0 * D[(5 * n_ket + k)]))) + (((R1_0_1_0 * D[(6 * n_ket + k)]) + (R0_2_0_0 * D[(7 * n_ket + k)])) + ((R0_1_1_0 * D[(8 * n_ket + k)]) + (R0_0_2_0 * D[(9 * n_ket + k)]))))) - ((R1_0_0_0 * D[(1 * n_ket + k)]) + ((R0_1_0_0 * D[(2 * n_ket + k)]) + (R0_0_1_0 * D[(3 * n_ket + k)]))));
         }
         // reduce J_p across the warp: every lane sees the sum
         double Jp0;
