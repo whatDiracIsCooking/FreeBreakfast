@@ -1,5 +1,6 @@
 /// @file
-/// @brief Implementation of the SAD initial guess.
+/// @brief Implementation of the SAD initial guess: the block-diagonal assembly
+/// of atomic SCF densities.
 
 module free_breakfast.sad;
 
@@ -7,68 +8,40 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.basis;
+import :scf;
 
 #include "diagnostics.h"
 
 namespace free_breakfast {
 
-std::vector<int32_t> subshell_occupation(int32_t z) {
-  if (z < 0 || z > 118) {
-    check_or_abort(err_config("subshell_occupation: Z={} is outside [0, 118]", z));
-  }
-  std::vector<int32_t> occupation;
-  int32_t remaining = z;
-  for (const SubshellFill &subshell : kAufbauOrder) {
-    if (remaining == 0) {
-      break;
-    }
-    const int32_t here = std::min(remaining, subshell.capacity);
-    occupation.push_back(here);
-    remaining -= here;
-  }
-  return occupation;
+// Two atoms share an SCF when their shells match exactly -- momentum,
+// exponents and coefficients -- whatever their centers.
+bool same_shells(std::span<const Shell> a, std::span<const Shell> b) {
+  return std::ranges::equal(a, b, [](const Shell &x, const Shell &y) {
+    return x.angular_momentum() == y.angular_momentum() &&
+           std::ranges::equal(x.primitives(), y.primitives(),
+                              [](const Primitive &p, const Primitive &q) {
+                                return p.exponent == q.exponent && p.coefficient == q.coefficient;
+                              });
+  });
 }
 
-std::vector<double> atomic_diagonal(int32_t z, std::span<const Shell> shells) {
-  // shells_of_l[l] lists the indices of this atom's shells of momentum l, in
-  // order; the k-th subshell of momentum l goes on shells_of_l[l][k].
-  std::vector<std::vector<size_t>> shells_of_l;
-  std::vector<size_t> ao_offset_sphe(shells.size(), 0);
-  size_t nao_sphe = 0;
-  for (size_t s = 0; s < shells.size(); ++s) {
-    const auto l = static_cast<size_t>(shells[s].angular_momentum());
-    if (l >= shells_of_l.size()) {
-      shells_of_l.resize(l + 1);
-    }
-    shells_of_l[l].push_back(s);
-    ao_offset_sphe[s] = nao_sphe;
-    nao_sphe += shells[s].function_count_sphe();
+Result<std::vector<double>> sad_density(const BasisSet &basis, std::span<const Atom> atoms) {
+  if (basis.natoms() != atoms.size()) {
+    return err_config("sad_density: the basis groups its shells over {} atoms but {} were given; "
+                      "the basis was not placed over these atoms",
+                      basis.natoms(), atoms.size());
   }
+  const size_t n = basis.nao_sphe();
+  std::vector<double> density(n * n, 0.0);
 
-  std::vector<double> diagonal(nao_sphe, 0.0);
-  std::vector<size_t> next_of_l(shells_of_l.size(), 0);
-  const std::vector<int32_t> occupation = subshell_occupation(z);
-  for (size_t k = 0; k < occupation.size(); ++k) {
-    const auto l = static_cast<size_t>(kAufbauOrder[k].l);
-    if (l >= shells_of_l.size() || next_of_l[l] >= shells_of_l[l].size()) {
-      continue; // No shell of this momentum left: these electrons are dropped.
-    }
-    const size_t s = shells_of_l[l][next_of_l[l]++];
-    const uint32_t nfun = shells[s].function_count_sphe();
-    const double per_ao = static_cast<double>(occupation[k]) / static_cast<double>(nfun);
-    std::fill_n(diagonal.begin() + static_cast<std::ptrdiff_t>(ao_offset_sphe[s]), nfun, per_ao);
-  }
-  return diagonal;
-}
+  struct Solved {
+    int32_t z;
+    std::span<const Shell> shells;
+    std::vector<double> density;
+  };
+  std::vector<Solved> solved;
 
-Result<std::vector<double>> sad_diagonal(const BasisSet &basis, const Molecule &molecule) {
-  if (basis.natoms() != molecule.natoms()) {
-    return err_config("sad_diagonal: the basis groups its shells over {} atoms but the molecule "
-                      "has {}; the basis was not placed over this molecule",
-                      basis.natoms(), molecule.natoms());
-  }
-  std::vector<double> diagonal(basis.nao_sphe(), 0.0);
-  const std::vector<Atom> &atoms = molecule.atoms();
   for (uint32_t a = 0; a < basis.natoms(); ++a) {
     const uint32_t count = basis.atom_shell_count(a);
     if (count == 0) {
@@ -76,19 +49,22 @@ Result<std::vector<double>> sad_diagonal(const BasisSet &basis, const Molecule &
     }
     const uint32_t first = basis.atom_shell_offset(a);
     const std::span<const Shell> shells(basis.shells().data() + first, count);
-    const std::vector<double> block = atomic_diagonal(nuclear_charge(atoms[a]), shells);
-    const auto offset = static_cast<std::ptrdiff_t>(basis.ao_offset_sphe(first));
-    std::ranges::copy(block, diagonal.begin() + offset);
-  }
-  return diagonal;
-}
-
-Result<std::vector<double>> sad_density(const BasisSet &basis, const Molecule &molecule) {
-  const std::vector<double> diagonal = FBF_TRY(sad_diagonal(basis, molecule));
-  const size_t n = diagonal.size();
-  std::vector<double> density(n * n, 0.0);
-  for (size_t i = 0; i < n; ++i) {
-    density[i + (i * n)] = diagonal[i];
+    const int32_t z = nuclear_charge(atoms[a]);
+    auto it = std::ranges::find_if(
+        solved, [&](const Solved &s) { return s.z == z && same_shells(s.shells, shells); });
+    if (it == solved.end()) {
+      AtomicScf scf = FBF_TRY(atomic_scf(z, shells));
+      solved.push_back(Solved{z, shells, std::move(scf.density)});
+      it = std::prev(solved.end());
+    }
+    const size_t offset = basis.ao_offset_sphe(first);
+    const size_t block = basis.ao_offset_sphe(first + count - 1) +
+                         basis.shells()[first + count - 1].function_count_sphe() - offset;
+    for (size_t j = 0; j < block; ++j) {
+      for (size_t i = 0; i < block; ++i) {
+        density[(offset + i) + (n * (offset + j))] = it->density[i + (block * j)];
+      }
+    }
   }
   return density;
 }

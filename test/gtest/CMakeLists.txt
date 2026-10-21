@@ -146,10 +146,11 @@ target_include_directories(
 
 # Golden reference data (data/README.md). An absolute path, so a test finds it
 # whatever directory ctest runs it from.
-target_compile_definitions(
-  free_breakfast_tests_gpu
-  PRIVATE FBF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
-)
+foreach(_fb_target free_breakfast_tests_gpu free_breakfast_tests_host)
+  target_compile_definitions(
+    ${_fb_target} PRIVATE FBF_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/data"
+  )
+endforeach()
 
 # ---------------------------------------------------------------------------
 # ctest registration

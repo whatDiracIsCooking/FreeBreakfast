@@ -1,8 +1,8 @@
 /// @file
 /// @brief A symmetric eigensolver for the SCF's l blocks.
 
-// A private interface partition: nothing here is exported.
-export module free_breakfast.experimental.atomic_scf:eigen;
+// An internal partition of free_breakfast.sad.
+module free_breakfast.sad:eigen;
 
 import std;
 import free_breakfast.core.types;
