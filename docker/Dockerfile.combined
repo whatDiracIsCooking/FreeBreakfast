@@ -68,7 +68,7 @@ ENV GPU_TARGETS=${GPU_TARGETS} \
 # container (`printenv CLAUDE_CODE_VERSION`), not merely inferable from the
 # binary: that is what lets doctor.sh tell "pinned and installed" apart from
 # "someone npm-installed over the top".
-ARG CLAUDE_CODE_VERSION=2.1.306
+ARG CLAUDE_CODE_VERSION=2.1.308
 ENV CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}
 RUN --mount=type=bind,source=docker/install-claude-code.sh,target=/tmp/install-claude-code.sh \
     bash /tmp/install-claude-code.sh
