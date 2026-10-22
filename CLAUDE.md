@@ -332,9 +332,11 @@ on:
   does not have. `worktree.sh rm` tears down the container and volumes that
   `git worktree remove` would leak.
 
-The seven skills in `.claude/skills/` are the tooling ones — `audit`, `devbox`,
-`doctor`, `milestone`, `pr`, `test`, `worktree` — and they apply to this tree as
-written.
+The eight skills in `.claude/skills/` are the tooling ones — `audit`, `devbox`,
+`doctor`, `milestone`, `milestone-run`, `pr`, `test`, `worktree` — and they
+apply to this tree as written. `milestone-run` executes what `milestone`
+creates: one subagent per ready issue, each in a `.claude/worktrees/` checkout,
+PRs merged serially by the orchestrator.
 
 Three more came across in the hoist and were **removed**: `constants`,
 `error-handling` and `memory-buffer` documented the *ancestor* project's
