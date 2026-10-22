@@ -2,10 +2,10 @@
 /// @brief The J build's ket pre-contraction, over the dq<la, lb> kernels
 /// FelizJueves generates: one class's weights, D_q and Dmax.
 
-export module free_breakfast.integrals.coulomb.dq;
+export module free_breakfast.integrals.eri.integral_direct.coulomb.dq;
 
 import free_breakfast.core.wwr;
-import free_breakfast.integrals.coulomb.pair_class;
+import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 import free_breakfast.linalg.matrix_ao;
 
 export namespace free_breakfast {

@@ -7,7 +7,7 @@ module;
 // declared in the GMF so it keeps external linkage (see the header).
 #include "sort_bounds_bridge.h"
 
-module free_breakfast.integrals.coulomb;
+module free_breakfast.integrals.eri.integral_direct.coulomb;
 
 import std;
 import free_breakfast.core.types;
@@ -17,10 +17,10 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
-import free_breakfast.integrals.coulomb.pair_class;
-import free_breakfast.integrals.coulomb.dq;
-import free_breakfast.integrals.coulomb.e_hermite;
-import free_breakfast.integrals.coulomb.j_coulomb;
+import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
+import free_breakfast.integrals.eri.integral_direct.coulomb.dq;
+import free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite;
+import free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb;
 import free_breakfast.linalg.matrix_ao;
 
 #include "diagnostics.h"

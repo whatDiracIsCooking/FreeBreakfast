@@ -6,8 +6,9 @@ which each launch over these classes.
 
 ## Module
 
-`free_breakfast.integrals.coulomb.pair_class`, re-exported by
-`free_breakfast.integrals.coulomb` and so by `free_breakfast.integrals`.
+`free_breakfast.integrals.eri.integral_direct.coulomb.pair_class`, re-exported
+by `free_breakfast.integrals.eri.integral_direct.coulomb` and so by
+`free_breakfast.integrals`.
 
 ## Design
 

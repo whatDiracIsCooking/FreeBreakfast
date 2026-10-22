@@ -22,7 +22,7 @@ add_subdirectory(pairs)
 # core::kernel_headers; all four PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
-  free_breakfast.integrals.exchange.device
+  free_breakfast.integrals.eri.integral_direct.exchange.device
   SOURCES
   exchange_launch.cu
   kernels/kb/kb_00_00.cu
@@ -108,7 +108,7 @@ free_breakfast_add_gpu_device_library(
   kernels/kb/kb_22_22.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
-  free_breakfast::integrals::exchange::pairs::headers
+  free_breakfast::integrals::eri::integral_direct::exchange::pairs::headers
   wwr::device
   LINK_PRIVATE
   felizjueves::headers
@@ -126,7 +126,7 @@ free_breakfast_add_gpu_device_library(
 # final link.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.integrals.exchange
+  free_breakfast.integrals.eri.integral_direct.exchange
   PRIMARY_INTERFACE
   exchange.cppm
   IMPLEMENTATION
@@ -135,7 +135,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::error_handling
   free_breakfast::core::resources
-  free_breakfast::integrals::exchange::pairs
+  free_breakfast::integrals::eri::integral_direct::exchange::pairs
   free_breakfast::linalg::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::types
@@ -143,6 +143,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::diagnostics_macros
   free_breakfast::basis
   free_breakfast::integrals::one_electron::launch
-  free_breakfast::integrals::exchange::device
-  free_breakfast::integrals::exchange::helpers
+  free_breakfast::integrals::eri::integral_direct::exchange::device
+  free_breakfast::integrals::eri::integral_direct::exchange::helpers
 )

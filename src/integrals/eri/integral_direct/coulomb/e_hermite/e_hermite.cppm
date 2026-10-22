@@ -3,11 +3,11 @@
 /// FelizJueves generates: one ket class against every bra class, screened by
 /// the record bound.
 
-export module free_breakfast.integrals.coulomb.e_hermite;
+export module free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite;
 
 import std;
 import free_breakfast.core.wwr;
-import free_breakfast.integrals.coulomb.pair_class;
+import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 
 export namespace free_breakfast {
 

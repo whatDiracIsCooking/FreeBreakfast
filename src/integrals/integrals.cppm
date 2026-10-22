@@ -10,5 +10,5 @@ export module free_breakfast.integrals;
 
 export import free_breakfast.integrals.mmd;
 export import free_breakfast.integrals.one_electron;
-export import free_breakfast.integrals.coulomb;
-export import free_breakfast.integrals.exchange;
+export import free_breakfast.integrals.eri.integral_direct.coulomb;
+export import free_breakfast.integrals.eri.integral_direct.exchange;

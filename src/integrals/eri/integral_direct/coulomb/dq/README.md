@@ -6,8 +6,8 @@ FelizJueves generates: per class, `D_q = w Σ_cd D_cd s E^cd_q` and
 
 ## Module
 
-`free_breakfast.integrals.coulomb.dq`, driven by
-`free_breakfast.integrals.coulomb`'s `coulomb`.
+`free_breakfast.integrals.eri.integral_direct.coulomb.dq`, driven by
+`free_breakfast.integrals.eri.integral_direct.coulomb`'s `coulomb`.
 
 ## Design
 

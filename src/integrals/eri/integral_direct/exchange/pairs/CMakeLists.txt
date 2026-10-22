@@ -1,11 +1,12 @@
 # OrderedPairClassView, the exchange launchers' view of an ordered class,
 # offered two ways from one definition in ordered_pair_class_view.h: `#include`
 # through this include path, and `import
-# free_breakfast.integrals.exchange.pairs;`, which includes it in its GMF and
-# re-exports the name (mmd's headers library, the same arrangement).
+# free_breakfast.integrals.eri.integral_direct.exchange.pairs;`, which includes
+# it in its GMF and re-exports the name (mmd's headers library, the same
+# arrangement).
 free_breakfast_add_interface_library(
   NAME
-  free_breakfast.integrals.exchange.pairs.headers
+  free_breakfast.integrals.eri.integral_direct.exchange.pairs.headers
   LINK_PUBLIC
   free_breakfast::core::types_headers
 )
@@ -20,7 +21,7 @@ free_breakfast_add_interface_library(
 # src/integrals/sort's merge sort; both PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
-  free_breakfast.integrals.exchange.pairs.device
+  free_breakfast.integrals.eri.integral_direct.exchange.pairs.device
   SOURCES
   pairs_launch.cu
   LINK_PUBLIC
@@ -40,7 +41,7 @@ free_breakfast_add_gpu_device_library(
 # GMF, are its only.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.integrals.exchange.pairs
+  free_breakfast.integrals.eri.integral_direct.exchange.pairs
   PRIMARY_INTERFACE
   pairs.cppm
   IMPLEMENTATION
@@ -53,8 +54,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::basis
   free_breakfast::integrals::mmd
-  free_breakfast::integrals::exchange::pairs::headers
+  free_breakfast::integrals::eri::integral_direct::exchange::pairs::headers
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
-  free_breakfast::integrals::exchange::pairs::device
+  free_breakfast::integrals::eri::integral_direct::exchange::pairs::device
 )

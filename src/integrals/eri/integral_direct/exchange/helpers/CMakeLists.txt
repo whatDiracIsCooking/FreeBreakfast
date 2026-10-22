@@ -11,7 +11,7 @@
 # PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
-  free_breakfast.integrals.exchange.helpers
+  free_breakfast.integrals.eri.integral_direct.exchange.helpers
   SOURCES
   exchange_helpers.cu
   LINK_PUBLIC

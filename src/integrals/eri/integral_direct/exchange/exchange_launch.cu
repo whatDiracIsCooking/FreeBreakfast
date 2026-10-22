@@ -1,7 +1,8 @@
-// The device half of free_breakfast.integrals.exchange: the launcher over the
-// generated kb<la, lc, lb, ld>, and the small kernels that make the per-record
-// inputs it leaves to its caller (the rank-to-AO table and the bra's Dcd rows).
-// One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
+// The device half of free_breakfast.integrals.eri.integral_direct.exchange: the
+// launcher over the generated kb<la, lc, lb, ld>, and the small kernels that
+// make the per-record inputs it leaves to its caller (the rank-to-AO table and
+// the bra's Dcd rows). One source for both backends -- nvcc under CUDA,
+// clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/kb/),
 // each one explicit specialization of the template kernels/kb/kb.h declares with

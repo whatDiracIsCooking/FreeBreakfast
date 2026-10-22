@@ -13,10 +13,10 @@ a block's warp stops its bra loop at the first bra with
 
 ## Module
 
-`free_breakfast.integrals.exchange`, also re-exported by
+`free_breakfast.integrals.eri.integral_direct.exchange`, also re-exported by
 `free_breakfast.integrals`. It re-exports
-[`free_breakfast.integrals.exchange.pairs`](pairs/README.md), so the one
-import gives both the ordered classes the build reads and the build:
+[`free_breakfast.integrals.eri.integral_direct.exchange.pairs`](pairs/README.md),
+so the one import gives both the ordered classes the build reads and the build:
 
 ```cpp
 auto mmd = primitive_pair_classes(res, basis);              // once per basis

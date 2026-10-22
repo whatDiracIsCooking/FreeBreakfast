@@ -1,15 +1,14 @@
-// GPU cases for integrals.exchange: the Cartesian exchange matrix K of H2O in
-// STO-3G (s, p; O's p shell precedes the H s shells, so (p, s) and (s, p) are
-// both reached) and cc-pVDZ (s, p, d, so every k class through (dd|dd))
-// against libcint's K of the same density, recorded by PySCF
+// GPU cases for integrals.eri.integral_direct.exchange: the Cartesian exchange
+// matrix K of H2O in STO-3G (s, p; O's p shell precedes the H s shells, so
+// (p, s) and (s, p) are both reached) and cc-pVDZ (s, p, d, so every k class
+// through (dd|dd)) against libcint's K of the same density, recorded by PySCF
 // (test/gtest/data/exchange/, copied from FelizJueves's fixtures by
 // tools/extract_integral_golden.py), unscreened (tau = 0) and screened at the
 // default (1e-13) and at 1e-14, all to one bar; the H10 chain's block factors,
 // as the build makes them, a pinned share of them under max|D|; the symmetric
-// sweep against the full one, and on a
-// non-symmetric density, that it mirrors rather than computes the a > b
-// blocks; that a tau no bound reaches screens everything; plus, as
-// coulomb_gpu.cpp, the zeroing and the refusals.
+// sweep against the full one, and on a non-symmetric density, that it mirrors
+// rather than computes the a > b blocks; that a tau no bound reaches screens
+// everything; plus, as coulomb_gpu.cpp, the zeroing and the refusals.
 
 #include <gtest/gtest.h>
 

@@ -2,7 +2,8 @@
 """Write K's dressed record bounds, FelizJueves's ao.k.record_bounds, as gtest
 golden data: test/gtest/data/record_bound/<molecule>.json.
 
-free_breakfast.integrals.exchange.pairs computes each ordered record's bound
+free_breakfast.integrals.eri.integral_direct.exchange.pairs computes each
+ordered record's bound
 
     I = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
 

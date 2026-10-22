@@ -1,4 +1,5 @@
-// The device half of free_breakfast.integrals.exchange.pairs: an ordered
+// The device half of
+// free_breakfast.integrals.eri.integral_direct.exchange.pairs: an ordered
 // class's order (each group sorted by mmd's dressed bound of the orientation)
 // and its gather, straight from the mmd class it is drawn from, once per basis.
 // One source for both backends -- nvcc under CUDA, clang -x hip under HIP.

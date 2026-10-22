@@ -16,7 +16,7 @@ module;
 
 #include "ordered_pair_class_view.h"
 
-export module free_breakfast.integrals.exchange.pairs;
+export module free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
 import std;
 import free_breakfast.core.types;

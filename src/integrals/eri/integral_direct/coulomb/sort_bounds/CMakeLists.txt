@@ -9,7 +9,7 @@
 # with is src/integrals/sort's, PRIVATE: only the .cu includes its bridge.
 free_breakfast_add_gpu_device_library(
   NAME
-  free_breakfast.integrals.coulomb.sort_bounds.device
+  free_breakfast.integrals.eri.integral_direct.coulomb.sort_bounds.device
   SOURCES
   sort_bounds_launch.cu
   LINK_PUBLIC

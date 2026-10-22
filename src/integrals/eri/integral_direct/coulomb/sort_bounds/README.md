@@ -6,11 +6,11 @@ Each ket class of the J build sorted descending by its screen bound
 ## Target
 
 A device library with no module face,
-`free_breakfast::integrals::coulomb::sort_bounds::device`, driven through
-`sort_bounds_bridge.h`. Only [`coulomb`](../README.md) uses it: the buffers it
-sorts into are `CoulombPairClass`'s `ket_` fields, so the class owns them, and
-coulomb's implementation unit includes the bridge in its global module
-fragment.
+`free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device`,
+driven through `sort_bounds_bridge.h`. Only [`coulomb`](../README.md) uses it:
+the buffers it sorts into are `CoulombPairClass`'s `ket_` fields, so the class
+owns them, and coulomb's implementation unit includes the bridge in its global
+module fragment.
 
 ## Why the kets are sorted, and by what
 

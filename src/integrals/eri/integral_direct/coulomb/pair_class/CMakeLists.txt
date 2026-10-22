@@ -9,7 +9,7 @@
 # primitives.h), hence basis::headers and core::kernel_headers PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
-  free_breakfast.integrals.coulomb.pair_class.device
+  free_breakfast.integrals.eri.integral_direct.coulomb.pair_class.device
   SOURCES
   pair_class_launch.cu
   LINK_PUBLIC
@@ -30,7 +30,7 @@ free_breakfast_add_gpu_device_library(
 # calls the launchers. The momentum limit is basis's.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.integrals.coulomb.pair_class
+  free_breakfast.integrals.eri.integral_direct.coulomb.pair_class
   PRIMARY_INTERFACE
   pair_class.cppm
   IMPLEMENTATION
@@ -46,5 +46,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::diagnostics_macros
   free_breakfast::basis
   free_breakfast::integrals::one_electron::launch
-  free_breakfast::integrals::coulomb::pair_class::device
+  free_breakfast::integrals::eri::integral_direct::coulomb::pair_class::device
 )

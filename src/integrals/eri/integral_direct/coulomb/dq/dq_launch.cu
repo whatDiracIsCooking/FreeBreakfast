@@ -1,7 +1,7 @@
-// The device half of free_breakfast.integrals.coulomb.dq: the launcher over the
-// generated dq<la, lb> kernels, and the small kernel that makes the weights
-// they leave to their caller. One source for both backends -- nvcc under CUDA,
-// clang -x hip under HIP.
+// The device half of free_breakfast.integrals.eri.integral_direct.coulomb.dq:
+// the launcher over the generated dq<la, lb> kernels, and the small kernel that
+// makes the weights they leave to their caller. One source for both backends --
+// nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/),
 // each one explicit specialization of the kernel template `dq`. kernels/dq.h

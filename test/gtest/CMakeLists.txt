@@ -115,26 +115,27 @@ set_target_properties(
 # free_breakfast::test::gpu_kernels is the device library (test/gpu_kernels)
 # primitives_gpu.cpp and reduce_gpu.cpp launch through: its .cu files stay out
 # of this executable, and only their plain-C++ launcher headers are #included
-# here. free_breakfast::integrals::exchange::helpers and
-# free_breakfast::integrals::coulomb::sort_bounds::device are the same
-# arrangement for exchange_helpers_gpu.cpp and sort_bounds_gpu.cpp: device
-# libraries with no module face, driven through their bridge headers.
+# here. free_breakfast::integrals::eri::integral_direct::exchange::helpers and
+# free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
+# are the same arrangement for exchange_helpers_gpu.cpp and sort_bounds_gpu.cpp:
+# device libraries with no module face, driven through their bridge headers.
 target_link_libraries(
   free_breakfast_tests_gpu
-  PRIVATE free_breakfast::core
-          free_breakfast::core::resources
-          free_breakfast::molecule
-          free_breakfast::basis
-          free_breakfast::sad
-          free_breakfast::linalg
-          free_breakfast::integrals
-          free_breakfast::integrals::coulomb::sort_bounds::device
-          free_breakfast::integrals::exchange::helpers
-          free_breakfast::integrals::exchange::pairs
-          free_breakfast::io
-          free_breakfast::test::gpu_kernels
-          GTest::gtest
-          GTest::gtest_main
+  PRIVATE
+  free_breakfast::core
+  free_breakfast::core::resources
+  free_breakfast::molecule
+  free_breakfast::basis
+  free_breakfast::sad
+  free_breakfast::linalg
+  free_breakfast::integrals
+  free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
+  free_breakfast::integrals::eri::integral_direct::exchange::helpers
+  free_breakfast::integrals::eri::integral_direct::exchange::pairs
+  free_breakfast::io
+  free_breakfast::test::gpu_kernels
+  GTest::gtest
+  GTest::gtest_main
 )
 
 # gpu_requirement.h and slow_test.h are #included by the TUs in this directory.

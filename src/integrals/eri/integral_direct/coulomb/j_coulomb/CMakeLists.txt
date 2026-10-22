@@ -13,7 +13,7 @@
 # primitives.h), hence core::kernel_headers; both PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
-  free_breakfast.integrals.coulomb.j_coulomb.device
+  free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb.device
   SOURCES
   j_coulomb_launch.cu
   kernels/jab_00.cu
@@ -40,7 +40,7 @@ free_breakfast_add_gpu_device_library(
 # final link.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.integrals.coulomb.j_coulomb
+  free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb
   PRIMARY_INTERFACE
   j_coulomb.cppm
   IMPLEMENTATION
@@ -49,8 +49,8 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::types
   free_breakfast::core::wwr
-  free_breakfast::integrals::coulomb::pair_class
+  free_breakfast::integrals::eri::integral_direct::coulomb::pair_class
   free_breakfast::linalg::matrix_ao
   LINK_PRIVATE
-  free_breakfast::integrals::coulomb::j_coulomb::device
+  free_breakfast::integrals::eri::integral_direct::coulomb::j_coulomb::device
 )

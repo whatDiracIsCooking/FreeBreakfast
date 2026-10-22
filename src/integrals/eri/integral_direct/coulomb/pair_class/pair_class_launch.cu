@@ -1,4 +1,5 @@
-// The device half of free_breakfast.integrals.coulomb.pair_class:
+// The device half of
+// free_breakfast.integrals.eri.integral_direct.coulomb.pair_class:
 // coulomb_pair_classes' prune (the bound maxima, the keep flag and its scan,
 // the scatter). One source for both backends -- nvcc under CUDA, clang -x hip
 // under HIP.

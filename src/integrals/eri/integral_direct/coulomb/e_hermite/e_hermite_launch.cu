@@ -1,4 +1,5 @@
-// The device half of free_breakfast.integrals.coulomb.e_hermite: the launcher
+// The device half of
+// free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite: the launcher
 // over the generated e_hermite<lp, lq> kernels. One source for both backends --
 // nvcc under CUDA, clang -x hip under HIP.
 //

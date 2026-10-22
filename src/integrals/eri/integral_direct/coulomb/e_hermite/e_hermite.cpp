@@ -7,12 +7,12 @@ module;
 // it keeps external linkage (see the header).
 #include "e_hermite_bridge.h"
 
-module free_breakfast.integrals.coulomb.e_hermite;
+module free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite;
 
 import std;
 import free_breakfast.core.wwr;
 import free_breakfast.integrals.mmd;
-import free_breakfast.integrals.coulomb.pair_class;
+import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 
 namespace free_breakfast {
 

@@ -3,10 +3,11 @@
 /// made on the device, with the primitive pairs J cannot need pruned and only
 /// the fields J reads, plus each class's per-build scratch.
 ///
-/// Below the J build's steps (dq, e_hermite, j_coulomb), which each launch
-/// over these, and re-exported by free_breakfast.integrals.coulomb.
+/// Below the J build's steps (dq, e_hermite, j_coulomb), which each launch over
+/// these, and re-exported by
+/// free_breakfast.integrals.eri.integral_direct.coulomb.
 
-export module free_breakfast.integrals.coulomb.pair_class;
+export module free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 
 import std;
 import free_breakfast.core.types;

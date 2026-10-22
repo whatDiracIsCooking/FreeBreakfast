@@ -7,11 +7,11 @@ module;
 // keeps external linkage (see the header).
 #include "dq_bridge.h"
 
-module free_breakfast.integrals.coulomb.dq;
+module free_breakfast.integrals.eri.integral_direct.coulomb.dq;
 
 import std;
 import free_breakfast.core.wwr;
-import free_breakfast.integrals.coulomb.pair_class;
+import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 import free_breakfast.linalg.matrix_ao;
 
 namespace free_breakfast {

@@ -1,17 +1,18 @@
-// GPU cases for integrals.exchange.pairs: the ordered pair classes K's bras
-// and kets are drawn from, on H2O in STO-3G (O's p shell precedes the H s
-// shells, so (p, s) is reached only by swapping mmd's (s|p)) and cc-pVDZ (s,
-// p, d: all nine ordered classes), and the H10 chain. Each class's record
-// count against a host count of ordered primitive pairs; its groups
-// contiguous, one first shell each with its AO offset, in basis order and non-increasing in the
-// dressed record bound, and their bounds on the device side as group_start;
-// each record's rank_b; the (la, lb) and (lb, la) records the same multiset
-// with P - A and P - B swapped; every class bit for bit against a host gather
-// of mmd's records; the view naming the device fields; and
-// each record's dressed bound against FelizJueves's ao.k.record_bounds
-// (test/gtest/data/record_bound/, tools/emit_record_bound_golden.py), on
-// H2O/cc-pVDZ and the chain, with its centres those of its two shells. The
-// classes are device only: every check reads a copy taken back explicitly.
+// GPU cases for integrals.eri.integral_direct.exchange.pairs: the ordered pair
+// classes K's bras and kets are drawn from, on H2O in STO-3G (O's p shell
+// precedes the H s shells, so (p, s) is reached only by swapping mmd's (s|p))
+// and cc-pVDZ (s, p, d: all nine ordered classes), and the H10 chain. Each
+// class's record count against a host count of ordered primitive pairs; its
+// groups contiguous, one first shell each with its AO offset, in basis order
+// and non-increasing in the dressed record bound, and their bounds on the
+// device side as group_start; each record's rank_b; the (la, lb) and (lb, la)
+// records the same multiset with P - A and P - B swapped; every class bit for
+// bit against a host gather of mmd's records; the view naming the device
+// fields; and each record's dressed bound against FelizJueves's
+// ao.k.record_bounds (test/gtest/data/record_bound/,
+// tools/emit_record_bound_golden.py), on H2O/cc-pVDZ and the chain, with its
+// centres those of its two shells. The classes are device only: every check
+// reads a copy taken back explicitly.
 
 #include <gtest/gtest.h>
 
@@ -23,7 +24,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
-import free_breakfast.integrals.exchange.pairs;
+import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
 namespace {
 

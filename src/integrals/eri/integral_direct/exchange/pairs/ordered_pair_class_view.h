@@ -2,10 +2,11 @@
 /// @brief OrderedPairClassView: one ordered pair class's records on the
 /// device, by pointer, for the exchange launchers.
 ///
-/// This header is the single definition, as primitive_pair_class_view.h is
-/// for mmd's classes: a launcher reaches it by `#include` (through its bridge
-/// header), a module by `import free_breakfast.integrals.exchange.pairs;`,
-/// which includes it in its global module fragment and re-exports the name.
+/// This header is the single definition, as primitive_pair_class_view.h is for
+/// mmd's classes: a launcher reaches it by `#include` (through its bridge
+/// header), a module by `import
+/// free_breakfast.integrals.eri.integral_direct.exchange.pairs;`, which
+/// includes it in its global module fragment and re-exports the name.
 ///
 /// The owner, @c OrderedPairClass, holds wwr buffers and so lives only in the
 /// module; it hands out one of these with @c view(). A view is valid while its

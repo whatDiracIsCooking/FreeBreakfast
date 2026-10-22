@@ -7,7 +7,7 @@ module;
 // so they keep external linkage (see the header).
 #include "pair_class_bridge.h"
 
-module free_breakfast.integrals.coulomb.pair_class;
+module free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 
 import std;
 import free_breakfast.core.types;
