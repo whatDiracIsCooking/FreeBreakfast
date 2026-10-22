@@ -45,6 +45,7 @@ add_executable(
   io_toml_host.cpp
   gpu_policy_host.cpp
   node_resources_host.cpp
+  pipeline_step_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -66,6 +67,7 @@ target_link_libraries(
           free_breakfast::sad
           free_breakfast::io
           free_breakfast::core::resources
+          free_breakfast::pipeline::step
           GTest::gtest
           GTest::gtest_main
 )
