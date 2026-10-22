@@ -224,6 +224,7 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
     for (const auto &[shell, recs] : groups) {
       cls.group_start.pinned().data()[cls.groups.size()] = static_cast<int32_t>(r);
       cls.groups.push_back({.shell = shell,
+                            .ao_offset = static_cast<int32_t>(basis.ao_offset_cart(shell)),
                             .start = static_cast<int32_t>(r),
                             .count = static_cast<int32_t>(recs.size())});
       for (const OrderedPairSource &src : recs) {
@@ -234,8 +235,7 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
     FBF_TRY(copy_ordered_to_device(cls));
     FBF_TRY(form_ordered_bounds(cls));
   }
-  // The pinned side is final only once every class's refresh has run; the K
-  // build reads it on the host (its shells' AO offsets).
+  // The pinned side is final only once every class's refresh has run.
   for (const OrderedPairClass &cls : out) {
     FBF_TRY(gpu_status(wwr::wwrStreamSynchronize(cls.device_stream()->stream())));
   }

@@ -84,9 +84,9 @@ is once per basis, never per build. (Before the dressed bound, `mmd`'s ζ order
 was enough: its bound rises with ζ. The dressed one does not follow ζ.) A K
 block takes one bra group and one ket group whole, since all its bras share
 the `a` shell whose row the block is, and its kets the `b` shell whose column.
-The group table is on the host, one `OrderedPairGroup {shell, start, count}`
-per group: `shell` the first shell's index in `BasisSet::shells()`, the
-records `[start, start + count)`. Its bounds are also on the device, as
+The group table is on the host, one `OrderedPairGroup {shell, ao_offset,
+start, count}` per group: `shell` the first shell's index in
+`BasisSet::shells()`, `ao_offset` its first Cartesian AO, the records `[start, start + count)`. Its bounds are also on the device, as
 `group_start` (`groups.size() + 1` entries, the last `n_rec`), from which the
 K build makes its block tables there.
 
@@ -99,7 +99,7 @@ copies to the device on a new `DeviceStream`, then the bound, the sort and the
 refresh above. The group table and the ranks are host data anyway, and the
 gather is a few array copies. Every class's stream is synchronized before the
 return, so the pinned side is final (the K build reads its shells' AO offsets
-from it). A record whose AO offset starts no shell of the basis (the `mmd`
+from the group table, not from it). A record whose AO offset starts no shell of the basis (the `mmd`
 classes are another basis's) is an `InvalidConfig` error.
 
 ## Public API
@@ -107,7 +107,7 @@ classes are another basis's) is an `InvalidConfig` error.
 | Symbol | Role |
 |---|---|
 | `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field (`record_bound` and `rank_b` among them), `groups` and their bounds `group_start`, `device_stream()`; `view()` gives an `OrderedPairClassView` |
-| `OrderedPairGroup` | One group: `shell`, `start`, `count` |
+| `OrderedPairGroup` | One group: `shell`, `ao_offset`, `start`, `count` |
 | `OrderedPairClassView` | The class's device fields by pointer, for the launchers (`ordered_pair_class_view.h`, re-exported) |
 | `ordered_pair_classes(res, basis, classes)` | `Result<std::vector<OrderedPairClass>>` from `primitive_pair_classes(res, basis)`: every reached ordered class, ascending `(la, lb)`, none empty, each on a new `DeviceStream` |
 

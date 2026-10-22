@@ -3,7 +3,7 @@
 // shells, so (p, s) is reached only by swapping mmd's (s|p)) and cc-pVDZ (s,
 // p, d: all nine ordered classes), and the H10 chain. Each class's record
 // count against a host count of ordered primitive pairs; its groups
-// contiguous, one first shell each, in basis order and non-increasing in the
+// contiguous, one first shell each with its AO offset, in basis order and non-increasing in the
 // dressed record bound, and their bounds on the device side as group_start;
 // each record's rank_b; the (la, lb) and (lb, la) records the same multiset
 // with P - A and P - B swapped; the device side matching the pinned side; and
@@ -206,6 +206,7 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
       }
       EXPECT_EQ(g.count, want) << name << " shell " << g.shell;
       const auto a_off = static_cast<std::int32_t>(basis.ao_offset_cart(g.shell));
+      EXPECT_EQ(g.ao_offset, a_off) << name << " shell " << g.shell;
       for (std::int32_t k = g.start; k < g.start + g.count; ++k) {
         const auto r = static_cast<std::size_t>(k);
         EXPECT_EQ(at(cls.off_a, r), a_off) << name << " record " << k;

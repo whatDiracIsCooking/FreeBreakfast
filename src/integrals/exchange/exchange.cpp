@@ -113,8 +113,7 @@ Status exchange_build(DeviceResources &res, const std::span<const OrderedPairCla
   }
   const auto n_ao = static_cast<int32_t>(n);
 
-  // The shells, read off the groups' first records on the host (the pinned
-  // side holds what was copied to the device), and the classes by momenta.
+  // The shells, read off the host's groups, and the classes by momenta.
   // Every shell of momentum l pairs with itself, so the class (l, l) names
   // every shell of l, and every (lc, ld) of two reached momenta is reached.
   std::vector<ExchangeShell> shells;
@@ -129,7 +128,7 @@ Status exchange_build(DeviceResources &res, const std::span<const OrderedPairCla
       }
       ExchangeShell &sh = shells[at];
       if (sh.momentum < 0) {
-        sh = {cls.la, cls.off_a.pinned().data()[g.start]};
+        sh = {cls.la, g.ao_offset};
         ++n_shells[static_cast<size_t>(cls.la)];
         if (sh.offset < 0 || sh.offset + exchange_cartesian_count(sh.momentum) > n_ao) {
           return err_config("exchange: shell {} reaches AO {}, but K is {} x {}", g.shell,

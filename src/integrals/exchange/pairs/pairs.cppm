@@ -37,6 +37,9 @@ using free_breakfast::OrderedPairClassView;
 struct OrderedPairGroup {
   /// @brief The first shell, as an index into @c BasisSet::shells().
   int32_t shell;
+  /// @brief The first shell's first Cartesian AO (@c BasisSet::ao_offset_cart),
+  /// every record's @ref OrderedPairClass::off_a.
+  int32_t ao_offset;
   /// @brief The group's first record.
   int32_t start;
   /// @brief The group's record count, positive.
