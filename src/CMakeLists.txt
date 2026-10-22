@@ -38,4 +38,5 @@ target_link_libraries(
           free_breakfast::pipeline::config
           free_breakfast::pipeline::spherical_transform
           free_breakfast::pipeline::primitive_pair_classes
+          free_breakfast::pipeline::overlap
 )
