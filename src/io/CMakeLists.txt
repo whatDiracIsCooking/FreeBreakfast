@@ -2,7 +2,6 @@ add_subdirectory(base)
 add_subdirectory(json)
 add_subdirectory(npy)
 add_subdirectory(toml)
-add_subdirectory(config)
 add_subdirectory(basis)
 add_subdirectory(xyz)
 
@@ -16,7 +15,6 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::io::base
   free_breakfast::io::basis
-  free_breakfast::io::config
   free_breakfast::io::json
   free_breakfast::io::npy
   free_breakfast::io::toml

@@ -176,9 +176,9 @@ file's per-element table of them. Putting one somewhere follows one pattern:
 
 ## Module-private code
 
-**There are no anonymous namespaces and no `detail` namespaces**, with two
-exceptions where an anonymous namespace is allowed: `.cu` files and
-`test/gtest/*.cpp`. Neither of those is a module unit, so the alternatives
+**There are no anonymous namespaces and no `detail` namespaces**, with three
+exceptions where an anonymous namespace is allowed: `.cu` files,
+`test/gtest/*.cpp` and `src/main.cpp`. None of those is a module unit, so the alternatives
 below are not available there.
 
 In a named module, `export` already decides what is visible. Anything not
@@ -194,7 +194,7 @@ on who needs it:
 
 | Who uses it | Put it in | Example |
 | --- | --- | --- |
-| One implementation unit (`.cpp`) | An unexported declaration at namespace scope in that file | `table_int` in `src/io/config/config_reader.cpp` |
+| One implementation unit (`.cpp`) | An unexported declaration at namespace scope in that file | `step_table` in `src/pipeline/config/config.cpp` |
 | Several implementation units of one module | An **internal partition**, `module M:name;`, imported by those units | `src/io/npy/npy_format.cppm` (`kMagic`, used by both the reader and the writer) |
 | An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | None in the tree today; `src/basis/numeric.cppm` was one until its helpers moved to `free_breakfast.core.primitives` |
 
@@ -276,7 +276,7 @@ Say why in a comment there (see `LogPolicy` in
 - Use `///` Doxygen comments with `@brief` on everything exported, and `//` for
   everything else. Don't use `/** … */`. "Exported" includes the public members
   of an exported type: data members, member functions, member aliases and
-  constructors (see `Config` in `src/io/config/config_shared.cppm`). It also
+  constructors (see `MoleculeStep` in `src/pipeline/molecule/molecule.cppm`). It also
   includes enumerators, which take a trailing `///<` (see `LogLevel`). The one
   exception is special members that are only `= default` or `= delete`.
 - Explain *why*: the constraint, the failure the code avoids, or the

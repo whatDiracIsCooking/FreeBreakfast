@@ -14,6 +14,7 @@ sad/       The SAD initial-guess density from spherically averaged atomic SCFs o
 linalg/    Dense GPU linear algebra: square gemm and the sandwich products, the symmetric orthogonalizer S^{-1/2}, and DIIS extrapolation
 integrals/ Gaussian integrals on the GPU over FelizJueves-generated kernels: MMD primitive-pair records, S, T, V, the core Hamiltonian H = T + V and the Coulomb matrix J
 pipeline/  The calculation pipeline: the step contract (View, PipelineStep) its steps are written against
+main.cpp   The free-breakfast executable: a TOML config's steps run in order, and the one Error -> exit-code boundary
 ```
 
 ## Adding a module
