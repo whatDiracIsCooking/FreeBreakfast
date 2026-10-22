@@ -48,10 +48,10 @@ TEST(SortBounds, SortsAKetClassDescendingAndGathersEveryArray) {
   }
   const fb::BasisSet basis(
       {fb::Shell(0, exponents, coefficients, fb::Vec<double, 3>{0.1, -0.2, 0.3})});
-  const auto classes = fb::primitive_pair_classes(res, basis);
+  auto classes = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(classes);
   ASSERT_EQ(classes->size(), 1U);
-  const fb::PrimitivePairClass &cls = (*classes)[0];
+  fb::PrimitivePairClass &cls = (*classes)[0];
   const auto n = static_cast<std::size_t>(cls.n_rec);
   ASSERT_GT(n, 2816U);
 
@@ -77,7 +77,12 @@ TEST(SortBounds, SortsAKetClassDescendingAndGathersEveryArray) {
                                   wwr::wwrMemcpyHostToDevice, res.stream()),
               wwr::wwrSuccess);
   }
-  // The records' copy to the device is queued on the class's stream.
+  // The records' copy to the device, and their order there, are queued on the
+  // class's stream; mmd's pinned side is staging only, so the fields read
+  // below are copied back on it.
+  for (fb::MirroredBuffer<double> *field : {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z}) {
+    ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
+  }
   ASSERT_EQ(wwr::wwrStreamSynchronize(cls.device_stream()->stream()), wwr::wwrSuccess);
 
   fb::SortedKets kets(res.device(), cls, kHermite);

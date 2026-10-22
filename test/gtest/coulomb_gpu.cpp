@@ -247,8 +247,8 @@ INSTANTIATE_TEST_SUITE_P(Molecules, CoulombPruned,
 // The host prune coulomb_pair_classes made before it moved to the device: B
 // mmd's bound_ab, K = w ncart(la) B, the maxima over every record, and a
 // record kept when `B Dc maxK >= tau || K Dc maxB >= tau`, Dc = 2. Each
-// class's kept record indices, from mmd's pinned side (the classes' streams
-// synchronized).
+// class's kept record indices, from mmd's pinned side (each field the test
+// reads copied back from the device, the classes' streams synchronized).
 std::vector<std::vector<std::int32_t>>
 host_prune(const std::vector<fb::PrimitivePairClass> &classes, const double tau) {
   constexpr double kCap = 2.0;
@@ -291,7 +291,17 @@ TEST_P(CoulombPairClassesPrune, KeepsTheHostPrunesRecords) {
   fb::DeviceResources res{0};
   auto classes = fb::primitive_pair_classes(res, g.basis);
   ASSERT_TRUE(classes);
+  // mmd's pinned side is staging only: copy back what the host prune and the
+  // checks below read.
   for (fb::PrimitivePairClass &cls : *classes) {
+    for (fb::MirroredBuffer<double> *field :
+         {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
+          &cls.pb_y, &cls.pb_z, &cls.s, &cls.bound, &cls.bound_ab}) {
+      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
+    }
+    for (fb::MirroredBuffer<std::int32_t> *field : {&cls.off_a, &cls.off_b}) {
+      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
+    }
     ASSERT_EQ(wwr::wwrStreamSynchronize(cls.device_stream()->stream()), wwr::wwrSuccess);
   }
   for (const double tau : {1e-13, 1e-10, 0.0}) {

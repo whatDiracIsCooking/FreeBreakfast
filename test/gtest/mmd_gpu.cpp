@@ -1,8 +1,8 @@
 // GPU cases for integrals.mmd: the primitive-pair records a basis turns into,
-// checked field by field (on each class's pinned side) against the Gaussian
-// product theorem, the la <= lb swap that lets one kernel serve both (s|p) and
-// (p|s), one stream per class, the device side matching the pinned side, and
-// each class's records in descending zeta order, equal zetas in the order the
+// checked field by field (each class's device side, copied back) against the
+// Gaussian product theorem, the la <= lb swap that lets one kernel serve both
+// (s|p) and (p|s), one stream per class, the pinned side left as the host's
+// staging, and each class's records in descending zeta order, equal zetas in the order the
 // host wrote them: on shells whose exponents ascend, so the sort has to move
 // records, and on a class past the merge sort's 2816-key tile; and each
 // record's Schwarz bound, formed on the device, against a host evaluation of
@@ -29,7 +29,8 @@ namespace fb = free_breakfast;
 
 constexpr double kTol = 1e-15;
 
-// Record k of a field, as written on the host.
+// Record k of a field, on its pinned side: the device side's, once classes_of
+// has copied it back.
 template <typename T>
 T at(const fb::MirroredBuffer<T> &field, const std::size_t k) {
   return field.pinned().data()[k];
@@ -54,9 +55,9 @@ std::vector<T> pinned(const fb::MirroredBuffer<T> &field) {
   return {p, p + field.size()};
 }
 
-// The classes, each stream synchronized: the order and the pinned side's
-// refresh from the device are queued on it, so the pinned side holds the final
-// records only after.
+// The classes, each one's device side copied back to its pinned side and its
+// stream synchronized: mmd leaves the pinned side as the host staged it, so
+// the final records, ordered and bounded, reach the host only by this copy.
 std::vector<fb::PrimitivePairClass> classes_of(fb::DeviceResources &res,
                                                const fb::BasisSet &basis) {
   auto classes = fb::primitive_pair_classes(res, basis);
@@ -64,7 +65,17 @@ std::vector<fb::PrimitivePairClass> classes_of(fb::DeviceResources &res,
   if (!classes) {
     return {};
   }
-  for (const fb::PrimitivePairClass &cls : *classes) {
+  for (fb::PrimitivePairClass &cls : *classes) {
+    for (fb::MirroredBuffer<double> *field :
+         {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
+          &cls.pb_y, &cls.pb_z, &cls.s, &cls.ea, &cls.eb, &cls.bound, &cls.bound_ab,
+          &cls.bound_ba}) {
+      EXPECT_EQ(field->to_pinned(), wwr::wwrSuccess);
+    }
+    for (fb::MirroredBuffer<std::int32_t> *field :
+         {&cls.off_a, &cls.off_b, &cls.rank_a, &cls.rank_b}) {
+      EXPECT_EQ(field->to_pinned(), wwr::wwrSuccess);
+    }
     EXPECT_EQ(wwr::wwrStreamSynchronize(cls.device_stream()->stream()), wwr::wwrSuccess);
   }
   return std::move(*classes);
@@ -189,25 +200,6 @@ TEST(Mmd, EachClassHasItsOwnStream) {
   }
 }
 
-// What reaches the device is what was written on the host, bit for bit.
-TEST(Mmd, DeviceSideMatchesThePinnedSide) {
-  FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
-  const auto classes = classes_of(res, p_then_s());
-  for (const fb::PrimitivePairClass &cls : classes) {
-    for (const fb::MirroredBuffer<double> *field :
-         {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-          &cls.pb_y, &cls.pb_z, &cls.s, &cls.ea, &cls.eb, &cls.bound, &cls.bound_ab,
-          &cls.bound_ba}) {
-      EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
-    }
-    for (const fb::MirroredBuffer<std::int32_t> *field :
-         {&cls.off_a, &cls.off_b, &cls.rank_a, &cls.rank_b}) {
-      EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
-    }
-  }
-}
-
 // One record of an s-only basis, as the host writes it.
 struct SRecord {
   double zeta;
@@ -280,11 +272,6 @@ void expect_s_records(const fb::BasisSet &basis) {
     ASSERT_NEAR(at(ss.pb_z, k), want[k].pb_z, kTol) << "record " << k;
     ASSERT_NEAR(at(ss.s, k), want[k].s, kTol * want[k].s) << "record " << k;
   }
-  // The device side was permuted, and the pinned side refreshed from it.
-  EXPECT_EQ(download(ss.zeta), pinned(ss.zeta));
-  EXPECT_EQ(download(ss.off_b), pinned(ss.off_b));
-  EXPECT_EQ(download(ss.ea), pinned(ss.ea));
-  EXPECT_EQ(download(ss.rank_b), pinned(ss.rank_b));
 }
 
 TEST(Mmd, RecordsAreInDescendingZetaOrder) {
@@ -303,6 +290,45 @@ TEST(Mmd, RecordsAreInDescendingZetaOrderPastOneSortTile) {
     exponents.push_back(0.1 * std::pow(1.2, i));
   }
   expect_s_records(fb::BasisSet({s_shell(exponents, 0.4)}));
+}
+
+// The pinned side is staging, one way: mmd copies nothing back, so it keeps
+// the records in the order the host wrote them and the bounds' pinned sides
+// stay zero, while the device side holds every host-written field's values,
+// bit for bit, in descending zeta order. On ascending exponents, so the order
+// moves the records.
+TEST(Mmd, PinnedSideIsTheHostsStaging) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto classes = fb::primitive_pair_classes(
+      res, fb::BasisSet({s_shell({0.3, 1.1, 4.0}, 0.0), s_shell({0.7, 2.5}, 1.2)}));
+  ASSERT_TRUE(classes);
+  ASSERT_EQ(classes->size(), 1U);
+  const fb::PrimitivePairClass &ss = (*classes)[0];
+  ASSERT_EQ(wwr::wwrStreamSynchronize(ss.device_stream()->stream()), wwr::wwrSuccess);
+  const auto same_values = [](const auto &field) {
+    auto device = download(field);
+    auto host = pinned(field);
+    std::ranges::sort(device);
+    std::ranges::sort(host);
+    return device == host;
+  };
+  for (const fb::MirroredBuffer<double> *field :
+       {&ss.zeta, &ss.p_x, &ss.p_y, &ss.p_z, &ss.pa_x, &ss.pa_y, &ss.pa_z, &ss.pb_x, &ss.pb_y,
+        &ss.pb_z, &ss.s, &ss.ea, &ss.eb}) {
+    EXPECT_TRUE(same_values(*field));
+  }
+  for (const fb::MirroredBuffer<std::int32_t> *field :
+       {&ss.off_a, &ss.off_b, &ss.rank_a, &ss.rank_b}) {
+    EXPECT_TRUE(same_values(*field));
+  }
+  EXPECT_TRUE(std::ranges::is_sorted(download(ss.zeta), std::greater<>{}));
+  EXPECT_FALSE(std::ranges::is_sorted(pinned(ss.zeta), std::greater<>{}));
+  const std::vector<double> zero(static_cast<std::size_t>(ss.n_rec), 0.0);
+  for (const fb::MirroredBuffer<double> *field : {&ss.bound, &ss.bound_ab, &ss.bound_ba}) {
+    EXPECT_EQ(pinned(*field), zero);
+    EXPECT_NE(download(*field), zero);
+  }
 }
 
 // k!!, with (-1)!! = 1.
@@ -354,7 +380,7 @@ fb::BasisSet h2o_ccpvdz() {
   return fb::BasisSet(std::move(shells));
 }
 
-// Each record's bound, read on the pinned side (refreshed from the device),
+// Each record's bound, copied back from the device,
 // within 16 eps of the host's closed form, and non-increasing within each
 // class: the bound rises with zeta, and the records are in descending zeta.
 TEST(Mmd, BoundMatchesTheClosedFormAndFollowsTheZetaOrder) {

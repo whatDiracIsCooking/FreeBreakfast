@@ -19,9 +19,8 @@ free_breakfast_add_interface_library(
 # tools/emit_one_electron_kernels.py) and record_bound (kernels/record_bound/,
 # written by tools/emit_exchange_kernels.py). Under CUDA that wants
 # relocatable device code, this library's default, so it must never pass
-# NO_DEVICE_LINKING. The record_bound launcher is also called from above mmd
-# (exchange/pairs' device library, and coulomb's module through its GMF). The
-# bridge header names int32_t, PrimitivePairClassView, wwrStream_t and
+# NO_DEVICE_LINKING. Only mmd's own module calls the launchers. The bridge
+# header names int32_t, PrimitivePairClassView, wwrStream_t and
 # wwrError_t, hence types_headers, headers and wwr::device PUBLIC; the kernels
 # read kFourWarps (block_params.h) and idivup (primitives.h), hence
 # core::kernel_headers, sort with src/integrals/sort's merge sort, size the
