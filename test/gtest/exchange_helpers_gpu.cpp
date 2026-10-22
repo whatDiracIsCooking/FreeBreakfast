@@ -1,6 +1,6 @@
 // GPU cases for the exchange build's hand-written device steps
-// (src/integrals/exchange/helpers): max|D|, the Dcd gather, the block table
-// and its density factors, the shell starts and mirror, and the density decay
+// (src/integrals/eri/integral_direct/exchange/helpers): max|D|, the Dcd
+// gather, the block table and its density factors, the shell starts and mirror, and the density decay
 // the factors are cut from (the bound maximum, the AO centres, the group
 // geometry and the decay fit), each against a host loop, on H2O/cc-pVDZ's
 // recorded density and shells (s, p and d, interleaved by atom, so a shell's

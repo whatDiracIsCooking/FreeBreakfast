@@ -25,7 +25,7 @@ one explicit specialization of the kernel template `dq`, compiled as a source
 of the device library; `dq_launch.cu` includes only `kernels/dq.h` and
 launches through its `dq_kernels` table.
 
-**The family layout** is `../../one_electron/overlap/`'s; that parent README's
+**The family layout** is `../../../../one_electron/overlap/`'s; that parent README's
 "One layout per kernel family" has the table.
 
 ## Public API

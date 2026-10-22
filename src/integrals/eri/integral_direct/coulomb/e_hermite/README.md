@@ -30,7 +30,7 @@ kernel template `e_hermite`, compiled as a source of the device library;
 `e_hermite_kernels` table with its `e_hermite_block_dim`, and asserts that
 block against `kWarpSize`.
 
-**The family layout** is `../../one_electron/overlap/`'s; that parent README's
+**The family layout** is `../../../../one_electron/overlap/`'s; that parent README's
 "One layout per kernel family" has the table.
 
 ## Public API

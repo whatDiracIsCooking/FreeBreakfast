@@ -28,7 +28,7 @@ of the device library; `j_coulomb_launch.cu` includes only `kernels/jab.h` and
 launches through its `jab_kernels` table. The kernels keep FelizJueves's name,
 `jab`; the module is named for what it builds.
 
-**The family layout** is `../../one_electron/overlap/`'s; that parent README's
+**The family layout** is `../../../../one_electron/overlap/`'s; that parent README's
 "One layout per kernel family" has the table.
 
 ## Public API

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Regenerate the exchange-build kernels under src/integrals/exchange/kernels/,
-and the dressed record bound under src/integrals/mmd/kernels/.
+"""Regenerate the exchange-build kernels under
+src/integrals/eri/integral_direct/exchange/kernels/, and the dressed record
+bound under src/integrals/mmd/kernels/.
 
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
@@ -86,7 +87,7 @@ MAX_L = 2
 # still takes one.
 ARCH = "sm_86"
 
-OUT = ROOT / "src/integrals/exchange/kernels"
+OUT = ROOT / "src/integrals/eri/integral_direct/exchange/kernels"
 FAMILY = "kb"
 
 # The record vectors, as mmd names them (module docstring).

@@ -26,7 +26,7 @@ a kernel needs of that pair and cannot form itself:
 | `eb` | β, the ket exponent (the kinetic kernel's) |
 | `off_a`, `off_b` | the two shells' first Cartesian AO |
 | `rank_a`, `rank_b` | each shell's index among the basis's shells of its momentum, in basis order |
-| `bound` | I = pair_bound(ζ, la + lb), the record's undressed Schwarz bound: J's screen's `Ip` as a bra and `Iq` as a ket. Formed on the device (below). K reads its own, dressed bound instead ([`exchange/pairs`](../exchange/pairs/README.md)) |
+| `bound` | I = pair_bound(ζ, la + lb), the record's undressed Schwarz bound: J's screen's `Ip` as a bra and `Iq` as a ket. Formed on the device (below). K reads its own, dressed bound instead ([`exchange/pairs`](../eri/integral_direct/exchange/pairs/README.md)) |
 | `bound_ab`, `bound_ba` | the record's DRESSED Schwarz bound, FelizJueves's `ao.k.record_bounds` (the max over the first shell's Cartesians), as stored and swapped. Formed on the device (below) |
 
 The kernels build the Hermite expansion E from these, including its
@@ -86,7 +86,7 @@ refuses such a class, and `primitive_pair_classes` itself still accepts it. The 
 record order, kets through their class's sorted `ket_` copy). The K build does not:
 its screen is proved against the DRESSED bound (contraction coefficients and
 pair factor in), which depends on the pair's orientation, so the ordered
-classes carry it ([`exchange/pairs`](../exchange/pairs/README.md)).
+classes carry it ([`exchange/pairs`](../eri/integral_direct/exchange/pairs/README.md)).
 `tools/emit_one_electron_kernels.py` writes the kernels (its small `mmd`
 section); `kernels/.clang-format` turns formatting off so they stay as emitted.
 
@@ -121,7 +121,7 @@ mirror it.
 **Coefficients are taken as given** (see `Shell`): normalisation is the basis's
 business (`BasisStamp::primitive_normalized`). Nothing is screened: S, T and
 V read every record. J prunes a copy of them
-(`coulomb_pair_classes`, [`../coulomb/`](../coulomb/README.md)).
+(`coulomb_pair_classes`, [`../coulomb/`](../eri/integral_direct/coulomb/README.md)).
 
 ## Public API
 

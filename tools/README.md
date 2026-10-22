@@ -14,14 +14,14 @@ emit_one_electron_kernels.py
                   src/integrals/mmd/kernels/pair_bound/, from the
                   FelizJueves submodule. Standard library only.
 emit_coulomb_kernels.py
-                  Regenerate src/integrals/coulomb/{dq,e_hermite,
-                  j_coulomb}/kernels/ from the FelizJueves submodule.
-                  Standard library only.
+                  Regenerate src/integrals/eri/integral_direct/coulomb/
+                  {dq,e_hermite,j_coulomb}/kernels/ from the FelizJueves
+                  submodule. Standard library only.
 emit_exchange_kernels.py
-                  Regenerate src/integrals/exchange/kernels/kb/, and the
-                  dressed record bound src/integrals/mmd/kernels/
-                  record_bound/, from the FelizJueves submodule. Standard
-                  library only.
+                  Regenerate src/integrals/eri/integral_direct/exchange/
+                  kernels/kb/, and the dressed record bound
+                  src/integrals/mmd/kernels/record_bound/, from the
+                  FelizJueves submodule. Standard library only.
 extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,
                   coulomb,exchange}/ hold out of FelizJueves's fixtures.
