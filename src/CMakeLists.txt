@@ -17,3 +17,6 @@ add_subdirectory(sad)
 add_subdirectory(linalg)
 # After linalg: one_electron writes into linalg.matrix_ao's CartesianMatrixAO.
 add_subdirectory(integrals)
+# After the modules its steps wrap: the step contract itself is a leaf over
+# core, but the setup steps that follow it import integrals and linalg.
+add_subdirectory(pipeline)
