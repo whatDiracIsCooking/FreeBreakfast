@@ -21,7 +21,7 @@ coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO d
 exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, screened by the Schwarz bound and the density's decay
   helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table and its density factors, the decay they are cut from, the shell starts and the mirror kb leaves to its launcher
   kernels/kb/        free_breakfast::integrals::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
-  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (mmd's kernels/record_bound/), each group sorted by it
+  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one device-only class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (mmd's bound_ab or bound_ba), each group sorted by it
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd, coulomb/sort_bounds and exchange/pairs sort with
 ```
@@ -37,7 +37,7 @@ Molecule(res, atoms)                  nuclei on the device          (molecule, o
 PrimitivePairClass[] --coulomb_pair_classes--> PrimitivePairClass[]  (coulomb, a copy without the pairs J cannot need, assuming |D| <= 2, once per basis)
 CartesianMatrixAO D                   an AO density
          --coulomb-->                CartesianMatrixAO J           (dq and the ket sort per class, then e_hermite per class pair and jab per class)
-PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, the dressed bound and each group's sort on the device, once per basis)
+PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, each group sorted by mmd's dressed bound and gathered on the device, once per basis)
 CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (the decay and Dcd per class, then kb per (bra class, ket class), one warp per a <= b block, and the mirror)
          --MatrixAOPair::cartesian_to_spherical-->  spherical      (linalg.matrix_ao)
 ```

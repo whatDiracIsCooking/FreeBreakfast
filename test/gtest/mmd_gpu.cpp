@@ -440,13 +440,33 @@ TEST(Mmd, DressedBoundsMatchTheOrderedClasses) {
 
   std::map<OrderedKey, double> bound_of;
   for (const fb::OrderedPairClass &cls : *ordered) {
+    // The ordered class is device only: each field copied back on its stream.
+    const auto back = [&cls]<typename T>(const fb::StreamBuffers::device<T> &field) {
+      std::vector<T> out(static_cast<std::size_t>(cls.n_rec));
+      const wwr::wwrStream_t stream = cls.device_stream()->stream();
+      EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), field.data(), sizeof(T) * out.size(),
+                                    wwr::wwrMemcpyDeviceToHost, stream),
+                wwr::wwrSuccess);
+      EXPECT_EQ(wwr::wwrStreamSynchronize(stream), wwr::wwrSuccess);
+      return out;
+    };
+    const auto off_a = back(cls.off_a);
+    const auto off_b = back(cls.off_b);
+    const auto zeta = back(cls.zeta);
+    const auto pa_x = back(cls.pa_x);
+    const auto pa_y = back(cls.pa_y);
+    const auto pa_z = back(cls.pa_z);
+    const auto pb_x = back(cls.pb_x);
+    const auto pb_y = back(cls.pb_y);
+    const auto pb_z = back(cls.pb_z);
+    const auto s = back(cls.s);
+    const auto record_bound = back(cls.record_bound);
     for (std::size_t r = 0; r < static_cast<std::size_t>(cls.n_rec); ++r) {
-      const OrderedKey key{at(cls.off_a, r), at(cls.off_b, r), at(cls.zeta, r), at(cls.pa_x, r),
-                           at(cls.pa_y, r),  at(cls.pa_z, r),  at(cls.pb_x, r), at(cls.pb_y, r),
-                           at(cls.pb_z, r),  at(cls.s, r)};
-      const auto [it, fresh] = bound_of.emplace(key, at(cls.record_bound, r));
+      const OrderedKey key{off_a[r], off_b[r], zeta[r], pa_x[r], pa_y[r],
+                           pa_z[r],  pb_x[r],  pb_y[r], pb_z[r], s[r]};
+      const auto [it, fresh] = bound_of.emplace(key, record_bound[r]);
       // Two records alike in every field the bound reads have one bound.
-      ASSERT_TRUE(fresh || it->second == at(cls.record_bound, r));
+      ASSERT_TRUE(fresh || it->second == record_bound[r]);
     }
   }
 

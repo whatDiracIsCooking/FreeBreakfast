@@ -190,8 +190,9 @@ and `n_ao` `int32`s of shell starts; the three doubles of the decay and one of
 `G_max`) is drawn from `res.device()`'s pool in `res.stream()`'s order and
 returned in its order once every phase is joined back, so there is no host
 synchronization. The shells' AO offsets and the shell counts by momentum are
-read on the host off the classes' groups and their pinned `off_a`, which
-`ordered_pair_classes` wrote before its copies.
+read on the host off the classes' groups (each group's `shell` and
+`ao_offset`, which `ordered_pair_classes` takes from the basis); the classes
+themselves are device only.
 
 **One text serves both warp widths.** `kb` is emitted `any_wavefront`: its
 shuffles and its shared array read `FJ_WAVEFRONT`, which `deps/CMakeLists.txt`
@@ -239,8 +240,9 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
   Run to run, K varies by a few percent at H₁₀ and H₂₀, so none of these is a
   gain. K moved by at most 2e-16 · max|K|. What pruning would save is memory:
-  the records grow quadratically with the chain, about 108 bytes each on each
-  side, 108 MB pinned and as much on the device at H₂₀₀, against 4 MB pruned.
+  the records grow quadratically with the chain, about 108 bytes each, 108 MB
+  on the device at H₂₀₀ (and, when this was measured, as much again pinned),
+  against 4 MB pruned.
   J does prune (`coulomb_pair_classes`): its bras are screened on `mmd`'s
   undressed bound, so there pruning saves most of its time (91% at H₁₀₀).
 - **The swap inside the diagonal blocks.** An `a == b` block is computed
