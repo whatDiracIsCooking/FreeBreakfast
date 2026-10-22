@@ -22,6 +22,9 @@ multiplicity = 2
 
 [basis_set]
 basis = "/basis/sto-3g.json"
+
+[orthogonalizer]
+eigenvalue_floor = 1e-8
 )";
 
 void expect_config_error(std::string_view toml, std::string_view needle) {
@@ -34,12 +37,13 @@ void expect_config_error(std::string_view toml, std::string_view needle) {
 TEST(PipelineConfig, EveryOptionIsRead) {
   auto steps = fb::parse_config(kWater, "/inputs");
   ASSERT_TRUE(steps.has_value()) << steps.error().message;
-  const auto &[molecule, basis_set] = *steps;
+  const auto &[molecule, basis_set, orthogonalizer] = *steps;
   EXPECT_EQ(molecule.xyz, std::filesystem::path("/inputs/water.xyz"));
   EXPECT_EQ(molecule.charge, -1);
   EXPECT_EQ(molecule.multiplicity, 2);
   // An absolute path is kept as written.
   EXPECT_EQ(basis_set.basis, std::filesystem::path("/basis/sto-3g.json"));
+  EXPECT_EQ(orthogonalizer.eigenvalue_floor, 1e-8);
 }
 
 TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {
@@ -49,8 +53,19 @@ TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {
   const fb::MoleculeStep defaults{};
   EXPECT_EQ(std::get<fb::MoleculeStep>(*steps).charge, defaults.charge);
   EXPECT_EQ(std::get<fb::MoleculeStep>(*steps).multiplicity, defaults.multiplicity);
+  // A table whose options all have defaults may be left out.
+  EXPECT_EQ(std::get<fb::OrthogonalizerStep>(*steps).eigenvalue_floor,
+            fb::OrthogonalizerStep{}.eigenvalue_floor);
   // No base directory: relative to the working directory.
   EXPECT_EQ(std::get<fb::MoleculeStep>(*steps).xyz, std::filesystem::path("w.xyz"));
+}
+
+TEST(PipelineConfig, IntegerReadsAsDouble) {
+  auto steps = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n"
+                                "[orthogonalizer]\neigenvalue_floor = 0\n",
+                                "");
+  ASSERT_TRUE(steps.has_value()) << steps.error().message;
+  EXPECT_EQ(std::get<fb::OrthogonalizerStep>(*steps).eigenvalue_floor, 0.0);
 }
 
 TEST(PipelineConfig, MissingStepTableIsInvalidConfig) {
@@ -71,6 +86,9 @@ TEST(PipelineConfig, MisspeltOptionIsInvalidConfig) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\nmultiplicty = 3\n[basis_set]\nbasis = \"b.json\"\n",
       "'multiplicty'");
+  expect_config_error("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n"
+                      "[orthogonalizer]\nfloor = 1e-8\n",
+                      "'floor'");
 }
 
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
@@ -81,6 +99,9 @@ TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 3000000000\n[basis_set]\nbasis = \"b.json\"\n",
       "[molecule] charge");
+  expect_config_error("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n"
+                      "[orthogonalizer]\neigenvalue_floor = \"small\"\n",
+                      "[orthogonalizer] eigenvalue_floor");
 }
 
 TEST(PipelineConfig, MalformedTomlIsIoError) {

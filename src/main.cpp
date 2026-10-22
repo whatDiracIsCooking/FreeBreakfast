@@ -33,7 +33,8 @@ fb::Status run(std::span<char *const> args) {
     return fb::err_config("usage: {} <config.toml>", args.empty() ? "free-breakfast" : args[0]);
   }
   // Read before the node is built: a bad config fails without touching a GPU.
-  const auto [molecule_step, basis_set_step] = FBF_TRY(fb::read_config(args[1]));
+  const auto [molecule_step, basis_set_step, orthogonalizer_step] =
+      FBF_TRY(fb::read_config(args[1]));
 
   fb::NodeResources node;
   node.log();
@@ -55,6 +56,8 @@ fb::Status run(std::span<char *const> args) {
       fb::View<fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{basis, transform,
                                                                                pairs},
       res));
+  const fb::Orthogonalizer orthogonalizer =
+      FBF_TRY(orthogonalizer_step.run(fb::View<fb::BasisSet, fb::Overlap>{basis, overlap}, res));
 
   std::println("atoms:             {}", molecule.natoms());
   std::println("charge:            {}", molecule.charge());
@@ -67,6 +70,8 @@ fb::Status run(std::span<char *const> args) {
   std::println("spherical U:       {}", transform.u ? "uploaded" : "identity");
   std::println("pair classes:      {}", pairs.classes.size());
   std::println("overlap:           {0} x {0} (spherical)", overlap.s.n());
+  std::println("orthogonalizer:    {0} x {0}, eigenvalue floor {1:g}", orthogonalizer.x.n(),
+               orthogonalizer_step.eigenvalue_floor);
   return {};
 }
 
