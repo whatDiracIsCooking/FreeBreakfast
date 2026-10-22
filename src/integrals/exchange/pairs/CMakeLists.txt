@@ -10,44 +10,27 @@ free_breakfast_add_interface_library(
   free_breakfast::core::types_headers
 )
 
-# The record bound and order: each record's dressed Schwarz bound through the
-# generated record_bound kernels (kernels/record_bound/, written by
-# tools/emit_exchange_kernels.py), one per ordered class, each compiled on its
-# own, and each group sorted by it, once per basis. Device code in its own
-# library, so its language and -x hip never reach the module compiles. Under
-# CUDA launching another unit's specialization wants relocatable device code,
-# this library's default, so it must never pass NO_DEVICE_LINKING. The bound
-# also runs over mmd's own records, for J's pruning (coulomb_pair_classes, whose
-# module links this library). The bridge header names int32_t,
-# OrderedPairClassView, PrimitivePairClassView, wwrStream_t and wwrError_t,
-# hence types_headers, headers, mmd::headers and wwr::device PUBLIC; the
-# launcher reads kFourWarps and idivup (core::kernel_headers) and
-# kMaxAngularMomentum (basis::headers), sorts with src/integrals/sort's merge
-# sort, and the generated units include felizjueves/runtime.h
-# (felizjueves::headers); all PRIVATE.
+# The record bound and order: each record's dressed Schwarz bound, through
+# mmd's launcher of the generated record_bound kernels (mmd::device, whose
+# bridge header the launcher includes), and each group sorted by it, once per
+# basis. Device code in its own library, so its language and -x hip never
+# reach the module compiles. The bridge header names int32_t,
+# OrderedPairClassView, wwrStream_t and wwrError_t, hence types_headers,
+# headers and wwr::device PUBLIC; the launcher reads kFourWarps and idivup
+# (core::kernel_headers) and sorts with src/integrals/sort's merge sort; all
+# PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.exchange.pairs.device
   SOURCES
   pairs_launch.cu
-  kernels/record_bound/record_bound_00.cu
-  kernels/record_bound/record_bound_01.cu
-  kernels/record_bound/record_bound_02.cu
-  kernels/record_bound/record_bound_10.cu
-  kernels/record_bound/record_bound_11.cu
-  kernels/record_bound/record_bound_12.cu
-  kernels/record_bound/record_bound_20.cu
-  kernels/record_bound/record_bound_21.cu
-  kernels/record_bound/record_bound_22.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::exchange::pairs::headers
-  free_breakfast::integrals::mmd::headers
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
-  free_breakfast::basis::headers
-  felizjueves::headers
+  free_breakfast::integrals::mmd::device
   free_breakfast::integrals::sort::device
 )
 

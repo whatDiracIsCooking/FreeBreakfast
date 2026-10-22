@@ -10,19 +10,23 @@ free_breakfast_add_interface_library(
   free_breakfast::core::types_headers
 )
 
-# The record order and bound: each class's records put in descending zeta
-# order on the device, then each record's Schwarz bound, once per basis. Device
-# code in its own library, so its language and -x hip never reach the module
-# compiles. Its sources are the launcher and the generated pair_bound kernels
-# (kernels/pair_bound/, written by tools/emit_one_electron_kernels.py), one per
-# class, each compiled on its own; under CUDA that wants relocatable device
-# code, this library's default, so it must never pass NO_DEVICE_LINKING. The
-# bridge header names int32_t, wwrStream_t and wwrError_t, hence types_headers
-# and wwr::device PUBLIC; the kernels read kFourWarps (block_params.h) and
-# idivup (primitives.h), hence core::kernel_headers, sort with
-# src/integrals/sort's merge sort, size the bound's table by
-# kMaxAngularMomentum (basis::headers), and the generated units include
-# felizjueves/runtime.h (felizjueves::headers); all PRIVATE.
+# The record order and bounds: each class's records put in descending zeta
+# order on the device, then each record's Schwarz bound and its dressed bound,
+# as stored and swapped, once per basis. Device code in its own library, so
+# its language and -x hip never reach the module compiles. Its sources are the
+# launcher and the generated kernels, one per class, each compiled on its own:
+# pair_bound (kernels/pair_bound/, written by
+# tools/emit_one_electron_kernels.py) and record_bound (kernels/record_bound/,
+# written by tools/emit_exchange_kernels.py). Under CUDA that wants
+# relocatable device code, this library's default, so it must never pass
+# NO_DEVICE_LINKING. The record_bound launcher is also called from above mmd
+# (exchange/pairs' device library, and coulomb's module through its GMF). The
+# bridge header names int32_t, PrimitivePairClassView, wwrStream_t and
+# wwrError_t, hence types_headers, headers and wwr::device PUBLIC; the kernels
+# read kFourWarps (block_params.h) and idivup (primitives.h), hence
+# core::kernel_headers, sort with src/integrals/sort's merge sort, size the
+# bounds' tables by kMaxAngularMomentum (basis::headers), and the generated
+# units include felizjueves/runtime.h (felizjueves::headers); all PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.mmd.device
@@ -34,8 +38,18 @@ free_breakfast_add_gpu_device_library(
   kernels/pair_bound/pair_bound_11.cu
   kernels/pair_bound/pair_bound_12.cu
   kernels/pair_bound/pair_bound_22.cu
+  kernels/record_bound/record_bound_00.cu
+  kernels/record_bound/record_bound_01.cu
+  kernels/record_bound/record_bound_02.cu
+  kernels/record_bound/record_bound_10.cu
+  kernels/record_bound/record_bound_11.cu
+  kernels/record_bound/record_bound_12.cu
+  kernels/record_bound/record_bound_20.cu
+  kernels/record_bound/record_bound_21.cu
+  kernels/record_bound/record_bound_22.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
+  free_breakfast::integrals::mmd::headers
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers

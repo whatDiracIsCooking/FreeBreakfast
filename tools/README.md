@@ -18,8 +18,8 @@ emit_coulomb_kernels.py
                   jab}/ from the FelizJueves submodule. Standard library
                   only.
 emit_exchange_kernels.py
-                  Regenerate src/integrals/exchange/kernels/kb/, and K's
-                  dressed record bound src/integrals/exchange/pairs/kernels/
+                  Regenerate src/integrals/exchange/kernels/kb/, and the
+                  dressed record bound src/integrals/mmd/kernels/
                   record_bound/, from the FelizJueves submodule. Standard
                   library only.
 extract_integral_golden.py

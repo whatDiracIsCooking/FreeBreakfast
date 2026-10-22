@@ -1,24 +1,18 @@
 // The device half of free_breakfast.integrals.exchange.pairs: each record's
-// dressed Schwarz bound through the generated record_bound<la, lb>
-// (kernels/record_bound/, written by tools/emit_exchange_kernels.py, each class
-// its own unit of this library: launching a specialization another TU defines
-// wants relocatable device code under nvcc), and the order that sorts each
-// group by it, once per basis. One source for both backends -- nvcc under
+// dressed Schwarz bound, through mmd's launcher of the generated
+// record_bound<la, lb> (mmd_bridge.h), and the order that sorts each group by
+// it, once per basis. One source for both backends -- nvcc under
 // CUDA, clang -x hip under HIP.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
 // libc++ header must not follow it (see primitives.h). block_params.h and
 // primitives.h include theirs first, as the bridges do integral_types.h.
-#include <type_traits>
-
 #include "block_params.h"
 #include "primitives.h"
 
-#include "angular_momentum.h"
 #include "merge_sort_bridge.h"
+#include "mmd_bridge.h"
 #include "pairs_bridge.h"
-
-#include "kernels/record_bound/record_bound.h"
 
 namespace {
 
@@ -69,37 +63,9 @@ __global__ void gather_kernel(const int32_t n_rec, const uint32_t *perm, const T
   }
 }
 
-constexpr auto kExtent = static_cast<size_t>(fb::kMaxAngularMomentum + 1);
-
-static_assert(std::extent_v<decltype(record_bound_kernels), 0> == kExtent &&
-                  std::extent_v<decltype(record_bound_kernels), 1> == kExtent,
-              "kernels/record_bound was not emitted for kMaxAngularMomentum: rerun "
-              "tools/emit_exchange_kernels.py");
-
-bool valid_momentum(const int32_t l) {
-  return l >= 0 && l <= fb::kMaxAngularMomentum;
-}
-
 // One thread per record, kFourWarps to a block.
 uint32_t record_blocks(const int32_t n_rec) {
   return fb::math::idivup(static_cast<uint32_t>(n_rec), fb::kFourWarps);
-}
-
-// record_bound<la, lb> over a class view of either kind: the ordered classes'
-// and mmd's name the fields it reads alike.
-template <typename View>
-wwr::wwrError_t launch_record_bound(const wwr::wwrStream_t stream, const View &cls, double *bound) {
-  if (cls.n_rec < 1 || !valid_momentum(cls.la) || !valid_momentum(cls.lb)) {
-    return wwr::wwrErrorInvalidValue;
-  }
-  // One thread per record in 32-thread blocks, as FelizJueves's launch_shape
-  // states it; the mapping is not part of the numerical contract.
-  constexpr uint32_t kThreads = 32;
-  record_bound_kernels[cls.la][cls.lb]<<<
-      fb::math::idivup(static_cast<uint32_t>(cls.n_rec), kThreads), kThreads, 0, stream>>>(
-      cls.n_rec, cls.zeta, cls.pa_x, cls.pa_y, cls.pa_z, cls.pb_x, cls.pb_y, cls.pb_z, cls.s,
-      bound);
-  return wwr::wwrGetLastError();
 }
 
 template <typename T>
@@ -121,14 +87,25 @@ wwr::wwrError_t permute_field(const wwr::wwrStream_t stream, const int32_t n_rec
 
 namespace free_breakfast::device {
 
+// mmd's launcher over the fields record_bound reads, which the ordered class
+// names as mmd's view does, "a" its first shell.
 wwr::wwrError_t ordered_pair_bound(const wwr::wwrStream_t stream, const OrderedPairClassView &cls,
                                    double *bound) {
-  return launch_record_bound(stream, cls, bound);
-}
-
-wwr::wwrError_t ordered_pair_bound(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                                   double *bound) {
-  return launch_record_bound(stream, cls, bound);
+  return ordered_pair_bound(stream,
+                            PrimitivePairClassView{
+                                .la = cls.la,
+                                .lb = cls.lb,
+                                .n_rec = cls.n_rec,
+                                .zeta = cls.zeta,
+                                .pa_x = cls.pa_x,
+                                .pa_y = cls.pa_y,
+                                .pa_z = cls.pa_z,
+                                .pb_x = cls.pb_x,
+                                .pb_y = cls.pb_y,
+                                .pb_z = cls.pb_z,
+                                .s = cls.s,
+                            },
+                            bound);
 }
 
 wwr::wwrError_t ordered_pair_order(const wwr::wwrStream_t stream, const int32_t n_rec,

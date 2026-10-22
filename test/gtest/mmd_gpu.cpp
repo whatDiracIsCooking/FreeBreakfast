@@ -6,7 +6,10 @@
 // host wrote them: on shells whose exponents ascend, so the sort has to move
 // records, and on a class past the merge sort's 2816-key tile; and each
 // record's Schwarz bound, formed on the device, against a host evaluation of
-// its closed form for every class of H2O/cc-pVDZ.
+// its closed form for every class of H2O/cc-pVDZ; and what the two-electron
+// builds derive from: the exponents and shell ranks against the basis, and the
+// dressed bound as stored and swapped against the one ordered_pair_classes
+// forms for the same record.
 
 #include <gtest/gtest.h>
 
@@ -18,6 +21,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
+import free_breakfast.integrals.exchange.pairs;
 
 namespace {
 
@@ -130,7 +134,11 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
     EXPECT_EQ(at(sp.off_a, k), s_off) << "record " << k;
     EXPECT_EQ(at(sp.off_b, k), p_off) << "record " << k;
     EXPECT_NEAR(at(sp.zeta, k), zeta, kTol) << "record " << k;
+    EXPECT_EQ(at(sp.ea, k), alpha) << "record " << k;
     EXPECT_NEAR(at(sp.eb, k), beta, kTol) << "record " << k;
+    // Each the first, and only, shell of its momentum.
+    EXPECT_EQ(at(sp.rank_a, k), 0) << "record " << k;
+    EXPECT_EQ(at(sp.rank_b, k), 0) << "record " << k;
     EXPECT_NEAR(at(sp.p_z, k), pz, kTol) << "record " << k;
     EXPECT_NEAR(at(sp.pa_z, k), pz - z_a, kTol) << "record " << k;
     EXPECT_NEAR(at(sp.pb_z, k), pz - z_b, kTol) << "record " << k;
@@ -189,10 +197,12 @@ TEST(Mmd, DeviceSideMatchesThePinnedSide) {
   for (const fb::PrimitivePairClass &cls : classes) {
     for (const fb::MirroredBuffer<double> *field :
          {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-          &cls.pb_y, &cls.pb_z, &cls.s, &cls.eb, &cls.bound}) {
+          &cls.pb_y, &cls.pb_z, &cls.s, &cls.ea, &cls.eb, &cls.bound, &cls.bound_ab,
+          &cls.bound_ba}) {
       EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
     }
-    for (const fb::MirroredBuffer<std::int32_t> *field : {&cls.off_a, &cls.off_b}) {
+    for (const fb::MirroredBuffer<std::int32_t> *field :
+         {&cls.off_a, &cls.off_b, &cls.rank_a, &cls.rank_b}) {
       EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
     }
   }
@@ -205,9 +215,13 @@ struct SRecord {
   double pa_z;
   double pb_z;
   double s;
+  double ea;
   double eb;
   std::int32_t off_a;
   std::int32_t off_b;
+  // An s-only basis: each shell's rank is its index.
+  std::int32_t rank_a;
+  std::int32_t rank_b;
 };
 
 // An s shell on the z axis at z, its exponents as given, coefficients 1.
@@ -232,8 +246,10 @@ std::vector<SRecord> want_s_records(const fb::BasisSet &basis) {
           const double pz = ((pa.exponent * za) + (pb.exponent * zb)) / zeta;
           out.push_back({zeta, pz, pz - za, pz - zb,
                          pa.coefficient * pb.coefficient * std::pow(std::numbers::pi / zeta, 1.5),
-                         pb.exponent, static_cast<std::int32_t>(basis.ao_offset_cart(i)),
-                         static_cast<std::int32_t>(basis.ao_offset_cart(j))});
+                         pa.exponent, pb.exponent,
+                         static_cast<std::int32_t>(basis.ao_offset_cart(i)),
+                         static_cast<std::int32_t>(basis.ao_offset_cart(j)),
+                         static_cast<std::int32_t>(i), static_cast<std::int32_t>(j)});
         }
       }
     }
@@ -255,7 +271,10 @@ void expect_s_records(const fb::BasisSet &basis) {
     ASSERT_EQ(at(ss.zeta, k), want[k].zeta) << "record " << k;
     ASSERT_EQ(at(ss.off_a, k), want[k].off_a) << "record " << k;
     ASSERT_EQ(at(ss.off_b, k), want[k].off_b) << "record " << k;
+    ASSERT_EQ(at(ss.ea, k), want[k].ea) << "record " << k;
     ASSERT_EQ(at(ss.eb, k), want[k].eb) << "record " << k;
+    ASSERT_EQ(at(ss.rank_a, k), want[k].rank_a) << "record " << k;
+    ASSERT_EQ(at(ss.rank_b, k), want[k].rank_b) << "record " << k;
     ASSERT_NEAR(at(ss.p_z, k), want[k].p_z, kTol) << "record " << k;
     ASSERT_NEAR(at(ss.pa_z, k), want[k].pa_z, kTol) << "record " << k;
     ASSERT_NEAR(at(ss.pb_z, k), want[k].pb_z, kTol) << "record " << k;
@@ -264,6 +283,8 @@ void expect_s_records(const fb::BasisSet &basis) {
   // The device side was permuted, and the pinned side refreshed from it.
   EXPECT_EQ(download(ss.zeta), pinned(ss.zeta));
   EXPECT_EQ(download(ss.off_b), pinned(ss.off_b));
+  EXPECT_EQ(download(ss.ea), pinned(ss.ea));
+  EXPECT_EQ(download(ss.rank_b), pinned(ss.rank_b));
 }
 
 TEST(Mmd, RecordsAreInDescendingZetaOrder) {
@@ -354,6 +375,103 @@ TEST(Mmd, BoundMatchesTheClosedFormAndFollowsTheZetaOrder) {
       }
     }
   }
+}
+
+// Each record's exponents and shell ranks match the basis: its two shells
+// named by their AO offsets, of the class's momenta, ea and eb exponents of
+// theirs summing to zeta exactly (the host formed zeta as ea + eb), and each
+// rank the shell's index among the basis's shells of its momentum.
+TEST(Mmd, ExponentsAndRanksMatchTheBasis) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::BasisSet basis = h2o_ccpvdz();
+  const auto classes = classes_of(res, basis);
+  ASSERT_EQ(classes.size(), 6U);
+  const std::vector<fb::Shell> &shells = basis.shells();
+  std::map<std::int32_t, std::size_t> shell_at;
+  std::vector<std::int32_t> rank(shells.size());
+  std::map<std::int32_t, std::int32_t> next_rank;
+  for (std::size_t i = 0; i < shells.size(); ++i) {
+    shell_at[static_cast<std::int32_t>(basis.ao_offset_cart(i))] = i;
+    rank[i] = next_rank[shells[i].angular_momentum()]++;
+  }
+  const auto has_exponent = [](const fb::Shell &sh, const double e) {
+    return std::ranges::any_of(sh.primitives(),
+                               [e](const fb::Primitive &p) { return p.exponent == e; });
+  };
+  for (const fb::PrimitivePairClass &cls : classes) {
+    for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
+      ASSERT_TRUE(shell_at.contains(at(cls.off_a, k)) && shell_at.contains(at(cls.off_b, k)));
+      const std::size_t a = shell_at.at(at(cls.off_a, k));
+      const std::size_t b = shell_at.at(at(cls.off_b, k));
+      ASSERT_EQ(shells[a].angular_momentum(), cls.la);
+      ASSERT_EQ(shells[b].angular_momentum(), cls.lb);
+      ASSERT_TRUE(has_exponent(shells[a], at(cls.ea, k)))
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      ASSERT_TRUE(has_exponent(shells[b], at(cls.eb, k)))
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      ASSERT_EQ(at(cls.ea, k) + at(cls.eb, k), at(cls.zeta, k))
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      ASSERT_EQ(at(cls.rank_a, k), rank[a]) << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      ASSERT_EQ(at(cls.rank_b, k), rank[b]) << "(" << cls.la << ", " << cls.lb << ") record " << k;
+    }
+  }
+}
+
+// What an ordered record is known by: its first and second shells' AO
+// offsets, zeta, P - A (A the first shell's centre), P - B and s. A record and
+// its copy in an ordered class carry these bit for bit.
+using OrderedKey = std::tuple<std::int32_t, std::int32_t, double, double, double, double, double,
+                              double, double, double>;
+
+// bound_ab and bound_ba bit for bit against the dressed bound
+// ordered_pair_classes forms for the same record as stored and swapped: the
+// same generated kernel on the same fields. A diagonal record has no swapped
+// copy there, but its swap is, field for field, a record of its own class (the
+// primitives the other way round), so it is found all the same.
+TEST(Mmd, DressedBoundsMatchTheOrderedClasses) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::BasisSet basis = h2o_ccpvdz();
+  const auto classes = classes_of(res, basis);
+  ASSERT_EQ(classes.size(), 6U);
+  const auto ordered = fb::ordered_pair_classes(res, basis, classes);
+  ASSERT_TRUE(ordered);
+
+  std::map<OrderedKey, double> bound_of;
+  for (const fb::OrderedPairClass &cls : *ordered) {
+    for (std::size_t r = 0; r < static_cast<std::size_t>(cls.n_rec); ++r) {
+      const OrderedKey key{at(cls.off_a, r), at(cls.off_b, r), at(cls.zeta, r), at(cls.pa_x, r),
+                           at(cls.pa_y, r),  at(cls.pa_z, r),  at(cls.pb_x, r), at(cls.pb_y, r),
+                           at(cls.pb_z, r),  at(cls.s, r)};
+      const auto [it, fresh] = bound_of.emplace(key, at(cls.record_bound, r));
+      // Two records alike in every field the bound reads have one bound.
+      ASSERT_TRUE(fresh || it->second == at(cls.record_bound, r));
+    }
+  }
+
+  std::size_t positive = 0;
+  for (const fb::PrimitivePairClass &cls : classes) {
+    for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
+      const OrderedKey as_stored{
+          at(cls.off_a, k), at(cls.off_b, k), at(cls.zeta, k), at(cls.pa_x, k), at(cls.pa_y, k),
+          at(cls.pa_z, k),  at(cls.pb_x, k),  at(cls.pb_y, k), at(cls.pb_z, k), at(cls.s, k)};
+      const OrderedKey swapped{at(cls.off_b, k), at(cls.off_a, k), at(cls.zeta, k), at(cls.pb_x, k),
+                               at(cls.pb_y, k),  at(cls.pb_z, k),  at(cls.pa_x, k), at(cls.pa_y, k),
+                               at(cls.pa_z, k),  at(cls.s, k)};
+      ASSERT_TRUE(bound_of.contains(as_stored))
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      ASSERT_TRUE(bound_of.contains(swapped))
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      ASSERT_EQ(at(cls.bound_ab, k), bound_of.at(as_stored))
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      ASSERT_EQ(at(cls.bound_ba, k), bound_of.at(swapped))
+          << "(" << cls.la << ", " << cls.lb << ") record " << k;
+      positive += at(cls.bound_ab, k) > 0.0 ? 1 : 0;
+    }
+  }
+  // Not vacuous: the bounds were formed, not left at their zeroed start.
+  EXPECT_GT(positive, 0U);
 }
 
 } // namespace

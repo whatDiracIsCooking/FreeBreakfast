@@ -108,8 +108,8 @@ chain the far pairs are almost all of them.
 **The bound, and the density it assumes.** Each record's dressed bound
 `B = max_{i∈a} Σ_{k∈b} Σ_p |s E^{ik}_p| I_p(ζ)` is FelizJueves's
 `ao.k.record_bounds` in `mmd`'s orientation, by the same generated
-`record_bound<la, lb>` K reads (`exchange/pairs`' `ordered_pair_bound`, over
-`mmd`'s view). With `|[p|q]| <= I_p I_q`, the term of a bra record `(a, b)` and
+`record_bound<la, lb>` K reads (`mmd`'s `ordered_pair_bound`, over `mmd`'s
+view). With `|[p|q]| <= I_p I_q`, the term of a bra record `(a, b)` and
 a ket record `(c, d)` in any element of J is at most `B_ab · Dc · K_cd`, where
 `K = w · ncart(la) · B` bounds the ket's sum over every Cartesian pair (`w`
 as above) and **`Dc = 2` caps every `|D_cd|`**. A record goes when it is under
@@ -195,7 +195,7 @@ none; and the refusals.
 | File | Role |
 |------|------|
 | `coulomb.cppm` | Module interface: `coulomb`, `coulomb_pair_classes` |
-| `coulomb.cpp` | The build: the checks, the scratch, the two phases; the pruning: the bounds (through `../exchange/pairs/pairs_bridge.h`), the cut, the copies |
+| `coulomb.cpp` | The build: the checks, the scratch, the two phases; the pruning: the bounds (through `../mmd/mmd_bridge.h`), the cut, the copies |
 | `coulomb_bridge.h` | The launchers, declared once for the module and the device TU |
 | `coulomb_launch.cu` | The launchers; the `w` and rows kernels; the compile-time checks of the tables against `kMaxAngularMomentum` and of `e_hermite_block_dim` against `kWarpSize` |
 | `kernels/` | The generated units and their three template headers |

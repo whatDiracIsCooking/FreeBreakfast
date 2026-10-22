@@ -75,10 +75,10 @@ free_breakfast_add_gpu_device_library(
 # (one_electron::launch), the ket sort is sort_bounds', and the device library
 # is PRIVATE: the implementation unit includes the bridge header in its GMF and
 # calls the launchers, and a static library's private link dependencies still
-# reach the final link. coulomb_pair_classes' dressed bound is exchange/pairs'
-# launcher (exchange::pairs::device, the same arrangement: one kernel family
-# for both builds), its copies MirroredBuffers (core::mirrored_buffer), its
-# Cartesian count and momentum limit basis's.
+# reach the final link. coulomb_pair_classes' dressed bound is mmd's launcher
+# (mmd::device, the same arrangement: one kernel family for J and K), its
+# copies MirroredBuffers (core::mirrored_buffer), its Cartesian count and
+# momentum limit basis's.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.coulomb
@@ -101,5 +101,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::coulomb::sort_bounds
   free_breakfast::integrals::coulomb::device
-  free_breakfast::integrals::exchange::pairs::device
+  free_breakfast::integrals::mmd::device
 )
