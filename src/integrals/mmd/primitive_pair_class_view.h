@@ -24,7 +24,9 @@ namespace free_breakfast {
 /// Every array has @ref n_rec entries; a vector is three arrays, one per axis,
 /// as the generated kernels take it.
 struct PrimitivePairClassView {
-  /// @brief The bra shell's angular momentum, <= @ref lb.
+  /// @brief The bra shell's angular momentum, <= @ref lb in a class's own
+  /// view; a swapped view, which only ordered_pair_bound reads
+  /// (mmd_bridge.h), may have it above.
   int32_t la;
   /// @brief The ket shell's angular momentum.
   int32_t lb;
@@ -52,15 +54,28 @@ struct PrimitivePairClassView {
   const double *pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   const double *s;
+  /// @brief alpha, the bra primitive's exponent.
+  const double *ea;
   /// @brief beta, the ket primitive's exponent.
   const double *eb;
   /// @brief The record's Schwarz bound I = pair_bound(zeta, la + lb): a J or
   /// K screen's Ip as a bra and Iq as a ket.
   const double *bound;
+  /// @brief The record's dressed Schwarz bound as stored: ao.k.record_bounds,
+  /// the max over the bra shell's Cartesians.
+  const double *bound_ab;
+  /// @brief The record's dressed Schwarz bound swapped: the max over the ket
+  /// shell's Cartesians.
+  const double *bound_ba;
   /// @brief The bra shell's first Cartesian AO.
   const int32_t *off_a;
   /// @brief The ket shell's first Cartesian AO.
   const int32_t *off_b;
+  /// @brief The bra shell's rank: its index among the basis's shells of
+  /// momentum @ref la, in basis order.
+  const int32_t *rank_a;
+  /// @brief The ket shell's rank, among the shells of momentum @ref lb.
+  const int32_t *rank_b;
 };
 
 } // namespace free_breakfast

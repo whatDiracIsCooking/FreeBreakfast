@@ -21,7 +21,7 @@ coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO d
 exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, screened by the Schwarz bound and the density's decay
   helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table and its density factors, the decay they are cut from, the shell starts and the mirror kb leaves to its launcher
   kernels/kb/        free_breakfast::integrals::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
-  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (kernels/record_bound/), each group sorted by it
+  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (mmd's kernels/record_bound/), each group sorted by it
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd, coulomb/sort_bounds and exchange/pairs sort with
 ```
@@ -48,7 +48,7 @@ from the FelizJueves submodule; a build never runs Python. Re-run all three afte
 bumping the submodule. Each family has its own directory
 (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
 `mmd/kernels/pair_bound/`, `coulomb/kernels/{dq,e_hermite,jab}/`,
-`exchange/kernels/kb/`, `exchange/pairs/kernels/record_bound/`), and the device Boys
+`exchange/kernels/kb/`, `mmd/kernels/record_bound/`), and the device Boys
 routine every unit with a fundamental includes, `eval_boys<M>`, is generated
 once into `shared/eval_boys.h` rather than carried in each unit, beside the
 `shared/eval_boys_{M}.h` it includes: below its switch, one fixed `fma` chain

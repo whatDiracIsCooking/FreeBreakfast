@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Regenerate the exchange-build kernels under src/integrals/exchange/kernels/,
-and the ordered pairs' record bound under src/integrals/exchange/pairs/kernels/.
+and the dressed record bound under src/integrals/mmd/kernels/.
 
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
@@ -45,20 +45,20 @@ the table a launcher indexes. The device Boys routine the units include is
 src/integrals/shared/eval_boys.h, written by the other two tools; this one
 writes nothing there.
 
-One more family rides along because K is its only reader:
+One more family rides along because K's screen is its first reader:
 `record_bound<la, lb>`, FelizJueves's `Target.RECORD_BOUND`
 (`kernel_record_bound.py`), K's DRESSED per-record Schwarz bound
 
     I = ao.k.record_bounds = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
 
-one thread per record, the max over the FIRST shell's Cartesians. It is a
-field of every free_breakfast.integrals.exchange.pairs record, computed once
-per basis, so it is written to src/integrals/exchange/pairs/kernels/
-record_bound/. The class is an ORDERED pair, so unlike mmd's `pair_bound`
-every `(la, lb)` with each l at most 2 is written: 9 classes. Its two record
-vectors are split as mmd names them, `pa_*` = P - A (A the first shell) and
-`pb_*` = P - B. It has no shuffle, so it is emitted with the default options
-and its text has no width.
+one thread per record, the max over the FIRST shell's Cartesians. mmd forms
+it once per basis over its own records, as stored and swapped (its
+bound_ab and bound_ba), so it is written to src/integrals/mmd/kernels/
+record_bound/, beside mmd's `pair_bound`. The class is an ORDERED pair, so
+unlike `pair_bound` every `(la, lb)` with each l at most 2 is written: 9
+classes. Its two record vectors are split as mmd names them, `pa_*` = P - A
+(A the first shell) and `pb_*` = P - B. It has no shuffle, so it is emitted
+with the default options and its text has no width.
 
 FelizJueves needs only the standard library to import, so this needs no
 virtualenv.
@@ -100,9 +100,9 @@ AXES = {
 }
 OPTIONS = {"block_dim": (1, WAVEFRONT), "any_wavefront": True}
 
-# The record bound: its own directory under pairs/kernels/ (whose
+# The record bound: its own directory under mmd/kernels/ (whose
 # .clang-format is the same DisableFormat), its two record vectors split.
-PAIRS_OUT = ROOT / "src/integrals/exchange/pairs/kernels"
+PAIRS_OUT = ROOT / "src/integrals/mmd/kernels"
 BOUND_FAMILY = "record_bound"
 BOUND_AXES = {"XPA": ("pa_x", "pa_y", "pa_z"), "XPB": ("pb_x", "pb_y", "pb_z")}
 

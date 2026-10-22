@@ -9,9 +9,11 @@
 /// s = c_a c_b (pi / zeta)^{3/2}, the ket exponent beta and the two shells' AO
 /// offsets. The kernels form the Hermite expansion E from those, including its
 /// exp(-alpha beta / zeta |A - B|^2) prefactor (as exp(zeta X_PA X_PB) per axis),
-/// so the host forms neither. One field is formed on the device, once per
-/// basis: the record's Schwarz bound I = pair_bound(zeta, la + lb), which the
-/// two-electron screens read.
+/// so the host forms neither. The record also carries what the two-electron
+/// builds derive from: the bra exponent alpha and each shell's rank among the
+/// basis's shells of its momentum. Three fields are formed on the device, once
+/// per basis: the record's Schwarz bound I = pair_bound(zeta, la + lb), and its
+/// dressed bound (FelizJueves's ao.k.record_bounds) as stored and swapped.
 ///
 /// The launchers' view of a class is primitive_pair_class_view.h's, included
 /// in the global module fragment and re-exported (atom.cppm has the why).
@@ -81,6 +83,8 @@ struct PrimitivePairClass {
   MirroredBuffer<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   MirroredBuffer<double> s;
+  /// @brief alpha, the bra primitive's exponent.
+  MirroredBuffer<double> ea;
   /// @brief beta, the ket primitive's exponent.
   MirroredBuffer<double> eb;
   /// @brief The record's Schwarz bound I = pair_bound(zeta, la + lb), formed
@@ -90,10 +94,26 @@ struct PrimitivePairClass {
   /// Zero in a class above kMaxAngularMomentum, which has no kernel and which
   /// every build refuses.
   MirroredBuffer<double> bound;
+  /// @brief The record's DRESSED Schwarz bound as stored, FelizJueves's
+  /// ao.k.record_bounds: max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p|
+  /// I_p(zeta), the max over the bra shell's Cartesians, formed on the device
+  /// by the generated record_bound<la, lb> after the zeta order. Zero in a
+  /// class above kMaxAngularMomentum, as @ref bound.
+  MirroredBuffer<double> bound_ab;
+  /// @brief The same bound of the record swapped, the ket shell first: the
+  /// max over the ket shell's Cartesians, by record_bound<lb, la> with P - A
+  /// and P - B exchanged. Equal to @ref bound_ab on a diagonal record.
+  MirroredBuffer<double> bound_ba;
   /// @brief The bra shell's first Cartesian AO (@c BasisSet::ao_offset_cart).
   MirroredBuffer<int32_t> off_a;
   /// @brief The ket shell's first Cartesian AO.
   MirroredBuffer<int32_t> off_b;
+  /// @brief The bra shell's rank: its index among the basis's shells of
+  /// momentum @ref la, in basis order.
+  MirroredBuffer<int32_t> rank_a;
+  /// @brief The ket shell's rank, among the basis's shells of momentum
+  /// @ref lb.
+  MirroredBuffer<int32_t> rank_b;
 
   /// @brief The class's own work stream: the records were allocated and copied
   /// on it, and every build launches the class on it.
@@ -117,10 +137,15 @@ struct PrimitivePairClass {
         .pb_y = pb_y.device().data(),
         .pb_z = pb_z.device().data(),
         .s = s.device().data(),
+        .ea = ea.device().data(),
         .eb = eb.device().data(),
         .bound = bound.device().data(),
+        .bound_ab = bound_ab.device().data(),
+        .bound_ba = bound_ba.device().data(),
         .off_a = off_a.device().data(),
         .off_b = off_b.device().data(),
+        .rank_a = rank_a.device().data(),
+        .rank_b = rank_b.device().data(),
     };
   }
 };
@@ -143,8 +168,8 @@ struct PrimitivePairClass {
 ///
 /// The records are written into each class's pinned side, copied to the
 /// device, ordered there (a stable merge sort on -zeta, every field permuted
-/// in place), each record's bound formed from its ordered zeta, and the pinned
-/// side refreshed from the device, all queued on the class's stream, ahead of
+/// in place), each record's three bounds formed from its ordered fields, and
+/// the pinned side refreshed from the device, all queued on the class's stream, ahead of
 /// anything a build launches there; no host synchronization. So the pinned side holds the final records only once that
 /// stream has been synchronized. The device res.dev_idx() names is made current for
 /// the call and the previous one restored.

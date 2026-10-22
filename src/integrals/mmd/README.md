@@ -2,7 +2,8 @@
 
 McMurchie–Davidson primitive-pair records: a `BasisSet` turned into the
 per-class arrays the generated one-electron kernels read, on the device, with
-each record's Schwarz bound, which J's screen reads.
+each record's Schwarz bounds, undressed and dressed, which the J and K screens
+derive from.
 
 ## Module
 
@@ -21,9 +22,12 @@ a kernel needs of that pair and cannot form itself:
 | `pa_x`, `pa_y`, `pa_z` | P − A |
 | `pb_x`, `pb_y`, `pb_z` | P − B |
 | `s` | c_a c_b (π/ζ)^{3/2} |
+| `ea` | α, the bra exponent |
 | `eb` | β, the ket exponent (the kinetic kernel's) |
 | `off_a`, `off_b` | the two shells' first Cartesian AO |
+| `rank_a`, `rank_b` | each shell's index among the basis's shells of its momentum, in basis order |
 | `bound` | I = pair_bound(ζ, la + lb), the record's undressed Schwarz bound: J's screen's `Ip` as a bra and `Iq` as a ket. Formed on the device (below). K reads its own, dressed bound instead ([`exchange/pairs`](../exchange/pairs/README.md)) |
+| `bound_ab`, `bound_ba` | the record's DRESSED Schwarz bound, FelizJueves's `ao.k.record_bounds` (the max over the first shell's Cartesians), as stored and swapped. Formed on the device (below) |
 
 The kernels build the Hermite expansion E from these, including its
 exp(−αβ/ζ |A−B|²) prefactor (as exp(ζ X_PA X_PB) per axis), so the host forms
@@ -74,6 +78,18 @@ classes carry it ([`exchange/pairs`](../exchange/pairs/README.md)).
 `tools/emit_one_electron_kernels.py` writes the kernels (its small `mmd`
 section); `kernels/.clang-format` turns formatting off so they stay as emitted.
 
+**So is the dressed bound, both ways.** `ao.k.record_bounds`, `max_{i∈a}
+Σ_{k∈b} Σ_p |s E^{ik}_p| I_p(ζ)`, carries the coefficients and the pair factor,
+and takes its max over the FIRST shell, so it depends on the orientation. On the
+class's stream, after the order, the generated `record_bound<la, lb>`
+(`kernels/record_bound/`, written by `tools/emit_exchange_kernels.py`, one
+thread per record) writes `bound_ab` from the record as stored, and
+`record_bound<lb, la>` writes `bound_ba` from a swapped view (`la`/`lb` and
+`P − A`/`P − B` exchanged); both pinned sides are refreshed. The launcher,
+`ordered_pair_bound` (`mmd_bridge.h`), is mmd's because both readers sit above
+it: `coulomb_pair_classes` and `exchange/pairs`, whose ordered classes it
+bounds through a view of the fields it reads.
+
 **The launchers' view is a header.** `PrimitivePairClass` holds wwr buffers,
 which only a module can name, so `view()` hands the launchers a
 `PrimitivePairClassView`: the same fields as plain `const` pointers, defined
@@ -99,7 +115,7 @@ V read every record. J prunes a copy of them
 
 | Symbol | Role |
 |---|---|
-| `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field (`bound` among them), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
+| `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field (the three bounds among them), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
 | `PrimitivePairClassView` | The class's device fields by pointer, for the launchers (`primitive_pair_class_view.h`, re-exported) |
 | `primitive_pair_classes(res, basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty, each on a new `DeviceStream`. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records aborts |
 
@@ -111,7 +127,10 @@ the order, on a shell whose exponents ascend (so the sort has to move them)
 and on a class past one sort tile (2816 records), each record matched by its
 fields to the one the host wrote; and the bound, for every class of
 H₂O/cc-pVDZ, within 16 eps of a host evaluation of its closed form (summed term
-by term, not by the kernel's Horner fold) and non-increasing within each class.
+by term, not by the kernel's Horner fold) and non-increasing within each class;
+`ea`, `eb` and the ranks against the basis; and `bound_ab` and `bound_ba`, for
+every class of H₂O/cc-pVDZ, bit for bit against the bound
+`ordered_pair_classes` forms for the same record as stored and swapped.
 
 ## Files
 
@@ -119,8 +138,9 @@ by term, not by the kernel's Horner fold) and non-increasing within each class.
 |------|------|
 | `primitive_pair_class_view.h` | `PrimitivePairClassView`, the single definition, for `#include` and `import` alike |
 | `mmd.cppm` | Module interface: `PrimitivePairClass`, `primitive_pair_classes`, the view re-exported |
-| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the per-record arithmetic, the copies, the order and the bound |
-| `mmd_bridge.h` | The order's and the bound's launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
-| `mmd_launch.cu` | The key and gather kernels, and the launchers: `mmd_order` (key and sort), `mmd_permute` (one field, in place), `mmd_bound` (the generated `pair_bound<la, lb>`, its table checked against `kMaxAngularMomentum`) |
+| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the ranks, the per-record arithmetic, the copies, the order and the bounds |
+| `mmd_bridge.h` | The order's and the bounds' launchers, declared once for `mmd.cpp`'s GMF and the `.cu`; `ordered_pair_bound` also for `../coulomb/coulomb.cpp`'s GMF and `../exchange/pairs/pairs_launch.cu` |
+| `mmd_launch.cu` | The key and gather kernels, and the launchers: `mmd_order` (key and sort), `mmd_permute` (one field, in place), `mmd_bound` (the generated `pair_bound<la, lb>`), `ordered_pair_bound` (the generated `record_bound<la, lb>`), both tables checked against `kMaxAngularMomentum` |
 | `kernels/pair_bound/` | The generated `pair_bound<la, lb>` units and their template header (`tools/emit_one_electron_kernels.py`) |
+| `kernels/record_bound/` | The generated `record_bound<la, lb>` units, all nine ordered classes through d, and their template header (`tools/emit_exchange_kernels.py`) |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.mmd.headers`, the device library and the module library |

@@ -5,7 +5,8 @@
 /// Included by mmd.cpp in its GLOBAL MODULE FRAGMENT, and by mmd_launch.cu
 /// directly, for the reason overlap_bridge.h gives: a declaration in a
 /// module's purview gets module linkage and can never bind to a definition
-/// compiled in a plain TU. wwrStream_t and wwrError_t come from a different wwr
+/// compiled in a plain TU. ordered_pair_bound is also included from above mmd:
+/// by coulomb.cpp's GMF and by exchange/pairs' pairs_launch.cu. wwrStream_t and wwrError_t come from a different wwr
 /// header in each pass, as there.
 
 #pragma once
@@ -13,6 +14,8 @@
 // Standard (via integral_types.h) before runtime.h: under HIP a libc++ header
 // must not follow the vendor runtime header (see primitives.h).
 #include "integral_types.h"
+
+#include "primitive_pair_class_view.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see overlap_bridge.h.
@@ -65,5 +68,28 @@ namespace free_breakfast::device {
 ///         Launch errors only.
 [[nodiscard]] wwr::wwrError_t mmd_bound(wwr::wwrStream_t stream, int32_t la, int32_t lb,
                                         int32_t n_rec, const double *zeta, double *bound);
+
+/// @brief Each record's DRESSED Schwarz bound into @p bound, on @p stream: the
+/// generated record_bound<cls.la, cls.lb> (kernels/record_bound/, written by
+/// tools/emit_exchange_kernels.py), one thread per record, FelizJueves's
+/// ao.k.record_bounds,
+///
+///     I = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
+///
+/// from the view's zeta, P - A, P - B and s, "a" its records' first shell
+/// (the view's la, pa_*). The bound is ORDERED: the max runs over the first
+/// shell's Cartesians, so (la, lb) and (lb, la) are different kernels with
+/// different values, and @p cls may be a swapped view, la > lb with P - A and
+/// P - B exchanged: mmd forms @ref PrimitivePairClass::bound_ba so, and
+/// exchange/pairs its ordered classes. Only la, lb, n_rec, zeta, pa_*, pb_*
+/// and s are read. @p bound is cls.n_rec long, written whole, and must not
+/// overlap the view's fields; a pair whose pair factor underflows gets
+/// exactly 0.0.
+///
+/// @return The launch status (wwrErrorInvalidValue if the view has no
+///         records or no kernel: la and lb at most kMaxAngularMomentum).
+///         Launch errors only.
+[[nodiscard]] wwr::wwrError_t ordered_pair_bound(wwr::wwrStream_t stream,
+                                                 const PrimitivePairClassView &cls, double *bound);
 
 } // namespace free_breakfast::device

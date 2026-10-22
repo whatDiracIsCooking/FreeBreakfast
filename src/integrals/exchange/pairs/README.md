@@ -63,7 +63,7 @@ short of it: up to 1.2× on H₂O/cc-pVDZ, an s shell with itself) nor the same
 for `(a, b)` and `(b, a)`. It decays with `|AB|`: on the H₁₀ chain 54 of 2,500
 records are exactly `0.0`, the pair factor underflowed. It is formed once per
 basis, on each class's stream after its upload, by the generated
-`record_bound<la, lb>` (`kernels/record_bound/`, FelizJueves's
+`record_bound<la, lb>` (`../../mmd/kernels/record_bound/`, launched by `mmd`'s `ordered_pair_bound`, FelizJueves's
 `Target.RECORD_BOUND`, one thread per record in 32-thread blocks, written by
 `tools/emit_exchange_kernels.py`; `kernels/.clang-format` keeps them as
 emitted). A class above d has no kernel and keeps zeros; the K build refuses
@@ -138,7 +138,6 @@ displacements and both offsets with the bound.
 | `ordered_pair_class_view.h` | `OrderedPairClassView`, the single definition, for `#include` and `import` alike |
 | `pairs.cppm` | Module interface: `OrderedPairClass`, `OrderedPairGroup`, `ordered_pair_classes`, the view re-exported |
 | `pairs.cpp` | The host gather (the sync, the orientations, the groups, the ranks, the copies), then the bound, the sort, the permutation and the refresh on the device |
-| `pairs_bridge.h` | The bound's, the order's and the permutation's launchers, declared once for `pairs.cpp`'s GMF and the `.cu`, and the bound's for `../../coulomb/coulomb.cpp`'s GMF |
-| `pairs_launch.cu` | The key and gather kernels, and the launchers: `ordered_pair_bound` (the generated `record_bound<la, lb>`, its table checked against `kMaxAngularMomentum`; also over `mmd`'s own records, as stored, for J's pruning, `coulomb_pair_classes`), `ordered_pair_order` (the two sorts), `ordered_pair_permute` (one field, in place) |
-| `kernels/record_bound/` | The generated `record_bound<la, lb>` units, all nine ordered classes through d, and their template header (`tools/emit_exchange_kernels.py`) |
+| `pairs_bridge.h` | The bound's, the order's and the permutation's launchers, declared once for `pairs.cpp`'s GMF and the `.cu` |
+| `pairs_launch.cu` | The key and gather kernels, and the launchers: `ordered_pair_bound` (an ordered class through `mmd`'s launcher of the generated `record_bound<la, lb>`, `../../mmd/mmd_bridge.h`), `ordered_pair_order` (the two sorts), `ordered_pair_permute` (one field, in place) |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.exchange.pairs.headers`, the device library and the module library |

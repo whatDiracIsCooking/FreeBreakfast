@@ -6,9 +6,9 @@ module;
 // The kernel launchers, defined in coulomb_launch.cu: declared in the GMF so
 // they keep external linkage (see the header).
 #include "coulomb_bridge.h"
-// The dressed record bound's launcher (exchange/pairs' device library), which
+// The dressed record bound's launcher (mmd's device library), which
 // coulomb_pair_classes runs over mmd's records: the same arrangement.
-#include "pairs_bridge.h"
+#include "mmd_bridge.h"
 
 module free_breakfast.integrals.coulomb;
 
@@ -172,10 +172,15 @@ Result<PrimitivePairClass> coulomb_pruned_class(DeviceResources &res, const Prim
       .pb_y = MirroredBuffer<double>(n, ds),
       .pb_z = MirroredBuffer<double>(n, ds),
       .s = MirroredBuffer<double>(n, ds),
+      .ea = MirroredBuffer<double>(n, ds),
       .eb = MirroredBuffer<double>(n, ds),
       .bound = MirroredBuffer<double>(n, ds),
+      .bound_ab = MirroredBuffer<double>(n, ds),
+      .bound_ba = MirroredBuffer<double>(n, ds),
       .off_a = MirroredBuffer<int32_t>(n, ds),
       .off_b = MirroredBuffer<int32_t>(n, ds),
+      .rank_a = MirroredBuffer<int32_t>(n, ds),
+      .rank_b = MirroredBuffer<int32_t>(n, ds),
   };
   const auto copy = [&keep, n](auto &to, const auto &from) {
     for (size_t r = 0; r < n; ++r) {
@@ -194,10 +199,15 @@ Result<PrimitivePairClass> coulomb_pruned_class(DeviceResources &res, const Prim
   FBF_TRY(copy(out.pb_y, cls.pb_y));
   FBF_TRY(copy(out.pb_z, cls.pb_z));
   FBF_TRY(copy(out.s, cls.s));
+  FBF_TRY(copy(out.ea, cls.ea));
   FBF_TRY(copy(out.eb, cls.eb));
   FBF_TRY(copy(out.bound, cls.bound));
+  FBF_TRY(copy(out.bound_ab, cls.bound_ab));
+  FBF_TRY(copy(out.bound_ba, cls.bound_ba));
   FBF_TRY(copy(out.off_a, cls.off_a));
   FBF_TRY(copy(out.off_b, cls.off_b));
+  FBF_TRY(copy(out.rank_a, cls.rank_a));
+  FBF_TRY(copy(out.rank_b, cls.rank_b));
   return out;
 }
 
