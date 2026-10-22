@@ -27,10 +27,16 @@ export namespace free_breakfast {
 /// so the class must outlive it.
 class SortedKets {
 public:
-  /// @brief Scratch and sorted copies for @p cls, whose D_q has @p n_hermite
-  /// Hermite functions. Allocates; launches nothing.
-  SortedKets(const std::shared_ptr<Device> &device, const PrimitivePairClass &cls,
+  /// @brief Scratch and sorted copies for the class @p cls views (J's
+  /// CoulombPairClass), whose D_q has @p n_hermite Hermite functions; only
+  /// its la, lb, n_rec, zeta and P are read. Allocates; launches nothing.
+  SortedKets(const std::shared_ptr<Device> &device, const PrimitivePairClassView &cls,
              int32_t n_hermite);
+
+  /// @brief The same, for one of mmd's classes.
+  SortedKets(const std::shared_ptr<Device> &device, const PrimitivePairClass &cls,
+             int32_t n_hermite)
+      : SortedKets(device, cls.view(), n_hermite) {}
 
   /// @brief Sort the class's records by Iq * Dmax, descending, and gather
   /// zeta, P, @p bound, @p dmax and @p dq into that order, on @p stream.

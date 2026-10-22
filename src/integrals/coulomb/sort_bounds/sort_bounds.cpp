@@ -16,9 +16,9 @@ import free_breakfast.integrals.mmd;
 
 namespace free_breakfast {
 
-SortedKets::SortedKets(const std::shared_ptr<Device> &device, const PrimitivePairClass &cls,
+SortedKets::SortedKets(const std::shared_ptr<Device> &device, const PrimitivePairClassView &cls,
                        const int32_t n_hermite)
-    : cls_(cls.view()), n_hermite_(n_hermite), key_(static_cast<size_t>(cls.n_rec), device),
+    : cls_(cls), n_hermite_(n_hermite), key_(static_cast<size_t>(cls.n_rec), device),
       key_alt_(static_cast<size_t>(cls.n_rec), device),
       perm_(static_cast<size_t>(cls.n_rec), device),
       perm_alt_(static_cast<size_t>(cls.n_rec), device),

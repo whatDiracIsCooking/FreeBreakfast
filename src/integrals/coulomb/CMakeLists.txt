@@ -15,7 +15,9 @@ add_subdirectory(sort_bounds)
 # felizjueves/runtime.h (felizjueves::headers, which also carries FJ_WAVEFRONT
 # = WWR_WARP_SIZE), e_hermite's the shared eval_boys.h (shared::headers), and
 # the launcher's block sizing reads kWarpSize (block_params.h, primitives.h),
-# hence core::kernel_headers; all three PRIVATE.
+# hence core::kernel_headers, which also carries block_reduce.cuh for the
+# prune's maxima; all three PRIVATE. The prune's K reads basis.h's
+# function_count_cart, through basis::headers.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.coulomb.device
@@ -69,16 +71,15 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::integrals::shared::headers
 )
 
-# The module. DeviceResources, PrimitivePairClass and CartesianMatrixAO are in
-# its signature, so core::resources, mmd and linalg::matrix_ao are PUBLIC. The
-# per-class launch and the pre-launch checks are the one-electron builds' own
-# (one_electron::launch), the ket sort is sort_bounds', and the device library
-# is PRIVATE: the implementation unit includes the bridge header in its GMF and
-# calls the launchers, and a static library's private link dependencies still
-# reach the final link. coulomb_pair_classes' dressed bound is mmd's launcher
-# (mmd::device, the same arrangement: one kernel family for J and K), its
-# copies MirroredBuffers (core::mirrored_buffer), its Cartesian count and
-# momentum limit basis's.
+# The module. DeviceResources, PrimitivePairClass, CartesianMatrixAO and J's
+# own class (its StreamBuffers on a DeviceStream, its int32_t) are in its
+# signature, so core::types, core::wwr, core::resources, mmd and
+# linalg::matrix_ao are PUBLIC. The per-class launch and the pre-launch checks
+# are the one-electron builds' own (one_electron::launch), the ket sort is
+# sort_bounds', and the device library is PRIVATE: the implementation unit
+# includes the bridge header in its GMF and calls the launchers (the build's
+# and the prune's), and a static library's private link dependencies still
+# reach the final link. The momentum limit is basis's.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.coulomb
@@ -88,18 +89,16 @@ free_breakfast_add_cxx_module_library(
   coulomb.cpp
   IMPORT_STD
   LINK_PUBLIC
+  free_breakfast::core::types
   free_breakfast::core::error_handling
+  free_breakfast::core::wwr
   free_breakfast::core::resources
   free_breakfast::integrals::mmd
   free_breakfast::linalg::matrix_ao
   LINK_PRIVATE
-  free_breakfast::core::types
-  free_breakfast::core::wwr
-  free_breakfast::core::mirrored_buffer
   free_breakfast::core::diagnostics_macros
   free_breakfast::basis
   free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::coulomb::sort_bounds
   free_breakfast::integrals::coulomb::device
-  free_breakfast::integrals::mmd::device
 )
