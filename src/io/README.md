@@ -1,6 +1,6 @@
 # IO
 
-The file-level input/output layer: reading a calculation's inputs off disk and writing its results back. Each sub-directory is one module, laid out the same way — a primary interface named after the directory plus `<name>_{reader,writer,shared}.cppm` partitions. The layer has three tiers: `base/` (whole-file primitives), the **format** modules (`json/`, `toml/`, `npy/`, each the only place its backing representation is named), and the **domain** modules (`config/`, `basis/` and `xyz/`, which say what the bytes mean). `io.cppm` (`free_breakfast.io`) re-exports all of them, so one import covers the layer and each sub-module stays importable on its own.
+The file-level input/output layer: reading a calculation's inputs off disk and writing its results back. Each sub-directory is one module, laid out the same way — a primary interface named after the directory plus `<name>_{reader,writer,shared}.cppm` partitions. The layer has three tiers: `base/` (whole-file primitives), the **format** modules (`json/`, `toml/`, `npy/`, each the only place its backing representation is named), and the **domain** modules (`basis/` and `xyz/`, which say what the bytes mean). The TOML config is read one layer up, by `free_breakfast.pipeline.config`, because what it means is the pipeline's steps. `io.cppm` (`free_breakfast.io`) re-exports all of them, so one import covers the layer and each sub-module stays importable on its own.
 
 ## Sub-modules
 
@@ -10,7 +10,6 @@ The file-level input/output layer: reading a calculation's inputs off disk and w
 | `json/` | `free_breakfast.io.json` | The JSON format: the `free_breakfast::json` vocabulary type, `parse_json`/`read_json`, `json_to_string`/`write_json`. The only place nlohmann is named. |
 | `toml/` | `free_breakfast.io.toml` | The TOML format: the `free_breakfast::toml` vocabulary types and `parse_toml`/`read_toml`. The only place toml++ is named. |
 | `npy/` | `free_breakfast.io.npy` | The NumPy `.npy` binary array format (float64, C order): `NpyArray`, `parse_npy`/`read_npy`, `npy_to_bytes`/`write_npy`. Interop with the Python tooling layer. |
-| `config/` | `free_breakfast.io.config` | Parse a TOML config into a `Config`. |
 | `xyz/` | `free_breakfast.io.xyz` | Parse a standard XYZ geometry (Angstrom) into a `Molecule` (bohr). |
 | `basis/` | `free_breakfast.io.basis` | Parse a Basis Set Exchange (BSE) JSON basis into a per-element `BasisStamp` and place it over a `Molecule` to build a `BasisSet`. |
 
@@ -22,7 +21,7 @@ Within a directory `x/`:
 
 * `x.cppm` — the primary interface `free_breakfast.io.x`; `export import`s the partitions.
 * `x_reader.cppm` / `x_writer.cppm` — the `:reader` / `:writer` partitions; a module carries only the directions it has.
-* `x_shared.cppm` — the `:shared` partition for what both directions (or the caller) need, e.g. `config/`'s `Config` or `npy/`'s `NpyArray`.
+* `x_shared.cppm` — the `:shared` partition for what both directions (or the caller) need, e.g. `npy/`'s `NpyArray`.
 * `x_reader.cpp` / `x_writer.cpp` — implementation units.
 
 The on-disk `read_x(path)` / `write_x(path, ...)` entry points are the in-memory parsers piped through `io/base`'s `read_file` / `write_file` — no other module opens files itself.

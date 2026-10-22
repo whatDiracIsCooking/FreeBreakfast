@@ -39,13 +39,13 @@ add_executable(
   sad_host.cpp
   io_base_host.cpp
   io_basis_host.cpp
-  io_config_host.cpp
   io_json_host.cpp
   io_npy_host.cpp
   io_toml_host.cpp
   gpu_policy_host.cpp
   node_resources_host.cpp
   pipeline_step_host.cpp
+  pipeline_config_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -68,6 +68,7 @@ target_link_libraries(
           free_breakfast::io
           free_breakfast::core::resources
           free_breakfast::pipeline::step
+          free_breakfast::pipeline::config
           GTest::gtest
           GTest::gtest_main
 )

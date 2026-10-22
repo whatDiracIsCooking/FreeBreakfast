@@ -20,3 +20,20 @@ add_subdirectory(integrals)
 # After the modules its steps wrap: the step contract itself is a leaf over
 # core, but the setup steps that follow it import integrals and linalg.
 add_subdirectory(pipeline)
+
+# The free-breakfast executable: the one place a value-tier Error becomes an
+# exit code. Not a module library, so it sets the module-scanning properties
+# itself, as the experimental/ benches do.
+add_executable(free_breakfast_main main.cpp)
+set_target_properties(
+  free_breakfast_main PROPERTIES OUTPUT_NAME free-breakfast CXX_MODULE_STD 1
+                                 CXX_SCAN_FOR_MODULES ON
+)
+target_link_libraries(
+  free_breakfast_main
+  PRIVATE free_breakfast::core
+          free_breakfast::core::resources
+          free_breakfast::core::diagnostics_macros
+          free_breakfast::pipeline::step
+          free_breakfast::pipeline::config
+)

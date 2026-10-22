@@ -28,7 +28,8 @@ malformed file is `ErrorKind::IO`, exactly as there.
 - **A root step**, so it reads nothing (`View<>`). Its options are its inputs:
   the file, and the charge and multiplicity XYZ does not carry.
 - **The path is already resolved.** Which directory a relative path in the
-  TOML is relative to is the front end's decision. It is made once, before any
+  TOML is relative to is the front end's decision (`pipeline.config`: the config
+  file's own directory). It is made once, before any
   step exists, so the step holds a path it can open as given. There is no
   shared "input directory" product: that would be configuration routed through
   the graph, the first field of a context object.
