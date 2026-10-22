@@ -36,4 +36,5 @@ target_link_libraries(
           free_breakfast::core::diagnostics_macros
           free_breakfast::pipeline::step
           free_breakfast::pipeline::config
+          free_breakfast::pipeline::spherical_transform
 )

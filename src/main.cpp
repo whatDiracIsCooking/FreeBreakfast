@@ -20,6 +20,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
+import free_breakfast.pipeline.spherical_transform;
 
 namespace {
 
@@ -44,6 +45,8 @@ fb::Status run(std::span<char *const> args) {
 
   const fb::Molecule molecule = FBF_TRY(molecule_step.run(fb::View<>{}, res));
   const fb::BasisSet basis = FBF_TRY(basis_set_step.run(fb::View<fb::Molecule>{molecule}));
+  const fb::SphericalTransform transform =
+      FBF_TRY(fb::SphericalTransformStep{}.run(fb::View<fb::BasisSet>{basis}, res));
 
   std::println("atoms:             {}", molecule.natoms());
   std::println("charge:            {}", molecule.charge());
@@ -53,6 +56,7 @@ fb::Status run(std::span<char *const> args) {
   std::println("shells:            {}", basis.nshells());
   std::println("AOs (cartesian):   {}", basis.nao_cart());
   std::println("AOs (spherical):   {}", basis.nao_sphe());
+  std::println("spherical U:       {}", transform.u ? "uploaded" : "identity");
   return {};
 }
 
