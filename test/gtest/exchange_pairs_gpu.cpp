@@ -6,10 +6,12 @@
 // contiguous, one first shell each with its AO offset, in basis order and non-increasing in the
 // dressed record bound, and their bounds on the device side as group_start;
 // each record's rank_b; the (la, lb) and (lb, la) records the same multiset
-// with P - A and P - B swapped; the device side matching the pinned side; and
+// with P - A and P - B swapped; every class bit for bit against a host gather
+// of mmd's records; the view naming the device fields; and
 // each record's dressed bound against FelizJueves's ao.k.record_bounds
 // (test/gtest/data/record_bound/, tools/emit_record_bound_golden.py), on
-// H2O/cc-pVDZ and the chain, with its centres those of its two shells.
+// H2O/cc-pVDZ and the chain, with its centres those of its two shells. The
+// classes are device only: every check reads a copy taken back explicitly.
 
 #include <gtest/gtest.h>
 
@@ -52,29 +54,46 @@ std::array<double, 3> coords(const fb::Vec<double, 3> &v) {
   return {v.x, v.y, v.z};
 }
 
-// Record k of a field's pinned side.
+// A device field of n elements, copied back to the host on the class's
+// stream, which every write of it was queued on.
 template <typename T>
-T at(const fb::MirroredBuffer<T> &field, const std::size_t k) {
-  return field.pinned().data()[k];
-}
-
-// A field's pinned side.
-template <typename T>
-std::vector<T> pinned(const fb::MirroredBuffer<T> &field) {
-  const T *p = field.pinned().data();
-  return {p, p + field.size()};
-}
-
-// A field's device side, copied back to the host on the field's stream.
-template <typename T>
-std::vector<T> download(const fb::MirroredBuffer<T> &field) {
-  std::vector<T> out(field.size());
-  const wwr::wwrStream_t stream = field.handle()->stream();
-  EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), field.device().data(), sizeof(T) * out.size(),
-                                wwr::wwrMemcpyDeviceToHost, stream),
+std::vector<T> download(const fb::OrderedPairClass &cls, const fb::StreamBuffers::device<T> &field,
+                        const std::size_t n) {
+  std::vector<T> out(n);
+  const wwr::wwrStream_t stream = cls.device_stream()->stream();
+  EXPECT_EQ(field.num_elements(), n);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), field.data(), sizeof(T) * n, wwr::wwrMemcpyDeviceToHost,
+                                stream),
             wwr::wwrSuccess);
   EXPECT_EQ(wwr::wwrStreamSynchronize(stream), wwr::wwrSuccess);
   return out;
+}
+
+// An ordered class's fields on the host, named as there.
+struct Host {
+  std::vector<double> zeta, p_x, p_y, p_z, pa_x, pa_y, pa_z, pb_x, pb_y, pb_z, s, record_bound;
+  std::vector<std::int32_t> off_a, off_b, rank_b, group_start;
+};
+
+Host fetch(const fb::OrderedPairClass &cls) {
+  const auto n = static_cast<std::size_t>(cls.n_rec);
+  const auto f = [&cls, n](const auto &field) { return download(cls, field, n); };
+  return {.zeta = f(cls.zeta),
+          .p_x = f(cls.p_x),
+          .p_y = f(cls.p_y),
+          .p_z = f(cls.p_z),
+          .pa_x = f(cls.pa_x),
+          .pa_y = f(cls.pa_y),
+          .pa_z = f(cls.pa_z),
+          .pb_x = f(cls.pb_x),
+          .pb_y = f(cls.pb_y),
+          .pb_z = f(cls.pb_z),
+          .s = f(cls.s),
+          .record_bound = f(cls.record_bound),
+          .off_a = f(cls.off_a),
+          .off_b = f(cls.off_b),
+          .rank_b = f(cls.rank_b),
+          .group_start = download(cls, cls.group_start, cls.groups.size() + 1)};
 }
 
 // The basis's ordered classes, with the mmd classes they were drawn from (the
@@ -134,16 +153,17 @@ std::map<std::int32_t, ShellAt> shells_by_offset(const fb::BasisSet &basis) {
 using Record = std::array<double, 13>;
 
 std::vector<Record> records(const fb::OrderedPairClass &cls, const bool swap) {
+  const Host h = fetch(cls);
   std::vector<Record> out;
   for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
-    const std::array<double, 3> pa{at(cls.pa_x, k), at(cls.pa_y, k), at(cls.pa_z, k)};
-    const std::array<double, 3> pb{at(cls.pb_x, k), at(cls.pb_y, k), at(cls.pb_z, k)};
+    const std::array<double, 3> pa{h.pa_x[k], h.pa_y[k], h.pa_z[k]};
+    const std::array<double, 3> pb{h.pb_x[k], h.pb_y[k], h.pb_z[k]};
     const std::array<double, 3> &one = swap ? pb : pa;
     const std::array<double, 3> &two = swap ? pa : pb;
-    const auto off_one = static_cast<double>(swap ? at(cls.off_b, k) : at(cls.off_a, k));
-    const auto off_two = static_cast<double>(swap ? at(cls.off_a, k) : at(cls.off_b, k));
-    out.push_back({at(cls.zeta, k), at(cls.p_x, k), at(cls.p_y, k), at(cls.p_z, k), one[0], one[1],
-                   one[2], two[0], two[1], two[2], at(cls.s, k), off_one, off_two});
+    const auto off_one = static_cast<double>(swap ? h.off_b[k] : h.off_a[k]);
+    const auto off_two = static_cast<double>(swap ? h.off_a[k] : h.off_b[k]);
+    out.push_back({h.zeta[k], h.p_x[k], h.p_y[k], h.p_z[k], one[0], one[1], one[2], two[0], two[1],
+                   two[2], h.s[k], off_one, off_two});
   }
   std::ranges::sort(out);
   return out;
@@ -162,10 +182,11 @@ TEST_P(ExchangePairs, RecordCountsAreTheOrderedPrimitivePairs) {
   for (const fb::OrderedPairClass &cls : o.ordered) {
     EXPECT_EQ(ClassKey(cls.la, cls.lb), w->first);
     EXPECT_EQ(cls.n_rec, w->second) << "(" << cls.la << ", " << cls.lb << ")";
-    for (const fb::MirroredBuffer<double> *field : {&cls.zeta, &cls.pb_z, &cls.record_bound}) {
-      EXPECT_EQ(field->size(), static_cast<std::size_t>(cls.n_rec));
+    for (const fb::StreamBuffers::device<double> *field :
+         {&cls.zeta, &cls.pb_z, &cls.record_bound}) {
+      EXPECT_EQ(field->num_elements(), static_cast<std::size_t>(cls.n_rec));
     }
-    EXPECT_EQ(cls.rank_b.size(), static_cast<std::size_t>(cls.n_rec));
+    EXPECT_EQ(cls.rank_b.num_elements(), static_cast<std::size_t>(cls.n_rec));
     ++w;
   }
 }
@@ -180,14 +201,15 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
   for (const fb::OrderedPairClass &cls : o.ordered) {
     const std::string name = std::format("({}, {})", cls.la, cls.lb);
     ASSERT_FALSE(cls.groups.empty()) << name;
-    ASSERT_EQ(cls.group_start.size(), cls.groups.size() + 1) << name;
+    ASSERT_EQ(cls.group_start.num_elements(), cls.groups.size() + 1) << name;
+    const Host h = fetch(cls);
     std::int32_t next = 0;
     std::int32_t prev_shell = -1;
     for (std::size_t gi = 0; gi < cls.groups.size(); ++gi) {
       const fb::OrderedPairGroup &g = cls.groups[gi];
       // Contiguous and in basis order; the groups cover the class exactly.
       EXPECT_EQ(g.start, next) << name;
-      EXPECT_EQ(at(cls.group_start, gi), g.start) << name << " group " << gi;
+      EXPECT_EQ(h.group_start[gi], g.start) << name << " group " << gi;
       EXPECT_GT(g.count, 0) << name;
       EXPECT_GT(g.shell, prev_shell) << name;
       next = g.start + g.count;
@@ -209,22 +231,21 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
       EXPECT_EQ(g.ao_offset, a_off) << name << " shell " << g.shell;
       for (std::int32_t k = g.start; k < g.start + g.count; ++k) {
         const auto r = static_cast<std::size_t>(k);
-        EXPECT_EQ(at(cls.off_a, r), a_off) << name << " record " << k;
+        EXPECT_EQ(h.off_a[r], a_off) << name << " record " << k;
         // kb's sorted breaks need it; a far pair's bound may be exactly 0.
         if (k > g.start) {
-          EXPECT_LE(at(cls.record_bound, r), at(cls.record_bound, r - 1))
-              << name << " record " << k;
+          EXPECT_LE(h.record_bound[r], h.record_bound[r - 1]) << name << " record " << k;
         }
-        EXPECT_GE(at(cls.record_bound, r), 0.0) << name << " record " << k;
+        EXPECT_GE(h.record_bound[r], 0.0) << name << " record " << k;
         // The second shell has momentum lb and its host rank.
-        const auto b = by_offset.find(at(cls.off_b, r));
+        const auto b = by_offset.find(h.off_b[r]);
         ASSERT_NE(b, by_offset.end()) << name << " record " << k;
         EXPECT_EQ(b->second.l, cls.lb) << name << " record " << k;
-        EXPECT_EQ(at(cls.rank_b, r), b->second.rank) << name << " record " << k;
+        EXPECT_EQ(h.rank_b[r], b->second.rank) << name << " record " << k;
       }
     }
     EXPECT_EQ(next, cls.n_rec) << name;
-    EXPECT_EQ(at(cls.group_start, cls.groups.size()), cls.n_rec) << name;
+    EXPECT_EQ(h.group_start[cls.groups.size()], cls.n_rec) << name;
   }
 }
 
@@ -244,26 +265,90 @@ TEST_P(ExchangePairs, SwappedClassesHoldTheSameRecordsWithPaAndPbSwapped) {
   }
 }
 
-TEST_P(ExchangePairs, DeviceSideMatchesThePinnedSide) {
+// Every class bit for bit against a host gather of mmd's records, read on
+// mmd's pinned side (final once its stream is synchronized): each mmd record
+// taken in record order to its first shell's group, as stored and, unless
+// diagonal, swapped; each group stably sorted by the dressed bound,
+// descending. The order, the bounds and every field the device's gather
+// wrote.
+TEST_P(ExchangePairs, MatchesAHostGatherOfMmd) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const Ordered o = ordered_of(res, h2o(GetParam()));
+  ASSERT_FALSE(o.ordered.empty());
+  for (const fb::PrimitivePairClass &m : o.mmd) {
+    ASSERT_EQ(wwr::wwrStreamSynchronize(m.device_stream()->stream()), wwr::wwrSuccess);
+  }
+  const auto pin = [](const auto &field, const std::size_t r) { return field.pinned().data()[r]; };
+  for (const fb::OrderedPairClass &cls : o.ordered) {
+    const std::string name = std::format("({}, {})", cls.la, cls.lb);
+    const auto m = std::ranges::find_if(o.mmd, [&cls](const fb::PrimitivePairClass &c) {
+      return c.la == std::min(cls.la, cls.lb) && c.lb == std::max(cls.la, cls.lb);
+    });
+    ASSERT_NE(m, o.mmd.end()) << name;
+    // Each group's (record, swapped), by the first shell's rank.
+    std::vector<std::vector<std::pair<std::size_t, bool>>> groups(cls.groups.size());
+    for (std::size_t r = 0; r < static_cast<std::size_t>(m->n_rec); ++r) {
+      if (cls.la == m->la) {
+        groups.at(static_cast<std::size_t>(pin(m->rank_a, r))).emplace_back(r, false);
+      }
+      if (cls.la == m->lb && (m->la != m->lb || pin(m->off_a, r) != pin(m->off_b, r))) {
+        groups.at(static_cast<std::size_t>(pin(m->rank_b, r))).emplace_back(r, true);
+      }
+    }
+    std::vector<std::pair<std::size_t, bool>> want;
+    for (auto &g : groups) {
+      std::ranges::stable_sort(g, std::ranges::greater{}, [&](const auto &rec) {
+        return pin(rec.second ? m->bound_ba : m->bound_ab, rec.first);
+      });
+      want.insert(want.end(), g.begin(), g.end());
+    }
+    ASSERT_EQ(want.size(), static_cast<std::size_t>(cls.n_rec)) << name;
+    const Host h = fetch(cls);
+    for (std::size_t k = 0; k < want.size(); ++k) {
+      const auto [r, sw] = want[k];
+      const auto &[pa_x, pb_x] = sw ? std::tie(m->pb_x, m->pa_x) : std::tie(m->pa_x, m->pb_x);
+      const auto &[pa_y, pb_y] = sw ? std::tie(m->pb_y, m->pa_y) : std::tie(m->pa_y, m->pb_y);
+      const auto &[pa_z, pb_z] = sw ? std::tie(m->pb_z, m->pa_z) : std::tie(m->pa_z, m->pb_z);
+      const auto &[off_a, off_b] = sw ? std::tie(m->off_b, m->off_a) : std::tie(m->off_a, m->off_b);
+      const std::array<double, 12> want_d{
+          pin(m->zeta, r), pin(m->p_x, r), pin(m->p_y, r), pin(m->p_z, r),
+          pin(pa_x, r),    pin(pa_y, r),   pin(pa_z, r),   pin(pb_x, r),
+          pin(pb_y, r),    pin(pb_z, r),   pin(m->s, r),   pin(sw ? m->bound_ba : m->bound_ab, r)};
+      const std::array<double, 12> got_d{h.zeta[k], h.p_x[k],  h.p_y[k],  h.p_z[k],
+                                         h.pa_x[k], h.pa_y[k], h.pa_z[k], h.pb_x[k],
+                                         h.pb_y[k], h.pb_z[k], h.s[k],    h.record_bound[k]};
+      ASSERT_EQ(got_d, want_d) << name << " record " << k;
+      const std::array<std::int32_t, 3> want_i{pin(off_a, r), pin(off_b, r),
+                                               pin(sw ? m->rank_a : m->rank_b, r)};
+      const std::array<std::int32_t, 3> got_i{h.off_a[k], h.off_b[k], h.rank_b[k]};
+      ASSERT_EQ(got_i, want_i) << name << " record " << k;
+    }
+  }
+}
+
+TEST_P(ExchangePairs, ViewNamesTheDeviceFields) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const Ordered o = ordered_of(res, h2o(GetParam()));
   ASSERT_FALSE(o.ordered.empty());
   for (const fb::OrderedPairClass &cls : o.ordered) {
     const fb::OrderedPairClassView v = cls.view();
+    EXPECT_EQ(v.la, cls.la);
+    EXPECT_EQ(v.lb, cls.lb);
     EXPECT_EQ(v.n_rec, cls.n_rec);
-    EXPECT_EQ(v.rank_b, cls.rank_b.device().data());
+    EXPECT_EQ(v.zeta, cls.zeta.data());
+    EXPECT_EQ(v.p_x, cls.p_x.data());
+    EXPECT_EQ(v.pa_y, cls.pa_y.data());
+    EXPECT_EQ(v.pb_z, cls.pb_z.data());
+    EXPECT_EQ(v.s, cls.s.data());
+    EXPECT_EQ(v.record_bound, cls.record_bound.data());
+    EXPECT_EQ(v.off_a, cls.off_a.data());
+    EXPECT_EQ(v.off_b, cls.off_b.data());
+    EXPECT_EQ(v.rank_b, cls.rank_b.data());
     EXPECT_EQ(v.n_groups, static_cast<std::int32_t>(cls.groups.size()));
-    EXPECT_EQ(v.group_start, cls.group_start.device().data());
-    for (const fb::MirroredBuffer<double> *field :
-         {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-          &cls.pb_y, &cls.pb_z, &cls.s, &cls.record_bound}) {
-      EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
-    }
-    for (const fb::MirroredBuffer<std::int32_t> *field :
-         {&cls.off_a, &cls.off_b, &cls.rank_b, &cls.group_start}) {
-      EXPECT_EQ(download(*field), pinned(*field)) << "(" << cls.la << ", " << cls.lb << ")";
-    }
+    EXPECT_EQ(v.group_start, cls.group_start.data());
+    EXPECT_EQ(cls.device_stream()->dev_idx(), res.dev_idx());
   }
 }
 
@@ -306,21 +391,22 @@ TEST_P(ExchangeRecordBound, MatchesFelizJuevesRecordBounds) {
   std::int64_t n_rec = 0;
   std::int64_t n_zero = 0;
   for (const fb::OrderedPairClass &cls : o.ordered) {
+    const Host h = fetch(cls);
     for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
-      const std::int32_t a = shell_at.at(at(cls.off_a, k));
-      const std::int32_t b = shell_at.at(at(cls.off_b, k));
+      const std::int32_t a = shell_at.at(h.off_a[k]);
+      const std::int32_t b = shell_at.at(h.off_b[k]);
       const auto ca = coords(basis.shells()[static_cast<std::size_t>(a)].center());
       const auto cb = coords(basis.shells()[static_cast<std::size_t>(b)].center());
-      const std::array p{at(cls.p_x, k), at(cls.p_y, k), at(cls.p_z, k)};
-      const std::array pa{at(cls.pa_x, k), at(cls.pa_y, k), at(cls.pa_z, k)};
-      const std::array pb{at(cls.pb_x, k), at(cls.pb_y, k), at(cls.pb_z, k)};
+      const std::array p{h.p_x[k], h.p_y[k], h.p_z[k]};
+      const std::array pa{h.pa_x[k], h.pa_y[k], h.pa_z[k]};
+      const std::array pb{h.pb_x[k], h.pb_y[k], h.pb_z[k]};
       for (std::size_t x = 0; x < 3; ++x) {
         ASSERT_NEAR(p[x] - pa[x], ca[x], 1e-12)
             << "record " << k << " of shells " << a << ", " << b;
         ASSERT_NEAR(p[x] - pb[x], cb[x], 1e-12)
             << "record " << k << " of shells " << a << ", " << b;
       }
-      got[{a, b}].emplace_back(at(cls.zeta, k), at(cls.record_bound, k));
+      got[{a, b}].emplace_back(h.zeta[k], h.record_bound[k]);
       ++n_rec;
     }
   }
@@ -359,8 +445,8 @@ INSTANTIATE_TEST_SUITE_P(Golden, ExchangeRecordBound,
                          ::testing::Values("h2o_ccpvdz", "h10_chain_ccpvdz"));
 
 // The ordered classes of one basis built from another basis's mmd classes are
-// refused: an AO offset that starts no shell is an InvalidConfig error, not a garbage
-// gather.
+// refused: a class the basis does not reach, or of a record count not the
+// basis's, is an InvalidConfig error, not a garbage gather.
 TEST(ExchangePairsMismatch, ClassesOfAnotherBasisAreRefused) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};

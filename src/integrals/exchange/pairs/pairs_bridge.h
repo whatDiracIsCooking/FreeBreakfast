@@ -1,13 +1,21 @@
 /// @file
-/// @brief The ordered classes' record-bound and record-order launchers,
-/// declared once for the module that calls them and the device TU that
-/// defines them.
+/// @brief The ordered classes' order and gather launchers, declared once for
+/// the module that calls them and the device TU that defines them.
 ///
 /// Included by pairs.cpp in its GLOBAL MODULE FRAGMENT, and by
 /// pairs_launch.cu directly, for the reason overlap_bridge.h gives: a
 /// declaration in a module's purview gets module linkage and can never bind to
 /// a definition compiled in a plain TU. wwrStream_t and wwrError_t come from a
 /// different wwr header in each pass, as there.
+///
+/// Both launchers read an ordered class straight from the mmd class it is
+/// drawn from, through the mmd class's view, by SLOT: slot s is one
+/// orientation of one mmd record. For an ordered (la, lb) of an mmd (la, lb)
+/// with la < lb, slot r is record r as stored; of an mmd (lb, la), record r
+/// swapped; and for la == lb, slot 2r is record r as stored and slot 2r + 1 it
+/// swapped, a slot that does not exist for a diagonal record (off_a == off_b),
+/// which has one orientation only. So a class has `from.n_rec` slots, twice
+/// that for la == lb.
 ///
 /// Every pointer is device memory, every launch is asynchronous on @p stream,
 /// and the launchers return launch errors only.
@@ -18,7 +26,7 @@
 // must not follow the vendor runtime header (see primitives.h).
 #include "integral_types.h"
 
-#include "ordered_pair_class_view.h"
+#include "primitive_pair_class_view.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see overlap_bridge.h.
@@ -30,57 +38,48 @@
 
 namespace free_breakfast::device {
 
-/// @brief Each record's DRESSED Schwarz bound into @p bound, on @p stream: the
-/// generated record_bound<cls.la, cls.lb>, through mmd's launcher of it
-/// (mmd_bridge.h's ordered_pair_bound), one thread per record, FelizJueves's
-/// ao.k.record_bounds,
+/// @brief The order of the ordered class (@p la, lb) of the mmd class
+/// @p from, on @p stream: slot perm[k] is its k-th record, for k below the
+/// class's record count, grouped by first shell in basis order (group g the
+/// first shell of rank g among the shells of momentum @p la), each group in
+/// descending dressed bound (mmd's bound_ab as stored, bound_ba swapped),
+/// equal bounds in slot order; and the groups' bounds into @p group_start.
 ///
-///     I = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
+/// Two stable sorts (src/integrals/sort's merge_sort_passes): every slot by
+/// -bound, then the result by its first shell's rank, a slot that does not
+/// exist by @p n_groups, so it lands past every record. @p group_start, of
+/// @p n_groups + 1 entries, is then each group's first record, by bisection
+/// over the sorted ranks, its last entry the record count. @p key,
+/// @p key_alt, @p perm and @p perm_alt are one per slot; the alts are touched
+/// only past one tile of the sort (2816 slots). No array may overlap another,
+/// or @p from's fields.
 ///
-/// from the class's zeta, P - A, P - B and s, "a" its records' first shell.
-/// The class is ORDERED: the max runs over the first shell's Cartesians, so
-/// (la, lb) and (lb, la) are different kernels with different values. @p bound
-/// is cls.n_rec long, written whole, and must not overlap the class's fields;
-/// a pair whose pair factor underflows gets exactly 0.0.
-///
-/// @return The launch status (wwrErrorInvalidValue if the class has no
-///         records or no kernel: la and lb at most kMaxAngularMomentum).
-[[nodiscard]] wwr::wwrError_t ordered_pair_bound(wwr::wwrStream_t stream,
-                                                 const OrderedPairClassView &cls, double *bound);
+/// @return The first launch status (wwrErrorInvalidValue if @p from has no
+///         records, @p n_groups is not positive, or @p la is neither of
+///         @p from's momenta).
+[[nodiscard]] wwr::wwrError_t ordered_pair_order(wwr::wwrStream_t stream,
+                                                 const PrimitivePairClassView &from, int32_t la,
+                                                 int32_t n_groups, double *key, double *key_alt,
+                                                 uint32_t *perm, uint32_t *perm_alt,
+                                                 int32_t *group_start);
 
-/// @brief The order that puts each of a class's groups in descending @p bound,
-/// on @p stream: record perm[k] is the k-th, the groups (@p group_start,
-/// @p n_groups + 1 entries, the last @p n_rec) kept where they are, and equal
-/// bounds within a group in record order.
+/// @brief Write the ordered class (@p la, lb) of the mmd class @p from in the
+/// order @p perm gives (@ref ordered_pair_order's), on @p stream: record k is
+/// slot perm[k], for k below @p n_rec, one thread per record.
 ///
-/// Two stable sorts (src/integrals/sort's merge_sort_passes): every record by
-/// -bound, then the result by its group's index, which leaves each group's
-/// records in the first sort's order. @p key, @p key_alt, @p perm and
-/// @p perm_alt are @p n_rec long; the alts are touched only past one tile of
-/// the sort (2816 records). No array may overlap another.
+/// As stored a record is mmd's with its bound_ab and rank_b; swapped, with
+/// P - A and P - B exchanged, off_a and off_b exchanged, bound_ba, and rank_a
+/// as its rank_b. @p doubles is the class's zeta, p_x, p_y, p_z, pa_x, pa_y,
+/// pa_z, pb_x, pb_y, pb_z, s and record_bound, @p ints its off_a, off_b and
+/// rank_b, each @p n_rec long and written whole; none may overlap another, or
+/// @p from's fields.
 ///
-/// @return The first launch status (wwrErrorInvalidValue if @p n_rec or
-///         @p n_groups is not positive).
-[[nodiscard]] wwr::wwrError_t ordered_pair_order(wwr::wwrStream_t stream, int32_t n_rec,
-                                                 int32_t n_groups, const int32_t *group_start,
-                                                 const double *bound, double *key, double *key_alt,
-                                                 uint32_t *perm, uint32_t *perm_alt);
-
-/// @brief Put @p field in the order @p perm gives, in place, on @p stream:
-/// field[k] becomes the old field[perm[k]].
-///
-/// Copies @p field into @p tmp, then gathers it back. All three are @p n_rec
-/// long, @p perm a permutation of 0 .. n_rec - 1 (@ref ordered_pair_order's).
-///
-/// @return The first copy or launch status (wwrErrorInvalidValue if @p n_rec
-///         is not positive).
-[[nodiscard]] wwr::wwrError_t ordered_pair_permute(wwr::wwrStream_t stream, int32_t n_rec,
-                                                   const uint32_t *perm, double *field,
-                                                   double *tmp);
-
-/// @copydoc ordered_pair_permute
-[[nodiscard]] wwr::wwrError_t ordered_pair_permute(wwr::wwrStream_t stream, int32_t n_rec,
-                                                   const uint32_t *perm, int32_t *field,
-                                                   int32_t *tmp);
+/// @return The launch status (wwrErrorInvalidValue if @p n_rec is not
+///         positive or @p la is neither of @p from's momenta).
+[[nodiscard]] wwr::wwrError_t ordered_pair_gather(wwr::wwrStream_t stream,
+                                                  const PrimitivePairClassView &from, int32_t la,
+                                                  int32_t n_rec, const uint32_t *perm,
+                                                  double *const doubles[12],
+                                                  int32_t *const ints[3]);
 
 } // namespace free_breakfast::device

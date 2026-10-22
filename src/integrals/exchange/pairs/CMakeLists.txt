@@ -10,15 +10,14 @@ free_breakfast_add_interface_library(
   free_breakfast::core::types_headers
 )
 
-# The record bound and order: each record's dressed Schwarz bound, through
-# mmd's launcher of the generated record_bound kernels (mmd::device, whose
-# bridge header the launcher includes), and each group sorted by it, once per
-# basis. Device code in its own library, so its language and -x hip never
-# reach the module compiles. The bridge header names int32_t,
-# OrderedPairClassView, wwrStream_t and wwrError_t, hence types_headers,
-# headers and wwr::device PUBLIC; the launcher reads kFourWarps and idivup
-# (core::kernel_headers) and sorts with src/integrals/sort's merge sort; all
-# PRIVATE.
+# The order and the gather: each ordered class's records grouped by first
+# shell and sorted by mmd's dressed bound, then written straight from the mmd
+# class, once per basis. Device code in its own library, so its language and
+# -x hip never reach the module compiles. The bridge header names int32_t,
+# PrimitivePairClassView (mmd's headers), wwrStream_t and wwrError_t, hence
+# types_headers, mmd::headers and wwr::device PUBLIC; the launcher reads
+# kFourWarps and idivup (core::kernel_headers) and sorts with
+# src/integrals/sort's merge sort; both PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.exchange.pairs.device
@@ -26,19 +25,19 @@ free_breakfast_add_gpu_device_library(
   pairs_launch.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
-  free_breakfast::integrals::exchange::pairs::headers
+  free_breakfast::integrals::mmd::headers
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
-  free_breakfast::integrals::mmd::device
   free_breakfast::integrals::sort::device
 )
 
-# The ordered classes, gathered on the host from mmd's, copied to the device
-# and ordered there. MirroredBuffer, DeviceStream, DeviceResources, Result,
-# BasisSet and PrimitivePairClass are in its interface, so their modules are
-# PUBLIC; diagnostics.h (FBF_TRY) and the device library, whose bridge header
-# the implementation unit includes in its GMF, are its only.
+# The ordered classes: their groups from the basis on the host, their records
+# ordered and gathered on the device from mmd's. StreamBuffers, DeviceStream,
+# DeviceResources, Result, BasisSet and PrimitivePairClass are in its
+# interface, so their modules are PUBLIC; diagnostics.h (FBF_TRY) and the
+# device library, whose bridge header the implementation unit includes in its
+# GMF, are its only.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.exchange.pairs
@@ -51,7 +50,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
-  free_breakfast::core::mirrored_buffer
   free_breakfast::core::resources
   free_breakfast::basis
   free_breakfast::integrals::mmd
