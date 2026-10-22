@@ -36,7 +36,7 @@ namespace free_breakfast::device {
 /// array e_hermite reads of a ket into place k of its sorted copy: zeta, P,
 /// bound (Iq), dmax, and column k of each of dq's n_hermite rows.
 ///
-/// @p bound, @p dmax and @p dq are the class's own, from coulomb_prepare.
+/// @p bound, @p dmax and @p dq are the class's own, from dq.
 /// @p key, @p key_alt, @p perm and @p perm_alt are cls.n_rec-long scratch; the
 /// alts are touched only past one tile of the sort (2816 records). The sorted
 /// copies are cls.n_rec long. @p dq and @p dq_sorted are q-major, @p n_hermite
