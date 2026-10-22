@@ -41,10 +41,24 @@ using free_breakfast::PrimitivePairClassView;
 /// class's own work stream.
 ///
 /// A vector is three fields, one per axis (P - A is @ref pa_x, @ref pa_y,
-/// @ref pa_z), named and laid out as the generated kernels take them. The
-/// pinned side is what the records were written into; it is kept for the
-/// class's lifetime, so the copy to the device never needs a host
-/// synchronization to protect it.
+/// @ref pa_z), named and laid out as the generated kernels take them.
+///
+/// **The device side is the class; the pinned side is staging.** The host
+/// writes the records into the pinned side and they flow one way, to the
+/// device, where they are ordered and bounded. Nothing is copied back: the
+/// pinned side keeps the records in the order the host wrote them, the three
+/// bounds' pinned sides are never written, and every reader (the builds, J's
+/// prune, K's gather) reads the device side. A reader that wants the records on
+/// the host copies them back itself.
+///
+/// The pinned side is kept for the class's lifetime, so the upload never needs
+/// a host synchronization to protect it, and so a later step can stage again
+/// without allocating pinned memory: under AIMD the basis composition is
+/// fixed, so the zeta order (which depends only on the basis) puts each record
+/// at the same index every step, and a step rewrites @ref p_x, @ref pa_x,
+/// @ref pb_x (and y, z) there and re-uploads. Rewriting the pinned side in
+/// place must first wait, by an event or a synchronization, for the previous
+/// upload from it to complete.
 ///
 /// **The class is always la <= lb.** A shell pair whose bra has the higher
 /// angular momentum is stored swapped, B as the bra and A as the ket, so the
@@ -168,11 +182,11 @@ struct PrimitivePairClass {
 ///
 /// The records are written into each class's pinned side, copied to the
 /// device, ordered there (a stable merge sort on -zeta, every field permuted
-/// in place), each record's three bounds formed from its ordered fields, and
-/// the pinned side refreshed from the device, all queued on the class's stream, ahead of
-/// anything a build launches there; no host synchronization. So the pinned side holds the final records only once that
-/// stream has been synchronized. The device res.dev_idx() names is made current for
-/// the call and the previous one restored.
+/// in place) and each record's three bounds formed from its ordered fields,
+/// all queued on the class's stream, ahead of anything a build launches there;
+/// no host synchronization. The final records are on the device side only
+/// (see @ref PrimitivePairClass). The device res.dev_idx() names is made
+/// current for the call and the previous one restored.
 ///
 /// Coefficients are taken from the basis as given (see @ref Shell), so a basis
 /// that wants normalized primitives is placed from

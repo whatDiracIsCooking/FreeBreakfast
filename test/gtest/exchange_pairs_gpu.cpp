@@ -266,7 +266,7 @@ TEST_P(ExchangePairs, SwappedClassesHoldTheSameRecordsWithPaAndPbSwapped) {
 }
 
 // Every class bit for bit against a host gather of mmd's records, read on
-// mmd's pinned side (final once its stream is synchronized): each mmd record
+// mmd's pinned side once copied back from its device side: each mmd record
 // taken in record order to its first shell's group, as stored and, unless
 // diagonal, swapped; each group stably sorted by the dressed bound,
 // descending. The order, the bounds and every field the device's gather
@@ -274,9 +274,18 @@ TEST_P(ExchangePairs, SwappedClassesHoldTheSameRecordsWithPaAndPbSwapped) {
 TEST_P(ExchangePairs, MatchesAHostGatherOfMmd) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const Ordered o = ordered_of(res, h2o(GetParam()));
+  Ordered o = ordered_of(res, h2o(GetParam()));
   ASSERT_FALSE(o.ordered.empty());
-  for (const fb::PrimitivePairClass &m : o.mmd) {
+  // mmd's pinned side is staging only: copy back every field read below.
+  for (fb::PrimitivePairClass &m : o.mmd) {
+    for (fb::MirroredBuffer<double> *field :
+         {&m.zeta, &m.p_x, &m.p_y, &m.p_z, &m.pa_x, &m.pa_y, &m.pa_z, &m.pb_x, &m.pb_y, &m.pb_z,
+          &m.s, &m.bound_ab, &m.bound_ba}) {
+      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
+    }
+    for (fb::MirroredBuffer<std::int32_t> *field : {&m.off_a, &m.off_b, &m.rank_a, &m.rank_b}) {
+      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
+    }
     ASSERT_EQ(wwr::wwrStreamSynchronize(m.device_stream()->stream()), wwr::wwrSuccess);
   }
   const auto pin = [](const auto &field, const std::size_t r) { return field.pinned().data()[r]; };

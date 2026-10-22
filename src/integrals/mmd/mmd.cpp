@@ -126,11 +126,11 @@ Status copy_to_device(PrimitivePairClass &cls) {
 }
 
 // Put cls's records in descending zeta order on its stream, after their copy
-// to the device: the order, then every field permuted to it in place, then the
-// pinned side refreshed from the device. Within a class the record bound
-// (form_bounds) rises with zeta, so this is descending Ip: a J
-// build's bras with the longest ket loops launch first. Every kernel
-// accumulates, so none depends on the order. The scratch is drawn on cls's
+// to the device: the order, then every field permuted to it in place. Only the
+// device side is ordered: the pinned side keeps the order the host wrote.
+// Within a class the record bound (form_bounds) rises with zeta, so this is
+// descending Ip: a J build's bras with the longest ket loops launch first.
+// Every kernel accumulates, so none depends on the order. The scratch is drawn on cls's
 // stream and returned in its order.
 Status order_by_zeta(PrimitivePairClass &cls) {
   const std::shared_ptr<DeviceStream> &ds = cls.device_stream();
@@ -149,18 +149,16 @@ Status order_by_zeta(PrimitivePairClass &cls) {
         &cls.pb_y, &cls.pb_z, &cls.s, &cls.ea, &cls.eb}) {
     FBF_TRY(gpu_status(
         device::mmd_permute(stream, cls.n_rec, perm.data(), field->device().data(), tmp.data())));
-    FBF_TRY(gpu_status(field->to_pinned()));
   }
   for (MirroredBuffer<int32_t> *field : {&cls.off_a, &cls.off_b, &cls.rank_a, &cls.rank_b}) {
     FBF_TRY(gpu_status(device::mmd_permute(stream, cls.n_rec, perm.data(), field->device().data(),
                                            tmp_offsets.data())));
-    FBF_TRY(gpu_status(field->to_pinned()));
   }
   return {};
 }
 
 // Each record's three bounds, on cls's stream after order_by_zeta, so they are
-// in record order, then their pinned sides refreshed: the Schwarz bound
+// in record order, on the device only: the Schwarz bound
 // I = pair_bound(zeta, la + lb) from its zeta, which rises with zeta and so is
 // non-increasing in record order, and the dressed bound (ordered_pair_bound) of
 // the record as stored and swapped, the swap a view with la and lb, and P - A
@@ -182,9 +180,6 @@ Status form_bounds(PrimitivePairClass &cls) {
   std::swap(swapped.pa_y, swapped.pb_y);
   std::swap(swapped.pa_z, swapped.pb_z);
   FBF_TRY(gpu_status(device::ordered_pair_bound(stream, swapped, cls.bound_ba.device().data())));
-  for (MirroredBuffer<double> *field : {&cls.bound, &cls.bound_ab, &cls.bound_ba}) {
-    FBF_TRY(gpu_status(field->to_pinned()));
-  }
   return {};
 }
 

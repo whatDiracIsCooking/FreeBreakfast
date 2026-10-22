@@ -215,7 +215,7 @@ misses the bar with every record too); the record counts pinned, 135 of 135
 kept in STO-3G, 572 of 593 in cc-pVDZ and 842 of 1,305 on the chain; how far
 pruning moved J recorded (2.0e-14 on the chain, its worst error 2.0e-14); on
 all three, at `1e-13`, `1e-10` and `0`, the device prune's records exactly the
-host prune's (the criterion above, over `mmd`'s pinned `bound_ab`), every field
+host prune's (the criterion above, over `mmd`'s `bound_ab` copied back), every field
 J reads, read back from the device, bitwise, in `mmd`'s order; `tau = 0`
 keeping every record and a `tau` above every bound none; and the refusals.
 
