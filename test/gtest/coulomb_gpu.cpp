@@ -87,7 +87,7 @@ std::vector<double> golden_j(const Golden &g, const double tau) {
   if (!classes) {
     return {};
   }
-  const auto every = fb::coulomb_pair_classes(res, *classes, 0.0);
+  auto every = fb::coulomb_pair_classes(res, *classes, 0.0);
   EXPECT_TRUE(every);
   if (!every) {
     return {};
@@ -167,7 +167,7 @@ PrunedJ pruned_j(const Golden &g, const double tau, const double prune = 1e-13) 
   if (!classes) {
     return {};
   }
-  const auto pruned = fb::coulomb_pair_classes(res, *classes, prune);
+  auto pruned = fb::coulomb_pair_classes(res, *classes, prune);
   EXPECT_TRUE(pruned) << (pruned ? "" : pruned.error().message);
   if (!pruned) {
     return {};
@@ -384,6 +384,47 @@ TEST(CoulombPairClasses, RefusesANegativeOrNaNTauAndAClassAboveD) {
   EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
+// The classes carry a build's scratch (J_p, D_q, the ket order), so a second
+// build over them must not see the first's: one build of a density whose
+// elements are reweighted (so its kets sort into another order), then two of
+// the golden density on the same classes, at the default screen, each
+// against libcint.
+TEST(Coulomb, ReusedClassesGiveEachDensitysJ) {
+  FBF_REQUIRE_GPU();
+  const Golden g = read_golden("h2o_ccpvdz");
+  ASSERT_FALSE(g.vj.empty());
+  double scale = 0.0;
+  for (const double v : g.vj) {
+    scale = std::max(scale, std::abs(v));
+  }
+  fb::DeviceResources res{0};
+  const auto mmd = fb::primitive_pair_classes(res, g.basis);
+  ASSERT_TRUE(mmd);
+  auto classes = fb::coulomb_pair_classes(res, *mmd, 0.0);
+  ASSERT_TRUE(classes);
+  const std::size_t n = g.basis.nao_cart();
+  std::vector<double> reweighted(g.density.size());
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t k = 0; k < n; ++k) {
+      reweighted[i * n + k] = g.density[i * n + k] * static_cast<double>(1 + i + k);
+    }
+  }
+  fb::CartesianMatrixAO density(res, g.basis);
+  fb::CartesianMatrixAO j(res, g.basis);
+  upload(res, reweighted, density);
+  ASSERT_TRUE(fb::coulomb(res, *classes, density, j));
+  upload(res, g.density, density);
+  for (const std::int32_t build : {2, 3}) {
+    const fb::Status status = fb::coulomb(res, *classes, density, j);
+    ASSERT_TRUE(status) << (status ? "" : status.error().message);
+    const std::vector<double> got = download(res, j);
+    ASSERT_EQ(got.size(), g.vj.size());
+    for (std::size_t i = 0; i < got.size(); ++i) {
+      ASSERT_LE(std::abs(got[i] - g.vj[i]), kRelTol * scale) << "build " << build << ", " << i;
+    }
+  }
+}
+
 TEST(Coulomb, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -416,7 +457,7 @@ TEST(Coulomb, RefusesANegativeOrNaNTau) {
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const auto mmd = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(mmd);
-  const auto classes = fb::coulomb_pair_classes(res, *mmd, 0.0);
+  auto classes = fb::coulomb_pair_classes(res, *mmd, 0.0);
   ASSERT_TRUE(classes);
   const fb::CartesianMatrixAO density(res, basis);
   fb::CartesianMatrixAO j(res, basis);
@@ -435,7 +476,7 @@ TEST(Coulomb, RefusesADensityOfAnotherOrder) {
                           fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 1.0})});
   const auto mmd = fb::primitive_pair_classes(res, two);
   ASSERT_TRUE(mmd);
-  const auto classes = fb::coulomb_pair_classes(res, *mmd, 0.0);
+  auto classes = fb::coulomb_pair_classes(res, *mmd, 0.0);
   ASSERT_TRUE(classes);
   const fb::CartesianMatrixAO density(res, one);
   fb::CartesianMatrixAO j(res, two);

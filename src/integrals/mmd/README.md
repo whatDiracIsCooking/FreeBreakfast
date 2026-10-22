@@ -83,7 +83,7 @@ writes it. Because it rises
 with ζ, it is non-increasing in record order. A class above
 `kMaxAngularMomentum` has no kernel, so its bound stays zero; every build
 refuses such a class, and `primitive_pair_classes` itself still accepts it. The J build reads it (bras in
-record order, kets through `sort_bounds`' sorted copy). The K build does not:
+record order, kets through their class's sorted `ket_` copy). The K build does not:
 its screen is proved against the DRESSED bound (contraction coefficients and
 pair factor in), which depends on the pair's orientation, so the ordered
 classes carry it ([`exchange/pairs`](../exchange/pairs/README.md)).

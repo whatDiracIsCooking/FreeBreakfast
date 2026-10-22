@@ -3,9 +3,11 @@
 
 module;
 
-// The kernel launchers, defined in coulomb_launch.cu: declared in the GMF so
-// they keep external linkage (see the header).
+// The kernel launchers, defined in coulomb_launch.cu and
+// sort_bounds/sort_bounds_launch.cu: declared in the GMF so they keep external
+// linkage (see the headers).
 #include "coulomb_bridge.h"
+#include "sort_bounds_bridge.h"
 
 module free_breakfast.integrals.coulomb;
 
@@ -16,7 +18,6 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
-import free_breakfast.integrals.coulomb.sort_bounds;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.linalg.matrix_ao;
 
@@ -31,19 +32,78 @@ size_t coulomb_hermite_count(const int32_t l) {
   return (n + 1) * (n + 2) * (n + 3) / 6;
 }
 
-// One class's scratch: its records' weights and, as a ket, D_q and Dmax, in
-// record order, and those with zeta, P and the Schwarz bound Iq (the class's
-// own bound field) sorted by Iq * Dmax; as a bra, J_p. D_q and J_p share the
-// class's Hermite order, la + lb.
-struct CoulombScratch {
-  Buffers::device<double> w;
-  Buffers::device<double> dq;
-  Buffers::device<double> dmax;
-  Buffers::device<double> jp;
-  SortedKets kets;
-};
+// The build proper, once coulomb has checked its inputs and zeroed j: J_p
+// zeroed, then the ket phase and the bra phase, each forked from and joined
+// back into stream.
+Status coulomb_build(DeviceResources &res, const std::span<CoulombPairClass> classes,
+                     const CartesianMatrixAO &density, CartesianMatrixAO &j, const double tau) {
+  const wwr::wwrStream_t stream = res.stream();
+  // Drawn from res.device()'s pool in stream's order, so every class's fork
+  // from stream sees it allocated, and returned in its order at the end,
+  // after both phases' joins.
+  int32_t max_rec = 0;
+  for (const CoulombPairClass &cls : classes) {
+    max_rec = std::max(max_rec, cls.n_rec);
+  }
+  Buffers::device<int32_t> rows(static_cast<size_t>(max_rec), res.device());
+  FBF_TRY(gpu_status(device::coulomb_rows(stream, max_rec, rows.data())));
+  // e_hermite adds every ket class into J_p, from every class's stream, so it
+  // is zeroed on stream, before the fork; the last build's last touch of it
+  // (its jab, on the class's stream) was joined into stream.
+  for (CoulombPairClass &cls : classes) {
+    const size_t n = static_cast<size_t>(cls.n_rec) * static_cast<size_t>(cls.n_hermite);
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(cls.jp.data(), 0, sizeof(double) * n, stream)));
+  }
+  const auto n_ao = static_cast<int32_t>(j.n());
+  // launch_each hands each class over const; the build writes its scratch.
+  const auto own = [&](const CoulombPairClass &cls) -> CoulombPairClass & {
+    return classes[static_cast<size_t>(&cls - classes.data())];
+  };
 
-Status coulomb(DeviceResources &res, const std::span<const CoulombPairClass> classes,
+  // Every class as a ket, on its own stream: its weights, D_q and Dmax, the
+  // class sorted by Iq * Dmax (Iq its records' bound, mmd's), then every bra
+  // class contracted against it into the bra's J_p. Its sorted copies are
+  // written and read on its stream alone; the bras' records are only read,
+  // and their J_p only added to, atomically.
+  FBF_TRY(gpu_status(launch_each(classes, stream, [&](const CoulombPairClass &cls) {
+    CoulombPairClass &ket = own(cls);
+    const wwr::wwrStream_t s = ket.device_stream()->stream();
+    const PrimitivePairClassView v = ket.view();
+    if (const wwr::wwrError_t code = device::coulomb_prepare(
+            s, v, n_ao, density.data(), ket.w.data(), ket.dq.data(), ket.dmax.data());
+        code != wwr::wwrSuccess) {
+      return code;
+    }
+    if (const wwr::wwrError_t code = device::sort_bounds_kets(
+            s, v, ket.n_hermite, v.bound, ket.dmax.data(), ket.dq.data(), ket.ket_key.data(),
+            ket.ket_key_alt.data(), ket.ket_perm.data(), ket.ket_perm_alt.data(),
+            ket.ket_zeta.data(), ket.ket_p_x.data(), ket.ket_p_y.data(), ket.ket_p_z.data(),
+            ket.ket_bound.data(), ket.ket_dmax.data(), ket.ket_dq.data());
+        code != wwr::wwrSuccess) {
+      return code;
+    }
+    const PrimitivePairClassView k = ket.ket_view();
+    for (CoulombPairClass &bra : classes) {
+      const PrimitivePairClassView b = bra.view();
+      if (const wwr::wwrError_t code =
+              device::coulomb_e_hermite(s, b, k, tau, b.bound, k.bound, ket.ket_dq.data(),
+                                        ket.ket_dmax.data(), bra.jp.data());
+          code != wwr::wwrSuccess) {
+        return code;
+      }
+    }
+    return wwr::wwrSuccess;
+  })));
+
+  // Every class as a bra, its J_p complete once the ket phase's join closed:
+  // its scatter into J, on its own stream, reading the class in record order.
+  return gpu_status(launch_each(classes, stream, [&](const CoulombPairClass &bra) {
+    return device::coulomb_jab(bra.device_stream()->stream(), bra.view(), n_ao, rows.data(),
+                               own(bra).jp.data(), j.data());
+  }));
+}
+
+Status coulomb(DeviceResources &res, const std::span<CoulombPairClass> classes,
                const CartesianMatrixAO &density, CartesianMatrixAO &j, const double tau) {
   // The matrix's checks are the one-electron builds'; J's classes are not
   // mmd's, so theirs are here, with the same messages.
@@ -79,68 +139,15 @@ Status coulomb(DeviceResources &res, const std::span<const CoulombPairClass> cla
   if (classes.empty()) {
     return {};
   }
-
-  // Drawn from res.device()'s pool in stream's order, so every class's fork
-  // from stream sees them allocated, and returned in its order at the end,
-  // after both phases' joins.
-  int32_t max_rec = 0;
+  const Status built = coulomb_build(res, classes, density, j, tau);
+  // A ket's stream reads every bra's records and adds into its J_p, and a
+  // failed phase leaves some streams unforked by the next, so every class's
+  // stream waits on stream, which has joined them all, before anything else
+  // is queued there: a class's frees then follow every read of it.
   for (const CoulombPairClass &cls : classes) {
-    max_rec = std::max(max_rec, cls.n_rec);
+    FBF_TRY(gpu_status(cls.device_stream()->fork_stream().fork_from(stream)));
   }
-  Buffers::device<int32_t> rows(static_cast<size_t>(max_rec), res.device());
-  FBF_TRY(gpu_status(device::coulomb_rows(stream, max_rec, rows.data())));
-  std::vector<CoulombScratch> scratch;
-  scratch.reserve(classes.size());
-  for (const CoulombPairClass &cls : classes) {
-    const auto n_rec = static_cast<size_t>(cls.n_rec);
-    const size_t n_hermite = coulomb_hermite_count(cls.la + cls.lb);
-    const size_t n = n_rec * n_hermite;
-    CoulombScratch &sc = scratch.emplace_back(CoulombScratch{
-        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n, res.device()),
-        Buffers::device<double>(n_rec, res.device()), Buffers::device<double>(n, res.device()),
-        SortedKets(res.device(), cls.view(), static_cast<int32_t>(n_hermite))});
-    // e_hermite adds every ket class into J_p.
-    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(sc.jp.data(), 0, sizeof(double) * n, stream)));
-  }
-  const auto of = [&](const CoulombPairClass &cls) -> CoulombScratch & {
-    return scratch[static_cast<size_t>(&cls - classes.data())];
-  };
-  const auto n_ao = static_cast<int32_t>(j.n());
-
-  // Every class's inputs: its weights and, as a ket, its D_q and Dmax, then
-  // the class sorted by Iq * Dmax as a ket (Iq its records' bound, mmd's),
-  // which every bra class reads, so the join closes the phase before any of
-  // them starts.
-  FBF_TRY(gpu_status(launch_each(classes, stream, [&](const CoulombPairClass &cls) {
-    const wwr::wwrStream_t s = cls.device_stream()->stream();
-    CoulombScratch &k = of(cls);
-    const PrimitivePairClassView v = cls.view();
-    if (const wwr::wwrError_t code = device::coulomb_prepare(s, v, n_ao, density.data(), k.w.data(),
-                                                             k.dq.data(), k.dmax.data());
-        code != wwr::wwrSuccess) {
-      return code;
-    }
-    return k.kets.sort(s, v.bound, k.dmax.data(), k.dq.data());
-  })));
-
-  // Every class as a bra: J_p over every ket class, sorted, then its scatter
-  // into J, in that order on the bra's own stream. The bra side reads the
-  // class in record order, its Ip the class's own bound, so jab's rows stay
-  // the identity.
-  return gpu_status(launch_each(classes, stream, [&](const CoulombPairClass &bra) {
-    const wwr::wwrStream_t s = bra.device_stream()->stream();
-    CoulombScratch &b = of(bra);
-    const PrimitivePairClassView v = bra.view();
-    for (const CoulombPairClass &ket : classes) {
-      const SortedKets &k = of(ket).kets;
-      if (const wwr::wwrError_t code = device::coulomb_e_hermite(
-              s, v, k.view(), tau, v.bound, k.bound(), k.dq(), k.dmax(), b.jp.data());
-          code != wwr::wwrSuccess) {
-        return code;
-      }
-    }
-    return device::coulomb_jab(s, v, n_ao, rows.data(), b.jp.data(), j.data());
-  }));
+  return built;
 }
 
 // J's classes from mmd's, once every class's stream has been joined into
@@ -181,11 +188,13 @@ coulomb_prune(DeviceResources &res, const std::span<const PrimitivePairClass> cl
       continue;
     }
     const auto n = static_cast<size_t>(n_rec);
+    const size_t n_hermite = coulomb_hermite_count(classes[c].la + classes[c].lb);
     const auto ds = std::make_shared<DeviceStream>(res.device());
     out.push_back(CoulombPairClass{
         .la = classes[c].la,
         .lb = classes[c].lb,
         .n_rec = n_rec,
+        .n_hermite = static_cast<int32_t>(n_hermite),
         .handle = ds,
         .zeta = StreamBuffers::device<double>(n, ds),
         .p_x = StreamBuffers::device<double>(n, ds),
@@ -201,6 +210,21 @@ coulomb_prune(DeviceResources &res, const std::span<const PrimitivePairClass> cl
         .bound = StreamBuffers::device<double>(n, ds),
         .off_a = StreamBuffers::device<int32_t>(n, ds),
         .off_b = StreamBuffers::device<int32_t>(n, ds),
+        .w = StreamBuffers::device<double>(n, ds),
+        .dq = StreamBuffers::device<double>(n * n_hermite, ds),
+        .dmax = StreamBuffers::device<double>(n, ds),
+        .jp = StreamBuffers::device<double>(n * n_hermite, ds),
+        .ket_key = StreamBuffers::device<double>(n, ds),
+        .ket_key_alt = StreamBuffers::device<double>(n, ds),
+        .ket_perm = StreamBuffers::device<uint32_t>(n, ds),
+        .ket_perm_alt = StreamBuffers::device<uint32_t>(n, ds),
+        .ket_zeta = StreamBuffers::device<double>(n, ds),
+        .ket_p_x = StreamBuffers::device<double>(n, ds),
+        .ket_p_y = StreamBuffers::device<double>(n, ds),
+        .ket_p_z = StreamBuffers::device<double>(n, ds),
+        .ket_bound = StreamBuffers::device<double>(n, ds),
+        .ket_dmax = StreamBuffers::device<double>(n, ds),
+        .ket_dq = StreamBuffers::device<double>(n * n_hermite, ds),
     });
     from.push_back(c);
   }

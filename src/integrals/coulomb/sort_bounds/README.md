@@ -3,12 +3,14 @@
 Each ket class of the J build sorted descending by its screen bound
 `Iq · Dmax`, which is the order `e_hermite`'s screen needs.
 
-## Module
+## Target
 
-`free_breakfast.integrals.coulomb.sort_bounds`, target
-`free_breakfast::integrals::coulomb::sort_bounds`. Only
-[`coulomb`](../README.md) uses it, so `free_breakfast.integrals` does not
-re-export it.
+A device library with no module face,
+`free_breakfast::integrals::coulomb::sort_bounds::device`, driven through
+`sort_bounds_bridge.h`. Only [`coulomb`](../README.md) uses it: the buffers it
+sorts into are `CoulombPairClass`'s `ket_` fields, so the class owns them, and
+coulomb's implementation unit includes the bridge in its global module
+fragment.
 
 ## Why the kets are sorted, and by what
 
@@ -33,9 +35,8 @@ once per basis.
 
 ## Design
 
-`SortedKets(device, cls, n_hermite)` allocates, from `device`'s pool, the sort's
-scratch and a sorted copy of each array `e_hermite` reads of a ket.
-`sort(stream, bound, dmax, dq)` queues three steps on the class's stream:
+`sort_bounds_kets(stream, cls, n_hermite, bound, dmax, dq, …)` queues three
+steps on the class's stream, into scratch and sorted copies the caller owns:
 
 | Step | Kernel | Does |
 |---|---|---|
@@ -52,10 +53,10 @@ scratch and a sorted copy of each array `e_hermite` reads of a ket.
 - **One launch per class at these sizes.** Up to 2816 records the sort is a
   single block sort in 1 to 8 warps. Above that it runs merge passes, which
   use the `_alt` scratch.
-- **`e_hermite`'s launcher is unchanged.** `view()` returns a
-  `PrimitivePairClassView` with `la`, `lb`, `n_rec`, and `zeta` and P aimed at
-  the sorted copies, which is all `e_hermite` reads of a ket. Its other
-  pointers are null.
+- **`e_hermite`'s launcher is unchanged.** `CoulombPairClass::ket_view()`
+  returns a `PrimitivePairClassView` with `la`, `lb`, `n_rec`, and `zeta`, P
+  and the bound aimed at the sorted copies, which is all `e_hermite` reads of
+  a ket. Its other pointers are null.
 
 The merge sort is [`src/integrals/sort`](../../sort/README.md)'s, shared with
 `mmd`, which orders each class's records with it.
@@ -64,16 +65,14 @@ The merge sort is [`src/integrals/sort`](../../sort/README.md)'s, shared with
 
 | Symbol | Role |
 |---|---|
-| `SortedKets(device, cls, n_hermite)` | Scratch and sorted copies for `cls`, whose `D_q` (q-major, `n_hermite × n_rec`) has `n_hermite` Hermite functions. Allocates and launches nothing. Movable. `cls` must outlive it |
-| `SortedKets::sort(stream, bound, dmax, dq)` | `wwrError_t`: queues the key, the sort and the gather on `stream`. Launch errors only |
-| `SortedKets::view()` | The class as `e_hermite`'s ket: `zeta` and P sorted, the other pointers null |
-| `SortedKets::bound()`, `dmax()`, `dq()` | `Iq`, `Dmax` and `D_q` (q-major), sorted |
+| `device::sort_bounds_kets(stream, cls, n_hermite, bound, dmax, dq, key, key_alt, perm, perm_alt, zeta_sorted, p_x_sorted, p_y_sorted, p_z_sorted, bound_sorted, dmax_sorted, dq_sorted)` | `wwrError_t`: queues the key, the sort and the gather on `stream`. Reads `cls`'s `la`, `lb`, `n_rec`, `zeta` and P; `dq` and `dq_sorted` are q-major, `n_hermite × n_rec`, the rest `n_rec` long. Launch errors only |
 
 ## Tests
 
-`test/gtest/sort_bounds_gpu.cpp` uses one s shell of 60 primitives against
-itself, 3600 records, which is past the 2816-key tile, so a merge pass runs.
-It makes up bounds, `Dmax` and `D_q`, with repeated products and zero `Dmax`
+`test/gtest/sort_bounds_gpu.cpp` drives the launcher through its bridge, as
+`exchange_helpers_gpu.cpp` drives its own, on a made-up class of 3600
+records, which is past the 2816-key tile, so a merge pass runs. It makes up
+`zeta`, P, bounds, `Dmax` and `D_q`, with repeated products and zero `Dmax`
 among them. Every sorted array must equal its record order permuted by a host
 `std::stable_sort` of the same keys under `std::strong_order`, bit for bit. The
 products must not increase, and a zero `Dmax` must come last. Through `J`, the
@@ -83,7 +82,6 @@ screen is [`coulomb`](../README.md)'s tests.
 
 | File | Role |
 |------|------|
-| `sort_bounds.cppm` / `.cpp` | The module: `SortedKets`, its scratch, and the launcher's arguments |
-| `sort_bounds_bridge.h` | `sort_bounds_kets`, declared once for the module's GMF and the `.cu` |
+| `sort_bounds_bridge.h` | `sort_bounds_kets`, declared once for coulomb's GMF, the test and the `.cu` |
 | `sort_bounds_launch.cu` | The key and gather kernels and `sort_bounds_kets` |
-| `CMakeLists.txt` | The device library and the module |
+| `CMakeLists.txt` | The device library |

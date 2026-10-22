@@ -5,9 +5,10 @@
 ///
 /// The records are J's own, CoulombPairClass: coulomb_pair_classes' copy of
 /// mmd's, made on the device, with the primitive pairs J cannot need pruned
-/// and only the fields J reads. Every class is both a ket class (its density
-/// pre-contracted, its records sorted by the screen's bound) and a bra class
-/// (its J_p contracted against every ket class, then scattered into J).
+/// and only the fields J reads, plus the class's per-build scratch. Every class
+/// is both a ket class (its density pre-contracted, its records sorted by the
+/// screen's bound, then contracted into every bra class's J_p) and a bra class
+/// (its J_p scattered into J).
 
 export module free_breakfast.integrals.coulomb;
 
@@ -23,13 +24,23 @@ export namespace free_breakfast {
 
 /// @brief One class of J's primitive-pair records: the records of one of
 /// mmd's classes (la, lb) that J can need (@ref coulomb_pair_classes), with
-/// the fields J reads, on the device only, on the class's own work stream.
+/// the fields J reads, and the scratch a J build writes, on the device only,
+/// on the class's own work stream.
 ///
-/// Each field is mmd's (@ref PrimitivePairClass has their meaning) for the
-/// kept records, in mmd's order: descending zeta, so J's bras keep their
+/// Each record field is mmd's (@ref PrimitivePairClass has their meaning) for
+/// the kept records, in mmd's order: descending zeta, so J's bras keep their
 /// load-balancing order. @ref bound is mmd's undressed bound, e_hermite's Ip
 /// and Iq. There is no pinned side, and no ea, eb, dressed bound or rank:
 /// nothing J runs reads them.
+///
+/// **The scratch is the class's, not the build's.** Every @ref coulomb call
+/// rewrites it: the weights, D_q and Dmax in record order, the class as a ket
+/// (the `ket_` fields: zeta, P, Iq, Dmax and D_q sorted descending by
+/// Iq * Dmax, the order e_hermite's screen breaks on, and the sort's own
+/// scratch), and J_p. It is allocated with the records, once per basis, so an
+/// SCF loop allocates nothing per build; and, being the class's, it allows one
+/// @ref coulomb at a time per set of classes: two builds over the same classes
+/// must be queued on one stream, which orders them.
 ///
 /// Movable, not copyable.
 struct CoulombPairClass {
@@ -37,8 +48,11 @@ struct CoulombPairClass {
   int32_t la;
   /// @brief The ket shell's angular momentum.
   int32_t lb;
-  /// @brief The number of records, positive: the length of every field.
+  /// @brief The number of records, positive: the length of every record field.
   int32_t n_rec;
+  /// @brief The number of Hermite functions of order up to la + lb: one
+  /// record's row of @ref jp, and the number of rows of @ref dq.
+  int32_t n_hermite;
   /// @brief The class's own work stream: every field was allocated and written
   /// on it, and @ref coulomb launches the class on it. Declared before the
   /// fields, so it outlives their stream-ordered frees.
@@ -72,11 +86,45 @@ struct CoulombPairClass {
   /// @brief The ket shell's first Cartesian AO.
   StreamBuffers::device<int32_t> off_b;
 
+  /// @brief Scratch: each record's density weight, 2 for two shells, 1 for a
+  /// shell against itself.
+  StreamBuffers::device<double> w;
+  /// @brief Scratch: D_q, q-major, n_hermite x n_rec, in record order.
+  StreamBuffers::device<double> dq;
+  /// @brief Scratch: Dmax = max_q |D_q|, in record order.
+  StreamBuffers::device<double> dmax;
+  /// @brief Scratch: J_p, record-major, n_rec x n_hermite, summed over every
+  /// ket class.
+  StreamBuffers::device<double> jp;
+  /// @brief Scratch: the ket sort's keys, -(Iq * Dmax).
+  StreamBuffers::device<double> ket_key;
+  /// @brief Scratch: the ket sort's second key buffer, used past one tile.
+  StreamBuffers::device<double> ket_key_alt;
+  /// @brief Scratch: the ket sort's permutation.
+  StreamBuffers::device<uint32_t> ket_perm;
+  /// @brief Scratch: the ket sort's second permutation buffer.
+  StreamBuffers::device<uint32_t> ket_perm_alt;
+  /// @brief Scratch: zeta, in the ket order.
+  StreamBuffers::device<double> ket_zeta;
+  /// @brief Scratch: P: x, in the ket order.
+  StreamBuffers::device<double> ket_p_x;
+  /// @brief Scratch: P: y, in the ket order.
+  StreamBuffers::device<double> ket_p_y;
+  /// @brief Scratch: P: z, in the ket order.
+  StreamBuffers::device<double> ket_p_z;
+  /// @brief Scratch: Iq (@ref bound), in the ket order.
+  StreamBuffers::device<double> ket_bound;
+  /// @brief Scratch: Dmax, in the ket order.
+  StreamBuffers::device<double> ket_dmax;
+  /// @brief Scratch: D_q, q-major, each row in the ket order.
+  StreamBuffers::device<double> ket_dq;
+
   /// @brief @ref handle, as launch_each takes a class's stream.
   const std::shared_ptr<DeviceStream> &device_stream() const noexcept { return handle; }
 
-  /// @brief The records on the device by pointer, for a launcher; the fields
-  /// J's class does not carry are null. Valid while this is alive.
+  /// @brief The records on the device by pointer, in record order, for a
+  /// launcher; the fields J's class does not carry are null. Valid while this
+  /// is alive.
   [[nodiscard]] PrimitivePairClassView view() const {
     return {
         .la = la,
@@ -104,6 +152,37 @@ struct CoulombPairClass {
         .rank_b = nullptr,
     };
   }
+
+  /// @brief The class as e_hermite's ket: la, lb and n_rec, and zeta, P and
+  /// the bound (Iq) in the ket order the last build sorted them into. The
+  /// other fields are null; e_hermite does not read them of a ket.
+  [[nodiscard]] PrimitivePairClassView ket_view() const {
+    return {
+        .la = la,
+        .lb = lb,
+        .n_rec = n_rec,
+        .zeta = ket_zeta.data(),
+        .p_x = ket_p_x.data(),
+        .p_y = ket_p_y.data(),
+        .p_z = ket_p_z.data(),
+        .pa_x = nullptr,
+        .pa_y = nullptr,
+        .pa_z = nullptr,
+        .pb_x = nullptr,
+        .pb_y = nullptr,
+        .pb_z = nullptr,
+        .s = nullptr,
+        .ea = nullptr,
+        .eb = nullptr,
+        .bound = ket_bound.data(),
+        .bound_ab = nullptr,
+        .bound_ba = nullptr,
+        .off_a = nullptr,
+        .off_b = nullptr,
+        .rank_a = nullptr,
+        .rank_b = nullptr,
+    };
+  }
 };
 
 /// @brief The Cartesian Coulomb matrix J_mn = sum_ls (mn|ls) D_ls of the AO
@@ -117,23 +196,30 @@ struct CoulombPairClass {
 /// threshold of EXESS's J engine (Palethorpe and Barca), whose [p|q] kernel and
 /// screen these are.
 ///
-/// Zeroes @p j, then, per class on that class's own stream, computes the
-/// bounds, pre-contracts the density into the class's Hermite basis (dq) and
-/// sorts the class's kets descending by Iq * Dmax (SortedKets: the screen
-/// breaks at a lane's first ket under @p tau, so that is the order it needs);
-/// then contracts each bra class against every ket class (e_hermite, J_p added
-/// atomically) and scatters J_p into @p j (jab, added at (m, n) and (n, m)).
-/// @p density must be symmetric; it is not checked. The classes must come from
-/// @ref coulomb_pair_classes over the basis @p density and @p j were made for
-/// (at tau = 0 for every record): a record's AO offsets are not checked
-/// against j.n().
+/// Ket-major, in two phases. Zeroes @p j and every class's J_p; then, per
+/// class on that class's own stream, pre-contracts the density into the
+/// class's Hermite basis (dq), sorts the class as a ket descending by
+/// Iq * Dmax (the screen breaks at a lane's first ket under @p tau, so that is
+/// the order it needs), and contracts every bra class against it (e_hermite,
+/// added atomically into the bra's J_p, which every ket class's stream adds
+/// to). Once every class's stream is joined, each class's J_p is complete and
+/// it scatters it into @p j on its own stream (jab, added at (m, n) and
+/// (n, m)). A class's sorted ket copies are read only on its own stream; the
+/// bra side reads the class's records in record order, its Ip the class's own
+/// bound, so jab's rows stay the identity. @p density must be symmetric; it is
+/// not checked. The classes must come from @ref coulomb_pair_classes over the
+/// basis @p density and @p j were made for (at tau = 0 for every record): a
+/// record's AO offsets are not checked against j.n().
 ///
 /// Queued on res.stream(), each phase's classes forked from it and joined back
-/// (@c launch_each), with no host synchronization; the scratch (per class
-/// n_rec x n_hermite(la + lb) doubles three times, and 13 n_rec more doubles
-/// or uint32s) is drawn from res.device()'s pool and returned to it in
-/// res.stream()'s order. The device res.dev_idx() names is made current for
-/// the call and the previous one restored.
+/// (@c launch_each), with no host synchronization, and every class's stream
+/// forked from it once more at the end, succeeded or not, so nothing queued
+/// there later (a class's own frees) runs ahead of another class's stream
+/// still reading it. Writes the classes' scratch (@ref CoulombPairClass), so
+/// one call at a time per set of classes; it allocates only a max(n_rec) row
+/// map, from res.device()'s pool in res.stream()'s order. The device
+/// res.dev_idx() names is made current for the call and the previous one
+/// restored.
 ///
 /// @return Success; InvalidConfig if @p tau is negative or NaN, if @p res is
 ///         not on @p j's, @p density's or @p classes' device, if @p density and
@@ -141,7 +227,7 @@ struct CoulombPairClass {
 ///         j.n() is too large for the kernels' 32-bit index (j.n()^2 above
 ///         INT32_MAX); or the GpuRuntime error of the first memset, fork,
 ///         launch or join that failed, which leaves @p j unspecified.
-[[nodiscard]] Status coulomb(DeviceResources &res, std::span<const CoulombPairClass> classes,
+[[nodiscard]] Status coulomb(DeviceResources &res, std::span<CoulombPairClass> classes,
                              const CartesianMatrixAO &density, CartesianMatrixAO &j,
                              double tau = 1e-10);
 
@@ -187,8 +273,9 @@ struct CoulombPairClass {
 /// stream then waits on res.stream() in turn, so a free of @p classes queued
 /// there is ordered after every read of them. One host synchronization, of
 /// res.stream(), reads the kept counts back to size J's classes; each is on a
-/// new @c DeviceStream of res.device(), its scatter queued there and joined
-/// back into res.stream(). The device res.dev_idx() names is made current for
+/// new @c DeviceStream of res.device(), its records and its build scratch
+/// (@ref CoulombPairClass) allocated there and its scatter queued there and
+/// joined back into res.stream(). The device res.dev_idx() names is made current for
 /// the call and the previous one restored.
 ///
 /// @return J's classes (none for no @p classes); InvalidConfig if @p tau is

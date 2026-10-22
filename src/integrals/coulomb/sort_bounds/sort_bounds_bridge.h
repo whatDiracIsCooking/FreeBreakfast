@@ -1,11 +1,11 @@
 /// @file
-/// @brief The ket sort's launcher, declared once for the module that calls it
-/// and the device TU that defines it.
+/// @brief The ket sort's launcher, declared once for the module that calls it,
+/// its test and the device TU that defines it.
 ///
-/// Included by sort_bounds.cpp in its GLOBAL MODULE FRAGMENT, and by
-/// sort_bounds_launch.cu directly, for the reason overlap_bridge.h gives: a
-/// declaration in a module's purview gets module linkage and can never bind to
-/// a definition compiled in a plain TU. wwrStream_t and wwrError_t come from a
+/// Included by coulomb.cpp in its GLOBAL MODULE FRAGMENT, and by
+/// sort_bounds_launch.cu and test/gtest/sort_bounds_gpu.cpp directly, for the
+/// reason overlap_bridge.h gives: a declaration in a module's purview gets
+/// module linkage and can never bind to a definition compiled in a plain TU. wwrStream_t and wwrError_t come from a
 /// different wwr header in each pass, as there.
 
 #pragma once
