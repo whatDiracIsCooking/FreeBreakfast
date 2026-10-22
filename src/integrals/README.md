@@ -17,16 +17,18 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
   potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
-coulomb/       free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened, over its own device-only classes: mmd's records with the negligible primitive pairs pruned on the device
-  pair_class/        free_breakfast.integrals.coulomb.pair_class: J's device-only classes, CoulombPairClass, and the prune that makes them from mmd's
-  dq/                free_breakfast.integrals.coulomb.dq: the ket pre-contraction D_q and Dmax, over the generated dq<lc, ld>
-  e_hermite/         free_breakfast.integrals.coulomb.e_hermite: the screened [p|q] contraction into each bra's J_p, over the generated e_hermite<lp, lq>
-  j_coulomb/         free_breakfast.integrals.coulomb.j_coulomb: the bra back-transform and scatter of J_p into J, over the generated jab<la, lb>
-  sort_bounds/       free_breakfast::integrals::coulomb::sort_bounds::device: each ket class sorted by its screen bound Iq * Dmax, into the class's own ket_ fields
-exchange/      free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, screened by the Schwarz bound and the density's decay
-  helpers/           free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table and its density factors, the decay they are cut from, the shell starts and the mirror kb leaves to its launcher
-  kernels/kb/        free_breakfast::integrals::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
-  pairs/             free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one device-only class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (mmd's bound_ab or bound_ba), each group sorted by it
+eri/           the electron-repulsion integrals
+  integral_direct/   J and K contracted from the integrals as they are formed, never stored
+    coulomb/         free_breakfast.integrals.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened, over its own device-only classes: mmd's records with the negligible primitive pairs pruned on the device
+      pair_class/    free_breakfast.integrals.coulomb.pair_class: J's device-only classes, CoulombPairClass, and the prune that makes them from mmd's
+      dq/            free_breakfast.integrals.coulomb.dq: the ket pre-contraction D_q and Dmax, over the generated dq<lc, ld>
+      e_hermite/     free_breakfast.integrals.coulomb.e_hermite: the screened [p|q] contraction into each bra's J_p, over the generated e_hermite<lp, lq>
+      j_coulomb/     free_breakfast.integrals.coulomb.j_coulomb: the bra back-transform and scatter of J_p into J, over the generated jab<la, lb>
+      sort_bounds/   free_breakfast::integrals::coulomb::sort_bounds::device: each ket class sorted by its screen bound Iq * Dmax, into the class's own ket_ fields
+    exchange/        free_breakfast.integrals.exchange: the exchange matrix K of an AO density on the GPU, screened by the Schwarz bound and the density's decay
+      helpers/       free_breakfast::integrals::exchange::helpers: max|D|, the Dcd gather, the block table and its density factors, the decay they are cut from, the shell starts and the mirror kb leaves to its launcher
+      kernels/kb/    free_breakfast::integrals::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
+      pairs/         free_breakfast.integrals.exchange.pairs: mmd's records in both orientations, one device-only class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (mmd's bound_ab or bound_ba), each group sorted by it
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
 sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd, coulomb/sort_bounds and exchange/pairs sort with
 ```
@@ -52,10 +54,12 @@ CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (the decay an
 from the FelizJueves submodule; a build never runs Python. Re-run all three after
 bumping the submodule. Each family has its own directory
 (`one_electron/{overlap,kinetic,potential_en}/kernels/`,
-`mmd/kernels/pair_bound/`, `coulomb/{dq,e_hermite,j_coulomb}/kernels/`,
-`exchange/kernels/kb/`, `mmd/kernels/record_bound/`), and the device Boys
-routine every unit with a fundamental includes, `eval_boys<M>`, is generated
-once into `shared/eval_boys.h` rather than carried in each unit, beside the
+`mmd/kernels/pair_bound/`,
+`eri/integral_direct/coulomb/{dq,e_hermite,j_coulomb}/kernels/`,
+`eri/integral_direct/exchange/kernels/kb/`, `mmd/kernels/record_bound/`), and
+the device Boys routine every unit with a fundamental includes, `eval_boys<M>`,
+is generated once into `shared/eval_boys.h` rather than carried in each unit,
+beside the
 `shared/eval_boys_{M}.h` it includes: below its switch, one fixed `fma` chain
 per order M <= 20 in place of a summed loop. Each of those
 directories has a `.clang-format` that turns formatting off, and
@@ -73,7 +77,8 @@ matrices are symmetric and the kernels write each value at `(m, n)` and
 build allocates its scratch per call and launches one kernel per class (or
 class pair, or ket group) as FelizJueves ships it. K applies the bra-ket swap
 by its shell blocks, computing `a <= b` and mirroring, so it still visits the
-quartets inside its `a == b` blocks twice ([`exchange/`](exchange/README.md)).
+quartets inside its `a == b` blocks twice
+([`exchange/`](eri/integral_direct/exchange/README.md)).
 
 ## Tests
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Regenerate the Coulomb-build kernels under src/integrals/coulomb/.
+"""Regenerate the Coulomb-build kernels under
+src/integrals/eri/integral_direct/coulomb/.
 
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
@@ -80,7 +81,7 @@ MAX_L = 2
 # text; the gpu backend still takes one.
 ARCH = "sm_86"
 
-OUT = ROOT / "src/integrals/coulomb"
+OUT = ROOT / "src/integrals/eri/integral_direct/coulomb"
 SHARED = ROOT / "src/integrals/shared"
 
 # The record vectors, as mmd names them.

@@ -64,7 +64,7 @@ short of it: up to 1.2× on H₂O/cc-pVDZ, an s shell with itself) nor the same
 for `(a, b)` and `(b, a)`. It decays with `|AB|`: on the H₁₀ chain 54 of 2,500
 records are exactly `0.0`, the pair factor underflowed. `mmd` forms it, both
 orientations of every record, once per basis (`bound_ab` and `bound_ba`, by
-the generated `record_bound<la, lb>` in `../../mmd/kernels/record_bound/`), so
+the generated `record_bound<la, lb>` in `../../../../mmd/kernels/record_bound/`), so
 this module only picks the orientation's. A class above d has no kernel and
 has zeros; the K build refuses it.
 
@@ -95,7 +95,7 @@ swapped, a slot a diagonal record does not have. On a new `DeviceStream`,
 `ordered_pair_classes` queues:
 
 1. **The order** (`ordered_pair_order`): two stable merge sorts
-   ([`src/integrals/sort`](../../sort/README.md)), every slot by `-I`, then
+   ([`src/integrals/sort`](../../../../sort/README.md)), every slot by `-I`, then
    the result by its first shell's rank (`mmd`'s `rank_a` as stored, `rank_b`
    swapped), a diagonal record's swapped slot past every group. Slot order is
    `mmd`'s record order, so equal bounds stay in it. Then `group_start`, by
