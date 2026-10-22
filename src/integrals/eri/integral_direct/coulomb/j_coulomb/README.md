@@ -6,8 +6,8 @@ scattered into the Coulomb matrix J.
 
 ## Module
 
-`free_breakfast.integrals.coulomb.j_coulomb`, driven by
-`free_breakfast.integrals.coulomb`'s `coulomb`.
+`free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb`, driven by
+`free_breakfast.integrals.eri.integral_direct.coulomb`'s `coulomb`.
 
 ## Design
 

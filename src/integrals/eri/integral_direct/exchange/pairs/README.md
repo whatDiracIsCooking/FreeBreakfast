@@ -8,7 +8,7 @@ only.
 
 ## Module
 
-`free_breakfast.integrals.exchange.pairs`.
+`free_breakfast.integrals.eri.integral_direct.exchange.pairs`.
 
 ## Why here, not in `mmd`
 
@@ -163,4 +163,4 @@ displacements and both offsets with the bound.
 | `pairs.cpp` | The check against the basis, the groups from it, then per class the fork from `mmd`'s stream, the order and the gather on the device, and the joins back |
 | `pairs_bridge.h` | The order's and the gather's launchers, and the slots they share, declared once for `pairs.cpp`'s GMF and the `.cu` |
 | `pairs_launch.cu` | The key, group-start and gather kernels, and the launchers: `ordered_pair_order` (the two sorts and `group_start`), `ordered_pair_gather` (every field, from `mmd`'s class) |
-| `CMakeLists.txt` | The interface library `free_breakfast.integrals.exchange.pairs.headers`, the device library and the module library |
+| `CMakeLists.txt` | The interface library `free_breakfast.integrals.eri.integral_direct.exchange.pairs.headers`, the device library and the module library |

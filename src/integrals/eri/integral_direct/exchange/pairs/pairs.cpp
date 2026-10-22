@@ -10,7 +10,7 @@ module;
 // GMF so they keep external linkage (see the header).
 #include "pairs_bridge.h"
 
-module free_breakfast.integrals.exchange.pairs;
+module free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
 import std;
 import free_breakfast.core.types;

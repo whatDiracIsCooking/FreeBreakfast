@@ -21,7 +21,7 @@ add_subdirectory(j_coulomb)
 # final link. The momentum limit is basis's.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.integrals.coulomb
+  free_breakfast.integrals.eri.integral_direct.coulomb
   PRIMARY_INTERFACE
   coulomb.cppm
   IMPLEMENTATION
@@ -30,7 +30,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::error_handling
   free_breakfast::core::resources
-  free_breakfast::integrals::coulomb::pair_class
+  free_breakfast::integrals::eri::integral_direct::coulomb::pair_class
   free_breakfast::linalg::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::types
@@ -39,8 +39,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   free_breakfast::integrals::mmd
   free_breakfast::integrals::one_electron::launch
-  free_breakfast::integrals::coulomb::sort_bounds::device
-  free_breakfast::integrals::coulomb::dq
-  free_breakfast::integrals::coulomb::e_hermite
-  free_breakfast::integrals::coulomb::j_coulomb
+  free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
+  free_breakfast::integrals::eri::integral_direct::coulomb::dq
+  free_breakfast::integrals::eri::integral_direct::coulomb::e_hermite
+  free_breakfast::integrals::eri::integral_direct::coulomb::j_coulomb
 )

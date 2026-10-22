@@ -21,7 +21,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
-import free_breakfast.integrals.exchange.pairs;
+import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
 namespace {
 

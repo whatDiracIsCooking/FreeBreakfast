@@ -9,12 +9,12 @@
 /// class's J_p, e_hermite) and a bra class (its J_p scattered into J,
 /// j_coulomb).
 
-export module free_breakfast.integrals.coulomb;
+export module free_breakfast.integrals.eri.integral_direct.coulomb;
 
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-export import free_breakfast.integrals.coulomb.pair_class;
+export import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 import free_breakfast.linalg.matrix_ao;
 
 export namespace free_breakfast {

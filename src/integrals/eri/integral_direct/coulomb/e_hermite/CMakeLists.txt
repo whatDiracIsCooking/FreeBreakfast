@@ -14,7 +14,7 @@
 # kWarpSize (block_params.h), hence core::kernel_headers; all three PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
-  free_breakfast.integrals.coulomb.e_hermite.device
+  free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite.device
   SOURCES
   e_hermite_launch.cu
   kernels/e_hermite_00.cu
@@ -61,7 +61,7 @@ free_breakfast_add_gpu_device_library(
 # final link.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.integrals.coulomb.e_hermite
+  free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite
   PRIMARY_INTERFACE
   e_hermite.cppm
   IMPLEMENTATION
@@ -69,8 +69,8 @@ free_breakfast_add_cxx_module_library(
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::wwr
-  free_breakfast::integrals::coulomb::pair_class
+  free_breakfast::integrals::eri::integral_direct::coulomb::pair_class
   LINK_PRIVATE
   free_breakfast::integrals::mmd
-  free_breakfast::integrals::coulomb::e_hermite::device
+  free_breakfast::integrals::eri::integral_direct::coulomb::e_hermite::device
 )

@@ -8,7 +8,7 @@ module;
 #include "exchange_bridge.h"
 #include "exchange_helpers_bridge.h"
 
-module free_breakfast.integrals.exchange;
+module free_breakfast.integrals.eri.integral_direct.exchange;
 
 import std;
 import free_breakfast.core.types;
@@ -16,7 +16,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
-import free_breakfast.integrals.exchange.pairs;
+import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.linalg.matrix_ao;
 

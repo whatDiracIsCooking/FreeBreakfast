@@ -12,18 +12,18 @@ copy of `mmd`'s with the negligible primitive pairs **pruned**
 
 ## Module
 
-`free_breakfast.integrals.coulomb`, also re-exported by
+`free_breakfast.integrals.eri.integral_direct.coulomb`, also re-exported by
 `free_breakfast.integrals`. It re-exports
-`free_breakfast.integrals.coulomb.pair_class` (J's classes and the prune), and
-drives the build's three steps, each a module of its own over one generated
-kernel family:
+`free_breakfast.integrals.eri.integral_direct.coulomb.pair_class` (J's classes
+and the prune), and drives the build's three steps, each a module of its own
+over one generated kernel family:
 
 ```
-pair_class/   free_breakfast.integrals.coulomb.pair_class: CoulombPairClass, and coulomb_pair_classes, the prune that makes them
-dq/           free_breakfast.integrals.coulomb.dq: the ket pre-contraction, over dq<lc, ld>
-e_hermite/    free_breakfast.integrals.coulomb.e_hermite: the [p|q] contraction, over e_hermite<lp, lq>
-j_coulomb/    free_breakfast.integrals.coulomb.j_coulomb: the bra back-transform and scatter into J, over jab<la, lb>
-sort_bounds/  free_breakfast::integrals::coulomb::sort_bounds::device: the ket sort
+pair_class/   free_breakfast.integrals.eri.integral_direct.coulomb.pair_class: CoulombPairClass, and coulomb_pair_classes, the prune that makes them
+dq/           free_breakfast.integrals.eri.integral_direct.coulomb.dq: the ket pre-contraction, over dq<lc, ld>
+e_hermite/    free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite: the [p|q] contraction, over e_hermite<lp, lq>
+j_coulomb/    free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb: the bra back-transform and scatter into J, over jab<la, lb>
+sort_bounds/  free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device: the ket sort
 ```
 
 ## Design

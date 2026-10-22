@@ -6,8 +6,8 @@ every bra class, Schwarz-screened.
 
 ## Module
 
-`free_breakfast.integrals.coulomb.e_hermite`, driven by
-`free_breakfast.integrals.coulomb`'s `coulomb`.
+`free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite`, driven by
+`free_breakfast.integrals.eri.integral_direct.coulomb`'s `coulomb`.
 
 ## Design
 

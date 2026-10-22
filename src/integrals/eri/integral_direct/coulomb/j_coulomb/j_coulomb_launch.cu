@@ -1,4 +1,5 @@
-// The device half of free_breakfast.integrals.coulomb.j_coulomb: the launcher
+// The device half of
+// free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb: the launcher
 // over the generated jab<la, lb> kernels, and the small kernel that makes the
 // row map they leave to their caller. One source for both backends -- nvcc
 // under CUDA, clang -x hip under HIP.

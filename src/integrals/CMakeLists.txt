@@ -18,6 +18,6 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::integrals::mmd
   free_breakfast::integrals::one_electron
-  free_breakfast::integrals::coulomb
-  free_breakfast::integrals::exchange
+  free_breakfast::integrals::eri::integral_direct::coulomb
+  free_breakfast::integrals::eri::integral_direct::exchange
 )

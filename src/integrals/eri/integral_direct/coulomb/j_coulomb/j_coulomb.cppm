@@ -2,12 +2,12 @@
 /// @brief The J build's bra back-transform, over the jab<la, lb> kernels
 /// FelizJueves generates: one bra class's J_p scattered into J.
 
-export module free_breakfast.integrals.coulomb.j_coulomb;
+export module free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.wwr;
-import free_breakfast.integrals.coulomb.pair_class;
+import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 import free_breakfast.linalg.matrix_ao;
 
 export namespace free_breakfast {

@@ -1,13 +1,13 @@
-// GPU cases for integrals.coulomb: the Cartesian Coulomb matrix J of H2O in
-// STO-3G (s, p; O's p shell precedes the H s shells, so the la <= lb swap is
-// exercised, in the density's read as in J's scatter) and cc-pVDZ (s, p, d, so
-// every e_hermite class through (4, 4)) against libcint's J of the same
-// density, recorded by PySCF (test/gtest/data/coulomb/, copied from
-// FelizJueves's fixtures by tools/extract_integral_golden.py), both unscreened
-// (tau = 0) and at the default screen, from every record (J's classes pruned
-// at 0); J from coulomb_pair_classes' pruned records against the same goldens
-// (the H10 chain's too, unscreened), their count pinned, and the device
-// prune's records exactly the host prune's; that a tau no bound reaches
+// GPU cases for integrals.eri.integral_direct.coulomb: the Cartesian Coulomb
+// matrix J of H2O in STO-3G (s, p; O's p shell precedes the H s shells, so the
+// la <= lb swap is exercised, in the density's read as in J's scatter) and
+// cc-pVDZ (s, p, d, so every e_hermite class through (4, 4)) against libcint's
+// J of the same density, recorded by PySCF (test/gtest/data/coulomb/, copied
+// from FelizJueves's fixtures by tools/extract_integral_golden.py), both
+// unscreened (tau = 0) and at the default screen, from every record (J's
+// classes pruned at 0); J from coulomb_pair_classes' pruned records against the
+// same goldens (the H10 chain's too, unscreened), their count pinned, and the
+// device prune's records exactly the host prune's; that a tau no bound reaches
 // screens everything; plus, as overlap_gpu.cpp, the zeroing and the refusals.
 
 #include <gtest/gtest.h>

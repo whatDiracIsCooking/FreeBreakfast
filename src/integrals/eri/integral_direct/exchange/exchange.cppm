@@ -3,17 +3,19 @@
 /// over the kb kernels FelizJueves generates, screened by the dressed record
 /// bound the ordered classes carry (OrderedPairClass::record_bound).
 ///
-/// The records are free_breakfast.integrals.exchange.pairs's ordered classes,
-/// re-exported here, so one import gives both the classes and the build: every
-/// ordered class is both a bra class (a, c) and a ket class (b, d).
+/// The records are
+/// free_breakfast.integrals.eri.integral_direct.exchange.pairs's ordered
+/// classes, re-exported here, so one import gives both the classes and the
+/// build: every ordered class is both a bra class (a, c) and a ket class
+/// (b, d).
 
-export module free_breakfast.integrals.exchange;
+export module free_breakfast.integrals.eri.integral_direct.exchange;
 
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.linalg.matrix_ao;
-export import free_breakfast.integrals.exchange.pairs;
+export import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
 export namespace free_breakfast {
 

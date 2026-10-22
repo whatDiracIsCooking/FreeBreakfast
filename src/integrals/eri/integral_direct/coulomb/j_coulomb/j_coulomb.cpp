@@ -7,12 +7,12 @@ module;
 // they keep external linkage (see the header).
 #include "j_coulomb_bridge.h"
 
-module free_breakfast.integrals.coulomb.j_coulomb;
+module free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.wwr;
-import free_breakfast.integrals.coulomb.pair_class;
+import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 import free_breakfast.linalg.matrix_ao;
 
 namespace free_breakfast {
