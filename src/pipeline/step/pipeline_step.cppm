@@ -90,7 +90,7 @@ using StepOutput = typename ResultValue<typename RunSignatureOf<S>::ReturnType>:
 /// struct OrthogonalizerStep {
 ///   static constexpr std::string_view kName = "orthogonalizer";
 ///   double eigenvalue_floor = kOrthogonalizeEigenvalueFloor<double>;  // an option
-///   Result<Orthogonalizer> run(View<Overlap> in, DeviceResources &res) const;
+///   Result<Orthogonalizer> run(View<BasisSet, Overlap> in, DeviceResources &res) const;
 /// };
 /// ```
 ///

@@ -27,7 +27,7 @@ struct OrthogonalizerStep {
 
   double eigenvalue_floor = kOrthogonalizeEigenvalueFloor<double>;  // an option
 
-  Result<Orthogonalizer> run(View<Overlap> in, DeviceResources &res) const;
+  Result<Orthogonalizer> run(View<BasisSet, Overlap> in, DeviceResources &res) const;
 };
 ```
 

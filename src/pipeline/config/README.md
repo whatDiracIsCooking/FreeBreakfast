@@ -20,10 +20,13 @@ multiplicity = 1    # default 1
 
 [basis_set]
 basis = "sto-3g.json"   # required, a BSE JSON basis
+
+[orthogonalizer]          # optional: every option has a default
+eigenvalue_floor = 1e-10  # default 1e-10
 ```
 
 ```cpp
-using ConfigSteps = std::tuple<MoleculeStep, BasisSetStep>;
+using ConfigSteps = std::tuple<MoleculeStep, BasisSetStep, OrthogonalizerStep>;
 
 Result<ConfigSteps> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
 Result<ConfigSteps> read_config(const std::filesystem::path &path);
@@ -35,14 +38,21 @@ Result<ConfigSteps> read_config(const std::filesystem::path &path);
 the working directory. The steps document that their paths "arrive
 resolved", and this is where that happens.
 
+**A table is required only if its step has a required option.** The
+`[orthogonalizer]` table may be left out, since its one option has a default.
+Steps with no options at all (`SphericalTransform`, `PrimitivePairClasses`,
+`Overlap`, `CoreHamiltonian`) have no table and are not in `ConfigSteps`:
+`main` constructs them.
+
 **Strict.** Each of these is `InvalidConfig`, naming the
 table or key:
 
-- a missing step table, or a missing required key;
+- a missing table for a step with a required option, or a missing required key;
 - a table that names no step;
 - a key the step has no option for;
 - a value of the wrong type. Integers are read exactly, so `charge = 1.5` is
-  refused, not truncated, and so is a value outside `int32_t`.
+  refused, not truncated, and so is a value outside `int32_t`. A `double`
+  option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`.
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`

@@ -10,9 +10,10 @@ basis_set/  free_breakfast.pipeline.basis_set: BasisSetStep -- a BSE JSON basis 
 spherical_transform/  free_breakfast.pipeline.spherical_transform: SphericalTransformStep -- the basis's Cartesian-to-spherical U, uploaded once
 primitive_pair_classes/  free_breakfast.pipeline.primitive_pair_classes: PrimitivePairClassesStep -- the basis's primitive-pair records, on the device
 overlap/    free_breakfast.pipeline.overlap: OverlapStep -- the spherical AO overlap S
+orthogonalizer/  free_breakfast.pipeline.orthogonalizer: OrthogonalizerStep -- X = S^{-1/2}, the symmetric orthogonalizer
 config/     free_breakfast.pipeline.config: the TOML front end -- a config file read into the steps it names
 ```
 
-The rest of the setup steps (`Orthogonalizer`, `CoreHamiltonian`, ...)
+The rest of the setup steps (`CoreHamiltonian`, ...)
 and the `Pipeline<Steps...>` class that plans and runs them come next, each its
 own module here.

@@ -44,6 +44,13 @@ template <class T>
       return err_config("[{}] {} is not a 32-bit integer", step, key);
     }
     out = static_cast<int32_t>(*value);
+  } else if constexpr (std::same_as<T, double>) {
+    // value, not value_exact: an integer node is accepted, so 1 reads as 1.0.
+    const auto value = node.value<double>();
+    if (!value) {
+      return err_config("[{}] {} is not a number", step, key);
+    }
+    out = *value;
   } else {
     static_assert(std::same_as<T, std::filesystem::path>);
     const auto value = node.value_exact<std::string>();
@@ -70,7 +77,8 @@ template <class T>
                                                const std::filesystem::path &base_dir) {
   const toml::table doc = FBF_TRY(parse_toml(toml_text));
   for (const auto &[key, value] : doc) {
-    if (key.str() != MoleculeStep::kName && key.str() != BasisSetStep::kName) {
+    if (key.str() != MoleculeStep::kName && key.str() != BasisSetStep::kName &&
+        key.str() != OrthogonalizerStep::kName) {
       return err_config("unknown step [{}]", key.str());
     }
   }
@@ -87,7 +95,16 @@ template <class T>
   const toml::table &b = *FBF_TRY(step_table(doc, kBasisSet, {"basis"}));
   FBF_TRY(read_required_key(b, kBasisSet, "basis", base_dir, basis_set.basis));
 
-  return ConfigSteps{std::move(molecule), std::move(basis_set)};
+  // Optional: its one option has a default.
+  OrthogonalizerStep orthogonalizer;
+  constexpr std::string_view kOrthogonalizer = OrthogonalizerStep::kName;
+  if (doc.contains(kOrthogonalizer)) {
+    const toml::table &o = *FBF_TRY(step_table(doc, kOrthogonalizer, {"eigenvalue_floor"}));
+    FBF_TRY(read_key(o, kOrthogonalizer, "eigenvalue_floor", base_dir,
+                     orthogonalizer.eigenvalue_floor));
+  }
+
+  return ConfigSteps{std::move(molecule), std::move(basis_set), std::move(orthogonalizer)};
 }
 
 [[nodiscard]] Result<ConfigSteps> read_config(const std::filesystem::path &path) {

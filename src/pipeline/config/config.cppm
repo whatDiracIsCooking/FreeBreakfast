@@ -12,18 +12,20 @@ import std;
 import free_breakfast.core.error_handling;
 export import free_breakfast.pipeline.molecule;
 export import free_breakfast.pipeline.basis_set;
+export import free_breakfast.pipeline.orthogonalizer;
 
 export namespace free_breakfast {
 
 /// @brief The steps a config file names, in pipeline order.
-using ConfigSteps = std::tuple<MoleculeStep, BasisSetStep>;
+using ConfigSteps = std::tuple<MoleculeStep, BasisSetStep, OrthogonalizerStep>;
 
 /// @brief Parse a config from an in-memory TOML document.
 ///
 /// A relative path in it is resolved against @p base_dir (empty: left
-/// relative to the working directory). A syntactically invalid document is
-/// ErrorKind::IO. A missing step table or required key, an unknown table or
-/// key, or a value of the wrong type is ErrorKind::InvalidConfig naming it.
+/// relative to the working directory). A step whose options all have defaults
+/// may leave its table out. A syntactically invalid document is ErrorKind::IO.
+/// A missing step table or required key, an unknown table or key, or a value
+/// of the wrong type is ErrorKind::InvalidConfig naming it.
 [[nodiscard]] Result<ConfigSteps> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &base_dir);
 
