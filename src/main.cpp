@@ -22,6 +22,7 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.spherical_transform;
 import free_breakfast.pipeline.primitive_pair_classes;
+import free_breakfast.pipeline.overlap;
 
 namespace {
 
@@ -50,6 +51,10 @@ fb::Status run(std::span<char *const> args) {
       FBF_TRY(fb::SphericalTransformStep{}.run(fb::View<fb::BasisSet>{basis}, res));
   const fb::PrimitivePairClasses pairs =
       FBF_TRY(fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSet>{basis}, res));
+  const fb::Overlap overlap = FBF_TRY(fb::OverlapStep{}.run(
+      fb::View<fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{basis, transform,
+                                                                               pairs},
+      res));
 
   std::println("atoms:             {}", molecule.natoms());
   std::println("charge:            {}", molecule.charge());
@@ -61,6 +66,7 @@ fb::Status run(std::span<char *const> args) {
   std::println("AOs (spherical):   {}", basis.nao_sphe());
   std::println("spherical U:       {}", transform.u ? "uploaded" : "identity");
   std::println("pair classes:      {}", pairs.classes.size());
+  std::println("overlap:           {0} x {0} (spherical)", overlap.s.n());
   return {};
 }
 
