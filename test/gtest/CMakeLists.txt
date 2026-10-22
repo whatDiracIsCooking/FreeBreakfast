@@ -103,6 +103,7 @@ add_executable(
   io_xyz_gpu.cpp
   pipeline_molecule_gpu.cpp
   pipeline_basis_set_gpu.cpp
+  pipeline_spherical_transform_gpu.cpp
   launch_gpu.cpp
   overlap_gpu.cpp
   core_hamiltonian_gpu.cpp
@@ -140,6 +141,7 @@ target_link_libraries(
   free_breakfast::io
   free_breakfast::pipeline::molecule
   free_breakfast::pipeline::basis_set
+  free_breakfast::pipeline::spherical_transform
   free_breakfast::test::gpu_kernels
   GTest::gtest
   GTest::gtest_main
