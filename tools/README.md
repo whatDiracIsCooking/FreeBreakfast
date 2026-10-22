@@ -14,9 +14,9 @@ emit_one_electron_kernels.py
                   src/integrals/mmd/kernels/pair_bound/, from the
                   FelizJueves submodule. Standard library only.
 emit_coulomb_kernels.py
-                  Regenerate src/integrals/coulomb/kernels/{dq,e_hermite,
-                  jab}/ from the FelizJueves submodule. Standard library
-                  only.
+                  Regenerate src/integrals/coulomb/{dq,e_hermite,
+                  j_coulomb}/kernels/ from the FelizJueves submodule.
+                  Standard library only.
 emit_exchange_kernels.py
                   Regenerate src/integrals/exchange/kernels/kb/, and the
                   dressed record bound src/integrals/mmd/kernels/

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the Coulomb-build kernels under src/integrals/coulomb/kernels/.
+"""Regenerate the Coulomb-build kernels under src/integrals/coulomb/.
 
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
@@ -37,8 +37,10 @@ block to launch it with, {1, FJ_WAVEFRONT}. `dq` and `jab`
 have no shuffle, so their text has no width at all. Nothing is added to the text here.
 
 As tools/emit_one_electron_kernels.py does, each class is one explicit
-specialization of its family's template, and each family's directory gets
-one header, `<family>.h`, every unit includes: the primary, each class's
+specialization of its family's template, written to the `kernels/` of the
+family's module (coulomb/dq/, coulomb/e_hermite/, and coulomb/j_coulomb/ for
+jab), which also gets one header, `<family>.h`, every unit includes: the
+primary, each class's
 declaration and `<family>_kernels`, the table a launcher indexes. Pair
 classes are written `la <= lb` only, for the reason that tool gives; the
 Hermite classes are every (lp, lq) with both at most 2 kMaxAngularMomentum.
@@ -71,14 +73,14 @@ from felizjueves.passes import atomize, split_axes, transpose  # noqa: E402
 from felizjueves.spec import Operator, Spec, Target  # noqa: E402
 
 # The kernels' L limit: d. It must equal kMaxAngularMomentum
-# (src/basis/angular_momentum.h); coulomb_launch.cu asserts the tables against
-# it.
+# (src/basis/angular_momentum.h); each family's launcher asserts its table
+# against it.
 MAX_L = 2
 # With any_wavefront and no shuffle elsewhere, the arch fixes nothing in the
 # text; the gpu backend still takes one.
 ARCH = "sm_86"
 
-OUT = ROOT / "src/integrals/coulomb/kernels"
+OUT = ROOT / "src/integrals/coulomb"
 SHARED = ROOT / "src/integrals/shared"
 
 # The record vectors, as mmd names them.
@@ -119,22 +121,24 @@ def e_hermite(cls: tuple[int, int]):
     return transpose(split_axes(atomize(k), PQ_AXES), Q_MAJOR)
 
 
-# family -> (its classes, its builder, the emitter's options)
+# family -> (its module's directory, its classes, its builder, the emitter's
+# options); the kernels go in that directory's kernels/.
 FAMILIES = {
-    "dq": (pair_classes, dq, {}),
+    "dq": ("dq", pair_classes, dq, {}),
     "e_hermite": (
+        "e_hermite",
         hermite_classes,
         e_hermite,
         {"block_dim": (1, WAVEFRONT), "any_wavefront": True},
     ),
-    "jab": (pair_classes, jab, {}),
+    "jab": ("j_coulomb", pair_classes, jab, {}),
 }
 
 
 def main() -> int:
     arch = by_name(ARCH)
-    for family, (classes_of, build, options) in FAMILIES.items():
-        out = OUT / family
+    for family, (directory, classes_of, build, options) in FAMILIES.items():
+        out = OUT / directory / "kernels"
         out.mkdir(parents=True, exist_ok=True)
         classes = classes_of()
         for cls in classes:
