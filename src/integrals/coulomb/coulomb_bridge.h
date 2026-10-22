@@ -90,4 +90,52 @@ namespace free_breakfast::device {
                                           const PrimitivePairClassView &cls, int32_t n_ao,
                                           const int32_t *rows, const double *jp, double *j);
 
+/// @brief Raise @p maxima[0] to the largest dressed bound B (cls.bound_ab) of
+/// @p cls's records and @p maxima[1] to the largest K = w ncart(la) B, on
+/// @p stream: coulomb_pair_classes' maxima, one class at a time.
+///
+/// w is 1 for a record whose offsets are equal (a shell against itself) and 2
+/// otherwise, as @ref coulomb_prepare's. @p maxima is two doubles, zero or
+/// non-negative on entry, raised atomically (as the bits of a non-negative
+/// double), so any number of classes may fold into it. Only la, n_rec,
+/// bound_ab, off_a and off_b are read.
+///
+/// @return The launch status (wwrErrorInvalidValue if cls.n_rec is not
+///         positive). Launch errors only.
+[[nodiscard]] wwr::wwrError_t
+coulomb_prune_maxima(wwr::wwrStream_t stream, const PrimitivePairClassView &cls, double *maxima);
+
+/// @brief Each record of @p cls's place among the class's kept records, on
+/// @p stream: @p dest[r] is the number of kept records before r if r is kept,
+/// -1 if not, and @p count[0] the number kept.
+///
+/// Record r is kept when `B_r Dc maxK >= tau || K_r Dc maxB >= tau`, B, K and
+/// the maxima as in @ref coulomb_prune_maxima (@p maxima its result, complete
+/// over every class) and Dc = 2, the density cap coulomb_pair_classes
+/// assumes; @p tau = 0 keeps every record. The scan is stable, so the kept
+/// records keep their order. @p dest is cls.n_rec long, written whole. Only
+/// la, n_rec, bound_ab, off_a and off_b are read.
+///
+/// @return The launch status (wwrErrorInvalidValue if cls.n_rec is not
+///         positive). Launch errors only.
+[[nodiscard]] wwr::wwrError_t coulomb_prune_keep(wwr::wwrStream_t stream,
+                                                 const PrimitivePairClassView &cls,
+                                                 const double *maxima, double tau, int32_t *dest,
+                                                 int32_t *count);
+
+/// @brief Scatter each kept record of @p from into @p to, on @p stream:
+/// to[dest[r]] = from[r] for every r < @p n_rec with dest[r] >= 0
+/// (@ref coulomb_prune_keep's @p dest).
+///
+/// @return The launch status (wwrErrorInvalidValue if @p n_rec is not
+///         positive). Launch errors only.
+[[nodiscard]] wwr::wwrError_t coulomb_prune_scatter(wwr::wwrStream_t stream, int32_t n_rec,
+                                                    const int32_t *dest, const double *from,
+                                                    double *to);
+
+/// @copydoc coulomb_prune_scatter
+[[nodiscard]] wwr::wwrError_t coulomb_prune_scatter(wwr::wwrStream_t stream, int32_t n_rec,
+                                                    const int32_t *dest, const int32_t *from,
+                                                    int32_t *to);
+
 } // namespace free_breakfast::device
