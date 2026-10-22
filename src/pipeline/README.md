@@ -4,9 +4,10 @@ The calculation pipeline: steps that each read a declared set of products and
 write one, planned into a task graph and run on a `NodeResources`.
 
 ```
-step/  free_breakfast.pipeline.step: the step contract -- View, RunShape, PipelineStep, and what a step reads, writes and holds, read off its run
+step/      free_breakfast.pipeline.step: the step contract -- View, RunShape, PipelineStep, and what a step reads, writes and holds, read off its run
+molecule/  free_breakfast.pipeline.molecule: MoleculeStep, the root step -- an XYZ file read into a Molecule
 ```
 
-Only the contract exists so far. The setup steps (`Molecule`, `BasisSet`,
-`Overlap`, `CoreHamiltonian`, ...) and the `Pipeline<Steps...>` class that
-plans and runs them come next, each its own module here.
+The rest of the setup steps (`BasisSet`, `Overlap`, `CoreHamiltonian`, ...)
+and the `Pipeline<Steps...>` class that plans and runs them come next, each its
+own module here.
