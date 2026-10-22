@@ -23,6 +23,7 @@ import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.spherical_transform;
 import free_breakfast.pipeline.primitive_pair_classes;
 import free_breakfast.pipeline.overlap;
+import free_breakfast.pipeline.core_hamiltonian;
 
 namespace {
 
@@ -58,6 +59,10 @@ fb::Status run(std::span<char *const> args) {
       res));
   const fb::Orthogonalizer orthogonalizer =
       FBF_TRY(orthogonalizer_step.run(fb::View<fb::BasisSet, fb::Overlap>{basis, overlap}, res));
+  const fb::CoreHamiltonian core_hamiltonian = FBF_TRY(fb::CoreHamiltonianStep{}.run(
+      fb::View<fb::Molecule, fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{
+          molecule, basis, transform, pairs},
+      res));
 
   std::println("atoms:             {}", molecule.natoms());
   std::println("charge:            {}", molecule.charge());
@@ -72,6 +77,7 @@ fb::Status run(std::span<char *const> args) {
   std::println("overlap:           {0} x {0} (spherical)", overlap.s.n());
   std::println("orthogonalizer:    {0} x {0}, eigenvalue floor {1:g}", orthogonalizer.x.n(),
                orthogonalizer_step.eigenvalue_floor);
+  std::println("core Hamiltonian:  {0} x {0} (spherical)", core_hamiltonian.h.n());
   return {};
 }
 

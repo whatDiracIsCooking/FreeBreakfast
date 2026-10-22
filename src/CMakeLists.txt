@@ -40,4 +40,5 @@ target_link_libraries(
           free_breakfast::pipeline::primitive_pair_classes
           free_breakfast::pipeline::overlap
           free_breakfast::pipeline::orthogonalizer
+          free_breakfast::pipeline::core_hamiltonian
 )
