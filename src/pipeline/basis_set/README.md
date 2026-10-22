@@ -16,7 +16,7 @@ struct BasisSetStep {
 
   std::filesystem::path basis{};
 
-  Result<BasisSet> run(View<Molecule> in) const;  // read_basis, then place
+  Result<BasisSet> run(View<Molecule> in) const;  // read_basis, normalize, place
 };
 ```
 
@@ -27,6 +27,11 @@ same error kinds:
 - A malformed basis is `InvalidConfig`.
 - So is a basis that lacks an element the molecule uses, because a basis that
   cannot cover the molecule is a configuration error, not a smaller basis.
+
+**The primitives are normalized here.** BSE coefficients are for normalized
+primitives, and the integral engines (`integrals.mmd`'s records) take
+coefficients as given. So the step places `BasisStamp::primitive_normalized`,
+which is what a production run's `BasisSet` is.
 
 **`Host`-shaped.** `place` reads only `Molecule::atoms()`, never the device
 nuclei, so the step takes no `DeviceResources&`. It is free host work that
@@ -50,7 +55,7 @@ when geom-opt arrives.
 
 - The step's contract is checked by `static_assert`.
 - The step's basis is checked, shell by shell, against a direct `read_basis`
-  then `place` of the same file.
+  then `primitive_normalized` and `place` of the same file.
 - A missing file is checked to be `IO`, and an uncovered element to be
   `InvalidConfig`.
 

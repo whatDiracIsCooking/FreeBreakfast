@@ -92,8 +92,8 @@ a step not handed one cannot reach it.
 |---|---|---|---|
 | nothing extra | `Host` | free (host) | `BasisSet` (`place`) |
 | `tf::Subflow&` | `HostSubflow` | free (host), parallel inside | SAD (a subflow per stamp) |
-| `DeviceResources&` | `Device` | on that device's chain | `Overlap`, `Orthogonalizer` |
-| `DeviceResources&, tf::Subflow&` | `DeviceSubflow` | on that device's chain, host-parallel inside | `PrimitivePairClasses` |
+| `DeviceResources&` | `Device` | on that device's chain | `PrimitivePairClasses`, `Overlap`, `Orthogonalizer` |
+| `DeviceResources&, tf::Subflow&` | `DeviceSubflow` | on that device's chain, host-parallel inside | none yet: `PrimitivePairClasses`, were its records written in parallel |
 | `NodeResources&` | `Node` | holds every device's chain | a multi-GPU J build |
 
 The types must match exactly. A `tf::FlowBuilder&` or a

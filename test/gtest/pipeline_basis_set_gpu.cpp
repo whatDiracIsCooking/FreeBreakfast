@@ -1,6 +1,6 @@
-// The BasisSet step against a direct read_basis + place. The step's contract
-// is checked by static_assert; running it needs a Molecule, which owns its
-// nuclei on the device, so the rest needs a GPU.
+// The BasisSet step against a direct read_basis + primitive_normalized + place.
+// The step's contract is checked by static_assert; running it needs a
+// Molecule, which owns its nuclei on the device, so the rest needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -48,7 +48,7 @@ TEST(PipelineBasisSet, MatchesReadBasisThenPlace) {
   auto basis = step.run(fb::View<fb::Molecule>{molecule});
   auto stamp = fb::read_basis(path);
   ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
-  auto direct = fb::place(*stamp, molecule);
+  auto direct = fb::place(stamp->primitive_normalized(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   ASSERT_TRUE(direct.has_value()) << direct.error().message;
 
