@@ -30,42 +30,53 @@ reads it.
 | Step | Template | One per | Computes |
 |---|---|---|---|
 | ket pre-contraction | `dq<lc, ld>` | ket pair class, `lc <= ld` | `D_q = w Σ_cd D_cd s E^cd_q` and `Dmax = max_q \|D_q\|`, reading the AO density in place |
-| ket sort | `SortedKets::sort` (not generated) | ket pair class | the class's records sorted descending by `Iq · Dmax`, and `zeta`, P, `Iq`, `Dmax` and `D_q` gathered into that order |
+| ket sort | `sort_bounds_kets` (not generated) | ket pair class | the class's records sorted descending by `Iq · Dmax`, and `zeta`, P, `Iq`, `Dmax` and `D_q` gathered into that order, the class's `ket_` fields |
 | `[p\|q]` | `e_hermite<lp, lq>` | (bra class, ket class), `lp = la + lb`, `lq = lc + ld` | `J_p += Σ_q [p\|q] D_q`, one warp per bra record, kets strip-mined, `J_p` added atomically |
 | bra transform + scatter | `jab<la, lb>` | bra pair class | `J_ab += Σ_p s E^ab_p J_p`, added atomically into `J_µν` at (m, n) and (n, m) |
 
-`coulomb(res, classes, density, j)` runs them as two phases of
-`launch_each` (the one-electron builds' per-class launch, reused with their
+`coulomb(res, classes, density, j)` runs them **ket-major**, as two phases
+of `launch_each` (the one-electron builds' per-class launch, reused with their
 pre-launch checks from `free_breakfast.integrals.one_electron.launch`):
 
 1. On `res.stream()`: zero `J` and every class's `J_p`, and fill `row` below.
-2. **Every class's inputs**, each on its own stream: its records' weights `w`,
-   then `dq`, then the ket sort (keyed on the class's `bound` times `Dmax`). The join closes
-   the phase, because every bra class reads every ket class's sorted bounds,
-   `D_q` and `Dmax`.
-3. **Every class as a bra**, each on its own stream: `e_hermite` against every
-   ket class, sorted, into the bra's `J_p`, then `jab` into `J`, in that order.
-   The bra side reads its class in record order, which `mmd` makes
-   descending ζ, so descending `Ip`: the bras with the longest ket loops
-   launch first, once per basis and at no cost per build.
+2. **Every class as a ket**, each on its own stream: its records' weights `w`,
+   then `dq`, then the ket sort (keyed on the class's `bound` times `Dmax`),
+   then `e_hermite` of every bra class against it, into that bra's `J_p`. A
+   ket class's sorted copies are written and read on its own stream only, so
+   each ket starts contracting as soon as its own sort is done. The bras'
+   records are only read, and their `J_p` only added to, atomically, from
+   every ket class's stream at once. The join closes the phase: a bra's `J_p`
+   is complete only once every ket class has added to it.
+3. **Every class as a bra**, each on its own stream: `jab` of its `J_p` into
+   `J`. The bra side reads its class in record order, which `mmd` makes
+   descending ζ, so descending `Ip`, once per basis and at no cost per build.
+4. Every class's stream forked from `res.stream()` once more, succeeded or
+   not: a ket's stream read every other class's records, so a class's own
+   frees, queued on its stream later, must follow every class's stream.
 
 What the kernels leave to the launcher, and how it is supplied:
 
 | Input | Value | Why |
 |---|---|---|
 | `w` | 2 for a shell pair of two shells, 1 for a shell against itself (`off_a == off_b`, as `mmd` records it) | `mmd` stores each unique shell pair once; the sum over all `(c, d)` counts the others twice. A one-thread kernel in `coulomb_launch.cu` writes it per build |
-| `Ip`, `Iq` | the bra's `bound` field (`mmd`'s) in record order, the ket's sorted copy (`SortedKets::bound`) | The screen is `Dmax · Ip · Iq < tau` |
+| `Ip`, `Iq` | the bra's `bound` field (`mmd`'s) in record order, the ket's sorted copy (`ket_bound`) | The screen is `Dmax · Ip · Iq < tau` |
 | `tau` | `coulomb`'s, default `1e-10` | The screen `break`s on a lane's first ket under `tau`, which is right only for kets sorted descending by `Iq · Dmax`: so they are |
 | `row` | the record index | `jab` reads record `k`'s row of `J_p`; with one batch per class that row is `k` |
 | `J`, `J_p` | zeroed | Both are only added to |
 | the block | `e_hermite_block_dim`, `{1, FJ_WAVEFRONT}` | `e_hermite`'s shared `J_p` accumulator is sized for exactly that block |
 
-The scratch, per class `n_rec × n_hermite(la + lb)` doubles for `D_q`, as many
-for the sorted `D_q` and as many for `J_p`, plus `2 n_rec` for `w`
-and `Dmax` and `10 n_rec` for the sort (its keys, its permutation, each with an
-alternate, and the six sorted per-record arrays), is drawn from
-`res.device()`'s pool in `res.stream()`'s order and returned in its order once
-both phases are joined back, so there is no host synchronization.
+**The scratch is the class's.** Per class, `n_rec × n_hermite(la + lb)`
+doubles for `D_q`, as many for the sorted `D_q` and as many for `J_p`, plus
+`2 n_rec` for `w` and `Dmax` and `10 n_rec` for the sort (its keys, its
+permutation, each with an alternate, and the six sorted per-record arrays),
+all `CoulombPairClass` fields, allocated with its records on its own stream
+by `coulomb_pair_classes`, once per basis. That is O(records), the order of the
+records themselves, and an SCF loop allocates nothing per build but the
+`max(n_rec)`-long `row`, from `res.device()`'s pool in `res.stream()`'s order;
+there is no host synchronization. The price is that a build writes its
+classes: **one `coulomb` at a time per set of classes.** Builds queued on one
+stream are ordered by their forks and joins, so an SCF loop is fine; two
+builds over the same classes on two streams would race on the scratch.
 
 **The swap needs nothing.** `mmd` stores a pair whose bra has the higher
 momentum swapped; `dq` reads the symmetric density at the record's own offsets
@@ -101,10 +112,12 @@ untouched, because S, T and V read them and their correctness must not hang on
 a two-electron bound.
 
 **J's class** (`CoulombPairClass`) is device-only, on a stream of its own, and
-carries only what J reads: `zeta`, P, `P − A`, `P − B`, `s`, the undressed
-`bound` and the two offsets. Its `view()` is a `PrimitivePairClassView` with
-the rest (`ea`, `eb`, the dressed bounds, the ranks) null, so `dq`,
-`e_hermite`, `jab` and `SortedKets` read it as they read `mmd`'s.
+carries only the records J reads: `zeta`, P, `P − A`, `P − B`, `s`, the
+undressed `bound` and the two offsets, plus a build's scratch (above). Its
+`view()` is a `PrimitivePairClassView` with the rest (`ea`, `eb`, the dressed
+bounds, the ranks) null, so `dq`, `e_hermite`, `jab` and the ket sort read it
+as they read `mmd`'s; `ket_view()` is the same over the sorted copies, as
+`e_hermite` reads a ket.
 
 **It runs on the device**, queued on `res.stream()`, which first waits on each
 of `mmd`'s class streams by event (never a host synchronization):
@@ -115,8 +128,9 @@ of `mmd`'s class streams by event (never a host synchronization):
    giving each kept record its place and the class its kept count.
 3. One readback of the counts (the only host synchronization, of
    `res.stream()`), to size J's classes; an emptied class is left out.
-4. Per kept class, on its own new stream forked from `res.stream()`: a scatter
-   of each field into place. The scan is stable, so the kept records keep
+4. Per kept class, on its own new stream forked from `res.stream()`: its
+   records and scratch allocated there, and a scatter of each field into
+   place. The scan is stable, so the kept records keep
    `mmd`'s descending ζ, and J's bras their load-balancing order, with no
    sort. The scatters are joined back into `res.stream()`, and each of
    `mmd`'s streams then waits on `res.stream()`, so a later free of `mmd`'s
@@ -176,7 +190,9 @@ a throwaway, not kept in `bench/`.
 
 ## Not done
 
-- **Reuse across SCF iterations.** The scratch is allocated per call.
+- **Reuse across geometries.** The classes, scratch included, are remade per
+  basis, so an AIMD step reallocates them; classes that grow to a high-water
+  mark and refill in place would not.
 - **Batching.** One `e_hermite` kernel per class, as FelizJueves ships it.
 - **A checked cap.** `coulomb` does not check its density against
   `coulomb_pair_classes`' `|D_cd| <= 2`; the classes do not carry the
@@ -189,8 +205,8 @@ a throwaway, not kept in `bench/`.
 
 | Symbol | Role |
 |---|---|
-| `CoulombPairClass` | J's class of records: `mmd`'s fields J reads, device-only, on its own `DeviceStream`; `view()` gives a `PrimitivePairClassView` with the fields it does not carry null |
-| `coulomb(res, classes, density, j, tau = 1e-10)` | `Status`: the Cartesian J of `density` into `j` from J's `classes`, screened at `tau` (`0` screens nothing). InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, or `j.n()^2` past `INT32_MAX` |
+| `CoulombPairClass` | J's class of records: `mmd`'s fields J reads and a build's scratch, device-only, on its own `DeviceStream`; `view()` gives a `PrimitivePairClassView` with the fields it does not carry null, `ket_view()` the same over the last build's sorted ket copies |
+| `coulomb(res, classes, density, j, tau = 1e-10)` | `Status`: the Cartesian J of `density` into `j` from J's `classes`, screened at `tau` (`0` screens nothing). Writes the classes' scratch, so one call at a time per set of classes. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, or `j.n()^2` past `INT32_MAX` |
 | `coulomb_pair_classes(res, classes, tau = 1e-13)` | `Result<std::vector<CoulombPairClass>>`: J's classes from `classes` (`primitive_pair_classes` of one basis), without every record whose J terms, as bra and as ket, are all under `tau` **for any density with `\|D_cd\| <= 2`** (above), each class in `mmd`'s record order on a new `DeviceStream`, an emptied class left out. `tau = 0` keeps every record. InvalidConfig for a negative or NaN `tau` or a class above d |
 
 ## Tests
@@ -205,7 +221,9 @@ the zeroing; and the refusals. `tau` bounds each skipped term of a `J_p`, not
 the error in `J`, so the screened bar is the same measured `1e-12`, not one
 derived from `tau`. The bound the screen reads is `mmd`'s, and
 `mmd_gpu.cpp`'s test. The sort itself is
-[`sort_bounds/`](sort_bounds/README.md)'s test.
+[`sort_bounds/`](sort_bounds/README.md)'s test. Every J test builds ket-major,
+so the goldens also exercise every ket class's stream adding into each bra's
+`J_p` before `jab` reads it.
 
 The pruned records (`coulomb_pair_classes` at its default): J from them against
 the same goldens at `1e-12 · max|J|`, at `tau = 0` on H₂O in STO-3G and
@@ -224,9 +242,9 @@ keeping every record and a `tau` above every bound none; and the refusals.
 | File | Role |
 |------|------|
 | `coulomb.cppm` | Module interface: `CoulombPairClass`, `coulomb`, `coulomb_pair_classes` |
-| `coulomb.cpp` | The build: the checks, the scratch, the two phases; the pruning: the event waits, the maxima and scans, the count readback, J's classes and their scatters |
+| `coulomb.cpp` | The build: the checks, the two phases, the closing fork; the pruning: the event waits, the maxima and scans, the count readback, J's classes and their scatters |
 | `coulomb_bridge.h` | The launchers, declared once for the module and the device TU |
 | `coulomb_launch.cu` | The launchers; the `w` and rows kernels; the prune's maxima, keep-scan and scatter kernels; the compile-time checks of the tables against `kMaxAngularMomentum` and of `e_hermite_block_dim` against `kWarpSize` |
 | `kernels/` | The generated units and their three template headers |
-| `sort_bounds/` | The ket sort: its own module and device library, and the merge sort it sorts with |
+| `sort_bounds/` | The ket sort: its device library and bridge header, which `coulomb.cpp` drives into a class's `ket_` fields |
 | `CMakeLists.txt` | The device library and the module |

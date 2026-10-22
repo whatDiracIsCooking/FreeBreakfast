@@ -63,7 +63,7 @@ namespace free_breakfast::device {
 /// then holds the sum over all of them. Each lane stops at its first ket with
 /// `Dmax * Ip * Iq < tau`, so for any @p tau above 0 the kets (@p ket's zeta
 /// and P, and @p iq, @p dq and @p dmax with them) must be sorted descending by
-/// Iq * Dmax (SortedKets); at @p tau = 0 the screen never fires and their order
+/// Iq * Dmax (sort_bounds_kets, into the class's ket_ fields); at @p tau = 0 the screen never fires and their order
 /// is free.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no

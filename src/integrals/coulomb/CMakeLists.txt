@@ -1,5 +1,5 @@
-# The ket sort the screen needs (its own module and device library), first:
-# the module below links it.
+# The ket sort the screen needs (its own device library), first: the module
+# below links it.
 add_subdirectory(sort_bounds)
 
 # The J launchers. Device code in its own library, so its language and -x hip
@@ -75,11 +75,12 @@ free_breakfast_add_gpu_device_library(
 # own class (its StreamBuffers on a DeviceStream, its int32_t) are in its
 # signature, so core::types, core::wwr, core::resources, mmd and
 # linalg::matrix_ao are PUBLIC. The per-class launch and the pre-launch checks
-# are the one-electron builds' own (one_electron::launch), the ket sort is
-# sort_bounds', and the device library is PRIVATE: the implementation unit
-# includes the bridge header in its GMF and calls the launchers (the build's
-# and the prune's), and a static library's private link dependencies still
-# reach the final link. The momentum limit is basis's.
+# are the one-electron builds' own (one_electron::launch), and both device
+# libraries, this directory's and sort_bounds', are PRIVATE: the
+# implementation unit includes their bridge headers in its GMF and calls the
+# launchers (the build's, the prune's and the ket sort's), and a static
+# library's private link dependencies still reach the final link. The momentum
+# limit is basis's.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.coulomb
@@ -99,6 +100,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::diagnostics_macros
   free_breakfast::basis
   free_breakfast::integrals::one_electron::launch
-  free_breakfast::integrals::coulomb::sort_bounds
+  free_breakfast::integrals::coulomb::sort_bounds::device
   free_breakfast::integrals::coulomb::device
 )

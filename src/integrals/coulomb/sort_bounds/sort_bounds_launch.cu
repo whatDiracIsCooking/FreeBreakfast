@@ -1,4 +1,4 @@
-// The device half of free_breakfast.integrals.coulomb.sort_bounds: each ket
+// The ket sort coulomb's J build drives through sort_bounds_bridge.h: each ket
 // class's sort key, the sort (merge_sort.cu), and the gather of everything
 // e_hermite reads of a ket into that order. One source for both backends --
 // nvcc under CUDA, clang -x hip under HIP.
