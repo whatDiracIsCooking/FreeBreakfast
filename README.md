@@ -3,15 +3,20 @@
 A GPU-first scientific computing project in C++23 named modules, targeting
 **either CUDA or HIP** from one source tree.
 
-This is a **starter**: the build system, containers, dev tooling and CI are
-complete and exercised; `src/` holds one module whose job is to prove the
-toolchain works. Add your domain code as sibling directories under `src/` and
-delete what you do not use.
+It is an early **quantum-chemistry** codebase. `src/` holds ten modules —
+`core`, `atom`, `molecule`, `basis`, `io`, `sad`, `recipes`, `integrals`,
+`localization` and `pipeline` — and the `free-breakfast` executable they add up
+to: a TOML config planned into a task graph and run as a closed-shell RHF SCF,
+with GPU integrals, a SAD initial guess and Pipek-Mezey localization of the
+occupied orbitals. [`src/README.md`](src/README.md) has the one-line summary of
+each module, and every directory under `src/` carries its own README.
 
 The GPU API layer is not written here. [WarpWraps](https://github.com/whatDiracIsCooking/WarpWraps)
 is a submodule at `deps/WarpWraps` and supplies backend-neutral `wwr*` modules
 over the CUDA and ROCm APIs, so code under `src/` is written once and builds for
-both backends.
+both backends. The tree reaches it through **one** module,
+[`free_breakfast.core.wwr`](src/core/wwr/README.md), which re-exports the wwr
+modules it uses and binds the RAII wrappers to this tree's error policies.
 
 ## Quick start
 
@@ -39,6 +44,25 @@ export HOST_UID=$(id -u) HOST_GID=$(id -g)
 docker compose -f docker/compose.yaml run --rm build
 docker compose -f docker/compose.yaml run --rm test
 ```
+
+What it builds, once a tier has built it:
+
+```sh
+build/src/free-breakfast calc.toml     # one table per pipeline step
+```
+
+```toml
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"       # a compiled-in name, or a path to BSE JSON
+[scf]                  # every option has a default
+```
+
+A table is a *request*: the steps producing what it reads are filled in, so the
+file above plans the whole chain from the geometry to the converged RHF energy.
+[`src/pipeline/config/README.md`](src/pipeline/config/README.md) is the full
+grammar; relative paths resolve against the config file, not the cwd.
 
 Host-side, for editing and the Python suite:
 
@@ -86,11 +110,24 @@ deps/
   spdlog/ taskflow/   `.cppm` module shims over the prebuilt /opt libraries
   tomlplusplus/
   nlohmann/           ...and one FetchContent header-only library
-src/core/             The starting set: one module over wwr and `import std`
+  FelizJueves/        SUBMODULE: the integral-kernel generator. Not built -- its
+                      kernels are emitted by hand and committed under src/integrals/
+src/                  Ten modules and main.cpp -- see src/README.md
+  core/               The GPU, error-handling and logging vocabulary over wwr
+  atom/ molecule/     Elements, atoms, geometry, nuclear repulsion
+  basis/ io/          Shells and AO layouts; files, JSON/TOML/.npy, XYZ, Molden
+  sad/ recipes/       The SAD atomic-density guess; dense GPU linear algebra
+  integrals/          S, T, V, H and J on the GPU, over FelizJueves kernels
+  localization/       Pipek-Mezey, p = 2 or Knizia's p = 4
+  pipeline/           The step contract, the steps, the RHF SCF, and the planner
 data/basis/           BSE JSON basis sets, compiled into the binary by the build
+data/sad/             Per-element SAD densities for each of them, likewise
 test/gtest/           C++ tests, two binaries split by device requirement
 test/gpu_kernels/     `.cu` kernels the GPU tests launch, as their own device library
 test/pytest/          Python tests over the built binaries
+bench/                Wall-clock benchmarks (opt-in, never a ctest entry)
+experimental/         Code that does not build by default
+docs/style.md         The coding style. Read it before writing C++
 docker/
   Dockerfile.base       Vendor-neutral toolchain + the three /opt deps
   Dockerfile.cuda       base + CUDA. The default backend
@@ -100,7 +137,8 @@ docker/
   compose.yaml          The batch path
 .devcontainer/{cuda,hip,combined}/   The interactive path, one per backend
 devtools/             Container, worktree, test-tier, coverage and doctor scripts
-tools/                Standalone Python: BSE basis download, aCD/acCD atomic Cholesky
+tools/                BSE download, the FelizJueves kernel emitters, the PySCF
+                      references, and the C++ SAD-stamp generator
 ```
 
 ---
@@ -117,16 +155,29 @@ root `CMakeLists.txt` mirrors the choice onto `WWR_GPU_BACKEND` so the submodule
 can never disagree — a tree built CUDA against a HIP wwr fails deep inside wwr's
 own sources with nothing naming the mismatch.
 
-Import the backend-neutral modules and link the matching target:
+Inside `src/`, the backend-neutral names arrive through
+`free_breakfast.core.wwr` — import that and link
+`free_breakfast::core::wwr`, not `wwr.*`/`wwr::*`:
 
 ```cpp
-import wwr.extension.memory_buffer;   // DeviceBuffer, PinnedBuffer, ...
-import wwr.wrappers.blas;             // gemm<float>(...), either backend
+import free_breakfast.core.wwr;   // Device, Buffers, BlasHandle, gpu_status,
+                                  // and the wwr modules it re-exports
 ```
 
+To use a wwr module the tree does not use yet, add it to `src/core/wwr`; the
+exceptions that do link wwr directly (`core/types`, `core/constants`, header
+and `.cu` device code) and the reasons for them are in
+[`src/core/wwr/README.md`](src/core/wwr/README.md).
+
 A vendor-only entry point goes through the low-level module
-(`import wwr.cuda.cublas_v2;`), and that file is then CUDA-only by construction.
-WarpWraps' own README lists which functions those are and why.
+(`import wwr.cuda.cublas_v2;`), and that file is then CUDA-only by
+construction. WarpWraps' own README lists which functions those are and why.
+
+**A failed GPU create or allocation aborts, in every build.** The wrappers'
+creation slots use this tree's `AbortPolicy` — log critical, `std::abort()` at
+the failing call — so there is no `Result` to check after constructing one.
+Recovery was cut as YAGNI; a site that needs it gets a reporting policy of its
+own, not a tree-wide switch.
 
 ---
 
@@ -155,7 +206,9 @@ devtools/cpp-tier.sh [--preset NAME] [--fresh] [--clean] [--no-test] [--tidy] [-
 
 Every configure preset has its own `binaryDir`, and it needs to stay that way —
 two presets sharing one build directory silently reconfigure it back and forth,
-a full rebuild each way.
+a full rebuild each way. `bench/` has no preset for that reason: pass
+`-DFREE_BREAKFAST_BUILD_BENCH=ON` on top of whichever preset already matches
+the machine, into a build directory of its own.
 
 **There are no per-architecture presets.** `base` uses `native` and `ci-cuda`
 pins `86`. Target something else with a command-line `-D` and a build directory
@@ -209,7 +262,11 @@ requirement: `free_breakfast_tests_host` (the `*_host.cpp` TUs, which need no
 device and all run everywhere) and `free_breakfast_tests_gpu` (the `*_gpu.cpp`
 TUs, which drive the device). The GPU cases call `FBF_REQUIRE_GPU()`
 and **skip with a reason** rather than failing, so the suite stays usable on a
-device-less build host — read the skip list before calling a run green.
+device-less build host — read the skip list before calling a run green. A
+second switch skips from the other end: `FREE_BREAKFAST_FAST_TESTS` makes
+`slow_test.h`'s macro skip the heavy validation cases, and `cpp-tier.sh` and
+`cpp-smoke.sh` both set it. `devtools/cpp-slow-tier.sh` is the run with nothing
+skipped.
 
 Kernel code a GPU test needs lives in `test/gpu_kernels/`, a device library
 the GPU binary links, never in the test executable itself (see
@@ -262,15 +319,18 @@ cannot run, so a skip is never mistaken for a pass.
 ### What is gated where
 
 `git push` runs the fast pytest tier, and only when the push touches a `.py`;
-`devtools/cpp-smoke.sh` runs the C++ smoke gate when it touches C++. CI runs
-lint + the fast pytest tier per PR.
+`devtools/cpp-smoke.sh` runs the C++ smoke gate when it touches C++. Per PR, CI
+runs `lint` and the fast pytest tier (`test`, on the oldest and newest
+supported Python); the `slow` job runs the slow pytest tier nightly and on a
+manual dispatch, never on a PR.
 
-**The two `cpp` jobs in `.github/workflows/ci.yml` are `if: false`.** Until one
-of the two routes in that file's comment is set up, a PR touching only `src/` is
-checked by nothing on the server, and `devtools/cpp-tier.sh` before opening it
-is the whole gate. Note the `ci-cuda`/`ci-hip` presets were built for that job
-and need no GPU — the only obstacle is getting the toolchain image onto a
-runner.
+**The `cpp` job in `.github/workflows/ci.yml` is `if: false`** — both matrix
+legs, cuda and hip. Until one of the two routes in that file's comment is set
+up, a PR touching only `src/` has its formatting and CMake lint checked on the
+server and nothing else: nothing builds or runs it. `devtools/cpp-tier.sh`
+before opening the PR is the whole correctness gate, and it is a human one. The
+`ci-cuda`/`ci-hip` presets were built for that job and need no GPU — the only
+obstacle is getting the toolchain image onto a runner.
 
 ---
 
@@ -340,10 +400,43 @@ free_breakfast_add_cxx_module_library(
 ```
 
 Then `add_subdirectory(widget)` in the parent, add it to that parent's
-`LINK_PUBLIC`, and `export import` it from the aggregating module if it is part
-of the public surface. For `.cu` device code use
+`LINK_PUBLIC`, `export import` it from the aggregating module if it is part of
+the public surface, and drop a `README.md` beside it matching the neighbours —
+[`src/README.md`](src/README.md) has the checklist. For `.cu` device code use
 `free_breakfast_add_gpu_device_library`; for header-only code use
 `free_breakfast_add_interface_library`.
+
+**`IMPORT_STD` is not bookkeeping.** A module library that says `import std;`
+without it is not built with `CXX_MODULE_STD`, and the failure names the
+standard library rather than the missing flag. And a `.cu` never joins a module
+library or a test executable: those are scanned for modules, and nvcc neither
+understands `import std` nor takes part in module dependency scanning.
+
+---
+
+## Basis sets and SAD stamps are build input
+
+`data/basis/*.json` is Basis Set Exchange JSON downloaded by
+`tools/bse_download.py` and **compiled into the binary**: the build wraps each
+file verbatim in a raw string literal, and `resolve_basis("sto-3g")` parses it
+back out. This tree installs nothing of its own, so the alternative — a runtime
+data directory — would mean an install rule and a search path that can work on
+one machine and not the next. `resolve_basis` takes a **name or a path**, name
+first, so a basis the build does not carry is still read from disk with no
+rebuild.
+
+Only **spherical** sets can be carried: `src/io/basis` rejects `gto_cartesian`
+at any l, and the parser walks the whole document, so one Cartesian shell makes
+the whole file unreadable — which is why `6-31g.json` stops at argon. Check the
+harmonic types before adding a set; [`data/basis/README.md`](data/basis/README.md)
+has the detail.
+
+`data/sad/<basis>/<Z>.npy` is every element's atomic density in every carried
+set, written by the C++ generator `tools/sad` (`free-breakfast-sad-stamps`,
+built with the tree) and compiled in the same way. **Changing `data/basis/` or
+the atomic SCF means regenerating `data/sad/`** — the bitwise check in
+`test/gtest/io_sad_host.cpp` fails until you do, and each 3d element costs
+minutes in cc-pVDZ/TZ. Commands in [`data/sad/README.md`](data/sad/README.md).
 
 ---
 
@@ -359,13 +452,20 @@ the scripts.
 | `doctor.sh` | Report what is degraded here. Non-zero only on a FAIL. |
 | `devcontainer.sh` | `up` / `rebuild` / `shell` / `test` / `down`, per worktree. Takes `--cuda`/`--hip`/`--combined`. |
 | `worktree.sh` | `add` / `rm` / `sync` / `gc` / `list` for container-backed worktrees. |
+| `build.sh` | Configure + build, no ctest — the build half of `cpp-tier.sh`. |
 | `cpp-tier.sh` | Configure + build + ctest, logged. The C++ tier. |
 | `cpp-slow-tier.sh` | The same with nothing skipped — the deep-validation sweep. |
 | `cpp-smoke.sh` | The C++ half of the pre-push gate. |
 | `cross-backend-check.sh` | Compile the tree for the *other* GPU backend. |
 | `coverage.sh` | Build instrumented, run ctest, `llvm-cov` summary of `src/`. |
-| `claude-version.sh` | Read/compare/bump the Claude Code pin across the three GPU Dockerfiles. |
+| `slow-tier.sh` | The slow Python tier, off the per-commit path, logged. |
 | `prepush-tests.sh` | The fast Python gate that `git push` runs. |
+| `format.sh` | clang-format + ruff format; `--check` is what the gates run. |
+| `cmake-lint.sh` | `cmake-lint` over the staged CMake files, at `git commit`. |
+| `check-int-types.py` | Reject `int`/`long`/… — every integer states its width. |
+| `check-shared-mem.py` | Reject `extern __shared__` without a stated reason. |
+| `gpu-object-cache.sh` | Content-addressed object cache for `.cu` device compiles, in front of sccache. |
+| `claude-version.sh` / `agy-version.sh` | Read/compare/bump the agent CLI pins across the three GPU Dockerfiles. |
 
 The coding style is in [`docs/style.md`](docs/style.md). The mechanical half
 is enforced:
@@ -378,9 +478,13 @@ devtools/format.sh --check    # what the commit hook and CI run
 **No hook rewrites a file** — a formatter run as a hook buries the real diff
 in restyling — so the commit hook and CI's `lint` job *check* the format and
 fail on drift, and you run `devtools/format.sh` to fix it. `ruff check` and
-`cmake-lint` (80 columns) are enforced the same way. clang-tidy is advisory and
-off by default (`cpp-tier.sh --tidy`); its handling of C++23 named modules is
-still incomplete, so expect noise on `.cppm` files.
+`cmake-lint` (80 columns) are enforced the same way, and two rules from
+`docs/style.md` that clang-tidy cannot gate have checkers of their own:
+`check-int-types.py` (fixed-width integers only) and `check-shared-mem.py`
+(statically sized shared memory, unless a line says why not). Both take an
+in-line escape with a reason. clang-tidy itself is advisory and off by default
+(`cpp-tier.sh --tidy`); its handling of C++23 named modules is still
+incomplete, so expect noise on `.cppm` files.
 
 `BUILD_JOBS` in `devtools/config.sh` is the one to set conservatively — a C++23
 module build is memory-hungry per job, and letting Ninja pick (cores + 2) is
