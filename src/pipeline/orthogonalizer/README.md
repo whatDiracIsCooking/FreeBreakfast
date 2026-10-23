@@ -45,9 +45,9 @@ solver or BLAS call is `GpuRuntime`. An overlap eigenvalue at or below
 A device `run` should only enqueue on `res.stream()` and never synchronize the
 host (`step/README.md`). `orthogonalize` synchronizes `res.stream()` once, to
 read syevd's convergence flag and the extreme eigenvalues. That is what makes a
-non-converged solve an error here rather than a wrong X downstream. It is kept
-until the pipeline (stage 3) has an event to hand out instead, as for
-`Molecule`'s nuclei.
+non-converged solve an error here rather than a wrong X downstream. It needs
+the values mid-`run`, so the pipeline's own wait after the step cannot replace
+it; it stays until events replace those waits, as for `Molecule`'s nuclei.
 
 Its scratch (U, the scaled U, the eigenvalues and syevd's workspace) is carved
 from `res.device_workspace()`, which grows if it has to and is never part of a

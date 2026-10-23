@@ -13,8 +13,8 @@ io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BS
 sad/       The SAD initial-guess density from spherically averaged atomic SCFs over a placed basis, in the spherical layout
 linalg/    Dense GPU linear algebra: square gemm and the sandwich products, the symmetric orthogonalizer S^{-1/2}, and DIIS extrapolation
 integrals/ Gaussian integrals on the GPU over FelizJueves-generated kernels: MMD primitive-pair records, S, T, V, the core Hamiltonian H = T + V and the Coulomb matrix J
-pipeline/  The calculation pipeline: the step contract (View, PipelineStep) its steps are written against
-main.cpp   The free-breakfast executable: a TOML config's steps run in order, and the one Error -> exit-code boundary
+pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H), and Pipeline<Steps...>, which plans and runs them
+main.cpp   The free-breakfast executable: a TOML config planned and run as a pipeline, and the one Error -> exit-code boundary
 ```
 
 ## Adding a module

@@ -35,21 +35,23 @@ bounds formed on the device. A failed copy is `GpuRuntime`, exactly as there.
   writing the records in parallel on the host. `primitive_pair_classes` writes
   them on one thread, so the step asks for the narrower shape. It widens when
   the record writing does.
-- **No options**, so no TOML table: `main` constructs it.
+- **No options.** The config fills it in when a step it plans reads its
+  product; an empty table asks for it directly (`pipeline.config`).
 - **One product, not one per class.** The classes are read together by every
   build, so a type per class would only add names.
 
 ## Which streams it uses
 
-A device `run` should only enqueue on `res.stream()` (`step/README.md`). This
-step enqueues nothing there: each class is built on a new `DeviceStream` of its
-own, and every build launches that class on that same stream, which is what
-orders a build after its records. It never synchronizes the host.
+A device `run` should only enqueue on `res.stream()` (`step/README.md`), and
+the pipeline waits on `res.stream()` after it. This step enqueues nothing
+there: each class is built on a new `DeviceStream` of its own, and every build
+launches that class on that same stream, which is what orders a build after its
+records.
 
-That ordering lives in the class, not in the pipeline's device chain, which
-holds while every consumer launches a class on its own stream. A consumer that
-reads a class's device side from another stream must first wait on the class's
-stream.
+So the step **waits on every class's stream before it returns**, which the
+pipeline's wait on `res.stream()` would not cover. A consumer may then read a
+class's device side from any stream. It costs one wait per class, once per
+geometry, against builds that each take far longer.
 
 ## Tests
 

@@ -1,5 +1,6 @@
-// Host-only cases for the TOML front end: a config document -> the steps it
-// names, with path resolution and every way a config can be refused.
+// Host-only cases for the TOML front end: a config document -> the pipeline
+// it asks for, with path resolution, filled-in producers, and every way a
+// config can be refused. Nothing is run, so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -27,68 +28,99 @@ basis = "/basis/sto-3g.json"
 eigenvalue_floor = 1e-8
 )";
 
+// The two tables every config that reaches a basis needs.
+constexpr std::string_view kInputs =
+    "[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n";
+
+std::string with_inputs(std::string_view tables) {
+  return std::string(kInputs).append(tables);
+}
+
 void expect_config_error(std::string_view toml, std::string_view needle) {
-  auto steps = fb::parse_config(toml, "");
-  ASSERT_FALSE(steps.has_value());
-  EXPECT_EQ(steps.error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_NE(steps.error().message.find(needle), std::string::npos) << steps.error().message;
+  auto calc = fb::parse_config(toml, "");
+  ASSERT_FALSE(calc.has_value());
+  EXPECT_EQ(calc.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(calc.error().message.find(needle), std::string::npos) << calc.error().message;
 }
 
 TEST(PipelineConfig, EveryOptionIsRead) {
-  auto steps = fb::parse_config(kWater, "/inputs");
-  ASSERT_TRUE(steps.has_value()) << steps.error().message;
-  const auto &[molecule, basis_set, orthogonalizer] = *steps;
+  auto calc = fb::parse_config(kWater, "/inputs");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::MoleculeStep &molecule = *calc->step<fb::MoleculeStep>();
   EXPECT_EQ(molecule.xyz, std::filesystem::path("/inputs/water.xyz"));
   EXPECT_EQ(molecule.charge, -1);
   EXPECT_EQ(molecule.multiplicity, 2);
   // An absolute path is kept as written.
-  EXPECT_EQ(basis_set.basis, std::filesystem::path("/basis/sto-3g.json"));
-  EXPECT_EQ(orthogonalizer.eigenvalue_floor, 1e-8);
+  EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, std::filesystem::path("/basis/sto-3g.json"));
+  EXPECT_EQ(calc->step<fb::OrthogonalizerStep>()->eigenvalue_floor, 1e-8);
 }
 
 TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {
-  auto steps =
-      fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n", "");
-  ASSERT_TRUE(steps.has_value()) << steps.error().message;
+  auto calc = fb::parse_config(with_inputs("[orthogonalizer]\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::MoleculeStep defaults{};
-  EXPECT_EQ(std::get<fb::MoleculeStep>(*steps).charge, defaults.charge);
-  EXPECT_EQ(std::get<fb::MoleculeStep>(*steps).multiplicity, defaults.multiplicity);
-  // A table whose options all have defaults may be left out.
-  EXPECT_EQ(std::get<fb::OrthogonalizerStep>(*steps).eigenvalue_floor,
+  EXPECT_EQ(calc->step<fb::MoleculeStep>()->charge, defaults.charge);
+  EXPECT_EQ(calc->step<fb::MoleculeStep>()->multiplicity, defaults.multiplicity);
+  EXPECT_EQ(calc->step<fb::OrthogonalizerStep>()->eigenvalue_floor,
             fb::OrthogonalizerStep{}.eigenvalue_floor);
   // No base directory: relative to the working directory.
-  EXPECT_EQ(std::get<fb::MoleculeStep>(*steps).xyz, std::filesystem::path("w.xyz"));
+  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, std::filesystem::path("w.xyz"));
 }
 
 TEST(PipelineConfig, IntegerReadsAsDouble) {
-  auto steps = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n"
-                                "[orthogonalizer]\neigenvalue_floor = 0\n",
-                                "");
-  ASSERT_TRUE(steps.has_value()) << steps.error().message;
-  EXPECT_EQ(std::get<fb::OrthogonalizerStep>(*steps).eigenvalue_floor, 0.0);
+  auto calc = fb::parse_config(with_inputs("[orthogonalizer]\neigenvalue_floor = 0\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::OrthogonalizerStep>()->eigenvalue_floor, 0.0);
 }
 
-TEST(PipelineConfig, MissingStepTableIsInvalidConfig) {
-  expect_config_error("[molecule]\nxyz = \"w.xyz\"\n", "[basis_set]");
+TEST(PipelineConfig, ATableIsARequestAndItsProducersAreFilledIn) {
+  auto calc = fb::parse_config(with_inputs("[core_hamiltonian]\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::SphericalTransformStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::PrimitivePairClassesStep>().has_value());
+  // Not upstream of anything asked for.
+  EXPECT_FALSE(calc->step<fb::OverlapStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::OrthogonalizerStep>().has_value());
+}
+
+TEST(PipelineConfig, OnlyWhatWasAskedForIsPlanned) {
+  auto calc = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n", "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_TRUE(calc->step<fb::MoleculeStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::BasisSetStep>().has_value());
+}
+
+TEST(PipelineConfig, AFilledInStepMissingARequiredOptionIsInvalidConfig) {
+  // [overlap] needs a basis, and [basis_set] cannot be read from nothing.
+  expect_config_error("[molecule]\nxyz = \"w.xyz\"\n[overlap]\n", "[basis_set] needs 'basis'");
+  expect_config_error("[basis_set]\nbasis = \"b.json\"\n", "[molecule] needs 'xyz'");
 }
 
 TEST(PipelineConfig, MissingRequiredOptionIsInvalidConfig) {
   expect_config_error("[molecule]\ncharge = 0\n[basis_set]\nbasis = \"b.json\"\n", "'xyz'");
 }
 
+TEST(PipelineConfig, AConfigNamingNoStepIsInvalidConfig) {
+  expect_config_error("", "names no step");
+}
+
 TEST(PipelineConfig, UnknownStepIsInvalidConfig) {
-  expect_config_error(
-      "[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n[scf]\nmax_iterations = 3\n",
-      "[scf]");
+  expect_config_error(with_inputs("[scf]\nmax_iterations = 3\n"), "unknown step [scf]");
+}
+
+TEST(PipelineConfig, AStepThatIsNotATableIsInvalidConfig) {
+  expect_config_error("molecule = \"w.xyz\"\n", "write it as [molecule]");
 }
 
 TEST(PipelineConfig, MisspeltOptionIsInvalidConfig) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\nmultiplicty = 3\n[basis_set]\nbasis = \"b.json\"\n",
       "'multiplicty'");
-  expect_config_error("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n"
-                      "[orthogonalizer]\nfloor = 1e-8\n",
-                      "'floor'");
+  expect_config_error(with_inputs("[orthogonalizer]\nfloor = 1e-8\n"), "'floor'");
+  // A step with no options has no keys to give.
+  expect_config_error(with_inputs("[overlap]\nscreen = 1e-12\n"),
+                      "[overlap] has no option 'screen'");
 }
 
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
@@ -99,30 +131,29 @@ TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 3000000000\n[basis_set]\nbasis = \"b.json\"\n",
       "[molecule] charge");
-  expect_config_error("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n"
-                      "[orthogonalizer]\neigenvalue_floor = \"small\"\n",
+  expect_config_error(with_inputs("[orthogonalizer]\neigenvalue_floor = \"small\"\n"),
                       "[orthogonalizer] eigenvalue_floor");
 }
 
 TEST(PipelineConfig, MalformedTomlIsIoError) {
-  auto steps = fb::parse_config("[molecule\n", "");
-  ASSERT_FALSE(steps.has_value());
-  EXPECT_EQ(steps.error().kind, fb::ErrorKind::IO);
+  auto calc = fb::parse_config("[molecule\n", "");
+  ASSERT_FALSE(calc.has_value());
+  EXPECT_EQ(calc.error().kind, fb::ErrorKind::IO);
 }
 
 TEST(PipelineConfig, ReadResolvesAgainstTheFilesDirectory) {
   const fb::test::ScratchDir dir("pipeline-config");
   std::ofstream(dir / "run.toml") << kWater;
-  auto steps = fb::read_config(dir / "run.toml");
-  ASSERT_TRUE(steps.has_value()) << steps.error().message;
-  EXPECT_EQ(std::get<fb::MoleculeStep>(*steps).xyz, dir / "water.xyz");
+  auto calc = fb::read_config(dir / "run.toml");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, dir / "water.xyz");
 }
 
 TEST(PipelineConfig, ReadOfMissingFileIsIoError) {
   const fb::test::ScratchDir dir("pipeline-config");
-  auto steps = fb::read_config(dir / "absent.toml");
-  ASSERT_FALSE(steps.has_value());
-  EXPECT_EQ(steps.error().kind, fb::ErrorKind::IO);
+  auto calc = fb::read_config(dir / "absent.toml");
+  ASSERT_FALSE(calc.has_value());
+  EXPECT_EQ(calc.error().kind, fb::ErrorKind::IO);
 }
 
 } // namespace

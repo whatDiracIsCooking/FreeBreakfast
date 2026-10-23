@@ -13,20 +13,16 @@ import free_breakfast.io.toml;
 
 namespace free_breakfast {
 
-/// @brief The `[step]` table of @p doc, refusing a key not in @p keys: a
-/// misspelt option is an error, not a default.
-[[nodiscard]] Result<const toml::table *> step_table(const toml::table &doc, std::string_view step,
-                                                     std::initializer_list<std::string_view> keys) {
-  const toml::table *table = doc[step].as_table();
-  if (table == nullptr) {
-    return err_config("the config needs a [{}] table", step);
-  }
-  for (const auto &[key, value] : *table) {
+/// @brief Refuse a key of the `[step]` table not in @p keys: a misspelt option
+/// is an error, not a default.
+[[nodiscard]] Status check_keys(const toml::table &table, std::string_view step,
+                                std::initializer_list<std::string_view> keys) {
+  for (const auto &[key, value] : table) {
     if (std::ranges::find(keys, key.str()) == keys.end()) {
       return err_config("[{}] has no option '{}'", step, key.str());
     }
   }
-  return table;
+  return {};
 }
 
 /// @brief Read @p key of the `[step]` table into @p out if present, leaving
@@ -73,41 +69,74 @@ template <class T>
   return read_key(table, step, key, base_dir, out);
 }
 
-[[nodiscard]] Result<ConfigSteps> parse_config(std::string_view toml_text,
-                                               const std::filesystem::path &base_dir) {
-  const toml::table doc = FBF_TRY(parse_toml(toml_text));
-  for (const auto &[key, value] : doc) {
-    if (key.str() != MoleculeStep::kName && key.str() != BasisSetStep::kName &&
-        key.str() != OrthogonalizerStep::kName) {
-      return err_config("unknown step [{}]", key.str());
-    }
+/// @brief Step `S` from its table. A filled-in step is read from an empty
+/// one, so a required option it lacks is reported as for a written table.
+template <class S>
+[[nodiscard]] Result<S> read_step(const toml::table &table, const std::filesystem::path &base_dir) {
+  constexpr std::string_view kStep = S::kName;
+  S step;
+  if constexpr (std::same_as<S, MoleculeStep>) {
+    FBF_TRY(check_keys(table, kStep, {"xyz", "charge", "multiplicity"}));
+    FBF_TRY(read_required_key(table, kStep, "xyz", base_dir, step.xyz));
+    FBF_TRY(read_key(table, kStep, "charge", base_dir, step.charge));
+    FBF_TRY(read_key(table, kStep, "multiplicity", base_dir, step.multiplicity));
+  } else if constexpr (std::same_as<S, BasisSetStep>) {
+    FBF_TRY(check_keys(table, kStep, {"basis"}));
+    FBF_TRY(read_required_key(table, kStep, "basis", base_dir, step.basis));
+  } else if constexpr (std::same_as<S, OrthogonalizerStep>) {
+    FBF_TRY(check_keys(table, kStep, {"eigenvalue_floor"}));
+    FBF_TRY(read_key(table, kStep, "eigenvalue_floor", base_dir, step.eigenvalue_floor));
+  } else {
+    // A step with options needs its own branch above, or every key in its
+    // table would be refused.
+    static_assert(std::is_empty_v<S>, "read_step has no branch for this step's options");
+    FBF_TRY(check_keys(table, kStep, {}));
   }
-
-  MoleculeStep molecule;
-  constexpr std::string_view kMolecule = MoleculeStep::kName;
-  const toml::table &m = *FBF_TRY(step_table(doc, kMolecule, {"xyz", "charge", "multiplicity"}));
-  FBF_TRY(read_required_key(m, kMolecule, "xyz", base_dir, molecule.xyz));
-  FBF_TRY(read_key(m, kMolecule, "charge", base_dir, molecule.charge));
-  FBF_TRY(read_key(m, kMolecule, "multiplicity", base_dir, molecule.multiplicity));
-
-  BasisSetStep basis_set;
-  constexpr std::string_view kBasisSet = BasisSetStep::kName;
-  const toml::table &b = *FBF_TRY(step_table(doc, kBasisSet, {"basis"}));
-  FBF_TRY(read_required_key(b, kBasisSet, "basis", base_dir, basis_set.basis));
-
-  // Optional: its one option has a default.
-  OrthogonalizerStep orthogonalizer;
-  constexpr std::string_view kOrthogonalizer = OrthogonalizerStep::kName;
-  if (doc.contains(kOrthogonalizer)) {
-    const toml::table &o = *FBF_TRY(step_table(doc, kOrthogonalizer, {"eigenvalue_floor"}));
-    FBF_TRY(read_key(o, kOrthogonalizer, "eigenvalue_floor", base_dir,
-                     orthogonalizer.eigenvalue_floor));
-  }
-
-  return ConfigSteps{std::move(molecule), std::move(basis_set), std::move(orthogonalizer)};
+  return step;
 }
 
-[[nodiscard]] Result<ConfigSteps> read_config(const std::filesystem::path &path) {
+/// @brief The step whose `kName` is @p name, read from @p node.
+[[nodiscard]] Result<Calculation::Step> read_named_step(std::string_view name,
+                                                        const toml::node &node,
+                                                        const std::filesystem::path &base_dir) {
+  return [&]<size_t... Is>(std::index_sequence<Is...>) -> Result<Calculation::Step> {
+    std::optional<Result<Calculation::Step>> out;
+    const auto read = [&]<class S>() -> Result<Calculation::Step> {
+      const toml::table *table = node.as_table();
+      if (table == nullptr) {
+        return err_config("{0} is not a table: write it as [{0}]", name);
+      }
+      return Calculation::Step{std::in_place_type<S>, FBF_TRY(read_step<S>(*table, base_dir))};
+    };
+    (void)((name == std::variant_alternative_t<Is, Calculation::Step>::kName
+                ? (out = read.template
+                         operator()<std::variant_alternative_t<Is, Calculation::Step>>(),
+                   false)
+                : true) &&
+           ...);
+    if (!out) {
+      return err_config("unknown step [{}]", name);
+    }
+    return std::move(*out);
+  }(std::make_index_sequence<std::variant_size_v<Calculation::Step>>{});
+}
+
+[[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
+                                               const std::filesystem::path &base_dir) {
+  const toml::table doc = FBF_TRY(parse_toml(toml_text));
+  std::vector<Calculation::Step> steps;
+  for (const auto &[key, value] : doc) {
+    steps.push_back(FBF_TRY(read_named_step(key.str(), value, base_dir)));
+  }
+  if (steps.empty()) {
+    return err_config("the config names no step");
+  }
+  const toml::table empty;
+  return Calculation::create(std::move(steps),
+                             [&]<class S>() { return read_step<S>(empty, base_dir); });
+}
+
+[[nodiscard]] Result<Calculation> read_config(const std::filesystem::path &path) {
   const std::string text = FBF_TRY(read_file(path));
   return parse_config(text, path.parent_path());
 }

@@ -34,7 +34,8 @@ U is `nao_cart x nao_sphe`, column-major, and `nullptr` when no shell is above p
   `MatrixAOPair` over this U and publish only the spherical matrix. U is
   never written after the upload, so those steps may share it across streams.
 - **`Device`-shaped**, because U lives on the device.
-- **No options**, so the step has no TOML table: `main` constructs it.
+- **No options.** The config fills it in when a step it plans reads its
+  product; an empty table asks for it directly (`pipeline.config`).
 
 ## The device contract it does not keep
 
@@ -42,8 +43,9 @@ A device `run` should only enqueue on `res.stream()` and never synchronize the
 host (`step/README.md`). `upload_spherical_transform_matrix` synchronizes
 `res.stream()` once, when there is a U to upload, so that the host staging copy
 can be released. That is one small blocking copy per basis, on a step that runs
-once per calculation. It is kept until the pipeline (stage 3) has an event to
-hand out instead, as for `Molecule`'s nuclei.
+once per calculation. The staging copy is released inside `run`, so the
+pipeline's own wait after the step cannot replace it; it stays until events
+replace those waits, as for `Molecule`'s nuclei.
 
 ## Tests
 

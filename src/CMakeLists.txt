@@ -34,11 +34,5 @@ target_link_libraries(
   PRIVATE free_breakfast::core
           free_breakfast::core::resources
           free_breakfast::core::diagnostics_macros
-          free_breakfast::pipeline::step
           free_breakfast::pipeline::config
-          free_breakfast::pipeline::spherical_transform
-          free_breakfast::pipeline::primitive_pair_classes
-          free_breakfast::pipeline::overlap
-          free_breakfast::pipeline::orthogonalizer
-          free_breakfast::pipeline::core_hamiltonian
 )

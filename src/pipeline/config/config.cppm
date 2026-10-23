@@ -1,36 +1,47 @@
 /// @file
-/// @brief The TOML front end: a config file read into the steps it names.
+/// @brief The TOML front end: a config file read into the pipeline it asks
+///        for, and the registry of every step a config may name.
 ///
 /// One table per step, named by the step's `kName`; its keys are the step's
-/// options, spelled as its members. Until `Pipeline<Steps...>` and its
-/// `StepVariant` land, the steps come back as a fixed tuple; then this
-/// returns the step vector instead. Re-exports the steps it returns.
+/// options, spelled as its members. A table is a request: the steps producing
+/// what it reads are filled in, each read from an empty table, so only a step
+/// with a required option must be written out. Re-exports the steps and the
+/// pipeline it returns.
 
 export module free_breakfast.pipeline.config;
 
 import std;
 import free_breakfast.core.error_handling;
+export import free_breakfast.pipeline.pipeline;
 export import free_breakfast.pipeline.molecule;
 export import free_breakfast.pipeline.basis_set;
+export import free_breakfast.pipeline.spherical_transform;
+export import free_breakfast.pipeline.primitive_pair_classes;
+export import free_breakfast.pipeline.overlap;
 export import free_breakfast.pipeline.orthogonalizer;
+export import free_breakfast.pipeline.core_hamiltonian;
 
 export namespace free_breakfast {
 
-/// @brief The steps a config file names, in pipeline order.
-using ConfigSteps = std::tuple<MoleculeStep, BasisSetStep, OrthogonalizerStep>;
+/// @brief The pipeline over every step a config file may name.
+using Calculation =
+    Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
+             OverlapStep, OrthogonalizerStep, CoreHamiltonianStep>;
 
-/// @brief Parse a config from an in-memory TOML document.
+/// @brief Parse a config from an in-memory TOML document and plan the
+/// pipeline it asks for.
 ///
 /// A relative path in it is resolved against @p base_dir (empty: left
-/// relative to the working directory). A step whose options all have defaults
-/// may leave its table out. A syntactically invalid document is ErrorKind::IO.
-/// A missing step table or required key, an unknown table or key, or a value
-/// of the wrong type is ErrorKind::InvalidConfig naming it.
-[[nodiscard]] Result<ConfigSteps> parse_config(std::string_view toml_text,
+/// relative to the working directory). A syntactically invalid document is
+/// ErrorKind::IO. A document naming no step, an unknown table or key, a value
+/// of the wrong type, or a missing required key -- in a written table or in
+/// one a filled-in step was read from -- is ErrorKind::InvalidConfig naming
+/// it.
+[[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &base_dir);
 
 /// @brief Parse a config file, resolving its relative paths against the
 /// file's own directory. A file that cannot be opened is ErrorKind::IO.
-[[nodiscard]] Result<ConfigSteps> read_config(const std::filesystem::path &path);
+[[nodiscard]] Result<Calculation> read_config(const std::filesystem::path &path);
 
 } // namespace free_breakfast

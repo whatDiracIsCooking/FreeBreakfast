@@ -128,6 +128,10 @@ public:
   /// handles. Read it back with fetch_info().
   Buffers::device<int32_t> &info() noexcept { return info_; }
 
+  /// @brief Wait on the host for everything queued on stream(). A GpuRuntime
+  /// error if the wait fails.
+  [[nodiscard]] Status sync() const { return gpu_status(wwr::extension::sync(stream())); }
+
   /// @brief Copy info() into pinned host memory and return it: the d2h copy is
   /// queued on stream(), after the solver call that wrote it, and stream() is
   /// then synchronized. A GpuRuntime error if either call fails.
@@ -135,7 +139,7 @@ public:
     if (auto status = gpu_status(wwr::extension::copy(info_host_, info_, stream())); !status) {
       return std::unexpected(std::move(status).error());
     }
-    if (auto status = gpu_status(wwr::extension::sync(stream())); !status) {
+    if (auto status = sync(); !status) {
       return std::unexpected(std::move(status).error());
     }
     return info_host_.data()[0];

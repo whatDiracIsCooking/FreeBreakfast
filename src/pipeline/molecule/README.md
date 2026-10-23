@@ -47,8 +47,9 @@ is ordered after the stream the nuclei were copied on.
 
 That costs one small blocking copy per geometry. The step holds its device's
 chain while the copy runs, so the chain stalls for one copy of a few doubles per
-atom. It is kept rather than worked around until the pipeline (stage 3) has an
-event to hand out instead.
+atom. The pipeline waits on `res.stream()` after every device step anyway, so
+this is one wait more, not lost overlap; it stays until events replace those
+waits.
 
 It also reads the file on the device chain. Splitting the read into a host step
 would need a host-only XYZ parser in `io.xyz`, which returns a device-backed

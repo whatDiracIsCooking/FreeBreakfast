@@ -105,9 +105,10 @@ escape hatch: safe, and paid for only in concurrency.
 
 ### Contracts the types cannot check
 
-- A device `run` only enqueues on `res.stream()`. It never synchronizes the
+- A device `run` only enqueues on `res.stream()`. It does not synchronize the
   host and does not select the device: the pipeline opens a
-  `ScopedDeviceIndex` around it.
+  `ScopedDeviceIndex` around it and waits on `res.stream()` after it
+  (`pipeline/README.md`).
 - A host `run` never touches the device. A host product the GPU needs is
   uploaded by the device step that consumes it.
 - With a device resource and a subflow, one thread drives a device at a time
