@@ -4,6 +4,11 @@
 
 #pragma once
 
+// wwrFloatComplex / wwrDoubleComplex, for the numeric literals' complex
+// specializations. Reached through wwr's neutral src/-root header, which picks
+// cuComplex.h or hip_complex.h; never include either vendor header here.
+#include "complex.h"
+
 namespace free_breakfast {
 
 // Numeric literals
@@ -11,22 +16,46 @@ namespace free_breakfast {
 // Typed 0/1/2/-1 for use where a scalar must be passed by address -- cuBLAS and
 // cuSOLVER take alpha/beta through a host pointer, so a named constant replaces
 // the per-call `const T one{1}` local while keeping the call site readable.
+//
+// Each also holds for the two GPU complex types, as value + 0i. Those need the
+// explicit specializations after each primary: a complex type is a vector type,
+// not an arithmetic one, so static_cast<T>(1) does not compile on CUDA (a plain
+// float2 struct) and on HIP would call HIP_vector_type's one-scalar constructor,
+// which broadcasts -- 1 + 1i. Brace-init {re, im} is constexpr on both. The
+// specializations are `inline`: unlike the template, a const non-template
+// variable has internal linkage, which an importer of the module cannot reach.
 
 /// @brief Typed zero (0)
 template <typename T>
 constexpr T kZero = static_cast<T>(0);
+template <>
+inline constexpr wwr::wwrFloatComplex kZero<wwr::wwrFloatComplex>{0, 0};
+template <>
+inline constexpr wwr::wwrDoubleComplex kZero<wwr::wwrDoubleComplex>{0, 0};
 
 /// @brief Typed one (1)
 template <typename T>
 constexpr T kOne = static_cast<T>(1);
+template <>
+inline constexpr wwr::wwrFloatComplex kOne<wwr::wwrFloatComplex>{1, 0};
+template <>
+inline constexpr wwr::wwrDoubleComplex kOne<wwr::wwrDoubleComplex>{1, 0};
 
 /// @brief Typed two (2)
 template <typename T>
 constexpr T kTwo = static_cast<T>(2);
+template <>
+inline constexpr wwr::wwrFloatComplex kTwo<wwr::wwrFloatComplex>{2, 0};
+template <>
+inline constexpr wwr::wwrDoubleComplex kTwo<wwr::wwrDoubleComplex>{2, 0};
 
 /// @brief Typed negative one (-1)
 template <typename T>
 constexpr T kNegOne = static_cast<T>(-1);
+template <>
+inline constexpr wwr::wwrFloatComplex kNegOne<wwr::wwrFloatComplex>{-1, 0};
+template <>
+inline constexpr wwr::wwrDoubleComplex kNegOne<wwr::wwrDoubleComplex>{-1, 0};
 
 // Physical Constants
 

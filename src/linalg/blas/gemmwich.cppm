@@ -1,40 +1,43 @@
 /// @file
-/// @brief gemmwich: the sandwich product C = OpX(X)^T OpF(F) OpX(X), as two gemms
+/// @brief gemmwich: the sandwich product C = OpX(X)^H OpF(F) OpX(X), as two gemms
 
 export module free_breakfast.linalg.blas:gemmwich;
 
-import :shared; // raw_blas_handle, RealOp
+import :shared; // raw_blas_handle, SandwichOp, kAdjointOp
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero
-import free_breakfast.core.wwr;       // CreatePolicy, real_fp, gemm<T, IntT>, ScopedPointerMode
+import free_breakfast.core.wwr;       // CreatePolicy, usual_fp, gemm<T, IntT>, ScopedPointerMode
 
 export namespace free_breakfast {
 
-/// @brief C = OpX(X)^T OpF(F) OpX(X), for n x m OpX(X), n x n F and m x m C,
+/// @brief C = OpX(X)^H OpF(F) OpX(X), for n x m OpX(X), n x n F and m x m C,
 /// through an n x m `work`.
 ///
-/// `OpX` and `OpF` are each WWRBLAS_OP_N or WWRBLAS_OP_T (RealOp), fixed at
-/// compile time, and each one not given is WWRBLAS_OP_N. Every matrix is
-/// column-major and contiguous, so its leading dimension is its row count as
-/// stored:
+/// ^H is T's adjoint: the transpose on a real T, the conjugate transpose on a
+/// complex one, so on a real T this is OpX(X)^T OpF(F) OpX(X). `OpX` and `OpF`
+/// are each WWRBLAS_OP_N or that adjoint (SandwichOp): WWRBLAS_OP_T on a real
+/// T, WWRBLAS_OP_C on a complex one. They are fixed at compile time, and each
+/// one not given is WWRBLAS_OP_N. Every matrix is column-major and contiguous,
+/// so its leading dimension is its row count as stored:
 ///
 /// | Matrix | Stored as | Leading dimension |
 /// | --- | --- | --- |
 /// | X, OpX = N | n x m | n |
-/// | X, OpX = T | m x n | m |
+/// | X, OpX = T / C | m x n | m |
 /// | F | n x n | n |
 /// | work | n x m | n |
 /// | C | m x m | m |
 ///
-/// So OpX = N with X stored n x m is X^T OpF(F) X, the projection of F onto
+/// So OpX = N with X stored n x m is X^H OpF(F) X, the projection of F onto
 /// X's m columns. Two gemms, with no host synchronization between them:
 ///
 ///   work = OpF(F) OpX(X)
-///   C    = OpX(X)^T work
+///   C    = OpX(X)^H work
 ///
 /// `work` is scratch: its contents on entry are ignored and on return are
 /// OpF(F) OpX(X). `work` must not alias X, F or C, and C must not alias X or
-/// F; F and C need not be symmetric, and C is overwritten, not accumulated into.
+/// F; F and C need not be symmetric (or Hermitian), and C is overwritten, not
+/// accumulated into.
 ///
 /// The two gemms read their scalars (one and zero) from host memory, so the
 /// handle is held in host pointer mode for the call by wwr's ScopedPointerMode
@@ -47,13 +50,14 @@ export namespace free_breakfast {
 /// gemm status, or success; a failure leaves C (and possibly `work`)
 /// unspecified.
 template <wwr::wwrblasOperation_t OpX = wwr::WWRBLAS_OP_N,
-          wwr::wwrblasOperation_t OpF = wwr::WWRBLAS_OP_N, wwr::real_fp T,
+          wwr::wwrblasOperation_t OpF = wwr::WWRBLAS_OP_N, wwr::usual_fp T,
           wwr::extension::blas_handle H>
-  requires RealOp<OpX> && RealOp<OpF>
+  requires SandwichOp<OpX, T> && SandwichOp<OpF, T>
 [[nodiscard]] wwr::wwrblasStatus_t gemmwich(const H &handle, int32_t m, int32_t n, const T *x,
                                             const T *f, T *work, T *c) {
-  // OpX(X)^T, as the op on X in the second gemm: T for OpX = N, N for OpX = T.
-  constexpr auto op_x_transposed = OpX == wwr::WWRBLAS_OP_N ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N;
+  // OpX(X)^H, as the op on X in the second gemm: the adjoint for OpX = N, N for
+  // OpX = the adjoint (SandwichOp admits nothing else).
+  constexpr auto op_x_adjoint = OpX == wwr::WWRBLAS_OP_N ? kAdjointOp<T> : wwr::WWRBLAS_OP_N;
   const int32_t ldx = OpX == wwr::WWRBLAS_OP_N ? n : m;
 
   const wwr::wwrblasHandle_t raw = raw_blas_handle(handle);
@@ -68,21 +72,22 @@ template <wwr::wwrblasOperation_t OpX = wwr::WWRBLAS_OP_N,
       status != wwr::WWRBLAS_STATUS_SUCCESS) {
     return status;
   }
-  // C (m x m) = OpX(X)^T (m x n) * work (n x m)
-  return wwr::gemm<T, int32_t>(raw, op_x_transposed, wwr::WWRBLAS_OP_N, m, m, n, &kOne<T>, x, ldx,
+  // C (m x m) = OpX(X)^H (m x n) * work (n x m)
+  return wwr::gemm<T, int32_t>(raw, op_x_adjoint, wwr::WWRBLAS_OP_N, m, m, n, &kOne<T>, x, ldx,
                                work, n, &kZero<T>, c, m);
 }
 
-/// @brief C = OpX(X)^T OpF(F) OpX(X), for n x n X, F and C, through an n x n
+/// @brief C = OpX(X)^H OpF(F) OpX(X), for n x n X, F and C, through an n x n
 /// `work`.
 ///
-/// The overload above with m = n: `gemmwich(...)` is X^T F X and
-/// `gemmwich<WWRBLAS_OP_T>(...)` is X F X^T. `work` is left holding
-/// OpF(F) OpX(X). Everything else the overload above says applies here.
+/// The overload above with m = n: `gemmwich(...)` is X^H F X, and OpX = the
+/// adjoint (`gemmwich<WWRBLAS_OP_T>(...)` on a real T, `<WWRBLAS_OP_C>` on a
+/// complex one) is X F X^H. `work` is left holding OpF(F) OpX(X). Everything
+/// else the overload above says applies here.
 template <wwr::wwrblasOperation_t OpX = wwr::WWRBLAS_OP_N,
-          wwr::wwrblasOperation_t OpF = wwr::WWRBLAS_OP_N, wwr::real_fp T,
+          wwr::wwrblasOperation_t OpF = wwr::WWRBLAS_OP_N, wwr::usual_fp T,
           wwr::extension::blas_handle H>
-  requires RealOp<OpX> && RealOp<OpF>
+  requires SandwichOp<OpX, T> && SandwichOp<OpF, T>
 [[nodiscard]] wwr::wwrblasStatus_t gemmwich(const H &handle, int32_t n, const T *x, const T *f,
                                             T *work, T *c) {
   // Qualified, so argument-dependent lookup cannot weigh in on which gemmwich.

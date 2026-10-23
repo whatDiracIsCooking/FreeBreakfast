@@ -89,6 +89,16 @@ static_assert(fb::kZero<double> == 0.0);
 static_assert(fb::kOne<float> == 1.0f);
 static_assert(fb::kTwo<std::int32_t> == 2);
 static_assert(fb::kNegOne<double> == -1.0);
+
+// On the GPU complex types each literal is value + 0i: brace-built, never the
+// one-scalar HIP_vector_type constructor that would fill both parts.
+static_assert(fb::kZero<wwr::wwrDoubleComplex>.x == 0.0 &&
+              fb::kZero<wwr::wwrDoubleComplex>.y == 0.0);
+static_assert(fb::kOne<wwr::wwrDoubleComplex>.x == 1.0 && fb::kOne<wwr::wwrDoubleComplex>.y == 0.0);
+static_assert(fb::kOne<wwr::wwrFloatComplex>.x == 1.0f && fb::kOne<wwr::wwrFloatComplex>.y == 0.0f);
+static_assert(fb::kTwo<wwr::wwrFloatComplex>.x == 2.0f && fb::kTwo<wwr::wwrFloatComplex>.y == 0.0f);
+static_assert(fb::kNegOne<wwr::wwrDoubleComplex>.x == -1.0 &&
+              fb::kNegOne<wwr::wwrDoubleComplex>.y == 0.0);
 static_assert(fb::kKilo<double> == 1e3);
 static_assert(fb::kFemto<double> == 1e-15);
 

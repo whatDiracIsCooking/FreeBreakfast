@@ -73,7 +73,9 @@ CUDA-only copy of it.
 and link it, not `wwr::*`. It re-exports every wwr module the tree uses, plus
 `gpu_status`, the GPU error policies, and the wrappers bound to them. To use a
 new wwr module, add it there. The exceptions, which link wwr directly, are
-`core/types` (it sits below the error layer `core.wwr` is built on), header
+`core/types` (it sits below the error layer `core.wwr` is built on),
+`core/constants` (its `constants.h` is shared with device code, so it includes
+wwr's `complex.h` rather than importing), header
 and `.cu` device code (`wwr::device`; nvcc cannot import), and a deliberately
 CUDA-only `import wwr.cuda.*`. `src/core/wwr/README.md` has the reasons.
 

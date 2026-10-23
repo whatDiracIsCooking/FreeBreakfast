@@ -4,10 +4,15 @@ Three BLAS conveniences over WarpWraps' typed dispatch (`wwr::gemm<T>`,
 `wwr::dgmm<T>`, re-exported by [`free_breakfast.core.wwr`](../../core/wwr/README.md)):
 
 - `gemm`, `wwr::gemm` for square, contiguous operands;
-- `gemmwich`, the sandwich product `Xᵀ F X` (and its general rectangular form)
+- `gemmwich`, the sandwich product `Xᴴ F X` (and its general rectangular form)
   as two gemms;
-- `gmmwich`, the same sandwich with a diagonal middle, `Xᵀ diag(d) X`, as a
+- `gmmwich`, the same sandwich with a diagonal middle, `Xᴴ diag(d) X`, as a
   dgmm and a gemm.
+
+`ᴴ` is the adjoint of the element type: the conjugate transpose on a complex
+`T`, the plain transpose on a real one, where the sandwiches are `Xᵀ F X` and
+`Xᵀ diag(d) X`. All three take any `wwr::usual_fp` (float, double and the two
+complex types).
 
 They fix arguments and compose calls; they do not rename them. `gemm` forwards
 to `wwr::gemm` with arguments filled in, and every other gemm still calls
@@ -34,10 +39,16 @@ interface, all re-exported:
 
 `:shared` is a private interface partition holding what the other three share,
 unexported: `raw_blas_handle` unwraps a `BlasHandle` or passes a raw handle
-through, and two concepts on a `wwrblasOperation_t` value constrain the ops.
-`BlasOp` is `N`, `T` or `C`, what `gemm` takes; `RealOp` is `BlasOp` without
-`C`, what the sandwiches take, since on a real `T` `C` is `T` under another
-name. They sit in an interface partition, not an internal one, because the
+through, and two concepts constrain the ops. `BlasOp<Op>` is `N`, `T` or `C`,
+what `gemm` takes. `SandwichOp<Op, T>` is `N` or `kAdjointOp<T>`, `T`'s adjoint
+in its one spelling, what the sandwiches take:
+
+| `T` | `kAdjointOp<T>` | Left out, and why |
+| --- | --- | --- |
+| `float`, `double` | `WWRBLAS_OP_T` | `C`: on a real `T` it is `T` under another name |
+| `wwrFloatComplex`, `wwrDoubleComplex` | `WWRBLAS_OP_C` | `T`: the sandwich's other factor would be `(Xᵀ)ᴴ = conj(X)`, which no BLAS op spells |
+
+They sit in an interface partition, not an internal one, because the
 exported templates that use them are instantiated in the importer's TU
 (`docs/style.md`, "Module-private code").
 
@@ -101,26 +112,30 @@ work matrix. Two overloads, the square one the general one with `m = n`:
 
 | Call | Computes |
 | --- | --- |
-| `gemmwich<OpX, OpF>(handle, m, n, x, f, work, c)` | `C = OpX(X)ᵀ OpF(F) OpX(X)` |
+| `gemmwich<OpX, OpF>(handle, m, n, x, f, work, c)` | `C = OpX(X)ᴴ OpF(F) OpX(X)` |
 | `gemmwich<OpX, OpF>(handle, n, x, f, work, c)` | the same, `m = n` |
-| `gemmwich(handle, n, x, f, work, c)` | `C = Xᵀ F X` |
-| `gemmwich<WWRBLAS_OP_T>(handle, n, x, f, work, c)` | `C = X F Xᵀ` |
+| `gemmwich(handle, n, x, f, work, c)` | `C = Xᴴ F X` |
+| `gemmwich<kAdjointOp<T>>(handle, n, x, f, work, c)` | `C = X F Xᴴ` |
 
-In the general form `OpX(X)` is `n x m`, F is `n x n` and C is `m x m`, through
-an `n x m` work matrix: `work = OpF(F) OpX(X)`, then `C = OpX(X)ᵀ work`.
+The last row is `gemmwich<WWRBLAS_OP_T>` on a real `T` and
+`gemmwich<WWRBLAS_OP_C>` on a complex one (`kAdjointOp` itself is not
+exported). In the general form `OpX(X)` is `n x m`, F is `n x n` and C is
+`m x m`, through an `n x m` work matrix: `work = OpF(F) OpX(X)`, then
+`C = OpX(X)ᴴ work`.
 Every matrix is column-major and contiguous, so its leading dimension is its
 stored row count:
 
 | Matrix | Stored as | Leading dimension |
 | --- | --- | --- |
 | X, `OpX = N` | `n x m` | `n` |
-| X, `OpX = T` | `m x n` | `m` |
+| X, `OpX` = the adjoint | `m x n` | `m` |
 | F | `n x n` | `n` |
 | work | `n x m` | `n` |
 | C | `m x m` | `m` |
 
-`OpX = N` with X stored `n x m` is `Xᵀ OpF(F) X`, the projection of F onto
-X's `m` columns. `OpX` and `OpF` are each `WWRBLAS_OP_N` or `_T` (`RealOp`).
+`OpX = N` with X stored `n x m` is `Xᴴ OpF(F) X`, the projection of F onto
+X's `m` columns. `OpX` and `OpF` are each `WWRBLAS_OP_N` or the adjoint
+(`SandwichOp`).
 
 ```cpp
 fb::Buffers::device<double> work(n * n, dev);
@@ -130,12 +145,14 @@ fb::Buffers::device<double> rect_work(n * m, dev);                  // X stored 
 FBF_GPU_MUST(fb::gemmwich(blas, m, n, x, f, rect_work.data(), c));  // C (m x m) = X^T F X
 ```
 
-- `T` is `float` or `double` (`wwr::real_fp`): for complex operands the useful
-  sandwich is `Xᴴ F X`, which this does not offer.
+- `T` is any `wwr::usual_fp`. On a complex `T` the sandwich is `Xᴴ F X`, the
+  one that keeps a Hermitian F Hermitian; the complex-symmetric `Xᵀ F X` is not
+  offered.
 - `work` is scratch, ignored on entry and left holding `OpF(F) OpX(X)`. It
   must not alias X, F or C, and C must not alias X or F. C is overwritten
   (`beta = 0`), not accumulated into.
-- The scalars are `kOne` / `kZero` in host memory, so the handle is held in
+- The scalars are `kOne` / `kZero` in host memory (`1 + 0i` / `0` on a
+  complex `T`; see `core/constants`), so the handle is held in
   host pointer mode for the call by wwr's `ScopedPointerMode` (bound to
   `CreatePolicy`) and handed back in whatever mode it had. A failure to read or
   set the mode means a bad handle and aborts, as `ScopedDeviceIndex` does.
@@ -151,21 +168,21 @@ is its own transpose. Two overloads, as for `gemmwich`:
 
 | Call | Computes |
 | --- | --- |
-| `gmmwich<OpX>(handle, m, n, x, d, work, c)` | `C = OpX(X)ᵀ diag(d) OpX(X)` |
+| `gmmwich<OpX>(handle, m, n, x, d, work, c)` | `C = OpX(X)ᴴ diag(d) OpX(X)` |
 | `gmmwich<OpX>(handle, n, x, d, work, c)` | the same, `m = n` |
-| `gmmwich(handle, n, x, d, work, c)` | `C = Xᵀ diag(d) X` |
+| `gmmwich(handle, n, x, d, work, c)` | `C = Xᴴ diag(d) X` |
 
 `OpX(X)` is `n x m`, d has `n` elements (stride 1) and C is `m x m`. `work`
 always has X's stored shape, because the diagonal goes on whichever side of X
-needs no transpose:
+needs no adjoint:
 
 | `OpX` | X stored as | `work =` | `C =` |
 | --- | --- | --- | --- |
-| `N` | `n x m`, ld `n` | `diag(d) X` | `Xᵀ work` |
-| `T` | `m x n`, ld `m` | `X diag(d)` | `work Xᵀ` |
+| `N` | `n x m`, ld `n` | `diag(d) X` | `Xᴴ work` |
+| the adjoint (`T` / `C`) | `m x n`, ld `m` | `X diag(d)` | `work Xᴴ` |
 
-`OpX = T` with an eigenvector matrix U is the spectral recombination
-`U f(Λ) Uᵀ`, which is how `linalg.orthogonalize` assembles `S^{-1/2}`:
+`OpX` = the adjoint with an eigenvector matrix U is the spectral recombination
+`U f(Λ) Uᴴ`, which is how `linalg.orthogonalize` assembles `S^{-1/2}`:
 
 ```cpp
 // X = U diag(lambda^{-1/2}) U^T; m_scratch is left holding U diag(lambda^{-1/2})
@@ -173,7 +190,10 @@ FBF_TRY(fb::gpu_status(fb::gmmwich<wwr::WWRBLAS_OP_T>(res.blas(), n, u, inv_sqrt
                                                       m_scratch, x)));
 ```
 
-- `T` is `float` or `double` (`wwr::real_fp`), as for `gemmwich`.
+- `T` is any `wwr::usual_fp`, as for `gemmwich`. d is a `T` too, as the
+  complex dgmm takes it, so on a complex `T` a real diagonal (eigenvalues) is
+  stored with zero imaginary parts. C is Hermitian up to rounding when d is
+  real.
 - `work` is scratch, ignored on entry and left as in the table. It must not
   alias X, d or C, and C must not alias X or d. C is overwritten (`beta = 0`).
 - The dgmm takes no scalars. The gemm's `kOne` / `kZero` are in host memory,
@@ -191,7 +211,7 @@ GPU, in `test/gtest/{gemm,gemmwich,gmmwich}_gpu.cpp`, linked into
 | File | Role |
 |------|------|
 | `blas.cppm` | Primary interface: re-exports the four partitions |
-| `shared.cppm` | `:shared`: `raw_blas_handle`, `BlasOp`, `RealOp`, all unexported |
+| `shared.cppm` | `:shared`: `raw_blas_handle`, `BlasOp`, `SandwichOp`, `kAdjointOp`, all unexported |
 | `gemm.cppm` | `:gemm`: `gemm` |
 | `gemmwich.cppm` | `:gemmwich`: `gemmwich` |
 | `gmmwich.cppm` | `:gmmwich`: `gmmwich` |
@@ -202,6 +222,7 @@ GPU, in `test/gtest/{gemm,gemmwich,gmmwich}_gpu.cpp`, linked into
 All PUBLIC: every export is a template instantiated in the consumer's TU.
 
 - `free_breakfast::core::types`: `int32_t`
-- `free_breakfast::core::constants`: `kOne` / `kZero`, the sandwiches' scalars
+- `free_breakfast::core::constants`: `kOne` / `kZero`, the sandwiches' scalars,
+  real or complex
 - `free_breakfast::core::wwr`: wwr's BLAS dispatch and `ScopedPointerMode`, and
   `CreatePolicy`

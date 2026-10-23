@@ -231,6 +231,12 @@ they link wwr directly:
    runtime from the compiler's macros the same way, because a generator that
    is not built against wwr cannot spell wwr's header. Their launchers still
    include wwr's first, through the bridge.
+   `core/constants` is header code of this kind with a host-side twist:
+   `constants.h` includes wwr's `complex.h` for the complex numeric literals,
+   and its module compiles that header on the host, so it links
+   `wwr::vector_types::host` (the backend define, wwr's `src/` root and the
+   vendor include path) rather than `wwr::device`, as `core/types` does for
+   `vec.h`.
 3. **`diagnostics_macros` does not link this module**, although `FBF_GPU_MUST`
    expands to `gpu_status`. `io/` and `basis/` link it for `FBF_TRY` and
    `FBF_LOG_*` and have no GPU code. Code that calls `FBF_GPU_MUST` already
