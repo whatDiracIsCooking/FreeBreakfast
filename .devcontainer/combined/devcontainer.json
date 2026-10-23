@@ -53,8 +53,17 @@
   // `up`/`rebuild`; the value after the colon is the fallback for opening this
   // config directly, and is host-specific like CUDA_ARCH and GPU_TARGETS
   // above.
+  // The four NVIDIA --device= lines are not redundant beside --gpus all: they
+  // are what stops the CUDA card dropping out of a long-running container on
+  // the next systemd daemon-reload. ../cuda/ has the whole mechanism, and why
+  // these are paths rather than cgroup rules. The AMD half below already had
+  // it, which is why only CUDA ever dropped here.
   "runArgs": [
     "--gpus", "all",
+    "--device=/dev/nvidiactl",
+    "--device=/dev/nvidia0",                     // EDIT: one line per card
+    "--device=/dev/nvidia-uvm",
+    "--device=/dev/nvidia-uvm-tools",
     "--device=/dev/kfd",
     "--device=/dev/dri",
     "--group-add", "${localEnv:FREE_BREAKFAST_RENDER_GID:109}",        // EDIT: fallback gid
