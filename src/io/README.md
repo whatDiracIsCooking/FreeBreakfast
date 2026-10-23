@@ -9,7 +9,7 @@ The file-level input/output layer: reading a calculation's inputs off disk and w
 | `base/` | `free_breakfast.io.base` | The whole-file primitives everything builds on: `read_file` and `write_file`, both through `Result`/`Status`. |
 | `json/` | `free_breakfast.io.json` | The JSON format: the `free_breakfast::json` vocabulary type, `parse_json`/`read_json`, `json_to_string`/`write_json`. The only place nlohmann is named. |
 | `toml/` | `free_breakfast.io.toml` | The TOML format: the `free_breakfast::toml` vocabulary types and `parse_toml`/`read_toml`. The only place toml++ is named. |
-| `npy/` | `free_breakfast.io.npy` | The NumPy `.npy` binary array format (float64, C order): `NpyArray`, `parse_npy`/`read_npy`, `npy_to_bytes`/`write_npy`. Interop with the Python tooling layer. |
+| `npy/` | `free_breakfast.io.npy` | The NumPy `.npy` binary array format (float64, column-major): `NpyArray`, `parse_npy`/`read_npy`, `npy_to_bytes`/`write_npy`. Interop with the Python tooling layer. |
 | `xyz/` | `free_breakfast.io.xyz` | Parse a standard XYZ geometry (Angstrom) into a `Molecule` (bohr). |
 | `basis/` | `free_breakfast.io.basis` | Parse a Basis Set Exchange (BSE) JSON basis into a per-element `BasisStamp` and place it over a `Molecule` to build a `BasisSet`. |
 
