@@ -27,6 +27,8 @@ import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
+#include "mmd_records.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -361,8 +363,8 @@ TEST_P(ExchangePairs, SwappedClassesHoldTheSameRecordsWithPaAndPbSwapped) {
   }
 }
 
-// Every class bit for bit against a host gather of mmd's records, read on
-// mmd's pinned side once copied back from its device side: each mmd record
+// Every class bit for bit against a host gather of mmd's records, copied
+// back from the device: each mmd record
 // taken in record order to its first shell's group, as stored and, unless
 // diagonal, swapped; each group stably sorted by the dressed bound,
 // descending. The order, the bounds and every field the device's gather
@@ -372,25 +374,15 @@ TEST_P(ExchangePairs, MatchesAHostGatherOfMmd) {
   fb::DeviceResources res{0};
   Ordered o = ordered_of(res, h2o(GetParam()));
   ASSERT_FALSE(o.ordered.empty());
-  // mmd's pinned side is staging only: copy back every field read below.
-  for (fb::PrimitivePairClass &m : o.mmd) {
-    for (fb::MirroredBuffer<double> *field :
-         {&m.zeta, &m.p_x, &m.p_y, &m.p_z, &m.pa_x, &m.pa_y, &m.pa_z, &m.pb_x, &m.pb_y, &m.pb_z,
-          &m.s, &m.bound_ab, &m.bound_ba}) {
-      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
-    }
-    for (fb::MirroredBuffer<std::int32_t> *field : {&m.off_a, &m.off_b, &m.rank_a, &m.rank_b}) {
-      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
-    }
-    ASSERT_EQ(wwr::wwrStreamSynchronize(m.device_stream()->stream()), wwr::wwrSuccess);
-  }
-  const auto pin = [](const auto &field, const std::size_t r) { return field.pinned().data()[r]; };
+  // mmd's records exist on the device only: copy back every field read below.
+  const std::vector<fb::test::MmdRecords> mmd = fb::test::copy_back(o.mmd);
+  const auto pin = [](const auto &field, const std::size_t r) { return field[r]; };
   for (const fb::OrderedPairClass &cls : o.ordered) {
     const std::string name = std::format("({}, {})", cls.la, cls.lb);
-    const auto m = std::ranges::find_if(o.mmd, [&cls](const fb::PrimitivePairClass &c) {
+    const auto m = std::ranges::find_if(mmd, [&cls](const fb::test::MmdRecords &c) {
       return c.la == std::min(cls.la, cls.lb) && c.lb == std::max(cls.la, cls.lb);
     });
-    ASSERT_NE(m, o.mmd.end()) << name;
+    ASSERT_NE(m, mmd.end()) << name;
     // Each group's (record, swapped), by the first shell's rank.
     std::vector<std::vector<std::pair<std::size_t, bool>>> groups(
         static_cast<std::size_t>(cls.n_groups));

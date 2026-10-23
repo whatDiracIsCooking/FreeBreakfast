@@ -25,16 +25,17 @@ struct PrimitivePairClassesStep {
 ```
 
 A thin wrapper over `integrals.mmd`'s `primitive_pair_classes`: one class per
-(la, lb) the basis reaches, records in descending zeta order, each record's
-bounds formed on the device. A failed copy is `GpuRuntime`, exactly as there.
+(la, lb) the basis reaches, records formed on the device in descending zeta
+order, each with its bounds. A failed copy, launch or wait is `GpuRuntime`,
+exactly as there.
 
 - **The coefficients are the basis's own.** `primitive_pair_classes` takes them
   as given, so the `BasisSet` step places a primitive-normalized stamp: the
   BSE coefficients are for normalized primitives.
 - **`Device`-shaped.** Section 11 expected `DeviceSubflow`, a subflow for
-  writing the records in parallel on the host. `primitive_pair_classes` writes
-  them on one thread, so the step asks for the narrower shape. It widens when
-  the record writing does.
+  writing the records in parallel on the host. `primitive_pair_classes` forms
+  them on the device instead (the host only lists shells and shell pairs), so
+  the step asks for the narrower shape.
 - **No options.** The config fills it in when a step it plans reads its
   product; an empty table asks for it directly (`pipeline.config`).
 - **One product, not one per class.** The classes are read together by every
@@ -48,10 +49,12 @@ there: each class is built on a new `DeviceStream` of its own, and every build
 launches that class on that same stream, which is what orders a build after its
 records.
 
-So the step **waits on every class's stream before it returns**, which the
-pipeline's wait on `res.stream()` would not cover. A consumer may then read a
-class's device side from any stream. It costs one wait per class, once per
-geometry, against builds that each take far longer.
+So **every class's stream is waited on before the step returns**, which the
+pipeline's wait on `res.stream()` would not cover. `primitive_pair_classes`
+does that wait itself (its shell tables are its own, freed when it returns), so
+the step adds none. A consumer may then read a class from any stream. It costs
+one wait per class, once per geometry, against builds that each take far
+longer.
 
 ## Tests
 
@@ -60,7 +63,7 @@ geometry, against builds that each take far longer.
 - The step's contract is checked by `static_assert`.
 - The step's classes are checked against a direct `primitive_pair_classes` of
   the same basis: the same (la, lb) and record count per class, and the same
-  device-side records, field by field.
+  records, every field bit for bit.
 - An empty basis is checked to give no classes.
 
 ## Files

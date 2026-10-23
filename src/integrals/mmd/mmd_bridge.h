@@ -1,6 +1,6 @@
 /// @file
-/// @brief The record-order and record-bound launchers, declared once for the module that calls
-/// them and the device TU that defines them.
+/// @brief The record, record-order and record-bound launchers, and the source they form the
+/// records from, declared once for the module that calls them and the device TU that defines them.
 ///
 /// Included by mmd.cpp in its GLOBAL MODULE FRAGMENT, and by mmd_launch.cu
 /// directly, for the reason overlap_bridge.h gives: a declaration in a
@@ -28,34 +28,114 @@
 
 namespace free_breakfast::device {
 
-/// @brief The order of a class's records by @p zeta, descending, on @p stream:
-/// record perm[k] is the k-th, equal zetas in record order.
+/// @brief What a class's records are formed from, on the device: the basis's
+/// shells and primitives, and the class's shell pairs.
 ///
-/// Writes key[k] = -zeta[k] and perm[k] = k, then sorts the keys ascending with
-/// perm carried (src/integrals/sort's merge_sort_passes, stable). @p key,
-/// @p key_alt, @p perm and @p perm_alt are @p n_rec long; the alts are touched
-/// only past one tile of the sort (2816 records). No array may overlap another.
-///
-/// @return The first launch status (wwrErrorInvalidValue if @p n_rec is not
-///         positive). Launch errors only.
-[[nodiscard]] wwr::wwrError_t mmd_order(wwr::wwrStream_t stream, int32_t n_rec, const double *zeta,
-                                        double *key, double *key_alt, uint32_t *perm,
-                                        uint32_t *perm_alt);
+/// A record is named by its index in the order the host would have written it
+/// (shell pair, then bra primitive, then ket primitive): the shell pair p whose
+/// [rec_begin[p], rec_begin[p + 1]) holds it, then its offset in that range,
+/// bra-primitive-major. One thread per record finds p by a binary search of
+/// @ref rec_begin.
+struct PrimitivePairSource {
+  /// @brief The class's shell pairs, positive.
+  int32_t n_pairs;
+  /// @brief Each shell pair's bra shell, already in la <= lb order.
+  const uint32_t *bra;
+  /// @brief Each shell pair's ket shell.
+  const uint32_t *ket;
+  /// @brief Each shell pair's first record, n_pairs + 1 long: rec_begin[0] is
+  /// 0, rec_begin[n_pairs] the class's record count.
+  const int32_t *rec_begin;
+  /// @brief Each shell's first primitive in @ref exponent and
+  /// @ref coefficient, n_shells + 1 long.
+  const int32_t *prim_begin;
+  /// @brief Every primitive's exponent, shell by shell.
+  const double *exponent;
+  /// @brief Every primitive's contraction coefficient, as the basis gives it.
+  const double *coefficient;
+  /// @brief Each shell's centre: x.
+  const double *c_x;
+  /// @brief Each shell's centre: y.
+  const double *c_y;
+  /// @brief Each shell's centre: z.
+  const double *c_z;
+  /// @brief Each shell's first Cartesian AO.
+  const int32_t *ao_offset;
+  /// @brief Each shell's rank among the basis's shells of its momentum.
+  const int32_t *rank;
+};
 
-/// @brief Put @p field in the order @p perm gives, in place, on @p stream:
-/// field[k] becomes the old field[perm[k]].
-///
-/// Copies @p field into @p tmp, then gathers it back. All three are @p n_rec
-/// long, @p perm a permutation of 0 .. n_rec - 1 (@ref mmd_order's).
-///
-/// @return The first copy or launch status (wwrErrorInvalidValue if @p n_rec
-///         is not positive). Launch errors only.
-[[nodiscard]] wwr::wwrError_t mmd_permute(wwr::wwrStream_t stream, int32_t n_rec,
-                                          const uint32_t *perm, double *field, double *tmp);
+/// @brief A class's record fields on the device, writable: what
+/// @ref mmd_records fills. The bounds are not among them; mmd_bound and
+/// ordered_pair_bound write those.
+struct PrimitivePairRecords {
+  /// @brief zeta = alpha + beta.
+  double *zeta;
+  /// @brief P: x.
+  double *p_x;
+  /// @brief P: y.
+  double *p_y;
+  /// @brief P: z.
+  double *p_z;
+  /// @brief P - A: x.
+  double *pa_x;
+  /// @brief P - A: y.
+  double *pa_y;
+  /// @brief P - A: z.
+  double *pa_z;
+  /// @brief P - B: x.
+  double *pb_x;
+  /// @brief P - B: y.
+  double *pb_y;
+  /// @brief P - B: z.
+  double *pb_z;
+  /// @brief c_a c_b (pi / zeta)^{3/2}.
+  double *s;
+  /// @brief alpha.
+  double *ea;
+  /// @brief beta.
+  double *eb;
+  /// @brief The bra shell's first Cartesian AO.
+  int32_t *off_a;
+  /// @brief The ket shell's first Cartesian AO.
+  int32_t *off_b;
+  /// @brief The bra shell's rank.
+  int32_t *rank_a;
+  /// @brief The ket shell's rank.
+  int32_t *rank_b;
+};
 
-/// @copydoc mmd_permute
-[[nodiscard]] wwr::wwrError_t mmd_permute(wwr::wwrStream_t stream, int32_t n_rec,
-                                          const uint32_t *perm, int32_t *field, int32_t *tmp);
+/// @brief The order of a class's records by zeta, descending, on @p stream:
+/// the record of host index perm[k] is the k-th, equal zetas in host order.
+///
+/// Writes key[r] = -zeta of host record r (formed from @p src) and
+/// perm[r] = r, then sorts the keys ascending with perm carried
+/// (src/integrals/sort's merge_sort_passes, stable). @p key, @p key_alt,
+/// @p perm and @p perm_alt are @p n_rec long; the alts are touched only past
+/// one tile of the sort (2816 records). No array may overlap another.
+///
+/// @return The first launch status (wwrErrorInvalidValue if @p n_rec or
+///         src.n_pairs is not positive). Launch errors only.
+[[nodiscard]] wwr::wwrError_t mmd_order(wwr::wwrStream_t stream, int32_t n_rec,
+                                        const PrimitivePairSource &src, double *key,
+                                        double *key_alt, uint32_t *perm, uint32_t *perm_alt);
+
+/// @brief Every record field but the bounds, in the order @p perm gives, on
+/// @p stream: record k is the record of host index perm[k], formed from
+/// @p src, one thread per record.
+///
+/// P is (alpha A + beta B) / zeta with no FMA contraction, each product
+/// rounded on its own: the IEEE value a host computes, bit for bit, and the
+/// same for a record and its primitives swapped (the two records a diagonal
+/// shell pair has for every pair of distinct primitives).
+///
+/// @p perm and every field of @p out are @p n_rec long, written whole.
+///
+/// @return The launch status (wwrErrorInvalidValue if @p n_rec or
+///         src.n_pairs is not positive). Launch errors only.
+[[nodiscard]] wwr::wwrError_t mmd_records(wwr::wwrStream_t stream, int32_t n_rec,
+                                          const PrimitivePairSource &src, const uint32_t *perm,
+                                          const PrimitivePairRecords &out);
 
 /// @brief Each record's Schwarz bound I = pair_bound(zeta, la + lb) into
 /// @p bound, on @p stream: the generated pair_bound<la, lb>

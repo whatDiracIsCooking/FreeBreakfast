@@ -268,8 +268,8 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
   Run to run, K varies by a few percent at H₁₀ and H₂₀, so none of these is a
   gain. K moved by at most 2e-16 · max|K|. What pruning would save is memory:
   the records grow quadratically with the chain, about 108 bytes each, 108 MB
-  on the device at H₂₀₀ (and, when this was measured, as much again pinned),
-  against 4 MB pruned.
+  on the device at H₂₀₀ (and, when this was measured, as much again pinned;
+  `mmd` has since stopped staging records on the host), against 4 MB pruned.
   J does prune (`coulomb_pair_classes`): its bras are screened on `mmd`'s
   undressed bound, so there pruning saves most of its time (91% at H₁₀₀).
 - **The swap inside the diagonal blocks.** An `a == b` block is computed

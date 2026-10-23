@@ -22,6 +22,8 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
+#include "mmd_records.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -247,30 +249,28 @@ INSTANTIATE_TEST_SUITE_P(Molecules, CoulombPruned,
 // The host prune coulomb_pair_classes made before it moved to the device: B
 // mmd's bound_ab, K = w ncart(la) B, the maxima over every record, and a
 // record kept when `B Dc maxK >= tau || K Dc maxB >= tau`, Dc = 2. Each
-// class's kept record indices, from mmd's pinned side (each field the test
-// reads copied back from the device, the classes' streams synchronized).
-std::vector<std::vector<std::int32_t>>
-host_prune(const std::vector<fb::PrimitivePairClass> &classes, const double tau) {
+// class's kept record indices, from mmd's records copied back.
+std::vector<std::vector<std::int32_t>> host_prune(const std::vector<fb::test::MmdRecords> &classes,
+                                                  const double tau) {
   constexpr double kCap = 2.0;
   double max_bra = 0.0;
   double max_ket = 0.0;
-  const auto ket = [](const fb::PrimitivePairClass &cls, const std::int32_t r) {
-    const double w = cls.off_a.pinned().data()[r] == cls.off_b.pinned().data()[r] ? 1.0 : 2.0;
-    return w * static_cast<double>(fb::function_count_cart(cls.la)) *
-           cls.bound_ab.pinned().data()[r];
+  const auto ket = [](const fb::test::MmdRecords &cls, const std::size_t r) {
+    const double w = cls.off_a[r] == cls.off_b[r] ? 1.0 : 2.0;
+    return w * static_cast<double>(fb::function_count_cart(cls.la)) * cls.bound_ab[r];
   };
-  for (const fb::PrimitivePairClass &cls : classes) {
-    for (std::int32_t r = 0; r < cls.n_rec; ++r) {
-      max_bra = std::max(max_bra, cls.bound_ab.pinned().data()[r]);
+  for (const fb::test::MmdRecords &cls : classes) {
+    for (std::size_t r = 0; r < static_cast<std::size_t>(cls.n_rec); ++r) {
+      max_bra = std::max(max_bra, cls.bound_ab[r]);
       max_ket = std::max(max_ket, ket(cls, r));
     }
   }
   std::vector<std::vector<std::int32_t>> keep(classes.size());
   for (std::size_t c = 0; c < classes.size(); ++c) {
-    const fb::PrimitivePairClass &cls = classes[c];
+    const fb::test::MmdRecords &cls = classes[c];
     for (std::int32_t r = 0; r < cls.n_rec; ++r) {
-      if (cls.bound_ab.pinned().data()[r] * kCap * max_ket >= tau ||
-          ket(cls, r) * kCap * max_bra >= tau) {
+      const auto i = static_cast<std::size_t>(r);
+      if (cls.bound_ab[i] * kCap * max_ket >= tau || ket(cls, i) * kCap * max_bra >= tau) {
         keep[c].push_back(r);
       }
     }
@@ -291,43 +291,33 @@ TEST_P(CoulombPairClassesPrune, KeepsTheHostPrunesRecords) {
   fb::DeviceResources res{0};
   auto classes = fb::primitive_pair_classes(res, g.basis);
   ASSERT_TRUE(classes);
-  // mmd's pinned side is staging only: copy back what the host prune and the
-  // checks below read.
-  for (fb::PrimitivePairClass &cls : *classes) {
-    for (fb::MirroredBuffer<double> *field :
-         {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-          &cls.pb_y, &cls.pb_z, &cls.s, &cls.bound, &cls.bound_ab}) {
-      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
-    }
-    for (fb::MirroredBuffer<std::int32_t> *field : {&cls.off_a, &cls.off_b}) {
-      ASSERT_EQ(field->to_pinned(), wwr::wwrSuccess);
-    }
-    ASSERT_EQ(wwr::wwrStreamSynchronize(cls.device_stream()->stream()), wwr::wwrSuccess);
-  }
+  // mmd's records exist on the device only: copy back what the host prune and
+  // the checks below read.
+  const std::vector<fb::test::MmdRecords> records = fb::test::copy_back(*classes);
   for (const double tau : {1e-13, 1e-10, 0.0}) {
     const auto pruned = fb::coulomb_pair_classes(res, *classes, tau);
     ASSERT_TRUE(pruned) << tau;
-    const std::vector<std::vector<std::int32_t>> keep = host_prune(*classes, tau);
+    const std::vector<std::vector<std::int32_t>> keep = host_prune(records, tau);
     std::size_t k = 0;
     for (std::size_t c = 0; c < classes->size(); ++c) {
       if (keep[c].empty()) {
         continue;
       }
       ASSERT_LT(k, pruned->size()) << tau;
-      const fb::PrimitivePairClass &src = (*classes)[c];
+      const fb::test::MmdRecords &src = records[c];
       const fb::CoulombPairClass &out = (*pruned)[k++];
       ASSERT_EQ(out.la, src.la) << tau;
       ASSERT_EQ(out.lb, src.lb) << tau;
       ASSERT_EQ(static_cast<std::size_t>(out.n_rec), keep[c].size()) << tau;
       ASSERT_EQ(wwr::wwrStreamSynchronize(out.device_stream()->stream()), wwr::wwrSuccess);
       const auto check = [&](const char *name, const auto &got, const auto &want) {
-        using T = std::remove_cvref_t<decltype(want.pinned().data()[0])>;
+        using T = std::remove_cvref_t<decltype(want)>::value_type;
         std::vector<T> host(keep[c].size());
         ASSERT_EQ(wwr::wwrMemcpy(host.data(), got.data(), sizeof(T) * host.size(),
                                  wwr::wwrMemcpyDeviceToHost),
                   wwr::wwrSuccess);
         for (std::size_t r = 0; r < host.size(); ++r) {
-          ASSERT_EQ(host[r], want.pinned().data()[keep[c][r]])
+          ASSERT_EQ(host[r], want[static_cast<std::size_t>(keep[c][r])])
               << name << " of class (" << out.la << ", " << out.lb << ") record " << r << ", tau "
               << tau;
         }
