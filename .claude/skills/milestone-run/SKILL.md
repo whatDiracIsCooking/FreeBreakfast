@@ -44,7 +44,7 @@ each). Everything below runs from the main checkout root.
   assigned, and the other backend gets only `cross-backend-check.sh`'s
   compile check (when a `.cu` is touched) — CI's `cpp` job is `if: false`, so
   **nothing on the server builds or runs C++ at all**. Prefer `both` for
-  anything touching a `.cu`, a kernel under `src/integrals/`, or `src/linalg`;
+  anything touching a `.cu`, a kernel under `src/integrals/`, or `src/recipes`;
   one backend is for work whose device code is unchanged.
 - **`dry-run`** — do steps 1–2, print the schedule, and stop. No worktree, no
   agent, no `gh` write.

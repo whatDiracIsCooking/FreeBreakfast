@@ -49,7 +49,7 @@ basis the matrix was made for.
 ```cpp
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.overlap;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 namespace fb = free_breakfast;
 
 const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis

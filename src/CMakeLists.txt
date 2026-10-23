@@ -14,11 +14,11 @@ add_subdirectory(molecule)
 add_subdirectory(basis)
 add_subdirectory(io)
 add_subdirectory(sad)
-add_subdirectory(linalg)
-# After linalg: one_electron writes into linalg.matrix_ao's CartesianMatrixAO.
+add_subdirectory(recipes)
+# After recipes: one_electron writes into recipes.matrix_ao's CartesianMatrixAO.
 add_subdirectory(integrals)
 # After the modules its steps wrap: the step contract itself is a leaf over
-# core, but the setup steps that follow it import integrals and linalg.
+# core, but the setup steps that follow it import integrals and recipes.
 add_subdirectory(pipeline)
 
 # The free-breakfast executable: the one place a value-tier Error becomes an

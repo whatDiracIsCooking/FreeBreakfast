@@ -7,7 +7,7 @@ attraction to the molecule's nuclei.
 
 `free_breakfast.pipeline.core_hamiltonian`, target
 `free_breakfast::pipeline::core_hamiltonian`. It re-exports
-`free_breakfast.linalg.matrix_ao` and the two steps whose products it reads, so
+`free_breakfast.recipes.matrix_ao` and the two steps whose products it reads, so
 an importer can name everything in `run`'s signature without a second import.
 
 ## The step
@@ -26,7 +26,7 @@ struct CoreHamiltonianStep {
 ```
 
 A thin wrapper over `integrals.one_electron`'s `core_hamiltonian` and
-`linalg.matrix_ao`'s `cartesian_to_spherical`, with their errors: a class above
+`recipes.matrix_ao`'s `cartesian_to_spherical`, with their errors: a class above
 d is `InvalidConfig` (refused before anything is launched), and a failed launch
 or BLAS call is `GpuRuntime`.
 

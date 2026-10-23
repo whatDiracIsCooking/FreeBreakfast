@@ -14,7 +14,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::resources
   free_breakfast::basis
-  free_breakfast::linalg::matrix_ao
+  free_breakfast::recipes::matrix_ao
   free_breakfast::integrals::one_electron::overlap
   free_breakfast::pipeline::step
   free_breakfast::pipeline::spherical_transform

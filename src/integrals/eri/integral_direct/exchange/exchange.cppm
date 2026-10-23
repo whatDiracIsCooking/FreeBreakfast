@@ -14,7 +14,7 @@ export module free_breakfast.integrals.eri.integral_direct.exchange;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
 export namespace free_breakfast {

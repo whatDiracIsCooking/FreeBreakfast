@@ -122,7 +122,7 @@ from it and joined back into it, with no host synchronization.
 
 ```cpp
 import free_breakfast.integrals;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 namespace fb = free_breakfast;
 
 const auto classes = fb::primitive_pair_classes(res, basis);  // once per basis

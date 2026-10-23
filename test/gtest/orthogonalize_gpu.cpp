@@ -1,4 +1,4 @@
-// GPU cases for linalg.orthogonalize: X = S^{-1/2} against operands whose
+// GPU cases for recipes.orthogonalize: X = S^{-1/2} against operands whose
 // answer is known -- a diagonal S (X is the elementwise inverse root), a dense
 // well-conditioned S (X^T S X == I), and a singular S (the null mode is
 // dropped, and X stays finite).
@@ -10,7 +10,7 @@
 import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
-import free_breakfast.linalg;
+import free_breakfast.recipes;
 
 namespace {
 

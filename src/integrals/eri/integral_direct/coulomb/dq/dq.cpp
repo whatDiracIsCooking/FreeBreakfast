@@ -12,7 +12,7 @@ module free_breakfast.integrals.eri.integral_direct.coulomb.dq;
 import std;
 import free_breakfast.core.wwr;
 import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 
 namespace free_breakfast {
 

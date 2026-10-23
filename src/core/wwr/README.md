@@ -21,7 +21,7 @@ members are the fork/join protocol, not renamed runtime calls; the raw
 operations stay wwr's free functions (`record`, `wait_event`, `sync`, ...).
 The BLAS conveniences over wwr's dispatch (`gemm` for square operands, the
 sandwiches `gemmwich` and `gmmwich`) are numerics, not binding, and live in
-[`free_breakfast.linalg.blas`](../../linalg/blas/README.md).
+[`free_breakfast.recipes.blas`](../../recipes/blas/README.md).
 
 ## Module
 

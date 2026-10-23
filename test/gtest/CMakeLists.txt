@@ -145,7 +145,7 @@ target_link_libraries(
   free_breakfast::molecule
   free_breakfast::basis
   free_breakfast::sad
-  free_breakfast::linalg
+  free_breakfast::recipes
   free_breakfast::integrals
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers

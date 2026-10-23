@@ -16,7 +16,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::molecule
   free_breakfast::basis
-  free_breakfast::linalg::matrix_ao
+  free_breakfast::recipes::matrix_ao
   free_breakfast::integrals::one_electron::core_hamiltonian
   free_breakfast::pipeline::step
   free_breakfast::pipeline::spherical_transform

@@ -1,0 +1,14 @@
+/// @file
+/// @brief Convenience module that re-exports the dense linear-algebra layer.
+///
+/// `import free_breakfast.recipes;` gives every recipes routine. The sub-modules
+/// remain importable individually.
+
+export module free_breakfast.recipes;
+
+export import free_breakfast.recipes.blas;
+export import free_breakfast.recipes.complex_cast;
+export import free_breakfast.recipes.diagonalize;
+export import free_breakfast.recipes.diis;
+export import free_breakfast.recipes.matrix_ao;
+export import free_breakfast.recipes.orthogonalize;

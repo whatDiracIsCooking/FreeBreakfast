@@ -6,7 +6,7 @@ Iterate closed-shell restricted Hartree-Fock to self-consistency, from the
 ## Module
 
 `free_breakfast.pipeline.scf`, target `free_breakfast::pipeline::scf`. It
-re-exports `free_breakfast.linalg.matrix_ao` and the `orthogonalizer`,
+re-exports `free_breakfast.recipes.matrix_ao` and the `orthogonalizer`,
 `core_hamiltonian` and `guess` steps, which between them re-export every other
 product in `run`'s signature. `run` is defined in the implementation unit, so
 J, K, DIIS and the BLAS calls it uses are PRIVATE links.
@@ -53,7 +53,7 @@ Each iteration, all on `res.stream()`:
 5. Otherwise **DIIS** extrapolates F from the (F, e) history into a copy; the
    as-built F stays the incremental builds' accumulator. On the incremental
    build that switches to full ones, the history is then dropped.
-6. **Diagonalize** F' = X^T F X (`linalg.diagonalize`), C = X C', and D = 2 C_occ C_occ^T.
+6. **Diagonalize** F' = X^T F X (`recipes.diagonalize`), C = X C', and D = 2 C_occ C_occ^T.
 
 On convergence step 5 is skipped: the published orbitals are the canonical
 ones of the Fock matrix as built, not of an extrapolation, and D is theirs.
@@ -98,7 +98,7 @@ What it settled:
   classes are rebuilt from `PrimitivePairClasses` per run
   (`coulomb_pair_classes`, `ordered_pair_classes`), as design section 8 has
   them until their scratch is refactored away.
-- **`syevd`'s work is `res.device_workspace()`'s**: `linalg.diagonalize`
+- **`syevd`'s work is `res.device_workspace()`'s**: `recipes.diagonalize`
   takes it per call and drops it when it returns, since nothing reads it after.
   Everything else the loop holds lives across calls (DIIS writes into `tmp`,
   `eps` is read at convergence), so it stays in the step's own buffers. The

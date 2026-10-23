@@ -1,7 +1,7 @@
 /// @file
 /// @brief The `Overlap` step: the spherical AO overlap matrix S.
 ///
-/// A thin wrapper over integrals.one_electron's overlap and linalg.matrix_ao's
+/// A thin wrapper over integrals.one_electron's overlap and recipes.matrix_ao's
 /// cartesian_to_spherical: S is built Cartesian in a transient MatrixAOPair and
 /// only its spherical form is published.
 
@@ -13,7 +13,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.one_electron.overlap;
 import free_breakfast.pipeline.step;
-export import free_breakfast.linalg.matrix_ao;
+export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.spherical_transform;
 export import free_breakfast.pipeline.primitive_pair_classes;
 

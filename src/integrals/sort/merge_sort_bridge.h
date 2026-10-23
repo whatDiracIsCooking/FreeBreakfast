@@ -7,7 +7,7 @@
 /// MODULE FRAGMENT: a
 /// declaration in a module's purview would get module linkage and never bind
 /// to the definition in the .cu (see
-/// src/linalg/orthogonalize/inverse_sqrt_bridge.h).
+/// src/recipes/orthogonalize/inverse_sqrt_bridge.h).
 
 #pragma once
 

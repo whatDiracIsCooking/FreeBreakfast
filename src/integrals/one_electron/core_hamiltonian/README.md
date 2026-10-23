@@ -31,7 +31,7 @@ module and its implementation unit are the whole directory.
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
 import free_breakfast.integrals.one_electron.core_hamiltonian;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 namespace fb = free_breakfast;
 
 const auto classes = fb::primitive_pair_classes(res, basis); // once per basis

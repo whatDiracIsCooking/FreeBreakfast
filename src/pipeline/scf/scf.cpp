@@ -11,9 +11,9 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.linalg.blas;
-import free_breakfast.linalg.diagonalize;
-import free_breakfast.linalg.diis;
+import free_breakfast.recipes.blas;
+import free_breakfast.recipes.diagonalize;
+import free_breakfast.recipes.diis;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 

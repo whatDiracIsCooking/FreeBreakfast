@@ -1,7 +1,7 @@
 # The step contract. Templates only, so no implementation unit: every name a
 # step's run signature or the concept checks reaches (Result, DeviceResources,
 # NodeResources, tf::Subflow) is instantiated in the importer's TU, hence all
-# PUBLIC. Nothing from integrals or linalg: a leaf, so a new method never
+# PUBLIC. Nothing from integrals or recipes: a leaf, so a new method never
 # recompiles it.
 free_breakfast_add_cxx_module_library(
   NAME

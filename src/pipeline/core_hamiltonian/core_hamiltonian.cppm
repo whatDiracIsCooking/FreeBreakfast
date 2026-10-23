@@ -2,7 +2,7 @@
 /// @brief The `CoreHamiltonian` step: the spherical core Hamiltonian H = T + V.
 ///
 /// A thin wrapper over integrals.one_electron's core_hamiltonian and
-/// linalg.matrix_ao's cartesian_to_spherical: H is built Cartesian in a
+/// recipes.matrix_ao's cartesian_to_spherical: H is built Cartesian in a
 /// transient MatrixAOPair and only its spherical form is published.
 
 export module free_breakfast.pipeline.core_hamiltonian;
@@ -14,7 +14,7 @@ import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.integrals.one_electron.core_hamiltonian;
 import free_breakfast.pipeline.step;
-export import free_breakfast.linalg.matrix_ao;
+export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.spherical_transform;
 export import free_breakfast.pipeline.primitive_pair_classes;
 

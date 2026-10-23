@@ -16,7 +16,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::resources
-  free_breakfast::linalg::matrix_ao
+  free_breakfast::recipes::matrix_ao
   free_breakfast::pipeline::step
   free_breakfast::pipeline::orthogonalizer
   free_breakfast::pipeline::core_hamiltonian
@@ -26,9 +26,9 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::log
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
-  free_breakfast::linalg::blas
-  free_breakfast::linalg::diagonalize
-  free_breakfast::linalg::diis
+  free_breakfast::recipes::blas
+  free_breakfast::recipes::diagonalize
+  free_breakfast::recipes::diis
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
 )

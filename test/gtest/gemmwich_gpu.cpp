@@ -1,4 +1,4 @@
-// GPU cases for linalg/blas's :gemmwich: the general OpX(X)^T OpF(F) OpX(X)
+// GPU cases for recipes/blas's :gemmwich: the general OpX(X)^T OpF(F) OpX(X)
 // with a rectangular X, and the square X^T F X / X F X^T, against a host
 // reference, with non-symmetric X and F (so the two orders, or a transpose on
 // the wrong side, cannot pass), plus which ops it takes and the pointer-mode
@@ -11,7 +11,7 @@
 
 import std;
 import free_breakfast.core;
-import free_breakfast.linalg.blas;
+import free_breakfast.recipes.blas;
 
 namespace {
 
