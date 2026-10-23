@@ -97,6 +97,7 @@ add_executable(
   orthogonalize_gpu.cpp
   diis_gpu.cpp
   expm_gpu.cpp
+  cg_unitary_gpu.cpp
   davidson_gpu.cpp
   matrix_ao_gpu.cpp
   gemm_gpu.cpp
