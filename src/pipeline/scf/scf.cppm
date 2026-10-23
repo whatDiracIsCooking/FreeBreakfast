@@ -40,7 +40,7 @@ struct Scf {
 };
 
 /// @brief Iterates RHF to self-consistency from the @ref Guess, with Pulay
-/// DIIS on the Fock matrix.
+/// DIIS on the Fock matrix and incremental Fock builds.
 struct ScfStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "scf";
@@ -55,6 +55,11 @@ struct ScfStep {
   double commutator_tolerance = 1e-7;
   /// @brief The most (F, error) pairs DIIS keeps, 1..kDiisMaxHistoryLimit.
   int32_t diis_history = 8;
+  /// @brief Every this many Fock builds, one is full: G of the density itself.
+  /// The rest are incremental, F plus G of the density's change since the last
+  /// build, which J's and K's screens skip more of. Convergence is only taken
+  /// on a full build. 1 makes every build full. At least 1.
+  int32_t fock_rebuild_interval = 20;
 
   /// @brief The converged wavefunction. An open shell (an odd electron count,
   /// or a multiplicity other than 1) is ErrorKind::Unsupported; an option out
