@@ -1,7 +1,6 @@
 /// @file
 /// @brief Launch-shape constants and constraints (kWarpSize, kFourWarps,
-/// NumWarps), written
-/// once for host and device code.
+/// kMaxThreads, NumWarps), written once for host and device code.
 ///
 /// A plain header, as primitives.h is: block sizing is wanted by device
 /// translation units, which cannot `import`, and by host code sizing the launch.
@@ -43,18 +42,26 @@ inline constexpr uint32_t kWarpSize = static_cast<uint32_t>(WWR_WARP_SIZE);
 /// integral launchers: a whole number of warps keeps every block's lanes in step.
 inline constexpr uint32_t kFourWarps = 4 * kWarpSize;
 
+/// @brief The most threads a block may hold: 1024, on every target either
+/// backend builds for
+///
+/// The block size of a one-block launch that strides a whole array, and the
+/// bound NumWarps holds a warps-per-block count to.
+inline constexpr uint32_t kMaxThreads = 1024;
+
 static_assert(kWarpSize == 32 || kWarpSize == 64,
               "WWR_WARP_SIZE must be 32 (NVIDIA, RDNA) or 64 (CDNA)");
+static_assert(kMaxThreads % kWarpSize == 0, "a full block must be whole warps");
 
 /// @brief A warps-per-block count @p N: integral, >= 1, a power of two, and at
-/// most 1024 threads once multiplied by kWarpSize
+/// most kMaxThreads threads once multiplied by kWarpSize
 ///
 /// Constrains a value, not a type: `template <auto W> requires NumWarps<W>`.
-/// The bound is checked as N <= 1024 / kWarpSize so a huge N cannot overflow
+/// The bound is checked as N <= kMaxThreads / kWarpSize so a huge N cannot overflow
 /// the product, and in uint64_t so a 64-bit N (1ull << 32, say) is not
 /// truncated to 0 and let through; N >= 1 has already ruled out negatives.
 template <auto N>
 concept NumWarps = std::integral<decltype(N)> && (N >= 1) && ((N & (N - 1)) == 0) &&
-                   (static_cast<uint64_t>(N) <= 1024 / kWarpSize);
+                   (static_cast<uint64_t>(N) <= kMaxThreads / kWarpSize);
 
 } // namespace free_breakfast

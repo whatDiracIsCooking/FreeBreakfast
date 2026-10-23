@@ -75,7 +75,7 @@ __device__ __forceinline__ T block_reduce(const cg::thread_block &block, T (&sha
   if constexpr (kNumWarps == 1) {
     return warp_reduce(warp_tile, v, op, nactive);
   } else {
-    // NumWarps caps kNumWarps at 1024 / kWarpSize <= kWarpSize, so the second
+    // NumWarps caps kNumWarps at kMaxThreads / kWarpSize <= kWarpSize, so the second
     // level is one warp_reduce.
     const uint32_t warp_idx = warp_tile.meta_group_rank();
     const uint32_t first = warp_idx * kWarpSize;
