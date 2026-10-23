@@ -15,41 +15,6 @@ import free_breakfast.io.base;
 
 namespace free_breakfast {
 
-/// @brief Map an element symbol (e.g. "H", "He", "c") to its atomic number.
-///
-/// Case-insensitive on the first letter's neighbours: XYZ files vary between
-/// "CL" and "Cl", so the lookup normalises to a leading capital and a trailing
-/// lowercase before matching. Returns 0 for an unrecognised symbol, which the
-/// caller turns into an IO error.
-[[nodiscard]] int32_t atomic_number(std::string_view symbol) {
-  // Index 0 is a placeholder so element E sits at index Z.
-  static constexpr std::array<std::string_view, 119> kSymbols{
-      "",   "H",  "He", "Li", "Be", "B",  "C",  "N",  "O",  "F",  "Ne", "Na", "Mg", "Al", "Si",
-      "P",  "S",  "Cl", "Ar", "K",  "Ca", "Sc", "Ti", "V",  "Cr", "Mn", "Fe", "Co", "Ni", "Cu",
-      "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y",  "Zr", "Nb", "Mo", "Tc", "Ru",
-      "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I",  "Xe", "Cs", "Ba", "La", "Ce", "Pr",
-      "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W",
-      "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac",
-      "Th", "Pa", "U",  "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr", "Rf",
-      "Db", "Sg", "Bh", "Hs", "Mt", "Ds", "Rg", "Cn", "Nh", "Fl", "Mc", "Lv", "Ts", "Og"};
-
-  if (symbol.empty() || symbol.size() > 2) {
-    return 0;
-  }
-  // Normalise to "Xx" capitalisation so "cl", "CL" and "Cl" all match "Cl".
-  std::string normalised(symbol);
-  normalised[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(normalised[0])));
-  if (normalised.size() == 2) {
-    normalised[1] = static_cast<char>(std::tolower(static_cast<unsigned char>(normalised[1])));
-  }
-  for (int32_t z = 1; z < static_cast<int32_t>(kSymbols.size()); ++z) {
-    if (kSymbols[static_cast<size_t>(z)] == normalised) {
-      return z;
-    }
-  }
-  return 0;
-}
-
 [[nodiscard]] Result<Molecule> parse_xyz(DeviceResources &res, std::string_view xyz_text,
                                          int32_t charge, int32_t multiplicity) {
   // Split into non-empty lines; a trailing newline or blank lines at the end
@@ -104,15 +69,15 @@ namespace free_breakfast {
     if (!(stream >> symbol >> x >> y >> z)) {
       return err_io("XYZ atom line {} is malformed: '{}'", i + 1, record);
     }
-    const int32_t number = atomic_number(symbol);
-    if (number == 0) {
+    const Element element = element_from_symbol(symbol);
+    if (element == Element::Sentinel) {
       return err_io("XYZ atom line {} has unknown element '{}'", i + 1, symbol);
     }
     // XYZ coordinates are in Angstrom; Molecule stores bohr. Convert here.
     atoms.push_back(Atom{{x * free_breakfast::kBohrPerAngstrom<double>,
                           y * free_breakfast::kBohrPerAngstrom<double>,
                           z * free_breakfast::kBohrPerAngstrom<double>},
-                         static_cast<Element>(number)});
+                         element});
   }
 
   if (static_cast<int32_t>(atoms.size()) != declared_count) {

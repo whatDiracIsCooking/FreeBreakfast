@@ -1,0 +1,21 @@
+# atom and basis are PUBLIC: the writer's signatures name Atom and BasisSet.
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.io.molden
+  PRIMARY_INTERFACE
+  molden.cppm
+  PARTITIONS
+  molden_writer.cppm
+  IMPLEMENTATION
+  molden_writer.cpp
+  LINK_PUBLIC
+  free_breakfast::core::types
+  free_breakfast::core::error_handling
+  free_breakfast::atom
+  free_breakfast::basis
+  LINK_PRIVATE
+  free_breakfast::core::primitives
+  free_breakfast::io::base
+  free_breakfast::core::diagnostics_macros
+  IMPORT_STD
+)

@@ -1,6 +1,6 @@
 # IO
 
-The file-level input/output layer: reading a calculation's inputs off disk and writing its results back. Each sub-directory is one module, laid out the same way — a primary interface named after the directory plus `<name>_{reader,writer,shared}.cppm` partitions. The layer has three tiers: `base/` (whole-file primitives), the **format** modules (`json/`, `toml/`, `npy/`, each the only place its backing representation is named), and the **domain** modules (`basis/`, `sad/` and `xyz/`, which say what the bytes mean). The TOML config is read one layer up, by `free_breakfast.pipeline.config`, because what it means is the pipeline's steps. `io.cppm` (`free_breakfast.io`) re-exports all of them, so one import covers the layer and each sub-module stays importable on its own.
+The file-level input/output layer: reading a calculation's inputs off disk and writing its results back. Each sub-directory is one module, laid out the same way — a primary interface named after the directory plus `<name>_{reader,writer,shared}.cppm` partitions. The layer has three tiers: `base/` (whole-file primitives), the **format** modules (`json/`, `toml/`, `npy/`, each the only place its backing representation is named), and the **domain** modules (`basis/`, `molden/`, `sad/` and `xyz/`, which say what the bytes mean). The TOML config is read one layer up, by `free_breakfast.pipeline.config`, because what it means is the pipeline's steps. `io.cppm` (`free_breakfast.io`) re-exports all of them, so one import covers the layer and each sub-module stays importable on its own.
 
 ## Sub-modules
 
@@ -12,6 +12,7 @@ The file-level input/output layer: reading a calculation's inputs off disk and w
 | `npy/` | `free_breakfast.io.npy` | The NumPy `.npy` binary array format (float64, column-major): `NpyArray`, `parse_npy`/`read_npy`, `npy_to_bytes`/`write_npy`. Interop with the Python tooling layer. |
 | `xyz/` | `free_breakfast.io.xyz` | Parse a standard XYZ geometry (Angstrom) into a `Molecule` (bohr). |
 | `basis/` | `free_breakfast.io.basis` | Parse a Basis Set Exchange (BSE) JSON basis into a per-element `BasisStamp` and place it over a `Molecule` to build a `BasisSet`. |
+| `molden/` | `free_breakfast.io.molden` | Write a molecule's atoms, spherical basis and orbitals as a Molden file, reordered and renormalized to the format's conventions. |
 | `sad/` | `free_breakfast.io.sad` | The SAD atomic densities of `data/sad/`, compiled in as `.npy` bytes and looked up by basis-set name and Z: `builtin_sad_density`. |
 
 Every parser returns through `free_breakfast.core.error_handling`'s `Result<T>` / `Status`, so a malformed file becomes a classified `Error` rather than a throw or a crash. The classification is split by tier: **syntactically invalid is `IO`** (reported by the format module), **wrong content is `InvalidConfig`** (reported by the domain module). Domain modules import the format modules, never `free_breakfast.third_party.nlohmann` / `free_breakfast.third_party.tomlplusplus` directly.

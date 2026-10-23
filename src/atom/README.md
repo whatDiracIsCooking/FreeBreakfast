@@ -17,6 +17,8 @@ The re-export in `atom.cppm` is written with `using free_breakfast::Element;` / 
 
 `Element` is a strong enum over `std::uint8_t` whose enumerator value is exactly the nuclear charge Z, covering `H` (1) through `Og` (118). `Sentinel` (0) is the default "no element" value. The headers include `<cstdint>` rather than relying on `import std`, so they work unchanged in device code.
 
+The symbols are host-only, so they live in `atom.cppm` rather than the headers: `element_symbol(Element)` gives `"Cl"` (empty for `Sentinel`), and `element_from_symbol(std::string_view)` maps a symbol back, case-insensitively (`"CL"`, `"cl"`), returning `Sentinel` for none. The XYZ reader and the Molden writer (`src/io`) both read this one table.
+
 `Atom` is a plain aggregate — a public `position` (`Vec<double, 3>`, i.e. the backend's `double3`, in bohr) plus an `Element`, with no invariant — so callers brace-initialise directly. A default-constructed `Atom` sits at the origin carrying `Element::Sentinel`.
 
 ## Usage
@@ -41,5 +43,5 @@ auto z = static_cast<std::uint8_t>(c.element);   // 6
 |------|------|
 | `element.h` | Single definition of the `Element` strong enum (Z=0..118) |
 | `atom.h` | Single definition of the `Atom` aggregate; includes `element.h` and `vec.h` |
-| `atom.cppm` | Module interface: includes the headers and re-exports `Element` / `Atom` |
+| `atom.cppm` | Module interface: includes the headers, re-exports `Element` / `Atom`, and defines the symbol lookups |
 | `CMakeLists.txt` | The `free_breakfast.atom.headers` interface library and the `free_breakfast.atom` module library |

@@ -21,4 +21,5 @@ free_breakfast_add_cxx_module_library(
   atom.cppm
   LINK_PUBLIC
   free_breakfast::atom::headers
+  IMPORT_STD
 )
