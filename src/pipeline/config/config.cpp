@@ -119,11 +119,18 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "commutator_tolerance", base_dir, step.commutator_tolerance));
     FBF_TRY(read_key(table, kStep, "diis_history", base_dir, step.diis_history));
     FBF_TRY(read_key(table, kStep, "fock_rebuild_interval", base_dir, step.fock_rebuild_interval));
-  } else if constexpr (std::same_as<S, PipekMezeyStep>) {
-    FBF_TRY(
-        check_keys(table, kStep,
-                   {"max_sweeps", "functional_tolerance", "rotation_gain_threshold", "exponent"}));
-    PipekMezeyOptions &options = step.options;
+  } else if constexpr (std::same_as<S, LocalizationStep>) {
+    FBF_TRY(check_keys(
+        table, kStep,
+        {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold", "exponent"}));
+    std::string mode = "pipek_mezey";
+    FBF_TRY(read_key(table, kStep, "mode", base_dir, mode));
+    if (mode != "pipek_mezey") {
+      return err_config("[{}] has no mode '{}' (known: 'pipek_mezey')", kStep, mode);
+    }
+    step.mode = LocalizationMode::PipekMezey;
+    // Pipek-Mezey's options, the only method's, sit in the table itself.
+    PipekMezeyOptions &options = step.pipek_mezey;
     FBF_TRY(read_key(table, kStep, "max_sweeps", base_dir, options.max_sweeps));
     FBF_TRY(read_key(table, kStep, "functional_tolerance", base_dir, options.functional_tolerance));
     FBF_TRY(read_key(table, kStep, "rotation_gain_threshold", base_dir,

@@ -9,13 +9,13 @@ localization runs after the SCF, not inside it.
 
 | Directory | Module | Role |
 |-----------|--------|------|
-| `pm/` | `free_breakfast.localization.pm` | Pipek-Mezey on the GPU (`pipek_mezey_localize`), maximizing the sum of squared (or fourth powers of) Mulliken atomic populations |
+| `pipek_mezey/` | `free_breakfast.localization.pipek_mezey` | Pipek-Mezey on the GPU (`pipek_mezey_localize`), maximizing the sum of squared (or fourth powers of) Mulliken atomic populations |
 
 Pipek-Mezey came first because it needs nothing the SCF does not already have:
 the overlap and the occupied orbitals. Foster-Boys (dipole integrals) and
 Edmiston-Ruedenberg (the two-electron integrals in the MO basis) are not here.
 
-The pipeline step over it is `pipeline/pipek_mezey`.
+The pipeline step over it is `pipeline/localization`, `LocalizationMode::PipekMezey`.
 
 ## Files
 

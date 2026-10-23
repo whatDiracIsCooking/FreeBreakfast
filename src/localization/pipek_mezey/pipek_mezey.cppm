@@ -7,10 +7,10 @@
 /// and spread over the molecule. Pipek-Mezey trades that for orbitals sitting
 /// on as few atoms as possible -- cores, lone pairs, bonds -- while the
 /// density, the energy and every observable stay the same. It needs only S and
-/// C, which the SCF already has. The README has the algorithm; pm_math.h has
-/// the arithmetic.
+/// C, which the SCF already has. The README has the algorithm;
+/// pipek_mezey_kernels.cu has the arithmetic.
 
-export module free_breakfast.localization.pm;
+export module free_breakfast.localization.pipek_mezey;
 
 import std;
 import free_breakfast.core.types;
@@ -84,9 +84,10 @@ struct PipekMezeyInfo {
 ///         MaxIterationsExceeded when max_sweeps pass without converging, with
 ///         @p c_local and @p u holding the last sweep's orbitals; GpuRuntime
 ///         for a failed launch, copy or BLAS call.
-template <real_fp T>
-[[nodiscard]] Result<PipekMezeyInfo>
-pipek_mezey_localize(DeviceResources &res, const BasisSet &basis, int32_t n_occ, const T *s,
-                     const T *c, T *c_local, T *u, const PipekMezeyOptions &options = {});
+[[nodiscard]] Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res,
+                                                          const BasisSet &basis, int32_t n_occ,
+                                                          const double *s, const double *c,
+                                                          double *c_local, double *u,
+                                                          const PipekMezeyOptions &options = {});
 
 } // namespace free_breakfast
