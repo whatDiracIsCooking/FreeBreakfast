@@ -91,7 +91,10 @@ bool is_builtin_basis(std::string_view spec) { return find_builtin_basis(spec) !
 
 Result<BasisStamp> resolve_basis(std::string_view spec) {
   if (const BuiltinBasis *builtin = find_builtin_basis(spec); builtin != nullptr) {
-    return parse_basis(builtin->json);
+    // Named here and only here: these shells are known to be the set's, which
+    // is what the name promises to the baked SAD stamps looked up by it.
+    BasisStamp stamp = FBF_TRY(parse_basis(builtin->json));
+    return BasisStamp{stamp.element_shells(), std::string{builtin->name}};
   }
   Result<BasisStamp> stamp = read_basis(std::filesystem::path{spec});
   if (!stamp.has_value() && stamp.error().kind == ErrorKind::IO) {

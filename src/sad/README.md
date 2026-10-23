@@ -18,6 +18,8 @@ Core-Hamiltonian start, Pulay DIIS on the stacked per-l commutators `F P S − S
 
 One SCF runs per distinct (Z, shells) pair, so a molecule pays for its elements, not its atoms. Its density is an `AtomicDensityStamp`: one-center, so geometry-free, the same block for every atom with that Z and those shells. `place` writes it onto each such atom's diagonal block (`docs/style.md`, "Stamps"); between atoms the guess is zero.
 
+**Baked stamps.** Both forms take an optional `SadStampLookup`, a plain function pointer from (basis name, Z) to an atom's block. For a basis that carries a name (`BasisSet::name`, set only for a compiled-in set), each distinct stamp asks it first, and an element it has skips its SCF. The baked block is checked against the shells by size only (`ErrorKind::InvalidConfig` if it differs); the name is what says the shells are the ones it was computed over. This module never knows where the blocks come from: the Guess step passes `free_breakfast.io.sad`'s `builtin_sad_density`, which reads the stamps `data/sad/` compiles in. Those stamps are written by `tools/sad`, which links this module and passes no lookup, so it can only ever compute them. The lookup is called from the task form's worker threads, so it must be safe to call concurrently.
+
 **Two forms, one result.** `sad_density(basis, atoms)` runs the SCFs one after another and returns the guess. `sad_density(flow, basis, atoms, out)` adds one task to a caller's `tf::Taskflow` (or an enclosing task's `tf::Subflow`) and returns it, so the guess can be ordered against the rest of a graph. When it runs, it finds the distinct stamps, spawns a subflow with one task per stamp that runs its SCF and then `place`s it on each of its atoms, and writes the guess or the error into `out`. The two share everything but that loop. Each SCF is independent and each atom's block is its own, so the stamp tasks need no lock and the result is bitwise the serial one; the error is too, the first failing atom's, though every other SCF still runs.
 
 **Lifetimes in the task form.** Nothing is read at the call: `basis`, the atoms and `out` are captured by reference and used when the task runs, so they must outlive the run, and a predecessor may still be filling `basis` in. Inside, the stamps, their statuses and the density are locals of the task's frame, sized once before any stamp task exists (each holds a reference into them). The task joins its subflow explicitly, because Taskflow's implicit join happens only after the task's callable returns, when those locals are already gone.
@@ -47,8 +49,9 @@ So S, T, V and `(ij|kl)` are closed form, with no quadrature or table. They are 
 
 | Symbol | Role |
 |---|---|
-| `sad_density(basis, atoms)` | `Result<std::vector<double>>`, the n×n column-major guess, n = `nao_sphe()`. |
-| `sad_density(flow, basis, atoms, out)` | `tf::Task`: the same guess as one task of `flow`, its SCFs in parallel, written into `out`. |
+| `sad_density(basis, atoms, baked = nullptr)` | `Result<std::vector<double>>`, the n×n column-major guess, n = `nao_sphe()`. |
+| `sad_density(flow, basis, atoms, out, baked = nullptr)` | `tf::Task`: the same guess as one task of `flow`, its SCFs in parallel, written into `out`. |
+| `SadStampLookup` | `std::optional<std::vector<double>> (*)(std::string_view basis, int32_t z)`: where `baked` finds an element's block instead of running its SCF. |
 
 Nothing else is exported, except that `free_breakfast.third_party.taskflow` is re-exported for the task form's `tf::FlowBuilder` and `tf::Task`. The aufbau fill and the atomic SCF are internal partitions, imported only by `sad.cpp`, so none of their names are visible to an importer.
 
@@ -73,7 +76,8 @@ node.executor().run(flow).wait();
 
 ## Tests
 
-- `test/gtest/sad_host.cpp`: each atom's block against PySCF 2.14's `AtomSphAverageRHF` density for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ (to 1e-7), the block-diagonal assembly, seating by momentum rather than shell position, a ghost atom, and the refusals. Over formaldehyde in cc-pVDZ, the task form against the serial one bitwise, with a predecessor building the basis, and reporting the first failing atom's error.
+- `test/gtest/sad_host.cpp`: each atom's block against PySCF 2.14's `AtomSphAverageRHF` density for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ (to 1e-7), the block-diagonal assembly, seating by momentum rather than shell position, a ghost atom, and the refusals. Over formaldehyde in cc-pVDZ, the task form against the serial one bitwise, with a predecessor building the basis, and reporting the first failing atom's error. A lookup standing in for an element's SCF in both forms, ignored for an unnamed basis, and refused at the wrong size.
+- `test/gtest/io_sad_host.cpp`: the compiled-in stamps against this module's SCF, bitwise.
 - `test/gtest/sad_gpu.cpp`: the guess over a basis `place`d on a `Molecule`.
 
 The reference data is `test/gtest/data/sad/atomic_scf.json`, written by `tools/emit_sad_reference.py`.
@@ -91,7 +95,7 @@ Each class and each concern is its own internal partition (`module free_breakfas
 | File | Partition | Role |
 |------|-----------|------|
 | `sad.cppm` | primary | Module interface: `sad_density` |
-| `sad.cpp` | implementation | `AtomicDensityStamp`, its `place`, and both forms of `sad_density`: one stamp per distinct (Z, shells), placed on each of its atoms' blocks, serially or as one task per stamp |
+| `sad.cpp` | implementation | `AtomicDensityStamp`, its `place`, and both forms of `sad_density`: one stamp per distinct (Z, shells), baked or computed, placed on each of its atoms' blocks, serially or as one task per stamp |
 | `aufbau.cppm` | `:aufbau` | `kAufbauOrder` and `subshell_occupation`, the Madelung fill |
 | `atomic_scf/scf.cppm` | `:scf` | `AtomicScf` and `atomic_scf`: the Fock build, the energy, the per-l commutators, the iteration |
 | `atomic_scf/integrals.cppm` | `:integrals` | `AtomicIntegrals` and `atomic_integrals`: checks the shells, calls the two families below, carries them to the spherical layout |

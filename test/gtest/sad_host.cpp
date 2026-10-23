@@ -1,7 +1,8 @@
 // Host-only cases for the SAD initial guess: each atom's block against PySCF's
 // AtomSphAverageRHF density (data/sad/atomic_scf.json, written by
 // tools/emit_sad_reference.py), the block-diagonal assembly, the task form
-// against the serial one, and the refusals. The guess over a basis placed on a
+// against the serial one, a SadStampLookup standing in for an SCF, and the
+// refusals. The compiled-in stamps themselves are io_sad_host.cpp's. The guess over a basis placed on a
 // Molecule is sad_gpu.cpp's.
 
 #include <gtest/gtest.h>
@@ -63,9 +64,11 @@ fb::Result<std::vector<double>> atom_density(Element element, std::vector<fb::Sh
 }
 
 // A basis over @p atoms laid out as place would: each atom's shells, from
-// @p shells_of its element, moved to its position and grouped per atom.
+// @p shells_of its element, moved to its position and grouped per atom, and
+// named @p name as place names a compiled-in set.
 fb::BasisSet grouped_basis(std::span<const Atom> atoms,
-                           const std::function<std::vector<fb::Shell>(Element)> &shells_of) {
+                           const std::function<std::vector<fb::Shell>(Element)> &shells_of,
+                           std::string name = {}) {
   std::vector<fb::Shell> shells;
   std::vector<std::uint32_t> offsets{0};
   for (const Atom &atom : atoms) {
@@ -74,7 +77,7 @@ fb::BasisSet grouped_basis(std::span<const Atom> atoms,
     }
     offsets.push_back(static_cast<std::uint32_t>(shells.size()));
   }
-  return fb::BasisSet(shells, offsets);
+  return fb::BasisSet(shells, offsets, std::move(name));
 }
 
 // H2CO, C2v in the yz plane, bohr: C=O 1.205 A, C-H 1.111 A, HCH 116.1 deg.
@@ -91,11 +94,12 @@ std::vector<fb::Shell> ccpvdz(Element element) {
 }
 
 // The task form of sad_density, run to completion on its own executor.
-fb::Result<std::vector<double>> run_task(const fb::BasisSet &basis, std::span<const Atom> atoms) {
+fb::Result<std::vector<double>> run_task(const fb::BasisSet &basis, std::span<const Atom> atoms,
+                                         fb::SadStampLookup baked = nullptr) {
   fb::tf::Executor executor(4);
   fb::tf::Taskflow flow;
   fb::Result<std::vector<double>> out;
-  fb::sad_density(flow, basis, atoms, out);
+  fb::sad_density(flow, basis, atoms, out, baked);
   executor.run(flow).wait();
   return out;
 }
@@ -305,6 +309,78 @@ TEST(Sad, TaskReportsTheFirstFailingAtomsError) {
   const auto mismatched = run_task(basis, std::span(atoms).first(2));
   ASSERT_FALSE(mismatched);
   EXPECT_EQ(mismatched.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
+// --- Baked stamps ---------------------------------------------------------------
+
+// A lookup that knows only hydrogen in a set called "baked", and gives it a
+// block no SCF would: STO-3G H is one AO, holding one electron.
+std::optional<std::vector<double>> baked_hydrogen(std::string_view basis, std::int32_t z) {
+  if (basis == "baked" && z == 1) {
+    return std::vector<double>{0.25};
+  }
+  return std::nullopt;
+}
+
+// The same, with a block of the wrong size for those shells.
+std::optional<std::vector<double>> misbaked_hydrogen(std::string_view /*basis*/, std::int32_t z) {
+  if (z == 1) {
+    return std::vector<double>{0.25, 0.0, 0.0, 0.25};
+  }
+  return std::nullopt;
+}
+
+// H2O in STO-3G: O's 5 AOs, then each H's one.
+const std::vector<Atom> kWater{
+    Atom{kOrigin, Element::O},
+    Atom{fb::Vec<double, 3>{1.43, 0.21, -1.07}, Element::H},
+    Atom{fb::Vec<double, 3>{-1.38, 0.35, -1.12}, Element::H},
+};
+
+fb::BasisSet sto3g_water(std::string name) {
+  return grouped_basis(
+      kWater,
+      [](Element element) {
+        return reference_shells("sto-3g", static_cast<std::int32_t>(element));
+      },
+      std::move(name));
+}
+
+TEST(Sad, ABakedStampStandsInForItsElementsScf) {
+  const fb::BasisSet basis = sto3g_water("baked");
+  const auto computed = fb::sad_density(basis, kWater);
+  ASSERT_TRUE(computed) << computed.error().message;
+
+  // Both H take the baked block; O, which the lookup lacks, is computed.
+  std::vector<double> expected = *computed;
+  expected[5 + (7 * 5)] = 0.25;
+  expected[6 + (7 * 6)] = 0.25;
+  const auto serial = fb::sad_density(basis, kWater, baked_hydrogen);
+  ASSERT_TRUE(serial) << serial.error().message;
+  EXPECT_EQ(*serial, expected);
+  const auto task = run_task(basis, kWater, baked_hydrogen);
+  ASSERT_TRUE(task) << task.error().message;
+  EXPECT_EQ(*task, expected);
+}
+
+TEST(Sad, ABasisWithoutANameComputesEveryElement) {
+  // The name is what says the shells are the set the stamps were computed in.
+  const fb::BasisSet basis = sto3g_water({});
+  const auto computed = fb::sad_density(basis, kWater);
+  ASSERT_TRUE(computed) << computed.error().message;
+  const auto serial = fb::sad_density(basis, kWater, misbaked_hydrogen);
+  ASSERT_TRUE(serial) << serial.error().message;
+  EXPECT_EQ(*serial, *computed);
+}
+
+TEST(Sad, ABakedBlockOfTheWrongSizeIsInvalidConfig) {
+  const fb::BasisSet basis = sto3g_water("baked");
+  const auto serial = fb::sad_density(basis, kWater, misbaked_hydrogen);
+  ASSERT_FALSE(serial);
+  EXPECT_EQ(serial.error().kind, fb::ErrorKind::InvalidConfig);
+  const auto task = run_task(basis, kWater, misbaked_hydrogen);
+  ASSERT_FALSE(task);
+  EXPECT_EQ(task.error().message, serial.error().message);
 }
 
 TEST(Sad, GhostAtomIsEmpty) {

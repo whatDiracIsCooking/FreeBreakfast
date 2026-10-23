@@ -29,6 +29,13 @@ basis this build does not carry is read straight from disk with no rebuild,
 which is why the name/path pair is one function rather than a mode switch. A
 file whose own name collides with a compiled-in one is reached as `./sto-3g`.
 
+**Only a compiled-in set comes back named.** `resolve_basis`'s compiled-in
+branch sets `BasisStamp::name` to the set's canonical BSE spelling (`STO-3G`,
+however it was asked for); `read_basis` and the path branch leave it empty,
+whatever the document's own `name` says. The name is how the SAD guess finds
+its baked atomic densities (`src/io/sad`), so it must only ever sit on shells
+known to be that set's.
+
 `is_builtin_basis` exists because the discrimination has to happen *before* a
 relative path is anchored to a config file's directory — joining a name to
 that directory would turn `sto-3g` into a file nobody wrote. Only

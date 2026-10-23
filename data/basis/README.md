@@ -76,3 +76,7 @@ refuses.
    which is the point of that case.
 3. Reconfigure. The glob is `CONFIGURE_DEPENDS`, so a new file is picked up on
    the next build without a manual `cmake` invocation.
+4. **Regenerate `data/sad/`** (its README has the commands), so the new set's
+   SAD guess is baked rather than computed on every run. The same goes for
+   re-downloading a set: the stamps were computed over the old shells, and
+   `test/gtest/io_sad_host.cpp` fails until they are regenerated.

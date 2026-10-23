@@ -11,6 +11,8 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.sad;
+import free_breakfast.io.basis;
+import free_breakfast.io.sad;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.guess;
 
@@ -65,6 +67,26 @@ TEST(PipelineGuess, SadMatchesSadDensityBitwise) {
   ASSERT_TRUE(direct.has_value()) << direct.error().message;
   ASSERT_EQ(guess->d.size(), std::size_t{basis->nao_sphe()} * basis->nao_sphe());
   EXPECT_EQ(guess->d, *direct);
+}
+
+// A compiled-in set carries its name through place, and the step takes that
+// set's baked stamps: exactly the guess sad_density gives with them.
+// io_sad_host.cpp holds each stamp to the SCF it stands in for.
+TEST(PipelineGuess, ACompiledInBasisTakesTheBakedStamps) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::Molecule molecule = water(res);
+  auto stamp = fb::resolve_basis("cc-pvdz");
+  ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+  auto basis = fb::place(stamp->primitive_normalized(), molecule);
+  ASSERT_TRUE(basis.has_value()) << basis.error().message;
+  EXPECT_EQ(basis->name(), "cc-pVDZ");
+
+  auto guess = run_step(fb::GuessStep{}, GuessInput{molecule, *basis});
+  auto baked = fb::sad_density(*basis, molecule.atoms(), fb::builtin_sad_density);
+  ASSERT_TRUE(guess.has_value()) << guess.error().message;
+  ASSERT_TRUE(baked.has_value()) << baked.error().message;
+  EXPECT_EQ(guess->d, *baked);
 }
 
 TEST(PipelineGuess, ABasisPlacedOverOtherAtomsIsInvalidConfig) {

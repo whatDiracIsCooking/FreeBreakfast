@@ -490,6 +490,10 @@ enable_testing()
 add_subdirectory(deps)
 add_subdirectory(src)
 
+# The C++ generators tools/ runs by hand (tools/README.md). Built with the
+# tree, so a generator cannot rot unbuilt between regenerations.
+add_subdirectory(tools/sad)
+
 # The device kernels the GPU tests drive. Outside the gate below on purpose:
 # they need no GoogleTest, and devtools/cross-backend-check.sh (which configures
 # with FREE_BREAKFAST_COMPILE_TIME_ONLY) exists precisely to compile .cu code

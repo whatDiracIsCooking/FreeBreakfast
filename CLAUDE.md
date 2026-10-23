@@ -177,6 +177,17 @@ which is why `6-31g.json` stops at argon and `6-31G*` is absent entirely.
 Check the harmonic types before adding a set; `data/basis/README.md` has the
 detail and the regeneration commands.
 
+**So are the SAD stamps.** `data/sad/<basis>/<Z>.npy` is every element's atomic
+density in every carried set, written by the C++ generator `tools/sad`
+(`free-breakfast-sad-stamps`, built with the tree) and compiled in by
+`src/io/sad` the same way. Each 3d element's SCF takes minutes in cc-pVDZ/TZ.
+The Guess step takes a stamp only for a basis whose `BasisSet::name()` is set,
+and only `resolve_basis`'s compiled-in branch sets it. A path-read basis
+computes every element, even if its document claims a carried name. **Changing
+`data/basis/` or the atomic SCF means regenerating `data/sad/`**; the bitwise
+check in `test/gtest/io_sad_host.cpp` fails until you do. The commands are in
+`data/sad/README.md`.
+
 ## The two languages, and what verifies which
 
 | | C++ | Python |
@@ -311,7 +322,8 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   `lint` job; `devtools/format.sh` fixes. `cmake-lint` holds CMake to 80
   columns. Constants are `kCamelCase`.
 - **No anonymous namespaces, no `detail` namespaces** — except anonymous
-  namespaces in `.cu` and `test/gtest/*.cpp`, which are not module units. In a
+  namespaces in `.cu`, `test/gtest/*.cpp` and the `main.cpp` of `src/` and
+  `tools/*/`, which are not module units. In a
   module, not exporting *is* the privacy; module-private code shared between
   units goes in a partition. `docs/style.md` "Module-private code" says which
   kind, and why an unexported name must still be unique module-wide.

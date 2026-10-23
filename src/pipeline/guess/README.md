@@ -7,7 +7,8 @@ Build the initial-guess density. SAD is the only kind so far.
 `free_breakfast.pipeline.guess`, target `free_breakfast::pipeline::guess`. It
 re-exports `free_breakfast.basis` (and through it `free_breakfast.molecule`)
 and Taskflow, so an importer can name everything in `run`'s signature without
-a second import. It links no GPU library: the step is host work.
+a second import. It links no GPU library: the step is host work. It links
+`sad` and `io::sad` publicly, since `run`'s inline body names both.
 
 ## The step
 
@@ -27,8 +28,11 @@ struct GuessStep {
 };
 ```
 
-A thin wrapper over `sad`'s task form, `sad_density(tf::FlowBuilder&, …)`, with
-the same errors:
+A thin wrapper over `sad`'s task form, `sad_density(tf::FlowBuilder&, …)`,
+passing it `io.sad`'s `builtin_sad_density`. So a basis resolved by name
+(`BasisSet::name`) takes each element's density from the stamps compiled into
+the binary from `data/sad/`, and runs an atomic SCF only for an element they
+lack. A basis read from a path runs every one. The errors are `sad_density`'s:
 
 - a basis not placed over these atoms, or one too small to seat an atom's
   occupied subshells, is `InvalidConfig`;
@@ -71,6 +75,8 @@ the guess uploads it. That is the Fock build, which does not exist yet.
 - The step's contract is checked by `static_assert`.
 - The step's density, run on a subflow, is checked bitwise against a direct
   serial `sad_density`.
+- A compiled-in set (cc-pVDZ) is checked to arrive named, and the step's
+  density is checked bitwise against `sad_density` with the baked stamps.
 - A basis placed over other atoms is checked to be `InvalidConfig`.
 
 The step itself never touches the device, but its input `Molecule` does, so the

@@ -148,6 +148,11 @@ export namespace free_breakfast {
 /// wins: a file called @c sto-3g in the working directory is reached as
 /// @c ./sto-3g.
 ///
+/// A compiled-in set comes back named (@ref BasisStamp::name, its canonical
+/// BSE spelling, whatever spelling @p spec used); one read from disk comes
+/// back unnamed, whatever its document calls itself, since only the
+/// compiled-in bytes are known to be the set the name promises.
+///
 /// Classification is @ref read_basis's throughout: a spec that is neither a
 /// known name nor an openable file is ErrorKind::IO, as an unreadable path is
 /// everywhere else in this layer, with the compiled-in names appended to the
