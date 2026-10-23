@@ -7,23 +7,24 @@ and two wwr `gemm`s.
 
 ## Module
 
-`free_breakfast.localization.pm`, target `free_breakfast::localization::pm`.
+`free_breakfast.localization.pipek_mezey`, target
+`free_breakfast::localization::pipek_mezey`.
 
 | Name | Role |
 |---|---|
-| `pipek_mezey_localize<T>(res, basis, n_occ, s, c, c_local, u, options)` | The localization; returns `Result<PipekMezeyInfo>` |
+| `pipek_mezey_localize(res, basis, n_occ, s, c, c_local, u, options)` | The localization; returns `Result<PipekMezeyInfo>` |
 | `PipekMezeyOptions` | Sweep cap, tolerances, exponent |
 | `PipekMezeyExponent` | `Two` (Pipek-Mezey) or `Four` (Knizia's IBO exponent) |
 | `PipekMezeyInfo` | Sweeps taken, the functional before and after |
 
-`T` is `float` or `double`. Every matrix is a column-major device pointer with
-a packed leading dimension, over the spherical AOs of `basis`: `s` is n_ao x
+Double precision only. Every matrix is a column-major device `double *` with a
+packed leading dimension, over the spherical AOs of `basis`: `s` is n_ao x
 n_ao, `c` and `c_local` n_ao x n_occ, `u` (optional) n_occ x n_occ, with
 C_local = C U. The first `n_occ` columns of a square C, such as `Scf::c`, serve
 as `c` directly.
 
 ```cpp
-const PipekMezeyInfo info = FBF_TRY(pipek_mezey_localize<double>(
+const PipekMezeyInfo info = FBF_TRY(pipek_mezey_localize(
     res, basis, n_occ, overlap.s.data(), scf.c.data(), c_local.data(), u.data(),
     {.exponent = PipekMezeyExponent::Four}));
 ```
@@ -60,11 +61,21 @@ from a bare shell list, with no atoms, is refused.
 rotation angle per pair. **p = 4** is Knizia's IBO exponent (J. Chem. Theory
 Comput. 9, 4834 (2013), eq. 4 and Appendix D): p = 2's rotation Hessian can
 carry an exact zero mode for a symmetric pi system (benzene's six equivalent pi
-orbitals), leaving a continuum of answers, and p = 4 picks one. Its angle drops
-an 8gamma harmonic and is only approximate, so the exact gain at that angle is
-evaluated from two more sums of the same pass, and a pair that would lose is
-left alone. Both exponents read the same population tensor and share every
+orbitals), leaving a continuum of answers, and p = 4 picks one. The pair
+change in L_4 has 4gamma and 8gamma harmonics, so it has no closed-form
+maximum. The angle is Knizia's Appendix D one, 1/4 atan2(B, -A): B is half the
+exact slope at gamma = 0 and -A an eighth of the negated curvature, so it is
+zero only where the pair is stationary, and a converged sweep is a stationary
+point of L_4. (Dropping the 8gamma harmonic and maximizing the rest lands
+nearer each pair's own maximum, but its angle vanishes off the stationary
+points, and a sweep driven by it stalls on a slope.) The angle is approximate, so the exact gain
+there is evaluated from the same pass's four sums, and a pair that would lose
+is left alone. Both exponents read the same population tensor and share every
 kernel but the pair angle and the functional.
+
+The functional is eq. 4's, but over Mulliken populations rather than the
+paper's IAO ones: this is Pipek-Mezey with Knizia's exponent, not IBO (see
+"Not done here").
 
 ## Design
 
@@ -89,14 +100,16 @@ U <- U R) however many pairs it holds.
 That costs nothing in quality. A pair's rotation changes only its own Q_pp and
 Q_qq, from its own Q_pp, Q_qq and Q_pq, and L reads only diagonals, so a round
 gains the sum of its pairs' gains, each non-negative. L rises round by round as
-under sequential Jacobi, and the two reach the same maximum, which
-`test/gtest/pipek_mezey_host.cpp` checks against an independently written
-sequential Pipek-Mezey.
+under sequential Jacobi, and the two reach the same maximum: the step's test
+matches PySCF's to 1e-8 in L.
 
 ### The kernels
 
 The population tensor is atom-fastest, ((i n_occ) + j) n_atoms + A, and every
-kernel puts the atom on `threadIdx.x`, so a warp walks contiguous memory.
+kernel puts the atom on `threadIdx.x`, so a warp walks contiguous memory. The
+arithmetic is small `__device__` functions in the same `.cu`, each kernel only
+picking its elements; nothing of it runs on the host. The round-robin schedule
+is the one host part, built by the driver once and uploaded.
 
 | Kernel | Grid | What it does |
 |---|---|---|
@@ -134,28 +147,29 @@ the reference to check it against.
 
 ## Tests
 
-- `test/gtest/pipek_mezey_host.cpp`, host-only, over `pm_math.h`: the schedule
-  is a tournament; the p = 2 angle is the exact maximum and the p = 4 angle
-  tracks a brute-force scan of the exact quartic, whose guard never accepts a
-  loss; the populations are Mulliken's and sum to one, over single- and
-  multi-AO atoms; a host sweep built from the kernels' element functions rises
-  every round, keeps U orthogonal, matches populations rebuilt from C U and an
-  independent sequential Pipek-Mezey; and on a symmetric six-ring p = 2 reaches
-  one value by many localizations where p = 4 picks one.
-- `test/gtest/pipek_mezey_gpu.cpp`, the device: for both exponents, U
+Every test needs a GPU.
+
+- `test/gtest/pipeline_localization_gpu.cpp`, the oracle: water in STO-3G and
+  cc-pVDZ and NH4+ in cc-pVDZ, both exponents, through the step
+  (`pipeline/localization`), against PySCF's Pipek-Mezey
+  (`tools/emit_localization_reference.py`): L to 1e-8, and every orbital's
+  Mulliken population on every atom matched to a PySCF orbital to 1e-5. The
+  populations stand in for the orbitals, which the two codes express over
+  differently normalised and ordered AOs. Water has an odd occupied count, so
+  this also runs the schedule's padding.
+- `test/gtest/pipek_mezey_gpu.cpp`, over model bases: for both exponents, U
   orthogonal, C_local = C U and S-orthonormal, and the reported functional the
-  host's from the definition, over atoms owning s+p and s shells; float
-  agreeing with double; separated centres localizing onto single atoms; one
-  orbital and none; the sweep cap; every refusal.
-- `test/gtest/pipeline_pipek_mezey_gpu.cpp`, the step.
+  host's from the definition, over atoms owning s+p and s shells; separated
+  centres localizing onto single atoms; on a symmetric six-ring p = 2 reaching
+  one value by many localizations where p = 4 picks one; one orbital and none;
+  the sweep cap; every refusal.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `pm.cppm` | Module interface: the options, the info and `pipek_mezey_localize` |
-| `pm.cpp` | The sweep driver and its float and double instantiations |
-| `pm_math.h` | The per-element arithmetic and the schedule, host and device |
-| `pm_bridge.h` | The launchers, declared for the module and the `.cu` |
-| `pm_kernels.cu` | The kernels and their launchers |
-| `CMakeLists.txt` | The module, the device library, and the headers target the host tests link |
+| `pipek_mezey.cppm` | Module interface: the options, the info and `pipek_mezey_localize` |
+| `pipek_mezey.cpp` | The sweep driver and the round-robin schedule |
+| `pipek_mezey_bridge.h` | The launchers, declared for the module and the `.cu` |
+| `pipek_mezey_kernels.cu` | The arithmetic, the kernels and their launchers |
+| `CMakeLists.txt` | The module and the device library |

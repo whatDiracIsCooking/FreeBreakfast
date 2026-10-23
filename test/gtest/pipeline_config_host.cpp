@@ -194,6 +194,30 @@ TEST(PipelineConfig, AnUnknownGuessTypeIsInvalidConfig) {
   expect_config_error(with_inputs("[guess]\ntype = \"SAD\"\n"), "[guess] has no type 'SAD'");
 }
 
+TEST(PipelineConfig, TheLocalizationModeAndItsOptionsAreRead) {
+  auto calc = fb::parse_config(with_inputs("[localization]\nmode = \"pipek_mezey\"\n"
+                                           "max_sweeps = 7\nexponent = 4\n"),
+                               "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::LocalizationStep &step = *calc->step<fb::LocalizationStep>();
+  EXPECT_EQ(step.mode, fb::LocalizationMode::PipekMezey);
+  EXPECT_EQ(step.pipek_mezey.max_sweeps, 7);
+  EXPECT_EQ(step.pipek_mezey.exponent, fb::PipekMezeyExponent::Four);
+  // An empty table is Pipek-Mezey with its defaults.
+  auto plain = fb::parse_config(with_inputs("[localization]\n"), "");
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  EXPECT_EQ(plain->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::PipekMezey);
+  EXPECT_EQ(plain->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
+}
+
+TEST(PipelineConfig, AnUnknownLocalizationModeIsInvalidConfig) {
+  expect_config_error(with_inputs("[localization]\nmode = \"foster_boys\"\n"),
+                      "[localization] has no mode 'foster_boys'");
+  expect_config_error(with_inputs("[localization]\nmode = 1\n"), "[localization] mode");
+  expect_config_error(with_inputs("[localization]\nexponent = 3\n"),
+                      "[localization] exponent is 3");
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",

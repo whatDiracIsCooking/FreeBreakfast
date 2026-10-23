@@ -17,7 +17,7 @@ add_subdirectory(sad)
 add_subdirectory(recipes)
 # After recipes: one_electron writes into recipes.matrix_ao's CartesianMatrixAO.
 add_subdirectory(integrals)
-# Before pipeline: its PipekMezey step wraps localization.pm.
+# Before pipeline: its Localization step wraps localization.pipek_mezey.
 add_subdirectory(localization)
 # After the modules its steps wrap: the step contract itself is a leaf over
 # core, but the setup steps that follow it import integrals and recipes.

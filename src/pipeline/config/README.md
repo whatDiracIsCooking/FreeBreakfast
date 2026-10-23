@@ -13,7 +13,7 @@ names them all. It is the one library that imports every step, so only it and
 ```cpp
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep, GuessStep, ScfStep, PipekMezeyStep>;
+                             CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
 Result<Calculation> read_config(const std::filesystem::path &path);
@@ -48,9 +48,14 @@ type = "sad"              # default "sad", the only kind so far
 [scf]                     # every option has a default
 max_iterations = 100
 
-[pipek_mezey]             # every option has a default
+[localization]            # every option has a default
+mode = "pipek_mezey"      # default "pipek_mezey", the only method so far
 exponent = 4              # default 2; 2 or 4
 ```
+
+`[localization]`'s method options sit in the table beside `mode`, not in
+a subtable named after `LocalizationStep::pipek_mezey`: Pipek-Mezey is the only
+method so far.
 
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all ten steps: `[orthogonalizer]` reads the
@@ -94,7 +99,8 @@ resolved", and this is where that happens.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`, and `[pipek_mezey] exponent`, 2 or 4);
+  only `"sad"`; `[localization] mode`, which knows only `"pipek_mezey"`; and
+  `[localization] exponent`, 2 or 4);
 - `from` beside another key, or on a step with no `load`;
 - a value of the wrong type. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`

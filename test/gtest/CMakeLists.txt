@@ -49,7 +49,6 @@ add_executable(
   pipeline_step_host.cpp
   pipeline_pipeline_host.cpp
   pipeline_config_host.cpp
-  pipek_mezey_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -74,7 +73,6 @@ target_link_libraries(
           free_breakfast::pipeline::step
           free_breakfast::pipeline::pipeline
           free_breakfast::pipeline::config
-          free_breakfast::localization::pm::headers
           GTest::gtest
           GTest::gtest_main
 )
@@ -132,7 +130,7 @@ add_executable(
   exchange_pairs_gpu.cpp
   exchange_gpu.cpp
   pipek_mezey_gpu.cpp
-  pipeline_pipek_mezey_gpu.cpp
+  pipeline_localization_gpu.cpp
 )
 
 set_target_properties(
@@ -169,7 +167,7 @@ target_link_libraries(
   free_breakfast::pipeline::core_hamiltonian
   free_breakfast::pipeline::guess
   free_breakfast::pipeline::scf
-  free_breakfast::pipeline::pipek_mezey
+  free_breakfast::pipeline::localization
   free_breakfast::pipeline::config
   free_breakfast::test::gpu_kernels
   GTest::gtest

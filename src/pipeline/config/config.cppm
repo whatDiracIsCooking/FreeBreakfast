@@ -23,14 +23,14 @@ export import free_breakfast.pipeline.orthogonalizer;
 export import free_breakfast.pipeline.core_hamiltonian;
 export import free_breakfast.pipeline.guess;
 export import free_breakfast.pipeline.scf;
-export import free_breakfast.pipeline.pipek_mezey;
+export import free_breakfast.pipeline.localization;
 
 export namespace free_breakfast {
 
 /// @brief The pipeline over every step a config file may name.
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep, GuessStep, ScfStep, PipekMezeyStep>;
+                             CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep>;
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.

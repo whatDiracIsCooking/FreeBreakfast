@@ -1,9 +1,10 @@
-// pipek_mezey_localize on the device. The arithmetic is pipek_mezey_host.cpp's
-// to check; this checks the driver and kernels reach a right answer with it:
-// U orthogonal, C_local = C U and still S-orthonormal, the reported functional
-// the one recomputed on the host from the definition, for both exponents and
-// both precisions, over a basis whose atoms own several AOs; separated centres
-// localizing onto single atoms; the edge counts; and every refusal.
+// pipek_mezey_localize on the device, over model bases: U orthogonal, C_local
+// = C U and still S-orthonormal, the reported functional the one recomputed on
+// the host from the definition, for both exponents, over a basis whose atoms
+// own several AOs; separated centres localizing onto single atoms; a symmetric
+// six-ring, where p = 2 has a continuum of maxima and p = 4 picks one; the
+// edge counts; and every refusal. That the maximum is the right one, for a
+// real molecule, is pipeline_localization_gpu.cpp's PySCF comparison.
 
 #include <gtest/gtest.h>
 
@@ -13,7 +14,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
-import free_breakfast.localization.pm;
+import free_breakfast.localization.pipek_mezey;
 
 namespace {
 
@@ -132,25 +133,23 @@ double host_functional(const Model &m, const Matrix &c, std::int32_t p) {
   return l;
 }
 
-template <typename T>
-fb::Buffers::device<T> upload(fb::DeviceResources &res, const Matrix &host) {
-  const std::vector<T> cast(host.begin(), host.end());
-  fb::Buffers::device<T> buffer(std::max<std::size_t>(cast.size(), 1), res.device());
-  EXPECT_EQ(wwr::wwrMemcpyAsync(buffer.data(), cast.data(), sizeof(T) * cast.size(),
+fb::Buffers::device<double> upload(fb::DeviceResources &res, const Matrix &host) {
+  fb::Buffers::device<double> buffer(std::max<std::size_t>(host.size(), 1), res.device());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(buffer.data(), host.data(), sizeof(double) * host.size(),
                                 wwr::wwrMemcpyHostToDevice, res.stream()),
             wwr::wwrSuccess);
   EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);
   return buffer;
 }
 
-template <typename T>
-Matrix download(fb::DeviceResources &res, const fb::Buffers::device<T> &buffer, std::size_t count) {
-  std::vector<T> host(count);
-  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), buffer.data(), sizeof(T) * count,
+Matrix download(fb::DeviceResources &res, const fb::Buffers::device<double> &buffer,
+                std::size_t count) {
+  Matrix host(count);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), buffer.data(), sizeof(double) * count,
                                 wwr::wwrMemcpyDeviceToHost, res.stream()),
             wwr::wwrSuccess);
   EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);
-  return {host.begin(), host.end()};
+  return host;
 }
 
 struct Localized {
@@ -159,16 +158,15 @@ struct Localized {
   Matrix u;
 };
 
-template <typename T>
 Localized localize(fb::DeviceResources &res, const Model &m,
                    const fb::PipekMezeyOptions &options = {}) {
   const auto occ = static_cast<std::size_t>(m.n_occ);
-  auto s = upload<T>(res, m.s);
-  auto c = upload<T>(res, m.c);
-  fb::Buffers::device<T> c_local(std::max<std::size_t>(m.n_ao * occ, 1), res.device());
-  fb::Buffers::device<T> u(std::max<std::size_t>(occ * occ, 1), res.device());
-  auto info = fb::pipek_mezey_localize<T>(res, m.basis, m.n_occ, s.data(), c.data(), c_local.data(),
-                                          u.data(), options);
+  auto s = upload(res, m.s);
+  auto c = upload(res, m.c);
+  fb::Buffers::device<double> c_local(std::max<std::size_t>(m.n_ao * occ, 1), res.device());
+  fb::Buffers::device<double> u(std::max<std::size_t>(occ * occ, 1), res.device());
+  auto info = fb::pipek_mezey_localize(res, m.basis, m.n_occ, s.data(), c.data(), c_local.data(),
+                                       u.data(), options);
   return {std::move(info), download(res, c_local, m.n_ao * occ), download(res, u, occ * occ)};
 }
 
@@ -205,27 +203,13 @@ TEST_P(PipekMezeyGpu, RotatesWithinTheSpanAndReportsTheHostFunctional) {
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = mixed_model();
   const auto p = static_cast<std::int32_t>(GetParam());
-  const Localized run = localize<double>(res, m, {.exponent = GetParam()});
+  const Localized run = localize(res, m, {.exponent = GetParam()});
   ASSERT_TRUE(run.info.has_value()) << run.info.error().message;
   expect_rotation_of(m, run, 1e-11);
   EXPECT_NEAR(run.info->initial_functional, host_functional(m, m.c, p), 1e-12);
   EXPECT_NEAR(run.info->functional, host_functional(m, run.c_local, p), 1e-10);
   EXPECT_GT(run.info->functional, run.info->initial_functional);
   EXPECT_GE(run.info->sweeps, 1);
-}
-
-TEST_P(PipekMezeyGpu, SinglePrecisionAgreesToItsOwnAccuracy) {
-  FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  const Model m = mixed_model();
-  const fb::PipekMezeyOptions options{.functional_tolerance = 1e-5, .exponent = GetParam()};
-  const Localized single = localize<float>(res, m, options);
-  const Localized full = localize<double>(res, m, options);
-  ASSERT_TRUE(single.info.has_value()) << single.info.error().message;
-  ASSERT_TRUE(full.info.has_value()) << full.info.error().message;
-  expect_rotation_of(m, single, 1e-4);
-  EXPECT_NEAR(single.info->functional, full.info->functional, 1e-4);
 }
 
 INSTANTIATE_TEST_SUITE_P(Exponents, PipekMezeyGpu,
@@ -242,10 +226,104 @@ TEST(PipekMezeyGpuEdges, SeparatedCentresLocalizeOntoSingleAtoms) {
   fb::DeviceResources res{0};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = make_model({{0}, {0}, {0}, {0}, {0}}, 5, 40.0);
-  const Localized run = localize<double>(res, m);
+  const Localized run = localize(res, m);
   ASSERT_TRUE(run.info.has_value()) << run.info.error().message;
   EXPECT_LT(run.info->initial_functional, 3.0);
   EXPECT_NEAR(run.info->functional, 5.0, 1e-8);
+}
+
+// The three lowest Hueckel MOs of a six-ring of s centres with S = I (to
+// isolate the symmetry from any overlap asymmetry): the bonding k = 0 orbital
+// and the degenerate k = 1 pair, the textbook case of p = 2's zero mode.
+// Localized from eight random near-identity rotations of the occupied space,
+// standing in for whatever basis of the degenerate MOs an eigensolver returns,
+// it returns each run's L and its sorted, rounded populations (a fingerprint
+// blind to how the orbitals and atoms are labelled).
+std::pair<std::vector<double>, std::set<std::vector<double>>>
+localize_ring(fb::DeviceResources &res, fb::PipekMezeyExponent exponent) {
+  constexpr std::size_t kRing = 6;
+  constexpr std::size_t kOcc = 3;
+  // A decay this steep makes the off-diagonal overlap exactly zero.
+  Model m = make_model(std::vector<std::vector<std::int32_t>>(kRing, {0}), kOcc, 1e3);
+  Matrix c0(kRing * kOcc);
+  for (std::size_t mu = 0; mu < kRing; ++mu) {
+    const double theta = 2.0 * std::numbers::pi * static_cast<double>(mu) / kRing;
+    at(c0, kRing, mu, 0) = 1.0 / std::sqrt(6.0);
+    at(c0, kRing, mu, 1) = std::cos(theta) / std::sqrt(3.0);
+    at(c0, kRing, mu, 2) = std::sin(theta) / std::sqrt(3.0);
+  }
+
+  std::mt19937 rng(2024);
+  std::normal_distribution<double> noise(0.0, 0.05);
+  std::vector<double> values;
+  std::set<std::vector<double>> fingerprints;
+  for (std::int32_t trial = 0; trial < 8; ++trial) {
+    // A rotation near I: Gram-Schmidt on I plus noise.
+    Matrix r(kOcc * kOcc);
+    for (std::size_t i = 0; i < kOcc; ++i) {
+      for (std::size_t j = 0; j < kOcc; ++j) {
+        at(r, kOcc, i, j) = (i == j ? 1.0 : 0.0) + (i == j ? 0.0 : noise(rng));
+      }
+    }
+    for (std::size_t j = 0; j < kOcc; ++j) {
+      for (std::size_t i = 0; i < j; ++i) {
+        double ov = 0.0;
+        for (std::size_t k = 0; k < kOcc; ++k) {
+          ov += at(r, kOcc, k, i) * at(r, kOcc, k, j);
+        }
+        for (std::size_t k = 0; k < kOcc; ++k) {
+          at(r, kOcc, k, j) -= ov * at(r, kOcc, k, i);
+        }
+      }
+      double norm = 0.0;
+      for (std::size_t k = 0; k < kOcc; ++k) {
+        norm += at(r, kOcc, k, j) * at(r, kOcc, k, j);
+      }
+      for (std::size_t k = 0; k < kOcc; ++k) {
+        at(r, kOcc, k, j) /= std::sqrt(norm);
+      }
+    }
+    m.c = multiply(c0, r, kRing, kOcc, kOcc);
+    const Localized run = localize(res, m, {.exponent = exponent});
+    EXPECT_TRUE(run.info.has_value()) << "trial " << trial << ": " << run.info.error().message;
+    if (!run.info.has_value()) {
+      continue;
+    }
+    values.push_back(run.info->functional);
+    // With S = I an orbital's population on a one-AO atom is its square.
+    std::vector<double> fp;
+    for (const double coefficient : run.c_local) {
+      fp.push_back(std::round(coefficient * coefficient * 1000.0) / 1000.0);
+    }
+    std::ranges::sort(fp);
+    fingerprints.insert(fp);
+  }
+  return {values, fingerprints};
+}
+
+TEST(PipekMezeyGpuDegeneracy, P2ReachesOneValueByManyLocalizations) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const auto [values, fingerprints] = localize_ring(res, fb::PipekMezeyExponent::Two);
+  ASSERT_FALSE(values.empty());
+  for (const double v : values) {
+    EXPECT_NEAR(v, values.front(), 1e-8);
+  }
+  EXPECT_GT(fingerprints.size(), 1U) << "p = 2 picked one localization; the ring should be "
+                                        "a continuum";
+}
+
+TEST(PipekMezeyGpuDegeneracy, P4PicksOneLocalization) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const auto [values, fingerprints] = localize_ring(res, fb::PipekMezeyExponent::Four);
+  ASSERT_FALSE(values.empty());
+  for (const double v : values) {
+    EXPECT_NEAR(v, values.front(), 1e-6);
+  }
+  EXPECT_EQ(fingerprints.size(), 1U);
 }
 
 TEST(PipekMezeyGpuEdges, OneOrbitalPassesThrough) {
@@ -253,7 +331,7 @@ TEST(PipekMezeyGpuEdges, OneOrbitalPassesThrough) {
   fb::DeviceResources res{0};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = make_model({{0, 1}, {0}}, 1, 0.6);
-  const Localized run = localize<double>(res, m);
+  const Localized run = localize(res, m);
   ASSERT_TRUE(run.info.has_value()) << run.info.error().message;
   EXPECT_EQ(run.info->sweeps, 0);
   EXPECT_EQ(run.info->functional, run.info->initial_functional);
@@ -266,7 +344,7 @@ TEST(PipekMezeyGpuEdges, NoOrbitalsIsANoOp) {
   fb::DeviceResources res{0};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = make_model({{0}, {0}}, 0, 0.6);
-  const Localized run = localize<double>(res, m);
+  const Localized run = localize(res, m);
   ASSERT_TRUE(run.info.has_value()) << run.info.error().message;
   EXPECT_EQ(run.info->sweeps, 0);
   EXPECT_EQ(run.info->functional, 0.0);
@@ -278,7 +356,7 @@ TEST(PipekMezeyGpuEdges, TheSweepCapIsMaxIterationsExceededWithTheLastSweepWritt
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = mixed_model();
   // A tolerance of 0 cannot be met: |change| < 0 is never true.
-  const Localized run = localize<double>(res, m, {.max_sweeps = 1, .functional_tolerance = 0.0});
+  const Localized run = localize(res, m, {.max_sweeps = 1, .functional_tolerance = 0.0});
   ASSERT_FALSE(run.info.has_value());
   EXPECT_EQ(run.info.error().kind, fb::ErrorKind::MaxIterationsExceeded);
   expect_rotation_of(m, run, 1e-11);
@@ -290,15 +368,14 @@ TEST(PipekMezeyGpuEdges, RefusesMalformedRequests) {
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const Model m = mixed_model();
   const auto occ = static_cast<std::size_t>(m.n_occ);
-  auto s = upload<double>(res, m.s);
-  auto c = upload<double>(res, m.c);
+  auto s = upload(res, m.s);
+  auto c = upload(res, m.c);
   fb::Buffers::device<double> out(m.n_ao * occ, res.device());
 
   const auto expect_refused = [&](const fb::BasisSet &basis, std::int32_t n_occ, const double *sp,
                                   const double *cp, double *outp,
                                   const fb::PipekMezeyOptions &options, std::string_view what) {
-    const auto info =
-        fb::pipek_mezey_localize<double>(res, basis, n_occ, sp, cp, outp, nullptr, options);
+    const auto info = fb::pipek_mezey_localize(res, basis, n_occ, sp, cp, outp, nullptr, options);
     ASSERT_FALSE(info.has_value()) << what;
     EXPECT_EQ(info.error().kind, fb::ErrorKind::InvalidConfig) << what;
   };

@@ -40,6 +40,12 @@ emit_scf_reference.py
                   RHF energies and orbital energies over this tree's
                   data/basis files, the reference the Scf step is tested
                   against. Needs PySCF.
+emit_localization_reference.py
+                  Write test/gtest/data/localization/pipek_mezey.json:
+                  PySCF's Mulliken Pipek-Mezey of those RHF orbitals, both
+                  exponents, as the functional and per-orbital atomic
+                  populations, the reference the Localization step is tested
+                  against. Needs PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
                   element of every compiled-in basis set, computed by src/sad
@@ -60,7 +66,7 @@ tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
 tools/bse_download.py --list
 ```
 
-`atomic_cd`, `emit_sad_reference.py` and `emit_scf_reference.py` need PySCF and numpy, which sit in the
+`atomic_cd` and the three `emit_*_reference.py` need PySCF and numpy, which sit in the
 opt-in `tools` dependency group in `pyproject.toml` rather than in `dev`, so the
 image and the push gate do not carry them. Inside the devcontainer, add
 `UV_PROJECT_ENVIRONMENT=$PWD/.venv` so the group goes into a worktree-local
@@ -69,6 +75,7 @@ venv rather than the image's `/opt/venv`:
 ```sh
 uv run --group tools tools/emit_sad_reference.py
 uv run --group tools tools/emit_scf_reference.py
+uv run --group tools tools/emit_localization_reference.py
 uv run --group tools tools/emit_record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \
