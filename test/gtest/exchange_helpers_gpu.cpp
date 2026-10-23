@@ -1,8 +1,9 @@
 // GPU cases for the exchange build's hand-written device steps
 // (src/integrals/eri/integral_direct/exchange/helpers): max|D|, the Dcd
-// gather, the block table and its density factors, the shell starts and mirror, and the density decay
-// the factors are cut from (the bound maximum, the AO centres, the group
-// geometry and the decay fit), each against a host loop, on H2O/cc-pVDZ's
+// gather, the block table and its density factors, the shell starts and the
+// mirror of either sign, and the density decay the factors are cut from (the
+// bound maximum, the AO centres, the group geometry and the decay fit), each
+// against a host loop, on H2O/cc-pVDZ's
 // recorded density and shells (s, p and d, interleaved by atom, so a shell's
 // rank among its momentum differs from its index, and the shells of two
 // momenta interleave in AO order) and the H10 chain's RHF density. What moves,
@@ -261,7 +262,7 @@ std::vector<double> geometry_of(const std::size_t n_groups, const double z0, con
   return geom;
 }
 
-// F_ab as exchange_blocks states it, on the host.
+// F_ab as exchange_factors states it, on the host.
 double host_factor(const std::vector<double> &a, const std::size_t ga, const std::vector<double> &b,
                    const std::size_t gb, const std::array<double, 3> &decay) {
   const std::size_t n_a = a.size() / 4;
@@ -282,10 +283,10 @@ double host_factor(const std::vector<double> &a, const std::size_t ga, const std
                   decay[2] * std::exp(-decay[1] * d) * (1.0 + fb::device::kExchangeDecayMargin));
 }
 
-// Every (la, lb), symmetric and not: the table against a host enumeration of
-// the same blocks, bra-major, a <= b by AO offset when symmetric. cc-pVDZ's
-// shells of two momenta interleave by atom, so the symmetric cut falls inside
-// the ket groups at a different place for each bra group. Each block's factor
+// Every (la, lb): the table against a host enumeration of the same blocks,
+// bra-major, a <= b by AO offset. cc-pVDZ's shells of two momenta interleave by
+// atom, so the cut falls inside the ket groups at a different place for each
+// bra group. Each block's factor, from the second launch over the same groups,
 // against the rule, on synthetic geometry that takes every branch: a group
 // that reaches nothing, a pair too close to bound, and pairs far enough apart
 // that the decay is under max|D|.
@@ -300,70 +301,70 @@ TEST(ExchangeHelpers, BuildsTheBlockTable) {
   const auto decay_d = upload(stream, std::vector<double>(decay.begin(), decay.end()));
   std::size_t n_decayed = 0;
   std::size_t n_whole = 0;
-  for (const bool symmetric : {false, true}) {
-    for (std::int32_t la = 0; la < kMomenta; ++la) {
-      for (std::int32_t lb = 0; lb < kMomenta; ++lb) {
-        const Side a = side_of(by_l.at(static_cast<std::size_t>(la)));
-        const Side b = side_of(by_l.at(static_cast<std::size_t>(lb)));
-        const auto n_a = static_cast<std::int32_t>(a.start.size() - 1);
-        const auto n_b = static_cast<std::int32_t>(b.start.size() - 1);
-        const std::vector<double> a_geom = geometry_of(static_cast<std::size_t>(n_a), 0.0, 3.0);
-        const std::vector<double> b_geom = geometry_of(static_cast<std::size_t>(n_b), 1.0, 2.0);
-        std::vector<std::array<std::int32_t, kFields>> want;
-        std::vector<double> want_factor;
-        for (std::int32_t ga = 0; ga < n_a; ++ga) {
-          for (std::int32_t gb = 0; gb < n_b; ++gb) {
-            const std::int32_t ko_a = a.off[static_cast<std::size_t>(a.start[ga])];
-            const std::int32_t ko_b = b.off[static_cast<std::size_t>(b.start[gb])];
-            if (!symmetric || ko_a <= ko_b) {
-              want.push_back(
-                  {a.start[ga], a.start[ga + 1], b.start[gb], b.start[gb + 1], ko_a, ko_b});
-              want_factor.push_back(host_factor(a_geom, static_cast<std::size_t>(ga), b_geom,
-                                                static_cast<std::size_t>(gb), decay));
-            }
+  for (std::int32_t la = 0; la < kMomenta; ++la) {
+    for (std::int32_t lb = 0; lb < kMomenta; ++lb) {
+      const Side a = side_of(by_l.at(static_cast<std::size_t>(la)));
+      const Side b = side_of(by_l.at(static_cast<std::size_t>(lb)));
+      const auto n_a = static_cast<std::int32_t>(a.start.size() - 1);
+      const auto n_b = static_cast<std::int32_t>(b.start.size() - 1);
+      const std::vector<double> a_geom = geometry_of(static_cast<std::size_t>(n_a), 0.0, 3.0);
+      const std::vector<double> b_geom = geometry_of(static_cast<std::size_t>(n_b), 1.0, 2.0);
+      std::vector<std::array<std::int32_t, kFields>> want;
+      std::vector<double> want_factor;
+      for (std::int32_t ga = 0; ga < n_a; ++ga) {
+        for (std::int32_t gb = 0; gb < n_b; ++gb) {
+          const std::int32_t ko_a = a.off[static_cast<std::size_t>(a.start[ga])];
+          const std::int32_t ko_b = b.off[static_cast<std::size_t>(b.start[gb])];
+          if (ko_a <= ko_b) {
+            want.push_back(
+                {a.start[ga], a.start[ga + 1], b.start[gb], b.start[gb + 1], ko_a, ko_b});
+            want_factor.push_back(host_factor(a_geom, static_cast<std::size_t>(ga), b_geom,
+                                              static_cast<std::size_t>(gb), decay));
           }
         }
-        const std::string name =
-            std::format("symmetric {}, (la, lb) = ({}, {})", symmetric, la, lb);
-        // Off the diagonal of momenta some of each, so the cut is exercised.
-        if (symmetric && la != lb) {
-          ASSERT_GT(want.size(), 0U) << name;
-          ASSERT_LT(want.size(), static_cast<std::size_t>(n_a) * n_b) << name;
+      }
+      const std::string name = std::format("(la, lb) = ({}, {})", la, lb);
+      // Off the diagonal of momenta some of each, so the cut is exercised.
+      if (la != lb) {
+        ASSERT_GT(want.size(), 0U) << name;
+        ASSERT_LT(want.size(), static_cast<std::size_t>(n_a) * n_b) << name;
+      }
+      if (want.empty()) {
+        continue;
+      }
+      const auto n_blk = static_cast<std::int32_t>(want.size());
+      const auto a_start = upload(stream, a.start);
+      const auto a_off = upload(stream, a.off);
+      const auto b_start = upload(stream, b.start);
+      const auto b_off = upload(stream, b.off);
+      const auto a_geom_d = upload(stream, a_geom);
+      const auto b_geom_d = upload(stream, b_geom);
+      DeviceArray<std::int32_t> table(kFields * want.size());
+      DeviceArray<double> factor(want.size());
+      ASSERT_EQ(fb::device::exchange_blocks(stream.get(), n_a, a_start.data(), a_off.data(), n_b,
+                                            b_start.data(), b_off.data(), n_blk, table.data()),
+                wwr::wwrSuccess)
+          << name;
+      ASSERT_EQ(fb::device::exchange_factors(stream.get(), n_a, a_start.data(), a_off.data(),
+                                             a_geom_d.data(), n_b, b_start.data(), b_off.data(),
+                                             b_geom_d.data(), decay_d.data(), n_blk, factor.data()),
+                wwr::wwrSuccess)
+          << name;
+      const auto got = download_ints(stream, table.data(), kFields * want.size());
+      const auto got_factor = download(stream, factor.data(), want.size());
+      for (std::size_t blk = 0; blk < want.size(); ++blk) {
+        for (std::size_t f = 0; f < kFields; ++f) {
+          ASSERT_EQ(got[f * want.size() + blk], want[blk][f])
+              << name << ", block " << blk << ", field " << f;
         }
-        if (want.empty()) {
-          continue;
-        }
-        const auto n_blk = static_cast<std::int32_t>(want.size());
-        const auto a_start = upload(stream, a.start);
-        const auto a_off = upload(stream, a.off);
-        const auto b_start = upload(stream, b.start);
-        const auto b_off = upload(stream, b.off);
-        const auto a_geom_d = upload(stream, a_geom);
-        const auto b_geom_d = upload(stream, b_geom);
-        DeviceArray<std::int32_t> table(kFields * want.size());
-        DeviceArray<double> factor(want.size());
-        ASSERT_EQ(fb::device::exchange_blocks(stream.get(), n_a, a_start.data(), a_off.data(),
-                                              a_geom_d.data(), n_b, b_start.data(), b_off.data(),
-                                              b_geom_d.data(), decay_d.data(), symmetric, n_blk,
-                                              table.data(), factor.data()),
-                  wwr::wwrSuccess)
-            << name;
-        const auto got = download_ints(stream, table.data(), kFields * want.size());
-        const auto got_factor = download(stream, factor.data(), want.size());
-        for (std::size_t blk = 0; blk < want.size(); ++blk) {
-          for (std::size_t f = 0; f < kFields; ++f) {
-            ASSERT_EQ(got[f * want.size() + blk], want[blk][f])
-                << name << ", block " << blk << ", field " << f;
-          }
-          if (want_factor[blk] == decay[0]) {
-            // max|D| is a copy, never computed.
-            ASSERT_EQ(bits(got_factor[blk]), bits(decay[0])) << name << ", block " << blk;
-            ++n_whole;
-          } else {
-            ASSERT_NEAR(got_factor[blk], want_factor[blk], kUlps * want_factor[blk])
-                << name << ", block " << blk;
-            ++n_decayed;
-          }
+        if (want_factor[blk] == decay[0]) {
+          // max|D| is a copy, never computed.
+          ASSERT_EQ(bits(got_factor[blk]), bits(decay[0])) << name << ", block " << blk;
+          ++n_whole;
+        } else {
+          ASSERT_NEAR(got_factor[blk], want_factor[blk], kUlps * want_factor[blk])
+              << name << ", block " << blk;
+          ++n_decayed;
         }
       }
     }
@@ -374,9 +375,9 @@ TEST(ExchangeHelpers, BuildsTheBlockTable) {
 }
 
 // The shell starts of every momentum, against the basis's; then the mirror of
-// a K with a distinct value in every element: the lower shell blocks are the
-// upper ones' transposes, and everything else, the diagonal blocks whole among
-// it, is untouched.
+// a K with a distinct value in every element, by either sign: the lower shell
+// blocks are the upper ones' transposes times the sign, and everything else,
+// the diagonal blocks whole among it, is untouched.
 TEST(ExchangeHelpers, MirrorsTheLowerShellBlocks) {
   FBF_REQUIRE_GPU();
   const Stream stream;
@@ -408,16 +409,19 @@ TEST(ExchangeHelpers, MirrorsTheLowerShellBlocks) {
   for (std::size_t e = 0; e < nn; ++e) {
     k[e] = 1.0 + static_cast<double>(e);
   }
-  DeviceArray<double> k_d = upload(stream, k);
-  ASSERT_EQ(fb::device::exchange_mirror(stream.get(), n_ao, start.data(), k_d.data()),
-            wwr::wwrSuccess);
-  const auto got = download(stream, k_d.data(), nn);
   const auto &aos = g.basis.aos_cart();
-  for (std::size_t m = 0; m < static_cast<std::size_t>(n_ao); ++m) {
-    for (std::size_t q = 0; q < static_cast<std::size_t>(n_ao); ++q) {
-      const bool lower = aos[q].shell_index < aos[m].shell_index;
-      const double want = lower ? k[q * n_ao + m] : k[m * n_ao + q];
-      ASSERT_EQ(bits(got[m * n_ao + q]), bits(want)) << "K(" << m << ", " << q << ")";
+  for (const double sign : {1.0, -1.0}) {
+    DeviceArray<double> k_d = upload(stream, k);
+    ASSERT_EQ(fb::device::exchange_mirror(stream.get(), n_ao, start.data(), sign, k_d.data()),
+              wwr::wwrSuccess);
+    const auto got = download(stream, k_d.data(), nn);
+    for (std::size_t m = 0; m < static_cast<std::size_t>(n_ao); ++m) {
+      for (std::size_t q = 0; q < static_cast<std::size_t>(n_ao); ++q) {
+        const bool lower = aos[q].shell_index < aos[m].shell_index;
+        const double want = lower ? sign * k[q * n_ao + m] : k[m * n_ao + q];
+        ASSERT_EQ(bits(got[m * n_ao + q]), bits(want))
+            << "sign " << sign << ", K(" << m << ", " << q << ")";
+      }
     }
   }
 }
@@ -728,9 +732,13 @@ TEST(ExchangeHelpers, RefusesWhatTheyCannotLaunch) {
                                         {1, 0, 1},
                                         {1, 1, 0},
                                         {1, 1, std::numeric_limits<std::int32_t>::max() / 2}}) {
-    EXPECT_EQ(fb::device::exchange_blocks(stream.get(), n_a, off.data(), off.data(), d.data(), n_b,
-                                          off.data(), off.data(), d.data(), d.data(), true, n_blk,
-                                          off.data(), d.data()),
+    EXPECT_EQ(fb::device::exchange_blocks(stream.get(), n_a, off.data(), off.data(), n_b,
+                                          off.data(), off.data(), n_blk, off.data()),
+              wwr::wwrErrorInvalidValue)
+        << n_a << " " << n_b << " " << n_blk;
+    EXPECT_EQ(fb::device::exchange_factors(stream.get(), n_a, off.data(), off.data(), d.data(), n_b,
+                                           off.data(), off.data(), d.data(), d.data(), n_blk,
+                                           d.data()),
               wwr::wwrErrorInvalidValue)
         << n_a << " " << n_b << " " << n_blk;
   }
@@ -754,8 +762,11 @@ TEST(ExchangeHelpers, RefusesWhatTheyCannotLaunch) {
               wwr::wwrErrorInvalidValue)
         << l << " " << n_s;
   }
-  EXPECT_EQ(fb::device::exchange_mirror(stream.get(), 0, off.data(), d.data()),
-            wwr::wwrErrorInvalidValue);
+  for (const auto &[n_ao, sign] : {std::pair{0, 1.0}, {1, 0.0}, {1, 2.0}}) {
+    EXPECT_EQ(fb::device::exchange_mirror(stream.get(), n_ao, off.data(), sign, d.data()),
+              wwr::wwrErrorInvalidValue)
+        << n_ao << " " << sign;
+  }
   EXPECT_EQ(wwr::wwrStreamSynchronize(stream.get()), wwr::wwrSuccess);
 }
 

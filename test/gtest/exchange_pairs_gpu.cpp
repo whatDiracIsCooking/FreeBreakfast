@@ -3,12 +3,13 @@
 // precedes the H s shells, so (p, s) is reached only by swapping mmd's (s|p))
 // and cc-pVDZ (s, p, d: all nine ordered classes), and the H10 chain. Each
 // class's record count against a host count of ordered primitive pairs; its
-// groups contiguous, one first shell each with its AO offset, in basis order
-// and non-increasing in the dressed record bound, and their bounds on the
-// device side as group_start; each record's rank_b; the (la, lb) and (lb, la)
-// records the same multiset with P - A and P - B swapped; every class bit for
-// bit against a host gather of mmd's records; the view naming the device
-// fields; and each record's dressed bound against FelizJueves's
+// groups (group_start) contiguous, one first shell each with its AO offset, in
+// basis order and non-increasing in the dressed record bound; each record's
+// rank_b; the (la, lb) and (lb, la) records the same multiset with P - A and
+// P - B swapped; every class bit for bit against a host gather of mmd's
+// records; the K build's sizes, Dcd rows and a <= b block tables against the
+// basis; the view naming the device fields; and each record's dressed bound
+// against FelizJueves's
 // ao.k.record_bounds (test/gtest/data/record_bound/,
 // tools/emit_record_bound_golden.py), on H2O/cc-pVDZ and the chain, with its
 // centres those of its two shells. The classes are device only: every check
@@ -94,7 +95,8 @@ Host fetch(const fb::OrderedPairClass &cls) {
           .off_a = f(cls.off_a),
           .off_b = f(cls.off_b),
           .rank_b = f(cls.rank_b),
-          .group_start = download(cls, cls.group_start, cls.groups.size() + 1)};
+          .group_start =
+              download(cls, cls.group_start, static_cast<std::size_t>(cls.n_groups) + 1)};
 }
 
 // The basis's ordered classes, with the mmd classes they were drawn from (the
@@ -201,24 +203,26 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
   const std::vector<fb::Shell> &shells = basis.shells();
   for (const fb::OrderedPairClass &cls : o.ordered) {
     const std::string name = std::format("({}, {})", cls.la, cls.lb);
-    ASSERT_FALSE(cls.groups.empty()) << name;
-    ASSERT_EQ(cls.group_start.num_elements(), cls.groups.size() + 1) << name;
+    // One group per shell of momentum la, in basis order.
+    std::vector<std::uint32_t> firsts;
+    for (std::uint32_t sh = 0; sh < basis.nshells(); ++sh) {
+      if (shells[sh].angular_momentum() == cls.la) {
+        firsts.push_back(sh);
+      }
+    }
+    ASSERT_FALSE(firsts.empty()) << name;
+    ASSERT_EQ(cls.n_groups, static_cast<std::int32_t>(firsts.size())) << name;
+    ASSERT_EQ(cls.group_start.num_elements(), firsts.size() + 1) << name;
     const Host h = fetch(cls);
     std::int32_t next = 0;
-    std::int32_t prev_shell = -1;
-    for (std::size_t gi = 0; gi < cls.groups.size(); ++gi) {
-      const fb::OrderedPairGroup &g = cls.groups[gi];
+    for (std::size_t gi = 0; gi < firsts.size(); ++gi) {
+      const fb::Shell &a = shells[firsts[gi]];
       // Contiguous and in basis order; the groups cover the class exactly.
-      EXPECT_EQ(g.start, next) << name;
-      EXPECT_EQ(h.group_start[gi], g.start) << name << " group " << gi;
-      EXPECT_GT(g.count, 0) << name;
-      EXPECT_GT(g.shell, prev_shell) << name;
-      next = g.start + g.count;
-      prev_shell = g.shell;
-      ASSERT_GE(g.shell, 0) << name;
-      ASSERT_LT(static_cast<std::uint32_t>(g.shell), basis.nshells()) << name;
-      const fb::Shell &a = shells[static_cast<std::size_t>(g.shell)];
-      EXPECT_EQ(a.angular_momentum(), cls.la) << name;
+      const std::int32_t start = h.group_start[gi];
+      const std::int32_t count = h.group_start[gi + 1] - start;
+      EXPECT_EQ(start, next) << name << " group " << gi;
+      EXPECT_GT(count, 0) << name;
+      next = start + count;
       // Every primitive pair of a against every lb shell.
       std::int64_t want = 0;
       for (const fb::Shell &b : shells) {
@@ -227,14 +231,13 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
                   static_cast<std::int64_t>(b.primitives().size());
         }
       }
-      EXPECT_EQ(g.count, want) << name << " shell " << g.shell;
-      const auto a_off = static_cast<std::int32_t>(basis.ao_offset_cart(g.shell));
-      EXPECT_EQ(g.ao_offset, a_off) << name << " shell " << g.shell;
-      for (std::int32_t k = g.start; k < g.start + g.count; ++k) {
+      EXPECT_EQ(count, want) << name << " shell " << firsts[gi];
+      const auto a_off = static_cast<std::int32_t>(basis.ao_offset_cart(firsts[gi]));
+      for (std::int32_t k = start; k < start + count; ++k) {
         const auto r = static_cast<std::size_t>(k);
         EXPECT_EQ(h.off_a[r], a_off) << name << " record " << k;
         // kb's sorted breaks need it; a far pair's bound may be exactly 0.
-        if (k > g.start) {
+        if (k > start) {
           EXPECT_LE(h.record_bound[r], h.record_bound[r - 1]) << name << " record " << k;
         }
         EXPECT_GE(h.record_bound[r], 0.0) << name << " record " << k;
@@ -246,8 +249,100 @@ TEST_P(ExchangePairs, GroupsAreContiguousOneFirstShellAndDescendingInBound) {
       }
     }
     EXPECT_EQ(next, cls.n_rec) << name;
-    EXPECT_EQ(h.group_start[cls.groups.size()], cls.n_rec) << name;
+    EXPECT_EQ(h.group_start[firsts.size()], cls.n_rec) << name;
   }
+}
+
+// What the K build reads of a class and the ordered classes make once per
+// basis: the basis's AO count and shells per momentum; a bra's Dcd rows,
+// rank_b times each momentum's shell count; and its a <= b block table against
+// every ket class of the set, in set order, each against a host enumeration
+// of the same blocks from the groups, bra-major. cc-pVDZ's shells of two
+// momenta interleave by atom, so the a <= b cut falls inside the ket groups
+// at a different place for each bra group.
+TEST_P(ExchangePairs, BraTablesAreTheBasissABlocks) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::BasisSet basis = h2o(GetParam());
+  const Ordered o = ordered_of(res, basis);
+  ASSERT_FALSE(o.ordered.empty());
+  std::vector<std::int32_t> n_shells(static_cast<std::size_t>(fb::kMaxAngularMomentum + 1));
+  for (const fb::Shell &sh : basis.shells()) {
+    const auto l = static_cast<std::size_t>(sh.angular_momentum());
+    if (l >= n_shells.size()) {
+      n_shells.resize(l + 1);
+    }
+    ++n_shells[l];
+  }
+  std::vector<Host> hosts;
+  for (const fb::OrderedPairClass &cls : o.ordered) {
+    hosts.push_back(fetch(cls));
+  }
+  // bra0, bra1, ket0, ket1, ko_a, ko_b: exchange_helpers_bridge.h's
+  // kExchangeBlockFields, which this test cannot include beside its imports
+  // (exchange_helpers_gpu.cpp's header says why).
+  constexpr std::size_t kFields = 6;
+  std::size_t n_cut = 0;
+  for (std::size_t a = 0; a < o.ordered.size(); ++a) {
+    const fb::OrderedPairClass &bra = o.ordered[a];
+    const Host &hb = hosts[a];
+    const std::string name = std::format("({}, {})", bra.la, bra.lb);
+    EXPECT_EQ(bra.n_ao, static_cast<std::int32_t>(basis.nao_cart())) << name;
+    EXPECT_EQ(bra.n_shells, n_shells) << name;
+    ASSERT_EQ(bra.n_blk.size(), o.ordered.size()) << name;
+
+    const auto n_rec = static_cast<std::size_t>(bra.n_rec);
+    const auto dc = download(bra, bra.dc, n_shells.size() * n_rec);
+    for (std::size_t ld = 0; ld < n_shells.size(); ++ld) {
+      if (n_shells[ld] == 0) {
+        continue;
+      }
+      for (std::size_t r = 0; r < n_rec; ++r) {
+        ASSERT_EQ(dc[ld * n_rec + r], hb.rank_b[r] * n_shells[ld]) << name << " ld " << ld;
+      }
+    }
+
+    std::vector<std::array<std::int32_t, kFields>> want;
+    for (std::size_t b = 0; b < o.ordered.size(); ++b) {
+      const fb::OrderedPairClass &ket = o.ordered[b];
+      const Host &hk = hosts[b];
+      std::size_t count = 0;
+      for (std::int32_t ga = 0; ga < bra.n_groups; ++ga) {
+        for (std::int32_t gb = 0; gb < ket.n_groups; ++gb) {
+          const std::int32_t ko_a = hb.off_a[static_cast<std::size_t>(hb.group_start[ga])];
+          const std::int32_t ko_b = hk.off_a[static_cast<std::size_t>(hk.group_start[gb])];
+          if (ko_a <= ko_b) {
+            want.push_back({hb.group_start[ga], hb.group_start[ga + 1], hk.group_start[gb],
+                            hk.group_start[gb + 1], ko_a, ko_b});
+            ++count;
+          }
+        }
+      }
+      EXPECT_EQ(static_cast<std::size_t>(bra.n_blk[b]), count)
+          << name << " against (" << ket.la << ", " << ket.lb << ")";
+      n_cut += static_cast<std::size_t>(bra.n_groups) * ket.n_groups - count;
+    }
+    if (want.empty()) {
+      continue;
+    }
+    // The tables back to back, each kFields segments of its own block count.
+    const auto table = download(bra, bra.blocks, kFields * want.size());
+    std::size_t at = 0;
+    std::size_t blk0 = 0;
+    for (const std::int32_t count : bra.n_blk) {
+      const auto n = static_cast<std::size_t>(count);
+      for (std::size_t blk = 0; blk < n; ++blk) {
+        for (std::size_t f = 0; f < kFields; ++f) {
+          ASSERT_EQ(table[at + f * n + blk], want[blk0 + blk][f])
+              << name << ", block " << blk0 + blk << ", field " << f;
+        }
+      }
+      at += kFields * n;
+      blk0 += n;
+    }
+  }
+  // The a > b blocks are left out.
+  EXPECT_GT(n_cut, 0U);
 }
 
 TEST_P(ExchangePairs, SwappedClassesHoldTheSameRecordsWithPaAndPbSwapped) {
@@ -297,7 +392,8 @@ TEST_P(ExchangePairs, MatchesAHostGatherOfMmd) {
     });
     ASSERT_NE(m, o.mmd.end()) << name;
     // Each group's (record, swapped), by the first shell's rank.
-    std::vector<std::vector<std::pair<std::size_t, bool>>> groups(cls.groups.size());
+    std::vector<std::vector<std::pair<std::size_t, bool>>> groups(
+        static_cast<std::size_t>(cls.n_groups));
     for (std::size_t r = 0; r < static_cast<std::size_t>(m->n_rec); ++r) {
       if (cls.la == m->la) {
         groups.at(static_cast<std::size_t>(pin(m->rank_a, r))).emplace_back(r, false);
@@ -356,7 +452,7 @@ TEST_P(ExchangePairs, ViewNamesTheDeviceFields) {
     EXPECT_EQ(v.off_a, cls.off_a.data());
     EXPECT_EQ(v.off_b, cls.off_b.data());
     EXPECT_EQ(v.rank_b, cls.rank_b.data());
-    EXPECT_EQ(v.n_groups, static_cast<std::int32_t>(cls.groups.size()));
+    EXPECT_EQ(v.n_groups, cls.n_groups);
     EXPECT_EQ(v.group_start, cls.group_start.data());
     EXPECT_EQ(cls.device_stream()->dev_idx(), res.dev_idx());
   }

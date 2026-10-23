@@ -1,7 +1,8 @@
 // The device half of
 // free_breakfast.integrals.eri.integral_direct.exchange.pairs: an ordered
-// class's order (each group sorted by mmd's dressed bound of the orientation)
-// and its gather, straight from the mmd class it is drawn from, once per basis.
+// class's order (each group sorted by mmd's dressed bound of the orientation),
+// its gather, straight from the mmd class it is drawn from, and its Dcd rows,
+// once per basis.
 // One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
@@ -147,6 +148,15 @@ __global__ void gather_kernel(const fb::PrimitivePairClassView from, const Orien
   to.ints[2][k] = (sw ? from.rank_a : from.rank_b)[r];
 }
 
+// dc[r] = rank_b[r] * n_d: see ordered_pair_bra_rows.
+__global__ void bra_rows_kernel(const int32_t n_rec, const int32_t *rank_b, const int32_t n_d,
+                                int32_t *dc) {
+  const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (r < n_rec) {
+    dc[r] = rank_b[r] * n_d;
+  }
+}
+
 // One thread per item, kFourWarps to a block.
 uint32_t blocks_of(const uint32_t n) {
   return fb::math::idivup(n, fb::kFourWarps);
@@ -203,6 +213,16 @@ wwr::wwrError_t ordered_pair_gather(const wwr::wwrStream_t stream,
   }
   gather_kernel<<<blocks_of(static_cast<uint32_t>(n_rec)), kFourWarps, 0, stream>>>(from, o, n_rec,
                                                                                     perm, to);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t ordered_pair_bra_rows(const wwr::wwrStream_t stream, const int32_t n_rec,
+                                      const int32_t *rank_b, const int32_t n_d, int32_t *dc) {
+  if (n_rec < 1 || n_d < 0) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  bra_rows_kernel<<<blocks_of(static_cast<uint32_t>(n_rec)), kFourWarps, 0, stream>>>(n_rec, rank_b,
+                                                                                      n_d, dc);
   return wwr::wwrGetLastError();
 }
 

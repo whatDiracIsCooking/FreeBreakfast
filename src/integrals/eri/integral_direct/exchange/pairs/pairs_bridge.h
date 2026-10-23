@@ -1,6 +1,6 @@
 /// @file
-/// @brief The ordered classes' order and gather launchers, declared once for
-/// the module that calls them and the device TU that defines them.
+/// @brief The ordered classes' order, gather and Dcd-row launchers, declared
+/// once for the module that calls them and the device TU that defines them.
 ///
 /// Included by pairs.cpp in its GLOBAL MODULE FRAGMENT, and by
 /// pairs_launch.cu directly, for the reason overlap_bridge.h gives: a
@@ -81,5 +81,18 @@ namespace free_breakfast::device {
                                                   int32_t n_rec, const uint32_t *perm,
                                                   double *const doubles[12],
                                                   int32_t *const ints[3]);
+
+/// @brief One bra class's rows of the (lb, ld) Dcd, `dc[r] = rank_b[r] * n_d`,
+/// on @p stream, for its @p n_rec records' second-shell ranks @p rank_b and
+/// @p n_d the number of shells of momentum ld: kb's `dc`, the row of Dcd
+/// (exchange_gather_dcd) its record (a, c) reads, `rank_c * n_d + rank_d`
+/// with the ket's `dd = rank_d`. It depends on the ket's ld, so a bra class
+/// has one per ld; @p dc is @p n_rec int32s, written whole.
+///
+/// @return The launch status (wwrErrorInvalidValue if @p n_rec is not
+///         positive or @p n_d is negative).
+[[nodiscard]] wwr::wwrError_t ordered_pair_bra_rows(wwr::wwrStream_t stream, int32_t n_rec,
+                                                    const int32_t *rank_b, int32_t n_d,
+                                                    int32_t *dc);
 
 } // namespace free_breakfast::device

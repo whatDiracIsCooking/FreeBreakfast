@@ -1,7 +1,7 @@
 /// @file
 /// @brief The hand-written device steps the generated kb kernels leave to
-/// their launcher: max|D|, the Dcd gather, the block table, and the shell
-/// starts and mirror that complete the symmetric sweep's K, declared once for
+/// their launcher: max|D|, the Dcd gather, the block table and its factors,
+/// and the shell starts and mirror that complete the sweep's K, declared once for
 /// the module that calls them and the device TU that defines them.
 ///
 /// Included by the exchange module's implementation unit in its GLOBAL MODULE
@@ -180,8 +180,10 @@ exchange_group_geometry(wwr::wwrStream_t stream, int32_t n_groups, const int32_t
                                                   const int32_t *off_d, double *dcd);
 
 /// @brief Write the block table of one kb launch, a bra class against a ket
-/// class, into @p blocks, on @p stream: one block per (bra group, ket group),
-/// or with @p symmetric only those whose bra shell is at most the ket shell.
+/// class, into @p blocks, on @p stream: one block per (bra group, ket group)
+/// whose bra shell is at most the ket shell, the a <= b blocks K's sweep
+/// computes (exchange.cppm). It depends only on the basis, so the ordered
+/// classes write each bra's tables once (ordered_pair_classes).
 ///
 /// Each side is given by its groups by first shell: @p n_a bra groups, group g
 /// the bra records [@p a_start[g], @p a_start[g + 1]), and @p a_off the bra
@@ -198,16 +200,29 @@ exchange_group_geometry(wwr::wwrStream_t stream, int32_t n_groups, const int32_t
 ///     bra0 = a_start[ga], bra1 = a_start[ga + 1], ko_a = a_off[bra0]
 ///     ket0 = b_start[gb], ket1 = b_start[gb + 1], ko_b = b_off[ket0]
 ///
-/// @p n_blk must be the number of blocks so chosen, n_a n_b when not
-/// @p symmetric (the host counts it from the classes' groups; nothing here
-/// checks it, and a smaller one is written out of bounds).
+/// @p n_blk must be the number of blocks so chosen (the host counts it from
+/// the basis; nothing here checks it, and a smaller one is written out of
+/// bounds).
 ///
-/// Beside the table, @p factor (@p n_blk doubles, written whole) is kb's
-/// `dmax`: each block's density factor F_ab, a bound on every |D_cd| the block
-/// can visit (arXiv:2407.21445 §4.3.1; FelizJueves #484). With @p a_geom and @p b_geom
-/// the two classes' group geometries (@ref kExchangeGroupFields), A and B the
-/// two groups' centres and R_a and R_b their reaches, and @p decay the call's
-/// (@ref kExchangeDecayFields), d = |AB| - R_a - R_b and
+/// @return The launch status (wwrErrorInvalidValue if @p n_a, @p n_b or
+///         @p n_blk is not positive, or the table has more than INT32_MAX
+///         elements).
+[[nodiscard]] wwr::wwrError_t exchange_blocks(wwr::wwrStream_t stream, int32_t n_a,
+                                              const int32_t *a_start, const int32_t *a_off,
+                                              int32_t n_b, const int32_t *b_start,
+                                              const int32_t *b_off, int32_t n_blk, int32_t *blocks);
+
+/// @brief Write the density factor of every block of @ref exchange_blocks's
+/// table for the same groups into @p factor (@p n_blk doubles, in the table's
+/// order, written whole), on @p stream: kb's `dmax`, each block's F_ab, a
+/// bound on every |D_cd| the block can visit (arXiv:2407.21445 §4.3.1;
+/// FelizJueves #484). It depends on the density, so the K build writes it
+/// per call.
+///
+/// With @p a_geom and @p b_geom the two classes' group geometries
+/// (@ref kExchangeGroupFields), A and B the two groups' centres and R_a and
+/// R_b their reaches, and @p decay the call's (@ref kExchangeDecayFields),
+/// d = |AB| - R_a - R_b and
 ///
 ///     F_ab = max|D|                                  if d <= 2 kExchangeSameCentre
 ///                                                    or either R is negative
@@ -217,14 +232,11 @@ exchange_group_geometry(wwr::wwrStream_t stream, int32_t n_groups, const int32_t
 /// every one is off-centre, and H_off's bound covers it. FelizJueves's cut is
 /// d <= 0; the margin is what its exact centres do not need.
 ///
-/// @return The launch status (wwrErrorInvalidValue if @p n_a, @p n_b or
-///         @p n_blk is not positive, or the table has more than INT32_MAX
-///         elements).
+/// @return The launch status, as @ref exchange_blocks.
 [[nodiscard]] wwr::wwrError_t
-exchange_blocks(wwr::wwrStream_t stream, int32_t n_a, const int32_t *a_start, const int32_t *a_off,
-                const double *a_geom, int32_t n_b, const int32_t *b_start, const int32_t *b_off,
-                const double *b_geom, const double *decay, bool symmetric, int32_t n_blk,
-                int32_t *blocks, double *factor);
+exchange_factors(wwr::wwrStream_t stream, int32_t n_a, const int32_t *a_start, const int32_t *a_off,
+                 const double *a_geom, int32_t n_b, const int32_t *b_start, const int32_t *b_off,
+                 const double *b_geom, const double *decay, int32_t n_blk, double *factor);
 
 /// @brief Write the first AO of its shell for every AO of the @p n_s shells of
 /// momentum @p l, `start[off[r] + i] = off[r]` for i < n_x(l), on @p stream.
@@ -238,20 +250,22 @@ exchange_blocks(wwr::wwrStream_t stream, int32_t n_a, const int32_t *a_start, co
 [[nodiscard]] wwr::wwrError_t exchange_shell_starts(wwr::wwrStream_t stream, int32_t l, int32_t n_s,
                                                     const int32_t *off, int32_t *start);
 
-/// @brief Complete the symmetric sweep's @p k from its a <= b shell blocks, on
+/// @brief Complete the sweep's @p k from its a <= b shell blocks, on
 /// @p stream: every element of a lower shell block, whose column is in an
-/// earlier shell than its row, is set to its transpose,
+/// earlier shell than its row, is set to its transpose times @p sign,
 ///
-///     k[m][q] = k[q][m]   for q < start[m]
+///     k[m][q] = sign k[q][m]   for q < start[m]
 ///
+/// @p sign is 1 for a symmetric density's K, which is symmetric, and -1 for an
+/// antisymmetric one's, which is antisymmetric (exchange.cppm).
 /// @p start the first AO of each AO's shell (@ref exchange_shell_starts). The
 /// a == b blocks, computed whole, are left as they are. It sets, never adds:
 /// the lower blocks' contents are overwritten, and every kb launch into the
 /// upper ones must be ordered before it.
 ///
 /// @return The launch status (wwrErrorInvalidValue if @p n_ao is not
-///         positive).
+///         positive or @p sign is neither 1 nor -1).
 [[nodiscard]] wwr::wwrError_t exchange_mirror(wwr::wwrStream_t stream, int32_t n_ao,
-                                              const int32_t *start, double *k);
+                                              const int32_t *start, double sign, double *k);
 
 } // namespace free_breakfast::device

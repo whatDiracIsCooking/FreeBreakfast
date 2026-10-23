@@ -19,12 +19,32 @@ export import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
 export namespace free_breakfast {
 
+/// @brief The symmetry of @c exchange's density, which its K shares, and so
+/// the sign of the mirror that completes K from its a <= b shell blocks.
+///
+/// Renaming c <-> d and using `(ac|bd) = (bd|ac)` gives `K[D]^T = K[D^T]`. So
+/// a symmetric D has a symmetric K, `K_ba = K_ab^T`, and an antisymmetric D an
+/// antisymmetric K, `K_ba = -K_ab^T`: either way only the a <= b blocks need
+/// computing.
+///
+/// **A general D is two sweeps.** Split it as S = (D + D^T) / 2 plus
+/// A = (D - D^T) / 2 (one @c geam), run @c exchange on S as Symmetric and on A
+/// as Antisymmetric, and add the two K: the same kb work as one sweep over
+/// every block, and each half fits its own decay, so it screens at least as
+/// tightly. Codes usually have the two parts already: TDHF / RPA work with
+/// X + Y and X - Y, which are exactly the symmetric and antisymmetric parts,
+/// and so do CIS transition densities and the response to an imaginary
+/// perturbation (a magnetic field's density is antisymmetric).
+enum class DensitySymmetry { Symmetric, Antisymmetric };
+
 /// @brief The Cartesian exchange matrix K_ab = sum_cd D_cd (ac|bd) of the AO
-/// density @p density into @p k, screened at @p tau, by the a <= b shell
-/// blocks mirrored unless @p symmetric is false.
+/// density @p density into @p k, screened at @p tau, by its a <= b shell
+/// blocks, the rest mirrored as @p symmetry says.
 ///
 /// @p classes are @c ordered_pair_classes(res, basis, primitive_pair_classes)
-/// of the basis @p density and @p k were made for, built once per basis.
+/// of the basis @p density and @p k were made for, built once per basis: the
+/// whole set, in its order, since a bra's block tables are made against every
+/// class of it.
 ///
 /// Screened by kb's bound: a primitive quartet is skipped when
 /// `Ip * Iq * F_ab < tau`, Ip and Iq the bra's and the ket's DRESSED record
@@ -47,60 +67,62 @@ export namespace free_breakfast {
 /// the density's decay (Λ, H_off) from the centres; then per class the (la, lb)
 /// gather of the density into Dcd and its group geometry (each first shell's
 /// centre and reach); then, after a join, each class as a bra on its own
-/// stream: for every ket class, its block table and the blocks' factors, one
-/// block per (bra first shell a, ket first shell b), and one
-/// kb<la, lc, lb, ld> launch over them, one warp per block adding its
-/// contracted K_ab straight into @p k.
+/// stream: for every ket class, its block table's factors, one block per
+/// (bra first shell a, ket first shell b) with a <= b, and one
+/// kb<la, lc, lb, ld> launch over the table, one warp per block adding its
+/// contracted K_ab straight into @p k; and after a last join, the a > b blocks
+/// set to the a < b ones' transposes, negated for an antisymmetric density.
+/// An a == b block is computed whole.
 ///
-/// **@p symmetric (the default) is a contract: @p density must be symmetric,
-/// and it is not checked** (refusing would need a device pass and a host
-/// synchronization to read the verdict back). It halves the work by the
-/// bra-ket swap `(ac|bd) = (bd|ac)`: for a symmetric D, K_ba = K_ab^T, so each
-/// table holds only the blocks of a <= b, and after every launch the a > b
-/// blocks of @p k are set to the a < b ones' transposes; an a == b block is
-/// computed whole. With @p symmetric false every table holds every block and
-/// nothing is mirrored: K_ab and K_ba are each computed directly, for any D,
-/// at twice the work. For a non-symmetric D the symmetric sweep returns the
-/// a <= b blocks of its K, mirrored.
+/// **@p symmetry is a contract: it is not checked** (refusing would need a
+/// device pass and a host synchronization to read the verdict back). For a D
+/// of neither symmetry, or the other one, the call returns its K's a <= b
+/// blocks and the mirror of them @p symmetry names; @ref DensitySymmetry says
+/// how to build such a D's K from two calls.
 ///
 /// Queued on res.stream(), each phase's classes forked from it and joined back
-/// (@c launch_each), with no host synchronization; the scratch (per class 4
-/// doubles per group, (l_max + 1) n_rec int32s, and 6 int32s and a double per
-/// block of its tables; one Dcd per class; one rank table per momentum; 3 n_ao
-/// doubles of AO centres and n_ao int32s of shell starts; four doubles of
-/// decay and bound maximum) is drawn from
-/// res.device()'s pool and returned to it in res.stream()'s order. The device
+/// (@c launch_each), with no host synchronization, and every class's stream
+/// forked from it once more at the end, succeeded or not, so nothing queued
+/// there later (a class's own frees, the next build's scratch) runs ahead of
+/// another class's stream still reading it. Writes the classes' scratch
+/// (@ref OrderedPairClass), so one call at a time per set of classes; it
+/// allocates only one rank table per momentum, 3 n_ao doubles of AO centres
+/// and n_ao int32s of shell starts, and four doubles of decay and bound
+/// maximum, from res.device()'s pool in res.stream()'s order. The device
 /// res.dev_idx() names is made current for the call and the previous one
 /// restored.
 ///
 /// @return Success; InvalidConfig if @p tau is negative or NaN, if @p res is
 ///         not on @p k's, @p density's or @p classes' device, if @p density and
-///         @p k differ in order, if a class is above d, if a class's shell
-///         reaches past @p k's order, or if k.n() is too large for the kernels'
-///         32-bit index (k.n()^2 above INT32_MAX), or a launch's table is (6
-///         int32s per block above INT32_MAX); or the GpuRuntime error of
-///         the first memset, fork, launch or join that failed, which leaves
-///         @p k unspecified.
-[[nodiscard]] Status exchange(DeviceResources &res, std::span<const OrderedPairClass> classes,
+///         @p k differ in order, if a class is above d, if the classes are of a
+///         basis of another order than @p k's, if @p classes are not one whole
+///         set in its order (a subset, or reordered), or if k.n() is too large
+///         for the kernels' 32-bit index (k.n()^2 above INT32_MAX); or the
+///         GpuRuntime error of the first memset, fork, launch or join that
+///         failed, which leaves @p k unspecified.
+[[nodiscard]] Status exchange(DeviceResources &res, std::span<OrderedPairClass> classes,
                               const CartesianMatrixAO &density, CartesianMatrixAO &k,
-                              double tau = 1e-13, bool symmetric = true);
+                              double tau = 1e-13,
+                              DensitySymmetry symmetry = DensitySymmetry::Symmetric);
 
 /// @brief The density factor F_ab of every block @c exchange would launch for
 /// the same arguments, read back to the host: the decay, the reaches and the
-/// block tables made exactly as @c exchange makes them, and nothing of K
-/// itself (no zeroing, no kb launch, no mirror).
+/// factors made exactly as @c exchange makes them, and nothing of K itself
+/// (no zeroing, no kb launch, no mirror). The factors do not depend on the
+/// density's symmetry: both sweeps launch the same a <= b blocks.
 ///
 /// For diagnostics and tests: how many blocks the decay screens below max|D|
 /// is what decides whether it pays. The factors are bra class major (in
 /// @p classes' order), then ket class, then each table's own order, bra group
-/// major. Unlike @c exchange it synchronizes res.stream() before returning.
+/// major. It writes the classes' scratch as @c exchange does, and unlike it
+/// synchronizes res.stream() before returning.
 ///
 /// @return The factors (none for no @p classes or an empty basis); the
 ///         InvalidConfig errors of @c exchange that do not concern K; or the
 ///         GpuRuntime error of the first launch, copy or synchronization that
 ///         failed.
 [[nodiscard]] Result<std::vector<double>>
-exchange_block_factors(DeviceResources &res, std::span<const OrderedPairClass> classes,
-                       const CartesianMatrixAO &density, double tau = 1e-13, bool symmetric = true);
+exchange_block_factors(DeviceResources &res, std::span<OrderedPairClass> classes,
+                       const CartesianMatrixAO &density, double tau = 1e-13);
 
 } // namespace free_breakfast

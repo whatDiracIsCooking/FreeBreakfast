@@ -30,25 +30,10 @@ export namespace free_breakfast {
 
 using free_breakfast::OrderedPairClassView;
 
-/// @brief The records of one ordered class whose first shell is one shell: a
-/// contiguous run of an @ref OrderedPairClass, which a K block takes whole
-/// (its bra or its ket range).
-struct OrderedPairGroup {
-  /// @brief The first shell, as an index into @c BasisSet::shells().
-  int32_t shell;
-  /// @brief The first shell's first Cartesian AO (@c BasisSet::ao_offset_cart),
-  /// every record's @ref OrderedPairClass::off_a.
-  int32_t ao_offset;
-  /// @brief The group's first record.
-  int32_t start;
-  /// @brief The group's record count, positive.
-  int32_t count;
-};
-
 /// @brief Every ordered primitive-pair record of one class (la, lb), in either
 /// order of la and lb, one @ref n_rec long device buffer per field, all on the
-/// class's own work stream, and its groups by first shell on the host and,
-/// as their bounds, on the device.
+/// class's own work stream; its groups by first shell, as their bounds on the
+/// device; and what the K build reads of it as a bra, and writes per build.
 ///
 /// The fields are mmd's, named as there, with "a" the record's first shell and
 /// "b" its second: a record taken from mmd's (b, a) is stored with its P - A
@@ -63,6 +48,19 @@ struct OrderedPairGroup {
 /// each group sorted by @ref record_bound, non-increasing: the order kb's
 /// screen `break`s need of its bras and kets.
 ///
+/// **The classes are a set.** A bra's block tables are made against every
+/// class of its @ref ordered_pair_classes call, so the K build takes the whole
+/// set, in its order, and refuses anything else (@ref n_blk is how it tells).
+///
+/// **The K build's scratch is the class's, not the build's** (as J's is
+/// @c CoulombPairClass's). What depends only on the basis is written once, by
+/// @ref ordered_pair_classes: as a bra, its Dcd rows per ld (@ref dc) and its
+/// kb block tables (@ref blocks). What depends on the density, @ref dcd,
+/// @ref geom and @ref factor, every @c exchange call rewrites. So an SCF loop
+/// allocates none of it per build, and the K build allows one @c exchange or
+/// @c exchange_block_factors at a time per set of classes: two builds over
+/// the same classes must be queued on one stream, which orders them.
+///
 /// **Device only.** There is no host copy of a record: a reader copies a
 /// field back itself, on @ref device_stream()'s stream or after it.
 ///
@@ -72,10 +70,25 @@ struct OrderedPairClass {
   int32_t la;
   /// @brief The second shell's angular momentum.
   int32_t lb;
-  /// @brief The number of records, positive: the length of every field.
+  /// @brief The number of records, positive: the length of every record field.
   int32_t n_rec;
-  /// @brief The class's own work stream: the records were allocated and
-  /// written on it. Read through @ref device_stream().
+  /// @brief The number of groups by first shell, positive: one per shell of
+  /// momentum @ref la, in basis order.
+  int32_t n_groups;
+  /// @brief The basis's Cartesian AO count: the order of the density and the
+  /// K the class serves.
+  int32_t n_ao;
+  /// @brief The basis's shell count per angular momentum, ascending from s, at
+  /// least kMaxAngularMomentum + 1 entries (0 for a momentum it does not
+  /// reach): the extents of @ref dc and @ref dcd.
+  std::vector<int32_t> n_shells;
+  /// @brief The blocks of this class's block table as a bra against each
+  /// class of its set as a ket, in the set's order: one per (a, b), a a first
+  /// shell of this class and b one of the ket's, with a <= b in basis order.
+  /// So its size is the set's class count. Each is at most INT32_MAX / 6.
+  std::vector<int32_t> n_blk;
+  /// @brief The class's own work stream: everything was allocated and written
+  /// on it. Read through @ref device_stream().
   std::shared_ptr<DeviceStream> work_stream;
   /// @brief zeta = alpha + beta.
   StreamBuffers::device<double> zeta;
@@ -118,14 +131,33 @@ struct OrderedPairClass {
   /// `rank_c * n_shells(ld) + rank_d` (exchange_helpers_bridge.h), so a bra's
   /// `dc` and a ket's `dd` are formed from it.
   StreamBuffers::device<int32_t> rank_b;
-  /// @brief The groups by first shell, in basis order, covering the records
-  /// exactly: group g is records [start, start + count), its first shell the
-  /// one of rank g among the basis's shells of momentum @ref la.
-  std::vector<OrderedPairGroup> groups;
-  /// @brief The groups' bounds on the device, groups.size() + 1 entries: group
-  /// g is records [group_start[g], group_start[g + 1]), the last entry n_rec.
-  /// The K build makes its block table from it on the device.
+  /// @brief The groups' bounds, @ref n_groups + 1 entries, covering the
+  /// records exactly: group g is records [group_start[g], group_start[g + 1]),
+  /// its first shell the one of rank g among the basis's shells of momentum
+  /// @ref la, and the last entry n_rec. The block tables are made from it.
   StreamBuffers::device<int32_t> group_start;
+  /// @brief As a bra (a, c), its Dcd rows for each ld, n_shells.size() x
+  /// n_rec, row ld at `ld * n_rec`: `rank_b[r] * n_shells[ld]`, kb's `dc`
+  /// (ordered_pair_bra_rows). Written once; a row of a momentum the basis
+  /// does not reach is never written or read.
+  StreamBuffers::device<int32_t> dc;
+  /// @brief As a bra, its kb block tables (exchange_blocks), one per ket class
+  /// of the set in its order, each kExchangeBlockFields x @ref n_blk segments
+  /// (bra0, bra1, ket0, ket1, ko_a, ko_b), the tables back to back. Written
+  /// once.
+  StreamBuffers::device<int32_t> blocks;
+  /// @brief Scratch: as the density class (lc, ld) = (la, lb), Dcd, the
+  /// (la, lb) shell blocks of the density, (n_shells[la] n_shells[lb]) x
+  /// (n_x(la) n_x(lb)) (exchange_gather_dcd).
+  StreamBuffers::device<double> dcd;
+  /// @brief Scratch: the group geometry, kExchangeGroupFields x @ref n_groups:
+  /// each first shell's centre and its reach at the build's tau and density
+  /// (exchange_group_geometry).
+  StreamBuffers::device<double> geom;
+  /// @brief Scratch: as a bra, each block's density factor F_ab
+  /// (exchange_factors), beside @ref blocks: one per block, the tables'
+  /// factors back to back in the same order.
+  StreamBuffers::device<double> factor;
 
   /// @brief The class's own work stream (@ref work_stream), as mmd's classes
   /// name theirs, for the builds' fork and join.
@@ -153,7 +185,7 @@ struct OrderedPairClass {
         .off_a = off_a.data(),
         .off_b = off_b.data(),
         .rank_b = rank_b.data(),
-        .n_groups = static_cast<int32_t>(groups.size()),
+        .n_groups = n_groups,
         .group_start = group_start.data(),
     };
   }
@@ -170,27 +202,37 @@ struct OrderedPairClass {
 /// momenta, a shell against itself once. Only reached classes appear, so none
 /// is empty.
 ///
-/// The groups are the host's, from @p basis alone: one per shell of momentum
-/// la, in basis order, of nprim(a) times the primitives of every lb shell.
-/// The rest is on the device, on each class's stream, once per basis: the
-/// order that groups the mmd class's orientations by first shell and sorts
-/// each group by its dressed bound, non-increasing, equal bounds in mmd's
-/// record order (two stable device sorts); @ref OrderedPairClass::group_start
-/// from it; and every field written in that order straight from the mmd
-/// class. **kb's screen `break`s depend on that order**: an unsorted group is
-/// a wrong K, not a slow one.
+/// The groups are @p basis's: one per shell of momentum la, in basis order,
+/// of nprim(a) times the primitives of every lb shell; so are
+/// @ref OrderedPairClass::n_shells, @ref OrderedPairClass::n_ao and every
+/// table's block count, @ref OrderedPairClass::n_blk. The rest is on the
+/// device, on each class's stream, once per basis: the order that groups the
+/// mmd class's orientations by first shell and sorts each group by its
+/// dressed bound, non-increasing, equal bounds in mmd's record order (two
+/// stable device sorts); @ref OrderedPairClass::group_start from it; every
+/// field written in that order straight from the mmd class; then, once every
+/// class is gathered, each class's Dcd rows and its block tables against
+/// every class. **kb's screen `break`s depend on that order**: an unsorted
+/// group is a wrong K, not a slow one. The K build's per-build scratch is
+/// allocated here too, and left unwritten.
 ///
 /// No host synchronization: each class's stream waits on an event recorded on
-/// its mmd class's stream, so it reads mmd's final records, and the mmd
-/// class's stream then waits on the class's gather, so a free queued there
-/// after the return (the mmd class's destruction) does not overtake it. The
+/// its mmd class's stream, so it reads mmd's final records. A bra's tables
+/// read every class's groups, so every class's stream is joined into
+/// res.stream() after its gather and forked back from it for its tables, and
+/// joined and forked once more after them, so a class's frees follow every
+/// table that read it. res.stream() then waits on every gather and table, and
+/// each mmd class's stream waits on res.stream(), so a free queued there after
+/// the return (the mmd class's destruction) does not overtake a gather. The
 /// device res.dev_idx() names is made current for the call and the previous
 /// one restored. A class of more than INT32_MAX records logs and aborts.
 ///
 /// @return The ordered classes (none for no @p classes), the GpuRuntime error
 ///         of the first event or launch that failed, or an InvalidConfig error
-///         if @p classes are not those of @p basis: a class missing, repeated,
-///         not la <= lb, or of a record count not the basis's.
+///         if @p classes are not those of @p basis (a class missing, repeated,
+///         not la <= lb, or of a record count not the basis's) or a block
+///         table would pass the kernels' 32-bit index (6 int32s per block
+///         above INT32_MAX).
 [[nodiscard]] Result<std::vector<OrderedPairClass>>
 ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
                      const std::vector<PrimitivePairClass> &classes);
