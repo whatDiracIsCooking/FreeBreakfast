@@ -5,13 +5,12 @@
 # Under CUDA that wants relocatable device code, this library's default, so it
 # must never pass NO_DEVICE_LINKING (nvcc warns #20280 without it). The bridge
 # header it shares with the module names int32_t, kMaxAngularMomentum,
-# PrimitivePairClassView, NucleiView and wwrStream_t, hence types_headers,
-# basis::headers, mmd::headers, molecule::headers and wwr::device PUBLIC. The
-# kernels include FelizJueves's
-# felizjueves/runtime.h and the shared eval_boys.h, which nothing outside this
-# library sees, hence felizjueves::headers and shared::headers PRIVATE; so is
-# the launcher's block sizing (block_params.h, primitives.h), hence
-# core::kernel_headers.
+# PrimitivePairClassView, NucleiView, wwrStream_t and wwrError_t, hence
+# types_headers, basis::headers, mmd::headers, molecule::headers and wwr::device
+# PUBLIC. The kernels include FelizJueves's felizjueves/runtime.h and the shared
+# eval_boys.h, which nothing outside this library sees, hence
+# felizjueves::headers and shared::headers PRIVATE; so is the launcher's block
+# sizing (block_params.h, primitives.h), hence core::kernel_headers.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.one_electron.potential_en.device

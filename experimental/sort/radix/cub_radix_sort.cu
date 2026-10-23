@@ -40,21 +40,20 @@ wwr::wwrError_t copy_back(vendor::DoubleBuffer<T> &buffer, T *caller, const uint
 
 } // namespace
 
-int32_t cub_radix_sort_temp_bytes(const uint32_t n, const bool with_values, size_t *bytes) {
+wwr::wwrError_t cub_radix_sort_temp_bytes(const uint32_t n, const bool with_values, size_t *bytes) {
   // A null temp pointer makes the call a size query; the buffers are not read.
   vendor::DoubleBuffer<double> keys{nullptr, nullptr};
   const auto num_items = static_cast<int32_t>(n);
   if (with_values) {
     vendor::DoubleBuffer<uint32_t> values{nullptr, nullptr};
-    return static_cast<int32_t>(
-        vendor::DeviceRadixSort::SortPairs(nullptr, *bytes, keys, values, num_items));
+    return vendor::DeviceRadixSort::SortPairs(nullptr, *bytes, keys, values, num_items);
   }
-  return static_cast<int32_t>(vendor::DeviceRadixSort::SortKeys(nullptr, *bytes, keys, num_items));
+  return vendor::DeviceRadixSort::SortKeys(nullptr, *bytes, keys, num_items);
 }
 
-int32_t cub_radix_sort_vendor(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
-                              double *keys_alt, uint32_t *values, uint32_t *values_alt, void *temp,
-                              size_t temp_bytes) {
+wwr::wwrError_t cub_radix_sort_vendor(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
+                                      double *keys_alt, uint32_t *values, uint32_t *values_alt,
+                                      void *temp, size_t temp_bytes) {
   vendor::DoubleBuffer<double> key_buffer{keys, keys_alt};
   const auto num_items = static_cast<int32_t>(n);
   wwr::wwrError_t err = wwr::wwrSuccess;
@@ -72,7 +71,7 @@ int32_t cub_radix_sort_vendor(const wwr::wwrStream_t stream, const uint32_t n, d
   if (err == wwr::wwrSuccess) {
     err = copy_back(key_buffer, keys, n, stream);
   }
-  return static_cast<int32_t>(err);
+  return err;
 }
 
 } // namespace free_breakfast::device

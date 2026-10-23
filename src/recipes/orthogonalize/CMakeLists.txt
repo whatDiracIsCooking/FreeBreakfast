@@ -1,7 +1,8 @@
 # The inverse_sqrt kernel. Device code in its own library, so its language and
 # -x hip never reach the module compiles. The bridge header it shares with the
-# module names int32_t and wwrStream_t, hence types_headers and wwr::device
-# PUBLIC; parallel_for and primitives.h (math::sqrt) are its own business.
+# module names int32_t, wwrStream_t and wwrError_t, hence types_headers and
+# wwr::device PUBLIC; parallel_for and primitives.h (math::sqrt) are its own
+# business.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.recipes.orthogonalize.device

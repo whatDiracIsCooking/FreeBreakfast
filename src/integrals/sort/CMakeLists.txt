@@ -3,9 +3,9 @@
 # Iq * Dmax. Device code only, no module: a device library links it and its
 # .cu includes merge_sort_bridge.h, which its source directory, its public
 # include path, supplies. experimental/sort/merge links it too, rather than
-# keeping a copy. The bridge names int32_t and wwrStream_t, and merge_sort.cu
-# reads kWarpSize (block_params.h), hence core::kernel_headers PUBLIC: it
-# brings types_headers and wwr::device with it.
+# keeping a copy. The bridge names int32_t, wwrStream_t and wwrError_t, and
+# merge_sort.cu reads kWarpSize (block_params.h), hence core::kernel_headers
+# PUBLIC: it brings types_headers and wwr::device with it.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.sort.device

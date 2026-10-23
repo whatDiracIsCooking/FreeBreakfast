@@ -8,9 +8,12 @@
 /// plain TU, which a .cu is (wwr docs/architecture.md, section 14).
 ///
 /// The launchers are generic in the complex type Z and its real component type
-/// R, so this header names neither wwr complex type and needs nothing past
-/// runtime.h; the caller spells R as wwr::ComplexToRealType<Z>, and the .cu
-/// instantiates the two pairs.
+/// R, so this header names neither wwr complex type; the caller spells R as
+/// wwr::ComplexToRealType<Z>, and the .cu instantiates the two pairs.
+///
+/// wwrStream_t and wwrError_t come from a different wwr header in each pass, as
+/// src/integrals/one_electron/overlap/overlap_bridge.h explains, so the module
+/// passes its stream in and takes the status back with no cast.
 
 #pragma once
 
@@ -18,7 +21,13 @@
 // must not follow the vendor runtime header (see primitives.h).
 #include "integral_types.h"
 
+// wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
+// wwrError_t: see src/integrals/one_electron/overlap/overlap_bridge.h.
+#if defined(__CUDACC__) || defined(__HIP__) || defined(__HIPCC__)
 #include "runtime.h"
+#else
+#include "wwr/runtime_api.h"
+#endif
 
 namespace free_breakfast::device {
 
@@ -28,12 +37,10 @@ namespace free_breakfast::device {
 /// @p a has leading dimension @p lda, both planes @p ldp; padding rows are
 /// neither read nor written. @p rows and @p cols must be positive.
 ///
-/// @return The launch status, as the integer value of `wwrError_t`. The enum
-///         itself is only in runtime.h's device section, which a host GMF does
-///         not see; the caller casts it back.
+/// @return The launch status.
 template <typename Z, typename R>
-[[nodiscard]] int32_t split_planes(wwr::wwrStream_t stream, int32_t rows, int32_t cols, const Z *a,
-                                   int32_t lda, R *re, R *im, int32_t ldp);
+[[nodiscard]] wwr::wwrError_t split_planes(wwr::wwrStream_t stream, int32_t rows, int32_t cols,
+                                           const Z *a, int32_t lda, R *re, R *im, int32_t ldp);
 
 /// @brief c(i,j) <- (re(i,j), im(i,j)) over the column-major @p rows x @p cols
 /// block, on @p stream; split_planes' inverse.
@@ -41,9 +48,10 @@ template <typename Z, typename R>
 /// Both planes have leading dimension @p ldp, @p c has @p ldc; padding rows are
 /// neither read nor written. @p rows and @p cols must be positive.
 ///
-/// @return The launch status, as the integer value of `wwrError_t`.
+/// @return The launch status.
 template <typename Z, typename R>
-[[nodiscard]] int32_t merge_planes(wwr::wwrStream_t stream, int32_t rows, int32_t cols, const R *re,
-                                   const R *im, int32_t ldp, Z *c, int32_t ldc);
+[[nodiscard]] wwr::wwrError_t merge_planes(wwr::wwrStream_t stream, int32_t rows, int32_t cols,
+                                           const R *re, const R *im, int32_t ldp, Z *c,
+                                           int32_t ldc);
 
 } // namespace free_breakfast::device

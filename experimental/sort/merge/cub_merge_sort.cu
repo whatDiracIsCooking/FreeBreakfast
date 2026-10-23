@@ -40,30 +40,29 @@ struct TotalLess {
 
 } // namespace
 
-int32_t cub_merge_sort_temp_bytes(const uint32_t n, const bool with_values, size_t *bytes) {
+wwr::wwrError_t cub_merge_sort_temp_bytes(const uint32_t n, const bool with_values, size_t *bytes) {
   // A null temp pointer makes the call a size query; the arrays are not read.
   const auto num_items = static_cast<int32_t>(n);
   uint64_t *const keys = nullptr;
   if (with_values) {
     uint32_t *const values = nullptr;
-    return static_cast<int32_t>(vendor::DeviceMergeSort::StableSortPairs(
-        nullptr, *bytes, keys, values, num_items, TotalLess{}));
+    return vendor::DeviceMergeSort::StableSortPairs(nullptr, *bytes, keys, values, num_items,
+                                                    TotalLess{});
   }
-  return static_cast<int32_t>(
-      vendor::DeviceMergeSort::StableSortKeys(nullptr, *bytes, keys, num_items, TotalLess{}));
+  return vendor::DeviceMergeSort::StableSortKeys(nullptr, *bytes, keys, num_items, TotalLess{});
 }
 
-int32_t cub_merge_sort_vendor(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
-                              uint32_t *values, void *temp, size_t temp_bytes) {
+wwr::wwrError_t cub_merge_sort_vendor(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
+                                      uint32_t *values, void *temp, size_t temp_bytes) {
   // The vendor only moves and compares the keys, as bits.
   auto *const bits = reinterpret_cast<uint64_t *>(keys);
   const auto num_items = static_cast<int32_t>(n);
   if (values != nullptr) {
-    return static_cast<int32_t>(vendor::DeviceMergeSort::StableSortPairs(
-        temp, temp_bytes, bits, values, num_items, TotalLess{}, stream));
+    return vendor::DeviceMergeSort::StableSortPairs(temp, temp_bytes, bits, values, num_items,
+                                                    TotalLess{}, stream);
   }
-  return static_cast<int32_t>(vendor::DeviceMergeSort::StableSortKeys(
-      temp, temp_bytes, bits, num_items, TotalLess{}, stream));
+  return vendor::DeviceMergeSort::StableSortKeys(temp, temp_bytes, bits, num_items, TotalLess{},
+                                                 stream);
 }
 
 } // namespace free_breakfast::device

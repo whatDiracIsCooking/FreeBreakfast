@@ -51,9 +51,9 @@ Status radix_sort(DeviceResources &res, const int32_t n, double *keys, uint32_t 
   const size_t count = static_cast<size_t>(n);
   const RadixSortScratch scratch = carve_radix_sort_scratch(
       res, count, values != nullptr, device::radix_sort_count_slots(count) * sizeof(uint32_t));
-  return gpu_status(static_cast<wwr::wwrError_t>(device::radix_sort_passes(
-      res.stream(), static_cast<uint32_t>(n), keys, scratch.keys_alt, values, scratch.values_alt,
-      reinterpret_cast<uint32_t *>(scratch.tail))));
+  return gpu_status(device::radix_sort_passes(res.stream(), static_cast<uint32_t>(n), keys,
+                                              scratch.keys_alt, values, scratch.values_alt,
+                                              reinterpret_cast<uint32_t *>(scratch.tail)));
 }
 
 Status cub_radix_sort(DeviceResources &res, const int32_t n, double *keys, uint32_t *values) {
@@ -63,13 +63,11 @@ Status cub_radix_sort(DeviceResources &res, const int32_t n, double *keys, uint3
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto un = static_cast<uint32_t>(n);
   size_t temp_bytes = 0;
-  FBF_TRY(gpu_status(static_cast<wwr::wwrError_t>(
-      device::cub_radix_sort_temp_bytes(un, values != nullptr, &temp_bytes))));
+  FBF_TRY(gpu_status(device::cub_radix_sort_temp_bytes(un, values != nullptr, &temp_bytes)));
   const RadixSortScratch scratch =
       carve_radix_sort_scratch(res, static_cast<size_t>(n), values != nullptr, temp_bytes);
-  return gpu_status(static_cast<wwr::wwrError_t>(
-      device::cub_radix_sort_vendor(res.stream(), un, keys, scratch.keys_alt, values,
-                                    scratch.values_alt, scratch.tail, temp_bytes)));
+  return gpu_status(device::cub_radix_sort_vendor(res.stream(), un, keys, scratch.keys_alt, values,
+                                                  scratch.values_alt, scratch.tail, temp_bytes));
 }
 
 } // namespace free_breakfast

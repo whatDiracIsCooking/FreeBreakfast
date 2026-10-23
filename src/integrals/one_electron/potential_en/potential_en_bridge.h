@@ -8,9 +8,9 @@
 /// compiled in a plain TU, which a .cu is (wwr docs/architecture.md, section
 /// 14).
 ///
-/// wwrStream_t comes from wwr's runtime.h, whose always-on part is that one type
-/// and is host-safe; it is the same type wwr.runtime_api exports, so the module
-/// passes its stream straight through.
+/// wwrStream_t and wwrError_t come from a different wwr header in each pass, as
+/// overlap_bridge.h explains, so the module passes its stream in and takes
+/// the status back with no cast.
 
 #pragma once
 
@@ -22,7 +22,13 @@
 #include "nuclei_view.h"
 #include "primitive_pair_class_view.h"
 
+// wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
+// wwrError_t: see overlap_bridge.h.
+#if defined(__CUDACC__) || defined(__HIP__) || defined(__HIPCC__)
 #include "runtime.h"
+#else
+#include "wwr/runtime_api.h"
+#endif
 
 namespace free_breakfast::device {
 
@@ -40,12 +46,11 @@ namespace free_breakfast::device {
 /// kMaxAngularMomentum. The kernels index @p v as a 32-bit `m * n_ao + n`, so
 /// n_ao * n_ao must fit an int32_t.
 ///
-/// @return The launch status, as the integer value of `wwrError_t`
-///         (wwrErrorInvalidValue for a class with no kernel). The enum itself is
-///         only in runtime.h's device section, which a host GMF does not see;
-///         the caller casts it back. Launch errors only: the kernel's own faults
-///         surface at the next synchronization.
-[[nodiscard]] int32_t potential_en_class(wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                                         const NucleiView &nuclei, int32_t n_ao, double *v);
+/// @return The launch status (wwrErrorInvalidValue for a class with no kernel).
+///         Launch errors only: the kernel's own faults surface at the next
+///         synchronization.
+[[nodiscard]] wwr::wwrError_t potential_en_class(wwr::wwrStream_t stream,
+                                                 const PrimitivePairClassView &cls,
+                                                 const NucleiView &nuclei, int32_t n_ao, double *v);
 
 } // namespace free_breakfast::device

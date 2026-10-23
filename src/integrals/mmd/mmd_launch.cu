@@ -97,8 +97,7 @@ wwr::wwrError_t mmd_order(const wwr::wwrStream_t stream, const int32_t n_rec, co
   if (const wwr::wwrError_t code = wwr::wwrGetLastError(); code != wwr::wwrSuccess) {
     return code;
   }
-  return static_cast<wwr::wwrError_t>(
-      merge_sort_passes(stream, static_cast<uint32_t>(n_rec), key, key_alt, perm, perm_alt));
+  return merge_sort_passes(stream, static_cast<uint32_t>(n_rec), key, key_alt, perm, perm_alt);
 }
 
 wwr::wwrError_t mmd_permute(const wwr::wwrStream_t stream, const int32_t n_rec,

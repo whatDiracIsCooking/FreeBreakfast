@@ -2,10 +2,10 @@
 # its language and -x hip never reach the module compiles. The merge sort
 # itself is src/integrals/sort's merge_sort.cu, which the integral builds sort
 # with; this tree links it rather than keeping a copy.
-# The bridge header this library shares with the module names wwrStream_t,
-# hence kernel_headers PUBLIC: it brings types_headers and wwr::device with it.
-# wwr::device also carries cub.h and the vendor's CUB or hipCUB include path,
-# as for sort/radix.
+# The bridge header this library shares with the module names wwrStream_t and
+# wwrError_t, hence kernel_headers PUBLIC: it brings types_headers and
+# wwr::device with it. wwr::device also carries cub.h and the vendor's CUB or
+# hipCUB include path, as for sort/radix.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.experimental.sort.merge.device

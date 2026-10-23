@@ -26,8 +26,7 @@ Status split_planes(DeviceResources &res, const int32_t rows, const int32_t cols
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(static_cast<wwr::wwrError_t>(
-      device::split_planes(res.stream(), rows, cols, a, lda, re, im, ldp)));
+  return gpu_status(device::split_planes(res.stream(), rows, cols, a, lda, re, im, ldp));
 }
 
 template <wwr::complex_fp Z>
@@ -38,8 +37,7 @@ Status merge_planes(DeviceResources &res, const int32_t rows, const int32_t cols
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(static_cast<wwr::wwrError_t>(
-      device::merge_planes(res.stream(), rows, cols, re, im, ldp, c, ldc)));
+  return gpu_status(device::merge_planes(res.stream(), rows, cols, re, im, ldp, c, ldc));
 }
 
 template Status split_planes<wwr::wwrFloatComplex>(DeviceResources &, int32_t, int32_t,

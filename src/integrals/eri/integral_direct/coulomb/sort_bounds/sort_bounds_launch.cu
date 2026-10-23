@@ -73,8 +73,7 @@ wwr::wwrError_t sort_bounds_kets(const wwr::wwrStream_t stream, const PrimitiveP
   if (const wwr::wwrError_t code = wwr::wwrGetLastError(); code != wwr::wwrSuccess) {
     return code;
   }
-  if (const auto code = static_cast<wwr::wwrError_t>(
-          merge_sort_passes(stream, n_rec, key, key_alt, perm, perm_alt));
+  if (const wwr::wwrError_t code = merge_sort_passes(stream, n_rec, key, key_alt, perm, perm_alt);
       code != wwr::wwrSuccess) {
     return code;
   }

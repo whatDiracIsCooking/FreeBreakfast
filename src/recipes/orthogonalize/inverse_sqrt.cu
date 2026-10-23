@@ -37,12 +37,13 @@ struct InverseSqrtFunctor {
 } // namespace
 
 template <typename T>
-int32_t inverse_sqrt(const wwr::wwrStream_t stream, const int32_t count, T *data, const T floor) {
+wwr::wwrError_t inverse_sqrt(const wwr::wwrStream_t stream, const int32_t count, T *data,
+                             const T floor) {
   const InverseSqrtFunctor<T> functor{data, floor};
-  return static_cast<int32_t>(wwr::extension::parallel_for(stream, count, functor));
+  return wwr::extension::parallel_for(stream, count, functor);
 }
 
-template int32_t inverse_sqrt<float>(wwr::wwrStream_t, int32_t, float *, float);
-template int32_t inverse_sqrt<double>(wwr::wwrStream_t, int32_t, double *, double);
+template wwr::wwrError_t inverse_sqrt<float>(wwr::wwrStream_t, int32_t, float *, float);
+template wwr::wwrError_t inverse_sqrt<double>(wwr::wwrStream_t, int32_t, double *, double);
 
 } // namespace free_breakfast::device
