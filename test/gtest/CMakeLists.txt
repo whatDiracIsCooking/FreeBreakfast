@@ -99,6 +99,7 @@ add_executable(
   gemm_gpu.cpp
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp
+  complex_cast_gpu.cpp
   mmd_gpu.cpp
   molecule_gpu.cpp
   basis_gpu.cpp

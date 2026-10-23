@@ -7,6 +7,7 @@
 export module free_breakfast.linalg;
 
 export import free_breakfast.linalg.blas;
+export import free_breakfast.linalg.complex_cast;
 export import free_breakfast.linalg.diagonalize;
 export import free_breakfast.linalg.diis;
 export import free_breakfast.linalg.matrix_ao;
