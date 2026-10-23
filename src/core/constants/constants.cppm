@@ -17,6 +17,7 @@ export using free_breakfast::kOne;
 export using free_breakfast::kTwo;
 /// @brief Typed negative one (-1)
 export using free_breakfast::kNegOne;
+export using free_breakfast::kImaginaryUnit;
 
 /// @brief Boltzmann constant k_B in J/K (1.380649e-23)
 export using free_breakfast::kBoltzmann;

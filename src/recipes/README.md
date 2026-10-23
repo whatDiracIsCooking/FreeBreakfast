@@ -11,6 +11,7 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 | `davidson/` | `free_breakfast.recipes.davidson` | Block Davidson for the lowest eigenpairs of a symmetric `LinearOperator` (`davidson_solve`). |
 | `diagonalize/` | `free_breakfast.recipes.diagonalize` | The symmetric eigendecomposition A = U diag(w) Uᵀ, one `syevd` with its work and flag from `DeviceResources`. |
 | `diis/` | `free_breakfast.recipes.diis` | Pulay DIIS extrapolation over a device-resident ring of iterates and residuals. |
+| `expm/` | `free_breakfast.recipes.expm` | The exponential of a skew-Hermitian H, exp(tH) = U diag(e^{-itw}) U^H, from one Hermitian eigendecomposition of iH (`skew_eig`) and evaluated at any t (`skew_expm`). |
 | `linear_operator/` | `free_breakfast.recipes.linear_operator` | The `LinearOperator` concept: a matrix known only by `op.apply(res, k, x, y)`, Y = A X. |
 | `matrix_ao/` | `free_breakfast.recipes.matrix_ao` | AO-basis matrices tagged Cartesian or spherical, and a pair holding both that converts through a shared transform. |
 | `orthogonalize/` | `free_breakfast.recipes.orthogonalize` | The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, over `diagonalize`. |
