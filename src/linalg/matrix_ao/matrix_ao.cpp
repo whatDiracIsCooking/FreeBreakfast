@@ -1,6 +1,6 @@
 /// @file
 /// @brief upload_spherical_transform_matrix's upload of U, and MatrixAOPair's cartesian_to_spherical /
-/// spherical_to_cartesian as gemmwich's two op_x forms over it.
+/// spherical_to_cartesian as gemmwich's two OpX forms over it.
 
 module free_breakfast.linalg.matrix_ao;
 
@@ -75,10 +75,9 @@ Status MatrixAOPair::cartesian_to_spherical(DeviceResources &res) {
                                           sizeof(double) * cartesian_.num_elements(),
                                           wwr::wwrMemcpyDeviceToDevice, res.stream()));
   }
-  // op_x = N: X = U stored nao_cart x nao_sphe, so n = nao_cart and
+  // OpX = N: X = U stored nao_cart x nao_sphe, so n = nao_cart and
   // m = nao_sphe.
-  return gpu_status(gemmwich(res.blas(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N,
-                             static_cast<int32_t>(spherical_.n()),
+  return gpu_status(gemmwich(res.blas(), static_cast<int32_t>(spherical_.n()),
                              static_cast<int32_t>(cartesian_.n()), u_->data(), cartesian_.data(),
                              work_.data(), spherical_.data()));
 }
@@ -98,12 +97,11 @@ Status MatrixAOPair::spherical_to_cartesian(DeviceResources &res) {
                                           sizeof(double) * spherical_.num_elements(),
                                           wwr::wwrMemcpyDeviceToDevice, res.stream()));
   }
-  // op_x = T: op_x(X) = U^T is nao_sphe x nao_cart, the same buffer read as
+  // OpX = T: OpX(X) = U^T is nao_sphe x nao_cart, the same buffer read as
   // stored m x n with m = nao_cart and n = nao_sphe.
-  return gpu_status(gemmwich(res.blas(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N,
-                             static_cast<int32_t>(cartesian_.n()),
-                             static_cast<int32_t>(spherical_.n()), u_->data(), spherical_.data(),
-                             work_.data(), cartesian_.data()));
+  return gpu_status(gemmwich<wwr::WWRBLAS_OP_T>(
+      res.blas(), static_cast<int32_t>(cartesian_.n()), static_cast<int32_t>(spherical_.n()),
+      u_->data(), spherical_.data(), work_.data(), cartesian_.data()));
 }
 
 } // namespace free_breakfast

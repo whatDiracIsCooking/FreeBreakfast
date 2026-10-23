@@ -93,14 +93,14 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x,
       device::inverse_sqrt<T>(stream, n, eigenvalues.data(), eigenvalue_floor))));
 
   // 3. X = U diag(Lambda^{-1/2}) U^T, symmetric by construction: gmmwich's
-  //    op_x = T form, a dgmm (M = U diag(Lambda^{-1/2}), in O(n^2) rather than a
+  //    OpX = T form, a dgmm (M = U diag(Lambda^{-1/2}), in O(n^2) rather than a
   //    gemm against a dense diagonal) into M, then X = M U^T. M is the
   //    workspace's: diagonalize is done with it, and nothing else is called
   //    while M is live. syevd's work is usually larger than n*n, so this
   //    request rarely grows it.
   auto m = wwr::extension::reinterpret_buffer_view<T>(res.device_workspace(nn * sizeof(T)));
   return gpu_status(
-      gmmwich(res.blas(), wwr::WWRBLAS_OP_T, n, u.data(), eigenvalues.data(), m.data(), x));
+      gmmwich<wwr::WWRBLAS_OP_T>(res.blas(), n, u.data(), eigenvalues.data(), m.data(), x));
 }
 
 template Status orthogonalize<float>(DeviceResources &, int32_t, const float *, float *, float);

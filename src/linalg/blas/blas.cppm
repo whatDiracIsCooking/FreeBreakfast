@@ -7,9 +7,14 @@
 
 export module free_breakfast.linalg.blas;
 
+// :shared exports nothing: it holds the partitions' unexported helpers
+// (raw_blas_handle, BlasOp, RealOp), and is re-exported only because every
+// interface partition must be.
+export import :shared;
+
 // gemm (:gemm): wwr::gemm for n x n operands with every leading dimension n,
-// transposed or not. A convenience over wwr's call, not a replacement: any
-// other shape calls wwr::gemm directly.
+// its ops fixed at compile time. A convenience over wwr's call, not a
+// replacement: any other shape calls wwr::gemm directly.
 export import :gemm;
 
 // gemmwich (:gemmwich): the sandwich product op(X) F op(X)^T -- X^T F X by

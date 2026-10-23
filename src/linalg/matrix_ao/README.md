@@ -17,8 +17,8 @@ Every shell in this tree means its `2l+1` real solid harmonics, but the integral
 
   | Product | Computes | gemmwich |
   | --- | --- | --- |
-  | `cartesian_to_spherical(res)` | `spherical = Uᵀ cartesian U` | `op_x = N`, `m = nao_sphe`, `n = nao_cart` |
-  | `spherical_to_cartesian(res)` | `cartesian = U spherical Uᵀ` | `op_x = T`, `m = nao_cart`, `n = nao_sphe` |
+  | `cartesian_to_spherical(res)` | `spherical = Uᵀ cartesian U` | `OpX = N`, `m = nao_sphe`, `n = nao_cart` |
+  | `spherical_to_cartesian(res)` | `cartesian = U spherical Uᵀ` | `OpX = T`, `m = nao_cart`, `n = nao_sphe` |
 
   Both read the same stored U. When U is the identity (a null U), both are a device-to-device copy, and the pair allocates no scratch.
 
