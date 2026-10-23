@@ -14,6 +14,7 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 | `linear_operator/` | `free_breakfast.recipes.linear_operator` | The `LinearOperator` concept: a matrix known only by `op.apply(res, k, x, y)`, Y = A X. |
 | `matrix_ao/` | `free_breakfast.recipes.matrix_ao` | AO-basis matrices tagged Cartesian or spherical, and a pair holding both that converts through a shared transform. |
 | `orthogonalize/` | `free_breakfast.recipes.orthogonalize` | The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, over `diagonalize`. |
+| `polynomial_roots/` | `free_breakfast.recipes.polynomial_roots` | Every root of a batch of polynomials by the Aberth-Ehrlich iteration, one warp per polynomial and one lane per root (`polynomial_roots`). |
 
 Routines take a `DeviceResources` (`free_breakfast.core.resources`) for their stream and library handles, so the BLAS and solver calls are ordered on one stream by construction. Each routine returns `Result`/`Status`. `blas/` is the exception: its building blocks take a BLAS handle and return the library status, the way `wwr::gemm` does.
 
