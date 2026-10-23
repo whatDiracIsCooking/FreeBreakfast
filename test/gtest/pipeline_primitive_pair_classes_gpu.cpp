@@ -13,6 +13,8 @@ import free_breakfast.basis;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.primitive_pair_classes;
 
+#include "mmd_records.h"
+
 namespace {
 
 namespace fb = free_breakfast;
@@ -22,18 +24,6 @@ static_assert(fb::PipelineStep<fb::PrimitivePairClassesStep>);
 static_assert(fb::kRunShape<fb::PrimitivePairClassesStep> == fb::RunShape::Device);
 static_assert(std::same_as<fb::StepInput<fb::PrimitivePairClassesStep>, fb::View<fb::BasisSet>>);
 static_assert(std::same_as<fb::StepOutput<fb::PrimitivePairClassesStep>, fb::PrimitivePairClasses>);
-
-// A field's device side, copied back to the host on the field's stream.
-template <typename T>
-std::vector<T> download(const fb::MirroredBuffer<T> &field) {
-  std::vector<T> out(field.size());
-  const wwr::wwrStream_t stream = field.handle()->stream();
-  EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), field.device().data(), sizeof(T) * out.size(),
-                                wwr::wwrMemcpyDeviceToHost, stream),
-            wwr::wwrSuccess);
-  EXPECT_EQ(wwr::wwrStreamSynchronize(stream), wwr::wwrSuccess);
-  return out;
-}
 
 // s and p on two centres, d on a third: classes (0,0) .. (2,2), with a p bra
 // before an s ket, so the la <= lb swap is in play.
@@ -64,15 +54,8 @@ TEST(PipelinePrimitivePairClasses, MatchesPrimitivePairClasses) {
     EXPECT_EQ(got.la, want.la) << c;
     EXPECT_EQ(got.lb, want.lb) << c;
     ASSERT_EQ(got.n_rec, want.n_rec) << c;
-    for (const auto field :
-         {&Class::zeta, &Class::p_x, &Class::p_y, &Class::p_z, &Class::pa_x, &Class::pa_y,
-          &Class::pa_z, &Class::pb_x, &Class::pb_y, &Class::pb_z, &Class::s, &Class::ea, &Class::eb,
-          &Class::bound, &Class::bound_ab, &Class::bound_ba}) {
-      EXPECT_EQ(download(got.*field), download(want.*field)) << c;
-    }
-    for (const auto field : {&Class::off_a, &Class::off_b, &Class::rank_a, &Class::rank_b}) {
-      EXPECT_EQ(download(got.*field), download(want.*field)) << c;
-    }
+    // Every field, bit for bit.
+    EXPECT_TRUE(fb::test::copy_back(got) == fb::test::copy_back(want)) << c;
   }
 }
 

@@ -1,9 +1,10 @@
 // GPU cases for integrals.mmd: the primitive-pair records a basis turns into,
 // checked field by field (each class's device side, copied back) against the
 // Gaussian product theorem, the la <= lb swap that lets one kernel serve both
-// (s|p) and (p|s), one stream per class, the pinned side left as the host's
-// staging, and each class's records in descending zeta order, equal zetas in the order the
-// host wrote them: on shells whose exponents ascend, so the sort has to move
+// (s|p) and (p|s), one stream per class, a diagonal shell pair's mirrored
+// records bitwise mirrored, and each class's records in descending zeta order, equal zetas in
+// the shell-pair, then bra-primitive, order: on shells whose exponents ascend, so the sort has
+// to move
 // records, and on a class past the merge sort's 2816-key tile; and each
 // record's Schwarz bound, formed on the device, against a host evaluation of
 // its closed form for every class of H2O/cc-pVDZ; and what the two-electron
@@ -23,62 +24,29 @@ import free_breakfast.io.json;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
+#include "mmd_records.h"
+
 namespace {
 
 namespace fb = free_breakfast;
+using Records = fb::test::MmdRecords;
 
 constexpr double kTol = 1e-15;
 
-// Record k of a field, on its pinned side: the device side's, once classes_of
-// has copied it back.
+// Record k of a field, copied back.
 template <typename T>
-T at(const fb::MirroredBuffer<T> &field, const std::size_t k) {
-  return field.pinned().data()[k];
+T at(const std::vector<T> &field, const std::size_t k) {
+  return field[k];
 }
 
-// A field's device side, copied back to the host on the field's stream.
-template <typename T>
-std::vector<T> download(const fb::MirroredBuffer<T> &field) {
-  std::vector<T> out(field.size());
-  const wwr::wwrStream_t stream = field.handle()->stream();
-  EXPECT_EQ(wwr::wwrMemcpyAsync(out.data(), field.device().data(), sizeof(T) * out.size(),
-                                wwr::wwrMemcpyDeviceToHost, stream),
-            wwr::wwrSuccess);
-  EXPECT_EQ(wwr::wwrStreamSynchronize(stream), wwr::wwrSuccess);
-  return out;
-}
-
-// A field's pinned side.
-template <typename T>
-std::vector<T> pinned(const fb::MirroredBuffer<T> &field) {
-  const T *p = field.pinned().data();
-  return {p, p + field.size()};
-}
-
-// The classes, each one's device side copied back to its pinned side and its
-// stream synchronized: mmd leaves the pinned side as the host staged it, so
-// the final records, ordered and bounded, reach the host only by this copy.
-std::vector<fb::PrimitivePairClass> classes_of(fb::DeviceResources &res,
-                                               const fb::BasisSet &basis) {
+// The classes, each one copied back: the records exist on the device only.
+std::vector<Records> classes_of(fb::DeviceResources &res, const fb::BasisSet &basis) {
   auto classes = fb::primitive_pair_classes(res, basis);
   EXPECT_TRUE(classes);
   if (!classes) {
     return {};
   }
-  for (fb::PrimitivePairClass &cls : *classes) {
-    for (fb::MirroredBuffer<double> *field :
-         {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-          &cls.pb_y, &cls.pb_z, &cls.s, &cls.ea, &cls.eb, &cls.bound, &cls.bound_ab,
-          &cls.bound_ba}) {
-      EXPECT_EQ(field->to_pinned(), wwr::wwrSuccess);
-    }
-    for (fb::MirroredBuffer<std::int32_t> *field :
-         {&cls.off_a, &cls.off_b, &cls.rank_a, &cls.rank_b}) {
-      EXPECT_EQ(field->to_pinned(), wwr::wwrSuccess);
-    }
-    EXPECT_EQ(wwr::wwrStreamSynchronize(cls.device_stream()->stream()), wwr::wwrSuccess);
-  }
-  return std::move(*classes);
+  return fb::test::copy_back(*classes);
 }
 
 // A two-primitive p shell on A, then a one-primitive s shell on B: the p
@@ -107,7 +75,7 @@ TEST(Mmd, ClassesAreReachedOnlyAndAscending) {
   EXPECT_EQ(classes[0].n_rec, 1);
   EXPECT_EQ(classes[1].n_rec, 2);
   EXPECT_EQ(classes[2].n_rec, 4);
-  for (const fb::PrimitivePairClass &cls : classes) {
+  for (const Records &cls : classes) {
     const auto n = static_cast<std::size_t>(cls.n_rec);
     EXPECT_EQ(cls.zeta.size(), n);
     EXPECT_EQ(cls.pa_y.size(), n);
@@ -121,7 +89,7 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
   const fb::BasisSet basis = p_then_s();
   const auto classes = classes_of(res, basis);
   ASSERT_EQ(classes.size(), 3U);
-  const fb::PrimitivePairClass &sp = classes[1];
+  const Records &sp = classes[1];
   ASSERT_EQ(sp.la, 0);
   ASSERT_EQ(sp.lb, 1);
 
@@ -154,7 +122,7 @@ TEST(Mmd, HigherMomentumBraIsSwappedToTheKet) {
     EXPECT_NEAR(at(sp.pa_z, k), pz - z_a, kTol) << "record " << k;
     EXPECT_NEAR(at(sp.pb_z, k), pz - z_b, kTol) << "record " << k;
     // x and y: every center is on the z axis
-    for (const fb::MirroredBuffer<double> *axis :
+    for (const std::vector<double> *axis :
          {&sp.p_x, &sp.p_y, &sp.pa_x, &sp.pa_y, &sp.pb_x, &sp.pb_y}) {
       EXPECT_EQ(at(*axis, k), 0.0) << "record " << k;
     }
@@ -168,14 +136,14 @@ TEST(Mmd, DiagonalShellPairCarriesEqualOffsets) {
   fb::DeviceResources res{0};
   const auto classes = classes_of(res, p_then_s());
   ASSERT_EQ(classes.size(), 3U);
-  for (const fb::PrimitivePairClass *cls : {&classes[0], &classes[2]}) {
+  for (const Records *cls : {&classes[0], &classes[2]}) {
     for (std::size_t k = 0; k < static_cast<std::size_t>(cls->n_rec); ++k) {
       EXPECT_EQ(at(cls->off_a, k), at(cls->off_b, k)) << "(" << cls->la << ", " << cls->lb << ")";
     }
   }
   // Descending zeta, the tie (alpha_0, alpha_1) / (alpha_1, alpha_0) in the
   // order the host wrote it.
-  const fb::PrimitivePairClass &pp = classes[2];
+  const Records &pp = classes[2];
   EXPECT_NEAR(at(pp.zeta, 0), 4.0, kTol);
   EXPECT_NEAR(at(pp.zeta, 1), 2.5, kTol);
   EXPECT_NEAR(at(pp.zeta, 2), 2.5, kTol);
@@ -191,9 +159,10 @@ TEST(Mmd, EmptyBasisHasNoClasses) {
 TEST(Mmd, EachClassHasItsOwnStream) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto classes = classes_of(res, p_then_s());
+  const auto classes = fb::primitive_pair_classes(res, p_then_s());
+  ASSERT_TRUE(classes);
   std::set<wwr::wwrStream_t> streams{res.stream()};
-  for (const fb::PrimitivePairClass &cls : classes) {
+  for (const fb::PrimitivePairClass &cls : *classes) {
     EXPECT_EQ(cls.device_stream()->dev_idx(), res.dev_idx());
     EXPECT_TRUE(streams.insert(cls.device_stream()->stream()).second)
         << "class (" << cls.la << ", " << cls.lb << ") shares a stream";
@@ -254,7 +223,7 @@ void expect_s_records(const fb::BasisSet &basis) {
   fb::DeviceResources res{0};
   const auto classes = classes_of(res, basis);
   ASSERT_EQ(classes.size(), 1U);
-  const fb::PrimitivePairClass &ss = classes[0];
+  const Records &ss = classes[0];
   const std::vector<SRecord> want = want_s_records(basis);
   ASSERT_EQ(static_cast<std::size_t>(ss.n_rec), want.size());
   for (std::size_t k = 0; k < want.size(); ++k) {
@@ -292,42 +261,36 @@ TEST(Mmd, RecordsAreInDescendingZetaOrderPastOneSortTile) {
   expect_s_records(fb::BasisSet({s_shell(exponents, 0.4)}));
 }
 
-// The pinned side is staging, one way: mmd copies nothing back, so it keeps
-// the records in the order the host wrote them and the bounds' pinned sides
-// stay zero, while the device side holds every host-written field's values,
-// bit for bit, in descending zeta order. On ascending exponents, so the order
-// moves the records.
-TEST(Mmd, PinnedSideIsTheHostsStaging) {
+// A diagonal shell pair's record (alpha_i, alpha_j) and its mirror
+// (alpha_j, alpha_i) carry the same P bit for bit, so each one's P - A is the
+// other's P - B: the device forms P with no FMA contraction, so its two
+// products are rounded on their own and their sum commutes exactly. K's gather
+// and its test lean on it (a diagonal record's swap is a record of its own
+// class). Off the axes, on a d shell, so every component and a centre whose
+// products would round differently under a fused multiply-add are in play.
+TEST(Mmd, DiagonalMirrorsAreBitwiseMirrored) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto classes = fb::primitive_pair_classes(
-      res, fb::BasisSet({s_shell({0.3, 1.1, 4.0}, 0.0), s_shell({0.7, 2.5}, 1.2)}));
-  ASSERT_TRUE(classes);
-  ASSERT_EQ(classes->size(), 1U);
-  const fb::PrimitivePairClass &ss = (*classes)[0];
-  ASSERT_EQ(wwr::wwrStreamSynchronize(ss.device_stream()->stream()), wwr::wwrSuccess);
-  const auto same_values = [](const auto &field) {
-    auto device = download(field);
-    auto host = pinned(field);
-    std::ranges::sort(device);
-    std::ranges::sort(host);
-    return device == host;
-  };
-  for (const fb::MirroredBuffer<double> *field :
-       {&ss.zeta, &ss.p_x, &ss.p_y, &ss.p_z, &ss.pa_x, &ss.pa_y, &ss.pa_z, &ss.pb_x, &ss.pb_y,
-        &ss.pb_z, &ss.s, &ss.ea, &ss.eb}) {
-    EXPECT_TRUE(same_values(*field));
+  const fb::Vec<double, 3> c{0.37, -1.29, 2.71};
+  const auto classes =
+      classes_of(res, fb::BasisSet({fb::Shell(2, {{3.3, 0.2}, {1.17, 0.5}, {0.29, 0.7}}, c)}));
+  ASSERT_EQ(classes.size(), 1U);
+  const Records &dd = classes[0];
+  ASSERT_EQ(dd.n_rec, 9);
+  std::map<std::pair<double, double>, std::size_t> by_exponents;
+  for (std::size_t k = 0; k < 9; ++k) {
+    by_exponents[{dd.ea[k], dd.eb[k]}] = k;
   }
-  for (const fb::MirroredBuffer<std::int32_t> *field :
-       {&ss.off_a, &ss.off_b, &ss.rank_a, &ss.rank_b}) {
-    EXPECT_TRUE(same_values(*field));
-  }
-  EXPECT_TRUE(std::ranges::is_sorted(download(ss.zeta), std::greater<>{}));
-  EXPECT_FALSE(std::ranges::is_sorted(pinned(ss.zeta), std::greater<>{}));
-  const std::vector<double> zero(static_cast<std::size_t>(ss.n_rec), 0.0);
-  for (const fb::MirroredBuffer<double> *field : {&ss.bound, &ss.bound_ab, &ss.bound_ba}) {
-    EXPECT_EQ(pinned(*field), zero);
-    EXPECT_NE(download(*field), zero);
+  ASSERT_EQ(by_exponents.size(), 9U);
+  for (std::size_t k = 0; k < 9; ++k) {
+    const std::size_t m = by_exponents.at({dd.eb[k], dd.ea[k]});
+    EXPECT_EQ(dd.zeta[k], dd.zeta[m]) << "record " << k;
+    EXPECT_EQ(dd.s[k], dd.s[m]) << "record " << k;
+    const std::array<double, 9> mine{dd.p_x[k],  dd.p_y[k],  dd.p_z[k],  dd.pa_x[k], dd.pa_y[k],
+                                     dd.pa_z[k], dd.pb_x[k], dd.pb_y[k], dd.pb_z[k]};
+    const std::array<double, 9> mirror{dd.p_x[m],  dd.p_y[m],  dd.p_z[m],  dd.pb_x[m], dd.pb_y[m],
+                                       dd.pb_z[m], dd.pa_x[m], dd.pa_y[m], dd.pa_z[m]};
+    EXPECT_EQ(mine, mirror) << "record " << k;
   }
 }
 
@@ -389,7 +352,7 @@ TEST(Mmd, BoundMatchesTheClosedFormAndFollowsTheZetaOrder) {
   const auto classes = classes_of(res, h2o_ccpvdz());
   ASSERT_EQ(classes.size(), 6U);
   constexpr double kBoundTol = 16.0 * std::numeric_limits<double>::epsilon();
-  for (const fb::PrimitivePairClass &cls : classes) {
+  for (const Records &cls : classes) {
     const std::int32_t l = cls.la + cls.lb;
     for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
       const double want = host_pair_bound(at(cls.zeta, k), l);
@@ -425,7 +388,7 @@ TEST(Mmd, ExponentsAndRanksMatchTheBasis) {
     return std::ranges::any_of(sh.primitives(),
                                [e](const fb::Primitive &p) { return p.exponent == e; });
   };
-  for (const fb::PrimitivePairClass &cls : classes) {
+  for (const Records &cls : classes) {
     for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
       ASSERT_TRUE(shell_at.contains(at(cls.off_a, k)) && shell_at.contains(at(cls.off_b, k)));
       const std::size_t a = shell_at.at(at(cls.off_a, k));
@@ -459,10 +422,12 @@ TEST(Mmd, DressedBoundsMatchTheOrderedClasses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::BasisSet basis = h2o_ccpvdz();
-  const auto classes = classes_of(res, basis);
-  ASSERT_EQ(classes.size(), 6U);
-  const auto ordered = fb::ordered_pair_classes(res, basis, classes);
+  const auto mmd = fb::primitive_pair_classes(res, basis);
+  ASSERT_TRUE(mmd);
+  ASSERT_EQ(mmd->size(), 6U);
+  const auto ordered = fb::ordered_pair_classes(res, basis, *mmd);
   ASSERT_TRUE(ordered);
+  const std::vector<Records> classes = fb::test::copy_back(*mmd);
 
   std::map<OrderedKey, double> bound_of;
   for (const fb::OrderedPairClass &cls : *ordered) {
@@ -497,7 +462,7 @@ TEST(Mmd, DressedBoundsMatchTheOrderedClasses) {
   }
 
   std::size_t positive = 0;
-  for (const fb::PrimitivePairClass &cls : classes) {
+  for (const Records &cls : classes) {
     for (std::size_t k = 0; k < static_cast<std::size_t>(cls.n_rec); ++k) {
       const OrderedKey as_stored{
           at(cls.off_a, k), at(cls.off_b, k), at(cls.zeta, k), at(cls.pa_x, k), at(cls.pa_y, k),

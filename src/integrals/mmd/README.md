@@ -30,8 +30,8 @@ a kernel needs of that pair and cannot form itself:
 | `bound_ab`, `bound_ba` | the record's DRESSED Schwarz bound, FelizJueves's `ao.k.record_bounds` (the max over the first shell's Cartesians), as stored and swapped. Formed on the device (below) |
 
 The kernels build the Hermite expansion E from these, including its
-exp(−αβ/ζ |A−B|²) prefactor (as exp(ζ X_PA X_PB) per axis), so the host forms
-neither. `eb` is read by the kinetic kernels only and `p_*` by the
+exp(−αβ/ζ |A−B|²) prefactor (as exp(ζ X_PA X_PB) per axis), so this module
+forms neither. `eb` is read by the kinetic kernels only and `p_*` by the
 nuclear-attraction kernels only, so one record set serves S, T and V.
 
 **Every field is one value per record.** A vector is three flat arrays, one per
@@ -39,34 +39,38 @@ axis, named as the generated kernels name their parameters, so with one thread
 per record a warp's lanes read consecutive doubles on every load. The kernels
 take them as plain positional pointers.
 
-**A class owns its records.** `PrimitivePairClass` is `la`, `lb`, `n_rec` and
-one `n_rec`-long `MirroredBuffer` per field, all on the class's own
-`DeviceStream`. `primitive_pair_classes(res, basis)` counts each class's
-records, allocates it on a new stream of `res.device()`, writes the records
-straight into the pinned side, and queues every field's copy to the device on
-that stream, then the order and the bounds below. It never synchronizes: the
-pinned side is kept for the class's lifetime (a `MirroredBuffer`'s destructor
-waits out its copies), and a build launches the class on the same stream,
-after them.
-
-**The pinned side is staging, one way.** The records flow host to device and
-nothing is copied back: the order and the bounds exist on the device side
-only, the pinned side keeps the records in the order the host wrote them, and
-the bounds' pinned sides are never written. Every reader — S, T and V, J's
+**A class owns its records, on the device only.** `PrimitivePairClass` is
+`la`, `lb`, `n_rec`, its own `DeviceStream` (`handle`) and one `n_rec`-long
+device buffer per field, all on that stream. Every reader — S, T and V, J's
 prune (`coulomb_pair_classes`), K's gather (`ordered_pair_classes`) — reads
-the device side; a test that wants the records on the host copies them back.
-The pinned side stays allocated by design: under AIMD the basis composition is
-fixed, and the ζ order depends only on the basis, so a later step can rewrite
-`p_*`, `pa_*` and `pb_*` at the same record indices and re-upload without
-allocating pinned memory again. Rewriting it in place must first wait (an
-event or a synchronization) for the previous upload from it; that entry point
-does not exist yet.
+them there; a test that wants them on the host copies them back
+(`test/gtest/mmd_records.h`).
 
-**Records are in descending ζ order, per class.** On the class's stream, after
-the upload: key `-ζ`, a stable merge sort carrying each record's index
-([`src/integrals/sort`](../sort/README.md)), then every field permuted to that
-order in place (`mmd_launch.cu`). Equal ζ keep
-the order the host wrote (shell pair, then bra primitive). Within a class the
+**The records are formed on the device; the host never writes one.** A basis
+of N primitives has O(N²) records but only O(shells) shells and O(shells²)
+shell pairs, so that is all the host forms and uploads:
+
+- the **shell table**, once: each shell's primitives (exponents and
+  coefficients, flattened, with each shell's first index), centre, first
+  Cartesian AO and rank;
+- per class, its **shell pairs** in sweep order (`i <= j`, swapped into
+  `la <= lb`), each with its first record: the prefix of `K_a · K_b`.
+
+A record is then named by its index in that enumeration (shell pair, then bra
+primitive, then ket primitive). One thread per record finds its shell pair by
+a binary search of the prefix and its two primitives by a division
+(`mmd_launch.cu`'s `record_primitives`). The tables are staged in
+`MirroredBuffer`s that live for the call only, so `primitive_pair_classes`
+waits for every class's stream before it returns.
+
+**Records are in descending ζ order, per class, and written once, in it.** On
+the class's stream, after its shell pairs' upload and a fork from the shell
+table's stream: `mmd_order` writes each enumerated record's key `-ζ` (from its
+two exponents alone) and its index, and sorts them stably
+([`src/integrals/sort`](../sort/README.md)); then `mmd_records` writes record
+`k` from enumerated record `perm[k]`, every field at once. Nothing is permuted
+after. Equal ζ keep the enumeration order (shell pair, then bra primitive).
+Within a class the
 record bound rises with ζ, so this is descending `Ip`: a bra's ket loop runs until `Dmax · Ip · Iq < τ`, so the
 longest loops launch first and a build's tail is short. No kernel depends on
 the order (each accumulates), and it is fixed per basis, so it costs one sort
@@ -116,7 +120,19 @@ as H₂O's do, still lands in `(s|p)`.
 
 **Diagonal pairs** (a shell against itself) have `off_a == off_b`, which is how
 the kernels tell them apart: they write the lower triangle of the block once and
-mirror it.
+mirror it. Such a pair's record `(α_i, α_j)` and its mirror `(α_j, α_i)` carry
+the same P bit for bit. K's gather relies on it: a diagonal record has no
+swapped copy of its own, its mirror stands in.
+
+**P is never contracted into an FMA.** `mmd_records` forms
+`(αA + βB)/ζ` with each product rounded on its own (nvcc's `_rn` intrinsics;
+`#pragma clang fp contract(off)` under HIP), so P is the correctly rounded
+IEEE value a host computes from the same expression. With the products rounded
+separately the sum commutes exactly, which is what gives the diagonal mirror
+above. And the dressed bound needs it: its pair factor `exp(ζ X_PA X_PB)`
+turns one ulp of P into hundreds of ulps of bound on a distant pair, which
+FelizJueves's goldens (`ExchangeRecordBound`, 16 eps) would reject — an
+FMA-contracted P failed that test on the H₁₀ chain by up to ~550 eps.
 
 **Coefficients are taken as given** (see `Shell`): normalisation is the basis's
 business (`BasisStamp::primitive_normalized`). Nothing is screened: S, T and
@@ -127,18 +143,19 @@ V read every record. J prunes a copy of them
 
 | Symbol | Role |
 |---|---|
-| `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, one `MirroredBuffer` per field (the three bounds among them), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
+| `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, `handle`, one device buffer per field (the three bounds among them), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
 | `PrimitivePairClassView` | The class's device fields by pointer, for the launchers (`primitive_pair_class_view.h`, re-exported) |
-| `primitive_pair_classes(res, basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty, each on a new `DeviceStream`. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records aborts |
+| `primitive_pair_classes(res, basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty, each on a new `DeviceStream`, finished when it returns. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records, or a basis past `INT32_MAX` primitives, aborts |
 
 ## Tests
 
-`test/gtest/mmd_gpu.cpp`, reading the device side copied back: each record's
-fields against the Gaussian product theorem, the swap, the streams, and the
-pinned side as staging (the device side holds its values, reordered; the
-pinned side keeps the host's order); the order, on a shell whose exponents
-ascend (so the sort has to move them) and on a class past one sort tile (2816 records), each record matched by its
-fields to the one the host wrote; and the bound, for every class of
+`test/gtest/mmd_gpu.cpp`, reading the records copied back
+(`test/gtest/mmd_records.h`, shared with the J, K and pipeline tests): each
+record's fields against the Gaussian product theorem, the swap, the streams,
+and a diagonal d shell's mirrored records bitwise mirrored, off the axes; the
+order, on a shell whose exponents ascend (so the sort has to move them) and on
+a class past one sort tile (2816 records), each record matched by its fields
+to a host enumeration, stably sorted; and the bound, for every class of
 H₂O/cc-pVDZ, within 16 eps of a host evaluation of its closed form (summed term
 by term, not by the kernel's Horner fold) and non-increasing within each class;
 `ea`, `eb` and the ranks against the basis; and `bound_ab` and `bound_ba`, for
@@ -151,9 +168,9 @@ every class of H₂O/cc-pVDZ, bit for bit against the bound
 |------|------|
 | `primitive_pair_class_view.h` | `PrimitivePairClassView`, the single definition, for `#include` and `import` alike |
 | `mmd.cppm` | Module interface: `PrimitivePairClass`, `primitive_pair_classes`, the view re-exported |
-| `mmd.cpp` | The shell-pair sweep (one pass to count and size each class, one to write its records by index), the swap, the ranks, the per-record arithmetic, the copies, the order and the bounds |
-| `mmd_bridge.h` | The order's and the bounds' launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
-| `mmd_launch.cu` | The key and gather kernels, and the launchers: `mmd_order` (key and sort), `mmd_permute` (one field, in place), `mmd_bound` (the generated `pair_bound<la, lb>`), `ordered_pair_bound` (the generated `record_bound<la, lb>`), both tables checked against `kMaxAngularMomentum` |
+| `mmd.cpp` | The shell-pair sweep (each class's shell pairs and their record prefix), the swap, the ranks, the shell and shell-pair tables staged and uploaded, the launches, and the wait |
+| `mmd_bridge.h` | `PrimitivePairSource` and `PrimitivePairRecords`, and the records', the order's and the bounds' launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
+| `mmd_launch.cu` | The key and record kernels, and the launchers: `mmd_order` (key and sort), `mmd_records` (every field but the bounds, in the sorted order), `mmd_bound` (the generated `pair_bound<la, lb>`), `ordered_pair_bound` (the generated `record_bound<la, lb>`), both tables checked against `kMaxAngularMomentum` |
 | `kernels/pair_bound/` | The generated `pair_bound<la, lb>` units and their template header (`tools/emit_one_electron_kernels.py`) |
 | `kernels/record_bound/` | The generated `record_bound<la, lb>` units, all nine ordered classes through d, and their template header (`tools/emit_exchange_kernels.py`) |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.mmd.headers`, the device library and the module library |

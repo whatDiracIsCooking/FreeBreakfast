@@ -9,11 +9,14 @@
 /// s = c_a c_b (pi / zeta)^{3/2}, the ket exponent beta and the two shells' AO
 /// offsets. The kernels form the Hermite expansion E from those, including its
 /// exp(-alpha beta / zeta |A - B|^2) prefactor (as exp(zeta X_PA X_PB) per axis),
-/// so the host forms neither. The record also carries what the two-electron
-/// builds derive from: the bra exponent alpha and each shell's rank among the
-/// basis's shells of its momentum. Three fields are formed on the device, once
-/// per basis: the record's Schwarz bound I = pair_bound(zeta, la + lb), and its
-/// dressed bound (FelizJueves's ao.k.record_bounds) as stored and swapped.
+/// so this module never forms it. The record also carries what the
+/// two-electron builds derive from: the bra exponent alpha and each shell's
+/// rank among the basis's shells of its momentum. Every field is formed on the
+/// device, once per basis, from the basis's shells and each class's shell
+/// pairs: the host uploads O(shells) and O(shell pairs), never a record. Three
+/// of them are bounds: the record's Schwarz bound I = pair_bound(zeta, la + lb),
+/// and its dressed bound (FelizJueves's ao.k.record_bounds) as stored and
+/// swapped.
 ///
 /// The launchers' view of a class is primitive_pair_class_view.h's, included
 /// in the global module fragment and re-exported (atom.cppm has the why).
@@ -28,7 +31,6 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
-import free_breakfast.core.mirrored_buffer;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 
@@ -37,28 +39,16 @@ export namespace free_breakfast {
 using free_breakfast::PrimitivePairClassView;
 
 /// @brief Every primitive-pair record of one shell-pair class (la, lb), with
-/// la <= lb, one @ref n_rec long @c MirroredBuffer per field, all on the
-/// class's own work stream.
+/// la <= lb, one @ref n_rec long device buffer per field, all on the class's
+/// own work stream.
 ///
 /// A vector is three fields, one per axis (P - A is @ref pa_x, @ref pa_y,
 /// @ref pa_z), named and laid out as the generated kernels take them.
 ///
-/// **The device side is the class; the pinned side is staging.** The host
-/// writes the records into the pinned side and they flow one way, to the
-/// device, where they are ordered and bounded. Nothing is copied back: the
-/// pinned side keeps the records in the order the host wrote them, the three
-/// bounds' pinned sides are never written, and every reader (the builds, J's
-/// prune, K's gather) reads the device side. A reader that wants the records on
-/// the host copies them back itself.
-///
-/// The pinned side is kept for the class's lifetime, so the upload never needs
-/// a host synchronization to protect it, and so a later step can stage again
-/// without allocating pinned memory: under AIMD the basis composition is
-/// fixed, so the zeta order (which depends only on the basis) puts each record
-/// at the same index every step, and a step rewrites @ref p_x, @ref pa_x,
-/// @ref pb_x (and y, z) there and re-uploads. Rewriting the pinned side in
-/// place must first wait, by an event or a synchronization, for the previous
-/// upload from it to complete.
+/// **The records exist on the device only.** They are formed there from the
+/// basis's shells and the class's shell pairs, already in their final order,
+/// then bounded; every reader (the builds, J's prune, K's gather) reads them
+/// there. A reader that wants them on the host copies them back itself.
 ///
 /// **The class is always la <= lb.** A shell pair whose bra has the higher
 /// angular momentum is stored swapped, B as the bra and A as the ket, so the
@@ -75,63 +65,66 @@ struct PrimitivePairClass {
   int32_t lb;
   /// @brief The number of records, positive: the length of every field.
   int32_t n_rec;
+  /// @brief The class's own work stream: every field was allocated and written
+  /// on it, and every build launches the class on it. Declared before the
+  /// fields, so it outlives their stream-ordered frees.
+  std::shared_ptr<DeviceStream> handle;
   /// @brief zeta = alpha + beta.
-  MirroredBuffer<double> zeta;
+  StreamBuffers::device<double> zeta;
   /// @brief P, the product centre: x.
-  MirroredBuffer<double> p_x;
+  StreamBuffers::device<double> p_x;
   /// @brief P: y.
-  MirroredBuffer<double> p_y;
+  StreamBuffers::device<double> p_y;
   /// @brief P: z.
-  MirroredBuffer<double> p_z;
+  StreamBuffers::device<double> p_z;
   /// @brief P - A: x.
-  MirroredBuffer<double> pa_x;
+  StreamBuffers::device<double> pa_x;
   /// @brief P - A: y.
-  MirroredBuffer<double> pa_y;
+  StreamBuffers::device<double> pa_y;
   /// @brief P - A: z.
-  MirroredBuffer<double> pa_z;
+  StreamBuffers::device<double> pa_z;
   /// @brief P - B: x.
-  MirroredBuffer<double> pb_x;
+  StreamBuffers::device<double> pb_x;
   /// @brief P - B: y.
-  MirroredBuffer<double> pb_y;
+  StreamBuffers::device<double> pb_y;
   /// @brief P - B: z.
-  MirroredBuffer<double> pb_z;
+  StreamBuffers::device<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
-  MirroredBuffer<double> s;
+  StreamBuffers::device<double> s;
   /// @brief alpha, the bra primitive's exponent.
-  MirroredBuffer<double> ea;
+  StreamBuffers::device<double> ea;
   /// @brief beta, the ket primitive's exponent.
-  MirroredBuffer<double> eb;
+  StreamBuffers::device<double> eb;
   /// @brief The record's Schwarz bound I = pair_bound(zeta, la + lb), formed
   /// on the device by the generated pair_bound<la, lb> after the zeta order:
   /// a J or K screen's Ip as a bra and Iq as a ket. It depends on zeta and
   /// la + lb only, and rises with zeta, so it is non-increasing in record order.
   /// Zero in a class above kMaxAngularMomentum, which has no kernel and which
   /// every build refuses.
-  MirroredBuffer<double> bound;
+  StreamBuffers::device<double> bound;
   /// @brief The record's DRESSED Schwarz bound as stored, FelizJueves's
   /// ao.k.record_bounds: max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p|
   /// I_p(zeta), the max over the bra shell's Cartesians, formed on the device
   /// by the generated record_bound<la, lb> after the zeta order. Zero in a
   /// class above kMaxAngularMomentum, as @ref bound.
-  MirroredBuffer<double> bound_ab;
+  StreamBuffers::device<double> bound_ab;
   /// @brief The same bound of the record swapped, the ket shell first: the
   /// max over the ket shell's Cartesians, by record_bound<lb, la> with P - A
   /// and P - B exchanged. Equal to @ref bound_ab on a diagonal record.
-  MirroredBuffer<double> bound_ba;
+  StreamBuffers::device<double> bound_ba;
   /// @brief The bra shell's first Cartesian AO (@c BasisSet::ao_offset_cart).
-  MirroredBuffer<int32_t> off_a;
+  StreamBuffers::device<int32_t> off_a;
   /// @brief The ket shell's first Cartesian AO.
-  MirroredBuffer<int32_t> off_b;
+  StreamBuffers::device<int32_t> off_b;
   /// @brief The bra shell's rank: its index among the basis's shells of
   /// momentum @ref la, in basis order.
-  MirroredBuffer<int32_t> rank_a;
+  StreamBuffers::device<int32_t> rank_a;
   /// @brief The ket shell's rank, among the basis's shells of momentum
   /// @ref lb.
-  MirroredBuffer<int32_t> rank_b;
+  StreamBuffers::device<int32_t> rank_b;
 
-  /// @brief The class's own work stream: the records were allocated and copied
-  /// on it, and every build launches the class on it.
-  const std::shared_ptr<DeviceStream> &device_stream() const noexcept { return zeta.handle(); }
+  /// @brief @ref handle, as launch_each takes a class's stream.
+  const std::shared_ptr<DeviceStream> &device_stream() const noexcept { return handle; }
 
   /// @brief The records on the device by pointer, for a launcher. Valid while
   /// this is alive.
@@ -140,26 +133,26 @@ struct PrimitivePairClass {
         .la = la,
         .lb = lb,
         .n_rec = n_rec,
-        .zeta = zeta.device().data(),
-        .p_x = p_x.device().data(),
-        .p_y = p_y.device().data(),
-        .p_z = p_z.device().data(),
-        .pa_x = pa_x.device().data(),
-        .pa_y = pa_y.device().data(),
-        .pa_z = pa_z.device().data(),
-        .pb_x = pb_x.device().data(),
-        .pb_y = pb_y.device().data(),
-        .pb_z = pb_z.device().data(),
-        .s = s.device().data(),
-        .ea = ea.device().data(),
-        .eb = eb.device().data(),
-        .bound = bound.device().data(),
-        .bound_ab = bound_ab.device().data(),
-        .bound_ba = bound_ba.device().data(),
-        .off_a = off_a.device().data(),
-        .off_b = off_b.device().data(),
-        .rank_a = rank_a.device().data(),
-        .rank_b = rank_b.device().data(),
+        .zeta = zeta.data(),
+        .p_x = p_x.data(),
+        .p_y = p_y.data(),
+        .p_z = p_z.data(),
+        .pa_x = pa_x.data(),
+        .pa_y = pa_y.data(),
+        .pa_z = pa_z.data(),
+        .pb_x = pb_x.data(),
+        .pb_y = pb_y.data(),
+        .pb_z = pb_z.data(),
+        .s = s.data(),
+        .ea = ea.data(),
+        .eb = eb.data(),
+        .bound = bound.data(),
+        .bound_ab = bound_ab.data(),
+        .bound_ba = bound_ba.data(),
+        .off_a = off_a.data(),
+        .off_b = off_b.data(),
+        .rank_a = rank_a.data(),
+        .rank_b = rank_b.data(),
     };
   }
 };
@@ -180,22 +173,24 @@ struct PrimitivePairClass {
 /// record order and a J build's bras with the longest ket loops launch first.
 /// No kernel depends on the order: each accumulates.
 ///
-/// The records are written into each class's pinned side, copied to the
-/// device, ordered there (a stable merge sort on -zeta, every field permuted
-/// in place) and each record's three bounds formed from its ordered fields,
-/// all queued on the class's stream, ahead of anything a build launches there;
-/// no host synchronization. The final records are on the device side only
-/// (see @ref PrimitivePairClass). The device res.dev_idx() names is made
-/// current for the call and the previous one restored.
+/// The host uploads the basis's shells and primitives, and each class's shell
+/// pairs with each one's first record; the device does the rest, on the
+/// class's stream: a stable merge sort of the records' -zeta, formed from
+/// those tables, then every field written once, already in that order, then
+/// each record's three bounds. The tables are the call's own, so it waits for
+/// every class's stream before returning: the records are then final, and a
+/// consumer on any stream may read them. The device res.dev_idx() names is
+/// made current for the call and the previous one restored.
 ///
 /// Coefficients are taken from the basis as given (see @ref Shell), so a basis
 /// that wants normalized primitives is placed from
 /// @c BasisStamp::primitive_normalized. The AO offsets are int32_t;
 /// @ref BasisSet already guarantees its Cartesian AO count fits one. A class of
-/// more than INT32_MAX records logs and aborts.
+/// more than INT32_MAX records, or a basis of more than INT32_MAX primitives,
+/// logs and aborts.
 ///
 /// @return The classes (none for an empty basis), or the GpuRuntime error of
-///         the first copy that failed.
+///         the first copy, launch or wait that failed.
 [[nodiscard]] Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
                                                                              const BasisSet &basis);
 

@@ -10,10 +10,12 @@ free_breakfast_add_interface_library(
   free_breakfast::core::types_headers
 )
 
-# The record order and bounds: each class's records put in descending zeta
-# order on the device, then each record's Schwarz bound and its dressed bound,
-# as stored and swapped, once per basis. Device code in its own library, so
-# its language and -x hip never reach the module compiles. Its sources are the
+# The records, their order and their bounds: each class's records formed on
+# the device from the basis's shells and the class's shell pairs, in
+# descending zeta order, then each record's Schwarz bound and its dressed
+# bound, as stored and swapped, once per basis. Device code in its own
+# library, so its language and -x hip never reach the module compiles. Its
+# sources are the
 # launcher and the generated kernels, one per class, each compiled on its own:
 # pair_bound (kernels/pair_bound/, written by
 # tools/emit_one_electron_kernels.py) and record_bound (kernels/record_bound/,
@@ -22,8 +24,9 @@ free_breakfast_add_interface_library(
 # NO_DEVICE_LINKING. Only mmd's own module calls the launchers. The bridge
 # header names int32_t, PrimitivePairClassView, wwrStream_t and
 # wwrError_t, hence types_headers, headers and wwr::device PUBLIC; the kernels
-# read kFourWarps (block_params.h) and idivup (primitives.h), hence
-# core::kernel_headers, sort with src/integrals/sort's merge sort, size the
+# read kFourWarps (block_params.h) and idivup and pow (primitives.h), hence
+# core::kernel_headers, kPi (constants.h), hence core::constants_header,
+# sort with src/integrals/sort's merge sort, size the
 # bounds' tables by kMaxAngularMomentum (basis::headers), and the generated
 # units include felizjueves/runtime.h (felizjueves::headers); all PRIVATE.
 free_breakfast_add_gpu_device_library(
@@ -52,14 +55,17 @@ free_breakfast_add_gpu_device_library(
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
+  free_breakfast::core::constants_header
   free_breakfast::basis::headers
   felizjueves::headers
   free_breakfast::integrals::sort::device
 )
 
-# The records, built on the host, copied to the device and ordered there.
-# MirroredBuffer, DeviceStream, DeviceResources, Result and BasisSet are in its
-# interface, so their modules are PUBLIC. The device library is PRIVATE: the
+# The classes: the shell-pair sweep on the host, the shell and shell-pair
+# tables staged there and uploaded, everything else on the device.
+# StreamBuffers, DeviceStream, DeviceResources, Result and BasisSet are in its
+# interface, so their modules are PUBLIC; MirroredBuffer stages the tables in
+# the implementation unit only. The device library is PRIVATE: the
 # implementation unit includes the bridge header in its GMF and calls the
 # launchers.
 free_breakfast_add_cxx_module_library(
@@ -74,12 +80,11 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::wwr
-  free_breakfast::core::mirrored_buffer
   free_breakfast::core::resources
   free_breakfast::basis
   free_breakfast::integrals::mmd::headers
   LINK_PRIVATE
-  free_breakfast::core::constants
+  free_breakfast::core::mirrored_buffer
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::mmd::device
 )

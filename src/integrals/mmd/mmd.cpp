@@ -1,19 +1,18 @@
 /// @file
 /// @brief primitive_pair_classes: the shell-pair sweep, the la <= lb swap, the
-/// per-record arithmetic, the copy to the device, the order there and the
-/// record bounds.
+/// ranks, the tables the device forms the records from, the order there and
+/// the record bounds.
 
 module;
 
-// The record-order and record-bound launchers, defined in mmd_launch.cu: declared in the GMF so
-// they keep external linkage (see the header).
+// The record, record-order and record-bound launchers, defined in mmd_launch.cu: declared in the
+// GMF so they keep external linkage (see the header).
 #include "mmd_bridge.h"
 
 module free_breakfast.integrals.mmd;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.mirrored_buffer;
@@ -37,6 +36,118 @@ std::pair<uint32_t, uint32_t> bra_ket_order(const std::vector<Shell> &shells, co
   return {i, j};
 }
 
+// One class's shell pairs, in sweep order, and each one's first record: the
+// prefix of their primitive-pair counts, in int64_t so a class past INT32_MAX
+// is caught before it is sized.
+struct ClassPairs {
+  std::vector<uint32_t> bra;
+  std::vector<uint32_t> ket;
+  std::vector<int64_t> rec_begin{0};
+};
+
+// The basis's shells and primitives, staged: what every class's records are
+// formed from. A MirroredBuffer's destructor waits for its stream, so the
+// pinned side outlives the upload.
+struct ShellTable {
+  MirroredBuffer<int32_t> prim_begin;
+  MirroredBuffer<double> exponent;
+  MirroredBuffer<double> coefficient;
+  MirroredBuffer<double> c_x;
+  MirroredBuffer<double> c_y;
+  MirroredBuffer<double> c_z;
+  MirroredBuffer<int32_t> ao_offset;
+  MirroredBuffer<int32_t> rank;
+};
+
+// One class's ClassPairs, staged.
+struct PairTable {
+  MirroredBuffer<uint32_t> bra;
+  MirroredBuffer<uint32_t> ket;
+  MirroredBuffer<int32_t> rec_begin;
+};
+
+// values in a new MirroredBuffer on ds, on its pinned side only.
+template <typename T>
+MirroredBuffer<T> staged(const std::vector<T> &values, const std::shared_ptr<DeviceStream> &ds) {
+  MirroredBuffer<T> out(values.size(), ds);
+  std::ranges::copy(values, out.pinned().data());
+  return out;
+}
+
+// The basis's shells and primitives staged on ds, each shell's rank as given.
+// BasisSet guarantees nao_cart() fits an int32_t, so the offset casts are
+// exact; the primitive count is checked here.
+ShellTable stage_shells(const BasisSet &basis, const std::vector<int32_t> &rank,
+                        const std::shared_ptr<DeviceStream> &ds) {
+  const std::vector<Shell> &shells = basis.shells();
+  std::vector<int32_t> prim_begin{0};
+  std::vector<double> exponent;
+  std::vector<double> coefficient;
+  std::vector<double> c_x;
+  std::vector<double> c_y;
+  std::vector<double> c_z;
+  std::vector<int32_t> ao_offset;
+  int64_t n_prim = 0;
+  for (uint32_t i = 0; i < basis.nshells(); ++i) {
+    n_prim += shells[i].nprimitives();
+    if (n_prim > std::numeric_limits<int32_t>::max()) {
+      check_or_abort(Status{err_config("primitive_pair_classes: the basis has more than {} "
+                                       "primitives",
+                                       std::numeric_limits<int32_t>::max())});
+    }
+    prim_begin.push_back(static_cast<int32_t>(n_prim));
+    for (const Primitive &p : shells[i].primitives()) {
+      exponent.push_back(p.exponent);
+      coefficient.push_back(p.coefficient);
+    }
+    c_x.push_back(shells[i].center().x);
+    c_y.push_back(shells[i].center().y);
+    c_z.push_back(shells[i].center().z);
+    ao_offset.push_back(static_cast<int32_t>(basis.ao_offset_cart(i)));
+  }
+  return {
+      .prim_begin = staged(prim_begin, ds),
+      .exponent = staged(exponent, ds),
+      .coefficient = staged(coefficient, ds),
+      .c_x = staged(c_x, ds),
+      .c_y = staged(c_y, ds),
+      .c_z = staged(c_z, ds),
+      .ao_offset = staged(ao_offset, ds),
+      .rank = staged(rank, ds),
+  };
+}
+
+// One class's shell pairs staged on ds, their record prefix narrowed to
+// int32_t: its last entry, the class's record count, is checked already.
+PairTable stage_pairs(const ClassPairs &pairs, const std::shared_ptr<DeviceStream> &ds) {
+  std::vector<int32_t> rec_begin(pairs.rec_begin.size());
+  std::ranges::transform(pairs.rec_begin, rec_begin.begin(),
+                         [](const int64_t r) { return static_cast<int32_t>(r); });
+  return {.bra = staged(pairs.bra, ds),
+          .ket = staged(pairs.ket, ds),
+          .rec_begin = staged(rec_begin, ds)};
+}
+
+// Queue every staged field's pinned-to-device copy on its stream.
+Status upload(ShellTable &table) {
+  for (MirroredBuffer<double> *field :
+       {&table.exponent, &table.coefficient, &table.c_x, &table.c_y, &table.c_z}) {
+    FBF_TRY(gpu_status(field->to_device()));
+  }
+  for (MirroredBuffer<int32_t> *field : {&table.prim_begin, &table.ao_offset, &table.rank}) {
+    FBF_TRY(gpu_status(field->to_device()));
+  }
+  return {};
+}
+
+// Queue each staged shell-pair field's pinned-to-device copy on its stream.
+Status upload(PairTable &pairs) {
+  FBF_TRY(gpu_status(pairs.bra.to_device()));
+  FBF_TRY(gpu_status(pairs.ket.to_device()));
+  FBF_TRY(gpu_status(pairs.rec_begin.to_device()));
+  return {};
+}
+
 // A class of n records on a new stream of res's Device, every field zeroed.
 PrimitivePairClass make_class(DeviceResources &res, const ClassKey key, const int32_t n) {
   const auto ds = std::make_shared<DeviceStream>(res.device());
@@ -45,119 +156,70 @@ PrimitivePairClass make_class(DeviceResources &res, const ClassKey key, const in
       .la = key.first,
       .lb = key.second,
       .n_rec = n,
-      .zeta = MirroredBuffer<double>(len, ds),
-      .p_x = MirroredBuffer<double>(len, ds),
-      .p_y = MirroredBuffer<double>(len, ds),
-      .p_z = MirroredBuffer<double>(len, ds),
-      .pa_x = MirroredBuffer<double>(len, ds),
-      .pa_y = MirroredBuffer<double>(len, ds),
-      .pa_z = MirroredBuffer<double>(len, ds),
-      .pb_x = MirroredBuffer<double>(len, ds),
-      .pb_y = MirroredBuffer<double>(len, ds),
-      .pb_z = MirroredBuffer<double>(len, ds),
-      .s = MirroredBuffer<double>(len, ds),
-      .ea = MirroredBuffer<double>(len, ds),
-      .eb = MirroredBuffer<double>(len, ds),
-      .bound = MirroredBuffer<double>(len, ds),
-      .bound_ab = MirroredBuffer<double>(len, ds),
-      .bound_ba = MirroredBuffer<double>(len, ds),
-      .off_a = MirroredBuffer<int32_t>(len, ds),
-      .off_b = MirroredBuffer<int32_t>(len, ds),
-      .rank_a = MirroredBuffer<int32_t>(len, ds),
-      .rank_b = MirroredBuffer<int32_t>(len, ds),
+      .handle = ds,
+      .zeta = StreamBuffers::device<double>(len, ds),
+      .p_x = StreamBuffers::device<double>(len, ds),
+      .p_y = StreamBuffers::device<double>(len, ds),
+      .p_z = StreamBuffers::device<double>(len, ds),
+      .pa_x = StreamBuffers::device<double>(len, ds),
+      .pa_y = StreamBuffers::device<double>(len, ds),
+      .pa_z = StreamBuffers::device<double>(len, ds),
+      .pb_x = StreamBuffers::device<double>(len, ds),
+      .pb_y = StreamBuffers::device<double>(len, ds),
+      .pb_z = StreamBuffers::device<double>(len, ds),
+      .s = StreamBuffers::device<double>(len, ds),
+      .ea = StreamBuffers::device<double>(len, ds),
+      .eb = StreamBuffers::device<double>(len, ds),
+      .bound = StreamBuffers::device<double>(len, ds),
+      .bound_ab = StreamBuffers::device<double>(len, ds),
+      .bound_ba = StreamBuffers::device<double>(len, ds),
+      .off_a = StreamBuffers::device<int32_t>(len, ds),
+      .off_b = StreamBuffers::device<int32_t>(len, ds),
+      .rank_a = StreamBuffers::device<int32_t>(len, ds),
+      .rank_b = StreamBuffers::device<int32_t>(len, ds),
   };
 }
 
-// Write the records of the basis's shell pair (bra, ket), already in la <= lb
-// order, into cls's pinned side from record index rec; rank names each shell's
-// rank by its index. Return the index one past the last record written.
-int32_t write_shell_pair_records(PrimitivePairClass &cls, const int32_t rec, const BasisSet &basis,
-                                 const uint32_t bra, const uint32_t ket,
-                                 const std::vector<int32_t> &rank) {
-  const Shell &a = basis.shells()[bra];
-  const Shell &b = basis.shells()[ket];
-  const auto off_a = static_cast<int32_t>(basis.ao_offset_cart(bra));
-  const auto off_b = static_cast<int32_t>(basis.ao_offset_cart(ket));
-  const Vec<double, 3> &ca = a.center();
-  const Vec<double, 3> &cb = b.center();
-  auto r = static_cast<size_t>(rec);
-  const auto at = [&r](auto &field) -> auto & { return field.pinned().data()[r]; };
-  for (const Primitive &pa : a.primitives()) {
-    for (const Primitive &pb : b.primitives()) {
-      const double zeta = pa.exponent + pb.exponent;
-      const double px = ((pa.exponent * ca.x) + (pb.exponent * cb.x)) / zeta;
-      const double py = ((pa.exponent * ca.y) + (pb.exponent * cb.y)) / zeta;
-      const double pz = ((pa.exponent * ca.z) + (pb.exponent * cb.z)) / zeta;
-      at(cls.zeta) = zeta;
-      at(cls.p_x) = px;
-      at(cls.p_y) = py;
-      at(cls.p_z) = pz;
-      at(cls.pa_x) = px - ca.x;
-      at(cls.pa_y) = py - ca.y;
-      at(cls.pa_z) = pz - ca.z;
-      at(cls.pb_x) = px - cb.x;
-      at(cls.pb_y) = py - cb.y;
-      at(cls.pb_z) = pz - cb.z;
-      at(cls.s) = pa.coefficient * pb.coefficient * std::pow(kPi<double> / zeta, 1.5);
-      at(cls.ea) = pa.exponent;
-      at(cls.eb) = pb.exponent;
-      at(cls.off_a) = off_a;
-      at(cls.off_b) = off_b;
-      at(cls.rank_a) = rank[bra];
-      at(cls.rank_b) = rank[ket];
-      ++r;
-    }
-  }
-  return static_cast<int32_t>(r);
-}
-
-// Queue every host-written field's pinned-to-device copy on cls's stream (all
-// but the three bounds, which form_bounds writes on the device).
-Status copy_to_device(PrimitivePairClass &cls) {
-  for (MirroredBuffer<double> *field :
-       {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-        &cls.pb_y, &cls.pb_z, &cls.s, &cls.ea, &cls.eb}) {
-    FBF_TRY(gpu_status(field->to_device()));
-  }
-  for (MirroredBuffer<int32_t> *field : {&cls.off_a, &cls.off_b, &cls.rank_a, &cls.rank_b}) {
-    FBF_TRY(gpu_status(field->to_device()));
-  }
-  return {};
-}
-
-// Put cls's records in descending zeta order on its stream, after their copy
-// to the device: the order, then every field permuted to it in place. Only the
-// device side is ordered: the pinned side keeps the order the host wrote.
-// Within a class the record bound (form_bounds) rises with zeta, so this is
-// descending Ip: a J build's bras with the longest ket loops launch first.
-// Every kernel accumulates, so none depends on the order. The scratch is drawn on cls's
-// stream and returned in its order.
-Status order_by_zeta(PrimitivePairClass &cls) {
-  const std::shared_ptr<DeviceStream> &ds = cls.device_stream();
+// cls's records formed from src on its stream, in descending zeta order: the
+// order first, sorted from zeta alone, then every field written once, already
+// in it, so nothing is permuted after. Within a class the record bound
+// (form_bounds) rises with zeta, so this is descending Ip: a J build's bras
+// with the longest ket loops launch first. Every kernel accumulates, so none
+// depends on the order. The sort's scratch is drawn on cls's stream and
+// returned in its order.
+Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &src) {
+  const std::shared_ptr<DeviceStream> &ds = cls.handle;
   const wwr::wwrStream_t stream = ds->stream();
   const auto n = static_cast<size_t>(cls.n_rec);
   StreamBuffers::device<double> key(n, ds);
   StreamBuffers::device<double> key_alt(n, ds);
   StreamBuffers::device<uint32_t> perm(n, ds);
   StreamBuffers::device<uint32_t> perm_alt(n, ds);
-  StreamBuffers::device<double> tmp(n, ds);
-  StreamBuffers::device<int32_t> tmp_offsets(n, ds);
-  FBF_TRY(gpu_status(device::mmd_order(stream, cls.n_rec, cls.zeta.device().data(), key.data(),
-                                       key_alt.data(), perm.data(), perm_alt.data())));
-  for (MirroredBuffer<double> *field :
-       {&cls.zeta, &cls.p_x, &cls.p_y, &cls.p_z, &cls.pa_x, &cls.pa_y, &cls.pa_z, &cls.pb_x,
-        &cls.pb_y, &cls.pb_z, &cls.s, &cls.ea, &cls.eb}) {
-    FBF_TRY(gpu_status(
-        device::mmd_permute(stream, cls.n_rec, perm.data(), field->device().data(), tmp.data())));
-  }
-  for (MirroredBuffer<int32_t> *field : {&cls.off_a, &cls.off_b, &cls.rank_a, &cls.rank_b}) {
-    FBF_TRY(gpu_status(device::mmd_permute(stream, cls.n_rec, perm.data(), field->device().data(),
-                                           tmp_offsets.data())));
-  }
-  return {};
+  FBF_TRY(gpu_status(device::mmd_order(stream, cls.n_rec, src, key.data(), key_alt.data(),
+                                       perm.data(), perm_alt.data())));
+  const device::PrimitivePairRecords out{
+      .zeta = cls.zeta.data(),
+      .p_x = cls.p_x.data(),
+      .p_y = cls.p_y.data(),
+      .p_z = cls.p_z.data(),
+      .pa_x = cls.pa_x.data(),
+      .pa_y = cls.pa_y.data(),
+      .pa_z = cls.pa_z.data(),
+      .pb_x = cls.pb_x.data(),
+      .pb_y = cls.pb_y.data(),
+      .pb_z = cls.pb_z.data(),
+      .s = cls.s.data(),
+      .ea = cls.ea.data(),
+      .eb = cls.eb.data(),
+      .off_a = cls.off_a.data(),
+      .off_b = cls.off_b.data(),
+      .rank_a = cls.rank_a.data(),
+      .rank_b = cls.rank_b.data(),
+  };
+  return gpu_status(device::mmd_records(stream, cls.n_rec, src, perm.data(), out));
 }
 
-// Each record's three bounds, on cls's stream after order_by_zeta, so they are
+// Each record's three bounds, on cls's stream after form_records, so they are
 // in record order, on the device only: the Schwarz bound
 // I = pair_bound(zeta, la + lb) from its zeta, which rises with zeta and so is
 // non-increasing in record order, and the dressed bound (ordered_pair_bound) of
@@ -169,36 +231,73 @@ Status form_bounds(PrimitivePairClass &cls) {
   if (cls.lb > kMaxAngularMomentum) {
     return {};
   }
-  const wwr::wwrStream_t stream = cls.device_stream()->stream();
-  FBF_TRY(gpu_status(device::mmd_bound(stream, cls.la, cls.lb, cls.n_rec, cls.zeta.device().data(),
-                                       cls.bound.device().data())));
+  const wwr::wwrStream_t stream = cls.handle->stream();
+  FBF_TRY(gpu_status(
+      device::mmd_bound(stream, cls.la, cls.lb, cls.n_rec, cls.zeta.data(), cls.bound.data())));
   const PrimitivePairClassView v = cls.view();
-  FBF_TRY(gpu_status(device::ordered_pair_bound(stream, v, cls.bound_ab.device().data())));
+  FBF_TRY(gpu_status(device::ordered_pair_bound(stream, v, cls.bound_ab.data())));
   PrimitivePairClassView swapped = v;
   std::swap(swapped.la, swapped.lb);
   std::swap(swapped.pa_x, swapped.pb_x);
   std::swap(swapped.pa_y, swapped.pb_y);
   std::swap(swapped.pa_z, swapped.pb_z);
-  FBF_TRY(gpu_status(device::ordered_pair_bound(stream, swapped, cls.bound_ba.device().data())));
+  FBF_TRY(gpu_status(device::ordered_pair_bound(stream, swapped, cls.bound_ba.data())));
+  return {};
+}
+
+// Every class formed on its own stream: its shell pairs uploaded there, the
+// stream forked from table_ds's (where the shell table was uploaded), then its
+// records and bounds.
+Status form_classes(std::vector<PrimitivePairClass> &classes, std::vector<PairTable> &pairs,
+                    ShellTable &table, DeviceStream &table_ds) {
+  FBF_TRY(upload(table));
+  for (size_t c = 0; c < classes.size(); ++c) {
+    PrimitivePairClass &cls = classes[c];
+    PairTable &pt = pairs[c];
+    FBF_TRY(upload(pt));
+    FBF_TRY(gpu_status(cls.handle->fork_stream().fork_from(table_ds.stream())));
+    const device::PrimitivePairSource src{
+        .n_pairs = static_cast<int32_t>(pt.bra.size()),
+        .bra = pt.bra.device().data(),
+        .ket = pt.ket.device().data(),
+        .rec_begin = pt.rec_begin.device().data(),
+        .prim_begin = table.prim_begin.device().data(),
+        .exponent = table.exponent.device().data(),
+        .coefficient = table.coefficient.device().data(),
+        .c_x = table.c_x.device().data(),
+        .c_y = table.c_y.device().data(),
+        .c_z = table.c_z.device().data(),
+        .ao_offset = table.ao_offset.device().data(),
+        .rank = table.rank.device().data(),
+    };
+    FBF_TRY(form_records(cls, src));
+    FBF_TRY(form_bounds(cls));
+  }
   return {};
 }
 
 Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
                                                                const BasisSet &basis) {
-  // BasisSet guarantees nao_cart() fits an int32_t, so the offset casts below are exact.
   const std::vector<Shell> &shells = basis.shells();
   const uint32_t nsh = basis.nshells();
+  if (nsh == 0) {
+    return std::vector<PrimitivePairClass>{};
+  }
 
-  // Pass 1: every reached class's record count, in int64_t so a class past
-  // INT32_MAX is caught before it is sized. Keyed by (la, lb), so the result
-  // comes out in ascending class order.
-  std::map<ClassKey, int64_t> counts;
+  // The sweep: every shell pair i <= j, in la <= lb order, listed in its
+  // class with its first record. Keyed by (la, lb), so the result comes out in
+  // ascending class order. No record is formed here: a pair is O(1) however
+  // many primitives it has.
+  std::map<ClassKey, ClassPairs> sweep;
   for (uint32_t i = 0; i < nsh; ++i) {
     for (uint32_t j = i; j < nsh; ++j) {
       const auto [bra, ket] = bra_ket_order(shells, i, j);
-      counts[{shells[bra].angular_momentum(), shells[ket].angular_momentum()}] +=
-          static_cast<int64_t>(shells[bra].primitives().size()) *
-          static_cast<int64_t>(shells[ket].primitives().size());
+      ClassPairs &cp = sweep[{shells[bra].angular_momentum(), shells[ket].angular_momentum()}];
+      cp.bra.push_back(bra);
+      cp.ket.push_back(ket);
+      cp.rec_begin.push_back(cp.rec_begin.back() +
+                             (static_cast<int64_t>(shells[bra].nprimitives()) *
+                              static_cast<int64_t>(shells[ket].nprimitives())));
     }
   }
 
@@ -210,39 +309,41 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
     rank[i] = next_rank[shells[i].angular_momentum()]++;
   }
 
-  // Size each class once, at its final record count.
+  // The shell table, on a stream of its own that every class's stream forks
+  // from. Its device side is freed on that stream when the call returns, so
+  // the classes' streams, which read it, are waited for first (below).
   const ScopedDeviceIndex on{res.dev_idx()};
+  const auto table_ds = std::make_shared<DeviceStream>(res.device());
+  ShellTable table = stage_shells(basis, rank, table_ds);
+
+  // Size each class once, at its final record count.
   std::vector<PrimitivePairClass> out;
-  out.reserve(counts.size());
-  std::map<ClassKey, size_t> slot;
-  for (const auto &[key, n] : counts) {
+  std::vector<PairTable> pairs;
+  out.reserve(sweep.size());
+  pairs.reserve(sweep.size());
+  for (const auto &[key, cp] : sweep) {
+    const int64_t n = cp.rec_begin.back();
     if (n > std::numeric_limits<int32_t>::max()) {
       check_or_abort(
           Status{err_config("primitive_pair_classes: class ({}, {}) has {} records, "
                             "past {}",
                             key.first, key.second, n, std::numeric_limits<int32_t>::max())});
     }
-    slot.emplace(key, out.size());
     out.push_back(make_class(res, key, static_cast<int32_t>(n)));
+    pairs.push_back(stage_pairs(cp, out.back().handle));
   }
 
-  // Pass 2: the same sweep, each shell pair's records written at its class's
-  // cursor, in shell-pair, then bra-primitive-major, order: the order the host
-  // writes them in, before order_by_zeta reorders them on the device.
-  std::vector<int32_t> cursor(out.size(), 0);
-  for (uint32_t i = 0; i < nsh; ++i) {
-    for (uint32_t j = i; j < nsh; ++j) {
-      const auto [bra, ket] = bra_ket_order(shells, i, j);
-      const size_t c = slot.at({shells[bra].angular_momentum(), shells[ket].angular_momentum()});
-      cursor[c] = write_shell_pair_records(out[c], cursor[c], basis, bra, ket, rank);
+  // Wait for every class's stream however the forming went: the tables are
+  // this call's, and are freed when it returns.
+  const Status formed = form_classes(out, pairs, table, *table_ds);
+  Status waited;
+  for (PrimitivePairClass &cls : out) {
+    if (const Status s = gpu_status(cls.handle->fork_stream().sync()); !s && waited) {
+      waited = s;
     }
   }
-
-  for (PrimitivePairClass &cls : out) {
-    FBF_TRY(copy_to_device(cls));
-    FBF_TRY(order_by_zeta(cls));
-    FBF_TRY(form_bounds(cls));
-  }
+  FBF_TRY(formed);
+  FBF_TRY(waited);
   return out;
 }
 
