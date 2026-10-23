@@ -21,6 +21,9 @@ import free_breakfast.core.resources;
 
 namespace free_breakfast {
 
+// The solve's shared memory is sized for this history and no more.
+static_assert(std::cmp_equal(kDiisMaxHistoryLimit + 1, device::kDiisSolveMaxDim));
+
 Diis::Diis(DeviceResources &res, const size_t len, const size_t max_history)
     : len_(len), cap_(std::clamp<size_t>(max_history, 1, kDiisMaxHistoryLimit)),
       dev_idx_(res.dev_idx()), fock_(len_ * cap_, res.device()), error_(len_ * cap_, res.device()),

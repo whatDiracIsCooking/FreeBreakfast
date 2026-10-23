@@ -13,6 +13,7 @@ disagree, the config is what gets enforced.
 | Python lint | `ruff check` | `pyproject.toml` `[tool.ruff.lint]` | commit hook, CI `lint` |
 | CMake lint (80 columns) | `cmake-lint` | [`.cmake-format.yaml`](../.cmake-format.yaml) | commit hook, CI `lint` |
 | Fixed-width integer types only (see [Integer types](#integer-types)) | `devtools/check-int-types.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
+| Statically sized shared memory (see [Shared memory](#shared-memory)) | `devtools/check-shared-mem.py` | the `dynamic-smem-ok:` marker | commit hook, CI `lint` |
 | C++ naming, bug-prone patterns | clang-tidy | [`.clang-tidy`](../.clang-tidy) | **advisory** — `devtools/cpp-tier.sh --tidy` |
 | Whitespace, line endings, final newline | editor + pre-commit | [`.editorconfig`](../.editorconfig) | commit hook |
 
@@ -271,6 +272,38 @@ exceptions, which get their own buffers:
   `orthogonalize` holds U and the eigenvalues across `diagonalize` this way,
   and takes M from the workspace once `diagonalize` has returned
   (`src/linalg/orthogonalize/orthogonalize.cpp`).
+
+## Shared memory
+
+**A kernel's shared memory is sized at compile time**: a `__shared__` array
+whose extent is a `constexpr` or a template parameter, never
+`extern __shared__` with the size passed at launch. When the size depends on the
+problem, bound it and size for the bound, as `diis_solve` in
+`src/linalg/diis/diis_solve.cu` does for the largest DIIS history.
+
+The size is then something the compiler knows. The resource report and the
+occupancy calculation include it, an oversized array fails the build instead of
+failing a launch on whichever card has less to give, several arrays need no
+offsets carved by hand out of one `extern` buffer, and nothing on the host has
+to agree with the kernel about a byte count.
+
+There are two exceptions, and each must be stated on the declaration as
+`// dynamic-smem-ok: <reason>` (on the line itself or a comment-only line above
+it):
+
+- **More than 48 KiB.** That is CUDA's limit for static shared memory. Beyond it
+  the memory has to be dynamic and the kernel opted in with
+  `FuncAttributeMaxDynamicSharedMemorySize`.
+- **A runtime size where the bound would cost occupancy.** For a grid of many
+  blocks, sizing every block for the worst case can keep blocks off an SM. A
+  single-block launch, like `diis_solve`, never qualifies.
+
+Templating a kernel on its size is the right answer when the sizes are few. It
+is not the answer when they are many: each instantiation is another kernel to
+compile.
+
+`devtools/check-shared-mem.py` enforces this. It ignores comments and string
+literals, and skips FelizJueves-generated kernels.
 
 ## Errors
 

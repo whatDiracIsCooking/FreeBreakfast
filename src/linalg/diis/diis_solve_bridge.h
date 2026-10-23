@@ -21,6 +21,12 @@
 
 namespace free_breakfast::device {
 
+/// @brief The largest bordered system diis_solve takes: kDiisMaxHistoryLimit
+/// plus the Lagrange row. The kernel's shared memory is sized statically from
+/// it, (dim+1)*dim doubles = 34,320 B, under the 48 KiB static limit; diis.cpp
+/// asserts it agrees with the module's constant.
+inline constexpr int32_t kDiisSolveMaxDim = 65;
+
 /// @brief Solve the bordered DIIS system for the @p m extrapolation
 /// coefficients, on @p stream, in one block using shared memory.
 ///
@@ -38,8 +44,8 @@ namespace free_breakfast::device {
 /// If a pivot falls below 1e-14 the subspace is singular, and @p coeff is set
 /// to the unit selector at @p newest (1 there, 0 elsewhere), so the caller's
 /// extrapolation reproduces the newest Fock. @p singular_out (one device int)
-/// is set to 1 in that case and 0 otherwise. @p m must be in 1..ld and
-/// @p newest in 0..m-1; shared memory is (m+1)(m+2) doubles.
+/// is set to 1 in that case and 0 otherwise. @p m must be in 1..ld, @p ld
+/// below kDiisSolveMaxDim, and @p newest in 0..m-1.
 ///
 /// @return The launch status, as the integer value of `wwrError_t`. The enum
 ///         itself is only in runtime.h's device section, which a host GMF does
