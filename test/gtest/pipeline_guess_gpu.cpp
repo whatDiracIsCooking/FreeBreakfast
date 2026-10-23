@@ -1,7 +1,8 @@
-// The Guess step against a direct sad_density. The step's contract is checked
-// by static_assert; running it needs a Molecule, which owns its nuclei on the
-// device, so the rest needs a GPU. The guess itself is host work, run here on
-// a subflow of a taskflow of its own, as the pipeline would.
+// The Guess step against a direct sad_density, and its load against the
+// density it was saved from. The step's contract is checked by static_assert;
+// running it needs a Molecule, which owns its nuclei on the device, so the
+// rest needs a GPU. The guess itself is host work, run here on a subflow of a
+// taskflow of its own, as the pipeline would.
 
 #include <gtest/gtest.h>
 
@@ -13,8 +14,12 @@ import free_breakfast.core.resources;
 import free_breakfast.sad;
 import free_breakfast.io.basis;
 import free_breakfast.io.sad;
+import free_breakfast.io.npy;
+import free_breakfast.core.nontransferrable;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.guess;
+
+#include "scratch_dir.h"
 
 namespace {
 
@@ -28,6 +33,9 @@ static_assert(fb::PipelineStep<fb::GuessStep>);
 static_assert(fb::kRunShape<fb::GuessStep> == fb::RunShape::HostSubflow);
 static_assert(std::same_as<fb::StepInput<fb::GuessStep>, GuessInput>);
 static_assert(std::same_as<fb::StepOutput<fb::GuessStep>, fb::Guess>);
+static_assert(fb::LoadableStep<fb::GuessStep>);
+static_assert(fb::kLoadShape<fb::GuessStep> == fb::RunShape::Host);
+static_assert(std::same_as<fb::LoadInput<fb::GuessStep>, fb::View<fb::BasisSet>>);
 
 // O: s, s, p, d (the d unoccupied); H: s.
 fb::BasisStamp water_stamp() {
@@ -100,6 +108,60 @@ TEST(PipelineGuess, ABasisPlacedOverOtherAtomsIsInvalidConfig) {
   auto guess = run_step(fb::GuessStep{}, GuessInput{molecule, *basis});
   ASSERT_FALSE(guess.has_value());
   EXPECT_EQ(guess.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
+// --- load -------------------------------------------------------------------
+
+TEST(PipelineGuess, ALoadedGuessIsTheSavedDensityBitwise) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::Molecule molecule = water(res);
+  auto basis = fb::place(water_stamp(), molecule);
+  ASSERT_TRUE(basis.has_value()) << basis.error().message;
+  auto guess = run_step(fb::GuessStep{}, GuessInput{molecule, *basis});
+  ASSERT_TRUE(guess.has_value()) << guess.error().message;
+
+  const fb::test::ScratchDir dir("pipeline-guess");
+  const std::size_t n = basis->nao_sphe();
+  ASSERT_TRUE(fb::write_npy(dir / "d.npy", fb::NpyArray{.shape = {n, n}, .data = guess->d}));
+  auto loaded = fb::GuessStep::load(dir / "d.npy", fb::View<fb::BasisSet>{*basis});
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().message;
+  EXPECT_EQ(loaded->d, guess->d);
+}
+
+TEST(PipelineGuess, ALoadOfTheWrongShapeIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::Molecule molecule = water(res);
+  auto basis = fb::place(water_stamp(), molecule);
+  ASSERT_TRUE(basis.has_value()) << basis.error().message;
+  const std::size_t n = basis->nao_sphe();
+
+  const fb::test::ScratchDir dir("pipeline-guess");
+  // A basis one function smaller, and the right count as a vector.
+  for (const std::vector<std::size_t> &shape :
+       {std::vector<std::size_t>{n - 1, n - 1}, std::vector<std::size_t>{n * n}}) {
+    const fb::NpyArray array{.shape = shape,
+                             .data = std::vector<double>(*fb::element_count(shape), 0.0)};
+    ASSERT_TRUE(fb::write_npy(dir / "d.npy", array));
+    auto loaded = fb::GuessStep::load(dir / "d.npy", fb::View<fb::BasisSet>{*basis});
+    ASSERT_FALSE(loaded.has_value());
+    EXPECT_EQ(loaded.error().kind, fb::ErrorKind::InvalidConfig);
+    EXPECT_NE(loaded.error().message.find("[guess]"), std::string::npos) << loaded.error().message;
+  }
+}
+
+TEST(PipelineGuess, ALoadOfAMissingFileIsIo) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::Molecule molecule = water(res);
+  auto basis = fb::place(water_stamp(), molecule);
+  ASSERT_TRUE(basis.has_value()) << basis.error().message;
+
+  const fb::test::ScratchDir dir("pipeline-guess");
+  auto loaded = fb::GuessStep::load(dir / "absent.npy", fb::View<fb::BasisSet>{*basis});
+  ASSERT_FALSE(loaded.has_value());
+  EXPECT_EQ(loaded.error().kind, fb::ErrorKind::IO);
 }
 
 } // namespace

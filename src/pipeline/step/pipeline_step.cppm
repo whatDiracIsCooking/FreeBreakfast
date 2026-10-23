@@ -1,6 +1,7 @@
 /// @file
 /// @brief `:pipeline_step`: the concept a step type satisfies, and what it
-///        reads, writes and holds, all read off its `run` signature.
+///        reads, writes and holds, all read off its `run` signature; and the
+///        same read off an optional static `load`.
 
 export module free_breakfast.pipeline.step:pipeline_step;
 
@@ -55,6 +56,22 @@ struct RunSignature<Return (S::*)(Input, Resources...) const noexcept(kNoexcept)
 
 template <class S>
 using RunSignatureOf = RunSignature<decltype(&S::run)>;
+
+// The parts of a static load's type: a free function taking the path first,
+// then a view and resources as run does. A non-static load is a member pointer
+// and matches nothing; taking &S::load rejects an overloaded or template one.
+template <class F>
+struct LoadSignature {};
+template <class Return, class Input, class... Resources, bool kNoexcept>
+struct LoadSignature<Return (*)(const std::filesystem::path &, Input,
+                                Resources...) noexcept(kNoexcept)> {
+  using InputView = std::remove_cvref_t<Input>;
+  using ReturnType = Return;
+  static constexpr std::optional<RunShape> kShape = kShapeOfResources<Resources...>;
+};
+
+template <class S>
+using LoadSignatureOf = LoadSignature<decltype(&S::load)>;
 
 // Result<T> is std::expected<T, Error>: a bare T, or another expected, has no
 // output.
@@ -119,5 +136,48 @@ concept PipelineStep =
 /// @brief The `RunShape` of step `S`'s `run`.
 template <PipelineStep S>
 constexpr RunShape kRunShape = *RunSignatureOf<S>::kShape;
+
+/// @brief The `View` step `S`'s `load` reads: its second parameter.
+template <class S>
+using LoadInput = typename LoadSignatureOf<S>::InputView;
+
+/// @brief A step whose product can be read back instead of made: one static
+///        `load`, whose signature declares what loading reads and where it
+///        runs, as `run`'s does for making it.
+///
+/// ```cpp
+/// struct GuessStep {
+///   ...
+///   static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in);
+/// };
+/// ```
+///
+/// - The first parameter is `const std::filesystem::path &`: what to read.
+/// - The second is a `View<Ts...>`, the inputs loading checks the file
+///   against, none of them the product.
+/// - The return type is `run`'s, `Result<StepOutput<S>>`: one product, made
+///   either way.
+/// - The remaining parameters are one of the five `RunShape` resource lists,
+///   not necessarily `run`'s.
+/// - `load` is static (a step's options configure `run`, and a loaded product
+///   never ran), neither overloaded nor a template, and may be `noexcept`.
+template <class S>
+concept LoadableStep =
+    PipelineStep<S> && requires { typename LoadInput<S>; } && kIsView<LoadInput<S>> &&
+    std::same_as<typename LoadSignatureOf<S>::ReturnType, Result<StepOutput<S>>> &&
+    !kViewContains<StepOutput<S>, LoadInput<S>> && LoadSignatureOf<S>::kShape.has_value();
+
+/// @brief The `RunShape` of step `S`'s `load`.
+template <LoadableStep S>
+constexpr RunShape kLoadShape = *LoadSignatureOf<S>::kShape;
+
+/// @brief A request to read step `S`'s product from @ref from with `S::load`
+///        instead of making it with `S::run`: what a front end hands the
+///        pipeline in place of an `S`.
+template <LoadableStep S>
+struct Load {
+  /// @brief What `S::load` reads, resolved by the front end.
+  std::filesystem::path from;
+};
 
 } // namespace free_breakfast

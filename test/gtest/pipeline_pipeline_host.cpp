@@ -48,9 +48,28 @@ struct RootStep {
   }
 };
 
+// The made-up steps' "file" is its own name: an integer, or an IO error.
+fb::Result<std::int32_t> read_value(const std::filesystem::path &from) {
+  const std::string text = from.string();
+  std::int32_t value = 0;
+  const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+  if (ec != std::errc{} || end != text.data() + text.size()) {
+    return fb::err_io("cannot read '{}'", text);
+  }
+  return value;
+}
+
+// Loadable from nothing, so loading it drops RootStep from the plan.
 struct DoubleStep {
   static constexpr std::string_view kName = "double";
   fb::Result<B> run(fb::View<A> in) const { return B{.value = 2 * in.get<A>().value}; }
+  static fb::Result<B> load(const std::filesystem::path &from, fb::View<> /*in*/) {
+    const fb::Result<std::int32_t> value = read_value(from);
+    if (!value) {
+      return std::unexpected(value.error());
+    }
+    return B{.value = *value};
+  }
 };
 
 struct SumStep {
@@ -77,6 +96,14 @@ struct DeviceStep {
   static constexpr std::string_view kName = "device";
   fb::Result<E> run(fb::View<A> in, fb::DeviceResources & /*res*/) const {
     return E{.value = in.get<A>().value};
+  }
+  // Made on the device, loaded on the host: the file's value plus a.
+  static fb::Result<E> load(const std::filesystem::path &from, fb::View<A> in) {
+    const fb::Result<std::int32_t> value = read_value(from);
+    if (!value) {
+      return std::unexpected(value.error());
+    }
+    return E{.value = *value + in.get<A>().value};
   }
 };
 
@@ -118,6 +145,21 @@ static_assert(CanGet<Calc, A>);
 static_assert(CanGet<Calc, F>);
 static_assert(!CanGet<Calc, P>);
 static_assert(std::same_as<decltype(std::declval<const Calc &>().get<A>()), const fb::Result<A> &>);
+
+// A Step is any step, or a Load of a step with a load.
+static_assert(std::variant_size_v<Calc::Step> == 8);
+static_assert(std::constructible_from<Calc::Step, fb::Load<DoubleStep>>);
+static_assert(std::constructible_from<Calc::Step, fb::Load<DeviceStep>>);
+
+// What a load reads needs a producer in the registry too.
+struct LoadsQStep {
+  static constexpr std::string_view kName = "loads_q";
+  fb::Result<P> run(fb::View<> /*in*/) const { return P{}; }
+  static fb::Result<P> load(const std::filesystem::path & /*from*/, fb::View<Q> /*in*/) {
+    return P{};
+  }
+};
+static_assert(!FormsPipeline<LoadsQStep>);
 
 // Each reads the other's product: a registry the compiler accepts, and a
 // cycle create refuses.
@@ -264,6 +306,73 @@ TEST(Pipeline, ADeviceStepWithNoDeviceFailsBeforeAnyStepRuns) {
   fb::NodeResources node(host_only());
   expect_error(calc->run(node), fb::ErrorKind::GpuRuntime, "[device] needs a GPU device");
   expect_error(calc->get<A>(), fb::ErrorKind::InvalidConfig, "has not run");
+}
+
+// --- Loading ----------------------------------------------------------------
+
+TEST(Pipeline, ALoadedProductStandsInForItsStep) {
+  auto calc = Calc::create({RootStep{.value = 3}, fb::Load<DoubleStep>{"7"}, SumStep{}});
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node(host_only());
+  ASSERT_TRUE(calc->run(node).has_value());
+  EXPECT_EQ(calc->get<B>()->value, 7);
+  EXPECT_EQ(calc->get<C>()->value, 10);
+  // The pipeline holds no DoubleStep, only where its product came from.
+  EXPECT_FALSE(calc->step<DoubleStep>().has_value());
+  EXPECT_EQ(calc->from<DoubleStep>(), std::filesystem::path("7"));
+  EXPECT_FALSE(calc->from<DeviceStep>().has_value());
+}
+
+TEST(Pipeline, ALoadNeedsOnlyWhatItsLoadReads) {
+  // DoubleStep's run reads A; its load reads nothing, so no root is needed.
+  auto calc = Calc::create({fb::Load<DoubleStep>{"7"}});
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node(host_only());
+  ASSERT_TRUE(calc->run(node).has_value());
+  EXPECT_EQ(calc->get<B>()->value, 7);
+  expect_error(calc->get<A>(), fb::ErrorKind::InvalidConfig, "[root] has not run");
+}
+
+TEST(Pipeline, InsertSkipsWhatOnlyALoadedStepsRunReads) {
+  std::vector<std::string_view> inserted;
+  auto calc =
+      Calc::create({fb::Load<DoubleStep>{"7"}, SubflowStep{}}, [&]<class S>() -> fb::Result<S> {
+        inserted.push_back(S::kName);
+        return S{};
+      });
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  // SumStep reads A and B: the root is filled in for it, not for the load.
+  EXPECT_EQ(inserted, (std::vector<std::string_view>{"sum", "root"}));
+  fb::NodeResources node(host_only());
+  ASSERT_TRUE(calc->run(node).has_value());
+  // c = a + b = 1 + 7, and the subflow adds 1 + 2.
+  EXPECT_EQ(calc->get<D>()->value, 11);
+}
+
+TEST(Pipeline, ALoadWiresTheInputsAndShapeOfItsLoad) {
+  // DeviceStep runs on the device; loaded, it runs on the host, after the root.
+  auto calc = Calc::create({fb::Load<DeviceStep>{"4"}, RootStep{.value = 3}});
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node(host_only());
+  ASSERT_TRUE(calc->run(node).has_value());
+  EXPECT_EQ(calc->get<E>()->value, 7);
+}
+
+TEST(Pipeline, AStepGivenToRunAndToLoadIsGivenTwice) {
+  auto calc = Calc::create({DoubleStep{}, fb::Load<DoubleStep>{"7"}, RootStep{}});
+  ASSERT_FALSE(calc.has_value());
+  EXPECT_EQ(calc.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(calc.error().message.find("[double] is given twice"), std::string::npos)
+      << calc.error().message;
+}
+
+TEST(Pipeline, AFailedLoadFailsItsConsumers) {
+  auto calc = Calc::create({RootStep{}, fb::Load<DoubleStep>{"nope"}, SumStep{}});
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node(host_only());
+  expect_error(calc->run(node), fb::ErrorKind::IO, "cannot read 'nope'");
+  expect_error(calc->get<C>(), fb::ErrorKind::IO, "cannot read 'nope'");
+  EXPECT_TRUE(calc->get<A>().has_value());
 }
 
 } // namespace

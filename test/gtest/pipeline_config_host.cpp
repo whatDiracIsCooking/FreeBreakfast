@@ -207,6 +207,38 @@ TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(with_inputs("[guess]\ntype = 1\n"), "[guess] type");
 }
 
+TEST(PipelineConfig, FromLoadsTheProductRelativeToTheConfig) {
+  auto calc = fb::parse_config(with_inputs("[guess]\nfrom = \"d.npy\"\n"), "/inputs");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_FALSE(calc->step<fb::GuessStep>().has_value());
+  EXPECT_EQ(calc->from<fb::GuessStep>(), std::filesystem::path("/inputs/d.npy"));
+  // What the guess's load reads is still planned.
+  EXPECT_TRUE(calc->step<fb::BasisSetStep>().has_value());
+}
+
+TEST(PipelineConfig, ALoadedGuessIsNotFilledInForTheScf) {
+  auto calc = fb::parse_config(with_inputs("[guess]\nfrom = \"d.npy\"\n[scf]\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::GuessStep>().has_value());
+  EXPECT_EQ(calc->from<fb::GuessStep>(), std::filesystem::path("d.npy"));
+  // Without a filled-in guess, nothing loads it.
+  auto unloaded = fb::parse_config(with_inputs("[scf]\n"), "");
+  ASSERT_TRUE(unloaded.has_value()) << unloaded.error().message;
+  EXPECT_FALSE(unloaded->from<fb::GuessStep>().has_value());
+}
+
+TEST(PipelineConfig, FromTakesNoOtherOption) {
+  expect_config_error(with_inputs("[guess]\nfrom = \"d.npy\"\ntype = \"sad\"\n"),
+                      "[guess] loads 'from' a file, so takes no option 'type'");
+  expect_config_error(with_inputs("[guess]\nfrom = 1\n"), "[guess] from");
+}
+
+TEST(PipelineConfig, AStepWithNoLoadCannotBeLoaded) {
+  expect_config_error(with_inputs("[overlap]\nfrom = \"s.npy\"\n"),
+                      "[overlap] cannot be loaded 'from' a file");
+}
+
 TEST(PipelineConfig, MalformedTomlIsIoError) {
   auto calc = fb::parse_config("[molecule\n", "");
   ASSERT_FALSE(calc.has_value());

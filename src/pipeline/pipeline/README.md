@@ -17,7 +17,7 @@ template <PipelineStep... Steps>
   requires StepRegistry<Steps...>
 class Pipeline {
 public:
-  using Step = std::variant<Steps...>;
+  using Step = std::variant<Steps..., Load<S>...>;  // a Load<S> per S with a load
 
   static Result<Pipeline> create(std::vector<Step> steps);                  // strict
   template <class Insert>
@@ -27,13 +27,14 @@ public:
 
   template <class T> const Result<T> &get() const;          // T a product of Steps
   template <class S> const std::optional<S> &step() const;  // S one of Steps
+  template <class S> const std::optional<std::filesystem::path> &from() const;  // S loadable
 };
 ```
 
 ## The registry, checked at compile time
 
 `Steps` must have unique `kName`s, exactly one producer per product, and a
-producer for every type any step's `View` reads. A list that breaks one does
+producer for every type any step's `View` reads, its `run`'s or its `load`'s. A list that breaks one does
 not form a `Pipeline` type. So a type → producer lookup is a constant, and
 each step's edges are known before any config is read.
 
@@ -42,8 +43,15 @@ since that comes from a config file. That is `create`'s job.
 
 ## `create`: the planner
 
-- **One instance per step.** A step given twice is `InvalidConfig`. Two of one
-  kind would need labels (orchestration section 9).
+- **One instance per step.** A step given twice is `InvalidConfig`, and so is
+  a step given both to run and to load. Two of one kind would need labels
+  (orchestration section 9).
+- **Run or load.** A `Load<S>{path}` plans `S` to read its product with
+  `S::load` instead of making it with `S::run`. Its edges and its shape are
+  `load`'s, so what only `run` reads is not filled in for it, and a step that
+  runs on the device may load on the host, beside the chain. A step with no
+  `load` has no `Load<S>` alternative in `Step`, so asking for one does not
+  compile (`step/README.md`).
 - **A producer for every input.** Strict `create` refuses a step whose input
   has no producer in the list (`[sum] reads the product of [double], which is
   not in the pipeline`). With `insert`, a missing producer `S` is made by
@@ -101,7 +109,9 @@ or, for a product this pipeline did not plan or has not run, `InvalidConfig`.
 Products are immutable, so it hands out `const Result<T>&`.
 
 `step<S>()` returns the planned step, as given or filled in, so a caller can
-read the options a product was made with.
+read the options a product was made with. A loaded step has no options, so
+`step<S>()` is empty for it, and `from<S>()` is the path its product is read
+from.
 
 **Free order.** The destructor destroys the products in reverse plan order,
 with their device current. The run has already waited on every device step.
@@ -119,6 +129,9 @@ copyable nor assignable.
   - a subflow step, and a `Node` step on a node with no devices;
   - a missing producer, a step given twice, a cycle;
   - insertion, and an insertion error;
+  - a loaded step: standing in for its run, planned by its load's inputs and
+    shape, not filled in for, given twice, and a failed load failing its
+    consumers;
   - a failed step failing its consumers;
   - an unplanned product, a second `run`, and a device step with no device.
 - `test/gtest/pipeline_calculation_gpu.cpp`: the real registry from a config

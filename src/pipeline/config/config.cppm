@@ -5,8 +5,9 @@
 /// One table per step, named by the step's `kName`; its keys are the step's
 /// options, spelled as its members. A table is a request: the steps producing
 /// what it reads are filled in, each read from an empty table, so only a step
-/// with a required option must be written out. Re-exports the steps and the
-/// pipeline it returns.
+/// with a required option must be written out. A lone `from` key loads the
+/// step's product from that file instead, for a step with a `load`.
+/// Re-exports the steps and the pipeline it returns.
 
 export module free_breakfast.pipeline.config;
 

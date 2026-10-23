@@ -11,6 +11,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.base;
+import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
@@ -141,6 +142,41 @@ TEST(PipelineCalculation, TheGuessHoldsEveryElectronAgainstThePipelinesOverlap) 
     trace += d[k] * s[k]; // both symmetric, so Sum_ij D_ij S_ji is elementwise
   }
   EXPECT_NEAR(trace, 10.0, 1e-10); // O + 2 H
+}
+
+// A guess saved by one run and loaded by the next starts the same SCF: the
+// loaded step is planned by its load, beside the device chain, with no SAD.
+TEST(PipelineCalculation, AnScfFromALoadedGuessMatchesOneFromItsOwn) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_calculation");
+  write_inputs(dir,
+               "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"basis.json\"\n[scf]\n");
+  fb::NodeResources node;
+  auto made = fb::read_config(dir / "run.toml");
+  ASSERT_TRUE(made.has_value()) << made.error().message;
+  const fb::Status made_ran = made->run(node);
+  ASSERT_TRUE(made_ran.has_value()) << made_ran.error().message;
+  const std::size_t n = made->get<fb::BasisSet>()->nao_sphe();
+  ASSERT_TRUE(fb::write_npy(dir / "d.npy",
+                            fb::NpyArray{.shape = {n, n}, .data = made->get<fb::Guess>()->d}));
+
+  ASSERT_TRUE(fb::write_file(dir / "load.toml", "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\n"
+                                                "basis = \"basis.json\"\n[guess]\nfrom = "
+                                                "\"d.npy\"\n[scf]\n")
+                  .has_value());
+  auto loaded = fb::read_config(dir / "load.toml");
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().message;
+  EXPECT_FALSE(loaded->step<fb::GuessStep>().has_value());
+  EXPECT_EQ(loaded->from<fb::GuessStep>(), dir / "d.npy");
+  const fb::Status loaded_ran = loaded->run(node);
+  ASSERT_TRUE(loaded_ran.has_value()) << loaded_ran.error().message;
+
+  EXPECT_EQ(loaded->get<fb::Guess>()->d, made->get<fb::Guess>()->d);
+  const fb::Scf &a = *made->get<fb::Scf>();
+  const fb::Scf &b = *loaded->get<fb::Scf>();
+  EXPECT_NEAR(b.energy, a.energy, 1e-12);
+  EXPECT_EQ(b.iterations, a.iterations);
+  expect_near(b.mo_energies, a.mo_energies);
 }
 
 TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {

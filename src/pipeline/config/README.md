@@ -13,7 +13,7 @@ names them all. It is the one library that imports every step, so only it and
 ```cpp
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep, GuessStep>;
+                             CoreHamiltonianStep, GuessStep, ScfStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
 Result<Calculation> read_config(const std::filesystem::path &path);
@@ -44,6 +44,9 @@ eigenvalue_floor = 1e-10  # default 1e-10
 
 [guess]
 type = "sad"              # default "sad", the only kind so far
+
+[scf]                     # every option has a default
+max_iterations = 100
 ```
 
 **A table is a request, and the steps producing what it reads are filled
@@ -60,6 +63,21 @@ The filling in is `Calculation::create`'s insert hook, called with the
 missing producer's type. `Pipeline::create` without the hook stays strict, so
 a pipeline built by hand lists every step.
 
+**`from` loads a product instead of making it.** For a step with a `load`
+(`step/README.md`), `from` names the file its product is read from, and the
+step is planned by its load, so only what the load reads is filled in:
+
+```toml
+[guess]
+from = "water_d.npy"   # the density, read in place of SAD
+
+[scf]                  # starts from it
+```
+
+`from` stands alone: the step's options configure a run that does not happen,
+so any other key beside it is refused. A step with no `load` refuses `from`.
+It is a path, resolved like every other.
+
 **Relative paths are relative to the config file**, not the working directory.
 `read_config` resolves them against the file's own directory, and
 `parse_config` against `base_dir`. An empty `base_dir` leaves them relative to
@@ -74,6 +92,7 @@ resolved", and this is where that happens.
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
   only `"sad"`);
+- `from` beside another key, or on a step with no `load`;
 - a value of the wrong type. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`
   option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`;
@@ -92,7 +111,7 @@ the order the tables were written in. Pipeline order comes from each step's
 
 `test/gtest/pipeline_config_host.cpp`, host-only: every option read, the step
 defaults kept, path resolution against the file's directory, which steps are
-filled in and which are not, and each refusal above. Nothing is run.
+filled in and which are not, `from`, and each refusal above. Nothing is run.
 `test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end.
 
 ## Files

@@ -9,6 +9,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.io.base;
 import free_breakfast.io.basis;
 import free_breakfast.io.toml;
+import free_breakfast.pipeline.step;
 
 #include "diagnostics.h"
 
@@ -138,14 +139,34 @@ template <class S>
       if (table == nullptr) {
         return err_config("{0} is not a table: write it as [{0}]", name);
       }
-      return Calculation::Step{std::in_place_type<S>, FBF_TRY(read_step<S>(*table, base_dir))};
+      if (!table->contains("from")) {
+        return Calculation::Step{std::in_place_type<S>, FBF_TRY(read_step<S>(*table, base_dir))};
+      }
+      // 'from' loads the product instead, and the step's options configure a
+      // run that never happens, so none may stand beside it.
+      if constexpr (LoadableStep<S>) {
+        for (const auto &[key, value] : *table) {
+          if (key.str() != "from") {
+            return err_config("[{}] loads 'from' a file, so takes no option '{}'", name, key.str());
+          }
+        }
+        Load<S> load;
+        FBF_TRY(read_key(*table, S::kName, "from", base_dir, load.from));
+        return Calculation::Step{std::move(load)};
+      } else {
+        return err_config("[{}] cannot be loaded 'from' a file", name);
+      }
     };
-    (void)((name == std::variant_alternative_t<Is, Calculation::Step>::kName
-                ? (out = read.template
-                         operator()<std::variant_alternative_t<Is, Calculation::Step>>(),
-                   false)
-                : true) &&
-           ...);
+    // The Load<S> alternatives have no kName: only the steps are named.
+    const auto match = [&]<class X>() {
+      if constexpr (requires { X::kName; }) {
+        if (name == X::kName) {
+          out = read.template operator()<X>();
+        }
+      }
+      return !out;
+    };
+    (void)(match.template operator()<std::variant_alternative_t<Is, Calculation::Step>>() && ...);
     if (!out) {
       return err_config("unknown step [{}]", name);
     }
