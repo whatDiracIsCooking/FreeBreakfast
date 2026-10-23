@@ -27,6 +27,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::linalg::blas
+  free_breakfast::linalg::diagonalize
   free_breakfast::linalg::diis
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange

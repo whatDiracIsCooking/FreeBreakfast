@@ -12,6 +12,7 @@ import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.linalg.blas;
+import free_breakfast.linalg.diagonalize;
 import free_breakfast.linalg.diis;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -19,11 +20,6 @@ import free_breakfast.integrals.eri.integral_direct.exchange;
 #include "diagnostics.h"
 
 namespace free_breakfast {
-
-// syevd's eigenvector mode and triangle, shared by the workspace query and the
-// call so the two cannot disagree. F' is symmetric, so either triangle does.
-constexpr auto kScfEigMode = wwr::WWRSOLVER_EIG_MODE_VECTOR;
-constexpr auto kScfFillMode = wwr::WWRBLAS_FILL_MODE_LOWER;
 
 // Everything the loop holds across iterations, allocated once on res's device:
 // the step's private state. The J and K classes are the Fock build's, made
@@ -43,7 +39,6 @@ struct ScfState {
   SphericalMatrixAO work;
   SphericalMatrixAO c;
   Buffers::device<double> eps;
-  int32_t lwork; // syevd's work, in doubles: taken from res's workspace per call
 };
 
 // F = H + G(D), G(D) = J(D) - K(D)/2, J and K built from a Cartesian density.
@@ -121,27 +116,14 @@ struct ScfState {
 
 // Solve F C = S C eps through X, @p fock being F: F' = X^T F X = C' eps C'^T,
 // C = X C'. Then D = 2 C_occ C_occ^T from the nocc lowest columns.
-[[nodiscard]] Status diagonalize(DeviceResources &res, ScfState &st, const SphericalMatrixAO &fock,
-                                 const SphericalMatrixAO &x, int32_t nocc) {
+[[nodiscard]] Status solve_fock(DeviceResources &res, ScfState &st, const SphericalMatrixAO &fock,
+                                const SphericalMatrixAO &x, int32_t nocc) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto n = static_cast<int32_t>(x.n());
   FBF_TRY(gpu_status(gemmwich(blas, n, x.data(), fock.data(), st.work.data(), st.tmp.data())));
-  // syevd's work is dead once it returns, so it is the shared workspace's, not
-  // the loop's. In a pipeline the Orthogonalizer has already asked for more on
-  // the same n, so this request does not grow it.
-  auto eig_work = wwr::extension::reinterpret_buffer_view<double>(
-      res.device_workspace(static_cast<size_t>(st.lwork) * sizeof(double)));
-  FBF_TRY(gpu_status(wwr::syevd<double>(res.solver().get(), kScfEigMode, kScfFillMode, n,
-                                        st.tmp.data(), n, st.eps.data(), eig_work.data(), st.lwork,
-                                        res.info().data())));
-  const int32_t info = FBF_TRY(res.fetch_info());
-  // info < 0 names a bad argument (a bug here); info > 0 is non-convergence.
-  if (info < 0) {
-    return err_gpu("scf: syevd rejected argument {}", -info);
-  }
-  if (info > 0) {
-    return err_numerical("scf: syevd did not converge on the Fock matrix (info = {})", info);
-  }
+  // syevd's work is dead once it returns, so diagonalize takes it from the
+  // shared workspace, not the loop's buffers.
+  FBF_TRY(diagonalize<double>(res, n, st.tmp.data(), st.eps.data()));
   FBF_TRY(gpu_status(
       gemm(blas, n, &kOne<double>, x.data(), st.tmp.data(), &kZero<double>, st.c.data())));
   return gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n,
@@ -193,10 +175,6 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
   const ScopedDeviceIndex on{res.dev_idx()};
   const std::shared_ptr<const Buffers::device<double>> &u = in.get<SphericalTransform>().u;
   const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClasses>().classes;
-  int32_t lwork = 0;
-  FBF_TRY(gpu_status(wwr::syevd_bufferSize<double>(res.solver().get(), kScfEigMode, kScfFillMode,
-                                                   static_cast<int32_t>(n), nullptr,
-                                                   static_cast<int32_t>(n), nullptr, &lwork)));
   std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
   std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
   ScfState st{
@@ -214,7 +192,6 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
       .work = SphericalMatrixAO(res, basis),
       .c = SphericalMatrixAO(res, basis),
       .eps = Buffers::device<double>(n, res.device()),
-      .lwork = lwork,
   };
   Diis diis(res, std::size_t{n} * n, static_cast<size_t>(diis_history));
 
@@ -275,7 +252,7 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
     }
     // Converged: the canonical orbitals of the Fock matrix as built, not of an
     // extrapolation, and the density they give.
-    FBF_TRY(diagonalize(res, st, converged ? st.f : st.f_diis, x, nocc));
+    FBF_TRY(solve_fock(res, st, converged ? st.f : st.f_diis, x, nocc));
     if (converged) {
       std::vector<double> mo_energies(n);
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(mo_energies.data(), st.eps.data(), n * sizeof(double),

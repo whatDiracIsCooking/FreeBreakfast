@@ -43,15 +43,15 @@ solver or BLAS call is `GpuRuntime`. An overlap eigenvalue at or below
 ## The device contract it does not keep
 
 A device `run` should only enqueue on `res.stream()` and never synchronize the
-host (`step/README.md`). `orthogonalize` synchronizes `res.stream()` once, to
-read syevd's convergence flag and the extreme eigenvalues. That is what makes a
+host (`step/README.md`). `orthogonalize` synchronizes `res.stream()` to read
+syevd's convergence flag and then the extreme eigenvalues. That is what makes a
 non-converged solve an error here rather than a wrong X downstream. It needs
 the values mid-`run`, so the pipeline's own wait after the step cannot replace
 it; it stays until events replace those waits, as for `Molecule`'s nuclei.
 
-Its scratch (U, the scaled U, the eigenvalues and syevd's workspace) is carved
-from `res.device_workspace()`, which grows if it has to and is never part of a
-product.
+Its scratch is never part of a product: U and the eigenvalues are pool buffers
+freed when it returns, and syevd's work and the scaled U come from
+`res.device_workspace()`, which grows if it has to.
 
 ## Tests
 

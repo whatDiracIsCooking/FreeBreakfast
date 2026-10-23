@@ -40,8 +40,8 @@ export namespace free_breakfast {
 /// **One routine owns the device workspace at a time.** A routine may carve all
 /// of its device scratch from it -- a solver's work and its own intermediates
 /// alike -- by asking once for the total and splitting the result. So nothing
-/// nests: a routine that uses it calls no other that does, and no argument to
-/// one may point into it.
+/// nests: a routine holds no region of it across a call to another that uses
+/// it, and no argument to one may point into it.
 ///
 /// Movable, not copyable. A moved-from DeviceResources holds no Device.
 class DeviceResources : private NonCopyable {

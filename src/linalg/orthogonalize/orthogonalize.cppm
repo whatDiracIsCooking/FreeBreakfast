@@ -32,7 +32,7 @@ inline constexpr T kOrthogonalizeEigenvalueFloor = T{1e-10};
 
 /// @brief Build the symmetric (Loewdin) orthogonalizer X = S^{-1/2} on the GPU.
 ///
-/// Diagonalizes @p s with syevd, maps the eigenvalues to Lambda^{-1/2} with a
+/// Diagonalizes @p s (diagonalize, a syevd), maps the eigenvalues to Lambda^{-1/2} with a
 /// kernel, and assembles X = U Lambda^{-1/2} U^T with gmmwich (a dgmm for the
 /// column scaling, then a gemm). On success @p x holds the n x n orthogonalizer, which satisfies
 /// X^T S X == I to rounding for a well-conditioned S. @p s is not modified.
@@ -40,14 +40,15 @@ inline constexpr T kOrthogonalizeEigenvalueFloor = T{1e-10};
 /// Every matrix is a column-major device pointer with packed leading dimension
 /// n (element (i, j) at i + j*n). Only the lower triangle of @p s is read.
 ///
-/// Every intermediate -- U, M = U diag(Lambda^{-1/2}), the eigenvalues and
-/// syevd's workspace -- is carved from res.device_workspace(), which grows to
-/// n*n + n + max(syevd's size, n*n) elements of T (each region rounded up) if
-/// it is smaller: the one allocation this can make. res.info() takes syevd's flag. Neither @p s nor @p x may
-/// point into res.device_workspace().
+/// U and the eigenvalues are pool buffers on res.device(), since they live
+/// across diagonalize's use of res.device_workspace(). syevd's work and then
+/// M = U diag(Lambda^{-1/2}) are the workspace's, which grows if it is smaller
+/// than either; res.info() takes syevd's flag. Neither @p s nor @p x may point
+/// into res.device_workspace().
 ///
-/// Everything is queued on res.stream(), and the call synchronizes that stream
-/// once, to read syevd's convergence flag and the extreme eigenvalues. The
+/// Everything is queued on res.stream(). The call waits on it twice: in
+/// diagonalize, for syevd's convergence flag, and then for the extreme
+/// eigenvalues, by which point the stream is idle. The
 /// device res.dev_idx() names is made current for the call and the previous one
 /// restored.
 ///
@@ -58,7 +59,8 @@ inline constexpr T kOrthogonalizeEigenvalueFloor = T{1e-10};
 /// @param x                 Out: the orthogonalizer (n x n).
 /// @param eigenvalue_floor  Eigenvalues at or below this drop their mode
 ///                          (contribute 0). Should be non-negative.
-/// @return Success; a Numerical error if syevd did not converge on @p s; or
+/// @return Success; diagonalize's Numerical error if syevd did not converge on
+///         @p s; or
 ///         the GpuRuntime error of the first runtime, solver, BLAS or launch
 ///         call that failed. A mode under the floor is dropped, not an error.
 template <real_fp T>
