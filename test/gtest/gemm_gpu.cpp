@@ -1,4 +1,4 @@
-// GPU cases for linalg/blas's :gemm: the three gemm overloads against a host
+// GPU cases for linalg/blas's :gemm: gemm with its ops defaulted and given, against a host
 // reference, with non-symmetric operands (so a swapped or wrongly transposed
 // operand cannot pass) and a non-zero beta (so C's prior contents must be
 // accumulated, not overwritten), through both a BlasHandle and a raw
@@ -94,7 +94,7 @@ class Gemm : public ::testing::Test {};
 using RealTypes = ::testing::Types<float, double>;
 TYPED_TEST_SUITE(Gemm, RealTypes);
 
-// The untransposed overload, through both arms of blas_handle: the wrapper
+// The defaulted call, A B, through both arms of blas_handle: the wrapper
 // itself, and the raw handle it holds.
 TYPED_TEST(Gemm, UntransposedMatchesHostReference) {
   FBF_REQUIRE_GPU();
@@ -125,8 +125,13 @@ TYPED_TEST(Gemm, UntransposedMatchesHostReference) {
   expect_matches(ops.download_c(), expected);
 }
 
-// The op overload, over every N/T combination on each side. The (N, N) case
-// pins that the untransposed overload is exactly this one with OP_N twice.
+// An op as a type, so a test can pass it to a lambda and get it back as a
+// template argument.
+template <wwr::wwrblasOperation_t Op>
+using OpConstant = std::integral_constant<wwr::wwrblasOperation_t, Op>;
+
+// Explicit ops, over every N/T combination on each side. The (N, N) case pins
+// that the defaulted call is exactly this one with OP_N twice.
 TYPED_TEST(Gemm, EveryTransposeMatchesHostReference) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
@@ -144,24 +149,30 @@ TYPED_TEST(Gemm, EveryTransposeMatchesHostReference) {
   ops.upload(ops.a, a);
   ops.upload(ops.b, b);
 
-  for (const bool trans_a : {false, true}) {
-    for (const bool trans_b : {false, true}) {
-      SCOPED_TRACE(std::format("op_a = {}, op_b = {}", trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'));
-      const auto op_a = trans_a ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N;
-      const auto op_b = trans_b ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N;
+  const auto check = [&]<wwr::wwrblasOperation_t OpA, wwr::wwrblasOperation_t OpB>(
+                         OpConstant<OpA>, OpConstant<OpB>) {
+    constexpr bool trans_a = OpA == wwr::WWRBLAS_OP_T;
+    constexpr bool trans_b = OpB == wwr::WWRBLAS_OP_T;
+    SCOPED_TRACE(std::format("OpA = {}, OpB = {}", trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'));
 
-      ops.upload(ops.c, c);
-      ASSERT_EQ(
-          fb::gemm(blas, op_a, op_b, kN, &alpha, ops.a.data(), ops.b.data(), &beta, ops.c.data()),
-          wwr::WWRBLAS_STATUS_SUCCESS);
-      expect_matches(ops.download_c(), reference(trans_a, trans_b, alpha, a, b, beta, c, kN));
-    }
-  }
+    ops.upload(ops.c, c);
+    // Parenthesized: the comma in the template arguments would split the macro's.
+    ASSERT_EQ(
+        (fb::gemm<OpA, OpB>(blas, kN, &alpha, ops.a.data(), ops.b.data(), &beta, ops.c.data())),
+        wwr::WWRBLAS_STATUS_SUCCESS);
+    expect_matches(ops.download_c(), reference(trans_a, trans_b, alpha, a, b, beta, c, kN));
+  };
+  using N = OpConstant<wwr::WWRBLAS_OP_N>;
+  using Tr = OpConstant<wwr::WWRBLAS_OP_T>;
+  check(N{}, N{});
+  check(N{}, Tr{});
+  check(Tr{}, N{});
+  check(Tr{}, Tr{});
 }
 
-// The op_both overload: the same op on A and B, against the matching (op, op)
-// reference -- so OP_T is pinned to A^T B^T, not (A B)^T.
-TYPED_TEST(Gemm, SharedOpMatchesHostReference) {
+// One op given: it is OpA, and OpB stays N -- so gemm<OP_T> is A^T B, not
+// A^T B^T. OP_C on a real T is the same as OP_T.
+TYPED_TEST(Gemm, OneOpLeavesBUntransposed) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
 
@@ -174,19 +185,42 @@ TYPED_TEST(Gemm, SharedOpMatchesHostReference) {
   const auto c = random_matrix<T>(kN, 9);
   const T alpha{-1.25};
   const T beta{0.5};
+  const auto expected = reference(true, false, alpha, a, b, beta, c, kN);
 
   ops.upload(ops.a, a);
   ops.upload(ops.b, b);
 
-  for (const bool trans : {false, true}) {
-    SCOPED_TRACE(std::format("op_both = {}", trans ? 'T' : 'N'));
-    const auto op = trans ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N;
+  ops.upload(ops.c, c);
+  ASSERT_EQ(fb::gemm<wwr::WWRBLAS_OP_T>(blas, kN, &alpha, ops.a.data(), ops.b.data(), &beta,
+                                        ops.c.data()),
+            wwr::WWRBLAS_STATUS_SUCCESS);
+  expect_matches(ops.download_c(), expected);
 
-    ops.upload(ops.c, c);
-    ASSERT_EQ(fb::gemm(blas, op, kN, &alpha, ops.a.data(), ops.b.data(), &beta, ops.c.data()),
-              wwr::WWRBLAS_STATUS_SUCCESS);
-    expect_matches(ops.download_c(), reference(trans, trans, alpha, a, b, beta, c, kN));
-  }
+  ops.upload(ops.c, c);
+  ASSERT_EQ(fb::gemm<wwr::WWRBLAS_OP_C>(blas, kN, &alpha, ops.a.data(), ops.b.data(), &beta,
+                                        ops.c.data()),
+            wwr::WWRBLAS_STATUS_SUCCESS);
+  expect_matches(ops.download_c(), expected);
 }
+
+// A value of the op type that is none of N, T, C on either backend:
+// CUBLAS_OP_CONJG on CUDA (unsupported, and not named by wwr), nothing on HIP,
+// whose ops are 111-113. Within both enums' value ranges, so the cast is a
+// constant expression.
+constexpr auto kNotAnOp = static_cast<wwr::wwrblasOperation_t>(3);
+
+// Whether gemm<OpA, OpB> can be called at all: a requires-expression must sit
+// in a template to report an ill-formed call as false rather than as an error.
+template <wwr::wwrblasOperation_t OpA, wwr::wwrblasOperation_t OpB>
+constexpr bool kGemmTakes = requires(const fb::BlasHandle &h, const double *p, double *c) {
+  fb::gemm<OpA, OpB>(h, kN, p, p, p, p, c);
+};
+
+// Every BlasOp on each side, and nothing outside it.
+static_assert(kGemmTakes<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N>);
+static_assert(kGemmTakes<wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_C>);
+static_assert(kGemmTakes<wwr::WWRBLAS_OP_C, wwr::WWRBLAS_OP_T>);
+static_assert(!kGemmTakes<kNotAnOp, wwr::WWRBLAS_OP_N>);
+static_assert(!kGemmTakes<wwr::WWRBLAS_OP_N, kNotAnOp>);
 
 } // namespace

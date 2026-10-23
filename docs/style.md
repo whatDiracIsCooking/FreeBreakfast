@@ -197,7 +197,7 @@ on who needs it:
 | --- | --- | --- |
 | One implementation unit (`.cpp`) | An unexported declaration at namespace scope in that file | `step_table` in `src/pipeline/config/config.cpp` |
 | Several implementation units of one module | An **internal partition**, `module M:name;`, imported by those units | `src/io/npy/npy_format.cppm` (`kMagic`, used by both the reader and the writer) |
-| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | None in the tree today; `src/basis/numeric.cppm` was one until its helpers moved to `free_breakfast.core.primitives` |
+| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | `src/linalg/blas/shared.cppm` (`raw_blas_handle` and the op concepts, used by every BLAS partition's templates) |
 
 All partitions, of either kind, go under `PARTITIONS` in
 `free_breakfast_add_cxx_module_library`.

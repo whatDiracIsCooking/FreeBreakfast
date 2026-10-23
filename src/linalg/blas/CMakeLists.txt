@@ -7,6 +7,7 @@ free_breakfast_add_cxx_module_library(
   PRIMARY_INTERFACE
   blas.cppm
   PARTITIONS
+  shared.cppm
   gemm.cppm
   gemmwich.cppm
   gmmwich.cppm

@@ -1,8 +1,8 @@
-// GPU cases for linalg/blas's :gmmwich: op_x(X)^T diag(d) op_x(X) against a
+// GPU cases for linalg/blas's :gmmwich: OpX(X)^T diag(d) OpX(X) against a
 // host reference that forms the dense diagonal, square and rectangular, for
-// both op_x, with a non-symmetric X and a d of distinct mixed-sign entries (so
+// both OpX, with a non-symmetric X and a d of distinct mixed-sign entries (so
 // a diagonal on the wrong side of X, or a transpose in the wrong place, cannot
-// pass), plus the argument check and the pointer-mode restore.
+// pass), plus which ops it takes and the pointer-mode restore.
 
 #include <gtest/gtest.h>
 
@@ -18,7 +18,12 @@ namespace fb = free_breakfast;
 namespace ext = wwr::extension;
 
 constexpr std::int32_t kN = 37; // odd and not a tile multiple
-constexpr std::int32_t kM = 23; // columns of op_x(X), order of C; != kN
+constexpr std::int32_t kM = 23; // columns of OpX(X), order of C; != kN
+
+// An op as a type, so a test can pass it to a lambda and get it back as a
+// template argument.
+template <wwr::wwrblasOperation_t Op>
+using OpConstant = std::integral_constant<wwr::wwrblasOperation_t, Op>;
 
 // A rows x cols column-major matrix on the host, element (i, j) at i + j*rows.
 template <typename T>
@@ -162,8 +167,8 @@ TYPED_TEST(Gmmwich, DefaultIsXTransposeDiagX) {
   expect_matches(ops.get(ops.c), expected);
 }
 
-// op = OP_T is X diag(d) X^T, with work left holding X diag(d) -- the form
-// orthogonalize uses -- and op = OP_N matches the default overload.
+// OpX = OP_T is X diag(d) X^T, with work left holding X diag(d) -- the form
+// orthogonalize uses -- and OpX = OP_N matches the defaulted call.
 TYPED_TEST(Gmmwich, OpSelectsTheSide) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
@@ -174,35 +179,17 @@ TYPED_TEST(Gmmwich, OpSelectsTheSide) {
   ops.upload_operands();
   const auto diag = diagonal(ops.d);
 
-  ASSERT_EQ(fb::gmmwich(blas, wwr::WWRBLAS_OP_N, kN, ops.dx.data(), ops.dd.data(), ops.work.data(),
-                        ops.c.data()),
+  ASSERT_EQ(fb::gmmwich<wwr::WWRBLAS_OP_N>(blas, kN, ops.dx.data(), ops.dd.data(), ops.work.data(),
+                                           ops.c.data()),
             wwr::WWRBLAS_STATUS_SUCCESS);
   expect_matches(ops.get(ops.c), product(transposed(ops.x), product(diag, ops.x)));
 
   const auto xd = product(ops.x, diag);
-  ASSERT_EQ(fb::gmmwich(blas, wwr::WWRBLAS_OP_T, kN, ops.dx.data(), ops.dd.data(), ops.work.data(),
-                        ops.c.data()),
+  ASSERT_EQ(fb::gmmwich<wwr::WWRBLAS_OP_T>(blas, kN, ops.dx.data(), ops.dd.data(), ops.work.data(),
+                                           ops.c.data()),
             wwr::WWRBLAS_STATUS_SUCCESS);
   expect_matches(ops.get(ops.c), product(xd, transposed(ops.x)));
   expect_matches(ops.get(ops.work), xd);
-}
-
-// OP_C is rejected before anything is enqueued: C keeps its prior contents.
-TYPED_TEST(Gmmwich, RejectsAnOpOtherThanNOrT) {
-  FBF_REQUIRE_GPU();
-  using T = TypeParam;
-
-  auto dev = std::make_shared<fb::Device>(0);
-  fb::BlasHandle blas(dev);
-  Square<T> ops{.dev = dev};
-
-  const auto sentinel = random_rect<T>(kN, kN, 3).v;
-  upload(dev, ops.c, sentinel);
-
-  EXPECT_EQ(fb::gmmwich(blas, wwr::WWRBLAS_OP_C, kN, ops.dx.data(), ops.dd.data(), ops.work.data(),
-                        ops.c.data()),
-            wwr::WWRBLAS_STATUS_INVALID_VALUE);
-  EXPECT_EQ(ops.get(ops.c), sentinel);
 }
 
 // A handle in device pointer mode gets the right answer (the gemm's scalars are
@@ -228,9 +215,9 @@ TYPED_TEST(Gmmwich, RestoresDevicePointerMode) {
   expect_matches(ops.get(ops.c), product(transposed(ops.x), product(diagonal(ops.d), ops.x)));
 }
 
-// The general overload with m != n, both op_x, so a swapped dimension or leading
+// The general overload with m != n, both OpX, so a swapped dimension or leading
 // dimension fails rather than reading in bounds by luck. X is stored n x m for
-// op_x = N and m x n for op_x = T, and work comes back in X's stored shape.
+// OpX = N and m x n for OpX = T, and work comes back in X's stored shape.
 TYPED_TEST(Gmmwich, GeneralRectangularMatchesHostReference) {
   FBF_REQUIRE_GPU();
   using T = TypeParam;
@@ -246,22 +233,42 @@ TYPED_TEST(Gmmwich, GeneralRectangularMatchesHostReference) {
   fb::Buffers::device<T> c(static_cast<std::size_t>(kM) * kM, dev);
   upload(dev, dd, d);
 
-  for (const bool trans_x : {false, true}) {
-    SCOPED_TRACE(std::format("op_x = {}", trans_x ? 'T' : 'N'));
-    const auto op_x = trans_x ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N;
+  const auto check = [&]<wwr::wwrblasOperation_t OpX>(OpConstant<OpX>) {
+    constexpr bool trans_x = OpX == wwr::WWRBLAS_OP_T;
+    SCOPED_TRACE(std::format("OpX = {}", trans_x ? 'T' : 'N'));
 
-    // x is X as stored; opx is op_x(X), always n x m.
+    // x is X as stored; opx is OpX(X), always n x m.
     const auto x = trans_x ? random_rect<T>(kM, kN, 5) : random_rect<T>(kN, kM, 5);
     const auto opx = trans_x ? transposed(x) : x;
     const auto expected_c = product(transposed(opx), product(diag, opx));
     const auto expected_work = trans_x ? product(x, diag) : product(diag, x);
     upload(dev, dx, x.v);
 
-    ASSERT_EQ(fb::gmmwich(blas, op_x, kM, kN, dx.data(), dd.data(), work.data(), c.data()),
+    ASSERT_EQ(fb::gmmwich<OpX>(blas, kM, kN, dx.data(), dd.data(), work.data(), c.data()),
               wwr::WWRBLAS_STATUS_SUCCESS);
     expect_matches(download(dev, c, expected_c.v.size()), expected_c);
     expect_matches(download(dev, work, expected_work.v.size()), expected_work);
-  }
+  };
+  check(OpConstant<wwr::WWRBLAS_OP_N>{});
+  check(OpConstant<wwr::WWRBLAS_OP_T>{});
 }
+
+// Whether each overload's gmmwich<OpX> can be called at all: a
+// requires-expression must sit in a template to report an ill-formed call as
+// false rather than as an error.
+template <wwr::wwrblasOperation_t OpX>
+constexpr bool kSquareTakes = requires(const fb::BlasHandle &h, const double *p, double *w) {
+  fb::gmmwich<OpX>(h, kN, p, p, w, w);
+};
+template <wwr::wwrblasOperation_t OpX>
+constexpr bool kGeneralTakes = requires(const fb::BlasHandle &h, const double *p, double *w) {
+  fb::gmmwich<OpX>(h, kM, kN, p, p, w, w);
+};
+
+// N and T, and not OP_C: on a real T it is T under another name.
+static_assert(kSquareTakes<wwr::WWRBLAS_OP_N> && kGeneralTakes<wwr::WWRBLAS_OP_N>);
+static_assert(kSquareTakes<wwr::WWRBLAS_OP_T> && kGeneralTakes<wwr::WWRBLAS_OP_T>);
+static_assert(!kSquareTakes<wwr::WWRBLAS_OP_C>);
+static_assert(!kGeneralTakes<wwr::WWRBLAS_OP_C>);
 
 } // namespace
