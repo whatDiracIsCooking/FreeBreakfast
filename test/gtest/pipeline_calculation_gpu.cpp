@@ -1,6 +1,7 @@
 // The real registry end to end: a config file read, planned and run by
 // Calculation, against the same steps called by hand in the order the planner
-// should choose. Runs the device chain, so needs a GPU.
+// should choose. Runs the device chain, with the host guess beside it, so needs
+// a GPU.
 
 #include <gtest/gtest.h>
 
@@ -40,6 +41,8 @@ basis = "basis.json"
 [orthogonalizer]
 
 [core_hamiltonian]
+
+[guess]
 )";
 
 std::vector<double> download(fb::DeviceResources &res, const fb::SphericalMatrixAO &m) {
@@ -98,6 +101,13 @@ TEST(PipelineCalculation, MatchesTheStepsCalledByHand) {
       res);
   ASSERT_TRUE(x.has_value());
   ASSERT_TRUE(h.has_value());
+  fb::tf::Taskflow guess_flow;
+  fb::Result<fb::Guess> guess = fb::err_config("the guess task did not run");
+  guess_flow.emplace([&](fb::tf::Subflow &subflow) {
+    guess = fb::GuessStep{}.run(fb::View<fb::Molecule, fb::BasisSet>{*molecule, *basis}, subflow);
+  });
+  node.executor().run(guess_flow).wait();
+  ASSERT_TRUE(guess.has_value()) << guess.error().message;
 
   ASSERT_TRUE(calc->get<fb::BasisSet>().has_value());
   EXPECT_EQ(calc->get<fb::BasisSet>()->nao_sphe(), basis->nao_sphe());
@@ -105,6 +115,32 @@ TEST(PipelineCalculation, MatchesTheStepsCalledByHand) {
   expect_near(download(res, calc->get<fb::Overlap>()->s), download(res, overlap->s));
   expect_near(download(res, calc->get<fb::Orthogonalizer>()->x), download(res, x->x));
   expect_near(download(res, calc->get<fb::CoreHamiltonian>()->h), download(res, h->h));
+  ASSERT_TRUE(calc->get<fb::Guess>().has_value());
+  EXPECT_EQ(calc->get<fb::Guess>()->d, guess->d);
+}
+
+TEST(PipelineCalculation, TheGuessHoldsEveryElectronAgainstThePipelinesOverlap) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_calculation");
+  write_inputs(dir, kConfig);
+  fb::NodeResources node;
+  auto calc = fb::read_config(dir / "run.toml");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  // trace(D S) is Sum_A Z_A exactly: the host guess and the device overlap,
+  // made by different code on different sides, must agree on the basis.
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const std::vector<double> s = download(res, calc->get<fb::Overlap>()->s);
+  const std::vector<double> &d = calc->get<fb::Guess>()->d;
+  ASSERT_EQ(d.size(), s.size());
+  double trace = 0.0;
+  for (std::size_t k = 0; k < d.size(); ++k) {
+    trace += d[k] * s[k]; // both symmetric, so Sum_ij D_ij S_ji is elementwise
+  }
+  EXPECT_NEAR(trace, 10.0, 1e-10); // O + 2 H
 }
 
 TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
@@ -122,6 +158,7 @@ TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
   ASSERT_FALSE(calc->get<fb::CoreHamiltonian>().has_value());
   EXPECT_EQ(calc->get<fb::CoreHamiltonian>().error().kind, fb::ErrorKind::IO);
   EXPECT_EQ(calc->get<fb::Orthogonalizer>().error().message, ran.error().message);
+  EXPECT_EQ(calc->get<fb::Guess>().error().message, ran.error().message);
 }
 
 } // namespace

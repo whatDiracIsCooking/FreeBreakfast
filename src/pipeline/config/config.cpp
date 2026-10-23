@@ -101,6 +101,14 @@ template <class S>
   } else if constexpr (std::same_as<S, OrthogonalizerStep>) {
     FBF_TRY(check_keys(table, kStep, {"eigenvalue_floor"}));
     FBF_TRY(read_key(table, kStep, "eigenvalue_floor", base_dir, step.eigenvalue_floor));
+  } else if constexpr (std::same_as<S, GuessStep>) {
+    FBF_TRY(check_keys(table, kStep, {"type"}));
+    std::string type = "sad";
+    FBF_TRY(read_key(table, kStep, "type", base_dir, type));
+    if (type != "sad") {
+      return err_config("[{}] has no type '{}' (known: 'sad')", kStep, type);
+    }
+    step.type = GuessType::Sad;
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.

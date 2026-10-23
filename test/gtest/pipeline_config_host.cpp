@@ -26,6 +26,9 @@ basis = "/basis/sto-3g.json"
 
 [orthogonalizer]
 eigenvalue_floor = 1e-8
+
+[guess]
+type = "sad"
 )";
 
 // The two tables every config that reaches a basis needs.
@@ -53,6 +56,7 @@ TEST(PipelineConfig, EveryOptionIsRead) {
   // An absolute path is kept as written.
   EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, "/basis/sto-3g.json");
   EXPECT_EQ(calc->step<fb::OrthogonalizerStep>()->eigenvalue_floor, 1e-8);
+  EXPECT_EQ(calc->step<fb::GuessStep>()->type, fb::GuessType::Sad);
 }
 
 TEST(PipelineConfig, ARelativeBasisPathIsAnchoredToTheConfig) {
@@ -103,6 +107,14 @@ TEST(PipelineConfig, ATableIsARequestAndItsProducersAreFilledIn) {
   EXPECT_FALSE(calc->step<fb::OrthogonalizerStep>().has_value());
 }
 
+TEST(PipelineConfig, TheGuessNeedsNoDeviceStepPastTheMolecule) {
+  auto calc = fb::parse_config(with_inputs("[guess]\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::GuessStep>()->type, fb::GuessStep{}.type);
+  EXPECT_FALSE(calc->step<fb::OverlapStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::PrimitivePairClassesStep>().has_value());
+}
+
 TEST(PipelineConfig, OnlyWhatWasAskedForIsPlanned) {
   auto calc = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n", "");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
@@ -142,6 +154,11 @@ TEST(PipelineConfig, MisspeltOptionIsInvalidConfig) {
                       "[overlap] has no option 'screen'");
 }
 
+TEST(PipelineConfig, AnUnknownGuessTypeIsInvalidConfig) {
+  expect_config_error(with_inputs("[guess]\ntype = \"core\"\n"), "[guess] has no type 'core'");
+  expect_config_error(with_inputs("[guess]\ntype = \"SAD\"\n"), "[guess] has no type 'SAD'");
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",
@@ -152,6 +169,7 @@ TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
       "[molecule] charge");
   expect_config_error(with_inputs("[orthogonalizer]\neigenvalue_floor = \"small\"\n"),
                       "[orthogonalizer] eigenvalue_floor");
+  expect_config_error(with_inputs("[guess]\ntype = 1\n"), "[guess] type");
 }
 
 TEST(PipelineConfig, MalformedTomlIsIoError) {

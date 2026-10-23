@@ -13,7 +13,7 @@ names them all. It is the one library that imports every step, so only it and
 ```cpp
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep>;
+                             CoreHamiltonianStep, GuessStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
 Result<Calculation> read_config(const std::filesystem::path &path);
@@ -41,10 +41,13 @@ basis = "sto-3g.json"   # required, a BSE JSON basis
 eigenvalue_floor = 1e-10  # default 1e-10
 
 [core_hamiltonian]        # no options: the table is the request
+
+[guess]
+type = "sad"              # default "sad", the only kind so far
 ```
 
 **A table is a request, and the steps producing what it reads are filled
-in.** The file above plans all seven steps: `[orthogonalizer]` reads the
+in.** The file above plans all eight steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
 filled-in step is **read from an empty table**, so its defaults apply and a
 required option it lacks is the same error a written table would give:
@@ -69,6 +72,8 @@ resolved", and this is where that happens.
 - a table that names no step, or a step written as a key instead of a table;
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
+- an enumerated option naming no value it has (`[guess] type`, which knows
+  only `"sad"`);
 - a value of the wrong type. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`
   option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`;
