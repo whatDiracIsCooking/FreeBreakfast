@@ -60,6 +60,12 @@ What it settled:
   classes are rebuilt from `PrimitivePairClasses` per run
   (`coulomb_pair_classes`, `ordered_pair_classes`), as design section 8 has
   them until their scratch is refactored away.
+- **`syevd`'s work is `res.device_workspace()`'s**, fetched in the
+  diagonalization and dropped when it returns, since nothing reads it after.
+  Everything else the loop holds lives across calls (DIIS writes into `tmp`,
+  `eps` is read at convergence), so it stays in the step's own buffers. The
+  Orthogonalizer has already grown the workspace past `syevd`'s size for the
+  same n, so in a pipeline the SCF adds no allocation for it.
 - **The first device consumer of `Guess`**, so the host-to-device upload is
   here. The planner syncs after every device step and a host step has finished
   when its task does, so the Taskflow edge the `View` gives is all the ordering
