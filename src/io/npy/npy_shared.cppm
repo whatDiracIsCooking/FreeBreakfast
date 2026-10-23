@@ -9,12 +9,13 @@ import free_breakfast.core.error_handling;
 
 export namespace free_breakfast {
 
-/// @brief An n-dimensional float64 array in C (row-major) order.
+/// @brief An n-dimensional float64 array in Fortran (column-major) order.
 ///
 /// The shape carries the dimensions exactly as the .npy header spells them:
 /// `{}` is a NumPy scalar (one element), `{n}` a vector, `{rows, cols}` a
-/// matrix. @c data holds the elements flattened in C order, so a matrix's
-/// element (i, j) sits at `data[i * shape[1] + j]`.
+/// matrix. @c data holds the elements flattened in Fortran order -- the first
+/// axis varies fastest, the layout every matrix in this tree uses -- so a
+/// matrix's element (i, j) sits at `data[i + j * shape[0]]`.
 struct NpyArray {
   std::vector<size_t> shape{};
   std::vector<double> data{};

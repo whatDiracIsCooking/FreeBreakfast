@@ -79,6 +79,36 @@ static_assert(std::numeric_limits<double>::is_iec559, "the .npy module assumes I
   return err_io("NPY header has no boolean '{}'", key);
 }
 
+/// @brief A C-order payload of @p shape, reordered into Fortran order.
+///
+/// Walks the output in Fortran order with an odometer over the multi-index,
+/// first axis fastest, carrying the matching C-order offset along with it.
+[[nodiscard]] std::vector<double> c_to_fortran_order(std::span<const double> c_order,
+                                                     std::span<const size_t> shape) {
+  std::vector<double> out(c_order.size());
+  if (out.empty()) {
+    return out;
+  }
+  std::vector<size_t> c_stride(shape.size(), 1);
+  for (size_t k = shape.size(); k-- > 1;) {
+    c_stride[k - 1] = c_stride[k] * shape[k];
+  }
+  std::vector<size_t> index(shape.size(), 0);
+  size_t c_offset = 0;
+  for (double &element : out) {
+    element = c_order[c_offset];
+    for (size_t k = 0; k < shape.size(); ++k) {
+      c_offset += c_stride[k];
+      if (++index[k] < shape[k]) {
+        break;
+      }
+      c_offset -= c_stride[k] * shape[k];
+      index[k] = 0;
+    }
+  }
+  return out;
+}
+
 /// @brief The shape tuple, e.g. "()" -> {}, "(5,)" -> {5}, "(2, 3)" -> {2, 3}.
 [[nodiscard]] Result<std::vector<size_t>> shape_value(std::string_view header) {
   const auto start = value_start(header, "shape");
@@ -135,9 +165,6 @@ static_assert(std::numeric_limits<double>::is_iec559, "the .npy module assumes I
     return err_io("unsupported NPY dtype '{}' (only '<f8')", descr);
   }
   auto fortran = FBF_TRY(bool_value(header, "fortran_order"));
-  if (fortran) {
-    return err_io("Fortran-order NPY is not supported (C order only)");
-  }
   auto shape = FBF_TRY(shape_value(header));
 
   auto count = FBF_TRY(element_count(shape));
@@ -154,6 +181,9 @@ static_assert(std::numeric_limits<double>::is_iec559, "the .npy module assumes I
   array.shape = std::move(shape);
   array.data.resize(count);
   std::memcpy(array.data.data(), npy_bytes.data() + data_offset, expected);
+  if (!fortran) {
+    array.data = c_to_fortran_order(array.data, array.shape);
+  }
   return array;
 }
 

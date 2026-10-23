@@ -1,5 +1,5 @@
-// Host-only cases for io/npy: the float64 C-order slice of NumPy's .npy
-// format, both directions.
+// Host-only cases for io/npy: the float64 slice of NumPy's .npy format, held
+// column-major, both directions.
 
 #include <gtest/gtest.h>
 
@@ -65,15 +65,19 @@ TEST(IoNpy, ElementCountOverflowIsInvalidConfig) {
 // Writer
 // ---------------------------------------------------------------------------
 
-// The 128-byte headers numpy 2.5.4's np.save writes for a float64 C-order
-// array of each shape, captured from real np.save output. The payload follows
-// at byte 128 in every case.
+// The 128-byte headers numpy 2.5.4's np.save writes for a float64
+// Fortran-order array (np.asfortranarray) of each shape, captured from real
+// np.save output. 'fortran_order' is True only where the C and Fortran
+// layouts differ. The payload follows at byte 128 in every case.
 TEST(IoNpy, HeaderMatchesNumpySaveByteForByte) {
-  const std::array<std::pair<std::vector<std::size_t>, std::string_view>, 4> golden{{
+  const std::array<std::pair<std::vector<std::size_t>, std::string_view>, 7> golden{{
       {{}, "{'descr': '<f8', 'fortran_order': False, 'shape': (), }"},
       {{3}, "{'descr': '<f8', 'fortran_order': False, 'shape': (3,), }"},
-      {{2, 3}, "{'descr': '<f8', 'fortran_order': False, 'shape': (2, 3), }"},
       {{0}, "{'descr': '<f8', 'fortran_order': False, 'shape': (0,), }"},
+      {{2, 3}, "{'descr': '<f8', 'fortran_order': True, 'shape': (2, 3), }"},
+      {{1, 3}, "{'descr': '<f8', 'fortran_order': False, 'shape': (1, 3), }"},
+      {{0, 3}, "{'descr': '<f8', 'fortran_order': False, 'shape': (0, 3), }"},
+      {{2, 1, 2}, "{'descr': '<f8', 'fortran_order': True, 'shape': (2, 1, 2), }"},
   }};
   for (const auto &[shape, dict] : golden) {
     fb::NpyArray array{shape, std::vector<double>(fb::element_count(shape).value(), 0.0)};
@@ -197,10 +201,58 @@ TEST(IoNpy, RejectsOtherDtypes) {
   }
 }
 
-TEST(IoNpy, RejectsFortranOrder) {
-  expect_io_error(
-      make_npy("{'descr': '<f8', 'fortran_order': True, 'shape': (1,), }", std::string(8, '\0')),
-      "Fortran-order");
+TEST(IoNpy, WritesTheColumnMajorPayloadAsIs) {
+  const fb::NpyArray array{{2, 3}, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}};
+  auto bytes = fb::npy_to_bytes(array);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().message;
+  EXPECT_EQ(bytes->substr(128), doubles_as_bytes(array.data));
+}
+
+TEST(IoNpy, ReadsFortranOrderPayloadAsIs) {
+  // np.asfortranarray([[1, 2, 3], [4, 5, 6]]): the columns are contiguous.
+  const std::array values{1.0, 4.0, 2.0, 5.0, 3.0, 6.0};
+  auto array = fb::parse_npy(make_npy("{'descr': '<f8', 'fortran_order': True, 'shape': (2, 3), }",
+                                      doubles_as_bytes(values)));
+  ASSERT_TRUE(array.has_value()) << array.error().message;
+  EXPECT_EQ(array->shape, (std::vector<std::size_t>{2, 3}));
+  EXPECT_EQ(array->data, (std::vector<double>{1.0, 4.0, 2.0, 5.0, 3.0, 6.0}));
+}
+
+TEST(IoNpy, ReordersCOrderMatrixIntoColumnMajor) {
+  // np.array([[1, 2, 3], [4, 5, 6]]) saved C-order: the rows are contiguous.
+  const std::array values{1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+  auto array = fb::parse_npy(make_npy("{'descr': '<f8', 'fortran_order': False, 'shape': (2, 3), }",
+                                      doubles_as_bytes(values)));
+  ASSERT_TRUE(array.has_value()) << array.error().message;
+  EXPECT_EQ(array->shape, (std::vector<std::size_t>{2, 3}));
+  EXPECT_EQ(array->data, (std::vector<double>{1.0, 4.0, 2.0, 5.0, 3.0, 6.0}));
+}
+
+TEST(IoNpy, ReordersCOrderRankThreeIntoColumnMajor) {
+  // np.arange(24.0).reshape(2, 3, 4): element (i, j, k) is 12i + 4j + k, and
+  // column-major puts it at i + 2j + 6k.
+  std::vector<double> c_order(24);
+  std::iota(c_order.begin(), c_order.end(), 0.0);
+  auto array = fb::parse_npy(make_npy(
+      "{'descr': '<f8', 'fortran_order': False, 'shape': (2, 3, 4), }", doubles_as_bytes(c_order)));
+  ASSERT_TRUE(array.has_value()) << array.error().message;
+  ASSERT_EQ(array->data.size(), 24U);
+  for (std::size_t i = 0; i < 2; ++i) {
+    for (std::size_t j = 0; j < 3; ++j) {
+      for (std::size_t k = 0; k < 4; ++k) {
+        EXPECT_EQ(array->data[i + 2 * j + 6 * k], static_cast<double>(12 * i + 4 * j + k))
+            << i << j << k;
+      }
+    }
+  }
+}
+
+TEST(IoNpy, ReadsEmptyCOrderMatrix) {
+  auto array =
+      fb::parse_npy(make_npy("{'descr': '<f8', 'fortran_order': False, 'shape': (0, 3), }", ""));
+  ASSERT_TRUE(array.has_value()) << array.error().message;
+  EXPECT_EQ(array->shape, (std::vector<std::size_t>{0, 3}));
+  EXPECT_TRUE(array->data.empty());
 }
 
 TEST(IoNpy, RejectsMalformedHeaderFields) {
