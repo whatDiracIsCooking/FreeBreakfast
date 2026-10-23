@@ -7,6 +7,7 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 | Directory | Module | Role |
 |-----------|--------|------|
 | `blas/` | `free_breakfast.linalg.blas` | BLAS conveniences over wwr's dispatch: `gemm` for square operands, and the sandwiches `gemmwich` (`Xᵀ F X`) and `gmmwich` (`Xᵀ diag(d) X`). |
+| `complex_cast/` | `free_breakfast.linalg.complex_cast` | Split a complex matrix into real and imaginary planes (`split_planes`), and merge them back (`merge_planes`). |
 | `diagonalize/` | `free_breakfast.linalg.diagonalize` | The symmetric eigendecomposition A = U diag(w) Uᵀ, one `syevd` with its work and flag from `DeviceResources`. |
 | `diis/` | `free_breakfast.linalg.diis` | Pulay DIIS extrapolation over a device-resident ring of iterates and residuals. |
 | `matrix_ao/` | `free_breakfast.linalg.matrix_ao` | AO-basis matrices tagged Cartesian or spherical, and a pair holding both that converts through a shared transform. |

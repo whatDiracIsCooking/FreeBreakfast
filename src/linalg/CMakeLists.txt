@@ -1,4 +1,5 @@
 add_subdirectory(blas)
+add_subdirectory(complex_cast)
 add_subdirectory(diagonalize)
 add_subdirectory(diis)
 add_subdirectory(matrix_ao)
@@ -13,6 +14,7 @@ free_breakfast_add_cxx_module_library(
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::linalg::blas
+  free_breakfast::linalg::complex_cast
   free_breakfast::linalg::diagonalize
   free_breakfast::linalg::diis
   free_breakfast::linalg::matrix_ao
