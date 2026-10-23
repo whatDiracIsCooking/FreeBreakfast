@@ -170,6 +170,28 @@ point into it. Using it again after that call returns is fine.
 own pool buffers; M is written only after `diagonalize` returns, so it is
 the workspace's.
 
+**A callback is a nested user, whether or not it runs concurrently.** Nothing
+here runs two routines at once, so the hazard is not a race. It is
+*lifetime*. A routine that calls back into caller-supplied code, such as an
+iterative solver's operator or preconditioner, cannot know whether that code
+takes the workspace, so it must assume the callback does. Any of the routine's
+own scratch still live when the callback returns is then lost, in one of two
+ways:
+
+- the callback asks for more bytes than the routine took, the workspace grows,
+  and the old block is freed under the routine's pointers;
+- the callback asks for fewer bytes, gets the same block, and writes its
+  scratch over the routine's.
+
+Either way, no error is reported, and the routine reads garbage on its next
+step. So state an iterative routine keeps across its callbacks is its own
+pool buffer. Scratch that is dead before the next callback may still come from
+the workspace. `davidson_solve` (`src/recipes/davidson/`) is the example: its
+subspace and residual blocks are its own buffers, while syevd's work, taken by
+`diagonalize` between two operator applies, is the workspace's.
+`test/gtest/davidson_gpu.cpp` pins this with an operator that grows and
+overwrites the workspace on every apply.
+
 **`info` is on the work stream.** The solver handle writes `info()` on
 `stream()`, and `fetch_info()` copies on that same stream, so the read is
 ordered after the write. That is why these live here rather than in a
