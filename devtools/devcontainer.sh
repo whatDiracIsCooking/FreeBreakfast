@@ -286,14 +286,32 @@ require_git_dir() {
 # absolute paths: a restored BMI keeps the path it was built under. That is
 # correct behaviour, not a misconfiguration -- see CMakeLists.txt's "Compiler
 # cache" section. Sharing the store still dedups what each tree rebuilds.
-require_sccache_dir() {
-  local d="${FREE_BREAKFAST_SCCACHE_DIR:-$(dirname "$FREE_BREAKFAST_GIT_DIR")/.sccache}"
+#
+# FREE_BREAKFAST_OBJECT_CACHE_DIR is the second store, devtools/gpu-object-
+# cache.sh's, made and exported the same way. Unlike sccache's it is bound at
+# its HOST path (source == target, like the .git mount): the script finds it
+# as <primary root>/.build-object-cache, and the .git mount is what makes that
+# root resolve inside the container. Without this bind, a sibling worktree's
+# container sees the primary root as a root-owned mount point holding only
+# .git, and every device object misses. And unlike sccache's, its hits DO
+# cross worktrees -- the key is content, not paths.
+require_cache_dirs() {
+  local root d o
+  root=$(dirname "$FREE_BREAKFAST_GIT_DIR")
+  d="${FREE_BREAKFAST_SCCACHE_DIR:-$root/.sccache}"
+  o="${FREE_BREAKFAST_OBJECT_CACHE_DIR:-$root/.build-object-cache}"
   if ! mkdir -p "$d" 2>/dev/null; then
     echo "error: cannot create the sccache store at $d" >&2
     echo "       set FREE_BREAKFAST_SCCACHE_DIR to a writable directory." >&2
     exit 1
   fi
+  if ! mkdir -p "$o" 2>/dev/null; then
+    echo "error: cannot create the GPU object cache at $o" >&2
+    echo "       set FREE_BREAKFAST_OBJECT_CACHE_DIR to a writable directory." >&2
+    exit 1
+  fi
   export FREE_BREAKFAST_SCCACHE_DIR="$d"
+  export FREE_BREAKFAST_OBJECT_CACHE_DIR="$o"
 
   ensure_host_bind_dirs
 }
@@ -706,7 +724,7 @@ case "${1:-}" in
   up)
     shift
     require_git_dir
-    require_sccache_dir
+    require_cache_dirs
     export_host_gids
     host_mount_args
     remote_env_args
@@ -729,7 +747,7 @@ case "${1:-}" in
     # container's own filesystem does not.
     shift
     require_git_dir
-    require_sccache_dir
+    require_cache_dirs
     export_host_gids
     host_mount_args
     remote_env_args

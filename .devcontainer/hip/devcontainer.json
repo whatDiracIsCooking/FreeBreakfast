@@ -126,6 +126,13 @@
     // is only a fallback for opening this config directly, as with the .git
     // mount below; edit it to your own checkout then.
     "source=${localEnv:FREE_BREAKFAST_SCCACHE_DIR:/absolute/path/to/your-root/main/.sccache},target=/home/ubuntu/.sccache,type=bind",
+    // devtools/gpu-object-cache.sh's store, at its HOST path (source ==
+    // target): the script resolves it as <primary root>/.build-object-cache,
+    // which the .git mount below makes resolve in here too. Its hits DO cross
+    // worktrees -- the key is content, not paths. Host path injected as
+    // FREE_BREAKFAST_OBJECT_CACHE_DIR, and created first, by
+    // devtools/devcontainer.sh; the fallback is as for the mounts around it.
+    "source=${localEnv:FREE_BREAKFAST_OBJECT_CACHE_DIR:/absolute/path/to/your-root/main/.build-object-cache},target=${localEnv:FREE_BREAKFAST_OBJECT_CACHE_DIR:/absolute/path/to/your-root/main/.build-object-cache},type=bind",
     // Host path injected as FREE_BREAKFAST_GIT_DIR by devtools/devcontainer.sh (up /
     // rebuild); the literal after the colon is only a fallback for opening this
     // config directly (VS Code "Reopen in Container"), which you then edit to
