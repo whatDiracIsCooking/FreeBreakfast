@@ -1,7 +1,7 @@
 // The exchange build's hand-written device steps (exchange_helpers_bridge.h):
-// max|D|, the Dcd gather, the block table, and the shell starts and mirror,
-// the things the generated kb leaves to its launcher. One source for both
-// backends -- nvcc under CUDA, clang -x hip under HIP.
+// max|D|, the Dcd gather, the block table and its factors, and the shell
+// starts and mirror, the things the generated kb leaves to its launcher. One
+// source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 
 // block_reduce.cuh first: it orders its standard headers ahead of the vendor
 // runtime header, which under HIP must not precede libc++.
@@ -283,9 +283,9 @@ __global__ void gather_dcd_kernel(const int64_t n, const int32_t nc, const int32
   dcd[e] = density[m * n_ao + q];
 }
 
-// The first ket group whose first AO is at least off: with the symmetric
-// sweep, a bra group at off takes the ket groups from it on. The groups are in
-// basis order, so their first AOs rise and a binary search finds it.
+// The first ket group whose first AO is at least off: a bra group at off takes
+// the ket groups from it on. The groups are in basis order, so their first AOs
+// rise and a binary search finds it.
 __device__ int32_t first_ket_group(const int32_t n_b, const int32_t *b_start, const int32_t *b_off,
                                    const int32_t off) {
   int32_t lo = 0;
@@ -301,7 +301,7 @@ __device__ int32_t first_ket_group(const int32_t n_b, const int32_t *b_start, co
   return lo;
 }
 
-// F_ab of bra group ga against ket group gb: see exchange_blocks.
+// F_ab of bra group ga against ket group gb: see exchange_factors.
 __device__ double block_factor(const int32_t n_a, const double *a_geom, const int32_t ga,
                                const int32_t n_b, const double *b_geom, const int32_t gb,
                                const double *decay) {
@@ -323,16 +323,19 @@ __device__ double block_factor(const int32_t n_a, const double *a_geom, const in
 
 // One block per bra group ga. Its blocks start after every earlier bra group's,
 // n_b - first(g) each, which the block's threads sum, and its threads then
-// write its own, one per ket group from first(ga) on, and each one's factor.
+// visit its own, one per ket group from first(ga) on: each block's table
+// entry when blocks is not null, and its factor when factor is not null. The
+// table and the factors are two launches (exchange_blocks, exchange_factors)
+// of this one walk, so they agree on the order.
 __global__ void __launch_bounds__(fb::kFourWarps)
     blocks_kernel(const int32_t n_a, const int32_t *a_start, const int32_t *a_off,
                   const double *a_geom, const int32_t n_b, const int32_t *b_start,
                   const int32_t *b_off, const double *b_geom, const double *decay,
-                  const bool symmetric, const int32_t n_blk, int32_t *blocks, double *factor) {
+                  const int32_t n_blk, int32_t *blocks, double *factor) {
   __shared__ int32_t partials[kTableWarps];
   const auto ga = static_cast<int32_t>(blockIdx.x);
   const auto first = [&](const int32_t g) {
-    return symmetric ? first_ket_group(n_b, b_start, b_off, a_off[a_start[g]]) : 0;
+    return first_ket_group(n_b, b_start, b_off, a_off[a_start[g]]);
   };
   int32_t before = 0;
   for (auto g = static_cast<int32_t>(threadIdx.x); g < ga; g += static_cast<int32_t>(blockDim.x)) {
@@ -345,15 +348,25 @@ __global__ void __launch_bounds__(fb::kFourWarps)
   for (int32_t gb = f + static_cast<int32_t>(threadIdx.x); gb < n_b;
        gb += static_cast<int32_t>(blockDim.x)) {
     const int32_t blk = base + gb - f;
-    const int32_t ket0 = b_start[gb];
-    blocks[blk] = bra0;
-    blocks[n_blk + blk] = a_start[ga + 1];
-    blocks[2 * n_blk + blk] = ket0;
-    blocks[3 * n_blk + blk] = b_start[gb + 1];
-    blocks[4 * n_blk + blk] = a_off[bra0];
-    blocks[5 * n_blk + blk] = b_off[ket0];
-    factor[blk] = block_factor(n_a, a_geom, ga, n_b, b_geom, gb, decay);
+    if (blocks != nullptr) {
+      const int32_t ket0 = b_start[gb];
+      blocks[blk] = bra0;
+      blocks[n_blk + blk] = a_start[ga + 1];
+      blocks[2 * n_blk + blk] = ket0;
+      blocks[3 * n_blk + blk] = b_start[gb + 1];
+      blocks[4 * n_blk + blk] = a_off[bra0];
+      blocks[5 * n_blk + blk] = b_off[ket0];
+    }
+    if (factor != nullptr) {
+      factor[blk] = block_factor(n_a, a_geom, ga, n_b, b_geom, gb, decay);
+    }
   }
+}
+
+// The checks exchange_blocks and exchange_factors share.
+bool valid_table(const int32_t n_a, const int32_t n_b, const int32_t n_blk) {
+  return n_a >= 1 && n_b >= 1 && n_blk >= 1 &&
+         static_cast<int64_t>(n_blk) * fb::device::kExchangeBlockFields <= kMaxElements;
 }
 
 // One thread per AO of the momentum's shells, by rank.
@@ -369,7 +382,7 @@ __global__ void shell_starts_kernel(const int32_t n, const int32_t nx, const int
 // One thread per element of K; those of a lower shell block read their
 // transpose, which is in an upper one, so no element is both read and written.
 __global__ void mirror_kernel(const int64_t n, const int64_t n_ao, const int32_t *start,
-                              double *k) {
+                              const double sign, double *k) {
   const int64_t e = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (e >= n) {
     return;
@@ -377,7 +390,7 @@ __global__ void mirror_kernel(const int64_t n, const int64_t n_ao, const int32_t
   const int64_t m = e / n_ao;
   const int64_t q = e % n_ao;
   if (q < start[m]) {
-    k[e] = k[q * n_ao + m];
+    k[e] = sign * k[q * n_ao + m];
   }
 }
 
@@ -457,17 +470,27 @@ wwr::wwrError_t exchange_density_decay(const wwr::wwrStream_t stream, const int3
 }
 
 wwr::wwrError_t exchange_blocks(const wwr::wwrStream_t stream, const int32_t n_a,
-                                const int32_t *a_start, const int32_t *a_off, const double *a_geom,
-                                const int32_t n_b, const int32_t *b_start, const int32_t *b_off,
-                                const double *b_geom, const double *decay, const bool symmetric,
-                                const int32_t n_blk, int32_t *blocks, double *factor) {
-  if (n_a < 1 || n_b < 1 || n_blk < 1 ||
-      static_cast<int64_t>(n_blk) * kExchangeBlockFields > kMaxElements) {
+                                const int32_t *a_start, const int32_t *a_off, const int32_t n_b,
+                                const int32_t *b_start, const int32_t *b_off, const int32_t n_blk,
+                                int32_t *blocks) {
+  if (!valid_table(n_a, n_b, n_blk)) {
     return wwr::wwrErrorInvalidValue;
   }
   blocks_kernel<<<static_cast<uint32_t>(n_a), kFourWarps, 0, stream>>>(
-      n_a, a_start, a_off, a_geom, n_b, b_start, b_off, b_geom, decay, symmetric, n_blk, blocks,
-      factor);
+      n_a, a_start, a_off, nullptr, n_b, b_start, b_off, nullptr, nullptr, n_blk, blocks, nullptr);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t exchange_factors(const wwr::wwrStream_t stream, const int32_t n_a,
+                                 const int32_t *a_start, const int32_t *a_off, const double *a_geom,
+                                 const int32_t n_b, const int32_t *b_start, const int32_t *b_off,
+                                 const double *b_geom, const double *decay, const int32_t n_blk,
+                                 double *factor) {
+  if (!valid_table(n_a, n_b, n_blk)) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  blocks_kernel<<<static_cast<uint32_t>(n_a), kFourWarps, 0, stream>>>(
+      n_a, a_start, a_off, a_geom, n_b, b_start, b_off, b_geom, decay, n_blk, nullptr, factor);
   return wwr::wwrGetLastError();
 }
 
@@ -487,12 +510,12 @@ wwr::wwrError_t exchange_shell_starts(const wwr::wwrStream_t stream, const int32
 }
 
 wwr::wwrError_t exchange_mirror(const wwr::wwrStream_t stream, const int32_t n_ao,
-                                const int32_t *start, double *k) {
-  if (n_ao < 1) {
+                                const int32_t *start, const double sign, double *k) {
+  if (n_ao < 1 || (sign != 1.0 && sign != -1.0)) {
     return wwr::wwrErrorInvalidValue;
   }
   const int64_t n = static_cast<int64_t>(n_ao) * n_ao;
-  mirror_kernel<<<element_blocks(n), kFourWarps, 0, stream>>>(n, n_ao, start, k);
+  mirror_kernel<<<element_blocks(n), kFourWarps, 0, stream>>>(n, n_ao, start, sign, k);
   return wwr::wwrGetLastError();
 }
 

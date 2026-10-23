@@ -1,8 +1,8 @@
 // The device half of free_breakfast.integrals.eri.integral_direct.exchange: the
-// launcher over the generated kb<la, lc, lb, ld>, and the small kernels that
-// make the per-record inputs it leaves to its caller (the rank-to-AO table and
-// the bra's Dcd rows). One source for both backends -- nvcc under CUDA,
-// clang -x hip under HIP.
+// launcher over the generated kb<la, lc, lb, ld>, and the small kernel that
+// makes the rank-to-AO table it leaves to its caller (the bra's Dcd rows are
+// the ordered classes', pairs_launch.cu). One source for both backends --
+// nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/kb/),
 // each one explicit specialization of the template kernels/kb/kb.h declares with
@@ -38,15 +38,6 @@ __global__ void rank_offsets_kernel(const int32_t n_rec, const int32_t *rank_b,
   const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
   if (r < n_rec) {
     off[rank_b[r]] = off_b[r];
-  }
-}
-
-// dc[r] = rank_b[r] * n_d: see exchange_bra_rows.
-__global__ void bra_rows_kernel(const int32_t n_rec, const int32_t *rank_b, const int32_t n_d,
-                                int32_t *dc) {
-  const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (r < n_rec) {
-    dc[r] = rank_b[r] * n_d;
   }
 }
 
@@ -108,16 +99,6 @@ wwr::wwrError_t exchange_rank_offsets(const wwr::wwrStream_t stream,
   }
   rank_offsets_kernel<<<record_blocks(cls.n_rec), kFourWarps, 0, stream>>>(cls.n_rec, cls.rank_b,
                                                                            cls.off_b, off);
-  return wwr::wwrGetLastError();
-}
-
-wwr::wwrError_t exchange_bra_rows(const wwr::wwrStream_t stream, const OrderedPairClassView &bra,
-                                  const int32_t n_d, int32_t *dc) {
-  if (!has_records(bra) || n_d < 0) {
-    return wwr::wwrErrorInvalidValue;
-  }
-  bra_rows_kernel<<<record_blocks(bra.n_rec), kFourWarps, 0, stream>>>(bra.n_rec, bra.rank_b, n_d,
-                                                                       dc);
   return wwr::wwrGetLastError();
 }
 

@@ -4,7 +4,8 @@ The ordered primitive-pair classes K's bras and kets are drawn from: `mmd`'s
 `la <= lb` records in both orientations, one class per ordered `(la, lb)`,
 grouped by first shell, each record with K's **dressed** Schwarz bound and
 each group sorted by it, built once per basis on the device, and held there
-only.
+only; with them, what the K build needs per basis (its block tables and `Dcd`
+rows) and the scratch it rewrites per build.
 
 ## Module
 
@@ -51,8 +52,9 @@ and `eb` are not carried (kb reads neither), and neither is its undressed
 kb's `Dcd` row is `dc[bra] + dd[ket]`, and the exchange helpers' gather
 (`../helpers/exchange_helpers_bridge.h`) lays `Dcd` out so that is
 `rank_c * n_shells(ld) + rank_d`: a bra's `dc` is its `rank_b` times the number
-of `ld` shells, a ket's `dd` its `rank_b`. The first shell's rank is not
-stored: a K block is per first shell (below), and that shell is the group's.
+of `ld` shells, a ket's `dd` its `rank_b`. The class stores the `dc` rows, one
+per `ld` (below). The first shell's rank is not stored: a K block is per first
+shell (below), and that shell is the group's.
 
 **The bound is dressed, and per orientation.** kb's screen and its
 guarantee (FelizJueves #484/#485: every skipped term under `τ`) are proved
@@ -80,12 +82,11 @@ wrong K, not a slow one.** The sort is once per basis, never per build.
 (Before the dressed bound, `mmd`'s ζ order was enough: its bound rises with
 ζ. The dressed one does not follow ζ.) A K block takes one bra group and one
 ket group whole, since all its bras share the `a` shell whose row the block
-is, and its kets the `b` shell whose column. The group table is on the host,
-one `OrderedPairGroup {shell, ao_offset, start, count}` per group: `shell` the
-first shell's index in `BasisSet::shells()`, `ao_offset` its first Cartesian
-AO, the records `[start, start + count)`. Its bounds are also on the device,
-as `group_start` (`groups.size() + 1` entries, the last `n_rec`), from which
-the K build makes its block tables there.
+is, and its kets the `b` shell whose column. The groups' bounds are on the
+device, as `group_start` (`n_groups + 1` entries, the last `n_rec`): group `g`
+is records `[group_start[g], group_start[g + 1])`. The host keeps only their
+number, `n_groups`; which shell a group is follows from the basis (rank `g`
+among the shells of `la`).
 
 **The gather is on the device, once per basis, straight from `mmd`'s
 class.** Each ordered class reads one `mmd` class, the one of its momenta in
@@ -103,20 +104,39 @@ swapped, a slot a diagonal record does not have. On a new `DeviceStream`,
 2. **The gather** (`ordered_pair_gather`): record `k` is the `k`-th slot in
    that order, every field written from `mmd`'s, swapped where the slot is.
 
+3. **The K build's per-basis inputs**, once every class is gathered: each
+   class's `dc` rows, one per `ld` the basis reaches (`ordered_pair_bra_rows`),
+   and its block table as a bra against every class of the set as a ket, in
+   the set's order (the exchange helpers' `exchange_blocks`): one block per
+   `(a, b)` of a bra group and a ket group with `a <= b`, the blocks the K
+   sweep computes (`../README.md`, "The bra-ket swap").
+
 So the records are gathered once, already in order; nothing is permuted after.
 `group_start` is formed there too rather than uploaded: an upload would need a
 host source that outlives the asynchronous copy, which is a pinned side and a
-synchronization again.
+synchronization again. The host sizes everything from the basis alone:
+`n_shells` (shells per momentum, through d at least), `n_ao` (its Cartesian
+AO count) and, per bra, `n_blk` (each table's block count, one per class of
+the set, so its size is the set's class count). A table of more than
+`INT32_MAX / 6` blocks is an `InvalidConfig` error.
+
+**The K build's scratch is the class's** (as J's is `CoulombPairClass`'s):
+`dcd`, `geom` and `factor` are allocated here and left unwritten, and every
+`exchange` call rewrites them (`../README.md`, "Scratch"). So an SCF loop
+allocates none of them per build, and the K build allows one call at a time
+per set of classes.
 
 **No host synchronization, and no host copy.** Each class's stream is forked
 from its `mmd` class's (an event, `ForkStream::fork_from`), so it reads
-`mmd`'s final records, and once every class is queued, each is joined back
-into it (`record_join`, `join_into`): freeing an `mmd` class queues its frees
-on its own stream, so they wait for every read of it, and the caller may drop
-the `mmd` classes as soon as the call returns. Every fork precedes every
-join, so the two classes of one `mmd` class do not serialize. The records are
-device only (`StreamBuffers::device`); the K build reads its shells' AO
-offsets from the group table, and a test copies a field back itself. Since
+`mmd`'s final records. A bra's tables read every class's `group_start` and
+`off_a`, so once every class is gathered, each class's stream is joined into
+`res.stream()` and forked back from it for its tables, then joined and forked
+once more, so a class's frees follow every table that read it. Each `mmd`
+class's stream then waits on `res.stream()`: freeing an `mmd` class queues
+its frees on its own stream, so they wait for every read of it, and the
+caller may drop the `mmd` classes as soon as the call returns. The records
+are device only (`StreamBuffers::device`); a test copies a field back
+itself. Since
 nothing reads `mmd`'s records on the host, the classes are checked against
 the basis by their momenta and record counts: a class missing, repeated or of
 another count (the `mmd` classes are another basis's) is an `InvalidConfig`
@@ -126,10 +146,9 @@ error.
 
 | Symbol | Role |
 |---|---|
-| `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, its `work_stream` (also `device_stream()`, as `mmd`'s classes name theirs), one device-only `StreamBuffers::device` per field (`record_bound` and `rank_b` among them), `groups` and their bounds `group_start`; `view()` gives an `OrderedPairClassView` |
-| `OrderedPairGroup` | One group: `shell`, `ao_offset`, `start`, `count` |
+| `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, `n_groups`, the basis's `n_ao` and `n_shells`, its tables' `n_blk` (one per class of the set), its `work_stream` (also `device_stream()`, as `mmd`'s classes name theirs), one device-only `StreamBuffers::device` per field (`record_bound` and `rank_b` among them), the groups' bounds `group_start`, the K build's `dc` rows and `blocks` tables (once per basis) and its scratch `dcd`, `geom` and `factor` (per build); `view()` gives an `OrderedPairClassView` |
 | `OrderedPairClassView` | The class's device fields by pointer, for the launchers (`ordered_pair_class_view.h`, re-exported) |
-| `ordered_pair_classes(res, basis, classes)` | `Result<std::vector<OrderedPairClass>>` from `primitive_pair_classes(res, basis)`: every reached ordered class, ascending `(la, lb)`, none empty, each on a new `DeviceStream` |
+| `ordered_pair_classes(res, basis, classes)` | `Result<std::vector<OrderedPairClass>>` from `primitive_pair_classes(res, basis)`: every reached ordered class, ascending `(la, lb)`, none empty, each on a new `DeviceStream`, a set the K build takes whole |
 
 ## Tests
 
@@ -138,7 +157,9 @@ H₁₀ chain: each class's record count against a host count of ordered
 primitive pairs; each group contiguous, one first shell of momentum `la`, the
 groups in basis order, each group's count right and its `record_bound`
 non-increasing and non-negative, and `group_start` its bounds; each record's
-`rank_b`; the `(la, lb)` and `(lb, la)` records the same multiset of
+`rank_b`; each class's `n_ao`, `n_shells`, `dc` rows, and `a <= b` block table
+against every ket class (`n_blk` and every entry) against a host enumeration
+from the groups; the `(la, lb)` and `(lb, la)` records the same multiset of
 (ζ, P, P − A, P − B, `s`, offsets) with the two orientations swapped; the
 classes bit for bit against a host gather of `mmd`'s records (each group
 stably sorted by the bound, the order the earlier host gather made); the view
@@ -159,8 +180,8 @@ displacements and both offsets with the bound.
 | File | Role |
 |------|------|
 | `ordered_pair_class_view.h` | `OrderedPairClassView`, the single definition, for `#include` and `import` alike |
-| `pairs.cppm` | Module interface: `OrderedPairClass`, `OrderedPairGroup`, `ordered_pair_classes`, the view re-exported |
-| `pairs.cpp` | The check against the basis, the groups from it, then per class the fork from `mmd`'s stream, the order and the gather on the device, and the joins back |
-| `pairs_bridge.h` | The order's and the gather's launchers, and the slots they share, declared once for `pairs.cpp`'s GMF and the `.cu` |
-| `pairs_launch.cu` | The key, group-start and gather kernels, and the launchers: `ordered_pair_order` (the two sorts and `group_start`), `ordered_pair_gather` (every field, from `mmd`'s class) |
+| `pairs.cppm` | Module interface: `OrderedPairClass`, `ordered_pair_classes`, the view re-exported |
+| `pairs.cpp` | The check against the basis, the sizes from it, then per class the fork from `mmd`'s stream, the order and the gather on the device; after a join, every bra's `dc` rows and tables; and the joins back |
+| `pairs_bridge.h` | The order's, the gather's and the `dc` rows' launchers, and the slots the first two share, declared once for `pairs.cpp`'s GMF and the `.cu` |
+| `pairs_launch.cu` | The key, group-start, gather and `dc`-row kernels, and the launchers: `ordered_pair_order` (the two sorts and `group_start`), `ordered_pair_gather` (every field, from `mmd`'s class), `ordered_pair_bra_rows` |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.eri.integral_direct.exchange.pairs.headers`, the device library and the module library |

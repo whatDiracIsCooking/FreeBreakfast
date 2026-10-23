@@ -1,7 +1,7 @@
 /// @file
 /// @brief The K build's launcher over the generated kb<la, lc, lb, ld>, and the
-/// two small kernels that make its per-record inputs, declared once for the
-/// module that calls them and the device TU that defines them.
+/// small kernel that makes its rank-to-AO table, declared once for the module
+/// that calls them and the device TU that defines them.
 ///
 /// Included by exchange.cpp in its GLOBAL MODULE FRAGMENT, and by
 /// exchange_launch.cu directly, for the reason overlap_bridge.h gives: a
@@ -45,33 +45,23 @@ namespace free_breakfast::device {
 [[nodiscard]] wwr::wwrError_t exchange_rank_offsets(wwr::wwrStream_t stream,
                                                     const OrderedPairClassView &cls, int32_t *off);
 
-/// @brief One bra class's rows of the (bra.lb, ld) Dcd, `dc[r] =
-/// bra.rank_b[r] * n_d`, on @p stream, @p n_d the number of shells of
-/// momentum ld; @p dc is bra.n_rec int32_ts, written whole. It depends on the
-/// ket's ld, so a bra class has one per ld.
-///
-/// @return The launch status (wwrErrorInvalidValue for a class with no
-///         records or a negative @p n_d).
-[[nodiscard]] wwr::wwrError_t exchange_bra_rows(wwr::wwrStream_t stream,
-                                                const OrderedPairClassView &bra, int32_t n_d,
-                                                int32_t *dc);
-
 /// @brief Add kb<bra.la, bra.lb, ket.la, ket.lb> of @p bra against @p ket into
 /// the n_ao x n_ao @p k, on @p stream: one warp per block of @p blocks, the
 /// block's kets strip-mined across its lanes, every lane walking its bras, and
 /// lane 0 adding the contracted K_ab block into @p k at the block's AO offsets.
 ///
-/// @p blocks is the launch's table, @p n_blk blocks (exchange_blocks): each a
+/// @p blocks is the launch's table, @p n_blk blocks (exchange_blocks, the
+/// bra's OrderedPairClass::blocks): each a
 /// range of bra records of one first shell a and a range of ket records of one
-/// first shell b, and their AO offsets; @p factor, the table's, is each block's
-/// density factor F_ab. Every range must be non-increasing in record_bound, as
+/// first shell b, and their AO offsets; @p factor, the table's
+/// (exchange_factors), is each block's density factor F_ab. Every range must be non-increasing in record_bound, as
 /// each of the classes' groups is: the kernel breaks out of its bra loop at the
 /// first bra with `Ip * Iq[ket0] * F_ab < tau`, and each lane out of its ket
 /// loop at its first ket with `Ip * Iq * F_ab < tau`, Ip and Iq the records'
 /// dressed bounds.
-/// @p dc is @p bra's, from @ref exchange_bra_rows (for ld = ket.lb); the kets'
-/// `dd` is ket.rank_b. @p dcd is the (bra.lb, ket.lb) gather
-/// (exchange_gather_dcd), @p n_dc its row count.
+/// @p dc is @p bra's Dcd rows for ld = ket.lb (OrderedPairClass::dc,
+/// ordered_pair_bra_rows); the kets' `dd` is ket.rank_b. @p dcd is the
+/// (bra.lb, ket.lb) gather (exchange_gather_dcd), @p n_dc its row count.
 ///
 /// The adds are atomic, so launches of several class pairs into one @p k need
 /// no ordering among them; zero @p k before the first.

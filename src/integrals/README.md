@@ -74,11 +74,12 @@ orientations, and its record bound has a kernel per ordered class. The
 matrices are symmetric and the kernels write each value at `(m, n)` and
 `(n, m)`, so the swap changes nothing about the result.
 
-**Not done, in J and K alike: batching and reuse across SCF iterations.** Each
-build allocates its scratch per call and launches one kernel per class (or
+**Not done, in J and K alike: batching.** Each build's scratch is its
+classes', allocated once per basis, and each launches one kernel per class (or
 class pair, or ket group) as FelizJueves ships it. K applies the bra-ket swap
-by its shell blocks, computing `a <= b` and mirroring, so it still visits the
-quartets inside its `a == b` blocks twice
+by its shell blocks, computing `a <= b` and mirroring (negated for an
+antisymmetric density), so it still visits the quartets inside its `a == b`
+blocks twice
 ([`exchange/`](eri/integral_direct/exchange/README.md)).
 
 ## Tests

@@ -24,6 +24,11 @@ auto classes = ordered_pair_classes(res, basis, *mmd);      // once per basis
 FBF_TRY(exchange(res, *classes, density, k));               // per density
 ```
 
+The classes are a **set**: each bra's block tables are made against every
+class of its `ordered_pair_classes` call, so `exchange` takes the whole set in
+its order and refuses a subset or a reordering. They also hold the build's
+scratch, so one build at a time per set (see "Scratch" below).
+
 ## Design
 
 FelizJueves's `kb_driver` (`test/kblock_driver.py`) and `launch_kblock.py` are
@@ -61,29 +66,29 @@ layout is the one `kernel_k` used.
    every shell of `l`, each paired with itself. The join closes the phase:
    every gather reads two tables, the decay every centre, every geometry
    `G_max`. Then, on `res.stream()`, **the density's decay** (`Λ`, `H_off`,
-   below) from the centres (`exchange_density_decay`), and for the symmetric
-   sweep the first AO of every AO's shell, from the tables
-   (`exchange_shell_starts`).
+   below) from the centres (`exchange_density_decay`), and the first AO of
+   every AO's shell, from the tables (`exchange_shell_starts`).
 3. **The density blocks and geometry**, each class `(lc, ld)` on its own
    stream: `Dcd` of `(lc, ld)`, gathered from `D` (`exchange_gather_dcd`), and
    the class's group geometry, each first shell's centre and **reach**
    (`exchange_group_geometry`). Every `(lc, ld)` of two reached momenta is a
    reached class, so each `Dcd` has a stream. The join closes the phase: every
    bra class reads them.
-4. **Every class as a bra**, each on its own stream: its `Dcd` rows; then, for
-   every ket class, its block table and the blocks' density factors
-   (`exchange_blocks`) and one `kb` launch over them into `K`, in that order.
-5. For the symmetric sweep, after the join, on `res.stream()`: every `a > b`
-   block of `K` set to its transpose (`exchange_mirror`).
+4. **Every class as a bra**, each on its own stream: for every ket class, its
+   block table's density factors (`exchange_factors`) and one `kb` launch over
+   the table into `K`, in that order.
+5. After the join, on `res.stream()`: every `a > b` block of `K` set to its
+   transpose, negated for an antisymmetric density (`exchange_mirror`).
 
-**The block tables are made on the device**, per call, from the classes'
-groups: each class carries its groups' bounds on the device (`group_start`),
-and `exchange_blocks` writes one launch's table from a bra class's and a ket
-class's, one thread block per bra group. The host knows the groups too, so it
-counts each table's blocks itself (the grid and the allocation) and nothing is
-read back: the build stays without a host synchronization. Each block's
-density factor is written beside it, and depends on the density, so the
-tables could not be fixed per basis in any case.
+**The block tables are made once per basis**, on the device, by
+`ordered_pair_classes` ([`pairs/`](pairs/README.md)): each class carries its
+groups' bounds on the device (`group_start`), and `exchange_blocks` writes one
+launch's table from a bra class's and a ket class's, one thread block per bra
+group. The host knows the basis too, so it counts each table's blocks itself
+(the grid and the allocation, each class's `n_blk`) and nothing is read back.
+The table depends only on the basis; each block's density factor depends on
+the density, so `exchange_factors` rewrites it beside the table per call, the
+same walk over the groups as the table's so the two agree on the order.
 
 **The density factor** is FelizJueves's `ao.k.density_decay` (#484), the
 paper's eqs. 41–49 and its Figure 3's three exits made a guaranteed bound, and
@@ -105,10 +110,11 @@ such a block) and `|D_cd| <= H_off e^{-Λ d}`. With the **dressed** record bound
 skipped term is under `tau`** either way (the paper's looser `τ* = τ/N*` is not
 taken). Because the dressed bound carries the pair factor, it decays with
 `|AC|`, so a reach stops short of the molecule and the factor fires: on the H₁₀
-chain (23 bohr) **48 of the 3,600** block factors of the full sweep fall below
-`max|D|` at the default `tau = 1e-13`, 144 at `1e-10` (the count FelizJueves's
-own `density_decay` gives) and 242 at `1e-6`; the smallest is 0.0136 against
-`max|D|` 0.328. On H₂O every factor is `max|D|`.
+chain (23 bohr) **24 of the 1,860** `a <= b` block factors fall below `max|D|`
+at the default `tau = 1e-13`, 72 at `1e-10` (half the 144 FelizJueves's own
+`density_decay` gives over every block: a block's factor is its transpose's,
+and no `a == b` block is under `max|D|`) and 121 at `1e-6`; the smallest is
+0.0136 against `max|D|` 0.328. On H₂O every factor is `max|D|`.
 
 **Why the default is `1e-13`, not J's `1e-10`.** The guarantee is per skipped
 term; `K_ab` sums many of them, and their number grows with the record pairs
@@ -141,25 +147,35 @@ FelizJueves's is 0. `2^-40` is rounding room that only loosens the bound. A
 molecule with no visible decay gets `Λ = 0` and `F_ab = max|D|`, the screen
 before this one exactly.
 
-**The bra-ket swap.** `(ac|bd) = (bd|ac)`, so for a symmetric `D`,
-`K_ba = K_ab^T`: only the shell blocks `a <= b` need computing. The symmetric
-sweep's tables hold only those, cut on the device by AO offset (the groups are
-in basis order, so offsets rise with them; the host's count compares shell
-indices, the same order), and `exchange_mirror` then sets each element of an
-`a > b` block from its transpose. An `a == b` block is computed whole and left
-as it is. What is left of the duplication is inside the `a == b` blocks:
-`O(n_shells)` of `O(n_shells^2)`. The paper's K does the same: it uses only
-this symmetry (§4.3.1), and FelizJueves's `ao/k.py` "THE TWO SWEEPS" has the
-identity and the unique-sweep reference.
+**The bra-ket swap.** Renaming `c <-> d` and using `(ac|bd) = (bd|ac)` gives
+`K[D]^T = K[D^T]`. So a symmetric `D` has a symmetric `K`, `K_ba = K_ab^T`,
+and an antisymmetric `D` an antisymmetric one, `K_ba = -K_ab^T`: either way
+only the shell blocks `a <= b` need computing. The tables hold only those, cut
+on the device by AO offset (the groups are in basis order, so offsets rise
+with them; the host's count compares shell indices, the same order), and
+`exchange_mirror` then sets each element of an `a > b` block from its
+transpose, times `-1` for `DensitySymmetry::Antisymmetric`. An `a == b` block
+is computed whole and left as it is. What is left of the duplication is
+inside the `a == b` blocks: `O(n_shells)` of `O(n_shells^2)`. The paper's K
+does the same: it uses only this symmetry (§4.3.1), and FelizJueves's
+`ao/k.py` "THE TWO SWEEPS" has the identity and the unique-sweep reference.
 
-**The precondition is a contract, not a check.** The symmetric sweep is only
-`K` for a symmetric `D`, and `exchange` does not verify it: refusing would
-cost a device pass over `D` *and* a host synchronization to read the verdict
-back into the `Status`, where the build is otherwise fully asynchronous. So
-`symmetric` (default `true`) is the switch: `false` launches every block and
-mirrors nothing, `K_ab` and `K_ba` each computed directly, correct for any `D`
-at twice the work. Handed a non-symmetric `D`, the symmetric sweep returns its
-`K`'s `a <= b` blocks, mirrored.
+**A general `D` is two sweeps.** `D = S + A`, `S = (D + D^T)/2` and
+`A = (D - D^T)/2` (one `geam`): `exchange` on `S` as `Symmetric` plus
+`exchange` on `A` as `Antisymmetric` is `K[D]`, at the same `kb` work as one
+sweep over every block, plus the `geam` and two mirrors; and each half fits
+its own decay, so it screens at least as tightly. There is no every-block
+sweep and no general-`D` wrapper, since nothing in the tree has a
+non-symmetric `D` yet. **Codes usually have the two parts already:** TDHF/RPA
+works with `X + Y` and `X − Y`, which are exactly the symmetric and the
+antisymmetric parts; so do CIS transition densities, and the response to an
+imaginary perturbation (a magnetic field gives an antisymmetric density).
+
+**The symmetry is a contract, not a check.** `exchange` does not verify it:
+refusing would cost a device pass over `D` *and* a host synchronization to
+read the verdict back into the `Status`, where the build is otherwise fully
+asynchronous. Handed a `D` of neither symmetry, it returns its `K`'s `a <= b`
+blocks and the mirror of them that `DensitySymmetry` names.
 
 What the kernels leave to the launcher, and how it is supplied:
 
@@ -168,10 +184,10 @@ What the kernels leave to the launcher, and how it is supplied:
 | bra fields | `p_*`, `zeta`, `pa_*`, `pb_*`, `s` of the bra class as `p_*`, `zeta_ac`, `pa_*`, `pc_*`, `s_ac` | "a" is a record's first shell, "b" (here `c`) its second |
 | ket fields | the ket class's same fields as `q_*`, `eta`, `qb_*`, `qd_*`, `s_bd`, `Iq` = `record_bound`, `dd` = `rank_b` | the ket's first shell is `b`, its second `d` |
 | `Ip` | the bra class's `record_bound` | the record's own dressed Schwarz bound; the density is in `dmax` |
-| `dc`, `dd` | `dc = rank_b · n_shells(ld)` per (bra class, `ld`) (`exchange_bra_rows`), `dd = rank_b` | the gather's `Dcd` row is `rank_c · n_shells(ld) + rank_d`; `dc` depends on the ket's `ld`, so a bra class has one row set per `ld` and none is stored |
+| `dc`, `dd` | `dc = rank_b · n_shells(ld)` per (bra class, `ld`), the class's `dc` (`ordered_pair_bra_rows`, once per basis), `dd = rank_b` | the gather's `Dcd` row is `rank_c · n_shells(ld) + rank_d`; `dc` depends on the ket's `ld`, so a bra class has one row set per `ld` |
 | `n_dc` | `n_shells(lc) · n_shells(ld)` | an extent only, never read |
-| `bra0` … `ko_b` | the block table, one segment of `n_blk` per field (`exchange_blocks`) | a block's bras and kets are one group each, so each range is non-increasing in `record_bound`: both screens are `break`s, and unsorted ranges would make them a wrong answer, not a slow one |
-| `dmax` | each block's `F_ab`, `n_blk` doubles beside the table (`exchange_blocks`) | constant within a block, so the sorted `break`s stay exact |
+| `bra0` … `ko_b` | the bra class's block table against the ket class, one segment of `n_blk` per field (`exchange_blocks`, once per basis) | a block's bras and kets are one group each, so each range is non-increasing in `record_bound`: both screens are `break`s, and unsorted ranges would make them a wrong answer, not a slow one |
+| `dmax` | each block's `F_ab`, `n_blk` doubles beside the table (`exchange_factors`, per call) | constant within a block, so the sorted `break`s stay exact |
 | `K`, `n_ao` | `K` itself, zeroed | lane 0 `atomicAdd`s the reduced block at `(ko_a, ko_b)`: no two blocks of a launch meet, and launches of several class pairs, from several streams, need no ordering |
 | the launch | grid `n_blk`, block `kb_block_dim = {1, FJ_WAVEFRONT}`, **no dynamic shared memory** | `kb`'s `Ksh[(n_p + n_a n_b) · FJ_WAVEFRONT]` is static, sized for exactly that block |
 
@@ -183,16 +199,27 @@ What the kernels leave to the launcher, and how it is supplied:
 `kMaxAngularMomentum` and `kb_block_dim` against `kWarpSize`. The footprint is
 `kernel_k`'s, unchanged.
 
-The scratch (per class 4 doubles per group of geometry, `(l_max + 1) n_rec`
-`int32`s of `dc`, and 6 `int32`s and a double per block of its tables; one
-`Dcd` per class; one rank table per momentum; `3 n_ao` doubles of AO centres
-and `n_ao` `int32`s of shell starts; the three doubles of the decay and one of
-`G_max`) is drawn from `res.device()`'s pool in `res.stream()`'s order and
-returned in its order once every phase is joined back, so there is no host
-synchronization. The shells' AO offsets and the shell counts by momentum are
-read on the host off the classes' groups (each group's `shell` and
-`ao_offset`, which `ordered_pair_classes` takes from the basis); the classes
-themselves are device only.
+**Scratch.** As J's is `CoulombPairClass`'s, K's is `OrderedPairClass`'s,
+allocated with the records once per basis, so an SCF loop allocates none of it
+per build. What depends only on the basis is written then too: a bra's `dc`
+rows (`(l_max + 1) n_rec` `int32`s) and its block tables (6 `int32`s per
+block). What depends on the density is rewritten by every call: `dcd` (one
+`Dcd` per class), `geom` (4 doubles per group: the reach is screened at
+`record_bound · G_max · max|D|`) and `factor` (a double per block, eq. 49 of
+arXiv:2407.21445). So **one `exchange` or `exchange_block_factors` at a time
+per set of classes**: two builds over the same classes must be queued on one
+stream. At the end of a call every class's stream is forked from
+`res.stream()`, which has joined them all, so a class's frees and the next
+build's writes follow every other stream's reads of it.
+
+What the call still allocates (one rank table per momentum; `3 n_ao` doubles
+of AO centres and `n_ao` `int32`s of shell starts; the three doubles of the
+decay and one of `G_max`) is drawn from `res.device()`'s pool in
+`res.stream()`'s order and returned in its order once every phase is joined
+back, so there is no host synchronization. The shell counts by momentum and
+the basis's Cartesian AO count are read on the host off the classes
+(`n_shells`, `n_ao`); `exchange` checks the density's order against the
+latter. The records themselves are device only.
 
 **One text serves both warp widths.** `kb` is emitted `any_wavefront`: its
 shuffles and its shared array read `FJ_WAVEFRONT`, which `deps/CMakeLists.txt`
@@ -250,10 +277,11 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
   `O(n_shells^2)`.
 - **Batching.** One `kb` launch per (bra class, ket class), every block at
   once, as FelizJueves ships it; no split class.
-- **Reuse across SCF iterations.** The scratch, the rank tables, the block
-  tables and `Dcd` are allocated and rebuilt per call. The tables' ranges are
-  fixed per basis, their factors are not; the AO centres and `G_max` are, and
-  are recomputed anyway.
+- **The rest of the reuse across SCF iterations.** The classes' scratch and
+  tables are allocated once per basis, but the per-call buffers outside them
+  are not: the rank tables, the AO centres, the shell starts and `G_max`
+  depend only on the basis and are recomputed per call anyway, and the decay
+  (four doubles) is per density.
 - **`kb` is not measured against `kernel_k`.** Only the pruning above timed
   K at all; FelizJueves has not timed `kb` against `kernel_k` either (its
   `measure.sh kblock` run was refused by the card gate).
@@ -262,8 +290,9 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 | Symbol | Role |
 |---|---|
-| `exchange(res, classes, density, k, tau = 1e-13, symmetric = true)` | `Status`: the Cartesian K of `density` into `k`, from `ordered_pair_classes` of the same basis, screened at `tau` (`0` screens nothing), by the `a <= b` blocks mirrored (`symmetric`, which requires a symmetric `density`, unchecked) or every block directly. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, a shell past `k`'s order, `k.n()^2` past `INT32_MAX`, or a block table past `INT32_MAX` int32s |
-| `exchange_block_factors(res, classes, density, tau = 1e-13, symmetric = true)` | `Result<std::vector<double>>`: every block's density factor `F_ab` as `exchange` makes it for the same arguments (the same code path, with no `K`: no zeroing, no `kb`, no mirror), read back, bra class major, then ket class, then table order. A diagnostic: how many blocks the decay screens below `max\|D\|` decides whether it pays. Synchronizes `res.stream()` |
+| `exchange(res, classes, density, k, tau = 1e-13, symmetry = DensitySymmetry::Symmetric)` | `Status`: the Cartesian K of `density` into `k`, from the whole set of `ordered_pair_classes` of the same basis, in its order, screened at `tau` (`0` screens nothing), by the `a <= b` blocks, the rest mirrored as `symmetry` says (a contract on `density`, unchecked). Writes the classes' scratch. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, classes of a basis of another order, a subset or reordering of the classes, or `k.n()^2` past `INT32_MAX` |
+| `DensitySymmetry` | `Symmetric` or `Antisymmetric`: the density's, which `K` shares, and the mirror's sign. A general `D` is one call per part |
+| `exchange_block_factors(res, classes, density, tau = 1e-13)` | `Result<std::vector<double>>`: every block's density factor `F_ab` as `exchange` makes it for the same arguments (the same code path, with no `K`: no zeroing, no `kb`, no mirror), read back, bra class major, then ket class, then table order. A diagnostic: how many blocks the decay screens below `max\|D\|` decides whether it pays. Synchronizes `res.stream()` |
 | `OrderedPairClass`, `ordered_pair_classes`, ... | re-exported from [`pairs/`](pairs/README.md) |
 
 ## Tests
@@ -274,34 +303,38 @@ converged RHF density, which decays) against libcint's `vk` of the same
 density, through the golden data in `test/gtest/data/exchange/`, within
 `1e-12 · max|K|` at `tau = 0`, at the default `1e-13` and at `1e-14` (the table
 above; each run records its worst error and how far the screen moved `K`).
-The chain's block factors as the build makes them (`exchange_block_factors`,
-the full sweep): none above `max|D|`, and 48 of 3,600 below it at `1e-13`, 144
-at `1e-10`, 242 at `1e-6`, all pinned. `K` symmetric to `1e-12 · max|K|`; the
-symmetric sweep against the full one at `tau = 0` and the default, with
-the share of the full sweep's (bra, ket) record pairs its blocks cover recorded
-(0.58 in cc-pVDZ, 0.60 in STO-3G: the diagonal blocks weigh more in a small
-basis, and the share falls toward a half as the shells grow in number); on a
-non-symmetric density, the symmetric `K` equal to the full one's `a <= b`
-blocks and their transposes, not its own `a > b` blocks, which shows those are
-mirrored, never computed; a `tau` above every bound gives exactly zero, which shows the
-screen reaches the kernel and fires; the zeroing; and the refusals. The
-helpers are `exchange_helpers_gpu.cpp`'s test, each against a host loop: the
-block table and its factors (every branch of the rule), the shell starts and
-the mirror, the bound maximum, the AO centres and group geometry, and the
+The chain's block factors as the build makes them (`exchange_block_factors`):
+none above `max|D|`, and 24 of 1,860 below it at `1e-13`, 72 at `1e-10`, 121
+at `1e-6`, all pinned. `K` symmetric to `1e-12 · max|K|`. A **non-symmetric**
+density (the recorded one plus an antisymmetric part) as two sweeps, its
+symmetric part's (`Symmetric`) plus its antisymmetric part's
+(`Antisymmetric`), at `tau = 0` and the default: the symmetric part's `K`
+against libcint's `vk` (the symmetric part is the recorded density; libcint
+gave no `K` of a non-symmetric one), and the sum against `K[D]` assembled from
+computed blocks only, by `K[D]^T = K[D^T]` (the `a <= b` blocks of `D`'s sweep
+and the transposes of `D^T`'s), so a wrong mirror sign would miss by
+`2 |K[A]|`; the antisymmetric part's `K` antisymmetric to round-off. A `tau`
+above every bound gives exactly zero, which shows the screen reaches the
+kernel and fires; the zeroing; and the refusals, a subset or a reordering of
+the classes among them. The helpers are `exchange_helpers_gpu.cpp`'s test,
+each against a host loop: the block table and its factors (every branch of
+the rule), the shell starts and the mirror of either sign, the bound maximum,
+the AO centres and group geometry, and the
 decay fit on H₂O's and the chain's densities, whose bound is checked at every
 off-centre element with no tolerance (the chain's `Λ` 0.397 / bohr, `H_off`
 0.571, `max|D|` 0.328; FelizJueves's reference gives the same). The classes,
-their `group_start` among them, are `exchange_pairs_gpu.cpp`'s.
+their `group_start`, `dc` rows and block tables among them, are
+`exchange_pairs_gpu.cpp`'s.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `exchange.cppm` | Module interface: `exchange`, the pairs re-exported |
-| `exchange.cpp` | The build: the checks, the block counts, the scratch, the phases |
+| `exchange.cppm` | Module interface: `exchange`, `DensitySymmetry`, `exchange_block_factors`, the pairs re-exported |
+| `exchange.cpp` | The build: the checks, the per-call buffers, the phases |
 | `exchange_bridge.h` | The launchers, declared once for the module and the device TU |
-| `exchange_launch.cu` | The `kb` launcher; the rank-table and `dc` kernels; the compile-time checks of the table, the block and the shared-memory budget |
-| `helpers/` | `max\|D\|`, the `Dcd` gather, the block table and its factors, the shell starts and the mirror, and the decay's bound maximum, AO centres, group geometry and fit, a device library of their own |
+| `exchange_launch.cu` | The `kb` launcher; the rank-table kernel; the compile-time checks of the table, the block and the shared-memory budget |
+| `helpers/` | `max\|D\|`, the `Dcd` gather, the block table (which `pairs/` makes) and its factors, the shell starts and the signed mirror, and the decay's bound maximum, AO centres, group geometry and fit, a device library of their own |
 | `kernels/kb/` | The generated units and their template header `kb.h` |
 | `pairs/` | The ordered pair classes: their own module and view header library |
 | `CMakeLists.txt` | The device library, its launcher among the kernels, and the module |

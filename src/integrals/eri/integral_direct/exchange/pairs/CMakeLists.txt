@@ -11,10 +11,11 @@ free_breakfast_add_interface_library(
   free_breakfast::core::types_headers
 )
 
-# The order and the gather: each ordered class's records grouped by first
-# shell and sorted by mmd's dressed bound, then written straight from the mmd
-# class, once per basis. Device code in its own library, so its language and
-# -x hip never reach the module compiles. The bridge header names int32_t,
+# The order, the gather and the Dcd rows: each ordered class's records grouped
+# by first shell and sorted by mmd's dressed bound, then written straight from
+# the mmd class, and its bra rows from them, once per basis. Device code in its
+# own library, so its language and -x hip never reach the module compiles. The
+# bridge header names int32_t,
 # PrimitivePairClassView (mmd's headers), wwrStream_t and wwrError_t, hence
 # types_headers, mmd::headers and wwr::device PUBLIC; the launcher reads
 # kFourWarps and idivup (core::kernel_headers) and sorts with
@@ -33,12 +34,13 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::integrals::sort::device
 )
 
-# The ordered classes: their groups from the basis on the host, their records
-# ordered and gathered on the device from mmd's. StreamBuffers, DeviceStream,
-# DeviceResources, Result, BasisSet and PrimitivePairClass are in its
-# interface, so their modules are PUBLIC; diagnostics.h (FBF_TRY) and the
-# device library, whose bridge header the implementation unit includes in its
-# GMF, are its only.
+# The ordered classes: their groups and table sizes from the basis on the
+# host, their records ordered and gathered on the device from mmd's, and the
+# K build's block tables, made once per basis by the exchange helpers'
+# launcher. StreamBuffers, DeviceStream, DeviceResources, Result, BasisSet and
+# PrimitivePairClass are in its interface, so their modules are PUBLIC;
+# diagnostics.h (FBF_TRY), the device library and the helpers, whose bridge
+# headers the implementation unit includes in its GMF, are its only.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.exchange.pairs
@@ -58,4 +60,5 @@ free_breakfast_add_cxx_module_library(
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::eri::integral_direct::exchange::pairs::device
+  free_breakfast::integrals::eri::integral_direct::exchange::helpers
 )
