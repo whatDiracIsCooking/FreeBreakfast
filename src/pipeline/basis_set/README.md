@@ -1,6 +1,6 @@
 # Pipeline: BasisSet
 
-Read a BSE JSON basis and place it over the `Molecule`.
+Resolve a basis by name or path and place it over the `Molecule`.
 
 ## Module
 
@@ -14,16 +14,18 @@ without a second import.
 struct BasisSetStep {
   static constexpr std::string_view kName = "basis_set";
 
-  std::filesystem::path basis{};
+  std::string basis{};
 
-  Result<BasisSet> run(View<Molecule> in) const;  // read_basis, normalize, place
+  Result<BasisSet> run(View<Molecule> in) const;  // resolve_basis, normalize, place
 };
 ```
 
-A thin wrapper over `io.basis`'s `read_basis` and `basis`'s `place`, with the
-same error kinds:
+A thin wrapper over `io.basis`'s `resolve_basis` and `basis`'s `place`, with
+the same error kinds:
 
-- A missing or syntactically invalid file is `IO`.
+- A name that is neither a compiled-in set nor an openable file is `IO`, and
+  the message lists the compiled-in names.
+- A syntactically invalid file is `IO`.
 - A malformed basis is `InvalidConfig`.
 - So is a basis that lacks an element the molecule uses, because a basis that
   cannot cover the molecule is a configuration error, not a smaller basis.
@@ -37,12 +39,20 @@ which is what a production run's `BasisSet` is.
 nuclei, so the step takes no `DeviceResources&`. The pipeline runs it as free
 host work, beside the device chain.
 
-**The path arrives resolved**, as for `MoleculeStep`: the front end decides
-what a relative path in the TOML is relative to.
+**`basis` is a name or a path**, and `resolve_basis` prefers the name: a
+compiled-in set (`sto-3g`, see `data/basis/README.md`) is parsed out of the
+binary, anything else is read from disk. That is why the field is a
+`std::string` and not a `std::filesystem::path` — the two are told apart by
+`io.basis`, not by type.
+
+**A path arrives resolved**, as for `MoleculeStep`: the front end decides what
+a relative path in the TOML is relative to. A *name* must reach the step
+untouched, so `pipeline/config` asks `is_builtin_basis` before it anchors
+anything to the config file's directory.
 
 ## Not split into a stamp step, yet
 
-`read_basis` returns a geometry-free `BasisStamp`, and `place` lays it over one
+`resolve_basis` returns a geometry-free `BasisStamp`, and `place` lays it over one
 geometry. The split exists so one parse can serve many geometries. A pipeline
 that runs once per geometry, like geom-opt's inner flow, would want a
 `BasisStamp` step outside the loop and a placing step inside it. With one

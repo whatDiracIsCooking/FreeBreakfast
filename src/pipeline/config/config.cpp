@@ -7,6 +7,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.io.base;
+import free_breakfast.io.basis;
 import free_breakfast.io.toml;
 
 #include "diagnostics.h"
@@ -47,6 +48,14 @@ template <class T>
       return err_config("[{}] {} is not a number", step, key);
     }
     out = *value;
+  } else if constexpr (std::same_as<T, std::string>) {
+    // Verbatim: a string option is not necessarily a path, so anchoring it to
+    // base_dir is the caller's decision rather than this function's.
+    const auto value = node.value_exact<std::string>();
+    if (!value) {
+      return err_config("[{}] {} is not a string", step, key);
+    }
+    out = *value;
   } else {
     static_assert(std::same_as<T, std::filesystem::path>);
     const auto value = node.value_exact<std::string>();
@@ -83,6 +92,12 @@ template <class S>
   } else if constexpr (std::same_as<S, BasisSetStep>) {
     FBF_TRY(check_keys(table, kStep, {"basis"}));
     FBF_TRY(read_required_key(table, kStep, "basis", base_dir, step.basis));
+    // 'basis' is a compiled-in set's name or a path to a BSE JSON file, and
+    // only a path means anything relative to the config file. Joining a name
+    // to base_dir would turn 'sto-3g' into a file nobody wrote.
+    if (!is_builtin_basis(step.basis)) {
+      step.basis = (base_dir / step.basis).string();
+    }
   } else if constexpr (std::same_as<S, OrthogonalizerStep>) {
     FBF_TRY(check_keys(table, kStep, {"eigenvalue_floor"}));
     FBF_TRY(read_key(table, kStep, "eigenvalue_floor", base_dir, step.eigenvalue_floor));

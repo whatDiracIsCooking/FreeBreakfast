@@ -87,6 +87,7 @@ deps/
   tomlplusplus/
   nlohmann/           ...and one FetchContent header-only library
 src/core/             The starting set: one module over wwr and `import std`
+data/basis/           BSE JSON basis sets, compiled into the binary by the build
 test/gtest/           C++ tests, two binaries split by device requirement
 test/gpu_kernels/     `.cu` kernels the GPU tests launch, as their own device library
 test/pytest/          Python tests over the built binaries

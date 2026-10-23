@@ -153,6 +153,30 @@ plenty of free memory. It is set in the `asan`/`hip-asan` *test* presets (so
 because compose runs bare `ctest --test-dir` and never sees a test preset. Both
 copies are deliberate; keep them in step.
 
+## Basis sets are build input, not installed data
+
+`data/basis/*.json` is BSE JSON downloaded by `tools/bse_download.py` and
+**compiled into the binary**: `src/io/basis/CMakeLists.txt` wraps each file
+verbatim in a raw string literal in a module implementation unit generated from
+`builtin_basis.cpp.in`, and `resolve_basis("sto-3g")` parses it out of the
+binary. This tree installs nothing of its own, so the alternative — a runtime
+data directory — would mean inventing an install rule and a search path that
+can work on one machine and not the next.
+
+`resolve_basis` takes a **name or a path**, name first, so a basis the build
+does not carry is still read from disk with no rebuild. That escape hatch is
+what keeps baking from being a restriction, and it is why
+`BasisSetStep::basis` is a `std::string` rather than a path: only
+`pipeline/config` knows which of the two it has, via `is_builtin_basis`, and a
+name must not be joined to the config file's directory.
+
+**Only spherical sets can be carried.** `src/io/basis` rejects
+`gto_cartesian` at any l by design, and `parse_basis` walks the whole
+document, so one Cartesian shell anywhere makes the entire file unreadable —
+which is why `6-31g.json` stops at argon and `6-31G*` is absent entirely.
+Check the harmonic types before adding a set; `data/basis/README.md` has the
+detail and the regeneration commands.
+
 ## The two languages, and what verifies which
 
 | | C++ | Python |

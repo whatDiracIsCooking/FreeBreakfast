@@ -128,4 +128,30 @@ export namespace free_breakfast {
 [[nodiscard]] Result<BasisSet> parse_and_assign_aux_basis(std::string_view json_text,
                                                           const Molecule &molecule);
 
+/// @brief Whether @p spec names a basis set compiled into this binary.
+///
+/// Spelling is folded before the comparison -- lowercased, with @c -, @c _ and
+/// spaces dropped -- so @c STO-3G, @c sto-3g and @c sto3g are one name.
+///
+/// This is the question a front end has to ask BEFORE it resolves a relative
+/// path, since a name must not be joined to a config file's directory. @ref
+/// resolve_basis asks it again and needs no help: a caller that simply wants
+/// the basis should call that, not this.
+[[nodiscard]] bool is_builtin_basis(std::string_view spec);
+
+/// @brief The basis @p spec asks for, by compiled-in name or by file path.
+///
+/// A spec that names one of the compiled-in sets (@ref is_builtin_basis) is
+/// parsed from the bytes in the binary; anything else is read from disk as an
+/// ordinary BSE JSON file, which is how a basis this build does not carry is
+/// used without rebuilding. The two cannot be told apart by shape, so the name
+/// wins: a file called @c sto-3g in the working directory is reached as
+/// @c ./sto-3g.
+///
+/// Classification is @ref read_basis's throughout: a spec that is neither a
+/// known name nor an openable file is ErrorKind::IO, as an unreadable path is
+/// everywhere else in this layer, with the compiled-in names appended to the
+/// message since a misspelt name is the likelier mistake.
+[[nodiscard]] Result<BasisStamp> resolve_basis(std::string_view spec);
+
 } // namespace free_breakfast
