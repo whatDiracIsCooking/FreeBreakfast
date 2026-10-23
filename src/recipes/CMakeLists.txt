@@ -1,4 +1,5 @@
 add_subdirectory(blas)
+add_subdirectory(cg_unitary)
 add_subdirectory(complex_cast)
 add_subdirectory(davidson)
 add_subdirectory(diagonalize)
@@ -18,6 +19,7 @@ free_breakfast_add_cxx_module_library(
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::recipes::blas
+  free_breakfast::recipes::cg_unitary
   free_breakfast::recipes::complex_cast
   free_breakfast::recipes::davidson
   free_breakfast::recipes::diagonalize
