@@ -168,10 +168,23 @@ reads a field copied back explicitly.
 On H₂O/cc-pVDZ and the chain, every record's `record_bound` against
 FelizJueves's `ao.k.record_bounds` of the same ordered shell pair
 (`test/gtest/data/record_bound/`, written by
-`tools/emit_record_bound_golden.py`), matched by its two shells and ζ, within
-16 eps (FelizJueves's bar for the kernel), a host zero exactly zero: worst
-2.95 eps on H₂O/cc-pVDZ (1,024 records) and 2.97 eps on the chain (2,500
-records, 54 zeros) on the RX 9060 XT; and every record's P − (P − A) and
+`tools/emit_record_bound_golden.py`), matched by its two shells and ζ, a host
+zero exactly zero. Each record passes within 16 eps (FelizJueves's bar for
+the kernel) or within 10⁻¹³ absolutely. `mmd` forms P's numerator with an FMA
+and the golden with two roundings, so P can sit an ulp of the coordinates
+away. The bound magnifies that relatively: through the pair factor on distant
+pairs, and through the Hermite polynomials where two shells share an atom far
+from the origin. That happens only on bounds those factors have already
+shrunk. Measured on the RTX 3080 and the gfx1200 alike:
+
+- H₂O/cc-pVDZ (1,024 records): worst 37.6 eps, 1.8 × 10⁻¹⁵ absolute.
+- The chain (2,500 records, 54 zeros): worst 5,041 eps, which is 8 × 10⁻²³ on
+  a bound of 7 × 10⁻¹¹; worst 2.4 × 10⁻¹⁵ absolute.
+
+10⁻¹³ leaves room for molecules further from the origin. It sits below any
+screen threshold, and still fails an O(bound) kernel error on every bound above
+it. Before the FMA the worst was 2.95 and 2.97 eps (RX 9060 XT). Every record's
+P − (P − A) and
 P − (P − B) its two shells' centres, so the sort carried P, both
 displacements and both offsets with the bound.
 

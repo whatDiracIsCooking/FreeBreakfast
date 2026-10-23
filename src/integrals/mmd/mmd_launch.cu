@@ -59,23 +59,24 @@ __device__ RecordPrimitives record_primitives(const PrimitivePairSource &src, co
   return {lo, src.prim_begin[a] + (local / kb), src.prim_begin[b] + (local % kb)};
 }
 
-// One axis of P = (alpha A + beta B) / zeta, each product rounded on its own:
-// never contracted into an FMA, so P is the correctly rounded IEEE value of
-// this expression, bit for bit what a host computes. Two things lean on it.
-// The dressed bound's pair factor exp(zeta X_PA X_PB) turns one ulp of P into
-// hundreds of ulps of bound on a distant pair, and FelizJueves's goldens
-// (exchange_pairs_gpu.cpp) are formed this way. And with the products rounded
-// separately the sum commutes exactly, so a diagonal shell pair's record and
-// its mirror carry the same P. nvcc's _rn intrinsics are never fused; clang
-// (HIP) honours the pragma under its default -ffp-contract=fast-honor-pragmas.
+// One axis of P = (alpha A + beta B) / zeta, as one explicit FMA: the
+// larger-exponent term fused, the other rounded first. The terms are put in
+// exponent order before either is formed, so a record and its primitives
+// swapped run the same operations on the same operands: a diagonal shell
+// pair's record and its mirror carry the same P, bit for bit, which K's gather
+// relies on. Explicit rather than left to contraction, so both backends fuse
+// the same product. The FMA rounds once where the plain expression rounds
+// twice, so P differs from a host's unfused value by an ulp at times; the
+// dressed bound's pair factor exp(zeta X_PA X_PB) magnifies that on a distant
+// pair, which is what ExchangeRecordBound's tolerance is sized for.
 __device__ double product_centre(const double alpha, const double a, const double beta,
                                  const double b, const double zeta) {
-#if defined(__NVCC__)
-  return __ddiv_rn(__dadd_rn(__dmul_rn(alpha, a), __dmul_rn(beta, b)), zeta);
-#else
-#pragma clang fp contract(off)
-  return ((alpha * a) + (beta * b)) / zeta;
-#endif
+  const bool alpha_first = alpha <= beta;
+  const double e_lo = alpha_first ? alpha : beta;
+  const double c_lo = alpha_first ? a : b;
+  const double e_hi = alpha_first ? beta : alpha;
+  const double c_hi = alpha_first ? b : a;
+  return free_breakfast::math::fma(e_hi, c_hi, e_lo * c_lo) / zeta;
 }
 
 // key[r] = -zeta and perm[r] = r for host record r: the ascending sort of key
