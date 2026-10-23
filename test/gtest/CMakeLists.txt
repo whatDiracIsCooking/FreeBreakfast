@@ -40,6 +40,7 @@ add_executable(
   io_base_host.cpp
   io_basis_host.cpp
   io_json_host.cpp
+  io_molden_host.cpp
   io_npy_host.cpp
   io_sad_host.cpp
   io_toml_host.cpp

@@ -9,7 +9,7 @@ core/      The starting set: one module library over WarpWraps and `import std`
 atom/      The Element enum and Atom, shared by #include and import
 molecule/  Molecule, nuclear repulsion energy and gradient
 basis/     Gaussian basis description: shells, AO layouts, cart->sph, BasisStamp/place
-io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BSE basis and XYZ geometry readers, the compiled-in SAD stamps
+io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BSE basis and XYZ geometry readers, the Molden orbital writer, the compiled-in SAD stamps
 sad/       The SAD initial-guess density from spherically averaged atomic SCFs over a placed basis, in the spherical layout
 recipes/   Dense GPU linear algebra: square gemm and the sandwich products, the symmetric orthogonalizer S^{-1/2}, and DIIS extrapolation
 integrals/ Gaussian integrals on the GPU over FelizJueves-generated kernels: MMD primitive-pair records, S, T, V, the core Hamiltonian H = T + V and the Coulomb matrix J

@@ -48,4 +48,28 @@ TEST(Atom, BraceInitialisesPositionThenElement) {
   EXPECT_EQ(atom.element, fb::Element::N);
 }
 
+static_assert(fb::element_symbol(fb::Element::Og) == "Og");
+static_assert(fb::element_from_symbol("Og") == fb::Element::Og);
+
+TEST(Atom, EverySymbolRoundTrips) {
+  for (std::int32_t z = 1; z <= 118; ++z) {
+    const auto element = static_cast<fb::Element>(z);
+    EXPECT_EQ(fb::element_from_symbol(fb::element_symbol(element)), element) << z;
+  }
+  EXPECT_EQ(fb::element_symbol(fb::Element::Sentinel), "");
+}
+
+TEST(Atom, SymbolLookupIgnoresCase) {
+  EXPECT_EQ(fb::element_from_symbol("Cl"), fb::Element::Cl);
+  EXPECT_EQ(fb::element_from_symbol("CL"), fb::Element::Cl);
+  EXPECT_EQ(fb::element_from_symbol("cl"), fb::Element::Cl);
+  EXPECT_EQ(fb::element_from_symbol("h"), fb::Element::H);
+}
+
+TEST(Atom, UnknownSymbolIsSentinel) {
+  EXPECT_EQ(fb::element_from_symbol(""), fb::Element::Sentinel);
+  EXPECT_EQ(fb::element_from_symbol("Xx"), fb::Element::Sentinel);
+  EXPECT_EQ(fb::element_from_symbol("Abc"), fb::Element::Sentinel);
+}
+
 } // namespace

@@ -3,6 +3,7 @@ add_subdirectory(json)
 add_subdirectory(npy)
 add_subdirectory(toml)
 add_subdirectory(basis)
+add_subdirectory(molden)
 add_subdirectory(sad)
 add_subdirectory(xyz)
 
@@ -17,6 +18,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::base
   free_breakfast::io::basis
   free_breakfast::io::json
+  free_breakfast::io::molden
   free_breakfast::io::npy
   free_breakfast::io::sad
   free_breakfast::io::toml
