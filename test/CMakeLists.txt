@@ -20,7 +20,11 @@
 # from the root CMakeLists, outside the FREE_BREAKFAST_COMPILE_TIME_ONLY gate
 # that skips this whole directory, so cross-backend-check.sh still compiles it.
 #
-# NOTE: `ctest` here also runs the WarpWraps submodule's own suites -- it adds
-# them itself from deps/ (see deps/CMakeLists.txt). Scope a run to this
-# project's cases by name, or use the labels.
+# NOTE: `ctest` here runs THIS project's suites and nothing else. The WarpWraps
+# submodule is added with WWR_BUILD_TESTS and WWR_BUILD_EXAMPLES forced OFF
+# (deps/CMakeLists.txt), so it calls no enable_testing() and registers no
+# entries of its own -- its suites are wwr's CI's job, not this tree's. What a
+# run does get scoped by is the device: the GPU binary's entries carry the
+# `gpu` label, which the ci-cuda and ci-hip test presets exclude (gtest/
+# CMakeLists.txt says why).
 add_subdirectory(gtest)
