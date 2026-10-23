@@ -21,13 +21,14 @@ export import free_breakfast.pipeline.overlap;
 export import free_breakfast.pipeline.orthogonalizer;
 export import free_breakfast.pipeline.core_hamiltonian;
 export import free_breakfast.pipeline.guess;
+export import free_breakfast.pipeline.scf;
 
 export namespace free_breakfast {
 
 /// @brief The pipeline over every step a config file may name.
 using Calculation =
     Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
-             OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep>;
+             OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep>;
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.

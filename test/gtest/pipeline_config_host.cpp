@@ -115,6 +115,38 @@ TEST(PipelineConfig, TheGuessNeedsNoDeviceStepPastTheMolecule) {
   EXPECT_FALSE(calc->step<fb::PrimitivePairClassesStep>().has_value());
 }
 
+TEST(PipelineConfig, TheScfFillsInTheWholeChain) {
+  auto calc = fb::parse_config(with_inputs("[scf]\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_TRUE(calc->step<fb::OverlapStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::OrthogonalizerStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::GuessStep>().has_value());
+  const fb::ScfStep defaults{};
+  const fb::ScfStep &scf = *calc->step<fb::ScfStep>();
+  EXPECT_EQ(scf.max_iterations, defaults.max_iterations);
+  EXPECT_EQ(scf.energy_tolerance, defaults.energy_tolerance);
+  EXPECT_EQ(scf.commutator_tolerance, defaults.commutator_tolerance);
+  EXPECT_EQ(scf.diis_history, defaults.diis_history);
+}
+
+TEST(PipelineConfig, EveryScfOptionIsRead) {
+  auto calc = fb::parse_config(with_inputs("[scf]\nmax_iterations = 40\nenergy_tolerance = 1e-8\n"
+                                           "commutator_tolerance = 1e-5\ndiis_history = 6\n"),
+                               "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::ScfStep &scf = *calc->step<fb::ScfStep>();
+  EXPECT_EQ(scf.max_iterations, 40);
+  EXPECT_EQ(scf.energy_tolerance, 1e-8);
+  EXPECT_EQ(scf.commutator_tolerance, 1e-5);
+  EXPECT_EQ(scf.diis_history, 6);
+}
+
+TEST(PipelineConfig, AMisspeltScfOptionIsInvalidConfig) {
+  expect_config_error(with_inputs("[scf]\nmax_iter = 40\n"), "[scf] has no option 'max_iter'");
+  expect_config_error(with_inputs("[scf]\nmax_iterations = 1.5\n"), "[scf] max_iterations");
+}
+
 TEST(PipelineConfig, OnlyWhatWasAskedForIsPlanned) {
   auto calc = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n", "");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
@@ -137,7 +169,7 @@ TEST(PipelineConfig, AConfigNamingNoStepIsInvalidConfig) {
 }
 
 TEST(PipelineConfig, UnknownStepIsInvalidConfig) {
-  expect_config_error(with_inputs("[scf]\nmax_iterations = 3\n"), "unknown step [scf]");
+  expect_config_error(with_inputs("[mp2]\nfrozen_core = true\n"), "unknown step [mp2]");
 }
 
 TEST(PipelineConfig, AStepThatIsNotATableIsInvalidConfig) {

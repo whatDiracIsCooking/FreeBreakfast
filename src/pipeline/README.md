@@ -14,6 +14,7 @@ overlap/    free_breakfast.pipeline.overlap: OverlapStep -- the spherical AO ove
 orthogonalizer/  free_breakfast.pipeline.orthogonalizer: OrthogonalizerStep -- X = S^{-1/2}, the symmetric orthogonalizer
 core_hamiltonian/  free_breakfast.pipeline.core_hamiltonian: CoreHamiltonianStep -- the spherical core Hamiltonian H = T + V
 guess/      free_breakfast.pipeline.guess: GuessStep -- the initial-guess density (SAD), host work beside the device chain
+scf/        free_breakfast.pipeline.scf: ScfStep -- closed-shell RHF to self-consistency, its Fock build, DIIS and loop private to the step
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 ```
 

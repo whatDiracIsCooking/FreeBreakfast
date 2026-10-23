@@ -35,6 +35,11 @@ emit_sad_reference.py
                   Write test/gtest/data/sad/atomic_scf.json: PySCF's
                   spherically averaged atomic RHF densities, the reference
                   src/sad's guess is tested against. Needs PySCF.
+emit_scf_reference.py
+                  Write test/gtest/data/scf/rhf.json: PySCF's closed-shell
+                  RHF energies and orbital energies over this tree's
+                  data/basis files, the reference the Scf step is tested
+                  against. Needs PySCF.
 ```
 
 Re-run the three `emit_*_kernels.py`, `extract_integral_golden.py` and then
@@ -51,7 +56,7 @@ tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
 tools/bse_download.py --list
 ```
 
-`atomic_cd` and `emit_sad_reference.py` need PySCF and numpy, which sit in the
+`atomic_cd`, `emit_sad_reference.py` and `emit_scf_reference.py` need PySCF and numpy, which sit in the
 opt-in `tools` dependency group in `pyproject.toml` rather than in `dev`, so the
 image and the push gate do not carry them. Inside the devcontainer, add
 `UV_PROJECT_ENVIRONMENT=$PWD/.venv` so the group goes into a worktree-local
@@ -59,6 +64,7 @@ venv rather than the image's `/opt/venv`:
 
 ```sh
 uv run --group tools tools/emit_sad_reference.py
+uv run --group tools tools/emit_scf_reference.py
 uv run --group tools tools/emit_record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \
