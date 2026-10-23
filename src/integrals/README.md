@@ -47,7 +47,7 @@ CartesianMatrixAO D                   an AO density
          --coulomb-->                CartesianMatrixAO J           (ket-major: dq, the ket sort and e_hermite against every bra per class, then jab per class)
 PrimitivePairClass[] --ordered_pair_classes--> OrderedPairClass[]  (exchange.pairs, both orientations, grouped by first shell, each group sorted by mmd's dressed bound and gathered on the device, once per basis)
 CartesianMatrixAO D --exchange-->    CartesianMatrixAO K           (the decay and Dcd per class, then kb per (bra class, ket class), one warp per a <= b block, and the mirror)
-         --MatrixAOPair::cartesian_to_spherical-->  spherical      (linalg.matrix_ao)
+         --MatrixAOPair::cartesian_to_spherical-->  spherical      (recipes.matrix_ao)
 ```
 
 **Generated kernels are committed, not built.** `tools/emit_one_electron_kernels.py`,

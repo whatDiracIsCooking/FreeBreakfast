@@ -10,7 +10,7 @@ import free_breakfast.core.resources;
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
 import free_breakfast.integrals.one_electron.launch;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 
 export namespace free_breakfast {
 

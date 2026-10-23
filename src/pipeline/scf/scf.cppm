@@ -12,7 +12,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
-export import free_breakfast.linalg.matrix_ao;
+export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.orthogonalizer;
 export import free_breakfast.pipeline.core_hamiltonian;
 export import free_breakfast.pipeline.guess;

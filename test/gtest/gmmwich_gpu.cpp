@@ -1,4 +1,4 @@
-// GPU cases for linalg/blas's :gmmwich: OpX(X)^T diag(d) OpX(X) against a
+// GPU cases for recipes/blas's :gmmwich: OpX(X)^T diag(d) OpX(X) against a
 // host reference that forms the dense diagonal, square and rectangular, for
 // both OpX, with a non-symmetric X and a d of distinct mixed-sign entries (so
 // a diagonal on the wrong side of X, or a transpose in the wrong place, cannot
@@ -11,7 +11,7 @@
 
 import std;
 import free_breakfast.core;
-import free_breakfast.linalg.blas;
+import free_breakfast.recipes.blas;
 
 namespace {
 

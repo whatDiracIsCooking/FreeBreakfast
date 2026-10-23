@@ -1,4 +1,4 @@
-// GPU cases for linalg.diis: the extrapolation against a host solve of the
+// GPU cases for recipes.diis: the extrapolation against a host solve of the
 // same bordered system, through the ring's wrap-around; the start-up,
 // singular and reset paths; and DIIS on a linear fixed point, where it is
 // GMRES and must reach the solution in at most len + 1 steps.
@@ -10,7 +10,7 @@
 import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
-import free_breakfast.linalg;
+import free_breakfast.recipes;
 
 namespace {
 

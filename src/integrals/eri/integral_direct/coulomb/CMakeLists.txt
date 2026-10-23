@@ -13,7 +13,7 @@ add_subdirectory(j_coulomb)
 # The module: the build, which runs the three steps and the ket sort ket-major.
 # DeviceResources, CoulombPairClass (pair_class, re-exported) and
 # CartesianMatrixAO are in its signature, so core::resources, pair_class and
-# linalg::matrix_ao are PUBLIC. The per-class launch and the pre-launch checks
+# recipes::matrix_ao are PUBLIC. The per-class launch and the pre-launch checks
 # are the one-electron builds' own (one_electron::launch), the three steps are
 # modules of their own, and the ket sort's device library is PRIVATE: the
 # implementation unit includes its bridge header in its GMF and calls the
@@ -31,7 +31,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::resources
   free_breakfast::integrals::eri::integral_direct::coulomb::pair_class
-  free_breakfast::linalg::matrix_ao
+  free_breakfast::recipes::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::core::wwr

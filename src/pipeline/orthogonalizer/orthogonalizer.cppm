@@ -2,7 +2,7 @@
 /// @brief The `Orthogonalizer` step: the symmetric (Loewdin) orthogonalizer
 ///        X = S^{-1/2} of the spherical overlap.
 ///
-/// A thin wrapper over linalg.orthogonalize. Device-shaped; see README.md for
+/// A thin wrapper over recipes.orthogonalize. Device-shaped; see README.md for
 /// the one device contract it does not keep.
 
 export module free_breakfast.pipeline.orthogonalizer;
@@ -12,9 +12,9 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
-import free_breakfast.linalg.orthogonalize;
+import free_breakfast.recipes.orthogonalize;
 import free_breakfast.pipeline.step;
-export import free_breakfast.linalg.matrix_ao;
+export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.overlap;
 
 #include "diagnostics.h"

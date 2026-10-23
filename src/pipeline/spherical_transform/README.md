@@ -7,7 +7,7 @@ AO-matrix step to share.
 
 `free_breakfast.pipeline.spherical_transform`, target
 `free_breakfast::pipeline::spherical_transform`. It re-exports
-`free_breakfast.linalg.matrix_ao`, since every consumer of the product builds a
+`free_breakfast.recipes.matrix_ao`, since every consumer of the product builds a
 `MatrixAOPair` over it.
 
 ## The step
@@ -24,7 +24,7 @@ struct SphericalTransformStep {
 };
 ```
 
-A thin wrapper over `linalg.matrix_ao`'s `upload_spherical_transform_matrix`:
+A thin wrapper over `recipes.matrix_ao`'s `upload_spherical_transform_matrix`:
 U is `nao_cart x nao_sphe`, column-major, and `nullptr` when no shell is above p
 (or the basis is empty), exactly as there. A failed upload is `GpuRuntime`.
 

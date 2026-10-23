@@ -10,7 +10,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
-import free_breakfast.linalg.orthogonalize;
+import free_breakfast.recipes.orthogonalize;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.orthogonalizer;
 

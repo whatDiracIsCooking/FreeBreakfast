@@ -9,7 +9,7 @@ product it writes, and where it runs.
 `free_breakfast.pipeline.step`, target `free_breakfast::pipeline::step`.
 It imports `core.types`, `core.error_handling` (`Result`) and `core.resources`
 (`DeviceResources`, `NodeResources`, and through them `tf::Subflow`), and
-nothing from integrals or linalg: a leaf, so a new method never recompiles it.
+nothing from integrals or recipes: a leaf, so a new method never recompiles it.
 Templates only, so there is no implementation unit.
 
 | Export | What |

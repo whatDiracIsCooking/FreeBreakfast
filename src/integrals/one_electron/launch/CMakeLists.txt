@@ -19,5 +19,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   free_breakfast::integrals::mmd
   free_breakfast::molecule
-  free_breakfast::linalg::matrix_ao
+  free_breakfast::recipes::matrix_ao
 )

@@ -5,7 +5,7 @@ Build the spherical AO overlap matrix S.
 ## Module
 
 `free_breakfast.pipeline.overlap`, target `free_breakfast::pipeline::overlap`.
-It re-exports `free_breakfast.linalg.matrix_ao` and the two steps whose products
+It re-exports `free_breakfast.recipes.matrix_ao` and the two steps whose products
 it reads, so an importer can name everything in `run`'s signature without a
 second import.
 
@@ -24,7 +24,7 @@ struct OverlapStep {
 };
 ```
 
-A thin wrapper over `integrals.one_electron`'s `overlap` and `linalg.matrix_ao`'s
+A thin wrapper over `integrals.one_electron`'s `overlap` and `recipes.matrix_ao`'s
 `cartesian_to_spherical`. Its errors are theirs: a failed launch or BLAS call is
 `GpuRuntime`, and a class above d is `InvalidConfig`.
 

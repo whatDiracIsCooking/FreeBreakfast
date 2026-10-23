@@ -1,7 +1,7 @@
 /// @file
 /// @brief Pulay DIIS on the host, over flat vectors.
 
-// An internal partition of free_breakfast.sad. src/linalg/diis is
+// An internal partition of free_breakfast.sad. src/recipes/diis is
 // the device-resident one; this one holds a few hundred doubles per iterate.
 module free_breakfast.sad:diis;
 

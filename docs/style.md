@@ -197,7 +197,7 @@ on who needs it:
 | --- | --- | --- |
 | One implementation unit (`.cpp`) | An unexported declaration at namespace scope in that file | `step_table` in `src/pipeline/config/config.cpp` |
 | Several implementation units of one module | An **internal partition**, `module M:name;`, imported by those units | `src/io/npy/npy_format.cppm` (`kMagic`, used by both the reader and the writer) |
-| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | `src/linalg/blas/shared.cppm` (`raw_blas_handle` and the op concepts, used by every BLAS partition's templates) |
+| An exported `inline` function or template — the job `detail` used to do | Unexported in the interface partition that uses it, or, when several partitions share it, a **private interface partition** `export module M:name;` that exports nothing | `src/recipes/blas/shared.cppm` (`raw_blas_handle` and the op concepts, used by every BLAS partition's templates) |
 
 All partitions, of either kind, go under `PARTITIONS` in
 `free_breakfast_add_cxx_module_library`.
@@ -263,7 +263,7 @@ exceptions, which get their own buffers:
 - **State that lives across calls.** The SCF's density, Fock matrix and DIIS
   history are read from one iteration to the next, with other routines called
   in between. They are owned by the step, and `syevd`'s work, which is dead
-  once `syevd` returns, is the workspace's (`src/linalg/diagonalize/`).
+  once `syevd` returns, is the workspace's (`src/recipes/diagonalize/`).
 - **Outputs and products.** What a routine returns or a step publishes outlives
   the call by definition.
 - **Scratch held across a call to another workspace user.** Nothing nests, so
@@ -271,7 +271,7 @@ exceptions, which get their own buffers:
   workspace, that scratch is its own. Say so in a comment there.
   `orthogonalize` holds U and the eigenvalues across `diagonalize` this way,
   and takes M from the workspace once `diagonalize` has returned
-  (`src/linalg/orthogonalize/orthogonalize.cpp`).
+  (`src/recipes/orthogonalize/orthogonalize.cpp`).
 
 ## Shared memory
 
@@ -279,7 +279,7 @@ exceptions, which get their own buffers:
 whose extent is a `constexpr` or a template parameter, never
 `extern __shared__` with the size passed at launch. When the size depends on the
 problem, bound it and size for the bound, as `diis_solve` in
-`src/linalg/diis/diis_solve.cu` does for the largest DIIS history.
+`src/recipes/diis/diis_solve.cu` does for the largest DIIS history.
 
 The size is then something the compiler knows. The resource report and the
 occupancy calculation include it, an oversized array fails the build instead of

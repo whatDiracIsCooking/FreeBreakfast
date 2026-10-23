@@ -7,7 +7,7 @@ overlap.
 
 `free_breakfast.pipeline.orthogonalizer`, target
 `free_breakfast::pipeline::orthogonalizer`. It re-exports
-`free_breakfast.linalg.matrix_ao` and `free_breakfast.pipeline.overlap`, so an
+`free_breakfast.recipes.matrix_ao` and `free_breakfast.pipeline.overlap`, so an
 importer can name everything in `run`'s signature without a second import.
 
 ## The step
@@ -26,7 +26,7 @@ struct OrthogonalizerStep {
 };
 ```
 
-A thin wrapper over `linalg.orthogonalize`'s `orthogonalize<double>`, with the
+A thin wrapper over `recipes.orthogonalize`'s `orthogonalize<double>`, with the
 same errors: a non-converged eigensolve is `Numerical`, and a failed runtime,
 solver or BLAS call is `GpuRuntime`. An overlap eigenvalue at or below
 `eigenvalue_floor` drops its mode (it contributes 0 to X). That is not an error.

@@ -1,4 +1,4 @@
-// GPU cases for linalg.diagonalize: A = U diag(w) U^T against operands whose
+// GPU cases for recipes.diagonalize: A = U diag(w) U^T against operands whose
 // answer is known -- a diagonal A (w is its sorted diagonal), and a dense
 // symmetric A (U orthonormal, U diag(w) U^T == A, w ascending).
 
@@ -9,7 +9,7 @@
 import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
-import free_breakfast.linalg;
+import free_breakfast.recipes;
 
 namespace {
 

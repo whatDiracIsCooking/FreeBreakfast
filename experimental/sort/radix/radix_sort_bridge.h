@@ -5,7 +5,7 @@
 /// Included by radix_sort.cpp in its GLOBAL MODULE FRAGMENT, and by
 /// radix_sort.cu directly: a declaration in a module's purview would get module
 /// linkage and never bind to the definition in the .cu (see
-/// src/linalg/orthogonalize/inverse_sqrt_bridge.h). Everything here is public
+/// src/recipes/orthogonalize/inverse_sqrt_bridge.h). Everything here is public
 /// to both, so it is only what the host side needs to size the scratch.
 
 #pragma once

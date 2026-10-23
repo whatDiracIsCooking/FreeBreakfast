@@ -1,4 +1,4 @@
-// GPU cases for linalg.complex_cast: split_planes and merge_planes on a
+// GPU cases for recipes.complex_cast: split_planes and merge_planes on a
 // padded block in both precisions, checked bit for bit (both only move
 // components), with the padding rows of whichever side is written left as
 // sentinels, plus the round trip and an empty block.
@@ -10,7 +10,7 @@
 import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
-import free_breakfast.linalg;
+import free_breakfast.recipes;
 
 namespace {
 

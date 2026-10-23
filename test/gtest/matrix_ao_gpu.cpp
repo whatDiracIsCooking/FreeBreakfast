@@ -1,4 +1,4 @@
-// GPU cases for linalg.matrix_ao: the layout orders, the uploaded U, cartesian_to_spherical
+// GPU cases for recipes.matrix_ao: the layout orders, the uploaded U, cartesian_to_spherical
 // and spherical_to_cartesian against the host U^T M U and U M U^T built from
 // spherical_transform_matrix, the trace pairing the two share, the identity copy
 // below d, and the pair's checks on U and on the device.
@@ -11,7 +11,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
-import free_breakfast.linalg;
+import free_breakfast.recipes;
 
 namespace {
 

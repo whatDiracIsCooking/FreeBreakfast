@@ -14,7 +14,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.io.json;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals;
 
 namespace {

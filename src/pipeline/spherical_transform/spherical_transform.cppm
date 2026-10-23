@@ -2,7 +2,7 @@
 /// @brief The `SphericalTransform` step: the basis's Cartesian-to-spherical
 ///        transform U, uploaded once for every AO-matrix step to share.
 ///
-/// A thin wrapper over linalg.matrix_ao's upload_spherical_transform_matrix.
+/// A thin wrapper over recipes.matrix_ao's upload_spherical_transform_matrix.
 /// Device-shaped; see README.md for the one device contract it does not keep.
 
 export module free_breakfast.pipeline.spherical_transform;
@@ -13,7 +13,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.pipeline.step;
-export import free_breakfast.linalg.matrix_ao;
+export import free_breakfast.recipes.matrix_ao;
 
 #include "diagnostics.h"
 

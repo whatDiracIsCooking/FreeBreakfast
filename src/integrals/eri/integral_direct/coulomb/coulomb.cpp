@@ -21,7 +21,7 @@ import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
 import free_breakfast.integrals.eri.integral_direct.coulomb.dq;
 import free_breakfast.integrals.eri.integral_direct.coulomb.e_hermite;
 import free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 
 #include "diagnostics.h"
 

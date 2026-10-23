@@ -33,7 +33,7 @@ free_breakfast_add_gpu_device_library(
 )
 
 # The module. CoulombPairClass, CartesianMatrixAO and wwrError_t are in its
-# signature, so pair_class, linalg::matrix_ao and core::wwr are PUBLIC. The
+# signature, so pair_class, recipes::matrix_ao and core::wwr are PUBLIC. The
 # device library is PRIVATE: the implementation unit includes the bridge header
 # in its GMF and calls the launcher, and a static library's private link
 # dependencies still reach the final link.
@@ -48,7 +48,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::wwr
   free_breakfast::integrals::eri::integral_direct::coulomb::pair_class
-  free_breakfast::linalg::matrix_ao
+  free_breakfast::recipes::matrix_ao
   LINK_PRIVATE
   free_breakfast::integrals::eri::integral_direct::coulomb::dq::device
 )

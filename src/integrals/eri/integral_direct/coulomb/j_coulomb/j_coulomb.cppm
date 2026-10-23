@@ -8,7 +8,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.wwr;
 import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
-import free_breakfast.linalg.matrix_ao;
+import free_breakfast.recipes.matrix_ao;
 
 export namespace free_breakfast {
 
