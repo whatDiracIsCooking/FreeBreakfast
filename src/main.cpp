@@ -56,6 +56,10 @@ void print_products(const fb::Calculation &calc) {
     std::println("initial guess:     {0} x {0} (spherical, SAD)",
                  calc.get<fb::BasisSet>()->nao_sphe());
   }
+  if (const auto &scf = calc.get<fb::Scf>()) {
+    std::println("SCF iterations:    {}", scf->iterations);
+    std::println("RHF energy:        {:.10f} Ha", scf->energy);
+  }
 }
 
 fb::Status run(std::span<char *const> args) {

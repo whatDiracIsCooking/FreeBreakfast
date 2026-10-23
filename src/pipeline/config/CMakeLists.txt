@@ -22,6 +22,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::orthogonalizer
   free_breakfast::pipeline::core_hamiltonian
   free_breakfast::pipeline::guess
+  free_breakfast::pipeline::scf
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::io::base

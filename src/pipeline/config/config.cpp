@@ -109,6 +109,14 @@ template <class S>
       return err_config("[{}] has no type '{}' (known: 'sad')", kStep, type);
     }
     step.type = GuessType::Sad;
+  } else if constexpr (std::same_as<S, ScfStep>) {
+    FBF_TRY(
+        check_keys(table, kStep,
+                   {"max_iterations", "energy_tolerance", "commutator_tolerance", "diis_history"}));
+    FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, step.max_iterations));
+    FBF_TRY(read_key(table, kStep, "energy_tolerance", base_dir, step.energy_tolerance));
+    FBF_TRY(read_key(table, kStep, "commutator_tolerance", base_dir, step.commutator_tolerance));
+    FBF_TRY(read_key(table, kStep, "diis_history", base_dir, step.diis_history));
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.
