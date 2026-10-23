@@ -128,11 +128,13 @@ TEST(PipelineConfig, TheScfFillsInTheWholeChain) {
   EXPECT_EQ(scf.energy_tolerance, defaults.energy_tolerance);
   EXPECT_EQ(scf.commutator_tolerance, defaults.commutator_tolerance);
   EXPECT_EQ(scf.diis_history, defaults.diis_history);
+  EXPECT_EQ(scf.fock_rebuild_interval, defaults.fock_rebuild_interval);
 }
 
 TEST(PipelineConfig, EveryScfOptionIsRead) {
   auto calc = fb::parse_config(with_inputs("[scf]\nmax_iterations = 40\nenergy_tolerance = 1e-8\n"
-                                           "commutator_tolerance = 1e-5\ndiis_history = 6\n"),
+                                           "commutator_tolerance = 1e-5\ndiis_history = 6\n"
+                                           "fock_rebuild_interval = 1\n"),
                                "");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::ScfStep &scf = *calc->step<fb::ScfStep>();
@@ -140,6 +142,7 @@ TEST(PipelineConfig, EveryScfOptionIsRead) {
   EXPECT_EQ(scf.energy_tolerance, 1e-8);
   EXPECT_EQ(scf.commutator_tolerance, 1e-5);
   EXPECT_EQ(scf.diis_history, 6);
+  EXPECT_EQ(scf.fock_rebuild_interval, 1);
 }
 
 TEST(PipelineConfig, AMisspeltScfOptionIsInvalidConfig) {

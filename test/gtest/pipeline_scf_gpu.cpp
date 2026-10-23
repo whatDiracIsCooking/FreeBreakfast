@@ -207,6 +207,30 @@ INSTANTIATE_TEST_SUITE_P(Rhf, PipelineScf,
                          ::testing::Values("h2o_sto3g", "h2o_ccpvdz", "nh4_ccpvdz"),
                          [](const auto &info) { return std::string(info.param); });
 
+// Incremental Fock builds (the default) against a full build every iteration:
+// G is linear in D, so the two differ only by J's and K's screening of the
+// density differences, and the converged result is a full build's either way.
+TEST(PipelineScfIncremental, MatchesFullBuilds) {
+  FBF_REQUIRE_GPU();
+  const fb::json &expected = reference_case("h2o_ccpvdz");
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
+                            expected.at("charge").get<std::int32_t>());
+  ASSERT_TRUE(inputs.has_value());
+  ASSERT_GT(fb::ScfStep{}.fock_rebuild_interval, 1);
+
+  auto incremental = fb::ScfStep{}.run(inputs->view(), res);
+  auto full = fb::ScfStep{.fock_rebuild_interval = 1}.run(inputs->view(), res);
+  ASSERT_TRUE(incremental.has_value()) << incremental.error().message;
+  ASSERT_TRUE(full.has_value()) << full.error().message;
+  EXPECT_NEAR(incremental->energy, full->energy, 1e-9);
+  ASSERT_EQ(incremental->mo_energies.size(), full->mo_energies.size());
+  for (std::size_t i = 0; i < full->mo_energies.size(); ++i) {
+    EXPECT_NEAR(incremental->mo_energies[i], full->mo_energies[i], 1e-7) << i;
+  }
+}
+
 TEST(PipelineScfErrors, AnOpenShellIsUnsupported) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -237,7 +261,8 @@ TEST(PipelineScfErrors, AnOptionOutOfRangeIsInvalidConfig) {
   ASSERT_TRUE(inputs.has_value());
   for (const fb::ScfStep step :
        {fb::ScfStep{.max_iterations = 0}, fb::ScfStep{.diis_history = 0},
-        fb::ScfStep{.energy_tolerance = -1.0}, fb::ScfStep{.commutator_tolerance = std::nan("")}}) {
+        fb::ScfStep{.fock_rebuild_interval = 0}, fb::ScfStep{.energy_tolerance = -1.0},
+        fb::ScfStep{.commutator_tolerance = std::nan("")}}) {
     auto scf = step.run(inputs->view(), res);
     ASSERT_FALSE(scf.has_value());
     EXPECT_EQ(scf.error().kind, fb::ErrorKind::InvalidConfig) << scf.error().message;
