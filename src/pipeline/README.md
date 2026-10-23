@@ -13,9 +13,9 @@ primitive_pair_classes/  free_breakfast.pipeline.primitive_pair_classes: Primiti
 overlap/    free_breakfast.pipeline.overlap: OverlapStep -- the spherical AO overlap S
 orthogonalizer/  free_breakfast.pipeline.orthogonalizer: OrthogonalizerStep -- X = S^{-1/2}, the symmetric orthogonalizer
 core_hamiltonian/  free_breakfast.pipeline.core_hamiltonian: CoreHamiltonianStep -- the spherical core Hamiltonian H = T + V
+guess/      free_breakfast.pipeline.guess: GuessStep -- the initial-guess density (SAD), host work beside the device chain
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 ```
 
 `src/main.cpp` reads a config into a `Calculation`, runs it, and prints the
-products. SAD, the first step meant to overlap the device chain from the host,
-comes next.
+products.

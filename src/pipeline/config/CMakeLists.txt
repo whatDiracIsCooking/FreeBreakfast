@@ -21,6 +21,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::overlap
   free_breakfast::pipeline::orthogonalizer
   free_breakfast::pipeline::core_hamiltonian
+  free_breakfast::pipeline::guess
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::io::base

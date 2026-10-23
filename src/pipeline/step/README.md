@@ -91,7 +91,7 @@ a step not handed one cannot reach it.
 | `run(View, ...)` | `RunShape` | Scheduling | Example |
 |---|---|---|---|
 | nothing extra | `Host` | free (host) | `BasisSet` (`place`) |
-| `tf::Subflow&` | `HostSubflow` | free (host), parallel inside | SAD (a subflow per stamp) |
+| `tf::Subflow&` | `HostSubflow` | free (host), parallel inside | `GuessStep` (SAD, a subflow per stamp) |
 | `DeviceResources&` | `Device` | on that device's chain | `PrimitivePairClasses`, `Overlap`, `Orthogonalizer` |
 | `DeviceResources&, tf::Subflow&` | `DeviceSubflow` | on that device's chain, host-parallel inside | none yet: `PrimitivePairClasses`, were its records written in parallel |
 | `NodeResources&` | `Node` | holds every device's chain | a multi-GPU J build |

@@ -51,6 +51,11 @@ void print_products(const fb::Calculation &calc) {
   if (const auto &core_hamiltonian = calc.get<fb::CoreHamiltonian>()) {
     std::println("core Hamiltonian:  {0} x {0} (spherical)", core_hamiltonian->h.n());
   }
+  // The guess read the basis, so a guess means a basis to size it by.
+  if (calc.get<fb::Guess>()) {
+    std::println("initial guess:     {0} x {0} (spherical, SAD)",
+                 calc.get<fb::BasisSet>()->nao_sphe());
+  }
 }
 
 fb::Status run(std::span<char *const> args) {
