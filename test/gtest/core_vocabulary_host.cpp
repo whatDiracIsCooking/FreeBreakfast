@@ -227,17 +227,19 @@ static_assert(std::is_same_v<std::remove_const_t<decltype(fb::kWarpSize)>, std::
 static_assert(fb::kWarpSize == 32 || fb::kWarpSize == 64);
 static_assert(std::is_same_v<std::remove_const_t<decltype(fb::kFourWarps)>, std::uint32_t>);
 static_assert(fb::kFourWarps == 4 * fb::kWarpSize && fb::NumWarps<4>);
+static_assert(std::is_same_v<std::remove_const_t<decltype(fb::kMaxThreads)>, std::uint32_t>);
+static_assert(fb::kMaxThreads == 1024);
 
 // NumWarps constrains a value: >= 1, a power of two, and a block of at most
-// 1024 threads -- checked without overflowing for a 64-bit count.
-static_assert(fb::NumWarps<1> && fb::NumWarps<2U> && fb::NumWarps<1024 / fb::kWarpSize>);
+// kMaxThreads threads -- checked without overflowing for a 64-bit count.
+static_assert(fb::NumWarps<1> && fb::NumWarps<2U> && fb::NumWarps<fb::kMaxThreads / fb::kWarpSize>);
 static_assert(!fb::NumWarps<0> && !fb::NumWarps<-1> && !fb::NumWarps<3>);
-static_assert(!fb::NumWarps<2048 / fb::kWarpSize>);
+static_assert(!fb::NumWarps<2 * fb::kMaxThreads / fb::kWarpSize>);
 static_assert(!fb::NumWarps<std::uint64_t{1} << 32>);
 static_assert(!fb::NumWarps<1.0>);
 
 TEST(CoreKernel, WarpSizeDividesTheBlockCap) {
-  EXPECT_EQ(1024 % fb::kWarpSize, 0U);
+  EXPECT_EQ(fb::kMaxThreads % fb::kWarpSize, 0U);
 }
 
 // ---------------------------------------------------------------------------

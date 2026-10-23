@@ -55,7 +55,7 @@ static_assert(DeviceFunctor<AddOp> && DeviceFunctor<MaxNanOp> && DeviceFunctor<F
 static_assert(DeviceFunctor<device::IdentityFunctor<double>>);
 static_assert(!DeviceFunctor<int32_t>);
 
-constexpr uint32_t kMaxWarps = 1024 / kWarpSize;
+constexpr uint32_t kMaxWarps = kMaxThreads / kWarpSize;
 
 template <uint32_t kNumWarps, typename T, typename Op>
 __global__ void block_reduce_kernel(const T *in, const uint32_t nactive, T *out, const Op op) {

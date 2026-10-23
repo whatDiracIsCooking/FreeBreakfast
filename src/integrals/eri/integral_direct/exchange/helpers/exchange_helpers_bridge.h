@@ -5,7 +5,7 @@
 /// the module that calls them and the device TU that defines them.
 ///
 /// Included by the exchange module's implementation unit in its GLOBAL MODULE
-/// FRAGMENT, and by exchange_helpers.cu directly, for the reason
+/// FRAGMENT, and by each of this directory's .cu files directly, for the reason
 /// overlap_bridge.h gives: a declaration in a module's purview gets module
 /// linkage and can never bind to a definition compiled in a plain TU.
 /// wwrStream_t and wwrError_t come from a different wwr header in each pass, as

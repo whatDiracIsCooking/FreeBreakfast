@@ -1,7 +1,7 @@
 # Kernel
 
 Building blocks for writing kernels: the launch-shape constants (`kWarpSize`,
-`kFourWarps`, `NumWarps`), the `DeviceFunctor` concept, and warp- and block-wide reductions.
+`kFourWarps`, `kMaxThreads`, `NumWarps`), the `DeviceFunctor` concept, and warp- and block-wide reductions.
 The integer rounding a launch is sized with (`math::idivup`,
 `math::align_up`) is in [`primitives/`](../primitives/README.md).
 
@@ -9,7 +9,8 @@ The integer rounding a launch is sized with (`math::idivup`,
 
 `free_breakfast.core.kernel` — target `free_breakfast::core::kernel`, also
 re-exported by `free_breakfast.core`. It carries only what host code needs to
-size a launch: `kWarpSize`, `kFourWarps` and `NumWarps`, in `free_breakfast`.
+size a launch: `kWarpSize`, `kFourWarps`, `kMaxThreads` and `NumWarps`, in
+`free_breakfast`.
 
 Everything else here is device code with no module face, `#include`d into a
 `.cu` that links `free_breakfast::core::kernel_headers`. Its names are in
@@ -21,7 +22,8 @@ Everything else here is device code with no module face, `#include`d into a
 |------|------------|
 | `kWarpSize` | `uint32_t`, the build's warp/wavefront size: `WWR_WARP_SIZE`, which wwr sets at configure time (32; 64 for a CDNA build) |
 | `kFourWarps` | `uint32_t`, `4 * kWarpSize`: the block size of a one-thread-per-item launch (128; 256 for a CDNA build) |
-| `NumWarps<N>` | Concept over a *value*: `N` is integral, >= 1, a power of two, and `N * kWarpSize <= 1024`. Use it as `template <auto W> requires NumWarps<W>` |
+| `kMaxThreads` | `uint32_t`, 1024: the most threads a block may hold, on every target. The block size of a one-block launch that strides a whole array |
+| `NumWarps<N>` | Concept over a *value*: `N` is integral, >= 1, a power of two, and `N * kWarpSize <= kMaxThreads`. Use it as `template <auto W> requires NumWarps<W>` |
 
 ## Functors (`device_functor.h`)
 
@@ -88,7 +90,7 @@ or vendor header. A `.cu` should include `block_reduce.cuh` (or
 
 ## Tests
 
-- Host: `test/gtest/core_vocabulary_host.cpp` pins `kWarpSize`, `kFourWarps` and the bounds
+- Host: `test/gtest/core_vocabulary_host.cpp` pins `kWarpSize`, `kFourWarps`, `kMaxThreads` and the bounds
   `NumWarps` accepts and rejects.
 - Device: `test/gtest/reduce_gpu.cpp` runs `block_reduce` (and so
   `warp_reduce`) through `test/gpu_kernels/reduce_kernels.cu`, over `double`
@@ -101,7 +103,7 @@ or vendor header. A `.cu` should include `block_reduce.cuh` (or
 
 | File | Role |
 |------|------|
-| `block_params.h` | `kWarpSize`, `kFourWarps`, `NumWarps`, for host and device |
+| `block_params.h` | `kWarpSize`, `kFourWarps`, `kMaxThreads`, `NumWarps`, for host and device |
 | `kernel.cppm` | Host module: GMF-includes `block_params.h` and re-exports its names. Must list everything the header defines |
 | `device_functor.h` | `DeviceFunctor`; `IdentityFunctor` in a device pass |
 | `warp_reduce.cuh` | `warp_reduce`, device only |
