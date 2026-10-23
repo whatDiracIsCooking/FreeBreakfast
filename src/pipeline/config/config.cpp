@@ -119,6 +119,21 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "commutator_tolerance", base_dir, step.commutator_tolerance));
     FBF_TRY(read_key(table, kStep, "diis_history", base_dir, step.diis_history));
     FBF_TRY(read_key(table, kStep, "fock_rebuild_interval", base_dir, step.fock_rebuild_interval));
+  } else if constexpr (std::same_as<S, PipekMezeyStep>) {
+    FBF_TRY(
+        check_keys(table, kStep,
+                   {"max_sweeps", "functional_tolerance", "rotation_gain_threshold", "exponent"}));
+    PipekMezeyOptions &options = step.options;
+    FBF_TRY(read_key(table, kStep, "max_sweeps", base_dir, options.max_sweeps));
+    FBF_TRY(read_key(table, kStep, "functional_tolerance", base_dir, options.functional_tolerance));
+    FBF_TRY(read_key(table, kStep, "rotation_gain_threshold", base_dir,
+                     options.rotation_gain_threshold));
+    auto exponent = static_cast<int32_t>(options.exponent);
+    FBF_TRY(read_key(table, kStep, "exponent", base_dir, exponent));
+    if (exponent != 2 && exponent != 4) {
+      return err_config("[{}] exponent is {}, not 2 or 4", kStep, exponent);
+    }
+    options.exponent = static_cast<PipekMezeyExponent>(exponent);
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.

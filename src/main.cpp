@@ -60,6 +60,11 @@ void print_products(const fb::Calculation &calc) {
     std::println("SCF iterations:    {}", scf->iterations);
     std::println("RHF energy:        {:.10f} Ha", scf->energy);
   }
+  if (const auto &pm = calc.get<fb::PipekMezey>()) {
+    std::println("Pipek-Mezey:       {} orbitals, {} sweeps", pm->n_occ, pm->info.sweeps);
+    std::println("PM functional:     {:.10f} -> {:.10f}", pm->info.initial_functional,
+                 pm->info.functional);
+  }
 }
 
 fb::Status run(std::span<char *const> args) {
