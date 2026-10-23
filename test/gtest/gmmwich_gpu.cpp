@@ -2,7 +2,8 @@
 // host reference that forms the dense diagonal, square and rectangular, for
 // both OpX, with a non-symmetric X and a d of distinct mixed-sign entries (so
 // a diagonal on the wrong side of X, or a transpose in the wrong place, cannot
-// pass), plus which ops it takes and the pointer-mode restore.
+// pass), plus which ops it takes and the pointer-mode restore; and on a complex
+// T, OpX(X)^H diag(d) OpX(X) against a std::complex reference.
 
 #include <gtest/gtest.h>
 
@@ -270,5 +271,125 @@ static_assert(kSquareTakes<wwr::WWRBLAS_OP_N> && kGeneralTakes<wwr::WWRBLAS_OP_N
 static_assert(kSquareTakes<wwr::WWRBLAS_OP_T> && kGeneralTakes<wwr::WWRBLAS_OP_T>);
 static_assert(!kSquareTakes<wwr::WWRBLAS_OP_C>);
 static_assert(!kGeneralTakes<wwr::WWRBLAS_OP_C>);
+
+// ---------------------------------------------------------------------------
+// Complex T: the sandwich is OpX(X)^H diag(d) OpX(X)
+// ---------------------------------------------------------------------------
+
+// The host reference is std::complex, which has the arithmetic the vendor
+// complex types lack; the two share a layout but are converted by value.
+template <typename Z>
+using HostComplex = std::complex<wwr::ComplexToRealType<Z>>;
+
+template <typename Z>
+std::vector<Z> to_device_values(const std::vector<HostComplex<Z>> &a) {
+  std::vector<Z> out;
+  out.reserve(a.size());
+  for (const auto &z : a) {
+    out.push_back(Z{z.real(), z.imag()});
+  }
+  return out;
+}
+
+template <typename R>
+Rect<std::complex<R>> random_complex_rect(std::int32_t rows, std::int32_t cols,
+                                          std::uint32_t seed) {
+  const auto re = random_rect<R>(rows, cols, seed);
+  const auto im = random_rect<R>(rows, cols, seed + 1000);
+  Rect<std::complex<R>> z{rows, cols, std::vector<std::complex<R>>(re.v.size())};
+  for (std::size_t i = 0; i < z.v.size(); ++i) {
+    z.v[i] = {re.v[i], im.v[i]};
+  }
+  return z;
+}
+
+template <typename R>
+Rect<std::complex<R>> adjoint(const Rect<std::complex<R>> &a) {
+  auto t = transposed(a);
+  for (auto &z : t.v) {
+    z = std::conj(z);
+  }
+  return t;
+}
+
+template <typename Z>
+void expect_matches_complex(const std::vector<Z> &got, const Rect<HostComplex<Z>> &expected) {
+  using R = wwr::ComplexToRealType<Z>;
+  ASSERT_EQ(got.size(), expected.v.size());
+  // A complex product is four real ones: twice the real tolerance.
+  const R tolerance = (std::is_same_v<R, float> ? R{2e-5} : R{2e-13}) * kN;
+  for (std::int32_t j = 0; j < expected.cols; ++j) {
+    for (std::int32_t i = 0; i < expected.rows; ++i) {
+      const Z g = got[i + j * expected.rows];
+      ASSERT_LE(std::abs(HostComplex<Z>{g.x, g.y} - expected.at(i, j)), tolerance)
+          << "at (" << i << ", " << j << ")";
+    }
+  }
+}
+
+template <typename Z>
+class GmmwichComplex : public ::testing::Test {};
+
+using ComplexTypes = ::testing::Types<wwr::wwrFloatComplex, wwr::wwrDoubleComplex>;
+TYPED_TEST_SUITE(GmmwichComplex, ComplexTypes);
+
+// Both OpX in {N, C} with m != n, then the square default, with complex X and a
+// complex d (the dgmm takes d as T, so nothing about it need be real), so a
+// transpose where a conjugate transpose belongs fails.
+TYPED_TEST(GmmwichComplex, AdjointSandwichMatchesHostReference) {
+  FBF_REQUIRE_GPU();
+  using Z = TypeParam;
+  using R = wwr::ComplexToRealType<Z>;
+
+  auto dev = std::make_shared<fb::Device>(0);
+  fb::BlasHandle blas(dev);
+
+  const auto d = random_complex_rect<R>(kN, 1, 6).v;
+  const auto diag = diagonal(d);
+  fb::Buffers::device<Z> dd(d.size(), dev);
+  fb::Buffers::device<Z> dx(static_cast<std::size_t>(kM) * kN, dev);
+  fb::Buffers::device<Z> work(static_cast<std::size_t>(kM) * kN, dev);
+  fb::Buffers::device<Z> c(static_cast<std::size_t>(kM) * kM, dev);
+  upload(dev, dd, to_device_values<Z>(d));
+
+  const auto check = [&]<wwr::wwrblasOperation_t OpX>(OpConstant<OpX>) {
+    constexpr bool adj_x = OpX == wwr::WWRBLAS_OP_C;
+    SCOPED_TRACE(std::format("OpX = {}", adj_x ? 'C' : 'N'));
+
+    const auto x = adj_x ? random_complex_rect<R>(kM, kN, 7) : random_complex_rect<R>(kN, kM, 7);
+    const auto opx = adj_x ? adjoint(x) : x;
+    const auto expected_c = product(adjoint(opx), product(diag, opx));
+    const auto expected_work = adj_x ? product(x, diag) : product(diag, x);
+    upload(dev, dx, to_device_values<Z>(x.v));
+
+    ASSERT_EQ(fb::gmmwich<OpX>(blas, kM, kN, dx.data(), dd.data(), work.data(), c.data()),
+              wwr::WWRBLAS_STATUS_SUCCESS);
+    expect_matches_complex(download(dev, c, expected_c.v.size()), expected_c);
+    expect_matches_complex(download(dev, work, expected_work.v.size()), expected_work);
+  };
+  check(OpConstant<wwr::WWRBLAS_OP_N>{});
+  check(OpConstant<wwr::WWRBLAS_OP_C>{});
+
+  // The square overload, on buffers of its own: copy wants matching sizes.
+  const auto x = random_complex_rect<R>(kN, kN, 8);
+  fb::Buffers::device<Z> sx(x.v.size(), dev);
+  fb::Buffers::device<Z> swork(x.v.size(), dev);
+  fb::Buffers::device<Z> sc(x.v.size(), dev);
+  upload(dev, sx, to_device_values<Z>(x.v));
+  ASSERT_EQ(fb::gmmwich(blas, kN, sx.data(), dd.data(), swork.data(), sc.data()),
+            wwr::WWRBLAS_STATUS_SUCCESS);
+  expect_matches_complex(download(dev, sc, x.v.size()), product(adjoint(x), product(diag, x)));
+}
+
+template <wwr::wwrblasOperation_t OpX>
+constexpr bool kComplexTakes =
+    requires(const fb::BlasHandle &h, const wwr::wwrDoubleComplex *p, wwr::wwrDoubleComplex *w) {
+      fb::gmmwich<OpX>(h, kM, kN, p, p, w, w);
+    };
+
+// On a complex T the adjoint is OP_C, and OP_T is left out: (X^T)^H = conj(X)
+// is no BLAS op.
+static_assert(kComplexTakes<wwr::WWRBLAS_OP_N> && kComplexTakes<wwr::WWRBLAS_OP_C>);
+static_assert(!kComplexTakes<wwr::WWRBLAS_OP_T>);
 
 } // namespace

@@ -8,8 +8,8 @@
 export module free_breakfast.linalg.blas;
 
 // :shared exports nothing: it holds the partitions' unexported helpers
-// (raw_blas_handle, BlasOp, RealOp), and is re-exported only because every
-// interface partition must be.
+// (raw_blas_handle, BlasOp, SandwichOp, kAdjointOp), and is re-exported only
+// because every interface partition must be.
 export import :shared;
 
 // gemm (:gemm): wwr::gemm for n x n operands with every leading dimension n,
@@ -17,10 +17,11 @@ export import :shared;
 // replacement: any other shape calls wwr::gemm directly.
 export import :gemm;
 
-// gemmwich (:gemmwich): the sandwich product op(X) F op(X)^T -- X^T F X by
-// default -- as two square gemms through a caller-supplied work matrix.
+// gemmwich (:gemmwich): the sandwich product op(X)^H F op(X) -- X^H F X by
+// default, X^T F X on a real T -- as two gemms through a caller-supplied work
+// matrix.
 export import :gemmwich;
 
-// gmmwich (:gmmwich): the same sandwich with a diagonal middle, op(X)^T diag(d)
+// gmmwich (:gmmwich): the same sandwich with a diagonal middle, op(X)^H diag(d)
 // op(X), as a dgmm and a gemm, so the diagonal is never formed.
 export import :gmmwich;

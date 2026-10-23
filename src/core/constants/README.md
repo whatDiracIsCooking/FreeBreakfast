@@ -21,6 +21,14 @@ BLAS / solver `alpha`/`beta` host pointers).
 | `kTwo<T>` | 2 |
 | `kNegOne<T>` | -1 |
 
+Each is also defined for the two GPU complex types, `wwr::wwrFloatComplex` and
+`wwr::wwrDoubleComplex`, as the value plus `0i` (`kOne<wwrDoubleComplex>` is
+`{1, 0}`), so `&kOne<T>` is a BLAS `alpha` for any `wwr::usual_fp` T. These
+are explicit specializations, built by brace-init: `static_cast<T>(1)` does not
+compile for CUDA's complex struct, and on HIP it would call `HIP_vector_type`'s
+one-scalar constructor, which fills both components (`1 + 1i`). The physical
+constants and prefixes below are real-only.
+
 ### Physical
 
 | Name | Symbol | Value |
@@ -59,6 +67,13 @@ auto length = 5.0 * free_breakfast::kNano<double>;
 
 | File | Role |
 |------|------|
-| `constants.h` | Header-based definitions; plain C++, so a device `.cu` can `#include` it |
+| `constants.h` | Header-based definitions; plain C++ over wwr's `complex.h`, so a device `.cu` can `#include` it |
 | `constants.cppm` | Module interface re-exporting all constants |
 | `CMakeLists.txt` | Build definitions: the module, and `free_breakfast::core::constants_header` exposing `constants.h` to device code |
+
+## Dependencies
+
+`wwr::vector_types::host`, PUBLIC on both targets: `complex.h` needs the
+`WWR_GPU_BACKEND_*` define, wwr's `src/` include root and the vendor complex
+header's include path, the same three things `core/types`' `vec.h` takes from
+it. See `src/core/wwr/README.md`, "Where it sits, and the exceptions".
