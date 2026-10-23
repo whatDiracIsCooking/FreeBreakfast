@@ -57,6 +57,21 @@ inline constexpr wwr::wwrFloatComplex kNegOne<wwr::wwrFloatComplex>{-1, 0};
 template <>
 inline constexpr wwr::wwrDoubleComplex kNegOne<wwr::wwrDoubleComplex>{-1, 0};
 
+/// @brief Typed imaginary unit (0 + 1i), for the two GPU complex types only
+///
+/// Unlike the four above, it has no real value, so the primary refuses every
+/// type that is not specialized below: naming kImaginaryUnit<float> is a
+/// compile error, not a link error or a silent zero.
+template <typename T>
+constexpr T kImaginaryUnit = [] {
+  static_assert(sizeof(T) == 0, "kImaginaryUnit is defined only for the GPU complex types");
+  return T{};
+}();
+template <>
+inline constexpr wwr::wwrFloatComplex kImaginaryUnit<wwr::wwrFloatComplex>{0, 1};
+template <>
+inline constexpr wwr::wwrDoubleComplex kImaginaryUnit<wwr::wwrDoubleComplex>{0, 1};
+
 // Physical Constants
 
 /// @brief Boltzmann constant k_B in J/K (1.380649e-23)

@@ -20,6 +20,7 @@ BLAS / solver `alpha`/`beta` host pointers).
 | `kOne<T>` | 1 |
 | `kTwo<T>` | 2 |
 | `kNegOne<T>` | -1 |
+| `kImaginaryUnit<T>` | i (complex `T` only) |
 
 Each is also defined for the two GPU complex types, `wwr::wwrFloatComplex` and
 `wwr::wwrDoubleComplex`, as the value plus `0i` (`kOne<wwrDoubleComplex>` is
@@ -28,6 +29,11 @@ are explicit specializations, built by brace-init: `static_cast<T>(1)` does not
 compile for CUDA's complex struct, and on HIP it would call `HIP_vector_type`'s
 one-scalar constructor, which fills both components (`1 + 1i`). The physical
 constants and prefixes below are real-only.
+
+`kImaginaryUnit<T>` (`0 + 1i`) is the one complex-only literal: it exists for
+the two GPU complex types alone, and naming it for any other `T` fails to
+compile (a `static_assert` in the primary). It is the BLAS `alpha` that turns
+a skew-Hermitian matrix into a Hermitian one (`recipes/expm`).
 
 ### Physical
 
