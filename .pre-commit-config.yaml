@@ -102,6 +102,17 @@ repos:
         language: script
         files: '\.(cppm|cpp|cu|cuh|h|hpp)$'
 
+  # Statically sized shared memory -- docs/style.md "Shared memory". Flags
+  # `extern __shared__` without a `dynamic-smem-ok:` reason. Stdlib-only, like
+  # int-types, whose comment/literal blanking it reuses.
+  - repo: local
+    hooks:
+      - id: shared-mem
+        name: static shared memory (staged device code)
+        entry: devtools/check-shared-mem.py
+        language: script
+        files: '\.(cu|cuh|h|hpp)$'
+
   # The fast test gate. `stages: [pre-push]` means it runs at `git push`, not
   # on commit; `files: \.py$` is the entire "only when Python changed"
   # condition -- push a docs-only change and it does not fire.

@@ -28,8 +28,8 @@ import free_breakfast.core.resources;
 export namespace free_breakfast {
 
 /// @brief The largest history Diis keeps. The coefficient solve holds the
-/// (cap+1)-square bordered system in one block's shared memory, and 64 keeps
-/// that under 48 KiB, the default per-block limit on both backends.
+/// (cap+1)-square bordered system in one block's statically sized shared
+/// memory, and 64 keeps that under 48 KiB, CUDA's static per-block limit.
 inline constexpr size_t kDiisMaxHistoryLimit = 64;
 
 /// @brief Pulay DIIS extrapolation over device-resident iterate and residual

@@ -18,8 +18,9 @@ constexpr double kSingularPivot = 1e-14;
 
 // One block: build the bordered system in shared memory, then solve it.
 //
-// Dynamic shared memory holds the dim x dim bordered matrix b (row-major,
-// dim = m + 1) followed by the length-dim right-hand side. The block builds
+// Shared memory holds the dim x dim bordered matrix b (row-major, dim = m + 1)
+// and the length-dim right-hand side, sized statically for the largest dim
+// (kDiisSolveMaxDim); b is packed at stride dim, not the bound. The block builds
 // the system cooperatively, striding by blockDim.x rather than the warp size,
 // so a 64-wide wavefront and a 32-wide warp take the same path. Thread 0 then
 // runs the elimination serially: dim is the history depth plus one, far too
@@ -27,10 +28,9 @@ constexpr double kSingularPivot = 1e-14;
 __global__ void diis_solve_kernel(const int32_t m, const int32_t ld, const int32_t newest,
                                   const double *__restrict__ gram, double *__restrict__ coeff,
                                   int32_t *__restrict__ singular_out) {
-  extern __shared__ double smem[];
+  __shared__ double b[kDiisSolveMaxDim * kDiisSolveMaxDim];
+  __shared__ double rhs[kDiisSolveMaxDim];
   const int32_t dim = m + 1;
-  double *b = smem;
-  double *rhs = smem + (dim * dim);
   const auto tid = static_cast<int32_t>(threadIdx.x);
   const auto stride = static_cast<int32_t>(blockDim.x);
 
@@ -116,11 +116,7 @@ __global__ void diis_solve_kernel(const int32_t m, const int32_t ld, const int32
 
 int32_t diis_solve(const wwr::wwrStream_t stream, const int32_t m, const int32_t ld,
                    const int32_t newest, const double *gram, double *coeff, int32_t *singular_out) {
-  const int32_t dim = m + 1;
-  const size_t smem_bytes =
-      (static_cast<size_t>(dim) * static_cast<size_t>(dim) + static_cast<size_t>(dim)) *
-      sizeof(double);
-  diis_solve_kernel<<<1, kWarpSize, smem_bytes, stream>>>(m, ld, newest, gram, coeff, singular_out);
+  diis_solve_kernel<<<1, kWarpSize, 0, stream>>>(m, ld, newest, gram, coeff, singular_out);
   return static_cast<int32_t>(wwr::wwrGetLastError());
 }
 
