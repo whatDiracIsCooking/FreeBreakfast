@@ -124,10 +124,11 @@ struct PrimitivePairRecords {
 /// @p stream: record k is the record of host index perm[k], formed from
 /// @p src, one thread per record.
 ///
-/// P is (alpha A + beta B) / zeta with no FMA contraction, each product
-/// rounded on its own: the IEEE value a host computes, bit for bit, and the
-/// same for a record and its primitives swapped (the two records a diagonal
-/// shell pair has for every pair of distinct primitives).
+/// P is (alpha A + beta B) / zeta, its numerator one explicit FMA with the
+/// terms in exponent order: the same for a record and its primitives swapped
+/// (the two records a diagonal shell pair has for every pair of distinct
+/// primitives), bit for bit, though it may sit an ulp from a host's unfused
+/// value.
 ///
 /// @p perm and every field of @p out are @p n_rec long, written whole.
 ///

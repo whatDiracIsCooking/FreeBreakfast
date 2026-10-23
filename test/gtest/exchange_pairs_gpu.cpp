@@ -452,16 +452,34 @@ TEST_P(ExchangePairs, ViewNamesTheDeviceFields) {
 
 // Every record's dressed bound against FelizJueves's ao.k.record_bounds of the
 // same ordered shell pair, matched by its two shells and its zeta (the two
-// sides order their records differently): to a few ulps, a host zero (a pair
-// factor that underflowed) exactly zero. And every record's centres, P - (P -
+// sides order their records differently): to a few ulps or 1e-13 absolutely,
+// a host zero (a pair factor that underflowed) exactly zero. And every
+// record's centres, P - (P -
 // A) and P - (P - B), those of its two shells, so the sort that put the bound
 // in order carried P, P - A, P - B and both offsets with it.
 class ExchangeRecordBound : public ::testing::TestWithParam<std::string> {};
 
+// A record passes within kBoundUlps relatively or kBoundAbs absolutely.
 // FelizJueves holds the generated kernel to its host within 16 eps per record
-// (test_kernel_record_bound.py); the same bar here. The kernel forms each I_p in
-// closed form and sums plainly, the host by the [p|q] recurrence and fsum.
+// (test_kernel_record_bound.py); the same bar here, for the kernel itself. The
+// kernel forms each I_p in closed form and sums plainly, the host by the [p|q]
+// recurrence and fsum.
 constexpr double kBoundUlps = 16.0;
+
+// Or within this much absolutely. mmd forms the numerator of
+// P = (alpha A + beta B) / zeta with an FMA (mmd_launch.cu's product_centre),
+// the golden with two roundings, so P can sit an ulp of the coordinates away,
+// and the bound magnifies that relatively: through the pair factor
+// exp(zeta X_PA X_PB) on a distant pair, and through the Hermite polynomials
+// where two shells share an atom far from the origin (X_PA ~ 0, but only to
+// an ulp of A). That relative error grows with the coordinates (the H10 chain
+// reaches ~5000 eps), but only on bounds the same factors have shrunk: in
+// absolute terms the worst is 2.4e-15 (on a bound near 1), and the
+// 5000-eps record is 8e-23 on a bound of 7e-11. 1e-13 leaves room for a
+// molecule further from the origin, sits below any screen threshold a bound
+// is compared against, and still fails a kernel that is wrong by O(bound) on
+// every bound above it.
+constexpr double kBoundAbs = 1e-13;
 
 TEST_P(ExchangeRecordBound, MatchesFelizJuevesRecordBounds) {
   FBF_REQUIRE_GPU();
@@ -511,6 +529,7 @@ TEST_P(ExchangeRecordBound, MatchesFelizJuevesRecordBounds) {
   ASSERT_EQ(n_rec, (*doc)["n_records"].get<std::int64_t>());
   ASSERT_EQ(got.size(), want.size());
   double worst = 0.0;
+  double worst_abs = 0.0;
   for (auto &[key, recs] : want) {
     const auto it = got.find(key);
     ASSERT_NE(it, got.end()) << "shells " << key.first << ", " << key.second;
@@ -526,16 +545,19 @@ TEST_P(ExchangeRecordBound, MatchesFelizJuevesRecordBounds) {
         ++n_zero;
         continue;
       }
-      const double ulps =
-          std::abs(mine[r].second - bound) / (std::numeric_limits<double>::epsilon() * bound);
+      const double abs_err = std::abs(mine[r].second - bound);
+      const double ulps = abs_err / (std::numeric_limits<double>::epsilon() * bound);
       worst = std::max(worst, ulps);
-      EXPECT_LE(ulps, kBoundUlps) << "shells " << key.first << ", " << key.second << ", zeta "
-                                  << zeta;
+      worst_abs = std::max(worst_abs, abs_err);
+      EXPECT_TRUE(ulps <= kBoundUlps || abs_err <= kBoundAbs)
+          << "shells " << key.first << ", " << key.second << ", zeta " << zeta << ": " << ulps
+          << " eps, " << abs_err << " absolute";
     }
   }
   std::cout << "[ bound    ] " << GetParam() << ": " << n_rec << " records, worst " << worst
-            << " eps, " << n_zero << " exact zeros\n";
+            << " eps, worst " << worst_abs << " absolute, " << n_zero << " exact zeros\n";
   RecordProperty("worst_eps", std::format("{:.2f}", worst));
+  RecordProperty("worst_abs", std::format("{:.3g}", worst_abs));
   RecordProperty("exact_zeros", std::format("{}", n_zero));
 }
 

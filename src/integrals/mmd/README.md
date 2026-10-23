@@ -124,15 +124,24 @@ mirror it. Such a pair's record `(α_i, α_j)` and its mirror `(α_j, α_i)` car
 the same P bit for bit. K's gather relies on it: a diagonal record has no
 swapped copy of its own, its mirror stands in.
 
-**P is never contracted into an FMA.** `mmd_records` forms
-`(αA + βB)/ζ` with each product rounded on its own (nvcc's `_rn` intrinsics;
-`#pragma clang fp contract(off)` under HIP), so P is the correctly rounded
-IEEE value a host computes from the same expression. With the products rounded
-separately the sum commutes exactly, which is what gives the diagonal mirror
-above. And the dressed bound needs it: its pair factor `exp(ζ X_PA X_PB)`
-turns one ulp of P into hundreds of ulps of bound on a distant pair, which
-FelizJueves's goldens (`ExchangeRecordBound`, 16 eps) would reject — an
-FMA-contracted P failed that test on the H₁₀ chain by up to ~550 eps.
+**P's numerator is one explicit FMA, its terms in exponent order.**
+`mmd_records` forms `(αA + βB)/ζ` as `fma(e_hi, c_hi, e_lo·c_lo)/ζ`, the
+larger-exponent term fused. The terms are ordered before either is formed, so a
+record and its mirror run the same operations on the same operands: that is
+what gives the diagonal mirror above. It is explicit rather than left to
+contraction, so nvcc and HIP clang fuse the same product.
+
+The FMA rounds once where a host's plain expression rounds twice, so P can sit
+an ulp away from the host's, and the dressed bound magnifies that: its pair
+factor `exp(ζ X_PA X_PB)` on a distant pair, and its Hermite polynomials where
+two shells share an atom far from the origin (X_PA ≈ 0, but only to an ulp of
+A). Against FelizJueves's unfused goldens the H₁₀ chain moves by up to ~5000 eps,
+H₂O/cc-pVDZ by ~38. Those relative errors grow with the coordinates, but only on
+bounds the same factors have already shrunk, so the absolute error stays tiny:
+at most 2.4 × 10⁻¹⁵ (on a bound near 1). The 5000-eps record is 8 × 10⁻²³ on a
+bound of 7 × 10⁻¹¹. So `ExchangeRecordBound` passes a record within 16 eps (the
+kernel's own bar) or within 10⁻¹³ absolutely
+([`exchange/pairs`](../eri/integral_direct/exchange/pairs/README.md)).
 
 **Coefficients are taken as given** (see `Shell`): normalisation is the basis's
 business (`BasisStamp::primitive_normalized`). Nothing is screened: S, T and

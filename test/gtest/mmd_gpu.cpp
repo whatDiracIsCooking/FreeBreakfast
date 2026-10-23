@@ -263,11 +263,11 @@ TEST(Mmd, RecordsAreInDescendingZetaOrderPastOneSortTile) {
 
 // A diagonal shell pair's record (alpha_i, alpha_j) and its mirror
 // (alpha_j, alpha_i) carry the same P bit for bit, so each one's P - A is the
-// other's P - B: the device forms P with no FMA contraction, so its two
-// products are rounded on their own and their sum commutes exactly. K's gather
-// and its test lean on it (a diagonal record's swap is a record of its own
-// class). Off the axes, on a d shell, so every component and a centre whose
-// products would round differently under a fused multiply-add are in play.
+// other's P - B: the device puts P's two terms in exponent order before its
+// FMA, so both records fuse the same product. K's gather and its test lean on
+// it (a diagonal record's swap is a record of its own class). Off the axes, on
+// a d shell, so every component and a centre where an FMA fusing the other
+// product would round differently are in play.
 TEST(Mmd, DiagonalMirrorsAreBitwiseMirrored) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
