@@ -41,7 +41,9 @@ export namespace free_breakfast {
 /// of its device scratch from it -- a solver's work and its own intermediates
 /// alike -- by asking once for the total and splitting the result. So nothing
 /// nests: a routine holds no region of it across a call to another that uses
-/// it, and no argument to one may point into it.
+/// it, and no argument to one may point into it. A callback into caller code
+/// (an iterative solver's operator) counts as such a call: assume it takes the
+/// workspace. The README has why, and davidson_solve the pattern.
 ///
 /// Movable, not copyable. A moved-from DeviceResources holds no Device.
 class DeviceResources : private NonCopyable {

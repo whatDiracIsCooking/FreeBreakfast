@@ -1,7 +1,9 @@
 add_subdirectory(blas)
 add_subdirectory(complex_cast)
+add_subdirectory(davidson)
 add_subdirectory(diagonalize)
 add_subdirectory(diis)
+add_subdirectory(linear_operator)
 add_subdirectory(matrix_ao)
 add_subdirectory(orthogonalize)
 
@@ -15,8 +17,10 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::recipes::blas
   free_breakfast::recipes::complex_cast
+  free_breakfast::recipes::davidson
   free_breakfast::recipes::diagonalize
   free_breakfast::recipes::diis
+  free_breakfast::recipes::linear_operator
   free_breakfast::recipes::matrix_ao
   free_breakfast::recipes::orthogonalize
 )
