@@ -45,7 +45,44 @@
   // the container still builds and every CPU test still runs; only tests
   // needing a live device are lost -- and device-COMPILE tests do not need one,
   // since nvcc targets an arch rather than the card present.
-  "runArgs": ["--gpus", "all"],
+  //
+  // WHY THE --device= LINES, which look redundant beside --gpus all: they are
+  // what keeps the card from dropping out of a LONG-RUNNING container.
+  // --gpus all is not declarative -- it is read by the nvidia prestart hook,
+  // which grants the device-cgroup majors 195/507 imperatively after runc has
+  // handed off, so docker never records them and systemd never learns of them.
+  // Under the systemd cgroup driver (`docker info`: Cgroup Driver: systemd)
+  // every container is a systemd scope whose device filter systemd REWRITES
+  // from its own DeviceAllow= list on any reconfigure -- and a daemon-reload is
+  // a DAILY event on a desktop (apt-daily-upgrade, snapd). The rewrite drops
+  // the hook's grants, open() on /dev/nvidia* starts returning EPERM, and NVML
+  // reports that as
+  //     Failed to initialize NVML: Unknown Error
+  // in a container whose /dev/nvidia* nodes are all still present and whose
+  // libcuda still matches the running host driver -- so it reads like a dead
+  // card rather than a permission bit, and `rebuild` "fixes" it only because a
+  // new container re-runs the hook. Upstream: NVIDIA/nvidia-docker#1730.
+  //
+  // A --device= path IS recorded (HostConfig.Devices), so docker passes it to
+  // systemd as DeviceAllow= and the grant survives every reapply. This is the
+  // same reason ../hip/ names /dev/kfd and /dev/dri explicitly; only the
+  // NVIDIA half was ever missing it, which is exactly why CUDA dropped daily
+  // on a host where HIP did not.
+  //
+  // PATHS, not `--device-cgroup-rule=c 195:* rwm`: of these majors only 195 is
+  // statically assigned to NVIDIA. nvidia-uvm (507 on one host) and
+  // nvidia-caps are allocated dynamically and move across a driver reload, so
+  // a hardcoded major silently rots, while a path is resolved at
+  // container-creation time. The list is the COMPUTE set, and a node that does
+  // not exist makes `docker run` fail outright -- so /dev/nvidia-modeset
+  // (display) and /dev/nvidia-caps (MIG) are deliberately absent.
+  "runArgs": [
+    "--gpus", "all",
+    "--device=/dev/nvidiactl",
+    "--device=/dev/nvidia0",                     // EDIT: one line per card
+    "--device=/dev/nvidia-uvm",
+    "--device=/dev/nvidia-uvm-tools"
+  ],
 
   // CLAUDE CODE IS NOT A FEATURE HERE, deliberately. The
   // ghcr.io/anthropics/devcontainer-features/claude-code feature this used to
