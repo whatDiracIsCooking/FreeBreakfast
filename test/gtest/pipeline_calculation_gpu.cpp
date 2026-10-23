@@ -79,7 +79,8 @@ TEST(PipelineCalculation, MatchesTheStepsCalledByHand) {
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto molecule = fb::MoleculeStep{.xyz = dir / "water.xyz"}.run(fb::View<>{}, res);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
-  auto basis = fb::BasisSetStep{.basis = dir / "basis.json"}.run(fb::View<fb::Molecule>{*molecule});
+  auto basis = fb::BasisSetStep{.basis = (dir / "basis.json").string()}.run(
+      fb::View<fb::Molecule>{*molecule});
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   auto transform = fb::SphericalTransformStep{}.run(fb::View<fb::BasisSet>{*basis}, res);
   auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSet>{*basis}, res);

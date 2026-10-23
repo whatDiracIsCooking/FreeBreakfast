@@ -24,6 +24,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::io::base
+  free_breakfast::io::basis
   free_breakfast::io::toml
   free_breakfast::core::diagnostics_macros
 )

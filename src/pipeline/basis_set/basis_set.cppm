@@ -1,8 +1,8 @@
 /// @file
-/// @brief The `BasisSet` step: read a BSE JSON basis and place it over the
-///        `Molecule`.
+/// @brief The `BasisSet` step: resolve a basis by name or path and place it
+///        over the `Molecule`.
 ///
-/// A thin wrapper over io.basis's read_basis and basis's place, with the
+/// A thin wrapper over io.basis's resolve_basis and basis's place, with the
 /// per-primitive normalization folded in between. Host-shaped: place reads
 /// only the molecule's atoms, never its device nuclei.
 
@@ -24,18 +24,20 @@ struct BasisSetStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "basis_set";
 
-  /// @brief The BSE JSON basis file. Resolved by the front end, so a relative
-  /// path here is relative to the working directory.
-  std::filesystem::path basis{};
+  /// @brief The basis: either a compiled-in set's name (`sto-3g`) or the path
+  /// to a BSE JSON file. @ref resolve_basis decides which, preferring the
+  /// name. A path is resolved by the front end, so one written here is
+  /// relative to the working directory.
+  std::string basis{};
 
-  /// @brief Read @ref basis, normalize its primitives and place it. A missing
-  /// or syntactically invalid file is ErrorKind::IO; a malformed basis, or one
-  /// lacking an element the molecule uses, is ErrorKind::InvalidConfig.
+  /// @brief Resolve @ref basis, normalize its primitives and place it. An
+  /// unreadable file is ErrorKind::IO; an unknown name, a malformed basis, or
+  /// one lacking an element the molecule uses, is ErrorKind::InvalidConfig.
   ///
   /// BSE coefficients are for normalized primitives, and the integral engines
   /// take coefficients as given, so the normalization is folded in here, once.
   [[nodiscard]] Result<BasisSet> run(View<Molecule> in) const {
-    const BasisStamp stamp = FBF_TRY(read_basis(basis));
+    const BasisStamp stamp = FBF_TRY(resolve_basis(basis));
     return place(stamp.primitive_normalized(), in.get<Molecule>());
   }
 };

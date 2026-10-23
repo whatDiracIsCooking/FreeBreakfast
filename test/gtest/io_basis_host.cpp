@@ -127,4 +127,68 @@ TEST(IoBasis, OnlySphericalFunctionTypesAreAccepted) {
   EXPECT_FALSE(shell_with("sto", 0).has_value());
 }
 
+// The compiled-in sets (data/basis/, wrapped into the binary by
+// src/io/basis/CMakeLists.txt) and resolution by name or path.
+
+TEST(IoBasisBuiltins, EveryCompiledInSetParsesAndCoversItsElements) {
+  // The element counts pin data/basis/: a set whose range silently changed, or
+  // one re-downloaded with Cartesian shells the reader refuses, fails here
+  // rather than at someone's first calculation.
+  struct Expected {
+    std::string_view name;
+    std::size_t elements;
+  };
+  for (const auto &[name, elements] :
+       std::array<Expected, 4>{{{"sto-3g", 36}, {"6-31g", 18}, {"cc-pVDZ", 35}, {"cc-pVTZ", 35}}}) {
+    auto stamp = fb::resolve_basis(name);
+    ASSERT_TRUE(stamp.has_value()) << name << ": " << stamp.error().message;
+    EXPECT_EQ(stamp->element_shells().size(), elements) << name;
+  }
+
+  // STO-3G runs to krypton; the correlation-consistent sets have no potassium
+  // (BSE defines none), which data/basis/README.md records.
+  auto sto = fb::resolve_basis("sto-3g");
+  ASSERT_TRUE(sto.has_value()) << sto.error().message;
+  EXPECT_NE(sto->shells_for(36), nullptr);
+  auto dz = fb::resolve_basis("cc-pvdz");
+  ASSERT_TRUE(dz.has_value()) << dz.error().message;
+  EXPECT_EQ(dz->shells_for(19), nullptr);
+  EXPECT_NE(dz->shells_for(20), nullptr);
+}
+
+TEST(IoBasisBuiltins, NamesIgnoreCaseHyphensAndUnderscores) {
+  for (const std::string_view spelling : {"STO-3G", "sto-3g", "sto3g", "STO_3G", "s t o-3 g"}) {
+    EXPECT_TRUE(fb::is_builtin_basis(spelling)) << spelling;
+  }
+  for (const std::string_view spelling : {"cc-pVTZ", "ccpvtz", "CC-PVTZ"}) {
+    EXPECT_TRUE(fb::is_builtin_basis(spelling)) << spelling;
+  }
+  // Normalization folds separators, never the characters that distinguish one
+  // set from another: 6-31G* is a different basis from 6-31G, and is not
+  // compiled in (its d shells are Cartesian -- data/basis/README.md).
+  EXPECT_TRUE(fb::is_builtin_basis("6-31g"));
+  EXPECT_FALSE(fb::is_builtin_basis("6-31g*"));
+  EXPECT_FALSE(fb::is_builtin_basis("cc-pvqz"));
+  EXPECT_FALSE(fb::is_builtin_basis(""));
+}
+
+TEST(IoBasisBuiltins, AnUnknownBasisReadsAsAPathAndSaysWhatTheNamesAre) {
+  auto stamp = fb::resolve_basis("sto-3gg");
+  ASSERT_FALSE(stamp.has_value());
+  // Whatever the user meant, what failed was opening a path.
+  EXPECT_EQ(stamp.error().kind, fb::ErrorKind::IO);
+  EXPECT_NE(stamp.error().message.find("STO-3G"), std::string::npos) << stamp.error().message;
+}
+
+TEST(IoBasisBuiltins, APathIsStillRead) {
+  // The escape hatch: a basis this build does not carry needs no rebuild.
+  const fb::test::ScratchDir dir("io_basis_builtins");
+  const auto path = dir / "custom.json";
+  ASSERT_TRUE(fb::write_file(path, kBasis).has_value());
+
+  auto stamp = fb::resolve_basis(path.string());
+  ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+  EXPECT_EQ(stamp->element_shells().size(), 2U);
+}
+
 } // namespace

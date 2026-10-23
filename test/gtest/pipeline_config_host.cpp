@@ -51,8 +51,27 @@ TEST(PipelineConfig, EveryOptionIsRead) {
   EXPECT_EQ(molecule.charge, -1);
   EXPECT_EQ(molecule.multiplicity, 2);
   // An absolute path is kept as written.
-  EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, std::filesystem::path("/basis/sto-3g.json"));
+  EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, "/basis/sto-3g.json");
   EXPECT_EQ(calc->step<fb::OrthogonalizerStep>()->eigenvalue_floor, 1e-8);
+}
+
+TEST(PipelineConfig, ARelativeBasisPathIsAnchoredToTheConfig) {
+  auto calc =
+      fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n", "/inputs");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, "/inputs/b.json");
+}
+
+TEST(PipelineConfig, ABuiltinBasisNameIsNotAPath) {
+  // The name of a compiled-in set must survive the front end verbatim: joined
+  // to base_dir it would become /inputs/sto-3g, a file nobody wrote.
+  for (const std::string_view spelling : {"sto-3g", "STO-3G", "sto3g", "cc-pVTZ"}) {
+    auto calc = fb::parse_config(
+        std::format("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"{}\"\n", spelling),
+        "/inputs");
+    ASSERT_TRUE(calc.has_value()) << spelling << ": " << calc.error().message;
+    EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, spelling);
+  }
 }
 
 TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {

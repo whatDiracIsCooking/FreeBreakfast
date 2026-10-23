@@ -106,7 +106,7 @@ TEST(PipelineOverlap, NormalizedBasisHasUnitDiagonal) {
   const fb::Molecule water(res, {Atom{{0.0, 0.0, 0.2217}, Element::O},
                                  Atom{{0.0, 1.4309, -0.8867}, Element::H},
                                  Atom{{0.0, -1.4309, -0.8867}, Element::H}});
-  auto basis = fb::BasisSetStep{.basis = path}.run(fb::View<fb::Molecule>{water});
+  auto basis = fb::BasisSetStep{.basis = path.string()}.run(fb::View<fb::Molecule>{water});
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
 
   auto s = step_overlap(res, *basis);

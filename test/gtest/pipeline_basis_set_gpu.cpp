@@ -44,7 +44,7 @@ TEST(PipelineBasisSet, MatchesReadBasisThenPlace) {
   ASSERT_TRUE(fb::write_file(path, kBasis).has_value());
   const fb::Molecule molecule = water(res);
 
-  const fb::BasisSetStep step{.basis = path};
+  const fb::BasisSetStep step{.basis = path.string()};
   auto basis = step.run(fb::View<fb::Molecule>{molecule});
   auto stamp = fb::read_basis(path);
   ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
@@ -80,7 +80,7 @@ TEST(PipelineBasisSet, MissingFileIsIoError) {
   const fb::test::ScratchDir dir("pipeline_basis_set");
   const fb::Molecule molecule = water(res);
 
-  const fb::BasisSetStep step{.basis = dir / "absent.json"};
+  const fb::BasisSetStep step{.basis = (dir / "absent.json").string()};
   auto basis = step.run(fb::View<fb::Molecule>{molecule});
   ASSERT_FALSE(basis.has_value());
   EXPECT_EQ(basis.error().kind, fb::ErrorKind::IO);
@@ -95,7 +95,7 @@ TEST(PipelineBasisSet, UncoveredElementIsInvalidConfig) {
   const fb::Molecule co(res,
                         {Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.1}, Element::O}});
 
-  const fb::BasisSetStep step{.basis = path};
+  const fb::BasisSetStep step{.basis = path.string()};
   auto basis = step.run(fb::View<fb::Molecule>{co});
   ASSERT_FALSE(basis.has_value());
   EXPECT_EQ(basis.error().kind, fb::ErrorKind::InvalidConfig);

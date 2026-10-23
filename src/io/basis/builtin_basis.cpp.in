@@ -1,0 +1,110 @@
+/// @file
+/// @brief The compiled-in basis sets, and basis resolution by name or path.
+///
+/// **This file is a template.** The build generates `builtin_basis.cpp` from it
+/// (see `CMakeLists.txt`), replacing the two `FB_BUILTIN_BASIS_*` tokens with
+/// one entry per `data/basis/*.json`: the document's own BSE `name` field, and
+/// its bytes verbatim inside a raw string literal. Edit this template, never
+/// the generated copy.
+///
+/// Why the data is compiled in rather than read from an installed data
+/// directory: this project installs nothing of its own, so a data directory
+/// would have to be found at runtime -- an install rule, a search path rooted
+/// at the executable, an environment override -- all of it new, and all of it
+/// able to work on one machine and not the next. A name that resolves inside
+/// the binary cannot be misplaced, and the binary stays copyable to a compute
+/// node on its own. The cost is a rebuild to add a set, which @ref
+/// free_breakfast::resolve_basis's path form makes optional: an arbitrary BSE
+/// JSON file is still read straight from disk.
+
+module free_breakfast.io.basis;
+
+import std;
+import free_breakfast.core.error_handling;
+import free_breakfast.basis;
+
+#include "diagnostics.h"
+
+namespace free_breakfast {
+
+/// @brief One compiled-in BSE document: its canonical BSE name, and the file's
+/// bytes exactly as `data/basis/` holds them.
+struct BuiltinBasis {
+  std::string_view name;
+  std::string_view json;
+};
+
+/// @brief The basis sets compiled into this binary, from `data/basis/`.
+///
+/// Not exported: a caller reaches these through @ref resolve_basis, which also
+/// accepts a path, so nothing outside this module needs to know which of the
+/// two a given spec was.
+constexpr std::array<BuiltinBasis, @FB_BUILTIN_BASIS_COUNT@> kBuiltinBases{{
+@FB_BUILTIN_BASIS_ENTRIES@
+}};
+
+/// @brief Fold a basis-set spelling onto the one key both sides compare by:
+/// lowercased, with `-`, `_` and spaces dropped.
+///
+/// So `STO-3G`, `sto-3g`, `sto3g` and `STO_3G` are one name, which is PySCF's
+/// rule and spares this tree an alias table for the ordinary case. The
+/// characters a basis name carries meaningfully -- `*`, `+`, `(`, `)` -- all
+/// survive, so `6-31G*` and `6-31G` stay distinct. A genuine synonym that
+/// normalization cannot reach (`6-31G(d)` for `6-31G*`) would need such a
+/// table; none of the compiled-in sets has one.
+[[nodiscard]] std::string normalized_basis_name(std::string_view spec) {
+  std::string key;
+  key.reserve(spec.size());
+  for (const char c : spec) {
+    if (c == '-' || c == '_' || c == ' ') {
+      continue;
+    }
+    key.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return key;
+}
+
+/// @brief The compiled-in set @p spec names, or nullptr if it names none.
+[[nodiscard]] const BuiltinBasis *find_builtin_basis(std::string_view spec) {
+  const std::string key = normalized_basis_name(spec);
+  for (const BuiltinBasis &candidate : kBuiltinBases) {
+    if (normalized_basis_name(candidate.name) == key) {
+      return &candidate;
+    }
+  }
+  return nullptr;
+}
+
+/// @brief The compiled-in names, canonical spelling, for an error message.
+[[nodiscard]] std::string builtin_basis_list() {
+  std::string out;
+  for (const BuiltinBasis &basis : kBuiltinBases) {
+    if (!out.empty()) {
+      out += ", ";
+    }
+    out += basis.name;
+  }
+  return out;
+}
+
+bool is_builtin_basis(std::string_view spec) { return find_builtin_basis(spec) != nullptr; }
+
+Result<BasisStamp> resolve_basis(std::string_view spec) {
+  if (const BuiltinBasis *builtin = find_builtin_basis(spec); builtin != nullptr) {
+    return parse_basis(builtin->json);
+  }
+  Result<BasisStamp> stamp = read_basis(std::filesystem::path{spec});
+  if (!stamp.has_value() && stamp.error().kind == ErrorKind::IO) {
+    // A spec that is neither a name nor an openable file is a misspelt basis
+    // far more often than a missing file, so the message says what the names
+    // are. The classification and origin stay read_basis's: whatever the user
+    // meant, what failed was opening a path, and an unreadable file is IO
+    // everywhere else in this layer.
+    Error error = std::move(stamp.error());
+    error.message += std::format(" (and not a compiled-in basis: {})", builtin_basis_list());
+    return std::unexpected(std::move(error));
+  }
+  return stamp;
+}
+
+} // namespace free_breakfast
