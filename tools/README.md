@@ -1,7 +1,7 @@
 # `tools/`
 
-Standalone Python utilities around the C++ tree. Not tests, not a package, not
-on the push gate.
+Standalone utilities around the C++ tree: Python scripts, and one C++
+generator. Not tests, not a package, not on the push gate.
 
 ```
 bse_download.py   Fetch basis sets from the Basis Set Exchange as the JSON
@@ -40,6 +40,10 @@ emit_scf_reference.py
                   RHF energies and orbital energies over this tree's
                   data/basis files, the reference the Scf step is tested
                   against. Needs PySCF.
+sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
+                  data/sad/<basis>/<Z>.npy, the SAD atomic density of every
+                  element of every compiled-in basis set, computed by src/sad
+                  itself. data/sad/README.md has when and how.
 ```
 
 Re-run the three `emit_*_kernels.py`, `extract_integral_golden.py` and then

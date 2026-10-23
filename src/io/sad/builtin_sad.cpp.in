@@ -1,0 +1,58 @@
+/// @file
+/// @brief The compiled-in SAD atomic densities, and their lookup.
+///
+/// **This file is a template.** The build generates `builtin_sad.cpp` from it
+/// (see `CMakeLists.txt`), replacing the two `FB_BUILTIN_SAD_*` tokens with one
+/// entry per `data/sad/<basis>/<Z>.npy`: the directory's basis-set name, the
+/// file's Z, and its bytes verbatim, every byte a `\x` escape. Edit this
+/// template, never the generated copy.
+///
+/// Compiled in for the reason the basis sets are (`src/io/basis/
+/// builtin_basis.cpp.in`): this project installs nothing, and a stamp that
+/// lives in the binary cannot go missing beside it. A `.npy` is binary, so it
+/// cannot sit in a raw string literal as the JSON does; escaping every byte
+/// also means no escape can run into the hex digit after it. The `sv` suffix
+/// takes the length from the literal, so the NUL bytes every `.npy` holds are
+/// part of the view rather than its end.
+
+module free_breakfast.io.sad;
+
+import std;
+import free_breakfast.core.types;
+import free_breakfast.core.error_handling;
+import free_breakfast.io.npy;
+
+namespace free_breakfast {
+
+using namespace std::string_view_literals;
+
+/// @brief One compiled-in stamp: the basis set's canonical name, the element's
+/// atomic number, and the `.npy` file's bytes exactly as `data/sad/` holds them.
+struct BuiltinSad {
+  std::string_view basis;
+  int32_t z;
+  std::string_view npy;
+};
+
+/// @brief The stamps compiled into this binary, from `data/sad/`.
+constexpr std::array<BuiltinSad, @FB_BUILTIN_SAD_COUNT@> kBuiltinSad{{
+@FB_BUILTIN_SAD_ENTRIES@
+}};
+
+std::optional<std::vector<double>> builtin_sad_density(std::string_view basis, int32_t z) {
+  for (const BuiltinSad &entry : kBuiltinSad) {
+    if (entry.basis != basis || entry.z != z) {
+      continue;
+    }
+    // Abort, not Result: these bytes are the binary's own, so a bad one is a
+    // broken build, and falling back to the SCF would only hide it.
+    NpyArray array = check_or_abort(parse_npy(entry.npy));
+    if (array.shape.size() != 2 || array.shape[0] != array.shape[1]) {
+      check_or_abort(err_io("builtin SAD stamp {}/{:03}.npy is not a square matrix", basis, z));
+    }
+    return std::move(array.data);
+  }
+  return std::nullopt;
+}
+
+} // namespace free_breakfast

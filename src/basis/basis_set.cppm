@@ -71,8 +71,12 @@ public:
   ///                           @c shells.size(); anything else aborts, since the
   ///                           one producer (@ref place) builds it from the same
   ///                           loop that builds @p shells.
-  BasisSet(std::vector<Shell> shells, std::vector<uint32_t> atom_shell_offsets)
-      : shells_(std::move(shells)), atom_shell_offsets_(std::move(atom_shell_offsets)) {
+  /// @param name               The compiled-in set the shells were placed from,
+  ///                           or empty (see @ref name).
+  BasisSet(std::vector<Shell> shells, std::vector<uint32_t> atom_shell_offsets,
+           std::string name = {})
+      : shells_(std::move(shells)), atom_shell_offsets_(std::move(atom_shell_offsets)),
+        name_(std::move(name)) {
     const bool valid = !atom_shell_offsets_.empty() && atom_shell_offsets_.front() == 0 &&
                        atom_shell_offsets_.back() == shells_.size() &&
                        std::ranges::is_sorted(atom_shell_offsets_);
@@ -108,6 +112,15 @@ public:
     }
     return atom_shell_offsets_[atom + 1] - atom_shell_offsets_[atom];
   }
+
+  /// @brief The canonical name of the compiled-in basis set these shells were
+  /// placed from (@ref BasisStamp::name), or empty.
+  ///
+  /// The SAD guess looks its baked atomic densities up by it, so it is set only
+  /// where the shells are known to be that set's: by @ref place from a stamp
+  /// that @c resolve_basis took from the binary. A basis read from a path, or
+  /// built from a shell list, has none.
+  [[nodiscard]] const std::string &name() const { return name_; }
 
   /// @brief The shells, in the order supplied.
   [[nodiscard]] const std::vector<Shell> &shells() const { return shells_; }
@@ -220,6 +233,8 @@ private:
   // One offset per atom plus a trailing total; empty when the basis carries no
   // per-atom map. See natoms().
   std::vector<uint32_t> atom_shell_offsets_{};
+  // The compiled-in set's name, or empty. See name().
+  std::string name_{};
 };
 
 /// @brief The Cartesian-to-spherical transform @c U for @p basis: a

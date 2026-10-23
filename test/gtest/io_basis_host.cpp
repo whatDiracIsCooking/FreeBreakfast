@@ -191,4 +191,26 @@ TEST(IoBasisBuiltins, APathIsStillRead) {
   EXPECT_EQ(stamp->element_shells().size(), 2U);
 }
 
+TEST(IoBasisBuiltins, OnlyACompiledInSetIsNamed) {
+  // The canonical spelling, whatever spelling asked for it, and kept through
+  // the normalization the BasisSet step applies.
+  auto sto = fb::resolve_basis("sto3g");
+  ASSERT_TRUE(sto.has_value()) << sto.error().message;
+  EXPECT_EQ(sto->name(), "STO-3G");
+  EXPECT_EQ(sto->primitive_normalized().name(), "STO-3G");
+
+  // A file is unnamed even when its document claims a compiled-in name: the
+  // name promises the baked SAD stamps the set's own shells.
+  const fb::test::ScratchDir dir("io_basis_named");
+  const auto path = dir / "claims-sto-3g.json";
+  ASSERT_TRUE(
+      fb::write_file(path, R"({"name": "STO-3G", )" + std::string{kBasis}.substr(1)).has_value());
+  auto file = fb::resolve_basis(path.string());
+  ASSERT_TRUE(file.has_value()) << file.error().message;
+  EXPECT_EQ(file->name(), "");
+  auto read = fb::read_basis(path);
+  ASSERT_TRUE(read.has_value()) << read.error().message;
+  EXPECT_EQ(read->name(), "");
+}
+
 } // namespace

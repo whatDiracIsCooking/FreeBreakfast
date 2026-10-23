@@ -47,8 +47,21 @@ public:
   /// @param element_shells The element -> shells table (Z as returned by
   ///                       @c nuclear_charge). Elements a molecule does not use
   ///                       may be present; @ref place ignores them.
-  explicit BasisStamp(std::map<int32_t, std::vector<ShellStamp>> element_shells)
-      : element_shells_(std::move(element_shells)) {}
+  /// @param name           The compiled-in set this table is, or empty (see
+  ///                       @ref name).
+  explicit BasisStamp(std::map<int32_t, std::vector<ShellStamp>> element_shells,
+                      std::string name = {})
+      : element_shells_(std::move(element_shells)), name_(std::move(name)) {}
+
+  /// @brief The canonical name of the compiled-in basis set this stamp is
+  /// (`cc-pVDZ`), or empty.
+  ///
+  /// Only @c resolve_basis's compiled-in branch sets it. A name is a promise
+  /// about the shells -- the baked SAD stamps are looked up by it -- and a file
+  /// read from disk may call itself `cc-pVDZ` while holding anything, so a
+  /// basis read from a path carries none. @ref place copies it onto the
+  /// @ref BasisSet it makes.
+  [[nodiscard]] const std::string &name() const { return name_; }
 
   /// @brief The element -> shells table.
   [[nodiscard]] const std::map<int32_t, std::vector<ShellStamp>> &element_shells() const {
@@ -75,11 +88,12 @@ public:
       }
       out.emplace(z, std::move(normalized));
     }
-    return BasisStamp{std::move(out)};
+    return BasisStamp{std::move(out), name_};
   }
 
 private:
   std::map<int32_t, std::vector<ShellStamp>> element_shells_{};
+  std::string name_{};
 };
 
 /// @brief Stamp a @ref BasisStamp onto a molecule's atoms to make a centered
@@ -89,7 +103,8 @@ private:
 /// BasisStamp::shells_for) are placed at that atom's center and appended to the
 /// basis. The AO layout therefore follows atom order, then the stamp's shell
 /// order, and the basis records that grouping (@ref BasisSet::natoms, @ref
-/// BasisSet::atom_shell_offset). Build one stamp, @c place it at each geometry.
+/// BasisSet::atom_shell_offset) and the stamp's @ref BasisStamp::name. Build
+/// one stamp, @c place it at each geometry.
 ///
 /// @param basis_stamp The geometry-free definition.
 /// @param molecule    The atoms (positions in bohr) to stamp onto.
@@ -112,7 +127,7 @@ private:
     }
     atom_shell_offsets.push_back(static_cast<uint32_t>(shells.size()));
   }
-  return BasisSet{std::move(shells), std::move(atom_shell_offsets)};
+  return BasisSet{std::move(shells), std::move(atom_shell_offsets), basis_stamp.name()};
 }
 
 } // namespace free_breakfast

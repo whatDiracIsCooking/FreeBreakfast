@@ -41,6 +41,7 @@ add_executable(
   io_basis_host.cpp
   io_json_host.cpp
   io_npy_host.cpp
+  io_sad_host.cpp
   io_toml_host.cpp
   gpu_policy_host.cpp
   node_resources_host.cpp

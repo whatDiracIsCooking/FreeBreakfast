@@ -32,6 +32,13 @@
 /// @c U = spherical_transform_matrix(basis) -- density transforms contravariantly,
 /// the opposite way to the @c U^T M U used for Fock and overlap matrices.
 ///
+/// **Baked stamps.** Each form takes an optional @ref SadStampLookup. For a
+/// basis that carries a name (@ref BasisSet::name), it is asked for each
+/// element's density first, and an element it has skips its SCF. This module
+/// never knows where the densities come from: the compiled-in ones are
+/// @c free_breakfast.io.sad's, and the generator that writes them links this
+/// module and passes no lookup, so it can only ever compute.
+///
 /// The atomic SCF is the internal partitions under @c atomic_scf/; nothing of
 /// it is exported.
 export module free_breakfast.sad;
@@ -47,6 +54,16 @@ export import free_breakfast.third_party.taskflow;
 
 export namespace free_breakfast {
 
+/// @brief Where @ref sad_density finds an element's density instead of running
+/// its SCF: given a basis set's name (@ref BasisSet::name, never empty) and an
+/// atomic number, that atom's converged block over its own spherical AOs, flat
+/// column-major, or nullopt for an element it does not have.
+///
+/// A plain function pointer, called from the task form's worker threads, so it
+/// must be safe to call concurrently. @c free_breakfast.io.sad's
+/// @c builtin_sad_density is the one in the tree.
+using SadStampLookup = std::optional<std::vector<double>> (*)(std::string_view basis, int32_t z);
+
 /// @brief The SAD initial-guess density: each atom's spherically averaged
 /// atomic SCF density on its block of @p basis's spherical layout, zeros
 /// between atoms.
@@ -59,16 +76,19 @@ export namespace free_breakfast {
 /// @param atoms The atoms, in the order @p basis was placed over: a
 ///              @c Molecule's @c atoms(). A span rather than the @c Molecule,
 ///              whose nuclei would need a device; the guess is host-only.
+/// @param baked Asked first for each element's density when @p basis is
+///              named; nullptr, or an unnamed basis, computes every one.
 /// @return n x n, n = @c basis.nao_sphe(), flat column-major, element (i, j) at
 ///   index i + j*n. ErrorKind::InvalidConfig if @c basis.natoms() differs from
 ///   the atom count -- including a basis built from a bare shell list, which
 ///   carries no grouping at all -- or if some atom's basis has fewer linearly
 ///   independent orbitals of some momentum than it has occupied subshells of
-///   it. ErrorKind::Unsupported for an atom past 96 Cartesian AOs, where its
+///   it, or if @p baked returns a block of the wrong size for an atom's shells.
+///   ErrorKind::Unsupported for an atom past 96 Cartesian AOs, where its
 ///   n^4 two-electron tensor no longer fits in well under a gigabyte.
 ///   ErrorKind::MaxIterationsExceeded if an atomic SCF does not converge.
-[[nodiscard]] Result<std::vector<double>> sad_density(const BasisSet &basis,
-                                                      std::span<const Atom> atoms);
+[[nodiscard]] Result<std::vector<double>>
+sad_density(const BasisSet &basis, std::span<const Atom> atoms, SadStampLookup baked = nullptr);
 
 /// @brief The same guess as one task of @p flow, its atomic SCFs run in
 /// parallel: when it runs, it spawns a subflow with one task per distinct
@@ -91,8 +111,10 @@ export namespace free_breakfast {
 /// @param basis As for the serial form.
 /// @param atoms As for the serial form.
 /// @param out   Where the guess, or the serial form's error, is written.
+/// @param baked As for the serial form; copied, so it need not outlive the
+///              call.
 /// @return The task, for the caller to order against the rest of @p flow.
 tf::Task sad_density(tf::FlowBuilder &flow, const BasisSet &basis, std::span<const Atom> atoms,
-                     Result<std::vector<double>> &out);
+                     Result<std::vector<double>> &out, SadStampLookup baked = nullptr);
 
 } // namespace free_breakfast
