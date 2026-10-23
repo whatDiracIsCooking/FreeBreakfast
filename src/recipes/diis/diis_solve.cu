@@ -114,10 +114,11 @@ __global__ void diis_solve_kernel(const int32_t m, const int32_t ld, const int32
 
 } // namespace
 
-int32_t diis_solve(const wwr::wwrStream_t stream, const int32_t m, const int32_t ld,
-                   const int32_t newest, const double *gram, double *coeff, int32_t *singular_out) {
+wwr::wwrError_t diis_solve(const wwr::wwrStream_t stream, const int32_t m, const int32_t ld,
+                           const int32_t newest, const double *gram, double *coeff,
+                           int32_t *singular_out) {
   diis_solve_kernel<<<1, kWarpSize, 0, stream>>>(m, ld, newest, gram, coeff, singular_out);
-  return static_cast<int32_t>(wwr::wwrGetLastError());
+  return wwr::wwrGetLastError();
 }
 
 } // namespace free_breakfast::device

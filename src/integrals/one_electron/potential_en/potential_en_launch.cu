@@ -30,11 +30,11 @@ static_assert(std::extent_v<decltype(potential_en_kernels), 0> == kMaxAngularMom
               "kernels/ was not emitted for kMaxAngularMomentum: rerun "
               "tools/emit_one_electron_kernels.py");
 
-int32_t potential_en_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                           const NucleiView &nuclei, const int32_t n_ao, double *v) {
+wwr::wwrError_t potential_en_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
+                                   const NucleiView &nuclei, const int32_t n_ao, double *v) {
   if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum || cls.n_rec < 1 ||
       nuclei.n_nuc < 1) {
-    return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
+    return wwr::wwrErrorInvalidValue;
   }
   const auto kernel = potential_en_kernels[cls.la][cls.lb];
   // One thread per record, the nuclei serial inside it, kFourWarps to a block; a
@@ -43,7 +43,7 @@ int32_t potential_en_class(const wwr::wwrStream_t stream, const PrimitivePairCla
   kernel<<<blocks, kFourWarps, 0, stream>>>(
       cls.n_rec, n_ao, nuclei.n_nuc, cls.zeta, cls.p_x, cls.p_y, cls.p_z, cls.pa_x, cls.pa_y,
       cls.pa_z, cls.pb_x, cls.pb_y, cls.pb_z, cls.s, cls.off_a, cls.off_b, nuclei.z, nuclei.c, v);
-  return static_cast<int32_t>(wwr::wwrGetLastError());
+  return wwr::wwrGetLastError();
 }
 
 } // namespace free_breakfast::device

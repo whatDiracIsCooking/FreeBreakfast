@@ -89,8 +89,7 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x,
 
   // 2. Lambda <- Lambda^{-1/2} in place, dropping modes at or below the floor.
   //    Per element in the kernel, so steps 2-3 never synchronize.
-  FBF_TRY(gpu_status(static_cast<wwr::wwrError_t>(
-      device::inverse_sqrt<T>(stream, n, eigenvalues.data(), eigenvalue_floor))));
+  FBF_TRY(gpu_status(device::inverse_sqrt<T>(stream, n, eigenvalues.data(), eigenvalue_floor)));
 
   // 3. X = U diag(Lambda^{-1/2}) U^T, symmetric by construction: gmmwich's
   //    OpX = T form, a dgmm (M = U diag(Lambda^{-1/2}), in O(n^2) rather than a

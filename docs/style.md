@@ -238,6 +238,21 @@ A `.cu` is never a module unit. Use an anonymous namespace there for file-local
 kernels and helpers, because it is the only way to keep them out of the
 device-link namespace.
 
+### Bridge headers
+
+A module reaches a `.cu`'s launcher through a `…_bridge.h`, which the `.cu`
+includes directly and the module's `.cpp` includes in its global module
+fragment. A declaration in the module's purview would get module linkage and
+never bind to the `.cu`'s definition.
+
+**A launcher returns `wwr::wwrError_t`, not the status as an `int32_t`.** The
+bridge takes the type from a different wwr header in each pass: `runtime.h` in
+a device pass, `wwr/runtime_api.h` on the host. Copy the `#if` block from
+`src/integrals/one_electron/overlap/overlap_bridge.h`, whose header comment
+explains it. Both headers alias the vendor's own type, so the caller hands the
+status straight to `gpu_status` with no cast. An `int32_t` round trip gives up
+the type for nothing, and a cast back from an integer accepts any value.
+
 ## Scratch memory
 
 **A calculation's device scratch comes from `DeviceResources::device_workspace()`**,

@@ -95,9 +95,9 @@ Status Diis::push_and_extrapolate(DeviceResources &res, const double *cur_fock,
       return {};
     }
 
-    FBF_TRY(gpu_status(static_cast<wwr::wwrError_t>(
-        device::diis_solve(stream, static_cast<int32_t>(m), cap, static_cast<int32_t>(slot),
-                           gram_.data(), coeff_.data(), singular_.data()))));
+    FBF_TRY(gpu_status(device::diis_solve(stream, static_cast<int32_t>(m), cap,
+                                          static_cast<int32_t>(slot), gram_.data(), coeff_.data(),
+                                          singular_.data())));
 
     // F* = F_hist c over physical columns 0..m-1. The sum is order-invariant,
     // so the ring's rotated order needs no unscrambling. beta = 0 overwrites

@@ -84,32 +84,31 @@ struct MergePlanesFunctor {
 } // namespace
 
 template <typename Z, typename R>
-int32_t split_planes(const wwr::wwrStream_t stream, const int32_t rows, const int32_t cols,
-                     const Z *a, const int32_t lda, R *re, R *im, const int32_t ldp) {
+wwr::wwrError_t split_planes(const wwr::wwrStream_t stream, const int32_t rows, const int32_t cols,
+                             const Z *a, const int32_t lda, R *re, R *im, const int32_t ldp) {
   const SplitPlanesFunctor<Z, R> functor{a, re, im, rows, lda, ldp};
-  return static_cast<int32_t>(
-      wwr::extension::parallel_for(stream, static_cast<int64_t>(rows) * cols, functor));
+  return wwr::extension::parallel_for(stream, static_cast<int64_t>(rows) * cols, functor);
 }
 
 template <typename Z, typename R>
-int32_t merge_planes(const wwr::wwrStream_t stream, const int32_t rows, const int32_t cols,
-                     const R *re, const R *im, const int32_t ldp, Z *c, const int32_t ldc) {
+wwr::wwrError_t merge_planes(const wwr::wwrStream_t stream, const int32_t rows, const int32_t cols,
+                             const R *re, const R *im, const int32_t ldp, Z *c, const int32_t ldc) {
   const MergePlanesFunctor<Z, R> functor{re, im, c, rows, ldp, ldc};
-  return static_cast<int32_t>(
-      wwr::extension::parallel_for(stream, static_cast<int64_t>(rows) * cols, functor));
+  return wwr::extension::parallel_for(stream, static_cast<int64_t>(rows) * cols, functor);
 }
 
-template int32_t split_planes<wwrFloatComplex, float>(wwr::wwrStream_t, int32_t, int32_t,
-                                                      const wwrFloatComplex *, int32_t, float *,
-                                                      float *, int32_t);
-template int32_t split_planes<wwrDoubleComplex, double>(wwr::wwrStream_t, int32_t, int32_t,
-                                                        const wwrDoubleComplex *, int32_t, double *,
-                                                        double *, int32_t);
-template int32_t merge_planes<wwrFloatComplex, float>(wwr::wwrStream_t, int32_t, int32_t,
-                                                      const float *, const float *, int32_t,
-                                                      wwrFloatComplex *, int32_t);
-template int32_t merge_planes<wwrDoubleComplex, double>(wwr::wwrStream_t, int32_t, int32_t,
-                                                        const double *, const double *, int32_t,
-                                                        wwrDoubleComplex *, int32_t);
+template wwr::wwrError_t split_planes<wwrFloatComplex, float>(wwr::wwrStream_t, int32_t, int32_t,
+                                                              const wwrFloatComplex *, int32_t,
+                                                              float *, float *, int32_t);
+template wwr::wwrError_t split_planes<wwrDoubleComplex, double>(wwr::wwrStream_t, int32_t, int32_t,
+                                                                const wwrDoubleComplex *, int32_t,
+                                                                double *, double *, int32_t);
+template wwr::wwrError_t merge_planes<wwrFloatComplex, float>(wwr::wwrStream_t, int32_t, int32_t,
+                                                              const float *, const float *, int32_t,
+                                                              wwrFloatComplex *, int32_t);
+template wwr::wwrError_t merge_planes<wwrDoubleComplex, double>(wwr::wwrStream_t, int32_t, int32_t,
+                                                                const double *, const double *,
+                                                                int32_t, wwrDoubleComplex *,
+                                                                int32_t);
 
 } // namespace free_breakfast::device

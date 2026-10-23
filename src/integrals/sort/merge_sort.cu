@@ -426,17 +426,17 @@ wwr::wwrError_t merge_sort_launches(const wwr::wwrStream_t stream, uint64_t *key
 
 } // namespace
 
-int32_t merge_sort_passes(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
-                          double *keys_alt, uint32_t *values, uint32_t *values_alt) {
+wwr::wwrError_t merge_sort_passes(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
+                                  double *keys_alt, uint32_t *values, uint32_t *values_alt) {
   if (n == 0) {
-    return static_cast<int32_t>(wwr::wwrSuccess);
+    return wwr::wwrSuccess;
   }
   // The kernels only load and store the keys, as bits.
   auto *bits = reinterpret_cast<uint64_t *>(keys);
   auto *bits_alt = reinterpret_cast<uint64_t *>(keys_alt);
-  return static_cast<int32_t>(
-      values != nullptr ? merge_sort_launches<true>(stream, bits, bits_alt, values, values_alt, n)
-                        : merge_sort_launches<false>(stream, bits, bits_alt, nullptr, nullptr, n));
+  return values != nullptr
+             ? merge_sort_launches<true>(stream, bits, bits_alt, values, values_alt, n)
+             : merge_sort_launches<false>(stream, bits, bits_alt, nullptr, nullptr, n);
 }
 
 } // namespace free_breakfast::device

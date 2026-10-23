@@ -1,7 +1,7 @@
 # The split_planes / merge_planes kernels. Device code in its own library, so
 # its language and -x hip never reach the module compiles. The bridge header it
-# shares with the module names int32_t and wwrStream_t, hence types_headers and
-# wwr::device PUBLIC; parallel_for is its own business.
+# shares with the module names int32_t, wwrStream_t and wwrError_t, hence
+# types_headers and wwr::device PUBLIC; parallel_for is its own business.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.recipes.complex_cast.device

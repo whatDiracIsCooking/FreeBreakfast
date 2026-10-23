@@ -30,10 +30,10 @@ static_assert(std::extent_v<decltype(kinetic_kernels), 0> == kMaxAngularMomentum
               "kernels/ was not emitted for kMaxAngularMomentum: rerun "
               "tools/emit_one_electron_kernels.py");
 
-int32_t kinetic_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
-                      const int32_t n_ao, double *t) {
+wwr::wwrError_t kinetic_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
+                              const int32_t n_ao, double *t) {
   if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum || cls.n_rec < 1) {
-    return static_cast<int32_t>(wwr::wwrErrorInvalidValue);
+    return wwr::wwrErrorInvalidValue;
   }
   const auto kernel = kinetic_kernels[cls.la][cls.lb];
   // One thread per record, kFourWarps to a block; a whole number of warps keeps
@@ -42,7 +42,7 @@ int32_t kinetic_class(const wwr::wwrStream_t stream, const PrimitivePairClassVie
   kernel<<<blocks, kFourWarps, 0, stream>>>(cls.n_rec, n_ao, cls.zeta, cls.pa_x, cls.pa_y, cls.pa_z,
                                             cls.pb_x, cls.pb_y, cls.pb_z, cls.s, cls.eb, cls.off_a,
                                             cls.off_b, t);
-  return static_cast<int32_t>(wwr::wwrGetLastError());
+  return wwr::wwrGetLastError();
 }
 
 } // namespace free_breakfast::device

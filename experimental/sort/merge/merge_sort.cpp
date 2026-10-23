@@ -35,9 +35,9 @@ Status merge_sort(DeviceResources &res, const int32_t n, double *keys, uint32_t 
       math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
   const size_t values_bytes = values != nullptr ? count * sizeof(uint32_t) : 0;
   std::byte *const base = res.device_workspace(keys_bytes + values_bytes).data();
-  return gpu_status(static_cast<wwr::wwrError_t>(device::merge_sort_passes(
-      res.stream(), static_cast<uint32_t>(n), keys, reinterpret_cast<double *>(base), values,
-      reinterpret_cast<uint32_t *>(base + keys_bytes))));
+  return gpu_status(device::merge_sort_passes(res.stream(), static_cast<uint32_t>(n), keys,
+                                              reinterpret_cast<double *>(base), values,
+                                              reinterpret_cast<uint32_t *>(base + keys_bytes)));
 }
 
 Status cub_merge_sort(DeviceResources &res, const int32_t n, double *keys, uint32_t *values) {
@@ -47,11 +47,10 @@ Status cub_merge_sort(DeviceResources &res, const int32_t n, double *keys, uint3
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto un = static_cast<uint32_t>(n);
   size_t temp_bytes = 0;
-  FBF_TRY(gpu_status(static_cast<wwr::wwrError_t>(
-      device::cub_merge_sort_temp_bytes(un, values != nullptr, &temp_bytes))));
+  FBF_TRY(gpu_status(device::cub_merge_sort_temp_bytes(un, values != nullptr, &temp_bytes)));
   std::byte *const temp = res.device_workspace(temp_bytes).data();
-  return gpu_status(static_cast<wwr::wwrError_t>(
-      device::cub_merge_sort_vendor(res.stream(), un, keys, values, temp, temp_bytes)));
+  return gpu_status(
+      device::cub_merge_sort_vendor(res.stream(), un, keys, values, temp, temp_bytes));
 }
 
 } // namespace free_breakfast

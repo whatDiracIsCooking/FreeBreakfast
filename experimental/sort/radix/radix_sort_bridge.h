@@ -7,6 +7,8 @@
 /// linkage and never bind to the definition in the .cu (see
 /// src/recipes/orthogonalize/inverse_sqrt_bridge.h). Everything here is public
 /// to both, so it is only what the host side needs to size the scratch.
+/// wwrError_t comes from a different wwr header in each pass, as
+/// src/integrals/one_electron/overlap/overlap_bridge.h explains.
 
 #pragma once
 
@@ -16,7 +18,13 @@
 #include "block_params.h"
 #include "integral_types.h"
 
+// wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
+// wwrError_t: see src/integrals/one_electron/overlap/overlap_bridge.h.
+#if defined(__CUDACC__) || defined(__HIP__) || defined(__HIPCC__)
 #include "runtime.h"
+#else
+#include "wwr/runtime_api.h"
+#endif
 
 namespace free_breakfast::device {
 
@@ -58,19 +66,18 @@ inline constexpr size_t radix_sort_count_slots(const size_t n) {
 /// @param values      Null for a keys-only sort
 /// @param values_alt  Scratch, @p n elements; ignored when @p values is null
 /// @param counts      Scratch, radix_sort_count_slots(n) elements
-/// @return The status of the first failed launch, or success, as the integer
-///         value of `wwrError_t` (the enum is only in runtime.h's device
-///         section; the caller casts it back). Launch errors only: a fault
-///         inside a kernel surfaces at the next synchronization.
-[[nodiscard]] int32_t radix_sort_passes(wwr::wwrStream_t stream, uint32_t n, double *keys,
-                                        double *keys_alt, uint32_t *values, uint32_t *values_alt,
-                                        uint32_t *counts);
+/// @return The status of the first failed launch, or success. Launch errors
+///         only: a fault inside a kernel surfaces at the next synchronization.
+[[nodiscard]] wwr::wwrError_t radix_sort_passes(wwr::wwrStream_t stream, uint32_t n, double *keys,
+                                                double *keys_alt, uint32_t *values,
+                                                uint32_t *values_alt, uint32_t *counts);
 
 /// @brief The bytes of temporary storage cub_radix_sort_vendor needs for @p n
 /// keys, into @p bytes: the vendor's size query, which launches nothing
 ///
-/// @return The query's status, as the integer value of `wwrError_t`
-[[nodiscard]] int32_t cub_radix_sort_temp_bytes(uint32_t n, bool with_values, size_t *bytes);
+/// @return The query's status
+[[nodiscard]] wwr::wwrError_t cub_radix_sort_temp_bytes(uint32_t n, bool with_values,
+                                                        size_t *bytes);
 
 /// @brief radix_sort_passes' contract over the vendor's DeviceRadixSort (CUB on
 /// CUDA, hipCUB on HIP), the reference the experimental sort is measured
@@ -81,10 +88,10 @@ inline constexpr size_t radix_sort_count_slots(const size_t n) {
 /// The vendor's order is not quite total order; see the README.
 ///
 /// @param temp        Scratch, @p temp_bytes from cub_radix_sort_temp_bytes
-/// @return The status of the first failed call, or success, as the integer
-///         value of `wwrError_t`
-[[nodiscard]] int32_t cub_radix_sort_vendor(wwr::wwrStream_t stream, uint32_t n, double *keys,
-                                            double *keys_alt, uint32_t *values,
-                                            uint32_t *values_alt, void *temp, size_t temp_bytes);
+/// @return The status of the first failed call, or success
+[[nodiscard]] wwr::wwrError_t cub_radix_sort_vendor(wwr::wwrStream_t stream, uint32_t n,
+                                                    double *keys, double *keys_alt,
+                                                    uint32_t *values, uint32_t *values_alt,
+                                                    void *temp, size_t temp_bytes);
 
 } // namespace free_breakfast::device

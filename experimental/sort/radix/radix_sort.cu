@@ -461,11 +461,11 @@ wwr::wwrError_t radix_sort_small(const wwr::wwrStream_t stream, uint64_t *keys, 
 
 } // namespace
 
-int32_t radix_sort_passes(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
-                          double *keys_alt, uint32_t *values, uint32_t *values_alt,
-                          uint32_t *counts) {
+wwr::wwrError_t radix_sort_passes(const wwr::wwrStream_t stream, const uint32_t n, double *keys,
+                                  double *keys_alt, uint32_t *values, uint32_t *values_alt,
+                                  uint32_t *counts) {
   if (n == 0) {
-    return static_cast<int32_t>(wwr::wwrSuccess);
+    return wwr::wwrSuccess;
   }
   // The kernels only load and store the keys, as bits; no double is ever read
   // through these.
@@ -474,7 +474,7 @@ int32_t radix_sort_passes(const wwr::wwrStream_t stream, const uint32_t n, doubl
 
   // Small inputs: a tile sort, then at most four merge rounds.
   if (n <= kSmallSortMaxKeys) {
-    return static_cast<int32_t>(radix_sort_small(stream, bits, bits_alt, values, values_alt, n));
+    return radix_sort_small(stream, bits, bits_alt, values, values_alt, n);
   }
 
   const uint32_t num_tiles = (n + kRadixSortTile - 1) / kRadixSortTile;
@@ -483,23 +483,23 @@ int32_t radix_sort_passes(const wwr::wwrStream_t stream, const uint32_t n, doubl
   for (uint32_t shift = 0; shift < kRadixKeyBits; shift += kRadixBits) {
     radix_count_kernel<<<num_tiles, kRadixSortTile, 0, stream>>>(bits, n, shift, counts);
     if (const wwr::wwrError_t err = wwr::wwrGetLastError(); err != wwr::wwrSuccess) {
-      return static_cast<int32_t>(err);
+      return err;
     }
     radix_scan_kernel<<<1, kScanThreads, 0, stream>>>(counts, count_len);
     if (const wwr::wwrError_t err = wwr::wwrGetLastError(); err != wwr::wwrSuccess) {
-      return static_cast<int32_t>(err);
+      return err;
     }
     radix_scatter_kernel<<<num_tiles, kRadixSortTile, 0, stream>>>(bits, values, n, shift, counts,
                                                                    bits_alt, values_dst);
     if (const wwr::wwrError_t err = wwr::wwrGetLastError(); err != wwr::wwrSuccess) {
-      return static_cast<int32_t>(err);
+      return err;
     }
     // The output of this pass is the input of the next. The pass count is
     // even, so the last swap leaves bits and values pointing at the caller's.
     std::swap(bits, bits_alt);
     std::swap(values, values_dst);
   }
-  return static_cast<int32_t>(wwr::wwrSuccess);
+  return wwr::wwrSuccess;
 }
 
 } // namespace free_breakfast::device

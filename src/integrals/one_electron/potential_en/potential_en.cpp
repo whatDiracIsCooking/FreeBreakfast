@@ -29,8 +29,8 @@ Status launch_potential_en(DeviceResources &res, const std::span<const Primitive
   const NucleiView nuclei_view = molecule.view();
   const auto n_ao = static_cast<int32_t>(m.n());
   return gpu_status(launch_each(classes, res.stream(), [&](const PrimitivePairClass &cls) {
-    return static_cast<wwr::wwrError_t>(device::potential_en_class(
-        cls.device_stream()->stream(), cls.view(), nuclei_view, n_ao, m.data()));
+    return device::potential_en_class(cls.device_stream()->stream(), cls.view(), nuclei_view, n_ao,
+                                      m.data());
   }));
 }
 
