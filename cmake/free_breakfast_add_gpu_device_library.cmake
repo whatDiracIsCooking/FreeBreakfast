@@ -136,6 +136,18 @@ macro(FREE_BREAKFAST_ADD_GPU_DEVICE_LIBRARY)
       target_compile_options(${ARG_NAME} PRIVATE ${ARG_GPU_OPTIONS})
     endif()
 
+    # The CUDA build gets the object cache language-wide, through
+    # CMAKE_CUDA_COMPILER_LAUNCHER; under HIP it has to be per target -- see
+    # the "Compiler cache" section of the root CMakeLists.txt. It is empty
+    # exactly when sccache is absent, and then so is the CXX launcher this
+    # replaces. Being CXX, these sources would also be scanned for modules and
+    # compiled with an `@<modmap>` argument whose contents the cache cannot
+    # see; a `.cu` imports nothing (nvcc cannot), so there is nothing to scan.
+    set_target_properties(
+      ${ARG_NAME} PROPERTIES CXX_SCAN_FOR_MODULES OFF CXX_COMPILER_LAUNCHER
+                             "${FREE_BREAKFAST_GPU_OBJECT_CACHE}"
+    )
+
     unset(_gdl_hip_include_dir)
     unset(_gdl_hip_prefix)
   endif()

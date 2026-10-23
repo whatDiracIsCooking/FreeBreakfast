@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# CMAKE_CUDA_COMPILER_LAUNCHER wrapper: a stateless, content-addressed object
-# cache that sits IN FRONT of sccache.
+# Compiler launcher for the device-pass `.cu` sources of either backend: a
+# stateless, content-addressed object cache that sits IN FRONT of sccache.
+# Under CUDA it is CMAKE_CUDA_COMPILER_LAUNCHER (nvcc); under HIP, where a
+# `.cu` is compiled as CXX by clang's `-x hip`, it is the CXX_COMPILER_LAUNCHER
+# of each free_breakfast_add_gpu_device_library target only. It must never
+# front a module unit: those write a BMI beside the .o, and a hit here restores
+# only the .o.
 #
-# sccache already caches CUDA object compiles, but CMake bakes each worktree's
-# absolute path into the -I flags it hands nvcc, and that path ends up in
-# sccache's cache key -- so identical source in a different worktree/checkout
+# sccache already caches these object compiles, but CMake bakes each worktree's
+# absolute path into the -I flags it hands the compiler, and that path ends up
+# in sccache's cache key -- so identical source in a different worktree/checkout
 # is a guaranteed miss (measured: eri_K_2222.cu.o, 597s in a fresh worktree
 # despite an identical compile already cached elsewhere). SCCACHE_BASEDIRS
 # looks like the fix but is not: it is read once when the sccache daemon
@@ -13,10 +18,10 @@
 #
 # This script computes its OWN key from file CONTENT instead of paths: the
 # source file, every LOCAL header it #includes (resolved recursively, hashed
-# by content, never by path), the compiler version, and the compile flags with
-# this checkout's own absolute root stripped out. Identical content hits
-# regardless of which worktree or container built it first, because nothing
-# worktree-specific ever enters the key.
+# by content, never by path), the compiler version, an optional caller salt,
+# and the compile flags with this checkout's own absolute root stripped out.
+# Identical content hits regardless of which worktree or container built it
+# first, because nothing worktree-specific ever enters the key.
 #
 # The -I/-isystem search dirs are deliberately NOT part of the key. They exist
 # only so the include scan below can FIND each header; once found, that header's
@@ -28,7 +33,15 @@
 # checked: if a different -I set resolves a different header, that header's
 # content hash moves and busts the key on its own.
 #
-# Usage (as a compiler launcher): this script nvcc <the real compiler args...>
+# Headers that resolve OUTSIDE this checkout are not hashed; the compiler
+# version stands in for them. That holds for nvcc, whose --version names the
+# whole toolkit, but not under HIP: the compiler is apt's clang while the
+# headers and device libraries are ROCm's, so a ROCm upgrade under the same
+# clang would hit stale objects. --salt=<text> is how CMake puts that version
+# (hip_VERSION) into the key.
+#
+# Usage (as a compiler launcher):
+#   this script [--salt=<text>] <compiler> <the real compiler args...>
 # Every failure mode here falls through to a real compile -- a cache-layer bug
 # must never be a build failure.
 set -euo pipefail
@@ -44,10 +57,16 @@ CACHE_ROOT=${BUILD_OBJECT_CACHE_DIR:-${PRIMARY_ROOT:-$REPO_ROOT}/.build-object-c
 # Parse the real compiler invocation: <compiler> <args...>, e.g.
 #   nvcc -forward-unknown-to-host-compiler $DEFINES $INCLUDES $FLAGS \
 #        -MD -MT $out -MF $DEP_FILE -x cu -rdc=true -c $in -o $out
+#   clang++ $DEFINES $INCLUDES $FLAGS -MD -MT $out -MF $DEP_FILE -o $out -c $in
+# (the second is HIP, $FLAGS carrying `-x hip --offload-arch=...`).
 # -I is glued (-I/path), -isystem is a separate following argument -- CMake's
 # CUDA rule uses both shapes in the same command line (see CMakeLists.txt for
 # a device-heavy library: -I<private dirs>, -isystem <CUDA toolkit includes>).
 # ---------------------------------------------------------------------------
+salt=
+case "${1:-}" in
+  --salt=*) salt=${1#--salt=}; shift ;;
+esac
 compiler=$1
 shift
 args=("$@")
@@ -163,6 +182,7 @@ key_input=$(
   sha256sum "$input" | cut -d' ' -f1
   printf '%s\n' "${header_hashes[@]}" | sort -u
   printf 'compiler:%s\n' "$compiler_id"
+  printf 'salt:%s\n' "$salt"
   printf 'args:%s\n' "$normalized_args"
 )
 key=$(printf '%s' "$key_input" | sha256sum | cut -d' ' -f1)
@@ -171,13 +191,16 @@ cached="$CACHE_ROOT/$shard/$key.o"
 
 mkdir -p "$(dirname "$output")"
 
-if [ -f "$cached" ]; then
-  cp "$cached" "$output"
+if [ -f "$cached" ] && cp "$cached" "$output"; then
+  :
 else
   "${launcher[@]}" "$compiler" "${args[@]}"
-  mkdir -p "$(dirname "$cached")"
+  # Storing is best-effort. CACHE_ROOT can be unwritable -- a worktree's
+  # container that does not mount the main checkout sees it as a root-owned
+  # mount point -- and the compile above has already succeeded by now.
   tmp="$cached.tmp.$$"
-  cp "$output" "$tmp" && mv -f "$tmp" "$cached"
+  { mkdir -p "$(dirname "$cached")" && cp "$output" "$tmp" &&
+    mv -f "$tmp" "$cached"; } 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 fi
 
 # Always (re)written, hit or miss: ninja needs this object's real dependencies

@@ -229,7 +229,7 @@ the same two sorts: keys only, and `double` keys with `uint32_t` values.
 - **Both costs grow** with every extra GPU architecture in the build and every
   extra key/value type pair instantiated.
 - **In practice:** the extra compile time is one translation unit, cached by
-  sccache and `devtools/cuda-object-cache.sh` after the first build. It
+  sccache and `devtools/gpu-object-cache.sh` after the first build. It
   lengthens a full build only if this TU ends up on the critical path.
 
 ## Known costs

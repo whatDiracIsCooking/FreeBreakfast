@@ -32,7 +32,7 @@ compile_commands.json
 # worktrees point at one cache; never committed.
 /.sccache/
 
-# devtools/cuda-object-cache.sh's content-addressed CUDA object store. Lives
+# devtools/gpu-object-cache.sh's content-addressed GPU object store. Lives
 # under the main checkout, same reasoning as .sccache/ above -- resolved via
 # PRIMARY_ROOT (devtools/lib.sh) so every worktree points at the one copy.
 /.build-object-cache/
