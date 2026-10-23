@@ -1,6 +1,7 @@
 # Pipeline: Guess
 
-Build the initial-guess density. SAD is the only kind so far.
+Build the initial-guess density, or read one back from a `.npy` file. SAD is
+the only kind built so far.
 
 ## Module
 
@@ -8,7 +9,8 @@ Build the initial-guess density. SAD is the only kind so far.
 re-exports `free_breakfast.basis` (and through it `free_breakfast.molecule`)
 and Taskflow, so an importer can name everything in `run`'s signature without
 a second import. It links no GPU library: the step is host work. It links
-`sad` and `io::sad` publicly, since `run`'s inline body names both.
+`sad` and `io::sad` publicly, since `run`'s inline body names both, and
+`io::npy` for `load`'s.
 
 ## The step
 
@@ -25,6 +27,7 @@ struct GuessStep {
   GuessType type = GuessType::Sad;
 
   Result<Guess> run(View<Molecule, BasisSet> in, tf::Subflow &subflow) const;
+  static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in);
 };
 ```
 
@@ -65,6 +68,14 @@ explicit join, one level up.
 touches the device (`step/README.md`), so whichever device step first reads
 the guess uploads it. That is the Fock build, which does not exist yet.
 
+**`load` reads a saved density** (`[guess] from = "d.npy"`, `step/README.md`):
+a float64 `.npy` file, `nao_sphe` square, in either layout, since `read_npy`
+returns column-major. It reads only the `BasisSet`, for that count, and runs on
+the host like `run`, with no subflow. The file carries only the numbers, so
+only the shape is checked. A file made over another basis of the same size, or
+the same atoms in another order, is accepted. A file that cannot be read is
+`IO`; another shape is `InvalidConfig`.
+
 **`Molecule` is read for its atoms only**, never its device nuclei, as
 `BasisSet` reads it.
 
@@ -78,6 +89,8 @@ the guess uploads it. That is the Fock build, which does not exist yet.
 - A compiled-in set (cc-pVDZ) is checked to arrive named, and the step's
   density is checked bitwise against `sad_density` with the baked stamps.
 - A basis placed over other atoms is checked to be `InvalidConfig`.
+- `load` is checked to read a saved density back bitwise. The wrong shape is
+  checked to be `InvalidConfig`, and a missing file `IO`.
 
 The step itself never touches the device, but its input `Molecule` does, so the
 tests need a GPU.
@@ -89,6 +102,7 @@ registry, beside the device chain:
 - trace(D S) is checked to equal Σ Z_A to 1e-10, with S being the overlap the
   same pipeline built on the device.
 - A failed root is checked to fail the guess with the root's error.
+- An SCF from a loaded guess is checked to match one from its own.
 
 `test/gtest/pipeline_config_host.cpp` has the `[guess]` table's cases.
 
@@ -96,5 +110,5 @@ registry, beside the device chain:
 
 | File | Role |
 |------|------|
-| `guess.cppm` | Module interface: `GuessType`, `Guess`, `GuessStep` |
+| `guess.cppm` | Module interface: `GuessType`, `Guess`, `GuessStep` and its `load` |
 | `CMakeLists.txt` | The module library |

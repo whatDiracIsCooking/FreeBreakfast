@@ -45,6 +45,57 @@ struct InputProducers<View<Ts...>, Steps...> {
   static constexpr std::array<size_t, sizeof...(Ts)> kIndices{kProducerIndex<Ts, Steps...>...};
 };
 
+// What step S's load reads, as positions in Steps; none for a step with no
+// load, which is never planned as loaded.
+template <class S, class... Steps>
+constexpr std::span<const size_t> load_producers() {
+  if constexpr (LoadableStep<S>) {
+    return InputProducers<LoadInput<S>, Steps...>::kIndices;
+  } else {
+    return {};
+  }
+}
+
+template <class S, class... Steps>
+constexpr bool kLoadInputsProduced = [] {
+  if constexpr (LoadableStep<S>) {
+    return InputProducers<LoadInput<S>, Steps...>::kAllProduced;
+  } else {
+    return true;
+  }
+}();
+
+// Where step S runs when it is loaded; its run's shape for a step with no load.
+template <class S>
+constexpr RunShape load_shape() {
+  if constexpr (LoadableStep<S>) {
+    return kLoadShape<S>;
+  } else {
+    return kRunShape<S>;
+  }
+}
+
+// The alternatives of Pipeline::Step: every step, then Load<S> for each step
+// with a load, so a Load of one without fails to compile.
+template <class S, bool = LoadableStep<S>>
+struct LoadAlternative {
+  using type = std::tuple<>;
+};
+template <class S>
+struct LoadAlternative<S, true> {
+  using type = std::tuple<Load<S>>;
+};
+template <class Tuple>
+struct VariantOver {};
+template <class... Ts>
+struct VariantOver<std::tuple<Ts...>> {
+  using type = std::variant<Ts...>;
+};
+template <class... Steps>
+using StepVariant = typename VariantOver<decltype(std::tuple_cat(
+    std::declval<std::tuple<Steps...>>(),
+    std::declval<typename LoadAlternative<Steps>::type>()...))>::type;
+
 template <class... Steps>
 constexpr bool kUniqueStepNames = [] {
   const std::array<std::string_view, sizeof...(Steps)> names{Steps::kName...};
@@ -59,12 +110,13 @@ constexpr bool kUniqueStepNames = [] {
 }();
 
 // A registry a Pipeline can plan over: steps with unique names, one producer
-// per product, and a producer for everything any step reads. A pipeline built
-// from it may still leave a producer out, which create reports.
+// per product, and a producer for everything any step's run or load reads. A
+// pipeline built from it may still leave a producer out, which create reports.
 template <class... Steps>
 concept StepRegistry = (PipelineStep<Steps> && ...) && kUniqueStepNames<Steps...> &&
                        ((kProducerCount<StepOutput<Steps>, Steps...> == 1) && ...) &&
-                       (InputProducers<StepInput<Steps>, Steps...>::kAllProduced && ...);
+                       (InputProducers<StepInput<Steps>, Steps...>::kAllProduced && ...) &&
+                       (kLoadInputsProduced<Steps, Steps...> && ...);
 
 // The shapes whose run takes a DeviceResources: they need a device, and the
 // pipeline waits on it after them.
@@ -120,12 +172,16 @@ class Pipeline {
   using StepAt = std::tuple_element_t<I, std::tuple<Steps...>>;
 
 public:
-  /// @brief One step of the registry, as the front end hands it over.
-  using Step = std::variant<Steps...>;
+  /// @brief One step of the registry, as the front end hands it over: an `S`
+  /// to run, or a `Load<S>` to read its product instead, for an `S` with a
+  /// `load`.
+  using Step = StepVariant<Steps...>;
 
   /// @brief Plan @p steps: wire each one's `View` to its producers, and order
-  /// them. ErrorKind::InvalidConfig, naming the steps, for a step given twice,
-  /// a step reading a product no step in @p steps writes, or a cycle.
+  /// them. A loaded step is wired by its `load`'s `View`, so what only its
+  /// `run` reads is not planned for it. ErrorKind::InvalidConfig, naming the
+  /// steps, for a step given twice (to run or to load), a step reading a
+  /// product no step in @p steps writes, or a cycle.
   [[nodiscard]] static Result<Pipeline> create(std::vector<Step> steps) {
     std::nullptr_t strict = nullptr;
     return plan(std::move(steps), strict);
@@ -175,7 +231,7 @@ public:
     }
     DeviceResources *res = nullptr;
     for (const size_t i : order_) {
-      if (needs_device(kShapes[i])) {
+      if (needs_device(shape(i))) {
         if (node.device_count() == 0) {
           return err_gpu("[{}] needs a GPU device, and none is visible", kNames[i]);
         }
@@ -194,10 +250,10 @@ public:
         tasks[I] = emplace_task<I>(flow, node, res);
         return {};
       });
-      for (const size_t j : kInputs[i]) {
+      for (const size_t j : inputs(i)) {
         tasks[j].precede(tasks[i]);
       }
-      if (on_device_chain(kShapes[i])) {
+      if (on_device_chain(shape(i))) {
         if (chain_tail) {
           chain_tail->precede(tasks[i]);
         }
@@ -228,11 +284,19 @@ public:
   }
 
   /// @brief The planned step of type `S`, as given or filled in; empty if the
-  /// pipeline does not hold one.
+  /// pipeline does not hold one, or loads its product.
   template <class S>
     requires(std::same_as<S, Steps> || ...)
   [[nodiscard]] const std::optional<S> &step() const {
     return std::get<std::optional<S>>(steps_);
+  }
+
+  /// @brief Where the product of step `S` is loaded from; empty if the
+  /// pipeline does not load it.
+  template <class S>
+    requires(std::same_as<S, Steps> || ...) && LoadableStep<S>
+  [[nodiscard]] const std::optional<std::filesystem::path> &from() const {
+    return from_[kProducerIndex<StepOutput<S>, Steps...>];
   }
 
 private:
@@ -240,6 +304,9 @@ private:
   static constexpr std::array<RunShape, kStepCount> kShapes{kRunShape<Steps>...};
   static constexpr std::array<std::span<const size_t>, kStepCount> kInputs{
       std::span<const size_t>{InputProducers<StepInput<Steps>, Steps...>::kIndices}...};
+  static constexpr std::array<std::span<const size_t>, kStepCount> kLoadInputs{
+      load_producers<Steps, Steps...>()...};
+  static constexpr std::array<RunShape, kStepCount> kLoadShapes{load_shape<Steps>()...};
 
   Pipeline() = default;
 
@@ -250,13 +317,7 @@ private:
     Pipeline pipeline;
     std::array<bool, kStepCount> planned{};
     for (Step &step : steps) {
-      const size_t i = step.index();
-      if (planned[i]) {
-        return err_config("[{}] is given twice", kNames[i]);
-      }
-      planned[i] = true;
-      std::visit([&]<class S>(S &s) { std::get<std::optional<S>>(pipeline.steps_) = std::move(s); },
-                 step);
+      FBF_TRY(std::visit([&](auto &s) { return pipeline.take(s, planned); }, step));
     }
     // Close over the producers, in registry order, so an insertion error is
     // the same whichever order the steps came in.
@@ -266,7 +327,7 @@ private:
         if (!planned[i]) {
           continue;
         }
-        for (const size_t j : kInputs[i]) {
+        for (const size_t j : pipeline.inputs(i)) {
           if (planned[j]) {
             continue;
           }
@@ -283,9 +344,40 @@ private:
         }
       }
     }
-    pipeline.order_ = FBF_TRY(plan_order(planned));
+    pipeline.order_ = FBF_TRY(pipeline.plan_order(planned));
     return pipeline;
   }
+
+  // Take step S into the plan, to run.
+  template <class S>
+  Status take(S &step, std::array<bool, kStepCount> &planned) {
+    constexpr size_t kI = kProducerIndex<StepOutput<S>, Steps...>;
+    FBF_TRY(plan_once(kI, planned));
+    std::get<kI>(steps_) = std::move(step);
+    return {};
+  }
+
+  // Take step S into the plan, to load its product.
+  template <class S>
+  Status take(Load<S> &load, std::array<bool, kStepCount> &planned) {
+    constexpr size_t kI = kProducerIndex<StepOutput<S>, Steps...>;
+    FBF_TRY(plan_once(kI, planned));
+    from_[kI] = std::move(load.from);
+    return {};
+  }
+
+  static Status plan_once(size_t i, std::array<bool, kStepCount> &planned) {
+    if (planned[i]) {
+      return err_config("[{}] is given twice", kNames[i]);
+    }
+    planned[i] = true;
+    return {};
+  }
+
+  // What step i reads, and where it runs: its load's if it is loaded, its
+  // run's otherwise.
+  std::span<const size_t> inputs(size_t i) const { return from_[i] ? kLoadInputs[i] : kInputs[i]; }
+  RunShape shape(size_t i) const { return from_[i] ? kLoadShapes[i] : kShapes[i]; }
 
   // Call f.template operator()<I>() for the runtime index i < kStepCount.
   template <class F>
@@ -300,14 +392,14 @@ private:
   // The planned steps in an order where each follows its producers: Kahn's,
   // lowest registry position first, so the plan is the same for any input
   // order. Steps left over form a cycle.
-  static Result<std::vector<size_t>> plan_order(const std::array<bool, kStepCount> &planned) {
+  Result<std::vector<size_t>> plan_order(const std::array<bool, kStepCount> &planned) const {
     std::vector<size_t> order;
     std::array<bool, kStepCount> placed{};
     for (bool grew = true; grew;) {
       grew = false;
       for (size_t i = 0; i < kStepCount; ++i) {
         if (!planned[i] || placed[i] ||
-            !std::ranges::all_of(kInputs[i], [&](size_t j) { return placed[j]; })) {
+            !std::ranges::all_of(inputs(i), [&](size_t j) { return placed[j]; })) {
           continue;
         }
         order.push_back(i);
@@ -352,24 +444,23 @@ private:
     return View<Ts...>{**std::get<kProducerIndex<Ts, Steps...>>(outputs_)...};
   }
 
-  // Run step I on the resources its shape names, after its inputs.
-  template <size_t I, class... Subflow>
-  Result<StepOutput<StepAt<I>>> run_step(NodeResources &node, DeviceResources *res,
-                                         Subflow &...subflow) const {
-    const auto view = FBF_TRY(bind(std::type_identity<StepInput<StepAt<I>>>{}));
-    const StepAt<I> &step = *std::get<I>(steps_);
-    if constexpr (kShapes[I] == RunShape::Host || kShapes[I] == RunShape::HostSubflow) {
-      return step.run(view, subflow...);
-    } else if constexpr (needs_device(kShapes[I])) {
+  // make(resources...) on the resources kShape names. A device one runs
+  // under a ScopedDeviceIndex, and its stream is waited on after.
+  template <class T, RunShape kShape, class Make, class... Subflow>
+  static Result<T> on_resources(const Make &make, NodeResources &node, DeviceResources *res,
+                                Subflow &...subflow) {
+    if constexpr (kShape == RunShape::Host || kShape == RunShape::HostSubflow) {
+      return make(subflow...);
+    } else if constexpr (needs_device(kShape)) {
       const ScopedDeviceIndex on{res->dev_idx()};
-      auto out = step.run(view, *res, subflow...);
+      auto out = make(*res, subflow...);
       if (out) {
         FBF_TRY(res->sync());
       }
       return out;
     } else {
-      static_assert(kShapes[I] == RunShape::Node);
-      auto out = step.run(view, node);
+      static_assert(kShape == RunShape::Node);
+      auto out = make(node);
       for (DeviceResources &device : node.devices()) {
         const ScopedDeviceIndex on{device.dev_idx()};
         FBF_TRY(device.sync());
@@ -378,20 +469,47 @@ private:
     }
   }
 
-  // Step I as one task of flow, writing its slot.
-  template <size_t I>
-  tf::Task emplace_task(tf::Taskflow &flow, NodeResources &node, DeviceResources *res) {
+  // Step I's task, writing its slot with make on the resources kShape names.
+  template <size_t I, RunShape kShape, class Make>
+  tf::Task emplace_shaped(tf::Taskflow &flow, NodeResources &node, DeviceResources *res,
+                          Make make) {
+    using T = StepOutput<StepAt<I>>;
     auto &slot = std::get<I>(outputs_);
-    if constexpr (kShapes[I] == RunShape::HostSubflow || kShapes[I] == RunShape::DeviceSubflow) {
-      return flow.emplace([this, &slot, &node, res](tf::Subflow &subflow) {
-        slot = run_step<I>(node, res, subflow);
+    if constexpr (kShape == RunShape::HostSubflow || kShape == RunShape::DeviceSubflow) {
+      return flow.emplace([&slot, &node, res, make](tf::Subflow &subflow) {
+        slot = on_resources<T, kShape>(make, node, res, subflow);
       });
     } else {
-      return flow.emplace([this, &slot, &node, res] { slot = run_step<I>(node, res); });
+      return flow.emplace(
+          [&slot, &node, res, make] { slot = on_resources<T, kShape>(make, node, res); });
     }
   }
 
+  // Step I as one task of flow, after its inputs: its load if it is loaded,
+  // its run otherwise.
+  template <size_t I>
+  tf::Task emplace_task(tf::Taskflow &flow, NodeResources &node, DeviceResources *res) {
+    using S = StepAt<I>;
+    using T = StepOutput<S>;
+    if constexpr (LoadableStep<S>) {
+      if (from_[I]) {
+        return emplace_shaped<I, kLoadShape<S>>(
+            flow, node, res, [this](auto &...resources) -> Result<T> {
+              const auto view = FBF_TRY(bind(std::type_identity<LoadInput<S>>{}));
+              return S::load(*from_[I], view, resources...);
+            });
+      }
+    }
+    return emplace_shaped<I, kRunShape<S>>(
+        flow, node, res, [this](auto &...resources) -> Result<T> {
+          const auto view = FBF_TRY(bind(std::type_identity<StepInput<S>>{}));
+          return std::get<I>(steps_)->run(view, resources...);
+        });
+  }
+
   std::tuple<std::optional<Steps>...> steps_;
+  // Each loaded step's path, in place of the step.
+  std::array<std::optional<std::filesystem::path>, kStepCount> from_;
   std::tuple<std::optional<Result<StepOutput<Steps>>>...> outputs_;
   // The planned steps' registry positions, each after its producers.
   std::vector<size_t> order_;

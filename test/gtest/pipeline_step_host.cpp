@@ -199,6 +199,89 @@ struct TemplateRun {
 };
 static_assert(!fb::PipelineStep<TemplateRun>);
 
+// --- Loadable steps ---------------------------------------------------------
+
+// Made on the device, read back on the host from fewer inputs.
+struct HostLoadStep {
+  static constexpr std::string_view kName = "host_load";
+  fb::Result<B> run(fb::View<A> in, fb::DeviceResources &res) const;
+  static fb::Result<B> load(const std::filesystem::path &from, fb::View<> in);
+};
+
+// A load of its own shape, noexcept, its view by const reference.
+struct DeviceLoadStep {
+  static constexpr std::string_view kName = "device_load";
+  fb::Result<MoveOnly> run(fb::View<A, B> in) const;
+  static fb::Result<MoveOnly> load(const std::filesystem::path &from, const fb::View<A> &in,
+                                   fb::DeviceResources &res) noexcept;
+};
+
+static_assert(fb::LoadableStep<HostLoadStep>);
+static_assert(fb::LoadableStep<DeviceLoadStep>);
+static_assert(fb::kRunShape<HostLoadStep> == fb::RunShape::Device);
+static_assert(fb::kLoadShape<HostLoadStep> == fb::RunShape::Host);
+static_assert(fb::kRunShape<DeviceLoadStep> == fb::RunShape::Host);
+static_assert(fb::kLoadShape<DeviceLoadStep> == fb::RunShape::Device);
+static_assert(std::same_as<fb::LoadInput<HostLoadStep>, fb::View<>>);
+static_assert(std::same_as<fb::LoadInput<DeviceLoadStep>, fb::View<A>>);
+
+// A step with no load is a step, but not a loadable one.
+static_assert(!fb::LoadableStep<HostStep>);
+
+template <class S>
+concept FormsLoad = requires { typename fb::Load<S>; };
+static_assert(FormsLoad<HostLoadStep>);
+static_assert(!FormsLoad<HostStep>);
+
+// A loaded product never ran, so the step's options cannot reach load.
+struct NonStaticLoad {
+  static constexpr std::string_view kName = "non_static_load";
+  fb::Result<B> run(fb::View<A> in) const;
+  fb::Result<B> load(const std::filesystem::path &from, fb::View<> in) const;
+};
+static_assert(fb::PipelineStep<NonStaticLoad>);
+static_assert(!fb::LoadableStep<NonStaticLoad>);
+
+// One product, made either way.
+struct LoadsAnotherProduct {
+  static constexpr std::string_view kName = "loads_another_product";
+  fb::Result<B> run(fb::View<A> in) const;
+  static fb::Result<A> load(const std::filesystem::path &from, fb::View<> in);
+};
+static_assert(!fb::LoadableStep<LoadsAnotherProduct>);
+
+struct LoadReadsOwnOutput {
+  static constexpr std::string_view kName = "load_reads_own_output";
+  fb::Result<B> run(fb::View<A> in) const;
+  static fb::Result<B> load(const std::filesystem::path &from, fb::View<B> in);
+};
+static_assert(!fb::LoadableStep<LoadReadsOwnOutput>);
+
+// The path is exactly a const std::filesystem::path&, as a shape's resources
+// are exact.
+struct LoadPathByValue {
+  static constexpr std::string_view kName = "load_path_by_value";
+  fb::Result<B> run(fb::View<A> in) const;
+  static fb::Result<B> load(std::filesystem::path from, fb::View<> in);
+};
+static_assert(!fb::LoadableStep<LoadPathByValue>);
+
+struct LoadNoShape {
+  static constexpr std::string_view kName = "load_no_shape";
+  fb::Result<B> run(fb::View<A> in) const;
+  static fb::Result<B> load(const std::filesystem::path &from, fb::View<> in,
+                            std::int32_t &unknown);
+};
+static_assert(!fb::LoadableStep<LoadNoShape>);
+
+struct OverloadedLoad {
+  static constexpr std::string_view kName = "overloaded_load";
+  fb::Result<B> run(fb::View<A> in) const;
+  static fb::Result<B> load(const std::filesystem::path &from, fb::View<> in);
+  static fb::Result<B> load(const std::filesystem::path &from, fb::View<A> in);
+};
+static_assert(!fb::LoadableStep<OverloadedLoad>);
+
 // --- Running ----------------------------------------------------------------
 
 TEST(PipelineStep, ViewGetReturnsTheBoundObject) {

@@ -13,6 +13,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.sad;
 import free_breakfast.io.sad;
+import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 export import free_breakfast.basis;
 export import free_breakfast.third_party.taskflow;
@@ -64,6 +65,24 @@ struct GuessStep {
     // Taskflow's implicit join would run it only after run has returned.
     subflow.join();
     return Guess{FBF_TRY(std::move(d))};
+  }
+
+  /// @brief A density read from the .npy file @p from, in place of @ref run:
+  /// `nao_sphe` square, spherical, in the AO order of the @ref BasisSet it was
+  /// made over. Either layout reads back, since read_npy returns column-major.
+  ///
+  /// The file carries only the numbers, so only the shape is checked: a basis
+  /// of the same size but another order is not caught. A file that cannot be
+  /// read or parsed is ErrorKind::IO; a shape other than nao_sphe x nao_sphe
+  /// is ErrorKind::InvalidConfig.
+  [[nodiscard]] static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in) {
+    NpyArray d = FBF_TRY(read_npy(from));
+    const size_t n = in.get<BasisSet>().nao_sphe();
+    if (d.shape != std::vector<size_t>{n, n}) {
+      return err_config("[{}] {} is not {} x {}, the basis's spherical AO count", kName,
+                        from.string(), n, n);
+    }
+    return Guess{std::move(d.data)};
   }
 };
 

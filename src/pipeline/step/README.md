@@ -2,7 +2,8 @@
 
 The contract a pipeline step is written against. A step is a name and one
 `run`, and the `run` signature declares the rest: what the step reads, the one
-product it writes, and where it runs.
+product it writes, and where it runs. A step may also have a static `load`,
+which reads that product back from a file instead, declared the same way.
 
 ## Module
 
@@ -18,6 +19,9 @@ Templates only, so there is no implementation unit.
 | `RunShape` | Where a step runs: the five resource lists a `run` may take |
 | `PipelineStep<S>` | The concept every step satisfies |
 | `StepInput<S>`, `StepOutput<S>`, `kRunShape<S>` | What `S` reads, writes and holds, read off its `run` |
+| `LoadableStep<S>` | A step with a `load` |
+| `LoadInput<S>`, `kLoadShape<S>` | What `S`'s `load` reads and holds |
+| `Load<S>` | A request to load `S`'s product from a path, handed to the pipeline in place of an `S` |
 
 ## A step
 
@@ -48,7 +52,8 @@ through `StepInput`, `StepOutput` and `kRunShape`, which take apart the type of
 `run`.
 
 **Options are the step's own data members**, defaulted. A root step takes
-`View<>`, and its options are its inputs: atoms, a basis stamp.
+`View<>`, and its options are its inputs: `MoleculeStep`'s XYZ path, charge and
+multiplicity.
 
 **No central store.** A step never holds a writable store. Its one write is
 the product `run` returns, which the pipeline stores in the step's own slot.
@@ -117,6 +122,36 @@ escape hatch: safe, and paid for only in concurrency.
 - A subflow holding references into the task's frame is joined explicitly
   before `run` returns (SAD's lesson).
 
+## `load`: the product read back instead of made
+
+```cpp
+struct GuessStep {
+  ...
+  static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in);
+};
+```
+
+| Part | Requirement | Why |
+|---|---|---|
+| first parameter | exactly `const std::filesystem::path &` | what to read; the front end resolves it |
+| second parameter | a `View<Ts...>`, not holding the product: `LoadInput<S>` | what loading checks the file against, and so the edges a loaded step is planned by |
+| return type | `run`'s, `Result<StepOutput<S>>` | one product per step, made either way, so the registry keeps one producer per product |
+| other parameters | one of the five `RunShape` lists: `kLoadShape<S>`, not necessarily `run`'s | a product made on the device may be read on the host |
+| `load` itself | `static`, not overloaded, not a template; may be `noexcept` | a step's options configure `run`, and a loaded product never ran |
+
+**Loading is a mode of the step, not another step.** A second step
+producing the same type would be a second producer, which the registry
+refuses, and every loadable product would double the step types. With `load`
+on the step, a loadable product costs one static member.
+
+**The pipeline plans a loaded step by its `load`.** Its edges are `load`'s
+`View`, so whatever only `run` reads is not planned for it: a loaded `[guess]`
+needs the `BasisSet`, not SAD's `Molecule` atoms. `Load<S>` carries only the
+path, since the step's options configure a `run` that does not happen.
+
+A front end hands over `Load<S>{path}` in place of an `S`. It is constrained
+to `LoadableStep<S>`, so a step with no `load` cannot be asked to load.
+
 ## Files
 
 Each partition holds one unexported block of helpers, then one exported block.
@@ -129,7 +164,7 @@ first, in partitions of their own.
 | `step.cppm` | Primary interface: re-exports the three partitions |
 | `view.cppm` | `:view`: `View`, and what may be a product |
 | `run_shape.cppm` | `:run_shape`: `RunShape` |
-| `pipeline_step.cppm` | `:pipeline_step`: `PipelineStep`, `StepInput`, `StepOutput`, `kRunShape`, and the signature reading behind them |
+| `pipeline_step.cppm` | `:pipeline_step`: `PipelineStep`, `StepInput`, `StepOutput`, `kRunShape`, their `load` counterparts and `Load`, and the signature reading behind them |
 | `CMakeLists.txt` | The module library |
 
 Tests are in `test/gtest/pipeline_step_host.cpp`: made-up steps, mostly
