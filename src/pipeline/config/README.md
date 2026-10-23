@@ -1,11 +1,27 @@
 # Pipeline: config
 
-The TOML front end: a config file read into the steps it names.
+The TOML front end: a config file read into the pipeline it asks for, and the
+registry of every step a config may name.
 
 ## Module
 
 `free_breakfast.pipeline.config`, target `free_breakfast::pipeline::config`. It
-re-exports the step modules whose types it returns.
+re-exports `pipeline.pipeline` and every step module, since `Calculation`
+names them all. It is the one library that imports every step, so only it and
+`main` pay that build fan-in.
+
+```cpp
+using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
+                             PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
+                             CoreHamiltonianStep>;
+
+Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
+Result<Calculation> read_config(const std::filesystem::path &path);
+```
+
+A new step joins the registry here: its type in `Calculation`, and, if it has
+options, a branch in `read_step` reading them. A step with options and no
+branch fails a `static_assert`, rather than having every key refused.
 
 ## The config file
 
@@ -21,16 +37,25 @@ multiplicity = 1    # default 1
 [basis_set]
 basis = "sto-3g.json"   # required, a BSE JSON basis
 
-[orthogonalizer]          # optional: every option has a default
+[orthogonalizer]          # every option has a default
 eigenvalue_floor = 1e-10  # default 1e-10
+
+[core_hamiltonian]        # no options: the table is the request
 ```
 
-```cpp
-using ConfigSteps = std::tuple<MoleculeStep, BasisSetStep, OrthogonalizerStep>;
+**A table is a request, and the steps producing what it reads are filled
+in.** The file above plans all seven steps: `[orthogonalizer]` reads the
+overlap, which reads the spherical transform and the pair classes. Each
+filled-in step is **read from an empty table**, so its defaults apply and a
+required option it lacks is the same error a written table would give:
+`[overlap]` alone is refused with `[molecule] needs 'xyz'`. So only a step
+with a required option ever has to be written out for its own sake, and there
+is no second list of which options are required. Nothing is pruned: every
+planned step is upstream of a request.
 
-Result<ConfigSteps> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
-Result<ConfigSteps> read_config(const std::filesystem::path &path);
-```
+The filling in is `Calculation::create`'s insert hook, called with the
+missing producer's type. `Pipeline::create` without the hook stays strict, so
+a pipeline built by hand lists every step.
 
 **Relative paths are relative to the config file**, not the working directory.
 `read_config` resolves them against the file's own directory, and
@@ -38,34 +63,21 @@ Result<ConfigSteps> read_config(const std::filesystem::path &path);
 the working directory. The steps document that their paths "arrive
 resolved", and this is where that happens.
 
-**A table is required only if its step has a required option.** The
-`[orthogonalizer]` table may be left out, since its one option has a default.
-Steps with no options at all (`SphericalTransform`, `PrimitivePairClasses`,
-`Overlap`, `CoreHamiltonian`) have no table and are not in `ConfigSteps`:
-`main` constructs them.
+**Strict.** Each of these is `InvalidConfig`, naming the table or key:
 
-**Strict.** Each of these is `InvalidConfig`, naming the
-table or key:
-
-- a missing table for a step with a required option, or a missing required key;
-- a table that names no step;
-- a key the step has no option for;
+- a document naming no step;
+- a table that names no step, or a step written as a key instead of a table;
+- a missing required key, in a written table or in a filled-in step's empty one;
+- a key the step has no option for (a step with no options has no keys);
 - a value of the wrong type. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`
-  option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`.
+  option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`;
+- what `Pipeline::create` refuses (a cycle).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`
-that restated every step option a second time.) A syntactically invalid document is `IO`,
-as `io.toml` reports it.
-
-## Until the planner
-
-`ConfigSteps` is a fixed tuple because there is no `StepVariant` yet. When
-`Pipeline<Steps...>` lands, `read_config` returns the step vector, and the
-walk over the document becomes a lookup of each table's name in the
-registry. Every table then becomes optional, and `Pipeline::create` reports
-a missing producer.
+that restated every step option a second time.) A syntactically invalid
+document is `IO`, as `io.toml` reports it.
 
 toml++ keeps a table's keys in a sorted `std::map`, so this module never sees
 the order the tables were written in. Pipeline order comes from each step's
@@ -74,13 +86,14 @@ the order the tables were written in. Pipeline order comes from each step's
 ## Tests
 
 `test/gtest/pipeline_config_host.cpp`, host-only: every option read, the step
-defaults kept, path resolution against the file's directory, and each refusal
-above.
+defaults kept, path resolution against the file's directory, which steps are
+filled in and which are not, and each refusal above. Nothing is run.
+`test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `config.cppm` | Module interface: `ConfigSteps`, `parse_config`, `read_config` |
-| `config.cpp` | The document walk |
+| `config.cppm` | Module interface: `Calculation`, `parse_config`, `read_config` |
+| `config.cpp` | The document walk and each step's `read_step` |
 | `CMakeLists.txt` | The module library |

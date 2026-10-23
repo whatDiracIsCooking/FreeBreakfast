@@ -42,7 +42,8 @@ or BLAS call is `GpuRuntime`.
   class's stream (`molecule/README.md`).
 - **`Device`-shaped.** Everything is queued on `res.stream()`; each class's
   launch is forked from it and joined back. No host synchronization.
-- **No options**, so no TOML table: `main` constructs it.
+- **No options.** The config fills it in when a step it plans reads its
+  product; an empty table asks for it directly (`pipeline.config`).
 
 ## Tests
 

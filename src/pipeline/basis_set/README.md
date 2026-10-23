@@ -34,8 +34,8 @@ coefficients as given. So the step places `BasisStamp::primitive_normalized`,
 which is what a production run's `BasisSet` is.
 
 **`Host`-shaped.** `place` reads only `Molecule::atoms()`, never the device
-nuclei, so the step takes no `DeviceResources&`. It is free host work that
-can overlap the device chain once the pipeline schedules it (stage 3).
+nuclei, so the step takes no `DeviceResources&`. The pipeline runs it as free
+host work, beside the device chain.
 
 **The path arrives resolved**, as for `MoleculeStep`: the front end decides
 what a relative path in the TOML is relative to.

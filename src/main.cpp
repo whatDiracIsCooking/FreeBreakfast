@@ -1,83 +1,70 @@
 /// @file
-/// @brief The `free-breakfast` executable: read a TOML config, run the steps
-///        it names, and report what they built.
+/// @brief The `free-breakfast` executable: read a TOML config, run the
+///        pipeline it asks for, and report what it built.
 ///
 /// `main` is the top-level boundary, and the only one: the one place a
 /// value-tier Error is logged and turned into a process exit code
 /// (`to_exit_code`). Everything below it returns through Result; nothing
 /// below it logs a value-tier error itself.
 ///
-/// It runs the steps by hand, in the order `Pipeline<Steps...>` will plan
-/// them, binding each output into its consumer's `View`. When the planner
-/// lands, that becomes `read_config`'s step vector handed to
-/// `Pipeline::create` / `run`, and the config file stays the only thing main
-/// knows about.
+/// The config file is the only thing it knows about: `read_config` plans the
+/// pipeline, `run` runs it, and main prints each product the pipeline built.
 
 #include "diagnostics.h"
 
 import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
-import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
-import free_breakfast.pipeline.spherical_transform;
-import free_breakfast.pipeline.primitive_pair_classes;
-import free_breakfast.pipeline.overlap;
-import free_breakfast.pipeline.core_hamiltonian;
 
 namespace {
 
 namespace fb = free_breakfast;
 
+// One block per product type, each printed only if the pipeline built it.
+void print_products(const fb::Calculation &calc) {
+  if (const auto &molecule = calc.get<fb::Molecule>()) {
+    std::println("atoms:             {}", molecule->natoms());
+    std::println("charge:            {}", molecule->charge());
+    std::println("multiplicity:      {}", molecule->multiplicity());
+    std::println("electrons:         {}", molecule->electron_count());
+    std::println("nuclear repulsion: {:.10f} Ha", fb::nuclear_repulsion_energy(*molecule));
+  }
+  if (const auto &basis = calc.get<fb::BasisSet>()) {
+    std::println("shells:            {}", basis->nshells());
+    std::println("AOs (cartesian):   {}", basis->nao_cart());
+    std::println("AOs (spherical):   {}", basis->nao_sphe());
+  }
+  if (const auto &transform = calc.get<fb::SphericalTransform>()) {
+    std::println("spherical U:       {}", transform->u ? "uploaded" : "identity");
+  }
+  if (const auto &pairs = calc.get<fb::PrimitivePairClasses>()) {
+    std::println("pair classes:      {}", pairs->classes.size());
+  }
+  if (const auto &overlap = calc.get<fb::Overlap>()) {
+    std::println("overlap:           {0} x {0} (spherical)", overlap->s.n());
+  }
+  if (const auto &orthogonalizer = calc.get<fb::Orthogonalizer>()) {
+    std::println("orthogonalizer:    {0} x {0}, eigenvalue floor {1:g}", orthogonalizer->x.n(),
+                 calc.step<fb::OrthogonalizerStep>()->eigenvalue_floor);
+  }
+  if (const auto &core_hamiltonian = calc.get<fb::CoreHamiltonian>()) {
+    std::println("core Hamiltonian:  {0} x {0} (spherical)", core_hamiltonian->h.n());
+  }
+}
+
 fb::Status run(std::span<char *const> args) {
   if (args.size() != 2) {
     return fb::err_config("usage: {} <config.toml>", args.empty() ? "free-breakfast" : args[0]);
   }
-  // Read before the node is built: a bad config fails without touching a GPU.
-  const auto [molecule_step, basis_set_step, orthogonalizer_step] =
-      FBF_TRY(fb::read_config(args[1]));
+  // Read and planned before the node is built: a bad config fails without
+  // touching a GPU. The products hold their Device, so they may outlive node.
+  fb::Calculation calc = FBF_TRY(fb::read_config(args[1]));
 
   fb::NodeResources node;
   node.log();
-  if (node.device_count() == 0) {
-    return fb::err_gpu("no GPU device visible");
-  }
-  // One device for now, driven from this thread. Opened before any product,
-  // so it is closed after every product's frees.
-  fb::DeviceResources &res = node.device(0);
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-
-  const fb::Molecule molecule = FBF_TRY(molecule_step.run(fb::View<>{}, res));
-  const fb::BasisSet basis = FBF_TRY(basis_set_step.run(fb::View<fb::Molecule>{molecule}));
-  const fb::SphericalTransform transform =
-      FBF_TRY(fb::SphericalTransformStep{}.run(fb::View<fb::BasisSet>{basis}, res));
-  const fb::PrimitivePairClasses pairs =
-      FBF_TRY(fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSet>{basis}, res));
-  const fb::Overlap overlap = FBF_TRY(fb::OverlapStep{}.run(
-      fb::View<fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{basis, transform,
-                                                                               pairs},
-      res));
-  const fb::Orthogonalizer orthogonalizer =
-      FBF_TRY(orthogonalizer_step.run(fb::View<fb::BasisSet, fb::Overlap>{basis, overlap}, res));
-  const fb::CoreHamiltonian core_hamiltonian = FBF_TRY(fb::CoreHamiltonianStep{}.run(
-      fb::View<fb::Molecule, fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{
-          molecule, basis, transform, pairs},
-      res));
-
-  std::println("atoms:             {}", molecule.natoms());
-  std::println("charge:            {}", molecule.charge());
-  std::println("multiplicity:      {}", molecule.multiplicity());
-  std::println("electrons:         {}", molecule.electron_count());
-  std::println("nuclear repulsion: {:.10f} Ha", fb::nuclear_repulsion_energy(molecule));
-  std::println("shells:            {}", basis.nshells());
-  std::println("AOs (cartesian):   {}", basis.nao_cart());
-  std::println("AOs (spherical):   {}", basis.nao_sphe());
-  std::println("spherical U:       {}", transform.u ? "uploaded" : "identity");
-  std::println("pair classes:      {}", pairs.classes.size());
-  std::println("overlap:           {0} x {0} (spherical)", overlap.s.n());
-  std::println("orthogonalizer:    {0} x {0}, eigenvalue floor {1:g}", orthogonalizer.x.n(),
-               orthogonalizer_step.eigenvalue_floor);
-  std::println("core Hamiltonian:  {0} x {0} (spherical)", core_hamiltonian.h.n());
+  FBF_TRY(calc.run(node));
+  print_products(calc);
   return {};
 }
 

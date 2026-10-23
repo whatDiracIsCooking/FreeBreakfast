@@ -38,7 +38,8 @@ A thin wrapper over `integrals.one_electron`'s `overlap` and `linalg.matrix_ao`'
   launch is forked from it and joined back (`launch_each`). No host
   synchronization.
 - **`BasisSet` is read for the orders only**: the pair is sized from it.
-- **No options**, so no TOML table: `main` constructs it.
+- **No options.** The config fills it in when a step it plans reads its
+  product; an empty table asks for it directly (`pipeline.config`).
 
 ## Tests
 

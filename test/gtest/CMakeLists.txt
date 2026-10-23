@@ -45,6 +45,7 @@ add_executable(
   gpu_policy_host.cpp
   node_resources_host.cpp
   pipeline_step_host.cpp
+  pipeline_pipeline_host.cpp
   pipeline_config_host.cpp
 )
 
@@ -68,6 +69,7 @@ target_link_libraries(
           free_breakfast::io
           free_breakfast::core::resources
           free_breakfast::pipeline::step
+          free_breakfast::pipeline::pipeline
           free_breakfast::pipeline::config
           GTest::gtest
           GTest::gtest_main
@@ -108,6 +110,7 @@ add_executable(
   pipeline_overlap_gpu.cpp
   pipeline_orthogonalizer_gpu.cpp
   pipeline_core_hamiltonian_gpu.cpp
+  pipeline_calculation_gpu.cpp
   launch_gpu.cpp
   overlap_gpu.cpp
   core_hamiltonian_gpu.cpp
@@ -150,6 +153,7 @@ target_link_libraries(
   free_breakfast::pipeline::overlap
   free_breakfast::pipeline::orthogonalizer
   free_breakfast::pipeline::core_hamiltonian
+  free_breakfast::pipeline::config
   free_breakfast::test::gpu_kernels
   GTest::gtest
   GTest::gtest_main
