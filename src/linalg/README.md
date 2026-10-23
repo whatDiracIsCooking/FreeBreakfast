@@ -7,9 +7,10 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 | Directory | Module | Role |
 |-----------|--------|------|
 | `blas/` | `free_breakfast.linalg.blas` | BLAS conveniences over wwr's dispatch: `gemm` for square operands, and the sandwiches `gemmwich` (`Xᵀ F X`) and `gmmwich` (`Xᵀ diag(d) X`). |
+| `diagonalize/` | `free_breakfast.linalg.diagonalize` | The symmetric eigendecomposition A = U diag(w) Uᵀ, one `syevd` with its work and flag from `DeviceResources`. |
 | `diis/` | `free_breakfast.linalg.diis` | Pulay DIIS extrapolation over a device-resident ring of iterates and residuals. |
 | `matrix_ao/` | `free_breakfast.linalg.matrix_ao` | AO-basis matrices tagged Cartesian or spherical, and a pair holding both that converts through a shared transform. |
-| `orthogonalize/` | `free_breakfast.linalg.orthogonalize` | The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, its intermediates carved from `DeviceResources`' workspace. |
+| `orthogonalize/` | `free_breakfast.linalg.orthogonalize` | The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, over `diagonalize`. |
 
 Routines take a `DeviceResources` (`free_breakfast.core.resources`) for their stream and library handles, so the BLAS and solver calls are ordered on one stream by construction. Each routine returns `Result`/`Status`. `blas/` is the exception: its building blocks take a BLAS handle and return the library status, the way `wwr::gemm` does.
 

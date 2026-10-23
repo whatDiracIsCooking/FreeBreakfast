@@ -161,11 +161,14 @@ immediate, not stream-ordered.
 **One routine owns the device workspace at a time.** It is not only for the
 solver's own work: a routine can carve all of its device scratch from it,
 asking once for the total and splitting the result, so its caller lends
-nothing. `orthogonalize` lays U, the eigenvalues and syevd's work end to end
-and puts M over syevd's work once syevd is done with it. Ask for the total in
-one request, since a second could grow it and free the first's region. And
-nothing nests: a routine that uses the workspace calls no other that does,
-and no argument to one may point into it.
+nothing. Ask for the total in one request, since a second could grow it and
+free the first's region. And nothing nests: a routine holds no region of the
+workspace across a call to another that uses it, and no argument to one may
+point into it. Using it again after that call returns is fine.
+`orthogonalize` is the example: U and the eigenvalues must outlive
+`diagonalize`, which takes the workspace for syevd's work, so they are its
+own pool buffers; M is written only after `diagonalize` returns, so it is
+the workspace's.
 
 **`info` is on the work stream.** The solver handle writes `info()` on
 `stream()`, and `fetch_info()` copies on that same stream, so the read is

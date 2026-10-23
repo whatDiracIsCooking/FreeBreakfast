@@ -57,8 +57,8 @@ HostMatrix<T> well_conditioned_spd(std::int32_t n) {
   return s;
 }
 
-// orthogonalize's operand and result for one n, plus host staging. Every
-// intermediate is res's.
+// orthogonalize's operand and result for one n, plus host staging. The
+// intermediates are orthogonalize's own or res's.
 template <typename T>
 struct Orthogonalizer {
   fb::DeviceResources &res;
@@ -96,7 +96,7 @@ TEST(Orthogonalize, EmptyOperandSucceedsWithoutTouchingAnything) {
   EXPECT_EQ(res.device_workspace(0).num_elements(), 0U);
 }
 
-// Every intermediate comes from res's workspace, which grows with n: one DeviceResources serves
+// syevd's work and M come from res's workspace, which grows with n: one DeviceResources serves
 // a small operand and then a larger one, in either precision.
 TEST(Orthogonalize, GrowsTheResourcesWorkspaceWithTheOperand) {
   FBF_REQUIRE_GPU();

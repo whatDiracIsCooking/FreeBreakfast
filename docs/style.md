@@ -244,7 +244,7 @@ with few exceptions. Scratch means memory a routine needs only while one call
 runs: a solver's `lwork`, an intermediate product, a buffer that is written and
 consumed before the call returns. Don't allocate a `Buffers::device` for it, and
 don't make the caller lend one. Ask the workspace once, for the total, and carve
-it, as `orthogonalize` in `src/linalg/orthogonalize/orthogonalize.cpp` does.
+it.
 The same goes for a generic solver's host scratch and `host_workspace()`.
 
 The reasons are memory and allocation count. The workspace only grows, so every
@@ -254,19 +254,23 @@ the sum of their needs instead, and allocates again each time its owner runs.
 
 The rules for using it are in
 [`src/core/resources/README.md`](../src/core/resources/README.md) "Solver
-scratch": fetch it just before the call and never keep the pointer, and a
-routine that uses it calls no other that does. Those rules define the
+scratch": fetch it just before the call and never keep the pointer, and hold
+no region of it across a call to another routine that uses it. Those rules
+define the
 exceptions, which get their own buffers:
 
 - **State that lives across calls.** The SCF's density, Fock matrix and DIIS
   history are read from one iteration to the next, with other routines called
   in between. They are owned by the step, and `syevd`'s work, which is dead
-  once `syevd` returns, is the workspace's (`src/pipeline/scf/scf.cpp`).
+  once `syevd` returns, is the workspace's (`src/linalg/diagonalize/`).
 - **Outputs and products.** What a routine returns or a step publishes outlives
   the call by definition.
 - **Scratch held across a call to another workspace user.** Nothing nests, so
   if a routine has to keep scratch live while it calls something that takes the
   workspace, that scratch is its own. Say so in a comment there.
+  `orthogonalize` holds U and the eigenvalues across `diagonalize` this way,
+  and takes M from the workspace once `diagonalize` has returned
+  (`src/linalg/orthogonalize/orthogonalize.cpp`).
 
 ## Errors
 
