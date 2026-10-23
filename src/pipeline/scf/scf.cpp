@@ -40,8 +40,7 @@ struct ScfState {
   SphericalMatrixAO work;
   SphericalMatrixAO c;
   Buffers::device<double> eps;
-  Buffers::device<double> eig_work;
-  int32_t lwork;
+  int32_t lwork; // syevd's work, in doubles: taken from res's workspace per call
 };
 
 // F = H + J(D) - K(D)/2, J and K built from D's Cartesian form.
@@ -106,9 +105,14 @@ struct ScfState {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto n = static_cast<int32_t>(x.n());
   FBF_TRY(gpu_status(gemmwich(blas, n, x.data(), st.f.data(), st.work.data(), st.tmp.data())));
+  // syevd's work is dead once it returns, so it is the shared workspace's, not
+  // the loop's. In a pipeline the Orthogonalizer has already asked for more on
+  // the same n, so this request does not grow it.
+  auto eig_work = wwr::extension::reinterpret_buffer_view<double>(
+      res.device_workspace(static_cast<size_t>(st.lwork) * sizeof(double)));
   FBF_TRY(gpu_status(wwr::syevd<double>(res.solver().get(), kScfEigMode, kScfFillMode, n,
-                                        st.tmp.data(), n, st.eps.data(), st.eig_work.data(),
-                                        st.lwork, res.info().data())));
+                                        st.tmp.data(), n, st.eps.data(), eig_work.data(), st.lwork,
+                                        res.info().data())));
   const int32_t info = FBF_TRY(res.fetch_info());
   // info < 0 names a bad argument (a bug here); info > 0 is non-convergence.
   if (info < 0) {
@@ -183,7 +187,6 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
       .work = SphericalMatrixAO(res, basis),
       .c = SphericalMatrixAO(res, basis),
       .eps = Buffers::device<double>(n, res.device()),
-      .eig_work = Buffers::device<double>(static_cast<size_t>(std::max(lwork, 1)), res.device()),
       .lwork = lwork,
   };
   Diis diis(res, std::size_t{n} * n, static_cast<size_t>(diis_history));

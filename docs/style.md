@@ -237,6 +237,37 @@ A `.cu` is never a module unit. Use an anonymous namespace there for file-local
 kernels and helpers, because it is the only way to keep them out of the
 device-link namespace.
 
+## Scratch memory
+
+**A calculation's device scratch comes from `DeviceResources::device_workspace()`**,
+with few exceptions. Scratch means memory a routine needs only while one call
+runs: a solver's `lwork`, an intermediate product, a buffer that is written and
+consumed before the call returns. Don't allocate a `Buffers::device` for it, and
+don't make the caller lend one. Ask the workspace once, for the total, and carve
+it, as `orthogonalize` in `src/linalg/orthogonalize/orthogonalize.cpp` does.
+The same goes for a generic solver's host scratch and `host_workspace()`.
+
+The reasons are memory and allocation count. The workspace only grows, so every
+routine on one device shares a single block sized for the largest of them, and
+once it has grown a later request allocates nothing. A buffer per routine holds
+the sum of their needs instead, and allocates again each time its owner runs.
+
+The rules for using it are in
+[`src/core/resources/README.md`](../src/core/resources/README.md) "Solver
+scratch": fetch it just before the call and never keep the pointer, and a
+routine that uses it calls no other that does. Those rules define the
+exceptions, which get their own buffers:
+
+- **State that lives across calls.** The SCF's density, Fock matrix and DIIS
+  history are read from one iteration to the next, with other routines called
+  in between. They are owned by the step, and `syevd`'s work, which is dead
+  once `syevd` returns, is the workspace's (`src/pipeline/scf/scf.cpp`).
+- **Outputs and products.** What a routine returns or a step publishes outlives
+  the call by definition.
+- **Scratch held across a call to another workspace user.** Nothing nests, so
+  if a routine has to keep scratch live while it calls something that takes the
+  workspace, that scratch is its own. Say so in a comment there.
+
 ## Errors
 
 A failure is handled in one of three ways. Pick the tier by what a caller can
