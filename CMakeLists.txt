@@ -288,18 +288,30 @@ endif()
 # -fmodule-file=NAME=PATH, both in sccache's supported set), and nvcc device
 # TUs.
 #
-# The CUDA launcher is devtools/cuda-object-cache.sh rather than sccache
-# directly: see that script's header for the nvcc invocation shape it exists to
-# handle.
+# Device-pass `.cu` sources go through devtools/gpu-object-cache.sh rather
+# than sccache directly: it keys on content, not on the worktree path sccache
+# sees, so an identical kernel compiled in another worktree is a hit. See that
+# script's header. Under CUDA every `.cu` is the CUDA language, so the
+# language-wide launcher covers exactly them. Under HIP a `.cu` is CXX, and the
+# CXX launcher also fronts the module units, whose BMI the object cache cannot
+# restore -- so FREE_BREAKFAST_GPU_OBJECT_CACHE is attached per target, by
+# free_breakfast_add_gpu_device_library, and the salt carries the ROCm version
+# that apt's clang --version does not.
 find_program(FREE_BREAKFAST_SCCACHE sccache)
 if(FREE_BREAKFAST_SCCACHE)
   set(CMAKE_C_COMPILER_LAUNCHER "${FREE_BREAKFAST_SCCACHE}")
   set(CMAKE_CXX_COMPILER_LAUNCHER "${FREE_BREAKFAST_SCCACHE}")
+  set(_fbf_gpu_object_cache
+      "${CMAKE_CURRENT_SOURCE_DIR}/devtools/gpu-object-cache.sh"
+  )
   if(FREE_BREAKFAST_GPU_BACKEND STREQUAL "CUDA")
-    set(CMAKE_CUDA_COMPILER_LAUNCHER
-        "${CMAKE_CURRENT_SOURCE_DIR}/devtools/cuda-object-cache.sh"
+    set(CMAKE_CUDA_COMPILER_LAUNCHER "${_fbf_gpu_object_cache}")
+  else()
+    set(FREE_BREAKFAST_GPU_OBJECT_CACHE
+        "${_fbf_gpu_object_cache};--salt=hip-${hip_VERSION}"
     )
   endif()
+  unset(_fbf_gpu_object_cache)
   message(STATUS "Compiler cache: ${FREE_BREAKFAST_SCCACHE}")
 else()
   message(
