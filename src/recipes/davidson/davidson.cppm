@@ -12,7 +12,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // gemm, axpy, dot, nrm2, scal, ScopedPointerMode, CreatePolicy
+import free_breakfast.core.wwr; // BLAS, wwrMemcpy2DAsync, ScopedPointerMode, CreatePolicy
 import free_breakfast.core.resources;
 import free_breakfast.recipes.diagonalize;
 export import free_breakfast.recipes.linear_operator;
@@ -60,15 +60,17 @@ concept DavidsonPreconditioner = requires(
 /// from the @p guess_count columns of @p guess.
 ///
 /// Each iteration applies @p op once, to only the columns new to the
-/// subspace, diagonalizes the projected matrix H = V^T A V, and expands V by
+/// subspace, extends the projected matrix H = V^T A V by those columns' rows
+/// alone, diagonalizes it, and expands V by
 /// the preconditioned residuals of the roots not yet converged,
 /// re-orthogonalized against V and each other. V collapses onto the current
 /// Ritz vectors when a full new block would not fit in @p max_subspace
 /// columns.
 ///
 /// Everything is queued on res.stream() with res.blas() held in host pointer
-/// mode, including the @p op and @p precondition calls, and each iteration
-/// synchronizes the stream to read the Ritz values and residual norms. The
+/// mode, including the @p op and @p precondition calls. Each iteration
+/// synchronizes the stream to read the Ritz values, once for all the residual
+/// norms, and once per correction kept, for its norm. The
 /// subspace lives in pool buffers of the call's own, allocated on entry: @p op
 /// and @p precondition may take res.device_workspace(), and diagonalize takes
 /// it for syevd. The device res.dev_idx() names is made current for the call.
@@ -126,14 +128,18 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   // frees are ordered on the stream after the work that reads them.
   Buffers::device<T> v(nz * columns, res.device());  // the orthonormal basis V
   Buffers::device<T> av(nz * columns, res.device()); // A V, in lockstep with V
-  // H = V^T A V, packed at the current dimension (diagonalize's layout), then
-  // its eigenvectors S; and its ascending eigenvalues.
+  // V^T A V's lower triangle, leading dimension max_subspace, grown a row
+  // block per apply; its copy packed at the current dimension (diagonalize's
+  // layout), then the copy's eigenvectors S; and their ascending eigenvalues.
+  Buffers::device<T> vav(columns * columns, res.device());
   Buffers::device<T> h(columns * columns, res.device());
   Buffers::device<T> ritz(columns, res.device());
   Buffers::device<T> ritz_av(nz * roots, res.device()); // A X for the Ritz vectors X
   Buffers::device<T> residual(nz * roots, res.device());
   Buffers::device<T> correction(nz * roots, res.device());
   Buffers::device<T> projection(columns * roots, res.device()); // V^T C
+  Buffers::device<T> norms(roots, res.device());    // the residual norms, read back at once
+  Buffers::device<T> overlaps(roots, res.device()); // a correction's on those accepted before it
 
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data(), guess,
                                          nz * static_cast<size_t>(guess_count) * sizeof(T),
@@ -146,6 +152,7 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   };
 
   std::vector<T> theta(roots);
+  std::vector<T> residual_norms(roots);
   std::vector<bool> converged(roots);
   DavidsonInfo info;
   int32_t dim = guess_count;
@@ -153,27 +160,26 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   for (int32_t iteration = 1; iteration <= options.max_iterations; ++iteration) {
     info.iterations = iteration;
 
-    // 1. Extend A V over the new columns only: one apply per iteration.
+    // 1. Extend A V over the new columns only: one apply per iteration. V^T A V
+    //    gains the new columns' rows, V_new^T (A V), which with the rows before
+    //    them hold every element of its lower triangle: the old rows are
+    //    never recomputed.
     if (dim > filled) {
       const size_t offset = static_cast<size_t>(filled) * nz;
       FBF_TRY(op.apply(res, dim - filled, v.data() + offset, av.data() + offset));
+      FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
+          blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, dim - filled, dim, n, &kOne<T>,
+          v.data() + offset, n, av.data(), n, &kZero<T>, vav.data() + filled, max_subspace)));
       filled = dim;
     }
 
-    // 2. Rayleigh-Ritz: H = V^T A V, then H = S diag(ritz) S^T, which syncs.
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, dim, dim,
-                                             n, &kOne<T>, v.data(), n, av.data(), n, &kZero<T>,
-                                             h.data(), dim)));
+    // 2. Rayleigh-Ritz: H = V^T A V packed at dim, then H = S diag(ritz) S^T,
+    //    which syncs; theta comes back while the stream is idle.
+    const size_t dim_bytes = static_cast<size_t>(dim) * sizeof(T);
+    FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(h.data(), dim_bytes, vav.data(), columns * sizeof(T),
+                                             dim_bytes, static_cast<size_t>(dim),
+                                             wwr::wwrMemcpyDeviceToDevice, stream)));
     FBF_TRY(diagonalize<T>(res, dim, h.data(), ritz.data()));
-
-    // 3. Ritz vectors X = V S and their images A X = (A V) S, from the leading
-    //    n_roots columns of S: A is never applied to X.
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
-                                             dim, &kOne<T>, v.data(), n, h.data(), dim, &kZero<T>,
-                                             eigenvectors, n)));
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
-                                             dim, &kOne<T>, av.data(), n, h.data(), dim, &kZero<T>,
-                                             ritz_av.data(), n)));
     // ||H||_2 is max |theta| over the ascending spectrum: one of its two ends.
     T theta_top{};
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(theta.data(), ritz.data(), roots * sizeof(T),
@@ -183,17 +189,40 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     FBF_TRY(res.sync());
     const T h_norm = std::max(std::abs(theta.front()), std::abs(theta_top));
 
+    // 3. Ritz vectors X = V S and their images A X = (A V) S, from the leading
+    //    n_roots columns of S: A is never applied to X.
+    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
+                                             dim, &kOne<T>, v.data(), n, h.data(), dim, &kZero<T>,
+                                             eigenvectors, n)));
+    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
+                                             dim, &kOne<T>, av.data(), n, h.data(), dim, &kZero<T>,
+                                             ritz_av.data(), n)));
+
     // 4. Residuals R = A X - X diag(theta), and the relative test per root.
+    //    The norms land on the device and come back together, one sync.
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(residual.data(), ritz_av.data(), block_bytes,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
-    bool all_converged = true;
-    T max_norm{};
     for (size_t i = 0; i < roots; ++i) {
       const T neg_theta = -theta[i];
       FBF_TRY(gpu_status(wwr::axpy<T, int32_t>(blas, n, &neg_theta, eigenvectors + (i * nz), 1,
                                                residual.data() + (i * nz), 1)));
-      T norm{};
-      FBF_TRY(gpu_status(wwr::nrm2<T, int32_t>(blas, n, residual.data() + (i * nz), 1, &norm)));
+    }
+    {
+      const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
+                                              CreatePolicy<wwr::wwrblasStatus_t>>
+          device_result{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
+      for (size_t i = 0; i < roots; ++i) {
+        FBF_TRY(gpu_status(
+            wwr::nrm2<T, int32_t>(blas, n, residual.data() + (i * nz), 1, norms.data() + i)));
+      }
+    }
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(residual_norms.data(), norms.data(), roots * sizeof(T),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    FBF_TRY(res.sync());
+    bool all_converged = true;
+    T max_norm{};
+    for (size_t i = 0; i < roots; ++i) {
+      const T norm = residual_norms[i];
       converged[i] = norm <= tolerance * std::max(std::abs(theta[i]), h_norm);
       all_converged = all_converged && converged[i];
       max_norm = std::max(max_norm, norm);
@@ -210,12 +239,18 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     FBF_TRY(precondition(res, std::span<const T>{theta}, residual.data(), correction.data()));
 
     // 6. Collapse onto the Ritz pairs if a full new block would not fit.
-    //    max_subspace >= 2 * n_roots leaves room for one after.
+    //    max_subspace >= 2 * n_roots leaves room for one after. X^T A X is
+    //    S^T H S = diag(theta), which V^T A V becomes.
     if (dim + n_roots > max_subspace) {
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data(), eigenvectors, block_bytes,
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(av.data(), ritz_av.data(), block_bytes,
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
+      FBF_TRY(
+          gpu_status(wwr::wwrMemsetAsync(vav.data(), 0, columns * columns * sizeof(T), stream)));
+      FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(vav.data(), (columns + 1) * sizeof(T), ritz.data(),
+                                               sizeof(T), sizeof(T), roots,
+                                               wwr::wwrMemcpyDeviceToDevice, stream)));
       dim = n_roots;
       filled = n_roots;
     }
@@ -230,21 +265,25 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
           projection.data(), dim, &kOne<T>, correction.data(), n)));
     }
 
-    // 8. Modified Gram-Schmidt of the unconverged corrections against each
-    //    other, each survivor normalized and appended to V.
+    // 8. Gram-Schmidt of the unconverged corrections against each other,
+    //    each survivor normalized and appended to V. A candidate is projected
+    //    off the ones accepted before it, contiguous in V, by two gemvs a pass
+    //    and two passes, so the overlaps stay on the device and only the norm
+    //    comes back.
     int32_t kept = 0;
     for (size_t i = 0; i < roots; ++i) {
       if (converged[i]) {
         continue;
       }
       T *candidate = correction.data() + (i * nz);
-      for (int32_t j = 0; j < kept; ++j) {
-        const T *accepted = v.data() + (static_cast<size_t>(dim + j) * nz);
-        T overlap{};
-        FBF_TRY(gpu_status(wwr::dot<T, int32_t>(blas, n, accepted, 1, candidate, 1, &overlap)));
-        const T neg_overlap = -overlap;
+      const T *const accepted = v.data() + (static_cast<size_t>(dim) * nz);
+      for (int32_t pass = 0; kept > 0 && pass < 2; ++pass) {
         FBF_TRY(
-            gpu_status(wwr::axpy<T, int32_t>(blas, n, &neg_overlap, accepted, 1, candidate, 1)));
+            gpu_status(wwr::gemv<T, int32_t>(blas, wwr::WWRBLAS_OP_T, n, kept, &kOne<T>, accepted,
+                                             n, candidate, 1, &kZero<T>, overlaps.data(), 1)));
+        FBF_TRY(gpu_status(wwr::gemv<T, int32_t>(blas, wwr::WWRBLAS_OP_N, n, kept, &kNegOne<T>,
+                                                 accepted, n, overlaps.data(), 1, &kOne<T>,
+                                                 candidate, 1)));
       }
       T norm{};
       FBF_TRY(gpu_status(wwr::nrm2<T, int32_t>(blas, n, candidate, 1, &norm)));
