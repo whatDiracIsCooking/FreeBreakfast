@@ -26,7 +26,8 @@ namespace {
 namespace fb = free_breakfast;
 
 // The canonical names, as BasisSet::name holds them.
-constexpr std::array<std::string_view, 4> kCompiledInSets{"STO-3G", "6-31G", "cc-pVDZ", "cc-pVTZ"};
+constexpr std::array<std::string_view, 5> kCompiledInSets{"STO-3G", "6-31G", "cc-pVDZ", "cc-pVTZ",
+                                                          "MINAO"};
 
 // Element @p z of @p normalized alone at the origin, grouped as one atom.
 fb::BasisSet atom_basis(const fb::BasisStamp &normalized, std::int32_t z) {

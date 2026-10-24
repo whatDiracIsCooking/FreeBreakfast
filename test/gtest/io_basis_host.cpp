@@ -138,8 +138,8 @@ TEST(IoBasisBuiltins, EveryCompiledInSetParsesAndCoversItsElements) {
     std::string_view name;
     std::size_t elements;
   };
-  for (const auto &[name, elements] :
-       std::array<Expected, 4>{{{"sto-3g", 36}, {"6-31g", 18}, {"cc-pVDZ", 35}, {"cc-pVTZ", 35}}}) {
+  for (const auto &[name, elements] : std::array<Expected, 5>{
+           {{"sto-3g", 36}, {"6-31g", 18}, {"cc-pVDZ", 35}, {"cc-pVTZ", 35}, {"minao", 35}}}) {
     auto stamp = fb::resolve_basis(name);
     ASSERT_TRUE(stamp.has_value()) << name << ": " << stamp.error().message;
     EXPECT_EQ(stamp->element_shells().size(), elements) << name;
@@ -154,6 +154,21 @@ TEST(IoBasisBuiltins, EveryCompiledInSetParsesAndCoversItsElements) {
   ASSERT_TRUE(dz.has_value()) << dz.error().message;
   EXPECT_EQ(dz->shells_for(19), nullptr);
   EXPECT_NE(dz->shells_for(20), nullptr);
+
+  // MINAO is minimal: one function per occupied free-atom AO, so C is
+  // 1s 2s 2p and Fe 1s-4s 2p 3p 3d. Ca has no 3d, its 4s being the last filled.
+  auto minao = fb::resolve_basis("minao");
+  ASSERT_TRUE(minao.has_value()) << minao.error().message;
+  EXPECT_EQ(minao->name(), "MINAO");
+  EXPECT_EQ(minao->shells_for(19), nullptr);
+  for (const auto &[z, functions] : std::array<std::pair<std::int32_t, std::size_t>, 5>{
+           {{1, 1}, {6, 5}, {20, 10}, {26, 15}, {36, 18}}}) {
+    std::size_t n = 0;
+    for (const fb::ShellStamp &shell : *minao->shells_for(z)) {
+      n += shell.function_count_sphe();
+    }
+    EXPECT_EQ(n, functions) << "Z=" << z;
+  }
 }
 
 TEST(IoBasisBuiltins, NamesIgnoreCaseHyphensAndUnderscores) {
