@@ -121,9 +121,9 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "fock_rebuild_interval", base_dir, step.fock_rebuild_interval));
     FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
   } else if constexpr (std::same_as<S, LocalizationStep>) {
-    FBF_TRY(check_keys(
-        table, kStep,
-        {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold", "exponent"}));
+    FBF_TRY(check_keys(table, kStep,
+                       {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold",
+                        "exponent", "molden"}));
     std::string mode = "pipek_mezey";
     FBF_TRY(read_key(table, kStep, "mode", base_dir, mode));
     if (mode != "pipek_mezey") {
@@ -142,6 +142,7 @@ template <class S>
       return err_config("[{}] exponent is {}, not 2 or 4", kStep, exponent);
     }
     options.exponent = static_cast<PipekMezeyExponent>(exponent);
+    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.

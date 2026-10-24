@@ -28,6 +28,7 @@ struct LocalizationStep {
 
   LocalizationMode mode = LocalizationMode::PipekMezey;
   PipekMezeyOptions pipek_mezey;  // max_sweeps, tolerances, exponent
+  std::filesystem::path molden{}; // if set, the localized orbitals are written here
 
   Result<Localization> run(View<Molecule, BasisSet, Overlap, Scf> in, DeviceResources &res) const;
 };
@@ -42,7 +43,14 @@ an open shell, so `n_occ` is half the electrons.
 The options are read from a `[localization]` table (`pipeline.config`):
 `mode`, `"pipek_mezey"` by default and the only value so far, then
 Pipek-Mezey's own `max_sweeps`, `functional_tolerance`,
-`rotation_gain_threshold`, and `exponent`, 2 or 4.
+`rotation_gain_threshold`, and `exponent`, 2 or 4, and `molden`.
+
+**`molden` writes the localized orbitals.** When it is set, `c` and `u` are
+downloaded and written by `io.molden`'s `write_molden`: the `n_occ` localized
+orbitals only, each at occupation 2. They are not eigenvectors of F, so each
+is given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
+SCF's occupied orbital energies. It is the `[localization] molden` TOML key,
+relative to the config file. A failed write fails the step.
 
 Like `Orthogonalizer`, it synchronizes `res.stream()` inside `run`: once a
 sweep, to read the functional for the convergence test.
@@ -54,11 +62,14 @@ sweep, to read the functional for the convergence test.
 the real registry from a config naming `[localization]`, for both Pipek-Mezey
 exponents, against PySCF (`test/gtest/data/localization/`): the functional to
 1e-8 and each orbital's atomic populations to 1e-5; and the localized orbitals
-are S-orthonormal and give back the SCF's density.
+are S-orthonormal and give back the SCF's density. With `molden` set, the
+file holds `n_occ` orbitals at occupation 2, and their energies sum to the
+SCF's occupied ones (U is orthogonal).
 
 ## Files
 
 | File | Role |
 |------|------|
 | `localization.cppm` | Module interface: `LocalizationMode`, `Localization`, `LocalizationStep` |
+| `localization.cpp` | `LocalizationStep::run`, and the Molden file |
 | `CMakeLists.txt` | The module library |

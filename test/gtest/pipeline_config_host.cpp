@@ -197,19 +197,22 @@ TEST(PipelineConfig, AnUnknownGuessTypeIsInvalidConfig) {
 }
 
 TEST(PipelineConfig, TheLocalizationModeAndItsOptionsAreRead) {
-  auto calc = fb::parse_config(with_inputs("[localization]\nmode = \"pipek_mezey\"\n"
-                                           "max_sweeps = 7\nexponent = 4\n"),
-                               "");
+  auto calc =
+      fb::parse_config(with_inputs("[localization]\nmode = \"pipek_mezey\"\n"
+                                   "max_sweeps = 7\nexponent = 4\nmolden = \"pm.molden\"\n"),
+                       "/run");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::LocalizationStep &step = *calc->step<fb::LocalizationStep>();
   EXPECT_EQ(step.mode, fb::LocalizationMode::PipekMezey);
   EXPECT_EQ(step.pipek_mezey.max_sweeps, 7);
   EXPECT_EQ(step.pipek_mezey.exponent, fb::PipekMezeyExponent::Four);
+  EXPECT_EQ(step.molden, std::filesystem::path("/run/pm.molden"));
   // An empty table is Pipek-Mezey with its defaults.
   auto plain = fb::parse_config(with_inputs("[localization]\n"), "");
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   EXPECT_EQ(plain->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::PipekMezey);
   EXPECT_EQ(plain->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
+  EXPECT_TRUE(plain->step<fb::LocalizationStep>()->molden.empty());
 }
 
 TEST(PipelineConfig, AnUnknownLocalizationModeIsInvalidConfig) {

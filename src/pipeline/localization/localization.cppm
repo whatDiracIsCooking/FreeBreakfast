@@ -3,7 +3,7 @@
 /// the method its @ref LocalizationMode names.
 ///
 /// A thin wrapper over the localization modules, Pipek-Mezey for now.
-/// Device-shaped.
+/// Device-shaped. See README.md.
 
 export module free_breakfast.pipeline.localization;
 
@@ -16,8 +16,6 @@ import free_breakfast.pipeline.step;
 export import free_breakfast.core.wwr; // Buffers, in the product
 export import free_breakfast.localization.pipek_mezey;
 export import free_breakfast.pipeline.scf;
-
-#include "diagnostics.h"
 
 export namespace free_breakfast {
 
@@ -49,35 +47,20 @@ struct LocalizationStep {
   LocalizationMode mode = LocalizationMode::PipekMezey;
   /// @brief Pipek-Mezey's sweeps, tolerances and exponent.
   PipekMezeyOptions pipek_mezey;
+  /// @brief Where the localized orbitals are written as a Molden file, if not
+  /// empty: the n_occ of them at occupation 2, each with its Fock expectation
+  /// value sum_k U_ki^2 eps_k as its energy. Arrives resolved
+  /// (pipeline/config anchors a relative one to the config file).
+  std::filesystem::path molden{};
 
   /// @brief The localized orbitals. The Scf has already refused an open
   /// shell, so the occupied count is half the electrons. Errors are the
   /// method's; for Pipek-Mezey, InvalidConfig for an option out of range,
   /// MaxIterationsExceeded when the sweeps do not converge, GpuRuntime for a
-  /// failed launch, copy or BLAS call.
+  /// failed launch, copy or BLAS call. A @ref molden file that cannot be
+  /// written is @c write_molden's error.
   [[nodiscard]] Result<Localization> run(View<Molecule, BasisSet, Overlap, Scf> in,
-                                         DeviceResources &res) const {
-    const BasisSet &basis = in.get<BasisSet>();
-    const int32_t n_occ = in.get<Molecule>().electron_count() / 2;
-    const size_t n_ao = basis.nao_sphe();
-    const auto occ = static_cast<size_t>(n_occ);
-    Localization out{
-        .c = Buffers::device<double>(n_ao * occ, res.device()),
-        .u = Buffers::device<double>(occ * occ, res.device()),
-        .n_occ = n_occ,
-        .info = {},
-    };
-    // C is AO by MO with the occupied orbitals first, so its first n_occ
-    // columns are the occupied block, packed.
-    switch (mode) {
-    case LocalizationMode::PipekMezey:
-      out.info = FBF_TRY(pipek_mezey_localize(res, basis, n_occ, in.get<Overlap>().s.data(),
-                                              in.get<Scf>().c.data(), out.c.data(), out.u.data(),
-                                              pipek_mezey));
-      break;
-    }
-    return out;
-  }
+                                         DeviceResources &res) const;
 };
 
 } // namespace free_breakfast
