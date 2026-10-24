@@ -8,7 +8,8 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, potrf, potrs, wwrMemcpyAsync, gpu_status
+import free_breakfast.core.log;
+import free_breakfast.core.wwr; // gemm, potrf, potrs, wwrMemcpy{,2D}Async, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.recipes.orthogonalize;
@@ -61,17 +62,59 @@ namespace free_breakfast {
   return {};
 }
 
-// S = L L^T in place, the lower triangle; the work is the device workspace.
-[[nodiscard]] Status ibo_cholesky(DeviceResources &res, const int32_t n, double *a,
-                                  const std::string_view what) {
+// L L^T = A in place, the lower triangle, potrf's flag left in res.info(); the
+// work is the device workspace.
+[[nodiscard]] Status ibo_potrf(DeviceResources &res, const int32_t n, double *a) {
   int32_t lwork = 0;
   FBF_TRY(gpu_status(wwr::potrf_bufferSize<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
                                                    n, a, n, &lwork)));
   auto work = wwr::extension::reinterpret_buffer_view<double>(
       res.device_workspace(static_cast<size_t>(std::max(lwork, 1)) * sizeof(double)));
-  FBF_TRY(gpu_status(wwr::potrf<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER, n, a, n,
-                                        work.data(), lwork, res.info().data())));
+  return gpu_status(wwr::potrf<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER, n, a, n,
+                                       work.data(), lwork, res.info().data()));
+}
+
+// S = L L^T in place; an error if S is not positive definite.
+[[nodiscard]] Status ibo_cholesky(DeviceResources &res, const int32_t n, double *a,
+                                  const std::string_view what) {
+  FBF_TRY(ibo_potrf(res, n, a));
   return ibo_check_info(res, what);
+}
+
+// The basis's overlap S1 = L L^T in place, and whether a solve over L is to be
+// trusted: false when potrf meets a minor that is not positive, or a pivot
+// L_jj^2 at or below orthogonalize's floor. Every pivot bounds S1's smallest
+// eigenvalue from above, so such a pivot means a mode that floor would drop,
+// and a solve over L amplifies rounding by its inverse. On false @p a holds
+// no usable factor.
+[[nodiscard]] Result<bool> ibo_basis_cholesky(DeviceResources &res, const int32_t n, double *a) {
+  FBF_TRY(ibo_potrf(res, n, a));
+  const int32_t info = FBF_TRY(res.fetch_info());
+  if (info < 0) {
+    return err_gpu("intrinsic_atomic_orbitals: potrf rejected argument {}", -info);
+  }
+  if (info > 0) {
+    FBF_LOG_WARN("intrinsic_atomic_orbitals: the basis's overlap is not positive definite "
+                 "(minor {}); S1^-1 is applied as X X^T over X = S1^-1/2",
+                 info);
+    return false;
+  }
+  std::vector<double> diagonal(static_cast<size_t>(n));
+  FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(
+      diagonal.data(), sizeof(double), a, (static_cast<size_t>(n) + 1) * sizeof(double),
+      sizeof(double), static_cast<size_t>(n), wwr::wwrMemcpyDeviceToHost, res.stream())));
+  FBF_TRY(res.sync());
+  double pivot = std::numeric_limits<double>::infinity();
+  for (const double l : diagonal) {
+    pivot = std::min(pivot, l * l);
+  }
+  if (pivot <= kOrthogonalizeEigenvalueFloor<double>) {
+    FBF_LOG_WARN("intrinsic_atomic_orbitals: the basis's overlap has a Cholesky pivot of {:.3e}, "
+                 "at or below {:.0e}; S1^-1 is applied as X X^T over X = S1^-1/2",
+                 pivot, kOrthogonalizeEigenvalueFloor<double>);
+    return false;
+  }
+  return true;
 }
 
 // B <- S^-1 B for the n x nrhs B, over ibo_cholesky's factor @p l.
@@ -80,6 +123,21 @@ namespace free_breakfast {
   FBF_TRY(gpu_status(wwr::potrs<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER, n, nrhs,
                                         l, n, b, n, res.info().data())));
   return ibo_check_info(res, "potrs");
+}
+
+// B <- S1^-1 B for the n x nrhs B: a solve over the Cholesky factor, or, when
+// @p cholesky is false, X (X B) over @p factor = X = S1^-1/2, which is
+// symmetric. With orthogonalize's floor, X X^T is the pseudo-inverse on the
+// modes it keeps.
+[[nodiscard]] Status ibo_solve_basis(DeviceResources &res, const int32_t n, const int32_t nrhs,
+                                     const bool cholesky, const double *factor, double *b) {
+  if (cholesky) {
+    return ibo_solve(res, n, nrhs, factor, b);
+  }
+  Buffers::device<double> xb = ibo_buffer(res, static_cast<size_t>(n) * nrhs);
+  FBF_TRY(
+      ibo_gemm(res, false, false, n, nrhs, n, kOne<double>, factor, b, kZero<double>, xb.data()));
+  return ibo_gemm(res, false, false, n, nrhs, n, kOne<double>, factor, xb.data(), kZero<double>, b);
 }
 
 // X <- X (X^T S X)^-1/2 for the n x k X: Loewdin orthonormalization of its
@@ -168,16 +226,22 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
   Buffers::device<double> s2 = ibo_buffer(res, static_cast<size_t>(m) * m);
   FBF_TRY(ibo_overlaps(res, basis, minimal, s12, s2));
 
-  // The two Cholesky factors; S1^-1 and S2^-1 are only ever solves.
+  // S1^-1 and S2^-1 are only ever applied, never formed. S2's is a solve over
+  // its Cholesky factor, an error if it has none: it is a free-atom minimal
+  // basis. S1's is one too, unless S1 is too near singular for that, and then
+  // X X^T over X = S1^-1/2, as Knizia's Appendix C advises.
   Buffers::device<double> l1 = ibo_buffer(res, static_cast<size_t>(n) * n);
   FBF_TRY(ibo_copy(res, l1.data(), s, static_cast<size_t>(n) * n));
-  FBF_TRY(ibo_cholesky(res, n, l1.data(), "the basis's overlap"));
+  const bool cholesky = FBF_TRY(ibo_basis_cholesky(res, n, l1.data()));
+  if (!cholesky) {
+    FBF_TRY(orthogonalize<double>(res, n, s, l1.data()));
+  }
   FBF_TRY(ibo_cholesky(res, m, s2.data(), "the minimal basis's overlap"));
 
   // P12 = S1^-1 S12, the projector from the minimal basis onto the basis.
   Buffers::device<double> p12 = ibo_buffer(res, nm);
   FBF_TRY(ibo_copy(res, p12.data(), s12.data(), nm));
-  FBF_TRY(ibo_solve(res, n, m, l1.data(), p12.data()));
+  FBF_TRY(ibo_solve_basis(res, n, m, cholesky, l1.data(), p12.data()));
 
   // C~ = orth(S1^-1 S12 S2^-1 S21 C): the occupied orbitals depolarized,
   // projected onto the minimal basis and back.
@@ -193,7 +257,7 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
     FBF_TRY(ibo_solve(res, m, k, s2.data(), x.data()));
     FBF_TRY(ibo_gemm(res, false, false, n, k, m, kOne<double>, s12.data(), x.data(), kZero<double>,
                      ct.data()));
-    FBF_TRY(ibo_solve(res, n, k, l1.data(), ct.data()));
+    FBF_TRY(ibo_solve_basis(res, n, k, cholesky, l1.data(), ct.data()));
     FBF_TRY(ibo_orthonormalize(res, n, k, s, ct.data(), sc.data(), scratch.data()));
 
     // A = (C C^T S1 C~ C~^T S1 + (1 - C C^T S1)(1 - C~ C~^T S1)) P12. With

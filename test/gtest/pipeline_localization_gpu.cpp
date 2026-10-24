@@ -88,10 +88,18 @@ std::vector<double> download(const Buffer &buffer, std::size_t count) {
 }
 
 // The reference's molecule localized with the given exponent, from a config
-// naming only the inputs and [localization], plus @p extra in that table.
+// naming only the inputs and [localization], plus @p extra in that table. A
+// @p basis document, if given, is read from a file in place of the entry's
+// basis.
 std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t exponent,
-                                        std::string_view extra = "") {
+                                        std::string_view extra = "",
+                                        const fb::json *basis = nullptr) {
   const fb::test::ScratchDir dir("pipeline_localization");
+  std::string basis_spec = entry.at("basis").get<std::string>();
+  if (basis != nullptr) {
+    basis_spec = "basis.json";
+    EXPECT_TRUE(fb::write_json(dir / basis_spec, *basis).has_value());
+  }
   // Bohr in the reference, Angstrom in an XYZ file.
   std::string xyz =
       std::format("{}\n{}\n", entry.at("atoms").size(), entry.at("name").get<std::string>());
@@ -108,8 +116,7 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
   const std::string toml =
       std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
                   "[localization]\nexponent = {}\nfunctional_tolerance = 1e-13\n{}",
-                  entry.at("charge").get<std::int32_t>(), entry.at("basis").get<std::string>(),
-                  exponent, extra);
+                  entry.at("charge").get<std::int32_t>(), basis_spec, exponent, extra);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml");
   if (!calc.has_value()) {
@@ -366,86 +373,108 @@ TEST_P(PipelineIbo, MatchesPyscfAndKeepsTheDensity) {
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineIbo, kCases, case_name);
 
-// The IAOs on their own, from the Scf's orbitals: orthonormal, spanning the
-// occupied orbitals (each has unit weight on them), and giving PySCF's partial
-// charges, Z_A - 2 sum_i sum_{r in A} (A^T S C)_ri^2.
+// The IAOs on their own, from the Scf's orbitals over the entry's basis (or
+// @p basis_document): orthonormal, spanning the occupied orbitals (each has
+// unit weight on them), and giving PySCF's partial charges,
+// Z_A - 2 sum_i sum_{r in A} (A^T S C)_ri^2.
+void expect_iaos(const fb::json &entry, const fb::json *basis_document = nullptr) {
+  auto calc = localize(entry, 4, "mode = \"ibo\"\n", basis_document);
+  ASSERT_TRUE(calc.has_value());
+  const auto &molecule = calc->get<fb::Molecule>();
+  const auto &basis = calc->get<fb::BasisSet>();
+  const auto &overlap = calc->get<fb::Overlap>();
+  const auto &scf = calc->get<fb::Scf>();
+  ASSERT_TRUE(molecule.has_value() && basis.has_value() && overlap.has_value() && scf.has_value());
+  auto stamp = fb::resolve_basis("minao");
+  ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+  auto minao = fb::place(stamp->primitive_normalized(), *molecule);
+  ASSERT_TRUE(minao.has_value()) << minao.error().message;
+
+  const std::size_t n = basis->nao_sphe();
+  const std::size_t m = minao->nao_sphe();
+  const auto occ = static_cast<std::size_t>(molecule->electron_count() / 2);
+  fb::DeviceResources res(scf->c.dev_idx());
+  fb::Buffers::device<double> iao(n * m, res.device());
+  const fb::Status built =
+      fb::intrinsic_atomic_orbitals(res, *basis, *minao, static_cast<std::int32_t>(occ),
+                                    overlap->s.data(), scf->c.data(), iao.data());
+  ASSERT_TRUE(built.has_value()) << built.error().message;
+  ASSERT_TRUE(res.sync().has_value());
+  const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
+  const std::vector<double> a = download(iao, n * m);
+  const std::vector<double> s = download(overlap->s, n * n);
+
+  // A^T S A = I.
+  std::vector<double> ats(m * n, 0.0);
+  for (std::size_t r = 0; r < m; ++r) {
+    for (std::size_t nu = 0; nu < n; ++nu) {
+      for (std::size_t mu = 0; mu < n; ++mu) {
+        ats[r + (m * nu)] += a[mu + (n * r)] * s[mu + (n * nu)];
+      }
+    }
+  }
+  for (std::size_t r = 0; r < m; ++r) {
+    for (std::size_t q = 0; q < m; ++q) {
+      double atsa = 0.0;
+      for (std::size_t nu = 0; nu < n; ++nu) {
+        atsa += ats[r + (m * nu)] * a[nu + (n * q)];
+      }
+      EXPECT_NEAR(atsa, r == q ? 1.0 : 0.0, 1e-10) << r << "," << q;
+    }
+  }
+  // The canonical orbitals' populations over the IAOs: each orbital's sum
+  // to one, as the IAOs span them, and the charges are PySCF's.
+  const auto populations =
+      fb::orbital_populations(res, *basis, *minao, static_cast<std::int32_t>(occ),
+                              overlap->s.data(), scf->c.data(), iao.data());
+  ASSERT_TRUE(populations.has_value()) << populations.error().message;
+  const std::uint32_t n_atoms = minao->natoms();
+  ASSERT_EQ(populations->size(), n_atoms * occ);
+  for (std::size_t i = 0; i < occ; ++i) {
+    double weight = 0.0;
+    for (std::uint32_t atom = 0; atom < n_atoms; ++atom) {
+      weight += (*populations)[atom + (n_atoms * i)];
+    }
+    EXPECT_NEAR(weight, 1.0, 1e-10) << "orbital " << i;
+  }
+
+  const auto ours = fb::partial_charges(molecule->atoms(), *populations);
+  ASSERT_TRUE(ours.has_value()) << ours.error().message;
+  const auto charges = entry.at("iao_charges").get<std::vector<double>>();
+  ASSERT_EQ(charges.size(), n_atoms);
+  ASSERT_EQ(ours->size(), n_atoms);
+  for (std::uint32_t atom = 0; atom < n_atoms; ++atom) {
+    EXPECT_NEAR((*ours)[atom], charges[atom], kChargeTolerance) << "atom " << atom;
+  }
+  // Each electron is counted once: the charges sum to the molecule's.
+  EXPECT_NEAR(std::accumulate(ours->begin(), ours->end(), 0.0), molecule->charge(), 1e-10);
+}
+
 TEST(PipelineIbo, TheIaosAreOrthonormalSpanTheOccupiedAndGivePyscfsCharges) {
   FBF_REQUIRE_GPU();
   for (std::string_view name : {"h2o_sto3g", "h2o_ccpvdz", "nh4_ccpvdz"}) {
     SCOPED_TRACE(name);
-    const fb::json &entry = reference_case(name, "ibo.json");
-    auto calc = localize(entry, 4, "mode = \"ibo\"\n");
-    ASSERT_TRUE(calc.has_value());
-    const auto &molecule = calc->get<fb::Molecule>();
-    const auto &basis = calc->get<fb::BasisSet>();
-    const auto &overlap = calc->get<fb::Overlap>();
-    const auto &scf = calc->get<fb::Scf>();
-    ASSERT_TRUE(molecule.has_value() && basis.has_value() && overlap.has_value() &&
-                scf.has_value());
-    auto stamp = fb::resolve_basis("minao");
-    ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
-    auto minao = fb::place(stamp->primitive_normalized(), *molecule);
-    ASSERT_TRUE(minao.has_value()) << minao.error().message;
-
-    const std::size_t n = basis->nao_sphe();
-    const std::size_t m = minao->nao_sphe();
-    const auto occ = static_cast<std::size_t>(molecule->electron_count() / 2);
-    fb::DeviceResources res(scf->c.dev_idx());
-    fb::Buffers::device<double> iao(n * m, res.device());
-    const fb::Status built =
-        fb::intrinsic_atomic_orbitals(res, *basis, *minao, static_cast<std::int32_t>(occ),
-                                      overlap->s.data(), scf->c.data(), iao.data());
-    ASSERT_TRUE(built.has_value()) << built.error().message;
-    ASSERT_TRUE(res.sync().has_value());
-    const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-    const std::vector<double> a = download(iao, n * m);
-    const std::vector<double> s = download(overlap->s, n * n);
-
-    // A^T S A = I.
-    std::vector<double> ats(m * n, 0.0);
-    for (std::size_t r = 0; r < m; ++r) {
-      for (std::size_t nu = 0; nu < n; ++nu) {
-        for (std::size_t mu = 0; mu < n; ++mu) {
-          ats[r + (m * nu)] += a[mu + (n * r)] * s[mu + (n * nu)];
-        }
-      }
-    }
-    for (std::size_t r = 0; r < m; ++r) {
-      for (std::size_t q = 0; q < m; ++q) {
-        double atsa = 0.0;
-        for (std::size_t nu = 0; nu < n; ++nu) {
-          atsa += ats[r + (m * nu)] * a[nu + (n * q)];
-        }
-        EXPECT_NEAR(atsa, r == q ? 1.0 : 0.0, 1e-10) << r << "," << q;
-      }
-    }
-    // The canonical orbitals' populations over the IAOs: each orbital's sum
-    // to one, as the IAOs span them, and the charges are PySCF's.
-    const auto populations =
-        fb::orbital_populations(res, *basis, *minao, static_cast<std::int32_t>(occ),
-                                overlap->s.data(), scf->c.data(), iao.data());
-    ASSERT_TRUE(populations.has_value()) << populations.error().message;
-    const std::uint32_t n_atoms = minao->natoms();
-    ASSERT_EQ(populations->size(), n_atoms * occ);
-    for (std::size_t i = 0; i < occ; ++i) {
-      double weight = 0.0;
-      for (std::uint32_t atom = 0; atom < n_atoms; ++atom) {
-        weight += (*populations)[atom + (n_atoms * i)];
-      }
-      EXPECT_NEAR(weight, 1.0, 1e-10) << "orbital " << i;
-    }
-
-    const auto ours = fb::partial_charges(molecule->atoms(), *populations);
-    ASSERT_TRUE(ours.has_value()) << ours.error().message;
-    const auto charges = entry.at("iao_charges").get<std::vector<double>>();
-    ASSERT_EQ(charges.size(), n_atoms);
-    ASSERT_EQ(ours->size(), n_atoms);
-    for (std::uint32_t atom = 0; atom < n_atoms; ++atom) {
-      EXPECT_NEAR((*ours)[atom], charges[atom], kChargeTolerance) << "atom " << atom;
-    }
-    // Each electron is counted once: the charges sum to the molecule's.
-    EXPECT_NEAR(std::accumulate(ours->begin(), ours->end(), 0.0), molecule->charge(), 1e-10);
+    expect_iaos(reference_case(name, "ibo.json"));
   }
+}
+
+// cc-pVDZ with oxygen's outer s function given twice, read from a path: the
+// same space, so the same SCF and IAOs, over an exactly singular S1. Its
+// Cholesky factor has a pivot at rounding, below orthogonalize's floor, so
+// S1^-1 is applied as X X^T over X = S1^-1/2, and the charges are still the
+// plain cc-pVDZ ones PySCF gave. (PySCF's own fallback, canonical
+// orthogonalization, is the same pseudo-inverse here: both drop the one null
+// mode and nothing else.)
+TEST(PipelineIbo, ASingularOverlapFallsBackToTheInverseRoot) {
+  FBF_REQUIRE_GPU();
+  auto document = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / ".." / ".." / ".." /
+                                "data" / "basis" / "cc-pVDZ.json");
+  ASSERT_TRUE(document.has_value()) << document.error().message;
+  fb::json &coefficients =
+      document->at("elements").at("8").at("electron_shells").at(0).at("coefficients");
+  ASSERT_EQ(coefficients.size(), 3U);
+  coefficients.push_back(coefficients.back());
+  expect_iaos(reference_case("h2o_ccpvdz", "ibo.json"), &*document);
 }
 
 // partial_charges is host arithmetic, and refuses populations that are not

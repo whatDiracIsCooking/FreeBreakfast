@@ -4,7 +4,8 @@
 /// span the occupied orbitals exactly, and the IBOs, the occupied orbitals
 /// localized over the IAOs' atomic populations.
 ///
-/// The IAOs are gemms, Cholesky solves and two Loewdin orthogonalizations
+/// The IAOs are gemms, Cholesky solves (S^-1/2 for a near-singular basis
+/// overlap) and two Loewdin orthogonalizations
 /// over the overlaps of the working basis and a free-atom minimal basis
 /// (MINAO); the IBOs are pipek_mezey_localize run over the occupied orbitals
 /// written in the orthonormal IAOs, where the Mulliken populations are the
@@ -36,6 +37,10 @@ export namespace free_breakfast {
 /// the n x m IAO coefficients, m = minimal.nao_sphe(), with A^T S A = I and
 /// the occupied orbitals in their span: C = A A^T S C.
 ///
+/// S1^-1, @p s's inverse, is a Cholesky solve, or X X^T over X = S1^-1/2
+/// (orthogonalize, floored) when @p s is too near singular for one: a pivot
+/// at or below kOrthogonalizeEigenvalueFloor, or none positive.
+///
 /// Queued on res.stream(), which is synchronized several times (each Cholesky
 /// flag, each orthogonalization). Scratch is pool buffers on res.device(),
 /// apart from the solvers' work, which is res.device_workspace(); no argument
@@ -43,9 +48,10 @@ export namespace free_breakfast {
 ///
 /// @return Success, or InvalidConfig for a basis with no atoms, @p minimal
 ///         over a different atom count, m above n, @p n_occ outside 0..m, or
-///         a null pointer; Numerical when either overlap is not positive
-///         definite; GpuRuntime for a failed integral, launch, copy, BLAS or
-///         solver call.
+///         a null pointer; Numerical when the minimal basis's overlap is not
+///         positive definite, or orthogonalize's syevd does not converge;
+///         GpuRuntime for a failed integral, launch, copy, BLAS or solver
+///         call.
 [[nodiscard]] Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
                                                const BasisSet &minimal, int32_t n_occ,
                                                const double *s, const double *c, double *iao);
