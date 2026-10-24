@@ -27,12 +27,21 @@ struct BondCenter {
   std::array<double, 4> character{};
 };
 
+/// @brief Whether an orbital is a sigma or a pi orbital.
+enum class BondKind : uint8_t {
+  Sigma, ///< Some center's share is not almost entirely p.
+  Pi,    ///< Every center's share is almost entirely p.
+};
+
 /// @brief One orbital's centers: one for a core or lone pair, two for a
 /// bond, three or more for a multi-center bond.
 struct BondOrbital {
   /// @brief The atoms holding at least the threshold of the orbital, by
   /// descending population; at least the largest one.
   std::vector<BondCenter> centers;
+  /// @brief Pi when every center's p character is at least the pi
+  /// threshold, sigma otherwise; one-center orbitals included.
+  BondKind kind = BondKind::Sigma;
 };
 
 /// @brief The centers of each of @p n_orb orbitals, from their @p weights on
@@ -42,13 +51,17 @@ struct BondOrbital {
 /// i's weight on function r at [r + m * i]: what orbital_weights returns. An
 /// atom is a center of an orbital when its population there, the weights
 /// summed over the atom's functions, is at least @p threshold; the largest
-/// atom is a center regardless, so no orbital has none.
+/// atom is a center regardless, so no orbital has none. The orbital is pi
+/// when each center's p share, character[1], is at least @p pi_threshold,
+/// and sigma otherwise (Derricotte and Evangelista, J. Chem. Theory Comput.
+/// 13, 5984 (2017), section 2.2), so a pure-p lone pair is pi too.
 ///
 /// @return One BondOrbital per orbital; or InvalidConfig when @p minimal has
 ///         no atoms or a shell above f, @p weights is not m x @p n_orb, or
-///         @p threshold is outside (0, 1].
+///         @p threshold or @p pi_threshold is outside (0, 1].
 [[nodiscard]] Result<std::vector<BondOrbital>> bond_orbitals(const BasisSet &minimal, int32_t n_orb,
                                                              std::span<const double> weights,
-                                                             double threshold = 0.1);
+                                                             double threshold = 0.1,
+                                                             double pi_threshold = 0.9);
 
 } // namespace free_breakfast

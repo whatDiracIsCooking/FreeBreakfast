@@ -18,15 +18,16 @@ import free_breakfast.io.molden;
 
 namespace free_breakfast {
 
-// One IBO for the log: its kind, then each center as its element, atom
-// index, share of the orbital and angular character, as
-// "bond  O0 61.2% (s 21% p 79%)  H1 38.6% (s 100%)". A share under half a
-// percent is left out of the character.
+// One IBO for the log: sigma or pi, its kind by center count, then each
+// center as its element, atom index, share of the orbital and angular
+// character, as "sigma bond  O0 61.2% (s 21% p 79%)  H1 38.6% (s 100%)". A
+// share under half a percent is left out of the character.
 [[nodiscard]] std::string describe_bond_orbital(const BondOrbital &orbital,
                                                 const std::span<const Atom> atoms) {
   static constexpr std::array<std::string_view, 3> kKinds{"lone", "bond", "3c+ "};
   static constexpr std::array<char, 4> kMomenta{'s', 'p', 'd', 'f'};
-  std::string text{kKinds[std::min(orbital.centers.size(), kKinds.size()) - 1]};
+  std::string text = std::format("{:<5} {}", orbital.kind == BondKind::Pi ? "pi" : "sigma",
+                                 kKinds[std::min(orbital.centers.size(), kKinds.size()) - 1]);
   for (const BondCenter &center : orbital.centers) {
     text += std::format("  {}{} {:.1f}% (", element_symbol(atoms[center.atom].element), center.atom,
                         100.0 * center.population);

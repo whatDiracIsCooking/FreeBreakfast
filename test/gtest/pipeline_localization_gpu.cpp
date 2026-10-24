@@ -547,6 +547,139 @@ TEST(Bond, CentersAndCharacterFromTheWeights) {
   EXPECT_FALSE(fb::orbital_populations(minimal, 3, weights).has_value());
 }
 
+// bond_orbitals' sigma / pi kind over hand-written weights, on two atoms
+// each with an s and a p shell: pi when every center is at least
+// pi_threshold p, one-center orbitals included.
+TEST(Bond, PiWhenEveryCenterIsAlmostAllP) {
+  const fb::Vec<double, 3> origin{0.0, 0.0, 0.0};
+  const auto shell = [&](std::int32_t l) {
+    return fb::Shell(l, std::vector<double>{1.0}, std::vector<double>{1.0}, origin);
+  };
+  const fb::BasisSet minimal({shell(0), shell(1), shell(0), shell(1)}, {0, 2, 4});
+  ASSERT_EQ(minimal.nao_sphe(), 8U);
+  // Functions s0 p0x p0y p0z s1 p1x p1y p1z. A pi bond, all p on both
+  // atoms; a bond all p on atom 0 but 20% s on atom 1; a one-center pure-p
+  // lone pair, with an s tail under the threshold; a lone pair half s.
+  const std::array weights{0.0, 0.0,  0.0, 0.5, 0.0,  0.0, 0.0, 0.5, //
+                           0.0, 0.0,  0.0, 0.5, 0.1,  0.0, 0.0, 0.4, //
+                           0.0, 0.97, 0.0, 0.0, 0.03, 0.0, 0.0, 0.0, //
+                           0.5, 0.0,  0.0, 0.5, 0.0,  0.0, 0.0, 0.0};
+  const auto bonds = fb::bond_orbitals(minimal, 4, weights);
+  ASSERT_TRUE(bonds.has_value()) << bonds.error().message;
+  ASSERT_EQ(bonds->size(), 4U);
+  EXPECT_EQ((*bonds)[0].kind, fb::BondKind::Pi);
+  EXPECT_EQ((*bonds)[1].kind, fb::BondKind::Sigma) << "atom 1 is s-bearing";
+  ASSERT_EQ((*bonds)[2].centers.size(), 1U);
+  EXPECT_EQ((*bonds)[2].kind, fb::BondKind::Pi) << "a pure-p lone pair is pi";
+  EXPECT_EQ((*bonds)[3].kind, fb::BondKind::Sigma);
+
+  // The rule at its edge, on the second orbital's s-bearing center: pi just
+  // below its p character, sigma just above.
+  const double p_share = (*bonds)[1].centers[1].character[1];
+  EXPECT_NEAR(p_share, 0.8, 1e-15);
+  EXPECT_EQ(fb::bond_orbitals(minimal, 4, weights, 0.1, p_share - 1e-12)->at(1).kind,
+            fb::BondKind::Pi);
+  EXPECT_EQ(fb::bond_orbitals(minimal, 4, weights, 0.1, p_share + 1e-12)->at(1).kind,
+            fb::BondKind::Sigma);
+  // A pi_threshold of one keeps only the pure-p orbitals pi.
+  const auto pure = fb::bond_orbitals(minimal, 4, weights, 0.1, 1.0);
+  ASSERT_TRUE(pure.has_value()) << pure.error().message;
+  EXPECT_EQ(pure->at(0).kind, fb::BondKind::Pi);
+  EXPECT_EQ(pure->at(2).kind, fb::BondKind::Pi);
+
+  for (const double refused : {0.0, -0.5, 1.0 + 1e-12, std::numeric_limits<double>::quiet_NaN()}) {
+    const auto out = fb::bond_orbitals(minimal, 4, weights, 0.1, refused);
+    ASSERT_FALSE(out.has_value()) << refused;
+    EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig);
+  }
+}
+
+// A localize() entry for a closed-shell neutral molecule from Angstrom
+// coordinates, as the reference files give one in Bohr.
+fb::json molecule_entry(std::string_view name,
+                        std::span<const std::pair<std::string_view, fb::Vec<double, 3>>> atoms) {
+  fb::json entry{{"name", name}, {"charge", 0}, {"basis", "cc-pvdz"}, {"atoms", fb::json::array()}};
+  for (const auto &[symbol, coord] : atoms) {
+    entry.at("atoms").push_back(
+        {{"symbol", symbol},
+         {"coord", std::vector<double>{coord.x / fb::kAngstromPerBohr<double>,
+                                       coord.y / fb::kAngstromPerBohr<double>,
+                                       coord.z / fb::kAngstromPerBohr<double>}}});
+  }
+  return entry;
+}
+
+// The kinds of the Localization step's IBOs, at the default exponent of four
+// (which separates sigma and pi, rather than giving banana bonds): the
+// cores, and the sigma and pi orbitals over two or more centers, counted.
+struct KindCounts {
+  std::size_t cores = 0;
+  std::size_t sigma = 0;
+  std::size_t pi = 0;
+};
+KindCounts ibo_kinds(const fb::json &entry) {
+  KindCounts counts;
+  const auto calc = localize(entry, 4, "mode = \"ibo\"\n");
+  if (!calc.has_value()) {
+    return counts;
+  }
+  const auto &local = calc->get<fb::LocalizationOutput>();
+  EXPECT_TRUE(local.has_value());
+  if (!local.has_value()) {
+    return counts;
+  }
+  EXPECT_EQ(local->bonds.size(), static_cast<std::size_t>(local->n_occ));
+  for (const fb::BondOrbital &orbital : local->bonds) {
+    if (orbital.centers.size() == 1) {
+      EXPECT_EQ(orbital.kind, fb::BondKind::Sigma) << "a carbon 1s core";
+      ++counts.cores;
+    } else {
+      ++(orbital.kind == fb::BondKind::Pi ? counts.pi : counts.sigma);
+    }
+  }
+  return counts;
+}
+
+// Ethylene, cc-pVDZ: two sigma cores, five sigma bonds (four CH, one CC)
+// and one pi bond.
+TEST(PipelineIbo, EthyleneHasOnePiBond) {
+  FBF_REQUIRE_GPU();
+  const std::array<std::pair<std::string_view, fb::Vec<double, 3>>, 6> atoms{{
+      {"C", {0.6695, 0.0, 0.0}},
+      {"C", {-0.6695, 0.0, 0.0}},
+      {"H", {1.2321, 0.9289, 0.0}},
+      {"H", {1.2321, -0.9289, 0.0}},
+      {"H", {-1.2321, 0.9289, 0.0}},
+      {"H", {-1.2321, -0.9289, 0.0}},
+  }};
+  const KindCounts counts = ibo_kinds(molecule_entry("ethylene", atoms));
+  EXPECT_EQ(counts.cores, 2U);
+  EXPECT_EQ(counts.sigma, 5U);
+  EXPECT_EQ(counts.pi, 1U);
+}
+
+// Benzene, cc-pVDZ: six cores, twelve sigma bonds and three pi bonds. Each
+// pi IBO is half on one carbon and a fifth on each neighbour, so three
+// centers at the default threshold, every one of them all p.
+TEST(PipelineIbo, BenzeneHasThreePiBonds) {
+  FBF_REQUIRE_GPU();
+  constexpr double kCarbon = 1.3915;
+  constexpr double kHydrogen = 2.4715;
+  std::vector<std::pair<std::string_view, fb::Vec<double, 3>>> atoms;
+  for (const double radius : {kCarbon, kHydrogen}) {
+    for (std::int32_t k = 0; k < 6; ++k) {
+      const double angle = k * fb::kPi<double> / 3.0;
+      atoms.emplace_back(
+          radius == kCarbon ? "C" : "H",
+          fb::Vec<double, 3>{radius * std::cos(angle), radius * std::sin(angle), 0.0});
+    }
+  }
+  const KindCounts counts = ibo_kinds(molecule_entry("benzene", atoms));
+  EXPECT_EQ(counts.cores, 6U);
+  EXPECT_EQ(counts.sigma, 12U);
+  EXPECT_EQ(counts.pi, 3U);
+}
+
 // molden set: the localized orbitals land in a Molden file, n_occ of them at
 // occupation 2. Each energy is <i|F|i> = sum_k U_ki^2 eps_k, and U is
 // orthogonal, so they sum to the canonical occupied energies.
