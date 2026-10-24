@@ -56,6 +56,12 @@ emit_fci_reference.py
                   active-space integrals in its own MO basis, and
                   fci.direct_spin1's lowest roots over them, with <S^2> and
                   1-RDMs, the reference src/ci is tested against. Needs PySCF.
+emit_active_integrals_reference.py
+                  Write test/gtest/data/active_space/active_space.json:
+                  PySCF CASCI's E_core and the sign-invariant elements of
+                  h_eff and (tu|vw) over this tree's basis files, the
+                  reference integrals.active_space is tested against. Needs
+                  PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
                   element of the compiled-in sets named (or --all), by src/sad
