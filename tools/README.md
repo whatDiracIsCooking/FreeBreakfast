@@ -6,6 +6,11 @@ generator. Not tests, not a package, not on the push gate.
 ```
 bse_download.py   Fetch basis sets from the Basis Set Exchange as the JSON
                   src/io/basis reads. Standard library only.
+minao_from_pyscf.py
+                  Write data/basis/minao.json: the MINAO free-atom minimal
+                  basis (the IAOs' B2), converted from PySCF's
+                  pyscf/gto/basis/minao.py, since the Basis Set Exchange
+                  does not serve it. Needs PySCF.
 atomic_cd/        aCD / acCD atomic Cholesky decomposition over PySCF
                   integrals; writes acCD auxiliary shells as BSE JSON.
 emit_one_electron_kernels.py
@@ -66,13 +71,15 @@ tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
 tools/bse_download.py --list
 ```
 
-`atomic_cd` and the three `emit_*_reference.py` need PySCF and numpy, which sit in the
-opt-in `tools` dependency group in `pyproject.toml` rather than in `dev`, so the
-image and the push gate do not carry them. Inside the devcontainer, add
+`atomic_cd`, `minao_from_pyscf.py` and the three `emit_*_reference.py` need
+PySCF and numpy, which sit in the opt-in `tools` dependency group in
+`pyproject.toml` rather than in `dev`, so the image and the push gate do not
+carry them. Inside the devcontainer, add
 `UV_PROJECT_ENVIRONMENT=$PWD/.venv` so the group goes into a worktree-local
 venv rather than the image's `/opt/venv`:
 
 ```sh
+uv run --group tools tools/minao_from_pyscf.py
 uv run --group tools tools/emit_sad_reference.py
 uv run --group tools tools/emit_scf_reference.py
 uv run --group tools tools/emit_localization_reference.py

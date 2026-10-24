@@ -23,9 +23,11 @@ at all.
 | `6-31g.json` | `6-31G` | Z 1–18 (H–Ar) | Cartesian d from K up; see below |
 | `cc-pVDZ.json` | `cc-pVDZ` | Z 1–18, 20–36 | no K |
 | `cc-pVTZ.json` | `cc-pVTZ` | Z 1–18, 20–36 | no K |
+| `minao.json` | `MINAO` | Z 1–18, 20–36 | **not from BSE**: converted from PySCF; see below |
 
-Filenames are whatever `tools/bse_download.py` writes, so the regeneration
-commands below reproduce this directory byte for byte. The name a user writes
+Filenames are whatever `tools/bse_download.py` (or, for MINAO,
+`tools/minao_from_pyscf.py`) writes, so the regeneration commands below
+reproduce this directory byte for byte. The name a user writes
 in a config is **not** the filename: it is the `name` field inside the
 document, matched with `-`, `_` and spaces dropped and case ignored, so
 `cc-pVDZ`, `cc-pvdz` and `ccpvdz` are one name.
@@ -36,9 +38,10 @@ document, matched with `-`, `_` and spaces dropped and case ignored, so
 tools/bse_download.py sto-3g -o data/basis --elements 1-36 --force
 tools/bse_download.py 6-31g -o data/basis --elements 1-18 --force
 tools/bse_download.py cc-pVDZ cc-pVTZ -o data/basis --elements 1-18,20-36 --force
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/minao_from_pyscf.py
 ```
 
-All four are BSE version 1 (`sto-3g` and `6-31g` revised 2018-06-19, the two
+The four BSE sets are BSE version 1 (`sto-3g` and `6-31g` revised 2018-06-19, the two
 correlation-consistent sets 2018-10-03). Each document keeps its BSE header —
 `description`, `references`, `revision_date` — so provenance travels with the
 data rather than living only here.
@@ -65,6 +68,42 @@ reader (a deliberate reversal of the design in `src/basis/README.md`) or a
 spherical re-contraction, which is a different basis from the one BSE
 publishes. Pick that fight separately; do not quietly ship data the reader
 refuses.
+
+## MINAO, the one set taken from PySCF
+
+`minao.json` is the free-atom minimal basis of the intrinsic atomic orbitals
+(Knizia, J. Chem. Theory Comput. 9, 4834 (2013), Appendix B): for each element,
+the first n_occ contracted functions of each angular momentum of cc-pVTZ,
+which are spherically averaged ground-state Hartree–Fock AOs. Molpro
+introduced it under that name. It is there to be the IAOs' B2, not to run an
+SCF in, though nothing stops one.
+
+**The Basis Set Exchange does not serve it.** Its `mini` is Huzinaga's MINI,
+a different set. So `tools/minao_from_pyscf.py` converts PySCF's copy of
+Molpro's table, `pyscf/gto/basis/minao.py`, into the same BSE JSON the other
+files are. PySCF's own `lo.iao` defaults to that table, so a PySCF oracle and
+this tree build their IAOs over one B2, bit for bit.
+
+- **Provenance travels in the file**: `revision_description` names the PySCF
+  version it came from (2.14.0, the one `uv.lock` pins), and every element's
+  `references` entry names the table. PySCF is Apache-2.0.
+- **The values are PySCF's doubles exactly**, each written as its shortest
+  round-trip decimal, so the reader parses back what PySCF holds. Running the
+  tool twice gives the same bytes.
+- **The element range is the cc sets'**. PySCF's table has no potassium,
+  since cc-pVTZ has none. From rubidium on, it is cut from cc-pVTZ-PP, a
+  valence set for an effective core potential, and this all-electron tree has
+  no use for that.
+- **Against `cc-pVTZ.json`**, the BSE copy in this directory, MINAO is exactly
+  its first n_occ columns for every element but five. These five match only
+  to rounding, because Molpro's cc-pVTZ table and BSE's are rounded
+  differently: one Ca coefficient differs by 5e-8, and Ga, Ge, As and Kr carry
+  exponents with fewer digits, at most 4.4e-7 relative. That is why this file
+  is converted from PySCF rather than cut from `cc-pVTZ.json`: cutting would
+  give a B2 that differs from the oracle's in those elements.
+
+After a PySCF bump, re-run the tool. If the diff is not empty, regenerate
+`data/sad/` too.
 
 ## Adding a set
 
