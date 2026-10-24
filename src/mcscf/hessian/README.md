@@ -84,12 +84,51 @@ built as s C_i C_iᵀ, s = min(1, 2 / m_i²), m_i = max_µ |(U C)_µi|, as
 iamax per build (one synchronize each) and scaled the same way. J and K are
 screened at s τ and scaled by 1 / s.
 
-**Screening breaks symmetry at the 1e-13 level.** J and K skip what falls
-under τ whatever the density, so the screened H is not exactly linear: at the
-default τ = 1e-14, xᵀHy and yᵀHx part by up to 5e-13 over random unit x, y on
-the cc-pVDZ cases, which is past 1e-12 of |xᵀHy| when that is small. With J
-and K unscreened they agree to 5e-14 of it. A Davidson over H does not notice
-either.
+**Screening makes H symmetric only to 1e-13 of max |H|, and K's screen is
+why.** A screened J or K skips what falls under τ for *this* density, so the
+screened H x is not exactly linear in x and xᵀHy ≠ yᵀHx. Measured on the five
+cc-pVDZ cases below over the gradient and eight random unit x, building the
+operator once per (τ_j, τ_k), as max |xᵀHy − yᵀHx| / (max |diag H| ‖x‖ ‖y‖):
+
+| Source | H₂O | N₂ | H₂CO SA2 | H₂CO SA2 weighted | H₂O AVAS |
+|---|---|---|---|---|---|
+| neither (τ_j = τ_k = 0) | 1.6e-16 | 4.3e-16 | 1.3e-16 | 1.8e-16 | 2.3e-16 |
+| J only (τ_j = 1e-14) | 1.5e-16 | 3.9e-16 | 3.7e-16 | 2.8e-16 | 2.6e-15 |
+| K only (τ_k = 1e-14) | 1.0e-13 | 1.8e-14 | 4.5e-15 | 7.5e-15 | 7.3e-14 |
+| both, the defaults | 1.0e-13 | 1.8e-14 | 4.6e-15 | 7.5e-15 | 7.3e-14 |
+| both at 1e-12 | 2.7e-11 | 4.4e-12 | 1.0e-12 | 1.0e-12 | 2.5e-11 |
+| both at 1e-10 | 5.2e-9 | 4.4e-10 | 2.0e-10 | 3.6e-10 | 2.1e-9 |
+
+So it is **K's** screen, which reads the density through each block's factor
+and each group's reach as well as through max |D|, and it grows with τ_k: the
+coefficient of τ_k max |diag H| ‖x‖ ‖y‖ is 0.5 to 10 at 1e-14 and 2 to 50 at
+1e-10. J's at 1e-14 is near rounding (2.6e-15 at worst); at τ_j = 1e-12 alone it
+reaches 6e-14, under a tenth of K's at the same τ. The **prune cap**
+is not a source: J and K screen s D at s τ, so the scale cancels in every
+skip test, and building with s = 1 throughout (outside the classes' |D| ≤ 2,
+for densities up to 2.7 here) gives the same 1e-13 level. The **per-core-orbital builds in
+create** are not one either: they feed only the diagonal, which `apply` never
+reads. In absolute terms the defaults part xᵀHy and yᵀHx by at most 7.8e-13
+(H₂O AVAS), which is past 1e-12 of the smallest |xᵀHy| (9e-4); that is why a
+bar relative to |xᵀHy| failed.
+
+Making the screened product exactly linear would mean screening K by a bound
+that does not depend on the density, a change to `exchange` (and a looser or
+costlier screen) rather than to this operator, so the screening is kept and
+**the bar is absolute: |xᵀHy − yᵀHx| ≤ 100 τ max |H| ‖x‖ ‖y‖**, 1e-12 at the
+default τ, as the STO-3G check already had it. Absolute, because every skipped
+term of a K is under τ whatever the vectors (`exchange`'s guarantee), so the
+error does not shrink with |xᵀHy|; of max |H|, because that is the scale the
+skipped integrals are contracted into H at; ‖x‖ ‖y‖, because the products are
+of x and y. 100 is the measured coefficient's worst (10 at 1e-14, 50 at 1e-10)
+with room, and the tests take max |diag H|, which is at most max |H|.
+
+**It does not matter to an augmented-Hessian Davidson** (#251), which assumes
+a symmetric operator. `davidson_solve` over [[0, gᵀ], [g, H]] (preconditioned
+by 1 / (θ − diag), from e₀, to 1e-10) took the same iterations at τ = 0 and at
+the defaults (H₂O cc-pVDZ 15, N₂ 12), with the lowest eigenvalue the same to
+2e-15 and the step x / x₀ to 2.7e-12 relative: the asymmetry (3e-13 and 4e-13
+absolute there) is far below the 1e-10 residual it converges to.
 
 Scratch per product (κ, X₂, the gemms' intermediates, two n_cart² densities
 and an n_cart × nmo product) is carved from `res.device_workspace()`, which
@@ -122,8 +161,9 @@ by AVAS.
   every pair: d/dY E(C exp(tκ + Y)) by exp(K + Y) = exp(K) exp(Y − [K, Y]/2 +
   …). Without that term the slope is H x + [κ, G]/2, which is not small off a
   stationary point;
-- symmetry, xᵀHy = yᵀHx over the gradient and the random x, to 1e-12 of
-  |xᵀHy|, with J and K unscreened (above);
+- symmetry, xᵀHy = yᵀHx over the gradient and the random x, of the
+  operator at the default τ, to 1e-12 (100 τ) of max |diag H| ‖x‖ ‖y‖ (above;
+  seen: 1e-13);
 - on H₂O STO-3G, H e_i for every unit vector, in one block, against the
   diagonal to 1e-7 (seen: 3e-14), symmetric to 1e-12 of max |H|, and the
   finite difference, both at a two-root frontier CAS(2,2) weighted
