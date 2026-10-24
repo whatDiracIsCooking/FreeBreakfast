@@ -50,20 +50,11 @@ Status rdm1(const StringSet &alpha, const StringSet &beta, const std::span<const
   return {};
 }
 
-// What both rdm12s refuse: the shapes they would otherwise index past, and
-// weights that do not make an average.
-Status check_rdm12_inputs(const StringSet &alpha, const StringSet &beta,
-                          const std::span<const double> vectors,
-                          const std::span<const double> weights, const size_t gamma,
-                          const size_t gamma2) {
-  const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
-  const auto n = static_cast<size_t>(alpha.n_orbitals());
-  if (alpha.n_orbitals() != beta.n_orbitals() || vectors.size() != weights.size() * dim ||
-      gamma != n * n || gamma2 != n * n * n * n) {
-    return err_config("ci rdm12: orbitals {} and {}, {} determinants, {} weights, given vectors "
-                      "of {}, gamma of {} and gamma2 of {}",
-                      alpha.n_orbitals(), beta.n_orbitals(), dim, weights.size(), vectors.size(),
-                      gamma, gamma2);
+// What both rdm12s refuse in the weights: none, or any that do not make an
+// average.
+Status check_rdm12_weights(const std::span<const double> weights) {
+  if (weights.empty()) {
+    return err_config("ci rdm12: no weights");
   }
   double sum = 0.0;
   for (const double w : weights) {
@@ -81,9 +72,16 @@ Status check_rdm12_inputs(const StringSet &alpha, const StringSet &beta,
 Status host_rdm12(const StringSet &alpha, const StringSet &beta,
                   const std::span<const double> vectors, const std::span<const double> weights,
                   const std::span<double> gamma, const std::span<double> gamma2) {
-  FBF_TRY(check_rdm12_inputs(alpha, beta, vectors, weights, gamma.size(), gamma2.size()));
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
   const auto n = static_cast<size_t>(alpha.n_orbitals());
+  if (alpha.n_orbitals() != beta.n_orbitals() || vectors.size() != weights.size() * dim ||
+      gamma.size() != n * n || gamma2.size() != n * n * n * n) {
+    return err_config("ci rdm12: orbitals {} and {}, {} determinants, {} weights, given vectors "
+                      "of {}, gamma of {} and gamma2 of {}",
+                      alpha.n_orbitals(), beta.n_orbitals(), dim, weights.size(), vectors.size(),
+                      gamma.size(), gamma2.size());
+  }
+  FBF_TRY(check_rdm12_weights(weights));
   const size_t nn = n * n;
   const auto nb = static_cast<size_t>(beta.size());
 
@@ -135,11 +133,11 @@ Status host_rdm12(const StringSet &alpha, const StringSet &beta,
   return {};
 }
 
-// The bytes of D one chunk of determinants may take: big enough that the gemms
-// over a chunk are wide ones, small enough to stay a modest scratch.
+// The bytes of D one chunk of determinants may take: big enough that the
+// products over a chunk are wide ones, small enough to stay a modest scratch.
 constexpr size_t kRdmChunkBytes = size_t{64} << 20;
 
-// A set's replacement lists as rdm12's gather takes them: target, unpacked
+// A set's replacement lists as CiRdm's gather takes them: target, unpacked
 // pair p · n + q, sign, three int32_t per replacement, by string then list
 // order.
 std::vector<int32_t> rdm_link_table(const StringSet &set) {
@@ -158,110 +156,91 @@ std::vector<int32_t> rdm_link_table(const StringSet &set) {
   return links;
 }
 
-Status rdm12(DeviceResources &res, const StringSet &alpha, const StringSet &beta,
-             const std::span<const double> vectors, const std::span<const double> weights,
-             const std::span<double> gamma, const std::span<double> gamma2) {
-  FBF_TRY(check_rdm12_inputs(alpha, beta, vectors, weights, gamma.size(), gamma2.size()));
+CiRdm::CiRdm(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
+             const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per)
+    : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
+      alpha_per_{alpha_per}, beta_per_{beta_per},
+      alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
+      beta_links_(static_cast<size_t>(n_beta) * static_cast<size_t>(beta_per) * 3, res.device()) {}
+
+Result<CiRdm> CiRdm::create(DeviceResources &res, const StringSet &alpha, const StringSet &beta) {
+  if (alpha.n_orbitals() != beta.n_orbitals()) {
+    return err_config("CiRdm: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
+                      beta.n_orbitals());
+  }
+  if (alpha.n_orbitals() == 0) {
+    return err_config("CiRdm: the strings span no orbitals");
+  }
   if (static_cast<int64_t>(alpha.size()) * beta.size() > std::numeric_limits<int32_t>::max()) {
-    return err_config("ci rdm12: {} x {} determinants is more than an int32_t counts", alpha.size(),
+    return err_config("CiRdm: {} x {} determinants is more than an int32_t counts", alpha.size(),
                       beta.size());
   }
-  const auto n = static_cast<size_t>(alpha.n_orbitals());
-  if (n == 0) {
-    return {}; // γ and Γ are empty.
-  }
-  const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
-  const size_t nn = n * n;
-  const auto nn32 = static_cast<int32_t>(nn);
-  const auto per_a = alpha.replacements_per_string();
-  const auto per_b = beta.replacements_per_string();
+  const ScopedDeviceIndex on{res.dev_idx()};
+  CiRdm rdm(res, alpha.n_orbitals(), alpha.size(), beta.size(), alpha.replacements_per_string(),
+            beta.replacements_per_string());
   const std::vector<int32_t> alpha_links = rdm_link_table(alpha);
   const std::vector<int32_t> beta_links = rdm_link_table(beta);
+  const wwr::wwrStream_t stream = res.stream();
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rdm.alpha_links_.data(), alpha_links.data(),
+                                         sizeof(int32_t) * alpha_links.size(),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rdm.beta_links_.data(), beta_links.data(),
+                                         sizeof(int32_t) * beta_links.size(),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
+  // Pageable sources, which die at return.
+  FBF_TRY(res.sync());
+  return rdm;
+}
+
+Status CiRdm::rdm12(DeviceResources &res, const std::span<const double> weights,
+                    const double *const vectors, double *const gamma, double *const gamma2) {
+  if (res.dev_idx() != dev_idx_) {
+    return err_config("CiRdm: tables are on device {}, but the call passed device {}", dev_idx_,
+                      res.dev_idx());
+  }
+  FBF_TRY(check_rdm12_weights(weights));
+  const auto n = static_cast<size_t>(n_orbitals_);
+  const auto dim = static_cast<size_t>(size());
+  const size_t nn = n * n;
+  const auto nn32 = static_cast<int32_t>(nn);
   const auto chunk =
       static_cast<int32_t>(std::clamp<size_t>(kRdmChunkBytes / (sizeof(double) * nn), 1, dim));
 
-  // Carve the workspace: the two link tables, the vectors, M, γ, then D.
-  const auto aligned = [](size_t bytes) {
-    return math::align_up(bytes, DeviceResources::kWorkspaceAlignment);
-  };
-  const size_t alpha_bytes = aligned(sizeof(int32_t) * alpha_links.size());
-  const size_t beta_bytes = aligned(sizeof(int32_t) * beta_links.size());
-  const size_t vector_bytes = aligned(sizeof(double) * vectors.size());
-  const size_t m_bytes = aligned(sizeof(double) * nn * nn);
-  const size_t gamma_bytes = aligned(sizeof(double) * nn);
+  // The workspace: M, then one chunk of D.
+  const size_t m_bytes =
+      math::align_up(sizeof(double) * nn * nn, DeviceResources::kWorkspaceAlignment);
   const size_t d_bytes = sizeof(double) * static_cast<size_t>(chunk) * nn;
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  std::byte *base = res.device_workspace(alpha_bytes + beta_bytes + vector_bytes + m_bytes +
-                                         gamma_bytes + d_bytes)
-                        .data();
-  const auto carve = [&base](size_t bytes) {
-    std::byte *const at = base;
-    base += bytes;
-    return at;
-  };
-  auto *const alpha_dev = reinterpret_cast<int32_t *>(carve(alpha_bytes));
-  auto *const beta_dev = reinterpret_cast<int32_t *>(carve(beta_bytes));
-  auto *const c_dev = reinterpret_cast<double *>(carve(vector_bytes));
-  auto *const m_dev = reinterpret_cast<double *>(carve(m_bytes));
-  auto *const gamma_dev = reinterpret_cast<double *>(carve(gamma_bytes));
-  auto *const d_dev = reinterpret_cast<double *>(carve(d_bytes));
-
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(alpha_dev, alpha_links.data(),
-                                         sizeof(int32_t) * alpha_links.size(),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(beta_dev, beta_links.data(),
-                                         sizeof(int32_t) * beta_links.size(),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c_dev, vectors.data(), sizeof(double) * vectors.size(),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(m_dev, 0, sizeof(double) * nn * nn, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma_dev, 0, sizeof(double) * nn, stream)));
+  std::byte *const base = res.device_workspace(m_bytes + d_bytes).data();
+  auto *const m = reinterpret_cast<double *>(base);
+  auto *const d = reinterpret_cast<double *>(base + m_bytes);
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(m, 0, sizeof(double) * nn * nn, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma, 0, sizeof(double) * nn, stream)));
 
   // Per root and chunk of determinants K: D_{tu,K} = ⟨c| E_tu |K⟩ as a
-  // count × n² column-major block, then M += w Dᵀ D and γ += w Dᵀ c.
+  // count × n² column-major block, then M += w Dᵀ D, its lower triangle, and
+  // γ += w Dᵀ c.
   for (size_t r = 0; r < weights.size(); ++r) {
     if (weights[r] == 0.0) {
       continue;
     }
-    const double *const c = c_dev + r * dim;
-    for (int32_t begin = 0; begin < static_cast<int32_t>(dim); begin += chunk) {
-      const int32_t count = std::min(chunk, static_cast<int32_t>(dim) - begin);
+    const double *const c = vectors + r * dim;
+    for (int32_t begin = 0; begin < size(); begin += chunk) {
+      const int32_t count = std::min(chunk, size() - begin);
       FBF_TRY(gpu_status(
-          wwr::wwrMemsetAsync(d_dev, 0, sizeof(double) * static_cast<size_t>(count) * nn, stream)));
-      FBF_TRY(gpu_status(device::ci_rdm_gather_d(stream, begin, count, beta.size(), alpha_dev,
-                                                 per_a, beta_dev, per_b, c, d_dev)));
+          wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * nn, stream)));
+      FBF_TRY(gpu_status(device::ci_rdm_gather_d(stream, begin, count, n_beta_, alpha_links_.data(),
+                                                 alpha_per_, beta_links_.data(), beta_per_, c, d)));
+      FBF_TRY(gpu_status(wwr::syrk<double, int32_t>(res.blas().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
+                                                    wwr::WWRBLAS_OP_T, nn32, count, &weights[r], d,
+                                                    count, &kOne<double>, m, nn32)));
       FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-          res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nn32, nn32, count, &weights[r],
-          d_dev, count, d_dev, count, &kOne<double>, m_dev, nn32)));
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-          res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nn32, 1, count, &weights[r],
-          d_dev, count, c + begin, static_cast<int32_t>(dim), &kOne<double>, gamma_dev, nn32)));
+          res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nn32, 1, count, &weights[r], d,
+          count, c + begin, static_cast<int32_t>(dim), &kOne<double>, gamma, nn32)));
     }
   }
-
-  std::vector<double> m(nn * nn);
-  std::vector<double> one(nn);
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(m.data(), m_dev, sizeof(double) * m.size(),
-                                         wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(one.data(), gamma_dev, sizeof(double) * one.size(),
-                                         wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(res.sync());
-
-  // Γ_tuvw = M_{tu,wv} − δ_uv γ_tw. M is symmetric, so its storage order does
-  // not matter.
-  for (size_t t = 0; t < n; ++t) {
-    for (size_t u = 0; u < n; ++u) {
-      for (size_t v = 0; v < n; ++v) {
-        for (size_t w = 0; w < n; ++w) {
-          const double delta = u == v ? one[t * n + w] : 0.0;
-          gamma2[((t * n + u) * n + v) * n + w] = m[(t * n + u) * nn + (w * n + v)] - delta;
-        }
-      }
-    }
-  }
-  std::ranges::copy(one, gamma.begin());
-  return {};
+  return gpu_status(device::ci_rdm_assemble(stream, n_orbitals_, m, gamma, gamma2));
 }
 
 } // namespace free_breakfast

@@ -160,10 +160,60 @@ Status CiSpinSquare::penalize(DeviceResources &res, const int32_t k, const doubl
   return launch(res, k, target, lambda, true, x, y);
 }
 
+Status CiSpinSquare::penalize_diagonal(DeviceResources &res, const double lambda,
+                                       const double target, const double *const diagonal,
+                                       double *const shifted) {
+  if (res.dev_idx() != dev_idx_) {
+    return err_config("CiSpinSquare: tables are on device {}, but the call passed device {}",
+                      dev_idx_, res.dev_idx());
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  return gpu_status(device::ci_spin_diagonal(res.stream(), size(), n_beta_, n_orbitals_,
+                                             alpha_links_.data(), alpha_per_, beta_slots_.data(),
+                                             constant_, target, lambda, diagonal, shifted));
+}
+
 Status ci_precondition(DeviceResources &res, const int32_t n, const double theta,
                        const double *const shifted, const double *const residual,
                        double *const correction) {
   return gpu_status(device::ci_precondition(res.stream(), n, theta, shifted, residual, correction));
+}
+
+Status ci_guesses(DeviceResources &res, const int32_t n, const int32_t count,
+                  const double *const diagonal, double *const guess) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  Buffers::device<double> partial_values(device::kCiLowestBlocks, res.device());
+  Buffers::device<int32_t> partial_index(device::kCiLowestBlocks, res.device());
+  Buffers::device<int32_t> picks(static_cast<size_t>(count), res.device());
+  FBF_TRY(gpu_status(device::ci_lowest(stream, n, diagonal, count, partial_values.data(),
+                                       partial_index.data(), picks.data())));
+  FBF_TRY(gpu_status(device::ci_guess(stream, n, count, picks.data(), guess)));
+
+  // Modified Gram-Schmidt, twice, of each column against the ones before;
+  // the dots and norms come back as host scalars.
+  const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t, CreatePolicy<wwr::wwrblasStatus_t>>
+      host_scalars{blas, wwr::WWRBLAS_POINTER_MODE_HOST};
+  const auto nz = static_cast<size_t>(n);
+  for (int32_t g = 0; g < count; ++g) {
+    double *const column = guess + (static_cast<size_t>(g) * nz);
+    for (int32_t pass = 0; pass < 2; ++pass) {
+      for (int32_t h = 0; h < g; ++h) {
+        const double *const earlier = guess + (static_cast<size_t>(h) * nz);
+        double overlap = 0.0;
+        FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, earlier, 1, column, 1, &overlap)));
+        const double neg_overlap = -overlap;
+        FBF_TRY(
+            gpu_status(wwr::axpy<double, int32_t>(blas, n, &neg_overlap, earlier, 1, column, 1)));
+      }
+    }
+    double norm = 0.0;
+    FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n, column, 1, &norm)));
+    const double inv_norm = 1.0 / norm;
+    FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n, &inv_norm, column, 1)));
+  }
+  return {};
 }
 
 } // namespace free_breakfast

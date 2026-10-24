@@ -44,4 +44,10 @@ namespace free_breakfast::device {
                                               int32_t alpha_per, const int32_t *beta_links,
                                               int32_t beta_per, const double *c, double *d);
 
+/// @brief Γ_tuvw = M_{tu,wv} − δ_uv γ_tw into @p gamma2, n⁴ row-major (t, u,
+/// v, w), from @p m, n² × n² column-major with only its lower triangle
+/// written (a syrk's), and @p gamma, n × n.
+[[nodiscard]] wwr::wwrError_t ci_rdm_assemble(wwr::wwrStream_t stream, int32_t n, const double *m,
+                                              const double *gamma, double *gamma2);
+
 } // namespace free_breakfast::device
