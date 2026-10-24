@@ -63,9 +63,30 @@ A = P12 - C E - C~ F + 2 C O F,   E = C^T S12,  F = C~^T S12,  O = C^T S1 C~
 ```
 
 **S^-1 is a Cholesky solve**, never an inverse, as the paper advises: `potrf`
-once per overlap, `potrs` per right-hand side. Either overlap failing to be
-positive definite is `Numerical`. PySCF falls back to canonical
-orthogonalization for a near-singular S1; that is not done here.
+once per overlap, `potrs` per right-hand side. S2, a free-atom minimal basis,
+failing to be positive definite is `Numerical`.
+
+**A near-singular S1 falls back to S^-1/2.** A basis read from a path can be
+near-linearly dependent (diffuse sets, near-duplicate exponents), and a
+Cholesky solve over S1 then amplifies rounding by the inverse of its smallest
+pivot. So S1's factor is used only if `potrf` succeeds and every pivot L_jj^2
+clears `kOrthogonalizeEigenvalueFloor` (1e-10). Every pivot bounds S1's
+smallest eigenvalue from above, so a pivot under the floor means a mode
+`orthogonalize` would drop. The pivot test is what does the work: on the
+test's exactly singular S1, `potrf` succeeds with a pivot of ~3e-18, so a
+fallback keyed on its failure alone would never run. Otherwise S1^-1 B is
+applied as X (X B), with
+X = S1^-1/2 from `recipes/orthogonalize`: the floored modes drop, so X X^T is
+the pseudo-inverse on the rest. That is the paper's "twice multiplying with
+S^-1/2". It logs at warn, and `orthogonalize` logs cond(S1) alongside. The
+pivot test is one-sided: an S1 whose pivots all clear the floor can still have
+an eigenvalue under it, and such an S1 keeps the Cholesky path.
+
+PySCF falls back only when `cho_factor` fails, to canonical orthogonalization
+at 1e-8. On a set both take the fallback for, the two agree where they drop
+the same modes. X is built here rather than taken from the pipeline's
+`Orthogonalizer`, so the module needs no pipeline type. The cost is one
+extra `syevd`, paid only on this path.
 
 **The two orth()s are Loewdin**, `recipes/orthogonalize` on the small metric
 (n_occ x n_occ, then m x m) and one gemm. The paper's procedure is invariant to
@@ -123,7 +144,10 @@ NH4+ in cc-pVDZ:
   the set is determined;
 - the IAOs alone, from the Scf's orbitals: A^T S A = I, each occupied orbital
   of unit weight on them, and the IAO partial charges (eq 3) matching PySCF's
-  to 1e-7.
+  to 1e-7;
+- the same, over cc-pVDZ read from a path with oxygen's outer s function
+  given twice: the same space over an exactly singular S1, so the fallback
+  runs and the charges are still the plain cc-pVDZ ones.
 
 ## Files
 
