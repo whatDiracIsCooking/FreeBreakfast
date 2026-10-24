@@ -73,6 +73,14 @@ void print_products(const fb::Calculation &calc) {
                    casci->spin_squares[r]);
     }
   }
+  if (const auto &fci = calc.get<fb::Fci>()) {
+    std::println("FCI:               {} electrons in {} orbitals, {} Davidson iterations",
+                 fci->n_electrons, fci->nmo, fci->davidson.iterations);
+    for (std::size_t r = 0; r < fci->energies.size(); ++r) {
+      std::println("FCI root {}:        {:.10f} Ha, <S^2> {:.6f}", r, fci->energies[r],
+                   fci->spin_squares[r]);
+    }
+  }
 }
 
 fb::Status run(std::span<char *const> args) {

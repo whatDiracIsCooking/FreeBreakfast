@@ -347,6 +347,25 @@ TEST(PipelineConfig, AnImpossibleCasciActiveSpaceIsRefusedByOrbitalOrder) {
                  "active names 3 orbitals, not ncas 2");
 }
 
+TEST(PipelineConfig, EveryFciOptionIsReadAndTheScfIsFilledIn) {
+  auto calc = fb::parse_config(with_inputs("[fci]\nnroots = 3\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::FciStep>()->nroots, 3);
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::CasciStep>().has_value());
+
+  auto plain = fb::parse_config(with_inputs("[fci]\n"), "");
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  EXPECT_EQ(plain->step<fb::FciStep>()->nroots, 1);
+}
+
+TEST(PipelineConfig, AMalformedFciTableIsInvalidConfig) {
+  // No active space: FCI is every orbital.
+  expect_config_error(with_inputs("[fci]\nncas = 4\n"), "[fci] has no option 'ncas'");
+  expect_config_error(with_inputs("[fci]\nnroots = 1.5\n"), "[fci] nroots");
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",

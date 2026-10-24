@@ -139,6 +139,7 @@ add_executable(
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
   pipeline_casci_gpu.cpp
+  pipeline_fci_gpu.cpp
 )
 
 set_target_properties(
@@ -178,6 +179,7 @@ target_link_libraries(
   free_breakfast::pipeline::scf
   free_breakfast::pipeline::localization
   free_breakfast::pipeline::casci
+  free_breakfast::pipeline::fci
   free_breakfast::pipeline::config
   free_breakfast::test::gpu_kernels
   GTest::gtest

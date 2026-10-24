@@ -201,6 +201,11 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     FBF_TRY(read_key(table, kStep, "active", base_dir, step.active));
     FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+  } else if constexpr (std::same_as<S, FciStep>) {
+    // Whether the space fits is the device's to say, so FciStep::run checks
+    // it when the step runs.
+    FBF_TRY(check_keys(table, kStep, {"nroots"}));
+    FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.

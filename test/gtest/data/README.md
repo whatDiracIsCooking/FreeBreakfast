@@ -17,6 +17,7 @@ file names the tool that wrote it and the source it came from.
 | `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit_sad_reference.py`, which runs PySCF |
 | `casci/` | `casci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF `mcscf.CASCI` over its orbitals, H₂O CAS(4,4) (frontier, and an explicit set in cc-pVDZ) and N₂ CAS(6,6), and `mcscf.avas`'s picks over MINAO (H₂O O 2p + H 1s, N₂ 2s + 2p, and N₂ 2p at threshold 0.5, in cc-pVDZ): the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit_casci_reference.py`, which runs PySCF |
 | `ci/` | `direct_spin1.json`: active-space integrals (E_core, h_eff, (tu\|vw)) from PySCF's CASCI over its own RHF in its own basis library, and `fci.direct_spin1`'s lowest 12 roots over them, each with ⟨S²⟩ and its spin-summed 1-RDM, for H₂O STO-3G CAS(4,4), H₂O 6-31G CAS(6,6), N₂ cc-pVDZ CAS(6,6) and CH₂O STO-3G CAS(4,4) | `tools/emit_fci_reference.py`, which runs PySCF |
+| `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit_fci_step_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
 
@@ -190,4 +191,24 @@ it, with the singlets kept. Regenerate with:
 
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_casci_reference.py
+```
+
+## `fci/fci.json`
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF and numpy versions, date, host, the command that wrote it |
+| `cases` | One per molecule: `name`, `basis` (this tree's builtin name), `charge`, `atoms` (`symbol`, `z`, `coord` in bohr), `electrons`, `nmo`, `determinants` (C(nmo, electrons / 2)²), `rhf_energy`, and `roots` |
+| `roots` | The lowest three singlets, ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another of the lowest 12 roots of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
+
+As in `casci/`, the 1-RDM itself is not recorded, and a degenerate root's
+occupations are skipped by a test. Unlike a CASCI's, an FCI energy and its
+natural occupations do not depend on the orbitals at all, only on the basis.
+The roots are the lowest 12 of the M_s = 0 sector, with the singlets kept: by a
+dense diagonalisation up to 20,000 determinants, and above that by
+`direct_spin1`'s Davidson, run twice from PySCF's guesses spread by differently
+seeded noise, the two agreeing to 1e-10. Regenerate with:
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_fci_step_reference.py
 ```

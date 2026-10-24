@@ -25,13 +25,15 @@ export import free_breakfast.pipeline.guess;
 export import free_breakfast.pipeline.scf;
 export import free_breakfast.pipeline.localization;
 export import free_breakfast.pipeline.casci;
+export import free_breakfast.pipeline.fci;
 
 export namespace free_breakfast {
 
 /// @brief The pipeline over every step a config file may name.
-using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
-                             PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep, CasciStep>;
+using Calculation =
+    Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep,
+             OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
+             LocalizationStep, CasciStep, FciStep>;
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.
