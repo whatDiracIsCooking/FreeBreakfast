@@ -31,8 +31,8 @@ namespace free_breakfast {
 //   ci_solve       g dim guesses, nroots dim vectors, the step's dim diagonal
 //   davidson       2 m dim for V and A V, 3 nroots dim for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta
-//   CiSigma apply  g dim (P + 1) for G, the largest block being the guesses,
-//                  and one chunk of D, at most 64 MiB
+//   CiSigma apply  dim (P + 1) for G, one vector's (apply goes a vector at a
+//                  time), and one chunk of D, at most 64 MiB
 //   CiSigma tables two sets of strings (8 bytes) and links (12 bytes per
 //                  replacement), the P x (P + 1) contraction, n + 2 n^2 terms
 //   integrals      (tu|vw) n^4 and h_eff n^2
@@ -50,13 +50,12 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const double pairs = orbitals * (orbitals + 1.0) / 2.0;
   const double replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
 
-  const double doubles = ((guesses + roots + 1.0) * dim) + (2.0 * subspace * dim) +
-                         (3.0 * roots * dim) + (subspace * (subspace + roots + 1.0)) +
-                         (guesses * dim * (pairs + 1.0)) + (pairs * (pairs + 1.0)) +
-                         (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) +
-                         (orbitals * orbitals);
+  const double doubles =
+      ((guesses + roots + 1.0) * dim) + (2.0 * subspace * dim) + (3.0 * roots * dim) +
+      (subspace * (subspace + roots + 1.0)) + (dim * (pairs + 1.0)) + (pairs * (pairs + 1.0)) +
+      (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) + (orbitals * orbitals);
   const double chunk =
-      std::min(static_cast<double>(size_t{64} << 20U), guesses * dim * pairs * sizeof(double));
+      std::min(static_cast<double>(size_t{64} << 20U), dim * pairs * sizeof(double));
   const double tables = 2.0 * strings * (8.0 + (12.0 * replacements));
   return (doubles * sizeof(double)) + chunk + tables;
 }

@@ -324,22 +324,23 @@ Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const
     return err_config("CiSigma: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
-  if (k < 0 || static_cast<int64_t>(k) * size() > std::numeric_limits<int32_t>::max()) {
-    return err_config("CiSigma: a block of {} vectors of {} is outside an int32_t's rows", k,
-                      size());
+  if (k < 0) {
+    return err_config("CiSigma: a block of {} vectors", k);
   }
   if (k == 0) {
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  const int32_t rows = k * size();
+  const int32_t rows = size();
   const auto n_pairs = static_cast<int32_t>(ci_pair(static_cast<size_t>(n_orbitals_), 0));
   const auto pairs = static_cast<size_t>(n_pairs);
   const int32_t chunk = static_cast<int32_t>(std::clamp<size_t>(
       kCiSigmaChunkBytes / (sizeof(double) * pairs), 1, static_cast<size_t>(rows)));
 
-  // G for every row, then D for one chunk.
+  // G for one vector's rows, then D for one chunk of them. σ_I reads G only
+  // over I's own vector, so the vectors go one at a time and G is never wider
+  // than one: k · dim · (P + 1) doubles would be 60 GB at CAS(14,14), k = 6.
   const size_t g_bytes = math::align_up(sizeof(double) * static_cast<size_t>(rows) * (pairs + 1),
                                         DeviceResources::kWorkspaceAlignment);
   const size_t d_bytes = sizeof(double) * static_cast<size_t>(chunk) * pairs;
@@ -347,20 +348,25 @@ Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const
   auto *const g = reinterpret_cast<double *>(base);
   auto *const d = reinterpret_cast<double *>(base + g_bytes);
 
-  for (int32_t begin = 0; begin < rows; begin += chunk) {
-    const int32_t count = std::min(chunk, rows - begin);
-    FBF_TRY(gpu_status(
-        wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
-    FBF_TRY(
-        gpu_status(device::ci_gather_d(stream, begin, count, size(), n_beta_, alpha_links_.data(),
-                                       alpha_per_, beta_links_.data(), beta_per_, x, d)));
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-        res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, count, n_pairs + 1, n_pairs,
-        &kOne<double>, d, count, contraction_.data(), n_pairs, &kZero<double>, g + begin, rows)));
+  for (int32_t j = 0; j < k; ++j) {
+    const double *const xj = x + (static_cast<size_t>(j) * static_cast<size_t>(rows));
+    double *const yj = y + (static_cast<size_t>(j) * static_cast<size_t>(rows));
+    for (int32_t begin = 0; begin < rows; begin += chunk) {
+      const int32_t count = std::min(chunk, rows - begin);
+      FBF_TRY(gpu_status(
+          wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
+      FBF_TRY(
+          gpu_status(device::ci_gather_d(stream, begin, count, rows, n_beta_, alpha_links_.data(),
+                                         alpha_per_, beta_links_.data(), beta_per_, xj, d)));
+      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+          res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, count, n_pairs + 1, n_pairs,
+          &kOne<double>, d, count, contraction_.data(), n_pairs, &kZero<double>, g + begin, rows)));
+    }
+    FBF_TRY(gpu_status(device::ci_sigma_from_g(stream, rows, rows, n_beta_, n_pairs,
+                                               alpha_links_.data(), alpha_per_, beta_links_.data(),
+                                               beta_per_, e_core_, xj, g, yj)));
   }
-  return gpu_status(device::ci_sigma_from_g(stream, rows, size(), n_beta_, n_pairs,
-                                            alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                            beta_per_, e_core_, x, g, y));
+  return {};
 }
 
 Status CiSigma::diagonal(DeviceResources &res, double *const diagonal) {
