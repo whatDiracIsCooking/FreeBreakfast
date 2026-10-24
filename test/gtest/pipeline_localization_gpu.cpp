@@ -71,8 +71,9 @@ std::vector<double> download(const Buffer &buffer, std::size_t count) {
 }
 
 // The reference's molecule localized with the given exponent, from a config
-// naming only the inputs and [localization].
-std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t exponent) {
+// naming only the inputs and [localization], plus @p extra in that table.
+std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t exponent,
+                                        std::string_view extra = "") {
   const fb::test::ScratchDir dir("pipeline_localization");
   // Bohr in the reference, Angstrom in an XYZ file.
   std::string xyz =
@@ -87,10 +88,11 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
   EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
   // Converged past the comparison's needs: the default 1e-10 on L leaves the
   // populations ~1e-5 from the maximum.
-  const std::string toml = std::format(
-      "[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
-      "[localization]\nexponent = {}\nfunctional_tolerance = 1e-13\n",
-      entry.at("charge").get<std::int32_t>(), entry.at("basis").get<std::string>(), exponent);
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
+                  "[localization]\nexponent = {}\nfunctional_tolerance = 1e-13\n{}",
+                  entry.at("charge").get<std::int32_t>(), entry.at("basis").get<std::string>(),
+                  exponent, extra);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml");
   if (!calc.has_value()) {
@@ -221,5 +223,44 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineLocalization,
                          [](const auto &info) {
                            return std::format("{}_p{}", info.param.name, info.param.exponent);
                          });
+
+// molden set: the localized orbitals land in a Molden file, n_occ of them at
+// occupation 2. Each energy is <i|F|i> = sum_k U_ki^2 eps_k, and U is
+// orthogonal, so they sum to the canonical occupied energies.
+TEST(PipelineLocalizationMolden, WritesTheLocalizedOrbitals) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_localization_molden");
+  const std::filesystem::path path = dir / "h2o_pm.molden";
+  auto calc = localize(reference_case("h2o_sto3g"), 2,
+                       std::format("molden = \"{}\"\n", path.generic_string()));
+  ASSERT_TRUE(calc.has_value());
+  const auto &local = calc->get<fb::Localization>();
+  const auto &scf = calc->get<fb::Scf>();
+  ASSERT_TRUE(local.has_value() && scf.has_value());
+  const auto occ = static_cast<std::size_t>(local->n_occ);
+
+  std::ifstream file(path);
+  ASSERT_TRUE(file.is_open());
+  std::string line;
+  ASSERT_TRUE(std::getline(file, line));
+  EXPECT_EQ(line, "[Molden Format]");
+  std::size_t orbitals = 0;
+  std::size_t occupied = 0;
+  double energy_sum = 0.0;
+  while (std::getline(file, line)) {
+    if (line.starts_with(" Ene=")) {
+      ++orbitals;
+      energy_sum += std::stod(line.substr(5));
+    }
+    occupied += line == " Occup= 2.000000" ? 1 : 0;
+  }
+  EXPECT_EQ(orbitals, occ);
+  EXPECT_EQ(occupied, occ);
+  double expected_sum = 0.0;
+  for (std::size_t k = 0; k < occ; ++k) {
+    expected_sum += scf->mo_energies[k];
+  }
+  EXPECT_NEAR(energy_sum, expected_sum, 1e-10);
+}
 
 } // namespace

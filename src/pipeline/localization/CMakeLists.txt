@@ -2,13 +2,15 @@
 # pipeline::scf are PUBLIC and re-exported: the product holds Buffers, the
 # options are PipekMezeyOptions, and run's View names the Scf and the products
 # it re-exports. core::resources, basis and pipeline::step are in run's
-# signature, and run's inline body calls pipek_mezey_localize from the
-# importer's TU. diagnostics_macros is only FBF_TRY, expanded here.
+# signature. run is defined in the implementation unit, so the Molden writer
+# and diagnostics_macros (FBF_TRY) are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.localization
   PRIMARY_INTERFACE
   localization.cppm
+  IMPLEMENTATION
+  localization.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types
@@ -21,4 +23,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::scf
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
+  free_breakfast::io::molden
 )

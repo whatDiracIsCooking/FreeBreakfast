@@ -52,6 +52,7 @@ molden = "water.molden"   # default none: the converged orbitals, written
 [localization]            # every option has a default
 mode = "pipek_mezey"      # default "pipek_mezey", the only method so far
 exponent = 4              # default 2; 2 or 4
+molden = "water_pm.molden"  # default none: the localized orbitals, written
 ```
 
 `[localization]`'s method options sit in the table beside `mode`, not in
