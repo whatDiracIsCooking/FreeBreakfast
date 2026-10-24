@@ -24,15 +24,18 @@ namespace free_breakfast {
 // The device bytes the solve over all n orbitals, n_alpha electrons of each
 // spin and nroots roots holds at its peak, inside ci_solve's Davidson. In
 // double, as the space it refuses can pass any integer type: C(n, n_alpha)^2
-// is 1.4e12 for N2 cc-pVDZ. dim = C(n, n_alpha)^2, g = min(dim, 2 nroots)
-// guesses, m = max(2 nroots, min(dim, 16 nroots)) subspace columns (ci_solve's
-// choices), P = n (n + 1) / 2 packed pairs:
+// is 1.4e12 for N2 cc-pVDZ. A singlet solve runs on the symmetric layout's
+// packed vectors, s = C(n, n_alpha) strings giving dim = s^2 determinants and
+// t = s (s + 1) / 2 packed elements; g = min(t, 2 nroots) guesses,
+// m = max(2 nroots, min(t, 16 nroots)) subspace columns (ci_solve's choices),
+// P = n (n + 1) / 2 packed pairs:
 //
-//   ci_solve       g dim guesses, nroots dim vectors, its dim penalized diagonal,
-//                  and the step's dim diagonal
-//   davidson       2 m dim for V and A V, 3 nroots dim for A X, R and the
+//   ci_solve       g t guesses, nroots t vectors, its t penalized diagonal, and
+//                  the step's dim diagonal; after the Davidson, nroots dim
+//                  unpacked roots in its place
+//   davidson       2 m t for V and A V, 3 nroots t for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta
-//   CiSigma apply  dim (P + 1) for G, one vector's (apply goes a vector at a
+//   CiSigma apply  t (P + 1) for G, one vector's (apply goes a vector at a
 //                  time), and one chunk of D, at most 64 MiB
 //   CiSigma tables two sets of strings (8 bytes) and links (12 bytes per
 //                  replacement), the P x (P + 1) contraction in double and
@@ -45,19 +48,24 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   }
   strings = std::round(strings);
   const double dim = strings * strings;
+  const double packed = strings * (strings + 1.0) / 2.0;
   const double roots = nroots;
-  const double guesses = std::min(dim, 2.0 * roots);
-  const double subspace = std::max(2.0 * roots, std::min(dim, 16.0 * roots));
+  const double guesses = std::min(packed, 2.0 * roots);
+  const double subspace = std::max(2.0 * roots, std::min(packed, 16.0 * roots));
   const double orbitals = n;
   const double pairs = orbitals * (orbitals + 1.0) / 2.0;
   const double replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
 
-  const double doubles =
-      ((guesses + roots + 2.0) * dim) + (2.0 * subspace * dim) + (3.0 * roots * dim) +
-      (subspace * (subspace + roots + 1.0)) + (dim * (pairs + 1.0)) + (pairs * (pairs + 1.0)) +
-      (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) + (orbitals * orbitals);
+  // ci_solve's own and the step's diagonal throughout; then the Davidson and
+  // the sigma's G, or after it the unpacked roots, whichever is more.
+  const double held = ((guesses + roots + 1.0) * packed) + dim;
+  const double davidson = (2.0 * subspace * packed) + (3.0 * roots * packed) +
+                          (subspace * (subspace + roots + 1.0)) + (packed * (pairs + 1.0));
+  const double doubles = held + std::max(davidson, roots * dim) + (pairs * (pairs + 1.0)) +
+                         (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) +
+                         (orbitals * orbitals);
   const double chunk =
-      std::min(static_cast<double>(size_t{64} << 20U), dim * pairs * sizeof(double));
+      std::min(static_cast<double>(size_t{64} << 20U), packed * pairs * sizeof(double));
   const double tables =
       2.0 * strings * (8.0 + (12.0 * replacements)) + (pairs * (pairs + 1.0) * sizeof(float));
   return (doubles * sizeof(double)) + chunk + tables;

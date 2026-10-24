@@ -2,7 +2,9 @@
 // diag(H) against host_diagonal, and the 1-RDM against ci.rdm's rdm1, over the
 // golden active spaces of data/ci/direct_spin1.json, random integrals at
 // CAS(8,8) and CAS(10,10) and in sectors with N_alpha != N_beta, and
-// CAS(12,12) in the slow tier (its 1-RDM in the fast one); and the refusals.
+// CAS(12,12) in the slow tier (its 1-RDM in the fast one); the same in the
+// symmetric layout over swap-symmetric vectors, with ci_unpack; and the
+// refusals.
 
 #include <gtest/gtest.h>
 
@@ -247,6 +249,161 @@ constexpr std::array<std::array<std::int32_t, 4>, 10> kRandomShapes{{
     {7, 4, 2, 4},
 }};
 
+// A random block of k vectors over m strings for both spins, each symmetric
+// under the swap of the two strings: full layout, m^2 per vector.
+std::vector<double> random_symmetric_block(std::size_t m, std::int32_t k, std::uint64_t seed) {
+  const std::vector<double> r = random_block(m * m * static_cast<std::size_t>(k), seed);
+  std::vector<double> c(r.size());
+  for (std::size_t j = 0; j < static_cast<std::size_t>(k); ++j) {
+    for (std::size_t a = 0; a < m; ++a) {
+      for (std::size_t b = 0; b < m; ++b) {
+        c[(j * m * m) + (a * m) + b] =
+            0.5 * (r[(j * m * m) + (a * m) + b] + r[(j * m * m) + (b * m) + a]);
+      }
+    }
+  }
+  return c;
+}
+
+// The symmetric layout of a full-layout block (see CiLayout): the triangle
+// a >= b, off-diagonal elements times sqrt(2).
+std::vector<double> pack(const std::vector<double> &full, std::size_t m) {
+  const std::size_t k = full.size() / (m * m);
+  const std::size_t packed = m * (m + 1) / 2;
+  std::vector<double> out(packed * k);
+  for (std::size_t j = 0; j < k; ++j) {
+    for (std::size_t a = 0; a < m; ++a) {
+      for (std::size_t b = 0; b <= a; ++b) {
+        const double x = full[(j * m * m) + (a * m) + b];
+        out[(j * packed) + (a * (a + 1) / 2) + b] = a == b ? x : std::numbers::sqrt2 * x;
+      }
+    }
+  }
+  return out;
+}
+
+// σ in the symmetric layout, apply's or apply_fp32's, for a random block of k
+// swap-symmetric vectors over (n, N) for both spins: each packed column
+// against host_sigma's packed to @p tolerance of ‖σ‖ (of ‖σ − E_core c‖ for
+// fp32, the part the float gemm sees). The packing is an isometry, so the
+// norms are the full vectors'. ci_unpack of the packed input gives the input
+// back.
+void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const Integrals &ints,
+                     std::int32_t k, std::uint64_t seed, bool fp32) {
+  const auto set = fb::StringSet::create(ints.n, n_electrons);
+  ASSERT_TRUE(set.has_value());
+  auto sigma = fb::CiSigma::create(res, *set, *set);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  ASSERT_TRUE(sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
+  const auto m = static_cast<std::size_t>(set->size());
+  const std::size_t dim = m * m;
+  const std::size_t packed = m * (m + 1) / 2;
+  ASSERT_EQ(static_cast<std::size_t>(sigma->size(fb::CiLayout::symmetric)), packed);
+
+  const std::vector<double> c = random_symmetric_block(m, k, seed);
+  const std::vector<double> u = pack(c, m);
+  const auto x = to_device(res, u);
+  fb::Buffers::device<double> y(u.size(), res.device());
+  const auto applied = fp32 ? sigma->apply_fp32(res, k, x.data(), y.data(), fb::CiLayout::symmetric)
+                            : sigma->apply(res, k, x.data(), y.data(), fb::CiLayout::symmetric);
+  ASSERT_TRUE(applied.has_value()) << applied.error().message;
+  const std::vector<double> got = to_host(res, y);
+
+  fb::Buffers::device<double> unpacked(c.size(), res.device());
+  ASSERT_TRUE(fb::ci_unpack(res, set->size(), k, x.data(), unpacked.data()).has_value());
+  const std::vector<double> back = to_host(res, unpacked);
+  for (std::size_t i = 0; i < c.size(); ++i) {
+    ASSERT_NEAR(back[i], c[i], 1e-15) << "element " << i;
+  }
+
+  const auto pairs = static_cast<std::size_t>(ints.n) * static_cast<std::size_t>(ints.n + 1) / 2;
+  const double tolerance = fp32 ? fp32_tolerance(pairs) : 1e-12;
+  std::vector<double> expected(dim);
+  for (std::int32_t j = 0; j < k; ++j) {
+    const std::span<const double> column{c.data() + j * dim, dim};
+    const auto host = fb::host_sigma(*set, *set, ints.e_core, ints.h1, ints.eri, column, expected);
+    ASSERT_TRUE(host.has_value()) << host.error().message;
+    if (fp32) {
+      for (std::size_t i = 0; i < dim; ++i) {
+        expected[i] -= ints.e_core * column[i];
+      }
+    }
+    const std::vector<double> want = pack(expected, m);
+    double norm = 0.0;
+    double error = 0.0;
+    for (std::size_t i = 0; i < packed; ++i) {
+      norm += want[i] * want[i];
+      const double e_core_part = fp32 ? ints.e_core * u[j * packed + i] : 0.0;
+      const double delta = got[j * packed + i] - e_core_part - want[i];
+      error += delta * delta;
+    }
+    EXPECT_LE(std::sqrt(error), tolerance * std::sqrt(norm)) << "column " << j;
+    if (fp32) {
+      EXPECT_GT(std::sqrt(error), 1e-12 * std::sqrt(norm)) << "column " << j;
+    }
+  }
+}
+
+// (n, N, k) for both spins: CAS(8,8) and CAS(10,10) as kRandomShapes has
+// them, a single orbital, an empty and a full set, and two more open ones.
+constexpr std::array<std::array<std::int32_t, 3>, 7> kSymmetricShapes{{
+    {8, 4, 2},
+    {10, 5, 3},
+    {1, 1, 1},
+    {5, 0, 1},
+    {6, 6, 1},
+    {7, 2, 2},
+    {9, 3, 2},
+}};
+
+TEST(CiSigmaGpu, SymmetricLayoutMatchesHost) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto doc =
+      fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
+  ASSERT_TRUE(doc.has_value()) << doc.error().message;
+  std::int32_t golden = 0;
+  for (const auto &entry : (*doc)["cases"]) {
+    if (entry["n_alpha"].get<std::int32_t>() != entry["n_beta"].get<std::int32_t>()) {
+      continue;
+    }
+    ++golden;
+    SCOPED_TRACE(entry["name"].get<std::string>());
+    const Integrals ints{entry["n_orbitals"].get<std::int32_t>(), entry["e_core"].get<double>(),
+                         entry["h1"]["values"].get<std::vector<double>>(),
+                         entry["eri"]["values"].get<std::vector<double>>()};
+    for (const bool fp32 : {false, true}) {
+      SCOPED_TRACE(fp32 ? "fp32" : "fp64");
+      check_symmetric(res, entry["n_alpha"].get<std::int32_t>(), ints, 3, 7, fp32);
+    }
+  }
+  EXPECT_GT(golden, 0);
+  for (const auto &[n, n_electrons, k] : kSymmetricShapes) {
+    SCOPED_TRACE(std::format("n = {}, N = {}, k = {}", n, n_electrons, k));
+    for (const bool fp32 : {false, true}) {
+      SCOPED_TRACE(fp32 ? "fp32" : "fp64");
+      // With no electrons D is zero and σ is E_core c alone, exact in either
+      // precision, so there is no float rounding to find.
+      if (fp32 && n_electrons == 0) {
+        continue;
+      }
+      check_symmetric(res, n_electrons, random_integrals(n, 500 + static_cast<std::uint64_t>(n)), k,
+                      19, fp32);
+    }
+  }
+}
+
+// 427,350 triangle rows over 78 pairs: the symmetric gather spans four
+// chunks in double and two in float.
+TEST(CiSigmaGpu, SymmetricLayoutMatchesHostAtCas1212) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  fb::DeviceResources res{0};
+  const Integrals ints = random_integrals(12, 412);
+  check_symmetric(res, 6, ints, 1, 13, false);
+  check_symmetric(res, 6, ints, 1, 13, true);
+}
+
 TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -353,6 +510,21 @@ TEST(CiSigmaGpu, Refuses) {
   EXPECT_FALSE(sigma->apply_fp32(res, -1, x.data(), y.data()).has_value());
   EXPECT_TRUE(sigma->apply(res, 0, x.data(), y.data()).has_value());
   EXPECT_TRUE(sigma->apply_fp32(res, 0, x.data(), y.data()).has_value());
+  EXPECT_TRUE(sigma->apply(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
+  EXPECT_FALSE(fb::ci_unpack(res, -1, 1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(fb::ci_unpack(res, 4, -1, x.data(), y.data()).has_value());
+
+  // The symmetric layout wants one set for both spins: (4, 1) and (4, 3) have
+  // the same number of strings, and are still two sets.
+  const auto one = fb::StringSet::create(4, 1);
+  const auto three = fb::StringSet::create(4, 3);
+  ASSERT_TRUE(one.has_value() && three.has_value());
+  auto mixed = fb::CiSigma::create(res, *one, *three);
+  ASSERT_TRUE(mixed.has_value()) << mixed.error().message;
+  ASSERT_TRUE(mixed->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
+  EXPECT_FALSE(mixed->apply(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
+  EXPECT_FALSE(mixed->apply_fp32(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
+  EXPECT_TRUE(mixed->apply(res, 1, x.data(), y.data()).has_value());
 }
 
 } // namespace

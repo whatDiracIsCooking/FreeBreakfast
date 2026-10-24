@@ -8,12 +8,18 @@
 // from that string's slot table. S² is real symmetric, so J's own links reach
 // every K with <J|S²|K> nonzero. A thread owns its row, so nothing is atomic
 // and the summation order is fixed.
+//
+// S² and the penalized diagonal come in the two layouts of CiLayout, as a
+// template on Symmetric: in the symmetric one a row is a triangle element
+// (a, b), a >= b, and a link below the triangle reads its mirror, as the GPU
+// sigma's gathers do (see ../sigma/ci_symmetric.h).
 
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
 #include "block_params.h"
 
 #include "ci_solver_bridge.h"
+#include "ci_symmetric.h"
 
 namespace free_breakfast::device {
 
@@ -28,6 +34,18 @@ constexpr int32_t kLinkWidth = 3;
 // determinant has theta ≈ its diagonal.
 constexpr double kDenominatorFloor = 1e-3;
 
+// Determinant (a, b) of element @p det of a vector, in the layout's terms.
+template <bool Symmetric>
+__device__ void ci_strings(const int32_t det, const int32_t n_beta, int32_t &a, int32_t &b) {
+  if constexpr (Symmetric) {
+    ci_triangle_strings(det, a, b);
+  } else {
+    a = det / n_beta;
+    b = det % n_beta;
+  }
+}
+
+template <bool Symmetric>
 __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, const int32_t n_beta,
                                       const int32_t n, const int32_t *const alpha_links,
                                       const int32_t alpha_per, const int32_t *const beta_slots,
@@ -41,10 +59,14 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
   const auto row = static_cast<size_t>(r);
   const auto det = static_cast<int32_t>(row % static_cast<size_t>(n_det));
   const size_t vector_base = row - static_cast<size_t>(det);
-  const int32_t ja = det / n_beta;
-  const int32_t jb = det % n_beta;
+  int32_t ja = 0;
+  int32_t jb = 0;
+  ci_strings<Symmetric>(det, n_beta, ja, jb);
 
-  double sum = (constant - shift) * x[row];
+  // Σ sign · c_K over J's links. In the symmetric layout c_K is K's stored
+  // element (its mirror's, below the triangle) over √2 off the diagonal, and
+  // the row's own is stored times √2 off the diagonal.
+  double links = 0.0;
   const int32_t *a = alpha_links + (static_cast<size_t>(ja) * alpha_per * kLinkWidth);
   const int32_t *const slots =
       beta_slots + (static_cast<size_t>(jb) * static_cast<size_t>(n) * static_cast<size_t>(n));
@@ -55,8 +77,19 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
     }
     const int32_t kb = (slot < 0 ? -slot : slot) - 1;
     const double sign = static_cast<double>(slot < 0 ? -a[2] : a[2]);
-    sum -= sign * x[vector_base + (static_cast<size_t>(a[0]) * static_cast<size_t>(n_beta)) +
-                    static_cast<size_t>(kb)];
+    if constexpr (Symmetric) {
+      const double weight = a[0] == kb ? 1.0 : kCiInvSqrt2;
+      links += sign * (weight * x[vector_base + ci_triangle(a[0], kb)]);
+    } else {
+      links += sign * x[vector_base + (static_cast<size_t>(a[0]) * static_cast<size_t>(n_beta)) +
+                        static_cast<size_t>(kb)];
+    }
+  }
+  double sum = (constant - shift) * x[row];
+  if constexpr (Symmetric) {
+    sum -= ja == jb ? links : kCiSqrt2 * links;
+  } else {
+    sum -= links;
   }
   y[row] = (accumulate ? y[row] : 0.0) + (scale * sum);
 }
@@ -75,6 +108,7 @@ __global__ void ci_precondition_kernel(const int32_t n, const double theta,
   correction[i] = residual[i] / denominator;
 }
 
+template <bool Symmetric>
 __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_beta, const int32_t n,
                                         const int32_t *const alpha_links, const int32_t alpha_per,
                                         const int32_t *const beta_slots, const double constant,
@@ -84,8 +118,9 @@ __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_bet
   if (det >= n_det) {
     return;
   }
-  const auto ja = static_cast<int32_t>(det / n_beta);
-  const auto jb = static_cast<int32_t>(det % n_beta);
+  int32_t ja = 0;
+  int32_t jb = 0;
+  ci_strings<Symmetric>(static_cast<int32_t>(det), n_beta, ja, jb);
   // Only a†_p a_p leaves the α string where it was, and its partner a†_p a_p
   // survives the β string exactly when p is occupied there too.
   int32_t doubles = 0;
@@ -97,7 +132,9 @@ __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_bet
       ++doubles;
     }
   }
-  shifted[det] = diagonal[det] + (scale * (constant - static_cast<double>(doubles) - shift));
+  const size_t full =
+      (static_cast<size_t>(ja) * static_cast<size_t>(n_beta)) + static_cast<size_t>(jb);
+  shifted[det] = diagonal[full] + (scale * (constant - static_cast<double>(doubles) - shift));
 }
 
 // One (value, address) candidate of ci_lowest; address −1 is none.
@@ -200,18 +237,24 @@ uint32_t ci_blocks(const int64_t items) {
 
 } // namespace
 
-wwr::wwrError_t ci_spin_square(const wwr::wwrStream_t stream, const int32_t rows,
-                               const int32_t n_det, const int32_t n_beta, const int32_t n,
-                               const int32_t *const alpha_links, const int32_t alpha_per,
-                               const int32_t *const beta_slots, const double constant,
-                               const double shift, const double scale, const bool accumulate,
-                               const double *const x, double *const y) {
+wwr::wwrError_t ci_spin_square(const wwr::wwrStream_t stream, const bool symmetric,
+                               const int32_t rows, const int32_t n_det, const int32_t n_beta,
+                               const int32_t n, const int32_t *const alpha_links,
+                               const int32_t alpha_per, const int32_t *const beta_slots,
+                               const double constant, const double shift, const double scale,
+                               const bool accumulate, const double *const x, double *const y) {
   if (rows == 0) {
     return wwr::wwrSuccess;
   }
-  ci_spin_square_kernel<<<ci_blocks(rows), kCiBlock, 0, stream>>>(
-      rows, n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale,
-      accumulate, x, y);
+  if (symmetric) {
+    ci_spin_square_kernel<true><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+        rows, n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale,
+        accumulate, x, y);
+  } else {
+    ci_spin_square_kernel<false><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+        rows, n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale,
+        accumulate, x, y);
+  }
   return wwr::wwrGetLastError();
 }
 
@@ -226,8 +269,8 @@ wwr::wwrError_t ci_precondition(const wwr::wwrStream_t stream, const int32_t n, 
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const int32_t n_det,
-                                 const int32_t n_beta, const int32_t n,
+wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const bool symmetric,
+                                 const int32_t n_det, const int32_t n_beta, const int32_t n,
                                  const int32_t *const alpha_links, const int32_t alpha_per,
                                  const int32_t *const beta_slots, const double constant,
                                  const double shift, const double scale,
@@ -235,9 +278,15 @@ wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const int32_t n_
   if (n_det == 0) {
     return wwr::wwrSuccess;
   }
-  ci_spin_diagonal_kernel<<<ci_blocks(n_det), kCiBlock, 0, stream>>>(
-      n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, diagonal,
-      shifted);
+  if (symmetric) {
+    ci_spin_diagonal_kernel<true><<<ci_blocks(n_det), kCiBlock, 0, stream>>>(
+        n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, diagonal,
+        shifted);
+  } else {
+    ci_spin_diagonal_kernel<false><<<ci_blocks(n_det), kCiBlock, 0, stream>>>(
+        n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, diagonal,
+        shifted);
+  }
   return wwr::wwrGetLastError();
 }
 

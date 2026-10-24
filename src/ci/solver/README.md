@@ -14,17 +14,18 @@ written against.
 |---|---|
 | `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options)` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2. A template over the sigma. |
 | `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12) and `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off) |
-| `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo` of the FP64 stage), `fp32_iterations` (the single-precision stage's, 0 when none ran) |
+| `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer in the full layout, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo` of the FP64 stage), `fp32_iterations` (the single-precision stage's, 0 when none ran) |
 | `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
 | `CiSpinSquare::create(res, alpha, beta)` | Upload S²'s tables; `Result<CiSpinSquare>` |
-| `CiSpinSquare::apply(res, k, x, y)` | Y = S² X for size() × k device blocks: a `LinearOperator`; `Status` |
-| `CiSpinSquare::penalize(res, k, λ, target, x, y)` | Y += λ (S² − target) X, the penalty ci_solve adds into sigma's output; `Status` |
-| `CiSpinSquare::penalize_diagonal(res, λ, target, diagonal, shifted)` | shifted = diagonal + λ (diag(S²) − target), the preconditioner's diagonal; `Status` |
+| `CiSpinSquare::apply(res, k, x, y, layout = full)` | Y = S² X for size(layout) × k device blocks: a `LinearOperator`; `Status` |
+| `CiSpinSquare::penalize(res, k, λ, target, x, y, layout = full)` | Y += λ (S² − target) X, the penalty ci_solve adds into sigma's output; `Status` |
+| `CiSpinSquare::penalize_diagonal(res, λ, target, diagonal, shifted, layout = full)` | shifted = diagonal + λ (diag(S²) − target), the preconditioner's diagonal, from the full diagonal into either layout; `Status` |
 
 `sigma` applies H to a device block of CI vectors in `host_sigma`'s layout:
 the GPU sigma in a calculation, `host_sigma` wrapped as a `LinearOperator` in
-the tests. `diagonal` is diag(H) on the device, as `CiSigma::diagonal` writes
-it.
+the tests. One that also takes a `CiLayout` (`CiSigma`) lets a singlet solve
+run in the symmetric layout (below). `diagonal` is diag(H) on the device, as
+`CiSigma::diagonal` writes it.
 
 ## Design
 
@@ -46,6 +47,13 @@ comes back with the wrong ⟨S²⟩, and `ci_solve` returns `Numerical` rather t
 a mixed spectrum (any root more than 1e-6 off S(S+1)). λ = 0 turns the control
 off, and the roots are the sector's lowest of any spin.
 
+In a singlet solve over `CiSigma` the symmetric layout (below) already keeps
+the Davidson to even S, exactly, so the triplets the penalty used to lift are
+not in its space at all. The penalty stays for the rest: quintets and higher
+are even too, each lifted by at least 6λ, and a sigma without a layout (the
+tests' `host_sigma`), or an M_s = 1 sector, still runs in the full layout and
+needs it for everything.
+
 **Energies are ⟨H⟩.** The Ritz value θ is the unit Ritz vector's Rayleigh
 quotient of the penalized operator, so θ − λ (⟨S²⟩ − S(S+1)) is its quotient
 of H itself, contamination or not.
@@ -60,9 +68,18 @@ carries only its own list's.
 **The preconditioner is r / (θ − diag(H + penalty)).** diag(S²) is
 S_z (S_z + 1) + N_β less the doubly occupied orbitals, so the penalty's
 diagonal is free, and including it keeps the lifted determinants from being
-over-weighted. The denominator is held off zero at 1e-3.
+over-weighted. The denominator is held off zero at 1e-3. In the symmetric
+layout it is the same diagonal on the triangle's determinants: the packed
+operator's own diagonal adds H's element between a determinant and its mirror, which is
+nonzero only where the two differ by one orbital of each spin, and the
+preconditioner needs only an approximation. diag(H) and diag(S²) are both
+unchanged by the swap, so the correction stays symmetric too.
 
-**Guesses are the 2 · n_roots determinants of lowest diag(H), spread.** A
+**Guesses are the 2 · n_roots determinants of lowest diag(H), spread.** In
+the symmetric layout they are triangle elements, each a determinant and its
+mirror at once, so a determinant and its mirror, which have one diagonal, no
+longer take two of the guesses; and the spread is drawn over the triangle, so
+every guess is symmetric by construction. A
 determinant has one spatial symmetry, and both H and a diagonal preconditioner
 keep to it, so from unit vectors alone a root of a symmetry no guess has never
 enters the subspace: N₂'s second and third singlets were lost that way. Each
@@ -74,6 +91,30 @@ lowest determinants by 2 · n_roots argmin passes over diag(H) (each the least
 (value, address) above the last, so ties go to the lower address, as a stable
 sort's would, without sorting dim values), the spread by a hash kernel, and
 the orthonormalization by modified Gram-Schmidt, twice, over the BLAS.
+
+**A singlet solve runs on packed vectors.** When the sigma takes a
+`CiLayout`, the two sets are one (N_α = N_β), the penalty is on and n_roots
+fits the triangle, `ci_solve` runs the whole Davidson in
+`CiLayout::symmetric` (`../sigma/`): the guesses and the penalized diagonal
+are built on the triangle, sigma and the penalty apply to packed blocks, ⟨S²⟩
+is taken there (the packing is an isometry, so the dots are the full
+vectors'), and the converged roots are unpacked with `ci_unpack` into
+`CiRoots::vectors` in the full layout, so `CiSigma::rdm1`, `CiRdm::rdm12` and
+every caller read them as before. λ = 0 asks for every spin, odd S included,
+so it keeps the full layout.
+
+The alternative was full-length vectors with only sigma's work skipped:
+sigma would read and write the triangle of each full column, and the scratch
+would halve, but not V and A V, which at CAS(14,14) with three roots and the
+16 · n_roots subspace are about 9 GB, as much as G itself, and not the
+Davidson's own FP64 gemms over them either, a third of the kernel time at
+CAS(12,12) (see the table below). Packed vectors halve all of it, and
+`recipes/davidson` is unchanged: the √2 on the off-diagonal elements is what
+keeps its plain dot product, and so the packed operator's symmetry, right. The
+cost is an unpack at the end, n_roots full vectors. A full-length Davidson
+would also have had to keep its vectors symmetric against roundoff, the
+guesses' spread included; in packed vectors the symmetry is the layout, so
+there is nothing to drift and no re-symmetrisation to schedule.
 
 **The residual tolerance is tight, 1e-12 relative.** A vector's error is first
 order in its residual and the 1-RDM is read from the vector, so the default
@@ -106,7 +147,8 @@ fastest setting that did. `bench/ci_sigma_precision` over
 `tools/emit_ci_bench_integrals.py`'s N₂ cc-pVDZ active spaces, three singlets,
 `max_iterations` 400 (100, the default, does not converge these
 FP64-only), each card idle (the 3080 held through `devtools/lib.sh`'s GPU
-slots):
+slots), all in the full layout, before the symmetric one (whose numbers
+follow below):
 
 | | | σ per column, FP64 / FP32 | `ci_solve` FP64-only | two-stage, 1e-6 | iterations, FP64-only → FP32 + FP64 |
 |---|---|---|---|---|---|
@@ -137,6 +179,35 @@ gemm of a whole CAS(12,12) vector's D (853,776 × 78, times 78 × 79) on the
 3080, is exact to 3e-16 but takes 186 ms against DGEMM's 57 ms (SGEMM:
 1.3 ms). With k = P = 78 there is too little reduction
 for the splitting to pay for itself.
+
+Measured with `bench/ci_sigma_precision` on the RTX 3080, idle and held
+through `devtools/lib.sh`'s GPU slots, over the same N₂ cc-pVDZ active spaces,
+three singlets, `max_iterations` 400. "Full" is `ci_solve` held to the full
+layout (a wrapper that hides `CiSigma`'s layout parameter), which is the
+solve as it was before the symmetric layout; the workspace is what one
+column of `apply` grows a fresh `DeviceResources` to, G and one chunk of D:
+
+| | σ per column FP64 / FP32, full → symmetric | `apply` workspace FP64 / FP32, MiB | `ci_solve` FP64-only, full → symmetric | two-stage at 1e-6, full → symmetric |
+|---|---|---|---|---|
+| CAS(10,10), 1.0977 Å | 2.09 / 0.28 → 1.03 / 0.15 ms | 53.8 / 26.9 → 27.0 / 13.5 | 0.99 → 0.50 s (131 → 114 it.) | 0.89 → 0.44 s |
+| CAS(12,12), 1.0977 Å | 39.4 / 5.77 → 20.3 / 3.35 ms | 579 / 321 → 322 / 193 | 15.1 → 7.90 s (114 → 126) | 11.6 → 6.06 s |
+| CAS(10,10), 2.0 Å | 1.90 / 0.25 → 0.88 / 0.18 ms | 53.8 / 26.9 → 27.0 / 13.5 | 1.55 → 0.98 s (225 → 238) | 1.21 → 0.81 s |
+| CAS(12,12), 2.0 Å | 41.2 / 6.21 → 21.3 / 3.43 ms | 579 / 321 → 322 / 193 | 26.3 → 13.4 s (211 → 226) | 20.2 → 9.36 s |
+
+Every symmetric-layout energy, at every `fp32_tolerance` from 1e-4 to 1e-7,
+is within 9e-13 of the full layout's FP64-only one. σ halves, as the rows do;
+the workspace less its fixed 64 MiB (32 in float) of D halves too. The
+Davidson's own buffers halve with the vectors: at CAS(12,12) with three roots
+V and A V are 625 → 313 MiB, A X, R and the corrections 59 → 29, and
+`ci_solve`'s guesses, roots and diagonal 65 → 33, with the 20 MiB of unpacked
+roots added at the end. At CAS(12,12) the whole solve gains about what σ
+does, 1.9–2.2×, because the Davidson's FP64 gemms halve with it; at
+CAS(10,10), where each iteration's fixed costs weigh more, 1.5–2×. Iteration
+counts move by about 10% either way: the packed subspace is a different
+Krylov sequence, from guesses that are each a determinant and its mirror. In
+the symmetric layout the single-precision stage converged at 1e-7 in all four
+cases, where the full layout's stalled at CAS(12,12) above; the full layout
+was not rerun at 1e-7 here.
 
 **Nothing of dim size touches the host.** The penalty and the preconditioner
 run on the device, so no block leaves it during the Davidson. On the host
@@ -169,21 +240,29 @@ there has a triplet below its second singlet, so the spin control is exercised:
 - with λ = 0, direct_spin1's lowest three roots, a triplet among them;
 - over `CiSigma` itself, every case's singlets and (M_s = 1) triplets, two-
   stage by default and FP64-only at `fp32_tolerance` = 0, each to the same
-  tolerances, the first with `fp32_iterations` > 0 and the second with 0;
+  tolerances, the first with `fp32_iterations` > 0 and the second with 0, and
+  each recording the layout it was applied in: symmetric for the singlets,
+  full for the triplets;
+- over `CiSigma` with λ = 0, the full layout and a triplet among the lowest
+  three;
 - `MaxIterationsExceeded` when given two iterations;
 - the refusals;
 - `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on
   random blocks of three vectors, each column to 1e-12 of its norm, over seven
   sectors (open and closed shells, an empty spin, a full one, a single orbital,
   N_α < N_β), `penalize_diagonal` against diag(S²) from the strings' popcounts
-  (also in place), and its refusals.
+  (also in place), and its refusals;
+- the same in the symmetric layout over six sets for both spins, on packed
+  swap-symmetric blocks against `host_spin_square` packed, with
+  `penalize_diagonal` exactly the full layout's on the triangle, and refused
+  over two sets.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `solver.cppm` | Module interface: `ci_solve` (a template, with its two stages), its options and roots, `host_spin_square`, `CiSpinSquare` |
+| `solver.cppm` | Module interface: `ci_solve` (a template, with its two stages and two layouts), its options and roots, `host_spin_square`, `CiSpinSquare` |
 | `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launch; the guesses |
 | `ci_solver_bridge.h` | The launchers' declarations, shared by `solver.cpp`'s GMF and the `.cu` |
-| `ci_solver.cu` | The S² gather, the penalized diagonal, the preconditioner kernel, the argmin passes and the guess spread |
+| `ci_solver.cu` | The S² gather and the penalized diagonal (in either layout, over `../sigma/ci_symmetric.h`), the preconditioner kernel, the argmin passes and the guess spread |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.solver.device` and the module `free_breakfast.ci.solver` |

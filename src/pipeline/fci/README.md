@@ -54,20 +54,23 @@ struct FciStep {
    `CiSigma::rdm1` each root's 1-RDM. The product keeps the energies, ⟨S²⟩, 1-RDMs and
    Davidson record; the CI vectors are dropped.
 
-With dim = C(n, N/2)², g = min(dim, 2 nroots) guesses, m = max(2 nroots,
-min(dim, 16 nroots)) subspace columns (`ci_solve`'s choices) and
+A singlet solve runs in the symmetric layout (`../../ci/solver/`), on packed
+vectors. With s = C(n, N/2) strings, dim = s² determinants, t = s (s + 1) / 2
+packed elements, g = min(t, 2 nroots) guesses, m = max(2 nroots,
+min(t, 16 nroots)) subspace columns (`ci_solve`'s choices) and
 P = n (n + 1) / 2, the estimate counts, in doubles:
 
 | Holder | Size |
 |---|---|
-| `ci_solve` | g dim guesses, nroots dim vectors, and the step's dim diagonal |
-| `davidson_solve` | 2 m dim for V and A V, 3 nroots dim for A X, R and the corrections, and the m-sized projections |
-| `CiSigma::apply`'s scratch | dim (P + 1) for G, one vector's (`apply` goes a vector at a time), plus one ≤ 64 MiB chunk of D |
+| `ci_solve` | g t guesses, nroots t vectors, its t penalized diagonal, and the step's dim diagonal; after the Davidson, nroots dim unpacked roots, counted where they outweigh the Davidson's |
+| `davidson_solve` | 2 m t for V and A V, 3 nroots t for A X, R and the corrections, and the m-sized projections |
+| `CiSigma::apply`'s scratch | t (P + 1) for G, one vector's (`apply` goes a vector at a time), plus one ≤ 64 MiB chunk of D |
 | `CiSigma`'s tables | two string sets (8 bytes a string, 12 a replacement), the P × (P + 1) contraction |
 | The integrals | (pq\|rs) n⁴ and h n² |
 
-For H₂O 6-31G (13 orbitals, 1,656,369 determinants, 3 roots) G is 1.2 GB of a
-2.8 GB estimate, the Davidson subspace most of the rest. The J and K classes and
+For H₂O 6-31G (13 orbitals, 1,656,369 determinants, 828,828 packed, 3 roots)
+G is 0.61 GB of a 1.45 GB estimate, the Davidson subspace most of the rest;
+in the full layout they were 1.2 GB of 2.8 GB. The J and K classes and
 `active_space_hamiltonian`'s own scratch are left out; they scale with the
 basis, not the determinants. The comparison is against free memory as the
 runtime reports it, so memory the pool has cached counts as used: the refusal
