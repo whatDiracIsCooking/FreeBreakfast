@@ -1,12 +1,23 @@
 /// @file
-/// @brief S² on a CI vector, over the replacement lists.
+/// @brief S² on a CI vector, over the replacement lists: on the host, and
+/// CiSpinSquare's uploads and launches; and ci_solve's device preconditioner.
+
+module;
+
+// The launchers, defined in ci_solver.cu: declared in the GMF so they keep
+// external linkage (see the header).
+#include "ci_solver_bridge.h"
 
 module free_breakfast.ci.solver;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.wwr;
+import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
+
+#include "diagnostics.h"
 
 namespace free_breakfast {
 
@@ -58,6 +69,101 @@ Status host_spin_square(const StringSet &alpha, const StringSet &beta,
     }
   }
   return {};
+}
+
+static_assert(LinearOperator<CiSpinSquare, double>);
+
+CiSpinSquare::CiSpinSquare(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
+                           const int32_t n_beta, const int32_t alpha_per, const double constant)
+    : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
+      alpha_per_{alpha_per}, constant_{constant},
+      alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
+      beta_slots_(static_cast<size_t>(n_beta) * static_cast<size_t>(n_orbitals) *
+                      static_cast<size_t>(n_orbitals),
+                  res.device()) {}
+
+Result<CiSpinSquare> CiSpinSquare::create(DeviceResources &res, const StringSet &alpha,
+                                          const StringSet &beta) {
+  if (alpha.n_orbitals() != beta.n_orbitals()) {
+    return err_config("CiSpinSquare: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
+                      beta.n_orbitals());
+  }
+  if (static_cast<int64_t>(alpha.size()) * beta.size() > std::numeric_limits<int32_t>::max()) {
+    return err_config("CiSpinSquare: {} x {} determinants is more than an int32_t counts",
+                      alpha.size(), beta.size());
+  }
+  const auto n = static_cast<size_t>(alpha.n_orbitals());
+  // host_spin_square's constant, S_z (S_z + 1) + N_β.
+  const double two_sz = alpha.n_electrons() - beta.n_electrons();
+  const double constant = 0.25 * two_sz * (two_sz + 2.0) + beta.n_electrons();
+
+  // Each α link a†_p a_q names the slot q · n + p of its partner a†_q a_p.
+  std::vector<int32_t> links;
+  links.reserve(static_cast<size_t>(alpha.size()) *
+                static_cast<size_t>(alpha.replacements_per_string()) * 3);
+  for (int32_t address = 0; address < alpha.size(); ++address) {
+    for (const Replacement &r : alpha.replacements(address)) {
+      links.push_back(r.target);
+      links.push_back(
+          static_cast<int32_t>(static_cast<size_t>(r.q) * n + static_cast<size_t>(r.p)));
+      links.push_back(r.sign);
+    }
+  }
+  // Each (p, q) appears at most once in a list, so a slot holds one link.
+  std::vector<int32_t> slots(static_cast<size_t>(beta.size()) * n * n, 0);
+  for (int32_t address = 0; address < beta.size(); ++address) {
+    int32_t *const table = slots.data() + static_cast<size_t>(address) * n * n;
+    for (const Replacement &r : beta.replacements(address)) {
+      table[static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)] = r.sign * (r.target + 1);
+    }
+  }
+
+  const ScopedDeviceIndex on{res.dev_idx()};
+  CiSpinSquare spin(res, alpha.n_orbitals(), alpha.size(), beta.size(),
+                    alpha.replacements_per_string(), constant);
+  const wwr::wwrStream_t stream = res.stream();
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(spin.alpha_links_.data(), links.data(),
+                                         sizeof(int32_t) * links.size(), wwr::wwrMemcpyHostToDevice,
+                                         stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(spin.beta_slots_.data(), slots.data(),
+                                         sizeof(int32_t) * slots.size(), wwr::wwrMemcpyHostToDevice,
+                                         stream)));
+  // Pageable sources, which die at return.
+  FBF_TRY(res.sync());
+  return spin;
+}
+
+Status CiSpinSquare::launch(DeviceResources &res, const int32_t k, const double shift,
+                            const double scale, const bool accumulate, const double *const x,
+                            double *const y) {
+  if (res.dev_idx() != dev_idx_) {
+    return err_config("CiSpinSquare: tables are on device {}, but the call passed device {}",
+                      dev_idx_, res.dev_idx());
+  }
+  if (k < 0 || static_cast<int64_t>(k) * size() > std::numeric_limits<int32_t>::max()) {
+    return err_config("CiSpinSquare: a block of {} vectors of {} is outside an int32_t's rows", k,
+                      size());
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  return gpu_status(device::ci_spin_square(res.stream(), k * size(), size(), n_beta_, n_orbitals_,
+                                           alpha_links_.data(), alpha_per_, beta_slots_.data(),
+                                           constant_, shift, scale, accumulate, x, y));
+}
+
+Status CiSpinSquare::apply(DeviceResources &res, const int32_t k, const double *const x,
+                           double *const y) {
+  return launch(res, k, 0.0, 1.0, false, x, y);
+}
+
+Status CiSpinSquare::penalize(DeviceResources &res, const int32_t k, const double lambda,
+                              const double target, const double *const x, double *const y) {
+  return launch(res, k, target, lambda, true, x, y);
+}
+
+Status ci_precondition(DeviceResources &res, const int32_t n, const double theta,
+                       const double *const shifted, const double *const residual,
+                       double *const correction) {
+  return gpu_status(device::ci_precondition(res.stream(), n, theta, shifted, residual, correction));
 }
 
 } // namespace free_breakfast

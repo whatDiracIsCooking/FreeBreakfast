@@ -270,4 +270,100 @@ TEST(CiSolver, RejectsBadShapes) {
       fb::host_spin_square(c.alpha, c.beta, vector, std::span<double>{out}.first(1)).has_value());
 }
 
+// CiSpinSquare against host_spin_square on random blocks of three vectors,
+// each column to 1e-12 of its norm: apply, and penalize into a random Y. The
+// sectors cover open and closed shells, an empty spin, a full one, a single
+// orbital and N_alpha < N_beta.
+TEST(CiSpinSquareGpu, MatchesHost) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  struct Sector {
+    std::int32_t n, n_alpha, n_beta;
+  };
+  constexpr std::int32_t k = 3;
+  constexpr double lambda = 0.7;
+  constexpr double target = 2.0;
+  for (const Sector s : {Sector{6, 3, 3}, Sector{7, 4, 2}, Sector{8, 3, 5}, Sector{5, 0, 3},
+                         Sector{5, 5, 2}, Sector{1, 1, 0}, Sector{10, 5, 5}}) {
+    SCOPED_TRACE(std::format("n {} alpha {} beta {}", s.n, s.n_alpha, s.n_beta));
+    const auto alpha = fb::StringSet::create(s.n, s.n_alpha);
+    const auto beta = fb::StringSet::create(s.n, s.n_beta);
+    ASSERT_TRUE(alpha.has_value() && beta.has_value());
+    auto spin = fb::CiSpinSquare::create(res, *alpha, *beta);
+    ASSERT_TRUE(spin.has_value()) << spin.error().message;
+    const auto dim = static_cast<std::size_t>(spin->size());
+    ASSERT_EQ(dim,
+              static_cast<std::size_t>(alpha->size()) * static_cast<std::size_t>(beta->size()));
+
+    std::mt19937_64 engine{dim};
+    std::uniform_real_distribution<double> uniform{-1.0, 1.0};
+    std::vector<double> x(dim * k);
+    std::vector<double> y0(dim * k);
+    for (double &v : x) {
+      v = uniform(engine);
+    }
+    for (double &v : y0) {
+      v = uniform(engine);
+    }
+    const auto upload = [&](const std::vector<double> &host) {
+      fb::Buffers::device<double> d(host.size(), res.device());
+      EXPECT_EQ(wwr::wwrMemcpyAsync(d.data(), host.data(), host.size() * sizeof(double),
+                                    wwr::wwrMemcpyHostToDevice, res.stream()),
+                wwr::wwrSuccess);
+      return d;
+    };
+    const auto download = [&](const fb::Buffers::device<double> &d) {
+      std::vector<double> host(d.num_elements());
+      EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), d.data(), host.size() * sizeof(double),
+                                    wwr::wwrMemcpyDeviceToHost, res.stream()),
+                wwr::wwrSuccess);
+      EXPECT_TRUE(res.sync().has_value());
+      return host;
+    };
+    const auto xd = upload(x);
+    fb::Buffers::device<double> applied(dim * k, res.device());
+    ASSERT_TRUE(spin->apply(res, k, xd.data(), applied.data()).has_value());
+    const std::vector<double> got = download(applied);
+    auto penalized = upload(y0);
+    ASSERT_TRUE(spin->penalize(res, k, lambda, target, xd.data(), penalized.data()).has_value());
+    const std::vector<double> got_penalized = download(penalized);
+
+    std::vector<double> s2x(dim);
+    for (std::size_t j = 0; j < k; ++j) {
+      const std::span<const double> column{x.data() + j * dim, dim};
+      ASSERT_TRUE(fb::host_spin_square(*alpha, *beta, column, s2x).has_value());
+      double norm = 0.0;
+      double error = 0.0;
+      double penalized_error = 0.0;
+      for (std::size_t i = 0; i < dim; ++i) {
+        norm += s2x[i] * s2x[i] + column[i] * column[i];
+        const double delta = got[j * dim + i] - s2x[i];
+        error += delta * delta;
+        const double expected = y0[j * dim + i] + lambda * (s2x[i] - target * column[i]);
+        const double pdelta = got_penalized[j * dim + i] - expected;
+        penalized_error += pdelta * pdelta;
+      }
+      EXPECT_LE(std::sqrt(error), 1e-12 * std::sqrt(norm)) << "column " << j;
+      EXPECT_LE(std::sqrt(penalized_error), 1e-12 * std::sqrt(norm)) << "column " << j;
+    }
+  }
+}
+
+TEST(CiSpinSquareGpu, Refuses) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto four = fb::StringSet::create(4, 2);
+  const auto five = fb::StringSet::create(5, 2);
+  ASSERT_TRUE(four.has_value() && five.has_value());
+  EXPECT_FALSE(fb::CiSpinSquare::create(res, *four, *five).has_value());
+
+  auto spin = fb::CiSpinSquare::create(res, *four, *four);
+  ASSERT_TRUE(spin.has_value()) << spin.error().message;
+  fb::Buffers::device<double> x(static_cast<std::size_t>(spin->size()), res.device());
+  fb::Buffers::device<double> y(static_cast<std::size_t>(spin->size()), res.device());
+  EXPECT_FALSE(spin->apply(res, -1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(spin->penalize(res, -1, 1.0, 0.0, x.data(), y.data()).has_value());
+  EXPECT_TRUE(spin->apply(res, 0, x.data(), y.data()).has_value());
+}
+
 } // namespace
