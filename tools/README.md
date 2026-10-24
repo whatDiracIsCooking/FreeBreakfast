@@ -53,7 +53,7 @@ emit_localization_reference.py
                   against. Needs PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
-                  element of every compiled-in basis set, computed by src/sad
+                  element of the compiled-in sets named (or --all), by src/sad
                   itself. data/sad/README.md has when and how.
 ```
 
