@@ -62,6 +62,11 @@ emit_active_integrals_reference.py
                   h_eff and (tu|vw) over this tree's basis files, the
                   reference integrals.active_space is tested against. Needs
                   PySCF.
+emit_casci_reference.py
+                  Write test/gtest/data/casci/casci.json: PySCF mcscf.CASCI
+                  over its RHF in this tree's basis files, the lowest
+                  singlets' energies, <S^2> and natural occupations, the
+                  reference the Casci step is tested against. Needs PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
                   element of the compiled-in sets named (or --all), by src/sad
@@ -82,7 +87,7 @@ tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
 tools/bse_download.py --list
 ```
 
-`atomic_cd`, `minao_from_pyscf.py` and the three `emit_*_reference.py` need
+`atomic_cd`, `minao_from_pyscf.py` and the `emit_*_reference.py` scripts need
 PySCF and numpy, which sit in the opt-in `tools` dependency group in
 `pyproject.toml` rather than in `dev`, so the image and the push gate do not
 carry them. Inside the devcontainer, add
@@ -94,6 +99,7 @@ uv run --group tools tools/minao_from_pyscf.py
 uv run --group tools tools/emit_sad_reference.py
 uv run --group tools tools/emit_scf_reference.py
 uv run --group tools tools/emit_localization_reference.py
+uv run --group tools tools/emit_casci_reference.py
 uv run --group tools tools/emit_record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \

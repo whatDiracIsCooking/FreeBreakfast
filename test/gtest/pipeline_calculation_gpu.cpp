@@ -179,6 +179,45 @@ TEST(PipelineCalculation, AnScfFromALoadedGuessMatchesOneFromItsOwn) {
   expect_near(b.mo_energies, a.mo_energies);
 }
 
+// A config naming only the inputs and [casci] plans the chain to the Scf and
+// runs the CASCI after it, giving what the step gives run by hand on the same
+// products. J adds atomically, so the two Hamiltonians agree to roundoff.
+TEST(PipelineCalculation, ACasciConfigRunsEndToEnd) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_calculation");
+  write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
+                    "[casci]\nncas = 4\nnelecas = 4\nnroots = 2\n");
+  fb::NodeResources node;
+  auto calc = fb::read_config(dir / "run.toml");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  ASSERT_TRUE(calc->get<fb::Scf>().has_value());
+  const auto &casci = calc->get<fb::Casci>();
+  ASSERT_TRUE(casci.has_value());
+  EXPECT_EQ(casci->ncore, 3);
+  ASSERT_EQ(casci->energies.size(), 2U);
+  // A CASCI lowers the RHF energy it starts from: the RHF determinant is in
+  // the space.
+  EXPECT_LT(casci->energies[0], calc->get<fb::Scf>()->energy);
+  EXPECT_LT(casci->energies[0], casci->energies[1]);
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto by_hand = calc->step<fb::CasciStep>()->run(
+      fb::StepInput<fb::CasciStep>{*calc->get<fb::Molecule>(), *calc->get<fb::BasisSet>(),
+                                   *calc->get<fb::SphericalTransform>(),
+                                   *calc->get<fb::PrimitivePairClasses>(),
+                                   *calc->get<fb::CoreHamiltonian>(), *calc->get<fb::Scf>()},
+      res);
+  ASSERT_TRUE(by_hand.has_value()) << by_hand.error().message;
+  ASSERT_EQ(by_hand->energies.size(), casci->energies.size());
+  for (std::size_t r = 0; r < casci->energies.size(); ++r) {
+    EXPECT_NEAR(by_hand->energies[r], casci->energies[r], 1e-10) << r;
+    EXPECT_NEAR(by_hand->spin_squares[r], casci->spin_squares[r], 1e-10) << r;
+  }
+}
+
 TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_calculation");
