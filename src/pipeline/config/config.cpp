@@ -107,6 +107,35 @@ template <class T>
   return read_key(table, step, key, base_dir, out);
 }
 
+/// @brief The active-space selection's keys of the `[step]` table, the same
+/// in every step that takes one: `ncas` and `nelecas` required, with `active`;
+/// or `avas` with `avas_threshold` in their place. The ranges need the
+/// molecule and the basis, so ActiveSpaceSelection::orbital_order checks them
+/// when the step runs.
+[[nodiscard]] Status read_active_space(const toml::table &table, std::string_view step,
+                                       const std::filesystem::path &base_dir,
+                                       ActiveSpaceSelection &out) {
+  if (table.contains("avas")) {
+    // AVAS picks the active space, so nothing may name one beside it.
+    for (std::string_view key : {"ncas", "nelecas", "active"}) {
+      if (table.contains(key)) {
+        return err_config("[{}] avas picks the active space, so takes no '{}'", step, key);
+      }
+    }
+    FBF_TRY(read_key(table, step, "avas", base_dir, out.avas));
+    if (out.avas.empty()) {
+      return err_config("[{}] avas names no AO label", step);
+    }
+    FBF_TRY(read_key(table, step, "avas_threshold", base_dir, out.avas_threshold));
+  } else if (table.contains("avas_threshold")) {
+    return err_config("[{}] avas_threshold needs 'avas'", step);
+  } else {
+    FBF_TRY(read_required_key(table, step, "ncas", base_dir, out.ncas));
+    FBF_TRY(read_required_key(table, step, "nelecas", base_dir, out.nelecas));
+  }
+  return read_key(table, step, "active", base_dir, out.active);
+}
+
 /// @brief Step `S` from its table. A filled-in step is read from an empty
 /// one, so a required option it lacks is reported as for a written table.
 template <class S>
@@ -176,30 +205,10 @@ template <class S>
     options.exponent = static_cast<PipekMezeyExponent>(exponent);
     FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
   } else if constexpr (std::same_as<S, CasciStep>) {
-    // The ranges need the molecule and the basis, so CasciStep::orbital_order
-    // checks them when the step runs.
     FBF_TRY(check_keys(
         table, kStep, {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "molden"}));
-    if (table.contains("avas")) {
-      // AVAS picks the active space, so nothing may name one beside it.
-      for (std::string_view key : {"ncas", "nelecas", "active"}) {
-        if (table.contains(key)) {
-          return err_config("[{}] avas picks the active space, so takes no '{}'", kStep, key);
-        }
-      }
-      FBF_TRY(read_key(table, kStep, "avas", base_dir, step.avas));
-      if (step.avas.empty()) {
-        return err_config("[{}] avas names no AO label", kStep);
-      }
-      FBF_TRY(read_key(table, kStep, "avas_threshold", base_dir, step.avas_threshold));
-    } else if (table.contains("avas_threshold")) {
-      return err_config("[{}] avas_threshold needs 'avas'", kStep);
-    } else {
-      FBF_TRY(read_required_key(table, kStep, "ncas", base_dir, step.ncas));
-      FBF_TRY(read_required_key(table, kStep, "nelecas", base_dir, step.nelecas));
-    }
+    FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
-    FBF_TRY(read_key(table, kStep, "active", base_dir, step.active));
     FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
   } else if constexpr (std::same_as<S, FciStep>) {
     // Whether the space fits is the device's to say, so FciStep::run checks

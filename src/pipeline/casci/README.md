@@ -9,11 +9,16 @@ and the lowest root's natural orbitals as Molden.
 
 `free_breakfast.pipeline.casci`, target `free_breakfast::pipeline::casci`. It
 re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
-`run`'s signature) and `free_breakfast.recipes.davidson` (`DavidsonInfo`, in
+`run`'s signature), `free_breakfast.pipeline.active_space` (the selection,
+`CasciStep`'s base), and `free_breakfast.recipes.davidson` (`DavidsonInfo`, in
 the product). `run` is defined in the implementation unit, so
-`integrals.active_space`, J's and K's classes, the `ci` modules, and AVAS's
-`io.basis` (MINAO), `overlap_mixed_spherical` and `diagonalize`, and
-`io.molden`, are PRIVATE links.
+`integrals.active_space`, J's and K's classes, the `ci` modules,
+`diagonalize` and `io.molden` are PRIVATE links.
+
+**The active-space selection** -- `ncas`, `nelecas`, `active`, `avas`,
+`avas_threshold`, `orbital_order`, AVAS over MINAO, and the rotation C R -- is
+`pipeline/active_space`'s, shared with the steps that take one; see
+[`active_space/README.md`](../active_space/README.md). This step adds the CI.
 
 ## The step
 
@@ -28,18 +33,12 @@ struct Casci {
   DavidsonInfo davidson;
 };
 
-struct CasciStep {
+struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold
   static constexpr std::string_view kName = "casci";
 
-  int32_t ncas = 0;             // required
-  int32_t nelecas = 0;          // required
   int32_t nroots = 1;
-  std::vector<int32_t> active;  // 0-based MO indices; empty: the frontier orbitals
-  std::vector<std::string> avas;     // MINAO AO labels; not empty: AVAS picks the above
-  double avas_threshold = 0.2;
   std::filesystem::path molden{};    // the lowest root's natural orbitals, if set
 
-  Result<std::vector<int32_t>> orbital_order(int32_t n_electrons, int32_t nmo) const;
   Result<Casci> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
                          CoreHamiltonian, Scf> in,
                     DeviceResources &res) const;
@@ -48,16 +47,10 @@ struct CasciStep {
 
 `run`, all on `res.stream()`:
 
-1. **The orbitals**, as a rotation R of the Scf's: `Casci::c` = C R, one
-   gemm. By index, R is `orbital_order`'s permutation, so C R's columns are
-   C's exactly (each element is one C element times 1 plus exact zeros).
-   `orbital_order` gives the Scf's orbital for each column:
-   the core, the (N − nelecas) / 2 lowest orbitals not active, ascending; the
-   active ones, as `active` names them or the ncas above the core; the rest,
-   ascending. That is PySCF's `sort_mo`, except that `active` is 0-based
-   (`sort_mo`'s default base is 1). The Scf's C is copied column by column into
-   that order, and published as `Casci::c`: the 1-RDMs are over its columns
-   [ncore, ncore + ncas). Under `avas`, R is AVAS's (below).
+1. **The orbitals**: `ActiveSpaceSelection::select`'s `ActiveSpace`, C R
+   with R a permutation by index or AVAS's rotation
+   ([`active_space/README.md`](../active_space/README.md)), published as
+   `Casci::c`: the 1-RDMs are over its columns [ncore, ncore + ncas).
 2. **The Hamiltonian.** `active_space_hamiltonian` over those orbitals, at its
    own default screens (`tau_j` 1e-14; see `integrals/active_space/`), from J
    and K classes built from `PrimitivePairClasses` per run, as the Scf does.
@@ -75,75 +68,26 @@ struct CasciStep {
    orbital's energy is its expectation in the Scf's Fock matrix,
    Σ_k R_kj² ε_k, as the Localization step's Molden file gives its orbitals.
 
-## AVAS
-
-`avas` names MINAO AOs (Sayfutyarova et al., JCTC 13, 4063 (2017)), and the
-selection is PySCF's `mcscf.avas` at its defaults for a closed shell: ncore 0,
-no IAOs, `openshell_option` 2 (which for a closed shell is no option at all),
-canonicalized.
-
-- **The labels** are `<symbol> <n><l>`: every component of that shell of
-  MINAO on every atom of the element, n counted from l + 1 over the atom's
-  shells of that l in the file's order, as PySCF's `ao_labels` counts them
-  (MINAO's oxygen is 1s, 2s, 2p). That is the form PySCF's own examples use;
-  its labels are regular expressions over `ao_labels`, which this does not
-  try to be. A label naming no AO of the molecule is refused rather than
-  ignored: it is a typo or a missing element, never a request for nothing.
-- **The projector.** MINAO is `resolve_basis("minao")`, placed over the
-  molecule; S21 (labelled AO by MO) and S2 (labelled AO by labelled AO) are
-  the labelled rows of `overlap_mixed_spherical`'s MINAO-by-basis S times C,
-  and of its MINAO-by-MINAO S. P = S21ᵀ S2⁻¹ S21, through S2's
-  eigendecomposition. Neither basis's AO normalization matters: P is
-  invariant to scaling a labelled AO.
-- **The selection.** P's occupied block and its virtual block are each
-  diagonalized; an orbital of weight ≥ `avas_threshold` is active, an
-  occupied one below it core, a virtual one below it the rest. So nelecas =
-  N − 2 ncore. The weights are invariant to rotations within the occupied and
-  within the virtual orbitals, so a degenerate set of the Scf's is never split.
-- **Canonical spaces.** Core, active and the rest are each rotated to
-  diagonalize the Scf's Fock matrix within them, diag(ε) in the MO basis, as
-  PySCF's `canonicalize` does (its `symmetrize` is a no-op without point
-  group symmetry). The energy is invariant to that within core and active;
-  the virtual space's rotation only orders the published orbitals.
-- **Where it runs.** The overlaps, and S(MINAO, basis) C, are built on the
-  device. Everything after them is over a few dozen orbitals, so it is assembled on the host and each
-  of the six symmetric eigenproblems (S2, the two blocks of P, the three
-  spaces' Fock) solved by `diagonalize`.
-
 What it settled:
 
 - **Singlets only.** The Scf is closed-shell, so N is even, and with an even
   core count nelecas is too: the sector is N_α = N_β, whose lowest spin is 0.
   A triplet CASCI is the sector N_α − N_β = 2, a `spin` option, once a caller
   needs it.
-- **The range checks are `orbital_order`'s, not the config's.** Whether an
-  active space fits needs the molecule's electrons and the basis's orbitals,
-  which a config does not have until the steps run. `orbital_order` takes them
-  as integers, so the checks are testable on the host, and `run` calls it
-  first. A config reads only types: `ncas` and `nelecas` required,
-  integers; `nroots` an integer; `active` an array of integers. Or, in their
-  place, `avas` a non-empty array of strings, refused beside `ncas`,
-  `nelecas` or `active`, with `avas_threshold` a number; and `molden` a path.
-  The labels are parsed, and the threshold's range checked, when the step
-  runs, against the molecule's MINAO.
-- **The orbitals are published,** not only their order: the AVAS selection
-  (#228) rotates the Scf's orbitals rather than picking them, and a 1-RDM
-  needs the orbitals it is over.
-- **Host synchronizations:** `active_space_hamiltonian`'s own, one to read the
-  integrals back, one for the diagonal, and `ci_solve`'s, several per Davidson
-  iteration (the penalty and the preconditioner are on the host); under
-  `avas`, one for the overlaps and C and one per eigenproblem; with
-  `molden`, one for C and one for the 1-RDM's eigenproblem.
+- **The range checks are the selection's,** when the step runs; a config
+  reads only types: the selection's keys as `active_space/README.md` says,
+  `nroots` an integer, and `molden` a path.
+- **Host synchronizations:** the selection's (under `avas`),
+  `active_space_hamiltonian`'s own, one to read the integrals back, one for
+  the diagonal, and `ci_solve`'s, several per Davidson iteration (the penalty
+  and the preconditioner are on the host); one for the 1-RDMs; with `molden`,
+  one for C and one for the 1-RDM's eigenproblem.
 
-Errors: under `avas`, InvalidConfig for a label not of the form, a label
-naming no MINAO AO of the molecule, a threshold outside (0, 1), `ncas`,
-`nelecas` or `active` set beside it, or no orbital selected; Numerical for an
-S2 not positive definite. Otherwise `orbital_order`'s InvalidConfig (ncas below 1; nelecas negative, above
-2 ncas or above N; an odd core electron count; ncore + ncas above nmo; `active`
-not ncas distinct indices in [0, nmo)); `ci_solve`'s InvalidConfig for
-`nroots` outside [1, dim], MaxIterationsExceeded, or Numerical for a root of
-the wrong spin; the module calls' own errors (`overlap_mixed_spherical`'s,
-`diagonalize`'s, `write_molden`'s among them); GpuRuntime for a failed copy or gemm.
+Errors: `ActiveSpaceSelection::select`'s (`active_space/README.md`);
+`ci_solve`'s InvalidConfig for `nroots` outside [1, dim],
+MaxIterationsExceeded, or Numerical for a root of the wrong spin; the module
+calls' own errors (`diagonalize`'s and `write_molden`'s among them);
+GpuRuntime for a failed copy or gemm.
 
 ## Tests
 
@@ -184,5 +128,5 @@ hand in `pipeline_calculation_gpu.cpp`.
 | File | Role |
 |------|------|
 | `casci.cppm` | Module interface: `Casci`, `CasciStep` |
-| `casci.cpp` | `orbital_order`, the AVAS selection, and `run`: C R, the Hamiltonian, the CI solve, the 1-RDMs, the Molden file |
+| `casci.cpp` | `run`: the selection, the Hamiltonian, the CI solve, the 1-RDMs, the Molden file |
 | `CMakeLists.txt` | The module library |

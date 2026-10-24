@@ -1,10 +1,11 @@
-# The Casci step. recipes::davidson and pipeline::scf are PUBLIC and
-# re-exported: the product holds a DavidsonInfo and a SphericalMatrixAO, and
-# run's View names the Scf and the products it re-exports. core::resources and
+# The Casci step. recipes::davidson, pipeline::scf and pipeline::active_space
+# are PUBLIC and re-exported: the product holds a DavidsonInfo and a
+# SphericalMatrixAO, run's View names the Scf and the products it re-exports,
+# and CasciStep derives from ActiveSpaceSelection. core::resources and
 # pipeline::step are in run's signature. Everything run uses -- the J and K
-# classes, the active-space Hamiltonian, the CI strings, sigma, solver and
-# RDM, and AVAS's MINAO basis, mixed overlaps and eigensolver, and the Molden
-# writer -- is PRIVATE: run is defined in the implementation unit.
+# classes, the active-space Hamiltonian, the CI strings, sigma and solver, the
+# eigensolver for the natural orbitals, and the Molden writer -- is PRIVATE:
+# run is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.casci
@@ -20,6 +21,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::davidson
   free_breakfast::pipeline::step
   free_breakfast::pipeline::scf
+  free_breakfast::pipeline::active_space
   LINK_PRIVATE
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
@@ -29,9 +31,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
   free_breakfast::ci::solver
-  free_breakfast::atom
-  free_breakfast::io::basis
   free_breakfast::io::molden
   free_breakfast::recipes::diagonalize
-  free_breakfast::integrals::one_electron::overlap_mixed
 )
