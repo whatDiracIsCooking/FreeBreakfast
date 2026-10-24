@@ -26,6 +26,7 @@ import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
 
+#include "mcscf_setup.h"
 #include "scratch_dir.h"
 
 namespace {
@@ -111,13 +112,6 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
   return std::move(*calc);
 }
 
-// The SCF the start is selected from: unscreened J, converged past the
-// step's defaults.
-const fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
-                            .commutator_tolerance = 1e-12,
-                            .fock_rebuild_interval = 1,
-                            .tau_j = 0.0};
-
 // The reference's start as the Casci step's selection.
 fb::CasciStep casci_step(const fb::json &entry) {
   fb::CasciStep step;
@@ -189,9 +183,9 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
   setup->transform = &*transform;
   setup->h = &*h;
   setup->overlap = &*overlap;
-  auto scf = kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform, *pairs,
-                                                      *overlap, *x, *h, *guess},
-                           setup->res());
+  auto scf = fb::test::kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform,
+                                                                *pairs, *overlap, *x, *h, *guess},
+                                     setup->res());
   if (!scf.has_value()) {
     ADD_FAILURE() << scf.error().message;
     return nullptr;
