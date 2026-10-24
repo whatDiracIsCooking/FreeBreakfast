@@ -8,3 +8,5 @@ export module free_breakfast.ci;
 
 export import free_breakfast.ci.strings;
 export import free_breakfast.ci.sigma;
+export import free_breakfast.ci.solver;
+export import free_breakfast.ci.rdm;
