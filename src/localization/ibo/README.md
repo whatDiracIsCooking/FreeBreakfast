@@ -71,14 +71,13 @@ orthogonalization for a near-singular S1; that is not done here.
 (n_occ x n_occ, then m x m) and one gemm. The paper's procedure is invariant to
 the kind of orthogonalization for C~, but not for A: a symmetric
 orthogonalization depends on the columns' scale. So **the minimal basis's
-functions are normalized** first (its spherical transform's columns scaled by
-S2's diagonal to the -1/2) — this tree does not force a contraction to unit
-norm, and PySCF's normalized MINAO is what the oracle builds its IAOs from.
+functions are normalized** first (S12 <- S12 D and S2 <- D S2 D, with
+D = diag(S2)^-1/2, three `dgmm`s) — this tree does not force a contraction to
+unit norm, and PySCF's normalized MINAO is what the oracle builds its IAOs
+from.
 
-**The overlaps are built here.** `overlap_mixed` gives Cartesian S12 and S2;
-each becomes spherical as U_rows^T S_cart U_cols, with each basis's
-`spherical_transform_matrix` uploaded. That is the one spherical mixed
-overlap in the tree; it lives here until a second consumer wants it.
+**The overlaps** S12 and S2 are `overlap_mixed_spherical`'s
+(`integrals/one_electron/overlap_mixed`).
 
 ## The IBOs (Appendix D)
 

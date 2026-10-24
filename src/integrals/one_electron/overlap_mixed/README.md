@@ -49,16 +49,23 @@ each specialization, and `overlap_mixed_kernels`, the full `[la][lb]` table.
 
 **Limits.** d per shell (`kMaxAngularMomentum`), and
 `rows.nao_cart() * cols.nao_cart() <= INT32_MAX`; either is `InvalidConfig`
-before anything is formed or launched, as is a buffer of the wrong size. Not
-built: a spherical form (it would be `U_rowsᵀ S U_cols`). Its consumers,
-`pipeline/casci`'s AVAS and `localization/ibo`, each apply their U's
-themselves.
+before anything is formed or launched, as is a buffer of the wrong size.
+
+**The spherical form** is `overlap_mixed_spherical`: the Cartesian block
+carried over as `U_rowsᵀ S_cart U_cols`, each U the basis's
+`spherical_transform_matrix` uploaded, two gemms. Column-major
+`rows.nao_sphe() x cols.nao_sphe()`, the layout `SphericalMatrixAO` uses, into
+a plain buffer for the same reason as above. It synchronizes the stream once,
+at the end, so the host U's outlive their upload. `localization/ibo` uses it;
+`pipeline/casci`'s AVAS still applies its U's itself, on the host, over only
+the labelled AOs.
 
 ## Public API
 
 | Symbol | Role |
 |---|---|
 | `overlap_mixed(res, rows, cols, s)` | `Status`: the Cartesian S_{rows,cols} into `s` |
+| `overlap_mixed_spherical(res, rows, cols, s)` | `Status`: the spherical S_{rows,cols} into `s` |
 
 ## Usage
 
@@ -78,15 +85,17 @@ basis set x {same, different} geometry: a basis against itself against
 libcint's `int1e_ovlp` and against `overlap`; H₂O STO-3G against 6-31G and
 cc-pVDZ, and against 6-31G at another geometry, against libcint's
 `intor_cross` (`test/gtest/data/overlap_mixed/`), both orientations; s and p
-shells against themselves translated, against the closed form. Every build
-writes into a buffer of NaN. Plus the refusals.
+shells against themselves translated, against the closed form. The spherical
+form on the cross fixtures, against libcint's values carried over on the host
+by each basis's U (cc-pVDZ's d shells make the transform not an identity).
+Every build writes into a buffer of NaN. Plus the refusals.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `overlap_mixed.cppm` | Module interface: `overlap_mixed` |
-| `overlap_mixed.cpp` | Implementation: the checks, the records, the zeroing, the launch |
+| `overlap_mixed.cppm` | Module interface: `overlap_mixed`, `overlap_mixed_spherical` |
+| `overlap_mixed.cpp` | Implementation: the checks, the records, the zeroing, the launch; the spherical form's two gemms |
 | `overlap_mixed_launch.cu` | The launcher over the generated kernels, the class swapped |
 | `overlap_mixed_bridge.h` | The launcher's declaration, shared by the `.cu` and the implementation unit's GMF |
 | `kernels/` | The generated kernels, and the `.clang-format` that leaves them unformatted |
