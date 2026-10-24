@@ -249,6 +249,41 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   EXPECT_TRUE(triplet);
 }
 
+// Over CiSigma, which has an apply_fp32, ci_solve runs its single-precision
+// stage first by default; the roots meet the same tolerances as the FP64-only
+// solve, which fp32_tolerance = 0 asks for. Singlets and, from the M_s = 1
+// sector, triplets.
+TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::json cases = load_cases();
+  ASSERT_FALSE(cases.empty());
+  for (const auto &entry : cases) {
+    for (const std::int32_t shift : {0, 1}) {
+      const Case c = make_case(entry, shift);
+      SCOPED_TRACE(std::format("{}, M_s {}", c.name, shift));
+      auto sigma = fb::CiSigma::create(res, c.alpha, c.beta);
+      ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+      ASSERT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
+      fb::Buffers::device<double> diagonal(c.diagonal.size(), res.device());
+      ASSERT_TRUE(sigma->diagonal(res, diagonal.data()).has_value());
+      const double s2 = shift == 0 ? 0.0 : 2.0;
+
+      const auto two_stage = fb::ci_solve(res, *sigma, c.alpha, c.beta, diagonal.data(), 3);
+      ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
+      EXPECT_GT(two_stage->fp32_iterations, 0);
+      expect_roots(res, c, *two_stage, s2);
+
+      fb::CiSolverOptions fp64;
+      fp64.fp32_tolerance = 0.0;
+      const auto alone = fb::ci_solve(res, *sigma, c.alpha, c.beta, diagonal.data(), 3, fp64);
+      ASSERT_TRUE(alone.has_value()) << alone.error().message;
+      EXPECT_EQ(alone->fp32_iterations, 0);
+      expect_roots(res, c, *alone, s2);
+    }
+  }
+}
+
 TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -285,6 +320,10 @@ TEST(CiSolver, RejectsBadShapes) {
   fb::CiSolverOptions negative;
   negative.spin_penalty = -1.0;
   EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 1, negative)), invalid);
+  fb::CiSolverOptions negative_fp32;
+  negative_fp32.fp32_tolerance = -1.0;
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 1, negative_fp32)),
+            invalid);
   EXPECT_EQ(sigma.applies, 0);
 
   std::vector<double> vector(c.diagonal.size(), 0.0);

@@ -111,6 +111,18 @@ public:
   ///         negative @p k; or the GpuRuntime error of a launch or the gemm.
   [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *x, double *y);
 
+  /// @brief apply in single precision: the same Y = H X over the same double
+  /// blocks, but D, G and the contraction matrix are float and the gemm is
+  /// gemm<float>, which halves the gathers' traffic and G's scratch and runs
+  /// at the FP32 rate. Each D entry is the float of at most two FP64 terms,
+  /// and the second gather sums G in double, so the error is float rounding's,
+  /// of D, the contraction and G: a column of Y is good to ~1e-7 relative of
+  /// ‖Y − E_core X‖, not to roundoff. ci_solve's first stage, never its
+  /// converged roots.
+  ///
+  /// @return As apply.
+  [[nodiscard]] Status apply_fp32(DeviceResources &res, int32_t k, const double *x, double *y);
+
   /// @brief diag(H) into the size() device doubles @p diagonal, by
   /// host_diagonal's rule and in its order. Queued on res.stream().
   ///
@@ -140,6 +152,11 @@ private:
   CiSigma(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
           int32_t alpha_per, int32_t beta_per);
 
+  // apply and apply_fp32: D and G of T, over the contraction of T.
+  template <typename T>
+  Status apply_as(DeviceResources &res, int32_t k, const double *x, double *y,
+                  const T *contraction);
+
   int32_t dev_idx_;
   int32_t n_orbitals_;
   int32_t n_alpha_; // alpha.size()
@@ -156,6 +173,8 @@ private:
   // n_pairs × (n_pairs + 1), column-major: column pair(t, u) is ½ (tu|vw) over
   // the rows pair(v, w), and the last column k_vw.
   Buffers::device<double> contraction_;
+  // contraction_ rounded to float, apply_fp32's.
+  Buffers::device<float> contraction_fp32_;
   // n + 2 n²: h_ii, (ii|jj) and (ij|ji), for the diagonal.
   Buffers::device<double> diagonal_terms_;
 };

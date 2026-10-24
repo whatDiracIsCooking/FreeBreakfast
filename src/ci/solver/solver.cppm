@@ -143,6 +143,14 @@ struct CiSolverOptions {
   /// the 1-RDM is read from the vector: 1e-12 relative is ~1e-10 hartree at
   /// molecular energies.
   DavidsonOptions davidson{.residual_tolerance = 1e-12};
+  /// @brief The relative residual a first, single-precision stage runs to,
+  /// when the sigma has an apply_fp32 (CiSigma does): davidson_solve over
+  /// that, then again over apply from its Ritz vectors, to
+  /// davidson.residual_tolerance. 0 runs apply alone, as does any value at or
+  /// below that tolerance. FP32 sigma's noise stalls Davidson near 1e-7, and
+  /// a stage that stalls spends its max_iterations; the README has the
+  /// measurement behind the default.
+  double fp32_tolerance = 1e-6;
 };
 
 /// @brief The roots a ci_solve converged, ascending in energy.
@@ -154,8 +162,11 @@ struct CiRoots {
   /// @brief The unit CI vectors on the device of the ci_solve call, root r at
   /// [r · dim, (r + 1) · dim), each in host_sigma's layout.
   Buffers::device<double> vectors;
-  /// @brief What davidson_solve did.
+  /// @brief What the final davidson_solve did, over the sigma's apply.
   DavidsonInfo davidson;
+  /// @brief Iterations of the single-precision stage before it, 0 when there
+  /// was none (see CiSolverOptions::fp32_tolerance).
+  int32_t fp32_iterations = 0;
 };
 
 /// @brief The @p n_roots lowest roots of spin S = |N_α − N_β| / 2 of the CI
@@ -171,6 +182,13 @@ struct CiRoots {
 /// penalty (a CiSpinSquare) and the preconditioner run there per iteration,
 /// ⟨S²⟩ is taken there, and the roots stay there. Only the n_roots Ritz values
 /// and ⟨S²⟩s come to the host.
+///
+/// A sigma that also has `apply_fp32(res, k, x, y)` (CiSigma) is solved in two
+/// stages: davidson_solve over apply_fp32 to options.fp32_tolerance, then over
+/// apply, restarted from the first stage's Ritz vectors, to
+/// options.davidson's tolerance. The second stage is the whole solve as it
+/// would be without the first, from better guesses, so the roots are as
+/// accurate as an FP64-only solve's.
 ///
 /// @param sigma    Applies H to a device block of CI vectors (host_sigma's
 ///                 layout); a LinearOperator over dim = alpha.size() ·
@@ -191,11 +209,13 @@ template <LinearOperator<double> Op>
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
   if (alpha.n_orbitals() != beta.n_orbitals() ||
       dim > static_cast<size_t>(std::numeric_limits<int32_t>::max()) || n_roots < 1 ||
-      static_cast<size_t>(n_roots) > dim || !(options.spin_penalty >= 0.0)) {
+      static_cast<size_t>(n_roots) > dim || !(options.spin_penalty >= 0.0) ||
+      !(options.fp32_tolerance >= 0.0)) {
     return err_config("ci_solve: needs one orbital count, at most an int32_t of determinants, "
-                      "n_roots in [1, {}] and spin_penalty >= 0 (orbitals {} and {}, n_roots {}, "
-                      "spin_penalty {})",
-                      dim, alpha.n_orbitals(), beta.n_orbitals(), n_roots, options.spin_penalty);
+                      "n_roots in [1, {}], spin_penalty >= 0 and fp32_tolerance >= 0 (orbitals {} "
+                      "and {}, n_roots {}, spin_penalty {}, fp32_tolerance {})",
+                      dim, alpha.n_orbitals(), beta.n_orbitals(), n_roots, options.spin_penalty,
+                      options.fp32_tolerance);
   }
   const auto n = static_cast<int32_t>(dim);
   const auto roots = static_cast<size_t>(n_roots);
@@ -219,6 +239,8 @@ template <LinearOperator<double> Op>
 
   // H + λ (S² − S(S+1)) through the caller's sigma, the penalty added into
   // its output on the device, and diag(H + penalty) for the preconditioner.
+  // fp32 picks the sigma's apply_fp32; applies counts the calls, one per
+  // iteration, since every iteration adds a column.
   CiSpinSquare spin = FBF_TRY(CiSpinSquare::create(res, alpha, beta));
   FBF_TRY(spin.penalize_diagonal(res, penalty, target, diagonal, shifted.data()));
   struct Penalized {
@@ -226,9 +248,16 @@ template <LinearOperator<double> Op>
     CiSpinSquare &spin;
     double penalty;
     double target;
+    bool fp32 = false;
+    int32_t applies = 0;
 
     Status apply(DeviceResources &r, int32_t k, const double *x, double *y) {
-      FBF_TRY(sigma.apply(r, k, x, y));
+      ++applies;
+      if constexpr (requires { sigma.apply_fp32(r, k, x, y); }) {
+        FBF_TRY(fp32 ? sigma.apply_fp32(r, k, x, y) : sigma.apply(r, k, x, y));
+      } else {
+        FBF_TRY(sigma.apply(r, k, x, y));
+      }
       if (penalty == 0.0) {
         return {};
       }
@@ -249,9 +278,38 @@ template <LinearOperator<double> Op>
     return {};
   };
 
+  // Stage 1, when the sigma has an apply_fp32: that, to the loose tolerance.
+  // Running out of iterations or subspace there is no error, since stage 2
+  // starts from whatever Ritz vectors it left. Stage 2 is the solve there
+  // would be without stage 1, over apply to the caller's tolerance, only from
+  // those vectors (V S for an orthonormal V, so orthonormal) in place of the
+  // guesses.
+  int32_t fp32_iterations = 0;
+  int32_t start_count = guess_count;
+  if constexpr (requires { sigma.apply_fp32(res, n_roots, guess.data(), vectors.data()); }) {
+    if (options.fp32_tolerance > options.davidson.residual_tolerance) {
+      DavidsonOptions loose = options.davidson;
+      loose.residual_tolerance = options.fp32_tolerance;
+      op.fp32 = true;
+      const auto stage =
+          davidson_solve<double>(res, op, precondition, n, n_roots, max_subspace, guess.data(),
+                                 guess_count, values.data(), vectors.data(), loose);
+      op.fp32 = false;
+      if (!stage && stage.error().kind != ErrorKind::MaxIterationsExceeded &&
+          stage.error().kind != ErrorKind::Divergence) {
+        return std::unexpected{stage.error()};
+      }
+      fp32_iterations = op.applies;
+      FBF_TRY(
+          gpu_status(wwr::wwrMemcpyAsync(guess.data(), vectors.data(), dim * roots * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+      start_count = n_roots;
+    }
+  }
+
   const auto info =
       davidson_solve<double>(res, op, precondition, n, n_roots, max_subspace, guess.data(),
-                             guess_count, values.data(), vectors.data(), options.davidson);
+                             start_count, values.data(), vectors.data(), options.davidson);
   if (!info) {
     return std::unexpected{info.error()};
   }
@@ -264,7 +322,8 @@ template <LinearOperator<double> Op>
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(theta.data(), values.data(), roots * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(spin.apply(res, n_roots, vectors.data(), guess.data()));
-  CiRoots out{std::vector<double>(roots), std::vector<double>(roots), std::move(vectors), *info};
+  CiRoots out{std::vector<double>(roots), std::vector<double>(roots), std::move(vectors), *info,
+              fp32_iterations};
   {
     const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
                                             CreatePolicy<wwr::wwrblasStatus_t>>

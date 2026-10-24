@@ -19,3 +19,9 @@ cries wolf gets ignored. Read the numbers; do not gate on them.
 box contend, and nothing in the output says so. Pin disjoint cores with
 `CPUSET` (see `devtools/config.sh` and `.devcontainer/README.md`) before
 comparing one run to another.
+
+## Benchmarks
+
+| Executable | Times |
+|---|---|
+| `free_breakfast_ci_sigma_precision CASES.json [n_roots] [max_iterations] [device]` | `CiSigma::apply` against `apply_fp32` per column, and `ci_solve` FP64-only against its two-stage solve at several `fp32_tolerance`s, over the active spaces `tools/emit_ci_bench_integrals.py` writes. `src/ci/solver/README.md` has its numbers. |
