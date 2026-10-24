@@ -14,7 +14,7 @@ names them all. It is the one library that imports every step, so only it and
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
                              CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep,
-                             CasciStep, FciStep>;
+                             CasciStep, CasscfStep, FciStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
 Result<Calculation> read_config(const std::filesystem::path &path);
@@ -83,6 +83,24 @@ take the same options.
 `ActiveSpaceSelection`. Whether the active space fits needs the molecule's
 electrons and the basis's orbitals, so `ActiveSpaceSelection::orbital_order`
 checks the ranges when the step runs (`active_space/README.md`).
+
+```toml
+[casscf]
+ncas = 3                  # the start: the same selection keys as [casci], avas too
+nelecas = 4
+nroots = 2                # default 1
+weights = [0.5, 0.5]      # default equal; nroots of them, >= 0, summing to 1
+conv_tol = 1e-10          # default 1e-10: |dE| at convergence
+conv_tol_grad = 1e-6      # default 1e-6: ||g|| at convergence
+max_cycle = 50            # default 50 macro iterations
+molden = "h2co_sa.molden" # default none: the state-averaged natural orbitals
+```
+
+`[casscf]` reads the selection as `[casci]` does, and its own keys are checked
+when the file is read: `weights` of the wrong count, with a negative entry or
+not summing to 1 within 1e-12 (`casscf_solve`'s own bar), a tolerance not
+positive, or `max_cycle` below 1 is InvalidConfig. Unlike the active space's
+ranges, none of these needs the molecule.
 
 ```toml
 [fci]

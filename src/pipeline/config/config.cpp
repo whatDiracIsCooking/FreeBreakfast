@@ -71,6 +71,20 @@ template <class T>
       values.push_back(static_cast<int32_t>(*value));
     }
     out = std::move(values);
+  } else if constexpr (std::same_as<T, std::vector<double>>) {
+    const toml::array *array = node.as_array();
+    if (array == nullptr) {
+      return err_config("[{}] {} is not an array of numbers", step, key);
+    }
+    std::vector<double> values;
+    for (const toml::node &element : *array) {
+      const auto value = element.value<double>();
+      if (!value) {
+        return err_config("[{}] {} is not an array of numbers", step, key);
+      }
+      values.push_back(*value);
+    }
+    out = std::move(values);
   } else if constexpr (std::same_as<T, std::vector<std::string>>) {
     const toml::array *array = node.as_array();
     if (array == nullptr) {
@@ -210,6 +224,39 @@ template <class S>
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+  } else if constexpr (std::same_as<S, CasscfStep>) {
+    FBF_TRY(check_keys(table, kStep,
+                       {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "weights",
+                        "conv_tol", "conv_tol_grad", "max_cycle", "molden"}));
+    FBF_TRY(read_active_space(table, kStep, base_dir, step));
+    FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
+    FBF_TRY(read_key(table, kStep, "weights", base_dir, step.weights));
+    FBF_TRY(read_key(table, kStep, "conv_tol", base_dir, step.conv_tol));
+    FBF_TRY(read_key(table, kStep, "conv_tol_grad", base_dir, step.conv_tol_grad));
+    FBF_TRY(read_key(table, kStep, "max_cycle", base_dir, step.max_cycle));
+    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+    // Unlike the active space's ranges these need nothing of the molecule, so
+    // they are refused here rather than when casscf_solve runs.
+    if (!step.weights.empty()) {
+      if (std::cmp_not_equal(step.weights.size(), step.nroots)) {
+        return err_config("[{}] weights has {} entries, not nroots {}", kStep, step.weights.size(),
+                          step.nroots);
+      }
+      if (std::ranges::any_of(step.weights, [](double w) { return !(w >= 0.0); })) {
+        return err_config("[{}] weights has a negative entry", kStep);
+      }
+      // casscf_solve's own tolerance.
+      if (const double sum = std::ranges::fold_left(step.weights, 0.0, std::plus<>{});
+          std::abs(sum - 1.0) > 1e-12) {
+        return err_config("[{}] weights sum to {}, not 1", kStep, sum);
+      }
+    }
+    if (!(step.conv_tol > 0.0) || !(step.conv_tol_grad > 0.0)) {
+      return err_config("[{}] conv_tol and conv_tol_grad must be positive", kStep);
+    }
+    if (step.max_cycle < 1) {
+      return err_config("[{}] max_cycle is {}, below 1", kStep, step.max_cycle);
+    }
   } else if constexpr (std::same_as<S, FciStep>) {
     // Whether the space fits is the device's to say, so FciStep::run checks
     // it when the step runs.
