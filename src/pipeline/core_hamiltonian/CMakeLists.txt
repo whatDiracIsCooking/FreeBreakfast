@@ -1,6 +1,6 @@
 # The CoreHamiltonian step. matrix_ao is PUBLIC (re-exported: the step's
 # output is a SphericalMatrixAO), and so are the spherical_transform and
-# primitive_pair_classes steps, molecule, basis, pipeline::step and
+# primitive_pair_classes steps, the basis_set step, pipeline::step and
 # core::resources, since their types are in run's signature.
 # one_electron::core_hamiltonian is PUBLIC too: run's inline body calls
 # core_hamiltonian from the importer's TU. diagnostics_macros is only FBF_TRY,
@@ -14,8 +14,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::error_handling
   free_breakfast::core::resources
-  free_breakfast::molecule
-  free_breakfast::basis
+  free_breakfast::pipeline::basis_set
   free_breakfast::recipes::matrix_ao
   free_breakfast::integrals::one_electron::core_hamiltonian
   free_breakfast::pipeline::step

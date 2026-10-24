@@ -85,7 +85,7 @@ an eigenvalue under it, and such an S1 keeps the Cholesky path.
 PySCF falls back only when `cho_factor` fails, to canonical orthogonalization
 at 1e-8. On a set both take the fallback for, the two agree where they drop
 the same modes. X is built here rather than taken from the pipeline's
-`Orthogonalizer`, so the module needs no pipeline type. The cost is one
+`OrthogonalizerOutput`, so the module needs no pipeline type. The cost is one
 extra `syevd`, paid only on this path.
 
 **The two orth()s are Loewdin**, `recipes/orthogonalize` on the small metric
@@ -142,7 +142,7 @@ NH4+ in cc-pVDZ:
   by ~1e-13 and their populations by ~1e-3, and PySCF's own two IBO optimizers
   (`lo.ibo.PipekMezey` and Knizia's `ibo_loc`) disagree by that much, so only
   the set is determined;
-- the IAOs alone, from the Scf's orbitals: A^T S A = I, each occupied orbital
+- the IAOs alone, from the ScfOutput's orbitals: A^T S A = I, each occupied orbital
   of unit weight on them, and the IAO partial charges (eq 3) matching PySCF's
   to 1e-7;
 - the same, over cc-pVDZ read from a path with oxygen's outer s function

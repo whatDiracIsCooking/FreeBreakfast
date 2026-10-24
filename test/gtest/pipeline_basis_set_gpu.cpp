@@ -27,13 +27,13 @@ using fb::test::kBasis;
 
 static_assert(fb::PipelineStep<fb::BasisSetStep>);
 static_assert(fb::kRunShape<fb::BasisSetStep> == fb::RunShape::Host);
-static_assert(std::same_as<fb::StepInput<fb::BasisSetStep>, fb::View<fb::Molecule>>);
-static_assert(std::same_as<fb::StepOutput<fb::BasisSetStep>, fb::BasisSet>);
+static_assert(std::same_as<fb::StepInput<fb::BasisSetStep>, fb::View<fb::MoleculeOutput>>);
+static_assert(std::same_as<fb::StepOutput<fb::BasisSetStep>, fb::BasisSetOutput>);
 
-fb::Molecule water(fb::DeviceResources &res) {
-  return fb::Molecule(res, {Atom{{0.0, 0.0, 0.2217}, Element::O},
-                            Atom{{0.0, 1.4309, -0.8867}, Element::H},
-                            Atom{{0.0, -1.4309, -0.8867}, Element::H}});
+fb::MoleculeOutput water(fb::DeviceResources &res) {
+  return {fb::Molecule(res, {Atom{{0.0, 0.0, 0.2217}, Element::O},
+                             Atom{{0.0, 1.4309, -0.8867}, Element::H},
+                             Atom{{0.0, -1.4309, -0.8867}, Element::H}})};
 }
 
 TEST(PipelineBasisSet, MatchesReadBasisThenPlace) {
@@ -42,25 +42,25 @@ TEST(PipelineBasisSet, MatchesReadBasisThenPlace) {
   const fb::test::ScratchDir dir("pipeline_basis_set");
   const auto path = dir / "basis.json";
   ASSERT_TRUE(fb::write_file(path, kBasis).has_value());
-  const fb::Molecule molecule = water(res);
+  const fb::MoleculeOutput molecule = water(res);
 
   const fb::BasisSetStep step{.basis = path.string()};
-  auto basis = step.run(fb::View<fb::Molecule>{molecule});
+  auto basis = step.run(fb::View<fb::MoleculeOutput>{molecule});
   auto stamp = fb::read_basis(path);
   ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
-  auto direct = fb::place(stamp->primitive_normalized(), molecule);
+  auto direct = fb::place(stamp->primitive_normalized(), molecule.molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   ASSERT_TRUE(direct.has_value()) << direct.error().message;
 
-  EXPECT_EQ(basis->nao_cart(), direct->nao_cart());
-  EXPECT_EQ(basis->nao_sphe(), direct->nao_sphe());
-  ASSERT_EQ(basis->natoms(), direct->natoms());
+  EXPECT_EQ(basis->basis.nao_cart(), direct->nao_cart());
+  EXPECT_EQ(basis->basis.nao_sphe(), direct->nao_sphe());
+  ASSERT_EQ(basis->basis.natoms(), direct->natoms());
   for (std::uint32_t a = 0; a < direct->natoms(); ++a) {
-    EXPECT_EQ(basis->atom_shell_count(a), direct->atom_shell_count(a)) << a;
+    EXPECT_EQ(basis->basis.atom_shell_count(a), direct->atom_shell_count(a)) << a;
   }
-  ASSERT_EQ(basis->nshells(), direct->nshells());
+  ASSERT_EQ(basis->basis.nshells(), direct->nshells());
   for (std::uint32_t s = 0; s < direct->nshells(); ++s) {
-    const fb::Shell &got = basis->shells()[s];
+    const fb::Shell &got = basis->basis.shells()[s];
     const fb::Shell &want = direct->shells()[s];
     EXPECT_EQ(got.angular_momentum(), want.angular_momentum()) << s;
     EXPECT_EQ(got.center().x, want.center().x) << s;
@@ -78,10 +78,10 @@ TEST(PipelineBasisSet, MissingFileIsIoError) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::test::ScratchDir dir("pipeline_basis_set");
-  const fb::Molecule molecule = water(res);
+  const fb::MoleculeOutput molecule = water(res);
 
   const fb::BasisSetStep step{.basis = (dir / "absent.json").string()};
-  auto basis = step.run(fb::View<fb::Molecule>{molecule});
+  auto basis = step.run(fb::View<fb::MoleculeOutput>{molecule});
   ASSERT_FALSE(basis.has_value());
   EXPECT_EQ(basis.error().kind, fb::ErrorKind::IO);
 }
@@ -92,11 +92,11 @@ TEST(PipelineBasisSet, UncoveredElementIsInvalidConfig) {
   const fb::test::ScratchDir dir("pipeline_basis_set");
   const auto path = dir / "basis.json";
   ASSERT_TRUE(fb::write_file(path, kBasis).has_value());
-  const fb::Molecule co(res,
-                        {Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.1}, Element::O}});
+  const fb::MoleculeOutput co{
+      fb::Molecule(res, {Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.1}, Element::O}})};
 
   const fb::BasisSetStep step{.basis = path.string()};
-  auto basis = step.run(fb::View<fb::Molecule>{co});
+  auto basis = step.run(fb::View<fb::MoleculeOutput>{co});
   ASSERT_FALSE(basis.has_value());
   EXPECT_EQ(basis.error().kind, fb::ErrorKind::InvalidConfig);
 }

@@ -1,6 +1,6 @@
 /// @file
 /// @brief The `Fci` step: the lowest singlets of the full CI over every one of
-/// the @ref Scf's orbitals, refused up front when the determinant space would
+/// the @ref ScfOutput's orbitals, refused up front when the determinant space would
 /// not fit on the device.
 ///
 /// Device-shaped. CASCI with no core and every orbital active: `run` makes
@@ -21,8 +21,8 @@ export namespace free_breakfast {
 
 /// @brief The lowest roots of the full CI over a set of RHF orbitals,
 /// ascending in energy.
-struct Fci {
-  /// @brief The orbitals, all of them correlated: the Scf's, in its order.
+struct FciOutput {
+  /// @brief The orbitals, all of them correlated: the ScfOutput's, in its order.
   int32_t nmo;
   /// @brief The electrons, n_electrons / 2 of each spin.
   int32_t n_electrons;
@@ -30,14 +30,14 @@ struct Fci {
   std::vector<double> energies;
   /// @brief <S^2> per root.
   std::vector<double> spin_squares;
-  /// @brief The spin-summed 1-RDM per root over the Scf's orbitals, root r at
+  /// @brief The spin-summed 1-RDM per root over the ScfOutput's orbitals, root r at
   /// [r nmo^2, (r + 1) nmo^2), nmo x nmo, row-major.
   std::vector<double> rdm1;
   /// @brief What the Davidson solve did.
   DavidsonInfo davidson;
 };
 
-/// @brief FCI over the @ref Scf's canonical orbitals, on @p res's device.
+/// @brief FCI over the @ref ScfOutput's canonical orbitals, on @p res's device.
 struct FciStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "fci";
@@ -46,8 +46,8 @@ struct FciStep {
   int32_t nroots = 1;
 
   /// @brief The @ref nroots lowest singlets, by CasciStep's path with ncas
-  /// the Scf's orbital count and nelecas every electron, so no core and the
-  /// Scf's orbitals in their own order. First, before anything is allocated,
+  /// the ScfOutput's orbital count and nelecas every electron, so no core and the
+  /// ScfOutput's orbitals in their own order. First, before anything is allocated,
   /// the device memory the determinant space needs (the CI vectors, the
   /// Davidson subspace, the sigma's scratch, the n^4 integrals) is estimated
   /// against what the device has free. `ci_solve` runs at a 1e-11 relative
@@ -60,8 +60,9 @@ struct FciStep {
   ///         failed memory query or copy; or the error of the first module
   ///         call that failed: `active_space_hamiltonian`'s, `CiSigma`'s, or
   ///         `ci_solve`'s.
-  [[nodiscard]] Result<Fci>
-  run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, CoreHamiltonian, Scf> in,
+  [[nodiscard]] Result<FciOutput>
+  run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+           CoreHamiltonianOutput, ScfOutput> in,
       DeviceResources &res) const;
 };
 

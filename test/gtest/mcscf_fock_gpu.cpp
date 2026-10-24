@@ -5,7 +5,7 @@
 // central finite difference of the energy along random kappa, the RDMs fixed;
 // the RHF limit, ncas = 0; the packed order; and the refusals.
 //
-// The orbitals are the setup's own: the Scf (run with J unscreened), the active
+// The orbitals are the setup's own: the SCF (run with J unscreened), the active
 // space picked by pipeline.active_space as the Casci step picks it (by index,
 // or by AVAS), and the CI and RDMs from the Casci step's roots and ci.rdm's
 // CiRdm.
@@ -105,8 +105,8 @@ std::vector<std::pair<std::size_t, std::size_t>> packed_pairs(std::size_t nmo, s
   return pairs;
 }
 
-// The reference's molecule through the real registry to the Scf's inputs, in
-// basis if it is not empty and the reference's own otherwise. The Scf itself
+// The reference's molecule through the real registry to the Scf step's inputs, in
+// basis if it is not empty and the reference's own otherwise. The Scf step itself
 // is run by hand: tau_j is not a TOML key.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node,
                                                std::string_view basis = {}) {
@@ -140,7 +140,7 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
   return std::move(*calc);
 }
 
-// The Scf the comparisons need: unscreened J, every build full, converged past
+// The SCF the comparisons need: unscreened J, every build full, converged past
 // the step's defaults, since the gradient moves to first order in the orbitals.
 const fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
                             .commutator_tolerance = 1e-12,
@@ -164,19 +164,19 @@ fb::CasciStep casci_step(const fb::json &entry) {
   return step;
 }
 
-// Everything casscf_fock reads, from one converged Scf, and with a CASCI, its
+// Everything casscf_fock reads, from one converged SCF, and with a CASCI, its
 // orbitals and the weighted RDMs of its roots.
 struct Setup {
   fb::NodeResources node;
   std::optional<fb::Calculation> calc;
   const fb::Molecule *molecule = nullptr;
   const fb::BasisSet *basis = nullptr;
-  const fb::SphericalTransform *transform = nullptr;
-  const fb::CoreHamiltonian *h = nullptr;
-  std::optional<fb::Scf> scf;
+  const fb::SphericalTransformOutput *transform = nullptr;
+  const fb::CoreHamiltonianOutput *h = nullptr;
+  std::optional<fb::ScfOutput> scf;
   std::vector<fb::CoulombPairClass> j_classes;
   std::vector<fb::OrderedPairClass> k_classes;
-  std::optional<fb::Casci> casci;
+  std::optional<fb::CasciOutput> casci;
   std::vector<double> weights;
   std::vector<double> gamma;
   std::vector<double> gamma2;
@@ -234,25 +234,25 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci,
     return nullptr;
   }
   setup->calc.emplace(std::move(*calc)); // a Pipeline moves, but is not move-assigned
-  const auto &molecule = setup->calc->get<fb::Molecule>();
-  const auto &basis_set = setup->calc->get<fb::BasisSet>();
-  const auto &transform = setup->calc->get<fb::SphericalTransform>();
-  const auto &pairs = setup->calc->get<fb::PrimitivePairClasses>();
-  const auto &overlap = setup->calc->get<fb::Overlap>();
-  const auto &x = setup->calc->get<fb::Orthogonalizer>();
-  const auto &h = setup->calc->get<fb::CoreHamiltonian>();
-  const auto &guess = setup->calc->get<fb::Guess>();
+  const auto &molecule = setup->calc->get<fb::MoleculeOutput>();
+  const auto &basis_set = setup->calc->get<fb::BasisSetOutput>();
+  const auto &transform = setup->calc->get<fb::SphericalTransformOutput>();
+  const auto &pairs = setup->calc->get<fb::PrimitivePairClassesOutput>();
+  const auto &overlap = setup->calc->get<fb::OverlapOutput>();
+  const auto &x = setup->calc->get<fb::OrthogonalizerOutput>();
+  const auto &h = setup->calc->get<fb::CoreHamiltonianOutput>();
+  const auto &guess = setup->calc->get<fb::GuessOutput>();
   if (!molecule.has_value() || !basis_set.has_value() || !transform.has_value() ||
       !pairs.has_value() || !overlap.has_value() || !x.has_value() || !h.has_value() ||
       !guess.has_value()) {
     ADD_FAILURE() << "a product of the setup steps is missing";
     return nullptr;
   }
-  setup->molecule = &*molecule;
-  setup->basis = &*basis_set;
+  setup->molecule = &molecule->molecule;
+  setup->basis = &basis_set->basis;
   setup->transform = &*transform;
   setup->h = &*h;
-  setup->nmo = basis_set->nao_sphe();
+  setup->nmo = basis_set->basis.nao_sphe();
   auto scf = kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform, *pairs,
                                                       *overlap, *x, *h, *guess},
                            setup->res());
@@ -265,7 +265,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci,
   fb::DeviceResources &res = setup->res();
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto j_classes = fb::coulomb_pair_classes(res, pairs->classes);
-  auto k_classes = fb::ordered_pair_classes(res, *basis_set, pairs->classes);
+  auto k_classes = fb::ordered_pair_classes(res, basis_set->basis, pairs->classes);
   if (!j_classes.has_value() || !k_classes.has_value()) {
     ADD_FAILURE() << "the J or K classes failed";
     return nullptr;
@@ -277,9 +277,9 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci,
   }
 
   // The CASCI at the reference's start, and the selection's rotation R, which
-  // gives each column's energy in the Scf's Fock matrix: sum_k R_kj^2 eps_k.
+  // gives each column's energy in the ScfOutput's Fock matrix: sum_k R_kj^2 eps_k.
   const fb::CasciStep step = casci_step(entry);
-  auto space = step.select(res, *molecule, *basis_set, *setup->scf);
+  auto space = step.select(res, molecule->molecule, basis_set->basis, *setup->scf);
   if (!space.has_value()) {
     ADD_FAILURE() << space.error().message;
     return nullptr;
@@ -501,7 +501,7 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfFock,
                          [](const auto &info) { return std::string(info.param.name); });
 
 // ncas = 0: the generalized Fock is 2 F^I in the core columns, the gradient
-// 4 F^I_ai, the RHF one: zero at the converged Scf, whose energy is given
+// 4 F^I_ai, the RHF one: zero at the converged SCF, whose energy is given
 // back; and away from it, the slope of casscf_fock's own energy.
 TEST(McscfFockRhfLimit, IsTheRhfGradient) {
   FBF_REQUIRE_GPU();
@@ -527,7 +527,7 @@ TEST(McscfFockRhfLimit, IsTheRhfGradient) {
     EXPECT_NEAR(value, 0.0, kRhfGradientTolerance);
   }
 
-  // Off the Scf, along a random kappa of 0.05.
+  // Off the SCF, along a random kappa of 0.05.
   std::vector<double> step = directions(1, order.size()).front();
   auto off = rotate(*setup, setup->scf->c, nocc, 0, step, 0.05);
   ASSERT_TRUE(off.has_value());
@@ -549,7 +549,7 @@ TEST(McscfFockRhfLimit, IsTheRhfGradient) {
       EXPECT_NEAR(fock[p + (nmo * q)], want, 1e-12) << "(" << p << ", " << q << ")";
     }
   }
-  ASSERT_GT(norm, 1e-2); // far enough off the Scf to test anything
+  ASSERT_GT(norm, 1e-2); // far enough off the ScfOutput to test anything
   for (const auto &x : directions(kDirections, order.size())) {
     const auto fd = slope(*setup, *off, nocc, 0, x, [&](const fb::SphericalMatrixAO &orbitals) {
       return rhf(orbitals).transform([](const fb::CasscfFock &r) { return r.energy; });

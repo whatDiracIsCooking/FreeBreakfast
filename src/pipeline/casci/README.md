@@ -23,7 +23,7 @@ the product). `run` is defined in the implementation unit, so
 ## The step
 
 ```cpp
-struct Casci {
+struct CasciOutput {
   int32_t ncore, ncas, nelecas;
   SphericalMatrixAO c;               // AO x MO: C R, columns core, active, rest
   std::vector<double> energies;      // per root, total (hartree)
@@ -39,8 +39,8 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
   int32_t nroots = 1;
   std::filesystem::path molden{};    // the lowest root's natural orbitals, if set
 
-  Result<Casci> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
-                         CoreHamiltonian, Scf> in,
+  Result<CasciOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+                         CoreHamiltonianOutput, ScfOutput> in,
                     DeviceResources &res) const;
 };
 ```
@@ -50,10 +50,10 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
 1. **The orbitals**: `ActiveSpaceSelection::select`'s `ActiveSpace`, C R
    with R a permutation by index or AVAS's rotation
    ([`active_space/README.md`](../active_space/README.md)), published as
-   `Casci::c`: the 1-RDMs are over its columns [ncore, ncore + ncas).
+   `CasciOutput::c`: the 1-RDMs are over its columns [ncore, ncore + ncas).
 2. **The Hamiltonian.** `active_space_hamiltonian` over those orbitals, at its
    own default screens (`tau_j` 1e-14; see `integrals/active_space/`), from J
-   and K classes built from `PrimitivePairClasses` per run, as the Scf does.
+   and K classes built from `PrimitivePairClassesOutput` per run, as the Scf step does.
    E_core holds the core's energy and the nuclear repulsion, so every energy
    is a total.
 3. **The CI.** h_eff and (tu|vw) are read back and reordered row-major,
@@ -65,12 +65,12 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
 5. **The Molden file**, if `molden` is set: the lowest root's natural
    orbitals, C R with R's active block rotated to its 1-RDM's eigenvectors
    by descending occupation; the core at occupation 2, the rest at 0. Each
-   orbital's energy is its expectation in the Scf's Fock matrix,
+   orbital's energy is its expectation in the ScfOutput's Fock matrix,
    Σ_k R_kj² ε_k, as the Localization step's Molden file gives its orbitals.
 
 What it settled:
 
-- **Singlets only.** The Scf is closed-shell, so N is even, and with an even
+- **Singlets only.** The SCF is closed-shell, so N is even, and with an even
   core count nelecas is too: the sector is N_α = N_β, whose lowest spin is 0.
   A triplet CASCI is the sector N_α − N_β = 2, a `spin` option, once a caller
   needs it.
@@ -96,7 +96,7 @@ GpuRuntime for a failed copy or gemm.
 `test/gtest/pipeline_casci_gpu.cpp`, against PySCF's `mcscf.CASCI` over its own
 RHF in this tree's basis files (`test/gtest/data/casci/`,
 `tools/emit_casci_reference.py`), through the real registry from a config
-naming `[casci]`, its Scf at the defaults: H₂O STO-3G and
+naming `[casci]`, its Scf step at the defaults: H₂O STO-3G and
 cc-pVDZ CAS(4,4) and N₂ cc-pVDZ CAS(6,6) on the frontier orbitals, and H₂O
 cc-pVDZ CAS(4,4) on an explicit, non-contiguous set. No active space splits a
 degenerate set (N₂'s π pairs go in whole). For the lowest three singlets:
@@ -105,7 +105,7 @@ degenerate set (N₂'s π pairs go in whole). For the lowest three singlets:
 - the natural occupations to 1e-7, for each root of no degenerate level;
 - each 1-RDM symmetric with trace nelecas, and each CI vector of unit norm;
 - the orbital energies to 1e-6, since the frontier pick is by index, and
-  `Casci::c` the Scf's columns in `orbital_order`'s order, exactly.
+  `CasciOutput::c` the ScfOutput's columns in `orbital_order`'s order, exactly.
 
 The AVAS cases are against PySCF's `mcscf.avas` with the same labels and
 threshold, over this tree's MINAO, then `mcscf.CASCI`: H₂O cc-pVDZ
@@ -129,6 +129,6 @@ hand in `pipeline_calculation_gpu.cpp`.
 
 | File | Role |
 |------|------|
-| `casci.cppm` | Module interface: `Casci`, `CasciStep` |
+| `casci.cppm` | Module interface: `CasciOutput`, `CasciStep` |
 | `casci.cpp` | `run`: the selection, the Hamiltonian, the CI solve, the 1-RDMs, the Molden file |
 | `CMakeLists.txt` | The module library |

@@ -51,7 +51,7 @@ namespace free_breakfast {
 // eigenvectors by descending occupation; each energy sum_k R'_kj^2 eps_k.
 [[nodiscard]] Status write_casci_molden(DeviceResources &res, const std::filesystem::path &path,
                                         const Molecule &molecule, const BasisSet &basis,
-                                        const Scf &scf, const ActiveSpace &space,
+                                        const ScfOutput &scf, const ActiveSpace &space,
                                         std::span<const double> gamma) {
   const size_t nao = basis.nao_sphe();
   const size_t nmo = scf.mo_energies.size();
@@ -93,27 +93,28 @@ namespace free_breakfast {
   return write_molden(path, molecule.atoms(), basis, orbitals, energies, occupations);
 }
 
-[[nodiscard]] Result<Casci> CasciStep::run(
-    View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, CoreHamiltonian, Scf> in,
-    DeviceResources &res) const {
-  const Molecule &molecule = in.get<Molecule>();
-  const BasisSet &basis = in.get<BasisSet>();
-  const Scf &scf = in.get<Scf>();
+[[nodiscard]] Result<CasciOutput>
+CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
+                    PrimitivePairClassesOutput, CoreHamiltonianOutput, ScfOutput> in,
+               DeviceResources &res) const {
+  const Molecule &molecule = in.get<MoleculeOutput>().molecule;
+  const BasisSet &basis = in.get<BasisSetOutput>().basis;
+  const ScfOutput &scf = in.get<ScfOutput>();
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
 
-  // Casci::c = C R, R the selection's.
+  // CasciOutput::c = C R, R the selection's.
   ActiveSpace space = FBF_TRY(select(res, molecule, basis, scf));
   const int32_t ncore = space.ncore;
   const int32_t n_active = space.ncas;
   const int32_t n_electrons = space.nelecas;
 
-  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClasses>().classes;
+  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
   std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
   std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
   const ActiveSpaceHamiltonian ham = FBF_TRY(active_space_hamiltonian(
-      res, basis, molecule, in.get<CoreHamiltonian>().h, in.get<SphericalTransform>().u, j_classes,
-      k_classes, space.c, ncore, n_active));
+      res, basis, molecule, in.get<CoreHamiltonianOutput>().h, in.get<SphericalTransformOutput>().u,
+      j_classes, k_classes, space.c, ncore, n_active));
 
   // The sigma takes host arrays, row-major: h_eff transposed, and (tu|vw)
   // from the Hamiltonian's t-fastest order to w-fastest.
@@ -152,7 +153,7 @@ namespace free_breakfast {
 
   const auto count = static_cast<size_t>(nroots);
   // Each root's 1-RDM on the device, from the roots ci_solve left there; then
-  // both come to the host, the vectors for Casci::vectors.
+  // both come to the host, the vectors for CasciOutput::vectors.
   std::vector<double> gamma(count * n * n);
   std::vector<double> vectors(count * dim);
   Buffers::device<double> gamma_device(gamma.size(), res.device());
@@ -170,7 +171,7 @@ namespace free_breakfast {
     FBF_TRY(write_casci_molden(res, molden, molecule, basis, scf, space,
                                std::span<const double>{gamma.data(), n * n}));
   }
-  return Casci{
+  return CasciOutput{
       .ncore = ncore,
       .ncas = n_active,
       .nelecas = n_electrons,

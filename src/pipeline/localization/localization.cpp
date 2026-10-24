@@ -48,7 +48,7 @@ namespace free_breakfast {
 [[nodiscard]] Status write_localization_molden(DeviceResources &res,
                                                const std::filesystem::path &path,
                                                const Molecule &molecule, const BasisSet &basis,
-                                               const Localization &out,
+                                               const LocalizationOutput &out,
                                                const std::vector<double> &mo_energies) {
   const auto occ = static_cast<size_t>(out.n_occ);
   std::vector<double> c(basis.nao_sphe() * occ);
@@ -68,15 +68,16 @@ namespace free_breakfast {
   return write_molden(path, molecule.atoms(), basis, c, energies, occupations);
 }
 
-[[nodiscard]] Result<Localization> LocalizationStep::run(View<Molecule, BasisSet, Overlap, Scf> in,
-                                                         DeviceResources &res) const {
-  const Molecule &molecule = in.get<Molecule>();
-  const BasisSet &basis = in.get<BasisSet>();
-  const Scf &scf = in.get<Scf>();
+[[nodiscard]] Result<LocalizationOutput>
+LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOutput> in,
+                      DeviceResources &res) const {
+  const Molecule &molecule = in.get<MoleculeOutput>().molecule;
+  const BasisSet &basis = in.get<BasisSetOutput>().basis;
+  const ScfOutput &scf = in.get<ScfOutput>();
   const int32_t n_occ = molecule.electron_count() / 2;
   const size_t n_ao = basis.nao_sphe();
   const auto occ = static_cast<size_t>(n_occ);
-  Localization out{
+  LocalizationOutput out{
       .c = Buffers::device<double>(n_ao * occ, res.device()),
       .u = Buffers::device<double>(occ * occ, res.device()),
       .n_occ = n_occ,
@@ -86,13 +87,13 @@ namespace free_breakfast {
   // columns are the occupied block, packed.
   switch (mode) {
   case LocalizationMode::PipekMezey:
-    out.info = FBF_TRY(pipek_mezey_localize(res, basis, n_occ, in.get<Overlap>().s.data(),
+    out.info = FBF_TRY(pipek_mezey_localize(res, basis, n_occ, in.get<OverlapOutput>().s.data(),
                                             scf.c.data(), out.c.data(), out.u.data(), pipek_mezey));
     break;
   case LocalizationMode::Ibo: {
     const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
     const BasisSet minao = FBF_TRY(place(stamp.primitive_normalized(), molecule));
-    const double *s = in.get<Overlap>().s.data();
+    const double *s = in.get<OverlapOutput>().s.data();
     Buffers::device<double> iao(n_ao * minao.nao_sphe(), res.device());
     out.info = FBF_TRY(ibo_localize(res, basis, minao, n_occ, s, scf.c.data(), out.c.data(),
                                     out.u.data(), iao.data(), pipek_mezey));

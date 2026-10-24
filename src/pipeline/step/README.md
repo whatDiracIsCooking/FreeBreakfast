@@ -31,7 +31,7 @@ struct OrthogonalizerStep {
 
   double eigenvalue_floor = kOrthogonalizeEigenvalueFloor<double>;  // an option
 
-  Result<Orthogonalizer> run(View<BasisSet, Overlap> in, DeviceResources &res) const;
+  Result<OrthogonalizerOutput> run(View<BasisSetOutput, OverlapOutput> in, DeviceResources &res) const;
 };
 ```
 
@@ -62,8 +62,15 @@ Its reads are the `View`, which the pipeline builds from its producers' slots.
 ## Products and `View`
 
 A product is any non-`const`, move-constructible object type. It need not be
-copyable, since products own device buffers. `View<Overlap, Overlap>`,
+copyable, since products own device buffers. `View<OverlapOutput, OverlapOutput>`,
 `View<const A>`, `View<A&>` and `View<void>` do not compile.
+
+**Every product is its step's own `XOutput` struct**, `XStep` writing
+`XOutput`, even when it holds only a domain object (`BasisSetOutput{basis}`).
+A `View` finds a product by type, and the pipeline allows one producer per
+type, so a step returning a bare `BasisSet` would take that type for the whole
+graph: an auxiliary basis, or a geometry step's new `Molecule`, could never be a
+second product. The wrapper keeps the domain types free.
 
 **Immutable once published.** `View::get` hands out `const T&` only.
 
@@ -97,8 +104,8 @@ a step not handed one cannot reach it.
 |---|---|---|---|
 | nothing extra | `Host` | free (host) | `BasisSet` (`place`) |
 | `tf::Subflow&` | `HostSubflow` | free (host), parallel inside | `GuessStep` (SAD, a subflow per stamp) |
-| `DeviceResources&` | `Device` | on that device's chain | `PrimitivePairClasses`, `Overlap`, `Orthogonalizer` |
-| `DeviceResources&, tf::Subflow&` | `DeviceSubflow` | on that device's chain, host-parallel inside | none yet: `PrimitivePairClasses`, were its records written in parallel |
+| `DeviceResources&` | `Device` | on that device's chain | `PrimitivePairClassesOutput`, `OverlapOutput`, `OrthogonalizerOutput` |
+| `DeviceResources&, tf::Subflow&` | `DeviceSubflow` | on that device's chain, host-parallel inside | none yet: `PrimitivePairClassesOutput`, were its records written in parallel |
 | `NodeResources&` | `Node` | holds every device's chain | a multi-GPU J build |
 
 The types must match exactly. A `tf::FlowBuilder&` or a
@@ -127,7 +134,7 @@ escape hatch: safe, and paid for only in concurrency.
 ```cpp
 struct GuessStep {
   ...
-  static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in);
+  static Result<GuessOutput> load(const std::filesystem::path &from, View<BasisSetOutput> in);
 };
 ```
 

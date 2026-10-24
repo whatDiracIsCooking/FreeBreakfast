@@ -19,7 +19,7 @@ links.
 ## The step
 
 ```cpp
-struct Fci {
+struct FciOutput {
   int32_t nmo, n_electrons;
   std::vector<double> energies;      // per root, total (hartree)
   std::vector<double> spin_squares;  // <S^2> per root
@@ -32,8 +32,8 @@ struct FciStep {
 
   int32_t nroots = 1;
 
-  Result<Fci> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
-                       CoreHamiltonian, Scf> in,
+  Result<FciOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+                       CoreHamiltonianOutput, ScfOutput> in,
                   DeviceResources &res) const;
 };
 ```
@@ -45,10 +45,10 @@ struct FciStep {
    step returns `Allocation` before anything is allocated. Without this, the
    first allocation to fail would abort the process (`CreatePolicy`), not
    return an error.
-2. **The solve**, `CasciStep::run`'s calls with `ncas` the Scf's orbital
+2. **The solve**, `CasciStep::run`'s calls with `ncas` the ScfOutput's orbital
    count and `nelecas` every electron (`casci/README.md`): with no core and
    every orbital active, `CasciStep::orbital_order` would be the identity,
-   so the Scf's C goes in as it is.
+   so the ScfOutput's C goes in as it is.
    `active_space_hamiltonian` builds h and (pq|rs) over every orbital, E_core
    the nuclear repulsion alone; `CiSigma` and `ci_solve` find the roots, and
    `CiSigma::rdm1` each root's 1-RDM. The product keeps the energies, ⟨S²⟩, 1-RDMs and
@@ -86,7 +86,7 @@ What it settled:
   options, so the step makes its calls itself, with `ci_solve` at a 1e-11
   relative residual and 400 iterations. The energies' error is second order in
   the residual, ~1e-19 hartree; the 1-RDMs' first order, ~1e-9.
-- **Singlets only**, as `CasciStep`: the Scf is closed-shell, and the spin
+- **Singlets only**, as `CasciStep`: the SCF is closed-shell, and the spin
   penalty is `ci_solve`'s default.
 - **No range check of its own** beyond `nroots >= 1`, which the estimate
   needs; `nroots` past the space is `ci_solve`'s InvalidConfig. With no core
@@ -105,7 +105,7 @@ MaxIterationsExceeded, Divergence, or Numerical for a root of the wrong spin.
 `test/gtest/pipeline_fci_gpu.cpp`, against PySCF's `fci.FCI` over its own RHF
 in this tree's basis files (`test/gtest/data/fci/`,
 `tools/emit_fci_step_reference.py`), through the real registry from a config
-naming `[fci]`, its Scf at the defaults: H₂O STO-3G (7 orbitals, 441
+naming `[fci]`, its Scf step at the defaults: H₂O STO-3G (7 orbitals, 441
 determinants), N₂ STO-3G (10 orbitals, 14,400) and, under `slow_test.h`, H₂O
 6-31G (13 orbitals, 1,656,369). For the lowest three singlets:
 
@@ -115,13 +115,13 @@ determinants), N₂ STO-3G (10 orbitals, 14,400) and, under `slow_test.h`, H₂O
 
 An FCI energy and its natural occupations are invariant under any rotation of
 the orbitals, so the two SCFs' convergence does not enter. Also H₂O cc-pVDZ
-(1.8e9 determinants) refused as Allocation when the step runs, its Scf built.
+(1.8e9 determinants) refused as Allocation when the step runs, its ScfOutput built.
 The `[fci]` parsing is in `pipeline_config_host.cpp`.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `fci.cppm` | Module interface: `Fci`, `FciStep` |
+| `fci.cppm` | Module interface: `FciOutput`, `FciStep` |
 | `fci.cpp` | The device-memory estimate, and `run`: the refusal, the Hamiltonian, the CI solve, the 1-RDMs |
 | `CMakeLists.txt` | The module library |

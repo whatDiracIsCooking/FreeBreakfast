@@ -13,14 +13,14 @@ without a second import.
 ## The step
 
 ```cpp
-struct PrimitivePairClasses {
+struct PrimitivePairClassesOutput {
   std::vector<PrimitivePairClass> classes;  // ascending (la, lb), each on its own stream
 };
 
 struct PrimitivePairClassesStep {
   static constexpr std::string_view kName = "primitive_pair_classes";
 
-  Result<PrimitivePairClasses> run(View<BasisSet> in, DeviceResources &res) const;
+  Result<PrimitivePairClassesOutput> run(View<BasisSetOutput> in, DeviceResources &res) const;
 };
 ```
 
@@ -70,5 +70,5 @@ longer.
 
 | File | Role |
 |------|------|
-| `primitive_pair_classes.cppm` | Module interface: `PrimitivePairClasses`, `PrimitivePairClassesStep` |
+| `primitive_pair_classes.cppm` | Module interface: `PrimitivePairClassesOutput`, `PrimitivePairClassesStep` |
 | `CMakeLists.txt` | The module library |

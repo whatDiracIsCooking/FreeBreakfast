@@ -12,14 +12,14 @@ second import.
 ## The step
 
 ```cpp
-struct Overlap {
+struct OverlapOutput {
   SphericalMatrixAO s;  // nao_sphe square
 };
 
 struct OverlapStep {
   static constexpr std::string_view kName = "overlap";
 
-  Result<Overlap> run(View<BasisSet, SphericalTransform, PrimitivePairClasses> in,
+  Result<OverlapOutput> run(View<BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput> in,
                       DeviceResources &res) const;
 };
 ```
@@ -57,5 +57,5 @@ A thin wrapper over `integrals.one_electron`'s `overlap` and `recipes.matrix_ao`
 
 | File | Role |
 |------|------|
-| `overlap.cppm` | Module interface: `Overlap`, `OverlapStep` |
+| `overlap.cppm` | Module interface: `OverlapOutput`, `OverlapStep` |
 | `CMakeLists.txt` | The module library |

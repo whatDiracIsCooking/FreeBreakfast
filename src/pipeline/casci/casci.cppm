@@ -1,6 +1,6 @@
 /// @file
 /// @brief The `Casci` step: the lowest singlets of an active space of the
-/// @ref Scf's orbitals, named by index or picked by AVAS, its Hamiltonian
+/// @ref ScfOutput's orbitals, named by index or picked by AVAS, its Hamiltonian
 /// built integral-direct and solved over the GPU sigma, with each root's
 /// 1-RDM.
 ///
@@ -24,7 +24,7 @@ export namespace free_breakfast {
 
 /// @brief The lowest roots of a complete active space over a set of RHF
 /// orbitals, ascending in energy.
-struct Casci {
+struct CasciOutput {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.
   int32_t ncore;
   /// @brief The active orbitals: columns [ncore, ncore + ncas) of @ref c.
@@ -51,7 +51,7 @@ struct Casci {
   DavidsonInfo davidson;
 };
 
-/// @brief CASCI over the @ref Scf's orbitals, on @p res's device. The
+/// @brief CASCI over the @ref ScfOutput's orbitals, on @p res's device. The
 /// active space is the @ref ActiveSpaceSelection's: `ncas`, `nelecas`,
 /// `active`, or `avas` with `avas_threshold`.
 struct CasciStep : ActiveSpaceSelection {
@@ -63,7 +63,7 @@ struct CasciStep : ActiveSpaceSelection {
   /// @brief Where the lowest root's natural orbitals are written as a Molden
   /// file, if not empty: the core at occupation 2, the active space's
   /// natural orbitals by descending occupation, the rest at 0, each with its
-  /// energy in the Scf's Fock matrix.
+  /// energy in the ScfOutput's Fock matrix.
   std::filesystem::path molden{};
 
   /// @brief The @ref nroots lowest singlets. The active-space Hamiltonian is
@@ -80,8 +80,9 @@ struct CasciStep : ActiveSpaceSelection {
   ///         MaxIterationsExceeded, Numerical for a root of the wrong spin),
   ///         `diagonalize`'s or `write_molden`'s, and GpuRuntime for a failed
   ///         copy or BLAS call.
-  [[nodiscard]] Result<Casci>
-  run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, CoreHamiltonian, Scf> in,
+  [[nodiscard]] Result<CasciOutput>
+  run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+           CoreHamiltonianOutput, ScfOutput> in,
       DeviceResources &res) const;
 };
 

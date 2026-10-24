@@ -10,8 +10,7 @@ export module free_breakfast.pipeline.core_hamiltonian;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-import free_breakfast.molecule;
-import free_breakfast.basis;
+export import free_breakfast.pipeline.basis_set;
 import free_breakfast.integrals.one_electron.core_hamiltonian;
 import free_breakfast.pipeline.step;
 export import free_breakfast.recipes.matrix_ao;
@@ -24,7 +23,7 @@ export namespace free_breakfast {
 
 /// @brief The spherical core Hamiltonian H = T + V, @c nao_sphe square: the
 /// kinetic energy plus the attraction to the @ref Molecule's nuclei.
-struct CoreHamiltonian {
+struct CoreHamiltonianOutput {
   SphericalMatrixAO h;
 };
 
@@ -36,14 +35,14 @@ struct CoreHamiltonianStep {
   /// @brief H, built Cartesian and carried onto the spherical layout. A class
   /// above d is ErrorKind::InvalidConfig; a failed launch or BLAS call is
   /// ErrorKind::GpuRuntime.
-  [[nodiscard]] Result<CoreHamiltonian>
-  run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses> in,
+  [[nodiscard]] Result<CoreHamiltonianOutput>
+  run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput> in,
       DeviceResources &res) const {
-    MatrixAOPair h(res, in.get<BasisSet>(), in.get<SphericalTransform>().u);
-    FBF_TRY(core_hamiltonian(res, in.get<PrimitivePairClasses>().classes, in.get<Molecule>(),
-                             h.cartesian()));
+    MatrixAOPair h(res, in.get<BasisSetOutput>().basis, in.get<SphericalTransformOutput>().u);
+    FBF_TRY(core_hamiltonian(res, in.get<PrimitivePairClassesOutput>().classes,
+                             in.get<MoleculeOutput>().molecule, h.cartesian()));
     FBF_TRY(h.cartesian_to_spherical(res));
-    return CoreHamiltonian{std::move(h.spherical())};
+    return CoreHamiltonianOutput{std::move(h.spherical())};
   }
 };
 

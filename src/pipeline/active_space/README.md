@@ -1,14 +1,14 @@
 # Pipeline: active space
 
-The active-space selection the steps over the Scf's orbitals share (`Casci`;
+The active-space selection the steps over the ScfOutput's orbitals share (`Casci`;
 `Casscf` to come): by index, or by AVAS over MINAO, and the rotation of the
-Scf's orbitals it gives. Not a step: no `kName`, no product, no `[table]`.
+ScfOutput's orbitals it gives. Not a step: no `kName`, no product, no `[table]`.
 
 ## Module
 
 `free_breakfast.pipeline.active_space`, target
 `free_breakfast::pipeline::active_space`. It re-exports
-`free_breakfast.pipeline.scf` (`Molecule`, `BasisSet`, `Scf`,
+`free_breakfast.pipeline.scf` (`Molecule`, `BasisSet`, `ScfOutput`,
 `SphericalMatrixAO`). `select` is defined in the implementation unit, so
 AVAS's `io.basis` (MINAO), `overlap_mixed_spherical` and `diagonalize` are
 PRIVATE links.
@@ -31,7 +31,7 @@ struct ActiveSpaceSelection {
 
   Result<std::vector<int32_t>> orbital_order(int32_t n_electrons, int32_t nmo) const;
   Result<ActiveSpace> select(DeviceResources &res, const Molecule &molecule,
-                             const BasisSet &basis, const Scf &scf) const;
+                             const BasisSet &basis, const ScfOutput &scf) const;
 };
 ```
 
@@ -41,9 +41,9 @@ the TOML keys are the same in every table that takes them:
 `pipeline/config`'s `read_active_space` reads them once for each step.
 
 `select`, on `res.stream()`, builds the orbitals as a rotation R of the
-Scf's: `ActiveSpace::c` = C R, one gemm. By index, R is `orbital_order`'s
+ScfOutput's: `ActiveSpace::c` = C R, one gemm. By index, R is `orbital_order`'s
 permutation, so C R's columns are C's exactly (each element is one C element
-times 1 plus exact zeros). `orbital_order` gives the Scf's orbital for each
+times 1 plus exact zeros). `orbital_order` gives the ScfOutput's orbital for each
 column: the core, the (N − nelecas) / 2 lowest orbitals not active,
 ascending; the active ones, as `active` names them or the ncas above the
 core; the rest, ascending. That is PySCF's `sort_mo`, except that `active` is
@@ -75,9 +75,9 @@ canonicalized.
   diagonalized; an orbital of weight ≥ `avas_threshold` is active, an
   occupied one below it core, a virtual one below it the rest. So nelecas =
   N − 2 ncore. The weights are invariant to rotations within the occupied and
-  within the virtual orbitals, so a degenerate set of the Scf's is never split.
+  within the virtual orbitals, so a degenerate set of the ScfOutput's is never split.
 - **Canonical spaces.** Core, active and the rest are each rotated to
-  diagonalize the Scf's Fock matrix within them, diag(ε) in the MO basis, as
+  diagonalize the ScfOutput's Fock matrix within them, diag(ε) in the MO basis, as
   PySCF's `canonicalize` does (its `symmetrize` is a no-op without point
   group symmetry). The energy is invariant to that within core and active;
   the virtual space's rotation only orders the published orbitals.
@@ -98,7 +98,7 @@ What it settled:
   `avas_threshold` a number. The labels are parsed, and the threshold's range
   checked, when `select` runs, against the molecule's MINAO.
 - **The orbitals are published,** not only their order: AVAS rotates the
-  Scf's orbitals rather than picking them, and an RDM needs the orbitals it
+  ScfOutput's orbitals rather than picking them, and an RDM needs the orbitals it
   is over.
 - **Host synchronizations:** none by index; under `avas`, one for the
   overlaps and C and one per eigenproblem.
@@ -116,7 +116,7 @@ ncas distinct indices in [0, nmo)); `overlap_mixed_spherical`'s and
 
 Through the Casci step, which is the selection's one caller so far:
 `test/gtest/pipeline_casci_gpu.cpp` checks the index path's C R against the
-Scf's columns in `orbital_order`'s order, exactly, and the AVAS cases' ncore,
+ScfOutput's columns in `orbital_order`'s order, exactly, and the AVAS cases' ncore,
 ncas and nelecas against PySCF's `mcscf.avas` (`casci/README.md` has the
 cases); `pipeline_config_host.cpp` has the `[casci]` selection keys and every
 `orbital_order` refusal.

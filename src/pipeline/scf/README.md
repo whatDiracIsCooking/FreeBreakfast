@@ -1,7 +1,7 @@
 # Pipeline: Scf
 
 Iterate closed-shell restricted Hartree-Fock to self-consistency, from the
-`Guess`, with Pulay DIIS on the Fock matrix and incremental Fock builds.
+`GuessOutput`, with Pulay DIIS on the Fock matrix and incremental Fock builds.
 
 ## Module
 
@@ -14,7 +14,7 @@ J, K, DIIS and the BLAS calls it uses are PRIVATE links.
 ## The step
 
 ```cpp
-struct Scf {
+struct ScfOutput {
   double energy;                    // total: electronic + nuclear repulsion (hartree)
   int32_t iterations;               // Fock builds
   std::vector<double> mo_energies;  // ascending, host
@@ -33,8 +33,8 @@ struct ScfStep {
   double tau_j = 1e-10;                // J's screen, coulomb's tau; not a TOML key
   std::filesystem::path molden{};      // if set, the converged orbitals are written here
 
-  Result<Scf> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
-                       Overlap, Orthogonalizer, CoreHamiltonian, Guess> in,
+  Result<ScfOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+                       OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
                   DeviceResources &res) const;
 };
 ```
@@ -103,16 +103,16 @@ What it settled:
   would be a change to `pipeline/config`.
 - **One coarse step owns the loop** (design section 14). D, F, the DIIS
   history and the J and K classes are its private state, not products. The
-  classes are rebuilt from `PrimitivePairClasses` per run
+  classes are rebuilt from `PrimitivePairClassesOutput` per run
   (`coulomb_pair_classes`, `ordered_pair_classes`), as design section 8 has
   them until their scratch is refactored away.
 - **`syevd`'s work is `res.device_workspace()`'s**: `recipes.diagonalize`
   takes it per call and drops it when it returns, since nothing reads it after.
   Everything else the loop holds lives across calls (DIIS writes into `tmp`,
   `eps` is read at convergence), so it stays in the step's own buffers. The
-  Orthogonalizer has already grown the workspace to `syevd`'s size for the
+  the Orthogonalizer step has already grown the workspace to `syevd`'s size for the
   same n, so in a pipeline the SCF adds no allocation for it.
-- **The first device consumer of `Guess`**, so the host-to-device upload is
+- **The first device consumer of `GuessOutput`**, so the host-to-device upload is
   here. The planner syncs after every device step and a host step has finished
   when its task does, so the Taskflow edge the `View` gives is all the ordering
   the upload needs.
@@ -166,6 +166,6 @@ this tree's own `data/basis` files:
 
 | File | Role |
 |------|------|
-| `scf.cppm` | Module interface: `Scf`, `ScfStep` |
+| `scf.cppm` | Module interface: `ScfOutput`, `ScfStep` |
 | `scf.cpp` | `ScfStep::run`: the Fock build, the energy, the residual, the eigensolve |
 | `CMakeLists.txt` | The module library |

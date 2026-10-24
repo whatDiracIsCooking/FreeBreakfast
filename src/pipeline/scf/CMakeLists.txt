@@ -1,9 +1,9 @@
-# The Scf step. matrix_ao is PUBLIC (re-exported: Scf holds SphericalMatrixAOs),
-# and so are the orthogonalizer, core_hamiltonian and guess steps, which
-# re-export every other product in run's signature, plus pipeline::step and
-# core::resources. Everything run uses -- J, K, DIIS, the BLAS conveniences,
-# the log, the Molden writer -- is PRIVATE: run is defined in the
-# implementation unit, so no importer compiles against them.
+# The Scf step. matrix_ao is PUBLIC (re-exported: ScfOutput holds
+# SphericalMatrixAOs), and so are the orthogonalizer, core_hamiltonian and guess
+# steps, which re-export every other product in run's signature, plus
+# pipeline::step and core::resources. Everything run uses -- J, K, DIIS, the
+# BLAS conveniences, the log, the Molden writer -- is PRIVATE: run is defined in
+# the implementation unit, so no importer compiles against them.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.scf

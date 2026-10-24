@@ -13,14 +13,14 @@ AO-matrix step to share.
 ## The step
 
 ```cpp
-struct SphericalTransform {
+struct SphericalTransformOutput {
   std::shared_ptr<const Buffers::device<double>> u;  // nullptr: U is the identity
 };
 
 struct SphericalTransformStep {
   static constexpr std::string_view kName = "spherical_transform";
 
-  Result<SphericalTransform> run(View<BasisSet> in, DeviceResources &res) const;
+  Result<SphericalTransformOutput> run(View<BasisSetOutput> in, DeviceResources &res) const;
 };
 ```
 
@@ -60,5 +60,5 @@ replace those waits, as for `Molecule`'s nuclei.
 
 | File | Role |
 |------|------|
-| `spherical_transform.cppm` | Module interface: `SphericalTransform`, `SphericalTransformStep` |
+| `spherical_transform.cppm` | Module interface: `SphericalTransformOutput`, `SphericalTransformStep` |
 | `CMakeLists.txt` | The module library |

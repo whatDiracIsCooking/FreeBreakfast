@@ -11,7 +11,7 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
+export import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.step;
 export import free_breakfast.recipes.matrix_ao;
 
@@ -25,7 +25,7 @@ export namespace free_breakfast {
 /// @ref u is @c nullptr when no shell is above p, since U is then the identity
 /// (@ref upload_spherical_transform_matrix). Never written after the upload,
 /// so steps on different streams may share it.
-struct SphericalTransform {
+struct SphericalTransformOutput {
   /// @brief U, @c nao_cart x @c nao_sphe column-major; or @c nullptr.
   std::shared_ptr<const Buffers::device<double>> u;
 };
@@ -37,8 +37,10 @@ struct SphericalTransformStep {
 
   /// @brief Build U on the host and upload it. A failed upload is
   /// ErrorKind::GpuRuntime.
-  [[nodiscard]] Result<SphericalTransform> run(View<BasisSet> in, DeviceResources &res) const {
-    return SphericalTransform{FBF_TRY(upload_spherical_transform_matrix(res, in.get<BasisSet>()))};
+  [[nodiscard]] Result<SphericalTransformOutput> run(View<BasisSetOutput> in,
+                                                     DeviceResources &res) const {
+    return SphericalTransformOutput{
+        FBF_TRY(upload_spherical_transform_matrix(res, in.get<BasisSetOutput>().basis))};
   }
 };
 

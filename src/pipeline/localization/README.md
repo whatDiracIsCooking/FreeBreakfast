@@ -18,7 +18,7 @@ everything in `run`'s signature without a second import.
 ```cpp
 enum class LocalizationMode : uint8_t { PipekMezey, Ibo };
 
-struct Localization {
+struct LocalizationOutput {
   Buffers::device<double> c;  // nao_sphe x n_occ, column-major: C_occ U
   Buffers::device<double> u;  // n_occ x n_occ
   int32_t n_occ;              // electron_count() / 2
@@ -35,7 +35,7 @@ struct LocalizationStep {
   PipekMezeyOptions pipek_mezey;  // max_sweeps, tolerances, exponent
   std::filesystem::path molden{}; // if set, the localized orbitals are written here
 
-  Result<Localization> run(View<Molecule, BasisSet, Overlap, Scf> in, DeviceResources &res) const;
+  Result<LocalizationOutput> run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOutput> in, DeviceResources &res) const;
 };
 ```
 
@@ -44,9 +44,9 @@ A thin wrapper over the method's localizer, with the same errors: for
 `localization.ibo`'s `ibo_localize`, over MINAO (`resolve_basis("minao")`)
 placed over the Molecule here, so an element MINAO lacks is `place`'s error.
 Both take `pipek_mezey`'s options, since IBO is the same sweep over IAO
-populations. `Scf::c` is
+populations. `ScfOutput::c` is
 column-major with the occupied orbitals first, so its first `n_occ` columns
-are passed as they are: no transpose and no copy. The Scf has already refused
+are passed as they are: no transpose and no copy. The Scf step has already refused
 an open shell, so `n_occ` is half the electrons.
 
 **IBO mode also reports the IAO charges and the bonds.** `ibo_localize` hands
@@ -82,7 +82,7 @@ is given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
 SCF's occupied orbital energies. It is the `[localization] molden` TOML key,
 relative to the config file. A failed write fails the step.
 
-Like `Orthogonalizer`, it synchronizes `res.stream()` inside `run`: once a
+Like `OrthogonalizerStep`, it synchronizes `res.stream()` inside `run`: once a
 sweep, to read the functional for the convergence test.
 
 ## Tests
@@ -104,6 +104,6 @@ SCF's occupied ones (U is orthogonal).
 
 | File | Role |
 |------|------|
-| `localization.cppm` | Module interface: `LocalizationMode`, `Localization`, `LocalizationStep` |
+| `localization.cppm` | Module interface: `LocalizationMode`, `LocalizationOutput`, `LocalizationStep` |
 | `localization.cpp` | `LocalizationStep::run`, and the Molden file |
 | `CMakeLists.txt` | The module library |

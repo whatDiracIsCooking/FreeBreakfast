@@ -1,6 +1,6 @@
 /// @file
-/// @brief The `Molecule` step: read an XYZ geometry into a `Molecule`, the
-///        pipeline's root product.
+/// @brief The `Molecule` step: read an XYZ geometry into a `MoleculeOutput`,
+///        the pipeline's root product.
 ///
 /// A thin wrapper over io.xyz's read_xyz. A root step, so it reads nothing
 /// (`View<>`) and its options are its inputs: the file, and the charge and
@@ -18,7 +18,14 @@ import free_breakfast.io.xyz;
 import free_breakfast.pipeline.step;
 export import free_breakfast.molecule;
 
+#include "diagnostics.h"
+
 export namespace free_breakfast {
+
+/// @brief The geometry read, its nuclei on the device the step ran on.
+struct MoleculeOutput {
+  Molecule molecule;
+};
 
 /// @brief Reads @ref xyz into a @ref Molecule on @p res's device.
 struct MoleculeStep {
@@ -34,8 +41,8 @@ struct MoleculeStep {
   int32_t multiplicity{1};
 
   /// @brief Read @ref xyz. A missing or malformed file is ErrorKind::IO.
-  [[nodiscard]] Result<Molecule> run(View<> /*in*/, DeviceResources &res) const {
-    return read_xyz(res, xyz, charge, multiplicity);
+  [[nodiscard]] Result<MoleculeOutput> run(View<> /*in*/, DeviceResources &res) const {
+    return MoleculeOutput{FBF_TRY(read_xyz(res, xyz, charge, multiplicity))};
   }
 };
 

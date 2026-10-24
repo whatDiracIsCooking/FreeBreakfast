@@ -27,15 +27,15 @@ namespace fb = free_breakfast;
 using fb::Atom;
 using fb::Element;
 
-using GuessInput = fb::View<fb::Molecule, fb::BasisSet>;
+using GuessInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput>;
 
 static_assert(fb::PipelineStep<fb::GuessStep>);
 static_assert(fb::kRunShape<fb::GuessStep> == fb::RunShape::HostSubflow);
 static_assert(std::same_as<fb::StepInput<fb::GuessStep>, GuessInput>);
-static_assert(std::same_as<fb::StepOutput<fb::GuessStep>, fb::Guess>);
+static_assert(std::same_as<fb::StepOutput<fb::GuessStep>, fb::GuessOutput>);
 static_assert(fb::LoadableStep<fb::GuessStep>);
 static_assert(fb::kLoadShape<fb::GuessStep> == fb::RunShape::Host);
-static_assert(std::same_as<fb::LoadInput<fb::GuessStep>, fb::View<fb::BasisSet>>);
+static_assert(std::same_as<fb::LoadInput<fb::GuessStep>, fb::View<fb::BasisSetOutput>>);
 
 // O: s, s, p, d (the d unoccupied); H: s.
 fb::BasisStamp water_stamp() {
@@ -47,16 +47,24 @@ fb::BasisStamp water_stamp() {
   return fb::BasisStamp(std::move(table));
 }
 
-fb::Molecule water(fb::DeviceResources &res) {
-  return fb::Molecule(res, {Atom{{0.0, 0.0, 0.2}, Element::O}, Atom{{0.0, 1.4, -0.9}, Element::H},
-                            Atom{{0.0, -1.4, -0.9}, Element::H}});
+fb::MoleculeOutput water(fb::DeviceResources &res) {
+  return {fb::Molecule(res, {Atom{{0.0, 0.0, 0.2}, Element::O}, Atom{{0.0, 1.4, -0.9}, Element::H},
+                             Atom{{0.0, -1.4, -0.9}, Element::H}})};
+}
+
+// The stamp placed over the molecule, as the BasisSet step publishes it.
+fb::Result<fb::BasisSetOutput> placed(const fb::BasisStamp &stamp,
+                                      const fb::MoleculeOutput &molecule) {
+  return fb::place(stamp, molecule.molecule).transform([](fb::BasisSet basis) {
+    return fb::BasisSetOutput{std::move(basis)};
+  });
 }
 
 // The step's run on a subflow, the shape it is scheduled in.
-fb::Result<fb::Guess> run_step(const fb::GuessStep &step, const GuessInput &in) {
+fb::Result<fb::GuessOutput> run_step(const fb::GuessStep &step, const GuessInput &in) {
   fb::tf::Executor executor(4);
   fb::tf::Taskflow flow;
-  fb::Result<fb::Guess> out = fb::err_config("the guess task did not run");
+  fb::Result<fb::GuessOutput> out = fb::err_config("the guess task did not run");
   flow.emplace([&](fb::tf::Subflow &subflow) { out = step.run(in, subflow); });
   executor.run(flow).wait();
   return out;
@@ -65,15 +73,15 @@ fb::Result<fb::Guess> run_step(const fb::GuessStep &step, const GuessInput &in) 
 TEST(PipelineGuess, SadMatchesSadDensityBitwise) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::Molecule molecule = water(res);
-  auto basis = fb::place(water_stamp(), molecule);
+  const fb::MoleculeOutput molecule = water(res);
+  auto basis = placed(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
 
   auto guess = run_step(fb::GuessStep{.type = fb::GuessType::Sad}, GuessInput{molecule, *basis});
-  auto direct = fb::sad_density(*basis, molecule.atoms());
+  auto direct = fb::sad_density(basis->basis, molecule.molecule.atoms());
   ASSERT_TRUE(guess.has_value()) << guess.error().message;
   ASSERT_TRUE(direct.has_value()) << direct.error().message;
-  ASSERT_EQ(guess->d.size(), std::size_t{basis->nao_sphe()} * basis->nao_sphe());
+  ASSERT_EQ(guess->d.size(), std::size_t{basis->basis.nao_sphe()} * basis->basis.nao_sphe());
   EXPECT_EQ(guess->d, *direct);
 }
 
@@ -83,15 +91,15 @@ TEST(PipelineGuess, SadMatchesSadDensityBitwise) {
 TEST(PipelineGuess, ACompiledInBasisTakesTheBakedStamps) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::Molecule molecule = water(res);
+  const fb::MoleculeOutput molecule = water(res);
   auto stamp = fb::resolve_basis("cc-pvdz");
   ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
-  auto basis = fb::place(stamp->primitive_normalized(), molecule);
+  auto basis = placed(stamp->primitive_normalized(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
-  EXPECT_EQ(basis->name(), "cc-pVDZ");
+  EXPECT_EQ(basis->basis.name(), "cc-pVDZ");
 
   auto guess = run_step(fb::GuessStep{}, GuessInput{molecule, *basis});
-  auto baked = fb::sad_density(*basis, molecule.atoms(), fb::builtin_sad_density);
+  auto baked = fb::sad_density(basis->basis, molecule.molecule.atoms(), fb::builtin_sad_density);
   ASSERT_TRUE(guess.has_value()) << guess.error().message;
   ASSERT_TRUE(baked.has_value()) << baked.error().message;
   EXPECT_EQ(guess->d, *baked);
@@ -100,9 +108,9 @@ TEST(PipelineGuess, ACompiledInBasisTakesTheBakedStamps) {
 TEST(PipelineGuess, ABasisPlacedOverOtherAtomsIsInvalidConfig) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::Molecule molecule = water(res);
-  const fb::Molecule hydrogen(res, {Atom{{0.0, 0.0, 0.0}, Element::H}});
-  auto basis = fb::place(water_stamp(), hydrogen);
+  const fb::MoleculeOutput molecule = water(res);
+  const fb::MoleculeOutput hydrogen{fb::Molecule(res, {Atom{{0.0, 0.0, 0.0}, Element::H}})};
+  auto basis = placed(water_stamp(), hydrogen);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
 
   auto guess = run_step(fb::GuessStep{}, GuessInput{molecule, *basis});
@@ -115,16 +123,16 @@ TEST(PipelineGuess, ABasisPlacedOverOtherAtomsIsInvalidConfig) {
 TEST(PipelineGuess, ALoadedGuessIsTheSavedDensityBitwise) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::Molecule molecule = water(res);
-  auto basis = fb::place(water_stamp(), molecule);
+  const fb::MoleculeOutput molecule = water(res);
+  auto basis = placed(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
   auto guess = run_step(fb::GuessStep{}, GuessInput{molecule, *basis});
   ASSERT_TRUE(guess.has_value()) << guess.error().message;
 
   const fb::test::ScratchDir dir("pipeline-guess");
-  const std::size_t n = basis->nao_sphe();
+  const std::size_t n = basis->basis.nao_sphe();
   ASSERT_TRUE(fb::write_npy(dir / "d.npy", fb::NpyArray{.shape = {n, n}, .data = guess->d}));
-  auto loaded = fb::GuessStep::load(dir / "d.npy", fb::View<fb::BasisSet>{*basis});
+  auto loaded = fb::GuessStep::load(dir / "d.npy", fb::View<fb::BasisSetOutput>{*basis});
   ASSERT_TRUE(loaded.has_value()) << loaded.error().message;
   EXPECT_EQ(loaded->d, guess->d);
 }
@@ -132,10 +140,10 @@ TEST(PipelineGuess, ALoadedGuessIsTheSavedDensityBitwise) {
 TEST(PipelineGuess, ALoadOfTheWrongShapeIsInvalidConfig) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::Molecule molecule = water(res);
-  auto basis = fb::place(water_stamp(), molecule);
+  const fb::MoleculeOutput molecule = water(res);
+  auto basis = placed(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
-  const std::size_t n = basis->nao_sphe();
+  const std::size_t n = basis->basis.nao_sphe();
 
   const fb::test::ScratchDir dir("pipeline-guess");
   // A basis one function smaller, and the right count as a vector.
@@ -144,7 +152,7 @@ TEST(PipelineGuess, ALoadOfTheWrongShapeIsInvalidConfig) {
     const fb::NpyArray array{.shape = shape,
                              .data = std::vector<double>(*fb::element_count(shape), 0.0)};
     ASSERT_TRUE(fb::write_npy(dir / "d.npy", array));
-    auto loaded = fb::GuessStep::load(dir / "d.npy", fb::View<fb::BasisSet>{*basis});
+    auto loaded = fb::GuessStep::load(dir / "d.npy", fb::View<fb::BasisSetOutput>{*basis});
     ASSERT_FALSE(loaded.has_value());
     EXPECT_EQ(loaded.error().kind, fb::ErrorKind::InvalidConfig);
     EXPECT_NE(loaded.error().message.find("[guess]"), std::string::npos) << loaded.error().message;
@@ -154,12 +162,12 @@ TEST(PipelineGuess, ALoadOfTheWrongShapeIsInvalidConfig) {
 TEST(PipelineGuess, ALoadOfAMissingFileIsIo) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::Molecule molecule = water(res);
-  auto basis = fb::place(water_stamp(), molecule);
+  const fb::MoleculeOutput molecule = water(res);
+  auto basis = placed(water_stamp(), molecule);
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
 
   const fb::test::ScratchDir dir("pipeline-guess");
-  auto loaded = fb::GuessStep::load(dir / "absent.npy", fb::View<fb::BasisSet>{*basis});
+  auto loaded = fb::GuessStep::load(dir / "absent.npy", fb::View<fb::BasisSetOutput>{*basis});
   ASSERT_FALSE(loaded.has_value());
   EXPECT_EQ(loaded.error().kind, fb::ErrorKind::IO);
 }

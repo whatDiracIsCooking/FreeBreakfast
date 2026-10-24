@@ -1,16 +1,20 @@
 # Pipeline: Molecule
 
-The root step of a calculation: read an XYZ geometry into a `Molecule`.
+The root step of a calculation: read an XYZ geometry into a `MoleculeOutput`.
 
 ## Module
 
 `free_breakfast.pipeline.molecule`, target `free_breakfast::pipeline::molecule`.
-It re-exports `free_breakfast.molecule`, so an importer can name the step's
-output without a second import.
+It re-exports `free_breakfast.molecule`, so an importer can name the
+`Molecule` the step's output holds without a second import.
 
 ## The step
 
 ```cpp
+struct MoleculeOutput {
+  Molecule molecule;
+};
+
 struct MoleculeStep {
   static constexpr std::string_view kName = "molecule";
 
@@ -18,7 +22,7 @@ struct MoleculeStep {
   int32_t charge{0};
   int32_t multiplicity{1};
 
-  Result<Molecule> run(View<> in, DeviceResources &res) const;  // read_xyz
+  Result<MoleculeOutput> run(View<> in, DeviceResources &res) const;  // read_xyz
 };
 ```
 

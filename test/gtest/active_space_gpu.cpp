@@ -32,7 +32,7 @@ namespace {
 namespace fb = free_breakfast;
 
 // PySCF's integrals are exact and its orbitals converged to conv_tol_grad
-// 1e-11; ours carry kExactScf's tolerances, K's screen in the Scf, and, at the
+// 1e-11; ours carry kExactScf's tolerances, K's screen in the SCF, and, at the
 // defaults, J's and K's screens here.
 constexpr double kPyscfTolerance = 1e-10;
 // The orbital energies only pair our orbitals with PySCF's by index.
@@ -77,8 +77,8 @@ void upload(fb::DeviceResources &res, const std::vector<double> &host, double *d
   EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);
 }
 
-// The reference's molecule through the real registry to the Scf's inputs.
-// The Scf itself is run by hand: tau_j is not a TOML key.
+// The reference's molecule through the real registry to the Scf step's inputs.
+// The Scf step itself is run by hand: tau_j is not a TOML key.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node) {
   const fb::test::ScratchDir dir("active_space");
   // Bohr in the reference, Angstrom in an XYZ file.
@@ -109,7 +109,7 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
   return std::move(*calc);
 }
 
-// The Scf the comparisons need: unscreened J (tau_j = 0; at the default, J's
+// The SCF the comparisons need: unscreened J (tau_j = 0; at the default, J's
 // screen moves N2/cc-pVDZ's energy by 2.6e-10 Eh and an h_eff_tt by 1.4e-10),
 // every build full, and converged past the step's defaults, since h_eff_tt
 // moves to first order in the orbitals. K's default screen does not bind here.
@@ -118,16 +118,16 @@ const fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
                             .fock_rebuild_interval = 1,
                             .tau_j = 0.0};
 
-// Everything active_space_hamiltonian reads, from one converged Scf, and the
-// Scf's orbitals reordered to the reference's core, active, rest.
+// Everything active_space_hamiltonian reads, from one converged SCF, and the
+// ScfOutput's orbitals reordered to the reference's core, active, rest.
 struct Setup {
   fb::NodeResources node;
   std::optional<fb::Calculation> calc;
   const fb::Molecule *molecule = nullptr;
   const fb::BasisSet *basis = nullptr;
-  const fb::SphericalTransform *transform = nullptr;
-  const fb::CoreHamiltonian *h = nullptr;
-  std::optional<fb::Scf> scf;
+  const fb::SphericalTransformOutput *transform = nullptr;
+  const fb::CoreHamiltonianOutput *h = nullptr;
+  std::optional<fb::ScfOutput> scf;
   std::vector<fb::CoulombPairClass> j_classes;
   std::vector<fb::CoulombPairClass> j_classes_unpruned;
   std::vector<fb::OrderedPairClass> k_classes;
@@ -162,21 +162,21 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry) {
     return nullptr;
   }
   setup->calc.emplace(std::move(*calc)); // a Pipeline moves, but is not move-assigned
-  const auto &molecule = setup->calc->get<fb::Molecule>();
-  const auto &basis = setup->calc->get<fb::BasisSet>();
-  const auto &transform = setup->calc->get<fb::SphericalTransform>();
-  const auto &pairs = setup->calc->get<fb::PrimitivePairClasses>();
-  const auto &overlap = setup->calc->get<fb::Overlap>();
-  const auto &x = setup->calc->get<fb::Orthogonalizer>();
-  const auto &h = setup->calc->get<fb::CoreHamiltonian>();
-  const auto &guess = setup->calc->get<fb::Guess>();
+  const auto &molecule = setup->calc->get<fb::MoleculeOutput>();
+  const auto &basis = setup->calc->get<fb::BasisSetOutput>();
+  const auto &transform = setup->calc->get<fb::SphericalTransformOutput>();
+  const auto &pairs = setup->calc->get<fb::PrimitivePairClassesOutput>();
+  const auto &overlap = setup->calc->get<fb::OverlapOutput>();
+  const auto &x = setup->calc->get<fb::OrthogonalizerOutput>();
+  const auto &h = setup->calc->get<fb::CoreHamiltonianOutput>();
+  const auto &guess = setup->calc->get<fb::GuessOutput>();
   if (!molecule.has_value() || !basis.has_value() || !transform.has_value() || !pairs.has_value() ||
       !overlap.has_value() || !x.has_value() || !h.has_value() || !guess.has_value()) {
     ADD_FAILURE() << "a product of the setup steps is missing";
     return nullptr;
   }
-  setup->molecule = &*molecule;
-  setup->basis = &*basis;
+  setup->molecule = &molecule->molecule;
+  setup->basis = &basis->basis;
   setup->transform = &*transform;
   setup->h = &*h;
   auto scf = kExactScf.run(
@@ -192,7 +192,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry) {
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto j_classes = fb::coulomb_pair_classes(res, pairs->classes);
   auto j_classes_unpruned = fb::coulomb_pair_classes(res, pairs->classes, 0.0);
-  auto k_classes = fb::ordered_pair_classes(res, *basis, pairs->classes);
+  auto k_classes = fb::ordered_pair_classes(res, basis->basis, pairs->classes);
   if (!j_classes.has_value() || !j_classes_unpruned.has_value() || !k_classes.has_value()) {
     ADD_FAILURE() << "the J or K classes failed";
     return nullptr;
@@ -211,7 +211,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry) {
   }
 
   // C's columns in the reference's order: core, active, the rest.
-  const std::size_t n = basis->nao_sphe();
+  const std::size_t n = basis->basis.nao_sphe();
   const auto orbitals = entry.at("orbitals").get<std::vector<std::size_t>>();
   EXPECT_EQ(orbitals.size(), n);
   const std::vector<double> c = download(res, setup->scf->c.data(), n * n);
@@ -220,7 +220,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry) {
     std::copy_n(c.begin() + static_cast<std::ptrdiff_t>(n * orbitals[col]), n,
                 reordered.begin() + static_cast<std::ptrdiff_t>(n * col));
   }
-  setup->c.emplace(res, *basis);
+  setup->c.emplace(res, basis->basis);
   upload(res, reordered, setup->c->data());
   setup->ncore = entry.at("ncore").get<std::int32_t>();
   setup->ncas = entry.at("ncas").get<std::int32_t>();
@@ -325,7 +325,7 @@ TEST_P(ActiveSpaceGpu, MatchesPyscfGivesBackTheRhfEnergyAndIsSymmetric) {
   }
 
   // The RHF energy, from the core and the active occupied orbitals: those of
-  // the active columns that were occupied in the Scf.
+  // the active columns that were occupied in the SCF.
   const auto orbitals = entry.at("orbitals").get<std::vector<std::size_t>>();
   const std::size_t nocc = entry.at("electrons").get<std::size_t>() / 2;
   std::vector<std::size_t> occupied;

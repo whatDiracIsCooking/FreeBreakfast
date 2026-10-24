@@ -71,15 +71,16 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   return (doubles * sizeof(double)) + chunk + tables;
 }
 
-[[nodiscard]] Result<Fci> FciStep::run(
-    View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, CoreHamiltonian, Scf> in,
-    DeviceResources &res) const {
+[[nodiscard]] Result<FciOutput>
+FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
+                  PrimitivePairClassesOutput, CoreHamiltonianOutput, ScfOutput> in,
+             DeviceResources &res) const {
   if (nroots < 1) {
     return err_config("fci: nroots is {}, not at least 1", nroots);
   }
-  const Molecule &molecule = in.get<Molecule>();
-  const BasisSet &basis = in.get<BasisSet>();
-  const Scf &scf = in.get<Scf>();
+  const Molecule &molecule = in.get<MoleculeOutput>().molecule;
+  const BasisSet &basis = in.get<BasisSetOutput>().basis;
+  const ScfOutput &scf = in.get<ScfOutput>();
   const int32_t n_electrons = molecule.electron_count();
   const auto nmo = static_cast<int32_t>(scf.mo_energies.size());
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -101,13 +102,13 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   }
 
   // From here CasciStep::run's path with no core and every orbital active,
-  // so the Scf's C is used as it is: its orbital order is the identity.
-  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClasses>().classes;
+  // so the ScfOutput's C is used as it is: its orbital order is the identity.
+  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
   std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
   std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
   const ActiveSpaceHamiltonian ham = FBF_TRY(active_space_hamiltonian(
-      res, basis, molecule, in.get<CoreHamiltonian>().h, in.get<SphericalTransform>().u, j_classes,
-      k_classes, scf.c, 0, nmo));
+      res, basis, molecule, in.get<CoreHamiltonianOutput>().h, in.get<SphericalTransformOutput>().u,
+      j_classes, k_classes, scf.c, 0, nmo));
 
   // The sigma takes host arrays, row-major: h transposed, and (pq|rs) from
   // the Hamiltonian's p-fastest order to s-fastest.
@@ -163,7 +164,7 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
                                          gamma.size() * sizeof(double), wwr::wwrMemcpyDeviceToHost,
                                          stream)));
   FBF_TRY(res.sync());
-  return Fci{
+  return FciOutput{
       .nmo = nmo,
       .n_electrons = n_electrons,
       .energies = std::move(roots.energies),

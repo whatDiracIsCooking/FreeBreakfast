@@ -13,14 +13,14 @@ an importer can name everything in `run`'s signature without a second import.
 ## The step
 
 ```cpp
-struct CoreHamiltonian {
+struct CoreHamiltonianOutput {
   SphericalMatrixAO h;  // nao_sphe square
 };
 
 struct CoreHamiltonianStep {
   static constexpr std::string_view kName = "core_hamiltonian";
 
-  Result<CoreHamiltonian> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses> in,
+  Result<CoreHamiltonianOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput> in,
                               DeviceResources &res) const;
 };
 ```
@@ -30,11 +30,11 @@ A thin wrapper over `integrals.one_electron`'s `core_hamiltonian` and
 d is `InvalidConfig` (refused before anything is launched), and a failed launch
 or BLAS call is `GpuRuntime`.
 
-- **One product, `CoreHamiltonian`, not T and V** (design section 8).
+- **One product, `CoreHamiltonianOutput`, not T and V** (design section 8).
   `core_hamiltonian` forms T + V in place, with no T or V matrix of its own. T
   and V become products only when a consumer needs one, such as a virial ratio
   or an energy breakdown.
-- **Spherical across the step boundary**, as for `Overlap`. The kernels build
+- **Spherical across the step boundary**, as for `OverlapOutput`. The kernels build
   Cartesian H into a transient `MatrixAOPair` over the shared U, and only the
   spherical matrix is moved out and published.
 - **`Molecule` is read for its device nuclei**, which V's kernels read. The
@@ -59,5 +59,5 @@ or BLAS call is `GpuRuntime`.
 
 | File | Role |
 |------|------|
-| `core_hamiltonian.cppm` | Module interface: `CoreHamiltonian`, `CoreHamiltonianStep` |
+| `core_hamiltonian.cppm` | Module interface: `CoreHamiltonianOutput`, `CoreHamiltonianStep` |
 | `CMakeLists.txt` | The module library |

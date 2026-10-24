@@ -24,7 +24,7 @@ namespace free_breakfast {
 
 // Everything the loop holds across iterations, allocated once on res's device:
 // the step's private state. The J and K classes are the Fock build's, made
-// from the shared PrimitivePairClasses and never published.
+// from the shared PrimitivePairClassesOutput and never published.
 struct ScfState {
   std::vector<CoulombPairClass> j_classes;
   std::vector<OrderedPairClass> k_classes;
@@ -147,16 +147,16 @@ struct ScfState {
   return write_molden(path, molecule.atoms(), basis, host, mo_energies, occupations);
 }
 
-[[nodiscard]] Result<Scf>
-ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, Overlap,
-                  Orthogonalizer, CoreHamiltonian, Guess> in,
-             DeviceResources &res) const {
-  const Molecule &molecule = in.get<Molecule>();
-  const BasisSet &basis = in.get<BasisSet>();
-  const SphericalMatrixAO &s = in.get<Overlap>().s;
-  const SphericalMatrixAO &x = in.get<Orthogonalizer>().x;
-  const SphericalMatrixAO &h = in.get<CoreHamiltonian>().h;
-  const std::vector<double> &guess = in.get<Guess>().d;
+[[nodiscard]] Result<ScfOutput> ScfStep::run(
+    View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+         OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
+    DeviceResources &res) const {
+  const Molecule &molecule = in.get<MoleculeOutput>().molecule;
+  const BasisSet &basis = in.get<BasisSetOutput>().basis;
+  const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
+  const SphericalMatrixAO &x = in.get<OrthogonalizerOutput>().x;
+  const SphericalMatrixAO &h = in.get<CoreHamiltonianOutput>().h;
+  const std::vector<double> &guess = in.get<GuessOutput>().d;
 
   if (max_iterations < 1) {
     return err_config("[scf] max_iterations is {}, below 1", max_iterations);
@@ -193,8 +193,8 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
   }
 
   const ScopedDeviceIndex on{res.dev_idx()};
-  const std::shared_ptr<const Buffers::device<double>> &u = in.get<SphericalTransform>().u;
-  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClasses>().classes;
+  const std::shared_ptr<const Buffers::device<double>> &u = in.get<SphericalTransformOutput>().u;
+  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
   std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
   std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
   ScfState st{
@@ -283,11 +283,11 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
         FBF_TRY(write_scf_molden(res, molden, molecule, basis, st.c, mo_energies, nocc));
         FBF_LOG_INFO("scf: wrote {}", molden.string());
       }
-      return Scf{.energy = energy,
-                 .iterations = iteration,
-                 .mo_energies = std::move(mo_energies),
-                 .c = std::move(st.c),
-                 .d = std::move(st.d)};
+      return ScfOutput{.energy = energy,
+                       .iterations = iteration,
+                       .mo_energies = std::move(mo_energies),
+                       .c = std::move(st.c),
+                       .d = std::move(st.d)};
     }
   }
   return err_max_iterations_exceeded(

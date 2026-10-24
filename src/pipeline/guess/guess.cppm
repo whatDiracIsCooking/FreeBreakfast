@@ -15,7 +15,7 @@ import free_breakfast.sad;
 import free_breakfast.io.sad;
 import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
-export import free_breakfast.basis;
+export import free_breakfast.pipeline.basis_set;
 export import free_breakfast.third_party.taskflow;
 
 #include "diagnostics.h"
@@ -32,7 +32,7 @@ enum class GuessType : uint8_t {
 /// @c nao_sphe square, flat column-major (element (i, j) at i + j*n), in the
 /// spherical layout. Host data because the guess is made on the host: the
 /// device step that first reads it uploads it.
-struct Guess {
+struct GuessOutput {
   std::vector<double> d;
 };
 
@@ -54,17 +54,19 @@ struct GuessStep {
   /// small to seat an atom's occupied subshells, is ErrorKind::InvalidConfig;
   /// an atom too large for the atomic SCF is ErrorKind::Unsupported; a
   /// non-converged atomic SCF is ErrorKind::MaxIterationsExceeded.
-  [[nodiscard]] Result<Guess> run(View<Molecule, BasisSet> in, tf::Subflow &subflow) const {
+  [[nodiscard]] Result<GuessOutput> run(View<MoleculeOutput, BasisSetOutput> in,
+                                        tf::Subflow &subflow) const {
     Result<std::vector<double>> d;
     switch (type) {
     case GuessType::Sad:
-      sad_density(subflow, in.get<BasisSet>(), in.get<Molecule>().atoms(), d, builtin_sad_density);
+      sad_density(subflow, in.get<BasisSetOutput>().basis,
+                  in.get<MoleculeOutput>().molecule.atoms(), d, builtin_sad_density);
       break;
     }
     // Join here, explicitly: the task writes d, a local of this frame, and
     // Taskflow's implicit join would run it only after run has returned.
     subflow.join();
-    return Guess{FBF_TRY(std::move(d))};
+    return GuessOutput{FBF_TRY(std::move(d))};
   }
 
   /// @brief A density read from the .npy file @p from, in place of @ref run:
@@ -75,14 +77,15 @@ struct GuessStep {
   /// of the same size but another order is not caught. A file that cannot be
   /// read or parsed is ErrorKind::IO; a shape other than nao_sphe x nao_sphe
   /// is ErrorKind::InvalidConfig.
-  [[nodiscard]] static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in) {
+  [[nodiscard]] static Result<GuessOutput> load(const std::filesystem::path &from,
+                                                View<BasisSetOutput> in) {
     NpyArray d = FBF_TRY(read_npy(from));
-    const size_t n = in.get<BasisSet>().nao_sphe();
+    const size_t n = in.get<BasisSetOutput>().basis.nao_sphe();
     if (d.shape != std::vector<size_t>{n, n}) {
       return err_config("[{}] {} is not {} x {}, the basis's spherical AO count", kName,
                         from.string(), n, n);
     }
-    return Guess{std::move(d.data)};
+    return GuessOutput{std::move(d.data)};
   }
 };
 

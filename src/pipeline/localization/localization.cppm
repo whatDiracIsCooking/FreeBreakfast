@@ -12,7 +12,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
+export import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.step;
 export import free_breakfast.core.wwr;         // Buffers, in the product
 export import free_breakfast.localization.ibo; // and pipek_mezey
@@ -30,7 +30,7 @@ enum class LocalizationMode : uint8_t {
 
 /// @brief The localized occupied orbitals of a closed-shell RHF wavefunction,
 /// on the device the step ran on.
-struct Localization {
+struct LocalizationOutput {
   /// @brief The occupied orbitals localized: nao_sphe x @ref n_occ,
   /// column-major, C_local = C_occ U.
   Buffers::device<double> c;
@@ -53,7 +53,7 @@ struct Localization {
   std::vector<BondOrbital> bonds{};
 };
 
-/// @brief Localizes the @ref Scf's occupied orbitals on @p res's device.
+/// @brief Localizes the @ref ScfOutput's occupied orbitals on @p res's device.
 struct LocalizationStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "localization";
@@ -70,7 +70,7 @@ struct LocalizationStep {
   /// (pipeline/config anchors a relative one to the config file).
   std::filesystem::path molden{};
 
-  /// @brief The localized orbitals. The Scf has already refused an open
+  /// @brief The localized orbitals. The Scf step has already refused an open
   /// shell, so the occupied count is half the electrons. For IBO, MINAO is
   /// resolved and placed over the Molecule first, and an element it does not
   /// carry is place's error; the IAOs it localized over then give the IBOs'
@@ -80,8 +80,9 @@ struct LocalizationStep {
   /// MaxIterationsExceeded when the sweeps do not converge, GpuRuntime for a
   /// failed launch, copy or BLAS call. A @ref molden file that cannot be
   /// written is @c write_molden's error.
-  [[nodiscard]] Result<Localization> run(View<Molecule, BasisSet, Overlap, Scf> in,
-                                         DeviceResources &res) const;
+  [[nodiscard]] Result<LocalizationOutput>
+  run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOutput> in,
+      DeviceResources &res) const;
 };
 
 } // namespace free_breakfast
