@@ -104,10 +104,9 @@ llvm_profdata=$(pick_llvm llvm-profdata) || {
   exit 1
 }
 
-# Where this preset builds. Asked of CMake rather than guessed -- the coverage
-# preset uses build-coverage/, but --preset could name another.
-build_dir=$(cmake --preset "$preset" -N 2>/dev/null |
-  sed -n 's/^.*Binary directory: *//p' | head -1)
+# Where this preset builds, read from CMakePresets.json rather than guessed --
+# the coverage preset uses build-coverage/, but --preset could name another.
+build_dir=$(preset_binary_dir "$preset")
 [ -n "$build_dir" ] || build_dir="$REPO_ROOT/build-coverage"
 
 cov_dir="$build_dir/coverage"

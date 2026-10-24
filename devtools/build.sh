@@ -20,7 +20,8 @@
 #
 # Flags (a subset of cpp-tier.sh's, minus everything about running tests):
 #   --preset NAME   configure/build preset (default: CMAKE_PRESET from
-#                   devtools/config.sh).
+#                   devtools/config.sh -- `auto`, the least-loaded live
+#                   card's preset; the choice is printed).
 #   --fresh         wipe the CMake cache first (`--fresh`). Needed after
 #                   changing a toolchain variable; a plain reconfigure keeps
 #                   the old value and the change appears to do nothing.
@@ -67,14 +68,14 @@ run_phase() {
   return "${PIPESTATUS[0]}"
 }
 
-# The binary directory a preset configures into. Asked of CMake rather than
-# guessed: `default` uses build/ but the others use build-<preset>/, and a
-# hardcoded build/ would point --tidy's compile_commands.json at the previous
-# preset's database. Falls back to build/ when CMake cannot say.
+# The binary directory a preset configures into: `default` uses build/ but the
+# others use build-<preset>/, and a hardcoded build/ would point --tidy's
+# compile_commands.json at the previous preset's database, and cpp-smoke at
+# the wrong test binaries. preset_binary_dir (lib.sh) reads it out of
+# CMakePresets.json; falls back to build/ when that cannot say.
 cpp_build_dir() {
-  local preset=$1 d
-  d=$(cmake --preset "$preset" -N 2>/dev/null |
-    sed -n 's/^.*Binary directory: *//p' | head -1)
+  local d
+  d=$(preset_binary_dir "$1")
   [ -n "$d" ] && echo "$d" || echo "$REPO_ROOT/build"
 }
 
@@ -147,6 +148,7 @@ build_main() {
     esac
   done
 
+  [ "$preset" = auto ] && preset=$(gpu_auto_preset)
   cpp_require_build_tools || exit 1
 
   case "$report_dir" in /*) ;; *) report_dir="$REPO_ROOT/$report_dir";; esac

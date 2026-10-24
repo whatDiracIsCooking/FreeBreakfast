@@ -147,14 +147,15 @@
     "GH_TOKEN": "${localEnv:GH_TOKEN}",
     "GPU_TARGETS": "gfx1200",
     "AMDGPU_TARGETS": "gfx1200",
-    // The load-bearing pair. devtools/config.sh reads ${CMAKE_PRESET:-default}
-    // and ${CTEST_PRESET:-default}, so pinning them here makes a bare
-    // `devtools/cpp-tier.sh` inside this container drive the `hip` preset and
-    // build-hip/ with no flag. Without them it would configure the `default`
-    // preset, whose CMAKE_CUDA_ARCHITECTURES=native queries an NVIDIA driver
-    // that is not here -- a configure failure on a machine that is perfectly
-    // able to build the HIP backend. An explicit `--preset` on the command
-    // line still wins over both.
+    // devtools/config.sh reads ${CMAKE_PRESET:-auto} and ${CTEST_PRESET:-auto},
+    // so pinning them here makes a bare `devtools/cpp-tier.sh` inside this
+    // container drive the `hip` preset and build-hip/ with no flag. `auto`
+    // would land there too -- there is no NVIDIA device or nvcc here -- but
+    // when no card is live it falls back to `default`, whose
+    // CMAKE_CUDA_ARCHITECTURES=native queries an NVIDIA driver that is not
+    // here: a configure failure on a machine able to build the HIP backend.
+    // The pin keeps that from depending on a probe. An explicit `--preset` on
+    // the command line still wins over both.
     "CMAKE_PRESET": "hip",
     "CTEST_PRESET": "hip"
   },
