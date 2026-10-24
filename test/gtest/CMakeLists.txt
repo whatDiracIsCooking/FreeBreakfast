@@ -141,6 +141,7 @@ add_executable(
   pipeline_localization_gpu.cpp
   pipeline_casci_gpu.cpp
   pipeline_fci_gpu.cpp
+  mcscf_fock_gpu.cpp
 )
 
 set_target_properties(
@@ -165,6 +166,7 @@ target_link_libraries(
   free_breakfast::recipes
   free_breakfast::ci
   free_breakfast::integrals
+  free_breakfast::mcscf
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
