@@ -37,6 +37,7 @@ add_executable(
   molecule_host.cpp
   basis_host.cpp
   sad_host.cpp
+  ci_strings_host.cpp
   io_base_host.cpp
   io_basis_host.cpp
   io_json_host.cpp
@@ -68,6 +69,7 @@ target_link_libraries(
           free_breakfast::molecule
           free_breakfast::basis
           free_breakfast::sad
+          free_breakfast::ci
           free_breakfast::io
           free_breakfast::core::resources
           free_breakfast::pipeline::step
