@@ -5,7 +5,7 @@
 // solution, with its own cold CI; C^T S C = 1; no accepted step that raises
 // the energy; at most 20 macro iterations; and the refusals.
 //
-// The setup is mcscf_fock_gpu.cpp's: the Scf (run with J unscreened), and the
+// The setup is mcscf_fock_gpu.cpp's: the SCF (run with J unscreened), and the
 // start picked by pipeline.active_space (by index, or by AVAS). So this
 // executable links pipeline; mcscf itself does not. Runs the device chain, so
 // needs a GPU.
@@ -76,8 +76,8 @@ std::vector<double> download(fb::DeviceResources &res, const double *data, std::
   return host;
 }
 
-// The reference's molecule through the real registry to the Scf's inputs, in
-// basis if it is not empty and the reference's own otherwise. The Scf itself
+// The reference's molecule through the real registry to the Scf step's inputs, in
+// basis if it is not empty and the reference's own otherwise. The Scf step itself
 // is run by hand: tau_j is not a TOML key.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node,
                                                std::string_view basis = {}) {
@@ -111,7 +111,7 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
   return std::move(*calc);
 }
 
-// The Scf the start is selected from: unscreened J, converged past the
+// The SCF the start is selected from: unscreened J, converged past the
 // step's defaults.
 const fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
                             .commutator_tolerance = 1e-12,
@@ -135,16 +135,16 @@ fb::CasciStep casci_step(const fb::json &entry) {
   return step;
 }
 
-// Everything casscf_solve reads, from one converged Scf, and the start.
+// Everything casscf_solve reads, from one converged SCF, and the start.
 struct Setup {
   fb::NodeResources node;
   std::optional<fb::Calculation> calc;
   const fb::Molecule *molecule = nullptr;
   const fb::BasisSet *basis = nullptr;
-  const fb::SphericalTransform *transform = nullptr;
-  const fb::CoreHamiltonian *h = nullptr;
-  const fb::Overlap *overlap = nullptr;
-  std::optional<fb::Scf> scf;
+  const fb::SphericalTransformOutput *transform = nullptr;
+  const fb::CoreHamiltonianOutput *h = nullptr;
+  const fb::OverlapOutput *overlap = nullptr;
+  std::optional<fb::ScfOutput> scf;
   std::vector<fb::CoulombPairClass> j_classes;
   std::vector<fb::OrderedPairClass> k_classes;
   std::optional<fb::ActiveSpace> start;
@@ -170,22 +170,22 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
     return nullptr;
   }
   setup->calc.emplace(std::move(*calc)); // a Pipeline moves, but is not move-assigned
-  const auto &molecule = setup->calc->get<fb::Molecule>();
-  const auto &basis_set = setup->calc->get<fb::BasisSet>();
-  const auto &transform = setup->calc->get<fb::SphericalTransform>();
-  const auto &pairs = setup->calc->get<fb::PrimitivePairClasses>();
-  const auto &overlap = setup->calc->get<fb::Overlap>();
-  const auto &x = setup->calc->get<fb::Orthogonalizer>();
-  const auto &h = setup->calc->get<fb::CoreHamiltonian>();
-  const auto &guess = setup->calc->get<fb::Guess>();
+  const auto &molecule = setup->calc->get<fb::MoleculeOutput>();
+  const auto &basis_set = setup->calc->get<fb::BasisSetOutput>();
+  const auto &transform = setup->calc->get<fb::SphericalTransformOutput>();
+  const auto &pairs = setup->calc->get<fb::PrimitivePairClassesOutput>();
+  const auto &overlap = setup->calc->get<fb::OverlapOutput>();
+  const auto &x = setup->calc->get<fb::OrthogonalizerOutput>();
+  const auto &h = setup->calc->get<fb::CoreHamiltonianOutput>();
+  const auto &guess = setup->calc->get<fb::GuessOutput>();
   if (!molecule.has_value() || !basis_set.has_value() || !transform.has_value() ||
       !pairs.has_value() || !overlap.has_value() || !x.has_value() || !h.has_value() ||
       !guess.has_value()) {
     ADD_FAILURE() << "a product of the setup steps is missing";
     return nullptr;
   }
-  setup->molecule = &*molecule;
-  setup->basis = &*basis_set;
+  setup->molecule = &molecule->molecule;
+  setup->basis = &basis_set->basis;
   setup->transform = &*transform;
   setup->h = &*h;
   setup->overlap = &*overlap;
@@ -201,7 +201,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
   fb::DeviceResources &res = setup->res();
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto j_classes = fb::coulomb_pair_classes(res, pairs->classes);
-  auto k_classes = fb::ordered_pair_classes(res, *basis_set, pairs->classes);
+  auto k_classes = fb::ordered_pair_classes(res, basis_set->basis, pairs->classes);
   if (!j_classes.has_value() || !k_classes.has_value()) {
     ADD_FAILURE() << "the J or K classes failed";
     return nullptr;
@@ -211,7 +211,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
   if (!with_start) {
     return setup;
   }
-  auto space = casci_step(entry).select(res, *molecule, *basis_set, *setup->scf);
+  auto space = casci_step(entry).select(res, molecule->molecule, basis_set->basis, *setup->scf);
   if (!space.has_value()) {
     ADD_FAILURE() << space.error().message;
     return nullptr;
