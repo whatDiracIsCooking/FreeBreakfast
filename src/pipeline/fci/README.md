@@ -62,12 +62,12 @@ P = n (n + 1) / 2, the estimate counts, in doubles:
 |---|---|
 | `ci_solve` | g dim guesses, nroots dim vectors, and the step's dim diagonal |
 | `davidson_solve` | 2 m dim for V and A V, 3 nroots dim for A X, R and the corrections, and the m-sized projections |
-| `CiSigma::apply`'s scratch | g dim (P + 1) for G, the guesses being its widest block, plus one ≤ 64 MiB chunk of D |
+| `CiSigma::apply`'s scratch | dim (P + 1) for G, one vector's (`apply` goes a vector at a time), plus one ≤ 64 MiB chunk of D |
 | `CiSigma`'s tables | two string sets (8 bytes a string, 12 a replacement), the P × (P + 1) contraction |
 | The integrals | (pq\|rs) n⁴ and h n² |
 
-G dominates: for H₂O 6-31G (13 orbitals, 1,656,369 determinants, 3 roots) it
-is 7.3 GB of an 8.8 GB estimate. The J and K classes and
+For H₂O 6-31G (13 orbitals, 1,656,369 determinants, 3 roots) G is 1.2 GB of a
+2.8 GB estimate, the Davidson subspace most of the rest. The J and K classes and
 `active_space_hamiltonian`'s own scratch are left out; they scale with the
 basis, not the determinants. The comparison is against free memory as the
 runtime reports it, so memory the pool has cached counts as used: the refusal

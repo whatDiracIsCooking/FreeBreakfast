@@ -191,12 +191,14 @@ TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
 TEST(CiSigmaGpu, MatchesHostOnRandomIntegrals) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  // (n, N_alpha, N_beta, k): CAS(8,8) and CAS(10,10), whose three-vector
-  // block spans two of apply's chunks; open shells, an empty spin, a full
-  // one and a single orbital.
-  const std::array<std::array<std::int32_t, 4>, 9> shapes{{
+  // (n, N_alpha, N_beta, k): CAS(8,8), CAS(10,10), and 11 orbitals over
+  // (5, 4), whose 152,460 determinants each span two of apply's 127,100-row
+  // chunks, in a block of two that reuses G; open shells, an empty spin, a
+  // full one and a single orbital.
+  const std::array<std::array<std::int32_t, 4>, 10> shapes{{
       {8, 4, 4, 2},
       {10, 5, 5, 3},
+      {11, 5, 4, 2},
       {8, 5, 3, 2},
       {9, 3, 6, 1},
       {1, 1, 0, 1},

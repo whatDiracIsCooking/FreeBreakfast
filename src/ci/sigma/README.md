@@ -26,7 +26,7 @@ All take the integrals as host arrays: `h_eff` n × n and `eri` n⁴, row-major,
 (tu\|vw) in chemists' order, real with the usual symmetry. They refuse
 (`InvalidConfig`, nothing written) two `StringSet`s over different orbital
 counts, or any span of the wrong size. `CiSigma` also refuses no orbitals, more
-determinants (or rows of a block) than an `int32_t` counts, another device than
+determinants than an `int32_t` counts, a negative block, another device than
 `create`'s, and `apply` or `diagonal` before `set_integrals`.
 
 ## Design
@@ -69,9 +69,12 @@ Step 3 turns the host's scatter into a gather, so no thread writes another's
 element: nothing is atomic and a run's result does not depend on scheduling.
 D and G are packed over the pairs v ≥ w, n(n+1)/2 of them, because (tu\|vw) is
 symmetric in each pair; D's packed entry is D[vw] + D[wv]. The scratch is
-`res.device_workspace()`: G for the whole block, k · dim · (n(n+1)/2 + 1)
-doubles (540 MB at CAS(12,12), k = 1), and D for one 64 MiB chunk of rows. G
-is whole because step 3 reads any J's row.
+`res.device_workspace()`: G for one vector, dim · (n(n+1)/2 + 1) doubles
+(540 MB at CAS(12,12), 10 GB at CAS(14,14)), and D for one 64 MiB chunk of
+rows. G spans the whole vector because step 3 reads any J's row, but only J's
+in I's own vector, so `apply` runs the three steps one vector of the block at a
+time and the scratch does not grow with k: a whole block's G would be 60 GB for
+`ci_solve`'s six first guesses at CAS(14,14).
 
 **Tables once, integrals as often as needed.** `create` uploads the two sets'
 strings and their lists (target, packed pair, sign per replacement), once per
@@ -110,7 +113,8 @@ replacement lists. Against it:
 random blocks of one to four vectors, each column to 1e-12 ‖σ‖, and diag(H)
 to 1e-12, and `rdm1` on random unit vectors against `ci.rdm`'s `rdm1` to
 1e-12, for every golden case, for random integrals at CAS(8,8),
-CAS(10,10) (a block spanning two chunks) and seven shapes with N_α ≠ N_β (an
+CAS(10,10), 11 orbitals over (5, 4) (two vectors, each spanning two chunks)
+and seven shapes with N_α ≠ N_β (an
 empty spin, a full one and a single orbital among them), and at CAS(12,12) under `slow_test.h`; `rdm1` also at CAS(12,12) in the fast tier, over
 eight chunks; then the refusals.
 

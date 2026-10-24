@@ -67,9 +67,10 @@ export namespace free_breakfast {
 /// G_K = D_K [½ (tu|vw) | k_vw], and gathers σ_I from G over I's own lists:
 /// both gathers are one thread per determinant, so nothing is atomic and the
 /// result does not depend on the run. D and G are packed over the orbital
-/// pairs v ≥ w, since (tu|vw) is symmetric in each pair. Its scratch, G for the
-/// whole block (k · dim · (n(n+1)/2 + 1) doubles) and D for one chunk, is
-/// res.device_workspace().
+/// pairs v ≥ w, since (tu|vw) is symmetric in each pair. The block goes one
+/// vector at a time, so its scratch, G for one vector (dim · (n(n+1)/2 + 1)
+/// doubles) and D for one chunk, is res.device_workspace() and does not grow
+/// with the block.
 ///
 /// Move-only; the buffers are on the device of the DeviceResources create was
 /// given, which every call must pass again.
@@ -106,9 +107,8 @@ public:
   /// whose pointer mode must be host (its default, and what davidson_solve
   /// holds).
   ///
-  /// @return InvalidConfig before set_integrals, for another device, for a
-  ///         negative @p k or k · size() past an int32_t; or the GpuRuntime
-  ///         error of a launch or the gemm.
+  /// @return InvalidConfig before set_integrals, for another device or for a
+  ///         negative @p k; or the GpuRuntime error of a launch or the gemm.
   [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *x, double *y);
 
   /// @brief diag(H) into the size() device doubles @p diagonal, by
