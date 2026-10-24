@@ -154,12 +154,16 @@ template <class S>
                         "exponent", "molden"}));
     std::string mode = "pipek_mezey";
     FBF_TRY(read_key(table, kStep, "mode", base_dir, mode));
-    if (mode != "pipek_mezey") {
-      return err_config("[{}] has no mode '{}' (known: 'pipek_mezey')", kStep, mode);
+    if (mode != "pipek_mezey" && mode != "ibo") {
+      return err_config("[{}] has no mode '{}' (known: 'pipek_mezey', 'ibo')", kStep, mode);
     }
-    step.mode = LocalizationMode::PipekMezey;
-    // Pipek-Mezey's options, the only method's, sit in the table itself.
+    step.mode = mode == "ibo" ? LocalizationMode::Ibo : LocalizationMode::PipekMezey;
+    // The sweep's options sit in the table itself; IBO is the same sweep over
+    // other populations, at Knizia's exponent four unless the table says.
     PipekMezeyOptions &options = step.pipek_mezey;
+    if (step.mode == LocalizationMode::Ibo) {
+      options.exponent = PipekMezeyExponent::Four;
+    }
     FBF_TRY(read_key(table, kStep, "max_sweeps", base_dir, options.max_sweeps));
     FBF_TRY(read_key(table, kStep, "functional_tolerance", base_dir, options.functional_tolerance));
     FBF_TRY(read_key(table, kStep, "rotation_gain_threshold", base_dir,

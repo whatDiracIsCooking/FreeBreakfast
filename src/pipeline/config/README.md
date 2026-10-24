@@ -51,8 +51,8 @@ max_iterations = 100
 molden = "water.molden"   # default none: the converged orbitals, written
 
 [localization]            # every option has a default
-mode = "pipek_mezey"      # default "pipek_mezey", the only method so far
-exponent = 4              # default 2; 2 or 4
+mode = "pipek_mezey"      # default "pipek_mezey"; or "ibo"
+exponent = 4              # 2 or 4; default 2, or 4 for "ibo"
 molden = "water_pm.molden"  # default none: the localized orbitals, written
 
 [casci]
@@ -73,8 +73,9 @@ avas_threshold = 0.2      # default 0.2; needs avas
 ```
 
 `[localization]`'s method options sit in the table beside `mode`, not in
-a subtable named after `LocalizationStep::pipek_mezey`: Pipek-Mezey is the only
-method so far.
+a subtable named after `LocalizationStep::pipek_mezey`: both modes run the
+same Pipek-Mezey sweep, IBO over intrinsic-atomic-orbital populations, so they
+take the same options.
 
 `[casci]`'s keys are read for their types only. Whether the active space
 fits needs the molecule's electrons and the basis's orbitals, so
@@ -123,7 +124,7 @@ resolved", and this is where that happens.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[localization] mode`, which knows only `"pipek_mezey"`; and
+  only `"sad"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
   `[localization] exponent`, 2 or 4);
 - `from` beside another key, or on a step with no `load`;
 - a value of the wrong type. Integers are read exactly, so `charge = 1.5` is

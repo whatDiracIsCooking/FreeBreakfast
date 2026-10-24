@@ -1,0 +1,128 @@
+# Intrinsic bond orbitals
+
+Intrinsic atomic orbitals (IAOs) and intrinsic bond orbitals (IBOs) on the GPU,
+after Knizia, J. Chem. Theory Comput. 9, 4834 (2013). The IAOs are a minimal
+basis, one function per free-atom AO, polarized by the molecule just enough to
+span its occupied orbitals exactly. The IBOs are the occupied orbitals
+localized over the IAOs' atomic populations: Pipek-Mezey with chemically
+sound populations in place of Mulliken's.
+
+No kernels of its own: wwr's `gemm`, `potrf` and `potrs`, `recipes/orthogonalize`,
+`integrals/one_electron/overlap_mixed`, and `localization/pipek_mezey`'s sweep.
+
+## Module
+
+`free_breakfast.localization.ibo`, target `free_breakfast::localization::ibo`.
+It re-exports `free_breakfast.localization.pipek_mezey`, whose options and info
+it takes and returns.
+
+| Name | Role |
+|---|---|
+| `intrinsic_atomic_orbitals(res, basis, minimal, n_occ, s, c, iao)` | The orthonormal IAOs, n_ao x n_minimal; `Status` |
+| `ibo_localize(res, basis, minimal, n_occ, s, c, c_local, u, options)` | The IBOs; returns `Result<PipekMezeyInfo>`, exponent 4 by default |
+
+Double precision only. Every matrix is a column-major device `double *`,
+packed, over the spherical AOs: `s` (n x n) and `c` (n x n_occ) as for
+`pipek_mezey_localize`, `iao` n x m with m = `minimal.nao_sphe()`.
+`minimal` is the free-atom minimal basis placed over the same atoms, which
+for the paper's IAOs is MINAO (`data/basis/minao.json`):
+
+```cpp
+const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
+const BasisSet minao = FBF_TRY(place(stamp.primitive_normalized(), molecule));
+const PipekMezeyInfo info = FBF_TRY(ibo_localize(res, basis, minao, n_occ, overlap.s.data(),
+                                                 scf.c.data(), c_local.data(), u.data()));
+```
+
+The module takes the minimal basis rather than resolving MINAO itself, so it
+needs no `io` and any minimal basis serves. `pipeline/localization` resolves
+MINAO.
+
+## The IAOs (Appendix C)
+
+With S1 the basis's overlap, S2 the minimal basis's, S12 the one between them,
+and C the occupied orbitals:
+
+```
+P12 = S1^-1 S12
+C~  = orth(S1^-1 S12 S2^-1 S12^T C)
+A   = C C^T S1 C~ C~^T S12 + (1 - C C^T S1)(1 - C~ C~^T S1) P12
+IAO = orth(A),   orth(X) = X (X^T S1 X)^-1/2
+```
+
+C~ is the occupied space depolarized: projected onto the free-atom AOs and
+back. A splits each free-atom AO by it, the occupied part polarized as the
+molecule's orbitals are and the rest kept orthogonal to them, which is why the
+IAOs span the occupied orbitals.
+
+**No n x n product is formed.** S1 P12 = S12 exactly, so expanding A leaves
+n_occ-wide products only:
+
+```
+A = P12 - C E - C~ F + 2 C O F,   E = C^T S12,  F = C~^T S12,  O = C^T S1 C~
+```
+
+**S^-1 is a Cholesky solve**, never an inverse, as the paper advises: `potrf`
+once per overlap, `potrs` per right-hand side. Either overlap failing to be
+positive definite is `Numerical`. PySCF falls back to canonical
+orthogonalization for a near-singular S1; that is not done here.
+
+**The two orth()s are Loewdin**, `recipes/orthogonalize` on the small metric
+(n_occ x n_occ, then m x m) and one gemm. The paper's procedure is invariant to
+the kind of orthogonalization for C~, but not for A: a symmetric
+orthogonalization depends on the columns' scale. So **the minimal basis's
+functions are normalized** first (its spherical transform's columns scaled by
+S2's diagonal to the -1/2) — this tree does not force a contraction to unit
+norm, and PySCF's normalized MINAO is what the oracle builds its IAOs from.
+
+**The overlaps are built here.** `overlap_mixed` gives Cartesian S12 and S2;
+each becomes spherical as U_rows^T S_cart U_cols, with each basis's
+`spherical_transform_matrix` uploaded. That is the one spherical mixed
+overlap in the tree; it lives here until a second consumer wants it.
+
+## The IBOs (Appendix D)
+
+The occupied orbitals over the orthonormal IAOs are C_IAO = IAO^T S1 C,
+lossless because the IAOs span them. Over an orthonormal basis S is the
+identity, so `pipek_mezey_localize(res, minimal, n_occ, I, C_IAO, ...)`
+computes exactly the IAO populations, each IAO owned by its minimal-basis AO's
+atom (which the placed `minimal` records). Its p = 4 angle is the paper's
+Appendix D one, so this is Knizia's IBO functional and iteration, run on the
+existing sweep.
+
+The localized orbitals are written back as C U, not IAO C_IAO U: the same
+orbitals, without a round trip through the IAOs' rounding.
+
+## Cost
+
+The integrals and the n^2 m-sized gemms are the cost; everything else is
+n_occ wide. Scratch is pool buffers, since the solvers, `orthogonalize` and
+the sweep take `res.device_workspace()` in turn. The host synchronizes at each
+Cholesky flag and each orthogonalization.
+
+## Tests
+
+`test/gtest/pipeline_localization_gpu.cpp`, against PySCF's `lo.iao` and
+`lo.ibo.PipekMezey` (`tools/emit_localization_reference.py`, writing
+`test/gtest/data/localization/ibo.json`), for water in STO-3G and cc-pVDZ and
+NH4+ in cc-pVDZ:
+
+- through the step (`mode = "ibo"`), both exponents: L over the IAO
+  populations to 1e-8, every bond's Mulliken population on every atom matched
+  to a PySCF orbital to 1e-5, and the IBOs S-orthonormal and reproducing the
+  SCF's density. Orbitals wholly on one atom (water's O 1s and lone pairs) are
+  compared as a set, by their summed populations: rotating among them moves L
+  by ~1e-13 and their populations by ~1e-3, and PySCF's own two IBO optimizers
+  (`lo.ibo.PipekMezey` and Knizia's `ibo_loc`) disagree by that much, so only
+  the set is determined;
+- the IAOs alone, from the Scf's orbitals: A^T S A = I, each occupied orbital
+  of unit weight on them, and the IAO partial charges (eq 3) matching PySCF's
+  to 1e-7.
+
+## Files
+
+| File | Role |
+|---|---|
+| `ibo.cppm` | Module interface: `intrinsic_atomic_orbitals` and `ibo_localize` |
+| `ibo.cpp` | The overlaps, the IAO construction and the IBO driver |
+| `CMakeLists.txt` | The module |

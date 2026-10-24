@@ -9,6 +9,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.io.basis;
 import free_breakfast.io.molden;
 
 #include "diagnostics.h"
@@ -62,6 +63,13 @@ namespace free_breakfast {
     out.info = FBF_TRY(pipek_mezey_localize(res, basis, n_occ, in.get<Overlap>().s.data(),
                                             scf.c.data(), out.c.data(), out.u.data(), pipek_mezey));
     break;
+  case LocalizationMode::Ibo: {
+    const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
+    const BasisSet minao = FBF_TRY(place(stamp.primitive_normalized(), molecule));
+    out.info = FBF_TRY(ibo_localize(res, basis, minao, n_occ, in.get<Overlap>().s.data(),
+                                    scf.c.data(), out.c.data(), out.u.data(), pipek_mezey));
+    break;
+  }
   }
   if (!molden.empty()) {
     FBF_TRY(write_localization_molden(res, molden, molecule, basis, out, scf.mo_energies));

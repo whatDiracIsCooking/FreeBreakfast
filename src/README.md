@@ -13,9 +13,9 @@ io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BS
 sad/       The SAD initial-guess density from spherically averaged atomic SCFs over a placed basis, in the spherical layout
 recipes/   Dense GPU linear algebra: square gemm and the sandwich products, the symmetric orthogonalizer S^{-1/2}, and DIIS extrapolation
 integrals/ Gaussian integrals on the GPU over FelizJueves-generated kernels: MMD primitive-pair records, S, T, V, the core Hamiltonian H = T + V and the Coulomb matrix J
-localization/  Orbital localization of the occupied space: Pipek-Mezey on the GPU, p = 2 or Knizia's p = 4
+localization/  Orbital localization of the occupied space on the GPU: Pipek-Mezey (p = 2 or Knizia's p = 4), and intrinsic atomic and bond orbitals over MINAO
 ci/        Determinant CI over plain arrays: alpha/beta occupation strings, their lexical addresses and single-replacement lists
-pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the RHF SCF, Pipek-Mezey localization, and Pipeline<Steps...>, which plans and runs them
+pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the RHF SCF, Pipek-Mezey and IBO localization, and Pipeline<Steps...>, which plans and runs them
 main.cpp   The free-breakfast executable: a TOML config planned and run as a pipeline, and the one Error -> exit-code boundary
 ```
 

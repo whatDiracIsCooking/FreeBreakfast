@@ -213,6 +213,14 @@ TEST(PipelineConfig, TheLocalizationModeAndItsOptionsAreRead) {
   EXPECT_EQ(plain->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::PipekMezey);
   EXPECT_EQ(plain->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
   EXPECT_TRUE(plain->step<fb::LocalizationStep>()->molden.empty());
+  // IBO is Knizia's exponent four unless the table names another.
+  auto ibo = fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\n"), "");
+  ASSERT_TRUE(ibo.has_value()) << ibo.error().message;
+  EXPECT_EQ(ibo->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::Ibo);
+  EXPECT_EQ(ibo->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Four);
+  auto ibo2 = fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\nexponent = 2\n"), "");
+  ASSERT_TRUE(ibo2.has_value()) << ibo2.error().message;
+  EXPECT_EQ(ibo2->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
 }
 
 TEST(PipelineConfig, AnUnknownLocalizationModeIsInvalidConfig) {

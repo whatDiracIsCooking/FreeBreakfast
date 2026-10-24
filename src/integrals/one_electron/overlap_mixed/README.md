@@ -50,8 +50,9 @@ each specialization, and `overlap_mixed_kernels`, the full `[la][lb]` table.
 **Limits.** d per shell (`kMaxAngularMomentum`), and
 `rows.nao_cart() * cols.nao_cart() <= INT32_MAX`; either is `InvalidConfig`
 before anything is formed or launched, as is a buffer of the wrong size. Not
-built: a spherical form (it would be `U_rowsᵀ S U_cols`), and anything that
-consumes it.
+built: a spherical form (it would be `U_rowsᵀ S U_cols`). Its consumers,
+`pipeline/casci`'s AVAS and `localization/ibo`, each apply their U's
+themselves.
 
 ## Public API
 
