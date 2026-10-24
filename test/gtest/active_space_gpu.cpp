@@ -5,7 +5,11 @@
 // elements h_eff_tt, (tt|uu) and (tu|tu); the RHF energy given back by an
 // active space spanning occupied and virtual orbitals; (tu|vw)'s 8-fold
 // symmetry; the prune cap, on orbitals scaled past it; and the refusals. Each
-// at tau = 0 and at the defaults. Runs the device chain, so needs a GPU.
+// at tau = 0 and at the defaults. casscf_integrals' ppaa and papa likewise:
+// their sign-invariant (pp|uu) and (pu|pu), summed over degenerate sets,
+// against PySCF's CASSCF.ao2mo; their active blocks against
+// active_space_hamiltonian's (tu|vw); their permutational symmetries; and the
+// cap, for K as for J. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -141,6 +145,14 @@ struct Setup {
                                         unpruned ? j_classes_unpruned : j_classes, k_classes,
                                         orbitals, core, cas, tau_j, tau_k);
   }
+
+  [[nodiscard]] fb::Result<fb::CasscfIntegrals> build_casscf(const fb::SphericalMatrixAO &orbitals,
+                                                             double tau_j, double tau_k,
+                                                             bool unpruned = false) {
+    return fb::casscf_integrals(res(), *basis, *molecule, h->h, transform->u,
+                                unpruned ? j_classes_unpruned : j_classes, k_classes, orbitals,
+                                ncore, ncas, tau_j, tau_k);
+  }
 };
 
 std::unique_ptr<Setup> make_setup(const fb::json &entry) {
@@ -236,6 +248,30 @@ Host to_host(fb::DeviceResources &res, const fb::ActiveSpaceHamiltonian &ham) {
           .eri = download(res, ham.eri.data(), n * n * n * n)};
 }
 
+// ppaa and papa on the host: (p, q) of block (u, v) at
+// p + nmo (q + nmo (u + ncas v)).
+struct HostOrbital {
+  std::size_t nmo;
+  std::size_t ncas;
+  std::vector<double> ppaa;
+  std::vector<double> papa;
+
+  [[nodiscard]] std::size_t at(std::size_t p, std::size_t q, std::size_t u, std::size_t v) const {
+    return p + (nmo * (q + (nmo * (u + (ncas * v)))));
+  }
+};
+
+HostOrbital to_host(fb::DeviceResources &res, const fb::CasscfIntegrals &ints, std::size_t nmo) {
+  const auto ncas = static_cast<std::size_t>(ints.hamiltonian.ncas);
+  const std::size_t count = nmo * nmo * ncas * ncas;
+  EXPECT_EQ(ints.ppaa.num_elements(), count);
+  EXPECT_EQ(ints.papa.num_elements(), count);
+  return {.nmo = nmo,
+          .ncas = ncas,
+          .ppaa = download(res, ints.ppaa.data(), count),
+          .papa = download(res, ints.papa.data(), count)};
+}
+
 double max_abs(const std::vector<double> &v) {
   double m = 0.0;
   for (const double x : v) {
@@ -325,6 +361,101 @@ TEST_P(ActiveSpaceGpu, MatchesPyscfGivesBackTheRhfEnergyAndIsSymmetric) {
   }
 }
 
+TEST_P(ActiveSpaceGpu, CasscfIntegralsMatchPyscfTheHamiltonianAndAreSymmetric) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case(GetParam().name);
+  auto setup = make_setup(entry);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const bool screened = GetParam().screened;
+  // The screened case takes the functions' own defaults, whatever they are.
+  auto ints = screened
+                  ? fb::casscf_integrals(res, *setup->basis, *setup->molecule, setup->h->h,
+                                         setup->transform->u, setup->j_classes, setup->k_classes,
+                                         *setup->c, setup->ncore, setup->ncas)
+                  : setup->build_casscf(*setup->c, 0.0, 0.0);
+  auto ham = screened ? fb::active_space_hamiltonian(res, *setup->basis, *setup->molecule,
+                                                     setup->h->h, setup->transform->u,
+                                                     setup->j_classes, setup->k_classes, *setup->c,
+                                                     setup->ncore, setup->ncas)
+                      : setup->build(*setup->c, setup->ncore, setup->ncas, 0.0, 0.0);
+  ASSERT_TRUE(ints.has_value()) << ints.error().message;
+  ASSERT_TRUE(ham.has_value()) << ham.error().message;
+  const std::size_t nmo = setup->basis->nao_sphe();
+  const HostOrbital host = to_host(res, *ints, nmo);
+  const Host active = to_host(res, *ham);
+  const std::size_t n = active.n;
+  ASSERT_EQ(host.ncas, n);
+  const auto core = static_cast<std::size_t>(setup->ncore);
+
+  // The Hamiltonian it carries is active_space_hamiltonian's.
+  const Host carried = to_host(res, ints->hamiltonian);
+  EXPECT_NEAR(carried.e_core, active.e_core, 1e-12 * std::abs(active.e_core));
+  const double eri_tolerance = 1e-12 * max_abs(active.eri);
+  for (std::size_t k = 0; k < active.eri.size(); ++k) {
+    EXPECT_NEAR(carried.eri[k], active.eri[k], eri_tolerance) << k;
+  }
+
+  // Against PySCF: sum (pp|uu) and sum (pu|pu) over p's degenerate set and
+  // u's, which no orbital's sign, nor any rotation within a set, changes.
+  const auto sets = entry.at("orbital_sets").get<std::vector<std::vector<std::size_t>>>();
+  const auto active_sets = entry.at("active_sets").get<std::vector<std::vector<std::size_t>>>();
+  const auto pp_uu = entry.at("ppaa_diagonal").get<std::vector<std::vector<double>>>();
+  const auto pu_pu = entry.at("papa_diagonal").get<std::vector<std::vector<double>>>();
+  ASSERT_EQ(pp_uu.size(), sets.size());
+  ASSERT_EQ(pu_pu.size(), sets.size());
+  for (std::size_t a = 0; a < sets.size(); ++a) {
+    ASSERT_EQ(pp_uu[a].size(), active_sets.size());
+    ASSERT_EQ(pu_pu[a].size(), active_sets.size());
+    for (std::size_t b = 0; b < active_sets.size(); ++b) {
+      double coulomb = 0.0;
+      double exchange = 0.0;
+      for (const std::size_t p : sets[a]) {
+        for (const std::size_t u : active_sets[b]) {
+          coulomb += host.ppaa[host.at(p, p, u, u)];
+          exchange += host.papa[host.at(p, p, u, u)];
+        }
+      }
+      EXPECT_NEAR(coulomb, pp_uu[a][b], kPyscfTolerance) << "(pp|uu) set " << a << " " << b;
+      EXPECT_NEAR(exchange, pu_pu[a][b], kPyscfTolerance) << "(pu|pu) set " << a << " " << b;
+    }
+  }
+
+  // The active blocks: (tu|vw) is ppaa's (t, u) of block (v, w), and papa's
+  // (t, v) of block (u, w), (pu|qv) at p = t, q = v.
+  for (std::size_t w = 0; w < n; ++w) {
+    for (std::size_t v = 0; v < n; ++v) {
+      for (std::size_t u = 0; u < n; ++u) {
+        for (std::size_t t = 0; t < n; ++t) {
+          const double x = active.g(t, u, v, w);
+          EXPECT_NEAR(host.ppaa[host.at(core + t, core + u, v, w)], x, eri_tolerance)
+              << "ppaa " << t << u << v << w;
+          EXPECT_NEAR(host.papa[host.at(core + t, core + v, u, w)], x, eri_tolerance)
+              << "papa " << t << u << v << w;
+        }
+      }
+    }
+  }
+
+  // ppaa: (pq|uv) = (qp|uv) = (pq|vu). papa: (pu|qv) = (qv|pu).
+  const double pp_tolerance = 1e-12 * max_abs(host.ppaa);
+  const double pa_tolerance = 1e-12 * max_abs(host.papa);
+  for (std::size_t v = 0; v < n; ++v) {
+    for (std::size_t u = 0; u < n; ++u) {
+      for (std::size_t q = 0; q < nmo; ++q) {
+        for (std::size_t p = 0; p < nmo; ++p) {
+          const double x = host.ppaa[host.at(p, q, u, v)];
+          EXPECT_NEAR(host.ppaa[host.at(q, p, u, v)], x, pp_tolerance);
+          EXPECT_NEAR(host.ppaa[host.at(p, q, v, u)], x, pp_tolerance);
+          EXPECT_NEAR(host.papa[host.at(q, p, v, u)], host.papa[host.at(p, q, u, v)], pa_tolerance)
+              << p << " " << q << " " << u << " " << v;
+        }
+      }
+    }
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(Cases, ActiveSpaceGpu,
                          ::testing::Values(Case{"h2o_sto3g", false}, Case{"h2o_sto3g", true},
                                            Case{"h2o_ccpvdz", false}, Case{"h2o_ccpvdz", true},
@@ -382,6 +513,29 @@ TEST(ActiveSpaceGpuCap, ScaledOrbitalsOnPrunedClassesMatchUnprunedOnes) {
   for (std::size_t k = 0; k < a.eri.size(); ++k) {
     EXPECT_NEAR(a.eri[k], b.eri[k], tolerance) << k;
   }
+
+  // casscf_integrals' J is capped the same: ppaa on the pruned classes is the
+  // unpruned classes'. K's classes are not pruned, but K is capped as J is:
+  // papa of the scaled orbitals is kScale^4 times the unscaled orbitals',
+  // whose m_v m_w (below the cap or not) take another s.
+  auto pruned_ints = setup->build_casscf(scaled, 0.0, 0.0);
+  auto unpruned_ints = setup->build_casscf(scaled, 0.0, 0.0, /*unpruned=*/true);
+  auto unscaled_ints = setup->build_casscf(*setup->c, 0.0, 0.0);
+  ASSERT_TRUE(pruned_ints.has_value()) << pruned_ints.error().message;
+  ASSERT_TRUE(unpruned_ints.has_value()) << unpruned_ints.error().message;
+  ASSERT_TRUE(unscaled_ints.has_value()) << unscaled_ints.error().message;
+  const HostOrbital x = to_host(res, *pruned_ints, n);
+  const HostOrbital y = to_host(res, *unpruned_ints, n);
+  const HostOrbital z = to_host(res, *unscaled_ints, n);
+  const double pp_tolerance = 1e-12 * max_abs(y.ppaa);
+  for (std::size_t k = 0; k < x.ppaa.size(); ++k) {
+    EXPECT_NEAR(x.ppaa[k], y.ppaa[k], pp_tolerance) << k;
+  }
+  constexpr double kScale4 = kScale * kScale * kScale * kScale;
+  const double pa_tolerance = 1e-12 * max_abs(x.papa);
+  for (std::size_t k = 0; k < x.papa.size(); ++k) {
+    EXPECT_NEAR(x.papa[k], kScale4 * z.papa[k], pa_tolerance) << k;
+  }
 }
 
 TEST(ActiveSpaceGpuRefusals, RefusesAnActiveSpacePastTheOrbitalsOrEmpty) {
@@ -405,6 +559,15 @@ TEST(ActiveSpaceGpuRefusals, RefusesAnActiveSpacePastTheOrbitalsOrEmpty) {
   ASSERT_TRUE(fci.has_value()) << fci.error().message;
   EXPECT_NEAR(fci->e_core, fb::nuclear_repulsion_energy(*setup->molecule), 1e-12);
   EXPECT_TRUE(setup->build(*setup->c, 1, nmo - 1, 0.0, 0.0).has_value());
+  // casscf_integrals refuses alike.
+  setup->ncore = 1;
+  setup->ncas = nmo;
+  auto past = setup->build_casscf(*setup->c, 0.0, 0.0);
+  EXPECT_TRUE(!past.has_value() && past.error().kind == fb::ErrorKind::InvalidConfig);
+  setup->ncore = 0;
+  setup->ncas = 2;
+  auto negative = setup->build_casscf(*setup->c, -1.0, 0.0);
+  EXPECT_TRUE(!negative.has_value() && negative.error().kind == fb::ErrorKind::InvalidConfig);
 }
 
 } // namespace
