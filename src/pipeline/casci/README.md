@@ -12,8 +12,8 @@ re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
 `run`'s signature) and `free_breakfast.recipes.davidson` (`DavidsonInfo`, in
 the product). `run` is defined in the implementation unit, so
 `integrals.active_space`, J's and K's classes, the `ci` modules, and AVAS's
-`io.basis` (MINAO), `overlap_mixed` and `diagonalize`, and `io.molden`, are
-PRIVATE links.
+`io.basis` (MINAO), `overlap_mixed_spherical` and `diagonalize`, and
+`io.molden`, are PRIVATE links.
 
 ## The step
 
@@ -90,9 +90,9 @@ canonicalized.
   try to be. A label naming no AO of the molecule is refused rather than
   ignored: it is a typo or a missing element, never a request for nothing.
 - **The projector.** MINAO is `resolve_basis("minao")`, placed over the
-  molecule; S21 (labelled AO by MO) and S2 (labelled AO by labelled AO) come
-  from `overlap_mixed`'s Cartesian S, MINAO by the basis and MINAO by itself,
-  through each basis's U, and C. P = S21ᵀ S2⁻¹ S21, through S2's
+  molecule; S21 (labelled AO by MO) and S2 (labelled AO by labelled AO) are
+  the labelled rows of `overlap_mixed_spherical`'s MINAO-by-basis S times C,
+  and of its MINAO-by-MINAO S. P = S21ᵀ S2⁻¹ S21, through S2's
   eigendecomposition. Neither basis's AO normalization matters: P is
   invariant to scaling a labelled AO.
 - **The selection.** P's occupied block and its virtual block are each
@@ -105,8 +105,8 @@ canonicalized.
   PySCF's `canonicalize` does (its `symmetrize` is a no-op without point
   group symmetry). The energy is invariant to that within core and active;
   the virtual space's rotation only orders the published orbitals.
-- **Where it runs.** The overlaps are built on the device. Everything after
-  them is over a few dozen orbitals, so it is assembled on the host and each
+- **Where it runs.** The overlaps, and S(MINAO, basis) C, are built on the
+  device. Everything after them is over a few dozen orbitals, so it is assembled on the host and each
   of the six symmetric eigenproblems (S2, the two blocks of P, the three
   spaces' Fock) solved by `diagonalize`.
 
@@ -142,8 +142,8 @@ S2 not positive definite. Otherwise `orbital_order`'s InvalidConfig (ncas below 
 2 ncas or above N; an odd core electron count; ncore + ncas above nmo; `active`
 not ncas distinct indices in [0, nmo)); `ci_solve`'s InvalidConfig for
 `nroots` outside [1, dim], MaxIterationsExceeded, or Numerical for a root of
-the wrong spin; the module calls' own errors (`overlap_mixed`'s, `diagonalize`'s,
-`write_molden`'s among them); GpuRuntime for a failed copy or gemm.
+the wrong spin; the module calls' own errors (`overlap_mixed_spherical`'s,
+`diagonalize`'s, `write_molden`'s among them); GpuRuntime for a failed copy or gemm.
 
 ## Tests
 

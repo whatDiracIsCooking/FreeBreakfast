@@ -56,9 +56,8 @@ carried over as `U_rowsᵀ S_cart U_cols`, each U the basis's
 `spherical_transform_matrix` uploaded, two gemms. Column-major
 `rows.nao_sphe() x cols.nao_sphe()`, the layout `SphericalMatrixAO` uses, into
 a plain buffer for the same reason as above. It synchronizes the stream once,
-at the end, so the host U's outlive their upload. `localization/ibo` uses it;
-`pipeline/casci`'s AVAS still applies its U's itself, on the host, over only
-the labelled AOs.
+at the end, so the host U's outlive their upload. `localization/ibo` and
+`pipeline/casci`'s AVAS use it.
 
 ## Public API
 
