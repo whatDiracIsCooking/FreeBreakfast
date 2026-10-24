@@ -99,7 +99,8 @@ all of them again with no J or K.
 
 ## Not done
 
-- **The orbital Hessian** (#250) and **the macro loop** (#251) build on this.
+- **The macro loop** (#251) builds on this and on `../hessian/`'s orbital
+  Hessian.
 - **Frozen orbitals**: every core orbital rotates.
 - **Density fitting** (#177), as for `active_space`.
 

@@ -142,6 +142,7 @@ add_executable(
   pipeline_casci_gpu.cpp
   pipeline_fci_gpu.cpp
   mcscf_fock_gpu.cpp
+  mcscf_hessian_gpu.cpp
 )
 
 set_target_properties(
