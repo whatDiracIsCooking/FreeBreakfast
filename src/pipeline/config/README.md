@@ -14,7 +14,7 @@ names them all. It is the one library that imports every step, so only it and
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
                              CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep,
-                             CasciStep>;
+                             CasciStep, FciStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
 Result<Calculation> read_config(const std::filesystem::path &path);
@@ -81,6 +81,15 @@ take the same options.
 fits needs the molecule's electrons and the basis's orbitals, so
 `CasciStep::orbital_order` checks the ranges when the step runs
 (`casci/README.md`).
+
+```toml
+[fci]
+nroots = 3                # default 1
+```
+
+`[fci]` takes no active space: it is every orbital and every electron. Whether
+the determinant space fits is the device's to say, so `FciStep::run` estimates
+it against the free memory when the step runs (`fci/README.md`).
 
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all eleven steps: `[orthogonalizer]` reads the

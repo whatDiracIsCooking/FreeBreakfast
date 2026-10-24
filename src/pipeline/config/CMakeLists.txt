@@ -25,6 +25,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::scf
   free_breakfast::pipeline::localization
   free_breakfast::pipeline::casci
+  free_breakfast::pipeline::fci
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::io::base

@@ -68,6 +68,11 @@ emit_casci_reference.py
                   active spaces over this tree's MINAO), the lowest
                   singlets' energies, <S^2> and natural occupations, the
                   reference the Casci step is tested against. Needs PySCF.
+emit_fci_step_reference.py
+                  Write test/gtest/data/fci/fci.json: PySCF fci.FCI over
+                  every orbital of its RHF in this tree's basis files, the
+                  lowest singlets' energies, <S^2> and natural occupations,
+                  the reference the Fci step is tested against. Needs PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
                   element of the compiled-in sets named (or --all), by src/sad
@@ -101,6 +106,7 @@ uv run --group tools tools/emit_sad_reference.py
 uv run --group tools tools/emit_scf_reference.py
 uv run --group tools tools/emit_localization_reference.py
 uv run --group tools tools/emit_casci_reference.py
+uv run --group tools tools/emit_fci_step_reference.py
 uv run --group tools tools/emit_record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \
