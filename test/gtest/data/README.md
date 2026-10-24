@@ -18,6 +18,7 @@ file names the tool that wrote it and the source it came from.
 | `casci/` | `casci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF `mcscf.CASCI` over its orbitals, H₂O CAS(4,4) (frontier, and an explicit set in cc-pVDZ) and N₂ CAS(6,6), and `mcscf.avas`'s picks over MINAO (H₂O O 2p + H 1s, N₂ 2s + 2p, and N₂ 2p at threshold 0.5, in cc-pVDZ): the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit_casci_reference.py`, which runs PySCF |
 | `ci/` | `direct_spin1.json`: active-space integrals (E_core, h_eff, (tu\|vw)) from PySCF's CASCI over its own RHF in its own basis library, and `fci.direct_spin1`'s lowest 12 roots over them, each with ⟨S²⟩ and its spin-summed 1-RDM, for H₂O STO-3G CAS(4,4), H₂O 6-31G CAS(6,6), N₂ cc-pVDZ CAS(6,6) and CH₂O STO-3G CAS(4,4) | `tools/emit_fci_reference.py`, which runs PySCF |
 | `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit_fci_step_reference.py`, which runs PySCF |
+| `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ: at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit_casscf_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
 
@@ -211,4 +212,63 @@ seeded noise, the two agreeing to 1e-10. Regenerate with:
 
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_fci_step_reference.py
+```
+
+## `casscf/casscf.json`
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF and numpy versions, date, host, the command that wrote it, and `threads` (BLAS and OpenMP are pinned to it) |
+| `cases` | One per CASSCF: `name`, `basis` (this tree's builtin name), `charge`, `atoms` (`symbol`, `z`, `coord` in bohr), `electrons`, `nmo`, `ncas`, `nelecas`, `ncore`, the start (`active` and `avas`, below), `weights` (one per root, the lowest singlets), `rhf_energy`, `mo_energies` (the RHF's, ascending), `casci` and `casscf` |
+| `active` | The start, as 0-based indices into the RHF orbitals in ascending energy, as `sort_mo` takes them: the core is the remaining occupied orbitals, lowest first, then these in the given order, then the remaining virtuals. `null` for the frontier orbitals (the `ncas` above the lowest `ncore`) or an AVAS start |
+| `avas` | `labels` and `threshold` of an AVAS start (PySCF `mcscf.avas` over `data/basis/minao.json`, its three spaces canonicalized), or `null` |
+| `casci` | At the start, before any rotation: `orbital_energies` (the RHF Fock's diagonal over the start's columns, core, active, virtual, which is how a test matches its own orbitals to these), `energies` (each root's CASCI energy, by a dense diagonalisation of the M_s = 0 sector, singlets kept), `energy` (weighted), `pairs`, `gradient_norm` (\|g\|), `g_hessian_g` (gᵀHg) and `hessian_g_norm` (\|Hg\|) |
+| `pairs` | One per pair of orbital sets (P, Q) holding a non-redundant rotation, P in a later space than Q, in gen_g_hop's packed order: `p` and `q` (the column indices of each set; one column unless a degenerate set), `gradient` (sqrt Σ g_pq² over p in P, q in Q) and `hessian_diagonal` (Σ H_pq,pq over the same) |
+| `casscf` | Converged, at the polished orbitals: `energies` (each root's total energy), `energy` (weighted), `orbital_energies` (`core`, `active`, `virtual`: the eigenvalues, ascending, of the state-averaged Fock `mc.get_fock` within each space), `natural_occupations` (the weighted 1-RDM's eigenvalues, descending), and `gradient_norm` (\|g\| there, below 1e-10) |
+
+**The starts deviate from issue #244**, which asked for the frontier
+selection throughout. The tool keeps only a start from which `mc1step` and
+`mc2step` reach the same minimum (the weighted energy to 1e-9, `mc.converged`
+set by both), run after run at 8 threads. Water's frontier CAS(4,4) failed:
+its active space has to trade the 1b1 lone pair for the 1b2 O–H bond, so
+`mc2step` stalls or, at two roots, converges 6 mEh up. So water starts from
+the σ O–H orbitals [2, 3, 5, 6] (1b2, 3a1, 4a1, 2b2). N₂'s frontier CAS(6,6)
+at two roots landed 20 mEh up in about one run in three. LiH's CAS(2,4) has a
+zero orbital-Hessian eigenvalue at its minimum. So the two-root cases are
+formaldehyde's frontier CAS(4,3) (π, n, π*: the ground state and the n → π*
+singlet). The later tests (generalized Fock and gradient, Hessian, the SA
+loop and the Casscf step) must start at each case's recorded `active` or
+`avas`, not at a frontier selection of their own.
+
+g and H are the derivatives of E(C exp(κ)) at fixed RDMs, κ_pq = x_pq and
+κ_qp = −x_pq for each packed pair p > q:
+E = E₀ + g·x + ½ xᵀHx + …, so g_pq = 2(F_pq − F_qp) with F the generalized
+Fock. PySCF's `gen_g_hop` returns half of each (g, `h_op` and `h_diag`); the
+tool doubles them, and checks g and H against central finite differences of
+the energy and h_diag against H's own diagonal. Only quantities invariant
+under each orbital's sign are recorded, and under a rotation within a
+degenerate set (N₂'s π pairs), which is why a set is the unit in `pairs`.
+The tool refuses a degenerate set that straddles two spaces.
+
+PySCF's solvers run with fcisolver `conv_tol` 1e-14 and `conv_tol_residual`
+1e-9, `ah_start_tol` 1e-10 and `ah_conv_tol` 1e-14. At its defaults `mc1step`
+stalls near \|g\| = 3e-7 and never sets `mc.converged` at `conv_tol_grad`
+1e-7. A run that stalls just above it is restarted from where it stopped, at
+most twice. At 1e-7 the orbitals, and so the orbital energies, still move by
+about 5e-7 from run to run, and `mc2step` does not converge at 1e-8. So the
+converged results are taken after a polish: Newton steps over the exact
+orbital Hessian, with the CI re-solved densely at every step, to \|g\| < 1e-10.
+The tool checks that the polish leaves the weighted energy within 1e-9 of
+`mc1step`'s, and that H's least eigenvalue there is above 1e-3. Each root's
+energy is not stationary, so `mc1step`'s and `mc2step`'s roots agree only to
+a few 1e-8 (3.4e-8 for formaldehyde); the polished ones do not depend on that.
+
+The output is not bit-for-bit reproducible: threaded reductions differ from
+run to run. Over 13 runs, every stored value agreed with the others to within
+2.2e-10 (the largest drift, in N₂'s converged orbital energies; energies
+and natural occupations moved by at most 3e-12). The stated tolerance is 1e-9: a regeneration that
+moves any value by more than that is a change, not noise. Regenerate with:
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_casscf_reference.py
 ```
