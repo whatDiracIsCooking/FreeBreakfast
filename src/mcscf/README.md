@@ -12,6 +12,7 @@ layer, and each sub-module stays importable on its own.
 | Directory | Module | Role |
 |-----------|--------|------|
 | `fock/` | `free_breakfast.mcscf.fock` | At fixed orbitals and RDMs: the energy, the inactive and active Fock matrices F^I and F^A, the generalized Fock F and the orbital gradient (`casscf_fock`); and the packed order of the non-redundant orbital pairs (`pack_orbital_pairs`, `unpack_orbital_pairs`). |
+| `hessian/` | `free_breakfast.mcscf.hessian` | At the same point: the exact orbital Hessian at fixed CI as a `LinearOperator` over the packed pairs, and its diagonal (`OrbitalHessian`). |
 
 ## Orbitals and the packed order
 
@@ -44,13 +45,15 @@ The gradient is the first derivative in that coordinate, at fixed CI:
 
     E(C exp(κ(x))) = E + g · x + O(x²),   g_pq = 2 (F_pq − F_qp),
 
-with F the generalized Fock. `unpack_orbital_pairs` writes the full κ that
-`recipes.expm` exponentiates.
+with F the generalized Fock, and the Hessian (`hessian/`) the second
+derivative in the same coordinate, E = E + g · x + ½ xᵀ H x + O(x³): both are
+twice PySCF's `gen_g_hop` g, `h_op` and `h_diag`. `unpack_orbital_pairs`
+writes the full κ that `recipes.expm` exponentiates.
 
 ## Tests
 
-`test/gtest/mcscf_fock_gpu.cpp`, linked into `free_breakfast_tests_gpu`,
-against PySCF's `mc1step.gen_g_hop` through `test/gtest/data/casscf/`
+`test/gtest/mcscf_fock_gpu.cpp` and `test/gtest/mcscf_hessian_gpu.cpp`,
+linked into `free_breakfast_tests_gpu`, against PySCF's `mc1step.gen_g_hop` through `test/gtest/data/casscf/`
 (`tools/emit_casscf_reference.py`). The test sets its active spaces up with
 `pipeline.active_space` and the `Casci` step from the test executable; this
 layer's own targets link nothing of `pipeline`.
