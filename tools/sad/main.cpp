@@ -1,7 +1,7 @@
 /// @file
 /// @brief `free-breakfast-sad-stamps`: compute the SAD atomic density of every
-///        element of every compiled-in basis set, and write each one as
-///        `data/sad/<basis>/<Z>.npy`.
+///        element of the compiled-in basis sets it is asked for, and write
+///        each one as `data/sad/<basis>/<Z>.npy`.
 ///
 /// The generator behind the baked SAD stamps that `src/io/sad` compiles in. It
 /// runs exactly the computation the guess would run at runtime -- the
@@ -11,13 +11,19 @@
 /// otherwise compute. It passes no @c SadStampLookup, so it can only compute:
 /// the stamps it overwrites never feed it.
 ///
-/// The basis sets are the `<data>/basis/*.json` files, each resolved by its
-/// file name. Resolving goes through the binary, not the file, so a JSON file
-/// this build was not configured with is an error ("not compiled in"), not a
-/// stamp computed over shells the runtime would never see. Rebuild first.
+/// The sets to regenerate are named on the command line, each resolved as
+/// @c resolve_basis resolves a name (so `cc-pvdz` and `cc-pVDZ` are one set),
+/// or `--all` for every `<data>/basis/*.json`, each by its file name. A run
+/// names its sets because each costs minutes: the one set a change touched is
+/// what wants regenerating, not the hour of CPU the rest would cost. Resolving
+/// goes through the binary, not the file, so a set this build was not
+/// configured with is an error ("not compiled in"), not a stamp computed over
+/// shells the runtime would never see. Rebuild first.
 ///
-/// Every subdirectory of `<data>/sad/` is removed before the new stamps are
-/// written, so an element or a basis set that has gone leaves nothing behind.
+/// Each regenerated set's `<data>/sad/<basis>/` is removed before its new
+/// stamps are written, so an element that has gone leaves nothing behind;
+/// the other sets' stamps are not touched. `--all` removes every subdirectory
+/// of `<data>/sad/`, so a basis set that has gone leaves nothing behind either.
 /// An element whose SCF is refused as too large (ErrorKind::Unsupported) is
 /// reported and skipped: the runtime refuses it the same way. Any other failure
 /// fails the run, and nothing is written.
@@ -85,15 +91,8 @@ void compute(std::vector<Job> &jobs) {
   executor.run(flow).wait();
 }
 
-fb::Status run(std::span<char *const> args) {
-  if (args.size() != 2) {
-    return fb::err_config("usage: {} <repo>/data",
-                          args.empty() ? "free-breakfast-sad-stamps" : args[0]);
-  }
-  const std::filesystem::path data{args[1]};
-  const std::filesystem::path basis_dir = data / "basis";
-  const std::filesystem::path sad_dir = data / "sad";
-
+// The `<data>/basis/*.json` file names, sorted: what `--all` regenerates.
+fb::Result<std::vector<std::string>> every_set(const std::filesystem::path &basis_dir) {
   std::error_code ec;
   std::vector<std::string> specs;
   for (const auto &entry : std::filesystem::directory_iterator(basis_dir, ec)) {
@@ -105,10 +104,40 @@ fb::Status run(std::span<char *const> args) {
     return fb::err_io("cannot list {}: {}", basis_dir.string(), ec.message());
   }
   std::ranges::sort(specs);
+  return specs;
+}
 
+fb::Status run(std::span<char *const> args) {
+  if (args.size() < 3) {
+    return fb::err_config("usage: {} <repo>/data (<basis>... | --all)",
+                          args.empty() ? "free-breakfast-sad-stamps" : args[0]);
+  }
+  const std::filesystem::path data{args[1]};
+  const std::filesystem::path sad_dir = data / "sad";
+
+  const bool all = args.size() == 3 && std::string_view{args[2]} == "--all";
+  std::vector<std::string> specs;
+  if (all) {
+    specs = FBF_TRY(every_set(data / "basis"));
+  } else {
+    for (const char *arg : args.subspan(2)) {
+      if (std::string_view{arg} == "--all") {
+        return fb::err_config("--all takes no basis names beside it");
+      }
+      specs.emplace_back(arg);
+    }
+  }
+
+  // The canonical names of the sets being regenerated: two spellings of one
+  // set are one set, computed once.
+  std::vector<std::string> names;
   std::vector<Job> jobs;
   for (const std::string &spec : specs) {
     std::vector<Job> more = FBF_TRY(jobs_for(spec));
+    if (more.empty() || std::ranges::contains(names, more.front().basis)) {
+      continue;
+    }
+    names.push_back(more.front().basis);
     std::ranges::move(more, std::back_inserter(jobs));
   }
   compute(jobs);
@@ -121,12 +150,14 @@ fb::Status run(std::span<char *const> args) {
     }
   }
 
+  std::error_code ec;
   std::filesystem::create_directories(sad_dir, ec);
   if (ec) {
     return fb::err_io("cannot create {}: {}", sad_dir.string(), ec.message());
   }
   for (const auto &entry : std::filesystem::directory_iterator(sad_dir, ec)) {
-    if (entry.is_directory()) {
+    const bool regenerated = std::ranges::contains(names, entry.path().filename().string());
+    if (entry.is_directory() && (all || regenerated)) {
       std::filesystem::remove_all(entry.path(), ec);
       if (ec) {
         return fb::err_io("cannot remove {}: {}", entry.path().string(), ec.message());
