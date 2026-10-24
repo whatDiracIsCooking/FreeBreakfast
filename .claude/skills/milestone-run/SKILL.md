@@ -60,8 +60,9 @@ gh issue list --milestone "<title>" --state all --limit 200 \
 
 `--milestone` wants the **title**, not the number. For each issue, take its
 blockers from the `## Depends on` lines that `milestone` writes into every
-body — that is this repo's source of truth — plus any native dependencies
-someone added on top:
+body — that is this repo's source of truth — plus the native "blocked by"
+links `milestone` sets to match. If someone added a native link later, it
+counts too:
 
 ```bash
 gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by --jq '.[].number'

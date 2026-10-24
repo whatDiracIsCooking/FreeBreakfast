@@ -2,8 +2,9 @@
 name: milestone
 description: >-
   Turn a plan — a roadmap/design .md, or the current conversation — into a
-  GitHub milestone plus a DAG of issues, each scoped to a single PR and
-  cross-linked by dependency so independent issues can be worked in parallel.
+  GitHub milestone plus a DAG of issues, each scoped to a single PR, wired
+  with native "blocked by" dependencies and labelled (area + wave-N) so
+  independent issues can be worked in parallel.
   Use when the user asks to "make a milestone", "break this into issues",
   "plan out the work as issues", or wants a design decomposed into trackable,
   parallelizable GitHub work. Requires gh + GH_TOKEN (present in this repo's
@@ -82,7 +83,9 @@ Creating issues is public and awkward to undo. Present the whole plan first:
 
 - the **milestone** title + one-line description;
 - a **wave table** — for each issue: proposed title, its wave, its `depends on`
-  set, and a one-line scope;
+  set, its labels, and a one-line scope;
+- any **labels to be created** (new area labels, a `wave-N` beyond the ones
+  that exist), with description and colour;
 - call out the **wave-0 set** explicitly: "these N can be started in parallel
   immediately."
 
@@ -103,22 +106,53 @@ gh api repos/{owner}/{repo}/milestones \
 Put the wave map in the description (markdown renders on the milestone page) so
 the DAG is visible without opening every issue.
 
-## 6. Create the issues in topological order
+## 6. Make sure the labels exist
 
-Create dependencies **before** dependents. Then when you write a dependent's
-body, its `Depends on #N` already has a real number, and GitHub auto-creates
-the back-reference on the dependency's timeline — no second pass needed for the
-depends-on direction.
+Every issue gets labels, and `gh issue create --label` fails on one that does
+not exist — so create the missing ones first. Two kinds:
+
+- **`wave-N`** — exactly one per issue, its wave from step 3. `wave-0` …
+  `wave-4` already exist; add a higher one only when the DAG is that deep,
+  following the same pattern:
+
+  ```bash
+  gh label create wave-5 --description "Milestone wave 5" --color "<hex>"
+  ```
+
+- **Area labels** — one or more per issue, naming the subsystem it touches
+  (`scf`, `pipeline`, `ci`, `coulomb`, `exchange`, `density-fitting`, …, plus
+  the stock `bug` / `enhancement` / `documentation` where they fit). Reuse
+  what exists — `gh label list --limit 200` — before inventing a near
+  duplicate. A new subsystem gets a new label with a one-line description
+  naming its module, e.g. `--description "The CI module (src/ci)"`.
+
+Create only the labels the approved draft listed.
+
+## 7. Create the issues in topological order
+
+Create dependencies **before** dependents, so every blocker already has a real
+number when its dependent is created. Each issue carries three things that
+encode the graph:
+
+- the body's `## Depends on` lines — the **source of truth**, which
+  `milestone-run` reads and which survives any tooling;
+- native **"blocked by"** links (`--blocked-by`), which GitHub shows in the
+  issue sidebar as *Blocked by* / *Blocking* and on project boards — set them
+  on every issue with dependencies, matching the body exactly;
+- its **labels** (`wave-N` + area).
 
 ```bash
 gh issue create \
   --title "<title>" \
   --milestone "<milestone title>" \
+  --label "wave-1,scf" \
+  --blocked-by 12,14 \
   --body "$(cat <<'EOF'
 ## Scope
 ...
 ## Depends on
 - #12
+- #14
 ## Acceptance
 ...
 ## Files / area
@@ -132,21 +166,36 @@ Notes:
 
 - `--milestone` takes the milestone **title**, which must match what step 5
   created. It is `-m, --milestone name` — a bare number is not accepted.
-- Optional native links, if the user wants them beyond the body text: gh
-  **≥2.94** exposes `--parent <n>` for a true **sub-issue** (a parent/child
-  tree, not a general DAG — only use it when the relationship really is
-  containment). Check with `gh --version`; distro packages are often far
-  older than this (Ubuntu 24.04 ships 2.45), in which case the flag is absent
-  entirely and the body's `Depends on` line is all you have.
-- GitHub's newer many-to-many **issue dependencies** ("blocked by") are set via
-  the API, not a flag; the `Depends on #N` body line is the portable source of
-  truth, so add native dependencies only on request, on top of it — never
-  instead of it.
-- Labels are optional and must exist first (`gh label create`); a `wave-N`
-  label is a cheap parallelism signal if the user wants one, but the body's
-  `Depends on` is what actually encodes the graph.
+- A wave-0 issue has no `--blocked-by` and `None — ready to start` in its
+  body.
+- `--blocked-by` takes issue numbers or URLs, comma-separated. It needs a
+  recent gh: check that `gh issue create --help` lists it (the container's
+  gh does; a distro gh such as Ubuntu 24.04's 2.45 does not). Without it, add
+  each link after creation through the REST API. That endpoint wants the
+  blocker's **database id**, not its number:
 
-## 7. Report
+  ```bash
+  id=$(gh api repos/{owner}/{repo}/issues/<blocker> --jq .id)
+  gh api -X POST repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by \
+    -F issue_id="$id"
+  ```
+
+- A forgotten or wrong link is fixed in place:
+  `gh issue edit <n> --add-blocked-by 12` / `--remove-blocked-by 12`.
+- `--parent <n>` makes a **sub-issue** — a parent/child tree, not a
+  dependency. Use it only when the relationship really is containment, never
+  in place of `--blocked-by`.
+
+Verify the graph before reporting. For every issue, the native list must equal
+the body's `Depends on` set:
+
+```bash
+gh api repos/{owner}/{repo}/issues/<n>/dependencies/blocked_by --jq '[.[].number]'
+```
+
+Fix any mismatch with `gh issue edit`.
+
+## 8. Report
 
 Finish with the milestone URL and a short wave summary: which issues (by number
 now) are in each wave, and the explicit **"ready now"** list — the wave-0
@@ -163,4 +212,6 @@ gh api -X DELETE repos/{owner}/{repo}/milestones/<number>        # the milestone
 ```
 
 Deleting the milestone does **not** delete its issues — they just detach.
-Remove the issues first if the whole plan is being scrapped.
+Remove the issues first if the whole plan is being scrapped. Deleting an issue
+drops its blocked-by links with it. Labels from step 6 stay behind; delete a
+new one (`gh label delete <name> --yes`) only if nothing else uses it.
