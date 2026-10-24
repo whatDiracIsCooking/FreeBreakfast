@@ -15,6 +15,15 @@ rotation within one set is then a symmetry operation of the molecule, which
 leaves every recorded element unchanged. The tool refuses a case that breaks
 either rule.
 
+CASSCF's `mc_ao2mo` integrals over the same orbitals are recorded too, from
+`CASSCF.ao2mo`'s ppaa, (pq|uv), and papa, (pu|qv), over every orbital p and
+active u: their sign-invariant (pp|uu) and (pu|pu). p ranges over the whole
+basis, so an orbital outside the active space may share a degenerate set with
+others, rotated within it independently of the active one; each is therefore
+summed over p's degenerate set and u's, which is invariant under both
+rotations (a trace of J[C_u C_u^T] or K[C_u C_u^T] over p's set, summed over
+u's), and is the element itself where both sets are single orbitals.
+
     uv run --group tools tools/emit_active_integrals_reference.py
 
 writes test/gtest/data/active_space/active_space.json. Re-run it to regenerate;
@@ -95,6 +104,16 @@ def check_degeneracies(name: str, mo_energy: numpy.ndarray, active: list[int]):
         raise RuntimeError(f"{name}: the active space holds {inside} degenerate sets")
 
 
+def degenerate_sets(mo_energy: numpy.ndarray) -> list[list[int]]:
+    """Every orbital's degenerate set, singletons included, ascending."""
+    sets = [[0]]
+    for i in range(1, len(mo_energy)):
+        if mo_energy[i] - mo_energy[i - 1] > DEGENERACY:
+            sets.append([])
+        sets[-1].append(i)
+    return sets
+
+
 def case_reference(case: dict) -> dict:
     """The active-space reference of one molecule."""
     symbols = {symbol for symbol, _ in case["atoms"]}
@@ -131,6 +150,26 @@ def case_reference(case: dict) -> dict:
     mc = mcscf.CASCI(mf, ncas, mol.nelectron - 2 * ncore, ncore=ncore)
     h_eff, e_core = mc.get_h1eff(mo)
     eri = ao2mo.restore(1, mc.get_h2eff(mo), ncas)
+
+    # CASSCF's ppaa (pq|uv) and papa (pu|qv) over the same columns, summed over
+    # degenerate sets: the sets as column positions, and the active ones as
+    # active indices.
+    eris = mcscf.CASSCF(mf, ncas, mol.nelectron - 2 * ncore, ncore=ncore).ao2mo(mo)
+    ppaa = numpy.asarray(eris.ppaa)
+    papa = numpy.asarray(eris.papa)
+    sets = [[orbitals.index(i) for i in d] for d in degenerate_sets(mf.mo_energy)]
+    active_sets = [
+        [col - ncore for col in d] for d in sets if ncore <= d[0] < ncore + ncas
+    ]
+    assert sorted(u for d in active_sets for u in d) == list(range(ncas))
+    pp_uu = [
+        [float(sum(ppaa[p, p, u, u] for p in ps for u in us)) for us in active_sets]
+        for ps in sets
+    ]
+    pu_pu = [
+        [float(sum(papa[p, u, p, u] for p in ps for u in us)) for us in active_sets]
+        for ps in sets
+    ]
     return {
         "name": case["name"],
         "basis": case["basis"],
@@ -152,6 +191,10 @@ def case_reference(case: dict) -> dict:
         "exchange": [
             [float(eri[t, u, t, u]) for u in range(ncas)] for t in range(ncas)
         ],
+        "orbital_sets": sets,
+        "active_sets": active_sets,
+        "ppaa_diagonal": pp_uu,
+        "papa_diagonal": pu_pu,
     }
 
 
@@ -163,7 +206,12 @@ def main() -> None:
         "reordered by 'orbitals' (core, active, rest), columns "
         "[ncore, ncore + ncas) active: get_h1eff's constant E_core (nuclear repulsion "
         "included) and diagonal h_eff_tt, and get_h2eff's (tt|uu) ('coulomb') "
-        "and (tu|tu) ('exchange'), t the row; hartree, coordinates in bohr",
+        "and (tu|tu) ('exchange'), t the row; and CASSCF.ao2mo's ppaa (pq|uv) "
+        "and papa (pu|qv) over every column p and active u, as "
+        "'ppaa_diagonal' = sum (pp|uu) and 'papa_diagonal' = sum (pu|pu) over "
+        "p in each 'orbital_sets' entry (column positions, the row) and u in "
+        "each 'active_sets' entry (active indices, the column): the degenerate "
+        "sets, singletons included; hartree, coordinates in bohr",
         "provenance": {
             "pyscf": pyscf.__version__,
             "numpy": numpy.__version__,
