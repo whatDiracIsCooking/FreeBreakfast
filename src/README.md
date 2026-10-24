@@ -13,7 +13,7 @@ io/        File-level I/O: whole-file primitives, JSON / TOML / .npy, config, BS
 sad/       The SAD initial-guess density from spherically averaged atomic SCFs over a placed basis, in the spherical layout
 recipes/   Dense GPU linear algebra: square gemm and the sandwich products, the symmetric orthogonalizer S^{-1/2}, and DIIS extrapolation
 integrals/ Gaussian integrals on the GPU over FelizJueves-generated kernels: MMD primitive-pair records, S, T, V, the core Hamiltonian H = T + V and the Coulomb matrix J
-localization/  Orbital localization of the occupied space on the GPU: Pipek-Mezey (p = 2 or Knizia's p = 4), and intrinsic atomic and bond orbitals over MINAO
+localization/  Orbital localization of the occupied space on the GPU: Pipek-Mezey (p = 2 or Knizia's p = 4), and intrinsic atomic and bond orbitals over MINAO, and the valence virtual orbitals over the IAOs
 analysis/  Wavefunction analysis: atomic populations and partial charges over the intrinsic atomic orbitals, and the bond-orbital reading of the IBOs
 ci/        Determinant CI over plain arrays: alpha/beta occupation strings, their lexical addresses and single-replacement lists
 mcscf/     CASSCF at fixed orbitals and RDMs on the GPU: the energy, the inactive, active and generalized Fock matrices, the orbital gradient and its packed pair order
