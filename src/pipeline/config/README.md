@@ -13,7 +13,8 @@ names them all. It is the one library that imports every step, so only it and
 ```cpp
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep>;
+                             CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep,
+                             CasciStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
 Result<Calculation> read_config(const std::filesystem::path &path);
@@ -53,14 +54,25 @@ molden = "water.molden"   # default none: the converged orbitals, written
 mode = "pipek_mezey"      # default "pipek_mezey", the only method so far
 exponent = 4              # default 2; 2 or 4
 molden = "water_pm.molden"  # default none: the localized orbitals, written
+
+[casci]
+ncas = 4                  # required
+nelecas = 4               # required
+nroots = 3                # default 1
+active = [2, 4, 5, 7]     # 0-based MO indices; default the frontier orbitals
 ```
 
 `[localization]`'s method options sit in the table beside `mode`, not in
 a subtable named after `LocalizationStep::pipek_mezey`: Pipek-Mezey is the only
 method so far.
 
+`[casci]`'s keys are read for their types only. Whether the active space
+fits needs the molecule's electrons and the basis's orbitals, so
+`CasciStep::orbital_order` checks the ranges when the step runs
+(`casci/README.md`).
+
 **A table is a request, and the steps producing what it reads are filled
-in.** The file above plans all ten steps: `[orthogonalizer]` reads the
+in.** The file above plans all eleven steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
 filled-in step is **read from an empty table**, so its defaults apply and a
 required option it lacks is the same error a written table would give:
@@ -106,7 +118,9 @@ resolved", and this is where that happens.
 - `from` beside another key, or on a step with no `load`;
 - a value of the wrong type. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`
-  option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`;
+  option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`. An
+  integer-array option (`[casci] active`) holds integers only, each read the
+  same way;
 - what `Pipeline::create` refuses (a cycle).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The

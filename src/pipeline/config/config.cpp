@@ -57,6 +57,20 @@ template <class T>
       return err_config("[{}] {} is not a string", step, key);
     }
     out = *value;
+  } else if constexpr (std::same_as<T, std::vector<int32_t>>) {
+    const toml::array *array = node.as_array();
+    if (array == nullptr) {
+      return err_config("[{}] {} is not an array of integers", step, key);
+    }
+    std::vector<int32_t> values;
+    for (const toml::node &element : *array) {
+      const auto value = element.value_exact<int64_t>();
+      if (!value || !std::in_range<int32_t>(*value)) {
+        return err_config("[{}] {} is not an array of 32-bit integers", step, key);
+      }
+      values.push_back(static_cast<int32_t>(*value));
+    }
+    out = std::move(values);
   } else {
     static_assert(std::same_as<T, std::filesystem::path>);
     const auto value = node.value_exact<std::string>();
@@ -143,6 +157,14 @@ template <class S>
     }
     options.exponent = static_cast<PipekMezeyExponent>(exponent);
     FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+  } else if constexpr (std::same_as<S, CasciStep>) {
+    // The ranges need the molecule and the basis, so CasciStep::orbital_order
+    // checks them when the step runs.
+    FBF_TRY(check_keys(table, kStep, {"ncas", "nelecas", "nroots", "active"}));
+    FBF_TRY(read_required_key(table, kStep, "ncas", base_dir, step.ncas));
+    FBF_TRY(read_required_key(table, kStep, "nelecas", base_dir, step.nelecas));
+    FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
+    FBF_TRY(read_key(table, kStep, "active", base_dir, step.active));
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.

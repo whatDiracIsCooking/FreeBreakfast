@@ -16,6 +16,7 @@ core_hamiltonian/  free_breakfast.pipeline.core_hamiltonian: CoreHamiltonianStep
 guess/      free_breakfast.pipeline.guess: GuessStep -- the initial-guess density (SAD), host work beside the device chain
 scf/        free_breakfast.pipeline.scf: ScfStep -- closed-shell RHF to self-consistency, its Fock build, DIIS and loop private to the step
 localization/  free_breakfast.pipeline.localization: LocalizationStep -- the SCF's occupied orbitals localized, by Pipek-Mezey for now
+casci/      free_breakfast.pipeline.casci: CasciStep -- CASCI over the SCF's orbitals: the active-space Hamiltonian, the CI over the GPU sigma, and each root's 1-RDM
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 ```
 

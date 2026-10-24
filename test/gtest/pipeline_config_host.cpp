@@ -223,6 +223,84 @@ TEST(PipelineConfig, AnUnknownLocalizationModeIsInvalidConfig) {
                       "[localization] exponent is 3");
 }
 
+TEST(PipelineConfig, EveryCasciOptionIsReadAndTheScfIsFilledIn) {
+  auto calc = fb::parse_config(
+      with_inputs("[casci]\nncas = 4\nnelecas = 4\nnroots = 3\nactive = [2, 4, 5, 7]\n"), "");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::CasciStep &casci = *calc->step<fb::CasciStep>();
+  EXPECT_EQ(casci.ncas, 4);
+  EXPECT_EQ(casci.nelecas, 4);
+  EXPECT_EQ(casci.nroots, 3);
+  EXPECT_EQ(casci.active, (std::vector<std::int32_t>{2, 4, 5, 7}));
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::LocalizationStep>().has_value());
+
+  auto plain = fb::parse_config(with_inputs("[casci]\nncas = 2\nnelecas = 2\n"), "");
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  EXPECT_EQ(plain->step<fb::CasciStep>()->nroots, 1);
+  EXPECT_TRUE(plain->step<fb::CasciStep>()->active.empty());
+}
+
+TEST(PipelineConfig, AMalformedCasciTableIsInvalidConfig) {
+  expect_config_error(with_inputs("[casci]\nnelecas = 4\n"), "[casci] needs 'ncas'");
+  expect_config_error(with_inputs("[casci]\nncas = 4\n"), "[casci] needs 'nelecas'");
+  expect_config_error(with_inputs("[casci]\nncas = 4\nnelecas = 4\nnroot = 2\n"),
+                      "[casci] has no option 'nroot'");
+  expect_config_error(with_inputs("[casci]\nncas = 4.5\nnelecas = 4\n"), "[casci] ncas");
+  expect_config_error(with_inputs("[casci]\nncas = 2\nnelecas = 2\nactive = 3\n"),
+                      "[casci] active is not an array");
+  expect_config_error(with_inputs("[casci]\nncas = 2\nnelecas = 2\nactive = [3, 4.0]\n"),
+                      "[casci] active is not an array of 32-bit integers");
+}
+
+// The ranges need the molecule's electrons and the basis's orbitals, so
+// orbital_order checks them when the step runs: here, water's 10 electrons
+// over STO-3G's 7 orbitals.
+TEST(PipelineConfig, TheCasciOrbitalOrderPutsCoreActiveRest) {
+  const auto order = [](std::string_view table) {
+    auto calc = fb::parse_config(with_inputs(table), "");
+    EXPECT_TRUE(calc.has_value()) << calc.error().message;
+    return calc->step<fb::CasciStep>()->orbital_order(10, 7);
+  };
+  auto frontier = order("[casci]\nncas = 4\nnelecas = 4\n");
+  ASSERT_TRUE(frontier.has_value()) << frontier.error().message;
+  EXPECT_EQ(*frontier, (std::vector<std::int32_t>{0, 1, 2, 3, 4, 5, 6}));
+  auto explicit_set = order("[casci]\nncas = 2\nnelecas = 2\nactive = [5, 1]\n");
+  ASSERT_TRUE(explicit_set.has_value()) << explicit_set.error().message;
+  EXPECT_EQ(*explicit_set, (std::vector<std::int32_t>{0, 2, 3, 4, 5, 1, 6}));
+  auto all = order("[casci]\nncas = 7\nnelecas = 10\n");
+  ASSERT_TRUE(all.has_value()) << all.error().message;
+  EXPECT_EQ(*all, (std::vector<std::int32_t>{0, 1, 2, 3, 4, 5, 6}));
+}
+
+TEST(PipelineConfig, AnImpossibleCasciActiveSpaceIsRefusedByOrbitalOrder) {
+  const auto expect_refused = [](std::string_view table, std::string_view needle) {
+    auto calc = fb::parse_config(with_inputs(table), "");
+    ASSERT_TRUE(calc.has_value()) << calc.error().message;
+    const auto order = calc->step<fb::CasciStep>()->orbital_order(10, 7);
+    ASSERT_FALSE(order.has_value());
+    EXPECT_EQ(order.error().kind, fb::ErrorKind::InvalidConfig);
+    EXPECT_NE(order.error().message.find(needle), std::string::npos) << order.error().message;
+  };
+  // ncore + ncas > nmo: 3 core and 5 active over 7.
+  expect_refused("[casci]\nncas = 5\nnelecas = 4\n", "ncore 3 + ncas 5 exceeds the 7 orbitals");
+  // nelecas > 2 ncas.
+  expect_refused("[casci]\nncas = 2\nnelecas = 6\n", "nelecas in [0, min(2 ncas, 10)]");
+  expect_refused("[casci]\nncas = 0\nnelecas = 0\n", "ncas >= 1");
+  // An odd core electron count.
+  expect_refused("[casci]\nncas = 4\nnelecas = 3\n", "odd core electron count");
+  // A bad or duplicate index, or the wrong number of them.
+  expect_refused("[casci]\nncas = 2\nnelecas = 2\nactive = [4, 7]\n",
+                 "active orbital 7 is not in [0, 7)");
+  expect_refused("[casci]\nncas = 2\nnelecas = 2\nactive = [-1, 4]\n",
+                 "active orbital -1 is not in [0, 7)");
+  expect_refused("[casci]\nncas = 2\nnelecas = 2\nactive = [4, 4]\n",
+                 "active orbital 4 is named twice");
+  expect_refused("[casci]\nncas = 2\nnelecas = 2\nactive = [4, 5, 6]\n",
+                 "active names 3 orbitals, not ncas 2");
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",

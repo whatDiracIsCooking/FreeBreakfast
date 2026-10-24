@@ -65,6 +65,14 @@ void print_products(const fb::Calculation &calc) {
     std::println("PM functional:     {:.10f} -> {:.10f}", pm->info.initial_functional,
                  pm->info.functional);
   }
+  if (const auto &casci = calc.get<fb::Casci>()) {
+    std::println("CASCI:             CAS({}, {}), {} core, {} Davidson iterations", casci->nelecas,
+                 casci->ncas, casci->ncore, casci->davidson.iterations);
+    for (std::size_t r = 0; r < casci->energies.size(); ++r) {
+      std::println("CASCI root {}:      {:.10f} Ha, <S^2> {:.6f}", r, casci->energies[r],
+                   casci->spin_squares[r]);
+    }
+  }
 }
 
 fb::Status run(std::span<char *const> args) {
