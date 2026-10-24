@@ -14,6 +14,13 @@ root's <S^2> and spin-summed 1-RDM recorded. The roots are checked against a
 dense diagonalisation of the same sector, H built column by column with
 `contract_2e`, so a Davidson that skipped a root cannot be written out.
 
+Each case also carries state-averaged 1- and 2-RDMs: the ground state alone
+(weight 1) and, where a case names `weighted`, its lowest singlets at those
+weights. Each is `make_rdm12`'s spin-summed pair weighted over the roots, with
+`make_rdm12s` summed over the spins written beside it as a cross-check, and
+the CI vectors they were read from, so a test reads the RDMs of exactly those
+vectors and never depends on a solver's sign or rotation.
+
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
         tools/emit_fci_reference.py
 
@@ -52,9 +59,16 @@ FORMALDEHYDE = [
 # Water's STO-3G has 7 MOs, 5 of them doubly occupied, so CAS(6,6) (2 core,
 # 6 active) does not fit; its CAS(6,6) is in 6-31G. Formaldehyde is the case
 # chosen for its triplet below the second singlet (n -> pi*, T1 under S1);
-# the emitter asserts it has one.
+# the emitter asserts it has one. Water's STO-3G CAS(4,4) also carries a
+# two-singlet state average, at CASSCF's [0.7, 0.3].
 CASES = [
-    {"name": "h2o_sto3g_cas44", "atoms": WATER, "basis": "sto-3g", "cas": (4, 4)},
+    {
+        "name": "h2o_sto3g_cas44",
+        "atoms": WATER,
+        "basis": "sto-3g",
+        "cas": (4, 4),
+        "weighted": (0.7, 0.3),
+    },
     {"name": "h2o_631g_cas66", "atoms": WATER, "basis": "6-31g", "cas": (6, 6)},
     {"name": "n2_ccpvdz_cas66", "atoms": NITROGEN, "basis": "cc-pvdz", "cas": (6, 6)},
     {
@@ -78,6 +92,43 @@ DEGENERATE = 1e-8
 # left out must lie this far above the last kept, so no level is split.
 DENSE_TOL = 1e-10
 GAP = 1e-6
+
+# make_rdm12 and make_rdm12s summed over the spins must agree to this.
+RDM12S_TOL = 1e-12
+
+
+def values(array: numpy.ndarray) -> dict:
+    """An array as the JSON's shape-and-values pair, row-major."""
+    return {"shape": list(array.shape), "values": [float(v) for v in array.ravel()]}
+
+
+def averaged_rdm12(
+    vectors: list[numpy.ndarray],
+    roots: list[int],
+    weights: list[float],
+    n: int,
+    nelec: tuple[int, int],
+) -> dict:
+    """The weighted 1- and 2-RDMs of the given roots, and their vectors."""
+    dm1 = numpy.zeros((n, n))
+    dm2 = numpy.zeros((n, n, n, n))
+    dm2s = numpy.zeros((n, n, n, n))
+    for k, weight in zip(roots, weights, strict=True):
+        one, two = fci.direct_spin1.make_rdm12(vectors[k], n, nelec)
+        _, (aa, ab, bb) = fci.direct_spin1.make_rdm12s(vectors[k], n, nelec)
+        dm1 += weight * one
+        dm2 += weight * two
+        dm2s += weight * (aa + ab + ab.transpose(2, 3, 0, 1) + bb)
+    error = numpy.abs(dm2 - dm2s).max()
+    assert error < RDM12S_TOL, f"make_rdm12 and make_rdm12s differ by {error}"
+    return {
+        "roots": roots,
+        "weights": weights,
+        "vectors": values(numpy.array([vectors[k].ravel() for k in roots])),
+        "rdm1": values(dm1),
+        "rdm2": values(dm2),
+        "rdm2_from_rdm12s": values(dm2s),
+    }
 
 
 def dense_hamiltonian(
@@ -153,7 +204,7 @@ def case_reference(case: dict) -> dict:
                 "energy": float(energy),
                 "s2": float(s2),
                 "degenerate": degenerate,
-                "rdm1": {"shape": [n, n], "values": [float(v) for v in rdm1.ravel()]},
+                "rdm1": values(rdm1),
             }
         )
 
@@ -163,6 +214,22 @@ def case_reference(case: dict) -> dict:
         assert any(abs(roots[k]["s2"] - 2.0) < 1e-6 for k in range(singlets[1])), (
             f"{case['name']}: no triplet below the second singlet"
         )
+
+    # A degenerate root's RDMs depend on the solver's rotation, but these are
+    # read from the stored vectors; the roots are kept clear of one anyway, so
+    # each is a state in its own right.
+    averages = [([0], [1.0])]
+    if "weighted" in case:
+        weights = list(case["weighted"])
+        averages.append((singlets[: len(weights)], weights))
+    for picked, _ in averages:
+        assert not any(roots[k]["degenerate"] for k in picked), (
+            f"{case['name']}: a state-averaged root is degenerate"
+        )
+    rdm12 = [
+        averaged_rdm12(list(vectors), picked, weights, n, nelec)
+        for picked, weights in averages
+    ]
 
     return {
         "name": case["name"],
@@ -175,9 +242,10 @@ def case_reference(case: dict) -> dict:
         "n_alpha": nelec[0],
         "n_beta": nelec[1],
         "e_core": float(e_core),
-        "h1": {"shape": [n, n], "values": [float(v) for v in h1.ravel()]},
-        "eri": {"shape": [n, n, n, n], "values": [float(v) for v in eri.ravel()]},
+        "h1": values(h1),
+        "eri": values(eri),
         "roots": roots,
+        "rdm12": rdm12,
     }
 
 
@@ -188,7 +256,12 @@ def main() -> None:
         "from get_h2eff restored to n^4, chemists' order, row-major), and "
         "fci.direct_spin1's lowest roots over them (conv_tol 1e-13, checked "
         "against the dense spectrum): total energy (hartree, E_core "
-        "included), <S^2>, and the spin-summed 1-RDM; coordinates in bohr",
+        "included), <S^2>, and the spin-summed 1-RDM; and per case, state "
+        "averages (the ground state alone, and where given its lowest singlets "
+        "at the given weights) with their CI vectors (alpha-major, one row per "
+        "root), the weighted make_rdm12 pair (2-RDM [p,q,r,s] = "
+        "<p+ r+ s q>, n^4 row-major) and make_rdm12s summed over the spins; "
+        "coordinates in bohr",
         "provenance": {
             "pyscf": pyscf.__version__,
             "numpy": numpy.__version__,
