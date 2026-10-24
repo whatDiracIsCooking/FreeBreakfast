@@ -14,6 +14,8 @@ covers the layer, and each sub-module stays importable on its own.
 |-----------|--------|------|
 | `strings/` | `free_breakfast.ci.strings` | The occupation strings of one spin (`StringSet`): enumeration, lexical addressing onto [0, C(n, N)), and the single-replacement lists for E_pq. Host-side. |
 | `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `StringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays: `CiSigma` on the device, a `LinearOperator` over blocks of CI vectors, and the host reference written for clarity, its oracle. |
+| `solver/` | `free_breakfast.ci.solver` | `ci_solve`: the lowest roots of one spin through `davidson_solve` over any sigma that is a `LinearOperator`, spin held by a penalty λ (S² − S(S+1)), with ⟨S²⟩ per root; and S² on a vector. |
+| `rdm/` | `free_breakfast.ci.rdm` | The spin-summed 1-RDM γ_tu of a CI vector. Host-side. |
 
 A determinant is a pair of strings, alpha and beta, each from its own
 `StringSet`. The strings are in PySCF's `cistring` order, so a CI vector laid

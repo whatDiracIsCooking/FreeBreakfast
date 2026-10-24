@@ -103,6 +103,7 @@ add_executable(
   cg_unitary_gpu.cpp
   davidson_gpu.cpp
   ci_sigma_gpu.cpp
+  ci_solver_gpu.cpp
   matrix_ao_gpu.cpp
   gemm_gpu.cpp
   gemmwich_gpu.cpp

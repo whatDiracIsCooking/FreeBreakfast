@@ -2,6 +2,8 @@
 # never sees a basis, molecule or SCF. Sigma is over the strings' lists.
 add_subdirectory(strings)
 add_subdirectory(sigma)
+add_subdirectory(solver)
+add_subdirectory(rdm)
 
 # The aggregate: one import for the CI layer.
 free_breakfast_add_cxx_module_library(
@@ -13,4 +15,6 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
+  free_breakfast::ci::solver
+  free_breakfast::ci::rdm
 )
