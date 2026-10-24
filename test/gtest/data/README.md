@@ -14,6 +14,7 @@ file names the tool that wrote it and the source it came from.
 | `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr | `tools/emit_scf_reference.py`, which runs PySCF |
 | `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom | `tools/emit_localization_reference.py`, which runs PySCF |
 | `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit_sad_reference.py`, which runs PySCF |
+| `ci/` | `direct_spin1.json`: active-space integrals (E_core, h_eff, (tu\|vw)) from PySCF's CASCI over its own RHF in its own basis library, and `fci.direct_spin1`'s lowest 12 roots over them, each with ⟨S²⟩ and its spin-summed 1-RDM, for H₂O STO-3G CAS(4,4), H₂O 6-31G CAS(6,6), N₂ cc-pVDZ CAS(6,6) and CH₂O STO-3G CAS(4,4) | `tools/emit_fci_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
 
@@ -109,4 +110,26 @@ left. Regenerate with:
 
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_localization_reference.py
+```
+
+## `ci/direct_spin1.json`
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF and numpy versions, date, host, the command that wrote it |
+| `cases` | One per active space: `name`, `basis` (PySCF's library name), `atoms` (`symbol`, `z`, `coord` in bohr), `n_orbitals`, `n_alpha`, `n_beta`, `e_core` (hartree), `h1` (`{shape, values}`, n × n, row-major), `eri` (`{shape, values}`, n⁴, row-major (t, u, v, w), chemists' (tu\|vw)), and `roots` |
+| `roots` | The lowest 12 of the M_s = 0 sector, ascending: `energy` (hartree, `e_core` included), `s2` (⟨S²⟩), `degenerate` (another root lies within 1e-8, so this root's 1-RDM depends on the solver's rotation within the level), and `rdm1` (`{shape, values}`, the spin-summed γ_tu, n × n) |
+
+Everything is in PySCF's own MO basis, so nothing from this tree's AOs enters
+and there is no ordering or sign to reconcile. The roots are `direct_spin1`'s
+with no spin constraint, so the triplets' M_s = 0 components are among them;
+every case has three singlets within its 12, and the 12th root is not split
+from the 13th. Water's STO-3G has only 7 MOs, so its CAS(6,6) is in 6-31G.
+CH₂O is the case chosen for a triplet below the second singlet (T₁ under S₁,
+n → π*), and the tool asserts it has one; the other three have one too. The
+tool also checks the roots against a dense diagonalisation of the sector.
+Regenerate with:
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_fci_reference.py
 ```

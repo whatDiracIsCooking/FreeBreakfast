@@ -7,3 +7,4 @@
 export module free_breakfast.ci;
 
 export import free_breakfast.ci.strings;
+export import free_breakfast.ci.sigma;
