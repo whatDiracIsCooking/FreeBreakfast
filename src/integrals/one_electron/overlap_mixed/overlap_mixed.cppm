@@ -44,4 +44,23 @@ export namespace free_breakfast {
 [[nodiscard]] Status overlap_mixed(DeviceResources &res, const BasisSet &rows, const BasisSet &cols,
                                    Buffers::device<double> &s);
 
+/// @brief The spherical overlap S_mn = <m|n>, m a spherical AO of @p rows and
+/// n of @p cols, into @p s: column-major rows.nao_sphe() x cols.nao_sphe(),
+/// leading dimension rows.nao_sphe().
+///
+/// overlap_mixed's Cartesian block carried over as U_rows^T S_cart U_cols,
+/// each U the basis's spherical_transform_matrix: two gemms. The Cartesian
+/// block, both U's and the intermediate are pool buffers on res.device().
+/// Queued on res.stream(), which is synchronized once at the end, so the
+/// host copies of the U's outlive their upload.
+///
+/// @p s must hold exactly rows.nao_sphe() * cols.nao_sphe() doubles, on
+/// res.device().
+///
+/// @return Success; InvalidConfig if @p s is the wrong size, or overlap_mixed's
+///         errors; or the GpuRuntime error of a failed upload or gemm, which
+///         leaves @p s unspecified.
+[[nodiscard]] Status overlap_mixed_spherical(DeviceResources &res, const BasisSet &rows,
+                                             const BasisSet &cols, Buffers::device<double> &s);
+
 } // namespace free_breakfast

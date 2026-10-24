@@ -10,6 +10,7 @@ module;
 module free_breakfast.integrals.one_electron.overlap_mixed;
 
 import std;
+import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -65,6 +66,47 @@ Status overlap_mixed(DeviceResources &res, const BasisSet &rows, const BasisSet 
                                        static_cast<int32_t>(n_rows), static_cast<int32_t>(n_cols),
                                        s.data());
   }));
+}
+
+Status overlap_mixed_spherical(DeviceResources &res, const BasisSet &rows, const BasisSet &cols,
+                               Buffers::device<double> &s) {
+  const auto n_rows = static_cast<int32_t>(rows.nao_sphe());
+  const auto n_cols = static_cast<int32_t>(cols.nao_sphe());
+  const auto n_rows_cart = static_cast<int32_t>(rows.nao_cart());
+  const auto n_cols_cart = static_cast<int32_t>(cols.nao_cart());
+  if (s.num_elements() != static_cast<uint64_t>(n_rows) * static_cast<uint64_t>(n_cols)) {
+    return err_config("overlap_mixed_spherical: the buffer holds {} doubles, but S is {} x {}",
+                      s.num_elements(), n_rows, n_cols);
+  }
+  Buffers::device<double> cart(static_cast<size_t>(n_rows_cart) * n_cols_cart, res.device());
+  FBF_TRY(overlap_mixed(res, rows, cols, cart));
+  if (s.num_elements() == 0) {
+    return {};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  const std::vector<double> u_rows_host = spherical_transform_matrix(rows);
+  const std::vector<double> u_cols_host = spherical_transform_matrix(cols);
+  Buffers::device<double> u_rows(u_rows_host.size(), res.device());
+  Buffers::device<double> u_cols(u_cols_host.size(), res.device());
+  Buffers::device<double> t(static_cast<size_t>(n_rows_cart) * n_cols, res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(u_rows.data(), u_rows_host.data(),
+                                         u_rows_host.size() * sizeof(double),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(u_cols.data(), u_cols_host.data(),
+                                         u_cols_host.size() * sizeof(double),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
+  // T = S_cart U_cols, then S = U_rows^T T.
+  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_rows_cart, n_cols, n_cols_cart,
+      &kOne<double>, cart.data(), n_rows_cart, u_cols.data(), n_cols_cart, &kZero<double>, t.data(),
+      n_rows_cart)));
+  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(res.blas().get(), wwr::WWRBLAS_OP_T,
+                                                wwr::WWRBLAS_OP_N, n_rows, n_cols, n_rows_cart,
+                                                &kOne<double>, u_rows.data(), n_rows_cart, t.data(),
+                                                n_rows_cart, &kZero<double>, s.data(), n_rows)));
+  // The uploads read pageable host memory that goes with this frame.
+  return res.sync();
 }
 
 } // namespace free_breakfast

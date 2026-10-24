@@ -96,59 +96,40 @@ namespace free_breakfast {
 }
 
 // The spherical overlaps S12 (n x m, the basis by the minimal one) and S2
-// (m x m), each U_rows^T S_cart U_cols over overlap_mixed's Cartesian block,
-// with the minimal basis's functions normalized: its U's columns are scaled
-// by S2's diagonal to the -1/2 before the products that are kept.
+// (m x m), with the minimal basis's functions normalized: S12 <- S12 D and
+// S2 <- D S2 D, D = diag(S2)^-1/2.
 [[nodiscard]] Status ibo_overlaps(DeviceResources &res, const BasisSet &basis,
-                                  const BasisSet &minimal, double *s12, double *s2) {
+                                  const BasisSet &minimal, Buffers::device<double> &s12,
+                                  Buffers::device<double> &s2) {
   const auto n = static_cast<int32_t>(basis.nao_sphe());
-  const auto nc = static_cast<int32_t>(basis.nao_cart());
   const auto m = static_cast<int32_t>(minimal.nao_sphe());
-  const auto mc = static_cast<int32_t>(minimal.nao_cart());
-  Buffers::device<double> s12_cart = ibo_buffer(res, static_cast<size_t>(nc) * mc);
-  Buffers::device<double> s2_cart = ibo_buffer(res, static_cast<size_t>(mc) * mc);
-  FBF_TRY(overlap_mixed(res, basis, minimal, s12_cart));
-  FBF_TRY(overlap_mixed(res, minimal, minimal, s2_cart));
+  FBF_TRY(overlap_mixed_spherical(res, basis, minimal, s12));
+  FBF_TRY(overlap_mixed_spherical(res, minimal, minimal, s2));
 
-  const std::vector<double> u1_host = spherical_transform_matrix(basis);
-  std::vector<double> u2_host = spherical_transform_matrix(minimal);
-  Buffers::device<double> u1 = ibo_buffer(res, u1_host.size());
-  Buffers::device<double> u2 = ibo_buffer(res, u2_host.size());
-  Buffers::device<double> t =
-      ibo_buffer(res, static_cast<size_t>(std::max(nc, mc)) * static_cast<size_t>(m));
-  FBF_TRY(ibo_upload(res, u1.data(), u1_host));
-  FBF_TRY(ibo_upload(res, u2.data(), u2_host));
-
-  // S2 with U2 as built, for its diagonal.
-  const auto spherical_s2 = [&]() -> Status {
-    FBF_TRY(ibo_gemm(res, false, false, mc, m, mc, kOne<double>, s2_cart.data(), u2.data(),
-                     kZero<double>, t.data()));
-    return ibo_gemm(res, true, false, m, m, mc, kOne<double>, u2.data(), t.data(), kZero<double>,
-                    s2);
-  };
-  FBF_TRY(spherical_s2());
   std::vector<double> s2_host(static_cast<size_t>(m) * m);
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(s2_host.data(), s2, s2_host.size() * sizeof(double),
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(s2_host.data(), s2.data(), s2_host.size() * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, res.stream())));
   FBF_TRY(res.sync());
+  std::vector<double> scale_host(static_cast<size_t>(m));
   for (int32_t r = 0; r < m; ++r) {
     const double norm = s2_host[static_cast<size_t>(r) * (m + 1)];
     if (!(norm > 0.0)) {
       return err_numerical("intrinsic_atomic_orbitals: minimal-basis function {} has norm {}", r,
                            norm);
     }
-    const double scale = 1.0 / std::sqrt(norm);
-    for (int32_t i = 0; i < mc; ++i) {
-      u2_host[i + (static_cast<size_t>(mc) * r)] *= scale;
-    }
+    scale_host[static_cast<size_t>(r)] = 1.0 / std::sqrt(norm);
   }
-  FBF_TRY(ibo_upload(res, u2.data(), u2_host));
-  FBF_TRY(spherical_s2());
-  FBF_TRY(ibo_gemm(res, false, false, nc, m, mc, kOne<double>, s12_cart.data(), u2.data(),
-                   kZero<double>, t.data()));
-  FBF_TRY(
-      ibo_gemm(res, true, false, n, m, nc, kOne<double>, u1.data(), t.data(), kZero<double>, s12));
-  // u2_host is read by the upload above; wait before it goes out of scope.
+  Buffers::device<double> scale = ibo_buffer(res, scale_host.size());
+  FBF_TRY(ibo_upload(res, scale.data(), scale_host));
+  // dgmm in place: each output element reads only its own input element.
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, n, m, s12.data(), n,
+                                                scale.data(), 1, s12.data(), n)));
+  FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, m, m, s2.data(), m,
+                                                scale.data(), 1, s2.data(), m)));
+  FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, m, m, s2.data(), m,
+                                                scale.data(), 1, s2.data(), m)));
+  // scale_host is read by the upload above; wait before it goes out of scope.
   return res.sync();
 }
 
@@ -185,7 +166,7 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
 
   Buffers::device<double> s12 = ibo_buffer(res, nm);
   Buffers::device<double> s2 = ibo_buffer(res, static_cast<size_t>(m) * m);
-  FBF_TRY(ibo_overlaps(res, basis, minimal, s12.data(), s2.data()));
+  FBF_TRY(ibo_overlaps(res, basis, minimal, s12, s2));
 
   // The two Cholesky factors; S1^-1 and S2^-1 are only ever solves.
   Buffers::device<double> l1 = ibo_buffer(res, static_cast<size_t>(n) * n);

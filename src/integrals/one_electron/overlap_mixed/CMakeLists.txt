@@ -35,7 +35,8 @@ free_breakfast_add_gpu_device_library(
 
 # The module. DeviceResources, BasisSet and the device buffer are in its
 # signature, so core::resources, basis and core::wwr are PUBLIC. It builds the
-# records (mmd) and launches through launch_each (one_electron::launch) in its
+# records (mmd), launches through launch_each (one_electron::launch) and
+# scales the spherical form's gemms (core::constants) in its
 # implementation only, so those are PRIVATE, as is the device library: a static
 # library's private link dependencies still reach the final link.
 free_breakfast_add_cxx_module_library(
@@ -54,6 +55,7 @@ free_breakfast_add_cxx_module_library(
   LINK_PRIVATE
   free_breakfast::integrals::mmd
   free_breakfast::integrals::one_electron::launch
+  free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::one_electron::overlap_mixed::device
 )

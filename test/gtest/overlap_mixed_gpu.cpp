@@ -140,6 +140,43 @@ TEST_P(OverlapMixedCross, MatchesLibcintBothWays) {
   expect_matches(back, want, nr, nc, scale, "cols_rows");
 }
 
+// The spherical form against libcint's Cartesian values carried over on the
+// host, U_rows^T S U_cols. With cc-pVDZ's d shells on the columns the U is not
+// an identity there.
+TEST_P(OverlapMixedCross, SphericalIsTheCartesianCarriedOver) {
+  FBF_REQUIRE_GPU();
+  const fb::json doc = read_doc("overlap_mixed", GetParam());
+  ASSERT_FALSE(doc.is_null());
+  const fb::BasisSet rows = read_shells(doc["rows"]["shells"]);
+  const fb::BasisSet cols = read_shells(doc["cols"]["shells"]);
+  const std::size_t nr = rows.nao_cart();
+  const std::size_t nc = cols.nao_cart();
+  const std::size_t sr = rows.nao_sphe();
+  const std::size_t sc = cols.nao_sphe();
+  const auto cart = doc["int1e_ovlp_cross"]["values"].get<std::vector<double>>(); // row-major
+  const std::vector<double> u_rows = fb::spherical_transform_matrix(rows);
+  const std::vector<double> u_cols = fb::spherical_transform_matrix(cols);
+  // want, row-major sr x sc: sum_mn U_rows(m, p) S(m, n) U_cols(n, q).
+  std::vector<double> want(sr * sc, 0.0);
+  for (std::size_t p = 0; p < sr; ++p) {
+    for (std::size_t q = 0; q < sc; ++q) {
+      for (std::size_t m = 0; m < nr; ++m) {
+        for (std::size_t n = 0; n < nc; ++n) {
+          want[p * sc + q] += u_rows[m + p * nr] * cart[m * nc + n] * u_cols[n + q * nc];
+        }
+      }
+    }
+  }
+
+  fb::DeviceResources res{0};
+  fb::Buffers::device<double> s(sr * sc, res.device());
+  ASSERT_EQ(wwr::wwrMemsetAsync(s.data(), 0xFF, sizeof(double) * s.num_elements(), res.stream()),
+            wwr::wwrSuccess);
+  const fb::Status status = fb::overlap_mixed_spherical(res, rows, cols, s);
+  ASSERT_TRUE(status) << status.error().message;
+  expect_matches(download(res, s), want, sr, sc, max_abs(want), "spherical");
+}
+
 INSTANTIATE_TEST_SUITE_P(H2O, OverlapMixedCross,
                          ::testing::Values("h2o_sto3g_x_631g", "h2o_sto3g_x_ccpvdz",
                                            "h2o_sto3g_x_631g_moved"));
@@ -294,6 +331,14 @@ TEST(OverlapMixed, RefusesABufferOfTheWrongSize) {
   const fb::Status status = fb::overlap_mixed(res, basis, basis, s);
   ASSERT_FALSE(status);
   EXPECT_EQ(status.error().kind, fb::ErrorKind::InvalidConfig);
+  // The spherical form wants nao_sphe x nao_sphe, so a Cartesian-sized buffer
+  // is refused too when the two differ.
+  const fb::BasisSet with_d({fb::Shell(2, {{1.0, 1.0}}, Vec3{0.0, 0.0, 0.0})});
+  fb::Buffers::device<double> cart_sized(
+      static_cast<std::size_t>(with_d.nao_cart()) * with_d.nao_cart(), res.device());
+  const fb::Status spherical = fb::overlap_mixed_spherical(res, with_d, with_d, cart_sized);
+  ASSERT_FALSE(spherical);
+  EXPECT_EQ(spherical.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 TEST(OverlapMixed, RefusesAShellAboveD) {
