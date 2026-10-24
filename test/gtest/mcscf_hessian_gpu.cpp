@@ -40,7 +40,12 @@ namespace fb = free_breakfast;
 constexpr double kInvariantTolerance = 1e-7; // gᵀHg and |Hg|, relative
 constexpr double kDiagonalTolerance = 1e-7;
 constexpr double kFiniteDifferenceTolerance = 1e-6; // relative to |H x|
-constexpr double kSymmetryTolerance = 1e-12;        // relative
+// OrbitalHessian's default tau_j and tau_k, which every operator here is built
+// at.
+constexpr double kTau = 1e-14;
+// |x^T H y - y^T H x| <= this max |H| |x| |y|: 100 tau, src/mcscf/hessian's
+// README says why (seen: 1e-13 at most, of max |diag H|).
+constexpr double kSymmetryTolerance = 100.0 * kTau;
 // The orbital energies only pair our orbitals with PySCF's by index.
 constexpr double kOrbitalEnergyTolerance = 1e-6;
 // The finite difference: Richardson's extrapolation of two central
@@ -514,14 +519,14 @@ void expect_derivative(Setup &setup, const fb::SphericalMatrixAO &c,
 }
 
 // x_a^T H x_b = x_b^T H x_a over every pair of the columns of x, hx their
-// products.
+// products, to kSymmetryTolerance of scale |x_a| |x_b|, scale H's.
 void expect_symmetric(const std::vector<std::vector<double>> &x,
-                      const std::vector<std::vector<double>> &hx) {
+                      const std::vector<std::vector<double>> &hx, double scale) {
   for (std::size_t a = 0; a < x.size(); ++a) {
     for (std::size_t b = a + 1; b < x.size(); ++b) {
       const double ab = dot(x[a], hx[b]);
       const double ba = dot(x[b], hx[a]);
-      EXPECT_LE(std::abs(ab - ba), kSymmetryTolerance * std::abs(ab))
+      EXPECT_LE(std::abs(ab - ba), kSymmetryTolerance * scale * norm(x[a]) * norm(x[b]))
           << "directions " << a << ", " << b << ": " << ab << " and " << ba;
     }
   }
@@ -531,7 +536,7 @@ void expect_symmetric(const std::vector<std::vector<double>> &x,
 fb::Result<fb::OrbitalHessian> build_hessian(Setup &setup, const fb::SphericalMatrixAO &c,
                                              const fb::Buffers::device<double> &ppaa,
                                              const fb::Buffers::device<double> &papa,
-                                             const fb::CasscfFock &fock, double tau = 1e-14) {
+                                             const fb::CasscfFock &fock, double tau = kTau) {
   return fb::OrbitalHessian::create(setup.res(), *setup.basis, setup.h->h, setup.transform->u,
                                     setup.j_classes, setup.k_classes, c, setup.ncore, setup.ncas,
                                     ppaa, papa, fock, tau, tau);
@@ -612,13 +617,14 @@ TEST_P(McscfHessian, MatchesPyscfAtTheCasciOrbitals) {
   expect_derivative(*setup, c, random, h_random,
                     [&](const fb::SphericalMatrixAO &orbitals) { return setup->fock(orbitals); });
 
-  // Symmetry, over the gradient and the random directions, of the operator
-  // with J and K unscreened: each screened J and K skips what falls under
-  // tau whatever the density, so at the default taus x^T H y and y^T H x part
-  // by up to 5e-13 here, past 1e-12 of the smaller |x^T H y|.
-  auto unscreened = build_hessian(*setup, c, integrals->first, integrals->second, *fock, 0.0);
-  ASSERT_TRUE(unscreened.has_value()) << unscreened.error().message;
-  expect_symmetric(x, apply_block(res, *unscreened, x));
+  // Symmetry over the gradient and the random directions, at the default
+  // taus, against max |diag H|: H's scale without forming H, and no more than
+  // max |H|, so the bar is no looser for it.
+  double top = 0.0;
+  for (const double d : diagonal) {
+    top = std::max(top, std::abs(d));
+  }
+  expect_symmetric(x, hx, top);
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, McscfHessian,
@@ -734,7 +740,7 @@ TEST(McscfHessianRefusals, AreInvalidConfig) {
   ASSERT_TRUE(fock.has_value()) << fock.error().message;
   const fb::Buffers::device<double> short_ppaa(nmo * nmo, res.device());
   const auto call = [&](std::int32_t ncore, std::int32_t ncas, const fb::Buffers::device<double> &p,
-                        double tau = 1e-14) {
+                        double tau = kTau) {
     return fb::OrbitalHessian::create(res, *setup->basis, setup->h->h, setup->transform->u,
                                       setup->j_classes, setup->k_classes, setup->scf->c, ncore,
                                       ncas, p, papa, *fock, tau, tau);

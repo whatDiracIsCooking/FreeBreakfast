@@ -29,7 +29,8 @@ export namespace free_breakfast {
 ///
 /// A `LinearOperator<OrbitalHessian, double>` of order size(), so
 /// davidson_solve (or an augmented Hessian over it) takes it as it is, and
-/// diagonal() is the exact diag(H) for the preconditioner. H is symmetric.
+/// diagonal() is the exact diag(H) for the preconditioner. H is symmetric to
+/// 100 tau_k max |H| |x| |y| (README.md).
 ///
 /// Holds the MO intermediates it was built from, so the orbitals, ppaa, papa
 /// and the CasscfFock may go once create returns; it keeps @p j_classes and
