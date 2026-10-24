@@ -35,7 +35,8 @@ namespace free_breakfast {
 //   CiSigma apply  dim (P + 1) for G, one vector's (apply goes a vector at a
 //                  time), and one chunk of D, at most 64 MiB
 //   CiSigma tables two sets of strings (8 bytes) and links (12 bytes per
-//                  replacement), the P x (P + 1) contraction, n + 2 n^2 terms
+//                  replacement), the P x (P + 1) contraction in double and
+//                  again in float (apply_fp32's), n + 2 n^2 terms
 //   integrals      (tu|vw) n^4 and h_eff n^2
 double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   double strings = 1.0;
@@ -57,7 +58,8 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
       (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) + (orbitals * orbitals);
   const double chunk =
       std::min(static_cast<double>(size_t{64} << 20U), dim * pairs * sizeof(double));
-  const double tables = 2.0 * strings * (8.0 + (12.0 * replacements));
+  const double tables =
+      2.0 * strings * (8.0 + (12.0 * replacements)) + (pairs * (pairs + 1.0) * sizeof(float));
   return (doubles * sizeof(double)) + chunk + tables;
 }
 

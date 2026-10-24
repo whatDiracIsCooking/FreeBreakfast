@@ -85,6 +85,11 @@ emit_casscf_reference.py
                   each space's orbital energies and the natural occupations,
                   the reference src/mcscf and the Casscf step are tested
                   against. Needs PySCF.
+emit_ci_bench_integrals.py
+                  Write the given JSON path (untracked): PySCF's CAS(10,10)
+                  and CAS(12,12) integrals of N2 cc-pVDZ at 1.0977 and
+                  2.0 A, in direct_spin1.json's schema, the input
+                  bench/ci_sigma_precision times ci_solve over. Needs PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
                   element of the compiled-in sets named (or --all), by src/sad
@@ -93,8 +98,8 @@ sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
 
 Re-run the three `emit_*_kernels.py`, `extract_integral_golden.py` and then
 `emit_record_bound_golden.py` (it reads the exchange goldens' shells) after
-bumping `deps/FelizJueves`. Everything but `bse_download.py` and `atomic_cd`
-writes tracked files, so the diff is the review.
+bumping `deps/FelizJueves`. Everything but `bse_download.py`, `atomic_cd` and
+`emit_ci_bench_integrals.py` writes tracked files, so the diff is the review.
 
 ## Running
 

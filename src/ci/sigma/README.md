@@ -16,6 +16,7 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 | `CiSigma::create(res, alpha, beta)` | Upload the strings and replacement lists; `Result<CiSigma>` |
 | `CiSigma::set_integrals(res, e_core, h_eff, eri)` | Upload an H over them, replacing any before; `Status` |
 | `CiSigma::apply(res, k, x, y)` | Y = H X for size() × k device blocks: the `LinearOperator` member; `Status` |
+| `CiSigma::apply_fp32(res, k, x, y)` | The same Y = H X over the same double blocks, D, G and the gemm in float, to ~1e-7 relative; `ci_solve`'s first stage; `Status` |
 | `CiSigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
 | `CiSigma::rdm1(res, c, gamma)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector into n × n device doubles; `Status` |
 | `CiSigma::size()` | alpha.size() · beta.size(), the operator's n |
@@ -27,7 +28,7 @@ All take the integrals as host arrays: `h_eff` n × n and `eri` n⁴, row-major,
 (`InvalidConfig`, nothing written) two `StringSet`s over different orbital
 counts, or any span of the wrong size. `CiSigma` also refuses no orbitals, more
 determinants than an `int32_t` counts, a negative block, another device than
-`create`'s, and `apply` or `diagonal` before `set_integrals`.
+`create`'s, and `apply`, `apply_fp32` or `diagonal` before `set_integrals`.
 
 ## Design
 
@@ -92,6 +93,25 @@ only the link tables, so it needs no `set_integrals`, and its scratch is one
 chunk of D plus n(n+1)/2 doubles. The 2-RDM, Dᵀ D, is the same gather with a
 gemm.
 
+**`apply_fp32` is `apply` with D, G and the contraction in float.** The
+vectors stay double; `set_integrals` uploads the contraction matrix a second
+time, rounded to float (P (P + 1) floats beside the doubles), and `apply_fp32`
+runs the same three steps with float D and G and `gemm<float>`. The gemm is
+~85% of an FP64 sigma (CAS(12,12) on the RTX 3080, by nsys), and both cards
+here are FP64-poor (the 3080 runs FP64 at 1/64 of its FP32 rate), so a column
+is 6–7× cheaper there and ~3.5× on the gfx1200. Halving D and G also halves the gathers'
+traffic and G's scratch, dim · (P + 1) floats. The gathers stay one thread per
+row, deterministic and free of atomics. D accumulates in float, because an
+entry takes at most two terms, one link of each spin (E_vw and E_wv cannot
+both act on one string), so double accumulation would change one rounding at
+most. σ's gather sums G in double. The error is then the three roundings,
+D's, the contraction's and G's, adding in quadrature (the blocked FMA gemm
+adds little of its own): 1–2 u, ~1e-7 relative of ‖σ − E_core c‖, flat in
+P, on the RTX 3080 over the test's shapes and on both cards over N₂'s
+CAS(10,10) and CAS(12,12) ground states (`bench/ci_sigma_precision`). That is no use for a converged
+root, which needs a residual of 1e-12; it is what `ci_solve` uses for its
+first iterations (see `../solver/`).
+
 **diag(H) on the device** is host_diagonal's rule in host_diagonal's order, one
 thread per determinant.
 
@@ -116,14 +136,18 @@ to 1e-12, and `rdm1` on random unit vectors against `ci.rdm`'s `rdm1` to
 CAS(10,10), 11 orbitals over (5, 4) (two vectors, each spanning two chunks)
 and seven shapes with N_α ≠ N_β (an
 empty spin, a full one and a single orbital among them), and at CAS(12,12) under `slow_test.h`; `rdm1` also at CAS(12,12) in the fast tier, over
-eight chunks; then the refusals.
+eight chunks; then the refusals. `apply_fp32` is checked over the same golden
+cases and random shapes (and CAS(12,12) under `slow_test.h`), each column to
+4 sqrt(P + 3) u of ‖σ − E_core c‖, u = 2⁻²⁴, a bound derived in the test from
+the float roundings; the measured error is 1–2 u, and an error under 1e-12
+fails too, so the double path cannot stand in for it.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `sigma.cppm` | Module interface: `CiSigma`, `host_sigma`, `host_diagonal` |
-| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked gemm and gemv, and launches |
+| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked gemm (double or float) and gemv, and launches |
 | `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
-| `ci_sigma.cu` | The two gathers, the diagonal kernel and the 1-RDM's unpacking |
+| `ci_sigma.cu` | The two gathers (over double or float D and G), the diagonal kernel and the 1-RDM's unpacking |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.sigma.device` and the module `free_breakfast.ci.sigma` |

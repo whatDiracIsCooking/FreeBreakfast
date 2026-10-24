@@ -43,10 +43,16 @@ namespace free_breakfast::device {
 ///
 /// @p d is rows × n_pairs, column-major with leading dimension @p rows, and is
 /// accumulated into: it must be zero on entry. @p c is the block of vectors.
+/// A float @p d takes each term rounded to float: an entry has at most two,
+/// one link of each spin.
 [[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, int32_t row_begin, int32_t rows,
                                           int32_t n_det, int32_t n_beta, const int32_t *alpha_links,
                                           int32_t alpha_per, const int32_t *beta_links,
                                           int32_t beta_per, const double *c, double *d);
+[[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, int32_t row_begin, int32_t rows,
+                                          int32_t n_det, int32_t n_beta, const int32_t *alpha_links,
+                                          int32_t alpha_per, const int32_t *beta_links,
+                                          int32_t beta_per, const double *c, float *d);
 
 /// @brief σ for every one of the @p rows rows, from G:
 /// σ_I = e_core c_I + G_I[n_pairs] + Σ s · G_J[pair(p, q)] over I's α and β
@@ -54,12 +60,19 @@ namespace free_breakfast::device {
 ///
 /// @p g is rows × (n_pairs + 1), column-major with leading dimension @p rows:
 /// column pair(t, u) is G_K[tu] = ½ Σ_vw (tu|vw) D_K[vw], and the last column
-/// the one-electron term Σ_vw k_vw D_K[vw]. @p sigma has @p c's layout.
+/// the one-electron term Σ_vw k_vw D_K[vw]. @p sigma has @p c's layout. A
+/// float @p g is summed in double.
 [[nodiscard]] wwr::wwrError_t ci_sigma_from_g(wwr::wwrStream_t stream, int32_t rows, int32_t n_det,
                                               int32_t n_beta, int32_t n_pairs,
                                               const int32_t *alpha_links, int32_t alpha_per,
                                               const int32_t *beta_links, int32_t beta_per,
                                               double e_core, const double *c, const double *g,
+                                              double *sigma);
+[[nodiscard]] wwr::wwrError_t ci_sigma_from_g(wwr::wwrStream_t stream, int32_t rows, int32_t n_det,
+                                              int32_t n_beta, int32_t n_pairs,
+                                              const int32_t *alpha_links, int32_t alpha_per,
+                                              const int32_t *beta_links, int32_t beta_per,
+                                              double e_core, const double *c, const float *g,
                                               double *sigma);
 
 /// @brief diag(H) for the @p n_alpha · @p n_beta determinants, by host_diagonal's

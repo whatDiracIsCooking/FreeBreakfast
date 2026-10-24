@@ -57,30 +57,37 @@ __device__ void ci_walk_links(const CiRow row, const int32_t n_beta,
   }
 }
 
+// D of T: double for apply, float for apply_fp32.
+template <typename T>
 __global__ void ci_gather_d_kernel(const int32_t row_begin, const int32_t rows, const int32_t n_det,
                                    const int32_t n_beta, const int32_t *const alpha_links,
                                    const int32_t alpha_per, const int32_t *const beta_links,
-                                   const int32_t beta_per, const double *const c, double *const d) {
+                                   const int32_t beta_per, const double *const c, T *const d) {
   const int64_t r = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (r >= rows) {
     return;
   }
-  // α and β links can name the same pair, so the row accumulates.
-  double *const d_row = d + r;
+  // α and β links can name the same pair, so the row accumulates: at most one
+  // link of each spin per pair, since E_vw and E_wv cannot both act on a
+  // string.
+  T *const d_row = d + r;
   const auto ld = static_cast<size_t>(rows);
   ci_walk_links(ci_row(static_cast<size_t>(row_begin + r), n_det, n_beta), n_beta, alpha_links,
                 alpha_per, beta_links, beta_per,
                 [&](const size_t element, const int32_t pair, const int32_t sign) {
-                  d_row[static_cast<size_t>(pair) * ld] += static_cast<double>(sign) * c[element];
+                  d_row[static_cast<size_t>(pair) * ld] +=
+                      static_cast<T>(static_cast<double>(sign) * c[element]);
                 });
 }
 
+// G of T, summed in double.
+template <typename T>
 __global__ void ci_sigma_from_g_kernel(const int32_t rows, const int32_t n_det,
                                        const int32_t n_beta, const int32_t n_pairs,
                                        const int32_t *const alpha_links, const int32_t alpha_per,
                                        const int32_t *const beta_links, const int32_t beta_per,
-                                       const double e_core, const double *const c,
-                                       const double *const g, double *const sigma) {
+                                       const double e_core, const double *const c, const T *const g,
+                                       double *const sigma) {
   const int64_t r = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (r >= rows) {
     return;
@@ -89,10 +96,12 @@ __global__ void ci_sigma_from_g_kernel(const int32_t rows, const int32_t n_det,
   const auto ld = static_cast<size_t>(rows);
   // <I|E_qp|J> = <J|E_pq|I> = s for each of I's own links (p, q, J, s), and G
   // is symmetric in its pair, so I's links reach every G_J[tu] σ_I takes.
-  double sum = (e_core * c[row]) + g[(static_cast<size_t>(n_pairs) * ld) + row];
+  double sum =
+      (e_core * c[row]) + static_cast<double>(g[(static_cast<size_t>(n_pairs) * ld) + row]);
   ci_walk_links(ci_row(row, n_det, n_beta), n_beta, alpha_links, alpha_per, beta_links, beta_per,
                 [&](const size_t element, const int32_t pair, const int32_t sign) {
-                  sum += static_cast<double>(sign) * g[(static_cast<size_t>(pair) * ld) + element];
+                  sum += static_cast<double>(sign) *
+                         static_cast<double>(g[(static_cast<size_t>(pair) * ld) + element]);
                 });
   sigma[row] = sum;
 }
@@ -162,6 +171,36 @@ uint32_t ci_blocks(const int64_t items) {
   return static_cast<uint32_t>((items + kCiBlock - 1) / kCiBlock);
 }
 
+template <typename T>
+wwr::wwrError_t ci_gather_d_as(const wwr::wwrStream_t stream, const int32_t row_begin,
+                               const int32_t rows, const int32_t n_det, const int32_t n_beta,
+                               const int32_t *const alpha_links, const int32_t alpha_per,
+                               const int32_t *const beta_links, const int32_t beta_per,
+                               const double *const c, T *const d) {
+  if (rows == 0) {
+    return wwr::wwrSuccess;
+  }
+  ci_gather_d_kernel<T><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+      row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
+  return wwr::wwrGetLastError();
+}
+
+template <typename T>
+wwr::wwrError_t ci_sigma_from_g_as(const wwr::wwrStream_t stream, const int32_t rows,
+                                   const int32_t n_det, const int32_t n_beta, const int32_t n_pairs,
+                                   const int32_t *const alpha_links, const int32_t alpha_per,
+                                   const int32_t *const beta_links, const int32_t beta_per,
+                                   const double e_core, const double *const c, const T *const g,
+                                   double *const sigma) {
+  if (rows == 0) {
+    return wwr::wwrSuccess;
+  }
+  ci_sigma_from_g_kernel<T><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+      rows, n_det, n_beta, n_pairs, alpha_links, alpha_per, beta_links, beta_per, e_core, c, g,
+      sigma);
+  return wwr::wwrGetLastError();
+}
+
 } // namespace
 
 wwr::wwrError_t ci_gather_d(const wwr::wwrStream_t stream, const int32_t row_begin,
@@ -169,12 +208,17 @@ wwr::wwrError_t ci_gather_d(const wwr::wwrStream_t stream, const int32_t row_beg
                             const int32_t *const alpha_links, const int32_t alpha_per,
                             const int32_t *const beta_links, const int32_t beta_per,
                             const double *const c, double *const d) {
-  if (rows == 0) {
-    return wwr::wwrSuccess;
-  }
-  ci_gather_d_kernel<<<ci_blocks(rows), kCiBlock, 0, stream>>>(
-      row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
-  return wwr::wwrGetLastError();
+  return ci_gather_d_as(stream, row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links,
+                        beta_per, c, d);
+}
+
+wwr::wwrError_t ci_gather_d(const wwr::wwrStream_t stream, const int32_t row_begin,
+                            const int32_t rows, const int32_t n_det, const int32_t n_beta,
+                            const int32_t *const alpha_links, const int32_t alpha_per,
+                            const int32_t *const beta_links, const int32_t beta_per,
+                            const double *const c, float *const d) {
+  return ci_gather_d_as(stream, row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links,
+                        beta_per, c, d);
 }
 
 wwr::wwrError_t ci_sigma_from_g(const wwr::wwrStream_t stream, const int32_t rows,
@@ -183,13 +227,18 @@ wwr::wwrError_t ci_sigma_from_g(const wwr::wwrStream_t stream, const int32_t row
                                 const int32_t *const beta_links, const int32_t beta_per,
                                 const double e_core, const double *const c, const double *const g,
                                 double *const sigma) {
-  if (rows == 0) {
-    return wwr::wwrSuccess;
-  }
-  ci_sigma_from_g_kernel<<<ci_blocks(rows), kCiBlock, 0, stream>>>(
-      rows, n_det, n_beta, n_pairs, alpha_links, alpha_per, beta_links, beta_per, e_core, c, g,
-      sigma);
-  return wwr::wwrGetLastError();
+  return ci_sigma_from_g_as(stream, rows, n_det, n_beta, n_pairs, alpha_links, alpha_per,
+                            beta_links, beta_per, e_core, c, g, sigma);
+}
+
+wwr::wwrError_t ci_sigma_from_g(const wwr::wwrStream_t stream, const int32_t rows,
+                                const int32_t n_det, const int32_t n_beta, const int32_t n_pairs,
+                                const int32_t *const alpha_links, const int32_t alpha_per,
+                                const int32_t *const beta_links, const int32_t beta_per,
+                                const double e_core, const double *const c, const float *const g,
+                                double *const sigma) {
+  return ci_sigma_from_g_as(stream, rows, n_det, n_beta, n_pairs, alpha_links, alpha_per,
+                            beta_links, beta_per, e_core, c, g, sigma);
 }
 
 wwr::wwrError_t ci_diagonal(const wwr::wwrStream_t stream, const int32_t n, const int32_t n_alpha,

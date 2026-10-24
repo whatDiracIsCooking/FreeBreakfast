@@ -226,6 +226,7 @@ CiSigma::CiSigma(DeviceResources &res, const int32_t n_orbitals, const int32_t n
       contraction_(ci_pair(static_cast<size_t>(n_orbitals), 0) *
                        (ci_pair(static_cast<size_t>(n_orbitals), 0) + 1),
                    res.device()),
+      contraction_fp32_(contraction_.num_elements(), res.device()),
       diagonal_terms_(static_cast<size_t>(n_orbitals) * (1 + (2 * static_cast<size_t>(n_orbitals))),
                       res.device()) {}
 
@@ -294,6 +295,7 @@ Status CiSigma::set_integrals(DeviceResources &res, const double e_core,
       contraction[(n_pairs * n_pairs) + row] = h_eff[v * n + w] - 0.5 * sum;
     }
   }
+  const std::vector<float> contraction_fp32{contraction.begin(), contraction.end()};
   std::vector<double> terms(n * (1 + 2 * n));
   for (size_t i = 0; i < n; ++i) {
     terms[i] = h_eff[i * n + i];
@@ -305,9 +307,10 @@ Status CiSigma::set_integrals(DeviceResources &res, const double e_core,
 
   const ScopedDeviceIndex on{res.dev_idx()};
   // A failed upload leaves the tables half-written, so they count as unset
-  // until both are in.
+  // until all three are in.
   has_integrals_ = false;
   FBF_TRY(ci_upload(res.stream(), contraction_, contraction));
+  FBF_TRY(ci_upload(res.stream(), contraction_fp32_, contraction_fp32));
   FBF_TRY(ci_upload(res.stream(), diagonal_terms_, terms));
   FBF_TRY(res.sync());
   e_core_ = e_core;
@@ -315,8 +318,9 @@ Status CiSigma::set_integrals(DeviceResources &res, const double e_core,
   return {};
 }
 
-Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const x,
-                      double *const y) {
+template <typename T>
+Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *const x,
+                         double *const y, const T *const contraction) {
   if (!has_integrals_) {
     return err_config("CiSigma: apply before set_integrals");
   }
@@ -335,18 +339,18 @@ Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const
   const int32_t rows = size();
   const auto n_pairs = static_cast<int32_t>(ci_pair(static_cast<size_t>(n_orbitals_), 0));
   const auto pairs = static_cast<size_t>(n_pairs);
-  const int32_t chunk = static_cast<int32_t>(std::clamp<size_t>(
-      kCiSigmaChunkBytes / (sizeof(double) * pairs), 1, static_cast<size_t>(rows)));
+  const int32_t chunk = static_cast<int32_t>(
+      std::clamp<size_t>(kCiSigmaChunkBytes / (sizeof(T) * pairs), 1, static_cast<size_t>(rows)));
 
   // G for one vector's rows, then D for one chunk of them. σ_I reads G only
   // over I's own vector, so the vectors go one at a time and G is never wider
   // than one: k · dim · (P + 1) doubles would be 60 GB at CAS(14,14), k = 6.
-  const size_t g_bytes = math::align_up(sizeof(double) * static_cast<size_t>(rows) * (pairs + 1),
+  const size_t g_bytes = math::align_up(sizeof(T) * static_cast<size_t>(rows) * (pairs + 1),
                                         DeviceResources::kWorkspaceAlignment);
-  const size_t d_bytes = sizeof(double) * static_cast<size_t>(chunk) * pairs;
+  const size_t d_bytes = sizeof(T) * static_cast<size_t>(chunk) * pairs;
   std::byte *const base = res.device_workspace(g_bytes + d_bytes).data();
-  auto *const g = reinterpret_cast<double *>(base);
-  auto *const d = reinterpret_cast<double *>(base + g_bytes);
+  auto *const g = reinterpret_cast<T *>(base);
+  auto *const d = reinterpret_cast<T *>(base + g_bytes);
 
   for (int32_t j = 0; j < k; ++j) {
     const double *const xj = x + (static_cast<size_t>(j) * static_cast<size_t>(rows));
@@ -354,19 +358,29 @@ Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const
     for (int32_t begin = 0; begin < rows; begin += chunk) {
       const int32_t count = std::min(chunk, rows - begin);
       FBF_TRY(gpu_status(
-          wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
+          wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(count) * pairs, stream)));
       FBF_TRY(
           gpu_status(device::ci_gather_d(stream, begin, count, rows, n_beta_, alpha_links_.data(),
                                          alpha_per_, beta_links_.data(), beta_per_, xj, d)));
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+      FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
           res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, count, n_pairs + 1, n_pairs,
-          &kOne<double>, d, count, contraction_.data(), n_pairs, &kZero<double>, g + begin, rows)));
+          &kOne<T>, d, count, contraction, n_pairs, &kZero<T>, g + begin, rows)));
     }
     FBF_TRY(gpu_status(device::ci_sigma_from_g(stream, rows, rows, n_beta_, n_pairs,
                                                alpha_links_.data(), alpha_per_, beta_links_.data(),
                                                beta_per_, e_core_, xj, g, yj)));
   }
   return {};
+}
+
+Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const x,
+                      double *const y) {
+  return apply_as(res, k, x, y, contraction_.data());
+}
+
+Status CiSigma::apply_fp32(DeviceResources &res, const int32_t k, const double *const x,
+                           double *const y) {
+  return apply_as(res, k, x, y, contraction_fp32_.data());
 }
 
 Status CiSigma::diagonal(DeviceResources &res, double *const diagonal) {

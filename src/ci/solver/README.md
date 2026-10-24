@@ -13,8 +13,8 @@ written against.
 | Name | Role |
 |---|---|
 | `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options)` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2. A template over the sigma. |
-| `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin) and `davidson` (`DavidsonOptions`, residual tolerance 1e-12) |
-| `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo`) |
+| `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12) and `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off) |
+| `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo` of the FP64 stage), `fp32_iterations` (the single-precision stage's, 0 when none ran) |
 | `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
 | `CiSpinSquare::create(res, alpha, beta)` | Upload S²'s tables; `Result<CiSpinSquare>` |
 | `CiSpinSquare::apply(res, k, x, y)` | Y = S² X for size() × k device blocks: a `LinearOperator`; `Status` |
@@ -81,6 +81,63 @@ residual of `davidson_solve` (1e-8 relative, ~1e-6 hartree here) would leave
 the 1-RDM near 1e-5. 1e-12 relative is ~1e-10 hartree at molecular energies,
 which roundoff in sigma still clears.
 
+**FP32 first, then FP64, when the sigma can.** A sigma with an
+`apply_fp32` (`CiSigma`'s: float D, G and gemm, ~1e-7 relative, see
+`../sigma/`) is solved in two stages. Stage 1 is `davidson_solve` over the
+penalized `apply_fp32` to `fp32_tolerance`; stage 2 is `davidson_solve` over
+the penalized `apply` to `davidson.residual_tolerance`, from stage 1's n_roots
+Ritz vectors in place of the guesses. Stage 2 is why this is safe: its
+operator, preconditioner and tolerance are exactly an FP64-only solve's, and
+no column of A V mixes the precisions, because it restarts rather than
+carrying stage 1's A V over. Stage 1 only chooses where stage 2 starts. Its
+vectors are V S for an FP64 orthonormal V and an orthogonal S, so orthonormal
+whatever the noise in the A V they came from, and a bad start costs stage 2
+iterations, not accuracy. Stage 1 running out of iterations or subspace is
+therefore no error; stage 2 goes on from its last Ritz vectors. A sigma
+without `apply_fp32` (`host_sigma` in the tests), `fp32_tolerance` = 0, or a
+`fp32_tolerance` at or below the FP64 tolerance runs the single FP64 solve as
+before. `recipes/davidson` is unchanged.
+
+FP32 noise floors the residual near 1e-7 relative, so stage 1 cannot go much
+further, and where it stalls it spends its whole `max_iterations` (N₂
+CAS(12,12) at 1e-7: 400 FP32 iterations on the 3080, though not on the
+gfx1200). 1e-6, the default, converged in every case measured and was the
+fastest setting that did. `bench/ci_sigma_precision` over
+`tools/emit_ci_bench_integrals.py`'s N₂ cc-pVDZ active spaces, three singlets,
+`max_iterations` 400 (100, the default, does not converge these
+FP64-only), each card idle (the 3080 held through `devtools/lib.sh`'s GPU
+slots):
+
+| | | σ per column, FP64 / FP32 | `ci_solve` FP64-only | two-stage, 1e-6 | iterations, FP64-only → FP32 + FP64 |
+|---|---|---|---|---|---|
+| CAS(10,10), 1.0977 Å | 3080 | 1.77 / 0.26 ms | 0.95 s | 0.74 s (1.28×) | 134 → 71 + 78 |
+| | gfx1200 | 2.52 / 0.80 ms | 2.63 s | 2.45 s (1.07×) | 134 → 71 + 88 |
+| CAS(12,12), 1.0977 Å | 3080 | 35.6 / 5.33 ms | 15.2 s | 12.5 s (1.22×) | 140 → 78 + 94 |
+| | gfx1200 | 38.3 / 11.0 ms | 43.3 s | 32.2 s (1.34×) | 165 → 68 + 72 |
+| CAS(10,10), 2.0 Å | 3080 | 1.60 / 0.25 ms | 1.47 s | 1.18 s (1.25×) | 234 → 108 + 135 |
+| | gfx1200 | 1.60 / 0.49 ms | 3.93 s | 3.78 s (1.04×) | 234 → 108 + 135 |
+| CAS(12,12), 2.0 Å | 3080 | 35.8 / 5.30 ms | 25.7 s | 18.1 s (1.42×) | 228 → 115 + 131 |
+| | gfx1200 | 38.4 / 10.9 ms | 60.6 s | 52.5 s (1.16×) | 232 → 94 + 131 |
+
+At every `fp32_tolerance` from 1e-4 to 1e-7, every two-stage energy is within
+2e-12 of the FP64-only one (6e-12 on the gfx1200 at CAS(12,12)). The whole solve gains far less than σ for two
+reasons. First, stage 2 is long: 44–67% of the FP64-only iteration count,
+because 1e-6 is half the decades to 1e-12 and a restart from n_roots vectors
+drops the Krylov subspace. Carrying stage 1's whole subspace V over instead
+would cost one FP64 apply of up to 16 · n_roots columns, about as many as
+the iterations it saves. Second, Davidson's own FP64 work, the V^T A V and
+projection gemms over up to 48 columns, is untouched by stage 1: a third of
+the 3080's kernel time over the bench's five CAS(12,12) solves (nsys), and on
+the gfx1200 at least ~150 ms of an FP64-only iteration's ~260 is outside σ,
+more than σ's own (inferred from the timings: the image's rocprofv3 lacks
+`libhsa-amd-aqlprofile`). FP64 emulation for
+stage 2 does not help on these cards either: cuBLAS 13.0's Ozaki-style
+`CUBLAS_COMPUTE_64F_EMULATED_FIXEDPOINT`, forced on (`EAGER`) in a standalone
+gemm of a whole CAS(12,12) vector's D (853,776 × 78, times 78 × 79) on the
+3080, is exact to 3e-16 but takes 186 ms against DGEMM's 57 ms (SGEMM:
+1.3 ms). With k = P = 78 there is too little reduction
+for the splitting to pay for itself.
+
 **Nothing of dim size touches the host.** The penalty and the preconditioner
 run on the device, so no block leaves it during the Davidson. On the host
 each cost a block's round trip and a sync per call, and a single-threaded S²
@@ -110,6 +167,9 @@ there has a triplet below its second singlet, so the spin control is exercised:
 - the lowest three triplets, from the M_s = 1 sector, against direct_spin1's
   M_s = 0 ones (the spin-summed 1-RDM does not depend on M_s);
 - with λ = 0, direct_spin1's lowest three roots, a triplet among them;
+- over `CiSigma` itself, every case's singlets and (M_s = 1) triplets, two-
+  stage by default and FP64-only at `fp32_tolerance` = 0, each to the same
+  tolerances, the first with `fp32_iterations` > 0 and the second with 0;
 - `MaxIterationsExceeded` when given two iterations;
 - the refusals;
 - `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on
@@ -122,7 +182,7 @@ there has a triplet below its second singlet, so the spin control is exercised:
 
 | File | Role |
 |------|------|
-| `solver.cppm` | Module interface: `ci_solve` (a template), its options and roots, `host_spin_square`, `CiSpinSquare` |
+| `solver.cppm` | Module interface: `ci_solve` (a template, with its two stages), its options and roots, `host_spin_square`, `CiSpinSquare` |
 | `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launch; the guesses |
 | `ci_solver_bridge.h` | The launchers' declarations, shared by `solver.cpp`'s GMF and the `.cu` |
 | `ci_solver.cu` | The S² gather, the penalized diagonal, the preconditioner kernel, the argmin passes and the guess spread |

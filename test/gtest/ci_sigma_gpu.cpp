@@ -171,6 +171,82 @@ void check_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int
   check_rdm1(res, *sigma, *alpha, *beta, seed + 1);
 }
 
+// apply_fp32 for a random block of k vectors, each column against
+// host_sigma's to fp32_tolerance(P) of ‖σ − E_core c‖, the part that goes
+// through the float gemm (E_core c is added in double).
+//
+// The tolerance, from FP32 rounding, u = 2^-24. An entry of G is a P-term dot
+// product whose two factors are each rounded once to float (D's entry, the
+// float of at most two double terms, and the contraction's), accumulated in
+// float, and rounded once more on the store; σ sums G in double and adds
+// nothing. Independent roundings add in quadrature, so with every partial sum
+// rounded too the relative error is about sqrt(P + 3) u; a blocked FMA gemm
+// rounds far fewer partial sums: the RTX 3080 measures 1–2 u at every P here,
+// and the gfx1200 1.4–2 u on N2's CAS(10,10) and CAS(12,12) ground states
+// (bench/ci_sigma_precision). Over dim · P entries the norm-wise error sits at its
+// expectation, so 4 sqrt(P + 3) u holds with room and is still five orders of
+// magnitude under what a wrong pair or sign would cost.
+double fp32_tolerance(std::size_t pairs) {
+  return 4.0 * std::sqrt(static_cast<double>(pairs + 3)) * std::ldexp(1.0, -24);
+}
+
+void check_fp32_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int32_t n_beta,
+                             const Integrals &ints, std::int32_t k, std::uint64_t seed) {
+  const auto alpha = fb::StringSet::create(ints.n, n_alpha);
+  const auto beta = fb::StringSet::create(ints.n, n_beta);
+  ASSERT_TRUE(alpha.has_value() && beta.has_value());
+  auto sigma = fb::CiSigma::create(res, *alpha, *beta);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  const auto set = sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri);
+  ASSERT_TRUE(set.has_value()) << set.error().message;
+  const auto dim = static_cast<std::size_t>(sigma->size());
+  const auto m = static_cast<std::size_t>(ints.n);
+  const double tolerance = fp32_tolerance(m * (m + 1) / 2);
+
+  const std::vector<double> c = random_block(dim * static_cast<std::size_t>(k), seed);
+  const auto x = to_device(res, c);
+  fb::Buffers::device<double> y(c.size(), res.device());
+  const auto applied = sigma->apply_fp32(res, k, x.data(), y.data());
+  ASSERT_TRUE(applied.has_value()) << applied.error().message;
+  const std::vector<double> got = to_host(res, y);
+
+  std::vector<double> expected(dim);
+  for (std::int32_t j = 0; j < k; ++j) {
+    const std::span<const double> column{c.data() + j * dim, dim};
+    const auto host =
+        fb::host_sigma(*alpha, *beta, ints.e_core, ints.h1, ints.eri, column, expected);
+    ASSERT_TRUE(host.has_value()) << host.error().message;
+    double norm = 0.0;
+    double error = 0.0;
+    for (std::size_t i = 0; i < dim; ++i) {
+      const double two_electron = expected[i] - ints.e_core * column[i];
+      norm += two_electron * two_electron;
+      const double delta = got[j * dim + i] - expected[i];
+      error += delta * delta;
+    }
+    EXPECT_LE(std::sqrt(error), tolerance * std::sqrt(norm)) << "column " << j;
+    // Not to double's roundoff: the float path is in use.
+    EXPECT_GT(std::sqrt(error), 1e-12 * std::sqrt(norm)) << "column " << j;
+  }
+}
+
+// (n, N_alpha, N_beta, k): CAS(8,8), CAS(10,10), and 11 orbitals over
+// (5, 4), whose 152,460 determinants each span two of apply's 127,100-row
+// chunks, in a block of two that reuses G; open shells, an empty spin, a
+// full one and a single orbital.
+constexpr std::array<std::array<std::int32_t, 4>, 10> kRandomShapes{{
+    {8, 4, 4, 2},
+    {10, 5, 5, 3},
+    {11, 5, 4, 2},
+    {8, 5, 3, 2},
+    {9, 3, 6, 1},
+    {1, 1, 0, 1},
+    {5, 1, 4, 2},
+    {6, 0, 3, 2},
+    {6, 6, 5, 2},
+    {7, 4, 2, 4},
+}};
+
 TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -191,23 +267,7 @@ TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
 TEST(CiSigmaGpu, MatchesHostOnRandomIntegrals) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  // (n, N_alpha, N_beta, k): CAS(8,8), CAS(10,10), and 11 orbitals over
-  // (5, 4), whose 152,460 determinants each span two of apply's 127,100-row
-  // chunks, in a block of two that reuses G; open shells, an empty spin, a
-  // full one and a single orbital.
-  const std::array<std::array<std::int32_t, 4>, 10> shapes{{
-      {8, 4, 4, 2},
-      {10, 5, 5, 3},
-      {11, 5, 4, 2},
-      {8, 5, 3, 2},
-      {9, 3, 6, 1},
-      {1, 1, 0, 1},
-      {5, 1, 4, 2},
-      {6, 0, 3, 2},
-      {6, 6, 5, 2},
-      {7, 4, 2, 4},
-  }};
-  for (const auto &[n, n_alpha, n_beta, k] : shapes) {
+  for (const auto &[n, n_alpha, n_beta, k] : kRandomShapes) {
     SCOPED_TRACE(std::format("n = {}, N_alpha = {}, N_beta = {}, k = {}", n, n_alpha, n_beta, k));
     check_against_host(res, n_alpha, n_beta,
                        random_integrals(n, 300 + static_cast<std::uint64_t>(n)), k, 11);
@@ -219,6 +279,38 @@ TEST(CiSigmaGpu, MatchesHostAtCas1212) {
   FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   check_against_host(res, 6, 6, random_integrals(12, 412), 1, 13);
+}
+
+// apply_fp32 over every golden case and the random shapes of
+// MatchesHostOnRandomIntegrals, against host_sigma to fp32_tolerance; and
+// at CAS(12,12) in the slow tier.
+TEST(CiSigmaGpu, Fp32MatchesHostToFloatRounding) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto doc =
+      fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
+  ASSERT_TRUE(doc.has_value()) << doc.error().message;
+  ASSERT_FALSE((*doc)["cases"].empty());
+  for (const auto &entry : (*doc)["cases"]) {
+    SCOPED_TRACE(entry["name"].get<std::string>());
+    const Integrals ints{entry["n_orbitals"].get<std::int32_t>(), entry["e_core"].get<double>(),
+                         entry["h1"]["values"].get<std::vector<double>>(),
+                         entry["eri"]["values"].get<std::vector<double>>()};
+    check_fp32_against_host(res, entry["n_alpha"].get<std::int32_t>(),
+                            entry["n_beta"].get<std::int32_t>(), ints, 3, 7);
+  }
+  for (const auto &[n, n_alpha, n_beta, k] : kRandomShapes) {
+    SCOPED_TRACE(std::format("n = {}, N_alpha = {}, N_beta = {}, k = {}", n, n_alpha, n_beta, k));
+    check_fp32_against_host(res, n_alpha, n_beta,
+                            random_integrals(n, 300 + static_cast<std::uint64_t>(n)), k, 11);
+  }
+}
+
+TEST(CiSigmaGpu, Fp32MatchesHostAtCas1212) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  fb::DeviceResources res{0};
+  check_fp32_against_host(res, 6, 6, random_integrals(12, 412), 1, 13);
 }
 
 // 853,776 determinants over 78 pairs: rdm1's gather spans eight chunks, so the
@@ -248,6 +340,7 @@ TEST(CiSigmaGpu, Refuses) {
   fb::Buffers::device<double> x(static_cast<std::size_t>(sigma->size()), res.device());
   fb::Buffers::device<double> y(static_cast<std::size_t>(sigma->size()), res.device());
   EXPECT_FALSE(sigma->apply(res, 1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(sigma->apply_fp32(res, 1, x.data(), y.data()).has_value());
   EXPECT_FALSE(sigma->diagonal(res, y.data()).has_value());
 
   const Integrals ints = random_integrals(4, 5);
@@ -257,7 +350,9 @@ TEST(CiSigmaGpu, Refuses) {
       sigma->set_integrals(res, ints.e_core, std::span{ints.h1}.first(3), ints.eri).has_value());
   ASSERT_TRUE(sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
   EXPECT_FALSE(sigma->apply(res, -1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(sigma->apply_fp32(res, -1, x.data(), y.data()).has_value());
   EXPECT_TRUE(sigma->apply(res, 0, x.data(), y.data()).has_value());
+  EXPECT_TRUE(sigma->apply_fp32(res, 0, x.data(), y.data()).has_value());
 }
 
 } // namespace
