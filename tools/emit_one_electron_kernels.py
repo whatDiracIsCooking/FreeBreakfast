@@ -27,6 +27,12 @@ Only the classes `la <= lb` are written. The host pair builder
 (free_breakfast.integrals.mmd) swaps every shell pair into that order, so a
 `(1, 0)` kernel would be `(0, 1)`'s mirror and nothing would launch it.
 
+The mixed overlap `overlap_mixed<la, lb>` (FelizJueves's Target.SX) is the
+one family written for every ORDERED class: its rows and columns are two
+different bases, so nothing relates (la, lb) to (lb, la), its table is full,
+and its records (free_breakfast.integrals.mmd's mixed_primitive_pair_classes)
+are never swapped.
+
 One more family is not a one-electron integral but rides along because it
 is per pair class, keyed and laid out the same way: `pair_bound<la, lb>`
 (FelizJueves's Target.PAIR_BOUND), each record's pair-factor-free Schwarz
@@ -58,6 +64,7 @@ from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import Specialization  # noqa: E402
 from felizjueves.kernel_pair_bound import build_pair_bound_kernel  # noqa: E402
 from felizjueves.kernel_s import build_s_kernel  # noqa: E402
+from felizjueves.kernel_sx import build_sx_kernel  # noqa: E402
 from felizjueves.kernel_t import build_t_kernel  # noqa: E402
 from felizjueves.kernel_v import build_v_kernel  # noqa: E402
 
@@ -80,6 +87,9 @@ FAMILIES = {
     "potential_en": build_v_kernel,
 }
 
+# The ordered families: every (la, lb), la > lb included (module docstring).
+ORDERED_FAMILIES = {"overlap_mixed": build_sx_kernel}
+
 # The mmd section: the record bound, one directory of its own under mmd's
 # kernels/ (whose .clang-format is the same DisableFormat). One record vector,
 # the exponent, so no [n, 3] array to split.
@@ -91,6 +101,9 @@ def main() -> int:
     for family, build in FAMILIES.items():
         out = ROOT / "src/integrals/one_electron" / family / "kernels"
         emit_family(arch, family, build, out)
+    for family, build in ORDERED_FAMILIES.items():
+        out = ROOT / "src/integrals/one_electron" / family / "kernels"
+        emit_family(arch, family, build, out, ordered=True)
     for family, build in MMD_FAMILIES.items():
         emit_family(arch, family, build, ROOT / "src/integrals/mmd/kernels" / family)
     for name, text in gpu.emit_boys().items():
@@ -98,9 +111,13 @@ def main() -> int:
     return 0
 
 
-def emit_family(arch, family: str, build, out: Path) -> None:
+def emit_family(arch, family: str, build, out: Path, *, ordered: bool = False) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    classes = [(la, lb) for la in range(MAX_L + 1) for lb in range(la, MAX_L + 1)]
+    ls = range(MAX_L + 1)
+    if ordered:
+        classes = [(la, lb) for la in ls for lb in ls]
+    else:
+        classes = [(la, lb) for la in ls for lb in range(la, MAX_L + 1)]
     for cls in classes:
         kernel = build(cls)
         spec = Specialization(family, cls)

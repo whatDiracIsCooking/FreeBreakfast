@@ -50,7 +50,9 @@ using free_breakfast::PrimitivePairClassView;
 /// then bounded; every reader (the builds, J's prune, K's gather) reads them
 /// there. A reader that wants them on the host copies them back itself.
 ///
-/// **The class is always la <= lb.** A shell pair whose bra has the higher
+/// **A basis's class is always la <= lb.** (Between two bases,
+/// @ref mixed_primitive_pair_classes', it is any order, never swapped.) Within
+/// one basis a shell pair whose bra has the higher
 /// angular momentum is stored swapped, B as the bra and A as the ket, so the
 /// kernels need one class per unordered pair of momenta: (s|p) and no (p|s).
 /// The overlap, kinetic and nuclear-attraction matrices are symmetric, and the
@@ -59,7 +61,7 @@ using free_breakfast::PrimitivePairClassView;
 ///
 /// Movable, not copyable.
 struct PrimitivePairClass {
-  /// @brief The bra shell's angular momentum, <= @ref lb.
+  /// @brief The bra shell's angular momentum, <= @ref lb within one basis.
   int32_t la;
   /// @brief The ket shell's angular momentum.
   int32_t lb;
@@ -193,5 +195,30 @@ struct PrimitivePairClass {
 ///         the first copy, launch or wait that failed.
 [[nodiscard]] Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
                                                                              const BasisSet &basis);
+
+/// @brief The primitive-pair records between two bases, @p rows and @p cols, on
+/// @p res's device: what overlap_mixed reads.
+///
+/// Every ORDERED shell pair (i of @p rows, j of @p cols) contributes one record
+/// for each of its primitive pairs, i always the bra, to class (la of i, lb of
+/// j). Nothing is swapped, so la > lb classes appear, and @ref
+/// PrimitivePairClass::off_a is a Cartesian AO of @p rows while @ref
+/// PrimitivePairClass::off_b is one of @p cols: two index sets, so equal
+/// offsets mean nothing and no record is diagonal. The bases may differ in
+/// basis set, in geometry, in both or in neither; @p rows and @p cols may be
+/// the same object.
+///
+/// These are not @ref primitive_pair_classes' records: the symmetric builds
+/// (S, T, V, J, K) read a basis's i <= j pairs and mirror each value, so a
+/// mixed class handed to one builds the wrong matrix. Every field is formed as
+/// there, in the same order (descending zeta per class) and with the same
+/// bounds, each rank among its own basis's shells; ascending class order, none
+/// empty, each on a new @c DeviceStream, finished when it returns. Empty if
+/// either basis is. The same limits, checked the same way.
+///
+/// @return The classes, or the GpuRuntime error of the first copy, launch or
+///         wait that failed.
+[[nodiscard]] Result<std::vector<PrimitivePairClass>>
+mixed_primitive_pair_classes(DeviceResources &res, const BasisSet &rows, const BasisSet &cols);
 
 } // namespace free_breakfast

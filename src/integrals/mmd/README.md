@@ -114,9 +114,17 @@ their bridge headers); this module includes it in its
 global module fragment and re-exports the name, so the two sides share one
 entity (the `atom` pattern).
 
-**Classes are `la <= lb`.** A shell pair whose bra has the higher momentum is
-stored swapped (B as the bra), so a basis whose p shells precede its s shells,
+**Classes are `la <= lb`** within one basis. A shell pair whose bra has the
+higher momentum is stored swapped (B as the bra), so a basis whose p shells precede its s shells,
 as H₂O's do, still lands in `(s|p)`.
+
+**Between two bases nothing is swapped.** `mixed_primitive_pair_classes`
+sweeps every ordered pair (i of `rows`, j of `cols`) into class (la of i, lb of
+j). Its shell table is the two bases one after the other, each shell keeping
+its own basis's AO offset and rank, so a record is formed by the same kernels
+from the same kind of table. Its offsets index two different matrices' rows and
+columns, so none is diagonal, and pair_bound, which depends on `la + lb` alone,
+takes `(lb, la)`'s kernel when `la > lb`.
 
 **Diagonal pairs** (a shell against itself) have `off_a == off_b`, which is how
 the kernels tell them apart: they write the lower triangle of the block once and
@@ -154,6 +162,7 @@ V read every record. J prunes a copy of them
 |---|---|
 | `PrimitivePairClass` | One class `(la, lb)`: `n_rec`, `handle`, one device buffer per field (the three bounds among them), `device_stream()`; `view()` gives a `PrimitivePairClassView` |
 | `PrimitivePairClassView` | The class's device fields by pointer, for the launchers (`primitive_pair_class_view.h`, re-exported) |
+| `mixed_primitive_pair_classes(res, rows, cols)` | The same, between two bases: every ORDERED shell pair (i of `rows`, j of `cols`), never swapped, so `la > lb` classes appear; `off_a` indexes `rows`' AOs and `off_b` `cols'`. What `overlap_mixed` reads, and nothing else: the symmetric builds would mirror its values |
 | `primitive_pair_classes(res, basis)` | `Result<std::vector<PrimitivePairClass>>`: every reached class, ascending, none empty, each on a new `DeviceStream`, finished when it returns. `BasisSet` already bounds `nao_cart()` to `INT32_MAX`; a class past `INT32_MAX` records, or a basis past `INT32_MAX` primitives, aborts |
 
 ## Tests

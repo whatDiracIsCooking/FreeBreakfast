@@ -1,7 +1,7 @@
 /// @file
-/// @brief primitive_pair_classes: the shell-pair sweep, the la <= lb swap, the
-/// ranks, the tables the device forms the records from, the order there and
-/// the record bounds.
+/// @brief primitive_pair_classes and mixed_primitive_pair_classes: the
+/// shell-pair sweeps (the la <= lb swap in the first), the ranks, the tables the
+/// device forms the records from, the order there and the record bounds.
 
 module;
 
@@ -23,7 +23,8 @@ import free_breakfast.basis;
 
 namespace free_breakfast {
 
-// A shell-pair class, (la, lb) with la <= lb.
+// A shell-pair class, (la, lb): la <= lb for primitive_pair_classes, any
+// order for mixed_primitive_pair_classes.
 using ClassKey = std::pair<int32_t, int32_t>;
 
 // Shell pair (i, j) as (bra, ket) shell indices, swapped when i has the higher
@@ -45,8 +46,8 @@ struct ClassPairs {
   std::vector<int64_t> rec_begin{0};
 };
 
-// The basis's shells and primitives, staged: what every class's records are
-// formed from. A MirroredBuffer's destructor waits for its stream, so the
+// The shells and primitives of the bases swept, staged, one basis after the
+// other: what every class's records are formed from. A MirroredBuffer's destructor waits for its stream, so the
 // pinned side outlives the upload.
 struct ShellTable {
   MirroredBuffer<int32_t> prim_begin;
@@ -74,12 +75,24 @@ MirroredBuffer<T> staged(const std::vector<T> &values, const std::shared_ptr<Dev
   return out;
 }
 
-// The basis's shells and primitives staged on ds, each shell's rank as given.
-// BasisSet guarantees nao_cart() fits an int32_t, so the offset casts are
-// exact; the primitive count is checked here.
-ShellTable stage_shells(const BasisSet &basis, const std::vector<int32_t> &rank,
-                        const std::shared_ptr<DeviceStream> &ds) {
-  const std::vector<Shell> &shells = basis.shells();
+// Each shell's rank: its index among basis's shells of its momentum, in basis
+// order.
+std::vector<int32_t> shell_ranks(const BasisSet &basis) {
+  std::vector<int32_t> rank;
+  std::map<int32_t, int32_t> next_rank;
+  for (const Shell &shell : basis.shells()) {
+    rank.push_back(next_rank[shell.angular_momentum()]++);
+  }
+  return rank;
+}
+
+// The shells and primitives of bases staged on ds, one basis after the other,
+// so a shell's index in the table is its index in its basis plus the shell
+// counts of the bases before it. Each shell keeps its own basis's AO offset and
+// rank. BasisSet guarantees nao_cart() fits an int32_t, so the offset casts
+// are exact; the primitive count, across every basis, is checked here.
+ShellTable stage_shells(const std::span<const BasisSet *const> bases,
+                        const std::shared_ptr<DeviceStream> &ds, const std::string_view what) {
   std::vector<int32_t> prim_begin{0};
   std::vector<double> exponent;
   std::vector<double> coefficient;
@@ -87,23 +100,27 @@ ShellTable stage_shells(const BasisSet &basis, const std::vector<int32_t> &rank,
   std::vector<double> c_y;
   std::vector<double> c_z;
   std::vector<int32_t> ao_offset;
+  std::vector<int32_t> rank;
   int64_t n_prim = 0;
-  for (uint32_t i = 0; i < basis.nshells(); ++i) {
-    n_prim += shells[i].nprimitives();
-    if (n_prim > std::numeric_limits<int32_t>::max()) {
-      check_or_abort(Status{err_config("primitive_pair_classes: the basis has more than {} "
-                                       "primitives",
-                                       std::numeric_limits<int32_t>::max())});
+  for (const BasisSet *basis : bases) {
+    const std::vector<Shell> &shells = basis->shells();
+    for (uint32_t i = 0; i < basis->nshells(); ++i) {
+      n_prim += shells[i].nprimitives();
+      if (n_prim > std::numeric_limits<int32_t>::max()) {
+        check_or_abort(Status{err_config("{}: the bases have more than {} primitives", what,
+                                         std::numeric_limits<int32_t>::max())});
+      }
+      prim_begin.push_back(static_cast<int32_t>(n_prim));
+      for (const Primitive &p : shells[i].primitives()) {
+        exponent.push_back(p.exponent);
+        coefficient.push_back(p.coefficient);
+      }
+      c_x.push_back(shells[i].center().x);
+      c_y.push_back(shells[i].center().y);
+      c_z.push_back(shells[i].center().z);
+      ao_offset.push_back(static_cast<int32_t>(basis->ao_offset_cart(i)));
     }
-    prim_begin.push_back(static_cast<int32_t>(n_prim));
-    for (const Primitive &p : shells[i].primitives()) {
-      exponent.push_back(p.exponent);
-      coefficient.push_back(p.coefficient);
-    }
-    c_x.push_back(shells[i].center().x);
-    c_y.push_back(shells[i].center().y);
-    c_z.push_back(shells[i].center().z);
-    ao_offset.push_back(static_cast<int32_t>(basis.ao_offset_cart(i)));
+    std::ranges::copy(shell_ranks(*basis), std::back_inserter(rank));
   }
   return {
       .prim_begin = staged(prim_begin, ds),
@@ -226,14 +243,16 @@ Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &
 // the record as stored and swapped, the swap a view with la and lb, and P - A
 // and P - B, exchanged. A class above kMaxAngularMomentum has no kernel and
 // keeps its zeroed bounds: every build refuses such a class, so nothing reads
-// them.
+// them. pair_bound depends on la + lb alone, so a mixed class with la > lb
+// takes the kernel of (lb, la), the one emitted.
 Status form_bounds(PrimitivePairClass &cls) {
-  if (cls.lb > kMaxAngularMomentum) {
+  const auto [lo, hi] = std::minmax(cls.la, cls.lb);
+  if (hi > kMaxAngularMomentum) {
     return {};
   }
   const wwr::wwrStream_t stream = cls.handle->stream();
-  FBF_TRY(gpu_status(
-      device::mmd_bound(stream, cls.la, cls.lb, cls.n_rec, cls.zeta.data(), cls.bound.data())));
+  FBF_TRY(
+      gpu_status(device::mmd_bound(stream, lo, hi, cls.n_rec, cls.zeta.data(), cls.bound.data())));
   const PrimitivePairClassView v = cls.view();
   FBF_TRY(gpu_status(device::ordered_pair_bound(stream, v, cls.bound_ab.data())));
   PrimitivePairClassView swapped = v;
@@ -276,47 +295,32 @@ Status form_classes(std::vector<PrimitivePairClass> &classes, std::vector<PairTa
   return {};
 }
 
-Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
-                                                               const BasisSet &basis) {
-  const std::vector<Shell> &shells = basis.shells();
-  const uint32_t nsh = basis.nshells();
-  if (nsh == 0) {
-    return std::vector<PrimitivePairClass>{};
-  }
+// Append shell pair (bra, ket), whose shells are bra_shell and ket_shell, to
+// its class in sweep, with its first record.
+void add_pair(std::map<ClassKey, ClassPairs> &sweep, const Shell &bra_shell, const Shell &ket_shell,
+              const uint32_t bra, const uint32_t ket) {
+  ClassPairs &cp = sweep[{bra_shell.angular_momentum(), ket_shell.angular_momentum()}];
+  cp.bra.push_back(bra);
+  cp.ket.push_back(ket);
+  cp.rec_begin.push_back(cp.rec_begin.back() + (static_cast<int64_t>(bra_shell.nprimitives()) *
+                                                static_cast<int64_t>(ket_shell.nprimitives())));
+}
 
-  // The sweep: every shell pair i <= j, in la <= lb order, listed in its
-  // class with its first record. Keyed by (la, lb), so the result comes out in
-  // ascending class order. No record is formed here: a pair is O(1) however
-  // many primitives it has.
-  std::map<ClassKey, ClassPairs> sweep;
-  for (uint32_t i = 0; i < nsh; ++i) {
-    for (uint32_t j = i; j < nsh; ++j) {
-      const auto [bra, ket] = bra_ket_order(shells, i, j);
-      ClassPairs &cp = sweep[{shells[bra].angular_momentum(), shells[ket].angular_momentum()}];
-      cp.bra.push_back(bra);
-      cp.ket.push_back(ket);
-      cp.rec_begin.push_back(cp.rec_begin.back() +
-                             (static_cast<int64_t>(shells[bra].nprimitives()) *
-                              static_cast<int64_t>(shells[ket].nprimitives())));
-    }
-  }
-
-  // Each shell's rank: its index among the shells of its momentum, in basis
-  // order.
-  std::vector<int32_t> rank(nsh);
-  std::map<int32_t, int32_t> next_rank;
-  for (uint32_t i = 0; i < nsh; ++i) {
-    rank[i] = next_rank[shells[i].angular_momentum()]++;
-  }
-
+// The classes of sweep, whose shell indices name bases' shells one basis after
+// the other (stage_shells), formed on the device: each class sized once, at its
+// final record count, then its records and bounds formed on its own stream.
+// what names the caller in the abort messages.
+Result<std::vector<PrimitivePairClass>> form_sweep(DeviceResources &res,
+                                                   const std::map<ClassKey, ClassPairs> &sweep,
+                                                   const std::span<const BasisSet *const> bases,
+                                                   const std::string_view what) {
   // The shell table, on a stream of its own that every class's stream forks
   // from. Its device side is freed on that stream when the call returns, so
   // the classes' streams, which read it, are waited for first (below).
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto table_ds = std::make_shared<DeviceStream>(res.device());
-  ShellTable table = stage_shells(basis, rank, table_ds);
+  ShellTable table = stage_shells(bases, table_ds, what);
 
-  // Size each class once, at its final record count.
   std::vector<PrimitivePairClass> out;
   std::vector<PairTable> pairs;
   out.reserve(sweep.size());
@@ -325,9 +329,8 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
     const int64_t n = cp.rec_begin.back();
     if (n > std::numeric_limits<int32_t>::max()) {
       check_or_abort(
-          Status{err_config("primitive_pair_classes: class ({}, {}) has {} records, "
-                            "past {}",
-                            key.first, key.second, n, std::numeric_limits<int32_t>::max())});
+          Status{err_config("{}: class ({}, {}) has {} records, past {}", what, key.first,
+                            key.second, n, std::numeric_limits<int32_t>::max())});
     }
     out.push_back(make_class(res, key, static_cast<int32_t>(n)));
     pairs.push_back(stage_pairs(cp, out.back().handle));
@@ -345,6 +348,51 @@ Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &
   FBF_TRY(formed);
   FBF_TRY(waited);
   return out;
+}
+
+Result<std::vector<PrimitivePairClass>> primitive_pair_classes(DeviceResources &res,
+                                                               const BasisSet &basis) {
+  const std::vector<Shell> &shells = basis.shells();
+  const uint32_t nsh = basis.nshells();
+  if (nsh == 0) {
+    return std::vector<PrimitivePairClass>{};
+  }
+
+  // The sweep: every shell pair i <= j, in la <= lb order, listed in its
+  // class with its first record. Keyed by (la, lb), so the result comes out in
+  // ascending class order. No record is formed here: a pair is O(1) however
+  // many primitives it has.
+  std::map<ClassKey, ClassPairs> sweep;
+  for (uint32_t i = 0; i < nsh; ++i) {
+    for (uint32_t j = i; j < nsh; ++j) {
+      const auto [bra, ket] = bra_ket_order(shells, i, j);
+      add_pair(sweep, shells[bra], shells[ket], bra, ket);
+    }
+  }
+  const std::array<const BasisSet *, 1> bases{&basis};
+  return form_sweep(res, sweep, bases, "primitive_pair_classes");
+}
+
+Result<std::vector<PrimitivePairClass>>
+mixed_primitive_pair_classes(DeviceResources &res, const BasisSet &rows, const BasisSet &cols) {
+  const std::vector<Shell> &row_shells = rows.shells();
+  const std::vector<Shell> &col_shells = cols.shells();
+  const uint32_t n_rows = rows.nshells();
+  if (n_rows == 0 || cols.nshells() == 0) {
+    return std::vector<PrimitivePairClass>{};
+  }
+
+  // The sweep: every ordered shell pair (i of rows, j of cols), never swapped,
+  // listed in its class (la of i, lb of j). In the shell table cols' shells
+  // follow rows', so j is n_rows + j there.
+  std::map<ClassKey, ClassPairs> sweep;
+  for (uint32_t i = 0; i < n_rows; ++i) {
+    for (uint32_t j = 0; j < cols.nshells(); ++j) {
+      add_pair(sweep, row_shells[i], col_shells[j], i, n_rows + j);
+    }
+  }
+  const std::array<const BasisSet *, 2> bases{&rows, &cols};
+  return form_sweep(res, sweep, bases, "mixed_primitive_pair_classes");
 }
 
 } // namespace free_breakfast
