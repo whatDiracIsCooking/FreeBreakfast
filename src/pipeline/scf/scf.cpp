@@ -14,6 +14,7 @@ import free_breakfast.core.resources;
 import free_breakfast.recipes.blas;
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.diis;
+import free_breakfast.io.molden;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 
@@ -129,6 +130,21 @@ struct ScfState {
   return gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n,
                                                nocc, &kTwo<double>, st.c.data(), n, st.c.data(), n,
                                                &kZero<double>, st.d.data(), n));
+}
+
+// The converged orbitals to @p path as Molden: C downloaded, every MO written,
+// the nocc lowest doubly occupied.
+[[nodiscard]] Status write_scf_molden(DeviceResources &res, const std::filesystem::path &path,
+                                      const Molecule &molecule, const BasisSet &basis,
+                                      const SphericalMatrixAO &c,
+                                      const std::vector<double> &mo_energies, int32_t nocc) {
+  std::vector<double> host(c.num_elements());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(host.data(), c.data(), host.size() * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, res.stream())));
+  FBF_TRY(res.sync());
+  std::vector<double> occupations(mo_energies.size(), 0.0);
+  std::fill_n(occupations.begin(), nocc, 2.0);
+  return write_molden(path, molecule.atoms(), basis, host, mo_energies, occupations);
 }
 
 [[nodiscard]] Result<Scf>
@@ -263,6 +279,10 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
                                              wwr::wwrMemcpyDeviceToHost, res.stream())));
       FBF_TRY(res.sync());
       FBF_LOG_INFO("scf: converged in {} iterations, E = {:.12f}", iteration, energy);
+      if (!molden.empty()) {
+        FBF_TRY(write_scf_molden(res, molden, molecule, basis, st.c, mo_energies, nocc));
+        FBF_LOG_INFO("scf: wrote {}", molden.string());
+      }
       return Scf{.energy = energy,
                  .iterations = iteration,
                  .mo_energies = std::move(mo_energies),

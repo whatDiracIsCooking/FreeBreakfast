@@ -47,6 +47,7 @@ type = "sad"              # default "sad", the only kind so far
 
 [scf]                     # every option has a default
 max_iterations = 100
+molden = "water.molden"   # default none: the converged orbitals, written
 
 [localization]            # every option has a default
 mode = "pipek_mezey"      # default "pipek_mezey", the only method so far

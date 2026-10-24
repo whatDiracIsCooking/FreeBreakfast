@@ -31,6 +31,7 @@ struct ScfStep {
   int32_t diis_history = 8;
   int32_t fock_rebuild_interval = 20;  // every this many builds, one is full; 1: all full
   double tau_j = 1e-10;                // J's screen, coulomb's tau; not a TOML key
+  std::filesystem::path molden{};      // if set, the converged orbitals are written here
 
   Result<Scf> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
                        Overlap, Orthogonalizer, CoreHamiltonian, Guess> in,
@@ -118,6 +119,11 @@ What it settled:
 - **The guess is rescaled to the molecule's electron count**: SAD places
   sum Z electrons whatever the charge, so a cation or anion's guess is scaled by
   N / sum Z before the first Fock build.
+- **`molden` writes on convergence.** When it is set, the converged C is
+  downloaded and written by `io.molden`'s `write_molden`: every MO, the
+  `nocc` lowest at occupation 2. It is the `[scf] molden` TOML key, and like
+  every config path it is relative to the config file. Writing it is part of
+  the step, so a failed write fails the step.
 - **Closed shell only.** An odd electron count or a multiplicity other than 1
   is `Unsupported`.
 - **Host synchronizations**: the energy's two dots and the residual norm read
@@ -132,7 +138,8 @@ Errors: an option out of range, more electron pairs than orbitals, or a guess
 of the wrong size is `InvalidConfig`; a class above d is J's and K's
 `InvalidConfig`; no convergence within `max_iterations` is
 `MaxIterationsExceeded`; a non-converged eigensolve is `Numerical`; a failed
-runtime, BLAS, solver or launch call is `GpuRuntime`.
+runtime, BLAS, solver or launch call is `GpuRuntime`; a `molden` file that
+cannot be written is `write_molden`'s error, after the SCF has converged.
 
 ## Tests
 
@@ -151,6 +158,8 @@ this tree's own `data/basis` files:
   PySCF's.
 - An open shell is `Unsupported`, too few iterations `MaxIterationsExceeded`,
   and an option out of range `InvalidConfig`.
+- `molden` set writes a file a Molden reader takes: the header, one `[MO]`
+  entry per orbital, `nocc` of them at occupation 2.
 - The `[scf]` config cases are in `pipeline_config_host.cpp`.
 
 ## Files
