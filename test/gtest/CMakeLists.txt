@@ -102,6 +102,7 @@ add_executable(
   expm_gpu.cpp
   cg_unitary_gpu.cpp
   davidson_gpu.cpp
+  ci_sigma_gpu.cpp
   matrix_ao_gpu.cpp
   gemm_gpu.cpp
   gemmwich_gpu.cpp
@@ -158,6 +159,7 @@ target_link_libraries(
   free_breakfast::basis
   free_breakfast::sad
   free_breakfast::recipes
+  free_breakfast::ci
   free_breakfast::integrals
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers
