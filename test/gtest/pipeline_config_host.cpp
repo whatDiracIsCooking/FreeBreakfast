@@ -129,13 +129,14 @@ TEST(PipelineConfig, TheScfFillsInTheWholeChain) {
   EXPECT_EQ(scf.commutator_tolerance, defaults.commutator_tolerance);
   EXPECT_EQ(scf.diis_history, defaults.diis_history);
   EXPECT_EQ(scf.fock_rebuild_interval, defaults.fock_rebuild_interval);
+  EXPECT_TRUE(scf.molden.empty());
 }
 
 TEST(PipelineConfig, EveryScfOptionIsRead) {
   auto calc = fb::parse_config(with_inputs("[scf]\nmax_iterations = 40\nenergy_tolerance = 1e-8\n"
                                            "commutator_tolerance = 1e-5\ndiis_history = 6\n"
-                                           "fock_rebuild_interval = 1\n"),
-                               "");
+                                           "fock_rebuild_interval = 1\nmolden = \"w.molden\"\n"),
+                               "/run");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::ScfStep &scf = *calc->step<fb::ScfStep>();
   EXPECT_EQ(scf.max_iterations, 40);
@@ -143,6 +144,7 @@ TEST(PipelineConfig, EveryScfOptionIsRead) {
   EXPECT_EQ(scf.commutator_tolerance, 1e-5);
   EXPECT_EQ(scf.diis_history, 6);
   EXPECT_EQ(scf.fock_rebuild_interval, 1);
+  EXPECT_EQ(scf.molden, std::filesystem::path("/run/w.molden"));
 }
 
 TEST(PipelineConfig, AMisspeltScfOptionIsInvalidConfig) {

@@ -231,6 +231,35 @@ TEST(PipelineScfIncremental, MatchesFullBuilds) {
   }
 }
 
+// molden set: the converged orbitals land in a Molden file, every MO, the
+// occupied ones at 2. The writer's own conversions are io_molden_host's.
+TEST(PipelineScfMolden, WritesTheConvergedOrbitals) {
+  FBF_REQUIRE_GPU();
+  const fb::json &expected = reference_case("h2o_sto3g");
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
+                            expected.at("charge").get<std::int32_t>());
+  ASSERT_TRUE(inputs.has_value());
+  const fb::test::ScratchDir dir("pipeline_scf_molden");
+  auto scf = fb::ScfStep{.molden = dir / "h2o.molden"}.run(inputs->view(), res);
+  ASSERT_TRUE(scf.has_value()) << scf.error().message;
+
+  std::ifstream file(dir / "h2o.molden");
+  ASSERT_TRUE(file.is_open());
+  std::string line;
+  ASSERT_TRUE(std::getline(file, line));
+  EXPECT_EQ(line, "[Molden Format]");
+  std::size_t orbitals = 0;
+  std::size_t occupied = 0;
+  while (std::getline(file, line)) {
+    orbitals += line.starts_with(" Ene=") ? 1 : 0;
+    occupied += line == " Occup= 2.000000" ? 1 : 0;
+  }
+  EXPECT_EQ(orbitals, inputs->basis.nao_sphe());
+  EXPECT_EQ(occupied, expected.at("electrons").get<std::size_t>() / 2);
+}
+
 TEST(PipelineScfErrors, AnOpenShellIsUnsupported) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};

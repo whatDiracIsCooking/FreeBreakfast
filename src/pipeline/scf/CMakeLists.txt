@@ -2,8 +2,8 @@
 # and so are the orthogonalizer, core_hamiltonian and guess steps, which
 # re-export every other product in run's signature, plus pipeline::step and
 # core::resources. Everything run uses -- J, K, DIIS, the BLAS conveniences,
-# the log -- is PRIVATE: run is defined in the implementation unit, so no
-# importer compiles against them.
+# the log, the Molden writer -- is PRIVATE: run is defined in the
+# implementation unit, so no importer compiles against them.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.scf
@@ -29,6 +29,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize
   free_breakfast::recipes::diis
+  free_breakfast::io::molden
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
 )

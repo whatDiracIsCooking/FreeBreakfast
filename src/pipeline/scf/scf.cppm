@@ -65,6 +65,10 @@ struct ScfStep {
   /// converged energy and orbitals (2.6e-10 Eh on N2/cc-pVDZ at the default),
   /// so a comparison tighter than that runs at 0. Not a [scf] TOML key.
   double tau_j = 1e-10;
+  /// @brief Where the converged orbitals are written as a Molden file, if not
+  /// empty: every MO, occupation 2 for the occupied ones. Arrives resolved
+  /// (pipeline/config anchors a relative one to the config file).
+  std::filesystem::path molden{};
 
   /// @brief The converged wavefunction. An open shell (an odd electron count,
   /// or a multiplicity other than 1) is ErrorKind::Unsupported; an option out
@@ -73,7 +77,8 @@ struct ScfStep {
   /// InvalidConfig; no convergence within @ref max_iterations is
   /// ErrorKind::MaxIterationsExceeded; a non-converged eigensolve is
   /// ErrorKind::Numerical; a failed runtime, BLAS, solver or launch call is
-  /// ErrorKind::GpuRuntime.
+  /// ErrorKind::GpuRuntime; a @ref molden file that cannot be written is
+  /// @c write_molden's error.
   [[nodiscard]] Result<Scf> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
                                      Overlap, Orthogonalizer, CoreHamiltonian, Guess> in,
                                 DeviceResources &res) const;

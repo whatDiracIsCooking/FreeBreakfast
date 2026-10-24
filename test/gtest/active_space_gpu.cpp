@@ -109,10 +109,10 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
 // screen moves N2/cc-pVDZ's energy by 2.6e-10 Eh and an h_eff_tt by 1.4e-10),
 // every build full, and converged past the step's defaults, since h_eff_tt
 // moves to first order in the orbitals. K's default screen does not bind here.
-constexpr fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
-                                .commutator_tolerance = 1e-12,
-                                .fock_rebuild_interval = 1,
-                                .tau_j = 0.0};
+const fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
+                            .commutator_tolerance = 1e-12,
+                            .fock_rebuild_interval = 1,
+                            .tau_j = 0.0};
 
 // Everything active_space_hamiltonian reads, from one converged Scf, and the
 // Scf's orbitals reordered to the reference's core, active, rest.

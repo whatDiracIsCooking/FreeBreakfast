@@ -113,12 +113,13 @@ template <class S>
   } else if constexpr (std::same_as<S, ScfStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"max_iterations", "energy_tolerance", "commutator_tolerance",
-                        "diis_history", "fock_rebuild_interval"}));
+                        "diis_history", "fock_rebuild_interval", "molden"}));
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, step.max_iterations));
     FBF_TRY(read_key(table, kStep, "energy_tolerance", base_dir, step.energy_tolerance));
     FBF_TRY(read_key(table, kStep, "commutator_tolerance", base_dir, step.commutator_tolerance));
     FBF_TRY(read_key(table, kStep, "diis_history", base_dir, step.diis_history));
     FBF_TRY(read_key(table, kStep, "fock_rebuild_interval", base_dir, step.fock_rebuild_interval));
+    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
   } else if constexpr (std::same_as<S, LocalizationStep>) {
     FBF_TRY(check_keys(
         table, kStep,
