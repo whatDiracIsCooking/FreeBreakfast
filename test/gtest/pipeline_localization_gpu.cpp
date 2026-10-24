@@ -1,13 +1,14 @@
-// The Localization step against PySCF's Pipek-Mezey (data/localization/
-// pipek_mezey.json, tools/emit_localization_reference.py), through the real
-// registry: a config naming [localization] plans the whole chain to the Scf
-// and localizes its occupied orbitals. The two codes normalise and order their
-// AOs differently, so the orbitals are compared by what is invariant to that:
-// the functional, and each orbital's Mulliken population on each atom, matched
-// to PySCF's orbitals up to order. Localization is a rotation of the occupied
-// space, so the localized orbitals are also S-orthonormal and give back the
-// SCF's own density, D = 2 C_local C_local^T. Runs the device chain, so needs a
-// GPU.
+// The Localization step against PySCF's Pipek-Mezey and intrinsic bond
+// orbitals (data/localization/{pipek_mezey,ibo}.json,
+// tools/emit_localization_reference.py), through the real registry: a config
+// naming [localization] plans the whole chain to the Scf and localizes its
+// occupied orbitals. The two codes normalise and order their AOs differently,
+// so the orbitals are compared by what is invariant to that: the functional,
+// and each orbital's Mulliken population on each atom, matched to PySCF's
+// orbitals up to order. Localization is a rotation of the occupied space, so
+// the localized orbitals are also S-orthonormal and give back the SCF's own
+// density, D = 2 C_local C_local^T. The IAOs are checked on their own by their
+// partial charges. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -17,6 +18,7 @@ import std;
 import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.base;
+import free_breakfast.io.basis;
 import free_breakfast.io.json;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
@@ -39,26 +41,41 @@ static_assert(std::same_as<fb::StepOutput<fb::LocalizationStep>, fb::Localizatio
 // left beyond that is the two SCFs' own tolerances.
 constexpr double kFunctionalTolerance = 1e-8;
 constexpr double kPopulationTolerance = 1e-5;
+// The IAO charges are linear in the SCF's density, so they carry its
+// tolerance and nothing of the localization's.
+constexpr double kChargeTolerance = 1e-7;
+// An IBO with more than this population on one atom is a one-center orbital
+// (a core or a lone pair); a bond's largest is ~0.6.
+constexpr double kOneCenter = 0.9;
 
-const fb::json &reference() {
-  static const fb::json doc = [] {
-    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "localization" /
-                              "pipek_mezey.json");
-    EXPECT_TRUE(read.has_value()) << read.error().message;
-    return read.has_value() ? std::move(*read) : fb::json{};
-  }();
-  return doc;
+fb::json read_reference(std::string_view file) {
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "localization" / file);
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return read.has_value() ? std::move(*read) : fb::json{};
 }
 
-const fb::json &reference_case(std::string_view name) {
-  for (const fb::json &entry : reference().at("cases")) {
+// One case of localization/@p file: pipek_mezey.json or ibo.json.
+const fb::json &reference_case(std::string_view name, std::string_view file = "pipek_mezey.json") {
+  static const fb::json kPipekMezey = read_reference("pipek_mezey.json");
+  static const fb::json kIbo = read_reference("ibo.json");
+  for (const fb::json &entry : (file == "ibo.json" ? kIbo : kPipekMezey).at("cases")) {
     if (entry.at("name").get<std::string>() == name) {
       return entry;
     }
   }
-  ADD_FAILURE() << "no case " << name << " in localization/pipek_mezey.json";
+  ADD_FAILURE() << "no case " << name << " in localization/" << file;
   static const fb::json kNone;
   return kNone;
+}
+
+// The entry's record for @p exponent, or null.
+const fb::json *exponent_record(const fb::json &entry, std::int32_t exponent) {
+  for (const fb::json &localized : entry.at("localized")) {
+    if (localized.at("exponent").get<std::int32_t>() == exponent) {
+      return &localized;
+    }
+  }
+  return nullptr;
 }
 
 template <typename Buffer>
@@ -107,35 +124,23 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
   return std::move(*calc);
 }
 
-struct Case {
-  std::string_view name;
-  std::int32_t exponent;
-};
-
-// ctest names a discovered case by this, so `ctest -R h2o_ccpvdz_p4` selects one.
-void PrintTo(const Case &c, std::ostream *os) {
-  *os << c.name << "_p" << c.exponent;
-}
-
-class PipelineLocalization : public ::testing::TestWithParam<Case> {};
-
-TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
-  FBF_REQUIRE_GPU();
-  const fb::json &entry = reference_case(GetParam().name);
-  const fb::json *expected = nullptr;
-  for (const fb::json &localized : entry.at("localized")) {
-    if (localized.at("exponent").get<std::int32_t>() == GetParam().exponent) {
-      expected = &localized;
-    }
-  }
-  ASSERT_NE(expected, nullptr) << "no exponent " << GetParam().exponent;
-
-  auto calc = localize(entry, GetParam().exponent);
-  ASSERT_TRUE(calc.has_value());
-  const auto &local = calc->get<fb::Localization>();
-  const auto &scf = calc->get<fb::Scf>();
-  const auto &overlap = calc->get<fb::Overlap>();
-  const auto &basis = calc->get<fb::BasisSet>();
+// The localized orbitals of @p calc against the reference record @p expected:
+// the functional, every orbital's Mulliken population on every atom matched to
+// the reference's up to order, S-orthonormality and the SCF's density.
+//
+// @p one_center_sets is for IBO. Two orbitals both wholly on one atom by the
+// IAO populations (water's O 1s and lone pairs) can rotate into each other at
+// almost no cost in L, only the other atoms' small tails telling them apart:
+// L moves by 1e-13 where their Mulliken populations move by 1e-3, between
+// PySCF's own two IBO optimizers as much as between it and this code. Such
+// orbitals are fixed only as a set, so they are compared by the set's summed
+// populations, which are.
+void expect_matches(const fb::json &entry, const fb::json &expected, const fb::Calculation &calc,
+                    bool one_center_sets = false) {
+  const auto &local = calc.get<fb::Localization>();
+  const auto &scf = calc.get<fb::Scf>();
+  const auto &overlap = calc.get<fb::Overlap>();
+  const auto &basis = calc.get<fb::BasisSet>();
   ASSERT_TRUE(local.has_value() && scf.has_value() && overlap.has_value() && basis.has_value());
 
   const std::size_t n = basis->nao_sphe();
@@ -146,7 +151,7 @@ TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
   const std::vector<double> s = download(overlap->s, n * n);
   const std::vector<double> d = download(scf->d, n * n);
 
-  EXPECT_NEAR(local->info.functional, expected->at("functional").get<double>(),
+  EXPECT_NEAR(local->info.functional, expected.at("functional").get<double>(),
               kFunctionalTolerance);
   EXPECT_GT(local->info.functional, local->info.initial_functional);
 
@@ -173,10 +178,33 @@ TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
   // Every PySCF orbital matches a distinct one of ours, population by
   // population: the orbitals are the same up to order (and sign, which the
   // populations do not see).
-  const auto theirs = expected->at("populations").get<std::vector<std::vector<double>>>();
+  const auto theirs = expected.at("populations").get<std::vector<std::vector<double>>>();
   ASSERT_EQ(theirs.size(), occ);
+  // With @p one_center_sets, orbitals on one atom are compared as a set: the
+  // atom an orbital sits on (population above kOneCenter), or n_atoms for one
+  // that spans several.
+  const auto center = [&](const std::vector<double> &q) {
+    for (std::uint32_t a = 0; a < n_atoms; ++a) {
+      if (one_center_sets && q[a] > kOneCenter) {
+        return a;
+      }
+    }
+    return n_atoms;
+  };
+  std::vector<std::vector<double>> our_sets(n_atoms, std::vector<double>(n_atoms, 0.0));
+  std::vector<std::vector<double>> their_sets = our_sets;
   std::vector<bool> taken(occ, false);
+  for (std::size_t i = 0; i < occ; ++i) {
+    if (const std::uint32_t at = center(ours[i]); at < n_atoms) {
+      taken[i] = true;
+      std::ranges::transform(our_sets[at], ours[i], our_sets[at].begin(), std::plus{});
+    }
+  }
   for (std::size_t k = 0; k < occ; ++k) {
+    if (const std::uint32_t at = center(theirs[k]); at < n_atoms) {
+      std::ranges::transform(their_sets[at], theirs[k], their_sets[at].begin(), std::plus{});
+      continue;
+    }
     std::size_t best = occ;
     double best_gap = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < occ; ++i) {
@@ -192,6 +220,14 @@ TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
     ASSERT_LT(best, occ);
     taken[best] = true;
     EXPECT_LT(best_gap, kPopulationTolerance) << "PySCF orbital " << k << " has no match";
+  }
+  // The trace of a set's population block is invariant under rotations within
+  // it, so the sums are as determined as a lone orbital's populations.
+  for (std::uint32_t at = 0; at < n_atoms; ++at) {
+    for (std::uint32_t a = 0; a < n_atoms; ++a) {
+      EXPECT_NEAR(our_sets[at][a], their_sets[at][a], kPopulationTolerance)
+          << "orbitals on atom " << at << ", population on atom " << a;
+    }
   }
 
   for (std::size_t i = 0; i < occ; ++i) {
@@ -216,13 +252,140 @@ TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineLocalization,
-                         ::testing::Values(Case{"h2o_sto3g", 2}, Case{"h2o_sto3g", 4},
-                                           Case{"h2o_ccpvdz", 2}, Case{"h2o_ccpvdz", 4},
-                                           Case{"nh4_ccpvdz", 2}, Case{"nh4_ccpvdz", 4}),
-                         [](const auto &info) {
-                           return std::format("{}_p{}", info.param.name, info.param.exponent);
-                         });
+struct Case {
+  std::string_view name;
+  std::int32_t exponent;
+};
+
+// ctest names a discovered case by this, so `ctest -R h2o_ccpvdz_p4` selects one.
+void PrintTo(const Case &c, std::ostream *os) {
+  *os << c.name << "_p" << c.exponent;
+}
+
+const auto kCases =
+    ::testing::Values(Case{"h2o_sto3g", 2}, Case{"h2o_sto3g", 4}, Case{"h2o_ccpvdz", 2},
+                      Case{"h2o_ccpvdz", 4}, Case{"nh4_ccpvdz", 2}, Case{"nh4_ccpvdz", 4});
+
+std::string case_name(const ::testing::TestParamInfo<Case> &info) {
+  return std::format("{}_p{}", info.param.name, info.param.exponent);
+}
+
+class PipelineLocalization : public ::testing::TestWithParam<Case> {};
+
+TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case(GetParam().name);
+  const fb::json *expected = exponent_record(entry, GetParam().exponent);
+  ASSERT_NE(expected, nullptr) << "no exponent " << GetParam().exponent;
+  auto calc = localize(entry, GetParam().exponent);
+  ASSERT_TRUE(calc.has_value());
+  expect_matches(entry, *expected, *calc);
+}
+
+INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineLocalization, kCases, case_name);
+
+class PipelineIbo : public ::testing::TestWithParam<Case> {};
+
+TEST_P(PipelineIbo, MatchesPyscfAndKeepsTheDensity) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case(GetParam().name, "ibo.json");
+  const fb::json *expected = exponent_record(entry, GetParam().exponent);
+  ASSERT_NE(expected, nullptr) << "no exponent " << GetParam().exponent;
+  auto calc = localize(entry, GetParam().exponent, "mode = \"ibo\"\n");
+  ASSERT_TRUE(calc.has_value());
+  expect_matches(entry, *expected, *calc, true);
+}
+
+INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineIbo, kCases, case_name);
+
+// The IAOs on their own, from the Scf's orbitals: orthonormal, spanning the
+// occupied orbitals (each has unit weight on them), and giving PySCF's partial
+// charges, Z_A - 2 sum_i sum_{r in A} (A^T S C)_ri^2.
+TEST(PipelineIbo, TheIaosAreOrthonormalSpanTheOccupiedAndGivePyscfsCharges) {
+  FBF_REQUIRE_GPU();
+  for (std::string_view name : {"h2o_sto3g", "h2o_ccpvdz", "nh4_ccpvdz"}) {
+    SCOPED_TRACE(name);
+    const fb::json &entry = reference_case(name, "ibo.json");
+    auto calc = localize(entry, 4, "mode = \"ibo\"\n");
+    ASSERT_TRUE(calc.has_value());
+    const auto &molecule = calc->get<fb::Molecule>();
+    const auto &basis = calc->get<fb::BasisSet>();
+    const auto &overlap = calc->get<fb::Overlap>();
+    const auto &scf = calc->get<fb::Scf>();
+    ASSERT_TRUE(molecule.has_value() && basis.has_value() && overlap.has_value() &&
+                scf.has_value());
+    auto stamp = fb::resolve_basis("minao");
+    ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+    auto minao = fb::place(stamp->primitive_normalized(), *molecule);
+    ASSERT_TRUE(minao.has_value()) << minao.error().message;
+
+    const std::size_t n = basis->nao_sphe();
+    const std::size_t m = minao->nao_sphe();
+    const auto occ = static_cast<std::size_t>(molecule->electron_count() / 2);
+    fb::DeviceResources res(scf->c.dev_idx());
+    fb::Buffers::device<double> iao(n * m, res.device());
+    const fb::Status built =
+        fb::intrinsic_atomic_orbitals(res, *basis, *minao, static_cast<std::int32_t>(occ),
+                                      overlap->s.data(), scf->c.data(), iao.data());
+    ASSERT_TRUE(built.has_value()) << built.error().message;
+    ASSERT_TRUE(res.sync().has_value());
+    const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
+    const std::vector<double> a = download(iao, n * m);
+    const std::vector<double> s = download(overlap->s, n * n);
+    const std::vector<double> c = download(scf->c, n * occ);
+
+    // A^T S, m x n, and the occupied orbitals over the IAOs, A^T S C.
+    std::vector<double> ats(m * n, 0.0);
+    for (std::size_t r = 0; r < m; ++r) {
+      for (std::size_t nu = 0; nu < n; ++nu) {
+        for (std::size_t mu = 0; mu < n; ++mu) {
+          ats[r + (m * nu)] += a[mu + (n * r)] * s[mu + (n * nu)];
+        }
+      }
+    }
+    for (std::size_t r = 0; r < m; ++r) {
+      for (std::size_t q = 0; q < m; ++q) {
+        double atsa = 0.0;
+        for (std::size_t nu = 0; nu < n; ++nu) {
+          atsa += ats[r + (m * nu)] * a[nu + (n * q)];
+        }
+        EXPECT_NEAR(atsa, r == q ? 1.0 : 0.0, 1e-10) << r << "," << q;
+      }
+    }
+    std::vector<double> c_iao(m * occ, 0.0);
+    for (std::size_t i = 0; i < occ; ++i) {
+      for (std::size_t r = 0; r < m; ++r) {
+        for (std::size_t nu = 0; nu < n; ++nu) {
+          c_iao[r + (m * i)] += ats[r + (m * nu)] * c[nu + (n * i)];
+        }
+      }
+    }
+    for (std::size_t i = 0; i < occ; ++i) {
+      double weight = 0.0;
+      for (std::size_t r = 0; r < m; ++r) {
+        weight += c_iao[r + (m * i)] * c_iao[r + (m * i)];
+      }
+      EXPECT_NEAR(weight, 1.0, 1e-10) << "orbital " << i;
+    }
+
+    const auto charges = entry.at("iao_charges").get<std::vector<double>>();
+    ASSERT_EQ(charges.size(), minao->natoms());
+    for (std::uint32_t atom = 0; atom < minao->natoms(); ++atom) {
+      const std::uint32_t first = minao->ao_offset_sphe(minao->atom_shell_offset(atom));
+      const std::uint32_t last = atom + 1 < minao->natoms()
+                                     ? minao->ao_offset_sphe(minao->atom_shell_offset(atom + 1))
+                                     : static_cast<std::uint32_t>(m);
+      double population = 0.0;
+      for (std::size_t i = 0; i < occ; ++i) {
+        for (std::uint32_t r = first; r < last; ++r) {
+          population += 2.0 * c_iao[r + (m * i)] * c_iao[r + (m * i)];
+        }
+      }
+      const double charge = entry.at("atoms")[atom].at("z").get<double>() - population;
+      EXPECT_NEAR(charge, charges[atom], kChargeTolerance) << "atom " << atom;
+    }
+  }
+}
 
 // molden set: the localized orbitals land in a Molden file, n_occ of them at
 // occupation 2. Each energy is <i|F|i> = sum_k U_ki^2 eps_k, and U is

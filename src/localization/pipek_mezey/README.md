@@ -74,8 +74,10 @@ is left alone. Both exponents read the same population tensor and share every
 kernel but the pair angle and the functional.
 
 The functional is eq. 4's, but over Mulliken populations rather than the
-paper's IAO ones: this is Pipek-Mezey with Knizia's exponent, not IBO (see
-"Not done here").
+paper's IAO ones: this is Pipek-Mezey with Knizia's exponent, not IBO.
+`localization/ibo` is IBO: it writes the orbitals over the orthonormal IAOs,
+where S is the identity and these populations are the IAO ones, and calls this
+sweep.
 
 ## Design
 
@@ -138,9 +140,9 @@ not done here.
 
 ## Not done here
 
-The closed-shell occupied space, and Mulliken populations only: Loewdin or
-intrinsic-atomic-orbital populations (IBO) and the virtual space are further
-work. Either exponent works unchanged on another population tensor built the
+The closed-shell occupied space, and Mulliken populations only (IAO ones are
+`localization/ibo`'s, over this sweep): Loewdin populations and the virtual
+space are further work. Either exponent works unchanged on another population tensor built the
 same way. `recipes/cg_unitary` is the other route to the same maximum, as a
 cost function on O(n); the population build would be shared, and this sweep is
 the reference to check it against.

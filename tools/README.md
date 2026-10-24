@@ -46,8 +46,8 @@ emit_scf_reference.py
                   data/basis files, the reference the Scf step is tested
                   against. Needs PySCF.
 emit_localization_reference.py
-                  Write test/gtest/data/localization/pipek_mezey.json:
-                  PySCF's Mulliken Pipek-Mezey of those RHF orbitals, both
+                  Write test/gtest/data/localization/{pipek_mezey,ibo}.json:
+                  PySCF's Mulliken Pipek-Mezey and IBOs of those RHF orbitals, both
                   exponents, as the functional and per-orbital atomic
                   populations, the reference the Localization step is tested
                   against. Needs PySCF.
