@@ -77,10 +77,12 @@ a subtable named after `LocalizationStep::pipek_mezey`: both modes run the
 same Pipek-Mezey sweep, IBO over intrinsic-atomic-orbital populations, so they
 take the same options.
 
-`[casci]`'s keys are read for their types only. Whether the active space
-fits needs the molecule's electrons and the basis's orbitals, so
-`CasciStep::orbital_order` checks the ranges when the step runs
-(`casci/README.md`).
+`[casci]`'s keys are read for their types only. The active-space keys
+(`ncas`, `nelecas`, `active`, `avas`, `avas_threshold`) and their refusals are
+`read_active_space`'s, one reader for every step whose config derives from
+`ActiveSpaceSelection`. Whether the active space fits needs the molecule's
+electrons and the basis's orbitals, so `ActiveSpaceSelection::orbital_order`
+checks the ranges when the step runs (`active_space/README.md`).
 
 ```toml
 [fci]
@@ -164,5 +166,5 @@ filled in and which are not, `from`, and each refusal above. Nothing is run.
 | File | Role |
 |------|------|
 | `config.cppm` | Module interface: `Calculation`, `parse_config`, `read_config` |
-| `config.cpp` | The document walk and each step's `read_step` |
+| `config.cpp` | The document walk, each step's `read_step`, and `read_active_space` |
 | `CMakeLists.txt` | The module library |
