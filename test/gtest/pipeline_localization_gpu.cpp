@@ -280,6 +280,9 @@ TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
   auto calc = localize(entry, GetParam().exponent);
   ASSERT_TRUE(calc.has_value());
   expect_matches(entry, *expected, *calc);
+  const auto &local = calc->get<fb::Localization>();
+  ASSERT_TRUE(local.has_value());
+  EXPECT_TRUE(local->populations.empty() && local->charges.empty()) << "IBO only";
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineLocalization, kCases, case_name);
@@ -294,6 +297,31 @@ TEST_P(PipelineIbo, MatchesPyscfAndKeepsTheDensity) {
   auto calc = localize(entry, GetParam().exponent, "mode = \"ibo\"\n");
   ASSERT_TRUE(calc.has_value());
   expect_matches(entry, *expected, *calc, true);
+
+  // The step's IAO populations of the IBOs are the ones the sweep maximized:
+  // each orbital's sum to one, and their p-th powers sum to its L. The
+  // charges are the density's, so PySCF's whichever orbitals gave them.
+  const auto &local = calc->get<fb::Localization>();
+  ASSERT_TRUE(local.has_value());
+  const std::size_t n_atoms = entry.at("atoms").size();
+  const auto occ = static_cast<std::size_t>(local->n_occ);
+  ASSERT_EQ(local->populations.size(), n_atoms * occ);
+  double functional = 0.0;
+  for (std::size_t i = 0; i < occ; ++i) {
+    double weight = 0.0;
+    for (std::size_t a = 0; a < n_atoms; ++a) {
+      const double q = local->populations[a + (n_atoms * i)];
+      weight += q;
+      functional += std::pow(q, GetParam().exponent);
+    }
+    EXPECT_NEAR(weight, 1.0, 1e-10) << "orbital " << i;
+  }
+  EXPECT_NEAR(functional, local->info.functional, 1e-10);
+  const auto charges = entry.at("iao_charges").get<std::vector<double>>();
+  ASSERT_EQ(local->charges.size(), charges.size());
+  for (std::size_t a = 0; a < n_atoms; ++a) {
+    EXPECT_NEAR(local->charges[a], charges[a], kChargeTolerance) << "atom " << a;
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineIbo, kCases, case_name);
@@ -332,9 +360,8 @@ TEST(PipelineIbo, TheIaosAreOrthonormalSpanTheOccupiedAndGivePyscfsCharges) {
     const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
     const std::vector<double> a = download(iao, n * m);
     const std::vector<double> s = download(overlap->s, n * n);
-    const std::vector<double> c = download(scf->c, n * occ);
 
-    // A^T S, m x n, and the occupied orbitals over the IAOs, A^T S C.
+    // A^T S A = I.
     std::vector<double> ats(m * n, 0.0);
     for (std::size_t r = 0; r < m; ++r) {
       for (std::size_t nu = 0; nu < n; ++nu) {
@@ -352,39 +379,54 @@ TEST(PipelineIbo, TheIaosAreOrthonormalSpanTheOccupiedAndGivePyscfsCharges) {
         EXPECT_NEAR(atsa, r == q ? 1.0 : 0.0, 1e-10) << r << "," << q;
       }
     }
-    std::vector<double> c_iao(m * occ, 0.0);
-    for (std::size_t i = 0; i < occ; ++i) {
-      for (std::size_t r = 0; r < m; ++r) {
-        for (std::size_t nu = 0; nu < n; ++nu) {
-          c_iao[r + (m * i)] += ats[r + (m * nu)] * c[nu + (n * i)];
-        }
-      }
-    }
+    // The canonical orbitals' populations over the IAOs: each orbital's sum
+    // to one, as the IAOs span them, and the charges are PySCF's.
+    const auto populations =
+        fb::orbital_populations(res, *basis, *minao, static_cast<std::int32_t>(occ),
+                                overlap->s.data(), scf->c.data(), iao.data());
+    ASSERT_TRUE(populations.has_value()) << populations.error().message;
+    const std::uint32_t n_atoms = minao->natoms();
+    ASSERT_EQ(populations->size(), n_atoms * occ);
     for (std::size_t i = 0; i < occ; ++i) {
       double weight = 0.0;
-      for (std::size_t r = 0; r < m; ++r) {
-        weight += c_iao[r + (m * i)] * c_iao[r + (m * i)];
+      for (std::uint32_t atom = 0; atom < n_atoms; ++atom) {
+        weight += (*populations)[atom + (n_atoms * i)];
       }
       EXPECT_NEAR(weight, 1.0, 1e-10) << "orbital " << i;
     }
 
+    const auto ours = fb::partial_charges(molecule->atoms(), *populations);
+    ASSERT_TRUE(ours.has_value()) << ours.error().message;
     const auto charges = entry.at("iao_charges").get<std::vector<double>>();
-    ASSERT_EQ(charges.size(), minao->natoms());
-    for (std::uint32_t atom = 0; atom < minao->natoms(); ++atom) {
-      const std::uint32_t first = minao->ao_offset_sphe(minao->atom_shell_offset(atom));
-      const std::uint32_t last = atom + 1 < minao->natoms()
-                                     ? minao->ao_offset_sphe(minao->atom_shell_offset(atom + 1))
-                                     : static_cast<std::uint32_t>(m);
-      double population = 0.0;
-      for (std::size_t i = 0; i < occ; ++i) {
-        for (std::uint32_t r = first; r < last; ++r) {
-          population += 2.0 * c_iao[r + (m * i)] * c_iao[r + (m * i)];
-        }
-      }
-      const double charge = entry.at("atoms")[atom].at("z").get<double>() - population;
-      EXPECT_NEAR(charge, charges[atom], kChargeTolerance) << "atom " << atom;
+    ASSERT_EQ(charges.size(), n_atoms);
+    ASSERT_EQ(ours->size(), n_atoms);
+    for (std::uint32_t atom = 0; atom < n_atoms; ++atom) {
+      EXPECT_NEAR((*ours)[atom], charges[atom], kChargeTolerance) << "atom " << atom;
     }
+    // Each electron is counted once: the charges sum to the molecule's.
+    EXPECT_NEAR(std::accumulate(ours->begin(), ours->end(), 0.0), molecule->charge(), 1e-10);
   }
+}
+
+// partial_charges is host arithmetic, and refuses populations that are not
+// whole columns of the atoms.
+TEST(Population, PartialChargesAreZLessTheOccupiedPopulations) {
+  const std::array atoms{fb::Atom{{0.0, 0.0, 0.0}, fb::Element::O},
+                         fb::Atom{{0.0, 0.0, 1.8}, fb::Element::H}};
+  // Two orbitals: one all on O, one split 0.75 / 0.25.
+  const std::array populations{1.0, 0.0, 0.75, 0.25};
+  const auto charges = fb::partial_charges(atoms, populations);
+  ASSERT_TRUE(charges.has_value()) << charges.error().message;
+  EXPECT_DOUBLE_EQ((*charges)[0], 8.0 - (2.0 * 1.75));
+  EXPECT_DOUBLE_EQ((*charges)[1], 1.0 - (2.0 * 0.25));
+  const auto one = fb::partial_charges(atoms, populations, 1.0);
+  ASSERT_TRUE(one.has_value());
+  EXPECT_DOUBLE_EQ((*one)[0], 8.0 - 1.75);
+
+  const std::array ragged{1.0, 0.0, 0.5};
+  const auto refused = fb::partial_charges(atoms, ragged);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 // molden set: the localized orbitals land in a Molden file, n_occ of them at

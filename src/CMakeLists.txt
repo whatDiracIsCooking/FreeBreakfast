@@ -19,6 +19,8 @@ add_subdirectory(recipes)
 add_subdirectory(integrals)
 # Before pipeline: its Localization step wraps localization.pipek_mezey.
 add_subdirectory(localization)
+# Before pipeline: its Localization step reports IAO charges through it.
+add_subdirectory(analysis)
 # Over core alone for now; recipes, which the CI solver will need, is above.
 add_subdirectory(ci)
 # After the modules its steps wrap: the step contract itself is a leaf over

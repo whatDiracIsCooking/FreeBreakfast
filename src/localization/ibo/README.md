@@ -19,7 +19,7 @@ it takes and returns.
 | Name | Role |
 |---|---|
 | `intrinsic_atomic_orbitals(res, basis, minimal, n_occ, s, c, iao)` | The orthonormal IAOs, n_ao x n_minimal; `Status` |
-| `ibo_localize(res, basis, minimal, n_occ, s, c, c_local, u, options)` | The IBOs; returns `Result<PipekMezeyInfo>`, exponent 4 by default |
+| `ibo_localize(res, basis, minimal, n_occ, s, c, c_local, u, iao, options)` | The IBOs, and the IAOs if `iao` is not null; returns `Result<PipekMezeyInfo>`, exponent 4 by default |
 
 Double precision only. Every matrix is a column-major device `double *`,
 packed, over the spherical AOs: `s` (n x n) and `c` (n x n_occ) as for
@@ -91,6 +91,13 @@ existing sweep.
 
 The localized orbitals are written back as C U, not IAO C_IAO U: the same
 orbitals, without a round trip through the IAOs' rounding.
+
+## Charges and populations
+
+The IAO partial charges (eq 3) and each orbital's IAO population per atom are
+not here: they are `analysis/population`, which takes the IAOs as an argument
+and so does not depend on this module. `ibo_localize`'s optional `iao` hands
+back the IAOs it ran over, so a caller wanting both builds them once.
 
 ## Cost
 

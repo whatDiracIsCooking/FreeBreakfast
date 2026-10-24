@@ -55,8 +55,10 @@ export namespace free_breakfast {
 ///
 /// The arguments are pipek_mezey_localize's, plus @p minimal as for
 /// intrinsic_atomic_orbitals. @p c_local receives C U and @p u (if not null)
-/// the n_occ x n_occ orthogonal U; @p c_local must not alias @p c. The
-/// default exponent is Knizia's four.
+/// the n_occ x n_occ orthogonal U; @p c_local must not alias @p c. @p iao
+/// (if not null) receives the n x m IAOs the localization ran over, as
+/// intrinsic_atomic_orbitals would, for a population analysis without
+/// building them twice. The default exponent is Knizia's four.
 ///
 /// @return The sweeps and L over the IAO populations, or
 ///         intrinsic_atomic_orbitals' and pipek_mezey_localize's errors. On
@@ -64,7 +66,7 @@ export namespace free_breakfast {
 ///         orbitals.
 [[nodiscard]] Result<PipekMezeyInfo>
 ibo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &minimal, int32_t n_occ,
-             const double *s, const double *c, double *c_local, double *u,
+             const double *s, const double *c, double *c_local, double *u, double *iao = nullptr,
              const PipekMezeyOptions &options = {.exponent = PipekMezeyExponent::Four});
 
 } // namespace free_breakfast

@@ -7,7 +7,9 @@ module free_breakfast.pipeline.localization;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.log;
 import free_breakfast.core.wwr;
+import free_breakfast.atom; // element_symbol
 import free_breakfast.core.resources;
 import free_breakfast.io.basis;
 import free_breakfast.io.molden;
@@ -66,8 +68,19 @@ namespace free_breakfast {
   case LocalizationMode::Ibo: {
     const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
     const BasisSet minao = FBF_TRY(place(stamp.primitive_normalized(), molecule));
-    out.info = FBF_TRY(ibo_localize(res, basis, minao, n_occ, in.get<Overlap>().s.data(),
-                                    scf.c.data(), out.c.data(), out.u.data(), pipek_mezey));
+    const double *s = in.get<Overlap>().s.data();
+    Buffers::device<double> iao(n_ao * minao.nao_sphe(), res.device());
+    out.info = FBF_TRY(ibo_localize(res, basis, minao, n_occ, s, scf.c.data(), out.c.data(),
+                                    out.u.data(), iao.data(), pipek_mezey));
+    // Over the IBOs, so each orbital's populations are its bonding picture;
+    // the charges are the same over any rotation of the occupied orbitals.
+    out.populations =
+        FBF_TRY(orbital_populations(res, basis, minao, n_occ, s, out.c.data(), iao.data()));
+    out.charges = FBF_TRY(partial_charges(molecule.atoms(), out.populations));
+    for (size_t a = 0; a < out.charges.size(); ++a) {
+      FBF_LOG_INFO("localization: IAO charge {:>3} {:<2} {:+.6f}", a,
+                   element_symbol(molecule.atoms()[a].element), out.charges[a]);
+    }
     break;
   }
   }
