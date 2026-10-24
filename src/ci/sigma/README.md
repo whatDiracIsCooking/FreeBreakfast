@@ -1,6 +1,8 @@
 # Sigma
 
-σ = Hc and diag(H) for a determinant CI vector, on the host. Written for
+σ = Hc and diag(H) for a determinant CI vector: `CiSigma` on the device, as a
+`LinearOperator` (`recipes.linear_operator`) over a block of CI vectors, and
+`host_sigma` / `host_diagonal` on the host. The host pair is written for
 clarity, not speed: it is the reference the GPU sigma is tested against.
 
 ## Module
@@ -10,13 +12,20 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 
 | Name | Role |
 |---|---|
+| `CiSigma::create(res, alpha, beta)` | Upload the strings and replacement lists; `Result<CiSigma>` |
+| `CiSigma::set_integrals(res, e_core, h_eff, eri)` | Upload an H over them, replacing any before; `Status` |
+| `CiSigma::apply(res, k, x, y)` | Y = H X for size() × k device blocks: the `LinearOperator` member; `Status` |
+| `CiSigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
+| `CiSigma::size()` | alpha.size() · beta.size(), the operator's n |
 | `host_sigma(alpha, beta, e_core, h_eff, eri, c, sigma)` | σ = Hc; `Status` |
 | `host_diagonal(alpha, beta, e_core, h_eff, eri, diagonal)` | H_II for every determinant; `Status` |
 
-Both take the integrals as plain arrays: `h_eff` n × n and `eri` n⁴, row-major,
+All take the integrals as host arrays: `h_eff` n × n and `eri` n⁴, row-major,
 (tu\|vw) in chemists' order, real with the usual symmetry. They refuse
 (`InvalidConfig`, nothing written) two `StringSet`s over different orbital
-counts, or any span of the wrong size.
+counts, or any span of the wrong size. `CiSigma` also refuses no orbitals, more
+determinants (or rows of a block) than an `int32_t` counts, another device than
+`create`'s, and `apply` or `diagonal` before `set_integrals`.
 
 ## Design
 
@@ -45,6 +54,33 @@ ascending then β ascending: E_core + Σ_i h_ii + Σ_{i<j} [(ii\|jj) − δ_σ (
 summed in that order. The order is documented because the test's dense H
 sums its diagonal the same way, and the two are compared for equality.
 
+**The GPU sigma is the same algorithm, regrouped.** `CiSigma::apply` takes
+each (vector, determinant) pair of the block as a *row*, and runs:
+
+1. a gather, one thread per row, of D_K over K's α and β lists;
+2. one gemm per chunk of rows, G = D [½ (tu\|vw) | k_vw], whose last column is
+   the one-electron term;
+3. a gather, one thread per row, of σ_I = E_core c_I + G_I[k] + Σ s · G_J[tu]
+   over I's *own* lists, since ⟨I\|E_qp\|J⟩ = ⟨J\|E_pq\|I⟩.
+
+Step 3 turns the host's scatter into a gather, so no thread writes another's
+element: nothing is atomic and a run's result does not depend on scheduling.
+D and G are packed over the pairs v ≥ w, n(n+1)/2 of them, because (tu\|vw) is
+symmetric in each pair; D's packed entry is D[vw] + D[wv]. The scratch is
+`res.device_workspace()`: G for the whole block, k · dim · (n(n+1)/2 + 1)
+doubles (540 MB at CAS(12,12), k = 1), and D for one 64 MiB chunk of rows. G
+is whole because step 3 reads any J's row.
+
+**Tables once, integrals as often as needed.** `create` uploads the two sets'
+strings and their lists (target, packed pair, sign per replacement), once per
+(n, N_α, N_β); `set_integrals` uploads the packed contraction matrix and the
+diagonal's terms, and a CASSCF can call it again each macro-iteration. The
+gemm passes host scalars, so `res.blas()` must be in host pointer mode, its
+default and what `davidson_solve` holds.
+
+**diag(H) on the device** is host_diagonal's rule in host_diagonal's order, one
+thread per determinant.
+
 ## Tests
 
 `test/gtest/ci_sigma_host.cpp` builds a dense H by the Slater–Condon rules
@@ -59,10 +95,18 @@ replacement lists. Against it:
   `direct_spin1`'s roots to 1e-10, for every golden case;
 - the refusals.
 
+`test/gtest/ci_sigma_gpu.cpp` checks `CiSigma` against the host pair: σ on
+random blocks of one to four vectors, each column to 1e-12 ‖σ‖, and diag(H)
+to 1e-12, for every golden case, for random integrals at CAS(8,8),
+CAS(10,10) (a block spanning two chunks) and seven shapes with N_α ≠ N_β (an
+empty spin, a full one and a single orbital among them), and at CAS(12,12) under `slow_test.h`; then the refusals.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `sigma.cppm` | Module interface: `host_sigma`, `host_diagonal` |
-| `sigma.cpp` | The gather–contract–scatter, and the diagonal |
-| `CMakeLists.txt` | The module `free_breakfast.ci.sigma` |
+| `sigma.cppm` | Module interface: `CiSigma`, `host_sigma`, `host_diagonal` |
+| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked gemm and launches |
+| `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
+| `ci_sigma.cu` | The two gathers and the diagonal kernel |
+| `CMakeLists.txt` | The device library `free_breakfast.ci.sigma.device` and the module `free_breakfast.ci.sigma` |
