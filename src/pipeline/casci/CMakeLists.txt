@@ -3,7 +3,8 @@
 # run's View names the Scf and the products it re-exports. core::resources and
 # pipeline::step are in run's signature. Everything run uses -- the J and K
 # classes, the active-space Hamiltonian, the CI strings, sigma, solver and
-# RDM -- is PRIVATE: run is defined in the implementation unit.
+# RDM, and AVAS's MINAO basis, mixed overlaps and eigensolver, and the Molden
+# writer -- is PRIVATE: run is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.casci
@@ -29,4 +30,9 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::sigma
   free_breakfast::ci::solver
   free_breakfast::ci::rdm
+  free_breakfast::atom
+  free_breakfast::io::basis
+  free_breakfast::io::molden
+  free_breakfast::recipes::diagonalize
+  free_breakfast::integrals::one_electron::overlap_mixed
 )

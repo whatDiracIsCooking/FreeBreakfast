@@ -254,6 +254,44 @@ TEST(PipelineConfig, AMalformedCasciTableIsInvalidConfig) {
                       "[casci] active is not an array of 32-bit integers");
 }
 
+TEST(PipelineConfig, TheCasciAvasOptionsAreReadInPlaceOfAnActiveSpace) {
+  auto calc = fb::parse_config(with_inputs("[casci]\navas = [\"O 2p\", \"H 1s\"]\n"
+                                           "avas_threshold = 0.3\nnroots = 2\n"
+                                           "molden = \"cas.molden\"\n"),
+                               "base");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::CasciStep &casci = *calc->step<fb::CasciStep>();
+  EXPECT_EQ(casci.avas, (std::vector<std::string>{"O 2p", "H 1s"}));
+  EXPECT_EQ(casci.avas_threshold, 0.3);
+  EXPECT_EQ(casci.nroots, 2);
+  EXPECT_EQ(casci.ncas, 0);
+  EXPECT_EQ(casci.nelecas, 0);
+  EXPECT_EQ(casci.molden, std::filesystem::path("base") / "cas.molden");
+
+  auto plain = fb::parse_config(with_inputs("[casci]\navas = [\"N 2p\"]\n"), "");
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  EXPECT_EQ(plain->step<fb::CasciStep>()->avas_threshold, 0.2);
+  EXPECT_TRUE(plain->step<fb::CasciStep>()->molden.empty());
+}
+
+TEST(PipelineConfig, AMalformedCasciAvasIsInvalidConfig) {
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\nncas = 3\n"),
+                      "[casci] avas picks the active space, so takes no 'ncas'");
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\nnelecas = 4\n"),
+                      "[casci] avas picks the active space, so takes no 'nelecas'");
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\nactive = [1]\n"),
+                      "[casci] avas picks the active space, so takes no 'active'");
+  expect_config_error(with_inputs("[casci]\nncas = 2\nnelecas = 2\navas_threshold = 0.3\n"),
+                      "[casci] avas_threshold needs 'avas'");
+  expect_config_error(with_inputs("[casci]\navas = []\n"), "[casci] avas names no AO label");
+  expect_config_error(with_inputs("[casci]\navas = \"O 2p\"\n"),
+                      "[casci] avas is not an array of strings");
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\", 2]\n"),
+                      "[casci] avas is not an array of strings");
+  expect_config_error(with_inputs("[casci]\navas = [\"O 2p\"]\navas_threshold = \"x\"\n"),
+                      "[casci] avas_threshold is not a number");
+}
+
 // The ranges need the molecule's electrons and the basis's orbitals, so
 // orbital_order checks them when the step runs: here, water's 10 electrons
 // over STO-3G's 7 orbitals.

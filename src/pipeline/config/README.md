@@ -60,6 +60,16 @@ ncas = 4                  # required
 nelecas = 4               # required
 nroots = 3                # default 1
 active = [2, 4, 5, 7]     # 0-based MO indices; default the frontier orbitals
+molden = "water_cas.molden"  # default none: the lowest root's natural orbitals
+```
+
+Or, in place of `ncas`, `nelecas` and `active`, AVAS picks the active space
+from MINAO AO labels, and refuses any of the three beside it:
+
+```toml
+[casci]
+avas = ["O 2p", "H 1s"]   # "<symbol> <n><l>"; every m, every atom of the element
+avas_threshold = 0.2      # default 0.2; needs avas
 ```
 
 `[localization]`'s method options sit in the table beside `mode`, not in
@@ -120,7 +130,7 @@ resolved", and this is where that happens.
   refused, not truncated, and so is a value outside `int32_t`. A `double`
   option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`. An
   integer-array option (`[casci] active`) holds integers only, each read the
-  same way;
+  same way, and a string-array option (`[casci] avas`) strings only;
 - what `Pipeline::create` refuses (a cycle).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The

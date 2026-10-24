@@ -71,6 +71,20 @@ template <class T>
       values.push_back(static_cast<int32_t>(*value));
     }
     out = std::move(values);
+  } else if constexpr (std::same_as<T, std::vector<std::string>>) {
+    const toml::array *array = node.as_array();
+    if (array == nullptr) {
+      return err_config("[{}] {} is not an array of strings", step, key);
+    }
+    std::vector<std::string> values;
+    for (const toml::node &element : *array) {
+      const auto value = element.value_exact<std::string>();
+      if (!value) {
+        return err_config("[{}] {} is not an array of strings", step, key);
+      }
+      values.push_back(*value);
+    }
+    out = std::move(values);
   } else {
     static_assert(std::same_as<T, std::filesystem::path>);
     const auto value = node.value_exact<std::string>();
@@ -160,11 +174,29 @@ template <class S>
   } else if constexpr (std::same_as<S, CasciStep>) {
     // The ranges need the molecule and the basis, so CasciStep::orbital_order
     // checks them when the step runs.
-    FBF_TRY(check_keys(table, kStep, {"ncas", "nelecas", "nroots", "active"}));
-    FBF_TRY(read_required_key(table, kStep, "ncas", base_dir, step.ncas));
-    FBF_TRY(read_required_key(table, kStep, "nelecas", base_dir, step.nelecas));
+    FBF_TRY(check_keys(
+        table, kStep, {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "molden"}));
+    if (table.contains("avas")) {
+      // AVAS picks the active space, so nothing may name one beside it.
+      for (std::string_view key : {"ncas", "nelecas", "active"}) {
+        if (table.contains(key)) {
+          return err_config("[{}] avas picks the active space, so takes no '{}'", kStep, key);
+        }
+      }
+      FBF_TRY(read_key(table, kStep, "avas", base_dir, step.avas));
+      if (step.avas.empty()) {
+        return err_config("[{}] avas names no AO label", kStep);
+      }
+      FBF_TRY(read_key(table, kStep, "avas_threshold", base_dir, step.avas_threshold));
+    } else if (table.contains("avas_threshold")) {
+      return err_config("[{}] avas_threshold needs 'avas'", kStep);
+    } else {
+      FBF_TRY(read_required_key(table, kStep, "ncas", base_dir, step.ncas));
+      FBF_TRY(read_required_key(table, kStep, "nelecas", base_dir, step.nelecas));
+    }
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     FBF_TRY(read_key(table, kStep, "active", base_dir, step.active));
+    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.

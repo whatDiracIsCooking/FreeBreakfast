@@ -64,7 +64,8 @@ emit_active_integrals_reference.py
                   PySCF.
 emit_casci_reference.py
                   Write test/gtest/data/casci/casci.json: PySCF mcscf.CASCI
-                  over its RHF in this tree's basis files, the lowest
+                  over its RHF in this tree's basis files (and mcscf.avas's
+                  active spaces over this tree's MINAO), the lowest
                   singlets' energies, <S^2> and natural occupations, the
                   reference the Casci step is tested against. Needs PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
