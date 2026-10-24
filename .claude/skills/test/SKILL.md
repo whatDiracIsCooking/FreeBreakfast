@@ -34,7 +34,9 @@ exercised the old binary still imports. Say which suite you ran.
 ## The C++ tier
 
 ```bash
-devtools/cpp-tier.sh                       # configure + build + ctest, default preset
+devtools/cpp-tier.sh                       # configure + build + ctest, `auto` preset
+devtools/cpp-tier.sh --preset default      # pin the CUDA card
+devtools/cpp-tier.sh --preset hip          # pin the HIP card
 devtools/cpp-tier.sh --preset debug        # switches the ctest preset too
 devtools/cpp-tier.sh --preset asan
 devtools/cpp-tier.sh --fresh               # wipe the CMake cache and reconfigure
@@ -70,6 +72,31 @@ touch), not routinely before opening a PR.
 exit status** — the `.cppm` module interfaces are not clean, and what remains
 there is the CRTP design rather than defects. It prints a skip line instead of
 failing when clang-tidy is absent.
+
+### Which card: `auto`
+
+The default preset is **`auto`** (`CMAKE_PRESET` in `devtools/config.sh`).
+Several sessions usually test at once and one backend passing is normally
+enough, so before building, `auto` picks the live card with a free slot and
+the lowest load (max of compute % and VRAM %), and prints why:
+
+```
+gpu: auto -> hip (hip) [ cuda=load:12%,slots:1/2 hip=load:0%,slots:0/2 ]
+```
+
+A card counts as live only if its device nodes and compiler both exist, so in
+the single-backend `cuda`/`hip` containers `auto` is just that backend. The
+ctest phase (and cpp-smoke's GPU suite) then holds one of that card's
+`GPU_SLOTS` (2) slot locks; it waits, printing why, while every slot is held
+or the card's load is at or above `GPU_BUSY_PCT` (80%), and takes a free slot
+anyway after `GPU_BUSY_WAIT` (900 s) of load that holds no slot. The two cards
+never block each other. Knobs are the `GPU_*` variables in `config.sh`.
+
+**Report the preset the run resolved to**, not `auto` — the summary line and
+the log name carry it. Pin a backend with `--preset` when it matters: a change
+touching a `.cu` needs **both** `--preset default` and `--preset hip` (or
+`devtools/cross-backend-check.sh` for the side you did not run), because nvcc
+passes code that clang rejects.
 
 Run it **inside the container**, which is where the toolchain is:
 

@@ -38,7 +38,8 @@
 # Flags: identical to cpp-tier.sh, minus anything about skipping tests -- there
 # is no flag here that turns skipping back on; use cpp-tier.sh for that.
 #   --preset NAME   configure/build preset (default: CMAKE_PRESET from
-#                   devtools/config.sh). The test preset follows it when one of
+#                   devtools/config.sh -- `auto`, the least-loaded live
+#                   card's preset; the choice is printed). The test preset follows it when one of
 #                   the same name exists, and is skipped with a note when not
 #                   -- only default, workstation, debug and asan have one.
 #   --fresh         wipe the CMake cache first (`--fresh`). Needed after
@@ -107,6 +108,11 @@ done
 # --preset asan built into build-asan/.
 [ "$preset_explicit" -eq 1 ] && test_preset=$preset
 
+# `auto` (the default) picks the least-loaded live card's preset, before the
+# build; the test preset follows it (gpu_auto_preset in lib.sh).
+[ "$preset" = auto ] && preset=$(gpu_auto_preset)
+[ "$test_preset" = auto ] && test_preset=$preset
+
 cpp_require_build_tools || exit 1
 
 case "$report_dir" in /*) ;; *) report_dir="$REPO_ROOT/$report_dir";; esac
@@ -145,7 +151,7 @@ if [ "$rc" -eq 0 ] && [ "$run_tests" -eq 1 ]; then
   if has_test_preset; then
     # Deliberately no FREE_BREAKFAST_FAST_TESTS here -- this is the
     # tier where the reference-grade/end-to-end cases run.
-    run_phase ctest with_gpu_lock ctest --preset "$test_preset" "${passthrough[@]}" || rc=$?
+    run_phase ctest with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" ctest --preset "$test_preset" "${passthrough[@]}" || rc=$?
   else
     echo "cpp-slow-tier: no test preset '${test_preset:-<empty>}' -- built only" \
       | tee -a "$log"

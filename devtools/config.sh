@@ -45,9 +45,9 @@ PROJECT_NAME=${PROJECT_NAME:-free-breakfast}
 #                                            `hip` in containerEnv, so
 #                                            cpp-tier.sh needs no flag in there.
 #   .devcontainer/combined/devcontainer.json both SDKs, ~40GB. For working on
-#                                            both backends in one shell; stays
-#                                            on the `default` (CUDA) preset,
-#                                            `--preset hip` for the other.
+#                                            both backends in one shell; `auto`
+#                                            (below) picks the less-loaded
+#                                            card, `--preset default|hip` pins.
 #
 # This is only the FALLBACK. For one call, use the variant flag instead --
 # `devtools/devcontainer.sh --hip up` -- and for a whole shell session, export
@@ -108,8 +108,25 @@ DEVCONTAINER_CONFIG=${DEVCONTAINER_CONFIG:-.devcontainer/cuda/devcontainer.json}
 # CTEST_PRESET is separate because not every configure preset has a matching
 # test preset -- only default, workstation, debug and asan do. Set it empty to
 # configure and build without running ctest.
-CMAKE_PRESET=${CMAKE_PRESET:-default}
-CTEST_PRESET=${CTEST_PRESET:-default}
+#
+# THE DEFAULT IS `auto`: one backend passing is usually enough, and several
+# sessions run at once, so the scripts pick whichever live card is least
+# loaded (gpu_auto_preset in lib.sh) and print the choice. CTEST_PRESET=auto
+# follows whatever CMAKE_PRESET resolved to. Name a preset -- `--preset
+# default` (CUDA), `--preset hip` -- when the backend matters, as it does for
+# a change touching a .cu: then run BOTH.
+CMAKE_PRESET=${CMAKE_PRESET:-auto}
+CTEST_PRESET=${CTEST_PRESET:-auto}
+
+# What `auto` chooses between, `backend:preset`, in tie-break order. A backend
+# counts only where its device nodes and compiler both exist, so in the
+# single-backend `cuda`/`hip` containers `auto` is simply that backend.
+GPU_AUTO_PRESETS=${GPU_AUTO_PRESETS:-"cuda:default hip:hip"}
+# What `auto` resolves to when no card is live (a bare host, a dropped card).
+GPU_AUTO_FALLBACK=${GPU_AUTO_FALLBACK:-default}
+# Presets that build the HIP backend; every other preset is CUDA. Decides
+# which card's slot a test run takes.
+GPU_HIP_PRESETS=${GPU_HIP_PRESETS:-"hip hip-asan ci-hip"}
 
 # Parallel compile jobs for `cmake --build`. Distinct from JOBS below, which is
 # the pytest worker count: a C++23 module build is memory-hungry per job (the
@@ -321,17 +338,32 @@ HOST_MOUNTS=${HOST_MOUNTS:-"~/.gemini:/home/ubuntu/.gemini"}
 # in through a Google account.
 HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL"}
 
-# Where the cross-session GPU lock file lives (see with_gpu_lock() in lib.sh).
-# RUN_SERIAL in test/gtest/CMakeLists.txt only serializes test cases within one
-# ctest process -- it does nothing when a second worktree's cpp-tier.sh or
-# cpp-smoke.sh runs its own GPU binary against the same physical card at the
-# same time. Resolved the same way HOST_BIND_DIRS is: a relative path sits
-# under the MAIN checkout, not the calling worktree, which is the point --
-# every worktree needs to see the same file. Defaults inside .sccache because
-# that directory is already a bind mount shared by every compose service and
-# every worktree's devcontainer (see docker/compose.yaml and
-# .devcontainer/<variant>/devcontainer.json); reusing it costs no new mount.
-GPU_LOCK_FILE=${GPU_LOCK_FILE:-.sccache/.gpu-test.lock}
+# Cross-session GPU admission (see with_gpu_slot() and gpu_auto_preset() in
+# lib.sh). RUN_SERIAL in test/gtest/CMakeLists.txt only serializes test cases
+# within one ctest process -- it does nothing when a second worktree's
+# cpp-tier.sh or cpp-smoke.sh runs its own GPU binary against the same
+# physical card at the same time.
+#
+# GPU_LOCK_DIR holds GPU_SLOTS lock files per card. Resolved the same way
+# HOST_BIND_DIRS is: a relative path sits under the MAIN checkout, not the
+# calling worktree, which is the point -- every worktree needs to see the same
+# files. Defaults inside .sccache because that directory is already a bind
+# mount shared by every compose service and every worktree's devcontainer
+# (see docker/compose.yaml and .devcontainer/<variant>/devcontainer.json);
+# reusing it costs no new mount.
+GPU_LOCK_DIR=${GPU_LOCK_DIR:-.sccache/gpu-locks}
+# How many runs may share one card at once. 1 restores strict per-card
+# serialization.
+GPU_SLOTS=${GPU_SLOTS:-2}
+# A card whose load -- max(compute %, VRAM %) -- is at or above this is busy:
+# `auto` prefers the other card, and a run waits before taking a slot on it.
+GPU_BUSY_PCT=${GPU_BUSY_PCT:-80}
+# Seconds a run waits on a busy card that still has a slot free before taking
+# it anyway (load from something that holds no slot). 0 waits for ever.
+GPU_BUSY_WAIT=${GPU_BUSY_WAIT:-900}
+GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
+# Readings averaged into one load figure (0.3s apart); one is too noisy.
+GPU_LOAD_SAMPLES=${GPU_LOAD_SAMPLES:-4}
 
 # The marker expression separating the fast iteration loop from the expensive
 # tier. Empty disables the split -- everything is "fast", and slow-tier.sh then
@@ -407,7 +439,7 @@ hipconfig:the HIP backend, and devtools/cross-backend-check.sh; present only in 
 compute-sanitizer:the GPU memcheck/racecheck run (docker compose run --rm compute-sanitizer)
 nsys:Nsight Systems profiling from inside the container
 sccache:warm rebuilds (the compiler cache the default preset wires in as CMAKE_*_COMPILER_LAUNCHER); without it every configure recompiles from scratch
-flock:cross-session GPU test serialization (with_gpu_lock in lib.sh); without it cpp-tier.sh/cpp-smoke.sh run unlocked
+flock:cross-session GPU admission (per-card slots, with_gpu_slot in lib.sh); without it cpp-tier.sh/cpp-smoke.sh run unlocked
 clang-tidy:the advisory lint pass (cpp-tier.sh --tidy, and CI's cuda leg)
 clang-format:the C++ formatting pass (see CLAUDE.md -- it is not a git hook)
 cmake-format:the CMake formatting pass; run by hand, not by any hook

@@ -26,10 +26,9 @@
 # validation (every reference case) stays in devtools/cpp-tier.sh and the
 # nightly / self-hosted path.
 #
-# The GPU suite runs under with_gpu_lock (lib.sh), serializing it against a
-# concurrent cpp-tier.sh in another worktree so the two don't contend for the
-# one physical GPU. The host suite does not touch the GPU and
-# runs unlocked.
+# The GPU suite runs under with_gpu_slot (lib.sh), holding one of its card's
+# slots so concurrent cpp-tier.sh runs in other worktrees cannot overload that
+# card. The host suite does not touch the GPU and runs unlocked.
 #
 # It SKIPS (exit 0, not a failure) when the toolchain or a GPU is absent: the
 # clang/CMake/nvcc stack lives in docker/Dockerfile.{cuda,hip,combined}, and
@@ -54,6 +53,10 @@ cd "$REPO_ROOT"
 
 preset=$CMAKE_PRESET
 jobs=$BUILD_JOBS
+# `auto` (the default) picks the least-loaded live card (gpu_auto_preset in
+# lib.sh); the device-node check below follows the backend it chose.
+[ "$preset" = auto ] && preset=$(gpu_auto_preset)
+backend=$(gpu_backend_of_preset "$preset")
 
 skip() {
   echo "cpp-smoke: $1"
@@ -96,7 +99,10 @@ fi
 # "Failed to initialize NVML: Unknown Error" inside a container whose CUDA
 # runtime -- and thus /dev/nvidia* -- works perfectly, which is exactly what
 # native configure and the tests use.
-if [ ! -e /dev/nvidiactl ] || ! ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
+if [ "$backend" = hip ]; then
+  [ -e /dev/kfd ] ||
+    skip "no HIP device node (/dev/kfd) -- the GPU smoke needs one"
+elif [ ! -e /dev/nvidiactl ] || ! ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
   skip "no CUDA device node (/dev/nvidia*) -- native configure and the GPU smoke need one"
 fi
 
@@ -130,7 +136,7 @@ host_bin="$build_dir/test/gtest/free_breakfast_tests_host"
 gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 
 # Run one binary: append its full output to the log, echo its summary lines,
-# return its status. `lock` gates with_gpu_lock (lib.sh) -- the host suite
+# return its status. `lock` gates with_gpu_slot (lib.sh) -- the host suite
 # doesn't touch the GPU, so it shouldn't queue behind another session's GPU
 # tests, but the gpu suite must serialize against them.
 run_suite() {
@@ -143,7 +149,7 @@ run_suite() {
   echo "--- $label: $bin ---" >>"$BUILD_LOG"
   local out rc2
   if [ "$lock" -eq 1 ]; then
-    out=$(with_gpu_lock "$bin" "$@" 2>&1)
+    out=$(with_gpu_slot "$backend" "$bin" "$@" 2>&1)
   else
     out=$("$bin" "$@" 2>&1)
   fi

@@ -40,8 +40,9 @@ each). Everything below runs from the main checkout root.
   queue, then honour the number they gave.
 - **`both`** — require every PR that touches C++ to pass `cpp-tier.sh` on
   **both** cards (`--preset default` = CUDA, `--preset hip` = HIP). Without
-  it, **one backend suffices**: each agent runs the tier on the card it is
-  assigned, and the other backend gets only `cross-backend-check.sh`'s
+  it, **one backend suffices**: each agent runs the tier with the default
+  `auto` preset, which takes the least-loaded live card, and the other backend
+  gets only `cross-backend-check.sh`'s
   compile check (when a `.cu` is touched) — CI's `cpp` job is `if: false`, so
   **nothing on the server builds or runs C++ at all**. Prefer `both` for
   anything touching a `.cu`, a kernel under `src/integrals/`, or `src/recipes`;
@@ -115,10 +116,11 @@ devtools/cpp-tier.sh --no-test                   # CUDA (build/)
 devtools/cpp-tier.sh --preset hip --no-test      # HIP  (build-hip/)
 ```
 
-The live cards decide the assignment pool: both alive → alternate; one dead →
-every agent gets the live one (and say so); both dead, or one dead under
-`both` → no C++ agent can pass its gate, so don't launch one. Report it and
-stop (a milestone of pure Python/tooling issues can still run).
+The live cards decide what can run: `auto` already skips a card with no
+device node (or no compiler), so one dead card needs nothing from you beyond
+saying so; both dead, or one dead under `both` → no C++ agent can pass its
+gate, so don't launch one. Report it and stop (a milestone of pure
+Python/tooling issues can still run).
 
 ## 4. Dispatch loop
 
@@ -138,12 +140,16 @@ While any issue is ready or in flight:
    `isolation: "worktree"`: it lives elsewhere and tears itself down, which
    removes the checkout you need for a rebase. Also hand each agent:
 
-   - **a backend** (unless `both`): alternate `default` (CUDA) / `hip` across
-     launches so both compilers see the milestone. This buys coverage, not
-     throughput: there is **one** GPU lock (`GPU_LOCK_FILE` in
-     `devtools/config.sh`, taken by `with_gpu_lock` in `devtools/lib.sh`)
-     shared by both cards, so siblings' ctest phases serialise whichever card
-     they use. Compiles run unlocked, in parallel.
+   - **no backend** (unless `both`): agents run the default `auto` preset,
+     which picks the least-loaded live card at the start of each run
+     (`gpu_auto_preset` in `devtools/lib.sh`) and prints the choice. Each
+     card has `GPU_SLOTS` (default 2) slot locks (`with_gpu_slot`, lock files
+     under `GPU_LOCK_DIR` in `devtools/config.sh`), so the two cards never
+     block each other and up to two siblings share one card; a run waits only
+     when its card's slots are all held or its load is at `GPU_BUSY_PCT`
+     (80%). Compiles hold no slot. Both compilers seeing the milestone is
+     then a matter of load, not schedule — `both`, or the `.cu` rule below,
+     is what guarantees it.
    - **the files it owns.** Two agents editing the same module, or both
      touching the generated kernels under `src/integrals/`, conflict on every
      merge — and an emitted kernel file is a whole-file diff with no clean
@@ -157,7 +163,7 @@ While any issue is ready or in flight:
      `ninja: build stopped`.
 
    Then spawn a background `general-purpose` subagent with the prompt in
-   "Subagent prompt" below. Record `issue → {wt, agent id, backend, files}`.
+   "Subagent prompt" below. Record `issue → {wt, agent id, files}`, and the backend once the agent reports it.
 
 2. **Wait for notifications**; never poll on a short timer. When an agent
    reports:
@@ -209,7 +215,7 @@ will have, after any earlier merge in this run):
 
 ```bash
 git -C <wt> fetch origin main && git -C <wt> rebase origin/main
-devtools/cpp-tier.sh --preset <its preset> -j <J>    # run inside <wt>
+devtools/cpp-tier.sh --preset <the preset its run used> -j <J>   # inside <wt>; that build dir is warm
 git -C <wt> push --force-with-lease
 ```
 
@@ -265,8 +271,9 @@ Leave the worktrees of stuck issues standing, and say where they are.
 ## Subagent prompt
 
 Fill in `<…>`. Keep it self-contained — the agent has none of your context.
-`<preset>` is `default` (CUDA card) or `hip` (HIP card). Under `both`, give
-both preset runs and drop the fallback line.
+`<preset>` is `auto` — the least-loaded live card; the run prints which. Under
+`both`, give the two runs `--preset default` (CUDA) and `--preset hip` (HIP)
+and drop the fallback line.
 
 ```
 Resolve GitHub issue #<n> (<title>) in this repo. Read it first:
@@ -287,13 +294,15 @@ Rules:
   check passed that you did not see.
 - C++ changes: run the fast tier on your assigned card, from the worktree:
     devtools/cpp-tier.sh --preset <preset> -j <J>
-  Bash needs dangerouslyDisableSandbox to see the GPU. The ctest phase takes
-  the shared GPU lock (with_gpu_lock, devtools/lib.sh) and will say it is
-  waiting when a sibling holds it — that is expected, not a hang. Read the
+  Bash needs dangerouslyDisableSandbox to see the GPU. With --preset auto the
+  run prints "gpu: auto -> <preset> (<backend>)" with each card's load and
+  slots; quote that preset in the PR. The ctest phase takes one of that card's
+  slots (with_gpu_slot, devtools/lib.sh) and says it is waiting when the
+  slots are full or the card is busy — that is expected, not a hang. Read the
   ***Skipped list: if the gpu cases skip with "no GPU device visible", your
   card is down (nvidia-smi -L / rocminfo) — rerun on the other preset and say
   so in the PR. If the issue touches code the FBF_SKIP_IF_FAST_TESTS cases
-  validate, also run devtools/cpp-slow-tier.sh --preset <preset>.
+  validate, also run devtools/cpp-slow-tier.sh --preset <the same preset>.
   Say in the PR which backend you did NOT run. If you touched a .cu, also run
   devtools/cross-backend-check.sh (exit 2 means it could not run — not a
   pass).
