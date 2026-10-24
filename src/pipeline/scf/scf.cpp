@@ -47,7 +47,7 @@ struct ScfState {
 // screens scale with the density they read, and the difference shrinks as the
 // SCF converges, so they skip more of it.
 [[nodiscard]] Status build_fock(DeviceResources &res, ScfState &st, const SphericalMatrixAO &h,
-                                bool full) {
+                                bool full, double tau_j) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto n = static_cast<int32_t>(st.d.n());
   const size_t bytes = st.d.num_elements() * sizeof(double);
@@ -63,7 +63,7 @@ struct ScfState {
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(st.d_built.data(), st.d.data(), bytes,
                                          wwr::wwrMemcpyDeviceToDevice, res.stream())));
   FBF_TRY(st.dd.spherical_to_cartesian(res));
-  FBF_TRY(coulomb(res, st.j_classes, st.dd.cartesian(), st.g.cartesian()));
+  FBF_TRY(coulomb(res, st.j_classes, st.dd.cartesian(), st.g.cartesian(), tau_j));
   FBF_TRY(exchange(res, st.k_classes, st.dd.cartesian(), st.k));
   constexpr double kMinusHalf = -0.5;
   FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(st.k.num_elements()),
@@ -150,6 +150,10 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
                       "non-negative",
                       energy_tolerance, commutator_tolerance);
   }
+  // Written so that NaN fails too: a NaN tau would never screen, silently.
+  if (!(tau_j >= 0.0)) {
+    return err_config("[scf] tau_j is {}, but must be 0 or above", tau_j);
+  }
   if (fock_rebuild_interval < 1) {
     return err_config("[scf] fock_rebuild_interval is {}, below 1", fock_rebuild_interval);
   }
@@ -220,7 +224,7 @@ ScfStep::run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses, 
     const bool full =
         iteration == 1 || full_from_now || incremental_builds + 1 >= fock_rebuild_interval;
     incremental_builds = full ? 0 : incremental_builds + 1;
-    FBF_TRY(build_fock(res, st, h, full));
+    FBF_TRY(build_fock(res, st, h, full, tau_j));
     const double energy = nuclear + FBF_TRY(electronic_energy(res, st, h));
     const double norm = FBF_TRY(commutator(res, st, s, x));
     const double delta = energy - previous;

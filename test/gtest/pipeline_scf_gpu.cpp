@@ -262,7 +262,8 @@ TEST(PipelineScfErrors, AnOptionOutOfRangeIsInvalidConfig) {
   for (const fb::ScfStep step :
        {fb::ScfStep{.max_iterations = 0}, fb::ScfStep{.diis_history = 0},
         fb::ScfStep{.fock_rebuild_interval = 0}, fb::ScfStep{.energy_tolerance = -1.0},
-        fb::ScfStep{.commutator_tolerance = std::nan("")}}) {
+        fb::ScfStep{.commutator_tolerance = std::nan("")}, fb::ScfStep{.tau_j = -1.0},
+        fb::ScfStep{.tau_j = std::nan("")}}) {
     auto scf = step.run(inputs->view(), res);
     ASSERT_FALSE(scf.has_value());
     EXPECT_EQ(scf.error().kind, fb::ErrorKind::InvalidConfig) << scf.error().message;

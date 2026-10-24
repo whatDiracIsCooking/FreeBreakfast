@@ -133,6 +133,7 @@ add_executable(
   exchange_helpers_gpu.cpp
   exchange_pairs_gpu.cpp
   exchange_gpu.cpp
+  active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
 )
