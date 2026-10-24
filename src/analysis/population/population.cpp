@@ -1,6 +1,6 @@
 /// @file
-/// @brief orbital_populations and partial_charges: A^T S C on the device, its
-/// squares summed per atom on the host.
+/// @brief orbital_weights, orbital_populations and partial_charges: A^T S C on
+/// the device, its squares summed per atom on the host.
 
 module free_breakfast.analysis.population;
 
@@ -33,32 +33,30 @@ namespace free_breakfast {
   return owner;
 }
 
-Result<std::vector<double>> orbital_populations(DeviceResources &res, const BasisSet &basis,
-                                                const BasisSet &minimal, const int32_t n_orb,
-                                                const double *s, const double *c,
-                                                const double *iao) {
+Result<std::vector<double>> orbital_weights(DeviceResources &res, const BasisSet &basis,
+                                            const BasisSet &minimal, const int32_t n_orb,
+                                            const double *s, const double *c, const double *iao) {
   if (basis.natoms() == 0) {
-    return err_config("orbital_populations: the basis has no atoms; place it over a molecule");
+    return err_config("orbital_weights: the basis has no atoms; place it over a molecule");
   }
   if (minimal.natoms() != basis.natoms()) {
-    return err_config("orbital_populations: the minimal basis is over {} atoms, the basis over {}",
+    return err_config("orbital_weights: the minimal basis is over {} atoms, the basis over {}",
                       minimal.natoms(), basis.natoms());
   }
   if (n_orb < 0) {
-    return err_config("orbital_populations: n_orb {} is negative", n_orb);
+    return err_config("orbital_weights: n_orb {} is negative", n_orb);
   }
   if (s == nullptr || c == nullptr || iao == nullptr) {
-    return err_config("orbital_populations: s, c and iao must not be null");
+    return err_config("orbital_weights: s, c and iao must not be null");
   }
-  const uint32_t n_atoms = minimal.natoms();
   const auto k = static_cast<size_t>(n_orb);
-  std::vector<double> populations(static_cast<size_t>(n_atoms) * k, 0.0);
-  if (k == 0) {
-    return populations;
-  }
-  const ScopedDeviceIndex on{res.dev_idx()};
   const auto n = static_cast<int32_t>(basis.nao_sphe());
   const auto m = static_cast<int32_t>(minimal.nao_sphe());
+  std::vector<double> weights_host(static_cast<size_t>(m) * k);
+  if (k == 0) {
+    return weights_host;
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
 
   // The orbitals over the minimal basis, A^T S C, m x n_orb.
   Buffers::device<double> sc(static_cast<size_t>(n) * k, res.device());
@@ -71,20 +69,44 @@ Result<std::vector<double>> orbital_populations(DeviceResources &res, const Basi
   FBF_TRY(
       gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, m, n_orb, n,
                                             &one, iao, n, sc.data(), n, &zero, weights.data(), m)));
-  std::vector<double> weights_host(static_cast<size_t>(m) * k);
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(weights_host.data(), weights.data(),
                                          weights_host.size() * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, res.stream())));
   FBF_TRY(res.sync());
+  for (double &w : weights_host) {
+    w *= w;
+  }
+  return weights_host;
+}
 
+Result<std::vector<double>> orbital_populations(const BasisSet &minimal, const int32_t n_orb,
+                                                const std::span<const double> weights) {
+  if (minimal.natoms() == 0) {
+    return err_config("orbital_populations: the minimal basis has no atoms");
+  }
+  const size_t m = minimal.nao_sphe();
+  if (n_orb < 0 || weights.size() != m * static_cast<size_t>(n_orb)) {
+    return err_config("orbital_populations: {} weights are not {} x {}", weights.size(), m, n_orb);
+  }
+  const uint32_t n_atoms = minimal.natoms();
+  const auto k = static_cast<size_t>(n_orb);
+  std::vector<double> populations(static_cast<size_t>(n_atoms) * k, 0.0);
   const std::vector<uint32_t> owner = population_ao_atoms(minimal);
   for (size_t i = 0; i < k; ++i) {
-    for (size_t r = 0; r < static_cast<size_t>(m); ++r) {
-      const double w = weights_host[r + (static_cast<size_t>(m) * i)];
-      populations[owner[r] + (n_atoms * i)] += w * w;
+    for (size_t r = 0; r < m; ++r) {
+      populations[owner[r] + (n_atoms * i)] += weights[r + (m * i)];
     }
   }
   return populations;
+}
+
+Result<std::vector<double>> orbital_populations(DeviceResources &res, const BasisSet &basis,
+                                                const BasisSet &minimal, const int32_t n_orb,
+                                                const double *s, const double *c,
+                                                const double *iao) {
+  const std::vector<double> weights =
+      FBF_TRY(orbital_weights(res, basis, minimal, n_orb, s, c, iao));
+  return orbital_populations(minimal, n_orb, weights);
 }
 
 Result<std::vector<double>> partial_charges(const std::span<const Atom> atoms,

@@ -15,7 +15,9 @@ matrix.
 
 | Name | Role |
 |---|---|
-| `orbital_populations(res, basis, minimal, n_orb, s, c, iao)` | Each orbital's population on each atom, natoms x n_orb on the host; `Result` |
+| `orbital_weights(res, basis, minimal, n_orb, s, c, iao)` | Each orbital's weight on each minimal-basis function, (A^T S C)_ri^2, m x n_orb on the host; `Result` |
+| `orbital_populations(minimal, n_orb, weights)` | Those weights summed over each atom's functions, natoms x n_orb; host only; `Result` |
+| `orbital_populations(res, basis, minimal, n_orb, s, c, iao)` | The two above in one call; `Result` |
 | `partial_charges(atoms, populations, occupation = 2)` | q_A = Z_A − occupation · Σ_i populations[A, i]; `Result` |
 
 Double precision. `s` (n x n), `c` (n x n_orb) and `iao` (n x m) are
@@ -40,7 +42,10 @@ is written exactly as A (A^T S C)_i, and its population on atom A is
 n_A(i) = sum_{r on A} (A^T S C)_ri^2
 ```
 
-which sums to one over the atoms for an S-orthonormal orbital. The partial
+which sums to one over the atoms for an S-orthonormal orbital. The squares
+before the sum are `orbital_weights`, kept for a caller that wants more than
+the per-atom sum: `analysis/bond` splits each atom's share by angular
+momentum from them. The partial
 charge of eq 3 is q_A = Z_A − 2 Σ_i n_A(i) over the occupied orbitals of a
 closed shell; the charges sum to the molecule's.
 

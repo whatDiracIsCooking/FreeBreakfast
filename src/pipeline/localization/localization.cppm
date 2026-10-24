@@ -17,6 +17,7 @@ import free_breakfast.pipeline.step;
 export import free_breakfast.core.wwr;         // Buffers, in the product
 export import free_breakfast.localization.ibo; // and pipek_mezey
 export import free_breakfast.analysis.population;
+export import free_breakfast.analysis.bond;
 export import free_breakfast.pipeline.scf;
 
 export namespace free_breakfast {
@@ -46,6 +47,10 @@ struct Localization {
   /// @brief IBO only, empty for Pipek-Mezey: the IAO partial charge of each
   /// atom, Knizia's eq 3 (@ref partial_charges).
   std::vector<double> charges{};
+  /// @brief IBO only, empty for Pipek-Mezey: each localized orbital's centers
+  /// and their angular character, at bond_orbitals' default threshold
+  /// (@ref bond_orbitals).
+  std::vector<BondOrbital> bonds{};
 };
 
 /// @brief Localizes the @ref Scf's occupied orbitals on @p res's device.
@@ -69,7 +74,8 @@ struct LocalizationStep {
   /// shell, so the occupied count is half the electrons. For IBO, MINAO is
   /// resolved and placed over the Molecule first, and an element it does not
   /// carry is place's error; the IAOs it localized over then give the IBOs'
-  /// populations and the atoms' charges, which are logged. Errors are otherwise the method's;
+  /// populations and bond centers and the atoms' charges, the charges and
+  /// centers logged. Errors are otherwise the method's;
   /// for both, InvalidConfig for an option out of range,
   /// MaxIterationsExceeded when the sweeps do not converge, GpuRuntime for a
   /// failed launch, copy or BLAS call. A @ref molden file that cannot be

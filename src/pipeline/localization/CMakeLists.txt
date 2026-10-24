@@ -1,7 +1,7 @@
 # The Localization step. localization::ibo (with the pipek_mezey it
-# re-exports), analysis::population, core::wwr and pipeline::scf are PUBLIC
-# and re-exported: the
-# product holds Buffers, the options are PipekMezeyOptions, and run's View
+# re-exports), analysis::population and analysis::bond, core::wwr and
+# pipeline::scf are PUBLIC and re-exported: the product holds Buffers and
+# BondOrbitals, the options are PipekMezeyOptions, and run's View
 # names the Scf and the products it re-exports. core::resources, basis and
 # pipeline::step are in run's signature. run is defined in the
 # implementation unit, so io::basis (MINAO), the Molden writer and
@@ -23,6 +23,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::localization::pipek_mezey
   free_breakfast::localization::ibo
   free_breakfast::analysis::population
+  free_breakfast::analysis::bond
   free_breakfast::pipeline::step
   free_breakfast::pipeline::scf
   LINK_PRIVATE
