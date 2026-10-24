@@ -1,8 +1,8 @@
 # MCSCF
 
 CASSCF on the GPU, integral-direct and state-averaged. It sits over `core`,
-`recipes` and `integrals` (J, K and `active_space`), takes the RDMs `ci.rdm`
-writes as plain host arrays, and **never imports `pipeline`**: a step that runs
+`recipes`, `integrals` (J, K and `active_space`) and `ci` (the loop's CI and
+RDMs), takes the RDMs `ci.rdm` writes as plain host arrays, and **never imports `pipeline`**: a step that runs
 a CASSCF wraps this layer, not the other way round. `mcscf.cppm`
 (`free_breakfast.mcscf`) re-exports every sub-module, so one import covers the
 layer, and each sub-module stays importable on its own.
@@ -13,6 +13,7 @@ layer, and each sub-module stays importable on its own.
 |-----------|--------|------|
 | `fock/` | `free_breakfast.mcscf.fock` | At fixed orbitals and RDMs: the energy, the inactive and active Fock matrices F^I and F^A, the generalized Fock F and the orbital gradient (`casscf_fock`); and the packed order of the non-redundant orbital pairs (`pack_orbital_pairs`, `unpack_orbital_pairs`). |
 | `hessian/` | `free_breakfast.mcscf.hessian` | At the same point: the exact orbital Hessian at fixed CI as a `LinearOperator` over the packed pairs, and its diagonal (`OrbitalHessian`). |
+| `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop over both (`casscf_solve`): per macro iteration the integrals, the CI, the weighted RDMs, the energy and gradient, and an augmented-Hessian step under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
 
 ## Orbitals and the packed order
 
@@ -53,7 +54,7 @@ writes the full κ that `recipes.expm` exponentiates.
 ## Tests
 
 `test/gtest/mcscf_fock_gpu.cpp` and `test/gtest/mcscf_hessian_gpu.cpp`,
-linked into `free_breakfast_tests_gpu`, against PySCF's `mc1step.gen_g_hop` through `test/gtest/data/casscf/`
+linked into `free_breakfast_tests_gpu`, against PySCF's `mc1step.gen_g_hop` through `test/gtest/data/casscf/`, and `test/gtest/mcscf_solve_gpu.cpp` against its converged CASSCF
 (`tools/emit_casscf_reference.py`). The test sets its active spaces up with
 `pipeline.active_space` and the `Casci` step from the test executable; this
 layer's own targets link nothing of `pipeline`.
