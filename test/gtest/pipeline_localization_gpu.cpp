@@ -322,6 +322,46 @@ TEST_P(PipelineIbo, MatchesPyscfAndKeepsTheDensity) {
   for (std::size_t a = 0; a < n_atoms; ++a) {
     EXPECT_NEAR(local->charges[a], charges[a], kChargeTolerance) << "atom " << a;
   }
+
+  // The bond reading of the IBOs. Water and NH4+ are a heavy atom (atom 0)
+  // and hydrogens: every IBO is either on the heavy atom alone (core, lone
+  // pair) or a bond to one hydrogen, one per hydrogen. Each center is the
+  // step's own population, and its character sums to one; a hydrogen's is
+  // all s, MINAO giving it nothing else. The bonds are symmetry-equivalent,
+  // so the heavy atom's hybrid is the same in each.
+  ASSERT_EQ(local->bonds.size(), occ);
+  std::vector<bool> bonded(n_atoms, false);
+  std::optional<std::array<double, 4>> hybrid;
+  for (std::size_t i = 0; i < occ; ++i) {
+    SCOPED_TRACE(std::format("IBO {}", i));
+    const auto &centers = local->bonds[i].centers;
+    ASSERT_FALSE(centers.empty());
+    for (std::size_t k = 0; k < centers.size(); ++k) {
+      const fb::BondCenter &center = centers[k];
+      EXPECT_DOUBLE_EQ(center.population, local->populations[center.atom + (n_atoms * i)]);
+      EXPECT_NEAR(std::accumulate(center.character.begin(), center.character.end(), 0.0), 1.0,
+                  1e-12);
+      if (k > 0) {
+        EXPECT_GE(centers[k - 1].population, center.population);
+      }
+    }
+    EXPECT_EQ(centers[0].atom, 0U) << "the heavy atom holds the most of every IBO";
+    if (centers.size() == 1) {
+      continue;
+    }
+    ASSERT_EQ(centers.size(), 2U);
+    const std::uint32_t hydrogen = centers[1].atom;
+    EXPECT_FALSE(bonded[hydrogen]) << "two bonds to atom " << hydrogen;
+    bonded[hydrogen] = true;
+    EXPECT_NEAR(centers[1].character[0], 1.0, 1e-12);
+    if (!hybrid.has_value()) {
+      hybrid = centers[0].character;
+    }
+    for (std::size_t l = 0; l < 4; ++l) {
+      EXPECT_NEAR(centers[0].character[l], (*hybrid)[l], kPopulationTolerance) << "l = " << l;
+    }
+  }
+  EXPECT_EQ(std::ranges::count(bonded, true), static_cast<std::ptrdiff_t>(n_atoms - 1));
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineIbo, kCases, case_name);
@@ -427,6 +467,54 @@ TEST(Population, PartialChargesAreZLessTheOccupiedPopulations) {
   const auto refused = fb::partial_charges(atoms, ragged);
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
+}
+
+// orbital_populations and bond_orbitals over hand-written weights, on a
+// two-atom minimal basis: an s and a p shell on atom 0, an s on atom 1.
+TEST(Bond, CentersAndCharacterFromTheWeights) {
+  const fb::Vec<double, 3> origin{0.0, 0.0, 0.0};
+  const auto shell = [&](std::int32_t l) {
+    return fb::Shell(l, std::vector<double>{1.0}, std::vector<double>{1.0}, origin);
+  };
+  const fb::BasisSet minimal({shell(0), shell(1), shell(0)}, {0, 2, 3});
+  ASSERT_EQ(minimal.nao_sphe(), 5U);
+  // Functions s0 p0x p0y p0z s1. A bond, 60% on atom 0 (a third s) and 40%
+  // on atom 1; then a lone pair, 97% on atom 0's s.
+  const std::array weights{0.2, 0.1, 0.2, 0.1, 0.4, 0.97, 0.0, 0.0, 0.0, 0.03};
+
+  const auto populations = fb::orbital_populations(minimal, 2, weights);
+  ASSERT_TRUE(populations.has_value()) << populations.error().message;
+  ASSERT_EQ(populations->size(), 4U);
+  EXPECT_DOUBLE_EQ((*populations)[0], 0.6);
+  EXPECT_DOUBLE_EQ((*populations)[1], 0.4);
+  EXPECT_DOUBLE_EQ((*populations)[2], 0.97);
+  EXPECT_DOUBLE_EQ((*populations)[3], 0.03);
+
+  const auto bonds = fb::bond_orbitals(minimal, 2, weights);
+  ASSERT_TRUE(bonds.has_value()) << bonds.error().message;
+  ASSERT_EQ(bonds->size(), 2U);
+  const auto &bond = (*bonds)[0].centers;
+  ASSERT_EQ(bond.size(), 2U);
+  EXPECT_EQ(bond[0].atom, 0U);
+  EXPECT_DOUBLE_EQ(bond[0].population, 0.6);
+  EXPECT_NEAR(bond[0].character[0], 1.0 / 3.0, 1e-15);
+  EXPECT_NEAR(bond[0].character[1], 2.0 / 3.0, 1e-15);
+  EXPECT_EQ(bond[0].character[2], 0.0);
+  EXPECT_EQ(bond[1].atom, 1U);
+  EXPECT_DOUBLE_EQ(bond[1].character[0], 1.0);
+  const auto &lone = (*bonds)[1].centers;
+  ASSERT_EQ(lone.size(), 1U) << "3% is under the default threshold";
+  EXPECT_EQ(lone[0].atom, 0U);
+  EXPECT_DOUBLE_EQ(lone[0].character[0], 1.0);
+
+  // A lower threshold takes the 3% too; the largest atom is a center even
+  // above every population.
+  EXPECT_EQ(fb::bond_orbitals(minimal, 2, weights, 0.01)->at(1).centers.size(), 2U);
+  EXPECT_EQ(fb::bond_orbitals(minimal, 2, weights, 1.0)->at(0).centers.size(), 1U);
+
+  EXPECT_FALSE(fb::bond_orbitals(minimal, 2, weights, 0.0).has_value());
+  EXPECT_FALSE(fb::bond_orbitals(minimal, 3, weights).has_value());
+  EXPECT_FALSE(fb::orbital_populations(minimal, 3, weights).has_value());
 }
 
 // molden set: the localized orbitals land in a Molden file, n_occ of them at

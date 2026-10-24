@@ -18,6 +18,30 @@ import free_breakfast.io.molden;
 
 namespace free_breakfast {
 
+// One IBO for the log: its kind, then each center as its element, atom
+// index, share of the orbital and angular character, as
+// "bond  O0 61.2% (s 21% p 79%)  H1 38.6% (s 100%)". A share under half a
+// percent is left out of the character.
+[[nodiscard]] std::string describe_bond_orbital(const BondOrbital &orbital,
+                                                const std::span<const Atom> atoms) {
+  static constexpr std::array<std::string_view, 3> kKinds{"lone", "bond", "3c+ "};
+  static constexpr std::array<char, 4> kMomenta{'s', 'p', 'd', 'f'};
+  std::string text{kKinds[std::min(orbital.centers.size(), kKinds.size()) - 1]};
+  for (const BondCenter &center : orbital.centers) {
+    text += std::format("  {}{} {:.1f}% (", element_symbol(atoms[center.atom].element), center.atom,
+                        100.0 * center.population);
+    std::string_view gap;
+    for (size_t l = 0; l < kMomenta.size(); ++l) {
+      if (center.character[l] >= 0.005) {
+        text += std::format("{}{} {:.0f}%", gap, kMomenta[l], 100.0 * center.character[l]);
+        gap = " ";
+      }
+    }
+    text += ')';
+  }
+  return text;
+}
+
 // The localized orbitals to @p path as Molden. They are not eigenvectors of F,
 // so each is given its expectation value, <i|F|i> = sum_k U_ki^2 eps_k over the
 // canonical occupied energies; U is all that needs downloading for it.
@@ -74,12 +98,18 @@ namespace free_breakfast {
                                     out.u.data(), iao.data(), pipek_mezey));
     // Over the IBOs, so each orbital's populations are its bonding picture;
     // the charges are the same over any rotation of the occupied orbitals.
-    out.populations =
-        FBF_TRY(orbital_populations(res, basis, minao, n_occ, s, out.c.data(), iao.data()));
+    const std::vector<double> weights =
+        FBF_TRY(orbital_weights(res, basis, minao, n_occ, s, out.c.data(), iao.data()));
+    out.populations = FBF_TRY(orbital_populations(minao, n_occ, weights));
     out.charges = FBF_TRY(partial_charges(molecule.atoms(), out.populations));
+    out.bonds = FBF_TRY(bond_orbitals(minao, n_occ, weights));
     for (size_t a = 0; a < out.charges.size(); ++a) {
       FBF_LOG_INFO("localization: IAO charge {:>3} {:<2} {:+.6f}", a,
                    element_symbol(molecule.atoms()[a].element), out.charges[a]);
+    }
+    for (size_t i = 0; i < out.bonds.size(); ++i) {
+      FBF_LOG_INFO("localization: IBO {:>3} {}", i,
+                   describe_bond_orbital(out.bonds[i], molecule.atoms()));
     }
     break;
   }

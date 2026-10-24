@@ -9,7 +9,8 @@ names: Pipek-Mezey, or intrinsic bond orbitals.
 `free_breakfast::pipeline::localization`. It re-exports
 `free_breakfast.pipeline.scf`, `free_breakfast.localization.ibo` (and through
 it `free_breakfast.localization.pipek_mezey`),
-`free_breakfast.analysis.population` and `free_breakfast.core.wwr`, so an importer can name the product, the options and
+`free_breakfast.analysis.population`, `free_breakfast.analysis.bond` and
+`free_breakfast.core.wwr`, so an importer can name the product, the options and
 everything in `run`'s signature without a second import.
 
 ## The step
@@ -24,6 +25,7 @@ struct Localization {
   PipekMezeyInfo info;        // sweeps, functional before and after
   std::vector<double> populations{}; // IBO only: natoms x n_occ IAO populations of the IBOs
   std::vector<double> charges{};     // IBO only: the IAO partial charges, one per atom
+  std::vector<BondOrbital> bonds{};  // IBO only: each IBO's centers and their s/p/d character
 };
 
 struct LocalizationStep {
@@ -47,11 +49,25 @@ column-major with the occupied orbitals first, so its first `n_occ` columns
 are passed as they are: no transpose and no copy. The Scf has already refused
 an open shell, so `n_occ` is half the electrons.
 
-**IBO mode also reports the IAO charges.** `ibo_localize` hands back the IAOs
-it ran over, and `analysis.population` turns them into `populations`, each
-IBO's population on each atom (its bonding picture; their fourth powers sum
-to `info.functional`), and `charges`, Knizia's eq 3, which are logged at info
-level one atom per line. Pipek-Mezey has no IAOs, and leaves both empty.
+**IBO mode also reports the IAO charges and the bonds.** `ibo_localize` hands
+back the IAOs it ran over, and `analysis.population`'s `orbital_weights`
+gives each IBO's weight on each of them, once. From those:
+`populations`, each IBO's population on each atom (their fourth powers sum
+to `info.functional`); `charges`, Knizia's eq 3; and `bonds`,
+`analysis.bond`'s reading of each IBO as a lone pair, bond or multi-center
+bond. The charges and the bonds are logged at info level, one atom or IBO
+per line:
+
+```
+localization: IAO charge   0 O  -0.470630
+localization: IBO   1 bond  O0 61.8% (s 22% p 78%)  H2 38.2% (s 100%)
+localization: IBO   3 lone  O0 100.0% (s 56% p 44%)
+```
+
+(Water in STO-3G.)
+
+("3c+" marks three centers or more.) Pipek-Mezey has no IAOs, and leaves all
+three empty.
 
 The options are read from a `[localization]` table (`pipeline.config`):
 `mode`, `"pipek_mezey"` by default or `"ibo"`, then the sweep's
@@ -79,7 +95,8 @@ exponents, against PySCF (`test/gtest/data/localization/`): the functional to
 are S-orthonormal and give back the SCF's density. The same for `mode = "ibo"`
 against PySCF's IBOs, plus the IAOs' orthonormality, span and partial charges
 (`localization/ibo`'s README), and the step's `populations` reproducing L and
-its `charges` PySCF's (`analysis/population`'s README). With `molden` set, the
+its `charges` PySCF's (`analysis/population`'s README), and its `bonds`
+reading each molecule's lone pairs and X-H bonds (`analysis/bond`'s README). With `molden` set, the
 file holds `n_occ` orbitals at occupation 2, and their energies sum to the
 SCF's occupied ones (U is orthogonal).
 
