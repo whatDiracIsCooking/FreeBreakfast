@@ -347,6 +347,85 @@ TEST(PipelineConfig, AnImpossibleCasciActiveSpaceIsRefusedByOrbitalOrder) {
                  "active names 3 orbitals, not ncas 2");
 }
 
+TEST(PipelineConfig, EveryCasscfOptionIsReadAndTheScfIsFilledIn) {
+  auto calc = fb::parse_config(
+      with_inputs("[casscf]\nncas = 3\nnelecas = 4\nnroots = 2\nactive = [5, 6, 7]\n"
+                  "weights = [0.75, 0.25]\nconv_tol = 1e-9\nconv_tol_grad = 1e-5\n"
+                  "max_cycle = 20\nmolden = \"sa.molden\"\n"),
+      "base");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::CasscfStep &casscf = *calc->step<fb::CasscfStep>();
+  EXPECT_EQ(casscf.ncas, 3);
+  EXPECT_EQ(casscf.nelecas, 4);
+  EXPECT_EQ(casscf.nroots, 2);
+  EXPECT_EQ(casscf.active, (std::vector<std::int32_t>{5, 6, 7}));
+  EXPECT_EQ(casscf.weights, (std::vector<double>{0.75, 0.25}));
+  EXPECT_EQ(casscf.conv_tol, 1e-9);
+  EXPECT_EQ(casscf.conv_tol_grad, 1e-5);
+  EXPECT_EQ(casscf.max_cycle, 20);
+  EXPECT_EQ(casscf.molden, std::filesystem::path("base") / "sa.molden");
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::CasciStep>().has_value());
+
+  // The defaults are casscf_solve's; empty weights are equal ones.
+  auto plain = fb::parse_config(with_inputs("[casscf]\navas = [\"O 2p\"]\n"), "");
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  const fb::CasscfStep &defaults = *plain->step<fb::CasscfStep>();
+  const fb::CasscfOptions options;
+  EXPECT_EQ(defaults.avas, (std::vector<std::string>{"O 2p"}));
+  EXPECT_EQ(defaults.nroots, 1);
+  EXPECT_TRUE(defaults.weights.empty());
+  EXPECT_EQ(defaults.conv_tol, options.conv_tol);
+  EXPECT_EQ(defaults.conv_tol_grad, options.conv_tol_grad);
+  EXPECT_EQ(defaults.max_cycle, options.max_cycle);
+  EXPECT_TRUE(defaults.molden.empty());
+
+  // An integer weight reads as a number, as every float option does.
+  auto whole =
+      fb::parse_config(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nweights = [1]\n"), "");
+  ASSERT_TRUE(whole.has_value()) << whole.error().message;
+  EXPECT_EQ(whole->step<fb::CasscfStep>()->weights, (std::vector<double>{1.0}));
+}
+
+TEST(PipelineConfig, AMalformedCasscfTableIsInvalidConfig) {
+  // The selection's refusals, shared with [casci].
+  expect_config_error(with_inputs("[casscf]\nnelecas = 4\n"), "[casscf] needs 'ncas'");
+  expect_config_error(with_inputs("[casscf]\nncas = 4\n"), "[casscf] needs 'nelecas'");
+  expect_config_error(with_inputs("[casscf]\navas = [\"O 2p\"]\nncas = 3\n"),
+                      "[casscf] avas picks the active space, so takes no 'ncas'");
+  expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\navas_threshold = 0.3\n"),
+                      "[casscf] avas_threshold needs 'avas'");
+  expect_config_error(with_inputs("[casscf]\navas = []\n"), "[casscf] avas names no AO label");
+  expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nactive = [3, 4.0]\n"),
+                      "[casscf] active is not an array of 32-bit integers");
+  expect_config_error(with_inputs("[casscf]\nncas = 4\nnelecas = 4\nnroot = 2\n"),
+                      "[casscf] has no option 'nroot'");
+
+  // Its own.
+  const auto cas = [](std::string_view keys) {
+    return with_inputs(std::format("[casscf]\nncas = 3\nnelecas = 4\n{}", keys));
+  };
+  expect_config_error(cas("weights = 0.5\n"), "[casscf] weights is not an array of numbers");
+  expect_config_error(cas("weights = [0.5, \"x\"]\nnroots = 2\n"),
+                      "[casscf] weights is not an array of numbers");
+  expect_config_error(cas("weights = [0.5, 0.5]\n"),
+                      "[casscf] weights has 2 entries, not nroots 1");
+  expect_config_error(cas("nroots = 2\nweights = [1.0]\n"),
+                      "[casscf] weights has 1 entries, not nroots 2");
+  expect_config_error(cas("nroots = 2\nweights = [1.25, -0.25]\n"),
+                      "[casscf] weights has a negative entry");
+  expect_config_error(cas("nroots = 2\nweights = [0.5, 0.4]\n"),
+                      "[casscf] weights sum to 0.9, not 1");
+  expect_config_error(cas("conv_tol = 0.0\n"),
+                      "[casscf] conv_tol and conv_tol_grad must be positive");
+  expect_config_error(cas("conv_tol_grad = -1e-6\n"),
+                      "[casscf] conv_tol and conv_tol_grad must be positive");
+  expect_config_error(cas("conv_tol = nan\n"),
+                      "[casscf] conv_tol and conv_tol_grad must be positive");
+  expect_config_error(cas("max_cycle = 0\n"), "[casscf] max_cycle is 0, below 1");
+  expect_config_error(cas("max_cycle = 1.5\n"), "[casscf] max_cycle is not a 32-bit integer");
+}
+
 TEST(PipelineConfig, EveryFciOptionIsReadAndTheScfIsFilledIn) {
   auto calc = fb::parse_config(with_inputs("[fci]\nnroots = 3\n"), "");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;

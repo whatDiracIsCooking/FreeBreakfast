@@ -220,6 +220,45 @@ TEST(PipelineCalculation, ACasciConfigRunsEndToEnd) {
   }
 }
 
+// A config naming only the inputs and [casscf] plans the chain to the
+// ScfOutput and runs the CASSCF after it, giving what the step gives run by
+// hand on the same products, and a lower energy than the CASCI at its start.
+TEST(PipelineCalculation, ACasscfConfigRunsEndToEnd) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_calculation");
+  write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
+                    "[casci]\nncas = 4\nnelecas = 4\n"
+                    "[casscf]\nncas = 4\nnelecas = 4\n");
+  fb::NodeResources node;
+  auto calc = fb::read_config(dir / "run.toml");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &casci = calc->get<fb::CasciOutput>();
+  const auto &casscf = calc->get<fb::CasscfOutput>();
+  ASSERT_TRUE(casci.has_value() && casscf.has_value());
+  EXPECT_EQ(casscf->ncore, 3);
+  ASSERT_EQ(casscf->energies.size(), 1U);
+  EXPECT_EQ(casscf->weights, (std::vector<double>{1.0}));
+  // The weighted energy is the RDMs', the root's the CI's: equal to roundoff.
+  EXPECT_NEAR(casscf->energy, casscf->energies[0], 1e-10);
+  EXPECT_LT(casscf->gradient_norm, calc->step<fb::CasscfStep>()->conv_tol_grad);
+  // The CASCI's orbitals are the CASSCF's start, and the optimization only
+  // lowers the energy from there.
+  EXPECT_LT(casscf->energy, casci->energies[0]);
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto by_hand = calc->step<fb::CasscfStep>()->run(
+      fb::StepInput<fb::CasscfStep>{
+          *calc->get<fb::MoleculeOutput>(), *calc->get<fb::BasisSetOutput>(),
+          *calc->get<fb::SphericalTransformOutput>(), *calc->get<fb::PrimitivePairClassesOutput>(),
+          *calc->get<fb::CoreHamiltonianOutput>(), *calc->get<fb::ScfOutput>()},
+      res);
+  ASSERT_TRUE(by_hand.has_value()) << by_hand.error().message;
+  EXPECT_NEAR(by_hand->energy, casscf->energy, 1e-10);
+}
+
 TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_calculation");

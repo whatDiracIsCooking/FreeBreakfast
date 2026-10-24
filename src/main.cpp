@@ -75,6 +75,16 @@ void print_products(const fb::Calculation &calc) {
                    casci->spin_squares[r]);
     }
   }
+  if (const auto &casscf = calc.get<fb::CasscfOutput>()) {
+    std::println("CASSCF:            CAS({}, {}), {} core, {} macro iterations, |g| {:.3e}",
+                 casscf->nelecas, casscf->ncas, casscf->ncore, casscf->iterations.size(),
+                 casscf->gradient_norm);
+    for (std::size_t r = 0; r < casscf->energies.size(); ++r) {
+      std::println("CASSCF root {}:     {:.10f} Ha, <S^2> {:.6f}, weight {:.4f}", r,
+                   casscf->energies[r], casscf->spin_squares[r], casscf->weights[r]);
+    }
+    std::println("CASSCF energy:     {:.10f} Ha", casscf->energy);
+  }
   if (const auto &fci = calc.get<fb::FciOutput>()) {
     std::println("FCI:               {} electrons in {} orbitals, {} Davidson iterations",
                  fci->n_electrons, fci->nmo, fci->davidson.iterations);

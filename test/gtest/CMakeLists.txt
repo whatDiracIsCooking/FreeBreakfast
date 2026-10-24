@@ -141,6 +141,7 @@ add_executable(
   pipeline_localization_gpu.cpp
   livvo_gpu.cpp
   pipeline_casci_gpu.cpp
+  pipeline_casscf_gpu.cpp
   pipeline_fci_gpu.cpp
   mcscf_fock_gpu.cpp
   mcscf_hessian_gpu.cpp
@@ -186,6 +187,7 @@ target_link_libraries(
   free_breakfast::pipeline::localization
   free_breakfast::localization::livvo
   free_breakfast::pipeline::casci
+  free_breakfast::pipeline::casscf
   free_breakfast::pipeline::fci
   free_breakfast::pipeline::config
   free_breakfast::test::gpu_kernels

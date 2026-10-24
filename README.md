@@ -8,7 +8,8 @@ It is an early **quantum-chemistry** codebase. `src/` holds ten modules —
 `localization` and `pipeline` — and the `free-breakfast` executable they add up
 to: a TOML config planned into a task graph and run as a closed-shell RHF SCF,
 with GPU integrals, a SAD initial guess and Pipek-Mezey localization of the
-occupied orbitals. [`src/README.md`](src/README.md) has the one-line summary of
+occupied orbitals, then CASCI, FCI or a state-averaged CASSCF over its
+orbitals. [`src/README.md`](src/README.md) has the one-line summary of
 each module, and every directory under `src/` carries its own README.
 
 The GPU API layer is not written here. [WarpWraps](https://github.com/whatDiracIsCooking/WarpWraps)
