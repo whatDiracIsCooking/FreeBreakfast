@@ -175,6 +175,16 @@ file's per-element table of them. Putting one somewhere follows one pattern:
   place, gets a name of its own (`sad_density`), so that seeing `place` says
   the call is cheap.
 
+## Pipeline steps and products
+
+A step is a struct named `…Step`, and the product it writes is its own struct
+named `…Output`: `ScfStep` returns `Result<ScfOutput>`. That holds even when the
+product is just one domain object: `BasisSetStep` writes `BasisSetOutput{basis}`,
+never a bare `BasisSet`. The reason is in
+[`src/pipeline/step/README.md`](../src/pipeline/step/README.md) "Products and
+`View`": a `View` finds a product by its type, so a bare domain type would claim
+that type for the whole pipeline.
+
 ## Module-private code
 
 **There are no anonymous namespaces and no `detail` namespaces**, with four
