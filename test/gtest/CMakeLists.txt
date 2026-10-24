@@ -38,6 +38,7 @@ add_executable(
   basis_host.cpp
   sad_host.cpp
   ci_strings_host.cpp
+  ci_sigma_host.cpp
   io_base_host.cpp
   io_basis_host.cpp
   io_json_host.cpp

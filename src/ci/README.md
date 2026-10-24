@@ -12,6 +12,7 @@ covers the layer, and each sub-module stays importable on its own.
 | Directory | Module | Role |
 |-----------|--------|------|
 | `strings/` | `free_breakfast.ci.strings` | The occupation strings of one spin (`StringSet`): enumeration, lexical addressing onto [0, C(n, N)), and the single-replacement lists for E_pq. Host-side. |
+| `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `StringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays. Host-side reference, written for clarity: the oracle for the GPU sigma. |
 
 A determinant is a pair of strings, alpha and beta, each from its own
 `StringSet`. The strings are in PySCF's `cistring` order, so a CI vector laid
@@ -20,6 +21,8 @@ out alpha-major over two sets matches `fci.direct_spin1`'s element for element.
 ## Tests
 
 Host, in `test/gtest/ci_<name>_host.cpp`, linked into `free_breakfast_tests_host`.
+The golden data, PySCF's `fci.direct_spin1` over its own active-space
+integrals, is `test/gtest/data/ci/`, written by `tools/emit_fci_reference.py`.
 
 ## Files
 

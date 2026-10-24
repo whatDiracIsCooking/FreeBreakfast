@@ -1,6 +1,7 @@
 # Determinant CI over plain arrays: CASCI, CASSCF and FCI all call it, so it
-# never sees a basis, molecule or SCF. One member so far, the strings.
+# never sees a basis, molecule or SCF. Sigma is over the strings' lists.
 add_subdirectory(strings)
+add_subdirectory(sigma)
 
 # The aggregate: one import for the CI layer.
 free_breakfast_add_cxx_module_library(
@@ -11,4 +12,5 @@ free_breakfast_add_cxx_module_library(
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::ci::strings
+  free_breakfast::ci::sigma
 )
