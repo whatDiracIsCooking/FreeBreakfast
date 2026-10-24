@@ -4,7 +4,8 @@
 /// vector.
 ///
 /// The README has the spin control: a penalty λ (S² − S(S+1)) on H, S taken
-/// from the sector, and why that over filtering the roots afterwards.
+/// from the sector, and why that over filtering the roots afterwards; and why
+/// a singlet solve runs on the symmetric layout's packed vectors.
 
 export module free_breakfast.ci.solver;
 
@@ -17,6 +18,8 @@ import free_breakfast.core.resources;
 // sigma is written against its LinearOperator.
 export import free_breakfast.recipes.davidson;
 import free_breakfast.ci.strings;
+// CiLayout and ci_unpack, for ci_solve's symmetric path.
+import free_breakfast.ci.sigma;
 
 #include "diagnostics.h"
 
@@ -66,6 +69,10 @@ export namespace free_breakfast {
 /// own links, since S² is real symmetric: nothing is atomic and the result
 /// does not depend on the run. Cost is O(k · dim · N_α (n − N_α + 1)).
 ///
+/// Over one StringSet for both spins, apply, penalize and penalize_diagonal
+/// also take CiLayout::symmetric (see ci.sigma): S² commutes with the swap of
+/// the two strings, so it maps the packed vectors to packed vectors.
+///
 /// Move-only; the buffers are on the device of the DeviceResources create was
 /// given, which every call must pass again.
 class CiSpinSquare {
@@ -85,39 +92,48 @@ public:
   CiSpinSquare &operator=(const CiSpinSquare &) = delete;
   ~CiSpinSquare() = default;
 
-  /// @brief Y = S² X for the size() × @p k column-major device blocks @p x and
-  /// @p y, leading dimension size(), which must not overlap. Queued on
-  /// res.stream().
+  /// @brief Y = S² X for the size(@p layout) × @p k column-major device blocks
+  /// @p x and @p y, leading dimension size(@p layout), which must not
+  /// overlap. Queued on res.stream().
   ///
-  /// @return InvalidConfig for another device, or a negative @p k or
-  ///         k · size() past an int32_t; or the launch's GpuRuntime error.
-  [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *x, double *y);
+  /// @return InvalidConfig for another device, a negative @p k or
+  ///         k · size(@p layout) past an int32_t, or CiLayout::symmetric over
+  ///         two different sets; or the launch's GpuRuntime error.
+  [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *x, double *y,
+                             CiLayout layout = CiLayout::full);
 
   /// @brief Y += λ (S² − @p target) X: the spin penalty, added into a sigma's
   /// output. As apply otherwise.
   [[nodiscard]] Status penalize(DeviceResources &res, int32_t k, double lambda, double target,
-                                const double *x, double *y);
+                                const double *x, double *y, CiLayout layout = CiLayout::full);
 
-  /// @brief shifted = diagonal + λ (diag(S²) − @p target) for the size()
-  /// device doubles @p diagonal and @p shifted (which may be the same): the
-  /// diagonal of a penalized H, ci_solve's preconditioner's. diag(S²) is
-  /// S_z (S_z + 1) + N_β less the orbitals doubly occupied. Queued on
-  /// res.stream().
+  /// @brief shifted = diagonal + λ (diag(S²) − @p target), for the size()
+  /// device doubles @p diagonal, into the size(@p layout) device doubles
+  /// @p shifted: the diagonal of a penalized H, ci_solve's preconditioner's.
+  /// In CiLayout::symmetric, shifted holds the triangle's determinants,
+  /// unscaled. diag(S²) is S_z (S_z + 1) + N_β less the orbitals doubly
+  /// occupied. @p shifted may be @p diagonal in the full layout only. Queued
+  /// on res.stream().
   ///
-  /// @return InvalidConfig for another device; or the launch's GpuRuntime
-  ///         error.
+  /// @return InvalidConfig for another device, or CiLayout::symmetric over two
+  ///         different sets; or the launch's GpuRuntime error.
   [[nodiscard]] Status penalize_diagonal(DeviceResources &res, double lambda, double target,
-                                         const double *diagonal, double *shifted);
+                                         const double *diagonal, double *shifted,
+                                         CiLayout layout = CiLayout::full);
 
-  /// @brief The number of determinants, alpha.size() · beta.size().
-  [[nodiscard]] int32_t size() const noexcept { return n_alpha_ * n_beta_; }
+  /// @brief The number of determinants, alpha.size() · beta.size(), or for
+  /// CiLayout::symmetric the triangle's, alpha.size() (alpha.size() + 1) / 2.
+  [[nodiscard]] int32_t size(CiLayout layout = CiLayout::full) const noexcept {
+    return layout == CiLayout::symmetric ? n_alpha_ * (n_alpha_ + 1) / 2 : n_alpha_ * n_beta_;
+  }
 
 private:
   CiSpinSquare(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
-               int32_t alpha_per, double constant);
+               int32_t alpha_per, double constant, bool one_set);
 
+  Status check(DeviceResources &res, CiLayout layout) const;
   Status launch(DeviceResources &res, int32_t k, double shift, double scale, bool accumulate,
-                const double *x, double *y);
+                const double *x, double *y, CiLayout layout);
 
   int32_t dev_idx_;
   int32_t n_orbitals_;
@@ -125,6 +141,7 @@ private:
   int32_t n_beta_;  // beta.size()
   int32_t alpha_per_;
   double constant_; // S_z (S_z + 1) + N_β
+  bool one_set_;    // alpha and beta are the same (n, N): CiLayout::symmetric applies
   // Three int32_t per α replacement: target, its β partner's slot, sign.
   Buffers::device<int32_t> alpha_links_;
   // n_beta × n × n: sign · (target + 1) of a†_p a_q on each β string, or 0.
@@ -183,6 +200,14 @@ struct CiRoots {
 /// ⟨S²⟩ is taken there, and the roots stay there. Only the n_roots Ritz values
 /// and ⟨S²⟩s come to the host.
 ///
+/// A singlet solve, over one StringSet for both spins with a penalty, by a
+/// sigma that takes a CiLayout (CiSigma), runs on CiLayout::symmetric's packed
+/// vectors: every vector of even S is symmetric under the swap of the two
+/// strings, so the Davidson keeps to that subspace exactly, its vectors, A V
+/// and sigma scratch are about half as long, and quintets are the nearest
+/// spin the penalty has to lift. The roots are unpacked at the end, so
+/// CiRoots is the same either way.
+///
 /// A sigma that also has `apply_fp32(res, k, x, y)` (CiSigma) is solved in two
 /// stages: davidson_solve over apply_fp32 to options.fp32_tolerance, then over
 /// apply, restarted from the first stage's Ritz vectors, to
@@ -217,7 +242,6 @@ template <LinearOperator<double> Op>
                       dim, alpha.n_orbitals(), beta.n_orbitals(), n_roots, options.spin_penalty,
                       options.fp32_tolerance);
   }
-  const auto n = static_cast<int32_t>(dim);
   const auto roots = static_cast<size_t>(n_roots);
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
@@ -226,34 +250,63 @@ template <LinearOperator<double> Op>
   const int32_t two_s = std::abs(alpha.n_electrons() - beta.n_electrons());
   const double target = 0.25 * two_s * (two_s + 2);
 
+  // A singlet solve by a sigma that takes a layout runs on the symmetric
+  // layout's packed vectors (see the README); with no penalty the caller
+  // wants every spin, odd S included, so the full layout. n is the length the
+  // Davidson sees.
+  constexpr bool takes_layout = requires(const double *x, double *y) {
+    sigma.apply(res, n_roots, x, y, CiLayout::symmetric);
+  };
+  const size_t packed_dim = static_cast<size_t>(alpha.size()) * (alpha.size() + 1) / 2;
+  const CiLayout layout = takes_layout && two_s == 0 && alpha.n_electrons() == beta.n_electrons() &&
+                                  penalty > 0.0 && roots <= packed_dim
+                              ? CiLayout::symmetric
+                              : CiLayout::full;
+  const size_t length = layout == CiLayout::symmetric ? packed_dim : dim;
+  const auto n = static_cast<int32_t>(length);
+
   // Guesses on the 2 · n_roots determinants of lowest diag(H): see ci_guesses
-  // and the README for the spread. The subspace holds up to 16 · n_roots.
-  const auto guess_count = static_cast<int32_t>(std::min(dim, 2 * roots));
+  // and the README for the spread. In the symmetric layout they are triangle
+  // elements, each a determinant and its mirror. The subspace holds up to
+  // 16 · n_roots.
+  const auto guess_count = static_cast<int32_t>(std::min(length, 2 * roots));
   const int32_t max_subspace =
-      std::max(2 * n_roots, static_cast<int32_t>(std::min(dim, 16 * roots)));
-  Buffers::device<double> guess(dim * static_cast<size_t>(guess_count), res.device());
-  Buffers::device<double> shifted(dim, res.device());
+      std::max(2 * n_roots, static_cast<int32_t>(std::min(length, 16 * roots)));
+  Buffers::device<double> guess(length * static_cast<size_t>(guess_count), res.device());
+  Buffers::device<double> shifted(length, res.device());
   Buffers::device<double> values(roots, res.device());
-  Buffers::device<double> vectors(dim * roots, res.device());
-  FBF_TRY(ci_guesses(res, n, guess_count, diagonal, guess.data()));
+  Buffers::device<double> vectors(length * roots, res.device());
+  CiSpinSquare spin = FBF_TRY(CiSpinSquare::create(res, alpha, beta));
+  if (layout == CiLayout::symmetric) {
+    // diag(H) over the triangle, through penalize_diagonal with no penalty,
+    // into shifted until the penalized one overwrites it.
+    FBF_TRY(spin.penalize_diagonal(res, 0.0, target, diagonal, shifted.data(), layout));
+    FBF_TRY(ci_guesses(res, n, guess_count, shifted.data(), guess.data()));
+  } else {
+    FBF_TRY(ci_guesses(res, n, guess_count, diagonal, guess.data()));
+  }
 
   // H + λ (S² − S(S+1)) through the caller's sigma, the penalty added into
   // its output on the device, and diag(H + penalty) for the preconditioner.
   // fp32 picks the sigma's apply_fp32; applies counts the calls, one per
   // iteration, since every iteration adds a column.
-  CiSpinSquare spin = FBF_TRY(CiSpinSquare::create(res, alpha, beta));
-  FBF_TRY(spin.penalize_diagonal(res, penalty, target, diagonal, shifted.data()));
+  FBF_TRY(spin.penalize_diagonal(res, penalty, target, diagonal, shifted.data(), layout));
   struct Penalized {
     Op &sigma;
     CiSpinSquare &spin;
     double penalty;
     double target;
+    CiLayout layout;
     bool fp32 = false;
     int32_t applies = 0;
 
     Status apply(DeviceResources &r, int32_t k, const double *x, double *y) {
       ++applies;
-      if constexpr (requires { sigma.apply_fp32(r, k, x, y); }) {
+      if constexpr (requires { sigma.apply_fp32(r, k, x, y, layout); }) {
+        FBF_TRY(fp32 ? sigma.apply_fp32(r, k, x, y, layout) : sigma.apply(r, k, x, y, layout));
+      } else if constexpr (requires { sigma.apply(r, k, x, y, layout); }) {
+        FBF_TRY(sigma.apply(r, k, x, y, layout));
+      } else if constexpr (requires { sigma.apply_fp32(r, k, x, y); }) {
         FBF_TRY(fp32 ? sigma.apply_fp32(r, k, x, y) : sigma.apply(r, k, x, y));
       } else {
         FBF_TRY(sigma.apply(r, k, x, y));
@@ -261,10 +314,10 @@ template <LinearOperator<double> Op>
       if (penalty == 0.0) {
         return {};
       }
-      return spin.penalize(r, k, penalty, target, x, y);
+      return spin.penalize(r, k, penalty, target, x, y, layout);
     }
   };
-  Penalized op{sigma, spin, penalty, target};
+  Penalized op{sigma, spin, penalty, target, layout};
 
   // r / (θ − diag(H + penalty)) on the device, one launch per column, the
   // denominator kept off zero as the test's dense preconditioner is: a root
@@ -272,8 +325,8 @@ template <LinearOperator<double> Op>
   const auto precondition = [&](DeviceResources &r, std::span<const double> theta,
                                 const double *residual, double *correction) -> Status {
     for (size_t col = 0; col < theta.size(); ++col) {
-      FBF_TRY(ci_precondition(r, n, theta[col], shifted.data(), residual + col * dim,
-                              correction + col * dim));
+      FBF_TRY(ci_precondition(r, n, theta[col], shifted.data(), residual + col * length,
+                              correction + col * length));
     }
     return {};
   };
@@ -300,9 +353,9 @@ template <LinearOperator<double> Op>
         return std::unexpected{stage.error()};
       }
       fp32_iterations = op.applies;
-      FBF_TRY(
-          gpu_status(wwr::wwrMemcpyAsync(guess.data(), vectors.data(), dim * roots * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(guess.data(), vectors.data(),
+                                             length * roots * sizeof(double),
+                                             wwr::wwrMemcpyDeviceToDevice, stream)));
       start_count = n_roots;
     }
   }
@@ -317,24 +370,32 @@ template <LinearOperator<double> Op>
   // ⟨S²⟩ per root on the device, S² X into the guesses' block (davidson_solve
   // has copied them, and guess_count >= n_roots), and θ less the penalty's
   // ⟨λ (S² − S(S+1))⟩: θ is the unit Ritz vector's Rayleigh quotient of the
-  // penalized H, so this is its quotient of H itself.
+  // penalized H, so this is its quotient of H itself. The packing is an
+  // isometry, so the dots are the same in either layout.
   std::vector<double> theta(roots);
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(theta.data(), values.data(), roots * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(spin.apply(res, n_roots, vectors.data(), guess.data()));
-  CiRoots out{std::vector<double>(roots), std::vector<double>(roots), std::move(vectors), *info,
-              fp32_iterations};
+  FBF_TRY(spin.apply(res, n_roots, vectors.data(), guess.data(), layout));
+  std::vector<double> spin_squares(roots);
   {
     const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
                                             CreatePolicy<wwr::wwrblasStatus_t>>
         host_scalars{res.blas().get(), wwr::WWRBLAS_POINTER_MODE_HOST};
     for (size_t r = 0; r < roots; ++r) {
       FBF_TRY(
-          gpu_status(wwr::dot<double, int32_t>(res.blas().get(), n, out.vectors.data() + r * dim, 1,
-                                               guess.data() + r * dim, 1, &out.spin_squares[r])));
+          gpu_status(wwr::dot<double, int32_t>(res.blas().get(), n, vectors.data() + r * length, 1,
+                                               guess.data() + r * length, 1, &spin_squares[r])));
     }
   }
+  // The roots in the full layout, as CiSigma::rdm1 and CiRdm::rdm12 take them.
+  if (layout == CiLayout::symmetric) {
+    Buffers::device<double> full(dim * roots, res.device());
+    FBF_TRY(ci_unpack(res, alpha.size(), n_roots, vectors.data(), full.data()));
+    vectors = std::move(full);
+  }
   FBF_TRY(res.sync());
+  CiRoots out{std::vector<double>(roots), std::move(spin_squares), std::move(vectors), *info,
+              fp32_iterations};
   for (size_t r = 0; r < roots; ++r) {
     const double s2 = out.spin_squares[r];
     out.energies[r] = theta[r] - penalty * (s2 - target);

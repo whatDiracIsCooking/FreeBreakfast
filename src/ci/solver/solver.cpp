@@ -16,6 +16,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
+import free_breakfast.ci.sigma; // CiLayout
 
 #include "diagnostics.h"
 
@@ -74,9 +75,10 @@ Status host_spin_square(const StringSet &alpha, const StringSet &beta,
 static_assert(LinearOperator<CiSpinSquare, double>);
 
 CiSpinSquare::CiSpinSquare(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
-                           const int32_t n_beta, const int32_t alpha_per, const double constant)
+                           const int32_t n_beta, const int32_t alpha_per, const double constant,
+                           const bool one_set)
     : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
-      alpha_per_{alpha_per}, constant_{constant},
+      alpha_per_{alpha_per}, constant_{constant}, one_set_{one_set},
       alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
       beta_slots_(static_cast<size_t>(n_beta) * static_cast<size_t>(n_orbitals) *
                       static_cast<size_t>(n_orbitals),
@@ -120,7 +122,8 @@ Result<CiSpinSquare> CiSpinSquare::create(DeviceResources &res, const StringSet 
 
   const ScopedDeviceIndex on{res.dev_idx()};
   CiSpinSquare spin(res, alpha.n_orbitals(), alpha.size(), beta.size(),
-                    alpha.replacements_per_string(), constant);
+                    alpha.replacements_per_string(), constant,
+                    alpha.n_electrons() == beta.n_electrons());
   const wwr::wwrStream_t stream = res.stream();
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(spin.alpha_links_.data(), links.data(),
                                          sizeof(int32_t) * links.size(), wwr::wwrMemcpyHostToDevice,
@@ -133,42 +136,51 @@ Result<CiSpinSquare> CiSpinSquare::create(DeviceResources &res, const StringSet 
   return spin;
 }
 
-Status CiSpinSquare::launch(DeviceResources &res, const int32_t k, const double shift,
-                            const double scale, const bool accumulate, const double *const x,
-                            double *const y) {
+Status CiSpinSquare::check(DeviceResources &res, const CiLayout layout) const {
   if (res.dev_idx() != dev_idx_) {
     return err_config("CiSpinSquare: tables are on device {}, but the call passed device {}",
                       dev_idx_, res.dev_idx());
   }
-  if (k < 0 || static_cast<int64_t>(k) * size() > std::numeric_limits<int32_t>::max()) {
+  if (layout == CiLayout::symmetric && !one_set_) {
+    return err_config("CiSpinSquare: the symmetric layout needs one set of strings for both spins");
+  }
+  return {};
+}
+
+Status CiSpinSquare::launch(DeviceResources &res, const int32_t k, const double shift,
+                            const double scale, const bool accumulate, const double *const x,
+                            double *const y, const CiLayout layout) {
+  FBF_TRY(check(res, layout));
+  const int32_t length = size(layout);
+  if (k < 0 || static_cast<int64_t>(k) * length > std::numeric_limits<int32_t>::max()) {
     return err_config("CiSpinSquare: a block of {} vectors of {} is outside an int32_t's rows", k,
-                      size());
+                      length);
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::ci_spin_square(res.stream(), k * size(), size(), n_beta_, n_orbitals_,
-                                           alpha_links_.data(), alpha_per_, beta_slots_.data(),
-                                           constant_, shift, scale, accumulate, x, y));
+  return gpu_status(device::ci_spin_square(res.stream(), layout == CiLayout::symmetric, k * length,
+                                           length, n_beta_, n_orbitals_, alpha_links_.data(),
+                                           alpha_per_, beta_slots_.data(), constant_, shift, scale,
+                                           accumulate, x, y));
 }
 
 Status CiSpinSquare::apply(DeviceResources &res, const int32_t k, const double *const x,
-                           double *const y) {
-  return launch(res, k, 0.0, 1.0, false, x, y);
+                           double *const y, const CiLayout layout) {
+  return launch(res, k, 0.0, 1.0, false, x, y, layout);
 }
 
 Status CiSpinSquare::penalize(DeviceResources &res, const int32_t k, const double lambda,
-                              const double target, const double *const x, double *const y) {
-  return launch(res, k, target, lambda, true, x, y);
+                              const double target, const double *const x, double *const y,
+                              const CiLayout layout) {
+  return launch(res, k, target, lambda, true, x, y, layout);
 }
 
 Status CiSpinSquare::penalize_diagonal(DeviceResources &res, const double lambda,
                                        const double target, const double *const diagonal,
-                                       double *const shifted) {
-  if (res.dev_idx() != dev_idx_) {
-    return err_config("CiSpinSquare: tables are on device {}, but the call passed device {}",
-                      dev_idx_, res.dev_idx());
-  }
+                                       double *const shifted, const CiLayout layout) {
+  FBF_TRY(check(res, layout));
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::ci_spin_diagonal(res.stream(), size(), n_beta_, n_orbitals_,
+  return gpu_status(device::ci_spin_diagonal(res.stream(), layout == CiLayout::symmetric,
+                                             size(layout), n_beta_, n_orbitals_,
                                              alpha_links_.data(), alpha_per_, beta_slots_.data(),
                                              constant_, target, lambda, diagonal, shifted));
 }

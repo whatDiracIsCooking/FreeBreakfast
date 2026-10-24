@@ -2,7 +2,9 @@
 // a LinearOperator, against PySCF's fci.direct_spin1 (data/ci/direct_spin1.json,
 // written by tools/emit_fci_reference.py). Every case there has a triplet below
 // its second singlet, so the singlets come out in order only if the spin
-// penalty works; with no penalty the triplet appears among them.
+// penalty works; with no penalty the triplet appears among them. Over CiSigma,
+// a singlet solve runs in the symmetric layout, and the test records that it
+// did.
 
 #include <gtest/gtest.h>
 
@@ -249,10 +251,28 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   EXPECT_TRUE(triplet);
 }
 
+// CiSigma, forwarded, with the layout of every apply recorded: what ci_solve
+// chose.
+struct RecordingSigma {
+  fb::CiSigma &sigma;
+  std::set<fb::CiLayout> layouts;
+
+  fb::Status apply(fb::DeviceResources &res, std::int32_t k, const double *x, double *y,
+                   fb::CiLayout layout = fb::CiLayout::full) {
+    layouts.insert(layout);
+    return sigma.apply(res, k, x, y, layout);
+  }
+  fb::Status apply_fp32(fb::DeviceResources &res, std::int32_t k, const double *x, double *y,
+                        fb::CiLayout layout = fb::CiLayout::full) {
+    layouts.insert(layout);
+    return sigma.apply_fp32(res, k, x, y, layout);
+  }
+};
+
 // Over CiSigma, which has an apply_fp32, ci_solve runs its single-precision
 // stage first by default; the roots meet the same tolerances as the FP64-only
-// solve, which fp32_tolerance = 0 asks for. Singlets and, from the M_s = 1
-// sector, triplets.
+// solve, which fp32_tolerance = 0 asks for. Singlets, in the symmetric layout
+// and, from the M_s = 1 sector, triplets, in the full one.
 TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -268,20 +288,52 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
       fb::Buffers::device<double> diagonal(c.diagonal.size(), res.device());
       ASSERT_TRUE(sigma->diagonal(res, diagonal.data()).has_value());
       const double s2 = shift == 0 ? 0.0 : 2.0;
+      const std::set<fb::CiLayout> layout{shift == 0 ? fb::CiLayout::symmetric
+                                                     : fb::CiLayout::full};
 
-      const auto two_stage = fb::ci_solve(res, *sigma, c.alpha, c.beta, diagonal.data(), 3);
+      RecordingSigma recorded{*sigma, {}};
+      const auto two_stage = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3);
       ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
       EXPECT_GT(two_stage->fp32_iterations, 0);
+      EXPECT_EQ(recorded.layouts, layout);
       expect_roots(res, c, *two_stage, s2);
 
       fb::CiSolverOptions fp64;
       fp64.fp32_tolerance = 0.0;
-      const auto alone = fb::ci_solve(res, *sigma, c.alpha, c.beta, diagonal.data(), 3, fp64);
+      recorded.layouts.clear();
+      const auto alone = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, fp64);
       ASSERT_TRUE(alone.has_value()) << alone.error().message;
       EXPECT_EQ(alone->fp32_iterations, 0);
+      EXPECT_EQ(recorded.layouts, layout);
       expect_roots(res, c, *alone, s2);
     }
   }
+}
+
+// With no penalty, a sigma that takes a layout still gets the full one: the
+// symmetric layout holds even S alone, and λ = 0 asks for every spin.
+TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::json cases = load_cases();
+  ASSERT_FALSE(cases.empty());
+  const Case c = make_case(cases[0]);
+  auto sigma = fb::CiSigma::create(res, c.alpha, c.beta);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  ASSERT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
+  const auto diagonal = on_device(res, c.diagonal);
+  RecordingSigma recorded{*sigma, {}};
+  fb::CiSolverOptions options;
+  options.spin_penalty = 0.0;
+  const auto got = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
+  ASSERT_TRUE(got.has_value()) << got.error().message;
+  EXPECT_EQ(recorded.layouts, std::set<fb::CiLayout>{fb::CiLayout::full});
+  bool triplet = false;
+  for (std::size_t r = 0; r < 3; ++r) {
+    EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
+    triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+  }
+  EXPECT_TRUE(triplet);
 }
 
 TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {
@@ -444,6 +496,109 @@ TEST(CiSpinSquareGpu, MatchesHost) {
   }
 }
 
+// CiSpinSquare in the symmetric layout, over one set for both spins, against
+// host_spin_square on random swap-symmetric blocks of three vectors, packed:
+// apply and penalize to 1e-12 of the norm, and penalize_diagonal as the full
+// layout's restricted to the triangle.
+TEST(CiSpinSquareGpu, SymmetricLayoutMatchesHost) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr std::int32_t k = 3;
+  constexpr double lambda = 0.7;
+  constexpr double target = 0.0;
+  for (const auto [n, n_electrons] : std::array<std::pair<std::int32_t, std::int32_t>, 6>{
+           {{6, 3}, {8, 4}, {7, 2}, {5, 0}, {4, 4}, {1, 1}}}) {
+    SCOPED_TRACE(std::format("n {} N {}", n, n_electrons));
+    const auto set = fb::StringSet::create(n, n_electrons);
+    ASSERT_TRUE(set.has_value());
+    auto spin = fb::CiSpinSquare::create(res, *set, *set);
+    ASSERT_TRUE(spin.has_value()) << spin.error().message;
+    const auto m = static_cast<std::size_t>(set->size());
+    const std::size_t dim = m * m;
+    const std::size_t packed = m * (m + 1) / 2;
+    ASSERT_EQ(static_cast<std::size_t>(spin->size(fb::CiLayout::symmetric)), packed);
+
+    std::mt19937_64 engine{dim + 1};
+    std::uniform_real_distribution<double> uniform{-1.0, 1.0};
+    std::vector<double> x(dim * k);
+    for (std::size_t j = 0; j < k; ++j) {
+      for (std::size_t a = 0; a < m; ++a) {
+        for (std::size_t b = 0; b <= a; ++b) {
+          x[j * dim + a * m + b] = x[j * dim + b * m + a] = uniform(engine);
+        }
+      }
+    }
+    std::vector<double> y0(packed * k);
+    for (double &v : y0) {
+      v = uniform(engine);
+    }
+    // The triangle, off-diagonal elements times sqrt(2).
+    const auto pack = [&](std::span<const double> full) {
+      std::vector<double> out(packed);
+      for (std::size_t a = 0; a < m; ++a) {
+        for (std::size_t b = 0; b <= a; ++b) {
+          out[a * (a + 1) / 2 + b] =
+              a == b ? full[a * m + b] : std::numbers::sqrt2 * full[a * m + b];
+        }
+      }
+      return out;
+    };
+    std::vector<double> u(packed * k);
+    for (std::size_t j = 0; j < k; ++j) {
+      std::ranges::copy(pack(std::span<const double>{x}.subspan(j * dim, dim)),
+                        u.begin() + static_cast<std::ptrdiff_t>(j * packed));
+    }
+    const auto ud = on_device(res, u);
+    fb::Buffers::device<double> applied(packed * k, res.device());
+    ASSERT_TRUE(
+        spin->apply(res, k, ud.data(), applied.data(), fb::CiLayout::symmetric).has_value());
+    const std::vector<double> got = on_host(res, applied.data(), packed * k);
+    auto penalized = on_device(res, y0);
+    ASSERT_TRUE(
+        spin->penalize(res, k, lambda, target, ud.data(), penalized.data(), fb::CiLayout::symmetric)
+            .has_value());
+    const std::vector<double> got_penalized = on_host(res, penalized.data(), packed * k);
+
+    std::vector<double> s2x(dim);
+    for (std::size_t j = 0; j < k; ++j) {
+      const std::span<const double> column{x.data() + j * dim, dim};
+      ASSERT_TRUE(fb::host_spin_square(*set, *set, column, s2x).has_value());
+      const std::vector<double> want = pack(s2x);
+      double norm = 0.0;
+      double error = 0.0;
+      double penalized_error = 0.0;
+      for (std::size_t i = 0; i < packed; ++i) {
+        norm += want[i] * want[i] + u[j * packed + i] * u[j * packed + i];
+        const double delta = got[j * packed + i] - want[i];
+        error += delta * delta;
+        const double expected =
+            y0[j * packed + i] + lambda * (want[i] - target * u[j * packed + i]);
+        const double pdelta = got_penalized[j * packed + i] - expected;
+        penalized_error += pdelta * pdelta;
+      }
+      EXPECT_LE(std::sqrt(error), 1e-12 * std::sqrt(norm)) << "column " << j;
+      EXPECT_LE(std::sqrt(penalized_error), 1e-12 * std::sqrt(norm)) << "column " << j;
+    }
+
+    // The first column of x standing in for diag(H): the full layout's
+    // penalized diagonal, read on the triangle unscaled.
+    const auto xd = on_device(res, std::span<const double>{x}.first(dim));
+    fb::Buffers::device<double> full(dim, res.device());
+    ASSERT_TRUE(spin->penalize_diagonal(res, lambda, target, xd.data(), full.data()).has_value());
+    fb::Buffers::device<double> triangle(packed, res.device());
+    ASSERT_TRUE(spin->penalize_diagonal(res, lambda, target, xd.data(), triangle.data(),
+                                        fb::CiLayout::symmetric)
+                    .has_value());
+    const std::vector<double> want_full = on_host(res, full.data(), dim);
+    const std::vector<double> got_triangle = on_host(res, triangle.data(), packed);
+    for (std::size_t a = 0; a < m; ++a) {
+      for (std::size_t b = 0; b <= a; ++b) {
+        EXPECT_EQ(got_triangle[a * (a + 1) / 2 + b], want_full[a * m + b]) << a << ", " << b;
+      }
+    }
+  }
+}
+
 TEST(CiSpinSquareGpu, Refuses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -459,6 +614,18 @@ TEST(CiSpinSquareGpu, Refuses) {
   EXPECT_FALSE(spin->apply(res, -1, x.data(), y.data()).has_value());
   EXPECT_FALSE(spin->penalize(res, -1, 1.0, 0.0, x.data(), y.data()).has_value());
   EXPECT_TRUE(spin->apply(res, 0, x.data(), y.data()).has_value());
+
+  // The symmetric layout wants one set for both spins.
+  const auto one = fb::StringSet::create(4, 1);
+  const auto three = fb::StringSet::create(4, 3);
+  ASSERT_TRUE(one.has_value() && three.has_value());
+  auto mixed = fb::CiSpinSquare::create(res, *one, *three);
+  ASSERT_TRUE(mixed.has_value()) << mixed.error().message;
+  EXPECT_FALSE(mixed->apply(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
+  EXPECT_FALSE(
+      mixed->penalize(res, 1, 1.0, 0.0, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
+  EXPECT_FALSE(mixed->penalize_diagonal(res, 1.0, 0.0, x.data(), y.data(), fb::CiLayout::symmetric)
+                   .has_value());
 }
 
 } // namespace

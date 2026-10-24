@@ -18,6 +18,9 @@
 /// - A link table holds a StringSet's replacement lists, `per` links per
 ///   string, three int32_t per link: the target string's address, the packed
 ///   pair (p, q), and the sign of a†_p a_q.
+/// - With @p symmetric, the vectors are in CiLayout::symmetric (see
+///   ci_symmetric.h): n_alpha = n_beta strings, n_det the triangle's
+///   n_alpha (n_alpha + 1) / 2, and a row a triangle element.
 ///
 /// Each returns the launch status and does not synchronize.
 
@@ -44,13 +47,15 @@ namespace free_breakfast::device {
 /// @p d is rows × n_pairs, column-major with leading dimension @p rows, and is
 /// accumulated into: it must be zero on entry. @p c is the block of vectors.
 /// A float @p d takes each term rounded to float: an entry has at most two,
-/// one link of each spin.
-[[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, int32_t row_begin, int32_t rows,
-                                          int32_t n_det, int32_t n_beta, const int32_t *alpha_links,
+/// one link of each spin. With @p symmetric, D is of the unpacked c.
+[[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, bool symmetric,
+                                          int32_t row_begin, int32_t rows, int32_t n_det,
+                                          int32_t n_beta, const int32_t *alpha_links,
                                           int32_t alpha_per, const int32_t *beta_links,
                                           int32_t beta_per, const double *c, double *d);
-[[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, int32_t row_begin, int32_t rows,
-                                          int32_t n_det, int32_t n_beta, const int32_t *alpha_links,
+[[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, bool symmetric,
+                                          int32_t row_begin, int32_t rows, int32_t n_det,
+                                          int32_t n_beta, const int32_t *alpha_links,
                                           int32_t alpha_per, const int32_t *beta_links,
                                           int32_t beta_per, const double *c, float *d);
 
@@ -61,15 +66,16 @@ namespace free_breakfast::device {
 /// @p g is rows × (n_pairs + 1), column-major with leading dimension @p rows:
 /// column pair(t, u) is G_K[tu] = ½ Σ_vw (tu|vw) D_K[vw], and the last column
 /// the one-electron term Σ_vw k_vw D_K[vw]. @p sigma has @p c's layout. A
-/// float @p g is summed in double.
-[[nodiscard]] wwr::wwrError_t ci_sigma_from_g(wwr::wwrStream_t stream, int32_t rows, int32_t n_det,
-                                              int32_t n_beta, int32_t n_pairs,
+/// float @p g is summed in double. With @p symmetric, G_J of a J below the
+/// triangle is read from its mirror's row.
+[[nodiscard]] wwr::wwrError_t ci_sigma_from_g(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
+                                              int32_t n_det, int32_t n_beta, int32_t n_pairs,
                                               const int32_t *alpha_links, int32_t alpha_per,
                                               const int32_t *beta_links, int32_t beta_per,
                                               double e_core, const double *c, const double *g,
                                               double *sigma);
-[[nodiscard]] wwr::wwrError_t ci_sigma_from_g(wwr::wwrStream_t stream, int32_t rows, int32_t n_det,
-                                              int32_t n_beta, int32_t n_pairs,
+[[nodiscard]] wwr::wwrError_t ci_sigma_from_g(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
+                                              int32_t n_det, int32_t n_beta, int32_t n_pairs,
                                               const int32_t *alpha_links, int32_t alpha_per,
                                               const int32_t *beta_links, int32_t beta_per,
                                               double e_core, const double *c, const float *g,
@@ -91,5 +97,10 @@ namespace free_breakfast::device {
 /// 2 γ_tu off it. γ is symmetric, so row- and column-major agree.
 [[nodiscard]] wwr::wwrError_t ci_unpack_rdm1(wwr::wwrStream_t stream, int32_t n,
                                              const double *packed, double *gamma);
+
+/// @brief The @p k CiLayout::symmetric vectors @p x, n_strings (n_strings + 1)
+/// / 2 each, unpacked into the @p k full ones @p y, n_strings² each.
+[[nodiscard]] wwr::wwrError_t ci_unpack(wwr::wwrStream_t stream, int32_t n_strings, int32_t k,
+                                        const double *x, double *y);
 
 } // namespace free_breakfast::device

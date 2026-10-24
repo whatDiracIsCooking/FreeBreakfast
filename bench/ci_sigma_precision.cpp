@@ -1,7 +1,10 @@
-// CiSigma's apply against apply_fp32, one column at a time, and ci_solve with
+// CiSigma's apply against apply_fp32, one column at a time, in the full and
+// the symmetric layout with the device workspace each takes, and ci_solve with
 // its single-precision stage off and at several fp32_tolerance values, wall
 // clock, over the active spaces of a direct_spin1-schema JSON file
 // (tools/emit_ci_bench_integrals.py writes N2's CAS(10,10) and CAS(12,12)).
+// ci_solve runs a singlet in the symmetric layout; it is also run held to the
+// full one, as it was before that layout, FP64-only and at 1e-6.
 //
 //   free_breakfast_ci_sigma_precision CASES.json [n_roots = 3] [max_iterations = 100]
 //                                     [device = 0]
@@ -42,6 +45,27 @@ double ms_per_column(fb::DeviceResources &res, std::int32_t reps, Apply &&apply)
   }
   (void)res.sync();
   return 1e3 * seconds_since(start) / reps;
+}
+
+// CiSigma without the layout parameter, so ci_solve takes the full layout.
+struct FullLayout {
+  fb::CiSigma &sigma;
+  fb::Status apply(fb::DeviceResources &res, std::int32_t k, const double *x, double *y) {
+    return sigma.apply(res, k, x, y);
+  }
+  fb::Status apply_fp32(fb::DeviceResources &res, std::int32_t k, const double *x, double *y) {
+    return sigma.apply_fp32(res, k, x, y);
+  }
+};
+
+// The MiB of device workspace one column of @p apply grows a fresh
+// DeviceResources to.
+template <typename Apply>
+double workspace_mib(std::int32_t device, Apply &&apply) {
+  fb::DeviceResources fresh{device};
+  (void)apply(fresh);
+  (void)fresh.sync();
+  return static_cast<double>(fresh.device_workspace(0).num_elements()) / (1024.0 * 1024.0);
 }
 
 // ‖apply_fp32 c − apply c‖ / ‖apply c − E_core c‖ for the device vector @p c.
@@ -102,28 +126,39 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     fb::Buffers::device<double> diagonal(dim, res.device());
     fb::Buffers::device<double> y(dim, res.device());
     (void)sigma->diagonal(res, diagonal.data());
+    std::println("{}  dim {}, symmetric {}", entry["name"].get<std::string>(), dim,
+                 sigma->size(fb::CiLayout::symmetric));
 
-    // Any column will do for the timing: the cost does not depend on c.
+    // Any column will do for the timing: the cost does not depend on c. In
+    // the symmetric layout the first size(symmetric) elements of diag(H)
+    // stand in for a packed vector.
     const std::int32_t reps = dim > 200'000 ? 5 : 20;
-    const double fp64_ms =
-        ms_per_column(res, reps, [&] { return sigma->apply(res, 1, diagonal.data(), y.data()); });
-    const double fp32_ms = ms_per_column(
-        res, reps, [&] { return sigma->apply_fp32(res, 1, diagonal.data(), y.data()); });
-    std::println("{}  dim {}  sigma per column: FP64 {:.2f} ms, FP32 {:.2f} ms ({:.1f}x)",
-                 entry["name"].get<std::string>(), dim, fp64_ms, fp32_ms, fp64_ms / fp32_ms);
+    for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
+      const auto fp64 = [&](fb::DeviceResources &r) {
+        return sigma->apply(r, 1, diagonal.data(), y.data(), layout);
+      };
+      const auto fp32 = [&](fb::DeviceResources &r) {
+        return sigma->apply_fp32(r, 1, diagonal.data(), y.data(), layout);
+      };
+      const double fp64_ms = ms_per_column(res, reps, [&] { return fp64(res); });
+      const double fp32_ms = ms_per_column(res, reps, [&] { return fp32(res); });
+      std::println("  {:9} sigma per column: FP64 {:6.2f} ms, FP32 {:5.2f} ms; workspace FP64 "
+                   "{:6.1f} MiB, FP32 {:6.1f} MiB",
+                   layout == fb::CiLayout::full ? "full" : "symmetric", fp64_ms, fp32_ms,
+                   workspace_mib(device, fp64), workspace_mib(device, fp32));
+    }
 
     std::vector<double> reference;
-    for (const double tolerance : {0.0, 1e-4, 1e-5, 1e-6, 1e-7}) {
+    const auto solve = [&](auto &op, const char *label, double tolerance) {
       fb::CiSolverOptions options;
       options.fp32_tolerance = tolerance;
       options.davidson.max_iterations = max_iterations;
       const auto start = Clock::now();
-      const auto roots =
-          fb::ci_solve(res, *sigma, *alpha, *beta, diagonal.data(), n_roots, options);
+      const auto roots = fb::ci_solve(res, op, *alpha, *beta, diagonal.data(), n_roots, options);
       const double wall = seconds_since(start);
       if (!roots) {
-        std::println("  fp32_tolerance {:.0e}: {}", tolerance, roots.error().message);
-        continue;
+        std::println("  {:9} fp32_tolerance {:.0e}: {}", label, tolerance, roots.error().message);
+        return;
       }
       if (reference.empty()) {
         reference = roots->energies;
@@ -135,10 +170,17 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
       for (std::size_t r = 0; r < reference.size(); ++r) {
         worst = std::max(worst, std::abs(roots->energies[r] - reference[r]));
       }
-      std::println("  fp32_tolerance {:7.0e}: {:7.2f} s  iterations FP32 {:3} + FP64 {:3}  "
-                   "E0 {:.10f}  max |dE| vs FP64-only {:.1e}",
-                   tolerance, wall, roots->fp32_iterations, roots->davidson.iterations,
+      std::println("  {:9} fp32_tolerance {:7.0e}: {:7.2f} s  iterations FP32 {:3} + FP64 {:3}  "
+                   "E0 {:.10f}  max |dE| vs full FP64-only {:.1e}",
+                   label, tolerance, wall, roots->fp32_iterations, roots->davidson.iterations,
                    roots->energies[0], worst);
+    };
+    FullLayout full{*sigma};
+    for (const double tolerance : {0.0, 1e-6}) {
+      solve(full, "full", tolerance);
+    }
+    for (const double tolerance : {0.0, 1e-4, 1e-5, 1e-6, 1e-7}) {
+      solve(*sigma, "symmetric", tolerance);
     }
   }
   return 0;

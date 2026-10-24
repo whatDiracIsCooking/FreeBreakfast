@@ -1,5 +1,6 @@
 /// @file
-/// @brief The host sigma and diagonal, and CiSigma's uploads and launches.
+/// @brief The host sigma and diagonal, CiSigma's uploads and launches, and
+/// ci_unpack.
 
 module;
 
@@ -181,6 +182,15 @@ Status host_diagonal(const StringSet &alpha, const StringSet &beta, const double
   return {};
 }
 
+Status ci_unpack(DeviceResources &res, const int32_t n_strings, const int32_t k,
+                 const double *const x, double *const y) {
+  if (n_strings < 0 || k < 0) {
+    return err_config("ci_unpack: {} vectors over {} strings", k, n_strings);
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  return gpu_status(device::ci_unpack(res.stream(), n_strings, k, x, y));
+}
+
 // The bytes of D one chunk of apply's rows may take: big enough that the gemm
 // over a chunk is a wide one, small enough that G dominates the scratch.
 constexpr size_t kCiSigmaChunkBytes = size_t{64} << 20;
@@ -216,9 +226,10 @@ Status ci_upload(const wwr::wwrStream_t stream, Buffers::device<T> &to,
 }
 
 CiSigma::CiSigma(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
-                 const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per)
+                 const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per,
+                 const bool one_set)
     : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
-      alpha_per_{alpha_per}, beta_per_{beta_per},
+      alpha_per_{alpha_per}, beta_per_{beta_per}, one_set_{one_set},
       alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
       beta_links_(static_cast<size_t>(n_beta) * static_cast<size_t>(beta_per) * 3, res.device()),
       alpha_strings_(static_cast<size_t>(n_alpha), res.device()),
@@ -245,7 +256,7 @@ Result<CiSigma> CiSigma::create(DeviceResources &res, const StringSet &alpha,
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   CiSigma sigma(res, alpha.n_orbitals(), alpha.size(), beta.size(), alpha.replacements_per_string(),
-                beta.replacements_per_string());
+                beta.replacements_per_string(), alpha.n_electrons() == beta.n_electrons());
   const std::vector<int32_t> alpha_links = ci_link_table(alpha);
   const std::vector<int32_t> beta_links = ci_link_table(beta);
   const std::vector<uint64_t> alpha_strings{alpha.strings().begin(), alpha.strings().end()};
@@ -320,7 +331,7 @@ Status CiSigma::set_integrals(DeviceResources &res, const double e_core,
 
 template <typename T>
 Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *const x,
-                         double *const y, const T *const contraction) {
+                         double *const y, const T *const contraction, const CiLayout layout) {
   if (!has_integrals_) {
     return err_config("CiSigma: apply before set_integrals");
   }
@@ -331,12 +342,17 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
   if (k < 0) {
     return err_config("CiSigma: a block of {} vectors", k);
   }
+  const bool symmetric = layout == CiLayout::symmetric;
+  if (symmetric && !one_set_) {
+    return err_config("CiSigma: the symmetric layout needs one set of strings for both spins");
+  }
   if (k == 0) {
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  const int32_t rows = size();
+  // A vector's rows: every determinant, or the triangle's.
+  const int32_t rows = size(layout);
   const auto n_pairs = static_cast<int32_t>(ci_pair(static_cast<size_t>(n_orbitals_), 0));
   const auto pairs = static_cast<size_t>(n_pairs);
   const int32_t chunk = static_cast<int32_t>(
@@ -345,6 +361,7 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
   // G for one vector's rows, then D for one chunk of them. σ_I reads G only
   // over I's own vector, so the vectors go one at a time and G is never wider
   // than one: k · dim · (P + 1) doubles would be 60 GB at CAS(14,14), k = 6.
+  // In the symmetric layout it is the triangle's rows alone.
   const size_t g_bytes = math::align_up(sizeof(T) * static_cast<size_t>(rows) * (pairs + 1),
                                         DeviceResources::kWorkspaceAlignment);
   const size_t d_bytes = sizeof(T) * static_cast<size_t>(chunk) * pairs;
@@ -359,28 +376,28 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
       const int32_t count = std::min(chunk, rows - begin);
       FBF_TRY(gpu_status(
           wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(count) * pairs, stream)));
-      FBF_TRY(
-          gpu_status(device::ci_gather_d(stream, begin, count, rows, n_beta_, alpha_links_.data(),
-                                         alpha_per_, beta_links_.data(), beta_per_, xj, d)));
+      FBF_TRY(gpu_status(device::ci_gather_d(stream, symmetric, begin, count, rows, n_beta_,
+                                             alpha_links_.data(), alpha_per_, beta_links_.data(),
+                                             beta_per_, xj, d)));
       FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
           res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, count, n_pairs + 1, n_pairs,
           &kOne<T>, d, count, contraction, n_pairs, &kZero<T>, g + begin, rows)));
     }
-    FBF_TRY(gpu_status(device::ci_sigma_from_g(stream, rows, rows, n_beta_, n_pairs,
+    FBF_TRY(gpu_status(device::ci_sigma_from_g(stream, symmetric, rows, rows, n_beta_, n_pairs,
                                                alpha_links_.data(), alpha_per_, beta_links_.data(),
                                                beta_per_, e_core_, xj, g, yj)));
   }
   return {};
 }
 
-Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const x,
-                      double *const y) {
-  return apply_as(res, k, x, y, contraction_.data());
+Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const x, double *const y,
+                      const CiLayout layout) {
+  return apply_as(res, k, x, y, contraction_.data(), layout);
 }
 
 Status CiSigma::apply_fp32(DeviceResources &res, const int32_t k, const double *const x,
-                           double *const y) {
-  return apply_as(res, k, x, y, contraction_fp32_.data());
+                           double *const y, const CiLayout layout) {
+  return apply_as(res, k, x, y, contraction_fp32_.data(), layout);
 }
 
 Status CiSigma::diagonal(DeviceResources &res, double *const diagonal) {
@@ -423,9 +440,9 @@ Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const 
     const int32_t count = std::min(chunk, rows - begin);
     FBF_TRY(gpu_status(
         wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
-    FBF_TRY(
-        gpu_status(device::ci_gather_d(stream, begin, count, size(), n_beta_, alpha_links_.data(),
-                                       alpha_per_, beta_links_.data(), beta_per_, c, d)));
+    FBF_TRY(gpu_status(device::ci_gather_d(stream, false, begin, count, size(), n_beta_,
+                                           alpha_links_.data(), alpha_per_, beta_links_.data(),
+                                           beta_per_, c, d)));
     FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
         res.blas().get(), wwr::WWRBLAS_OP_T, count, n_pairs, &kOne<double>, d, count, c + begin, 1,
         begin == 0 ? &kZero<double> : &kOne<double>, packed, 1)));

@@ -19,6 +19,9 @@
 /// - A β slot table holds, per β string and n × n over (p, q) row-major, the
 ///   replacement a†_p a_q of that string as sign · (target + 1), or 0 when it
 ///   annihilates the string.
+/// - With @p symmetric, the vectors are in CiLayout::symmetric (see
+///   ../sigma/ci_symmetric.h): n_det is the triangle's, and a row a triangle
+///   element.
 ///
 /// Each returns the launch status and does not synchronize.
 
@@ -44,20 +47,22 @@ namespace free_breakfast::device {
 ///
 /// One thread per row gathers over its own α links and their β partners, since
 /// S² is real symmetric. @p y has @p x's layout and must not overlap it.
-[[nodiscard]] wwr::wwrError_t ci_spin_square(wwr::wwrStream_t stream, int32_t rows, int32_t n_det,
-                                             int32_t n_beta, int32_t n, const int32_t *alpha_links,
-                                             int32_t alpha_per, const int32_t *beta_slots,
-                                             double constant, double shift, double scale,
-                                             bool accumulate, const double *x, double *y);
+[[nodiscard]] wwr::wwrError_t ci_spin_square(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
+                                             int32_t n_det, int32_t n_beta, int32_t n,
+                                             const int32_t *alpha_links, int32_t alpha_per,
+                                             const int32_t *beta_slots, double constant,
+                                             double shift, double scale, bool accumulate,
+                                             const double *x, double *y);
 
 /// @brief shifted_J = diagonal_J + scale · (diag(S²)_J − shift) for the
 /// @p n_det determinants, diag(S²)_J = constant − the orbitals doubly occupied
-/// in J.
+/// in J. With @p symmetric, J runs over the triangle and @p diagonal is still
+/// the full layout's.
 ///
 /// One thread per determinant counts its α links a†_p a_p whose β partner
 /// a†_p a_p does not annihilate J's β string: the doubly occupied orbitals.
-[[nodiscard]] wwr::wwrError_t ci_spin_diagonal(wwr::wwrStream_t stream, int32_t n_det,
-                                               int32_t n_beta, int32_t n,
+[[nodiscard]] wwr::wwrError_t ci_spin_diagonal(wwr::wwrStream_t stream, bool symmetric,
+                                               int32_t n_det, int32_t n_beta, int32_t n,
                                                const int32_t *alpha_links, int32_t alpha_per,
                                                const int32_t *beta_slots, double constant,
                                                double shift, double scale, const double *diagonal,
