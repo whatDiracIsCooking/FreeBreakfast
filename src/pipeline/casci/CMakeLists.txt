@@ -29,7 +29,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
   free_breakfast::ci::solver
-  free_breakfast::ci::rdm
   free_breakfast::atom
   free_breakfast::io::basis
   free_breakfast::io::molden

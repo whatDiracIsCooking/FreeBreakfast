@@ -1,7 +1,8 @@
 # RDM
 
 The spin-summed one-particle reduced density matrix of a CI vector, on the
-host. The 2-RDM is CASSCF's and comes with it.
+host: the reference `CiSigma::rdm1` (`../sigma/`), the device form a
+calculation uses, is tested against. The 2-RDM is CASSCF's and comes with it.
 
 ## Module
 
@@ -26,6 +27,7 @@ is N_α + N_β for a unit vector, from the diagonal entries p = q alone.
 
 `test/gtest/ci_solver_gpu.cpp` checks it on `ci_solve`'s roots against
 `direct_spin1`'s `make_rdm1` to 1e-8, with the trace; see `../solver/`.
+`test/gtest/ci_sigma_gpu.cpp` checks `CiSigma::rdm1` against it.
 
 ## Files
 

@@ -73,4 +73,10 @@ namespace free_breakfast::device {
                                           const uint64_t *strings_beta, double e_core,
                                           const double *terms, double *diagonal);
 
+/// @brief γ, n × n, from its packed form: @p packed[pair(t, u)] is
+/// Σ_K c_K D_K[pair(t, u)], which is γ_tt on the diagonal and γ_tu + γ_ut =
+/// 2 γ_tu off it. γ is symmetric, so row- and column-major agree.
+[[nodiscard]] wwr::wwrError_t ci_unpack_rdm1(wwr::wwrStream_t stream, int32_t n,
+                                             const double *packed, double *gamma);
+
 } // namespace free_breakfast::device

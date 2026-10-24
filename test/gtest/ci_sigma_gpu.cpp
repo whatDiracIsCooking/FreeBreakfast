@@ -1,8 +1,8 @@
-// GPU cases for ci.sigma's CiSigma: σ on random blocks against host_sigma, and
-// diag(H) against host_diagonal, over the golden active spaces of
-// data/ci/direct_spin1.json, random integrals at CAS(8,8) and CAS(10,10) and
-// in sectors with N_alpha != N_beta, and CAS(12,12) in the slow tier; and the
-// refusals.
+// GPU cases for ci.sigma's CiSigma: σ on random blocks against host_sigma,
+// diag(H) against host_diagonal, and the 1-RDM against ci.rdm's rdm1, over the
+// golden active spaces of data/ci/direct_spin1.json, random integrals at
+// CAS(8,8) and CAS(10,10) and in sectors with N_alpha != N_beta, and
+// CAS(12,12) in the slow tier (its 1-RDM in the fast one); and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -91,8 +91,35 @@ std::vector<double> to_host(fb::DeviceResources &res, const fb::Buffers::device<
   return host;
 }
 
+// The 1-RDM of a random unit vector, to 1e-12 (N_α + N_β), its trace, of
+// rdm1's on the host.
+void check_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, const fb::StringSet &alpha,
+                const fb::StringSet &beta, std::uint64_t seed) {
+  const auto dim = static_cast<std::size_t>(sigma.size());
+  const auto n = static_cast<std::size_t>(alpha.n_orbitals());
+  std::vector<double> c = random_block(dim, seed);
+  const double norm = std::sqrt(std::inner_product(c.begin(), c.end(), c.begin(), 0.0));
+  for (double &x : c) {
+    x /= norm;
+  }
+  const auto x = to_device(res, c);
+  fb::Buffers::device<double> gamma(n * n, res.device());
+  const auto device = sigma.rdm1(res, x.data(), gamma.data());
+  ASSERT_TRUE(device.has_value()) << device.error().message;
+  const std::vector<double> got = to_host(res, gamma);
+  std::vector<double> expected(n * n);
+  const auto host = fb::rdm1(alpha, beta, c, expected);
+  ASSERT_TRUE(host.has_value()) << host.error().message;
+  const double electrons = alpha.n_electrons() + beta.n_electrons();
+  double worst = 0.0;
+  for (std::size_t i = 0; i < n * n; ++i) {
+    worst = std::max(worst, std::abs(got[i] - expected[i]));
+  }
+  EXPECT_LE(worst, 1e-12 * std::max(1.0, electrons));
+}
+
 // σ for a random block of k vectors, each column to 1e-12 ‖σ‖ of host_sigma's,
-// and diag(H) to 1e-12 of host_diagonal's.
+// diag(H) to 1e-12 of host_diagonal's, and the 1-RDM by check_rdm1.
 void check_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int32_t n_beta,
                         const Integrals &ints, std::int32_t k, std::uint64_t seed) {
   const auto alpha = fb::StringSet::create(ints.n, n_alpha);
@@ -140,6 +167,8 @@ void check_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int
     worst = std::max(worst, std::abs(device_diag[i] - host_diag[i]));
   }
   EXPECT_LE(worst, 1e-12);
+
+  check_rdm1(res, *sigma, *alpha, *beta, seed + 1);
 }
 
 TEST(CiSigmaGpu, MatchesHostOnDirectSpin1Cases) {
@@ -188,6 +217,18 @@ TEST(CiSigmaGpu, MatchesHostAtCas1212) {
   FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   check_against_host(res, 6, 6, random_integrals(12, 412), 1, 13);
+}
+
+// 853,776 determinants over 78 pairs: rdm1's gather spans eight chunks, so the
+// gemv's sum across them is exercised. Needs no integrals.
+TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto set = fb::StringSet::create(12, 6);
+  ASSERT_TRUE(set.has_value());
+  auto sigma = fb::CiSigma::create(res, *set, *set);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  check_rdm1(res, *sigma, *set, *set, 17);
 }
 
 TEST(CiSigmaGpu, Refuses) {

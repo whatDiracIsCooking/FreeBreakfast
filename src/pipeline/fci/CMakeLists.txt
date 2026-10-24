@@ -2,7 +2,7 @@
 # the product holds a DavidsonInfo, and run's View names the Scf and the
 # products it re-exports. core::resources and pipeline::step are in run's
 # signature. Everything run uses -- the J and K classes, the active-space
-# Hamiltonian, the CI strings, sigma, solver and RDM, and core::wwr for the
+# Hamiltonian, the CI strings, sigma and solver, and core::wwr for the
 # memory query -- is PRIVATE: run is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -28,5 +28,4 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
   free_breakfast::ci::solver
-  free_breakfast::ci::rdm
 )

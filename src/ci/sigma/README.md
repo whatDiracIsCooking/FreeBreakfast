@@ -1,8 +1,9 @@
 # Sigma
 
 σ = Hc and diag(H) for a determinant CI vector: `CiSigma` on the device, as a
-`LinearOperator` (`recipes.linear_operator`) over a block of CI vectors, and
-`host_sigma` / `host_diagonal` on the host. The host pair is written for
+`LinearOperator` (`recipes.linear_operator`) over a block of CI vectors, with
+the 1-RDM over the same tables, and `host_sigma` / `host_diagonal` on the
+host. The host pair is written for
 clarity, not speed: it is the reference the GPU sigma is tested against.
 
 ## Module
@@ -16,6 +17,7 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 | `CiSigma::set_integrals(res, e_core, h_eff, eri)` | Upload an H over them, replacing any before; `Status` |
 | `CiSigma::apply(res, k, x, y)` | Y = H X for size() × k device blocks: the `LinearOperator` member; `Status` |
 | `CiSigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
+| `CiSigma::rdm1(res, c, gamma)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector into n × n device doubles; `Status` |
 | `CiSigma::size()` | alpha.size() · beta.size(), the operator's n |
 | `host_sigma(alpha, beta, e_core, h_eff, eri, c, sigma)` | σ = Hc; `Status` |
 | `host_diagonal(alpha, beta, e_core, h_eff, eri, diagonal)` | H_II for every determinant; `Status` |
@@ -78,6 +80,15 @@ diagonal's terms, and a CASSCF can call it again each macro-iteration. The
 gemm passes host scalars, so `res.blas()` must be in host pointer mode, its
 default and what `davidson_solve` holds.
 
+**The 1-RDM is the first gather and a gemv.** γ_vw = Σ_K c_K (E_vw c)_K =
+Σ_K c_K D_K[vw], so `rdm1` runs apply's step 1 over each chunk of
+determinants and then one gemv, Dᵀ c, into the packed sums, summed across
+chunks by the gemv's β. A packed entry is D[vw] + D[wv], so the sum is 2 γ_vw
+off the diagonal, and a small kernel unpacks it, halving those. It reads
+only the link tables, so it needs no `set_integrals`, and its scratch is one
+chunk of D plus n(n+1)/2 doubles. The 2-RDM, Dᵀ D, is the same gather with a
+gemm.
+
 **diag(H) on the device** is host_diagonal's rule in host_diagonal's order, one
 thread per determinant.
 
@@ -97,16 +108,18 @@ replacement lists. Against it:
 
 `test/gtest/ci_sigma_gpu.cpp` checks `CiSigma` against the host pair: σ on
 random blocks of one to four vectors, each column to 1e-12 ‖σ‖, and diag(H)
-to 1e-12, for every golden case, for random integrals at CAS(8,8),
+to 1e-12, and `rdm1` on random unit vectors against `ci.rdm`'s `rdm1` to
+1e-12, for every golden case, for random integrals at CAS(8,8),
 CAS(10,10) (a block spanning two chunks) and seven shapes with N_α ≠ N_β (an
-empty spin, a full one and a single orbital among them), and at CAS(12,12) under `slow_test.h`; then the refusals.
+empty spin, a full one and a single orbital among them), and at CAS(12,12) under `slow_test.h`; `rdm1` also at CAS(12,12) in the fast tier, over
+eight chunks; then the refusals.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `sigma.cppm` | Module interface: `CiSigma`, `host_sigma`, `host_diagonal` |
-| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked gemm and launches |
+| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked gemm and gemv, and launches |
 | `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
-| `ci_sigma.cu` | The two gathers and the diagonal kernel |
+| `ci_sigma.cu` | The two gathers, the diagonal kernel and the 1-RDM's unpacking |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.sigma.device` and the module `free_breakfast.ci.sigma` |
