@@ -51,6 +51,11 @@ emit_localization_reference.py
                   exponents, as the functional and per-orbital atomic
                   populations, the reference the Localization step is tested
                   against. Needs PySCF.
+emit_fci_reference.py
+                  Write test/gtest/data/ci/direct_spin1.json: PySCF's
+                  active-space integrals in its own MO basis, and
+                  fci.direct_spin1's lowest roots over them, with <S^2> and
+                  1-RDMs, the reference src/ci is tested against. Needs PySCF.
 sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
                   element of the compiled-in sets named (or --all), by src/sad
