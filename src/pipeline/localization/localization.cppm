@@ -16,6 +16,7 @@ import free_breakfast.basis;
 import free_breakfast.pipeline.step;
 export import free_breakfast.core.wwr;         // Buffers, in the product
 export import free_breakfast.localization.ibo; // and pipek_mezey
+export import free_breakfast.analysis.population;
 export import free_breakfast.pipeline.scf;
 
 export namespace free_breakfast {
@@ -38,6 +39,13 @@ struct Localization {
   int32_t n_occ;
   /// @brief The sweeps taken and the functional before and after.
   PipekMezeyInfo info;
+  /// @brief IBO only, empty for Pipek-Mezey: each localized orbital's IAO
+  /// population on each atom, natoms x @ref n_occ column-major, orbital i's
+  /// on atom A at [A + natoms * i] (@ref orbital_populations).
+  std::vector<double> populations{};
+  /// @brief IBO only, empty for Pipek-Mezey: the IAO partial charge of each
+  /// atom, Knizia's eq 3 (@ref partial_charges).
+  std::vector<double> charges{};
 };
 
 /// @brief Localizes the @ref Scf's occupied orbitals on @p res's device.
@@ -60,7 +68,8 @@ struct LocalizationStep {
   /// @brief The localized orbitals. The Scf has already refused an open
   /// shell, so the occupied count is half the electrons. For IBO, MINAO is
   /// resolved and placed over the Molecule first, and an element it does not
-  /// carry is place's error. Errors are otherwise the method's;
+  /// carry is place's error; the IAOs it localized over then give the IBOs'
+  /// populations and the atoms' charges, which are logged. Errors are otherwise the method's;
   /// for both, InvalidConfig for an option out of range,
   /// MaxIterationsExceeded when the sweeps do not converge, GpuRuntime for a
   /// failed launch, copy or BLAS call. A @ref molden file that cannot be

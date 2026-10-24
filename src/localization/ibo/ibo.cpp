@@ -228,7 +228,7 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
 
 Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
                                     const BasisSet &minimal, const int32_t n_occ, const double *s,
-                                    const double *c, double *c_local, double *u,
+                                    const double *c, double *c_local, double *u, double *iao_out,
                                     const PipekMezeyOptions &options) {
   if (c_local == nullptr) {
     return err_config("ibo_localize: c_local must not be null");
@@ -242,6 +242,9 @@ Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
   const auto nm = static_cast<size_t>(n) * m;
   Buffers::device<double> iao = ibo_buffer(res, std::max(nm, size_t{1}));
   FBF_TRY(intrinsic_atomic_orbitals(res, basis, minimal, n_occ, s, c, iao.data()));
+  if (iao_out != nullptr) {
+    FBF_TRY(ibo_copy(res, iao_out, iao.data(), nm));
+  }
   if (k == 0) {
     return PipekMezeyInfo{};
   }
