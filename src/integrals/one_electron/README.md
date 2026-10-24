@@ -2,16 +2,17 @@
 
 One-electron integral matrices on the GPU, over kernels FelizJueves generates:
 the overlap S, the kinetic energy T, the nuclear attraction V, and the core
-Hamiltonian H = T + V.
+Hamiltonian H = T + V; and the overlap between two bases, `overlap_mixed`.
 
 ## Module
 
 `free_breakfast.integrals.one_electron`, a convenience module that re-exports
-the five below (and is itself re-exported by `free_breakfast.integrals`):
+the six below (and is itself re-exported by `free_breakfast.integrals`):
 
 ```
 launch/            free_breakfast.integrals.one_electron.launch: the per-class launch and the shared pre-launch checks
 overlap/           free_breakfast.integrals.one_electron.overlap: the overlap S
+overlap_mixed/     free_breakfast.integrals.one_electron.overlap_mixed: S between two bases
 kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
 potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
 core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V, in place

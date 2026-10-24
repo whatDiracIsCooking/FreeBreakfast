@@ -24,9 +24,10 @@ namespace free_breakfast {
 /// Every array has @ref n_rec entries; a vector is three arrays, one per axis,
 /// as the generated kernels take it.
 struct PrimitivePairClassView {
-  /// @brief The bra shell's angular momentum, <= @ref lb in a class's own
-  /// view; a swapped view, which only ordered_pair_bound reads
-  /// (mmd_bridge.h), may have it above.
+  /// @brief The bra shell's angular momentum, <= @ref lb in the view of a
+  /// basis's own class; a mixed class (mixed_primitive_pair_classes), or a
+  /// swapped view, which only ordered_pair_bound and overlap_mixed read, may
+  /// have it above.
   int32_t la;
   /// @brief The ket shell's angular momentum.
   int32_t lb;
