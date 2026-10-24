@@ -1,6 +1,7 @@
 /// @file
 /// @brief bond_orbitals: each orbital's weights summed per atom and per
-/// angular momentum, the atoms above the threshold kept.
+/// angular momentum, the atoms above the threshold kept, and the orbital
+/// pi when every one of them is almost all p.
 
 module free_breakfast.analysis.bond;
 
@@ -13,7 +14,7 @@ namespace free_breakfast {
 
 Result<std::vector<BondOrbital>> bond_orbitals(const BasisSet &minimal, const int32_t n_orb,
                                                const std::span<const double> weights,
-                                               const double threshold) {
+                                               const double threshold, const double pi_threshold) {
   const uint32_t n_atoms = minimal.natoms();
   if (n_atoms == 0) {
     return err_config("bond_orbitals: the minimal basis has no atoms");
@@ -24,6 +25,9 @@ Result<std::vector<BondOrbital>> bond_orbitals(const BasisSet &minimal, const in
   }
   if (!(threshold > 0.0 && threshold <= 1.0)) {
     return err_config("bond_orbitals: threshold {} is outside (0, 1]", threshold);
+  }
+  if (!(pi_threshold > 0.0 && pi_threshold <= 1.0)) {
+    return err_config("bond_orbitals: pi_threshold {} is outside (0, 1]", pi_threshold);
   }
   constexpr size_t kMomenta = std::tuple_size_v<decltype(BondCenter::character)>;
   // Each function's atom and angular momentum.
@@ -69,6 +73,9 @@ Result<std::vector<BondOrbital>> bond_orbitals(const BasisSet &minimal, const in
         }
       }
     }
+    const bool pi = std::ranges::all_of(
+        centers, [&](const BondCenter &center) { return center.character[1] >= pi_threshold; });
+    orbitals[i].kind = pi ? BondKind::Pi : BondKind::Sigma;
   }
   return orbitals;
 }
