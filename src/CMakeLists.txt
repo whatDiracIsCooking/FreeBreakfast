@@ -23,6 +23,9 @@ add_subdirectory(localization)
 add_subdirectory(analysis)
 # Over core alone for now; recipes, which the CI solver will need, is above.
 add_subdirectory(ci)
+# After integrals, whose J, K and active-space integrals it contracts; before
+# pipeline, which it must never import.
+add_subdirectory(mcscf)
 # After the modules its steps wrap: the step contract itself is a leaf over
 # core, but the setup steps that follow it import integrals and recipes.
 add_subdirectory(pipeline)
