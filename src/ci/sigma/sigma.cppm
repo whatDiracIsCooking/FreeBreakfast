@@ -1,7 +1,8 @@
 /// @file
 /// @brief σ = Hc and diag(H) for a determinant CI vector over two StringSets,
 /// from the active-space integrals as plain arrays: CiSigma on the device, as
-/// a LinearOperator, and host_sigma / host_diagonal on the host.
+/// a LinearOperator, with the 1-RDM over the same tables, and host_sigma /
+/// host_diagonal on the host.
 ///
 /// The host pair is written for clarity rather than speed: it is the reference
 /// the GPU sigma is tested against.
@@ -116,6 +117,20 @@ public:
   /// @return InvalidConfig before set_integrals or for another device; or the
   ///         launch's GpuRuntime error.
   [[nodiscard]] Status diagonal(DeviceResources &res, double *diagonal);
+
+  /// @brief The spin-summed 1-RDM γ_tu = ⟨c| E_tu |c⟩ of the size() device
+  /// doubles @p c into the n × n device doubles @p gamma (symmetric, so either
+  /// order): ci.rdm's rdm1, on the device. Needs no integrals.
+  ///
+  /// apply's gather of D_K = (E c)_K over each chunk of determinants, packed
+  /// over v ≥ w, then one gemv per chunk, Σ_K c_K D_K, which is 2 γ_vw off the
+  /// diagonal and γ_vv on it, unpacked into @p gamma. Its scratch, D for one
+  /// chunk and the n(n+1)/2 packed sums, is res.device_workspace(). Queued on
+  /// res.stream() with res.blas(), in host pointer mode.
+  ///
+  /// @return InvalidConfig for another device; or the GpuRuntime error of a
+  ///         launch or a gemv.
+  [[nodiscard]] Status rdm1(DeviceResources &res, const double *c, double *gamma);
 
   /// @brief The number of determinants, alpha.size() · beta.size(): the
   /// operator's n.

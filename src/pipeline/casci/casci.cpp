@@ -21,7 +21,6 @@ import free_breakfast.integrals.active_space;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;
 import free_breakfast.ci.solver;
-import free_breakfast.ci.rdm;
 
 #include "diagnostics.h"
 
@@ -446,11 +445,20 @@ struct CasciSpace {
   CiRoots roots = FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal, nroots));
 
   const auto count = static_cast<size_t>(nroots);
+  // Each root's 1-RDM on the device, from the roots ci_solve returned.
   std::vector<double> gamma(count * n * n);
+  Buffers::device<double> vectors_device(roots.vectors.size(), res.device());
+  Buffers::device<double> gamma_device(gamma.size(), res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(vectors_device.data(), roots.vectors.data(),
+                                         roots.vectors.size() * sizeof(double),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
   for (size_t r = 0; r < count; ++r) {
-    FBF_TRY(rdm1(alpha, beta, std::span<const double>{roots.vectors.data() + (r * dim), dim},
-                 std::span<double>{gamma.data() + (r * n * n), n * n}));
+    FBF_TRY(sigma.rdm1(res, vectors_device.data() + (r * dim), gamma_device.data() + (r * n * n)));
   }
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma.data(), gamma_device.data(),
+                                         gamma.size() * sizeof(double), wwr::wwrMemcpyDeviceToHost,
+                                         stream)));
+  FBF_TRY(res.sync());
   if (!molden.empty()) {
     FBF_TRY(write_casci_molden(res, molden, molecule, basis, scf, space,
                                std::span<const double>{gamma.data(), n * n}));

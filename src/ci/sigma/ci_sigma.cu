@@ -1,5 +1,5 @@
 // The device half of the GPU sigma: the gather of D from c, the gather of σ
-// from G, and the diagonal. The contraction G = D W between the two gathers is
+// from G, the diagonal, and the 1-RDM's unpacking. The contraction G = D W between the two gathers is
 // one gemm, on the module's side. One source for both backends -- nvcc under
 // CUDA, clang -x hip under HIP.
 //
@@ -143,6 +143,21 @@ __global__ void ci_diagonal_kernel(const int32_t n, const int32_t n_alpha, const
   diagonal[det] = sum;
 }
 
+__global__ void ci_unpack_rdm1_kernel(const int32_t n, const double *const packed,
+                                      double *const gamma) {
+  const int64_t at = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (at >= static_cast<int64_t>(n) * n) {
+    return;
+  }
+  const auto t = static_cast<int32_t>(at / n);
+  const auto u = static_cast<int32_t>(at % n);
+  const int32_t hi = t > u ? t : u;
+  const int32_t lo = t > u ? u : t;
+  // An off-diagonal packed entry is γ_tu + γ_ut = 2 γ_tu.
+  const double x = packed[(static_cast<size_t>(hi) * (hi + 1) / 2) + lo];
+  gamma[at] = t == u ? x : 0.5 * x;
+}
+
 uint32_t ci_blocks(const int64_t items) {
   return static_cast<uint32_t>((items + kCiBlock - 1) / kCiBlock);
 }
@@ -187,6 +202,16 @@ wwr::wwrError_t ci_diagonal(const wwr::wwrStream_t stream, const int32_t n, cons
   }
   ci_diagonal_kernel<<<ci_blocks(n_det), kCiBlock, 0, stream>>>(
       n, n_alpha, n_beta, strings_alpha, strings_beta, e_core, terms, diagonal);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t ci_unpack_rdm1(const wwr::wwrStream_t stream, const int32_t n,
+                               const double *const packed, double *const gamma) {
+  const int64_t elements = static_cast<int64_t>(n) * n;
+  if (elements == 0) {
+    return wwr::wwrSuccess;
+  }
+  ci_unpack_rdm1_kernel<<<ci_blocks(elements), kCiBlock, 0, stream>>>(n, packed, gamma);
   return wwr::wwrGetLastError();
 }
 

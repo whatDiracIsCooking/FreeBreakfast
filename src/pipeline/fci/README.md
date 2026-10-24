@@ -51,7 +51,7 @@ struct FciStep {
    so the Scf's C goes in as it is.
    `active_space_hamiltonian` builds h and (pq|rs) over every orbital, E_core
    the nuclear repulsion alone; `CiSigma` and `ci_solve` find the roots, and
-   `rdm1` each root's 1-RDM. The product keeps the energies, ⟨S²⟩, 1-RDMs and
+   `CiSigma::rdm1` each root's 1-RDM. The product keeps the energies, ⟨S²⟩, 1-RDMs and
    Davidson record; the CI vectors are dropped.
 
 With dim = C(n, N/2)², g = min(dim, 2 nroots) guesses, m = max(2 nroots,

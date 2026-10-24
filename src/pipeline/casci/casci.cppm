@@ -5,7 +5,7 @@
 /// 1-RDM.
 ///
 /// Device-shaped. A wrapper over `integrals.active_space`, `ci.solver` over
-/// `ci.sigma`'s `CiSigma`, and `ci.rdm`, all private to `run`, as are AVAS's
+/// `ci.sigma`'s `CiSigma`, which also gives the 1-RDMs, all private to `run`, as are AVAS's
 /// MINAO overlaps (`overlap_mixed_spherical`) and the Molden writer. See README.md.
 
 export module free_breakfast.pipeline.casci;
@@ -103,7 +103,7 @@ struct CasciStep {
   /// `active_space_hamiltonian`'s over the orbitals @ref orbital_order puts
   /// in place, or @ref avas picks, at its own default screens; the roots are `ci_solve`'s over
   /// `CiSigma`, at its default spin penalty and tolerance; each 1-RDM is
-  /// `rdm1`'s. Synchronizes res.stream(): the integrals and every Davidson
+  /// `CiSigma::rdm1`'s. Synchronizes res.stream(): the integrals and every Davidson
   /// iteration are read back to the host.
   ///
   /// @return The roots; @ref orbital_order's InvalidConfig; under @ref avas,

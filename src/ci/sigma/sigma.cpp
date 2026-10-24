@@ -377,4 +377,40 @@ Status CiSigma::diagonal(DeviceResources &res, double *const diagonal) {
                                         diagonal_terms_.data(), diagonal));
 }
 
+Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const gamma) {
+  if (res.dev_idx() != dev_idx_) {
+    return err_config("CiSigma: tables are on device {}, but the call passed device {}", dev_idx_,
+                      res.dev_idx());
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  const int32_t rows = size();
+  const auto n_pairs = static_cast<int32_t>(ci_pair(static_cast<size_t>(n_orbitals_), 0));
+  const auto pairs = static_cast<size_t>(n_pairs);
+  const int32_t chunk = static_cast<int32_t>(std::clamp<size_t>(
+      kCiSigmaChunkBytes / (sizeof(double) * pairs), 1, static_cast<size_t>(rows)));
+
+  // The packed sums, then D for one chunk.
+  const size_t packed_bytes =
+      math::align_up(sizeof(double) * pairs, DeviceResources::kWorkspaceAlignment);
+  const size_t d_bytes = sizeof(double) * static_cast<size_t>(chunk) * pairs;
+  std::byte *const base = res.device_workspace(packed_bytes + d_bytes).data();
+  auto *const packed = reinterpret_cast<double *>(base);
+  auto *const d = reinterpret_cast<double *>(base + packed_bytes);
+
+  // The first chunk's gemv overwrites the sums, every later one adds to them.
+  for (int32_t begin = 0; begin < rows; begin += chunk) {
+    const int32_t count = std::min(chunk, rows - begin);
+    FBF_TRY(gpu_status(
+        wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
+    FBF_TRY(
+        gpu_status(device::ci_gather_d(stream, begin, count, size(), n_beta_, alpha_links_.data(),
+                                       alpha_per_, beta_links_.data(), beta_per_, c, d)));
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+        res.blas().get(), wwr::WWRBLAS_OP_T, count, n_pairs, &kOne<double>, d, count, c + begin, 1,
+        begin == 0 ? &kZero<double> : &kOne<double>, packed, 1)));
+  }
+  return gpu_status(device::ci_unpack_rdm1(stream, n_orbitals_, packed, gamma));
+}
+
 } // namespace free_breakfast

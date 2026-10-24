@@ -5,7 +5,7 @@
 ///
 /// Device-shaped. CASCI with no core and every orbital active: `run` makes
 /// CasciStep's calls (`integrals.active_space`, `ci.solver` over `ci.sigma`'s
-/// `CiSigma`, `ci.rdm`), all private to the implementation unit. See README.md.
+/// `CiSigma`, whose `rdm1` gives the 1-RDMs), all private to the implementation unit. See README.md.
 
 export module free_breakfast.pipeline.fci;
 

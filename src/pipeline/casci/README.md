@@ -68,7 +68,7 @@ struct CasciStep {
    electrons of each spin, its diagonal taken on the device, and `ci_solve`
    finds the `nroots` lowest roots at its defaults: spin penalty 1 hartree,
    so they are singlets, and residual 1e-12 relative.
-4. **The 1-RDMs**, one `rdm1` per root, on the host.
+4. **The 1-RDMs**, one `CiSigma::rdm1` per root, on the device.
 5. **The Molden file**, if `molden` is set: the lowest root's natural
    orbitals, C R with R's active block rotated to its 1-RDM's eigenvectors
    by descending occupation; the core at occupation 2, the rest at 0. Each
