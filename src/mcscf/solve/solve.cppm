@@ -1,0 +1,139 @@
+/// @file
+/// @brief The two-step, state-averaged CASSCF loop on the device: per macro
+/// iteration the integrals over the current orbitals, the CI, the weighted RDMs, the energy and gradient, and an
+/// augmented-Hessian orbital step under a trust radius.
+///
+/// See README.md for the loop, its defaults and what each one settles.
+
+export module free_breakfast.mcscf.solve;
+
+import std;
+import free_breakfast.core.types;
+import free_breakfast.core.error_handling;
+import free_breakfast.core.wwr;
+import free_breakfast.core.resources;
+import free_breakfast.molecule;
+import free_breakfast.basis;
+import free_breakfast.recipes.matrix_ao;
+import free_breakfast.integrals.eri.integral_direct.coulomb;
+import free_breakfast.integrals.eri.integral_direct.exchange;
+// Re-exported: CasscfOptions holds CiSolverOptions and the solution CiRoots.
+export import free_breakfast.ci.solver;
+
+export namespace free_breakfast {
+
+/// @brief The knobs of one casscf_solve call.
+struct CasscfOptions {
+  /// @brief Converged when |Delta E| of the weighted energy over the last
+  /// accepted macro iteration is below this (hartree) ...
+  double conv_tol = 1e-10;
+  /// @brief ... and the orbital gradient's 2-norm ||g|| is below this.
+  double conv_tol_grad = 1e-6;
+  /// @brief Macro iterations, rejected ones included, before
+  /// MaxIterationsExceeded. At least 1.
+  int32_t max_cycle = 50;
+  /// @brief The initial and largest trust radius: the 2-norm bound of a step
+  /// x in the packed pairs, radians for a single pair.
+  double trust_radius = 0.5;
+  /// @brief Augmented-Hessian solves per macro iteration on its frozen
+  /// integrals (the quadratic model), each from the model gradient the last
+  /// one left. At least 1.
+  int32_t max_micro = 4;
+  /// @brief The CI's: its spin penalty, and in davidson.residual_tolerance the
+  /// tightest residual tolerance the schedule reaches near convergence.
+  CiSolverOptions ci;
+  /// @brief The J and K screening of every integral, Fock and Hessian build.
+  double tau_j = 1e-14;
+  double tau_k = 1e-14;
+};
+
+/// @brief What one macro iteration did, for the log.
+struct CasscfIteration {
+  /// @brief The weighted energy at this iteration's orbitals (hartree).
+  double energy;
+  /// @brief energy less the last accepted iteration's; 0 for the first.
+  double energy_change;
+  /// @brief ||g|| at this iteration's orbitals.
+  double gradient_norm;
+  /// @brief The trust radius the next step was taken under.
+  double trust_radius;
+  /// @brief Davidson iterations of this iteration's CI.
+  int32_t ci_iterations;
+  /// @brief Augmented-Hessian solves of the step taken from here (0 when
+  /// converged or rejected).
+  int32_t micro_iterations;
+  /// @brief Orbital-Hessian columns applied for that step, each two J and two
+  /// K builds when there is a core: the step's cost.
+  int32_t hessian_products;
+  /// @brief false when the energy rose over the last accepted iteration, so
+  /// these orbitals were dropped and the step retried at half the length.
+  bool accepted;
+};
+
+/// @brief A converged casscf_solve.
+struct CasscfSolution {
+  /// @brief The optimized orbitals, AO by MO: core, active, virtual, as given.
+  SphericalMatrixAO c;
+  /// @brief The CI at @ref c: each root's energy (hartree) and <S^2>, and the
+  /// unit CI vectors on the device, root r at [r dim, (r + 1) dim).
+  CiRoots roots;
+  /// @brief sum_r w_r E_r (hartree).
+  double energy;
+  /// @brief ||g|| at @ref c.
+  double gradient_norm;
+  /// @brief The weighted gamma, ncas x ncas, on the host (symmetric).
+  std::vector<double> gamma;
+  /// @brief The weighted Gamma, ncas^4 row-major (t, u, v, w), on the host:
+  /// @c CiRdm::rdm12's layout.
+  std::vector<double> gamma2;
+  /// @brief Each root's gamma, root r at [r ncas^2, (r + 1) ncas^2).
+  std::vector<double> root_gammas;
+  /// @brief One entry per macro iteration run.
+  std::vector<CasscfIteration> iterations;
+};
+
+/// @brief The state-averaged CASSCF of the @p nroots lowest roots of spin
+/// |N_alpha - N_beta| / 2, N_beta = @p nelecas / 2, from the orbitals @p c
+/// (columns [0, ncore) the core, [ncore, ncore + ncas) the active space).
+///
+/// @p basis, @p molecule, @p h, @p u and the two kinds of classes are what
+/// @c casscf_fock takes; the classes must stay alive for the call. @p weights
+/// are w_r, empty for equal ones.
+///
+/// Each macro iteration: @c casscf_integrals over the current C; @c ci_solve
+/// over the GPU sigma, from its own guesses (no warm start yet), its residual
+/// tolerance min(1e-8, 1e-4 ||g||) of the last iteration, held at or above
+/// options.ci's; @c CiRdm::rdm12 at @p weights and @c casscf_fock. Converged
+/// when |Delta E| < conv_tol and ||g|| < conv_tol_grad. A rise of the energy
+/// over the last accepted iteration past 1e-11 hartree rejects the orbitals:
+/// the step from the accepted ones is retried at half its length and the
+/// trust radius halved. Otherwise up to max_micro augmented-Hessian solves of
+/// the quadratic model at frozen integrals, [[0, g^T], [g, H + D]] by
+/// @c davidson_solve over @c OrbitalHessian H plus D, a BFGS correction for
+/// the CI's relaxation learned from the last 8 accepted steps, preconditioned
+/// by the diagonal, give the step x, at most the trust radius long; and
+/// C <- C exp(kappa(x)).
+/// The radius doubles (up to options.trust_radius) when an accepted step's
+/// energy change is within 25% of the model's.
+///
+/// Queued on res.stream() with res.blas() (host pointer mode); it
+/// synchronizes many times per iteration. The device res.dev_idx() names is
+/// made current for the call and the previous one restored.
+///
+/// @return The solution; InvalidConfig if ncore is negative, ncas is below 1,
+///         ncore + ncas exceeds nmo, nelecas is outside [0, 2 ncas], nroots
+///         is below 1 or above the determinant count, a weight is negative,
+///         the weights do not sum to 1 within 1e-12 or their count is not
+///         nroots, an option is out of range, or @p c is not of @p basis's
+///         spherical order; MaxIterationsExceeded once max_cycle runs out; or
+///         the first error of an integral, CI, RDM, Fock, Hessian or rotation
+///         call.
+[[nodiscard]] Result<CasscfSolution>
+casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
+             const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
+             std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
+             const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas,
+             int32_t nroots, std::span<const double> weights = {},
+             const CasscfOptions &options = {});
+
+} // namespace free_breakfast
