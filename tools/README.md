@@ -55,7 +55,9 @@ emit_fci_reference.py
                   Write test/gtest/data/ci/direct_spin1.json: PySCF's
                   active-space integrals in its own MO basis, and
                   fci.direct_spin1's lowest roots over them, with <S^2> and
-                  1-RDMs, the reference src/ci is tested against. Needs PySCF.
+                  1-RDMs, and state averages (CI vectors with their weighted
+                  make_rdm12 1- and 2-RDMs), the reference src/ci is tested
+                  against. Needs PySCF.
 emit_active_integrals_reference.py
                   Write test/gtest/data/active_space/active_space.json:
                   PySCF CASCI's E_core and the sign-invariant elements of
