@@ -16,6 +16,9 @@ written against.
 | `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin) and `davidson` (`DavidsonOptions`, residual tolerance 1e-12) |
 | `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo`) |
 | `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
+| `CiSpinSquare::create(res, alpha, beta)` | Upload S²'s tables; `Result<CiSpinSquare>` |
+| `CiSpinSquare::apply(res, k, x, y)` | Y = S² X for size() × k device blocks: a `LinearOperator`; `Status` |
+| `CiSpinSquare::penalize(res, k, λ, target, x, y)` | Y += λ (S² − target) X, the penalty ci_solve adds into sigma's output; `Status` |
 
 `sigma` applies H to a device block of CI vectors in `host_sigma`'s layout:
 the GPU sigma in a calculation, `host_sigma` wrapped as a `LinearOperator` in
@@ -72,11 +75,17 @@ residual of `davidson_solve` (1e-8 relative, ~1e-6 hartree here) would leave
 the 1-RDM near 1e-5. 1e-12 relative is ~1e-10 hartree at molecular energies,
 which roundoff in sigma still clears.
 
-**The penalty and the preconditioner run on the host,** in
-`res.host_workspace()`: each copies its block down, works, copies it back and
-syncs. That is free over the host sigma and a block's round trip per call over
-the GPU one, and S² is cheap next to sigma. Device versions are the change to
-make if it ever shows in a profile.
+**The penalty and the preconditioner run on the device,** so no block leaves
+it during the Davidson. On the host each cost a block's round trip and a sync
+per call, and a single-threaded S² per column, every iteration.
+`CiSpinSquare` gathers S² X one thread per row, like the GPU sigma's second
+gather: S² is real symmetric, so row J walks its own α links a†_p a_q and, for
+each, finds the β partner a†_q a_p in its β string's n × n slot table (which
+holds sign · (target + 1), or 0). `penalize` adds λ (S² − S(S+1)) X into the
+sigma's Y in the same pass. The preconditioner is one elementwise launch per
+column, θ passed by value, over diag(H + penalty) uploaded once. The final
+⟨S²⟩ per root is still `host_spin_square`, once, on the vectors already copied
+back.
 
 ## Tests
 
@@ -91,12 +100,18 @@ there has a triplet below its second singlet, so the spin control is exercised:
   M_s = 0 ones (the spin-summed 1-RDM does not depend on M_s);
 - with λ = 0, direct_spin1's lowest three roots, a triplet among them;
 - `MaxIterationsExceeded` when given two iterations;
-- the refusals.
+- the refusals;
+- `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on
+  random blocks of three vectors, each column to 1e-12 of its norm, over seven
+  sectors (open and closed shells, an empty spin, a full one, a single orbital,
+  N_α < N_β), and its refusals.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `solver.cppm` | Module interface: `ci_solve` (a template), its options and roots, `host_spin_square` |
-| `solver.cpp` | `host_spin_square` |
-| `CMakeLists.txt` | The module `free_breakfast.ci.solver` |
+| `solver.cppm` | Module interface: `ci_solve` (a template), its options and roots, `host_spin_square`, `CiSpinSquare` |
+| `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launch |
+| `ci_solver_bridge.h` | The launchers' declarations, shared by `solver.cpp`'s GMF and the `.cu` |
+| `ci_solver.cu` | The S² gather and the preconditioner kernel |
+| `CMakeLists.txt` | The device library `free_breakfast.ci.solver.device` and the module `free_breakfast.ci.solver` |

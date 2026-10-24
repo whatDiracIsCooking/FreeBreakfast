@@ -20,6 +20,18 @@ import free_breakfast.ci.strings;
 
 #include "diagnostics.h"
 
+namespace free_breakfast {
+
+// ci_solve's preconditioner for one column on the device: correction_i =
+// residual_i / (theta − shifted_i), held off zero at ±1e-3, queued on
+// res.stream(). Not exported: only ci_solve calls it, but its body is in the
+// implementation unit, the one place the bridge header may go.
+[[nodiscard]] Status ci_precondition(DeviceResources &res, int32_t n, double theta,
+                                     const double *shifted, const double *residual,
+                                     double *correction);
+
+} // namespace free_breakfast
+
 export namespace free_breakfast {
 
 /// @brief S² c on the host, for a CI vector over two StringSets in
@@ -35,6 +47,70 @@ export namespace free_breakfast {
 ///         has the wrong size; nothing is written then.
 [[nodiscard]] Status host_spin_square(const StringSet &alpha, const StringSet &beta,
                                       std::span<const double> c, std::span<double> s2c);
+
+/// @brief S² on the device, for host_spin_square's operator and layout: a
+/// `LinearOperator<CiSpinSquare, double>` over blocks of CI vectors, and the
+/// spin penalty ci_solve adds into its sigma's output.
+///
+/// create uploads the α set's replacement lists and, per β string, a table of
+/// its replacements by (p, q), so each α link a†_p a_q finds its β partner
+/// a†_q a_p in one read. Both calls gather one thread per row over the row's
+/// own links, since S² is real symmetric: nothing is atomic and the result
+/// does not depend on the run. Cost is O(k · dim · N_α (n − N_α + 1)).
+///
+/// Move-only; the buffers are on the device of the DeviceResources create was
+/// given, which every call must pass again.
+class CiSpinSquare {
+public:
+  /// @brief Upload @p alpha's lists and @p beta's slot tables to @p res's
+  /// device. A failed allocation aborts (CreatePolicy).
+  ///
+  /// @return InvalidConfig when the two sets span different orbital counts or
+  ///         alpha.size() · beta.size() does not fit an int32_t; or the
+  ///         GpuRuntime error of an upload.
+  [[nodiscard]] static Result<CiSpinSquare> create(DeviceResources &res, const StringSet &alpha,
+                                                   const StringSet &beta);
+
+  CiSpinSquare(CiSpinSquare &&) noexcept = default;
+  CiSpinSquare &operator=(CiSpinSquare &&) noexcept = default;
+  CiSpinSquare(const CiSpinSquare &) = delete;
+  CiSpinSquare &operator=(const CiSpinSquare &) = delete;
+  ~CiSpinSquare() = default;
+
+  /// @brief Y = S² X for the size() × @p k column-major device blocks @p x and
+  /// @p y, leading dimension size(), which must not overlap. Queued on
+  /// res.stream().
+  ///
+  /// @return InvalidConfig for another device, or a negative @p k or
+  ///         k · size() past an int32_t; or the launch's GpuRuntime error.
+  [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *x, double *y);
+
+  /// @brief Y += λ (S² − @p target) X: the spin penalty, added into a sigma's
+  /// output. As apply otherwise.
+  [[nodiscard]] Status penalize(DeviceResources &res, int32_t k, double lambda, double target,
+                                const double *x, double *y);
+
+  /// @brief The number of determinants, alpha.size() · beta.size().
+  [[nodiscard]] int32_t size() const noexcept { return n_alpha_ * n_beta_; }
+
+private:
+  CiSpinSquare(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
+               int32_t alpha_per, double constant);
+
+  Status launch(DeviceResources &res, int32_t k, double shift, double scale, bool accumulate,
+                const double *x, double *y);
+
+  int32_t dev_idx_;
+  int32_t n_orbitals_;
+  int32_t n_alpha_; // alpha.size()
+  int32_t n_beta_;  // beta.size()
+  int32_t alpha_per_;
+  double constant_; // S_z (S_z + 1) + N_β
+  // Three int32_t per α replacement: target, its β partner's slot, sign.
+  Buffers::device<int32_t> alpha_links_;
+  // n_beta × n × n: sign · (target + 1) of a†_p a_q on each β string, or 0.
+  Buffers::device<int32_t> beta_slots_;
+};
 
 /// @brief The knobs of one ci_solve call.
 struct CiSolverOptions {
@@ -71,8 +147,8 @@ struct CiRoots {
 /// on the 2 · n_roots determinants of lowest diag(H) (each with a small spread
 /// over every determinant, so no spatial symmetry is missed), preconditioned by
 /// r / (θ − diag(H + penalty)). S is the sector's lowest spin, so choosing the
-/// spin is choosing N_α − N_β = 2S. The penalty and the preconditioner run on
-/// the host, a block copied each way per call.
+/// spin is choosing N_α − N_β = 2S. The penalty (a CiSpinSquare) and the
+/// preconditioner run on the device, so no block leaves it per iteration.
 ///
 /// @param sigma    Applies H to a device block of CI vectors (host_sigma's
 ///                 layout); a LinearOperator over dim = alpha.size() ·
@@ -164,75 +240,46 @@ template <LinearOperator<double> Op>
     }
   }
   Buffers::device<double> guess(guess_host.size(), res.device());
+  Buffers::device<double> shifted_device(dim, res.device());
   Buffers::device<double> values(roots, res.device());
   Buffers::device<double> vectors(dim * roots, res.device());
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(guess.data(), guess_host.data(),
                                          guess_host.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, stream)));
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(shifted_device.data(), shifted.data(), dim * sizeof(double),
+                                     wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(res.sync());
 
-  // H + λ (S² − S(S+1)) through the caller's sigma, the penalty on the host
-  // in res.host_workspace(), which sigma has finished with by the sync.
+  // H + λ (S² − S(S+1)) through the caller's sigma, the penalty added into
+  // its output on the device.
+  CiSpinSquare spin = FBF_TRY(CiSpinSquare::create(res, alpha, beta));
   struct Penalized {
     Op &sigma;
-    const StringSet &alpha;
-    const StringSet &beta;
+    CiSpinSquare &spin;
     double penalty;
     double target;
-    size_t dim;
 
     Status apply(DeviceResources &r, int32_t k, const double *x, double *y) {
       FBF_TRY(sigma.apply(r, k, x, y));
       if (penalty == 0.0) {
         return {};
       }
-      const size_t count = dim * static_cast<size_t>(k);
-      const size_t bytes = count * sizeof(double);
-      auto *xh = reinterpret_cast<double *>(r.host_workspace(3 * bytes).data());
-      double *yh = xh + count;
-      double *s2x = yh + count;
-      FBF_TRY(
-          gpu_status(wwr::wwrMemcpyAsync(xh, x, bytes, wwr::wwrMemcpyDeviceToHost, r.stream())));
-      FBF_TRY(
-          gpu_status(wwr::wwrMemcpyAsync(yh, y, bytes, wwr::wwrMemcpyDeviceToHost, r.stream())));
-      FBF_TRY(r.sync());
-      for (size_t col = 0; col < static_cast<size_t>(k); ++col) {
-        const size_t at = col * dim;
-        FBF_TRY(host_spin_square(alpha, beta, std::span<const double>{xh + at, dim},
-                                 std::span<double>{s2x + at, dim}));
-      }
-      for (size_t i = 0; i < count; ++i) {
-        yh[i] += penalty * (s2x[i] - target * xh[i]);
-      }
-      FBF_TRY(
-          gpu_status(wwr::wwrMemcpyAsync(y, yh, bytes, wwr::wwrMemcpyHostToDevice, r.stream())));
-      return r.sync();
+      return spin.penalize(r, k, penalty, target, x, y);
     }
   };
-  Penalized op{sigma, alpha, beta, penalty, target, dim};
+  Penalized op{sigma, spin, penalty, target};
 
-  // r / (θ − diag), kept off zero as the test's dense preconditioner is: a
-  // root concentrated on one determinant has θ ≈ its diagonal.
+  // r / (θ − diag(H + penalty)) on the device, one launch per column, the
+  // denominator kept off zero as the test's dense preconditioner is: a root
+  // concentrated on one determinant has θ ≈ its diagonal.
   const auto precondition = [&](DeviceResources &r, std::span<const double> theta,
                                 const double *residual, double *correction) -> Status {
-    const size_t count = dim * theta.size();
-    const size_t bytes = count * sizeof(double);
-    auto *h = reinterpret_cast<double *>(r.host_workspace(bytes).data());
-    FBF_TRY(gpu_status(
-        wwr::wwrMemcpyAsync(h, residual, bytes, wwr::wwrMemcpyDeviceToHost, r.stream())));
-    FBF_TRY(r.sync());
     for (size_t col = 0; col < theta.size(); ++col) {
-      for (size_t i = 0; i < dim; ++i) {
-        double denominator = theta[col] - shifted[i];
-        if (std::abs(denominator) < 1e-3) {
-          denominator = denominator < 0.0 ? -1e-3 : 1e-3;
-        }
-        h[col * dim + i] /= denominator;
-      }
+      FBF_TRY(ci_precondition(r, n, theta[col], shifted_device.data(), residual + col * dim,
+                              correction + col * dim));
     }
-    FBF_TRY(gpu_status(
-        wwr::wwrMemcpyAsync(correction, h, bytes, wwr::wwrMemcpyHostToDevice, r.stream())));
-    return r.sync();
+    return {};
   };
 
   const auto info =
