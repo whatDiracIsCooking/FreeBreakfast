@@ -60,10 +60,15 @@ struct ScfStep {
   /// build, which J's and K's screens skip more of. Convergence is only taken
   /// on a full build. 1 makes every build full. At least 1.
   int32_t fock_rebuild_interval = 20;
+  /// @brief J's screening threshold, @c coulomb's tau: 0 or above, 0 skipping
+  /// nothing. The default is @c coulomb's own. Its screening error is in the
+  /// converged energy and orbitals (2.6e-10 Eh on N2/cc-pVDZ at the default),
+  /// so a comparison tighter than that runs at 0. Not a [scf] TOML key.
+  double tau_j = 1e-10;
 
   /// @brief The converged wavefunction. An open shell (an odd electron count,
   /// or a multiplicity other than 1) is ErrorKind::Unsupported; an option out
-  /// of range, more electron pairs than orbitals, or a guess of the wrong size
+  /// of range (a negative or NaN @ref tau_j among them), more electron pairs than orbitals, or a guess of the wrong size
   /// is ErrorKind::InvalidConfig; a class above d is J's and K's
   /// InvalidConfig; no convergence within @ref max_iterations is
   /// ErrorKind::MaxIterationsExceeded; a non-converged eigensolve is

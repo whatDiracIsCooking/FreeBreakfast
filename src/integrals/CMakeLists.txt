@@ -7,6 +7,8 @@ add_subdirectory(one_electron)
 # After one_electron: J reuses its per-class launch and checks.
 add_subdirectory(eri/integral_direct/coulomb)
 add_subdirectory(eri/integral_direct/exchange)
+# After J and K, which it is built from.
+add_subdirectory(active_space)
 
 # The aggregate: one import for the integral layer.
 free_breakfast_add_cxx_module_library(
@@ -20,4 +22,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::one_electron
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
+  free_breakfast::integrals::active_space
 )

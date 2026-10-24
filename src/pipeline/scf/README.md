@@ -30,6 +30,7 @@ struct ScfStep {
   double commutator_tolerance = 1e-7;  // ||X^T (F D S - S D F) X||_F
   int32_t diis_history = 8;
   int32_t fock_rebuild_interval = 20;  // every this many builds, one is full; 1: all full
+  double tau_j = 1e-10;                // J's screen, coulomb's tau; not a TOML key
 
   Result<Scf> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
                        Overlap, Orthogonalizer, CoreHamiltonian, Guess> in,
@@ -41,7 +42,7 @@ Each iteration, all on `res.stream()`:
 
 1. **Fock build**, full or incremental (below): the Cartesian form
    (`spherical_to_cartesian`) of D or of D - D_built, J and K from it
-   (`coulomb`, `exchange` at their default screening), G = J - K/2 carried
+   (`coulomb` at `tau_j`, `exchange` at its default screening), G = J - K/2 carried
    onto the spherical layout, then F = H + G (full) or F += G (incremental).
    D_built becomes D.
 2. **Energy**: E = tr(D (H + F))/2 + E_nuc.
@@ -93,6 +94,12 @@ What it settled:
   10x `commutator_tolerance` without the reset tied (209 s on gly5); at 10x
   and 100x with it, 226 and 234 s.
 
+- **J's screen is an option, `tau_j`, K's is not.** At the default, 1e-10,
+  J's screening error is in the converged energy and orbitals: 2.6e-10 Eh on
+  N₂/cc-pVDZ, which `test/gtest/active_space_gpu.cpp`'s 1e-10 comparisons
+  cannot absorb, so that test runs at 0. K's default screen (1e-13) does not
+  bind there, so K has no option. `tau_j` is not a `[scf]` TOML key: that
+  would be a change to `pipeline/config`.
 - **One coarse step owns the loop** (design section 14). D, F, the DIIS
   history and the J and K classes are its private state, not products. The
   classes are rebuilt from `PrimitivePairClasses` per run
