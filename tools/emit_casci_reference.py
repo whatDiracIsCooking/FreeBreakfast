@@ -11,6 +11,13 @@ checked against a dense diagonalisation of it, so a Davidson that skipped a
 root cannot be written out; the lowest NSINGLETS singlets among them are
 recorded.
 
+An AVAS case names MINAO AO labels and a threshold instead of an active
+space: PySCF's `mcscf.avas` (this tree's data/basis/minao.json as its MINAO,
+canonicalized, as by default) picks ncas, nelecas and the orbitals, and the
+CASCI runs over those. Its ncas and nelecas are recorded; the tool refuses a
+case whose projection weights come within WEIGHT_MARGIN of the threshold, so
+a selection cannot hinge on the last digits of two SCFs.
+
 Per singlet: the total energy, <S^2>, and the natural occupations (the 1-RDM's
 eigenvalues, descending), which unlike the 1-RDM itself do not depend on the
 signs, or any rotation, of the active orbitals. A root of a degenerate level is
@@ -39,6 +46,7 @@ from emit_active_integrals_reference import NITROGEN
 from emit_fci_reference import dense_hamiltonian
 from emit_scf_reference import BASES, WATER, pyscf_basis
 from pyscf import ao2mo, fci, gto, mcscf, scf
+from pyscf.mcscf import avas
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OUT = ROOT / "test" / "gtest" / "data" / "casci" / "casci.json"
@@ -59,9 +67,34 @@ CASES = [
         "cas": (4, 4),
         "active": [2, 4, 5, 7],
     },
+    # AVAS: water's O 2p and H 1s, CAS(8,6); N2's full valence, CAS(10,8);
+    # and N2's 2p at a threshold that drops the 0.22 virtual, CAS(8,6). N2's
+    # CAS(10,8) keeps its lowest singlet only: ci_solve, at its defaults (100
+    # Davidson iterations, residual 1e-12 relative), converges the ground
+    # state in 36 iterations but no block of 2 to 5 roots in 100.
+    {
+        "name": "h2o_ccpvdz_avas",
+        "atoms": WATER,
+        "basis": "cc-pvdz",
+        "avas": {"labels": ["O 2p", "H 1s"], "threshold": 0.2},
+    },
+    {
+        "name": "n2_ccpvdz_avas",
+        "atoms": NITROGEN,
+        "basis": "cc-pvdz",
+        "avas": {"labels": ["N 2s", "N 2p"], "threshold": 0.2},
+        "nsinglets": 1,
+    },
+    {
+        "name": "n2_ccpvdz_avas_2p",
+        "atoms": NITROGEN,
+        "basis": "cc-pvdz",
+        "avas": {"labels": ["N 2p"], "threshold": 0.5},
+    },
 ]
 
-# Roots solved for, and the singlets kept among them.
+# Roots solved for, and the singlets kept among them, unless a case says
+# "nsinglets".
 NROOTS = 12
 NSINGLETS = 3
 
@@ -71,6 +104,8 @@ ORBITAL_DEGENERACY = 1e-6
 ROOT_DEGENERACY = 1e-8
 # The Davidson roots must equal the dense spectrum to this.
 DENSE_TOL = 1e-10
+# No AVAS projection weight may lie closer than this to the threshold.
+WEIGHT_MARGIN = 1e-3
 
 
 def check_degeneracies(name: str, mo_energy: numpy.ndarray, active: list[int]):
@@ -106,13 +141,33 @@ def case_reference(case: dict) -> dict:
     assert mf.converged, f"{case['name']}: RHF did not converge"
 
     name = case["name"]
-    nelecas, ncas = case["cas"]
-    ncore = (mol.nelectron - nelecas) // 2
-    active = case.get("active") or list(range(ncore, ncore + ncas))
-    check_degeneracies(name, mf.mo_energy, active)
+    if "avas" in case:
+        # AVAS is invariant to rotations within the occupied and within the
+        # virtual orbitals, so no degenerate set can be split by it.
+        selection = avas.AVAS(
+            mf,
+            case["avas"]["labels"],
+            threshold=case["avas"]["threshold"],
+            minao=pyscf_basis("minao.json", symbols),
+            verbose=0,
+        )
+        ncas, nelecas, mo = selection.kernel()
+        ncas, nelecas = int(ncas), int(nelecas)
+        weights = numpy.concatenate([selection.occ_weights, selection.vir_weights])
+        margin = numpy.abs(weights - case["avas"]["threshold"]).min()
+        assert margin > WEIGHT_MARGIN, (
+            f"{name}: a weight within {margin} of the threshold"
+        )
+        ncore = (mol.nelectron - nelecas) // 2
+        mc = mcscf.CASCI(mf, ncas, nelecas)
+    else:
+        nelecas, ncas = case["cas"]
+        ncore = (mol.nelectron - nelecas) // 2
+        active = case.get("active") or list(range(ncore, ncore + ncas))
+        check_degeneracies(name, mf.mo_energy, active)
 
-    mc = mcscf.CASCI(mf, ncas, nelecas)
-    mo = mc.sort_mo(active, base=0) if "active" in case else mf.mo_coeff
+        mc = mcscf.CASCI(mf, ncas, nelecas)
+        mo = mc.sort_mo(active, base=0) if "active" in case else mf.mo_coeff
     solver = fci.direct_spin1.FCI(mol)
     solver.conv_tol = 1e-13
     solver.max_cycle = 1000
@@ -147,7 +202,8 @@ def case_reference(case: dict) -> dict:
                     "natural_occupations": [float(v) for v in occupations[::-1]],
                 }
             )
-    assert len(roots) >= NSINGLETS, f"{name}: fewer than {NSINGLETS} singlets"
+    nsinglets = case.get("nsinglets", NSINGLETS)
+    assert len(roots) >= nsinglets, f"{name}: fewer than {nsinglets} singlets"
 
     return {
         "name": name,
@@ -161,11 +217,12 @@ def case_reference(case: dict) -> dict:
         "ncas": ncas,
         "nelecas": nelecas,
         "ncore": ncore,
-        "active": active if "active" in case else None,
+        "active": case.get("active"),
+        "avas": case.get("avas"),
         "rhf_energy": float(mf.e_tot),
         "mo_energies": [float(e) for e in mf.mo_energy],
         "e_core": float(e_core),
-        "roots": roots[:NSINGLETS],
+        "roots": roots[:nsinglets],
     }
 
 
@@ -174,7 +231,8 @@ def main() -> None:
         "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, "
         "conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF "
         "mcscf.CASCI over its canonical orbitals (the frontier ones, or "
-        "'active' by sort_mo, 0-based) with fci.direct_spin1 (conv_tol 1e-13, "
+        "'active' by sort_mo, 0-based, or by mcscf.avas over "
+        "data/basis/minao.json) with fci.direct_spin1 (conv_tol 1e-13, "
         "checked against the dense spectrum): the lowest singlets' total "
         "energy (hartree), <S^2> and natural occupations; coordinates in bohr",
         "provenance": {

@@ -1,7 +1,8 @@
 // The Casci step against PySCF's mcscf.CASCI (data/casci/casci.json,
 // tools/emit_casci_reference.py), through the real registry: a config naming
-// [casci] plans the whole chain to the Scf, builds the active space's
-// Hamiltonian and solves it over the GPU sigma. Compared: each singlet's total
+// [casci] plans the whole chain to the Scf, picks the active space (by index,
+// or by AVAS against PySCF's mcscf.avas), builds its Hamiltonian and solves it
+// over the GPU sigma. Compared: each singlet's total
 // energy and <S^2>, and, for a root of no degenerate level, its natural
 // occupations, the 1-RDM's eigenvalues, which unlike the 1-RDM do not depend
 // on the active orbitals' signs. Every 1-RDM is symmetric with trace nelecas,
@@ -95,6 +96,16 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
 // it fills in runs at its defaults: they leave the energies within 1e-9 of
 // PySCF's here, though a CASCI energy moves to first order in the orbitals.
 std::string casci_tables(const fb::json &entry, std::size_t nroots) {
+  if (!entry.at("avas").is_null()) {
+    // AVAS picks ncas and nelecas; the test compares them with PySCF's.
+    std::string tables = std::format("[casci]\nnroots = {}\navas_threshold = {:.17g}\navas = [",
+                                     nroots, entry.at("avas").at("threshold").get<double>());
+    const auto labels = entry.at("avas").at("labels").get<std::vector<std::string>>();
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+      tables += std::format("{}\"{}\"", i == 0 ? "" : ", ", labels[i]);
+    }
+    return tables + "]\n";
+  }
   std::string tables = std::format("[casci]\nncas = {}\nnelecas = {}\nnroots = {}\n",
                                    entry.at("ncas").get<std::int32_t>(),
                                    entry.at("nelecas").get<std::int32_t>(), nroots);
@@ -233,6 +244,9 @@ TEST_P(PipelineCasci, MatchesPyscf) {
     }
   }
 
+  if (!entry.at("avas").is_null()) {
+    return; // AVAS rotates the Scf's orbitals rather than ordering them
+  }
   // The orbitals are the Scf's, in orbital_order's order.
   const auto order = calc->step<fb::CasciStep>()->orbital_order(
       calc->get<fb::Molecule>()->electron_count(), static_cast<std::int32_t>(mo_energies.size()));
@@ -251,7 +265,8 @@ TEST_P(PipelineCasci, MatchesPyscf) {
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasci,
                          ::testing::Values(Case{"h2o_sto3g"}, Case{"h2o_ccpvdz"}, Case{"n2_ccpvdz"},
-                                           Case{"h2o_ccpvdz_explicit"}),
+                                           Case{"h2o_ccpvdz_explicit"}, Case{"h2o_ccpvdz_avas"},
+                                           Case{"n2_ccpvdz_avas"}, Case{"n2_ccpvdz_avas_2p"}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // An active space past the orbitals is refused when the step runs, and the
@@ -270,6 +285,76 @@ TEST(PipelineCasci, AnActiveSpacePastTheOrbitalsIsInvalidConfig) {
   EXPECT_NE(ran.error().message.find("exceeds the 7 orbitals"), std::string::npos)
       << ran.error().message;
   ASSERT_TRUE(calc->get<fb::Scf>().has_value());
+  EXPECT_FALSE(calc->get<fb::Casci>().has_value());
+}
+
+// molden set: the lowest root's natural orbitals land in a Molden file, read
+// back as io_molden_host reads one. Every orbital is written, the core at 2,
+// the natural ones at PySCF's natural occupations, descending, the rest at 0.
+TEST(PipelineCasciMolden, WritesTheNaturalOrbitals) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz_avas");
+  const fb::test::ScratchDir dir("pipeline_casci_molden");
+  const std::filesystem::path path = dir / "h2o_avas.molden";
+  auto calc = fb::read_config(write_config(
+      dir, entry,
+      casci_tables(entry, 1) + std::format("molden = \"{}\"\n", path.generic_string())));
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &casci = calc->get<fb::Casci>();
+  const auto &basis = calc->get<fb::BasisSet>();
+  ASSERT_TRUE(casci.has_value() && basis.has_value());
+
+  const auto text = fb::read_file(path);
+  ASSERT_TRUE(text.has_value()) << text.error().message;
+  ASSERT_TRUE(text->starts_with("[Molden Format]\n"));
+  const std::size_t mo_at = text->find("[MO]");
+  ASSERT_NE(mo_at, std::string::npos);
+  std::vector<double> occupations;
+  std::size_t coefficients = 0;
+  std::istringstream in{text->substr(mo_at)};
+  std::string line;
+  while (std::getline(in, line)) {
+    std::int32_t index = 0;
+    double value = 0.0;
+    std::istringstream fields(line);
+    if (line.starts_with(" Occup=")) {
+      occupations.push_back(std::stod(line.substr(7)));
+    } else if (fields >> index >> value) {
+      ++coefficients;
+    }
+  }
+  const std::size_t nao = basis->nao_sphe();
+  ASSERT_EQ(occupations.size(), nao);
+  EXPECT_EQ(coefficients, nao * nao);
+  const auto ncore = static_cast<std::size_t>(casci->ncore);
+  const auto n = static_cast<std::size_t>(casci->ncas);
+  const auto expected =
+      entry.at("roots").at(0).at("natural_occupations").get<std::vector<double>>();
+  ASSERT_EQ(expected.size(), n);
+  for (std::size_t j = 0; j < nao; ++j) {
+    // Molden's Occup= has six decimals.
+    const double want = j < ncore ? 2.0 : (j < ncore + n ? expected[j - ncore] : 0.0);
+    EXPECT_NEAR(occupations[j], want, 1e-6) << "orbital " << j;
+  }
+}
+
+// An AVAS label naming no MINAO AO of the molecule is refused when the step
+// runs: MINAO's oxygen has no 3d.
+TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz_avas");
+  const fb::test::ScratchDir dir("pipeline_casci");
+  auto calc = fb::read_config(write_config(dir, entry, "[casci]\navas = [\"O 2p\", \"O 3d\"]\n"));
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(ran.error().message.find("'O 3d' names no MINAO AO"), std::string::npos)
+      << ran.error().message;
   EXPECT_FALSE(calc->get<fb::Casci>().has_value());
 }
 
