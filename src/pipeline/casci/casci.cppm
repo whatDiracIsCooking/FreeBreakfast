@@ -6,7 +6,7 @@
 ///
 /// Device-shaped. A wrapper over `integrals.active_space`, `ci.solver` over
 /// `ci.sigma`'s `CiSigma`, and `ci.rdm`, all private to `run`, as are AVAS's
-/// MINAO overlaps (`overlap_mixed`) and the Molden writer. See README.md.
+/// MINAO overlaps (`overlap_mixed_spherical`) and the Molden writer. See README.md.
 
 export module free_breakfast.pipeline.casci;
 
@@ -111,7 +111,8 @@ struct CasciStep {
   ///         the molecule, @ref avas_threshold outside (0, 1), @ref ncas,
   ///         @ref nelecas or @ref active set beside it, or no orbital
   ///         selected; or the error of the first module call that failed:
-  ///         `overlap_mixed`'s, `diagonalize`'s, `active_space_hamiltonian`'s,
+  ///         `overlap_mixed_spherical`'s, `diagonalize`'s,
+  ///         `active_space_hamiltonian`'s,
   ///         `CiSigma`'s, `ci_solve`'s (InvalidConfig for @ref nroots
   ///         outside [1, dim], MaxIterationsExceeded, Numerical for a root of
   ///         the wrong spin), or `write_molden`'s, and GpuRuntime for a failed

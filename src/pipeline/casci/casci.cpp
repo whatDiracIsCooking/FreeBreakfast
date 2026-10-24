@@ -190,32 +190,34 @@ struct CasciSpace {
   const BasisSet minao = FBF_TRY(place(stamp.primitive_normalized(), molecule));
   const std::vector<bool> chosen = FBF_TRY(avas_minao_aos(molecule, minao, labels));
 
-  const size_t nmc = minao.nao_cart();
-  const size_t nbc = basis.nao_cart();
+  const size_t nms = minao.nao_sphe();
   const size_t nao = basis.nao_sphe();
   const size_t nmo = scf.mo_energies.size();
   const auto nocc = static_cast<size_t>(molecule.electron_count() / 2);
   const wwr::wwrStream_t stream = res.stream();
-  Buffers::device<double> s_mix_device(nmc * nbc, res.device());
-  Buffers::device<double> s_mm_device(nmc * nmc, res.device());
-  FBF_TRY(overlap_mixed(res, minao, basis, s_mix_device));
-  FBF_TRY(overlap_mixed(res, minao, minao, s_mm_device));
-  std::vector<double> s_mix(nmc * nbc);
-  std::vector<double> s_mm(nmc * nmc);
-  std::vector<double> c(nao * nmo);
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(s_mix.data(), s_mix_device.data(),
-                                         s_mix.size() * sizeof(double), wwr::wwrMemcpyDeviceToHost,
-                                         stream)));
+  // <MINAO AO | MO> = S(MINAO, basis) C, nms x nmo, and S(MINAO, MINAO).
+  Buffers::device<double> s_mix_device(nms * nao, res.device());
+  Buffers::device<double> s_mm_device(nms * nms, res.device());
+  Buffers::device<double> s_mo_device(nms * nmo, res.device());
+  FBF_TRY(overlap_mixed_spherical(res, minao, basis, s_mix_device));
+  FBF_TRY(overlap_mixed_spherical(res, minao, minao, s_mm_device));
+  constexpr double kOneScale = 1.0;
+  constexpr double kNoAccumulate = 0.0;
+  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, static_cast<int32_t>(nms),
+      static_cast<int32_t>(nmo), static_cast<int32_t>(nao), &kOneScale, s_mix_device.data(),
+      static_cast<int32_t>(nms), scf.c.data(), static_cast<int32_t>(nao), &kNoAccumulate,
+      s_mo_device.data(), static_cast<int32_t>(nms))));
+  std::vector<double> s_mo(nms * nmo);
+  std::vector<double> s_mm(nms * nms);
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(s_mo.data(), s_mo_device.data(), s_mo.size() * sizeof(double),
+                                     wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(
       gpu_status(wwr::wwrMemcpyAsync(s_mm.data(), s_mm_device.data(), s_mm.size() * sizeof(double),
                                      wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c.data(), scf.c.data(), c.size() * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(res.sync());
 
-  // Each labelled AO as a Cartesian vector of MINAO: a column of its U.
-  const std::vector<double> u_minao = spherical_transform_matrix(minao);
-  const std::vector<double> u_basis = spherical_transform_matrix(basis);
   std::vector<size_t> picked;
   for (size_t p = 0; p < chosen.size(); ++p) {
     if (chosen[p]) {
@@ -223,35 +225,16 @@ struct CasciSpace {
     }
   }
   const size_t m = picked.size();
-  // S21 = <labelled AO | MO>, m x nmo, and S2 = <labelled AO | labelled AO>.
-  std::vector<double> s21(m * nmo, 0.0);
-  std::vector<double> s2(m * m, 0.0);
+  // S21 = <labelled AO | MO>, m x nmo, and S2 = <labelled AO | labelled AO>:
+  // the labelled rows (and columns) of the two.
+  std::vector<double> s21(m * nmo);
+  std::vector<double> s2(m * m);
   for (size_t i = 0; i < m; ++i) {
-    const double *a = u_minao.data() + (picked[i] * nmc);
-    std::vector<double> cart(nbc, 0.0);
-    for (size_t j = 0; j < nbc; ++j) {
-      for (size_t mu = 0; mu < nmc; ++mu) {
-        cart[j] += a[mu] * s_mix[mu + (nmc * j)];
-      }
-    }
-    std::vector<double> sphe(nao, 0.0);
-    for (size_t nu = 0; nu < nao; ++nu) {
-      for (size_t j = 0; j < nbc; ++j) {
-        sphe[nu] += cart[j] * u_basis[j + (nbc * nu)];
-      }
-    }
     for (size_t k = 0; k < nmo; ++k) {
-      for (size_t nu = 0; nu < nao; ++nu) {
-        s21[i + (m * k)] += sphe[nu] * c[nu + (nao * k)];
-      }
+      s21[i + (m * k)] = s_mo[picked[i] + (nms * k)];
     }
     for (size_t i2 = 0; i2 < m; ++i2) {
-      const double *b = u_minao.data() + (picked[i2] * nmc);
-      for (size_t nu = 0; nu < nmc; ++nu) {
-        for (size_t mu = 0; mu < nmc; ++mu) {
-          s2[i + (m * i2)] += a[mu] * s_mm[mu + (nmc * nu)] * b[nu];
-        }
-      }
+      s2[i + (m * i2)] = s_mm[picked[i] + (nms * picked[i2])];
     }
   }
   // P = X^T X, X = w^-1/2 V^T S21 for S2 = V w V^T: S21^T S2^-1 S21.
