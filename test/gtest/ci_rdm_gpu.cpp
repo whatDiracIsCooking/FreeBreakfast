@@ -1,4 +1,4 @@
-// GPU cases for ci.rdm's rdm12: the device γ and Γ against host_rdm12, and
+// GPU cases for ci.rdm's CiRdm: the device γ and Γ against host_rdm12, and
 // both against PySCF's make_rdm12 (and make_rdm12s summed over the spins) over
 // the CI vectors stored in data/ci/direct_spin1.json, written by
 // tools/emit_fci_reference.py; γ against rdm1 and CiSigma::rdm1; the RDM
@@ -77,16 +77,52 @@ struct Rdm12 {
   std::vector<double> gamma2;
 };
 
+// @p host on the device.
+fb::Buffers::device<double> on_device(fb::DeviceResources &res, std::span<const double> host) {
+  fb::Buffers::device<double> d(host.size(), res.device());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(d.data(), host.data(), host.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  // The source may be a temporary.
+  EXPECT_TRUE(res.sync().has_value());
+  return d;
+}
+
+// @p device on the host.
+std::vector<double> on_host(fb::DeviceResources &res, const fb::Buffers::device<double> &device) {
+  std::vector<double> host(device.num_elements());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), device.data(), host.size() * sizeof(double),
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return host;
+}
+
+// CiRdm::rdm12 of the host @p vectors, through the device and back.
+Rdm12 device_rdm12(fb::DeviceResources &res, const fb::StringSet &alpha, const fb::StringSet &beta,
+                   std::span<const double> vectors, std::span<const double> weights) {
+  const auto n = static_cast<std::size_t>(alpha.n_orbitals());
+  auto rdm = fb::CiRdm::create(res, alpha, beta);
+  EXPECT_TRUE(rdm.has_value()) << rdm.error().message;
+  if (!rdm) {
+    return {};
+  }
+  const auto c = on_device(res, vectors);
+  fb::Buffers::device<double> gamma(n * n, res.device());
+  fb::Buffers::device<double> gamma2(n * n * n * n, res.device());
+  const auto got = rdm->rdm12(res, weights, c.data(), gamma.data(), gamma2.data());
+  EXPECT_TRUE(got.has_value()) << got.error().message;
+  return Rdm12{on_host(res, gamma), on_host(res, gamma2)};
+}
+
 std::pair<Rdm12, Rdm12> both_rdm12(fb::DeviceResources &res, const fb::StringSet &alpha,
                                    const fb::StringSet &beta, std::span<const double> vectors,
                                    std::span<const double> weights) {
   const auto n = static_cast<std::size_t>(alpha.n_orbitals());
   const std::size_t dim =
       static_cast<std::size_t>(alpha.size()) * static_cast<std::size_t>(beta.size());
-  Rdm12 device{std::vector<double>(n * n), std::vector<double>(n * n * n * n)};
-  Rdm12 host = device;
-  const auto got = fb::rdm12(res, alpha, beta, vectors, weights, device.gamma, device.gamma2);
-  EXPECT_TRUE(got.has_value()) << got.error().message;
+  Rdm12 device = device_rdm12(res, alpha, beta, vectors, weights);
+  Rdm12 host{std::vector<double>(n * n), std::vector<double>(n * n * n * n)};
   const auto want = fb::host_rdm12(alpha, beta, vectors, weights, host.gamma, host.gamma2);
   EXPECT_TRUE(want.has_value()) << want.error().message;
 
@@ -230,82 +266,105 @@ TEST(CiRdm12Gpu, Refuses) {
   fb::DeviceResources res{0};
   const auto four = fb::StringSet::create(4, 2);
   const auto five = fb::StringSet::create(5, 2);
-  ASSERT_TRUE(four.has_value() && five.has_value());
+  const auto none = fb::StringSet::create(0, 0);
+  ASSERT_TRUE(four.has_value() && five.has_value() && none.has_value());
   const std::size_t dim =
       static_cast<std::size_t>(four->size()) * static_cast<std::size_t>(four->size());
   const std::vector<double> two_vectors = random_unit_vectors(dim, 2);
   constexpr double kSentinel = 42.0;
-
-  // Both rdm12s refuse, and leave γ and Γ as they were.
-  const auto refused = [&](const fb::StringSet &alpha, const fb::StringSet &beta,
-                           std::span<const double> vectors, std::span<const double> weights,
-                           std::size_t gamma_size, std::size_t gamma2_size) {
-    for (const bool device : {true, false}) {
-      SCOPED_TRACE(device ? "device" : "host");
-      std::vector<double> gamma(gamma_size, kSentinel);
-      std::vector<double> gamma2(gamma2_size, kSentinel);
-      const auto got = device ? fb::rdm12(res, alpha, beta, vectors, weights, gamma, gamma2)
-                              : fb::host_rdm12(alpha, beta, vectors, weights, gamma, gamma2);
-      ASSERT_FALSE(got.has_value());
-      EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
-      EXPECT_TRUE(std::ranges::all_of(gamma, [](double x) { return x == kSentinel; }));
-      EXPECT_TRUE(std::ranges::all_of(gamma2, [](double x) { return x == kSentinel; }));
-    }
-  };
   const std::size_t g1 = 16;
   const std::size_t g2 = 256;
+
+  // CiRdm refuses sets it cannot gather over.
+  EXPECT_FALSE(fb::CiRdm::create(res, *four, *five).has_value());
+  EXPECT_FALSE(fb::CiRdm::create(res, *none, *none).has_value());
+
+  auto rdm = fb::CiRdm::create(res, *four, *four);
+  ASSERT_TRUE(rdm.has_value()) << rdm.error().message;
+  ASSERT_EQ(static_cast<std::size_t>(rdm->size()), dim);
+  const auto c = on_device(res, two_vectors);
+
+  // Both refuse weights that do not make an average, and leave γ and Γ as
+  // they were; host_rdm12 also refuses the shapes it is given.
+  const auto refused = [&](std::span<const double> vectors, std::span<const double> weights,
+                           std::size_t gamma_size, std::size_t gamma2_size, bool on_device_too) {
+    std::vector<double> gamma(gamma_size, kSentinel);
+    std::vector<double> gamma2(gamma2_size, kSentinel);
+    const auto got = fb::host_rdm12(*four, *four, vectors, weights, gamma, gamma2);
+    ASSERT_FALSE(got.has_value());
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
+    EXPECT_TRUE(std::ranges::all_of(gamma, [](double x) { return x == kSentinel; }));
+    EXPECT_TRUE(std::ranges::all_of(gamma2, [](double x) { return x == kSentinel; }));
+    if (!on_device_too) {
+      return;
+    }
+    auto gamma_dev = on_device(res, std::vector<double>(g1, kSentinel));
+    auto gamma2_dev = on_device(res, std::vector<double>(g2, kSentinel));
+    const auto device = rdm->rdm12(res, weights, c.data(), gamma_dev.data(), gamma2_dev.data());
+    ASSERT_FALSE(device.has_value());
+    EXPECT_EQ(device.error().kind, fb::ErrorKind::InvalidConfig) << device.error().message;
+    EXPECT_TRUE(
+        std::ranges::all_of(on_host(res, gamma_dev), [](double x) { return x == kSentinel; }));
+    EXPECT_TRUE(
+        std::ranges::all_of(on_host(res, gamma2_dev), [](double x) { return x == kSentinel; }));
+  };
   const std::span<const double> one_vector = std::span{two_vectors}.first(dim);
   {
     SCOPED_TRACE("two weights for one vector");
-    refused(*four, *four, one_vector, std::array{0.5, 0.5}, g1, g2);
+    refused(one_vector, std::array{0.5, 0.5}, g1, g2, false);
   }
   {
     SCOPED_TRACE("one weight for two vectors");
-    refused(*four, *four, two_vectors, std::array{1.0}, g1, g2);
+    refused(two_vectors, std::array{1.0}, g1, g2, false);
   }
   {
     SCOPED_TRACE("no weights");
-    refused(*four, *four, std::span<const double>{}, std::span<const double>{}, g1, g2);
+    refused(std::span<const double>{}, std::span<const double>{}, g1, g2, true);
   }
   {
     SCOPED_TRACE("a negative weight");
-    refused(*four, *four, two_vectors, std::array{1.5, -0.5}, g1, g2);
+    refused(two_vectors, std::array{1.5, -0.5}, g1, g2, true);
   }
   {
     SCOPED_TRACE("a NaN weight");
-    refused(*four, *four, two_vectors, std::array{1.0, std::numeric_limits<double>::quiet_NaN()},
-            g1, g2);
+    refused(two_vectors, std::array{1.0, std::numeric_limits<double>::quiet_NaN()}, g1, g2, true);
   }
   {
     SCOPED_TRACE("weights summing past 1 + 1e-12");
-    refused(*four, *four, two_vectors, std::array{0.7, 0.3 + 1e-11}, g1, g2);
+    refused(two_vectors, std::array{0.7, 0.3 + 1e-11}, g1, g2, true);
   }
   {
     SCOPED_TRACE("a short vector");
-    refused(*four, *four, one_vector.first(dim - 1), std::array{1.0}, g1, g2);
+    refused(one_vector.first(dim - 1), std::array{1.0}, g1, g2, false);
   }
   {
     SCOPED_TRACE("a short gamma");
-    refused(*four, *four, one_vector, std::array{1.0}, g1 - 1, g2);
+    refused(one_vector, std::array{1.0}, g1 - 1, g2, false);
   }
   {
     SCOPED_TRACE("a short Gamma");
-    refused(*four, *four, one_vector, std::array{1.0}, g1, g2 - 1);
+    refused(one_vector, std::array{1.0}, g1, g2 - 1, false);
   }
   {
     SCOPED_TRACE("sets over different orbital counts");
-    refused(*four, *five,
-            std::vector<double>(static_cast<std::size_t>(four->size()) *
-                                static_cast<std::size_t>(five->size())),
-            std::array{1.0}, g1, g2);
+    std::vector<double> gamma(g1, kSentinel);
+    std::vector<double> gamma2(g2, kSentinel);
+    EXPECT_FALSE(fb::host_rdm12(*four, *five,
+                                std::vector<double>(static_cast<std::size_t>(four->size()) *
+                                                    static_cast<std::size_t>(five->size())),
+                                std::array{1.0}, gamma, gamma2)
+                     .has_value());
   }
 
   // Within 1e-12 of 1 is accepted.
   std::vector<double> gamma(g1);
   std::vector<double> gamma2(g2);
   const std::array weights{0.7, 0.3 + 1e-13};
-  EXPECT_TRUE(fb::rdm12(res, *four, *four, two_vectors, weights, gamma, gamma2).has_value());
+  fb::Buffers::device<double> gamma_dev(g1, res.device());
+  fb::Buffers::device<double> gamma2_dev(g2, res.device());
+  EXPECT_TRUE(rdm->rdm12(res, weights, c.data(), gamma_dev.data(), gamma2_dev.data()).has_value());
   EXPECT_TRUE(fb::host_rdm12(*four, *four, two_vectors, weights, gamma, gamma2).has_value());
+  EXPECT_TRUE(res.sync().has_value());
 }
 
 } // namespace

@@ -14,15 +14,17 @@ written against.
 |---|---|
 | `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options)` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2. A template over the sigma. |
 | `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin) and `davidson` (`DavidsonOptions`, residual tolerance 1e-12) |
-| `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo`) |
+| `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo`) |
 | `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
 | `CiSpinSquare::create(res, alpha, beta)` | Upload S²'s tables; `Result<CiSpinSquare>` |
 | `CiSpinSquare::apply(res, k, x, y)` | Y = S² X for size() × k device blocks: a `LinearOperator`; `Status` |
 | `CiSpinSquare::penalize(res, k, λ, target, x, y)` | Y += λ (S² − target) X, the penalty ci_solve adds into sigma's output; `Status` |
+| `CiSpinSquare::penalize_diagonal(res, λ, target, diagonal, shifted)` | shifted = diagonal + λ (diag(S²) − target), the preconditioner's diagonal; `Status` |
 
 `sigma` applies H to a device block of CI vectors in `host_sigma`'s layout:
 the GPU sigma in a calculation, `host_sigma` wrapped as a `LinearOperator` in
-the tests. `diagonal` is diag(H) on the host, as `host_diagonal` writes it.
+the tests. `diagonal` is diag(H) on the device, as `CiSigma::diagonal` writes
+it.
 
 ## Design
 
@@ -67,7 +69,11 @@ enters the subspace: N₂'s second and third singlets were lost that way. Each
 guess therefore also carries a 1e-3 deterministic spread over every
 determinant (a splitmix64 hash of its position, so runs are reproducible), and
 the columns are orthonormalized. The subspace holds up to 16 · n_roots
-columns (at least 2 · n_roots, at most dim).
+columns (at least 2 · n_roots, at most dim). All of it is on the device: the
+lowest determinants by 2 · n_roots argmin passes over diag(H) (each the least
+(value, address) above the last, so ties go to the lower address, as a stable
+sort's would, without sorting dim values), the spread by a hash kernel, and
+the orthonormalization by modified Gram-Schmidt, twice, over the BLAS.
 
 **The residual tolerance is tight, 1e-12 relative.** A vector's error is first
 order in its residual and the 1-RDM is read from the vector, so the default
@@ -75,17 +81,22 @@ residual of `davidson_solve` (1e-8 relative, ~1e-6 hartree here) would leave
 the 1-RDM near 1e-5. 1e-12 relative is ~1e-10 hartree at molecular energies,
 which roundoff in sigma still clears.
 
-**The penalty and the preconditioner run on the device,** so no block leaves
-it during the Davidson. On the host each cost a block's round trip and a sync
-per call, and a single-threaded S² per column, every iteration.
+**Nothing of dim size touches the host.** The penalty and the preconditioner
+run on the device, so no block leaves it during the Davidson. On the host
+each cost a block's round trip and a sync per call, and a single-threaded S²
+per column, every iteration. The setup and the readback are on the device too:
+diag(H) comes in as a device array, the guesses and the penalized diagonal are
+built from it there, ⟨S²⟩ per root is S² X and a dot there, and the roots
+stay there as `CiRoots::vectors`, which `CiSigma::rdm1` and `CiRdm::rdm12`
+take as they are. Only the n_roots Ritz values and ⟨S²⟩s are read back.
 `CiSpinSquare` gathers S² X one thread per row, like the GPU sigma's second
 gather: S² is real symmetric, so row J walks its own α links a†_p a_q and, for
 each, finds the β partner a†_q a_p in its β string's n × n slot table (which
 holds sign · (target + 1), or 0). `penalize` adds λ (S² − S(S+1)) X into the
 sigma's Y in the same pass. The preconditioner is one elementwise launch per
-column, θ passed by value, over diag(H + penalty) uploaded once. The final
-⟨S²⟩ per root is still `host_spin_square`, once, on the vectors already copied
-back.
+column, θ passed by value, over diag(H + penalty), which `penalize_diagonal`
+builds once: one thread per determinant counts its α links a†_p a_p whose β
+partner survives, the doubly occupied orbitals.
 
 ## Tests
 
@@ -104,14 +115,15 @@ there has a triplet below its second singlet, so the spin control is exercised:
 - `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on
   random blocks of three vectors, each column to 1e-12 of its norm, over seven
   sectors (open and closed shells, an empty spin, a full one, a single orbital,
-  N_α < N_β), and its refusals.
+  N_α < N_β), `penalize_diagonal` against diag(S²) from the strings' popcounts
+  (also in place), and its refusals.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `solver.cppm` | Module interface: `ci_solve` (a template), its options and roots, `host_spin_square`, `CiSpinSquare` |
-| `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launch |
+| `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launch; the guesses |
 | `ci_solver_bridge.h` | The launchers' declarations, shared by `solver.cpp`'s GMF and the `.cu` |
-| `ci_solver.cu` | The S² gather and the preconditioner kernel |
+| `ci_solver.cu` | The S² gather, the penalized diagonal, the preconditioner kernel, the argmin passes and the guess spread |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.solver.device` and the module `free_breakfast.ci.solver` |

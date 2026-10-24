@@ -50,10 +50,47 @@ namespace free_breakfast::device {
                                              double constant, double shift, double scale,
                                              bool accumulate, const double *x, double *y);
 
+/// @brief shifted_J = diagonal_J + scale · (diag(S²)_J − shift) for the
+/// @p n_det determinants, diag(S²)_J = constant − the orbitals doubly occupied
+/// in J.
+///
+/// One thread per determinant counts its α links a†_p a_p whose β partner
+/// a†_p a_p does not annihilate J's β string: the doubly occupied orbitals.
+[[nodiscard]] wwr::wwrError_t ci_spin_diagonal(wwr::wwrStream_t stream, int32_t n_det,
+                                               int32_t n_beta, int32_t n,
+                                               const int32_t *alpha_links, int32_t alpha_per,
+                                               const int32_t *beta_slots, double constant,
+                                               double shift, double scale, const double *diagonal,
+                                               double *shifted);
+
 /// @brief correction_i = residual_i / (theta − shifted_i) for the @p n
 /// elements of one column, the denominator held off zero at ±1e-3.
 [[nodiscard]] wwr::wwrError_t ci_precondition(wwr::wwrStream_t stream, int32_t n, double theta,
                                               const double *shifted, const double *residual,
                                               double *correction);
+
+/// @brief The blocks ci_lowest's first pass runs, and so the length of its
+/// @p partial_values and @p partial_index: at most kCiLowestBlocks.
+inline constexpr int32_t kCiLowestBlocks = 1024;
+
+/// @brief The addresses of the @p count lowest of the @p n @p values into
+/// @p picks, ascending in value and ties to the lower address: the first
+/// @p count of a stable sort by value, without the sort.
+///
+/// Pick j is the least (value, address) above pick j − 1, in two passes: each
+/// block of the first reduces its stride of @p values into @p partial_values
+/// and @p partial_index, and one block reduces those. @p count passes over
+/// @p values, for the handful of guesses a Davidson wants. Requires
+/// count <= n.
+[[nodiscard]] wwr::wwrError_t ci_lowest(wwr::wwrStream_t stream, int32_t n, const double *values,
+                                        int32_t count, double *partial_values,
+                                        int32_t *partial_index, int32_t *picks);
+
+/// @brief ci_solve's @p count guess columns, n long, column-major: column g is
+/// a 1e-3 spread (a splitmix64 hash of the element's position g · n + i,
+/// uniform in [−1e-3, 1e-3)) plus 1 on determinant @p picks[g]. Not yet
+/// orthonormal.
+[[nodiscard]] wwr::wwrError_t ci_guess(wwr::wwrStream_t stream, int32_t n, int32_t count,
+                                       const int32_t *picks, double *guess);
 
 } // namespace free_breakfast::device

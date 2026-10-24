@@ -28,7 +28,8 @@ namespace free_breakfast {
 // guesses, m = max(2 nroots, min(dim, 16 nroots)) subspace columns (ci_solve's
 // choices), P = n (n + 1) / 2 packed pairs:
 //
-//   ci_solve       g dim guesses, nroots dim vectors, the step's dim diagonal
+//   ci_solve       g dim guesses, nroots dim vectors, its dim penalized diagonal,
+//                  and the step's dim diagonal
 //   davidson       2 m dim for V and A V, 3 nroots dim for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta
 //   CiSigma apply  dim (P + 1) for G, one vector's (apply goes a vector at a
@@ -51,7 +52,7 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const double replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
 
   const double doubles =
-      ((guesses + roots + 1.0) * dim) + (2.0 * subspace * dim) + (3.0 * roots * dim) +
+      ((guesses + roots + 2.0) * dim) + (2.0 * subspace * dim) + (3.0 * roots * dim) +
       (subspace * (subspace + roots + 1.0)) + (dim * (pairs + 1.0)) + (pairs * (pairs + 1.0)) +
       (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) + (orbitals * orbitals);
   const double chunk =
@@ -130,11 +131,6 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const auto dim = static_cast<size_t>(sigma.size());
   Buffers::device<double> diagonal_device(dim, res.device());
   FBF_TRY(sigma.diagonal(res, diagonal_device.data()));
-  std::vector<double> diagonal(dim);
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(diagonal.data(), diagonal_device.data(), dim * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(res.sync());
   // Not ci_solve's defaults: over H2O 6-31G's 1.66M determinants its 1e-12
   // relative residual is past what the Davidson reaches (it stalls near 1.2e-10
   // absolute, 125 iterations in, as Divergence), and its 100 iterations are
@@ -143,18 +139,15 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   CiSolverOptions options;
   options.davidson.residual_tolerance = 1e-11;
   options.davidson.max_iterations = 400;
-  CiRoots roots = FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal, nroots, options));
+  CiRoots roots =
+      FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal_device.data(), nroots, options));
 
   const auto count = static_cast<size_t>(nroots);
-  // Each root's 1-RDM on the device, from the roots ci_solve returned.
+  // Each root's 1-RDM on the device, from the roots ci_solve left there.
   std::vector<double> gamma(count * n * n);
-  Buffers::device<double> vectors_device(roots.vectors.size(), res.device());
   Buffers::device<double> gamma_device(gamma.size(), res.device());
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(vectors_device.data(), roots.vectors.data(),
-                                         roots.vectors.size() * sizeof(double),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
   for (size_t r = 0; r < count; ++r) {
-    FBF_TRY(sigma.rdm1(res, vectors_device.data() + (r * dim), gamma_device.data() + (r * n * n)));
+    FBF_TRY(sigma.rdm1(res, roots.vectors.data() + (r * dim), gamma_device.data() + (r * n * n)));
   }
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma.data(), gamma_device.data(),
                                          gamma.size() * sizeof(double), wwr::wwrMemcpyDeviceToHost,

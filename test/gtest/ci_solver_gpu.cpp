@@ -111,6 +111,26 @@ Case make_case(const fb::json &entry, std::int32_t shift = 0) {
   return c;
 }
 
+// @p host on the device.
+fb::Buffers::device<double> on_device(fb::DeviceResources &res, std::span<const double> host) {
+  fb::Buffers::device<double> d(host.size(), res.device());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(d.data(), host.data(), host.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return d;
+}
+
+// The @p count doubles at @p device on the host.
+std::vector<double> on_host(fb::DeviceResources &res, const double *device, std::size_t count) {
+  std::vector<double> host(count);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), device, count * sizeof(double),
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return host;
+}
+
 // The golden roots whose <S^2> is @p s2, in ascending order.
 std::vector<std::size_t> golden_of_spin(const fb::json &roots, double s2) {
   std::vector<std::size_t> out;
@@ -126,11 +146,13 @@ std::vector<std::size_t> golden_of_spin(const fb::json &roots, double s2) {
 // and the 1-RDM (where the golden root is not one of a degenerate level)
 // with its trace. The spin-summed 1-RDM does not depend on M_s, so a triplet
 // solved at M_s = 1 compares with direct_spin1's M_s = 0 one.
-void expect_roots(const Case &c, const fb::CiRoots &got, double s2) {
+void expect_roots(fb::DeviceResources &res, const Case &c, const fb::CiRoots &got, double s2) {
   const std::vector<std::size_t> golden = golden_of_spin(c.roots, s2);
   ASSERT_GE(golden.size(), got.energies.size());
   const std::size_t dim =
       static_cast<std::size_t>(c.alpha.size()) * static_cast<std::size_t>(c.beta.size());
+  ASSERT_EQ(got.vectors.num_elements(), dim * got.energies.size());
+  const std::vector<double> vectors = on_host(res, got.vectors.data(), got.vectors.num_elements());
   const auto m = static_cast<std::size_t>(c.n);
   std::int32_t compared = 0;
   for (std::size_t r = 0; r < got.energies.size(); ++r) {
@@ -141,7 +163,7 @@ void expect_roots(const Case &c, const fb::CiRoots &got, double s2) {
 
     std::vector<double> gamma(m * m);
     ASSERT_TRUE(
-        fb::rdm1(c.alpha, c.beta, std::span<const double>{got.vectors}.subspan(r * dim, dim), gamma)
+        fb::rdm1(c.alpha, c.beta, std::span<const double>{vectors}.subspan(r * dim, dim), gamma)
             .has_value());
     double trace = 0.0;
     for (std::size_t t = 0; t < m; ++t) {
@@ -178,10 +200,11 @@ TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
     ASSERT_LT(golden_of_spin(c.roots, 2.0).front(), singlets[1]);
 
     HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
-    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, c.diagonal, 3);
+    const auto diagonal = on_device(res, c.diagonal);
+    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3);
     ASSERT_TRUE(got.has_value()) << got.error().message;
     EXPECT_EQ(sigma.applies, got->davidson.iterations);
-    expect_roots(c, *got, 0.0);
+    expect_roots(res, c, *got, 0.0);
   }
 }
 
@@ -196,9 +219,10 @@ TEST(CiSolver, LowestTripletsFromTheMsOneSector) {
     const Case c = make_case(entry, 1);
     SCOPED_TRACE(c.name);
     HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
-    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, c.diagonal, 3);
+    const auto diagonal = on_device(res, c.diagonal);
+    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3);
     ASSERT_TRUE(got.has_value()) << got.error().message;
-    expect_roots(c, *got, 2.0);
+    expect_roots(res, c, *got, 2.0);
   }
 }
 
@@ -213,7 +237,8 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
   fb::CiSolverOptions options;
   options.spin_penalty = 0.0;
-  const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, c.diagonal, 3, options);
+  const auto diagonal = on_device(res, c.diagonal);
+  const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
   ASSERT_TRUE(got.has_value()) << got.error().message;
   bool triplet = false;
   for (std::size_t r = 0; r < 3; ++r) {
@@ -233,7 +258,8 @@ TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
   fb::CiSolverOptions options;
   options.davidson.max_iterations = 2;
-  const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, c.diagonal, 3, options);
+  const auto diagonal = on_device(res, c.diagonal);
+  const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
   ASSERT_FALSE(got.has_value());
   EXPECT_EQ(got.error().kind, fb::ErrorKind::MaxIterationsExceeded) << got.error().message;
 }
@@ -246,18 +272,19 @@ TEST(CiSolver, RejectsBadShapes) {
   const Case c = make_case(cases[0]);
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
   const auto dim = static_cast<std::int32_t>(c.diagonal.size());
+  const auto diagonal = on_device(res, c.diagonal);
   const auto kind = [](const fb::Result<fb::CiRoots> &got) {
     return got.has_value() ? std::optional<fb::ErrorKind>{} : got.error().kind;
   };
   const auto invalid = std::optional{fb::ErrorKind::InvalidConfig};
-  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, c.diagonal, 0)), invalid);
-  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, c.diagonal, dim + 1)), invalid);
-  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta,
-                              std::span<const double>{c.diagonal}.first(c.diagonal.size() - 1), 1)),
-            invalid);
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 0)), invalid);
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), dim + 1)), invalid);
+  const auto other = fb::StringSet::create(c.n + 1, c.beta.n_electrons());
+  ASSERT_TRUE(other.has_value());
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, *other, diagonal.data(), 1)), invalid);
   fb::CiSolverOptions negative;
   negative.spin_penalty = -1.0;
-  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, c.diagonal, 1, negative)), invalid);
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 1, negative)), invalid);
   EXPECT_EQ(sigma.applies, 0);
 
   std::vector<double> vector(c.diagonal.size(), 0.0);
@@ -327,6 +354,35 @@ TEST(CiSpinSquareGpu, MatchesHost) {
     auto penalized = upload(y0);
     ASSERT_TRUE(spin->penalize(res, k, lambda, target, xd.data(), penalized.data()).has_value());
     const std::vector<double> got_penalized = download(penalized);
+
+    // penalize_diagonal against diag(S²) = S_z (S_z + 1) + N_β less the
+    // doubly occupied orbitals, from the strings, on the first column of x
+    // standing in for diag(H); and in place.
+    const double two_sz = s.n_alpha - s.n_beta;
+    const double constant = (0.25 * two_sz * (two_sz + 2.0)) + s.n_beta;
+    std::vector<double> want_diagonal(dim);
+    for (std::size_t ia = 0; ia < static_cast<std::size_t>(alpha->size()); ++ia) {
+      for (std::size_t ib = 0; ib < static_cast<std::size_t>(beta->size()); ++ib) {
+        const std::size_t det = ia * static_cast<std::size_t>(beta->size()) + ib;
+        const std::int32_t doubles = std::popcount(alpha->strings()[ia] & beta->strings()[ib]);
+        want_diagonal[det] = x[det] + lambda * (constant - doubles - target);
+      }
+    }
+    fb::Buffers::device<double> shifted(dim, res.device());
+    ASSERT_TRUE(
+        spin->penalize_diagonal(res, lambda, target, xd.data(), shifted.data()).has_value());
+    // To roundoff, as the device may fuse the multiply-add.
+    const auto expect_diagonal = [&](const std::vector<double> &got_diagonal) {
+      ASSERT_EQ(got_diagonal.size(), want_diagonal.size());
+      for (std::size_t i = 0; i < dim; ++i) {
+        EXPECT_NEAR(got_diagonal[i], want_diagonal[i], 1e-14) << "determinant " << i;
+      }
+    };
+    expect_diagonal(download(shifted));
+    auto in_place = upload(std::vector<double>(x.begin(), x.begin() + dim));
+    ASSERT_TRUE(
+        spin->penalize_diagonal(res, lambda, target, in_place.data(), in_place.data()).has_value());
+    expect_diagonal(download(in_place));
 
     std::vector<double> s2x(dim);
     for (std::size_t j = 0; j < k; ++j) {

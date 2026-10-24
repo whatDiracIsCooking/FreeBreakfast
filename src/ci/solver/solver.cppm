@@ -30,6 +30,14 @@ namespace free_breakfast {
                                      const double *shifted, const double *residual,
                                      double *correction);
 
+// ci_solve's @p count orthonormal guess columns into the n × count device
+// block @p guess: unit vectors on the determinants of lowest @p diagonal
+// (device, n), ties to the lower address, each with a 1e-3 deterministic
+// spread over every determinant, then modified Gram-Schmidt twice. Queued on
+// res.stream() with res.blas(), whose pointer mode it holds at host.
+[[nodiscard]] Status ci_guesses(DeviceResources &res, int32_t n, int32_t count,
+                                const double *diagonal, double *guess);
+
 } // namespace free_breakfast
 
 export namespace free_breakfast {
@@ -90,6 +98,17 @@ public:
   [[nodiscard]] Status penalize(DeviceResources &res, int32_t k, double lambda, double target,
                                 const double *x, double *y);
 
+  /// @brief shifted = diagonal + λ (diag(S²) − @p target) for the size()
+  /// device doubles @p diagonal and @p shifted (which may be the same): the
+  /// diagonal of a penalized H, ci_solve's preconditioner's. diag(S²) is
+  /// S_z (S_z + 1) + N_β less the orbitals doubly occupied. Queued on
+  /// res.stream().
+  ///
+  /// @return InvalidConfig for another device; or the launch's GpuRuntime
+  ///         error.
+  [[nodiscard]] Status penalize_diagonal(DeviceResources &res, double lambda, double target,
+                                         const double *diagonal, double *shifted);
+
   /// @brief The number of determinants, alpha.size() · beta.size().
   [[nodiscard]] int32_t size() const noexcept { return n_alpha_ * n_beta_; }
 
@@ -132,9 +151,9 @@ struct CiRoots {
   std::vector<double> energies;
   /// @brief ⟨S²⟩ per root.
   std::vector<double> spin_squares;
-  /// @brief The unit CI vectors, root r at [r · dim, (r + 1) · dim), each in
-  /// host_sigma's layout.
-  std::vector<double> vectors;
+  /// @brief The unit CI vectors on the device of the ci_solve call, root r at
+  /// [r · dim, (r + 1) · dim), each in host_sigma's layout.
+  Buffers::device<double> vectors;
   /// @brief What davidson_solve did.
   DavidsonInfo davidson;
 };
@@ -147,14 +166,18 @@ struct CiRoots {
 /// on the 2 · n_roots determinants of lowest diag(H) (each with a small spread
 /// over every determinant, so no spatial symmetry is missed), preconditioned by
 /// r / (θ − diag(H + penalty)). S is the sector's lowest spin, so choosing the
-/// spin is choosing N_α − N_β = 2S. The penalty (a CiSpinSquare) and the
-/// preconditioner run on the device, so no block leaves it per iteration.
+/// spin is choosing N_α − N_β = 2S. Everything runs on the device: the
+/// guesses and the penalized diagonal are built there from @p diagonal, the
+/// penalty (a CiSpinSquare) and the preconditioner run there per iteration,
+/// ⟨S²⟩ is taken there, and the roots stay there. Only the n_roots Ritz values
+/// and ⟨S²⟩s come to the host.
 ///
 /// @param sigma    Applies H to a device block of CI vectors (host_sigma's
 ///                 layout); a LinearOperator over dim = alpha.size() ·
 ///                 beta.size().
 /// @param alpha, beta The sector's strings.
-/// @param diagonal diag(H) on the host, dim long, as host_diagonal writes it.
+/// @param diagonal diag(H) on the device, dim doubles, as CiSigma::diagonal
+///                 (or host_diagonal) writes it.
 /// @param n_roots  Roots wanted, in [1, dim].
 /// @return The roots. Otherwise InvalidConfig for a shape or option out of
 ///         range; davidson_solve's error (MaxIterationsExceeded, Divergence,
@@ -163,97 +186,41 @@ struct CiRoots {
 ///         below for the penalty to lift.
 template <LinearOperator<double> Op>
 [[nodiscard]] Result<CiRoots> ci_solve(DeviceResources &res, Op &sigma, const StringSet &alpha,
-                                       const StringSet &beta,
-                                       const std::span<const double> diagonal,
+                                       const StringSet &beta, const double *const diagonal,
                                        const int32_t n_roots, const CiSolverOptions &options = {}) {
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
-  if (alpha.n_orbitals() != beta.n_orbitals() || diagonal.size() != dim ||
+  if (alpha.n_orbitals() != beta.n_orbitals() ||
       dim > static_cast<size_t>(std::numeric_limits<int32_t>::max()) || n_roots < 1 ||
       static_cast<size_t>(n_roots) > dim || !(options.spin_penalty >= 0.0)) {
-    return err_config("ci_solve: needs one orbital count, a diagonal of {} determinants, n_roots "
-                      "in [1, {}] and spin_penalty >= 0 (orbitals {} and {}, diagonal {}, n_roots "
-                      "{}, spin_penalty {})",
-                      dim, dim, alpha.n_orbitals(), beta.n_orbitals(), diagonal.size(), n_roots,
-                      options.spin_penalty);
+    return err_config("ci_solve: needs one orbital count, at most an int32_t of determinants, "
+                      "n_roots in [1, {}] and spin_penalty >= 0 (orbitals {} and {}, n_roots {}, "
+                      "spin_penalty {})",
+                      dim, alpha.n_orbitals(), beta.n_orbitals(), n_roots, options.spin_penalty);
   }
   const auto n = static_cast<int32_t>(dim);
   const auto roots = static_cast<size_t>(n_roots);
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const double penalty = options.spin_penalty;
-  // S(S+1) with 2S = |N_α − N_β|, and S_z (S_z + 1).
+  // S(S+1) with 2S = |N_α − N_β|.
   const int32_t two_s = std::abs(alpha.n_electrons() - beta.n_electrons());
   const double target = 0.25 * two_s * (two_s + 2);
-  const double two_sz = alpha.n_electrons() - beta.n_electrons();
-  const double sz_term = 0.25 * two_sz * (two_sz + 2.0);
 
-  // diag(H + penalty): diag(S²) is S_z (S_z + 1) + N_β less the doubly
-  // occupied orbitals, the diagonal of Σ E^β_pp E^α_pp.
-  std::vector<double> shifted(dim);
-  for (size_t ia = 0; ia < static_cast<size_t>(alpha.size()); ++ia) {
-    for (size_t ib = 0; ib < static_cast<size_t>(beta.size()); ++ib) {
-      const size_t det = ia * static_cast<size_t>(beta.size()) + ib;
-      const auto doubles = std::popcount(alpha.strings()[ia] & beta.strings()[ib]);
-      shifted[det] = diagonal[det] + penalty * (sz_term + beta.n_electrons() - doubles - target);
-    }
-  }
-
-  // Guesses: unit vectors on the determinants of lowest diag(H), ties to the
-  // lower address, twice as many as the roots. A determinant has one spatial
-  // symmetry, and a diagonal preconditioner and H both keep to it, so from
-  // unit vectors alone a root of a symmetry the guesses miss never appears:
-  // N₂'s second and third singlets are lost that way. So each guess also gets
-  // a 1e-3 spread over every determinant, deterministic (a splitmix64 hash of
-  // its position), and the columns are then orthonormalized.
+  // Guesses on the 2 · n_roots determinants of lowest diag(H): see ci_guesses
+  // and the README for the spread. The subspace holds up to 16 · n_roots.
   const auto guess_count = static_cast<int32_t>(std::min(dim, 2 * roots));
   const int32_t max_subspace =
       std::max(2 * n_roots, static_cast<int32_t>(std::min(dim, 16 * roots)));
-  std::vector<size_t> order(dim);
-  std::iota(order.begin(), order.end(), size_t{0});
-  std::ranges::stable_sort(order, {}, [&](size_t i) { return diagonal[i]; });
-  std::vector<double> guess_host(dim * static_cast<size_t>(guess_count));
-  for (size_t i = 0; i < guess_host.size(); ++i) {
-    uint64_t z = (i + 1) * 0x9E3779B97F4A7C15ULL;
-    z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
-    z ^= z >> 31U;
-    guess_host[i] = 1e-3 * (static_cast<double>(z >> 11U) * 0x1.0p-52 - 1.0); // [-1e-3, 1e-3)
-  }
-  for (size_t g = 0; g < static_cast<size_t>(guess_count); ++g) {
-    const std::span<double> column{guess_host.data() + g * dim, dim};
-    column[order[g]] += 1.0;
-    // Modified Gram-Schmidt, twice, against the columns before.
-    for (int32_t pass = 0; pass < 2; ++pass) {
-      for (size_t h = 0; h < g; ++h) {
-        const std::span<const double> earlier{guess_host.data() + h * dim, dim};
-        const double overlap =
-            std::inner_product(earlier.begin(), earlier.end(), column.begin(), 0.0);
-        for (size_t i = 0; i < dim; ++i) {
-          column[i] -= overlap * earlier[i];
-        }
-      }
-    }
-    const double norm =
-        std::sqrt(std::inner_product(column.begin(), column.end(), column.begin(), 0.0));
-    for (double &x : column) {
-      x /= norm;
-    }
-  }
-  Buffers::device<double> guess(guess_host.size(), res.device());
-  Buffers::device<double> shifted_device(dim, res.device());
+  Buffers::device<double> guess(dim * static_cast<size_t>(guess_count), res.device());
+  Buffers::device<double> shifted(dim, res.device());
   Buffers::device<double> values(roots, res.device());
   Buffers::device<double> vectors(dim * roots, res.device());
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(guess.data(), guess_host.data(),
-                                         guess_host.size() * sizeof(double),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(shifted_device.data(), shifted.data(), dim * sizeof(double),
-                                     wwr::wwrMemcpyHostToDevice, stream)));
-  FBF_TRY(res.sync());
+  FBF_TRY(ci_guesses(res, n, guess_count, diagonal, guess.data()));
 
   // H + λ (S² − S(S+1)) through the caller's sigma, the penalty added into
-  // its output on the device.
+  // its output on the device, and diag(H + penalty) for the preconditioner.
   CiSpinSquare spin = FBF_TRY(CiSpinSquare::create(res, alpha, beta));
+  FBF_TRY(spin.penalize_diagonal(res, penalty, target, diagonal, shifted.data()));
   struct Penalized {
     Op &sigma;
     CiSpinSquare &spin;
@@ -276,7 +243,7 @@ template <LinearOperator<double> Op>
   const auto precondition = [&](DeviceResources &r, std::span<const double> theta,
                                 const double *residual, double *correction) -> Status {
     for (size_t col = 0; col < theta.size(); ++col) {
-      FBF_TRY(ci_precondition(r, n, theta[col], shifted_device.data(), residual + col * dim,
+      FBF_TRY(ci_precondition(r, n, theta[col], shifted.data(), residual + col * dim,
                               correction + col * dim));
     }
     return {};
@@ -289,25 +256,28 @@ template <LinearOperator<double> Op>
     return std::unexpected{info.error()};
   }
 
-  CiRoots out{std::vector<double>(roots), std::vector<double>(roots),
-              std::vector<double>(dim * roots), *info};
+  // ⟨S²⟩ per root on the device, S² X into the guesses' block (davidson_solve
+  // has copied them, and guess_count >= n_roots), and θ less the penalty's
+  // ⟨λ (S² − S(S+1))⟩: θ is the unit Ritz vector's Rayleigh quotient of the
+  // penalized H, so this is its quotient of H itself.
   std::vector<double> theta(roots);
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(theta.data(), values.data(), roots * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.vectors.data(), vectors.data(),
-                                         out.vectors.size() * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(spin.apply(res, n_roots, vectors.data(), guess.data()));
+  CiRoots out{std::vector<double>(roots), std::vector<double>(roots), std::move(vectors), *info};
+  {
+    const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
+                                            CreatePolicy<wwr::wwrblasStatus_t>>
+        host_scalars{res.blas().get(), wwr::WWRBLAS_POINTER_MODE_HOST};
+    for (size_t r = 0; r < roots; ++r) {
+      FBF_TRY(
+          gpu_status(wwr::dot<double, int32_t>(res.blas().get(), n, out.vectors.data() + r * dim, 1,
+                                               guess.data() + r * dim, 1, &out.spin_squares[r])));
+    }
+  }
   FBF_TRY(res.sync());
-
-  // ⟨S²⟩ per root, and θ less the penalty's ⟨λ (S² − S(S+1))⟩: θ is the
-  // unit Ritz vector's Rayleigh quotient of the penalized H, so this is
-  // its quotient of H itself.
-  std::vector<double> s2c(dim);
   for (size_t r = 0; r < roots; ++r) {
-    const std::span<const double> c{out.vectors.data() + r * dim, dim};
-    FBF_TRY(host_spin_square(alpha, beta, c, s2c));
-    const double s2 = std::inner_product(c.begin(), c.end(), s2c.begin(), 0.0);
-    out.spin_squares[r] = s2;
+    const double s2 = out.spin_squares[r];
     out.energies[r] = theta[r] - penalty * (s2 - target);
     if (penalty > 0.0 && std::abs(s2 - target) > 1e-6) {
       return err_numerical("ci_solve: root {} has <S^2> = {:.8f}, not S(S+1) = {}: a state of "

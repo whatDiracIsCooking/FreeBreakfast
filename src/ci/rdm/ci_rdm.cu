@@ -1,7 +1,8 @@
-// The device half of rdm12: the gather of D_{pq,K} = <c| E_pq |K> over each
-// determinant's own replacement lists. The products D Dᵀ and D c that give the
-// 2- and 1-RDM are gemms, on the module's side. One source for both backends
-// -- nvcc under CUDA, clang -x hip under HIP.
+// The device half of CiRdm::rdm12: the gather of D_{pq,K} = <c| E_pq |K> over
+// each determinant's own replacement lists, and Γ's assembly from M and γ. The
+// products Dᵀ D (a syrk) and Dᵀ c (a gemm) between the two are on the module's
+// side. One source for both backends -- nvcc under CUDA, clang -x hip under
+// HIP.
 //
 // One thread per determinant K, walking K's α links (K_β held) and then its β
 // links (K_α held): a†_p a_q |K> = s |J> is <J| E_pq |K> = s, so K's own links
@@ -54,7 +55,41 @@ __global__ void ci_rdm_gather_d_kernel(const int32_t begin, const int32_t rows,
   }
 }
 
+__global__ void ci_rdm_assemble_kernel(const int32_t n, const double *const m,
+                                       const double *const gamma, double *const gamma2) {
+  const int64_t at = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  const auto nn = static_cast<int64_t>(n) * n;
+  if (at >= nn * nn) {
+    return;
+  }
+  // at = (t u) · n² + (v w), each pair row-major.
+  const int64_t tu = at / nn;
+  const int64_t vw = at % nn;
+  const int64_t t = tu / n;
+  const int64_t u = tu % n;
+  const int64_t v = vw / n;
+  const int64_t w = vw % n;
+  // M_{tu,wv}, read from the lower triangle M is symmetric about.
+  const int64_t wv = (w * n) + v;
+  const int64_t hi = tu > wv ? tu : wv;
+  const int64_t lo = tu > wv ? wv : tu;
+  const double delta = u == v ? gamma[(t * n) + w] : 0.0;
+  gamma2[at] = m[hi + (lo * nn)] - delta;
+}
+
 } // namespace
+
+wwr::wwrError_t ci_rdm_assemble(const wwr::wwrStream_t stream, const int32_t n,
+                                const double *const m, const double *const gamma,
+                                double *const gamma2) {
+  const int64_t elements = static_cast<int64_t>(n) * n * n * n;
+  if (elements == 0) {
+    return wwr::wwrSuccess;
+  }
+  const auto blocks = static_cast<uint32_t>((elements + kCiRdmBlock - 1) / kCiRdmBlock);
+  ci_rdm_assemble_kernel<<<blocks, kCiRdmBlock, 0, stream>>>(n, m, gamma, gamma2);
+  return wwr::wwrGetLastError();
+}
 
 wwr::wwrError_t ci_rdm_gather_d(const wwr::wwrStream_t stream, const int32_t begin,
                                 const int32_t rows, const int32_t n_beta,

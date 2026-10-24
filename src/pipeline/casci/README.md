@@ -78,10 +78,12 @@ What it settled:
   reads only types: the selection's keys as `active_space/README.md` says,
   `nroots` an integer, and `molden` a path.
 - **Host synchronizations:** the selection's (under `avas`),
-  `active_space_hamiltonian`'s own, one to read the integrals back, one for
-  the diagonal, and `ci_solve`'s, several per Davidson iteration (the penalty
-  and the preconditioner are on the host); one for the 1-RDMs; with `molden`,
-  one for C and one for the 1-RDM's eigenproblem.
+  `active_space_hamiltonian`'s own, one to read the integrals back, and
+  `ci_solve`'s: its guesses' Gram-Schmidt dots, a few per Davidson iteration
+  to read the Ritz values and residual norms, and one for the energies and
+  ⟨S²⟩s (the diagonal, the guesses, the penalty, the preconditioner and the
+  roots stay on the device); one for the 1-RDMs and the vectors; with
+  `molden`, one for C and one for the 1-RDM's eigenproblem.
 
 Errors: `ActiveSpaceSelection::select`'s (`active_space/README.md`);
 `ci_solve`'s InvalidConfig for `nroots` outside [1, dim],

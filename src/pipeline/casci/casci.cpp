@@ -148,27 +148,23 @@ namespace free_breakfast {
   const auto dim = static_cast<size_t>(sigma.size());
   Buffers::device<double> diagonal_device(dim, res.device());
   FBF_TRY(sigma.diagonal(res, diagonal_device.data()));
-  std::vector<double> diagonal(dim);
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(diagonal.data(), diagonal_device.data(), dim * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(res.sync());
-  CiRoots roots = FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal, nroots));
+  CiRoots roots = FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal_device.data(), nroots));
 
   const auto count = static_cast<size_t>(nroots);
-  // Each root's 1-RDM on the device, from the roots ci_solve returned.
+  // Each root's 1-RDM on the device, from the roots ci_solve left there; then
+  // both come to the host, the vectors for Casci::vectors.
   std::vector<double> gamma(count * n * n);
-  Buffers::device<double> vectors_device(roots.vectors.size(), res.device());
+  std::vector<double> vectors(count * dim);
   Buffers::device<double> gamma_device(gamma.size(), res.device());
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(vectors_device.data(), roots.vectors.data(),
-                                         roots.vectors.size() * sizeof(double),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
   for (size_t r = 0; r < count; ++r) {
-    FBF_TRY(sigma.rdm1(res, vectors_device.data() + (r * dim), gamma_device.data() + (r * n * n)));
+    FBF_TRY(sigma.rdm1(res, roots.vectors.data() + (r * dim), gamma_device.data() + (r * n * n)));
   }
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma.data(), gamma_device.data(),
                                          gamma.size() * sizeof(double), wwr::wwrMemcpyDeviceToHost,
                                          stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(vectors.data(), roots.vectors.data(),
+                                         vectors.size() * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
   FBF_TRY(res.sync());
   if (!molden.empty()) {
     FBF_TRY(write_casci_molden(res, molden, molecule, basis, scf, space,
@@ -181,7 +177,7 @@ namespace free_breakfast {
       .c = std::move(space.c),
       .energies = std::move(roots.energies),
       .spin_squares = std::move(roots.spin_squares),
-      .vectors = std::move(roots.vectors),
+      .vectors = std::move(vectors),
       .rdm1 = std::move(gamma),
       .davidson = roots.davidson,
   };
