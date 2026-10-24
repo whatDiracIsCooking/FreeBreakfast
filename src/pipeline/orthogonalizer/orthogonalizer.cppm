@@ -11,7 +11,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
+export import free_breakfast.pipeline.basis_set;
 import free_breakfast.recipes.orthogonalize;
 import free_breakfast.pipeline.step;
 export import free_breakfast.recipes.matrix_ao;
@@ -24,11 +24,11 @@ export namespace free_breakfast {
 /// @brief X = S^{-1/2} over the spherical AOs, @c nao_sphe square: X^T S X = I
 /// on the modes above the eigenvalue floor, which turns F C = S C eps into a
 /// standard eigenproblem.
-struct Orthogonalizer {
+struct OrthogonalizerOutput {
   SphericalMatrixAO x;
 };
 
-/// @brief Builds the @ref Overlap's orthogonalizer on @p res's device.
+/// @brief Builds the @ref OverlapOutput's orthogonalizer on @p res's device.
 struct OrthogonalizerStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "orthogonalizer";
@@ -39,11 +39,12 @@ struct OrthogonalizerStep {
 
   /// @brief X from S. A non-converged eigensolve is ErrorKind::Numerical; a
   /// failed runtime, solver or BLAS call is ErrorKind::GpuRuntime.
-  [[nodiscard]] Result<Orthogonalizer> run(View<BasisSet, Overlap> in, DeviceResources &res) const {
-    const SphericalMatrixAO &s = in.get<Overlap>().s;
-    SphericalMatrixAO x(res, in.get<BasisSet>());
+  [[nodiscard]] Result<OrthogonalizerOutput> run(View<BasisSetOutput, OverlapOutput> in,
+                                                 DeviceResources &res) const {
+    const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
+    SphericalMatrixAO x(res, in.get<BasisSetOutput>().basis);
     FBF_TRY(orthogonalize(res, static_cast<int32_t>(s.n()), s.data(), x.data(), eigenvalue_floor));
-    return Orthogonalizer{std::move(x)};
+    return OrthogonalizerOutput{std::move(x)};
   }
 };
 

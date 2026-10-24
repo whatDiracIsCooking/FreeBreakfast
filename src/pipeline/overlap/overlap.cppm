@@ -10,7 +10,7 @@ export module free_breakfast.pipeline.overlap;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
+export import free_breakfast.pipeline.basis_set;
 import free_breakfast.integrals.one_electron.overlap;
 import free_breakfast.pipeline.step;
 export import free_breakfast.recipes.matrix_ao;
@@ -22,7 +22,7 @@ export import free_breakfast.pipeline.primitive_pair_classes;
 export namespace free_breakfast {
 
 /// @brief The spherical AO overlap S_mn = <m|n>, @c nao_sphe square.
-struct Overlap {
+struct OverlapOutput {
   SphericalMatrixAO s;
 };
 
@@ -33,12 +33,13 @@ struct OverlapStep {
 
   /// @brief S, built Cartesian and carried onto the spherical layout. A
   /// failed launch or BLAS call is ErrorKind::GpuRuntime.
-  [[nodiscard]] Result<Overlap> run(View<BasisSet, SphericalTransform, PrimitivePairClasses> in,
-                                    DeviceResources &res) const {
-    MatrixAOPair s(res, in.get<BasisSet>(), in.get<SphericalTransform>().u);
-    FBF_TRY(overlap(res, in.get<PrimitivePairClasses>().classes, s.cartesian()));
+  [[nodiscard]] Result<OverlapOutput>
+  run(View<BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput> in,
+      DeviceResources &res) const {
+    MatrixAOPair s(res, in.get<BasisSetOutput>().basis, in.get<SphericalTransformOutput>().u);
+    FBF_TRY(overlap(res, in.get<PrimitivePairClassesOutput>().classes, s.cartesian()));
     FBF_TRY(s.cartesian_to_spherical(res));
-    return Overlap{std::move(s.spherical())};
+    return OverlapOutput{std::move(s.spherical())};
   }
 };
 

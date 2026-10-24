@@ -1,22 +1,26 @@
 # Pipeline: BasisSet
 
-Resolve a basis by name or path and place it over the `Molecule`.
+Resolve a basis by name or path and place it over the `MoleculeOutput`'s molecule.
 
 ## Module
 
 `free_breakfast.pipeline.basis_set`, target `free_breakfast::pipeline::basis_set`.
-It re-exports `free_breakfast.basis`, so an importer can name the step's output
-without a second import.
+It re-exports `free_breakfast.basis` and the Molecule step, so an importer can
+name everything in `run`'s signature without a second import.
 
 ## The step
 
 ```cpp
+struct BasisSetOutput {
+  BasisSet basis;
+};
+
 struct BasisSetStep {
   static constexpr std::string_view kName = "basis_set";
 
   std::string basis{};
 
-  Result<BasisSet> run(View<Molecule> in) const;  // resolve_basis, normalize, place
+  Result<BasisSetOutput> run(View<MoleculeOutput> in) const;  // resolve_basis, normalize, place
 };
 ```
 

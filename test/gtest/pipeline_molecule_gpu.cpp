@@ -24,7 +24,7 @@ namespace fb = free_breakfast;
 static_assert(fb::PipelineStep<fb::MoleculeStep>);
 static_assert(fb::kRunShape<fb::MoleculeStep> == fb::RunShape::Device);
 static_assert(std::same_as<fb::StepInput<fb::MoleculeStep>, fb::View<>>);
-static_assert(std::same_as<fb::StepOutput<fb::MoleculeStep>, fb::Molecule>);
+static_assert(std::same_as<fb::StepOutput<fb::MoleculeStep>, fb::MoleculeOutput>);
 
 constexpr std::string_view kWater = "3\n"
                                     "water, Angstrom\n"
@@ -45,11 +45,11 @@ TEST(PipelineMolecule, MatchesReadXyz) {
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   ASSERT_TRUE(direct.has_value()) << direct.error().message;
 
-  EXPECT_EQ(molecule->charge(), 1);
-  EXPECT_EQ(molecule->multiplicity(), 2);
-  ASSERT_EQ(molecule->natoms(), direct->natoms());
+  EXPECT_EQ(molecule->molecule.charge(), 1);
+  EXPECT_EQ(molecule->molecule.multiplicity(), 2);
+  ASSERT_EQ(molecule->molecule.natoms(), direct->natoms());
   for (std::uint32_t a = 0; a < direct->natoms(); ++a) {
-    const fb::Atom &got = molecule->atoms()[a];
+    const fb::Atom &got = molecule->molecule.atoms()[a];
     const fb::Atom &want = direct->atoms()[a];
     EXPECT_EQ(got.element, want.element) << a;
     EXPECT_EQ(got.position.x, want.position.x) << a;

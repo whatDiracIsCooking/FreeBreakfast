@@ -1,5 +1,5 @@
 # The Fci step. recipes::davidson and pipeline::scf are PUBLIC and re-exported:
-# the product holds a DavidsonInfo, and run's View names the Scf and the
+# the product holds a DavidsonInfo, and run's View names the ScfOutput and the
 # products it re-exports. core::resources and pipeline::step are in run's
 # signature. Everything run uses -- the J and K classes, the active-space
 # Hamiltonian, the CI strings, sigma and solver, and core::wwr for the

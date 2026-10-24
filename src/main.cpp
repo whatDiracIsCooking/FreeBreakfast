@@ -23,49 +23,51 @@ namespace fb = free_breakfast;
 
 // One block per product type, each printed only if the pipeline built it.
 void print_products(const fb::Calculation &calc) {
-  if (const auto &molecule = calc.get<fb::Molecule>()) {
-    std::println("atoms:             {}", molecule->natoms());
-    std::println("charge:            {}", molecule->charge());
-    std::println("multiplicity:      {}", molecule->multiplicity());
-    std::println("electrons:         {}", molecule->electron_count());
-    std::println("nuclear repulsion: {:.10f} Ha", fb::nuclear_repulsion_energy(*molecule));
+  if (const auto &out = calc.get<fb::MoleculeOutput>()) {
+    const fb::Molecule &molecule = out->molecule;
+    std::println("atoms:             {}", molecule.natoms());
+    std::println("charge:            {}", molecule.charge());
+    std::println("multiplicity:      {}", molecule.multiplicity());
+    std::println("electrons:         {}", molecule.electron_count());
+    std::println("nuclear repulsion: {:.10f} Ha", fb::nuclear_repulsion_energy(molecule));
   }
-  if (const auto &basis = calc.get<fb::BasisSet>()) {
-    std::println("shells:            {}", basis->nshells());
-    std::println("AOs (cartesian):   {}", basis->nao_cart());
-    std::println("AOs (spherical):   {}", basis->nao_sphe());
+  if (const auto &out = calc.get<fb::BasisSetOutput>()) {
+    const fb::BasisSet &basis = out->basis;
+    std::println("shells:            {}", basis.nshells());
+    std::println("AOs (cartesian):   {}", basis.nao_cart());
+    std::println("AOs (spherical):   {}", basis.nao_sphe());
   }
-  if (const auto &transform = calc.get<fb::SphericalTransform>()) {
+  if (const auto &transform = calc.get<fb::SphericalTransformOutput>()) {
     std::println("spherical U:       {}", transform->u ? "uploaded" : "identity");
   }
-  if (const auto &pairs = calc.get<fb::PrimitivePairClasses>()) {
+  if (const auto &pairs = calc.get<fb::PrimitivePairClassesOutput>()) {
     std::println("pair classes:      {}", pairs->classes.size());
   }
-  if (const auto &overlap = calc.get<fb::Overlap>()) {
+  if (const auto &overlap = calc.get<fb::OverlapOutput>()) {
     std::println("overlap:           {0} x {0} (spherical)", overlap->s.n());
   }
-  if (const auto &orthogonalizer = calc.get<fb::Orthogonalizer>()) {
+  if (const auto &orthogonalizer = calc.get<fb::OrthogonalizerOutput>()) {
     std::println("orthogonalizer:    {0} x {0}, eigenvalue floor {1:g}", orthogonalizer->x.n(),
                  calc.step<fb::OrthogonalizerStep>()->eigenvalue_floor);
   }
-  if (const auto &core_hamiltonian = calc.get<fb::CoreHamiltonian>()) {
+  if (const auto &core_hamiltonian = calc.get<fb::CoreHamiltonianOutput>()) {
     std::println("core Hamiltonian:  {0} x {0} (spherical)", core_hamiltonian->h.n());
   }
   // The guess read the basis, so a guess means a basis to size it by.
-  if (calc.get<fb::Guess>()) {
+  if (calc.get<fb::GuessOutput>()) {
     std::println("initial guess:     {0} x {0} (spherical, SAD)",
-                 calc.get<fb::BasisSet>()->nao_sphe());
+                 calc.get<fb::BasisSetOutput>()->basis.nao_sphe());
   }
-  if (const auto &scf = calc.get<fb::Scf>()) {
+  if (const auto &scf = calc.get<fb::ScfOutput>()) {
     std::println("SCF iterations:    {}", scf->iterations);
     std::println("RHF energy:        {:.10f} Ha", scf->energy);
   }
-  if (const auto &pm = calc.get<fb::Localization>()) {
+  if (const auto &pm = calc.get<fb::LocalizationOutput>()) {
     std::println("Pipek-Mezey:       {} orbitals, {} sweeps", pm->n_occ, pm->info.sweeps);
     std::println("PM functional:     {:.10f} -> {:.10f}", pm->info.initial_functional,
                  pm->info.functional);
   }
-  if (const auto &casci = calc.get<fb::Casci>()) {
+  if (const auto &casci = calc.get<fb::CasciOutput>()) {
     std::println("CASCI:             CAS({}, {}), {} core, {} Davidson iterations", casci->nelecas,
                  casci->ncas, casci->ncore, casci->davidson.iterations);
     for (std::size_t r = 0; r < casci->energies.size(); ++r) {
@@ -73,7 +75,7 @@ void print_products(const fb::Calculation &calc) {
                    casci->spin_squares[r]);
     }
   }
-  if (const auto &fci = calc.get<fb::Fci>()) {
+  if (const auto &fci = calc.get<fb::FciOutput>()) {
     std::println("FCI:               {} electrons in {} orbitals, {} Davidson iterations",
                  fci->n_electrons, fci->nmo, fci->davidson.iterations);
     for (std::size_t r = 0; r < fci->energies.size(); ++r) {

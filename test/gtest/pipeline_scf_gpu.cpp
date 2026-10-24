@@ -23,14 +23,14 @@ namespace {
 
 namespace fb = free_breakfast;
 
-using ScfInput =
-    fb::View<fb::Molecule, fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses,
-             fb::Overlap, fb::Orthogonalizer, fb::CoreHamiltonian, fb::Guess>;
+using ScfInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                          fb::PrimitivePairClassesOutput, fb::OverlapOutput,
+                          fb::OrthogonalizerOutput, fb::CoreHamiltonianOutput, fb::GuessOutput>;
 
 static_assert(fb::PipelineStep<fb::ScfStep>);
 static_assert(fb::kRunShape<fb::ScfStep> == fb::RunShape::Device);
 static_assert(std::same_as<fb::StepInput<fb::ScfStep>, ScfInput>);
-static_assert(std::same_as<fb::StepOutput<fb::ScfStep>, fb::Scf>);
+static_assert(std::same_as<fb::StepOutput<fb::ScfStep>, fb::ScfOutput>);
 
 // Against PySCF converged to conv_tol 1e-12. What is left is J's and K's
 // screening and the step's own tolerances.
@@ -94,14 +94,14 @@ std::vector<double> matmul(const std::vector<double> &a, const std::vector<doubl
 // Every product the Scf step reads, made by the steps called by hand in the
 // order the planner would choose.
 struct Inputs {
-  fb::Molecule molecule;
-  fb::BasisSet basis;
-  fb::SphericalTransform transform;
-  fb::PrimitivePairClasses pairs;
-  fb::Overlap overlap;
-  fb::Orthogonalizer x;
-  fb::CoreHamiltonian h;
-  fb::Guess guess;
+  fb::MoleculeOutput molecule;
+  fb::BasisSetOutput basis;
+  fb::SphericalTransformOutput transform;
+  fb::PrimitivePairClassesOutput pairs;
+  fb::OverlapOutput overlap;
+  fb::OrthogonalizerOutput x;
+  fb::CoreHamiltonianOutput h;
+  fb::GuessOutput guess;
 
   [[nodiscard]] ScfInput view() const {
     return ScfInput{molecule, basis, transform, pairs, overlap, x, h, guess};
@@ -111,31 +111,32 @@ struct Inputs {
 std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom> atoms,
                                   std::string_view basis_name, std::int32_t charge,
                                   std::int32_t multiplicity = 1) {
-  fb::Molecule molecule(res, std::move(atoms), charge, multiplicity);
-  auto basis =
-      fb::BasisSetStep{.basis = std::string(basis_name)}.run(fb::View<fb::Molecule>{molecule});
+  fb::MoleculeOutput molecule{fb::Molecule(res, std::move(atoms), charge, multiplicity)};
+  auto basis = fb::BasisSetStep{.basis = std::string(basis_name)}.run(
+      fb::View<fb::MoleculeOutput>{molecule});
   if (!basis.has_value()) {
     ADD_FAILURE() << basis.error().message;
     return std::nullopt;
   }
-  auto transform = fb::SphericalTransformStep{}.run(fb::View<fb::BasisSet>{*basis}, res);
-  auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSet>{*basis}, res);
+  auto transform = fb::SphericalTransformStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
+  auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
   if (!transform.has_value() || !pairs.has_value()) {
     ADD_FAILURE() << "spherical transform or pair classes failed";
     return std::nullopt;
   }
   auto overlap = fb::OverlapStep{}.run(
-      fb::View<fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{*basis, *transform,
-                                                                               *pairs},
+      fb::View<fb::BasisSetOutput, fb::SphericalTransformOutput, fb::PrimitivePairClassesOutput>{
+          *basis, *transform, *pairs},
       res);
   if (!overlap.has_value()) {
     ADD_FAILURE() << overlap.error().message;
     return std::nullopt;
   }
-  auto x = fb::OrthogonalizerStep{}.run(fb::View<fb::BasisSet, fb::Overlap>{*basis, *overlap}, res);
+  auto x = fb::OrthogonalizerStep{}.run(
+      fb::View<fb::BasisSetOutput, fb::OverlapOutput>{*basis, *overlap}, res);
   auto h = fb::CoreHamiltonianStep{}.run(
-      fb::View<fb::Molecule, fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{
-          molecule, *basis, *transform, *pairs},
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+               fb::PrimitivePairClassesOutput>{molecule, *basis, *transform, *pairs},
       res);
   if (!x.has_value() || !h.has_value()) {
     ADD_FAILURE() << "orthogonalizer or core Hamiltonian failed";
@@ -143,9 +144,10 @@ std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom
   }
   fb::tf::Executor executor(4);
   fb::tf::Taskflow flow;
-  fb::Result<fb::Guess> guess = fb::err_config("the guess task did not run");
+  fb::Result<fb::GuessOutput> guess = fb::err_config("the guess task did not run");
   flow.emplace([&](fb::tf::Subflow &subflow) {
-    guess = fb::GuessStep{}.run(fb::View<fb::Molecule, fb::BasisSet>{molecule, *basis}, subflow);
+    guess = fb::GuessStep{}.run(fb::View<fb::MoleculeOutput, fb::BasisSetOutput>{molecule, *basis},
+                                subflow);
   });
   executor.run(flow).wait();
   if (!guess.has_value()) {
@@ -166,12 +168,12 @@ TEST_P(PipelineScf, MatchesPyscf) {
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>());
   ASSERT_TRUE(inputs.has_value());
-  const std::size_t n = inputs->basis.nao_sphe();
+  const std::size_t n = inputs->basis.basis.nao_sphe();
   ASSERT_EQ(n, expected.at("nao").get<std::size_t>());
 
   auto scf = fb::ScfStep{}.run(inputs->view(), res);
   ASSERT_TRUE(scf.has_value()) << scf.error().message;
-  EXPECT_NEAR(fb::nuclear_repulsion_energy(inputs->molecule),
+  EXPECT_NEAR(fb::nuclear_repulsion_energy(inputs->molecule.molecule),
               expected.at("nuclear_repulsion").get<double>(), 1e-10);
   EXPECT_NEAR(scf->energy, expected.at("energy").get<double>(), kEnergyTolerance);
   const auto mo_energies = expected.at("mo_energies").get<std::vector<double>>();
@@ -256,7 +258,7 @@ TEST(PipelineScfMolden, WritesTheConvergedOrbitals) {
     orbitals += line.starts_with(" Ene=") ? 1 : 0;
     occupied += line == " Occup= 2.000000" ? 1 : 0;
   }
-  EXPECT_EQ(orbitals, inputs->basis.nao_sphe());
+  EXPECT_EQ(orbitals, inputs->basis.basis.nao_sphe());
   EXPECT_EQ(occupied, expected.at("electrons").get<std::size_t>() / 2);
 }
 
@@ -324,8 +326,9 @@ TEST(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  ASSERT_TRUE(calc->get<fb::Scf>().has_value());
-  EXPECT_NEAR(calc->get<fb::Scf>()->energy, expected.at("energy").get<double>(), kEnergyTolerance);
+  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
+  EXPECT_NEAR(calc->get<fb::ScfOutput>()->energy, expected.at("energy").get<double>(),
+              kEnergyTolerance);
 }
 
 } // namespace

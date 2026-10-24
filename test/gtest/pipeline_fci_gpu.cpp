@@ -1,6 +1,6 @@
 // The Fci step against PySCF's fci.FCI (data/fci/fci.json,
 // tools/emit_fci_step_reference.py), through the real registry: a config
-// naming [fci] plans the whole chain to the Scf and solves the full CI over
+// naming [fci] plans the whole chain to the ScfOutput and solves the full CI over
 // every orbital on the GPU sigma. Compared: each singlet's total energy and
 // <S^2>, and, for a root of no degenerate level, its natural occupations.
 // Both are invariant under any rotation of the orbitals, so they depend on
@@ -29,10 +29,11 @@ namespace fb = free_breakfast;
 
 static_assert(fb::PipelineStep<fb::FciStep>);
 static_assert(fb::kRunShape<fb::FciStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::FciStep>,
-                           fb::View<fb::Molecule, fb::BasisSet, fb::SphericalTransform,
-                                    fb::PrimitivePairClasses, fb::CoreHamiltonian, fb::Scf>>);
-static_assert(std::same_as<fb::StepOutput<fb::FciStep>, fb::Fci>);
+static_assert(std::same_as<
+              fb::StepInput<fb::FciStep>,
+              fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                       fb::PrimitivePairClassesOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>>);
+static_assert(std::same_as<fb::StepOutput<fb::FciStep>, fb::FciOutput>);
 
 // The issue's bar, for the energies and <S^2>.
 constexpr double kEnergyTolerance = 1e-8;
@@ -154,7 +155,7 @@ TEST_P(PipelineFci, MatchesPyscf) {
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  const auto &fci = calc->get<fb::Fci>();
+  const auto &fci = calc->get<fb::FciOutput>();
   ASSERT_TRUE(fci.has_value());
 
   EXPECT_EQ(fci->nmo, entry.at("nmo").get<std::int32_t>());
@@ -215,8 +216,8 @@ TEST(PipelineFci, ASpacePastTheDeviceMemoryIsRefusedUpFront) {
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::Allocation);
   EXPECT_NE(ran.error().message.find("fci: 10 electrons in 24 orbitals"), std::string::npos)
       << ran.error().message;
-  ASSERT_TRUE(calc->get<fb::Scf>().has_value());
-  EXPECT_FALSE(calc->get<fb::Fci>().has_value());
+  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
+  EXPECT_FALSE(calc->get<fb::FciOutput>().has_value());
 }
 
 } // namespace

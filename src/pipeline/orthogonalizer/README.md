@@ -13,7 +13,7 @@ importer can name everything in `run`'s signature without a second import.
 ## The step
 
 ```cpp
-struct Orthogonalizer {
+struct OrthogonalizerOutput {
   SphericalMatrixAO x;  // nao_sphe square
 };
 
@@ -22,7 +22,7 @@ struct OrthogonalizerStep {
 
   double eigenvalue_floor = kOrthogonalizeEigenvalueFloor<double>;  // 1e-10
 
-  Result<Orthogonalizer> run(View<BasisSet, Overlap> in, DeviceResources &res) const;
+  Result<OrthogonalizerOutput> run(View<BasisSetOutput, OverlapOutput> in, DeviceResources &res) const;
 };
 ```
 
@@ -67,5 +67,5 @@ freed when it returns, and syevd's work and the scaled U come from
 
 | File | Role |
 |------|------|
-| `orthogonalizer.cppm` | Module interface: `Orthogonalizer`, `OrthogonalizerStep` |
+| `orthogonalizer.cppm` | Module interface: `OrthogonalizerOutput`, `OrthogonalizerStep` |
 | `CMakeLists.txt` | The module library |

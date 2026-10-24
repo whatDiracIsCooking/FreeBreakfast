@@ -17,7 +17,7 @@ a second import. It links no GPU library: the step is host work. It links
 ```cpp
 enum class GuessType : uint8_t { Sad };
 
-struct Guess {
+struct GuessOutput {
   std::vector<double> d;  // nao_sphe square, column-major, spherical, on the host
 };
 
@@ -26,8 +26,8 @@ struct GuessStep {
 
   GuessType type = GuessType::Sad;
 
-  Result<Guess> run(View<Molecule, BasisSet> in, tf::Subflow &subflow) const;
-  static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in);
+  Result<GuessOutput> run(View<MoleculeOutput, BasisSetOutput> in, tf::Subflow &subflow) const;
+  static Result<GuessOutput> load(const std::filesystem::path &from, View<BasisSetOutput> in);
 };
 ```
 
@@ -43,7 +43,7 @@ lack. A basis read from a path runs every one. The errors are `sad_density`'s:
 - a non-converged atomic SCF is `MaxIterationsExceeded`.
 
 **One step, with a `type` option**, not one step per kind of guess. Several
-steps producing one `Guess` would be two producers of a product, which the
+steps producing one `GuessOutput` would be two producers of a product, which the
 registry refuses. `run` dispatches on `type`, and its `View` carries the inputs
 of every kind. SAD needs only the `Molecule`'s atoms and the `BasisSet`. A kind
 that reads more, such as a projection from a previous geometry, widens the
@@ -110,5 +110,5 @@ registry, beside the device chain:
 
 | File | Role |
 |------|------|
-| `guess.cppm` | Module interface: `GuessType`, `Guess`, `GuessStep` and its `load` |
+| `guess.cppm` | Module interface: `GuessType`, `GuessOutput`, `GuessStep` and its `load` |
 | `CMakeLists.txt` | The module library |

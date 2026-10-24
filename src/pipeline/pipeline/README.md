@@ -90,7 +90,7 @@ One `tf::Taskflow`, one task per step, run on `node.executor()`.
   steps do (diagonalizations, and later Fock builds), and a failed wait is
   the step's error. A `Node` step is followed by a wait on every device. A
   step that enqueues on streams of its own waits on them itself
-  (`PrimitivePairClasses`).
+  (`PrimitivePairClassesOutput`).
 - **A subflow step's task is a subflow task**: its `run` gets the `tf::Subflow&`
   and joins it explicitly (`step/README.md`).
 

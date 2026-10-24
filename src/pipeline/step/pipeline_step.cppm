@@ -107,7 +107,7 @@ using StepOutput = typename ResultValue<typename RunSignatureOf<S>::ReturnType>:
 /// struct OrthogonalizerStep {
 ///   static constexpr std::string_view kName = "orthogonalizer";
 ///   double eigenvalue_floor = kOrthogonalizeEigenvalueFloor<double>;  // an option
-///   Result<Orthogonalizer> run(View<BasisSet, Overlap> in, DeviceResources &res) const;
+///   Result<OrthogonalizerOutput> run(View<BasisSetOutput, OverlapOutput> in, DeviceResources &res) const;
 /// };
 /// ```
 ///
@@ -148,7 +148,7 @@ using LoadInput = typename LoadSignatureOf<S>::InputView;
 /// ```cpp
 /// struct GuessStep {
 ///   ...
-///   static Result<Guess> load(const std::filesystem::path &from, View<BasisSet> in);
+///   static Result<GuessOutput> load(const std::filesystem::path &from, View<BasisSetOutput> in);
 /// };
 /// ```
 ///

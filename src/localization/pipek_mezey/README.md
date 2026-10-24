@@ -20,7 +20,7 @@ and two wwr `gemm`s.
 Double precision only. Every matrix is a column-major device `double *` with a
 packed leading dimension, over the spherical AOs of `basis`: `s` is n_ao x
 n_ao, `c` and `c_local` n_ao x n_occ, `u` (optional) n_occ x n_occ, with
-C_local = C U. The first `n_occ` columns of a square C, such as `Scf::c`, serve
+C_local = C U. The first `n_occ` columns of a square C, such as `ScfOutput::c`, serve
 as `c` directly.
 
 ```cpp

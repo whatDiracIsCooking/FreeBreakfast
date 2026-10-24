@@ -6,9 +6,9 @@
 // On H2O STO-3G, H e_i for every unit vector against the diagonal, at a
 // two-root CAS(2,2) and at ncas = 0; and the refusals.
 //
-// The orbitals are the setup's own, as in mcscf_fock_gpu.cpp: the Scf (run
+// The orbitals are the setup's own, as in mcscf_fock_gpu.cpp: the SCF (run
 // with J unscreened), the active space picked by pipeline.active_space as the
-// Casci step picks it (by index, or by AVAS), and the RDMs from the Casci
+// Casci step picks it (by index, or by AVAS), and the RDMs from the CasciOutput
 // step's roots and ci.rdm's CiRdm. So this executable links pipeline; mcscf
 // itself does not. Runs the device chain, so needs a GPU.
 
@@ -114,8 +114,8 @@ std::vector<std::pair<std::size_t, std::size_t>> packed_pairs(std::size_t nmo, s
   return pairs;
 }
 
-// The reference's molecule through the real registry to the Scf's inputs. The
-// Scf itself is run by hand: tau_j is not a TOML key.
+// The reference's molecule through the real registry to the Scf step's inputs. The
+// Scf step itself is run by hand: tau_j is not a TOML key.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node) {
   const fb::test::ScratchDir dir("mcscf_hessian");
   // Bohr in the reference, Angstrom in an XYZ file.
@@ -146,7 +146,7 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
   return std::move(*calc);
 }
 
-// The Scf the comparisons need: unscreened J, every build full, converged past
+// The SCF the comparisons need: unscreened J, every build full, converged past
 // the step's defaults, since the Hessian moves to first order in the orbitals.
 const fb::ScfStep kExactScf{.energy_tolerance = 1e-13,
                             .commutator_tolerance = 1e-12,
@@ -170,19 +170,19 @@ fb::CasciStep casci_step(const fb::json &entry) {
   return step;
 }
 
-// Everything casscf_fock and OrbitalHessian read, from one converged Scf,
+// Everything casscf_fock and OrbitalHessian read, from one converged SCF,
 // and with a CASCI, its orbitals and the weighted RDMs of its roots.
 struct Setup {
   fb::NodeResources node;
   std::optional<fb::Calculation> calc;
   const fb::Molecule *molecule = nullptr;
   const fb::BasisSet *basis = nullptr;
-  const fb::SphericalTransform *transform = nullptr;
-  const fb::CoreHamiltonian *h = nullptr;
-  std::optional<fb::Scf> scf;
+  const fb::SphericalTransformOutput *transform = nullptr;
+  const fb::CoreHamiltonianOutput *h = nullptr;
+  std::optional<fb::ScfOutput> scf;
   std::vector<fb::CoulombPairClass> j_classes;
   std::vector<fb::OrderedPairClass> k_classes;
-  std::optional<fb::Casci> casci;
+  std::optional<fb::CasciOutput> casci;
   std::int32_t ncore = 0;
   std::int32_t ncas = 0;
   std::vector<double> gamma;
@@ -233,25 +233,25 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci) {
     return nullptr;
   }
   setup->calc.emplace(std::move(*calc)); // a Pipeline moves, but is not move-assigned
-  const auto &molecule = setup->calc->get<fb::Molecule>();
-  const auto &basis_set = setup->calc->get<fb::BasisSet>();
-  const auto &transform = setup->calc->get<fb::SphericalTransform>();
-  const auto &pairs = setup->calc->get<fb::PrimitivePairClasses>();
-  const auto &overlap = setup->calc->get<fb::Overlap>();
-  const auto &x = setup->calc->get<fb::Orthogonalizer>();
-  const auto &h = setup->calc->get<fb::CoreHamiltonian>();
-  const auto &guess = setup->calc->get<fb::Guess>();
+  const auto &molecule = setup->calc->get<fb::MoleculeOutput>();
+  const auto &basis_set = setup->calc->get<fb::BasisSetOutput>();
+  const auto &transform = setup->calc->get<fb::SphericalTransformOutput>();
+  const auto &pairs = setup->calc->get<fb::PrimitivePairClassesOutput>();
+  const auto &overlap = setup->calc->get<fb::OverlapOutput>();
+  const auto &x = setup->calc->get<fb::OrthogonalizerOutput>();
+  const auto &h = setup->calc->get<fb::CoreHamiltonianOutput>();
+  const auto &guess = setup->calc->get<fb::GuessOutput>();
   if (!molecule.has_value() || !basis_set.has_value() || !transform.has_value() ||
       !pairs.has_value() || !overlap.has_value() || !x.has_value() || !h.has_value() ||
       !guess.has_value()) {
     ADD_FAILURE() << "a product of the setup steps is missing";
     return nullptr;
   }
-  setup->molecule = &*molecule;
-  setup->basis = &*basis_set;
+  setup->molecule = &molecule->molecule;
+  setup->basis = &basis_set->basis;
   setup->transform = &*transform;
   setup->h = &*h;
-  setup->nmo = basis_set->nao_sphe();
+  setup->nmo = basis_set->basis.nao_sphe();
   auto scf = kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform, *pairs,
                                                       *overlap, *x, *h, *guess},
                            setup->res());
@@ -264,7 +264,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci) {
   fb::DeviceResources &res = setup->res();
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto j_classes = fb::coulomb_pair_classes(res, pairs->classes);
-  auto k_classes = fb::ordered_pair_classes(res, *basis_set, pairs->classes);
+  auto k_classes = fb::ordered_pair_classes(res, basis_set->basis, pairs->classes);
   if (!j_classes.has_value() || !k_classes.has_value()) {
     ADD_FAILURE() << "the J or K classes failed";
     return nullptr;
@@ -276,7 +276,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci) {
   }
 
   const fb::CasciStep step = casci_step(entry);
-  auto space = step.select(res, *molecule, *basis_set, *setup->scf);
+  auto space = step.select(res, molecule->molecule, basis_set->basis, *setup->scf);
   if (!space.has_value()) {
     ADD_FAILURE() << space.error().message;
     return nullptr;
@@ -295,7 +295,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci) {
   EXPECT_EQ(setup->ncas, entry.at("ncas").get<std::int32_t>());
   EXPECT_EQ(setup->casci->nelecas, entry.at("nelecas").get<std::int32_t>());
   if (entry.contains("casci")) {
-    // The selection's rotation R gives each column's energy in the Scf's
+    // The selection's rotation R gives each column's energy in the ScfOutput's
     // Fock matrix: sum_k R_kj^2 eps_k.
     const auto expected = entry.at("casci").at("orbital_energies").get<std::vector<double>>();
     EXPECT_EQ(expected.size(), setup->nmo);
@@ -698,7 +698,7 @@ TEST(McscfHessianUnitVectors, DiagonalIsHOnEveryUnitVector) {
   expect_whole_hessian(*setup, c, integrals->first, integrals->second);
 }
 
-// ncas = 0, the RHF orbital Hessian, at and off the Scf: with no active space
+// ncas = 0, the RHF orbital Hessian, at and off the SCF: with no active space
 // there is no H_act, and every pair is core-virtual.
 TEST(McscfHessianRhfLimit, DiagonalIsHOnEveryUnitVector) {
   FBF_REQUIRE_GPU();

@@ -33,8 +33,8 @@ export namespace free_breakfast {
 ///
 /// A step's `run` takes one as its first parameter, and that parameter is the
 /// step's whole declaration of what it reads. Every type must be a
-/// non-`const` movable object type, and none may repeat: `View<Overlap,
-/// Overlap>` does not compile.
+/// non-`const` movable object type, and none may repeat: `View<OverlapOutput,
+/// OverlapOutput>` does not compile.
 ///
 /// Holds pointers into the producers' output slots and owns nothing, so it
 /// lives for one `run` call. A product therefore never borrows from another

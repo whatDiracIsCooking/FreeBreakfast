@@ -1,11 +1,11 @@
 # The Casci step. recipes::davidson, pipeline::scf and pipeline::active_space
 # are PUBLIC and re-exported: the product holds a DavidsonInfo and a
-# SphericalMatrixAO, run's View names the Scf and the products it re-exports,
-# and CasciStep derives from ActiveSpaceSelection. core::resources and
-# pipeline::step are in run's signature. Everything run uses -- the J and K
+# SphericalMatrixAO, run's View names the ScfOutput and the products it
+# re-exports, and CasciStep derives from ActiveSpaceSelection. core::resources
+# and pipeline::step are in run's signature. Everything run uses -- the J and K
 # classes, the active-space Hamiltonian, the CI strings, sigma and solver, the
-# eigensolver for the natural orbitals, and the Molden writer -- is PRIVATE:
-# run is defined in the implementation unit.
+# eigensolver for the natural orbitals, and the Molden writer -- is PRIVATE: run
+# is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.casci

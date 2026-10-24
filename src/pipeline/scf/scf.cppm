@@ -2,7 +2,7 @@
 /// @brief The `Scf` step: closed-shell restricted Hartree-Fock, its loop, its
 /// Fock build and its DIIS history all private to one `run`.
 ///
-/// Device-shaped. The step's first device consumer of the host `Guess`, which
+/// Device-shaped. The step's first device consumer of the host `GuessOutput`, which
 /// it uploads and rescales to the molecule's electron count. See README.md.
 
 export module free_breakfast.pipeline.scf;
@@ -23,7 +23,7 @@ export namespace free_breakfast {
 ///
 /// The matrices are over the spherical AOs, @c nao_sphe square, column-major,
 /// on the device the step ran on.
-struct Scf {
+struct ScfOutput {
   /// @brief The total energy, electronic plus nuclear repulsion (hartree), of
   /// the density the last Fock matrix was built from.
   double energy;
@@ -39,7 +39,7 @@ struct Scf {
   SphericalMatrixAO d;
 };
 
-/// @brief Iterates RHF to self-consistency from the @ref Guess, with Pulay
+/// @brief Iterates RHF to self-consistency from the @ref GuessOutput, with Pulay
 /// DIIS on the Fock matrix and incremental Fock builds.
 struct ScfStep {
   /// @brief The step's TOML table name.
@@ -79,9 +79,10 @@ struct ScfStep {
   /// ErrorKind::Numerical; a failed runtime, BLAS, solver or launch call is
   /// ErrorKind::GpuRuntime; a @ref molden file that cannot be written is
   /// @c write_molden's error.
-  [[nodiscard]] Result<Scf> run(View<Molecule, BasisSet, SphericalTransform, PrimitivePairClasses,
-                                     Overlap, Orthogonalizer, CoreHamiltonian, Guess> in,
-                                DeviceResources &res) const;
+  [[nodiscard]] Result<ScfOutput>
+  run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+           OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
+      DeviceResources &res) const;
 };
 
 } // namespace free_breakfast

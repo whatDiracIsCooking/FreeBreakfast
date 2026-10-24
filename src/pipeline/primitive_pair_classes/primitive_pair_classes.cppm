@@ -11,7 +11,7 @@ export module free_breakfast.pipeline.primitive_pair_classes;
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
+export import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.step;
 export import free_breakfast.integrals.mmd;
 
@@ -25,7 +25,7 @@ export namespace free_breakfast {
 /// What the one-electron and two-electron builds launch over. Built once per
 /// geometry and only read after: a build reads the device side, on the class's
 /// own stream.
-struct PrimitivePairClasses {
+struct PrimitivePairClassesOutput {
   /// @brief The classes; none for an empty basis.
   std::vector<PrimitivePairClass> classes;
 };
@@ -39,8 +39,10 @@ struct PrimitivePairClassesStep {
   /// primitive_pair_classes waits for each class's stream before it returns,
   /// so a consumer on any stream reads them finished. A failed copy, launch or
   /// wait is ErrorKind::GpuRuntime.
-  [[nodiscard]] Result<PrimitivePairClasses> run(View<BasisSet> in, DeviceResources &res) const {
-    return PrimitivePairClasses{FBF_TRY(primitive_pair_classes(res, in.get<BasisSet>()))};
+  [[nodiscard]] Result<PrimitivePairClassesOutput> run(View<BasisSetOutput> in,
+                                                       DeviceResources &res) const {
+    return PrimitivePairClassesOutput{
+        FBF_TRY(primitive_pair_classes(res, in.get<BasisSetOutput>().basis))};
   }
 };
 

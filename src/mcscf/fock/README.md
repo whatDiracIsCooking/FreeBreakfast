@@ -111,7 +111,7 @@ all of them again with no J or K.
 recorded start: H₂O cc-pVDZ CAS(4,4) from RHF orbitals [2, 3, 5, 6], N₂ cc-pVDZ
 CAS(6,6) frontier, H₂CO cc-pVDZ CAS(4,3) at two singlets weighted [0.5, 0.5]
 and [0.7, 0.3], and H₂O cc-pVDZ by AVAS (O 2p, H 1s). The test reaches each
-start through `pipeline.active_space` and the `Casci` step, over an Scf with J
+start through `pipeline.active_space` and the `Casci` step, over an SCF with J
 unscreened, and takes the RDMs from `CiRdm::rdm12` over the Casci step's roots; the
 orbitals pair with PySCF's by their energies, checked to 1e-6.
 
@@ -125,7 +125,7 @@ orbitals pair with PySCF's by their energies, checked to 1e-6.
   three random unit x (C exp(±ε κ(x)) through `skew_eig` and `skew_expm`,
   Richardson-extrapolated over ε = 2e-3 and 1e-3, the RDMs fixed), to 1e-6 of
   max(|g · x|, |g|);
-- the RHF limit, ncas = 0 on H₂O cc-pVDZ: |g_ai| < 1e-6 at the converged Scf
+- the RHF limit, ncas = 0 on H₂O cc-pVDZ: |g_ai| < 1e-6 at the converged SCF
   and E its energy to 1e-9; off it, g = 4 F^I_ai and F = 2 F^I in the core
   columns, and g against a finite difference of the energy;
 - the packed order element by element, and unpack as its antisymmetric

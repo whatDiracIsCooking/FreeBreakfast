@@ -122,7 +122,7 @@ per call.
 over H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, each at `tau = 0` and the
 defaults: E_core and the sign-invariant h_eff_tt, (tt|uu) and (tu|tu) to 1e-10;
 the RHF energy given back by an active space spanning occupied and virtual
-orbitals to 1e-10 of `Scf::energy`; the 8-fold symmetry to 1e-12 max; the cap,
+orbitals to 1e-10 of `ScfOutput::energy`; the 8-fold symmetry to 1e-12 max; the cap,
 on orbitals scaled past it, pruned against unpruned classes to 1e-12 max; and
 the refusals. `casscf_integrals` likewise, over the same cases and taus: the
 sign-invariant (pp|uu) and (pu|pu) against PySCF's `CASSCF.ao2mo` ppaa and
@@ -135,5 +135,5 @@ against an independent J; ppaa's (pq|uv) = (qp|uv) = (pq|vu) and papa's
 (pu|qv) = (qv|pu) to 1e-12 max; the cap, on the scaled orbitals, ppaa on
 pruned classes against unpruned ones and papa against 8⁴ times the unscaled
 orbitals' (K's classes are unpruned, so its cap shows as exact scaling), to
-1e-12 max; and the refusals. Its Scf runs with `tau_j = 0`: at the default, J's screen moves
+1e-12 max; and the refusals. Its Scf step runs with `tau_j = 0`: at the default, J's screen moves
 N₂'s RHF energy by 2.6e-10 Eh.

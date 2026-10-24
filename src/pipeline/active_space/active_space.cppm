@@ -1,6 +1,6 @@
 /// @file
-/// @brief The active-space selection a step over the @ref Scf's orbitals takes:
-/// by index, or by AVAS over MINAO, and the rotation of the Scf's orbitals it
+/// @brief The active-space selection a step over the @ref ScfOutput's orbitals takes:
+/// by index, or by AVAS over MINAO, and the rotation of the ScfOutput's orbitals it
 /// gives. Not a step: @ref ActiveSpaceSelection is what a step's config derives
 /// from (`CasciStep`), and @ref ActiveSpaceSelection::select what its run calls.
 ///
@@ -13,11 +13,11 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
-export import free_breakfast.pipeline.scf; // Molecule, BasisSet, Scf, SphericalMatrixAO
+export import free_breakfast.pipeline.scf; // Molecule, BasisSet, ScfOutput, SphericalMatrixAO
 
 export namespace free_breakfast {
 
-/// @brief An active space as a rotation of the @ref Scf's orbitals.
+/// @brief An active space as a rotation of the @ref ScfOutput's orbitals.
 struct ActiveSpace {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.
   int32_t ncore;
@@ -26,12 +26,12 @@ struct ActiveSpace {
   /// @brief The active electrons, N - 2 ncore.
   int32_t nelecas;
   /// @brief R, nmo x nmo, column-major, orthogonal: column j of @ref c is the
-  /// Scf's orbitals combined by column j of R. By index, a permutation.
+  /// ScfOutput's orbitals combined by column j of R. By index, a permutation.
   std::vector<double> r;
-  /// @brief C R, AO by MO: core, active, the rest. The Scf's columns in the
+  /// @brief C R, AO by MO: core, active, the rest. The ScfOutput's columns in the
   /// order @ref ActiveSpaceSelection::orbital_order gives, exactly; or, under
   /// @ref ActiveSpaceSelection::avas, AVAS's rotation of them, each of the
-  /// three spaces canonical (diagonal in the Scf's Fock matrix).
+  /// three spaces canonical (diagonal in the ScfOutput's Fock matrix).
   SphericalMatrixAO c;
 };
 
@@ -45,7 +45,7 @@ struct ActiveSpaceSelection {
   /// without @ref avas. The rest, N - nelecas, fill the core, so it is even.
   /// Left at 0 under @ref avas, which picks it.
   int32_t nelecas = 0;
-  /// @brief The active orbitals as 0-based indices into the Scf's orbitals
+  /// @brief The active orbitals as 0-based indices into the ScfOutput's orbitals
   /// (ascending in energy), ncas of them, distinct, in the order they become
   /// columns. Empty: the frontier orbitals, the ncas above the core. Left
   /// empty under @ref avas.
@@ -63,7 +63,7 @@ struct ActiveSpaceSelection {
   /// @ref avas, in (0, 1): PySCF's default.
   double avas_threshold = 0.2;
 
-  /// @brief The Scf's orbital at each column of @ref ActiveSpace::c for a
+  /// @brief The ScfOutput's orbital at each column of @ref ActiveSpace::c for a
   /// molecule of @p n_electrons over @p nmo orbitals: the core, the
   /// (N - nelecas) / 2 lowest orbitals not active, ascending; then the active
   /// ones; then the rest, ascending.
@@ -87,7 +87,7 @@ struct ActiveSpaceSelection {
   ///         definite, or `overlap_mixed_spherical`'s or `diagonalize`'s
   ///         error; and GpuRuntime for a failed copy or BLAS call.
   [[nodiscard]] Result<ActiveSpace> select(DeviceResources &res, const Molecule &molecule,
-                                           const BasisSet &basis, const Scf &scf) const;
+                                           const BasisSet &basis, const ScfOutput &scf) const;
 };
 
 } // namespace free_breakfast

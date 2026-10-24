@@ -168,12 +168,12 @@ struct AvasRotation {
 // no IAOs, canonicalized): the occupied and the virtual orbitals each rotated
 // to the eigenvectors of P, the projector onto the labelled MINAO AOs, sa =
 // S21^T S2^-1 S21 in the MO basis; weight >= threshold active. Then each
-// space is made canonical: rotated to diagonalize the Scf's Fock matrix,
+// space is made canonical: rotated to diagonalize the ScfOutput's Fock matrix,
 // diag(eps) in the MO basis, within it. The overlaps are built on the device;
 // the matrices after them are a few dozen orbitals across, so they are
 // assembled on the host and each eigenproblem solved by diagonalize.
 [[nodiscard]] Result<AvasRotation> avas_space(DeviceResources &res, const Molecule &molecule,
-                                              const BasisSet &basis, const Scf &scf,
+                                              const BasisSet &basis, const ScfOutput &scf,
                                               std::span<const std::string> labels,
                                               double threshold) {
   if (!(threshold > 0.0 && threshold < 1.0)) {
@@ -306,7 +306,7 @@ struct AvasRotation {
 [[nodiscard]] Result<ActiveSpace> ActiveSpaceSelection::select(DeviceResources &res,
                                                                const Molecule &molecule,
                                                                const BasisSet &basis,
-                                                               const Scf &scf) const {
+                                                               const ScfOutput &scf) const {
   const auto nmo = static_cast<int32_t>(scf.mo_energies.size());
   const ScopedDeviceIndex on{res.dev_idx()};
   const size_t nao = basis.nao_sphe();

@@ -167,5 +167,5 @@ by AVAS.
 - on H₂O STO-3G, H e_i for every unit vector, in one block, against the
   diagonal to 1e-7 (seen: 3e-14), symmetric to 1e-12 of max |H|, and the
   finite difference, both at a two-root frontier CAS(2,2) weighted
-  [0.6, 0.4] (every kind of pair) and at ncas = 0 at and off the Scf;
+  [0.6, 0.4] (every kind of pair) and at ncas = 0 at and off the SCF;
 - the refusals.

@@ -1,12 +1,12 @@
 // The Casci step against PySCF's mcscf.CASCI (data/casci/casci.json,
 // tools/emit_casci_reference.py), through the real registry: a config naming
-// [casci] plans the whole chain to the Scf, picks the active space (by index,
+// [casci] plans the whole chain to the ScfOutput, picks the active space (by index,
 // or by AVAS against PySCF's mcscf.avas), builds its Hamiltonian and solves it
 // over the GPU sigma. Compared: each singlet's total
 // energy and <S^2>, and, for a root of no degenerate level, its natural
 // occupations, the 1-RDM's eigenvalues, which unlike the 1-RDM do not depend
 // on the active orbitals' signs. Every 1-RDM is symmetric with trace nelecas,
-// and the orbitals are the Scf's, reordered. Runs the device chain, so needs a
+// and the orbitals are the ScfOutput's, reordered. Runs the device chain, so needs a
 // GPU.
 
 #include <gtest/gtest.h>
@@ -30,10 +30,11 @@ namespace fb = free_breakfast;
 
 static_assert(fb::PipelineStep<fb::CasciStep>);
 static_assert(fb::kRunShape<fb::CasciStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::CasciStep>,
-                           fb::View<fb::Molecule, fb::BasisSet, fb::SphericalTransform,
-                                    fb::PrimitivePairClasses, fb::CoreHamiltonian, fb::Scf>>);
-static_assert(std::same_as<fb::StepOutput<fb::CasciStep>, fb::Casci>);
+static_assert(std::same_as<
+              fb::StepInput<fb::CasciStep>,
+              fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                       fb::PrimitivePairClassesOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>>);
+static_assert(std::same_as<fb::StepOutput<fb::CasciStep>, fb::CasciOutput>);
 
 // The issue's bar, for the energies and <S^2>. Measured: within 1e-9.
 constexpr double kEnergyTolerance = 1e-8;
@@ -92,7 +93,7 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
   return dir / "run.toml";
 }
 
-// The [casci] table of the reference's active space, nroots singlets. The Scf
+// The [casci] table of the reference's active space, nroots singlets. The Scf step
 // it fills in runs at its defaults: they leave the energies within 1e-9 of
 // PySCF's here, though a CASCI energy moves to first order in the orbitals.
 std::string casci_tables(const fb::json &entry, std::size_t nroots) {
@@ -187,9 +188,9 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  const auto &casci = calc->get<fb::Casci>();
-  const auto &scf = calc->get<fb::Scf>();
-  const auto &basis = calc->get<fb::BasisSet>();
+  const auto &casci = calc->get<fb::CasciOutput>();
+  const auto &scf = calc->get<fb::ScfOutput>();
+  const auto &basis = calc->get<fb::BasisSetOutput>();
   ASSERT_TRUE(casci.has_value() && scf.has_value() && basis.has_value());
 
   // The frontier selection, and PySCF's, pick orbitals by index: the two
@@ -245,13 +246,14 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   }
 
   if (!entry.at("avas").is_null()) {
-    return; // AVAS rotates the Scf's orbitals rather than ordering them
+    return; // AVAS rotates the ScfOutput's orbitals rather than ordering them
   }
-  // The orbitals are the Scf's, in orbital_order's order.
+  // The orbitals are the ScfOutput's, in orbital_order's order.
   const auto order = calc->step<fb::CasciStep>()->orbital_order(
-      calc->get<fb::Molecule>()->electron_count(), static_cast<std::int32_t>(mo_energies.size()));
+      calc->get<fb::MoleculeOutput>()->molecule.electron_count(),
+      static_cast<std::int32_t>(mo_energies.size()));
   ASSERT_TRUE(order.has_value()) << order.error().message;
-  const std::size_t nao = basis->nao_sphe();
+  const std::size_t nao = basis->basis.nao_sphe();
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
   const std::vector<double> c = download(casci->c.data(), nao * nao);
   const std::vector<double> scf_c = download(scf->c.data(), nao * nao);
@@ -284,8 +286,8 @@ TEST(PipelineCasci, AnActiveSpacePastTheOrbitalsIsInvalidConfig) {
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
   EXPECT_NE(ran.error().message.find("exceeds the 7 orbitals"), std::string::npos)
       << ran.error().message;
-  ASSERT_TRUE(calc->get<fb::Scf>().has_value());
-  EXPECT_FALSE(calc->get<fb::Casci>().has_value());
+  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
+  EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 }
 
 // molden set: the lowest root's natural orbitals land in a Molden file, read
@@ -303,8 +305,8 @@ TEST(PipelineCasciMolden, WritesTheNaturalOrbitals) {
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  const auto &casci = calc->get<fb::Casci>();
-  const auto &basis = calc->get<fb::BasisSet>();
+  const auto &casci = calc->get<fb::CasciOutput>();
+  const auto &basis = calc->get<fb::BasisSetOutput>();
   ASSERT_TRUE(casci.has_value() && basis.has_value());
 
   const auto text = fb::read_file(path);
@@ -326,7 +328,7 @@ TEST(PipelineCasciMolden, WritesTheNaturalOrbitals) {
       ++coefficients;
     }
   }
-  const std::size_t nao = basis->nao_sphe();
+  const std::size_t nao = basis->basis.nao_sphe();
   ASSERT_EQ(occupations.size(), nao);
   EXPECT_EQ(coefficients, nao * nao);
   const auto ncore = static_cast<std::size_t>(casci->ncore);
@@ -355,7 +357,7 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
   EXPECT_NE(ran.error().message.find("'O 3d' names no MINAO AO"), std::string::npos)
       << ran.error().message;
-  EXPECT_FALSE(calc->get<fb::Casci>().has_value());
+  EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 }
 
 } // namespace

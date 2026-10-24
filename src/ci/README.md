@@ -1,7 +1,7 @@
 # CI
 
 Determinant configuration interaction over plain arrays. CASCI, CASSCF and FCI
-all call it, so it never sees a basis, a molecule or an `Scf`: what it takes is
+all call it, so it never sees a basis, a molecule or an `ScfOutput`: what it takes is
 a number of orbitals, electron counts and, for sigma, integrals as arrays. It
 depends only on `core`, and on `recipes` for the `LinearOperator` concept the
 GPU sigma models.

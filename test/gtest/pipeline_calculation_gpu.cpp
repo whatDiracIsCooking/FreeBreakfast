@@ -84,40 +84,42 @@ TEST(PipelineCalculation, MatchesTheStepsCalledByHand) {
   auto molecule = fb::MoleculeStep{.xyz = dir / "water.xyz"}.run(fb::View<>{}, res);
   ASSERT_TRUE(molecule.has_value()) << molecule.error().message;
   auto basis = fb::BasisSetStep{.basis = (dir / "basis.json").string()}.run(
-      fb::View<fb::Molecule>{*molecule});
+      fb::View<fb::MoleculeOutput>{*molecule});
   ASSERT_TRUE(basis.has_value()) << basis.error().message;
-  auto transform = fb::SphericalTransformStep{}.run(fb::View<fb::BasisSet>{*basis}, res);
-  auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSet>{*basis}, res);
+  auto transform = fb::SphericalTransformStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
+  auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
   ASSERT_TRUE(transform.has_value());
   ASSERT_TRUE(pairs.has_value());
   auto overlap = fb::OverlapStep{}.run(
-      fb::View<fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{*basis, *transform,
-                                                                               *pairs},
+      fb::View<fb::BasisSetOutput, fb::SphericalTransformOutput, fb::PrimitivePairClassesOutput>{
+          *basis, *transform, *pairs},
       res);
   ASSERT_TRUE(overlap.has_value());
-  auto x = fb::OrthogonalizerStep{}.run(fb::View<fb::BasisSet, fb::Overlap>{*basis, *overlap}, res);
+  auto x = fb::OrthogonalizerStep{}.run(
+      fb::View<fb::BasisSetOutput, fb::OverlapOutput>{*basis, *overlap}, res);
   auto h = fb::CoreHamiltonianStep{}.run(
-      fb::View<fb::Molecule, fb::BasisSet, fb::SphericalTransform, fb::PrimitivePairClasses>{
-          *molecule, *basis, *transform, *pairs},
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+               fb::PrimitivePairClassesOutput>{*molecule, *basis, *transform, *pairs},
       res);
   ASSERT_TRUE(x.has_value());
   ASSERT_TRUE(h.has_value());
   fb::tf::Taskflow guess_flow;
-  fb::Result<fb::Guess> guess = fb::err_config("the guess task did not run");
+  fb::Result<fb::GuessOutput> guess = fb::err_config("the guess task did not run");
   guess_flow.emplace([&](fb::tf::Subflow &subflow) {
-    guess = fb::GuessStep{}.run(fb::View<fb::Molecule, fb::BasisSet>{*molecule, *basis}, subflow);
+    guess = fb::GuessStep{}.run(fb::View<fb::MoleculeOutput, fb::BasisSetOutput>{*molecule, *basis},
+                                subflow);
   });
   node.executor().run(guess_flow).wait();
   ASSERT_TRUE(guess.has_value()) << guess.error().message;
 
-  ASSERT_TRUE(calc->get<fb::BasisSet>().has_value());
-  EXPECT_EQ(calc->get<fb::BasisSet>()->nao_sphe(), basis->nao_sphe());
-  EXPECT_EQ(calc->get<fb::PrimitivePairClasses>()->classes.size(), pairs->classes.size());
-  expect_near(download(res, calc->get<fb::Overlap>()->s), download(res, overlap->s));
-  expect_near(download(res, calc->get<fb::Orthogonalizer>()->x), download(res, x->x));
-  expect_near(download(res, calc->get<fb::CoreHamiltonian>()->h), download(res, h->h));
-  ASSERT_TRUE(calc->get<fb::Guess>().has_value());
-  EXPECT_EQ(calc->get<fb::Guess>()->d, guess->d);
+  ASSERT_TRUE(calc->get<fb::BasisSetOutput>().has_value());
+  EXPECT_EQ(calc->get<fb::BasisSetOutput>()->basis.nao_sphe(), basis->basis.nao_sphe());
+  EXPECT_EQ(calc->get<fb::PrimitivePairClassesOutput>()->classes.size(), pairs->classes.size());
+  expect_near(download(res, calc->get<fb::OverlapOutput>()->s), download(res, overlap->s));
+  expect_near(download(res, calc->get<fb::OrthogonalizerOutput>()->x), download(res, x->x));
+  expect_near(download(res, calc->get<fb::CoreHamiltonianOutput>()->h), download(res, h->h));
+  ASSERT_TRUE(calc->get<fb::GuessOutput>().has_value());
+  EXPECT_EQ(calc->get<fb::GuessOutput>()->d, guess->d);
 }
 
 TEST(PipelineCalculation, TheGuessHoldsEveryElectronAgainstThePipelinesOverlap) {
@@ -134,8 +136,8 @@ TEST(PipelineCalculation, TheGuessHoldsEveryElectronAgainstThePipelinesOverlap) 
   // made by different code on different sides, must agree on the basis.
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
-  const std::vector<double> s = download(res, calc->get<fb::Overlap>()->s);
-  const std::vector<double> &d = calc->get<fb::Guess>()->d;
+  const std::vector<double> s = download(res, calc->get<fb::OverlapOutput>()->s);
+  const std::vector<double> &d = calc->get<fb::GuessOutput>()->d;
   ASSERT_EQ(d.size(), s.size());
   double trace = 0.0;
   for (std::size_t k = 0; k < d.size(); ++k) {
@@ -156,9 +158,9 @@ TEST(PipelineCalculation, AnScfFromALoadedGuessMatchesOneFromItsOwn) {
   ASSERT_TRUE(made.has_value()) << made.error().message;
   const fb::Status made_ran = made->run(node);
   ASSERT_TRUE(made_ran.has_value()) << made_ran.error().message;
-  const std::size_t n = made->get<fb::BasisSet>()->nao_sphe();
-  ASSERT_TRUE(fb::write_npy(dir / "d.npy",
-                            fb::NpyArray{.shape = {n, n}, .data = made->get<fb::Guess>()->d}));
+  const std::size_t n = made->get<fb::BasisSetOutput>()->basis.nao_sphe();
+  ASSERT_TRUE(fb::write_npy(
+      dir / "d.npy", fb::NpyArray{.shape = {n, n}, .data = made->get<fb::GuessOutput>()->d}));
 
   ASSERT_TRUE(fb::write_file(dir / "load.toml", "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\n"
                                                 "basis = \"basis.json\"\n[guess]\nfrom = "
@@ -171,15 +173,15 @@ TEST(PipelineCalculation, AnScfFromALoadedGuessMatchesOneFromItsOwn) {
   const fb::Status loaded_ran = loaded->run(node);
   ASSERT_TRUE(loaded_ran.has_value()) << loaded_ran.error().message;
 
-  EXPECT_EQ(loaded->get<fb::Guess>()->d, made->get<fb::Guess>()->d);
-  const fb::Scf &a = *made->get<fb::Scf>();
-  const fb::Scf &b = *loaded->get<fb::Scf>();
+  EXPECT_EQ(loaded->get<fb::GuessOutput>()->d, made->get<fb::GuessOutput>()->d);
+  const fb::ScfOutput &a = *made->get<fb::ScfOutput>();
+  const fb::ScfOutput &b = *loaded->get<fb::ScfOutput>();
   EXPECT_NEAR(b.energy, a.energy, 1e-12);
   EXPECT_EQ(b.iterations, a.iterations);
   expect_near(b.mo_energies, a.mo_energies);
 }
 
-// A config naming only the inputs and [casci] plans the chain to the Scf and
+// A config naming only the inputs and [casci] plans the chain to the ScfOutput and
 // runs the CASCI after it, giving what the step gives run by hand on the same
 // products. J adds atomically, so the two Hamiltonians agree to roundoff.
 TEST(PipelineCalculation, ACasciConfigRunsEndToEnd) {
@@ -192,23 +194,23 @@ TEST(PipelineCalculation, ACasciConfigRunsEndToEnd) {
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  ASSERT_TRUE(calc->get<fb::Scf>().has_value());
-  const auto &casci = calc->get<fb::Casci>();
+  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
+  const auto &casci = calc->get<fb::CasciOutput>();
   ASSERT_TRUE(casci.has_value());
   EXPECT_EQ(casci->ncore, 3);
   ASSERT_EQ(casci->energies.size(), 2U);
   // A CASCI lowers the RHF energy it starts from: the RHF determinant is in
   // the space.
-  EXPECT_LT(casci->energies[0], calc->get<fb::Scf>()->energy);
+  EXPECT_LT(casci->energies[0], calc->get<fb::ScfOutput>()->energy);
   EXPECT_LT(casci->energies[0], casci->energies[1]);
 
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto by_hand = calc->step<fb::CasciStep>()->run(
-      fb::StepInput<fb::CasciStep>{*calc->get<fb::Molecule>(), *calc->get<fb::BasisSet>(),
-                                   *calc->get<fb::SphericalTransform>(),
-                                   *calc->get<fb::PrimitivePairClasses>(),
-                                   *calc->get<fb::CoreHamiltonian>(), *calc->get<fb::Scf>()},
+      fb::StepInput<fb::CasciStep>{
+          *calc->get<fb::MoleculeOutput>(), *calc->get<fb::BasisSetOutput>(),
+          *calc->get<fb::SphericalTransformOutput>(), *calc->get<fb::PrimitivePairClassesOutput>(),
+          *calc->get<fb::CoreHamiltonianOutput>(), *calc->get<fb::ScfOutput>()},
       res);
   ASSERT_TRUE(by_hand.has_value()) << by_hand.error().message;
   ASSERT_EQ(by_hand->energies.size(), casci->energies.size());
@@ -230,10 +232,10 @@ TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
   const fb::Status ran = calc->run(node);
   ASSERT_FALSE(ran.has_value());
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::IO);
-  ASSERT_FALSE(calc->get<fb::CoreHamiltonian>().has_value());
-  EXPECT_EQ(calc->get<fb::CoreHamiltonian>().error().kind, fb::ErrorKind::IO);
-  EXPECT_EQ(calc->get<fb::Orthogonalizer>().error().message, ran.error().message);
-  EXPECT_EQ(calc->get<fb::Guess>().error().message, ran.error().message);
+  ASSERT_FALSE(calc->get<fb::CoreHamiltonianOutput>().has_value());
+  EXPECT_EQ(calc->get<fb::CoreHamiltonianOutput>().error().kind, fb::ErrorKind::IO);
+  EXPECT_EQ(calc->get<fb::OrthogonalizerOutput>().error().message, ran.error().message);
+  EXPECT_EQ(calc->get<fb::GuessOutput>().error().message, ran.error().message);
 }
 
 } // namespace

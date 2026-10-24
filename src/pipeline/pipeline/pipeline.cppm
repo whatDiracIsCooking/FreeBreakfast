@@ -140,7 +140,7 @@ export namespace free_breakfast {
 /// using Calc = Pipeline<MoleculeStep, BasisSetStep, OverlapStep, ...>;
 /// Calc calc = FBF_TRY(Calc::create({MoleculeStep{.xyz = "w.xyz"}, ...}));
 /// FBF_TRY(calc.run(node));
-/// if (const Result<Overlap> &s = calc.get<Overlap>()) { ... s->s ... }
+/// if (const Result<OverlapOutput> &s = calc.get<OverlapOutput>()) { ... s->s ... }
 /// ```
 ///
 /// The registry is checked at compile time: unique `kName`s, one producer per
