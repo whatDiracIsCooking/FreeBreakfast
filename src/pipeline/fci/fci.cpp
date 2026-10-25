@@ -34,7 +34,8 @@ namespace free_breakfast {
 //                  the step's dim diagonal; after the Davidson, nroots dim
 //                  unpacked roots in its place
 //   davidson       2 m t for V and A V, 3 nroots t for A X, R and the
-//                  corrections, m^2 + m nroots + m for H, V^T C and theta
+//                  corrections, m^2 + m nroots + m for H, V^T C and theta;
+//                  its GD+k collapse works in R and V^T C, adding nothing
 //   CiSigma apply  t (P + 1) for G, one vector's (apply goes a vector at a
 //                  time), and one chunk of D, at most 64 MiB
 //   CiSigma tables two sets of strings (8 bytes) and links (12 bytes per
