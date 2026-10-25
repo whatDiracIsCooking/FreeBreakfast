@@ -103,11 +103,11 @@ EOF
 # --- GPU cards: slots, load, and the `auto` preset -------------------------
 #
 # Admission of GPU-bound commands across every worktree/session on this host.
-# RUN_SERIAL (test/gtest/CMakeLists.txt) only serializes test cases within one
-# ctest process -- it does nothing when a second session's cpp-tier.sh or
-# cpp-smoke.sh runs its own ctest/gtest binary against the same physical GPU
-# at the same time, which is what actually timed out a full-tier run under
-# cross-worktree contention.
+# One ctest run is serial by default (no preset sets a job count and
+# CTEST_PARALLEL_LEVEL is unset), but nothing in that process coordinates with
+# a second session's cpp-tier.sh or cpp-smoke.sh running its own ctest/gtest
+# binary against the same physical GPU at the same time, which is what
+# actually timed out a full-tier run under cross-worktree contention.
 #
 # Each card (`cuda`, `hip`) has GPU_SLOTS lock files, `<backend>.<i>.lock`
 # under GPU_LOCK_DIR. A run holds one slot of its card for the whole GPU
