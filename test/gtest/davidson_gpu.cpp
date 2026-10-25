@@ -110,18 +110,23 @@ struct Dense {
 
 // The diagonal correction r / (theta - A_jj) on the host, its denominator kept
 // off zero. A test needs no kernel for it. With zero set, a zero block, which
-// leaves nothing to expand by.
+// leaves nothing to expand by; with identity set, the residual itself.
 template <typename T>
 struct DiagonalPreconditioner {
   std::int32_t n;
   const std::vector<T> *a;
   bool zero = false;
+  bool identity = false;
 
   fb::Status operator()(fb::DeviceResources &res, std::span<const T> theta, const T *residual,
                         T *correction) const {
     const std::size_t count = static_cast<std::size_t>(n) * theta.size();
     if (zero) {
       return fb::gpu_status(wwr::wwrMemsetAsync(correction, 0, count * sizeof(T), res.stream()));
+    }
+    if (identity) {
+      return fb::gpu_status(wwr::wwrMemcpyAsync(correction, residual, count * sizeof(T),
+                                                wwr::wwrMemcpyDeviceToDevice, res.stream()));
     }
     std::vector<T> r = to_host(res, residual, count);
     for (std::size_t i = 0; i < theta.size(); ++i) {
@@ -247,10 +252,54 @@ TEST(Davidson, LowestEigenpairsFloat) {
   check_converges<float>(20);
 }
 
-// max_subspace = 2 * n_roots collapses at every iteration after the first.
+// max_subspace = 2 * n_roots collapses at every iteration after the first,
+// onto X alone: X_prev does not fit.
 TEST(Davidson, ConvergesAtTheSmallestSubspace) {
   FBF_REQUIRE_GPU();
   check_converges<double>(2 * Problem<double>::kRoots);
+}
+
+// GD+k: from 3 * n_roots columns a collapse keeps the previous Ritz vectors
+// beside the current ones. With the correction the residual itself, a
+// collapse onto X alone is a restart of steepest descent, and keeping X_prev
+// is what brings the restarted solve back near the unrestarted one: 58
+// iterations at 3 * n_roots onto X alone in double against 29 with X_prev and
+// 12 unrestarted (229 at 2 * n_roots, where X_prev does not fit).
+template <typename T>
+void check_collapse_keeps_previous() {
+  const auto iterations = [](std::int32_t max_subspace) {
+    fb::DeviceResources res{0};
+    Problem<T> p{res};
+    p.precondition.identity = true;
+    const auto options = Problem<T>::converging_options();
+    const auto info = p.solve(max_subspace, options);
+    EXPECT_TRUE(info) << max_subspace << ": " << info.error().message;
+    if (info) {
+      EXPECT_EQ(p.op.applies, info->iterations);
+      // Converged only to its 1e-4 relative tolerance, float's residual is
+      // above expect_lowest_pairs' bound, which the diagonal preconditioner's
+      // solves clear by overshooting it.
+      if constexpr (!Problem<T>::kFloat) {
+        p.expect_lowest_pairs(options);
+      }
+    }
+    return info ? info->iterations : 0;
+  };
+  const std::int32_t only_x = iterations(2 * Problem<T>::kRoots);
+  const std::int32_t with_previous = iterations(3 * Problem<T>::kRoots);
+  const std::int32_t unrestarted = iterations(Problem<T>::kN);
+  EXPECT_GT(only_x, 2 * with_previous);
+  EXPECT_LE(with_previous, 3 * unrestarted);
+}
+
+TEST(Davidson, CollapseKeepsThePreviousRitzVectorsDouble) {
+  FBF_REQUIRE_GPU();
+  check_collapse_keeps_previous<double>();
+}
+
+TEST(Davidson, CollapseKeepsThePreviousRitzVectorsFloat) {
+  FBF_REQUIRE_GPU();
+  check_collapse_keeps_previous<float>();
 }
 
 // The subspace lives in the call's own buffers: an operator that grows and

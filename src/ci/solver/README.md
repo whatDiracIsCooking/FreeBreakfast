@@ -209,6 +209,36 @@ the symmetric layout the single-precision stage converged at 1e-7 in all four
 cases, where the full layout's stalled at CAS(12,12) above; the full layout
 was not rerun at 1e-7 here.
 
+**The Davidson collapse keeps X_prev (GD+k, `../../recipes/davidson/`).**
+With three roots the 48-column subspace collapses every ~15 iterations, and
+each collapse onto the Ritz vectors alone used to drop the search direction.
+Keeping the previous Ritz vectors beside them cuts the FP64 iterations by
+10–25%. Times are from `bench/ci_sigma_precision`, max_iterations 400, three
+singlets, the symmetric layout except the "full" column. Each card was idle
+with both of its GPU slots held, and the parent commit was run in the same
+hold. Iterations are FP32 + FP64:
+
+| | | full, FP64-only | symmetric, FP64-only | two-stage 1e-6 | two-stage 1e-7 |
+|---|---|---|---|---|---|
+| CAS(10,10), 1.0977 Å | 3080 | 0.95 → 0.81 s (138 → 112) | 0.47 → 0.40 s (128 → 108) | 0.36 → 0.32 s (54+70 → 46+60) | 0.36 → 0.32 s (59+67 → 56+57) |
+| | gfx1200 | 2.43 → 2.09 s (138 → 112) | 1.13 → 0.95 s (128 → 108) | 1.00 → 0.88 s (54+68 → 47+60) | 1.02 → 0.89 s (59+65 → 56+53) |
+| CAS(12,12), 1.0977 Å | 3080 | 13.8 → 11.7 s (130 → 99) | 6.03 → 5.32 s (110 → 91) | 4.89 → 3.73 s (48+75 → 47+61) | 4.54 → 3.76 s (58+72 → 51+55) |
+| | gfx1200 | 34.2 → 31.5 s (131 → 119) | 15.1 → 12.7 s (109 → 91) | Divergence in both | 14.7 → 13.4 s (57+64 → 51+59) |
+| CAS(10,10), 2.0 Å | 3080 | 1.36 → 1.22 s (232 → 206) | 0.82 → 0.74 s (229 → 210) | 0.65 → 0.61 s (110+116 → 103+108) | 0.65 → 0.58 s (125+110 → 122+87) |
+| | gfx1200 | 3.86 → 3.42 s (232 → 206) | 2.00 → 1.83 s (229 → 212) | 1.86 → 1.73 s (110+116 → 103+108) | 1.94 → 1.71 s (126+113 → 122+88) |
+| CAS(12,12), 2.0 Å | 3080 | 24.2 → 21.9 s (221 → 195) | 11.9 → 10.1 s (230 → 192) | 8.56 → 7.18 s (103+132 → 90+103) | 8.24 → 7.02 s (124+122 → 112+97) |
+| | gfx1200 | 60.7 → 54.3 s (233 → 208) | 30.6 → 26.6 s (231 → 201) | Divergence in both | 27.6 → 23.4 s (125+117 → 113+92) |
+
+Every solve that both builds converge is 1.01–1.35× faster, on both cards.
+On the gfx1200 the FP64 stage of the CAS(12,12) two-stage solves stalls just
+above its 1e-12 tolerance (~1.1e-10 absolute) and ends in `Divergence`. That
+happens in 6 of the parent's 14 such solves, and with GD+k in a 7th: 2.0 Å,
+symmetric, `fp32_tolerance` 1e-4, which the parent converged in 34 + 206
+iterations, 29.9 s (#318). The 3080 converges all 28. The energies differ from
+the parent's by at most 1.3e-12 on the 3080 (5.5e-13 FP64-only) and 1.1e-11 on
+the gfx1200 (2.5e-12 FP64-only). That is within the parent's own spread across
+its solve modes, 2.4e-12 and 5.3e-11.
+
 **Nothing of dim size touches the host.** The penalty and the preconditioner
 run on the device, so no block leaves it during the Davidson. On the host
 each cost a block's round trip and a sync per call, and a single-threaded S²

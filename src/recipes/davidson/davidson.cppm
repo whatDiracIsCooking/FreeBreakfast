@@ -63,9 +63,10 @@ concept DavidsonPreconditioner = requires(
 /// subspace, extends the projected matrix H = V^T A V by those columns' rows
 /// alone, diagonalizes it, and expands V by
 /// the preconditioned residuals of the roots not yet converged,
-/// re-orthogonalized against V and each other. V collapses onto the current
-/// Ritz vectors when a full new block would not fit in @p max_subspace
-/// columns.
+/// re-orthogonalized against V and each other. When a full new block would
+/// not fit in @p max_subspace columns, V collapses onto the current Ritz
+/// vectors X and the previous iteration's X_prev (GD+k), or onto X alone when
+/// @p max_subspace < 3 * @p n_roots.
 ///
 /// Everything is queued on res.stream() with res.blas() held in host pointer
 /// mode, including the @p op and @p precondition calls. Each iteration
@@ -80,7 +81,8 @@ concept DavidsonPreconditioner = requires(
 /// @param n             The order of @p op.
 /// @param n_roots       Roots wanted, at least 1.
 /// @param max_subspace  Columns of V, at least 2 * @p n_roots: a collapsed
-///                      subspace always has room for a full new block.
+///                      subspace always has room for a full new block. From
+///                      3 * @p n_roots, the collapse also keeps X_prev.
 /// @param guess         Device, n x guess_count, leading dimension n, with
 ///                      orthonormal columns.
 /// @param guess_count   n_roots <= guess_count <= max_subspace.
@@ -117,6 +119,9 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   const size_t block_bytes = nz * roots * sizeof(T);
   const T tolerance = static_cast<T>(options.residual_tolerance);
   const T floor = static_cast<T>(options.linear_dependence_floor);
+  // GD+k: a collapse keeps X_prev too when its up to 2 n_roots columns and a
+  // full new block fit.
+  const bool keep_previous = max_subspace >= 3 * n_roots;
 
   // The level-1 reductions write host results and every scalar is a host
   // value, so host pointer mode for the call; the previous mode is restored.
@@ -154,6 +159,18 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   std::vector<T> theta(roots);
   std::vector<T> residual_norms(roots);
   std::vector<bool> converged(roots);
+  // For the GD+k collapse, on the host: this iteration's S (its leading
+  // n_roots columns, all dim of them and the whole spectrum when collapsing),
+  // and the last iteration's leading columns S_prev, prev_rows x n_roots: X_prev
+  // = V S_prev, because V only grows between collapses. prev_rows is 0 before
+  // the first. y_host and m_host hold the collapse's uploads (Y's columns past
+  // X, and their block of Y^T H Y) until the stream has read them.
+  std::vector<T> s_now(keep_previous ? columns * columns : 0);
+  std::vector<T> spectrum(keep_previous ? columns : 0);
+  std::vector<T> s_prev(keep_previous ? columns * roots : 0);
+  int32_t prev_rows = 0;
+  std::vector<T> y_host(keep_previous ? columns * roots : 0);
+  std::vector<T> m_host(keep_previous ? roots * roots : 0);
   DavidsonInfo info;
   int32_t dim = guess_count;
   int32_t filled = 0; // columns of av already holding A v
@@ -174,7 +191,11 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     }
 
     // 2. Rayleigh-Ritz: H = V^T A V packed at dim, then H = S diag(ritz) S^T,
-    //    which syncs; theta comes back while the stream is idle.
+    //    which syncs; theta comes back while the stream is idle, and for
+    //    GD+k S's leading n_roots columns, or before a collapse all of S and
+    //    the spectrum.
+    const bool collapse = dim + n_roots > max_subspace;
+    const bool whole = collapse && prev_rows > 0;
     const size_t dim_bytes = static_cast<size_t>(dim) * sizeof(T);
     FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(h.data(), dim_bytes, vav.data(), columns * sizeof(T),
                                              dim_bytes, static_cast<size_t>(dim),
@@ -186,6 +207,16 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
                                            wwr::wwrMemcpyDeviceToHost, stream)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&theta_top, ritz.data() + (dim - 1), sizeof(T),
                                            wwr::wwrMemcpyDeviceToHost, stream)));
+    if (keep_previous) {
+      const size_t s_columns = whole ? static_cast<size_t>(dim) : roots;
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(s_now.data(), h.data(),
+                                             static_cast<size_t>(dim) * s_columns * sizeof(T),
+                                             wwr::wwrMemcpyDeviceToHost, stream)));
+    }
+    if (whole) {
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(spectrum.data(), ritz.data(), dim_bytes,
+                                             wwr::wwrMemcpyDeviceToHost, stream)));
+    }
     FBF_TRY(res.sync());
     const T h_norm = std::max(std::abs(theta.front()), std::abs(theta_top));
 
@@ -238,21 +269,131 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     // 5. Corrections for the whole block; a converged root's is dropped below.
     FBF_TRY(precondition(res, std::span<const T>{theta}, residual.data(), correction.data()));
 
-    // 6. Collapse onto the Ritz pairs if a full new block would not fit.
-    //    max_subspace >= 2 * n_roots leaves room for one after. X^T A X is
-    //    S^T H S = diag(theta), which V^T A V becomes.
-    if (dim + n_roots > max_subspace) {
+    // 6. Collapse if a full new block would not fit: V onto span[X, X_prev]
+    //    = V Y, Y = [S, S_prev padded with zero rows] orthonormalized (GD+k).
+    //    X = V S and A X are already formed, so only Y's other columns Y_2 cost
+    //    a gemm each, into the residual block, free once the corrections are
+    //    made. In S's eigenbasis S is the leading unit vectors and H is
+    //    diag(spectrum), so Y_2 = S_full Q with Q zero on S's rows, and
+    //    V^T A V becomes diag(theta) beside Q^T diag(spectrum) Q.
+    //    max_subspace >= 2 * n_roots leaves room for a block after X alone,
+    //    3 * n_roots after X and X_prev.
+    if (collapse) {
+      int32_t extra = 0; // Y_2's columns, at most n_roots
+      if (whole) {
+        const auto d = static_cast<size_t>(dim);
+        const auto rows = static_cast<size_t>(prev_rows);
+        std::vector<double> q(d * roots, 0.0);
+        for (size_t c = 0; c < roots; ++c) {
+          // S_full^T S_prev's column c off S's rows, then off the Q before it.
+          double *const p = q.data() + (static_cast<size_t>(extra) * d);
+          for (size_t r = roots; r < d; ++r) {
+            double dot = 0.0;
+            for (size_t i = 0; i < rows; ++i) {
+              dot += static_cast<double>(s_now[i + (r * d)]) *
+                     static_cast<double>(s_prev[i + (c * rows)]);
+            }
+            p[r] = dot;
+          }
+          for (int32_t pass = 0; pass < 2; ++pass) {
+            for (int32_t a = 0; a < extra; ++a) {
+              const double *const qa = q.data() + (static_cast<size_t>(a) * d);
+              double overlap = 0.0;
+              for (size_t r = roots; r < d; ++r) {
+                overlap += qa[r] * p[r];
+              }
+              for (size_t r = roots; r < d; ++r) {
+                p[r] -= overlap * qa[r];
+              }
+            }
+          }
+          double norm2 = 0.0;
+          for (size_t r = roots; r < d; ++r) {
+            norm2 += p[r] * p[r];
+          }
+          const double norm = std::sqrt(norm2);
+          if (norm <= static_cast<double>(floor)) {
+            std::fill_n(p, d, 0.0); // nearly in span X: dropped
+            continue;
+          }
+          for (size_t r = roots; r < d; ++r) {
+            p[r] /= norm;
+          }
+          ++extra;
+        }
+        const auto kept_columns = static_cast<size_t>(extra);
+        for (size_t j = 0; j < kept_columns; ++j) {
+          const double *const qj = q.data() + (j * d);
+          for (size_t i = 0; i < d; ++i) {
+            double value = 0.0;
+            for (size_t r = roots; r < d; ++r) {
+              value += static_cast<double>(s_now[i + (r * d)]) * qj[r];
+            }
+            y_host[i + (j * d)] = static_cast<T>(value);
+          }
+          for (size_t a = 0; a < kept_columns; ++a) {
+            const double *const qa = q.data() + (a * d);
+            double value = 0.0;
+            for (size_t r = roots; r < d; ++r) {
+              value += static_cast<double>(spectrum[r]) * qa[r] * qj[r];
+            }
+            m_host[a + (j * kept_columns)] = static_cast<T>(value);
+          }
+        }
+      }
+      const size_t extra_bytes = nz * static_cast<size_t>(extra) * sizeof(T);
+      if (extra > 0) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(projection.data(), y_host.data(),
+                                               static_cast<size_t>(dim * extra) * sizeof(T),
+                                               wwr::wwrMemcpyHostToDevice, stream)));
+        FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
+            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, extra, dim, &kOne<T>, v.data(), n,
+            projection.data(), dim, &kZero<T>, residual.data(), n)));
+      }
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data(), eigenvectors, block_bytes,
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
+      if (extra > 0) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data() + (roots * nz), residual.data(),
+                                               extra_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
+        FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
+            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, extra, dim, &kOne<T>, av.data(), n,
+            projection.data(), dim, &kZero<T>, residual.data(), n)));
+      }
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(av.data(), ritz_av.data(), block_bytes,
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
+      if (extra > 0) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(av.data() + (roots * nz), residual.data(),
+                                               extra_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
+      }
       FBF_TRY(
           gpu_status(wwr::wwrMemsetAsync(vav.data(), 0, columns * columns * sizeof(T), stream)));
       FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(vav.data(), (columns + 1) * sizeof(T), ritz.data(),
                                                sizeof(T), sizeof(T), roots,
                                                wwr::wwrMemcpyDeviceToDevice, stream)));
-      dim = n_roots;
-      filled = n_roots;
+      if (extra > 0) {
+        const size_t extra_row_bytes = static_cast<size_t>(extra) * sizeof(T);
+        FBF_TRY(gpu_status(
+            wwr::wwrMemcpy2DAsync(vav.data() + (roots * (columns + 1)), columns * sizeof(T),
+                                  m_host.data(), extra_row_bytes, extra_row_bytes,
+                                  static_cast<size_t>(extra), wwr::wwrMemcpyHostToDevice, stream)));
+      }
+      dim = n_roots + extra;
+      filled = dim;
+    }
+
+    // X is X_prev to the next iteration: S's leading columns, or after a
+    // collapse the leading unit vectors of the new V.
+    if (keep_previous) {
+      if (collapse) {
+        std::fill(s_prev.begin(), s_prev.end(), T{0});
+        for (size_t i = 0; i < roots; ++i) {
+          s_prev[i + (i * roots)] = T{1};
+        }
+        prev_rows = n_roots;
+      } else {
+        std::copy_n(s_now.begin(), static_cast<size_t>(dim) * roots, s_prev.begin());
+        prev_rows = dim;
+      }
     }
 
     // 7. C -= V (V^T C), twice: one pass loses orthogonality once V is large.
