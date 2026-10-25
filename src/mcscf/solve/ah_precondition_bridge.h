@@ -27,7 +27,7 @@ namespace free_breakfast::device {
 /// off zero at ±@p floor, for the @p n elements of one column.
 ///
 /// The reciprocal, then the product, as the host-built 1 / d and its dgmm
-/// were: the same roundings, so the Davidson takes the same steps. Launch
+/// were, so the roundings did not change when it moved to the device. Launch
 /// status only; it does not synchronize.
 [[nodiscard]] wwr::wwrError_t ah_precondition(wwr::wwrStream_t stream, int32_t n, double theta,
                                               double floor, const double *diagonal,

@@ -47,7 +47,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::constants
   free_breakfast::core::log
   free_breakfast::core::diagnostics_macros
-  free_breakfast::recipes::davidson
+  free_breakfast::recipes::diagonalize
   free_breakfast::recipes::expm
   free_breakfast::integrals::active_space
   free_breakfast::ci::strings
