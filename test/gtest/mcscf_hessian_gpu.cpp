@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -538,6 +539,8 @@ fb::Result<fb::OrbitalHessian> build_hessian(Setup &setup, const fb::SphericalMa
 
 struct Case {
   std::string_view name;
+  // Under slow_test.h: every case but H2O cc-pVDZ, the cheapest.
+  bool slow;
 };
 
 // ctest names a discovered case by this, so `ctest -R n2_ccpvdz` selects one.
@@ -549,6 +552,9 @@ class McscfHessian : public ::testing::TestWithParam<Case> {};
 
 TEST_P(McscfHessian, MatchesPyscfAtTheCasciOrbitals) {
   FBF_REQUIRE_GPU();
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const fb::json &entry = reference_case(GetParam().name);
   const fb::json &casci = entry.at("casci");
   auto setup = make_setup(entry, true);
@@ -622,10 +628,11 @@ TEST_P(McscfHessian, MatchesPyscfAtTheCasciOrbitals) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, McscfHessian,
-                         ::testing::Values(Case{"h2o_ccpvdz"}, Case{"n2_ccpvdz"},
-                                           Case{"h2co_ccpvdz_sa2"},
-                                           Case{"h2co_ccpvdz_sa2_weighted"},
-                                           Case{"h2o_ccpvdz_avas"}),
+                         ::testing::Values(Case{.name = "h2o_ccpvdz", .slow = false},
+                                           Case{.name = "n2_ccpvdz", .slow = true},
+                                           Case{.name = "h2co_ccpvdz_sa2", .slow = true},
+                                           Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},
+                                           Case{.name = "h2o_ccpvdz_avas", .slow = true}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // The whole H on H2O STO-3G, one column per unit vector in one block: its
