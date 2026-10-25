@@ -256,26 +256,20 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
         FBF_TRY(casscf_integrals(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore,
                                  ncas, options.tau_j, options.tau_k));
 
-    // 2. The CI, from the last roots. The sigma takes host arrays, row-major:
-    //    h_eff transposed, (tu|vw) from t-fastest to w-fastest.
+    // 2. The CI, from the last roots. The sigma takes host arrays, row-major,
+    //    and the Hamiltonian's are column-major, which needs no reorder: h_eff
+    //    is symmetric, and (t, u, v, w) at t + n(u + n(v + n w)) is row-major
+    //    (w, v, u, t), with (wv|ut) = (tu|vw) for real ERIs. That symmetry is
+    //    exact only to roundoff and screening: (tu|vw) and (vw|tu) are
+    //    separate screened J builds, and C^T J C is not bitwise symmetric.
+    //    set_integrals does not confine it to one triangle (Σ_u (vu|uw),
+    //    (ii|jj) and (ij|ji) run over every index), so the CI sees the other
+    //    side of that asymmetry, which is far below its tolerance.
     {
-      const std::vector<double> h_col =
+      const std::vector<double> h_eff =
           FBF_TRY(casscf_download(res, ints.hamiltonian.h_eff.data(), n * n));
-      const std::vector<double> eri_col =
+      const std::vector<double> eri =
           FBF_TRY(casscf_download(res, ints.hamiltonian.eri.data(), n * n * n * n));
-      std::vector<double> h_eff(n * n);
-      std::vector<double> eri(n * n * n * n);
-      for (size_t t = 0; t < n; ++t) {
-        for (size_t uu = 0; uu < n; ++uu) {
-          h_eff[(t * n) + uu] = h_col[t + (n * uu)];
-          for (size_t v = 0; v < n; ++v) {
-            for (size_t ww = 0; ww < n; ++ww) {
-              eri[(((((t * n) + uu) * n) + v) * n) + ww] =
-                  eri_col[t + (n * (uu + (n * (v + (n * ww)))))];
-            }
-          }
-        }
-      }
       FBF_TRY(sigma.set_integrals(res, ints.hamiltonian.e_core, h_eff, eri));
     }
     FBF_TRY(sigma.diagonal(res, diagonal.data()));
