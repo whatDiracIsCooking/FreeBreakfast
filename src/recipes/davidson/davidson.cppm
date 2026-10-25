@@ -224,13 +224,28 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     // 1. Extend A V over the new columns only: one apply per iteration. V^T A V
     //    gains the new columns' rows, V_new^T (A V), which with the rows before
     //    them hold every element of its lower triangle: the old rows are
-    //    never recomputed.
+    //    never recomputed. The new diagonal elements are then rewritten by
+    //    dot, in device pointer mode, so with no sync: v^T A v sums n terms of
+    //    one sign, which rocBLAS's gemm of this shape on the gfx1200 gets up
+    //    to ~1e-12 relative wrong (its dot, and cuBLAS's gemm, near 1e-15). That
+    //    error is the Ritz value's, a collapse writes it back as diag(theta),
+    //    and the residual then floors at |theta| times it (see the README).
     if (dim > filled) {
       const size_t offset = static_cast<size_t>(filled) * nz;
       FBF_TRY(op.apply(res, dim - filled, v.data() + offset, av.data() + offset));
       FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
           blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, dim - filled, dim, n, &kOne<T>,
           v.data() + offset, n, av.data(), n, &kZero<T>, vav.data() + filled, max_subspace)));
+      {
+        const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
+                                                CreatePolicy<wwr::wwrblasStatus_t>>
+            device_result{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
+        for (auto j = static_cast<size_t>(filled); j < static_cast<size_t>(dim); ++j) {
+          FBF_TRY(
+              gpu_status(wwr::dot<T, int32_t>(blas, n, v.data() + (j * nz), 1, av.data() + (j * nz),
+                                              1, vav.data() + (j * (columns + 1)))));
+        }
+      }
       filled = dim;
     }
 
