@@ -15,13 +15,14 @@ generalized Fock, gradient and energy read γ and Γ from `CiRdm::rdm12`.
 |---|---|
 | `rdm1(alpha, beta, c, gamma)` | γ_tu = ⟨c\| E_tu \|c⟩, n × n row-major; `Status` |
 | `CiRdm::create(res, alpha, beta)` | Upload the two sets' replacement lists; `Result<CiRdm>` |
-| `CiRdm::rdm12(res, weights, vectors, gamma, gamma2)` | On the device: γ = Σ_r w_r γ^(r), n × n, and Γ_tuvw = Σ_r w_r ⟨c_r\| E_tu E_vw − δ_uv E_tw \|c_r⟩, n⁴ row-major; `Status` |
-| `CiRdm::size()` | alpha.size() · beta.size(), dim |
+| `CiRdm::rdm12(res, weights, vectors, gamma, gamma2, layout)` | On the device, over full or packed (`layout`, default full) vectors: γ = Σ_r w_r γ^(r), n × n, and Γ_tuvw = Σ_r w_r ⟨c_r\| E_tu E_vw − δ_uv E_tw \|c_r⟩, n⁴ row-major; `Status` |
+| `CiRdm::size(layout)` | A vector's length: alpha.size() · beta.size(), dim, or the triangle's m (m + 1) / 2 for `CiLayout::symmetric` |
 | `host_rdm12(alpha, beta, vectors, weights, gamma, gamma2)` | The same on the host, written for clarity: `CiRdm::rdm12`'s oracle |
 
 For `CiRdm::rdm12`, `vectors`, `gamma` and `gamma2` are device arrays: the
 vectors root r at [r · dim, (r + 1) · dim), which is what `CiRoots::vectors`
-holds, one per weight; the weights are on the host. `host_rdm12` takes and
+holds, one per weight, or root r at [r · m (m + 1) / 2, …) in
+`CiLayout::symmetric` (`../sigma/`); the weights are on the host. `host_rdm12` takes and
 writes host spans in the same layout. A single state is `weights = {1}`.
 
 `rdm1` refuses (`InvalidConfig`, nothing written) two `StringSet`s over
@@ -29,7 +30,8 @@ different orbital counts, or a span of the wrong size. Both 2-RDMs refuse no
 weights, a negative or NaN weight, and weights not summing to 1 within 1e-12;
 `host_rdm12` also refuses `rdm1`'s shapes and vectors of the wrong count for
 the weights, and `CiRdm::create` sets over different orbital counts or none,
-or more determinants than an `int32_t` counts.
+or more determinants than an `int32_t` counts. `CiRdm::rdm12` refuses
+`CiLayout::symmetric` unless the two sets are one, as `CiSigma` does.
 
 ## Design
 
@@ -56,6 +58,18 @@ thread owns its row and nothing is atomic, so the result does not depend on
 the run. M and D are carved from `res.device_workspace()`; cost is
 O(Σ_r dim · n⁴) in the syrks, M is n⁴ doubles (128 MiB at the strings'
 64-orbital limit).
+
+**The symmetric layout halves the gather and the syrk.** For a
+swap-symmetric c (every state of even S over one set for both spins), the
+spin-summed E_tu commutes with the swap of the two strings, so D_K is D of
+K's mirror. Then M = Σ_K D_K D_Kᵀ = Σ over the triangle K_α ≥ K_β of
+w_K D_K D_Kᵀ, and γ = Σ_K c_K D_K likewise, with w_K = 2 off the diagonal
+and 1 on it. So in `CiLayout::symmetric` the gather walks the triangle's rows
+alone, by `../sigma/ci_symmetric.h`'s map (a link below the triangle reads its
+mirror times 1/√2), scaling each off-diagonal row by √w = √2; the syrk then
+gives M exactly, and the gemm with the packed c, whose off-diagonal elements
+carry the other √2, gives γ. `ci_solve` still unpacks its roots, so
+`CiRoots` callers read the full layout; packed roots are a follow-up.
 
 **Tables once, vectors as often as needed.** `CiRdm::create` uploads the link
 tables once per (n, N_α, N_β), as `CiSigma::create` does, and `rdm12` reads
@@ -89,9 +103,16 @@ vectors over seven sectors (open shells, an empty and a full spin, one
 orbital, N_α < N_β) at three weights check the device against the host again;
 a slow case (`MatchesHostAcrossChunks`, skipped under
 `FREE_BREAKFAST_FAST_TESTS`) does it over 108 900 determinants, two chunks of
-D. Each checks Γ_tuvw = Γ_vwtu, Σ_v Γ_tuvv = (N − 1) γ_tu and
+D. The symmetric layout is checked on packed swap-symmetric vectors, every
+golden average with N_α = N_β and random unit vectors at three weights over
+seven sets (an empty and a full one, one orbital): its γ and Γ match the full
+layout's on the unpacked vectors and `host_rdm12` to 1e-12, and per root
+`CiSigma::rdm1` in the symmetric layout matches the full one and `rdm1` to
+1e-12; a slow case (`SymmetricLayoutMatchesFullAcrossChunks`) does it over
+106 953 triangle rows, two chunks. Each checks Γ_tuvw = Γ_vwtu, Σ_v Γ_tuvv = (N − 1) γ_tu and
 Σ_tu Γ_ttuu = N (N − 1) to 1e-10. The refusals are checked on both, with
-γ and Γ left untouched (on the device, read back).
+γ and Γ left untouched (on the device, read back), and the symmetric layout
+over the two sets (4, 1) and (4, 3).
 
 ## Files
 
@@ -100,5 +121,5 @@ D. Each checks Γ_tuvw = Γ_vwtu, Σ_v Γ_tuvv = (N − 1) γ_tu and
 | `rdm.cppm` | Module interface: `rdm1`, `CiRdm`, `host_rdm12` |
 | `rdm.cpp` | The passes over the replacement lists, and `CiRdm`'s uploads, syrk and gemm |
 | `ci_rdm_bridge.h` | The launchers, shared by the module (GMF) and the `.cu` |
-| `ci_rdm.cu` | The gather of D, one thread per determinant, and Γ's assembly |
+| `ci_rdm.cu` | The gather of D, one thread per determinant (or triangle element), and Γ's assembly |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.rdm.device` and the module `free_breakfast.ci.rdm` |

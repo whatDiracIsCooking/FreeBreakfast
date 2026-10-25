@@ -47,17 +47,23 @@ namespace free_breakfast::device {
 /// @p d is rows × n_pairs, column-major with leading dimension @p rows, and is
 /// accumulated into: it must be zero on entry. @p c is the block of vectors.
 /// A float @p d takes each term rounded to float: an entry has at most two,
-/// one link of each spin. With @p symmetric, D is of the unpacked c.
+/// one link of each spin. With @p symmetric, D is of the unpacked c, and
+/// with @p scale_off_diagonal too, each off-diagonal row (I_α > I_β) is
+/// scaled by √2: the triangle's rows then carry the weight 2 of a determinant
+/// and its mirror in a sum over the packed c (CiSigma::rdm1's). Without
+/// @p symmetric, @p scale_off_diagonal is ignored.
 [[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, bool symmetric,
                                           int32_t row_begin, int32_t rows, int32_t n_det,
                                           int32_t n_beta, const int32_t *alpha_links,
                                           int32_t alpha_per, const int32_t *beta_links,
-                                          int32_t beta_per, const double *c, double *d);
+                                          int32_t beta_per, bool scale_off_diagonal,
+                                          const double *c, double *d);
 [[nodiscard]] wwr::wwrError_t ci_gather_d(wwr::wwrStream_t stream, bool symmetric,
                                           int32_t row_begin, int32_t rows, int32_t n_det,
                                           int32_t n_beta, const int32_t *alpha_links,
                                           int32_t alpha_per, const int32_t *beta_links,
-                                          int32_t beta_per, const double *c, float *d);
+                                          int32_t beta_per, bool scale_off_diagonal,
+                                          const double *c, float *d);
 
 /// @brief σ for every one of the @p rows rows, from G:
 /// σ_I = e_core c_I + G_I[n_pairs] + Σ s · G_J[pair(p, q)] over I's α and β

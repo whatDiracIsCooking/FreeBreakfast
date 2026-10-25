@@ -1,9 +1,10 @@
 # CiRdm's gather of D and Γ's assembly. Device code in its own library, so
 # its language and -x hip never reach the module compiles. The bridge header it
 # shares with the module names int32_t, wwrStream_t and wwrError_t, hence
-# types_headers and wwr::device PUBLIC; block_params.h (kFourWarps) and
-# primitives.h (math::idivup), both from core::kernel_headers, are its own
-# business.
+# types_headers and wwr::device PUBLIC; block_params.h (kFourWarps),
+# primitives.h (math::idivup), both from core::kernel_headers, and the sigma's
+# ci_symmetric.h, reached through ci::sigma::device's include directory, are
+# its own business.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.ci.rdm.device
@@ -14,12 +15,14 @@ free_breakfast_add_gpu_device_library(
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
+  free_breakfast::ci::sigma::device
 )
 
 # The module: rdm1, host_rdm12 and CiRdm. ci::strings is PUBLIC because the
 # interface takes StringSets, core::error_handling because it returns a
-# Status, core::resources because CiRdm takes DeviceResources, and core::wwr
-# because CiRdm holds Buffers. The implementation unit alone GMF-includes the
+# Status, core::resources because CiRdm takes DeviceResources, core::wwr
+# because CiRdm holds Buffers, and ci::sigma because rdm12 takes its
+# CiLayout. The implementation unit alone GMF-includes the
 # bridge, so the device library, constants, primitives and the FBF_TRY header
 # are PRIVATE.
 free_breakfast_add_cxx_module_library(
@@ -36,6 +39,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::resources
   free_breakfast::core::wwr
   free_breakfast::ci::strings
+  free_breakfast::ci::sigma
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros

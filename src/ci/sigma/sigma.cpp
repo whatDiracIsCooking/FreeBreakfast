@@ -373,7 +373,7 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
           wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(count) * pairs, stream)));
       FBF_TRY(gpu_status(device::ci_gather_d(stream, symmetric, begin, count, rows, n_beta_,
                                              alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                             beta_per_, xj, d)));
+                                             beta_per_, false, xj, d)));
       FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
           res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, count, n_pairs + 1, n_pairs,
           &kOne<T>, d, count, contraction, n_pairs, &kZero<T>, g + begin, rows)));
@@ -409,14 +409,22 @@ Status CiSigma::diagonal(DeviceResources &res, double *const diagonal) {
                                         diagonal_terms_.data(), diagonal));
 }
 
-Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const gamma) {
+Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const gamma,
+                     const CiLayout layout) {
   if (res.dev_idx() != dev_idx_) {
     return err_config("CiSigma: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
+  const bool symmetric = layout == CiLayout::symmetric;
+  if (symmetric && !one_set_) {
+    return err_config("CiSigma: the symmetric layout needs one set of strings for both spins");
+  }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  const int32_t rows = size();
+  // Every determinant, or the triangle's, each off-diagonal row scaled by √2
+  // so that with the packed c's own √2 it carries the weight 2 of itself and
+  // its mirror.
+  const int32_t rows = size(layout);
   const auto n_pairs = static_cast<int32_t>(ci_pair(static_cast<size_t>(n_orbitals_), 0));
   const auto pairs = static_cast<size_t>(n_pairs);
   const int32_t chunk = static_cast<int32_t>(std::clamp<size_t>(
@@ -430,9 +438,9 @@ Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const 
     const int32_t count = std::min(chunk, rows - begin);
     FBF_TRY(gpu_status(
         wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
-    FBF_TRY(gpu_status(device::ci_gather_d(stream, false, begin, count, size(), n_beta_,
+    FBF_TRY(gpu_status(device::ci_gather_d(stream, symmetric, begin, count, rows, n_beta_,
                                            alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                           beta_per_, c, d)));
+                                           beta_per_, true, c, d)));
     FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
         res.blas().get(), wwr::WWRBLAS_OP_T, count, n_pairs, &kOne<double>, d, count, c + begin, 1,
         begin == 0 ? &kZero<double> : &kOne<double>, packed, 1)));

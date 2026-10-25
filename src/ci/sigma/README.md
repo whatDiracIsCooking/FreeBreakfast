@@ -18,7 +18,7 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 | `CiSigma::apply(res, k, x, y, layout = full)` | Y = H X for size(layout) × k device blocks: the `LinearOperator` member; `Status` |
 | `CiSigma::apply_fp32(res, k, x, y, layout = full)` | The same Y = H X over the same double blocks, D, G and the gemm in float, to ~1e-7 relative; `ci_solve`'s first stage; `Status` |
 | `CiSigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
-| `CiSigma::rdm1(res, c, gamma)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector into n × n device doubles; `Status` |
+| `CiSigma::rdm1(res, c, gamma, layout)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector, full or packed (`layout`, default full), into n × n device doubles; `Status` |
 | `CiSigma::size(layout = full)` | The operator's n: alpha.size() · beta.size(), or the symmetric layout's alpha.size() (alpha.size() + 1) / 2 |
 | `CiLayout` | `full`, every determinant; or `symmetric`, the packed triangle of a vector symmetric under the swap of the two strings |
 | `ci_unpack(res, n_strings, k, x, y)` | k symmetric-layout device vectors into full ones; `Status` |
@@ -112,8 +112,9 @@ mirror's row, unscaled, then scales σ_I by √2 off the diagonal. So D, the gem
 and G all halve, and nothing is atomic still. Only the symmetric parity is
 implemented: `ci_solve` wants singlets, and the antisymmetric (odd S) states of
 M_s = 0 are what M_s = 1 solves for. The triangle's index map is
-`ci_symmetric.h`, shared with `ci.solver`'s S². `ci_unpack` takes packed
-vectors back to the full layout, which is what `rdm1` and `CiRdm::rdm12` read.
+`ci_symmetric.h`, shared with `ci.solver`'s S² and `ci.rdm`'s gather.
+`ci_unpack` takes packed vectors back to the full layout; `rdm1` and
+`CiRdm::rdm12` read either.
 
 **Tables once, integrals as often as needed.** `create` uploads the two sets'
 strings and their lists (target, packed pair, sign per replacement), once per
@@ -130,6 +131,13 @@ off the diagonal, and a small kernel unpacks it, halving those. It reads
 only the link tables, so it needs no `set_integrals`, and its scratch is one
 chunk of D plus n(n+1)/2 doubles. The 2-RDM, Dᵀ D, is the same gather with a
 gemm.
+
+In the symmetric layout D_K is D of K's mirror (E_vw commutes with the swap
+and c is symmetric), so Σ_K c_K D_K is Σ over the triangle of w_K c_K D_K, w_K
+2 off the diagonal and 1 on it. The gather walks the triangle's rows with
+`scale_off_diagonal`, which multiplies each off-diagonal row by √2, and the
+gemv takes the packed c, whose off-diagonal elements carry the other √2; the
+sum is then the full layout's, over half the rows.
 
 **`apply_fp32` is `apply` with D, G and the contraction in float.** The
 vectors stay double; `set_integrals` uploads the contraction matrix a second
@@ -185,7 +193,10 @@ case with N_α = N_β and seven shapes over one set (CAS(8,8), CAS(10,10), a
 single orbital, an empty set and a full one among them), and at CAS(12,12),
 four chunks of triangle rows in double, under `slow_test.h`; `ci_unpack` of
 each packed block gives the block back; and the layout is refused over two
-sets with the same number of strings, (4, 1) and (4, 3).
+sets with the same number of strings, (4, 1) and (4, 3), by `apply`,
+`apply_fp32` and `rdm1`. In double, `rdm1` of each packed column also matches
+the full layout's on the unpacked one and `ci.rdm`'s `rdm1` to 1e-12 of
+max |γ|; `test/gtest/ci_rdm_gpu.cpp` checks it again on unit vectors.
 
 ## Files
 
