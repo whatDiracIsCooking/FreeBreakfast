@@ -151,6 +151,14 @@ instead of returning to the driver, not a cap on allocation. The pool is
 declared before the `ForkStream`, so the stream — which synchronizes before
 destroying — is torn down first and no queued free outlives its pool.
 
+Under HIP the pool is created exportable (a POSIX file descriptor handle type)
+though nothing exports it. That is a workaround for a ROCm 7.2.4 defect (#300):
+a non-exportable pool is backed by ROCm's virtual-memory heap, whose
+`hipMemPoolDestroy` intermittently dereferences a null after a run of
+differently sized allocations, and an exportable pool never gets the heap.
+`Device::pool_props()` has the details and the upstream fix that retires it;
+it is the tree's one backend `#if` in host code.
+
 ## DeviceStream
 
 A `Device`'s pool paired with a `ForkStream` of its own: another work stream
