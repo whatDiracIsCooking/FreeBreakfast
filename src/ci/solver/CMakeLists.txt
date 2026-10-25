@@ -24,8 +24,8 @@ free_breakfast_add_gpu_device_library(
 # runtime's memcpy (core::wwr), StringSet, CiLayout and ci_unpack
 # (ci::sigma) -- is PUBLIC. The FBF_TRY macro
 # expands in the interface unit, so its header is PRIVATE, and the
-# implementation unit alone GMF-includes the bridge, so the device library is
-# PRIVATE too.
+# implementation unit alone GMF-includes the bridge and calls orthonormalize,
+# so the device library and recipes::orthogonalize are PRIVATE too.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.ci.solver
@@ -44,5 +44,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::sigma
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
+  free_breakfast::recipes::orthogonalize
   free_breakfast::ci::solver::device
 )

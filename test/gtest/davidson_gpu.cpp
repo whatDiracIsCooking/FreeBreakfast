@@ -225,21 +225,27 @@ struct Problem {
   }
 };
 
+// Each with the corrections orthonormalized by Gram-Schmidt (the default)
+// and by orthonormalize.
 template <typename T>
 void check_converges(std::int32_t max_subspace) {
-  fb::DeviceResources res{0};
-  Problem<T> p{res};
-  const auto options = Problem<T>::converging_options();
-  const auto info = p.solve(max_subspace, options);
-  ASSERT_TRUE(info) << info.error().message;
-  EXPECT_GT(info->iterations, 1);
-  // ||A||_2 is below n + 1 here, so this is the converged bound loosened.
-  EXPECT_LE(info->max_residual_norm, options.residual_tolerance * (Problem<T>::kN + 1));
-  // One apply per iteration, on only the columns new since the last: the
-  // guess, then each expansion. A collapse reuses A X and applies nothing.
-  EXPECT_EQ(p.op.applies, info->iterations);
-  EXPECT_TRUE(p.op.host_mode);
-  p.expect_lowest_pairs(options);
+  for (const bool canonical : {false, true}) {
+    SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
+    fb::DeviceResources res{0};
+    Problem<T> p{res};
+    auto options = Problem<T>::converging_options();
+    options.canonical_orthonormalization = canonical;
+    const auto info = p.solve(max_subspace, options);
+    ASSERT_TRUE(info) << info.error().message;
+    EXPECT_GT(info->iterations, 1);
+    // ||A||_2 is below n + 1 here, so this is the converged bound loosened.
+    EXPECT_LE(info->max_residual_norm, options.residual_tolerance * (Problem<T>::kN + 1));
+    // One apply per iteration, on only the columns new since the last: the
+    // guess, then each expansion. A collapse reuses A X and applies nothing.
+    EXPECT_EQ(p.op.applies, info->iterations);
+    EXPECT_TRUE(p.op.host_mode);
+    p.expect_lowest_pairs(options);
+  }
 }
 
 TEST(Davidson, LowestEigenpairsDouble) {
@@ -266,12 +272,14 @@ TEST(Davidson, ConvergesAtTheSmallestSubspace) {
 // iterations at 3 * n_roots onto X alone in double against 29 with X_prev and
 // 12 unrestarted (229 at 2 * n_roots, where X_prev does not fit).
 template <typename T>
-void check_collapse_keeps_previous() {
-  const auto iterations = [](std::int32_t max_subspace) {
+void check_collapse_keeps_previous(bool canonical) {
+  SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
+  const auto iterations = [canonical](std::int32_t max_subspace) {
     fb::DeviceResources res{0};
     Problem<T> p{res};
     p.precondition.identity = true;
-    const auto options = Problem<T>::converging_options();
+    auto options = Problem<T>::converging_options();
+    options.canonical_orthonormalization = canonical;
     const auto info = p.solve(max_subspace, options);
     EXPECT_TRUE(info) << max_subspace << ": " << info.error().message;
     if (info) {
@@ -294,12 +302,14 @@ void check_collapse_keeps_previous() {
 
 TEST(Davidson, CollapseKeepsThePreviousRitzVectorsDouble) {
   FBF_REQUIRE_GPU();
-  check_collapse_keeps_previous<double>();
+  check_collapse_keeps_previous<double>(false);
+  check_collapse_keeps_previous<double>(true);
 }
 
 TEST(Davidson, CollapseKeepsThePreviousRitzVectorsFloat) {
   FBF_REQUIRE_GPU();
-  check_collapse_keeps_previous<float>();
+  check_collapse_keeps_previous<float>(false);
+  check_collapse_keeps_previous<float>(true);
 }
 
 // The subspace lives in the call's own buffers: an operator that grows and
@@ -337,13 +347,18 @@ TEST(Davidson, MaxIterationsIsAnErrorWithTheLastRitzValues) {
 // Zero corrections leave nothing to expand by: Divergence at the first step.
 TEST(Davidson, ZeroCorrectionsAreDivergence) {
   FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
-  Problem<double> p{res};
-  p.precondition.zero = true;
-  const auto info = p.solve(20, fb::DavidsonOptions{});
-  ASSERT_FALSE(info);
-  EXPECT_EQ(info.error().kind, fb::ErrorKind::Divergence);
-  EXPECT_EQ(p.op.applies, 1);
+  for (const bool canonical : {false, true}) {
+    SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
+    fb::DeviceResources res{0};
+    Problem<double> p{res};
+    p.precondition.zero = true;
+    fb::DavidsonOptions options;
+    options.canonical_orthonormalization = canonical;
+    const auto info = p.solve(20, options);
+    ASSERT_FALSE(info);
+    EXPECT_EQ(info.error().kind, fb::ErrorKind::Divergence);
+    EXPECT_EQ(p.op.applies, 1);
+  }
 }
 
 TEST(Davidson, RejectsABadShape) {

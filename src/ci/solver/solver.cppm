@@ -40,10 +40,12 @@ namespace free_breakfast {
 // ci_solve's @p count orthonormal guess columns into the n × count device
 // block @p guess: unit vectors on the determinants of lowest @p diagonal
 // (device, n), ties to the lower address, each with a 1e-3 deterministic
-// spread over every determinant, then modified Gram-Schmidt twice. Queued on
-// res.stream() with res.blas(), whose pointer mode it holds at host.
+// spread over every determinant, then modified Gram-Schmidt twice, or with
+// @p canonical orthonormalize (Numerical if a column drops, which
+// independent guesses never should). Queued on res.stream() with
+// res.blas(), whose pointer mode it holds at host.
 [[nodiscard]] Status ci_guesses(DeviceResources &res, int32_t n, int32_t count,
-                                const double *diagonal, double *guess);
+                                const double *diagonal, double *guess, bool canonical);
 
 } // namespace free_breakfast
 
@@ -290,9 +292,11 @@ template <LinearOperator<double> Op>
     // diag(H) over the triangle, through penalize_diagonal with no penalty,
     // into shifted until the penalized one overwrites it.
     FBF_TRY(spin.penalize_diagonal(res, 0.0, target, diagonal, shifted.data(), layout));
-    FBF_TRY(ci_guesses(res, n, guess_count, shifted.data(), guess.data()));
+    FBF_TRY(ci_guesses(res, n, guess_count, shifted.data(), guess.data(),
+                       options.davidson.canonical_orthonormalization));
   } else {
-    FBF_TRY(ci_guesses(res, n, guess_count, diagonal, guess.data()));
+    FBF_TRY(ci_guesses(res, n, guess_count, diagonal, guess.data(),
+                       options.davidson.canonical_orthonormalization));
   }
 
   // H + λ (S² − S(S+1)) through the caller's sigma, the penalty added into
