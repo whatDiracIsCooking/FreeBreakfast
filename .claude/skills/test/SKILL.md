@@ -90,7 +90,11 @@ ctest phase (and cpp-smoke's GPU suite) then holds one of that card's
 `GPU_SLOTS` (2) slot locks; it waits, printing why, while every slot is held
 or the card's load is at or above `GPU_BUSY_PCT` (80%), and takes a free slot
 anyway after `GPU_BUSY_WAIT` (900 s) of load that holds no slot. The two cards
-never block each other. Knobs are the `GPU_*` variables in `config.sh`.
+never block each other. Inside its one slot a run is `GPU_TEST_JOBS` (3)
+processes: ctest `-j` in the tier, gtest shards in the smoke, each shard's
+summary lines tagged `[shard i/N]`. A crashed shard prints the case it died in.
+Knobs are the `GPU_*` variables in `config.sh`; `GPU_TEST_JOBS=1` is the
+serial run, for a crash that only reproduces alone.
 
 **Report the preset the run resolved to**, not `auto` — the summary line and
 the log name carry it. Pin a backend with `--preset` when it matters: a change

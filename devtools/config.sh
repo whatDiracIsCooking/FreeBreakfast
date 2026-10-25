@@ -339,10 +339,9 @@ HOST_MOUNTS=${HOST_MOUNTS:-"~/.gemini:/home/ubuntu/.gemini"}
 HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL"}
 
 # Cross-session GPU admission (see with_gpu_slot() and gpu_auto_preset() in
-# lib.sh). One ctest run here is already serial -- no preset sets a job count
-# and CTEST_PARALLEL_LEVEL is unset -- but nothing in that process coordinates
-# with a second worktree's cpp-tier.sh or cpp-smoke.sh running its own GPU
-# binary against the same physical card at the same time.
+# lib.sh). One run's own concurrency is GPU_TEST_JOBS below, but nothing in
+# that run coordinates with a second worktree's cpp-tier.sh or cpp-smoke.sh
+# running its own GPU binary against the same physical card at the same time.
 #
 # GPU_LOCK_DIR holds GPU_SLOTS lock files per card. Resolved the same way
 # HOST_BIND_DIRS is: a relative path sits under the MAIN checkout, not the
@@ -362,6 +361,16 @@ GPU_BUSY_PCT=${GPU_BUSY_PCT:-80}
 # it anyway (load from something that holds no slot). 0 waits for ever.
 GPU_BUSY_WAIT=${GPU_BUSY_WAIT:-900}
 GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
+# Concurrent GPU test processes WITHIN the one slot a run holds: cpp-smoke.sh
+# splits the gpu binary into this many gtest shards, cpp-tier.sh passes it to
+# ctest as -j. 1 is fully serial. Measured on idle cards (2026-10-25), N=1/2/3:
+#   cpp-tier   cuda 343/249/219s  hip 378/270/243s
+#   cpp-smoke  cuda 143/137/137s  hip 193/177/180s  (GPU phase)
+# ctest gains because every entry is its own process paying GPU runtime init,
+# which overlaps; the smoke binary pays that once, so its cases already keep
+# the card busy and shards barely help. Past 3 neither moves. A slot is now up
+# to this many processes of load, which GPU_BUSY_PCT still sees.
+GPU_TEST_JOBS=${GPU_TEST_JOBS:-3}
 # Readings averaged into one load figure (0.3s apart); one is too noisy.
 GPU_LOAD_SAMPLES=${GPU_LOAD_SAMPLES:-4}
 
