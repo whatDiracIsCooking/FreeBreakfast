@@ -201,12 +201,17 @@ TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
     ASSERT_FALSE(golden_of_spin(c.roots, 2.0).empty());
     ASSERT_LT(golden_of_spin(c.roots, 2.0).front(), singlets[1]);
 
-    HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
     const auto diagonal = on_device(res, c.diagonal);
-    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3);
-    ASSERT_TRUE(got.has_value()) << got.error().message;
-    EXPECT_EQ(sigma.applies, got->davidson.iterations);
-    expect_roots(res, c, *got, 0.0);
+    for (const bool olsen : {false, true}) {
+      SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+      HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
+      fb::CiSolverOptions options;
+      options.olsen_correction = olsen;
+      const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+      ASSERT_TRUE(got.has_value()) << got.error().message;
+      EXPECT_EQ(sigma.applies, got->davidson.iterations);
+      expect_roots(res, c, *got, 0.0);
+    }
   }
 }
 
@@ -222,9 +227,14 @@ TEST(CiSolver, LowestTripletsFromTheMsOneSector) {
     SCOPED_TRACE(c.name);
     HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
     const auto diagonal = on_device(res, c.diagonal);
-    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3);
-    ASSERT_TRUE(got.has_value()) << got.error().message;
-    expect_roots(res, c, *got, 2.0);
+    for (const bool olsen : {false, true}) {
+      SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+      fb::CiSolverOptions options;
+      options.olsen_correction = olsen;
+      const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+      ASSERT_TRUE(got.has_value()) << got.error().message;
+      expect_roots(res, c, *got, 2.0);
+    }
   }
 }
 
@@ -237,18 +247,22 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   ASSERT_FALSE(cases.empty());
   const Case c = make_case(cases[0]);
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
-  fb::CiSolverOptions options;
-  options.spin_penalty = 0.0;
   const auto diagonal = on_device(res, c.diagonal);
-  const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
-  ASSERT_TRUE(got.has_value()) << got.error().message;
-  bool triplet = false;
-  for (std::size_t r = 0; r < 3; ++r) {
-    EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
-    EXPECT_NEAR(got->spin_squares[r], c.roots[r]["s2"].get<double>(), kSpinTol);
-    triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+  for (const bool olsen : {false, true}) {
+    SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+    fb::CiSolverOptions options;
+    options.spin_penalty = 0.0;
+    options.olsen_correction = olsen;
+    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+    ASSERT_TRUE(got.has_value()) << got.error().message;
+    bool triplet = false;
+    for (std::size_t r = 0; r < 3; ++r) {
+      EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
+      EXPECT_NEAR(got->spin_squares[r], c.roots[r]["s2"].get<double>(), kSpinTol);
+      triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+    }
+    EXPECT_TRUE(triplet);
   }
-  EXPECT_TRUE(triplet);
 }
 
 // CiSigma, forwarded, with the layout of every apply recorded: what ci_solve
@@ -291,21 +305,27 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
       const std::set<fb::CiLayout> layout{shift == 0 ? fb::CiLayout::symmetric
                                                      : fb::CiLayout::full};
 
-      RecordingSigma recorded{*sigma, {}};
-      const auto two_stage = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3);
-      ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
-      EXPECT_GT(two_stage->fp32_iterations, 0);
-      EXPECT_EQ(recorded.layouts, layout);
-      expect_roots(res, c, *two_stage, s2);
+      for (const bool olsen : {false, true}) {
+        SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+        RecordingSigma recorded{*sigma, {}};
+        fb::CiSolverOptions options;
+        options.olsen_correction = olsen;
+        const auto two_stage =
+            fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
+        ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
+        EXPECT_GT(two_stage->fp32_iterations, 0);
+        EXPECT_EQ(recorded.layouts, layout);
+        expect_roots(res, c, *two_stage, s2);
 
-      fb::CiSolverOptions fp64;
-      fp64.fp32_tolerance = 0.0;
-      recorded.layouts.clear();
-      const auto alone = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, fp64);
-      ASSERT_TRUE(alone.has_value()) << alone.error().message;
-      EXPECT_EQ(alone->fp32_iterations, 0);
-      EXPECT_EQ(recorded.layouts, layout);
-      expect_roots(res, c, *alone, s2);
+        fb::CiSolverOptions fp64 = options;
+        fp64.fp32_tolerance = 0.0;
+        recorded.layouts.clear();
+        const auto alone = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, fp64);
+        ASSERT_TRUE(alone.has_value()) << alone.error().message;
+        EXPECT_EQ(alone->fp32_iterations, 0);
+        EXPECT_EQ(recorded.layouts, layout);
+        expect_roots(res, c, *alone, s2);
+      }
     }
   }
 }
@@ -322,18 +342,22 @@ TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   ASSERT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
   const auto diagonal = on_device(res, c.diagonal);
-  RecordingSigma recorded{*sigma, {}};
-  fb::CiSolverOptions options;
-  options.spin_penalty = 0.0;
-  const auto got = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
-  ASSERT_TRUE(got.has_value()) << got.error().message;
-  EXPECT_EQ(recorded.layouts, std::set<fb::CiLayout>{fb::CiLayout::full});
-  bool triplet = false;
-  for (std::size_t r = 0; r < 3; ++r) {
-    EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
-    triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+  for (const bool olsen : {false, true}) {
+    SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+    RecordingSigma recorded{*sigma, {}};
+    fb::CiSolverOptions options;
+    options.spin_penalty = 0.0;
+    options.olsen_correction = olsen;
+    const auto got = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
+    ASSERT_TRUE(got.has_value()) << got.error().message;
+    EXPECT_EQ(recorded.layouts, std::set<fb::CiLayout>{fb::CiLayout::full});
+    bool triplet = false;
+    for (std::size_t r = 0; r < 3; ++r) {
+      EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
+      triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+    }
+    EXPECT_TRUE(triplet);
   }
-  EXPECT_TRUE(triplet);
 }
 
 TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {

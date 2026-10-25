@@ -118,8 +118,8 @@ struct DiagonalPreconditioner {
   bool zero = false;
   bool identity = false;
 
-  fb::Status operator()(fb::DeviceResources &res, std::span<const T> theta, const T *residual,
-                        T *correction) const {
+  fb::Status operator()(fb::DeviceResources &res, std::span<const T> theta,
+                        const T * /*ritz_vectors*/, const T *residual, T *correction) const {
     const std::size_t count = static_cast<std::size_t>(n) * theta.size();
     if (zero) {
       return fb::gpu_status(wwr::wwrMemsetAsync(correction, 0, count * sizeof(T), res.stream()));

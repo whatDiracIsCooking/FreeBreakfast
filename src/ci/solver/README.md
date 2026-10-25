@@ -13,7 +13,7 @@ written against.
 | Name | Role |
 |---|---|
 | `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options)` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2. A template over the sigma. |
-| `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12) and `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off) |
+| `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12), `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off) and `olsen_correction` (Olsen's correction in place of the plain one; off) |
 | `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer in the full layout, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo` of the FP64 stage), `fp32_iterations` (the single-precision stage's, 0 when none ran) |
 | `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
 | `CiSpinSquare::create(res, alpha, beta)` | Upload S²'s tables; `Result<CiSpinSquare>` |
@@ -64,6 +64,46 @@ excitations and go through the sets' own replacement lists: nothing leaves the
 sector, and no string set for (N_α ± 1, N_β ∓ 1) is needed. Each operator is
 even in its spin, so it passes the other spin's creators with no sign and
 carries only its own list's.
+
+**Olsen's correction is an option, off by default.** With
+`olsen_correction` the correction is δ = M⁻¹ (r − ε x),
+ε = xᵀ M⁻¹ r / xᵀ M⁻¹ x, in place of the plain M⁻¹ r, over
+M = θ − diag(H + penalty). A CI matrix is diagonally dominant, so M ≈ θ − H
+and M⁻¹ r = M⁻¹ (H − θ) x is nearly −x, the Ritz vector itself; projected off
+V, which holds x, it leaves a small, noisy remainder. Olsen's is the
+first-order Jacobi–Davidson correction, with xᵀ δ = 0 by construction.
+`davidson_solve` passes X for it. Per column it is two elementwise launches
+and two dots: M⁻¹ x into the correction column, xᵀ M⁻¹ x and (M⁻¹ x)ᵀ r
+(= xᵀ M⁻¹ r, M being diagonal) into the device workspace in device pointer
+mode, then δ from r, x and those two dots, with ε formed in the kernel.
+Nothing comes back to the host, so it adds no sync. A zero xᵀ M⁻¹ x falls
+back to ε = 0. With the option off, the correction is the same launch on r
+that it always was, and the solve is bitwise the one before the option
+existed.
+
+Over the diagonal M it does not pay. On `bench/ci_sigma_precision` (below
+the GD+k table, same conditions, parent 34b1ca5 → `olsen_correction` on) it
+is slower on 19 of the 3080's 28 solves and 11 of the gfx1200's 21 that both
+converge, at 0.88–1.07× and 0.91–1.19×; iteration counts move both ways, by
+up to ~20%. On the gfx1200 it converges two CAS(12,12) 2.0 Å symmetric
+solves whose FP64 stage stalls in the parent (#318): `fp32_tolerance` 1e-4 in
+60 + 135 iterations (24.0 s) and 1e-6 in 82 + 109 (23.0 s), and it adds no
+new `Divergence`. The energies differ from the parent's by at most 1.1e-12
+on the 3080 (3.8e-13 FP64-only) and 1.8e-11 on the gfx1200 (2.6e-12
+FP64-only), within the parent's own spread across solve modes, 2.8e-12 and
+5.6e-11. #287 replaces M with a P-space operator; it is to re-bench Olsen's
+correction there and turn it on by default if it wins.
+
+| | | full, FP64-only | symmetric, FP64-only | two-stage 1e-6 | two-stage 1e-7 |
+|---|---|---|---|---|---|
+| CAS(10,10), 1.0977 Å | 3080 | 0.81 → 0.80 s (112 → 109) | 0.39 → 0.39 s (108 → 103) | 0.32 → 0.33 s (46+60 → 48+60) | 0.32 → 0.30 s (56+57 → 57+45) |
+| | gfx1200 | 2.32 → 2.03 s (112 → 106) | 0.95 → 0.92 s (108 → 103) | 0.88 → 0.91 s (47+60 → 48+61) | 0.89 → 0.90 s (56+53 → 57+52) |
+| CAS(12,12), 1.0977 Å | 3080 | 11.6 → 12.7 s (99 → 115) | 5.27 → 5.26 s (91 → 97) | 3.71 → 4.20 s (47+61 → 55+66) | 3.74 → 3.99 s (51+55 → 71+53) |
+| | gfx1200 | 31.3 → 26.2 s (119 → 97) | 12.7 → 13.6 s (91 → 101) | Divergence in both | 13.3 → 14.1 s (51+59 → 71+52) |
+| CAS(10,10), 2.0 Å | 3080 | 1.21 → 1.33 s (206 → 225) | 0.74 → 0.75 s (210 → 205) | 0.60 → 0.62 s (103+108 → 103+107) | 0.58 → 0.60 s (122+87 → 122+89) |
+| | gfx1200 | 3.42 → 3.76 s (206 → 225) | 1.83 → 1.81 s (212 → 205) | 1.73 → 1.76 s (103+108 → 103+108) | 1.71 → 1.71 s (122+88 → 121+85) |
+| CAS(12,12), 2.0 Å | 3080 | 21.7 → 22.1 s (195 → 208) | 10.1 → 10.1 s (192 → 189) | 7.18 → 7.50 s (90+103 → 95+108) | 7.02 → 7.12 s (112+97 → 112+95) |
+| | gfx1200 | 54.1 → 49.6 s (208 → 184) | 26.6 → 25.4 s (201 → 189) | Divergence → 23.0 s (82+109) | 23.4 → 23.4 s (113+92 → 103+98) |
 
 **The preconditioner is r / (θ − diag(H + penalty)).** diag(S²) is
 S_z (S_z + 1) + N_β less the doubly occupied orbitals, so the penalty's
@@ -252,7 +292,8 @@ gather: S² is real symmetric, so row J walks its own α links a†_p a_q and, f
 each, finds the β partner a†_q a_p in its β string's n × n slot table (which
 holds sign · (target + 1), or 0). `penalize` adds λ (S² − S(S+1)) X into the
 sigma's Y in the same pass. The preconditioner is one elementwise launch per
-column, θ passed by value, over diag(H + penalty), which `penalize_diagonal`
+column (two launches and two device-mode dots with Olsen's correction), θ
+passed by value, over diag(H + penalty), which `penalize_diagonal`
 builds once: one thread per determinant counts its α links a†_p a_p whose β
 partner survives, the doubly occupied orbitals.
 
@@ -275,6 +316,7 @@ there has a triplet below its second singlet, so the spin control is exercised:
   full for the triplets;
 - over `CiSigma` with λ = 0, the full layout and a triplet among the lowest
   three;
+- every solve above, with `olsen_correction` off and on;
 - `MaxIterationsExceeded` when given two iterations;
 - the refusals;
 - `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on
@@ -292,7 +334,7 @@ there has a triplet below its second singlet, so the spin control is exercised:
 | File | Role |
 |------|------|
 | `solver.cppm` | Module interface: `ci_solve` (a template, with its two stages and two layouts), its options and roots, `host_spin_square`, `CiSpinSquare` |
-| `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launch; the guesses |
+| `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launches, and Olsen's dots; the guesses |
 | `ci_solver_bridge.h` | The launchers' declarations, shared by `solver.cpp`'s GMF and the `.cu` |
-| `ci_solver.cu` | The S² gather and the penalized diagonal (in either layout, over `../sigma/ci_symmetric.h`), the preconditioner kernel, the argmin passes and the guess spread |
+| `ci_solver.cu` | The S² gather and the penalized diagonal (in either layout, over `../sigma/ci_symmetric.h`), the preconditioner's two kernels, the argmin passes and the guess spread |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.solver.device` and the module `free_breakfast.ci.solver` |

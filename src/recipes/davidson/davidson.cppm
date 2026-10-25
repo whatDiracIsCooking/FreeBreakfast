@@ -44,17 +44,21 @@ struct DavidsonInfo {
   double max_residual_norm = 0.0;
 };
 
-/// @brief `precondition(res, theta, residual, correction)`: turn the n x k
-/// residual block into a correction block of the same shape (both device,
-/// column-major, leading dimension n), given the k current Ritz values
-/// @p theta on the host. The diagonal correction r / (theta - diag(A)) is the
-/// usual choice. Like LinearOperator::apply, it runs on res.stream() and may
-/// take res.device_workspace().
+/// @brief `precondition(res, theta, ritz_vectors, residual, correction)`: turn
+/// the n x k residual block into a correction block of the same shape, given
+/// the k current Ritz values @p theta on the host and their Ritz vectors X
+/// (all three blocks device, column-major, leading dimension n). The diagonal
+/// correction r / (theta - diag(A)) is the simplest choice; X is there for
+/// Olsen's, M^-1 (r - eps x) with eps = x^T M^-1 r / x^T M^-1 x, which is
+/// orthogonal to x (see ci_solve). Like LinearOperator::apply, it runs on
+/// res.stream(), with res.blas() in host pointer mode, and may take
+/// res.device_workspace().
 template <class F, class T>
-concept DavidsonPreconditioner = requires(
-    const F &f, DeviceResources &res, std::span<const T> theta, const T *residual, T *correction) {
-  { f(res, theta, residual, correction) } -> std::convertible_to<Status>;
-};
+concept DavidsonPreconditioner =
+    requires(const F &f, DeviceResources &res, std::span<const T> theta, const T *ritz_vectors,
+             const T *residual, T *correction) {
+      { f(res, theta, ritz_vectors, residual, correction) } -> std::convertible_to<Status>;
+    };
 
 /// @brief Converge the @p n_roots lowest eigenpairs of the symmetric @p op
 /// from the @p guess_count columns of @p guess.
@@ -266,8 +270,10 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
       return info;
     }
 
-    // 5. Corrections for the whole block; a converged root's is dropped below.
-    FBF_TRY(precondition(res, std::span<const T>{theta}, residual.data(), correction.data()));
+    // 5. Corrections for the whole block, from the residuals and the Ritz
+    //    vectors; a converged root's is dropped below.
+    FBF_TRY(precondition(res, std::span<const T>{theta}, eigenvectors, residual.data(),
+                         correction.data()));
 
     // 6. Collapse if a full new block would not fit: V onto span[X, X_prev]
     //    = V Y, Y = [S, S_prev padded with zero rows] orthonormalized (GD+k).

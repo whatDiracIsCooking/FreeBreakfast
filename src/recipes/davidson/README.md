@@ -14,7 +14,7 @@ Block Davidson for the lowest eigenpairs of a symmetric operator known only as a
 2. **Rayleigh–Ritz.** H = Vᵀ A V copied out packed at the current dimension, then `diagonalize` (syevd), which syncs the stream.
 3. **Ritz pairs.** X = V S and A X = (A V) S from the same leading columns of S, so A is never applied to X.
 4. **Residuals.** R = A X − X diag(θ). A root converges when ‖rᵢ‖ ≤ `residual_tolerance` · max(|θᵢ|, ‖H‖₂), ‖H‖₂ being max |θ| over the subspace spectrum.
-5. **Corrections.** `precondition(res, theta, residual, correction)` maps the residual block to a correction block. The diagonal correction r / (θ − diag(A)) is the usual choice, and it is the caller's, because only the caller knows the diagonal.
+5. **Corrections.** `precondition(res, theta, ritz_vectors, residual, correction)` maps the residual block to a correction block, given the Ritz values and the Ritz vectors X formed in step 3. The diagonal correction r / (θ − diag(A)) is the simplest choice, and it is the caller's, because only the caller knows the diagonal. X is passed for Olsen's correction M⁻¹ (r − ε x), ε = xᵀ M⁻¹ r / xᵀ M⁻¹ x, which is orthogonal to x: where M ≈ A − θ, as on a diagonally dominant A, the plain M⁻¹ r is nearly x itself, and what survives projection off V is a small, noisy remainder. `ci_solve` offers it as `CiSolverOptions::olsen_correction`, off by default; a preconditioner that does not need X ignores the argument.
 6. **Collapse onto [X, X_prev] (GD+k).** When a full new block would not fit, V collapses onto span[X, X_prev], X_prev being the previous iteration's Ritz vectors, and A V with it (below). With `max_subspace < 3 · n_roots` the 2 · n_roots columns and a new block would not fit, so V and A V reset to X and A X alone, and Vᵀ A V to Xᵀ A X = Sᵀ H S = diag(θ). `max_subspace ≥ 2 · n_roots` leaves room for a block after that.
 7. **Re-orthogonalization.** The corrections are projected off V twice (block Gram–Schmidt, since one pass loses orthogonality as V grows). Then Gram–Schmidt runs among the corrections of the unconverged roots, each projected off the ones already accepted by two gemvs, twice. A correction at or below `linear_dependence_floor` is dropped.
 
@@ -34,7 +34,7 @@ After `MaxIterationsExceeded` or `Divergence`, `eigenvalues` and `eigenvectors` 
 
 **None of the subspace is the device workspace.** V, A V, H, the Ritz values and the residual, correction and projection blocks are held across `op.apply`, `precondition` and `diagonalize`, and each of those may take `res.device_workspace()`. A CIS sigma build will want it for J/K scratch. A workspace growth frees the old block, and even without one, the callee's scratch lands on the same bytes. So these are the call's own pool buffers, allocated on entry, and the GD+k collapse borrows two of them, the residual and projection blocks, rather than adding any (`docs/style.md` "Scratch memory", "Scratch held across a call to another workspace user"). syevd's work is still the workspace's: `diagonalize` takes it and is finished with it before the next callback.
 
-**Host pointer mode for the whole call.** The kept corrections' `nrm2`s write host results and every scalar is a host value, so `res.blas()` is held in host pointer mode by `ScopedPointerMode` and restored on return; only the residual norms are taken in a scoped device mode. `op` and `precondition` run in that mode too, which is also the handle's default.
+**Host pointer mode for the whole call.** The kept corrections' `nrm2`s write host results and every scalar is a host value, so `res.blas()` is held in host pointer mode by `ScopedPointerMode` and restored on return; only the residual norms are taken in a scoped device mode. `op` and `precondition` are called in that mode too, which is also the handle's default; `ci_solve`'s preconditioner takes its dots in a scoped device mode of its own.
 
 **Vᵀ A V grows by rows, not recomputed.** A column of V and of A V never changes until a collapse, so neither does any element of Vᵀ A V already formed. Each iteration forms only the new columns' rows, V_newᵀ (A V): with the rows before them they hold every element of its lower triangle, which is all syevd reads. Recomputing the whole of it was a gemm with a dim × dim output over a reduction of length n, a shape BLAS runs far below peak, and at CASCI sizes it was a third of the 3080's kernel time (see `../../ci/solver/`). The incremental form costs dim · k instead of dim² per iteration, k the new columns. It is held at leading dimension `max_subspace` in its own buffer, because syevd overwrites the copy it is handed with S.
 
@@ -64,7 +64,8 @@ namespace fb = free_breakfast;
 fb::DeviceResources res{0};
 Sigma op{...};                     // any fb::LinearOperator<Sigma, double>
 const auto precondition = [&](fb::DeviceResources &r, std::span<const double> theta,
-                              const double *residual, double *correction) -> fb::Status { ... };
+                              const double *ritz_vectors, const double *residual,
+                              double *correction) -> fb::Status { ... };
 
 // guess: n x n_roots, orthonormal columns (unit vectors on the lowest diagonal entries)
 fb::Buffers::device<double> values(n_roots, res.device());
