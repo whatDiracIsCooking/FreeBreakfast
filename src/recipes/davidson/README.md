@@ -8,7 +8,7 @@ Block Davidson for the lowest eigenpairs of a symmetric operator known only as a
 
 ## Design
 
-`davidson_solve<T>(res, op, precondition, n, n_roots, max_subspace, guess, guess_count, eigenvalues, eigenvectors, options)` converges the `n_roots` lowest eigenpairs of `op` from `guess`'s orthonormal columns. Each iteration runs these steps:
+`davidson_solve<T>(res, op, precondition, n, n_roots, max_subspace, guess, guess_count, eigenvalues, eigenvectors, options, previous_eigenvectors)` converges the `n_roots` lowest eigenpairs of `op` from `guess`'s orthonormal columns. Each iteration runs these steps:
 
 1. **Expand A V over the new columns only.** `op.apply` runs once per iteration, on the columns V gained since the last, so the operator is never reapplied to a direction already in the subspace. Vᵀ A V gains those columns' rows, V_newᵀ (A V), by one gemm.
 2. **Rayleigh–Ritz.** H = Vᵀ A V copied out packed at the current dimension, then `diagonalize` (syevd), which syncs the stream.
@@ -20,6 +20,8 @@ Block Davidson for the lowest eigenpairs of a symmetric operator known only as a
 8. **Orthonormalization among themselves.** By default, Gram–Schmidt among the corrections of the unconverged roots, each projected off the ones already accepted by two gemvs, twice, and normalized; a correction at or below `linear_dependence_floor` is dropped. With `canonical_orthonormalization`, the corrections are instead copied after V's columns and orthonormalized there as one block by [`orthonormalize`](../orthogonalize/README.md) (canonical orthogonalization, then a second pass), which compacts the survivors to the front; a correction, or a mode of the block of them, at or below the floor is dropped. Either way V grows by however many are kept, and none kept is `Divergence`.
 
 **Why X_prev survives a collapse.** X − X_prev is roughly the search direction, and a collapse onto X alone throws it away, so every restart falls back to something near steepest descent (Stathopoulos and Saad's GD+k). Keeping it costs no `op.apply`: V only grows between collapses, so X_prev = V S_prev, S_prev being the last iteration's S padded with zero rows, and the collapse is V ← V Y, A V ← (A V) Y for Y = [S, S_prev] orthonormalized. That is done on the host, in S's eigenbasis, where S is the leading unit vectors and H is diag(spectrum): S_prev's coordinates there, S_fullᵀ S_prev, have S's rows dropped and are Gram–Schmidt orthonormalized among themselves twice into Q, a column at or below `linear_dependence_floor` dropped (near convergence S_prev ≈ S). So Y = [S, S_full Q], and Vᵀ A V becomes diag(θ) beside Qᵀ diag(spectrum) Q, with nothing between them. V S and (A V) S are X and A X, already formed, so only S_full Q costs a gemm on each, into the residual block, which is free once the corrections are made; S_full Q itself is uploaded into the projection block. The collapse therefore needs no buffer of its own. On the host it needs S's leading n_roots columns each iteration, and on a collapsing one all of S and the spectrum, read in the sync that already brings θ back. With three roots and `ci_solve`'s 48 columns a collapse comes every ~15 iterations; in the tests' dense problem with the residual as the correction, keeping X_prev at 3 · n_roots columns halves the iterations (58 → 29, against 12 unrestarted).
+
+**X_prev can be written out.** With `previous_eigenvectors` not null (it is null by default), every return that writes `eigenvectors` also writes the previous iteration's Ritz vectors X_prev there, n × n_roots; after a single iteration, which has none, X itself. `ci_solve` restarts its FP64 stage from [X, X_prev] with `restart_with_previous` (`../../ci/solver/`). X_prev = V S_prev is one upload, gemm and sync, on return, from the S_prev the collapse already tracks (with `max_subspace < 3 · n_roots` it is tracked only for this). A collapse rewrites V, so a collapsing iteration forms X_prev before it, and a `Divergence` or `MaxIterationsExceeded` after it returns that. With the pointer null, the solve is bitwise the one before the option existed.
 
 **Non-convergence is a value-tier error**, as `docs/style.md` "Errors" has it, not a success with a reason attached:
 
@@ -52,6 +54,7 @@ After `MaxIterationsExceeded` or `Divergence`, `eigenvalues` and `eigenvectors` 
 | Symbol | Role |
 |---|---|
 | `davidson_solve<T>(…)` | `Result<DavidsonInfo>`: the `n_roots` lowest eigenpairs of `op`. Any `real_fp` `T`; a template instantiated by the caller. |
+| `previous_eigenvectors` | The optional last argument, null by default: out, n × n_roots, X_prev on every return that writes `eigenvectors` |
 | `DavidsonOptions` | `residual_tolerance` (1e-8), `max_iterations` (100), `linear_dependence_floor` (1e-12), `canonical_orthonormalization` (false) |
 | `DavidsonInfo` | `iterations`, `max_residual_norm` |
 | `DavidsonPreconditioner<F, T>` | `f(res, theta, residual, correction)` returns something convertible to `Status`; `theta` is a host `std::span<const T>` of the current Ritz values, one per column |
@@ -87,6 +90,7 @@ const auto info = fb::davidson_solve<double>(res, op, precondition, n, n_roots, 
 - one apply per iteration, every apply made in host pointer mode;
 - an operator that grows and overwrites the device workspace on every apply;
 - `MaxIterationsExceeded` with the first step's Ritz values written, and `Divergence` from zero corrections;
+- `previous_eigenvectors` against the Ritz vectors of a run one iteration shorter, unrestarted, collapsing onto [X, X_prev] and onto X alone, on the converging return and out of iterations, and X itself after one iteration;
 - the convergence, collapse and `Divergence` cases with `canonical_orthonormalization` both off and on;
 - shape rejection;
 - the concepts, accepting and rejecting models.

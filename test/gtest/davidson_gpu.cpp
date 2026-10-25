@@ -312,6 +312,50 @@ TEST(Davidson, CollapseKeepsThePreviousRitzVectorsFloat) {
   check_collapse_keeps_previous<float>(true);
 }
 
+// previous_eigenvectors: on every return, X_prev is the Ritz vectors a run
+// one iteration shorter, otherwise the same, returns as its own X. Unrestarted
+// (max_subspace = n), collapsing onto [X, X_prev] (3 * n_roots) and onto X
+// alone (2 * n_roots), the last run converging and the shorter ones out of
+// iterations; and X itself after a single iteration, which has no previous.
+TEST(Davidson, WritesThePreviousRitzVectors) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kN = Problem<double>::kN;
+  constexpr std::int32_t kRoots = Problem<double>::kRoots;
+  constexpr std::size_t kBlock = static_cast<std::size_t>(kN) * kRoots;
+  for (const std::int32_t max_subspace : {kN, 3 * kRoots, 2 * kRoots}) {
+    SCOPED_TRACE(std::format("max_subspace {}", max_subspace));
+    fb::DeviceResources res{0};
+    Problem<double> p{res};
+    fb::Buffers::device<double> previous(kBlock, res.device());
+    auto options = Problem<double>::converging_options();
+    const auto converged = p.solve(max_subspace, options);
+    ASSERT_TRUE(converged) << converged.error().message;
+    const std::int32_t last = converged->iterations;
+    ASSERT_GT(last, 3);
+    // The first iterations, past a collapse in both collapsing runs, and the
+    // converging one.
+    for (std::int32_t k = 1; k <= last; k = std::max(k + 1, k == 12 ? last : 0)) {
+      SCOPED_TRACE(std::format("iterations {}", k));
+      options.max_iterations = k;
+      const auto info = fb::davidson_solve<double>(
+          res, p.op, p.precondition, kN, kRoots, max_subspace, p.guess.data(), kRoots,
+          p.values.data(), p.vectors.data(), options, previous.data());
+      EXPECT_EQ(static_cast<bool>(info), k == last);
+      const auto x_prev = to_host(res, previous.data(), kBlock);
+      if (k > 1) {
+        options.max_iterations = k - 1;
+        const auto shorter = p.solve(max_subspace, options);
+        ASSERT_FALSE(shorter);
+        EXPECT_EQ(shorter.error().kind, fb::ErrorKind::MaxIterationsExceeded);
+      }
+      const auto expected = to_host(res, p.vectors.data(), kBlock);
+      for (std::size_t i = 0; i < kBlock; ++i) {
+        ASSERT_NEAR(x_prev[i], expected[i], 1e-12) << i;
+      }
+    }
+  }
+}
+
 // The subspace lives in the call's own buffers: an operator that grows and
 // overwrites the device workspace on every apply changes nothing.
 TEST(Davidson, OperatorMayTakeTheDeviceWorkspace) {

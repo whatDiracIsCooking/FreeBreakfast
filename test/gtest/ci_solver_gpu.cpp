@@ -276,14 +276,19 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
 }
 
 // CiSigma, forwarded, with the layout of every apply recorded: what ci_solve
-// chose.
+// chose; and the columns of the first FP64 apply, the ones the FP64 Davidson
+// starts from.
 struct RecordingSigma {
   fb::CiSigma &sigma;
   std::set<fb::CiLayout> layouts;
+  std::int32_t first_fp64_columns = 0;
 
   fb::Status apply(fb::DeviceResources &res, std::int32_t k, const double *x, double *y,
                    fb::CiLayout layout = fb::CiLayout::full) {
     layouts.insert(layout);
+    if (first_fp64_columns == 0) {
+      first_fp64_columns = k;
+    }
     return sigma.apply(res, k, x, y, layout);
   }
   fb::Status apply_fp32(fb::DeviceResources &res, std::int32_t k, const double *x, double *y,
@@ -296,7 +301,9 @@ struct RecordingSigma {
 // Over CiSigma, which has an apply_fp32, ci_solve runs its single-precision
 // stage first by default; the roots meet the same tolerances as the FP64-only
 // solve, which fp32_tolerance = 0 asks for. Singlets, in the symmetric layout
-// and, from the M_s = 1 sector, triplets, in the full one.
+// and, from the M_s = 1 sector, triplets, in the full one. The FP64 stage
+// starts from X's three columns, or with restart_with_previous from
+// [X, X_prev] orthonormalized, more than three.
 TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -318,20 +325,30 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
       for (const auto [olsen, canonical] : kSolverVariants) {
         SCOPED_TRACE(
             std::format("olsen_correction {}, canonical_orthonormalization {}", olsen, canonical));
-        RecordingSigma recorded{*sigma, {}};
         fb::CiSolverOptions options;
         options.olsen_correction = olsen;
         options.davidson.canonical_orthonormalization = canonical;
-        const auto two_stage =
-            fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
-        ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
-        EXPECT_GT(two_stage->fp32_iterations, 0);
-        EXPECT_EQ(recorded.layouts, layout);
-        expect_roots(res, c, *two_stage, s2);
+        for (const bool previous : {false, true}) {
+          SCOPED_TRACE(std::format("restart_with_previous {}", previous));
+          RecordingSigma recorded{*sigma, {}};
+          fb::CiSolverOptions restart = options;
+          restart.restart_with_previous = previous;
+          const auto two_stage =
+              fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, restart);
+          ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
+          EXPECT_GT(two_stage->fp32_iterations, 0);
+          if (previous) {
+            EXPECT_GT(recorded.first_fp64_columns, 3);
+          } else {
+            EXPECT_EQ(recorded.first_fp64_columns, 3);
+          }
+          EXPECT_EQ(recorded.layouts, layout);
+          expect_roots(res, c, *two_stage, s2);
+        }
 
+        RecordingSigma recorded{*sigma, {}};
         fb::CiSolverOptions fp64 = options;
         fp64.fp32_tolerance = 0.0;
-        recorded.layouts.clear();
         const auto alone = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, fp64);
         ASSERT_TRUE(alone.has_value()) << alone.error().message;
         EXPECT_EQ(alone->fp32_iterations, 0);
