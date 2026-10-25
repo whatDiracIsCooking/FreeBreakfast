@@ -16,10 +16,11 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // gemm, gemv, dgmm, nrm2, scal, gpu_status
+import free_breakfast.core.wwr; // gemv, dgmm, nrm2, scal, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.basis;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.expm;
@@ -341,9 +342,8 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   // C_now = C_accepted exp(t kappa), from kappa_u and kappa_w.
   const auto rotate = [&](const double t) -> Status {
     FBF_TRY(skew_expm<double>(res, nmo, kappa_u.data(), kappa_w.data(), t, rotation.data()));
-    return gpu_status(wwr::gemm<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nmo, nmo, nmo, &kOne<double>, c_accepted.data(),
-        nmo, rotation.data(), nmo, &kZero<double>, c_now.data(), nmo));
+    return gpu_status(gemm(blas, nmo, &kOne<double>, c_accepted.data(), rotation.data(),
+                           &kZero<double>, c_now.data()));
   };
 
   std::optional<CiRoots> roots;

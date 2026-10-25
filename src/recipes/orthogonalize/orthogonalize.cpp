@@ -181,8 +181,7 @@ Result<int32_t> orthonormalize(DeviceResources &res, const int32_t n, const int3
     FBF_TRY(gpu_status(wwr::dgmm<T, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, m, kept, u_kept, m,
                                              lambda_kept, 1, u_kept, m)));
     const auto [product] = res.device_regions<T>(nz * static_cast<size_t>(kept));
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, kept, m,
-                                             &kOne<T>, v, n, u_kept, m, &kZero<T>, product, n)));
+    FBF_TRY(gpu_status(gemm(blas, n, kept, m, &kOne<T>, v, u_kept, &kZero<T>, product)));
     const size_t kept_bytes = nz * static_cast<size_t>(kept) * sizeof(T);
     FBF_TRY(gpu_status(
         wwr::wwrMemcpyAsync(v, product, kept_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
@@ -202,8 +201,7 @@ Result<int32_t> orthonormalize(DeviceResources &res, const int32_t n, const int3
       const T three_halves{1.5};
       FBF_TRY(gram(m));
       // product still holds Q: product <- 3/2 Q - 1/2 Q (Q^T Q).
-      FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, m, m,
-                                               &neg_half, v, n, g, m, &three_halves, product, n)));
+      FBF_TRY(gpu_status(gemm(blas, n, m, m, &neg_half, v, g, &three_halves, product)));
       FBF_TRY(gpu_status(
           wwr::wwrMemcpyAsync(v, product, kept_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
       return m;

@@ -57,5 +57,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::one_electron::launch
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros
+  free_breakfast::recipes::blas
   free_breakfast::integrals::one_electron::overlap_mixed::device
 )

@@ -184,6 +184,32 @@ not there, add it there rather than writing a second copy.
 A `.cu` includes `"block_params.h"` and `"primitives.h"`, and its target links
 `free_breakfast::core::kernel_headers`, which brings in both.
 
+## Matrix products
+
+**A gemm on packed operands is `recipes/blas`'s `gemm`**, square or
+rectangular. Packed means column-major with each leading dimension the row
+count of its matrix as stored, and that includes a run of whole columns of a
+larger matrix:
+
+```cpp
+FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao, sc,
+                                           &kZero<double>, c_iao)));
+```
+
+It derives `lda`, `ldb` and `ldc` from the ops, so a call site cannot give one
+that disagrees with them. Call `wwr::gemm` only when that derivation is not
+the call you want: a leading dimension that is not the operand's own row count
+(a row block of a larger matrix), or an op chosen at run time.
+
+Don't write a module-local gemm helper that derives the leading dimensions.
+`livvo_gemm` and `ibo_gemm` were two copies of the rectangular overload, each
+taking its ops as `bool`s. (A lambda that only shortens a run of `wwr::gemm`
+calls whose leading dimensions are given, as `OrbitalHessian::apply`'s does over
+blocks of κ, is not one.) The ops are template arguments, as
+everywhere in `recipes/blas`, so an op outside `N`, `T` and `C` fails to
+compile. The link is `free_breakfast::recipes::blas`. The rest of the
+convention is in [`src/recipes/blas/README.md`](../src/recipes/blas/README.md).
+
 ## Stamps
 
 A **stamp** is a geometry-free definition, a type named `…Stamp`: a

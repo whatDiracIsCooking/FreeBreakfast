@@ -17,6 +17,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
+import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
@@ -97,14 +98,10 @@ Status overlap_mixed_spherical(DeviceResources &res, const BasisSet &rows, const
                                          u_cols_host.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, stream)));
   // T = S_cart U_cols, then S = U_rows^T T.
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_rows_cart, n_cols, n_cols_cart,
-      &kOne<double>, cart.data(), n_rows_cart, u_cols.data(), n_cols_cart, &kZero<double>, t.data(),
-      n_rows_cart)));
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(res.blas().get(), wwr::WWRBLAS_OP_T,
-                                                wwr::WWRBLAS_OP_N, n_rows, n_cols, n_rows_cart,
-                                                &kOne<double>, u_rows.data(), n_rows_cart, t.data(),
-                                                n_rows_cart, &kZero<double>, s.data(), n_rows)));
+  FBF_TRY(gpu_status(gemm(res.blas(), n_rows_cart, n_cols, n_cols_cart, &kOne<double>, cart.data(),
+                          u_cols.data(), &kZero<double>, t.data())));
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), n_rows, n_cols, n_rows_cart, &kOne<double>,
+                                             u_rows.data(), t.data(), &kZero<double>, s.data())));
   // The uploads read pageable host memory that goes with this frame.
   return res.sync();
 }

@@ -33,4 +33,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::basis
   free_breakfast::io::molden
   free_breakfast::localization::livvo
+  free_breakfast::recipes::blas
 )

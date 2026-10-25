@@ -9,27 +9,15 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, wwrMemcpyAsync, gpu_status
+import free_breakfast.core.wwr; // WWRBLAS_OP_*, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
 
 #include "diagnostics.h"
 
 namespace free_breakfast {
-
-// One column-major gemm on res.stream(): C = op(A) op(B), op(A) m x k and
-// op(B) k x n, each matrix packed.
-[[nodiscard]] Status livvo_gemm(DeviceResources &res, const bool trans_a, const bool trans_b,
-                                const int32_t m, const int32_t n, const int32_t k, const double *a,
-                                const double *b, double *c) {
-  const double one = kOne<double>;
-  const double zero = kZero<double>;
-  return gpu_status(
-      wwr::gemm<double, int32_t>(res.blas().get(), trans_a ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N,
-                                 trans_b ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N, m, n, k, &one, a,
-                                 trans_a ? k : m, b, trans_b ? n : k, &zero, c, m));
-}
 
 Status valence_virtual_orbitals(DeviceResources &res, const BasisSet &basis,
                                 const BasisSet &minimal, const int32_t n_occ, const double *s,
@@ -74,9 +62,11 @@ Status valence_virtual_orbitals(DeviceResources &res, const BasisSet &basis,
   // dead before diagonalize, so they are the workspace's.
   {
     const auto [sc, c_iao] = res.device_regions<double>(nk, mk);
-    FBF_TRY(livvo_gemm(res, false, false, n, k, n, s, c, sc));
-    FBF_TRY(livvo_gemm(res, true, false, m, k, n, iao, sc, c_iao));
-    FBF_TRY(livvo_gemm(res, false, true, m, m, k, c_iao, c_iao, p));
+    FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, c, &kZero<double>, sc)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao, sc,
+                                               &kZero<double>, c_iao)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        res.blas(), m, m, k, &kOne<double>, c_iao, c_iao, &kZero<double>, p)));
   }
 
   // P = C_iao C_iao^T projects R^m onto the occupied orbitals' coordinates,
@@ -89,7 +79,7 @@ Status valence_virtual_orbitals(DeviceResources &res, const BasisSet &basis,
   // Synchronized, as its siblings are, so V is ready when this returns.
   // projector's free is wwrFreeAsync on the same stream, ordered after the
   // gemm either way.
-  FBF_TRY(livvo_gemm(res, false, false, n, n_vvo, m, iao, p, vvo));
+  FBF_TRY(gpu_status(gemm(res.blas(), n, n_vvo, m, &kOne<double>, iao, p, &kZero<double>, vvo)));
   return res.sync();
 }
 
@@ -130,8 +120,9 @@ Result<PipekMezeyInfo> livvo_localize(DeviceResources &res, const BasisSet &basi
   Buffers::device<double> identity(static_cast<size_t>(m) * m, res.device());
   {
     const auto [sv] = res.device_regions<double>(static_cast<size_t>(n) * k);
-    FBF_TRY(livvo_gemm(res, false, false, n, k, n, s, vvo, sv));
-    FBF_TRY(livvo_gemm(res, true, false, m, k, n, iao, sv, v_iao.data()));
+    FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, vvo, &kZero<double>, sv)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao, sv,
+                                               &kZero<double>, v_iao.data())));
   }
   std::vector<double> identity_host(static_cast<size_t>(m) * m, 0.0);
   for (int32_t r = 0; r < m; ++r) {
@@ -149,7 +140,8 @@ Result<PipekMezeyInfo> livvo_localize(DeviceResources &res, const BasisSet &basi
     return info;
   }
   // V U rather than A V_IAO U: the same orbitals, without the round trip.
-  FBF_TRY(livvo_gemm(res, false, false, n, k, k, vvo, rotation.data(), livvo));
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), n, k, k, &kOne<double>, vvo, rotation.data(), &kZero<double>, livvo)));
   if (u != nullptr) {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(u, rotation.data(),
                                            static_cast<size_t>(k) * k * sizeof(double),
@@ -187,8 +179,9 @@ Result<std::vector<double>> valence_character(DeviceResources &res, const BasisS
   std::vector<double> o_host(lc);
   {
     const auto [sc, o] = res.device_regions<double>(n_c, lc);
-    FBF_TRY(livvo_gemm(res, false, false, n, n_orb, n, s, c, sc));
-    FBF_TRY(livvo_gemm(res, true, false, n_vvo, n_orb, n, livvo, sc, o));
+    FBF_TRY(gpu_status(gemm(res.blas(), n, n_orb, n, &kOne<double>, s, c, &kZero<double>, sc)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), n_vvo, n_orb, n, &kOne<double>, livvo,
+                                               sc, &kZero<double>, o)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(o_host.data(), o, lc * sizeof(double),
                                            wwr::wwrMemcpyDeviceToHost, res.stream())));
     FBF_TRY(res.sync());

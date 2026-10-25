@@ -7,8 +7,9 @@ span its occupied orbitals exactly. The IBOs are the occupied orbitals
 localized over the IAOs' atomic populations: Pipek-Mezey with chemically
 sound populations in place of Mulliken's.
 
-No kernels of its own: wwr's `gemm`, `potrf` and `potrs`, `recipes/orthogonalize`,
-`integrals/one_electron/overlap_mixed`, and `localization/pipek_mezey`'s sweep.
+No kernels of its own: `recipes/blas`'s `gemm`, wwr's `potrf` and `potrs`,
+`recipes/orthogonalize`, `integrals/one_electron/overlap_mixed`, and
+`localization/pipek_mezey`'s sweep.
 
 ## Module
 

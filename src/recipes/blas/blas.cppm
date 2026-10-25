@@ -1,5 +1,5 @@
 /// @file
-/// @brief BLAS conveniences over wwr's typed dispatch: gemm for square operands,
+/// @brief BLAS conveniences over wwr's typed dispatch: gemm for packed operands,
 /// and the sandwich products gemmwich and gmmwich
 ///
 /// The general calls stay wwr's (`wwr::gemm`, `wwr::dgmm`, ...), re-exported by

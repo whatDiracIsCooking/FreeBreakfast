@@ -13,9 +13,10 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, wwrMemcpyAsync, gpu_status
+import free_breakfast.core.wwr; // wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
+import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
@@ -151,9 +152,8 @@ Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res, const BasisSet
 
   // W = S C, the populations, and U = I. The coefficients are not touched again
   // until C U: the sweeps run on the populations alone.
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_ao, n_occ, n_ao, &kOne<double>, s,
-      n_ao, c, n_ao, &kZero<double>, scratch.w, n_ao)));
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), n_ao, n_occ, n_ao, &kOne<double>, s, c, &kZero<double>, scratch.w)));
   double *pops_cur = scratch.pops_a;
   double *pops_next = scratch.pops_b;
   double *u_cur = scratch.u_a;
@@ -205,9 +205,8 @@ Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res, const BasisSet
 
   // Written whether or not the sweeps converged, so a caller handed
   // MaxIterationsExceeded still has the last sweep's orbitals.
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_ao, n_occ, n_occ, &kOne<double>, c,
-      n_ao, u_cur, n_occ, &kZero<double>, c_local, n_ao)));
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), n_ao, n_occ, n_occ, &kOne<double>, c, u_cur, &kZero<double>, c_local)));
   if (u != nullptr) {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(
         u, u_cur, static_cast<size_t>(n_occ) * static_cast<size_t>(n_occ) * sizeof(double),

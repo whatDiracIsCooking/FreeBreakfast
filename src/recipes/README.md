@@ -6,7 +6,7 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 
 | Directory | Module | Role |
 |-----------|--------|------|
-| `blas/` | `free_breakfast.recipes.blas` | BLAS conveniences over wwr's dispatch: `gemm` for square operands, and the sandwiches `gemmwich` (`Xᵀ F X`) and `gmmwich` (`Xᵀ diag(d) X`). |
+| `blas/` | `free_breakfast.recipes.blas` | BLAS conveniences over wwr's dispatch: `gemm` for packed operands, and the sandwiches `gemmwich` (`Xᵀ F X`) and `gmmwich` (`Xᵀ diag(d) X`). |
 | `cg_unitary/` | `free_breakfast.recipes.cg_unitary` | Riemannian conjugate gradient on U(n) (O(n) for a real T), with the paper's polynomial and DFT geodesic line searches (`cg_unitary`), over a caller's `UnitaryCostFunction`. |
 | `complex_cast/` | `free_breakfast.recipes.complex_cast` | Split a complex matrix into real and imaginary planes (`split_planes`), and merge them back (`merge_planes`). |
 | `davidson/` | `free_breakfast.recipes.davidson` | Block Davidson for the lowest eigenpairs of a symmetric `LinearOperator` (`davidson_solve`). |

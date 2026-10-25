@@ -22,6 +22,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::diagnostics_macros
   free_breakfast::atom
   free_breakfast::io::basis
+  free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize
   free_breakfast::integrals::one_electron::overlap_mixed
 )

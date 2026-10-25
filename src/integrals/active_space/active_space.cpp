@@ -10,11 +10,11 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, axpy, scal, dot, wwrMemcpyAsync, gpu_status
+import free_breakfast.core.wwr; // axpy, scal, dot, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.basis;
-import free_breakfast.recipes.blas; // gemmwich
+import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -110,9 +110,8 @@ Result<ActiveSpaceHamiltonian> build_active_space(
   // The orbitals over the Cartesian AOs the kernels evaluate, U C: J[U P U^T]
   // projected by U C is J's spherical matrix projected by C.
   if (u != nullptr) {
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, m,
-                                                  ns, &kOne<double>, u->data(), nc, c.data(), ns,
-                                                  &kZero<double>, scratch.c_cart, nc)));
+    FBF_TRY(gpu_status(
+        gemm(blas, nc, m, ns, &kOne<double>, u->data(), c.data(), &kZero<double>, scratch.c_cart)));
   } else {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(scratch.c_cart, c.data(),
                                            sizeof(double) * n_cart * static_cast<size_t>(m),
@@ -126,9 +125,9 @@ Result<ActiveSpaceHamiltonian> build_active_space(
 
   if (ncore > 0) {
     // P = C_core C_core^T (one spin's density), G = 2 J[P] - K[P] into j.
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc, nc, ncore, &kOne<double>, scratch.c_cart,
-        nc, scratch.c_cart, nc, &kZero<double>, density.data(), nc)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, nc, nc, ncore, &kOne<double>, scratch.c_cart, scratch.c_cart, &kZero<double>,
+        density.data())));
     FBF_TRY(coulomb(res, j_classes, density, j, tau_j));
     FBF_TRY(exchange(res, k_classes, density, k, tau_k));
     const auto len_cart = static_cast<int32_t>(j.num_elements());
@@ -139,9 +138,8 @@ Result<ActiveSpaceHamiltonian> build_active_space(
 
     // E_core = E_nuc + 2 tr(P h) + tr(P G); P, h and G are symmetric, so each
     // trace is the elementwise dot. h is spherical, so its P is too.
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, ns,
-                                                  ns, ncore, &kOne<double>, c.data(), ns, c.data(),
-                                                  ns, &kZero<double>, scratch.p_sphe, ns)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, ns, ns, ncore, &kOne<double>, c.data(), c.data(), &kZero<double>, scratch.p_sphe)));
     double ph = 0.0;
     double pg = 0.0;
     FBF_TRY(
@@ -196,12 +194,10 @@ Result<ActiveSpaceHamiltonian> build_active_space(
       const double minus_inverse = -inverse;
       const double *const c_v = c_cart_act + (static_cast<size_t>(n_cart) * v);
       const double *const c_w = c_cart_act + (static_cast<size_t>(n_cart) * w);
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
-                                                    nc, 1, &half_s, c_v, nc, c_w, nc,
-                                                    &kZero<double>, density.data(), nc)));
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
-                                                    nc, 1, &half_s, c_w, nc, c_v, nc, &kOne<double>,
-                                                    density.data(), nc)));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, nc, nc, 1, &half_s, c_v, c_w, &kZero<double>, density.data())));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, nc, nc, 1, &half_s, c_w, c_v, &kOne<double>, density.data())));
       FBF_TRY(coulomb(res, j_classes, density, j, tau_j * s));
       const auto [vw, wv] = blocks(out.eri.data(), na, v, w);
       FBF_TRY(gpu_status(gemmwich(blas, ncas, nc, c_cart_act, j.data(), scratch.work, vw)));
@@ -237,12 +233,10 @@ Result<ActiveSpaceHamiltonian> build_active_space(
         continue;
       }
       FBF_TRY(copy_block(pa_wv, pa_vw, n_all));
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
-                                                    nc, 1, &minus_half_s, c_w, nc, c_v, nc,
-                                                    &kZero<double>, density.data(), nc)));
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
-                                                    nc, 1, &half_s, c_v, nc, c_w, nc, &kOne<double>,
-                                                    density.data(), nc)));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, nc, nc, 1, &minus_half_s, c_w, c_v, &kZero<double>, density.data())));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, nc, nc, 1, &half_s, c_v, c_w, &kOne<double>, density.data())));
       FBF_TRY(exchange(res, k_classes, density, k, tau_k * s, DensitySymmetry::Antisymmetric));
       FBF_TRY(gpu_status(
           gemmwich(blas, nmo, nc, scratch.c_cart, k.data(), scratch.work, scratch.block)));

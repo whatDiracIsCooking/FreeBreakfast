@@ -13,6 +13,7 @@ import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.io.molden;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -182,9 +183,8 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                                          wwr::wwrMemcpyHostToDevice, stream)));
   SphericalMatrixAO c(res, basis);
   const auto order = static_cast<int32_t>(nmo);
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, order, order, order, &kOne<double>,
-      sol.c.data(), order, r_device.data(), order, &kZero<double>, c.data(), order)));
+  FBF_TRY(gpu_status(gemm(res.blas(), order, &kOne<double>, sol.c.data(), r_device.data(),
+                          &kZero<double>, c.data())));
 
   // The CI vectors to the host, for CasscfOutput::vectors.
   std::vector<double> vectors(sol.roots.vectors.num_elements());
