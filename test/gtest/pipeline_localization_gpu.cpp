@@ -296,6 +296,8 @@ TEST_P(PipelineLocalization, MatchesPyscfAndKeepsTheDensity) {
   const auto &local = calc->get<fb::LocalizationOutput>();
   ASSERT_TRUE(local.has_value());
   EXPECT_TRUE(local->populations.empty() && local->charges.empty()) << "IBO only";
+  EXPECT_EQ(local->n_vvo, 0) << "LIVVO only";
+  EXPECT_TRUE(local->livvo_bonds.empty() && local->valence_character.empty()) << "LIVVO only";
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineLocalization, kCases, case_name);
@@ -721,6 +723,121 @@ TEST(PipelineLocalizationMolden, WritesTheLocalizedOrbitals) {
     expected_sum += scf->mo_energies[k];
   }
   EXPECT_NEAR(energy_sum, expected_sum, 1e-10);
+}
+
+// Water's LIVVOs over MINAO, in either mode: its two sigma*_OH, each on O
+// (atom 0) and one hydrogen, a different one each; and the canonical
+// virtuals' valence characters, each in [0, 1] and summing to n_vvo, the
+// LIVVOs lying wholly in the virtual space (localization/livvo's README).
+// IBO's populations, charges and bonds describe the occupied IBOs, so
+// Pipek-Mezey leaves them empty even though LIVVO placed MINAO.
+class PipelineLivvo : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(PipelineLivvo, WatersTwoSigmaStarOh) {
+  FBF_REQUIRE_GPU();
+  const bool ibo = GetParam() == "ibo";
+  auto calc = localize(reference_case("h2o_ccpvdz"), ibo ? 4 : 2,
+                       std::format("mode = \"{}\"\nlivvo = true\n", GetParam()));
+  ASSERT_TRUE(calc.has_value());
+  const auto &local = calc->get<fb::LocalizationOutput>();
+  const auto &scf = calc->get<fb::ScfOutput>();
+  ASSERT_TRUE(local.has_value() && scf.has_value());
+  const auto occ = static_cast<std::size_t>(local->n_occ);
+  ASSERT_EQ(local->n_vvo, 2);
+  EXPECT_EQ(local->livvo.num_elements(), calc->get<fb::BasisSetOutput>()->basis.nao_sphe() * 2);
+  EXPECT_GE(local->livvo_info.functional, local->livvo_info.initial_functional);
+  EXPECT_EQ(local->populations.empty(), !ibo) << "IBO only";
+  EXPECT_EQ(local->charges.empty(), !ibo) << "IBO only";
+  EXPECT_EQ(local->bonds.empty(), !ibo) << "IBO only";
+
+  ASSERT_EQ(local->livvo_bonds.size(), 2U);
+  std::array<bool, 3> on_hydrogen{};
+  for (const fb::BondOrbital &orbital : local->livvo_bonds) {
+    EXPECT_EQ(orbital.kind, fb::BondKind::Sigma);
+    ASSERT_EQ(orbital.centers.size(), 2U);
+    const std::uint32_t a = orbital.centers[0].atom;
+    const std::uint32_t b = orbital.centers[1].atom;
+    ASSERT_TRUE(std::min(a, b) == 0 && std::max(a, b) > 0) << "on " << a << " and " << b;
+    const std::uint32_t hydrogen = std::max(a, b);
+    EXPECT_FALSE(on_hydrogen[hydrogen]) << "two LIVVOs on atom " << hydrogen;
+    on_hydrogen[hydrogen] = true;
+    EXPECT_NEAR(orbital.centers[0].population + orbital.centers[1].population, 1.0, 1e-3);
+  }
+
+  ASSERT_EQ(local->valence_character.size(), scf->mo_energies.size() - occ);
+  double sum = 0.0;
+  for (const double t_val : local->valence_character) {
+    EXPECT_GE(t_val, -1e-12);
+    EXPECT_LE(t_val, 1.0 + 1e-12);
+    sum += t_val;
+  }
+  EXPECT_NEAR(sum, static_cast<double>(local->n_vvo), 1e-8);
+}
+
+INSTANTIATE_TEST_SUITE_P(Modes, PipelineLivvo, ::testing::Values("pipek_mezey", "ibo"),
+                         [](const ::testing::TestParamInfo<std::string_view> &info) {
+                           return std::string{info.param};
+                         });
+
+// The LIVVOs land in localization_livvo.molden beside the localized
+// orbitals, n_vvo of them at occupation 0. Each energy is a weighted mean of
+// the canonical virtual energies, sum_a O_al^2 eps_a with sum_a O_al^2 = 1,
+// so it lies within their range.
+TEST(PipelineLocalizationMolden, WritesTheLivvos) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_localization_livvo_molden");
+  auto calc = localize(reference_case("h2o_ccpvdz"), 2, "livvo = true\n", nullptr, dir.path());
+  ASSERT_TRUE(calc.has_value());
+  const auto &local = calc->get<fb::LocalizationOutput>();
+  const auto &scf = calc->get<fb::ScfOutput>();
+  ASSERT_TRUE(local.has_value() && scf.has_value());
+  const auto occ = static_cast<std::size_t>(local->n_occ);
+
+  std::ifstream file(dir / "localization_livvo.molden");
+  ASSERT_TRUE(file.is_open());
+  std::string line;
+  ASSERT_TRUE(std::getline(file, line));
+  EXPECT_EQ(line, "[Molden Format]");
+  std::vector<double> energies;
+  std::size_t empty = 0;
+  while (std::getline(file, line)) {
+    if (line.starts_with(" Ene=")) {
+      energies.push_back(std::stod(line.substr(5)));
+    }
+    empty += line == " Occup= 0.000000" ? 1 : 0;
+  }
+  ASSERT_EQ(energies.size(), static_cast<std::size_t>(local->n_vvo));
+  EXPECT_EQ(empty, energies.size());
+  const double lowest = scf->mo_energies[occ];
+  const double highest = scf->mo_energies.back();
+  for (const double energy : energies) {
+    EXPECT_GE(energy, lowest - 1e-10);
+    EXPECT_LE(energy, highest + 1e-10);
+  }
+  EXPECT_TRUE(std::filesystem::exists(dir / "localization.molden"));
+}
+
+// livvo_molden names the LIVVOs' file, so a hand-built step setting it
+// without livvo is refused when it runs. A config cannot ask for that: it
+// sets livvo_molden only beside livvo.
+TEST(PipelineLocalization, ALivvoMoldenWithoutLivvoIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_localization_livvo_without");
+  ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
+                                                "H 0 -0.7572 -0.4692\n")
+                  .has_value());
+  auto calc = fb::Calculation::create({fb::MoleculeStep{.xyz = dir / "water.xyz"},
+                                       fb::BasisSetStep{.basis = "sto-3g"},
+                                       fb::LocalizationStep{.livvo_molden = dir / "livvo.molden"}},
+                                      []<class S>() -> fb::Result<S> { return S{}; });
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_EQ(ran.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(ran.error().message.find("livvo_molden needs livvo"), std::string::npos)
+      << ran.error().message;
+  EXPECT_FALSE(std::filesystem::exists(dir / "livvo.molden"));
 }
 
 } // namespace

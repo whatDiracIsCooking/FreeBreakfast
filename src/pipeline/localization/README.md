@@ -1,7 +1,8 @@
 # Pipeline: Localization
 
 Localize the SCF's occupied orbitals, by the method a `LocalizationMode`
-names: Pipek-Mezey, or intrinsic bond orbitals.
+names: Pipek-Mezey, or intrinsic bond orbitals. In either mode it can also
+build the localized intrinsic valence virtual orbitals (LIVVOs).
 
 ## Module
 
@@ -26,6 +27,11 @@ struct LocalizationOutput {
   std::vector<double> populations{}; // IBO only: natoms x n_occ IAO populations of the IBOs
   std::vector<double> charges{};     // IBO only: the IAO partial charges, one per atom
   std::vector<BondOrbital> bonds{};  // IBO only: each IBO's centers and their s/p/d character
+  Buffers::device<double> livvo;     // LIVVO only: nao_sphe x n_vvo, column-major
+  int32_t n_vvo = 0;                 // LIVVO only: MINAO's nao_sphe - n_occ
+  PipekMezeyInfo livvo_info{};       // LIVVO only: their sweeps and functional
+  std::vector<BondOrbital> livvo_bonds{};   // LIVVO only: each LIVVO's centers and sigma/pi kind
+  std::vector<double> valence_character{};  // LIVVO only: t_val of each canonical virtual
 };
 
 struct LocalizationStep {
@@ -34,6 +40,8 @@ struct LocalizationStep {
   LocalizationMode mode = LocalizationMode::PipekMezey;
   PipekMezeyOptions pipek_mezey;  // max_sweeps, tolerances, exponent
   std::filesystem::path molden{}; // if set, the localized orbitals are written here
+  bool livvo = false;             // the LIVVOs too, in either mode
+  std::filesystem::path livvo_molden{}; // if set (needs livvo), the LIVVOs are written here
 
   Result<LocalizationOutput> run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOutput> in, DeviceResources &res) const;
 };
@@ -73,7 +81,7 @@ The options are read from a `[localization]` table (`pipeline.config`):
 `mode`, `"pipek_mezey"` by default or `"ibo"`, then the sweep's
 `max_sweeps`, `functional_tolerance`, `rotation_gain_threshold`, and
 `exponent`, 2 or 4 (2 by default for `"pipek_mezey"`, Knizia's 4 for
-`"ibo"`).
+`"ibo"`), and `livvo`, `false` by default.
 
 **`molden` writes the localized orbitals.** When it is set, `c` and `u` are
 downloaded and written by `io.molden`'s `write_molden`: the `n_occ` localized
@@ -82,6 +90,46 @@ is given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
 SCF's occupied orbital energies. It is not a TOML key: `pipeline/config` sets
 it to `localization.molden` in the run's output directory. A failed write
 fails the step.
+
+**`livvo` adds the LIVVOs**, in either mode, from
+`localization.livvo` (its README has the formulas). MINAO is then resolved
+and placed whichever mode runs, and the IAOs are built once: `ibo_localize`
+hands them back in IBO mode, and `intrinsic_atomic_orbitals` builds them from
+the canonical occupied orbitals in Pipek-Mezey mode (the IAOs depend only on
+the occupied space). From them, `valence_virtual_orbitals` and then
+`livvo_localize` give `livvo`, its `n_vvo = m - n_occ` columns. The sweep takes
+`pipek_mezey`'s sweep count and tolerances at Knizia's exponent four, whatever
+exponent the occupied orbitals ran at. Then:
+
+- `livvo_bonds`: `bond_orbitals` over the LIVVOs' IAO weights
+  (`orbital_weights`), with each orbital's sigma/pi kind;
+- `valence_character`: `valence_character` of each of the SCF's canonical
+  virtuals, in its order; they sum to `n_vvo`.
+
+All logged at info level: the LIVVOs' sweeps and functional, one line per
+LIVVO through the same reader as the IBOs', and one per virtual:
+
+```
+localization: 2 LIVVOs in 4 sweeps, L 0.119750 -> 0.438610
+localization: LIVVO   0 sigma bond  H1 67.6% (s 100%)  O0 32.4% (s 28% p 72%)
+localization: LIVVO   1 sigma bond  H2 67.6% (s 100%)  O0 32.4% (s 28% p 72%)
+localization: virtual   5 eps +0.185476 t_val 0.7231
+localization: virtual   6 eps +0.256181 t_val 0.5357
+```
+
+(Water in cc-pVDZ, Pipek-Mezey mode.)
+
+`populations`, `charges` and `bonds` stay **IBO only** even when LIVVO places
+MINAO in Pipek-Mezey mode: they describe the occupied IBOs.
+
+**`livvo_molden` writes the LIVVOs**, at occupation 0. Each is given its Fock
+expectation value over the canonical virtuals, `sum_a (C_vir^T S L)_al^2
+eps_a`: the LIVVOs lie wholly in the virtual space, so that is all of
+`<l|F|l>`, a weighted mean of the virtual energies. C_vir^T S L is two gemms
+over the device workspace, then downloaded. `pipeline/config` sets it to
+`localization_livvo.molden` in the run's output directory when `livvo` is set,
+and to nothing otherwise; a hand-built step setting it without `livvo` is
+refused, `InvalidConfig`, before anything runs.
 
 Like `OrthogonalizerStep`, it synchronizes `res.stream()` inside `run`: once a
 sweep, to read the functional for the convergence test.
@@ -100,11 +148,17 @@ its `charges` PySCF's (`analysis/population`'s README), and its `bonds`
 reading each molecule's lone pairs and X-H bonds (`analysis/bond`'s README). With `molden` set, the
 file holds `n_occ` orbitals at occupation 2, and their energies sum to the
 SCF's occupied ones (U is orthogonal).
+With `livvo = true`, in both modes, water in cc-pVDZ: two LIVVOs, each a
+sigma bond on O and one hydrogen, a different one each, the virtuals' valence
+characters each in [0, 1] and summing to 2, and `populations`, `charges` and
+`bonds` empty in Pipek-Mezey mode; the LIVVO Molden file holds `n_vvo`
+orbitals at occupation 0 with energies inside the canonical virtual range;
+and a hand-built `livvo_molden` without `livvo` is `InvalidConfig`.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `localization.cppm` | Module interface: `LocalizationMode`, `LocalizationOutput`, `LocalizationStep` |
-| `localization.cpp` | `LocalizationStep::run`, and the Molden file |
+| `localization.cpp` | `LocalizationStep::run`, and the two Molden files |
 | `CMakeLists.txt` | The module library |

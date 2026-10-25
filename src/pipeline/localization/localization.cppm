@@ -3,7 +3,8 @@
 /// the method its @ref LocalizationMode names.
 ///
 /// A thin wrapper over the localization modules: Pipek-Mezey, and the
-/// intrinsic bond orbitals over MINAO.
+/// intrinsic bond orbitals over MINAO; and, in either mode, the localized
+/// intrinsic valence virtual orbitals (LIVVOs).
 /// Device-shaped. See README.md.
 
 export module free_breakfast.pipeline.localization;
@@ -51,6 +52,22 @@ struct LocalizationOutput {
   /// and their angular character, at bond_orbitals' default threshold
   /// (@ref bond_orbitals).
   std::vector<BondOrbital> bonds{};
+  /// @brief LIVVO only, empty otherwise: the localized valence virtual
+  /// orbitals, nao_sphe x @ref n_vvo, column-major (@ref livvo_localize).
+  Buffers::device<double> livvo;
+  /// @brief LIVVO only, zero otherwise: the LIVVO count, MINAO's nao_sphe
+  /// less @ref n_occ.
+  int32_t n_vvo = 0;
+  /// @brief LIVVO only: the LIVVO sweeps taken and the functional before and
+  /// after.
+  PipekMezeyInfo livvo_info{};
+  /// @brief LIVVO only, empty otherwise: each LIVVO's centers, angular
+  /// character and sigma/pi kind, over its IAO weights (@ref bond_orbitals).
+  std::vector<BondOrbital> livvo_bonds{};
+  /// @brief LIVVO only, empty otherwise: the valence character t_val of each
+  /// canonical virtual, in the SCF's order; they sum to @ref n_vvo
+  /// (@ref valence_character).
+  std::vector<double> valence_character{};
 };
 
 /// @brief Localizes the @ref ScfOutput's occupied orbitals on @p res's device.
@@ -70,17 +87,32 @@ struct LocalizationStep {
   /// (pipeline/config sets it to localization.molden in the run's output
   /// directory).
   std::filesystem::path molden{};
+  /// @brief Also build the LIVVOs over MINAO, their bonds and the canonical
+  /// virtuals' valence character, in either mode. Their sweep takes
+  /// @ref pipek_mezey's options at Knizia's exponent four, whichever it names.
+  bool livvo = false;
+  /// @brief Where the LIVVOs are written as a Molden file, if not empty: the
+  /// n_vvo of them at occupation 0, each with its Fock expectation value over
+  /// the canonical virtuals, sum_a (C_vir^T S L)_al^2 eps_a, as its energy.
+  /// Needs @ref livvo. Arrives resolved (pipeline/config sets it to
+  /// localization_livvo.molden in the run's output directory when @ref livvo
+  /// is set).
+  std::filesystem::path livvo_molden{};
 
   /// @brief The localized orbitals. The Scf step has already refused an open
   /// shell, so the occupied count is half the electrons. For IBO, MINAO is
   /// resolved and placed over the Molecule first, and an element it does not
   /// carry is place's error; the IAOs it localized over then give the IBOs'
   /// populations and bond centers and the atoms' charges, the charges and
-  /// centers logged. Errors are otherwise the method's;
+  /// centers logged. With @ref livvo, MINAO is placed in either mode, the
+  /// IAOs are built once (ibo_localize's, or intrinsic_atomic_orbitals' for
+  /// Pipek-Mezey), and the LIVVOs' bonds and the virtuals' valence character
+  /// are logged; their errors are livvo's. InvalidConfig for a
+  /// @ref livvo_molden without @ref livvo. Errors are otherwise the method's;
   /// for both, InvalidConfig for an option out of range,
   /// MaxIterationsExceeded when the sweeps do not converge, GpuRuntime for a
-  /// failed launch, copy or BLAS call. A @ref molden file that cannot be
-  /// written is @c write_molden's error.
+  /// failed launch, copy or BLAS call. A @ref molden or @ref livvo_molden
+  /// file that cannot be written is @c write_molden's error.
   [[nodiscard]] Result<LocalizationOutput>
   run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOutput> in,
       DeviceResources &res) const;

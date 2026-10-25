@@ -36,7 +36,13 @@ template <class T>
   if (!node) {
     return {};
   }
-  if constexpr (std::same_as<T, int32_t>) {
+  if constexpr (std::same_as<T, bool>) {
+    const auto value = node.value_exact<bool>();
+    if (!value) {
+      return err_config("[{}] {} is not a boolean", step, key);
+    }
+    out = *value;
+  } else if constexpr (std::same_as<T, int32_t>) {
     const auto value = node.value_exact<int64_t>();
     if (!value || !std::in_range<int32_t>(*value)) {
       return err_config("[{}] {} is not a 32-bit integer", step, key);
@@ -195,9 +201,9 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "fock_rebuild_interval", base_dir, step.fock_rebuild_interval));
     step.molden = output_dir / std::format("{}.molden", kStep);
   } else if constexpr (std::same_as<S, LocalizationStep>) {
-    FBF_TRY(check_keys(
-        table, kStep,
-        {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold", "exponent"}));
+    FBF_TRY(check_keys(table, kStep,
+                       {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold",
+                        "exponent", "livvo"}));
     std::string mode = "pipek_mezey";
     FBF_TRY(read_key(table, kStep, "mode", base_dir, mode));
     if (mode != "pipek_mezey" && mode != "ibo") {
@@ -220,7 +226,11 @@ template <class S>
       return err_config("[{}] exponent is {}, not 2 or 4", kStep, exponent);
     }
     options.exponent = static_cast<PipekMezeyExponent>(exponent);
+    FBF_TRY(read_key(table, kStep, "livvo", base_dir, step.livvo));
     step.molden = output_dir / std::format("{}.molden", kStep);
+    if (step.livvo) {
+      step.livvo_molden = output_dir / std::format("{}_livvo.molden", kStep);
+    }
   } else if constexpr (std::same_as<S, CasciStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold"}));
