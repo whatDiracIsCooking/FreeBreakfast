@@ -278,7 +278,7 @@ On the gfx1200 the FP64 stage of the CAS(12,12) two-stage solves stalls just
 above its 1e-12 tolerance (~1.1e-10 absolute) and ends in `Divergence`. That
 happens in 6 of the parent's 14 such solves, and with GD+k in a 7th: 2.0 Å,
 symmetric, `fp32_tolerance` 1e-4, which the parent converged in 34 + 206
-iterations, 29.9 s (#318). The 3080 converges all 28. The energies differ from
+iterations, 29.9 s (#318, since fixed: below). The 3080 converges all 28. The energies differ from
 the parent's by at most 1.3e-12 on the 3080 (5.5e-13 FP64-only) and 1.1e-11 on
 the gfx1200 (2.5e-12 FP64-only). That is within the parent's own spread across
 its solve modes, 2.4e-12 and 5.3e-11.
@@ -365,6 +365,71 @@ on both cards.
 |  | gfx1200 | 3.44 → 3.42 s (206 → 206) | 1.84 → 1.84 s (212 → 212) | 1.74 → 1.69 s (103+108 → 103+100) | 1.72 → 1.73 s (122+88 → 122+88) |
 | CAS(12,12), 2.0 Å | 3080 | 21.6 → 21.9 s (195 → 195) | 10.0 → 10.1 s (192 → 192) | 7.15 → 7.45 s (90+103 → 90+108) | 6.99 → 7.22 s (112+97 → 112+105) |
 |  | gfx1200 | 54.0 → 54.3 s (208 → 208) | 26.6 → 26.6 s (201 → 201) | Divergence → 24.6 s (95+116) | 23.3 → 23.7 s (113+92 → 113+94) |
+
+**The FP64 stage's stall on the gfx1200 was the Ritz values, not the
+sigma (#318).** On the gfx1200 the FP64 stage of six of the 14 CAS(12,12)
+two-stage solves stalled at a residual of 1.1–4e-10, just above or a few
+times its 1e-12 tolerance (~1.09e-10 at |E| ≈ 109), and ended in
+`Divergence`; the 3080 converged them all. The FP64 sigma is not the cause:
+over the converged roots and random vectors, `CiSigma::apply` on the
+gfx1200 is within 1.4e-13 of `host_sigma` (~1e-15 of ‖H c‖), bitwise
+repeatable, and symmetric to 1e-16. What stalled was θ. At the stall the
+Ritz vectors were already converged, ‖A x − ρ x‖ = 1e-11 to 4e-11 with ρ
+their Rayleigh quotient, equal to the FP64-only energies, but every θ sat
+1.0–1.3e-10 above its ρ, so the residual A x − θ x was (ρ − θ) x. That offset
+was there from the FP64 stage's first iteration and never moved. It came from
+Vᵀ A V's diagonal: `davidson_solve` formed it by a DGEMM reduced over the
+vector length, whose terms vᵢ (A v)ᵢ ≈ θ vᵢ² all share a sign, and rocBLAS's
+DGEMM of that shape on the gfx1200 sums them up to ~1e-12 relative high,
+where its `dot` and the 3080's cuBLAS DGEMM stay near 1e-15. A collapse
+writes diag(θ) back into Vᵀ A V, so the offset never washes out, and the
+FP64 stage starts from nearly converged vectors, so its first iteration's
+offset is the one that stays. `davidson_solve` now rewrites each new
+diagonal element by `dot` (`../../recipes/davidson/`: a dot per new column,
+in device pointer mode, no sync). The off-diagonal elements, whose terms
+cancel, were already accurate.
+
+The alternatives were the two the issue named. A stagnation-aware
+convergence test would have accepted a θ wrong by 1e-10, so a residual that
+measures θ's error and not the vector's; the vectors were fine, so the
+fix belongs in θ. A residual against a reorthogonalized basis would not have
+moved it: V was orthonormal to 1e-14. Two others were tried on the way:
+making `linear_dependence_floor` relative to each correction's norm turned
+every `Divergence` into `MaxIterationsExceeded` at 400 iterations, the same
+stall run longer, so it is not part of this; and `canonical_orthonormalization`
+and `olsen_correction`, measured above, each moved one or two of the six by
+a different rounding path.
+
+`bench/ci_sigma_precision`, same conditions as the tables above, parent
+1626bc5 → the diagonal by `dot`, both run back to back with both of each
+card's GPU slots held:
+
+| | | full, FP64-only | symmetric, FP64-only | two-stage 1e-6 | two-stage 1e-7 |
+|---|---|---|---|---|---|
+| CAS(10,10), 1.0977 Å | 3080 | 0.59 → 0.56 s (75 → 75) | 0.44 → 0.44 s (108 → 108) | 0.36 → 0.36 s (46+62 → 46+62) | 0.36 → 0.34 s (52+59 → 53+52) |
+|  | gfx1200 | 1.81 → 1.59 s (81 → 81) | 0.99 → 0.97 s (108 → 108) | 0.92 → 0.87 s (46+62 → 46+58) | 0.92 → 0.85 s (52+57 → 53+49) |
+| CAS(12,12), 1.0977 Å | 3080 | 13.5 → 13.7 s (120 → 119) | 6.04 → 6.56 s (106 → 106) | 4.17 → 4.27 s (43+66 → 43+62) | 4.10 → 4.04 s (55+56 → 55+49) |
+|  | gfx1200 | 31.6 → 32.3 s (120 → 122) | 14.5 → 14.6 s (106 → 106) | Divergence → 12.2 s (43+59) | Divergence → 12.7 s (55+53) |
+| CAS(10,10), 2.0 Å | 3080 | 1.41 → 1.42 s (226 → 227) | 0.84 → 0.85 s (225 → 226) | 0.67 → 0.66 s (120+105 → 120+105) | 0.65 → 0.64 s (138+87 → 138+87) |
+|  | gfx1200 | 3.75 → 3.75 s (225 → 225) | 1.97 → 1.97 s (227 → 227) | 1.79 → 1.84 s (120+100 → 120+106) | 1.82 → 1.87 s (137+88 → 138+93) |
+| CAS(12,12), 2.0 Å | 3080 | 22.0 → 23.0 s (183 → 195) | 10.6 → 10.5 s (191 → 190) | 7.47 → 7.56 s (85+106 → 85+109) | 7.06 → 7.36 s (97+93 → 97+95) |
+|  | gfx1200 | 50.7 → 50.2 s (191 → 191) | 25.3 → 25.4 s (189 → 190) | 22.9 → 22.8 s (85+108 → 85+108) | 22.1 → 22.4 s (98+92 → 97+96) |
+
+The four other gfx1200 `Divergence`s converge too: at 1.0977 Å, the full
+layout at 1e-6 in 58 + 64 iterations (28.0 s) and symmetric 1e-5 in 39 + 65
+(12.7 s); at 2.0 Å, full 1e-6 in 104 + 109 (48.1 s) and symmetric 1e-5 in
+64 + 125 (23.0 s). All 28 solves converge on both cards. Over the 22 the
+gfx1200's parent converges, 228.0 → 229.0 s; over the 3080's 28, 135.0 →
+138.4 s, mostly one solve (CAS(12,12) at 2.0 Å, full, FP64-only), whose
+iteration count moved 183 → 195 on the new rounding path: iteration counts
+move by a few either way, and the dots themselves, one length-n
+reduction per new column, are nothing beside a sigma. The energies close up:
+every solve's worst root is within 6.7e-13 of the card's own FP64-only
+solve on the 3080 (2.4e-12 in the parent) and 1.3e-12 on the gfx1200
+(9.7e-11), and the FP64-only energies of the two cards agree to every printed
+decimal. The parent's gfx1200 spread across solve modes, 5.6e-11 in the
+tables above, was this offset, not FP64 sigma noise.
+
 
 **Nothing of dim size touches the host.** The penalty and the preconditioner
 run on the device, so no block leaves it during the Davidson. On the host
