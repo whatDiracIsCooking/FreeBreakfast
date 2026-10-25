@@ -31,5 +31,8 @@ free_breakfast_add_cxx_module_library(
   wwr::extension::blas
   wwr::extension::solver
   wwr::extension::tx
+  # selected_backend.h, for device.cppm's ROCm workaround alone.
+  LINK_PRIVATE
+  wwr::backend
   IMPORT_STD
 )

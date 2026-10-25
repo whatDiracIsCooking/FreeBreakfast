@@ -2,6 +2,12 @@
 /// @brief Device: one device's context -- its properties, a ForkStream as its
 /// work stream, and a memory pool -- plus the MemPool wrapper it owns
 
+module;
+
+// WWR_SELECTED_HIP, for the one backend branch in this tree's host code: the
+// ROCm workaround in pool_props(). Macros only, so safe in an interface's GMF.
+#include "selected_backend.h"
+
 export module free_breakfast.core.wwr:device;
 
 import std;
@@ -51,8 +57,8 @@ public:
   explicit Device(int32_t dev_idx = 0,
                   uint64_t pool_release_threshold = kDefaultPoolReleaseThreshold,
                   std::source_location location = std::source_location::current())
-      : props_(query_props(dev_idx, location)), pool_(dev_idx, pool_release_threshold, location),
-        fork_(dev_idx, location) {}
+      : props_(query_props(dev_idx, location)),
+        pool_(pool_props(dev_idx), pool_release_threshold, location), fork_(dev_idx, location) {}
 
   /// @brief Index of the device the stream and pool live on (-1 once moved from).
   int32_t dev_idx() const noexcept { return fork_.dev_idx(); }
@@ -77,6 +83,32 @@ public:
   const ForkStream &fork_stream() const noexcept { return fork_; }
 
 private:
+  // wwr's default pool properties, except that under HIP the pool is created
+  // exportable (a POSIX file descriptor handle type), which it never uses.
+  //
+  // A workaround for a ROCm defect, seen on 7.2.4 (#300). ROCm backs a
+  // non-exportable pool with a virtual-memory heap (DEBUG_HIP_MEM_POOL_VMHEAP,
+  // on by default), which registers each physical chunk it maps in MemObjMap,
+  // beside the allocations inside it. After a pool has served many
+  // differently sized allocations, hipMemPoolDestroy can look a chunk up,
+  // find nothing, and dereference the null (VmHeap::UncommitMemory,
+  // vmheap.cpp:86): an intermittent SIGSEGV as the Device is destroyed. An
+  // exportable pool is never given the heap. ROCm/rocm-systems 944b5d3c6d
+  // (#12671) stops registering the chunks; no release carries it yet. Drop
+  // this once the image's ROCm does.
+  static wwr::wwrMemPoolProps pool_props(int32_t dev_idx) {
+    wwr::wwrMemPoolProps props{};
+    props.allocType = wwr::wwrMemAllocationTypePinned;
+#if defined(WWR_SELECTED_HIP)
+    props.handleTypes = wwr::wwrMemHandleTypePosixFileDescriptor;
+#else
+    props.handleTypes = wwr::wwrMemHandleTypeNone;
+#endif
+    props.location.type = wwr::wwrMemLocationTypeDevice;
+    props.location.id = dev_idx;
+    return props;
+  }
+
   static wwr::wwrDeviceProp query_props(int32_t dev_idx, std::source_location location) {
     wwr::wwrDeviceProp prop{};
     CreatePolicy<wwr::wwrError_t>{}.handle_error(wwr::wwrGetDeviceProperties(&prop, dev_idx),
