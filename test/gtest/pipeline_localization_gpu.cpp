@@ -91,11 +91,16 @@ std::vector<double> download(const Buffer &buffer, std::size_t count) {
 // The reference's molecule localized with the given exponent, from a config
 // naming only the inputs and [localization], plus @p extra in that table. A
 // @p basis document, if given, is read from a file in place of the entry's
-// basis.
+// basis. The run's outputs land in @p output_dir, or in a directory removed
+// on return if none is given.
 std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t exponent,
                                         std::string_view extra = "",
-                                        const fb::json *basis = nullptr) {
+                                        const fb::json *basis = nullptr,
+                                        std::filesystem::path output_dir = {}) {
   const fb::test::ScratchDir dir("pipeline_localization");
+  if (output_dir.empty()) {
+    output_dir = dir / "out";
+  }
   std::string basis_spec = entry.at("basis").get<std::string>();
   if (basis != nullptr) {
     basis_spec = "basis.json";
@@ -119,7 +124,7 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
                   "[localization]\nexponent = {}\nfunctional_tolerance = 1e-13\n{}",
                   entry.at("charge").get<std::int32_t>(), basis_spec, exponent, extra);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), output_dir);
   if (!calc.has_value()) {
     ADD_FAILURE() << calc.error().message;
     return std::nullopt;
@@ -680,15 +685,14 @@ TEST(PipelineIbo, BenzeneHasThreePiBonds) {
   EXPECT_EQ(counts.pi, 3U);
 }
 
-// molden set: the localized orbitals land in a Molden file, n_occ of them at
-// occupation 2. Each energy is <i|F|i> = sum_k U_ki^2 eps_k, and U is
-// orthogonal, so they sum to the canonical occupied energies.
+// The localized orbitals land in the output directory's localization.molden,
+// n_occ of them at occupation 2. Each energy is <i|F|i> = sum_k U_ki^2 eps_k,
+// and U is orthogonal, so they sum to the canonical occupied energies.
 TEST(PipelineLocalizationMolden, WritesTheLocalizedOrbitals) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_localization_molden");
-  const std::filesystem::path path = dir / "h2o_pm.molden";
-  auto calc = localize(reference_case("h2o_sto3g"), 2,
-                       std::format("molden = \"{}\"\n", path.generic_string()));
+  const std::filesystem::path path = dir / "localization.molden";
+  auto calc = localize(reference_case("h2o_sto3g"), 2, "", nullptr, dir.path());
   ASSERT_TRUE(calc.has_value());
   const auto &local = calc->get<fb::LocalizationOutput>();
   const auto &scf = calc->get<fb::ScfOutput>();

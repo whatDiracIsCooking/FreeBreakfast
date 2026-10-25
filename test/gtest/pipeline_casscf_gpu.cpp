@@ -208,9 +208,9 @@ TEST_P(PipelineCasscf, MatchesPyscf) {
   const fb::json &entry = reference_case(GetParam().name);
   const fb::json &want = entry.at("casscf");
   const fb::test::ScratchDir dir("pipeline_casscf");
-  const std::filesystem::path molden = dir / "natural.molden";
-  auto calc = fb::read_config(write_config(
-      dir, entry, casscf_table(entry) + std::format("molden = \"{}\"\n", molden.generic_string())));
+  const std::filesystem::path molden = dir / "out/casscf.molden";
+  auto calc =
+      fb::read_config(write_config(dir, entry, casscf_table(entry)), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
@@ -302,7 +302,8 @@ TEST(PipelineCasscf, OutOfMacroIterationsIsMaxIterationsExceeded) {
   const fb::json &entry = reference_case("h2o_ccpvdz");
   const fb::test::ScratchDir dir("pipeline_casscf");
   auto calc =
-      fb::read_config(write_config(dir, entry, "[casscf]\nncas = 4\nnelecas = 4\nmax_cycle = 1\n"));
+      fb::read_config(write_config(dir, entry, "[casscf]\nncas = 4\nnelecas = 4\nmax_cycle = 1\n"),
+                      dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);

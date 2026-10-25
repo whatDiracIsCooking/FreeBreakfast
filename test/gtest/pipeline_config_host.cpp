@@ -35,19 +35,23 @@ type = "sad"
 constexpr std::string_view kInputs =
     "[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n";
 
+// An output directory apart from every input directory the cases use. Nothing
+// is created: parse_config never touches the disk.
+const std::filesystem::path kOut = "/out";
+
 std::string with_inputs(std::string_view tables) {
   return std::string(kInputs).append(tables);
 }
 
 void expect_config_error(std::string_view toml, std::string_view needle) {
-  auto calc = fb::parse_config(toml, "");
+  auto calc = fb::parse_config(toml, "", kOut);
   ASSERT_FALSE(calc.has_value());
   EXPECT_EQ(calc.error().kind, fb::ErrorKind::InvalidConfig);
   EXPECT_NE(calc.error().message.find(needle), std::string::npos) << calc.error().message;
 }
 
 TEST(PipelineConfig, EveryOptionIsRead) {
-  auto calc = fb::parse_config(kWater, "/inputs");
+  auto calc = fb::parse_config(kWater, "/inputs", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::MoleculeStep &molecule = *calc->step<fb::MoleculeStep>();
   EXPECT_EQ(molecule.xyz, std::filesystem::path("/inputs/water.xyz"));
@@ -59,9 +63,9 @@ TEST(PipelineConfig, EveryOptionIsRead) {
   EXPECT_EQ(calc->step<fb::GuessStep>()->type, fb::GuessType::Sad);
 }
 
-TEST(PipelineConfig, ARelativeBasisPathIsAnchoredToTheConfig) {
-  auto calc =
-      fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n", "/inputs");
+TEST(PipelineConfig, ARelativeBasisPathIsAnchoredToTheInputDirectory) {
+  auto calc = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n",
+                               "/inputs", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, "/inputs/b.json");
 }
@@ -72,14 +76,14 @@ TEST(PipelineConfig, ABuiltinBasisNameIsNotAPath) {
   for (const std::string_view spelling : {"sto-3g", "STO-3G", "sto3g", "cc-pVTZ"}) {
     auto calc = fb::parse_config(
         std::format("[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"{}\"\n", spelling),
-        "/inputs");
+        "/inputs", kOut);
     ASSERT_TRUE(calc.has_value()) << spelling << ": " << calc.error().message;
     EXPECT_EQ(calc->step<fb::BasisSetStep>()->basis, spelling);
   }
 }
 
 TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {
-  auto calc = fb::parse_config(with_inputs("[orthogonalizer]\n"), "");
+  auto calc = fb::parse_config(with_inputs("[orthogonalizer]\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::MoleculeStep defaults{};
   EXPECT_EQ(calc->step<fb::MoleculeStep>()->charge, defaults.charge);
@@ -91,13 +95,13 @@ TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {
 }
 
 TEST(PipelineConfig, IntegerReadsAsDouble) {
-  auto calc = fb::parse_config(with_inputs("[orthogonalizer]\neigenvalue_floor = 0\n"), "");
+  auto calc = fb::parse_config(with_inputs("[orthogonalizer]\neigenvalue_floor = 0\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_EQ(calc->step<fb::OrthogonalizerStep>()->eigenvalue_floor, 0.0);
 }
 
 TEST(PipelineConfig, ATableIsARequestAndItsProducersAreFilledIn) {
-  auto calc = fb::parse_config(with_inputs("[core_hamiltonian]\n"), "");
+  auto calc = fb::parse_config(with_inputs("[core_hamiltonian]\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
   EXPECT_TRUE(calc->step<fb::SphericalTransformStep>().has_value());
@@ -108,7 +112,7 @@ TEST(PipelineConfig, ATableIsARequestAndItsProducersAreFilledIn) {
 }
 
 TEST(PipelineConfig, TheGuessNeedsNoDeviceStepPastTheMolecule) {
-  auto calc = fb::parse_config(with_inputs("[guess]\n"), "");
+  auto calc = fb::parse_config(with_inputs("[guess]\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_EQ(calc->step<fb::GuessStep>()->type, fb::GuessStep{}.type);
   EXPECT_FALSE(calc->step<fb::OverlapStep>().has_value());
@@ -116,7 +120,7 @@ TEST(PipelineConfig, TheGuessNeedsNoDeviceStepPastTheMolecule) {
 }
 
 TEST(PipelineConfig, TheScfFillsInTheWholeChain) {
-  auto calc = fb::parse_config(with_inputs("[scf]\n"), "");
+  auto calc = fb::parse_config(with_inputs("[scf]\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_TRUE(calc->step<fb::OverlapStep>().has_value());
   EXPECT_TRUE(calc->step<fb::OrthogonalizerStep>().has_value());
@@ -129,14 +133,15 @@ TEST(PipelineConfig, TheScfFillsInTheWholeChain) {
   EXPECT_EQ(scf.commutator_tolerance, defaults.commutator_tolerance);
   EXPECT_EQ(scf.diis_history, defaults.diis_history);
   EXPECT_EQ(scf.fock_rebuild_interval, defaults.fock_rebuild_interval);
-  EXPECT_TRUE(scf.molden.empty());
+  // Always written, under the step's own name.
+  EXPECT_EQ(scf.molden, kOut / "scf.molden");
 }
 
 TEST(PipelineConfig, EveryScfOptionIsRead) {
   auto calc = fb::parse_config(with_inputs("[scf]\nmax_iterations = 40\nenergy_tolerance = 1e-8\n"
                                            "commutator_tolerance = 1e-5\ndiis_history = 6\n"
-                                           "fock_rebuild_interval = 1\nmolden = \"w.molden\"\n"),
-                               "/run");
+                                           "fock_rebuild_interval = 1\n"),
+                               "/run", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::ScfStep &scf = *calc->step<fb::ScfStep>();
   EXPECT_EQ(scf.max_iterations, 40);
@@ -144,7 +149,73 @@ TEST(PipelineConfig, EveryScfOptionIsRead) {
   EXPECT_EQ(scf.commutator_tolerance, 1e-5);
   EXPECT_EQ(scf.diis_history, 6);
   EXPECT_EQ(scf.fock_rebuild_interval, 1);
-  EXPECT_EQ(scf.molden, std::filesystem::path("/run/w.molden"));
+}
+
+TEST(PipelineConfig, AnOutputIsNamedByTheRunNotTheConfig) {
+  // The four steps that write a Molden file, each under its own kName.
+  auto calc = fb::parse_config(
+      with_inputs(
+          "[localization]\n[casci]\nncas = 2\nnelecas = 2\n[casscf]\nncas = 2\nnelecas = 2\n"),
+      "/run", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::ScfStep>()->molden, kOut / "scf.molden");
+  EXPECT_EQ(calc->step<fb::LocalizationStep>()->molden, kOut / "localization.molden");
+  EXPECT_EQ(calc->step<fb::CasciStep>()->molden, kOut / "casci.molden");
+  EXPECT_EQ(calc->step<fb::CasscfStep>()->molden, kOut / "casscf.molden");
+  for (std::string_view step : {"scf", "localization"}) {
+    expect_config_error(with_inputs(std::format("[{}]\nmolden = \"x.molden\"\n", step)),
+                        std::format("[{}] has no option 'molden'", step));
+  }
+  expect_config_error(with_inputs("[casci]\nncas = 2\nnelecas = 2\nmolden = \"x.molden\"\n"),
+                      "[casci] has no option 'molden'");
+  expect_config_error(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nmolden = \"x.molden\"\n"),
+                      "[casscf] has no option 'molden'");
+}
+
+TEST(PipelineConfig, TheOutputDirectoryIsNotTheInputDirectory) {
+  // Compared as the directories they name: '.', '' and the working directory
+  // spelt out are one, and a trailing separator or '..' changes nothing.
+  const std::filesystem::path cwd = std::filesystem::current_path();
+  const std::array<std::pair<std::filesystem::path, std::filesystem::path>, 5> same{{
+      {"", "."},
+      {".", cwd},
+      {"/run", "/run/"},
+      {"/run/in", "/run/out/../in"},
+      {"in", cwd / "in"},
+  }};
+  for (const auto &[in, out] : same) {
+    auto calc = fb::parse_config(with_inputs("[scf]\n"), in, out);
+    ASSERT_FALSE(calc.has_value()) << in << " vs " << out;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::InvalidConfig);
+    EXPECT_NE(calc.error().message.find("the input and output directories are both"),
+              std::string::npos)
+        << calc.error().message;
+  }
+  // A directory inside the other is not the same one: the default output
+  // directory sits inside the default input directory.
+  auto nested = fb::parse_config(with_inputs("[scf]\n"), ".", "fbf_output");
+  EXPECT_TRUE(nested.has_value()) << nested.error().message;
+}
+
+TEST(PipelineConfig, NoInputFileIsInTheOutputDirectory) {
+  // Each input key, reaching the output directory past a different input one.
+  const std::array<std::string, 3> tables{
+      "[molecule]\nxyz = \"/out/w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n[scf]\n",
+      "[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"../out/b.json\"\n[scf]\n",
+      with_inputs("[guess]\nfrom = \"/out/scf_density.npy\"\n[scf]\n"),
+  };
+  for (const std::string &table : tables) {
+    auto calc = fb::parse_config(table, "/run", "/out/");
+    ASSERT_FALSE(calc.has_value()) << table;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::InvalidConfig);
+    EXPECT_NE(calc.error().message.find("is in the output directory '/out'"), std::string::npos)
+        << calc.error().message;
+  }
+  // Below it is apart: outputs are written into it, not under it.
+  auto below = fb::parse_config(
+      "[molecule]\nxyz = \"/out/prev/w.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n[scf]\n", "/run",
+      kOut);
+  EXPECT_TRUE(below.has_value()) << below.error().message;
 }
 
 TEST(PipelineConfig, AMisspeltScfOptionIsInvalidConfig) {
@@ -153,7 +224,7 @@ TEST(PipelineConfig, AMisspeltScfOptionIsInvalidConfig) {
 }
 
 TEST(PipelineConfig, OnlyWhatWasAskedForIsPlanned) {
-  auto calc = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n", "");
+  auto calc = fb::parse_config("[molecule]\nxyz = \"w.xyz\"\n", "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_TRUE(calc->step<fb::MoleculeStep>().has_value());
   EXPECT_FALSE(calc->step<fb::BasisSetStep>().has_value());
@@ -197,28 +268,26 @@ TEST(PipelineConfig, AnUnknownGuessTypeIsInvalidConfig) {
 }
 
 TEST(PipelineConfig, TheLocalizationModeAndItsOptionsAreRead) {
-  auto calc =
-      fb::parse_config(with_inputs("[localization]\nmode = \"pipek_mezey\"\n"
-                                   "max_sweeps = 7\nexponent = 4\nmolden = \"pm.molden\"\n"),
-                       "/run");
+  auto calc = fb::parse_config(with_inputs("[localization]\nmode = \"pipek_mezey\"\n"
+                                           "max_sweeps = 7\nexponent = 4\n"),
+                               "/run", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::LocalizationStep &step = *calc->step<fb::LocalizationStep>();
   EXPECT_EQ(step.mode, fb::LocalizationMode::PipekMezey);
   EXPECT_EQ(step.pipek_mezey.max_sweeps, 7);
   EXPECT_EQ(step.pipek_mezey.exponent, fb::PipekMezeyExponent::Four);
-  EXPECT_EQ(step.molden, std::filesystem::path("/run/pm.molden"));
   // An empty table is Pipek-Mezey with its defaults.
-  auto plain = fb::parse_config(with_inputs("[localization]\n"), "");
+  auto plain = fb::parse_config(with_inputs("[localization]\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   EXPECT_EQ(plain->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::PipekMezey);
   EXPECT_EQ(plain->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
-  EXPECT_TRUE(plain->step<fb::LocalizationStep>()->molden.empty());
   // IBO is Knizia's exponent four unless the table names another.
-  auto ibo = fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\n"), "");
+  auto ibo = fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\n"), "", kOut);
   ASSERT_TRUE(ibo.has_value()) << ibo.error().message;
   EXPECT_EQ(ibo->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::Ibo);
   EXPECT_EQ(ibo->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Four);
-  auto ibo2 = fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\nexponent = 2\n"), "");
+  auto ibo2 =
+      fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\nexponent = 2\n"), "", kOut);
   ASSERT_TRUE(ibo2.has_value()) << ibo2.error().message;
   EXPECT_EQ(ibo2->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
 }
@@ -233,7 +302,7 @@ TEST(PipelineConfig, AnUnknownLocalizationModeIsInvalidConfig) {
 
 TEST(PipelineConfig, EveryCasciOptionIsReadAndTheScfIsFilledIn) {
   auto calc = fb::parse_config(
-      with_inputs("[casci]\nncas = 4\nnelecas = 4\nnroots = 3\nactive = [2, 4, 5, 7]\n"), "");
+      with_inputs("[casci]\nncas = 4\nnelecas = 4\nnroots = 3\nactive = [2, 4, 5, 7]\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::CasciStep &casci = *calc->step<fb::CasciStep>();
   EXPECT_EQ(casci.ncas, 4);
@@ -244,7 +313,7 @@ TEST(PipelineConfig, EveryCasciOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
   EXPECT_FALSE(calc->step<fb::LocalizationStep>().has_value());
 
-  auto plain = fb::parse_config(with_inputs("[casci]\nncas = 2\nnelecas = 2\n"), "");
+  auto plain = fb::parse_config(with_inputs("[casci]\nncas = 2\nnelecas = 2\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   EXPECT_EQ(plain->step<fb::CasciStep>()->nroots, 1);
   EXPECT_TRUE(plain->step<fb::CasciStep>()->active.empty());
@@ -264,9 +333,8 @@ TEST(PipelineConfig, AMalformedCasciTableIsInvalidConfig) {
 
 TEST(PipelineConfig, TheCasciAvasOptionsAreReadInPlaceOfAnActiveSpace) {
   auto calc = fb::parse_config(with_inputs("[casci]\navas = [\"O 2p\", \"H 1s\"]\n"
-                                           "avas_threshold = 0.3\nnroots = 2\n"
-                                           "molden = \"cas.molden\"\n"),
-                               "base");
+                                           "avas_threshold = 0.3\nnroots = 2\n"),
+                               "base", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::CasciStep &casci = *calc->step<fb::CasciStep>();
   EXPECT_EQ(casci.avas, (std::vector<std::string>{"O 2p", "H 1s"}));
@@ -274,12 +342,10 @@ TEST(PipelineConfig, TheCasciAvasOptionsAreReadInPlaceOfAnActiveSpace) {
   EXPECT_EQ(casci.nroots, 2);
   EXPECT_EQ(casci.ncas, 0);
   EXPECT_EQ(casci.nelecas, 0);
-  EXPECT_EQ(casci.molden, std::filesystem::path("base") / "cas.molden");
 
-  auto plain = fb::parse_config(with_inputs("[casci]\navas = [\"N 2p\"]\n"), "");
+  auto plain = fb::parse_config(with_inputs("[casci]\navas = [\"N 2p\"]\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   EXPECT_EQ(plain->step<fb::CasciStep>()->avas_threshold, 0.2);
-  EXPECT_TRUE(plain->step<fb::CasciStep>()->molden.empty());
 }
 
 TEST(PipelineConfig, AMalformedCasciAvasIsInvalidConfig) {
@@ -305,7 +371,7 @@ TEST(PipelineConfig, AMalformedCasciAvasIsInvalidConfig) {
 // over STO-3G's 7 orbitals.
 TEST(PipelineConfig, TheCasciOrbitalOrderPutsCoreActiveRest) {
   const auto order = [](std::string_view table) {
-    auto calc = fb::parse_config(with_inputs(table), "");
+    auto calc = fb::parse_config(with_inputs(table), "", kOut);
     EXPECT_TRUE(calc.has_value()) << calc.error().message;
     return calc->step<fb::CasciStep>()->orbital_order(10, 7);
   };
@@ -322,7 +388,7 @@ TEST(PipelineConfig, TheCasciOrbitalOrderPutsCoreActiveRest) {
 
 TEST(PipelineConfig, AnImpossibleCasciActiveSpaceIsRefusedByOrbitalOrder) {
   const auto expect_refused = [](std::string_view table, std::string_view needle) {
-    auto calc = fb::parse_config(with_inputs(table), "");
+    auto calc = fb::parse_config(with_inputs(table), "", kOut);
     ASSERT_TRUE(calc.has_value()) << calc.error().message;
     const auto order = calc->step<fb::CasciStep>()->orbital_order(10, 7);
     ASSERT_FALSE(order.has_value());
@@ -351,8 +417,8 @@ TEST(PipelineConfig, EveryCasscfOptionIsReadAndTheScfIsFilledIn) {
   auto calc = fb::parse_config(
       with_inputs("[casscf]\nncas = 3\nnelecas = 4\nnroots = 2\nactive = [5, 6, 7]\n"
                   "weights = [0.75, 0.25]\nconv_tol = 1e-9\nconv_tol_grad = 1e-5\n"
-                  "max_cycle = 20\nmolden = \"sa.molden\"\n"),
-      "base");
+                  "max_cycle = 20\n"),
+      "base", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::CasscfStep &casscf = *calc->step<fb::CasscfStep>();
   EXPECT_EQ(casscf.ncas, 3);
@@ -363,12 +429,11 @@ TEST(PipelineConfig, EveryCasscfOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_EQ(casscf.conv_tol, 1e-9);
   EXPECT_EQ(casscf.conv_tol_grad, 1e-5);
   EXPECT_EQ(casscf.max_cycle, 20);
-  EXPECT_EQ(casscf.molden, std::filesystem::path("base") / "sa.molden");
   EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
   EXPECT_FALSE(calc->step<fb::CasciStep>().has_value());
 
   // The defaults are casscf_solve's; empty weights are equal ones.
-  auto plain = fb::parse_config(with_inputs("[casscf]\navas = [\"O 2p\"]\n"), "");
+  auto plain = fb::parse_config(with_inputs("[casscf]\navas = [\"O 2p\"]\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   const fb::CasscfStep &defaults = *plain->step<fb::CasscfStep>();
   const fb::CasscfOptions options;
@@ -378,11 +443,10 @@ TEST(PipelineConfig, EveryCasscfOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_EQ(defaults.conv_tol, options.conv_tol);
   EXPECT_EQ(defaults.conv_tol_grad, options.conv_tol_grad);
   EXPECT_EQ(defaults.max_cycle, options.max_cycle);
-  EXPECT_TRUE(defaults.molden.empty());
 
   // An integer weight reads as a number, as every float option does.
   auto whole =
-      fb::parse_config(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nweights = [1]\n"), "");
+      fb::parse_config(with_inputs("[casscf]\nncas = 2\nnelecas = 2\nweights = [1]\n"), "", kOut);
   ASSERT_TRUE(whole.has_value()) << whole.error().message;
   EXPECT_EQ(whole->step<fb::CasscfStep>()->weights, (std::vector<double>{1.0}));
 }
@@ -427,14 +491,14 @@ TEST(PipelineConfig, AMalformedCasscfTableIsInvalidConfig) {
 }
 
 TEST(PipelineConfig, EveryFciOptionIsReadAndTheScfIsFilledIn) {
-  auto calc = fb::parse_config(with_inputs("[fci]\nnroots = 3\n"), "");
+  auto calc = fb::parse_config(with_inputs("[fci]\nnroots = 3\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_EQ(calc->step<fb::FciStep>()->nroots, 3);
   EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
   EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
   EXPECT_FALSE(calc->step<fb::CasciStep>().has_value());
 
-  auto plain = fb::parse_config(with_inputs("[fci]\n"), "");
+  auto plain = fb::parse_config(with_inputs("[fci]\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   EXPECT_EQ(plain->step<fb::FciStep>()->nroots, 1);
 }
@@ -458,8 +522,8 @@ TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(with_inputs("[guess]\ntype = 1\n"), "[guess] type");
 }
 
-TEST(PipelineConfig, FromLoadsTheProductRelativeToTheConfig) {
-  auto calc = fb::parse_config(with_inputs("[guess]\nfrom = \"d.npy\"\n"), "/inputs");
+TEST(PipelineConfig, FromLoadsTheProductRelativeToTheInputDirectory) {
+  auto calc = fb::parse_config(with_inputs("[guess]\nfrom = \"d.npy\"\n"), "/inputs", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_FALSE(calc->step<fb::GuessStep>().has_value());
   EXPECT_EQ(calc->from<fb::GuessStep>(), std::filesystem::path("/inputs/d.npy"));
@@ -468,13 +532,13 @@ TEST(PipelineConfig, FromLoadsTheProductRelativeToTheConfig) {
 }
 
 TEST(PipelineConfig, ALoadedGuessIsNotFilledInForTheScf) {
-  auto calc = fb::parse_config(with_inputs("[guess]\nfrom = \"d.npy\"\n[scf]\n"), "");
+  auto calc = fb::parse_config(with_inputs("[guess]\nfrom = \"d.npy\"\n[scf]\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
   EXPECT_FALSE(calc->step<fb::GuessStep>().has_value());
   EXPECT_EQ(calc->from<fb::GuessStep>(), std::filesystem::path("d.npy"));
   // Without a filled-in guess, nothing loads it.
-  auto unloaded = fb::parse_config(with_inputs("[scf]\n"), "");
+  auto unloaded = fb::parse_config(with_inputs("[scf]\n"), "", kOut);
   ASSERT_TRUE(unloaded.has_value()) << unloaded.error().message;
   EXPECT_FALSE(unloaded->from<fb::GuessStep>().has_value());
 }
@@ -491,24 +555,39 @@ TEST(PipelineConfig, AStepWithNoLoadCannotBeLoaded) {
 }
 
 TEST(PipelineConfig, MalformedTomlIsIoError) {
-  auto calc = fb::parse_config("[molecule\n", "");
+  auto calc = fb::parse_config("[molecule\n", "", kOut);
   ASSERT_FALSE(calc.has_value());
   EXPECT_EQ(calc.error().kind, fb::ErrorKind::IO);
 }
 
-TEST(PipelineConfig, ReadResolvesAgainstTheFilesDirectory) {
+TEST(PipelineConfig, ReadResolvesAgainstTheInputDirectoryAndMakesTheOutputOne) {
   const fb::test::ScratchDir dir("pipeline-config");
-  std::ofstream(dir / "run.toml") << kWater;
-  auto calc = fb::read_config(dir / "run.toml");
+  std::filesystem::create_directory(dir / "config");
+  std::ofstream(dir / "config/run.toml") << kWater << "[scf]\n";
+  // Not the config file's directory: the run's.
+  auto calc = fb::read_config(dir / "config/run.toml", dir / "in", dir / "out/a");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, dir / "water.xyz");
+  EXPECT_EQ(calc->step<fb::MoleculeStep>()->xyz, dir / "in/water.xyz");
+  EXPECT_EQ(calc->step<fb::ScfStep>()->molden, dir / "out/a/scf.molden");
+  EXPECT_TRUE(std::filesystem::is_directory(dir / "out/a"));
 }
 
 TEST(PipelineConfig, ReadOfMissingFileIsIoError) {
   const fb::test::ScratchDir dir("pipeline-config");
-  auto calc = fb::read_config(dir / "absent.toml");
+  auto calc = fb::read_config(dir / "absent.toml", dir.path(), dir / "out");
   ASSERT_FALSE(calc.has_value());
   EXPECT_EQ(calc.error().kind, fb::ErrorKind::IO);
+}
+
+TEST(PipelineConfig, AnOutputDirectoryThatCannotBeMadeIsIoError) {
+  const fb::test::ScratchDir dir("pipeline-config");
+  std::ofstream(dir / "run.toml") << kWater;
+  std::ofstream(dir / "taken") << "a file, not a directory";
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "taken");
+  ASSERT_FALSE(calc.has_value());
+  EXPECT_EQ(calc.error().kind, fb::ErrorKind::IO);
+  EXPECT_NE(calc.error().message.find("cannot create the output directory"), std::string::npos)
+      << calc.error().message;
 }
 
 } // namespace

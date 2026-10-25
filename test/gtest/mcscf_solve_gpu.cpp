@@ -100,7 +100,7 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
                   entry.at("charge").get<std::int32_t>(),
                   basis.empty() ? entry.at("basis").get<std::string>() : std::string{basis});
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   if (!calc.has_value()) {
     ADD_FAILURE() << calc.error().message;
     return std::nullopt;

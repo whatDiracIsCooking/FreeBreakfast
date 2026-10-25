@@ -7,8 +7,11 @@
 /// (`to_exit_code`). Everything below it returns through Result; nothing
 /// below it logs a value-tier error itself.
 ///
-/// The config file is the only thing it knows about: `read_config` plans the
-/// pipeline, `run` runs it, and main prints each product the pipeline built.
+/// `free-breakfast [-i <input_dir>] [-o <output_dir>] <config.toml>`: the
+/// config's paths are relative to the input directory (default `.`), and every
+/// file the run writes lands in the output directory (default `fbf_output`),
+/// named after the step that wrote it. `read_config` plans the pipeline,
+/// `run` runs it, and main prints each product the pipeline built.
 
 #include "diagnostics.h"
 
@@ -96,12 +99,28 @@ void print_products(const fb::Calculation &calc) {
 }
 
 fb::Status run(std::span<char *const> args) {
-  if (args.size() != 2) {
-    return fb::err_config("usage: {} <config.toml>", args.empty() ? "free-breakfast" : args[0]);
+  const std::string_view program = args.empty() ? "free-breakfast" : args[0];
+  std::filesystem::path input_dir = ".";
+  std::filesystem::path output_dir = "fbf_output";
+  std::optional<std::filesystem::path> config;
+  for (std::size_t i = 1; i < args.size(); ++i) {
+    const std::string_view arg = args[i];
+    if ((arg == "-i" || arg == "-o") && i + 1 < args.size()) {
+      (arg == "-i" ? input_dir : output_dir) = args[++i];
+    } else if (!config && !arg.starts_with('-')) {
+      config = arg;
+    } else {
+      config.reset();
+      break;
+    }
   }
-  // Read and planned before the node is built: a bad config fails without
-  // touching a GPU. The products hold their Device, so they may outlive node.
-  fb::Calculation calc = FBF_TRY(fb::read_config(args[1]));
+  if (!config) {
+    return fb::err_config("usage: {} [-i <input_dir>] [-o <output_dir>] <config.toml>", program);
+  }
+  // Read and planned, and the output directory made, before the node is
+  // built: a bad config or path fails without touching a GPU. The products
+  // hold their Device, so they may outlive node.
+  fb::Calculation calc = FBF_TRY(fb::read_config(*config, input_dir, output_dir));
 
   fb::NodeResources node;
   node.log();

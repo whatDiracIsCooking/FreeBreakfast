@@ -76,7 +76,8 @@ What it settled:
   needs it.
 - **The range checks are the selection's,** when the step runs; a config
   reads only types: the selection's keys as `active_space/README.md` says,
-  `nroots` an integer, and `molden` a path.
+  and `nroots` an integer. `molden` is not a key: `pipeline/config` sets it
+  to `casci.molden` in the run's output directory.
 - **Host synchronizations:** the selection's (under `avas`),
   `active_space_hamiltonian`'s own, one to read the integrals back, and
   `ci_solve`'s: its guesses' Gram-Schmidt dots, a few per Davidson iteration

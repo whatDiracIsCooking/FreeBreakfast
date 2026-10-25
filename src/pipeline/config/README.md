@@ -16,8 +16,11 @@ using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep,
                              CasciStep, CasscfStep, FciStep>;
 
-Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &base_dir);
-Result<Calculation> read_config(const std::filesystem::path &path);
+Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
+                                 const std::filesystem::path &output_dir);
+Result<Calculation> read_config(const std::filesystem::path &path,
+                                const std::filesystem::path &input_dir,
+                                const std::filesystem::path &output_dir);
 ```
 
 A new step joins the registry here: its type in `Calculation`, and, if it has
@@ -48,19 +51,16 @@ type = "sad"              # default "sad", the only kind so far
 
 [scf]                     # every option has a default
 max_iterations = 100
-molden = "water.molden"   # default none: the converged orbitals, written
 
 [localization]            # every option has a default
 mode = "pipek_mezey"      # default "pipek_mezey"; or "ibo"
 exponent = 4              # 2 or 4; default 2, or 4 for "ibo"
-molden = "water_pm.molden"  # default none: the localized orbitals, written
 
 [casci]
 ncas = 4                  # required
 nelecas = 4               # required
 nroots = 3                # default 1
 active = [2, 4, 5, 7]     # 0-based MO indices; default the frontier orbitals
-molden = "water_cas.molden"  # default none: the lowest root's natural orbitals
 ```
 
 Or, in place of `ncas`, `nelecas` and `active`, AVAS picks the active space
@@ -93,7 +93,6 @@ weights = [0.5, 0.5]      # default equal; nroots of them, >= 0, summing to 1
 conv_tol = 1e-10          # default 1e-10: |dE| at convergence
 conv_tol_grad = 1e-6      # default 1e-6: ||g|| at convergence
 max_cycle = 50            # default 50 macro iterations
-molden = "h2co_sa.molden" # default none: the state-averaged natural orbitals
 ```
 
 `[casscf]` reads the selection as `[casci]` does, and its own keys are checked
@@ -140,11 +139,47 @@ from = "water_d.npy"   # the density, read in place of SAD
 so any other key beside it is refused. A step with no `load` refuses `from`.
 It is a path, resolved like every other.
 
-**Relative paths are relative to the config file**, not the working directory.
-`read_config` resolves them against the file's own directory, and
-`parse_config` against `base_dir`. An empty `base_dir` leaves them relative to
-the working directory. The steps document that their paths "arrive
-resolved", and this is where that happens.
+**Every path in a config is an input, relative to the input directory**:
+`[molecule] xyz`, a `[basis_set] basis` that is not a compiled-in name, and
+every `from`. The input directory is the run's, not the config file's:
+`free-breakfast -i <dir>`, default `.`, so a config can be shared between
+runs that each bring their own inputs. An empty `input_dir` leaves the paths
+relative to the working directory. The steps document that their paths
+"arrive resolved", and this is where that happens.
+
+**Outputs are named by the run, not the config.** Every output a planned step
+can write is written, into the output directory (`free-breakfast -o <dir>`,
+default `fbf_output`) under the step's `kName`. A pipeline holds one of each
+step, so no two collide:
+
+| Step | File |
+|------|------|
+| `[scf]` | `scf.molden`: every MO, the occupied at 2 |
+| `[localization]` | `localization.molden`: the localized occupied orbitals |
+| `[casci]` | `casci.molden`: the lowest root's natural orbitals |
+| `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
+
+There is no `molden` key: a config names no output, so a later config can
+rely on what an earlier run wrote. A file already there is overwritten; a
+directory per run is what `-o` is for. The steps keep their `molden` member,
+empty meaning not written, for a pipeline built by hand.
+
+**The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
+comparing the directories named rather than their spelling (`.`, `''` and the
+working directory spelt out are one; a trailing `/` or a `..` changes
+nothing):
+
+- an output directory that is the input directory, which would mix a run's
+  outputs into its inputs;
+- an input file directly in the output directory, which a step's output could
+  overwrite. An absolute path, or one through `..`, reaches there however the
+  two directories differ. A file in a directory *below* the output directory
+  is apart, and so is an output directory below the input one, as the
+  defaults are.
+
+`read_config` then creates the output directory, before anything runs: a
+directory that cannot be made is `IO`, refused before a GPU is touched rather
+than after the SCF has converged. `parse_config` touches no disk.
 
 **Strict.** Each of these is `InvalidConfig`, naming the table or key:
 
@@ -175,8 +210,9 @@ the order the tables were written in. Pipeline order comes from each step's
 ## Tests
 
 `test/gtest/pipeline_config_host.cpp`, host-only: every option read, the step
-defaults kept, path resolution against the file's directory, which steps are
-filled in and which are not, `from`, and each refusal above. Nothing is run.
+defaults kept, path resolution against the input directory, the output
+names, the inputs kept apart from the outputs, which steps are filled in and
+which are not, `from`, and each refusal above. Nothing is run.
 `test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end.
 
 ## Files

@@ -50,6 +50,7 @@ What it builds, once a tier has built it:
 
 ```sh
 build/src/free-breakfast calc.toml     # one table per pipeline step
+build/src/free-breakfast -i inputs -o runs/a calc.toml
 ```
 
 ```toml
@@ -63,7 +64,10 @@ basis = "sto-3g"       # a compiled-in name, or a path to BSE JSON
 A table is a *request*: the steps producing what it reads are filled in, so the
 file above plans the whole chain from the geometry to the converged RHF energy.
 [`src/pipeline/config/README.md`](src/pipeline/config/README.md) is the full
-grammar; relative paths resolve against the config file, not the cwd.
+grammar. Paths in the config resolve against the input directory (`-i`,
+default `.`), not the config file's; every file the run writes lands in the
+output directory (`-o`, default `fbf_output`), named after its step
+(`scf.molden`), and the two must differ.
 
 Host-side, for editing and the Python suite:
 

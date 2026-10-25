@@ -39,17 +39,26 @@ using Calculation =
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.
 ///
-/// A relative path in it is resolved against @p base_dir (empty: left
-/// relative to the working directory). A syntactically invalid document is
-/// ErrorKind::IO. A document naming no step, an unknown table or key, a value
-/// of the wrong type, or a missing required key -- in a written table or in
-/// one a filled-in step was read from -- is ErrorKind::InvalidConfig naming
-/// it.
+/// Every path in it is an input, and a relative one is resolved against
+/// @p input_dir (empty: left relative to the working directory). Every output
+/// a planned step can write is written into @p output_dir, named after the
+/// step: `scf.molden`. Nothing is created or read on disk.
+///
+/// A syntactically invalid document is ErrorKind::IO. A document naming no
+/// step, an unknown table or key, a value of the wrong type, or a missing
+/// required key -- in a written table or in one a filled-in step was read
+/// from -- is ErrorKind::InvalidConfig naming it. So is an @p output_dir that
+/// is @p input_dir, or holds an input file, compared as the directories they
+/// name rather than as spelt.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
-                                               const std::filesystem::path &base_dir);
+                                               const std::filesystem::path &input_dir,
+                                               const std::filesystem::path &output_dir);
 
-/// @brief Parse a config file, resolving its relative paths against the
-/// file's own directory. A file that cannot be opened is ErrorKind::IO.
-[[nodiscard]] Result<Calculation> read_config(const std::filesystem::path &path);
+/// @brief parse_config of the file at @p path, then @p output_dir created if
+/// it does not exist, so a run's paths fail before it starts. A file that
+/// cannot be read, or a directory that cannot be created, is ErrorKind::IO.
+[[nodiscard]] Result<Calculation> read_config(const std::filesystem::path &path,
+                                              const std::filesystem::path &input_dir,
+                                              const std::filesystem::path &output_dir);
 
 } // namespace free_breakfast

@@ -322,7 +322,7 @@ TEST(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
                   .has_value());
 
   fb::NodeResources node;
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;

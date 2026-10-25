@@ -74,7 +74,7 @@ TEST(PipelineCalculation, MatchesTheStepsCalledByHand) {
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, kConfig);
   fb::NodeResources node;
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
@@ -127,7 +127,7 @@ TEST(PipelineCalculation, TheGuessHoldsEveryElectronAgainstThePipelinesOverlap) 
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, kConfig);
   fb::NodeResources node;
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
@@ -154,7 +154,7 @@ TEST(PipelineCalculation, AnScfFromALoadedGuessMatchesOneFromItsOwn) {
   write_inputs(dir,
                "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"basis.json\"\n[scf]\n");
   fb::NodeResources node;
-  auto made = fb::read_config(dir / "run.toml");
+  auto made = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(made.has_value()) << made.error().message;
   const fb::Status made_ran = made->run(node);
   ASSERT_TRUE(made_ran.has_value()) << made_ran.error().message;
@@ -166,7 +166,7 @@ TEST(PipelineCalculation, AnScfFromALoadedGuessMatchesOneFromItsOwn) {
                                                 "basis = \"basis.json\"\n[guess]\nfrom = "
                                                 "\"d.npy\"\n[scf]\n")
                   .has_value());
-  auto loaded = fb::read_config(dir / "load.toml");
+  auto loaded = fb::read_config(dir / "load.toml", dir.path(), dir / "out");
   ASSERT_TRUE(loaded.has_value()) << loaded.error().message;
   EXPECT_FALSE(loaded->step<fb::GuessStep>().has_value());
   EXPECT_EQ(loaded->from<fb::GuessStep>(), dir / "d.npy");
@@ -190,7 +190,7 @@ TEST(PipelineCalculation, ACasciConfigRunsEndToEnd) {
   write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
                     "[casci]\nncas = 4\nnelecas = 4\nnroots = 2\n");
   fb::NodeResources node;
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
@@ -230,7 +230,7 @@ TEST(PipelineCalculation, ACasscfConfigRunsEndToEnd) {
                     "[casci]\nncas = 4\nnelecas = 4\n"
                     "[casscf]\nncas = 4\nnelecas = 4\n");
   fb::NodeResources node;
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
@@ -265,7 +265,7 @@ TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
   write_inputs(dir, kConfig);
   std::filesystem::remove(dir / "water.xyz");
   fb::NodeResources node;
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
 
   const fb::Status ran = calc->run(node);

@@ -121,9 +121,9 @@ What it settled:
   N / sum Z before the first Fock build.
 - **`molden` writes on convergence.** When it is set, the converged C is
   downloaded and written by `io.molden`'s `write_molden`: every MO, the
-  `nocc` lowest at occupation 2. It is the `[scf] molden` TOML key, and like
-  every config path it is relative to the config file. Writing it is part of
-  the step, so a failed write fails the step.
+  `nocc` lowest at occupation 2. It is not a TOML key: `pipeline/config` sets
+  it to `scf.molden` in the run's output directory. Writing it is part of the
+  step, so a failed write fails the step.
 - **Closed shell only.** An odd electron count or a multiplicity other than 1
   is `Unsupported`.
 - **Host synchronizations**: the energy's two dots and the residual norm read
