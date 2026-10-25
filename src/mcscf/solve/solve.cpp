@@ -3,6 +3,12 @@
 /// CiRdm::rdm12 and casscf_fock, and the augmented-Hessian orbital step over
 /// OrbitalHessian under a trust radius.
 
+module;
+
+// The preconditioner's launcher, defined in ah_precondition.cu: declared in
+// the GMF so it keeps external linkage (see the header).
+#include "ah_precondition_bridge.h"
+
 module free_breakfast.mcscf.solve;
 
 import std;
@@ -62,6 +68,10 @@ constexpr double kResponseSafeguard = 1e-8;
 // gradient on the device and D = R diag(scale) R^T the CI response's
 // rank-@p rank correction (R n x rank, column-major): the augmented Hessian
 // whose lowest eigenvector gives the step x = v / v_0, (H + D - lambda) x = -g.
+// xs, ys (n x columns) and rv (rank x columns) are the caller's, allocated
+// once for the solve: held across OrbitalHessian::apply, which takes the
+// workspace, so not the workspace's, and a Davidson applies this every
+// iteration, so not allocated per call.
 struct AugmentedHessian {
   OrbitalHessian &hessian;
   const double *gradient;
@@ -69,46 +79,46 @@ struct AugmentedHessian {
   const double *response_scale;
   int32_t rank;
   int32_t n;
+  int32_t columns;
+  double *xs;
+  double *ys;
+  double *rv;
   int32_t products = 0;
 
   Status apply(DeviceResources &res, const int32_t k, const double *const x, double *const y) {
+    if (k > columns) {
+      return err_config("casscf_solve: the augmented Hessian's buffers hold {} columns, given {}",
+                        columns, k);
+    }
     const wwr::wwrblasHandle_t blas = res.blas().get();
     const wwr::wwrStream_t stream = res.stream();
     const int32_t m = n + 1;
-    const auto rows = static_cast<size_t>(n);
-    const size_t width = rows * sizeof(double);
+    const size_t width = static_cast<size_t>(n) * sizeof(double);
     const size_t pitch = static_cast<size_t>(m) * sizeof(double);
-    // Held across OrbitalHessian::apply, which takes the workspace: their own.
-    Buffers::device<double> xs(rows * static_cast<size_t>(k), res.device());
-    Buffers::device<double> ys(rows * static_cast<size_t>(k), res.device());
-    FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(xs.data(), width, x + 1, pitch, width,
-                                             static_cast<size_t>(k), wwr::wwrMemcpyDeviceToDevice,
-                                             stream)));
-    FBF_TRY(hessian.apply(res, k, xs.data(), ys.data()));
+    FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(xs, width, x + 1, pitch, width, static_cast<size_t>(k),
+                                             wwr::wwrMemcpyDeviceToDevice, stream)));
+    FBF_TRY(hessian.apply(res, k, xs, ys));
     products += k;
     // D v = R diag(scale) (R^T v).
     if (rank > 0) {
-      Buffers::device<double> rv(static_cast<size_t>(rank) * static_cast<size_t>(k), res.device());
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-          blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, rank, k, n, &kOne<double>, response, n,
-          xs.data(), n, &kZero<double>, rv.data(), rank)));
-      FBF_TRY(
-          gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, rank, k, rv.data(),
-                                                rank, response_scale, 1, rv.data(), rank)));
+      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N,
+                                                    rank, k, n, &kOne<double>, response, n, xs, n,
+                                                    &kZero<double>, rv, rank)));
+      FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, rank, k, rv, rank,
+                                                    response_scale, 1, rv, rank)));
       FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n,
-                                                    k, rank, &kOne<double>, response, n, rv.data(),
-                                                    rank, &kOne<double>, ys.data(), n)));
+                                                    k, rank, &kOne<double>, response, n, rv, rank,
+                                                    &kOne<double>, ys, n)));
     }
     // H v + g v_0, and g^T v into row 0.
     FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, k,
                                                   1, &kOne<double>, gradient, n, x, m,
-                                                  &kOne<double>, ys.data(), n)));
+                                                  &kOne<double>, ys, n)));
     FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, 1, k,
-                                                  n, &kOne<double>, gradient, n, xs.data(), n,
+                                                  n, &kOne<double>, gradient, n, xs, n,
                                                   &kZero<double>, y, m)));
-    return gpu_status(wwr::wwrMemcpy2DAsync(y + 1, pitch, ys.data(), width, width,
-                                            static_cast<size_t>(k), wwr::wwrMemcpyDeviceToDevice,
-                                            stream));
+    return gpu_status(wwr::wwrMemcpy2DAsync(y + 1, pitch, ys, width, width, static_cast<size_t>(k),
+                                            wwr::wwrMemcpyDeviceToDevice, stream));
   }
 };
 
@@ -210,13 +220,30 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   Buffers::device<wwr::wwrDoubleComplex> kappa_u(mo * mo, res.device());
   Buffers::device<double> kappa_w(mo, res.device());
   Buffers::device<double> rotation(mo * mo, res.device());
-  // The augmented Hessian's model gradient, guess, Ritz value and vector.
+  // The augmented Hessian, every buffer for the solve: its Davidson runs up
+  // to ah_columns columns, so no apply takes more. The model gradient; D's
+  // terms and scales, at most 2 kResponseMemory; (0, diag(H + D)) for the
+  // preconditioner; the guess e_0, set once; the operator's xs, ys and rv;
+  // and the Ritz vector and value side by side, (v_0, v, lambda), read back
+  // in one copy: v first, so it keeps the pool's alignment, which the
+  // Davidson's BLAS on it may choose its kernels (and roundings) by.
+  const int32_t ah_columns = std::max(2, std::min(m, kAhMaxSubspace));
+  const auto ah_width = static_cast<size_t>(ah_columns);
+  const size_t response_max = 2 * kResponseMemory;
   Buffers::device<double> model_gradient(std::max<size_t>(pairs, 1), res.device());
+  Buffers::device<double> response_device(std::max<size_t>(pairs * response_max, 1), res.device());
+  Buffers::device<double> scale_device(response_max, res.device());
+  Buffers::device<double> ah_diagonal(static_cast<size_t>(m), res.device());
   Buffers::device<double> ah_guess(static_cast<size_t>(m), res.device());
-  Buffers::device<double> ah_value(1, res.device());
-  Buffers::device<double> ah_vector(static_cast<size_t>(m), res.device());
-  std::vector<double> unit(static_cast<size_t>(m), 0.0);
-  unit[0] = 1.0;
+  Buffers::device<double> ah_xs(std::max<size_t>(pairs * ah_width, 1), res.device());
+  Buffers::device<double> ah_ys(std::max<size_t>(pairs * ah_width, 1), res.device());
+  Buffers::device<double> ah_rv(response_max * ah_width, res.device());
+  Buffers::device<double> ah_pair(static_cast<size_t>(m) + 1, res.device());
+  {
+    std::vector<double> unit(static_cast<size_t>(m), 0.0);
+    unit[0] = 1.0;
+    FBF_TRY(casscf_upload(res, unit, ah_guess.data()));
+  }
 
   // C_now = C_accepted exp(t kappa), from kappa_u and kappa_w.
   const auto rotate = [&](const double t) -> Status {
@@ -363,9 +390,14 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     OrbitalHessian hessian =
         FBF_TRY(OrbitalHessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
                                        ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
-    std::vector<double> h_diagonal =
-        FBF_TRY(casscf_download(res, hessian.diagonal().data(), pairs));
-    // D's terms on the device, and diag(H + D) for the preconditioner.
+    // (0, diag(H + D)) for the preconditioner, built here and uploaded once
+    // for the macro iteration, and D's terms beside it.
+    std::vector<double> ah_diagonal_host(static_cast<size_t>(m), 0.0);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_diagonal_host.data() + 1, hessian.diagonal().data(),
+                                           pairs * sizeof(double), wwr::wwrMemcpyDeviceToHost,
+                                           stream)));
+    FBF_TRY(res.sync());
+    const std::span<double> h_diagonal{ah_diagonal_host.data() + 1, pairs};
     const auto rank = static_cast<int32_t>(response.size());
     std::vector<double> response_host(pairs * response.size());
     std::vector<double> scale_host(response.size());
@@ -377,36 +409,23 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
         h_diagonal[i] += scale * r[i] * r[i];
       }
     }
-    Buffers::device<double> response_device(std::max<size_t>(response_host.size(), 1),
-                                            res.device());
-    Buffers::device<double> scale_device(std::max<size_t>(scale_host.size(), 1), res.device());
     FBF_TRY(casscf_upload(res, response_host, response_device.data()));
     FBF_TRY(casscf_upload(res, scale_host, scale_device.data()));
+    FBF_TRY(casscf_upload(res, ah_diagonal_host, ah_diagonal.data()));
     double h_scale = 1.0;
     for (const double d : h_diagonal) {
       h_scale = std::max(h_scale, std::abs(d));
     }
-    // r / (theta - diag), diag (0, diag(H)), the denominator off zero.
+    // r / (theta - (0, diag(H + D))), the denominator off zero, on the device:
+    // theta goes by value, so a Davidson iteration's correction neither
+    // allocates nor syncs.
     const auto precondition = [&](DeviceResources &r, std::span<const double> theta,
                                   const double *residual, double *correction) -> Status {
-      const size_t columns = theta.size();
-      std::vector<double> inverse(static_cast<size_t>(m) * columns);
-      for (size_t col = 0; col < columns; ++col) {
-        for (size_t i = 0; i < static_cast<size_t>(m); ++i) {
-          double d = theta[col] - (i == 0 ? 0.0 : h_diagonal[i - 1]);
-          if (std::abs(d) < kAhDenominatorFloor) {
-            d = d < 0.0 ? -kAhDenominatorFloor : kAhDenominatorFloor;
-          }
-          inverse[(col * static_cast<size_t>(m)) + i] = 1.0 / d;
-        }
-      }
-      Buffers::device<double> inverse_device(inverse.size(), r.device());
-      FBF_TRY(casscf_upload(r, inverse, inverse_device.data()));
-      for (size_t col = 0; col < columns; ++col) {
+      for (size_t col = 0; col < theta.size(); ++col) {
         const size_t at = col * static_cast<size_t>(m);
-        FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(r.blas().get(), wwr::WWRBLAS_SIDE_LEFT, m, 1,
-                                                      residual + at, m, inverse_device.data() + at,
-                                                      1, correction + at, m)));
+        FBF_TRY(gpu_status(device::ah_precondition(r.stream(), m, theta[col], kAhDenominatorFloor,
+                                                   ah_diagonal.data(), residual + at,
+                                                   correction + at)));
       }
       return {};
     };
@@ -415,18 +434,28 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     std::ranges::fill(x_total, 0.0);
     std::ranges::fill(hx_total, 0.0);
     for (int32_t micro = 1; micro <= options.max_micro; ++micro) {
-      FBF_TRY(casscf_upload(res, g_model, model_gradient.data()));
-      FBF_TRY(casscf_upload(res, unit, ah_guess.data()));
-      AugmentedHessian op{
-          hessian, model_gradient.data(), response_device.data(), scale_device.data(), rank,
-          n_pairs};
+      // Not waited for: g_model is next written after the readback below,
+      // whose sync on this stream follows the copy.
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(model_gradient.data(), g_model.data(),
+                                             pairs * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                             stream)));
+      AugmentedHessian op{hessian,
+                          model_gradient.data(),
+                          response_device.data(),
+                          scale_device.data(),
+                          rank,
+                          n_pairs,
+                          ah_columns,
+                          ah_xs.data(),
+                          ah_ys.data(),
+                          ah_rv.data()};
       const double g_model_norm = std::sqrt(casscf_dot(g_model, g_model));
       DavidsonOptions ah;
       ah.residual_tolerance = std::clamp(kAhPerGradient * g_model_norm / h_scale, 1e-14, 1e-4);
       ah.max_iterations = kAhMaxIterations;
-      const auto info = davidson_solve<double>(
-          res, op, precondition, m, 1, std::max(2, std::min(m, kAhMaxSubspace)), ah_guess.data(), 1,
-          ah_value.data(), ah_vector.data(), ah);
+      const auto info =
+          davidson_solve<double>(res, op, precondition, m, 1, ah_columns, ah_guess.data(), 1,
+                                 ah_pair.data() + m, ah_pair.data(), ah);
       record.hessian_products += op.products;
       // Out of iterations or of new directions, the last Ritz pair still
       // gives a step of the model, and the energy test guards it.
@@ -434,8 +463,10 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
           info.error().kind != ErrorKind::Divergence) {
         return std::unexpected{info.error()};
       }
-      const std::vector<double> lambda = FBF_TRY(casscf_download(res, ah_value.data(), 1));
-      const std::vector<double> v = FBF_TRY(casscf_download(res, ah_vector.data(), unit.size()));
+      const std::vector<double> pair =
+          FBF_TRY(casscf_download(res, ah_pair.data(), static_cast<size_t>(m) + 1));
+      const std::span<const double> v{pair.data(), static_cast<size_t>(m)};
+      const double lambda = pair[static_cast<size_t>(m)];
       if (v[0] == 0.0) {
         return err_numerical("casscf_solve: the augmented Hessian's lowest root has no "
                              "component along the gradient (macro iteration {})",
@@ -450,7 +481,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
       const double s = dx_norm > remaining ? remaining / dx_norm : 1.0;
       // H dx = lambda dx - g_model, the root's own equation.
       for (size_t i = 0; i < pairs; ++i) {
-        const double hdx = s * ((lambda[0] * dx[i]) - g_model[i]);
+        const double hdx = s * ((lambda * dx[i]) - g_model[i]);
         x_total[i] += s * dx[i];
         hx_total[i] += hdx;
         g_model[i] += hdx;
