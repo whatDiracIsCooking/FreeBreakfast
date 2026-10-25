@@ -24,6 +24,10 @@ namespace fb = free_breakfast;
 constexpr double kEnergyTol = 1e-8;
 constexpr double kSpinTol = 1e-8;
 constexpr double kRdmTol = 1e-8;
+// ci_solve's options each solve runs under: (olsen_correction,
+// davidson.canonical_orthonormalization), the defaults first.
+constexpr std::array<std::pair<bool, bool>, 3> kSolverVariants{
+    {{false, false}, {true, false}, {false, true}}};
 
 // host_sigma as a LinearOperator: each column copied to the host, through
 // host_sigma, and back.
@@ -202,11 +206,13 @@ TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
     ASSERT_LT(golden_of_spin(c.roots, 2.0).front(), singlets[1]);
 
     const auto diagonal = on_device(res, c.diagonal);
-    for (const bool olsen : {false, true}) {
-      SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+    for (const auto [olsen, canonical] : kSolverVariants) {
+      SCOPED_TRACE(
+          std::format("olsen_correction {}, canonical_orthonormalization {}", olsen, canonical));
       HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
       fb::CiSolverOptions options;
       options.olsen_correction = olsen;
+      options.davidson.canonical_orthonormalization = canonical;
       const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
       ASSERT_TRUE(got.has_value()) << got.error().message;
       EXPECT_EQ(sigma.applies, got->davidson.iterations);
@@ -227,10 +233,12 @@ TEST(CiSolver, LowestTripletsFromTheMsOneSector) {
     SCOPED_TRACE(c.name);
     HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
     const auto diagonal = on_device(res, c.diagonal);
-    for (const bool olsen : {false, true}) {
-      SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+    for (const auto [olsen, canonical] : kSolverVariants) {
+      SCOPED_TRACE(
+          std::format("olsen_correction {}, canonical_orthonormalization {}", olsen, canonical));
       fb::CiSolverOptions options;
       options.olsen_correction = olsen;
+      options.davidson.canonical_orthonormalization = canonical;
       const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
       ASSERT_TRUE(got.has_value()) << got.error().message;
       expect_roots(res, c, *got, 2.0);
@@ -248,11 +256,13 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   const Case c = make_case(cases[0]);
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
   const auto diagonal = on_device(res, c.diagonal);
-  for (const bool olsen : {false, true}) {
-    SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+  for (const auto [olsen, canonical] : kSolverVariants) {
+    SCOPED_TRACE(
+        std::format("olsen_correction {}, canonical_orthonormalization {}", olsen, canonical));
     fb::CiSolverOptions options;
     options.spin_penalty = 0.0;
     options.olsen_correction = olsen;
+    options.davidson.canonical_orthonormalization = canonical;
     const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
     ASSERT_TRUE(got.has_value()) << got.error().message;
     bool triplet = false;
@@ -305,11 +315,13 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
       const std::set<fb::CiLayout> layout{shift == 0 ? fb::CiLayout::symmetric
                                                      : fb::CiLayout::full};
 
-      for (const bool olsen : {false, true}) {
-        SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+      for (const auto [olsen, canonical] : kSolverVariants) {
+        SCOPED_TRACE(
+            std::format("olsen_correction {}, canonical_orthonormalization {}", olsen, canonical));
         RecordingSigma recorded{*sigma, {}};
         fb::CiSolverOptions options;
         options.olsen_correction = olsen;
+        options.davidson.canonical_orthonormalization = canonical;
         const auto two_stage =
             fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
         ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
@@ -342,12 +354,14 @@ TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   ASSERT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
   const auto diagonal = on_device(res, c.diagonal);
-  for (const bool olsen : {false, true}) {
-    SCOPED_TRACE(std::format("olsen_correction {}", olsen));
+  for (const auto [olsen, canonical] : kSolverVariants) {
+    SCOPED_TRACE(
+        std::format("olsen_correction {}, canonical_orthonormalization {}", olsen, canonical));
     RecordingSigma recorded{*sigma, {}};
     fb::CiSolverOptions options;
     options.spin_penalty = 0.0;
     options.olsen_correction = olsen;
+    options.davidson.canonical_orthonormalization = canonical;
     const auto got = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
     ASSERT_TRUE(got.has_value()) << got.error().message;
     EXPECT_EQ(recorded.layouts, std::set<fb::CiLayout>{fb::CiLayout::full});

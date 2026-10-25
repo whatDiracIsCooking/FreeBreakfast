@@ -16,7 +16,8 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
-import free_breakfast.ci.sigma; // CiLayout
+import free_breakfast.ci.sigma;              // CiLayout
+import free_breakfast.recipes.orthogonalize; // orthonormalize
 
 #include "diagnostics.h"
 
@@ -219,7 +220,7 @@ Status ci_precondition(DeviceResources &res, const int32_t n, const std::span<co
 }
 
 Status ci_guesses(DeviceResources &res, const int32_t n, const int32_t count,
-                  const double *const diagonal, double *const guess) {
+                  const double *const diagonal, double *const guess, const bool canonical) {
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -229,6 +230,18 @@ Status ci_guesses(DeviceResources &res, const int32_t n, const int32_t count,
   FBF_TRY(gpu_status(device::ci_lowest(stream, n, diagonal, count, partial_values.data(),
                                        partial_index.data(), picks.data())));
   FBF_TRY(gpu_status(device::ci_guess(stream, n, count, picks.data(), guess)));
+
+  if (canonical) {
+    // Orthonormalized as a block. Unit vectors on distinct determinants plus
+    // a 1e-3 spread are independent by construction, so only a bug drops
+    // one: the floor is zero, leaving orthonormalize's own rounding cut.
+    const int32_t kept = FBF_TRY(orthonormalize<double>(res, n, count, guess, 0.0));
+    if (kept != count) {
+      return err_numerical("ci_guesses: {} of {} guess columns were linearly dependent",
+                           count - kept, count);
+    }
+    return {};
+  }
 
   // Modified Gram-Schmidt, twice, of each column against the ones before;
   // the dots and norms come back as host scalars.

@@ -130,7 +130,11 @@ columns (at least 2 · n_roots, at most dim). All of it is on the device: the
 lowest determinants by 2 · n_roots argmin passes over diag(H) (each the least
 (value, address) above the last, so ties go to the lower address, as a stable
 sort's would, without sorting dim values), the spread by a hash kernel, and
-the orthonormalization by modified Gram-Schmidt, twice, over the BLAS.
+the orthonormalization by modified Gram-Schmidt, twice, over the BLAS, or,
+with `davidson.canonical_orthonormalization` (below), by `orthonormalize`
+(`../../recipes/orthogonalize/`), with no host round trip per pair. The
+columns are independent by construction, so `ci_guesses` returns
+`Numerical` if `orthonormalize` ever drops one.
 
 **A singlet solve runs on packed vectors.** When the sigma takes a
 `CiLayout`, the two sets are one (N_α = N_β), the penalty is on and n_roots
@@ -279,6 +283,44 @@ the parent's by at most 1.3e-12 on the 3080 (5.5e-13 FP64-only) and 1.1e-11 on
 the gfx1200 (2.5e-12 FP64-only). That is within the parent's own spread across
 its solve modes, 2.4e-12 and 5.3e-11.
 
+**Canonical orthonormalization is an option, off by default.**
+`davidson.canonical_orthonormalization` orthonormalizes the guesses and each
+iteration's new corrections as a block, by `orthonormalize` (canonical
+orthogonalization over a Gram matrix, one syevd and a sync, then a
+Newton–Schulz step or a second canonical pass), in place of Gram–Schmidt's
+norm sync per column. Per iteration it is even: `bench/ci_sigma_precision`
+(same conditions as above, parent 4e21392 → the option on, the "on" binary
+being the pre-option build in which it always was), the FP64-only solves,
+which take the same iteration counts to within a few, sum to 51.6 → 51.8 s
+on the 3080 and 133.1 → 133.8 s on the gfx1200. The two-stage solves take a
+different rounding path, and their FP32 stage, at its noise floor, moves by
+several iterations either way. One of them, CAS(12,12) at 1.0977 Å,
+symmetric, `fp32_tolerance` 1e-7, stalls its FP32 stage for all 400
+iterations on both cards (51 in the parent), which makes the option slower on
+balance: 126.2 → 131.1 s over the 3080's 28 solves, 199.4 → 231.7 s over the
+21 the gfx1200's parent converges. Without that solve it is 1% slower on
+each card. On the gfx1200 it converges one solve whose FP64 stage stalls in
+the parent (#318), CAS(12,12) at 2.0 Å, symmetric, 1e-4, in 58 + 149
+iterations (25.6 s), and adds no new `Divergence`; the other six stall as
+before, so the Gram–Schmidt is not what stalls them. The energies differ from
+the parent's by at most 1.4e-12 on the 3080 (3.7e-13 FP64-only) and 1.1e-11
+on the gfx1200 (3.1e-12 FP64-only), within the parent's own spread across
+solve modes, 2.8e-12 and 5.6e-11. With the option off, both are the
+Gram–Schmidt they always were: on the two CAS(10,10) cases, 7 solves each,
+every root energy to 15 decimals and every iteration count matched the
+parent's on both cards.
+
+| | | full, FP64-only | symmetric, FP64-only | two-stage 1e-6 | two-stage 1e-7 |
+|---|---|---|---|---|---|
+| CAS(10,10), 1.0977 Å | 3080 | 0.81 → 0.80 s (112 → 112) | 0.39 → 0.39 s (108 → 108) | 0.31 → 0.32 s (46+60 → 45+65) | 0.31 → 0.34 s (56+57 → 60+57) |
+|  | gfx1200 | 2.01 → 2.11 s (112 → 112) | 0.95 → 0.96 s (108 → 108) | 0.89 → 0.92 s (47+60 → 45+66) | 0.90 → 0.97 s (56+53 → 60+57) |
+| CAS(12,12), 1.0977 Å | 3080 | 11.5 → 11.6 s (99 → 106) | 5.24 → 5.31 s (91 → 91) | 3.69 → 3.97 s (47+61 → 53+57) | 3.75 → 7.58 s (51+55 → 400+55) |
+|  | gfx1200 | 31.4 → 31.7 s (119 → 115) | 12.7 → 12.7 s (91 → 91) | Divergence in both | 13.3 → 43.9 s (51+59 → 400+56) |
+| CAS(10,10), 2.0 Å | 3080 | 1.22 → 1.20 s (206 → 205) | 0.74 → 0.73 s (210 → 209) | 0.61 → 0.60 s (103+108 → 103+110) | 0.58 → 0.57 s (122+87 → 121+90) |
+|  | gfx1200 | 3.43 → 3.45 s (206 → 205) | 1.84 → 1.83 s (212 → 208) | 1.74 → 1.77 s (103+108 → 103+109) | 1.72 → 1.75 s (122+88 → 121+90) |
+| CAS(12,12), 2.0 Å | 3080 | 21.7 → 21.8 s (195 → 202) | 10.0 → 10.1 s (192 → 191) | 7.16 → 7.05 s (90+103 → 81+105) | 6.99 → 6.80 s (112+97 → 94+96) |
+|  | gfx1200 | 54.2 → 54.9 s (208 → 211) | 26.6 → 26.0 s (201 → 195) | Divergence in both | 23.3 → 23.8 s (113+92 → 106+99) |
+
 **Nothing of dim size touches the host.** The penalty and the preconditioner
 run on the device, so no block leaves it during the Davidson. On the host
 each cost a block's round trip and a sync per call, and a single-threaded S²
@@ -316,7 +358,8 @@ there has a triplet below its second singlet, so the spin control is exercised:
   full for the triplets;
 - over `CiSigma` with λ = 0, the full layout and a triplet among the lowest
   three;
-- every solve above, with `olsen_correction` off and on;
+- every solve above, with `olsen_correction` off and on, and with
+  `davidson.canonical_orthonormalization` on;
 - `MaxIterationsExceeded` when given two iterations;
 - the refusals;
 - `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on

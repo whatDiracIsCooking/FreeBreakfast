@@ -15,6 +15,7 @@ import free_breakfast.core.log;
 import free_breakfast.core.wwr; // BLAS, wwrMemcpy2DAsync, ScopedPointerMode, CreatePolicy
 import free_breakfast.core.resources;
 import free_breakfast.recipes.diagonalize;
+import free_breakfast.recipes.orthogonalize; // orthonormalize
 export import free_breakfast.recipes.linear_operator;
 
 #include "diagnostics.h"
@@ -29,11 +30,19 @@ struct DavidsonOptions {
   double residual_tolerance = 1e-8;
   /// @brief Subspace expansions before giving up. At least 1.
   int32_t max_iterations = 100;
-  /// @brief A re-orthogonalized correction at or below this norm has nothing
-  /// left outside the subspace and is dropped. Kept well below
+  /// @brief A re-orthogonalized correction (or, with
+  /// canonical_orthonormalization, a mode of the block of them) at or below
+  /// this norm has nothing left outside the subspace and is dropped. Kept well
+  /// below
   /// residual_tolerance: a nearly converged root's correction shrinks with its
   /// residual, and a floor near the tolerance would drop real new directions.
   double linear_dependence_floor = 1e-12;
+  /// @brief Orthonormalize the new corrections among themselves as one block,
+  /// by orthonormalize (canonical orthogonalization), instead of by
+  /// Gram-Schmidt, a norm sync per correction. Off by default: even per
+  /// iteration, but over the README's N2 bench it took different iteration
+  /// paths that were slower on balance. ci_solve's guesses follow it too.
+  bool canonical_orthonormalization = false;
 };
 
 /// @brief What a converged davidson_solve did.
@@ -75,10 +84,12 @@ concept DavidsonPreconditioner =
 /// Everything is queued on res.stream() with res.blas() held in host pointer
 /// mode, including the @p op and @p precondition calls. Each iteration
 /// synchronizes the stream to read the Ritz values, once for all the residual
-/// norms, and once per correction kept, for its norm. The
-/// subspace lives in pool buffers of the call's own, allocated on entry: @p op
-/// and @p precondition may take res.device_workspace(), and diagonalize takes
-/// it for syevd. The device res.dev_idx() names is made current for the call.
+/// norms, and once per correction kept, for its norm (with
+/// canonical_orthonormalization, twice or four times in orthonormalize
+/// instead). The subspace lives in pool buffers of the call's own, allocated
+/// on entry: @p op and @p precondition may take res.device_workspace(),
+/// diagonalize takes it for syevd and orthonormalize for its product. The
+/// device res.dev_idx() names is made current for the call.
 ///
 /// @param op            Applied as op.apply(res, k, x, y). Must be symmetric.
 /// @param precondition  Turns residuals into corrections.
@@ -412,37 +423,56 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
           projection.data(), dim, &kOne<T>, correction.data(), n)));
     }
 
-    // 8. Gram-Schmidt of the unconverged corrections against each other,
-    //    each survivor normalized and appended to V. A candidate is projected
-    //    off the ones accepted before it, contiguous in V, by two gemvs a pass
-    //    and two passes, so the overlaps stay on the device and only the norm
-    //    comes back.
+    // 8. The unconverged corrections among themselves, each survivor
+    //    normalized and appended to V.
     int32_t kept = 0;
-    for (size_t i = 0; i < roots; ++i) {
-      if (converged[i]) {
-        continue;
+    if (options.canonical_orthonormalization) {
+      // Appended to V and orthonormalized there as a block by
+      // orthonormalize, which compacts the survivors to the front. A
+      // correction at or below the floor, or a mode of them that is, adds
+      // nothing and is dropped.
+      int32_t candidates = 0;
+      for (size_t i = 0; i < roots; ++i) {
+        if (converged[i]) {
+          continue;
+        }
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(
+            v.data() + (static_cast<size_t>(dim + candidates) * nz), correction.data() + (i * nz),
+            nz * sizeof(T), wwr::wwrMemcpyDeviceToDevice, stream)));
+        ++candidates;
       }
-      T *candidate = correction.data() + (i * nz);
-      const T *const accepted = v.data() + (static_cast<size_t>(dim) * nz);
-      for (int32_t pass = 0; kept > 0 && pass < 2; ++pass) {
-        FBF_TRY(
-            gpu_status(wwr::gemv<T, int32_t>(blas, wwr::WWRBLAS_OP_T, n, kept, &kOne<T>, accepted,
-                                             n, candidate, 1, &kZero<T>, overlaps.data(), 1)));
-        FBF_TRY(gpu_status(wwr::gemv<T, int32_t>(blas, wwr::WWRBLAS_OP_N, n, kept, &kNegOne<T>,
-                                                 accepted, n, overlaps.data(), 1, &kOne<T>,
-                                                 candidate, 1)));
+      kept = FBF_TRY(
+          orthonormalize<T>(res, n, candidates, v.data() + (static_cast<size_t>(dim) * nz), floor));
+    } else {
+      // Gram-Schmidt: a candidate is projected off the ones accepted before
+      // it, contiguous in V, by two gemvs a pass and two passes, so the
+      // overlaps stay on the device and only the norm comes back.
+      for (size_t i = 0; i < roots; ++i) {
+        if (converged[i]) {
+          continue;
+        }
+        T *candidate = correction.data() + (i * nz);
+        const T *const accepted = v.data() + (static_cast<size_t>(dim) * nz);
+        for (int32_t pass = 0; kept > 0 && pass < 2; ++pass) {
+          FBF_TRY(
+              gpu_status(wwr::gemv<T, int32_t>(blas, wwr::WWRBLAS_OP_T, n, kept, &kOne<T>, accepted,
+                                               n, candidate, 1, &kZero<T>, overlaps.data(), 1)));
+          FBF_TRY(gpu_status(wwr::gemv<T, int32_t>(blas, wwr::WWRBLAS_OP_N, n, kept, &kNegOne<T>,
+                                                   accepted, n, overlaps.data(), 1, &kOne<T>,
+                                                   candidate, 1)));
+        }
+        T norm{};
+        FBF_TRY(gpu_status(wwr::nrm2<T, int32_t>(blas, n, candidate, 1, &norm)));
+        if (norm <= floor) {
+          continue;
+        }
+        const T inv_norm = T{1} / norm;
+        FBF_TRY(gpu_status(wwr::scal<T, int32_t>(blas, n, &inv_norm, candidate, 1)));
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data() + (static_cast<size_t>(dim + kept) * nz),
+                                               candidate, nz * sizeof(T),
+                                               wwr::wwrMemcpyDeviceToDevice, stream)));
+        ++kept;
       }
-      T norm{};
-      FBF_TRY(gpu_status(wwr::nrm2<T, int32_t>(blas, n, candidate, 1, &norm)));
-      if (norm <= floor) {
-        continue;
-      }
-      const T inv_norm = T{1} / norm;
-      FBF_TRY(gpu_status(wwr::scal<T, int32_t>(blas, n, &inv_norm, candidate, 1)));
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data() + (static_cast<size_t>(dim + kept) * nz),
-                                             candidate, nz * sizeof(T),
-                                             wwr::wwrMemcpyDeviceToDevice, stream)));
-      ++kept;
     }
     if (kept == 0) {
       FBF_TRY(write_eigenvalues());

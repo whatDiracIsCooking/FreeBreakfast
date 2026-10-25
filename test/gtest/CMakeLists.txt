@@ -98,6 +98,7 @@ add_executable(
   scoped_device_index_gpu.cpp
   diagonalize_gpu.cpp
   orthogonalize_gpu.cpp
+  orthonormalize_gpu.cpp
   diis_gpu.cpp
   expm_gpu.cpp
   cg_unitary_gpu.cpp

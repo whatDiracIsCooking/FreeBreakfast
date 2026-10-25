@@ -1,5 +1,6 @@
 /// @file
-/// @brief orthogonalize, and its float / double instantiations.
+/// @brief orthogonalize and orthonormalize, and their float / double
+/// instantiations.
 
 module;
 
@@ -11,6 +12,7 @@ module free_breakfast.recipes.orthogonalize;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr;
@@ -102,7 +104,118 @@ Status orthogonalize(DeviceResources &res, const int32_t n, const T *s, T *x,
       gmmwich<wwr::WWRBLAS_OP_T>(res.blas(), n, u.data(), eigenvalues.data(), m.data(), x));
 }
 
+template <real_fp T>
+Result<int32_t> orthonormalize(DeviceResources &res, const int32_t n, const int32_t k, T *const v,
+                               const T floor) {
+  if (k < 0 || (k > 0 && n < 1)) {
+    return err_config("orthonormalize: needs k >= 0, and n >= 1 when k > 0 (n = {}, k = {})", n, k);
+  }
+  if (k == 0) {
+    return 0;
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t, CreatePolicy<wwr::wwrblasStatus_t>>
+      host_scalars{blas, wwr::WWRBLAS_POINTER_MODE_HOST};
+  const auto nz = static_cast<size_t>(n);
+  const auto kz = static_cast<size_t>(k);
+
+  // G (then its eigenvectors U), the eigenvalues and D are held across
+  // diagonalize, which takes the workspace for syevd, so they are the call's
+  // own: one pool buffer, freed on the stream after the gemm that reads U.
+  Buffers::device<T> small(kz * kz + (2 * kz), res.device());
+  T *const g = small.data();
+  T *const lambda = g + (kz * kz);
+  T *const d = lambda + kz;
+  std::vector<T> lambda_host(kz);
+
+  // G = V^T V over v's first m columns, a gemv per column of G. Not a gemm:
+  // cuBLAS runs an m x m output over a reduction of n ~ 1e5 rows on one
+  // output tile, about 200 us on the 3080 for m = 3 against 4 us a gemv, and
+  // syrk, which tiles only the output, took 10-20 ms.
+  const auto gram = [&](const int32_t m) -> Status {
+    for (int32_t j = 0; j < m; ++j) {
+      FBF_TRY(gpu_status(wwr::gemv<T, int32_t>(
+          blas, wwr::WWRBLAS_OP_T, n, m, &kOne<T>, v, n, v + (static_cast<size_t>(j) * nz), 1,
+          &kZero<T>, g + (static_cast<size_t>(j) * static_cast<size_t>(m)), 1)));
+    }
+    return {};
+  };
+
+  int32_t m = k; // the columns this pass orthonormalizes
+  for (int32_t pass = 0; pass < 2 && m > 0; ++pass) {
+    const auto mz = static_cast<size_t>(m);
+    // 1. G = V^T V.
+    FBF_TRY(gram(m));
+    // 2. D = diag(G)^{-1/2}, a column of norm <= floor scaled to zero; then
+    //    G' = D G D, in place (each output element reads only its own input).
+    FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(d, sizeof(T), g, (mz + 1) * sizeof(T), sizeof(T), mz,
+                                             wwr::wwrMemcpyDeviceToDevice, stream)));
+    FBF_TRY(gpu_status(device::inverse_sqrt<T>(stream, m, d, floor * floor)));
+    FBF_TRY(
+        gpu_status(wwr::dgmm<T, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, m, m, g, m, d, 1, g, m)));
+    FBF_TRY(
+        gpu_status(wwr::dgmm<T, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, m, m, g, m, d, 1, g, m)));
+    // 3. G' = U Lambda U^T (a sync), and Lambda read back to count the kept
+    //    modes: the top of the ascending spectrum. The stream is idle, so the
+    //    copy waits on nothing else.
+    FBF_TRY(diagonalize<T>(res, m, g, lambda));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(lambda_host.data(), lambda, mz * sizeof(T),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    FBF_TRY(res.sync());
+    const T cut = std::max(floor * floor, static_cast<T>(m) * std::numeric_limits<T>::epsilon() *
+                                              lambda_host[mz - 1]);
+    const auto kept = static_cast<int32_t>(std::count_if(
+        lambda_host.begin(), lambda_host.begin() + m, [cut](T l) { return l > cut; }));
+    if (kept == 0) {
+      return 0;
+    }
+    // 4. U_kept <- D U_kept Lambda_kept^{-1/2}, then V U_kept into the
+    //    workspace and back over V's leading columns.
+    T *const u_kept = g + (static_cast<size_t>(m - kept) * mz);
+    T *const lambda_kept = lambda + (m - kept);
+    FBF_TRY(gpu_status(device::inverse_sqrt<T>(stream, kept, lambda_kept, T{0})));
+    FBF_TRY(gpu_status(
+        wwr::dgmm<T, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, m, kept, u_kept, m, d, 1, u_kept, m)));
+    FBF_TRY(gpu_status(wwr::dgmm<T, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, m, kept, u_kept, m,
+                                             lambda_kept, 1, u_kept, m)));
+    const auto [product] = res.device_regions<T>(nz * static_cast<size_t>(kept));
+    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, kept, m,
+                                             &kOne<T>, v, n, u_kept, m, &kZero<T>, product, n)));
+    const size_t kept_bytes = nz * static_cast<size_t>(kept) * sizeof(T);
+    FBF_TRY(gpu_status(
+        wwr::wwrMemcpyAsync(v, product, kept_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
+    m = kept;
+
+    // 5. The second pass. This one leaves Q^T Q = I + E, ||E|| ~ kappa
+    //    epsilon, kappa = lambda_max / lambda_min over the kept modes. When
+    //    that is below sqrt(epsilon) with room to spare, no mode can drop
+    //    again, and one Newton-Schulz step, Q <- Q (3 I - Q^T Q) / 2, leaves
+    //    O(E^2), rounding: gemvs and a gemm, no sync or syevd, where a canonical
+    //    pass costs both (7% of ci_solve's wall time at CAS(10,10) on the
+    //    3080). Davidson's correction blocks have a median kappa near 16.
+    const T eps = std::numeric_limits<T>::epsilon();
+    const T kappa = lambda_host[mz - 1] / lambda_host[mz - static_cast<size_t>(kept)];
+    if (pass == 0 && kappa * eps <= T{1e-2} * std::sqrt(eps)) {
+      const T neg_half{-0.5};
+      const T three_halves{1.5};
+      FBF_TRY(gram(m));
+      // product still holds Q: product <- 3/2 Q - 1/2 Q (Q^T Q).
+      FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, m, m,
+                                               &neg_half, v, n, g, m, &three_halves, product, n)));
+      FBF_TRY(gpu_status(
+          wwr::wwrMemcpyAsync(v, product, kept_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
+      return m;
+    }
+  }
+  return m;
+}
+
 template Status orthogonalize<float>(DeviceResources &, int32_t, const float *, float *, float);
 template Status orthogonalize<double>(DeviceResources &, int32_t, const double *, double *, double);
+template Result<int32_t> orthonormalize<float>(DeviceResources &, int32_t, int32_t, float *, float);
+template Result<int32_t> orthonormalize<double>(DeviceResources &, int32_t, int32_t, double *,
+                                                double);
 
 } // namespace free_breakfast
