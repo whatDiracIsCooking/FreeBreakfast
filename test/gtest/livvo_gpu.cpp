@@ -49,10 +49,12 @@ constexpr std::string_view kNitrogen = "2\nN2\n"
                                        "N 0.0 0.0 0.0\n"
                                        "N 0.0 0.0 1.0977\n";
 
-std::vector<double> download(const double *device, std::size_t count) {
+std::vector<double> download(fb::DeviceResources &res, const double *device, std::size_t count) {
   std::vector<double> host(count);
-  EXPECT_EQ(wwr::wwrMemcpy(host.data(), device, sizeof(double) * count, wwr::wwrMemcpyDeviceToHost),
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), device, sizeof(double) * count,
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
             wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
   return host;
 }
 
@@ -130,7 +132,7 @@ std::vector<double> build_vvos(fb::DeviceResources &res, const fb::BasisSet &bas
       fb::valence_virtual_orbitals(res, basis, minao, n_occ, s, c, iao.data(), vvo.data());
   EXPECT_TRUE(made.has_value()) << made.error().message;
   EXPECT_TRUE(res.sync().has_value());
-  return download(vvo.data(), n * n_vvo);
+  return download(res, vvo.data(), n * n_vvo);
 }
 
 struct Case {
@@ -170,8 +172,8 @@ TEST_P(Livvo, AreTheOrthonormalVirtualHalfOfTheIaoSpan) {
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
   const std::vector<double> v =
       build_vvos(res, basis->basis, *minao, k, overlap->s.data(), scf->c.data());
-  const std::vector<double> s = download(overlap->s.data(), n * n);
-  const std::vector<double> c = download(scf->c.data(), n * n);
+  const std::vector<double> s = download(res, overlap->s.data(), n * n);
+  const std::vector<double> c = download(res, scf->c.data(), n * n);
 
   // V^T S V = I.
   const std::vector<double> vsv = overlap_of(v, s, v, n, n_vvo, n_vvo);
@@ -278,9 +280,9 @@ TEST(Livvo, WaterLocalizesIntoTwoMirrorImageSigmaStarOh) {
   ASSERT_TRUE(info.has_value()) << info.error().message;
   EXPECT_GE(info->functional, info->initial_functional);
 
-  const std::vector<double> s = download(s_dev, n * n);
-  const std::vector<double> c = download(c_dev, n * n);
-  const std::vector<double> l = download(livvo.data(), n * n_vvo);
+  const std::vector<double> s = download(res, s_dev, n * n);
+  const std::vector<double> c = download(res, c_dev, n * n);
+  const std::vector<double> l = download(res, livvo.data(), n * n_vvo);
 
   // L^T S L = I and C_occ^T S L = 0.
   const std::vector<double> lsl = overlap_of(l, s, l, n, n_vvo, n_vvo);

@@ -309,13 +309,14 @@ TEST_P(CoulombPairClassesPrune, KeepsTheHostPrunesRecords) {
       ASSERT_EQ(out.la, src.la) << tau;
       ASSERT_EQ(out.lb, src.lb) << tau;
       ASSERT_EQ(static_cast<std::size_t>(out.n_rec), keep[c].size()) << tau;
-      ASSERT_EQ(wwr::wwrStreamSynchronize(out.device_stream()->stream()), wwr::wwrSuccess);
+      const wwr::wwrStream_t stream = out.device_stream()->stream();
       const auto check = [&](const char *name, const auto &got, const auto &want) {
         using T = std::remove_cvref_t<decltype(want)>::value_type;
         std::vector<T> host(keep[c].size());
-        ASSERT_EQ(wwr::wwrMemcpy(host.data(), got.data(), sizeof(T) * host.size(),
-                                 wwr::wwrMemcpyDeviceToHost),
+        ASSERT_EQ(wwr::wwrMemcpyAsync(host.data(), got.data(), sizeof(T) * host.size(),
+                                      wwr::wwrMemcpyDeviceToHost, stream),
                   wwr::wwrSuccess);
+        ASSERT_EQ(wwr::wwrStreamSynchronize(stream), wwr::wwrSuccess);
         for (std::size_t r = 0; r < host.size(); ++r) {
           ASSERT_EQ(host[r], want[static_cast<std::size_t>(keep[c][r])])
               << name << " of class (" << out.la << ", " << out.lb << ") record " << r << ", tau "

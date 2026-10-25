@@ -64,10 +64,12 @@ const fb::json &reference_case(std::string_view name) {
   return kNone;
 }
 
-std::vector<double> download(const double *data, std::size_t count) {
+std::vector<double> download(fb::DeviceResources &res, const double *data, std::size_t count) {
   std::vector<double> host(count);
-  EXPECT_EQ(wwr::wwrMemcpy(host.data(), data, sizeof(double) * count, wwr::wwrMemcpyDeviceToHost),
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), data, sizeof(double) * count,
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
             wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
   return host;
 }
 
@@ -256,8 +258,9 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   ASSERT_TRUE(order.has_value()) << order.error().message;
   const std::size_t nao = basis->basis.nao_sphe();
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  const std::vector<double> c = download(casci->c.data(), nao * nao);
-  const std::vector<double> scf_c = download(scf->c.data(), nao * nao);
+  fb::DeviceResources res(scf->c.dev_idx());
+  const std::vector<double> c = download(res, casci->c.data(), nao * nao);
+  const std::vector<double> scf_c = download(res, scf->c.data(), nao * nao);
   for (std::size_t col = 0; col < nao; ++col) {
     for (std::size_t mu = 0; mu < nao; ++mu) {
       ASSERT_EQ(c[(col * nao) + mu], scf_c[(static_cast<std::size_t>((*order)[col]) * nao) + mu])
