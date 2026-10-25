@@ -17,6 +17,9 @@ import free_breakfast.core.resources;
 // Re-exported: CiSolverOptions and CiRoots hold its options and info, and a
 // sigma is written against its LinearOperator.
 export import free_breakfast.recipes.davidson;
+// orthonormalize, for stage 2's start; its target comes PUBLIC through
+// recipes::davidson's.
+import free_breakfast.recipes.orthogonalize;
 import free_breakfast.ci.strings;
 // CiLayout and ci_unpack, for ci_solve's symmetric path.
 import free_breakfast.ci.sigma;
@@ -179,6 +182,12 @@ struct CiSolverOptions {
   /// over the diagonal M it is slower than the plain correction on most of
   /// the README's bench solves.
   bool olsen_correction = false;
+  /// @brief Start the FP64 stage from the FP32 stage's Ritz vectors X and
+  /// the iteration's before them, X_prev, orthonormalized together (nearly
+  /// dependent columns dropped), in place of X alone. Off by default: over
+  /// the README's N2 bench it was slower than X alone on most two-stage
+  /// solves.
+  bool restart_with_previous = false;
 };
 
 /// @brief The roots a ci_solve converged, ascending in energy.
@@ -347,8 +356,12 @@ template <LinearOperator<double> Op>
   // Running out of iterations or subspace there is no error, since stage 2
   // starts from whatever Ritz vectors it left. Stage 2 is the solve there
   // would be without stage 1, over apply to the caller's tolerance, only from
-  // those vectors (V S for an orthonormal V, so orthonormal) in place of the
-  // guesses.
+  // those vectors X (V S for an orthonormal V, so orthonormal) in place of
+  // the guesses. With options.restart_with_previous, from [X, X_prev] instead,
+  // X_prev the iteration's before X, orthonormalized, nearly dependent
+  // columns dropped, so the restart keeps stage 1's last search direction.
+  // X_prev is written into the guesses' second n_roots columns, which hold
+  // 2 · n_roots whenever the space does.
   int32_t fp32_iterations = 0;
   int32_t start_count = guess_count;
   if constexpr (requires { sigma.apply_fp32(res, n_roots, guess.data(), vectors.data()); }) {
@@ -356,9 +369,11 @@ template <LinearOperator<double> Op>
       DavidsonOptions loose = options.davidson;
       loose.residual_tolerance = options.fp32_tolerance;
       op.fp32 = true;
+      const bool with_previous = options.restart_with_previous && guess_count >= 2 * n_roots;
+      double *const previous = with_previous ? guess.data() + (length * roots) : nullptr;
       const auto stage =
           davidson_solve<double>(res, op, precondition, n, n_roots, max_subspace, guess.data(),
-                                 guess_count, values.data(), vectors.data(), loose);
+                                 guess_count, values.data(), vectors.data(), loose, previous);
       op.fp32 = false;
       if (!stage && stage.error().kind != ErrorKind::MaxIterationsExceeded &&
           stage.error().kind != ErrorKind::Divergence) {
@@ -369,6 +384,16 @@ template <LinearOperator<double> Op>
                                              length * roots * sizeof(double),
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
       start_count = n_roots;
+      if (with_previous) {
+        // X is orthonormal, so at least its n_roots columns survive.
+        start_count = FBF_TRY(orthonormalize<double>(res, n, 2 * n_roots, guess.data(),
+                                                     options.davidson.linear_dependence_floor));
+        if (start_count < n_roots) {
+          return err_numerical("ci_solve: orthonormalizing [X, X_prev] kept {} of {} columns, "
+                               "fewer than the {} roots",
+                               start_count, 2 * n_roots, n_roots);
+        }
+      }
     }
   }
 

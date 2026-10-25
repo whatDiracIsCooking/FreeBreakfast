@@ -13,7 +13,7 @@ written against.
 | Name | Role |
 |---|---|
 | `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options)` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2. A template over the sigma. |
-| `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12), `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off) and `olsen_correction` (Olsen's correction in place of the plain one; off) |
+| `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12), `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off), `olsen_correction` (Olsen's correction in place of the plain one; off) and `restart_with_previous` (the FP64 stage from [X, X_prev] in place of X; off) |
 | `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer in the full layout, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo` of the FP64 stage), `fp32_iterations` (the single-precision stage's, 0 when none ran) |
 | `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
 | `CiSpinSquare::create(res, alpha, beta)` | Upload S²'s tables; `Result<CiSpinSquare>` |
@@ -321,6 +321,51 @@ parent's on both cards.
 | CAS(12,12), 2.0 Å | 3080 | 21.7 → 21.8 s (195 → 202) | 10.0 → 10.1 s (192 → 191) | 7.16 → 7.05 s (90+103 → 81+105) | 6.99 → 6.80 s (112+97 → 94+96) |
 |  | gfx1200 | 54.2 → 54.9 s (208 → 211) | 26.6 → 26.0 s (201 → 195) | Divergence in both | 23.3 → 23.8 s (113+92 → 106+99) |
 
+**Restarting the FP64 stage from [X, X_prev] is an option, off by default.**
+With `restart_with_previous`, stage 1's `davidson_solve` also writes out the
+Ritz vectors of the iteration before its last, X_prev (its
+`previous_eigenvectors`, into the guesses' second n_roots columns), and
+stage 2 starts from `orthonormalize([X, X_prev])` (`../../recipes/orthogonalize/`),
+at most 2 · n_roots columns, a mode at or below
+`davidson.linear_dependence_floor` (or under the Gram matrix's rounding)
+dropped, in place of X alone. The argument for stage 2 above still holds:
+X and X_prev are each V S for an FP64-orthonormal V of stage 1's, the start
+is orthonormalized in FP64, and stage 2's operator, preconditioner and
+tolerance are unchanged; X_prev only widens where it starts. The
+orthonormalization's n × 2 n_roots product is the device workspace's,
+smaller than the sigma's unblocked scratch; `FciStep` leaves the option off,
+so its memory estimate is unchanged.
+
+It does not pay. On `bench/ci_sigma_precision` (same conditions as the
+tables above, parent 8e85883 → the option on, each card idle with both
+GPU slots held, the two run back to back in one hold) stage 2's iterations
+move both ways, by up to ~10 either way, and the extra n_roots FP64 columns
+of its first apply, and the earlier collapse they bring, cost about what
+the iterations save. Over the 3080's 20 two-stage solves it is 74.3 → 76.1 s
+(faster on 5), stage 2 1844 → 1822 iterations; over the 13 the gfx1200's
+parent converges, 66.4 → 67.0 s (faster on 7), 1185 → 1166. On the gfx1200
+it converges two CAS(12,12) 2.0 Å symmetric solves whose FP64 stage stalls
+in the parent (#318), `fp32_tolerance` 1e-4 in 34 + 160 iterations (24.3 s)
+and 1e-6 in 95 + 116 (24.6 s), and adds no new `Divergence`. The energies
+differ from the parent's by at most 1.8e-12 on the 3080 and 3.5e-11 on the
+gfx1200 (the FP64-only solves are untouched, to the bit), within the
+parent's own spread across solve modes, 2.8e-12 and 5.6e-11; a 1e-12
+criterion sits below that spread on both cards. With the option off, both
+stages are the parent's: on the two CAS(10,10) cases, 7 solves each, every
+root energy to 15 decimals and every iteration count matched the parent's
+on both cards.
+
+| | | full, FP64-only | symmetric, FP64-only | two-stage 1e-6 | two-stage 1e-7 |
+|---|---|---|---|---|---|
+| CAS(10,10), 1.0977 Å | 3080 | 0.81 → 0.81 s (112 → 112) | 0.39 → 0.40 s (108 → 108) | 0.31 → 0.31 s (46+60 → 46+55) | 0.31 → 0.31 s (56+57 → 56+52) |
+|  | gfx1200 | 2.26 → 2.11 s (112 → 112) | 0.95 → 0.95 s (108 → 108) | 0.89 → 0.88 s (47+60 → 47+58) | 0.89 → 0.83 s (56+53 → 56+44) |
+| CAS(12,12), 1.0977 Å | 3080 | 11.5 → 11.7 s (99 → 99) | 5.24 → 5.31 s (91 → 91) | 3.67 → 3.91 s (47+61 → 47+56) | 3.70 → 3.96 s (51+55 → 51+56) |
+|  | gfx1200 | 31.0 → 31.4 s (119 → 119) | 12.7 → 12.7 s (91 → 91) | Divergence in both | 13.3 → 14.5 s (51+59 → 51+69) |
+| CAS(10,10), 2.0 Å | 3080 | 1.20 → 1.22 s (206 → 206) | 0.73 → 0.74 s (210 → 210) | 0.60 → 0.59 s (103+108 → 103+98) | 0.57 → 0.59 s (122+87 → 122+90) |
+|  | gfx1200 | 3.44 → 3.42 s (206 → 206) | 1.84 → 1.84 s (212 → 212) | 1.74 → 1.69 s (103+108 → 103+100) | 1.72 → 1.73 s (122+88 → 122+88) |
+| CAS(12,12), 2.0 Å | 3080 | 21.6 → 21.9 s (195 → 195) | 10.0 → 10.1 s (192 → 192) | 7.15 → 7.45 s (90+103 → 90+108) | 6.99 → 7.22 s (112+97 → 112+105) |
+|  | gfx1200 | 54.0 → 54.3 s (208 → 208) | 26.6 → 26.6 s (201 → 201) | Divergence → 24.6 s (95+116) | 23.3 → 23.7 s (113+92 → 113+94) |
+
 **Nothing of dim size touches the host.** The penalty and the preconditioner
 run on the device, so no block leaves it during the Davidson. On the host
 each cost a block's round trip and a sync per call, and a single-threaded S²
@@ -359,7 +404,9 @@ there has a triplet below its second singlet, so the spin control is exercised:
 - over `CiSigma` with λ = 0, the full layout and a triplet among the lowest
   three;
 - every solve above, with `olsen_correction` off and on, and with
-  `davidson.canonical_orthonormalization` on;
+  `davidson.canonical_orthonormalization` on; the two-stage ones also with
+  `restart_with_previous`, whose FP64 stage's first apply then takes more
+  than the three columns of X it takes without;
 - `MaxIterationsExceeded` when given two iterations;
 - the refusals;
 - `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on

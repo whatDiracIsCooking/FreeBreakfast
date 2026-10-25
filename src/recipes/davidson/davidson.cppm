@@ -104,6 +104,11 @@ concept DavidsonPreconditioner =
 /// @param eigenvalues   Out: device, the n_roots lowest Ritz values, ascending.
 /// @param eigenvectors  Out: device, n x n_roots, leading dimension n, their
 ///                      Ritz vectors.
+/// @param previous_eigenvectors Out, when not null: device, n x n_roots,
+///                      leading dimension n, the previous iteration's Ritz
+///                      vectors X_prev, on every return that writes
+///                      @p eigenvectors; @p eigenvectors' own after the first
+///                      iteration, which has no previous. Null by default.
 /// @return The iteration count and final residual on convergence. Otherwise
 ///         InvalidConfig for a shape outside the bounds above;
 ///         MaxIterationsExceeded once max_iterations run out; Divergence when
@@ -111,13 +116,14 @@ concept DavidsonPreconditioner =
 ///         longer grow; or the first failing call's error, @p op's and
 ///         @p precondition's included. After MaxIterationsExceeded or
 ///         Divergence, @p eigenvalues and @p eigenvectors hold the last
-///         iteration's Ritz pairs.
+///         iteration's Ritz pairs, and @p previous_eigenvectors the one's
+///         before.
 template <real_fp T, LinearOperator<T> Op, DavidsonPreconditioner<T> Precondition>
 [[nodiscard]] Result<DavidsonInfo>
 davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, const int32_t n,
                const int32_t n_roots, const int32_t max_subspace, const T *guess,
                const int32_t guess_count, T *eigenvalues, T *eigenvectors,
-               const DavidsonOptions &options = {}) {
+               const DavidsonOptions &options = {}, T *previous_eigenvectors = nullptr) {
   if (n < 1 || n_roots < 1 || max_subspace < 2 * n_roots || guess_count < n_roots ||
       guess_count > max_subspace || options.max_iterations < 1) {
     return err_config("davidson_solve: needs n >= 1, n_roots >= 1, max_subspace >= 2 * n_roots, "
@@ -137,6 +143,8 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   // GD+k: a collapse keeps X_prev too when its up to 2 n_roots columns and a
   // full new block fit.
   const bool keep_previous = max_subspace >= 3 * n_roots;
+  // S_prev is tracked for the collapse, or for previous_eigenvectors.
+  const bool track_previous = keep_previous || previous_eigenvectors != nullptr;
 
   // The level-1 reductions write host results and every scalar is a host
   // value, so host pointer mode for the call; the previous mode is restored.
@@ -174,18 +182,39 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   std::vector<T> theta(roots);
   std::vector<T> residual_norms(roots);
   std::vector<bool> converged(roots);
-  // For the GD+k collapse, on the host: this iteration's S (its leading
-  // n_roots columns, all dim of them and the whole spectrum when collapsing),
-  // and the last iteration's leading columns S_prev, prev_rows x n_roots: X_prev
-  // = V S_prev, because V only grows between collapses. prev_rows is 0 before
-  // the first. y_host and m_host hold the collapse's uploads (Y's columns past
-  // X, and their block of Y^T H Y) until the stream has read them.
-  std::vector<T> s_now(keep_previous ? columns * columns : 0);
+  // For the GD+k collapse and previous_eigenvectors, on the host: this
+  // iteration's S (its leading n_roots columns, all dim of them and the whole
+  // spectrum when collapsing), and the last iteration's leading columns
+  // S_prev, prev_rows x n_roots: X_prev = V S_prev, because V only grows
+  // between collapses. prev_rows is 0 before the first. y_host and m_host hold
+  // the collapse's uploads (Y's columns past X, and their block of Y^T H Y)
+  // until the stream has read them.
+  std::vector<T> s_now(keep_previous ? columns * columns : (track_previous ? columns * roots : 0));
   std::vector<T> spectrum(keep_previous ? columns : 0);
-  std::vector<T> s_prev(keep_previous ? columns * roots : 0);
+  std::vector<T> s_prev(track_previous ? columns * roots : 0);
   int32_t prev_rows = 0;
   std::vector<T> y_host(keep_previous ? columns * roots : 0);
   std::vector<T> m_host(keep_previous ? roots * roots : 0);
+  // X_prev = V S_prev into previous_eigenvectors, or X itself before there is
+  // a previous iteration. Valid until a collapse rewrites V or S_prev moves
+  // on, so a collapsing iteration writes it first.
+  const auto write_previous = [&]() -> Status {
+    if (previous_eigenvectors == nullptr) {
+      return {};
+    }
+    if (prev_rows == 0) {
+      return gpu_status(wwr::wwrMemcpyAsync(previous_eigenvectors, eigenvectors, block_bytes,
+                                            wwr::wwrMemcpyDeviceToDevice, stream));
+    }
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(projection.data(), s_prev.data(),
+                                           static_cast<size_t>(prev_rows) * roots * sizeof(T),
+                                           wwr::wwrMemcpyHostToDevice, stream)));
+    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
+                                             prev_rows, &kOne<T>, v.data(), n, projection.data(),
+                                             prev_rows, &kZero<T>, previous_eigenvectors, n)));
+    // s_prev may change on the host before the stream reads it.
+    return res.sync();
+  };
   DavidsonInfo info;
   int32_t dim = guess_count;
   int32_t filled = 0; // columns of av already holding A v
@@ -210,7 +239,7 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     //    GD+k S's leading n_roots columns, or before a collapse all of S and
     //    the spectrum.
     const bool collapse = dim + n_roots > max_subspace;
-    const bool whole = collapse && prev_rows > 0;
+    const bool whole = collapse && keep_previous && prev_rows > 0;
     const size_t dim_bytes = static_cast<size_t>(dim) * sizeof(T);
     FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(h.data(), dim_bytes, vav.data(), columns * sizeof(T),
                                              dim_bytes, static_cast<size_t>(dim),
@@ -222,7 +251,7 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
                                            wwr::wwrMemcpyDeviceToHost, stream)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&theta_top, ritz.data() + (dim - 1), sizeof(T),
                                            wwr::wwrMemcpyDeviceToHost, stream)));
-    if (keep_previous) {
+    if (track_previous) {
       const size_t s_columns = whole ? static_cast<size_t>(dim) : roots;
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(s_now.data(), h.data(),
                                              static_cast<size_t>(dim) * s_columns * sizeof(T),
@@ -278,6 +307,7 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
                   info.max_residual_norm);
     if (all_converged) {
       FBF_TRY(write_eigenvalues());
+      FBF_TRY(write_previous());
       return info;
     }
 
@@ -296,6 +326,8 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     //    max_subspace >= 2 * n_roots leaves room for a block after X alone,
     //    3 * n_roots after X and X_prev.
     if (collapse) {
+      // X_prev's V and S_prev are about to go.
+      FBF_TRY(write_previous());
       int32_t extra = 0; // Y_2's columns, at most n_roots
       if (whole) {
         const auto d = static_cast<size_t>(dim);
@@ -398,21 +430,6 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
       filled = dim;
     }
 
-    // X is X_prev to the next iteration: S's leading columns, or after a
-    // collapse the leading unit vectors of the new V.
-    if (keep_previous) {
-      if (collapse) {
-        std::fill(s_prev.begin(), s_prev.end(), T{0});
-        for (size_t i = 0; i < roots; ++i) {
-          s_prev[i + (i * roots)] = T{1};
-        }
-        prev_rows = n_roots;
-      } else {
-        std::copy_n(s_now.begin(), static_cast<size_t>(dim) * roots, s_prev.begin());
-        prev_rows = dim;
-      }
-    }
-
     // 7. C -= V (V^T C), twice: one pass loses orthogonality once V is large.
     for (int32_t pass = 0; pass < 2; ++pass) {
       FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, dim,
@@ -476,9 +493,33 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     }
     if (kept == 0) {
       FBF_TRY(write_eigenvalues());
+      if (!collapse) {
+        FBF_TRY(write_previous());
+      }
       return err_divergence("davidson_solve: no correction survived re-orthogonalization at "
                             "iteration {}, so the subspace cannot grow (max residual {:.3e})",
                             iteration, info.max_residual_norm);
+    }
+    if (iteration == options.max_iterations) {
+      if (!collapse) {
+        FBF_TRY(write_previous());
+      }
+      break;
+    }
+
+    // X is X_prev to the next iteration: S's leading columns, or after a
+    // collapse the leading unit vectors of the new V.
+    if (track_previous) {
+      if (collapse) {
+        std::fill(s_prev.begin(), s_prev.end(), T{0});
+        for (size_t i = 0; i < roots; ++i) {
+          s_prev[i + (i * roots)] = T{1};
+        }
+        prev_rows = n_roots;
+      } else {
+        std::copy_n(s_now.begin(), static_cast<size_t>(dim) * roots, s_prev.begin());
+        prev_rows = dim;
+      }
     }
     dim += kept;
   }
