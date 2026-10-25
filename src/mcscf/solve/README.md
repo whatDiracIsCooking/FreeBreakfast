@@ -103,6 +103,21 @@ per iteration; `CasscfIteration::hessian_products` counts them. The integrals
 and the Hessian's own setup are a few J and K per active pair and per core
 orbital, once per macro iteration.
 
+**The augmented Hessian's Davidson neither allocates nor syncs of its own.**
+Its operator's scratch (the n × k blocks around `OrbitalHessian::apply` and
+D's rank × k product), D's terms, the guess e₀ and (0, diag(H + D)) are
+buffers of the solve's, sized once for the largest block `davidson_solve`
+can pass (`kAhMaxSubspace` columns) and for 2 × 8 BFGS terms. diag(H + D) is
+uploaded once per macro iteration, and the preconditioner is a kernel of this
+module's (`ah_precondition.cu`), θ passed by value, so a Davidson iteration
+syncs only where `davidson_solve` itself does. Per micro iteration there is
+one upload of gₘ, not waited for, and one readback of λ and v together. The
+kernel is this module's, not a shared one in `recipes/davidson`: `ci_solve`'s
+preconditioner divides with a 1e-3 floor over a spin-shifted diagonal, this
+one multiplies by the reciprocal (bitwise what the host-built 1 / d and its
+`dgmm` gave, so the iteration counts did not move) with a 1e-8 floor, and a
+common kernel would carry both as options for two callers.
+
 **The augmented Hessian's tolerance follows ‖gₘ‖**: an absolute residual of
 about 1e-2 ‖gₘ‖ (relative to max(1, max |diag H|)), so the step is good to
 about 1% at any ‖g‖. A fixed one would stop the Davidson at e₀ once ‖g‖ fell
@@ -149,4 +164,6 @@ by AVAS, at `conv_tol_grad` 1e-9:
 |------|------|
 | `solve.cppm` | Module interface: `casscf_solve`, `CasscfOptions`, `CasscfIteration`, `CasscfSolution` |
 | `solve.cpp` | The loop, the augmented Hessian (with D) as a `LinearOperator`, its preconditioner, the BFGS pairs |
-| `CMakeLists.txt` | The module `free_breakfast.mcscf.solve` |
+| `ah_precondition.cu` | The preconditioner's kernel, r / (θ − (0, diag(H + D))) for one column |
+| `ah_precondition_bridge.h` | Its launcher, shared by the `.cu` and `solve.cpp`'s global module fragment |
+| `CMakeLists.txt` | The device library `free_breakfast.mcscf.solve.device` and the module `free_breakfast.mcscf.solve` |
