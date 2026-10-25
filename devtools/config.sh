@@ -339,10 +339,10 @@ HOST_MOUNTS=${HOST_MOUNTS:-"~/.gemini:/home/ubuntu/.gemini"}
 HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL"}
 
 # Cross-session GPU admission (see with_gpu_slot() and gpu_auto_preset() in
-# lib.sh). RUN_SERIAL in test/gtest/CMakeLists.txt only serializes test cases
-# within one ctest process -- it does nothing when a second worktree's
-# cpp-tier.sh or cpp-smoke.sh runs its own GPU binary against the same
-# physical card at the same time.
+# lib.sh). One ctest run here is already serial -- no preset sets a job count
+# and CTEST_PARALLEL_LEVEL is unset -- but nothing in that process coordinates
+# with a second worktree's cpp-tier.sh or cpp-smoke.sh running its own GPU
+# binary against the same physical card at the same time.
 #
 # GPU_LOCK_DIR holds GPU_SLOTS lock files per card. Resolved the same way
 # HOST_BIND_DIRS is: a relative path sits under the MAIN checkout, not the
