@@ -204,8 +204,9 @@ the call you want: a leading dimension that is not the operand's own row count
 Don't write a module-local gemm helper that derives the leading dimensions.
 `livvo_gemm` and `ibo_gemm` were two copies of the rectangular overload, each
 taking its ops as `bool`s. (A lambda that only shortens a run of `wwr::gemm`
-calls whose leading dimensions are given, as `OrbitalHessian::apply`'s does over
-blocks of κ, is not one.) The ops are template arguments, as
+calls whose leading dimensions are given is not one: `OrbitalHessian::apply`'s
+`block_gemm` takes the row blocks of κ and X₂, and its packed products beside
+them are `gemm`. Don't name such a lambda `gemm`, which hides this one.) The ops are template arguments, as
 everywhere in `recipes/blas`, so an op outside `N`, `T` and `C` fails to
 compile. The link is `free_breakfast::recipes::blas`. The rest of the
 convention is in [`src/recipes/blas/README.md`](../src/recipes/blas/README.md).
