@@ -3,8 +3,8 @@
 // golden active spaces of data/ci/direct_spin1.json, random integrals at
 // CAS(8,8) and CAS(10,10) and in sectors with N_alpha != N_beta, and
 // CAS(12,12) in the slow tier (its 1-RDM in the fast one); the same in the
-// symmetric layout over swap-symmetric vectors, with ci_unpack; and the
-// refusals.
+// symmetric layout over swap-symmetric vectors, σ and the 1-RDM, with
+// ci_unpack; and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -287,7 +287,8 @@ std::vector<double> pack(const std::vector<double> &full, std::size_t m) {
 // against host_sigma's packed to @p tolerance of ‖σ‖ (of ‖σ − E_core c‖ for
 // fp32, the part the float gemm sees). The packing is an isometry, so the
 // norms are the full vectors'. ci_unpack of the packed input gives the input
-// back.
+// back. In double, rdm1 of each packed column matches the full layout's on the
+// unpacked one and the host's to 1e-12 of max |γ|.
 void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const Integrals &ints,
                      std::int32_t k, std::uint64_t seed, bool fp32) {
   const auto set = fb::StringSet::create(ints.n, n_electrons);
@@ -314,6 +315,30 @@ void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const I
   const std::vector<double> back = to_host(res, unpacked);
   for (std::size_t i = 0; i < c.size(); ++i) {
     ASSERT_NEAR(back[i], c[i], 1e-15) << "element " << i;
+  }
+
+  const auto n = static_cast<std::size_t>(ints.n);
+  for (std::int32_t j = 0; !fp32 && j < k; ++j) {
+    SCOPED_TRACE(std::format("rdm1 of column {}", j));
+    const auto column = static_cast<std::size_t>(j);
+    fb::Buffers::device<double> gamma(n * n, res.device());
+    ASSERT_TRUE(sigma->rdm1(res, x.data() + column * packed, gamma.data(), fb::CiLayout::symmetric)
+                    .has_value());
+    const std::vector<double> symmetric = to_host(res, gamma);
+    ASSERT_TRUE(sigma->rdm1(res, unpacked.data() + column * dim, gamma.data()).has_value());
+    const std::vector<double> full = to_host(res, gamma);
+    std::vector<double> host(n * n);
+    ASSERT_TRUE(fb::rdm1(*set, *set, std::span{c}.subspan(column * dim, dim), host).has_value());
+    double scale = 1.0;
+    double vs_full = 0.0;
+    double vs_host = 0.0;
+    for (std::size_t i = 0; i < n * n; ++i) {
+      scale = std::max(scale, std::abs(host[i]));
+      vs_full = std::max(vs_full, std::abs(symmetric[i] - full[i]));
+      vs_host = std::max(vs_host, std::abs(symmetric[i] - host[i]));
+    }
+    EXPECT_LE(vs_full, 1e-12 * scale) << "symmetric rdm1 vs full";
+    EXPECT_LE(vs_host, 1e-12 * scale) << "symmetric rdm1 vs host";
   }
 
   const auto pairs = static_cast<std::size_t>(ints.n) * static_cast<std::size_t>(ints.n + 1) / 2;
@@ -525,6 +550,11 @@ TEST(CiSigmaGpu, Refuses) {
   EXPECT_FALSE(mixed->apply(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
   EXPECT_FALSE(mixed->apply_fp32(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
   EXPECT_TRUE(mixed->apply(res, 1, x.data(), y.data()).has_value());
+  fb::Buffers::device<double> gamma(16, res.device());
+  const auto one_rdm = mixed->rdm1(res, x.data(), gamma.data(), fb::CiLayout::symmetric);
+  ASSERT_FALSE(one_rdm.has_value());
+  EXPECT_EQ(one_rdm.error().kind, fb::ErrorKind::InvalidConfig) << one_rdm.error().message;
+  EXPECT_TRUE(mixed->rdm1(res, x.data(), gamma.data()).has_value());
 }
 
 } // namespace

@@ -86,15 +86,24 @@ __device__ void ci_walk_links(const CiRow row, const int32_t n_beta,
 }
 
 // D of T: double for apply, float for apply_fp32. In the symmetric layout D_K
-// is of c itself, each stored element times its weight.
+// is of c itself, each stored element times its weight, and with
+// scale_off_diagonal an off-diagonal row is D_K times √2 (rdm1's).
 template <bool Symmetric, typename T>
 __global__ void ci_gather_d_kernel(const int32_t row_begin, const int32_t rows, const int32_t n_det,
                                    const int32_t n_beta, const int32_t *const alpha_links,
                                    const int32_t alpha_per, const int32_t *const beta_links,
-                                   const int32_t beta_per, const double *const c, T *const d) {
+                                   const int32_t beta_per, const bool scale_off_diagonal,
+                                   const double *const c, T *const d) {
   const int64_t r = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (r >= rows) {
     return;
+  }
+  const CiRow place = ci_row<Symmetric>(static_cast<size_t>(row_begin + r), n_det, n_beta);
+  double scale = 1.0;
+  if constexpr (Symmetric) {
+    if (scale_off_diagonal && place.alpha != place.beta) {
+      scale = kCiSqrt2;
+    }
   }
   // α and β links can name the same pair, so the row accumulates: at most one
   // link of each spin per pair, since E_vw and E_wv cannot both act on a
@@ -102,11 +111,10 @@ __global__ void ci_gather_d_kernel(const int32_t row_begin, const int32_t rows, 
   T *const d_row = d + r;
   const auto ld = static_cast<size_t>(rows);
   ci_walk_links<Symmetric>(
-      ci_row<Symmetric>(static_cast<size_t>(row_begin + r), n_det, n_beta), n_beta, alpha_links,
-      alpha_per, beta_links, beta_per,
+      place, n_beta, alpha_links, alpha_per, beta_links, beta_per,
       [&](const size_t element, const int32_t pair, const int32_t sign, const double weight) {
         d_row[static_cast<size_t>(pair) * ld] +=
-            static_cast<T>(static_cast<double>(sign) * (weight * c[element]));
+            static_cast<T>(static_cast<double>(sign) * (scale * (weight * c[element])));
       });
 }
 
@@ -236,16 +244,19 @@ wwr::wwrError_t ci_gather_d_as(const wwr::wwrStream_t stream, const bool symmetr
                                const int32_t row_begin, const int32_t rows, const int32_t n_det,
                                const int32_t n_beta, const int32_t *const alpha_links,
                                const int32_t alpha_per, const int32_t *const beta_links,
-                               const int32_t beta_per, const double *const c, T *const d) {
+                               const int32_t beta_per, const bool scale_off_diagonal,
+                               const double *const c, T *const d) {
   if (rows == 0) {
     return wwr::wwrSuccess;
   }
   if (symmetric) {
     ci_gather_d_kernel<true, T><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
-        row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
+        row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per,
+        scale_off_diagonal, c, d);
   } else {
     ci_gather_d_kernel<false, T><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
-        row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
+        row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per,
+        scale_off_diagonal, c, d);
   }
   return wwr::wwrGetLastError();
 }
@@ -278,18 +289,20 @@ wwr::wwrError_t ci_gather_d(const wwr::wwrStream_t stream, const bool symmetric,
                             const int32_t row_begin, const int32_t rows, const int32_t n_det,
                             const int32_t n_beta, const int32_t *const alpha_links,
                             const int32_t alpha_per, const int32_t *const beta_links,
-                            const int32_t beta_per, const double *const c, double *const d) {
+                            const int32_t beta_per, const bool scale_off_diagonal,
+                            const double *const c, double *const d) {
   return ci_gather_d_as(stream, symmetric, row_begin, rows, n_det, n_beta, alpha_links, alpha_per,
-                        beta_links, beta_per, c, d);
+                        beta_links, beta_per, scale_off_diagonal, c, d);
 }
 
 wwr::wwrError_t ci_gather_d(const wwr::wwrStream_t stream, const bool symmetric,
                             const int32_t row_begin, const int32_t rows, const int32_t n_det,
                             const int32_t n_beta, const int32_t *const alpha_links,
                             const int32_t alpha_per, const int32_t *const beta_links,
-                            const int32_t beta_per, const double *const c, float *const d) {
+                            const int32_t beta_per, const bool scale_off_diagonal,
+                            const double *const c, float *const d) {
   return ci_gather_d_as(stream, symmetric, row_begin, rows, n_det, n_beta, alpha_links, alpha_per,
-                        beta_links, beta_per, c, d);
+                        beta_links, beta_per, scale_off_diagonal, c, d);
 }
 
 wwr::wwrError_t ci_sigma_from_g(const wwr::wwrStream_t stream, const bool symmetric,

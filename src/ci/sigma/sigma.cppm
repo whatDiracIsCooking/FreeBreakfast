@@ -165,9 +165,9 @@ public:
   ///         launch's GpuRuntime error.
   [[nodiscard]] Status diagonal(DeviceResources &res, double *diagonal);
 
-  /// @brief The spin-summed 1-RDM γ_tu = ⟨c| E_tu |c⟩ of the size() device
-  /// doubles @p c into the n × n device doubles @p gamma (symmetric, so either
-  /// order): ci.rdm's rdm1, on the device. Needs no integrals.
+  /// @brief The spin-summed 1-RDM γ_tu = ⟨c| E_tu |c⟩ of the size(@p layout)
+  /// device doubles @p c into the n × n device doubles @p gamma (symmetric, so
+  /// either order): ci.rdm's rdm1, on the device. Needs no integrals.
   ///
   /// apply's gather of D_K = (E c)_K over each chunk of determinants, packed
   /// over v ≥ w, then one gemv per chunk, Σ_K c_K D_K, which is 2 γ_vw off the
@@ -175,9 +175,16 @@ public:
   /// chunk and the n(n+1)/2 packed sums, is res.device_workspace(). Queued on
   /// res.stream() with res.blas(), in host pointer mode.
   ///
-  /// @return InvalidConfig for another device; or the GpuRuntime error of a
-  ///         launch or a gemv.
-  [[nodiscard]] Status rdm1(DeviceResources &res, const double *c, double *gamma);
+  /// CiLayout::symmetric takes a packed swap-symmetric c, for which D_K is D
+  /// of K's mirror: the gather walks the triangle's rows alone, each
+  /// off-diagonal one scaled by √2, and with the packed c's own √2 the gemv's
+  /// sum gives each the weight 2 of itself and its mirror. That halves the
+  /// gather and the gemv.
+  ///
+  /// @return InvalidConfig for another device, or for CiLayout::symmetric over
+  ///         two different sets; or the GpuRuntime error of a launch or a gemv.
+  [[nodiscard]] Status rdm1(DeviceResources &res, const double *c, double *gamma,
+                            CiLayout layout = CiLayout::full);
 
   /// @brief The operator's n: the number of determinants,
   /// alpha.size() · beta.size(), or for CiLayout::symmetric the triangle's,

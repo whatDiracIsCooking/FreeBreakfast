@@ -17,6 +17,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
+import free_breakfast.ci.sigma; // CiLayout
 
 #include "diagnostics.h"
 
@@ -156,9 +157,10 @@ std::vector<int32_t> rdm_link_table(const StringSet &set) {
 }
 
 CiRdm::CiRdm(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
-             const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per)
+             const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per,
+             const bool one_set)
     : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
-      alpha_per_{alpha_per}, beta_per_{beta_per},
+      alpha_per_{alpha_per}, beta_per_{beta_per}, one_set_{one_set},
       alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
       beta_links_(static_cast<size_t>(n_beta) * static_cast<size_t>(beta_per) * 3, res.device()) {}
 
@@ -176,7 +178,7 @@ Result<CiRdm> CiRdm::create(DeviceResources &res, const StringSet &alpha, const 
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   CiRdm rdm(res, alpha.n_orbitals(), alpha.size(), beta.size(), alpha.replacements_per_string(),
-            beta.replacements_per_string());
+            beta.replacements_per_string(), alpha.n_electrons() == beta.n_electrons());
   const std::vector<int32_t> alpha_links = rdm_link_table(alpha);
   const std::vector<int32_t> beta_links = rdm_link_table(beta);
   const wwr::wwrStream_t stream = res.stream();
@@ -192,14 +194,21 @@ Result<CiRdm> CiRdm::create(DeviceResources &res, const StringSet &alpha, const 
 }
 
 Status CiRdm::rdm12(DeviceResources &res, const std::span<const double> weights,
-                    const double *const vectors, double *const gamma, double *const gamma2) {
+                    const double *const vectors, double *const gamma, double *const gamma2,
+                    const CiLayout layout) {
   if (res.dev_idx() != dev_idx_) {
     return err_config("CiRdm: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
   FBF_TRY(check_rdm12_weights(weights));
+  const bool symmetric = layout == CiLayout::symmetric;
+  if (symmetric && !one_set_) {
+    return err_config("CiRdm: the symmetric layout needs one set of strings for both spins");
+  }
   const auto n = static_cast<size_t>(n_orbitals_);
-  const auto dim = static_cast<size_t>(size());
+  // A vector's rows: every determinant, or the triangle's.
+  const int32_t rows = size(layout);
+  const auto dim = static_cast<size_t>(rows);
   const size_t nn = n * n;
   const auto nn32 = static_cast<int32_t>(nn);
   const auto chunk =
@@ -214,18 +223,20 @@ Status CiRdm::rdm12(DeviceResources &res, const std::span<const double> weights,
 
   // Per root and chunk of determinants K: D_{tu,K} = ⟨c| E_tu |K⟩ as a
   // count × n² column-major block, then M += w Dᵀ D, its lower triangle, and
-  // γ += w Dᵀ c.
+  // γ += w Dᵀ c. In the symmetric layout K is a triangle element, its row of D
+  // scaled by √2 off the diagonal, and c the packed vector.
   for (size_t r = 0; r < weights.size(); ++r) {
     if (weights[r] == 0.0) {
       continue;
     }
     const double *const c = vectors + r * dim;
-    for (int32_t begin = 0; begin < size(); begin += chunk) {
-      const int32_t count = std::min(chunk, size() - begin);
+    for (int32_t begin = 0; begin < rows; begin += chunk) {
+      const int32_t count = std::min(chunk, rows - begin);
       FBF_TRY(gpu_status(
           wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * nn, stream)));
-      FBF_TRY(gpu_status(device::ci_rdm_gather_d(stream, begin, count, n_beta_, alpha_links_.data(),
-                                                 alpha_per_, beta_links_.data(), beta_per_, c, d)));
+      FBF_TRY(gpu_status(device::ci_rdm_gather_d(stream, symmetric, begin, count, n_beta_,
+                                                 alpha_links_.data(), alpha_per_,
+                                                 beta_links_.data(), beta_per_, c, d)));
       FBF_TRY(gpu_status(wwr::syrk<double, int32_t>(res.blas().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
                                                     wwr::WWRBLAS_OP_T, nn32, count, &weights[r], d,
                                                     count, &kOne<double>, m, nn32)));

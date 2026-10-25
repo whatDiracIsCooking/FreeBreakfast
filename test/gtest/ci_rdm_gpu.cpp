@@ -2,7 +2,8 @@
 // both against PySCF's make_rdm12 (and make_rdm12s summed over the spins) over
 // the CI vectors stored in data/ci/direct_spin1.json, written by
 // tools/emit_fci_reference.py; γ against rdm1 and CiSigma::rdm1; the RDM
-// identities; and the refusals.
+// identities; the symmetric layout against the full one, for rdm12 and
+// CiSigma::rdm1; and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -98,9 +99,11 @@ std::vector<double> on_host(fb::DeviceResources &res, const fb::Buffers::device<
   return host;
 }
 
-// CiRdm::rdm12 of the host @p vectors, through the device and back.
+// CiRdm::rdm12 of the host @p vectors, in @p layout, through the device and
+// back.
 Rdm12 device_rdm12(fb::DeviceResources &res, const fb::StringSet &alpha, const fb::StringSet &beta,
-                   std::span<const double> vectors, std::span<const double> weights) {
+                   std::span<const double> vectors, std::span<const double> weights,
+                   fb::CiLayout layout = fb::CiLayout::full) {
   const auto n = static_cast<std::size_t>(alpha.n_orbitals());
   auto rdm = fb::CiRdm::create(res, alpha, beta);
   EXPECT_TRUE(rdm.has_value()) << rdm.error().message;
@@ -110,7 +113,7 @@ Rdm12 device_rdm12(fb::DeviceResources &res, const fb::StringSet &alpha, const f
   const auto c = on_device(res, vectors);
   fb::Buffers::device<double> gamma(n * n, res.device());
   fb::Buffers::device<double> gamma2(n * n * n * n, res.device());
-  const auto got = rdm->rdm12(res, weights, c.data(), gamma.data(), gamma2.data());
+  const auto got = rdm->rdm12(res, weights, c.data(), gamma.data(), gamma2.data(), layout);
   EXPECT_TRUE(got.has_value()) << got.error().message;
   return Rdm12{on_host(res, gamma), on_host(res, gamma2)};
 }
@@ -185,6 +188,92 @@ std::vector<double> random_unit_vectors(std::size_t dim, std::size_t roots) {
   return vectors;
 }
 
+// The symmetric layout of full-layout vectors over m strings for both spins
+// (see CiLayout): the triangle a >= b, off-diagonal elements times sqrt(2).
+std::vector<double> pack(std::span<const double> full, std::size_t m) {
+  const std::size_t k = full.size() / (m * m);
+  const std::size_t packed = m * (m + 1) / 2;
+  std::vector<double> out(packed * k);
+  for (std::size_t j = 0; j < k; ++j) {
+    for (std::size_t a = 0; a < m; ++a) {
+      for (std::size_t b = 0; b <= a; ++b) {
+        const double x = full[(j * m * m) + (a * m) + b];
+        out[(j * packed) + (a * (a + 1) / 2) + b] = a == b ? x : std::numbers::sqrt2 * x;
+      }
+    }
+  }
+  return out;
+}
+
+// The full layout of packed vectors: what they stand for.
+std::vector<double> unpack(std::span<const double> packed_vectors, std::size_t m) {
+  const std::size_t packed = m * (m + 1) / 2;
+  const std::size_t k = packed_vectors.size() / packed;
+  std::vector<double> out(m * m * k);
+  for (std::size_t j = 0; j < k; ++j) {
+    for (std::size_t a = 0; a < m; ++a) {
+      for (std::size_t b = 0; b < m; ++b) {
+        const std::size_t hi = std::max(a, b);
+        const std::size_t lo = std::min(a, b);
+        const double x = packed_vectors[(j * packed) + (hi * (hi + 1) / 2) + lo];
+        out[(j * m * m) + (a * m) + b] = a == b ? x : x / std::numbers::sqrt2;
+      }
+    }
+  }
+  return out;
+}
+
+// CiSigma::rdm1 of the device vector @p c in @p layout.
+std::vector<double> sigma_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, std::size_t n,
+                               std::span<const double> c, fb::CiLayout layout) {
+  const auto c_dev = on_device(res, c);
+  fb::Buffers::device<double> gamma(n * n, res.device());
+  const auto got = sigma.rdm1(res, c_dev.data(), gamma.data(), layout);
+  EXPECT_TRUE(got.has_value()) << got.error().message;
+  return on_host(res, gamma);
+}
+
+// The @p weights.size() packed swap-symmetric vectors @p packed over @p set
+// for both spins: rdm12 in the symmetric layout against the full layout on
+// the unpacked vectors and against host_rdm12, and per root CiSigma::rdm1 the
+// same way against rdm1, all to 1e-12; and the identities.
+void check_symmetric(fb::DeviceResources &res, const fb::StringSet &set,
+                     std::span<const double> packed, std::span<const double> weights) {
+  const auto n = static_cast<std::size_t>(set.n_orbitals());
+  const auto m = static_cast<std::size_t>(set.size());
+  const std::size_t triangle = m * (m + 1) / 2;
+  ASSERT_EQ(packed.size(), triangle * weights.size());
+  const std::vector<double> full = unpack(packed, m);
+
+  const Rdm12 symmetric = device_rdm12(res, set, set, packed, weights, fb::CiLayout::symmetric);
+  const Rdm12 unpacked = device_rdm12(res, set, set, full, weights);
+  Rdm12 host{std::vector<double>(n * n), std::vector<double>(n * n * n * n)};
+  const auto want = fb::host_rdm12(set, set, full, weights, host.gamma, host.gamma2);
+  ASSERT_TRUE(want.has_value()) << want.error().message;
+  const double scale = std::max(1.0, max_abs(host.gamma2));
+  EXPECT_LE(max_abs_diff(symmetric.gamma2, unpacked.gamma2), kHostTol * scale)
+      << "symmetric Gamma vs full";
+  EXPECT_LE(max_abs_diff(symmetric.gamma, unpacked.gamma), kHostTol) << "symmetric gamma vs full";
+  EXPECT_LE(max_abs_diff(symmetric.gamma2, host.gamma2), kHostTol * scale)
+      << "symmetric Gamma vs host";
+  EXPECT_LE(max_abs_diff(symmetric.gamma, host.gamma), kHostTol) << "symmetric gamma vs host";
+  expect_identities(symmetric.gamma, symmetric.gamma2, n, 2 * set.n_electrons());
+
+  auto sigma = fb::CiSigma::create(res, set, set);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  std::vector<double> one(n * n);
+  for (std::size_t r = 0; r < weights.size(); ++r) {
+    SCOPED_TRACE(std::format("rdm1 of root {}", r));
+    const std::span<const double> c = std::span{full}.subspan(r * m * m, m * m);
+    const auto got =
+        sigma_rdm1(res, *sigma, n, packed.subspan(r * triangle, triangle), fb::CiLayout::symmetric);
+    const auto got_full = sigma_rdm1(res, *sigma, n, c, fb::CiLayout::full);
+    ASSERT_TRUE(fb::rdm1(set, set, c, one).has_value());
+    EXPECT_LE(max_abs_diff(got, got_full), kHostTol) << "symmetric rdm1 vs full";
+    EXPECT_LE(max_abs_diff(got, one), kHostTol) << "symmetric rdm1 vs host";
+  }
+}
+
 TEST(CiRdm12Gpu, MatchesDirectSpin1) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -244,6 +333,76 @@ TEST(CiRdm12Gpu, MatchesHostOnRandomSectors) {
     const std::vector<double> vectors = random_unit_vectors(dim, weights.size());
     both_rdm12(res, *alpha, *beta, vectors, weights);
   }
+}
+
+// The golden singlets of every case with N_α = N_β, packed: each average of
+// one or two roots stored, symmetric to roundoff.
+TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnDirectSpin1) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  auto doc = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
+  ASSERT_TRUE(doc.has_value()) << doc.error().message;
+  std::int32_t golden = 0;
+  for (const auto &entry : (*doc)["cases"]) {
+    if (entry["n_alpha"].get<std::int32_t>() != entry["n_beta"].get<std::int32_t>()) {
+      continue;
+    }
+    SCOPED_TRACE(entry["name"].get<std::string>());
+    const auto set = fb::StringSet::create(entry["n_orbitals"].get<std::int32_t>(),
+                                           entry["n_alpha"].get<std::int32_t>());
+    ASSERT_TRUE(set.has_value());
+    const auto m = static_cast<std::size_t>(set->size());
+    for (const auto &average : entry["rdm12"]) {
+      const auto weights = average["weights"].get<std::vector<double>>();
+      SCOPED_TRACE(std::format("{} roots", weights.size()));
+      const auto vectors = average["vectors"]["values"].get<std::vector<double>>();
+      // Singlets: c(a, b) = c(b, a), or the packing would not stand for them.
+      for (std::size_t j = 0; j < weights.size(); ++j) {
+        for (std::size_t a = 0; a < m; ++a) {
+          for (std::size_t b = 0; b < a; ++b) {
+            ASSERT_NEAR(vectors[(j * m * m) + (a * m) + b], vectors[(j * m * m) + (b * m) + a],
+                        1e-12);
+          }
+        }
+      }
+      check_symmetric(res, *set, pack(vectors, m), weights);
+      ++golden;
+    }
+  }
+  EXPECT_GT(golden, 0);
+}
+
+// Random packed unit vectors (the packing is an isometry, so they are unit
+// swap-symmetric vectors) at three weights, over one set for both spins:
+// closed shells, an empty set and a full one (one string each), and a single
+// orbital.
+TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnRandomVectors) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const std::array<double, 3> weights{0.5, 0.3, 0.2};
+  for (const auto [n, electrons] :
+       {std::pair{6, 3}, std::pair{7, 2}, std::pair{8, 4}, std::pair{5, 0}, std::pair{5, 5},
+        std::pair{1, 1}, std::pair{2, 1}}) {
+    SCOPED_TRACE(std::format("n {} N {}", n, electrons));
+    const auto set = fb::StringSet::create(n, electrons);
+    ASSERT_TRUE(set.has_value());
+    const auto m = static_cast<std::size_t>(set->size());
+    check_symmetric(res, *set, random_unit_vectors(m * (m + 1) / 2, weights.size()), weights);
+  }
+}
+
+// 106 953 triangle rows over 11 orbitals, which hold 69 327 a chunk: the
+// symmetric gather spans two chunks.
+TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullAcrossChunks) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  fb::DeviceResources res{0};
+  const auto set = fb::StringSet::create(11, 5);
+  ASSERT_TRUE(set.has_value());
+  const auto m = static_cast<std::size_t>(set->size());
+  ASSERT_EQ(m * (m + 1) / 2, 106953U);
+  const std::array<double, 1> weights{1.0};
+  check_symmetric(res, *set, random_unit_vectors(m * (m + 1) / 2, 1), weights);
 }
 
 // A sector big enough that D is gathered in two chunks of determinants: 11
@@ -354,6 +513,32 @@ TEST(CiRdm12Gpu, Refuses) {
                                                     static_cast<std::size_t>(five->size())),
                                 std::array{1.0}, gamma, gamma2)
                      .has_value());
+  }
+
+  {
+    // The symmetric layout wants one set for both spins: (4, 1) and (4, 3)
+    // have the same number of strings, and are still two sets.
+    SCOPED_TRACE("the symmetric layout over two sets");
+    const auto one = fb::StringSet::create(4, 1);
+    const auto three = fb::StringSet::create(4, 3);
+    ASSERT_TRUE(one.has_value() && three.has_value());
+    auto mixed = fb::CiRdm::create(res, *one, *three);
+    ASSERT_TRUE(mixed.has_value()) << mixed.error().message;
+    const auto c_mixed = on_device(res, random_unit_vectors(16, 1));
+    auto gamma_dev = on_device(res, std::vector<double>(g1, kSentinel));
+    auto gamma2_dev = on_device(res, std::vector<double>(g2, kSentinel));
+    const std::array weight{1.0};
+    const auto got = mixed->rdm12(res, weight, c_mixed.data(), gamma_dev.data(), gamma2_dev.data(),
+                                  fb::CiLayout::symmetric);
+    ASSERT_FALSE(got.has_value());
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
+    EXPECT_TRUE(
+        std::ranges::all_of(on_host(res, gamma_dev), [](double x) { return x == kSentinel; }));
+    EXPECT_TRUE(
+        std::ranges::all_of(on_host(res, gamma2_dev), [](double x) { return x == kSentinel; }));
+    EXPECT_TRUE(
+        mixed->rdm12(res, weight, c_mixed.data(), gamma_dev.data(), gamma2_dev.data()).has_value());
+    EXPECT_EQ(rdm->size(fb::CiLayout::symmetric), 21);
   }
 
   // Within 1e-12 of 1 is accepted.

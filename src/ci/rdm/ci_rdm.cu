@@ -9,6 +9,9 @@
 // reach every c_J that D_K takes. Adjacent threads are adjacent determinants,
 // so every write to a column of D is coalesced. A thread owns its row, so
 // nothing is atomic and the summation order is fixed.
+//
+// In CiLayout::symmetric a thread is a triangle determinant of the packed c,
+// by ci_symmetric.h's triangle walk, the one the sigma's gathers take.
 
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
@@ -16,6 +19,7 @@
 #include "primitives.h"
 
 #include "ci_rdm_bridge.h"
+#include "ci_symmetric.h"
 
 namespace free_breakfast::device {
 
@@ -24,6 +28,12 @@ namespace {
 // The fields of one link (see the bridge header).
 constexpr int32_t kLinkWidth = 3;
 
+// In the symmetric layout a row is triangle element det = (a, b), a ≥ b, of
+// the packed c, and a link to a determinant below the triangle reads its
+// mirror, times 1/√2 off the diagonal (see ci_symmetric.h); an off-diagonal
+// row is then scaled by √2, so that the products over the triangle weight it
+// 2, for itself and its mirror.
+template <bool Symmetric>
 __global__ void ci_rdm_gather_d_kernel(const int32_t begin, const int32_t rows,
                                        const int32_t n_beta, const int32_t *const alpha_links,
                                        const int32_t alpha_per, const int32_t *const beta_links,
@@ -34,23 +44,35 @@ __global__ void ci_rdm_gather_d_kernel(const int32_t begin, const int32_t rows,
     return;
   }
   const int32_t det = begin + static_cast<int32_t>(i);
-  const int32_t ka = det / n_beta;
-  const int32_t kb = det % n_beta;
+  int32_t ka = 0;
+  int32_t kb = 0;
+  double scale = 1.0;
+  if constexpr (Symmetric) {
+    ci_triangle_strings(det, ka, kb);
+    scale = ka == kb ? 1.0 : kCiSqrt2;
+  } else {
+    ka = det / n_beta;
+    kb = det % n_beta;
+  }
+  // c(a, b) of the unpacked vector.
+  const auto at = [&](const int32_t a, const int32_t b) {
+    if constexpr (Symmetric) {
+      return a == b ? c[ci_triangle(a, b)] : kCiInvSqrt2 * c[ci_triangle(a, b)];
+    } else {
+      return c[(static_cast<size_t>(a) * static_cast<size_t>(n_beta)) + static_cast<size_t>(b)];
+    }
+  };
   const auto ld = static_cast<size_t>(rows);
   // α and β links can name the same pair (the diagonal p == q), so the row
   // accumulates.
   double *const d_row = d + i;
   const int32_t *a = alpha_links + (static_cast<size_t>(ka) * alpha_per * kLinkWidth);
   for (int32_t e = 0; e < alpha_per; ++e, a += kLinkWidth) {
-    const size_t j =
-        (static_cast<size_t>(a[0]) * static_cast<size_t>(n_beta)) + static_cast<size_t>(kb);
-    d_row[static_cast<size_t>(a[1]) * ld] += static_cast<double>(a[2]) * c[j];
+    d_row[static_cast<size_t>(a[1]) * ld] += static_cast<double>(a[2]) * (scale * at(a[0], kb));
   }
-  const size_t alpha_base = static_cast<size_t>(ka) * static_cast<size_t>(n_beta);
   const int32_t *b = beta_links + (static_cast<size_t>(kb) * beta_per * kLinkWidth);
   for (int32_t e = 0; e < beta_per; ++e, b += kLinkWidth) {
-    d_row[static_cast<size_t>(b[1]) * ld] +=
-        static_cast<double>(b[2]) * c[alpha_base + static_cast<size_t>(b[0])];
+    d_row[static_cast<size_t>(b[1]) * ld] += static_cast<double>(b[2]) * (scale * at(ka, b[0]));
   }
 }
 
@@ -90,8 +112,8 @@ wwr::wwrError_t ci_rdm_assemble(const wwr::wwrStream_t stream, const int32_t n,
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_rdm_gather_d(const wwr::wwrStream_t stream, const int32_t begin,
-                                const int32_t rows, const int32_t n_beta,
+wwr::wwrError_t ci_rdm_gather_d(const wwr::wwrStream_t stream, const bool symmetric,
+                                const int32_t begin, const int32_t rows, const int32_t n_beta,
                                 const int32_t *const alpha_links, const int32_t alpha_per,
                                 const int32_t *const beta_links, const int32_t beta_per,
                                 const double *const c, double *const d) {
@@ -99,8 +121,13 @@ wwr::wwrError_t ci_rdm_gather_d(const wwr::wwrStream_t stream, const int32_t beg
     return wwr::wwrSuccess;
   }
   const auto blocks = math::idivup(static_cast<uint32_t>(rows), kFourWarps);
-  ci_rdm_gather_d_kernel<<<blocks, kFourWarps, 0, stream>>>(begin, rows, n_beta, alpha_links,
-                                                            alpha_per, beta_links, beta_per, c, d);
+  if (symmetric) {
+    ci_rdm_gather_d_kernel<true><<<blocks, kFourWarps, 0, stream>>>(
+        begin, rows, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
+  } else {
+    ci_rdm_gather_d_kernel<false><<<blocks, kFourWarps, 0, stream>>>(
+        begin, rows, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
+  }
   return wwr::wwrGetLastError();
 }
 

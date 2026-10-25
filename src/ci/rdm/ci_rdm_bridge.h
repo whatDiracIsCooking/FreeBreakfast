@@ -1,7 +1,7 @@
 /// @file
-/// @brief rdm12's one launcher, declared once for the module that calls it and
-/// the device TU that defines it: the gather of the one-replacement
-/// intermediate D.
+/// @brief rdm12's launchers, declared once for the module that calls them and
+/// the device TU that defines them: the gather of the one-replacement
+/// intermediate D, and Γ's assembly.
 ///
 /// Included by rdm.cpp in its GLOBAL MODULE FRAGMENT, and by ci_rdm.cu
 /// directly: a declaration in a module's purview gets module linkage and can
@@ -37,12 +37,20 @@ namespace free_breakfast::device {
 /// one CI vector @p c: D_{pq,K} = ⟨c| E_pq |K⟩ = Σ s · c_J over K's α and β
 /// links (p, q, J, s).
 ///
+/// With @p symmetric, @p c is in CiLayout::symmetric (see ../sigma/
+/// ci_symmetric.h), one set for both spins (n_beta = n_alpha), and K runs
+/// over its triangle elements: D_K is of the unpacked c, and each off-diagonal
+/// row (K_α > K_β) is scaled by √2, so that Σ over the triangle of
+/// D_K D_Kᵀ, and of D_K times the packed c, is the full layout's sum over
+/// every determinant.
+///
 /// @p d is rows × n², column-major with leading dimension @p rows (column
 /// p · n + q), and is accumulated into: it must be zero on entry.
-[[nodiscard]] wwr::wwrError_t ci_rdm_gather_d(wwr::wwrStream_t stream, int32_t begin, int32_t rows,
-                                              int32_t n_beta, const int32_t *alpha_links,
-                                              int32_t alpha_per, const int32_t *beta_links,
-                                              int32_t beta_per, const double *c, double *d);
+[[nodiscard]] wwr::wwrError_t ci_rdm_gather_d(wwr::wwrStream_t stream, bool symmetric,
+                                              int32_t begin, int32_t rows, int32_t n_beta,
+                                              const int32_t *alpha_links, int32_t alpha_per,
+                                              const int32_t *beta_links, int32_t beta_per,
+                                              const double *c, double *d);
 
 /// @brief Γ_tuvw = M_{tu,wv} − δ_uv γ_tw into @p gamma2, n⁴ row-major (t, u,
 /// v, w), from @p m, n² × n² column-major with only its lower triangle
