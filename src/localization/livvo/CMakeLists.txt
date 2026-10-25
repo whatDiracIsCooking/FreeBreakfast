@@ -1,5 +1,7 @@
 # The module. Host code over wwr's BLAS and recipes/diagonalize, with no
-# kernels of its own; the IAOs are an argument, so it does not link ibo.
+# kernels of its own; the IAOs are an argument, so it does not link ibo. The
+# localization is pipek_mezey's, re-exported for its options and info, so it
+# is PUBLIC.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.localization.livvo
@@ -13,6 +15,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::resources
   free_breakfast::basis
+  free_breakfast::localization::pipek_mezey
   LINK_PRIVATE
   free_breakfast::core::constants
   free_breakfast::core::wwr
