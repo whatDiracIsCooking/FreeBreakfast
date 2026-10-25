@@ -53,7 +53,7 @@
 #                   the run, because the tree is not clean yet (see
 #                   .clang-tidy). Off by default so the normal tier stays
 #                   a build-and-test.
-#   -j N            parallel compile jobs (default: BUILD_JOBS from config.sh,
+#   -j N            parallel COMPILE jobs (default: BUILD_JOBS from config.sh,
 #                   or Ninja's own choice when that is empty). Module builds
 #                   are memory-hungry per job -- a too-high N OOMs rather than
 #                   failing cleanly.
@@ -62,6 +62,8 @@
 #   -- <args>       everything after `--` is passed to ctest verbatim
 #                   (e.g. `-- -R Constants` to scope the run). ctest has
 #                   one entry per gtest case, so -R matches suite names.
+#                   ctest itself runs GPU_TEST_JOBS (config.sh) entries at
+#                   once; `-- -j 1` overrides that for one run.
 #
 # Exit status is the first failing phase's, so a scheduler can alert on it.
 #: -- help stops here --
@@ -163,7 +165,11 @@ if [ "$rc" -eq 0 ] && [ "$run_tests" -eq 1 ]; then
     echo "cpp-tier: skipping reference-grade validation cases (FREE_BREAKFAST_FAST_TESTS=1)" \
       | tee -a "$log"
     export FREE_BREAKFAST_FAST_TESTS=1
-    run_phase ctest with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" ctest --preset "$test_preset" "${passthrough[@]}" || rc=$?
+    # GPU_TEST_JOBS concurrent entries, all inside the one slot. Before the
+    # passthrough, so a `-- -j 1` still wins.
+    run_phase ctest with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" \
+      ctest --preset "$test_preset" --parallel "$GPU_TEST_JOBS" \
+      "${passthrough[@]}" || rc=$?
     unset FREE_BREAKFAST_FAST_TESTS
   else
     echo "cpp-tier: no test preset '${test_preset:-<empty>}' -- built only" \

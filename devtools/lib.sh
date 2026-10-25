@@ -103,8 +103,8 @@ EOF
 # --- GPU cards: slots, load, and the `auto` preset -------------------------
 #
 # Admission of GPU-bound commands across every worktree/session on this host.
-# One ctest run is serial by default (no preset sets a job count and
-# CTEST_PARALLEL_LEVEL is unset), but nothing in that process coordinates with
+# One run's own concurrency is GPU_TEST_JOBS (config.sh: gtest shards in
+# cpp-smoke.sh, ctest -j in cpp-tier.sh), but nothing in that run coordinates with
 # a second session's cpp-tier.sh or cpp-smoke.sh running its own ctest/gtest
 # binary against the same physical GPU at the same time, which is what
 # actually timed out a full-tier run under cross-worktree contention.
