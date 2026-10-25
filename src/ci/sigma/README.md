@@ -17,6 +17,7 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 | `CiSigma::set_integrals(res, e_core, h_eff, eri)` | Upload an H over them, replacing any before; `Status` |
 | `CiSigma::apply(res, k, x, y, layout = full)` | Y = H X for size(layout) × k device blocks: the `LinearOperator` member; `Status` |
 | `CiSigma::apply_fp32(res, k, x, y, layout = full)` | The same Y = H X over the same double blocks, D, G and the gemm in float, to ~1e-7 relative; `ci_solve`'s first stage; `Status` |
+| `CiSigma::set_workspace_limit(bytes)` | Bound `apply`'s and `apply_fp32`'s device workspace; past it G is computed a block of strings at a time (below) |
 | `CiSigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
 | `CiSigma::rdm1(res, c, gamma, layout)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector, full or packed (`layout`, default full), into n × n device doubles; `Status` |
 | `CiSigma::size(layout = full)` | The operator's n: alpha.size() · beta.size(), or the symmetric layout's alpha.size() (alpha.size() + 1) / 2 |
@@ -87,6 +88,75 @@ the triangle's in the symmetric one (below), so G is, in double:
 | CAS(14,14) | 11,778,624 / 5,891,028 | 10.0 GB | 5.0 GB |
 
 and half that again in float (`apply_fp32`).
+
+**Past a workspace limit, G goes a block of strings at a time.** At
+CAS(14,14) the symmetric G is 5 GB beside ~5 GB of Davidson subspace, past the
+RTX 3080's 10 GB, so `set_workspace_limit` bounds the scratch. While G for the
+whole vector and a chunk of D fit the limit nothing changes, to the bit (and
+unset, the limit is unbounded). Past it, step 3 is split by which of I's links
+a G row serves. Row I = (a, b) reads G at
+
+- (a, b′) over its **β links**, the same α string, and
+- (a′, b) over its **α links**, the same β string.
+
+So the G of an *α block*, the rows whose α string is in [first, first + count)
+against every β string, holds every G that the β links of those same rows
+read; and that of a *β block* every G the α links of its rows read. In the
+full layout `apply` makes two passes: α blocks, each running steps 1 and 2 over
+its rows and then adding E_core c_I, G_I's one-electron term and the β-link
+terms to its own rows; then β blocks, each adding the α-link terms. σ is
+zeroed first and every block adds, each thread still owning its row, so
+nothing is atomic and the result does not depend on the run; it differs from
+the unblocked σ only in the order the same terms are summed, and in the gemm's
+own blocking over a shorter m: ~1e-16 relative in double, and in float up
+to float rounding, ~1e-7, where the gemm picks another kernel for the shape.
+The cost is the first gather and the gemm twice over (each pass covers every determinant once), and G's
+scratch is one block's.
+
+**In the symmetric layout one pass does.** Take a block of strings S of the
+one set and hold G over the *unpacked* determinants (s, x), s ∈ S, x any,
+|S| · m rows (the gather reads c through the mirror, as for any J below the
+triangle). A triangle row (a, b), a ≥ b:
+
+- its β links read G(a, b′): held when a ∈ S;
+- its α links read G(a′, b) = G(b, a′) by the swap symmetry of G: held when
+  b ∈ S.
+
+So the α block and the β block over S are the same rows up to the mirror, and
+one block serves both halves: each block adds the β-link part (with E_core c
+and the one-electron term) to the triangle rows with a ∈ S and the α-link part
+to those with b ∈ S. Walking the blocks over all m strings gives every row
+each part exactly once. The gathers and the gemm then run over m² rows, the
+unpacked vector's, twice the triangle's t = m (m + 1)/2, as the full layout's
+two passes run over 2 m²: blocking costs the symmetric layout's halving and no
+more. (A block also holds both G(s, x) and G(x, s) when s, x ∈ S; skipping the
+mirrored copies would trim the work by |S|² / 2 a block, at the cost of a
+ragged block.)
+
+The block is the most strings whose G and D fit the limit, at least one. While
+bounded, a call first grows the workspace to the lesser of the limit and
+`apply`'s unblocked double scratch, so `ci_solve`'s `apply_fp32` stage and its
+`apply` stage carve one allocation, and the limit holds at the peak: a growth
+from the float workspace to the double one would hold both for a moment.
+`pipeline/fci` sets the limit to whatever its memory estimate leaves free.
+
+On the RTX 3080, at N₂ cc-pVDZ CAS(12,12) (78 pairs) a sigma column costs, per
+`bench/ci_sigma_blocked`, with the workspace it takes:
+
+| Layout, precision | Unbounded | Under 200 MiB | Under 100 MiB |
+|---|---|---|---|
+| full, FP64 | 38.4 ms, 579 MiB | 73.0 ms | 72.3 ms |
+| full, FP32 | 5.3 ms, 321 MiB | 11.4 ms | 10.7 ms |
+| symmetric, FP64 | 18.2 ms, 322 MiB | 38.5 ms | 37.4 ms |
+| symmetric, FP32 | 3.0 ms, 193 MiB | 3.0 ms (fits unblocked) | 6.9 ms |
+
+(the workspace under a limit is the limit: the call grows it there first).
+Blocking costs the predicted 2×, and nothing more as the blocks shrink. So blocking is
+off unless asked for: unset, `apply` is the single pass it was. N₂ cc-pVDZ
+CAS(14,14), three singlets, which wants a 5 GB G unblocked and aborts on the
+workspace growth on that card, converges in `ci_solve`'s symmetric layout
+under a 3000 MiB limit in 217 s, at a card-wide peak of 9,475 MiB, 767 of it
+held before the run.
 
 **The symmetric layout halves the work when N_α = N_β.** Over one
 `StringSet` for both spins, swapping the two strings of every determinant,
@@ -197,14 +267,23 @@ sets with the same number of strings, (4, 1) and (4, 3), by `apply`,
 `apply_fp32` and `rdm1`. In double, `rdm1` of each packed column also matches
 the full layout's on the unpacked one and `ci.rdm`'s `rdm1` to 1e-12 of
 max |γ|; `test/gtest/ci_rdm_gpu.cpp` checks it again on unit vectors.
+Blocked, `apply` under a forced limit equals the unblocked result to 1e-13
+relative per column, and `apply_fp32` to its own float bound (the float gemm's
+rounding depends on the row count it is handed, and cuBLAS on the RTX 3080
+differs by ~1e-7 between the blocked and unblocked shapes of some full-layout
+cases), in both layouts, on every golden case and
+the random shapes (and swap-symmetric ones), at one string a block and at a
+third of the unblocked scratch (a ragged last block); at CAS(12,12), under
+`slow_test.h`, with blocks spanning several chunks of D. A limit at the
+unblocked scratch gives the unbounded result bit for bit.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `sigma.cppm` | Module interface: `CiLayout`, `ci_unpack`, `CiSigma`, `host_sigma`, `host_diagonal` |
-| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked gemm (double or float) and gemv, and launches; `ci_unpack`'s launch |
+| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci_unpack`'s launch |
 | `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
 | `ci_symmetric.h` | The symmetric layout's triangle index map and √2, for device code here and in `../solver/` |
-| `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout), the diagonal kernel, the 1-RDM's unpacking and `ci_unpack` |
+| `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout, whole or by string blocks), the diagonal kernel, the 1-RDM's unpacking and `ci_unpack` |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.sigma.device` and the module `free_breakfast.ci.sigma` |

@@ -25,3 +25,16 @@ target_link_libraries(
   PRIVATE free_breakfast::core free_breakfast::core::resources
           free_breakfast::io free_breakfast::ci
 )
+
+# CiSigma's apply unbounded against blocked under a workspace limit, per
+# column, and ci_solve under one, for active spaces whose G is past the card.
+add_executable(free_breakfast_ci_sigma_blocked ci_sigma_blocked.cpp)
+set_target_properties(
+  free_breakfast_ci_sigma_blocked PROPERTIES CXX_MODULE_STD 1
+                                             CXX_SCAN_FOR_MODULES ON
+)
+target_link_libraries(
+  free_breakfast_ci_sigma_blocked
+  PRIVATE free_breakfast::core free_breakfast::core::resources
+          free_breakfast::io free_breakfast::ci
+)

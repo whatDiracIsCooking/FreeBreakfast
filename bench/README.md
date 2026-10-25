@@ -25,3 +25,5 @@ comparing one run to another.
 | Executable | Times |
 |---|---|
 | `free_breakfast_ci_sigma_precision CASES.json [n_roots] [max_iterations] [device]` | `CiSigma::apply` against `apply_fp32` per column, in the full and the symmetric layout with the device workspace each takes, and `ci_solve` FP64-only against its two-stage solve at several `fp32_tolerance`s, in the symmetric layout and held to the full one, over the active spaces `tools/emit_ci_bench_integrals.py` writes. `src/ci/solver/README.md` has its numbers. |
+| `free_breakfast_ci_sigma_blocked CASES.json columns LIMIT_MIB [device]` | `CiSigma::apply` and `apply_fp32` per column, unbounded against blocked under `set_workspace_limit(LIMIT_MIB)`, in both layouts, with the workspace each takes. `../src/ci/sigma/README.md` has its numbers. |
+| `free_breakfast_ci_sigma_blocked CASES.json solve LIMIT_MIB [n_roots] [device]` | `ci_solve`'s singlets under that limit (0 leaves it unbounded), for a space like CAS(14,14) whose G is past the card. |

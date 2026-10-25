@@ -21,11 +21,29 @@ import free_breakfast.ci.solver;
 
 namespace free_breakfast {
 
+// C(n, n_alpha), the strings of one spin, in double, as the space the step
+// refuses can pass any integer type: C(n, n_alpha)^2 is 1.4e12 for N2 cc-pVDZ.
+double fci_strings(int32_t n, int32_t n_alpha) {
+  double strings = 1.0;
+  for (int32_t k = 0; k < n_alpha; ++k) {
+    strings = strings * static_cast<double>(n - k) / static_cast<double>(k + 1);
+  }
+  return std::round(strings);
+}
+
+// The bytes of CiSigma apply's scratch in double over n orbitals with G for
+// rows rows: rows (P + 1) for G and one chunk of D, at most 64 MiB.
+double fci_sigma_bytes(int32_t n, double rows) {
+  const double orbitals = n;
+  const double pairs = orbitals * (orbitals + 1.0) / 2.0;
+  return (rows * (pairs + 1.0) * sizeof(double)) +
+         std::min(static_cast<double>(size_t{64} << 20U), rows * pairs * sizeof(double));
+}
+
 // The device bytes the solve over all n orbitals, n_alpha electrons of each
-// spin and nroots roots holds at its peak, inside ci_solve's Davidson. In
-// double, as the space it refuses can pass any integer type: C(n, n_alpha)^2
-// is 1.4e12 for N2 cc-pVDZ. A singlet solve runs on the symmetric layout's
-// packed vectors, s = C(n, n_alpha) strings giving dim = s^2 determinants and
+// spin and nroots roots holds at its peak, besides CiSigma apply's scratch
+// (fci_sigma_bytes). A singlet solve runs on the symmetric layout's packed
+// vectors, s = C(n, n_alpha) strings giving dim = s^2 determinants and
 // t = s (s + 1) / 2 packed elements; g = min(t, 2 nroots) guesses,
 // m = max(2 nroots, min(t, 16 nroots)) subspace columns (ci_solve's choices),
 // P = n (n + 1) / 2 packed pairs:
@@ -36,18 +54,15 @@ namespace free_breakfast {
 //   davidson       2 m t for V and A V, 3 nroots t for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta;
 //                  its GD+k collapse works in R and V^T C, adding nothing
-//   CiSigma apply  t (P + 1) for G, one vector's (apply goes a vector at a
-//                  time), and one chunk of D, at most 64 MiB
 //   CiSigma tables two sets of strings (8 bytes) and links (12 bytes per
 //                  replacement), the P x (P + 1) contraction in double and
 //                  again in float (apply_fp32's), n + 2 n^2 terms
 //   integrals      (tu|vw) n^4 and h_eff n^2
+//
+// The scratch is the device workspace, which outlives the Davidson, so it
+// is added to whichever of the Davidson and the unpacked roots is more.
 double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
-  double strings = 1.0;
-  for (int32_t k = 0; k < n_alpha; ++k) {
-    strings = strings * static_cast<double>(n - k) / static_cast<double>(k + 1);
-  }
-  strings = std::round(strings);
+  const double strings = fci_strings(n, n_alpha);
   const double dim = strings * strings;
   const double packed = strings * (strings + 1.0) / 2.0;
   const double roots = nroots;
@@ -57,19 +72,17 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const double pairs = orbitals * (orbitals + 1.0) / 2.0;
   const double replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
 
-  // ci_solve's own and the step's diagonal throughout; then the Davidson and
-  // the sigma's G, or after it the unpacked roots, whichever is more.
+  // ci_solve's own and the step's diagonal throughout; then the Davidson, or
+  // after it the unpacked roots, whichever is more.
   const double held = ((guesses + roots + 1.0) * packed) + dim;
-  const double davidson = (2.0 * subspace * packed) + (3.0 * roots * packed) +
-                          (subspace * (subspace + roots + 1.0)) + (packed * (pairs + 1.0));
+  const double davidson =
+      (2.0 * subspace * packed) + (3.0 * roots * packed) + (subspace * (subspace + roots + 1.0));
   const double doubles = held + std::max(davidson, roots * dim) + (pairs * (pairs + 1.0)) +
                          (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) +
                          (orbitals * orbitals);
-  const double chunk =
-      std::min(static_cast<double>(size_t{64} << 20U), packed * pairs * sizeof(double));
   const double tables =
       2.0 * strings * (8.0 + (12.0 * replacements)) + (pairs * (pairs + 1.0) * sizeof(float));
-  return (doubles * sizeof(double)) + chunk + tables;
+  return (doubles * sizeof(double)) + tables;
 }
 
 [[nodiscard]] Result<FciOutput>
@@ -88,8 +101,11 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const wwr::wwrStream_t stream = res.stream();
 
   // Refused before anything is allocated: past the device's memory, the
-  // first allocation to fail would abort (CreatePolicy), not return.
-  const double need = fci_device_bytes(nmo, n_electrons / 2, nroots);
+  // first allocation to fail would abort (CreatePolicy), not return. The
+  // sigma's scratch is what is left: G for the whole triangle when it fits,
+  // else CiSigma blocks it, down to one string's rows a block.
+  const double held = fci_device_bytes(nmo, n_electrons / 2, nroots);
+  const double need = held + fci_sigma_bytes(nmo, fci_strings(nmo, n_electrons / 2));
   size_t free_bytes = 0;
   size_t total_bytes = 0;
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
@@ -139,6 +155,9 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const StringSet alpha = FBF_TRY(StringSet::create(nmo, n_electrons / 2));
   const StringSet beta = FBF_TRY(StringSet::create(nmo, n_electrons / 2));
   CiSigma sigma = FBF_TRY(CiSigma::create(res, alpha, beta));
+  // Everything the estimate leaves free, which is G for the whole triangle
+  // (and the solve as it was) whenever that fits.
+  sigma.set_workspace_limit(static_cast<size_t>(static_cast<double>(free_bytes) - held));
   FBF_TRY(sigma.set_integrals(res, ham.e_core, h, eri));
   const auto dim = static_cast<size_t>(sigma.size());
   Buffers::device<double> diagonal_device(dim, res.device());

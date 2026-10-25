@@ -100,6 +100,11 @@ enum class CiLayout : int32_t { full, symmetric };
 /// lets only the rows I_α ≥ I_β be computed: G_J for J below the triangle is
 /// G of its mirror. That halves the gathers, the gemm and G's scratch.
 ///
+/// G for one vector can still be past the device (5 GB at CAS(14,14) in the
+/// symmetric layout), so set_workspace_limit bounds the scratch: past the
+/// limit, G is computed a block of strings at a time, at up to twice the
+/// gathers and gemm.
+///
 /// Move-only; the buffers are on the device of the DeviceResources create was
 /// given, which every call must pass again.
 class CiSigma {
@@ -158,6 +163,27 @@ public:
   [[nodiscard]] Status apply_fp32(DeviceResources &res, int32_t k, const double *x, double *y,
                                   CiLayout layout = CiLayout::full);
 
+  /// @brief Bound the device workspace apply and apply_fp32 take to @p bytes;
+  /// unbounded until called.
+  ///
+  /// Where G for a whole vector and a chunk of D fit, a call runs as it would
+  /// unbounded, and gives the same result to the bit. Past it, G is held for a
+  /// block of strings at a time, as many as fit: in the full layout α blocks,
+  /// whose G serves the β links of their own rows, then β blocks, serving the
+  /// α links; in the symmetric layout one pass of blocks over the one set
+  /// serves both (see the README). That runs the first gather and the gemm
+  /// over every determinant twice in the full layout, and over all m² rather
+  /// than the triangle's in the symmetric one, and agrees with the unblocked
+  /// result to roundoff: σ_I sums the same terms in another order. A block is
+  /// never less than one string, so a limit under one string's G and D is
+  /// exceeded by that much.
+  ///
+  /// While bounded, a call first grows the workspace to the lesser of
+  /// @p bytes and apply's unblocked scratch, so apply_fp32 followed by apply
+  /// (ci_solve's two stages) shares one allocation rather than holding the old
+  /// and the new across a growth: the bound covers the peak.
+  void set_workspace_limit(size_t bytes) noexcept { workspace_limit_ = bytes; }
+
   /// @brief diag(H) into the size() device doubles @p diagonal, by
   /// host_diagonal's rule and in its order. Queued on res.stream().
   ///
@@ -202,6 +228,11 @@ private:
   Status apply_as(DeviceResources &res, int32_t k, const double *x, double *y, const T *contraction,
                   CiLayout layout);
 
+  // apply_as past workspace_limit_: G a block of strings at a time.
+  template <typename T>
+  Status apply_blocked(DeviceResources &res, int32_t k, const double *x, double *y,
+                       const T *contraction, CiLayout layout);
+
   int32_t dev_idx_;
   int32_t n_orbitals_;
   int32_t n_alpha_; // alpha.size()
@@ -211,6 +242,8 @@ private:
   bool one_set_; // alpha and beta are the same (n, N): CiLayout::symmetric applies
   bool has_integrals_ = false;
   double e_core_ = 0.0;
+  // set_workspace_limit's bound on apply's scratch, in bytes.
+  size_t workspace_limit_ = std::numeric_limits<size_t>::max();
   // The link tables, three int32_t per replacement: target, packed pair, sign.
   Buffers::device<int32_t> alpha_links_;
   Buffers::device<int32_t> beta_links_;
