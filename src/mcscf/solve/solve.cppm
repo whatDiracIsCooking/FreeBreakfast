@@ -108,10 +108,12 @@ struct CasscfSolution {
 /// over the last accepted iteration past 1e-11 hartree rejects the orbitals:
 /// the step from the accepted ones is retried at half its length and the
 /// trust radius halved. Otherwise up to max_micro augmented-Hessian solves of
-/// the quadratic model at frozen integrals, [[0, g^T], [g, H + D]] by
-/// @c davidson_solve over @c OrbitalHessian H plus D, a BFGS correction for
-/// the CI's relaxation learned from the last 8 accepted steps, preconditioned
-/// by the diagonal, give the step x, at most the trust radius long; and
+/// the quadratic model at frozen integrals, the lowest root of [[0, g^T], [g,
+/// H + D]] over @c OrbitalHessian H plus D, a BFGS correction for the CI's
+/// relaxation learned from the last 8 accepted steps, give the step x, at most
+/// the trust radius long; the solves share one subspace, grown by
+/// diagonally preconditioned residuals, so a later one pays only for what the
+/// earlier ones' products lack; and
 /// C <- C exp(kappa(x)).
 /// The radius doubles (up to options.trust_radius) when an accepted step's
 /// energy change is within 25% of the model's.

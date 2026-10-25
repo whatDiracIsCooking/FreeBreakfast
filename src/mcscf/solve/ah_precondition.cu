@@ -1,5 +1,5 @@
 // The device half of free_breakfast.mcscf.solve: the augmented Hessian's
-// diagonal preconditioner, so its Davidson's corrections never leave the
+// diagonal preconditioner, so its subspace's corrections never leave the
 // device. One source for both backends -- nvcc under CUDA, clang -x hip under
 // HIP.
 

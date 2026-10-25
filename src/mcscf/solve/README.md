@@ -57,12 +57,35 @@ Each macro iteration, at the current C:
 6. **The step**: `OrbitalHessian` H at C plus the CI response D (below), and
    up to `max_micro` solves of the quadratic model at these frozen integrals,
    E + g·x + ½ xᵀ(H + D)x. Each is the lowest root of the augmented Hessian
-   [[0, gₘᵀ], [gₘ, H + D]] by `davidson_solve` from the unit vector e₀,
-   preconditioned by r / (θ − (0, diag(H + D))); its eigenvector (v₀, v)
-   gives dx = v / v₀, with (H + D − λ) dx = −gₘ. dx is cut to what is left of the trust radius, and the
-   model gradient moves to gₘ + (H + D) dx, which is λ dx − gₘ by the root's own
-   equation: no H product past the Davidson's. The solves stop once ‖gₘ‖ is
-   a tenth of ‖g‖, the radius is reached, or `max_micro` is.
+   [[0, gₘᵀ], [gₘ, H + D]], gₘ the model gradient; its eigenvector (v₀, v)
+   gives dx = v / v₀, with (H + D − λ) dx = −gₘ. dx is cut to what is left of
+   the trust radius, and the model gradient moves to gₘ + (H + D) dx. The
+   solves stop once ‖gₘ‖ is a tenth of ‖g‖, the radius is reached, or
+   `max_micro` is.
+
+   **The solves share one subspace.** H + D is fixed for the macro
+   iteration, and only gₘ changes between its solves, so they keep one
+   orthonormal Q (n_pairs × q) and (H + D) Q, grown by every product taken
+   and dropped when the macro iteration ends. A solve projects:
+   the lowest root (μ, (u₀, u)) of the (q + 1)-square
+   [[0, (Qᵀgₘ)ᵀ], [Qᵀgₘ, Qᵀ(H + D)Q]] (`diagonalize`), and its residual
+   r = u₀ gₘ + (H + D) Q u − μ Q u (its first row is 0 by the small
+   problem's own equation). Only while ‖r‖ is above the tolerance below does
+   Q grow, by r / (μ − diag(H + D)) (the denominator held off zero at 1e-8),
+   orthogonalized against Q twice and normalized, and one product. Then
+   dx = Q u / u₀ and (H + D) dx = (H + D) Q u / u₀, a gemv of products
+   already taken. Q holds at most 40 columns (`kAhMaxSubspace`); past that
+   it restarts on the current direction Q u / ‖u‖, whose image is a gemv of
+   the old one's, so no product is lost. A solve adds at most 50 columns,
+   and a correction re-orthogonalized to 1e-12 or less ends it; either way
+   its last root is taken, and the energy test guards the step.
+
+   This is what `davidson_solve` from e₀ did, for fewer products. Its subspace was [e₀, (0, Q)]: e₀'s row is the only one a
+   correction has after the first, and re-orthogonalizing against e₀
+   removes it. But it applied the operator to e₀ itself, an H product of
+   zero, once per solve; and each solve after a macro iteration's first
+   started over, though gₘ = g + (H + D) x lies almost wholly in the span
+   the last one built.
 7. **Rotate**: C ← C exp(κ(x)), κ unpacked to the full antisymmetric nmo × nmo
    (`unpack_orbital_pairs`) and exponentiated by `skew_eig` and `skew_expm`.
 
@@ -98,32 +121,41 @@ radius, up to `trust_radius`, when the two are within 25%.
 | `tau_j`, `tau_k` | 1e-14 | the screening of every J and K build |
 
 **The cost is the Hessian products.** Each H·κ is two J and two K builds when
-there is a core (`hessian/`), and each micro iteration's Davidson takes one
-per iteration; `CasscfIteration::hessian_products` counts them. The integrals
-and the Hessian's own setup are a few J and K per active pair and per core
-orbital, once per macro iteration.
+there is a core (`hessian/`), and each column added to Q costs one;
+`CasscfIteration::hessian_products` counts them. A macro iteration's first
+solve pays for every column it needs; a later solve pays only for what its
+own residual still lacks, often half or less. The integrals and the
+Hessian's own setup are a few J and K per active pair and per core orbital,
+once per macro iteration.
 
-**The augmented Hessian's Davidson neither allocates nor syncs of its own.**
-Its operator's scratch (the n × k blocks around `OrbitalHessian::apply` and
-D's rank × k product), D's terms, the guess e₀ and (0, diag(H + D)) are
-buffers of the solve's, sized once for the largest block `davidson_solve`
-can pass (`kAhMaxSubspace` columns) and for 2 × 8 BFGS terms. diag(H + D) is
+**The subspace allocates nothing per iteration.** Q, (H + D) Q beside gₘ, D's
+terms and scales, diag(H + D), the residual, the correction, the step pair
+(dx, (H + D) dx), and the projected problem are buffers of the solve's, sized
+once for `kAhMaxSubspace` columns and 2 × 8 BFGS terms. diag(H + D) is
 uploaded once per macro iteration, and the preconditioner is a kernel of this
-module's (`ah_precondition.cu`), θ passed by value, so a Davidson iteration
-syncs only where `davidson_solve` itself does. Per micro iteration there is
-one upload of gₘ, not waited for, and one readback of λ and v together. The
-kernel is this module's, not a shared one in `recipes/davidson`: `ci_solve`'s
-preconditioner divides with a 1e-3 floor over a spin-shifted diagonal, this
-one multiplies by the reciprocal (bitwise what the host-built 1 / d and its
-`dgmm` gave, so the iteration counts did not move) with a 1e-8 floor, and a
-common kernel would carry both as options for two callers.
+module's (`ah_precondition.cu`), μ passed by value. Per column added there
+are a handful of syncs (the small problem's upload, `diagonalize`, its
+readback, the residual's and the correction's norms, the new row's readback),
+against the two J and two K of its product. The kernel is this module's, not
+a shared one in `recipes/davidson`: `ci_solve`'s preconditioner divides with
+a 1e-3 floor over a spin-shifted diagonal, this one multiplies by the
+reciprocal with a 1e-8 floor, and a common kernel would carry both as options
+for two callers.
 
-**The augmented Hessian's tolerance follows ‖gₘ‖**: an absolute residual of
-about 1e-2 ‖gₘ‖ (relative to max(1, max |diag H|)), so the step is good to
-about 1% at any ‖g‖. A fixed one would stop the Davidson at e₀ once ‖g‖ fell
-below it, and the step would be zero. A Davidson that runs out of iterations
-or new directions still leaves its last Ritz pair, which is taken: the energy
-test guards the step.
+**The tolerance follows ‖gₘ‖**: a residual of about 1e-2 ‖gₘ‖ (relative to
+max(1, max |diag(H + D)|)), times max(|μ|, the projected problem's largest
+|eigenvalue|), so the step is good to about 1% at any ‖g‖. A fixed one would
+stop the solve at e₀ once ‖g‖ fell below it, and the step would be zero.
+
+**Why a persistent augmented Hessian, and not Steihaug CG or GLTR** over the
+same products: those take the Newton step, or a boundary point of the trust
+region when H + D is indefinite, where the augmented Hessian takes a
+level-shifted one. Swapping the step's model would move every case's macro
+trajectory and the radius's behaviour with it, which the issue's bar (macro
+iterations within one) leaves no room to absorb, and the products it could
+save are few: past a macro iteration's first solve, the persistent subspace
+already prices a later one at its residual's few columns, and most macro
+iterations here take one solve. Steihaug was not measured.
 
 ## Not done
 
@@ -163,7 +195,7 @@ by AVAS, at `conv_tol_grad` 1e-9:
 | File | Role |
 |------|------|
 | `solve.cppm` | Module interface: `casscf_solve`, `CasscfOptions`, `CasscfIteration`, `CasscfSolution` |
-| `solve.cpp` | The loop, the augmented Hessian (with D) as a `LinearOperator`, its preconditioner, the BFGS pairs |
-| `ah_precondition.cu` | The preconditioner's kernel, r / (θ − (0, diag(H + D))) for one column |
+| `solve.cpp` | The loop, the augmented Hessian's persistent subspace over H + D, the BFGS pairs |
+| `ah_precondition.cu` | The preconditioner's kernel, r / (μ − diag(H + D)) for one column |
 | `ah_precondition_bridge.h` | Its launcher, shared by the `.cu` and `solve.cpp`'s global module fragment |
 | `CMakeLists.txt` | The device library `free_breakfast.mcscf.solve.device` and the module `free_breakfast.mcscf.solve` |

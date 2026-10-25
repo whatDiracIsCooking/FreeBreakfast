@@ -13,15 +13,15 @@ module free_breakfast.mcscf.solve;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kOne, kZero
+import free_breakfast.core.constants; // kOne, kZero, kNegOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // gemm, dgmm, wwrMemcpy2DAsync, gpu_status
+import free_breakfast.core.wwr; // gemm, gemv, dgmm, nrm2, scal, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
-import free_breakfast.recipes.davidson;
+import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.expm;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -45,13 +45,19 @@ constexpr double kEnergyRiseTolerance = 1e-11;
 // min(kCiLoosest, kCiPerGradient ||g||), held at or above options.ci's.
 constexpr double kCiLoosest = 1e-8;
 constexpr double kCiPerGradient = 1e-4;
-// The augmented Hessian's Davidson: an absolute residual of
-// kAhPerGradient ||g_model||, so the step is good to ~1% at any ||g||.
+// The augmented Hessian's subspace solve: an absolute residual of
+// kAhPerGradient ||g_model||, so the step is good to ~1% at any ||g||. Q
+// holds at most kAhMaxSubspace columns, then restarts on the current step's
+// direction; a micro iteration adds at most kAhMaxIterations.
 constexpr double kAhPerGradient = 1e-2;
 constexpr int32_t kAhMaxSubspace = 40;
 constexpr int32_t kAhMaxIterations = 50;
-// The preconditioner's denominator theta - diag(H) is held off zero here.
+// The preconditioner's denominator mu - diag(H + D) is held off zero here.
 constexpr double kAhDenominatorFloor = 1e-8;
+// A correction re-orthogonalized against Q to this norm or below has nothing
+// new in it, and the solve stops on the solution it has: davidson_solve's
+// default floor, which the subspace solve replaced.
+constexpr double kAhLinearDependenceFloor = 1e-12;
 // Micro iterations stop once the model gradient is this fraction of ||g||.
 constexpr double kMicroGradientFraction = 0.1;
 // The trust radius doubles when an accepted step's energy change is within
@@ -63,64 +69,6 @@ constexpr double kTrustAgreement = 0.25;
 // off roundoff.
 constexpr size_t kResponseMemory = 8;
 constexpr double kResponseSafeguard = 1e-8;
-
-// [[0, g^T], [g, H + D]] over the (n + 1)-vectors (v_0, v), g the model
-// gradient on the device and D = R diag(scale) R^T the CI response's
-// rank-@p rank correction (R n x rank, column-major): the augmented Hessian
-// whose lowest eigenvector gives the step x = v / v_0, (H + D - lambda) x = -g.
-// xs, ys (n x columns) and rv (rank x columns) are the caller's, allocated
-// once for the solve: held across OrbitalHessian::apply, which takes the
-// workspace, so not the workspace's, and a Davidson applies this every
-// iteration, so not allocated per call.
-struct AugmentedHessian {
-  OrbitalHessian &hessian;
-  const double *gradient;
-  const double *response;
-  const double *response_scale;
-  int32_t rank;
-  int32_t n;
-  int32_t columns;
-  double *xs;
-  double *ys;
-  double *rv;
-  int32_t products = 0;
-
-  Status apply(DeviceResources &res, const int32_t k, const double *const x, double *const y) {
-    if (k > columns) {
-      return err_config("casscf_solve: the augmented Hessian's buffers hold {} columns, given {}",
-                        columns, k);
-    }
-    const wwr::wwrblasHandle_t blas = res.blas().get();
-    const wwr::wwrStream_t stream = res.stream();
-    const int32_t m = n + 1;
-    const size_t width = static_cast<size_t>(n) * sizeof(double);
-    const size_t pitch = static_cast<size_t>(m) * sizeof(double);
-    FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(xs, width, x + 1, pitch, width, static_cast<size_t>(k),
-                                             wwr::wwrMemcpyDeviceToDevice, stream)));
-    FBF_TRY(hessian.apply(res, k, xs, ys));
-    products += k;
-    // D v = R diag(scale) (R^T v).
-    if (rank > 0) {
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N,
-                                                    rank, k, n, &kOne<double>, response, n, xs, n,
-                                                    &kZero<double>, rv, rank)));
-      FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, rank, k, rv, rank,
-                                                    response_scale, 1, rv, rank)));
-      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n,
-                                                    k, rank, &kOne<double>, response, n, rv, rank,
-                                                    &kOne<double>, ys, n)));
-    }
-    // H v + g v_0, and g^T v into row 0.
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, k,
-                                                  1, &kOne<double>, gradient, n, x, m,
-                                                  &kOne<double>, ys, n)));
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, 1, k,
-                                                  n, &kOne<double>, gradient, n, xs, n,
-                                                  &kZero<double>, y, m)));
-    return gpu_status(wwr::wwrMemcpy2DAsync(y + 1, pitch, ys, width, width, static_cast<size_t>(k),
-                                            wwr::wwrMemcpyDeviceToDevice, stream));
-  }
-};
 
 // @p count doubles from the device into a host vector, waited for.
 Result<std::vector<double>> casscf_download(DeviceResources &res, const double *const from,
@@ -204,7 +152,6 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   const auto n = static_cast<size_t>(ncas);
   const int32_t n_pairs = (ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas));
   const auto pairs = static_cast<size_t>(n_pairs);
-  const int32_t m = n_pairs + 1;
 
   // C now, and C at the last accepted iteration, which a step starts from.
   SphericalMatrixAO c_now(res, basis);
@@ -220,30 +167,30 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   Buffers::device<wwr::wwrDoubleComplex> kappa_u(mo * mo, res.device());
   Buffers::device<double> kappa_w(mo, res.device());
   Buffers::device<double> rotation(mo * mo, res.device());
-  // The augmented Hessian, every buffer for the solve: its Davidson runs up
-  // to ah_columns columns, so no apply takes more. The model gradient; D's
-  // terms and scales, at most 2 kResponseMemory; (0, diag(H + D)) for the
-  // preconditioner; the guess e_0, set once; the operator's xs, ys and rv;
-  // and the Ritz vector and value side by side, (v_0, v, lambda), read back
-  // in one copy: v first, so it keeps the pool's alignment, which the
-  // Davidson's BLAS on it may choose its kernels (and roundings) by.
-  const int32_t ah_columns = std::max(2, std::min(m, kAhMaxSubspace));
-  const auto ah_width = static_cast<size_t>(ah_columns);
+  // The augmented Hessian's subspace, every buffer for the solve. Q, at most
+  // q_max orthonormal columns, and beside it [g_model, (H + D) Q], the model
+  // gradient first so one gemv takes a new column's overlaps with both; D's
+  // terms and scales, at most 2 kResponseMemory, and R^T q beside them; diag(H
+  // + D) for the preconditioner; a residual and its correction; the step dx and
+  // (H + D) dx, read back in one copy; and the projected problem, (q + 1)^2,
+  // its eigenvalues, and the small vectors in and out of the gemvs.
+  const int32_t q_max = std::max(1, std::min(n_pairs, kAhMaxSubspace));
+  const auto q_width = static_cast<size_t>(q_max);
   const size_t response_max = 2 * kResponseMemory;
-  Buffers::device<double> model_gradient(std::max<size_t>(pairs, 1), res.device());
-  Buffers::device<double> response_device(std::max<size_t>(pairs * response_max, 1), res.device());
+  const size_t ah_length = std::max<size_t>(pairs, 1);
+  Buffers::device<double> ah_basis(ah_length * q_width, res.device());
+  Buffers::device<double> ah_image(ah_length * (q_width + 1), res.device());
+  Buffers::device<double> response_device(ah_length * response_max, res.device());
   Buffers::device<double> scale_device(response_max, res.device());
-  Buffers::device<double> ah_diagonal(static_cast<size_t>(m), res.device());
-  Buffers::device<double> ah_guess(static_cast<size_t>(m), res.device());
-  Buffers::device<double> ah_xs(std::max<size_t>(pairs * ah_width, 1), res.device());
-  Buffers::device<double> ah_ys(std::max<size_t>(pairs * ah_width, 1), res.device());
-  Buffers::device<double> ah_rv(response_max * ah_width, res.device());
-  Buffers::device<double> ah_pair(static_cast<size_t>(m) + 1, res.device());
-  {
-    std::vector<double> unit(static_cast<size_t>(m), 0.0);
-    unit[0] = 1.0;
-    FBF_TRY(casscf_upload(res, unit, ah_guess.data()));
-  }
+  Buffers::device<double> ah_rv(response_max, res.device());
+  Buffers::device<double> ah_diagonal(ah_length, res.device());
+  Buffers::device<double> ah_residual(ah_length, res.device());
+  Buffers::device<double> ah_correction(ah_length, res.device());
+  Buffers::device<double> ah_step(2 * ah_length, res.device());
+  Buffers::device<double> ah_projected((q_width + 1) * (q_width + 1), res.device());
+  Buffers::device<double> ah_ritz(q_width + 1, res.device());
+  Buffers::device<double> ah_coefficients(q_width + 1, res.device());
+  Buffers::device<double> ah_overlaps(q_width + 2, res.device());
 
   // C_now = C_accepted exp(t kappa), from kappa_u and kappa_w.
   const auto rotate = [&](const double t) -> Status {
@@ -385,19 +332,20 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
                                        wwr::wwrMemcpyDeviceToDevice, stream)));
 
     // 5. The step: augmented-Hessian solves of the quadratic model
-    //    E + g.x + x.Hx / 2, each from the model gradient g + H x the last
-    //    left, until it is small, the radius is reached or max_micro is.
+    //    E + g.x + x.(H + D)x / 2, each from the model gradient g + (H + D) x
+    //    the last left, until it is small, the radius is reached or max_micro
+    //    is. H + D is fixed for the macro iteration, so the solves share one
+    //    subspace Q (see the README).
     OrbitalHessian hessian =
         FBF_TRY(OrbitalHessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
                                        ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
-    // (0, diag(H + D)) for the preconditioner, built here and uploaded once
-    // for the macro iteration, and D's terms beside it.
-    std::vector<double> ah_diagonal_host(static_cast<size_t>(m), 0.0);
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_diagonal_host.data() + 1, hessian.diagonal().data(),
+    // diag(H + D) for the preconditioner, built here and uploaded once for the
+    // macro iteration, and D's terms beside it.
+    std::vector<double> h_diagonal(pairs);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(h_diagonal.data(), hessian.diagonal().data(),
                                            pairs * sizeof(double), wwr::wwrMemcpyDeviceToHost,
                                            stream)));
     FBF_TRY(res.sync());
-    const std::span<double> h_diagonal{ah_diagonal_host.data() + 1, pairs};
     const auto rank = static_cast<int32_t>(response.size());
     std::vector<double> response_host(pairs * response.size());
     std::vector<double> scale_host(response.size());
@@ -411,81 +359,220 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     }
     FBF_TRY(casscf_upload(res, response_host, response_device.data()));
     FBF_TRY(casscf_upload(res, scale_host, scale_device.data()));
-    FBF_TRY(casscf_upload(res, ah_diagonal_host, ah_diagonal.data()));
+    FBF_TRY(casscf_upload(res, h_diagonal, ah_diagonal.data()));
     double h_scale = 1.0;
     for (const double d : h_diagonal) {
       h_scale = std::max(h_scale, std::abs(d));
     }
-    // r / (theta - (0, diag(H + D))), the denominator off zero, on the device:
-    // theta goes by value, so a Davidson iteration's correction neither
-    // allocates nor syncs.
-    const auto precondition = [&](DeviceResources &r, std::span<const double> theta,
-                                  const double * /*ritz_vectors*/, const double *residual,
-                                  double *correction) -> Status {
-      for (size_t col = 0; col < theta.size(); ++col) {
-        const size_t at = col * static_cast<size_t>(m);
-        FBF_TRY(gpu_status(device::ah_precondition(r.stream(), m, theta[col], kAhDenominatorFloor,
-                                                   ah_diagonal.data(), residual + at,
-                                                   correction + at)));
+
+    // Q's column j at ah_basis + j n, (H + D) q_j at ah_image + (j + 1) n, and
+    // the model gradient at ah_image. The small problem's pieces on the host:
+    // A = Q^T (H + D) Q (q_max x q_max, both triangles) and b = Q^T g_model.
+    const auto column = [&](double *base, const int32_t j) {
+      return base + (static_cast<size_t>(j) * pairs);
+    };
+    // (H + D) q_j into its column of ah_image: H, then D q = R diag(scale)
+    // (R^T q).
+    const auto apply = [&](const int32_t j) -> Status {
+      const double *const x = column(ah_basis.data(), j);
+      double *const y = column(ah_image.data(), j + 1);
+      FBF_TRY(hessian.apply(res, 1, x, y));
+      if (rank > 0) {
+        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, rank, 1, n_pairs, &kOne<double>,
+            response_device.data(), n_pairs, x, n_pairs, &kZero<double>, ah_rv.data(), rank)));
+        FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, rank, 1,
+                                                      ah_rv.data(), rank, scale_device.data(), 1,
+                                                      ah_rv.data(), rank)));
+        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_pairs, 1, rank, &kOne<double>,
+            response_device.data(), n_pairs, ah_rv.data(), rank, &kOne<double>, y, n_pairs)));
       }
       return {};
     };
+    // [Q, (H + D) Q] times the host coefficients c (q of them) into
+    // ah_step's two columns, read back as (Q c, (H + D) Q c).
+    const auto expand = [&](const int32_t q,
+                            std::span<const double> c) -> Result<std::vector<double>> {
+      FBF_TRY(casscf_upload(res, c, ah_coefficients.data()));
+      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, n_pairs, q, &kOne<double>, ah_basis.data(), n_pairs,
+          ah_coefficients.data(), 1, &kZero<double>, ah_step.data(), 1)));
+      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, n_pairs, q, &kOne<double>, column(ah_image.data(), 1), n_pairs,
+          ah_coefficients.data(), 1, &kZero<double>, ah_step.data() + pairs, 1)));
+      return casscf_download(res, ah_step.data(), 2 * pairs);
+    };
+    std::vector<double> a_host(q_width * q_width);
+    std::vector<double> b_host(q_width);
+    std::vector<double> projected;
+    int32_t q = 0;
 
     std::vector<double> g_model = g;
     std::ranges::fill(x_total, 0.0);
     std::ranges::fill(hx_total, 0.0);
     for (int32_t micro = 1; micro <= options.max_micro; ++micro) {
-      // Not waited for: g_model is next written after the readback below,
-      // whose sync on this stream follows the copy.
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(model_gradient.data(), g_model.data(),
-                                             pairs * sizeof(double), wwr::wwrMemcpyHostToDevice,
-                                             stream)));
-      AugmentedHessian op{hessian,
-                          model_gradient.data(),
-                          response_device.data(),
-                          scale_device.data(),
-                          rank,
-                          n_pairs,
-                          ah_columns,
-                          ah_xs.data(),
-                          ah_ys.data(),
-                          ah_rv.data()};
-      const double g_model_norm = std::sqrt(casscf_dot(g_model, g_model));
-      DavidsonOptions ah;
-      ah.residual_tolerance = std::clamp(kAhPerGradient * g_model_norm / h_scale, 1e-14, 1e-4);
-      ah.max_iterations = kAhMaxIterations;
-      const auto info =
-          davidson_solve<double>(res, op, precondition, m, 1, ah_columns, ah_guess.data(), 1,
-                                 ah_pair.data() + m, ah_pair.data(), ah);
-      record.hessian_products += op.products;
-      // Out of iterations or of new directions, the last Ritz pair still
-      // gives a step of the model, and the energy test guards it.
-      if (!info && info.error().kind != ErrorKind::MaxIterationsExceeded &&
-          info.error().kind != ErrorKind::Divergence) {
-        return std::unexpected{info.error()};
+      // g_model into ah_image's first column, and b = Q^T g_model.
+      FBF_TRY(casscf_upload(res, g_model, ah_image.data()));
+      if (q > 0) {
+        FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_T, n_pairs, q, &kOne<double>, ah_basis.data(), n_pairs,
+            ah_image.data(), 1, &kZero<double>, ah_overlaps.data(), 1)));
+        const std::vector<double> b =
+            FBF_TRY(casscf_download(res, ah_overlaps.data(), static_cast<size_t>(q)));
+        std::ranges::copy(b, b_host.begin());
       }
-      const std::vector<double> pair =
-          FBF_TRY(casscf_download(res, ah_pair.data(), static_cast<size_t>(m) + 1));
-      const std::span<const double> v{pair.data(), static_cast<size_t>(m)};
-      const double lambda = pair[static_cast<size_t>(m)];
-      if (v[0] == 0.0) {
+      const double g_model_norm = std::sqrt(casscf_dot(g_model, g_model));
+      const double tolerance = std::clamp(kAhPerGradient * g_model_norm / h_scale, 1e-14, 1e-4);
+
+      // The lowest root mu, (u_0, u), of [[0, b^T], [b, A]], and Q grown by
+      // its preconditioned residual until that is below the tolerance, the
+      // correction has nothing new, or kAhMaxIterations columns are added.
+      double mu = 0.0;
+      std::vector<double> root;
+      for (int32_t added = 0;; ++added) {
+        const int32_t k = q + 1;
+        const auto kz = static_cast<size_t>(k);
+        projected.assign(kz * kz, 0.0);
+        for (size_t j = 0; j + 1 < kz; ++j) {
+          projected[j + 1] = b_host[j];
+          for (size_t i = j; i + 1 < kz; ++i) {
+            projected[(i + 1) + ((j + 1) * kz)] = a_host[i + (j * q_width)];
+          }
+        }
+        FBF_TRY(casscf_upload(res, projected, ah_projected.data()));
+        FBF_TRY(diagonalize<double>(res, k, ah_projected.data(), ah_ritz.data()));
+        const std::vector<double> ritz = FBF_TRY(casscf_download(res, ah_ritz.data(), kz));
+        root = FBF_TRY(casscf_download(res, ah_projected.data(), kz));
+        mu = ritz.front();
+        const double spectrum = std::max(std::abs(ritz.front()), std::abs(ritz.back()));
+
+        // r = u_0 g_model + (H + D) Q u - mu Q u: its first row, b.u - mu
+        // u_0, is 0 by the small problem's own equation.
+        FBF_TRY(casscf_upload(res, root, ah_coefficients.data()));
+        FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_N, n_pairs, k, &kOne<double>, ah_image.data(), n_pairs,
+            ah_coefficients.data(), 1, &kZero<double>, ah_residual.data(), 1)));
+        if (q > 0) {
+          const double neg_mu = -mu;
+          FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, n_pairs, q, &neg_mu, ah_basis.data(), n_pairs,
+              ah_coefficients.data() + 1, 1, &kOne<double>, ah_residual.data(), 1)));
+        }
+        double residual_norm = 0.0;
+        FBF_TRY(gpu_status(
+            wwr::nrm2<double, int32_t>(blas, n_pairs, ah_residual.data(), 1, &residual_norm)));
+        if (residual_norm <= tolerance * std::max(std::abs(mu), spectrum) ||
+            added == kAhMaxIterations) {
+          break;
+        }
+        FBF_TRY(gpu_status(device::ah_precondition(stream, n_pairs, mu, kAhDenominatorFloor,
+                                                   ah_diagonal.data(), ah_residual.data(),
+                                                   ah_correction.data())));
+
+        // Full: restart Q on the current step's direction Q u / ||u||, whose
+        // (H + D) image is a gemv of the old one's, so no product is lost;
+        // the root is then (u_0, ||u||).
+        if (q == q_max) {
+          double u_norm = 0.0;
+          for (size_t i = 1; i < kz; ++i) {
+            u_norm += root[i] * root[i];
+          }
+          u_norm = std::sqrt(u_norm);
+          if (u_norm == 0.0) {
+            return err_numerical("casscf_solve: the augmented Hessian's lowest root has no "
+                                 "component in its subspace to restart on (macro iteration {})",
+                                 cycle);
+          }
+          std::vector<double> c(root.begin() + 1, root.end());
+          for (double &ci : c) {
+            ci /= u_norm;
+          }
+          FBF_TRY(expand(q, c));
+          double ac = 0.0;
+          double bc = 0.0;
+          for (size_t i = 0; i < c.size(); ++i) {
+            bc += b_host[i] * c[i];
+            for (size_t j = 0; j < c.size(); ++j) {
+              ac += c[i] * a_host[i + (j * q_width)] * c[j];
+            }
+          }
+          FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_basis.data(), ah_step.data(),
+                                                 pairs * sizeof(double),
+                                                 wwr::wwrMemcpyDeviceToDevice, stream)));
+          FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(column(ah_image.data(), 1), ah_step.data() + pairs,
+                                                 pairs * sizeof(double),
+                                                 wwr::wwrMemcpyDeviceToDevice, stream)));
+          a_host[0] = ac;
+          b_host[0] = bc;
+          root = {root[0], u_norm};
+          q = 1;
+        }
+
+        // The correction off Q, twice, then normalized as Q's next column.
+        for (int32_t pass = 0; pass < 2; ++pass) {
+          FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_T, n_pairs, q, &kOne<double>, ah_basis.data(), n_pairs,
+              ah_correction.data(), 1, &kZero<double>, ah_overlaps.data(), 1)));
+          FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, n_pairs, q, &kNegOne<double>, ah_basis.data(), n_pairs,
+              ah_overlaps.data(), 1, &kOne<double>, ah_correction.data(), 1)));
+        }
+        double correction_norm = 0.0;
+        FBF_TRY(gpu_status(
+            wwr::nrm2<double, int32_t>(blas, n_pairs, ah_correction.data(), 1, &correction_norm)));
+        if (correction_norm <= kAhLinearDependenceFloor) {
+          break;
+        }
+        const double inverse = 1.0 / correction_norm;
+        FBF_TRY(gpu_status(
+            wwr::scal<double, int32_t>(blas, n_pairs, &inverse, ah_correction.data(), 1)));
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(column(ah_basis.data(), q), ah_correction.data(),
+                                               pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                               stream)));
+        FBF_TRY(apply(q));
+        ++record.hessian_products;
+        // The new column's overlaps with [g_model, (H + D) Q]: b's new entry
+        // and A's new row, mirrored into its column.
+        FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_T, n_pairs, q + 2, &kOne<double>, ah_image.data(), n_pairs,
+            column(ah_basis.data(), q), 1, &kZero<double>, ah_overlaps.data(), 1)));
+        const std::vector<double> w =
+            FBF_TRY(casscf_download(res, ah_overlaps.data(), static_cast<size_t>(q) + 2));
+        const auto qz = static_cast<size_t>(q);
+        b_host[qz] = w[0];
+        for (size_t j = 0; j <= qz; ++j) {
+          a_host[qz + (j * q_width)] = w[j + 1];
+          a_host[j + (qz * q_width)] = w[j + 1];
+        }
+        ++q;
+      }
+
+      // The step dx = Q u / u_0, and (H + D) dx from (H + D) Q: no product
+      // past the solve's.
+      if (root[0] == 0.0) {
         return err_numerical("casscf_solve: the augmented Hessian's lowest root has no "
                              "component along the gradient (macro iteration {})",
                              cycle);
       }
-      std::vector<double> dx(pairs);
-      for (size_t i = 0; i < pairs; ++i) {
-        dx[i] = v[i + 1] / v[0];
+      std::vector<double> dx(pairs, 0.0);
+      std::vector<double> hdx(pairs, 0.0);
+      if (q > 0) {
+        std::vector<double> c(root.begin() + 1, root.end());
+        for (double &ci : c) {
+          ci /= root[0];
+        }
+        const std::vector<double> both = FBF_TRY(expand(q, c));
+        std::copy_n(both.begin(), pairs, dx.begin());
+        std::copy_n(both.begin() + static_cast<std::ptrdiff_t>(pairs), pairs, hdx.begin());
       }
       const double dx_norm = std::sqrt(casscf_dot(dx, dx));
       const double remaining = radius - std::sqrt(casscf_dot(x_total, x_total));
       const double s = dx_norm > remaining ? remaining / dx_norm : 1.0;
-      // H dx = lambda dx - g_model, the root's own equation.
       for (size_t i = 0; i < pairs; ++i) {
-        const double hdx = s * ((lambda * dx[i]) - g_model[i]);
         x_total[i] += s * dx[i];
-        hx_total[i] += hdx;
-        g_model[i] += hdx;
+        hx_total[i] += s * hdx[i];
+        g_model[i] += s * hdx[i];
       }
       record.micro_iterations = micro;
       if (s < 1.0 || std::sqrt(casscf_dot(g_model, g_model)) <= kMicroGradientFraction * g_norm) {
