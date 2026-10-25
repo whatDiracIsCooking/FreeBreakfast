@@ -42,7 +42,9 @@ namespace free_breakfast {
 // is ~1e-12, and a rejection there would only shrink the radius for nothing.
 constexpr double kEnergyRiseTolerance = 1e-11;
 // The CI's residual tolerance follows ||g|| of the last iteration as
-// min(kCiLoosest, kCiPerGradient ||g||), held at or above options.ci's.
+// min(kCiLoosest, kCiPerGradient ||g||^2), held at or above options.ci's: the
+// steps converge quadratically, so the CI must keep ahead of the next ||g||,
+// not the last.
 constexpr double kCiLoosest = 1e-8;
 constexpr double kCiPerGradient = 1e-4;
 // The augmented Hessian's subspace solve: an absolute residual of
@@ -52,7 +54,7 @@ constexpr double kCiPerGradient = 1e-4;
 constexpr double kAhPerGradient = 1e-2;
 constexpr int32_t kAhMaxSubspace = 40;
 constexpr int32_t kAhMaxIterations = 50;
-// The preconditioner's denominator mu - diag(H + D) is held off zero here.
+// The preconditioner's denominator mu - diag(H) is held off zero here.
 constexpr double kAhDenominatorFloor = 1e-8;
 // A correction re-orthogonalized against Q to this norm or below has nothing
 // new in it, and the solve stops on the solution it has: davidson_solve's
@@ -63,12 +65,12 @@ constexpr double kMicroGradientFraction = 0.1;
 // The trust radius doubles when an accepted step's energy change is within
 // this fraction of the model's prediction.
 constexpr double kTrustAgreement = 0.25;
-// The CI response's BFGS pairs: at most this many steps are kept, the oldest
-// dropped, and a step is taken only when y.s and s.Bs are at least
-// kResponseSafeguard times their factors' norms: the curvature condition, held
-// off roundoff.
-constexpr size_t kResponseMemory = 8;
-constexpr double kResponseSafeguard = 1e-8;
+// The CI response's conjugate gradients stop at a residual this fraction of
+// the right-hand side's, or after this many sigmas per root. Two roots closer
+// than kResponseGapFloor (hartree) leave their mixing out.
+constexpr double kResponseTolerance = 1e-8;
+constexpr int32_t kResponseMaxIterations = 200;
+constexpr double kResponseGapFloor = 1e-8;
 
 // @p count doubles from the device into a host vector, waited for.
 Result<std::vector<double>> casscf_download(DeviceResources &res, const double *const from,
@@ -92,6 +94,140 @@ Status casscf_upload(DeviceResources &res, std::span<const double> from, double 
 
 double casscf_dot(std::span<const double> a, std::span<const double> b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
+}
+
+// The macro iteration's integrals the CI response contracts, on the host:
+// F^I (nmo x nmo) and ppaa, papa (casscf_integrals' layout), all column-major
+// as the device's.
+struct ResponseIntegrals {
+  size_t nmo;
+  size_t ncore;
+  size_t ncas;
+  std::vector<double> fock_inactive;
+  std::vector<double> ppaa;
+  std::vector<double> papa;
+
+  [[nodiscard]] double fi(const size_t p, const size_t q) const {
+    return fock_inactive[p + (nmo * q)];
+  }
+  // (pq|uv) and (pu|qv), q over every orbital, u and v active.
+  [[nodiscard]] double pq_uv(const size_t p, const size_t q, const size_t u, const size_t v) const {
+    return ppaa[p + (nmo * (q + (nmo * (u + (ncas * v)))))];
+  }
+  [[nodiscard]] double pu_qv(const size_t p, const size_t q, const size_t u, const size_t v) const {
+    return papa[p + (nmo * (q + (nmo * (u + (ncas * v)))))];
+  }
+};
+
+// The first derivative of the active-space Hamiltonian along kappa (nmo x nmo,
+// column-major), C <- C (1 + kappa): h_eff' into @p h1 (n x n) and (tu|vw)'
+// into @p eri1 (n^4), both row-major as CiSigma::set_integrals takes them.
+// With T = ncore + t,
+//   (tu|vw)' = X_tuvw + X_utvw + X_vwtu + X_wvtu, X_tuvw = sum_p kappa_pT (pU|vw),
+//   h_eff'_tu = sum_p kappa_pT F^I_pU + kappa_pU F^I_Tp
+//             + sum_p,i kappa_pi (4 (pi|tu) - (pt|iu) - (pu|it)),
+// the last F^I's change through the core density, i core: no J or K, since
+// every integral it takes has two active indices.
+void response_integrals(const ResponseIntegrals &ints, std::span<const double> kappa,
+                        std::span<double> h1, std::span<double> eri1) {
+  const size_t mo = ints.nmo;
+  const size_t core = ints.ncore;
+  const size_t n = ints.ncas;
+  const auto at = [n](size_t t, size_t u, size_t v, size_t w) {
+    return (((((t * n) + u) * n) + v) * n) + w;
+  };
+  std::vector<double> x(n * n * n * n, 0.0);
+  for (size_t t = 0; t < n; ++t) {
+    for (size_t u = 0; u < n; ++u) {
+      for (size_t v = 0; v < n; ++v) {
+        for (size_t w = 0; w < n; ++w) {
+          double sum = 0.0;
+          for (size_t p = 0; p < mo; ++p) {
+            sum += kappa[p + (mo * (core + t))] * ints.pq_uv(p, core + u, v, w);
+          }
+          x[at(t, u, v, w)] = sum;
+        }
+      }
+    }
+  }
+  for (size_t t = 0; t < n; ++t) {
+    for (size_t u = 0; u < n; ++u) {
+      for (size_t v = 0; v < n; ++v) {
+        for (size_t w = 0; w < n; ++w) {
+          eri1[at(t, u, v, w)] =
+              x[at(t, u, v, w)] + x[at(u, t, v, w)] + x[at(v, w, t, u)] + x[at(w, v, t, u)];
+        }
+      }
+      double sum = 0.0;
+      for (size_t p = 0; p < mo; ++p) {
+        sum += (kappa[p + (mo * (core + t))] * ints.fi(p, core + u)) +
+               (kappa[p + (mo * (core + u))] * ints.fi(core + t, p));
+        for (size_t i = 0; i < core; ++i) {
+          sum += kappa[p + (mo * i)] *
+                 ((4.0 * ints.pq_uv(p, i, t, u)) - ints.pu_qv(p, i, t, u) - ints.pu_qv(p, i, u, t));
+        }
+      }
+      h1[(t * n) + u] = sum;
+    }
+  }
+}
+
+// The adjoint of response_integrals: the antisymmetric nmo x nmo
+// (column-major) A = G - G^T, G_pq = d/dkappa_pq of
+// sum_tu h_eff'_tu gamma_tu + sum_tuvw (tu|vw)'_tuvw gamma2_tuvw for the
+// row-major @p gamma and @p gamma2, so that A's packed pairs are that sum's
+// gradient in x (kappa_pq = x_pq = -kappa_qp).
+void response_gradient(const ResponseIntegrals &ints, std::span<const double> gamma,
+                       std::span<const double> gamma2, std::span<double> a) {
+  const size_t mo = ints.nmo;
+  const size_t core = ints.ncore;
+  const size_t n = ints.ncas;
+  const auto at = [n](size_t t, size_t u, size_t v, size_t w) {
+    return (((((t * n) + u) * n) + v) * n) + w;
+  };
+  // d/dX of the two-electron part: X enters (tu|vw)' four times.
+  std::vector<double> y(n * n * n * n);
+  for (size_t t = 0; t < n; ++t) {
+    for (size_t u = 0; u < n; ++u) {
+      for (size_t v = 0; v < n; ++v) {
+        for (size_t w = 0; w < n; ++w) {
+          y[at(t, u, v, w)] = gamma2[at(t, u, v, w)] + gamma2[at(u, t, v, w)] +
+                              gamma2[at(v, w, t, u)] + gamma2[at(v, w, u, t)];
+        }
+      }
+    }
+  }
+  std::vector<double> g(mo * mo, 0.0);
+  for (size_t p = 0; p < mo; ++p) {
+    for (size_t t = 0; t < n; ++t) {
+      double sum = 0.0;
+      for (size_t u = 0; u < n; ++u) {
+        sum += (gamma[(t * n) + u] * ints.fi(p, core + u)) +
+               (gamma[(u * n) + t] * ints.fi(core + u, p));
+        for (size_t v = 0; v < n; ++v) {
+          for (size_t w = 0; w < n; ++w) {
+            sum += y[at(t, u, v, w)] * ints.pq_uv(p, core + u, v, w);
+          }
+        }
+      }
+      g[p + (mo * (core + t))] += sum;
+    }
+    for (size_t i = 0; i < core; ++i) {
+      double sum = 0.0;
+      for (size_t t = 0; t < n; ++t) {
+        for (size_t u = 0; u < n; ++u) {
+          sum += gamma[(t * n) + u] *
+                 ((4.0 * ints.pq_uv(p, i, t, u)) - ints.pu_qv(p, i, t, u) - ints.pu_qv(p, i, u, t));
+        }
+      }
+      g[p + (mo * i)] += sum;
+    }
+  }
+  for (size_t q = 0; q < mo; ++q) {
+    for (size_t p = 0; p < mo; ++p) {
+      a[p + (mo * q)] = g[p + (mo * q)] - g[q + (mo * p)];
+    }
+  }
 }
 
 Result<CasscfSolution>
@@ -168,21 +304,16 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   Buffers::device<double> kappa_w(mo, res.device());
   Buffers::device<double> rotation(mo * mo, res.device());
   // The augmented Hessian's subspace, every buffer for the solve. Q, at most
-  // q_max orthonormal columns, and beside it [g_model, (H + D) Q], the model
-  // gradient first so one gemv takes a new column's overlaps with both; D's
-  // terms and scales, at most 2 kResponseMemory, and R^T q beside them; diag(H
-  // + D) for the preconditioner; a residual and its correction; the step dx and
-  // (H + D) dx, read back in one copy; and the projected problem, (q + 1)^2,
-  // its eigenvalues, and the small vectors in and out of the gemvs.
+  // q_max orthonormal columns, and beside it [g_model, H~ Q], the model
+  // gradient first so one gemv takes a new column's overlaps with both; diag(H)
+  // for the preconditioner; a residual and its correction; the step dx and
+  // H~ dx, read back in one copy; and the projected problem, (q + 1)^2, its
+  // eigenvalues, and the small vectors in and out of the gemvs.
   const int32_t q_max = std::max(1, std::min(n_pairs, kAhMaxSubspace));
   const auto q_width = static_cast<size_t>(q_max);
-  const size_t response_max = 2 * kResponseMemory;
   const size_t ah_length = std::max<size_t>(pairs, 1);
   Buffers::device<double> ah_basis(ah_length * q_width, res.device());
   Buffers::device<double> ah_image(ah_length * (q_width + 1), res.device());
-  Buffers::device<double> response_device(ah_length * response_max, res.device());
-  Buffers::device<double> scale_device(response_max, res.device());
-  Buffers::device<double> ah_rv(response_max, res.device());
   Buffers::device<double> ah_diagonal(ah_length, res.device());
   Buffers::device<double> ah_residual(ah_length, res.device());
   Buffers::device<double> ah_correction(ah_length, res.device());
@@ -191,6 +322,21 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   Buffers::device<double> ah_ritz(q_width + 1, res.device());
   Buffers::device<double> ah_coefficients(q_width + 1, res.device());
   Buffers::device<double> ah_overlaps(q_width + 2, res.device());
+  // The CI response's: a second sigma, for H's derivative along kappa; the CI
+  // blocks b = H' c, delta and c +- delta (dim x nroots each); conjugate
+  // gradients' three vectors; the roots' overlaps; kappa, then the gradient's
+  // antisymmetric matrix; the packed gradient; and the RDMs of c +- delta.
+  CiSigma response_sigma = FBF_TRY(CiSigma::create(res, alpha, beta));
+  const size_t ci_block = dim * roots_count;
+  Buffers::device<double> ci_b(ci_block, res.device());
+  Buffers::device<double> ci_delta(ci_block, res.device());
+  Buffers::device<double> ci_pm(2 * ci_block, res.device());
+  Buffers::device<double> cg_vectors(3 * dim, res.device());
+  Buffers::device<double> ci_overlaps(roots_count, res.device());
+  Buffers::device<double> response_matrix(mo * mo, res.device());
+  Buffers::device<double> response_packed(ah_length, res.device());
+  Buffers::device<double> response_gamma(2 * n * n, res.device());
+  Buffers::device<double> response_gamma2(2 * n * n * n * n, res.device());
 
   // C_now = C_accepted exp(t kappa), from kappa_u and kappa_w.
   const auto rotate = [&](const double t) -> Status {
@@ -213,16 +359,9 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   double step_xhx = 0.0;
   double step_norm = 0.0;
   double step_t = 1.0;
-  // The step x and the model's (H + D) x, and g at the accepted orbitals.
+  // The step x and the model's H~ x.
   std::vector<double> x_total(pairs, 0.0);
   std::vector<double> hx_total(pairs, 0.0);
-  std::vector<double> g_accepted;
-  // The CI response: H, at fixed CI, misses the CI's relaxation, which is
-  // what leaves a two-step loop linear. D is the BFGS correction from each
-  // accepted step s and the gradient's actual change y (CI relaxed at both
-  // ends), as terms (vector, scale) of D = sum scale v v^T, so B = H + D
-  // learns the relaxation along the steps taken.
-  std::deque<std::pair<std::vector<double>, double>> response;
 
   for (int32_t cycle = 1; cycle <= options.max_cycle; ++cycle) {
     // 1. The active-space Hamiltonian and ppaa, papa over C.
@@ -248,8 +387,9 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     }
     FBF_TRY(sigma.diagonal(res, diagonal.data()));
     CiSolverOptions ci = options.ci;
-    ci.davidson.residual_tolerance = std::max(options.ci.davidson.residual_tolerance,
-                                              std::min(kCiLoosest, kCiPerGradient * last_gradient));
+    ci.davidson.residual_tolerance =
+        std::max(options.ci.davidson.residual_tolerance,
+                 std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
     // Cold each iteration: no warm start yet (#282, see the README).
     roots.emplace(FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci)));
 
@@ -287,29 +427,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
         radius = std::min(options.trust_radius, 2.0 * radius);
         record.trust_radius = radius;
       }
-      // BFGS over the step s = t x, with B s = t (H + D) x and y the
-      // gradient's actual change: B + y y^T / (y.s) - (Bs)(Bs)^T / (s.Bs),
-      // which keeps B positive definite when y.s > 0.
-      std::vector<double> y(pairs);
-      std::vector<double> s(pairs);
-      std::vector<double> bs(pairs);
-      for (size_t i = 0; i < pairs; ++i) {
-        s[i] = step_t * x_total[i];
-        bs[i] = step_t * hx_total[i];
-        y[i] = g[i] - g_accepted[i];
-      }
-      const double ys = casscf_dot(y, s);
-      const double sbs = casscf_dot(s, bs);
-      const double floor = kResponseSafeguard * std::sqrt(casscf_dot(s, s));
-      if (ys > floor * std::sqrt(casscf_dot(y, y)) && sbs > floor * std::sqrt(casscf_dot(bs, bs))) {
-        response.emplace_back(std::move(y), 1.0 / ys);
-        response.emplace_back(std::move(bs), -1.0 / sbs);
-        while (response.size() > 2 * kResponseMemory) {
-          response.pop_front();
-        }
-      }
     }
-    g_accepted = g;
     have_accepted = true;
     e_accepted = energy;
     if (converged) {
@@ -332,66 +450,174 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
                                        wwr::wwrMemcpyDeviceToDevice, stream)));
 
     // 5. The step: augmented-Hessian solves of the quadratic model
-    //    E + g.x + x.(H + D)x / 2, each from the model gradient g + (H + D) x
-    //    the last left, until it is small, the radius is reached or max_micro
-    //    is. H + D is fixed for the macro iteration, so the solves share one
-    //    subspace Q (see the README).
+    //    E + g.x + x.H~x / 2, H~ = H + R the orbital Hessian with the CI
+    //    relaxed (below), each from the model gradient g + H~ x the last left,
+    //    until it is small, the radius is reached or max_micro is. H~ is fixed
+    //    for the macro iteration, so the solves share one subspace Q (see the
+    //    README).
     OrbitalHessian hessian =
         FBF_TRY(OrbitalHessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
                                        ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
-    // diag(H + D) for the preconditioner, built here and uploaded once for the
-    // macro iteration, and D's terms beside it.
-    std::vector<double> h_diagonal(pairs);
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(h_diagonal.data(), hessian.diagonal().data(),
-                                           pairs * sizeof(double), wwr::wwrMemcpyDeviceToHost,
+    // diag(H) for the preconditioner, copied once for the macro iteration, and
+    // read back for its scale.
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_diagonal.data(), hessian.diagonal().data(),
+                                           pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
                                            stream)));
-    FBF_TRY(res.sync());
-    const auto rank = static_cast<int32_t>(response.size());
-    std::vector<double> response_host(pairs * response.size());
-    std::vector<double> scale_host(response.size());
-    for (size_t j = 0; j < response.size(); ++j) {
-      const auto &[r, scale] = response[j];
-      std::ranges::copy(r, response_host.begin() + static_cast<std::ptrdiff_t>(j * pairs));
-      scale_host[j] = scale;
-      for (size_t i = 0; i < pairs; ++i) {
-        h_diagonal[i] += scale * r[i] * r[i];
-      }
-    }
-    FBF_TRY(casscf_upload(res, response_host, response_device.data()));
-    FBF_TRY(casscf_upload(res, scale_host, scale_device.data()));
-    FBF_TRY(casscf_upload(res, h_diagonal, ah_diagonal.data()));
+    const std::vector<double> h_diagonal =
+        FBF_TRY(casscf_download(res, hessian.diagonal().data(), pairs));
     double h_scale = 1.0;
     for (const double d : h_diagonal) {
       h_scale = std::max(h_scale, std::abs(d));
     }
 
-    // Q's column j at ah_basis + j n, (H + D) q_j at ah_image + (j + 1) n, and
-    // the model gradient at ah_image. The small problem's pieces on the host:
-    // A = Q^T (H + D) Q (q_max x q_max, both triangles) and b = Q^T g_model.
+    // The CI response R x = H_oc delta (README.md, "The CI response"),
+    // delta_r = -(H_0 - E_r)^-1 (1 - c_r c_r^T) H'(x) c_r, so that H~ = H + R
+    // is the Hessian of the energy with the CI relaxed. The integrals it
+    // contracts come to the host once per macro iteration.
+    const ResponseIntegrals response_ints{
+        mo,
+        static_cast<size_t>(ncore),
+        n,
+        FBF_TRY(casscf_download(res, fock.fock_inactive.data(), mo * mo)),
+        FBF_TRY(casscf_download(res, ints.ppaa.data(), mo * mo * n * n)),
+        FBF_TRY(casscf_download(res, ints.papa.data(), mo * mo * n * n))};
+    const double *const ci_c = roots->vectors.data();
+    const auto ci_root = [&](auto *base, const size_t r) { return base + (r * dim); };
+    const auto dim32 = static_cast<int32_t>(dim);
+    // v <- v - C (C^T v): off every root.
+    const auto ci_project = [&](double *v) -> Status {
+      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, dim32, nroots,
+                                                    &kOne<double>, ci_c, dim32, v, 1,
+                                                    &kZero<double>, ci_overlaps.data(), 1)));
+      return gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_N, dim32, nroots,
+                                                   &kNegOne<double>, ci_c, dim32,
+                                                   ci_overlaps.data(), 1, &kOne<double>, v, 1));
+    };
+    // y += R x.
+    const auto respond = [&](const double *x, double *y) -> Status {
+      // H'(x) from kappa(x), and b_r = H' c_r for every root.
+      FBF_TRY(unpack_orbital_pairs(res, nmo, ncore, ncas, x, response_matrix.data()));
+      const std::vector<double> kappa_host =
+          FBF_TRY(casscf_download(res, response_matrix.data(), mo * mo));
+      std::vector<double> h1(n * n);
+      std::vector<double> eri1(n * n * n * n);
+      response_integrals(response_ints, kappa_host, h1, eri1);
+      FBF_TRY(response_sigma.set_integrals(res, 0.0, h1, eri1));
+      FBF_TRY(response_sigma.apply(res, nroots, ci_c, ci_b.data()));
+
+      // delta_r: conjugate gradients on (H_0 - E_r) off every root, and the
+      // other roots' part exactly, -(c_s . b_r) / (E_s - E_r) c_s.
+      double *const cg_r = cg_vectors.data();
+      double *const cg_p = cg_r + dim;
+      double *const cg_ap = cg_p + dim;
+      for (size_t r = 0; r < roots_count; ++r) {
+        const double e_r = roots->energies[r];
+        double *const delta = ci_root(ci_delta.data(), r);
+        FBF_TRY(gpu_status(wwr::wwrMemsetAsync(delta, 0, dim * sizeof(double), stream)));
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_r, ci_root(ci_b.data(), r), dim * sizeof(double),
+                                               wwr::wwrMemcpyDeviceToDevice, stream)));
+        FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, dim32, &kNegOne<double>, cg_r, 1)));
+        FBF_TRY(ci_project(cg_r));
+        double rhs_norm = 0.0;
+        FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &rhs_norm)));
+        double rr = rhs_norm * rhs_norm;
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_p, cg_r, dim * sizeof(double),
+                                               wwr::wwrMemcpyDeviceToDevice, stream)));
+        for (int32_t it = 0; it < kResponseMaxIterations && rr > 0.0; ++it) {
+          FBF_TRY(sigma.apply(res, 1, cg_p, cg_ap));
+          const double neg_e = -e_r;
+          FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_e, cg_p, 1, cg_ap, 1)));
+          FBF_TRY(ci_project(cg_ap));
+          double pap = 0.0;
+          FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, dim32, cg_p, 1, cg_ap, 1, &pap)));
+          // H_0 - E_r is positive off the roots in their spin; a direction it
+          // is not positive along (roundoff's other spins) ends the solve.
+          if (!(pap > 0.0)) {
+            break;
+          }
+          const double alpha_step = rr / pap;
+          const double neg_alpha = -alpha_step;
+          FBF_TRY(
+              gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &alpha_step, cg_p, 1, delta, 1)));
+          FBF_TRY(
+              gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_alpha, cg_ap, 1, cg_r, 1)));
+          double r_norm = 0.0;
+          FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &r_norm)));
+          const double rr_new = r_norm * r_norm;
+          if (r_norm <= kResponseTolerance * rhs_norm) {
+            break;
+          }
+          const double beta_step = rr_new / rr;
+          FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, dim32, &beta_step, cg_p, 1)));
+          FBF_TRY(
+              gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &kOne<double>, cg_r, 1, cg_p, 1)));
+          rr = rr_new;
+        }
+        for (size_t s = 0; s < roots_count; ++s) {
+          const double gap = roots->energies[s] - e_r;
+          if (s == r || std::abs(gap) < kResponseGapFloor) {
+            continue;
+          }
+          double overlap = 0.0;
+          FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, dim32, ci_root(ci_c, s), 1,
+                                                       ci_root(ci_b.data(), r), 1, &overlap)));
+          const double coefficient = -overlap / gap;
+          FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &coefficient, ci_root(ci_c, s),
+                                                        1, delta, 1)));
+        }
+      }
+
+      // R x = H_oc delta, the gradient in x of h_eff'.gamma_T +
+      // 1/2 (tu|vw)'.Gamma_T, gamma_T = sum_r w_r (<c_r|E|delta_r> +
+      // <delta_r|E|c_r>): half the difference of the RDMs of c + delta and
+      // c - delta.
+      double *const plus = ci_pm.data();
+      double *const minus = plus + ci_block;
+      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, dim32, nroots, &kOne<double>, ci_c, dim32,
+          &kOne<double>, ci_delta.data(), dim32, plus, dim32)));
+      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, dim32, nroots, &kOne<double>, ci_c, dim32,
+          &kNegOne<double>, ci_delta.data(), dim32, minus, dim32)));
+      FBF_TRY(ci_rdm.rdm12(res, w, plus, response_gamma.data(), response_gamma2.data()));
+      FBF_TRY(ci_rdm.rdm12(res, w, minus, response_gamma.data() + (n * n),
+                           response_gamma2.data() + (n * n * n * n)));
+      const std::vector<double> g1 =
+          FBF_TRY(casscf_download(res, response_gamma.data(), 2 * n * n));
+      const std::vector<double> g2 =
+          FBF_TRY(casscf_download(res, response_gamma2.data(), 2 * n * n * n * n));
+      std::vector<double> gamma_t(n * n);
+      std::vector<double> gamma2_t(n * n * n * n);
+      for (size_t i = 0; i < gamma_t.size(); ++i) {
+        gamma_t[i] = 0.5 * (g1[i] - g1[i + gamma_t.size()]);
+      }
+      for (size_t i = 0; i < gamma2_t.size(); ++i) {
+        gamma2_t[i] = 0.25 * (g2[i] - g2[i + gamma2_t.size()]);
+      }
+      std::vector<double> a(mo * mo);
+      response_gradient(response_ints, gamma_t, gamma2_t, a);
+      FBF_TRY(casscf_upload(res, a, response_matrix.data()));
+      FBF_TRY(pack_orbital_pairs(res, nmo, ncore, ncas, response_matrix.data(),
+                                 response_packed.data()));
+      return gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>,
+                                                   response_packed.data(), 1, y, 1));
+    };
+
+    // Q's column j at ah_basis + j n, H~ q_j at ah_image + (j + 1) n, and the
+    // model gradient at ah_image. The small problem's pieces on the host:
+    // A = Q^T H~ Q (q_max x q_max, both triangles) and b = Q^T g_model.
     const auto column = [&](double *base, const int32_t j) {
       return base + (static_cast<size_t>(j) * pairs);
     };
-    // (H + D) q_j into its column of ah_image: H, then D q = R diag(scale)
-    // (R^T q).
+    // H~ q_j into its column of ah_image: H, then R.
     const auto apply = [&](const int32_t j) -> Status {
       const double *const x = column(ah_basis.data(), j);
       double *const y = column(ah_image.data(), j + 1);
       FBF_TRY(hessian.apply(res, 1, x, y));
-      if (rank > 0) {
-        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-            blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, rank, 1, n_pairs, &kOne<double>,
-            response_device.data(), n_pairs, x, n_pairs, &kZero<double>, ah_rv.data(), rank)));
-        FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, rank, 1,
-                                                      ah_rv.data(), rank, scale_device.data(), 1,
-                                                      ah_rv.data(), rank)));
-        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_pairs, 1, rank, &kOne<double>,
-            response_device.data(), n_pairs, ah_rv.data(), rank, &kOne<double>, y, n_pairs)));
-      }
-      return {};
+      return respond(x, y);
     };
-    // [Q, (H + D) Q] times the host coefficients c (q of them) into
-    // ah_step's two columns, read back as (Q c, (H + D) Q c).
+    // [Q, H~ Q] times the host coefficients c (q of them) into ah_step's two
+    // columns, read back as (Q c, H~ Q c).
     const auto expand = [&](const int32_t q,
                             std::span<const double> c) -> Result<std::vector<double>> {
       FBF_TRY(casscf_upload(res, c, ah_coefficients.data()));
@@ -447,7 +673,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
         mu = ritz.front();
         const double spectrum = std::max(std::abs(ritz.front()), std::abs(ritz.back()));
 
-        // r = u_0 g_model + (H + D) Q u - mu Q u: its first row, b.u - mu
+        // r = u_0 g_model + H~ Q u - mu Q u: its first row, b.u - mu
         // u_0, is 0 by the small problem's own equation.
         FBF_TRY(casscf_upload(res, root, ah_coefficients.data()));
         FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
@@ -471,7 +697,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
                                                    ah_correction.data())));
 
         // Full: restart Q on the current step's direction Q u / ||u||, whose
-        // (H + D) image is a gemv of the old one's, so no product is lost;
+        // H~ image is a gemv of the old one's, so no product is lost;
         // the root is then (u_0, ||u||).
         if (q == q_max) {
           double u_norm = 0.0;
@@ -532,7 +758,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
                                                stream)));
         FBF_TRY(apply(q));
         ++record.hessian_products;
-        // The new column's overlaps with [g_model, (H + D) Q]: b's new entry
+        // The new column's overlaps with [g_model, H~ Q]: b's new entry
         // and A's new row, mirrored into its column.
         FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
             blas, wwr::WWRBLAS_OP_T, n_pairs, q + 2, &kOne<double>, ah_image.data(), n_pairs,
@@ -548,7 +774,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
         ++q;
       }
 
-      // The step dx = Q u / u_0, and (H + D) dx from (H + D) Q: no product
+      // The step dx = Q u / u_0, and H~ dx from H~ Q: no product
       // past the solve's.
       if (root[0] == 0.0) {
         return err_numerical("casscf_solve: the augmented Hessian's lowest root has no "

@@ -63,7 +63,8 @@ struct CasscfIteration {
   /// converged or rejected).
   int32_t micro_iterations;
   /// @brief Orbital-Hessian columns applied for that step, each two J and two
-  /// K builds when there is a core: the step's cost.
+  /// K builds when there is a core, and the CI's response to it (sigmas and
+  /// two RDMs, no J or K): the step's cost.
   int32_t hessian_products;
   /// @brief false when the energy rose over the last accepted iteration, so
   /// these orbitals were dropped and the step retried at half the length.
@@ -102,16 +103,17 @@ struct CasscfSolution {
 ///
 /// Each macro iteration: @c casscf_integrals over the current C; @c ci_solve
 /// over the GPU sigma, from its own guesses (no warm start yet), its residual
-/// tolerance min(1e-8, 1e-4 ||g||) of the last iteration, held at or above
+/// tolerance min(1e-8, 1e-4 ||g||^2) of the last iteration, held at or above
 /// options.ci's; @c CiRdm::rdm12 at @p weights and @c casscf_fock. Converged
 /// when |Delta E| < conv_tol and ||g|| < conv_tol_grad. A rise of the energy
 /// over the last accepted iteration past 1e-11 hartree rejects the orbitals:
 /// the step from the accepted ones is retried at half its length and the
 /// trust radius halved. Otherwise up to max_micro augmented-Hessian solves of
 /// the quadratic model at frozen integrals, the lowest root of [[0, g^T], [g,
-/// H + D]] over @c OrbitalHessian H plus D, a BFGS correction for the CI's
-/// relaxation learned from the last 8 accepted steps, give the step x, at most
-/// the trust radius long; the solves share one subspace, grown by
+/// H~]], H~ = H - H_oc (H_cc - E)^-1 H_co the Hessian with the CI relaxed
+/// (@c OrbitalHessian H, and the CI's response to each column by conjugate
+/// gradients over the sigma), give the step x, at most the trust radius
+/// long; the solves share one subspace, grown by
 /// diagonally preconditioned residuals, so a later one pays only for what the
 /// earlier ones' products lack; and
 /// C <- C exp(kappa(x)).
