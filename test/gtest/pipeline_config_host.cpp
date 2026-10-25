@@ -292,6 +292,34 @@ TEST(PipelineConfig, TheLocalizationModeAndItsOptionsAreRead) {
   EXPECT_EQ(ibo2->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
 }
 
+TEST(PipelineConfig, LivvoIsReadAndNamesItsOwnMolden) {
+  // In either mode; the LIVVOs' Molden file is named by the run, beside the
+  // localized orbitals', and only when there are LIVVOs to write.
+  for (std::string_view mode : {"pipek_mezey", "ibo"}) {
+    auto calc = fb::parse_config(
+        with_inputs(std::format("[localization]\nmode = \"{}\"\nlivvo = true\n", mode)), "/run",
+        kOut);
+    ASSERT_TRUE(calc.has_value()) << calc.error().message;
+    const fb::LocalizationStep &step = *calc->step<fb::LocalizationStep>();
+    EXPECT_TRUE(step.livvo) << mode;
+    EXPECT_EQ(step.livvo_molden, kOut / "localization_livvo.molden") << mode;
+    EXPECT_EQ(step.molden, kOut / "localization.molden") << mode;
+  }
+  for (std::string_view table : {"[localization]\n", "[localization]\nlivvo = false\n"}) {
+    auto calc = fb::parse_config(with_inputs(table), "/run", kOut);
+    ASSERT_TRUE(calc.has_value()) << calc.error().message;
+    EXPECT_FALSE(calc->step<fb::LocalizationStep>()->livvo) << table;
+    EXPECT_TRUE(calc->step<fb::LocalizationStep>()->livvo_molden.empty()) << table;
+  }
+  expect_config_error(with_inputs("[localization]\nlivvo = 1\n"),
+                      "[localization] livvo is not a boolean");
+  expect_config_error(with_inputs("[localization]\nlivvo = \"true\"\n"),
+                      "[localization] livvo is not a boolean");
+  // A config names no output, so not this one either.
+  expect_config_error(with_inputs("[localization]\nlivvo = true\nlivvo_molden = \"x.molden\"\n"),
+                      "[localization] has no option 'livvo_molden'");
+}
+
 TEST(PipelineConfig, AnUnknownLocalizationModeIsInvalidConfig) {
   expect_config_error(with_inputs("[localization]\nmode = \"foster_boys\"\n"),
                       "[localization] has no mode 'foster_boys'");

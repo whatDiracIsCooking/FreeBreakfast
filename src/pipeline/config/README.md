@@ -55,6 +55,7 @@ max_iterations = 100
 [localization]            # every option has a default
 mode = "pipek_mezey"      # default "pipek_mezey"; or "ibo"
 exponent = 4              # 2 or 4; default 2, or 4 for "ibo"
+livvo = true              # default false; the LIVVOs too, in either mode
 
 [casci]
 ncas = 4                  # required
@@ -75,7 +76,8 @@ avas_threshold = 0.2      # default 0.2; needs avas
 `[localization]`'s method options sit in the table beside `mode`, not in
 a subtable named after `LocalizationStep::pipek_mezey`: both modes run the
 same Pipek-Mezey sweep, IBO over intrinsic-atomic-orbital populations, so they
-take the same options.
+take the same options. `livvo` adds the localized valence virtual orbitals
+(`pipeline/localization`'s README) in either mode.
 
 `[casci]`'s keys are read for their types only. The active-space keys
 (`ncas`, `nelecas`, `active`, `avas`, `avas_threshold`) and their refusals are
@@ -156,12 +158,14 @@ step, so no two collide:
 |------|------|
 | `[scf]` | `scf.molden`: every MO, the occupied at 2 |
 | `[localization]` | `localization.molden`: the localized occupied orbitals |
+| `[localization]` with `livvo = true` | `localization_livvo.molden`: the LIVVOs, at 0 |
 | `[casci]` | `casci.molden`: the lowest root's natural orbitals |
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
 
-There is no `molden` key: a config names no output, so a later config can
-rely on what an earlier run wrote. A file already there is overwritten; a
-directory per run is what `-o` is for. The steps keep their `molden` member,
+There is no `molden` key, nor a `livvo_molden` one: a config names no
+output, so a later config can rely on what an earlier run wrote. A file
+already there is overwritten; a directory per run is what `-o` is for. The
+steps keep their `molden` member (and `LocalizationStep` its `livvo_molden`),
 empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
@@ -191,7 +195,8 @@ than after the SCF has converged. `parse_config` touches no disk.
   only `"sad"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
   `[localization] exponent`, 2 or 4);
 - `from` beside another key, or on a step with no `load`;
-- a value of the wrong type. Integers are read exactly, so `charge = 1.5` is
+- a value of the wrong type. A boolean (`[localization] livvo`) is `true` or
+  `false`, not `1` or `"true"`. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`
   option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`. An
   integer-array option (`[casci] active`) holds integers only, each read the
