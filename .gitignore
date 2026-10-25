@@ -42,6 +42,8 @@ compile_commands.json
 /.log/
 # devtools/slow-tier.sh and devtools/cpp-tier.sh write timestamped run logs here.
 .slow-tier-reports/
+# free-breakfast's default output directory (-o), for a run from the repo.
+fbf_output/
 
 # --- Python ----------------------------------------------------------------
 __pycache__/

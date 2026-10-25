@@ -67,7 +67,7 @@ struct ScfStep {
   double tau_j = 1e-10;
   /// @brief Where the converged orbitals are written as a Molden file, if not
   /// empty: every MO, occupation 2 for the occupied ones. Arrives resolved
-  /// (pipeline/config anchors a relative one to the config file).
+  /// (pipeline/config sets it to scf.molden in the run's output directory).
   std::filesystem::path molden{};
 
   /// @brief The converged wavefunction. An open shell (an odd electron count,

@@ -152,8 +152,11 @@ template <class T>
 
 /// @brief Step `S` from its table. A filled-in step is read from an empty
 /// one, so a required option it lacks is reported as for a written table.
+/// Every output a step can write is written, into @p output_dir under the
+/// step's own name: a pipeline holds one of each step, so no two collide.
 template <class S>
-[[nodiscard]] Result<S> read_step(const toml::table &table, const std::filesystem::path &base_dir) {
+[[nodiscard]] Result<S> read_step(const toml::table &table, const std::filesystem::path &base_dir,
+                                  const std::filesystem::path &output_dir) {
   constexpr std::string_view kStep = S::kName;
   S step;
   if constexpr (std::same_as<S, MoleculeStep>) {
@@ -165,7 +168,7 @@ template <class S>
     FBF_TRY(check_keys(table, kStep, {"basis"}));
     FBF_TRY(read_required_key(table, kStep, "basis", base_dir, step.basis));
     // 'basis' is a compiled-in set's name or a path to a BSE JSON file, and
-    // only a path means anything relative to the config file. Joining a name
+    // only a path means anything relative to the input directory. Joining a name
     // to base_dir would turn 'sto-3g' into a file nobody wrote.
     if (!is_builtin_basis(step.basis)) {
       step.basis = (base_dir / step.basis).string();
@@ -184,17 +187,17 @@ template <class S>
   } else if constexpr (std::same_as<S, ScfStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"max_iterations", "energy_tolerance", "commutator_tolerance",
-                        "diis_history", "fock_rebuild_interval", "molden"}));
+                        "diis_history", "fock_rebuild_interval"}));
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, step.max_iterations));
     FBF_TRY(read_key(table, kStep, "energy_tolerance", base_dir, step.energy_tolerance));
     FBF_TRY(read_key(table, kStep, "commutator_tolerance", base_dir, step.commutator_tolerance));
     FBF_TRY(read_key(table, kStep, "diis_history", base_dir, step.diis_history));
     FBF_TRY(read_key(table, kStep, "fock_rebuild_interval", base_dir, step.fock_rebuild_interval));
-    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+    step.molden = output_dir / std::format("{}.molden", kStep);
   } else if constexpr (std::same_as<S, LocalizationStep>) {
-    FBF_TRY(check_keys(table, kStep,
-                       {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold",
-                        "exponent", "molden"}));
+    FBF_TRY(check_keys(
+        table, kStep,
+        {"mode", "max_sweeps", "functional_tolerance", "rotation_gain_threshold", "exponent"}));
     std::string mode = "pipek_mezey";
     FBF_TRY(read_key(table, kStep, "mode", base_dir, mode));
     if (mode != "pipek_mezey" && mode != "ibo") {
@@ -217,24 +220,24 @@ template <class S>
       return err_config("[{}] exponent is {}, not 2 or 4", kStep, exponent);
     }
     options.exponent = static_cast<PipekMezeyExponent>(exponent);
-    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+    step.molden = output_dir / std::format("{}.molden", kStep);
   } else if constexpr (std::same_as<S, CasciStep>) {
-    FBF_TRY(check_keys(
-        table, kStep, {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "molden"}));
+    FBF_TRY(check_keys(table, kStep,
+                       {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold"}));
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
-    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+    step.molden = output_dir / std::format("{}.molden", kStep);
   } else if constexpr (std::same_as<S, CasscfStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "weights",
-                        "conv_tol", "conv_tol_grad", "max_cycle", "molden"}));
+                        "conv_tol", "conv_tol_grad", "max_cycle"}));
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     FBF_TRY(read_key(table, kStep, "weights", base_dir, step.weights));
     FBF_TRY(read_key(table, kStep, "conv_tol", base_dir, step.conv_tol));
     FBF_TRY(read_key(table, kStep, "conv_tol_grad", base_dir, step.conv_tol_grad));
     FBF_TRY(read_key(table, kStep, "max_cycle", base_dir, step.max_cycle));
-    FBF_TRY(read_key(table, kStep, "molden", base_dir, step.molden));
+    step.molden = output_dir / std::format("{}.molden", kStep);
     // Unlike the active space's ranges these need nothing of the molecule, so
     // they are refused here rather than when casscf_solve runs.
     if (!step.weights.empty()) {
@@ -274,7 +277,8 @@ template <class S>
 /// @brief The step whose `kName` is @p name, read from @p node.
 [[nodiscard]] Result<Calculation::Step> read_named_step(std::string_view name,
                                                         const toml::node &node,
-                                                        const std::filesystem::path &base_dir) {
+                                                        const std::filesystem::path &base_dir,
+                                                        const std::filesystem::path &output_dir) {
   return [&]<size_t... Is>(std::index_sequence<Is...>) -> Result<Calculation::Step> {
     std::optional<Result<Calculation::Step>> out;
     const auto read = [&]<class S>() -> Result<Calculation::Step> {
@@ -283,7 +287,8 @@ template <class S>
         return err_config("{0} is not a table: write it as [{0}]", name);
       }
       if (!table->contains("from")) {
-        return Calculation::Step{std::in_place_type<S>, FBF_TRY(read_step<S>(*table, base_dir))};
+        return Calculation::Step{std::in_place_type<S>,
+                                 FBF_TRY(read_step<S>(*table, base_dir, output_dir))};
       }
       // 'from' loads the product instead, and the step's options configure a
       // run that never happens, so none may stand beside it.
@@ -317,24 +322,99 @@ template <class S>
   }(std::make_index_sequence<std::variant_size_v<Calculation::Step>>{});
 }
 
+/// @brief @p dir as the directory it names, so two spellings of one compare
+/// equal: empty is the working directory, and the part of it not yet made is
+/// normalized lexically.
+[[nodiscard]] std::filesystem::path resolved_dir(const std::filesystem::path &dir) {
+  std::error_code ec;
+  // absolute first: weakly_canonical leaves a relative path relative when no
+  // prefix of it exists.
+  const std::filesystem::path absolute = std::filesystem::absolute(dir.empty() ? "." : dir, ec);
+  if (ec) {
+    return dir.lexically_normal();
+  }
+  std::filesystem::path out = std::filesystem::weakly_canonical(absolute, ec);
+  if (ec) {
+    return dir.lexically_normal();
+  }
+  // weakly_canonical keeps a trailing separator: out/ is out.
+  return out.has_filename() ? out : out.parent_path();
+}
+
+/// @brief Refuse an input file directly in @p output_dir, where a step's
+/// output could overwrite it before or after it is read. An absolute path, or
+/// one through '..', reaches there however the two directories differ.
+[[nodiscard]] Status check_inputs_apart(const Calculation &calc,
+                                        const std::filesystem::path &output_dir) {
+  // Every path an input key names: the molecule's, a basis read from disk,
+  // and each product loaded 'from' a file.
+  std::vector<std::filesystem::path> inputs;
+  if (const auto &molecule = calc.step<MoleculeStep>()) {
+    inputs.push_back(molecule->xyz);
+  }
+  if (const auto &basis = calc.step<BasisSetStep>(); basis && !is_builtin_basis(basis->basis)) {
+    inputs.emplace_back(basis->basis);
+  }
+  [&]<class... Ss>(std::type_identity<Pipeline<Ss...>>) {
+    const auto add_from = [&]<class S>() {
+      if constexpr (LoadableStep<S>) {
+        if (const auto &from = calc.from<S>()) {
+          inputs.push_back(*from);
+        }
+      }
+    };
+    (add_from.template operator()<Ss>(), ...);
+  }(std::type_identity<Calculation>{});
+  const std::filesystem::path out = resolved_dir(output_dir);
+  for (const std::filesystem::path &input : inputs) {
+    if (resolved_dir(input.parent_path()) == out) {
+      return err_config("input '{}' is in the output directory '{}', where an output could "
+                        "overwrite it",
+                        input.string(), out.string());
+    }
+  }
+  return {};
+}
+
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
-                                               const std::filesystem::path &base_dir) {
+                                               const std::filesystem::path &input_dir,
+                                               const std::filesystem::path &output_dir) {
+  if (const std::filesystem::path dir = resolved_dir(input_dir); dir == resolved_dir(output_dir)) {
+    return err_config("the input and output directories are both '{}': give the run an output "
+                      "directory of its own",
+                      dir.string());
+  }
   const toml::table doc = FBF_TRY(parse_toml(toml_text));
   std::vector<Calculation::Step> steps;
   for (const auto &[key, value] : doc) {
-    steps.push_back(FBF_TRY(read_named_step(key.str(), value, base_dir)));
+    steps.push_back(FBF_TRY(read_named_step(key.str(), value, input_dir, output_dir)));
   }
   if (steps.empty()) {
     return err_config("the config names no step");
   }
   const toml::table empty;
-  return Calculation::create(std::move(steps),
-                             [&]<class S>() { return read_step<S>(empty, base_dir); });
+  Calculation calc = FBF_TRY(Calculation::create(
+      std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
+  FBF_TRY(check_inputs_apart(calc, output_dir));
+  return calc;
 }
 
-[[nodiscard]] Result<Calculation> read_config(const std::filesystem::path &path) {
+[[nodiscard]] Result<Calculation> read_config(const std::filesystem::path &path,
+                                              const std::filesystem::path &input_dir,
+                                              const std::filesystem::path &output_dir) {
   const std::string text = FBF_TRY(read_file(path));
-  return parse_config(text, path.parent_path());
+  Calculation calc = FBF_TRY(parse_config(text, input_dir, output_dir));
+  // Made before anything runs, so one that cannot be is refused before a GPU
+  // is touched rather than after a step has run.
+  if (!output_dir.empty()) {
+    std::error_code ec;
+    std::filesystem::create_directories(output_dir, ec);
+    if (ec) {
+      return err_io("cannot create the output directory '{}': {}", output_dir.string(),
+                    ec.message());
+    }
+  }
+  return calc;
 }
 
 } // namespace free_breakfast

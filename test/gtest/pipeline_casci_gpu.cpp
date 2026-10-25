@@ -183,7 +183,8 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   const fb::json &entry = reference_case(GetParam().name);
   const fb::json &roots = entry.at("roots");
   const fb::test::ScratchDir dir("pipeline_casci");
-  auto calc = fb::read_config(write_config(dir, entry, casci_tables(entry, roots.size())));
+  auto calc = fb::read_config(write_config(dir, entry, casci_tables(entry, roots.size())),
+                              dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
@@ -278,7 +279,8 @@ TEST(PipelineCasci, AnActiveSpacePastTheOrbitalsIsInvalidConfig) {
   const fb::json &entry = reference_case("h2o_sto3g");
   const fb::test::ScratchDir dir("pipeline_casci");
   // Water's STO-3G has 7 orbitals; 3 core and 5 active do not fit.
-  auto calc = fb::read_config(write_config(dir, entry, "[casci]\nncas = 5\nnelecas = 4\n"));
+  auto calc = fb::read_config(write_config(dir, entry, "[casci]\nncas = 5\nnelecas = 4\n"),
+                              dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
@@ -290,17 +292,17 @@ TEST(PipelineCasci, AnActiveSpacePastTheOrbitalsIsInvalidConfig) {
   EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 }
 
-// molden set: the lowest root's natural orbitals land in a Molden file, read
-// back as io_molden_host reads one. Every orbital is written, the core at 2,
-// the natural ones at PySCF's natural occupations, descending, the rest at 0.
+// The lowest root's natural orbitals land in the output directory's
+// casci.molden, read back as io_molden_host reads one. Every orbital is
+// written, the core at 2, the natural ones at PySCF's natural occupations,
+// descending, the rest at 0.
 TEST(PipelineCasciMolden, WritesTheNaturalOrbitals) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_ccpvdz_avas");
   const fb::test::ScratchDir dir("pipeline_casci_molden");
-  const std::filesystem::path path = dir / "h2o_avas.molden";
-  auto calc = fb::read_config(write_config(
-      dir, entry,
-      casci_tables(entry, 1) + std::format("molden = \"{}\"\n", path.generic_string())));
+  const std::filesystem::path path = dir / "out/casci.molden";
+  auto calc =
+      fb::read_config(write_config(dir, entry, casci_tables(entry, 1)), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
@@ -349,7 +351,8 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_ccpvdz_avas");
   const fb::test::ScratchDir dir("pipeline_casci");
-  auto calc = fb::read_config(write_config(dir, entry, "[casci]\navas = [\"O 2p\", \"O 3d\"]\n"));
+  auto calc = fb::read_config(write_config(dir, entry, "[casci]\navas = [\"O 2p\", \"O 3d\"]\n"),
+                              dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);

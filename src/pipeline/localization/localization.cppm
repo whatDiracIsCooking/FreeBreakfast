@@ -67,7 +67,8 @@ struct LocalizationStep {
   /// @brief Where the localized orbitals are written as a Molden file, if not
   /// empty: the n_occ of them at occupation 2, each with its Fock expectation
   /// value sum_k U_ki^2 eps_k as its energy. Arrives resolved
-  /// (pipeline/config anchors a relative one to the config file).
+  /// (pipeline/config sets it to localization.molden in the run's output
+  /// directory).
   std::filesystem::path molden{};
 
   /// @brief The localized orbitals. The Scf step has already refused an open

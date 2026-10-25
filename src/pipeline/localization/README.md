@@ -73,14 +73,15 @@ The options are read from a `[localization]` table (`pipeline.config`):
 `mode`, `"pipek_mezey"` by default or `"ibo"`, then the sweep's
 `max_sweeps`, `functional_tolerance`, `rotation_gain_threshold`, and
 `exponent`, 2 or 4 (2 by default for `"pipek_mezey"`, Knizia's 4 for
-`"ibo"`), and `molden`.
+`"ibo"`).
 
 **`molden` writes the localized orbitals.** When it is set, `c` and `u` are
 downloaded and written by `io.molden`'s `write_molden`: the `n_occ` localized
 orbitals only, each at occupation 2. They are not eigenvectors of F, so each
 is given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
-SCF's occupied orbital energies. It is the `[localization] molden` TOML key,
-relative to the config file. A failed write fails the step.
+SCF's occupied orbital energies. It is not a TOML key: `pipeline/config` sets
+it to `localization.molden` in the run's output directory. A failed write
+fails the step.
 
 Like `OrthogonalizerStep`, it synchronizes `res.stream()` inside `run`: once a
 sweep, to read the functional for the convergence test.

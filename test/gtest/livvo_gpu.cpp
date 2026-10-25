@@ -53,7 +53,7 @@ std::optional<fb::Calculation> run_scf(std::string_view xyz) {
   EXPECT_TRUE(fb::write_file(dir / "run.toml", "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\n"
                                                "basis = \"cc-pvdz\"\n[scf]\n")
                   .has_value());
-  auto calc = fb::read_config(dir / "run.toml");
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   if (!calc.has_value()) {
     ADD_FAILURE() << calc.error().message;
     return std::nullopt;

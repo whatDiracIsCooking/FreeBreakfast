@@ -150,7 +150,8 @@ TEST_P(PipelineFci, MatchesPyscf) {
   const fb::json &roots = entry.at("roots");
   const fb::test::ScratchDir dir("pipeline_fci");
   auto calc = fb::read_config(write_config(dir, entry, entry.at("basis").get<std::string>(),
-                                           std::format("[fci]\nnroots = {}\n", roots.size())));
+                                           std::format("[fci]\nnroots = {}\n", roots.size())),
+                              dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
@@ -208,7 +209,8 @@ TEST(PipelineFci, ASpacePastTheDeviceMemoryIsRefusedUpFront) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_sto3g");
   const fb::test::ScratchDir dir("pipeline_fci");
-  auto calc = fb::read_config(write_config(dir, entry, "cc-pvdz", "[fci]\n"));
+  auto calc =
+      fb::read_config(write_config(dir, entry, "cc-pvdz", "[fci]\n"), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
