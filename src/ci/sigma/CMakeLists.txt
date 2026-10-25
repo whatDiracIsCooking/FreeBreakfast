@@ -39,7 +39,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::strings
   LINK_PRIVATE
   free_breakfast::core::constants
-  free_breakfast::core::primitives
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::linear_operator
   free_breakfast::ci::sigma::device

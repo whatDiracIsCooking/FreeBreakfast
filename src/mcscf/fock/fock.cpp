@@ -8,8 +8,7 @@ module free_breakfast.mcscf.fock;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;  // kOne, kZero, kTwo
-import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm, geam, axpy, scal, wwrMemcpy2DAsync, gpu_status
 import free_breakfast.core.resources;
@@ -116,21 +115,8 @@ struct CasscfFockScratch {
 
   CasscfFockScratch(DeviceResources &res, const size_t n_cart, const size_t nmo,
                     const size_t ncas) {
-    size_t bytes = 0;
-    const auto region = [&bytes](const size_t count) {
-      const size_t at = bytes;
-      bytes += math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
-      return at;
-    };
-    const size_t at_c_cart = region(n_cart * nmo);
-    const size_t at_work = region(n_cart * nmo);
-    const size_t at_block = region(nmo * nmo);
-    const size_t at_paaa = region(nmo * ncas * ncas * ncas);
-    std::byte *const base = res.device_workspace(bytes).data();
-    c_cart = reinterpret_cast<double *>(base + at_c_cart);
-    work = reinterpret_cast<double *>(base + at_work);
-    block = reinterpret_cast<double *>(base + at_block);
-    paaa = reinterpret_cast<double *>(base + at_paaa);
+    std::tie(c_cart, work, block, paaa) =
+        res.device_regions<double>(n_cart * nmo, n_cart * nmo, nmo * nmo, nmo * ncas * ncas * ncas);
   }
 };
 

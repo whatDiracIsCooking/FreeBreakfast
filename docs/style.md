@@ -303,6 +303,19 @@ don't make the caller lend one. Ask the workspace once, for the total, and carve
 it.
 The same goes for a generic solver's host scratch and `host_workspace()`.
 
+**Carve it with `device_regions`**, which takes one count per region and
+returns the regions' starts:
+
+```cpp
+const auto [work, block] = res.device_regions<double>(n_cart * nmo, nmo * nmo);
+std::tie(w, partner) = res.device_regions<double, int32_t>(n_ao * n_occ, n_occ);
+```
+
+It rounds each region up to `kWorkspaceAlignment`, so every one starts aligned
+for its type, and makes the single request for the total. Don't add up offsets
+and `reinterpret_cast` by hand. Five units used to carry their own copy of that
+lambda, and three more a two-region version of it.
+
 The reasons are memory and allocation count. The workspace only grows, so every
 routine on one device shares a single block sized for the largest of them, and
 once it has grown a later request allocates nothing. A buffer per routine holds
