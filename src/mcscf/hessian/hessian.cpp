@@ -137,9 +137,8 @@ OrbitalHessian::create(DeviceResources &res, const BasisSet &basis, const Spheri
 
   // U C, then C^T h C, and the MO matrices the product reads.
   if (u != nullptr) {
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc,
-                                                  nmo, ns, &kOne<double>, u->data(), nc, c.data(),
-                                                  ns, &kZero<double>, out.c_cart_.data(), nc)));
+    FBF_TRY(gpu_status(gemm(blas, nc, nmo, ns, &kOne<double>, u->data(), c.data(), &kZero<double>,
+                            out.c_cart_.data())));
   } else {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.c_cart_.data(), c.data(), sizeof(double) * nn,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
@@ -278,9 +277,8 @@ OrbitalHessian::create(DeviceResources &res, const BasisSet &basis, const Spheri
     const double s = m * m > 2.0 ? 2.0 / (m * m) : 1.0;
     scale[i] = s;
     const double *const c_i = out.c_cart_.data() + (n_cart * i);
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
-                                                  nc, 1, &s, c_i, nc, c_i, nc, &kZero<double>,
-                                                  out.density_.data(), nc)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, nc, nc, 1, &s, c_i, c_i, &kZero<double>, out.density_.data())));
     FBF_TRY(coulomb(res, j_classes, out.density_, out.j_, tau_j * s));
     FBF_TRY(exchange(res, k_classes, out.density_, out.k_, tau_k * s));
     FBF_TRY(gpu_status(gemmwich(blas, nmo, nc, out.c_cart_.data(), out.j_.data(), work, block)));

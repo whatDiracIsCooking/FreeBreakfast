@@ -9,7 +9,7 @@ the bonds. `livvo_localize` localizes them over the IAO populations (the
 paper's LIVVOs), and `valence_character` measures how much of any orbital lies
 in their span.
 
-No kernels of its own: wwr `gemm`s, `recipes/diagonalize` and
+No kernels of its own: `recipes/blas`'s `gemm`, `recipes/diagonalize` and
 `pipek_mezey_localize`.
 
 ## Module

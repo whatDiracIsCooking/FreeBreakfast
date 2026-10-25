@@ -10,11 +10,11 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, geam, axpy, scal, wwrMemcpy2DAsync, gpu_status
+import free_breakfast.core.wwr; // geam, axpy, scal, wwrMemcpy2DAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.basis;
-import free_breakfast.recipes.blas; // gemmwich
+import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -215,9 +215,8 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
 
   // U C, the orbitals over the Cartesian AOs the kernels evaluate.
   if (u != nullptr) {
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc,
-                                                  nmo, ns, &kOne<double>, u->data(), nc, c.data(),
-                                                  ns, &kZero<double>, scratch.c_cart, nc)));
+    FBF_TRY(gpu_status(gemm(blas, nc, nmo, ns, &kOne<double>, u->data(), c.data(), &kZero<double>,
+                            scratch.c_cart)));
   } else {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(scratch.c_cart, c.data(), sizeof(double) * nn,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
@@ -236,9 +235,9 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
       gemmwich(blas, nmo, ns, c.data(), h.data(), scratch.work, out.fock_inactive.data())));
   FBF_TRY(diagonal(h_diagonal, out.fock_inactive.data()));
   if (ncore > 0) {
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc, nc, ncore, &kOne<double>, scratch.c_cart,
-        nc, scratch.c_cart, nc, &kZero<double>, density.data(), nc)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, nc, nc, ncore, &kOne<double>, scratch.c_cart, scratch.c_cart, &kZero<double>,
+        density.data())));
     FBF_TRY(coulomb(res, j_classes, density, j, tau_j));
     FBF_TRY(exchange(res, k_classes, density, k, tau_k));
     FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, len_cart, &kTwo<double>, j.data(), 1)));
@@ -274,12 +273,10 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
     }
     const double s = bound > 2.0 ? 2.0 / bound : 1.0;
     const double inverse = 1.0 / s;
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, ncas, ncas, &kOne<double>, c_cart_act, nc,
-        out.gamma.data(), ncas, &kZero<double>, scratch.work, nc)));
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
-                                                  nc, ncas, &s, scratch.work, nc, c_cart_act, nc,
-                                                  &kZero<double>, density.data(), nc)));
+    FBF_TRY(gpu_status(gemm(blas, nc, ncas, ncas, &kOne<double>, c_cart_act, out.gamma.data(),
+                            &kZero<double>, scratch.work)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, nc, nc, ncas, &s, scratch.work, c_cart_act, &kZero<double>, density.data())));
     FBF_TRY(coulomb(res, j_classes, density, j, tau_j * s));
     FBF_TRY(exchange(res, k_classes, density, k, tau_k * s));
     FBF_TRY(gpu_status(
@@ -304,10 +301,9 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
         out.fock_inactive.data(), nmo, &kTwo<double>, out.fock_active.data(), nmo, fock, nmo)));
   }
   if (ncas > 0) {
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nmo, ncas, ncas, &kOne<double>,
-        out.fock_inactive.data() + (n_all * static_cast<size_t>(ncore)), nmo, out.gamma.data(),
-        ncas, &kZero<double>, fock_act, nmo)));
+    FBF_TRY(gpu_status(gemm(blas, nmo, ncas, ncas, &kOne<double>,
+                            out.fock_inactive.data() + (n_all * static_cast<size_t>(ncore)),
+                            out.gamma.data(), &kZero<double>, fock_act)));
     // (pu|vw) is ppaa's columns q = ncore + u of each block (v, w): ncas
     // contiguous columns per block, gathered into one nmo x ncas^3 matrix.
     FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(scratch.paaa, n_all * na * sizeof(double),
@@ -316,9 +312,9 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
                                              na * na, wwr::wwrMemcpyDeviceToDevice, stream)));
     // F_pt += sum_k paaa_pk Gamma_tk, k = u + ncas (v + ncas w): Gamma as the
     // column-major ncas x ncas^3 matrix, transposed.
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nmo, ncas, ncas * ncas * ncas, &kOne<double>,
-        scratch.paaa, nmo, out.gamma2.data(), ncas, &kOne<double>, fock_act, nmo)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, nmo, ncas, ncas * ncas * ncas, &kOne<double>, scratch.paaa, out.gamma2.data(),
+        &kOne<double>, fock_act)));
   }
 
   // g = 2 (F - F^T) over the packed pairs.

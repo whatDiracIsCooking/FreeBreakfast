@@ -11,6 +11,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.atom;
 import free_breakfast.io.basis;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.integrals.one_electron.overlap_mixed;
 
@@ -196,11 +197,9 @@ struct AvasRotation {
   FBF_TRY(overlap_mixed_spherical(res, minao, minao, s_mm_device));
   constexpr double kOneScale = 1.0;
   constexpr double kNoAccumulate = 0.0;
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, static_cast<int32_t>(nms),
-      static_cast<int32_t>(nmo), static_cast<int32_t>(nao), &kOneScale, s_mix_device.data(),
-      static_cast<int32_t>(nms), scf.c.data(), static_cast<int32_t>(nao), &kNoAccumulate,
-      s_mo_device.data(), static_cast<int32_t>(nms))));
+  FBF_TRY(gpu_status(gemm(res.blas(), static_cast<int32_t>(nms), static_cast<int32_t>(nmo),
+                          static_cast<int32_t>(nao), &kOneScale, s_mix_device.data(), scf.c.data(),
+                          &kNoAccumulate, s_mo_device.data())));
   std::vector<double> s_mo(nms * nmo);
   std::vector<double> s_mm(nms * nms);
   FBF_TRY(
@@ -337,10 +336,8 @@ struct AvasRotation {
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
   constexpr double kOneScale = 1.0;
   constexpr double kNoAccumulate = 0.0;
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, static_cast<int32_t>(nao), nmo, nmo,
-      &kOneScale, scf.c.data(), static_cast<int32_t>(nao), r_device.data(), nmo, &kNoAccumulate,
-      c.data(), static_cast<int32_t>(nao))));
+  FBF_TRY(gpu_status(gemm(res.blas(), static_cast<int32_t>(nao), nmo, nmo, &kOneScale, scf.c.data(),
+                          r_device.data(), &kNoAccumulate, c.data())));
   return ActiveSpace{
       .ncore = space.ncore,
       .ncas = space.ncas,

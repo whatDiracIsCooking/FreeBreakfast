@@ -23,8 +23,9 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne, kPi
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // gemm, geam, dot, dotc, nrm2, axpy, scal, ScopedPointerMode
+import free_breakfast.core.wwr; // geam, dot, dotc, nrm2, axpy, scal, ScopedPointerMode
 import free_breakfast.core.resources;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.expm;
 
 #include "diagnostics.h"
@@ -247,16 +248,13 @@ geodesic_search(DeviceResources &res, const int32_t n, const T *const w, const C
       if (i > 0) {
         FBF_TRY(skew_expm<T>(res, n, s.eigvec.data(), s.eigval.data(), sign * h * static_cast<R>(i),
                              s.rotation.data()));
-        FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n,
-                                                 n, &kOne<T>, s.rotation.data(), n, w, n, &kZero<T>,
-                                                 s.trial.data(), n)));
+        FBF_TRY(
+            gpu_status(gemm(blas, n, &kOne<T>, s.rotation.data(), w, &kZero<T>, s.trial.data())));
         FBF_TRY(cost.euclidean_gradient(res, n, s.trial.data(), s.psi_trial.data()));
         trial = s.trial.data();
         psi = s.psi_trial.data();
       }
-      FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n,
-                                               &kOne<T>, s.dir.data(), n, trial, n, &kZero<T>,
-                                               s.tmp.data(), n)));
+      FBF_TRY(gpu_status(gemm(blas, n, &kOne<T>, s.dir.data(), trial, &kZero<T>, s.tmp.data())));
       {
         // Device pointer mode for this one reduction, so the sample stays on
         // the device; the guard puts host mode back.
@@ -379,7 +377,7 @@ template <wwr::usual_fp T, UnitaryCostFunction<T> CostF>
   CgState<T> s{res, n};
   const auto nn = static_cast<int64_t>(s.nn);
   const size_t matrix_bytes = s.nn * sizeof(T);
-  const auto adjoint = wwr::real_fp<T> ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_C;
+  constexpr auto adjoint = wwr::real_fp<T> ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_C;
   const R sign = direction == CgDirection::Minimize ? R{-1} : R{1};
   const int32_t reset_period = options.reset_period > 0 ? options.reset_period : n * n;
 
@@ -387,8 +385,8 @@ template <wwr::usual_fp T, UnitaryCostFunction<T> CostF>
   // X = Psi W^H, the projection onto u(n).
   const auto riemannian_gradient = [&](T *const g) -> Status {
     FBF_TRY(cost.euclidean_gradient(res, n, w, s.psi.data()));
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, adjoint, n, n, n, &kOne<T>,
-                                             s.psi.data(), n, w, n, &kZero<T>, s.tmp.data(), n)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, adjoint>(blas, n, &kOne<T>, s.psi.data(), w,
+                                                        &kZero<T>, s.tmp.data())));
     return gpu_status(wwr::geam<T, int32_t>(blas, wwr::WWRBLAS_OP_N, adjoint, n, n, &kOne<T>,
                                             s.tmp.data(), n, &kNegOne<T>, s.tmp.data(), n, g, n));
   };
@@ -458,9 +456,7 @@ template <wwr::usual_fp T, UnitaryCostFunction<T> CostF>
 
     // Step 5: W <- exp(sign mu H) W, from the decomposition the search left.
     FBF_TRY(skew_expm<T>(res, n, s.eigvec.data(), s.eigval.data(), sign * mu, s.rotation.data()));
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n,
-                                             &kOne<T>, s.rotation.data(), n, w, n, &kZero<T>,
-                                             s.trial.data(), n)));
+    FBF_TRY(gpu_status(gemm(blas, n, &kOne<T>, s.rotation.data(), w, &kZero<T>, s.trial.data())));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(w, s.trial.data(), matrix_bytes,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
 

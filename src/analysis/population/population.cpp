@@ -8,10 +8,11 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, wwrMemcpyAsync, gpu_status
+import free_breakfast.core.wwr; // wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.atom;
 import free_breakfast.basis;
+import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
@@ -64,11 +65,9 @@ Result<std::vector<double>> orbital_weights(DeviceResources &res, const BasisSet
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const double one = kOne<double>;
   const double zero = kZero<double>;
-  FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n,
-                                                n_orb, n, &one, s, n, c, n, &zero, sc.data(), n)));
-  FBF_TRY(
-      gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, m, n_orb, n,
-                                            &one, iao, n, sc.data(), n, &zero, weights.data(), m)));
+  FBF_TRY(gpu_status(gemm(blas, n, n_orb, n, &one, s, c, &zero, sc.data())));
+  FBF_TRY(gpu_status(
+      gemm<wwr::WWRBLAS_OP_T>(blas, m, n_orb, n, &one, iao, sc.data(), &zero, weights.data())));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(weights_host.data(), weights.data(),
                                          weights_host.size() * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, res.stream())));

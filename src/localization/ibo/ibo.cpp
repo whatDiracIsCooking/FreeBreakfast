@@ -9,27 +9,16 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // gemm, potrf, potrs, wwrMemcpy{,2D}Async, gpu_status
+import free_breakfast.core.wwr; // potrf, potrs, dgmm, wwrMemcpy{,2D}Async, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.orthogonalize;
 import free_breakfast.integrals.one_electron.overlap_mixed;
 
 #include "diagnostics.h"
 
 namespace free_breakfast {
-
-// One column-major gemm on res.stream(): C = alpha op(A) op(B) + beta C, op(A)
-// m x k and op(B) k x n, each matrix packed (its leading dimension its row
-// count as stored).
-[[nodiscard]] Status ibo_gemm(DeviceResources &res, const bool trans_a, const bool trans_b,
-                              const int32_t m, const int32_t n, const int32_t k, const double alpha,
-                              const double *a, const double *b, const double beta, double *c) {
-  return gpu_status(
-      wwr::gemm<double, int32_t>(res.blas().get(), trans_a ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N,
-                                 trans_b ? wwr::WWRBLAS_OP_T : wwr::WWRBLAS_OP_N, m, n, k, &alpha,
-                                 a, trans_a ? k : m, b, trans_b ? n : k, &beta, c, m));
-}
 
 // A pool buffer of @p count doubles on res.device().
 [[nodiscard]] Buffers::device<double> ibo_buffer(DeviceResources &res, const size_t count) {
@@ -135,9 +124,10 @@ namespace free_breakfast {
     return ibo_solve(res, n, nrhs, factor, b);
   }
   Buffers::device<double> xb = ibo_buffer(res, static_cast<size_t>(n) * nrhs);
-  FBF_TRY(
-      ibo_gemm(res, false, false, n, nrhs, n, kOne<double>, factor, b, kZero<double>, xb.data()));
-  return ibo_gemm(res, false, false, n, nrhs, n, kOne<double>, factor, xb.data(), kZero<double>, b);
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), n, nrhs, n, &kOne<double>, factor, b, &kZero<double>, xb.data())));
+  return gpu_status(
+      gemm(res.blas(), n, nrhs, n, &kOne<double>, factor, xb.data(), &kZero<double>, b));
 }
 
 // X <- X (X^T S X)^-1/2 for the n x k X: Loewdin orthonormalization of its
@@ -146,10 +136,11 @@ namespace free_breakfast {
                                         const double *s, double *x, double *sx, double *xn) {
   Buffers::device<double> metric = ibo_buffer(res, static_cast<size_t>(k) * k);
   Buffers::device<double> root = ibo_buffer(res, static_cast<size_t>(k) * k);
-  FBF_TRY(ibo_gemm(res, false, false, n, k, n, kOne<double>, s, x, kZero<double>, sx));
-  FBF_TRY(ibo_gemm(res, true, false, k, k, n, kOne<double>, x, sx, kZero<double>, metric.data()));
+  FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, x, &kZero<double>, sx)));
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), k, k, n, &kOne<double>, x, sx,
+                                             &kZero<double>, metric.data())));
   FBF_TRY(orthogonalize<double>(res, k, metric.data(), root.data()));
-  FBF_TRY(ibo_gemm(res, false, false, n, k, k, kOne<double>, x, root.data(), kZero<double>, xn));
+  FBF_TRY(gpu_status(gemm(res.blas(), n, k, k, &kOne<double>, x, root.data(), &kZero<double>, xn)));
   return ibo_copy(res, x, xn, static_cast<size_t>(n) * k);
 }
 
@@ -252,11 +243,11 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
   Buffers::device<double> a = ibo_buffer(res, nm);
   FBF_TRY(ibo_copy(res, a.data(), p12.data(), nm));
   if (k > 0) {
-    FBF_TRY(
-        ibo_gemm(res, true, false, m, k, n, kOne<double>, s12.data(), c, kZero<double>, x.data()));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, s12.data(), c,
+                                               &kZero<double>, x.data())));
     FBF_TRY(ibo_solve(res, m, k, s2.data(), x.data()));
-    FBF_TRY(ibo_gemm(res, false, false, n, k, m, kOne<double>, s12.data(), x.data(), kZero<double>,
-                     ct.data()));
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), n, k, m, &kOne<double>, s12.data(), x.data(), &kZero<double>, ct.data())));
     FBF_TRY(ibo_solve_basis(res, n, k, cholesky, l1.data(), ct.data()));
     FBF_TRY(ibo_orthonormalize(res, n, k, s, ct.data(), sc.data(), scratch.data()));
 
@@ -267,21 +258,21 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
     Buffers::device<double> f = ibo_buffer(res, mk);
     Buffers::device<double> o = ibo_buffer(res, static_cast<size_t>(k) * k);
     Buffers::device<double> of = ibo_buffer(res, mk);
-    FBF_TRY(ibo_gemm(res, false, false, n, k, n, kOne<double>, s, c, kZero<double>, sc.data()));
-    FBF_TRY(
-        ibo_gemm(res, true, false, k, m, n, kOne<double>, c, s12.data(), kZero<double>, e.data()));
-    FBF_TRY(ibo_gemm(res, true, false, k, m, n, kOne<double>, ct.data(), s12.data(), kZero<double>,
-                     f.data()));
-    FBF_TRY(ibo_gemm(res, true, false, k, k, n, kOne<double>, sc.data(), ct.data(), kZero<double>,
-                     o.data()));
-    FBF_TRY(ibo_gemm(res, false, false, k, m, k, kOne<double>, o.data(), f.data(), kZero<double>,
-                     of.data()));
-    FBF_TRY(
-        ibo_gemm(res, false, false, n, m, k, kNegOne<double>, c, e.data(), kOne<double>, a.data()));
-    FBF_TRY(ibo_gemm(res, false, false, n, m, k, kNegOne<double>, ct.data(), f.data(), kOne<double>,
-                     a.data()));
-    FBF_TRY(
-        ibo_gemm(res, false, false, n, m, k, kTwo<double>, c, of.data(), kOne<double>, a.data()));
+    FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, c, &kZero<double>, sc.data())));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), k, m, n, &kOne<double>, c, s12.data(),
+                                               &kZero<double>, e.data())));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), k, m, n, &kOne<double>, ct.data(),
+                                               s12.data(), &kZero<double>, f.data())));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), k, k, n, &kOne<double>, sc.data(),
+                                               ct.data(), &kZero<double>, o.data())));
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), k, m, k, &kOne<double>, o.data(), f.data(), &kZero<double>, of.data())));
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), n, m, k, &kNegOne<double>, c, e.data(), &kOne<double>, a.data())));
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), n, m, k, &kNegOne<double>, ct.data(), f.data(), &kOne<double>, a.data())));
+    FBF_TRY(gpu_status(
+        gemm(res.blas(), n, m, k, &kTwo<double>, c, of.data(), &kOne<double>, a.data())));
   }
 
   // The IAOs: A orthonormalized under S1.
@@ -324,9 +315,9 @@ Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
   Buffers::device<double> c_iao_local = ibo_buffer(res, mk);
   Buffers::device<double> rotation = ibo_buffer(res, static_cast<size_t>(k) * k);
   Buffers::device<double> identity = ibo_buffer(res, static_cast<size_t>(m) * m);
-  FBF_TRY(ibo_gemm(res, false, false, n, k, n, kOne<double>, s, c, kZero<double>, sc.data()));
-  FBF_TRY(ibo_gemm(res, true, false, m, k, n, kOne<double>, iao.data(), sc.data(), kZero<double>,
-                   c_iao.data()));
+  FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, c, &kZero<double>, sc.data())));
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao.data(),
+                                             sc.data(), &kZero<double>, c_iao.data())));
   std::vector<double> identity_host(static_cast<size_t>(m) * m, 0.0);
   for (int32_t r = 0; r < m; ++r) {
     identity_host[static_cast<size_t>(r) * (m + 1)] = 1.0;
@@ -340,8 +331,8 @@ Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
     return info;
   }
   // C U rather than A C_IAO U: the same orbitals, without the round trip.
-  FBF_TRY(ibo_gemm(res, false, false, n, k, k, kOne<double>, c, rotation.data(), kZero<double>,
-                   c_local));
+  FBF_TRY(gpu_status(
+      gemm(res.blas(), n, k, k, &kOne<double>, c, rotation.data(), &kZero<double>, c_local)));
   if (u != nullptr) {
     FBF_TRY(ibo_copy(res, u, rotation.data(), static_cast<size_t>(k) * k));
   }

@@ -127,9 +127,8 @@ struct ScfState {
   FBF_TRY(diagonalize<double>(res, n, st.tmp.data(), st.eps.data()));
   FBF_TRY(gpu_status(
       gemm(blas, n, &kOne<double>, x.data(), st.tmp.data(), &kZero<double>, st.c.data())));
-  return gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n,
-                                               nocc, &kTwo<double>, st.c.data(), n, st.c.data(), n,
-                                               &kZero<double>, st.d.data(), n));
+  return gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+      blas, n, n, nocc, &kTwo<double>, st.c.data(), st.c.data(), &kZero<double>, st.d.data()));
 }
 
 // The converged orbitals to @p path as Molden: C downloaded, every MO written,

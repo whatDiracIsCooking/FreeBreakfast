@@ -3,7 +3,7 @@
 Three BLAS conveniences over WarpWraps' typed dispatch (`wwr::gemm<T>`,
 `wwr::dgmm<T>`, re-exported by [`free_breakfast.core.wwr`](../../core/wwr/README.md)):
 
-- `gemm`, `wwr::gemm` for square, contiguous operands;
+- `gemm`, `wwr::gemm` for packed operands, rectangular or square;
 - `gemmwich`, the sandwich product `Xᴴ F X` (and its general rectangular form)
   as two gemms;
 - `gmmwich`, the same sandwich with a diagonal middle, `Xᴴ diag(d) X`, as a
@@ -15,7 +15,8 @@ Three BLAS conveniences over WarpWraps' typed dispatch (`wwr::gemm<T>`,
 complex types).
 
 They fix arguments and compose calls; they do not rename them. `gemm` forwards
-to `wwr::gemm` with arguments filled in, and every other gemm still calls
+to `wwr::gemm` with the leading dimensions filled in, and a gemm it cannot
+express (a padded leading dimension, an op chosen at run time) still calls
 `wwr::gemm` itself. `gemmwich` is two `wwr::gemm` calls under wwr's
 `ScopedPointerMode`, and `gmmwich` the same composition with a `wwr::dgmm` in
 place of the first gemm.
@@ -67,15 +68,25 @@ namespace fb = free_breakfast;
 
 ## gemm
 
-`free_breakfast::gemm` is `wwr::gemm<T, int32_t>` for square, contiguous
-operands: A, B and C all `n x n`, column-major, `m = n = k = n` and every
-leading dimension `n`. One function:
+`free_breakfast::gemm` is `wwr::gemm<T, int32_t>` for **packed** operands:
+column-major, each leading dimension the row count of its matrix as stored.
+Two overloads:
 
-| Call | Computes |
-| --- | --- |
-| `gemm<OpA, OpB>(handle, n, alpha, a, b, beta, c)` | `C = alpha*OpA(A)*OpB(B) + beta*C` |
-| `gemm<OpA>(handle, n, alpha, a, b, beta, c)` | `C = alpha*OpA(A)*B + beta*C` |
-| `gemm(handle, n, alpha, a, b, beta, c)` | `C = alpha*A*B + beta*C` |
+| Call | Shapes | Computes |
+| --- | --- | --- |
+| `gemm<OpA, OpB>(handle, m, n, k, alpha, a, b, beta, c)` | `OpA(A)` m x k, `OpB(B)` k x n, C m x n | `C = alpha*OpA(A)*OpB(B) + beta*C` |
+| `gemm<OpA, OpB>(handle, n, alpha, a, b, beta, c)` | all n x n | the same, with `m = n = k = n` |
+
+The rectangular one derives the leading dimensions from the ops: `lda` is `m`
+under `OP_N` (A stored m x k) and `k` otherwise (A stored k x m), `ldb` is `k`
+or `n` the same way, and `ldc` is `m`. The square one forwards to it with
+`n, n, n`.
+
+A block of a larger matrix is still packed when it is a run of whole columns:
+the first `ncore` columns of an `n x nmo` C are an `n x ncore` matrix with
+leading dimension `n`. A block that takes only some of the rows is not: its
+leading dimension is the parent's row count, not its own, and it goes to
+`wwr::gemm`.
 
 `OpA` / `OpB` are `WWRBLAS_OP_N`, `_T` or `_C` (`BlasOp`; `_C` is the
 conjugate transpose, the same as `_T` for a real `T`). `gemm<WWRBLAS_OP_T>` is
@@ -86,6 +97,9 @@ fb::BlasHandle blas(dev);
 FBF_GPU_MUST(fb::gemm(blas, n, &kOne<double>, a, b, &kZero<double>, c));
 FBF_GPU_MUST(fb::gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(blas, n, &kOne<double>, m, u,
                                                             &kZero<double>, x));
+// C_iao (m x k) = A^T (S C), A n x m and S C n x k.
+FBF_TRY(fb::gpu_status(fb::gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao, sc,
+                                                   &kZero<double>, c_iao)));
 ```
 
 - `T` is any `wwr::usual_fp` (float, double and the two complex types); sizes
@@ -100,10 +114,13 @@ FBF_GPU_MUST(fb::gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(blas, n, &kOne<doubl
   `FBF_GPU_MUST` or `gpu_status`. Like every BLAS call it runs on the calling
   thread's current device (see `ScopedDeviceIndex` in `core/wwr`).
 - The name is `wwr::gemm`'s too. They never collide: wwr's takes 14 arguments
-  and is reached qualified, and this takes 7. Inside `free_breakfast`,
+  and is reached qualified, and these take 9 and 7. Inside `free_breakfast`,
   write `wwr::gemm` for the general call and plain `gemm` for these.
 
-For a rectangular shape or a padded leading dimension, call `wwr::gemm`.
+For a padded leading dimension or an op known only at run time, call
+`wwr::gemm`. Don't wrap it in a module-local helper that takes the ops as
+`bool`s: `livvo_gemm` and `ibo_gemm` were two copies of the rectangular
+overload, each deriving the leading dimensions on its own.
 
 ## gemmwich
 

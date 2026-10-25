@@ -14,6 +14,7 @@ import free_breakfast.core.resources;
 import free_breakfast.io.basis;
 import free_breakfast.io.molden;
 import free_breakfast.localization.livvo;
+import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
@@ -89,12 +90,10 @@ namespace free_breakfast {
     const double zero = 0.0;
     const double *c_vir = scf.c.data() + (static_cast<size_t>(n_ao) * out.n_occ);
     const auto [sl, o_dev] = res.device_regions<double>(l.size(), o.size());
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(res.blas().get(), wwr::WWRBLAS_OP_N,
-                                                  wwr::WWRBLAS_OP_N, n_ao, out.n_vvo, n_ao, &one, s,
-                                                  n_ao, out.livvo.data(), n_ao, &zero, sl, n_ao)));
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(res.blas().get(), wwr::WWRBLAS_OP_T,
-                                                  wwr::WWRBLAS_OP_N, n_vir, out.n_vvo, n_ao, &one,
-                                                  c_vir, n_ao, sl, n_ao, &zero, o_dev, n_vir)));
+    FBF_TRY(
+        gpu_status(gemm(res.blas(), n_ao, out.n_vvo, n_ao, &one, s, out.livvo.data(), &zero, sl)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), n_vir, out.n_vvo, n_ao, &one, c_vir, sl,
+                                               &zero, o_dev)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(o.data(), o_dev, o.size() * sizeof(double),
                                            wwr::wwrMemcpyDeviceToHost, res.stream())));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(l.data(), out.livvo.data(), l.size() * sizeof(double),

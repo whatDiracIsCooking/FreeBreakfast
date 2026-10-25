@@ -1,4 +1,4 @@
-# The module. Host code over wwr's BLAS and solver, orthogonalize and
+# The module. Host code over recipes/blas, wwr's solver, orthogonalize and
 # overlap_mixed, with no kernels of its own: the localization is
 # pipek_mezey's, re-exported for its options and info, so it is PUBLIC.
 free_breakfast_add_cxx_module_library(
@@ -20,6 +20,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::log
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
+  free_breakfast::recipes::blas
   free_breakfast::recipes::orthogonalize
   free_breakfast::integrals::one_electron::overlap_mixed
 )

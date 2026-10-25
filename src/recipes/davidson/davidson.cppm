@@ -14,6 +14,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
 import free_breakfast.core.wwr; // BLAS, wwrMemcpy2DAsync, ScopedPointerMode, CreatePolicy
 import free_breakfast.core.resources;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
 import free_breakfast.recipes.orthogonalize; // orthonormalize
 export import free_breakfast.recipes.linear_operator;
@@ -209,9 +210,8 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(projection.data(), s_prev.data(),
                                            static_cast<size_t>(prev_rows) * roots * sizeof(T),
                                            wwr::wwrMemcpyHostToDevice, stream)));
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
-                                             prev_rows, &kOne<T>, v.data(), n, projection.data(),
-                                             prev_rows, &kZero<T>, previous_eigenvectors, n)));
+    FBF_TRY(gpu_status(gemm(blas, n, n_roots, prev_rows, &kOne<T>, v.data(), projection.data(),
+                            &kZero<T>, previous_eigenvectors)));
     // s_prev may change on the host before the stream reads it.
     return res.sync();
   };
@@ -266,12 +266,10 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
 
     // 3. Ritz vectors X = V S and their images A X = (A V) S, from the leading
     //    n_roots columns of S: A is never applied to X.
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
-                                             dim, &kOne<T>, v.data(), n, h.data(), dim, &kZero<T>,
-                                             eigenvectors, n)));
-    FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots,
-                                             dim, &kOne<T>, av.data(), n, h.data(), dim, &kZero<T>,
-                                             ritz_av.data(), n)));
+    FBF_TRY(gpu_status(
+        gemm(blas, n, n_roots, dim, &kOne<T>, v.data(), h.data(), &kZero<T>, eigenvectors)));
+    FBF_TRY(gpu_status(
+        gemm(blas, n, n_roots, dim, &kOne<T>, av.data(), h.data(), &kZero<T>, ritz_av.data())));
 
     // 4. Residuals R = A X - X diag(theta), and the relative test per root.
     //    The norms land on the device and come back together, one sync.
@@ -395,18 +393,16 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
         FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(projection.data(), y_host.data(),
                                                static_cast<size_t>(dim * extra) * sizeof(T),
                                                wwr::wwrMemcpyHostToDevice, stream)));
-        FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
-            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, extra, dim, &kOne<T>, v.data(), n,
-            projection.data(), dim, &kZero<T>, residual.data(), n)));
+        FBF_TRY(gpu_status(gemm(blas, n, extra, dim, &kOne<T>, v.data(), projection.data(),
+                                &kZero<T>, residual.data())));
       }
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data(), eigenvectors, block_bytes,
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
       if (extra > 0) {
         FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data() + (roots * nz), residual.data(),
                                                extra_bytes, wwr::wwrMemcpyDeviceToDevice, stream)));
-        FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
-            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, extra, dim, &kOne<T>, av.data(), n,
-            projection.data(), dim, &kZero<T>, residual.data(), n)));
+        FBF_TRY(gpu_status(gemm(blas, n, extra, dim, &kOne<T>, av.data(), projection.data(),
+                                &kZero<T>, residual.data())));
       }
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(av.data(), ritz_av.data(), block_bytes,
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
@@ -432,12 +428,10 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
 
     // 7. C -= V (V^T C), twice: one pass loses orthogonality once V is large.
     for (int32_t pass = 0; pass < 2; ++pass) {
-      FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, dim,
-                                               n_roots, n, &kOne<T>, v.data(), n, correction.data(),
-                                               n, &kZero<T>, projection.data(), dim)));
-      FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
-          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n_roots, dim, &kNegOne<T>, v.data(), n,
-          projection.data(), dim, &kOne<T>, correction.data(), n)));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, dim, n_roots, n, &kOne<T>, v.data(),
+                                                 correction.data(), &kZero<T>, projection.data())));
+      FBF_TRY(gpu_status(gemm(blas, n, n_roots, dim, &kNegOne<T>, v.data(), projection.data(),
+                              &kOne<T>, correction.data())));
     }
 
     // 8. The unconverged corrections among themselves, each survivor

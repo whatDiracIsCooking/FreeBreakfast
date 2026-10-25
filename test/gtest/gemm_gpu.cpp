@@ -1,8 +1,8 @@
-// GPU cases for recipes/blas's :gemm: gemm with its ops defaulted and given, against a host
-// reference, with non-symmetric operands (so a swapped or wrongly transposed
-// operand cannot pass) and a non-zero beta (so C's prior contents must be
-// accumulated, not overwritten), through both a BlasHandle and a raw
-// wwrblasHandle_t.
+// GPU cases for recipes/blas's :gemm: gemm, square and rectangular, with its
+// ops defaulted and given, against a host reference, with non-symmetric
+// operands (so a swapped or wrongly transposed operand cannot pass) and a
+// non-zero beta (so C's prior contents must be accumulated, not overwritten),
+// through both a BlasHandle and a raw wwrblasHandle_t.
 
 #include <gtest/gtest.h>
 
@@ -203,6 +203,111 @@ TYPED_TEST(Gemm, OneOpLeavesBUntransposed) {
   expect_matches(ops.download_c(), expected);
 }
 
+// The rectangular overload's shape: three distinct extents, so a leading
+// dimension taken from the wrong one reads out of place (or out of bounds).
+constexpr std::int32_t kRectM = 23;
+constexpr std::int32_t kRectN = 31;
+constexpr std::int32_t kRectK = 37;
+
+// Column-major rows x cols on the host.
+template <typename T>
+std::vector<T> random_rect(std::int32_t rows, std::int32_t cols, std::uint32_t seed) {
+  std::mt19937 gen{seed};
+  std::uniform_real_distribution<T> dist{T{-1}, T{1}};
+  std::vector<T> m(static_cast<std::size_t>(rows) * cols);
+  for (auto &v : m) {
+    v = dist(gen);
+  }
+  return m;
+}
+
+// alpha * op(A) * op(B) + beta * C for m x k op(A) and k x n op(B), each stored
+// packed: A is m x k or k x m, B is k x n or n x k.
+template <typename T>
+std::vector<T> rect_reference(bool trans_a, bool trans_b, T alpha, const std::vector<T> &a,
+                              const std::vector<T> &b, T beta, const std::vector<T> &c) {
+  const std::int32_t lda = trans_a ? kRectK : kRectM;
+  const std::int32_t ldb = trans_b ? kRectN : kRectK;
+  std::vector<T> out(c.size());
+  for (std::int32_t j = 0; j < kRectN; ++j) {
+    for (std::int32_t i = 0; i < kRectM; ++i) {
+      T sum{0};
+      for (std::int32_t p = 0; p < kRectK; ++p) {
+        const T a_ip = trans_a ? a[p + i * lda] : a[i + p * lda];
+        const T b_pj = trans_b ? b[j + p * ldb] : b[p + j * ldb];
+        sum += a_ip * b_pj;
+      }
+      out[i + j * kRectM] = alpha * sum + beta * c[i + j * kRectM];
+    }
+  }
+  return out;
+}
+
+// The rectangular overload over every N/T combination, each operand packed in
+// the shape its op implies, with a non-zero beta.
+TYPED_TEST(Gemm, RectangularMatchesHostReference) {
+  FBF_REQUIRE_GPU();
+  using T = TypeParam;
+
+  auto dev = std::make_shared<fb::Device>(0);
+  fb::BlasHandle blas(dev);
+  constexpr std::size_t kMk = static_cast<std::size_t>(kRectM) * kRectK;
+  constexpr std::size_t kKn = static_cast<std::size_t>(kRectK) * kRectN;
+  constexpr std::size_t kMn = static_cast<std::size_t>(kRectM) * kRectN;
+  fb::Buffers::pinned<T> stage{std::max({kMk, kKn, kMn})};
+  fb::Buffers::device<T> da{kMk, dev};
+  fb::Buffers::device<T> db{kKn, dev};
+  fb::Buffers::device<T> dc{kMn, dev};
+  const auto upload = [&](fb::Buffers::device<T> &d, const std::vector<T> &host) {
+    std::ranges::copy(host, stage.data());
+    ASSERT_EQ(wwr::wwrMemcpyAsync(d.data(), stage.data(), host.size() * sizeof(T),
+                                  wwr::wwrMemcpyHostToDevice, dev->stream()),
+              wwr::wwrSuccess);
+    ASSERT_EQ(ext::sync(dev->stream()), wwr::wwrSuccess);
+  };
+  const auto download_c = [&] {
+    EXPECT_EQ(wwr::wwrMemcpyAsync(stage.data(), dc.data(), kMn * sizeof(T),
+                                  wwr::wwrMemcpyDeviceToHost, dev->stream()),
+              wwr::wwrSuccess);
+    EXPECT_EQ(ext::sync(dev->stream()), wwr::wwrSuccess);
+    return std::vector<T>(stage.data(), stage.data() + kMn);
+  };
+
+  // The element count is the same either way round, so one A and one B serve
+  // every op: only how they are read changes.
+  const auto a = random_rect<T>(kRectM, kRectK, 10);
+  const auto b = random_rect<T>(kRectK, kRectN, 11);
+  const auto c = random_rect<T>(kRectM, kRectN, 12);
+  const T alpha{0.5};
+  const T beta{-1.5};
+  upload(da, a);
+  upload(db, b);
+
+  const auto check = [&]<wwr::wwrblasOperation_t OpA, wwr::wwrblasOperation_t OpB>(
+                         OpConstant<OpA>, OpConstant<OpB>) {
+    constexpr bool trans_a = OpA == wwr::WWRBLAS_OP_T;
+    constexpr bool trans_b = OpB == wwr::WWRBLAS_OP_T;
+    SCOPED_TRACE(std::format("OpA = {}, OpB = {}", trans_a ? 'T' : 'N', trans_b ? 'T' : 'N'));
+
+    upload(dc, c);
+    ASSERT_EQ((fb::gemm<OpA, OpB>(blas, kRectM, kRectN, kRectK, &alpha, da.data(), db.data(), &beta,
+                                  dc.data())),
+              wwr::WWRBLAS_STATUS_SUCCESS);
+    const auto got = download_c();
+    const auto expected = rect_reference(trans_a, trans_b, alpha, a, b, beta, c);
+    const T tolerance = std::is_same_v<T, float> ? T{1e-4} : T{1e-12};
+    for (std::size_t i = 0; i < kMn; ++i) {
+      ASSERT_NEAR(got[i], expected[i], tolerance) << "at " << i;
+    }
+  };
+  using N = OpConstant<wwr::WWRBLAS_OP_N>;
+  using Tr = OpConstant<wwr::WWRBLAS_OP_T>;
+  check(N{}, N{});
+  check(N{}, Tr{});
+  check(Tr{}, N{});
+  check(Tr{}, Tr{});
+}
+
 // A value of the op type that is none of N, T, C on either backend:
 // CUBLAS_OP_CONJG on CUDA (unsupported, and not named by wwr), nothing on HIP,
 // whose ops are 111-113. Within both enums' value ranges, so the cast is a
@@ -222,5 +327,16 @@ static_assert(kGemmTakes<wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_C>);
 static_assert(kGemmTakes<wwr::WWRBLAS_OP_C, wwr::WWRBLAS_OP_T>);
 static_assert(!kGemmTakes<kNotAnOp, wwr::WWRBLAS_OP_N>);
 static_assert(!kGemmTakes<wwr::WWRBLAS_OP_N, kNotAnOp>);
+
+// The same constraint on the rectangular overload.
+template <wwr::wwrblasOperation_t OpA, wwr::wwrblasOperation_t OpB>
+constexpr bool kRectGemmTakes = requires(const fb::BlasHandle &h, const double *p, double *c) {
+  fb::gemm<OpA, OpB>(h, kRectM, kRectN, kRectK, p, p, p, p, c);
+};
+
+static_assert(kRectGemmTakes<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N>);
+static_assert(kRectGemmTakes<wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_C>);
+static_assert(!kRectGemmTakes<kNotAnOp, wwr::WWRBLAS_OP_N>);
+static_assert(!kRectGemmTakes<wwr::WWRBLAS_OP_N, kNotAnOp>);
 
 } // namespace

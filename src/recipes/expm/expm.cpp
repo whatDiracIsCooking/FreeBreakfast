@@ -15,6 +15,7 @@ import free_breakfast.core.constants;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
@@ -105,8 +106,8 @@ Status skew_expm(DeviceResources &res, const int32_t n,
   } else {
     product = e;
   }
-  FBF_TRY(gpu_status(wwr::gemm<Z, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_C, n, n, n,
-                                           &kOne<Z>, v, n, u, n, &kZero<Z>, product, n)));
+  FBF_TRY(gpu_status(
+      gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_C>(blas, n, &kOne<Z>, v, u, &kZero<Z>, product)));
   if constexpr (wwr::real_fp<T>) {
     FBF_TRY(
         gpu_status(wwr::copy<R, int64_t>(blas, nn, reinterpret_cast<const R *>(product), 2, e, 1)));
