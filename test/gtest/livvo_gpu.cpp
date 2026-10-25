@@ -1,8 +1,10 @@
 // valence_virtual_orbitals over the IAOs of an RHF SCF, water and N2 in
 // cc-pVDZ over MINAO: m - n_occ of them, S-orthonormal, orthogonal to the
 // occupied orbitals and inside the canonical virtual space, and a span that a
-// rotation of the occupied orbitals does not move. The SCF is the pipeline's,
-// from a config naming only [scf]. Runs the device chain, so needs a GPU.
+// rotation of the occupied orbitals does not move. Then livvo_localize on
+// water, two mirror-image sigma*_OH LIVVOs, and valence_character over the
+// canonical virtuals. The SCF is the pipeline's, from a config naming only
+// [scf]. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -16,6 +18,7 @@ import free_breakfast.io.base;
 import free_breakfast.io.basis;
 import free_breakfast.localization.ibo;
 import free_breakfast.localization.livvo;
+import free_breakfast.analysis.population;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
@@ -29,6 +32,13 @@ namespace fb = free_breakfast;
 // Every check is an orthonormality or a projector built from orbitals the SCF
 // and the IAOs give to rounding; nothing here carries the SCF's tolerance.
 constexpr double kTolerance = 1e-10;
+
+// A LIVVO is two-centre when O and its H hold more than this of it; the far
+// H holds under 1e-6 of either.
+constexpr double kTwoCenter = 0.999;
+// The two LIVVOs' populations agree to the localization's convergence rather
+// than to rounding; they are measured equal to about 1e-11.
+constexpr double kMirror = 1e-8;
 
 // Angstrom.
 constexpr std::string_view kWater = "3\nwater\n"
@@ -201,10 +211,14 @@ TEST_P(Livvo, AreTheOrthonormalVirtualHalfOfTheIaoSpan) {
       rotated[mu + (n * (i + 1))] = (sn * a) + (cs * b);
     }
   }
+  // Uploaded on res.stream(), which is non-blocking: a plain wwrMemcpy from
+  // pageable memory goes on the null stream and may return before its DMA
+  // lands, so the IAOs below could read c_rotated half written.
   fb::Buffers::device<double> c_rotated(n * occ, res.device());
-  ASSERT_EQ(wwr::wwrMemcpy(c_rotated.data(), rotated.data(), sizeof(double) * rotated.size(),
-                           wwr::wwrMemcpyHostToDevice),
+  ASSERT_EQ(wwr::wwrMemcpyAsync(c_rotated.data(), rotated.data(), sizeof(double) * rotated.size(),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
             wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
   const std::vector<double> w =
       build_vvos(res, basis->basis, *minao, k, overlap->s.data(), c_rotated.data());
   const std::vector<double> vv = outer(v, n, n_vvo);
@@ -219,6 +233,110 @@ INSTANTIATE_TEST_SUITE_P(CcPvdzOverMinao, Livvo,
                          [](const ::testing::TestParamInfo<Case> &info) {
                            return std::string{info.param.name};
                          });
+
+// Water's two LIVVOs are the sigma*_OH: each on O and one H by the IAO
+// populations, one per H, mirror images of each other. Their valence
+// character over the canonical virtuals is a partition of n_vvo, the same
+// from the VVOs as from the LIVVOs.
+TEST(Livvo, WaterLocalizesIntoTwoMirrorImageSigmaStarOh) {
+  FBF_REQUIRE_GPU();
+  auto calc = run_scf(kWater);
+  ASSERT_TRUE(calc.has_value());
+  const auto &molecule = calc->get<fb::MoleculeOutput>();
+  const auto &basis = calc->get<fb::BasisSetOutput>();
+  const auto &overlap = calc->get<fb::OverlapOutput>();
+  const auto &scf = calc->get<fb::ScfOutput>();
+  ASSERT_TRUE(molecule.has_value() && basis.has_value() && overlap.has_value() && scf.has_value());
+  auto stamp = fb::resolve_basis("minao");
+  ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+  auto minao = fb::place(stamp->primitive_normalized(), molecule->molecule);
+  ASSERT_TRUE(minao.has_value()) << minao.error().message;
+
+  const std::size_t n = basis->basis.nao_sphe();
+  const std::size_t m = minao->nao_sphe();
+  const auto occ = static_cast<std::size_t>(molecule->molecule.electron_count() / 2);
+  const std::size_t n_vvo = m - occ;
+  ASSERT_EQ(n_vvo, 2U);
+  const auto k = static_cast<std::int32_t>(occ);
+
+  fb::DeviceResources res(scf->c.dev_idx());
+  const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
+  const double *s_dev = overlap->s.data();
+  const double *c_dev = scf->c.data();
+  fb::Buffers::device<double> iao(n * m, res.device());
+  fb::Buffers::device<double> vvo(n * n_vvo, res.device());
+  fb::Buffers::device<double> livvo(n * n_vvo, res.device());
+  fb::Buffers::device<double> u(n_vvo * n_vvo, res.device());
+  const fb::Status built =
+      fb::intrinsic_atomic_orbitals(res, basis->basis, *minao, k, s_dev, c_dev, iao.data());
+  ASSERT_TRUE(built.has_value()) << built.error().message;
+  const fb::Status made = fb::valence_virtual_orbitals(res, basis->basis, *minao, k, s_dev, c_dev,
+                                                       iao.data(), vvo.data());
+  ASSERT_TRUE(made.has_value()) << made.error().message;
+  const auto info = fb::livvo_localize(res, basis->basis, *minao, k, s_dev, iao.data(), vvo.data(),
+                                       livvo.data(), u.data());
+  ASSERT_TRUE(info.has_value()) << info.error().message;
+  EXPECT_GE(info->functional, info->initial_functional);
+
+  const std::vector<double> s = download(s_dev, n * n);
+  const std::vector<double> c = download(c_dev, n * n);
+  const std::vector<double> l = download(livvo.data(), n * n_vvo);
+
+  // L^T S L = I and C_occ^T S L = 0.
+  const std::vector<double> lsl = overlap_of(l, s, l, n, n_vvo, n_vvo);
+  for (std::size_t j = 0; j < n_vvo; ++j) {
+    for (std::size_t i = 0; i < n_vvo; ++i) {
+      EXPECT_NEAR(lsl[i + (n_vvo * j)], i == j ? 1.0 : 0.0, kTolerance) << i << "," << j;
+    }
+  }
+  const std::vector<double> csl = overlap_of(c, s, l, n, occ, n_vvo);
+  for (const double x : csl) {
+    EXPECT_NEAR(x, 0.0, kTolerance);
+  }
+
+  // Populations over the IAOs, atoms O, H, H: each LIVVO on O and one H, a
+  // different H each, and the two mirror images.
+  const auto pop = fb::orbital_populations(
+      res, basis->basis, *minao, static_cast<std::int32_t>(n_vvo), s_dev, livvo.data(), iao.data());
+  ASSERT_TRUE(pop.has_value()) << pop.error().message;
+  ASSERT_EQ(pop->size(), 3 * n_vvo);
+  const auto at = [&](std::size_t atom, std::size_t orb) { return (*pop)[atom + (3 * orb)]; };
+  std::array<std::size_t, 2> hydrogen{};
+  for (std::size_t j = 0; j < n_vvo; ++j) {
+    hydrogen[j] = at(1, j) > at(2, j) ? 1 : 2;
+    const std::size_t other = 3 - hydrogen[j];
+    std::cout << std::format("LIVVO {}: O {:.12f}, H{} {:.12f}, H{} {:.3e}\n", j, at(0, j),
+                             hydrogen[j], at(hydrogen[j], j), other, at(other, j));
+    EXPECT_GT(at(0, j) + at(hydrogen[j], j), kTwoCenter) << "LIVVO " << j;
+  }
+  EXPECT_NE(hydrogen[0], hydrogen[1]);
+  EXPECT_NEAR(at(0, 0), at(0, 1), kMirror);
+  EXPECT_NEAR(at(hydrogen[0], 0), at(hydrogen[1], 1), kMirror);
+  EXPECT_NEAR(at(hydrogen[1], 0), at(hydrogen[0], 1), kMirror);
+
+  // t_val over the n - n_occ canonical virtuals: each in [0, 1], summing to
+  // n_vvo since the VVOs lie wholly in the virtual space, and the same from
+  // the VVOs as from the LIVVOs, which span the same space.
+  const auto n_virt = static_cast<std::int32_t>(n - occ);
+  const double *virtuals = c_dev + (n * occ);
+  const auto from_livvo = fb::valence_character(
+      res, basis->basis, n_virt, static_cast<std::int32_t>(n_vvo), s_dev, virtuals, livvo.data());
+  const auto from_vvo = fb::valence_character(
+      res, basis->basis, n_virt, static_cast<std::int32_t>(n_vvo), s_dev, virtuals, vvo.data());
+  ASSERT_TRUE(from_livvo.has_value()) << from_livvo.error().message;
+  ASSERT_TRUE(from_vvo.has_value()) << from_vvo.error().message;
+  ASSERT_EQ(from_livvo->size(), n - occ);
+  ASSERT_EQ(from_vvo->size(), n - occ);
+  double total = 0.0;
+  for (std::size_t i = 0; i < n - occ; ++i) {
+    const double t_val = (*from_livvo)[i];
+    EXPECT_GE(t_val, -kTolerance) << "virtual " << i;
+    EXPECT_LE(t_val, 1.0 + kTolerance) << "virtual " << i;
+    EXPECT_NEAR(t_val, (*from_vvo)[i], kTolerance) << "virtual " << i;
+    total += t_val;
+  }
+  EXPECT_NEAR(total, static_cast<double>(n_vvo), kTolerance);
+}
 
 // The arguments are refused before anything is read, so any non-null device
 // pointer serves for the matrices.
@@ -254,6 +372,53 @@ TEST(Livvo, RefusesAnOutOfRangeNOccMismatchedAtomsAndNullPointers) {
   EXPECT_TRUE(refused(*minao, 5, p, nullptr, p, p));
   EXPECT_TRUE(refused(*minao, 5, p, p, nullptr, p));
   EXPECT_TRUE(refused(*minao, 5, p, p, p, nullptr));
+}
+
+TEST(Livvo, LocalizeAndValenceCharacterRefuseBadArguments) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::Molecule water(res, {fb::Atom{{0.0, 0.0, 0.2}, fb::Element::O},
+                                 fb::Atom{{0.0, 1.4, -0.9}, fb::Element::H},
+                                 fb::Atom{{0.0, -1.4, -0.9}, fb::Element::H}});
+  const fb::Molecule hydrogen(
+      res, {fb::Atom{{0.0, 0.0, 0.0}, fb::Element::H}, fb::Atom{{0.0, 0.0, 1.4}, fb::Element::H}});
+  auto basis_stamp = fb::resolve_basis("cc-pvdz");
+  auto minao_stamp = fb::resolve_basis("minao");
+  ASSERT_TRUE(basis_stamp.has_value() && minao_stamp.has_value());
+  auto basis = fb::place(basis_stamp->primitive_normalized(), water);
+  auto minao = fb::place(minao_stamp->primitive_normalized(), water);
+  auto other = fb::place(minao_stamp->primitive_normalized(), hydrogen);
+  ASSERT_TRUE(basis.has_value() && minao.has_value() && other.has_value());
+  const auto m = static_cast<std::int32_t>(minao->nao_sphe());
+  fb::Buffers::device<double> any(2, res.device());
+  double *p = any.data();
+  double *q = p + 1;
+
+  const auto invalid = [](const auto &result) {
+    return !result.has_value() && result.error().kind == fb::ErrorKind::InvalidConfig;
+  };
+  const auto localize = [&](const fb::BasisSet &minimal, std::int32_t n_occ, const double *s,
+                            const double *iao, const double *vvo, double *livvo) {
+    return invalid(fb::livvo_localize(res, *basis, minimal, n_occ, s, iao, vvo, livvo));
+  };
+  EXPECT_TRUE(localize(*minao, -1, p, p, p, q));
+  EXPECT_TRUE(localize(*minao, m + 1, p, p, p, q));
+  EXPECT_TRUE(localize(*other, 1, p, p, p, q));
+  EXPECT_TRUE(localize(*minao, 5, nullptr, p, p, q));
+  EXPECT_TRUE(localize(*minao, 5, p, nullptr, p, q));
+  EXPECT_TRUE(localize(*minao, 5, p, p, nullptr, q));
+  EXPECT_TRUE(localize(*minao, 5, p, p, p, nullptr));
+  EXPECT_TRUE(localize(*minao, 5, p, p, q, q));
+
+  const auto character = [&](std::int32_t n_orb, std::int32_t n_vvo, const double *s,
+                             const double *c, const double *livvo) {
+    return invalid(fb::valence_character(res, *basis, n_orb, n_vvo, s, c, livvo));
+  };
+  EXPECT_TRUE(character(-1, 2, p, p, p));
+  EXPECT_TRUE(character(1, -1, p, p, p));
+  EXPECT_TRUE(character(1, 2, nullptr, p, p));
+  EXPECT_TRUE(character(1, 2, p, nullptr, p));
+  EXPECT_TRUE(character(1, 2, p, p, nullptr));
 }
 
 } // namespace
