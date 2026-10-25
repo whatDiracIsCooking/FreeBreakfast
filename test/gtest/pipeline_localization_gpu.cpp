@@ -80,11 +80,12 @@ const fb::json *exponent_record(const fb::json &entry, std::int32_t exponent) {
 }
 
 template <typename Buffer>
-std::vector<double> download(const Buffer &buffer, std::size_t count) {
+std::vector<double> download(fb::DeviceResources &res, const Buffer &buffer, std::size_t count) {
   std::vector<double> host(count);
-  EXPECT_EQ(wwr::wwrMemcpy(host.data(), buffer.data(), sizeof(double) * count,
-                           wwr::wwrMemcpyDeviceToHost),
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), buffer.data(), sizeof(double) * count,
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
             wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
   return host;
 }
 
@@ -160,9 +161,10 @@ void expect_matches(const fb::json &entry, const fb::json &expected, const fb::C
   const auto occ = static_cast<std::size_t>(local->n_occ);
   ASSERT_EQ(occ * 2, entry.at("electrons").get<std::size_t>());
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  const std::vector<double> c = download(local->c, n * occ);
-  const std::vector<double> s = download(overlap->s, n * n);
-  const std::vector<double> d = download(scf->d, n * n);
+  fb::DeviceResources res(scf->c.dev_idx());
+  const std::vector<double> c = download(res, local->c, n * occ);
+  const std::vector<double> s = download(res, overlap->s, n * n);
+  const std::vector<double> d = download(res, scf->d, n * n);
 
   EXPECT_NEAR(local->info.functional, expected.at("functional").get<double>(),
               kFunctionalTolerance);
@@ -409,8 +411,8 @@ void expect_iaos(const fb::json &entry, const fb::json *basis_document = nullptr
   ASSERT_TRUE(built.has_value()) << built.error().message;
   ASSERT_TRUE(res.sync().has_value());
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  const std::vector<double> a = download(iao, n * m);
-  const std::vector<double> s = download(overlap->s, n * n);
+  const std::vector<double> a = download(res, iao, n * m);
+  const std::vector<double> s = download(res, overlap->s, n * n);
 
   // A^T S A = I.
   std::vector<double> ats(m * n, 0.0);

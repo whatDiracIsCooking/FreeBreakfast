@@ -124,6 +124,17 @@ repos:
         language: script
         files: '\.(cppm|cpp|cu|cuh|h|hpp)$'
 
+  # No blocking host-device copy -- docs/style.md "Host-device copies". Flags
+  # `wwrMemcpy(` / `wwrMemcpy2D(`; wwrMemcpyAsync on res.stream() is the
+  # spelling. Stdlib-only, reusing int-types' comment/literal blanking.
+  - repo: local
+    hooks:
+      - id: blocking-memcpy
+        name: no blocking wwrMemcpy (staged C++)
+        entry: devtools/check-blocking-memcpy.py
+        language: script
+        files: '\.(cppm|cpp|cu|cuh|h|hpp)$'
+
   # The fast test gate. `stages: [pre-push]` means it runs at `git push`, not
   # on commit; `files: \.py$` is the entire "only when Python changed"
   # condition -- push a docs-only change and it does not fire.

@@ -15,6 +15,7 @@ disagree, the config is what gets enforced.
 | Fixed-width integer types only (see [Integer types](#integer-types)) | `devtools/check-int-types.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
 | Statically sized shared memory (see [Shared memory](#shared-memory)) | `devtools/check-shared-mem.py` | the `dynamic-smem-ok:` marker | commit hook, CI `lint` |
 | No hand-written ceiling division (see [Launch shape and integer rounding](#launch-shape-and-integer-rounding)) | `devtools/check-ceil-div.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
+| No blocking `wwrMemcpy` (see [Host-device copies](#host-device-copies)) | `devtools/check-blocking-memcpy.py` | none | commit hook, CI `lint` |
 | C++ naming, bug-prone patterns | clang-tidy | [`.clang-tidy`](../.clang-tidy) | **advisory** — `devtools/cpp-tier.sh --tidy` |
 | Whitespace, line endings, final newline | editor + pre-commit | [`.editorconfig`](../.editorconfig) | commit hook |
 
@@ -340,6 +341,39 @@ exceptions, which get their own buffers:
   `orthogonalize` holds U and the eigenvalues across `diagonalize` this way,
   and takes M from the workspace once `diagonalize` has returned
   (`src/recipes/orthogonalize/orthogonalize.cpp`).
+
+## Host-device copies
+
+**A copy between host and device that is ordered against a `DeviceResources`
+goes on `res.stream()` with `wwrMemcpyAsync`, and `res.sync()` comes before
+the host side is read or goes away.** A bare `wwrMemcpy` (or `wwrMemcpy2D`)
+is not used, in tests included:
+
+```cpp
+EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), device, sizeof(double) * count,
+                              wwr::wwrMemcpyDeviceToHost, res.stream()),
+          wwr::wwrSuccess);
+EXPECT_TRUE(res.sync().has_value());
+```
+
+`res.stream()` is a **non-blocking** stream, so the null stream that
+`wwrMemcpy` runs on is not ordered against it in either direction. And from
+pageable host memory `wwrMemcpy` may return before the copy has landed. An
+upload can then be read by the next routine on `res.stream()` half written,
+and a readback can read what a routine on it has not yet written. `livvo_gpu`'s
+upload of rotated orbitals did the first, and failed intermittently on both
+backends, worse under GPU contention (#263).
+
+A readback after a routine that happens to `res.sync()` before returning is
+safe, but only by that routine's convention, which the caller cannot see. Put
+the copy on the stream and let the ordering be the stream's.
+
+Where a helper has no `DeviceResources` in reach, pass it the stream it should
+order against (`out.device_stream()->stream()`, or a `DeviceResources` for a
+finished calculation's outputs) rather than falling back to the null stream.
+Code that launches on the legacy default stream, as `test/gpu_kernels/` does,
+names that stream explicitly. `devtools/check-blocking-memcpy.py` flags a
+bare call at commit and in CI.
 
 ## Shared memory
 

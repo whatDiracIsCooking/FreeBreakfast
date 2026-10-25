@@ -91,15 +91,17 @@ Timing time_sort(fb::DeviceResources &res, const SortFn sort, const std::int32_t
   std::ranges::sort(ms);
 
   Timing timing{ms[ms.size() / 2], std::vector<double>(count), {}};
-  check_gpu(wwr::wwrMemcpy(timing.keys.data(), keys.data(), count * sizeof(double),
-                           wwr::wwrMemcpyDeviceToHost),
+  check_gpu(wwr::wwrMemcpyAsync(timing.keys.data(), keys.data(), count * sizeof(double),
+                                wwr::wwrMemcpyDeviceToHost, stream),
             "downloading keys");
   if (with_values) {
     timing.values.resize(count);
-    check_gpu(wwr::wwrMemcpy(timing.values.data(), values.data(), count * sizeof(std::uint32_t),
-                             wwr::wwrMemcpyDeviceToHost),
+    check_gpu(wwr::wwrMemcpyAsync(timing.values.data(), values.data(),
+                                  count * sizeof(std::uint32_t), wwr::wwrMemcpyDeviceToHost,
+                                  stream),
               "downloading values");
   }
+  check_gpu(wwr::wwrStreamSynchronize(stream), "synchronizing the download");
   return timing;
 }
 
@@ -145,12 +147,14 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
 
   fb::Buffers::device<double> pristine_keys{max_count, res.device()};
   fb::Buffers::device<std::uint32_t> pristine_values{max_count, res.device()};
-  check_gpu(wwr::wwrMemcpy(pristine_keys.data(), host_keys.data(), max_count * sizeof(double),
-                           wwr::wwrMemcpyHostToDevice),
+  check_gpu(wwr::wwrMemcpyAsync(pristine_keys.data(), host_keys.data(), max_count * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
             "uploading keys");
-  check_gpu(wwr::wwrMemcpy(pristine_values.data(), host_values.data(),
-                           max_count * sizeof(std::uint32_t), wwr::wwrMemcpyHostToDevice),
+  check_gpu(wwr::wwrMemcpyAsync(pristine_values.data(), host_values.data(),
+                                max_count * sizeof(std::uint32_t), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
             "uploading values");
+  check_gpu(wwr::wwrStreamSynchronize(res.stream()), "synchronizing the upload");
 
   std::println("radix_sort vs cub_radix_sort (vendor DeviceRadixSort), double keys, median of {} "
                "reps",

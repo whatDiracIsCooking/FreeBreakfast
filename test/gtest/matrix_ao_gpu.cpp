@@ -157,9 +157,10 @@ TEST(MatrixAO, TransformIsUploadedAsIs) {
   const std::vector<double> u = fb::spherical_transform_matrix(fx.basis);
   ASSERT_EQ(fx.u->num_elements(), u.size());
   std::vector<double> device_u(u.size());
-  ASSERT_EQ(wwr::wwrMemcpy(device_u.data(), fx.u->data(), u.size() * sizeof(double),
-                           wwr::wwrMemcpyDeviceToHost),
+  ASSERT_EQ(wwr::wwrMemcpyAsync(device_u.data(), fx.u->data(), u.size() * sizeof(double),
+                                wwr::wwrMemcpyDeviceToHost, fx.res.stream()),
             wwr::wwrSuccess);
+  ASSERT_EQ(wwr::wwrStreamSynchronize(fx.res.stream()), wwr::wwrSuccess);
   EXPECT_EQ(device_u, u);
 }
 

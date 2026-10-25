@@ -26,11 +26,12 @@ static_assert(
 
 const fb::Vec<double, 3> kOrigin{0.0, 0.0, 0.0};
 
-std::vector<double> download(const fb::Buffers::device<double> &u) {
+std::vector<double> download(fb::DeviceResources &res, const fb::Buffers::device<double> &u) {
   std::vector<double> host(u.num_elements());
-  EXPECT_EQ(wwr::wwrMemcpy(host.data(), u.data(), host.size() * sizeof(double),
-                           wwr::wwrMemcpyDeviceToHost),
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), u.data(), host.size() * sizeof(double),
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
             wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
   return host;
 }
 
@@ -50,7 +51,7 @@ TEST(PipelineSphericalTransform, MatchesUploadSphericalTransformMatrix) {
   ASSERT_NE(*direct, nullptr);
 
   EXPECT_EQ(transform->u->num_elements(), std::size_t{10} * 9);
-  EXPECT_EQ(download(*transform->u), download(**direct));
+  EXPECT_EQ(download(res, *transform->u), download(res, **direct));
 }
 
 TEST(PipelineSphericalTransform, NoTransformBelowD) {

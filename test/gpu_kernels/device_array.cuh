@@ -7,7 +7,7 @@
 
 #include "integral_types.h"
 
-// wwr's runtime surface for a device TU -- wwr::wwrMalloc, wwrMemcpy, ... --
+// wwr's runtime surface for a device TU -- wwr::wwrMalloc, wwrMemcpyAsync, ... --
 // so the launchers need no backend #if.
 #include "runtime.h"
 
@@ -37,13 +37,21 @@ public:
   /// @brief The device pointer
   [[nodiscard]] T *data() const { return data_; }
 
+  // The launchers here run on the legacy default stream, so the copies are
+  // ordered there: on it explicitly, then synchronized, as docs/style.md
+  // "Host-device copies" asks of every copy.
+
   /// @brief Copy the whole array in from @p host
   [[nodiscard]] bool upload(const T *host) const {
-    return wwr::wwrMemcpy(data_, host, bytes_, wwr::wwrMemcpyHostToDevice) == wwr::wwrSuccess;
+    return wwr::wwrMemcpyAsync(data_, host, bytes_, wwr::wwrMemcpyHostToDevice, nullptr) ==
+               wwr::wwrSuccess &&
+           wwr::wwrStreamSynchronize(nullptr) == wwr::wwrSuccess;
   }
   /// @brief Copy the whole array out to @p host
   [[nodiscard]] bool download(T *host) const {
-    return wwr::wwrMemcpy(host, data_, bytes_, wwr::wwrMemcpyDeviceToHost) == wwr::wwrSuccess;
+    return wwr::wwrMemcpyAsync(host, data_, bytes_, wwr::wwrMemcpyDeviceToHost, nullptr) ==
+               wwr::wwrSuccess &&
+           wwr::wwrStreamSynchronize(nullptr) == wwr::wwrSuccess;
   }
 
 private:
