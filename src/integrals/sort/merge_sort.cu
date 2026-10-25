@@ -43,6 +43,7 @@
 // wwr headers below: under HIP the vendor runtime header they pull in must not
 // precede libc++ (primitives.h has why).
 #include "block_params.h"
+#include "primitives.h"
 
 #include "merge_sort_bridge.h"
 
@@ -120,7 +121,7 @@ __device__ __forceinline__ uint32_t warp_merge_path(const Warp &warp, const uint
   uint32_t lo = diag > b_len ? diag - b_len : 0;
   uint32_t hi = diag < a_len ? diag : a_len;
   while (lo < hi) {
-    const uint32_t stride = (hi - lo + kWarpSize - 1) / kWarpSize;
+    const uint32_t stride = math::idivup(hi - lo, kWarpSize);
     const uint32_t p = lo + lane * stride;
     const bool takes_a = p < hi && ordered_bits(a[p]) <= ordered_bits(b[diag - 1 - p]);
     // The probes that take from a are a prefix of the lanes: the merge path's
@@ -397,7 +398,7 @@ wwr::wwrError_t merge_sort_launches(const wwr::wwrStream_t stream, uint64_t *key
   if (n <= kTile) {
     return sort_one_tile<1, kWithValues>(stream, keys, values, n);
   }
-  const uint32_t num_tiles = (n + kTile - 1) / kTile;
+  const uint32_t num_tiles = math::idivup(n, kTile);
   // Block-sort into whichever half leaves the last pass writing the caller's
   // arrays: passes alternate halves, and there are ceil(log2(num_tiles)).
   uint32_t passes = 0;

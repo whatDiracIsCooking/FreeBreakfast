@@ -30,9 +30,6 @@ namespace {
 
 namespace cg = cooperative_groups;
 
-// The element-wise kernels' block: the atom (or row) rides threadIdx.x.
-constexpr uint32_t kElementBlock = kFourWarps;
-
 // A pair's reduction over the atoms. Four warps: a pair's atom count is the
 // molecule's, and a block per pair keeps a round's pairs in parallel.
 constexpr uint32_t kPairWarps = 4;
@@ -449,7 +446,7 @@ __global__ void identity_kernel(const int32_t n, double *const matrix) {
 
 // The population build's and the rotation's grid: atom tiles by n_occ by n_occ.
 dim3 triangle_grid(const int32_t n_atoms, const int32_t n_occ) {
-  return {math::idivup(static_cast<uint32_t>(n_atoms), kElementBlock), static_cast<uint32_t>(n_occ),
+  return {math::idivup(static_cast<uint32_t>(n_atoms), kFourWarps), static_cast<uint32_t>(n_occ),
           static_cast<uint32_t>(n_occ)};
 }
 
@@ -459,7 +456,7 @@ wwr::wwrError_t pm_populations(const wwr::wwrStream_t stream, const int32_t n_at
                                const int32_t n_occ, const int32_t ld, const double *const c,
                                const double *const w, const int32_t *const atom_ao_offsets,
                                double *const pops) {
-  populations_kernel<<<triangle_grid(n_atoms, n_occ), kElementBlock, 0, stream>>>(
+  populations_kernel<<<triangle_grid(n_atoms, n_occ), kFourWarps, 0, stream>>>(
       n_atoms, n_occ, ld, c, w, atom_ao_offsets, pops);
   return wwr::wwrGetLastError();
 }
@@ -484,7 +481,7 @@ wwr::wwrError_t pm_rotate_populations(const wwr::wwrStream_t stream, const int32
                                       const int32_t n_occ, const double *const pops_in,
                                       const double *const cos_v, const double *const sin_v,
                                       const int32_t *const partner, double *const pops_out) {
-  rotate_populations_kernel<<<triangle_grid(n_atoms, n_occ), kElementBlock, 0, stream>>>(
+  rotate_populations_kernel<<<triangle_grid(n_atoms, n_occ), kFourWarps, 0, stream>>>(
       n_atoms, n_occ, pops_in, cos_v, sin_v, partner, pops_out);
   return wwr::wwrGetLastError();
 }
@@ -493,9 +490,9 @@ wwr::wwrError_t pm_rotate_columns(const wwr::wwrStream_t stream, const int32_t n
                                   const double *const in, const double *const cos_v,
                                   const double *const sin_v, const int32_t *const partner,
                                   double *const out) {
-  const dim3 grid{math::idivup(static_cast<uint32_t>(n_occ), kElementBlock),
+  const dim3 grid{math::idivup(static_cast<uint32_t>(n_occ), kFourWarps),
                   static_cast<uint32_t>(n_occ)};
-  rotate_columns_kernel<<<grid, kElementBlock, 0, stream>>>(n_occ, in, cos_v, sin_v, partner, out);
+  rotate_columns_kernel<<<grid, kFourWarps, 0, stream>>>(n_occ, in, cos_v, sin_v, partner, out);
   return wwr::wwrGetLastError();
 }
 
@@ -512,8 +509,8 @@ wwr::wwrError_t pm_functional(const wwr::wwrStream_t stream, const int32_t expon
 
 wwr::wwrError_t pm_identity(const wwr::wwrStream_t stream, const int32_t n, double *const matrix) {
   const size_t total = static_cast<size_t>(n) * static_cast<size_t>(n);
-  const auto blocks = static_cast<uint32_t>(math::idivup(total, size_t{kElementBlock}));
-  identity_kernel<<<blocks, kElementBlock, 0, stream>>>(n, matrix);
+  const auto blocks = static_cast<uint32_t>(math::idivup(total, size_t{kFourWarps}));
+  identity_kernel<<<blocks, kFourWarps, 0, stream>>>(n, matrix);
   return wwr::wwrGetLastError();
 }
 

@@ -17,6 +17,7 @@
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
 #include "block_params.h"
+#include "primitives.h"
 
 #include "ci_solver_bridge.h"
 #include "ci_symmetric.h"
@@ -24,8 +25,6 @@
 namespace free_breakfast::device {
 
 namespace {
-
-constexpr uint32_t kCiBlock = kFourWarps;
 
 // The fields of one α link (see the bridge header).
 constexpr int32_t kLinkWidth = 3;
@@ -156,12 +155,12 @@ __device__ bool ci_below(const CiPick a, const CiPick b) {
 
 // The least of a block's candidates, into thread 0's: a tree in shared memory.
 __device__ CiPick ci_block_least(CiPick mine) {
-  __shared__ double values[kCiBlock];
-  __shared__ int32_t addresses[kCiBlock];
+  __shared__ double values[kFourWarps];
+  __shared__ int32_t addresses[kFourWarps];
   values[threadIdx.x] = mine.value;
   addresses[threadIdx.x] = mine.address;
   __syncthreads();
-  for (uint32_t half = kCiBlock / 2; half > 0; half /= 2) {
+  for (uint32_t half = kFourWarps / 2; half > 0; half /= 2) {
     if (threadIdx.x < half) {
       const CiPick other{values[threadIdx.x + half], addresses[threadIdx.x + half]};
       if (ci_below(other, CiPick{values[threadIdx.x], addresses[threadIdx.x]})) {
@@ -232,7 +231,7 @@ __global__ void ci_guess_kernel(const int32_t n, const int32_t count, const int3
 }
 
 uint32_t ci_blocks(const int64_t items) {
-  return static_cast<uint32_t>((items + kCiBlock - 1) / kCiBlock);
+  return static_cast<uint32_t>(math::idivup(items, int64_t{kFourWarps}));
 }
 
 } // namespace
@@ -247,11 +246,11 @@ wwr::wwrError_t ci_spin_square(const wwr::wwrStream_t stream, const bool symmetr
     return wwr::wwrSuccess;
   }
   if (symmetric) {
-    ci_spin_square_kernel<true><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+    ci_spin_square_kernel<true><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
         rows, n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale,
         accumulate, x, y);
   } else {
-    ci_spin_square_kernel<false><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+    ci_spin_square_kernel<false><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
         rows, n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale,
         accumulate, x, y);
   }
@@ -264,8 +263,8 @@ wwr::wwrError_t ci_precondition(const wwr::wwrStream_t stream, const int32_t n, 
   if (n == 0) {
     return wwr::wwrSuccess;
   }
-  ci_precondition_kernel<<<ci_blocks(n), kCiBlock, 0, stream>>>(n, theta, shifted, residual,
-                                                                correction);
+  ci_precondition_kernel<<<ci_blocks(n), kFourWarps, 0, stream>>>(n, theta, shifted, residual,
+                                                                  correction);
   return wwr::wwrGetLastError();
 }
 
@@ -279,11 +278,11 @@ wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const bool symme
     return wwr::wwrSuccess;
   }
   if (symmetric) {
-    ci_spin_diagonal_kernel<true><<<ci_blocks(n_det), kCiBlock, 0, stream>>>(
+    ci_spin_diagonal_kernel<true><<<ci_blocks(n_det), kFourWarps, 0, stream>>>(
         n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, diagonal,
         shifted);
   } else {
-    ci_spin_diagonal_kernel<false><<<ci_blocks(n_det), kCiBlock, 0, stream>>>(
+    ci_spin_diagonal_kernel<false><<<ci_blocks(n_det), kFourWarps, 0, stream>>>(
         n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, diagonal,
         shifted);
   }
@@ -297,10 +296,10 @@ wwr::wwrError_t ci_lowest(const wwr::wwrStream_t stream, const int32_t n,
   const auto blocks = static_cast<uint32_t>(
       ci_blocks(n) < static_cast<uint32_t>(kCiLowestBlocks) ? ci_blocks(n) : kCiLowestBlocks);
   for (int32_t j = 0; j < count; ++j) {
-    ci_lowest_partial_kernel<<<blocks, kCiBlock, 0, stream>>>(
+    ci_lowest_partial_kernel<<<blocks, kFourWarps, 0, stream>>>(
         n, values, j == 0 ? nullptr : picks + (j - 1), partial_values, partial_index);
-    ci_lowest_final_kernel<<<1, kCiBlock, 0, stream>>>(static_cast<int32_t>(blocks), partial_values,
-                                                       partial_index, picks + j);
+    ci_lowest_final_kernel<<<1, kFourWarps, 0, stream>>>(static_cast<int32_t>(blocks),
+                                                         partial_values, partial_index, picks + j);
   }
   return wwr::wwrGetLastError();
 }
@@ -311,7 +310,7 @@ wwr::wwrError_t ci_guess(const wwr::wwrStream_t stream, const int32_t n, const i
   if (elements == 0) {
     return wwr::wwrSuccess;
   }
-  ci_guess_kernel<<<ci_blocks(elements), kCiBlock, 0, stream>>>(n, count, picks, guess);
+  ci_guess_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n, count, picks, guess);
   return wwr::wwrGetLastError();
 }
 

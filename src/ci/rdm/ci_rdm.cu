@@ -13,14 +13,13 @@
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
 #include "block_params.h"
+#include "primitives.h"
 
 #include "ci_rdm_bridge.h"
 
 namespace free_breakfast::device {
 
 namespace {
-
-constexpr uint32_t kCiRdmBlock = kFourWarps;
 
 // The fields of one link (see the bridge header).
 constexpr int32_t kLinkWidth = 3;
@@ -86,8 +85,8 @@ wwr::wwrError_t ci_rdm_assemble(const wwr::wwrStream_t stream, const int32_t n,
   if (elements == 0) {
     return wwr::wwrSuccess;
   }
-  const auto blocks = static_cast<uint32_t>((elements + kCiRdmBlock - 1) / kCiRdmBlock);
-  ci_rdm_assemble_kernel<<<blocks, kCiRdmBlock, 0, stream>>>(n, m, gamma, gamma2);
+  const auto blocks = static_cast<uint32_t>(math::idivup(elements, int64_t{kFourWarps}));
+  ci_rdm_assemble_kernel<<<blocks, kFourWarps, 0, stream>>>(n, m, gamma, gamma2);
   return wwr::wwrGetLastError();
 }
 
@@ -99,10 +98,9 @@ wwr::wwrError_t ci_rdm_gather_d(const wwr::wwrStream_t stream, const int32_t beg
   if (rows == 0) {
     return wwr::wwrSuccess;
   }
-  const auto blocks =
-      static_cast<uint32_t>((static_cast<int64_t>(rows) + kCiRdmBlock - 1) / kCiRdmBlock);
-  ci_rdm_gather_d_kernel<<<blocks, kCiRdmBlock, 0, stream>>>(begin, rows, n_beta, alpha_links,
-                                                             alpha_per, beta_links, beta_per, c, d);
+  const auto blocks = math::idivup(static_cast<uint32_t>(rows), kFourWarps);
+  ci_rdm_gather_d_kernel<<<blocks, kFourWarps, 0, stream>>>(begin, rows, n_beta, alpha_links,
+                                                            alpha_per, beta_links, beta_per, c, d);
   return wwr::wwrGetLastError();
 }
 

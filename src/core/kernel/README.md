@@ -25,6 +25,10 @@ Everything else here is device code with no module face, `#include`d into a
 | `kMaxThreads` | `uint32_t`, 1024: the most threads a block may hold, on every target. The block size of a one-block launch that strides a whole array |
 | `NumWarps<N>` | Concept over a *value*: `N` is integral, >= 1, a power of two, and `N * kWarpSize <= kMaxThreads`. Use it as `template <auto W> requires NumWarps<W>` |
 
+Use these names as they are. A `.cu` launches `<<<math::idivup(n, kFourWarps),
+kFourWarps>>>` and does not define a local `kXBlock = kFourWarps` or write its own
+ceiling division (see `docs/style.md` "Launch shape and integer rounding").
+
 ## Functors (`device_functor.h`)
 
 `DeviceFunctor<F>`: a trivially-copyable class type, which is what can be

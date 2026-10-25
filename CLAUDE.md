@@ -325,6 +325,11 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   (clang-format + ruff format, pinned by `uv.lock`) runs at commit and in CI's
   `lint` job; `devtools/format.sh` fixes. `cmake-lint` holds CMake to 80
   columns. Constants are `kCamelCase`.
+- **Look in `src/core/` before writing a helper or a constant.** Don't re-derive
+  or rename what is already there. A block is `kFourWarps`, not a per-file
+  `kCiBlock = kFourWarps`, and a block count is `math::idivup`, not
+  `(n + b - 1) / b`. `src/core/README.md` lists each directory's names, and
+  `docs/style.md` "Launch shape and integer rounding" has the rule.
 - **No anonymous namespaces, no `detail` namespaces** — except anonymous
   namespaces in `.cu`, `test/gtest/*.cpp` and the `main.cpp` of `src/` and
   `tools/*/`, which are not module units. In a

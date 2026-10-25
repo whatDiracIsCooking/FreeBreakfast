@@ -17,6 +17,7 @@
 // primitives.h).
 #include "block_params.h"
 #include "integral_types.h"
+#include "primitives.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see src/integrals/one_electron/overlap/overlap_bridge.h.
@@ -46,7 +47,7 @@ static_assert(kRadixKeyBits % kRadixBits == 0 && (kRadixKeyBits / kRadixBits) % 
 /// @brief uint32_t slots of digit counts radix_sort_passes needs for @p n keys:
 /// one per (bucket, tile)
 inline constexpr size_t radix_sort_count_slots(const size_t n) {
-  return kRadixBuckets * ((n + kRadixSortTile - 1) / kRadixSortTile);
+  return kRadixBuckets * math::idivup(n, size_t{kRadixSortTile});
 }
 
 /// @brief Sort the first @p n of @p keys ascending in IEEE-754 total order,

@@ -35,8 +35,14 @@ Before pushing, look at what the diff touches and whether this repo guards it:
   threshold produces a green run — that is exactly why it needs a human.
 - the **reference chain** (whatever independently checks correctness here) is
   not something to adjust to make a test pass.
+- **`src/core/`'s vocabulary is not re-derived.** Grep the diff's added lines
+  for a constant that only renames a core one (`= kFourWarps;`,
+  `= kWarpSize;`), and use the core name instead; see `docs/style.md` "Launch
+  shape and integer rounding". The commit hook `ceil-div` already catches a
+  hand-written `(n + b - 1) / b`. It does not catch an alias, because some
+  derived constants have a meaning of their own, so that call is yours.
 
-A repo with neither has nothing to do in this step.
+A repo with none of these has nothing to do in this step.
 
 ## 3. Push
 

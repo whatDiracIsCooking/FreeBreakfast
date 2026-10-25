@@ -113,6 +113,17 @@ repos:
         language: script
         files: '\.(cu|cuh|h|hpp)$'
 
+  # No hand-written ceiling division -- docs/style.md "Launch shape and integer
+  # rounding". Flags `(n + b - 1) / b`; math::idivup is the spelling.
+  # Stdlib-only, reusing int-types' comment/literal blanking.
+  - repo: local
+    hooks:
+      - id: ceil-div
+        name: no hand-written ceiling division (staged C++)
+        entry: devtools/check-ceil-div.py
+        language: script
+        files: '\.(cppm|cpp|cu|cuh|h|hpp)$'
+
   # The fast test gate. `stages: [pre-push]` means it runs at `git push`, not
   # on commit; `files: \.py$` is the entire "only when Python changed"
   # condition -- push a docs-only change and it does not fire.

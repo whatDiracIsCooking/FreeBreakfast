@@ -14,6 +14,7 @@ disagree, the config is what gets enforced.
 | CMake lint (80 columns) | `cmake-lint` | [`.cmake-format.yaml`](../.cmake-format.yaml) | commit hook, CI `lint` |
 | Fixed-width integer types only (see [Integer types](#integer-types)) | `devtools/check-int-types.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
 | Statically sized shared memory (see [Shared memory](#shared-memory)) | `devtools/check-shared-mem.py` | the `dynamic-smem-ok:` marker | commit hook, CI `lint` |
+| No hand-written ceiling division (see [Launch shape and integer rounding](#launch-shape-and-integer-rounding)) | `devtools/check-ceil-div.py` | the script's `EXEMPT_FILES` | commit hook, CI `lint` |
 | C++ naming, bug-prone patterns | clang-tidy | [`.clang-tidy`](../.clang-tidy) | **advisory** — `devtools/cpp-tier.sh --tidy` |
 | Whitespace, line endings, final newline | editor + pre-commit | [`.editorconfig`](../.editorconfig) | commit hook |
 
@@ -152,6 +153,35 @@ parameters, so generic code can write `Vec<T, 3>`, and that `Vec` covers the
 64-bit 4-vectors (`double4`, `long4`, …) that wwr leaves out. The one place
 wwr's aliases appear on purpose is `test/gtest/core_vocabulary_host.cpp`,
 which checks that `Vec` maps onto them.
+
+## Launch shape and integer rounding
+
+**Size a launch with `src/core/`'s names, written as they are.** Before writing
+a small helper or a constant, look in `src/core/`; `src/core/README.md` gives
+each directory's names in one line. If a second file needs something that is
+not there, add it there rather than writing a second copy.
+
+- **A one-thread-per-item block is `kFourWarps`**, from
+  `src/core/kernel/block_params.h`. Use it directly at the launch and in a
+  `__shared__` extent. Don't rename it per file
+  (`constexpr uint32_t kCiBlock = kFourWarps;`). The alias says nothing that
+  `kFourWarps` doesn't, a reader has to look it up to learn the block is four
+  warps, and three `.cu` files in `src/ci/` each used to carry their own copy. A
+  constant that has a meaning of its own and is only derived from the launch
+  shape keeps its name. Examples are `kTile = kThreads * kItems` in
+  `src/integrals/sort/merge_sort.cu`, or a warps-per-block count that a
+  template takes.
+- **Ceiling division is `math::idivup`, and rounding up to a multiple is
+  `math::align_up`**, from `src/core/primitives/primitives.h` (the module
+  `free_breakfast.core.primitives` on the host). Never write
+  `(n + b - 1) / b` by hand. Both are templates over a single integral type, so
+  give both operands the same type: `math::idivup(items, int64_t{kFourWarps})`.
+  `devtools/check-ceil-div.py` enforces this half. A renaming alias is left to
+  review, because whether a derived constant has a meaning of its own is a
+  judgement call.
+
+A `.cu` includes `"block_params.h"` and `"primitives.h"`, and its target links
+`free_breakfast::core::kernel_headers`, which brings in both.
 
 ## Stamps
 

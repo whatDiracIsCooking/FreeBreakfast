@@ -284,7 +284,11 @@ branch <wt>, forked from origin/main — EnterWorktree {"path": …} into it and
 do not create another.
 
 Read CLAUDE.md, and docs/style.md before writing C++. Keep the public surface
-small: no helper type, alias or template just to remove repetition.
+small: no helper type, alias or template just to remove repetition. Before
+writing a helper or a constant, check src/core/ (src/core/README.md) for one
+that already exists, and use it under its own name: a block is kFourWarps, a
+block count is math::idivup, never a local alias or a hand-written
+(n + b - 1) / b.
 
 Rules:
 - Do NOT merge and do NOT tear down the worktree. Your job ends at an open PR
