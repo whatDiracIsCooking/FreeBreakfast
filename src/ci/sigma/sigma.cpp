@@ -12,7 +12,8 @@ module free_breakfast.ci.sigma;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kOne, kZero
+import free_breakfast.core.constants;  // kOne, kZero
+import free_breakfast.core.primitives; // math::align_up
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -194,6 +195,15 @@ Status ci_unpack(DeviceResources &res, const int32_t n_strings, const int32_t k,
 // over a chunk is a wide one, small enough that G dominates the scratch.
 constexpr size_t kCiSigmaChunkBytes = size_t{64} << 20;
 
+// The bytes of apply's workspace for G over g_rows rows and D over one chunk
+// of them, elements of element_bytes each, as device_regions rounds the two.
+size_t ci_sigma_workspace(const size_t element_bytes, const size_t pairs, const size_t g_rows) {
+  const size_t chunk = std::clamp<size_t>(kCiSigmaChunkBytes / (element_bytes * pairs), 1, g_rows);
+  return math::align_up(g_rows * (pairs + 1) * element_bytes,
+                        DeviceResources::kWorkspaceAlignment) +
+         math::align_up(chunk * pairs * element_bytes, DeviceResources::kWorkspaceAlignment);
+}
+
 // The packed index of orbital pair (t, u), symmetric in the two.
 size_t ci_pair(const size_t t, const size_t u) {
   const size_t hi = std::max(t, u);
@@ -357,6 +367,20 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
   const int32_t chunk = static_cast<int32_t>(
       std::clamp<size_t>(kCiSigmaChunkBytes / (sizeof(T) * pairs), 1, static_cast<size_t>(rows)));
 
+  // Bounded, the workspace is grown once to what apply takes, unblocked or at
+  // the bound, so a float call and then a double one never hold two
+  // allocations across a growth. The regions are in whole alignment steps,
+  // so the bound rounded down to one still holds a block that fits it.
+  if (workspace_limit_ != std::numeric_limits<size_t>::max()) {
+    const size_t bound =
+        workspace_limit_ - (workspace_limit_ % DeviceResources::kWorkspaceAlignment);
+    res.device_workspace(
+        std::min(bound, ci_sigma_workspace(sizeof(double), pairs, static_cast<size_t>(rows))));
+  }
+  if (ci_sigma_workspace(sizeof(T), pairs, static_cast<size_t>(rows)) > workspace_limit_) {
+    return apply_blocked(res, k, x, y, contraction, layout);
+  }
+
   // G for one vector's rows, then D for one chunk of them. σ_I reads G only
   // over I's own vector, so the vectors go one at a time and G is never wider
   // than one: k · dim · (P + 1) doubles would be 60 GB at CAS(14,14), k = 6.
@@ -381,6 +405,82 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
     FBF_TRY(gpu_status(device::ci_sigma_from_g(stream, symmetric, rows, rows, n_beta_, n_pairs,
                                                alpha_links_.data(), alpha_per_, beta_links_.data(),
                                                beta_per_, e_core_, xj, g, yj)));
+  }
+  return {};
+}
+
+template <typename T>
+Status CiSigma::apply_blocked(DeviceResources &res, const int32_t k, const double *const x,
+                              double *const y, const T *const contraction, const CiLayout layout) {
+  const wwr::wwrStream_t stream = res.stream();
+  const bool symmetric = layout == CiLayout::symmetric;
+  const int32_t rows = size(layout);
+  const auto n_pairs = static_cast<int32_t>(ci_pair(static_cast<size_t>(n_orbitals_), 0));
+  const auto pairs = static_cast<size_t>(n_pairs);
+
+  // The most rows of G a block may hold, at least one: the workspace grows
+  // with them, so the largest that fits the limit, by bisection.
+  size_t fit = 1;
+  size_t top = static_cast<size_t>(n_alpha_) * static_cast<size_t>(n_beta_);
+  while (fit < top) {
+    const size_t mid = fit + ((top - fit) / 2) + 1;
+    if (ci_sigma_workspace(sizeof(T), pairs, mid) <= workspace_limit_) {
+      fit = mid;
+    } else {
+      top = mid - 1;
+    }
+  }
+
+  // A pass is one spin's strings in blocks, each against every string of the
+  // other spin: in the full layout the α blocks (β links), then the β blocks
+  // (α links); in the symmetric one the one set's alone, serving both.
+  const auto block_strings = [&](const int32_t n_major, const int32_t n_minor) {
+    return static_cast<int32_t>(
+        std::clamp<size_t>(fit / static_cast<size_t>(n_minor), 1, static_cast<size_t>(n_major)));
+  };
+  const int32_t alpha_block = block_strings(n_alpha_, n_beta_);
+  const int32_t beta_block = block_strings(n_beta_, n_alpha_);
+  size_t block_rows = static_cast<size_t>(alpha_block) * static_cast<size_t>(n_beta_);
+  if (!symmetric) {
+    block_rows =
+        std::max(block_rows, static_cast<size_t>(beta_block) * static_cast<size_t>(n_alpha_));
+  }
+  const size_t chunk = std::clamp<size_t>(kCiSigmaChunkBytes / (sizeof(T) * pairs), 1, block_rows);
+  const auto [g, d] = res.device_regions<T>(block_rows * (pairs + 1), chunk * pairs);
+
+  for (int32_t j = 0; j < k; ++j) {
+    const double *const xj = x + (static_cast<size_t>(j) * static_cast<size_t>(rows));
+    double *const yj = y + (static_cast<size_t>(j) * static_cast<size_t>(rows));
+    // Every block adds its share of σ.
+    FBF_TRY(
+        gpu_status(wwr::wwrMemsetAsync(yj, 0, sizeof(double) * static_cast<size_t>(rows), stream)));
+    for (const bool beta_major : {false, true}) {
+      if (beta_major && symmetric) {
+        break;
+      }
+      const int32_t n_major = beta_major ? n_beta_ : n_alpha_;
+      const int32_t n_minor = beta_major ? n_alpha_ : n_beta_;
+      const int32_t strings = beta_major ? beta_block : alpha_block;
+      for (int32_t first = 0; first < n_major; first += strings) {
+        const int32_t count = std::min(strings, n_major - first);
+        const int32_t rows_here = count * n_minor;
+        const int32_t step = static_cast<int32_t>(std::min(chunk, static_cast<size_t>(rows_here)));
+        for (int32_t begin = 0; begin < rows_here; begin += step) {
+          const int32_t many = std::min(step, rows_here - begin);
+          FBF_TRY(gpu_status(
+              wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(many) * pairs, stream)));
+          FBF_TRY(gpu_status(device::ci_gather_d_block(
+              stream, symmetric, beta_major, first, begin, many, n_alpha_, n_beta_,
+              alpha_links_.data(), alpha_per_, beta_links_.data(), beta_per_, xj, d)));
+          FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
+              res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, many, n_pairs + 1, n_pairs,
+              &kOne<T>, d, many, contraction, n_pairs, &kZero<T>, g + begin, rows_here)));
+        }
+        FBF_TRY(gpu_status(device::ci_sigma_from_g_block(
+            stream, symmetric, beta_major, first, count, n_alpha_, n_beta_, n_pairs,
+            alpha_links_.data(), alpha_per_, beta_links_.data(), beta_per_, e_core_, xj, g, yj)));
+      }
+    }
   }
   return {};
 }

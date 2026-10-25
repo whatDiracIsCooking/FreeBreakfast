@@ -4,7 +4,8 @@
 // CAS(8,8) and CAS(10,10) and in sectors with N_alpha != N_beta, and
 // CAS(12,12) in the slow tier (its 1-RDM in the fast one); the same in the
 // symmetric layout over swap-symmetric vectors, σ and the 1-RDM, with
-// ci_unpack; and the refusals.
+// ci_unpack; σ blocked under a workspace limit against unblocked; and the
+// refusals.
 
 #include <gtest/gtest.h>
 
@@ -505,6 +506,136 @@ TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
   auto sigma = fb::CiSigma::create(res, *set, *set);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   check_rdm1(res, *sigma, *set, *set, 17);
+}
+
+// apply (or apply_fp32) of a random block of k vectors, swap-symmetric and
+// packed in the symmetric layout, unbounded and then under workspace limits
+// on a fresh DeviceResources each, so the workspace's size is the call's:
+//
+// - at the unbounded scratch, the unblocked path: bit for bit;
+// - one byte under it, at a third of it (a ragged last block) and at one
+//   byte (a string a block): each column to 1e-13 of its norm in double, and
+//   in float to fp32_tolerance(P) of ‖σ − E_core c‖, apply_fp32's own bound.
+void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &ints, std::int32_t k,
+                   std::uint64_t seed, fb::CiLayout layout, bool fp32) {
+  const bool symmetric = layout == fb::CiLayout::symmetric;
+  const auto alpha = fb::StringSet::create(ints.n, n_alpha);
+  const auto beta = fb::StringSet::create(ints.n, n_beta);
+  ASSERT_TRUE(alpha.has_value() && beta.has_value());
+  const auto m = static_cast<std::size_t>(alpha->size());
+  const std::vector<double> c =
+      symmetric
+          ? pack(random_symmetric_block(m, k, seed), m)
+          : random_block(m * static_cast<std::size_t>(beta->size()) * static_cast<std::size_t>(k),
+                         seed);
+
+  // Y = H X under limit (none for nullopt), and the workspace it grew to.
+  const auto run = [&](std::optional<std::size_t> limit) {
+    fb::DeviceResources res{0};
+    auto sigma = fb::CiSigma::create(res, *alpha, *beta);
+    EXPECT_TRUE(sigma.has_value());
+    EXPECT_TRUE(sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
+    if (limit) {
+      sigma->set_workspace_limit(*limit);
+    }
+    const auto x = to_device(res, c);
+    fb::Buffers::device<double> y(c.size(), res.device());
+    const auto applied = fp32 ? sigma->apply_fp32(res, k, x.data(), y.data(), layout)
+                              : sigma->apply(res, k, x.data(), y.data(), layout);
+    EXPECT_TRUE(applied.has_value()) << applied.error().message;
+    return std::pair{to_host(res, y), res.device_workspace(0).num_elements()};
+  };
+  const auto [want, unbounded] = run(std::nullopt);
+  ASSERT_GT(unbounded, 0U);
+
+  const auto [same, at_limit] = run(unbounded);
+  EXPECT_EQ(at_limit, unbounded);
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    ASSERT_EQ(std::bit_cast<std::uint64_t>(same[i]), std::bit_cast<std::uint64_t>(want[i]))
+        << "element " << i << " at the unbounded scratch";
+  }
+
+  // A block is never under one string, so one byte gives one-string blocks
+  // and the least workspace blocking can take: the floor any limit is held to.
+  const std::size_t length = want.size() / static_cast<std::size_t>(k);
+  const std::size_t floor = run(1).second;
+  EXPECT_LE(floor, unbounded);
+  for (const std::size_t limit : {std::size_t{1}, unbounded / 3, unbounded - 1}) {
+    SCOPED_TRACE(std::format("limit {} of {} bytes", limit, unbounded));
+    const auto [got, workspace] = run(limit);
+    EXPECT_LE(workspace, std::max(limit, floor));
+    // Not 1e-13 in float: the float gemm's rounding depends on the row count
+    // it is given, which blocking changes, so G differs at float rounding.
+    // cuBLAS picks its kernel by shape, and on the RTX 3080 full-layout
+    // shapes here (n = 10 at (5, 5), n = 6 at (6, 5)) differ by 1e-7
+    // relative; in double the same reordering stays under 1e-16.
+    const auto pairs = static_cast<std::size_t>(ints.n) * static_cast<std::size_t>(ints.n + 1) / 2;
+    const double tolerance = fp32 ? fp32_tolerance(pairs) : 1e-13;
+    for (std::size_t j = 0; j < static_cast<std::size_t>(k); ++j) {
+      double norm = 0.0;
+      double error = 0.0;
+      for (std::size_t i = j * length; i < (j + 1) * length; ++i) {
+        const double two_electron = fp32 ? want[i] - ints.e_core * c[i] : want[i];
+        norm += two_electron * two_electron;
+        error += (got[i] - want[i]) * (got[i] - want[i]);
+      }
+      EXPECT_LE(std::sqrt(error), tolerance * std::sqrt(norm)) << "column " << j;
+    }
+  }
+}
+
+// check_blocked over every golden case and the random shapes, both layouts
+// (the symmetric where N_alpha = N_beta) and both precisions.
+TEST(CiSigmaGpu, BlockedMatchesUnblocked) {
+  FBF_REQUIRE_GPU();
+  const auto doc =
+      fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "ci" / "direct_spin1.json");
+  ASSERT_TRUE(doc.has_value()) << doc.error().message;
+  ASSERT_FALSE((*doc)["cases"].empty());
+  const auto each = [](std::int32_t n_alpha, std::int32_t n_beta, const Integrals &ints,
+                       std::int32_t k, std::uint64_t seed) {
+    for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
+      if (layout == fb::CiLayout::symmetric && n_alpha != n_beta) {
+        continue;
+      }
+      for (const bool fp32 : {false, true}) {
+        SCOPED_TRACE(std::format("{} layout, {}",
+                                 layout == fb::CiLayout::full ? "full" : "symmetric",
+                                 fp32 ? "fp32" : "fp64"));
+        check_blocked(n_alpha, n_beta, ints, k, seed, layout, fp32);
+      }
+    }
+  };
+  for (const auto &entry : (*doc)["cases"]) {
+    SCOPED_TRACE(entry["name"].get<std::string>());
+    const Integrals ints{entry["n_orbitals"].get<std::int32_t>(), entry["e_core"].get<double>(),
+                         entry["h1"]["values"].get<std::vector<double>>(),
+                         entry["eri"]["values"].get<std::vector<double>>()};
+    each(entry["n_alpha"].get<std::int32_t>(), entry["n_beta"].get<std::int32_t>(), ints, 3, 7);
+  }
+  for (const auto &[n, n_alpha, n_beta, k] : kRandomShapes) {
+    SCOPED_TRACE(std::format("n = {}, N_alpha = {}, N_beta = {}, k = {}", n, n_alpha, n_beta, k));
+    each(n_alpha, n_beta, random_integrals(n, 300 + static_cast<std::uint64_t>(n)), k, 11);
+  }
+  for (const auto &[n, n_electrons, k] : kSymmetricShapes) {
+    SCOPED_TRACE(std::format("n = {}, N = {}, k = {}", n, n_electrons, k));
+    each(n_electrons, n_electrons, random_integrals(n, 500 + static_cast<std::uint64_t>(n)), k, 19);
+  }
+}
+
+// At CAS(12,12) a third of the unblocked scratch leaves blocks of tens of
+// thousands of rows, each spanning several chunks of D.
+TEST(CiSigmaGpu, BlockedMatchesUnblockedAtCas1212) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const Integrals ints = random_integrals(12, 412);
+  for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
+    for (const bool fp32 : {false, true}) {
+      SCOPED_TRACE(std::format("{} layout, {}", layout == fb::CiLayout::full ? "full" : "symmetric",
+                               fp32 ? "fp32" : "fp64"));
+      check_blocked(6, 6, ints, 1, 13, layout, fp32);
+    }
+  }
 }
 
 TEST(CiSigmaGpu, Refuses) {

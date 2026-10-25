@@ -64,7 +64,7 @@ P = n (n + 1) / 2, the estimate counts, in doubles:
 |---|---|
 | `ci_solve` | g t guesses, nroots t vectors, its t penalized diagonal, and the step's dim diagonal; after the Davidson, nroots dim unpacked roots, counted where they outweigh the Davidson's |
 | `davidson_solve` | 2 m t for V and A V, 3 nroots t for A X, R and the corrections, and the m-sized projections |
-| `CiSigma::apply`'s scratch | t (P + 1) for G, one vector's (`apply` goes a vector at a time), plus one ≤ 64 MiB chunk of D |
+| `CiSigma::apply`'s scratch | t (P + 1) for G, one vector's (`apply` goes a vector at a time), plus one ≤ 64 MiB chunk of D, when that fits; else blocked (below), down to s (P + 1) for one string's block. The workspace outlives the Davidson, so it is added to the larger of the Davidson and the unpacked roots |
 | `CiSigma`'s tables | two string sets (8 bytes a string, 12 a replacement), the P × (P + 1) contraction |
 | The integrals | (pq\|rs) n⁴ and h n² |
 
@@ -75,6 +75,13 @@ in the full layout they were 1.2 GB of 2.8 GB. The J and K classes and
 basis, not the determinants. The comparison is against free memory as the
 runtime reports it, so memory the pool has cached counts as used: the refusal
 errs toward refusing.
+
+The step refuses only when the rest of the estimate plus one string's block of
+G does not fit. Otherwise it hands `CiSigma::set_workspace_limit` whatever the
+estimate leaves free. When G for the whole triangle fits, the sigma is the
+unblocked single pass and gives the same result to the bit. When it does not,
+G goes a block of strings at a time, at twice the gathers and gemm
+(`../../ci/sigma/README.md`).
 
 What it settled:
 

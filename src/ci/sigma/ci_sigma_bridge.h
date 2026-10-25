@@ -65,6 +65,28 @@ namespace free_breakfast::device {
                                           int32_t beta_per, bool scale_off_diagonal,
                                           const double *c, float *d);
 
+/// @brief ci_gather_d over rows [@p row_begin, @p row_begin + @p rows) of a
+/// string block rather than of the vector: block row r is string
+/// @p first + r / n_minor of the block's spin, the β with @p beta_major and
+/// else the α, against string r % n_minor of the other, n_minor being the
+/// other spin's count (@p n_alpha with @p beta_major, else @p n_beta). @p d is
+/// as ci_gather_d's. With @p symmetric (@p beta_major false, @p n_alpha =
+/// @p n_beta the one set's m) a block row is a determinant of the unpacked
+/// vector, of either order, its links read through the mirror; D is of the
+/// unpacked c, unscaled.
+[[nodiscard]] wwr::wwrError_t ci_gather_d_block(wwr::wwrStream_t stream, bool symmetric,
+                                                bool beta_major, int32_t first, int32_t row_begin,
+                                                int32_t rows, int32_t n_alpha, int32_t n_beta,
+                                                const int32_t *alpha_links, int32_t alpha_per,
+                                                const int32_t *beta_links, int32_t beta_per,
+                                                const double *c, double *d);
+[[nodiscard]] wwr::wwrError_t ci_gather_d_block(wwr::wwrStream_t stream, bool symmetric,
+                                                bool beta_major, int32_t first, int32_t row_begin,
+                                                int32_t rows, int32_t n_alpha, int32_t n_beta,
+                                                const int32_t *alpha_links, int32_t alpha_per,
+                                                const int32_t *beta_links, int32_t beta_per,
+                                                const double *c, float *d);
+
 /// @brief σ for every one of the @p rows rows, from G:
 /// σ_I = e_core c_I + G_I[n_pairs] + Σ s · G_J[pair(p, q)] over I's α and β
 /// links (p, q, J, s).
@@ -86,6 +108,33 @@ namespace free_breakfast::device {
                                               const int32_t *beta_links, int32_t beta_per,
                                               double e_core, const double *c, const float *g,
                                               double *sigma);
+
+/// @brief Add to @p sigma what the G of one string block (see
+/// ci_gather_d_block: strings [@p first, @p first + @p count)) serves.
+///
+/// @p g is the block's rows × (n_pairs + 1), column-major with leading
+/// dimension count · n_minor, as ci_sigma_from_g's. A determinant (a, b)'s β
+/// links reach (a, b′), so the block holding a serves them, and with them
+/// E_core c and the one-electron term; its α links reach (a′, b), served by the
+/// block holding b. In the full layout an α block (@p beta_major false) adds
+/// the β-link part to its own rows and a β block the α-link part. With
+/// @p symmetric G of (a′, b) is G of its mirror, so a block of the one set
+/// serves both parts, each to the triangle rows it reaches (a or b in the
+/// block), scaled by √2 off the diagonal. @p sigma must be zero before the
+/// first block; once every block has added, it is ci_sigma_from_g's σ.
+[[nodiscard]] wwr::wwrError_t
+ci_sigma_from_g_block(wwr::wwrStream_t stream, bool symmetric, bool beta_major, int32_t first,
+                      int32_t count, int32_t n_alpha, int32_t n_beta, int32_t n_pairs,
+                      const int32_t *alpha_links, int32_t alpha_per, const int32_t *beta_links,
+                      int32_t beta_per, double e_core, const double *c, const double *g,
+                      double *sigma);
+[[nodiscard]] wwr::wwrError_t ci_sigma_from_g_block(wwr::wwrStream_t stream, bool symmetric,
+                                                    bool beta_major, int32_t first, int32_t count,
+                                                    int32_t n_alpha, int32_t n_beta,
+                                                    int32_t n_pairs, const int32_t *alpha_links,
+                                                    int32_t alpha_per, const int32_t *beta_links,
+                                                    int32_t beta_per, double e_core,
+                                                    const double *c, const float *g, double *sigma);
 
 /// @brief diag(H) for the @p n_alpha · @p n_beta determinants, by host_diagonal's
 /// rule and in its order.
