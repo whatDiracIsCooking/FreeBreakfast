@@ -12,8 +12,7 @@ module free_breakfast.ci.sigma;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;  // kOne, kZero
-import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -362,12 +361,8 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
   // over I's own vector, so the vectors go one at a time and G is never wider
   // than one: k · dim · (P + 1) doubles would be 60 GB at CAS(14,14), k = 6.
   // In the symmetric layout it is the triangle's rows alone.
-  const size_t g_bytes = math::align_up(sizeof(T) * static_cast<size_t>(rows) * (pairs + 1),
-                                        DeviceResources::kWorkspaceAlignment);
-  const size_t d_bytes = sizeof(T) * static_cast<size_t>(chunk) * pairs;
-  std::byte *const base = res.device_workspace(g_bytes + d_bytes).data();
-  auto *const g = reinterpret_cast<T *>(base);
-  auto *const d = reinterpret_cast<T *>(base + g_bytes);
+  const auto [g, d] = res.device_regions<T>(static_cast<size_t>(rows) * (pairs + 1),
+                                            static_cast<size_t>(chunk) * pairs);
 
   for (int32_t j = 0; j < k; ++j) {
     const double *const xj = x + (static_cast<size_t>(j) * static_cast<size_t>(rows));
@@ -428,12 +423,7 @@ Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const 
       kCiSigmaChunkBytes / (sizeof(double) * pairs), 1, static_cast<size_t>(rows)));
 
   // The packed sums, then D for one chunk.
-  const size_t packed_bytes =
-      math::align_up(sizeof(double) * pairs, DeviceResources::kWorkspaceAlignment);
-  const size_t d_bytes = sizeof(double) * static_cast<size_t>(chunk) * pairs;
-  std::byte *const base = res.device_workspace(packed_bytes + d_bytes).data();
-  auto *const packed = reinterpret_cast<double *>(base);
-  auto *const d = reinterpret_cast<double *>(base + packed_bytes);
+  const auto [packed, d] = res.device_regions<double>(pairs, static_cast<size_t>(chunk) * pairs);
 
   // The first chunk's gemv overwrites the sums, every later one adds to them.
   for (int32_t begin = 0; begin < rows; begin += chunk) {

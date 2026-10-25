@@ -7,8 +7,7 @@ module free_breakfast.mcscf.hessian;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;  // kOne, kZero, kTwo
-import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm, gemv, geam, gemmStridedBatched, iamax, gpu_status
 import free_breakfast.core.resources;
@@ -133,19 +132,8 @@ OrbitalHessian::create(DeviceResources &res, const BasisSet &basis, const Spheri
   // Scratch: gemmwich's intermediate, one projected nmo x nmo block, and
   // the permuted Gamma of H_act's exchange part. coulomb and exchange, called
   // while it is live, do not take the workspace.
-  size_t bytes = 0;
-  const auto region = [&bytes](const size_t count) {
-    const size_t at = bytes;
-    bytes += math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
-    return at;
-  };
-  const size_t at_work = region(n_cart * n_all);
-  const size_t at_block = region(nn);
-  const size_t at_gamma2 = region(na * na * na * na);
-  std::byte *const base = res.device_workspace(bytes).data();
-  auto *const work = reinterpret_cast<double *>(base + at_work);
-  auto *const block = reinterpret_cast<double *>(base + at_block);
-  auto *const gamma2_exchange = reinterpret_cast<double *>(base + at_gamma2);
+  const auto [work, block, gamma2_exchange] =
+      res.device_regions<double>(n_cart * n_all, nn, na * na * na * na);
 
   // U C, then C^T h C, and the MO matrices the product reads.
   if (u != nullptr) {
@@ -383,31 +371,9 @@ Status OrbitalHessian::apply(DeviceResources &res, const int32_t k, const double
 
   // Scratch, carved once for the block: coulomb and exchange, called while it
   // is live, do not take the workspace.
-  size_t bytes = 0;
-  const auto region = [&bytes](const size_t count) {
-    const size_t at = bytes;
-    bytes += math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
-    return at;
-  };
-  const size_t at_kappa = region(nn);
-  const size_t at_x2 = region(nn);
-  const size_t at_hx = region(n_all * (core + na));
-  const size_t at_t_act = region(na * n_all);
-  const size_t at_t2 = region(na * n_all);
-  const size_t at_w = region(std::max(core, na) * n_cart);
-  const size_t at_cart = region(n_cart * n_cart);
-  const size_t at_dm3 = region(n_cart * n_cart);
-  const size_t at_jc = region(n_cart * n_all);
-  std::byte *const base = res.device_workspace(bytes).data();
-  auto *const kappa = reinterpret_cast<double *>(base + at_kappa);
-  auto *const x2 = reinterpret_cast<double *>(base + at_x2);
-  auto *const hx = reinterpret_cast<double *>(base + at_hx);
-  auto *const t_act = reinterpret_cast<double *>(base + at_t_act);
-  auto *const t2 = reinterpret_cast<double *>(base + at_t2);
-  auto *const w = reinterpret_cast<double *>(base + at_w);
-  auto *const cart = reinterpret_cast<double *>(base + at_cart);
-  auto *const dm3 = reinterpret_cast<double *>(base + at_dm3);
-  auto *const jc = reinterpret_cast<double *>(base + at_jc);
+  const auto [kappa, x2, hx, t_act, t2, w, cart, dm3, jc] = res.device_regions<double>(
+      nn, nn, n_all * (core + na), na * n_all, na * n_all, std::max(core, na) * n_cart,
+      n_cart * n_cart, n_cart * n_cart, n_cart * n_all);
   const double *const c_cart = c_cart_.data();
   const double *const c_cart_act = c_cart + (n_cart * core);
   const auto gemm = [blas](wwr::wwrblasOperation_t op_a, wwr::wwrblasOperation_t op_b, int32_t m,

@@ -8,8 +8,7 @@ module free_breakfast.integrals.active_space;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;  // kOne, kZero, kTwo
-import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm, axpy, scal, dot, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
@@ -37,21 +36,8 @@ struct ActiveSpaceScratch {
 
   ActiveSpaceScratch(DeviceResources &res, const size_t n_cart, const size_t n_sphe,
                      const size_t cols) {
-    size_t bytes = 0;
-    const auto region = [&bytes](const size_t count) {
-      const size_t at = bytes;
-      bytes += math::align_up(count * sizeof(double), DeviceResources::kWorkspaceAlignment);
-      return at;
-    };
-    const size_t at_c_cart = region(n_cart * cols);
-    const size_t at_work = region(n_cart * cols);
-    const size_t at_block = region(cols * cols);
-    const size_t at_p_sphe = region(n_sphe * n_sphe);
-    std::byte *const base = res.device_workspace(bytes).data();
-    c_cart = reinterpret_cast<double *>(base + at_c_cart);
-    work = reinterpret_cast<double *>(base + at_work);
-    block = reinterpret_cast<double *>(base + at_block);
-    p_sphe = reinterpret_cast<double *>(base + at_p_sphe);
+    std::tie(c_cart, work, block, p_sphe) =
+        res.device_regions<double>(n_cart * cols, n_cart * cols, cols * cols, n_sphe * n_sphe);
   }
 };
 

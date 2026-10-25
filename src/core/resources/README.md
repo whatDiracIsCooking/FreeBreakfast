@@ -147,6 +147,17 @@ alignment. `kWorkspaceAlignmentIn<T>` is the same step in elements of `T`, for
 a routine carving the workspace into typed regions; it is constrained to a `T`
 whose size divides 256, so the step can neither truncate nor be 0.
 
+**Carve it with `device_regions<Ts...>(counts...)`.** One `T` per count, or one
+`T` for all of them; each region is rounded up to 256 B, the total is asked for
+in one `device_workspace` request, and the regions' starts come back as a
+`std::tuple<Ts *...>` for a structured binding or a `std::tie`:
+
+```cpp
+const auto [work, block] = res.device_regions<double>(n_cart * nmo, nmo * nmo);
+```
+
+The regions are the workspace's, so the rule below holds for them too.
+
 **Fetch the buffer just before the call; never keep its pointer.** A growth
 frees the old block — on `stream()` for the device workspace, so work already
 queued against it is safe, but a pointer or view held across another request

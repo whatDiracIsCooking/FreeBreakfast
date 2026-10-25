@@ -12,8 +12,7 @@ module free_breakfast.ci.rdm;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;  // kOne
-import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.constants; // kOne
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -207,14 +206,9 @@ Status CiRdm::rdm12(DeviceResources &res, const std::span<const double> weights,
       static_cast<int32_t>(std::clamp<size_t>(kRdmChunkBytes / (sizeof(double) * nn), 1, dim));
 
   // The workspace: M, then one chunk of D.
-  const size_t m_bytes =
-      math::align_up(sizeof(double) * nn * nn, DeviceResources::kWorkspaceAlignment);
-  const size_t d_bytes = sizeof(double) * static_cast<size_t>(chunk) * nn;
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  std::byte *const base = res.device_workspace(m_bytes + d_bytes).data();
-  auto *const m = reinterpret_cast<double *>(base);
-  auto *const d = reinterpret_cast<double *>(base + m_bytes);
+  const auto [m, d] = res.device_regions<double>(nn * nn, static_cast<size_t>(chunk) * nn);
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(m, 0, sizeof(double) * nn * nn, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma, 0, sizeof(double) * nn, stream)));
 

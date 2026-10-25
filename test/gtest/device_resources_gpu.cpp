@@ -196,6 +196,30 @@ TEST(DeviceResources, WorkspaceViewsAsAnyElementType) {
   EXPECT_GE(ext::reinterpret_buffer_view<double>(ws).num_elements() * sizeof(double), 1004U);
 }
 
+// device_regions lays its regions out in order, each a whole number of
+// alignment steps from the workspace's start, in one request for the total;
+// a single T is every region's.
+TEST(DeviceResources, DeviceRegionsCarveAlignedInOrder) {
+  FBF_REQUIRE_GPU();
+
+  constexpr std::size_t kAlign = fb::DeviceResources::kWorkspaceAlignment;
+  fb::DeviceResources res{0};
+
+  const auto [a, b, c] = res.device_regions<double, std::int32_t, std::complex<double>>(
+      std::size_t{33}, std::size_t{1}, std::size_t{0});
+  static_assert(std::is_same_v<decltype(b), std::int32_t *const>);
+  const auto *const base = res.device_workspace(0).data();
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(a), base);
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(b), base + (2 * kAlign));
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(c), base + (3 * kAlign));
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 3 * kAlign);
+
+  const auto [x, y] = res.device_regions<float>(std::size_t{64}, std::size_t{65});
+  EXPECT_EQ(reinterpret_cast<const std::byte *>(y) - reinterpret_cast<const std::byte *>(x),
+            static_cast<std::ptrdiff_t>(kAlign));
+  EXPECT_EQ(res.device_workspace(0).num_elements(), 3 * kAlign);
+}
+
 // fetch_info() reads back what was last written to info() on the work stream:
 // zero from the allocation, then whatever a later write leaves.
 TEST(DeviceResources, FetchInfoReadsTheDeviceFlag) {

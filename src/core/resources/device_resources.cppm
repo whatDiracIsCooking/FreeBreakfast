@@ -111,6 +111,32 @@ public:
     return device_workspace_;
   }
 
+  /// @brief The device workspace carved into one region per count: a region
+  /// of count elements of its T, each rounded up to kWorkspaceAlignment so
+  /// every one starts aligned for its type, from a single device_workspace
+  /// request for the total.
+  ///
+  /// One T per count pairs them up, `device_regions<double, int32_t>(n, m)`;
+  /// a single T is every region's, `device_regions<double>(a, b, c)`. Returns
+  /// the regions' starts in order. They are device_workspace()'s, so the same
+  /// rule holds: never keep them across another request.
+  template <typename... Ts, std::same_as<size_t>... Counts>
+    requires(sizeof...(Ts) == sizeof...(Counts) || sizeof...(Ts) == 1) &&
+            ((kWorkspaceAlignment % sizeof(Ts) == 0) && ...)
+  auto device_regions(const Counts... counts) {
+    if constexpr (sizeof...(Ts) != sizeof...(Counts)) {
+      using T = std::tuple_element_t<0, std::tuple<Ts...>>;
+      return device_regions<std::conditional_t<true, T, Counts>...>(counts...);
+    } else {
+      size_t bytes = 0;
+      const std::array<size_t, sizeof...(Ts)> at{std::exchange(
+          bytes, bytes + math::align_up(counts * sizeof(Ts), kWorkspaceAlignment))...};
+      std::byte *const base = device_workspace(bytes).data();
+      size_t i = 0;
+      return std::tuple<Ts *...>{reinterpret_cast<Ts *>(base + at[i++])...};
+    }
+  }
+
   /// @brief The scratch host workspace (a solver's bufferOnHost), grown to hold
   /// at least `bytes`.
   ///

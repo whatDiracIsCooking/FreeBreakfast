@@ -11,8 +11,7 @@ module free_breakfast.localization.pipek_mezey;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants;  // kOne, kZero
-import free_breakfast.core.primitives; // math::align_up
+import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
@@ -69,9 +68,8 @@ void pm_fill_round_robin(const int32_t m, int32_t *const pairs) {
 }
 
 // The call's device scratch, one region per buffer, carved from one
-// workspace request. Each region is a whole number of alignment steps, so
-// every one starts aligned for its type. Nothing here calls another workspace
-// user while these are live.
+// workspace request. Nothing here calls another workspace user while these
+// are live.
 struct PmScratch {
   double *w;                // S C, n_ao x n_occ
   double *pops_a;           // the population tensor, ping
@@ -88,36 +86,11 @@ struct PmScratch {
   PmScratch(DeviceResources &res, const size_t n_ao, const size_t n_occ, const size_t n_atoms,
             const size_t schedule_size) {
     const size_t pops = n_atoms * n_occ * n_occ;
-    size_t bytes = 0;
-    const auto region = [&bytes](const size_t count, const size_t size) {
-      const size_t at = bytes;
-      bytes += math::align_up(count * size, DeviceResources::kWorkspaceAlignment);
-      return at;
-    };
-    const size_t at_w = region(n_ao * n_occ, sizeof(double));
-    const size_t at_pops_a = region(pops, sizeof(double));
-    const size_t at_pops_b = region(pops, sizeof(double));
-    const size_t at_u_a = region(n_occ * n_occ, sizeof(double));
-    const size_t at_u_b = region(n_occ * n_occ, sizeof(double));
-    const size_t at_cos = region(n_occ, sizeof(double));
-    const size_t at_sin = region(n_occ, sizeof(double));
-    const size_t at_functional = region(1, sizeof(double));
-    const size_t at_partner = region(n_occ, sizeof(int32_t));
-    const size_t at_schedule = region(schedule_size, sizeof(int32_t));
-    const size_t at_offsets = region(n_atoms + 1, sizeof(int32_t));
-
-    std::byte *const base = res.device_workspace(bytes).data();
-    w = reinterpret_cast<double *>(base + at_w);
-    pops_a = reinterpret_cast<double *>(base + at_pops_a);
-    pops_b = reinterpret_cast<double *>(base + at_pops_b);
-    u_a = reinterpret_cast<double *>(base + at_u_a);
-    u_b = reinterpret_cast<double *>(base + at_u_b);
-    cos = reinterpret_cast<double *>(base + at_cos);
-    sin = reinterpret_cast<double *>(base + at_sin);
-    functional = reinterpret_cast<double *>(base + at_functional);
-    partner = reinterpret_cast<int32_t *>(base + at_partner);
-    schedule = reinterpret_cast<int32_t *>(base + at_schedule);
-    atom_ao_offsets = reinterpret_cast<int32_t *>(base + at_offsets);
+    std::tie(w, pops_a, pops_b, u_a, u_b, cos, sin, functional, partner, schedule,
+             atom_ao_offsets) = res.device_regions<double, double, double, double, double, double,
+                                                   double, double, int32_t, int32_t, int32_t>(
+        n_ao * n_occ, pops, pops, n_occ * n_occ, n_occ * n_occ, n_occ, n_occ, size_t{1}, n_occ,
+        schedule_size, n_atoms + 1);
   }
 };
 

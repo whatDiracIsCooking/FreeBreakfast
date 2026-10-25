@@ -34,7 +34,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   LINK_PRIVATE
   free_breakfast::core::constants
-  free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::localization::pipek_mezey::device
