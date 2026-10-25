@@ -2,7 +2,8 @@
 # per-iteration device work. Device code in its own library, so its language
 # and -x hip never reach the module compiles. The bridge header it shares with
 # the module names int32_t, wwrStream_t and wwrError_t, hence types_headers and
-# wwr::device PUBLIC; block_params.h (kFourWarps) and the sigma's
+# wwr::device PUBLIC; block_params.h (kFourWarps), primitives.h (math::idivup)
+# and the sigma's
 # ci_symmetric.h, reached through ci::sigma::device's include directory, are
 # its own business.
 free_breakfast_add_gpu_device_library(

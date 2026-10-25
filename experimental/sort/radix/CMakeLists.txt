@@ -1,8 +1,9 @@
 # The radix-sort kernels, and the vendor reference over CUB / hipCUB. Device
 # code in its own library, so its language and -x hip never reach the module
 # compiles. The bridge header it shares with the module reads kFourWarps
-# (block_params.h) and names wwrStream_t and wwrError_t, hence kernel_headers
-# PUBLIC: it brings types_headers and wwr::device with it. wwr::device also
+# (block_params.h) and math::idivup (primitives.h) and names wwrStream_t and
+# wwrError_t, hence kernel_headers PUBLIC: it brings primitives_header,
+# types_headers and wwr::device with it. wwr::device also
 # carries cub.h and the include path of the vendor's CUB (the toolkit's cccl
 # dir) or hipCUB (the ROCm include root), so the reference needs no
 # find_package.

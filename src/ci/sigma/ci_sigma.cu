@@ -17,6 +17,7 @@
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
 #include "block_params.h"
+#include "primitives.h"
 
 #include "ci_sigma_bridge.h"
 #include "ci_symmetric.h"
@@ -24,8 +25,6 @@
 namespace free_breakfast::device {
 
 namespace {
-
-constexpr uint32_t kCiBlock = kFourWarps;
 
 // The fields of one link (see the bridge header).
 constexpr int32_t kLinkWidth = 3;
@@ -229,7 +228,7 @@ __global__ void ci_unpack_kernel(const int32_t n_strings, const int64_t elements
 }
 
 uint32_t ci_blocks(const int64_t items) {
-  return static_cast<uint32_t>((items + kCiBlock - 1) / kCiBlock);
+  return static_cast<uint32_t>(math::idivup(items, int64_t{kFourWarps}));
 }
 
 template <typename T>
@@ -242,10 +241,10 @@ wwr::wwrError_t ci_gather_d_as(const wwr::wwrStream_t stream, const bool symmetr
     return wwr::wwrSuccess;
   }
   if (symmetric) {
-    ci_gather_d_kernel<true, T><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+    ci_gather_d_kernel<true, T><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
         row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
   } else {
-    ci_gather_d_kernel<false, T><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+    ci_gather_d_kernel<false, T><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
         row_begin, rows, n_det, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, d);
   }
   return wwr::wwrGetLastError();
@@ -262,11 +261,11 @@ wwr::wwrError_t ci_sigma_from_g_as(const wwr::wwrStream_t stream, const bool sym
     return wwr::wwrSuccess;
   }
   if (symmetric) {
-    ci_sigma_from_g_kernel<true, T><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+    ci_sigma_from_g_kernel<true, T><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
         rows, n_det, n_beta, n_pairs, alpha_links, alpha_per, beta_links, beta_per, e_core, c, g,
         sigma);
   } else {
-    ci_sigma_from_g_kernel<false, T><<<ci_blocks(rows), kCiBlock, 0, stream>>>(
+    ci_sigma_from_g_kernel<false, T><<<ci_blocks(rows), kFourWarps, 0, stream>>>(
         rows, n_det, n_beta, n_pairs, alpha_links, alpha_per, beta_links, beta_per, e_core, c, g,
         sigma);
   }
@@ -321,7 +320,7 @@ wwr::wwrError_t ci_diagonal(const wwr::wwrStream_t stream, const int32_t n, cons
   if (n_det == 0) {
     return wwr::wwrSuccess;
   }
-  ci_diagonal_kernel<<<ci_blocks(n_det), kCiBlock, 0, stream>>>(
+  ci_diagonal_kernel<<<ci_blocks(n_det), kFourWarps, 0, stream>>>(
       n, n_alpha, n_beta, strings_alpha, strings_beta, e_core, terms, diagonal);
   return wwr::wwrGetLastError();
 }
@@ -332,7 +331,7 @@ wwr::wwrError_t ci_unpack_rdm1(const wwr::wwrStream_t stream, const int32_t n,
   if (elements == 0) {
     return wwr::wwrSuccess;
   }
-  ci_unpack_rdm1_kernel<<<ci_blocks(elements), kCiBlock, 0, stream>>>(n, packed, gamma);
+  ci_unpack_rdm1_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n, packed, gamma);
   return wwr::wwrGetLastError();
 }
 
@@ -342,7 +341,7 @@ wwr::wwrError_t ci_unpack(const wwr::wwrStream_t stream, const int32_t n_strings
   if (elements == 0) {
     return wwr::wwrSuccess;
   }
-  ci_unpack_kernel<<<ci_blocks(elements), kCiBlock, 0, stream>>>(n_strings, elements, x, y);
+  ci_unpack_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n_strings, elements, x, y);
   return wwr::wwrGetLastError();
 }
 

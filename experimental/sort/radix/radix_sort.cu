@@ -432,7 +432,7 @@ wwr::wwrError_t radix_sort_small(const wwr::wwrStream_t stream, uint64_t *keys, 
   }
   // Tile-sort into whichever half leaves the last merge round writing the
   // caller's arrays: rounds alternate halves, and there are ceil(log2(tiles)).
-  const uint32_t num_tiles = (n + kTileKeys - 1) / kTileKeys;
+  const uint32_t num_tiles = math::idivup(n, kTileKeys);
   uint32_t rounds = 0;
   for (uint32_t run = kTileKeys; run < n; run *= 2) {
     ++rounds;
@@ -477,7 +477,7 @@ wwr::wwrError_t radix_sort_passes(const wwr::wwrStream_t stream, const uint32_t 
     return radix_sort_small(stream, bits, bits_alt, values, values_alt, n);
   }
 
-  const uint32_t num_tiles = (n + kRadixSortTile - 1) / kRadixSortTile;
+  const uint32_t num_tiles = math::idivup(n, kRadixSortTile);
   const uint32_t count_len = num_tiles * kRadixBuckets;
   uint32_t *values_dst = values != nullptr ? values_alt : nullptr;
   for (uint32_t shift = 0; shift < kRadixKeyBits; shift += kRadixBits) {

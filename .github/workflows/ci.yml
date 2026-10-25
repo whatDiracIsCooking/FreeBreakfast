@@ -82,6 +82,13 @@ jobs:
         run: |
           uv run devtools/check-shared-mem.py \
             $(git ls-files '*.cu' '*.cuh' '*.h' '*.hpp' ':!:deps/WarpWraps/**')
+      # docs/style.md "Launch shape and integer rounding", over the same scope
+      # as int-types.
+      - name: ceil-div
+        run: |
+          uv run devtools/check-ceil-div.py \
+            $(git ls-files '*.cpp' '*.cppm' '*.cu' '*.cuh' '*.h' '*.hpp' \
+              ':!:deps/WarpWraps/**')
       # cmake-lint over the files that define every target in the tree. Comes
       # from the `cmakelang` dev dependency, so it is already in the lock;
       # configured by .cmake-format.yaml. Lint only -- cmake-format is not part
