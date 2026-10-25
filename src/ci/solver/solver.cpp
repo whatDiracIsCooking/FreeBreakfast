@@ -185,10 +185,37 @@ Status CiSpinSquare::penalize_diagonal(DeviceResources &res, const double lambda
                                              constant_, target, lambda, diagonal, shifted));
 }
 
-Status ci_precondition(DeviceResources &res, const int32_t n, const double theta,
-                       const double *const shifted, const double *const residual,
-                       double *const correction) {
-  return gpu_status(device::ci_precondition(res.stream(), n, theta, shifted, residual, correction));
+Status ci_precondition(DeviceResources &res, const int32_t n, const std::span<const double> theta,
+                       const double *const shifted, const double *const ritz_vectors,
+                       const double *const residual, double *const correction, const bool olsen) {
+  const wwr::wwrStream_t stream = res.stream();
+  const auto nz = static_cast<size_t>(n);
+  if (!olsen) {
+    for (size_t col = 0; col < theta.size(); ++col) {
+      FBF_TRY(gpu_status(device::ci_precondition(stream, n, theta[col], shifted,
+                                                 residual + (col * nz), correction + (col * nz))));
+    }
+    return {};
+  }
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  // x^T M⁻¹ x and x^T M⁻¹ r per column, written and read on the device: ε
+  // never comes back to the host.
+  const auto [dots] = res.device_regions<double>(2 * theta.size());
+  const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t, CreatePolicy<wwr::wwrblasStatus_t>>
+      device_results{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
+  for (size_t col = 0; col < theta.size(); ++col) {
+    const double *const x = ritz_vectors + (col * nz);
+    const double *const r = residual + (col * nz);
+    double *const c = correction + (col * nz);
+    double *const pair = dots + (2 * col);
+    // M⁻¹ x into the correction column; M is diagonal, so x^T M⁻¹ r is
+    // (M⁻¹ x)^T r and M⁻¹ r is never formed on its own.
+    FBF_TRY(gpu_status(device::ci_precondition(stream, n, theta[col], shifted, x, c)));
+    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, x, 1, c, 1, pair)));
+    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, c, 1, r, 1, pair + 1)));
+    FBF_TRY(gpu_status(device::ci_olsen(stream, n, theta[col], shifted, x, r, pair, c)));
+  }
+  return {};
 }
 
 Status ci_guesses(DeviceResources &res, const int32_t n, const int32_t count,

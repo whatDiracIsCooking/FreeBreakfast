@@ -25,13 +25,17 @@ import free_breakfast.ci.sigma;
 
 namespace free_breakfast {
 
-// ci_solve's preconditioner for one column on the device: correction_i =
-// residual_i / (theta − shifted_i), held off zero at ±1e-3, queued on
-// res.stream(). Not exported: only ci_solve calls it, but its body is in the
-// implementation unit, the one place the bridge header may go.
-[[nodiscard]] Status ci_precondition(DeviceResources &res, int32_t n, double theta,
-                                     const double *shifted, const double *residual,
-                                     double *correction);
+// ci_solve's preconditioner on the device, per column of the theta.size()
+// columns of the n-long blocks @p ritz_vectors (X), @p residual and
+// @p correction: δ = M⁻¹ r, M = θ − shifted held off zero at ±1e-3, or with
+// @p olsen Olsen's δ = M⁻¹ (r − ε x), ε = x^T M⁻¹ r / x^T M⁻¹ x. Queued on
+// res.stream(); Olsen's dots run in device pointer mode into
+// res.device_workspace(), so nothing comes back to the host. Not exported:
+// only ci_solve calls it, but its body is in the implementation unit, the one
+// place the bridge header may go.
+[[nodiscard]] Status ci_precondition(DeviceResources &res, int32_t n, std::span<const double> theta,
+                                     const double *shifted, const double *ritz_vectors,
+                                     const double *residual, double *correction, bool olsen);
 
 // ci_solve's @p count orthonormal guess columns into the n × count device
 // block @p guess: unit vectors on the determinants of lowest @p diagonal
@@ -168,6 +172,11 @@ struct CiSolverOptions {
   /// a stage that stalls spends its max_iterations; the README has the
   /// measurement behind the default.
   double fp32_tolerance = 1e-6;
+  /// @brief Olsen's correction M⁻¹ (r − ε x), ε = x^T M⁻¹ r / x^T M⁻¹ x, in
+  /// place of the plain M⁻¹ r, M = θ − diag(H + penalty). Off by default:
+  /// over the diagonal M it is slower than the plain correction on most of
+  /// the README's bench solves.
+  bool olsen_correction = false;
 };
 
 /// @brief The roots a ci_solve converged, ascending in energy.
@@ -319,16 +328,15 @@ template <LinearOperator<double> Op>
   };
   Penalized op{sigma, spin, penalty, target, layout};
 
-  // r / (θ − diag(H + penalty)) on the device, one launch per column, the
-  // denominator kept off zero as the test's dense preconditioner is: a root
-  // concentrated on one determinant has θ ≈ its diagonal.
+  // M⁻¹ r over M = θ − diag(H + penalty) on the device, or Olsen's
+  // M⁻¹ (r − ε x) with options.olsen_correction (see the README). The
+  // denominator is kept off zero as the test's dense preconditioner is: a
+  // root concentrated on one determinant has θ ≈ its diagonal.
   const auto precondition = [&](DeviceResources &r, std::span<const double> theta,
-                                const double *residual, double *correction) -> Status {
-    for (size_t col = 0; col < theta.size(); ++col) {
-      FBF_TRY(ci_precondition(r, n, theta[col], shifted.data(), residual + col * length,
-                              correction + col * length));
-    }
-    return {};
+                                const double *ritz_vectors, const double *residual,
+                                double *correction) -> Status {
+    return ci_precondition(r, n, theta, shifted.data(), ritz_vectors, residual, correction,
+                           options.olsen_correction);
   };
 
   // Stage 1, when the sigma has an apply_fp32: that, to the loose tolerance.

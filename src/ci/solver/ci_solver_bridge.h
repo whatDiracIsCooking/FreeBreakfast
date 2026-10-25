@@ -1,7 +1,7 @@
 /// @file
 /// @brief The solver's launchers, declared once for the module that calls them
 /// and the device TU that defines them: S² on a block of CI vectors, and the
-/// diagonal preconditioner.
+/// diagonal preconditioner with Olsen's correction.
 ///
 /// Included by solver.cpp in its GLOBAL MODULE FRAGMENT, and by ci_solver.cu
 /// directly: a declaration in a module's purview gets module linkage and can
@@ -68,11 +68,20 @@ namespace free_breakfast::device {
                                                double shift, double scale, const double *diagonal,
                                                double *shifted);
 
-/// @brief correction_i = residual_i / (theta − shifted_i) for the @p n
-/// elements of one column, the denominator held off zero at ±1e-3.
+/// @brief out_i = in_i / (theta − shifted_i) for the @p n elements of one
+/// column, the denominator held off zero at ±1e-3: M⁻¹ in, M = theta − shifted.
+/// @p out may be @p in.
 [[nodiscard]] wwr::wwrError_t ci_precondition(wwr::wwrStream_t stream, int32_t n, double theta,
-                                              const double *shifted, const double *residual,
-                                              double *correction);
+                                              const double *shifted, const double *in, double *out);
+
+/// @brief Olsen's correction for one column, correction = M⁻¹ (residual − ε x)
+/// with M as ci_precondition's and ε = dots[1] / dots[0], read on the device:
+/// @p dots (device, 2) holds x^T M⁻¹ x and x^T M⁻¹ r. A zero dots[0] gives
+/// ε = 0. @p correction must overlap neither @p x nor @p residual.
+[[nodiscard]] wwr::wwrError_t ci_olsen(wwr::wwrStream_t stream, int32_t n, double theta,
+                                       const double *shifted, const double *x,
+                                       const double *residual, const double *dots,
+                                       double *correction);
 
 /// @brief The blocks ci_lowest's first pass runs, and so the length of its
 /// @p partial_values and @p partial_index: at most kCiLowestBlocks.

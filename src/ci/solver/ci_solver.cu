@@ -1,7 +1,7 @@
 // The device half of ci_solve's per-iteration work: S² on a block of CI
 // vectors, which the spin penalty adds into sigma's output, and the diagonal
-// preconditioner. One source for both backends -- nvcc under CUDA, clang -x
-// hip under HIP.
+// preconditioner with Olsen's correction. One source for both backends --
+// nvcc under CUDA, clang -x hip under HIP.
 //
 // S² is a gather, one thread per row: (Σ_pq E^β_pq E^α_qp x)_J walks J's α
 // links a†_p a_q and, for each, the β partner a†_q a_p of J's β string, read
@@ -93,18 +93,36 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
   y[row] = (accumulate ? y[row] : 0.0) + (scale * sum);
 }
 
+// theta − shifted, held off zero at ±kDenominatorFloor.
+__device__ double ci_denominator(const double theta, const double shifted) {
+  const double denominator = theta - shifted;
+  if (denominator < kDenominatorFloor && denominator > -kDenominatorFloor) {
+    return denominator < 0.0 ? -kDenominatorFloor : kDenominatorFloor;
+  }
+  return denominator;
+}
+
 __global__ void ci_precondition_kernel(const int32_t n, const double theta,
-                                       const double *const shifted, const double *const residual,
-                                       double *const correction) {
+                                       const double *const shifted, const double *const in,
+                                       double *const out) {
   const int64_t i = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (i >= n) {
     return;
   }
-  double denominator = theta - shifted[i];
-  if (denominator < kDenominatorFloor && denominator > -kDenominatorFloor) {
-    denominator = denominator < 0.0 ? -kDenominatorFloor : kDenominatorFloor;
+  out[i] = in[i] / ci_denominator(theta, shifted[i]);
+}
+
+// Olsen's correction, M⁻¹ (r − ε x) with ε = dots[1] / dots[0] read on the
+// device. A zero x^T M⁻¹ x leaves ε at 0: the plain correction M⁻¹ r.
+__global__ void ci_olsen_kernel(const int32_t n, const double theta, const double *const shifted,
+                                const double *const x, const double *const residual,
+                                const double *const dots, double *const correction) {
+  const int64_t i = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (i >= n) {
+    return;
   }
-  correction[i] = residual[i] / denominator;
+  const double epsilon = dots[0] == 0.0 ? 0.0 : dots[1] / dots[0];
+  correction[i] = (residual[i] - (epsilon * x[i])) / ci_denominator(theta, shifted[i]);
 }
 
 template <bool Symmetric>
@@ -258,13 +276,24 @@ wwr::wwrError_t ci_spin_square(const wwr::wwrStream_t stream, const bool symmetr
 }
 
 wwr::wwrError_t ci_precondition(const wwr::wwrStream_t stream, const int32_t n, const double theta,
-                                const double *const shifted, const double *const residual,
-                                double *const correction) {
+                                const double *const shifted, const double *const in,
+                                double *const out) {
   if (n == 0) {
     return wwr::wwrSuccess;
   }
-  ci_precondition_kernel<<<ci_blocks(n), kFourWarps, 0, stream>>>(n, theta, shifted, residual,
-                                                                  correction);
+  ci_precondition_kernel<<<ci_blocks(n), kFourWarps, 0, stream>>>(n, theta, shifted, in, out);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t ci_olsen(const wwr::wwrStream_t stream, const int32_t n, const double theta,
+                         const double *const shifted, const double *const x,
+                         const double *const residual, const double *const dots,
+                         double *const correction) {
+  if (n == 0) {
+    return wwr::wwrSuccess;
+  }
+  ci_olsen_kernel<<<ci_blocks(n), kFourWarps, 0, stream>>>(n, theta, shifted, x, residual, dots,
+                                                           correction);
   return wwr::wwrGetLastError();
 }
 

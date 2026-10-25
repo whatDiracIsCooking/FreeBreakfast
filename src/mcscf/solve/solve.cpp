@@ -420,7 +420,8 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     // theta goes by value, so a Davidson iteration's correction neither
     // allocates nor syncs.
     const auto precondition = [&](DeviceResources &r, std::span<const double> theta,
-                                  const double *residual, double *correction) -> Status {
+                                  const double * /*ritz_vectors*/, const double *residual,
+                                  double *correction) -> Status {
       for (size_t col = 0; col < theta.size(); ++col) {
         const size_t at = col * static_cast<size_t>(m);
         FBF_TRY(gpu_status(device::ah_precondition(r.stream(), m, theta[col], kAhDenominatorFloor,
