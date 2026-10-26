@@ -429,7 +429,8 @@ fix belongs in θ. A residual against a reorthogonalized basis would not have
 moved it: V was orthonormal to 1e-14. Two others were tried on the way:
 making `linear_dependence_floor` relative to each correction's norm turned
 every `Divergence` into `MaxIterationsExceeded` at 400 iterations, the same
-stall run longer, so it is not part of this; and `canonical_orthonormalization`
+stall run longer, so it was not the fix (it landed later, on its own, as
+#330: `../../recipes/davidson/`); and `canonical_orthonormalization`
 and `olsen_correction`, measured above, each moved one or two of the six by
 a different rounding path.
 

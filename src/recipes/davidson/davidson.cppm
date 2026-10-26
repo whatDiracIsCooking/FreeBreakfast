@@ -31,12 +31,11 @@ struct DavidsonOptions {
   double residual_tolerance = 1e-8;
   /// @brief Subspace expansions before giving up. At least 1.
   int32_t max_iterations = 100;
-  /// @brief A re-orthogonalized correction (or, with
-  /// canonical_orthonormalization, a mode of the block of them) at or below
-  /// this norm has nothing left outside the subspace and is dropped. Kept well
-  /// below
-  /// residual_tolerance: a nearly converged root's correction shrinks with its
-  /// residual, and a floor near the tolerance would drop real new directions.
+  /// @brief A correction is scaled to unit norm before it is re-orthogonalized,
+  /// and what is left of it (or, with canonical_orthonormalization, a mode of
+  /// the block of them) at or below this norm has nothing outside the subspace
+  /// and is dropped. Relative, so it means the same at any scale of A and
+  /// however small the residual: a fraction of the correction, not a norm.
   double linear_dependence_floor = 1e-12;
   /// @brief Orthonormalize the new corrections among themselves as one block,
   /// by orthonormalize (canonical orthogonalization), instead of by
@@ -85,7 +84,8 @@ concept DavidsonPreconditioner =
 /// Everything is queued on res.stream() with res.blas() held in host pointer
 /// mode, including the @p op and @p precondition calls. Each iteration
 /// synchronizes the stream to read the Ritz values, once for all the residual
-/// norms, and once per correction kept, for its norm (with
+/// norms, once for all the correction norms, and once per correction kept,
+/// for its norm after re-orthogonalization (with
 /// canonical_orthonormalization, twice or four times in orthonormalize
 /// instead). The subspace lives in pool buffers of the call's own, allocated
 /// on entry: @p op and @p precondition may take res.device_workspace(),
@@ -167,7 +167,7 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   Buffers::device<T> residual(nz * roots, res.device());
   Buffers::device<T> correction(nz * roots, res.device());
   Buffers::device<T> projection(columns * roots, res.device()); // V^T C
-  Buffers::device<T> norms(roots, res.device());    // the residual norms, read back at once
+  Buffers::device<T> norms(roots, res.device());    // the residual, then correction, norms
   Buffers::device<T> overlaps(roots, res.device()); // a correction's on those accepted before it
 
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data(), guess,
@@ -183,6 +183,10 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
   std::vector<T> theta(roots);
   std::vector<T> residual_norms(roots);
   std::vector<bool> converged(roots);
+  // Step 7's correction norms, and the roots step 8 takes: unconverged, with a
+  // correction that is not zero.
+  std::vector<T> correction_norms(roots);
+  std::vector<bool> expand(roots);
   // For the GD+k collapse and previous_eigenvectors, on the host: this
   // iteration's S (its leading n_roots columns, all dim of them and the whole
   // spectrum when collapsing), and the last iteration's leading columns
@@ -441,7 +445,37 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
       filled = dim;
     }
 
-    // 7. C -= V (V^T C), twice: one pass loses orthogonality once V is large.
+    // 7. Each unconverged correction scaled to unit norm, so the floor below
+    //    is a fraction of the correction, not an absolute norm: a correction
+    //    shrinks with its residual, and near a tight tolerance, or on an A of
+    //    small scale, a real new direction is far below the floor once
+    //    projected. The norms land on the device and come back together, one
+    //    sync. A zero (or subnormal) correction is dropped.
+    {
+      const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
+                                              CreatePolicy<wwr::wwrblasStatus_t>>
+          device_result{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
+      for (size_t i = 0; i < roots; ++i) {
+        if (!converged[i]) {
+          FBF_TRY(gpu_status(
+              wwr::nrm2<T, int32_t>(blas, n, correction.data() + (i * nz), 1, norms.data() + i)));
+        }
+      }
+    }
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(correction_norms.data(), norms.data(), roots * sizeof(T),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    FBF_TRY(res.sync());
+    for (size_t i = 0; i < roots; ++i) {
+      expand[i] = !converged[i] && correction_norms[i] >= std::numeric_limits<T>::min();
+      if (expand[i]) {
+        const T inv_norm = T{1} / correction_norms[i];
+        FBF_TRY(
+            gpu_status(wwr::scal<T, int32_t>(blas, n, &inv_norm, correction.data() + (i * nz), 1)));
+      }
+    }
+
+    //    Then C -= V (V^T C), twice: one pass loses orthogonality once V is
+    //    large.
     for (int32_t pass = 0; pass < 2; ++pass) {
       FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, dim, n_roots, n, &kOne<T>, v.data(),
                                                  correction.data(), &kZero<T>, projection.data())));
@@ -459,7 +493,7 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
       // nothing and is dropped.
       int32_t candidates = 0;
       for (size_t i = 0; i < roots; ++i) {
-        if (converged[i]) {
+        if (!expand[i]) {
           continue;
         }
         FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(
@@ -474,7 +508,7 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
       // it, contiguous in V, by two gemvs a pass and two passes, so the
       // overlaps stay on the device and only the norm comes back.
       for (size_t i = 0; i < roots; ++i) {
-        if (converged[i]) {
+        if (!expand[i]) {
           continue;
         }
         T *candidate = correction.data() + (i * nz);
