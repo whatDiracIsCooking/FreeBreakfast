@@ -374,6 +374,104 @@ if [ -n "${DOCTOR_GPU_VENDORS// /}" ]; then
   fi
 fi
 
+# --- gpu kernel modules (will the card survive the NEXT reboot?) ----------
+#
+# The section above answers "is a card here now". This one answers the
+# question that costs a day when nobody asks it: will there still be one after
+# the next reboot. Both vendors' drivers here are OUT-OF-TREE DKMS modules,
+# rebuilt per kernel by the dkms apt trigger -- and a rebuild that FAILS is
+# effectively silent. The kernel arrives through unattended-upgrades, apt's
+# report of the failure goes to a log nobody reads, and the module already
+# loaded for the RUNNING kernel keeps working, so the machine looks perfect
+# until the reboot that picks the new kernel up. Then the card is simply gone:
+# `rocminfo` lists only the CPU agent, `lspci -k` shows no driver for the card,
+# and nothing in any of it names a kernel upgrade as the cause.
+#
+# Seen on amdgpu across 6.8.0-146 -> -147: Ubuntu gave pci_resize_resource() a
+# fourth argument that amdgpu-dkms 6.16.13 does not pass, so the build broke
+# and the card came back driverless (amdgpu-dkms 7.1.9 autoconf-tests for the
+# signature). nvidia's DKMS is the same construction and can fail the same way.
+#
+# This is the HOST-side counterpart to the NVIDIA --device= lines in
+# .devcontainer/{cuda,combined}/. Those stop a live card dropping out of a
+# long-running container (a cgroup grant systemd erases on daemon-reload), and
+# the AMD half never needed them because ../hip/ always named /dev/kfd and
+# /dev/dri explicitly. What is left over is this, and it cannot be made
+# declarative from in here -- no amount of container config rebuilds a kernel
+# module. What a check CAN do is catch it in the one window where the fix is
+# cheap: before the reboot, while the old kernel is still bootable and the card
+# still works. So a warning here means exactly one thing -- do not reboot yet.
+#
+# Host-only by construction rather than by a probe: the container has no dkms
+# and no /boot, so both guards below come back empty and the section skips.
+if [ -n "${DOCTOR_GPU_VENDORS// /}" ] && command -v dkms >/dev/null 2>&1; then
+  # The bootable set, oldest first: a kernel needs BOTH a /boot/vmlinuz- image
+  # (what grub offers) and a /lib/modules/ tree (where dkms installs into). A
+  # vmlinuz with no module tree is a half-removed kernel, not a reboot target,
+  # and warning about one would be a false alarm -- images of that shape do
+  # accumulate in /boot. `sort -V` because the ABI number is numeric:
+  # lexically, -99 sorts after -147.
+  kernels=()
+  while read -r kver; do
+    [ -n "$kver" ] && [ -d "/lib/modules/$kver" ] && kernels+=("$kver")
+  done < <(for img in /boot/vmlinuz-*; do
+             [ -f "$img" ] && echo "${img#/boot/vmlinuz-}"
+           done | sort -V)
+
+  if [ "${#kernels[@]}" -gt 0 ]; then
+    echo "gpu kernel modules"
+    dkms_status=$(dkms status 2>/dev/null)
+    running=$(uname -r)
+    karch=$(uname -m)
+    newest=${kernels[${#kernels[@]}-1]}
+
+    # dkms spells a usable module as
+    #   <module>/<version>, <kernel>, <arch>: installed [(Original ...)]
+    # with older dkms separating module and version by ", " instead of "/".
+    # `installed` is the only state that is loadable -- a module can be `added`
+    # or `built` and still not be in /lib/modules -- so the state is matched
+    # too, not just the kernel appearing somewhere in the line.
+    dkms_installed() {
+      printf '%s\n' "$dkms_status" |
+        grep -q "^$1[/,].*[,/ ]$2, *$karch: installed"
+    }
+
+    for vendor in $DOCTOR_GPU_VENDORS; do
+      # The module name, which is not always the vendor name, and where a
+      # replacement comes from -- the two differ per vendor and the warning is
+      # worth little without the second. An unknown vendor has already been
+      # reported by the section above.
+      case $vendor in
+        nvidia) kmod=nvidia; kfix="a newer nvidia-dkms package" ;;
+        amd)    kmod=amdgpu
+                kfix="a newer amdgpu-dkms from repo.radeon.com/amdgpu/latest" ;;
+        *)      continue ;;
+      esac
+
+      if ! printf '%s\n' "$dkms_status" | grep -q "^$kmod[/,]"; then
+        # Not a DKMS module here at all: either this vendor has no card on
+        # this host, or its driver is the distro's in-tree one. Neither has a
+        # per-kernel rebuild to fail, so neither is a warning.
+        note "$kmod: not a DKMS module here -- no per-kernel rebuild to fail"
+      elif ! dkms_installed "$kmod" "$running"; then
+        warn "$kmod: no module built for the running kernel $running"
+        note "this is the post-reboot state -- the card has no driver until it builds"
+        note "why it failed: /var/lib/dkms/$kmod/*/build/make.log"
+        note "fix: $kfix, then reboot"
+      elif [ "$newest" != "$running" ] && ! dkms_installed "$kmod" "$newest"; then
+        warn "$kmod: built for $running but NOT for $newest -- a reboot loses the card"
+        note "why the rebuild failed: /var/lib/dkms/$kmod/*/build/make.log"
+        note "fix before rebooting: $kfix, built against $newest"
+        note "or boot $running from grub's advanced menu until it is fixed"
+      elif [ "$newest" != "$running" ]; then
+        ok "$kmod: built for $running (running) and $newest (next boot)"
+      else
+        ok "$kmod: built for $running (running, and the newest installed)"
+      fi
+    done
+  fi
+fi
+
 # --- required paths (submodules, fixture trees) ---------------------------
 config_lines "$DOCTOR_REQUIRED_PATHS"
 if [ "${#CONFIG_LINES[@]}" -gt 0 ]; then
