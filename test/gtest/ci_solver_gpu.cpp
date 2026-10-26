@@ -5,7 +5,9 @@
 // penalty works; with no penalty the triplet appears among them. Over CiSigma,
 // a singlet solve runs in the symmetric layout, and the test records that it
 // did; a solve started from converged roots, on either path, takes a step or
-// two per stage, and an empty start changes nothing.
+// two per stage, and an empty start changes nothing. With a P-space, H_PP
+// matches the dense penalized H to 1e-12, a P that covers the space solves it
+// with no Davidson, and every solve runs again over a P-space of 24.
 
 #include <gtest/gtest.h>
 
@@ -31,9 +33,23 @@ constexpr double kRdmTol = 1e-8;
 constexpr std::array<std::tuple<bool, bool, bool>, 4> kSolverVariants{
     {{false, false, false}, {true, false, false}, {false, true, false}, {false, false, true}}};
 
+// The P-space sizes each solve runs at: the default, none, and 24, which
+// covers the 36-determinant cases' triangle and leaves the 400-determinant
+// ones a Davidson over it.
+const std::vector<std::int32_t> kPspaceSizes = [] {
+  std::vector<std::int32_t> sizes{fb::CiSolverOptions{}.pspace_size};
+  for (const std::int32_t p : {0, 24}) {
+    if (p != sizes.front()) {
+      sizes.push_back(p);
+    }
+  }
+  return sizes;
+}();
+
 // host_sigma as a LinearOperator: each column copied to the host, through
 // host_sigma, and back. k is (ij|ji) on the device, for the spin-averaged
-// diagonal, or null.
+// diagonal, or null; h the same H as CiSigma::contraction holds it, for the
+// P-space, or null.
 struct HostSigma {
   const fb::StringSet &alpha;
   const fb::StringSet &beta;
@@ -42,8 +58,10 @@ struct HostSigma {
   const std::vector<double> &eri;
   std::int32_t applies = 0;
   const double *k = nullptr;
+  const double *h = nullptr;
 
   [[nodiscard]] const double *exchange() const noexcept { return k; }
+  [[nodiscard]] const double *contraction() const noexcept { return h; }
 
   fb::Status apply(fb::DeviceResources &res, std::int32_t k, const double *x, double *y) {
     ++applies;
@@ -156,6 +174,30 @@ fb::Buffers::device<double> exchange_on_device(fb::DeviceResources &res, const C
   return on_device(res, k);
 }
 
+// CiSigma over @p c's integrals, whose contraction() a HostSigma borrows.
+fb::CiSigma sigma_of(fb::DeviceResources &res, const Case &c) {
+  auto sigma = fb::CiSigma::create(res, c.alpha, c.beta);
+  EXPECT_TRUE(sigma.has_value());
+  EXPECT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
+  return std::move(*sigma);
+}
+
+// The length of the vectors ci_solve over @p c runs on: the triangle for a
+// singlet over a sigma that takes a layout, every determinant otherwise.
+std::int32_t solve_length(const Case &c, bool symmetric) {
+  const auto m = static_cast<std::int32_t>(c.alpha.size());
+  return symmetric ? m * (m + 1) / 2 : m * c.beta.size();
+}
+
+// Whether ci_solve over @p c with @p n_roots and P-space @p pspace solves it
+// exactly: P, at least the 2 n_roots guesses, leaves out fewer elements of
+// the space than that.
+bool solved_exactly(const Case &c, std::int32_t pspace, std::int32_t n_roots, bool symmetric) {
+  const std::int32_t length = solve_length(c, symmetric);
+  const std::int32_t guesses = std::min(length, 2 * n_roots);
+  return pspace > 0 && length - std::max(pspace, guesses) < guesses;
+}
+
 // The golden roots whose <S^2> is @p s2, in ascending order.
 std::vector<std::size_t> golden_of_spin(const fb::json &roots, double s2) {
   std::vector<std::size_t> out;
@@ -226,19 +268,25 @@ TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
 
     const auto diagonal = on_device(res, c.diagonal);
     const auto exchange = exchange_on_device(res, c);
-    for (const auto [olsen, canonical, averaged] : kSolverVariants) {
-      SCOPED_TRACE(std::format("olsen_correction {}, canonical_orthonormalization {}, "
-                               "spin_averaged_diagonal {}",
-                               olsen, canonical, averaged));
-      HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri, 0, exchange.data()};
-      fb::CiSolverOptions options;
-      options.olsen_correction = olsen;
-      options.davidson.canonical_orthonormalization = canonical;
-      options.spin_averaged_diagonal = averaged;
-      const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
-      ASSERT_TRUE(got.has_value()) << got.error().message;
-      EXPECT_EQ(sigma.applies, got->davidson.iterations);
-      expect_roots(res, c, *got, 0.0);
+    const fb::CiSigma packed = sigma_of(res, c);
+    for (const std::int32_t pspace : kPspaceSizes) {
+      for (const auto [olsen, canonical, averaged] : kSolverVariants) {
+        SCOPED_TRACE(std::format("pspace_size {}, olsen_correction {}, "
+                                 "canonical_orthonormalization {}, spin_averaged_diagonal {}",
+                                 pspace, olsen, canonical, averaged));
+        HostSigma sigma{c.alpha, c.beta, c.e_core,        c.h1,
+                        c.eri,   0,      exchange.data(), packed.contraction()};
+        fb::CiSolverOptions options;
+        options.olsen_correction = olsen;
+        options.davidson.canonical_orthonormalization = canonical;
+        options.spin_averaged_diagonal = averaged;
+        options.pspace_size = pspace;
+        const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+        ASSERT_TRUE(got.has_value()) << got.error().message;
+        EXPECT_EQ(sigma.applies, got->davidson.iterations);
+        EXPECT_EQ(got->davidson.iterations == 0, solved_exactly(c, pspace, 3, false));
+        expect_roots(res, c, *got, 0.0);
+      }
     }
   }
 }
@@ -254,19 +302,25 @@ TEST(CiSolver, LowestTripletsFromTheMsOneSector) {
     const Case c = make_case(entry, 1);
     SCOPED_TRACE(c.name);
     const auto exchange = exchange_on_device(res, c);
-    HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri, 0, exchange.data()};
+    const fb::CiSigma packed = sigma_of(res, c);
+    HostSigma sigma{c.alpha, c.beta, c.e_core,        c.h1,
+                    c.eri,   0,      exchange.data(), packed.contraction()};
     const auto diagonal = on_device(res, c.diagonal);
-    for (const auto [olsen, canonical, averaged] : kSolverVariants) {
-      SCOPED_TRACE(std::format("olsen_correction {}, canonical_orthonormalization {}, "
-                               "spin_averaged_diagonal {}",
-                               olsen, canonical, averaged));
-      fb::CiSolverOptions options;
-      options.olsen_correction = olsen;
-      options.davidson.canonical_orthonormalization = canonical;
-      options.spin_averaged_diagonal = averaged;
-      const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
-      ASSERT_TRUE(got.has_value()) << got.error().message;
-      expect_roots(res, c, *got, 2.0);
+    for (const std::int32_t pspace : kPspaceSizes) {
+      for (const auto [olsen, canonical, averaged] : kSolverVariants) {
+        SCOPED_TRACE(std::format("pspace_size {}, olsen_correction {}, "
+                                 "canonical_orthonormalization {}, spin_averaged_diagonal {}",
+                                 pspace, olsen, canonical, averaged));
+        fb::CiSolverOptions options;
+        options.olsen_correction = olsen;
+        options.davidson.canonical_orthonormalization = canonical;
+        options.spin_averaged_diagonal = averaged;
+        options.pspace_size = pspace;
+        const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+        ASSERT_TRUE(got.has_value()) << got.error().message;
+        EXPECT_EQ(got->davidson.iterations == 0, solved_exactly(c, pspace, 3, false));
+        expect_roots(res, c, *got, 2.0);
+      }
     }
   }
 }
@@ -278,28 +332,33 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
+  // 36 determinants in the full layout, so a P-space of 24 leaves a Davidson.
   const Case c = make_case(cases[0]);
   const auto exchange = exchange_on_device(res, c);
-  HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri, 0, exchange.data()};
+  const fb::CiSigma packed = sigma_of(res, c);
+  HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri, 0, exchange.data(), packed.contraction()};
   const auto diagonal = on_device(res, c.diagonal);
-  for (const auto [olsen, canonical, averaged] : kSolverVariants) {
-    SCOPED_TRACE(std::format("olsen_correction {}, canonical_orthonormalization {}, "
-                             "spin_averaged_diagonal {}",
-                             olsen, canonical, averaged));
-    fb::CiSolverOptions options;
-    options.spin_penalty = 0.0;
-    options.olsen_correction = olsen;
-    options.davidson.canonical_orthonormalization = canonical;
-    options.spin_averaged_diagonal = averaged;
-    const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
-    ASSERT_TRUE(got.has_value()) << got.error().message;
-    bool triplet = false;
-    for (std::size_t r = 0; r < 3; ++r) {
-      EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
-      EXPECT_NEAR(got->spin_squares[r], c.roots[r]["s2"].get<double>(), kSpinTol);
-      triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+  for (const std::int32_t pspace : kPspaceSizes) {
+    for (const auto [olsen, canonical, averaged] : kSolverVariants) {
+      SCOPED_TRACE(std::format("pspace_size {}, olsen_correction {}, "
+                               "canonical_orthonormalization {}, spin_averaged_diagonal {}",
+                               pspace, olsen, canonical, averaged));
+      fb::CiSolverOptions options;
+      options.spin_penalty = 0.0;
+      options.olsen_correction = olsen;
+      options.davidson.canonical_orthonormalization = canonical;
+      options.spin_averaged_diagonal = averaged;
+      options.pspace_size = pspace;
+      const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+      ASSERT_TRUE(got.has_value()) << got.error().message;
+      bool triplet = false;
+      for (std::size_t r = 0; r < 3; ++r) {
+        EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
+        EXPECT_NEAR(got->spin_squares[r], c.roots[r]["s2"].get<double>(), kSpinTol);
+        triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+      }
+      EXPECT_TRUE(triplet);
     }
-    EXPECT_TRUE(triplet);
   }
 }
 
@@ -325,6 +384,7 @@ struct RecordingSigma {
     return sigma.apply_fp32(res, k, x, y, layout);
   }
   [[nodiscard]] const double *exchange() const noexcept { return sigma.exchange(); }
+  [[nodiscard]] const double *contraction() const noexcept { return sigma.contraction(); }
 };
 
 // Over CiSigma, which has an apply_fp32, ci_solve runs its single-precision
@@ -332,7 +392,8 @@ struct RecordingSigma {
 // solve, which fp32_tolerance = 0 asks for. Singlets, in the symmetric layout
 // and, from the M_s = 1 sector, triplets, in the full one. The FP64 stage
 // starts from X's three columns, or with restart_with_previous from
-// [X, X_prev] orthonormalized, more than three.
+// [X, X_prev] orthonormalized, more than three. A P-space that covers the
+// space applies nothing.
 TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -351,40 +412,51 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
       const std::set<fb::CiLayout> layout{shift == 0 ? fb::CiLayout::symmetric
                                                      : fb::CiLayout::full};
 
-      for (const auto [olsen, canonical, averaged] : kSolverVariants) {
-        SCOPED_TRACE(std::format("olsen_correction {}, canonical_orthonormalization {}, "
-                                 "spin_averaged_diagonal {}",
-                                 olsen, canonical, averaged));
-        fb::CiSolverOptions options;
-        options.olsen_correction = olsen;
-        options.davidson.canonical_orthonormalization = canonical;
-        options.spin_averaged_diagonal = averaged;
-        for (const bool previous : {false, true}) {
-          SCOPED_TRACE(std::format("restart_with_previous {}", previous));
-          RecordingSigma recorded{*sigma, {}};
-          fb::CiSolverOptions restart = options;
-          restart.restart_with_previous = previous;
-          const auto two_stage =
-              fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, restart);
-          ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
-          EXPECT_GT(two_stage->fp32_iterations, 0);
-          if (previous) {
-            EXPECT_GT(recorded.first_fp64_columns, 3);
-          } else {
-            EXPECT_EQ(recorded.first_fp64_columns, 3);
+      for (const std::int32_t pspace : kPspaceSizes) {
+        const bool exact = solved_exactly(c, pspace, 3, shift == 0);
+        for (const auto [olsen, canonical, averaged] : kSolverVariants) {
+          SCOPED_TRACE(std::format("pspace_size {}, olsen_correction {}, "
+                                   "canonical_orthonormalization {}, spin_averaged_diagonal {}",
+                                   pspace, olsen, canonical, averaged));
+          fb::CiSolverOptions options;
+          options.olsen_correction = olsen;
+          options.davidson.canonical_orthonormalization = canonical;
+          options.spin_averaged_diagonal = averaged;
+          options.pspace_size = pspace;
+          for (const bool previous : {false, true}) {
+            SCOPED_TRACE(std::format("restart_with_previous {}", previous));
+            RecordingSigma recorded{*sigma, {}};
+            fb::CiSolverOptions restart = options;
+            restart.restart_with_previous = previous;
+            const auto two_stage =
+                fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, restart);
+            ASSERT_TRUE(two_stage.has_value()) << two_stage.error().message;
+            if (exact) {
+              EXPECT_EQ(two_stage->fp32_iterations, 0);
+              EXPECT_EQ(two_stage->davidson.iterations, 0);
+              EXPECT_TRUE(recorded.layouts.empty());
+            } else {
+              EXPECT_GT(two_stage->fp32_iterations, 0);
+              if (previous) {
+                EXPECT_GT(recorded.first_fp64_columns, 3);
+              } else {
+                EXPECT_EQ(recorded.first_fp64_columns, 3);
+              }
+              EXPECT_EQ(recorded.layouts, layout);
+            }
+            expect_roots(res, c, *two_stage, s2);
           }
-          EXPECT_EQ(recorded.layouts, layout);
-          expect_roots(res, c, *two_stage, s2);
-        }
 
-        RecordingSigma recorded{*sigma, {}};
-        fb::CiSolverOptions fp64 = options;
-        fp64.fp32_tolerance = 0.0;
-        const auto alone = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, fp64);
-        ASSERT_TRUE(alone.has_value()) << alone.error().message;
-        EXPECT_EQ(alone->fp32_iterations, 0);
-        EXPECT_EQ(recorded.layouts, layout);
-        expect_roots(res, c, *alone, s2);
+          RecordingSigma recorded{*sigma, {}};
+          fb::CiSolverOptions fp64 = options;
+          fp64.fp32_tolerance = 0.0;
+          const auto alone = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, fp64);
+          ASSERT_TRUE(alone.has_value()) << alone.error().message;
+          EXPECT_EQ(alone->fp32_iterations, 0);
+          EXPECT_EQ(alone->davidson.iterations == 0, exact);
+          EXPECT_EQ(recorded.layouts, exact ? std::set<fb::CiLayout>{} : layout);
+          expect_roots(res, c, *alone, s2);
+        }
       }
     }
   }
@@ -417,15 +489,22 @@ TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
       const std::set<fb::CiLayout> layout{shift == 0 ? fb::CiLayout::symmetric
                                                      : fb::CiLayout::full};
 
-      for (const auto [fp32_tolerance, averaged] :
-           std::array<std::pair<double, bool>, 3>{{{fb::CiSolverOptions{}.fp32_tolerance, false},
-                                                   {0.0, false},
-                                                   {fb::CiSolverOptions{}.fp32_tolerance, true}}}) {
-        SCOPED_TRACE(
-            std::format("fp32_tolerance {}, spin_averaged_diagonal {}", fp32_tolerance, averaged));
+      for (const auto [fp32_tolerance, averaged, pspace] :
+           std::array<std::tuple<double, bool, std::int32_t>, 6>{
+               {{fb::CiSolverOptions{}.fp32_tolerance, false, 0},
+                {0.0, false, 0},
+                {fb::CiSolverOptions{}.fp32_tolerance, true, 0},
+                {fb::CiSolverOptions{}.fp32_tolerance, false, 24},
+                {0.0, false, 24},
+                {fb::CiSolverOptions{}.fp32_tolerance, false,
+                 fb::CiSolverOptions{}.pspace_size}}}) {
+        SCOPED_TRACE(std::format("fp32_tolerance {}, spin_averaged_diagonal {}, pspace_size {}",
+                                 fp32_tolerance, averaged, pspace));
+        const bool exact = solved_exactly(c, pspace, 3, shift == 0);
         fb::CiSolverOptions options;
         options.fp32_tolerance = fp32_tolerance;
         options.spin_averaged_diagonal = averaged;
+        options.pspace_size = pspace;
         const auto cold = fb::ci_solve(res, *sigma, c.alpha, c.beta, diagonal.data(), 3, options);
         ASSERT_TRUE(cold.has_value()) << cold.error().message;
         const std::vector<double> cold_vectors =
@@ -445,19 +524,20 @@ TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
             res, recorded, c.alpha, c.beta, diagonal.data(), 3, options,
             std::span<const double>{cold->vectors.data(), cold->vectors.num_elements()});
         ASSERT_TRUE(warm.has_value()) << warm.error().message;
-        EXPECT_EQ(recorded.layouts, layout);
+        // A P-space over the whole space solves it exactly, start or not.
+        EXPECT_EQ(recorded.layouts, exact ? std::set<fb::CiLayout>{} : layout);
         EXPECT_LE(warm->davidson.iterations, 2);
         EXPECT_LE(warm->fp32_iterations, 2);
-        if (fp32_tolerance > 0.0) {
+        if (fp32_tolerance > 0.0 && !exact) {
           EXPECT_GT(warm->fp32_iterations, 0);
         } else {
           EXPECT_EQ(warm->fp32_iterations, 0);
         }
-        std::cout << std::format("[ warm     ] {} M_s {} fp32_tolerance {} spin_averaged {}: "
-                                 "cold {} + {}, warm {} + {} iterations\n",
-                                 c.name, shift, fp32_tolerance, averaged, cold->fp32_iterations,
-                                 cold->davidson.iterations, warm->fp32_iterations,
-                                 warm->davidson.iterations);
+        std::cout << std::format("[ warm     ] {} M_s {} fp32_tolerance {} spin_averaged {} "
+                                 "pspace {}: cold {} + {}, warm {} + {} iterations\n",
+                                 c.name, shift, fp32_tolerance, averaged, pspace,
+                                 cold->fp32_iterations, cold->davidson.iterations,
+                                 warm->fp32_iterations, warm->davidson.iterations);
         expect_roots(res, c, *warm, s2);
 
         const std::vector<double> warm_vectors =
@@ -499,26 +579,230 @@ TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   ASSERT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
   const auto diagonal = on_device(res, c.diagonal);
-  for (const auto [olsen, canonical, averaged] : kSolverVariants) {
-    SCOPED_TRACE(std::format("olsen_correction {}, canonical_orthonormalization {}, "
-                             "spin_averaged_diagonal {}",
-                             olsen, canonical, averaged));
-    RecordingSigma recorded{*sigma, {}};
-    fb::CiSolverOptions options;
-    options.spin_penalty = 0.0;
-    options.olsen_correction = olsen;
-    options.davidson.canonical_orthonormalization = canonical;
-    options.spin_averaged_diagonal = averaged;
-    const auto got = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
-    ASSERT_TRUE(got.has_value()) << got.error().message;
-    EXPECT_EQ(recorded.layouts, std::set<fb::CiLayout>{fb::CiLayout::full});
-    bool triplet = false;
-    for (std::size_t r = 0; r < 3; ++r) {
-      EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
-      triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+  for (const std::int32_t pspace : kPspaceSizes) {
+    const bool exact = solved_exactly(c, pspace, 3, false);
+    for (const auto [olsen, canonical, averaged] : kSolverVariants) {
+      SCOPED_TRACE(std::format("pspace_size {}, olsen_correction {}, "
+                               "canonical_orthonormalization {}, spin_averaged_diagonal {}",
+                               pspace, olsen, canonical, averaged));
+      RecordingSigma recorded{*sigma, {}};
+      fb::CiSolverOptions options;
+      options.spin_penalty = 0.0;
+      options.olsen_correction = olsen;
+      options.davidson.canonical_orthonormalization = canonical;
+      options.spin_averaged_diagonal = averaged;
+      options.pspace_size = pspace;
+      const auto got = fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options);
+      ASSERT_TRUE(got.has_value()) << got.error().message;
+      EXPECT_EQ(recorded.layouts,
+                exact ? std::set<fb::CiLayout>{} : std::set<fb::CiLayout>{fb::CiLayout::full});
+      bool triplet = false;
+      for (std::size_t r = 0; r < 3; ++r) {
+        EXPECT_NEAR(got->energies[r], c.roots[r]["energy"].get<double>(), kEnergyTol);
+        triplet = triplet || std::abs(got->spin_squares[r] - 2.0) < kSpinTol;
+      }
+      EXPECT_TRUE(triplet);
     }
-    EXPECT_TRUE(triplet);
   }
+}
+
+// H_PP against the dense penalized H, <φ_i| H + λ (S² − S(S+1)) |φ_j> with
+// H by host_sigma (ci_sigma_host.cpp checks it against Slater–Condon on
+// spin-orbital patterns) and S² by host_spin_square, to 1e-12: every element
+// of the layout, in reverse order so the picks are a permutation, over every
+// case in the singlet (full and symmetric layouts) and M_s = 1 sectors.
+TEST(CiSolver, PspaceHamiltonianMatchesDense) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr double lambda = 0.7;
+  const fb::json cases = load_cases();
+  ASSERT_FALSE(cases.empty());
+  for (const auto &entry : cases) {
+    for (const std::int32_t shift : {0, 1}) {
+      const Case c = make_case(entry, shift);
+      const fb::CiSigma sigma = sigma_of(res, c);
+      const auto diagonal = on_device(res, c.diagonal);
+      const double target = shift == 0 ? 0.0 : 2.0;
+      const std::size_t dim = c.diagonal.size();
+      const auto m = static_cast<std::size_t>(c.alpha.size());
+      for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
+        if (layout == fb::CiLayout::symmetric && shift != 0) {
+          continue;
+        }
+        SCOPED_TRACE(std::format("{}, M_s {}, {}", c.name, shift,
+                                 layout == fb::CiLayout::full ? "full" : "symmetric"));
+        // Each element's φ as a full vector.
+        std::vector<std::vector<double>> basis;
+        if (layout == fb::CiLayout::full) {
+          for (std::size_t e = 0; e < dim; ++e) {
+            basis.emplace_back(dim, 0.0)[e] = 1.0;
+          }
+        } else {
+          for (std::size_t a = 0; a < m; ++a) {
+            for (std::size_t b = 0; b <= a; ++b) {
+              std::vector<double> phi(dim, 0.0);
+              const double w = a == b ? 1.0 : std::numbers::sqrt2 / 2.0;
+              phi[a * m + b] = w;
+              phi[b * m + a] = w;
+              basis.push_back(std::move(phi));
+            }
+          }
+        }
+        const std::size_t length = basis.size();
+        std::vector<std::vector<double>> applied(length, std::vector<double>(dim));
+        std::vector<double> s2(dim);
+        for (std::size_t j = 0; j < length; ++j) {
+          ASSERT_TRUE(fb::host_sigma(c.alpha, c.beta, c.e_core, c.h1, c.eri, basis[j], applied[j])
+                          .has_value());
+          ASSERT_TRUE(fb::host_spin_square(c.alpha, c.beta, basis[j], s2).has_value());
+          for (std::size_t i = 0; i < dim; ++i) {
+            applied[j][i] += lambda * (s2[i] - target * basis[j][i]);
+          }
+        }
+
+        const auto p = static_cast<std::int32_t>(length);
+        std::vector<std::int32_t> picks(length);
+        for (std::size_t i = 0; i < length; ++i) {
+          picks[i] = static_cast<std::int32_t>(length - 1 - i);
+        }
+        fb::Buffers::device<std::int32_t> picks_device(length, res.device());
+        ASSERT_EQ(wwr::wwrMemcpyAsync(picks_device.data(), picks.data(),
+                                      length * sizeof(std::int32_t), wwr::wwrMemcpyHostToDevice,
+                                      res.stream()),
+                  wwr::wwrSuccess);
+        fb::Buffers::device<double> h(length * length, res.device());
+        ASSERT_TRUE(fb::ci_pspace_hamiltonian(res, c.alpha, c.beta, sigma.contraction(),
+                                              diagonal.data(), lambda, p, picks_device.data(),
+                                              h.data(), layout)
+                        .has_value());
+        const std::vector<double> got = on_host(res, h.data(), length * length);
+        double worst = 0.0;
+        for (std::size_t j = 0; j < length; ++j) {
+          for (std::size_t i = 0; i < length; ++i) {
+            const auto bra = static_cast<std::size_t>(picks[i]);
+            const auto ket = static_cast<std::size_t>(picks[j]);
+            double want = 0.0;
+            for (std::size_t k = 0; k < dim; ++k) {
+              want += basis[bra][k] * applied[ket][k];
+            }
+            worst = std::max(worst, std::abs(got[i + j * length] - want));
+          }
+        }
+        EXPECT_LE(worst, 1e-12);
+      }
+    }
+  }
+  // Without a contraction, refused.
+  const Case c = make_case(cases[0]);
+  const auto diagonal = on_device(res, c.diagonal);
+  fb::Buffers::device<std::int32_t> picks(1, res.device());
+  fb::Buffers::device<double> h(1, res.device());
+  EXPECT_FALSE(fb::ci_pspace_hamiltonian(res, c.alpha, c.beta, nullptr, diagonal.data(), 1.0, 1,
+                                         picks.data(), h.data())
+                   .has_value());
+}
+
+// A P-space that covers the space the Davidson would run in is the whole
+// operator: the roots are H_PP's eigenpairs, with no iteration of either
+// stage, to 1e-10 of direct_spin1's energies (and the golden tolerances
+// otherwise). Over CiSigma, singlets (symmetric layout) and M_s = 1 triplets,
+// and over the host sigma in the full layout.
+TEST(CiSolver, PspaceCoveringTheSpaceIsExact) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::json cases = load_cases();
+  ASSERT_FALSE(cases.empty());
+  for (const auto &entry : cases) {
+    for (const std::int32_t shift : {0, 1}) {
+      const Case c = make_case(entry, shift);
+      SCOPED_TRACE(std::format("{}, M_s {}", c.name, shift));
+      fb::CiSigma sigma = sigma_of(res, c);
+      const auto diagonal = on_device(res, c.diagonal);
+      const auto exchange = exchange_on_device(res, c);
+      const double s2 = shift == 0 ? 0.0 : 2.0;
+      const std::vector<std::size_t> golden = golden_of_spin(c.roots, s2);
+      fb::CiSolverOptions options;
+      options.pspace_size = static_cast<std::int32_t>(c.diagonal.size());
+      const auto check = [&](const fb::Result<fb::CiRoots> &got) {
+        ASSERT_TRUE(got.has_value()) << got.error().message;
+        EXPECT_EQ(got->davidson.iterations, 0);
+        EXPECT_EQ(got->fp32_iterations, 0);
+        for (std::size_t r = 0; r < 3; ++r) {
+          EXPECT_NEAR(got->energies[r], c.roots[golden[r]]["energy"].get<double>(), 1e-10)
+              << "root " << r;
+        }
+        expect_roots(res, c, *got, s2);
+      };
+      RecordingSigma recorded{sigma, {}};
+      check(fb::ci_solve(res, recorded, c.alpha, c.beta, diagonal.data(), 3, options));
+      EXPECT_TRUE(recorded.layouts.empty());
+      HostSigma host{c.alpha, c.beta, c.e_core,        c.h1,
+                     c.eri,   0,      exchange.data(), sigma.contraction()};
+      check(fb::ci_solve(res, host, c.alpha, c.beta, diagonal.data(), 3, options));
+      EXPECT_EQ(host.applies, 0);
+    }
+  }
+}
+
+// The largest P that still leaves a Davidson, the space less the six
+// guesses' worth of elements, converges, FP64-only and in two stages, in
+// fewer FP64 iterations than the diagonal alone; one element more is the
+// exact solve. Singlets and M_s = 1 triplets of the 400-determinant cases.
+TEST(CiSolver, PspaceJustBelowTheSpaceConverges) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::json cases = load_cases();
+  ASSERT_FALSE(cases.empty());
+  for (const std::size_t index : {std::size_t{1}, std::size_t{2}}) {
+    for (const std::int32_t shift : {0, 1}) {
+      const Case c = make_case(cases[index], shift);
+      fb::CiSigma sigma = sigma_of(res, c);
+      const auto diagonal = on_device(res, c.diagonal);
+      const std::int32_t length = solve_length(c, shift == 0);
+      for (const double fp32_tolerance : {0.0, fb::CiSolverOptions{}.fp32_tolerance}) {
+        SCOPED_TRACE(std::format("{}, M_s {}, length {}, fp32_tolerance {}", c.name, shift, length,
+                                 fp32_tolerance));
+        fb::CiSolverOptions options;
+        options.fp32_tolerance = fp32_tolerance;
+        const auto diagonal_only =
+            fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+        ASSERT_TRUE(diagonal_only.has_value()) << diagonal_only.error().message;
+        options.pspace_size = length - 6;
+        const auto below = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+        ASSERT_TRUE(below.has_value()) << below.error().message;
+        std::cout << std::format("[ pspace   ] {} M_s {} fp32_tolerance {}: P 0 {} + {}, P {} of "
+                                 "{} {} + {} iterations\n",
+                                 c.name, shift, fp32_tolerance, diagonal_only->fp32_iterations,
+                                 diagonal_only->davidson.iterations, length - 6, length,
+                                 below->fp32_iterations, below->davidson.iterations);
+        EXPECT_GE(below->davidson.iterations, 1);
+        EXPECT_LT(below->davidson.iterations, diagonal_only->davidson.iterations);
+        expect_roots(res, c, *below, shift == 0 ? 0.0 : 2.0);
+        options.pspace_size = length - 5;
+        const auto exact = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+        ASSERT_TRUE(exact.has_value()) << exact.error().message;
+        EXPECT_EQ(exact->davidson.iterations, 0);
+        EXPECT_EQ(exact->fp32_iterations, 0);
+        expect_roots(res, c, *exact, shift == 0 ? 0.0 : 2.0);
+      }
+    }
+  }
+}
+
+// A sigma without a contraction() runs at the default pspace_size with no
+// P-space, as it did before there was one.
+TEST(CiSolver, PspaceDefaultRunsWithoutAContraction) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::json cases = load_cases();
+  ASSERT_FALSE(cases.empty());
+  const Case c = make_case(cases[2]);
+  HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
+  const auto diagonal = on_device(res, c.diagonal);
+  const auto got = fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3);
+  ASSERT_TRUE(got.has_value()) << got.error().message;
+  EXPECT_GT(got->davidson.iterations, 0);
+  expect_roots(res, c, *got, 0.0);
 }
 
 TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {
@@ -570,6 +854,13 @@ TEST(CiSolver, RejectsBadShapes) {
   fb::CiSolverOptions averaged;
   averaged.spin_averaged_diagonal = true;
   EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 1, averaged)), invalid);
+  // A P-space wants the sigma's contraction(): this one's is null. At the
+  // default size it runs without one; any other is refused, as is a negative.
+  fb::CiSolverOptions pspace;
+  pspace.pspace_size = fb::CiSolverOptions{}.pspace_size + 7;
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 1, pspace)), invalid);
+  pspace.pspace_size = -1;
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 1, pspace)), invalid);
   // A start is n_roots vectors, and independent ones.
   const fb::Buffers::device<double> zeros =
       on_device(res, std::vector<double>(3 * c.diagonal.size(), 0.0));

@@ -1,7 +1,8 @@
-// The device half of ci_solve's per-iteration work: S² on a block of CI
-// vectors, which the spin penalty adds into sigma's output, and the diagonal
-// preconditioner with Olsen's correction. One source for both backends --
-// nvcc under CUDA, clang -x hip under HIP.
+// The device half of ci_solve: S² on a block of CI vectors, which the spin
+// penalty adds into sigma's output, the diagonal preconditioner with Olsen's
+// correction, the select of the lowest diagonals, and the P-space's
+// Hamiltonian by Slater–Condon. One source for both backends -- nvcc under
+// CUDA, clang -x hip under HIP.
 //
 // S² is a gather, one thread per row: (Σ_pq E^β_pq E^α_qp x)_J walks J's α
 // links a†_p a_q and, for each, the β partner a†_q a_p of J's β string, read
@@ -113,7 +114,8 @@ __global__ void ci_precondition_kernel(const int32_t n, const double theta,
 }
 
 // Olsen's correction, M⁻¹ (r − ε x) with ε = dots[1] / dots[0] read on the
-// device. A zero x^T M⁻¹ x leaves ε at 0: the plain correction M⁻¹ r.
+// device. A zero x^T M⁻¹ x leaves ε at 0: the plain correction M⁻¹ r. With
+// shifted null, r − ε x alone.
 __global__ void ci_olsen_kernel(const int32_t n, const double theta, const double *const shifted,
                                 const double *const x, const double *const residual,
                                 const double *const dots, double *const correction) {
@@ -122,7 +124,8 @@ __global__ void ci_olsen_kernel(const int32_t n, const double theta, const doubl
     return;
   }
   const double epsilon = dots[0] == 0.0 ? 0.0 : dots[1] / dots[0];
-  correction[i] = (residual[i] - (epsilon * x[i])) / ci_denominator(theta, shifted[i]);
+  const double numerator = residual[i] - (epsilon * x[i]);
+  correction[i] = shifted == nullptr ? numerator : numerator / ci_denominator(theta, shifted[i]);
 }
 
 // With @p exchange, diagonal_J is first spin-averaged: over the open shells
@@ -202,80 +205,129 @@ __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_bet
       diagonal[full] + average + (scale * (constant - static_cast<double>(doubles) - shift));
 }
 
-// One (value, address) candidate of ci_lowest; address −1 is none.
-struct CiPick {
-  double value;
-  int32_t address;
+// ci_lowest's state, in its scratch: the histogram of the current byte, the
+// (value key, address) prefix chosen so far, the rank still to find under it,
+// and the survivors' counter.
+struct CiLowestState {
+  uint64_t key;
+  uint32_t address;
+  uint32_t remaining;
+  uint32_t found;
+  uint32_t histogram[256];
 };
+static_assert(sizeof(CiLowestState) <= sizeof(uint64_t) * kCiLowestScratch);
 
-// Whether a is below b in (value, address) order, none above everything.
-__device__ bool ci_below(const CiPick a, const CiPick b) {
-  if (a.address < 0) {
-    return false;
-  }
-  if (b.address < 0) {
+// The blocks of ci_lowest's histogram passes, at most.
+constexpr uint32_t kCiLowestBlocks = 1024;
+
+// The select's passes: eight bytes of the value's key, then four of the
+// address.
+constexpr int32_t kCiKeyBytes = 8;
+constexpr int32_t kCiLowestPasses = 12;
+
+// A double's bits as an unsigned key in the double's order, −0 as +0.
+__device__ uint64_t ci_order_key(const double value) {
+  const auto bits = static_cast<uint64_t>(__double_as_longlong(value == 0.0 ? 0.0 : value));
+  return (bits >> 63U) != 0 ? ~bits : bits | (uint64_t{1} << 63U);
+}
+
+// Whether (key, address) matches the prefix above byte @p pass, and if so its
+// byte there.
+__device__ bool ci_lowest_digit(const CiLowestState &state, const int32_t pass, const uint64_t key,
+                                const uint32_t address, uint32_t &digit) {
+  if (pass < kCiKeyBytes) {
+    const auto above = static_cast<uint32_t>(64 - (8 * pass));
+    if (pass > 0 && (key >> above) != (state.key >> above)) {
+      return false;
+    }
+    digit = static_cast<uint32_t>(key >> (above - 8U)) & 0xFFU;
     return true;
   }
-  return a.value < b.value || (a.value == b.value && a.address < b.address);
-}
-
-// The least of a block's candidates, into thread 0's: a tree in shared memory.
-__device__ CiPick ci_block_least(CiPick mine) {
-  __shared__ double values[kFourWarps];
-  __shared__ int32_t addresses[kFourWarps];
-  values[threadIdx.x] = mine.value;
-  addresses[threadIdx.x] = mine.address;
-  __syncthreads();
-  for (uint32_t half = kFourWarps / 2; half > 0; half /= 2) {
-    if (threadIdx.x < half) {
-      const CiPick other{values[threadIdx.x + half], addresses[threadIdx.x + half]};
-      if (ci_below(other, CiPick{values[threadIdx.x], addresses[threadIdx.x]})) {
-        values[threadIdx.x] = other.value;
-        addresses[threadIdx.x] = other.address;
-      }
-    }
-    __syncthreads();
+  const auto above = static_cast<uint32_t>(32 - (8 * (pass - kCiKeyBytes)));
+  if (key != state.key || (pass > kCiKeyBytes && (address >> above) != (state.address >> above))) {
+    return false;
   }
-  return CiPick{values[0], addresses[0]};
+  digit = (address >> (above - 8U)) & 0xFFU;
+  return true;
 }
 
-// Pass one of pick j: each block's least candidate above pick j − 1 (none for
-// j = 0, @p previous null).
-__global__ void ci_lowest_partial_kernel(const int32_t n, const double *const values,
-                                         const int32_t *const previous,
-                                         double *const partial_values,
-                                         int32_t *const partial_index) {
-  const CiPick floor = previous == nullptr ? CiPick{0.0, -1} : CiPick{values[*previous], *previous};
-  CiPick best{0.0, -1};
+// One pass's histogram: each block counts its stride in shared memory, then
+// adds its bins into the state's.
+__global__ void ci_lowest_histogram_kernel(const int32_t n, const double *const values,
+                                           const int32_t pass, CiLowestState *const state) {
+  __shared__ uint32_t bins[256];
+  for (uint32_t b = threadIdx.x; b < 256; b += blockDim.x) {
+    bins[b] = 0;
+  }
+  __syncthreads();
   for (int64_t i = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x; i < n;
        i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
-    const CiPick candidate{values[i], static_cast<int32_t>(i)};
-    if ((floor.address < 0 || ci_below(floor, candidate)) && ci_below(candidate, best)) {
-      best = candidate;
+    uint32_t digit = 0;
+    if (ci_lowest_digit(*state, pass, ci_order_key(values[i]), static_cast<uint32_t>(i), digit)) {
+      atomicAdd(&bins[digit], 1U);
     }
   }
-  const CiPick least = ci_block_least(best);
-  if (threadIdx.x == 0) {
-    partial_values[blockIdx.x] = least.value;
-    partial_index[blockIdx.x] = least.address;
+  __syncthreads();
+  for (uint32_t b = threadIdx.x; b < 256; b += blockDim.x) {
+    if (bins[b] != 0) {
+      atomicAdd(&state->histogram[b], bins[b]);
+    }
   }
 }
 
-// Pass two: one block, the least of the partials, into pick j.
-__global__ void ci_lowest_final_kernel(const int32_t partials, const double *const partial_values,
-                                       const int32_t *const partial_index, int32_t *const pick) {
-  CiPick best{0.0, -1};
-  for (int32_t i = static_cast<int32_t>(threadIdx.x); i < partials;
-       i += static_cast<int32_t>(blockDim.x)) {
-    const CiPick candidate{partial_values[i], partial_index[i]};
-    if (ci_below(candidate, best)) {
-      best = candidate;
+// One block: the byte under which the remaining rank lies, into the prefix;
+// then the histogram cleared for the next pass.
+__global__ void ci_lowest_choose_kernel(const int32_t pass, const int32_t count,
+                                        CiLowestState *const state) {
+  if (threadIdx.x == 0) {
+    uint32_t remaining = pass == 0 ? static_cast<uint32_t>(count) : state->remaining;
+    uint32_t digit = 0;
+    for (; digit < 255 && remaining > state->histogram[digit]; ++digit) {
+      remaining -= state->histogram[digit];
+    }
+    if (pass < kCiKeyBytes) {
+      state->key |= uint64_t{digit} << static_cast<uint32_t>(56 - (8 * pass));
+    } else {
+      state->address |= digit << static_cast<uint32_t>(24 - (8 * (pass - kCiKeyBytes)));
+    }
+    state->remaining = remaining;
+  }
+  __syncthreads();
+  for (uint32_t b = threadIdx.x; b < 256; b += blockDim.x) {
+    state->histogram[b] = 0;
+  }
+}
+
+// Every element at or below the threshold (key, address) into survivors.
+__global__ void ci_lowest_compact_kernel(const int32_t n, const double *const values,
+                                         CiLowestState *const state, int32_t *const survivors) {
+  const uint64_t key = state->key;
+  const uint32_t address = state->address;
+  for (int64_t i = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x; i < n;
+       i += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+    const uint64_t mine = ci_order_key(values[i]);
+    if (mine < key || (mine == key && static_cast<uint32_t>(i) <= address)) {
+      survivors[atomicAdd(&state->found, 1U)] = static_cast<int32_t>(i);
     }
   }
-  const CiPick least = ci_block_least(best);
-  if (threadIdx.x == 0) {
-    *pick = least.address;
+}
+
+// Each survivor to its rank among them in (key, address) order.
+__global__ void ci_lowest_rank_kernel(const int32_t count, const double *const values,
+                                      const int32_t *const survivors, int32_t *const picks) {
+  const int64_t s = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (s >= count) {
+    return;
   }
+  const int32_t address = survivors[s];
+  const uint64_t key = ci_order_key(values[address]);
+  int32_t rank = 0;
+  for (int32_t t = 0; t < count; ++t) {
+    const int32_t other = survivors[t];
+    const uint64_t other_key = ci_order_key(values[other]);
+    rank += static_cast<int32_t>(other_key < key || (other_key == key && other < address));
+  }
+  picks[rank] = address;
 }
 
 __global__ void ci_guess_kernel(const int32_t n, const int32_t count, const int32_t *const picks,
@@ -290,10 +342,200 @@ __global__ void ci_guess_kernel(const int32_t n, const int32_t count, const int3
   z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
   z ^= z >> 31U;
   double x = 1e-3 * ((static_cast<double>(z >> 11U) * 0x1.0p-52) - 1.0); // [-1e-3, 1e-3)
-  if (at % n == picks[at / n]) {
+  if (picks != nullptr && at % n == picks[at / n]) {
     x += 1.0;
   }
   guess[at] = x;
+}
+
+__global__ void ci_gather_kernel(const int32_t n, const int32_t count, const int32_t p,
+                                 const int32_t *const picks, const double *const from,
+                                 double *const to) {
+  const int64_t at = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (at >= static_cast<int64_t>(p) * count) {
+    return;
+  }
+  const int64_t column = at / p;
+  to[at] = from[(column * n) + picks[at % p]];
+}
+
+__global__ void ci_scatter_kernel(const int32_t n, const int32_t count, const int32_t p,
+                                  const int32_t *const picks, const double *const from,
+                                  double *const to) {
+  const int64_t at = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (at >= static_cast<int64_t>(p) * count) {
+    return;
+  }
+  const int64_t column = at / p;
+  to[(column * n) + picks[at % p]] = from[at];
+}
+
+// The occupied orbitals a_k or a†_k passes on the bit pattern @p string,
+// those below k, before it flips bit k there.
+__device__ int32_t ci_flip(uint64_t &string, const int32_t k) {
+  const uint64_t bit = uint64_t{1} << static_cast<uint32_t>(k);
+  const int32_t passed = __popcll(string & (bit - 1U));
+  string ^= bit;
+  return passed;
+}
+
+// ±1 for an even or odd count of orbitals passed.
+__device__ double ci_parity(const int32_t passed) {
+  return (passed & 1) == 0 ? 1.0 : -1.0;
+}
+
+// The sign of a†_p a_q on @p string, q occupied and p not: a_q, then a†_p.
+__device__ double ci_replacement_sign(uint64_t string, const int32_t p, const int32_t q) {
+  const int32_t passed = ci_flip(string, q);
+  return ci_parity(passed + ci_flip(string, p));
+}
+
+// The lowest and highest set bits of a nonzero pattern, through popcounts
+// alone: the bits below the lowest one, and those at or below the highest
+// once it is smeared down.
+__device__ int32_t ci_lowest_bit(const uint64_t bits) {
+  return __popcll((bits & (~bits + 1U)) - 1U);
+}
+__device__ int32_t ci_highest_bit(uint64_t bits) {
+  for (uint32_t shift = 1; shift < 64; shift *= 2) {
+    bits |= bits >> shift;
+  }
+  return __popcll(bits) - 1;
+}
+
+// (tu|vw) from CiSigma's contraction: twice its ½ (tu|vw).
+__device__ double ci_eri(const double *const contraction, const int32_t pairs, const int32_t t,
+                         const int32_t u, const int32_t v, const int32_t w) {
+  return 2.0 * contraction[(static_cast<size_t>(ci_triangle(t, u)) * pairs) + ci_triangle(v, w)];
+}
+
+// h_pq from CiSigma's contraction: k_pq + ½ Σ_u (pu|uq).
+__device__ double ci_one_electron(const double *const contraction, const int32_t pairs,
+                                  const int32_t n, const int32_t p, const int32_t q) {
+  double h = contraction[(static_cast<size_t>(pairs) * pairs) + ci_triangle(p, q)];
+  for (int32_t u = 0; u < n; ++u) {
+    h += contraction[(static_cast<size_t>(ci_triangle(p, u)) * pairs) + ci_triangle(u, q)];
+  }
+  return h;
+}
+
+// <I| H + λ (S² − target) |J> for the determinants I = (ia, ib) and
+// J = (ja, jb), by Slater–Condon's rules on the strings, each spin's
+// replacement carrying its own string's sign (a β operator passes every α
+// creator an even number of times). The orbitals occupied in J of the
+// replaced spin and the other one sum separately.
+__device__ double ci_determinant_element(const int32_t ia, const int32_t ib, const int32_t ja,
+                                         const int32_t jb, const int32_t n_beta, const int32_t n,
+                                         const uint64_t *const alpha_strings,
+                                         const uint64_t *const beta_strings,
+                                         const double *const contraction,
+                                         const double *const diagonal, const double penalty,
+                                         const double spin_shift) {
+  const uint64_t bra_a = alpha_strings[ia];
+  const uint64_t bra_b = beta_strings[ib];
+  const uint64_t ket_a = alpha_strings[ja];
+  const uint64_t ket_b = beta_strings[jb];
+  if (ia == ja && ib == jb) {
+    const size_t full =
+        (static_cast<size_t>(ia) * static_cast<size_t>(n_beta)) + static_cast<size_t>(ib);
+    return diagonal[full] + (penalty * (spin_shift - __popcll(ket_a & ket_b)));
+  }
+  const uint64_t particles_a = bra_a & ~ket_a;
+  const uint64_t holes_a = ket_a & ~bra_a;
+  const uint64_t particles_b = bra_b & ~ket_b;
+  const uint64_t holes_b = ket_b & ~bra_b;
+  const int32_t excited_a = __popcll(particles_a);
+  const int32_t excited_b = __popcll(particles_b);
+  if (excited_a + excited_b > 2) {
+    return 0.0;
+  }
+  const int32_t pairs = n * (n + 1) / 2;
+  if (excited_a + excited_b == 1) {
+    // a†_p a_q on one spin's string: h_pq + Σ_j∈J [(pq|jj) − δ_σ (pj|jq)].
+    const bool alpha = excited_a == 1;
+    const uint64_t same = alpha ? ket_a : ket_b;
+    const uint64_t other = alpha ? ket_b : ket_a;
+    const int32_t p = ci_lowest_bit(alpha ? particles_a : particles_b);
+    const int32_t q = ci_lowest_bit(alpha ? holes_a : holes_b);
+    double sum = ci_one_electron(contraction, pairs, n, p, q);
+    for (int32_t j = 0; j < n; ++j) {
+      if (((same >> j) & 1U) != 0 && j != q) {
+        sum += ci_eri(contraction, pairs, p, q, j, j) - ci_eri(contraction, pairs, p, j, j, q);
+      }
+      if (((other >> j) & 1U) != 0) {
+        sum += ci_eri(contraction, pairs, p, q, j, j);
+      }
+    }
+    return ci_replacement_sign(same, p, q) * sum;
+  }
+  if (excited_a == 1) {
+    // a†_pα a_qα a†_rβ a_sβ: (pq|rs), and S²'s −λ where it is the swap r = q,
+    // s = p.
+    const int32_t p = ci_lowest_bit(particles_a);
+    const int32_t q = ci_lowest_bit(holes_a);
+    const int32_t r = ci_lowest_bit(particles_b);
+    const int32_t s = ci_lowest_bit(holes_b);
+    const double sign = ci_replacement_sign(ket_a, p, q) * ci_replacement_sign(ket_b, r, s);
+    const double spin = r == q && s == p ? penalty : 0.0;
+    return sign * (ci_eri(contraction, pairs, p, q, r, s) - spin);
+  }
+  // Two of one spin, particles a < b and holes i < j: I = a†_a a†_b a_j a_i J,
+  // its sign that of a_i, a_j, a†_b and a†_a in turn; <ab||ij>.
+  const bool alpha = excited_a == 2;
+  const uint64_t particles = alpha ? particles_a : particles_b;
+  const uint64_t holes = alpha ? holes_a : holes_b;
+  const int32_t a = ci_lowest_bit(particles);
+  const int32_t b = ci_highest_bit(particles);
+  const int32_t i = ci_lowest_bit(holes);
+  const int32_t j = ci_highest_bit(holes);
+  uint64_t string = alpha ? ket_a : ket_b;
+  int32_t passed = ci_flip(string, i);
+  passed += ci_flip(string, j);
+  passed += ci_flip(string, b);
+  passed += ci_flip(string, a);
+  return ci_parity(passed) *
+         (ci_eri(contraction, pairs, a, i, b, j) - ci_eri(contraction, pairs, a, j, b, i));
+}
+
+template <bool Symmetric>
+__global__ void ci_pspace_kernel(const int32_t p, const int32_t *const picks, const int32_t n_beta,
+                                 const int32_t n, const uint64_t *const alpha_strings,
+                                 const uint64_t *const beta_strings,
+                                 const double *const contraction, const double *const diagonal,
+                                 const double penalty, const double spin_shift, double *const h) {
+  const int64_t at = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (at >= static_cast<int64_t>(p) * p) {
+    return;
+  }
+  const auto row = static_cast<int32_t>(at % p);
+  const auto column = static_cast<int32_t>(at / p);
+  int32_t ia = 0;
+  int32_t ib = 0;
+  int32_t ja = 0;
+  int32_t jb = 0;
+  ci_strings<Symmetric>(picks[row], n_beta, ia, ib);
+  ci_strings<Symmetric>(picks[column], n_beta, ja, jb);
+  const auto element = [&](const int32_t a, const int32_t b, const int32_t c, const int32_t d) {
+    return ci_determinant_element(a, b, c, d, n_beta, n, alpha_strings, beta_strings, contraction,
+                                  diagonal, penalty, spin_shift);
+  };
+  if constexpr (Symmetric) {
+    // φ = (|ab> + |ba>) / √2 off the triangle's diagonal, |aa> on it.
+    double sum = element(ia, ib, ja, jb);
+    if (ja != jb) {
+      sum += element(ia, ib, jb, ja);
+    }
+    if (ia != ib) {
+      sum += element(ib, ia, ja, jb);
+      if (ja != jb) {
+        sum += element(ib, ia, jb, ja);
+      }
+    }
+    const double weight = (ia == ib ? 1.0 : kCiInvSqrt2) * (ja == jb ? 1.0 : kCiInvSqrt2);
+    h[at] = weight * sum;
+  } else {
+    h[at] = element(ia, ib, ja, jb);
+  }
 }
 
 uint32_t ci_blocks(const int64_t items) {
@@ -368,17 +610,21 @@ wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const bool symme
 }
 
 wwr::wwrError_t ci_lowest(const wwr::wwrStream_t stream, const int32_t n,
-                          const double *const values, const int32_t count,
-                          double *const partial_values, int32_t *const partial_index,
-                          int32_t *const picks) {
-  const auto blocks = static_cast<uint32_t>(
-      ci_blocks(n) < static_cast<uint32_t>(kCiLowestBlocks) ? ci_blocks(n) : kCiLowestBlocks);
-  for (int32_t j = 0; j < count; ++j) {
-    ci_lowest_partial_kernel<<<blocks, kFourWarps, 0, stream>>>(
-        n, values, j == 0 ? nullptr : picks + (j - 1), partial_values, partial_index);
-    ci_lowest_final_kernel<<<1, kFourWarps, 0, stream>>>(static_cast<int32_t>(blocks),
-                                                         partial_values, partial_index, picks + j);
+                          const double *const values, const int32_t count, uint64_t *const scratch,
+                          int32_t *const survivors, int32_t *const picks) {
+  auto *const state = reinterpret_cast<CiLowestState *>(scratch);
+  if (const wwr::wwrError_t status = wwr::wwrMemsetAsync(state, 0, sizeof(CiLowestState), stream);
+      status != wwr::wwrSuccess) {
+    return status;
   }
+  const uint32_t blocks = ci_blocks(n) < kCiLowestBlocks ? ci_blocks(n) : kCiLowestBlocks;
+  for (int32_t pass = 0; pass < kCiLowestPasses; ++pass) {
+    ci_lowest_histogram_kernel<<<blocks, kFourWarps, 0, stream>>>(n, values, pass, state);
+    ci_lowest_choose_kernel<<<1, kFourWarps, 0, stream>>>(pass, count, state);
+  }
+  ci_lowest_compact_kernel<<<blocks, kFourWarps, 0, stream>>>(n, values, state, survivors);
+  ci_lowest_rank_kernel<<<ci_blocks(count), kFourWarps, 0, stream>>>(count, values, survivors,
+                                                                     picks);
   return wwr::wwrGetLastError();
 }
 
@@ -389,6 +635,49 @@ wwr::wwrError_t ci_guess(const wwr::wwrStream_t stream, const int32_t n, const i
     return wwr::wwrSuccess;
   }
   ci_guess_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n, count, picks, guess);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t ci_gather(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
+                          const int32_t p, const int32_t *const picks, const double *const from,
+                          double *const to) {
+  const int64_t elements = static_cast<int64_t>(p) * count;
+  if (elements == 0) {
+    return wwr::wwrSuccess;
+  }
+  ci_gather_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n, count, p, picks, from, to);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t ci_scatter(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
+                           const int32_t p, const int32_t *const picks, const double *const from,
+                           double *const to) {
+  const int64_t elements = static_cast<int64_t>(p) * count;
+  if (elements == 0) {
+    return wwr::wwrSuccess;
+  }
+  ci_scatter_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n, count, p, picks, from, to);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t ci_pspace(const wwr::wwrStream_t stream, const bool symmetric, const int32_t p,
+                          const int32_t *const picks, const int32_t n_beta, const int32_t n,
+                          const uint64_t *const alpha_strings, const uint64_t *const beta_strings,
+                          const double *const contraction, const double *const diagonal,
+                          const double penalty, const double spin_shift, double *const h) {
+  const int64_t elements = static_cast<int64_t>(p) * p;
+  if (elements == 0) {
+    return wwr::wwrSuccess;
+  }
+  if (symmetric) {
+    ci_pspace_kernel<true><<<ci_blocks(elements), kFourWarps, 0, stream>>>(
+        p, picks, n_beta, n, alpha_strings, beta_strings, contraction, diagonal, penalty,
+        spin_shift, h);
+  } else {
+    ci_pspace_kernel<false><<<ci_blocks(elements), kFourWarps, 0, stream>>>(
+        p, picks, n_beta, n, alpha_strings, beta_strings, contraction, diagonal, penalty,
+        spin_shift, h);
+  }
   return wwr::wwrGetLastError();
 }
 

@@ -7,13 +7,17 @@
 // full one, as it was before that layout, FP64-only and at 1e-6. Every solve
 // runs twice, with spin_averaged_diagonal off and on. A shift moves that many
 // electrons from β to α: 1 solves the M_s = 1 triplets, in the full layout
-// (the held-to-full solves are then skipped as the same).
+// (the held-to-full solves are then skipped as the same). pspace_size and
+// olsen set those options for every solve (0, the P-space off, is the solve
+// before it).
 //
 //   free_breakfast_ci_sigma_precision CASES.json [n_roots = 3] [max_iterations = 100]
 //                                     [device = 0] [shift = 0]
+//                                     [pspace_size = ci_solve's default] [olsen = 0]
 //
 // Each solve's energies are compared with the FP64-only solve's, the worst
-// root's difference printed, so a speedup that cost accuracy shows as one.
+// root's difference printed, so a speedup that cost accuracy shows as one;
+// and printed to 15 decimals, for a comparison across runs.
 
 import std;
 import free_breakfast.core;
@@ -60,6 +64,7 @@ struct FullLayout {
     return sigma.apply_fp32(res, k, x, y);
   }
   [[nodiscard]] const double *exchange() const noexcept { return sigma.exchange(); }
+  [[nodiscard]] const double *contraction() const noexcept { return sigma.contraction(); }
 };
 
 // The MiB of device workspace one column of @p apply grows a fresh
@@ -102,7 +107,9 @@ double fp32_error(fb::DeviceResources &res, fb::CiSigma &sigma, double e_core, c
 
 int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   if (argc < 2) {
-    std::println(std::cerr, "usage: {} CASES.json [n_roots] [max_iterations] [device] [shift]",
+    std::println(std::cerr,
+                 "usage: {} CASES.json [n_roots] [max_iterations] [device] [shift] "
+                 "[pspace_size] [olsen]",
                  argv[0]);
     return 2;
   }
@@ -110,6 +117,10 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   const std::int32_t max_iterations = argc > 3 ? std::stoi(argv[3]) : 100;
   const std::int32_t device = argc > 4 ? std::stoi(argv[4]) : 0;
   const std::int32_t shift = argc > 5 ? std::stoi(argv[5]) : 0;
+  const std::int32_t pspace_size =
+      argc > 6 ? std::stoi(argv[6]) : fb::CiSolverOptions{}.pspace_size;
+  const bool olsen = argc > 7 && std::stoi(argv[7]) != 0;
+  std::println("pspace_size {}, olsen_correction {}", pspace_size, olsen);
   const auto doc = fb::read_json(argv[1]);
   if (!doc) {
     std::println(std::cerr, "{}", doc.error().message);
@@ -166,6 +177,8 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
       options.fp32_tolerance = tolerance;
       options.davidson.max_iterations = max_iterations;
       options.spin_averaged_diagonal = averaged;
+      options.pspace_size = pspace_size;
+      options.olsen_correction = olsen;
       const auto start = Clock::now();
       const auto roots = fb::ci_solve(res, op, *alpha, *beta, diagonal.data(), n_roots, options);
       const double wall = seconds_since(start);
@@ -198,6 +211,7 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
                    "+ FP64 {:3}  E0 {:.10f}  max |dE| vs the first solve {:.1e}, vs off {:.1e}",
                    label, tolerance, averaged ? "on" : "off", wall, roots->fp32_iterations,
                    roots->davidson.iterations, roots->energies[0], worst, worst_off);
+      std::println("    energies {::.15f}", roots->energies);
     };
     FullLayout full{*sigma};
     if (shift == 0) {

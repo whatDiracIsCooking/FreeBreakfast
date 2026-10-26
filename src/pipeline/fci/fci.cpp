@@ -45,11 +45,13 @@ double fci_sigma_bytes(int32_t n, double rows) {
 // (fci_sigma_bytes). A singlet solve runs on the symmetric layout's packed
 // vectors, s = C(n, n_alpha) strings giving dim = s^2 determinants and
 // t = s (s + 1) / 2 packed elements; g = min(t, 2 nroots) guesses,
-// m = max(2 nroots, min(t, 16 nroots)) subspace columns (ci_solve's choices),
-// P = n (n + 1) / 2 packed pairs:
+// m = max(2 nroots, min(t, 16 nroots)) subspace columns, p P-space elements
+// (ci_solve's choices: 0 with the P-space off, else max(pspace_size, g), or t
+// once that leaves out fewer than g), P = n (n + 1) / 2 packed pairs:
 //
 //   ci_solve       g t guesses, nroots t vectors, its t penalized diagonal, and
-//                  the step's dim diagonal; after the Davidson, nroots dim
+//                  the step's dim diagonal; the P-space's U, p^2, and Λ, p, and
+//                  max(p, g) int32 picks; after the Davidson, nroots dim
 //                  unpacked roots in its place
 //   davidson       2 m t for V and A V, 3 nroots t for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta;
@@ -68,13 +70,18 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const double roots = nroots;
   const double guesses = std::min(packed, 2.0 * roots);
   const double subspace = std::max(2.0 * roots, std::min(packed, 16.0 * roots));
+  const double requested = std::max(static_cast<double>(CiSolverOptions{}.pspace_size), guesses);
+  const double pspace = CiSolverOptions{}.pspace_size <= 0 ? 0.0
+                        : packed - requested < guesses     ? packed
+                                                           : requested;
   const double orbitals = n;
   const double pairs = orbitals * (orbitals + 1.0) / 2.0;
   const double replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
 
   // ci_solve's own and the step's diagonal throughout; then the Davidson, or
   // after it the unpacked roots, whichever is more.
-  const double held = ((guesses + roots + 1.0) * packed) + dim;
+  const double held = ((guesses + roots + 1.0) * packed) + dim + (pspace * (pspace + 1.0)) +
+                      (std::max(pspace, guesses) * sizeof(int32_t) / sizeof(double));
   const double davidson =
       (2.0 * subspace * packed) + (3.0 * roots * packed) + (subspace * (subspace + roots + 1.0));
   const double doubles = held + std::max(davidson, roots * dim) + (pairs * (pairs + 1.0)) +
