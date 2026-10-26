@@ -124,11 +124,22 @@ public:
   /// occupied. @p shifted may be @p diagonal in the full layout only. Queued
   /// on res.stream().
   ///
+  /// With @p exchange, the n × n device doubles (ij|ji) of the H @p diagonal
+  /// is of (CiSigma::exchange), @p diagonal is first spin-averaged: each
+  /// determinant's is the average over the determinants of its spatial
+  /// configuration (the same doubly and singly occupied orbitals) in this
+  /// sector. Over the n_o open shells, n_α of them α, the exchange
+  /// −Σ_{i<j} δ_{σ_i σ_j} K_ij becomes −p Σ_{i<j} K_ij, with
+  /// p = [n_α(n_α − 1) + n_β(n_β − 1)] / [n_o(n_o − 1)] the probability that
+  /// two open shells have the same spin; every other term is the same across a
+  /// configuration.
+  ///
   /// @return InvalidConfig for another device, or CiLayout::symmetric over two
   ///         different sets; or the launch's GpuRuntime error.
   [[nodiscard]] Status penalize_diagonal(DeviceResources &res, double lambda, double target,
                                          const double *diagonal, double *shifted,
-                                         CiLayout layout = CiLayout::full);
+                                         CiLayout layout = CiLayout::full,
+                                         const double *exchange = nullptr);
 
   /// @brief The number of determinants, alpha.size() · beta.size(), or for
   /// CiLayout::symmetric the triangle's, alpha.size() (alpha.size() + 1) / 2.
@@ -188,6 +199,14 @@ struct CiSolverOptions {
   /// the README's N2 bench it was slower than X alone on most two-stage
   /// solves.
   bool restart_with_previous = false;
+  /// @brief Precondition with the spin-averaged diag(H) (DETCI's
+  /// `HD_AVG = EVANGELISTI`): each determinant's diagonal averaged over its
+  /// spatial configuration's determinants (see
+  /// CiSpinSquare::penalize_diagonal), so the correction keeps the equal
+  /// weights a spin eigenstate gives them. Needs a sigma with an
+  /// `exchange()` (CiSigma's), the (ij|ji) the average takes. Off by default:
+  /// the README has the bench.
+  bool spin_averaged_diagonal = false;
 };
 
 /// @brief The roots a ci_solve converged, ascending in energy.
@@ -213,7 +232,8 @@ struct CiRoots {
 /// which leaves spin S where it is and lifts every higher spin, from guesses
 /// on the 2 · n_roots determinants of lowest diag(H) (each with a small spread
 /// over every determinant, so no spatial symmetry is missed), preconditioned by
-/// r / (θ − diag(H + penalty)). S is the sector's lowest spin, so choosing the
+/// r / (θ − diag(H + penalty)), diag(H) spin-averaged with
+/// options.spin_averaged_diagonal. S is the sector's lowest spin, so choosing the
 /// spin is choosing N_α − N_β = 2S. Everything runs on the device: the
 /// guesses and the penalized diagonal are built there from @p diagonal, the
 /// penalty (a CiSpinSquare) and the preconditioner run there per iteration,
@@ -253,7 +273,9 @@ struct CiRoots {
 /// @param start    Empty, or n_roots · dim device doubles: the starting
 ///                 vectors, root r at [r · dim, (r + 1) · dim).
 /// @return The roots. Otherwise InvalidConfig for a shape or option out of
-///         range, @p start's size included; Numerical when @p start's
+///         range, @p start's size included, or for
+///         options.spin_averaged_diagonal over a sigma without an exchange()
+///         or whose exchange() is null; Numerical when @p start's
 ///         vectors are linearly dependent; davidson_solve's error (MaxIterationsExceeded, Divergence,
 ///         or @p sigma's own); or Numerical when, with a penalty, a root's ⟨S²⟩
 ///         is more than 1e-6 off S(S+1): a state of another spin lay too far
@@ -275,6 +297,17 @@ template <LinearOperator<double> Op>
                       "spin_penalty {}, fp32_tolerance {}, start {})",
                       dim, dim, alpha.n_orbitals(), beta.n_orbitals(), n_roots,
                       options.spin_penalty, options.fp32_tolerance, start.size());
+  }
+  // (ij|ji) for the spin-averaged diagonal, from the sigma; null without it.
+  const double *exchange = nullptr;
+  if (options.spin_averaged_diagonal) {
+    if constexpr (requires { sigma.exchange(); }) {
+      exchange = sigma.exchange();
+    }
+    if (exchange == nullptr) {
+      return err_config("ci_solve: spin_averaged_diagonal needs a sigma whose exchange() gives "
+                        "(ij|ji) on the device");
+    }
   }
   const auto roots = static_cast<size_t>(n_roots);
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -341,10 +374,11 @@ template <LinearOperator<double> Op>
   }
 
   // H + λ (S² − S(S+1)) through the caller's sigma, the penalty added into
-  // its output on the device, and diag(H + penalty) for the preconditioner.
-  // fp32 picks the sigma's apply_fp32; applies counts the calls, one per
-  // iteration, since every iteration adds a column.
-  FBF_TRY(spin.penalize_diagonal(res, penalty, target, diagonal, shifted.data(), layout));
+  // its output on the device, and diag(H + penalty) for the preconditioner,
+  // diag(H) spin-averaged when exchange is set (the guesses above keep the
+  // per-determinant one). fp32 picks the sigma's apply_fp32; applies counts
+  // the calls, one per iteration, since every iteration adds a column.
+  FBF_TRY(spin.penalize_diagonal(res, penalty, target, diagonal, shifted.data(), layout, exchange));
   struct Penalized {
     Op &sigma;
     CiSpinSquare &spin;

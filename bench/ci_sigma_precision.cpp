@@ -4,10 +4,13 @@
 // clock, over the active spaces of a direct_spin1-schema JSON file
 // (tools/emit_ci_bench_integrals.py writes N2's CAS(10,10) and CAS(12,12)).
 // ci_solve runs a singlet in the symmetric layout; it is also run held to the
-// full one, as it was before that layout, FP64-only and at 1e-6.
+// full one, as it was before that layout, FP64-only and at 1e-6. Every solve
+// runs twice, with spin_averaged_diagonal off and on. A shift moves that many
+// electrons from β to α: 1 solves the M_s = 1 triplets, in the full layout
+// (the held-to-full solves are then skipped as the same).
 //
 //   free_breakfast_ci_sigma_precision CASES.json [n_roots = 3] [max_iterations = 100]
-//                                     [device = 0]
+//                                     [device = 0] [shift = 0]
 //
 // Each solve's energies are compared with the FP64-only solve's, the worst
 // root's difference printed, so a speedup that cost accuracy shows as one.
@@ -56,6 +59,7 @@ struct FullLayout {
   fb::Status apply_fp32(fb::DeviceResources &res, std::int32_t k, const double *x, double *y) {
     return sigma.apply_fp32(res, k, x, y);
   }
+  [[nodiscard]] const double *exchange() const noexcept { return sigma.exchange(); }
 };
 
 // The MiB of device workspace one column of @p apply grows a fresh
@@ -98,12 +102,14 @@ double fp32_error(fb::DeviceResources &res, fb::CiSigma &sigma, double e_core, c
 
 int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   if (argc < 2) {
-    std::println(std::cerr, "usage: {} CASES.json [n_roots] [max_iterations] [device]", argv[0]);
+    std::println(std::cerr, "usage: {} CASES.json [n_roots] [max_iterations] [device] [shift]",
+                 argv[0]);
     return 2;
   }
   const std::int32_t n_roots = argc > 2 ? std::stoi(argv[2]) : 3;
   const std::int32_t max_iterations = argc > 3 ? std::stoi(argv[3]) : 100;
   const std::int32_t device = argc > 4 ? std::stoi(argv[4]) : 0;
+  const std::int32_t shift = argc > 5 ? std::stoi(argv[5]) : 0;
   const auto doc = fb::read_json(argv[1]);
   if (!doc) {
     std::println(std::cerr, "{}", doc.error().message);
@@ -113,8 +119,8 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
 
   for (const auto &entry : (*doc)["cases"]) {
     const auto n = entry["n_orbitals"].get<std::int32_t>();
-    const auto alpha = fb::StringSet::create(n, entry["n_alpha"].get<std::int32_t>());
-    const auto beta = fb::StringSet::create(n, entry["n_beta"].get<std::int32_t>());
+    const auto alpha = fb::StringSet::create(n, entry["n_alpha"].get<std::int32_t>() + shift);
+    const auto beta = fb::StringSet::create(n, entry["n_beta"].get<std::int32_t>() - shift);
     auto sigma = fb::CiSigma::create(res, *alpha, *beta);
     if (!sigma || !sigma->set_integrals(res, entry["e_core"].get<double>(),
                                         entry["h1"]["values"].get<std::vector<double>>(),
@@ -131,9 +137,12 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
 
     // Any column will do for the timing: the cost does not depend on c. In
     // the symmetric layout the first size(symmetric) elements of diag(H)
-    // stand in for a packed vector.
+    // stand in for a packed vector, which needs one set for both spins.
     const std::int32_t reps = dim > 200'000 ? 5 : 20;
     for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
+      if (layout == fb::CiLayout::symmetric && shift != 0) {
+        continue;
+      }
       const auto fp64 = [&](fb::DeviceResources &r) {
         return sigma->apply(r, 1, diagonal.data(), y.data(), layout);
       };
@@ -148,16 +157,24 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
                    workspace_mib(device, fp64), workspace_mib(device, fp32));
     }
 
+    // The first solve's energies, and the last one's with
+    // spin_averaged_diagonal off, which the next, on, is compared with.
     std::vector<double> reference;
-    const auto solve = [&](auto &op, const char *label, double tolerance) {
+    std::vector<double> off;
+    const auto solve = [&](auto &op, const char *label, double tolerance, bool averaged) {
       fb::CiSolverOptions options;
       options.fp32_tolerance = tolerance;
       options.davidson.max_iterations = max_iterations;
+      options.spin_averaged_diagonal = averaged;
       const auto start = Clock::now();
       const auto roots = fb::ci_solve(res, op, *alpha, *beta, diagonal.data(), n_roots, options);
       const double wall = seconds_since(start);
       if (!roots) {
-        std::println("  {:9} fp32_tolerance {:.0e}: {}", label, tolerance, roots.error().message);
+        std::println("  {:9} fp32_tolerance {:.0e} averaged {:3}: {}", label, tolerance,
+                     averaged ? "on" : "off", roots.error().message);
+        if (!averaged) {
+          off.clear();
+        }
         return;
       }
       if (reference.empty()) {
@@ -167,20 +184,33 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
             fp32_error(res, *sigma, entry["e_core"].get<double>(), roots->vectors.data(), dim));
       }
       double worst = 0.0;
+      double worst_off = 0.0;
       for (std::size_t r = 0; r < reference.size(); ++r) {
         worst = std::max(worst, std::abs(roots->energies[r] - reference[r]));
+        if (averaged && off.size() == reference.size()) {
+          worst_off = std::max(worst_off, std::abs(roots->energies[r] - off[r]));
+        }
       }
-      std::println("  {:9} fp32_tolerance {:7.0e}: {:7.2f} s  iterations FP32 {:3} + FP64 {:3}  "
-                   "E0 {:.10f}  max |dE| vs full FP64-only {:.1e}",
-                   label, tolerance, wall, roots->fp32_iterations, roots->davidson.iterations,
-                   roots->energies[0], worst);
+      if (!averaged) {
+        off = roots->energies;
+      }
+      std::println("  {:9} fp32_tolerance {:7.0e} averaged {:3}: {:7.2f} s  iterations FP32 {:3} "
+                   "+ FP64 {:3}  E0 {:.10f}  max |dE| vs the first solve {:.1e}, vs off {:.1e}",
+                   label, tolerance, averaged ? "on" : "off", wall, roots->fp32_iterations,
+                   roots->davidson.iterations, roots->energies[0], worst, worst_off);
     };
     FullLayout full{*sigma};
-    for (const double tolerance : {0.0, 1e-6}) {
-      solve(full, "full", tolerance);
+    if (shift == 0) {
+      for (const double tolerance : {0.0, 1e-6}) {
+        for (const bool averaged : {false, true}) {
+          solve(full, "full", tolerance, averaged);
+        }
+      }
     }
     for (const double tolerance : {0.0, 1e-4, 1e-5, 1e-6, 1e-7}) {
-      solve(*sigma, "symmetric", tolerance);
+      for (const bool averaged : {false, true}) {
+        solve(*sigma, shift == 0 ? "symmetric" : "full", tolerance, averaged);
+      }
     }
   }
   return 0;

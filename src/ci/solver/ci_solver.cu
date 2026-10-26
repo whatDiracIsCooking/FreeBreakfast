@@ -125,12 +125,17 @@ __global__ void ci_olsen_kernel(const int32_t n, const double theta, const doubl
   correction[i] = (residual[i] - (epsilon * x[i])) / ci_denominator(theta, shifted[i]);
 }
 
+// With @p exchange, diagonal_J is first spin-averaged: over the open shells
+// (occupied in one string of J), the exchange −δ_{σ_i σ_j} K_ij of each pair is
+// replaced by −p K_ij, p the probability two open shells have the same spin
+// over the configuration's determinants, which is the same for every pair.
 template <bool Symmetric>
 __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_beta, const int32_t n,
                                         const int32_t *const alpha_links, const int32_t alpha_per,
                                         const int32_t *const beta_slots, const double constant,
                                         const double shift, const double scale,
-                                        const double *const diagonal, double *const shifted) {
+                                        const double *const exchange, const double *const diagonal,
+                                        double *const shifted) {
   const int64_t det = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (det >= n_det) {
     return;
@@ -139,19 +144,62 @@ __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_bet
   int32_t jb = 0;
   ci_strings<Symmetric>(static_cast<int32_t>(det), n_beta, ja, jb);
   // Only a†_p a_p leaves the α string where it was, and its partner a†_p a_p
-  // survives the β string exactly when p is occupied there too.
+  // survives the β string exactly when p is occupied there too. Its slot
+  // index is p · n + p.
   int32_t doubles = 0;
+  uint64_t alpha_occupied = 0;
   const int32_t *a = alpha_links + (static_cast<size_t>(ja) * alpha_per * kLinkWidth);
   const int32_t *const slots =
       beta_slots + (static_cast<size_t>(jb) * static_cast<size_t>(n) * static_cast<size_t>(n));
   for (int32_t e = 0; e < alpha_per; ++e, a += kLinkWidth) {
-    if (a[0] == ja && slots[a[1]] != 0) {
-      ++doubles;
+    if (a[0] == ja) {
+      alpha_occupied |= uint64_t{1} << (a[1] / (n + 1));
+      if (slots[a[1]] != 0) {
+        ++doubles;
+      }
+    }
+  }
+  // Σ_{i<j open} (δ_{σ_i σ_j} − p) K_ij, which takes J's own open-shell
+  // exchange out and puts the average in.
+  double average = 0.0;
+  if (exchange != nullptr) {
+    uint64_t beta_occupied = 0;
+    for (int32_t p = 0; p < n; ++p) {
+      if (slots[p * (n + 1)] != 0) {
+        beta_occupied |= uint64_t{1} << p;
+      }
+    }
+    int32_t open_alpha = 0;
+    int32_t open_beta = 0;
+    for (int32_t p = 0; p < n; ++p) {
+      open_alpha += static_cast<int32_t>(((alpha_occupied & ~beta_occupied) >> p) & 1U);
+      open_beta += static_cast<int32_t>(((beta_occupied & ~alpha_occupied) >> p) & 1U);
+    }
+    const int32_t open = open_alpha + open_beta;
+    if (open >= 2) {
+      const double same =
+          static_cast<double>((open_alpha * (open_alpha - 1)) + (open_beta * (open_beta - 1))) /
+          static_cast<double>(open * (open - 1));
+      const uint64_t open_shells = alpha_occupied ^ beta_occupied;
+      for (int32_t i = 0; i < n; ++i) {
+        if (((open_shells >> i) & 1U) == 0) {
+          continue;
+        }
+        const bool i_alpha = ((alpha_occupied >> i) & 1U) != 0;
+        for (int32_t j = i + 1; j < n; ++j) {
+          if (((open_shells >> j) & 1U) == 0) {
+            continue;
+          }
+          const double delta = (((alpha_occupied >> j) & 1U) != 0) == i_alpha ? 1.0 : 0.0;
+          average += (delta - same) * exchange[(static_cast<size_t>(i) * n) + j];
+        }
+      }
     }
   }
   const size_t full =
       (static_cast<size_t>(ja) * static_cast<size_t>(n_beta)) + static_cast<size_t>(jb);
-  shifted[det] = diagonal[full] + (scale * (constant - static_cast<double>(doubles) - shift));
+  shifted[det] =
+      diagonal[full] + average + (scale * (constant - static_cast<double>(doubles) - shift));
 }
 
 // One (value, address) candidate of ci_lowest; address −1 is none.
@@ -302,18 +350,19 @@ wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const bool symme
                                  const int32_t *const alpha_links, const int32_t alpha_per,
                                  const int32_t *const beta_slots, const double constant,
                                  const double shift, const double scale,
-                                 const double *const diagonal, double *const shifted) {
+                                 const double *const exchange, const double *const diagonal,
+                                 double *const shifted) {
   if (n_det == 0) {
     return wwr::wwrSuccess;
   }
   if (symmetric) {
     ci_spin_diagonal_kernel<true><<<ci_blocks(n_det), kFourWarps, 0, stream>>>(
-        n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, diagonal,
-        shifted);
+        n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, exchange,
+        diagonal, shifted);
   } else {
     ci_spin_diagonal_kernel<false><<<ci_blocks(n_det), kFourWarps, 0, stream>>>(
-        n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, diagonal,
-        shifted);
+        n_det, n_beta, n, alpha_links, alpha_per, beta_slots, constant, shift, scale, exchange,
+        diagonal, shifted);
   }
   return wwr::wwrGetLastError();
 }

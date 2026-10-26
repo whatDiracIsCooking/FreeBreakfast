@@ -204,6 +204,15 @@ public:
   ///         launch's GpuRuntime error.
   [[nodiscard]] Status diagonal(DeviceResources &res, double *diagonal);
 
+  /// @brief The exchange integrals K_ij = (ij|ji) of set_integrals' H, as
+  /// n × n device doubles (row-major, symmetric), which ci_solve's
+  /// spin-averaged diagonal takes; null before set_integrals. Each
+  /// set_integrals rewrites them in place.
+  [[nodiscard]] const double *exchange() const noexcept {
+    const auto n = static_cast<size_t>(n_orbitals_);
+    return has_integrals_ ? diagonal_terms_.data() + n + (n * n) : nullptr;
+  }
+
   /// @brief The spin-summed 1-RDM γ_tu = ⟨c| E_tu |c⟩ of the size(@p layout)
   /// device doubles @p c into the n × n device doubles @p gamma (symmetric, so
   /// either order): ci.rdm's rdm1, on the device. Needs no integrals.
