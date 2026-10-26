@@ -213,6 +213,16 @@ public:
     return has_integrals_ ? diagonal_terms_.data() + n + (n * n) : nullptr;
   }
 
+  /// @brief set_integrals' H as apply contracts it, which ci_solve's P-space
+  /// reads its Slater–Condon elements from: n_pairs × (n_pairs + 1) device
+  /// doubles, column-major, n_pairs = n (n + 1) / 2 over the pairs
+  /// pair(t, u) = t (t + 1) / 2 + u, t ≥ u. Column pair(t, u) holds ½ (tu|vw)
+  /// down the rows pair(v, w), and the last column k_vw = h_vw − ½ Σ_u (vu|uw).
+  /// Null before set_integrals; each set_integrals rewrites it in place.
+  [[nodiscard]] const double *contraction() const noexcept {
+    return has_integrals_ ? contraction_.data() : nullptr;
+  }
+
   /// @brief The spin-summed 1-RDM γ_tu = ⟨c| E_tu |c⟩ of the size(@p layout)
   /// device doubles @p c into the n × n device doubles @p gamma (symmetric, so
   /// either order): ci.rdm's rdm1, on the device. Needs no integrals.

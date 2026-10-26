@@ -1,6 +1,7 @@
 /// @file
 /// @brief S² on a CI vector, over the replacement lists: on the host, and
-/// CiSpinSquare's uploads and launches; and ci_solve's device preconditioner.
+/// CiSpinSquare's uploads and launches; and ci_solve's device preconditioner,
+/// guesses and P-space.
 
 module;
 
@@ -12,11 +13,13 @@ module free_breakfast.ci.solver;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;              // CiLayout
+import free_breakfast.recipes.diagonalize;   // diagonalize
 import free_breakfast.recipes.orthogonalize; // orthonormalize
 
 #include "diagnostics.h"
@@ -189,53 +192,110 @@ Status CiSpinSquare::penalize_diagonal(DeviceResources &res, const double lambda
 
 Status ci_precondition(DeviceResources &res, const int32_t n, const std::span<const double> theta,
                        const double *const shifted, const double *const ritz_vectors,
-                       const double *const residual, double *const correction, const bool olsen) {
+                       const double *const residual, double *const correction, const bool olsen,
+                       const int32_t p, const int32_t *const picks,
+                       const double *const pspace_vectors, const double *const pspace_values) {
   const wwr::wwrStream_t stream = res.stream();
   const auto nz = static_cast<size_t>(n);
-  if (!olsen) {
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  if (p == 0) {
+    if (!olsen) {
+      for (size_t col = 0; col < theta.size(); ++col) {
+        FBF_TRY(gpu_status(device::ci_precondition(
+            stream, n, theta[col], shifted, residual + (col * nz), correction + (col * nz))));
+      }
+      return {};
+    }
+    // x^T M⁻¹ x and x^T M⁻¹ r per column, written and read on the device: ε
+    // never comes back to the host.
+    const auto [dots] = res.device_regions<double>(2 * theta.size());
+    const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
+                                            CreatePolicy<wwr::wwrblasStatus_t>>
+        device_results{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
     for (size_t col = 0; col < theta.size(); ++col) {
-      FBF_TRY(gpu_status(device::ci_precondition(stream, n, theta[col], shifted,
-                                                 residual + (col * nz), correction + (col * nz))));
+      const double *const x = ritz_vectors + (col * nz);
+      const double *const r = residual + (col * nz);
+      double *const c = correction + (col * nz);
+      double *const pair = dots + (2 * col);
+      // M⁻¹ x into the correction column; M is diagonal, so x^T M⁻¹ r is
+      // (M⁻¹ x)^T r and M⁻¹ r is never formed on its own.
+      FBF_TRY(gpu_status(device::ci_precondition(stream, n, theta[col], shifted, x, c)));
+      FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, x, 1, c, 1, pair)));
+      FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, c, 1, r, 1, pair + 1)));
+      FBF_TRY(gpu_status(device::ci_olsen(stream, n, theta[col], shifted, x, r, pair, c)));
     }
     return {};
   }
-  const wwr::wwrblasHandle_t blas = res.blas().get();
-  // x^T M⁻¹ x and x^T M⁻¹ r per column, written and read on the device: ε
-  // never comes back to the host.
-  const auto [dots] = res.device_regions<double>(2 * theta.size());
-  const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t, CreatePolicy<wwr::wwrblasStatus_t>>
-      device_results{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
+
+  // M = θ − (H_PP ⊕ diag(Q)): the diagonal over every element, then the P
+  // ones replaced by U (θ − Λ)⁻¹ U^T of their gathered part, its
+  // denominators held off zero as the diagonal's are. in may be out: P is
+  // gathered before the diagonal writes. The correction is always Olsen's
+  // here: over an exact P block the plain M⁻¹ r is all but x, which the
+  // Davidson projects away (see the README). M⁻¹ x is a column of its own,
+  // since M is no longer diagonal and r − ε x goes through M⁻¹ whole.
+  const auto pz = static_cast<size_t>(p);
+  const auto [dots, gathered, rotated, inverse_x] =
+      res.device_regions<double>(2 * theta.size(), pz, pz, nz);
+  const auto apply_inverse = [&](const double t, const double *const in,
+                                 double *const out) -> Status {
+    FBF_TRY(gpu_status(device::ci_gather(stream, n, 1, p, picks, in, gathered)));
+    FBF_TRY(gpu_status(device::ci_precondition(stream, n, t, shifted, in, out)));
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, p, p, &kOne<double>,
+                                                  pspace_vectors, p, gathered, 1, &kZero<double>,
+                                                  rotated, 1)));
+    FBF_TRY(gpu_status(device::ci_precondition(stream, p, t, pspace_values, rotated, rotated)));
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_N, p, p, &kOne<double>,
+                                                  pspace_vectors, p, rotated, 1, &kZero<double>,
+                                                  gathered, 1)));
+    return gpu_status(device::ci_scatter(stream, n, 1, p, picks, gathered, out));
+  };
   for (size_t col = 0; col < theta.size(); ++col) {
     const double *const x = ritz_vectors + (col * nz);
     const double *const r = residual + (col * nz);
     double *const c = correction + (col * nz);
     double *const pair = dots + (2 * col);
-    // M⁻¹ x into the correction column; M is diagonal, so x^T M⁻¹ r is
-    // (M⁻¹ x)^T r and M⁻¹ r is never formed on its own.
-    FBF_TRY(gpu_status(device::ci_precondition(stream, n, theta[col], shifted, x, c)));
-    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, x, 1, c, 1, pair)));
-    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, c, 1, r, 1, pair + 1)));
-    FBF_TRY(gpu_status(device::ci_olsen(stream, n, theta[col], shifted, x, r, pair, c)));
+    FBF_TRY(apply_inverse(theta[col], x, inverse_x));
+    {
+      const wwr::extension::ScopedPointerMode<wwr::wwrblasHandle_t,
+                                              CreatePolicy<wwr::wwrblasStatus_t>>
+          device_results{blas, wwr::WWRBLAS_POINTER_MODE_DEVICE};
+      FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, x, 1, inverse_x, 1, pair)));
+      FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, n, inverse_x, 1, r, 1, pair + 1)));
+    }
+    // r − ε x, then M⁻¹ of it in place.
+    FBF_TRY(gpu_status(device::ci_olsen(stream, n, theta[col], nullptr, x, r, pair, c)));
+    FBF_TRY(apply_inverse(theta[col], c, c));
   }
   return {};
 }
 
+Status ci_lowest(DeviceResources &res, const int32_t n, const double *const values,
+                 const int32_t count, int32_t *const picks) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto [scratch, survivors] = res.device_regions<uint64_t, int32_t>(
+      static_cast<size_t>(device::kCiLowestScratch), static_cast<size_t>(count));
+  return gpu_status(device::ci_lowest(res.stream(), n, values, count, scratch, survivors, picks));
+}
+
 Status ci_guesses(DeviceResources &res, const int32_t n, const int32_t count,
-                  const double *const diagonal, double *const guess, const bool canonical) {
+                  const int32_t *const picks, const int32_t p, const double *const columns,
+                  double *const guess, const bool canonical) {
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const wwr::wwrblasHandle_t blas = res.blas().get();
-  Buffers::device<double> partial_values(device::kCiLowestBlocks, res.device());
-  Buffers::device<int32_t> partial_index(device::kCiLowestBlocks, res.device());
-  Buffers::device<int32_t> picks(static_cast<size_t>(count), res.device());
-  FBF_TRY(gpu_status(device::ci_lowest(stream, n, diagonal, count, partial_values.data(),
-                                       partial_index.data(), picks.data())));
-  FBF_TRY(gpu_status(device::ci_guess(stream, n, count, picks.data(), guess)));
+  if (columns == nullptr) {
+    FBF_TRY(gpu_status(device::ci_guess(stream, n, count, picks, guess)));
+  } else {
+    FBF_TRY(gpu_status(device::ci_guess(stream, n, count, nullptr, guess)));
+    FBF_TRY(gpu_status(device::ci_scatter(stream, n, count, p, picks, columns, guess)));
+  }
 
   if (canonical) {
-    // Orthonormalized as a block. Unit vectors on distinct determinants plus
-    // a 1e-3 spread are independent by construction, so only a bug drops
-    // one: the floor is zero, leaving orthonormalize's own rounding cut.
+    // Orthonormalized as a block. Unit vectors on distinct determinants, or
+    // orthonormal columns on P, plus a 1e-3 spread are independent by
+    // construction, so only a bug drops one: the floor is zero, leaving
+    // orthonormalize's own rounding cut.
     const int32_t kept = FBF_TRY(orthonormalize<double>(res, n, count, guess, 0.0));
     if (kept != count) {
       return err_numerical("ci_guesses: {} of {} guess columns were linearly dependent",
@@ -267,6 +327,71 @@ Status ci_guesses(DeviceResources &res, const int32_t n, const int32_t count,
     FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n, &inv_norm, column, 1)));
   }
   return {};
+}
+
+Status ci_pspace_hamiltonian(DeviceResources &res, const StringSet &alpha, const StringSet &beta,
+                             const double *const contraction, const double *const diagonal,
+                             const double penalty, const int32_t p, const int32_t *const picks,
+                             double *const hamiltonian, const CiLayout layout) {
+  const bool symmetric = layout == CiLayout::symmetric;
+  if (alpha.n_orbitals() != beta.n_orbitals() || contraction == nullptr || p < 0 ||
+      static_cast<int64_t>(alpha.size()) * beta.size() > std::numeric_limits<int32_t>::max() ||
+      (symmetric && alpha.n_electrons() != beta.n_electrons())) {
+    return err_config("ci_pspace_hamiltonian: needs one orbital count, a contraction, p >= 0, at "
+                      "most an int32_t of determinants and, in the symmetric layout, one set for "
+                      "both spins (orbitals {} and {}, electrons {} and {}, p {})",
+                      alpha.n_orbitals(), beta.n_orbitals(), alpha.n_electrons(),
+                      beta.n_electrons(), p);
+  }
+  if (p == 0) {
+    return {};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  // λ (S² − S(S+1)): diag(S²) is S_z (S_z + 1) + N_β less the doubly occupied
+  // orbitals, S = |N_α − N_β| / 2.
+  const int32_t two_sz = alpha.n_electrons() - beta.n_electrons();
+  const int32_t two_s = std::abs(two_sz);
+  const double spin_shift =
+      (0.25 * two_sz * (two_sz + 2)) + beta.n_electrons() - (0.25 * two_s * (two_s + 2));
+  const std::span<const uint64_t> alpha_strings = alpha.strings();
+  const std::span<const uint64_t> beta_strings = beta.strings();
+  const auto [strings_a, strings_b] =
+      res.device_regions<uint64_t>(alpha_strings.size(), symmetric ? 0 : beta_strings.size());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(strings_a, alpha_strings.data(),
+                                         alpha_strings.size() * sizeof(uint64_t),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
+  if (!symmetric) {
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(strings_b, beta_strings.data(),
+                                           beta_strings.size() * sizeof(uint64_t),
+                                           wwr::wwrMemcpyHostToDevice, stream)));
+  }
+  FBF_TRY(gpu_status(device::ci_pspace(stream, symmetric, p, picks, beta.size(), alpha.n_orbitals(),
+                                       strings_a, symmetric ? strings_a : strings_b, contraction,
+                                       diagonal, penalty, spin_shift, hamiltonian)));
+  // The strings' pageable sources are the caller's, and may go at return.
+  return res.sync();
+}
+
+Status ci_pspace(DeviceResources &res, const StringSet &alpha, const StringSet &beta,
+                 const CiLayout layout, const int32_t n, const int32_t p,
+                 const double *const values, const double *const contraction,
+                 const double *const diagonal, const double penalty, int32_t *const picks,
+                 double *const vectors, double *const eigenvalues, const int32_t n_roots,
+                 double *const root_values, double *const root_vectors) {
+  FBF_TRY(ci_lowest(res, n, values, p, picks));
+  FBF_TRY(ci_pspace_hamiltonian(res, alpha, beta, contraction, diagonal, penalty, p, picks, vectors,
+                                layout));
+  FBF_TRY(diagonalize<double>(res, p, vectors, eigenvalues));
+  if (p < n) {
+    return {};
+  }
+  // P is a permutation of every element, so the scatter writes all of them.
+  const wwr::wwrStream_t stream = res.stream();
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(root_values, eigenvalues,
+                                         static_cast<size_t>(n_roots) * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  return gpu_status(device::ci_scatter(stream, n, n_roots, p, picks, vectors, root_vectors));
 }
 
 } // namespace free_breakfast

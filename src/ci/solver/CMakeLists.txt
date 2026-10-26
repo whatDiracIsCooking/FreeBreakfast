@@ -1,6 +1,7 @@
-# S² on a block of CI vectors and the diagonal preconditioner, ci_solve's
-# per-iteration device work. Device code in its own library, so its language
-# and -x hip never reach the module compiles. The bridge header it shares with
+# S² on a block of CI vectors, the diagonal preconditioner, the lowest-value
+# select and the P-space's Hamiltonian: ci_solve's device work. Device code
+# in its own library, so its language and -x hip never reach the module
+# compiles. The bridge header it shares with
 # the module names int32_t, wwrStream_t and wwrError_t, hence types_headers and
 # wwr::device PUBLIC; block_params.h (kFourWarps), primitives.h (math::idivup)
 # and the sigma's
@@ -25,7 +26,9 @@ free_breakfast_add_gpu_device_library(
 # (ci::sigma) -- is PUBLIC. The FBF_TRY macro
 # expands in the interface unit, so its header is PRIVATE, and the
 # implementation unit alone GMF-includes the bridge and calls orthonormalize,
-# so the device library and recipes::orthogonalize are PRIVATE too.
+# diagonalize (the P-space's) and the gemvs' kOne and kZero, so the device
+# library, recipes::orthogonalize, recipes::diagonalize and core::constants
+# are PRIVATE too.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.ci.solver
@@ -43,7 +46,9 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
   LINK_PRIVATE
+  free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros
+  free_breakfast::recipes::diagonalize
   free_breakfast::recipes::orthogonalize
   free_breakfast::ci::solver::device
 )
