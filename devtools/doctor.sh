@@ -334,6 +334,7 @@ if [ -n "${DOCTOR_GPU_VENDORS// /}" ]; then
         # reads, and it is visible inside a container given --device=/dev/kfd.
         # Node 0 is the CPU node and reports gfx_target_version 0; skip it.
         amd_listed=0
+        amd_wedged=0
         for props in /sys/class/kfd/kfd/topology/nodes/*/properties; do
           [ -r "$props" ] || continue
           gfxver=$(sed -n 's/^gfx_target_version //p' "$props" | head -1)
@@ -350,15 +351,49 @@ if [ -n "${DOCTOR_GPU_VENDORS// /}" ]; then
           amd_pci=$(printf '%04x:%04x' "${amd_vid:-0}" "${amd_did:-0}")
           amd_name=$(tr -d '\0' < "$nodedir/name" 2>/dev/null)
           case $amd_name in ip\ discovery|'') amd_name= ;; *) amd_name=" $amd_name" ;; esac
-          ok "amd:$amd_name $isa [$amd_pci] (-> GPU_TARGETS=$isa)"
-          amd_listed=$((amd_listed+1))
+
+          # ENUMERATED IS NOT THE SAME AS USABLE, and this is the one place
+          # doctor could say `ok` about a card that can run nothing. The card
+          # can wedge with amdgpu still bound and this topology node still
+          # listing it, while every HIP program gets hipErrorNoDevice and
+          # rocminfo gets HSA_STATUS_ERROR_OUT_OF_RESOURCES -- in which state a
+          # HIP ctest run GTEST_SKIPs every GPU case and still prints 100%
+          # passed. A green run nobody could distinguish from a real one is
+          # exactly what this script exists to prevent.
+          #
+          # The tell is the PCI device's runtime-PM state, readable without
+          # sudo and (unlike the dkms check below) from INSIDE the container
+          # too, which is where the symptom is met. Reached through the KFD
+          # node's own drm_render_minor rather than by guessing a cardN: the
+          # numbering depends on probe order, and with two vendors' cards here
+          # the amdgpu one is not card0. Only `error` is a fault -- `active`,
+          # `suspended` and the transient `suspending`/`resuming` are all
+          # normal, and a kernel without runtime PM says `unsupported`.
+          amd_rminor=$(sed -n 's/^drm_render_minor //p' "$props" | head -1)
+          amd_pm=
+          if [ -n "$amd_rminor" ]; then
+            amd_pm=$(cat "/sys/class/drm/renderD$amd_rminor/device/power/runtime_status" 2>/dev/null)
+          fi
+          if [ "$amd_pm" = error ]; then
+            warn "amd:$amd_name $isa [$amd_pci] is enumerated but WEDGED (runtime_status error)"
+            note "every HIP call returns hipErrorNoDevice; a hip ctest run skips every GPU case and still says 100% passed"
+            note "host-side and not fixable from a container: sudo reboot (never modprobe -r amdgpu -- it restarts the display manager)"
+            amd_wedged=$((amd_wedged+1))
+          else
+            ok "amd:$amd_name $isa [$amd_pci] (-> GPU_TARGETS=$isa)"
+            amd_listed=$((amd_listed+1))
+          fi
         done
         if [ "$amd_listed" -gt 0 ]; then
+          # Only the usable ones count: a wedged card must not satisfy the
+          # "some GPU is here" test at the bottom of this section.
           gpus_found=$((gpus_found+amd_listed))
           [ -e /dev/kfd ] ||
             note "/dev/kfd absent -- pass --device=/dev/kfd --device=/dev/dri to reach it"
           find_tool hipconfig >/dev/null 2>&1 ||
             note "card present but hipconfig is not -- ROCm is in the \`hip\`/\`combined\` image"
+        elif [ "$amd_wedged" -gt 0 ]; then
+          note "the \`hip\` preset builds but can run nothing until the host reboots"
         else
           note "no amd device -- the \`hip\` preset has nothing to run against"
         fi

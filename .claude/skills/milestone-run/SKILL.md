@@ -107,7 +107,10 @@ GPU commands from Bash need `dangerouslyDisableSandbox` to see either device —
 without it both cards look dead. A `nvidia-smi` that says `Failed to
 initialize NVML` means the CUDA card dropped out of the container; `rocminfo`
 listing only the CPU agent means the amdgpu DKMS module is not loaded on the
-host. Neither is fixable from here.
+host, and a `rocminfo` that fails with `HSA_STATUS_ERROR_OUT_OF_RESOURCES`
+while the KFD node still lists the card means it is wedged in runtime-PM error
+— `doctor.sh` warns on that one by name. None is fixable from here; all three
+mean that backend's acceptance line cannot run.
 
 Then warm the shared `.sccache` from the main checkout, one build per backend
 you will use, so `max` cold module builds do not all start from nothing:
