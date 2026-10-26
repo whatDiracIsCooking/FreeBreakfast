@@ -66,6 +66,16 @@ constexpr double kMicroGradientFraction = 0.1;
 // The trust radius doubles when an accepted step's energy change is within
 // this fraction of the model's prediction.
 constexpr double kTrustAgreement = 0.25;
+// A step along negative curvature, x.H~x < 0, has no minimum in the model, so
+// the radius alone sets its length, and the model says nothing of where the
+// surface turns up. It takes the whole radius only when the model has earned
+// it: the last accepted step agreed with its prediction (kTrustAgreement, or
+// there is none yet) and the gradient drives this one, |g.x| at least
+// 1 / kCurvatureDominance of |x.H~x| / 2. Otherwise it is cut to
+// kNegativeCurvatureFraction of the radius, the length two rejections would
+// have halved it to, without the two macro iterations.
+constexpr double kNegativeCurvatureFraction = 0.25;
+constexpr double kCurvatureDominance = 10.0;
 // The CI response's conjugate gradients stop at a residual this fraction of
 // the right-hand side's, or after this many sigmas per root. Two roots closer
 // than kResponseGapFloor (hartree) leave their mixing out.
@@ -355,6 +365,9 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   // The step from the accepted orbitals, t x: E changes by
   // t g.x + t^2 x.Hx / 2 in the model; t is 1, halved on each rejection.
   bool have_step = false;
+  // Whether the last accepted step's energy change agreed with its model:
+  // true before the first, false after a rejection.
+  bool model_agreed = true;
   double step_gx = 0.0;
   double step_xhx = 0.0;
   double step_norm = 0.0;
@@ -419,6 +432,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
                                             g_norm < options.conv_tol_grad);
     if (!converged && have_accepted && change > kEnergyRiseTolerance) {
       step_t *= 0.5;
+      model_agreed = false;
       radius = step_t * step_norm;
       record.accepted = false;
       record.trust_radius = radius;
@@ -430,7 +444,8 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     }
     if (have_step) {
       const double predicted = (step_t * step_gx) + (0.5 * step_t * step_t * step_xhx);
-      if (predicted < 0.0 && std::abs((change / predicted) - 1.0) < kTrustAgreement) {
+      model_agreed = predicted < 0.0 && std::abs((change / predicted) - 1.0) < kTrustAgreement;
+      if (model_agreed) {
         radius = std::min(options.trust_radius, 2.0 * radius);
         record.trust_radius = radius;
       }
@@ -811,6 +826,22 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
       if (s < 1.0 || std::sqrt(casscf_dot(g_model, g_model)) <= kMicroGradientFraction * g_norm) {
         break;
       }
+    }
+    // A step along negative curvature the model has not earned is cut short
+    // (kNegativeCurvatureFraction, above).
+    const double curvature = casscf_dot(x_total, hx_total);
+    const double length = std::sqrt(casscf_dot(x_total, x_total));
+    const double short_length = kNegativeCurvatureFraction * radius;
+    if (curvature < 0.0 && length > short_length &&
+        (!model_agreed ||
+         -0.5 * curvature > kCurvatureDominance * std::abs(casscf_dot(g, x_total)))) {
+      const double scale = short_length / length;
+      for (size_t i = 0; i < pairs; ++i) {
+        x_total[i] *= scale;
+        hx_total[i] *= scale;
+      }
+      FBF_LOG_DEBUG("casscf_solve: macro {} negative curvature {:.3e}, step cut to {:.3e}", cycle,
+                    curvature, short_length);
     }
     have_step = true;
     step_t = 1.0;

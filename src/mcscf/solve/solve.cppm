@@ -123,7 +123,10 @@ struct CasscfSolution {
 /// earlier ones' products lack; and
 /// C <- C exp(kappa(x)).
 /// The radius doubles (up to options.trust_radius) when an accepted step's
-/// energy change is within 25% of the model's.
+/// energy change is within 25% of the model's. A step along negative
+/// curvature (x.H~x < 0) is cut to a quarter of the radius unless the last
+/// accepted step agreed so and the gradient drives it (|g.x| at least a tenth
+/// of |x.H~x| / 2); the README's "The trust region" has the measurements.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
 /// synchronizes many times per iteration. The device res.dev_idx() names is
