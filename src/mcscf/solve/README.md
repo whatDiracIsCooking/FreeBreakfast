@@ -79,7 +79,8 @@ Each macro iteration, at the current C:
    gives dx = v / v₀, with (H̃ − λ) dx = −gₘ. dx is cut to what is left of
    the trust radius, and the model gradient moves to gₘ + H̃ dx. The
    solves stop once ‖gₘ‖ is a tenth of ‖g‖, the radius is reached, or
-   `max_micro` is.
+   `max_micro` is. A step x along negative curvature, xᵀH̃x < 0, may then
+   be cut to a quarter of the radius (see "The trust region" below).
 
    **The solves share one subspace.** H̃ is fixed for the macro
    iteration, and only gₘ changes between its solves, so they keep one
@@ -174,8 +175,56 @@ cost next to nothing at these sizes; the J and K builds are the time.
 Without either, the loop is linear: from these starts H₂O CAS(4,4) took 22
 macro iterations and H₂O AVAS 24, each cutting ‖g‖ by a steady 0.4–0.5.
 
+## The trust region
+
 An accepted step's actual ΔE against the model's t g·x + ½ t² xᵀH̃x doubles the
-radius, up to `trust_radius`, when the two are within 25%.
+radius, up to `trust_radius`, when the two are within 25%. A rise past 1e-11
+halves the step and the radius (step 5 of the loop).
+
+**A step along negative curvature is cut short unless the model has earned
+the radius.** When xᵀH̃x < 0 the quadratic model has no minimum along x: the
+augmented Hessian's root runs out to the radius, and nothing in the model says
+where the surface turns up. Such a step keeps its full length only if the last
+accepted step's ΔE agreed with its model (the same 25% test; true before the
+first step, false after a rejection) **and** the gradient drives it,
+|g·x| ≥ |½ xᵀH̃x| / 10. Otherwise it is cut to a quarter of the radius, the
+length two rejections would have halved it to, without spending the two macro
+iterations.
+
+Why both tests. On H₂O AVAS, at the macro-iteration-2 orbitals, H̃ has an
+eigenvalue near −1.3e-2 along a mode nearly orthogonal to g. Whether the
+subspace solve reaches it depends on where it stops, and that is chaotic in
+the last digits: the CI's ceiling (`kCiLoosest`) moved by a factor of 3 moves
+the CI energies by ~1e-9 and is enough to flip it. When it is found, the
+full-radius step along it (g·x ≈ −1e-7, the model's −1.7e-3 all curvature)
+raised the energy by 2.2e-3, the half step by 4.2e-5, and the case took 10 macro
+iterations, not 8. H₂O CAS(4,4) and N₂ take negative-curvature steps too
+(in their first three macro iterations), but gradient-driven ones (|g·x| about |½ xᵀH̃x|) after
+a model that agreed to a few percent. At full radius those are the fast way
+down: cutting every negative-curvature step took H₂O from 7 to 11 macro
+iterations and N₂ from 8 to 11–12. The gradient test alone does not suffice on
+AVAS either: after the cut step along the mode, the next is gradient-driven
+(|g·x| ≈ |½ xᵀH̃x|) but follows a 36% disagreement, and at full radius it was
+rejected (11 macro iterations at 6 of 9 ceilings).
+
+H₂O AVAS's macro iterations with the CI's ceiling moved (Hessian products in
+brackets; the RTX 3080, both GPU slots held):
+
+| ceiling | 1e-8 | 2e-8 | 3e-8 | 5e-8 | 1e-7 | 3e-7 | 1e-6 | 3e-6 | 1e-5 |
+|---|---|---|---|---|---|---|---|---|---|
+| full radius | 8 (68) | 8 (68) | 8 (68) | 10 (81) | 8 (67) | 10 (81) | 10 (82) | 10 (81) | 10 (80) |
+| cut | 8 (70) | 8 (68) | 8 (68) | 8 (68) | 8 (82) | 8 (81) | 8 (83) | 8 (81) | 8 (80) |
+
+At the shipped 1e-8 nothing is cut in any case here, and every case's
+trajectory is the one without the rule. The quarter was measured, not
+derived: on AVAS, a cut to an eighth of the radius crept along the mode and
+took 10 macro iterations, and to a half overshot and took 12.
+
+A smaller initial radius (0.25) was measured too: AVAS took 6 macro
+iterations at most ceilings but 12 at 1e-5, and H₂O CAS(4,4) went from 7 to 8.
+A line search on rejection (a cubic through E and g·x at both ends of the
+step) was not tried: it still spends the rejected macro iteration, and AVAS's
+bar is 8.
 
 ## Defaults, and what each settles
 
