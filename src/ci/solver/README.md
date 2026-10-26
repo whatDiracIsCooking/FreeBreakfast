@@ -12,7 +12,7 @@ written against.
 
 | Name | Role |
 |---|---|
-| `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options)` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2. A template over the sigma. |
+| `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options, start = {})` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2, from the guesses or, when `start` (n_roots device vectors in the full layout) is not empty, from those. A template over the sigma. |
 | `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12), `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off), `olsen_correction` (Olsen's correction in place of the plain one; off) and `restart_with_previous` (the FP64 stage from [X, X_prev] in place of X; off) |
 | `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer in the full layout, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo` of the FP64 stage), `fp32_iterations` (the single-precision stage's, 0 when none ran) |
 | `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
@@ -135,6 +135,26 @@ with `davidson.canonical_orthonormalization` (below), by `orthonormalize`
 (`../../recipes/orthogonalize/`), with no host round trip per pair. The
 columns are independent by construction, so `ci_guesses` returns
 `Numerical` if `orthonormalize` ever drops one.
+
+**A start replaces the guesses.** `start`, when not empty, is n_roots CI
+vectors in the full layout, as `CiRoots::vectors` holds them: in a CASSCF
+macro loop the last iteration's roots, whose H is a small step from this
+one's. They take the guesses' place and nothing else changes: on the
+symmetric path `ci_pack` (`../sigma/`) packs them onto the triangle, they are
+orthonormalized (`orthonormalize`, `Numerical` if one drops: a previous
+solve's roots are orthonormal only to its convergence, and `davidson_solve`
+takes orthonormal columns), and they start stage 1 (below) when there is one,
+stage 2 otherwise. Stage 1 only chooses where stage 2 starts, so seeding it is
+seeding both: from converged roots stage 1 stops at its first iteration, its
+Ritz vectors a rotation of the start within its span, and stage 2 recovers the
+roots in the first iteration of its own. `ci_pack` is `ci_unpack`'s adjoint,
+which on vectors symmetric under the swap is its inverse, and maps any other
+vector to its symmetric part: a start's odd-S part, if any, cannot enter the
+packed space. Only n_roots columns start, against the guesses' 2 · n_roots, so
+in a space hardly bigger than that (H₂CO's CAS(4,3), six triangle elements) a
+warm start can take an iteration or two more than the guesses, which span
+nearly all of it at once; each is two sigma columns there. An empty `start` is
+the solve without one, to the bit.
 
 **A singlet solve runs on packed vectors.** When the sigma takes a
 `CiLayout`, the two sets are one (N_α = N_β), the penalty is on and n_roots
@@ -466,6 +486,12 @@ there has a triplet below its second singlet, so the spin control is exercised:
   tolerances, the first with `fp32_iterations` > 0 and the second with 0, and
   each recording the layout it was applied in: symmetric for the singlets,
   full for the triplets;
+- over `CiSigma`, every case's singlets and triplets started from their own
+  converged roots, two-stage and FP64-only: at most two iterations per stage
+  (one, here), in the same layout as the cold solve, the energies to 1e-12 and
+  the 1-RDMs to 1e-10 of the cold solve's, and the golden tolerances; and an
+  empty start bit-identical to the cold solve, energies, ⟨S²⟩, iteration
+  counts and vectors;
 - over `CiSigma` with λ = 0, the full layout and a triplet among the lowest
   three;
 - every solve above, with `olsen_correction` off and on, and with
@@ -473,7 +499,8 @@ there has a triplet below its second singlet, so the spin control is exercised:
   `restart_with_previous`, whose FP64 stage's first apply then takes more
   than the three columns of X it takes without;
 - `MaxIterationsExceeded` when given two iterations;
-- the refusals;
+- the refusals, a start of the wrong size among them, and `Numerical` for a
+  start of zero vectors;
 - `CiSpinSquare`'s `apply` and `penalize` against `host_spin_square` on
   random blocks of three vectors, each column to 1e-12 of its norm, over seven
   sectors (open and closed shells, an empty spin, a full one, a single orbital,

@@ -41,6 +41,19 @@ enum class CiLayout : int32_t { full, symmetric };
 [[nodiscard]] Status ci_unpack(DeviceResources &res, int32_t n_strings, int32_t k, const double *x,
                                double *y);
 
+/// @brief Pack the @p k full-layout device vectors @p x, each m² long for
+/// @p n_strings = m, into the @p k symmetric-layout ones @p y, each
+/// m (m + 1) / 2, both blocks column-major: ci_unpack's inverse on vectors
+/// symmetric under the swap of the two strings. Triangle element (I_α, I_β)
+/// of y is (x(I_α, I_β) + x(I_β, I_α)) / √2 off the diagonal and x(I_α, I_α)
+/// on it, which is ci_unpack's adjoint: any x goes to the packing of its
+/// swap-symmetric part. Queued on res.stream().
+///
+/// @return InvalidConfig for a negative @p n_strings or @p k; or the launch's
+///         GpuRuntime error.
+[[nodiscard]] Status ci_pack(DeviceResources &res, int32_t n_strings, int32_t k, const double *x,
+                             double *y);
+
 /// @brief σ = H c on the host, H = E_core + Σ_tu h_tu E_tu
 /// + ½ Σ_tuvw (tu|vw) (E_tu E_vw − δ_uv E_tw), E_tu the spin-summed
 /// excitation operator.

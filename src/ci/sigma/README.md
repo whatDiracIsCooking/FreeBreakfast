@@ -23,6 +23,7 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 | `CiSigma::size(layout = full)` | The operator's n: alpha.size() · beta.size(), or the symmetric layout's alpha.size() (alpha.size() + 1) / 2 |
 | `CiLayout` | `full`, every determinant; or `symmetric`, the packed triangle of a vector symmetric under the swap of the two strings |
 | `ci_unpack(res, n_strings, k, x, y)` | k symmetric-layout device vectors into full ones; `Status` |
+| `ci_pack(res, n_strings, k, x, y)` | k full-layout device vectors into symmetric-layout ones, `ci_unpack`'s inverse on swap-symmetric vectors (its adjoint: any other goes to its symmetric part); `ci_solve`'s start; `Status` |
 | `host_sigma(alpha, beta, e_core, h_eff, eri, c, sigma)` | σ = Hc; `Status` |
 | `host_diagonal(alpha, beta, e_core, h_eff, eri, diagonal)` | H_II for every determinant; `Status` |
 
@@ -262,7 +263,10 @@ against `host_sigma`'s σ packed, to the same two tolerances, for every golden
 case with N_α = N_β and seven shapes over one set (CAS(8,8), CAS(10,10), a
 single orbital, an empty set and a full one among them), and at CAS(12,12),
 four chunks of triangle rows in double, under `slow_test.h`; `ci_unpack` of
-each packed block gives the block back; and the layout is refused over two
+each packed block gives the block back; `ci_pack` of random swap-symmetric
+full blocks over 1 to 924 strings is the host's packing and `ci_unpack` of it
+the block, each to 1e-15, and of blocks that are not symmetric it is the
+packing of their symmetric part; and the layout is refused over two
 sets with the same number of strings, (4, 1) and (4, 3), by `apply`,
 `apply_fp32` and `rdm1`. In double, `rdm1` of each packed column also matches
 the full layout's on the unpacked one and `ci.rdm`'s `rdm1` to 1e-12 of
@@ -281,9 +285,9 @@ unblocked scratch gives the unbounded result bit for bit.
 
 | File | Role |
 |------|------|
-| `sigma.cppm` | Module interface: `CiLayout`, `ci_unpack`, `CiSigma`, `host_sigma`, `host_diagonal` |
-| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci_unpack`'s launch |
+| `sigma.cppm` | Module interface: `CiLayout`, `ci_unpack`, `ci_pack`, `CiSigma`, `host_sigma`, `host_diagonal` |
+| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci_unpack`'s and `ci_pack`'s launches |
 | `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
 | `ci_symmetric.h` | The symmetric layout's triangle index map and √2, for device code here and in `../solver/` |
-| `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout, whole or by string blocks), the diagonal kernel, the 1-RDM's unpacking and `ci_unpack` |
+| `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout, whole or by string blocks), the diagonal kernel, the 1-RDM's unpacking, `ci_unpack` and `ci_pack` |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.sigma.device` and the module `free_breakfast.ci.sigma` |

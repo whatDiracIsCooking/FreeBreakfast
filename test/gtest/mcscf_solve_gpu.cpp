@@ -400,10 +400,10 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
   for (std::size_t i = 0; i < sol.iterations.size(); ++i) {
     const fb::CasscfIteration &it = sol.iterations[i];
     std::cout << std::format("[ casscf   ]   {:2} E {:.12f} dE {:+.3e} |g| {:.3e} radius {:.3f} "
-                             "ci {:2} micro {} Hx {:3}{}\n",
+                             "ci {:2} + {:2} micro {} Hx {:3}{}\n",
                              i + 1, it.energy, it.energy_change, it.gradient_norm, it.trust_radius,
-                             it.ci_iterations, it.micro_iterations, it.hessian_products,
-                             it.accepted ? "" : " rejected");
+                             it.ci_fp32_iterations, it.ci_iterations, it.micro_iterations,
+                             it.hessian_products, it.accepted ? "" : " rejected");
   }
   RecordProperty("macro_iterations", macro);
   EXPECT_LE(macro, kMaxMacroIterations);

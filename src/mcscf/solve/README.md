@@ -29,8 +29,8 @@ negative, if they do not sum to 1 within 1e-12 or if their count is not
 `CasscfSolution` holds C, the `CiRoots` at C (each root's energy and ⟨S²⟩,
 and the CI vectors on the device), the weighted energy, ‖g‖, the weighted γ and
 Γ and each root's γ on the host, and one `CasscfIteration` per macro iteration
-(the energy, ΔE, ‖g‖, the trust radius, the CI's Davidson iterations, the
-micro iterations and the Hessian products of the step, and whether the
+(the energy, ΔE, ‖g‖, the trust radius, the CI's Davidson iterations in each
+of its two stages, the micro iterations and the Hessian products of the step, and whether the
 iteration was accepted).
 
 ## The loop
@@ -40,8 +40,19 @@ Each macro iteration, at the current C:
 1. **The integrals**: `casscf_integrals`, the active-space Hamiltonian and
    ppaa, papa.
 2. **The CI**: `ci_solve` over the GPU sigma (`CiSigma`, created once, its
-   integrals set per iteration), from `ci_solve`'s own guesses: **not
-   warm-started** (see "Not done"). Its relative residual tolerance is
+   integrals set per iteration), **warm-started** from the last iteration's
+   roots (`ci_solve`'s `start`; the first iteration is from its own guesses).
+   The last roots are those of the last orbitals, accepted or rejected: the
+   nearest H either way. The root order and count do not change, and the RDMs
+   do not depend on a vector's sign. Late in the loop, where C barely moves,
+   the single-precision stage then stops at its first iteration and the
+   double one starts close: over the five test cases the CI's iterations fall
+   from 239 + 213 to 156 + 182 in total (single + double precision) on the
+   RTX 3080, the macro-iteration counts unchanged. On H₂CO's CAS(4,3), six
+   triangle elements, the early iterations take one to three more, since the
+   cold guesses span nearly the whole space at once (see
+   `../../ci/solver/`); each is at most two sigma columns of six. Its
+   relative residual tolerance is
    min(1e-8, 1e-4 ‖g‖²) of the last iteration, held at or above
    `options.ci`'s (1e-12 by default), so the early iterations do not
    over-solve and the last ones are as tight as a lone `ci_solve`. ‖g‖²,
@@ -220,15 +231,6 @@ iterations here take one solve. Steihaug was not measured.
 
 ## Not done
 
-- **The CI warm start** (#282), issue #251's "warm-started from the previous
-  iteration's vectors". `ci_solve` takes no starting vectors, and adding them
-  is not the small change it was: its singlet path now runs on the packed
-  vectors of `CiLayout::symmetric` (the triangle I_α ≥ I_β), and only
-  `ci_unpack` exists, so the last roots, which `CiRoots` holds in the full
-  layout, have no way back in. Each macro iteration solves the CI from the
-  determinant guesses; the tolerance schedule above still keeps the early
-  ones short, and the macro-iteration counts do not depend on it.
-
 - **A one-step joint (x, c) augmented Hessian** (Werner–Knowles,
   `mc1step_symm`): the CI is re-solved each macro iteration, so only the
   orbital step needs the coupling, and the Schur complement above gives it
@@ -256,7 +258,8 @@ by AVAS, at `conv_tol_grad` 1e-9:
 - ‖g‖ below `conv_tol_grad`, recomputed from scratch with a cold CI;
 - Cᵀ S C = 1 to 1e-10;
 - no accepted iteration's ΔE above 1e-11;
-- each case's macro iterations printed, and at most 20;
+- each case's macro iterations printed, with the CI's iterations per stage,
+  and at most 20;
 - `MaxIterationsExceeded`, and the refusals.
 
 ## Files

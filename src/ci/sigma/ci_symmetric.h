@@ -1,6 +1,7 @@
 /// @file
 /// @brief The symmetric layout's triangle (see CiLayout in sigma.cppm), for
-/// device code: the GPU sigma's gathers, ci_unpack, and ci.solver's S².
+/// device code: the GPU sigma's gathers, ci_unpack and ci_pack, and ci.solver's
+/// S².
 ///
 /// Determinant (a, b), a ≥ b, of a vector over one StringSet for both spins is
 /// triangle element a (a + 1) / 2 + b; one below the triangle, a < b, is read

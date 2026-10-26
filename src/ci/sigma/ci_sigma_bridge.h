@@ -158,4 +158,10 @@ ci_sigma_from_g_block(wwr::wwrStream_t stream, bool symmetric, bool beta_major, 
 [[nodiscard]] wwr::wwrError_t ci_unpack(wwr::wwrStream_t stream, int32_t n_strings, int32_t k,
                                         const double *x, double *y);
 
+/// @brief The @p k full vectors @p x, n_strings² each, packed into the @p k
+/// CiLayout::symmetric ones @p y, n_strings (n_strings + 1) / 2 each:
+/// ci_unpack's adjoint.
+[[nodiscard]] wwr::wwrError_t ci_pack(wwr::wwrStream_t stream, int32_t n_strings, int32_t k,
+                                      const double *x, double *y);
+
 } // namespace free_breakfast::device

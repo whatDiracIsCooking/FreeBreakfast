@@ -4,7 +4,7 @@
 // CAS(8,8) and CAS(10,10) and in sectors with N_alpha != N_beta, and
 // CAS(12,12) in the slow tier (its 1-RDM in the fast one); the same in the
 // symmetric layout over swap-symmetric vectors, σ and the 1-RDM, with
-// ci_unpack; σ blocked under a workspace limit against unblocked; and the
+// ci_unpack, and ci_pack as its inverse; σ blocked under a workspace limit against unblocked; and the
 // refusals.
 
 #include <gtest/gtest.h>
@@ -638,6 +638,56 @@ TEST(CiSigmaGpu, BlockedMatchesUnblockedAtCas1212) {
   }
 }
 
+// ci_pack of k random swap-symmetric full vectors over m strings is the
+// host's packing, and ci_unpack gives the vectors back, each to 1e-15; of
+// vectors that are not symmetric it is the packing of their symmetric part,
+// ci_unpack's adjoint. m = 924 is CAS(12,12)'s singlet set.
+TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr std::int32_t k = 3;
+  for (const std::int32_t m : {1, 4, 6, 20, 70, 924}) {
+    SCOPED_TRACE(std::format("m = {}", m));
+    const auto strings = static_cast<std::size_t>(m);
+    const std::size_t full_size = strings * strings * k;
+    const std::size_t packed_size = strings * (strings + 1) / 2 * k;
+    const std::vector<double> c =
+        random_symmetric_block(strings, k, 31 + static_cast<std::uint64_t>(m));
+    const std::vector<double> r = random_block(full_size, 37 + static_cast<std::uint64_t>(m));
+    for (const bool symmetric : {true, false}) {
+      SCOPED_TRACE(symmetric ? "symmetric" : "not symmetric");
+      const std::vector<double> &v = symmetric ? c : r;
+      const auto x = to_device(res, v);
+      fb::Buffers::device<double> packed(packed_size, res.device());
+      ASSERT_TRUE(fb::ci_pack(res, m, k, x.data(), packed.data()).has_value());
+      const std::vector<double> got = to_host(res, packed);
+      std::vector<double> part(full_size);
+      for (std::size_t j = 0; j < k; ++j) {
+        for (std::size_t a = 0; a < strings; ++a) {
+          for (std::size_t b = 0; b < strings; ++b) {
+            const std::size_t at = (j * strings * strings) + (a * strings) + b;
+            part[at] = 0.5 * (v[at] + v[(j * strings * strings) + (b * strings) + a]);
+          }
+        }
+      }
+      const std::vector<double> want = pack(part, strings);
+      ASSERT_EQ(got.size(), want.size());
+      for (std::size_t i = 0; i < got.size(); ++i) {
+        ASSERT_NEAR(got[i], want[i], 1e-15) << "element " << i;
+      }
+      fb::Buffers::device<double> unpacked(full_size, res.device());
+      ASSERT_TRUE(fb::ci_unpack(res, m, k, packed.data(), unpacked.data()).has_value());
+      const std::vector<double> back = to_host(res, unpacked);
+      for (std::size_t i = 0; i < full_size; ++i) {
+        ASSERT_NEAR(back[i], part[i], 1e-15) << "element " << i;
+        if (symmetric) {
+          ASSERT_NEAR(back[i], v[i], 1e-15) << "element " << i;
+        }
+      }
+    }
+  }
+}
+
 TEST(CiSigmaGpu, Refuses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -669,6 +719,9 @@ TEST(CiSigmaGpu, Refuses) {
   EXPECT_TRUE(sigma->apply(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
   EXPECT_FALSE(fb::ci_unpack(res, -1, 1, x.data(), y.data()).has_value());
   EXPECT_FALSE(fb::ci_unpack(res, 4, -1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(fb::ci_pack(res, -1, 1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(fb::ci_pack(res, 4, -1, x.data(), y.data()).has_value());
+  EXPECT_TRUE(fb::ci_pack(res, 4, 0, x.data(), y.data()).has_value());
 
   // The symmetric layout wants one set for both spins: (4, 1) and (4, 3) have
   // the same number of strings, and are still two sets.
