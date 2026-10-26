@@ -295,6 +295,13 @@ variant. It does not check the container `name` field.
 - `FREE_BREAKFAST_FAST_TESTS` makes `slow_test.h`'s macro skip the heavy
   validation cases. `cpp-tier.sh` and `cpp-smoke.sh` set it;
   `cpp-slow-tier.sh` is the un-skipped run.
+- **A card can be enumerated and still run nothing**, in which case every GPU
+  case skips and ctest prints `100% passed`. The AMD one wedges with `amdgpu`
+  still bound and the KFD node still listing it, while HIP returns
+  `hipErrorNoDevice`; `devtools/doctor.sh`'s `gpu devices` section reads the
+  PCI device's runtime-PM state and warns rather than reporting the card `ok`,
+  on both sides of the host/container split. The cause is host-side (a reboot
+  fixes it), so believe doctor over the enumeration.
 
 Tests are registered **one ctest entry per gtest case** via
 `gtest_discover_tests(… DISCOVERY_MODE PRE_TEST)`. `PRE_TEST` defers enumeration
