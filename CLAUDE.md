@@ -39,6 +39,14 @@ and a container half and doctor is what tells you which one you are on. On a
 bare host, ~11 warnings (the whole C++ toolchain and the three `/opt` trees) is
 the expected healthy state, not a broken machine.
 
+On the host it also answers a question no test run can: its `gpu kernel
+modules` section asks whether each vendor's **DKMS** module is built for the
+kernel the *next reboot* will pick, not just the running one. Both drivers here
+are out-of-tree, a failed per-kernel rebuild is silent, and the card is lost at
+the reboot rather than at the upgrade — so a warning there means *do not reboot
+until it is fixed*. It is the host-side half of the GPU plumbing; the
+container-side half is the `--device=` lines in `.devcontainer/*/`.
+
 Doctor resolves the tools it reports through `VENV_PATHS`, not `PATH` — the
 cmakelang pair lives in `.venv/bin` on the host and `/opt/venv/bin` in the
 image, and a bare `command -v` called them missing on the host while passing in

@@ -464,6 +464,12 @@ agy:the Antigravity CLI the GPU images ship (docker/install-agy.sh); absent on a
 # installed at CONFIGURE time; and a card present with no toolchain is the
 # normal host state. Both vendors are listed because this project builds for
 # either and a box can have both, while a build targets exactly one.
+#
+# The same list drives doctor's `gpu kernel modules` section, which maps the
+# vendor to its DKMS module (nvidia -> nvidia, amd -> amdgpu) and asks whether
+# that module is built for every bootable kernel -- a card that works today is
+# still lost at the next reboot if the rebuild failed. Adding a vendor here
+# means teaching that mapping too.
 DOCTOR_GPU_VENDORS=${DOCTOR_GPU_VENDORS:-"nvidia amd"}
 
 # Paths that must exist for some slice of the suite to run, one
