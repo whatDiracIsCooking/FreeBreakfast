@@ -21,7 +21,7 @@ free_breakfast_add_gpu_device_library(
 
 # ci_solve is a template over the caller's sigma, instantiated in the
 # consumer's TU, so what it names -- davidson_solve, DeviceResources, the
-# runtime's memcpy (core::wwr), StringSet, CiLayout and ci_unpack
+# runtime's memcpy (core::wwr), StringSet, CiLayout, ci_unpack and ci_pack
 # (ci::sigma) -- is PUBLIC. The FBF_TRY macro
 # expands in the interface unit, so its header is PRIVATE, and the
 # implementation unit alone GMF-includes the bridge and calls orthonormalize,

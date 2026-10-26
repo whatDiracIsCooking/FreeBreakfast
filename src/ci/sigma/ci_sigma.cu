@@ -1,5 +1,6 @@
 // The device half of the GPU sigma: the gather of D from c, the gather of σ
-// from G (whole or by string blocks), the diagonal, the 1-RDM's unpacking, and ci_unpack. The contraction G = D W between the two gathers is
+// from G (whole or by string blocks), the diagonal, the 1-RDM's unpacking,
+// ci_unpack and ci_pack. The contraction G = D W between the two gathers is
 // one gemm, on the module's side. One source for both backends -- nvcc under
 // CUDA, clang -x hip under HIP.
 //
@@ -327,6 +328,27 @@ __global__ void ci_unpack_kernel(const int32_t n_strings, const int64_t elements
   y[at] = a == b ? stored : kCiInvSqrt2 * stored;
 }
 
+// One thread per triangle element of one column: x is k full vectors of
+// n_strings², y the packed ones.
+__global__ void ci_pack_kernel(const int32_t n_strings, const int64_t elements,
+                               const double *const x, double *const y) {
+  const int64_t at = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (at >= elements) {
+    return;
+  }
+  const int64_t packed = static_cast<int64_t>(n_strings) * (n_strings + 1) / 2;
+  const int64_t column = at / packed;
+  int32_t a = 0;
+  int32_t b = 0;
+  ci_triangle_strings(static_cast<int32_t>(at - (column * packed)), a, b);
+  const double *const v = x + (static_cast<size_t>(column) * static_cast<size_t>(n_strings) *
+                               static_cast<size_t>(n_strings));
+  const size_t ab = (static_cast<size_t>(a) * n_strings) + b;
+  const size_t ba = (static_cast<size_t>(b) * n_strings) + a;
+  // ci_unpack's adjoint: √2 times the mean of (a, b) and its mirror.
+  y[at] = a == b ? v[ab] : kCiInvSqrt2 * (v[ab] + v[ba]);
+}
+
 uint32_t ci_blocks(const int64_t items) {
   return static_cast<uint32_t>(math::idivup(items, int64_t{kFourWarps}));
 }
@@ -529,6 +551,16 @@ wwr::wwrError_t ci_unpack(const wwr::wwrStream_t stream, const int32_t n_strings
     return wwr::wwrSuccess;
   }
   ci_unpack_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n_strings, elements, x, y);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t ci_pack(const wwr::wwrStream_t stream, const int32_t n_strings, const int32_t k,
+                        const double *const x, double *const y) {
+  const int64_t elements = static_cast<int64_t>(n_strings) * (n_strings + 1) / 2 * k;
+  if (elements == 0) {
+    return wwr::wwrSuccess;
+  }
+  ci_pack_kernel<<<ci_blocks(elements), kFourWarps, 0, stream>>>(n_strings, elements, x, y);
   return wwr::wwrGetLastError();
 }
 

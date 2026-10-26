@@ -17,11 +17,11 @@ import free_breakfast.core.resources;
 // Re-exported: CiSolverOptions and CiRoots hold its options and info, and a
 // sigma is written against its LinearOperator.
 export import free_breakfast.recipes.davidson;
-// orthonormalize, for stage 2's start; its target comes PUBLIC through
-// recipes::davidson's.
+// orthonormalize, for a caller's start and stage 2's; its target comes
+// PUBLIC through recipes::davidson's.
 import free_breakfast.recipes.orthogonalize;
 import free_breakfast.ci.strings;
-// CiLayout and ci_unpack, for ci_solve's symmetric path.
+// CiLayout, ci_unpack and ci_pack, for ci_solve's symmetric path.
 import free_breakfast.ci.sigma;
 
 #include "diagnostics.h"
@@ -235,6 +235,14 @@ struct CiRoots {
 /// would be without the first, from better guesses, so the roots are as
 /// accurate as an FP64-only solve's.
 ///
+/// @p start, when not empty, replaces the determinant guesses: n_roots unit
+/// CI vectors in host_sigma's layout, as CiRoots::vectors holds them (a
+/// previous solve's roots, say, of a nearby H). They are packed with ci_pack
+/// on the symmetric path, orthonormalized, and start the first stage, so, as
+/// with the guesses, the single-precision stage only chooses where the second
+/// starts; with no first stage they start the second. Empty, the solve is the
+/// one without it, to the bit.
+///
 /// @param sigma    Applies H to a device block of CI vectors (host_sigma's
 ///                 layout); a LinearOperator over dim = alpha.size() ·
 ///                 beta.size().
@@ -242,25 +250,31 @@ struct CiRoots {
 /// @param diagonal diag(H) on the device, dim doubles, as CiSigma::diagonal
 ///                 (or host_diagonal) writes it.
 /// @param n_roots  Roots wanted, in [1, dim].
+/// @param start    Empty, or n_roots · dim device doubles: the starting
+///                 vectors, root r at [r · dim, (r + 1) · dim).
 /// @return The roots. Otherwise InvalidConfig for a shape or option out of
-///         range; davidson_solve's error (MaxIterationsExceeded, Divergence,
+///         range, @p start's size included; Numerical when @p start's
+///         vectors are linearly dependent; davidson_solve's error (MaxIterationsExceeded, Divergence,
 ///         or @p sigma's own); or Numerical when, with a penalty, a root's ⟨S²⟩
 ///         is more than 1e-6 off S(S+1): a state of another spin lay too far
 ///         below for the penalty to lift.
 template <LinearOperator<double> Op>
 [[nodiscard]] Result<CiRoots> ci_solve(DeviceResources &res, Op &sigma, const StringSet &alpha,
                                        const StringSet &beta, const double *const diagonal,
-                                       const int32_t n_roots, const CiSolverOptions &options = {}) {
+                                       const int32_t n_roots, const CiSolverOptions &options = {},
+                                       const std::span<const double> start = {}) {
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
   if (alpha.n_orbitals() != beta.n_orbitals() ||
       dim > static_cast<size_t>(std::numeric_limits<int32_t>::max()) || n_roots < 1 ||
       static_cast<size_t>(n_roots) > dim || !(options.spin_penalty >= 0.0) ||
-      !(options.fp32_tolerance >= 0.0)) {
+      !(options.fp32_tolerance >= 0.0) ||
+      (!start.empty() && start.size() != dim * static_cast<size_t>(n_roots))) {
     return err_config("ci_solve: needs one orbital count, at most an int32_t of determinants, "
-                      "n_roots in [1, {}], spin_penalty >= 0 and fp32_tolerance >= 0 (orbitals {} "
-                      "and {}, n_roots {}, spin_penalty {}, fp32_tolerance {})",
-                      dim, alpha.n_orbitals(), beta.n_orbitals(), n_roots, options.spin_penalty,
-                      options.fp32_tolerance);
+                      "n_roots in [1, {}], spin_penalty >= 0, fp32_tolerance >= 0 and an empty "
+                      "start or n_roots * {} doubles of it (orbitals {} and {}, n_roots {}, "
+                      "spin_penalty {}, fp32_tolerance {}, start {})",
+                      dim, dim, alpha.n_orbitals(), beta.n_orbitals(), n_roots,
+                      options.spin_penalty, options.fp32_tolerance, start.size());
   }
   const auto roots = static_cast<size_t>(n_roots);
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -287,8 +301,11 @@ template <LinearOperator<double> Op>
 
   // Guesses on the 2 · n_roots determinants of lowest diag(H): see ci_guesses
   // and the README for the spread. In the symmetric layout they are triangle
-  // elements, each a determinant and its mirror. The subspace holds up to
-  // 16 · n_roots.
+  // elements, each a determinant and its mirror. Or the caller's n_roots
+  // starting vectors, packed in that layout and orthonormalized: davidson_solve
+  // takes orthonormal columns, and a previous solve's roots are so only to
+  // its convergence. The block holds guess_count columns either way, which
+  // stage 1's X_prev needs. The subspace holds up to 16 · n_roots.
   const auto guess_count = static_cast<int32_t>(std::min(length, 2 * roots));
   const int32_t max_subspace =
       std::max(2 * n_roots, static_cast<int32_t>(std::min(length, 16 * roots)));
@@ -297,7 +314,22 @@ template <LinearOperator<double> Op>
   Buffers::device<double> values(roots, res.device());
   Buffers::device<double> vectors(length * roots, res.device());
   CiSpinSquare spin = FBF_TRY(CiSpinSquare::create(res, alpha, beta));
-  if (layout == CiLayout::symmetric) {
+  int32_t start_count = guess_count;
+  if (!start.empty()) {
+    if (layout == CiLayout::symmetric) {
+      FBF_TRY(ci_pack(res, alpha.size(), n_roots, start.data(), guess.data()));
+    } else {
+      FBF_TRY(
+          gpu_status(wwr::wwrMemcpyAsync(guess.data(), start.data(), dim * roots * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+    }
+    start_count = FBF_TRY(orthonormalize<double>(res, n, n_roots, guess.data(),
+                                                 options.davidson.linear_dependence_floor));
+    if (start_count < n_roots) {
+      return err_numerical("ci_solve: orthonormalizing the {} starting vectors kept {}", n_roots,
+                           start_count);
+    }
+  } else if (layout == CiLayout::symmetric) {
     // diag(H) over the triangle, through penalize_diagonal with no penalty,
     // into shifted until the penalized one overwrites it.
     FBF_TRY(spin.penalize_diagonal(res, 0.0, target, diagonal, shifted.data(), layout));
@@ -352,7 +384,8 @@ template <LinearOperator<double> Op>
                            options.olsen_correction);
   };
 
-  // Stage 1, when the sigma has an apply_fp32: that, to the loose tolerance.
+  // Stage 1, when the sigma has an apply_fp32: that, to the loose tolerance,
+  // from the start_count columns of guess.
   // Running out of iterations or subspace there is no error, since stage 2
   // starts from whatever Ritz vectors it left. Stage 2 is the solve there
   // would be without stage 1, over apply to the caller's tolerance, only from
@@ -363,7 +396,6 @@ template <LinearOperator<double> Op>
   // X_prev is written into the guesses' second n_roots columns, which hold
   // 2 · n_roots whenever the space does.
   int32_t fp32_iterations = 0;
-  int32_t start_count = guess_count;
   if constexpr (requires { sigma.apply_fp32(res, n_roots, guess.data(), vectors.data()); }) {
     if (options.fp32_tolerance > options.davidson.residual_tolerance) {
       DavidsonOptions loose = options.davidson;
@@ -373,7 +405,7 @@ template <LinearOperator<double> Op>
       double *const previous = with_previous ? guess.data() + (length * roots) : nullptr;
       const auto stage =
           davidson_solve<double>(res, op, precondition, n, n_roots, max_subspace, guess.data(),
-                                 guess_count, values.data(), vectors.data(), loose, previous);
+                                 start_count, values.data(), vectors.data(), loose, previous);
       op.fp32 = false;
       if (!stage && stage.error().kind != ErrorKind::MaxIterationsExceeded &&
           stage.error().kind != ErrorKind::Divergence) {

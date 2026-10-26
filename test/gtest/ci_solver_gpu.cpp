@@ -4,7 +4,8 @@
 // its second singlet, so the singlets come out in order only if the spin
 // penalty works; with no penalty the triplet appears among them. Over CiSigma,
 // a singlet solve runs in the symmetric layout, and the test records that it
-// did.
+// did; a solve started from converged roots, on either path, takes a step or
+// two per stage, and an empty start changes nothing.
 
 #include <gtest/gtest.h>
 
@@ -359,6 +360,98 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
   }
 }
 
+// Started from a solve's own converged roots (CiRoots::vectors, the full
+// layout), ci_solve converges in at most two iterations per stage to the same
+// energies, to 1e-12, and 1-RDMs, to 1e-10 where the root is not one of a
+// degenerate level: singlets on the symmetric path, where the start is
+// packed, and triplets on the full one; in two stages and in the FP64 one
+// alone. An empty start is the solve without one, to the bit.
+TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::json cases = load_cases();
+  ASSERT_FALSE(cases.empty());
+  for (const auto &entry : cases) {
+    for (const std::int32_t shift : {0, 1}) {
+      const Case c = make_case(entry, shift);
+      SCOPED_TRACE(std::format("{}, M_s {}", c.name, shift));
+      auto sigma = fb::CiSigma::create(res, c.alpha, c.beta);
+      ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+      ASSERT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
+      fb::Buffers::device<double> diagonal(c.diagonal.size(), res.device());
+      ASSERT_TRUE(sigma->diagonal(res, diagonal.data()).has_value());
+      const double s2 = shift == 0 ? 0.0 : 2.0;
+      const std::vector<std::size_t> golden = golden_of_spin(c.roots, s2);
+      const auto m = static_cast<std::size_t>(c.n);
+      const std::size_t dim = c.diagonal.size();
+      const std::set<fb::CiLayout> layout{shift == 0 ? fb::CiLayout::symmetric
+                                                     : fb::CiLayout::full};
+
+      for (const double fp32_tolerance : {fb::CiSolverOptions{}.fp32_tolerance, 0.0}) {
+        SCOPED_TRACE(std::format("fp32_tolerance {}", fp32_tolerance));
+        fb::CiSolverOptions options;
+        options.fp32_tolerance = fp32_tolerance;
+        const auto cold = fb::ci_solve(res, *sigma, c.alpha, c.beta, diagonal.data(), 3, options);
+        ASSERT_TRUE(cold.has_value()) << cold.error().message;
+        const std::vector<double> cold_vectors =
+            on_host(res, cold->vectors.data(), cold->vectors.num_elements());
+
+        const auto empty =
+            fb::ci_solve(res, *sigma, c.alpha, c.beta, diagonal.data(), 3, options, {});
+        ASSERT_TRUE(empty.has_value()) << empty.error().message;
+        EXPECT_EQ(empty->energies, cold->energies);
+        EXPECT_EQ(empty->spin_squares, cold->spin_squares);
+        EXPECT_EQ(empty->davidson.iterations, cold->davidson.iterations);
+        EXPECT_EQ(empty->fp32_iterations, cold->fp32_iterations);
+        EXPECT_EQ(on_host(res, empty->vectors.data(), empty->vectors.num_elements()), cold_vectors);
+
+        RecordingSigma recorded{*sigma, {}};
+        const auto warm = fb::ci_solve(
+            res, recorded, c.alpha, c.beta, diagonal.data(), 3, options,
+            std::span<const double>{cold->vectors.data(), cold->vectors.num_elements()});
+        ASSERT_TRUE(warm.has_value()) << warm.error().message;
+        EXPECT_EQ(recorded.layouts, layout);
+        EXPECT_LE(warm->davidson.iterations, 2);
+        EXPECT_LE(warm->fp32_iterations, 2);
+        if (fp32_tolerance > 0.0) {
+          EXPECT_GT(warm->fp32_iterations, 0);
+        } else {
+          EXPECT_EQ(warm->fp32_iterations, 0);
+        }
+        std::cout << std::format("[ warm     ] {} M_s {} fp32_tolerance {}: cold {} + {}, warm "
+                                 "{} + {} iterations\n",
+                                 c.name, shift, fp32_tolerance, cold->fp32_iterations,
+                                 cold->davidson.iterations, warm->fp32_iterations,
+                                 warm->davidson.iterations);
+        expect_roots(res, c, *warm, s2);
+
+        const std::vector<double> warm_vectors =
+            on_host(res, warm->vectors.data(), warm->vectors.num_elements());
+        for (std::size_t r = 0; r < 3; ++r) {
+          SCOPED_TRACE(std::format("root {}", r));
+          EXPECT_NEAR(warm->energies[r], cold->energies[r], 1e-12);
+          if (c.roots[golden[r]]["degenerate"].get<bool>()) {
+            continue;
+          }
+          std::vector<double> warm_gamma(m * m);
+          std::vector<double> cold_gamma(m * m);
+          ASSERT_TRUE(fb::rdm1(c.alpha, c.beta,
+                               std::span<const double>{warm_vectors}.subspan(r * dim, dim),
+                               warm_gamma)
+                          .has_value());
+          ASSERT_TRUE(fb::rdm1(c.alpha, c.beta,
+                               std::span<const double>{cold_vectors}.subspan(r * dim, dim),
+                               cold_gamma)
+                          .has_value());
+          for (std::size_t i = 0; i < m * m; ++i) {
+            EXPECT_NEAR(warm_gamma[i], cold_gamma[i], 1e-10) << "element " << i;
+          }
+        }
+      }
+    }
+  }
+}
+
 // With no penalty, a sigma that takes a layout still gets the full one: the
 // symmetric layout holds even S alone, and λ = 0 asks for every spin.
 TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
@@ -431,6 +524,14 @@ TEST(CiSolver, RejectsBadShapes) {
   negative_fp32.fp32_tolerance = -1.0;
   EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 1, negative_fp32)),
             invalid);
+  // A start is n_roots vectors, and independent ones.
+  const fb::Buffers::device<double> zeros =
+      on_device(res, std::vector<double>(3 * c.diagonal.size(), 0.0));
+  const std::span<const double> start{zeros.data(), zeros.num_elements()};
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 2, {}, start)),
+            invalid);
+  EXPECT_EQ(kind(fb::ci_solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3, {}, start)),
+            std::optional{fb::ErrorKind::Numerical});
   EXPECT_EQ(sigma.applies, 0);
 
   std::vector<double> vector(c.diagonal.size(), 0.0);

@@ -57,8 +57,12 @@ struct CasscfIteration {
   double gradient_norm;
   /// @brief The trust radius the next step was taken under.
   double trust_radius;
-  /// @brief Davidson iterations of this iteration's CI.
+  /// @brief Davidson iterations of this iteration's CI: its final,
+  /// double-precision stage (CiRoots::davidson).
   int32_t ci_iterations;
+  /// @brief Iterations of the single-precision stage before it
+  /// (CiRoots::fp32_iterations), 0 when there was none.
+  int32_t ci_fp32_iterations;
   /// @brief Augmented-Hessian solves of the step taken from here (0 when
   /// converged or rejected).
   int32_t micro_iterations;
@@ -102,7 +106,8 @@ struct CasscfSolution {
 /// are w_r, empty for equal ones.
 ///
 /// Each macro iteration: @c casscf_integrals over the current C; @c ci_solve
-/// over the GPU sigma, from its own guesses (no warm start yet), its residual
+/// over the GPU sigma, warm-started from the last iteration's roots (the first
+/// from its own guesses), its residual
 /// tolerance min(1e-8, 1e-4 ||g||^2) of the last iteration, held at or above
 /// options.ci's; @c CiRdm::rdm12 at @p weights and @c casscf_fock. Converged
 /// when |Delta E| < conv_tol and ||g|| < conv_tol_grad. A rise of the energy

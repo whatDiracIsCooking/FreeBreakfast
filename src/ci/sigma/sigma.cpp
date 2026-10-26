@@ -1,6 +1,6 @@
 /// @file
 /// @brief The host sigma and diagonal, CiSigma's uploads and launches, and
-/// ci_unpack.
+/// ci_unpack and ci_pack.
 
 module;
 
@@ -189,6 +189,15 @@ Status ci_unpack(DeviceResources &res, const int32_t n_strings, const int32_t k,
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   return gpu_status(device::ci_unpack(res.stream(), n_strings, k, x, y));
+}
+
+Status ci_pack(DeviceResources &res, const int32_t n_strings, const int32_t k,
+               const double *const x, double *const y) {
+  if (n_strings < 0 || k < 0) {
+    return err_config("ci_pack: {} vectors over {} strings", k, n_strings);
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  return gpu_status(device::ci_pack(res.stream(), n_strings, k, x, y));
 }
 
 // The bytes of D one chunk of apply's rows may take: big enough that the gemm

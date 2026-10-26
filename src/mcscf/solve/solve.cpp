@@ -390,8 +390,13 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     ci.davidson.residual_tolerance =
         std::max(options.ci.davidson.residual_tolerance,
                  std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
-    // Cold each iteration: no warm start yet (#282, see the README).
-    roots.emplace(FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci)));
+    // Warm from the last iteration's roots, rejected or not: the nearest H's
+    // (see the README). The first is cold, from ci_solve's own guesses.
+    const std::span<const double> start =
+        roots ? std::span<const double>{roots->vectors.data(), ci_block}
+              : std::span<const double>{};
+    CiRoots solved = FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci, start));
+    roots = std::move(solved);
 
     // 3. The weighted RDMs, the energy and the gradient.
     FBF_TRY(ci_rdm.rdm12(res, w, roots->vectors.data(), gamma_device.data(), gamma2_device.data()));
@@ -405,7 +410,9 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     last_gradient = g_norm;
     const double energy = fock.energy;
     const double change = have_accepted ? energy - e_accepted : 0.0;
-    CasscfIteration record{energy, change, g_norm, radius, roots->davidson.iterations, 0, 0, true};
+    CasscfIteration record{
+        energy, change, g_norm, radius, roots->davidson.iterations, roots->fp32_iterations,
+        0,      0,      true};
 
     // 4. Convergence, then the rejection of a rise.
     const bool converged = n_pairs == 0 || (have_accepted && std::abs(change) < options.conv_tol &&
@@ -811,10 +818,10 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     step_xhx = casscf_dot(x_total, hx_total);
     step_norm = std::sqrt(casscf_dot(x_total, x_total));
     log.push_back(record);
-    FBF_LOG_DEBUG("casscf_solve: macro {} E {:.12f} dE {:.3e} |g| {:.3e} ci {} micro {} Hx {} "
+    FBF_LOG_DEBUG("casscf_solve: macro {} E {:.12f} dE {:.3e} |g| {:.3e} ci {} + {} micro {} Hx {} "
                   "step {:.3e}",
-                  cycle, energy, change, g_norm, record.ci_iterations, record.micro_iterations,
-                  record.hessian_products, step_norm);
+                  cycle, energy, change, g_norm, record.ci_fp32_iterations, record.ci_iterations,
+                  record.micro_iterations, record.hessian_products, step_norm);
 
     // 6. C <- C exp(kappa(x)).
     FBF_TRY(casscf_upload(res, x_total, step.data()));
