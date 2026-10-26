@@ -312,6 +312,41 @@ TEST(Davidson, CollapseKeepsThePreviousRitzVectorsFloat) {
   check_collapse_keeps_previous<float>(true);
 }
 
+// linear_dependence_floor is a fraction of each correction, not a norm: the
+// problem scaled by 2^-40, with the residual as the correction, converges in
+// the iterations and to the values of the unscaled one. Its corrections are
+// ~1e-13 at the first iteration, and an absolute floor dropped all of them
+// there, Divergence.
+TEST(Davidson, LinearDependenceFloorIsRelative) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kRoots = Problem<double>::kRoots;
+  const double scale = std::ldexp(1.0, -40);
+  for (const bool canonical : {false, true}) {
+    SCOPED_TRACE(std::format("canonical_orthonormalization {}", canonical));
+    const auto solve = [canonical](double factor) {
+      fb::DeviceResources res{0};
+      Problem<double> p{res};
+      for (double &element : p.a) {
+        element *= factor;
+      }
+      p.d_a = to_device(res, p.a);
+      p.op.a = p.d_a.data();
+      p.precondition.identity = true;
+      auto options = Problem<double>::converging_options();
+      options.canonical_orthonormalization = canonical;
+      const auto info = p.solve(20, options);
+      EXPECT_TRUE(info) << factor << ": " << info.error().message;
+      return std::pair{info ? info->iterations : 0, to_host(res, p.values.data(), kRoots)};
+    };
+    const auto [iterations, values] = solve(1.0);
+    const auto [scaled_iterations, scaled_values] = solve(scale);
+    EXPECT_EQ(scaled_iterations, iterations);
+    for (std::int32_t r = 0; r < kRoots; ++r) {
+      EXPECT_NEAR(scaled_values[r] / scale, values[r], 1e-12 * std::abs(values[r])) << r;
+    }
+  }
+}
+
 // previous_eigenvectors: on every return, X_prev is the Ritz vectors a run
 // one iteration shorter, otherwise the same, returns as its own X. Unrestarted
 // (max_subspace = n), collapsing onto [X, X_prev] (3 * n_roots) and onto X
