@@ -19,6 +19,7 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 | `CiSigma::apply_fp32(res, k, x, y, layout = full)` | The same Y = H X over the same double blocks, D, G and the gemm in float, to ~1e-7 relative; `ci_solve`'s first stage; `Status` |
 | `CiSigma::set_workspace_limit(bytes)` | Bound `apply`'s and `apply_fp32`'s device workspace; past it G is computed a block of strings at a time (below) |
 | `CiSigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
+| `CiSigma::exchange()` | The device (ij\|ji), n × n, that `ci_solve`'s spin-averaged diagonal takes; null before `set_integrals` |
 | `CiSigma::rdm1(res, c, gamma, layout)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector, full or packed (`layout`, default full), into n × n device doubles; `Status` |
 | `CiSigma::size(layout = full)` | The operator's n: alpha.size() · beta.size(), or the symmetric layout's alpha.size() (alpha.size() + 1) / 2 |
 | `CiLayout` | `full`, every determinant; or `symmetric`, the packed triangle of a vector symmetric under the swap of the two strings |

@@ -59,14 +59,22 @@ namespace free_breakfast::device {
 /// in J. With @p symmetric, J runs over the triangle and @p diagonal is still
 /// the full layout's.
 ///
+/// With @p exchange (device, n × n, (ij|ji)) not null, diagonal_J is
+/// spin-averaged first: + Σ_{i<j open} (δ_{σ_i σ_j} − p) K_ij over J's open
+/// shells, p = [n_α(n_α − 1) + n_β(n_β − 1)] / [n_o(n_o − 1)] with n_α and n_β
+/// of the n_o open shells α and β: the average of diagonal over the
+/// determinants of J's configuration.
+///
 /// One thread per determinant counts its α links a†_p a_p whose β partner
 /// a†_p a_p does not annihilate J's β string: the doubly occupied orbitals.
+/// The same links give the α occupations, and the slot table's (p, p)
+/// entries the β ones.
 [[nodiscard]] wwr::wwrError_t ci_spin_diagonal(wwr::wwrStream_t stream, bool symmetric,
                                                int32_t n_det, int32_t n_beta, int32_t n,
                                                const int32_t *alpha_links, int32_t alpha_per,
                                                const int32_t *beta_slots, double constant,
-                                               double shift, double scale, const double *diagonal,
-                                               double *shifted);
+                                               double shift, double scale, const double *exchange,
+                                               const double *diagonal, double *shifted);
 
 /// @brief out_i = in_i / (theta − shifted_i) for the @p n elements of one
 /// column, the denominator held off zero at ±1e-3: M⁻¹ in, M = theta − shifted.

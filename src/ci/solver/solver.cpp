@@ -177,13 +177,14 @@ Status CiSpinSquare::penalize(DeviceResources &res, const int32_t k, const doubl
 
 Status CiSpinSquare::penalize_diagonal(DeviceResources &res, const double lambda,
                                        const double target, const double *const diagonal,
-                                       double *const shifted, const CiLayout layout) {
+                                       double *const shifted, const CiLayout layout,
+                                       const double *const exchange) {
   FBF_TRY(check(res, layout));
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::ci_spin_diagonal(res.stream(), layout == CiLayout::symmetric,
-                                             size(layout), n_beta_, n_orbitals_,
-                                             alpha_links_.data(), alpha_per_, beta_slots_.data(),
-                                             constant_, target, lambda, diagonal, shifted));
+  return gpu_status(
+      device::ci_spin_diagonal(res.stream(), layout == CiLayout::symmetric, size(layout), n_beta_,
+                               n_orbitals_, alpha_links_.data(), alpha_per_, beta_slots_.data(),
+                               constant_, target, lambda, exchange, diagonal, shifted));
 }
 
 Status ci_precondition(DeviceResources &res, const int32_t n, const std::span<const double> theta,
