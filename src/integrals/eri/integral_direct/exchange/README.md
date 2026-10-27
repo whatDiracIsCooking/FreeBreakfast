@@ -35,8 +35,21 @@ FelizJueves's `kb_driver` (`test/kblock_driver.py`) and `launch_kblock.py` are
 the launch contract. K has no symmetry inside a pair, so its bra `(a, c)` and
 ket `(b, d)` are **ordered** shell pairs, the first shell of each an output
 index: every [ordered class](pairs/README.md) is both a bra class and a ket
-class, and the generated `kb<la, lc, lb, ld>` (`kernels/kb/`, dispatched as
-`kb_kernels[la][lc][lb][ld]`) is one per (bra class, ket class). Each record's
+class, and one generated kernel per (bra class, ket class) adds it into `K`:
+`kb<la, lc, lb, ld>` (`kernels/kb/`, dispatched as `kb_kernels[la][lc][lb][ld]`)
+when every shell is at most d, and FelizJueves's rolled
+`kbr<la, lc, lb, ld>` (`kernels/kbr/`, `kbr_kernels`) when any shell is f,
+FelizJueves's rule "through d kb, at f kbr" (#580). `kbr` is `kb`'s mapping,
+screen and output with two changes: `E` is an input, each record's undressed
+`E^{la lb}` (nonzero entries, record-major; the ket's odd-`|t|` entries
+negated) made once per basis by `exchange_e_table` into the ordered classes'
+`e_bra` and `e_ket`, only for a basis with an f shell; and its contraction is
+loops over five class tables (the two `E` patterns and `hpq`, compiled in as
+device arrays, `kernels/kbr/kbr_tables.h`), so its text does not grow with the
+class. A `kb` at f is never emitted: `kb_33_33` is 22 MB of source and never
+left cicc (FelizJueves #569). K's limits are `kExchangeMaxMomentum` (f) and
+`kExchangeKbMaxMomentum` (d) in `helpers/exchange_helpers_bridge.h`, which
+host units read and `exchange_launch.cu` checks against the two tables. Each record's
 Schwarz bound is the ordered classes' `record_bound`, FelizJueves's **dressed**
 `ao.k.record_bounds`, formed once per basis ([`pairs/`](pairs/README.md)); `kb`
 reads it as `Ip` on the bra and `Iq` on the ket, and the reach and `G_max`
@@ -190,17 +203,19 @@ What the kernels leave to the launcher, and how it is supplied:
 | `dmax` | each block's `F_ab`, `n_blk` doubles beside the table (`exchange_factors`, per call) | constant within a block, so the sorted `break`s stay exact |
 | `K`, `n_ao` | `K` itself, zeroed | lane 0 `atomicAdd`s the reduced block at `(ko_a, ko_b)`: no two blocks of a launch meet, and launches of several class pairs, from several streams, need no ordering |
 | the launch | grid `n_blk`, block `kb_block_dim = {1, FJ_WAVEFRONT}`, **no dynamic shared memory** | `kb`'s `Ksh[(n_p + n_a n_b) · FJ_WAVEFRONT]` is static, sized for exactly that block |
+| `kbr` only: `Eac`, `Ebd` | the bra class's `e_bra`, the ket class's `e_ket` | in place of `pa_*` … `qd_*`, which `kbr` does not read |
+| `kbr` only: `ac_*`, `bd_*`, `hpq` | `kbr_e_ptr` / `kbr_e_col` at the bra pair's and the ket pair's offsets, `kbr_hpq` at `(la + lc, lb + ld)`'s (`kbr_tables.h`, by `wwrGetSymbolAddress`) | constants of the class, written by the emitter from FelizJueves's `tables(am)` |
 
 **The shared-memory budget is checked at compile time.** `Ksh` is static, so
 `exchange_launch.cu` `static_assert`s the formula
 `(n_p + n_a n_b) · kb_block_dim[1] · 8` bytes, `n_p = (lp+1)(lp+2)(lp+3)/6`,
-`lp = la + lc`, at the table's largest class, today `(dd|dd)`, against 48 KiB:
-71 slots, 18,176 B at 32 lanes and 36,352 B at 64. Beside it, the table is
-checked square, and `kb_block_dim` against `kWarpSize`. The launcher's limit is
-the table's own extent, not `kMaxAngularMomentum`: K moves to a higher l when
-its kernels are emitted for one. `exchange_check`, the helpers and the build's
-storage still hold the tree-wide `kMaxAngularMomentum` until #348. The footprint is
-`kernel_k`'s, unchanged.
+`lp = la + lc`, at the tables' largest class, `(ff|ff)`, against 48 KiB: 184
+slots, 47,104 B at 32 lanes, just under. At 64 lanes it is 94,208 B, so a
+wave64 build stops at that assert. Beside it, both tables are checked square,
+`kb_block_dim` against `kWarpSize` and `kbr_block_dim`, and the two tables'
+extents against `kExchangeMaxMomentum` and `kExchangeKbMaxMomentum`, the limits
+`exchange_check`, the helpers and the build's storage read in place of the
+tree-wide `kMaxAngularMomentum`. The footprint is `kernel_k`'s, unchanged.
 
 **Scratch.** As J's is `CoulombPairClass`'s, K's is `OrderedPairClass`'s,
 allocated with the records once per basis, so an SCF loop allocates none of it
@@ -224,12 +239,13 @@ the basis's Cartesian AO count are read on the host off the classes
 (`n_shells`, `n_ao`); `exchange` checks the density's order against the
 latter. The records themselves are device only.
 
-**One text serves both warp widths.** `kb` is emitted `any_wavefront`: its
+**One text serves both warp widths.** `kb` and `kbr` are emitted `any_wavefront`: its
 shuffles and its shared array read `FJ_WAVEFRONT`, which `deps/CMakeLists.txt`
 sets from `WWR_WARP_SIZE`.
 
 **Generated kernels are committed, not built.** `tools/emit_exchange_kernels.py`
-writes `kernels/kb/` from the FelizJueves submodule; re-run it after bumping the
+writes `kernels/kb/` and `kernels/kbr/` (with `kbr_tables.h`) from the
+FelizJueves submodule; re-run it after bumping the
 submodule. `kernels/.clang-format` turns formatting off, and
 `devtools/check-int-types.py` skips a file by FelizJueves's banner, so the files
 stay byte-for-byte as emitted: a fix belongs in the generator.
@@ -293,7 +309,7 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 
 | Symbol | Role |
 |---|---|
-| `exchange(res, classes, density, k, tau = 1e-13, symmetry = DensitySymmetry::Symmetric)` | `Status`: the Cartesian K of `density` into `k`, from the whole set of `ordered_pair_classes` of the same basis, in its order, screened at `tau` (`0` screens nothing), by the `a <= b` blocks, the rest mirrored as `symmetry` says (a contract on `density`, unchecked). Writes the classes' scratch. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, classes of a basis of another order, a subset or reordering of the classes, or `k.n()^2` past `INT32_MAX` |
+| `exchange(res, classes, density, k, tau = 1e-13, symmetry = DensitySymmetry::Symmetric)` | `Status`: the Cartesian K of `density` into `k`, from the whole set of `ordered_pair_classes` of the same basis, in its order, screened at `tau` (`0` screens nothing), by the `a <= b` blocks, the rest mirrored as `symmetry` says (a contract on `density`, unchecked). Writes the classes' scratch. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above f, classes of a basis of another order, a subset or reordering of the classes, or `k.n()^2` past `INT32_MAX` |
 | `DensitySymmetry` | `Symmetric` or `Antisymmetric`: the density's, which `K` shares, and the mirror's sign. A general `D` is one call per part |
 | `exchange_block_factors(res, classes, density, tau = 1e-13)` | `Result<std::vector<double>>`: every block's density factor `F_ab` as `exchange` makes it for the same arguments (the same code path, with no `K`: no zeroing, no `kb`, no mirror), read back, bra class major, then ket class, then table order. A diagnostic: how many blocks the decay screens below `max\|D\|` decides whether it pays. Synchronizes `res.stream()` |
 | `OrderedPairClass`, `ordered_pair_classes`, ... | re-exported from [`pairs/`](pairs/README.md) |
@@ -301,8 +317,10 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 ## Tests
 
 `test/gtest/exchange_gpu.cpp`: `K` of H₂O in STO-3G and cc-pVDZ (their
-Hilbert densities) and of an H₁₀ chain in cc-pVDZ (five H₂ 4 bohr apart, its
-converged RHF density, which decays) against libcint's `vk` of the same
+Hilbert densities), of an H₁₀ chain in cc-pVDZ (five H₂ 4 bohr apart, its
+converged RHF density, which decays), and of CO in cc-pVTZ (an f shell on each
+atom, so every class through `(ff|ff)`, the 175 with an f shell on `kbr`:
+`kbr`'s first libcint check on a molecule) against libcint's `vk` of the same
 density, through the golden data in `test/gtest/data/exchange/`, within
 `1e-12 · max|K|` at `tau = 0`, at the default `1e-13` and at `1e-14` (the table
 above; each run records its worst error and how far the screen moved `K`).
@@ -344,8 +362,9 @@ their `group_start`, `dc` rows and block tables among them, are
 | `exchange.cppm` | Module interface: `exchange`, `DensitySymmetry`, `exchange_block_factors`, the pairs re-exported |
 | `exchange.cpp` | The build: the checks, the per-call buffers, the phases |
 | `exchange_bridge.h` | The launchers, declared once for the module and the device TU |
-| `exchange_launch.cu` | The `kb` launcher; the rank-table kernel; the compile-time checks of the table, the block and the shared-memory budget |
-| `helpers/` | `max\|D\|`, the `Dcd` gather, the block table (which `pairs/` makes) and its factors, the shell starts and the signed mirror, the decay's bound maximum, AO centres, group geometry and fit, and the E tables of FelizJueves's rolled kernel `kbr` (`e_table.cu`, `exchange_e_table`: each record's undressed `E^{la lb}`, nonzero entries, record-major, the ket's odd-`\|t\|` entries negated, through f; built and checked, not yet read by the build, #348), a device library of their own |
-| `kernels/kb/` | The generated units and their template header `kb.h` |
+| `exchange_launch.cu` | The `kb` / `kbr` launcher; the rank-table kernel; the compile-time checks of the tables, their limits, the block and the shared-memory budget |
+| `helpers/` | `max\|D\|`, the `Dcd` gather, the block table (which `pairs/` makes) and its factors, the shell starts and the signed mirror, the decay's bound maximum, AO centres, group geometry and fit, and the E tables of FelizJueves's rolled kernel `kbr` (`e_table.cu`, `exchange_e_table`: each record's undressed `E^{la lb}`, nonzero entries, record-major, the ket's odd-`\|t\|` entries negated, through f; `kbr`'s `Eac` and `Ebd`), a device library of their own |
+| `kernels/kb/` | The generated units through d and their template header `kb.h` |
+| `kernels/kbr/` | The generated rolled units with an f shell, their template header `kbr.h`, and the class tables `kbr_tables.h` |
 | `pairs/` | The ordered pair classes: their own module and view header library |
 | `CMakeLists.txt` | The device library, its launcher among the kernels, and the module |

@@ -113,6 +113,10 @@ static_assert(std::extent_v<decltype(kETableKernels), 1> ==
                   std::extent_v<decltype(kETableKernels), 0>,
               "the E table kernels are square in (la, lb)");
 
+// kbr reads a table of every class K takes.
+static_assert(kETableMaxMomentum >= fb::device::kExchangeMaxMomentum,
+              "the E table kernels stop below K's limit, kExchangeMaxMomentum");
+
 } // namespace
 
 namespace free_breakfast::device {

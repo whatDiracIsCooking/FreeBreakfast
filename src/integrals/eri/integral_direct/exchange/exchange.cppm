@@ -94,7 +94,7 @@ enum class DensitySymmetry { Symmetric, Antisymmetric };
 ///
 /// @return Success; InvalidConfig if @p tau is negative or NaN, if @p res is
 ///         not on @p k's, @p density's or @p classes' device, if @p density and
-///         @p k differ in order, if a class is above d, if the classes are of a
+///         @p k differ in order, if a class is above f, if the classes are of a
 ///         basis of another order than @p k's, if @p classes are not one whole
 ///         set in its order (a subset, or reordered), or if k.n() is too large
 ///         for the kernels' 32-bit index (k.n()^2 above INT32_MAX); or the

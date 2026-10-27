@@ -28,6 +28,14 @@
 
 namespace free_breakfast::device {
 
+/// @brief The largest momentum kernels/record_bound's table covers, f, the
+/// dressed bounds' limit: written by tools/emit_exchange_kernels.py with K's
+/// kernels, and checked against the table in mmd_launch.cu, which a host
+/// module unit cannot include. pair_bound's limit is not this one: that
+/// table comes from tools/emit_one_electron_kernels.py, and mmd.cpp gates it
+/// on the tree-wide kMaxAngularMomentum.
+inline constexpr int32_t kRecordBoundMaxMomentum = 3;
+
 /// @brief What a class's records are formed from, on the device: the basis's
 /// shells and primitives, and the class's shell pairs.
 ///
@@ -169,8 +177,8 @@ struct PrimitivePairRecords {
 /// factor underflows gets exactly 0.0.
 ///
 /// @return The launch status (wwrErrorInvalidValue if the view has no
-///         records or no kernel: la and lb at most the largest momentum
-///         kernels/record_bound's table covers).
+///         records or no kernel: la and lb at most
+///         @ref kRecordBoundMaxMomentum).
 ///         Launch errors only.
 [[nodiscard]] wwr::wwrError_t ordered_pair_bound(wwr::wwrStream_t stream,
                                                  const PrimitivePairClassView &cls, double *bound);

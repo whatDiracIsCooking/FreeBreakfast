@@ -1,5 +1,6 @@
 /// @file
-/// @brief The K build's launcher over the generated kb<la, lc, lb, ld>, and the
+/// @brief The K build's launcher over the generated kb<la, lc, lb, ld> and
+/// kbr<la, lc, lb, ld>, and the
 /// small kernel that makes its rank-to-AO table, declared once for the module
 /// that calls them and the device TU that defines them.
 ///
@@ -45,10 +46,17 @@ namespace free_breakfast::device {
 [[nodiscard]] wwr::wwrError_t exchange_rank_offsets(wwr::wwrStream_t stream,
                                                     const OrderedPairClassView &cls, int32_t *off);
 
-/// @brief Add kb<bra.la, bra.lb, ket.la, ket.lb> of @p bra against @p ket into
-/// the n_ao x n_ao @p k, on @p stream: one warp per block of @p blocks, the
-/// block's kets strip-mined across its lanes, every lane walking its bras, and
-/// lane 0 adding the contracted K_ab block into @p k at the block's AO offsets.
+/// @brief Add K class (bra.la, bra.lb | ket.la, ket.lb) of @p bra against @p ket
+/// into the n_ao x n_ao @p k, on @p stream: one warp per block of @p blocks,
+/// the block's kets strip-mined across its lanes, every lane walking its bras,
+/// and lane 0 adding the contracted K_ab block into @p k at the block's AO
+/// offsets.
+///
+/// A class whose every shell is at most kExchangeKbMaxMomentum (d) launches
+/// kb<bra.la, bra.lb, ket.la, ket.lb>, which forms E inline; any other, through
+/// kExchangeMaxMomentum (f), the rolled kbr<...>, which reads @p bra's e_bra
+/// and @p ket's e_ket (exchange_e_table) and its class tables, and is the same
+/// K to rounding.
 ///
 /// @p blocks is the launch's table, @p n_blk blocks (exchange_blocks, the
 /// bra's OrderedPairClass::blocks): each a
@@ -67,7 +75,8 @@ namespace free_breakfast::device {
 /// no ordering among them; zero @p k before the first.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no
-///         kernel, a non-positive @p n_blk or a non-positive @p n_ao).
+///         kernel, a kbr pair whose bra or ket has no E table, a non-positive
+///         @p n_blk or a non-positive @p n_ao).
 [[nodiscard]] wwr::wwrError_t exchange_k(wwr::wwrStream_t stream, const OrderedPairClassView &bra,
                                          const int32_t *dc, const OrderedPairClassView &ket,
                                          int32_t n_dc, double tau, const double *dcd, int32_t n_blk,

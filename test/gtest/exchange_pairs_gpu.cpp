@@ -268,7 +268,11 @@ TEST_P(ExchangePairs, BraTablesAreTheBasissABlocks) {
   const fb::BasisSet basis = h2o(GetParam());
   const Ordered o = ordered_of(res, basis);
   ASSERT_FALSE(o.ordered.empty());
-  std::vector<std::int32_t> n_shells(static_cast<std::size_t>(fb::kMaxAngularMomentum + 1));
+  // Padded through K's limit, f: exchange_helpers_bridge.h's
+  // kExchangeMaxMomentum + 1, which this test cannot include beside its
+  // imports (as kFields below).
+  constexpr std::size_t kKMomenta = 4;
+  std::vector<std::int32_t> n_shells(kKMomenta);
   for (const fb::Shell &sh : basis.shells()) {
     const auto l = static_cast<std::size_t>(sh.angular_momentum());
     if (l >= n_shells.size()) {

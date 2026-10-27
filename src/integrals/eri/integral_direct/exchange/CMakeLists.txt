@@ -7,19 +7,21 @@ add_subdirectory(pairs)
 
 # The K launchers. Device code in its own library, so its language and -x hip
 # never reach a module compile. Its sources are the launcher and the generated
-# kernels kb<la, lc, lb, ld> (kernels/kb/, written by
-# tools/emit_exchange_kernels.py), one per K class through d, 81 in all, each
-# compiled on its own: the launcher includes only kernels/kb/kb.h and launches
-# through its table. Under CUDA that wants relocatable device code, this
+# kernels (written by tools/emit_exchange_kernels.py), one per K class through
+# f, each compiled on its own: kb<la, lc, lb, ld> (kernels/kb/) for the 81
+# classes through d, and the rolled kbr<la, lc, lb, ld> (kernels/kbr/) for the
+# 175 with an f shell. The launcher includes kernels/kb/kb.h, kernels/kbr/kbr.h
+# and kbr's class tables, kernels/kbr/kbr_tables.h, and launches through the
+# two tables. Under CUDA that wants relocatable device code, this
 # library's default, so it must never pass NO_DEVICE_LINKING (nvcc warns #20280
 # without it). The bridge header it shares with the module names int32_t,
 # OrderedPairClassView, wwrStream_t and wwrError_t, hence types_headers,
 # pairs::headers and wwr::device PUBLIC. The kernels include FelizJueves's
 # felizjueves/runtime.h (felizjueves::headers, which also carries FJ_WAVEFRONT
 # = WWR_WARP_SIZE) and the shared eval_boys.h (shared::headers), and the
-# launcher reads kMaxAngularMomentum (angular_momentum.h) and kWarpSize and
-# math::idivup (block_params.h, primitives.h), hence basis::headers and
-# core::kernel_headers; all four PRIVATE.
+# launcher reads K's limits (the helpers' bridge header, by include path),
+# kWarpSize and math::idivup (block_params.h, primitives.h), hence
+# core::kernel_headers; all PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.exchange.device
@@ -106,6 +108,181 @@ free_breakfast_add_gpu_device_library(
   kernels/kb/kb_22_20.cu
   kernels/kb/kb_22_21.cu
   kernels/kb/kb_22_22.cu
+  kernels/kbr/kbr_00_03.cu
+  kernels/kbr/kbr_00_13.cu
+  kernels/kbr/kbr_00_23.cu
+  kernels/kbr/kbr_00_30.cu
+  kernels/kbr/kbr_00_31.cu
+  kernels/kbr/kbr_00_32.cu
+  kernels/kbr/kbr_00_33.cu
+  kernels/kbr/kbr_01_03.cu
+  kernels/kbr/kbr_01_13.cu
+  kernels/kbr/kbr_01_23.cu
+  kernels/kbr/kbr_01_30.cu
+  kernels/kbr/kbr_01_31.cu
+  kernels/kbr/kbr_01_32.cu
+  kernels/kbr/kbr_01_33.cu
+  kernels/kbr/kbr_02_03.cu
+  kernels/kbr/kbr_02_13.cu
+  kernels/kbr/kbr_02_23.cu
+  kernels/kbr/kbr_02_30.cu
+  kernels/kbr/kbr_02_31.cu
+  kernels/kbr/kbr_02_32.cu
+  kernels/kbr/kbr_02_33.cu
+  kernels/kbr/kbr_03_00.cu
+  kernels/kbr/kbr_03_01.cu
+  kernels/kbr/kbr_03_02.cu
+  kernels/kbr/kbr_03_03.cu
+  kernels/kbr/kbr_03_10.cu
+  kernels/kbr/kbr_03_11.cu
+  kernels/kbr/kbr_03_12.cu
+  kernels/kbr/kbr_03_13.cu
+  kernels/kbr/kbr_03_20.cu
+  kernels/kbr/kbr_03_21.cu
+  kernels/kbr/kbr_03_22.cu
+  kernels/kbr/kbr_03_23.cu
+  kernels/kbr/kbr_03_30.cu
+  kernels/kbr/kbr_03_31.cu
+  kernels/kbr/kbr_03_32.cu
+  kernels/kbr/kbr_03_33.cu
+  kernels/kbr/kbr_10_03.cu
+  kernels/kbr/kbr_10_13.cu
+  kernels/kbr/kbr_10_23.cu
+  kernels/kbr/kbr_10_30.cu
+  kernels/kbr/kbr_10_31.cu
+  kernels/kbr/kbr_10_32.cu
+  kernels/kbr/kbr_10_33.cu
+  kernels/kbr/kbr_11_03.cu
+  kernels/kbr/kbr_11_13.cu
+  kernels/kbr/kbr_11_23.cu
+  kernels/kbr/kbr_11_30.cu
+  kernels/kbr/kbr_11_31.cu
+  kernels/kbr/kbr_11_32.cu
+  kernels/kbr/kbr_11_33.cu
+  kernels/kbr/kbr_12_03.cu
+  kernels/kbr/kbr_12_13.cu
+  kernels/kbr/kbr_12_23.cu
+  kernels/kbr/kbr_12_30.cu
+  kernels/kbr/kbr_12_31.cu
+  kernels/kbr/kbr_12_32.cu
+  kernels/kbr/kbr_12_33.cu
+  kernels/kbr/kbr_13_00.cu
+  kernels/kbr/kbr_13_01.cu
+  kernels/kbr/kbr_13_02.cu
+  kernels/kbr/kbr_13_03.cu
+  kernels/kbr/kbr_13_10.cu
+  kernels/kbr/kbr_13_11.cu
+  kernels/kbr/kbr_13_12.cu
+  kernels/kbr/kbr_13_13.cu
+  kernels/kbr/kbr_13_20.cu
+  kernels/kbr/kbr_13_21.cu
+  kernels/kbr/kbr_13_22.cu
+  kernels/kbr/kbr_13_23.cu
+  kernels/kbr/kbr_13_30.cu
+  kernels/kbr/kbr_13_31.cu
+  kernels/kbr/kbr_13_32.cu
+  kernels/kbr/kbr_13_33.cu
+  kernels/kbr/kbr_20_03.cu
+  kernels/kbr/kbr_20_13.cu
+  kernels/kbr/kbr_20_23.cu
+  kernels/kbr/kbr_20_30.cu
+  kernels/kbr/kbr_20_31.cu
+  kernels/kbr/kbr_20_32.cu
+  kernels/kbr/kbr_20_33.cu
+  kernels/kbr/kbr_21_03.cu
+  kernels/kbr/kbr_21_13.cu
+  kernels/kbr/kbr_21_23.cu
+  kernels/kbr/kbr_21_30.cu
+  kernels/kbr/kbr_21_31.cu
+  kernels/kbr/kbr_21_32.cu
+  kernels/kbr/kbr_21_33.cu
+  kernels/kbr/kbr_22_03.cu
+  kernels/kbr/kbr_22_13.cu
+  kernels/kbr/kbr_22_23.cu
+  kernels/kbr/kbr_22_30.cu
+  kernels/kbr/kbr_22_31.cu
+  kernels/kbr/kbr_22_32.cu
+  kernels/kbr/kbr_22_33.cu
+  kernels/kbr/kbr_23_00.cu
+  kernels/kbr/kbr_23_01.cu
+  kernels/kbr/kbr_23_02.cu
+  kernels/kbr/kbr_23_03.cu
+  kernels/kbr/kbr_23_10.cu
+  kernels/kbr/kbr_23_11.cu
+  kernels/kbr/kbr_23_12.cu
+  kernels/kbr/kbr_23_13.cu
+  kernels/kbr/kbr_23_20.cu
+  kernels/kbr/kbr_23_21.cu
+  kernels/kbr/kbr_23_22.cu
+  kernels/kbr/kbr_23_23.cu
+  kernels/kbr/kbr_23_30.cu
+  kernels/kbr/kbr_23_31.cu
+  kernels/kbr/kbr_23_32.cu
+  kernels/kbr/kbr_23_33.cu
+  kernels/kbr/kbr_30_00.cu
+  kernels/kbr/kbr_30_01.cu
+  kernels/kbr/kbr_30_02.cu
+  kernels/kbr/kbr_30_03.cu
+  kernels/kbr/kbr_30_10.cu
+  kernels/kbr/kbr_30_11.cu
+  kernels/kbr/kbr_30_12.cu
+  kernels/kbr/kbr_30_13.cu
+  kernels/kbr/kbr_30_20.cu
+  kernels/kbr/kbr_30_21.cu
+  kernels/kbr/kbr_30_22.cu
+  kernels/kbr/kbr_30_23.cu
+  kernels/kbr/kbr_30_30.cu
+  kernels/kbr/kbr_30_31.cu
+  kernels/kbr/kbr_30_32.cu
+  kernels/kbr/kbr_30_33.cu
+  kernels/kbr/kbr_31_00.cu
+  kernels/kbr/kbr_31_01.cu
+  kernels/kbr/kbr_31_02.cu
+  kernels/kbr/kbr_31_03.cu
+  kernels/kbr/kbr_31_10.cu
+  kernels/kbr/kbr_31_11.cu
+  kernels/kbr/kbr_31_12.cu
+  kernels/kbr/kbr_31_13.cu
+  kernels/kbr/kbr_31_20.cu
+  kernels/kbr/kbr_31_21.cu
+  kernels/kbr/kbr_31_22.cu
+  kernels/kbr/kbr_31_23.cu
+  kernels/kbr/kbr_31_30.cu
+  kernels/kbr/kbr_31_31.cu
+  kernels/kbr/kbr_31_32.cu
+  kernels/kbr/kbr_31_33.cu
+  kernels/kbr/kbr_32_00.cu
+  kernels/kbr/kbr_32_01.cu
+  kernels/kbr/kbr_32_02.cu
+  kernels/kbr/kbr_32_03.cu
+  kernels/kbr/kbr_32_10.cu
+  kernels/kbr/kbr_32_11.cu
+  kernels/kbr/kbr_32_12.cu
+  kernels/kbr/kbr_32_13.cu
+  kernels/kbr/kbr_32_20.cu
+  kernels/kbr/kbr_32_21.cu
+  kernels/kbr/kbr_32_22.cu
+  kernels/kbr/kbr_32_23.cu
+  kernels/kbr/kbr_32_30.cu
+  kernels/kbr/kbr_32_31.cu
+  kernels/kbr/kbr_32_32.cu
+  kernels/kbr/kbr_32_33.cu
+  kernels/kbr/kbr_33_00.cu
+  kernels/kbr/kbr_33_01.cu
+  kernels/kbr/kbr_33_02.cu
+  kernels/kbr/kbr_33_03.cu
+  kernels/kbr/kbr_33_10.cu
+  kernels/kbr/kbr_33_11.cu
+  kernels/kbr/kbr_33_12.cu
+  kernels/kbr/kbr_33_13.cu
+  kernels/kbr/kbr_33_20.cu
+  kernels/kbr/kbr_33_21.cu
+  kernels/kbr/kbr_33_22.cu
+  kernels/kbr/kbr_33_23.cu
+  kernels/kbr/kbr_33_30.cu
+  kernels/kbr/kbr_33_31.cu
+  kernels/kbr/kbr_33_32.cu
+  kernels/kbr/kbr_33_33.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::eri::integral_direct::exchange::pairs::headers
@@ -113,7 +290,7 @@ free_breakfast_add_gpu_device_library(
   LINK_PRIVATE
   felizjueves::headers
   free_breakfast::integrals::shared::headers
-  free_breakfast::basis::headers
+  free_breakfast::integrals::eri::integral_direct::exchange::helpers
   free_breakfast::core::kernel_headers
 )
 

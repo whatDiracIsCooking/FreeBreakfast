@@ -34,7 +34,7 @@ output index (`a` the row, `b` the column). So:
   one class.
 - **A diagonal record** (`off_a == off_b`, a shell against itself) gives one.
 - So a class holds one record per primitive pair of every ordered shell pair
-  of its momenta: all nine classes through d, (p, s) as well as (s, p).
+  of its momenta: all sixteen classes through f, (p, s) as well as (s, p).
 
 The fields keep `mmd`'s names, with "a" the record's **first** shell and "b"
 its second. As the generated `kb<la, lc, lb, ld>` (`../kernels/kb/`) names its
@@ -67,7 +67,7 @@ for `(a, b)` and `(b, a)`. It decays with `|AB|`: on the H₁₀ chain 54 of 2,5
 records are exactly `0.0`, the pair factor underflowed. `mmd` forms it, both
 orientations of every record, once per basis (`bound_ab` and `bound_ba`, by
 the generated `record_bound<la, lb>` in `../../../../mmd/kernels/record_bound/`), so
-this module only picks the orientation's. A class above d has no kernel and
+this module only picks the orientation's. A class above f has no kernel and
 has zeros; the K build refuses it.
 
 **Grouped by first shell, each group sorted by the bound.** Each class's
@@ -115,10 +115,18 @@ So the records are gathered once, already in order; nothing is permuted after.
 `group_start` is formed there too rather than uploaded: an upload would need a
 host source that outlives the asynchronous copy, which is a pinned side and a
 synchronization again. The host sizes everything from the basis alone:
-`n_shells` (shells per momentum, through d at least), `n_ao` (its Cartesian
+`n_shells` (shells per momentum, through f at least, K's limit), `n_ao` (its Cartesian
 AO count) and, per bra, `n_blk` (each table's block count, one per class of
 the set, so its size is the set's class count). A table of more than
 `INT32_MAX / 6` blocks is an `InvalidConfig` error.
+
+**The E tables, for a basis with an f shell.** Such a basis launches the
+rolled `kbr` (`../README.md`), and every class is a side of some `kbr` launch,
+so after its gather each class gets `e_bra` and `e_ket`, its records' undressed
+E table as a bra and the same with odd-`|t|` entries negated as a ket
+(`exchange_e_table`, `n_rec · exchange_e_table_width(la, lb)` doubles each).
+A basis through d gets none (empty buffers, null in the view), and neither
+does a class above f, which the build refuses.
 
 **The K build's scratch is the class's** (as J's is `CoulombPairClass`'s):
 `dcd`, `geom` and `factor` are allocated here and left unwritten, and every

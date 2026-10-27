@@ -79,7 +79,7 @@ struct OrderedPairClass {
   /// K the class serves.
   int32_t n_ao;
   /// @brief The basis's shell count per angular momentum, ascending from s, at
-  /// least kMaxAngularMomentum + 1 entries (0 for a momentum it does not
+  /// least kExchangeMaxMomentum + 1 entries (0 for a momentum it does not
   /// reach): the extents of @ref dc and @ref dcd.
   std::vector<int32_t> n_shells;
   /// @brief The blocks of this class's block table as a bra against each
@@ -119,7 +119,7 @@ struct OrderedPairClass {
   /// @c PrimitivePairClass::bound_ba swapped. kb's Ip as a bra and Iq as a
   /// ket, and what the K build's reach and bound maximum read. Non-increasing
   /// within each group; exactly 0.0 for a pair whose pair factor underflows.
-  /// Zero in a class above d, which has no kernel and which the K build
+  /// Zero in a class above f, which has no kernel and which the K build
   /// refuses.
   StreamBuffers::device<double> record_bound;
   /// @brief The first shell's first Cartesian AO (@c BasisSet::ao_offset_cart).
@@ -154,6 +154,16 @@ struct OrderedPairClass {
   /// each first shell's centre and its reach at the build's tau and density
   /// (exchange_group_geometry).
   StreamBuffers::device<double> geom;
+  /// @brief The records' undressed E table as a bra (exchange_e_table): kbr's
+  /// Eac, @ref n_rec x exchange_e_table_width(la, lb), record-major. Written
+  /// once, and only when the set reaches past kb, a basis with a shell above
+  /// kExchangeKbMaxMomentum, since then every class pairs with a kbr class;
+  /// otherwise, or in a class above kExchangeMaxMomentum (which the K build
+  /// refuses), empty, so the view's pointer is null.
+  StreamBuffers::device<double> e_bra;
+  /// @brief As @ref e_bra, with every entry of odd |t| negated: kbr's Ebd as a
+  /// ket. Written and empty with it.
+  StreamBuffers::device<double> e_ket;
   /// @brief Scratch: as a bra, each block's density factor F_ab
   /// (exchange_factors), beside @ref blocks: one per block, the tables'
   /// factors back to back in the same order.
@@ -187,6 +197,8 @@ struct OrderedPairClass {
         .rank_b = rank_b.data(),
         .n_groups = n_groups,
         .group_start = group_start.data(),
+        .e_bra = e_bra.data(),
+        .e_ket = e_ket.data(),
     };
   }
 };
@@ -210,8 +222,9 @@ struct OrderedPairClass {
 /// mmd class's orientations by first shell and sorts each group by its
 /// dressed bound, non-increasing, equal bounds in mmd's record order (two
 /// stable device sorts); @ref OrderedPairClass::group_start from it; every
-/// field written in that order straight from the mmd class; then, once every
-/// class is gathered, each class's Dcd rows and its block tables against
+/// field written in that order straight from the mmd class, and from those
+/// its E tables when the basis has a shell above kb's momenta
+/// (@ref OrderedPairClass::e_bra); then, once every class is gathered, each class's Dcd rows and its block tables against
 /// every class. **kb's screen `break`s depend on that order**: an unsorted
 /// group is a wrong K, not a slow one. The K build's per-build scratch is
 /// allocated here too, and left unwritten.

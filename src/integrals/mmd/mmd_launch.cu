@@ -147,6 +147,8 @@ static_assert(std::extent_v<decltype(pair_bound_kernels), 1> == kPairBoundMaxL +
 static_assert(std::extent_v<decltype(record_bound_kernels), 1> == kRecordBoundMaxL + 1,
               "kernels/record_bound's [la][lb] table is not square: rerun "
               "tools/emit_exchange_kernels.py");
+static_assert(kRecordBoundMaxL == kRecordBoundMaxMomentum,
+              "kernels/record_bound's table and kRecordBoundMaxMomentum disagree");
 
 namespace {
 
