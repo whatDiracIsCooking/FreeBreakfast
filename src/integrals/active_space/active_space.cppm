@@ -2,7 +2,8 @@
 /// @brief The active-space Hamiltonian of a set of orbitals, (E_core, h_eff,
 /// (tu|vw)), and a CASSCF's (pq|uv) and (pu|qv) over all of them, built
 /// integral-direct from @c coulomb and @c exchange: no AO two-electron
-/// integral is stored.
+/// integral is stored. casscf_integrals also over density fitting, from the
+/// fitted factor B.
 ///
 /// What a CASCI (and, once per macro-iteration, a CASSCF) diagonalizes over:
 /// FCI is ncore = 0 and ncas = nmo. Classes through f only, since J and K
@@ -148,5 +149,41 @@ casscf_integrals(DeviceResources &res, const BasisSet &basis, const Molecule &mo
                  std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
                  const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, double tau_j = 1e-14,
                  double tau_k = 1e-14);
+
+/// @brief The same integrals over density fitting: (mn|ls) ~ sum_Q B_Q,mn
+/// B_Q,ls, from the fitted factor @p b in place of the J and K classes, the
+/// transform U and the taus. Spherical throughout, and nothing is screened,
+/// so there is no prune cap.
+///
+/// @p b is B as @c density_fit leaves it (the pipeline's
+/// DensityFittingOutput::b): @p naux x nao^2, element (Q, n + nao m) at
+/// Q + naux (n + nao m). @p basis, @p molecule, @p h, @p c, @p ncore and
+/// @p ncas are as for the integral-direct overload, and checked and refused
+/// alike.
+///
+/// - **E_core, h_eff:** one @c df_coulomb of P = C_core C_core^T and one
+///   @c df_exchange of C_core (skipped for ncore = 0).
+/// - **L:** the half transform L_Q,up = sum_mn B_Q,mn C_m,ncore+u C_n,p over
+///   every orbital p and active u: one batched gemm, then one gemm.
+/// - **papa** (pu|qv) = sum_Q L_Q,up L_Q,vq: n_act batched gemms of n_act.
+/// - **(tu|vw)** = gamma^T gamma, one gemm, gamma_Q,tu = L_Q,t,ncore+u being
+///   L's active columns: ppaa's active block, to rounding.
+/// - **ppaa** (pq|uv): J_uv = B^T gamma_uv for every (u, v), one gemm into
+///   ppaa's own buffer, then C^T J_uv C for every block, two batched gemms.
+///
+/// Queued on res.stream(); it synchronizes it for each of E_core's two dots
+/// (none for ncore = 0). Its scratch is res.device_workspace()'s, besides the
+/// three nao^2 matrices of the core's P, J and K, allocated per call: the
+/// README sizes it. The device res.dev_idx() names is made current for the
+/// call and the previous one restored.
+///
+/// @return The integrals; InvalidConfig as the integral-direct overload's
+///         checks, for naux below 1, a @p b that is not naux nao^2 doubles,
+///         or nao^2 or naux n_act past int32_t; or the GpuRuntime error of
+///         the first BLAS or copy that failed.
+[[nodiscard]] Result<CasscfIntegrals>
+casscf_integrals(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
+                 const SphericalMatrixAO &h, const Buffers::device<double> &b, int32_t naux,
+                 const SphericalMatrixAO &c, int32_t ncore, int32_t ncas);
 
 } // namespace free_breakfast

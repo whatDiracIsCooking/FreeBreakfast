@@ -2,7 +2,8 @@
 /// @brief active_space_hamiltonian and casscf_integrals: the core's J and K,
 /// one J per active pair contracted onto the active orbitals (and, for
 /// casscf_integrals, onto all of them), and for casscf_integrals one K per
-/// part of each active pair's density.
+/// part of each active pair's density; and casscf_integrals over density
+/// fitting, from B's half transform.
 
 module free_breakfast.integrals.active_space;
 
@@ -10,7 +11,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // axpy, scal, dot, wwrMemcpyAsync, gpu_status
+import free_breakfast.core.wwr; // axpy, scal, dot, gemmStridedBatched, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.basis;
@@ -18,6 +19,7 @@ import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
+import free_breakfast.integrals.eri.density_fitting.jk;
 
 #include "diagnostics.h"
 
@@ -279,6 +281,120 @@ Result<CasscfIntegrals> casscf_integrals(DeviceResources &res, const BasisSet &b
                                  tau_j, tau_k, ppaa.data(), papa.data()));
   return CasscfIntegrals{
       .hamiltonian = std::move(hamiltonian), .ppaa = std::move(ppaa), .papa = std::move(papa)};
+}
+
+Result<CasscfIntegrals> casscf_integrals(DeviceResources &res, const BasisSet &basis,
+                                         const Molecule &molecule, const SphericalMatrixAO &h,
+                                         const Buffers::device<double> &b, const int32_t naux,
+                                         const SphericalMatrixAO &c, const int32_t ncore,
+                                         const int32_t ncas) {
+  constexpr std::string_view kCaller = "casscf_integrals (density fitting)";
+  FBF_TRY(check_active_space(kCaller, res, basis, h, c, ncore, ncas, 0.0, 0.0));
+  // nao = nmo, which check_active_space has checked.
+  const size_t n_all = basis.nao_sphe();
+  const size_t nn = n_all * n_all;
+  if (naux < 1) {
+    return err_config("{}: naux is {}, but must be at least 1", kCaller, naux);
+  }
+  if (b.num_elements() != static_cast<size_t>(naux) * nn) {
+    return err_config("{}: B has {} elements, but naux {} x nao^2 {} is {}", kCaller,
+                      b.num_elements(), naux, nn, static_cast<size_t>(naux) * nn);
+  }
+  // J_uv's gemm runs over nao^2 rows, L's over naux n_act, in the int32_t
+  // dispatch.
+  constexpr auto kInt32Max = static_cast<size_t>(std::numeric_limits<int32_t>::max());
+  const size_t rows = static_cast<size_t>(naux) * static_cast<size_t>(ncas);
+  if (nn > kInt32Max || rows > kInt32Max) {
+    return err_config("{}: nao^2 = {} or naux n_act = {} exceeds int32_t", kCaller, nn, rows);
+  }
+
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const auto n = static_cast<int32_t>(n_all);
+  const auto na = static_cast<size_t>(ncas);
+  const int32_t pairs = ncas * ncas;
+  const size_t count = nn * na * na;
+  CasscfIntegrals out{
+      .hamiltonian = {.e_core = nuclear_repulsion_energy(molecule),
+                      .ncas = ncas,
+                      .h_eff = Buffers::device<double>(na * na, res.device()),
+                      .eri = Buffers::device<double>(na * na * na * na, res.device())},
+      .ppaa = Buffers::device<double>(count, res.device()),
+      .papa = Buffers::device<double>(count, res.device())};
+  const double *const c_act = c.data() + (n_all * static_cast<size_t>(ncore));
+
+  // The core: P = C_core C_core^T (one spin's density), J[P], and K of
+  // 2 C_core C_core^T = 2 P, df_exchange's. They are allocated per call, not
+  // carved from the workspace, which df_coulomb and df_exchange take.
+  // F = h + G, G = 2 J[P] - K[P], is what h_eff projects: h itself for
+  // ncore = 0.
+  const double *fock = h.data();
+  Buffers::device<double> core(3 * nn, res.device());
+  if (ncore > 0) {
+    double *const p = core.data();
+    double *const j = p + nn;
+    double *const k = j + nn;
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, n, n, ncore, &kOne<double>, c.data(), c.data(), &kZero<double>, p)));
+    FBF_TRY(df_coulomb(res, n, naux, b.data(), p, j));
+    FBF_TRY(df_exchange(res, n, naux, ncore, b.data(), c.data(), k));
+    const auto len = static_cast<int32_t>(nn);
+    constexpr double kMinusHalf = -0.5;
+    FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, len, &kTwo<double>, j, 1)));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, len, &kMinusHalf, k, 1, j, 1)));
+    // E_core = E_nuc + 2 tr(P h) + tr(P G), each trace the elementwise dot of
+    // two symmetric matrices.
+    double ph = 0.0;
+    double pg = 0.0;
+    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, len, p, 1, h.data(), 1, &ph)));
+    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, len, p, 1, j, 1, &pg)));
+    out.hamiltonian.e_core += (2.0 * ph) + pg;
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, len, &kOne<double>, h.data(), 1, j, 1)));
+    fock = j;
+  }
+
+  // The scratch, carved once the core's df_coulomb and df_exchange are done
+  // with the workspace: X, the first half of L; L; and the C^T J C batch's
+  // intermediate, which is also h_eff's gemmwich work.
+  const auto [x, l, work] = res.device_regions<double>(rows * n_all, rows * n_all, count);
+  FBF_TRY(gpu_status(gemmwich(blas, ncas, n, c_act, fock, work, out.hamiltonian.h_eff.data())));
+
+  // X_m = B_m C_act for every m, [Q][u][m]; then L = X C, [Q][u][p]: the
+  // (naux n_act) x nmo matrix whose rows u are the half-transformed B.
+  const auto rows32 = static_cast<int32_t>(rows);
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux, ncas, n, &kOne<double>, b.data(), naux,
+      int64_t{naux} * n, c_act, n, 0, &kZero<double>, x, naux, int64_t{rows32}, n)));
+  FBF_TRY(gpu_status(gemm(blas, rows32, n, n, &kOne<double>, x, c.data(), &kZero<double>, l)));
+
+  // gamma_Q,uv = L_Q,u,ncore+v: L's active columns, contiguous, the
+  // naux x n_act^2 matrix of column u + n_act v. (tu|vw) = gamma^T gamma.
+  const double *const gamma = l + (rows * static_cast<size_t>(ncore));
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, pairs, pairs, naux, &kOne<double>, gamma, gamma,
+                                             &kZero<double>, out.hamiltonian.eri.data())));
+
+  // papa: block (u, v) = L_u^T L_v, L_u the naux x nmo rows u of L (leading
+  // dimension naux n_act). One batch over u per v.
+  const auto nn64 = static_cast<int64_t>(nn);
+  for (size_t v = 0; v < na; ++v) {
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n, n, naux, &kOne<double>, l, rows32, naux,
+        l + (static_cast<size_t>(naux) * v), rows32, 0, &kZero<double>,
+        out.papa.data() + (nn * na * v), n, nn64, ncas)));
+  }
+
+  // ppaa: J_uv = B^T gamma_uv, nao x nao per (u, v), into ppaa's own buffer;
+  // then work_uv = J_uv C and block (u, v) = C^T work_uv over it.
+  FBF_TRY(
+      gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, static_cast<int32_t>(nn), pairs, naux, &kOne<double>,
+                                         b.data(), gamma, &kZero<double>, out.ppaa.data())));
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, out.ppaa.data(), n, nn64,
+      c.data(), n, 0, &kZero<double>, work, n, nn64, pairs)));
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, c.data(), n, 0, work, n,
+      nn64, &kZero<double>, out.ppaa.data(), n, nn64, pairs)));
+  return out;
 }
 
 } // namespace free_breakfast

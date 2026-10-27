@@ -3,7 +3,9 @@
 # kinds of pair class and the AO matrices are in its signature, so molecule,
 # basis, core::resources, coulomb, exchange (which re-export their classes)
 # and recipes::matrix_ao are PUBLIC. It launches nothing of its own: J and K
-# are coulomb's and exchange's, the rest BLAS, so there is no device library.
+# are coulomb's and exchange's (df_coulomb's and df_exchange's for the
+# density-fitted overload, whose B is a plain buffer, so jk is PRIVATE), the
+# rest BLAS, so there is no device library.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.active_space
@@ -26,4 +28,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
+  free_breakfast::integrals::eri::density_fitting::jk
 )
