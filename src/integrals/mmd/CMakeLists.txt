@@ -43,12 +43,19 @@ free_breakfast_add_gpu_device_library(
   kernels/record_bound/record_bound_00.cu
   kernels/record_bound/record_bound_01.cu
   kernels/record_bound/record_bound_02.cu
+  kernels/record_bound/record_bound_03.cu
   kernels/record_bound/record_bound_10.cu
   kernels/record_bound/record_bound_11.cu
   kernels/record_bound/record_bound_12.cu
+  kernels/record_bound/record_bound_13.cu
   kernels/record_bound/record_bound_20.cu
   kernels/record_bound/record_bound_21.cu
   kernels/record_bound/record_bound_22.cu
+  kernels/record_bound/record_bound_23.cu
+  kernels/record_bound/record_bound_30.cu
+  kernels/record_bound/record_bound_31.cu
+  kernels/record_bound/record_bound_32.cu
+  kernels/record_bound/record_bound_33.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::mmd::headers

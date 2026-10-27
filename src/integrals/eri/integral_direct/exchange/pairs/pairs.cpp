@@ -2,8 +2,9 @@
 /// @brief ordered_pair_classes: mmd's records in both orientations, one class
 /// per ordered (la, lb), its groups by first shell and its tables' sizes from
 /// the basis on the host, and on the device each group sorted by its dressed
-/// bound, the records gathered from mmd's in that order, and the K build's
-/// Dcd rows and block tables.
+/// bound, the records gathered from mmd's in that order, the rolled kernel's
+/// E tables when the basis reaches past kb, and the K build's Dcd rows and
+/// block tables.
 
 module;
 
@@ -43,12 +44,13 @@ int64_t ordered_block_count(const std::vector<uint32_t> &a, const std::vector<ui
 }
 
 // An ordered class of n records in n_groups groups, of a basis of n_ao
-// Cartesian AOs and n_shells shells per momentum, its tables n_blk blocks, on
-// a new stream of res's Device.
+// Cartesian AOs and n_shells shells per momentum, its tables n_blk blocks, its
+// E tables sized when rolled and the class within K's limit (else empty), on a
+// new stream of res's Device.
 OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, const int32_t lb,
                                     const int32_t n, const int32_t n_groups, const int32_t n_ao,
                                     const std::vector<int32_t> &n_shells,
-                                    std::vector<int32_t> n_blk) {
+                                    std::vector<int32_t> n_blk, const bool rolled) {
   const auto ds = std::make_shared<DeviceStream>(res.device());
   const auto len = static_cast<size_t>(n);
   size_t n_blocks = 0;
@@ -61,6 +63,10 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
                        static_cast<size_t>(ordered_cartesian_count(lb));
   const auto fields = static_cast<size_t>(device::kExchangeBlockFields);
   const auto groups = static_cast<size_t>(n_groups);
+  // A class above K's limit has no kernel, and the K build refuses it: no
+  // table.
+  const bool tables = rolled && std::max(la, lb) <= device::kExchangeMaxMomentum;
+  const size_t n_e = tables ? len * static_cast<size_t>(device::exchange_e_table_width(la, lb)) : 0;
   return {
       .la = la,
       .lb = lb,
@@ -88,6 +94,8 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
       .group_start = StreamBuffers::device<int32_t>(groups + 1, ds),
       .dc = StreamBuffers::device<int32_t>(n_shells.size() * len, ds),
       .blocks = StreamBuffers::device<int32_t>(std::max(fields * n_blocks, size_t{1}), ds),
+      .e_bra = StreamBuffers::device<double>(n_e, ds),
+      .e_ket = StreamBuffers::device<double>(n_e, ds),
       .dcd = StreamBuffers::device<double>(n_dcd, ds),
       .geom = StreamBuffers::device<double>(
           static_cast<size_t>(device::kExchangeGroupFields) * groups, ds),
@@ -120,6 +128,20 @@ Status gather_ordered(OrderedPairClass &cls, const PrimitivePairClass &from) {
   int32_t *const ints[] = {cls.off_a.data(), cls.off_b.data(), cls.rank_b.data()};
   return gpu_status(
       device::ordered_pair_gather(stream, v, cls.la, cls.n_rec, perm.data(), doubles, ints));
+}
+
+// The class's two E tables, kbr's Eac and Ebd, from its gathered records, on
+// its stream.
+Status write_e_tables(OrderedPairClass &cls) {
+  const wwr::wwrStream_t stream = cls.work_stream->stream();
+  const std::array pa{cls.pa_x.data(), cls.pa_y.data(), cls.pa_z.data()};
+  const std::array pb{cls.pb_x.data(), cls.pb_y.data(), cls.pb_z.data()};
+  for (const bool ket : {false, true}) {
+    FBF_TRY(gpu_status(device::exchange_e_table(stream, cls.la, cls.lb, cls.n_rec, cls.zeta.data(),
+                                                pa.data(), pb.data(), ket,
+                                                (ket ? cls.e_ket : cls.e_bra).data())));
+  }
+  return {};
 }
 
 // The bra's Dcd rows, one per momentum the basis reaches, and its block table
@@ -228,11 +250,11 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
   }
   std::ranges::sort(plan, {}, [](const auto &p) { return p.first; });
 
-  // The shell counts by momentum, through d at least, and every bra's table
-  // sizes against every ket, in plan order: kb and the table index a block in
-  // 32 bits.
+  // The shell counts by momentum, through K's limit at least, and every bra's
+  // table sizes against every ket, in plan order: kb and the table index a
+  // block in 32 bits.
   std::vector<int32_t> n_shells(
-      std::max(of_l.size(), static_cast<size_t>(kMaxAngularMomentum + 1)));
+      std::max(of_l.size(), static_cast<size_t>(device::kExchangeMaxMomentum + 1)));
   for (size_t l = 0; l < of_l.size(); ++l) {
     n_shells[l] = static_cast<int32_t>(of_l[l].size());
   }
@@ -252,6 +274,10 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
     }
   }
 
+  // A basis with a shell past kb's momenta launches kbr, and every class of
+  // its set is a side of some kbr launch, so every class gets E tables.
+  const bool rolled = of_l.size() > static_cast<size_t>(device::kExchangeKbMaxMomentum + 1);
+
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t hub = res.stream();
   std::vector<OrderedPairClass> out;
@@ -265,14 +291,17 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
           Status{err_config("ordered_pair_classes: class ({}, {}) has {} records, past {}", la, lb,
                             n, std::numeric_limits<int32_t>::max())});
     }
-    OrderedPairClass &cls = out.emplace_back(
-        make_ordered_class(res, la, lb, static_cast<int32_t>(n),
-                           static_cast<int32_t>(of_l[static_cast<size_t>(la)].size()),
-                           static_cast<int32_t>(basis.nao_cart()), n_shells, std::move(n_blk[c])));
+    OrderedPairClass &cls = out.emplace_back(make_ordered_class(
+        res, la, lb, static_cast<int32_t>(n),
+        static_cast<int32_t>(of_l[static_cast<size_t>(la)].size()),
+        static_cast<int32_t>(basis.nao_cart()), n_shells, std::move(n_blk[c]), rolled));
     // Fork from mmd's stream, so the class reads mmd's final records, without
     // a host synchronization.
     FBF_TRY(gpu_status(cls.work_stream->fork_stream().fork_from(from->device_stream()->stream())));
     FBF_TRY(gather_ordered(cls, *from));
+    if (cls.e_bra.num_elements() > 0) {
+      FBF_TRY(write_e_tables(cls));
+    }
   }
   // A bra's tables read every class's groups, so every gather is in before
   // any table is made, and every table before any class's frees can run.

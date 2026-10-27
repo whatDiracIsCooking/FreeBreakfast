@@ -715,10 +715,11 @@ TEST(ExchangeHelpers, RefusesWhatTheyCannotLaunch) {
   const Stream stream;
   DeviceArray<double> d(4);
   DeviceArray<std::int32_t> off(1);
-  constexpr std::int32_t kAboveD = fb::kMaxAngularMomentum + 1;
+  // K's limit, not the tree's: the helpers serve every class K takes.
+  constexpr std::int32_t kAboveK = fb::device::kExchangeMaxMomentum + 1;
   EXPECT_EQ(fb::device::exchange_density_max(stream.get(), 0, d.data(), d.data()),
             wwr::wwrErrorInvalidValue);
-  for (const auto &[lc, ld, n_ao, n_c, n_d] : {std::array{kAboveD, 0, 2, 1, 1},
+  for (const auto &[lc, ld, n_ao, n_c, n_d] : {std::array{kAboveK, 0, 2, 1, 1},
                                                {0, -1, 2, 1, 1},
                                                {0, 0, 0, 1, 1},
                                                {0, 0, 2, 0, 1},
@@ -757,7 +758,7 @@ TEST(ExchangeHelpers, RefusesWhatTheyCannotLaunch) {
             wwr::wwrErrorInvalidValue);
   EXPECT_EQ(fb::device::exchange_density_decay(stream.get(), 0, d.data(), d.data(), d.data()),
             wwr::wwrErrorInvalidValue);
-  for (const auto &[l, n_s] : {std::array{kAboveD, 1}, {-1, 1}, {0, 0}}) {
+  for (const auto &[l, n_s] : {std::array{kAboveK, 1}, {-1, 1}, {0, 0}}) {
     EXPECT_EQ(fb::device::exchange_shell_starts(stream.get(), l, n_s, off.data(), off.data()),
               wwr::wwrErrorInvalidValue)
         << l << " " << n_s;

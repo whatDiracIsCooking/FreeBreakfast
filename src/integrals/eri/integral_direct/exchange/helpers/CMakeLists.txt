@@ -7,10 +7,10 @@
 # library needs no relocatable device code, but keeps the default as coulomb's
 # does. The bridge header names int32_t,
 # wwrStream_t and wwrError_t, hence types_headers and wwr::device PUBLIC; the
-# .cu files read kMaxAngularMomentum (angular_momentum.h), and block_reduce,
-# kWarpSize, kMaxThreads and math::fabs / exp / idivup (block_reduce.cuh,
-# block_params.h, primitives.h), hence basis::headers and
-# core::kernel_headers PRIVATE.
+# .cu files read block_reduce, kWarpSize, kMaxThreads and math::fabs / exp /
+# idivup (block_reduce.cuh, block_params.h, primitives.h), hence
+# core::kernel_headers PRIVATE. Their L limit is the bridge's
+# kExchangeMaxMomentum, not angular_momentum.h's.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.exchange.helpers
@@ -25,6 +25,5 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::types_headers
   wwr::device
   LINK_PRIVATE
-  free_breakfast::basis::headers
   free_breakfast::core::kernel_headers
 )

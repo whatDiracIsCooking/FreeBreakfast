@@ -13,10 +13,11 @@
 
 // Standard headers before the vendor runtime header, which primitives.h brings
 // in last: under HIP it must not precede libc++.
-#include "angular_momentum.h"
 #include "block_params.h"
 #include "integral_types.h"
 #include "primitives.h"
+
+#include "exchange_helpers_bridge.h"
 
 namespace free_breakfast::device::exchange {
 
@@ -33,9 +34,9 @@ inline int32_t cartesian_count(const int32_t l) {
   return (l + 1) * (l + 2) / 2;
 }
 
-/// @brief Whether @p l is in [0, kMaxAngularMomentum].
+/// @brief Whether @p l is in [0, kExchangeMaxMomentum], K's limit.
 inline bool valid_momentum(const int32_t l) {
-  return l >= 0 && l <= kMaxAngularMomentum;
+  return l >= 0 && l <= kExchangeMaxMomentum;
 }
 
 /// @brief The kFourWarps blocks of a one-thread-per-element launch over @p n.

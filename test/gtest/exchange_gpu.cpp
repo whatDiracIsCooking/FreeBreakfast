@@ -1,7 +1,10 @@
 // GPU cases for integrals.eri.integral_direct.exchange: the Cartesian exchange
 // matrix K of H2O in STO-3G (s, p; O's p shell precedes the H s shells, so
 // (p, s) and (s, p) are both reached) and cc-pVDZ (s, p, d, so every k class
-// through (dd|dd)) against libcint's K of the same density, recorded by PySCF
+// through (dd|dd), all kb), and of CO in cc-pVTZ (s through f on both atoms, so
+// every class through (ff|ff): the 81 through d on kb, the 175 with an f shell
+// on the rolled kbr, its first libcint check on a molecule) against libcint's
+// K of the same density, recorded by PySCF
 // (test/gtest/data/exchange/, copied from FelizJueves's fixtures by
 // tools/extract_integral_golden.py), unscreened (tau = 0) and screened at the
 // default (1e-13) and at 1e-14, all to one bar; the H10 chain's block factors,
@@ -259,6 +262,8 @@ TEST_P(ExchangeGolden, ANonSymmetricDensityIsTwoSweeps) {
 INSTANTIATE_TEST_SUITE_P(H2O, ExchangeGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
 // Five H2 4 bohr apart in cc-pVDZ, with a converged RHF density.
 INSTANTIATE_TEST_SUITE_P(Chain, ExchangeGolden, ::testing::Values("h10_chain_ccpvdz"));
+// CO in cc-pVTZ: one f shell on each atom, so kbr beside kb in every build.
+INSTANTIATE_TEST_SUITE_P(F, ExchangeGolden, ::testing::Values("co_ccpvtz"));
 
 // The H10 chain's RHF density decays, and with the dressed record bound a
 // group's reach stops well short of the 23-bohr chain, so the density factor
@@ -409,10 +414,13 @@ TEST(Exchange, RefusesASubsetOrAReorderingOfTheClasses) {
   EXPECT_TRUE(fb::exchange(res, *classes, density, k));
 }
 
-TEST(Exchange, RefusesAClassAboveD) {
+// K's kernels stop at f: a g shell's classes are formed (mmd and the ordered
+// classes hold any momentum, without bounds or E tables past their kernels),
+// and the build refuses them before it queues anything.
+TEST(Exchange, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::BasisSet basis({fb::Shell(3, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
+  const fb::BasisSet basis({fb::Shell(4, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   auto classes = ordered(res, basis);
   ASSERT_TRUE(classes);
   const fb::CartesianMatrixAO density(res, basis);

@@ -59,6 +59,19 @@ __global__ void record_bound<0, 2>(
     double* bound);
 
 template <>
+__global__ void record_bound<0, 3>(
+    int32_t n_rec,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    double* bound);
+
+template <>
 __global__ void record_bound<1, 0>(
     int32_t n_rec,
     const double* zeta_ab,
@@ -86,6 +99,19 @@ __global__ void record_bound<1, 1>(
 
 template <>
 __global__ void record_bound<1, 2>(
+    int32_t n_rec,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    double* bound);
+
+template <>
+__global__ void record_bound<1, 3>(
     int32_t n_rec,
     const double* zeta_ab,
     const double* pa_x,
@@ -136,9 +162,75 @@ __global__ void record_bound<2, 2>(
     const double* s_ab,
     double* bound);
 
+template <>
+__global__ void record_bound<2, 3>(
+    int32_t n_rec,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    double* bound);
+
+template <>
+__global__ void record_bound<3, 0>(
+    int32_t n_rec,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    double* bound);
+
+template <>
+__global__ void record_bound<3, 1>(
+    int32_t n_rec,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    double* bound);
+
+template <>
+__global__ void record_bound<3, 2>(
+    int32_t n_rec,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    double* bound);
+
+template <>
+__global__ void record_bound<3, 3>(
+    int32_t n_rec,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    double* bound);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&record_bound<0, 0>) record_bound_kernels[3][3] = {
-    {&record_bound<0, 0>, &record_bound<0, 1>, &record_bound<0, 2>},
-    {&record_bound<1, 0>, &record_bound<1, 1>, &record_bound<1, 2>},
-    {&record_bound<2, 0>, &record_bound<2, 1>, &record_bound<2, 2>},
+inline constexpr decltype(&record_bound<0, 0>) record_bound_kernels[4][4] = {
+    {&record_bound<0, 0>, &record_bound<0, 1>, &record_bound<0, 2>, &record_bound<0, 3>},
+    {&record_bound<1, 0>, &record_bound<1, 1>, &record_bound<1, 2>, &record_bound<1, 3>},
+    {&record_bound<2, 0>, &record_bound<2, 1>, &record_bound<2, 2>, &record_bound<2, 3>},
+    {&record_bound<3, 0>, &record_bound<3, 1>, &record_bound<3, 2>, &record_bound<3, 3>},
 };

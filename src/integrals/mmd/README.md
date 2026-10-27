@@ -85,7 +85,7 @@ build: on the class's stream, after the order, the generated
 fold of its closed form in √ζ) writes it from the ordered ζ. The host never
 writes it. Because it rises
 with ζ, it is non-increasing in record order. A class above
-`kMaxAngularMomentum` has no kernel, so its bound stays zero; every build
+`kMaxAngularMomentum` has no `pair_bound` kernel, so its bound stays zero; every build
 refuses such a class, and `primitive_pair_classes` itself still accepts it. The J build reads it (bras in
 record order, kets through their class's sorted `ket_` copy). The K build does not:
 its screen is proved against the DRESSED bound (contraction coefficients and
@@ -105,6 +105,11 @@ thread per record) writes `bound_ab` from the record as stored, and
 (`mmd_bridge.h`), is called by mmd alone; the bounds' readers sit above it and
 read the fields: `coulomb_pair_classes` prunes by `bound_ab`, and
 `exchange/pairs` gathers `bound_ab` and `bound_ba` into its ordered classes.
+Its kernels run through f (`kRecordBoundMaxMomentum`, `mmd_bridge.h`, checked
+against their table in `mmd_launch.cu`), K's limit, while `pair_bound`'s stop
+at `kMaxAngularMomentum`, d: the two come from different emitters. So a class
+with an f shell gets real `bound_ab` and `bound_ba` and a zero `bound`, and a
+class above f gets none.
 
 **The launchers' view is a header.** `PrimitivePairClass` holds wwr buffers,
 which only a module can name, so `view()` hands the launchers a

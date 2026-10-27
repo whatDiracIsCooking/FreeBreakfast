@@ -70,6 +70,13 @@ struct OrderedPairClassView {
   /// [group_start[g], group_start[g + 1]), all of one first shell, the groups
   /// in basis order.
   const int32_t *group_start;
+  /// @brief The records' undressed E table as a bra, kbr's Eac
+  /// (exchange_e_table, record-major), or null when the class's set has none:
+  /// only a set that reaches past kb (kExchangeKbMaxMomentum) launches kbr.
+  const double *e_bra;
+  /// @brief The same table with every odd-|t| entry negated, kbr's Ebd as a
+  /// ket; null with @ref e_bra.
+  const double *e_ket;
 };
 
 } // namespace free_breakfast

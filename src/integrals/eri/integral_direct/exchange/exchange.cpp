@@ -24,8 +24,9 @@ import free_breakfast.recipes.matrix_ao;
 
 namespace free_breakfast {
 
-// One extent per angular momentum the kernels cover.
-constexpr auto kExchangeMomenta = static_cast<size_t>(kMaxAngularMomentum + 1);
+// One extent per angular momentum the kernels cover: K's own limit, not the
+// tree-wide kMaxAngularMomentum.
+constexpr auto kExchangeMomenta = static_cast<size_t>(device::kExchangeMaxMomentum + 1);
 
 int32_t exchange_cartesian_count(const int32_t l) {
   return (l + 1) * (l + 2) / 2;
@@ -65,12 +66,12 @@ Status exchange_check(const DeviceResources &res, const std::span<OrderedPairCla
       return err_config("exchange: class ({}, {}) is on device {}, but the call passed device {}",
                         cls.la, cls.lb, dev, res.dev_idx());
     }
-    // The tree-wide limit, not kb's table (exchange_k is bounded by its own),
-    // and what kExchangeMomenta sizes the build's storage by: both move when K
-    // lifts to f, #348.
-    if (cls.la < 0 || cls.la > kMaxAngularMomentum || cls.lb < 0 || cls.lb > kMaxAngularMomentum) {
+    // K's limit, the kernels' tables' (exchange_launch.cu checks the two
+    // agree), and what kExchangeMomenta sizes the build's storage by.
+    if (cls.la < 0 || cls.la > device::kExchangeMaxMomentum || cls.lb < 0 ||
+        cls.lb > device::kExchangeMaxMomentum) {
       return err_config("exchange: no kernel for class ({}, {}); the kernels cover la, lb <= {}",
-                        cls.la, cls.lb, kMaxAngularMomentum);
+                        cls.la, cls.lb, device::kExchangeMaxMomentum);
     }
     if (static_cast<uint32_t>(cls.n_ao) != n) {
       return err_config("exchange: class ({}, {}) is of a basis of {} Cartesian AOs, but the "

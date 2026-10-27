@@ -40,6 +40,21 @@
 
 namespace free_breakfast::device {
 
+/// @brief K's L limit: the largest momentum of a shell in any class the K
+/// build takes, f. Its kernels are emitted through it
+/// (tools/emit_exchange_kernels.py's MAX_L), and exchange_launch.cu checks it
+/// against their tables, which a host module unit cannot include; the tree-wide
+/// kMaxAngularMomentum is not K's.
+inline constexpr int32_t kExchangeMaxMomentum = 3;
+
+/// @brief The largest momentum K's unrolled kernel, kb, is emitted at, d: a
+/// class with any shell above it is launched as the rolled kbr, which reads
+/// the records' E tables (@ref exchange_e_table), so the ordered classes make
+/// those only for a basis that reaches past it. exchange_launch.cu checks it
+/// against kb's table. FelizJueves's rule, through d kb, at f kbr (#580): kb at
+/// f is unbuildable (#569).
+inline constexpr int32_t kExchangeKbMaxMomentum = 2;
+
 /// @brief The int32s per block of a kb launch's table: bra0, bra1, ket0, ket1,
 /// ko_a, ko_b, each a segment of n_blk.
 inline constexpr int32_t kExchangeBlockFields = 6;
@@ -173,7 +188,7 @@ exchange_group_geometry(wwr::wwrStream_t stream, int32_t n_groups, const int32_t
 /// (ld, lc) are two gathers.
 ///
 /// @return The launch status (wwrErrorInvalidValue if @p lc or @p ld is
-///         outside [0, kMaxAngularMomentum], @p n_ao, @p n_c or @p n_d is not
+///         outside [0, @ref kExchangeMaxMomentum], @p n_ao, @p n_c or @p n_d is not
 ///         positive, or @p dcd has more than INT32_MAX elements).
 [[nodiscard]] wwr::wwrError_t exchange_gather_dcd(wwr::wwrStream_t stream, int32_t lc, int32_t ld,
                                                   int32_t n_ao, const double *density, int32_t n_c,
@@ -247,7 +262,7 @@ exchange_factors(wwr::wwrStream_t stream, int32_t n_a, const int32_t *a_start, c
 /// whole, for @ref exchange_mirror.
 ///
 /// @return The launch status (wwrErrorInvalidValue if @p l is outside
-///         [0, kMaxAngularMomentum] or @p n_s is not positive).
+///         [0, @ref kExchangeMaxMomentum] or @p n_s is not positive).
 [[nodiscard]] wwr::wwrError_t exchange_shell_starts(wwr::wwrStream_t stream, int32_t l, int32_t n_s,
                                                     const int32_t *off, int32_t *start);
 
