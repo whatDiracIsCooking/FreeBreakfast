@@ -1,0 +1,109 @@
+{
+  "$comment": "Structured-output schema for the `audit` skill, one request per doc. Mirrors that skill's output contract: doc -> claim -> actual -> suggested fix, most load-bearing drift first. Pass with: batch.py run docs.jsonl --json-schema .claude/schemas/audit.json",
+  "type": "object",
+  "properties": {
+    "doc": {
+      "type": "string",
+      "description": "Repo-relative path of the document audited, e.g. src/core/README.md"
+    },
+    "doc_kind": {
+      "type": "string",
+      "enum": ["skill", "readme", "design", "claude-md", "memory", "other"],
+      "description": "Which of the audit skill's per-target checklists applies."
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["current", "drift", "unverifiable"],
+      "description": "Roll-up for the whole doc. 'current' means every claim checked out and findings is empty -- the audit skill's 'all paths and conventions current' result, which is a valid and useful outcome. 'unverifiable' means the sources needed to check it were not in the request."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two sentences. State plainly if nothing drifted."
+    },
+    "claims_checked": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many verifiable claims were extracted and checked, including the ones that were fine. A findings list of 2 out of 3 claims means something different from 2 out of 60."
+    },
+    "findings": {
+      "type": "array",
+      "description": "One entry per claim that drifted or could not be verified. Claims that checked out are counted in claims_checked, not listed here. Order most load-bearing first.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "claim": {
+            "type": "string",
+            "description": "The doc's assertion, quoted or tightly paraphrased. Present tense in prose is a claim, not evidence."
+          },
+          "claim_type": {
+            "type": "string",
+            "enum": [
+              "path",
+              "filename",
+              "symbol",
+              "command",
+              "count",
+              "status",
+              "cross-reference",
+              "measurement",
+              "convention",
+              "frontmatter"
+            ],
+            "description": "'status' is a landed/in-progress/planned ledger row; 'convention' is a rule that must agree with its authoritative source (CLAUDE.md, devtools/config.sh); 'frontmatter' is a skill's name: field versus its directory name."
+          },
+          "where": {
+            "type": "string",
+            "description": "Heading or line reference inside the doc, or 'unknown'."
+          },
+          "actual": {
+            "type": "string",
+            "description": "What is actually true in the tree. Never a guess -- if the real value could not be determined, say so here and set state to unverifiable."
+          },
+          "evidence": {
+            "type": "string",
+            "description": "What shows it: the path read, the grep run, the symbol found or absent."
+          },
+          "state": {
+            "type": "string",
+            "enum": ["drift", "unverifiable"],
+            "description": "'unverifiable' when the request did not carry the sources needed to decide. Do not report a verified-correct claim as a finding."
+          },
+          "severity": {
+            "type": "string",
+            "enum": ["load-bearing", "minor"],
+            "description": "load-bearing: acting on the claim would break something or send a reader to a path that does not exist. minor: cosmetic or stale-but-harmless."
+          },
+          "build_state": {
+            "type": "string",
+            "enum": ["not-built", "partial", "built", "not-applicable"],
+            "description": "Design/proposal docs only, where a present-tense description of intent reads exactly like shipped code. 'built' means the doc describes code that now exists and is a candidate for deletion rather than history. 'not-applicable' everywhere else."
+          },
+          "has_test": {
+            "type": "string",
+            "enum": ["yes", "no", "not-applicable"],
+            "description": "For a README ledger row claiming something landed or measured: is there a test pinning what it claims? An unpinned measured-improvement claim is unverified whatever the row says."
+          },
+          "suggested_fix": {
+            "type": "string",
+            "description": "The proposed edit. A proposal only -- rewriting is a separate step someone approves, and an audit's product is the finding, not a silent edit."
+          }
+        },
+        "required": [
+          "claim",
+          "claim_type",
+          "where",
+          "actual",
+          "evidence",
+          "state",
+          "severity",
+          "build_state",
+          "has_test",
+          "suggested_fix"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["doc", "doc_kind", "verdict", "summary", "claims_checked", "findings"],
+  "additionalProperties": false
+}
