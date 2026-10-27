@@ -190,10 +190,10 @@ name must not be joined to the config file's directory.
 **Only spherical sets can be carried.** `src/io/basis` rejects
 `gto_cartesian` at any l by design, and `parse_basis` walks the whole
 document, so one Cartesian shell anywhere makes the entire file unreadable.
-From K up 6-31G's d shells are Cartesian, so `6-31g.json` is carried
-relabelled spherical (5D) by `tools/basis/cartesian_to_spherical.py` — a
-different basis from BSE's from K on, by decision — and `6-31G*` is absent
-entirely. Check the harmonic types before adding a set; `data/basis/README.md`
+The Pople sets' d shells are Cartesian (6-31G's from K up, 6-31G* and
+6-31G**'s from Li), so all three are carried relabelled spherical (5D) by
+`tools/basis/cartesian_to_spherical.py` — different bases from BSE's 6D ones,
+by decision. Check the harmonic types before adding a set; `data/basis/README.md`
 has the detail and the regeneration commands.
 
 **So are the SAD stamps.** `data/sad/<basis>/<Z>.npy` is every element's atomic

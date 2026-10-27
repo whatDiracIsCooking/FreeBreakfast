@@ -6,8 +6,9 @@
 //
 // Recomputing them all takes hours of CPU (each 3d element of cc-pVTZ runs for
 // minutes), so the fast tier recomputes H, C and O of every set, and the slow
-// tier every element through argon, but cc-pVTZ only through neon: its third
-// row alone is most of a minute, past the timeout under a sanitizer. The rest
+// tier every element through argon, but cc-pVTZ and aug-cc-pVTZ only through
+// neon: their third rows alone are most of a minute and two minutes, past the
+// timeout under a sanitizer. The rest
 // are held to their size only; tools/sad's run is what computed them.
 
 #include <gtest/gtest.h>
@@ -26,8 +27,9 @@ namespace {
 namespace fb = free_breakfast;
 
 // The canonical names, as BasisSet::name holds them.
-constexpr std::array<std::string_view, 5> kCompiledInSets{"STO-3G", "6-31G", "cc-pVDZ", "cc-pVTZ",
-                                                          "MINAO"};
+constexpr std::array<std::string_view, 11> kCompiledInSets{
+    "STO-3G",  "6-31G",   "6-31G*",      "6-31G**",     "def2-SVP", "def2-TZVP",
+    "cc-pVDZ", "cc-pVTZ", "aug-cc-pVDZ", "aug-cc-pVTZ", "MINAO"};
 
 // Element @p z of @p normalized alone at the origin, grouped as one atom.
 fb::BasisSet atom_basis(const fb::BasisStamp &normalized, std::int32_t z) {
@@ -66,13 +68,24 @@ TEST(IoSad, EveryElementOfEveryCompiledInSetIsBaked) {
     auto stamp = fb::resolve_basis(name);
     ASSERT_TRUE(stamp) << name << ": " << stamp.error().message;
     ASSERT_EQ(stamp->name(), name);
+    const fb::BasisStamp normalized = stamp->primitive_normalized();
     for (const auto &[z, element] : stamp->element_shells()) {
       std::size_t n = 0;
       for (const fb::ShellStamp &shell : element) {
         n += shell.function_count_sphe();
       }
       const auto baked = fb::builtin_sad_density(name, z);
-      ASSERT_TRUE(baked) << name << " Z=" << z << " is not baked; regenerate data/sad";
+      if (!baked) {
+        // The one exemption: an atom too large for the atomic SCF, which
+        // tools/sad skips because the runtime refuses it the same way (the 3d
+        // row of aug-cc-pVTZ). Anything else unbaked is a stale data/sad.
+        const std::vector<fb::Atom> atom{
+            fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.0}, static_cast<fb::Element>(z)}};
+        const auto computed = fb::sad_density(atom_basis(normalized, z), atom);
+        ASSERT_FALSE(computed) << name << " Z=" << z << " is not baked; regenerate data/sad";
+        EXPECT_EQ(computed.error().kind, fb::ErrorKind::Unsupported) << name << " Z=" << z;
+        continue;
+      }
       EXPECT_EQ(baked->size(), n * n) << name << " Z=" << z;
     }
   }
@@ -97,7 +110,7 @@ TEST(IoSad, BakedMatchesComputedForHCO) {
 TEST(IoSad, BakedMatchesComputedThroughArgon) {
   FBF_SKIP_IF_FAST_TESTS();
   for (const std::string_view name : kCompiledInSets) {
-    const std::int32_t last = name == "cc-pVTZ" ? 10 : 18;
+    const std::int32_t last = name == "cc-pVTZ" || name == "aug-cc-pVTZ" ? 10 : 18;
     expect_baked_matches_computed(name, [last](std::int32_t z) { return z <= last; });
   }
 }

@@ -11,7 +11,7 @@ basis/cartesian_to_spherical.py
                   Relabel a BSE JSON document's gto_cartesian shells
                   gto_spherical (5D), in place, exponents and coefficients
                   untouched, so src/io/basis reads it: how data/basis/
-                  carries 6-31G from K on. Standard library only.
+                  carries the Pople sets. Standard library only.
 minao_from_pyscf.py
                   Write data/basis/minao.json: the MINAO free-atom minimal
                   basis (the IAOs' B2), converted from PySCF's

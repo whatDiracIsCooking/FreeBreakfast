@@ -138,8 +138,17 @@ TEST(IoBasisBuiltins, EveryCompiledInSetParsesAndCoversItsElements) {
     std::string_view name;
     std::size_t elements;
   };
-  for (const auto &[name, elements] : std::array<Expected, 5>{
-           {{"sto-3g", 36}, {"6-31g", 36}, {"cc-pVDZ", 35}, {"cc-pVTZ", 35}, {"minao", 35}}}) {
+  for (const auto &[name, elements] : std::array<Expected, 11>{{{"sto-3g", 36},
+                                                                {"6-31g", 36},
+                                                                {"6-31g*", 36},
+                                                                {"6-31g**", 36},
+                                                                {"def2-SVP", 36},
+                                                                {"def2-TZVP", 36},
+                                                                {"cc-pVDZ", 35},
+                                                                {"cc-pVTZ", 35},
+                                                                {"aug-cc-pVDZ", 34},
+                                                                {"aug-cc-pVTZ", 34},
+                                                                {"minao", 35}}}) {
     auto stamp = fb::resolve_basis(name);
     ASSERT_TRUE(stamp.has_value()) << name << ": " << stamp.error().message;
     EXPECT_EQ(stamp->element_shells().size(), elements) << name;
@@ -168,6 +177,28 @@ TEST(IoBasisBuiltins, EveryCompiledInSetParsesAndCoversItsElements) {
     EXPECT_EQ(n, 27U) << "Z=" << z;
   }
 
+  // 6-31G* and 6-31G** are Cartesian d from Li up, and carried 5D the same
+  // way: C is 6-31G's 9 plus 5 d, where 6D would be 15. ** differs from * only
+  // in H and He's p shell.
+  for (const auto &[name, z, functions] :
+       std::array<std::tuple<std::string_view, std::int32_t, std::size_t>, 4>{
+           {{"6-31g*", 1, 2}, {"6-31g*", 6, 14}, {"6-31g**", 1, 5}, {"6-31g**", 6, 14}}}) {
+    auto starred = fb::resolve_basis(name);
+    ASSERT_TRUE(starred.has_value()) << name << ": " << starred.error().message;
+    std::size_t n = 0;
+    for (const fb::ShellStamp &shell : *starred->shells_for(z)) {
+      n += shell.function_count_sphe();
+    }
+    EXPECT_EQ(n, functions) << name << " Z=" << z;
+  }
+
+  // The augmented cc sets have neither potassium nor calcium on BSE.
+  auto aug = fb::resolve_basis("aug-cc-pvdz");
+  ASSERT_TRUE(aug.has_value()) << aug.error().message;
+  EXPECT_EQ(aug->shells_for(19), nullptr);
+  EXPECT_EQ(aug->shells_for(20), nullptr);
+  EXPECT_NE(aug->shells_for(21), nullptr);
+
   // MINAO is minimal: one function per occupied free-atom AO, so C is
   // 1s 2s 2p and Fe 1s-4s 2p 3p 3d. Ca has no 3d, its 4s being the last filled.
   auto minao = fb::resolve_basis("minao");
@@ -192,10 +223,14 @@ TEST(IoBasisBuiltins, NamesIgnoreCaseHyphensAndUnderscores) {
     EXPECT_TRUE(fb::is_builtin_basis(spelling)) << spelling;
   }
   // Normalization folds separators, never the characters that distinguish one
-  // set from another: 6-31G* is a different basis from 6-31G, and is not
-  // compiled in (data/basis/README.md).
-  EXPECT_TRUE(fb::is_builtin_basis("6-31g"));
-  EXPECT_FALSE(fb::is_builtin_basis("6-31g*"));
+  // set from another: 6-31G, 6-31G* and 6-31G** are three bases, and 6-311G
+  // is not compiled in.
+  for (const std::string_view name : {"6-31G", "6-31G*", "6-31G**"}) {
+    auto stamp = fb::resolve_basis(name);
+    ASSERT_TRUE(stamp.has_value()) << name << ": " << stamp.error().message;
+    EXPECT_EQ(stamp->name(), name);
+  }
+  EXPECT_FALSE(fb::is_builtin_basis("6-311g"));
   EXPECT_FALSE(fb::is_builtin_basis("cc-pvqz"));
   EXPECT_FALSE(fb::is_builtin_basis(""));
 }

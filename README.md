@@ -432,10 +432,10 @@ rebuild.
 
 Only **spherical** sets can be carried: `src/io/basis` rejects `gto_cartesian`
 at any l, and the parser walks the whole document, so one Cartesian shell makes
-the whole file unreadable. 6-31G's d shells are Cartesian from K up, so
-`6-31g.json` is carried relabelled spherical (5D) by
-`tools/basis/cartesian_to_spherical.py`: from K on, a different basis from the
-one BSE publishes. Check the harmonic types before adding a set; [`data/basis/README.md`](data/basis/README.md)
+the whole file unreadable. The Pople sets' d shells are Cartesian (6-31G's from
+K up, 6-31G* and 6-31G**'s from Li), so all three are carried relabelled
+spherical (5D) by `tools/basis/cartesian_to_spherical.py`: different bases from
+the 6D ones BSE publishes. Check the harmonic types before adding a set; [`data/basis/README.md`](data/basis/README.md)
 has the detail.
 
 `data/sad/<basis>/<Z>.npy` is every element's atomic density in every carried
