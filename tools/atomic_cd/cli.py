@@ -13,7 +13,7 @@ off by default). The result is written as Basis Set Exchange spherical
 shells (``--bse-out``, see ``to_bse_spherical``'s doc comment).
 
 The ORBITAL basis can itself come from a Basis Set Exchange document
-(``--bse-in``; ``tools/bse_download.py`` fetches one), not only a name PySCF's
+(``--bse-in``; ``tools/basis/bse_download.py`` fetches one), not only a name PySCF's
 own library resolves -- see ``eri_quartet.basis_from_bse``. Cartesian and
 spherical BSE shells are equally acceptable here, unlike in ``src/io/basis``,
 which rejects Cartesian ones: the adapter reads only each shell's radial

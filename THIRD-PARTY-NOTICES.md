@@ -22,7 +22,7 @@ Everything below is one of three kinds:
 Copyright (c) 2020 The Molecular Sciences Software Institute, Virginia Tech
 
 Four of the five documents in `data/basis/` are Basis Set Exchange JSON,
-downloaded unmodified by `tools/bse_download.py` from
+downloaded by `tools/basis/bse_download.py` from
 <https://www.basissetexchange.org/> and compiled into the binary:
 
 | File | BSE name | Revision |
@@ -34,8 +34,12 @@ downloaded unmodified by `tools/bse_download.py` from
 
 Each document keeps its own BSE header, including the per-element
 `references` and the revision metadata, so the provenance of every shell
-travels in the file itself. No value was edited; `data/basis/README.md` records
-the exact download commands and the element ranges.
+travels in the file itself. No exponent or coefficient was edited. One
+modification was made: in `6-31g.json` the `gto_cartesian` d shells of K–Kr
+are relabelled `gto_spherical` by `tools/basis/cartesian_to_spherical.py`,
+which also updates the header's `function_types` and appends a note saying so
+to its `revision_description`. `data/basis/README.md` records the exact
+commands and the element ranges.
 
 Full licence text: [Appendix B](#appendix-b-bsd-3-clause-licence). Clause 1
 (source form) and clause 2 (binary form) are both engaged — the data is in the

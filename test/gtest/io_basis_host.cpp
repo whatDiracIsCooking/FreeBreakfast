@@ -139,7 +139,7 @@ TEST(IoBasisBuiltins, EveryCompiledInSetParsesAndCoversItsElements) {
     std::size_t elements;
   };
   for (const auto &[name, elements] : std::array<Expected, 5>{
-           {{"sto-3g", 36}, {"6-31g", 18}, {"cc-pVDZ", 35}, {"cc-pVTZ", 35}, {"minao", 35}}}) {
+           {{"sto-3g", 36}, {"6-31g", 36}, {"cc-pVDZ", 35}, {"cc-pVTZ", 35}, {"minao", 35}}}) {
     auto stamp = fb::resolve_basis(name);
     ASSERT_TRUE(stamp.has_value()) << name << ": " << stamp.error().message;
     EXPECT_EQ(stamp->element_shells().size(), elements) << name;
@@ -154,6 +154,19 @@ TEST(IoBasisBuiltins, EveryCompiledInSetParsesAndCoversItsElements) {
   ASSERT_TRUE(dz.has_value()) << dz.error().message;
   EXPECT_EQ(dz->shells_for(19), nullptr);
   EXPECT_NE(dz->shells_for(20), nullptr);
+
+  // 6-31G is Cartesian from K up as BSE serves it; data/basis/ carries it
+  // relabelled spherical (tools/basis/cartesian_to_spherical.py). K-Kr are
+  // s, 4 sp and 2 d: 27 functions as 5D, where 6D would be 29.
+  auto pople = fb::resolve_basis("6-31g");
+  ASSERT_TRUE(pople.has_value()) << pople.error().message;
+  for (const std::int32_t z : {19, 26, 36}) {
+    std::size_t n = 0;
+    for (const fb::ShellStamp &shell : *pople->shells_for(z)) {
+      n += shell.function_count_sphe();
+    }
+    EXPECT_EQ(n, 27U) << "Z=" << z;
+  }
 
   // MINAO is minimal: one function per occupied free-atom AO, so C is
   // 1s 2s 2p and Fe 1s-4s 2p 3p 3d. Ca has no 3d, its 4s being the last filled.
@@ -180,7 +193,7 @@ TEST(IoBasisBuiltins, NamesIgnoreCaseHyphensAndUnderscores) {
   }
   // Normalization folds separators, never the characters that distinguish one
   // set from another: 6-31G* is a different basis from 6-31G, and is not
-  // compiled in (its d shells are Cartesian -- data/basis/README.md).
+  // compiled in (data/basis/README.md).
   EXPECT_TRUE(fb::is_builtin_basis("6-31g"));
   EXPECT_FALSE(fb::is_builtin_basis("6-31g*"));
   EXPECT_FALSE(fb::is_builtin_basis("cc-pvqz"));

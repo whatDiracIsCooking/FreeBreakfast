@@ -172,7 +172,7 @@ copies are deliberate; keep them in step.
 
 ## Basis sets are build input, not installed data
 
-`data/basis/*.json` is BSE JSON downloaded by `tools/bse_download.py` and
+`data/basis/*.json` is BSE JSON downloaded by `tools/basis/bse_download.py` and
 **compiled into the binary**: `src/io/basis/CMakeLists.txt` wraps each file
 verbatim in a raw string literal in a module implementation unit generated from
 `builtin_basis.cpp.in`, and `resolve_basis("sto-3g")` parses it out of the
@@ -190,9 +190,11 @@ name must not be joined to the config file's directory.
 **Only spherical sets can be carried.** `src/io/basis` rejects
 `gto_cartesian` at any l by design, and `parse_basis` walks the whole
 document, so one Cartesian shell anywhere makes the entire file unreadable —
-which is why `6-31g.json` stops at argon and `6-31G*` is absent entirely.
-Check the harmonic types before adding a set; `data/basis/README.md` has the
-detail and the regeneration commands.
+From K up 6-31G's d shells are Cartesian, so `6-31g.json` is carried
+relabelled spherical (5D) by `tools/basis/cartesian_to_spherical.py` — a
+different basis from BSE's from K on, by decision — and `6-31G*` is absent
+entirely. Check the harmonic types before adding a set; `data/basis/README.md`
+has the detail and the regeneration commands.
 
 **So are the SAD stamps.** `data/sad/<basis>/<Z>.npy` is every element's atomic
 density in every carried set, written by the C++ generator `tools/sad`

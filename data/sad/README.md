@@ -21,7 +21,7 @@ density from there instead of running its atomic SCF.
   count. It is what `sad_density` computes for that atom alone. Load one with
   a plain `np.load`.
 
-Every element of every `data/basis` set is here: 159 files, about 1.4 MB.
+Every element of every `data/basis` set is here: 177 files, about 1.5 MB.
 
 ## Why
 

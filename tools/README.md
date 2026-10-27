@@ -4,8 +4,14 @@ Standalone utilities around the C++ tree: Python scripts, and one C++
 generator. Not tests, not a package, not on the push gate.
 
 ```
-bse_download.py   Fetch basis sets from the Basis Set Exchange as the JSON
+basis/bse_download.py
+                  Fetch basis sets from the Basis Set Exchange as the JSON
                   src/io/basis reads. Standard library only.
+basis/cartesian_to_spherical.py
+                  Relabel a BSE JSON document's gto_cartesian shells
+                  gto_spherical (5D), in place, exponents and coefficients
+                  untouched, so src/io/basis reads it: how data/basis/
+                  carries 6-31G from K on. Standard library only.
 minao_from_pyscf.py
                   Write data/basis/minao.json: the MINAO free-atom minimal
                   basis (the IAOs' B2), converted from PySCF's
@@ -118,16 +124,17 @@ sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
 
 Re-run the four `emit/*_kernels.py`, `extract_integral_golden.py` and then
 `emit/record_bound_golden.py` (it reads the exchange goldens' shells) after
-bumping `deps/FelizJueves`. Everything but `bse_download.py`, `atomic_cd` and
+bumping `deps/FelizJueves`. Everything but `basis/`, `atomic_cd` and
 `emit/ci_bench_integrals.py` writes tracked files, so the diff is the review.
 
 ## Running
 
-`bse_download.py` needs nothing beyond Python:
+`basis/` needs nothing beyond Python:
 
 ```sh
-tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
-tools/bse_download.py --list
+tools/basis/bse_download.py cc-pVDZ def2-SVP -o data/basis
+tools/basis/bse_download.py --list
+tools/basis/cartesian_to_spherical.py data/basis/6-31g.json
 ```
 
 `atomic_cd`, `minao_from_pyscf.py`, `jkfit_from_pyscf.py` and the
@@ -159,7 +166,7 @@ The two compose: an orbital basis fetched by `bse_download.py` can be fed back
 in with `--bse-in`, which makes the positional basis name a display label only.
 
 ```sh
-tools/bse_download.py cc-pVDZ --elements C -o /tmp/basis
+tools/basis/bse_download.py cc-pVDZ --elements C -o /tmp/basis
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ \
     --bse-in /tmp/basis/cc-pVDZ.json
 ```

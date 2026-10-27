@@ -44,7 +44,7 @@ dev = [
 # / golden generators (tools/README.md). Not part of
 # `dev` -- nothing on the push gate or in the image needs it, and PySCF is a
 # heavy wheel. Opt in with `uv sync --group tools` (or `uv run --group tools`).
-# tools/bse_download.py is stdlib-only and needs none of this.
+# tools/basis/ is stdlib-only and needs none of this.
 tools = [
     "numpy>=2.0",
     "pyscf>=2.6",
