@@ -14,12 +14,15 @@
 
 namespace free_breakfast {
 
-/// @brief The largest angular momentum the GPU kernels currently support (d).
+/// @brief The largest angular momentum the GPU kernels currently support (f).
 ///
-/// The device s/p/d kernel set covers L in [0, @ref kMaxAngularMomentum]; the
+/// The device s/p/d/f kernel set covers L in [0, @ref kMaxAngularMomentum]; the
 /// GPU integral/Fock engines reject a basis with any higher shell. @ref Shell
 /// itself imposes no such cap -- the host reference engines evaluate arbitrary L
-/// -- so this is the GPU-kernel limit, not a basis-wide invariant.
-inline constexpr int32_t kMaxAngularMomentum = 2;
+/// -- so this is the GPU-kernel limit, not a basis-wide invariant. Each engine
+/// also carries its own limit, read from its own emitted tables
+/// (`kOneElectronMaxL`, `device::kExchangeMaxMomentum`, mmd's bound limits);
+/// each is checked equal to this one where it is defined.
+inline constexpr int32_t kMaxAngularMomentum = 3;
 
 } // namespace free_breakfast

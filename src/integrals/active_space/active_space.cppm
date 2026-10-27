@@ -5,7 +5,7 @@
 /// integral is stored.
 ///
 /// What a CASCI (and, once per macro-iteration, a CASSCF) diagonalizes over:
-/// FCI is ncore = 0 and ncas = nmo. Classes through d only, since J and K
+/// FCI is ncore = 0 and ncas = nmo. Classes through f only, since J and K
 /// refuse higher.
 
 export module free_breakfast.integrals.active_space;
@@ -80,7 +80,7 @@ struct ActiveSpaceHamiltonian {
 ///         negative, ncore + ncas exceeds nmo, a tau is negative or NaN, @p h
 ///         or @p c is not of @p basis's spherical order or not on res's device;
 ///         @c coulomb's and
-///         @c exchange's own InvalidConfig (a class above d, or classes of
+///         @c exchange's own InvalidConfig (a class above f, or classes of
 ///         another basis); or the GpuRuntime error of the first BLAS, copy or
 ///         launch that failed.
 [[nodiscard]] Result<ActiveSpaceHamiltonian>

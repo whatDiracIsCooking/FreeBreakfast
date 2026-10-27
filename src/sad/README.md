@@ -76,7 +76,7 @@ node.executor().run(flow).wait();
 
 ## Tests
 
-- `test/gtest/sad_host.cpp`: each atom's block against PySCF 2.14's `AtomSphAverageRHF` density for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ (to 1e-7), the block-diagonal assembly, seating by momentum rather than shell position, a ghost atom, and the refusals. Over formaldehyde in cc-pVDZ, the task form against the serial one bitwise, with a predecessor building the basis, and reporting the first failing atom's error. A lookup standing in for an element's SCF in both forms, ignored for an unnamed basis, and refused at the wrong size.
+- `test/gtest/sad_host.cpp`: each atom's block against PySCF 2.14's `AtomSphAverageRHF` density for H–Ar and Zn in STO-3G, H, He, C, O, Ne in cc-pVDZ, and C and O in cc-pVTZ (f shells; to 1e-7), the block-diagonal assembly, seating by momentum rather than shell position, a ghost atom, and the refusals. Over formaldehyde in cc-pVDZ, the task form against the serial one bitwise, with a predecessor building the basis, and reporting the first failing atom's error. A lookup standing in for an element's SCF in both forms, ignored for an unnamed basis, and refused at the wrong size.
 - `test/gtest/io_sad_host.cpp`: the compiled-in stamps against this module's SCF, bitwise.
 - `test/gtest/sad_gpu.cpp`: the guess over a basis `place`d on a `Molecule`.
 

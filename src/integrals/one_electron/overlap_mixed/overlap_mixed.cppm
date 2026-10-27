@@ -36,7 +36,7 @@ export namespace free_breakfast {
 /// restored.
 ///
 /// @return Success; InvalidConfig if @p s is the wrong size, if a shell of
-///         either basis is above d, or if the matrix is too large for the
+///         either basis is above f, or if the matrix is too large for the
 ///         kernels' 32-bit index (rows.nao_cart() * cols.nao_cart() above
 ///         INT32_MAX); or the GpuRuntime error of the record build, or of the
 ///         first memset, fork, launch or join that failed, which leaves @p s

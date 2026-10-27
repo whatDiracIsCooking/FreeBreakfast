@@ -250,6 +250,9 @@ Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &
 // refuses such a class.
 // pair_bound depends on la + lb alone, so a mixed class with la > lb takes the
 // kernel of (lb, la), the one emitted.
+static_assert(device::kPairBoundMaxMomentum == kMaxAngularMomentum &&
+                  device::kRecordBoundMaxMomentum == kMaxAngularMomentum,
+              "mmd's bound limits and the tree-wide kMaxAngularMomentum disagree");
 Status form_bounds(PrimitivePairClass &cls) {
   const auto [lo, hi] = std::minmax(cls.la, cls.lb);
   const wwr::wwrStream_t stream = cls.handle->stream();

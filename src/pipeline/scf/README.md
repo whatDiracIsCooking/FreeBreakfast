@@ -135,7 +135,7 @@ What it settled:
   is the fix, once a basis needs it.
 
 Errors: an option out of range, more electron pairs than orbitals, or a guess
-of the wrong size is `InvalidConfig`; a class above d is J's and K's
+of the wrong size is `InvalidConfig`; a class above f is J's and K's
 `InvalidConfig`; no convergence within `max_iterations` is
 `MaxIterationsExceeded`; a non-converged eigensolve is `Numerical`; a failed
 runtime, BLAS, solver or launch call is `GpuRuntime`; a `molden` file that
@@ -150,12 +150,13 @@ this tree's own `data/basis` files:
 - The step's contract is checked by `static_assert`.
 - Incremental builds (the default) against `fock_rebuild_interval = 1` on
   H2O/cc-pVDZ: the energy to 1e-9 Eh and the orbital energies to 1e-7 Eh.
-- H2O in STO-3G and cc-pVDZ, and NH4+ (charged, so the guess is rescaled) in
-  cc-pVDZ, each over the setup steps and the guess run by hand: the energy to
+- H2O in STO-3G and cc-pVDZ, NH4+ (charged, so the guess is rescaled) in
+  cc-pVDZ, and CO in cc-pVTZ (f shells on both atoms, off every axis), each over the setup steps and the guess run by hand: the energy to
   1e-8 Eh and every orbital energy to 1e-6 Eh of PySCF's, and the invariants
   C^T S C = I, tr(D S) = N and D S D = 2 D.
-- A config naming only `[scf]` plans the whole chain, and its energy matches
-  PySCF's.
+- A config naming only `[scf]` plans the whole chain, for H2O/cc-pVDZ and
+  CO/cc-pVTZ, and its energy and orbital energies match PySCF's to the same
+  tolerances.
 - An open shell is `Unsupported`, too few iterations `MaxIterationsExceeded`,
   and an option out of range `InvalidConfig`.
 - `molden` set writes a file a Molden reader takes: the header, one `[MO]`

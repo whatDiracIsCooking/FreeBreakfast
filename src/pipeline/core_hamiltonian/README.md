@@ -27,7 +27,7 @@ struct CoreHamiltonianStep {
 
 A thin wrapper over `integrals.one_electron`'s `core_hamiltonian` and
 `recipes.matrix_ao`'s `cartesian_to_spherical`, with their errors: a class above
-d is `InvalidConfig` (refused before anything is launched), and a failed launch
+f is `InvalidConfig` (refused before anything is launched), and a failed launch
 or BLAS call is `GpuRuntime`.
 
 - **One product, `CoreHamiltonianOutput`, not T and V** (design section 8).
@@ -51,8 +51,9 @@ or BLAS call is `GpuRuntime`.
 
 - The step's contract is checked by `static_assert`.
 - The step's H is checked, element by element, against a direct
-  `core_hamiltonian` then `cartesian_to_spherical` for water.
-- A basis with an f shell is checked to come back as `InvalidConfig`, through
+  `core_hamiltonian` then `cartesian_to_spherical` for water, with an s, p, d
+  and f shell on oxygen.
+- A basis with a g shell is checked to come back as `InvalidConfig`, through
   the step's `Result`.
 
 ## Files

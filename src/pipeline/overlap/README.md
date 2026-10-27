@@ -26,7 +26,7 @@ struct OverlapStep {
 
 A thin wrapper over `integrals.one_electron`'s `overlap` and `recipes.matrix_ao`'s
 `cartesian_to_spherical`. Its errors are theirs: a failed launch or BLAS call is
-`GpuRuntime`, and a class above d is `InvalidConfig`.
+`GpuRuntime`, and a class above f is `InvalidConfig`.
 
 - **Spherical across the step boundary** (section 8 of the design). The kernels
   build Cartesian S into a transient `MatrixAOPair` over the shared U, which

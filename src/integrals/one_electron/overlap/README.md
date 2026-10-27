@@ -32,7 +32,7 @@ their own names; the parent README's "One layout per kernel family" has the
 table. The launcher takes `mmd`'s `PrimitivePairClassView`, not loose
 pointers, and is bounded by its own table's extent, not by `basis`'s
 `kMaxAngularMomentum`, so a family moves to a higher l when its kernels are
-emitted for one: they cover f while the tree-wide limit is still d.
+emitted for one.
 
 **Limits.** f per shell (`launch`'s `kOneElectronMaxL`), and `n_ao² ≤ INT32_MAX`;
 either is `InvalidConfig` before anything is launched. The records' AO offsets

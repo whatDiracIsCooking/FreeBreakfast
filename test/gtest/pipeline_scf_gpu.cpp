@@ -206,7 +206,7 @@ TEST_P(PipelineScf, MatchesPyscf) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Rhf, PipelineScf,
-                         ::testing::Values("h2o_sto3g", "h2o_ccpvdz", "nh4_ccpvdz"),
+                         ::testing::Values("h2o_sto3g", "h2o_ccpvdz", "nh4_ccpvdz", "co_ccpvtz"),
                          [](const auto &info) { return std::string(info.param); });
 
 // Incremental Fock builds (the default) against a full build every iteration:
@@ -301,12 +301,16 @@ TEST(PipelineScfErrors, AnOptionOutOfRangeIsInvalidConfig) {
   }
 }
 
-TEST(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
+// h2o_ccpvdz, and co_ccpvtz for f shells: a config names the basis by its
+// builtin name and the molecule by an XYZ file, as a user would.
+class PipelineScfCalculation : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
   FBF_REQUIRE_GPU();
-  const fb::json &expected = reference_case("h2o_ccpvdz");
+  const fb::json &expected = reference_case(GetParam());
   // The reference geometry is in bohr; XYZ is in Angstrom, read back through
   // the same constant, so the molecule is the reference's to rounding.
-  std::string xyz = std::format("{}\nwater\n", expected.at("atoms").size());
+  std::string xyz = std::format("{}\n{}\n", expected.at("atoms").size(), GetParam());
   for (const fb::json &atom : expected.at("atoms")) {
     const auto coord = atom.at("coord").get<std::vector<double>>();
     xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
@@ -315,10 +319,11 @@ TEST(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
   const fb::test::ScratchDir dir("pipeline_scf");
-  ASSERT_TRUE(fb::write_file(dir / "water.xyz", xyz).has_value());
+  ASSERT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
   ASSERT_TRUE(fb::write_file(dir / "run.toml",
-                             "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
-                             "[scf]\n")
+                             std::format("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\n"
+                                         "basis = \"{}\"\n[scf]\n",
+                                         expected.at("basis").get<std::string>()))
                   .has_value());
 
   fb::NodeResources node;
@@ -326,9 +331,17 @@ TEST(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
-  EXPECT_NEAR(calc->get<fb::ScfOutput>()->energy, expected.at("energy").get<double>(),
-              kEnergyTolerance);
+  const auto &scf = calc->get<fb::ScfOutput>();
+  ASSERT_TRUE(scf.has_value());
+  EXPECT_NEAR(scf->energy, expected.at("energy").get<double>(), kEnergyTolerance);
+  const auto mo_energies = expected.at("mo_energies").get<std::vector<double>>();
+  ASSERT_EQ(scf->mo_energies.size(), mo_energies.size());
+  for (std::size_t i = 0; i < mo_energies.size(); ++i) {
+    EXPECT_NEAR(scf->mo_energies[i], mo_energies[i], kOrbitalEnergyTolerance) << i;
+  }
 }
+
+INSTANTIATE_TEST_SUITE_P(Rhf, PipelineScfCalculation, ::testing::Values("h2o_ccpvdz", "co_ccpvtz"),
+                         [](const auto &info) { return std::string(info.param); });
 
 } // namespace

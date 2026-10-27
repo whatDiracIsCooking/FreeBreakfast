@@ -32,7 +32,8 @@ namespace {
 
 namespace fb = free_breakfast;
 
-constexpr std::int32_t kMomenta = fb::kMaxAngularMomentum + 1;
+// s, p and d: the momenta of h2o_ccpvdz, the golden every case reads.
+constexpr std::int32_t kMomenta = 3;
 
 struct Golden {
   fb::BasisSet basis;

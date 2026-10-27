@@ -33,7 +33,7 @@ struct CoreHamiltonianStep {
   static constexpr std::string_view kName = "core_hamiltonian";
 
   /// @brief H, built Cartesian and carried onto the spherical layout. A class
-  /// above d is ErrorKind::InvalidConfig; a failed launch or BLAS call is
+  /// above f is ErrorKind::InvalidConfig; a failed launch or BLAS call is
   /// ErrorKind::GpuRuntime.
   [[nodiscard]] Result<CoreHamiltonianOutput>
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput> in,

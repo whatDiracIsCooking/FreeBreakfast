@@ -37,7 +37,7 @@ export namespace free_breakfast {
 /// once per geometry).
 class ShellStamp {
 public:
-  /// @param l           Angular momentum L (0 = s, 1 = p, 2 = d). No upper cap;
+  /// @param l           Angular momentum L (0 = s, 1 = p, 2 = d, 3 = f). No cap;
   ///                    the GPU engines separately reject L > @ref
   ///                    kMaxAngularMomentum.
   /// @param primitives  The contracted primitives, in contraction order.

@@ -37,6 +37,7 @@ from pyscf.scf import atom_hf
 CASES: dict[str, list[str]] = {
     "sto-3g": ["H", "He", "Li", "Be", "C", "N", "O", "Ne", "Na", "Ar", "Zn"],
     "cc-pvdz": ["H", "He", "C", "O", "Ne"],
+    "cc-pvtz": ["C", "O"],
 }
 
 OUT = (

@@ -73,7 +73,7 @@ struct ScfStep {
   /// @brief The converged wavefunction. An open shell (an odd electron count,
   /// or a multiplicity other than 1) is ErrorKind::Unsupported; an option out
   /// of range (a negative or NaN @ref tau_j among them), more electron pairs than orbitals, or a guess of the wrong size
-  /// is ErrorKind::InvalidConfig; a class above d is J's and K's
+  /// is ErrorKind::InvalidConfig; a class above f is J's and K's
   /// InvalidConfig; no convergence within @ref max_iterations is
   /// ErrorKind::MaxIterationsExceeded; a non-converged eigensolve is
   /// ErrorKind::Numerical; a failed runtime, BLAS, solver or launch call is
