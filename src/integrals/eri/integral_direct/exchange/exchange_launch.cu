@@ -41,13 +41,16 @@ __global__ void rank_offsets_kernel(const int32_t n_rec, const int32_t *rank_b,
   }
 }
 
-constexpr size_t kExtent = static_cast<size_t>(fb::kMaxAngularMomentum + 1);
+// The largest momentum the emitted table covers, its own limit rather than the
+// tree's kMaxAngularMomentum, so K moves to a higher l when its kernels are
+// emitted for one.
+constexpr size_t kExtent = std::extent_v<decltype(kb_kernels), 0>;
+constexpr int32_t kMaxL = static_cast<int32_t>(kExtent) - 1;
 
-static_assert(std::extent_v<decltype(kb_kernels), 0> == kExtent &&
-                  std::extent_v<decltype(kb_kernels), 1> == kExtent &&
+static_assert(std::extent_v<decltype(kb_kernels), 1> == kExtent &&
                   std::extent_v<decltype(kb_kernels), 2> == kExtent &&
                   std::extent_v<decltype(kb_kernels), 3> == kExtent,
-              "kernels/kb was not emitted for kMaxAngularMomentum: rerun "
+              "kernels/kb's [la][lc][lb][ld] table is not square: rerun "
               "tools/emit_exchange_kernels.py");
 
 // One warp per K_ab block: blockDim = (1, warp width), the block kb's Ksh was
@@ -59,9 +62,10 @@ static_assert(kb_block_dim[0] == 1 && kb_block_dim[1] == fb::kWarpSize,
 // kb's shared memory is static, `Ksh[(n_p + n_a n_b) * blockDim.y]` doubles,
 // n_p = (lp + 1)(lp + 2)(lp + 3) / 6 Hermite functions of lp = la + lc and n_a
 // n_b the class's Cartesian block; it is launched with no dynamic bytes. So
-// the budget is checked on that formula at the largest class, (d d | d d):
-// 71 slots, 18,176 B at 32 lanes, 36,352 B at 64. A class over 48 KiB would
-// fail its launch (or, emitted, its compile) on a device without an opt-in.
+// the budget is checked on that formula at the table's largest class, today
+// (d d | d d): 71 slots, 18,176 B at 32 lanes, 36,352 B at 64. A class over
+// 48 KiB would fail its launch (or, emitted, its compile) on a device without
+// an opt-in.
 constexpr size_t kSharedBudget = 48 * 1024;
 
 constexpr size_t k_shared_bytes(const int32_t la, const int32_t lc, const int32_t lb) {
@@ -71,12 +75,11 @@ constexpr size_t k_shared_bytes(const int32_t la, const int32_t lc, const int32_
   return ((lp + 1) * (lp + 2) * (lp + 3) / 6 + na * nb) * kb_block_dim[1] * sizeof(double);
 }
 
-static_assert(k_shared_bytes(fb::kMaxAngularMomentum, fb::kMaxAngularMomentum,
-                             fb::kMaxAngularMomentum) <= kSharedBudget,
-              "kb's static shared memory at kMaxAngularMomentum is over 48 KiB");
+static_assert(k_shared_bytes(kMaxL, kMaxL, kMaxL) <= kSharedBudget,
+              "kb's static shared memory at its table's largest class is over 48 KiB");
 
 bool valid_momentum(const int32_t l) {
-  return l >= 0 && l <= fb::kMaxAngularMomentum;
+  return l >= 0 && l <= kMaxL;
 }
 
 bool has_records(const fb::OrderedPairClassView &cls) {

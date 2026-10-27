@@ -39,8 +39,9 @@ whichever matrix is wanted.
 matrix and every class on the call's device, the matrix's order within the
 kernels' 32-bit `m * n_ao + n` index (`n_ao² ≤ INT32_MAX`, about 46k Cartesian
 AOs), and every class `la <= lb <= kMaxAngularMomentum`. That limit is
-`basis`'s, one for the whole repo: every family is generated to it, and the
-launchers' kernel tables are sized by it. `check_nuclei` is the extra one for
+`basis`'s, the tree-wide one; each launcher is bounded by its own kernel
+table's extent instead, and this check moves to the families' tables when the
+one-electron engine lifts to f (#344). `check_nuclei` is the extra one for
 the builds that read the nuclei (V and H): the molecule's nuclei on the call's
 device.
 

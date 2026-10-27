@@ -65,6 +65,9 @@ Status exchange_check(const DeviceResources &res, const std::span<OrderedPairCla
       return err_config("exchange: class ({}, {}) is on device {}, but the call passed device {}",
                         cls.la, cls.lb, dev, res.dev_idx());
     }
+    // The tree-wide limit, not kb's table (exchange_k is bounded by its own),
+    // and what kExchangeMomenta sizes the build's storage by: both move when K
+    // lifts to f, #348.
     if (cls.la < 0 || cls.la > kMaxAngularMomentum || cls.lb < 0 || cls.lb > kMaxAngularMomentum) {
       return err_config("exchange: no kernel for class ({}, {}); the kernels cover la, lb <= {}",
                         cls.la, cls.lb, kMaxAngularMomentum);

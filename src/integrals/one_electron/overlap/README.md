@@ -30,8 +30,9 @@ holds `overlap_kernels`, the `[la][lb]` table it launches through.
 **The family layout.** `kinetic/` and `potential_en/` are the same files under
 their own names; the parent README's "One layout per kernel family" has the
 table. The launcher takes `mmd`'s `PrimitivePairClassView`, not loose
-pointers, and is bounded by `basis`'s `kMaxAngularMomentum`, the one limit for
-every family.
+pointers, and is bounded by its own table's extent, not by `basis`'s
+`kMaxAngularMomentum`, so a family moves to a higher l when its kernels are
+emitted for one.
 
 **Limits.** d per shell (`kMaxAngularMomentum`), and `n_ao² ≤ INT32_MAX`;
 either is `InvalidConfig` before anything is launched. The records' AO offsets

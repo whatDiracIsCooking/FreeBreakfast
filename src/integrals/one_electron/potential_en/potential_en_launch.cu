@@ -25,15 +25,19 @@
 
 namespace free_breakfast::device {
 
-static_assert(std::extent_v<decltype(potential_en_kernels), 0> == kMaxAngularMomentum + 1 &&
-                  std::extent_v<decltype(potential_en_kernels), 1> == kMaxAngularMomentum + 1,
-              "kernels/ was not emitted for kMaxAngularMomentum: rerun "
+// The largest momentum the emitted table covers, its own limit rather than
+// the tree's kMaxAngularMomentum, so this engine moves to a higher l when its
+// kernels are emitted for one.
+constexpr int32_t kMaxL =
+    static_cast<int32_t>(std::extent_v<decltype(potential_en_kernels), 0>) - 1;
+
+static_assert(std::extent_v<decltype(potential_en_kernels), 1> == kMaxL + 1,
+              "kernels/'s [la][lb] table is not square: rerun "
               "tools/emit_one_electron_kernels.py");
 
 wwr::wwrError_t potential_en_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
                                    const NucleiView &nuclei, const int32_t n_ao, double *v) {
-  if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum || cls.n_rec < 1 ||
-      nuclei.n_nuc < 1) {
+  if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxL || cls.n_rec < 1 || nuclei.n_nuc < 1) {
     return wwr::wwrErrorInvalidValue;
   }
   const auto kernel = potential_en_kernels[cls.la][cls.lb];

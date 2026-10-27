@@ -154,6 +154,8 @@ coulomb_pair_classes(DeviceResources &res, const std::span<const PrimitivePairCl
   if (!(tau >= 0.0)) {
     return err_config("coulomb_pair_classes: the threshold tau is {}, but must be 0 or above", tau);
   }
+  // The tree-wide limit, not J's tables: this moves to them when J lifts to f,
+  // #345.
   for (const PrimitivePairClass &cls : classes) {
     if (cls.la > kMaxAngularMomentum || cls.lb > kMaxAngularMomentum) {
       return err_config("coulomb_pair_classes: class ({}, {}) is above d, the largest momentum "

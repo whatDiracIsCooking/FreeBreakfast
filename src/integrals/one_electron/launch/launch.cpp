@@ -32,6 +32,8 @@ Status check_one_electron_build(const DeviceResources &res,
       return err_config("{}: class ({}, {}) is on device {}, but the call passed device {}", what,
                         cls.la, cls.lb, dev, res.dev_idx());
     }
+    // The tree-wide limit, not the families' tables (each launcher is bounded by
+    // its own): this moves to them when the one-electron engine lifts to f, #344.
     if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum) {
       return err_config("{}: no kernel for class ({}, {}); the kernels cover la <= lb <= {}", what,
                         cls.la, cls.lb, kMaxAngularMomentum);

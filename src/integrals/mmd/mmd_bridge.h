@@ -146,7 +146,8 @@ struct PrimitivePairRecords {
 /// not overlap.
 ///
 /// @return The launch status (wwrErrorInvalidValue if @p n_rec is not
-///         positive or (la, lb) has no kernel: la <= lb <= kMaxAngularMomentum).
+///         positive or (la, lb) has no kernel: la <= lb <= the largest
+///         momentum kernels/pair_bound's table covers).
 ///         Launch errors only.
 [[nodiscard]] wwr::wwrError_t mmd_bound(wwr::wwrStream_t stream, int32_t la, int32_t lb,
                                         int32_t n_rec, const double *zeta, double *bound);
@@ -168,7 +169,8 @@ struct PrimitivePairRecords {
 /// factor underflows gets exactly 0.0.
 ///
 /// @return The launch status (wwrErrorInvalidValue if the view has no
-///         records or no kernel: la and lb at most kMaxAngularMomentum).
+///         records or no kernel: la and lb at most the largest momentum
+///         kernels/record_bound's table covers).
 ///         Launch errors only.
 [[nodiscard]] wwr::wwrError_t ordered_pair_bound(wwr::wwrStream_t stream,
                                                  const PrimitivePairClassView &cls, double *bound);

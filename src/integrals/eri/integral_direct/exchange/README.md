@@ -194,9 +194,12 @@ What the kernels leave to the launcher, and how it is supplied:
 **The shared-memory budget is checked at compile time.** `Ksh` is static, so
 `exchange_launch.cu` `static_assert`s the formula
 `(n_p + n_a n_b) · kb_block_dim[1] · 8` bytes, `n_p = (lp+1)(lp+2)(lp+3)/6`,
-`lp = la + lc`, at the largest class, `(dd|dd)`, against 48 KiB: 71 slots,
-18,176 B at 32 lanes and 36,352 B at 64. Beside it, the table's extents against
-`kMaxAngularMomentum` and `kb_block_dim` against `kWarpSize`. The footprint is
+`lp = la + lc`, at the table's largest class, today `(dd|dd)`, against 48 KiB:
+71 slots, 18,176 B at 32 lanes and 36,352 B at 64. Beside it, the table is
+checked square, and `kb_block_dim` against `kWarpSize`. The launcher's limit is
+the table's own extent, not `kMaxAngularMomentum`: K moves to a higher l when
+its kernels are emitted for one. `exchange_check`, the helpers and the build's
+storage still hold the tree-wide `kMaxAngularMomentum` until #348. The footprint is
 `kernel_k`'s, unchanged.
 
 **Scratch.** As J's is `CoulombPairClass`'s, K's is `OrderedPairClass`'s,
