@@ -45,29 +45,39 @@ namespace free_breakfast {
   return text;
 }
 
-// The localized orbitals to @p path as Molden. They are not eigenvectors of F,
-// so each is given its expectation value, <i|F|i> = sum_k U_ki^2 eps_k over the
-// canonical occupied energies; U is all that needs downloading for it.
+// The localized orbitals to @p path as Molden, then the canonical virtuals:
+// the localization mixes only occupied orbitals, so together they are still
+// an orthonormal set spanning every MO. The localized ones are not
+// eigenvectors of F, so each is given its expectation value,
+// <i|F|i> = sum_k U_ki^2 eps_k over the canonical occupied energies; F is
+// block-diagonal between occupied and virtual, so each virtual keeps eps_a.
 [[nodiscard]] Status write_localization_molden(DeviceResources &res,
                                                const std::filesystem::path &path,
                                                const Molecule &molecule, const BasisSet &basis,
                                                const LocalizationOutput &out,
-                                               const std::vector<double> &mo_energies) {
+                                               const ScfOutput &scf) {
+  const size_t n_ao = basis.nao_sphe();
   const auto occ = static_cast<size_t>(out.n_occ);
-  std::vector<double> c(basis.nao_sphe() * occ);
+  const size_t n_mo = scf.mo_energies.size();
+  std::vector<double> c(n_ao * n_mo);
   std::vector<double> u(occ * occ);
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c.data(), out.c.data(), c.size() * sizeof(double),
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c.data(), out.c.data(), n_ao * occ * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, res.stream())));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c.data() + (n_ao * occ), scf.c.data() + (n_ao * occ),
+                                         n_ao * (n_mo - occ) * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, res.stream())));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(u.data(), out.u.data(), u.size() * sizeof(double),
                                          wwr::wwrMemcpyDeviceToHost, res.stream())));
   FBF_TRY(res.sync());
-  std::vector<double> energies(occ, 0.0);
+  std::vector<double> energies(scf.mo_energies);
   for (size_t i = 0; i < occ; ++i) {
+    energies[i] = 0.0;
     for (size_t k = 0; k < occ; ++k) {
-      energies[i] += u[k + (occ * i)] * u[k + (occ * i)] * mo_energies[k];
+      energies[i] += u[k + (occ * i)] * u[k + (occ * i)] * scf.mo_energies[k];
     }
   }
-  const std::vector<double> occupations(occ, 2.0);
+  std::vector<double> occupations(n_mo, 0.0);
+  std::fill_n(occupations.begin(), occ, 2.0);
   return write_molden(path, molecule.atoms(), basis, c, energies, occupations);
 }
 
@@ -205,7 +215,7 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
     }
   }
   if (!molden.empty()) {
-    FBF_TRY(write_localization_molden(res, molden, molecule, basis, out, scf.mo_energies));
+    FBF_TRY(write_localization_molden(res, molden, molecule, basis, out, scf));
   }
   if (!livvo_molden.empty()) {
     FBF_TRY(write_livvo_molden(res, livvo_molden, molecule, basis, scf, s, out));
