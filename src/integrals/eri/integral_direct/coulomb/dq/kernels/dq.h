@@ -83,6 +83,25 @@ __global__ void dq<0, 2>(
     double* Dmax);
 
 template <>
+__global__ void dq<0, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* eta,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const double* w,
+    const int32_t* off_c,
+    const int32_t* off_d,
+    const double* Dao,
+    double* D,
+    double* Dmax);
+
+template <>
 __global__ void dq<1, 1>(
     int32_t n_rec,
     int32_t n_ao,
@@ -121,6 +140,25 @@ __global__ void dq<1, 2>(
     double* Dmax);
 
 template <>
+__global__ void dq<1, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* eta,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const double* w,
+    const int32_t* off_c,
+    const int32_t* off_d,
+    const double* Dao,
+    double* D,
+    double* Dmax);
+
+template <>
 __global__ void dq<2, 2>(
     int32_t n_rec,
     int32_t n_ao,
@@ -139,9 +177,48 @@ __global__ void dq<2, 2>(
     double* D,
     double* Dmax);
 
+template <>
+__global__ void dq<2, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* eta,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const double* w,
+    const int32_t* off_c,
+    const int32_t* off_d,
+    const double* Dao,
+    double* D,
+    double* Dmax);
+
+template <>
+__global__ void dq<3, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* eta,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const double* w,
+    const int32_t* off_c,
+    const int32_t* off_d,
+    const double* Dao,
+    double* D,
+    double* Dmax);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&dq<0, 0>) dq_kernels[3][3] = {
-    {&dq<0, 0>, &dq<0, 1>, &dq<0, 2>},
-    {nullptr, &dq<1, 1>, &dq<1, 2>},
-    {nullptr, nullptr, &dq<2, 2>},
+inline constexpr decltype(&dq<0, 0>) dq_kernels[4][4] = {
+    {&dq<0, 0>, &dq<0, 1>, &dq<0, 2>, &dq<0, 3>},
+    {nullptr, &dq<1, 1>, &dq<1, 2>, &dq<1, 3>},
+    {nullptr, nullptr, &dq<2, 2>, &dq<2, 3>},
+    {nullptr, nullptr, nullptr, &dq<3, 3>},
 };

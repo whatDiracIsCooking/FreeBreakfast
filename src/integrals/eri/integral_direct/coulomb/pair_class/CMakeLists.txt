@@ -27,7 +27,8 @@ free_breakfast_add_gpu_device_library(
 # core::error_handling and mmd are PUBLIC. The per-class launch is the
 # one-electron builds' (one_electron::launch), and the device library is
 # PRIVATE: the implementation unit includes its bridge header in its GMF and
-# calls the launchers. The momentum limit is basis's.
+# calls the launchers. J's momentum limit, kCoulombMaxMomentum, is that
+# bridge's.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.coulomb.pair_class
@@ -44,7 +45,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::mmd
   LINK_PRIVATE
   free_breakfast::core::diagnostics_macros
-  free_breakfast::basis
   free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::eri::integral_direct::coulomb::pair_class::device
 )

@@ -100,7 +100,7 @@ a throwaway, not kept in `bench/`.
 | Symbol | Role |
 |---|---|
 | `CoulombPairClass` | J's class of records: `mmd`'s fields J reads and a build's scratch, device-only, on its own `DeviceStream`; `view()` gives a `PrimitivePairClassView` with the fields it does not carry null, `ket_view()` the same over the last build's sorted ket copies |
-| `coulomb_pair_classes(res, classes, tau = 1e-13)` | `Result<std::vector<CoulombPairClass>>`: J's classes from `classes` (`primitive_pair_classes` of one basis), without every record whose J terms, as bra and as ket, are all under `tau` **for any density with `\|D_cd\| <= 2`** (above), each class in `mmd`'s record order on a new `DeviceStream`, an emptied class left out. `tau = 0` keeps every record. InvalidConfig for a negative or NaN `tau` or a class above d |
+| `coulomb_pair_classes(res, classes, tau = 1e-13)` | `Result<std::vector<CoulombPairClass>>`: J's classes from `classes` (`primitive_pair_classes` of one basis), without every record whose J terms, as bra and as ket, are all under `tau` **for any density with `\|D_cd\| <= 2`** (above), each class in `mmd`'s record order on a new `DeviceStream`, an emptied class left out. `tau = 0` keeps every record. InvalidConfig for a negative or NaN `tau` or a class above f (`kCoulombMaxMomentum`) |
 
 ## Tests
 

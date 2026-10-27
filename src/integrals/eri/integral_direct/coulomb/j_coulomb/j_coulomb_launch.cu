@@ -21,6 +21,7 @@
 #include "primitives.h"
 
 #include "j_coulomb_bridge.h"
+#include "pair_class_bridge.h"
 
 #include "kernels/jab.h"
 
@@ -38,13 +39,15 @@ __global__ void j_coulomb_rows_kernel(const int32_t n, int32_t *rows) {
 
 namespace free_breakfast::device {
 
-// The largest momentum the emitted table covers, its own limit rather than
-// the tree's kMaxAngularMomentum, so this engine moves to a higher l when its
-// kernels are emitted for one.
+// The largest momentum the emitted table covers: J's limit.
 constexpr int32_t kMaxL = static_cast<int32_t>(std::extent_v<decltype(jab_kernels), 0>) - 1;
 
 static_assert(std::extent_v<decltype(jab_kernels), 1> == kMaxL + 1,
               "kernels/'s [la][lb] table is not square: rerun "
+              "tools/emit_coulomb_kernels.py");
+
+static_assert(kMaxL == kCoulombMaxMomentum,
+              "kernels/'s table and kCoulombMaxMomentum disagree: rerun "
               "tools/emit_coulomb_kernels.py");
 
 namespace {

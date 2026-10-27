@@ -116,6 +116,23 @@ the submodule. Each `kernels/.clang-format` turns formatting off, and
 `devtools/check-int-types.py` skips a file by FelizJueves's banner, so the files
 stay byte-for-byte as emitted: a fix belongs in the generator.
 
+**The screen at f.** The default `tau = 1e-10` is coarse for an f basis.
+`tau` bounds each skipped term of a `J_p`, and `jab` weights those terms by the
+bra's `E^ab_p`, which are large at f. On CO in cc-pVTZ (the golden's
+Hilbert-matrix density, `max|J|` 18.4), the default screen moves `J` by
+3.1e-11, or 1.7e-12 of `max|J|`, which is past the libcint bar. The worst error
+against libcint at each `tau` (RTX 3080):
+
+| `tau` | H₂O/cc-pVDZ | CO/cc-pVTZ | CO / `max\|J\|` |
+|---|---|---|---|
+| 1e-10 (default) | 5.9e-13 | 3.1e-11 | 1.7e-12 |
+| 3e-11 | 6.0e-13 | 4.5e-12 | 2.5e-13 |
+| 1e-11 | 6.0e-13 | 1.2e-12 | 6.6e-14 |
+| 3e-12 | 9.3e-13 | 7.3e-13 | 4.0e-14 |
+| 1e-12 | 5.4e-13 | 1.2e-13 | 6.8e-15 |
+
+The default is unchanged: lowering it would change every caller's cost.
+
 ## Not done
 
 - **Reuse across geometries.** The classes, scratch included, are remade per
@@ -137,15 +154,17 @@ functions are in their READMEs.
 
 | Symbol | Role |
 |---|---|
-| `coulomb(res, classes, density, j, tau = 1e-10)` | `Status`: the Cartesian J of `density` into `j` from J's `classes`, screened at `tau` (`0` screens nothing). Writes the classes' scratch, so one call at a time per set of classes. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above d, or `j.n()^2` past `INT32_MAX` |
+| `coulomb(res, classes, density, j, tau = 1e-10)` | `Status`: the Cartesian J of `density` into `j` from J's `classes`, screened at `tau` (`0` screens nothing). Writes the classes' scratch, so one call at a time per set of classes. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above f, or `j.n()^2` past `INT32_MAX` |
 
 ## Tests
 
-`test/gtest/coulomb_gpu.cpp`: `J` of H₂O in STO-3G and cc-pVDZ from every
-record (J's classes pruned at `0`) against
-libcint's `vj` of the same density at `1e-12 · max|J|`, through the golden data
-in `test/gtest/data/coulomb/`, both at `tau = 0` and at the default (each run
-records its worst error, and how far the screen moved `J`); a `tau` above every
+`test/gtest/coulomb_gpu.cpp`: `J` of H₂O in STO-3G and cc-pVDZ, and of CO in
+cc-pVTZ (f on both atoms, every class through `(6, 6)`), from every record
+(J's classes pruned at `0`) against libcint's `vj` of the same density at
+`1e-12 · max|J|`, through the golden data in `test/gtest/data/coulomb/`, both
+at `tau = 0` and screened (each run records its worst error, and how far the
+screen moved `J`). H₂O is screened at the default; CO at `1e-11`, for the
+reason "The screen at f" gives; a `tau` above every
 bound gives exactly zero, which shows the screen reaches the kernel and fires;
 the zeroing; and the refusals. `tau` bounds each skipped term of a `J_p`, not
 the error in `J`, so the screened bar is the same measured `1e-12`, not one

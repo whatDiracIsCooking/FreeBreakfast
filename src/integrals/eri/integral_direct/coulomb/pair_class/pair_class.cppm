@@ -229,8 +229,8 @@ struct CoulombPairClass {
 /// the call and the previous one restored.
 ///
 /// @return J's classes (none for no @p classes); InvalidConfig if @p tau is
-///         negative or NaN, or a class is above d (it has no bound kernel, and
-///         @ref coulomb refuses it); or the GpuRuntime error of the first
+///         negative or NaN, or a class is above f (kCoulombMaxMomentum: J has
+///         no kernel for it, and @ref coulomb refuses it); or the GpuRuntime error of the first
 ///         event, launch, copy or synchronization that failed.
 [[nodiscard]] Result<std::vector<CoulombPairClass>>
 coulomb_pair_classes(DeviceResources &res, std::span<const PrimitivePairClass> classes,

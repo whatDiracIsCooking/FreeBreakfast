@@ -18,7 +18,8 @@ add_subdirectory(j_coulomb)
 # modules of their own, and the ket sort's device library is PRIVATE: the
 # implementation unit includes its bridge header in its GMF and calls the
 # launcher, and a static library's private link dependencies still reach the
-# final link. The momentum limit is basis's.
+# final link. So is pair_class's, for J's momentum limit, kCoulombMaxMomentum
+# (its bridge header).
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.coulomb
@@ -36,9 +37,9 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
-  free_breakfast::basis
   free_breakfast::integrals::mmd
   free_breakfast::integrals::one_electron::launch
+  free_breakfast::integrals::eri::integral_direct::coulomb::pair_class::device
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::coulomb::dq
   free_breakfast::integrals::eri::integral_direct::coulomb::e_hermite
