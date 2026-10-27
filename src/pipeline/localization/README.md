@@ -85,9 +85,15 @@ The options are read from a `[localization]` table (`pipeline.config`):
 
 **`molden` writes the localized orbitals.** When it is set, `c` and `u` are
 downloaded and written by `io.molden`'s `write_molden`: the `n_occ` localized
-orbitals only, each at occupation 2. They are not eigenvectors of F, so each
-is given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
-SCF's occupied orbital energies. It is not a TOML key: `pipeline/config` sets
+orbitals at occupation 2, then the SCF's canonical virtuals at occupation 0,
+so the file holds every MO, as viewers and readers expect. The localization
+mixes only occupied orbitals, so the set is still orthonormal and spans the
+same space. The localized orbitals are not eigenvectors of F, so each is
+given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
+SCF's occupied orbital energies; F is block-diagonal between occupied and
+virtual, so each virtual keeps its own `eps_a`. Each localized energy is a
+weighted mean of occupied ones, so the file stays in ascending order across
+the occupied/virtual boundary. It is not a TOML key: `pipeline/config` sets
 it to `localization.molden` in the run's output directory. A failed write
 fails the step.
 
@@ -146,8 +152,9 @@ against PySCF's IBOs, plus the IAOs' orthonormality, span and partial charges
 (`localization/ibo`'s README), and the step's `populations` reproducing L and
 its `charges` PySCF's (`analysis/population`'s README), and its `bonds`
 reading each molecule's lone pairs and X-H bonds (`analysis/bond`'s README). With `molden` set, the
-file holds `n_occ` orbitals at occupation 2, and their energies sum to the
-SCF's occupied ones (U is orthogonal).
+file holds every MO, `n_occ` at occupation 2 and the rest at 0; the
+occupied energies sum to the SCF's occupied ones (U is orthogonal) and each
+virtual's is the SCF's own.
 With `livvo = true`, in both modes, water in cc-pVDZ: two LIVVOs, each a
 sigma bond on O and one hydrogen, a different one each, the virtuals' valence
 characters each in [0, 1] and summing to 2, and `populations`, `charges` and

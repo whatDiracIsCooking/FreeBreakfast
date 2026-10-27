@@ -690,8 +690,9 @@ TEST(PipelineIbo, BenzeneHasThreePiBonds) {
 }
 
 // The localized orbitals land in the output directory's localization.molden,
-// n_occ of them at occupation 2. Each energy is <i|F|i> = sum_k U_ki^2 eps_k,
-// and U is orthogonal, so they sum to the canonical occupied energies.
+// n_occ of them at occupation 2, then the canonical virtuals at occupation 0.
+// Each localized energy is <i|F|i> = sum_k U_ki^2 eps_k, and U is orthogonal,
+// so they sum to the canonical occupied energies; each virtual keeps its own.
 TEST(PipelineLocalizationMolden, WritesTheLocalizedOrbitals) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_localization_molden");
@@ -702,29 +703,38 @@ TEST(PipelineLocalizationMolden, WritesTheLocalizedOrbitals) {
   const auto &scf = calc->get<fb::ScfOutput>();
   ASSERT_TRUE(local.has_value() && scf.has_value());
   const auto occ = static_cast<std::size_t>(local->n_occ);
+  const std::size_t n_mo = scf->mo_energies.size();
+  ASSERT_GT(n_mo, occ);
 
   std::ifstream file(path);
   ASSERT_TRUE(file.is_open());
   std::string line;
   ASSERT_TRUE(std::getline(file, line));
   EXPECT_EQ(line, "[Molden Format]");
-  std::size_t orbitals = 0;
-  std::size_t occupied = 0;
-  double energy_sum = 0.0;
+  std::vector<double> energies;
+  std::vector<std::string> occupations;
   while (std::getline(file, line)) {
     if (line.starts_with(" Ene=")) {
-      ++orbitals;
-      energy_sum += std::stod(line.substr(5));
+      energies.push_back(std::stod(line.substr(5)));
     }
-    occupied += line == " Occup= 2.000000" ? 1 : 0;
+    if (line.starts_with(" Occup=")) {
+      occupations.push_back(line);
+    }
   }
-  EXPECT_EQ(orbitals, occ);
-  EXPECT_EQ(occupied, occ);
+  ASSERT_EQ(energies.size(), n_mo);
+  ASSERT_EQ(occupations.size(), n_mo);
+  double energy_sum = 0.0;
   double expected_sum = 0.0;
   for (std::size_t k = 0; k < occ; ++k) {
+    EXPECT_EQ(occupations[k], " Occup= 2.000000") << k;
+    energy_sum += energies[k];
     expected_sum += scf->mo_energies[k];
   }
   EXPECT_NEAR(energy_sum, expected_sum, 1e-10);
+  for (std::size_t a = occ; a < n_mo; ++a) {
+    EXPECT_EQ(occupations[a], " Occup= 0.000000") << a;
+    EXPECT_NEAR(energies[a], scf->mo_energies[a], 1e-10) << a;
+  }
 }
 
 // Water's LIVVOs over MINAO, in either mode: its two sigma*_OH, each on O
