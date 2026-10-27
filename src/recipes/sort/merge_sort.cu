@@ -4,10 +4,10 @@
 //
 // mmd_launch.cu orders each class's records by zeta with it, and
 // coulomb/sort_bounds' sort_bounds_launch.cu each ket class by Iq * Dmax. It
-// is also the device half of free_breakfast.experimental.sort.merge, whose
-// README has the algorithm's timings against radix_sort and the vendor sorts,
-// and whose tests (test/experimental/merge_sort_gpu.cpp) hold it to
-// std::strong_order.
+// is also the device half of free_breakfast.recipes.sort's merge_sort.
+// experimental/sort/merge's README has the algorithm's timings against
+// radix_sort and the vendor sorts, and its tests
+// (test/experimental/merge_sort_gpu.cpp) hold it to std::strong_order.
 //
 // As in experimental/sort/radix's radix_sort.cu, the kernels move each key's 64
 // bits as a uint64_t and compare ordered_bits() of them, whose unsigned order

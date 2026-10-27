@@ -170,7 +170,7 @@ not there, add it there rather than writing a second copy.
   warps, and three `.cu` files in `src/ci/` each used to carry their own copy. A
   constant that has a meaning of its own and is only derived from the launch
   shape keeps its name. Examples are `kTile = kThreads * kItems` in
-  `src/integrals/sort/merge_sort.cu`, or a warps-per-block count that a
+  `src/recipes/sort/merge_sort.cu`, or a warps-per-block count that a
   template takes.
 - **Ceiling division is `math::idivup`, and rounding up to a multiple is
   `math::align_up`**, from `src/core/primitives/primitives.h` (the module

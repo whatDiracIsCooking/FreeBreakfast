@@ -57,6 +57,16 @@ column-major with the occupied orbitals first, so its first `n_occ` columns
 are passed as they are: no transpose and no copy. The Scf step has already refused
 an open shell, so `n_occ` is half the electrons.
 
+**The localized orbitals come out in ascending order of energy.** The
+localizer's own order is whatever its Jacobi sweeps leave, so the step sorts
+`c` and `u` by each orbital's Fock expectation value, `<i|F|i> = sum_k U_ki^2
+eps_k`, the diagonal of `Uᵀ diag(eps_occ) U` (`recipes.blas`'s `gmmwich`). It
+uses `recipes.sort`'s stable `merge_sort`, so orbitals of equal energy keep
+the localizer's order, and its `gather_columns` permutes the columns of both,
+so `c = C_occ u` still holds. It runs before anything reads the orbitals, so
+`populations`, `bonds`, the log and the Molden file all use the sorted order:
+cores first, then bonds, then lone pairs up to the HOMO.
+
 **IBO mode also reports the IAO charges and the bonds.** `ibo_localize` hands
 back the IAOs it ran over, and `analysis.population`'s `orbital_weights`
 gives each IBO's weight on each of them, once. From those:
@@ -67,12 +77,15 @@ bond. The charges and the bonds are logged at info level, one atom or IBO
 per line:
 
 ```
-localization: IAO charge   0 O  -0.470630
-localization: IBO   1 bond  O0 61.8% (s 22% p 78%)  H2 38.2% (s 100%)
-localization: IBO   3 lone  O0 100.0% (s 56% p 44%)
+localization: IAO charge   0 O  -0.470624
+localization: IBO   0 sigma lone  O0 100.0% (s 99% p 1%)
+localization: IBO   1 sigma bond  O0 61.8% (s 22% p 78%)  H1 38.2% (s 100%)
+localization: IBO   3 sigma lone  O0 100.0% (s 56% p 44%)
+localization: IBO   4 pi    lone  O0 100.0% (p 100%)
 ```
 
-(Water in STO-3G.)
+(Water in STO-3G, in the energy order above: the O 1s, the two O-H bonds,
+then the lone pairs, the p one the HOMO.)
 
 ("3c+" marks three centers or more.) Pipek-Mezey has no IAOs, and leaves all
 three empty.
@@ -91,9 +104,9 @@ mixes only occupied orbitals, so the set is still orthonormal and spans the
 same space. The localized orbitals are not eigenvectors of F, so each is
 given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
 SCF's occupied orbital energies; F is block-diagonal between occupied and
-virtual, so each virtual keeps its own `eps_a`. Each localized energy is a
-weighted mean of occupied ones, so the file stays in ascending order across
-the occupied/virtual boundary. It is not a TOML key: `pipeline/config` sets
+virtual, so each virtual keeps its own `eps_a`. The localized orbitals are
+already sorted by that energy, and each is a weighted mean of occupied ones,
+so it is at most the HOMO's: the whole file ascends. It is not a TOML key: `pipeline/config` sets
 it to `localization.molden` in the run's output directory. A failed write
 fails the step.
 
@@ -151,10 +164,12 @@ are S-orthonormal and give back the SCF's density. The same for `mode = "ibo"`
 against PySCF's IBOs, plus the IAOs' orthonormality, span and partial charges
 (`localization/ibo`'s README), and the step's `populations` reproducing L and
 its `charges` PySCF's (`analysis/population`'s README), and its `bonds`
-reading each molecule's lone pairs and X-H bonds (`analysis/bond`'s README). With `molden` set, the
-file holds every MO, `n_occ` at occupation 2 and the rest at 0; the
-occupied energies sum to the SCF's occupied ones (U is orthogonal) and each
-virtual's is the SCF's own.
+reading each molecule's lone pairs and X-H bonds (`analysis/bond`'s README).
+In both modes, water in cc-pVDZ: the localized orbitals ascend in
+`<i|F|i>`, and `c` is still `C_occ u` column for column. With `molden` set, the
+file holds every MO, `n_occ` at occupation 2 and the rest at 0, in ascending
+order; the occupied energies sum to the SCF's occupied ones (U is orthogonal)
+and each virtual's is the SCF's own.
 With `livvo = true`, in both modes, water in cc-pVDZ: two LIVVOs, each a
 sigma bond on O and one hydrogen, a different one each, the virtuals' valence
 characters each in [0, 1] and summing to 2, and `populations`, `charges` and

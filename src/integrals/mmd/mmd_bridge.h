@@ -110,7 +110,7 @@ struct PrimitivePairRecords {
 ///
 /// Writes key[r] = -zeta of host record r (formed from @p src) and
 /// perm[r] = r, then sorts the keys ascending with perm carried
-/// (src/integrals/sort's merge_sort_passes, stable). @p key, @p key_alt,
+/// (src/recipes/sort's merge_sort_passes, stable). @p key, @p key_alt,
 /// @p perm and @p perm_alt are @p n_rec long; the alts are touched only past
 /// one tile of the sort (2816 records). No array may overlap another.
 ///

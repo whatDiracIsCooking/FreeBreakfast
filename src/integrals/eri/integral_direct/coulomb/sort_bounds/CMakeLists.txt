@@ -6,7 +6,7 @@
 # wwrStream_t and wwrError_t, hence types_headers, mmd::headers and
 # wwr::device PUBLIC; the kernels read kWarpSize (block_params.h) and idivup
 # (primitives.h), hence core::kernel_headers. The merge sort the launcher sorts
-# with is src/integrals/sort's, PRIVATE: only the .cu includes its bridge.
+# with is src/recipes/sort's, PRIVATE: only the .cu includes its bridge.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.coulomb.sort_bounds.device
@@ -18,5 +18,5 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::integrals::mmd::headers
   wwr::device
   LINK_PRIVATE
-  free_breakfast::integrals::sort::device
+  free_breakfast::recipes::sort::device
 )

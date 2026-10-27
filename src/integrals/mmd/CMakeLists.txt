@@ -26,7 +26,7 @@ free_breakfast_add_interface_library(
 # wwrError_t, hence types_headers, headers and wwr::device PUBLIC; the kernels
 # read kFourWarps (block_params.h) and idivup and pow (primitives.h), hence
 # core::kernel_headers, kPi (constants.h), hence core::constants_header,
-# sort with src/integrals/sort's merge sort, size the
+# sort with src/recipes/sort's merge sort, size the
 # bounds' tables by kMaxAngularMomentum (basis::headers), and the generated
 # units include felizjueves/runtime.h (felizjueves::headers); all PRIVATE.
 free_breakfast_add_gpu_device_library(
@@ -58,7 +58,7 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::constants_header
   free_breakfast::basis::headers
   felizjueves::headers
-  free_breakfast::integrals::sort::device
+  free_breakfast::recipes::sort::device
 )
 
 # The classes: the shell-pair sweep on the host, the shell and shell-pair

@@ -19,7 +19,7 @@ free_breakfast_add_interface_library(
 # PrimitivePairClassView (mmd's headers), wwrStream_t and wwrError_t, hence
 # types_headers, mmd::headers and wwr::device PUBLIC; the launcher reads
 # kFourWarps and idivup (core::kernel_headers) and sorts with
-# src/integrals/sort's merge sort; both PRIVATE.
+# src/recipes/sort's merge sort; both PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.exchange.pairs.device
@@ -31,7 +31,7 @@ free_breakfast_add_gpu_device_library(
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
-  free_breakfast::integrals::sort::device
+  free_breakfast::recipes::sort::device
 )
 
 # The ordered classes: their groups and table sizes from the basis on the

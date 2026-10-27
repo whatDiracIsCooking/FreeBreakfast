@@ -1,5 +1,3 @@
-# The merge sort, before mmd and coulomb: both sort with it.
-add_subdirectory(sort)
 add_subdirectory(mmd)
 # Before the families whose kernels include its headers.
 add_subdirectory(shared)

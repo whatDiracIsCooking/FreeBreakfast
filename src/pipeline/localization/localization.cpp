@@ -14,11 +14,52 @@ import free_breakfast.core.resources;
 import free_breakfast.io.basis;
 import free_breakfast.io.molden;
 import free_breakfast.localization.livvo;
-import free_breakfast.recipes.blas; // gemm
+import free_breakfast.recipes.blas; // gemm, gmmwich
+import free_breakfast.recipes.sort; // merge_sort, gather_columns
 
 #include "diagnostics.h"
 
 namespace free_breakfast {
+
+// The localized orbitals in ascending order of their Fock expectation value,
+// <i|F|i> = sum_k U_ki^2 eps_k, the diagonal of U^T diag(eps_occ) U. The sort
+// is stable, so orbitals of equal energy keep the localizer's order. C and U
+// are permuted together, so C_local = C_occ U still holds.
+[[nodiscard]] Status sort_localized_orbitals(DeviceResources &res, const size_t n_ao,
+                                             const ScfOutput &scf, LocalizationOutput &out) {
+  const int32_t n = out.n_occ;
+  if (n < 2) {
+    return {};
+  }
+  const auto occ = static_cast<size_t>(n);
+  // Not workspace: merge_sort carves its scratch from it.
+  Buffers::device<double> keys(occ, res.device());
+  Buffers::device<uint32_t> perm(occ, res.device());
+  {
+    const auto [eps, work, fock] = res.device_regions<double>(occ, occ * occ, occ * occ);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(eps, scf.mo_energies.data(), occ * sizeof(double),
+                                           wwr::wwrMemcpyHostToDevice, res.stream())));
+    FBF_TRY(gpu_status(gmmwich(res.blas(), n, out.u.data(), eps, work, fock)));
+    FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(keys.data(), sizeof(double), fock,
+                                             (occ + 1) * sizeof(double), sizeof(double), occ,
+                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
+  }
+  std::vector<uint32_t> identity(occ);
+  std::iota(identity.begin(), identity.end(), uint32_t{0});
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(perm.data(), identity.data(), occ * sizeof(uint32_t),
+                                         wwr::wwrMemcpyHostToDevice, res.stream())));
+  FBF_TRY(merge_sort(res, n, keys.data(), perm.data()));
+  Buffers::device<double> c(n_ao * occ, res.device());
+  Buffers::device<double> u(occ * occ, res.device());
+  FBF_TRY(gather_columns(res, static_cast<int32_t>(n_ao), n, perm.data(), out.c.data(), c.data()));
+  FBF_TRY(gather_columns(res, n, n, perm.data(), out.u.data(), u.data()));
+  // Pageable uploads above, and the unsorted buffers freed below: both wait
+  // for the stream.
+  FBF_TRY(res.sync());
+  out.c = std::move(c);
+  out.u = std::move(u);
+  return {};
+}
 
 // One IBO for the log: sigma or pi, its kind by center count, then each
 // center as its element, atom index, share of the orbital and angular
@@ -51,6 +92,7 @@ namespace free_breakfast {
 // eigenvectors of F, so each is given its expectation value,
 // <i|F|i> = sum_k U_ki^2 eps_k over the canonical occupied energies; F is
 // block-diagonal between occupied and virtual, so each virtual keeps eps_a.
+// sort_localized_orbitals has already put the localized ones in that order.
 [[nodiscard]] Status write_localization_molden(DeviceResources &res,
                                                const std::filesystem::path &path,
                                                const Molecule &molecule, const BasisSet &basis,
@@ -162,6 +204,7 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
   case LocalizationMode::PipekMezey:
     out.info = FBF_TRY(pipek_mezey_localize(res, basis, n_occ, s, scf.c.data(), out.c.data(),
                                             out.u.data(), pipek_mezey));
+    FBF_TRY(sort_localized_orbitals(res, n_ao, scf, out));
     if (livvo) {
       FBF_TRY(intrinsic_atomic_orbitals(res, basis, *minao, n_occ, s, scf.c.data(), iao.data()));
     }
@@ -169,6 +212,7 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
   case LocalizationMode::Ibo: {
     out.info = FBF_TRY(ibo_localize(res, basis, *minao, n_occ, s, scf.c.data(), out.c.data(),
                                     out.u.data(), iao.data(), pipek_mezey));
+    FBF_TRY(sort_localized_orbitals(res, n_ao, scf, out));
     // Over the IBOs, so each orbital's populations are its bonding picture;
     // the charges are the same over any rotation of the occupied orbitals.
     const std::vector<double> weights =

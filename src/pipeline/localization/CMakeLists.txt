@@ -4,7 +4,8 @@
 # options are PipekMezeyOptions, and run's View names the ScfOutput and the
 # products it re-exports. core::resources, the basis_set step and pipeline::step
 # are in run's signature. run is defined in the implementation unit, so
-# io::basis (MINAO), localization::livvo, the Molden writer and
+# io::basis (MINAO), localization::livvo, the Molden writer, recipes::blas and
+# recipes::sort (the energy order of the localized orbitals) and
 # diagnostics_macros (FBF_TRY) are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -34,4 +35,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::molden
   free_breakfast::localization::livvo
   free_breakfast::recipes::blas
+  free_breakfast::recipes::sort
 )
