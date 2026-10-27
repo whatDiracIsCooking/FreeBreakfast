@@ -141,6 +141,7 @@ add_executable(
   exchange_e_table_gpu.cpp
   exchange_pairs_gpu.cpp
   exchange_gpu.cpp
+  df_fit_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
@@ -180,6 +181,7 @@ target_link_libraries(
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
+  free_breakfast::integrals::eri::density_fitting::fit
   free_breakfast::io
   free_breakfast::pipeline::molecule
   free_breakfast::pipeline::basis_set
