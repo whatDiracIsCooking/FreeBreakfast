@@ -11,6 +11,7 @@ file names the tool that wrote it and the source it came from.
 | `exchange/` | The same bases, nuclei and density as `coulomb/`, and libcint's exchange matrix `vk` of it (PySCF `get_jk`, `vk_il = Σ_jk (ij\|kl) D_jk`), for the same four molecules, recorded by PySCF. The tool refuses to write one unless its `_k` fixture's basis, geometry and density equal the `_j` fixture's exactly, so a K test reads the J test's density, and unless `vk` is symmetric to 1e-14 · max\|vk\| | `tools/extract_integral_golden.py`, from FelizJueves's `_k` fixtures |
 | `overlap_mixed/` | Two Cartesian bases, `rows` and `cols`, and libcint's cross-basis overlap `int1e_ovlp_cross` between them (PySCF `gto.intor_cross`): H₂O, rows STO-3G, columns 6-31G or cc-pVDZ at the same geometry, or 6-31G at another. The tool refuses one whose shape is not the two AO counts | `tools/extract_integral_golden.py`, from FelizJueves's `h2o_sto3g_x_*` fixtures and their row fixture `h2o_sto3g_j` |
 | `record_bound/` | K's dressed record bound, FelizJueves's host `ao.k.record_bounds`, of every record of every ordered shell pair of H₂O/cc-pVDZ and the H₁₀ chain, the shells read from `exchange/` | `tools/emit_record_bound_golden.py`, which imports FelizJueves's `src/` (numpy, for its reference Boys) |
+| `e_table/` | The rolled K kernel's E table, FelizJueves's host `launch_kblock.e_table` (each record's undressed `E^{la lb}`, nonzero entries), of every record of every ordered shell pair of H₂O/cc-pVDZ and CO/cc-pVTZ (through f), with each record's inputs, the shells read from `exchange/`. FelizJueves checking itself: the table has no libcint counterpart | `tools/emit_e_table_golden.py`, which imports FelizJueves's `src/` |
 | `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr | `tools/emit_scf_reference.py`, which runs PySCF |
 | `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges | `tools/emit_localization_reference.py`, which runs PySCF |
 | `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit_active_integrals_reference.py`, which runs PySCF |
@@ -61,6 +62,21 @@ Regenerate after `tools/extract_integral_golden.py`:
 
 ```sh
 uv run --group tools tools/emit_record_bound_golden.py
+```
+
+## `e_table/*.json`
+
+| Key | Meaning |
+|---|---|
+| `source` | The FelizJueves commit, the reference call, and the `exchange/` file whose shells it used |
+| `n_shells`, `n_records` | The basis's shell count, and the records over every ordered shell pair |
+| `classes` | One per class `(la, lb)` reached: `width`, a record's table length, and `odd`, per entry `1` where its Hermite `\|t\|` is odd: the ket's table (`e_table(..., sign=True)`) is the unsigned one with exactly those negated, which the tool asserts of every record |
+| `pairs` | One per ordered shell pair: `a` and `b`, the shells' index in basis order, `la` and `lb`, `records`, each `[zeta, X_PA, Y_PA, Z_PA, X_PB, Y_PB, Z_PB]` (P − A and P − B as `mmd.hermite.e_block` forms them) in FelizJueves's record order, and `e`, each record's unsigned table. A test uploads the records as they are, so it compares the table alone |
+
+Regenerate after `tools/extract_integral_golden.py`:
+
+```sh
+uv run --group tools tools/emit_e_table_golden.py
 ```
 
 ## `active_space/active_space.json`

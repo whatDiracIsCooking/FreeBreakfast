@@ -1,8 +1,9 @@
 /// @file
 /// @brief The hand-written device steps the generated kb kernels leave to
 /// their launcher: max|D|, the Dcd gather, the block table and its factors,
-/// and the shell starts and mirror that complete the sweep's K, declared once for
-/// the module that calls them and the device TU that defines them.
+/// the shell starts and mirror that complete the sweep's K, and the E tables
+/// the rolled kernel (kbr) reads, declared once for the module that calls them
+/// and the device TU that defines them.
 ///
 /// Included by the exchange module's implementation unit in its GLOBAL MODULE
 /// FRAGMENT, and by each of this directory's .cu files directly, for the reason
@@ -267,5 +268,62 @@ exchange_factors(wwr::wwrStream_t stream, int32_t n_a, const int32_t *a_start, c
 ///         positive or @p sign is neither 1 nor -1).
 [[nodiscard]] wwr::wwrError_t exchange_mirror(wwr::wwrStream_t stream, int32_t n_ao,
                                               const int32_t *start, double sign, double *k);
+
+/// @brief The doubles per record of @ref exchange_e_table's table for a class
+/// (@p la, @p lb): the nonzero entries of one record's E^{la lb} block,
+///
+///     SUM_{a in cartesians(la), b in cartesians(lb)} PRODUCT_k (a_k + b_k + 1)
+///
+/// since E^{ab}_t is structurally zero exactly when some t_k > a_k + b_k, and
+/// every other t has |t| <= la + lb. FelizJueves's
+/// `len(launch_kblock.e_table(la, lb, ...))`, kbr's n_eac (bra) or n_ebd
+/// (ket). Zero for a negative momentum.
+inline constexpr int32_t exchange_e_table_width(const int32_t la, const int32_t lb) {
+  int32_t width = 0;
+  for (int32_t ax = la; ax >= 0; --ax) {
+    for (int32_t ay = la - ax; ay >= 0; --ay) {
+      for (int32_t bx = lb; bx >= 0; --bx) {
+        for (int32_t by = lb - bx; by >= 0; --by) {
+          width += (ax + bx + 1) * (ay + by + 1) * (la - ax - ay + lb - bx - by + 1);
+        }
+      }
+    }
+  }
+  return width;
+}
+
+/// @brief Write the UNDRESSED Hermite expansion E of each of @p n_rec records
+/// of a class (@p la, @p lb) into @p e, on @p stream: kbr's `Eac` (a bra
+/// class) or `Ebd` (a ket class, @p ket), FelizJueves's
+/// `launch_kblock.e_table(la, lb, zeta, P, A, B, sign=ket)` of every record.
+///
+/// @p e is n_rec x @ref exchange_e_table_width(la, lb), record-major (record r
+/// at `r * width`, in the records' own order) and written whole. Within a
+/// record the rows are the Cartesian pairs (a, b), a in cartesians(la) outer
+/// (x descending, then y descending), b in cartesians(lb) inner; within a row
+/// the Hermite t in |t|-ascending, then t_x, then t_y descending order,
+/// structural zeros (some t_k > a_k + b_k) dropped. Each entry is
+///
+///     E^{ab}_t = E^{a_x b_x}_{t_x} E^{a_y b_y}_{t_y} E^{a_z b_z}_{t_z}
+///
+/// per axis by McMurchie and Davidson's recurrence from
+/// E^{00}_0 = exp(zeta X_PA X_PB), FelizJueves's mmd.hermite.e_axis, operation
+/// for operation (the device may fuse a product into an add). No contraction
+/// coefficient, no (pi / zeta)^{3/2}: those are the record's s, which kbr
+/// applies. With @p ket, every entry of odd |t| is negated, the (-1)^|q| of
+/// [p|q] = (-1)^|q| [p + q]: exact, so a ket's table is a bra's with those
+/// entries' signs flipped.
+///
+/// @p zeta is the records' zeta, and @p pa and @p pb their P - A and P - B,
+/// "a" the first shell (OrderedPairClassView's fields), three segments each
+/// (x, y, z). It depends only on the records, so it is made once per basis.
+///
+/// @return The launch status (wwrErrorInvalidValue if @p la or @p lb is
+///         outside [0, 3], through f, @p n_rec is not positive, or @p e has
+///         more than INT32_MAX elements).
+[[nodiscard]] wwr::wwrError_t exchange_e_table(wwr::wwrStream_t stream, int32_t la, int32_t lb,
+                                               int32_t n_rec, const double *zeta,
+                                               const double *const pa[3], const double *const pb[3],
+                                               bool ket, double *e);
 
 } // namespace free_breakfast::device
