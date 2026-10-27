@@ -5,6 +5,9 @@ add_subdirectory(one_electron)
 # After one_electron: J reuses its per-class launch and checks.
 add_subdirectory(eri/integral_direct/coulomb)
 add_subdirectory(eri/integral_direct/exchange)
+# Density fitting's generated kernels (device libraries only, as yet), after
+# shared: they include its eval_boys.h.
+add_subdirectory(eri/density_fitting)
 # After J and K, which it is built from.
 add_subdirectory(active_space)
 
