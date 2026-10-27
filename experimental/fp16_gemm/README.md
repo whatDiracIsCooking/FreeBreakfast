@@ -17,23 +17,14 @@ const auto status = free_breakfast::gemm_fp16(res, free_breakfast::Fp16Accumulat
                                               m, n, k, a, b, c);
 ```
 
-| `Fp16Accumulate` | CUDA | HIP | Sum in |
+| `Fp16Accumulate` | Call | Sum in (CUDA) | Sum in (HIP) |
 |---|---|---|---|
-| `kHalf` | `cublasHgemm` | `hipblasHgemm` | `__half` (compute type 16F) |
-| `kFloat` | `cublasGemmEx`, `CUBLAS_COMPUTE_32F` | `hipblasGemmEx`, `HIPBLAS_COMPUTE_32F` | `float` |
+| `kHalf` | `wwrblasHgemm` | `__half` | `float` |
+| `kFloat` | `wwrblasGemmEx`, `WWRBLAS_COMPUTE_32F` | `float` | `float` |
 
-A, B and C are `__half` either way, and alpha = 1, beta = 0.
-
-## Why it calls the vendor directly
-
-WarpWraps has no half GEMM in its neutral surface: `wwr.blas` (and so
-`wwr::gemm<T>`) is S/D/C/Z only, and `wwr.cuda.cublas_v2` exports neither
-`cublasHgemm` nor `cublasGemmEx`. `wwr.hip.hipblas` does export
-`hipblasHgemm` and `hipblasGemmEx`, so wwr is lopsided here. `fp16_gemm.cpp`
-includes wwr's vendor-include point `blas.h` in its global module fragment
-and branches on `WWR_SELECTED_CUDA`. Promoting this means adding
-`wwrblasHgemm` / `wwrblasGemmEx` (and the 16F / 32F data and compute types) to
-wwr's `detail/blas_names.h` first, after which the `#if` goes away.
+A, B and C are `__half` either way, and alpha = 1, beta = 0. The two
+`Hgemm`s share a name, not numerics: hipBLAS's accumulates in fp32 (measured
+on gfx1200, bit-identical to `GemmEx`-32F), cuBLAS's in fp16.
 
 ## Tests and bench
 
