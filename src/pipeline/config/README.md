@@ -99,7 +99,7 @@ max_cycle = 50            # default 50 macro iterations
 
 `[casscf]` reads the selection as `[casci]` does, and its own keys are checked
 when the file is read: `weights` of the wrong count, with a negative entry or
-not summing to 1 within 1e-12 (`casscf_solve`'s own bar), a tolerance not
+not summing to 1 within 1e-12 (`mcscf::solve`'s own bar), a tolerance not
 positive, or `max_cycle` below 1 is InvalidConfig. Unlike the active space's
 ranges, none of these needs the molecule.
 

@@ -1,5 +1,5 @@
 /// @file
-/// @brief casscf_fock: F^I and F^A from one J and one K each, the generalized
+/// @brief fock: F^I and F^A from one J and one K each, the generalized
 /// Fock from them, gamma and one gemm over (pu|vw), the gradient as its
 /// antisymmetric part over the packed pairs, and the energy off their
 /// diagonals; and the packed order's two copies each way.
@@ -21,7 +21,7 @@ import free_breakfast.integrals.eri.integral_direct.exchange;
 
 #include "diagnostics.h"
 
-namespace free_breakfast {
+namespace free_breakfast::mcscf {
 
 // What both packing functions refuse; caller names the function.
 Status check_orbital_pairs(const std::string_view caller, const int32_t nmo, const int32_t ncore,
@@ -120,41 +120,41 @@ struct CasscfFockScratch {
   }
 };
 
-Result<CasscfFock>
-casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
-            const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
-            const std::span<CoulombPairClass> j_classes,
-            const std::span<OrderedPairClass> k_classes, const SphericalMatrixAO &c,
-            const int32_t ncore, const int32_t ncas, const Buffers::device<double> &ppaa,
-            const std::span<const double> gamma, const std::span<const double> gamma2,
-            const double tau_j, const double tau_k) {
+Result<Fock> fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
+                  const SphericalMatrixAO &h,
+                  const std::shared_ptr<const Buffers::device<double>> &u,
+                  const std::span<CoulombPairClass> j_classes,
+                  const std::span<OrderedPairClass> k_classes, const SphericalMatrixAO &c,
+                  const int32_t ncore, const int32_t ncas, const Buffers::device<double> &ppaa,
+                  const std::span<const double> gamma, const std::span<const double> gamma2,
+                  const double tau_j, const double tau_k) {
   const uint32_t n_sphe = basis.nao_sphe();
   const uint32_t n_cart = basis.nao_cart();
   const uint32_t n_orbitals = c.n();
-  FBF_TRY(check_orbital_pairs("casscf_fock", static_cast<int32_t>(n_orbitals), ncore, ncas));
+  FBF_TRY(check_orbital_pairs("fock", static_cast<int32_t>(n_orbitals), ncore, ncas));
   if (ncore + ncas == 0) {
-    return err_config("casscf_fock: ncore and ncas are both 0, so nothing is occupied");
+    return err_config("mcscf::fock: ncore and ncas are both 0, so nothing is occupied");
   }
   // Written so that NaN fails too.
   if (!(tau_j >= 0.0) || !(tau_k >= 0.0)) {
-    return err_config("casscf_fock: tau_j ({}) and tau_k ({}) must be 0 or above", tau_j, tau_k);
+    return err_config("mcscf::fock: tau_j ({}) and tau_k ({}) must be 0 or above", tau_j, tau_k);
   }
   if (h.n() != n_sphe || n_orbitals != n_sphe) {
-    return err_config("casscf_fock: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
+    return err_config("mcscf::fock: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
                       h.n(), h.n(), n_orbitals, n_orbitals, n_sphe);
   }
   if (h.dev_idx() != res.dev_idx() || c.dev_idx() != res.dev_idx()) {
-    return err_config("casscf_fock: h is on device {} and C on {}, but the call passed device {}",
+    return err_config("mcscf::fock: h is on device {} and C on {}, but the call passed device {}",
                       h.dev_idx(), c.dev_idx(), res.dev_idx());
   }
   const auto na = static_cast<size_t>(ncas);
   const size_t n_all = n_orbitals;
   if (ppaa.num_elements() != n_all * n_all * na * na) {
-    return err_config("casscf_fock: ppaa holds {} doubles, but nmo^2 ncas^2 is {}",
+    return err_config("mcscf::fock: ppaa holds {} doubles, but nmo^2 ncas^2 is {}",
                       ppaa.num_elements(), n_all * n_all * na * na);
   }
   if (gamma.size() != na * na || gamma2.size() != na * na * na * na) {
-    return err_config("casscf_fock: gamma holds {} and Gamma {} doubles, but ncas is {}",
+    return err_config("mcscf::fock: gamma holds {} and Gamma {} doubles, but ncas is {}",
                       gamma.size(), gamma2.size(), ncas);
   }
 
@@ -170,13 +170,13 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
   const size_t n_pairs =
       (static_cast<size_t>(ncore) * (n_all - ncore)) + (na * (n_all - static_cast<size_t>(nocc)));
 
-  CasscfFock out{.energy = nuclear_repulsion_energy(molecule),
-                 .fock_inactive = Buffers::device<double>(nn, res.device()),
-                 .fock_active = Buffers::device<double>(nn, res.device()),
-                 .fock = Buffers::device<double>(nn, res.device()),
-                 .gradient = Buffers::device<double>(n_pairs, res.device()),
-                 .gamma = Buffers::device<double>(na * na, res.device()),
-                 .gamma2 = Buffers::device<double>(na * na * na * na, res.device())};
+  Fock out{.energy = nuclear_repulsion_energy(molecule),
+           .fock_inactive = Buffers::device<double>(nn, res.device()),
+           .fock_active = Buffers::device<double>(nn, res.device()),
+           .fock = Buffers::device<double>(nn, res.device()),
+           .gradient = Buffers::device<double>(n_pairs, res.device()),
+           .gamma = Buffers::device<double>(na * na, res.device()),
+           .gamma2 = Buffers::device<double>(na * na * na * na, res.device())};
 
   // gamma and Gamma from ci::Rdm::rdm12's row-major order to the t-fastest one, so
   // (t, k) with k = u + ncas (v + ncas w) is a column-major ncas x ncas^3
@@ -292,18 +292,18 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
   // The generalized Fock, column by column of q's space: 2 (F^I + F^A) for
   // the core, F^I gamma + (pu|vw) Gamma for the active space, 0 for the
   // virtuals.
-  double *const fock = out.fock.data();
-  double *const fock_act = fock + (n_all * static_cast<size_t>(ncore));
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(fock, 0, nn * sizeof(double), stream)));
+  double *const f = out.fock.data();
+  double *const f_act = f + (n_all * static_cast<size_t>(ncore));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(f, 0, nn * sizeof(double), stream)));
   if (ncore > 0) {
     FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nmo, ncore, &kTwo<double>,
-        out.fock_inactive.data(), nmo, &kTwo<double>, out.fock_active.data(), nmo, fock, nmo)));
+        out.fock_inactive.data(), nmo, &kTwo<double>, out.fock_active.data(), nmo, f, nmo)));
   }
   if (ncas > 0) {
     FBF_TRY(gpu_status(gemm(blas, nmo, ncas, ncas, &kOne<double>,
                             out.fock_inactive.data() + (n_all * static_cast<size_t>(ncore)),
-                            out.gamma.data(), &kZero<double>, fock_act)));
+                            out.gamma.data(), &kZero<double>, f_act)));
     // (pu|vw) is ppaa's columns q = ncore + u of each block (v, w): ncas
     // contiguous columns per block, gathered into one nmo x ncas^3 matrix.
     FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(scratch.paaa, n_all * na * sizeof(double),
@@ -314,14 +314,14 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
     // column-major ncas x ncas^3 matrix, transposed.
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
         blas, nmo, ncas, ncas * ncas * ncas, &kOne<double>, scratch.paaa, out.gamma2.data(),
-        &kOne<double>, fock_act)));
+        &kOne<double>, f_act)));
   }
 
   // g = 2 (F - F^T) over the packed pairs.
   constexpr double kMinusTwo = -2.0;
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nmo,
-                                                nmo, &kTwo<double>, fock, nmo, &kMinusTwo, fock,
-                                                nmo, scratch.block, nmo)));
+                                                nmo, &kTwo<double>, f, nmo, &kMinusTwo, f, nmo,
+                                                scratch.block, nmo)));
   FBF_TRY(copy_orbital_pairs(res, nmo, ncore, ncas, scratch.block, out.gradient.data(), true));
 
   // E = E_nuc + sum_i (h_ii + F^I_ii) + sum_tu F^I_tu gamma_tu
@@ -332,7 +332,7 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
   std::vector<double> fock_diagonal(n_all);
   std::vector<double> h_eff(na * na);
   FBF_TRY(diagonal(fock_inactive_diagonal, out.fock_inactive.data()));
-  FBF_TRY(diagonal(fock_diagonal, fock));
+  FBF_TRY(diagonal(fock_diagonal, f));
   if (ncas > 0) {
     FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(
         h_eff.data(), na * sizeof(double),
@@ -354,4 +354,4 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
   return out;
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::mcscf

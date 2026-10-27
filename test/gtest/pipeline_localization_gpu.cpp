@@ -405,9 +405,9 @@ void expect_iaos(const fb::json &entry, const fb::json *basis_document = nullptr
   const auto occ = static_cast<std::size_t>(molecule->molecule.electron_count() / 2);
   fb::DeviceResources res(scf->c.dev_idx());
   fb::Buffers::device<double> iao(n * m, res.device());
-  const fb::Status built =
-      fb::intrinsic_atomic_orbitals(res, basis->basis, *minao, static_cast<std::int32_t>(occ),
-                                    overlap->s.data(), scf->c.data(), iao.data());
+  const fb::Status built = fb::localization::intrinsic_atomic_orbitals(
+      res, basis->basis, *minao, static_cast<std::int32_t>(occ), overlap->s.data(), scf->c.data(),
+      iao.data());
   ASSERT_TRUE(built.has_value()) << built.error().message;
   ASSERT_TRUE(res.sync().has_value());
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};

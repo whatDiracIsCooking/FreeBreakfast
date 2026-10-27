@@ -25,8 +25,8 @@ export namespace free_breakfast {
 
 /// @brief Which localization @ref LocalizationStep runs.
 enum class LocalizationMode : uint8_t {
-  PipekMezey, ///< Mulliken populations (@ref pipek_mezey_localize)
-  Ibo,        ///< Intrinsic-atomic-orbital populations over MINAO (@ref ibo_localize)
+  PipekMezey, ///< Mulliken populations (@ref localization::pm_localize)
+  Ibo,        ///< Intrinsic-atomic-orbital populations over MINAO (@ref localization::ibo_localize)
 };
 
 /// @brief The localized occupied orbitals of a closed-shell RHF wavefunction,
@@ -42,7 +42,7 @@ struct LocalizationOutput {
   /// @brief The occupied count, electron_count() / 2: the columns of @ref c.
   int32_t n_occ;
   /// @brief The sweeps taken and the functional before and after.
-  PipekMezeyInfo info;
+  localization::Info info;
   /// @brief IBO only, empty for Pipek-Mezey: each localized orbital's IAO
   /// population on each atom, natoms x @ref n_occ column-major, orbital i's
   /// on atom A at [A + natoms * i] (@ref orbital_populations).
@@ -55,20 +55,20 @@ struct LocalizationOutput {
   /// (@ref bond_orbitals).
   std::vector<BondOrbital> bonds{};
   /// @brief LIVVO only, empty otherwise: the localized valence virtual
-  /// orbitals, nao_sphe x @ref n_vvo, column-major (@ref livvo_localize).
+  /// orbitals, nao_sphe x @ref n_vvo, column-major (@ref localization::livvo_localize).
   Buffers::device<double> livvo;
   /// @brief LIVVO only, zero otherwise: the LIVVO count, MINAO's nao_sphe
   /// less @ref n_occ.
   int32_t n_vvo = 0;
   /// @brief LIVVO only: the LIVVO sweeps taken and the functional before and
   /// after.
-  PipekMezeyInfo livvo_info{};
+  localization::Info livvo_info{};
   /// @brief LIVVO only, empty otherwise: each LIVVO's centers, angular
   /// character and sigma/pi kind, over its IAO weights (@ref bond_orbitals).
   std::vector<BondOrbital> livvo_bonds{};
   /// @brief LIVVO only, empty otherwise: the valence character t_val of each
   /// canonical virtual, in the SCF's order; they sum to @ref n_vvo
-  /// (@ref valence_character).
+  /// (@ref localization::valence_character).
   std::vector<double> valence_character{};
 };
 
@@ -82,7 +82,7 @@ struct LocalizationStep {
   /// @brief The sweeps, tolerances and exponent, for either mode: IBO is
   /// Pipek-Mezey over other populations. Knizia's IBO exponent is four, which
   /// pipeline/config sets for mode "ibo" unless the table names another.
-  PipekMezeyOptions pipek_mezey;
+  localization::PmOptions pipek_mezey;
   /// @brief Where the localized orbitals are written as a Molden file, if not
   /// empty: the n_occ of them at occupation 2, each with its Fock expectation
   /// value sum_k U_ki^2 eps_k as its energy, then the SCF's canonical
@@ -110,8 +110,9 @@ struct LocalizationStep {
   /// carry is place's error; the IAOs it localized over then give the IBOs'
   /// populations and bond centers and the atoms' charges, the charges and
   /// centers logged. With @ref livvo, MINAO is placed in either mode, the
-  /// IAOs are built once (ibo_localize's, or intrinsic_atomic_orbitals' for
-  /// Pipek-Mezey), and the LIVVOs' bonds and the virtuals' valence character
+  /// IAOs are built once (localization::ibo_localize's, or
+  /// localization::intrinsic_atomic_orbitals' for Pipek-Mezey), and the
+  /// LIVVOs' bonds and the virtuals' valence character
   /// are logged; their errors are livvo's. InvalidConfig for a
   /// @ref livvo_molden without @ref livvo. Errors are otherwise the method's;
   /// for both, InvalidConfig for an option out of range,

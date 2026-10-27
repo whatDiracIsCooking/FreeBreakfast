@@ -1,5 +1,5 @@
 /// @file
-/// @brief pipek_mezey_localize: the sweep driver.
+/// @brief pm_localize: the sweep driver.
 
 module;
 
@@ -20,7 +20,7 @@ import free_breakfast.recipes.blas; // gemm
 
 #include "diagnostics.h"
 
-namespace free_breakfast {
+namespace free_breakfast::localization {
 
 // Atom A's spherical AOs are [offsets[A], offsets[A + 1]). A placed basis
 // holds each atom's shells together, in atom order, and the AO layout follows
@@ -95,34 +95,34 @@ struct PmScratch {
   }
 };
 
-Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res, const BasisSet &basis,
-                                            const int32_t n_occ, const double *const s,
-                                            const double *const c, double *const c_local,
-                                            double *const u, const PipekMezeyOptions &options) {
+Result<Info> pm_localize(DeviceResources &res, const BasisSet &basis, const int32_t n_occ,
+                         const double *const s, const double *const c, double *const c_local,
+                         double *const u, const PmOptions &options) {
   // Everything that can be refused is refused before the device is touched.
   const uint32_t n_atoms = basis.natoms();
   const auto n_ao = static_cast<int32_t>(basis.nao_sphe());
   if (n_atoms == 0) {
-    return err_config("pipek_mezey_localize: the basis has no atoms; place it over a molecule");
+    return err_config(
+        "localization::pm_localize: the basis has no atoms; place it over a molecule");
   }
   if (s == nullptr || c == nullptr || c_local == nullptr) {
-    return err_config("pipek_mezey_localize: s, c and c_local must not be null");
+    return err_config("localization::pm_localize: s, c and c_local must not be null");
   }
   if (c_local == c) {
-    return err_config("pipek_mezey_localize: c_local must not alias c (C U is a gemm)");
+    return err_config("localization::pm_localize: c_local must not alias c (C U is a gemm)");
   }
   if (n_occ < 0 || n_occ > n_ao) {
-    return err_config("pipek_mezey_localize: n_occ {} is outside 0..{}", n_occ, n_ao);
+    return err_config("localization::pm_localize: n_occ {} is outside 0..{}", n_occ, n_ao);
   }
-  if (n_occ > device::kPmMaxOccupied) {
-    return err_config("pipek_mezey_localize: n_occ {} is past the grid's limit {}", n_occ,
-                      device::kPmMaxOccupied);
+  if (n_occ > device::kMaxOccupied) {
+    return err_config("localization::pm_localize: n_occ {} is past the grid's limit {}", n_occ,
+                      device::kMaxOccupied);
   }
   if (options.max_sweeps < 1) {
-    return err_config("pipek_mezey_localize: max_sweeps {} is below 1", options.max_sweeps);
+    return err_config("localization::pm_localize: max_sweeps {} is below 1", options.max_sweeps);
   }
 
-  PipekMezeyInfo info{};
+  Info info{};
   if (n_occ == 0) {
     return info;
   }
@@ -158,13 +158,13 @@ Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res, const BasisSet
   double *pops_next = scratch.pops_b;
   double *u_cur = scratch.u_a;
   double *u_next = scratch.u_b;
-  FBF_TRY(gpu_status(device::pm_populations(stream, n_atoms_i, n_occ, n_ao, c, scratch.w,
-                                            scratch.atom_ao_offsets, pops_cur)));
-  FBF_TRY(gpu_status(device::pm_identity(stream, n_occ, u_cur)));
+  FBF_TRY(gpu_status(device::populations(stream, n_atoms_i, n_occ, n_ao, c, scratch.w,
+                                         scratch.atom_ao_offsets, pops_cur)));
+  FBF_TRY(gpu_status(device::identity(stream, n_occ, u_cur)));
 
   const auto read_functional = [&](const double *const pops) -> Result<double> {
     FBF_TRY(gpu_status(
-        device::pm_functional(stream, exponent, n_atoms_i, n_occ, pops, scratch.functional)));
+        device::functional(stream, exponent, n_atoms_i, n_occ, pops, scratch.functional)));
     double value{};
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&value, scratch.functional, sizeof(double),
                                            wwr::wwrMemcpyDeviceToHost, stream)));
@@ -185,14 +185,13 @@ Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res, const BasisSet
     for (int32_t round = 0; round < rounds; ++round) {
       const int32_t *const pairs =
           scratch.schedule + (static_cast<size_t>(round) * static_cast<size_t>(m));
-      FBF_TRY(gpu_status(device::pm_pair_angles(stream, exponent, n_atoms_i, n_occ, pops_cur, pairs,
-                                                m / 2, gain_threshold, scratch.cos, scratch.sin,
-                                                scratch.partner)));
-      FBF_TRY(
-          gpu_status(device::pm_rotate_populations(stream, n_atoms_i, n_occ, pops_cur, scratch.cos,
-                                                   scratch.sin, scratch.partner, pops_next)));
-      FBF_TRY(gpu_status(device::pm_rotate_columns(stream, n_occ, u_cur, scratch.cos, scratch.sin,
-                                                   scratch.partner, u_next)));
+      FBF_TRY(gpu_status(device::pair_angles(stream, exponent, n_atoms_i, n_occ, pops_cur, pairs,
+                                             m / 2, gain_threshold, scratch.cos, scratch.sin,
+                                             scratch.partner)));
+      FBF_TRY(gpu_status(device::rotate_populations(stream, n_atoms_i, n_occ, pops_cur, scratch.cos,
+                                                    scratch.sin, scratch.partner, pops_next)));
+      FBF_TRY(gpu_status(device::rotate_columns(stream, n_occ, u_cur, scratch.cos, scratch.sin,
+                                                scratch.partner, u_next)));
       std::swap(pops_cur, pops_next);
       std::swap(u_cur, u_next);
     }
@@ -213,10 +212,10 @@ Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res, const BasisSet
         wwr::wwrMemcpyDeviceToDevice, stream)));
   }
   if (!converged) {
-    return err_max_iterations_exceeded("pipek_mezey_localize: L still moved {:g} in sweep {}",
+    return err_max_iterations_exceeded("localization::pm_localize: L still moved {:g} in sweep {}",
                                        change, options.max_sweeps);
   }
   return info;
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::localization

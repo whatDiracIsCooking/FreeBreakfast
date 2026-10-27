@@ -1,6 +1,6 @@
-# The module: OrbitalHessian, declared in the interface and defined in the
+# The module: mcscf::Hessian, declared in the interface and defined in the
 # implementation unit. BasisSet, DeviceResources, Buffers, the two kinds of
-# pair class, the AO matrices and CasscfFock are in its signature or members,
+# pair class, the AO matrices and mcscf::Fock are in its signature or members,
 # so basis, core::wwr, core::resources, coulomb, exchange, recipes::matrix_ao
 # and mcscf::fock are PUBLIC. It launches nothing of its own: J and K are
 # coulomb's and exchange's, the rest BLAS and copies, so there is no device

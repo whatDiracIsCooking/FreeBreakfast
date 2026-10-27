@@ -1,5 +1,5 @@
 /// @file
-/// @brief OrbitalHessian: gen_g_hop's h_op as gemms over MO intermediates
+/// @brief Hessian: gen_g_hop's h_op as gemms over MO intermediates
 /// built once and two J and K of transition densities per product, and its
 /// h_diag assembled on the host from diagonals read back once.
 
@@ -21,15 +21,14 @@ import free_breakfast.mcscf.fock;
 
 #include "diagnostics.h"
 
-namespace free_breakfast {
+namespace free_breakfast::mcscf {
 
-static_assert(LinearOperator<OrbitalHessian, double>);
+static_assert(LinearOperator<Hessian, double>);
 
-OrbitalHessian::OrbitalHessian(DeviceResources &res, const BasisSet &basis,
-                               const std::span<CoulombPairClass> j_classes,
-                               const std::span<OrderedPairClass> k_classes, const int32_t nmo,
-                               const int32_t ncore, const int32_t ncas, const double tau_j,
-                               const double tau_k)
+Hessian::Hessian(DeviceResources &res, const BasisSet &basis,
+                 const std::span<CoulombPairClass> j_classes,
+                 const std::span<OrderedPairClass> k_classes, const int32_t nmo,
+                 const int32_t ncore, const int32_t ncas, const double tau_j, const double tau_k)
     : j_classes_(j_classes), k_classes_(k_classes), dev_idx_(res.dev_idx()), nmo_(nmo),
       ncore_(ncore), ncas_(ncas), n_cart_(static_cast<int32_t>(basis.nao_cart())),
       n_pairs_((ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas))), tau_j_(tau_j),
@@ -46,7 +45,7 @@ OrbitalHessian::OrbitalHessian(DeviceResources &res, const BasisSet &basis,
       diagonal_(static_cast<size_t>(n_pairs_), res.device()), density_(res, basis), j_(res, basis),
       k_(res, basis) {}
 
-Result<double> OrbitalHessian::capped_density(DeviceResources &res, const double *const from) {
+Result<double> Hessian::capped_density(DeviceResources &res, const double *const from) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const int32_t nc = n_cart_;
   // 1-based, and on the host in host pointer mode, so the call has waited.
@@ -63,40 +62,41 @@ Result<double> OrbitalHessian::capped_density(DeviceResources &res, const double
   return s;
 }
 
-Result<OrbitalHessian>
-OrbitalHessian::create(DeviceResources &res, const BasisSet &basis, const SphericalMatrixAO &h,
-                       const std::shared_ptr<const Buffers::device<double>> &u,
-                       const std::span<CoulombPairClass> j_classes,
-                       const std::span<OrderedPairClass> k_classes, const SphericalMatrixAO &c,
-                       const int32_t ncore, const int32_t ncas, const Buffers::device<double> &ppaa,
-                       const Buffers::device<double> &papa, const CasscfFock &fock,
-                       const double tau_j, const double tau_k) {
+Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
+                                const SphericalMatrixAO &h,
+                                const std::shared_ptr<const Buffers::device<double>> &u,
+                                const std::span<CoulombPairClass> j_classes,
+                                const std::span<OrderedPairClass> k_classes,
+                                const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
+                                const Buffers::device<double> &ppaa,
+                                const Buffers::device<double> &papa, const Fock &fock,
+                                const double tau_j, const double tau_k) {
   const uint32_t n_sphe = basis.nao_sphe();
   const uint32_t n_orbitals = c.n();
   if (ncore < 0 || ncas < 0) {
-    return err_config("OrbitalHessian::create: ncore ({}) and ncas ({}) must not be negative",
+    return err_config("mcscf::Hessian::create: ncore ({}) and ncas ({}) must not be negative",
                       ncore, ncas);
   }
   if (ncore + ncas == 0) {
-    return err_config("OrbitalHessian::create: ncore and ncas are both 0, so nothing is occupied");
+    return err_config("mcscf::Hessian::create: ncore and ncas are both 0, so nothing is occupied");
   }
   if (std::cmp_greater(int64_t{ncore} + ncas, n_orbitals)) {
-    return err_config("OrbitalHessian::create: ncore {} + ncas {} exceeds the {} orbitals", ncore,
+    return err_config("mcscf::Hessian::create: ncore {} + ncas {} exceeds the {} orbitals", ncore,
                       ncas, n_orbitals);
   }
   // Written so that NaN fails too.
   if (!(tau_j >= 0.0) || !(tau_k >= 0.0)) {
-    return err_config("OrbitalHessian::create: tau_j ({}) and tau_k ({}) must be 0 or above", tau_j,
+    return err_config("mcscf::Hessian::create: tau_j ({}) and tau_k ({}) must be 0 or above", tau_j,
                       tau_k);
   }
   if (h.n() != n_sphe || n_orbitals != n_sphe) {
     return err_config(
-        "OrbitalHessian::create: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
+        "mcscf::Hessian::create: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
         h.n(), h.n(), n_orbitals, n_orbitals, n_sphe);
   }
   if (h.dev_idx() != res.dev_idx() || c.dev_idx() != res.dev_idx()) {
     return err_config(
-        "OrbitalHessian::create: h is on device {} and C on {}, but the call passed device {}",
+        "mcscf::Hessian::create: h is on device {} and C on {}, but the call passed device {}",
         h.dev_idx(), c.dev_idx(), res.dev_idx());
   }
   const size_t n_all = n_orbitals;
@@ -106,14 +106,14 @@ OrbitalHessian::create(DeviceResources &res, const BasisSet &basis, const Spheri
   const size_t occ = core + na;
   if (ppaa.num_elements() != nn * na * na || papa.num_elements() != nn * na * na) {
     return err_config(
-        "OrbitalHessian::create: ppaa holds {} and papa {} doubles, but nmo^2 ncas^2 is {}",
+        "mcscf::Hessian::create: ppaa holds {} and papa {} doubles, but nmo^2 ncas^2 is {}",
         ppaa.num_elements(), papa.num_elements(), nn * na * na);
   }
   const size_t n_pairs = (core * (n_all - core)) + (na * (n_all - occ));
   if (fock.fock_inactive.num_elements() != nn || fock.fock_active.num_elements() != nn ||
       fock.fock.num_elements() != nn || fock.gradient.num_elements() != n_pairs ||
       fock.gamma.num_elements() != na * na || fock.gamma2.num_elements() != na * na * na * na) {
-    return err_config("OrbitalHessian::create: the CasscfFock is not of {} orbitals, ncore {} and "
+    return err_config("mcscf::Hessian::create: the Fock is not of {} orbitals, ncore {} and "
                       "ncas {}",
                       n_all, ncore, ncas);
   }
@@ -123,7 +123,7 @@ OrbitalHessian::create(DeviceResources &res, const BasisSet &basis, const Spheri
   const wwr::wwrStream_t stream = res.stream();
   const auto nmo = static_cast<int32_t>(n_orbitals);
   const int32_t nocc = ncore + ncas;
-  OrbitalHessian out(res, basis, j_classes, k_classes, nmo, ncore, ncas, tau_j, tau_k);
+  Hessian out(res, basis, j_classes, k_classes, nmo, ncore, ncas, tau_j, tau_k);
   const int32_t nc = out.n_cart_;
   const auto n_cart = static_cast<size_t>(nc);
   const auto ns = static_cast<int32_t>(n_sphe);
@@ -336,14 +336,14 @@ OrbitalHessian::create(DeviceResources &res, const BasisSet &basis, const Spheri
   return out;
 }
 
-Status OrbitalHessian::apply(DeviceResources &res, const int32_t k, const double *const x,
-                             double *const y) {
+Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const x,
+                      double *const y) {
   if (res.dev_idx() != dev_idx_) {
-    return err_config("OrbitalHessian::apply: built on device {}, but the call passed device {}",
+    return err_config("mcscf::Hessian::apply: built on device {}, but the call passed device {}",
                       dev_idx_, res.dev_idx());
   }
   if (k < 0) {
-    return err_config("OrbitalHessian::apply: the block has {} columns", k);
+    return err_config("mcscf::Hessian::apply: the block has {} columns", k);
   }
   if (k == 0 || n_pairs_ == 0) {
     return {};
@@ -478,4 +478,4 @@ Status OrbitalHessian::apply(DeviceResources &res, const int32_t k, const double
   return {};
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::mcscf

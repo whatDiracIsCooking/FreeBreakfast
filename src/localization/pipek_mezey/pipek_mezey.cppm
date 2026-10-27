@@ -18,7 +18,7 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 
-export namespace free_breakfast {
+export namespace free_breakfast::localization {
 
 /// @brief The power p of L_p = sum_i sum_A (Q^A_ii)^p.
 ///
@@ -28,13 +28,13 @@ export namespace free_breakfast {
 /// localized answers. Four is Knizia's IBO exponent, which concentrates the
 /// populations harder and breaks that degeneracy; its angle is approximate,
 /// but a rotation is accepted only where it raises L_4 exactly.
-enum class PipekMezeyExponent : int32_t {
+enum class PmExponent : int32_t {
   Two = 2,  ///< L_2, Pipek and Mezey (1989)
   Four = 4, ///< L_4, Knizia (2013)
 };
 
-/// @brief The knobs of one pipek_mezey_localize call.
-struct PipekMezeyOptions {
+/// @brief The knobs of one pm_localize call.
+struct PmOptions {
   /// @brief Sweeps before giving up; each visits every orbital pair once. At
   /// least 1.
   int32_t max_sweeps = 64;
@@ -44,11 +44,11 @@ struct PipekMezeyOptions {
   /// spending a rotation, and its rounding, on nothing.
   double rotation_gain_threshold = 1e-14;
   /// @brief The functional's power.
-  PipekMezeyExponent exponent = PipekMezeyExponent::Two;
+  PmExponent exponent = PmExponent::Two;
 };
 
-/// @brief What a converged pipek_mezey_localize did.
-struct PipekMezeyInfo {
+/// @brief What a converged pm_localize did.
+struct Info {
   /// @brief Sweeps taken; 0 for fewer than two orbitals, which have no pair.
   int32_t sweeps = 0;
   /// @brief L of the orbitals as given.
@@ -84,10 +84,8 @@ struct PipekMezeyInfo {
 ///         MaxIterationsExceeded when max_sweeps pass without converging, with
 ///         @p c_local and @p u holding the last sweep's orbitals; GpuRuntime
 ///         for a failed launch, copy or BLAS call.
-[[nodiscard]] Result<PipekMezeyInfo> pipek_mezey_localize(DeviceResources &res,
-                                                          const BasisSet &basis, int32_t n_occ,
-                                                          const double *s, const double *c,
-                                                          double *c_local, double *u,
-                                                          const PipekMezeyOptions &options = {});
+[[nodiscard]] Result<Info> pm_localize(DeviceResources &res, const BasisSet &basis, int32_t n_occ,
+                                       const double *s, const double *c, double *c_local, double *u,
+                                       const PmOptions &options = {});
 
-} // namespace free_breakfast
+} // namespace free_breakfast::localization

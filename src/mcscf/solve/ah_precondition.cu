@@ -10,7 +10,7 @@
 
 #include "ah_precondition_bridge.h"
 
-namespace free_breakfast::device {
+namespace free_breakfast::mcscf::device {
 
 namespace {
 
@@ -42,4 +42,4 @@ wwr::wwrError_t ah_precondition(const wwr::wwrStream_t stream, const int32_t n, 
   return wwr::wwrGetLastError();
 }
 
-} // namespace free_breakfast::device
+} // namespace free_breakfast::mcscf::device

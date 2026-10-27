@@ -7,7 +7,7 @@
 /// The IAOs are gemms, Cholesky solves (S^-1/2 for a near-singular basis
 /// overlap) and two Loewdin orthogonalizations
 /// over the overlaps of the working basis and a free-atom minimal basis
-/// (MINAO); the IBOs are pipek_mezey_localize run over the occupied orbitals
+/// (MINAO); the IBOs are pm_localize run over the occupied orbitals
 /// written in the orthonormal IAOs, where the Mulliken populations are the
 /// IAO ones. The README has the formulas.
 
@@ -20,7 +20,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 export import free_breakfast.localization.pipek_mezey;
 
-export namespace free_breakfast {
+export namespace free_breakfast::localization {
 
 /// @brief The orthonormal intrinsic atomic orbitals of @p n_occ occupied
 /// orbitals, over the spherical AOs of @p basis, one per spherical AO of
@@ -59,7 +59,7 @@ export namespace free_breakfast {
 /// @brief Localize @p n_occ orbitals into intrinsic bond orbitals: Pipek-Mezey
 /// over the populations of the intrinsic atomic orbitals.
 ///
-/// The arguments are pipek_mezey_localize's, plus @p minimal as for
+/// The arguments are pm_localize's, plus @p minimal as for
 /// intrinsic_atomic_orbitals. @p c_local receives C U and @p u (if not null)
 /// the n_occ x n_occ orthogonal U; @p c_local must not alias @p c. @p iao
 /// (if not null) receives the n x m IAOs the localization ran over, as
@@ -67,12 +67,13 @@ export namespace free_breakfast {
 /// building them twice. The default exponent is Knizia's four.
 ///
 /// @return The sweeps and L over the IAO populations, or
-///         intrinsic_atomic_orbitals' and pipek_mezey_localize's errors. On
+///         intrinsic_atomic_orbitals' and pm_localize's errors. On
 ///         MaxIterationsExceeded @p c_local and @p u hold the last sweep's
 ///         orbitals.
-[[nodiscard]] Result<PipekMezeyInfo>
-ibo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &minimal, int32_t n_occ,
-             const double *s, const double *c, double *c_local, double *u, double *iao = nullptr,
-             const PipekMezeyOptions &options = {.exponent = PipekMezeyExponent::Four});
+[[nodiscard]] Result<Info> ibo_localize(DeviceResources &res, const BasisSet &basis,
+                                        const BasisSet &minimal, int32_t n_occ, const double *s,
+                                        const double *c, double *c_local, double *u,
+                                        double *iao = nullptr,
+                                        const PmOptions &options = {.exponent = PmExponent::Four});
 
-} // namespace free_breakfast
+} // namespace free_breakfast::localization

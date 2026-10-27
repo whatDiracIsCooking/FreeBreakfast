@@ -18,7 +18,7 @@ import free_breakfast.integrals.one_electron.overlap_mixed;
 
 #include "diagnostics.h"
 
-namespace free_breakfast {
+namespace free_breakfast::localization {
 
 // A pool buffer of @p count doubles on res.device().
 [[nodiscard]] Buffers::device<double> ibo_buffer(DeviceResources &res, const size_t count) {
@@ -42,11 +42,12 @@ namespace free_breakfast {
 [[nodiscard]] Status ibo_check_info(DeviceResources &res, const std::string_view what) {
   const int32_t info = FBF_TRY(res.fetch_info());
   if (info < 0) {
-    return err_gpu("intrinsic_atomic_orbitals: {} rejected argument {}", what, -info);
+    return err_gpu("localization::intrinsic_atomic_orbitals: {} rejected argument {}", what, -info);
   }
   if (info > 0) {
-    return err_numerical("intrinsic_atomic_orbitals: {} is not positive definite (minor {})", what,
-                         info);
+    return err_numerical(
+        "localization::intrinsic_atomic_orbitals: {} is not positive definite (minor {})", what,
+        info);
   }
   return {};
 }
@@ -80,12 +81,13 @@ namespace free_breakfast {
   FBF_TRY(ibo_potrf(res, n, a));
   const int32_t info = FBF_TRY(res.fetch_info());
   if (info < 0) {
-    return err_gpu("intrinsic_atomic_orbitals: potrf rejected argument {}", -info);
+    return err_gpu("localization::intrinsic_atomic_orbitals: potrf rejected argument {}", -info);
   }
   if (info > 0) {
-    FBF_LOG_WARN("intrinsic_atomic_orbitals: the basis's overlap is not positive definite "
-                 "(minor {}); S1^-1 is applied as X X^T over X = S1^-1/2",
-                 info);
+    FBF_LOG_WARN(
+        "localization::intrinsic_atomic_orbitals: the basis's overlap is not positive definite "
+        "(minor {}); S1^-1 is applied as X X^T over X = S1^-1/2",
+        info);
     return false;
   }
   std::vector<double> diagonal(static_cast<size_t>(n));
@@ -98,7 +100,8 @@ namespace free_breakfast {
     pivot = std::min(pivot, l * l);
   }
   if (pivot <= kOrthogonalizeEigenvalueFloor<double>) {
-    FBF_LOG_WARN("intrinsic_atomic_orbitals: the basis's overlap has a Cholesky pivot of {:.3e}, "
+    FBF_LOG_WARN("localization::intrinsic_atomic_orbitals: the basis's overlap has a Cholesky "
+                 "pivot of {:.3e}, "
                  "at or below {:.0e}; S1^-1 is applied as X X^T over X = S1^-1/2",
                  pivot, kOrthogonalizeEigenvalueFloor<double>);
     return false;
@@ -163,8 +166,9 @@ namespace free_breakfast {
   for (int32_t r = 0; r < m; ++r) {
     const double norm = s2_host[static_cast<size_t>(r) * (m + 1)];
     if (!(norm > 0.0)) {
-      return err_numerical("intrinsic_atomic_orbitals: minimal-basis function {} has norm {}", r,
-                           norm);
+      return err_numerical(
+          "localization::intrinsic_atomic_orbitals: minimal-basis function {} has norm {}", r,
+          norm);
     }
     scale_host[static_cast<size_t>(r)] = 1.0 / std::sqrt(norm);
   }
@@ -189,24 +193,27 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
   const auto m = static_cast<int32_t>(minimal.nao_sphe());
   const int32_t k = n_occ;
   if (basis.natoms() == 0) {
-    return err_config("intrinsic_atomic_orbitals: the basis has no atoms; place it over a "
-                      "molecule");
+    return err_config(
+        "localization::intrinsic_atomic_orbitals: the basis has no atoms; place it over a "
+        "molecule");
   }
   if (minimal.natoms() != basis.natoms()) {
-    return err_config("intrinsic_atomic_orbitals: the minimal basis is over {} atoms, the basis "
-                      "over {}",
-                      minimal.natoms(), basis.natoms());
+    return err_config(
+        "localization::intrinsic_atomic_orbitals: the minimal basis is over {} atoms, the basis "
+        "over {}",
+        minimal.natoms(), basis.natoms());
   }
   if (m > n) {
-    return err_config("intrinsic_atomic_orbitals: the minimal basis has {} functions, more than "
-                      "the basis's {}",
-                      m, n);
+    return err_config(
+        "localization::intrinsic_atomic_orbitals: the minimal basis has {} functions, more than "
+        "the basis's {}",
+        m, n);
   }
   if (k < 0 || k > m) {
-    return err_config("intrinsic_atomic_orbitals: n_occ {} is outside 0..{}", k, m);
+    return err_config("localization::intrinsic_atomic_orbitals: n_occ {} is outside 0..{}", k, m);
   }
   if (s == nullptr || c == nullptr || iao == nullptr) {
-    return err_config("intrinsic_atomic_orbitals: s, c and iao must not be null");
+    return err_config("localization::intrinsic_atomic_orbitals: s, c and iao must not be null");
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto nm = static_cast<size_t>(n) * m;
@@ -281,15 +288,14 @@ Status intrinsic_atomic_orbitals(DeviceResources &res, const BasisSet &basis,
   return ibo_copy(res, iao, a.data(), nm);
 }
 
-Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
-                                    const BasisSet &minimal, const int32_t n_occ, const double *s,
-                                    const double *c, double *c_local, double *u, double *iao_out,
-                                    const PipekMezeyOptions &options) {
+Result<Info> ibo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &minimal,
+                          const int32_t n_occ, const double *s, const double *c, double *c_local,
+                          double *u, double *iao_out, const PmOptions &options) {
   if (c_local == nullptr) {
-    return err_config("ibo_localize: c_local must not be null");
+    return err_config("localization::ibo_localize: c_local must not be null");
   }
   if (c_local == c) {
-    return err_config("ibo_localize: c_local must not alias c (C U is a gemm)");
+    return err_config("localization::ibo_localize: c_local must not alias c (C U is a gemm)");
   }
   const auto n = static_cast<int32_t>(basis.nao_sphe());
   const auto m = static_cast<int32_t>(minimal.nao_sphe());
@@ -301,14 +307,14 @@ Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
     FBF_TRY(ibo_copy(res, iao_out, iao.data(), nm));
   }
   if (k == 0) {
-    return PipekMezeyInfo{};
+    return Info{};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto mk = static_cast<size_t>(m) * k;
 
   // The occupied orbitals over the orthonormal IAOs, C_IAO = A^T S1 C: lossless,
   // since the IAOs span them. Over an orthonormal basis S is the identity, so
-  // pipek_mezey_localize's Mulliken populations of C_IAO are the IAO ones,
+  // pm_localize's Mulliken populations of C_IAO are the IAO ones,
   // each IAO owned by its minimal-basis AO's atom.
   Buffers::device<double> sc = ibo_buffer(res, static_cast<size_t>(n) * k);
   Buffers::device<double> c_iao = ibo_buffer(res, mk);
@@ -325,8 +331,8 @@ Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
   FBF_TRY(ibo_upload(res, identity.data(), identity_host));
   FBF_TRY(res.sync());
 
-  Result<PipekMezeyInfo> info = pipek_mezey_localize(res, minimal, k, identity.data(), c_iao.data(),
-                                                     c_iao_local.data(), rotation.data(), options);
+  Result<Info> info = pm_localize(res, minimal, k, identity.data(), c_iao.data(),
+                                  c_iao_local.data(), rotation.data(), options);
   if (!info.has_value() && info.error().kind != ErrorKind::MaxIterationsExceeded) {
     return info;
   }
@@ -339,4 +345,4 @@ Result<PipekMezeyInfo> ibo_localize(DeviceResources &res, const BasisSet &basis,
   return info;
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::localization

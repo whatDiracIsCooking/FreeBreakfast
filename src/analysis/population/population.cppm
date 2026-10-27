@@ -27,7 +27,7 @@ export namespace free_breakfast {
 ///
 /// @p minimal says which atom owns which column of @p iao: column r belongs
 /// to the atom that owns @p minimal's spherical AO r, as for
-/// intrinsic_atomic_orbitals. @p basis is the one @p s, @p c and @p iao are
+/// localization::intrinsic_atomic_orbitals. @p basis is the one @p s, @p c and @p iao are
 /// over, n = basis.nao_sphe(): @p s the n x n overlap, @p c the n x n_orb
 /// orbitals and @p iao the n x m minimal basis, m = minimal.nao_sphe(), all
 /// column-major and packed. @p iao is expected S-orthonormal (A^T S A = I)

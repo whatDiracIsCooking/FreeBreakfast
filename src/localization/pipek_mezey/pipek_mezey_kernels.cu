@@ -24,7 +24,13 @@
 
 #include "pipek_mezey_bridge.h"
 
-namespace free_breakfast::device {
+namespace free_breakfast::localization::device {
+
+// block_reduce is a shared device helper, and it lives in the flat
+// free_breakfast::device (block_reduce.cuh). Inside this namespace a bare
+// `device::` names THIS module's launchers, not that one, so borrow the name
+// rather than qualifying all seven call sites.
+using free_breakfast::device::block_reduce;
 
 namespace {
 
@@ -452,20 +458,20 @@ dim3 triangle_grid(const int32_t n_atoms, const int32_t n_occ) {
 
 } // namespace
 
-wwr::wwrError_t pm_populations(const wwr::wwrStream_t stream, const int32_t n_atoms,
-                               const int32_t n_occ, const int32_t ld, const double *const c,
-                               const double *const w, const int32_t *const atom_ao_offsets,
-                               double *const pops) {
+wwr::wwrError_t populations(const wwr::wwrStream_t stream, const int32_t n_atoms,
+                            const int32_t n_occ, const int32_t ld, const double *const c,
+                            const double *const w, const int32_t *const atom_ao_offsets,
+                            double *const pops) {
   populations_kernel<<<triangle_grid(n_atoms, n_occ), kFourWarps, 0, stream>>>(
       n_atoms, n_occ, ld, c, w, atom_ao_offsets, pops);
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t pm_pair_angles(const wwr::wwrStream_t stream, const int32_t exponent,
-                               const int32_t n_atoms, const int32_t n_occ, const double *const pops,
-                               const int32_t *const pairs, const int32_t n_pairs,
-                               const double gain_threshold, double *const cos_out,
-                               double *const sin_out, int32_t *const partner_out) {
+wwr::wwrError_t pair_angles(const wwr::wwrStream_t stream, const int32_t exponent,
+                            const int32_t n_atoms, const int32_t n_occ, const double *const pops,
+                            const int32_t *const pairs, const int32_t n_pairs,
+                            const double gain_threshold, double *const cos_out,
+                            double *const sin_out, int32_t *const partner_out) {
   const auto blocks = static_cast<uint32_t>(n_pairs);
   if (exponent == 4) {
     pair_angle_kernel<4><<<blocks, kPairThreads, 0, stream>>>(
@@ -477,28 +483,28 @@ wwr::wwrError_t pm_pair_angles(const wwr::wwrStream_t stream, const int32_t expo
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t pm_rotate_populations(const wwr::wwrStream_t stream, const int32_t n_atoms,
-                                      const int32_t n_occ, const double *const pops_in,
-                                      const double *const cos_v, const double *const sin_v,
-                                      const int32_t *const partner, double *const pops_out) {
+wwr::wwrError_t rotate_populations(const wwr::wwrStream_t stream, const int32_t n_atoms,
+                                   const int32_t n_occ, const double *const pops_in,
+                                   const double *const cos_v, const double *const sin_v,
+                                   const int32_t *const partner, double *const pops_out) {
   rotate_populations_kernel<<<triangle_grid(n_atoms, n_occ), kFourWarps, 0, stream>>>(
       n_atoms, n_occ, pops_in, cos_v, sin_v, partner, pops_out);
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t pm_rotate_columns(const wwr::wwrStream_t stream, const int32_t n_occ,
-                                  const double *const in, const double *const cos_v,
-                                  const double *const sin_v, const int32_t *const partner,
-                                  double *const out) {
+wwr::wwrError_t rotate_columns(const wwr::wwrStream_t stream, const int32_t n_occ,
+                               const double *const in, const double *const cos_v,
+                               const double *const sin_v, const int32_t *const partner,
+                               double *const out) {
   const dim3 grid{math::idivup(static_cast<uint32_t>(n_occ), kFourWarps),
                   static_cast<uint32_t>(n_occ)};
   rotate_columns_kernel<<<grid, kFourWarps, 0, stream>>>(n_occ, in, cos_v, sin_v, partner, out);
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t pm_functional(const wwr::wwrStream_t stream, const int32_t exponent,
-                              const int32_t n_atoms, const int32_t n_occ, const double *const pops,
-                              double *const out) {
+wwr::wwrError_t functional(const wwr::wwrStream_t stream, const int32_t exponent,
+                           const int32_t n_atoms, const int32_t n_occ, const double *const pops,
+                           double *const out) {
   if (exponent == 4) {
     functional_kernel<4><<<1, kMaxThreads, 0, stream>>>(n_atoms, n_occ, pops, out);
   } else {
@@ -507,11 +513,11 @@ wwr::wwrError_t pm_functional(const wwr::wwrStream_t stream, const int32_t expon
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t pm_identity(const wwr::wwrStream_t stream, const int32_t n, double *const matrix) {
+wwr::wwrError_t identity(const wwr::wwrStream_t stream, const int32_t n, double *const matrix) {
   const size_t total = static_cast<size_t>(n) * static_cast<size_t>(n);
   const auto blocks = static_cast<uint32_t>(math::idivup(total, size_t{kFourWarps}));
   identity_kernel<<<blocks, kFourWarps, 0, stream>>>(n, matrix);
   return wwr::wwrGetLastError();
 }
 
-} // namespace free_breakfast::device
+} // namespace free_breakfast::localization::device

@@ -17,7 +17,7 @@ import free_breakfast.recipes.diagonalize;
 
 #include "diagnostics.h"
 
-namespace free_breakfast {
+namespace free_breakfast::localization {
 
 Status valence_virtual_orbitals(DeviceResources &res, const BasisSet &basis,
                                 const BasisSet &minimal, const int32_t n_occ, const double *s,
@@ -26,15 +26,16 @@ Status valence_virtual_orbitals(DeviceResources &res, const BasisSet &basis,
   const auto m = static_cast<int32_t>(minimal.nao_sphe());
   const int32_t k = n_occ;
   if (minimal.natoms() != basis.natoms()) {
-    return err_config("valence_virtual_orbitals: the minimal basis is over {} atoms, the basis "
-                      "over {}",
-                      minimal.natoms(), basis.natoms());
+    return err_config(
+        "localization::valence_virtual_orbitals: the minimal basis is over {} atoms, the basis "
+        "over {}",
+        minimal.natoms(), basis.natoms());
   }
   if (k < 0 || k > m) {
-    return err_config("valence_virtual_orbitals: n_occ {} is outside 0..{}", k, m);
+    return err_config("localization::valence_virtual_orbitals: n_occ {} is outside 0..{}", k, m);
   }
   if (s == nullptr || c == nullptr || iao == nullptr || vvo == nullptr) {
-    return err_config("valence_virtual_orbitals: s, c, iao and vvo must not be null");
+    return err_config("localization::valence_virtual_orbitals: s, c, iao and vvo must not be null");
   }
   const int32_t n_vvo = m - k;
   if (n_vvo == 0) {
@@ -83,35 +84,35 @@ Status valence_virtual_orbitals(DeviceResources &res, const BasisSet &basis,
   return res.sync();
 }
 
-Result<PipekMezeyInfo> livvo_localize(DeviceResources &res, const BasisSet &basis,
-                                      const BasisSet &minimal, const int32_t n_occ, const double *s,
-                                      const double *iao, const double *vvo, double *livvo,
-                                      double *u, const PipekMezeyOptions &options) {
+Result<Info> livvo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &minimal,
+                            const int32_t n_occ, const double *s, const double *iao,
+                            const double *vvo, double *livvo, double *u, const PmOptions &options) {
   const auto n = static_cast<int32_t>(basis.nao_sphe());
   const auto m = static_cast<int32_t>(minimal.nao_sphe());
   if (minimal.natoms() != basis.natoms()) {
-    return err_config("livvo_localize: the minimal basis is over {} atoms, the basis over {}",
-                      minimal.natoms(), basis.natoms());
+    return err_config(
+        "localization::livvo_localize: the minimal basis is over {} atoms, the basis over {}",
+        minimal.natoms(), basis.natoms());
   }
   if (n_occ < 0 || n_occ > m) {
-    return err_config("livvo_localize: n_occ {} is outside 0..{}", n_occ, m);
+    return err_config("localization::livvo_localize: n_occ {} is outside 0..{}", n_occ, m);
   }
   if (s == nullptr || iao == nullptr || vvo == nullptr || livvo == nullptr) {
-    return err_config("livvo_localize: s, iao, vvo and livvo must not be null");
+    return err_config("localization::livvo_localize: s, iao, vvo and livvo must not be null");
   }
   if (livvo == vvo) {
-    return err_config("livvo_localize: livvo must not alias vvo (V U is a gemm)");
+    return err_config("localization::livvo_localize: livvo must not alias vvo (V U is a gemm)");
   }
   const int32_t k = m - n_occ;
   if (k == 0) {
-    return PipekMezeyInfo{};
+    return Info{};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto mk = static_cast<size_t>(m) * k;
 
   // The VVOs over the orthonormal IAOs, V_IAO = A^T S V: lossless, since V is
   // A U_0. Over an orthonormal basis S is the identity, so
-  // pipek_mezey_localize's Mulliken populations of V_IAO are the IAO ones, as
+  // pm_localize's Mulliken populations of V_IAO are the IAO ones, as
   // for the IBOs. V_IAO, its rotation and the identity are read by the sweep,
   // which takes the workspace, so they are buffers of their own.
   Buffers::device<double> v_iao(mk, res.device());
@@ -134,8 +135,8 @@ Result<PipekMezeyInfo> livvo_localize(DeviceResources &res, const BasisSet &basi
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
   FBF_TRY(res.sync());
 
-  Result<PipekMezeyInfo> info = pipek_mezey_localize(res, minimal, k, identity.data(), v_iao.data(),
-                                                     v_iao_local.data(), rotation.data(), options);
+  Result<Info> info = pm_localize(res, minimal, k, identity.data(), v_iao.data(),
+                                  v_iao_local.data(), rotation.data(), options);
   if (!info.has_value() && info.error().kind != ErrorKind::MaxIterationsExceeded) {
     return info;
   }
@@ -158,13 +159,13 @@ Result<std::vector<double>> valence_character(DeviceResources &res, const BasisS
                                               const double *livvo) {
   const auto n = static_cast<int32_t>(basis.nao_sphe());
   if (n_orb < 0) {
-    return err_config("valence_character: n_orb {} is negative", n_orb);
+    return err_config("localization::valence_character: n_orb {} is negative", n_orb);
   }
   if (n_vvo < 0 || n_vvo > n) {
-    return err_config("valence_character: n_vvo {} is outside 0..{}", n_vvo, n);
+    return err_config("localization::valence_character: n_vvo {} is outside 0..{}", n_vvo, n);
   }
   if (s == nullptr || c == nullptr || livvo == nullptr) {
-    return err_config("valence_character: s, c and livvo must not be null");
+    return err_config("localization::valence_character: s, c and livvo must not be null");
   }
   std::vector<double> t_val(static_cast<size_t>(n_orb), 0.0);
   if (n_orb == 0 || n_vvo == 0) {
@@ -195,4 +196,4 @@ Result<std::vector<double>> valence_character(DeviceResources &res, const BasisS
   return t_val;
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::localization

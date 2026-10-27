@@ -212,9 +212,9 @@ template <class S>
     step.mode = mode == "ibo" ? LocalizationMode::Ibo : LocalizationMode::PipekMezey;
     // The sweep's options sit in the table itself; IBO is the same sweep over
     // other populations, at Knizia's exponent four unless the table says.
-    PipekMezeyOptions &options = step.pipek_mezey;
+    localization::PmOptions &options = step.pipek_mezey;
     if (step.mode == LocalizationMode::Ibo) {
-      options.exponent = PipekMezeyExponent::Four;
+      options.exponent = localization::PmExponent::Four;
     }
     FBF_TRY(read_key(table, kStep, "max_sweeps", base_dir, options.max_sweeps));
     FBF_TRY(read_key(table, kStep, "functional_tolerance", base_dir, options.functional_tolerance));
@@ -225,7 +225,7 @@ template <class S>
     if (exponent != 2 && exponent != 4) {
       return err_config("[{}] exponent is {}, not 2 or 4", kStep, exponent);
     }
-    options.exponent = static_cast<PipekMezeyExponent>(exponent);
+    options.exponent = static_cast<localization::PmExponent>(exponent);
     FBF_TRY(read_key(table, kStep, "livvo", base_dir, step.livvo));
     step.molden = output_dir / std::format("{}.molden", kStep);
     if (step.livvo) {
@@ -249,7 +249,7 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "max_cycle", base_dir, step.max_cycle));
     step.molden = output_dir / std::format("{}.molden", kStep);
     // Unlike the active space's ranges these need nothing of the molecule, so
-    // they are refused here rather than when casscf_solve runs.
+    // they are refused here rather than when mcscf::solve runs.
     if (!step.weights.empty()) {
       if (std::cmp_not_equal(step.weights.size(), step.nroots)) {
         return err_config("[{}] weights has {} entries, not nroots {}", kStep, step.weights.size(),
@@ -258,7 +258,7 @@ template <class S>
       if (std::ranges::any_of(step.weights, [](double w) { return !(w >= 0.0); })) {
         return err_config("[{}] weights has a negative entry", kStep);
       }
-      // casscf_solve's own tolerance.
+      // mcscf::solve's own tolerance.
       if (const double sum = std::ranges::fold_left(step.weights, 0.0, std::plus<>{});
           std::abs(sum - 1.0) > 1e-12) {
         return err_config("[{}] weights sum to {}, not 1", kStep, sum);

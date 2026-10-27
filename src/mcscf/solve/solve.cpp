@@ -1,7 +1,7 @@
 /// @file
-/// @brief casscf_solve: the macro loop over casscf_integrals, ci::solve,
-/// ci::Rdm::rdm12 and casscf_fock, and the augmented-Hessian orbital step over
-/// OrbitalHessian under a trust radius.
+/// @brief solve: the macro loop over casscf_integrals, ci::solve,
+/// ci::Rdm::rdm12 and fock, and the augmented-Hessian orbital step over
+/// Hessian under a trust radius.
 
 module;
 
@@ -36,7 +36,7 @@ import free_breakfast.mcscf.hessian;
 
 #include "diagnostics.h"
 
-namespace free_breakfast {
+namespace free_breakfast::mcscf {
 
 // A rise of the weighted energy past this rejects a step. Not 0: near
 // convergence the energy's own noise (the screened J and K, the CI residual)
@@ -241,33 +241,32 @@ void response_gradient(const ResponseIntegrals &ints, std::span<const double> ga
   }
 }
 
-Result<CasscfSolution>
-casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
-             const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
-             const std::span<CoulombPairClass> j_classes,
-             const std::span<OrderedPairClass> k_classes, const SphericalMatrixAO &c,
-             const int32_t ncore, const int32_t ncas, const int32_t nelecas, const int32_t nroots,
-             const std::span<const double> weights, const CasscfOptions &options) {
+Result<Solution>
+solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
+      const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
+      const std::span<CoulombPairClass> j_classes, const std::span<OrderedPairClass> k_classes,
+      const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas, const int32_t nelecas,
+      const int32_t nroots, const std::span<const double> weights, const Options &options) {
   const auto nmo = static_cast<int32_t>(c.n());
   if (c.n() != basis.nao_sphe() || c.dev_idx() != res.dev_idx()) {
-    return err_config("casscf_solve: c must be {0} x {0}, basis's spherical order, on device {1} "
+    return err_config("mcscf::solve: c must be {0} x {0}, basis's spherical order, on device {1} "
                       "(got {2} on device {3})",
                       basis.nao_sphe(), res.dev_idx(), c.n(), c.dev_idx());
   }
   if (ncore < 0 || ncas < 1 || ncore + ncas > nmo || nelecas < 0 || nelecas > 2 * ncas) {
-    return err_config("casscf_solve: needs ncore >= 0, ncas >= 1, ncore + ncas <= {} and nelecas "
+    return err_config("mcscf::solve: needs ncore >= 0, ncas >= 1, ncore + ncas <= {} and nelecas "
                       "in [0, 2 ncas] (ncore {}, ncas {}, nelecas {})",
                       nmo, ncore, ncas, nelecas);
   }
   if (!(options.conv_tol > 0.0) || !(options.conv_tol_grad > 0.0) || options.max_cycle < 1 ||
       !(options.trust_radius > 0.0) || options.max_micro < 1) {
-    return err_config("casscf_solve: conv_tol, conv_tol_grad and trust_radius must be above 0 and "
+    return err_config("mcscf::solve: conv_tol, conv_tol_grad and trust_radius must be above 0 and "
                       "max_cycle and max_micro at least 1 ({}, {}, {}, {}, {})",
                       options.conv_tol, options.conv_tol_grad, options.trust_radius,
                       options.max_cycle, options.max_micro);
   }
   if (nroots < 1) {
-    return err_config("casscf_solve: nroots ({}) must be at least 1", nroots);
+    return err_config("mcscf::solve: nroots ({}) must be at least 1", nroots);
   }
   const auto roots_count = static_cast<size_t>(nroots);
   std::vector<double> w(weights.begin(), weights.end());
@@ -277,7 +276,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   const double weight_sum = std::accumulate(w.begin(), w.end(), 0.0);
   if (w.size() != roots_count || std::ranges::any_of(w, [](double x) { return !(x >= 0.0); }) ||
       std::abs(weight_sum - 1.0) > 1e-12) {
-    return err_config("casscf_solve: needs {} weights, each >= 0, summing to 1 (got {}, summing "
+    return err_config("mcscf::solve: needs {} weights, each >= 0, summing to 1 (got {}, summing "
                       "to {})",
                       nroots, w.size(), weight_sum);
   }
@@ -292,7 +291,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   ci::Rdm ci_rdm = FBF_TRY(ci::Rdm::create(res, alpha, beta));
   const auto dim = static_cast<size_t>(sigma.size());
   if (roots_count > dim) {
-    return err_config("casscf_solve: nroots ({}) exceeds the {} determinants", nroots, dim);
+    return err_config("mcscf::solve: nroots ({}) exceeds the {} determinants", nroots, dim);
   }
 
   const auto mo = static_cast<size_t>(nmo);
@@ -357,7 +356,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   };
 
   std::optional<ci::Roots> roots;
-  std::vector<CasscfIteration> log;
+  std::vector<Iteration> log;
   bool have_accepted = false;
   double e_accepted = 0.0;
   double radius = options.trust_radius;
@@ -416,15 +415,14 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     FBF_TRY(ci_rdm.rdm12(res, w, roots->vectors.data(), gamma_device.data(), gamma2_device.data()));
     std::vector<double> gamma = FBF_TRY(casscf_download(res, gamma_device.data(), n * n));
     std::vector<double> gamma2 = FBF_TRY(casscf_download(res, gamma2_device.data(), n * n * n * n));
-    CasscfFock fock =
-        FBF_TRY(casscf_fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                            ints.ppaa, gamma, gamma2, options.tau_j, options.tau_k));
+    Fock fock = FBF_TRY(mcscf::fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore,
+                                    ncas, ints.ppaa, gamma, gamma2, options.tau_j, options.tau_k));
     const std::vector<double> g = FBF_TRY(casscf_download(res, fock.gradient.data(), pairs));
     const double g_norm = std::sqrt(casscf_dot(g, g));
     last_gradient = g_norm;
     const double energy = fock.energy;
     const double change = have_accepted ? energy - e_accepted : 0.0;
-    CasscfIteration record{
+    Iteration record{
         energy, change, g_norm, radius, roots->davidson.iterations, roots->fp32_iterations,
         0,      0,      true};
 
@@ -438,7 +436,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
       record.accepted = false;
       record.trust_radius = radius;
       log.push_back(record);
-      FBF_LOG_DEBUG("casscf_solve: macro {} E {:.12f} dE {:.3e} |g| {:.3e} rejected, step {:.3e}",
+      FBF_LOG_DEBUG("mcscf::solve: macro {} E {:.12f} dE {:.3e} |g| {:.3e} rejected, step {:.3e}",
                     cycle, energy, change, g_norm, step_t * step_norm);
       FBF_TRY(rotate(step_t));
       continue;
@@ -455,7 +453,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     e_accepted = energy;
     if (converged) {
       log.push_back(record);
-      FBF_LOG_INFO("casscf_solve: converged in {} macro iterations, E {:.12f}, |g| {:.3e}", cycle,
+      FBF_LOG_INFO("mcscf::solve: converged in {} macro iterations, E {:.12f}, |g| {:.3e}", cycle,
                    energy, g_norm);
       std::vector<double> root_gammas(roots_count * n * n);
       Buffers::device<double> root_gamma(n * n, res.device());
@@ -464,7 +462,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
         const std::vector<double> one = FBF_TRY(casscf_download(res, root_gamma.data(), n * n));
         std::ranges::copy(one, root_gammas.begin() + static_cast<std::ptrdiff_t>(r * n * n));
       }
-      return CasscfSolution{
+      return Solution{
           std::move(c_now),  std::move(*roots),      energy,        g_norm, std::move(gamma),
           std::move(gamma2), std::move(root_gammas), std::move(log)};
     }
@@ -478,9 +476,9 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     //    until it is small, the radius is reached or max_micro is. H~ is fixed
     //    for the macro iteration, so the solves share one subspace Q (see the
     //    README).
-    OrbitalHessian hessian =
-        FBF_TRY(OrbitalHessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                                       ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
+    Hessian hessian =
+        FBF_TRY(Hessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
+                                ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
     // diag(H) for the preconditioner, copied once for the macro iteration, and
     // read back for its scale.
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_diagonal.data(), hessian.diagonal().data(),
@@ -729,7 +727,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
           }
           u_norm = std::sqrt(u_norm);
           if (u_norm == 0.0) {
-            return err_numerical("casscf_solve: the augmented Hessian's lowest root has no "
+            return err_numerical("mcscf::solve: the augmented Hessian's lowest root has no "
                                  "component in its subspace to restart on (macro iteration {})",
                                  cycle);
           }
@@ -800,7 +798,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
       // The step dx = Q u / u_0, and H~ dx from H~ Q: no product
       // past the solve's.
       if (root[0] == 0.0) {
-        return err_numerical("casscf_solve: the augmented Hessian's lowest root has no "
+        return err_numerical("mcscf::solve: the augmented Hessian's lowest root has no "
                              "component along the gradient (macro iteration {})",
                              cycle);
       }
@@ -841,7 +839,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
         x_total[i] *= scale;
         hx_total[i] *= scale;
       }
-      FBF_LOG_DEBUG("casscf_solve: macro {} negative curvature {:.3e}, step cut to {:.3e}", cycle,
+      FBF_LOG_DEBUG("mcscf::solve: macro {} negative curvature {:.3e}, step cut to {:.3e}", cycle,
                     curvature, short_length);
     }
     have_step = true;
@@ -850,7 +848,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     step_xhx = casscf_dot(x_total, hx_total);
     step_norm = std::sqrt(casscf_dot(x_total, x_total));
     log.push_back(record);
-    FBF_LOG_DEBUG("casscf_solve: macro {} E {:.12f} dE {:.3e} |g| {:.3e} ci {} + {} micro {} Hx {} "
+    FBF_LOG_DEBUG("mcscf::solve: macro {} E {:.12f} dE {:.3e} |g| {:.3e} ci {} + {} micro {} Hx {} "
                   "step {:.3e}",
                   cycle, energy, change, g_norm, record.ci_fp32_iterations, record.ci_iterations,
                   record.micro_iterations, record.hessian_products, step_norm);
@@ -862,8 +860,8 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
     FBF_TRY(rotate(1.0));
   }
   return err_max_iterations_exceeded(
-      "casscf_solve: not converged in {} macro iterations (last |g| {:.3e})", options.max_cycle,
+      "mcscf::solve: not converged in {} macro iterations (last |g| {:.3e})", options.max_cycle,
       last_gradient);
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::mcscf

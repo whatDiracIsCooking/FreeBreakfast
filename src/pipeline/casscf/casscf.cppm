@@ -5,7 +5,7 @@
 ///
 /// Device-shaped. The selection is `pipeline.active_space`'s, which
 /// `CasscfStep` derives from, as `CasciStep` does. `mcscf.solve`'s
-/// `casscf_solve` does the optimization; the canonicalization, the Fock it
+/// `mcscf::solve` does the optimization; the canonicalization, the Fock it
 /// reads and the Molden writer are private to `run`. See README.md.
 
 export module free_breakfast.pipeline.casscf;
@@ -15,7 +15,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
-export import free_breakfast.mcscf.solve; // CasscfIteration, in the product
+export import free_breakfast.mcscf.solve; // mcscf::Iteration, in the product
 export import free_breakfast.pipeline.scf;
 export import free_breakfast.pipeline.active_space; // CasscfStep's base
 
@@ -56,7 +56,7 @@ struct CasscfOutput {
   /// at [r ncas^2, (r + 1) ncas^2), ncas x ncas (symmetric).
   std::vector<double> rdm1;
   /// @brief One entry per macro iteration run, rejected ones included.
-  std::vector<CasscfIteration> iterations;
+  std::vector<mcscf::Iteration> iterations;
 };
 
 /// @brief State-averaged CASSCF from the @ref ScfOutput's orbitals, on
@@ -72,13 +72,13 @@ struct CasscfStep : ActiveSpaceSelection {
   /// @brief Their weights, @ref nroots of them, non-negative and summing to
   /// 1; empty for equal ones.
   std::vector<double> weights{};
-  /// @brief @ref CasscfOptions::conv_tol, |Delta E| at convergence (hartree).
-  double conv_tol = CasscfOptions{}.conv_tol;
-  /// @brief @ref CasscfOptions::conv_tol_grad, ||g|| at convergence.
-  double conv_tol_grad = CasscfOptions{}.conv_tol_grad;
-  /// @brief @ref CasscfOptions::max_cycle, macro iterations before
+  /// @brief @ref mcscf::Options::conv_tol, |Delta E| at convergence (hartree).
+  double conv_tol = mcscf::Options{}.conv_tol;
+  /// @brief @ref mcscf::Options::conv_tol_grad, ||g|| at convergence.
+  double conv_tol_grad = mcscf::Options{}.conv_tol_grad;
+  /// @brief @ref mcscf::Options::max_cycle, macro iterations before
   /// MaxIterationsExceeded.
-  int32_t max_cycle = CasscfOptions{}.max_cycle;
+  int32_t max_cycle = mcscf::Options{}.max_cycle;
   /// @brief Where the state-averaged natural orbitals are written as a
   /// Molden file, if not empty: the canonical core at occupation 2, the
   /// active space's natural orbitals by descending weighted occupation, the
@@ -87,18 +87,18 @@ struct CasscfStep : ActiveSpaceSelection {
   std::filesystem::path molden{};
 
   /// @brief The optimized orbitals and roots. The start is the orbitals
-  /// @ref ActiveSpaceSelection::select gives; `casscf_solve` optimizes them
+  /// @ref ActiveSpaceSelection::select gives; `mcscf::solve` optimizes them
   /// at @ref conv_tol, @ref conv_tol_grad and @ref max_cycle, its other
   /// options at their defaults, over J and K classes built per run; the
-  /// state-averaged Fock at the solution is `casscf_fock`'s F^I + F^A over
+  /// state-averaged Fock at the solution is `mcscf::fock`'s F^I + F^A over
   /// one more `casscf_integrals`. Logs each macro iteration's energy and
   /// ||g|| at info. Synchronizes res.stream() many times.
   ///
   /// @return The CASSCF; @ref ActiveSpaceSelection::select's error;
-  ///         `casscf_solve`'s (InvalidConfig for @ref nroots above the
+  ///         `mcscf::solve`'s (InvalidConfig for @ref nroots above the
   ///         determinant count or bad @ref weights, MaxIterationsExceeded);
   ///         or the error of the first module call that failed:
-  ///         `casscf_integrals`', `casscf_fock`'s, `diagonalize`'s or
+  ///         `casscf_integrals`', `mcscf::fock`'s, `diagonalize`'s or
   ///         `write_molden`'s, and GpuRuntime for a failed copy or BLAS call.
   [[nodiscard]] Result<CasscfOutput>
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,

@@ -22,7 +22,7 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 
-export namespace free_breakfast {
+export namespace free_breakfast::mcscf {
 
 /// @brief A CASSCF wavefunction's energy and first derivatives at fixed
 /// orbitals C and RDMs, on the device it was built on.
@@ -30,7 +30,7 @@ export namespace free_breakfast {
 /// Every matrix is over the nmo orbitals, column-major, element (p, q) at
 /// p + nmo q: columns [0, ncore) of C the core, [ncore, nocc) the active
 /// space, nocc = ncore + ncas, the rest virtual.
-struct CasscfFock {
+struct Fock {
   /// @brief E = E_core + sum_tu h_eff,tu gamma_tu + 1/2 sum_tuvw (tu|vw) Gamma_tuvw
   /// (hartree), nuclear repulsion included: the weighted energy of the states
   /// the RDMs average.
@@ -98,13 +98,14 @@ struct CasscfFock {
 ///         @p gamma2 is not ncas^2 or ncas^4 long; @c coulomb's and
 ///         @c exchange's own InvalidConfig; or the GpuRuntime error of the
 ///         first BLAS, copy or launch that failed.
-[[nodiscard]] Result<CasscfFock>
-casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
-            const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
-            std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
-            const SphericalMatrixAO &c, int32_t ncore, int32_t ncas,
-            const Buffers::device<double> &ppaa, std::span<const double> gamma,
-            std::span<const double> gamma2, double tau_j = 1e-14, double tau_k = 1e-14);
+[[nodiscard]] Result<Fock> fock(DeviceResources &res, const BasisSet &basis,
+                                const Molecule &molecule, const SphericalMatrixAO &h,
+                                const std::shared_ptr<const Buffers::device<double>> &u,
+                                std::span<CoulombPairClass> j_classes,
+                                std::span<OrderedPairClass> k_classes, const SphericalMatrixAO &c,
+                                int32_t ncore, int32_t ncas, const Buffers::device<double> &ppaa,
+                                std::span<const double> gamma, std::span<const double> gamma2,
+                                double tau_j = 1e-14, double tau_k = 1e-14);
 
 /// @brief The non-redundant pairs of the nmo x nmo column-major device matrix
 /// @p full into the device vector @p packed, in the packed order: element
@@ -124,7 +125,7 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
 /// @brief The antisymmetric kappa of the packed @p packed into the nmo x nmo
 /// column-major device matrix @p kappa: kappa_pq = x_pq and kappa_qp = -x_pq
 /// for each packed pair p > q, every other element 0. C exp(kappa) is then
-/// the rotation along x that @ref CasscfFock::gradient differentiates.
+/// the rotation along x that @ref Fock::gradient differentiates.
 /// @p kappa and @p packed must not overlap.
 ///
 /// A memset, two 2D copies and two transposing geams on res.stream() with
@@ -135,4 +136,4 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
 [[nodiscard]] Status unpack_orbital_pairs(DeviceResources &res, int32_t nmo, int32_t ncore,
                                           int32_t ncas, const double *packed, double *kappa);
 
-} // namespace free_breakfast
+} // namespace free_breakfast::mcscf

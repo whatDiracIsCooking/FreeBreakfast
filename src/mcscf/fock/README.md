@@ -11,7 +11,7 @@ Hessian is then built from.
 by `free_breakfast.mcscf`.
 
 ```cpp
-struct CasscfFock {
+struct mcscf::Fock {
   double energy;                        // E, the weighted energy, E_nuc included (hartree)
   Buffers::device<double> fock_inactive; // F^I, nmo x nmo, MO basis
   Buffers::device<double> fock_active;   // F^A, nmo x nmo, MO basis
@@ -21,7 +21,7 @@ struct CasscfFock {
   Buffers::device<double> gamma2;        // Γ_tuvw at t + ncas (u + ncas (v + ncas w))
 };
 
-Result<CasscfFock> casscf_fock(
+Result<mcscf::Fock> mcscf::fock(
     DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
     std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,

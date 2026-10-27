@@ -1,5 +1,5 @@
 # The Casscf step. mcscf::solve, pipeline::scf and pipeline::active_space are
-# PUBLIC and re-exported: the product holds CasscfIteration and a
+# PUBLIC and re-exported: the product holds mcscf::Iteration and a
 # SphericalMatrixAO, run's View names the ScfOutput and the products it
 # re-exports, and CasscfStep derives from ActiveSpaceSelection. core::resources
 # and pipeline::step are in run's signature. Everything else run uses -- the J

@@ -7,13 +7,24 @@ a CASSCF wraps this layer, not the other way round. `mcscf.cppm`
 (`free_breakfast.mcscf`) re-exports every sub-module, so one import covers the
 layer, and each sub-module stays importable on its own.
 
+Everything it exports is in **`namespace free_breakfast::mcscf`**, spelled bare
+inside it — `mcscf::Fock`, `mcscf::Hessian`, `mcscf::Options`, `mcscf::solve` —
+and `ah_precondition`, the one launcher its bridge declares, is in
+**`free_breakfast::mcscf::device`**. The namespace is the layer, so the
+`Casscf` prefix every one of these used to carry is simply gone: this layer is
+CASSCF, and the namespace says so once instead of each name saying it again.
+`CasscfIntegrals` and `casscf_integrals` are the exception and stay as they
+are — they belong to CASSCF but live in `integrals/active_space/`, so neither
+namespace is their home. `docs/style.md` "Namespaces, and when a name needs a
+prefix" has the rule.
+
 ## Sub-modules
 
 | Directory | Module | Role |
 |-----------|--------|------|
-| `fock/` | `free_breakfast.mcscf.fock` | At fixed orbitals and RDMs: the energy, the inactive and active Fock matrices F^I and F^A, the generalized Fock F and the orbital gradient (`casscf_fock`); and the packed order of the non-redundant orbital pairs (`pack_orbital_pairs`, `unpack_orbital_pairs`). |
-| `hessian/` | `free_breakfast.mcscf.hessian` | At the same point: the exact orbital Hessian at fixed CI as a `LinearOperator` over the packed pairs, and its diagonal (`OrbitalHessian`). |
-| `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop over both (`casscf_solve`): per macro iteration the integrals, the CI, the weighted RDMs, the energy and gradient, and an augmented-Hessian step under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
+| `fock/` | `free_breakfast.mcscf.fock` | At fixed orbitals and RDMs: the energy, the inactive and active Fock matrices F^I and F^A, the generalized Fock F and the orbital gradient (`mcscf::fock`); and the packed order of the non-redundant orbital pairs (`pack_orbital_pairs`, `unpack_orbital_pairs`). |
+| `hessian/` | `free_breakfast.mcscf.hessian` | At the same point: the exact orbital Hessian at fixed CI as a `LinearOperator` over the packed pairs, and its diagonal (`mcscf::Hessian`). |
+| `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop over both (`mcscf::solve`): per macro iteration the integrals, the CI, the weighted RDMs, the energy and gradient, and an augmented-Hessian step under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
 
 ## Orbitals and the packed order
 
@@ -36,7 +47,7 @@ So x_pq for q core is at q (nmo − ncore) + (p − ncore), and for q active at
 ncore (nmo − ncore) + (q − ncore)(nmo − nocc) + (p − nocc). The packed vector
 is two column-major blocks of an nmo × nmo column-major matrix, so a pack or an
 unpack is two 2D copies, with no gather kernel. This is the order of
-`CasscfFock::gradient`, of the orbital Hessian's products and diagonal, and of
+`mcscf::Fock::gradient`, of the orbital Hessian's products and diagonal, and of
 the optimizer's step: everything over the pairs shares it. It is PySCF's
 `uniq_var_indices` mask read in column-major order, where PySCF's own packing
 reads it row-major; a test comparing with PySCF matches pairs by (p, q), not by

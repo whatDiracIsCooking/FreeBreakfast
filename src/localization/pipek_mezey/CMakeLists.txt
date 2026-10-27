@@ -16,9 +16,9 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::primitives_header
 )
 
-# The module. pipek_mezey_localize is declared in the interface and defined in
-# the implementation unit, which alone GMF-includes the bridge. So the device
-# library and what only the driver uses are PRIVATE.
+# The module. localization::pm_localize is declared in the interface and
+# defined in the implementation unit, which alone GMF-includes the bridge. So
+# the device library and what only the driver uses are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.localization.pipek_mezey

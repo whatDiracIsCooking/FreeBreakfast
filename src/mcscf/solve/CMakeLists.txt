@@ -15,7 +15,7 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::kernel_headers
 )
 
-# The module: casscf_solve, declared in the interface and defined in the
+# The module: mcscf::solve, declared in the interface and defined in the
 # implementation unit. Molecule, BasisSet, DeviceResources, Buffers, the two
 # kinds of pair class, the AO matrices and ci::Roots (in the solution) are in
 # its signature or result, so molecule, basis, core::wwr, core::resources,
