@@ -2,12 +2,8 @@
 /// @brief Half-precision GEMM through the vendor BLAS: does cuBLAS / hipBLAS
 /// multiply __half matrices on this card, and how well.
 ///
-/// wwr.blas, the backend-neutral surface, carries no half GEMM (its gemm<T> is
-/// S/D/C/Z only), and wwr.cuda.cublas_v2 exports neither cublasHgemm nor
-/// cublasGemmEx. So the implementation unit reaches each vendor's entry points
-/// through wwr's vendor-include point (blas.h) behind one backend #if, rather
-/// than through a wwr name. Promoting this means adding wwrblasHgemm /
-/// wwrblasGemmEx to wwr's detail/blas_names.h instead.
+/// Both accumulators go through wwr.blas's neutral wwrblasHgemm /
+/// wwrblasGemmEx; wwr::gemm<T> is still S/D/C/Z only.
 
 export module free_breakfast.experimental.fp16_gemm;
 

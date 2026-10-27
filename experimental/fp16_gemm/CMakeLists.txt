@@ -1,9 +1,7 @@
-# Half-precision GEMM through cuBLAS / hipBLAS. Host code only: the vendor
-# calls are host API, so there is no device library. wwr::blas::host is what
-# lets the implementation unit #include wwr's vendor-include point (blas.h):
-# the vendor header and library, and WWR_GPU_BACKEND_* for its backend #if.
-# wwr::fp16 is imported directly for wwrHalf, which free_breakfast::core::wwr
-# does not re-export.
+# Half-precision GEMM through wwr's wwrblasHgemm / wwrblasGemmEx. Host code
+# only: the vendor calls are host API, so there is no device library. wwr::fp16
+# is imported directly for wwrHalf, which free_breakfast::core::wwr does not
+# re-export.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.experimental.fp16_gemm
@@ -17,8 +15,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::resources
   wwr::fp16
-  LINK_PRIVATE
-  wwr::blas::host
 )
 
 # The two gemm_fp16 accumulators against fp32 Sgemm, wall clock. A plain
