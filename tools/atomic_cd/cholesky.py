@@ -1,80 +1,78 @@
-"""aCD: pivoted (incomplete) Cholesky decomposition of one atom's raw
-two-electron tensor (Beebe & Linderberg; the atomic form is
-Aquilante/Pedersen/Lindh's aCD). Cauchy-Schwarz gives the accuracy bound: once
+"""Pivoted (incomplete) Cholesky decomposition of a positive semidefinite
+matrix (Beebe & Linderberg), shared by both stages here: aCD runs it on one
+atom's two-electron integrals over its uncontracted primitives, packed by full
+eight-fold symmetry (``eri_quartet.screen_pairs``, an
+``eri_quartet.PackedSymmetric``; the atomic form is Aquilante/Pedersen/
+Lindh's aCD), acCD on each angular momentum's dense unit-diagonal candidate
+metric (``compact.coulomb_metric``). Either is read only through
+``m.diagonal()``, ``m[p]`` (one row) and, for the check, lower-triangle row
+blocks. Cauchy-Schwarz gives the accuracy bound: once
 every diagonal residual is below `threshold`, every off-diagonal residual is
-bounded by `threshold` too. AO pairs are dense (redundant, not triangular):
-all nao*nao ordered pairs, p*nao+q.
+bounded by `threshold` too.
 
-This operates on the WHOLE dense ``(nao,nao,nao,nao)`` tensor
-``eri_quartet.eri_ao`` already built, rather than gathering one pivot column
-at a time: a GPU implementation would gather to avoid materializing the
-tensor, but at atomic problem sizes numpy can just slice it.
+The matrix is held whole (packed, for aCD) rather than computed one pivot
+row at a time: a GPU implementation would compute each row on demand to
+avoid materializing it, but at atomic problem sizes numpy can just slice
+it.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import math
 
 import numpy as np
 
-
-@dataclass
-class AtomicCholeskyResult:
-    nao: int
-    threshold: float
-    # each length nao*nao, AO-pair-major p*nao+q
-    vectors: list[np.ndarray] = field(default_factory=list)
+# rows per block of reconstruction_error's V^T V, bounding its temporaries
+_CHECK_BLOCK = 1024
 
 
-def atomic_cholesky(
-    eri: np.ndarray, threshold: float, max_vectors: int | None = None
-) -> AtomicCholeskyResult:
-    """Pivoted (incomplete) Cholesky decomposition of `eri` (nao,nao,nao,nao),
-    flattened to (nao*nao, nao*nao) over ALL ordered AO pairs. Each iteration:
-    pick the AO pair with the largest remaining diagonal residual as the
-    pivot, take that column, project out every previously accepted vector,
-    normalize by the residual diagonal, update every remaining residual.
-    Stops once every remaining diagonal residual is below `threshold`.
+def pivoted_cholesky(
+    m, threshold: float, max_vectors: int | None = None
+) -> tuple[list[int], np.ndarray]:
+    """Decompose the symmetric PSD `m` (n, n) -- a dense array or an
+    ``eri_quartet.PackedSymmetric`` -- as V^T V. Each iteration picks
+    the largest remaining diagonal residual as the pivot, takes that row of
+    `m`, projects out every accepted vector in one product, and normalizes
+    by the residual. Stops once every residual is below `threshold`.
 
-    `max_vectors` caps the vector count (default: nao*nao, the dimension of
-    the redundant AO-pair space a full-rank decomposition can never exceed) --
-    a safety net against numerical noise stalling convergence just above
-    `threshold`.
-    """
-    nao = eri.shape[0]
-    n = nao * nao
-    m = eri.reshape(n, n)
-    d = np.diagonal(m).copy()
-    cap = max_vectors if max_vectors else n
-
-    vectors: list[np.ndarray] = []
-    for _ in range(cap):
+    Returns (pivots, vectors): `vectors` is (len(pivots), n), row J being
+    Cholesky vector J -- (phi_k|psi_J) at each k, NOT expansion
+    coefficients. The pivot's own residual is set to exactly zero after its
+    update (it is zero in exact arithmetic), so roundoff can never select
+    it twice. `max_vectors` caps the count (default n, the rank bound) -- a
+    safety net against noise stalling convergence just above `threshold`."""
+    n = m.shape[0]
+    cap = min(max_vectors or n, n)
+    d = m.diagonal().copy()
+    vectors = np.empty((min(cap, 64), n))
+    pivots: list[int] = []
+    for j in range(cap):
         pivot = int(np.argmax(d))
         if d[pivot] < threshold:
             break
-        col = m[:, pivot].copy()
-        for prev in vectors:
-            coeff = prev[pivot]
-            if coeff != 0.0:
-                col -= coeff * prev
-        col *= 1.0 / np.sqrt(d[pivot])
+        if j == vectors.shape[0]:
+            vectors = np.concatenate([vectors, np.empty_like(vectors)])[:cap]
+        col = m[pivot] - vectors[:j, pivot] @ vectors[:j]
+        col *= 1.0 / math.sqrt(d[pivot])
         d -= col * col
-        vectors.append(col)
-    return AtomicCholeskyResult(nao, threshold, vectors)
+        d[pivot] = 0.0
+        vectors[j] = col
+        pivots.append(pivot)
+    return pivots, vectors[: len(pivots)]
 
 
-def reconstruct(result: AtomicCholeskyResult) -> np.ndarray:
-    """sum_J L_J[pq] L_J[rs], as a flat (nao*nao, nao*nao) matrix -- directly
-    comparable to ``eri.reshape(nao*nao, nao*nao)``."""
-    n = result.nao * result.nao
-    out = np.zeros((n, n))
-    for v in result.vectors:
-        out += np.outer(v, v)
-    return out
-
-
-def reconstruction_error(eri: np.ndarray, result: AtomicCholeskyResult) -> float:
-    """max |reconstruct(result) - eri|, flattened the same way -- should stay
-    below `result.threshold` everywhere (the Cauchy-Schwarz bound above)."""
-    n = result.nao * result.nao
-    return float(np.abs(reconstruct(result) - eri.reshape(n, n)).max())
+def reconstruction_error(m, vectors: np.ndarray) -> float:
+    """max |m - V^T V| for symmetric `m` (dense or ``PackedSymmetric``) --
+    should stay below the decomposition's threshold everywhere (the
+    Cauchy-Schwarz bound above). Symmetry makes the lower triangle the whole
+    answer, taken in row blocks so the check costs no more memory than `m`
+    itself."""
+    n = m.shape[0]
+    worst = 0.0
+    for r0 in range(0, n, _CHECK_BLOCK):
+        r1 = min(r0 + _CHECK_BLOCK, n)
+        exact = m[r0:r1, :r1] if isinstance(m, np.ndarray) else m.lower_rows(r0, r1)
+        diff = exact - vectors[:, r0:r1].T @ vectors[:, :r1]
+        lower = np.arange(r1)[None, :] <= np.arange(r0, r1)[:, None]
+        worst = max(worst, float(np.abs(diff[lower]).max()))
+    return worst

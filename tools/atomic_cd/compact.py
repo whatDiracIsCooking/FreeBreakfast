@@ -1,53 +1,51 @@
 """acCD: a SECOND, independent pivoted Cholesky over UNCONTRACTED
-PRIMITIVE-pair candidates at one fixed target angular momentum `l`, removing
-linear dependence among the primitives to produce far fewer, genuinely
-portable auxiliary shells. Built on ``harmonics.py``.
+PRIMITIVE-pair candidates at one fixed target angular momentum `l`, whose
+pivots are the auxiliary basis -- the procedure of Lehtola, J. Chem. Theory
+Comput. 17, 6886 (2021), arXiv:2106.11081, Sec. 3.
 
-WHERE A CANDIDATE COMES FROM. A shell pair (sa, sb) with angular momenta
-(la, lb) has combined momentum L = la+lb; ``harmonics.graded_transform(L)``
-splits its ``ncart(L)`` Cartesian monomials into blocks of pure angular
-momentum L, L-2, .... For a target l, every shell pair whose combined L is
->= l with matching parity contributes one candidate per UNCONTRACTED
-primitive pair (a_i, b_j): exponent zeta = a_i+b_j, angular content the
-l-block's representative column of that shell pair's L-degree transform (any
-one of its 2l+1 columns -- they are radially equivalent). The original
-shells' contraction coefficients play NO role -- acCD rediscovers its own
-weights entirely from the pivoted Cholesky below.
+WHERE A CANDIDATE COMES FROM. The orbital basis is fully uncontracted into
+its distinct (ell, exponent) primitives (``eri_quartet.primitives``); the
+original contraction coefficients play no role. The pool is a list of
+primitive pairs: every pair (``eri_quartet.all_pairs``), or only those aCD's
+pivots land on (``eri_quartet.screen_pairs``, the paper's default "reduced"
+pool). A same-center primitive pair (la, a), (lb, b) is
+r^(la+lb) exp(-(a+b) r^2) times a product of two real spherical harmonics,
+which couples to every l with |la-lb| <= l <= la+lb and la+lb+l even (the
+Gaunt selection rule); each such l gets one candidate from the pair. At
+l < la+lb that candidate's true radial part is r^(la+lb-l) * r^l exp(-(a+b)
+r^2) -- not a Gaussian of angular momentum l (l=0 from p x p is
+r^2 exp(-zeta r^2)). Lehtola's Eq. 16 replaces it with the pure spherical
+GTO r^l exp(-zeta_eff r^2) of the same <r> (``effective_exponent``), so every
+candidate, and every shell this module emits, is a plain single-primitive
+spherical Gaussian (l, zeta_eff). At l = la+lb, zeta_eff = a+b exactly.
 
-RAW SAME-CENTER INTEGRAL. The bilinear form needs the raw 2-center Coulomb
-value (A|C) between two same-center, single-primitive, unnormalized monomial
-Gaussians. ``_same_center_raw_block`` below gets it from PySCF's own
-``int2c2e`` (the 2-center Coulomb-metric integral ``pyscf.df`` uses for the
-density-fitting (P|Q) metric), evaluated directly between two single-primitive
-shells, then divided by PySCF's own per-l primitive normalization
-(``angular.primitive_norm``) to undo the normalization PySCF always applies.
-(The obvious alternative -- a 4-center ERI with an angular-momentum-0,
-exponent-0 "identity" filler shell in the B/D slots -- is unavailable here:
-PySCF always normalizes a declared shell to unit self-overlap, which diverges
-for a constant function.) Checked against the closed-form same-center s-s
-Coulomb integral ``2*pi^(5/2) / (z1*z2*sqrt(z1+z2))`` (exact to float64
-precision), and against the physical requirement that, for two same-center
-Gaussians of definite angular momentum l, `radial_eri` agree across every one
-of the 2l+1 harmonic components of that l and vanish between different l's
-(also exact, to within Gram-Schmidt conditioning).
+THE METRIC. Candidates are radial functions only: two same-center pure-l
+Gaussians have a Coulomb integral that is identical across the 2l+1
+components of l and zero between different m, so one component's (P|Q)
+stands for the shell, and it has a closed form. The Fourier transform of
+r^l exp(-a r^2) Y_lm is k^l exp(-k^2/4a) Y_lm up to a^-(l+3/2), so the
+unnormalized (a|b) goes as 1/(a b (a+b)^(l+1/2)); normalized to (A|A) = 1
+it is (2 sqrt(ab)/(a+b))^(l+1/2) = sech(ln(a/b)/2)^(l+1/2) -- a function of
+the log-exponent spacing alone (compare the overlap's exponent l+3/2).
+``coulomb_metric`` evaluates that, matching PySCF's ``int2c2e`` (the
+density-fitting metric ``pyscf.df`` uses) to 1e-15 at l=0 and 3e-13 at
+l=10, where the closed form is the more accurate of the two. Identical
+(l, zeta_eff) candidates -- distinct pairs whose exponents sum to the same
+zeta -- are dropped before the metric is built.
 
-PYSCF REORDERS SHELLS. ``_same_center_raw_block`` builds its throwaway `Mole`
-from a basis STRING with shell_a (ell1) listed before shell_c (ell2), but
-PySCF sorts a single atom's shells by ANGULAR MOMENTUM ascending regardless of
-input order, so when ell1 > ell2 the lower-momentum shell lands at bas index
-0. Slicing at a fixed offset would then read the wrong sub-block. That case is
-reached whenever a target l draws candidates from more than one combined_l
-(every l with `harmonics` blocks below it; l=0 always), so each shell's block
-is located from the ``ell1 <= ell2`` ordering PySCF actually produced. With
-that, carbon/cc-pVDZ l=0 reconstructs to ~5e-9, in line with l=1..4, and the
-matrix `compact_cholesky_for_l` decomposes is numerically PSD (min eigenvalue
-~1e-12, pure roundoff).
+THE AUXILIARY BASIS. The pivots of a pivoted Cholesky of that metric, taken
+as-is: one uncontracted shell (l, zeta_eff) per pivot (``to_aux_shells``).
+Every non-pivot candidate is then fit by the pivots to within the threshold
+(its Cholesky residual), which is the property an auxiliary basis needs; the
+Cholesky VECTORS are Coulomb overlaps (phi_k|psi_J), not expansion
+coefficients, and are kept only for ``reconstruction_error``.
 
 WHAT THIS DOES NOT DO. This module does not evaluate density-fitting
-integrals from these (spherical) shells back onto an orbital basis; that is
-``src/integrals/eri/density_fitting``'s job, over an aux basis it is handed.
-There is no L ceiling (harmonics.py has none), so a target l can exceed the
-g limit of the C++ fitting kernels; cli.py adds the file I/O.
+integrals from these shells back onto an orbital basis; that is
+``src/integrals/eri/density_fitting``'s job, over an aux basis it is handed
+(``df_check`` measures it with PySCF). There is no l ceiling here, so a
+target l can exceed the g limit of the C++ fitting kernels; cli.py adds the
+file I/O.
 """
 
 from __future__ import annotations
@@ -58,190 +56,168 @@ from dataclasses import dataclass, field
 import numpy as np
 from pyscf import gto
 
-from .angular import ncart, primitive_norm
-from .harmonics import graded_transform
+from . import cholesky, eri_quartet
 
-# spectroscopic notation, ell=0..10 -- far past anything this reaches
-_ANGULAR_LETTERS = "SPDFGHIKLMN"
-
-
-@dataclass(frozen=True)
-class AuxPrimitive:
-    """One primitive of a portable acCD auxiliary shell: exponent and its
-    Cholesky-derived contraction coefficient, as given (no normalization)."""
-
-    exponent: float
-    coefficient: float
+# two candidate exponents closer than this (relative) are one candidate
+_DUPLICATE_RTOL = 1e-12
 
 
 @dataclass(frozen=True)
 class AuxShell:
-    """One acCD auxiliary shell: angular momentum ell plus its primitive
-    contraction, applying identically to each of the 2*ell+1 real solid
-    harmonic components of that ell (see module docstring)."""
+    """One auxiliary shell of angular momentum ell: a general contraction,
+    ``coefficients[f][k]`` being function f's coefficient on the normalized
+    primitive spherical Gaussian r^ell exp(-exponents[k] r^2), each function
+    for every one of the 2*ell+1 real solid harmonic components. acCD's own
+    pivots are the one-primitive, one-function case (``to_aux_shells``);
+    ``contract`` makes the rest."""
 
     ell: int
-    primitives: list[AuxPrimitive]
+    exponents: tuple[float, ...]
+    coefficients: tuple[tuple[float, ...], ...]
 
 
-@dataclass(frozen=True)
-class ShellSpec:
-    """A center-independent shell: angular momentum and primitive exponents
-    only -- acCD's candidates need nothing else (see module docstring: the
-    original contraction coefficients play no role)."""
-
-    ell: int
-    exponents: list[float]
-
-
-@dataclass(frozen=True)
-class _Candidate:
-    exponent: float
-    combined_l: int
-    embedding: np.ndarray  # length ncart(combined_l)
-
-
-def build_candidates(shells: list[ShellSpec], target_l: int) -> list[_Candidate]:
-    """Every uncontracted-primitive candidate at `target_l`, from every shell
-    pair (sa <= sb) of `shells` whose combined momentum reaches `target_l`
-    with the right parity. sa <= sb only: (sb, sa) would recompute the
-    identical candidate set (the underlying matrix is symmetric under
-    swapping bra/ket shells), so including both would just double-count."""
-    candidates: list[_Candidate] = []
-    n = len(shells)
-    for sa in range(n):
-        for sb in range(sa, n):
-            combined_l = shells[sa].ell + shells[sb].ell
-            if combined_l < target_l or (combined_l - target_l) % 2 != 0:
-                continue
-            embedding = graded_transform(combined_l).block_columns(target_l)[:, 0]
-            for ea in shells[sa].exponents:
-                for eb in shells[sb].exponents:
-                    candidates.append(_Candidate(ea + eb, combined_l, embedding))
-    return candidates
+def pruned_max_l(element: str, l_obs: int, l_inc: int) -> int:
+    """Lehtola's high-angular-momentum pruning, J. Chem. Theory Comput. 19,
+    6242 (2023), arXiv:2306.11039, Eq. 9: keep target l up to
+    max(2 l_occ, l_occ + l_obs + l_inc), where l_obs is the orbital basis's
+    highest ell for `element` and l_occ the highest occupied ell of the
+    neutral atom (Yang et al.'s ranges, which already give K/Ca d and Cs/Ba
+    f). The first term fits occupied x occupied products, the second
+    occupied x virtual ones; virtual x virtual products, the only source of
+    the l above that, never enter a global-fit HF or MP2 energy. Not a
+    bound on integral error -- the threshold's guarantee does not cover the
+    dropped l."""
+    z = gto.charge(element)
+    l_occ = 0 if z <= 2 else 1 if z <= 18 else 2 if z <= 54 else 3
+    return max(2 * l_occ, l_occ + l_obs + l_inc)
 
 
-def _same_center_raw_block(
-    ell1: int, zeta1: float, ell2: int, zeta2: float
-) -> np.ndarray:
-    """The raw (ncart(ell1), ncart(ell2)) two-electron block between two
-    same-center, single-primitive, coefficient-1 Cartesian monomial Gaussians
-    -- see module docstring for the int2c2e/primitive_norm derivation, and its
-    "PYSCF REORDERS SHELLS" paragraph for why the two shells are located by
-    angular momentum rather than by their position in the basis string."""
-    mol = gto.Mole()
-    mol.atom = [["H", (0.0, 0.0, 0.0)]]
-    shell_a = f"H {_ANGULAR_LETTERS[ell1]}\n   {zeta1:.16f} 1.0\n"
-    shell_c = f"H {_ANGULAR_LETTERS[ell2]}\n   {zeta2:.16f} 1.0\n"
-    mol.basis = {"H": gto.basis.parse(shell_a + shell_c)}
-    mol.cart = True
-    mol.spin = 1  # keeps mol.build() happy; intor() ignores occupation entirely
-    mol.verbose = 0
-    mol.build()
-    block = mol.intor("int2c2e")
-    # PySCF sorts one atom's shells by angular momentum ascending, ignoring
-    # the order given above: shell_a (ell1) is only at bas index 0 when
-    # ell1 <= ell2.
-    if ell1 <= ell2:
-        n_first = ncart(ell1)
-        raw = block[:n_first, n_first:]
-    else:
-        n_first = ncart(ell2)
-        raw = block[n_first:, :n_first]
-    return raw / (primitive_norm(zeta1, ell1) * primitive_norm(zeta2, ell2))
+def effective_exponent(target_l: int, combined_l: int, zeta: float) -> float:
+    """Lehtola's Eq. 16: the exponent of the pure GTO r^target_l
+    exp(-zeta_eff r^2) whose <r> (Eq. 14, <r> = Gamma(l+2) /
+    (Gamma(l+3/2) sqrt(2 zeta)) for r^l exp(-zeta r^2)) matches that of the
+    primitive-pair product r^combined_l exp(-zeta r^2) -- Eq. 15 solved for
+    zeta_eff. The scale is 1 at target_l = combined_l and falls monotonically
+    below it (about 0.1375 for g x g -> s).
 
-
-def radial_eri(k1: _Candidate, k2: _Candidate) -> float:
-    """The two-electron radial matrix element between two candidates -- the
-    bilinear form through the raw monomial-pair block (module docstring)."""
-    m_raw = _same_center_raw_block(
-        k1.combined_l, k1.exponent, k2.combined_l, k2.exponent
+    Measured against plain zeta_eff = a+b on C/H/O (CO and CH4 DF-RHF,
+    contracted, unscreened): as good or better at cc-pVDZ..cc-pVQZ
+    (cc-pVTZ CO 1e-7 Eh against 5e-7), a tie at cc-pV5Z (both within
+    6e-8, each ahead on one molecule); the one-centre ERI error favours
+    neither consistently."""
+    log_scale = (
+        math.lgamma(target_l + 2)
+        + math.lgamma(combined_l + 1.5)
+        - math.lgamma(combined_l + 2)
+        - math.lgamma(target_l + 1.5)
     )
-    return float(k1.embedding @ m_raw @ k2.embedding)
+    return math.exp(2.0 * log_scale) * zeta
 
 
-def _dense_matrix(candidates: list[_Candidate]) -> np.ndarray:
-    n = len(candidates)
-    m = np.empty((n, n))
-    for i in range(n):
-        for j in range(i, n):
-            v = radial_eri(candidates[i], candidates[j])
-            m[i, j] = v
-            m[j, i] = v
-    return m
+def build_candidates(
+    pairs: list[eri_quartet.PrimitivePair], target_l: int
+) -> np.ndarray:
+    """Every distinct candidate exponent at `target_l`, ascending: one
+    zeta_eff per primitive pair of the pool `pairs` that couples to
+    `target_l` (module docstring)."""
+    exponents: list[float] = []
+    for (la, a), (lb, b) in pairs:
+        if not abs(la - lb) <= target_l <= la + lb:
+            continue
+        if (la + lb - target_l) % 2 != 0:
+            continue
+        exponents.append(effective_exponent(target_l, la + lb, a + b))
+    exponents.sort()
+    distinct: list[float] = []
+    for e in exponents:
+        if not distinct or e - distinct[-1] > _DUPLICATE_RTOL * e:
+            distinct.append(e)
+    return np.asarray(distinct)
+
+
+def coulomb_metric(ell: int, exponents: np.ndarray) -> np.ndarray:
+    """The (n, n) Coulomb metric (P|Q) between same-center single-primitive
+    spherical Gaussians of angular momentum `ell`, one per exponent, in the
+    given order, each normalized to (P|P) = 1: sech(ln(a/b)/2)^(ell+1/2)
+    (module docstring). Through the log-exponents, so the diagonal is
+    exactly 1 and nothing overflows however far apart the exponents are."""
+    t = np.log(exponents)
+    return np.cosh(0.5 * (t[:, None] - t[None, :])) ** -(ell + 0.5)
 
 
 @dataclass
 class AccdResult:
-    """`vectors[J][k]` is Cholesky vector J's coefficient on candidate k
-    (`exponents[k]` its exponent) -- directly the primitives of the portable
-    shell `to_aux_shells` builds from vector J."""
+    """`exponents[k]` is candidate k's zeta_eff; `pivots` the candidates the
+    Cholesky accepted, in pivot order -- the auxiliary shells
+    (``to_aux_shells``). `vectors[J, k]` is Cholesky vector J's value at
+    candidate k, (phi_k|psi_J), a diagnostic (``reconstruction_error``)."""
 
     ell: int
     threshold: float
-    exponents: list[float] = field(default_factory=list)
-    vectors: list[np.ndarray] = field(default_factory=list)
+    exponents: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    pivots: list[int] = field(default_factory=list)
+    vectors: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
 
 
 def compact_cholesky_for_l(
-    shells: list[ShellSpec], target_l: int, threshold: float
+    pairs: list[eri_quartet.PrimitivePair], target_l: int, threshold: float
 ) -> AccdResult:
-    """Run acCD's radial pivoted Cholesky at `target_l`: build every
-    uncontracted-primitive candidate, form their dense two-electron matrix,
-    and decompose it with the same pivot/project/normalize loop as
-    `cholesky.atomic_cholesky`, stopping once every residual diagonal is
-    below `threshold`."""
-    candidates = build_candidates(shells, target_l)
-    result = AccdResult(target_l, threshold, [c.exponent for c in candidates])
-    if not candidates:
-        return result
+    """Run acCD's pivoted Cholesky at `target_l`: build every candidate of
+    the pool `pairs`, form
+    their unit-diagonal Coulomb metric, and decompose it with
+    ``cholesky.pivoted_cholesky``, stopping once every residual is below
+    `threshold`.
 
-    m = _dense_matrix(candidates)
-    d = np.diagonal(m).copy()
-    n = len(candidates)
-    for _ in range(n):
-        pivot = int(np.argmax(d))
-        if d[pivot] < threshold:
-            break
-        col = m[:, pivot].copy()
-        for prev in result.vectors:
-            coeff = prev[pivot]
-            if coeff != 0.0:
-                col -= coeff * prev
-        col *= 1.0 / math.sqrt(d[pivot])
-        d -= col * col
-        result.vectors.append(col)
-    return result
+    Unit-diagonal -- candidates normalized to (A|A) = 1, as Lehtola's are --
+    because the self-Coulomb of an overlap-normalized primitive still scales
+    as 1/zeta (its charge as zeta^-3/4, its extent as zeta^-1/2), spanning
+    ~5 orders of magnitude across one cc-pVDZ pool, so an
+    absolute cutoff on the raw metric would act partly as an exponent
+    ceiling rather than an accuracy. On this metric `threshold` is a
+    relative residual: each candidate's unexplained fraction of its own
+    self-Coulomb."""
+    exponents = build_candidates(pairs, target_l)
+    if exponents.size == 0:
+        return AccdResult(target_l, threshold, exponents)
+    pivots, vectors = cholesky.pivoted_cholesky(
+        coulomb_metric(target_l, exponents), threshold
+    )
+    return AccdResult(target_l, threshold, exponents, pivots, vectors)
 
 
-def reconstruct(result: AccdResult) -> np.ndarray:
-    """sum_J v_J[k1] v_J[k2], for direct comparison against the matrix
-    `compact_cholesky_for_l` decomposed."""
-    n = len(result.exponents)
-    out = np.zeros((n, n))
-    for v in result.vectors:
-        out += np.outer(v, v)
-    return out
-
-
-def reconstruction_error(shells: list[ShellSpec], result: AccdResult) -> float:
-    """max |reconstruct(result) - M|, M rebuilt independently (bypassing the
-    Cholesky loop entirely)."""
-    candidates = build_candidates(shells, result.ell)
-    if not candidates:
+def reconstruction_error(result: AccdResult) -> float:
+    """max |V^T V - M| against the metric M rebuilt independently of the
+    Cholesky loop; M's unit diagonal makes this relative, like the
+    threshold, so Cauchy-Schwarz bounds it by `result.threshold`."""
+    if result.exponents.size == 0:
         return 0.0
-    return float(np.abs(reconstruct(result) - _dense_matrix(candidates)).max())
+    return cholesky.reconstruction_error(
+        coulomb_metric(result.ell, result.exponents), result.vectors
+    )
 
 
 def to_aux_shells(result: AccdResult) -> list[AuxShell]:
-    """Package `result`'s accepted vectors into portable AuxShell objects, one
-    per vector, dropping exact numerical zeros."""
-    shells: list[AuxShell] = []
-    for v in result.vectors:
-        primitives = [
-            AuxPrimitive(result.exponents[k], float(v[k]))
-            for k in range(len(v))
-            if v[k] != 0.0
+    """One uncontracted AuxShell per pivot, tightest first (the usual
+    basis-set order)."""
+    return [
+        AuxShell(result.ell, (float(e),), ((1.0,),))
+        for e in sorted(result.exponents[result.pivots], reverse=True)
+    ]
+
+
+def to_pyscf_basis(aux_shells: dict[int, list[AuxShell]]) -> list:
+    """`aux_shells` in PySCF's own internal basis format, ``[[ell, [exponent,
+    c_0, c_1, ...], ...], ...]`` (one coefficient column per contracted
+    function) -- usable directly as a Mole's basis or a density-fitting
+    ``auxbasis`` (``df_check``)."""
+    return [
+        [
+            s.ell,
+            *(
+                [e, *(row[k] for row in s.coefficients)]
+                for k, e in enumerate(s.exponents)
+            ),
         ]
-        shells.append(AuxShell(result.ell, primitives))
-    return shells
+        for shells in aux_shells.values()
+        for s in shells
+    ]
