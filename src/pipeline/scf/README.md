@@ -63,6 +63,19 @@ The energy is that of the density the last Fock matrix was built from.
 
 What it settled:
 
+- **The loop and the Fock build are apart.** `:loop`'s `rhf_loop` is the
+  RHF iteration, written against a Fock builder with two members: `build`,
+  which makes F = H + G(D) from the density and the orbitals it came from
+  (null on the first build, whose D is the guess) and says whether that F is
+  exact for D, so may be taken as converged; and `reset_diis`, told the
+  commutator norm, which says whether DIIS's history is to be dropped. The
+  incremental builds, `fock_rebuild_interval`, the switch to full builds and
+  the DIIS reset are the direct builder's policy (`DirectFockBuilder` in
+  `scf.cpp`); the guess upload and rescale, convergence and the Molden write
+  are the loop's, so a second builder gets them unchanged. The orbitals are
+  passed because a density-fitted K is built from `C_occ`, not from D. The
+  loop is a template in an internal partition, not a public one.
+
 - **Incremental Fock builds, by default.** G is linear in D, so
   F(D) = F(D_built) + G(D - D_built). J's screen (`Dmax · Ip · Iq`) and K's
   (`Ip · Iq · F_ab`, `F_ab <= max|D|`, and the reach cut at `G_max · max|D|`)
@@ -167,6 +180,8 @@ this tree's own `data/basis` files:
 
 | File | Role |
 |------|------|
-| `scf.cppm` | Module interface: `ScfOutput`, `ScfStep` |
-| `scf.cpp` | `ScfStep::run`: the Fock build, the energy, the residual, the eigensolve |
+| `scf.cppm` | Module interface: `ScfStep`; re-exports `:output` |
+| `scf_output.cppm` | Interface partition `:output`: `ScfOutput`, so that `:loop` can name it |
+| `scf_loop.cppm` | Internal partition `:loop`: `rhf_loop`, the energy, the residual, convergence, DIIS, the eigensolve and the Molden write, against a Fock builder |
+| `scf.cpp` | `ScfStep::run`: the checks, and `DirectFockBuilder`, the integral-direct Fock build and its full/incremental policy |
 | `CMakeLists.txt` | The module library |

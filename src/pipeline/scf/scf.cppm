@@ -1,6 +1,7 @@
 /// @file
-/// @brief The `Scf` step: closed-shell restricted Hartree-Fock, its loop, its
-/// Fock build and its DIIS history all private to one `run`.
+/// @brief The `Scf` step: closed-shell restricted Hartree-Fock, its loop (the
+/// module-private `:loop`), its Fock build and its DIIS history all private to
+/// one `run`.
 ///
 /// Device-shaped. The step's first device consumer of the host `GuessOutput`, which
 /// it uploads and rescales to the molecule's electron count. See README.md.
@@ -16,28 +17,9 @@ export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.pipeline.orthogonalizer;
 export import free_breakfast.pipeline.core_hamiltonian;
 export import free_breakfast.pipeline.guess;
+export import :output;
 
 export namespace free_breakfast {
-
-/// @brief A converged closed-shell RHF wavefunction.
-///
-/// The matrices are over the spherical AOs, @c nao_sphe square, column-major,
-/// on the device the step ran on.
-struct ScfOutput {
-  /// @brief The total energy, electronic plus nuclear repulsion (hartree), of
-  /// the density the last Fock matrix was built from.
-  double energy;
-  /// @brief The Fock builds it took.
-  int32_t iterations;
-  /// @brief The orbital energies, ascending, one per column of @ref c
-  /// (hartree), on the host.
-  std::vector<double> mo_energies;
-  /// @brief The MO coefficients C, AO by MO: F C = S C eps.
-  SphericalMatrixAO c;
-  /// @brief The spin-summed density D = 2 C_occ C_occ^T, of the canonical
-  /// orbitals of the last Fock matrix.
-  SphericalMatrixAO d;
-};
 
 /// @brief Iterates RHF to self-consistency from the @ref GuessOutput, with Pulay
 /// DIIS on the Fock matrix and incremental Fock builds.
