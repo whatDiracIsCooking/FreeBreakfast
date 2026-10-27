@@ -54,6 +54,12 @@ emit_scf_reference.py
                   RHF energies and orbital energies over this tree's
                   data/basis files, the reference the Scf step is tested
                   against. Needs PySCF.
+emit_df_reference.py
+                  Write test/gtest/data/density_fitting/: libcint's spherical
+                  (P|Q) and (mn|P), PySCF's DF vj/vk of one density and its
+                  DF-RHF energies, over this tree's data/basis and
+                  data/aux_basis files, the reference density fitting is
+                  tested against. Needs PySCF.
 emit_localization_reference.py
                   Write test/gtest/data/localization/{pipek_mezey,ibo}.json:
                   PySCF's Mulliken Pipek-Mezey and IBOs of those RHF orbitals, both
@@ -131,6 +137,7 @@ uv run --group tools tools/minao_from_pyscf.py
 uv run --group tools tools/jkfit_from_pyscf.py
 uv run --group tools tools/emit_sad_reference.py
 uv run --group tools tools/emit_scf_reference.py
+uv run --group tools tools/emit_df_reference.py
 uv run --group tools tools/emit_localization_reference.py
 uv run --group tools tools/emit_casci_reference.py
 uv run --group tools tools/emit_fci_step_reference.py

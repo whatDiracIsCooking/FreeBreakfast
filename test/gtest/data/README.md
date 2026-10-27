@@ -13,6 +13,7 @@ file names the tool that wrote it and the source it came from.
 | `record_bound/` | K's dressed record bound, FelizJueves's host `ao.k.record_bounds`, of every record of every ordered shell pair of H₂O/cc-pVDZ and the H₁₀ chain, the shells read from `exchange/` | `tools/emit_record_bound_golden.py`, which imports FelizJueves's `src/` (numpy, for its reference Boys) |
 | `e_table/` | The rolled K kernel's E table, FelizJueves's host `launch_kblock.e_table` (each record's undressed `E^{la lb}`, nonzero entries), of every record of every ordered shell pair of H₂O/cc-pVDZ and CO/cc-pVTZ (through f), with each record's inputs, the shells read from `exchange/`. FelizJueves checking itself: the table has no libcint counterpart | `tools/emit_e_table_golden.py`, which imports FelizJueves's `src/` |
 | `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr | `tools/emit_scf_reference.py`, which runs PySCF |
+| `density_fitting/` | libcint's spherical Coulomb metric `int2c2e` (P\|Q) and three-centre `int3c2e` (mn\|P) for H₂O in cc-pVDZ / cc-pVDZ-JKFIT (orbitals to d, aux to f) and cc-pVTZ / cc-pVTZ-JKFIT (O's f orbitals and g fitting functions, so (ff\|g)), PySCF's DF `vj` and `vk` of one RHF density in the cc-pVDZ case, and PySCF's DF-RHF energies and orbital energies for H₂O and NH₄⁺ in cc-pVDZ / cc-pVDZ-JKFIT and H₂O in cc-pVTZ / cc-pVTZ-JKFIT, all over this tree's own `data/basis` and `data/aux_basis` files: `.npy` arrays and the manifest `density_fitting.json` | `tools/emit_df_reference.py`, which runs PySCF |
 | `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges | `tools/emit_localization_reference.py`, which runs PySCF |
 | `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit_active_integrals_reference.py`, which runs PySCF |
 | `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit_sad_reference.py`, which runs PySCF |
@@ -131,6 +132,64 @@ the two sides compute over one basis. Regenerate with:
 
 ```sh
 uv run --group tools tools/emit_scf_reference.py
+```
+
+## `density_fitting/`
+
+`density_fitting.json` is the manifest: it names every `.npy` beside it and
+what it holds. Each `.npy` is `'<f8'` in **Fortran order**, the layout
+`src/io/npy` reads, so a file loads into an `NpyArray` (first axis fastest)
+with no reordering, and with a plain `np.load` in Python.
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF, libcint (PySCF's `cint.h`) and numpy versions, `threads` (BLAS and OpenMP pinned to it), the command that wrote it. No date or host, so a rerun is byte-identical |
+| `integrals` | One per case: `name`, `basis` and `aux_basis` (this tree's builtin names), `atoms` (`symbol`, `z`, `coord` in bohr), `nao` and `naux` (spherical), `shells` and `aux_shells`, `int2c2e`, `int3c2e`, and on `h2o_ccpvdz` also `jk` |
+| `shells`, `aux_shells` | One per PySCF shell, in AO order: `atom` (index into `atoms`), `l`, `nctr`. A shell of `nctr` contractions holds `nctr` × (2l + 1) AOs, each contraction's m = −l..l together, in the BSE file's column order: the order this tree's reader gives by making each coefficient column a shell of its own. Within a shell, m runs −l..l (p: x, y, z), the libcint order `spherical_transform_matrix` follows |
+| `int2c2e` | The file of (P\|Q): `naux` × `naux` |
+| `int3c2e` | The pieces of (mn\|P), each `{file, aux: [begin, end)}`, in P order |
+| `jk` | `density` (D, `nao` × `nao`), `vj` and `vk` (each `nao` × `nao`), `occupied` (5) and `df_rhf_energy` |
+| `df_rhf` | One per DF-RHF: `name`, `basis`, `aux_basis`, `charge`, `atoms`, `nao`, `naux`, `electrons`, `energy` and `nuclear_repulsion` (hartree), `mo_energies` (hartree, ascending) |
+
+**The (mn\|P) layout.** Each `int3c2e` piece is an array of shape
+`(nao, nao, end − begin)`, element `[m, n, P − begin]` = (mn\|P), so the
+logical order is `[m][n][P]` with **m fastest and P slowest**: (mn\|P) sits at
+flat offset `m + nao · (n + nao · (P − begin))`. That is PySCF's native
+`df.incore.aux_e2(..., aosym="s1")` layout, an F-contiguous
+`(nao, nao, naux)`, written as it comes: each P is one column-major
+`nao` × `nao` matrix, symmetric in m and n. A piece is a contiguous run of
+those slabs. The tensor is split along P into the fewest balanced pieces that
+each fit under the 512 KiB limit, as FelizJueves's metric fixture is split by
+rows: `h2o_ccpvdz` (24 × 24 × 116) in two, `h2o_ccpvtz` (58 × 58 × 139) in
+eight. Concatenating the pieces along the last axis in manifest order gives
+the whole tensor.
+
+**The density.** D = 2 C Cᵀ, C the five occupied orbitals of PySCF's own
+converged DF-RHF (`conv_tol` 1e-12) of the `h2o_ccpvdz` case, at that case's
+geometry and over the same fitting set: symmetric positive semidefinite of
+rank 5, so a test can factor it back into occupied orbitals. `vj` and `vk` are
+`RHF(mol).density_fit(auxbasis=...).get_jk(mol, D, hermi=1)`:
+J_mn = Σ (mn\|P) (P\|Q)⁻¹ (Q\|ls) D_ls and
+K_mk = Σ (mn\|P) (P\|Q)⁻¹ (Q\|ks) D_ns. The tool checks both against those sums
+over the very `int2c2e` and `int3c2e` it writes, to 1e-10 relative.
+
+**Normalisation.** Every orbital and fitting function is PySCF's: unit
+self-overlap (the tool asserts `int1e_ovlp`'s diagonal is 1 to 1e-12 in both
+bases). A test whose function i is N_i times PySCF's scales an array by N_i per
+index (and D by 1 / (N_m N_n)), N_i read from its own overlap diagonal, as
+`sad/` says. Energies and orbital energies need no such care.
+
+**Geometries.** The integrals and `jk` use FelizJueves's `h2o_ccpvdz_j` water
+(O at the origin, H at (1.43, 0.21, −1.07) and (−1.38, 0.35, −1.12) bohr: in no
+symmetry plane, so every component of every shell is reached), the molecule of
+its cc-pVTZ-JKFIT metric fixtures. `df_rhf` uses `scf/rhf.json`'s geometries,
+so its energies sit beside the exact-integral ones there (the DF error is
+2.1e-5 Eh for H₂O and −1.05e-6 Eh for NH₄⁺ in cc-pVDZ).
+
+Regenerate with (one thread; the output is byte-identical run to run):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_df_reference.py
 ```
 
 ## `localization/pipek_mezey.json`
