@@ -3,8 +3,10 @@
 // launch of the same walk, its density factor.
 // One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 
-// block_reduce.cuh first: it orders its standard headers ahead of the vendor
-// runtime header, which under HIP must not precede libc++.
+// Standard headers, then block_reduce.cuh: it orders its standard headers
+// ahead of the vendor runtime header, which under HIP must not precede libc++.
+#include <type_traits>
+
 #include "block_reduce.cuh"
 
 #include "exchange_helpers.cuh"
@@ -66,15 +68,15 @@ __device__ double block_factor(const int32_t n_a, const double *a_geom, const in
 
 // One block per bra group ga. Its blocks start after every earlier bra group's,
 // n_b - first(g) each, which the block's threads sum, and its threads then
-// visit its own, one per ket group from first(ga) on: each block's table
-// entry when blocks is not null, and its factor when factor is not null. The
-// table and the factors are two launches (exchange_blocks, exchange_factors)
-// of this one walk, so they agree on the order.
-__global__ void __launch_bounds__(fb::kFourWarps)
-    blocks_kernel(const int32_t n_a, const int32_t *a_start, const int32_t *a_off,
-                  const double *a_geom, const int32_t n_b, const int32_t *b_start,
-                  const int32_t *b_off, const double *b_geom, const double *decay,
-                  const int32_t n_blk, int32_t *blocks, double *factor) {
+// visit its own, one per ket group from first(ga) on: each block's factor when
+// out is doubles, else its table entry. Only the factors read a_geom, b_geom
+// and decay. The table and the factors are two instantiations (the two
+// blocks_kernel overloads) of this one walk, so they agree on the order.
+template <typename Out>
+__device__ void walk_blocks(const int32_t n_a, const int32_t *a_start, const int32_t *a_off,
+                            const int32_t n_b, const int32_t *b_start, const int32_t *b_off,
+                            const int32_t n_blk, Out *out, const double *a_geom,
+                            const double *b_geom, const double *decay) {
   __shared__ int32_t partials[kTableWarps];
   const auto ga = static_cast<int32_t>(blockIdx.x);
   const auto first = [&](const int32_t g) {
@@ -91,19 +93,35 @@ __global__ void __launch_bounds__(fb::kFourWarps)
   for (int32_t gb = f + static_cast<int32_t>(threadIdx.x); gb < n_b;
        gb += static_cast<int32_t>(blockDim.x)) {
     const int32_t blk = base + gb - f;
-    if (blocks != nullptr) {
+    if constexpr (std::is_same_v<Out, double>) {
+      out[blk] = block_factor(n_a, a_geom, ga, n_b, b_geom, gb, decay);
+    } else {
       const int32_t ket0 = b_start[gb];
-      blocks[blk] = bra0;
-      blocks[n_blk + blk] = a_start[ga + 1];
-      blocks[2 * n_blk + blk] = ket0;
-      blocks[3 * n_blk + blk] = b_start[gb + 1];
-      blocks[4 * n_blk + blk] = a_off[bra0];
-      blocks[5 * n_blk + blk] = b_off[ket0];
-    }
-    if (factor != nullptr) {
-      factor[blk] = block_factor(n_a, a_geom, ga, n_b, b_geom, gb, decay);
+      out[blk] = bra0;
+      out[n_blk + blk] = a_start[ga + 1];
+      out[2 * n_blk + blk] = ket0;
+      out[3 * n_blk + blk] = b_start[gb + 1];
+      out[4 * n_blk + blk] = a_off[bra0];
+      out[5 * n_blk + blk] = b_off[ket0];
     }
   }
+}
+
+// The block table (exchange_blocks).
+__global__ void __launch_bounds__(fb::kFourWarps)
+    blocks_kernel(const int32_t n_a, const int32_t *a_start, const int32_t *a_off,
+                  const int32_t n_b, const int32_t *b_start, const int32_t *b_off,
+                  const int32_t n_blk, int32_t *blocks) {
+  walk_blocks(n_a, a_start, a_off, n_b, b_start, b_off, n_blk, blocks, nullptr, nullptr, nullptr);
+}
+
+// The blocks' factors (exchange_factors).
+__global__ void __launch_bounds__(fb::kFourWarps)
+    blocks_kernel(const int32_t n_a, const int32_t *a_start, const int32_t *a_off,
+                  const int32_t n_b, const int32_t *b_start, const int32_t *b_off,
+                  const int32_t n_blk, double *factor, const double *a_geom, const double *b_geom,
+                  const double *decay) {
+  walk_blocks(n_a, a_start, a_off, n_b, b_start, b_off, n_blk, factor, a_geom, b_geom, decay);
 }
 
 // The checks exchange_blocks and exchange_factors share.
@@ -124,7 +142,7 @@ wwr::wwrError_t exchange_blocks(const wwr::wwrStream_t stream, const int32_t n_a
     return wwr::wwrErrorInvalidValue;
   }
   blocks_kernel<<<static_cast<uint32_t>(n_a), kFourWarps, 0, stream>>>(
-      n_a, a_start, a_off, nullptr, n_b, b_start, b_off, nullptr, nullptr, n_blk, blocks, nullptr);
+      n_a, a_start, a_off, n_b, b_start, b_off, n_blk, blocks);
   return wwr::wwrGetLastError();
 }
 
@@ -137,7 +155,7 @@ wwr::wwrError_t exchange_factors(const wwr::wwrStream_t stream, const int32_t n_
     return wwr::wwrErrorInvalidValue;
   }
   blocks_kernel<<<static_cast<uint32_t>(n_a), kFourWarps, 0, stream>>>(
-      n_a, a_start, a_off, a_geom, n_b, b_start, b_off, b_geom, decay, n_blk, nullptr, factor);
+      n_a, a_start, a_off, n_b, b_start, b_off, n_blk, factor, a_geom, b_geom, decay);
   return wwr::wwrGetLastError();
 }
 
