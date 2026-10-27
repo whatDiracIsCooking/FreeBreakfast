@@ -357,6 +357,32 @@ GPU_SLOTS=${GPU_SLOTS:-2}
 # A card whose load -- max(compute %, VRAM %) -- is at or above this is busy:
 # `auto` prefers the other card, and a run waits before taking a slot on it.
 GPU_BUSY_PCT=${GPU_BUSY_PCT:-80}
+# VRAM use at or above which a card is no longer SHARED: a run that would be
+# its second tenant waits instead of joining it (with_gpu_slot in lib.sh).
+#
+# GPU_BUSY_PCT cannot do this job, which is why there are two numbers. It is
+# max(compute, VRAM), and compute sits near 100% through any normal GPU test
+# run, so the combined figure is pinned high by work that costs no memory and
+# says nothing about headroom -- and a threshold of 80 on VRAM alone would
+# still be too late, since this tree's heaviest launch reserves per-thread
+# stack for every thread the card can hold (about 1.4 GB of a 10 GB RTX 3080
+# for three_center's worst class) on top of whatever it allocates. 45 leaves
+# a second tenant room to exist. Raise it on a card with more memory than
+# this one; set it to 100 to go back to sharing regardless.
+#
+# Admission only. Nothing is evicted: a run that already holds the card's
+# only slot keeps it however full the card gets.
+GPU_MEM_SHARE_PCT=${GPU_MEM_SHARE_PCT:-45}
+# 1: hold EVERY slot of the card for the whole run, so nothing joins it.
+#
+# This is the case GPU_MEM_SHARE_PCT cannot catch: two runs that both start
+# on an empty card both pass its check, then both grow, and by then neither
+# can give memory back -- one of them dies with
+# `cudaErrorMemoryAllocation`. The check above only stops a run JOINING a
+# card that is already heavy. A run that knows in advance it will want most
+# of the card declares it here instead; cpp-slow-tier.sh does, since its
+# un-skipped validation cases are the heavy ones.
+GPU_EXCLUSIVE=${GPU_EXCLUSIVE:-0}
 # Seconds a run waits on a busy card that still has a slot free before taking
 # it anyway (load from something that holds no slot). 0 waits for ever.
 GPU_BUSY_WAIT=${GPU_BUSY_WAIT:-900}

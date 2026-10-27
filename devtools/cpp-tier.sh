@@ -3,7 +3,8 @@
 # fast pytest gate and devtools/cpp-slow-tier.sh.
 #
 #   devtools/cpp-tier.sh [--preset NAME] [--fresh] [--clean] [--no-test]
-#                        [--tidy] [-j N] [--report DIR] [-- <ctest args>]
+#                        [--tidy] [--exclusive] [-j N] [--report DIR]
+#                        [-- <ctest args>]
 #
 # It is NOT on the push gate, for the same reason the slow tier is not: a C++23
 # named-module build with CUDA separable compilation costs minutes even warm,
@@ -53,6 +54,16 @@
 #                   the run, because the tree is not clean yet (see
 #                   .clang-tidy). Off by default so the normal tier stays
 #                   a build-and-test.
+#   --exclusive     hold EVERY slot of the card for the test phase, so no
+#                   other session can share it (GPU_EXCLUSIVE=1,
+#                   devtools/config.sh). The admission rules already refuse
+#                   to JOIN a card whose VRAM is past GPU_MEM_SHARE_PCT, but
+#                   two runs that both start on an empty card and then grow
+#                   cannot be separated after the fact -- one dies with
+#                   `cudaErrorMemoryAllocation`. Pass this when the run will
+#                   want most of the card, or when a failure that costs
+#                   minutes to repeat matters more than another session's
+#                   wait. cpp-slow-tier.sh does it by default.
 #   -j N            parallel COMPILE jobs (default: BUILD_JOBS from config.sh,
 #                   or Ninja's own choice when that is empty). Module builds
 #                   are memory-hungry per job -- a too-high N OOMs rather than
@@ -106,6 +117,7 @@ while [ $# -gt 0 ]; do
     --clean)   clean=1; shift;;
     --no-test) run_tests=0; shift;;
     --tidy)    tidy=1; shift;;
+    --exclusive) export GPU_EXCLUSIVE=1; shift;;
     -j|--jobs) jobs=$2; shift 2;;
     --report)  report_dir=$2; shift 2;;
     --)        shift; passthrough=("$@"); break;;

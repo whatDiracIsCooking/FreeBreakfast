@@ -151,6 +151,13 @@ if [ "$rc" -eq 0 ] && [ "$run_tests" -eq 1 ]; then
   if has_test_preset; then
     # Deliberately no FREE_BREAKFAST_FAST_TESTS here -- this is the
     # tier where the reference-grade/end-to-end cases run.
+    #
+    # Those are also the cases that want most of the card, so this tier takes
+    # it exclusively by default (GPU_EXCLUSIVE, devtools/config.sh): a
+    # co-tenant that starts on an empty card and grows alongside them cannot
+    # be made to give memory back, so sharing has to be refused up front
+    # rather than detected. Export it for a one-off with GPU_EXCLUSIVE=0.
+    export GPU_EXCLUSIVE=${GPU_EXCLUSIVE:-1}
     run_phase ctest with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" ctest --preset "$test_preset" "${passthrough[@]}" || rc=$?
   else
     echo "cpp-slow-tier: no test preset '${test_preset:-<empty>}' -- built only" \

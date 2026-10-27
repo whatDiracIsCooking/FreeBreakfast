@@ -167,7 +167,33 @@ gpu_card_load() {
 }
 
 gpu_card_load_once() {
-  local out util mem used total
+  local util mem
+  IFS=, read -r util mem <<<"$(gpu_card_util_mem "$1")"
+  [[ "${util:-}" =~ ^[0-9]+$ ]] || { echo "?"; return 0; }
+  [[ "${mem:-}" =~ ^[0-9]+$ ]] || mem=0
+  echo $((util > mem ? util : mem))
+}
+
+# The card's VRAM use in percent, or `?`. SEPARATE from gpu_card_load on
+# purpose: that one is max(compute, VRAM), and the two answer different
+# questions. Compute pegs near 100% through any normal GPU test run, so the
+# combined figure is dominated by it and says nothing about how much memory
+# is left -- while a failed device allocation in this tree does not slow a
+# run down, it ABORTS it (CreatePolicy, src/core/wwr/policy.cppm). Memory
+# headroom therefore gets its own reading, and admission its own threshold
+# (GPU_MEM_SHARE_PCT).
+gpu_card_mem() {
+  local util mem
+  IFS=, read -r util mem <<<"$(gpu_card_util_mem "$1")"
+  if [[ "${mem:-}" =~ ^[0-9]+$ ]]; then echo "$mem"; else echo "?"; fi
+}
+
+# `<utilization %>,<VRAM %>` for a card, either field empty when the vendor
+# tool could not say. Device 0 of each vendor -- this host has one card per
+# backend. One place reads each tool, so load and memory cannot come from
+# two different samples of the same card.
+gpu_card_util_mem() {
+  local out util="" mem="" used total
   case "$1" in
     cuda)
       out=$(nvidia-smi -i 0 --format=csv,noheader,nounits \
@@ -181,9 +207,7 @@ gpu_card_load_once() {
       out=$(rocm-smi --showuse --showmemuse --csv 2>/dev/null | sed -n 2p) || out=""
       IFS=, read -r _ util mem _ <<<"$out";;
   esac
-  [[ "${util:-}" =~ ^[0-9]+$ ]] || { echo "?"; return 0; }
-  [[ "${mem:-}" =~ ^[0-9]+$ ]] || mem=0
-  echo $((util > mem ? util : mem))
+  echo "${util},${mem}"
 }
 
 # How many of a card's slots are held right now. Probes each with a
@@ -213,18 +237,24 @@ gpu_slots_held() {
 #
 #   [ "$preset" = auto ] && preset=$(gpu_auto_preset)
 gpu_auto_preset() {
-  local entry backend p load held key
+  local entry backend p load mem held key
   local best="" best_key="" report=""
   for entry in $GPU_AUTO_PRESETS; do
     backend=${entry%%:*} p=${entry#*:}
     gpu_card_alive "$backend" || { report+=" $backend=absent"; continue; }
     load=$(gpu_card_load "$backend")
+    mem=$(gpu_card_mem "$backend")
     held=$(command -v flock >/dev/null 2>&1 && gpu_slots_held "$backend" || echo 0)
-    report+=" $backend=load:${load}%,slots:$held/$GPU_SLOTS"
+    report+=" $backend=load:${load}%,vram:${mem}%,slots:$held/$GPU_SLOTS"
     # Sort key, smallest wins: free-and-cool cards first (0), then busy ones
-    # (1); within a class by held slots only when busy, then by load.
-    local l=${load/\?/0}
-    if [ "$held" -lt "$GPU_SLOTS" ] && [ "$l" -lt "$GPU_BUSY_PCT" ]; then
+    # (1); within a class by held slots only when busy, then by load. A card
+    # this run would have to SHARE while it is already memory-heavy counts as
+    # busy, matching what with_gpu_slot will refuse to do at test time --
+    # otherwise `auto` picks it, builds its backend for minutes, and only
+    # then discovers it cannot have it.
+    local l=${load/\?/0} m=${mem/\?/0}
+    if [ "$held" -lt "$GPU_SLOTS" ] && [ "$l" -lt "$GPU_BUSY_PCT" ] &&
+       { [ "$held" -eq 0 ] || [ "$m" -lt "$GPU_MEM_SHARE_PCT" ]; }; then
       key=$(printf '0-%03d' "$l")
     else
       key=$(printf '1-%03d-%03d' "$held" "$l")
@@ -242,6 +272,37 @@ gpu_auto_preset() {
   echo "$best"
 }
 
+# Take `count` of a card's slots, non-blocking. Sets GPU_HELD_FDS and
+# GPU_HELD_IDS to what it got and returns 0 only when it got them all; on
+# failure the caller drops what it has. A lock belongs to the open file
+# DESCRIPTION, so a second open of the same file does not share it -- which
+# is what lets gpu_slots_held count our own slot alongside everyone else's.
+gpu_take_slots() {
+  local backend=$1 count=$2 dir fd i
+  dir=$(gpu_lock_dir)
+  mkdir -p "$dir"
+  GPU_HELD_FDS=() GPU_HELD_IDS=()
+  for ((i = 0; i < GPU_SLOTS && ${#GPU_HELD_FDS[@]} < count; i++)); do
+    exec {fd}>"$dir/$backend.$i.lock"
+    if flock -n "$fd"; then
+      GPU_HELD_FDS+=("$fd") GPU_HELD_IDS+=("$i")
+    else
+      exec {fd}>&-
+    fi
+  done
+  [ "${#GPU_HELD_FDS[@]}" -eq "$count" ]
+}
+
+gpu_drop_slots() {
+  local fd
+  for fd in "${GPU_HELD_FDS[@]:-}"; do
+    [ -n "$fd" ] || continue
+    flock -u "$fd"
+    exec {fd}>&-
+  done
+  GPU_HELD_FDS=() GPU_HELD_IDS=()
+}
+
 # Run a GPU-bound command holding one slot of a card:
 #
 #   with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" ctest --preset ...
@@ -251,6 +312,22 @@ gpu_auto_preset() {
 # busy with a slot free -- loaded by something that takes no slot, such as
 # another user's job -- is taken anyway after GPU_BUSY_WAIT seconds (0: never),
 # so a pegged card delays a run rather than hanging it.
+#
+# TWO MEMORY RULES on top of that load check, because a card can have a free
+# slot and still not have room (a failed allocation ABORTS, it does not
+# queue):
+#
+#   * It will not become a card's SECOND tenant while the card's VRAM is at
+#     or above GPU_MEM_SHARE_PCT. Sharing is fine on an empty card and
+#     cannot work on a half-full one, and unlike the load check this has no
+#     take-it-anyway timeout: waiting for memory that is not there would
+#     only trade a wait for an abort. A run already holding the card's only
+#     slot is never affected -- the rule is about joining, not about staying.
+#   * GPU_EXCLUSIVE=1 takes EVERY slot for the whole run, so nothing can
+#     join it later. This is the only rule that covers two runs which both
+#     start on an empty card, pass the check above, and only then grow:
+#     by then neither can yield, so a run that knows it will reserve
+#     gigabytes has to say so up front.
 with_gpu_slot() {
   local backend=$1
   shift
@@ -260,43 +337,55 @@ with_gpu_slot() {
     return $?
   fi
 
-  local dir fd i got load busy_since="" said=""
+  local want=1 exclusive=""
+  if [ "${GPU_EXCLUSIVE:-0}" = 1 ] && [ "$GPU_SLOTS" -gt 1 ]; then
+    want=$GPU_SLOTS exclusive=" (exclusive)"
+  fi
+
+  local dir load mem others busy_since="" said=""
   dir=$(gpu_lock_dir)
-  mkdir -p "$dir"
   while :; do
-    got=""
-    for ((i = 0; i < GPU_SLOTS; i++)); do
-      exec {fd}>"$dir/$backend.$i.lock"
-      if flock -n "$fd"; then got=$i; break; fi
-      exec {fd}>&-
-    done
-    if [ -n "$got" ]; then
-      load=$(gpu_card_load "$backend")
-      if [ "$load" = "?" ] || [ "$load" -lt "$GPU_BUSY_PCT" ]; then
-        break
+    if gpu_take_slots "$backend" "$want"; then
+      mem=$(gpu_card_mem "$backend")
+      others=$(($(gpu_slots_held "$backend") - ${#GPU_HELD_FDS[@]}))
+      # Joining an occupied card that is already memory-heavy: no timeout,
+      # see the comment above.
+      if [ "$others" -gt 0 ] && [ "$mem" != "?" ] &&
+         [ "$mem" -ge "$GPU_MEM_SHARE_PCT" ]; then
+        gpu_drop_slots
+        [ "$said" = mem ] || echo "devtools: waiting -- $backend VRAM ${mem}% >=" \
+          "${GPU_MEM_SHARE_PCT}% and $others slot(s) in use; will not share it" >&2
+        said=mem
+      else
+        load=$(gpu_card_load "$backend")
+        if [ "$load" = "?" ] || [ "$load" -lt "$GPU_BUSY_PCT" ]; then
+          break
+        fi
+        busy_since=${busy_since:-$SECONDS}
+        if [ "$GPU_BUSY_WAIT" -gt 0 ] &&
+           [ $((SECONDS - busy_since)) -ge "$GPU_BUSY_WAIT" ]; then
+          echo "devtools: $backend still at ${load}% after ${GPU_BUSY_WAIT}s --" \
+            "taking slot(s) ${GPU_HELD_IDS[*]} anyway" >&2
+          break
+        fi
+        gpu_drop_slots
+        [ "$said" = busy ] || echo "devtools: waiting -- $backend load ${load}% >= ${GPU_BUSY_PCT}%" >&2
+        said=busy
       fi
-      busy_since=${busy_since:-$SECONDS}
-      if [ "$GPU_BUSY_WAIT" -gt 0 ] &&
-         [ $((SECONDS - busy_since)) -ge "$GPU_BUSY_WAIT" ]; then
-        echo "devtools: $backend still at ${load}% after ${GPU_BUSY_WAIT}s -- taking slot $got anyway" >&2
-        break
-      fi
-      flock -u "$fd"
-      exec {fd}>&-
-      [ "$said" = busy ] || echo "devtools: waiting -- $backend load ${load}% >= ${GPU_BUSY_PCT}%" >&2
-      said=busy
     else
-      [ "$said" = full ] || echo "devtools: waiting for a $backend slot -- all $GPU_SLOTS held ($dir)" >&2
+      gpu_drop_slots
+      [ "$said" = full ] || echo "devtools: waiting for" \
+        "$([ "$want" -gt 1 ] && echo "all $want $backend slots" || echo "a $backend slot")" \
+        "-- $(gpu_slots_held "$backend") of $GPU_SLOTS held ($dir)" >&2
       said=full
     fi
     sleep "$GPU_POLL_SECONDS"
   done
 
-  echo "devtools: $backend slot $got (load ${load}%)" >&2
+  echo "devtools: $backend slot(s) ${GPU_HELD_IDS[*]}$exclusive (load ${load}%, VRAM ${mem}%)" >&2
   local rc
   "$@" && rc=0 || rc=$?
-  flock -u "$fd"
-  exec {fd}>&-
+  gpu_drop_slots
   return "$rc"
 }
 
