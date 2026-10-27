@@ -26,6 +26,15 @@
 
 namespace free_breakfast::device {
 
+/// @brief J's L limit: the largest momentum of a shell in any class the J
+/// build takes, f. Its kernels are emitted through it
+/// (tools/emit_coulomb_kernels.py's MAX_L), and dq_launch.cu,
+/// e_hermite_launch.cu and j_coulomb_launch.cu check it against their tables,
+/// which a host module unit cannot include; the tree-wide kMaxAngularMomentum
+/// is not J's. Here, in the lowest of J's bridges, because
+/// coulomb_pair_classes refuses a class above it as coulomb does.
+inline constexpr int32_t kCoulombMaxMomentum = 3;
+
 /// @brief Raise @p maxima[0] to the largest dressed bound B (cls.bound_ab) of
 /// @p cls's records and @p maxima[1] to the largest K = w ncart(la) B, on
 /// @p stream: coulomb_pair_classes' maxima, one class at a time.

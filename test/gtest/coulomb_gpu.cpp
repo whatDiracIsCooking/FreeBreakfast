@@ -1,7 +1,8 @@
 // GPU cases for integrals.eri.integral_direct.coulomb: the Cartesian Coulomb
 // matrix J of H2O in STO-3G (s, p; O's p shell precedes the H s shells, so the
 // la <= lb swap is exercised, in the density's read as in J's scatter) and
-// cc-pVDZ (s, p, d, so every e_hermite class through (4, 4)) against libcint's
+// cc-pVDZ (s, p, d, so every e_hermite class through (4, 4)), and CO in
+// cc-pVTZ (f on both atoms, so every class through (6, 6)), against libcint's
 // J of the same density, recorded by PySCF (test/gtest/data/coulomb/, copied
 // from FelizJueves's fixtures by tools/extract_integral_golden.py), both
 // unscreened (tau = 0) and at the default screen, from every record (J's
@@ -102,15 +103,12 @@ std::vector<double> golden_j(const Golden &g, const double tau) {
   return download(res, j);
 }
 
-class CoulombGolden : public ::testing::TestWithParam<const char *> {};
-
-// At tau = 0 nothing is screened; at the default each skipped term of a J_p is
-// under 1e-10, and the screened J must still meet the same bar against
-// libcint. How far the screen moved J is recorded, not bounded: it is not
-// bounded by tau (jab weights each J_p term by the bra's E^ab_p).
-TEST_P(CoulombGolden, MatchesLibcint) {
-  FBF_REQUIRE_GPU();
-  const Golden g = read_golden(GetParam());
+// At tau = 0 nothing is screened; at @p tau each skipped term of a J_p is
+// under it, and the screened J must still meet the same bar against libcint.
+// How far the screen moved J is recorded, not bounded: it is not bounded by tau
+// (jab weights each J_p term by the bra's E^ab_p).
+void expect_matches_libcint(const char *stem, const double tau) {
+  const Golden g = read_golden(stem);
   ASSERT_FALSE(g.vj.empty());
   double scale = 0.0;
   for (const double v : g.vj) {
@@ -118,7 +116,7 @@ TEST_P(CoulombGolden, MatchesLibcint) {
   }
   const std::size_t n = g.basis.nao_cart();
   const std::vector<double> unscreened = golden_j(g, 0.0);
-  const std::vector<double> screened = golden_j(g, 1e-10);
+  const std::vector<double> screened = golden_j(g, tau);
   for (const auto &[name, got] : {std::pair{"unscreened", &unscreened}, {"screened", &screened}}) {
     ASSERT_EQ(got->size(), g.vj.size()) << name;
     double worst = 0.0;
@@ -132,16 +130,34 @@ TEST_P(CoulombGolden, MatchesLibcint) {
         EXPECT_LE(std::abs((*got)[i * n + k] - (*got)[k * n + i]), kRelTol * scale) << name;
       }
     }
-    RecordProperty(std::format("{}_worst_abs_error", name), std::format("{:.3e}", worst));
+    ::testing::Test::RecordProperty(std::format("{}_worst_abs_error", name),
+                                    std::format("{:.3e}", worst));
   }
   double moved = 0.0;
   for (std::size_t i = 0; i < n * n; ++i) {
     moved = std::max(moved, std::abs(screened[i] - unscreened[i]));
   }
-  RecordProperty("screen_max_abs_change", std::format("{:.3e}", moved));
+  ::testing::Test::RecordProperty("screen_max_abs_change", std::format("{:.3e}", moved));
+}
+
+class CoulombGolden : public ::testing::TestWithParam<const char *> {};
+
+// Screened at coulomb's default tau.
+TEST_P(CoulombGolden, MatchesLibcint) {
+  FBF_REQUIRE_GPU();
+  expect_matches_libcint(GetParam(), 1e-10);
 }
 
 INSTANTIATE_TEST_SUITE_P(H2O, CoulombGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
+
+// Screened at 1e-11, not the default 1e-10: at f, jab's E^ab_p weights let the
+// default screen move CO's J by 3.1e-11, 1.7e-12 of max|J|, past the bar
+// (README.md, "The screen at f"). At 1e-11 it moves J by 1.2e-12. The
+// unscreened half is the check that J at f matches libcint.
+TEST(CoulombGolden, MatchesLibcintAtF) {
+  FBF_REQUIRE_GPU();
+  expect_matches_libcint("co_ccpvtz", 1e-11);
+}
 
 // mmd's classes or J's.
 template <typename Class>
@@ -356,7 +372,7 @@ TEST_P(CoulombPairClassesPrune, KeepsTheHostPrunesRecords) {
 INSTANTIATE_TEST_SUITE_P(Molecules, CoulombPairClassesPrune,
                          ::testing::Values("h2o_sto3g", "h2o_ccpvdz", "h10_chain_ccpvdz"));
 
-TEST(CoulombPairClasses, RefusesANegativeOrNaNTauAndAClassAboveD) {
+TEST(CoulombPairClasses, RefusesANegativeOrNaNTauAndAClassAboveF) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::BasisSet s_shell({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
@@ -367,10 +383,10 @@ TEST(CoulombPairClasses, RefusesANegativeOrNaNTauAndAClassAboveD) {
     ASSERT_FALSE(out) << tau;
     EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig) << tau;
   }
-  const fb::BasisSet f_shell({fb::Shell(3, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
-  const auto f_classes = fb::primitive_pair_classes(res, f_shell);
-  ASSERT_TRUE(f_classes);
-  const auto out = fb::coulomb_pair_classes(res, *f_classes);
+  const fb::BasisSet g_shell({fb::Shell(4, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
+  const auto g_classes = fb::primitive_pair_classes(res, g_shell);
+  ASSERT_TRUE(g_classes);
+  const auto out = fb::coulomb_pair_classes(res, *g_classes);
   ASSERT_FALSE(out);
   EXPECT_EQ(out.error().kind, fb::ErrorKind::InvalidConfig);
 }
@@ -476,9 +492,9 @@ TEST(Coulomb, RefusesADensityOfAnotherOrder) {
   EXPECT_EQ(status.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
-// coulomb_pair_classes refuses to make a class above d (above), so this one
+// coulomb_pair_classes refuses to make a class above f (above), so this one
 // is an s class relabelled, which coulomb must still refuse.
-TEST(Coulomb, RefusesAClassAboveD) {
+TEST(Coulomb, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::BasisSet basis({fb::Shell(0, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
@@ -487,8 +503,8 @@ TEST(Coulomb, RefusesAClassAboveD) {
   auto classes = fb::coulomb_pair_classes(res, *mmd, 0.0);
   ASSERT_TRUE(classes);
   ASSERT_EQ(classes->size(), 1U);
-  (*classes)[0].la = 3;
-  (*classes)[0].lb = 3;
+  (*classes)[0].la = 4;
+  (*classes)[0].lb = 4;
   const fb::CartesianMatrixAO density(res, basis);
   fb::CartesianMatrixAO j(res, basis);
   const fb::Status status = fb::coulomb(res, *classes, density, j);

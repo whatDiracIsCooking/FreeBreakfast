@@ -4,7 +4,9 @@
 module;
 
 // The ket sort's launcher, defined in sort_bounds/sort_bounds_launch.cu:
-// declared in the GMF so it keeps external linkage (see the header).
+// declared in the GMF so it keeps external linkage (see the header). J's L
+// limit, kCoulombMaxMomentum, is pair_class's bridge's.
+#include "pair_class_bridge.h"
 #include "sort_bounds_bridge.h"
 
 module free_breakfast.integrals.eri.integral_direct.coulomb;
@@ -14,7 +16,6 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
 import free_breakfast.integrals.eri.integral_direct.coulomb.pair_class;
@@ -93,11 +94,9 @@ Status coulomb(DeviceResources &res, const std::span<CoulombPairClass> classes,
       return err_config("coulomb: class ({}, {}) is on device {}, but the call passed device {}",
                         cls.la, cls.lb, dev, res.dev_idx());
     }
-    // The tree-wide limit, not J's tables (dq, e_hermite and jab are each
-    // bounded by their own): this moves to them when J lifts to f, #345.
-    if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum) {
+    if (cls.la < 0 || cls.lb < cls.la || cls.lb > device::kCoulombMaxMomentum) {
       return err_config("coulomb: no kernel for class ({}, {}); the kernels cover la <= lb <= {}",
-                        cls.la, cls.lb, kMaxAngularMomentum);
+                        cls.la, cls.lb, device::kCoulombMaxMomentum);
     }
   }
   // Written so that NaN fails too: a NaN tau would never screen, silently.

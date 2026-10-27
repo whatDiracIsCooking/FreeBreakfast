@@ -83,6 +83,25 @@ __global__ void jab<0, 2>(
     double* J);
 
 template <>
+__global__ void jab<0, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_rows,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const int32_t* row,
+    const double* Jp,
+    double* J);
+
+template <>
 __global__ void jab<1, 1>(
     int32_t n_rec,
     int32_t n_ao,
@@ -121,6 +140,25 @@ __global__ void jab<1, 2>(
     double* J);
 
 template <>
+__global__ void jab<1, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_rows,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const int32_t* row,
+    const double* Jp,
+    double* J);
+
+template <>
 __global__ void jab<2, 2>(
     int32_t n_rec,
     int32_t n_ao,
@@ -139,9 +177,48 @@ __global__ void jab<2, 2>(
     const double* Jp,
     double* J);
 
+template <>
+__global__ void jab<2, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_rows,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const int32_t* row,
+    const double* Jp,
+    double* J);
+
+template <>
+__global__ void jab<3, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_rows,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const int32_t* row,
+    const double* Jp,
+    double* J);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&jab<0, 0>) jab_kernels[3][3] = {
-    {&jab<0, 0>, &jab<0, 1>, &jab<0, 2>},
-    {nullptr, &jab<1, 1>, &jab<1, 2>},
-    {nullptr, nullptr, &jab<2, 2>},
+inline constexpr decltype(&jab<0, 0>) jab_kernels[4][4] = {
+    {&jab<0, 0>, &jab<0, 1>, &jab<0, 2>, &jab<0, 3>},
+    {nullptr, &jab<1, 1>, &jab<1, 2>, &jab<1, 3>},
+    {nullptr, nullptr, &jab<2, 2>, &jab<2, 3>},
+    {nullptr, nullptr, nullptr, &jab<3, 3>},
 };

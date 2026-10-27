@@ -18,7 +18,7 @@ export namespace free_breakfast {
 /// A step of @ref coulomb, which checks its inputs: @p density must be
 /// symmetric, on the class's device, of the basis the class was made for, and
 /// small enough for the kernels' 32-bit index (n^2 <= INT32_MAX), and the class
-/// at most d with la <= lb. Queued only; nothing is synchronized.
+/// at most f with la <= lb. Queued only; nothing is synchronized.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class with no
 ///         kernel). Launch errors only.

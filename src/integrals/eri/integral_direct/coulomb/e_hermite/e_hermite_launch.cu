@@ -20,21 +20,25 @@
 #include "block_params.h"
 
 #include "e_hermite_bridge.h"
+#include "pair_class_bridge.h"
 
 #include "kernels/e_hermite.h"
 
 namespace free_breakfast::device {
 
-// One Hermite class per lp, lq <= 2 kMaxL: a d-shell pair's E reaches |t| = 4.
-// So the shell momentum the emitted table covers, its own limit rather than the
-// tree's kMaxAngularMomentum, is half its last index: this engine moves to a
-// higher l when its kernels are emitted for one.
+// One Hermite class per lp, lq <= 2 kMaxL: an f-shell pair's E reaches
+// |t| = 6. So the shell momentum the emitted table covers, J's limit, is half
+// its last index.
 constexpr auto kHermiteExtent = std::extent_v<decltype(e_hermite_kernels), 0>;
 constexpr int32_t kMaxL = static_cast<int32_t>(kHermiteExtent - 1) / 2;
 
 static_assert(kHermiteExtent % 2 == 1 &&
                   std::extent_v<decltype(e_hermite_kernels), 1> == kHermiteExtent,
               "kernels/'s [lp][lq] table is not square over lp <= 2 l: rerun "
+              "tools/emit_coulomb_kernels.py");
+
+static_assert(kMaxL == kCoulombMaxMomentum,
+              "kernels/'s table and kCoulombMaxMomentum disagree: rerun "
               "tools/emit_coulomb_kernels.py");
 
 // One warp per bra record: blockDim = (1, warp width), the block e_hermite's

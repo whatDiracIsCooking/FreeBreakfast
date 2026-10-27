@@ -57,7 +57,7 @@ export namespace free_breakfast {
 ///
 /// @return Success; InvalidConfig if @p tau is negative or NaN, if @p res is
 ///         not on @p j's, @p density's or @p classes' device, if @p density and
-///         @p j differ in order, if a class is above d (or not la <= lb), or if
+///         @p j differ in order, if a class is above f (or not la <= lb), or if
 ///         j.n() is too large for the kernels' 32-bit index (j.n()^2 above
 ///         INT32_MAX); or the GpuRuntime error of the first memset, fork,
 ///         launch or join that failed, which leaves @p j unspecified.

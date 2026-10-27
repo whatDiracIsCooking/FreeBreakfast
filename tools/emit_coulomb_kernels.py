@@ -44,7 +44,7 @@ jab), which also gets one header, `<family>.h`, every unit includes: the
 primary, each class's
 declaration and `<family>_kernels`, the table a launcher indexes. Pair
 classes are written `la <= lb` only, for the reason that tool gives; the
-Hermite classes are every (lp, lq) with both at most 2 kMaxAngularMomentum.
+Hermite classes are every (lp, lq) with both at most 2 MAX_L.
 
 The device Boys routine the units with a fundamental include, `eval_boys.h`,
 and the per-order `eval_boys_{M}.h` it includes for M in 0..20 (all of
@@ -73,10 +73,12 @@ from felizjueves.mmd.kernel import build_pq_kernel  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 from felizjueves.spec import Operator, Spec, Target  # noqa: E402
 
-# The kernels' L limit: d. It must equal kMaxAngularMomentum
-# (src/basis/angular_momentum.h); each family's launcher asserts its table
-# against it.
-MAX_L = 2
+# The kernels' L limit: f. It must equal kCoulombMaxMomentum
+# (coulomb/pair_class/pair_class_bridge.h), not the tree-wide
+# kMaxAngularMomentum; each family's launcher asserts its table against it. At
+# (ff) FelizJueves's build_dq_kernel and build_jab_kernel pick their low-stack
+# text on their own (la + lb >= 6).
+MAX_L = 3
 # With any_wavefront and no shuffle elsewhere, the arch fixes nothing in the
 # text; the gpu backend still takes one.
 ARCH = "sm_86"

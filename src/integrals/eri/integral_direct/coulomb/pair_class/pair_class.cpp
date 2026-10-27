@@ -14,7 +14,6 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
 
@@ -154,13 +153,11 @@ coulomb_pair_classes(DeviceResources &res, const std::span<const PrimitivePairCl
   if (!(tau >= 0.0)) {
     return err_config("coulomb_pair_classes: the threshold tau is {}, but must be 0 or above", tau);
   }
-  // The tree-wide limit, not J's tables: this moves to them when J lifts to f,
-  // #345.
   for (const PrimitivePairClass &cls : classes) {
-    if (cls.la > kMaxAngularMomentum || cls.lb > kMaxAngularMomentum) {
-      return err_config("coulomb_pair_classes: class ({}, {}) is above d, the largest momentum "
+    if (cls.la > device::kCoulombMaxMomentum || cls.lb > device::kCoulombMaxMomentum) {
+      return err_config("coulomb_pair_classes: class ({}, {}) is above {}, the largest momentum "
                         "the kernels support",
-                        cls.la, cls.lb);
+                        cls.la, cls.lb, device::kCoulombMaxMomentum);
     }
   }
   if (classes.empty()) {

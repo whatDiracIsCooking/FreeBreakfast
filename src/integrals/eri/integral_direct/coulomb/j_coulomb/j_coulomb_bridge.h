@@ -14,7 +14,6 @@
 // must not follow the vendor runtime header (see primitives.h).
 #include "integral_types.h"
 
-#include "angular_momentum.h"
 #include "primitive_pair_class_view.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
