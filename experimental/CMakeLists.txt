@@ -29,3 +29,7 @@ add_subdirectory(sort/radix)
 # Stable merge sort of double keys, radix_sort's contract and order. Its
 # benchmark times it against radix_sort, so it comes after sort/radix.
 add_subdirectory(sort/merge)
+
+# Half-precision GEMM through cuBLAS / hipBLAS, both accumulators. Its GPU test
+# is test/experimental.
+add_subdirectory(fp16_gemm)
