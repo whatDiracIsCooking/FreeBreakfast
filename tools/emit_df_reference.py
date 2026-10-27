@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Write the reference data the density-fitting tests read.
+
+Everything runs over this tree's own basis files, `data/basis/*.json` for the
+orbitals and `data/aux_basis/*.json` for the fitting sets, handed to PySCF as
+explicit shells (not its library's copies), spherical throughout:
+
+- libcint's `int2c2e_sph`, the Coulomb metric (P|Q), and `int3c2e_sph`, the
+  three-centre (mn|P), for H2O in cc-pVDZ / cc-pVDZ-JKFIT (orbitals to d, aux
+  to f) and in cc-pVTZ / cc-pVTZ-JKFIT (oxygen's f orbitals and g fitting
+  functions, so (ff|g) is reached).
+- PySCF's DF `vj` and `vk` (`RHF(mol).density_fit(auxbasis=...)`'s `get_jk`)
+  of one fixed density on the cc-pVDZ case: D = 2 C C^T over the five
+  occupied orbitals of that case's own converged DF-RHF, so a test can
+  factor it again.
+- DF-RHF (`conv_tol` 1e-12): total energy and orbital energies for H2O and
+  NH4+ in cc-pVDZ / cc-pVDZ-JKFIT and H2O in cc-pVTZ / cc-pVTZ-JKFIT, at
+  `scf/rhf.json`'s geometries.
+
+Arrays are .npy, '<f8' in Fortran order, the layout `src/io/npy` reads; the
+manifest `density_fitting.json` says which file holds what. A file over the
+512 KiB limit is split along the aux index into balanced pieces. BLAS and
+OpenMP are pinned to one thread, and nothing run-dependent (date, host) is
+written, so a rerun regenerates every file byte for byte.
+
+    UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
+        tools/emit_df_reference.py
+
+writes test/gtest/data/density_fitting/. Re-run it to regenerate; the files
+are never hand-edited.
+"""
+
+from __future__ import annotations
+
+import os
+
+# Before numpy loads its BLAS: one thread, so every reduction runs in one
+# order and the output is reproducible bit for bit.
+for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ[variable] = "1"
+
+import json  # noqa: E402
+import math  # noqa: E402
+import pathlib  # noqa: E402
+import re  # noqa: E402
+
+import numpy  # noqa: E402
+import pyscf  # noqa: E402
+from emit_scf_reference import AMMONIUM, BASES, WATER, pyscf_basis  # noqa: E402
+from pyscf import df, gto, lib, scf  # noqa: E402
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+OUT = ROOT / "test" / "gtest" / "data" / "density_fitting"
+MANIFEST = OUT / "density_fitting.json"
+
+# Under FelizJueves's pre-commit large-file hook, which this tree's data
+# follows.
+LIMIT = 512 * 1024
+# np.save's header for a 3-D '<f8' array, padded to 64 bytes: 128 bytes.
+NPY_HEADER = 128
+
+# The fitting set each builtin orbital basis pairs with, by its file under
+# data/aux_basis (pyscf_basis reads from data/basis, hence the relative path).
+AUX_BASES = {
+    "cc-pvdz": ("cc-pvdz-jkfit", "../aux_basis/cc-pVDZ-JKFIT.json"),
+    "cc-pvtz": ("cc-pvtz-jkfit", "../aux_basis/cc-pVTZ-JKFIT.json"),
+}
+
+# The integrals' water: FelizJueves's h2o_ccpvdz_j molecule (and its
+# cc-pVTZ-JKFIT metric fixtures'), no atom on an axis past O and the molecule
+# in no symmetry plane, so every component of every shell is reached. Bohr.
+WATER_SKEW = [
+    ("O", (0.0, 0.0, 0.0)),
+    ("H", (1.43, 0.21, -1.07)),
+    ("H", (-1.38, 0.35, -1.12)),
+]
+
+INTEGRAL_CASES = [
+    {"name": "h2o_ccpvdz", "atoms": WATER_SKEW, "basis": "cc-pvdz", "max_l": (2, 3)},
+    {"name": "h2o_ccpvtz", "atoms": WATER_SKEW, "basis": "cc-pvtz", "max_l": (3, 4)},
+]
+# The case vj and vk are recorded on.
+JK_CASE = "h2o_ccpvdz"
+
+SCF_CASES = [
+    {"name": "h2o_ccpvdz", "atoms": WATER, "basis": "cc-pvdz", "charge": 0},
+    {"name": "nh4_ccpvdz", "atoms": AMMONIUM, "basis": "cc-pvdz", "charge": 1},
+    {"name": "h2o_ccpvtz", "atoms": WATER, "basis": "cc-pvtz", "charge": 0},
+]
+
+COMMAND = (
+    "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_df_reference.py"
+)
+
+
+def libcint_version() -> str:
+    """The libcint PySCF ships, read from its cint.h as FelizJueves does."""
+    header = pathlib.Path(pyscf.__file__).parent / "lib" / "deps" / "include"
+    match = re.search(
+        r'#define\s+CINT_VERSION\s+"([^"]+)"', (header / "cint.h").read_text()
+    )
+    assert match, "no CINT_VERSION in PySCF's cint.h"
+    return match.group(1)
+
+
+def molecules(case: dict) -> tuple[gto.Mole, gto.Mole, str]:
+    """The orbital molecule, its fitting molecule and the fitting set's name."""
+    symbols = {symbol for symbol, _ in case["atoms"]}
+    aux_name, aux_file = AUX_BASES[case["basis"]]
+    mol = gto.M(
+        atom=[[symbol, coord] for symbol, coord in case["atoms"]],
+        unit="Bohr",
+        basis=pyscf_basis(BASES[case["basis"]], symbols),
+        charge=case.get("charge", 0),
+        spin=0,
+        cart=False,
+        verbose=0,
+    )
+    auxmol = df.addons.make_auxmol(mol, pyscf_basis(aux_file, symbols))
+    # Unit-normalised functions on both sides, which the README promises.
+    for m in (mol, auxmol):
+        assert numpy.abs(numpy.diag(m.intor("int1e_ovlp_sph")) - 1).max() < 1e-12
+    return mol, auxmol, aux_name
+
+
+def df_rhf(mol: gto.Mole, auxmol: gto.Mole) -> scf.hf.RHF:
+    """PySCF's converged DF-RHF over exactly auxmol's fitting functions."""
+    mf = scf.RHF(mol).density_fit(auxbasis=auxmol._basis)
+    mf.conv_tol = 1e-12
+    mf.conv_tol_grad = 1e-9
+    mf.max_cycle = 200
+    mf.kernel()
+    assert mf.converged
+    used = mf.with_df.auxmol
+    assert used.nao == auxmol.nao
+    assert numpy.array_equal(used._bas, auxmol._bas)
+    assert numpy.array_equal(used._env, auxmol._env)
+    return mf
+
+
+def shells(m: gto.Mole) -> list[dict]:
+    """One per PySCF shell, in AO order: its atom, l and contraction count.
+
+    A shell of nctr contractions holds nctr * (2l + 1) AOs, contraction-major
+    (each contraction's m = -l..l together), which is the order this tree
+    gets by taking each BSE coefficient column as a shell of its own.
+    """
+    return [
+        {
+            "atom": int(m.bas_atom(i)),
+            "l": int(m.bas_angular(i)),
+            "nctr": int(m.bas_nctr(i)),
+        }
+        for i in range(m.nbas)
+    ]
+
+
+def save(name: str, array: numpy.ndarray) -> str:
+    """Write one '<f8' Fortran-order .npy, under the limit; its file name."""
+    array = numpy.asfortranarray(array, dtype="<f8")
+    path = OUT / f"{name}.npy"
+    numpy.save(path, array, allow_pickle=False)
+    assert path.stat().st_size <= LIMIT, f"{path.name} is over {LIMIT} bytes"
+    return path.name
+
+
+def save_by_aux(name: str, array: numpy.ndarray) -> list[dict]:
+    """Write (nao, nao, naux) in balanced pieces along P, each under the limit."""
+    nao, _, naux = array.shape
+    per_slab = nao * nao * 8
+    pieces = math.ceil(naux / ((LIMIT - NPY_HEADER) // per_slab))
+    bounds = [naux * k // pieces for k in range(pieces + 1)]
+    out = []
+    for begin, end in zip(bounds, bounds[1:], strict=False):
+        stem = name if pieces == 1 else f"{name}_aux{begin}_{end}"
+        out.append({"file": save(stem, array[:, :, begin:end]), "aux": [begin, end]})
+    return out
+
+
+def atoms(case: dict) -> list[dict]:
+    return [
+        {"symbol": symbol, "z": gto.charge(symbol), "coord": list(coord)}
+        for symbol, coord in case["atoms"]
+    ]
+
+
+def integral_case(case: dict) -> dict:
+    """The metric and three-centre integrals of one case, and vj/vk on JK_CASE."""
+    mol, auxmol, aux_name = molecules(case)
+    lmax = max(mol.bas_angular(i) for i in range(mol.nbas))
+    aux_lmax = max(auxmol.bas_angular(i) for i in range(auxmol.nbas))
+    assert (lmax, aux_lmax) == case["max_l"], (lmax, aux_lmax)
+
+    metric = auxmol.intor("int2c2e_sph")
+    assert numpy.abs(metric - metric.T).max() < 1e-14 * numpy.abs(metric).max()
+    assert numpy.linalg.eigvalsh(metric).min() > 0.0
+    eri3 = df.incore.aux_e2(mol, auxmol, "int3c2e_sph", aosym="s1")
+    assert eri3.shape == (mol.nao, mol.nao, auxmol.nao)
+    assert (
+        numpy.abs(eri3 - eri3.transpose(1, 0, 2)).max() < 1e-14 * numpy.abs(eri3).max()
+    )
+
+    out = {
+        "name": case["name"],
+        "basis": case["basis"],
+        "aux_basis": aux_name,
+        "atoms": atoms(case),
+        "nao": int(mol.nao),
+        "naux": int(auxmol.nao),
+        "shells": shells(mol),
+        "aux_shells": shells(auxmol),
+        "int2c2e": save(f"{case['name']}_int2c2e", metric),
+        "int3c2e": save_by_aux(f"{case['name']}_int3c2e", eri3),
+    }
+    if case["name"] != JK_CASE:
+        return out
+
+    mf = df_rhf(mol, auxmol)
+    nocc = mol.nelectron // 2
+    occupied = mf.mo_coeff[:, :nocc]
+    density = 2.0 * occupied @ occupied.T
+    vj, vk = mf.get_jk(mol, density, hermi=1)
+    # The same from the integrals written above: J = (mn|P) (P|Q)^-1 (Q|ls) D_ls
+    # and K_ml = sum (mn|P) (P|Q)^-1 (Q|ks) D_ns over n, k.
+    fitted = numpy.linalg.solve(metric, eri3.reshape(-1, auxmol.nao).T)
+    fitted = fitted.T.reshape(eri3.shape)
+    vj_check = numpy.einsum("mnP,lsP,ls->mn", eri3, fitted, density)
+    vk_check = numpy.einsum("mnP,ksP,ns->mk", eri3, fitted, density)
+    assert numpy.abs(vj - vj_check).max() < 1e-10 * numpy.abs(vj).max()
+    assert numpy.abs(vk - vk_check).max() < 1e-10 * numpy.abs(vk).max()
+    out["jk"] = {
+        "density": save(f"{case['name']}_density", density),
+        "vj": save(f"{case['name']}_vj", vj),
+        "vk": save(f"{case['name']}_vk", vk),
+        "occupied": nocc,
+        "df_rhf_energy": float(mf.e_tot),
+    }
+    return out
+
+
+def scf_case(case: dict) -> dict:
+    """One DF-RHF reference: total energy and orbital energies."""
+    mol, auxmol, aux_name = molecules(case)
+    mf = df_rhf(mol, auxmol)
+    return {
+        "name": case["name"],
+        "basis": case["basis"],
+        "aux_basis": aux_name,
+        "charge": case["charge"],
+        "atoms": atoms(case),
+        "nao": int(mol.nao),
+        "naux": int(auxmol.nao),
+        "electrons": int(mol.nelectron),
+        "energy": float(mf.e_tot),
+        "nuclear_repulsion": float(mol.energy_nuc()),
+        "mo_energies": [float(e) for e in mf.mo_energy],
+    }
+
+
+def main() -> None:
+    lib.num_threads(1)
+    OUT.mkdir(parents=True, exist_ok=True)
+    for stale in OUT.glob("*.npy"):
+        stale.unlink()
+    doc = {
+        "description": "PySCF/libcint density fitting over this tree's data/basis "
+        "and data/aux_basis files, spherical: (P|Q), (mn|P), DF vj/vk of one "
+        "density, DF-RHF energies (hartree); coordinates in bohr. Arrays are "
+        "'<f8' Fortran-order .npy files beside this one",
+        "provenance": {
+            "pyscf": pyscf.__version__,
+            "libcint": libcint_version(),
+            "numpy": numpy.__version__,
+            "threads": 1,
+            "command": COMMAND,
+        },
+        "integrals": [integral_case(case) for case in INTEGRAL_CASES],
+        "df_rhf": [scf_case(case) for case in SCF_CASES],
+    }
+    MANIFEST.write_text(json.dumps(doc, indent=1) + "\n")
+    print(f"wrote {OUT}")
+
+
+if __name__ == "__main__":
+    main()
