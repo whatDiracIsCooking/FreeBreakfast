@@ -9,9 +9,8 @@ keeps them as uncontracted primitives). One ``--threshold`` drives both
 Cholesky stages, as in Lehtola's scheme. By default every target angular
 momentum the atom's own shells can reach is decomposed (``--max-l``,
 unbounded; ``--prune-l`` caps it per element by ``compact.pruned_max_l``,
-off by default). The result is written as this tool's own schema
-(``--aux-basis-out``) or real Basis Set Exchange spherical shells
-(``--bse-out``, see ``to_bse_spherical``'s doc comment).
+off by default). The result is written as Basis Set Exchange spherical
+shells (``--bse-out``, see ``to_bse_spherical``'s doc comment).
 
 The ORBITAL basis can itself come from a Basis Set Exchange document
 (``--bse-in``; ``tools/bse_download.py`` fetches one), not only a name PySCF's
@@ -31,12 +30,8 @@ or, from inside ``tools/``::
 
     python3 -m atomic_cd.cli C sto-3g
 
-A tighter contraction, and write the auxiliary shells to a file::
-
-    python3 -m atomic_cd.cli C cc-pVDZ --contract-threshold 1e-6 \
-        --aux-basis-out c_ccpvdz_accd.json
-
-Same, as a Basis Set Exchange spherical-shell document::
+A tighter contraction, written as a Basis Set Exchange spherical-shell
+document::
 
     python3 -m atomic_cd.cli C cc-pVDZ --contract-threshold 1e-6 \
         --bse-out c_ccpvdz_accd.bse.json
@@ -52,7 +47,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
 
 from pyscf import gto
 
@@ -152,36 +146,9 @@ def run(
         "prune_l": prune_l,
         "contract_threshold": contract_threshold,
         **stages,
-        # not printed/dumped verbatim -- see _write_aux_basis
+        # the shells themselves, written by --bse-out rather than printed
         "_aux_shells": aux_shells,
     }
-
-
-def _write_aux_basis(
-    path: str, element: str, basis_name: str, summary: dict, aux_shells: dict
-) -> None:
-    """Write the auxiliary basis as this tool's own JSON schema -- each
-    shell's ell, exponents and coefficient rows (``compact.AuxShell``), NOT
-    Basis Set Exchange format; ``to_bse_spherical`` is the BSE form."""
-    document = {
-        "generator": "tools/atomic_cd",
-        "convention": (
-            "real solid harmonic (spherical) auxiliary shells, each a "
-            "general contraction: coefficients[f][k] is function f's "
-            "coefficient on the normalized primitive r^l exp(-exponents[k] "
-            "r^2), for each of the 2l+1 components of that l."
-        ),
-        "element": element,
-        "basis": basis_name,
-        "threshold": summary["threshold"],
-        "screened": summary["aCD"] is not None,
-        "contract_threshold": summary["contract_threshold"],
-        "prune_l": summary["prune_l"],
-        "shells": [asdict(shell) for shells in aux_shells.values() for shell in shells],
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(document, f, indent=2)
-        f.write("\n")
 
 
 def to_bse_spherical(
@@ -221,9 +188,27 @@ def to_bse_spherical(
 
 
 def _write_bse_basis(
-    path: str, element: str, aux_shells: dict[int, list[compact.AuxShell]]
+    path: str,
+    element: str,
+    basis_name: str,
+    summary: dict,
+    aux_shells: dict[int, list[compact.AuxShell]],
 ) -> None:
+    """``to_bse_spherical``'s document, with the settings that made it in
+    its ``revision_description``."""
     document = to_bse_spherical(element, aux_shells)
+    document["revision_description"] = (
+        f"Generated from {basis_name} by tools/atomic_cd/cli.py "
+        f"(threshold {summary['threshold']:g}, "
+        + (
+            f"contract threshold {summary['contract_threshold']:g}"
+            if summary["contract_threshold"] is not None
+            else "uncontracted"
+        )
+        + (", screened" if summary["aCD"] is not None else "")
+        + (f", prune l {summary['prune_l']}" if summary["prune_l"] is not None else "")
+        + ")"
+    )
     with open(path, "w", encoding="utf-8") as f:
         json.dump(document, f, indent=2)
         f.write("\n")
@@ -317,11 +302,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--aux-basis-out",
-        metavar="PATH",
-        help="write the auxiliary shells to this JSON file",
-    )
-    parser.add_argument(
         "--bse-out",
         metavar="PATH",
         help=(
@@ -412,19 +392,8 @@ def main(argv: list[str] | None = None) -> int:
             + (f" contracted={c['contracted']}" if "contracted" in c else "")
         )
 
-    if args.aux_basis_out:
-        _write_aux_basis(
-            args.aux_basis_out,
-            args.element,
-            args.basis,
-            summary,
-            aux_shells,
-        )
-        n_shells = sum(len(v) for v in aux_shells.values())
-        print(f"wrote {args.aux_basis_out} ({n_shells} auxiliary shells)")
-
     if args.bse_out:
-        _write_bse_basis(args.bse_out, args.element, aux_shells)
+        _write_bse_basis(args.bse_out, args.element, args.basis, summary, aux_shells)
         n_shells = sum(len(v) for v in aux_shells.values())
         print(f"wrote {args.bse_out} ({n_shells} auxiliary shells, BSE spherical)")
 

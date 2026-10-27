@@ -277,3 +277,16 @@ def test_aux_set_is_each_element_as_cli_builds_it():
     # O's cc-pVDZ reaches d, so its uncapped top, 2 l_obs = 4, was cut to 3
     oxygen = document["elements"]["8"]["electron_shells"]
     assert max(s["angular_momentum"][0] for s in oxygen) == 3
+
+
+def test_bse_out_records_its_settings(tmp_path):
+    """--bse-out, the one output, says in revision_description how it was
+    made, as aux_set's documents do."""
+    out = tmp_path / "h.json"
+    assert cli.main(["H", "sto-3g", "--prune-l", "--bse-out", str(out)]) == 0
+    document = json.loads(out.read_text(encoding="utf-8"))
+    assert document["revision_description"] == (
+        "Generated from sto-3g by tools/atomic_cd/cli.py "
+        "(threshold 1e-07, contract threshold 1e-05, prune l 1)"
+    )
+    assert list(document["elements"]) == ["1"]
