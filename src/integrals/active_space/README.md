@@ -5,13 +5,15 @@ count, built **integral-direct** from `coulomb` and `exchange`: no AO
 two-electron integral is formed or stored. It is what a CASCI diagonalizes,
 and what a CASSCF rebuilds once per macro-iteration; FCI is `ncore = 0`,
 `ncas = nmo`. Beside it, the (pq|uv) and (pu|qv) over every orbital that a
-CASSCF's generalized Fock and orbital Hessian contract.
+CASSCF's generalized Fock and orbital Hessian contract, also built over
+density fitting from the fitted factor B.
 
 ## Module
 
 `free_breakfast.integrals.active_space`, target
 `free_breakfast::integrals::active_space`, re-exported by
-`free_breakfast.integrals`. Two functions and their products:
+`free_breakfast.integrals`. Two functions, one of them overloaded for density
+fitting, and their products:
 
 ```cpp
 struct ActiveSpaceHamiltonian {
@@ -35,6 +37,12 @@ struct CasscfIntegrals {
 };
 
 Result<CasscfIntegrals> casscf_integrals(/* active_space_hamiltonian's arguments, but tau_k = 1e-14 */);
+
+// Over density fitting: B in place of U, the classes and the taus.
+Result<CasscfIntegrals> casscf_integrals(
+    DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
+    const SphericalMatrixAO &h, const Buffers::device<double> &b, int32_t naux,
+    const SphericalMatrixAO &c, int32_t ncore, int32_t ncas);
 ```
 
 Columns `[0, ncore)` of C are the core, `[ncore, ncore + ncas)` the active
@@ -109,11 +117,50 @@ from `res.device_workspace()`, which neither `coulomb` nor `exchange` takes;
 the three Cartesian matrices they read and write are their own type, allocated
 per call.
 
+## Over density fitting
+
+The second `casscf_integrals` takes the fitted factor B (`density_fit`'s, the
+pipeline's `DensityFittingOutput::b` and `naux`), naux × nao², element
+(Q, n + nao m) at Q + naux (n + nao m), so that (mn|ls) ≈ Σ_Q B_Q,mn B_Q,ls.
+Everything is spherical: no U C, no Cartesian matrices, no screening and so
+no prune cap, and no per-pair J or K. It returns the same `CasscfIntegrals` in
+the same layouts.
+
+| Quantity | From |
+|---|---|
+| E_core, h_eff | one `df_coulomb` of P = C_core C_coreᵀ and one `df_exchange` of C_core (its K is of 2P), G = 2 J − K_df / 2; h_eff = C_actᵀ (h + G) C_act, one `gemmwich` (skipped to h alone for `ncore = 0`) |
+| L_Q,up = Σ_mn B_Q,mn C_m,ncore+u C_n,p | X_m = B_m C_act, one batched gemm over m, `[Q][u][m]`; then L = X C, one gemm, `[Q][u][p]` |
+| (pu\|qv) | Σ_Q L_Q,up L_Q,vq: block (u, v) = L_uᵀ L_v, one batched gemm over u per v (n_act calls) |
+| γ_Q,uv | L_Q,u,ncore+v: L's active columns, a contiguous naux × n_act² slice of L |
+| (tu\|vw) | γᵀ γ, one gemm: ppaa's active block, to rounding |
+| (pq\|uv) | J_uv = Bᵀ γ_uv for every (u, v), one gemm, nao × nao each, into ppaa's own buffer; then Cᵀ J_uv C into the (u, v) blocks, two batched gemms over the n_act² blocks |
+
+ppaa is *not* one gemm over L: (pq|uv) needs B transformed over every p and q,
+and the full MO transform L_Q,pq would cost another naux · nmo², B's own size.
+J_uv over every (u, v) is nao² · n_act², ppaa's own order of size, and is held
+in ppaa's buffer until the batched Cᵀ J C overwrites it.
+
+**Scratch**, with nao = nmo (C is square), in doubles:
+
+| Region | Size | Where |
+|---|---|---|
+| P, J, K of the core | 3 nao² | allocated per call: `df_coulomb` and `df_exchange` take the workspace |
+| `df_exchange`'s X and lower triangle | naux · ncore · nao + nao² | `res.device_workspace()`, during the core's K |
+| X, B's first half transform | naux · n_act · nao | `res.device_workspace()` |
+| L | naux · n_act · nmo | `res.device_workspace()` |
+| J_uv C, the batch's intermediate (and h_eff's `gemmwich` work) | nao · nmo · n_act² | `res.device_workspace()` |
+| J_uv | nao² · n_act² | ppaa's own buffer |
+
+So past its two nmo² n_act² outputs the call holds one more of their size and
+2 naux n_act nmo; B itself, naux nao², is the caller's. Two syncs, one per
+E_core dot, none for `ncore = 0`.
+
 ## Not done
 
 - **Batched J** (#200): one call over every pair density, once it lands.
-- **Density fitting** (#177): (tu|vw) = Σ_P B_tu^P B_vw^P is far cheaper than
-  n_act² J builds.
+- **A density-fitted `active_space_hamiltonian`**: the Hamiltonian alone over
+  B, without ppaa and papa. `casscf_integrals` carries it, at ppaa's and papa's
+  cost.
 
 ## Tests
 
@@ -137,3 +184,13 @@ pruned classes against unpruned ones and papa against 8⁴ times the unscaled
 orbitals' (K's classes are unpruned, so its cap shows as exact scaling), to
 1e-12 max; and the refusals. Its Scf step runs with `tau_j = 0`: at the default, J's screen moves
 N₂'s RHF energy by 2.6e-10 Eh.
+
+The density-fitted overload, on the same SCF orbitals of H₂O and N₂ in
+cc-pVDZ with B over aug-cc-pVDZ-acCD-6-6: E_core, h_eff, (tu|vw), ppaa and
+papa against the same B contracted on the host (the full MO transform L_Q,pq)
+to 1e-12 relative (max over each array); against the integral-direct overload
+at tau = 0 to 1e-4, DF's own error (worst measured: papa, 6.3e-5 on H₂O). Not
+cc-pVDZ-JKFIT: it is built for occupied pairs, and its Coulomb-metric fitting
+error reaches 1.6e-3 on the virtual-orbital pairs ppaa and papa span; (tu|vw)'s 8-fold symmetry, and ppaa's and
+papa's active blocks against it, to 1e-12 max; ppaa's and papa's permutational
+symmetries; and the refusals, with FCI (no core) taken.
