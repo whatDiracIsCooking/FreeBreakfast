@@ -3,23 +3,23 @@
 The exact orbital-orbital Hessian of a (state-averaged) CASSCF wavefunction at
 fixed CI, over the packed non-redundant pairs, on the GPU: its product with a
 block of vectors, as a `LinearOperator`, and its diagonal for the
-preconditioner. What the optimizer's augmented Hessian (#251) solves over.
+preconditioner. What `mcscf/solve`'s augmented Hessian (#251) solves over.
 
 ## Module
 
-`free_breakfast.mcscf.hessian`, target `free_breakfast::mcscf::hessian`,
-re-exported by `free_breakfast.mcscf`.
+`free_breakfast.response.hessian`, target `free_breakfast::response::hessian`,
+re-exported by `free_breakfast.response`.
 
 ```cpp
-class mcscf::Hessian {
+class response::Hessian {
 public:
-  static Result<mcscf::Hessian> create(
+  static Result<response::Hessian> create(
       DeviceResources &res, const BasisSet &basis, const SphericalMatrixAO &h,
       const std::shared_ptr<const Buffers::device<double>> &u,
       std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
       const SphericalMatrixAO &c, int32_t ncore, int32_t ncas,
       const Buffers::device<double> &ppaa, const Buffers::device<double> &papa,
-      const mcscf::Fock &fock, double tau_j = 1e-14, double tau_k = 1e-14);
+      const response::Fock &fock, double tau_j = 1e-14, double tau_k = 1e-14);
 
   Status apply(DeviceResources &res, int32_t k, const double *x, double *y); // Y = H X
   int32_t size() const noexcept;                                             // the pair count
@@ -27,13 +27,13 @@ public:
 };
 ```
 
-The arguments through `k_classes` are `mcscf::fock`'s; `fock` is its result
+The arguments through `k_classes` are `response::fock`'s; `fock` is its result
 over the same C, ncore and ncas, and `ppaa` and `papa` are `casscf_integrals`'
 over the same C (both empty for ncas = 0, the RHF orbital Hessian). Its γ and
 Γ are the weighted ones, so state averaging needs nothing here. H is the
 second derivative of E(C exp(κ(x))) in the gradient's coordinate:
 E = E₀ + g·x + ½ xᵀHx + …, so it is **twice** PySCF's `gen_g_hop` `h_op`
-and `h_diag`, as `mcscf::Fock::gradient` is twice its g. Everything is in
+and `h_diag`, as `response::Fock::gradient` is twice its g. Everything is in
 [`../README.md`](../README.md)'s packed order. `apply` models `recipes`'
 `LinearOperator` (`static_assert`ed), so `davidson_solve` takes it as is.
 
@@ -145,16 +145,16 @@ diagonal, and the three Cartesian matrices J and K read and write.
 
 ## Tests
 
-`test/gtest/mcscf_hessian_gpu.cpp`, against `test/gtest/data/casscf/casscf.json`
+`test/gtest/response_hessian_gpu.cpp`, against `test/gtest/data/casscf/casscf.json`
 (PySCF's `mc1step.gen_g_hop`, doubled), at each case's recorded start and set
-up as `mcscf_fock_gpu.cpp` does: H₂O cc-pVDZ CAS(4,4) [2, 3, 5, 6], N₂ cc-pVDZ
+up as `response_fock_gpu.cpp` does: H₂O cc-pVDZ CAS(4,4) [2, 3, 5, 6], N₂ cc-pVDZ
 CAS(6,6), H₂CO cc-pVDZ CAS(4,3) at [0.5, 0.5] and [0.7, 0.3], and H₂O cc-pVDZ
 by AVAS.
 
 - the diagonal summed over each pair of orbital sets against PySCF's, to 1e-7
   (seen: 2e-10);
 - gᵀHg and \|Hg\| against PySCF's, to 1e-7 relative (seen: 1.3e-9);
-- H x against a central finite difference of `mcscf::fock`'s gradient along
+- H x against a central finite difference of `response::fock`'s gradient along
   two random unit x, the RDMs fixed, to 1e-6 of \|Hx\| (seen: 9e-12). The
   gradient at C exp(tκ) is the derivative after the rotation, so the
   difference is taken of G′ + t [κ, G′] / 2 packed, G′ = 2 (F′ − F′ᵀ) over

@@ -3,7 +3,7 @@
 /// built once and two J and K of transition densities per product, and its
 /// h_diag assembled on the host from diagonals read back once.
 
-module free_breakfast.mcscf.hessian;
+module free_breakfast.response.hessian;
 
 import std;
 import free_breakfast.core.types;
@@ -18,11 +18,11 @@ import free_breakfast.recipes.norm; // norm, Norm
 import free_breakfast.recipes.linear_operator;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
-import free_breakfast.mcscf.fock;
+import free_breakfast.response.fock;
 
 #include "diagnostics.h"
 
-namespace free_breakfast::mcscf {
+namespace free_breakfast::response {
 
 static_assert(LinearOperator<Hessian, double>);
 
@@ -71,29 +71,30 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
   const uint32_t n_sphe = basis.nao_sphe();
   const uint32_t n_orbitals = c.n();
   if (ncore < 0 || ncas < 0) {
-    return err_config("mcscf::Hessian::create: ncore ({}) and ncas ({}) must not be negative",
+    return err_config("response::Hessian::create: ncore ({}) and ncas ({}) must not be negative",
                       ncore, ncas);
   }
   if (ncore + ncas == 0) {
-    return err_config("mcscf::Hessian::create: ncore and ncas are both 0, so nothing is occupied");
+    return err_config(
+        "response::Hessian::create: ncore and ncas are both 0, so nothing is occupied");
   }
   if (std::cmp_greater(int64_t{ncore} + ncas, n_orbitals)) {
-    return err_config("mcscf::Hessian::create: ncore {} + ncas {} exceeds the {} orbitals", ncore,
-                      ncas, n_orbitals);
+    return err_config("response::Hessian::create: ncore {} + ncas {} exceeds the {} orbitals",
+                      ncore, ncas, n_orbitals);
   }
   // Written so that NaN fails too.
   if (!(tau_j >= 0.0) || !(tau_k >= 0.0)) {
-    return err_config("mcscf::Hessian::create: tau_j ({}) and tau_k ({}) must be 0 or above", tau_j,
-                      tau_k);
+    return err_config("response::Hessian::create: tau_j ({}) and tau_k ({}) must be 0 or above",
+                      tau_j, tau_k);
   }
   if (h.n() != n_sphe || n_orbitals != n_sphe) {
     return err_config(
-        "mcscf::Hessian::create: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
+        "response::Hessian::create: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
         h.n(), h.n(), n_orbitals, n_orbitals, n_sphe);
   }
   if (h.dev_idx() != res.dev_idx() || c.dev_idx() != res.dev_idx()) {
     return err_config(
-        "mcscf::Hessian::create: h is on device {} and C on {}, but the call passed device {}",
+        "response::Hessian::create: h is on device {} and C on {}, but the call passed device {}",
         h.dev_idx(), c.dev_idx(), res.dev_idx());
   }
   const size_t n_all = n_orbitals;
@@ -103,14 +104,14 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
   const size_t occ = core + na;
   if (ppaa.num_elements() != nn * na * na || papa.num_elements() != nn * na * na) {
     return err_config(
-        "mcscf::Hessian::create: ppaa holds {} and papa {} doubles, but nmo^2 ncas^2 is {}",
+        "response::Hessian::create: ppaa holds {} and papa {} doubles, but nmo^2 ncas^2 is {}",
         ppaa.num_elements(), papa.num_elements(), nn * na * na);
   }
   const size_t n_pairs = (core * (n_all - core)) + (na * (n_all - occ));
   if (fock.fock_inactive.num_elements() != nn || fock.fock_active.num_elements() != nn ||
       fock.fock.num_elements() != nn || fock.gradient.num_elements() != n_pairs ||
       fock.gamma.num_elements() != na * na || fock.gamma2.num_elements() != na * na * na * na) {
-    return err_config("mcscf::Hessian::create: the Fock is not of {} orbitals, ncore {} and "
+    return err_config("response::Hessian::create: the Fock is not of {} orbitals, ncore {} and "
                       "ncas {}",
                       n_all, ncore, ncas);
   }
@@ -336,11 +337,11 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
 Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const x,
                       double *const y) {
   if (res.dev_idx() != dev_idx_) {
-    return err_config("mcscf::Hessian::apply: built on device {}, but the call passed device {}",
+    return err_config("response::Hessian::apply: built on device {}, but the call passed device {}",
                       dev_idx_, res.dev_idx());
   }
   if (k < 0) {
-    return err_config("mcscf::Hessian::apply: the block has {} columns", k);
+    return err_config("response::Hessian::apply: the block has {} columns", k);
   }
   if (k == 0 || n_pairs_ == 0) {
     return {};
@@ -475,4 +476,4 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
   return {};
 }
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response

@@ -54,7 +54,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::strings
   free_breakfast::ci::sigma
   free_breakfast::ci::rdm
-  free_breakfast::mcscf::fock
-  free_breakfast::mcscf::hessian
+  free_breakfast::response::fock
+  free_breakfast::response::hessian
   free_breakfast::mcscf::solve::device
 )

@@ -8,7 +8,7 @@
 /// once, plus two J and two K of transition densities when there is a core;
 /// see README.md for why those cannot be avoided.
 
-export module free_breakfast.mcscf.hessian;
+export module free_breakfast.response.hessian;
 
 import std;
 import free_breakfast.core.types;
@@ -19,9 +19,9 @@ import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
-import free_breakfast.mcscf.fock;
+import free_breakfast.response.fock;
 
-export namespace free_breakfast::mcscf {
+export namespace free_breakfast::response {
 
 /// @brief The orbital Hessian H of E(C exp(kappa(x))) at x = 0, fixed RDMs,
 /// over the packed pairs of @ref pack_orbital_pairs: E = E_0 + g . x +
@@ -135,4 +135,4 @@ private:
   CartesianMatrixAO k_;
 };
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response

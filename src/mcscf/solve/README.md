@@ -19,8 +19,8 @@ Result<mcscf::Solution> mcscf::solve(
     int32_t nroots, std::span<const double> weights = {}, const mcscf::Options &options = {});
 ```
 
-The arguments through `k_classes` are `mcscf::fock`'s; `c` is the start, its
-columns core, active, virtual as the rest of the layer takes them. The roots
+The arguments through `k_classes` are `response::fock`'s; `c` is the start, its
+columns core, active, virtual as `../../response/README.md` orders them. The roots
 are the `nroots` lowest of spin |N_α − N_β| / 2, N_β = nelecas / 2: singlets
 for an even `nelecas`. `weights` are refused (`InvalidConfig`) if any is
 negative, if they do not sum to 1 within 1e-12 or if their count is not
@@ -63,7 +63,7 @@ Each macro iteration, at the current C:
    went 4.2e-7 to 3.2e-7), and on H₂CO SA2 it left the final ‖g‖ at 7.6e-10
    inside the loop but 1.5e-9 recomputed with a tight CI.
 3. **The RDMs and derivatives**: `ci::Rdm::rdm12` at the weights, read back,
-   and `mcscf::fock`: the weighted energy and the gradient g.
+   and `response::fock`: the weighted energy and the gradient g.
 4. **Convergence**: |ΔE| < `conv_tol` over the last accepted iteration and
    ‖g‖ < `conv_tol_grad`. The first iteration has no ΔE, so the loop takes at
    least two.
@@ -71,7 +71,7 @@ Each macro iteration, at the current C:
    drops these orbitals, halves the step from the accepted ones and sets the
    trust radius to its new length. The step is not re-solved: its κ's
    `skew_eig` is kept, and `skew_expm` takes the half as its t.
-6. **The step**: `mcscf::Hessian` H at C plus the CI's response R (below),
+6. **The step**: `response::Hessian` H at C plus the CI's response R (below),
    H̃ = H + R, and up to `max_micro` solves of the quadratic model at these
    frozen integrals,
    E + g·x + ½ xᵀH̃x. Each is the lowest root of the augmented Hessian
@@ -239,7 +239,7 @@ bar is 8.
 | `tau_j`, `tau_k` | 1e-14 | the screening of every J and K build |
 
 **The cost is the Hessian products.** Each H·κ is two J and two K builds when
-there is a core (`hessian/`), plus the CI's response to it (sigmas and RDMs,
+there is a core (`response/hessian/`), plus the CI's response to it (sigmas and RDMs,
 no J or K), and each column added to Q costs one;
 `mcscf::Iteration::hessian_products` counts them. A macro iteration's first
 solve pays for every column it needs; a later solve pays only for what its
@@ -298,7 +298,7 @@ iterations here take one solve. Steihaug was not measured.
 
 `test/gtest/mcscf_solve_gpu.cpp`, against `test/gtest/data/casscf/casscf.json`'s
 converged, polished results, from each case's recorded start, set up as
-`mcscf_fock_gpu.cpp` does: H₂O cc-pVDZ CAS(4,4) [2, 3, 5, 6], N₂ cc-pVDZ
+`response_fock_gpu.cpp` does: H₂O cc-pVDZ CAS(4,4) [2, 3, 5, 6], N₂ cc-pVDZ
 CAS(6,6), H₂CO cc-pVDZ CAS(4,3) at [0.5, 0.5] and [0.7, 0.3], and H₂O cc-pVDZ
 by AVAS, at `conv_tol_grad` 1e-9:
 

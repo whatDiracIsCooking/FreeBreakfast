@@ -103,15 +103,19 @@ prefix; the qualification actually needed does.
 is self-disambiguating — nothing else in the tree wants `overlap`, `kinetic`,
 `nuclear_attraction` or `aberth`, and a new integral kind brings a new unique
 word. A method's is not: `rdm1`, `fock`, `energy`, `gradient` and `solve` recur
-once per method. So `ci`, `mcscf`, `localization` and whatever follows each take
+once per method. So `ci`, `response`, `mcscf`, `localization` and whatever follows each take
 a namespace and spell their contents bare inside it.
 
 **The namespace is the layer, not the method** — the directory directly under
 `src/`, so that the namespace path and the module path stay one hierarchy
-(`free_breakfast.mcscf.fock` exports into `free_breakfast::mcscf`). Where a
-layer holds exactly one method the two coincide, and the method prefix simply
-goes: `ci` is CI, `mcscf` is CASSCF, so `CasscfFock` is `mcscf::Fock` and
-`OrbitalHessian` is `mcscf::Hessian`. Where a layer holds several methods, each
+(`free_breakfast.response.fock` exports into `free_breakfast::response`). Where
+a layer holds exactly one method the two coincide, and the method prefix simply
+goes: `ci` is CI, `mcscf` is the CASSCF optimizer, so `CasscfSolve` is
+`mcscf::solve`. A layer can also be cut by *role* rather than by method:
+`response` holds the energy's derivatives with respect to the orbital rotation,
+which the optimizer steps over and a response solve inverts, so `CasscfFock` is
+`response::Fock` and `OrbitalHessian` is `response::Hessian`, and neither needs
+`mcscf` to read them. Where a layer holds several methods, each
 method's name stays on as the qualifier, because that is the one thing the
 namespace cannot supply — `localization` holds Pipek-Mezey, IBOs and LIVVOs, so
 `localization::PmOptions`, `localization::pm_localize` and
@@ -162,13 +166,13 @@ and nesting them would qualify most of the tree against nothing.
 - **error and log message text**, which reaches its reader with no namespace
   around it. Write the qualified name: `err_config("ci::pack: …")`, never
   `"pack: …"`. Refusal tests match these by *substring*
-  (`McscfHessianRefusals`), so keep the qualified name in the prefix and let
+  (`ResponseHessianRefusals`), so keep the qualified name in the prefix and let
   the assertions match the prose after it — a type name inside the message
   body is a name a rename will drift out from under them;
 - **gtest suite names**, which `gtest_discover_tests` turns into one ctest
   entry each in a flat registry that `ctest -R` selects over — and which the
   `TEST` macro pastes into an identifier, so a qualified name does not even
-  compile. They stay `CiSigma`, `CiSolver`, `CiStrings`, `McscfFock`.
+  compile. They stay `CiSigma`, `CiSolver`, `CiStrings`, `ResponseFock`.
 
 **When a name does need qualifying, qualify it by the method or the data
 structure, not the directory.** `CasscfIntegrals` lives in
@@ -302,7 +306,7 @@ the call you want: a leading dimension that is not the operand's own row count
 Don't write a module-local gemm helper that derives the leading dimensions.
 `livvo_gemm` and `ibo_gemm` were two copies of the rectangular overload, each
 taking its ops as `bool`s. (A lambda that only shortens a run of `wwr::gemm`
-calls whose leading dimensions are given is not one: `mcscf::Hessian::apply`'s
+calls whose leading dimensions are given is not one: `response::Hessian::apply`'s
 `block_gemm` takes the row blocks of κ and X₂, and its packed products beside
 them are `gemm`. Don't name such a lambda `gemm`, which hides this one.) The ops are template arguments, as
 everywhere in `recipes/blas`, so an op outside `N`, `T` and `C` fails to

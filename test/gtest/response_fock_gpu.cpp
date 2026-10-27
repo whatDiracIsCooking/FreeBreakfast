@@ -1,4 +1,4 @@
-// mcscf::fock on the device, at each case's CASCI orbitals, against PySCF's
+// response::fock on the device, at each case's CASCI orbitals, against PySCF's
 // mc1step.gen_g_hop (data/casscf/casscf.json, tools/emit_casscf_reference.py):
 // the weighted energy against the CASCI energy; the gradient's sign-invariant
 // sqrt(sum g_pq^2) per pair of orbital sets, and |g|; the gradient against a
@@ -9,7 +9,7 @@
 // space picked by pipeline.active_space as the Casci step picks it (by index,
 // or by AVAS), and the CI and RDMs from the Casci step's roots and ci.rdm's
 // ci::Rdm.
-// So this executable links pipeline; mcscf itself does not. Runs the device
+// So this executable links pipeline; response itself does not. Runs the device
 // chain, so needs a GPU.
 
 #include <gtest/gtest.h>
@@ -24,7 +24,7 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.expm;
 import free_breakfast.integrals;
 import free_breakfast.ci;
-import free_breakfast.mcscf;
+import free_breakfast.response;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -88,7 +88,7 @@ void upload(fb::DeviceResources &res, const std::vector<double> &host, double *d
   EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);
 }
 
-// The packed order, as src/mcscf/README.md documents it: (p, q) per packed
+// The packed order, as src/response/README.md documents it: (p, q) per packed
 // element.
 std::vector<std::pair<std::size_t, std::size_t>> packed_pairs(std::size_t nmo, std::size_t ncore,
                                                               std::size_t ncas) {
@@ -111,7 +111,7 @@ std::vector<std::pair<std::size_t, std::size_t>> packed_pairs(std::size_t nmo, s
 // is run by hand: tau_j is not a TOML key.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node,
                                                std::string_view basis = {}) {
-  const fb::test::ScratchDir dir("mcscf_fock");
+  const fb::test::ScratchDir dir("response_fock");
   // Bohr in the reference, Angstrom in an XYZ file.
   std::string xyz =
       std::format("{}\n{}\n", entry.at("atoms").size(), entry.at("name").get<std::string>());
@@ -158,7 +158,7 @@ fb::CasciStep casci_step(const fb::json &entry) {
   return step;
 }
 
-// Everything mcscf::fock reads, from one converged SCF, and with a CASCI, its
+// Everything response::fock reads, from one converged SCF, and with a CASCI, its
 // orbitals and the weighted RDMs of its roots.
 struct Setup {
   fb::NodeResources node;
@@ -178,19 +178,19 @@ struct Setup {
 
   [[nodiscard]] fb::DeviceResources &res() { return node.device(0); }
 
-  // mcscf::fock over orbitals with the setup's RDMs, ppaa built over them.
-  [[nodiscard]] fb::Result<fb::mcscf::Fock> fock(const fb::SphericalMatrixAO &orbitals) {
+  // response::fock over orbitals with the setup's RDMs, ppaa built over them.
+  [[nodiscard]] fb::Result<fb::response::Fock> fock(const fb::SphericalMatrixAO &orbitals) {
     auto integrals = fb::casscf_integrals(res(), *basis, *molecule, h->h, transform->u, j_classes,
                                           k_classes, orbitals, casci->ncore, casci->ncas);
     if (!integrals.has_value()) {
       return std::unexpected(std::move(integrals.error()));
     }
-    return fb::mcscf::fock(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes,
-                           orbitals, casci->ncore, casci->ncas, integrals->ppaa, gamma, gamma2);
+    return fb::response::fock(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes,
+                              orbitals, casci->ncore, casci->ncas, integrals->ppaa, gamma, gamma2);
   }
 
   // The energy of orbitals at the setup's RDMs, from active_space_hamiltonian:
-  // E_core + sum h_eff gamma + 1/2 sum (tu|vw) Gamma, independent of mcscf::fock.
+  // E_core + sum h_eff gamma + 1/2 sum (tu|vw) Gamma, independent of response::fock.
   [[nodiscard]] fb::Result<double> energy(const fb::SphericalMatrixAO &orbitals) {
     auto built =
         fb::active_space_hamiltonian(res(), *basis, *molecule, h->h, transform->u, j_classes,
@@ -310,7 +310,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci,
     return nullptr;
   }
   const auto n = static_cast<std::size_t>(ncas);
-  // ci::Rdm reads and writes the device; mcscf::fock takes gamma and Gamma
+  // ci::Rdm reads and writes the device; response::fock takes gamma and Gamma
   // on the host, as a CASSCF loop reads them back for its energy anyway.
   auto ci_rdm = fb::ci::Rdm::create(res, *alpha, *beta);
   if (!ci_rdm.has_value()) {
@@ -346,7 +346,7 @@ std::optional<fb::SphericalMatrixAO> rotate(Setup &setup, const fb::SphericalMat
   fb::Buffers::device<double> w(setup.nmo, res.device());
   fb::Buffers::device<double> e(nn, res.device());
   upload(res, x, packed.data());
-  if (!fb::mcscf::unpack_orbital_pairs(res, nmo, ncore, ncas, packed.data(), kappa.data())
+  if (!fb::response::unpack_orbital_pairs(res, nmo, ncore, ncas, packed.data(), kappa.data())
            .has_value() ||
       !fb::skew_eig<double>(res, nmo, kappa.data(), u.data(), w.data()).has_value() ||
       !fb::skew_expm<double>(res, nmo, u.data(), w.data(), t, e.data()).has_value()) {
@@ -416,9 +416,9 @@ void PrintTo(const Case &c, std::ostream *os) {
   *os << c.name;
 }
 
-class McscfFock : public ::testing::TestWithParam<Case> {};
+class ResponseFock : public ::testing::TestWithParam<Case> {};
 
-TEST_P(McscfFock, MatchesPyscfAtTheCasciOrbitals) {
+TEST_P(ResponseFock, MatchesPyscfAtTheCasciOrbitals) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case(GetParam().name);
   const fb::json &casci = entry.at("casci");
@@ -488,7 +488,7 @@ TEST_P(McscfFock, MatchesPyscfAtTheCasciOrbitals) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Pyscf, McscfFock,
+INSTANTIATE_TEST_SUITE_P(Pyscf, ResponseFock,
                          ::testing::Values(Case{"h2o_ccpvdz"}, Case{"n2_ccpvdz"},
                                            Case{"h2co_ccpvdz_sa2"},
                                            Case{"h2co_ccpvdz_sa2_weighted"},
@@ -497,8 +497,8 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfFock,
 
 // ncas = 0: the generalized Fock is 2 F^I in the core columns, the gradient
 // 4 F^I_ai, the RHF one: zero at the converged SCF, whose energy is given
-// back; and away from it, the slope of mcscf::fock's own energy.
-TEST(McscfFockRhfLimit, IsTheRhfGradient) {
+// back; and away from it, the slope of response::fock's own energy.
+TEST(ResponseFockRhfLimit, IsTheRhfGradient) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_ccpvdz");
   auto setup = make_setup(entry, false);
@@ -509,8 +509,9 @@ TEST(McscfFockRhfLimit, IsTheRhfGradient) {
   const std::int32_t nocc = setup->molecule->electron_count() / 2;
   const fb::Buffers::device<double> no_ppaa(0, res.device());
   const auto rhf = [&](const fb::SphericalMatrixAO &orbitals) {
-    return fb::mcscf::fock(res, *setup->basis, *setup->molecule, setup->h->h, setup->transform->u,
-                           setup->j_classes, setup->k_classes, orbitals, nocc, 0, no_ppaa, {}, {});
+    return fb::response::fock(res, *setup->basis, *setup->molecule, setup->h->h,
+                              setup->transform->u, setup->j_classes, setup->k_classes, orbitals,
+                              nocc, 0, no_ppaa, {}, {});
   };
 
   auto at_scf = rhf(setup->scf->c);
@@ -547,7 +548,7 @@ TEST(McscfFockRhfLimit, IsTheRhfGradient) {
   ASSERT_GT(norm, 1e-2); // far enough off the ScfOutput to test anything
   for (const auto &x : directions(kDirections, order.size())) {
     const auto fd = slope(*setup, *off, nocc, 0, x, [&](const fb::SphericalMatrixAO &orbitals) {
-      return rhf(orbitals).transform([](const fb::mcscf::Fock &r) { return r.energy; });
+      return rhf(orbitals).transform([](const fb::response::Fock &r) { return r.energy; });
     });
     ASSERT_TRUE(fd.has_value());
     const double gx = std::inner_product(g.begin(), g.end(), x.begin(), 0.0);
@@ -557,7 +558,7 @@ TEST(McscfFockRhfLimit, IsTheRhfGradient) {
 
 // The packed order, element by element, and unpack as its antisymmetric
 // inverse, over every combination of empty and non-empty spaces.
-TEST(McscfFockPackedOrder, PacksAndUnpacksTheNonRedundantPairs) {
+TEST(ResponseFockPackedOrder, PacksAndUnpacksTheNonRedundantPairs) {
   FBF_REQUIRE_GPU();
   fb::NodeResources node;
   fb::DeviceResources &res = node.device(0);
@@ -576,7 +577,7 @@ TEST(McscfFockPackedOrder, PacksAndUnpacksTheNonRedundantPairs) {
     fb::Buffers::device<double> packed(std::max<std::size_t>(order.size(), 1), res.device());
     upload(res, full, full_device.data());
     ASSERT_TRUE(
-        fb::mcscf::pack_orbital_pairs(res, kNmo, ncore, ncas, full_device.data(), packed.data())
+        fb::response::pack_orbital_pairs(res, kNmo, ncore, ncas, full_device.data(), packed.data())
             .has_value());
     const std::vector<double> got = download(res, packed.data(), order.size());
     for (std::size_t i = 0; i < order.size(); ++i) {
@@ -591,9 +592,9 @@ TEST(McscfFockPackedOrder, PacksAndUnpacksTheNonRedundantPairs) {
     if (!x.empty()) {
       upload(res, x, packed.data());
     }
-    ASSERT_TRUE(
-        fb::mcscf::unpack_orbital_pairs(res, kNmo, ncore, ncas, packed.data(), full_device.data())
-            .has_value());
+    ASSERT_TRUE(fb::response::unpack_orbital_pairs(res, kNmo, ncore, ncas, packed.data(),
+                                                   full_device.data())
+                    .has_value());
     const std::vector<double> kappa = download(res, full_device.data(), full.size());
     std::vector<double> want(kNmo * kNmo, 0.0);
     for (std::size_t i = 0; i < order.size(); ++i) {
@@ -605,16 +606,17 @@ TEST(McscfFockPackedOrder, PacksAndUnpacksTheNonRedundantPairs) {
       EXPECT_EQ(kappa[i], want[i]) << ncore << ", " << ncas << ": element " << i;
     }
   }
-  const fb::Status refused = fb::mcscf::pack_orbital_pairs(res, kNmo, 4, 4, nullptr, nullptr);
+  const fb::Status refused = fb::response::pack_orbital_pairs(res, kNmo, 4, 4, nullptr, nullptr);
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
-  const fb::Status negative = fb::mcscf::unpack_orbital_pairs(res, kNmo, -1, 2, nullptr, nullptr);
+  const fb::Status negative =
+      fb::response::unpack_orbital_pairs(res, kNmo, -1, 2, nullptr, nullptr);
   ASSERT_FALSE(negative.has_value());
   EXPECT_EQ(negative.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
-// Everything mcscf::fock refuses, refused before the device is touched.
-TEST(McscfFockRefusals, AreInvalidConfig) {
+// Everything response::fock refuses, refused before the device is touched.
+TEST(ResponseFockRefusals, AreInvalidConfig) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_ccpvdz");
   auto setup = make_setup(entry, false, "sto-3g");
@@ -629,11 +631,11 @@ TEST(McscfFockRefusals, AreInvalidConfig) {
   const auto call = [&](std::int32_t ncore, std::int32_t ncas, const fb::Buffers::device<double> &p,
                         std::span<const double> g1, std::span<const double> g2,
                         double tau = 1e-14) {
-    return fb::mcscf::fock(res, *setup->basis, *setup->molecule, setup->h->h, setup->transform->u,
-                           setup->j_classes, setup->k_classes, setup->scf->c, ncore, ncas, p, g1,
-                           g2, tau, tau);
+    return fb::response::fock(res, *setup->basis, *setup->molecule, setup->h->h,
+                              setup->transform->u, setup->j_classes, setup->k_classes,
+                              setup->scf->c, ncore, ncas, p, g1, g2, tau, tau);
   };
-  const auto refused = [](const fb::Result<fb::mcscf::Fock> &r, std::string_view what) {
+  const auto refused = [](const fb::Result<fb::response::Fock> &r, std::string_view what) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().kind, fb::ErrorKind::InvalidConfig);
     EXPECT_NE(r.error().message.find(what), std::string::npos) << r.error().message;

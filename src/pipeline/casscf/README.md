@@ -14,7 +14,7 @@ It re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
 `CasscfStep`'s base), and `free_breakfast.mcscf.solve` (`mcscf::Iteration`, in
 the product, and `mcscf::Options`, whose defaults the step's are). `run` is
 defined in the implementation unit, so J's and K's classes,
-`integrals.active_space`, `mcscf.fock`, `diagonalize` and `io.molden` are
+`integrals.active_space`, `response.fock`, `diagonalize` and `io.molden` are
 PRIVATE links.
 
 The selection -- `ncas`, `nelecas`, `active`, `avas`, `avas_threshold` -- is
@@ -65,7 +65,7 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
    at `mcscf::Options`' default. Each macro iteration's weighted energy and
    ‖g‖ is logged at info once it returns.
 3. **The state-averaged Fock** F = F^I + F^A at the solution, PySCF's
-   `mc.get_fock`: `mcscf::fock` over one more `casscf_integrals`, since the
+   `mc.get_fock`: `response::fock` over one more `casscf_integrals`, since the
    solution keeps neither. One macro iteration's integrals, no Hessian.
 4. **Canonicalization**, PySCF's default (`canonicalization = True`,
    `natorb = False`): the core and the virtual columns each rotated to F's
@@ -93,7 +93,7 @@ What it settled:
 
 Errors: `ActiveSpaceSelection::select`'s; `mcscf::solve`'s (InvalidConfig for
 `nroots` past the determinant count, MaxIterationsExceeded); the module
-calls' own (`casscf_integrals`', `mcscf::fock`'s, `diagonalize`'s,
+calls' own (`casscf_integrals`', `response::fock`'s, `diagonalize`'s,
 `write_molden`'s); GpuRuntime for a failed copy or gemm.
 
 ## Tests

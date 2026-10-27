@@ -5,7 +5,7 @@
 // solution, with its own cold CI; C^T S C = 1; no accepted step that raises
 // the energy; at most 20 macro iterations; and the refusals.
 //
-// The setup is mcscf_fock_gpu.cpp's: the SCF (run with J unscreened), and the
+// The setup is response_fock_gpu.cpp's: the SCF (run with J unscreened), and the
 // start picked by pipeline.active_space (by index, or by AVAS). So this
 // executable links pipeline; mcscf itself does not. Runs the device chain, so
 // needs a GPU.
@@ -22,6 +22,7 @@ import free_breakfast.io.base;
 import free_breakfast.io.json;
 import free_breakfast.integrals;
 import free_breakfast.ci;
+import free_breakfast.response;
 import free_breakfast.mcscf;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
@@ -219,7 +220,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
 }
 
 // The weighted energy and ||g|| at orbitals c from scratch: the integrals, a
-// cold CI at ci::solve's own tolerance, the RDMs and mcscf::fock, nothing of
+// cold CI at ci::solve's own tolerance, the RDMs and response::fock, nothing of
 // mcscf::solve's.
 std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::SphericalMatrixAO &c,
                                                       const std::vector<double> &weights) {
@@ -279,8 +280,9 @@ std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::Sp
   }
   const std::vector<double> g1 = download(res, gamma.data(), n * n);
   const std::vector<double> g2 = download(res, gamma2.data(), n * n * n * n);
-  auto fock = fb::mcscf::fock(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
-                              setup.j_classes, setup.k_classes, c, ncore, ncas, ints->ppaa, g1, g2);
+  auto fock =
+      fb::response::fock(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
+                         setup.j_classes, setup.k_classes, c, ncore, ncas, ints->ppaa, g1, g2);
   if (!fock.has_value()) {
     ADD_FAILURE() << fock.error().message;
     return std::nullopt;

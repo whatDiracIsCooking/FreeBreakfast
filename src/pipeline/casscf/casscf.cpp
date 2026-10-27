@@ -18,7 +18,7 @@ import free_breakfast.recipes.diagonalize;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 import free_breakfast.integrals.active_space;
-import free_breakfast.mcscf.fock;
+import free_breakfast.response.fock;
 
 #include "diagnostics.h"
 
@@ -151,9 +151,9 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   // neither, so one more set of integrals.
   const CasscfIntegrals ints = FBF_TRY(casscf_integrals(res, basis, molecule, h, u, j_classes,
                                                         k_classes, sol.c, space.ncore, space.ncas));
-  const mcscf::Fock fock =
-      FBF_TRY(mcscf::fock(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
-                          space.ncas, ints.ppaa, sol.gamma, sol.gamma2));
+  const response::Fock fock =
+      FBF_TRY(response::fock(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
+                             space.ncas, ints.ppaa, sol.gamma, sol.gamma2));
   const size_t nmo = sol.c.n();
   std::vector<double> f(nmo * nmo);
   std::vector<double> f_active(nmo * nmo);

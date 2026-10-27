@@ -90,7 +90,7 @@ struct CasscfStep : ActiveSpaceSelection {
   /// @ref ActiveSpaceSelection::select gives; `mcscf::solve` optimizes them
   /// at @ref conv_tol, @ref conv_tol_grad and @ref max_cycle, its other
   /// options at their defaults, over J and K classes built per run; the
-  /// state-averaged Fock at the solution is `mcscf::fock`'s F^I + F^A over
+  /// state-averaged Fock at the solution is `response::fock`'s F^I + F^A over
   /// one more `casscf_integrals`. Logs each macro iteration's energy and
   /// ||g|| at info. Synchronizes res.stream() many times.
   ///
@@ -98,7 +98,7 @@ struct CasscfStep : ActiveSpaceSelection {
   ///         `mcscf::solve`'s (InvalidConfig for @ref nroots above the
   ///         determinant count or bad @ref weights, MaxIterationsExceeded);
   ///         or the error of the first module call that failed:
-  ///         `casscf_integrals`', `mcscf::fock`'s, `diagonalize`'s or
+  ///         `casscf_integrals`', `response::fock`'s, `diagonalize`'s or
   ///         `write_molden`'s, and GpuRuntime for a failed copy or BLAS call.
   [[nodiscard]] Result<CasscfOutput>
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,

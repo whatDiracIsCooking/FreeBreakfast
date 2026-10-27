@@ -154,8 +154,8 @@ add_executable(
   pipeline_casci_gpu.cpp
   pipeline_casscf_gpu.cpp
   pipeline_fci_gpu.cpp
-  mcscf_fock_gpu.cpp
-  mcscf_hessian_gpu.cpp
+  response_fock_gpu.cpp
+  response_hessian_gpu.cpp
   mcscf_solve_gpu.cpp
 )
 
@@ -182,6 +182,7 @@ target_link_libraries(
   free_breakfast::ci
   free_breakfast::test::ci_oracles
   free_breakfast::integrals
+  free_breakfast::response
   free_breakfast::mcscf
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers

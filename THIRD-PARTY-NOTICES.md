@@ -73,18 +73,20 @@ regeneration command and the reasoning.
 generator (`tools/sad`, `free-breakfast-sad-stamps`); those stamps are
 free-breakfast's output, not PySCF content.
 
-### 2. `src/mcscf/hessian/` (code — a derivative work)
+### 2. `src/response/hessian/` (code — a derivative work)
 
-`free_breakfast.mcscf.hessian` (`hessian.cpp`, `hessian.cppm`) implements the
+`free_breakfast.response.hessian` (`hessian.cpp`, `hessian.cppm`) implements the
 exact CASSCF orbital-orbital Hessian-vector product and its diagonal, and it is
 a derivative of `pyscf/mcscf/mc1step.py`'s `gen_g_hop` — specifically its
 `h_op`, `h_diag` and `update_jk_in_ah`. The decomposition into intermediates,
 and the order they are formed in, follow PySCF's.
 
 This is stated throughout the source and history rather than only here:
-`hessian.cppm:6`, `src/mcscf/hessian/README.md`, `src/mcscf/README.md`, the
-commit that added the module, and issue #250 / PR #272, which specify the
-deliverable by reference to `gen_g_hop`.
+`hessian.cppm:6`, `src/response/hessian/README.md`, `src/response/README.md`,
+the commit that added the module, and issue #250 / PR #272, which specify the
+deliverable by reference to `gen_g_hop`. The module was added as
+`free_breakfast.mcscf.hessian` in `src/mcscf/hessian/` and moved to
+`src/response/hessian/` by issue #372, unchanged.
 
 **Changes made:**
 

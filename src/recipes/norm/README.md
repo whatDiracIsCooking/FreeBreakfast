@@ -37,7 +37,7 @@ fb::Status status = fb::norm<fb::Norm::inf>(res, n, d_x.data(), 1, &top);
 
 ## Consumers
 
-`OrbitalHessian::capped_density` (`mcscf/hessian`): ℓ∞ of a transition density, for its prune cap.
+`response::Hessian::capped_density` (`response/hessian`): ℓ∞ of a transition density, for its prune cap.
 
 ## Tests
 
