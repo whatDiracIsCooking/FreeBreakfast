@@ -9,7 +9,7 @@ automatic, including his 2023 contraction step.
 Everything here is Python over PySCF's integrals. There is no C++
 counterpart: `src/integrals/eri/density_fitting` fits over a ready-made set
 (`data/aux_basis/`) and does not generate one. `data/aux_basis/cc-pVDZ-acCD.json`
-is one this tool generated.
+and the seven `*-acCD-6-6.json` sets are ones this tool generated.
 
 ## The pipeline
 
@@ -50,8 +50,12 @@ uv run --group tools python -m tools.atomic_cd.aux_set \
 ```
 
 writes `data/aux_basis/cc-pVDZ-acCD.json` (`-o` elsewhere), in about two
-seconds for cc-pVDZ's 35 elements, the same bytes every run. `--max-l 4` is
-for the C++ kernels' g ceiling; it binds only on Sc-Zn, whose cc-pVDZ has f.
+seconds for cc-pVDZ's 35 elements, the same bytes every run. `--max-l 4` was
+for the C++ kernels' old g ceiling; it binds only on Sc-Zn, whose cc-pVDZ has
+f. `--threshold` and `--contract-threshold` take `cli`'s defaults and are
+recorded in the document's `revision_description`; the `*-acCD-6-6` sets are
+both at 1e-6 with `--max-l 6`, the kernels' i (`data/aux_basis/README.md`
+has their commands and measurements).
 `--df-check` prints the one-centre ERI fitting error and DF-RHF minus
 conventional RHF for the built-in molecules (CO, CH4) that contain the
 element.
@@ -147,9 +151,12 @@ functions, dE = +1.8e-5 Eh; cc-pVDZ-JKFIT, 116 functions, +2.1e-5.
 
 ## Not done
 
-- **Only cc-pVDZ is generated.** cc-pVTZ would need `--max-l 4` from O on
-  (its f shells reach l = 6 by default), which the measurements above have
-  not covered.
+- **The acCD-6-6 sets were measured on DF-RHF energies only** (CO, CH4,
+  H2O; `data/aux_basis/README.md`), and the `--max-l 6` cap on cc-pVTZ's
+  and aug-cc-pVTZ's Sc-Zn not at all.
+- **Small bases can starve H.** In 6-31G and 6-31G* H has only s, so its set
+  is s only and H-X bond products fit to ~1e-4-1e-3 Eh; nothing at l = 1 is a
+  candidate. Those two were not carried.
 - **Tested on C, H, O and (DF-RHF energy only) Zn.** The other heavy
   elements were generated but not measured, and ECP bases (pruning's l_occ
   assumes all-electron) and correlated or CASSCF energies are open.

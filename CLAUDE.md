@@ -398,9 +398,10 @@ hook: a full ladder is minutes of compiler time, the slow tier's budget.
   `kThreeCenterAuxMaxMomentum`, `tools/emit/df_kernels.py`'s `AUX_MAX_L`
   against its `MAX_L`), because a JKFIT or RI set carries shells two l above
   the orbital set it fits. Only `kThreeCenterMaxMomentum` is static_asserted
-  equal to the tree-wide one. Neither carried fitting set reaches past g, so
-  the h and i classes are exercised by a hand-built basis
-  (`test/gtest/data/df_high_aux/`), not a library one.
+  equal to the tree-wide one. The JKFIT cc sets stop at g;
+  `def2-universal-JKFIT` and the `*-acCD-6-6` sets reach h and i by name,
+  beside the hand-built `test/gtest/data/df_high_aux/`. A generated acCD set
+  must be capped at `--max-l 6` wherever its orbital set has g.
 
 ## Agent-specific
 

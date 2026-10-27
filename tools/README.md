@@ -18,15 +18,17 @@ minao_from_pyscf.py
                   pyscf/gto/basis/minao.py, since the Basis Set Exchange
                   does not serve it. Needs PySCF.
 jkfit_from_pyscf.py
-                  Write data/aux_basis/cc-pV{D,T}Z-JKFIT.json: Weigend's JK
-                  fitting sets, converted from PySCF's
-                  pyscf/gto/basis/cc-pv{d,t}z-jkfit.dat, since the Basis Set
-                  Exchange has no cc-pVDZ-JKFIT. Needs PySCF.
+                  Write data/aux_basis/cc-pV{D,T}Z-JKFIT.json and
+                  def2-universal-JKFIT.json: Weigend's JK fitting sets,
+                  converted from PySCF's pyscf/gto/basis/*-jkfit.dat, since
+                  the Basis Set Exchange has no cc-pVDZ-JKFIT and PySCF is
+                  the oracle. Needs PySCF.
 atomic_cd/        Generate an auxiliary basis for any orbital basis: aCD /
                   acCD atomic Cholesky decomposition plus SVD contraction
                   (Lehtola 2021, 2023) over PySCF integrals; writes BSE
                   JSON, one element (cli) or a whole named set (aux_set,
-                  which wrote data/aux_basis/cc-pVDZ-acCD.json).
+                  which wrote data/aux_basis/cc-pVDZ-acCD.json and the
+                  *-acCD-6-6.json sets).
                   atomic_cd/README.md has the method, measured accuracy
                   and references.
 emit/one_electron_kernels.py
