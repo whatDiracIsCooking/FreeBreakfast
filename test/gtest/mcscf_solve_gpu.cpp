@@ -1,4 +1,4 @@
-// casscf_solve on the device, from each case's recorded start, against the
+// mcscf::solve on the device, from each case's recorded start, against the
 // converged, polished CASSCF of data/casscf/casscf.json
 // (tools/emit_casscf_reference.py): each root's energy and the weighted one;
 // the state-averaged natural occupations; ||g|| recomputed from scratch at the
@@ -39,7 +39,7 @@ constexpr double kEnergyTolerance = 1e-8;
 constexpr double kOccupationTolerance = 1e-6;
 constexpr double kOrthonormalTolerance = 1e-10;
 constexpr std::int32_t kMaxMacroIterations = 20;
-// casscf_solve's own: a rise below it is noise, not a rejected step.
+// mcscf::solve's own: a rise below it is noise, not a rejected step.
 constexpr double kEnergyRiseTolerance = 1e-11;
 // The test's convergence. Each root's energy is not stationary in the
 // orbitals, and the natural occupations neither, so both are first order in
@@ -130,7 +130,7 @@ fb::CasciStep casci_step(const fb::json &entry) {
   return step;
 }
 
-// Everything casscf_solve reads, from one converged SCF, and the start.
+// Everything mcscf::solve reads, from one converged SCF, and the start.
 struct Setup {
   fb::NodeResources node;
   std::optional<fb::Calculation> calc;
@@ -146,11 +146,11 @@ struct Setup {
 
   [[nodiscard]] fb::DeviceResources &res() { return node.device(0); }
 
-  [[nodiscard]] fb::Result<fb::CasscfSolution> solve(const fb::SphericalMatrixAO &c,
-                                                     std::int32_t nroots,
-                                                     std::span<const double> weights,
-                                                     const fb::CasscfOptions &options) {
-    return fb::casscf_solve(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes, c,
+  [[nodiscard]] fb::Result<fb::mcscf::Solution> solve(const fb::SphericalMatrixAO &c,
+                                                      std::int32_t nroots,
+                                                      std::span<const double> weights,
+                                                      const fb::mcscf::Options &options) {
+    return fb::mcscf::solve(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes, c,
                             start->ncore, start->ncas, start->nelecas, nroots, weights, options);
   }
 };
@@ -219,8 +219,8 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
 }
 
 // The weighted energy and ||g|| at orbitals c from scratch: the integrals, a
-// cold CI at ci::solve's own tolerance, the RDMs and casscf_fock, nothing of
-// casscf_solve's.
+// cold CI at ci::solve's own tolerance, the RDMs and mcscf::fock, nothing of
+// mcscf::solve's.
 std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::SphericalMatrixAO &c,
                                                       const std::vector<double> &weights) {
   fb::DeviceResources &res = setup.res();
@@ -279,7 +279,7 @@ std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::Sp
   }
   const std::vector<double> g1 = download(res, gamma.data(), n * n);
   const std::vector<double> g2 = download(res, gamma2.data(), n * n * n * n);
-  auto fock = fb::casscf_fock(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
+  auto fock = fb::mcscf::fock(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
                               setup.j_classes, setup.k_classes, c, ncore, ncas, ints->ppaa, g1, g2);
   if (!fock.has_value()) {
     ADD_FAILURE() << fock.error().message;
@@ -388,17 +388,17 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const auto nroots = static_cast<std::int32_t>(weights.size());
 
-  fb::CasscfOptions options;
+  fb::mcscf::Options options;
   options.conv_tol_grad = kConvTolGrad;
   auto solved = setup->solve(setup->start->c, nroots, weights, options);
   ASSERT_TRUE(solved.has_value()) << solved.error().message;
-  const fb::CasscfSolution &sol = *solved;
+  const fb::mcscf::Solution &sol = *solved;
 
   // The macro iterations, logged and within the regression bar.
   const auto macro = static_cast<std::int32_t>(sol.iterations.size());
   std::cout << std::format("[ casscf   ] {}: {} macro iterations\n", GetParam().name, macro);
   for (std::size_t i = 0; i < sol.iterations.size(); ++i) {
-    const fb::CasscfIteration &it = sol.iterations[i];
+    const fb::mcscf::Iteration &it = sol.iterations[i];
     std::cout << std::format("[ casscf   ]   {:2} E {:.12f} dE {:+.3e} |g| {:.3e} radius {:.3f} "
                              "ci {:2} + {:2} micro {} Hx {:3}{}\n",
                              i + 1, it.energy, it.energy_change, it.gradient_norm, it.trust_radius,
@@ -452,7 +452,7 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
 
   // No accepted step raises the energy, and a rejected iteration did rise.
   for (std::size_t i = 1; i < sol.iterations.size(); ++i) {
-    const fb::CasscfIteration &it = sol.iterations[i];
+    const fb::mcscf::Iteration &it = sol.iterations[i];
     if (it.accepted) {
       EXPECT_LE(it.energy_change, kEnergyRiseTolerance) << "macro iteration " << i + 1;
     } else {
@@ -477,7 +477,7 @@ TEST(McscfSolveLimits, OutOfMacroIterationsIsMaxIterationsExceeded) {
   auto setup = make_setup(entry, true, "sto-3g");
   ASSERT_NE(setup, nullptr);
   const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
-  fb::CasscfOptions options;
+  fb::mcscf::Options options;
   options.max_cycle = 2;
   const auto got = setup->solve(setup->start->c, 1, {}, options);
   ASSERT_FALSE(got.has_value());
@@ -492,12 +492,12 @@ TEST(McscfSolveRefusals, AreInvalidConfig) {
   ASSERT_NE(setup, nullptr);
   const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
   const fb::SphericalMatrixAO &c = setup->start->c;
-  const auto refused = [](const fb::Result<fb::CasscfSolution> &r, std::string_view what) {
+  const auto refused = [](const fb::Result<fb::mcscf::Solution> &r, std::string_view what) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().kind, fb::ErrorKind::InvalidConfig);
     EXPECT_NE(r.error().message.find(what), std::string::npos) << r.error().message;
   };
-  const fb::CasscfOptions defaults;
+  const fb::mcscf::Options defaults;
   const std::vector<double> negative{1.2, -0.2};
   const std::vector<double> short_sum{0.5, 0.4};
   const std::vector<double> one{1.0};
@@ -505,7 +505,7 @@ TEST(McscfSolveRefusals, AreInvalidConfig) {
   refused(setup->solve(c, 2, negative, defaults), "weights");
   refused(setup->solve(c, 2, short_sum, defaults), "weights");
   refused(setup->solve(c, 0, {}, defaults), "nroots");
-  fb::CasscfOptions bad = defaults;
+  fb::mcscf::Options bad = defaults;
   bad.max_cycle = 0;
   refused(setup->solve(c, 1, {}, bad), "max_cycle");
   bad = defaults;
@@ -515,16 +515,16 @@ TEST(McscfSolveRefusals, AreInvalidConfig) {
   bad.trust_radius = -1.0;
   refused(setup->solve(c, 1, {}, bad), "trust_radius");
   const auto wrong_space =
-      fb::casscf_solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
+      fb::mcscf::solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
                        setup->transform->u, setup->j_classes, setup->k_classes, c, 6, 2, 4, 1);
   refused(wrong_space, "ncore + ncas");
   const auto too_many =
-      fb::casscf_solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
+      fb::mcscf::solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
                        setup->transform->u, setup->j_classes, setup->k_classes, c, 3, 2, 5, 1);
   refused(too_many, "nelecas");
   // CAS(4,2) has one determinant.
   const auto past_dim =
-      fb::casscf_solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
+      fb::mcscf::solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
                        setup->transform->u, setup->j_classes, setup->k_classes, c, 3, 2, 4, 2);
   refused(past_dim, "exceeds the 1 determinants");
 }

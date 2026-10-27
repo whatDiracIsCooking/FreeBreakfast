@@ -1,6 +1,6 @@
 /// @file
 /// @brief CasscfStep::run's path from the selected active space through
-/// casscf_solve to the canonical core and virtual orbitals and the
+/// mcscf::solve to the canonical core and virtual orbitals and the
 /// natural-orbital Molden file.
 
 module free_breakfast.pipeline.casscf;
@@ -134,25 +134,25 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
   std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
   std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
-  CasscfOptions options;
+  mcscf::Options options;
   options.conv_tol = conv_tol;
   options.conv_tol_grad = conv_tol_grad;
   options.max_cycle = max_cycle;
-  CasscfSolution sol =
-      FBF_TRY(casscf_solve(res, basis, molecule, h, u, j_classes, k_classes, space.c, space.ncore,
+  mcscf::Solution sol =
+      FBF_TRY(mcscf::solve(res, basis, molecule, h, u, j_classes, k_classes, space.c, space.ncore,
                            space.ncas, space.nelecas, nroots, weights, options));
   for (size_t i = 0; i < sol.iterations.size(); ++i) {
-    const CasscfIteration &it = sol.iterations[i];
+    const mcscf::Iteration &it = sol.iterations[i];
     log::info(std::format("CASSCF macro {:2}: E {:.12f} |g| {:.3e}{}", i + 1, it.energy,
                           it.gradient_norm, it.accepted ? "" : " (rejected)"));
   }
 
-  // The state-averaged Fock F^I + F^A at the solution: casscf_solve keeps
+  // The state-averaged Fock F^I + F^A at the solution: mcscf::solve keeps
   // neither, so one more set of integrals.
   const CasscfIntegrals ints = FBF_TRY(casscf_integrals(res, basis, molecule, h, u, j_classes,
                                                         k_classes, sol.c, space.ncore, space.ncas));
-  const CasscfFock fock =
-      FBF_TRY(casscf_fock(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
+  const mcscf::Fock fock =
+      FBF_TRY(mcscf::fock(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
                           space.ncas, ints.ppaa, sol.gamma, sol.gamma2));
   const size_t nmo = sol.c.n();
   std::vector<double> f(nmo * nmo);

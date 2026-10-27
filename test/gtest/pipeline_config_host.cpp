@@ -275,21 +275,24 @@ TEST(PipelineConfig, TheLocalizationModeAndItsOptionsAreRead) {
   const fb::LocalizationStep &step = *calc->step<fb::LocalizationStep>();
   EXPECT_EQ(step.mode, fb::LocalizationMode::PipekMezey);
   EXPECT_EQ(step.pipek_mezey.max_sweeps, 7);
-  EXPECT_EQ(step.pipek_mezey.exponent, fb::PipekMezeyExponent::Four);
+  EXPECT_EQ(step.pipek_mezey.exponent, fb::localization::PmExponent::Four);
   // An empty table is Pipek-Mezey with its defaults.
   auto plain = fb::parse_config(with_inputs("[localization]\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   EXPECT_EQ(plain->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::PipekMezey);
-  EXPECT_EQ(plain->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
+  EXPECT_EQ(plain->step<fb::LocalizationStep>()->pipek_mezey.exponent,
+            fb::localization::PmExponent::Two);
   // IBO is Knizia's exponent four unless the table names another.
   auto ibo = fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\n"), "", kOut);
   ASSERT_TRUE(ibo.has_value()) << ibo.error().message;
   EXPECT_EQ(ibo->step<fb::LocalizationStep>()->mode, fb::LocalizationMode::Ibo);
-  EXPECT_EQ(ibo->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Four);
+  EXPECT_EQ(ibo->step<fb::LocalizationStep>()->pipek_mezey.exponent,
+            fb::localization::PmExponent::Four);
   auto ibo2 =
       fb::parse_config(with_inputs("[localization]\nmode = \"ibo\"\nexponent = 2\n"), "", kOut);
   ASSERT_TRUE(ibo2.has_value()) << ibo2.error().message;
-  EXPECT_EQ(ibo2->step<fb::LocalizationStep>()->pipek_mezey.exponent, fb::PipekMezeyExponent::Two);
+  EXPECT_EQ(ibo2->step<fb::LocalizationStep>()->pipek_mezey.exponent,
+            fb::localization::PmExponent::Two);
 }
 
 TEST(PipelineConfig, LivvoIsReadAndNamesItsOwnMolden) {
@@ -460,11 +463,11 @@ TEST(PipelineConfig, EveryCasscfOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
   EXPECT_FALSE(calc->step<fb::CasciStep>().has_value());
 
-  // The defaults are casscf_solve's; empty weights are equal ones.
+  // The defaults are mcscf::solve's; empty weights are equal ones.
   auto plain = fb::parse_config(with_inputs("[casscf]\navas = [\"O 2p\"]\n"), "", kOut);
   ASSERT_TRUE(plain.has_value()) << plain.error().message;
   const fb::CasscfStep &defaults = *plain->step<fb::CasscfStep>();
-  const fb::CasscfOptions options;
+  const fb::mcscf::Options options;
   EXPECT_EQ(defaults.avas, (std::vector<std::string>{"O 2p"}));
   EXPECT_EQ(defaults.nroots, 1);
   EXPECT_TRUE(defaults.weights.empty());

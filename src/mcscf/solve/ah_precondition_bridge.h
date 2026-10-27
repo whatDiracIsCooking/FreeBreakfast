@@ -21,7 +21,7 @@
 #include "wwr/runtime_api.h"
 #endif
 
-namespace free_breakfast::device {
+namespace free_breakfast::mcscf::device {
 
 /// @brief correction_i = residual_i * (1 / d_i), d_i = theta − diagonal_i held
 /// off zero at ±@p floor, for the @p n elements of one column.
@@ -33,4 +33,4 @@ namespace free_breakfast::device {
                                               double floor, const double *diagonal,
                                               const double *residual, double *correction);
 
-} // namespace free_breakfast::device
+} // namespace free_breakfast::mcscf::device

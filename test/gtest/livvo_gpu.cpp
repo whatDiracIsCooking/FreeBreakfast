@@ -1,8 +1,8 @@
-// valence_virtual_orbitals over the IAOs of an RHF SCF, water and N2 in
+// localization::valence_virtual_orbitals over the IAOs of an RHF SCF, water and N2 in
 // cc-pVDZ over MINAO: m - n_occ of them, S-orthonormal, orthogonal to the
 // occupied orbitals and inside the canonical virtual space, and a span that a
-// rotation of the occupied orbitals does not move. Then livvo_localize on
-// water, two mirror-image sigma*_OH LIVVOs, and valence_character over the
+// rotation of the occupied orbitals does not move. Then localization::livvo_localize on
+// water, two mirror-image sigma*_OH LIVVOs, and localization::valence_character over the
 // canonical virtuals. The SCF is the pipeline's, from a config naming only
 // [scf]. Runs the device chain, so needs a GPU.
 
@@ -126,10 +126,10 @@ std::vector<double> build_vvos(fb::DeviceResources &res, const fb::BasisSet &bas
   fb::Buffers::device<double> iao(n * m, res.device());
   fb::Buffers::device<double> vvo(n * n_vvo, res.device());
   const fb::Status built =
-      fb::intrinsic_atomic_orbitals(res, basis, minao, n_occ, s, c, iao.data());
+      fb::localization::intrinsic_atomic_orbitals(res, basis, minao, n_occ, s, c, iao.data());
   EXPECT_TRUE(built.has_value()) << built.error().message;
-  const fb::Status made =
-      fb::valence_virtual_orbitals(res, basis, minao, n_occ, s, c, iao.data(), vvo.data());
+  const fb::Status made = fb::localization::valence_virtual_orbitals(res, basis, minao, n_occ, s, c,
+                                                                     iao.data(), vvo.data());
   EXPECT_TRUE(made.has_value()) << made.error().message;
   EXPECT_TRUE(res.sync().has_value());
   return download(res, vvo.data(), n * n_vvo);
@@ -269,14 +269,14 @@ TEST(Livvo, WaterLocalizesIntoTwoMirrorImageSigmaStarOh) {
   fb::Buffers::device<double> vvo(n * n_vvo, res.device());
   fb::Buffers::device<double> livvo(n * n_vvo, res.device());
   fb::Buffers::device<double> u(n_vvo * n_vvo, res.device());
-  const fb::Status built =
-      fb::intrinsic_atomic_orbitals(res, basis->basis, *minao, k, s_dev, c_dev, iao.data());
+  const fb::Status built = fb::localization::intrinsic_atomic_orbitals(res, basis->basis, *minao, k,
+                                                                       s_dev, c_dev, iao.data());
   ASSERT_TRUE(built.has_value()) << built.error().message;
-  const fb::Status made = fb::valence_virtual_orbitals(res, basis->basis, *minao, k, s_dev, c_dev,
-                                                       iao.data(), vvo.data());
+  const fb::Status made = fb::localization::valence_virtual_orbitals(
+      res, basis->basis, *minao, k, s_dev, c_dev, iao.data(), vvo.data());
   ASSERT_TRUE(made.has_value()) << made.error().message;
-  const auto info = fb::livvo_localize(res, basis->basis, *minao, k, s_dev, iao.data(), vvo.data(),
-                                       livvo.data(), u.data());
+  const auto info = fb::localization::livvo_localize(
+      res, basis->basis, *minao, k, s_dev, iao.data(), vvo.data(), livvo.data(), u.data());
   ASSERT_TRUE(info.has_value()) << info.error().message;
   EXPECT_GE(info->functional, info->initial_functional);
 
@@ -321,9 +321,9 @@ TEST(Livvo, WaterLocalizesIntoTwoMirrorImageSigmaStarOh) {
   // the VVOs as from the LIVVOs, which span the same space.
   const auto n_virt = static_cast<std::int32_t>(n - occ);
   const double *virtuals = c_dev + (n * occ);
-  const auto from_livvo = fb::valence_character(
+  const auto from_livvo = fb::localization::valence_character(
       res, basis->basis, n_virt, static_cast<std::int32_t>(n_vvo), s_dev, virtuals, livvo.data());
-  const auto from_vvo = fb::valence_character(
+  const auto from_vvo = fb::localization::valence_character(
       res, basis->basis, n_virt, static_cast<std::int32_t>(n_vvo), s_dev, virtuals, vvo.data());
   ASSERT_TRUE(from_livvo.has_value()) << from_livvo.error().message;
   ASSERT_TRUE(from_vvo.has_value()) << from_vvo.error().message;
@@ -364,7 +364,7 @@ TEST(Livvo, RefusesAnOutOfRangeNOccMismatchedAtomsAndNullPointers) {
   const auto refused = [&](const fb::BasisSet &minimal, std::int32_t n_occ, const double *s,
                            const double *c, const double *iao, double *vvo) {
     const fb::Status status =
-        fb::valence_virtual_orbitals(res, *basis, minimal, n_occ, s, c, iao, vvo);
+        fb::localization::valence_virtual_orbitals(res, *basis, minimal, n_occ, s, c, iao, vvo);
     return !status.has_value() && status.error().kind == fb::ErrorKind::InvalidConfig;
   };
   EXPECT_TRUE(refused(*minao, -1, p, p, p, p));
@@ -401,7 +401,8 @@ TEST(Livvo, LocalizeAndValenceCharacterRefuseBadArguments) {
   };
   const auto localize = [&](const fb::BasisSet &minimal, std::int32_t n_occ, const double *s,
                             const double *iao, const double *vvo, double *livvo) {
-    return invalid(fb::livvo_localize(res, *basis, minimal, n_occ, s, iao, vvo, livvo));
+    return invalid(
+        fb::localization::livvo_localize(res, *basis, minimal, n_occ, s, iao, vvo, livvo));
   };
   EXPECT_TRUE(localize(*minao, -1, p, p, p, q));
   EXPECT_TRUE(localize(*minao, m + 1, p, p, p, q));
@@ -414,7 +415,7 @@ TEST(Livvo, LocalizeAndValenceCharacterRefuseBadArguments) {
 
   const auto character = [&](std::int32_t n_orb, std::int32_t n_vvo, const double *s,
                              const double *c, const double *livvo) {
-    return invalid(fb::valence_character(res, *basis, n_orb, n_vvo, s, c, livvo));
+    return invalid(fb::localization::valence_character(res, *basis, n_orb, n_vvo, s, c, livvo));
   };
   EXPECT_TRUE(character(-1, 2, p, p, p));
   EXPECT_TRUE(character(1, -1, p, p, p));

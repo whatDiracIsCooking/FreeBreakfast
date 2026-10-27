@@ -12,10 +12,10 @@ and two wwr `gemm`s.
 
 | Name | Role |
 |---|---|
-| `pipek_mezey_localize(res, basis, n_occ, s, c, c_local, u, options)` | The localization; returns `Result<PipekMezeyInfo>` |
-| `PipekMezeyOptions` | Sweep cap, tolerances, exponent |
-| `PipekMezeyExponent` | `Two` (Pipek-Mezey) or `Four` (Knizia's IBO exponent) |
-| `PipekMezeyInfo` | Sweeps taken, the functional before and after |
+| `localization::pm_localize(res, basis, n_occ, s, c, c_local, u, options)` | The localization; returns `Result<localization::Info>` |
+| `localization::PmOptions` | Sweep cap, tolerances, exponent |
+| `localization::PmExponent` | `Two` (Pipek-Mezey) or `Four` (Knizia's IBO exponent) |
+| `localization::Info` | Sweeps taken, the functional before and after |
 
 Double precision only. Every matrix is a column-major device `double *` with a
 packed leading dimension, over the spherical AOs of `basis`: `s` is n_ao x
@@ -24,9 +24,9 @@ C_local = C U. The first `n_occ` columns of a square C, such as `ScfOutput::c`, 
 as `c` directly.
 
 ```cpp
-const PipekMezeyInfo info = FBF_TRY(pipek_mezey_localize(
+const localization::Info info = FBF_TRY(localization::pm_localize(
     res, basis, n_occ, overlap.s.data(), scf.c.data(), c_local.data(), u.data(),
-    {.exponent = PipekMezeyExponent::Four}));
+    {.exponent = localization::PmExponent::Four}));
 ```
 
 `c` is expected S-orthonormal (C^T S C = I): that is what makes an orbital's
@@ -170,7 +170,7 @@ Every test needs a GPU.
 
 | File | Role |
 |---|---|
-| `pipek_mezey.cppm` | Module interface: the options, the info and `pipek_mezey_localize` |
+| `pipek_mezey.cppm` | Module interface: the options, the info and `localization::pm_localize` |
 | `pipek_mezey.cpp` | The sweep driver and the round-robin schedule |
 | `pipek_mezey_bridge.h` | The launchers, declared for the module and the `.cu` |
 | `pipek_mezey_kernels.cu` | The arithmetic, the kernels and their launchers |

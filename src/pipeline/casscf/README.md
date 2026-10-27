@@ -2,7 +2,7 @@
 
 State-averaged CASSCF from the SCF's orbitals: the start is an active space
 named by index or picked by AVAS over MINAO, as the Casci step picks its own;
-`mcscf.solve`'s `casscf_solve` optimizes the orbitals and the CI of the lowest
+`mcscf.solve`'s `mcscf::solve` optimizes the orbitals and the CI of the lowest
 singlets at fixed weights; the core and the virtuals are then canonicalized,
 and the state-averaged natural orbitals optionally written as Molden.
 
@@ -11,8 +11,8 @@ and the state-averaged natural orbitals optionally written as Molden.
 `free_breakfast.pipeline.casscf`, target `free_breakfast::pipeline::casscf`.
 It re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
 `run`'s signature), `free_breakfast.pipeline.active_space` (the selection,
-`CasscfStep`'s base), and `free_breakfast.mcscf.solve` (`CasscfIteration`, in
-the product, and `CasscfOptions`, whose defaults the step's are). `run` is
+`CasscfStep`'s base), and `free_breakfast.mcscf.solve` (`mcscf::Iteration`, in
+the product, and `mcscf::Options`, whose defaults the step's are). `run` is
 defined in the implementation unit, so J's and K's classes,
 `integrals.active_space`, `mcscf.fock`, `diagonalize` and `io.molden` are
 PRIVATE links.
@@ -37,7 +37,7 @@ struct CasscfOutput {
   double gradient_norm;                    // ||g|| at c
   std::vector<double> vectors;             // root r at [r dim, (r + 1) dim)
   std::vector<double> rdm1;                // root r at [r ncas^2, (r + 1) ncas^2)
-  std::vector<CasscfIteration> iterations; // one per macro iteration
+  std::vector<mcscf::Iteration> iterations; // one per macro iteration
 };
 
 struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_threshold
@@ -45,7 +45,7 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
 
   int32_t nroots = 1;
   std::vector<double> weights{};       // empty: equal
-  double conv_tol = 1e-10;             // CasscfOptions{}'s
+  double conv_tol = 1e-10;             // mcscf::Options{}'s
   double conv_tol_grad = 1e-6;
   int32_t max_cycle = 50;
   std::filesystem::path molden{};      // the state-averaged natural orbitals, if set
@@ -59,13 +59,13 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
 `run`, all on `res.stream()`:
 
 1. **The start**: `ActiveSpaceSelection::select`'s C R, as the Casci step's.
-2. **The optimization**: `casscf_solve` from it, over J and K classes built
+2. **The optimization**: `mcscf::solve` from it, over J and K classes built
    from `PrimitivePairClassesOutput` per run, at the step's `nroots`,
    `weights`, `conv_tol`, `conv_tol_grad` and `max_cycle`, every other option
-   at `CasscfOptions`' default. Each macro iteration's weighted energy and
+   at `mcscf::Options`' default. Each macro iteration's weighted energy and
    ‖g‖ is logged at info once it returns.
 3. **The state-averaged Fock** F = F^I + F^A at the solution, PySCF's
-   `mc.get_fock`: `casscf_fock` over one more `casscf_integrals`, since the
+   `mc.get_fock`: `mcscf::fock` over one more `casscf_integrals`, since the
    solution keeps neither. One macro iteration's integrals, no Hessian.
 4. **Canonicalization**, PySCF's default (`canonicalization = True`,
    `natorb = False`): the core and the virtual columns each rotated to F's
@@ -83,7 +83,7 @@ What it settled:
 
 - **Singlets only**, for the Casci step's reason: the SCF is closed-shell.
 - **The weights, tolerances and `max_cycle` are refused when the config is
-  read**, since none needs the molecule (`config/README.md`); `casscf_solve`
+  read**, since none needs the molecule (`config/README.md`); `mcscf::solve`
   checks them again for a step built by hand. The active space's ranges are
   the selection's, when the step runs.
 - **`weights` in the product is never empty**: equal ones are filled in.
@@ -91,9 +91,9 @@ What it settled:
   what canonicalization is for, and recomputing F from C costs a set of
   integrals.
 
-Errors: `ActiveSpaceSelection::select`'s; `casscf_solve`'s (InvalidConfig for
+Errors: `ActiveSpaceSelection::select`'s; `mcscf::solve`'s (InvalidConfig for
 `nroots` past the determinant count, MaxIterationsExceeded); the module
-calls' own (`casscf_integrals`', `casscf_fock`'s, `diagonalize`'s,
+calls' own (`casscf_integrals`', `mcscf::fock`'s, `diagonalize`'s,
 `write_molden`'s); GpuRuntime for a failed copy or gemm.
 
 ## Tests
@@ -122,5 +122,5 @@ refusals are in `pipeline_config_host.cpp`, and an end-to-end run with
 | File | Role |
 |------|------|
 | `casscf.cppm` | Module interface: `CasscfOutput`, `CasscfStep` |
-| `casscf.cpp` | `run`: the selection, `casscf_solve`, the Fock at the solution, the canonicalization, the Molden file |
+| `casscf.cpp` | `run`: the selection, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden file |
 | `CMakeLists.txt` | The module library |

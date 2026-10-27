@@ -1,4 +1,4 @@
-# The module: casscf_fock and the packed order's two copies, declared in the
+# The module: mcscf::fock and the packed order's two copies, declared in the
 # interface and defined in the implementation unit. Molecule, BasisSet,
 # DeviceResources, Buffers, the two kinds of pair class and the AO matrices
 # are in its signature, so molecule, basis, core::wwr, core::resources,

@@ -23,13 +23,13 @@ struct LocalizationOutput {
   Buffers::device<double> c;  // nao_sphe x n_occ, column-major: C_occ U
   Buffers::device<double> u;  // n_occ x n_occ
   int32_t n_occ;              // electron_count() / 2
-  PipekMezeyInfo info;        // sweeps, functional before and after
+  localization::Info info;        // sweeps, functional before and after
   std::vector<double> populations{}; // IBO only: natoms x n_occ IAO populations of the IBOs
   std::vector<double> charges{};     // IBO only: the IAO partial charges, one per atom
   std::vector<BondOrbital> bonds{};  // IBO only: each IBO's centers and their s/p/d character
   Buffers::device<double> livvo;     // LIVVO only: nao_sphe x n_vvo, column-major
   int32_t n_vvo = 0;                 // LIVVO only: MINAO's nao_sphe - n_occ
-  PipekMezeyInfo livvo_info{};       // LIVVO only: their sweeps and functional
+  localization::Info livvo_info{};       // LIVVO only: their sweeps and functional
   std::vector<BondOrbital> livvo_bonds{};   // LIVVO only: each LIVVO's centers and sigma/pi kind
   std::vector<double> valence_character{};  // LIVVO only: t_val of each canonical virtual
 };
@@ -38,7 +38,7 @@ struct LocalizationStep {
   static constexpr std::string_view kName = "localization";
 
   LocalizationMode mode = LocalizationMode::PipekMezey;
-  PipekMezeyOptions pipek_mezey;  // max_sweeps, tolerances, exponent
+  localization::PmOptions pipek_mezey;  // max_sweeps, tolerances, exponent
   std::filesystem::path molden{}; // if set, the localized orbitals are written here
   bool livvo = false;             // the LIVVOs too, in either mode
   std::filesystem::path livvo_molden{}; // if set (needs livvo), the LIVVOs are written here
@@ -48,8 +48,8 @@ struct LocalizationStep {
 ```
 
 A thin wrapper over the method's localizer, with the same errors: for
-`PipekMezey`, `localization.pipek_mezey`'s `pipek_mezey_localize`; for `Ibo`,
-`localization.ibo`'s `ibo_localize`, over MINAO (`resolve_basis("minao")`)
+`PipekMezey`, `localization.pipek_mezey`'s `localization::pm_localize`; for `Ibo`,
+`localization.ibo`'s `localization::ibo_localize`, over MINAO (`resolve_basis("minao")`)
 placed over the Molecule here, so an element MINAO lacks is `place`'s error.
 Both take `pipek_mezey`'s options, since IBO is the same sweep over IAO
 populations. `ScfOutput::c` is
@@ -67,7 +67,7 @@ so `c = C_occ u` still holds. It runs before anything reads the orbitals, so
 `populations`, `bonds`, the log and the Molden file all use the sorted order:
 cores first, then bonds, then lone pairs up to the HOMO.
 
-**IBO mode also reports the IAO charges and the bonds.** `ibo_localize` hands
+**IBO mode also reports the IAO charges and the bonds.** `localization::ibo_localize` hands
 back the IAOs it ran over, and `analysis.population`'s `orbital_weights`
 gives each IBO's weight on each of them, once. From those:
 `populations`, each IBO's population on each atom (their fourth powers sum
@@ -112,11 +112,11 @@ fails the step.
 
 **`livvo` adds the LIVVOs**, in either mode, from
 `localization.livvo` (its README has the formulas). MINAO is then resolved
-and placed whichever mode runs, and the IAOs are built once: `ibo_localize`
+and placed whichever mode runs, and the IAOs are built once: `localization::ibo_localize`
 hands them back in IBO mode, and `intrinsic_atomic_orbitals` builds them from
 the canonical occupied orbitals in Pipek-Mezey mode (the IAOs depend only on
 the occupied space). From them, `valence_virtual_orbitals` and then
-`livvo_localize` give `livvo`, its `n_vvo = m - n_occ` columns. The sweep takes
+`localization::livvo_localize` give `livvo`, its `n_vvo = m - n_occ` columns. The sweep takes
 `pipek_mezey`'s sweep count and tolerances at Knizia's exponent four, whatever
 exponent the occupied orbitals ran at. Then:
 

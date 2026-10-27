@@ -20,18 +20,18 @@ it takes and returns.
 | Name | Role |
 |---|---|
 | `intrinsic_atomic_orbitals(res, basis, minimal, n_occ, s, c, iao)` | The orthonormal IAOs, n_ao x n_minimal; `Status` |
-| `ibo_localize(res, basis, minimal, n_occ, s, c, c_local, u, iao, options)` | The IBOs, and the IAOs if `iao` is not null; returns `Result<PipekMezeyInfo>`, exponent 4 by default |
+| `localization::ibo_localize(res, basis, minimal, n_occ, s, c, c_local, u, iao, options)` | The IBOs, and the IAOs if `iao` is not null; returns `Result<localization::Info>`, exponent 4 by default |
 
 Double precision only. Every matrix is a column-major device `double *`,
 packed, over the spherical AOs: `s` (n x n) and `c` (n x n_occ) as for
-`pipek_mezey_localize`, `iao` n x m with m = `minimal.nao_sphe()`.
+`localization::pm_localize`, `iao` n x m with m = `minimal.nao_sphe()`.
 `minimal` is the free-atom minimal basis placed over the same atoms, which
 for the paper's IAOs is MINAO (`data/basis/minao.json`):
 
 ```cpp
 const BasisStamp stamp = FBF_TRY(resolve_basis("minao"));
 const BasisSet minao = FBF_TRY(place(stamp.primitive_normalized(), molecule));
-const PipekMezeyInfo info = FBF_TRY(ibo_localize(res, basis, minao, n_occ, overlap.s.data(),
+const localization::Info info = FBF_TRY(localization::ibo_localize(res, basis, minao, n_occ, overlap.s.data(),
                                                  scf.c.data(), c_local.data(), u.data()));
 ```
 
@@ -105,7 +105,7 @@ from.
 
 The occupied orbitals over the orthonormal IAOs are C_IAO = IAO^T S1 C,
 lossless because the IAOs span them. Over an orthonormal basis S is the
-identity, so `pipek_mezey_localize(res, minimal, n_occ, I, C_IAO, ...)`
+identity, so `localization::pm_localize(res, minimal, n_occ, I, C_IAO, ...)`
 computes exactly the IAO populations, each IAO owned by its minimal-basis AO's
 atom (which the placed `minimal` records). Its p = 4 angle is the paper's
 Appendix D one, so this is Knizia's IBO functional and iteration, run on the
@@ -118,7 +118,7 @@ orbitals, without a round trip through the IAOs' rounding.
 
 The IAO partial charges (eq 3) and each orbital's IAO population per atom are
 not here: they are `analysis/population`, which takes the IAOs as an argument
-and so does not depend on this module. `ibo_localize`'s optional `iao` hands
+and so does not depend on this module. `localization::ibo_localize`'s optional `iao` hands
 back the IAOs it ran over, so a caller wanting both builds them once.
 
 ## Cost
@@ -154,6 +154,6 @@ NH4+ in cc-pVDZ:
 
 | File | Role |
 |---|---|
-| `ibo.cppm` | Module interface: `intrinsic_atomic_orbitals` and `ibo_localize` |
+| `ibo.cppm` | Module interface: `intrinsic_atomic_orbitals` and `localization::ibo_localize` |
 | `ibo.cpp` | The overlaps, the IAO construction and the IBO driver |
 | `CMakeLists.txt` | The module |

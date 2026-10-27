@@ -1,9 +1,10 @@
 # The Localization step. localization::ibo (with the pipek_mezey it re-exports),
 # analysis::population and analysis::bond, core::wwr and pipeline::scf are
 # PUBLIC and re-exported: the product holds Buffers and BondOrbitals, the
-# options are PipekMezeyOptions, and run's View names the ScfOutput and the
-# products it re-exports. core::resources, the basis_set step and pipeline::step
-# are in run's signature. run is defined in the implementation unit, so
+# options are localization::PmOptions, and run's View names the ScfOutput and
+# the products it re-exports. core::resources, the basis_set step and
+# pipeline::step are in run's signature. run is defined in the implementation
+# unit, so
 # io::basis (MINAO), localization::livvo, the Molden writer, recipes::blas and
 # recipes::sort (the energy order of the localized orbitals) and
 # diagnostics_macros (FBF_TRY) are PRIVATE.

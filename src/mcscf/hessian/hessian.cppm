@@ -21,27 +21,27 @@ import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 import free_breakfast.mcscf.fock;
 
-export namespace free_breakfast {
+export namespace free_breakfast::mcscf {
 
 /// @brief The orbital Hessian H of E(C exp(kappa(x))) at x = 0, fixed RDMs,
 /// over the packed pairs of @ref pack_orbital_pairs: E = E_0 + g . x +
-/// 1/2 x^T H x + ..., with g @ref CasscfFock::gradient.
+/// 1/2 x^T H x + ..., with g @ref Fock::gradient.
 ///
-/// A `LinearOperator<OrbitalHessian, double>` of order size(), so
+/// A `LinearOperator<Hessian, double>` of order size(), so
 /// davidson_solve (or an augmented Hessian over it) takes it as it is, and
 /// diagonal() is the exact diag(H) for the preconditioner. H is symmetric to
 /// 100 tau_k max |H| |x| |y| (README.md).
 ///
 /// Holds the MO intermediates it was built from, so the orbitals, ppaa, papa
-/// and the CasscfFock may go once create returns; it keeps @p j_classes and
+/// and the Fock may go once create returns; it keeps @p j_classes and
 /// @p k_classes (by span), which must outlive it, and the three Cartesian
 /// matrices J and K read and write. Move-only.
-class OrbitalHessian {
+class Hessian {
 public:
   /// @brief Build H at the orbitals @p c and the weighted RDMs in @p fock.
   ///
-  /// @p basis, @p h, @p u and the classes are @ref casscf_fock's; @p fock is
-  /// casscf_fock's result over the same @p c, @p ncore and @p ncas, and
+  /// @p basis, @p h, @p u and the classes are @ref fock's; @p fock is
+  /// fock's result over the same @p c, @p ncore and @p ncas, and
   /// @p ppaa and @p papa are @c casscf_integrals' over the same @p c (both
   /// empty for ncas = 0). Each is read here and not kept, the classes
   /// excepted.
@@ -65,19 +65,19 @@ public:
   ///         device, @p ppaa or @p papa is not nmo^2 ncas^2 long, or a member
   ///         of @p fock has another size than these ncore and ncas give; or
   ///         the error of the first J, K, BLAS call or copy that failed.
-  [[nodiscard]] static Result<OrbitalHessian>
+  [[nodiscard]] static Result<Hessian>
   create(DeviceResources &res, const BasisSet &basis, const SphericalMatrixAO &h,
          const std::shared_ptr<const Buffers::device<double>> &u,
          std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
          const SphericalMatrixAO &c, int32_t ncore, int32_t ncas,
-         const Buffers::device<double> &ppaa, const Buffers::device<double> &papa,
-         const CasscfFock &fock, double tau_j = 1e-14, double tau_k = 1e-14);
+         const Buffers::device<double> &ppaa, const Buffers::device<double> &papa, const Fock &fock,
+         double tau_j = 1e-14, double tau_k = 1e-14);
 
-  OrbitalHessian(OrbitalHessian &&) noexcept = default;
-  OrbitalHessian &operator=(OrbitalHessian &&) noexcept = default;
-  OrbitalHessian(const OrbitalHessian &) = delete;
-  OrbitalHessian &operator=(const OrbitalHessian &) = delete;
-  ~OrbitalHessian() = default;
+  Hessian(Hessian &&) noexcept = default;
+  Hessian &operator=(Hessian &&) noexcept = default;
+  Hessian(const Hessian &) = delete;
+  Hessian &operator=(const Hessian &) = delete;
+  ~Hessian() = default;
 
   /// @brief Y = H X for the size() x @p k column-major device blocks @p x and
   /// @p y, leading dimension size(); @p x and @p y must not overlap.
@@ -103,9 +103,9 @@ public:
   [[nodiscard]] const Buffers::device<double> &diagonal() const noexcept { return diagonal_; }
 
 private:
-  OrbitalHessian(DeviceResources &res, const BasisSet &basis, std::span<CoulombPairClass> j_classes,
-                 std::span<OrderedPairClass> k_classes, int32_t nmo, int32_t ncore, int32_t ncas,
-                 double tau_j, double tau_k);
+  Hessian(DeviceResources &res, const BasisSet &basis, std::span<CoulombPairClass> j_classes,
+          std::span<OrderedPairClass> k_classes, int32_t nmo, int32_t ncore, int32_t ncas,
+          double tau_j, double tau_k);
 
   // max |D| of the n_cart x n_cart @p from read back, and @p to = s @p from
   // with s = min(1, 2 / max |D|): the |D| <= 2 the J classes prune for.
@@ -135,4 +135,4 @@ private:
   CartesianMatrixAO k_;
 };
 
-} // namespace free_breakfast
+} // namespace free_breakfast::mcscf

@@ -5,12 +5,12 @@ J. Chem. Theory Comput. 13, 5984 (2017): the part of the intrinsic atomic
 orbitals' span orthogonal to the occupied orbitals. The IAOs are a minimal
 basis that spans the occupied space exactly, so what is left of them is
 m - n_occ virtual orbitals of valence character, the antibonding partners of
-the bonds. `livvo_localize` localizes them over the IAO populations (the
+the bonds. `localization::livvo_localize` localizes them over the IAO populations (the
 paper's LIVVOs), and `valence_character` measures how much of any orbital lies
 in their span.
 
 No kernels of its own: `recipes/blas`'s `gemm`, `recipes/diagonalize` and
-`pipek_mezey_localize`.
+`localization::pm_localize`.
 
 ## Module
 
@@ -20,11 +20,11 @@ No kernels of its own: `recipes/blas`'s `gemm`, `recipes/diagonalize` and
 | Name | Role |
 |---|---|
 | `valence_virtual_orbitals(res, basis, minimal, n_occ, s, c, iao, vvo)` | The n x (m - n_occ) VVOs; `Status` |
-| `livvo_localize(res, basis, minimal, n_occ, s, iao, vvo, livvo, u = nullptr, options = {.exponent = Four})` | The n x n_vvo LIVVOs and the n_vvo x n_vvo rotation; `Result<PipekMezeyInfo>` |
+| `localization::livvo_localize(res, basis, minimal, n_occ, s, iao, vvo, livvo, u = nullptr, options = {.exponent = Four})` | The n x n_vvo LIVVOs and the n_vvo x n_vvo rotation; `Result<localization::Info>` |
 | `valence_character(res, basis, n_orb, n_vvo, s, c, livvo)` | t_val of each of n_orb orbitals; `Result<std::vector<double>>` |
 
 The module re-exports `free_breakfast.localization.pipek_mezey`, for
-`PipekMezeyOptions` and `PipekMezeyInfo`.
+`localization::PmOptions` and `localization::Info`.
 
 Double precision only. Every matrix is a column-major device `double *`,
 packed, over the spherical AOs: `s` (n x n), `c` (n x n_occ, S-orthonormal),
@@ -32,7 +32,7 @@ packed, over the spherical AOs: `s` (n x n), `c` (n x n_occ, S-orthonormal),
 `basis.nao_sphe()` and m = `minimal.nao_sphe()`.
 
 **The IAOs are an argument.** They come from `intrinsic_atomic_orbitals`, or
-from `ibo_localize`'s `iao` out-parameter, so a caller wanting IBOs and VVOs
+from `localization::ibo_localize`'s `iao` out-parameter, so a caller wanting IBOs and VVOs
 builds them once. That also keeps this module off `ibo` and the integrals:
 `basis` and `minimal` are read only for their sizes and atom counts.
 
@@ -42,7 +42,7 @@ Buffers::device<double> vvo(n * (m - n_occ), res.device());
 FBF_TRY(intrinsic_atomic_orbitals(res, basis, minao, n_occ, s, c, iao.data()));
 FBF_TRY(valence_virtual_orbitals(res, basis, minao, n_occ, s, c, iao.data(), vvo.data()));
 Buffers::device<double> livvo(n * (m - n_occ), res.device());
-FBF_TRY(livvo_localize(res, basis, minao, n_occ, s, iao.data(), vvo.data(), livvo.data()));
+FBF_TRY(localization::livvo_localize(res, basis, minao, n_occ, s, iao.data(), vvo.data(), livvo.data()));
 std::vector<double> t_val = FBF_TRY(valence_character(res, basis, n - n_occ, m - n_occ, s,
                                                       c + n * n_occ, livvo.data()));
 ```
@@ -84,17 +84,17 @@ n_occ = 0 copies the IAOs, and n_occ = m writes nothing.
 
 ### LIVVOs
 
-As `ibo_localize` does for the occupied orbitals: the VVOs written over the
+As `localization::ibo_localize` does for the occupied orbitals: the VVOs written over the
 orthonormal IAOs,
 
 ```
 V_iao = A^T S V          (m x n_vvo, lossless: V = A V_iao)
 ```
 
-are localized by `pipek_mezey_localize` over the identity overlap, with
+are localized by `localization::pm_localize` over the identity overlap, with
 `minimal` saying which atom owns each IAO, so its Mulliken populations are the
 IAO ones. Its rotation U gives the LIVVOs as V U, without the round trip
-through A. The default exponent is Knizia's four. `pipek_mezey_localize` is
+through A. The default exponent is Knizia's four. `localization::pm_localize` is
 called directly; there is no IBO entry point for virtuals.
 
 ### Valence character
@@ -127,7 +127,7 @@ from the workspace with `res.device_regions`; P and the eigenvalues are a pool
 buffer, since `diagonalize` takes the workspace while they are live. `diagonalize` synchronizes the stream once, for its flag, and
 the function once more before freeing P.
 
-`livvo_localize`: two gemms for V_iao (S V from the workspace), the sweep, one
+`localization::livvo_localize`: two gemms for V_iao (S V from the workspace), the sweep, one
 n x n_vvo by n_vvo gemm for V U. V_iao, its localized copy, U and the m x m
 identity are pool buffers, held across the sweep, which takes the workspace.
 One sync after uploading the identity, the sweep's one per sweep, one before
@@ -153,7 +153,7 @@ pipeline SCF:
   populations equal to 1e-8 (mirror images);
 - t_val over water's canonical virtuals: each in [0, 1], summing to n_vvo,
   and the same from the VVOs as from the LIVVOs;
-- InvalidConfig from `livvo_localize` for n_occ outside 0..m, a mismatched
+- InvalidConfig from `localization::livvo_localize` for n_occ outside 0..m, a mismatched
   minimal basis, each null pointer and `livvo` aliasing `vvo`, and from
   `valence_character` for a negative `n_orb` or `n_vvo` and each null pointer.
 
@@ -161,6 +161,6 @@ pipeline SCF:
 
 | File | Role |
 |---|---|
-| `livvo.cppm` | Module interface: `valence_virtual_orbitals`, `livvo_localize`, `valence_character` |
+| `livvo.cppm` | Module interface: `valence_virtual_orbitals`, `localization::livvo_localize`, `valence_character` |
 | `livvo.cpp` | The null-space construction, the localization over the IAOs, t_val |
 | `CMakeLists.txt` | The module |

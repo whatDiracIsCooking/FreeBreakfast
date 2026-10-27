@@ -1,6 +1,6 @@
 # Solve
 
-The two-step, state-averaged CASSCF loop on the GPU: `casscf_solve`, which
+The two-step, state-averaged CASSCF loop on the GPU: `mcscf::solve`, which
 optimizes the orbitals and the CI of `nroots` roots at fixed weights until the
 weighted energy is stationary in both.
 
@@ -11,24 +11,24 @@ re-exported by `free_breakfast.mcscf`. It re-exports `free_breakfast.ci.solver`,
 whose `ci::SolverOptions` its options hold and whose `ci::Roots` its solution does.
 
 ```cpp
-Result<CasscfSolution> casscf_solve(
+Result<mcscf::Solution> mcscf::solve(
     DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
     std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas,
-    int32_t nroots, std::span<const double> weights = {}, const CasscfOptions &options = {});
+    int32_t nroots, std::span<const double> weights = {}, const mcscf::Options &options = {});
 ```
 
-The arguments through `k_classes` are `casscf_fock`'s; `c` is the start, its
+The arguments through `k_classes` are `mcscf::fock`'s; `c` is the start, its
 columns core, active, virtual as the rest of the layer takes them. The roots
 are the `nroots` lowest of spin |N_α − N_β| / 2, N_β = nelecas / 2: singlets
 for an even `nelecas`. `weights` are refused (`InvalidConfig`) if any is
 negative, if they do not sum to 1 within 1e-12 or if their count is not
 `nroots`; empty means equal.
 
-`CasscfSolution` holds C, the `ci::Roots` at C (each root's energy and ⟨S²⟩,
+`mcscf::Solution` holds C, the `ci::Roots` at C (each root's energy and ⟨S²⟩,
 and the CI vectors on the device), the weighted energy, ‖g‖, the weighted γ and
-Γ and each root's γ on the host, and one `CasscfIteration` per macro iteration
+Γ and each root's γ on the host, and one `mcscf::Iteration` per macro iteration
 (the energy, ΔE, ‖g‖, the trust radius, the CI's Davidson iterations in each
 of its two stages, the micro iterations and the Hessian products of the step, and whether the
 iteration was accepted).
@@ -63,7 +63,7 @@ Each macro iteration, at the current C:
    went 4.2e-7 to 3.2e-7), and on H₂CO SA2 it left the final ‖g‖ at 7.6e-10
    inside the loop but 1.5e-9 recomputed with a tight CI.
 3. **The RDMs and derivatives**: `ci::Rdm::rdm12` at the weights, read back,
-   and `casscf_fock`: the weighted energy and the gradient g.
+   and `mcscf::fock`: the weighted energy and the gradient g.
 4. **Convergence**: |ΔE| < `conv_tol` over the last accepted iteration and
    ‖g‖ < `conv_tol_grad`. The first iteration has no ΔE, so the loop takes at
    least two.
@@ -71,7 +71,7 @@ Each macro iteration, at the current C:
    drops these orbitals, halves the step from the accepted ones and sets the
    trust radius to its new length. The step is not re-solved: its κ's
    `skew_eig` is kept, and `skew_expm` takes the half as its t.
-6. **The step**: `OrbitalHessian` H at C plus the CI's response R (below),
+6. **The step**: `mcscf::Hessian` H at C plus the CI's response R (below),
    H̃ = H + R, and up to `max_micro` solves of the quadratic model at these
    frozen integrals,
    E + g·x + ½ xᵀH̃x. Each is the lowest root of the augmented Hessian
@@ -155,7 +155,7 @@ quadratically: every case here converges in 6 to 8 macro iterations, where
 the learned BFGS correction it replaced (D, the last 8 accepted steps' pairs
 y yᵀ / (y·s) − (Bs)(Bs)ᵀ / (s·Bs) of the gradient's actual change y) took 9
 to 15. The products per macro iteration barely move, so the J and K builds
-halve with the macro iterations, and `casscf_solve`'s wall time falls 32 to
+halve with the macro iterations, and `mcscf::solve`'s wall time falls 32 to
 48%. On the RTX 3080 (CUDA), both of its GPU slots held, the two builds
 interleaved, three runs each (median; the macro and product counts were the
 same in every run unless shown as a range); σ counts the sigma vectors
@@ -241,7 +241,7 @@ bar is 8.
 **The cost is the Hessian products.** Each H·κ is two J and two K builds when
 there is a core (`hessian/`), plus the CI's response to it (sigmas and RDMs,
 no J or K), and each column added to Q costs one;
-`CasscfIteration::hessian_products` counts them. A macro iteration's first
+`mcscf::Iteration::hessian_products` counts them. A macro iteration's first
 solve pays for every column it needs; a later solve pays only for what its
 own residual still lacks, often half or less. The integrals and the
 Hessian's own setup are a few J and K per active pair and per core orbital,
@@ -254,7 +254,7 @@ projected problem are buffers of the solve's, sized once for
 its three CG vectors and its RDMs. diag(H) is copied once per macro
 iteration (the response's diagonal is not built: diag(H) preconditions
 well enough), and the preconditioner is a kernel of this
-module's (`ah_precondition.cu`), μ passed by value. Per column added there
+module's (`device::ah_precondition.cu`), μ passed by value. Per column added there
 are a handful of syncs (the small problem's upload, `diagonalize`, its
 readback, the residual's and the correction's norms, the new row's readback),
 against the two J and two K of its product. The kernel is this module's, not
@@ -315,8 +315,8 @@ by AVAS, at `conv_tol_grad` 1e-9:
 
 | File | Role |
 |------|------|
-| `solve.cppm` | Module interface: `casscf_solve`, `CasscfOptions`, `CasscfIteration`, `CasscfSolution` |
+| `solve.cppm` | Module interface: `mcscf::solve`, `mcscf::Options`, `mcscf::Iteration`, `mcscf::Solution` |
 | `solve.cpp` | The loop, the augmented Hessian's persistent subspace over H̃, the CI's response R |
-| `ah_precondition.cu` | The preconditioner's kernel, r / (μ − diag(H)) for one column |
+| `device::ah_precondition.cu` | The preconditioner's kernel, r / (μ − diag(H)) for one column |
 | `ah_precondition_bridge.h` | Its launcher, shared by the `.cu` and `solve.cpp`'s global module fragment |
 | `CMakeLists.txt` | The device library `free_breakfast.mcscf.solve.device` and the module `free_breakfast.mcscf.solve` |

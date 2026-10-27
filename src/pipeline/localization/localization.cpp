@@ -184,7 +184,7 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
   }
   const size_t n_iao = minao ? minao->nao_sphe() : 0;
   // Sized for the buffer only: n_occ above MINAO's size is
-  // valence_virtual_orbitals' InvalidConfig.
+  // localization::valence_virtual_orbitals' InvalidConfig.
   const int32_t n_vvo = livvo ? std::max(static_cast<int32_t>(n_iao) - n_occ, 0) : 0;
   Buffers::device<double> iao(n_ao * n_iao, res.device());
   LocalizationOutput out{
@@ -202,16 +202,18 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
   // columns are the occupied block, packed.
   switch (mode) {
   case LocalizationMode::PipekMezey:
-    out.info = FBF_TRY(pipek_mezey_localize(res, basis, n_occ, s, scf.c.data(), out.c.data(),
-                                            out.u.data(), pipek_mezey));
+    out.info = FBF_TRY(localization::pm_localize(res, basis, n_occ, s, scf.c.data(), out.c.data(),
+                                                 out.u.data(), pipek_mezey));
     FBF_TRY(sort_localized_orbitals(res, n_ao, scf, out));
     if (livvo) {
-      FBF_TRY(intrinsic_atomic_orbitals(res, basis, *minao, n_occ, s, scf.c.data(), iao.data()));
+      FBF_TRY(localization::intrinsic_atomic_orbitals(res, basis, *minao, n_occ, s, scf.c.data(),
+                                                      iao.data()));
     }
     break;
   case LocalizationMode::Ibo: {
-    out.info = FBF_TRY(ibo_localize(res, basis, *minao, n_occ, s, scf.c.data(), out.c.data(),
-                                    out.u.data(), iao.data(), pipek_mezey));
+    out.info =
+        FBF_TRY(localization::ibo_localize(res, basis, *minao, n_occ, s, scf.c.data(), out.c.data(),
+                                           out.u.data(), iao.data(), pipek_mezey));
     FBF_TRY(sort_localized_orbitals(res, n_ao, scf, out));
     // Over the IBOs, so each orbital's populations are its bonding picture;
     // the charges are the same over any rotation of the occupied orbitals.
@@ -234,17 +236,17 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
   if (livvo) {
     // The VVOs are a step-local buffer: the product is their localized form.
     Buffers::device<double> vvo(n_ao * static_cast<size_t>(n_vvo), res.device());
-    FBF_TRY(valence_virtual_orbitals(res, basis, *minao, n_occ, s, scf.c.data(), iao.data(),
-                                     vvo.data()));
-    PipekMezeyOptions options = pipek_mezey;
-    options.exponent = PipekMezeyExponent::Four;
-    out.livvo_info = FBF_TRY(livvo_localize(res, basis, *minao, n_occ, s, iao.data(), vvo.data(),
-                                            out.livvo.data(), nullptr, options));
+    FBF_TRY(localization::valence_virtual_orbitals(res, basis, *minao, n_occ, s, scf.c.data(),
+                                                   iao.data(), vvo.data()));
+    localization::PmOptions options = pipek_mezey;
+    options.exponent = localization::PmExponent::Four;
+    out.livvo_info = FBF_TRY(localization::livvo_localize(
+        res, basis, *minao, n_occ, s, iao.data(), vvo.data(), out.livvo.data(), nullptr, options));
     const std::vector<double> weights =
         FBF_TRY(orbital_weights(res, basis, *minao, n_vvo, s, out.livvo.data(), iao.data()));
     out.livvo_bonds = FBF_TRY(bond_orbitals(*minao, n_vvo, weights));
     const auto n_vir = static_cast<int32_t>(scf.mo_energies.size()) - n_occ;
-    out.valence_character = FBF_TRY(valence_character(
+    out.valence_character = FBF_TRY(localization::valence_character(
         res, basis, n_vir, n_vvo, s, scf.c.data() + (n_ao * occ), out.livvo.data()));
     FBF_LOG_INFO("localization: {} LIVVOs in {} sweeps, L {:.6f} -> {:.6f}", n_vvo,
                  out.livvo_info.sweeps, out.livvo_info.initial_functional,

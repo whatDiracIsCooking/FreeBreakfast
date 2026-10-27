@@ -17,13 +17,13 @@ import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
-// Re-exported: CasscfOptions holds ci::SolverOptions and the solution ci::Roots.
+// Re-exported: Options holds ci::SolverOptions and the solution ci::Roots.
 export import free_breakfast.ci.solver;
 
-export namespace free_breakfast {
+export namespace free_breakfast::mcscf {
 
-/// @brief The knobs of one casscf_solve call.
-struct CasscfOptions {
+/// @brief The knobs of one solve call.
+struct Options {
   /// @brief Converged when |Delta E| of the weighted energy over the last
   /// accepted macro iteration is below this (hartree) ...
   double conv_tol = 1e-10;
@@ -48,7 +48,7 @@ struct CasscfOptions {
 };
 
 /// @brief What one macro iteration did, for the log.
-struct CasscfIteration {
+struct Iteration {
   /// @brief The weighted energy at this iteration's orbitals (hartree).
   double energy;
   /// @brief energy less the last accepted iteration's; 0 for the first.
@@ -75,8 +75,8 @@ struct CasscfIteration {
   bool accepted;
 };
 
-/// @brief A converged casscf_solve.
-struct CasscfSolution {
+/// @brief A converged solve.
+struct Solution {
   /// @brief The optimized orbitals, AO by MO: core, active, virtual, as given.
   SphericalMatrixAO c;
   /// @brief The CI at @ref c: each root's energy (hartree) and <S^2>, and the
@@ -94,7 +94,7 @@ struct CasscfSolution {
   /// @brief Each root's gamma, root r at [r ncas^2, (r + 1) ncas^2).
   std::vector<double> root_gammas;
   /// @brief One entry per macro iteration run.
-  std::vector<CasscfIteration> iterations;
+  std::vector<Iteration> iterations;
 };
 
 /// @brief The state-averaged CASSCF of the @p nroots lowest roots of spin
@@ -102,21 +102,21 @@ struct CasscfSolution {
 /// (columns [0, ncore) the core, [ncore, ncore + ncas) the active space).
 ///
 /// @p basis, @p molecule, @p h, @p u and the two kinds of classes are what
-/// @c casscf_fock takes; the classes must stay alive for the call. @p weights
+/// @c fock takes; the classes must stay alive for the call. @p weights
 /// are w_r, empty for equal ones.
 ///
 /// Each macro iteration: @c casscf_integrals over the current C; @c ci::solve
 /// over the GPU sigma, warm-started from the last iteration's roots (the first
 /// from its own guesses), its residual
 /// tolerance min(1e-8, 1e-4 ||g||^2) of the last iteration, held at or above
-/// options.ci's; @c ci::Rdm::rdm12 at @p weights and @c casscf_fock. Converged
+/// options.ci's; @c ci::Rdm::rdm12 at @p weights and @c fock. Converged
 /// when |Delta E| < conv_tol and ||g|| < conv_tol_grad. A rise of the energy
 /// over the last accepted iteration past 1e-11 hartree rejects the orbitals:
 /// the step from the accepted ones is retried at half its length and the
 /// trust radius halved. Otherwise up to max_micro augmented-Hessian solves of
 /// the quadratic model at frozen integrals, the lowest root of [[0, g^T], [g,
 /// H~]], H~ = H - H_oc (H_cc - E)^-1 H_co the Hessian with the CI relaxed
-/// (@c OrbitalHessian H, and the CI's response to each column by conjugate
+/// (@c Hessian H, and the CI's response to each column by conjugate
 /// gradients over the sigma), give the step x, at most the trust radius
 /// long; the solves share one subspace, grown by
 /// diagonally preconditioned residuals, so a later one pays only for what the
@@ -140,12 +140,11 @@ struct CasscfSolution {
 ///         spherical order; MaxIterationsExceeded once max_cycle runs out; or
 ///         the first error of an integral, CI, RDM, Fock, Hessian or rotation
 ///         call.
-[[nodiscard]] Result<CasscfSolution>
-casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
-             const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
-             std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
-             const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas,
-             int32_t nroots, std::span<const double> weights = {},
-             const CasscfOptions &options = {});
+[[nodiscard]] Result<Solution>
+solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
+      const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
+      std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
+      const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas, int32_t nroots,
+      std::span<const double> weights = {}, const Options &options = {});
 
-} // namespace free_breakfast
+} // namespace free_breakfast::mcscf

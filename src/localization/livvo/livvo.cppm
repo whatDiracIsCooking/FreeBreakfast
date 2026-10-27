@@ -18,7 +18,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 export import free_breakfast.localization.pipek_mezey;
 
-export namespace free_breakfast {
+export namespace free_breakfast::localization {
 
 /// @brief The n x (m - @p n_occ) valence virtual orbitals: an S-orthonormal
 /// basis of the IAOs' span orthogonal to the @p n_occ occupied orbitals.
@@ -62,13 +62,12 @@ export namespace free_breakfast {
 /// @return The sweeps and L over the IAO populations, or InvalidConfig for
 ///         @p minimal over a different atom count than @p basis, @p n_occ
 ///         outside 0..m, a null pointer or @p livvo aliasing @p vvo; else
-///         pipek_mezey_localize's errors. On MaxIterationsExceeded @p livvo
+///         pm_localize's errors. On MaxIterationsExceeded @p livvo
 ///         and @p u hold the last sweep's orbitals.
-[[nodiscard]] Result<PipekMezeyInfo>
+[[nodiscard]] Result<Info>
 livvo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &minimal, int32_t n_occ,
                const double *s, const double *iao, const double *vvo, double *livvo,
-               double *u = nullptr,
-               const PipekMezeyOptions &options = {.exponent = PipekMezeyExponent::Four});
+               double *u = nullptr, const PmOptions &options = {.exponent = PmExponent::Four});
 
 /// @brief The valence character t_val of each of @p n_orb orbitals: its
 /// squared overlap summed over the @p n_vvo LIVVOs (the paper's eqs 11-12).
@@ -90,4 +89,4 @@ livvo_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &mini
                                                             int32_t n_vvo, const double *s,
                                                             const double *c, const double *livvo);
 
-} // namespace free_breakfast
+} // namespace free_breakfast::localization
