@@ -44,7 +44,7 @@ m and n.
    field-major (`kThreeCenterBraFields`, `kThreeCenterAuxFields`,
    `kThreeCenterCellFields` in `three_center_bridge.h`), with U and U_aux,
    in one upload.
-4. **One launch per class** that has a cell, all 50 classes through `(ff|g)`
+4. **One launch per class** that has a cell, all 70 classes through `(ff|i)`
    into one Cartesian tensor `nao_cart² naux_cart` doubles, `[m][n][P]`,
    P fastest, one thread per cell, `kFourWarps` to a block. Every element
    belongs to one cell and is a plain store with its `(m, n)` mirror, so
@@ -70,9 +70,14 @@ three-center bra `s` is `mmd`'s, the same one J and K read.
 
 ## Limits
 
-- Orbital shells through f (`kThreeCenterMaxMomentum`), aux shells through g
+- Orbital shells through f (`kThreeCenterMaxMomentum`), aux shells through i
   (`kThreeCenterAuxMaxMomentum`); a higher one is `Unsupported`, naming the
-  shell.
+  shell. **The two are separate knobs on purpose**, and only the orbital one
+  is tied to the tree-wide `kMaxAngularMomentum`: a JKFIT or RI set carries
+  shells two l above the orbital set it fits, so the aux ladder runs higher
+  (`tools/emit/df_kernels.py`'s `AUX_MAX_L` against its `MAX_L`). No carried
+  fitting set reaches h or i — `data/aux_basis/` stops at g — so those
+  classes come up only through a path-read or hand-built basis.
 - **The whole tensor must fit, and is refused up front if not.** The staging,
   the Cartesian tensor and the intermediate (`naux · nao_cart²`) are counted
   before anything is allocated; past `max_bytes` (a test's forced limit, the
@@ -81,18 +86,29 @@ three-center bra `s` is `mmd`'s, the same one J and K read.
   m would need FelizJueves's mirrored store changed.
 - `nao_cart² naux_cart` within `INT32_MAX`, the kernels' 32-bit index, else
   `Unsupported`.
-- **The stack.** The unrolled high classes spill to stack: after device link
-  on the RTX 3080 (sm_86), `(ff|g)` (`eri3_334`) takes 70,232 B a thread and
-  `(df|g)` 32,040 B, at 255 registers. The CUDA runtime grows the context's
-  per-thread stack at the first such launch, for every thread the card can
-  hold (68 SMs x 1536, so about 7.3 GB for `(ff|g)`), and keeps it. It fit on
-  the 10 GB card; on a card with less free, that launch fails with a
-  GpuRuntime error rather than aborting. The size refusal above does not
-  count this reservation. A low-stack eri3 is FelizJueves's to emit.
+- **The stack.** These kernels spill to stack, and the CUDA runtime grows the
+  context's per-thread stack at the first such launch — for every thread the
+  card can hold (68 SMs x 1536 on the RTX 3080, so 104,448 of them) — and
+  keeps it. The size refusal above does not count that reservation. On a card
+  with less free than it wants, the launch fails with a GpuRuntime error
+  rather than aborting.
+
+  **The worst frame is `(dd|g)` (`eri3_224`) at 13,856 B a thread**, after
+  device link on sm_86 at 255 registers, so the reservation is about 1.4 GB.
+  It is *not* the top class: `(dd|g)` is the largest frame FelizJueves emits
+  unrolled, and every class above it — every `(df|.)`, every `(ff|.)` and
+  every aux-i row, 24 in all — comes out in FelizJueves's **low-stack** form
+  instead (its `eri3_lowstack`, gated on exactly that frame), which keeps
+  per-axis E tables and rolls the contraction. So the ladder's stack does not
+  grow with L past `(dd|g)`: `(ff|g)` is 6,320 B, `(ff|i)` 8,256 B, `(df|g)`
+  4,608 B. `(ff|g)` was **70,232 B** before that form existed, an 11x frame
+  and a ~7.3 GB reservation on a 10 GB card; the figure to quote now is the
+  1.4 GB one.
 - No screening: every cell is launched.
-- FelizJueves tested its kernels against libcint at `L <= 4` only; the
-  classes above, to `(ff|g)` at L = 10, are first checked here, against
-  PySCF.
+- FelizJueves tested its kernels against libcint at `L <= 4` only, and the
+  classes above it against its own host tower; all of those are first
+  checked here, against PySCF — to `(ff|g)` by the carried sets, and the
+  aux h and i rows by the hand-built basis below.
 
 ## Tests
 
@@ -100,6 +116,17 @@ three-center bra `s` is `mmd`'s, the same one J and K read.
 `int3c2e` for FelizJueves's water, each element divided by this tree's three
 function norms (PySCF's are unit-normalised): cc-pVDZ / cc-pVDZ-JKFIT (to
 `(dd|f)`) and cc-pVTZ / cc-pVTZ-JKFIT (to `(ff|g)`) to `1e-12 · max|(mn|P)|`,
-exactly `(m, n)`-symmetric, two runs bit-identical; a g orbital shell and an h
+exactly `(m, n)`-symmetric, two runs bit-identical; a g orbital shell and a k
 aux shell `Unsupported`; the size refusal at a forced limit one byte short,
 and the run at the limit.
+
+`test/gtest/df_high_aux_gpu.cpp` covers the aux ladder no carried set
+reaches: over `test/gtest/data/df_high_aux/`'s one-shell-per-l basis on two
+skew centres (orbitals to f, aux to i), it runs **all 70 classes** through
+`(ff|i)` at L = 12 against the same `int3c2e`, to the same
+`1e-12 · max|(mn|P)|` — which it clears by two orders, the measured worst
+being 1.6e-14 of max on the RTX 3080, printed by the case.
+Its fixture's basis is unit-normalised on both sides, so it needs no norm
+factor of its own, and a case of its own checks that every emitted class is
+reached by both a one-centre and a two-centre pair, rather than leaving that
+to a comment here.

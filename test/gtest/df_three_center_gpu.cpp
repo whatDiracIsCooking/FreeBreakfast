@@ -3,7 +3,7 @@
 // and cc-pVTZ / cc-pVTZ-JKFIT (orbitals to f, aux to g, so (ff|g)) over
 // FelizJueves's water, against PySCF's int3c2e (data/density_fitting/);
 // exactly (m, n)-symmetric, and bit-identical across two runs; and the
-// refusals: a g orbital shell, an h aux shell, and a tensor past a forced
+// refusals: a g orbital shell, a k aux shell, and a tensor past a forced
 // small limit.
 
 #include <gtest/gtest.h>
@@ -192,15 +192,17 @@ TEST(DfThreeCenter, TzThroughFfGMatchesInt3c2e) {
   check_three_center("h2o_ccpvtz");
 }
 
-// A g orbital shell and an h aux shell have no kernel, and a tensor past the
-// limit is refused, naming its bytes; each before anything is written.
+// A g orbital shell and a k aux shell have no kernel, and a tensor past the
+// limit is refused, naming its bytes; each before anything is written. The
+// aux ladder reaches i (kThreeCenterAuxMaxMomentum), which is why the aux
+// refusal is k and not h; df_high_aux_gpu.cpp runs the h and i classes.
 TEST(DfThreeCenter, Refusals) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::BasisSet s(std::vector<fb::Shell>{fb::Shell{0, {{1.0, 1.0}}, {0.0, 0.0, 0.0}}});
   const fb::BasisSet sg(std::vector<fb::Shell>{fb::Shell{0, {{1.0, 1.0}}, {0.0, 0.0, 0.0}},
                                                fb::Shell{4, {{1.0, 1.0}}, {0.0, 0.0, 1.0}}});
-  const fb::BasisSet h(std::vector<fb::Shell>{fb::Shell{5, {{1.0, 1.0}}, {0.0, 0.0, 0.0}}});
+  const fb::BasisSet k(std::vector<fb::Shell>{fb::Shell{7, {{1.0, 1.0}}, {0.0, 0.0, 0.0}}});
   const auto refusal = [&](const fb::BasisSet &basis, const fb::BasisSet &aux,
                            const std::size_t max_bytes, const std::string &says) {
     const auto classes = fb::primitive_pair_classes(res, basis);
@@ -214,7 +216,7 @@ TEST(DfThreeCenter, Refusals) {
   };
   constexpr std::size_t kUnlimited = std::numeric_limits<std::size_t>::max();
   refusal(sg, s, kUnlimited, "three_center: orbital shell 1 has momentum 4");
-  refusal(s, h, kUnlimited, "three_center: aux shell 0 has momentum 5");
+  refusal(s, k, kUnlimited, "three_center: aux shell 0 has momentum 7");
   // One (ss|s) element, 8 bytes, but four 256-byte regions of scratch.
   refusal(s, s, 1023, "needs 1024 bytes of device scratch (the Cartesian tensor alone 8 bytes)");
   // At the limit it runs.

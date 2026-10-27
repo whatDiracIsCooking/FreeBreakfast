@@ -73,11 +73,15 @@ shell or the bytes; a metric that is not positive definite is `Numerical`.
 
 ## The stack
 
-`three_center`'s `(ff|g)` class, reached by cc-pVTZ / cc-pVTZ-JKFIT, makes
-the CUDA runtime reserve about 7.3 GB of per-thread stack on a 10 GB RTX 3080,
-and keep it for the context (`three_center/README.md`, "The stack"). The step
-adds only B and the metric, a few MB at water's size, but a card that has
-less free memory fails that launch with `GpuRuntime`.
+`three_center`'s launches make the CUDA runtime reserve per-thread stack for
+every thread the card can hold, and keep it for the context
+(`three_center/README.md`, "The stack"). The worst frame in the family is
+`(dd|g)`'s 13,856 B, about **1.4 GB** on a 10 GB RTX 3080, which cc-pVTZ /
+cc-pVTZ-JKFIT reaches along with `(ff|g)`: the classes above `(dd|g)` are
+emitted in FelizJueves's low-stack form, so `(ff|g)` is only 6,320 B (it was
+70,232 B, and the reservation 7.3 GB, before that form existed). The step
+adds only B and the metric, a few MB at water's size, but a card with less
+free memory than the reservation wants fails that launch with `GpuRuntime`.
 
 ## Config
 

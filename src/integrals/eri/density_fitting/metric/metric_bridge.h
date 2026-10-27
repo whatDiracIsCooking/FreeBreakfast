@@ -28,11 +28,12 @@
 namespace free_breakfast::device {
 
 /// @brief The metric's L limit: the largest momentum of an auxiliary shell in
-/// any class (P|Q) it takes, g. Its kernels are emitted through it
+/// any class (P|Q) it takes, i. Its kernels are emitted through it
 /// (tools/emit/df_kernels.py's AUX_MAX_L, which the tool checks against this),
 /// and metric_launch.cu checks their table against it; the tree-wide
-/// kMaxAngularMomentum is the orbital basis's, not the aux basis's.
-inline constexpr int32_t kMetricMaxMomentum = 4;
+/// kMaxAngularMomentum is the orbital basis's, not the aux basis's, and this
+/// one is deliberately the higher of the two.
+inline constexpr int32_t kMetricMaxMomentum = 6;
 
 /// @brief The fields of one aux record, each a segment of n_rec doubles, in
 /// this order: the centre's x, y and z, the exponent alpha, and the weight

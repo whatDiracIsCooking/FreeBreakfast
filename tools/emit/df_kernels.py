@@ -12,13 +12,13 @@ Two families, one per FelizJueves target, each its module's own directory:
 - `metric<lP, lQ>`, FelizJueves's `Target.METRIC`
   (`eri/density_fit/kernel_metric.py`): the Coulomb metric (P|Q) of an
   auxiliary basis, one thread per aux shell pair, written to metric/kernels/.
-  Every `lP <= lQ` with both at most AUX_MAX_L (g) is written, 15 classes, the
-  top one (g|g) at L = 8.
+  Every `lP <= lQ` with both at most AUX_MAX_L (i) is written, 28 classes, the
+  top one (i|i) at L = 12.
 - `eri3<la, lb, lP>`, FelizJueves's `Target.ERI3`
   (`eri/density_fit/kernel_eri3.py`): the three-center (mn|P), one thread per
   (AO shell pair, aux shell), written to three_center/kernels/. Every
   `la <= lb` with both at most MAX_L (f), against every `lP` at most AUX_MAX_L
-  (g), 50 classes, the top one (ff|g) at L = 10.
+  (i), 70 classes, the top one (ff|i) at L = 12.
 
 Pair classes are written `la <= lb` (and `lP <= lQ`) only, for the reason
 tools/emit/one_electron_kernels.py gives: each kernel writes every element and
@@ -76,8 +76,10 @@ from felizjueves.performance.device import by_name  # noqa: E402
 
 # The orbital limit, f: kThreeCenterMaxMomentum (module docstring).
 MAX_L = 3
-# The aux limit, g: kThreeCenterAuxMaxMomentum and kMetricMaxMomentum.
-AUX_MAX_L = 4
+# The aux limit, i: kThreeCenterAuxMaxMomentum and kMetricMaxMomentum. It is
+# deliberately above the orbital MAX_L: a JKFIT or RI set carries shells two l
+# above the orbital set it fits, so the two ladders are separate knobs.
+AUX_MAX_L = 6
 # With no shuffle the arch fixes nothing in the text; the gpu backend still
 # takes one.
 ARCH = "sm_86"

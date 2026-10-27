@@ -44,6 +44,15 @@ in 101 functions over H2O. Each element's shells are general contractions, one
 per angular momentum, of up to 22 primitives (40 on the 3d metals), and no
 shell passes g.
 
+**All three sets stop at g, and the DF kernels go two l further.** `(P|Q)`
+and `(mn|P)` carry aux shells through **i** (`kMetricMaxMomentum`,
+`kThreeCenterAuxMaxMomentum` — the aux ladder is a separate, higher knob from
+the orbital `kMaxAngularMomentum`, because a fitting set is expected to run
+past the set it fits). Nothing here exercises the h and i classes, so they
+are reached only through a path-read set or a hand-built `BasisSet`: that is
+what `test/gtest/data/df_high_aux/` is for. Adding a fitting set with h or i
+functions would be the way to reach them from a name.
+
 ## Where the JKFIT sets come from: PySCF, not BSE
 
 Both files are written by `tools/jkfit_from_pyscf.py` from PySCF's

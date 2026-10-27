@@ -1,6 +1,6 @@
 # The DF Coulomb metric's device library: the generated kernels metric<lP, lQ>
 # (kernels/, written by tools/emit/df_kernels.py), one per aux class lP <= lQ
-# through g, each compiled on its own, and metric_launch.cu, the per-class
+# through i, each compiled on its own, and metric_launch.cu, the per-class
 # launcher, which checks their table (kernels/metric.h) against the limit in
 # metric_bridge.h at compile time. Device code in its own library, so its
 # language and -x hip never reach a module compile. Under CUDA the launcher
@@ -22,16 +22,29 @@ free_breakfast_add_gpu_device_library(
   kernels/metric_02.cu
   kernels/metric_03.cu
   kernels/metric_04.cu
+  kernels/metric_05.cu
+  kernels/metric_06.cu
   kernels/metric_11.cu
   kernels/metric_12.cu
   kernels/metric_13.cu
   kernels/metric_14.cu
+  kernels/metric_15.cu
+  kernels/metric_16.cu
   kernels/metric_22.cu
   kernels/metric_23.cu
   kernels/metric_24.cu
+  kernels/metric_25.cu
+  kernels/metric_26.cu
   kernels/metric_33.cu
   kernels/metric_34.cu
+  kernels/metric_35.cu
+  kernels/metric_36.cu
   kernels/metric_44.cu
+  kernels/metric_45.cu
+  kernels/metric_46.cu
+  kernels/metric_55.cu
+  kernels/metric_56.cu
+  kernels/metric_66.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   wwr::device

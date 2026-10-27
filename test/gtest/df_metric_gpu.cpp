@@ -1,6 +1,8 @@
 // GPU cases for integrals.eri.density_fitting.metric: the spherical Coulomb
 // metric (P|Q) of the compiled-in cc-pVDZ-JKFIT (aux f) and cc-pVTZ-JKFIT
-// (aux g) over FelizJueves's water, against PySCF's int2c2e
+// (aux g) over FelizJueves's water -- the aux h and i classes the kernels
+// also carry have no carried basis set and are df_high_aux_gpu.cpp's --
+// against PySCF's int2c2e
 // (data/density_fitting/); exactly symmetric, and bit-identical across two
 // runs; and the refusals.
 
@@ -144,20 +146,22 @@ TEST(DfMetric, TzAuxThroughGMatchesInt2c2e) {
   check_metric("h2o_ccpvtz");
 }
 
-// An aux shell above g has no kernel; a pair of another basis's orders, and a
-// pair on another device, are refused before anything is queued.
+// An aux shell above i has no kernel; a pair of another basis's orders, and a
+// pair on another device, are refused before anything is queued. The ladder
+// reaches i (kMetricMaxMomentum), so the shell that has no kernel is k, and
+// the aux h and i classes that do are run by df_high_aux_gpu.cpp.
 TEST(DfMetric, Refusals) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::BasisSet h_shell(std::vector<fb::Shell>{fb::Shell{5, {{1.0, 1.0}}, {0.0, 0.0, 0.0}}});
+  const fb::BasisSet k_shell(std::vector<fb::Shell>{fb::Shell{7, {{1.0, 1.0}}, {0.0, 0.0, 0.0}}});
   {
-    const auto u = fb::upload_spherical_transform_matrix(res, h_shell);
+    const auto u = fb::upload_spherical_transform_matrix(res, k_shell);
     ASSERT_TRUE(u) << u.error().message;
-    fb::MatrixAOPair m(res, h_shell, *u);
-    const fb::Status status = fb::metric(res, h_shell, m);
+    fb::MatrixAOPair m(res, k_shell, *u);
+    const fb::Status status = fb::metric(res, k_shell, m);
     ASSERT_FALSE(status);
     EXPECT_EQ(status.error().kind, fb::ErrorKind::InvalidConfig);
-    EXPECT_NE(status.error().message.find("momentum 5"), std::string::npos)
+    EXPECT_NE(status.error().message.find("momentum 7"), std::string::npos)
         << status.error().message;
   }
   const fb::BasisSet sp(std::vector<fb::Shell>{fb::Shell{0, {{1.0, 1.0}}, {0.0, 0.0, 0.0}},

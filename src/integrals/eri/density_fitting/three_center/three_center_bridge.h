@@ -35,9 +35,10 @@ namespace free_breakfast::device {
 inline constexpr int32_t kThreeCenterMaxMomentum = 3;
 
 /// @brief (mn|P)'s aux L limit: the largest momentum of an auxiliary shell P
-/// in any class it takes, g (tools/emit/df_kernels.py's AUX_MAX_L, as
-/// kMetricMaxMomentum is).
-inline constexpr int32_t kThreeCenterAuxMaxMomentum = 4;
+/// in any class it takes, i (tools/emit/df_kernels.py's AUX_MAX_L, as
+/// kMetricMaxMomentum is). It is above the orbital limit on purpose, and is
+/// not checked against kMaxAngularMomentum.
+inline constexpr int32_t kThreeCenterAuxMaxMomentum = 6;
 
 static_assert(kThreeCenterMaxMomentum == kMaxAngularMomentum,
               "(mn|P)'s orbital limit and the tree-wide kMaxAngularMomentum "

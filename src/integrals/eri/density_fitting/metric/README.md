@@ -88,17 +88,34 @@ itself against PySCF.
 
 ## Limits
 
-- Aux shells through g (`kMetricMaxMomentum`, the emitted table's extent,
-  checked in `metric_launch.cu`); a higher one is InvalidConfig.
+- Aux shells through i (`kMetricMaxMomentum`, the emitted table's extent,
+  checked in `metric_launch.cu`); a higher one is InvalidConfig. That limit
+  is the **aux** basis's and is deliberately above the orbital
+  `kMaxAngularMomentum` (f): a JKFIT or RI set carries shells two l above the
+  orbital set it fits, so the two ladders are separate knobs
+  (`tools/emit/df_kernels.py`'s `AUX_MAX_L` against its `MAX_L`).
 - `aux.nao_cart()²` within INT32_MAX, the kernels' 32-bit index.
-- FelizJueves tested its kernels against libcint at lP + lQ ≤ 4 only. The
-  six classes above it are first checked here, against PySCF, by
-  `test/gtest/df_metric_gpu.cpp`: (d|f) and (f|f) in both cases, and (p|g),
-  (d|g), (f|g) and (g|g) in the cc-pVTZ-JKFIT one.
+- FelizJueves tested its kernels against libcint at lP + lQ ≤ 4 only, and
+  the classes above that against its own host tower. All 19 of them are
+  first checked here, against PySCF: (d|f) and (f|f) in both carried cases
+  and (p|g), (d|g), (f|g) and (g|g) in the cc-pVTZ-JKFIT one, by
+  `test/gtest/df_metric_gpu.cpp`; then every class through (i|i), by
+  `test/gtest/df_high_aux_gpu.cpp`.
+- **No carried fitting set reaches h or i.** Both `data/aux_basis/` sets stop
+  at g, so the aux h and i classes are reachable only through a path-read
+  basis or a hand-built `BasisSet` — which is what their test uses.
 
 ## Tests
 
 `test/gtest/df_metric_gpu.cpp`, against `test/gtest/data/density_fitting/`'s
 `int2c2e` for FelizJueves's water: the spherical metric of cc-pVDZ-JKFIT
 (aux f) and cc-pVTZ-JKFIT (aux g) to 1e-12 · max|M|, the Cartesian and the
-spherical metric exactly symmetric, two runs bit-identical; and the refusals.
+spherical metric exactly symmetric, two runs bit-identical; and the refusals,
+whose unsupported shell is k, i being covered.
+
+`test/gtest/df_high_aux_gpu.cpp` runs the rest of the ladder — all 28 classes
+through (i|i), at L = 12 — over `test/gtest/data/df_high_aux/`'s hand-built
+one-shell-per-l basis on two skew centres, against the same `int2c2e`, to the
+same 1e-12 · max|M|. It clears that by two orders: the measured worst is
+1.2e-14 of max|M| on the RTX 3080, so the tower does not visibly lose
+accuracy up the aux ladder. The case prints the figure.
