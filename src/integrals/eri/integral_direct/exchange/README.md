@@ -325,7 +325,15 @@ the rule), the shell starts and the mirror of either sign, the bound maximum,
 the AO centres and group geometry, and the
 decay fit on H₂O's and the chain's densities, whose bound is checked at every
 off-centre element with no tolerance (the chain's `Λ` 0.397 / bohr, `H_off`
-0.571, `max|D|` 0.328; FelizJueves's reference gives the same). The classes,
+0.571, `max|D|` 0.328; FelizJueves's reference gives the same). The E
+tables are `exchange_e_table_gpu.cpp`'s: every record of every ordered shell
+pair of H₂O/cc-pVDZ and CO/cc-pVTZ (every class through `(f, f)`), as a bra and
+as a ket, against FelizJueves's host `launch_kblock.e_table`
+(`test/gtest/data/e_table/`), each entry within 16 eps of its record's largest
+(2.2 at worst on the RTX 3080) and the ket's the bra's with its odd-`|t|`
+entries negated, bit for bit. The records are the golden's own, so that
+compares the table alone; FelizJueves checking itself, as the table has no
+libcint counterpart. The classes,
 their `group_start`, `dc` rows and block tables among them, are
 `exchange_pairs_gpu.cpp`'s.
 
@@ -337,7 +345,7 @@ their `group_start`, `dc` rows and block tables among them, are
 | `exchange.cpp` | The build: the checks, the per-call buffers, the phases |
 | `exchange_bridge.h` | The launchers, declared once for the module and the device TU |
 | `exchange_launch.cu` | The `kb` launcher; the rank-table kernel; the compile-time checks of the table, the block and the shared-memory budget |
-| `helpers/` | `max\|D\|`, the `Dcd` gather, the block table (which `pairs/` makes) and its factors, the shell starts and the signed mirror, and the decay's bound maximum, AO centres, group geometry and fit, a device library of their own |
+| `helpers/` | `max\|D\|`, the `Dcd` gather, the block table (which `pairs/` makes) and its factors, the shell starts and the signed mirror, the decay's bound maximum, AO centres, group geometry and fit, and the E tables of FelizJueves's rolled kernel `kbr` (`e_table.cu`, `exchange_e_table`: each record's undressed `E^{la lb}`, nonzero entries, record-major, the ket's odd-`\|t\|` entries negated, through f; built and checked, not yet read by the build, #348), a device library of their own |
 | `kernels/kb/` | The generated units and their template header `kb.h` |
 | `pairs/` | The ordered pair classes: their own module and view header library |
 | `CMakeLists.txt` | The device library, its launcher among the kernels, and the module |

@@ -13,6 +13,10 @@ kernels are held to: `ao.k.record_bounds(epair(sa, sb), pq=reference.pq.pq)`
 for every ORDERED shell pair (sa, sb) of the molecule, the bound orientation-
 dependent (the max runs over the first shell's Cartesians).
 
+FelizJueves has since moved both: `ao.k` is `eri.k_exchange.k`, and `epair` is
+`ao.density`'s. The files keep the names they were written with, so a run at
+the new pin rewrites them unchanged but for the commit.
+
 The shells are read from the exchange golden the K test reads,
 test/gtest/data/exchange/<molecule>.json (written by
 tools/extract_integral_golden.py from FelizJueves's fixture), so the bounds
@@ -41,9 +45,9 @@ ROOT = Path(__file__).resolve().parent.parent
 FJ = ROOT / "deps/FelizJueves"
 sys.path.insert(0, str(FJ / "src"))
 
-from felizjueves.ao.j import epair  # noqa: E402
-from felizjueves.ao.k import record_bounds  # noqa: E402
+from felizjueves.ao.density import epair  # noqa: E402
 from felizjueves.ao.shell import Shell  # noqa: E402
+from felizjueves.eri.k_exchange.k import record_bounds  # noqa: E402
 from felizjueves.reference.pq import pq  # noqa: E402
 
 SOURCE = ROOT / "test/gtest/data/exchange"
