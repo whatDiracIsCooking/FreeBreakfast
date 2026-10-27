@@ -15,6 +15,10 @@ cannot be misplaced. Adding a set is a rebuild — and `resolve_basis` also
 takes a plain file path, so a basis this build does not carry needs no rebuild
 at all.
 
+The density-fitting sets are compiled in the same way but live in
+`data/aux_basis/`, not here: every set in this directory is one the SAD guess
+carries baked densities for (`data/sad/`), and a fitting set needs none.
+
 ## What is here
 
 | File | BSE name | Elements | Notes |

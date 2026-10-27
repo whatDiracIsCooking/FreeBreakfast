@@ -2,10 +2,18 @@
 /// @brief The compiled-in basis sets, and basis resolution by name or path.
 ///
 /// **This file is a template.** The build generates `builtin_basis.cpp` from it
-/// (see `CMakeLists.txt`), replacing the two `FB_BUILTIN_BASIS_*` tokens with
-/// one entry per `data/basis/*.json`: the document's own BSE `name` field, and
+/// (see `CMakeLists.txt`), replacing the `FB_BUILTIN_BASIS_*` tokens with one
+/// entry per `data/basis/*.json` and the `FB_BUILTIN_AUX_BASIS_*` tokens with
+/// one per `data/aux_basis/*.json`: the document's own BSE `name` field, and
 /// its bytes verbatim inside a raw string literal. Edit this template, never
 /// the generated copy.
+///
+/// The density-fitting sets are a table of their own, not more orbital sets:
+/// every orbital set is one the SAD guess carries baked densities for
+/// (`data/sad/`, written by `tools/sad`), and a SAD density in a fitting basis
+/// means nothing. So @ref free_breakfast::is_builtin_basis and @ref
+/// free_breakfast::resolve_basis never see a fitting set, and @ref
+/// free_breakfast::resolve_aux_basis never sees an orbital one.
 ///
 /// Why the data is compiled in rather than read from an installed data
 /// directory: this project installs nothing of its own, so a data directory
@@ -28,7 +36,7 @@ import free_breakfast.basis;
 namespace free_breakfast {
 
 /// @brief One compiled-in BSE document: its canonical BSE name, and the file's
-/// bytes exactly as `data/basis/` holds them.
+/// bytes exactly as `data/basis/` or `data/aux_basis/` holds them.
 struct BuiltinBasis {
   std::string_view name;
   std::string_view json;
@@ -41,6 +49,12 @@ struct BuiltinBasis {
 /// two a given spec was.
 constexpr std::array<BuiltinBasis, @FB_BUILTIN_BASIS_COUNT@> kBuiltinBases{{
 @FB_BUILTIN_BASIS_ENTRIES@
+}};
+
+/// @brief The density-fitting sets compiled into this binary, from
+/// `data/aux_basis/`. Reached through @ref resolve_aux_basis only.
+constexpr std::array<BuiltinBasis, @FB_BUILTIN_AUX_BASIS_COUNT@> kBuiltinAuxBases{{
+@FB_BUILTIN_AUX_BASIS_ENTRIES@
 }};
 
 /// @brief Fold a basis-set spelling onto the one key both sides compare by:
@@ -64,10 +78,11 @@ constexpr std::array<BuiltinBasis, @FB_BUILTIN_BASIS_COUNT@> kBuiltinBases{{
   return key;
 }
 
-/// @brief The compiled-in set @p spec names, or nullptr if it names none.
-[[nodiscard]] const BuiltinBasis *find_builtin_basis(std::string_view spec) {
+/// @brief The set of @p table that @p spec names, or nullptr if it names none.
+[[nodiscard]] const BuiltinBasis *find_builtin_basis(std::span<const BuiltinBasis> table,
+                                                     std::string_view spec) {
   const std::string key = normalized_basis_name(spec);
-  for (const BuiltinBasis &candidate : kBuiltinBases) {
+  for (const BuiltinBasis &candidate : table) {
     if (normalized_basis_name(candidate.name) == key) {
       return &candidate;
     }
@@ -75,10 +90,10 @@ constexpr std::array<BuiltinBasis, @FB_BUILTIN_BASIS_COUNT@> kBuiltinBases{{
   return nullptr;
 }
 
-/// @brief The compiled-in names, canonical spelling, for an error message.
-[[nodiscard]] std::string builtin_basis_list() {
+/// @brief The names in @p table, canonical spelling, for an error message.
+[[nodiscard]] std::string builtin_basis_list(std::span<const BuiltinBasis> table) {
   std::string out;
-  for (const BuiltinBasis &basis : kBuiltinBases) {
+  for (const BuiltinBasis &basis : table) {
     if (!out.empty()) {
       out += ", ";
     }
@@ -87,12 +102,16 @@ constexpr std::array<BuiltinBasis, @FB_BUILTIN_BASIS_COUNT@> kBuiltinBases{{
   return out;
 }
 
-bool is_builtin_basis(std::string_view spec) { return find_builtin_basis(spec) != nullptr; }
-
-Result<BasisStamp> resolve_basis(std::string_view spec) {
-  if (const BuiltinBasis *builtin = find_builtin_basis(spec); builtin != nullptr) {
+/// @brief @p spec from @p table by name, else read from disk as a path.
+///
+/// What @ref resolve_basis and @ref resolve_aux_basis share: they differ only
+/// in which table a name is looked up in.
+[[nodiscard]] Result<BasisStamp> resolve_from(std::span<const BuiltinBasis> table,
+                                              std::string_view spec) {
+  if (const BuiltinBasis *builtin = find_builtin_basis(table, spec); builtin != nullptr) {
     // Named here and only here: these shells are known to be the set's, which
-    // is what the name promises to the baked SAD stamps looked up by it.
+    // is what the name promises -- for an orbital set, to the baked SAD
+    // stamps looked up by it.
     BasisStamp stamp = FBF_TRY(parse_basis(builtin->json));
     return BasisStamp{stamp.element_shells(), std::string{builtin->name}};
   }
@@ -104,10 +123,20 @@ Result<BasisStamp> resolve_basis(std::string_view spec) {
     // meant, what failed was opening a path, and an unreadable file is IO
     // everywhere else in this layer.
     Error error = std::move(stamp.error());
-    error.message += std::format(" (and not a compiled-in basis: {})", builtin_basis_list());
+    error.message += std::format(" (and not a compiled-in basis: {})", builtin_basis_list(table));
     return std::unexpected(std::move(error));
   }
   return stamp;
+}
+
+bool is_builtin_basis(std::string_view spec) {
+  return find_builtin_basis(kBuiltinBases, spec) != nullptr;
+}
+
+Result<BasisStamp> resolve_basis(std::string_view spec) { return resolve_from(kBuiltinBases, spec); }
+
+Result<BasisStamp> resolve_aux_basis(std::string_view spec) {
+  return resolve_from(kBuiltinAuxBases, spec);
 }
 
 } // namespace free_breakfast

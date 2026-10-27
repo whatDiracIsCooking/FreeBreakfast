@@ -228,4 +228,96 @@ TEST(IoBasisBuiltins, OnlyACompiledInSetIsNamed) {
   EXPECT_EQ(read->name(), "");
 }
 
+// The compiled-in fitting sets (data/aux_basis/, their own table) and
+// resolve_aux_basis. Their placement over a molecule is io_basis_gpu.cpp's.
+
+TEST(IoBasisAux, BothJkfitSetsResolveByAnySpelling) {
+  // Both sets are tools/jkfit_from_pyscf.py's: PySCF's 19 elements, H, B-Ne,
+  // Al-Ar, Ga-Kr.
+  struct Spelling {
+    std::string_view spec;
+    std::string_view canonical;
+  };
+  for (const auto &[spec, canonical] :
+       std::array<Spelling, 4>{{{"cc-pVDZ-JKFIT", "cc-pVDZ-JKFIT"},
+                                {"ccpvdzjkfit", "cc-pVDZ-JKFIT"},
+                                {"cc-pVTZ-JKFIT", "cc-pVTZ-JKFIT"},
+                                {"CC_PVTZ_JKFIT", "cc-pVTZ-JKFIT"}}}) {
+    auto stamp = fb::resolve_aux_basis(spec);
+    ASSERT_TRUE(stamp.has_value()) << spec << ": " << stamp.error().message;
+    EXPECT_EQ(stamp->name(), canonical);
+    EXPECT_EQ(stamp->element_shells().size(), 19U) << spec;
+    EXPECT_NE(stamp->shells_for(36), nullptr) << spec;
+    EXPECT_EQ(stamp->shells_for(2), nullptr) << spec;
+  }
+}
+
+TEST(IoBasisAux, TheFittingAndOrbitalTablesAreDisjoint) {
+  // A fitting set is no orbital set: tools/sad and io_sad_host see only the
+  // five that carry data/sad/ stamps.
+  for (const std::string_view aux : {"cc-pVDZ-JKFIT", "cc-pvtz-jkfit"}) {
+    EXPECT_FALSE(fb::is_builtin_basis(aux)) << aux;
+    auto stamp = fb::resolve_basis(aux);
+    ASSERT_FALSE(stamp.has_value()) << aux;
+    EXPECT_EQ(stamp.error().kind, fb::ErrorKind::IO);
+  }
+  // ... and an orbital set's name is no fitting set's.
+  auto orbital = fb::resolve_aux_basis("cc-pvdz");
+  ASSERT_FALSE(orbital.has_value());
+  EXPECT_EQ(orbital.error().kind, fb::ErrorKind::IO);
+}
+
+TEST(IoBasisAux, AnUnknownNameReadsAsAPathAndSaysWhatTheNamesAre) {
+  auto stamp = fb::resolve_aux_basis("cc-pvqz-jkfit");
+  ASSERT_FALSE(stamp.has_value());
+  EXPECT_EQ(stamp.error().kind, fb::ErrorKind::IO);
+  EXPECT_NE(stamp.error().message.find("cc-pVDZ-JKFIT"), std::string::npos)
+      << stamp.error().message;
+  EXPECT_EQ(stamp.error().message.find("STO-3G"), std::string::npos) << stamp.error().message;
+}
+
+TEST(IoBasisAux, APathIsStillReadAndUnnamed) {
+  const fb::test::ScratchDir dir("io_basis_aux");
+  const auto path = dir / "custom-fit.json";
+  ASSERT_TRUE(fb::write_file(path, kBasis).has_value());
+
+  auto stamp = fb::resolve_aux_basis(path.string());
+  ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+  EXPECT_EQ(stamp->element_shells().size(), 2U);
+  EXPECT_EQ(stamp->name(), "");
+}
+
+TEST(IoBasisAux, TheTripleZetaSetIsTheDoubleZetaSetPlusItsTopMomentum) {
+  // Molpro's cc-pVDZ-JKFIT, which PySCF carries, is cc-pVTZ-JKFIT with each
+  // element's highest angular momentum dropped (data/aux_basis/README.md).
+  auto dz = fb::resolve_aux_basis("cc-pvdz-jkfit");
+  auto tz = fb::resolve_aux_basis("cc-pvtz-jkfit");
+  ASSERT_TRUE(dz.has_value()) << dz.error().message;
+  ASSERT_TRUE(tz.has_value()) << tz.error().message;
+  for (const auto &[z, tz_shells] : tz->element_shells()) {
+    SCOPED_TRACE(std::format("Z={}", z));
+    const std::vector<fb::ShellStamp> *dz_shells = dz->shells_for(z);
+    ASSERT_NE(dz_shells, nullptr);
+    std::int32_t top = 0;
+    for (const fb::ShellStamp &shell : tz_shells) {
+      top = std::max(top, shell.angular_momentum());
+    }
+    std::size_t kept = 0;
+    for (const fb::ShellStamp &shell : tz_shells) {
+      if (shell.angular_momentum() == top) {
+        continue;
+      }
+      ASSERT_LT(kept, dz_shells->size());
+      const fb::ShellStamp &match = (*dz_shells)[kept++];
+      EXPECT_EQ(match.angular_momentum(), shell.angular_momentum());
+      ASSERT_EQ(match.nprimitives(), shell.nprimitives());
+      for (std::size_t p = 0; p < shell.nprimitives(); ++p) {
+        EXPECT_EQ(match.primitives()[p].exponent, shell.primitives()[p].exponent);
+        EXPECT_EQ(match.primitives()[p].coefficient, shell.primitives()[p].coefficient);
+      }
+    }
+    EXPECT_EQ(kept, dz_shells->size());
+  }
+}
+
 } // namespace

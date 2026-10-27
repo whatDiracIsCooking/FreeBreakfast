@@ -1,5 +1,6 @@
-// GPU cases for io/basis: the BSE JSON reader's placement onto a molecule. A
-// Molecule owns its nuclei on the device, so building one needs a GPU.
+// GPU cases for io/basis: the BSE JSON reader's placement onto a molecule, and
+// the compiled-in fitting sets' placement. A Molecule owns its nuclei on the
+// device, so building one needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -54,21 +55,50 @@ TEST(IoBasis, UncoveredElementIsInvalidConfig) {
   EXPECT_NE(basis.error().message.find("Z=6"), std::string::npos) << basis.error().message;
 }
 
-TEST(IoBasis, AuxBasisNamesTheFittingRoleOnCoverageFailure) {
+// The compiled-in fitting sets placed over H2O, as the DF steps will: the
+// counts pin data/aux_basis/ (tools/jkfit_from_pyscf.py's conversion of
+// PySCF's tables), and match PySCF's naux for H2O, 116 and 139.
+TEST(IoBasisAux, AJkfitSetPlacesOverWater) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  auto ok = fb::parse_and_assign_aux_basis(kBasis, water(res));
-  ASSERT_TRUE(ok.has_value()) << ok.error().message;
-  EXPECT_EQ(ok->nshells(), 8U);
+  const fb::Molecule h2o = water(res);
+  struct Expected {
+    std::string_view name;
+    std::uint32_t nshells;
+    std::uint32_t nao_sphe;
+    std::int32_t oxygen_lmax;
+  };
+  // O: 10s 7p 5d 2f in DZ, one g more in TZ; H: 4s 3p 2d, one f more in TZ.
+  for (const auto &[name, nshells, nao_sphe, oxygen_lmax] :
+       std::array<Expected, 2>{{{"cc-pVDZ-JKFIT", 24 + 2 * 9, 70 + 2 * 23, 3},
+                                {"cc-pVTZ-JKFIT", 25 + 2 * 10, 79 + 2 * 30, 4}}}) {
+    SCOPED_TRACE(name);
+    auto stamp = fb::resolve_aux_basis(name);
+    ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+    auto aux = fb::place(stamp->primitive_normalized(), h2o);
+    ASSERT_TRUE(aux.has_value()) << aux.error().message;
+    EXPECT_EQ(aux->nshells(), nshells);
+    EXPECT_EQ(aux->nao_sphe(), nao_sphe);
+    std::int32_t lmax = 0;
+    for (std::uint32_t s = aux->atom_shell_offset(0); s < aux->atom_shell_offset(1); ++s) {
+      lmax = std::max(lmax, aux->shells()[s].angular_momentum());
+    }
+    EXPECT_EQ(lmax, oxygen_lmax);
+  }
+}
 
-  const fb::Molecule ch(res,
-                        {Atom{{0.0, 0.0, 0.0}, Element::C}, Atom{{0.0, 0.0, 2.0}, Element::H}});
-  auto bad = fb::parse_and_assign_aux_basis(kBasis, ch);
-  ASSERT_FALSE(bad.has_value());
-  EXPECT_EQ(bad.error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_TRUE(bad.error().message.starts_with("auxiliary (density-fitting) basis"))
-      << bad.error().message;
-  EXPECT_NE(bad.error().message.find("Z=6"), std::string::npos);
+TEST(IoBasisAux, AnElementTheSetLacksIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  // Li: the JKFIT sets have H, then B onward.
+  const fb::Molecule lih(res,
+                         {Atom{{0.0, 0.0, 0.0}, Element::Li}, Atom{{0.0, 0.0, 3.0}, Element::H}});
+  auto stamp = fb::resolve_aux_basis("cc-pvdz-jkfit");
+  ASSERT_TRUE(stamp.has_value()) << stamp.error().message;
+  auto aux = fb::place(stamp->primitive_normalized(), lih);
+  ASSERT_FALSE(aux.has_value());
+  EXPECT_EQ(aux.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(aux.error().message.find("Z=3"), std::string::npos) << aux.error().message;
 }
 
 } // namespace

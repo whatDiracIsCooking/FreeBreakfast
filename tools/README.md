@@ -11,6 +11,11 @@ minao_from_pyscf.py
                   basis (the IAOs' B2), converted from PySCF's
                   pyscf/gto/basis/minao.py, since the Basis Set Exchange
                   does not serve it. Needs PySCF.
+jkfit_from_pyscf.py
+                  Write data/aux_basis/cc-pV{D,T}Z-JKFIT.json: Weigend's JK
+                  fitting sets, converted from PySCF's
+                  pyscf/gto/basis/cc-pv{d,t}z-jkfit.dat, since the Basis Set
+                  Exchange has no cc-pVDZ-JKFIT. Needs PySCF.
 atomic_cd/        aCD / acCD atomic Cholesky decomposition over PySCF
                   integrals; writes acCD auxiliary shells as BSE JSON.
 emit_one_electron_kernels.py
@@ -114,15 +119,16 @@ tools/bse_download.py cc-pVDZ def2-SVP -o data/basis
 tools/bse_download.py --list
 ```
 
-`atomic_cd`, `minao_from_pyscf.py` and the `emit_*_reference.py` scripts need
-PySCF and numpy, which sit in the opt-in `tools` dependency group in
-`pyproject.toml` rather than in `dev`, so the image and the push gate do not
-carry them. Inside the devcontainer, add
+`atomic_cd`, `minao_from_pyscf.py`, `jkfit_from_pyscf.py` and the
+`emit_*_reference.py` scripts need PySCF and numpy, which sit in the opt-in
+`tools` dependency group in `pyproject.toml` rather than in `dev`, so the
+image and the push gate do not carry them. Inside the devcontainer, add
 `UV_PROJECT_ENVIRONMENT=$PWD/.venv` so the group goes into a worktree-local
 venv rather than the image's `/opt/venv`:
 
 ```sh
 uv run --group tools tools/minao_from_pyscf.py
+uv run --group tools tools/jkfit_from_pyscf.py
 uv run --group tools tools/emit_sad_reference.py
 uv run --group tools tools/emit_scf_reference.py
 uv run --group tools tools/emit_localization_reference.py
