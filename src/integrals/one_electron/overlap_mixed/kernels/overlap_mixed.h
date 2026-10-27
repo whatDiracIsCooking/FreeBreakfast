@@ -75,6 +75,23 @@ __global__ void overlap_mixed<0, 2>(
     double* S);
 
 template <>
+__global__ void overlap_mixed<0, 3>(
+    int32_t n_rec,
+    int32_t n_a,
+    int32_t n_b,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
 __global__ void overlap_mixed<1, 0>(
     int32_t n_rec,
     int32_t n_a,
@@ -110,6 +127,23 @@ __global__ void overlap_mixed<1, 1>(
 
 template <>
 __global__ void overlap_mixed<1, 2>(
+    int32_t n_rec,
+    int32_t n_a,
+    int32_t n_b,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
+__global__ void overlap_mixed<1, 3>(
     int32_t n_rec,
     int32_t n_a,
     int32_t n_b,
@@ -176,9 +210,95 @@ __global__ void overlap_mixed<2, 2>(
     const int32_t* off_b,
     double* S);
 
+template <>
+__global__ void overlap_mixed<2, 3>(
+    int32_t n_rec,
+    int32_t n_a,
+    int32_t n_b,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
+__global__ void overlap_mixed<3, 0>(
+    int32_t n_rec,
+    int32_t n_a,
+    int32_t n_b,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
+__global__ void overlap_mixed<3, 1>(
+    int32_t n_rec,
+    int32_t n_a,
+    int32_t n_b,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
+__global__ void overlap_mixed<3, 2>(
+    int32_t n_rec,
+    int32_t n_a,
+    int32_t n_b,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
+__global__ void overlap_mixed<3, 3>(
+    int32_t n_rec,
+    int32_t n_a,
+    int32_t n_b,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&overlap_mixed<0, 0>) overlap_mixed_kernels[3][3] = {
-    {&overlap_mixed<0, 0>, &overlap_mixed<0, 1>, &overlap_mixed<0, 2>},
-    {&overlap_mixed<1, 0>, &overlap_mixed<1, 1>, &overlap_mixed<1, 2>},
-    {&overlap_mixed<2, 0>, &overlap_mixed<2, 1>, &overlap_mixed<2, 2>},
+inline constexpr decltype(&overlap_mixed<0, 0>) overlap_mixed_kernels[4][4] = {
+    {&overlap_mixed<0, 0>, &overlap_mixed<0, 1>, &overlap_mixed<0, 2>, &overlap_mixed<0, 3>},
+    {&overlap_mixed<1, 0>, &overlap_mixed<1, 1>, &overlap_mixed<1, 2>, &overlap_mixed<1, 3>},
+    {&overlap_mixed<2, 0>, &overlap_mixed<2, 1>, &overlap_mixed<2, 2>, &overlap_mixed<2, 3>},
+    {&overlap_mixed<3, 0>, &overlap_mixed<3, 1>, &overlap_mixed<3, 2>, &overlap_mixed<3, 3>},
 };

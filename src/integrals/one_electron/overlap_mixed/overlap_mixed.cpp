@@ -23,15 +23,13 @@ import free_breakfast.recipes.blas; // gemm
 
 namespace free_breakfast {
 
-// InvalidConfig naming the first shell of basis above kMaxAngularMomentum, the
-// tree-wide limit (the launcher is bounded by its own table; this check moves to
-// it when the one-electron engine lifts to f, #344); which names the basis in
-// the message.
+// InvalidConfig naming the first shell of basis above kOneElectronMaxL; which
+// names the basis in the message.
 Status check_shells(const BasisSet &basis, const std::string_view which) {
   for (uint32_t i = 0; i < basis.nshells(); ++i) {
-    if (const int32_t l = basis.shells()[i].angular_momentum(); l > kMaxAngularMomentum) {
+    if (const int32_t l = basis.shells()[i].angular_momentum(); l > kOneElectronMaxL) {
       return err_config("overlap_mixed: {} shell {} has l = {}; the kernels cover l <= {}", which,
-                        i, l, kMaxAngularMomentum);
+                        i, l, kOneElectronMaxL);
     }
   }
   return {};

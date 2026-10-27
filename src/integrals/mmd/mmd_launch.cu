@@ -143,6 +143,8 @@ constexpr int32_t kRecordBoundMaxL =
 static_assert(std::extent_v<decltype(pair_bound_kernels), 1> == kPairBoundMaxL + 1,
               "kernels/pair_bound's [la][lb] table is not square: rerun "
               "tools/emit_one_electron_kernels.py");
+static_assert(kPairBoundMaxL == kPairBoundMaxMomentum,
+              "kernels/pair_bound's table and kPairBoundMaxMomentum disagree");
 
 static_assert(std::extent_v<decltype(record_bound_kernels), 1> == kRecordBoundMaxL + 1,
               "kernels/record_bound's [la][lb] table is not square: rerun "

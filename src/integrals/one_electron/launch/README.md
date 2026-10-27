@@ -38,10 +38,12 @@ whichever matrix is wanted.
 (`overlap`, `kinetic`, `potential_en`, `core_hamiltonian`) runs first: the
 matrix and every class on the call's device, the matrix's order within the
 kernels' 32-bit `m * n_ao + n` index (`n_ao² ≤ INT32_MAX`, about 46k Cartesian
-AOs), and every class `la <= lb <= kMaxAngularMomentum`. That limit is
-`basis`'s, the tree-wide one; each launcher is bounded by its own kernel
-table's extent instead, and this check moves to the families' tables when the
-one-electron engine lifts to f (#344). `check_nuclei` is the extra one for
+AOs), and every class `la <= lb <= kOneElectronMaxL`. That limit is the
+one-electron engine's, f, not `basis`'s tree-wide `kMaxAngularMomentum` (d
+until J and K reach f). It is the emitter's `MAX_L` written by hand, because a
+module unit cannot include the emitted tables; each launcher is bounded by its
+own table's extent besides, so a table emitted below it refuses the class
+rather than launching past it, and the f golden cases fail. `check_nuclei` is the extra one for
 the builds that read the nuclei (V and H): the molecule's nuclei on the call's
 device.
 
@@ -51,6 +53,7 @@ No device code: this module validates, and each family's module launches.
 
 | Symbol | Role |
 |---|---|
+| `kOneElectronMaxL` | The largest momentum the one-electron kernels cover (3, f); the host checks' limit |
 | `launch_each(classes, parent, launch)` | Each class's launch on its own stream, between a fork from and a join into `parent`; the first error of a fork, launch or join |
 | `check_one_electron_build(res, classes, m, what)` | `Status`: `InvalidConfig` naming the first refused input, `what` naming the build |
 | `check_nuclei(res, molecule, what)` | `Status`: `InvalidConfig` if the molecule's nuclei are on another device |
@@ -59,6 +62,6 @@ No device code: this module validates, and each family's module launches.
 
 | File | Role |
 |------|------|
-| `launch.cppm` | Module interface: `launch_each` and the checks |
+| `launch.cppm` | Module interface: `kOneElectronMaxL`, `launch_each` and the checks |
 | `launch.cpp` | Implementation |
 | `CMakeLists.txt` | The module |

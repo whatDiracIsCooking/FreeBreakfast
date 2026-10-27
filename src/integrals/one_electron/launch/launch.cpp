@@ -8,7 +8,6 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
-import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
 import free_breakfast.recipes.matrix_ao;
@@ -32,11 +31,9 @@ Status check_one_electron_build(const DeviceResources &res,
       return err_config("{}: class ({}, {}) is on device {}, but the call passed device {}", what,
                         cls.la, cls.lb, dev, res.dev_idx());
     }
-    // The tree-wide limit, not the families' tables (each launcher is bounded by
-    // its own): this moves to them when the one-electron engine lifts to f, #344.
-    if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum) {
+    if (cls.la < 0 || cls.lb < cls.la || cls.lb > kOneElectronMaxL) {
       return err_config("{}: no kernel for class ({}, {}); the kernels cover la <= lb <= {}", what,
-                        cls.la, cls.lb, kMaxAngularMomentum);
+                        cls.la, cls.lb, kOneElectronMaxL);
     }
   }
   return {};

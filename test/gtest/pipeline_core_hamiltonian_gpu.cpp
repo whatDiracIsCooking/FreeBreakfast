@@ -12,6 +12,7 @@ import free_breakfast.core.resources;
 import free_breakfast.molecule;
 import free_breakfast.basis;
 import free_breakfast.integrals.one_electron.core_hamiltonian;
+import free_breakfast.integrals.one_electron.launch; // kOneElectronMaxL
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.core_hamiltonian;
 
@@ -93,12 +94,12 @@ TEST(PipelineCoreHamiltonian, MatchesCoreHamiltonianThenCartesianToSpherical) {
   EXPECT_EQ(download(res, h->h), download(res, direct.spherical()));
 }
 
-TEST(PipelineCoreHamiltonian, ClassAboveDIsInvalidConfig) {
+TEST(PipelineCoreHamiltonian, ClassAboveFIsInvalidConfig) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::MoleculeOutput molecule = water(res);
   const fb::BasisSetOutput basis{
-      fb::BasisSet({shell(3, 1.0, molecule.molecule.atoms()[0].position)})};
+      fb::BasisSet({shell(fb::kOneElectronMaxL + 1, 1.0, molecule.molecule.atoms()[0].position)})};
 
   auto h = step_core_hamiltonian(res, molecule, basis);
   ASSERT_FALSE(h.has_value());

@@ -75,6 +75,23 @@ __global__ void kinetic<0, 2>(
     double* T);
 
 template <>
+__global__ void kinetic<0, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const double* eb_ket,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* T);
+
+template <>
 __global__ void kinetic<1, 1>(
     int32_t n_rec,
     int32_t n_ao,
@@ -109,6 +126,23 @@ __global__ void kinetic<1, 2>(
     double* T);
 
 template <>
+__global__ void kinetic<1, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const double* eb_ket,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* T);
+
+template <>
 __global__ void kinetic<2, 2>(
     int32_t n_rec,
     int32_t n_ao,
@@ -125,9 +159,44 @@ __global__ void kinetic<2, 2>(
     const int32_t* off_b,
     double* T);
 
+template <>
+__global__ void kinetic<2, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const double* eb_ket,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* T);
+
+template <>
+__global__ void kinetic<3, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const double* eb_ket,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* T);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&kinetic<0, 0>) kinetic_kernels[3][3] = {
-    {&kinetic<0, 0>, &kinetic<0, 1>, &kinetic<0, 2>},
-    {nullptr, &kinetic<1, 1>, &kinetic<1, 2>},
-    {nullptr, nullptr, &kinetic<2, 2>},
+inline constexpr decltype(&kinetic<0, 0>) kinetic_kernels[4][4] = {
+    {&kinetic<0, 0>, &kinetic<0, 1>, &kinetic<0, 2>, &kinetic<0, 3>},
+    {nullptr, &kinetic<1, 1>, &kinetic<1, 2>, &kinetic<1, 3>},
+    {nullptr, nullptr, &kinetic<2, 2>, &kinetic<2, 3>},
+    {nullptr, nullptr, nullptr, &kinetic<3, 3>},
 };

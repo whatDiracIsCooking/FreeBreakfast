@@ -68,10 +68,13 @@ from felizjueves.one_electron.kernel_t import build_t_kernel  # noqa: E402
 from felizjueves.one_electron.kernel_v import build_v_kernel  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 
-# The kernels' L limit: d. It must equal kMaxAngularMomentum
-# (src/basis/angular_momentum.h), the repo's one limit: every family's launcher
-# sizes its kernel table by it and names one kernel per la <= lb <= it.
-MAX_L = 2
+# The kernels' L limit: f, for every family here, mmd's pair_bound included.
+# Each launcher reads its limit from its own table, so this may sit above the
+# tree-wide kMaxAngularMomentum (src/basis/angular_momentum.h). Two host limits
+# must equal it: kOneElectronMaxL (src/integrals/one_electron/launch/launch.cppm,
+# the one-electron checks) and device::kPairBoundMaxMomentum
+# (src/integrals/mmd/mmd_bridge.h, static_asserted against the table).
+MAX_L = 3
 # The gpu backend reads only the arch's wavefront, and these kernels have no
 # shuffle, so their text names neither: any wave32 arch writes the same files.
 ARCH = "sm_86"

@@ -95,6 +95,28 @@ __global__ void potential_en<0, 2>(
     double* V);
 
 template <>
+__global__ void potential_en<0, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_nuc,
+    const double* zeta_ab,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const double* Z,
+    const double* Cnuc,
+    double* V);
+
+template <>
 __global__ void potential_en<1, 1>(
     int32_t n_rec,
     int32_t n_ao,
@@ -139,6 +161,28 @@ __global__ void potential_en<1, 2>(
     double* V);
 
 template <>
+__global__ void potential_en<1, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_nuc,
+    const double* zeta_ab,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const double* Z,
+    const double* Cnuc,
+    double* V);
+
+template <>
 __global__ void potential_en<2, 2>(
     int32_t n_rec,
     int32_t n_ao,
@@ -160,9 +204,54 @@ __global__ void potential_en<2, 2>(
     const double* Cnuc,
     double* V);
 
+template <>
+__global__ void potential_en<2, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_nuc,
+    const double* zeta_ab,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const double* Z,
+    const double* Cnuc,
+    double* V);
+
+template <>
+__global__ void potential_en<3, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    int32_t n_nuc,
+    const double* zeta_ab,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    const double* Z,
+    const double* Cnuc,
+    double* V);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&potential_en<0, 0>) potential_en_kernels[3][3] = {
-    {&potential_en<0, 0>, &potential_en<0, 1>, &potential_en<0, 2>},
-    {nullptr, &potential_en<1, 1>, &potential_en<1, 2>},
-    {nullptr, nullptr, &potential_en<2, 2>},
+inline constexpr decltype(&potential_en<0, 0>) potential_en_kernels[4][4] = {
+    {&potential_en<0, 0>, &potential_en<0, 1>, &potential_en<0, 2>, &potential_en<0, 3>},
+    {nullptr, &potential_en<1, 1>, &potential_en<1, 2>, &potential_en<1, 3>},
+    {nullptr, nullptr, &potential_en<2, 2>, &potential_en<2, 3>},
+    {nullptr, nullptr, nullptr, &potential_en<3, 3>},
 };

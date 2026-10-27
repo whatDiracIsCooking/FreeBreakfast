@@ -325,11 +325,11 @@ double host_pair_bound(const double zeta, const std::int32_t l) {
   return k * std::sqrt(x) * sum;
 }
 
-// H2O/cc-pVDZ (s, p, d: all six classes), as coulomb_gpu.cpp reads it.
-fb::BasisSet h2o_ccpvdz() {
+// A basis of test/gtest/data/coulomb/, as coulomb_gpu.cpp reads it.
+fb::BasisSet coulomb_basis(const std::string &stem) {
   const auto doc =
-      fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "coulomb" / "h2o_ccpvdz.json");
-  EXPECT_TRUE(doc);
+      fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "coulomb" / (stem + ".json"));
+  EXPECT_TRUE(doc) << stem;
   if (!doc) {
     return {};
   }
@@ -343,14 +343,33 @@ fb::BasisSet h2o_ccpvdz() {
   return fb::BasisSet(std::move(shells));
 }
 
+// H2O/cc-pVDZ (s, p, d: all six classes).
+fb::BasisSet h2o_ccpvdz() {
+  return coulomb_basis("h2o_ccpvdz");
+}
+
 // Each record's bound, copied back from the device,
 // within 16 eps of the host's closed form, and non-increasing within each
 // class: the bound rises with zeta, and the records are in descending zeta.
-TEST(Mmd, BoundMatchesTheClosedFormAndFollowsTheZetaOrder) {
+// H2O/cc-pVDZ has every class through d, CO/cc-pVTZ every class through f.
+struct BoundCase {
+  const char *stem;
+  std::size_t n_classes;
+};
+
+// gtest_discover_tests names each ctest entry by the printed parameter.
+void PrintTo(const BoundCase &c, std::ostream *os) {
+  *os << c.stem;
+}
+
+class MmdBound : public ::testing::TestWithParam<BoundCase> {};
+
+TEST_P(MmdBound, MatchesTheClosedFormAndFollowsTheZetaOrder) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto classes = classes_of(res, h2o_ccpvdz());
-  ASSERT_EQ(classes.size(), 6U);
+  const auto [stem, n_classes] = GetParam();
+  const auto classes = classes_of(res, coulomb_basis(stem));
+  ASSERT_EQ(classes.size(), n_classes);
   constexpr double kBoundTol = 16.0 * std::numeric_limits<double>::epsilon();
   for (const Records &cls : classes) {
     const std::int32_t l = cls.la + cls.lb;
@@ -365,6 +384,9 @@ TEST(Mmd, BoundMatchesTheClosedFormAndFollowsTheZetaOrder) {
     }
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(Basis, MmdBound,
+                         ::testing::Values(BoundCase{"h2o_ccpvdz", 6}, BoundCase{"co_ccpvtz", 10}));
 
 // Each record's exponents and shell ranks match the basis: its two shells
 // named by their AO offsets, of the class's momenta, ea and eb exponents of

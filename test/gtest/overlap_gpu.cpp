@@ -1,6 +1,7 @@
 // GPU cases for integrals.one_electron.overlap: the Cartesian S of H2O in
 // STO-3G (s, p; O's p shell precedes the H s shells, so the la <= lb swap is
-// exercised) and cc-pVDZ (s, p, d) against libcint's int1e_ovlp, recorded by
+// exercised) and cc-pVDZ (s, p, d), and of CO in cc-pVTZ (f on both atoms, the
+// bond off every axis), against libcint's int1e_ovlp, recorded by
 // PySCF (test/gtest/data/one_electron/, copied from FelizJueves's fixtures by
 // tools/extract_integral_golden.py), plus the zeroing and the class-range
 // refusal.
@@ -101,6 +102,8 @@ TEST_P(OverlapGolden, MatchesLibcint) {
 INSTANTIATE_TEST_SUITE_P(H2O, OverlapGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
 // Five H2 4 bohr apart in cc-pVDZ, with a converged RHF density.
 INSTANTIATE_TEST_SUITE_P(Chain, OverlapGolden, ::testing::Values("h10_chain_ccpvdz"));
+// CO in Cartesian cc-pVTZ: every class through (f, f).
+INSTANTIATE_TEST_SUITE_P(CO, OverlapGolden, ::testing::Values("co_ccpvtz"));
 
 TEST(Overlap, ZeroesTheMatrixFirst) {
   FBF_REQUIRE_GPU();
@@ -133,10 +136,11 @@ TEST(LaunchEach, StopsAtTheFirstFailure) {
   EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);
 }
 
-TEST(Overlap, RefusesAClassAboveD) {
+TEST(Overlap, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::BasisSet basis({fb::Shell(3, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
+  const fb::BasisSet basis(
+      {fb::Shell(fb::kOneElectronMaxL + 1, {{1.0, 1.0}}, fb::Vec<double, 3>{0.0, 0.0, 0.0})});
   const auto device = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(device);
   fb::CartesianMatrixAO s(res, basis);

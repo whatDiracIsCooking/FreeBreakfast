@@ -242,18 +242,18 @@ Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &
 // non-increasing in record order, and the dressed bound (ordered_pair_bound) of
 // the record as stored and swapped, the swap a view with la and lb, and P - A
 // and P - B, exchanged. Each family has its own limit, because two emitters
-// write them: pair_bound (tools/emit_one_electron_kernels.py, J's screen) is
-// formed through the tree-wide kMaxAngularMomentum, d, and the dressed bounds
+// write them: pair_bound (tools/emit_one_electron_kernels.py, J's screen)
+// through device::kPairBoundMaxMomentum, and the dressed bounds
 // (tools/emit_exchange_kernels.py, K's screen) through
-// device::kRecordBoundMaxMomentum, f. So at f bound_ab and bound_ba are real
-// and bound stays zero; a class above a family's limit keeps that family's
-// zeroed bounds, and every build that reads them refuses such a class.
+// device::kRecordBoundMaxMomentum, both f today. A class above a family's
+// limit keeps that family's zeroed bounds, and every build that reads them
+// refuses such a class.
 // pair_bound depends on la + lb alone, so a mixed class with la > lb takes the
 // kernel of (lb, la), the one emitted.
 Status form_bounds(PrimitivePairClass &cls) {
   const auto [lo, hi] = std::minmax(cls.la, cls.lb);
   const wwr::wwrStream_t stream = cls.handle->stream();
-  if (hi <= kMaxAngularMomentum) {
+  if (hi <= device::kPairBoundMaxMomentum) {
     FBF_TRY(gpu_status(
         device::mmd_bound(stream, lo, hi, cls.n_rec, cls.zeta.data(), cls.bound.data())));
   }

@@ -101,16 +101,16 @@ struct PrimitivePairClass {
   /// on the device by the generated pair_bound<la, lb> after the zeta order:
   /// a J or K screen's Ip as a bra and Iq as a ket. It depends on zeta and
   /// la + lb only, and rises with zeta, so it is non-increasing in record order.
-  /// Zero in a class above kMaxAngularMomentum, which has no kernel and which
-  /// every build refuses.
+  /// Real through f, its kernels' limit; zero in a class above, which has no
+  /// kernel and which every build refuses.
   StreamBuffers::device<double> bound;
   /// @brief The record's DRESSED Schwarz bound as stored, FelizJueves's
   /// ao.k.record_bounds: max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p|
   /// I_p(zeta), the max over the bra shell's Cartesians, formed on the device
   /// by the generated record_bound<la, lb> after the zeta order: a K screen's
-  /// Ip and Iq. Real through f, its kernels' limit (above @ref bound's, which
-  /// another emitter writes); zero in a class above f, which has no kernel and
-  /// which the K build refuses.
+  /// Ip and Iq. Real through f, its kernels' limit (@ref bound's too, though
+  /// another emitter writes it); zero in a class above f, which has no kernel
+  /// and which the K build refuses.
   StreamBuffers::device<double> bound_ab;
   /// @brief The same bound of the record swapped, the ket shell first: the
   /// max over the ket shell's Cartesians, by record_bound<lb, la> with P - A

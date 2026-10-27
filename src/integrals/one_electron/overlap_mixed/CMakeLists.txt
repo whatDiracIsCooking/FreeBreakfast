@@ -17,12 +17,19 @@ free_breakfast_add_gpu_device_library(
   kernels/sx_00.cu
   kernels/sx_01.cu
   kernels/sx_02.cu
+  kernels/sx_03.cu
   kernels/sx_10.cu
   kernels/sx_11.cu
   kernels/sx_12.cu
+  kernels/sx_13.cu
   kernels/sx_20.cu
   kernels/sx_21.cu
   kernels/sx_22.cu
+  kernels/sx_23.cu
+  kernels/sx_30.cu
+  kernels/sx_31.cu
+  kernels/sx_32.cu
+  kernels/sx_33.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::basis::headers

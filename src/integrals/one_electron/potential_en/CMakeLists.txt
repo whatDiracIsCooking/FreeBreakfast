@@ -19,9 +19,13 @@ free_breakfast_add_gpu_device_library(
   kernels/v_00.cu
   kernels/v_01.cu
   kernels/v_02.cu
+  kernels/v_03.cu
   kernels/v_11.cu
   kernels/v_12.cu
+  kernels/v_13.cu
   kernels/v_22.cu
+  kernels/v_23.cu
+  kernels/v_33.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::basis::headers
