@@ -240,6 +240,13 @@ def kbr_tables(every) -> str:
 // kbr's class tables: written by tools/emit_exchange_kernels.py from
 // FelizJueves's kernel_kblock_rolled.tables. Do not edit.
 // Included by exchange_launch.cu alone: it defines the arrays.
+//
+// The three device arrays are not const. The host only takes their address
+// (wwrGetSymbolAddress) and no device code in this TU names them, and clang's
+// HIP device compile drops a const __device__ variable no device code uses
+// while the host side still registers it: the runtime then aborts with
+// "Cannot create GlobalVar Obj for symbol". __constant__ would also keep them,
+// but they are ~190 KiB, over CUDA's 64 KiB constant bank.
 #pragma once
 
 #include <stdint.h>
@@ -247,14 +254,14 @@ def kbr_tables(every) -> str:
 // E^{{l1 l2}}'s CSR pattern, every pair a kbr class reads: its rows' ptr at
 // kbr_e_ptr + kbr_e_ptr_at[l1][l2], their Hermite columns at
 // kbr_e_col + kbr_e_col_at[l1][l2] (-1: no class reads the pair).
-__device__ const int32_t kbr_e_ptr[] = {values(e_ptr)};
-__device__ const int32_t kbr_e_col[] = {values(e_col)};
+__device__ int32_t kbr_e_ptr[] = {values(e_ptr)};
+__device__ int32_t kbr_e_col[] = {values(e_col)};
 constexpr int32_t kbr_e_ptr_at[{n_l}][{n_l}] = {at(ptr_at, n_l)};
 constexpr int32_t kbr_e_col_at[{n_l}][{n_l}] = {at(col_at, n_l)};
 
 // hpq of lp = la + lc and lq = lb + ld, row-major, at
 // kbr_hpq + kbr_hpq_at[lp][lq] (-1: no class has the pair).
-__device__ const int32_t kbr_hpq[] = {values(hpq)};
+__device__ int32_t kbr_hpq[] = {values(hpq)};
 constexpr int32_t kbr_hpq_at[{n_s}][{n_s}] = {at(hpq_at, n_s)};
 """
 
