@@ -189,7 +189,7 @@ name must not be joined to the config file's directory.
 
 **Only spherical sets can be carried.** `src/io/basis` rejects
 `gto_cartesian` at any l by design, and `parse_basis` walks the whole
-document, so one Cartesian shell anywhere makes the entire file unreadable —
+document, so one Cartesian shell anywhere makes the entire file unreadable.
 From K up 6-31G's d shells are Cartesian, so `6-31g.json` is carried
 relabelled spherical (5D) by `tools/basis/cartesian_to_spherical.py` — a
 different basis from BSE's from K on, by decision — and `6-31G*` is absent
