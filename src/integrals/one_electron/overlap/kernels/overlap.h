@@ -71,6 +71,22 @@ __global__ void overlap<0, 2>(
     double* S);
 
 template <>
+__global__ void overlap<0, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
 __global__ void overlap<1, 1>(
     int32_t n_rec,
     int32_t n_ao,
@@ -103,6 +119,22 @@ __global__ void overlap<1, 2>(
     double* S);
 
 template <>
+__global__ void overlap<1, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
 __global__ void overlap<2, 2>(
     int32_t n_rec,
     int32_t n_ao,
@@ -118,9 +150,42 @@ __global__ void overlap<2, 2>(
     const int32_t* off_b,
     double* S);
 
+template <>
+__global__ void overlap<2, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
+template <>
+__global__ void overlap<3, 3>(
+    int32_t n_rec,
+    int32_t n_ao,
+    const double* zeta_ab,
+    const double* pa_x,
+    const double* pa_y,
+    const double* pa_z,
+    const double* pb_x,
+    const double* pb_y,
+    const double* pb_z,
+    const double* s_ab,
+    const int32_t* off_a,
+    const int32_t* off_b,
+    double* S);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&overlap<0, 0>) overlap_kernels[3][3] = {
-    {&overlap<0, 0>, &overlap<0, 1>, &overlap<0, 2>},
-    {nullptr, &overlap<1, 1>, &overlap<1, 2>},
-    {nullptr, nullptr, &overlap<2, 2>},
+inline constexpr decltype(&overlap<0, 0>) overlap_kernels[4][4] = {
+    {&overlap<0, 0>, &overlap<0, 1>, &overlap<0, 2>, &overlap<0, 3>},
+    {nullptr, &overlap<1, 1>, &overlap<1, 2>, &overlap<1, 3>},
+    {nullptr, nullptr, &overlap<2, 2>, &overlap<2, 3>},
+    {nullptr, nullptr, nullptr, &overlap<3, 3>},
 };

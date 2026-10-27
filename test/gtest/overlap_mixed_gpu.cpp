@@ -2,8 +2,8 @@
 // bases, one case per cell of {same, different} basis set x {same, different}
 // geometry:
 //
-// - same basis, same geometry: H2O in STO-3G and cc-pVDZ and the H10 chain
-//   against libcint's int1e_ovlp (test/gtest/data/one_electron/) and against
+// - same basis, same geometry: H2O in STO-3G and cc-pVDZ, the H10 chain and
+//   CO in cc-pVTZ (every ordered class through f) against libcint's int1e_ovlp (test/gtest/data/one_electron/) and against
 //   the square S that overlap builds;
 // - different basis, same geometry: H2O, rows STO-3G, columns 6-31G or
 //   cc-pVDZ;
@@ -229,6 +229,8 @@ TEST_P(OverlapMixedSquare, MatchesLibcintAndOverlap) {
 
 INSTANTIATE_TEST_SUITE_P(H2O, OverlapMixedSquare, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
 INSTANTIATE_TEST_SUITE_P(Chain, OverlapMixedSquare, ::testing::Values("h10_chain_ccpvdz"));
+// CO in Cartesian cc-pVTZ: every ordered class through (f, f).
+INSTANTIATE_TEST_SUITE_P(CO, OverlapMixedSquare, ::testing::Values("co_ccpvtz"));
 
 // ---------------------------------------------------------------------------
 // Same basis set, different geometry: the closed form.
@@ -341,11 +343,11 @@ TEST(OverlapMixed, RefusesABufferOfTheWrongSize) {
   EXPECT_EQ(spherical.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
-TEST(OverlapMixed, RefusesAShellAboveD) {
+TEST(OverlapMixed, RefusesAShellAboveF) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::BasisSet rows = sp_basis({0.0, 0.0, 0.0});
-  const fb::BasisSet cols({fb::Shell(3, {{1.0, 1.0}}, Vec3{0.0, 0.0, 0.0})});
+  const fb::BasisSet cols({fb::Shell(fb::kOneElectronMaxL + 1, {{1.0, 1.0}}, Vec3{0.0, 0.0, 0.0})});
   fb::Buffers::device<double> s(static_cast<std::size_t>(rows.nao_cart()) * cols.nao_cart(),
                                 res.device());
   const fb::Status status = fb::overlap_mixed(res, rows, cols, s);

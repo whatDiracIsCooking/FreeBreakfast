@@ -37,9 +37,13 @@ free_breakfast_add_gpu_device_library(
   kernels/pair_bound/pair_bound_00.cu
   kernels/pair_bound/pair_bound_01.cu
   kernels/pair_bound/pair_bound_02.cu
+  kernels/pair_bound/pair_bound_03.cu
   kernels/pair_bound/pair_bound_11.cu
   kernels/pair_bound/pair_bound_12.cu
+  kernels/pair_bound/pair_bound_13.cu
   kernels/pair_bound/pair_bound_22.cu
+  kernels/pair_bound/pair_bound_23.cu
+  kernels/pair_bound/pair_bound_33.cu
   kernels/record_bound/record_bound_00.cu
   kernels/record_bound/record_bound_01.cu
   kernels/record_bound/record_bound_02.cu

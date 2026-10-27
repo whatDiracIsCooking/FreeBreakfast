@@ -18,6 +18,18 @@ import free_breakfast.recipes.matrix_ao;
 
 export namespace free_breakfast {
 
+/// @brief The largest momentum the one-electron kernels cover: f.
+///
+/// The host checks' limit, the one-electron engine's own rather than the
+/// tree-wide kMaxAngularMomentum, which stays at d until J and K reach f
+/// (#349). It is tools/emit_one_electron_kernels.py's `MAX_L`, written by
+/// hand because a module unit cannot include the emitted tables (each is
+/// device code): every family's launcher bounds itself by its own table's
+/// extent, so a table emitted below this refuses the class with
+/// wwrErrorInvalidValue rather than launching past it, and the f golden cases
+/// (overlap_gpu.cpp, core_hamiltonian_gpu.cpp, overlap_mixed_gpu.cpp) fail.
+inline constexpr int32_t kOneElectronMaxL = 3;
+
 /// @brief Call `launch(cls)` for every class of @p classes, between a fork of
 /// the class's own stream from, and a join of it into, @p parent; @p launch
 /// enqueues on `cls.device_stream()->stream()`.
@@ -75,9 +87,7 @@ template <std::ranges::random_access_range Classes, typename Launch>
 /// @p m and every class of @p classes must be on @p res's device, @p m's order
 /// within the generated kernels' 32-bit `m * n_ao + n` index (n_ao^2 <=
 /// INT32_MAX, about 46k AOs), and every class one with a kernel: la <= lb <=
-/// @c kMaxAngularMomentum, the tree-wide limit (each family's launcher is
-/// bounded by its own kernel table; this moves to them with #344). @p what
-/// names the build in the messages.
+/// @ref kOneElectronMaxL. @p what names the build in the messages.
 ///
 /// @return Success, or InvalidConfig naming the first input refused.
 [[nodiscard]] Status check_one_electron_build(const DeviceResources &res,

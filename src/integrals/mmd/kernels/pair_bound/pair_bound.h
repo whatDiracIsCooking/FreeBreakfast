@@ -31,6 +31,12 @@ __global__ void pair_bound<0, 2>(
     double* bound);
 
 template <>
+__global__ void pair_bound<0, 3>(
+    int32_t n_rec,
+    const double* zeta,
+    double* bound);
+
+template <>
 __global__ void pair_bound<1, 1>(
     int32_t n_rec,
     const double* zeta,
@@ -43,14 +49,33 @@ __global__ void pair_bound<1, 2>(
     double* bound);
 
 template <>
+__global__ void pair_bound<1, 3>(
+    int32_t n_rec,
+    const double* zeta,
+    double* bound);
+
+template <>
 __global__ void pair_bound<2, 2>(
     int32_t n_rec,
     const double* zeta,
     double* bound);
 
+template <>
+__global__ void pair_bound<2, 3>(
+    int32_t n_rec,
+    const double* zeta,
+    double* bound);
+
+template <>
+__global__ void pair_bound<3, 3>(
+    int32_t n_rec,
+    const double* zeta,
+    double* bound);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&pair_bound<0, 0>) pair_bound_kernels[3][3] = {
-    {&pair_bound<0, 0>, &pair_bound<0, 1>, &pair_bound<0, 2>},
-    {nullptr, &pair_bound<1, 1>, &pair_bound<1, 2>},
-    {nullptr, nullptr, &pair_bound<2, 2>},
+inline constexpr decltype(&pair_bound<0, 0>) pair_bound_kernels[4][4] = {
+    {&pair_bound<0, 0>, &pair_bound<0, 1>, &pair_bound<0, 2>, &pair_bound<0, 3>},
+    {nullptr, &pair_bound<1, 1>, &pair_bound<1, 2>, &pair_bound<1, 3>},
+    {nullptr, nullptr, &pair_bound<2, 2>, &pair_bound<2, 3>},
+    {nullptr, nullptr, nullptr, &pair_bound<3, 3>},
 };

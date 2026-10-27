@@ -1,7 +1,8 @@
 // GPU cases for integrals.one_electron's kinetic, potential_en and
 // core_hamiltonian modules: the Cartesian T, V and H = T + V of H2O in STO-3G
 // (s, p; O's p shell precedes the H s shells, so the la <= lb swap is
-// exercised) and cc-pVDZ (s, p, d) against libcint's int1e_kin and int1e_nuc
+// exercised) and cc-pVDZ (s, p, d), and of CO in cc-pVTZ (f on both atoms, the
+// bond off every axis), against libcint's int1e_kin and int1e_nuc
 // (point nuclei) and PySCF's hcore, recorded by PySCF
 // (test/gtest/data/one_electron/, copied from FelizJueves's fixtures by
 // tools/extract_integral_golden.py), plus, as overlap_gpu.cpp, the zeroing
@@ -168,6 +169,8 @@ TEST_P(OneElectronGolden, CoreHamiltonianMatchesPyscf) {
 INSTANTIATE_TEST_SUITE_P(H2O, OneElectronGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
 // Five H2 4 bohr apart in cc-pVDZ, with a converged RHF density.
 INSTANTIATE_TEST_SUITE_P(Chain, OneElectronGolden, ::testing::Values("h10_chain_ccpvdz"));
+// CO in Cartesian cc-pVTZ: every class through (f, f).
+INSTANTIATE_TEST_SUITE_P(CO, OneElectronGolden, ::testing::Values("co_ccpvtz"));
 
 // One shell of momentum l at the origin, and one hydrogen there: the smallest
 // basis and molecule a build takes.
@@ -208,10 +211,10 @@ TEST_P(OneElectronBuild, ZeroesTheMatrixFirst) {
   EXPECT_EQ(download(res, m)[0], 0.0);
 }
 
-TEST_P(OneElectronBuild, RefusesAClassAboveD) {
+TEST_P(OneElectronBuild, RefusesAClassAboveF) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const fb::BasisSet basis = one_shell(3);
+  const fb::BasisSet basis = one_shell(fb::kOneElectronMaxL + 1);
   const auto device = fb::primitive_pair_classes(res, basis);
   ASSERT_TRUE(device);
   const fb::Molecule molecule = one_hydrogen(res);
