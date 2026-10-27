@@ -14,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.integrals.one_electron.launch;
 
@@ -145,6 +146,9 @@ coulomb_prune(DeviceResources &res, const std::span<const PrimitivePairClass> cl
   })));
   return out;
 }
+
+static_assert(device::kCoulombMaxMomentum == kMaxAngularMomentum,
+              "J's limit and the tree-wide kMaxAngularMomentum disagree");
 
 Result<std::vector<CoulombPairClass>>
 coulomb_pair_classes(DeviceResources &res, const std::span<const PrimitivePairClass> classes,

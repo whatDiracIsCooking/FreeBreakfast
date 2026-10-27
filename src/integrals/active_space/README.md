@@ -40,7 +40,7 @@ Result<CasscfIntegrals> casscf_integrals(/* active_space_hamiltonian's arguments
 Columns `[0, ncore)` of C are the core, `[ncore, ncore + ncas)` the active
 space; a caller choosing other orbitals reorders C's columns first. The J and
 K classes are the caller's, built once per basis, so a CASSCF loop builds none.
-Classes through d only, as J and K.
+Classes through f only, as J and K.
 
 **ppaa and papa** are nmo² n_act² doubles each, one nmo × nmo column-major
 block in (p, q) per active pair (u, v), the blocks at nmo² (u + n_act v). So a

@@ -72,15 +72,16 @@ TEST(PipelineCoreHamiltonian, MatchesCoreHamiltonianThenCartesianToSpherical) {
   const fb::Vec<double, 3> o = molecule.molecule.atoms()[0].position;
   const fb::Vec<double, 3> h1 = molecule.molecule.atoms()[1].position;
   const fb::Vec<double, 3> h2 = molecule.molecule.atoms()[2].position;
-  // s, p and d on oxygen, an s on each hydrogen: nao_sphe = 1 + 3 + 5 + 1 + 1.
+  // s, p, d and f on oxygen, an s on each hydrogen:
+  // nao_sphe = 1 + 3 + 5 + 7 + 1 + 1.
   const fb::BasisSetOutput basis{
-      fb::BasisSet({shell(0, 5.03, o), shell(1, 1.17, o), shell(2, 1.185, o), shell(0, 0.62, h1),
-                    shell(0, 0.62, h2)},
-                   {0, 3, 4, 5})};
+      fb::BasisSet({shell(0, 5.03, o), shell(1, 1.17, o), shell(2, 1.185, o), shell(3, 1.428, o),
+                    shell(0, 0.62, h1), shell(0, 0.62, h2)},
+                   {0, 4, 5, 6})};
 
   auto h = step_core_hamiltonian(res, molecule, basis);
   ASSERT_TRUE(h.has_value()) << h.error().message;
-  EXPECT_EQ(h->h.n(), 11U);
+  EXPECT_EQ(h->h.n(), 18U);
 
   auto u = fb::upload_spherical_transform_matrix(res, basis.basis);
   auto classes = fb::primitive_pair_classes(res, basis.basis);

@@ -29,7 +29,7 @@ export namespace free_breakfast {
 /// call and the previous one restored.
 ///
 /// @return Success; InvalidConfig if @p res is not on @p s's or @p classes'
-///         device, if a class is above d (or not la <= lb), or if s.n() is too
+///         device, if a class is above f (or not la <= lb), or if s.n() is too
 ///         large for the kernels' 32-bit index (s.n()^2 above INT32_MAX, about
 ///         46k AOs); or the GpuRuntime error of the first memset, fork, launch
 ///         or join that failed, which leaves @p s unspecified.

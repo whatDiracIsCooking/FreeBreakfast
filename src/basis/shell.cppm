@@ -19,8 +19,8 @@
 /// angular momentum L means the 2L+1 real solid harmonics. The GPU kernels
 /// evaluate it over the Cartesian Gaussians x^a y^b z^c with a+b+c = L, of
 /// which there are (L+1)(L+2)/2 -- so 1 for L=0 (s), 3 for L=1 (p), 6 for L=2
-/// (d) -- and @c spherical_transform_matrix combines those into the harmonics
-/// afterward. The working target is up to d, i.e. L in {0, 1, 2}. The
+/// (d), 10 for L=3 (f) -- and @c spherical_transform_matrix combines those into
+/// the harmonics afterward. The GPU engines take L in {0, 1, 2, 3}. The
 /// Cartesian ordering within a shell is the canonical
 /// lexicographic-on-(a,b,c)-with-a-highest order used by most integral
 /// libraries; for p it is (x, y, z), and for d it is (xx, xy, xz, yy, yz, zz).
@@ -62,7 +62,7 @@ using free_breakfast::Primitive;
 /// one-electron/quadrupole engines are fed).
 class Shell {
 public:
-  /// @param l           Angular momentum L (0 = s, 1 = p, 2 = d). No upper cap:
+  /// @param l           Angular momentum L (0 = s, 1 = p, 2 = d, 3 = f). No cap:
   ///                    the host reference engines evaluate arbitrary L; the GPU
   ///                    engines separately reject L > @ref kMaxAngularMomentum.
   /// @param primitives  The contracted primitives, in contraction order.

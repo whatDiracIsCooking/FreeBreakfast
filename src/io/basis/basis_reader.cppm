@@ -17,7 +17,7 @@
 ///
 /// Each entry of @c electron_shells is a contracted-shell block with
 ///
-///   * @c angular_momentum -- a list of ints. Usually one (a pure s/p/d shell),
+///   * @c angular_momentum -- a list of ints. Usually one (a pure s/p/d/f shell),
 ///     but an sp-shell carries `[0, 1]`.
 ///   * @c exponents -- a list of primitive Gaussian exponents, written as
 ///     decimal STRINGS.
@@ -118,9 +118,9 @@ export namespace free_breakfast {
 /// naming the missing element -- an aux set that cannot cover the molecule is a
 /// configuration error, not a silently smaller basis.
 ///
-/// **Angular-momentum ceiling.** Fitting sets routinely run to @c f and @c g,
-/// above the s/p/d ceiling (@ref kMaxAngularMomentum) the GPU integral kernels
-/// are designed for. Parsing and HOLDING those higher-L shells is fully
+/// **Angular-momentum ceiling.** Fitting sets routinely run to @c g and
+/// beyond, above the s/p/d/f ceiling (@ref kMaxAngularMomentum) the GPU
+/// integral kernels are designed for. Parsing and HOLDING those higher-L shells is fully
 /// supported here -- @ref ShellStamp and @ref BasisSet impose no cap, exactly as
 /// for an orbital basis. Feeding such a basis to the GPU ERI path is a SEPARATE
 /// concern the kernels reject on their own; this reader neither enforces nor

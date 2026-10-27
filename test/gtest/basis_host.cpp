@@ -47,7 +47,7 @@ std::size_t row_of(std::int32_t l, const Powers &p) {
 }
 
 TEST(Basis, FunctionCounts) {
-  EXPECT_EQ(fb::kMaxAngularMomentum, 2);
+  EXPECT_EQ(fb::kMaxAngularMomentum, 3);
   const std::array<std::uint32_t, 5> cart{1, 3, 6, 10, 15};
   for (std::int32_t l = 0; l < 5; ++l) {
     EXPECT_EQ(fb::function_count_cart(l), cart[l]) << "l=" << l;
@@ -220,14 +220,36 @@ TEST(Basis, SolidHarmonicsAreGOrthonormal) {
   }
 }
 
+// Our block for momentum l against libcint's (PySCF's) cart2sph block, given
+// row by row (rows in cartesian_powers order, columns m = -l..+l). The two
+// differ only in the overall normalization, so one positive scalar, read off
+// the entry at (`row`, `col`), maps every column of libcint's onto ours --
+// same order, same phases.
+void expect_matches_libcint_up_to_one_scale(std::int32_t l, std::span<const double> libcint,
+                                            const Powers &row, std::size_t col) {
+  const std::vector<double> block = fb::solid_harmonic_block(l);
+  const std::size_t ncart = fb::function_count_cart(l);
+  const std::size_t nsph = fb::function_count_sphe(l);
+  ASSERT_EQ(block.size(), libcint.size());
+  const double scale =
+      block[row_of(l, row) + (col * ncart)] / libcint[(row_of(l, row) * nsph) + col];
+  EXPECT_GT(scale, 0.0);
+  for (std::size_t r = 0; r < ncart; ++r) {
+    for (std::size_t c = 0; c < nsph; ++c) {
+      EXPECT_NEAR(block[r + (c * ncart)], scale * libcint[(r * nsph) + c], 1e-14)
+          << "l=" << l << " " << r << "," << c;
+    }
+  }
+}
+
 TEST(Basis, SolidHarmonicDMatchesLibcintUpToOneScale) {
-  // libcint's (PySCF's) d-shell cart2sph block, columns m = -2..+2
+  // libcint's d-shell cart2sph block, columns m = -2..+2
   // (dxy, dyz, dz2, dxz, dx2-y2), in closed form.
   const double pi = std::numbers::pi;
   const double a = std::sqrt(15.0 / (4.0 * pi));  // 1.0925484305920792
   const double b = std::sqrt(5.0 / (16.0 * pi));  // 0.31539156525252005
   const double c = std::sqrt(15.0 / (16.0 * pi)); // 0.5462742152960396
-  // Rows xx, xy, xz, yy, yz, zz, written row by row (the block is column-major).
+  // Rows xx, xy, xz, yy, yz, zz.
   const std::array<double, 30> libcint{
       0.0, 0.0, -b,      0.0, c,   //
       a,   0.0, 0.0,     0.0, 0.0, //
@@ -236,17 +258,31 @@ TEST(Basis, SolidHarmonicDMatchesLibcintUpToOneScale) {
       0.0, a,   0.0,     0.0, 0.0, //
       0.0, 0.0, 2.0 * b, 0.0, 0.0, //
   };
-  const std::vector<double> block = fb::solid_harmonic_block(2);
-  ASSERT_EQ(block.size(), libcint.size());
-  // The two differ only in the overall normalization, so one positive scalar
-  // maps every column of libcint's onto ours -- same order, same phases.
-  const double scale = block[row_of(2, {1, 1, 0})] / a;
-  EXPECT_GT(scale, 0.0);
-  for (std::size_t r = 0; r < 6; ++r) {
-    for (std::size_t c = 0; c < 5; ++c) {
-      EXPECT_NEAR(block[r + (c * 6)], scale * libcint[(r * 5) + c], 1e-14) << r << "," << c;
-    }
-  }
+  expect_matches_libcint_up_to_one_scale(2, libcint, {1, 1, 0}, 0);
+}
+
+TEST(Basis, SolidHarmonicFMatchesLibcintUpToOneScale) {
+  // libcint's f-shell cart2sph block, columns m = -3..+3, in closed form.
+  const double pi = std::numbers::pi;
+  const double a = std::sqrt(35.0 / (32.0 * pi));  // 0.5900435899266435
+  const double b = std::sqrt(105.0 / (4.0 * pi));  // 2.890611442640554
+  const double c = std::sqrt(21.0 / (32.0 * pi));  // 0.4570457994644658
+  const double d = std::sqrt(7.0 / (16.0 * pi));   // 0.3731763325901154
+  const double e = std::sqrt(105.0 / (16.0 * pi)); // 1.445305721320277
+  // Rows xxx, xxy, xxz, xyy, xyz, xzz, yyy, yyz, yzz, zzz.
+  const std::array<double, 70> libcint{
+      0.0,     0.0, 0.0,     0.0,      -c,      0.0, a,        //
+      3.0 * a, 0.0, -c,      0.0,      0.0,     0.0, 0.0,      //
+      0.0,     0.0, 0.0,     -3.0 * d, 0.0,     e,   0.0,      //
+      0.0,     0.0, 0.0,     0.0,      -c,      0.0, -3.0 * a, //
+      0.0,     b,   0.0,     0.0,      0.0,     0.0, 0.0,      //
+      0.0,     0.0, 0.0,     0.0,      4.0 * c, 0.0, 0.0,      //
+      -a,      0.0, -c,      0.0,      0.0,     0.0, 0.0,      //
+      0.0,     0.0, 0.0,     -3.0 * d, 0.0,     -e,  0.0,      //
+      0.0,     0.0, 4.0 * c, 0.0,      0.0,     0.0, 0.0,      //
+      0.0,     0.0, 0.0,     2.0 * d,  0.0,     0.0, 0.0,      //
+  };
+  expect_matches_libcint_up_to_one_scale(3, libcint, {1, 1, 1}, 1);
 }
 
 TEST(Basis, SolidHarmonicFFollowsRealHarmonicConvention) {

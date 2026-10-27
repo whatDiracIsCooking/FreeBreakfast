@@ -37,8 +37,8 @@
 /// its angular momentum L. The GPU integral engines evaluate the Cartesian
 /// Gaussians x^a y^b z^c with a+b+c = L those harmonics are embedded in, of
 /// which there are (L+1)(L+2)/2 -- so 1 for L=0 (s), 3 for L=1 (p), 6 for L=2
-/// (d); the two sets coincide for L <= 1. The working target is up to d, i.e.
-/// L in {0, 1, 2}. The Cartesian ordering within a shell is the canonical
+/// (d), 10 for L=3 (f); the two sets coincide for L <= 1. The GPU engines take
+/// L in {0, 1, 2, 3}. The Cartesian ordering within a shell is the canonical
 /// lexicographic-on-(a,b,c)-with-a-highest order used by most integral
 /// libraries; for p it is (x, y, z), and for d it is (xx, xy, xz, yy, yz, zz).
 /// The harmonic combination is formed afterward via @c :harmonics' transform,

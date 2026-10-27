@@ -31,7 +31,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 OUT = ROOT / "test" / "gtest" / "data" / "scf" / "rhf.json"
 
 # The builtin basis name the C++ side resolves, and its file under data/basis.
-BASES = {"sto-3g": "sto-3g.json", "cc-pvdz": "cc-pVDZ.json"}
+BASES = {
+    "sto-3g": "sto-3g.json",
+    "cc-pvdz": "cc-pVDZ.json",
+    "cc-pvtz": "cc-pVTZ.json",
+}
 
 # Water near its equilibrium geometry, no atom on an axis past O; and NH4+,
 # which carries a charge, so the SAD guess (which places sum Z electrons)
@@ -48,11 +52,18 @@ AMMONIUM = [
     ("H", (-1.1, 1.1, -1.1)),
     ("H", (1.1, -1.1, -1.1)),
 ]
+# CO, 2.10 bohr apart along no axis, so every f component of cc-pVTZ's f
+# shells is reached; the geometry of test/gtest/data/coulomb/co_ccpvtz.json.
+CARBON_MONOXIDE = [
+    ("C", (0.13, -0.21, 0.17)),
+    ("O", (0.77, 0.86, 1.86)),
+]
 
 CASES = [
     {"name": "h2o_sto3g", "atoms": WATER, "basis": "sto-3g", "charge": 0},
     {"name": "h2o_ccpvdz", "atoms": WATER, "basis": "cc-pvdz", "charge": 0},
     {"name": "nh4_ccpvdz", "atoms": AMMONIUM, "basis": "cc-pvdz", "charge": 1},
+    {"name": "co_ccpvtz", "atoms": CARBON_MONOXIDE, "basis": "cc-pvtz", "charge": 0},
 ]
 
 

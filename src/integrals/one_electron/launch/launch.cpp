@@ -8,11 +8,15 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.molecule;
 import free_breakfast.recipes.matrix_ao;
 
 namespace free_breakfast {
+
+static_assert(kOneElectronMaxL == kMaxAngularMomentum,
+              "the one-electron limit and the tree-wide kMaxAngularMomentum disagree");
 
 Status check_one_electron_build(const DeviceResources &res,
                                 const std::span<const PrimitivePairClass> classes,

@@ -22,7 +22,7 @@ export namespace free_breakfast {
 /// Otherwise @c kinetic's and @c nuclear_attraction's contract.
 ///
 /// @return Success; InvalidConfig, before anything is launched, if @p res is
-///         not on @p h's or @p molecule's device, if a class is above d (or not
+///         not on @p h's or @p molecule's device, if a class is above f (or not
 ///         la <= lb), or if h.n() is too large for the kernels' 32-bit index;
 ///         or the GpuRuntime error of the first memset or launch that failed,
 ///         which leaves @p h unspecified.

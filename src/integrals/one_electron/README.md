@@ -56,7 +56,7 @@ Every family takes its inputs, and its pre-launch checks
 from its generated header. Each launcher is bounded by its own table's extent;
 `check_one_electron_build` holds every class to `launch`'s `kOneElectronMaxL`
 (f), the engine's own limit rather than `basis`'s tree-wide
-`kMaxAngularMomentum` (d until J and K reach f). `core_hamiltonian/` has no
+`kMaxAngularMomentum` (f too, checked equal in `launch.cpp`). `core_hamiltonian/` has no
 kernels of its own, so it is only the module.
 
 **H is built in place.** `core_hamiltonian` checks every input, then

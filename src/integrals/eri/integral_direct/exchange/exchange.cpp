@@ -25,8 +25,10 @@ import free_breakfast.recipes.matrix_ao;
 namespace free_breakfast {
 
 // One extent per angular momentum the kernels cover: K's own limit, not the
-// tree-wide kMaxAngularMomentum.
+// tree-wide kMaxAngularMomentum, though the two are kept equal.
 constexpr auto kExchangeMomenta = static_cast<size_t>(device::kExchangeMaxMomentum + 1);
+static_assert(device::kExchangeMaxMomentum == kMaxAngularMomentum,
+              "K's limit and the tree-wide kMaxAngularMomentum disagree");
 
 int32_t exchange_cartesian_count(const int32_t l) {
   return (l + 1) * (l + 2) / 2;
