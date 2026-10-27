@@ -1,7 +1,7 @@
 {
  "description": "#86: H2O in STO-3G, Cartesian, no atom on an axis -- s and p, three-primitive contractions. Records the converted basis and PySCF's get_jk J for the recorded density. -- the basis and the one-electron arrays only, copied by tools/extract_integral_golden.py",
  "source": {
-  "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
+  "felizjueves": "cc5d16fb16bf6b9fe32f395bdc08071b312966cb",
   "fixture": "test/oracle/fixtures/h2o_sto3g_j.json"
  },
  "provenance": {

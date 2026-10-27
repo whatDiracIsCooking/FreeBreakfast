@@ -59,14 +59,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
-from felizjueves.device import by_name  # noqa: E402
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import Specialization  # noqa: E402
-from felizjueves.kernel_pair_bound import build_pair_bound_kernel  # noqa: E402
-from felizjueves.kernel_s import build_s_kernel  # noqa: E402
-from felizjueves.kernel_sx import build_sx_kernel  # noqa: E402
-from felizjueves.kernel_t import build_t_kernel  # noqa: E402
-from felizjueves.kernel_v import build_v_kernel  # noqa: E402
+from felizjueves.eri.kernel_pair_bound import build_pair_bound_kernel  # noqa: E402
+from felizjueves.one_electron.kernel_s import build_s_kernel  # noqa: E402
+from felizjueves.one_electron.kernel_sx import build_sx_kernel  # noqa: E402
+from felizjueves.one_electron.kernel_t import build_t_kernel  # noqa: E402
+from felizjueves.one_electron.kernel_v import build_v_kernel  # noqa: E402
+from felizjueves.performance.device import by_name  # noqa: E402
 
 # The kernels' L limit: d. It must equal kMaxAngularMomentum
 # (src/basis/angular_momentum.h), the repo's one limit: every family's launcher

@@ -9,10 +9,10 @@ so a build never runs Python. Run this after bumping that submodule:
     tools/emit_exchange_kernels.py
 
 The K build's family is `kb<la, lc, lb, ld>`: FelizJueves's `Target.K` on
-opt-UM's mapping (`kernel_kblock.py`), K_ab += SUM_cd D_cd (ac|bd) on the J
-engine's recurrence, one warp per contracted shell block K_AB, its lanes over
-the block's kets, every lane walking its bras, and lane 0 adding the block
-straight into K. The class is the Hermite pairing, bra `(a, c)`
+opt-UM's mapping (`eri/k_exchange/kernel_kblock.py`), K_ab += SUM_cd D_cd
+(ac|bd) on the J engine's recurrence, one warp per contracted shell block
+K_AB, its lanes over the block's kets, every lane walking its bras, and
+lane 0 adding the block straight into K. The class is the Hermite pairing, bra `(a, c)`
 first and ket `(b, d)` second, not the AO quartet order; `(lp, lq) =
 (la + lc, lb + ld)`. Every ordered `(la, lc)` x ordered `(lb, ld)` with each
 l at most 2 (kMaxAngularMomentum) is written: 81 classes. K has no symmetry
@@ -22,7 +22,7 @@ inside a pair, so unlike the J and one-electron tools nothing is written
 Each class is `build_kblock_kernel(am)`, whose write into K is already an
 atomic add (several classes add into one K), then:
 
-- `passes.split_axes`: each [n, 3] record vector becomes three flat arrays,
+- `ir.passes.split_axes`: each [n, 3] record vector becomes three flat arrays,
   named as free_breakfast.integrals.mmd names its fields: `p_*` for the bra
   centre P and `q_*` for the ket centre Q (as the J kernel's), and the two
   displacements of each side by the letter of the shell they are from,
@@ -48,11 +48,12 @@ writes nothing there.
 
 One more family rides along because K's screen is its first reader:
 `record_bound<la, lb>`, FelizJueves's `Target.RECORD_BOUND`
-(`kernel_record_bound.py`), K's DRESSED per-record Schwarz bound
+(`eri/k_exchange/kernel_record_bound.py`), K's DRESSED per-record Schwarz bound
 
-    I = ao.k.record_bounds = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
+    I = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
 
-one thread per record, the max over the FIRST shell's Cartesians. mmd forms
+(FelizJueves's host `eri.k_exchange.k.record_bounds`), one thread per
+record, the max over the FIRST shell's Cartesians. mmd forms
 it once per basis over its own records, as stored and swapped (its
 bound_ab and bound_ba), so it is written to src/integrals/mmd/kernels/
 record_bound/, beside mmd's `pair_bound`. The class is an ORDERED pair, so
@@ -73,12 +74,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
-from felizjueves.device import by_name  # noqa: E402
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import WAVEFRONT, Specialization  # noqa: E402
-from felizjueves.kernel_kblock import build_kblock_kernel  # noqa: E402
-from felizjueves.kernel_record_bound import build_record_bound_kernel  # noqa: E402
-from felizjueves.passes import split_axes  # noqa: E402
+from felizjueves.eri.k_exchange.kernel_kblock import build_kblock_kernel  # noqa: E402
+from felizjueves.eri.k_exchange.kernel_record_bound import (  # noqa: E402
+    build_record_bound_kernel,
+)
+from felizjueves.ir.passes import split_axes  # noqa: E402
+from felizjueves.performance.device import by_name  # noqa: E402
 
 # The kernels' L limit: d. It must equal kMaxAngularMomentum
 # (src/basis/angular_momentum.h).
