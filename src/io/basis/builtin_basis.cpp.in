@@ -139,4 +139,8 @@ Result<BasisStamp> resolve_aux_basis(std::string_view spec) {
   return resolve_from(kBuiltinAuxBases, spec);
 }
 
+bool is_builtin_aux_basis(std::string_view spec) {
+  return find_builtin_basis(kBuiltinAuxBases, spec) != nullptr;
+}
+
 } // namespace free_breakfast

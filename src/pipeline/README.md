@@ -10,6 +10,7 @@ molecule/   free_breakfast.pipeline.molecule: MoleculeStep, the root step -- an 
 basis_set/  free_breakfast.pipeline.basis_set: BasisSetStep -- a BSE JSON basis read and placed over the Molecule
 spherical_transform/  free_breakfast.pipeline.spherical_transform: SphericalTransformStep -- the basis's Cartesian-to-spherical U, uploaded once
 primitive_pair_classes/  free_breakfast.pipeline.primitive_pair_classes: PrimitivePairClassesStep -- the basis's primitive-pair records, on the device
+density_fitting/  free_breakfast.pipeline.density_fitting: DensityFittingStep -- its own aux basis placed, then the metric, the three-center tensor and the fit B = L^-1 (mn|P)
 overlap/    free_breakfast.pipeline.overlap: OverlapStep -- the spherical AO overlap S
 orthogonalizer/  free_breakfast.pipeline.orthogonalizer: OrthogonalizerStep -- X = S^{-1/2}, the symmetric orthogonalizer
 core_hamiltonian/  free_breakfast.pipeline.core_hamiltonian: CoreHamiltonianStep -- the spherical core Hamiltonian H = T + V

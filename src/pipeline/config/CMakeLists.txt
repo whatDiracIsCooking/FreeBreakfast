@@ -18,6 +18,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::basis_set
   free_breakfast::pipeline::spherical_transform
   free_breakfast::pipeline::primitive_pair_classes
+  free_breakfast::pipeline::density_fitting
   free_breakfast::pipeline::overlap
   free_breakfast::pipeline::orthogonalizer
   free_breakfast::pipeline::core_hamiltonian

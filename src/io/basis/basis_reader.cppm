@@ -149,4 +149,12 @@ export namespace free_breakfast {
 /// integral kernel that cannot take one rejects it itself.
 [[nodiscard]] Result<BasisStamp> resolve_aux_basis(std::string_view spec);
 
+/// @brief Whether @p spec names a density-fitting basis set compiled into this
+/// binary (@ref resolve_aux_basis): @ref is_builtin_basis over the fitting
+/// sets instead of the orbital ones, the same spelling folded.
+///
+/// The question a front end asks before it resolves a relative aux-basis
+/// path, for the reason @ref is_builtin_basis gives.
+[[nodiscard]] bool is_builtin_aux_basis(std::string_view spec);
+
 } // namespace free_breakfast

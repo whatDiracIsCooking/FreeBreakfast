@@ -15,6 +15,7 @@ turns a BSE document into a geometry-free `BasisStamp` (from
   caller places it over the orbital basis's molecule with
   `place(stamp.primitive_normalized(), molecule)`; an element the set lacks is
   `InvalidConfig` from `place`.
+* `is_builtin_aux_basis(spec)` — `is_builtin_basis` over the fitting sets.
 
 ## The compiled-in sets
 
@@ -50,9 +51,10 @@ known to be that set's.
 
 `is_builtin_basis` exists because the discrimination has to happen *before* a
 relative path is anchored to a config file's directory — joining a name to
-that directory would turn `sto-3g` into a file nobody wrote. Only
-`free_breakfast.pipeline.config` needs it; everything else calls
-`resolve_basis`.
+that directory would turn `sto-3g` into a file nobody wrote.
+`is_builtin_aux_basis` asks the same of the fitting table, for
+`[density_fitting] aux_basis`. Only `free_breakfast.pipeline.config` needs
+either; everything else calls `resolve_basis` or `resolve_aux_basis`.
 
 Each `electron_shells` block maps to shells by pairing momentum *i* with
 coefficient column *i* (an sp / spd block), or — with one momentum and several

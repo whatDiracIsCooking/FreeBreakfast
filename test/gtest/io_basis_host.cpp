@@ -257,14 +257,27 @@ TEST(IoBasisAux, TheFittingAndOrbitalTablesAreDisjoint) {
   // five that carry data/sad/ stamps.
   for (const std::string_view aux : {"cc-pVDZ-JKFIT", "cc-pvtz-jkfit"}) {
     EXPECT_FALSE(fb::is_builtin_basis(aux)) << aux;
+    EXPECT_TRUE(fb::is_builtin_aux_basis(aux)) << aux;
     auto stamp = fb::resolve_basis(aux);
     ASSERT_FALSE(stamp.has_value()) << aux;
     EXPECT_EQ(stamp.error().kind, fb::ErrorKind::IO);
   }
   // ... and an orbital set's name is no fitting set's.
+  EXPECT_FALSE(fb::is_builtin_aux_basis("cc-pvdz"));
+  EXPECT_FALSE(fb::is_builtin_aux_basis("sto-3g"));
   auto orbital = fb::resolve_aux_basis("cc-pvdz");
   ASSERT_FALSE(orbital.has_value());
   EXPECT_EQ(orbital.error().kind, fb::ErrorKind::IO);
+}
+
+TEST(IoBasisAux, AuxNamesIgnoreCaseHyphensAndUnderscores) {
+  for (const std::string_view spelling :
+       {"cc-pVDZ-JKFIT", "ccpvdzjkfit", "CC_PVTZ_JKFIT", "cc pvtz jkfit"}) {
+    EXPECT_TRUE(fb::is_builtin_aux_basis(spelling)) << spelling;
+  }
+  EXPECT_FALSE(fb::is_builtin_aux_basis("cc-pvqz-jkfit"));
+  EXPECT_FALSE(fb::is_builtin_aux_basis("cc-pvdz-jkfit.json"));
+  EXPECT_FALSE(fb::is_builtin_aux_basis(""));
 }
 
 TEST(IoBasisAux, AnUnknownNameReadsAsAPathAndSaysWhatTheNamesAre) {
