@@ -9,11 +9,12 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemv, geam, gemmStridedBatched, iamax, gpu_status
+import free_breakfast.core.wwr; // gemm, gemv, geam, gemmStridedBatched, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.matrix_ao;
+import free_breakfast.recipes.norm; // norm, Norm
 import free_breakfast.recipes.linear_operator;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -48,14 +49,10 @@ Hessian::Hessian(DeviceResources &res, const BasisSet &basis,
 Result<double> Hessian::capped_density(DeviceResources &res, const double *const from) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const int32_t nc = n_cart_;
-  // 1-based, and on the host in host pointer mode, so the call has waited.
-  int32_t at = 0;
-  FBF_TRY(gpu_status(wwr::iamax<double, int32_t>(blas, nc * nc, from, 1, &at)));
+  // Host pointer mode, so the call has waited for it.
   double top = 0.0;
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(&top, from + (at - 1), sizeof(double),
-                                         wwr::wwrMemcpyDeviceToHost, res.stream())));
-  FBF_TRY(res.sync());
-  const double s = std::abs(top) > 2.0 ? 2.0 / std::abs(top) : 1.0;
+  FBF_TRY(norm<Norm::inf>(res, nc * nc, from, 1, &top));
+  const double s = top > 2.0 ? 2.0 / top : 1.0;
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc,
                                                 &s, from, nc, &kZero<double>, from, nc,
                                                 density_.data(), nc)));

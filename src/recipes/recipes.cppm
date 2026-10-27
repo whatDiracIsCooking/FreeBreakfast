@@ -15,6 +15,7 @@ export import free_breakfast.recipes.diis;
 export import free_breakfast.recipes.expm;
 export import free_breakfast.recipes.linear_operator;
 export import free_breakfast.recipes.matrix_ao;
+export import free_breakfast.recipes.norm;
 export import free_breakfast.recipes.orthogonalize;
 export import free_breakfast.recipes.polynomial_roots;
 export import free_breakfast.recipes.sort;
