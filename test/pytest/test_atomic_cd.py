@@ -18,13 +18,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 
+# before ANY third-party import: numpy is in the `tools` group too, not `dev`
 pytest.importorskip("pyscf", reason="needs the `tools` dependency group")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import numpy as np  # noqa: E402
 from pyscf import df  # noqa: E402
 
 from tools.atomic_cd import (  # noqa: E402
