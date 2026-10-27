@@ -1,8 +1,10 @@
 // GPU cases for integrals.eri.density_fitting.jk: from PySCF's int2c2e (P|Q)
 // and int3c2e (mn|P) (data/density_fitting/), fitted by density_fit, J of the
 // golden density and K of two host factors of it against PySCF's DF vj and vk;
-// K exactly symmetric; the two factors' K agreeing; and the empty and
-// negative counts.
+// K exactly symmetric; the two factors' K agreeing; the two-factor K of a
+// random non-symmetric A B^T against the host contraction over B, against
+// integral-direct exchange within the DF error, and at A = B = C against the
+// one-factor K; and the empty, negative and too-large counts.
 
 #include <gtest/gtest.h>
 
@@ -13,8 +15,15 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.json;
 import free_breakfast.io.npy;
+import free_breakfast.molecule;
+import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.integrals.eri.density_fitting.jk;
+import free_breakfast.integrals.eri.integral_direct.exchange;
+import free_breakfast.pipeline.step;
+import free_breakfast.pipeline.basis_set;
+import free_breakfast.pipeline.primitive_pair_classes;
+import free_breakfast.pipeline.density_fitting;
 
 namespace {
 
@@ -23,6 +32,17 @@ namespace fb = free_breakfast;
 // The issue's bar: J and K against PySCF's DF vj and vk to 1e-12 of max|vj|
 // and max|vk|, and the two factors' K to each other to 1e-12 of max|K|.
 constexpr double kRelTol = 1e-12;
+// 2 K[C C^T] by the two-factor gemm against the one-factor syrk, of max|K|
+// (2.3e-16 measured on HIP).
+constexpr double kRoundingTol = 1e-13;
+// The two-factor DF K against integral-direct exchange, of max|K|: the fitting
+// error of cc-pVDZ-JKFIT on a random density, which weights every AO product
+// alike, tight ones included. 8.0e-3 measured for the test's A B^T; a random
+// A A^T, which needs neither the new overload's asymmetry nor the antisymmetric
+// sweep, misses by 1.5e-2 the same way. A K transposed, or its factors
+// swapped, misses by about 0.75: its antisymmetric part is 0.26 of max|K|
+// 0.69.
+constexpr double kFittingTol = 3e-2;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "density_fitting";
 
@@ -103,19 +123,17 @@ Golden read_golden() {
   return {};
 }
 
-void upload(fb::DeviceResources &res, const std::vector<double> &host,
-            fb::Buffers::device<double> &d) {
-  ASSERT_EQ(host.size(), d.num_elements());
-  ASSERT_EQ(wwr::wwrMemcpyAsync(d.data(), host.data(), sizeof(double) * host.size(),
+void upload(fb::DeviceResources &res, const std::vector<double> &host, double *d) {
+  ASSERT_EQ(wwr::wwrMemcpyAsync(d, host.data(), sizeof(double) * host.size(),
                                 wwr::wwrMemcpyHostToDevice, res.stream()),
             wwr::wwrSuccess);
   // host is pageable: the copy has not finished reading it until the stream has.
   ASSERT_TRUE(res.sync().has_value());
 }
 
-std::vector<double> download(fb::DeviceResources &res, const fb::Buffers::device<double> &d) {
-  std::vector<double> host(d.num_elements());
-  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), d.data(), sizeof(double) * host.size(),
+std::vector<double> download(fb::DeviceResources &res, const double *d, const std::size_t count) {
+  std::vector<double> host(count);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), d, sizeof(double) * host.size(),
                                 wwr::wwrMemcpyDeviceToHost, res.stream()),
             wwr::wwrSuccess);
   EXPECT_TRUE(res.sync().has_value());
@@ -260,6 +278,75 @@ void expect_bitwise_symmetric(const std::vector<double> &k, const std::size_t n,
   EXPECT_EQ(mismatched, 0U) << what << ": K(m, n) and K(n, m) differ in bits";
 }
 
+// An n x rank factor, column-major, uniform on [-1/2, 1/2) from a fixed seed.
+std::vector<double> random_factor(const std::size_t n, const std::size_t rank,
+                                  const std::uint64_t seed) {
+  std::mt19937_64 engine{seed};
+  std::uniform_real_distribution<double> uniform{-0.5, 0.5};
+  std::vector<double> a(n * rank);
+  std::ranges::generate(a, [&] { return uniform(engine); });
+  return a;
+}
+
+// A B^T, n x n column-major, of the n x rank factors a and b.
+std::vector<double> product_of(const std::vector<double> &a, const std::vector<double> &b,
+                               const std::size_t n) {
+  const std::size_t rank = a.size() / n;
+  std::vector<double> d(n * n, 0.0);
+  for (std::size_t q = 0; q < n; ++q) {
+    for (std::size_t p = 0; p < n; ++p) {
+      for (std::size_t i = 0; i < rank; ++i) {
+        d[p + n * q] += a[p + n * i] * b[q + n * i];
+      }
+    }
+  }
+  return d;
+}
+
+// The transpose of the n x n column-major a.
+std::vector<double> transpose_of(const std::vector<double> &a, const std::size_t n) {
+  std::vector<double> t(a.size());
+  for (std::size_t q = 0; q < n; ++q) {
+    for (std::size_t p = 0; p < n; ++p) {
+      t[q + n * p] = a[p + n * q];
+    }
+  }
+  return t;
+}
+
+// K_mn = sum_Q sum_ls B_Q,ml B_Q,ns D_ls on the host, from D itself and not a
+// factor of it: per Q, T = B_Q D, then K += T B_Q^T. B is [Q][n][m], B_Q,ml at
+// Q + naux (l + nao m), symmetric in m and l.
+std::vector<double> fitted_exchange(const std::vector<double> &b, const std::size_t nao,
+                                    const std::size_t naux, const std::vector<double> &d) {
+  std::vector<double> k(nao * nao, 0.0);
+  std::vector<double> t(nao * nao);
+  for (std::size_t q = 0; q < naux; ++q) {
+    const auto bq = [&](const std::size_t m, const std::size_t l) {
+      return b[q + naux * (l + nao * m)];
+    };
+    for (std::size_t s = 0; s < nao; ++s) {
+      for (std::size_t m = 0; m < nao; ++m) {
+        double sum = 0.0;
+        for (std::size_t l = 0; l < nao; ++l) {
+          sum += bq(m, l) * d[l + nao * s];
+        }
+        t[m + nao * s] = sum;
+      }
+    }
+    for (std::size_t n = 0; n < nao; ++n) {
+      for (std::size_t m = 0; m < nao; ++m) {
+        double sum = 0.0;
+        for (std::size_t s = 0; s < nao; ++s) {
+          sum += t[m + nao * s] * bq(n, s);
+        }
+        k[m + nao * n] += sum;
+      }
+    }
+  }
+  return k;
+}
+
 // The fitted B on the device, from the golden tensors through density_fit.
 class DfJk : public ::testing::Test {
 protected:
@@ -271,8 +358,8 @@ protected:
     res_.emplace(0);
     metric_.emplace(g_.metric.size(), res_->device());
     b_.emplace(g_.b.size(), res_->device());
-    upload(*res_, g_.metric, *metric_);
-    upload(*res_, g_.b, *b_);
+    upload(*res_, g_.metric, metric_->data());
+    upload(*res_, g_.b, b_->data());
     const fb::Status fitted = fb::density_fit(*res_, g_.nao, g_.naux, metric_->data(), b_->data());
     ASSERT_TRUE(fitted) << fitted.error().message;
   }
@@ -281,12 +368,30 @@ protected:
   std::vector<double> exchange_of(const std::vector<double> &c) {
     fb::Buffers::device<double> d_c(c.size(), res_->device());
     fb::Buffers::device<double> d_k(g_.vk.size(), res_->device());
-    upload(*res_, c, d_c);
+    upload(*res_, c, d_c.data());
     const fb::Status built =
         fb::df_exchange(*res_, g_.nao, g_.naux, g_.occupied, b_->data(), d_c.data(), d_k.data());
     EXPECT_TRUE(built) << built.error().message;
-    return download(*res_, d_k);
+    return download(*res_, d_k.data(), d_k.num_elements());
   }
+
+  // K of the two-factor density left right^T (each nao x rank), read back.
+  std::vector<double> exchange_of(const std::vector<double> &left,
+                                  const std::vector<double> &right) {
+    const auto rank = static_cast<std::int32_t>(left.size() / static_cast<std::size_t>(g_.nao));
+    fb::Buffers::device<double> d_left(left.size(), res_->device());
+    fb::Buffers::device<double> d_right(right.size(), res_->device());
+    fb::Buffers::device<double> d_k(g_.vk.size(), res_->device());
+    upload(*res_, left, d_left.data());
+    upload(*res_, right, d_right.data());
+    const fb::Status built = fb::df_exchange(*res_, g_.nao, g_.naux, rank, b_->data(),
+                                             d_left.data(), d_right.data(), d_k.data());
+    EXPECT_TRUE(built) << built.error().message;
+    return download(*res_, d_k.data(), d_k.num_elements());
+  }
+
+  // The fitted B, read back.
+  std::vector<double> fitted_b() { return download(*res_, b_->data(), b_->num_elements()); }
 
   Golden g_;
   std::optional<fb::DeviceResources> res_;
@@ -297,10 +402,10 @@ protected:
 TEST_F(DfJk, CoulombMatchesPyscfDfVj) {
   fb::Buffers::device<double> d(g_.density.size(), res_->device());
   fb::Buffers::device<double> j(g_.vj.size(), res_->device());
-  upload(*res_, g_.density, d);
+  upload(*res_, g_.density, d.data());
   const fb::Status built = fb::df_coulomb(*res_, g_.nao, g_.naux, b_->data(), d.data(), j.data());
   ASSERT_TRUE(built) << built.error().message;
-  const std::vector<double> got = download(*res_, j);
+  const std::vector<double> got = download(*res_, j.data(), j.num_elements());
   const double scale = max_abs(g_.vj);
   const double worst = max_diff(got, g_.vj);
   ASSERT_GT(scale, 0.0);
@@ -347,8 +452,141 @@ TEST_F(DfJk, ExchangeOfTwoFactorsOfOneDensityAgrees) {
   EXPECT_LE(max_diff(k_cholesky, g_.vk), kRelTol * max_abs(g_.vk));
 }
 
-// naux = 0 or nocc = 0 is J or K = 0, written over whatever was there; nao = 0
-// writes nothing; a negative count is InvalidConfig.
+// A random A B^T, neither symmetric nor definite: K by the two-factor
+// overload against the host contraction of D itself over the same B, and
+// K[A B^T]^T = K[B A^T].
+TEST_F(DfJk, ExchangeOfTwoFactorsMatchesTheContractionOverB) {
+  const auto nao = static_cast<std::size_t>(g_.nao);
+  constexpr std::size_t kRank = 3;
+  const std::vector<double> a = random_factor(nao, kRank, 380);
+  const std::vector<double> b = random_factor(nao, kRank, 381);
+  const std::vector<double> d = product_of(a, b, nao);
+  // Not symmetric, so not a density the one-factor form can take.
+  EXPECT_GT(max_diff(d, transpose_of(d, nao)), 0.1 * max_abs(d));
+
+  const std::vector<double> expected = fitted_exchange(fitted_b(), nao, g_.naux, d);
+  const std::vector<double> got = exchange_of(a, b);
+  const double scale = max_abs(expected);
+  const double worst = max_diff(got, expected);
+  ASSERT_GT(scale, 0.0);
+  EXPECT_LE(worst, kRelTol * scale)
+      << "max|K - reference| = " << worst << ", " << worst / scale << " of max " << scale;
+  EXPECT_GT(max_diff(got, transpose_of(got, nao)), 0.1 * scale) << "K of a non-symmetric D";
+
+  const std::vector<double> swapped = exchange_of(b, a);
+  EXPECT_LE(max_diff(swapped, transpose_of(got, nao)), kRelTol * scale)
+      << "K[B A^T] is not K[A B^T]^T";
+}
+
+// K[C C^T] by the overload is half the one-factor K[2 C C^T]: a gemm against a
+// syrk over the same X, so equal to rounding.
+TEST_F(DfJk, ExchangeOfOneFactorTwiceIsTheOneFactorExchange) {
+  const auto nao = static_cast<std::size_t>(g_.nao);
+  const auto occupied = static_cast<std::size_t>(g_.occupied);
+  const std::vector<double> c = eigen_factor(g_.density, nao, occupied);
+  const std::vector<double> one = exchange_of(c);
+  std::vector<double> twice = exchange_of(c, c);
+  std::ranges::transform(twice, twice.begin(), [](const double x) { return 2.0 * x; });
+  const double scale = max_abs(one);
+  const double worst = max_diff(twice, one);
+  ASSERT_GT(scale, 0.0);
+  EXPECT_LE(worst, kRoundingTol * scale)
+      << "max|2 K[C C^T] - K(C)| = " << worst << ", " << worst / scale << " of max " << scale;
+  std::cout << std::format("[ df jk    ] max|2 K[C C^T] - df_exchange(C)| / max {:.3e}\n",
+                           worst / scale);
+}
+
+// The same A B^T over this tree's own basis and B (the DensityFitting step's),
+// against integral-direct exchange: S = (D + D^T) / 2 and the antisymmetric
+// rest each by its own sweep, unscreened, carried to the spherical layout.
+// Their difference is the fitting error, not rounding.
+TEST(DfJkDirect, ExchangeOfTwoFactorsMatchesIntegralDirectWithinTheFittingError) {
+  FBF_REQUIRE_GPU();
+  const auto doc = fb::read_json(kDataDir / "density_fitting.json");
+  ASSERT_TRUE(doc) << doc.error().message;
+  const fb::json *c = nullptr;
+  for (const fb::json &entry : (*doc)["integrals"]) {
+    if (entry["name"].get<std::string>() == "h2o_ccpvdz") {
+      c = &entry;
+    }
+  }
+  ASSERT_NE(c, nullptr);
+
+  fb::DeviceResources res{0};
+  std::vector<fb::Atom> atoms;
+  for (const auto &atom : (*c)["atoms"]) {
+    const auto xyz = atom["coord"].get<std::vector<double>>();
+    atoms.push_back(fb::Atom{fb::Vec<double, 3>{xyz[0], xyz[1], xyz[2]},
+                             static_cast<fb::Element>(atom["z"].get<std::int32_t>())});
+  }
+  const fb::MoleculeOutput molecule{fb::Molecule(res, std::move(atoms))};
+  auto basis = fb::BasisSetStep{.basis = (*c)["basis"].get<std::string>()}.run(
+      fb::View<fb::MoleculeOutput>{molecule});
+  ASSERT_TRUE(basis) << basis.error().message;
+  auto classes = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
+  ASSERT_TRUE(classes) << classes.error().message;
+  auto fit = fb::DensityFittingStep{.aux_basis = (*c)["aux_basis"].get<std::string>()}.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          molecule, *basis, *classes},
+      res);
+  ASSERT_TRUE(fit) << fit.error().message;
+  auto k_classes = fb::ordered_pair_classes(res, basis->basis, classes->classes);
+  ASSERT_TRUE(k_classes) << k_classes.error().message;
+  auto u = fb::upload_spherical_transform_matrix(res, basis->basis);
+  ASSERT_TRUE(u) << u.error().message;
+
+  const std::int32_t nao = static_cast<std::int32_t>(basis->basis.nao_sphe());
+  const auto n = static_cast<std::size_t>(nao);
+  constexpr std::size_t kRank = 3;
+  const std::vector<double> a = random_factor(n, kRank, 380);
+  const std::vector<double> b = random_factor(n, kRank, 381);
+  const std::vector<double> d = product_of(a, b, n);
+
+  fb::Buffers::device<double> d_a(a.size(), res.device());
+  fb::Buffers::device<double> d_b(b.size(), res.device());
+  fb::Buffers::device<double> d_k(n * n, res.device());
+  upload(res, a, d_a.data());
+  upload(res, b, d_b.data());
+  const fb::Status built = fb::df_exchange(res, nao, fit->naux, static_cast<std::int32_t>(kRank),
+                                           fit->b.data(), d_a.data(), d_b.data(), d_k.data());
+  ASSERT_TRUE(built) << built.error().message;
+  const std::vector<double> got = download(res, d_k.data(), d_k.num_elements());
+
+  // K of sign (D + sign D^T) / 2, by one sweep of that symmetry.
+  const std::vector<double> dt = transpose_of(d, n);
+  const auto direct = [&](const double sign, const fb::DensitySymmetry symmetry) {
+    std::vector<double> part(d.size());
+    for (std::size_t i = 0; i < d.size(); ++i) {
+      part[i] = (d[i] + sign * dt[i]) / 2.0;
+    }
+    fb::MatrixAOPair density(res, basis->basis, *u);
+    fb::MatrixAOPair k(res, basis->basis, *u);
+    upload(res, part, density.spherical().data());
+    EXPECT_TRUE(density.spherical_to_cartesian(res));
+    const fb::Status swept =
+        fb::exchange(res, *k_classes, density.cartesian(), k.cartesian(), 0.0, symmetry);
+    EXPECT_TRUE(swept) << swept.error().message;
+    EXPECT_TRUE(k.cartesian_to_spherical(res));
+    return download(res, k.spherical().data(), k.spherical().num_elements());
+  };
+  const std::vector<double> symmetric = direct(1.0, fb::DensitySymmetry::Symmetric);
+  const std::vector<double> antisymmetric = direct(-1.0, fb::DensitySymmetry::Antisymmetric);
+  std::vector<double> expected(d.size());
+  std::ranges::transform(symmetric, antisymmetric, expected.begin(), std::plus{});
+
+  const double scale = max_abs(expected);
+  const double worst = max_diff(got, expected);
+  ASSERT_GT(scale, 0.0);
+  EXPECT_LE(worst, kFittingTol * scale)
+      << "max|K_df - K_direct| = " << worst << ", " << worst / scale << " of max " << scale;
+  std::cout << std::format("[ df jk    ] two-factor K against integral-direct: max {:.4f}, worst "
+                           "|K_df - K_direct| / max {:.3e}\n",
+                           scale, worst / scale);
+}
+
+// naux = 0 or nocc (rank) = 0 is J or K = 0, written over whatever was there;
+// nao = 0 writes nothing; a negative count, or naux nocc (rank) past int32_t,
+// is InvalidConfig. Both K forms alike.
 TEST(DfJkEmpty, EmptyCountsAndNegativeCounts) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -356,23 +594,38 @@ TEST(DfJkEmpty, EmptyCountsAndNegativeCounts) {
   const std::vector<double> ones(kNao * kNao, 1.0);
   fb::Buffers::device<double> out(ones.size(), res.device());
 
-  upload(res, ones, out);
+  upload(res, ones, out.data());
   ASSERT_TRUE(fb::df_coulomb(res, kNao, 0, nullptr, nullptr, out.data()));
-  EXPECT_EQ(download(res, out), std::vector<double>(ones.size(), 0.0));
-  upload(res, ones, out);
+  EXPECT_EQ(download(res, out.data(), out.num_elements()), std::vector<double>(ones.size(), 0.0));
+  upload(res, ones, out.data());
   ASSERT_TRUE(fb::df_exchange(res, kNao, 0, 2, nullptr, nullptr, out.data()));
-  EXPECT_EQ(download(res, out), std::vector<double>(ones.size(), 0.0));
-  upload(res, ones, out);
+  EXPECT_EQ(download(res, out.data(), out.num_elements()), std::vector<double>(ones.size(), 0.0));
+  upload(res, ones, out.data());
   ASSERT_TRUE(fb::df_exchange(res, kNao, 4, 0, nullptr, nullptr, out.data()));
-  EXPECT_EQ(download(res, out), std::vector<double>(ones.size(), 0.0));
+  EXPECT_EQ(download(res, out.data(), out.num_elements()), std::vector<double>(ones.size(), 0.0));
+
+  upload(res, ones, out.data());
+  ASSERT_TRUE(fb::df_exchange(res, kNao, 0, 2, nullptr, nullptr, nullptr, out.data()));
+  EXPECT_EQ(download(res, out.data(), out.num_elements()), std::vector<double>(ones.size(), 0.0));
+  upload(res, ones, out.data());
+  ASSERT_TRUE(fb::df_exchange(res, kNao, 4, 0, nullptr, nullptr, nullptr, out.data()));
+  EXPECT_EQ(download(res, out.data(), out.num_elements()), std::vector<double>(ones.size(), 0.0));
 
   EXPECT_TRUE(fb::df_coulomb(res, 0, 4, nullptr, nullptr, nullptr));
   EXPECT_TRUE(fb::df_exchange(res, 0, 4, 2, nullptr, nullptr, nullptr));
-  for (const fb::Status negative : {fb::df_coulomb(res, -1, 4, nullptr, nullptr, nullptr),
-                                    fb::df_coulomb(res, 3, -1, nullptr, nullptr, nullptr),
-                                    fb::df_exchange(res, 3, 4, -1, nullptr, nullptr, nullptr)}) {
-    ASSERT_FALSE(negative);
-    EXPECT_EQ(negative.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_TRUE(fb::df_exchange(res, 0, 4, 2, nullptr, nullptr, nullptr, nullptr));
+  constexpr std::int32_t kHuge = 1 << 16; // kHuge^2 = 2^32
+  for (const fb::Status refused :
+       {fb::df_coulomb(res, -1, 4, nullptr, nullptr, nullptr),
+        fb::df_coulomb(res, 3, -1, nullptr, nullptr, nullptr),
+        fb::df_exchange(res, 3, 4, -1, nullptr, nullptr, nullptr),
+        fb::df_exchange(res, 3, kHuge, kHuge, nullptr, nullptr, nullptr),
+        fb::df_exchange(res, -1, 4, 2, nullptr, nullptr, nullptr, nullptr),
+        fb::df_exchange(res, 3, -1, 2, nullptr, nullptr, nullptr, nullptr),
+        fb::df_exchange(res, 3, 4, -1, nullptr, nullptr, nullptr, nullptr),
+        fb::df_exchange(res, 3, kHuge, kHuge, nullptr, nullptr, nullptr, nullptr)}) {
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
   }
 }
 

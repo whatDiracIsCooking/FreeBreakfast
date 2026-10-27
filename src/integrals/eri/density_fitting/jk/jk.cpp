@@ -1,6 +1,7 @@
 /// @file
-/// @brief df_coulomb (two gemvs) and df_exchange (a batched gemm, a syrk, and
-/// its mirror) over the fitted B.
+/// @brief df_coulomb (two gemvs) and df_exchange over the fitted B: of one
+/// factor, a batched gemm, a syrk and its mirror; of two, two batched gemms and
+/// a gemm.
 
 module free_breakfast.integrals.eri.density_fitting.jk;
 
@@ -8,7 +9,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemv, gemmStridedBatched, syrk, geam, copy, gpu_status
+import free_breakfast.core.wwr; // gemv, gemm(StridedBatched), syrk, geam, copy, gpu_status
 import free_breakfast.core.resources;
 
 #include "diagnostics.h"
@@ -88,6 +89,48 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
                                                 nao, &kOne<double>, lower, nao, &kOne<double>,
                                                 lower, nao, k, nao)));
   return gpu_status(wwr::copy<double, int32_t>(blas, nao, lower, nao + 1, k, nao + 1));
+}
+
+Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, const int32_t rank,
+                   const double *b, const double *left, const double *right, double *k) {
+  if (nao < 0 || naux < 0 || rank < 0) {
+    return err_config("df_exchange: nao = {}, naux = {} and rank = {} must be non-negative", nao,
+                      naux, rank);
+  }
+  // X's and Y's rows, the product's inner dimension and leading dimensions, in
+  // the int32_t dispatch.
+  const int64_t rows = int64_t{naux} * rank;
+  if (rows > std::numeric_limits<int32_t>::max()) {
+    return err_config("df_exchange: naux * rank = {} exceeds int32_t", rows);
+  }
+  if (nao == 0) {
+    return {};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  if (rows == 0) {
+    const auto nn = static_cast<size_t>(nao) * static_cast<size_t>(nao);
+    return gpu_status(wwr::wwrMemsetAsync(k, 0, sizeof(double) * nn, stream));
+  }
+  const auto rows32 = static_cast<int32_t>(rows);
+  const auto block = int64_t{naux} * nao; // B_m's stride
+  const auto scratch = static_cast<size_t>(rows) * nao;
+  const auto [x, y] = res.device_regions<double>(scratch, scratch);
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+
+  // X_m = B_m L and Y_m = B_m R for every m: naux x rank from naux x nao times
+  // nao x rank, the factor shared by the batch.
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux, rank, nao, &kOne<double>, b, naux, block,
+      left, nao, 0, &kZero<double>, x, naux, rows, nao)));
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux, rank, nao, &kOne<double>, b, naux, block,
+      right, nao, 0, &kZero<double>, y, naux, rows, nao)));
+
+  // K = X^T Y: K_mn = sum_Qi (B_m L)_Qi (B_n R)_Qi = sum_ls (ml|ns) (L R^T)_ls.
+  return gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nao, nao,
+                                               rows32, &kOne<double>, x, rows32, y, rows32,
+                                               &kZero<double>, k, nao));
 }
 
 } // namespace free_breakfast
