@@ -42,6 +42,20 @@ constexpr double kEnergyTolerance = 1e-9;
 constexpr double kGradientTolerance = 1e-7;
 constexpr double kRhfGradientTolerance = 1e-6;
 constexpr double kFiniteDifferenceTolerance = 1e-6;
+// F^A from ppaa and papa against the J and K of P_a it replaced: both at
+// tau 1e-14, so what parts them is the two routes' screening and rounding.
+constexpr double kFockActiveTolerance = 1e-10;
+// The density-fitted fock against a host contraction of the same B, ppaa and
+// papa: rounding only.
+constexpr double kDfHostEnergyTolerance = 1e-10;
+constexpr double kDfHostTolerance = 1e-10;
+// ...and against the integral-direct one: the fit's error, over cc-pVDZ-JKFIT.
+// Over the five cases it reaches 2.8e-4 Eh in the energy (N2) and 1.2e-3 in
+// an element of F^I, F^A, F or g (N2's F^A, H2CO's F^I): the bars sit above
+// that, as a fit's error, not rounding, is what they bound.
+constexpr double kDfEnergyTolerance = 1e-3;
+constexpr double kDfFockTolerance = 3e-3;
+constexpr std::string_view kAuxBasis = "cc-pvdz-jkfit";
 // The orbital energies only pair our orbitals with PySCF's by index.
 constexpr double kOrbitalEnergyTolerance = 1e-6;
 // The finite difference: Richardson's extrapolation of two central
@@ -178,7 +192,8 @@ struct Setup {
 
   [[nodiscard]] fb::DeviceResources &res() { return node.device(0); }
 
-  // response::fock over orbitals with the setup's RDMs, ppaa built over them.
+  // response::fock over orbitals with the setup's RDMs, ppaa and papa built
+  // over them.
   [[nodiscard]] fb::Result<fb::response::Fock> fock(const fb::SphericalMatrixAO &orbitals) {
     auto integrals = fb::casscf_integrals(res(), *basis, *molecule, h->h, transform->u, j_classes,
                                           k_classes, orbitals, casci->ncore, casci->ncas);
@@ -186,7 +201,8 @@ struct Setup {
       return std::unexpected(std::move(integrals.error()));
     }
     return fb::response::fock(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes,
-                              orbitals, casci->ncore, casci->ncas, integrals->ppaa, gamma, gamma2);
+                              orbitals, casci->ncore, casci->ncas, integrals->ppaa, integrals->papa,
+                              gamma, gamma2);
   }
 
   // The energy of orbitals at the setup's RDMs, from active_space_hamiltonian:
@@ -511,7 +527,7 @@ TEST(ResponseFockRhfLimit, IsTheRhfGradient) {
   const auto rhf = [&](const fb::SphericalMatrixAO &orbitals) {
     return fb::response::fock(res, *setup->basis, *setup->molecule, setup->h->h,
                               setup->transform->u, setup->j_classes, setup->k_classes, orbitals,
-                              nocc, 0, no_ppaa, {}, {});
+                              nocc, 0, no_ppaa, no_ppaa, {}, {});
   };
 
   auto at_scf = rhf(setup->scf->c);
@@ -615,6 +631,351 @@ TEST(ResponseFockPackedOrder, PacksAndUnpacksTheNonRedundantPairs) {
   EXPECT_EQ(negative.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
+// The column-major m x n product of op(a) and op(b) on the host, op(a) m x k
+// and op(b) k x n, each transposed when its flag is set.
+std::vector<double> host_gemm(const std::vector<double> &a, bool ta, const std::vector<double> &b,
+                              bool tb, std::size_t m, std::size_t n, std::size_t k) {
+  std::vector<double> c(m * n, 0.0);
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t l = 0; l < k; ++l) {
+      const double blj = tb ? b[j + (n * l)] : b[l + (k * j)];
+      for (std::size_t i = 0; i < m; ++i) {
+        c[i + (m * j)] += (ta ? a[l + (k * i)] : a[i + (m * l)]) * blj;
+      }
+    }
+  }
+  return c;
+}
+
+double max_abs_difference(const std::vector<double> &a, const std::vector<double> &b) {
+  EXPECT_EQ(a.size(), b.size());
+  double most = 0.0;
+  for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+    most = std::max(most, std::abs(a[i] - b[i]));
+  }
+  return most;
+}
+
+// F^A from ppaa and papa against the AO route it replaced: C^T (J[P_a] -
+// 1/2 K[P_a]) C, P_a = (U C)_act gamma (U C)_act^T, by one coulomb and one
+// exchange at the old prune cap s = min(1, 2 / sum_tu |gamma_tu| m_t m_u),
+// built on s P_a at s tau and scaled back by 1 / s.
+TEST(ResponseFockActive, MatchesTheAoRoute) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz");
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const std::size_t nmo = setup->nmo;
+  const auto ncore = static_cast<std::size_t>(setup->casci->ncore);
+  const auto ncas = static_cast<std::size_t>(setup->casci->ncas);
+  const std::size_t n_cart = setup->basis->nao_cart();
+
+  auto fock = setup->fock(setup->casci->c);
+  ASSERT_TRUE(fock.has_value()) << fock.error().message;
+  const std::vector<double> got = download(res, fock->fock_active.data(), nmo * nmo);
+
+  const std::vector<double> c = download(res, setup->casci->c.data(), nmo * nmo);
+  const std::vector<double> c_cart =
+      setup->transform->u == nullptr
+          ? c
+          : host_gemm(download(res, setup->transform->u->data(), n_cart * nmo), false, c, false,
+                      n_cart, nmo, nmo);
+  const std::vector<double> c_act(c_cart.begin() + static_cast<std::ptrdiff_t>(n_cart * ncore),
+                                  c_cart.begin() +
+                                      static_cast<std::ptrdiff_t>(n_cart * (ncore + ncas)));
+  std::vector<double> gamma_col(ncas * ncas);
+  for (std::size_t t = 0; t < ncas; ++t) {
+    for (std::size_t u = 0; u < ncas; ++u) {
+      gamma_col[t + (ncas * u)] = setup->gamma[(t * ncas) + u];
+    }
+  }
+  std::vector<double> col_max(ncas, 0.0);
+  for (std::size_t t = 0; t < ncas; ++t) {
+    for (std::size_t mu = 0; mu < n_cart; ++mu) {
+      col_max[t] = std::max(col_max[t], std::abs(c_act[mu + (n_cart * t)]));
+    }
+  }
+  double bound = 0.0;
+  for (std::size_t t = 0; t < ncas; ++t) {
+    for (std::size_t u = 0; u < ncas; ++u) {
+      bound += std::abs(gamma_col[t + (ncas * u)]) * col_max[t] * col_max[u];
+    }
+  }
+  const double s = bound > 2.0 ? 2.0 / bound : 1.0;
+  std::vector<double> p_a = host_gemm(host_gemm(c_act, false, gamma_col, false, n_cart, ncas, ncas),
+                                      false, c_act, true, n_cart, n_cart, ncas);
+  for (double &value : p_a) {
+    value *= s;
+  }
+  fb::CartesianMatrixAO density(res, *setup->basis);
+  fb::CartesianMatrixAO j(res, *setup->basis);
+  fb::CartesianMatrixAO k(res, *setup->basis);
+  upload(res, p_a, density.data());
+  ASSERT_TRUE(fb::coulomb(res, setup->j_classes, density, j, 1e-14 * s).has_value());
+  ASSERT_TRUE(fb::exchange(res, setup->k_classes, density, k, 1e-14 * s).has_value());
+  std::vector<double> g = download(res, j.data(), n_cart * n_cart);
+  const std::vector<double> k_host = download(res, k.data(), n_cart * n_cart);
+  for (std::size_t i = 0; i < g.size(); ++i) {
+    g[i] = (g[i] - (0.5 * k_host[i])) / s;
+  }
+  const std::vector<double> want = host_gemm(host_gemm(c_cart, true, g, false, nmo, n_cart, n_cart),
+                                             false, c_cart, false, nmo, nmo, n_cart);
+  const double error = max_abs_difference(got, want);
+  std::cout << std::format("F^A, MO route against AO route: max |d| = {:.2e}\n", error);
+  EXPECT_LT(error, kFockActiveTolerance);
+}
+
+// What the density-fitted tests read: B over the setup's basis and the aux
+// set, on the setup's device.
+std::optional<fb::DensityFittingOutput> fit(Setup &setup) {
+  const auto &molecule = setup.calc->get<fb::MoleculeOutput>();
+  const auto &basis = setup.calc->get<fb::BasisSetOutput>();
+  const auto &pairs = setup.calc->get<fb::PrimitivePairClassesOutput>();
+  if (!molecule.has_value() || !basis.has_value() || !pairs.has_value()) {
+    ADD_FAILURE() << "a product of the setup steps is missing";
+    return std::nullopt;
+  }
+  auto b = fb::DensityFittingStep{.aux_basis = std::string{kAuxBasis}}.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          *molecule, *basis, *pairs},
+      setup.res());
+  if (!b.has_value()) {
+    ADD_FAILURE() << b.error().message;
+    return std::nullopt;
+  }
+  return std::move(*b);
+}
+
+// The MO two-electron integrals (pq|rs) ~ sum_Q B_Q,pq B_Q,rs over C's
+// orbitals on the host, at p + nmo (q + nmo (r + nmo s)).
+std::vector<double> fitted_mo_eri(fb::DeviceResources &res, const fb::DensityFittingOutput &b,
+                                  const std::vector<double> &c, std::size_t nmo) {
+  const auto naux = static_cast<std::size_t>(b.naux);
+  const std::size_t nn = nmo * nmo;
+  const std::vector<double> b_ao = download(res, b.b.data(), naux * nn);
+  // B_Q over the MOs, C^T B_Q C, stored as the naux x nmo^2 matrix B is.
+  std::vector<double> b_mo(naux * nn);
+  std::vector<double> slice(nn);
+  for (std::size_t q = 0; q < naux; ++q) {
+    for (std::size_t i = 0; i < nn; ++i) {
+      slice[i] = b_ao[q + (naux * i)];
+    }
+    const std::vector<double> mo =
+        host_gemm(host_gemm(c, true, slice, false, nmo, nmo, nmo), false, c, false, nmo, nmo, nmo);
+    for (std::size_t i = 0; i < nn; ++i) {
+      b_mo[q + (naux * i)] = mo[i];
+    }
+  }
+  return host_gemm(b_mo, true, b_mo, false, nn, nn, naux);
+}
+
+// Everything response::fock returns, from the MO integrals eri on the host.
+struct HostFock {
+  double energy = 0.0;
+  std::vector<double> fock_inactive;
+  std::vector<double> fock_active;
+  std::vector<double> fock;
+  std::vector<double> gradient;
+};
+
+HostFock host_fock(const std::vector<double> &eri, const std::vector<double> &h_mo, double e_nuc,
+                   std::size_t nmo, std::size_t ncore, std::size_t ncas,
+                   const std::vector<double> &gamma, const std::vector<double> &gamma2) {
+  const auto at = [&](std::size_t p, std::size_t q, std::size_t r, std::size_t s) {
+    return eri[p + (nmo * (q + (nmo * (r + (nmo * s)))))];
+  };
+  const std::size_t nn = nmo * nmo;
+  HostFock out{.energy = e_nuc,
+               .fock_inactive = h_mo,
+               .fock_active = std::vector<double>(nn, 0.0),
+               .fock = std::vector<double>(nn, 0.0),
+               .gradient = {}};
+  for (std::size_t q = 0; q < nmo; ++q) {
+    for (std::size_t p = 0; p < nmo; ++p) {
+      double fi = 0.0;
+      for (std::size_t i = 0; i < ncore; ++i) {
+        fi += (2.0 * at(p, q, i, i)) - at(p, i, q, i);
+      }
+      out.fock_inactive[p + (nmo * q)] += fi;
+      double fa = 0.0;
+      for (std::size_t t = 0; t < ncas; ++t) {
+        for (std::size_t u = 0; u < ncas; ++u) {
+          fa += gamma[(t * ncas) + u] *
+                (at(p, q, ncore + t, ncore + u) - (0.5 * at(p, ncore + t, q, ncore + u)));
+        }
+      }
+      out.fock_active[p + (nmo * q)] = fa;
+    }
+  }
+  for (std::size_t p = 0; p < nmo; ++p) {
+    for (std::size_t q = 0; q < ncore; ++q) {
+      out.fock[p + (nmo * q)] =
+          2.0 * (out.fock_inactive[p + (nmo * q)] + out.fock_active[p + (nmo * q)]);
+    }
+    for (std::size_t t = 0; t < ncas; ++t) {
+      double f = 0.0;
+      for (std::size_t v = 0; v < ncas; ++v) {
+        f += out.fock_inactive[p + (nmo * (ncore + v))] * gamma[(v * ncas) + t];
+        for (std::size_t u = 0; u < ncas; ++u) {
+          for (std::size_t w = 0; w < ncas; ++w) {
+            f += at(p, ncore + u, ncore + v, ncore + w) *
+                 gamma2[(((((t * ncas) + u) * ncas) + v) * ncas) + w];
+          }
+        }
+      }
+      out.fock[p + (nmo * (ncore + t))] = f;
+    }
+  }
+  for (const auto [p, q] : packed_pairs(nmo, ncore, ncas)) {
+    out.gradient.push_back(2.0 * (out.fock[p + (nmo * q)] - out.fock[q + (nmo * p)]));
+  }
+  for (std::size_t i = 0; i < ncore; ++i) {
+    out.energy += h_mo[i + (nmo * i)] + out.fock_inactive[i + (nmo * i)];
+  }
+  for (std::size_t t = 0; t < ncas; ++t) {
+    for (std::size_t u = 0; u < ncas; ++u) {
+      out.energy += out.fock_inactive[(ncore + t) + (nmo * (ncore + u))] * gamma[(t * ncas) + u];
+      for (std::size_t v = 0; v < ncas; ++v) {
+        for (std::size_t w = 0; w < ncas; ++w) {
+          out.energy += 0.5 * at(ncore + t, ncore + u, ncore + v, ncore + w) *
+                        gamma2[(((((t * ncas) + u) * ncas) + v) * ncas) + w];
+        }
+      }
+    }
+  }
+  return out;
+}
+
+// ppaa (pq|uv) and papa (pu|qv) from the MO integrals, in casscf_integrals'
+// layout, uploaded.
+std::pair<fb::Buffers::device<double>, fb::Buffers::device<double>>
+upload_ppaa_papa(fb::DeviceResources &res, const std::vector<double> &eri, std::size_t nmo,
+                 std::size_t ncore, std::size_t ncas) {
+  const std::size_t count = nmo * nmo * ncas * ncas;
+  std::vector<double> ppaa(count);
+  std::vector<double> papa(count);
+  for (std::size_t v = 0; v < ncas; ++v) {
+    for (std::size_t u = 0; u < ncas; ++u) {
+      for (std::size_t q = 0; q < nmo; ++q) {
+        for (std::size_t p = 0; p < nmo; ++p) {
+          const std::size_t i = p + (nmo * (q + (nmo * (u + (ncas * v)))));
+          const std::size_t a = ncore + u;
+          const std::size_t b = ncore + v;
+          ppaa[i] = eri[p + (nmo * (q + (nmo * (a + (nmo * b)))))];
+          papa[i] = eri[p + (nmo * (a + (nmo * (q + (nmo * b)))))];
+        }
+      }
+    }
+  }
+  std::pair out{fb::Buffers::device<double>(count, res.device()),
+                fb::Buffers::device<double>(count, res.device())};
+  if (count > 0) {
+    upload(res, ppaa, out.first.data());
+    upload(res, papa, out.second.data());
+  }
+  return out;
+}
+
+// The density-fitted fock at each case's CASCI orbitals and RDMs, over a
+// fitted ppaa and papa: against a host reference contracted from the same B,
+// tightly, and against the integral-direct fock within the fit's error.
+TEST_P(ResponseFock, DensityFittedMatchesItsHostReferenceAndTheDirectOne) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case(GetParam().name);
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const std::size_t nmo = setup->nmo;
+  const auto ncore = static_cast<std::size_t>(setup->casci->ncore);
+  const auto ncas = static_cast<std::size_t>(setup->casci->ncas);
+  auto b = fit(*setup);
+  ASSERT_TRUE(b.has_value());
+
+  const std::vector<double> c = download(res, setup->casci->c.data(), nmo * nmo);
+  const std::vector<double> eri = fitted_mo_eri(res, *b, c, nmo);
+  const std::vector<double> h_mo = host_gemm(
+      host_gemm(c, true, download(res, setup->h->h.data(), nmo * nmo), false, nmo, nmo, nmo), false,
+      c, false, nmo, nmo, nmo);
+  const HostFock want = host_fock(eri, h_mo, fb::nuclear_repulsion_energy(*setup->molecule), nmo,
+                                  ncore, ncas, setup->gamma, setup->gamma2);
+  const auto [ppaa, papa] = upload_ppaa_papa(res, eri, nmo, ncore, ncas);
+
+  auto df = fb::response::fock(res, *setup->molecule, setup->h->h, b->b, b->naux, setup->casci->c,
+                               setup->casci->ncore, setup->casci->ncas, ppaa, papa, setup->gamma,
+                               setup->gamma2);
+  ASSERT_TRUE(df.has_value()) << df.error().message;
+  const std::vector<double> fi = download(res, df->fock_inactive.data(), nmo * nmo);
+  const std::vector<double> fa = download(res, df->fock_active.data(), nmo * nmo);
+  const std::vector<double> f = download(res, df->fock.data(), nmo * nmo);
+  const std::vector<double> g = download(res, df->gradient.data(), df->gradient.num_elements());
+
+  EXPECT_NEAR(df->energy, want.energy, kDfHostEnergyTolerance);
+  EXPECT_LT(max_abs_difference(fi, want.fock_inactive), kDfHostTolerance);
+  EXPECT_LT(max_abs_difference(fa, want.fock_active), kDfHostTolerance);
+  EXPECT_LT(max_abs_difference(f, want.fock), kDfHostTolerance);
+  EXPECT_LT(max_abs_difference(g, want.gradient), kDfHostTolerance);
+
+  auto direct = setup->fock(setup->casci->c);
+  ASSERT_TRUE(direct.has_value()) << direct.error().message;
+  const double d_energy = std::abs(df->energy - direct->energy);
+  const double d_fi =
+      max_abs_difference(fi, download(res, direct->fock_inactive.data(), nmo * nmo));
+  const double d_fa = max_abs_difference(fa, download(res, direct->fock_active.data(), nmo * nmo));
+  const double d_f = max_abs_difference(f, download(res, direct->fock.data(), nmo * nmo));
+  const double d_g = max_abs_difference(
+      g, download(res, direct->gradient.data(), direct->gradient.num_elements()));
+  std::cout << std::format("{}: DF against direct, |dE| = {:.2e}, max |d F^I| = {:.2e}, "
+                           "|d F^A| = {:.2e}, |d F| = {:.2e}, |d g| = {:.2e}\n",
+                           GetParam().name, d_energy, d_fi, d_fa, d_f, d_g);
+  EXPECT_LT(d_energy, kDfEnergyTolerance);
+  EXPECT_LT(d_fi, kDfFockTolerance);
+  EXPECT_LT(d_fa, kDfFockTolerance);
+  EXPECT_LT(d_f, kDfFockTolerance);
+  EXPECT_LT(d_g, kDfFockTolerance);
+}
+
+// ncas = 0 density-fitted, at a DF-RHF over the same aux set converged by the
+// Scf step: its energy given back, and its gradient zero.
+TEST(ResponseFockRhfLimit, DensityFittedIsTheDfRhfGradient) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz");
+  auto setup = make_setup(entry, false);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const std::int32_t nocc = setup->molecule->electron_count() / 2;
+  auto b = fit(*setup);
+  ASSERT_TRUE(b.has_value());
+
+  const auto &molecule = setup->calc->get<fb::MoleculeOutput>();
+  const auto &basis = setup->calc->get<fb::BasisSetOutput>();
+  const auto &transform = setup->calc->get<fb::SphericalTransformOutput>();
+  const auto &pairs = setup->calc->get<fb::PrimitivePairClassesOutput>();
+  const auto &overlap = setup->calc->get<fb::OverlapOutput>();
+  const auto &x = setup->calc->get<fb::OrthogonalizerOutput>();
+  const auto &h = setup->calc->get<fb::CoreHamiltonianOutput>();
+  const auto &guess = setup->calc->get<fb::GuessOutput>();
+  fb::ScfStep step = fb::test::kExactScf;
+  step.aux_basis = std::string{kAuxBasis};
+  auto scf = step.run(
+      fb::StepInput<fb::ScfStep>{*molecule, *basis, *transform, *pairs, *overlap, *x, *h, *guess},
+      res);
+  ASSERT_TRUE(scf.has_value()) << scf.error().message;
+
+  const fb::Buffers::device<double> none(0, res.device());
+  auto rhf = fb::response::fock(res, *setup->molecule, setup->h->h, b->b, b->naux, scf->c, nocc, 0,
+                                none, none, {}, {});
+  ASSERT_TRUE(rhf.has_value()) << rhf.error().message;
+  EXPECT_NEAR(rhf->energy, scf->energy, kEnergyTolerance);
+  std::cout << std::format("DF-RHF limit: |dE| = {:.2e}\n", std::abs(rhf->energy - scf->energy));
+  for (const double value : download(res, rhf->gradient.data(), rhf->gradient.num_elements())) {
+    EXPECT_NEAR(value, 0.0, kRhfGradientTolerance);
+  }
+}
+
 // Everything response::fock refuses, refused before the device is touched.
 TEST(ResponseFockRefusals, AreInvalidConfig) {
   FBF_REQUIRE_GPU();
@@ -633,7 +994,7 @@ TEST(ResponseFockRefusals, AreInvalidConfig) {
                         double tau = 1e-14) {
     return fb::response::fock(res, *setup->basis, *setup->molecule, setup->h->h,
                               setup->transform->u, setup->j_classes, setup->k_classes,
-                              setup->scf->c, ncore, ncas, p, g1, g2, tau, tau);
+                              setup->scf->c, ncore, ncas, p, ppaa, g1, g2, tau, tau);
   };
   const auto refused = [](const fb::Result<fb::response::Fock> &r, std::string_view what) {
     ASSERT_FALSE(r.has_value());
@@ -647,8 +1008,27 @@ TEST(ResponseFockRefusals, AreInvalidConfig) {
   refused(call(4, 2, ppaa, gamma, gamma2, -1.0), "must be 0 or above");
   refused(call(4, 2, ppaa, gamma, gamma2, std::nan("")), "must be 0 or above");
   refused(call(4, 2, short_ppaa, gamma, gamma2), "ppaa holds");
+  refused(fb::response::fock(res, *setup->basis, *setup->molecule, setup->h->h, setup->transform->u,
+                             setup->j_classes, setup->k_classes, setup->scf->c, 4, 2, ppaa,
+                             short_ppaa, gamma, gamma2),
+          "and papa");
   refused(call(4, 2, ppaa, std::span{gamma}.first(3), gamma2), "gamma holds");
   refused(call(4, 2, ppaa, gamma, std::span{gamma2}.first(8)), "gamma holds");
+
+  // The density-fitted overload: the same, and B's own.
+  constexpr std::int32_t kNaux = 3;
+  const fb::Buffers::device<double> b(kNaux * nmo * nmo, res.device());
+  const auto df = [&](std::int32_t ncore, std::int32_t ncas, std::int32_t naux,
+                      const fb::Buffers::device<double> &p) {
+    return fb::response::fock(res, *setup->molecule, setup->h->h, b, naux, setup->scf->c, ncore,
+                              ncas, p, ppaa, gamma, gamma2);
+  };
+  ASSERT_TRUE(df(4, 2, kNaux, ppaa).has_value());
+  refused(df(-1, 2, kNaux, ppaa), "must not be negative");
+  refused(df(6, 2, kNaux, ppaa), "exceeds the 7 orbitals");
+  refused(df(4, 2, kNaux, short_ppaa), "ppaa holds");
+  refused(df(4, 2, -1, ppaa), "naux (-1) must not be negative");
+  refused(df(4, 2, kNaux + 1, ppaa), "B holds");
 }
 
 } // namespace

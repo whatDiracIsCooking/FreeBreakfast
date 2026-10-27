@@ -153,7 +153,7 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                                                         k_classes, sol.c, space.ncore, space.ncas));
   const response::Fock fock =
       FBF_TRY(response::fock(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
-                             space.ncas, ints.ppaa, sol.gamma, sol.gamma2));
+                             space.ncas, ints.ppaa, ints.papa, sol.gamma, sol.gamma2));
   const size_t nmo = sol.c.n();
   std::vector<double> f(nmo * nmo);
   std::vector<double> f_active(nmo * nmo);

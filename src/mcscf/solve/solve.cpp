@@ -417,7 +417,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     std::vector<double> gamma2 = FBF_TRY(casscf_download(res, gamma2_device.data(), n * n * n * n));
     response::Fock fock =
         FBF_TRY(response::fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                               ints.ppaa, gamma, gamma2, options.tau_j, options.tau_k));
+                               ints.ppaa, ints.papa, gamma, gamma2, options.tau_j, options.tau_k));
     const std::vector<double> g = FBF_TRY(casscf_download(res, fock.gradient.data(), pairs));
     const double g_norm = std::sqrt(casscf_dot(g, g));
     last_gradient = g_norm;
