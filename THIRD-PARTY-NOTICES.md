@@ -21,7 +21,7 @@ Everything below is one of three kinds:
 
 Copyright (c) 2020 The Molecular Sciences Software Institute, Virginia Tech
 
-Four of the five documents in `data/basis/` are Basis Set Exchange JSON,
+Ten of the eleven documents in `data/basis/` are Basis Set Exchange JSON,
 downloaded by `tools/basis/bse_download.py` from
 <https://www.basissetexchange.org/> and compiled into the binary:
 
@@ -29,16 +29,23 @@ downloaded by `tools/basis/bse_download.py` from
 | --- | --- | --- |
 | `sto-3g.json` | STO-3G | 2018-06-19 |
 | `6-31g.json` | 6-31G | 2018-06-19 |
+| `6-31gstar.json` | 6-31G* | 2018-06-19 |
+| `6-31gstarstar.json` | 6-31G** | 2018-06-19 |
+| `def2-SVP.json` | def2-SVP | 2018-09-07 |
+| `def2-TZVP.json` | def2-TZVP | 2018-09-07 |
 | `cc-pVDZ.json` | cc-pVDZ | 2018-10-03 |
 | `cc-pVTZ.json` | cc-pVTZ | 2018-10-03 |
+| `aug-cc-pVDZ.json` | aug-cc-pVDZ | 2018-10-03 |
+| `aug-cc-pVTZ.json` | aug-cc-pVTZ | 2018-10-03 |
 
 Each document keeps its own BSE header, including the per-element
 `references` and the revision metadata, so the provenance of every shell
 travels in the file itself. No exponent or coefficient was edited. One
-modification was made: in `6-31g.json` the `gto_cartesian` d shells of K–Kr
-are relabelled `gto_spherical` by `tools/basis/cartesian_to_spherical.py`,
-which also updates the header's `function_types` and appends a note saying so
-to its `revision_description`. `data/basis/README.md` records the exact
+modification was made, to the three Pople sets: the `gto_cartesian` d shells
+(K–Kr in `6-31g.json`, Li–Kr in the two starred sets) are relabelled
+`gto_spherical` by `tools/basis/cartesian_to_spherical.py`, which also updates
+each header's `function_types` and appends a note saying so to its
+`revision_description`. `data/basis/README.md` records the exact
 commands and the element ranges.
 
 Full licence text: [Appendix B](#appendix-b-bsd-3-clause-licence). Clause 1

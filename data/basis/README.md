@@ -25,8 +25,14 @@ carries baked densities for (`data/sad/`), and a fitting set needs none.
 |---|---|---|---|
 | `sto-3g.json` | `STO-3G` | Z 1–36 (H–Kr) | |
 | `6-31g.json` | `6-31G` | Z 1–36 (H–Kr) | d relabelled spherical from K up; see below |
+| `6-31gstar.json` | `6-31G*` | Z 1–36 (H–Kr) | d relabelled spherical from Li up; see below |
+| `6-31gstarstar.json` | `6-31G**` | Z 1–36 (H–Kr) | d relabelled spherical from Li up; see below |
+| `def2-SVP.json` | `def2-SVP` | Z 1–36 (H–Kr) | all-electron to Kr; the ECPs start at Rb |
+| `def2-TZVP.json` | `def2-TZVP` | Z 1–36 (H–Kr) | all-electron to Kr; the ECPs start at Rb |
 | `cc-pVDZ.json` | `cc-pVDZ` | Z 1–18, 20–36 | no K |
 | `cc-pVTZ.json` | `cc-pVTZ` | Z 1–18, 20–36 | no K |
+| `aug-cc-pVDZ.json` | `aug-cc-pVDZ` | Z 1–18, 21–36 | no K or Ca |
+| `aug-cc-pVTZ.json` | `aug-cc-pVTZ` | Z 1–18, 21–36 | no K or Ca; Sc–Zn too large for the SAD guess (`data/sad/README.md`) |
 | `minao.json` | `MINAO` | Z 1–18, 20–36 | **not from BSE**: converted from PySCF; see below |
 
 Filenames are whatever `tools/basis/bse_download.py` (or, for MINAO,
@@ -42,21 +48,27 @@ document, matched with `-`, `_` and spaces dropped and case ignored, so
 tools/basis/bse_download.py sto-3g -o data/basis --elements 1-36 --force
 tools/basis/bse_download.py 6-31g -o data/basis --elements 1-36 --force
 tools/basis/cartesian_to_spherical.py data/basis/6-31g.json
+tools/basis/bse_download.py '6-31g*' '6-31g**' -o data/basis --elements 1-36 --force
+tools/basis/cartesian_to_spherical.py data/basis/6-31gstar.json
+tools/basis/cartesian_to_spherical.py data/basis/6-31gstarstar.json
+tools/basis/bse_download.py def2-SVP def2-TZVP -o data/basis --elements 1-36 --force
 tools/basis/bse_download.py cc-pVDZ cc-pVTZ -o data/basis --elements 1-18,20-36 --force
+tools/basis/bse_download.py aug-cc-pVDZ aug-cc-pVTZ -o data/basis --elements 1-18,21-36 --force
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/minao_from_pyscf.py
 ```
 
-The four BSE sets are BSE version 1 (`sto-3g` and `6-31g` revised 2018-06-19, the two
-correlation-consistent sets 2018-10-03), and all but `6-31g.json` are written as
-BSE serves them. Each document keeps its BSE header —
+The ten BSE sets are BSE version 1 (the three Pople sets and `sto-3g` revised
+2018-06-19, the two def2 sets 2018-09-07, the four correlation-consistent sets
+2018-10-03), and all but the three Pople files are written as BSE serves them. Each document keeps its BSE header —
 `description`, `references`, `revision_date` — so provenance travels with the
 data rather than living only here.
 
 ## Why the cc ranges skip potassium
 
-**`cc-pVDZ` and `cc-pVTZ` define no potassium.** BSE simply has no Z = 19 for
-either set, and asking for it 404s the whole request. Everything else through
-Kr is present.
+**`cc-pVDZ` and `cc-pVTZ` define no potassium**, and **`aug-cc-pVDZ` and
+`aug-cc-pVTZ` define neither potassium nor calcium.** BSE simply has no such
+element for those sets, and asking for one 404s the whole request. Everything
+else through Kr is present.
 
 ## 6-31G from potassium on: Cartesian, carried spherical
 
@@ -82,11 +94,14 @@ and the tool changes nothing there. The document keeps the name `6-31G`, and
 its `revision_description` records the relabelling, so the change travels
 with the file. Running the tool again is a no-op.
 
-**`6-31G*` is still not here**, though the same tool would now admit it: its
-d polarization functions are `gto_cartesian` for every element from Li up, and
-its 6D form is what its exponents were optimized in and what most published
-6-31G* numbers mean. Carrying it 5D is a decision of its own, not a side
-effect of this one.
+**`6-31G*` and `6-31G**` are carried the same way**, by the same tool, and
+there it reaches further: their d polarization functions are `gto_cartesian`
+for every element from Li up, not just K–Kr. So from Li on these are not the
+sets most published 6-31G* numbers mean — those are 6D, the convention the
+exponents were optimized in and Gaussian's default — and C is 14 functions
+here where 6D would be 15. That was decided, not fallen into: a spherical-only
+tree either carries them 5D or not at all, and 5D is what other codes give on
+request. The two differ only in H and He, where `**` adds a p shell.
 
 ## MINAO, the one set taken from PySCF
 

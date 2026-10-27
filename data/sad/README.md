@@ -21,7 +21,12 @@ density from there instead of running its atomic SCF.
   count. It is what `sad_density` computes for that atom alone. Load one with
   a plain `np.load`.
 
-Every element of every `data/basis` set is here: 177 files, about 1.5 MB.
+Every element of every `data/basis` set is here, but one row: 379 files,
+about 3.8 MB. The exception is aug-cc-pVTZ's Sc–Zn, at 119 Cartesian AOs
+each, past the 96 the atomic SCF holds its n⁴ tensor for (`src/sad/README.md`).
+The generator skips them because the runtime refuses them the same way, so a
+molecule with one of them fails its Guess step in aug-cc-pVTZ, stamp or no
+stamp.
 
 ## Why
 
@@ -63,8 +68,10 @@ compiled into this binary". It removes each regenerated set's directory before
 writing, so an element that is gone leaves nothing behind, and leaves the
 other sets' directories alone. `--all` removes every subdirectory here, so a
 set that is gone leaves nothing behind either. It runs every SCF in parallel.
-On a 24-thread machine `--all` took 9.5 minutes, nearly all of it the cc-pVDZ
-and cc-pVTZ 3d elements; STO-3G, 6-31G or MINAO alone take seconds.
+On a 24-thread machine `--all` took 9.5 minutes when it covered five sets,
+nearly all of it the cc-pVDZ and cc-pVTZ 3d elements; the Pople sets, STO-3G,
+def2-SVP or MINAO alone take seconds. The six sets added after that, run on
+their own, were dominated by aug-cc-pVTZ's Ga–Kr at about three minutes each.
 
 The files are binary, so `git diff` shows only that they changed. The review
 is `test/gtest/io_sad_host.cpp`: it recomputes H, C and O of every set in the
