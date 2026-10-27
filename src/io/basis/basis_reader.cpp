@@ -249,21 +249,4 @@ namespace free_breakfast {
   return place(basis_stamp, molecule);
 }
 
-[[nodiscard]] Result<BasisSet> parse_and_assign_aux_basis(std::string_view json_text,
-                                                          const Molecule &molecule) {
-  // A fitting set is an ordinary BSE record placed onto the same molecule, so
-  // this is parse_and_assign_basis with one difference: a coverage failure is
-  // re-tagged as an *auxiliary* pairing error, so the message names the DF role
-  // rather than reading as if the orbital basis were short an element. The
-  // classification (ErrorKind::InvalidConfig) is preserved -- only the text is
-  // enriched. Parse errors pass through untouched; they are not about pairing.
-  auto basis_stamp = FBF_TRY(parse_basis(json_text));
-  auto placed = place(basis_stamp, molecule);
-  if (!placed) {
-    return err_config("auxiliary (density-fitting) basis cannot be paired with the molecule: {}",
-                      placed.error().message);
-  }
-  return placed;
-}
-
 } // namespace free_breakfast

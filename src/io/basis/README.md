@@ -7,11 +7,14 @@ turns a BSE document into a geometry-free `BasisStamp` (from
 * `parse_basis(text)` / `read_basis(path)` — JSON → `BasisStamp`, keyed by
   atomic number. Elements the molecule does not use may be present.
 * `parse_and_assign_basis(text, molecule)` — parse, then `place`.
-* `parse_and_assign_aux_basis(text, molecule)` — the same for a
-  density-fitting set; a coverage failure's message names the auxiliary role.
 * `resolve_basis(spec)` — a **compiled-in set's name** (`sto-3g`) or a path to
   a BSE JSON file → `BasisStamp`. What a front end calls.
 * `is_builtin_basis(spec)` — whether `spec` is a name rather than a path.
+* `resolve_aux_basis(spec)` — `resolve_basis` over the compiled-in
+  **density-fitting** sets (`cc-pVDZ-JKFIT`, `cc-pVTZ-JKFIT`) instead. The
+  caller places it over the orbital basis's molecule with
+  `place(stamp.primitive_normalized(), molecule)`; an element the set lacks is
+  `InvalidConfig` from `place`.
 
 ## The compiled-in sets
 
@@ -20,6 +23,15 @@ unit by this directory's `CMakeLists.txt`, so `resolve_basis("sto-3g")` parses
 the bytes out of the binary. `builtin_basis.cpp.in` is that generator's
 template and carries the reasoning; `data/basis/README.md` says which sets,
 which elements, and why two of them stop short of krypton.
+
+`data/aux_basis/*.json`, the fitting sets, go into **a table of their own** in
+the same generated unit, reached only through `resolve_aux_basis`. They are
+not more orbital sets: `tools/sad` and `io_sad_host` treat every orbital set
+as one that needs `data/sad/` stamps, and a SAD density in a fitting basis
+means nothing. So `is_builtin_basis` and `resolve_basis` never see a fitting
+set's name, and `resolve_aux_basis` never sees an orbital one; either, asked
+for the other kind, reads it as a path. `data/aux_basis/README.md` says where
+the sets come from.
 
 Resolution prefers the name, and spelling is folded — lowercased, with `-`,
 `_` and spaces dropped — so `STO-3G`, `sto-3g` and `sto3g` are one name. The
@@ -67,5 +79,5 @@ exponent string, or an element the molecule needs but the basis lacks is
 | `basis.cppm` | Primary interface `free_breakfast.io.basis`; `export import`s `:reader` |
 | `basis_reader.cppm` | `:reader` — the entry points above |
 | `basis_reader.cpp` | Implementation of the parse / place entry points |
-| `builtin_basis.cpp.in` | Template for the generated unit: the compiled-in data, name folding, `resolve_basis` |
-| `CMakeLists.txt` | The module target, and the `data/basis/` → `builtin_basis.cpp` generation |
+| `builtin_basis.cpp.in` | Template for the generated unit: the compiled-in data, name folding, `resolve_basis`, `resolve_aux_basis` |
+| `CMakeLists.txt` | The module target, and the `data/basis/` + `data/aux_basis/` → `builtin_basis.cpp` generation |

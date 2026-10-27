@@ -99,36 +99,9 @@ export namespace free_breakfast {
 [[nodiscard]] Result<BasisSet> parse_and_assign_basis(std::string_view json_text,
                                                       const Molecule &molecule);
 
-/// @brief Parse a density-fitting (auxiliary) BSE JSON basis and @ref place it
-/// onto the SAME molecule the orbital basis was built over.
-///
-/// Density fitting needs a second @ref BasisSet -- the fitting set (e.g.
-/// @c cc-pVDZ-RI, @c def2-universal-JKFIT) -- laid over the identical geometry
-/// as the orbital basis. There is no separate parse: a fitting set is an
-/// ordinary BSE record, so this reuses @ref parse_basis and @ref place verbatim.
-/// The distinct name exists to make the DF call site read for what it is, to
-/// carry the L-ceiling caveat below, and to give the pairing its own error text.
-///
-/// **Pairing.** The aux and orbital sets are paired by being @ref place'd onto
-/// one @ref Molecule: same atom count, same centers, same bohr units, by
-/// construction rather than by a separate cross-check -- the shell centers of
-/// both sets come from that molecule's atoms. The one way the pairing can fail
-/// is coverage: a fitting record that lacks an element the molecule uses cannot
-/// be placed. That comes back as ErrorKind::InvalidConfig (from @ref place),
-/// naming the missing element -- an aux set that cannot cover the molecule is a
-/// configuration error, not a silently smaller basis.
-///
-/// **Angular-momentum ceiling.** Fitting sets routinely run to @c g and
-/// beyond, above the s/p/d/f ceiling (@ref kMaxAngularMomentum) the GPU
-/// integral kernels are designed for. Parsing and HOLDING those higher-L shells is fully
-/// supported here -- @ref ShellStamp and @ref BasisSet impose no cap, exactly as
-/// for an orbital basis. Feeding such a basis to the GPU ERI path is a SEPARATE
-/// concern the kernels reject on their own; this reader neither enforces nor
-/// silently drops the ceiling.
-[[nodiscard]] Result<BasisSet> parse_and_assign_aux_basis(std::string_view json_text,
-                                                          const Molecule &molecule);
-
-/// @brief Whether @p spec names a basis set compiled into this binary.
+/// @brief Whether @p spec names an orbital basis set compiled into this
+/// binary. The density-fitting sets (@ref resolve_aux_basis) are not among
+/// them.
 ///
 /// Spelling is folded before the comparison -- lowercased, with @c -, @c _ and
 /// spaces dropped -- so @c STO-3G, @c sto-3g and @c sto3g are one name.
@@ -158,5 +131,22 @@ export namespace free_breakfast {
 /// everywhere else in this layer, with the compiled-in names appended to the
 /// message since a misspelt name is the likelier mistake.
 [[nodiscard]] Result<BasisStamp> resolve_basis(std::string_view spec);
+
+/// @brief The density-fitting (auxiliary) basis @p spec asks for, by
+/// compiled-in name or by file path.
+///
+/// @ref resolve_basis's rules exactly -- name first, spelling folded, a path
+/// otherwise, a compiled-in set named and a file not, IO for neither -- over
+/// the fitting sets compiled in from `data/aux_basis/` (`cc-pVDZ-JKFIT`,
+/// `cc-pVTZ-JKFIT`) instead of the orbital ones. The two tables are disjoint
+/// on purpose: an orbital set carries baked SAD densities, a fitting set none.
+///
+/// The caller places the stamp over the orbital basis's molecule, as the
+/// BasisSet step does: `place(stamp.primitive_normalized(), molecule)`. A
+/// molecule with an element the set lacks is then ErrorKind::InvalidConfig
+/// from @ref place, naming it. Fitting sets run past the orbital ceiling
+/// (cc-pVTZ-JKFIT has g on O); holding those shells is supported, and an
+/// integral kernel that cannot take one rejects it itself.
+[[nodiscard]] Result<BasisStamp> resolve_aux_basis(std::string_view spec);
 
 } // namespace free_breakfast
