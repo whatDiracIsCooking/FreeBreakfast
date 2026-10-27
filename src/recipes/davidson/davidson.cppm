@@ -263,7 +263,30 @@ davidson_solve(DeviceResources &res, Op &op, const Precondition &precondition, c
     FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(h.data(), dim_bytes, vav.data(), columns * sizeof(T),
                                              dim_bytes, static_cast<size_t>(dim),
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
+    //    H is diagonalized scaled by the power of two that puts its diagonal's
+    //    norm in [1/2, 1), and its values scaled back: rocSOLVER's syevd on the
+    //    gfx1200 is not accurate on a matrix whose elements are ~1e-12 (the
+    //    tests' problem scaled by 2^-40: Ritz vectors 1e-4 from eigenvectors).
+    //    A power of two is exact, so the solve is also scale-invariant. Its
+    //    norm is never below 1 / (2 sqrt(dim)), since ||H||_2 >= max |h_ii|; a
+    //    zero diagonal is diagonalized as it is. The nrm2 syncs (host mode).
+    int32_t exponent = 0;
+    {
+      T diagonal_norm{};
+      FBF_TRY(gpu_status(wwr::nrm2<T, int32_t>(blas, dim, h.data(), dim + 1, &diagonal_norm)));
+      if (std::isfinite(diagonal_norm) && diagonal_norm > T{0}) {
+        std::frexp(diagonal_norm, &exponent);
+      }
+    }
+    if (exponent != 0) {
+      const T down = std::ldexp(T{1}, -exponent);
+      FBF_TRY(gpu_status(wwr::scal<T, int32_t>(blas, dim * dim, &down, h.data(), 1)));
+    }
     FBF_TRY(diagonalize<T>(res, dim, h.data(), ritz.data()));
+    if (exponent != 0) {
+      const T up = std::ldexp(T{1}, exponent);
+      FBF_TRY(gpu_status(wwr::scal<T, int32_t>(blas, dim, &up, ritz.data(), 1)));
+    }
     // ||H||_2 is max |theta| over the ascending spectrum: one of its two ends.
     T theta_top{};
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(theta.data(), ritz.data(), roots * sizeof(T),
