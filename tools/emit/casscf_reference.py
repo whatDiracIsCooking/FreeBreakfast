@@ -67,13 +67,28 @@ energy, the eigenvalues of the state-averaged Fock (`mc.get_fock`) within
 each of the core, active and virtual spaces, and the state-averaged natural
 occupations.
 
-    UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit/casscf_reference.py
+**Density-fitted**: the same five cases again, from the same starts (the
+exact RHF's orbitals, the same `active` or AVAS pick), with
+`mcscf.CASSCF(...).density_fit(auxbasis=...)`: every two-electron quantity
+of the CASSCF, the core's J and K included, over the fitted integrals, and
+gated, polished and recorded exactly as above. The fitting set is this
+tree's data/aux_basis/cc-pVDZ-JKFIT.json (AUX_FILES), handed to PySCF as
+parsed shells as df_reference.py does: `auxbasis="cc-pvdz-jkfit"` would load
+PySCF's own library copy, and a test comparing at 1e-8 would then be
+comparing two fitting sets. The tool checks that the auxiliary molecule
+PySCF fitted over is exactly the one the file gives. The RHF is the exact
+one, as above, so the starts are the exact cases' starts; only the CASSCF
+is fitted.
 
-writes test/gtest/data/casscf/casscf.json. Re-run it to regenerate; the file is
-never hand-edited. BLAS and OpenMP are pinned to THREADS, so a run does not
-depend on the machine's core count; the output is still not bit-for-bit
-reproducible (threaded reductions), only to the drift the data README states.
+    UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
+        tools/emit/casscf_reference.py [--only exact|df]
+
+writes test/gtest/data/casscf/casscf.json (the exact cases) and
+casscf_df.json (the density-fitted ones), or the one `--only` names. Re-run
+it to regenerate; the files are never hand-edited. BLAS and OpenMP are
+pinned to THREADS, so a run does not depend on the machine's core count; the
+output is still not bit-for-bit reproducible (threaded reductions), only to
+the drift the data READMEs state.
 """
 
 from __future__ import annotations
@@ -85,7 +100,9 @@ THREADS = 8
 for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
     os.environ[variable] = str(THREADS)
 
+import argparse  # noqa: E402
 import datetime  # noqa: E402
+import hashlib  # noqa: E402
 import json  # noqa: E402
 import pathlib  # noqa: E402
 import platform  # noqa: E402
@@ -95,12 +112,19 @@ import pyscf  # noqa: E402
 from active_integrals_reference import NITROGEN  # noqa: E402
 from casci_reference import WEIGHT_MARGIN  # noqa: E402
 from fci_reference import dense_hamiltonian  # noqa: E402
-from pyscf import ao2mo, fci, gto, lib, mcscf, scf  # noqa: E402
+from pyscf import ao2mo, df, fci, gto, lib, mcscf, scf  # noqa: E402
 from pyscf.mcscf import avas, mc1step  # noqa: E402
 from scf_reference import BASES, WATER, pyscf_basis  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "casscf" / "casscf.json"
+OUT_DF = OUT.with_name("casscf_df.json")
+
+# The fitting set of each orbital basis, under data/aux_basis (pyscf_basis
+# reads from data/basis, hence the relative path): df_reference.py's pairing.
+# Not imported from there, because importing it pins BLAS and OpenMP to one
+# thread.
+AUX_FILES = {"cc-pvdz": ("cc-pVDZ-JKFIT", "../aux_basis/cc-pVDZ-JKFIT.json")}
 
 # Formaldehyde in the yz plane, C=O along z: C=O 1.203 A, C-H 1.101 A,
 # H-C-H 116.5 degrees. Bohr.
@@ -355,8 +379,12 @@ def intermediates(case, mf, mc, mo, weights) -> dict:
     }
 
 
-def casscf(mf, ncas, nelecas, weights) -> mcscf.mc1step.CASSCF:
+def casscf(mf, ncas, nelecas, weights, auxbasis=None) -> mcscf.mc1step.CASSCF:
+    """PySCF's CASSCF at this tool's tolerances; density-fitted over the
+    parsed `auxbasis` when one is given."""
     mc = mcscf.CASSCF(mf, ncas, nelecas)
+    if auxbasis is not None:
+        mc = mc.density_fit(auxbasis=auxbasis)
     mc.conv_tol = CONV_TOL
     mc.conv_tol_grad = CONV_TOL_GRAD
     mc.max_cycle_macro = 50
@@ -388,15 +416,15 @@ def optimize(mc: mcscf.mc1step.CASSCF, step, mo: numpy.ndarray) -> None:
         step(mc.mo_coeff, mc.ci)
 
 
-def converged(case, mf, mo, ncas, nelecas, weights) -> dict:
+def converged(case, mf, mo, ncas, nelecas, weights, auxbasis=None) -> dict:
     """The converged CASSCF, checked against mc2step, then polished."""
     name = case["name"]
-    mc = casscf(mf, ncas, nelecas, weights)
+    mc = casscf(mf, ncas, nelecas, weights, auxbasis)
     optimize(mc, mc.kernel, mo)
     assert mc.converged, f"{name}: mc1step did not converge"
     states = list(mc.e_states) if len(weights) > 1 else [mc.e_tot]
 
-    other = casscf(mf, ncas, nelecas, weights)
+    other = casscf(mf, ncas, nelecas, weights, auxbasis)
     optimize(other, other.mc2step, mo)
     assert other.converged, f"{name}: mc2step did not converge"
     disagreement = abs(other.e_tot - mc.e_tot)
@@ -432,7 +460,10 @@ def converged(case, mf, mo, ncas, nelecas, weights) -> dict:
 
     ncore = mc.ncore
     nocc = ncore + ncas
-    fock = polished.T @ mc.get_fock(polished, casdm1=dm1) @ polished
+    # Without eris, get_fock builds J and K by the RHF's own (exact) get_jk;
+    # a density-fitted Fock needs the fitted integrals passed in.
+    eris = mc.ao2mo(polished) if auxbasis is not None else None
+    fock = polished.T @ mc.get_fock(polished, casdm1=dm1, eris=eris) @ polished
     spaces = {
         "core": slice(0, ncore),
         "active": slice(ncore, nocc),
@@ -457,9 +488,35 @@ def converged(case, mf, mo, ncas, nelecas, weights) -> dict:
     }
 
 
-def case_reference(case: dict) -> dict:
+def aux_basis(case: dict, mol: gto.Mole) -> tuple[dict, dict]:
+    """The case's fitting set as PySCF shells, and its provenance."""
+    name, file = AUX_FILES[case["basis"]]
+    symbols = {symbol for symbol, _ in case["atoms"]}
+    path = (ROOT / "data" / "basis" / file).resolve()
+    provenance = {
+        "name": name,
+        "file": str(path.relative_to(ROOT)),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "naux": int(df.addons.make_auxmol(mol, pyscf_basis(file, symbols)).nao),
+    }
+    return pyscf_basis(file, symbols), provenance
+
+
+def check_aux(name: str, mc, mol: gto.Mole, auxbasis: dict) -> None:
+    """Refuse a fit over any set but exactly `auxbasis`'s shells."""
+    expected = df.addons.make_auxmol(mol, auxbasis)
+    used = mc.with_df.auxmol
+    assert used is not None, f"{name}: the CASSCF was not density-fitted"
+    assert used.nao == expected.nao, f"{name}: aux size {used.nao}"
+    assert numpy.array_equal(used._bas, expected._bas), f"{name}: aux shells"
+    assert numpy.array_equal(used._env, expected._env), f"{name}: aux exponents"
+
+
+def case_reference(case: dict, fitted: bool = False) -> dict:
+    """One case's record; density-fitted over AUX_FILES's set if `fitted`."""
     name = case["name"]
     mol = molecule(case)
+    auxbasis, aux_provenance = aux_basis(case, mol) if fitted else (None, None)
     mf = scf.RHF(mol)
     mf.conv_tol = 1e-14
     mf.conv_tol_grad = 1e-11
@@ -489,8 +546,8 @@ def case_reference(case: dict) -> dict:
             mo = casscf(mf, ncas, nelecas, [1.0]).sort_mo(case["active"], base=0)
     ncore = (mol.nelectron - nelecas) // 2
 
-    start = casscf(mf, ncas, nelecas, [1.0])
-    return {
+    start = casscf(mf, ncas, nelecas, [1.0], auxbasis)
+    out = {
         "name": name,
         "basis": case["basis"],
         "charge": 0,
@@ -509,13 +566,27 @@ def case_reference(case: dict) -> dict:
         "rhf_energy": float(mf.e_tot),
         "mo_energies": [float(e) for e in mf.mo_energy],
         "casci": intermediates(case, mf, start, mo, weights),
-        "casscf": converged(case, mf, mo, ncas, nelecas, weights),
+        "casscf": converged(case, mf, mo, ncas, nelecas, weights, auxbasis),
+    }
+    if fitted:
+        check_aux(name, start, mol, auxbasis)
+        out["aux_basis"] = aux_provenance
+    return out
+
+
+def provenance() -> dict:
+    return {
+        "pyscf": pyscf.__version__,
+        "numpy": numpy.__version__,
+        "date": datetime.date.today().isoformat(),
+        "host": platform.node(),
+        "command": "uv run --group tools tools/emit/casscf_reference.py",
+        "threads": THREADS,
     }
 
 
-def main() -> None:
-    lib.num_threads(THREADS)
-    doc = {
+def exact() -> dict:
+    return {
         "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, "
         "conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF "
         "mcscf.CASSCF (conv_tol 1e-12, conv_tol_grad 1e-7, the lowest "
@@ -529,19 +600,42 @@ def main() -> None:
         "energy, the weighted energy, the state-averaged Fock's eigenvalues "
         "in each space and the state-averaged natural occupations. Hartree; "
         "coordinates in bohr",
-        "provenance": {
-            "pyscf": pyscf.__version__,
-            "numpy": numpy.__version__,
-            "date": datetime.date.today().isoformat(),
-            "host": platform.node(),
-            "command": "uv run --group tools tools/emit/casscf_reference.py",
-            "threads": THREADS,
-        },
+        "provenance": provenance(),
         "cases": [case_reference(case) for case in CASES],
     }
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(doc, indent=1) + "\n")
-    print(f"wrote {OUT}")
+
+
+def fitted() -> dict:
+    return {
+        "description": "As casscf.json's cases, from the same starts (the "
+        "exact RHF's orbitals and the same 'active' or AVAS pick), with "
+        "PySCF mcscf.CASSCF(...).density_fit(auxbasis=...): every "
+        "two-electron quantity of the CASSCF, the core's J and K included, "
+        "over the fitted integrals, gated against mc2step and polished to "
+        "|g| < 1e-10 as there. The fitting set is this tree's "
+        "data/aux_basis file each case's 'aux_basis' names, handed to PySCF "
+        "as parsed shells, not its library copy. Hartree; coordinates in bohr",
+        "provenance": provenance(),
+        "cases": [case_reference(case, fitted=True) for case in CASES],
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--only",
+        choices=("exact", "df"),
+        help="write only casscf.json (exact) or casscf_df.json (df)",
+    )
+    only = parser.parse_args().only
+    lib.num_threads(THREADS)
+    for kind, out, build in (("exact", OUT, exact), ("df", OUT_DF, fitted)):
+        if only not in (None, kind):
+            continue
+        doc = build()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(doc, indent=1) + "\n")
+        print(f"wrote {out}")
 
 
 if __name__ == "__main__":
