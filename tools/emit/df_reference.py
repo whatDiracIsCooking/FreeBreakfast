@@ -14,7 +14,8 @@ explicit shells (not its library's copies), spherical throughout:
   occupied orbitals of that case's own converged DF-RHF, so a test can
   factor it again.
 - DF-RHF (`conv_tol` 1e-12): total energy and orbital energies for H2O and
-  NH4+ in cc-pVDZ / cc-pVDZ-JKFIT and H2O in cc-pVTZ / cc-pVTZ-JKFIT, at
+  NH4+ in cc-pVDZ / cc-pVDZ-JKFIT, H2O in cc-pVTZ / cc-pVTZ-JKFIT and H2O in
+  cc-pVDZ / cc-pVDZ-acCD (general-contracted fitting shells), at
   `scf/rhf.json`'s geometries.
 
 Arrays are .npy, '<f8' in Fortran order, the layout `src/io/npy` reads; the
@@ -59,12 +60,15 @@ LIMIT = 512 * 1024
 # np.save's header for a 3-D '<f8' array, padded to 64 bytes: 128 bytes.
 NPY_HEADER = 128
 
-# The fitting set each builtin orbital basis pairs with, by its file under
-# data/aux_basis (pyscf_basis reads from data/basis, hence the relative path).
-AUX_BASES = {
-    "cc-pvdz": ("cc-pvdz-jkfit", "../aux_basis/cc-pVDZ-JKFIT.json"),
-    "cc-pvtz": ("cc-pvtz-jkfit", "../aux_basis/cc-pVTZ-JKFIT.json"),
+# Each fitting set's file under data/aux_basis (pyscf_basis reads from
+# data/basis, hence the relative path), and the one each builtin orbital
+# basis pairs with unless a case names its own "aux_basis".
+AUX_FILES = {
+    "cc-pvdz-jkfit": "../aux_basis/cc-pVDZ-JKFIT.json",
+    "cc-pvtz-jkfit": "../aux_basis/cc-pVTZ-JKFIT.json",
+    "cc-pvdz-accd": "../aux_basis/cc-pVDZ-acCD.json",
 }
+AUX_BASES = {"cc-pvdz": "cc-pvdz-jkfit", "cc-pvtz": "cc-pvtz-jkfit"}
 
 # The integrals' water: FelizJueves's h2o_ccpvdz_j molecule (and its
 # cc-pVTZ-JKFIT metric fixtures'), no atom on an axis past O and the molecule
@@ -86,6 +90,14 @@ SCF_CASES = [
     {"name": "h2o_ccpvdz", "atoms": WATER, "basis": "cc-pvdz", "charge": 0},
     {"name": "nh4_ccpvdz", "atoms": AMMONIUM, "basis": "cc-pvdz", "charge": 1},
     {"name": "h2o_ccpvtz", "atoms": WATER, "basis": "cc-pvtz", "charge": 0},
+    # tools/atomic_cd's set: general contractions of up to 22 primitives
+    {
+        "name": "h2o_ccpvdz_accd",
+        "atoms": WATER,
+        "basis": "cc-pvdz",
+        "aux_basis": "cc-pvdz-accd",
+        "charge": 0,
+    },
 ]
 
 COMMAND = (
@@ -106,7 +118,8 @@ def libcint_version() -> str:
 def molecules(case: dict) -> tuple[gto.Mole, gto.Mole, str]:
     """The orbital molecule, its fitting molecule and the fitting set's name."""
     symbols = {symbol for symbol, _ in case["atoms"]}
-    aux_name, aux_file = AUX_BASES[case["basis"]]
+    aux_name = case.get("aux_basis", AUX_BASES[case["basis"]])
+    aux_file = AUX_FILES[aux_name]
     mol = gto.M(
         atom=[[symbol, coord] for symbol, coord in case["atoms"]],
         unit="Bohr",
@@ -117,9 +130,11 @@ def molecules(case: dict) -> tuple[gto.Mole, gto.Mole, str]:
         verbose=0,
     )
     auxmol = df.addons.make_auxmol(mol, pyscf_basis(aux_file, symbols))
-    # Unit-normalised functions on both sides, which the README promises.
+    # Unit-normalised functions on both sides, which the README promises. To
+    # 1e-11, not 1e-12: an acCD shell's contraction over ~20 primitives with
+    # cancelling coefficients rounds to 1.3e-12 on H2O's oxygen.
     for m in (mol, auxmol):
-        assert numpy.abs(numpy.diag(m.intor("int1e_ovlp_sph")) - 1).max() < 1e-12
+        assert numpy.abs(numpy.diag(m.intor("int1e_ovlp_sph")) - 1).max() < 1e-11
     return mol, auxmol, aux_name
 
 
