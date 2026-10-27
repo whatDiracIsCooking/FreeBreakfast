@@ -27,6 +27,10 @@ emit_exchange_kernels.py
                   kernels/{kb,kbr}/, and the dressed record bound
                   src/integrals/mmd/kernels/record_bound/, from the
                   FelizJueves submodule. Standard library only.
+emit_df_kernels.py
+                  Regenerate src/integrals/eri/density_fitting/{metric,
+                  three_center}/kernels/ from the FelizJueves submodule.
+                  Standard library only.
 extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,
                   coulomb,exchange}/ hold out of FelizJueves's fixtures.
@@ -96,7 +100,7 @@ sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   itself. data/sad/README.md has when and how.
 ```
 
-Re-run the three `emit_*_kernels.py`, `extract_integral_golden.py` and then
+Re-run the four `emit_*_kernels.py`, `extract_integral_golden.py` and then
 `emit_record_bound_golden.py` (it reads the exchange goldens' shells) after
 bumping `deps/FelizJueves`. Everything but `bse_download.py`, `atomic_cd` and
 `emit_ci_bench_integrals.py` writes tracked files, so the diff is the review.
