@@ -1,4 +1,4 @@
-// The device half of ci_solve: S² on a block of CI vectors, which the spin
+// The device half of ci::solve: S² on a block of CI vectors, which the spin
 // penalty adds into sigma's output, the diagonal preconditioner with Olsen's
 // correction, the select of the lowest diagonals, and the P-space's
 // Hamiltonian by Slater–Condon. One source for both backends -- nvcc under
@@ -10,7 +10,7 @@
 // every K with <J|S²|K> nonzero. A thread owns its row, so nothing is atomic
 // and the summation order is fixed.
 //
-// S² and the penalized diagonal come in the two layouts of CiLayout, as a
+// S² and the penalized diagonal come in the two layouts of ci::Layout, as a
 // template on Symmetric: in the symmetric one a row is a triangle element
 // (a, b), a >= b, and a link below the triangle reads its mirror, as the GPU
 // sigma's gathers do (see ../sigma/ci_symmetric.h).
@@ -23,7 +23,7 @@
 #include "ci_solver_bridge.h"
 #include "ci_symmetric.h"
 
-namespace free_breakfast::device {
+namespace free_breakfast::ci::device {
 
 namespace {
 
@@ -38,7 +38,7 @@ constexpr double kDenominatorFloor = 1e-3;
 template <bool Symmetric>
 __device__ void ci_strings(const int32_t det, const int32_t n_beta, int32_t &a, int32_t &b) {
   if constexpr (Symmetric) {
-    ci_triangle_strings(det, a, b);
+    triangle_strings(det, a, b);
   } else {
     a = det / n_beta;
     b = det % n_beta;
@@ -78,8 +78,8 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
     const int32_t kb = (slot < 0 ? -slot : slot) - 1;
     const double sign = static_cast<double>(slot < 0 ? -a[2] : a[2]);
     if constexpr (Symmetric) {
-      const double weight = a[0] == kb ? 1.0 : kCiInvSqrt2;
-      links += sign * (weight * x[vector_base + ci_triangle(a[0], kb)]);
+      const double weight = a[0] == kb ? 1.0 : kInvSqrt2;
+      links += sign * (weight * x[vector_base + triangle(a[0], kb)]);
     } else {
       links += sign * x[vector_base + (static_cast<size_t>(a[0]) * static_cast<size_t>(n_beta)) +
                         static_cast<size_t>(kb)];
@@ -87,7 +87,7 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
   }
   double sum = (constant - shift) * x[row];
   if constexpr (Symmetric) {
-    sum -= ja == jb ? links : kCiSqrt2 * links;
+    sum -= ja == jb ? links : kSqrt2 * links;
   } else {
     sum -= links;
   }
@@ -205,7 +205,7 @@ __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_bet
       diagonal[full] + average + (scale * (constant - static_cast<double>(doubles) - shift));
 }
 
-// ci_lowest's state, in its scratch: the histogram of the current byte, the
+// pick_lowest's state, in its scratch: the histogram of the current byte, the
 // (value key, address) prefix chosen so far, the rank still to find under it,
 // and the survivors' counter.
 struct CiLowestState {
@@ -217,7 +217,7 @@ struct CiLowestState {
 };
 static_assert(sizeof(CiLowestState) <= sizeof(uint64_t) * kCiLowestScratch);
 
-// The blocks of ci_lowest's histogram passes, at most.
+// The blocks of pick_lowest's histogram passes, at most.
 constexpr uint32_t kCiLowestBlocks = 1024;
 
 // The select's passes: eight bytes of the value's key, then four of the
@@ -336,7 +336,7 @@ __global__ void ci_guess_kernel(const int32_t n, const int32_t count, const int3
   if (at >= static_cast<int64_t>(n) * count) {
     return;
   }
-  // splitmix64 of the position, as ci_solve's spread always was.
+  // splitmix64 of the position, as ci::solve's spread always was.
   uint64_t z = (static_cast<uint64_t>(at) + 1) * 0x9E3779B97F4A7C15ULL;
   z = (z ^ (z >> 30U)) * 0xBF58476D1CE4E5B9ULL;
   z = (z ^ (z >> 27U)) * 0x94D049BB133111EBULL;
@@ -403,18 +403,18 @@ __device__ int32_t ci_highest_bit(uint64_t bits) {
   return __popcll(bits) - 1;
 }
 
-// (tu|vw) from CiSigma's contraction: twice its ½ (tu|vw).
+// (tu|vw) from ci::Sigma's contraction: twice its ½ (tu|vw).
 __device__ double ci_eri(const double *const contraction, const int32_t pairs, const int32_t t,
                          const int32_t u, const int32_t v, const int32_t w) {
-  return 2.0 * contraction[(static_cast<size_t>(ci_triangle(t, u)) * pairs) + ci_triangle(v, w)];
+  return 2.0 * contraction[(static_cast<size_t>(triangle(t, u)) * pairs) + triangle(v, w)];
 }
 
-// h_pq from CiSigma's contraction: k_pq + ½ Σ_u (pu|uq).
+// h_pq from ci::Sigma's contraction: k_pq + ½ Σ_u (pu|uq).
 __device__ double ci_one_electron(const double *const contraction, const int32_t pairs,
                                   const int32_t n, const int32_t p, const int32_t q) {
-  double h = contraction[(static_cast<size_t>(pairs) * pairs) + ci_triangle(p, q)];
+  double h = contraction[(static_cast<size_t>(pairs) * pairs) + triangle(p, q)];
   for (int32_t u = 0; u < n; ++u) {
-    h += contraction[(static_cast<size_t>(ci_triangle(p, u)) * pairs) + ci_triangle(u, q)];
+    h += contraction[(static_cast<size_t>(triangle(p, u)) * pairs) + triangle(u, q)];
   }
   return h;
 }
@@ -531,7 +531,7 @@ __global__ void ci_pspace_kernel(const int32_t p, const int32_t *const picks, co
         sum += element(ib, ia, jb, ja);
       }
     }
-    const double weight = (ia == ib ? 1.0 : kCiInvSqrt2) * (ja == jb ? 1.0 : kCiInvSqrt2);
+    const double weight = (ia == ib ? 1.0 : kInvSqrt2) * (ja == jb ? 1.0 : kInvSqrt2);
     h[at] = weight * sum;
   } else {
     h[at] = element(ia, ib, ja, jb);
@@ -544,12 +544,12 @@ uint32_t ci_blocks(const int64_t items) {
 
 } // namespace
 
-wwr::wwrError_t ci_spin_square(const wwr::wwrStream_t stream, const bool symmetric,
-                               const int32_t rows, const int32_t n_det, const int32_t n_beta,
-                               const int32_t n, const int32_t *const alpha_links,
-                               const int32_t alpha_per, const int32_t *const beta_slots,
-                               const double constant, const double shift, const double scale,
-                               const bool accumulate, const double *const x, double *const y) {
+wwr::wwrError_t spin_square(const wwr::wwrStream_t stream, const bool symmetric, const int32_t rows,
+                            const int32_t n_det, const int32_t n_beta, const int32_t n,
+                            const int32_t *const alpha_links, const int32_t alpha_per,
+                            const int32_t *const beta_slots, const double constant,
+                            const double shift, const double scale, const bool accumulate,
+                            const double *const x, double *const y) {
   if (rows == 0) {
     return wwr::wwrSuccess;
   }
@@ -565,9 +565,9 @@ wwr::wwrError_t ci_spin_square(const wwr::wwrStream_t stream, const bool symmetr
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_precondition(const wwr::wwrStream_t stream, const int32_t n, const double theta,
-                                const double *const shifted, const double *const in,
-                                double *const out) {
+wwr::wwrError_t precondition(const wwr::wwrStream_t stream, const int32_t n, const double theta,
+                             const double *const shifted, const double *const in,
+                             double *const out) {
   if (n == 0) {
     return wwr::wwrSuccess;
   }
@@ -575,10 +575,10 @@ wwr::wwrError_t ci_precondition(const wwr::wwrStream_t stream, const int32_t n, 
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_olsen(const wwr::wwrStream_t stream, const int32_t n, const double theta,
-                         const double *const shifted, const double *const x,
-                         const double *const residual, const double *const dots,
-                         double *const correction) {
+wwr::wwrError_t olsen(const wwr::wwrStream_t stream, const int32_t n, const double theta,
+                      const double *const shifted, const double *const x,
+                      const double *const residual, const double *const dots,
+                      double *const correction) {
   if (n == 0) {
     return wwr::wwrSuccess;
   }
@@ -587,13 +587,12 @@ wwr::wwrError_t ci_olsen(const wwr::wwrStream_t stream, const int32_t n, const d
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const bool symmetric,
-                                 const int32_t n_det, const int32_t n_beta, const int32_t n,
-                                 const int32_t *const alpha_links, const int32_t alpha_per,
-                                 const int32_t *const beta_slots, const double constant,
-                                 const double shift, const double scale,
-                                 const double *const exchange, const double *const diagonal,
-                                 double *const shifted) {
+wwr::wwrError_t spin_diagonal(const wwr::wwrStream_t stream, const bool symmetric,
+                              const int32_t n_det, const int32_t n_beta, const int32_t n,
+                              const int32_t *const alpha_links, const int32_t alpha_per,
+                              const int32_t *const beta_slots, const double constant,
+                              const double shift, const double scale, const double *const exchange,
+                              const double *const diagonal, double *const shifted) {
   if (n_det == 0) {
     return wwr::wwrSuccess;
   }
@@ -609,9 +608,10 @@ wwr::wwrError_t ci_spin_diagonal(const wwr::wwrStream_t stream, const bool symme
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_lowest(const wwr::wwrStream_t stream, const int32_t n,
-                          const double *const values, const int32_t count, uint64_t *const scratch,
-                          int32_t *const survivors, int32_t *const picks) {
+wwr::wwrError_t pick_lowest(const wwr::wwrStream_t stream, const int32_t n,
+                            const double *const values, const int32_t count,
+                            uint64_t *const scratch, int32_t *const survivors,
+                            int32_t *const picks) {
   auto *const state = reinterpret_cast<CiLowestState *>(scratch);
   if (const wwr::wwrError_t status = wwr::wwrMemsetAsync(state, 0, sizeof(CiLowestState), stream);
       status != wwr::wwrSuccess) {
@@ -628,8 +628,8 @@ wwr::wwrError_t ci_lowest(const wwr::wwrStream_t stream, const int32_t n,
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_guess(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
-                         const int32_t *const picks, double *const guess) {
+wwr::wwrError_t guess(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
+                      const int32_t *const picks, double *const guess) {
   const int64_t elements = static_cast<int64_t>(n) * count;
   if (elements == 0) {
     return wwr::wwrSuccess;
@@ -638,9 +638,9 @@ wwr::wwrError_t ci_guess(const wwr::wwrStream_t stream, const int32_t n, const i
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_gather(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
-                          const int32_t p, const int32_t *const picks, const double *const from,
-                          double *const to) {
+wwr::wwrError_t gather(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
+                       const int32_t p, const int32_t *const picks, const double *const from,
+                       double *const to) {
   const int64_t elements = static_cast<int64_t>(p) * count;
   if (elements == 0) {
     return wwr::wwrSuccess;
@@ -649,9 +649,9 @@ wwr::wwrError_t ci_gather(const wwr::wwrStream_t stream, const int32_t n, const 
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_scatter(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
-                           const int32_t p, const int32_t *const picks, const double *const from,
-                           double *const to) {
+wwr::wwrError_t scatter(const wwr::wwrStream_t stream, const int32_t n, const int32_t count,
+                        const int32_t p, const int32_t *const picks, const double *const from,
+                        double *const to) {
   const int64_t elements = static_cast<int64_t>(p) * count;
   if (elements == 0) {
     return wwr::wwrSuccess;
@@ -660,11 +660,11 @@ wwr::wwrError_t ci_scatter(const wwr::wwrStream_t stream, const int32_t n, const
   return wwr::wwrGetLastError();
 }
 
-wwr::wwrError_t ci_pspace(const wwr::wwrStream_t stream, const bool symmetric, const int32_t p,
-                          const int32_t *const picks, const int32_t n_beta, const int32_t n,
-                          const uint64_t *const alpha_strings, const uint64_t *const beta_strings,
-                          const double *const contraction, const double *const diagonal,
-                          const double penalty, const double spin_shift, double *const h) {
+wwr::wwrError_t pspace(const wwr::wwrStream_t stream, const bool symmetric, const int32_t p,
+                       const int32_t *const picks, const int32_t n_beta, const int32_t n,
+                       const uint64_t *const alpha_strings, const uint64_t *const beta_strings,
+                       const double *const contraction, const double *const diagonal,
+                       const double penalty, const double spin_shift, double *const h) {
   const int64_t elements = static_cast<int64_t>(p) * p;
   if (elements == 0) {
     return wwr::wwrSuccess;
@@ -681,4 +681,4 @@ wwr::wwrError_t ci_pspace(const wwr::wwrStream_t stream, const bool symmetric, c
   return wwr::wwrGetLastError();
 }
 
-} // namespace free_breakfast::device
+} // namespace free_breakfast::ci::device

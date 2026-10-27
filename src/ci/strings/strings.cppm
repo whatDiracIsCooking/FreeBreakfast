@@ -13,7 +13,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 
-export namespace free_breakfast {
+export namespace free_breakfast::ci {
 
 /// @brief One term of a string's single-replacement list:
 /// a†_p a_q |I> = sign |J>, with J at address @c target.
@@ -96,4 +96,4 @@ private:
   std::vector<Replacement> replacements_;
 };
 
-} // namespace free_breakfast
+} // namespace free_breakfast::ci

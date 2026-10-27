@@ -1,6 +1,6 @@
 /// @file
-/// @brief The symmetric layout's triangle (see CiLayout in sigma.cppm), for
-/// device code: the GPU sigma's gathers, ci_unpack and ci_pack, and ci.solver's
+/// @brief The symmetric layout's triangle (see ci::Layout in sigma.cppm), for
+/// device code: the GPU sigma's gathers, unpack and pack, and ci.solver's
 /// S².
 ///
 /// Determinant (a, b), a ≥ b, of a vector over one StringSet for both spins is
@@ -16,21 +16,21 @@
 
 #include "runtime.h"
 
-namespace free_breakfast::device {
+namespace free_breakfast::ci::device {
 
 /// @brief √2 and 1/√2, the off-diagonal scaling and its inverse.
-inline constexpr double kCiSqrt2 = 1.4142135623730950488;
-inline constexpr double kCiInvSqrt2 = 0.70710678118654752440;
+inline constexpr double kSqrt2 = 1.4142135623730950488;
+inline constexpr double kInvSqrt2 = 0.70710678118654752440;
 
 /// @brief The triangle element of determinant (a, b) or its mirror.
-__device__ inline size_t ci_triangle(const int32_t a, const int32_t b) {
+__device__ inline size_t triangle(const int32_t a, const int32_t b) {
   const auto hi = static_cast<size_t>(a > b ? a : b);
   const auto lo = static_cast<size_t>(a > b ? b : a);
   return (hi * (hi + 1) / 2) + lo;
 }
 
 /// @brief The determinant (a, b), a ≥ b, of triangle element @p element.
-__device__ inline void ci_triangle_strings(const int32_t element, int32_t &a, int32_t &b) {
+__device__ inline void triangle_strings(const int32_t element, int32_t &a, int32_t &b) {
   // The root of a (a + 1) / 2 = element, then one step either way for the
   // double's rounding.
   a = static_cast<int32_t>((sqrt((8.0 * static_cast<double>(element)) + 1.0) - 1.0) * 0.5);
@@ -43,4 +43,4 @@ __device__ inline void ci_triangle_strings(const int32_t element, int32_t &a, in
   b = element - static_cast<int32_t>(static_cast<int64_t>(a) * (a + 1) / 2);
 }
 
-} // namespace free_breakfast::device
+} // namespace free_breakfast::ci::device

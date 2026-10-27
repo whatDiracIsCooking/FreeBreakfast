@@ -8,17 +8,27 @@ GPU sigma models.
 `ci.cppm` (`free_breakfast.ci`) re-exports every sub-module, so one import
 covers the layer, and each sub-module stays importable on its own.
 
+Everything it exports is in **`namespace free_breakfast::ci`**, spelled bare
+inside it — `ci::Sigma`, `ci::StringSet`, `ci::solve` — and the `.cu`
+launchers its bridge headers declare are in **`free_breakfast::ci::device`**,
+bare too (`device::olsen`, `device::gather_d`). CI is a *method*, and a
+method's vocabulary (`rdm1`, `solve`, `diagonal`, `pack`) recurs once per
+method, so it takes a namespace rather than a `Ci`/`ci_` prefix on each name.
+`docs/style.md` "Namespaces, and when a name needs a prefix" has the rule and
+the cases where a prefix still survives — filenames, message text and gtest
+suite names among them.
+
 ## Sub-modules
 
 | Directory | Module | Role |
 |-----------|--------|------|
-| `strings/` | `free_breakfast.ci.strings` | The occupation strings of one spin (`StringSet`): enumeration, lexical addressing onto [0, C(n, N)), and the single-replacement lists for E_pq. Host-side. |
-| `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `StringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays: `CiSigma` on the device, a `LinearOperator` over blocks of CI vectors, with the 1-RDM over the same tables. |
-| `solver/` | `free_breakfast.ci.solver` | `ci_solve`: the lowest roots of one spin through `davidson_solve` over any sigma that is a `LinearOperator`, spin held by a penalty λ (S² − S(S+1)), with ⟨S²⟩ per root; and S² on a vector, as `CiSpinSquare` on the device. |
-| `rdm/` | `free_breakfast.ci.rdm` | The state-averaged spin-summed γ and 2-RDM Γ_tuvw of CI vectors (`CiRdm::rdm12`, on the device), in PySCF's `make_rdm12` convention. One vector's γ is `CiSigma::rdm1`. |
+| `strings/` | `free_breakfast.ci.strings` | The occupation strings of one spin (`ci::StringSet`): enumeration, lexical addressing onto [0, C(n, N)), and the single-replacement lists for E_pq. Host-side. |
+| `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `ci::StringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays: `ci::Sigma` on the device, a `LinearOperator` over blocks of CI vectors, with the 1-RDM over the same tables. |
+| `solver/` | `free_breakfast.ci.solver` | `ci::solve`: the lowest roots of one spin through `davidson_solve` over any sigma that is a `LinearOperator`, spin held by a penalty λ (S² − S(S+1)), with ⟨S²⟩ per root; and S² on a vector, as `ci::SpinSquare` on the device. |
+| `rdm/` | `free_breakfast.ci.rdm` | The state-averaged spin-summed γ and 2-RDM Γ_tuvw of CI vectors (`ci::Rdm::rdm12`, on the device), in PySCF's `make_rdm12` convention. One vector's γ is `ci::Sigma::rdm1`. |
 
 A determinant is a pair of strings, alpha and beta, each from its own
-`StringSet`. The strings are in PySCF's `cistring` order, so a CI vector laid
+`ci::StringSet`. The strings are in PySCF's `cistring` order, so a CI vector laid
 out alpha-major over two sets matches `fci.direct_spin1`'s element for element.
 
 ## Tests

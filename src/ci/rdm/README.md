@@ -2,7 +2,7 @@
 
 The state-averaged spin-summed 1- and 2-RDM of CI vectors, on the device. The
 2-RDM is CASSCF's: its generalized Fock, gradient and energy read γ and Γ from
-`CiRdm::rdm12`. The 1-RDM of one vector is `CiSigma::rdm1` (`../sigma/`).
+`ci::Rdm::rdm12`. The 1-RDM of one vector is `ci::Sigma::rdm1` (`../sigma/`).
 
 The host references both are tested against, `host_rdm1` and `host_rdm12`, are
 in `test/ci_oracles/`: linked by the tests alone, not exported from here.
@@ -14,21 +14,21 @@ in `test/ci_oracles/`: linked by the tests alone, not exported from here.
 
 | Name | Role |
 |---|---|
-| `CiRdm::create(res, alpha, beta)` | Upload the two sets' replacement lists; `Result<CiRdm>` |
-| `CiRdm::rdm12(res, weights, vectors, gamma, gamma2, layout)` | On the device, over full or packed (`layout`, default full) vectors: γ = Σ_r w_r γ^(r), n × n, and Γ_tuvw = Σ_r w_r ⟨c_r\| E_tu E_vw − δ_uv E_tw \|c_r⟩, n⁴ row-major; `Status` |
-| `CiRdm::size(layout)` | A vector's length: alpha.size() · beta.size(), dim, or the triangle's m (m + 1) / 2 for `CiLayout::symmetric` |
+| `ci::Rdm::create(res, alpha, beta)` | Upload the two sets' replacement lists; `Result<ci::Rdm>` |
+| `ci::Rdm::rdm12(res, weights, vectors, gamma, gamma2, layout)` | On the device, over full or packed (`layout`, default full) vectors: γ = Σ_r w_r γ^(r), n × n, and Γ_tuvw = Σ_r w_r ⟨c_r\| E_tu E_vw − δ_uv E_tw \|c_r⟩, n⁴ row-major; `Status` |
+| `ci::Rdm::size(layout)` | A vector's length: alpha.size() · beta.size(), dim, or the triangle's m (m + 1) / 2 for `ci::Layout::symmetric` |
 
-For `CiRdm::rdm12`, `vectors`, `gamma` and `gamma2` are device arrays: the
-vectors root r at [r · dim, (r + 1) · dim), which is what `CiRoots::vectors`
+For `ci::Rdm::rdm12`, `vectors`, `gamma` and `gamma2` are device arrays: the
+vectors root r at [r · dim, (r + 1) · dim), which is what `ci::Roots::vectors`
 holds, one per weight, or root r at [r · m (m + 1) / 2, …) in
-`CiLayout::symmetric` (`../sigma/`); the weights are on the host. A single state
+`ci::Layout::symmetric` (`../sigma/`); the weights are on the host. A single state
 is `weights = {1}`.
 
-`CiRdm::rdm12` refuses (`InvalidConfig`, nothing written) no weights, a
+`ci::Rdm::rdm12` refuses (`InvalidConfig`, nothing written) no weights, a
 negative or NaN weight, and weights not summing to 1 within 1e-12, as
-`host_rdm12` does; `CiRdm::create` refuses sets over different orbital counts or none,
-or more determinants than an `int32_t` counts. `CiRdm::rdm12` refuses
-`CiLayout::symmetric` unless the two sets are one, as `CiSigma` does.
+`host_rdm12` does; `ci::Rdm::create` refuses sets over different orbital counts or none,
+or more determinants than an `int32_t` counts. `ci::Rdm::rdm12` refuses
+`ci::Layout::symmetric` unless the two sets are one, as `ci::Sigma` does.
 
 ## Design
 
@@ -61,24 +61,24 @@ swap-symmetric c (every state of even S over one set for both spins), the
 spin-summed E_tu commutes with the swap of the two strings, so D_K is D of
 K's mirror. Then M = Σ_K D_K D_Kᵀ = Σ over the triangle K_α ≥ K_β of
 w_K D_K D_Kᵀ, and γ = Σ_K c_K D_K likewise, with w_K = 2 off the diagonal
-and 1 on it. So in `CiLayout::symmetric` the gather walks the triangle's rows
+and 1 on it. So in `ci::Layout::symmetric` the gather walks the triangle's rows
 alone, by `../sigma/ci_symmetric.h`'s map (a link below the triangle reads its
 mirror times 1/√2), scaling each off-diagonal row by √w = √2; the syrk then
 gives M exactly, and the gemm with the packed c, whose off-diagonal elements
-carry the other √2, gives γ. `ci_solve` still unpacks its roots, so
-`CiRoots` callers read the full layout; packed roots are a follow-up.
+carry the other √2, gives γ. `ci::solve` still unpacks its roots, so
+`ci::Roots` callers read the full layout; packed roots are a follow-up.
 
-**Tables once, vectors as often as needed.** `CiRdm::create` uploads the link
-tables once per (n, N_α, N_β), as `CiSigma::create` does, and `rdm12` reads
+**Tables once, vectors as often as needed.** `ci::Rdm::create` uploads the link
+tables once per (n, N_α, N_β), as `ci::Sigma::create` does, and `rdm12` reads
 device vectors and writes device γ and Γ, so a CASSCF macro-iteration calls
-it on `ci_solve`'s roots where they are, with nothing rebuilt or copied.
+it on `ci::solve`'s roots where they are, with nothing rebuilt or copied.
 
-`CiRdm` keeps its own gather rather than reusing `CiSigma`'s, whose
-`rdm1` it shares the idea with: `CiSigma` packs D over v ≥ w as
+`ci::Rdm` keeps its own gather rather than reusing `ci::Sigma`'s, whose
+`rdm1` it shares the idea with: `ci::Sigma` packs D over v ≥ w as
 D_vw + D_wv, which is all σ and γ need (both contract it with something
 symmetric in the pair) but loses Γ, whose q and v in Σ (pv\|wx) Γ_qvwx are
 not symmetric. So its link tables carry the unpacked pair p · n + q, and it
-takes only the two `StringSet`s: no `CiSigma` and no integrals.
+takes only the two `ci::StringSet`s: no `ci::Sigma` and no integrals.
 
 The host reference, `host_rdm12`, builds the same d_K per determinant and adds
 the outer product w_r d_tu d_wv, O(Σ_r dim · n⁴) scalar work, and takes γ from
@@ -86,15 +86,15 @@ the outer product w_r d_tu d_wv, O(Σ_r dim · n⁴) scalar work, and takes γ f
 
 ## Tests
 
-`test/gtest/ci_solver_gpu.cpp` checks `host_rdm1` on `ci_solve`'s roots against
+`test/gtest/ci_solver_gpu.cpp` checks `host_rdm1` on `ci::solve`'s roots against
 `direct_spin1`'s `make_rdm1` to 1e-8, with the trace; see `../solver/`.
-`test/gtest/ci_sigma_gpu.cpp` checks `CiSigma::rdm1` against it.
+`test/gtest/ci_sigma_gpu.cpp` checks `ci::Sigma::rdm1` against it.
 
-`test/gtest/ci_rdm_gpu.cpp` checks `CiRdm::rdm12` over the CI vectors stored in
+`test/gtest/ci_rdm_gpu.cpp` checks `ci::Rdm::rdm12` over the CI vectors stored in
 `test/gtest/data/ci/direct_spin1.json`: each case's ground state, and H₂O
 STO-3G CAS(4,4)'s two lowest singlets at [0.7, 0.3]. The device γ and Γ match
 `host_rdm12` to 1e-12, both match PySCF's `make_rdm12` and `make_rdm12s` summed
-over the spins to 1e-8, and γ matches Σ_r w_r `host_rdm1` to 1e-12 (and, for one state, `CiSigma::rdm1`
+over the spins to 1e-8, and γ matches Σ_r w_r `host_rdm1` to 1e-12 (and, for one state, `ci::Sigma::rdm1`
 to 1e-12). Random unit
 vectors over seven sectors (open shells, an empty and a full spin, one
 orbital, N_α < N_β) at three weights check the device against the host again;
@@ -104,7 +104,7 @@ D. The symmetric layout is checked on packed swap-symmetric vectors, every
 golden average with N_α = N_β and random unit vectors at three weights over
 seven sets (an empty and a full one, one orbital): its γ and Γ match the full
 layout's on the unpacked vectors and `host_rdm12` to 1e-12, and per root
-`CiSigma::rdm1` in the symmetric layout matches the full one and `host_rdm1` to
+`ci::Sigma::rdm1` in the symmetric layout matches the full one and `host_rdm1` to
 1e-12; a slow case (`SymmetricLayoutMatchesFullAcrossChunks`) does it over
 106 953 triangle rows, two chunks. Each checks Γ_tuvw = Γ_vwtu, Σ_v Γ_tuvv = (N − 1) γ_tu and
 Σ_tu Γ_ttuu = N (N − 1) to 1e-10. The refusals are checked on both, with
@@ -115,8 +115,8 @@ over the two sets (4, 1) and (4, 3).
 
 | File | Role |
 |------|------|
-| `rdm.cppm` | Module interface: `CiRdm` |
-| `rdm.cpp` | `CiRdm`'s link tables, uploads, syrk and gemm |
+| `rdm.cppm` | Module interface: `ci::Rdm` |
+| `rdm.cpp` | `ci::Rdm`'s link tables, uploads, syrk and gemm |
 | `ci_rdm_bridge.h` | The launchers, shared by the module (GMF) and the `.cu` |
 | `ci_rdm.cu` | The gather of D, one thread per determinant (or triangle element), and Γ's assembly |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.rdm.device` and the module `free_breakfast.ci.rdm` |

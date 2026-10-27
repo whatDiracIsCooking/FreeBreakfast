@@ -192,7 +192,7 @@ Result<int32_t> orthonormalize(DeviceResources &res, const int32_t n, const int3
     //    that is below sqrt(epsilon) with room to spare, no mode can drop
     //    again, and one Newton-Schulz step, Q <- Q (3 I - Q^T Q) / 2, leaves
     //    O(E^2), rounding: gemvs and a gemm, no sync or syevd, where a canonical
-    //    pass costs both (7% of ci_solve's wall time at CAS(10,10) on the
+    //    pass costs both (7% of ci::solve's wall time at CAS(10,10) on the
     //    3080). Davidson's correction blocks have a median kappa near 16.
     const T eps = std::numeric_limits<T>::epsilon();
     const T kappa = lambda_host[mz - 1] / lambda_host[mz - static_cast<size_t>(kept)];

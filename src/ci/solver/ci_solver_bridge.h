@@ -20,7 +20,7 @@
 /// - A β slot table holds, per β string and n × n over (p, q) row-major, the
 ///   replacement a†_p a_q of that string as sign · (target + 1), or 0 when it
 ///   annihilates the string.
-/// - With @p symmetric, the vectors are in CiLayout::symmetric (see
+/// - With @p symmetric, the vectors are in ci::Layout::symmetric (see
 ///   ../sigma/ci_symmetric.h): n_det is the triangle's, and a row a triangle
 ///   element.
 ///
@@ -40,7 +40,7 @@
 #include "wwr/runtime_api.h"
 #endif
 
-namespace free_breakfast::device {
+namespace free_breakfast::ci::device {
 
 /// @brief For every one of the @p rows rows of the block @p x,
 /// y = (accumulate ? y : 0) + scale · ((S² − shift) x), with
@@ -48,12 +48,12 @@ namespace free_breakfast::device {
 ///
 /// One thread per row gathers over its own α links and their β partners, since
 /// S² is real symmetric. @p y has @p x's layout and must not overlap it.
-[[nodiscard]] wwr::wwrError_t ci_spin_square(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
-                                             int32_t n_det, int32_t n_beta, int32_t n,
-                                             const int32_t *alpha_links, int32_t alpha_per,
-                                             const int32_t *beta_slots, double constant,
-                                             double shift, double scale, bool accumulate,
-                                             const double *x, double *y);
+[[nodiscard]] wwr::wwrError_t spin_square(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
+                                          int32_t n_det, int32_t n_beta, int32_t n,
+                                          const int32_t *alpha_links, int32_t alpha_per,
+                                          const int32_t *beta_slots, double constant, double shift,
+                                          double scale, bool accumulate, const double *x,
+                                          double *y);
 
 /// @brief shifted_J = diagonal_J + scale · (diag(S²)_J − shift) for the
 /// @p n_det determinants, diag(S²)_J = constant − the orbitals doubly occupied
@@ -70,31 +70,30 @@ namespace free_breakfast::device {
 /// a†_p a_p does not annihilate J's β string: the doubly occupied orbitals.
 /// The same links give the α occupations, and the slot table's (p, p)
 /// entries the β ones.
-[[nodiscard]] wwr::wwrError_t ci_spin_diagonal(wwr::wwrStream_t stream, bool symmetric,
-                                               int32_t n_det, int32_t n_beta, int32_t n,
-                                               const int32_t *alpha_links, int32_t alpha_per,
-                                               const int32_t *beta_slots, double constant,
-                                               double shift, double scale, const double *exchange,
-                                               const double *diagonal, double *shifted);
+[[nodiscard]] wwr::wwrError_t spin_diagonal(wwr::wwrStream_t stream, bool symmetric, int32_t n_det,
+                                            int32_t n_beta, int32_t n, const int32_t *alpha_links,
+                                            int32_t alpha_per, const int32_t *beta_slots,
+                                            double constant, double shift, double scale,
+                                            const double *exchange, const double *diagonal,
+                                            double *shifted);
 
 /// @brief out_i = in_i / (theta − shifted_i) for the @p n elements of one
 /// column, the denominator held off zero at ±1e-3: M⁻¹ in, M = theta − shifted.
 /// @p out may be @p in.
-[[nodiscard]] wwr::wwrError_t ci_precondition(wwr::wwrStream_t stream, int32_t n, double theta,
-                                              const double *shifted, const double *in, double *out);
+[[nodiscard]] wwr::wwrError_t precondition(wwr::wwrStream_t stream, int32_t n, double theta,
+                                           const double *shifted, const double *in, double *out);
 
 /// @brief Olsen's correction for one column, correction = M⁻¹ (residual − ε x)
-/// with M as ci_precondition's and ε = dots[1] / dots[0], read on the device:
+/// with M as precondition's and ε = dots[1] / dots[0], read on the device:
 /// @p dots (device, 2) holds x^T M⁻¹ x and x^T M⁻¹ r. A zero dots[0] gives
 /// ε = 0. With @p shifted null, M⁻¹ is left out: correction = residual − ε x,
 /// for an M that is not diagonal to apply after. @p correction must overlap
 /// neither @p x nor @p residual.
-[[nodiscard]] wwr::wwrError_t ci_olsen(wwr::wwrStream_t stream, int32_t n, double theta,
-                                       const double *shifted, const double *x,
-                                       const double *residual, const double *dots,
-                                       double *correction);
+[[nodiscard]] wwr::wwrError_t olsen(wwr::wwrStream_t stream, int32_t n, double theta,
+                                    const double *shifted, const double *x, const double *residual,
+                                    const double *dots, double *correction);
 
-/// @brief The 64-bit words of ci_lowest's @p scratch, besides its survivors:
+/// @brief The 64-bit words of pick_lowest's @p scratch, besides its survivors:
 /// a 256-bin histogram, the threshold found so far and the counters.
 inline constexpr int32_t kCiLowestScratch = 136;
 
@@ -111,30 +110,28 @@ inline constexpr int32_t kCiLowestScratch = 136;
 /// order, then each written to @p picks at its rank among them. Twelve passes
 /// over @p values whatever @p count is. @p scratch is kCiLowestScratch device
 /// words. Requires 0 < count <= n.
-[[nodiscard]] wwr::wwrError_t ci_lowest(wwr::wwrStream_t stream, int32_t n, const double *values,
-                                        int32_t count, uint64_t *scratch, int32_t *survivors,
-                                        int32_t *picks);
+[[nodiscard]] wwr::wwrError_t pick_lowest(wwr::wwrStream_t stream, int32_t n, const double *values,
+                                          int32_t count, uint64_t *scratch, int32_t *survivors,
+                                          int32_t *picks);
 
-/// @brief ci_solve's @p count guess columns, n long, column-major: column g is
+/// @brief ci::solve's @p count guess columns, n long, column-major: column g is
 /// a 1e-3 spread (a splitmix64 hash of the element's position g · n + i,
 /// uniform in [−1e-3, 1e-3)) plus 1 on determinant @p picks[g], or the spread
 /// alone with @p picks null. Not yet orthonormal.
-[[nodiscard]] wwr::wwrError_t ci_guess(wwr::wwrStream_t stream, int32_t n, int32_t count,
-                                       const int32_t *picks, double *guess);
+[[nodiscard]] wwr::wwrError_t guess(wwr::wwrStream_t stream, int32_t n, int32_t count,
+                                    const int32_t *picks, double *guess);
 
 /// @brief to[j + g · p] = from[g · n + picks[j]] for the @p p elements
 /// @p picks of each of the @p count n-long columns of @p from: their P part,
 /// packed p × count.
-[[nodiscard]] wwr::wwrError_t ci_gather(wwr::wwrStream_t stream, int32_t n, int32_t count,
-                                        int32_t p, const int32_t *picks, const double *from,
-                                        double *to);
+[[nodiscard]] wwr::wwrError_t gather(wwr::wwrStream_t stream, int32_t n, int32_t count, int32_t p,
+                                     const int32_t *picks, const double *from, double *to);
 
-/// @brief to[g · n + picks[j]] = from[j + g · p]: ci_gather's inverse, which
+/// @brief to[g · n + picks[j]] = from[j + g · p]: gather's inverse, which
 /// writes the P elements of the @p count n-long columns of @p to and leaves
 /// the rest. @p picks must be distinct.
-[[nodiscard]] wwr::wwrError_t ci_scatter(wwr::wwrStream_t stream, int32_t n, int32_t count,
-                                         int32_t p, const int32_t *picks, const double *from,
-                                         double *to);
+[[nodiscard]] wwr::wwrError_t scatter(wwr::wwrStream_t stream, int32_t n, int32_t count, int32_t p,
+                                      const int32_t *picks, const double *from, double *to);
 
 /// @brief The P-space Hamiltonian, h[i + j · p] = <φ_i| H + λ (S² − target)
 /// |φ_j> over the @p p elements @p picks of a vector in the layout: in the
@@ -145,7 +142,7 @@ inline constexpr int32_t kCiLowestScratch = 136;
 ///
 /// A determinant element is Slater–Condon's over the strings' bit patterns
 /// (@p alpha_strings and @p beta_strings by address; one table for both in
-/// the symmetric layout), with the integrals read from CiSigma's
+/// the symmetric layout), with the integrals read from ci::Sigma's
 /// @p contraction (n_pairs × (n_pairs + 1), column-major: column pair(t, u)
 /// ½ (tu|vw) down the rows pair(v, w), the last k_vw =
 /// h_vw − ½ Σ_u (vu|uw)), and the diagonal from @p diagonal (the full layout's
@@ -153,10 +150,10 @@ inline constexpr int32_t kCiLowestScratch = 136;
 /// @p spin_shift = S_z (S_z + 1) + N_β − target. S² off the diagonal joins
 /// only the two determinants of one αβ swap a†_pα a_qα a†_qβ a_pβ, at −λ times
 /// their signs. One thread per (i, j).
-[[nodiscard]] wwr::wwrError_t ci_pspace(wwr::wwrStream_t stream, bool symmetric, int32_t p,
-                                        const int32_t *picks, int32_t n_beta, int32_t n,
-                                        const uint64_t *alpha_strings, const uint64_t *beta_strings,
-                                        const double *contraction, const double *diagonal,
-                                        double penalty, double spin_shift, double *h);
+[[nodiscard]] wwr::wwrError_t pspace(wwr::wwrStream_t stream, bool symmetric, int32_t p,
+                                     const int32_t *picks, int32_t n_beta, int32_t n,
+                                     const uint64_t *alpha_strings, const uint64_t *beta_strings,
+                                     const double *contraction, const double *diagonal,
+                                     double penalty, double spin_shift, double *h);
 
-} // namespace free_breakfast::device
+} // namespace free_breakfast::ci::device

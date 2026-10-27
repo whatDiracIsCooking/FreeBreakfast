@@ -1,11 +1,11 @@
-// GPU cases for ci.sigma's CiSigma: σ on random blocks against host_sigma,
+// GPU cases for ci.sigma's ci::Sigma: σ on random blocks against host_sigma,
 // diag(H) against host_diagonal, and the 1-RDM against host_rdm1, over the
 // golden active spaces of data/ci/direct_spin1.json, random integrals at
 // CAS(8,8) and CAS(10,10) and in sectors with N_alpha != N_beta, and
 // CAS(12,12) in the slow tier (its 1-RDM in the fast one); the same in the
 // symmetric layout over swap-symmetric vectors, σ and the 1-RDM, with
-// ci_unpack, and ci_pack as its inverse; σ blocked under a workspace limit against unblocked; and the
-// refusals.
+// ci::unpack, and ci::pack as its inverse; σ blocked under a workspace limit
+// against unblocked; and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -24,7 +24,7 @@ namespace {
 
 namespace fb = free_breakfast;
 
-static_assert(fb::LinearOperator<fb::CiSigma, double>);
+static_assert(fb::LinearOperator<fb::ci::Sigma, double>);
 
 // The active-space Hamiltonian as host_sigma and set_integrals take it.
 struct Integrals {
@@ -97,8 +97,8 @@ std::vector<double> to_host(fb::DeviceResources &res, const fb::Buffers::device<
 
 // The 1-RDM of a random unit vector, to 1e-12 (N_α + N_β), its trace, of
 // host_rdm1's.
-void check_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, const fb::StringSet &alpha,
-                const fb::StringSet &beta, std::uint64_t seed) {
+void check_rdm1(fb::DeviceResources &res, fb::ci::Sigma &sigma, const fb::ci::StringSet &alpha,
+                const fb::ci::StringSet &beta, std::uint64_t seed) {
   const auto dim = static_cast<std::size_t>(sigma.size());
   const auto n = static_cast<std::size_t>(alpha.n_orbitals());
   std::vector<double> c = random_block(dim, seed);
@@ -126,10 +126,10 @@ void check_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, const fb::StringSe
 // diag(H) to 1e-12 of host_diagonal's, and the 1-RDM by check_rdm1.
 void check_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int32_t n_beta,
                         const Integrals &ints, std::int32_t k, std::uint64_t seed) {
-  const auto alpha = fb::StringSet::create(ints.n, n_alpha);
-  const auto beta = fb::StringSet::create(ints.n, n_beta);
+  const auto alpha = fb::ci::StringSet::create(ints.n, n_alpha);
+  const auto beta = fb::ci::StringSet::create(ints.n, n_beta);
   ASSERT_TRUE(alpha.has_value() && beta.has_value());
-  auto sigma = fb::CiSigma::create(res, *alpha, *beta);
+  auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   const auto set = sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri);
   ASSERT_TRUE(set.has_value()) << set.error().message;
@@ -197,10 +197,10 @@ double fp32_tolerance(std::size_t pairs) {
 
 void check_fp32_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int32_t n_beta,
                              const Integrals &ints, std::int32_t k, std::uint64_t seed) {
-  const auto alpha = fb::StringSet::create(ints.n, n_alpha);
-  const auto beta = fb::StringSet::create(ints.n, n_beta);
+  const auto alpha = fb::ci::StringSet::create(ints.n, n_alpha);
+  const auto beta = fb::ci::StringSet::create(ints.n, n_beta);
   ASSERT_TRUE(alpha.has_value() && beta.has_value());
-  auto sigma = fb::CiSigma::create(res, *alpha, *beta);
+  auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   const auto set = sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri);
   ASSERT_TRUE(set.has_value()) << set.error().message;
@@ -268,7 +268,7 @@ std::vector<double> random_symmetric_block(std::size_t m, std::int32_t k, std::u
   return c;
 }
 
-// The symmetric layout of a full-layout block (see CiLayout): the triangle
+// The symmetric layout of a full-layout block (see ci::Layout): the triangle
 // a >= b, off-diagonal elements times sqrt(2).
 std::vector<double> pack(const std::vector<double> &full, std::size_t m) {
   const std::size_t k = full.size() / (m * m);
@@ -289,32 +289,33 @@ std::vector<double> pack(const std::vector<double> &full, std::size_t m) {
 // swap-symmetric vectors over (n, N) for both spins: each packed column
 // against host_sigma's packed to @p tolerance of ‖σ‖ (of ‖σ − E_core c‖ for
 // fp32, the part the float gemm sees). The packing is an isometry, so the
-// norms are the full vectors'. ci_unpack of the packed input gives the input
+// norms are the full vectors'. ci::unpack of the packed input gives the input
 // back. In double, rdm1 of each packed column matches the full layout's on the
 // unpacked one and the host's to 1e-12 of max |γ|.
 void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const Integrals &ints,
                      std::int32_t k, std::uint64_t seed, bool fp32) {
-  const auto set = fb::StringSet::create(ints.n, n_electrons);
+  const auto set = fb::ci::StringSet::create(ints.n, n_electrons);
   ASSERT_TRUE(set.has_value());
-  auto sigma = fb::CiSigma::create(res, *set, *set);
+  auto sigma = fb::ci::Sigma::create(res, *set, *set);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   ASSERT_TRUE(sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
   const auto m = static_cast<std::size_t>(set->size());
   const std::size_t dim = m * m;
   const std::size_t packed = m * (m + 1) / 2;
-  ASSERT_EQ(static_cast<std::size_t>(sigma->size(fb::CiLayout::symmetric)), packed);
+  ASSERT_EQ(static_cast<std::size_t>(sigma->size(fb::ci::Layout::symmetric)), packed);
 
   const std::vector<double> c = random_symmetric_block(m, k, seed);
   const std::vector<double> u = pack(c, m);
   const auto x = to_device(res, u);
   fb::Buffers::device<double> y(u.size(), res.device());
-  const auto applied = fp32 ? sigma->apply_fp32(res, k, x.data(), y.data(), fb::CiLayout::symmetric)
-                            : sigma->apply(res, k, x.data(), y.data(), fb::CiLayout::symmetric);
+  const auto applied =
+      fp32 ? sigma->apply_fp32(res, k, x.data(), y.data(), fb::ci::Layout::symmetric)
+           : sigma->apply(res, k, x.data(), y.data(), fb::ci::Layout::symmetric);
   ASSERT_TRUE(applied.has_value()) << applied.error().message;
   const std::vector<double> got = to_host(res, y);
 
   fb::Buffers::device<double> unpacked(c.size(), res.device());
-  ASSERT_TRUE(fb::ci_unpack(res, set->size(), k, x.data(), unpacked.data()).has_value());
+  ASSERT_TRUE(fb::ci::unpack(res, set->size(), k, x.data(), unpacked.data()).has_value());
   const std::vector<double> back = to_host(res, unpacked);
   for (std::size_t i = 0; i < c.size(); ++i) {
     ASSERT_NEAR(back[i], c[i], 1e-15) << "element " << i;
@@ -325,8 +326,9 @@ void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const I
     SCOPED_TRACE(std::format("rdm1 of column {}", j));
     const auto column = static_cast<std::size_t>(j);
     fb::Buffers::device<double> gamma(n * n, res.device());
-    ASSERT_TRUE(sigma->rdm1(res, x.data() + column * packed, gamma.data(), fb::CiLayout::symmetric)
-                    .has_value());
+    ASSERT_TRUE(
+        sigma->rdm1(res, x.data() + column * packed, gamma.data(), fb::ci::Layout::symmetric)
+            .has_value());
     const std::vector<double> symmetric = to_host(res, gamma);
     ASSERT_TRUE(sigma->rdm1(res, unpacked.data() + column * dim, gamma.data()).has_value());
     const std::vector<double> full = to_host(res, gamma);
@@ -505,9 +507,9 @@ TEST(CiSigmaGpu, Fp32MatchesHostAtCas1212) {
 TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto set = fb::StringSet::create(12, 6);
+  const auto set = fb::ci::StringSet::create(12, 6);
   ASSERT_TRUE(set.has_value());
-  auto sigma = fb::CiSigma::create(res, *set, *set);
+  auto sigma = fb::ci::Sigma::create(res, *set, *set);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   check_rdm1(res, *sigma, *set, *set, 17);
 }
@@ -521,10 +523,10 @@ TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
 //   byte (a string a block): each column to 1e-13 of its norm in double, and
 //   in float to fp32_tolerance(P) of ‖σ − E_core c‖, apply_fp32's own bound.
 void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &ints, std::int32_t k,
-                   std::uint64_t seed, fb::CiLayout layout, bool fp32) {
-  const bool symmetric = layout == fb::CiLayout::symmetric;
-  const auto alpha = fb::StringSet::create(ints.n, n_alpha);
-  const auto beta = fb::StringSet::create(ints.n, n_beta);
+                   std::uint64_t seed, fb::ci::Layout layout, bool fp32) {
+  const bool symmetric = layout == fb::ci::Layout::symmetric;
+  const auto alpha = fb::ci::StringSet::create(ints.n, n_alpha);
+  const auto beta = fb::ci::StringSet::create(ints.n, n_beta);
   ASSERT_TRUE(alpha.has_value() && beta.has_value());
   const auto m = static_cast<std::size_t>(alpha->size());
   const std::vector<double> c =
@@ -536,7 +538,7 @@ void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &i
   // Y = H X under limit (none for nullopt), and the workspace it grew to.
   const auto run = [&](std::optional<std::size_t> limit) {
     fb::DeviceResources res{0};
-    auto sigma = fb::CiSigma::create(res, *alpha, *beta);
+    auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
     EXPECT_TRUE(sigma.has_value());
     EXPECT_TRUE(sigma->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
     if (limit) {
@@ -598,13 +600,13 @@ TEST(CiSigmaGpu, BlockedMatchesUnblocked) {
   ASSERT_FALSE((*doc)["cases"].empty());
   const auto each = [](std::int32_t n_alpha, std::int32_t n_beta, const Integrals &ints,
                        std::int32_t k, std::uint64_t seed) {
-    for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
-      if (layout == fb::CiLayout::symmetric && n_alpha != n_beta) {
+    for (const fb::ci::Layout layout : {fb::ci::Layout::full, fb::ci::Layout::symmetric}) {
+      if (layout == fb::ci::Layout::symmetric && n_alpha != n_beta) {
         continue;
       }
       for (const bool fp32 : {false, true}) {
         SCOPED_TRACE(std::format("{} layout, {}",
-                                 layout == fb::CiLayout::full ? "full" : "symmetric",
+                                 layout == fb::ci::Layout::full ? "full" : "symmetric",
                                  fp32 ? "fp32" : "fp64"));
         check_blocked(n_alpha, n_beta, ints, k, seed, layout, fp32);
       }
@@ -633,19 +635,20 @@ TEST(CiSigmaGpu, BlockedMatchesUnblockedAtCas1212) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   const Integrals ints = random_integrals(12, 412);
-  for (const fb::CiLayout layout : {fb::CiLayout::full, fb::CiLayout::symmetric}) {
+  for (const fb::ci::Layout layout : {fb::ci::Layout::full, fb::ci::Layout::symmetric}) {
     for (const bool fp32 : {false, true}) {
-      SCOPED_TRACE(std::format("{} layout, {}", layout == fb::CiLayout::full ? "full" : "symmetric",
+      SCOPED_TRACE(std::format("{} layout, {}",
+                               layout == fb::ci::Layout::full ? "full" : "symmetric",
                                fp32 ? "fp32" : "fp64"));
       check_blocked(6, 6, ints, 1, 13, layout, fp32);
     }
   }
 }
 
-// ci_pack of k random swap-symmetric full vectors over m strings is the
-// host's packing, and ci_unpack gives the vectors back, each to 1e-15; of
+// ci::pack of k random swap-symmetric full vectors over m strings is the
+// host's packing, and ci::unpack gives the vectors back, each to 1e-15; of
 // vectors that are not symmetric it is the packing of their symmetric part,
-// ci_unpack's adjoint. m = 924 is CAS(12,12)'s singlet set.
+// ci::unpack's adjoint. m = 924 is CAS(12,12)'s singlet set.
 TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
@@ -663,7 +666,7 @@ TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
       const std::vector<double> &v = symmetric ? c : r;
       const auto x = to_device(res, v);
       fb::Buffers::device<double> packed(packed_size, res.device());
-      ASSERT_TRUE(fb::ci_pack(res, m, k, x.data(), packed.data()).has_value());
+      ASSERT_TRUE(fb::ci::pack(res, m, k, x.data(), packed.data()).has_value());
       const std::vector<double> got = to_host(res, packed);
       std::vector<double> part(full_size);
       for (std::size_t j = 0; j < k; ++j) {
@@ -680,7 +683,7 @@ TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
         ASSERT_NEAR(got[i], want[i], 1e-15) << "element " << i;
       }
       fb::Buffers::device<double> unpacked(full_size, res.device());
-      ASSERT_TRUE(fb::ci_unpack(res, m, k, packed.data(), unpacked.data()).has_value());
+      ASSERT_TRUE(fb::ci::unpack(res, m, k, packed.data(), unpacked.data()).has_value());
       const std::vector<double> back = to_host(res, unpacked);
       for (std::size_t i = 0; i < full_size; ++i) {
         ASSERT_NEAR(back[i], part[i], 1e-15) << "element " << i;
@@ -695,14 +698,14 @@ TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
 TEST(CiSigmaGpu, Refuses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto four = fb::StringSet::create(4, 2);
-  const auto five = fb::StringSet::create(5, 2);
-  const auto none = fb::StringSet::create(0, 0);
+  const auto four = fb::ci::StringSet::create(4, 2);
+  const auto five = fb::ci::StringSet::create(5, 2);
+  const auto none = fb::ci::StringSet::create(0, 0);
   ASSERT_TRUE(four.has_value() && five.has_value() && none.has_value());
-  EXPECT_FALSE(fb::CiSigma::create(res, *four, *five).has_value());
-  EXPECT_FALSE(fb::CiSigma::create(res, *none, *none).has_value());
+  EXPECT_FALSE(fb::ci::Sigma::create(res, *four, *five).has_value());
+  EXPECT_FALSE(fb::ci::Sigma::create(res, *none, *none).has_value());
 
-  auto sigma = fb::CiSigma::create(res, *four, *four);
+  auto sigma = fb::ci::Sigma::create(res, *four, *four);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   fb::Buffers::device<double> x(static_cast<std::size_t>(sigma->size()), res.device());
   fb::Buffers::device<double> y(static_cast<std::size_t>(sigma->size()), res.device());
@@ -720,26 +723,27 @@ TEST(CiSigmaGpu, Refuses) {
   EXPECT_FALSE(sigma->apply_fp32(res, -1, x.data(), y.data()).has_value());
   EXPECT_TRUE(sigma->apply(res, 0, x.data(), y.data()).has_value());
   EXPECT_TRUE(sigma->apply_fp32(res, 0, x.data(), y.data()).has_value());
-  EXPECT_TRUE(sigma->apply(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
-  EXPECT_FALSE(fb::ci_unpack(res, -1, 1, x.data(), y.data()).has_value());
-  EXPECT_FALSE(fb::ci_unpack(res, 4, -1, x.data(), y.data()).has_value());
-  EXPECT_FALSE(fb::ci_pack(res, -1, 1, x.data(), y.data()).has_value());
-  EXPECT_FALSE(fb::ci_pack(res, 4, -1, x.data(), y.data()).has_value());
-  EXPECT_TRUE(fb::ci_pack(res, 4, 0, x.data(), y.data()).has_value());
+  EXPECT_TRUE(sigma->apply(res, 1, x.data(), y.data(), fb::ci::Layout::symmetric).has_value());
+  EXPECT_FALSE(fb::ci::unpack(res, -1, 1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(fb::ci::unpack(res, 4, -1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(fb::ci::pack(res, -1, 1, x.data(), y.data()).has_value());
+  EXPECT_FALSE(fb::ci::pack(res, 4, -1, x.data(), y.data()).has_value());
+  EXPECT_TRUE(fb::ci::pack(res, 4, 0, x.data(), y.data()).has_value());
 
   // The symmetric layout wants one set for both spins: (4, 1) and (4, 3) have
   // the same number of strings, and are still two sets.
-  const auto one = fb::StringSet::create(4, 1);
-  const auto three = fb::StringSet::create(4, 3);
+  const auto one = fb::ci::StringSet::create(4, 1);
+  const auto three = fb::ci::StringSet::create(4, 3);
   ASSERT_TRUE(one.has_value() && three.has_value());
-  auto mixed = fb::CiSigma::create(res, *one, *three);
+  auto mixed = fb::ci::Sigma::create(res, *one, *three);
   ASSERT_TRUE(mixed.has_value()) << mixed.error().message;
   ASSERT_TRUE(mixed->set_integrals(res, ints.e_core, ints.h1, ints.eri).has_value());
-  EXPECT_FALSE(mixed->apply(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
-  EXPECT_FALSE(mixed->apply_fp32(res, 1, x.data(), y.data(), fb::CiLayout::symmetric).has_value());
+  EXPECT_FALSE(mixed->apply(res, 1, x.data(), y.data(), fb::ci::Layout::symmetric).has_value());
+  EXPECT_FALSE(
+      mixed->apply_fp32(res, 1, x.data(), y.data(), fb::ci::Layout::symmetric).has_value());
   EXPECT_TRUE(mixed->apply(res, 1, x.data(), y.data()).has_value());
   fb::Buffers::device<double> gamma(16, res.device());
-  const auto one_rdm = mixed->rdm1(res, x.data(), gamma.data(), fb::CiLayout::symmetric);
+  const auto one_rdm = mixed->rdm1(res, x.data(), gamma.data(), fb::ci::Layout::symmetric);
   ASSERT_FALSE(one_rdm.has_value());
   EXPECT_EQ(one_rdm.error().kind, fb::ErrorKind::InvalidConfig) << one_rdm.error().message;
   EXPECT_TRUE(mixed->rdm1(res, x.data(), gamma.data()).has_value());

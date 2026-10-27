@@ -31,7 +31,7 @@ double fci_strings(int32_t n, int32_t n_alpha) {
   return std::round(strings);
 }
 
-// The bytes of CiSigma apply's scratch in double over n orbitals with G for
+// The bytes of ci::Sigma apply's scratch in double over n orbitals with G for
 // rows rows: rows (P + 1) for G and one chunk of D, at most 64 MiB.
 double fci_sigma_bytes(int32_t n, double rows) {
   const double orbitals = n;
@@ -41,22 +41,22 @@ double fci_sigma_bytes(int32_t n, double rows) {
 }
 
 // The device bytes the solve over all n orbitals, n_alpha electrons of each
-// spin and nroots roots holds at its peak, besides CiSigma apply's scratch
+// spin and nroots roots holds at its peak, besides ci::Sigma apply's scratch
 // (fci_sigma_bytes). A singlet solve runs on the symmetric layout's packed
 // vectors, s = C(n, n_alpha) strings giving dim = s^2 determinants and
 // t = s (s + 1) / 2 packed elements; g = min(t, 2 nroots) guesses,
 // m = max(2 nroots, min(t, 16 nroots)) subspace columns, p P-space elements
-// (ci_solve's choices: 0 with the P-space off, else max(pspace_size, g), or t
+// (ci::solve's choices: 0 with the P-space off, else max(pspace_size, g), or t
 // once that leaves out fewer than g), P = n (n + 1) / 2 packed pairs:
 //
-//   ci_solve       g t guesses, nroots t vectors, its t penalized diagonal, and
+//   ci::solve       g t guesses, nroots t vectors, its t penalized diagonal, and
 //                  the step's dim diagonal; the P-space's U, p^2, and Λ, p, and
 //                  max(p, g) int32 picks; after the Davidson, nroots dim
 //                  unpacked roots in its place
 //   davidson       2 m t for V and A V, 3 nroots t for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta;
 //                  its GD+k collapse works in R and V^T C, adding nothing
-//   CiSigma tables two sets of strings (8 bytes) and links (12 bytes per
+//   ci::Sigma tables two sets of strings (8 bytes) and links (12 bytes per
 //                  replacement), the P x (P + 1) contraction in double and
 //                  again in float (apply_fp32's), n + 2 n^2 terms
 //   integrals      (tu|vw) n^4 and h_eff n^2
@@ -70,15 +70,15 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const double roots = nroots;
   const double guesses = std::min(packed, 2.0 * roots);
   const double subspace = std::max(2.0 * roots, std::min(packed, 16.0 * roots));
-  const double requested = std::max(static_cast<double>(CiSolverOptions{}.pspace_size), guesses);
-  const double pspace = CiSolverOptions{}.pspace_size <= 0 ? 0.0
-                        : packed - requested < guesses     ? packed
-                                                           : requested;
+  const double requested = std::max(static_cast<double>(ci::SolverOptions{}.pspace_size), guesses);
+  const double pspace = ci::SolverOptions{}.pspace_size <= 0 ? 0.0
+                        : packed - requested < guesses       ? packed
+                                                             : requested;
   const double orbitals = n;
   const double pairs = orbitals * (orbitals + 1.0) / 2.0;
   const double replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
 
-  // ci_solve's own and the step's diagonal throughout; then the Davidson, or
+  // ci::solve's own and the step's diagonal throughout; then the Davidson, or
   // after it the unpacked roots, whichever is more.
   const double held = ((guesses + roots + 1.0) * packed) + dim + (pspace * (pspace + 1.0)) +
                       (std::max(pspace, guesses) * sizeof(int32_t) / sizeof(double));
@@ -110,7 +110,7 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   // Refused before anything is allocated: past the device's memory, the
   // first allocation to fail would abort (CreatePolicy), not return. The
   // sigma's scratch is what is left: G for the whole triangle when it fits,
-  // else CiSigma blocks it, down to one string's rows a block.
+  // else ci::Sigma blocks it, down to one string's rows a block.
   const double held = fci_device_bytes(nmo, n_electrons / 2, nroots);
   const double need = held + fci_sigma_bytes(nmo, fci_strings(nmo, n_electrons / 2));
   size_t free_bytes = 0;
@@ -159,9 +159,9 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
     }
   }
 
-  const StringSet alpha = FBF_TRY(StringSet::create(nmo, n_electrons / 2));
-  const StringSet beta = FBF_TRY(StringSet::create(nmo, n_electrons / 2));
-  CiSigma sigma = FBF_TRY(CiSigma::create(res, alpha, beta));
+  const ci::StringSet alpha = FBF_TRY(ci::StringSet::create(nmo, n_electrons / 2));
+  const ci::StringSet beta = FBF_TRY(ci::StringSet::create(nmo, n_electrons / 2));
+  ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   // Everything the estimate leaves free, which is G for the whole triangle
   // (and the solve as it was) whenever that fits.
   sigma.set_workspace_limit(static_cast<size_t>(static_cast<double>(free_bytes) - held));
@@ -169,19 +169,19 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const auto dim = static_cast<size_t>(sigma.size());
   Buffers::device<double> diagonal_device(dim, res.device());
   FBF_TRY(sigma.diagonal(res, diagonal_device.data()));
-  // Not ci_solve's defaults: over H2O 6-31G's 1.66M determinants its 1e-12
+  // Not ci::solve's defaults: over H2O 6-31G's 1.66M determinants its 1e-12
   // relative residual is past what the Davidson reaches (it stalls near 1.2e-10
   // absolute, 125 iterations in, as Divergence), and its 100 iterations are
   // not enough for 1e-11 (112 were taken). 1e-11 still leaves the energies'
   // error second order in the residual, ~1e-19 hartree.
-  CiSolverOptions options;
+  ci::SolverOptions options;
   options.davidson.residual_tolerance = 1e-11;
   options.davidson.max_iterations = 400;
-  CiRoots roots =
-      FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal_device.data(), nroots, options));
+  ci::Roots roots =
+      FBF_TRY(ci::solve(res, sigma, alpha, beta, diagonal_device.data(), nroots, options));
 
   const auto count = static_cast<size_t>(nroots);
-  // Each root's 1-RDM on the device, from the roots ci_solve left there.
+  // Each root's 1-RDM on the device, from the roots ci::solve left there.
   std::vector<double> gamma(count * n * n);
   Buffers::device<double> gamma_device(gamma.size(), res.device());
   for (size_t r = 0; r < count; ++r) {

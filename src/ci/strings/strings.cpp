@@ -7,17 +7,18 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 
-namespace free_breakfast {
+namespace free_breakfast::ci {
 
 // A uint64_t holds the bit pattern, so 64 orbitals is the most a string spans.
 constexpr int32_t kMaxStringOrbitals = 64;
 
 Result<StringSet> StringSet::create(const int32_t n_orbitals, const int32_t n_electrons) {
   if (n_orbitals < 0 || n_orbitals > kMaxStringOrbitals) {
-    return err_config("StringSet: {} orbitals, outside [0, {}]", n_orbitals, kMaxStringOrbitals);
+    return err_config("ci::StringSet: {} orbitals, outside [0, {}]", n_orbitals,
+                      kMaxStringOrbitals);
   }
   if (n_electrons < 0 || n_electrons > n_orbitals) {
-    return err_config("StringSet: {} electrons in {} orbitals", n_electrons, n_orbitals);
+    return err_config("ci::StringSet: {} electrons in {} orbitals", n_electrons, n_orbitals);
   }
   const auto n = static_cast<size_t>(n_orbitals);
   const auto n_e = static_cast<size_t>(n_electrons);
@@ -37,7 +38,7 @@ Result<StringSet> StringSet::create(const int32_t n_orbitals, const int32_t n_el
   const int64_t count = c(n, n_e);
   const auto per = static_cast<int64_t>(n_electrons) * (n_orbitals - n_electrons + 1);
   if (count >= kCap || count * per >= kCap) {
-    return err_config("StringSet: {} electrons in {} orbitals is more strings or replacements "
+    return err_config("ci::StringSet: {} electrons in {} orbitals is more strings or replacements "
                       "than an int32_t counts",
                       n_electrons, n_orbitals);
   }
@@ -113,4 +114,4 @@ int32_t StringSet::address(const uint64_t string) const noexcept {
   return address;
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::ci

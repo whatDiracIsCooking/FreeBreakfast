@@ -1,5 +1,5 @@
 /// @file
-/// @brief CiSigma's uploads and launches, and ci_unpack and ci_pack.
+/// @brief Sigma's uploads and launches, and unpack and pack.
 
 module;
 
@@ -21,26 +21,26 @@ import free_breakfast.ci.strings;
 
 #include "diagnostics.h"
 
-namespace free_breakfast {
+namespace free_breakfast::ci {
 
-static_assert(LinearOperator<CiSigma, double>);
+static_assert(LinearOperator<Sigma, double>);
 
-Status ci_unpack(DeviceResources &res, const int32_t n_strings, const int32_t k,
-                 const double *const x, double *const y) {
+Status unpack(DeviceResources &res, const int32_t n_strings, const int32_t k, const double *const x,
+              double *const y) {
   if (n_strings < 0 || k < 0) {
-    return err_config("ci_unpack: {} vectors over {} strings", k, n_strings);
+    return err_config("ci::unpack: {} vectors over {} strings", k, n_strings);
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::ci_unpack(res.stream(), n_strings, k, x, y));
+  return gpu_status(device::unpack(res.stream(), n_strings, k, x, y));
 }
 
-Status ci_pack(DeviceResources &res, const int32_t n_strings, const int32_t k,
-               const double *const x, double *const y) {
+Status pack(DeviceResources &res, const int32_t n_strings, const int32_t k, const double *const x,
+            double *const y) {
   if (n_strings < 0 || k < 0) {
-    return err_config("ci_pack: {} vectors over {} strings", k, n_strings);
+    return err_config("ci::pack: {} vectors over {} strings", k, n_strings);
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::ci_pack(res.stream(), n_strings, k, x, y));
+  return gpu_status(device::pack(res.stream(), n_strings, k, x, y));
 }
 
 // The bytes of D one chunk of apply's rows may take: big enough that the gemm
@@ -86,9 +86,9 @@ Status ci_upload(const wwr::wwrStream_t stream, Buffers::device<T> &to,
                                         wwr::wwrMemcpyHostToDevice, stream));
 }
 
-CiSigma::CiSigma(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
-                 const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per,
-                 const bool one_set)
+Sigma::Sigma(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
+             const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per,
+             const bool one_set)
     : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
       alpha_per_{alpha_per}, beta_per_{beta_per}, one_set_{one_set},
       alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
@@ -102,22 +102,21 @@ CiSigma::CiSigma(DeviceResources &res, const int32_t n_orbitals, const int32_t n
       diagonal_terms_(static_cast<size_t>(n_orbitals) * (1 + (2 * static_cast<size_t>(n_orbitals))),
                       res.device()) {}
 
-Result<CiSigma> CiSigma::create(DeviceResources &res, const StringSet &alpha,
-                                const StringSet &beta) {
+Result<Sigma> Sigma::create(DeviceResources &res, const StringSet &alpha, const StringSet &beta) {
   if (alpha.n_orbitals() != beta.n_orbitals()) {
-    return err_config("CiSigma: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
+    return err_config("ci::Sigma: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
                       beta.n_orbitals());
   }
   if (alpha.n_orbitals() == 0) {
-    return err_config("CiSigma: the strings span no orbitals");
+    return err_config("ci::Sigma: the strings span no orbitals");
   }
   if (static_cast<int64_t>(alpha.size()) * beta.size() > std::numeric_limits<int32_t>::max()) {
-    return err_config("CiSigma: {} x {} determinants is more than an int32_t counts", alpha.size(),
-                      beta.size());
+    return err_config("ci::Sigma: {} x {} determinants is more than an int32_t counts",
+                      alpha.size(), beta.size());
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  CiSigma sigma(res, alpha.n_orbitals(), alpha.size(), beta.size(), alpha.replacements_per_string(),
-                beta.replacements_per_string(), alpha.n_electrons() == beta.n_electrons());
+  Sigma sigma(res, alpha.n_orbitals(), alpha.size(), beta.size(), alpha.replacements_per_string(),
+              beta.replacements_per_string(), alpha.n_electrons() == beta.n_electrons());
   const std::vector<int32_t> alpha_links = ci_link_table(alpha);
   const std::vector<int32_t> beta_links = ci_link_table(beta);
   const std::vector<uint64_t> alpha_strings{alpha.strings().begin(), alpha.strings().end()};
@@ -132,16 +131,16 @@ Result<CiSigma> CiSigma::create(DeviceResources &res, const StringSet &alpha,
   return sigma;
 }
 
-Status CiSigma::set_integrals(DeviceResources &res, const double e_core,
-                              const std::span<const double> h_eff,
-                              const std::span<const double> eri) {
+Status Sigma::set_integrals(DeviceResources &res, const double e_core,
+                            const std::span<const double> h_eff,
+                            const std::span<const double> eri) {
   if (res.dev_idx() != dev_idx_) {
-    return err_config("CiSigma: tables are on device {}, but the call passed device {}", dev_idx_,
+    return err_config("ci::Sigma: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
   const auto n = static_cast<size_t>(n_orbitals_);
   if (h_eff.size() != n * n || eri.size() != n * n * n * n) {
-    return err_config("CiSigma: {} orbitals want h_eff of {} and eri of {}, given {} and {}", n,
+    return err_config("ci::Sigma: {} orbitals want h_eff of {} and eri of {}, given {} and {}", n,
                       n * n, n * n * n * n, h_eff.size(), eri.size());
   }
   const auto at = [&](size_t t, size_t u, size_t v, size_t w) {
@@ -191,21 +190,21 @@ Status CiSigma::set_integrals(DeviceResources &res, const double e_core,
 }
 
 template <typename T>
-Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *const x,
-                         double *const y, const T *const contraction, const CiLayout layout) {
+Status Sigma::apply_as(DeviceResources &res, const int32_t k, const double *const x,
+                       double *const y, const T *const contraction, const Layout layout) {
   if (!has_integrals_) {
-    return err_config("CiSigma: apply before set_integrals");
+    return err_config("ci::Sigma: apply before set_integrals");
   }
   if (res.dev_idx() != dev_idx_) {
-    return err_config("CiSigma: tables are on device {}, but the call passed device {}", dev_idx_,
+    return err_config("ci::Sigma: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
   if (k < 0) {
-    return err_config("CiSigma: a block of {} vectors", k);
+    return err_config("ci::Sigma: a block of {} vectors", k);
   }
-  const bool symmetric = layout == CiLayout::symmetric;
+  const bool symmetric = layout == Layout::symmetric;
   if (symmetric && !one_set_) {
-    return err_config("CiSigma: the symmetric layout needs one set of strings for both spins");
+    return err_config("ci::Sigma: the symmetric layout needs one set of strings for both spins");
   }
   if (k == 0) {
     return {};
@@ -247,25 +246,25 @@ Status CiSigma::apply_as(DeviceResources &res, const int32_t k, const double *co
       const int32_t count = std::min(chunk, rows - begin);
       FBF_TRY(gpu_status(
           wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(count) * pairs, stream)));
-      FBF_TRY(gpu_status(device::ci_gather_d(stream, symmetric, begin, count, rows, n_beta_,
-                                             alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                             beta_per_, false, xj, d)));
+      FBF_TRY(gpu_status(device::gather_d(stream, symmetric, begin, count, rows, n_beta_,
+                                          alpha_links_.data(), alpha_per_, beta_links_.data(),
+                                          beta_per_, false, xj, d)));
       FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
           res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, count, n_pairs + 1, n_pairs,
           &kOne<T>, d, count, contraction, n_pairs, &kZero<T>, g + begin, rows)));
     }
-    FBF_TRY(gpu_status(device::ci_sigma_from_g(stream, symmetric, rows, rows, n_beta_, n_pairs,
-                                               alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                               beta_per_, e_core_, xj, g, yj)));
+    FBF_TRY(gpu_status(device::sigma_from_g(stream, symmetric, rows, rows, n_beta_, n_pairs,
+                                            alpha_links_.data(), alpha_per_, beta_links_.data(),
+                                            beta_per_, e_core_, xj, g, yj)));
   }
   return {};
 }
 
 template <typename T>
-Status CiSigma::apply_blocked(DeviceResources &res, const int32_t k, const double *const x,
-                              double *const y, const T *const contraction, const CiLayout layout) {
+Status Sigma::apply_blocked(DeviceResources &res, const int32_t k, const double *const x,
+                            double *const y, const T *const contraction, const Layout layout) {
   const wwr::wwrStream_t stream = res.stream();
-  const bool symmetric = layout == CiLayout::symmetric;
+  const bool symmetric = layout == Layout::symmetric;
   const int32_t rows = size(layout);
   const auto n_pairs = static_cast<int32_t>(ci_pair(static_cast<size_t>(n_orbitals_), 0));
   const auto pairs = static_cast<size_t>(n_pairs);
@@ -321,14 +320,14 @@ Status CiSigma::apply_blocked(DeviceResources &res, const int32_t k, const doubl
           const int32_t many = std::min(step, rows_here - begin);
           FBF_TRY(gpu_status(
               wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(many) * pairs, stream)));
-          FBF_TRY(gpu_status(device::ci_gather_d_block(
+          FBF_TRY(gpu_status(device::gather_d_block(
               stream, symmetric, beta_major, first, begin, many, n_alpha_, n_beta_,
               alpha_links_.data(), alpha_per_, beta_links_.data(), beta_per_, xj, d)));
           FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
               res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, many, n_pairs + 1, n_pairs,
               &kOne<T>, d, many, contraction, n_pairs, &kZero<T>, g + begin, rows_here)));
         }
-        FBF_TRY(gpu_status(device::ci_sigma_from_g_block(
+        FBF_TRY(gpu_status(device::sigma_from_g_block(
             stream, symmetric, beta_major, first, count, n_alpha_, n_beta_, n_pairs,
             alpha_links_.data(), alpha_per_, beta_links_.data(), beta_per_, e_core_, xj, g, yj)));
       }
@@ -337,39 +336,39 @@ Status CiSigma::apply_blocked(DeviceResources &res, const int32_t k, const doubl
   return {};
 }
 
-Status CiSigma::apply(DeviceResources &res, const int32_t k, const double *const x, double *const y,
-                      const CiLayout layout) {
+Status Sigma::apply(DeviceResources &res, const int32_t k, const double *const x, double *const y,
+                    const Layout layout) {
   return apply_as(res, k, x, y, contraction_.data(), layout);
 }
 
-Status CiSigma::apply_fp32(DeviceResources &res, const int32_t k, const double *const x,
-                           double *const y, const CiLayout layout) {
+Status Sigma::apply_fp32(DeviceResources &res, const int32_t k, const double *const x,
+                         double *const y, const Layout layout) {
   return apply_as(res, k, x, y, contraction_fp32_.data(), layout);
 }
 
-Status CiSigma::diagonal(DeviceResources &res, double *const diagonal) {
+Status Sigma::diagonal(DeviceResources &res, double *const diagonal) {
   if (!has_integrals_) {
-    return err_config("CiSigma: diagonal before set_integrals");
+    return err_config("ci::Sigma: diagonal before set_integrals");
   }
   if (res.dev_idx() != dev_idx_) {
-    return err_config("CiSigma: tables are on device {}, but the call passed device {}", dev_idx_,
+    return err_config("ci::Sigma: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::ci_diagonal(res.stream(), n_orbitals_, n_alpha_, n_beta_,
-                                        alpha_strings_.data(), beta_strings_.data(), e_core_,
-                                        diagonal_terms_.data(), diagonal));
+  return gpu_status(device::diagonal(res.stream(), n_orbitals_, n_alpha_, n_beta_,
+                                     alpha_strings_.data(), beta_strings_.data(), e_core_,
+                                     diagonal_terms_.data(), diagonal));
 }
 
-Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const gamma,
-                     const CiLayout layout) {
+Status Sigma::rdm1(DeviceResources &res, const double *const c, double *const gamma,
+                   const Layout layout) {
   if (res.dev_idx() != dev_idx_) {
-    return err_config("CiSigma: tables are on device {}, but the call passed device {}", dev_idx_,
+    return err_config("ci::Sigma: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
-  const bool symmetric = layout == CiLayout::symmetric;
+  const bool symmetric = layout == Layout::symmetric;
   if (symmetric && !one_set_) {
-    return err_config("CiSigma: the symmetric layout needs one set of strings for both spins");
+    return err_config("ci::Sigma: the symmetric layout needs one set of strings for both spins");
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
@@ -390,14 +389,14 @@ Status CiSigma::rdm1(DeviceResources &res, const double *const c, double *const 
     const int32_t count = std::min(chunk, rows - begin);
     FBF_TRY(gpu_status(
         wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
-    FBF_TRY(gpu_status(device::ci_gather_d(stream, symmetric, begin, count, rows, n_beta_,
-                                           alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                           beta_per_, true, c, d)));
+    FBF_TRY(gpu_status(device::gather_d(stream, symmetric, begin, count, rows, n_beta_,
+                                        alpha_links_.data(), alpha_per_, beta_links_.data(),
+                                        beta_per_, true, c, d)));
     FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
         res.blas().get(), wwr::WWRBLAS_OP_T, count, n_pairs, &kOne<double>, d, count, c + begin, 1,
         begin == 0 ? &kZero<double> : &kOne<double>, packed, 1)));
   }
-  return gpu_status(device::ci_unpack_rdm1(stream, n_orbitals_, packed, gamma));
+  return gpu_status(device::unpack_rdm1(stream, n_orbitals_, packed, gamma));
 }
 
-} // namespace free_breakfast
+} // namespace free_breakfast::ci

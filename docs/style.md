@@ -85,6 +85,77 @@ The prefix is for preprocessor macros only. CMake options and cache variables
 in a global namespace shared with every other project, where the short prefix
 would be ambiguous.
 
+### Namespaces, and when a name needs a prefix
+
+**A name is qualified exactly as much as it takes to be unambiguous in the
+namespace it lands in.** The directory a file sits in never dictates the
+prefix; the qualification actually needed does.
+
+| Where the name lands | Spelling | Example |
+| --- | --- | --- |
+| A **method**'s namespace, mirroring the module path | bare | `ci::Sigma`, `ci::solve`, `casscf::Fock` |
+| `free_breakfast`, for a **quantity** | bare | `overlap`, `coulomb`, `aberth`, `davidson_solve` |
+| A `device` leaf under the module's own namespace | bare | `ci::device::olsen` |
+| The flat `free_breakfast::device` | prefixed | `exchange_blocks`, `overlap_class`, `merge_sort_passes` |
+| A register of generically-named things | bare, inside it | `log::error`, `math::idivup` |
+
+**Methods get a namespace; quantities do not.** A quantity's vocabulary is
+self-disambiguating — nothing else in the tree wants `overlap`, `kinetic`,
+`nuclear_attraction` or `aberth`, and a new integral kind brings a new unique
+word. A method's is not: `rdm1`, `fock`, `energy`, `gradient` and `solve` recur
+once per method. So `ci`, `casscf` and whatever follows each take a namespace
+and spell their contents bare inside it, and adding a method adds no prefixes.
+
+Several quantity modules **cannot** take a namespace of their own name even if
+one were wanted: their entry point *is* that name. `namespace
+free_breakfast::overlap` alongside `Status free_breakfast::overlap(…)` is a
+name conflict the compiler rejects (*redefinition as a different kind of
+symbol*), not a preference. `overlap`, `coulomb`, `kinetic`, `exchange`,
+`overlap_mixed`, `dq`, `e_hermite`, `j_coulomb`, `core_hamiltonian`,
+`cg_unitary`, `diagonalize`, `orthogonalize` and `polynomial_roots` are all in
+that position.
+
+**`device` is always the leaf, directly under the module's own namespace.**
+`free_breakfast.ci.*`'s launchers are `free_breakfast::ci::device`; a module
+with no namespace of its own has `free_breakfast` as that parent, so
+`recipes/sort`'s stay in `free_breakfast::device`. Never `device::ci` — the
+leaf position is what keeps the namespace path and the module path one
+hierarchy instead of two. WarpWraps' own bridges do the same, in
+`wwr::extension::device`.
+
+**Add a namespace for a method, for the `device` leaf, or for a register of
+names that are generic by nature** — `log`, `math`, and `free_breakfast::test`
+for the host oracles under `test/`. Never for an area of the tree: there is no
+`integrals::`, `io::` or `recipes::`, because those hold unique quantity nouns
+and nesting them would qualify most of the tree against nothing.
+
+**A prefix survives only where no scope can carry the qualification:**
+
+- the flat `free_breakfast::device`, for a module with no namespace of its own;
+- macros (`FBF_`) and CMake or environment variables (`FREE_BREAKFAST_`);
+- **filenames**, because a `.h` reached through an include *directory* lands in
+  a flat search path shared with every other one. `ci_symmetric.h` is included
+  as `"ci_symmetric.h"` from two sibling directories, alongside `runtime.h` and
+  `integral_types.h`, so it keeps its prefix;
+- **error and log message text**, which reaches its reader with no namespace
+  around it. Write the qualified name: `err_config("ci::pack: …")`, never
+  `"pack: …"`;
+- **gtest suite names**, which `gtest_discover_tests` turns into one ctest
+  entry each in a flat registry that `ctest -R` selects over — and which the
+  `TEST` macro pastes into an identifier, so a qualified name does not even
+  compile. They stay `CiSigma`, `CiSolver`, `CiStrings`, `McscfFock`.
+
+**When a name does need qualifying, qualify it by the method or the data
+structure, not the directory.** `casscf_integrals` lives in
+`integrals/active_space/`, `ordered_pair_*` straddles `integrals/mmd/` and
+`exchange/pairs/`, and `ci_*` spanned four sub-modules — a directory prefix
+would have been wrong in every one. Inside a method namespace, this rule is
+what keeps `ci::device::olsen` from being written `ci::device::ci_olsen`.
+
+A name private to a `.cu`'s anonymous namespace keeps whatever specific name it
+has: the file and the anonymous namespace already scope it, and
+"Module-private code" below asks for specific names there regardless.
+
 ## Integer types
 
 **Every integer states its width.** Use `int8_t` … `int64_t`, `uint8_t` …

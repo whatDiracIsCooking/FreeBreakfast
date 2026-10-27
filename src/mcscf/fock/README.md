@@ -37,7 +37,7 @@ Status unpack_orbital_pairs(DeviceResources &res, int32_t nmo, int32_t ncore, in
 
 The arguments through `k_classes` are `active_space_hamiltonian`'s, built once
 per basis; `ppaa` is `casscf_integrals`' (pq|uv) over the same C (empty for
-ncas = 0), and γ and Γ are `CiRdm::rdm12`'s, row-major, read back to the host
+ncas = 0), and γ and Γ are `ci::Rdm::rdm12`'s, row-major, read back to the host
 (the energy and the prune cap read them there). Every matrix
 is column-major, (p, q) at p + nmo q. The packed order is
 [`../README.md`](../README.md)'s. The tau defaults are `casscf_integrals`',
@@ -112,7 +112,7 @@ recorded start: H₂O cc-pVDZ CAS(4,4) from RHF orbitals [2, 3, 5, 6], N₂ cc-p
 CAS(6,6) frontier, H₂CO cc-pVDZ CAS(4,3) at two singlets weighted [0.5, 0.5]
 and [0.7, 0.3], and H₂O cc-pVDZ by AVAS (O 2p, H 1s). The test reaches each
 start through `pipeline.active_space` and the `Casci` step, over an SCF with J
-unscreened, and takes the RDMs from `CiRdm::rdm12` over the Casci step's roots; the
+unscreened, and takes the RDMs from `ci::Rdm::rdm12` over the Casci step's roots; the
 orbitals pair with PySCF's by their energies, checked to 1e-6.
 
 - the energy against PySCF's CASCI energy, against the Casci step's roots

@@ -195,7 +195,7 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_fci_reference.
 |---|---|
 | `provenance` | PySCF and numpy versions, date, host, the command that wrote it |
 | `cases` | One per active space: `name`, `basis` (this tree's builtin name), `charge`, `atoms` (`symbol`, `z`, `coord` in bohr), `electrons`, `ncas`, `nelecas`, `ncore`, `active` (the 0-based MO indices, or `null` for the frontier orbitals), `avas` (`labels` and `threshold` of an AVAS case, whose `ncas` and `nelecas` are `mcscf.avas`'s, or `null`), `rhf_energy`, `mo_energies` (ascending), `e_core` (hartree, nuclear repulsion included), and `roots` |
-| `roots` | The lowest three singlets (one for N₂'s AVAS CAS(10,8), whose excited roots `ci_solve` does not converge at its defaults), ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another root of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
+| `roots` | The lowest three singlets (one for N₂'s AVAS CAS(10,8), whose excited roots `ci::solve` does not converge at its defaults), ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another root of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
 
 The 1-RDM itself is not recorded: it depends on the signs of the active
 orbitals, which the two codes pick independently, and its eigenvalues do not.

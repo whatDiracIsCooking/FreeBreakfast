@@ -1,6 +1,6 @@
 /// @file
 /// @brief σ = Hc and diag(H) for a determinant CI vector over two StringSets,
-/// from the active-space integrals as plain arrays: CiSigma on the device, as
+/// from the active-space integrals as plain arrays: Sigma on the device, as
 /// a LinearOperator, with the 1-RDM over the same tables.
 ///
 /// The host references it is tested against are test/ci_oracles' host_sigma
@@ -15,7 +15,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
 
-export namespace free_breakfast {
+export namespace free_breakfast::ci {
 
 /// @brief How a device CI vector is laid out.
 ///
@@ -29,7 +29,7 @@ export namespace free_breakfast {
 /// The scaling makes the packing an isometry, so the plain dot product, and
 /// with it a symmetric operator's symmetry, are kept, and davidson_solve runs
 /// on packed vectors as it is. A set of m strings packs to m (m + 1) / 2.
-enum class CiLayout : int32_t { full, symmetric };
+enum class Layout : int32_t { full, symmetric };
 
 /// @brief Unpack the @p k symmetric-layout device vectors @p x, each
 /// m (m + 1) / 2 long for @p n_strings = m, into the @p k full-layout ones
@@ -39,28 +39,28 @@ enum class CiLayout : int32_t { full, symmetric };
 ///
 /// @return InvalidConfig for a negative @p n_strings or @p k; or the launch's
 ///         GpuRuntime error.
-[[nodiscard]] Status ci_unpack(DeviceResources &res, int32_t n_strings, int32_t k, const double *x,
-                               double *y);
+[[nodiscard]] Status unpack(DeviceResources &res, int32_t n_strings, int32_t k, const double *x,
+                            double *y);
 
 /// @brief Pack the @p k full-layout device vectors @p x, each m² long for
 /// @p n_strings = m, into the @p k symmetric-layout ones @p y, each
-/// m (m + 1) / 2, both blocks column-major: ci_unpack's inverse on vectors
+/// m (m + 1) / 2, both blocks column-major: unpack's inverse on vectors
 /// symmetric under the swap of the two strings. Triangle element (I_α, I_β)
 /// of y is (x(I_α, I_β) + x(I_β, I_α)) / √2 off the diagonal and x(I_α, I_α)
-/// on it, which is ci_unpack's adjoint: any x goes to the packing of its
+/// on it, which is unpack's adjoint: any x goes to the packing of its
 /// swap-symmetric part. Queued on res.stream().
 ///
 /// @return InvalidConfig for a negative @p n_strings or @p k; or the launch's
 ///         GpuRuntime error.
-[[nodiscard]] Status ci_pack(DeviceResources &res, int32_t n_strings, int32_t k, const double *x,
-                             double *y);
+[[nodiscard]] Status pack(DeviceResources &res, int32_t n_strings, int32_t k, const double *x,
+                          double *y);
 
 /// @brief σ = Hc and diag(H) on the device: a
-/// `LinearOperator<CiSigma, double>` over blocks of CI vectors.
+/// `LinearOperator<Sigma, double>` over blocks of CI vectors.
 ///
 /// H = E_core + Σ_tu h_tu E_tu + ½ Σ_tuvw (tu|vw) (E_tu E_vw − δ_uv E_tw),
 /// E_tu the spin-summed excitation operator, over the determinants of two
-/// StringSets in CiLayout::full (or, over one set, CiLayout::symmetric).
+/// StringSets in Layout::full (or, over one set, Layout::symmetric).
 ///
 /// create uploads the two sets' strings and replacement lists, once per
 /// (n, N_α, N_β); set_integrals uploads an H over them, and may be called again
@@ -77,7 +77,7 @@ enum class CiLayout : int32_t { full, symmetric };
 /// with the block.
 ///
 /// Over one StringSet for both spins, apply and apply_fp32 also take blocks in
-/// CiLayout::symmetric, where H's commuting with the swap of the two strings
+/// Layout::symmetric, where H's commuting with the swap of the two strings
 /// lets only the rows I_α ≥ I_β be computed: G_J for J below the triangle is
 /// G of its mirror. That halves the gathers, the gemm and G's scratch.
 ///
@@ -88,7 +88,7 @@ enum class CiLayout : int32_t { full, symmetric };
 ///
 /// Move-only; the buffers are on the device of the DeviceResources create was
 /// given, which every call must pass again.
-class CiSigma {
+class Sigma {
 public:
   /// @brief Upload @p alpha's and @p beta's strings and replacement lists to
   /// @p res's device. A failed allocation aborts (CreatePolicy).
@@ -96,14 +96,14 @@ public:
   /// @return InvalidConfig when the two sets span different orbital counts or
   ///         none, or alpha.size() · beta.size() does not fit an int32_t; or the
   ///         GpuRuntime error of an upload.
-  [[nodiscard]] static Result<CiSigma> create(DeviceResources &res, const StringSet &alpha,
-                                              const StringSet &beta);
+  [[nodiscard]] static Result<Sigma> create(DeviceResources &res, const StringSet &alpha,
+                                            const StringSet &beta);
 
-  CiSigma(CiSigma &&) noexcept = default;
-  CiSigma &operator=(CiSigma &&) noexcept = default;
-  CiSigma(const CiSigma &) = delete;
-  CiSigma &operator=(const CiSigma &) = delete;
-  ~CiSigma() = default;
+  Sigma(Sigma &&) noexcept = default;
+  Sigma &operator=(Sigma &&) noexcept = default;
+  Sigma(const Sigma &) = delete;
+  Sigma &operator=(const Sigma &) = delete;
+  ~Sigma() = default;
 
   /// @brief Upload an H over these strings, as host arrays: @p e_core, the
   /// constant (nuclear repulsion and the frozen core's energy); @p h_eff, n × n
@@ -123,15 +123,15 @@ public:
   /// with res.blas(), whose pointer mode must be host (its default, and what
   /// davidson_solve holds).
   ///
-  /// CiLayout::symmetric takes and gives vectors symmetric under the swap of
-  /// the two strings, packed (see CiLayout); its scratch is G for the
+  /// Layout::symmetric takes and gives vectors symmetric under the swap of
+  /// the two strings, packed (see Layout); its scratch is G for the
   /// triangle's rows, half the full layout's.
   ///
   /// @return InvalidConfig before set_integrals, for another device, for a
-  ///         negative @p k, or for CiLayout::symmetric over two different
+  ///         negative @p k, or for Layout::symmetric over two different
   ///         sets; or the GpuRuntime error of a launch or the gemm.
   [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *x, double *y,
-                             CiLayout layout = CiLayout::full);
+                             Layout layout = Layout::full);
 
   /// @brief apply in single precision: the same Y = H X over the same double
   /// blocks, but D, G and the contraction matrix are float and the gemm is
@@ -139,12 +139,12 @@ public:
   /// at the FP32 rate. Each D entry is the float of at most two FP64 terms,
   /// and the second gather sums G in double, so the error is float rounding's,
   /// of D, the contraction and G: a column of Y is good to ~1e-7 relative of
-  /// ‖Y − E_core X‖, not to roundoff. ci_solve's first stage, never its
+  /// ‖Y − E_core X‖, not to roundoff. solve's first stage, never its
   /// converged roots.
   ///
   /// @return As apply.
   [[nodiscard]] Status apply_fp32(DeviceResources &res, int32_t k, const double *x, double *y,
-                                  CiLayout layout = CiLayout::full);
+                                  Layout layout = Layout::full);
 
   /// @brief Bound the device workspace apply and apply_fp32 take to @p bytes;
   /// unbounded until called.
@@ -163,7 +163,7 @@ public:
   ///
   /// While bounded, a call first grows the workspace to the lesser of
   /// @p bytes and apply's unblocked scratch, so apply_fp32 followed by apply
-  /// (ci_solve's two stages) shares one allocation rather than holding the old
+  /// (solve's two stages) shares one allocation rather than holding the old
   /// and the new across a growth: the bound covers the peak.
   void set_workspace_limit(size_t bytes) noexcept { workspace_limit_ = bytes; }
 
@@ -177,7 +177,7 @@ public:
   [[nodiscard]] Status diagonal(DeviceResources &res, double *diagonal);
 
   /// @brief The exchange integrals K_ij = (ij|ji) of set_integrals' H, as
-  /// n × n device doubles (row-major, symmetric), which ci_solve's
+  /// n × n device doubles (row-major, symmetric), which solve's
   /// spin-averaged diagonal takes; null before set_integrals. Each
   /// set_integrals rewrites them in place.
   [[nodiscard]] const double *exchange() const noexcept {
@@ -185,7 +185,7 @@ public:
     return has_integrals_ ? diagonal_terms_.data() + n + (n * n) : nullptr;
   }
 
-  /// @brief set_integrals' H as apply contracts it, which ci_solve's P-space
+  /// @brief set_integrals' H as apply contracts it, which solve's P-space
   /// reads its Slater–Condon elements from: n_pairs × (n_pairs + 1) device
   /// doubles, column-major, n_pairs = n (n + 1) / 2 over the pairs
   /// pair(t, u) = t (t + 1) / 2 + u, t ≥ u. Column pair(t, u) holds ½ (tu|vw)
@@ -205,37 +205,37 @@ public:
   /// chunk and the n(n+1)/2 packed sums, is res.device_workspace(). Queued on
   /// res.stream() with res.blas(), in host pointer mode.
   ///
-  /// CiLayout::symmetric takes a packed swap-symmetric c, for which D_K is D
+  /// Layout::symmetric takes a packed swap-symmetric c, for which D_K is D
   /// of K's mirror: the gather walks the triangle's rows alone, each
   /// off-diagonal one scaled by √2, and with the packed c's own √2 the gemv's
   /// sum gives each the weight 2 of itself and its mirror. That halves the
   /// gather and the gemv.
   ///
-  /// @return InvalidConfig for another device, or for CiLayout::symmetric over
+  /// @return InvalidConfig for another device, or for Layout::symmetric over
   ///         two different sets; or the GpuRuntime error of a launch or a gemv.
   [[nodiscard]] Status rdm1(DeviceResources &res, const double *c, double *gamma,
-                            CiLayout layout = CiLayout::full);
+                            Layout layout = Layout::full);
 
   /// @brief The operator's n: the number of determinants,
-  /// alpha.size() · beta.size(), or for CiLayout::symmetric the triangle's,
+  /// alpha.size() · beta.size(), or for Layout::symmetric the triangle's,
   /// alpha.size() (alpha.size() + 1) / 2.
-  [[nodiscard]] int32_t size(CiLayout layout = CiLayout::full) const noexcept {
-    return layout == CiLayout::symmetric ? n_alpha_ * (n_alpha_ + 1) / 2 : n_alpha_ * n_beta_;
+  [[nodiscard]] int32_t size(Layout layout = Layout::full) const noexcept {
+    return layout == Layout::symmetric ? n_alpha_ * (n_alpha_ + 1) / 2 : n_alpha_ * n_beta_;
   }
 
 private:
-  CiSigma(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
-          int32_t alpha_per, int32_t beta_per, bool one_set);
+  Sigma(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
+        int32_t alpha_per, int32_t beta_per, bool one_set);
 
   // apply and apply_fp32: D and G of T, over the contraction of T.
   template <typename T>
   Status apply_as(DeviceResources &res, int32_t k, const double *x, double *y, const T *contraction,
-                  CiLayout layout);
+                  Layout layout);
 
   // apply_as past workspace_limit_: G a block of strings at a time.
   template <typename T>
   Status apply_blocked(DeviceResources &res, int32_t k, const double *x, double *y,
-                       const T *contraction, CiLayout layout);
+                       const T *contraction, Layout layout);
 
   int32_t dev_idx_;
   int32_t n_orbitals_;
@@ -243,7 +243,7 @@ private:
   int32_t n_beta_;  // beta.size()
   int32_t alpha_per_;
   int32_t beta_per_;
-  bool one_set_; // alpha and beta are the same (n, N): CiLayout::symmetric applies
+  bool one_set_; // alpha and beta are the same (n, N): Layout::symmetric applies
   bool has_integrals_ = false;
   double e_core_ = 0.0;
   // set_workspace_limit's bound on apply's scratch, in bytes.
@@ -262,4 +262,4 @@ private:
   Buffers::device<double> diagonal_terms_;
 };
 
-} // namespace free_breakfast
+} // namespace free_breakfast::ci
