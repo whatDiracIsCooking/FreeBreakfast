@@ -18,8 +18,8 @@ free_breakfast_add_interface_library(
 # sources are the
 # launcher and the generated kernels, one per class, each compiled on its own:
 # pair_bound (kernels/pair_bound/, written by
-# tools/emit_one_electron_kernels.py) and record_bound (kernels/record_bound/,
-# written by tools/emit_exchange_kernels.py). Under CUDA that wants
+# tools/emit/one_electron_kernels.py) and record_bound (kernels/record_bound/,
+# written by tools/emit/exchange_kernels.py). Under CUDA that wants
 # relocatable device code, this library's default, so it must never pass
 # NO_DEVICE_LINKING. Only mmd's own module calls the launchers. The bridge
 # header names int32_t, PrimitivePairClassView, wwrStream_t and

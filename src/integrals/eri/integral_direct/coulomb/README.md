@@ -109,7 +109,7 @@ doubles apart. EXESS's J engine transposes `D_q` for the same reason
 (`[Fock]` §4.2). The ket gather keeps the layout, moving columns. `J_p`
 stays record-major: each warp owns one bra's row.
 
-**Generated kernels are committed, not built.** `tools/emit_coulomb_kernels.py`
+**Generated kernels are committed, not built.** `tools/emit/coulomb_kernels.py`
 writes each step's `kernels/` (`dq/kernels/`, `e_hermite/kernels/`,
 `j_coulomb/kernels/`) from the FelizJueves submodule; re-run it after bumping
 the submodule. Each `kernels/.clang-format` turns formatting off, and

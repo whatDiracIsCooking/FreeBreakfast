@@ -1,4 +1,4 @@
-// kbr's class tables: written by tools/emit_exchange_kernels.py from
+// kbr's class tables: written by tools/emit/exchange_kernels.py from
 // FelizJueves's kernel_kblock_rolled.tables. Do not edit.
 // Included by exchange_launch.cu alone: it defines the arrays.
 //

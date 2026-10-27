@@ -1,5 +1,5 @@
 # The DF Coulomb metric's device library: the generated kernels metric<lP, lQ>
-# (kernels/, written by tools/emit_df_kernels.py), one per aux class lP <= lQ
+# (kernels/, written by tools/emit/df_kernels.py), one per aux class lP <= lQ
 # through g, each compiled on its own, and metric_launch.cu, the per-class
 # launcher, which checks their table (kernels/metric.h) against the limit in
 # metric_bridge.h at compile time. Device code in its own library, so its

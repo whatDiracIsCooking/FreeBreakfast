@@ -207,7 +207,7 @@ cannot be written is `write_molden`'s error, after the SCF has converged.
 ## Tests
 
 `test/gtest/pipeline_scf_gpu.cpp`, against PySCF's RHF in
-`test/gtest/data/scf/rhf.json` (`tools/emit_scf_reference.py`), which ran over
+`test/gtest/data/scf/rhf.json` (`tools/emit/scf_reference.py`), which ran over
 this tree's own `data/basis` files:
 
 - The step's contract is checked by `static_assert`.
@@ -228,7 +228,7 @@ this tree's own `data/basis` files:
 
 `test/gtest/pipeline_df_scf_gpu.cpp`, against PySCF's DF-RHF over the same
 orbital and fitting sets (`test/gtest/data/density_fitting/`,
-`tools/emit_df_reference.py`):
+`tools/emit/df_reference.py`):
 
 - H2O and NH4+ in cc-pVDZ / cc-pVDZ-JKFIT and H2O in cc-pVTZ /
   cc-pVTZ-JKFIT (f orbitals, g fitting functions), each over the setup steps

@@ -1,5 +1,5 @@
 // The Fci step against PySCF's fci.FCI (data/fci/fci.json,
-// tools/emit_fci_step_reference.py), through the real registry: a config
+// tools/emit/fci_step_reference.py), through the real registry: a config
 // naming [fci] plans the whole chain to the ScfOutput and solves the full CI over
 // every orbital on the GPU sigma. Compared: each singlet's total energy and
 // <S^2>, and, for a root of no degenerate level, its natural occupations.

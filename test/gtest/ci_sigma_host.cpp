@@ -2,7 +2,7 @@
 // Slater–Condon rules directly on determinants, as spin-orbital bit patterns,
 // which shares nothing with the module's replacement lists; and that dense H's
 // lowest eigenvalues against PySCF's fci.direct_spin1 (data/ci/direct_spin1.json,
-// written by tools/emit_fci_reference.py).
+// written by tools/emit/fci_reference.py).
 
 #include <gtest/gtest.h>
 

@@ -46,11 +46,11 @@ constexpr int32_t kMaxL = static_cast<int32_t>(std::extent_v<decltype(dq_kernels
 
 static_assert(std::extent_v<decltype(dq_kernels), 1> == kMaxL + 1,
               "kernels/'s [la][lb] table is not square: rerun "
-              "tools/emit_coulomb_kernels.py");
+              "tools/emit/coulomb_kernels.py");
 
 static_assert(kMaxL == kCoulombMaxMomentum,
               "kernels/'s table and kCoulombMaxMomentum disagree: rerun "
-              "tools/emit_coulomb_kernels.py");
+              "tools/emit/coulomb_kernels.py");
 
 wwr::wwrError_t dq_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
                          const int32_t n_ao, const double *density, double *w, double *dq,

@@ -28,7 +28,7 @@ namespace free_breakfast::device {
 
 /// @brief J's L limit: the largest momentum of a shell in any class the J
 /// build takes, f. Its kernels are emitted through it
-/// (tools/emit_coulomb_kernels.py's MAX_L), and dq_launch.cu,
+/// (tools/emit/coulomb_kernels.py's MAX_L), and dq_launch.cu,
 /// e_hermite_launch.cu and j_coulomb_launch.cu check it against their tables,
 /// which a host module unit cannot include; the tree-wide kMaxAngularMomentum
 /// is not J's. Here, in the lowest of J's bridges, because

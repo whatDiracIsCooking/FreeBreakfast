@@ -1,6 +1,6 @@
 // The Scf step with density-fitted J and K ([scf] eri = "density_fitting")
 // against PySCF's DF-RHF over the same orbital and fitting sets
-// (data/density_fitting/density_fitting.json, tools/emit_df_reference.py): the
+// (data/density_fitting/density_fitting.json, tools/emit/df_reference.py): the
 // energy and orbital energies, and the invariants of a closed-shell
 // wavefunction, over the setup steps and the guess run by hand; then through
 // the real registry from a config whose [scf] selects density fitting. Runs

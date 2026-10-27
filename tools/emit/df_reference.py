@@ -24,7 +24,7 @@ OpenMP are pinned to one thread, and nothing run-dependent (date, host) is
 written, so a rerun regenerates every file byte for byte.
 
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit_df_reference.py
+        tools/emit/df_reference.py
 
 writes test/gtest/data/density_fitting/. Re-run it to regenerate; the files
 are never hand-edited.
@@ -46,10 +46,10 @@ import re  # noqa: E402
 
 import numpy  # noqa: E402
 import pyscf  # noqa: E402
-from emit_scf_reference import AMMONIUM, BASES, WATER, pyscf_basis  # noqa: E402
 from pyscf import df, gto, lib, scf  # noqa: E402
+from scf_reference import AMMONIUM, BASES, WATER, pyscf_basis  # noqa: E402
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "density_fitting"
 MANIFEST = OUT / "density_fitting.json"
 
@@ -89,7 +89,7 @@ SCF_CASES = [
 ]
 
 COMMAND = (
-    "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_df_reference.py"
+    "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/df_reference.py"
 )
 
 

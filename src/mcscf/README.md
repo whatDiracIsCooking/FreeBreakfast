@@ -30,7 +30,7 @@ the loop steps in are [`../response/README.md`](../response/README.md)'s.
 
 `test/gtest/mcscf_solve_gpu.cpp`, linked into `free_breakfast_tests_gpu`,
 against PySCF's converged CASSCF through `test/gtest/data/casscf/`
-(`tools/emit_casscf_reference.py`). The test sets its active spaces up with
+(`tools/emit/casscf_reference.py`). The test sets its active spaces up with
 `pipeline.active_space` and the `Casci` step from the test executable; this
 layer's own targets link nothing of `pipeline`.
 

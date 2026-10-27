@@ -80,7 +80,7 @@ node.executor().run(flow).wait();
 - `test/gtest/io_sad_host.cpp`: the compiled-in stamps against this module's SCF, bitwise.
 - `test/gtest/sad_gpu.cpp`: the guess over a basis `place`d on a `Molecule`.
 
-The reference data is `test/gtest/data/sad/atomic_scf.json`, written by `tools/emit_sad_reference.py`.
+The reference data is `test/gtest/data/sad/atomic_scf.json`, written by `tools/emit/sad_reference.py`.
 
 ## Not done
 

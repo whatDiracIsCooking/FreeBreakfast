@@ -1,7 +1,7 @@
 // GPU cases for ci.rdm's ci::Rdm: the device γ and Γ against host_rdm12, and
 // both against PySCF's make_rdm12 (and make_rdm12s summed over the spins) over
 // the CI vectors stored in data/ci/direct_spin1.json, written by
-// tools/emit_fci_reference.py; γ against rdm1 and ci::Sigma::rdm1; the RDM
+// tools/emit/fci_reference.py; γ against rdm1 and ci::Sigma::rdm1; the RDM
 // identities; the symmetric layout against the full one, for rdm12 and
 // ci::Sigma::rdm1; and the refusals.
 

@@ -68,9 +68,9 @@ They are wired differently and the difference matters.
 
 Plus `nlohmann_json`, which is FetchContent because it is header-only and small.
 And `deps/FelizJueves`, a submodule that is **not built**: it is the Python
-generator `tools/emit_one_electron_kernels.py`,
-`tools/emit_coulomb_kernels.py`, `tools/emit_exchange_kernels.py` and
-`tools/emit_df_kernels.py` run by
+generator `tools/emit/one_electron_kernels.py`,
+`tools/emit/coulomb_kernels.py`, `tools/emit/exchange_kernels.py` and
+`tools/emit/df_kernels.py` run by
 hand, their kernels committed under `src/integrals/`; re-run all four after
 bumping it. The build takes only its `include/`, as the
 INTERFACE target `felizjueves::headers` (`deps/CMakeLists.txt`): the

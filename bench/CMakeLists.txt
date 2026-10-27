@@ -13,7 +13,7 @@
 # devtools/config.sh) or the number means nothing; see .devcontainer/README.md.
 
 # CiSigma's apply against apply_fp32, and ci_solve with and without its
-# single-precision stage, over tools/emit_ci_bench_integrals.py's active
+# single-precision stage, over tools/emit/ci_bench_integrals.py's active
 # spaces.
 add_executable(free_breakfast_ci_sigma_precision ci_sigma_precision.cpp)
 set_target_properties(

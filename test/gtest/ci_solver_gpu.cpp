@@ -1,6 +1,6 @@
 // GPU cases for ci.solver and ci.rdm: ci::solve over the host sigma, wrapped as
 // a LinearOperator, against PySCF's fci.direct_spin1 (data/ci/direct_spin1.json,
-// written by tools/emit_fci_reference.py). Every case there has a triplet below
+// written by tools/emit/fci_reference.py). Every case there has a triplet below
 // its second singlet, so the singlets come out in order only if the spin
 // penalty works; with no penalty the triplet appears among them. Over ci::Sigma,
 // a singlet solve runs in the symmetric layout, and the test records that it

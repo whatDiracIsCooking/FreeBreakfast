@@ -101,7 +101,7 @@ calls' own (`casscf_integrals`', `response::fock`'s, `diagonalize`'s,
 `test/gtest/pipeline_casscf_gpu.cpp`, through the real registry from a config
 naming `[casscf]`, its Scf step at the defaults, against PySCF's converged,
 polished `mcscf.CASSCF` in `test/gtest/data/casscf/casscf.json`
-(`tools/emit_casscf_reference.py`): H₂O cc-pVDZ CAS(4,4) [2, 3, 5, 6], N₂
+(`tools/emit/casscf_reference.py`): H₂O cc-pVDZ CAS(4,4) [2, 3, 5, 6], N₂
 cc-pVDZ CAS(6,6), H₂CO cc-pVDZ CAS(4,3) at [0.5, 0.5] and [0.7, 0.3], and H₂O
 cc-pVDZ by AVAS, each at `conv_tol_grad` 1e-9 (see `mcscf/solve/README.md`
 for why):

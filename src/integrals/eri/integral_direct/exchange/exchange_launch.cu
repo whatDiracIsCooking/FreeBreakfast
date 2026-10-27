@@ -58,12 +58,12 @@ static_assert(std::extent_v<decltype(kbr_kernels), 1> == kExtent &&
                   std::extent_v<decltype(kbr_kernels), 2> == kExtent &&
                   std::extent_v<decltype(kbr_kernels), 3> == kExtent,
               "kernels/kbr's [la][lc][lb][ld] table is not square: rerun "
-              "tools/emit_exchange_kernels.py");
+              "tools/emit/exchange_kernels.py");
 static_assert(std::extent_v<decltype(kb_kernels), 1> == kKbExtent &&
                   std::extent_v<decltype(kb_kernels), 2> == kKbExtent &&
                   std::extent_v<decltype(kb_kernels), 3> == kKbExtent,
               "kernels/kb's [la][lc][lb][ld] table is not square: rerun "
-              "tools/emit_exchange_kernels.py");
+              "tools/emit/exchange_kernels.py");
 static_assert(kMaxL == fb::device::kExchangeMaxMomentum,
               "kernels/kbr's table and kExchangeMaxMomentum disagree");
 static_assert(kKbMaxL == fb::device::kExchangeKbMaxMomentum,

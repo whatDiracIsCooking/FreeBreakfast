@@ -30,12 +30,12 @@ static_assert(std::extent_v<decltype(eri3_kernels), 0> ==
                   std::extent_v<decltype(eri3_kernels), 1> ==
                       free_breakfast::device::kThreeCenterMaxMomentum + 1,
               "kernels/'s [la][lb] extents and kThreeCenterMaxMomentum disagree: "
-              "rerun tools/emit_df_kernels.py");
+              "rerun tools/emit/df_kernels.py");
 
 static_assert(std::extent_v<decltype(eri3_kernels), 2> ==
                   free_breakfast::device::kThreeCenterAuxMaxMomentum + 1,
               "kernels/'s [lP] extent and kThreeCenterAuxMaxMomentum disagree: "
-              "rerun tools/emit_df_kernels.py");
+              "rerun tools/emit/df_kernels.py");
 
 namespace {
 

@@ -56,9 +56,9 @@ orbitals C, ncore, ncas --active_space_hamiltonian--> E_core, h_eff, (tu|vw)  (J
          --MatrixAOPair::cartesian_to_spherical-->  spherical      (recipes.matrix_ao)
 ```
 
-**Generated kernels are committed, not built.** `tools/emit_one_electron_kernels.py`,
-`tools/emit_coulomb_kernels.py`, `tools/emit_exchange_kernels.py` and
-`tools/emit_df_kernels.py` write them
+**Generated kernels are committed, not built.** `tools/emit/one_electron_kernels.py`,
+`tools/emit/coulomb_kernels.py`, `tools/emit/exchange_kernels.py` and
+`tools/emit/df_kernels.py` write them
 from the FelizJueves submodule; a build never runs Python. Re-run all four after
 bumping the submodule. Each family has its own directory
 (`one_electron/{overlap,kinetic,potential_en}/kernels/`,

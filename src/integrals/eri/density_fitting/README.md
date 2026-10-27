@@ -31,7 +31,7 @@ M.spherical(), (P|mn) --density_fit--> L, B        (potrf of M, trsm of (P|mn), 
 B, D --jk-->                 J, K                  (jk/'s README has the products)
 ```
 
-**Generated kernels are committed, not built.** `tools/emit_df_kernels.py`
+**Generated kernels are committed, not built.** `tools/emit/df_kernels.py`
 writes `metric/kernels/` and `three_center/kernels/` from the FelizJueves
 submodule; rerun it after bumping that submodule, and never edit the emitted
 text by hand.

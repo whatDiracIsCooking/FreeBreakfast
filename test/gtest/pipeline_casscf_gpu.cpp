@@ -1,5 +1,5 @@
 // The Casscf step against PySCF's converged, polished mcscf.CASSCF
-// (data/casscf/casscf.json, tools/emit_casscf_reference.py), through the real
+// (data/casscf/casscf.json, tools/emit/casscf_reference.py), through the real
 // registry: a config naming [casscf] plans the whole chain to the ScfOutput,
 // picks the start (by index, or by AVAS), optimizes it and canonicalizes the
 // core and the virtuals. Compared: each root's energy and the weighted one,

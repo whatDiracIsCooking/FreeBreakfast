@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the reference data the Fci step's tests read.
 
-For each case below, PySCF's closed-shell RHF (as emit_casci_reference.py runs
+For each case below, PySCF's closed-shell RHF (as casci_reference.py runs
 it, over this tree's own basis files, converged tighter) is handed to PySCF's
 `fci.FCI`: `fci.direct_spin1` over every orbital and every electron, with no
 spin constraint, solved for the lowest NROOTS roots of the M_s = 0 sector; the
@@ -19,7 +19,7 @@ two SCFs' convergence nor the orbitals' signs. A root of a degenerate level is
 flagged: its 1-RDM depends on the solver's rotation within the level.
 
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit_fci_step_reference.py
+        tools/emit/fci_step_reference.py
 
 writes test/gtest/data/fci/fci.json. Re-run it to regenerate; the file is
 never hand-edited. H2O 6-31G (1.66M determinants) takes some minutes.
@@ -34,12 +34,12 @@ import platform
 
 import numpy
 import pyscf
-from emit_active_integrals_reference import NITROGEN
-from emit_fci_reference import dense_hamiltonian
-from emit_scf_reference import BASES, WATER, pyscf_basis
+from active_integrals_reference import NITROGEN
+from fci_reference import dense_hamiltonian
 from pyscf import ao2mo, fci, gto, scf
+from scf_reference import BASES, WATER, pyscf_basis
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "fci" / "fci.json"
 
 # This tree's builtin basis name, and its file.
@@ -200,7 +200,7 @@ def main() -> None:
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools tools/emit_fci_step_reference.py",
+            "command": "uv run --group tools tools/emit/fci_step_reference.py",
         },
         "cases": [case_reference(case) for case in CASES],
     }

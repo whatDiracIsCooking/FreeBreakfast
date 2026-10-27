@@ -5,7 +5,7 @@ and the mmd record bound under src/integrals/mmd/kernels/.
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
 
-    tools/emit_one_electron_kernels.py
+    tools/emit/one_electron_kernels.py
 
 They are FelizJueves's `gpu` spelling, written as a `.cu` that both backends
 compile as emitted: nvcc under CUDA and clang `-x hip` under HIP. Each file
@@ -44,7 +44,7 @@ screens read it as Ip (a bra) and Iq (a ket).
 The device Boys routine the units with a fundamental include, `eval_boys.h`,
 and the per-order `eval_boys_{M}.h` it includes for M in 0..20 (all of
 `gpu.emit_boys()`), are written once, to src/integrals/shared/, by this tool
-and tools/emit_coulomb_kernels.py alike: they are one text, so either leaves
+and tools/emit/coulomb_kernels.py alike: they are one text, so either leaves
 them as the other would.
 
 FelizJueves imports nothing outside the standard library, so this needs no
@@ -56,7 +56,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
 from felizjueves.emit import gpu  # noqa: E402

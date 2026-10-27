@@ -11,7 +11,7 @@
 // basis; the view naming the device fields; and each record's dressed bound
 // against FelizJueves's
 // ao.k.record_bounds (test/gtest/data/record_bound/,
-// tools/emit_record_bound_golden.py), on H2O/cc-pVDZ and the chain, with its
+// tools/emit/record_bound_golden.py), on H2O/cc-pVDZ and the chain, with its
 // centres those of its two shells. The classes are device only: every check
 // reads a copy taken back explicitly.
 

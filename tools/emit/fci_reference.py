@@ -22,7 +22,7 @@ the CI vectors they were read from, so a test reads the RDMs of exactly those
 vectors and never depends on a solver's sign or rotation.
 
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit_fci_reference.py
+        tools/emit/fci_reference.py
 
 writes test/gtest/data/ci/direct_spin1.json. Re-run it to regenerate; the file
 is never hand-edited.
@@ -37,10 +37,10 @@ import platform
 
 import numpy
 import pyscf
-from emit_scf_reference import WATER
 from pyscf import ao2mo, fci, gto, mcscf, scf
+from scf_reference import WATER
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "ci" / "direct_spin1.json"
 
 # N2 at 1.0977 A, and formaldehyde (C2v in the yz plane: C=O 1.205 A,
@@ -267,7 +267,7 @@ def main() -> None:
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools tools/emit_fci_reference.py",
+            "command": "uv run --group tools tools/emit/fci_reference.py",
         },
         "cases": [case_reference(case) for case in CASES],
     }

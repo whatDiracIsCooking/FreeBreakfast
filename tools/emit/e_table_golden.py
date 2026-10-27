@@ -28,7 +28,7 @@ mmd.hermite.e_block forms them, and its unsigned table. Per class
 e_table(..., sign=True), is the unsigned one with exactly those negated, which
 this asserts of every record before writing.
 
-    uv run --group tools tools/emit_e_table_golden.py
+    uv run --group tools tools/emit/e_table_golden.py
 
 (in the devcontainer, with UV_PROJECT_ENVIRONMENT=$PWD/.venv).
 """
@@ -40,7 +40,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 FJ = ROOT / "deps/FelizJueves"
 sys.path.insert(0, str(FJ / "src"))
 
@@ -121,7 +121,7 @@ def emit(stem: str, commit: str) -> dict:
         "description": (
             f"The rolled K kernel's E table, launch_kblock.e_table, of every record "
             f"of every ordered shell pair of {stem}'s basis -- written by "
-            f"tools/emit_e_table_golden.py"
+            f"tools/emit/e_table_golden.py"
         ),
         "source": {
             "felizjueves": commit,

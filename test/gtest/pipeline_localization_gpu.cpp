@@ -1,6 +1,6 @@
 // The Localization step against PySCF's Pipek-Mezey and intrinsic bond
 // orbitals (data/localization/{pipek_mezey,ibo}.json,
-// tools/emit_localization_reference.py), through the real registry: a config
+// tools/emit/localization_reference.py), through the real registry: a config
 // naming [localization] plans the whole chain to the ScfOutput and localizes its
 // occupied orbitals. The two codes normalise and order their AOs differently,
 // so the orbitals are compared by what is invariant to that: the functional,

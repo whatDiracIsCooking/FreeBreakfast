@@ -1,5 +1,5 @@
 {
- "description": "The rolled K kernel's E table, launch_kblock.e_table, of every record of every ordered shell pair of co_ccpvtz's basis -- written by tools/emit_e_table_golden.py",
+ "description": "The rolled K kernel's E table, launch_kblock.e_table, of every record of every ordered shell pair of co_ccpvtz's basis -- written by tools/emit/e_table_golden.py",
  "source": {
   "felizjueves": "cc5d16fb16bf6b9fe32f395bdc08071b312966cb",
   "reference": "felizjueves.eri.k_exchange.launch_kblock.e_table(la, lb, zeta, P, A, B) of felizjueves.ao.density.epair(sa, sb).recs",

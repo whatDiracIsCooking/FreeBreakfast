@@ -1,6 +1,6 @@
 // mcscf::solve on the device, from each case's recorded start, against the
 // converged, polished CASSCF of data/casscf/casscf.json
-// (tools/emit_casscf_reference.py): each root's energy and the weighted one;
+// (tools/emit/casscf_reference.py): each root's energy and the weighted one;
 // the state-averaged natural occupations; ||g|| recomputed from scratch at the
 // solution, with its own cold CI; C^T S C = 1; no accepted step that raises
 // the energy; at most 20 macro iterations; and the refusals.

@@ -22,7 +22,7 @@ export namespace free_breakfast {
 ///
 /// The host checks' limit, the one-electron engine's own rather than the
 /// tree-wide kMaxAngularMomentum, though the two are kept equal (checked in
-/// launch.cpp). It is tools/emit_one_electron_kernels.py's `MAX_L`, written by
+/// launch.cpp). It is tools/emit/one_electron_kernels.py's `MAX_L`, written by
 /// hand because a module unit cannot include the emitted tables (each is
 /// device code): every family's launcher bounds itself by its own table's
 /// extent, so a table emitted below this refuses the class with

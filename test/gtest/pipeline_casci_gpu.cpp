@@ -1,5 +1,5 @@
 // The Casci step against PySCF's mcscf.CASCI (data/casci/casci.json,
-// tools/emit_casci_reference.py), through the real registry: a config naming
+// tools/emit/casci_reference.py), through the real registry: a config naming
 // [casci] plans the whole chain to the ScfOutput, picks the active space (by index,
 // or by AVAS against PySCF's mcscf.avas), builds its Hamiltonian and solves it
 // over the GPU sigma. Compared: each singlet's total

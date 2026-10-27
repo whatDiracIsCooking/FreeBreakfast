@@ -32,7 +32,7 @@ constexpr int32_t kMaxL =
 
 static_assert(std::extent_v<decltype(overlap_mixed_kernels), 1> == kMaxL + 1,
               "kernels/'s [la][lb] table is not square: rerun "
-              "tools/emit_one_electron_kernels.py");
+              "tools/emit/one_electron_kernels.py");
 
 wwr::wwrError_t overlap_mixed_class(const wwr::wwrStream_t stream,
                                     const PrimitivePairClassView &cls, const int32_t n_rows,

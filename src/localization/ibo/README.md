@@ -131,7 +131,7 @@ Cholesky flag and each orthogonalization.
 ## Tests
 
 `test/gtest/pipeline_localization_gpu.cpp`, against PySCF's `lo.iao` and
-`lo.ibo.PipekMezey` (`tools/emit_localization_reference.py`, writing
+`lo.ibo.PipekMezey` (`tools/emit/localization_reference.py`, writing
 `test/gtest/data/localization/ibo.json`), for water in STO-3G and cc-pVDZ and
 NH4+ in cc-pVDZ:
 

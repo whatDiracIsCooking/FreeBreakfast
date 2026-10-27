@@ -1,5 +1,5 @@
 // response::Hessian on the device, at each case's CASCI orbitals, against PySCF's
-// mc1step.gen_g_hop (data/casscf/casscf.json, tools/emit_casscf_reference.py,
+// mc1step.gen_g_hop (data/casscf/casscf.json, tools/emit/casscf_reference.py,
 // doubled there as here): the sign-invariant gᵀHg, |Hg| and the diagonal
 // summed per pair of orbital sets; H x against a central finite difference of
 // response::fock's gradient along random kappa, the RDMs fixed; and symmetry.

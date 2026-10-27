@@ -111,7 +111,7 @@ MaxIterationsExceeded, Divergence, or Numerical for a root of the wrong spin.
 
 `test/gtest/pipeline_fci_gpu.cpp`, against PySCF's `fci.FCI` over its own RHF
 in this tree's basis files (`test/gtest/data/fci/`,
-`tools/emit_fci_step_reference.py`), through the real registry from a config
+`tools/emit/fci_step_reference.py`), through the real registry from a config
 naming `[fci]`, its Scf step at the defaults: H₂O STO-3G (7 orbitals, 441
 determinants), N₂ STO-3G (10 orbitals, 14,400) and, under `slow_test.h`, H₂O
 6-31G (13 orbitals, 1,656,369). For the lowest three singlets:
