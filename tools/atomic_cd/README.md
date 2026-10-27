@@ -8,7 +8,8 @@ automatic, including his 2023 contraction step.
 
 Everything here is Python over PySCF's integrals. There is no C++
 counterpart: `src/integrals/eri/density_fitting` fits over a ready-made set
-(`data/aux_basis/`) and does not generate one.
+(`data/aux_basis/`) and does not generate one. `data/aux_basis/cc-pVDZ-acCD.json`
+is one this tool generated.
 
 ## The pipeline
 
@@ -21,7 +22,8 @@ counterpart: `src/integrals/eri/density_fitting` fits over a ready-made set
 | (optional) Prune | `compact.pruned_max_l` | Drops target l above Lehtola's Eq. 9 cap, max(2 l_occ, l_occ + l_obs + l_inc). |
 
 `cholesky.pivoted_cholesky` is the one decomposition both Cholesky stages
-run. `df_check` measures a result; `cli` drives it all.
+run. `df_check` measures a result; `cli` drives it all for one element, and
+`aux_set` runs `cli`'s pipeline over every element of an orbital document.
 
 ## Running it
 
@@ -38,6 +40,18 @@ uv run --group tools python -m tools.atomic_cd.cli C label --bse-in orbital.json
 
 `--bse-out` writes Basis Set Exchange JSON, spherical, general-contracted,
 coefficients over normalized primitives -- the format `src/io/basis` reads.
+
+A whole set, every element of an orbital document at the defaults, as one
+named document `resolve_aux_basis` finds:
+
+```sh
+uv run --group tools python -m tools.atomic_cd.aux_set \
+    data/basis/cc-pVDZ.json cc-pVDZ-acCD --max-l 4
+```
+
+writes `data/aux_basis/cc-pVDZ-acCD.json` (`-o` elsewhere), in about two
+seconds for cc-pVDZ's 35 elements, the same bytes every run. `--max-l 4` is
+for the C++ kernels' g ceiling; it binds only on Sc-Zn, whose cc-pVDZ has f.
 `--df-check` prints the one-centre ERI fitting error and DF-RHF minus
 conventional RHF for the built-in molecules (CO, CH4) that contain the
 element.
@@ -112,15 +126,32 @@ so on the push gate):
 uv run --group tools pytest -rs test/pytest/test_atomic_cd.py
 ```
 
+**Capping at g costs integrals, not much energy.** On Fe/cc-pVDZ
+`--max-l 4` drops the l = 5, 6 functions that f x f products need: the
+one-centre ERI error goes from 1.1e-6 to 1.1e-2. DF-RHF barely notices: on
+the Zn atom dE is +7.6e-6 Eh either way, on ZnH2 (r = 1.535 A) +1.9e-5
+uncapped against +6.0e-5 capped.
+
+## Checked against the C++ side
+
+`cc-pVDZ-acCD` is read by `src/io/basis` (`IoBasisAux.TheAccdSetCoversCcPvdzAndStopsAtG`)
+and fit by the GPU DF-RHF (`DfRhf/PipelineDfScf.MatchesPyscf/h2o_ccpvdz_accd`,
+against PySCF over the same file, `tools/emit/df_reference.py`). The reader
+splits each general contraction into one shell per contracted function,
+every one carrying the full primitive list, so an acCD shell costs its
+primitive count in every three-centre integral (up to 22 on O, 40 on the 3d
+metals), against JKFIT's mostly single-primitive shells.
+
+On H2O, against conventional RHF (-76.026772 Eh): cc-pVDZ-acCD, 101
+functions, dE = +1.8e-5 Eh; cc-pVDZ-JKFIT, 116 functions, +2.1e-5.
+
 ## Not done
 
-- **One element per run.** A fitting set is one document over many
-  elements, with a `name` for `resolve_aux_basis`; that wrapper, and
-  regeneration commands in `data/aux_basis/README.md`, are still to come.
-- **Unchecked against the C++ side**: whether `src/io/basis` and the DF
-  kernels accept a general-contracted auxiliary set, and the l <= g cap
-  they need.
-- **Tested on C, H and O only.** Heavy elements, ECP bases (pruning's l_occ
+- **Only cc-pVDZ is generated.** cc-pVTZ would need `--max-l 4` from O on
+  (its f shells reach l = 6 by default), which the measurements above have
+  not covered.
+- **Tested on C, H, O and (DF-RHF energy only) Zn.** The other heavy
+  elements were generated but not measured, and ECP bases (pruning's l_occ
   assumes all-electron) and correlated or CASSCF energies are open.
 
 ## References

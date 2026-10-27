@@ -252,6 +252,25 @@ TEST(IoBasisAux, BothJkfitSetsResolveByAnySpelling) {
   }
 }
 
+TEST(IoBasisAux, TheAccdSetCoversCcPvdzAndStopsAtG) {
+  // tools/atomic_cd/aux_set.py over data/basis/cc-pVDZ.json, --max-l 4: every
+  // element the orbital set has, and no fitting shell past the kernels' g.
+  auto aux = fb::resolve_aux_basis("cc-pvdz-accd");
+  auto orbital = fb::resolve_basis("cc-pvdz");
+  ASSERT_TRUE(aux.has_value()) << aux.error().message;
+  ASSERT_TRUE(orbital.has_value()) << orbital.error().message;
+  EXPECT_EQ(aux->name(), "cc-pVDZ-acCD");
+  EXPECT_EQ(aux->element_shells().size(), orbital->element_shells().size());
+  for (const auto &[z, shells] : orbital->element_shells()) {
+    SCOPED_TRACE(std::format("Z={}", z));
+    const std::vector<fb::ShellStamp> *fit = aux->shells_for(z);
+    ASSERT_NE(fit, nullptr);
+    for (const fb::ShellStamp &shell : *fit) {
+      EXPECT_LE(shell.angular_momentum(), 4);
+    }
+  }
+}
+
 TEST(IoBasisAux, TheFittingAndOrbitalTablesAreDisjoint) {
   // A fitting set is no orbital set: tools/sad and io_sad_host see only the
   // five that carry data/sad/ stamps.

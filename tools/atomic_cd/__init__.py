@@ -28,7 +28,10 @@ Modules, in dependency order:
                     per l.
 - ``df_check``   -- how well a generated auxiliary basis fits: one-centre ERI
                     error and DF-RHF energy error for small molecules.
-- ``cli``        -- ``python3 -m atomic_cd.cli`` end-to-end driver.
+- ``cli``        -- ``python3 -m atomic_cd.cli`` end-to-end driver, one
+                    element.
+- ``aux_set``    -- every element of an orbital BSE document through ``cli``,
+                    as one named set for ``data/aux_basis/``.
 
 Needs PySCF and numpy, which live in the opt-in ``tools`` dependency group of
 ``pyproject.toml`` (not ``dev``, so the image and the push gate do not carry

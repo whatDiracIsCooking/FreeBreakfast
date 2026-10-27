@@ -19,8 +19,10 @@ jkfit_from_pyscf.py
 atomic_cd/        Generate an auxiliary basis for any orbital basis: aCD /
                   acCD atomic Cholesky decomposition plus SVD contraction
                   (Lehtola 2021, 2023) over PySCF integrals; writes BSE
-                  JSON. atomic_cd/README.md has the method, measured
-                  accuracy and references.
+                  JSON, one element (cli) or a whole named set (aux_set,
+                  which wrote data/aux_basis/cc-pVDZ-acCD.json).
+                  atomic_cd/README.md has the method, measured accuracy
+                  and references.
 emit/one_electron_kernels.py
                   Regenerate src/integrals/one_electron/{overlap,kinetic,
                   potential_en}/kernels/, and the mmd record bound
@@ -149,6 +151,8 @@ uv run --group tools tools/emit/record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ \
     --bse-out c_ccpvdz_accd.bse.json --df-check
+uv run --group tools python -m tools.atomic_cd.aux_set \
+    data/basis/cc-pVDZ.json cc-pVDZ-acCD --max-l 4
 ```
 
 The two compose: an orbital basis fetched by `bse_download.py` can be fed back

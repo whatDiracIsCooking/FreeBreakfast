@@ -15,6 +15,7 @@ SVD contraction relies on, and the BSE writer's coefficient convention.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -29,6 +30,7 @@ import numpy as np  # noqa: E402
 from pyscf import df  # noqa: E402
 
 from tools.atomic_cd import (  # noqa: E402
+    aux_set,
     cholesky,
     cli,
     compact,
@@ -248,3 +250,30 @@ def test_cli_defaults():
     args = cli._parse_args(["C", "cc-pvdz", "--no-contract"])
     assert (args.threshold, args.contract_threshold) == (1e-4, None)
     assert cli._parse_args(["C", "cc-pvdz", "--prune-l"]).prune_l == 1
+
+
+def test_aux_set_is_each_element_as_cli_builds_it():
+    """aux_set over this tree's cc-pVDZ cut to H and O: one named document
+    whose every element is cli's own shells at the defaults, capped by
+    --max-l."""
+    path = Path(__file__).resolve().parents[2] / "data" / "basis" / "cc-pVDZ.json"
+    orbital = json.loads(path.read_text(encoding="utf-8"))
+    orbital["elements"] = {z: orbital["elements"][z] for z in ("1", "8")}
+    document = aux_set.aux_set(orbital, "test-acCD", "orbital.json", max_l=3)
+    assert document["name"] == "test-acCD" and document["names"] == ["test-acCD"]
+    assert sorted(document["elements"]) == ["1", "8"]
+    for z, symbol in (("1", "H"), ("8", "O")):
+        shells, _ = cli.build_aux_shells(
+            symbol,
+            eri_quartet.basis_from_bse(orbital, symbol),
+            cli.THRESHOLD[True],
+            3,
+            contract_threshold=cli.CONTRACT_THRESHOLD,
+        )
+        expected = cli.to_bse_spherical(symbol, shells)["elements"][z]
+        got = document["elements"][z]
+        assert got["electron_shells"] == expected["electron_shells"]
+        assert got["references"]
+    # O's cc-pVDZ reaches d, so its uncapped top, 2 l_obs = 4, was cut to 3
+    oxygen = document["elements"]["8"]["electron_shells"]
+    assert max(s["angular_momentum"][0] for s in oxygen) == 3

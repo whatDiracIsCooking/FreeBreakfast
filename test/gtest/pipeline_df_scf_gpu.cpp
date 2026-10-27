@@ -212,10 +212,12 @@ TEST_P(PipelineDfScf, MatchesPyscf) {
 }
 
 // H2O and NH4+ (charged, so the guess is rescaled before it is factored) in
-// cc-pVDZ / cc-pVDZ-JKFIT, and H2O in cc-pVTZ / cc-pVTZ-JKFIT: f orbitals, g
-// fitting functions.
+// cc-pVDZ / cc-pVDZ-JKFIT, H2O in cc-pVTZ / cc-pVTZ-JKFIT: f orbitals, g
+// fitting functions, and H2O in cc-pVDZ / cc-pVDZ-acCD: general-contracted
+// fitting shells of up to 22 primitives.
 INSTANTIATE_TEST_SUITE_P(DfRhf, PipelineDfScf,
-                         ::testing::Values("h2o_ccpvdz", "nh4_ccpvdz", "h2o_ccpvtz"),
+                         ::testing::Values("h2o_ccpvdz", "nh4_ccpvdz", "h2o_ccpvtz",
+                                           "h2o_ccpvdz_accd"),
                          [](const auto &info) { return std::string(info.param); });
 
 // The aux basis is resolved when the step runs: an unknown name is

@@ -21,6 +21,7 @@ means nothing. `is_builtin_basis` and `resolve_basis` never see these names.
 |---|---|---|---|
 | `cc-pVDZ-JKFIT.json` | `cc-pVDZ-JKFIT` | H, B–Ne, Al–Ar, Ga–Kr (19) | 10s 7p 5d 2f |
 | `cc-pVTZ-JKFIT.json` | `cc-pVTZ-JKFIT` | the same 19 | 10s 7p 5d 2f 1g |
+| `cc-pVDZ-acCD.json` | `cc-pVDZ-acCD` | all of `data/basis/cc-pVDZ.json`'s 35, H–Kr but K | 8s 5p 5d 2f 1g, contracted |
 
 Weigend's JK fitting sets for Coulomb and exchange (F. Weigend, Phys. Chem.
 Chem. Phys. 4, 4285 (2002)), the ones that pair with cc-pVDZ and cc-pVTZ.
@@ -36,7 +37,14 @@ the orbital ceiling: every element but H goes to g, and H goes to f. Holding
 those shells is supported; an integral kernel that cannot take one rejects
 it.
 
-## Where they come from: PySCF, not BSE
+`cc-pVDZ-acCD` is not a published set: `tools/atomic_cd` derived it from
+`data/basis/cc-pVDZ.json` itself (below). It covers every element the
+orbital set does, including the Li–Be, Na–Mg, Ca and Sc–Zn that JKFIT lacks,
+in 101 functions over H2O. Each element's shells are general contractions, one
+per angular momentum, of up to 22 primitives (40 on the 3d metals), and no
+shell passes g.
+
+## Where the JKFIT sets come from: PySCF, not BSE
 
 Both files are written by `tools/jkfit_from_pyscf.py` from PySCF's
 `pyscf/gto/basis/cc-pvdz-jkfit.dat` and `cc-pvtz-jkfit.dat`. Those files hold
@@ -59,14 +67,29 @@ Molpro's `weigend_jkfit.libmol` (11 February 2010).
 - **The values are PySCF's doubles exactly**, each written as its shortest
   round-trip decimal. Running the tool twice gives the same bytes.
 
+## Where cc-pVDZ-acCD comes from: generated here
+
+Lehtola's automatic acCD with SVD contraction (JCTC 17, 6886 (2021) and 19,
+6242 (2023)), run by `tools/atomic_cd/aux_set.py` at its default thresholds
+(1e-7 Cholesky, 1e-5 contraction) over this tree's cc-pVDZ, not PySCF's.
+`--max-l 4` keeps it within the C++ kernels' g; that binds only on Sc–Zn,
+where cc-pVDZ has f and the uncapped set would reach l = 6.
+`tools/atomic_cd/README.md` has the method and what the cap costs. The
+settings and PySCF version are in the file's `revision_description`.
+
 ## Regenerating
 
 ```bash
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/jkfit_from_pyscf.py
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    python -m tools.atomic_cd.aux_set data/basis/cc-pVDZ.json cc-pVDZ-acCD --max-l 4
 ```
 
-Re-run it after a PySCF bump. Nothing else is derived from these files, so
-unlike `data/basis/` there is no `data/sad/` to regenerate.
+Re-run them after a PySCF bump, and the second after any change to
+`data/basis/cc-pVDZ.json` or `tools/atomic_cd`. Each writes the same bytes
+on a rerun. Nothing in `data/` is derived from these files, so unlike
+`data/basis/` there is no `data/sad/` to regenerate; but
+`tools/emit/df_reference.py` fits over them, so re-run it too.
 
 ## Adding a set
 
