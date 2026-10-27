@@ -115,6 +115,42 @@ __global__ void metric<0, 4>(
     double* metric);
 
 template <>
+__global__ void metric<0, 5>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<0, 6>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
 __global__ void metric<1, 1>(
     int32_t n_pair,
     int32_t n_rec,
@@ -187,6 +223,42 @@ __global__ void metric<1, 4>(
     double* metric);
 
 template <>
+__global__ void metric<1, 5>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<1, 6>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
 __global__ void metric<2, 2>(
     int32_t n_pair,
     int32_t n_rec,
@@ -241,6 +313,42 @@ __global__ void metric<2, 4>(
     double* metric);
 
 template <>
+__global__ void metric<2, 5>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<2, 6>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
 __global__ void metric<3, 3>(
     int32_t n_pair,
     int32_t n_rec,
@@ -277,6 +385,42 @@ __global__ void metric<3, 4>(
     double* metric);
 
 template <>
+__global__ void metric<3, 5>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<3, 6>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
 __global__ void metric<4, 4>(
     int32_t n_pair,
     int32_t n_rec,
@@ -294,11 +438,103 @@ __global__ void metric<4, 4>(
     const int32_t* off_q,
     double* metric);
 
+template <>
+__global__ void metric<4, 5>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<4, 6>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<5, 5>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<5, 6>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
+template <>
+__global__ void metric<6, 6>(
+    int32_t n_pair,
+    int32_t n_rec,
+    int32_t n_aux,
+    const double* a_x,
+    const double* a_y,
+    const double* a_z,
+    const double* alpha,
+    const double* s_aux,
+    const int32_t* p_rec0,
+    const int32_t* p_rec1,
+    const int32_t* q_rec0,
+    const int32_t* q_rec1,
+    const int32_t* off_p,
+    const int32_t* off_q,
+    double* metric);
+
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&metric<0, 0>) metric_kernels[5][5] = {
-    {&metric<0, 0>, &metric<0, 1>, &metric<0, 2>, &metric<0, 3>, &metric<0, 4>},
-    {nullptr, &metric<1, 1>, &metric<1, 2>, &metric<1, 3>, &metric<1, 4>},
-    {nullptr, nullptr, &metric<2, 2>, &metric<2, 3>, &metric<2, 4>},
-    {nullptr, nullptr, nullptr, &metric<3, 3>, &metric<3, 4>},
-    {nullptr, nullptr, nullptr, nullptr, &metric<4, 4>},
+inline constexpr decltype(&metric<0, 0>) metric_kernels[7][7] = {
+    {&metric<0, 0>, &metric<0, 1>, &metric<0, 2>, &metric<0, 3>, &metric<0, 4>, &metric<0, 5>, &metric<0, 6>},
+    {nullptr, &metric<1, 1>, &metric<1, 2>, &metric<1, 3>, &metric<1, 4>, &metric<1, 5>, &metric<1, 6>},
+    {nullptr, nullptr, &metric<2, 2>, &metric<2, 3>, &metric<2, 4>, &metric<2, 5>, &metric<2, 6>},
+    {nullptr, nullptr, nullptr, &metric<3, 3>, &metric<3, 4>, &metric<3, 5>, &metric<3, 6>},
+    {nullptr, nullptr, nullptr, nullptr, &metric<4, 4>, &metric<4, 5>, &metric<4, 6>},
+    {nullptr, nullptr, nullptr, nullptr, nullptr, &metric<5, 5>, &metric<5, 6>},
+    {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &metric<6, 6>},
 };

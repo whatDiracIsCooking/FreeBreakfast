@@ -14,6 +14,7 @@ file names the tool that wrote it and the source it came from.
 | `e_table/` | The rolled K kernel's E table, FelizJueves's host `launch_kblock.e_table` (each record's undressed `E^{la lb}`, nonzero entries), of every record of every ordered shell pair of H₂O/cc-pVDZ and CO/cc-pVTZ (through f), with each record's inputs, the shells read from `exchange/`. FelizJueves checking itself: the table has no libcint counterpart | `tools/emit/e_table_golden.py`, which imports FelizJueves's `src/` |
 | `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr | `tools/emit/scf_reference.py`, which runs PySCF |
 | `density_fitting/` | libcint's spherical Coulomb metric `int2c2e` (P\|Q) and three-centre `int3c2e` (mn\|P) for H₂O in cc-pVDZ / cc-pVDZ-JKFIT (orbitals to d, aux to f) and cc-pVTZ / cc-pVTZ-JKFIT (O's f orbitals and g fitting functions, so (ff\|g)), PySCF's DF `vj` and `vk` of one RHF density in the cc-pVDZ case, and PySCF's DF-RHF energies and orbital energies for H₂O and NH₄⁺ in cc-pVDZ / cc-pVDZ-JKFIT and H₂O in cc-pVTZ / cc-pVTZ-JKFIT, all over this tree's own `data/basis` and `data/aux_basis` files: `.npy` arrays and the manifest `density_fitting.json` | `tools/emit/df_reference.py`, which runs PySCF |
+| `df_high_aux/` | The top of the DF aux ladder, which no carried fitting set reaches: libcint's `int2c2e_sph` (P\|Q) and `int3c2e_sph` (mn\|P) over a **hand-built** basis — one single-primitive shell per l on two skew centres, orbitals to f and auxiliary to i — the smallest basis reaching every emitted class, all 28 metric (lP ≤ lQ ≤ 6) and all 70 eri3 (la ≤ lb ≤ 3, lP ≤ 6), each by a one-centre pair and a two-centre one. Coefficients are the primitives' own normalisers, so both sides are unit-normalised and the test needs no norm factor. `.npy` arrays, `int3c2e` split along the aux index, and the manifest `df_high_aux.json`, which carries both bases shell by shell so the test builds exactly these | `tools/emit/df_high_aux_reference.py`, which runs PySCF |
 | `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges | `tools/emit/localization_reference.py`, which runs PySCF |
 | `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit/active_integrals_reference.py`, which runs PySCF |
 | `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit/sad_reference.py`, which runs PySCF |
@@ -190,6 +191,52 @@ Regenerate with (one thread; the output is byte-identical run to run):
 
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/df_reference.py
+```
+
+## `df_high_aux/`
+
+`df_high_aux.json` is the manifest, and the arrays are `'<f8'` in Fortran
+order and split along P exactly as `density_fitting/`'s are. What differs is
+the **basis**, and why there is a second directory at all: the two fitting
+sets this tree carries stop at aux g, so `density_fitting/` reaches `(g|g)`
+and `(ff|g)` and no further, while the emitted kernels go to `(i|i)` and
+`(ff|i)` (`kMetricMaxMomentum`, `kThreeCenterAuxMaxMomentum`). No carried set
+has an i fitting shell, so those classes have no library basis to be run
+over.
+
+So this one is hand-built: **one single-primitive shell per l**, orbitals
+l = 0..3 and auxiliary l = 0..6, on each of two skew centres (bohr). That is
+the smallest basis reaching every class both families emit — all 28 metric
+`lP ≤ lQ ≤ 6` and all 70 eri3 `la ≤ lb ≤ 3` against `lP ≤ 6` — and it reaches
+each of them twice over, once with the pair on one centre (so `P − A` and
+`P − B` vanish and the Boys argument is 0) and once with a real separation.
+`df_high_aux_gpu.cpp` checks that coverage as a case of its own.
+
+| Key | Meaning |
+|---|---|
+| `source` | libcint's version (PySCF's `cint.h`) and the two intors used |
+| `what` | One line on what the basis is and why it is not a library set |
+| `atoms` | The two centres: `symbol`, `z`, `coord` in bohr. Nothing here is a nuclear integral, so the symbols only keep PySCF from sharing one basis between the centres |
+| `nao`, `naux` | Spherical counts, 32 and 98 |
+| `orbital_max_l`, `aux_max_l` | 3 and 6, the two ladders' limits |
+| `orbital_shells`, `aux_shells` | One per shell, in AO order (centre-major, l ascending — PySCF's order and this tree's for the same `Shell` list): `atom`, `l`, `centre`, `exponent`, `coefficient`. The test builds its `BasisSet`s from these, so the two sides cannot drift |
+| `int2c2e` | The file of (P\|Q): 98 × 98 |
+| `int3c2e` | The pieces of (mn\|P), each `{file, aux: [begin, end)}`, in P order |
+
+**Normalisation, and why this fixture needs no norm factor.** Each
+`coefficient` is the primitive's own normaliser `N(alpha, l)` — the one
+`ShellStamp::primitive_normalized` applies — so a `Shell` built from it has
+unit self-overlap, matching PySCF's own unit-normalised functions. Both
+arrays are then comparable element for element, unlike
+`df_three_center_gpu.cpp`'s, which divides by its carried basis's function
+norms. The test asserts the self-overlaps are 1, so a wrong coefficient in
+the manifest fails there rather than as a mysterious tolerance miss.
+
+Regenerate with (one thread; the output is byte-identical run to run):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/emit/df_high_aux_reference.py
 ```
 
 ## `localization/pipek_mezey.json`

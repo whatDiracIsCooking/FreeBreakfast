@@ -327,6 +327,25 @@ only breaks on a ROCm build. `devtools/cross-backend-check.sh` is the
 seconds-long answer; run it whenever a change touches a `.cu`. It exits **2**,
 not 0, when it cannot run, so a skip is never mistaken for a pass.
 
+### What a tier cannot tell you about one kernel: how long it took to compile
+
+`cmake --build` reports a target, not a file, so one emitted kernel that takes
+an hour in the back end looks like a build that hung — no file named, and no
+way to know whether it will ever land. The cost is not linear in the class
+either, and the source size does not order it. `devtools/kernel-compile-watchdog.sh`
+compiles each matching kernel **on its own**, deleting the object first so the
+number is real, under a per-file `timeout` (`--limit`, 300s by default), and
+prints every time with the slowest ten. Run it after `tools/emit/*.py` or a
+`deps/FelizJueves` bump, narrowed to what you touched:
+
+```bash
+devtools/kernel-compile-watchdog.sh 'density_fitting/.*kernels/'
+```
+
+It exits 1 when a kernel goes over or breaks and **2** when it could not run
+at all. Like the cross-backend check it is one backend's answer, and not a
+hook: a full ladder is minutes of compiler time, the slow tier's budget.
+
 ## Conventions worth not rediscovering
 
 - **`IMPORT_STD` is not bookkeeping.** A module library that says `import std;`
@@ -373,6 +392,15 @@ not 0, when it cannot run, so a skip is never mistaken for a pass.
   would pick, on purpose.** A module build is
   memory-hungry per job; an OOM-killed compiler surfaces as a bare
   `ninja: build stopped` with nothing about memory in it.
+- **The auxiliary basis's angular-momentum limit is its own, and higher than
+  the orbital one.** `kMaxAngularMomentum` (f) is the *orbital* ceiling;
+  density fitting's aux shells run to i (`kMetricMaxMomentum`,
+  `kThreeCenterAuxMaxMomentum`, `tools/emit/df_kernels.py`'s `AUX_MAX_L`
+  against its `MAX_L`), because a JKFIT or RI set carries shells two l above
+  the orbital set it fits. Only `kThreeCenterMaxMomentum` is static_asserted
+  equal to the tree-wide one. Neither carried fitting set reaches past g, so
+  the h and i classes are exercised by a hand-built basis
+  (`test/gtest/data/df_high_aux/`), not a library one.
 
 ## Agent-specific
 

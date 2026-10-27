@@ -1,6 +1,6 @@
 # The DF three-center integrals' device library: the generated kernels
 # eri3<la, lb, lP> (kernels/, written by tools/emit/df_kernels.py), one per
-# class la <= lb through f against lP through g, each compiled on its own, and
+# class la <= lb through f against lP through i, each compiled on its own, and
 # three_center_launch.cu, the per-class launcher and the (m, n)
 # symmetrization, which checks their table (kernels/eri3.h) against the limits
 # in three_center_bridge.h at compile time. Device code in its own library, so
@@ -23,51 +23,71 @@ free_breakfast_add_gpu_device_library(
   kernels/eri3_002.cu
   kernels/eri3_003.cu
   kernels/eri3_004.cu
+  kernels/eri3_005.cu
+  kernels/eri3_006.cu
   kernels/eri3_010.cu
   kernels/eri3_011.cu
   kernels/eri3_012.cu
   kernels/eri3_013.cu
   kernels/eri3_014.cu
+  kernels/eri3_015.cu
+  kernels/eri3_016.cu
   kernels/eri3_020.cu
   kernels/eri3_021.cu
   kernels/eri3_022.cu
   kernels/eri3_023.cu
   kernels/eri3_024.cu
+  kernels/eri3_025.cu
+  kernels/eri3_026.cu
   kernels/eri3_030.cu
   kernels/eri3_031.cu
   kernels/eri3_032.cu
   kernels/eri3_033.cu
   kernels/eri3_034.cu
+  kernels/eri3_035.cu
+  kernels/eri3_036.cu
   kernels/eri3_110.cu
   kernels/eri3_111.cu
   kernels/eri3_112.cu
   kernels/eri3_113.cu
   kernels/eri3_114.cu
+  kernels/eri3_115.cu
+  kernels/eri3_116.cu
   kernels/eri3_120.cu
   kernels/eri3_121.cu
   kernels/eri3_122.cu
   kernels/eri3_123.cu
   kernels/eri3_124.cu
+  kernels/eri3_125.cu
+  kernels/eri3_126.cu
   kernels/eri3_130.cu
   kernels/eri3_131.cu
   kernels/eri3_132.cu
   kernels/eri3_133.cu
   kernels/eri3_134.cu
+  kernels/eri3_135.cu
+  kernels/eri3_136.cu
   kernels/eri3_220.cu
   kernels/eri3_221.cu
   kernels/eri3_222.cu
   kernels/eri3_223.cu
   kernels/eri3_224.cu
+  kernels/eri3_225.cu
+  kernels/eri3_226.cu
   kernels/eri3_230.cu
   kernels/eri3_231.cu
   kernels/eri3_232.cu
   kernels/eri3_233.cu
   kernels/eri3_234.cu
+  kernels/eri3_235.cu
+  kernels/eri3_236.cu
   kernels/eri3_330.cu
   kernels/eri3_331.cu
   kernels/eri3_332.cu
   kernels/eri3_333.cu
   kernels/eri3_334.cu
+  kernels/eri3_335.cu
+  kernels/eri3_336.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::basis::headers
