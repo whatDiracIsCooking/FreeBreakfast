@@ -136,7 +136,7 @@ ci_sigma_from_g_block(wwr::wwrStream_t stream, bool symmetric, bool beta_major, 
                                                     int32_t beta_per, double e_core,
                                                     const double *c, const float *g, double *sigma);
 
-/// @brief diag(H) for the @p n_alpha · @p n_beta determinants, by host_diagonal's
+/// @brief diag(H) for the @p n_alpha · @p n_beta determinants, by CiSigma::diagonal's
 /// rule and in its order.
 ///
 /// @p strings_alpha and @p strings_beta are the two sets' bit patterns, by

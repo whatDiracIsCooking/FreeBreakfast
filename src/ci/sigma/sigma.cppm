@@ -1,11 +1,10 @@
 /// @file
 /// @brief σ = Hc and diag(H) for a determinant CI vector over two StringSets,
 /// from the active-space integrals as plain arrays: CiSigma on the device, as
-/// a LinearOperator, with the 1-RDM over the same tables, and host_sigma /
-/// host_diagonal on the host.
+/// a LinearOperator, with the 1-RDM over the same tables.
 ///
-/// The host pair is written for clarity rather than speed: it is the reference
-/// the GPU sigma is tested against.
+/// The host references it is tested against are test/ci_oracles' host_sigma
+/// and host_diagonal.
 
 export module free_breakfast.ci.sigma;
 
@@ -20,7 +19,9 @@ export namespace free_breakfast {
 
 /// @brief How a device CI vector is laid out.
 ///
-/// full is host_sigma's: every determinant, I_α · beta.size() + I_β. symmetric
+/// full holds every determinant, the pairs (I_α, I_β) of the alpha and beta
+/// strings laid out alpha-major, element I_α · beta.size() + I_β, which is
+/// `fci.direct_spin1`'s layout. symmetric
 /// holds a vector over one StringSet for both spins (N_α = N_β) that is
 /// symmetric under the swap of the two strings, c(I_α, I_β) = c(I_β, I_α), as
 /// every state of even S is: only the triangle I_α ≥ I_β, element
@@ -54,45 +55,12 @@ enum class CiLayout : int32_t { full, symmetric };
 [[nodiscard]] Status ci_pack(DeviceResources &res, int32_t n_strings, int32_t k, const double *x,
                              double *y);
 
-/// @brief σ = H c on the host, H = E_core + Σ_tu h_tu E_tu
-/// + ½ Σ_tuvw (tu|vw) (E_tu E_vw − δ_uv E_tw), E_tu the spin-summed
-/// excitation operator.
-///
-/// The determinants are the pairs (I_α, I_β) of @p alpha's and @p beta's
-/// strings, laid out alpha-major: element I_α · beta.size() + I_β, which is
-/// `fci.direct_spin1`'s layout. The α–α, β–β and α–β terms all go through the
-/// two sets' replacement lists. Cost is O(dim · n⁴), memory
-/// O(n²) besides the vectors.
-///
-/// @param alpha, beta The strings of each spin, over the same n orbitals.
-/// @param e_core The constant: nuclear repulsion and the frozen core's energy.
-/// @param h_eff n × n, row-major, symmetric: the one-electron operator over
-///        the active orbitals, the core's mean field included.
-/// @param eri n⁴, row-major (t, u, v, w), chemists' order, real with the
-///        8-fold symmetry: (tu|vw).
-/// @param c The CI vector, alpha.size() · beta.size().
-/// @param sigma Written with H c, the same size; must not overlap @p c.
-/// @return InvalidConfig when the two sets span different orbital counts or
-///         any span has the wrong size; nothing is written then.
-[[nodiscard]] Status host_sigma(const StringSet &alpha, const StringSet &beta, double e_core,
-                                std::span<const double> h_eff, std::span<const double> eri,
-                                std::span<const double> c, std::span<double> sigma);
-
-/// @brief diag(H) on the host, for the same H and layout as host_sigma.
-///
-/// Slater–Condon's rule for a determinant's diagonal over its occupied spin
-/// orbitals, α (ascending) then β (ascending), i < j:
-/// E_core + Σ_i h_ii + Σ_{i<j} [(ii|jj) − δ_{σ_i σ_j} (ij|ji)], summed in that
-/// order.
-///
-/// @param diagonal Written with H_II, alpha.size() · beta.size().
-/// @return InvalidConfig as host_sigma does.
-[[nodiscard]] Status host_diagonal(const StringSet &alpha, const StringSet &beta, double e_core,
-                                   std::span<const double> h_eff, std::span<const double> eri,
-                                   std::span<double> diagonal);
-
-/// @brief σ = Hc and diag(H) on the device, for host_sigma's H and layout: a
+/// @brief σ = Hc and diag(H) on the device: a
 /// `LinearOperator<CiSigma, double>` over blocks of CI vectors.
+///
+/// H = E_core + Σ_tu h_tu E_tu + ½ Σ_tuvw (tu|vw) (E_tu E_vw − δ_uv E_tw),
+/// E_tu the spin-summed excitation operator, over the determinants of two
+/// StringSets in CiLayout::full (or, over one set, CiLayout::symmetric).
 ///
 /// create uploads the two sets' strings and replacement lists, once per
 /// (n, N_α, N_β); set_integrals uploads an H over them, and may be called again
@@ -137,10 +105,12 @@ public:
   CiSigma &operator=(const CiSigma &) = delete;
   ~CiSigma() = default;
 
-  /// @brief Upload the H of host_sigma over these strings: @p e_core, @p h_eff
-  /// (n × n) and @p eri (n⁴, (tu|vw)), host arrays with host_sigma's layout and
-  /// symmetry. Synchronizes res.stream() before returning, so the arrays may
-  /// go at once.
+  /// @brief Upload an H over these strings, as host arrays: @p e_core, the
+  /// constant (nuclear repulsion and the frozen core's energy); @p h_eff, n × n
+  /// row-major and symmetric, the one-electron operator over the active
+  /// orbitals, the core's mean field included; and @p eri, n⁴ row-major
+  /// (t, u, v, w), chemists' order (tu|vw), real with the 8-fold symmetry.
+  /// Synchronizes res.stream() before returning, so the arrays may go at once.
   ///
   /// @return InvalidConfig for another device or a span of the wrong size,
   ///         leaving the previous integrals in place; or the GpuRuntime error
@@ -197,8 +167,10 @@ public:
   /// and the new across a growth: the bound covers the peak.
   void set_workspace_limit(size_t bytes) noexcept { workspace_limit_ = bytes; }
 
-  /// @brief diag(H) into the size() device doubles @p diagonal, by
-  /// host_diagonal's rule and in its order. Queued on res.stream().
+  /// @brief diag(H) into the size() device doubles @p diagonal: Slater–Condon's
+  /// rule over each determinant's occupied spin orbitals, α (ascending) then β
+  /// (ascending), i < j, E_core + Σ_i h_ii + Σ_{i<j} [(ii|jj) − δ_{σ_i σ_j}
+  /// (ij|ji)], summed in that order. Queued on res.stream().
   ///
   /// @return InvalidConfig before set_integrals or for another device; or the
   ///         launch's GpuRuntime error.
@@ -225,7 +197,7 @@ public:
 
   /// @brief The spin-summed 1-RDM γ_tu = ⟨c| E_tu |c⟩ of the size(@p layout)
   /// device doubles @p c into the n × n device doubles @p gamma (symmetric, so
-  /// either order): ci.rdm's rdm1, on the device. Needs no integrals.
+  /// either order), PySCF's `make_rdm1`. Needs no integrals.
   ///
   /// apply's gather of D_K = (E c)_K over each chunk of determinants, packed
   /// over v ≥ w, then one gemv per chunk, Σ_K c_K D_K, which is 2 γ_vw off the

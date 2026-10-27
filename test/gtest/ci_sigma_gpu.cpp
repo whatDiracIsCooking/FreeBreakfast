@@ -1,5 +1,5 @@
 // GPU cases for ci.sigma's CiSigma: σ on random blocks against host_sigma,
-// diag(H) against host_diagonal, and the 1-RDM against ci.rdm's rdm1, over the
+// diag(H) against host_diagonal, and the 1-RDM against host_rdm1, over the
 // golden active spaces of data/ci/direct_spin1.json, random integrals at
 // CAS(8,8) and CAS(10,10) and in sectors with N_alpha != N_beta, and
 // CAS(12,12) in the slow tier (its 1-RDM in the fast one); the same in the
@@ -18,6 +18,7 @@ import free_breakfast.core.resources;
 import free_breakfast.io.json;
 import free_breakfast.recipes;
 import free_breakfast.ci;
+import free_breakfast.test.ci_oracles;
 
 namespace {
 
@@ -95,7 +96,7 @@ std::vector<double> to_host(fb::DeviceResources &res, const fb::Buffers::device<
 }
 
 // The 1-RDM of a random unit vector, to 1e-12 (N_α + N_β), its trace, of
-// rdm1's on the host.
+// host_rdm1's.
 void check_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, const fb::StringSet &alpha,
                 const fb::StringSet &beta, std::uint64_t seed) {
   const auto dim = static_cast<std::size_t>(sigma.size());
@@ -111,7 +112,7 @@ void check_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, const fb::StringSe
   ASSERT_TRUE(device.has_value()) << device.error().message;
   const std::vector<double> got = to_host(res, gamma);
   std::vector<double> expected(n * n);
-  const auto host = fb::rdm1(alpha, beta, c, expected);
+  const auto host = fb::test::host_rdm1(alpha, beta, c, expected);
   ASSERT_TRUE(host.has_value()) << host.error().message;
   const double electrons = alpha.n_electrons() + beta.n_electrons();
   double worst = 0.0;
@@ -146,7 +147,7 @@ void check_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int
   for (std::int32_t j = 0; j < k; ++j) {
     const std::span<const double> column{c.data() + j * dim, dim};
     const auto host =
-        fb::host_sigma(*alpha, *beta, ints.e_core, ints.h1, ints.eri, column, expected);
+        fb::test::host_sigma(*alpha, *beta, ints.e_core, ints.h1, ints.eri, column, expected);
     ASSERT_TRUE(host.has_value()) << host.error().message;
     double norm = 0.0;
     double error = 0.0;
@@ -162,7 +163,8 @@ void check_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int
   const auto diag = sigma->diagonal(res, diagonal.data());
   ASSERT_TRUE(diag.has_value()) << diag.error().message;
   std::vector<double> host_diag(dim);
-  const auto host = fb::host_diagonal(*alpha, *beta, ints.e_core, ints.h1, ints.eri, host_diag);
+  const auto host =
+      fb::test::host_diagonal(*alpha, *beta, ints.e_core, ints.h1, ints.eri, host_diag);
   ASSERT_TRUE(host.has_value()) << host.error().message;
   const std::vector<double> device_diag = to_host(res, diagonal);
   double worst = 0.0;
@@ -217,7 +219,7 @@ void check_fp32_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std
   for (std::int32_t j = 0; j < k; ++j) {
     const std::span<const double> column{c.data() + j * dim, dim};
     const auto host =
-        fb::host_sigma(*alpha, *beta, ints.e_core, ints.h1, ints.eri, column, expected);
+        fb::test::host_sigma(*alpha, *beta, ints.e_core, ints.h1, ints.eri, column, expected);
     ASSERT_TRUE(host.has_value()) << host.error().message;
     double norm = 0.0;
     double error = 0.0;
@@ -329,7 +331,8 @@ void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const I
     ASSERT_TRUE(sigma->rdm1(res, unpacked.data() + column * dim, gamma.data()).has_value());
     const std::vector<double> full = to_host(res, gamma);
     std::vector<double> host(n * n);
-    ASSERT_TRUE(fb::rdm1(*set, *set, std::span{c}.subspan(column * dim, dim), host).has_value());
+    ASSERT_TRUE(
+        fb::test::host_rdm1(*set, *set, std::span{c}.subspan(column * dim, dim), host).has_value());
     double scale = 1.0;
     double vs_full = 0.0;
     double vs_host = 0.0;
@@ -347,7 +350,8 @@ void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const I
   std::vector<double> expected(dim);
   for (std::int32_t j = 0; j < k; ++j) {
     const std::span<const double> column{c.data() + j * dim, dim};
-    const auto host = fb::host_sigma(*set, *set, ints.e_core, ints.h1, ints.eri, column, expected);
+    const auto host =
+        fb::test::host_sigma(*set, *set, ints.e_core, ints.h1, ints.eri, column, expected);
     ASSERT_TRUE(host.has_value()) << host.error().message;
     if (fp32) {
       for (std::size_t i = 0; i < dim; ++i) {

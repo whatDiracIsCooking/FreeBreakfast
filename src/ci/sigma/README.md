@@ -2,9 +2,9 @@
 
 σ = Hc and diag(H) for a determinant CI vector: `CiSigma` on the device, as a
 `LinearOperator` (`recipes.linear_operator`) over a block of CI vectors, with
-the 1-RDM over the same tables, and `host_sigma` / `host_diagonal` on the
-host. The host pair is written for
-clarity, not speed: it is the reference the GPU sigma is tested against.
+the 1-RDM over the same tables. The host references it is tested against,
+`host_sigma` and `host_diagonal`, are in `test/ci_oracles/`: written for
+clarity, not speed, and linked by the tests alone.
 
 ## Module
 
@@ -26,13 +26,11 @@ clarity, not speed: it is the reference the GPU sigma is tested against.
 | `CiLayout` | `full`, every determinant; or `symmetric`, the packed triangle of a vector symmetric under the swap of the two strings |
 | `ci_unpack(res, n_strings, k, x, y)` | k symmetric-layout device vectors into full ones; `Status` |
 | `ci_pack(res, n_strings, k, x, y)` | k full-layout device vectors into symmetric-layout ones, `ci_unpack`'s inverse on swap-symmetric vectors (its adjoint: any other goes to its symmetric part); `ci_solve`'s start; `Status` |
-| `host_sigma(alpha, beta, e_core, h_eff, eri, c, sigma)` | σ = Hc; `Status` |
-| `host_diagonal(alpha, beta, e_core, h_eff, eri, diagonal)` | H_II for every determinant; `Status` |
 
-All take the integrals as host arrays: `h_eff` n × n and `eri` n⁴, row-major,
-(tu\|vw) in chemists' order, real with the usual symmetry. They refuse
-(`InvalidConfig`, nothing written) two `StringSet`s over different orbital
-counts, or any span of the wrong size. `CiSigma` also refuses no orbitals, more
+`set_integrals` takes the integrals as host arrays: `h_eff` n × n and `eri`
+n⁴, row-major, (tu\|vw) in chemists' order, real with the usual symmetry.
+`CiSigma` refuses (`InvalidConfig`, nothing written) two `StringSet`s over
+different orbital counts, any span of the wrong size, no orbitals, more
 determinants than an `int32_t` counts, a negative block, another device than
 `create`'s, `apply`, `apply_fp32` or `diagonal` before `set_integrals`, and the
 symmetric layout over two different sets.
@@ -47,7 +45,8 @@ I_α · beta.size() + I_β, and the strings are in PySCF's order (see
 H = E_core + Σ k_tw E_tw + ½ Σ (tu\|vw) E_tu E_vw, with
 k_tw = h_tw − ½ Σ_u (tu\|uw) taking the −δ_uv E_tw of the two-electron term.
 
-**σ is gathered and scattered per determinant K.** K's α list (K_β held) and
+**σ is gathered and scattered per determinant K**, which is `host_sigma`'s
+loop. K's α list (K_β held) and
 β list (K_α held) are every a†_t a_u that takes K somewhere, so:
 
 1. D_K[vw] = (E_vw c)_K = Σ_I ⟨I\|E_wv\|K⟩ c_I, gathered over both lists;
@@ -231,12 +230,12 @@ CAS(10,10) and CAS(12,12) ground states (`bench/ci_sigma_precision`). That is no
 root, which needs a residual of 1e-12; it is what `ci_solve` uses for its
 first iterations (see `../solver/`).
 
-**diag(H) on the device** is host_diagonal's rule in host_diagonal's order, one
-thread per determinant.
+**diag(H) on the device** is that rule in that order (`host_diagonal`'s too),
+one thread per determinant.
 
 ## Tests
 
-`test/gtest/ci_sigma_host.cpp` builds a dense H by the Slater–Condon rules
+`test/gtest/ci_sigma_host.cpp` checks the host pair. It builds a dense H by the Slater–Condon rules
 directly on determinants as spin-orbital bit patterns, sharing no code with the
 replacement lists. Against it:
 
@@ -250,7 +249,7 @@ replacement lists. Against it:
 
 `test/gtest/ci_sigma_gpu.cpp` checks `CiSigma` against the host pair: σ on
 random blocks of one to four vectors, each column to 1e-12 ‖σ‖, and diag(H)
-to 1e-12, and `rdm1` on random unit vectors against `ci.rdm`'s `rdm1` to
+to 1e-12, and `rdm1` on random unit vectors against `host_rdm1` to
 1e-12, for every golden case, for random integrals at CAS(8,8),
 CAS(10,10), 11 orbitals over (5, 4) (two vectors, each spanning two chunks)
 and seven shapes with N_α ≠ N_β (an
@@ -271,7 +270,7 @@ the block, each to 1e-15, and of blocks that are not symmetric it is the
 packing of their symmetric part; and the layout is refused over two
 sets with the same number of strings, (4, 1) and (4, 3), by `apply`,
 `apply_fp32` and `rdm1`. In double, `rdm1` of each packed column also matches
-the full layout's on the unpacked one and `ci.rdm`'s `rdm1` to 1e-12 of
+the full layout's on the unpacked one and `host_rdm1` to 1e-12 of
 max |γ|; `test/gtest/ci_rdm_gpu.cpp` checks it again on unit vectors.
 Blocked, `apply` under a forced limit equals the unblocked result to 1e-13
 relative per column, and `apply_fp32` to its own float bound (the float gemm's
@@ -287,8 +286,8 @@ unblocked scratch gives the unbounded result bit for bit.
 
 | File | Role |
 |------|------|
-| `sigma.cppm` | Module interface: `CiLayout`, `ci_unpack`, `ci_pack`, `CiSigma`, `host_sigma`, `host_diagonal` |
-| `sigma.cpp` | The host gather–contract–scatter and diagonal; `CiSigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci_unpack`'s and `ci_pack`'s launches |
+| `sigma.cppm` | Module interface: `CiLayout`, `ci_unpack`, `ci_pack`, `CiSigma` |
+| `sigma.cpp` | `CiSigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci_unpack`'s and `ci_pack`'s launches |
 | `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
 | `ci_symmetric.h` | The symmetric layout's triangle index map and √2, for device code here and in `../solver/` |
 | `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout, whole or by string blocks), the diagonal kernel, the 1-RDM's unpacking, `ci_unpack` and `ci_pack` |

@@ -1,10 +1,8 @@
 /// @file
-/// @brief The spin-summed reduced density matrices of CI vectors: the 1-RDM of
-/// one vector, and the state-averaged 1- and 2-RDM of several, on the device
-/// and on the host.
+/// @brief The state-averaged spin-summed 1- and 2-RDM of CI vectors, on the
+/// device. The 1-RDM of one vector is CiSigma::rdm1.
 ///
-/// The host 2-RDM is written for clarity rather than speed: it is the
-/// reference the device one is tested against.
+/// The host reference it is tested against is test/ci_oracles' host_rdm12.
 
 export module free_breakfast.ci.rdm;
 
@@ -17,19 +15,6 @@ import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma; // CiLayout
 
 export namespace free_breakfast {
-
-/// @brief γ_tu = ⟨c| E_tu |c⟩ = Σ_σ ⟨c| a†_tσ a_uσ |c⟩ on the host, for a CI
-/// vector over two StringSets in host_sigma's layout: PySCF's `make_rdm1`.
-///
-/// One pass over each determinant's two replacement lists, O(dim · N (n − N +
-/// 1)). Its trace is N_α + N_β for a unit @p c.
-///
-/// @param c The CI vector, alpha.size() · beta.size().
-/// @param gamma Written with γ, n × n row-major.
-/// @return InvalidConfig when the sets span different orbital counts or a span
-///         has the wrong size; nothing is written then.
-[[nodiscard]] Status rdm1(const StringSet &alpha, const StringSet &beta, std::span<const double> c,
-                          std::span<double> gamma);
 
 /// @brief The state-averaged spin-summed 1- and 2-RDM of CI vectors on the
 /// device: γ = Σ_r w_r γ^(r), and
@@ -80,7 +65,7 @@ public:
   /// @param weights w_r on the host, one per vector: each ≥ 0, summing to 1
   ///        within 1e-12.
   /// @param vectors Device, size(@p layout) × weights.size(), root r at
-  ///        [r · size(layout), (r + 1) · size(layout)): in host_sigma's layout,
+  ///        [r · size(layout), (r + 1) · size(layout)): in CiLayout::full,
   ///        what CiRoots::vectors holds, or packed in CiLayout::symmetric.
   ///        Unit vectors, for γ and Γ to be RDMs.
   /// @param gamma Device, written with γ, n × n row-major.
@@ -117,20 +102,5 @@ private:
   Buffers::device<int32_t> alpha_links_;
   Buffers::device<int32_t> beta_links_;
 };
-
-/// @brief CiRdm::rdm12's γ and Γ on the host, written for clarity: its
-/// oracle.
-///
-/// γ is Σ_r w_r rdm1(c_r). For Γ, per root and determinant K, d_tu =
-/// ⟨c| E_tu |K⟩ over K's lists, and Γ_tuvw += w_r d_tu d_wv (the second factor
-/// ⟨K| E_vw |c⟩); then Γ_tuvw −= δ_uv γ_tw. Cost is O(Σ_r dim · n⁴).
-///
-/// @return InvalidConfig, with nothing written, when the sets span different
-///         orbital counts, @p vectors is not weights.size() · dim long, the
-///         weights are refused as CiRdm::rdm12 refuses them, or @p gamma or
-///         @p gamma2 has the wrong size.
-[[nodiscard]] Status host_rdm12(const StringSet &alpha, const StringSet &beta,
-                                std::span<const double> vectors, std::span<const double> weights,
-                                std::span<double> gamma, std::span<double> gamma2);
 
 } // namespace free_breakfast

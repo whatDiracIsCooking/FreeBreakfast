@@ -71,6 +71,7 @@ target_link_libraries(
           free_breakfast::basis
           free_breakfast::sad
           free_breakfast::ci
+          free_breakfast::test::ci_oracles
           free_breakfast::io
           free_breakfast::core::resources
           free_breakfast::pipeline::step
@@ -172,6 +173,7 @@ target_link_libraries(
   free_breakfast::sad
   free_breakfast::recipes
   free_breakfast::ci
+  free_breakfast::test::ci_oracles
   free_breakfast::integrals
   free_breakfast::mcscf
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device

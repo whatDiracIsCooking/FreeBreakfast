@@ -15,16 +15,15 @@ written against.
 | `ci_solve(res, sigma, alpha, beta, diagonal, n_roots, options, start = {})` | `Result<CiRoots>`: the `n_roots` lowest roots of spin S = \|N_α − N_β\| / 2, from the guesses or, when `start` (n_roots device vectors in the full layout) is not empty, from those. A template over the sigma. |
 | `CiSolverOptions` | `spin_penalty` (λ, 1 hartree; 0 keeps every spin), `davidson` (`DavidsonOptions`, residual tolerance 1e-12), `fp32_tolerance` (the single-precision stage's, 1e-6; 0 turns it off), `olsen_correction` (Olsen's correction in place of the plain one over the diagonal M; off, and always Olsen's with a P-space), `restart_with_previous` (the FP64 stage from [X, X_prev] in place of X; off), `spin_averaged_diagonal` (precondition with the spin-averaged diag(H), from the sigma's `exchange()`; off) and `pspace_size` (P, the elements of lowest diag(H) whose H_PP preconditions and guesses, from the sigma's `contraction()`; 0, off) |
 | `CiRoots` | `energies`, `spin_squares` (⟨S²⟩), `vectors` (a device buffer in the full layout, root r at [r · dim, (r + 1) · dim)), `davidson` (`DavidsonInfo` of the FP64 stage), `fp32_iterations` (the single-precision stage's, 0 when none ran) |
-| `host_spin_square(alpha, beta, c, s2c)` | S² c on the host; `Status` |
 | `ci_pspace_hamiltonian(res, alpha, beta, contraction, diagonal, λ, p, picks, h, layout = full)` | H_PP = ⟨φ_i\| H + λ (S² − S(S+1)) \|φ_j⟩ over p device elements of either layout, by Slater–Condon on the device, into p × p device doubles: `ci_solve`'s P-space operator; `Status` |
 | `CiSpinSquare::create(res, alpha, beta)` | Upload S²'s tables; `Result<CiSpinSquare>` |
 | `CiSpinSquare::apply(res, k, x, y, layout = full)` | Y = S² X for size(layout) × k device blocks: a `LinearOperator`; `Status` |
 | `CiSpinSquare::penalize(res, k, λ, target, x, y, layout = full)` | Y += λ (S² − target) X, the penalty ci_solve adds into sigma's output; `Status` |
 | `CiSpinSquare::penalize_diagonal(res, λ, target, diagonal, shifted, layout = full, exchange = nullptr)` | shifted = diagonal + λ (diag(S²) − target), the preconditioner's diagonal, from the full diagonal into either layout; with `exchange` ((ij\|ji), n × n on the device) the diagonal spin-averaged first; `Status` |
 
-`sigma` applies H to a device block of CI vectors in `host_sigma`'s layout:
-the GPU sigma in a calculation, `host_sigma` wrapped as a `LinearOperator` in
-the tests. One that also takes a `CiLayout` (`CiSigma`) lets a singlet solve
+`sigma` applies H to a device block of CI vectors in the full layout:
+the GPU sigma in a calculation, `host_sigma` (`test/ci_oracles/`) wrapped as a
+`LinearOperator` in the tests. One that also takes a `CiLayout` (`CiSigma`) lets a singlet solve
 run in the symmetric layout (below). `diagonal` is diag(H) on the device, as
 `CiSigma::diagonal` writes it. `spin_averaged_diagonal` also wants the sigma's
 `exchange()`, the (ij|ji) of its H on the device (`CiSigma::exchange`), and is
@@ -724,8 +723,8 @@ there has a triplet below its second singlet, so the spin control is exercised:
 
 | File | Role |
 |------|------|
-| `solver.cppm` | Module interface: `ci_solve` (a template, with its two stages, two layouts and P-space), its options and roots, `host_spin_square`, `ci_pspace_hamiltonian`, `CiSpinSquare` |
-| `solver.cpp` | `host_spin_square`; `CiSpinSquare`'s tables and launches; the preconditioner's launches, Olsen's dots and the P block's gemvs; the lowest-value select and the guesses; the P-space's H_PP and its diagonalization |
+| `solver.cppm` | Module interface: `ci_solve` (a template, with its two stages, two layouts and P-space), its options and roots, `ci_pspace_hamiltonian`, `CiSpinSquare` |
+| `solver.cpp` | `CiSpinSquare`'s tables and launches; the preconditioner's launches, Olsen's dots and the P block's gemvs; the lowest-value select and the guesses; the P-space's H_PP and its diagonalization |
 | `ci_solver_bridge.h` | The launchers' declarations, shared by `solver.cpp`'s GMF and the `.cu` |
 | `ci_solver.cu` | The S² gather and the penalized, optionally spin-averaged, diagonal (in either layout, over `../sigma/ci_symmetric.h`), the preconditioner's two kernels, the radix select of the lowest diagonals, the guess spread, the P block's gather and scatter, and H_PP by Slater–Condon |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.solver.device` and the module `free_breakfast.ci.solver` |
