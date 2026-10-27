@@ -12,9 +12,9 @@ names them all. It is the one library that imports every step, so only it and
 
 ```cpp
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
-                             PrimitivePairClassesStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep,
-                             CasciStep, CasscfStep, FciStep>;
+                             PrimitivePairClassesStep, DensityFittingStep, OverlapStep,
+                             OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
+                             LocalizationStep, CasciStep, CasscfStep, FciStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
                                  const std::filesystem::path &output_dir);
@@ -40,6 +40,9 @@ multiplicity = 1    # default 1
 
 [basis_set]
 basis = "sto-3g.json"   # required, a BSE JSON basis
+
+[density_fitting]
+aux_basis = "cc-pvdz-jkfit"   # required, a compiled-in fitting set or a BSE JSON path
 
 [orthogonalizer]          # every option has a default
 eigenvalue_floor = 1e-10  # default 1e-10
@@ -113,7 +116,7 @@ the determinant space fits is the device's to say, so `FciStep::run` estimates
 it against the free memory when the step runs (`fci/README.md`).
 
 **A table is a request, and the steps producing what it reads are filled
-in.** The file above plans all eleven steps: `[orthogonalizer]` reads the
+in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
 filled-in step is **read from an empty table**, so its defaults apply and a
 required option it lacks is the same error a written table would give:
@@ -142,8 +145,9 @@ so any other key beside it is refused. A step with no `load` refuses `from`.
 It is a path, resolved like every other.
 
 **Every path in a config is an input, relative to the input directory**:
-`[molecule] xyz`, a `[basis_set] basis` that is not a compiled-in name, and
-every `from`. The input directory is the run's, not the config file's:
+`[molecule] xyz`, a `[basis_set] basis` that is not a compiled-in name, a
+`[density_fitting] aux_basis` that is not a compiled-in fitting set's name
+(`is_builtin_aux_basis`, the other table), and every `from`. The input directory is the run's, not the config file's:
 `free-breakfast -i <dir>`, default `.`, so a config can be shared between
 runs that each bring their own inputs. An empty `input_dir` leaves the paths
 relative to the working directory. The steps document that their paths

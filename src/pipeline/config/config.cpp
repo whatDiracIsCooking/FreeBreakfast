@@ -179,6 +179,13 @@ template <class S>
     if (!is_builtin_basis(step.basis)) {
       step.basis = (base_dir / step.basis).string();
     }
+  } else if constexpr (std::same_as<S, DensityFittingStep>) {
+    FBF_TRY(check_keys(table, kStep, {"aux_basis"}));
+    FBF_TRY(read_required_key(table, kStep, "aux_basis", base_dir, step.aux_basis));
+    // BasisSetStep's rule, over the fitting sets' names.
+    if (!is_builtin_aux_basis(step.aux_basis)) {
+      step.aux_basis = (base_dir / step.aux_basis).string();
+    }
   } else if constexpr (std::same_as<S, OrthogonalizerStep>) {
     FBF_TRY(check_keys(table, kStep, {"eigenvalue_floor"}));
     FBF_TRY(read_key(table, kStep, "eigenvalue_floor", base_dir, step.eigenvalue_floor));
@@ -356,14 +363,18 @@ template <class S>
 /// one through '..', reaches there however the two directories differ.
 [[nodiscard]] Status check_inputs_apart(const Calculation &calc,
                                         const std::filesystem::path &output_dir) {
-  // Every path an input key names: the molecule's, a basis read from disk,
-  // and each product loaded 'from' a file.
+  // Every path an input key names: the molecule's, a basis or an aux basis
+  // read from disk, and each product loaded 'from' a file.
   std::vector<std::filesystem::path> inputs;
   if (const auto &molecule = calc.step<MoleculeStep>()) {
     inputs.push_back(molecule->xyz);
   }
   if (const auto &basis = calc.step<BasisSetStep>(); basis && !is_builtin_basis(basis->basis)) {
     inputs.emplace_back(basis->basis);
+  }
+  if (const auto &fit = calc.step<DensityFittingStep>();
+      fit && !is_builtin_aux_basis(fit->aux_basis)) {
+    inputs.emplace_back(fit->aux_basis);
   }
   [&]<class... Ss>(std::type_identity<Pipeline<Ss...>>) {
     const auto add_from = [&]<class S>() {

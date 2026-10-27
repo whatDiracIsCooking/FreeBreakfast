@@ -82,6 +82,69 @@ TEST(PipelineConfig, ABuiltinBasisNameIsNotAPath) {
   }
 }
 
+TEST(PipelineConfig, ABuiltinAuxBasisNameIsNotAPath) {
+  // BasisSetStep's rule over the fitting sets: a compiled-in name is kept
+  // verbatim, spelt however it was written.
+  for (const std::string_view spelling : {"cc-pvdz-jkfit", "cc-pVTZ-JKFIT", "ccpvdzjkfit"}) {
+    auto calc = fb::parse_config(
+        with_inputs(std::format("[density_fitting]\naux_basis = \"{}\"\n", spelling)), "/inputs",
+        kOut);
+    ASSERT_TRUE(calc.has_value()) << spelling << ": " << calc.error().message;
+    EXPECT_EQ(calc->step<fb::DensityFittingStep>()->aux_basis, spelling);
+  }
+  // An orbital set's name is no fitting set's, so it reads as a path.
+  auto orbital = fb::parse_config(with_inputs("[density_fitting]\naux_basis = \"cc-pvdz\"\n"),
+                                  "/inputs", kOut);
+  ASSERT_TRUE(orbital.has_value()) << orbital.error().message;
+  EXPECT_EQ(orbital->step<fb::DensityFittingStep>()->aux_basis, "/inputs/cc-pvdz");
+}
+
+TEST(PipelineConfig, AnAuxBasisPathIsAnchoredToTheInputDirectory) {
+  auto relative = fb::parse_config(with_inputs("[density_fitting]\naux_basis = \"fit.json\"\n"),
+                                   "/inputs", kOut);
+  ASSERT_TRUE(relative.has_value()) << relative.error().message;
+  EXPECT_EQ(relative->step<fb::DensityFittingStep>()->aux_basis, "/inputs/fit.json");
+  // An absolute path is kept as written.
+  auto absolute = fb::parse_config(
+      with_inputs("[density_fitting]\naux_basis = \"/fits/fit.json\"\n"), "/inputs", kOut);
+  ASSERT_TRUE(absolute.has_value()) << absolute.error().message;
+  EXPECT_EQ(absolute->step<fb::DensityFittingStep>()->aux_basis, "/fits/fit.json");
+}
+
+TEST(PipelineConfig, DensityFittingFillsInWhatItReads) {
+  auto calc =
+      fb::parse_config(with_inputs("[density_fitting]\naux_basis = \"cc-pvdz-jkfit\"\n"), "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_TRUE(calc->step<fb::MoleculeStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::BasisSetStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::PrimitivePairClassesStep>().has_value());
+  // three_center and the metric build their own transforms.
+  EXPECT_FALSE(calc->step<fb::SphericalTransformStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::ScfStep>().has_value());
+}
+
+TEST(PipelineConfig, DensityFittingNeedsAnAuxBasisAndNothingElse) {
+  expect_config_error(with_inputs("[density_fitting]\n"), "[density_fitting] needs 'aux_basis'");
+  expect_config_error(
+      with_inputs("[density_fitting]\naux_basis = \"cc-pvdz-jkfit\"\naux = \"cc-pvtz-jkfit\"\n"),
+      "[density_fitting] has no option 'aux'");
+  expect_config_error(with_inputs("[density_fitting]\naux_basis = 3\n"),
+                      "[density_fitting] aux_basis is not a string");
+}
+
+TEST(PipelineConfig, AnAuxBasisFileIsNotInTheOutputDirectory) {
+  auto calc = fb::parse_config(with_inputs("[density_fitting]\naux_basis = \"../out/fit.json\"\n"),
+                               "/run", "/out");
+  ASSERT_FALSE(calc.has_value());
+  EXPECT_EQ(calc.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(calc.error().message.find("is in the output directory '/out'"), std::string::npos)
+      << calc.error().message;
+  // A name is no file, wherever the output goes.
+  auto name = fb::parse_config(with_inputs("[density_fitting]\naux_basis = \"cc-pvdz-jkfit\"\n"),
+                               "/run", "/out");
+  EXPECT_TRUE(name.has_value()) << name.error().message;
+}
+
 TEST(PipelineConfig, AbsentOptionsKeepTheStepDefaults) {
   auto calc = fb::parse_config(with_inputs("[orthogonalizer]\n"), "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
