@@ -41,7 +41,7 @@ struct DavidsonOptions {
   /// by orthonormalize (canonical orthogonalization), instead of by
   /// Gram-Schmidt, a norm sync per correction. Off by default: even per
   /// iteration, but over the README's N2 bench it took different iteration
-  /// paths that were slower on balance. ci_solve's guesses follow it too.
+  /// paths that were slower on balance. ci::solve's guesses follow it too.
   bool canonical_orthonormalization = false;
 };
 
@@ -59,7 +59,7 @@ struct DavidsonInfo {
 /// (all three blocks device, column-major, leading dimension n). The diagonal
 /// correction r / (theta - diag(A)) is the simplest choice; X is there for
 /// Olsen's, M^-1 (r - eps x) with eps = x^T M^-1 r / x^T M^-1 x, which is
-/// orthogonal to x (see ci_solve). Like LinearOperator::apply, it runs on
+/// orthogonal to x (see ci::solve). Like LinearOperator::apply, it runs on
 /// res.stream(), with res.blas() in host pointer mode, and may take
 /// res.device_workspace().
 template <class F, class T>

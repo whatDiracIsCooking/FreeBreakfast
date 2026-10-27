@@ -6,7 +6,7 @@
 ///
 /// Device-shaped. The selection is `pipeline.active_space`'s, which
 /// `CasciStep` derives from. A wrapper over `integrals.active_space`,
-/// `ci.solver` over `ci.sigma`'s `CiSigma`, which also gives the 1-RDMs, all
+/// `ci.solver` over `ci.sigma`'s `ci::Sigma`, which also gives the 1-RDMs, all
 /// private to `run`, as is the Molden writer. See README.md.
 
 export module free_breakfast.pipeline.casci;
@@ -68,14 +68,14 @@ struct CasciStep : ActiveSpaceSelection {
 
   /// @brief The @ref nroots lowest singlets. The active-space Hamiltonian is
   /// `active_space_hamiltonian`'s over the orbitals
-  /// @ref ActiveSpaceSelection::select gives, at its own default screens; the roots are `ci_solve`'s over
-  /// `CiSigma`, at its default spin penalty and tolerance; each 1-RDM is
-  /// `CiSigma::rdm1`'s. Synchronizes res.stream(): the integrals and every Davidson
-  /// iteration are read back to the host.
+  /// @ref ActiveSpaceSelection::select gives, at its own default screens; the
+  /// roots are `ci::solve`'s over `ci::Sigma`, at its default spin penalty and
+  /// tolerance; each 1-RDM is `ci::Sigma::rdm1`'s. Synchronizes res.stream():
+  /// the integrals and every Davidson iteration are read back to the host.
   ///
   /// @return The roots; @ref ActiveSpaceSelection::select's error; or the
   ///         error of the first module call that failed:
-  ///         `active_space_hamiltonian`'s, `CiSigma`'s, `ci_solve`'s
+  ///         `active_space_hamiltonian`'s, `ci::Sigma`'s, `ci::solve`'s
   ///         (InvalidConfig for @ref nroots outside [1, dim],
   ///         MaxIterationsExceeded, Numerical for a root of the wrong spin),
   ///         `diagonalize`'s or `write_molden`'s, and GpuRuntime for a failed

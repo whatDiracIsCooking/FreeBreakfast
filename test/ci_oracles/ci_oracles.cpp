@@ -13,7 +13,7 @@ import free_breakfast.ci.strings;
 namespace free_breakfast::test {
 
 // What host_sigma and host_diagonal refuse: the shapes they would otherwise index past.
-Status check_host_sigma_shapes(const StringSet &alpha, const StringSet &beta, size_t h_eff,
+Status check_host_sigma_shapes(const ci::StringSet &alpha, const ci::StringSet &beta, size_t h_eff,
                                size_t eri, size_t vector) {
   if (alpha.n_orbitals() != beta.n_orbitals()) {
     return err_config("ci sigma: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
@@ -31,7 +31,7 @@ Status check_host_sigma_shapes(const StringSet &alpha, const StringSet &beta, si
   return {};
 }
 
-Status host_sigma(const StringSet &alpha, const StringSet &beta, const double e_core,
+Status host_sigma(const ci::StringSet &alpha, const ci::StringSet &beta, const double e_core,
                   const std::span<const double> h_eff, const std::span<const double> eri,
                   const std::span<const double> c, const std::span<double> sigma) {
   if (Status shapes = check_host_sigma_shapes(alpha, beta, h_eff.size(), eri.size(), c.size());
@@ -80,11 +80,11 @@ Status host_sigma(const StringSet &alpha, const StringSet &beta, const double e_
     for (int32_t kb = 0; kb < beta.size(); ++kb) {
       const size_t det = static_cast<size_t>(ka) * nb + static_cast<size_t>(kb);
       std::ranges::fill(d, 0.0);
-      for (const Replacement &r : alpha.replacements(ka)) {
+      for (const ci::Replacement &r : alpha.replacements(ka)) {
         const size_t from = static_cast<size_t>(r.target) * nb + static_cast<size_t>(kb);
         d[static_cast<size_t>(r.q) * n + static_cast<size_t>(r.p)] += r.sign * c[from];
       }
-      for (const Replacement &r : beta.replacements(kb)) {
+      for (const ci::Replacement &r : beta.replacements(kb)) {
         const size_t from = static_cast<size_t>(ka) * nb + static_cast<size_t>(r.target);
         d[static_cast<size_t>(r.q) * n + static_cast<size_t>(r.p)] += r.sign * c[from];
       }
@@ -103,11 +103,11 @@ Status host_sigma(const StringSet &alpha, const StringSet &beta, const double e_
         g[tu] = 0.5 * sum;
       }
 
-      for (const Replacement &r : alpha.replacements(ka)) {
+      for (const ci::Replacement &r : alpha.replacements(ka)) {
         const size_t to = static_cast<size_t>(r.target) * nb + static_cast<size_t>(kb);
         sigma[to] += r.sign * g[static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)];
       }
-      for (const Replacement &r : beta.replacements(kb)) {
+      for (const ci::Replacement &r : beta.replacements(kb)) {
         const size_t to = static_cast<size_t>(ka) * nb + static_cast<size_t>(r.target);
         sigma[to] += r.sign * g[static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)];
       }
@@ -116,7 +116,7 @@ Status host_sigma(const StringSet &alpha, const StringSet &beta, const double e_
   return {};
 }
 
-Status host_diagonal(const StringSet &alpha, const StringSet &beta, const double e_core,
+Status host_diagonal(const ci::StringSet &alpha, const ci::StringSet &beta, const double e_core,
                      const std::span<const double> h_eff, const std::span<const double> eri,
                      const std::span<double> diagonal) {
   if (Status shapes =
@@ -169,8 +169,8 @@ Status host_diagonal(const StringSet &alpha, const StringSet &beta, const double
   return {};
 }
 
-Status host_rdm1(const StringSet &alpha, const StringSet &beta, const std::span<const double> c,
-                 const std::span<double> gamma) {
+Status host_rdm1(const ci::StringSet &alpha, const ci::StringSet &beta,
+                 const std::span<const double> c, const std::span<double> gamma) {
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
   const auto n = static_cast<size_t>(alpha.n_orbitals());
   if (alpha.n_orbitals() != beta.n_orbitals() || c.size() != dim || gamma.size() != n * n) {
@@ -183,11 +183,11 @@ Status host_rdm1(const StringSet &alpha, const StringSet &beta, const std::span<
   for (int32_t ka = 0; ka < alpha.size(); ++ka) {
     for (int32_t kb = 0; kb < beta.size(); ++kb) {
       const double ck = c[static_cast<size_t>(ka) * nb + static_cast<size_t>(kb)];
-      for (const Replacement &r : alpha.replacements(ka)) {
+      for (const ci::Replacement &r : alpha.replacements(ka)) {
         const size_t j = static_cast<size_t>(r.target) * nb + static_cast<size_t>(kb);
         gamma[static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)] += r.sign * c[j] * ck;
       }
-      for (const Replacement &r : beta.replacements(kb)) {
+      for (const ci::Replacement &r : beta.replacements(kb)) {
         const size_t j = static_cast<size_t>(ka) * nb + static_cast<size_t>(r.target);
         gamma[static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)] += r.sign * c[j] * ck;
       }
@@ -196,7 +196,7 @@ Status host_rdm1(const StringSet &alpha, const StringSet &beta, const std::span<
   return {};
 }
 
-// What host_rdm12 refuses in the weights, as CiRdm::rdm12 does: none, or any
+// What host_rdm12 refuses in the weights, as ci::Rdm::rdm12 does: none, or any
 // that do not make an average.
 Status check_host_rdm12_weights(const std::span<const double> weights) {
   if (weights.empty()) {
@@ -215,7 +215,7 @@ Status check_host_rdm12_weights(const std::span<const double> weights) {
   return {};
 }
 
-Status host_rdm12(const StringSet &alpha, const StringSet &beta,
+Status host_rdm12(const ci::StringSet &alpha, const ci::StringSet &beta,
                   const std::span<const double> vectors, const std::span<const double> weights,
                   const std::span<double> gamma, const std::span<double> gamma2) {
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
@@ -248,11 +248,11 @@ Status host_rdm12(const StringSet &alpha, const StringSet &beta,
     for (int32_t ka = 0; ka < alpha.size(); ++ka) {
       for (int32_t kb = 0; kb < beta.size(); ++kb) {
         std::ranges::fill(d, 0.0);
-        for (const Replacement &x : alpha.replacements(ka)) {
+        for (const ci::Replacement &x : alpha.replacements(ka)) {
           const size_t j = static_cast<size_t>(x.target) * nb + static_cast<size_t>(kb);
           d[static_cast<size_t>(x.p) * n + static_cast<size_t>(x.q)] += x.sign * c[j];
         }
-        for (const Replacement &x : beta.replacements(kb)) {
+        for (const ci::Replacement &x : beta.replacements(kb)) {
           const size_t j = static_cast<size_t>(ka) * nb + static_cast<size_t>(x.target);
           d[static_cast<size_t>(x.p) * n + static_cast<size_t>(x.q)] += x.sign * c[j];
         }
@@ -279,7 +279,7 @@ Status host_rdm12(const StringSet &alpha, const StringSet &beta,
   return {};
 }
 
-Status host_spin_square(const StringSet &alpha, const StringSet &beta,
+Status host_spin_square(const ci::StringSet &alpha, const ci::StringSet &beta,
                         const std::span<const double> c, const std::span<double> s2c) {
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
   if (alpha.n_orbitals() != beta.n_orbitals() || c.size() != dim || s2c.size() != dim) {
@@ -304,7 +304,7 @@ Status host_spin_square(const StringSet &alpha, const StringSet &beta,
   // each carries only its own list's sign.
   std::vector<int32_t> slot(n * n);
   for (int32_t kb = 0; kb < beta.size(); ++kb) {
-    const std::span<const Replacement> beta_list = beta.replacements(kb);
+    const std::span<const ci::Replacement> beta_list = beta.replacements(kb);
     std::ranges::fill(slot, -1);
     for (size_t j = 0; j < beta_list.size(); ++j) {
       slot[static_cast<size_t>(beta_list[j].p) * n + static_cast<size_t>(beta_list[j].q)] =
@@ -315,12 +315,12 @@ Status host_spin_square(const StringSet &alpha, const StringSet &beta,
       if (ck == 0.0) {
         continue;
       }
-      for (const Replacement &ra : alpha.replacements(ka)) {
+      for (const ci::Replacement &ra : alpha.replacements(ka)) {
         const int32_t j = slot[static_cast<size_t>(ra.q) * n + static_cast<size_t>(ra.p)];
         if (j < 0) {
           continue;
         }
-        const Replacement &rb = beta_list[static_cast<size_t>(j)];
+        const ci::Replacement &rb = beta_list[static_cast<size_t>(j)];
         s2c[static_cast<size_t>(ra.target) * nb + static_cast<size_t>(rb.target)] -=
             ra.sign * rb.sign * ck;
       }

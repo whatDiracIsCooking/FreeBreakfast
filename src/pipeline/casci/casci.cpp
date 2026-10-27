@@ -142,17 +142,17 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   }
 
   const int32_t n_beta = n_electrons / 2;
-  const StringSet alpha = FBF_TRY(StringSet::create(n_active, n_electrons - n_beta));
-  const StringSet beta = FBF_TRY(StringSet::create(n_active, n_beta));
-  CiSigma sigma = FBF_TRY(CiSigma::create(res, alpha, beta));
+  const ci::StringSet alpha = FBF_TRY(ci::StringSet::create(n_active, n_electrons - n_beta));
+  const ci::StringSet beta = FBF_TRY(ci::StringSet::create(n_active, n_beta));
+  ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   FBF_TRY(sigma.set_integrals(res, ham.e_core, h_eff, eri));
   const auto dim = static_cast<size_t>(sigma.size());
   Buffers::device<double> diagonal_device(dim, res.device());
   FBF_TRY(sigma.diagonal(res, diagonal_device.data()));
-  CiRoots roots = FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal_device.data(), nroots));
+  ci::Roots roots = FBF_TRY(ci::solve(res, sigma, alpha, beta, diagonal_device.data(), nroots));
 
   const auto count = static_cast<size_t>(nroots);
-  // Each root's 1-RDM on the device, from the roots ci_solve left there; then
+  // Each root's 1-RDM on the device, from the roots ci::solve left there; then
   // both come to the host, the vectors for CasciOutput::vectors.
   std::vector<double> gamma(count * n * n);
   std::vector<double> vectors(count * dim);

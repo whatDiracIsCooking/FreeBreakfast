@@ -178,7 +178,7 @@ casscf_fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecul
                  .gamma = Buffers::device<double>(na * na, res.device()),
                  .gamma2 = Buffers::device<double>(na * na * na * na, res.device())};
 
-  // gamma and Gamma from CiRdm::rdm12's row-major order to the t-fastest one, so
+  // gamma and Gamma from ci::Rdm::rdm12's row-major order to the t-fastest one, so
   // (t, k) with k = u + ncas (v + ncas w) is a column-major ncas x ncas^3
   // matrix. Live until the final synchronize, which the uploads precede.
   std::vector<double> gamma_col(na * na);

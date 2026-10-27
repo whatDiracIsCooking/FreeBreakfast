@@ -17,7 +17,7 @@ import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
-// Re-exported: CasscfOptions holds CiSolverOptions and the solution CiRoots.
+// Re-exported: CasscfOptions holds ci::SolverOptions and the solution ci::Roots.
 export import free_breakfast.ci.solver;
 
 export namespace free_breakfast {
@@ -41,7 +41,7 @@ struct CasscfOptions {
   int32_t max_micro = 4;
   /// @brief The CI's: its spin penalty, and in davidson.residual_tolerance the
   /// tightest residual tolerance the schedule reaches near convergence.
-  CiSolverOptions ci;
+  ci::SolverOptions ci;
   /// @brief The J and K screening of every integral, Fock and Hessian build.
   double tau_j = 1e-14;
   double tau_k = 1e-14;
@@ -58,10 +58,10 @@ struct CasscfIteration {
   /// @brief The trust radius the next step was taken under.
   double trust_radius;
   /// @brief Davidson iterations of this iteration's CI: its final,
-  /// double-precision stage (CiRoots::davidson).
+  /// double-precision stage (ci::Roots::davidson).
   int32_t ci_iterations;
   /// @brief Iterations of the single-precision stage before it
-  /// (CiRoots::fp32_iterations), 0 when there was none.
+  /// (ci::Roots::fp32_iterations), 0 when there was none.
   int32_t ci_fp32_iterations;
   /// @brief Augmented-Hessian solves of the step taken from here (0 when
   /// converged or rejected).
@@ -81,7 +81,7 @@ struct CasscfSolution {
   SphericalMatrixAO c;
   /// @brief The CI at @ref c: each root's energy (hartree) and <S^2>, and the
   /// unit CI vectors on the device, root r at [r dim, (r + 1) dim).
-  CiRoots roots;
+  ci::Roots roots;
   /// @brief sum_r w_r E_r (hartree).
   double energy;
   /// @brief ||g|| at @ref c.
@@ -89,7 +89,7 @@ struct CasscfSolution {
   /// @brief The weighted gamma, ncas x ncas, on the host (symmetric).
   std::vector<double> gamma;
   /// @brief The weighted Gamma, ncas^4 row-major (t, u, v, w), on the host:
-  /// @c CiRdm::rdm12's layout.
+  /// @c ci::Rdm::rdm12's layout.
   std::vector<double> gamma2;
   /// @brief Each root's gamma, root r at [r ncas^2, (r + 1) ncas^2).
   std::vector<double> root_gammas;
@@ -105,11 +105,11 @@ struct CasscfSolution {
 /// @c casscf_fock takes; the classes must stay alive for the call. @p weights
 /// are w_r, empty for equal ones.
 ///
-/// Each macro iteration: @c casscf_integrals over the current C; @c ci_solve
+/// Each macro iteration: @c casscf_integrals over the current C; @c ci::solve
 /// over the GPU sigma, warm-started from the last iteration's roots (the first
 /// from its own guesses), its residual
 /// tolerance min(1e-8, 1e-4 ||g||^2) of the last iteration, held at or above
-/// options.ci's; @c CiRdm::rdm12 at @p weights and @c casscf_fock. Converged
+/// options.ci's; @c ci::Rdm::rdm12 at @p weights and @c casscf_fock. Converged
 /// when |Delta E| < conv_tol and ||g|| < conv_tol_grad. A rise of the energy
 /// over the last accepted iteration past 1e-11 hartree rejects the orbitals:
 /// the step from the accepted ones is retried at half its length and the

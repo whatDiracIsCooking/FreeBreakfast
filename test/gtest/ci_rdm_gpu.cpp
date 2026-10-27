@@ -1,9 +1,9 @@
-// GPU cases for ci.rdm's CiRdm: the device γ and Γ against host_rdm12, and
+// GPU cases for ci.rdm's ci::Rdm: the device γ and Γ against host_rdm12, and
 // both against PySCF's make_rdm12 (and make_rdm12s summed over the spins) over
 // the CI vectors stored in data/ci/direct_spin1.json, written by
-// tools/emit_fci_reference.py; γ against rdm1 and CiSigma::rdm1; the RDM
+// tools/emit_fci_reference.py; γ against rdm1 and ci::Sigma::rdm1; the RDM
 // identities; the symmetric layout against the full one, for rdm12 and
-// CiSigma::rdm1; and the refusals.
+// ci::Sigma::rdm1; and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -100,13 +100,13 @@ std::vector<double> on_host(fb::DeviceResources &res, const fb::Buffers::device<
   return host;
 }
 
-// CiRdm::rdm12 of the host @p vectors, in @p layout, through the device and
+// ci::Rdm::rdm12 of the host @p vectors, in @p layout, through the device and
 // back.
-Rdm12 device_rdm12(fb::DeviceResources &res, const fb::StringSet &alpha, const fb::StringSet &beta,
-                   std::span<const double> vectors, std::span<const double> weights,
-                   fb::CiLayout layout = fb::CiLayout::full) {
+Rdm12 device_rdm12(fb::DeviceResources &res, const fb::ci::StringSet &alpha,
+                   const fb::ci::StringSet &beta, std::span<const double> vectors,
+                   std::span<const double> weights, fb::ci::Layout layout = fb::ci::Layout::full) {
   const auto n = static_cast<std::size_t>(alpha.n_orbitals());
-  auto rdm = fb::CiRdm::create(res, alpha, beta);
+  auto rdm = fb::ci::Rdm::create(res, alpha, beta);
   EXPECT_TRUE(rdm.has_value()) << rdm.error().message;
   if (!rdm) {
     return {};
@@ -119,8 +119,8 @@ Rdm12 device_rdm12(fb::DeviceResources &res, const fb::StringSet &alpha, const f
   return Rdm12{on_host(res, gamma), on_host(res, gamma2)};
 }
 
-std::pair<Rdm12, Rdm12> both_rdm12(fb::DeviceResources &res, const fb::StringSet &alpha,
-                                   const fb::StringSet &beta, std::span<const double> vectors,
+std::pair<Rdm12, Rdm12> both_rdm12(fb::DeviceResources &res, const fb::ci::StringSet &alpha,
+                                   const fb::ci::StringSet &beta, std::span<const double> vectors,
                                    std::span<const double> weights) {
   const auto n = static_cast<std::size_t>(alpha.n_orbitals());
   const std::size_t dim =
@@ -149,12 +149,12 @@ std::pair<Rdm12, Rdm12> both_rdm12(fb::DeviceResources &res, const fb::StringSet
   return {std::move(device), std::move(host)};
 }
 
-// rdm12's γ of one state against CiSigma::rdm1, the device 1-RDM a
+// rdm12's γ of one state against ci::Sigma::rdm1, the device 1-RDM a
 // calculation uses, over the same vector.
-void expect_matches_ci_sigma_rdm1(fb::DeviceResources &res, const fb::StringSet &alpha,
-                                  const fb::StringSet &beta, std::span<const double> c,
+void expect_matches_ci_sigma_rdm1(fb::DeviceResources &res, const fb::ci::StringSet &alpha,
+                                  const fb::ci::StringSet &beta, std::span<const double> c,
                                   std::span<const double> gamma) {
-  auto sigma = fb::CiSigma::create(res, alpha, beta);
+  auto sigma = fb::ci::Sigma::create(res, alpha, beta);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   fb::Buffers::device<double> c_dev(c.size(), res.device());
   fb::Buffers::device<double> gamma_dev(gamma.size(), res.device());
@@ -167,7 +167,7 @@ void expect_matches_ci_sigma_rdm1(fb::DeviceResources &res, const fb::StringSet 
                                 wwr::wwrMemcpyDeviceToHost, res.stream()),
             wwr::wwrSuccess);
   ASSERT_TRUE(res.sync().has_value());
-  EXPECT_LE(max_abs_diff(gamma, got), kHostTol) << "rdm12 gamma vs CiSigma::rdm1";
+  EXPECT_LE(max_abs_diff(gamma, got), kHostTol) << "rdm12 gamma vs ci::Sigma::rdm1";
 }
 
 // Random unit vectors, @p roots of them, over the sector (n, N_α, N_β).
@@ -190,7 +190,7 @@ std::vector<double> random_unit_vectors(std::size_t dim, std::size_t roots) {
 }
 
 // The symmetric layout of full-layout vectors over m strings for both spins
-// (see CiLayout): the triangle a >= b, off-diagonal elements times sqrt(2).
+// (see ci::Layout): the triangle a >= b, off-diagonal elements times sqrt(2).
 std::vector<double> pack(std::span<const double> full, std::size_t m) {
   const std::size_t k = full.size() / (m * m);
   const std::size_t packed = m * (m + 1) / 2;
@@ -224,9 +224,9 @@ std::vector<double> unpack(std::span<const double> packed_vectors, std::size_t m
   return out;
 }
 
-// CiSigma::rdm1 of the device vector @p c in @p layout.
-std::vector<double> sigma_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, std::size_t n,
-                               std::span<const double> c, fb::CiLayout layout) {
+// ci::Sigma::rdm1 of the device vector @p c in @p layout.
+std::vector<double> sigma_rdm1(fb::DeviceResources &res, fb::ci::Sigma &sigma, std::size_t n,
+                               std::span<const double> c, fb::ci::Layout layout) {
   const auto c_dev = on_device(res, c);
   fb::Buffers::device<double> gamma(n * n, res.device());
   const auto got = sigma.rdm1(res, c_dev.data(), gamma.data(), layout);
@@ -236,9 +236,9 @@ std::vector<double> sigma_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, std
 
 // The @p weights.size() packed swap-symmetric vectors @p packed over @p set
 // for both spins: rdm12 in the symmetric layout against the full layout on
-// the unpacked vectors and against host_rdm12, and per root CiSigma::rdm1 the
+// the unpacked vectors and against host_rdm12, and per root ci::Sigma::rdm1 the
 // same way against host_rdm1, all to 1e-12; and the identities.
-void check_symmetric(fb::DeviceResources &res, const fb::StringSet &set,
+void check_symmetric(fb::DeviceResources &res, const fb::ci::StringSet &set,
                      std::span<const double> packed, std::span<const double> weights) {
   const auto n = static_cast<std::size_t>(set.n_orbitals());
   const auto m = static_cast<std::size_t>(set.size());
@@ -246,7 +246,7 @@ void check_symmetric(fb::DeviceResources &res, const fb::StringSet &set,
   ASSERT_EQ(packed.size(), triangle * weights.size());
   const std::vector<double> full = unpack(packed, m);
 
-  const Rdm12 symmetric = device_rdm12(res, set, set, packed, weights, fb::CiLayout::symmetric);
+  const Rdm12 symmetric = device_rdm12(res, set, set, packed, weights, fb::ci::Layout::symmetric);
   const Rdm12 unpacked = device_rdm12(res, set, set, full, weights);
   Rdm12 host{std::vector<double>(n * n), std::vector<double>(n * n * n * n)};
   const auto want = fb::test::host_rdm12(set, set, full, weights, host.gamma, host.gamma2);
@@ -260,15 +260,15 @@ void check_symmetric(fb::DeviceResources &res, const fb::StringSet &set,
   EXPECT_LE(max_abs_diff(symmetric.gamma, host.gamma), kHostTol) << "symmetric gamma vs host";
   expect_identities(symmetric.gamma, symmetric.gamma2, n, 2 * set.n_electrons());
 
-  auto sigma = fb::CiSigma::create(res, set, set);
+  auto sigma = fb::ci::Sigma::create(res, set, set);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   std::vector<double> one(n * n);
   for (std::size_t r = 0; r < weights.size(); ++r) {
     SCOPED_TRACE(std::format("rdm1 of root {}", r));
     const std::span<const double> c = std::span{full}.subspan(r * m * m, m * m);
-    const auto got =
-        sigma_rdm1(res, *sigma, n, packed.subspan(r * triangle, triangle), fb::CiLayout::symmetric);
-    const auto got_full = sigma_rdm1(res, *sigma, n, c, fb::CiLayout::full);
+    const auto got = sigma_rdm1(res, *sigma, n, packed.subspan(r * triangle, triangle),
+                                fb::ci::Layout::symmetric);
+    const auto got_full = sigma_rdm1(res, *sigma, n, c, fb::ci::Layout::full);
     ASSERT_TRUE(fb::test::host_rdm1(set, set, c, one).has_value());
     EXPECT_LE(max_abs_diff(got, got_full), kHostTol) << "symmetric rdm1 vs full";
     EXPECT_LE(max_abs_diff(got, one), kHostTol) << "symmetric rdm1 vs host";
@@ -286,8 +286,8 @@ TEST(CiRdm12Gpu, MatchesDirectSpin1) {
   for (const auto &entry : cases) {
     SCOPED_TRACE(entry["name"].get<std::string>());
     const auto n = entry["n_orbitals"].get<std::int32_t>();
-    const auto alpha = fb::StringSet::create(n, entry["n_alpha"].get<std::int32_t>());
-    const auto beta = fb::StringSet::create(n, entry["n_beta"].get<std::int32_t>());
+    const auto alpha = fb::ci::StringSet::create(n, entry["n_alpha"].get<std::int32_t>());
+    const auto beta = fb::ci::StringSet::create(n, entry["n_beta"].get<std::int32_t>());
     ASSERT_TRUE(alpha.has_value() && beta.has_value());
     ASSERT_FALSE(entry["rdm12"].empty());
     for (const auto &average : entry["rdm12"]) {
@@ -326,8 +326,8 @@ TEST(CiRdm12Gpu, MatchesHostOnRandomSectors) {
   for (const Sector s : {Sector{6, 3, 3}, Sector{7, 4, 2}, Sector{8, 3, 5}, Sector{5, 0, 3},
                          Sector{5, 5, 2}, Sector{1, 1, 0}, Sector{2, 1, 1}}) {
     SCOPED_TRACE(std::format("n {} alpha {} beta {}", s.n, s.n_alpha, s.n_beta));
-    const auto alpha = fb::StringSet::create(s.n, s.n_alpha);
-    const auto beta = fb::StringSet::create(s.n, s.n_beta);
+    const auto alpha = fb::ci::StringSet::create(s.n, s.n_alpha);
+    const auto beta = fb::ci::StringSet::create(s.n, s.n_beta);
     ASSERT_TRUE(alpha.has_value() && beta.has_value());
     const std::size_t dim =
         static_cast<std::size_t>(alpha->size()) * static_cast<std::size_t>(beta->size());
@@ -349,8 +349,8 @@ TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnDirectSpin1) {
       continue;
     }
     SCOPED_TRACE(entry["name"].get<std::string>());
-    const auto set = fb::StringSet::create(entry["n_orbitals"].get<std::int32_t>(),
-                                           entry["n_alpha"].get<std::int32_t>());
+    const auto set = fb::ci::StringSet::create(entry["n_orbitals"].get<std::int32_t>(),
+                                               entry["n_alpha"].get<std::int32_t>());
     ASSERT_TRUE(set.has_value());
     const auto m = static_cast<std::size_t>(set->size());
     for (const auto &average : entry["rdm12"]) {
@@ -385,7 +385,7 @@ TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullOnRandomVectors) {
        {std::pair{6, 3}, std::pair{7, 2}, std::pair{8, 4}, std::pair{5, 0}, std::pair{5, 5},
         std::pair{1, 1}, std::pair{2, 1}}) {
     SCOPED_TRACE(std::format("n {} N {}", n, electrons));
-    const auto set = fb::StringSet::create(n, electrons);
+    const auto set = fb::ci::StringSet::create(n, electrons);
     ASSERT_TRUE(set.has_value());
     const auto m = static_cast<std::size_t>(set->size());
     check_symmetric(res, *set, random_unit_vectors(m * (m + 1) / 2, weights.size()), weights);
@@ -398,7 +398,7 @@ TEST(CiRdm12Gpu, SymmetricLayoutMatchesFullAcrossChunks) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
-  const auto set = fb::StringSet::create(11, 5);
+  const auto set = fb::ci::StringSet::create(11, 5);
   ASSERT_TRUE(set.has_value());
   const auto m = static_cast<std::size_t>(set->size());
   ASSERT_EQ(m * (m + 1) / 2, 106953U);
@@ -412,7 +412,7 @@ TEST(CiRdm12Gpu, MatchesHostAcrossChunks) {
   FBF_REQUIRE_GPU();
   FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
-  const auto set = fb::StringSet::create(11, 4);
+  const auto set = fb::ci::StringSet::create(11, 4);
   ASSERT_TRUE(set.has_value());
   const std::size_t dim =
       static_cast<std::size_t>(set->size()) * static_cast<std::size_t>(set->size());
@@ -424,9 +424,9 @@ TEST(CiRdm12Gpu, MatchesHostAcrossChunks) {
 TEST(CiRdm12Gpu, Refuses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto four = fb::StringSet::create(4, 2);
-  const auto five = fb::StringSet::create(5, 2);
-  const auto none = fb::StringSet::create(0, 0);
+  const auto four = fb::ci::StringSet::create(4, 2);
+  const auto five = fb::ci::StringSet::create(5, 2);
+  const auto none = fb::ci::StringSet::create(0, 0);
   ASSERT_TRUE(four.has_value() && five.has_value() && none.has_value());
   const std::size_t dim =
       static_cast<std::size_t>(four->size()) * static_cast<std::size_t>(four->size());
@@ -435,11 +435,11 @@ TEST(CiRdm12Gpu, Refuses) {
   const std::size_t g1 = 16;
   const std::size_t g2 = 256;
 
-  // CiRdm refuses sets it cannot gather over.
-  EXPECT_FALSE(fb::CiRdm::create(res, *four, *five).has_value());
-  EXPECT_FALSE(fb::CiRdm::create(res, *none, *none).has_value());
+  // ci::Rdm refuses sets it cannot gather over.
+  EXPECT_FALSE(fb::ci::Rdm::create(res, *four, *five).has_value());
+  EXPECT_FALSE(fb::ci::Rdm::create(res, *none, *none).has_value());
 
-  auto rdm = fb::CiRdm::create(res, *four, *four);
+  auto rdm = fb::ci::Rdm::create(res, *four, *four);
   ASSERT_TRUE(rdm.has_value()) << rdm.error().message;
   ASSERT_EQ(static_cast<std::size_t>(rdm->size()), dim);
   const auto c = on_device(res, two_vectors);
@@ -520,17 +520,17 @@ TEST(CiRdm12Gpu, Refuses) {
     // The symmetric layout wants one set for both spins: (4, 1) and (4, 3)
     // have the same number of strings, and are still two sets.
     SCOPED_TRACE("the symmetric layout over two sets");
-    const auto one = fb::StringSet::create(4, 1);
-    const auto three = fb::StringSet::create(4, 3);
+    const auto one = fb::ci::StringSet::create(4, 1);
+    const auto three = fb::ci::StringSet::create(4, 3);
     ASSERT_TRUE(one.has_value() && three.has_value());
-    auto mixed = fb::CiRdm::create(res, *one, *three);
+    auto mixed = fb::ci::Rdm::create(res, *one, *three);
     ASSERT_TRUE(mixed.has_value()) << mixed.error().message;
     const auto c_mixed = on_device(res, random_unit_vectors(16, 1));
     auto gamma_dev = on_device(res, std::vector<double>(g1, kSentinel));
     auto gamma2_dev = on_device(res, std::vector<double>(g2, kSentinel));
     const std::array weight{1.0};
     const auto got = mixed->rdm12(res, weight, c_mixed.data(), gamma_dev.data(), gamma2_dev.data(),
-                                  fb::CiLayout::symmetric);
+                                  fb::ci::Layout::symmetric);
     ASSERT_FALSE(got.has_value());
     EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
     EXPECT_TRUE(
@@ -539,7 +539,7 @@ TEST(CiRdm12Gpu, Refuses) {
         std::ranges::all_of(on_host(res, gamma2_dev), [](double x) { return x == kSentinel; }));
     EXPECT_TRUE(
         mixed->rdm12(res, weight, c_mixed.data(), gamma_dev.data(), gamma2_dev.data()).has_value());
-    EXPECT_EQ(rdm->size(fb::CiLayout::symmetric), 21);
+    EXPECT_EQ(rdm->size(fb::ci::Layout::symmetric), 21);
   }
 
   // Within 1e-12 of 1 is accepted.

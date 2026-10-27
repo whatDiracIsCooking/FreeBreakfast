@@ -88,7 +88,7 @@ std::int32_t apply(std::uint64_t &s, std::int32_t k, bool create) {
 
 // H over the determinants (I_a, I_b), alpha-major, by the Slater–Condon rules
 // on spin-orbital patterns s = I_a | I_b << n.
-std::vector<double> dense_hamiltonian(const fb::StringSet &alpha, const fb::StringSet &beta,
+std::vector<double> dense_hamiltonian(const fb::ci::StringSet &alpha, const fb::ci::StringSet &beta,
                                       const Integrals &ints) {
   const std::int32_t n = ints.n;
   const auto m = static_cast<std::size_t>(n);
@@ -263,8 +263,8 @@ std::vector<double> eigenvalues(std::vector<double> a, std::size_t n) {
 
 // Check host_sigma on random vectors and host_diagonal against the dense H,
 // and return that H.
-std::vector<double> check_against_dense(const fb::StringSet &alpha, const fb::StringSet &beta,
-                                        const Integrals &ints) {
+std::vector<double> check_against_dense(const fb::ci::StringSet &alpha,
+                                        const fb::ci::StringSet &beta, const Integrals &ints) {
   const std::vector<double> hm = dense_hamiltonian(alpha, beta, ints);
   const std::size_t dim =
       static_cast<std::size_t>(alpha.size()) * static_cast<std::size_t>(beta.size());
@@ -310,8 +310,8 @@ TEST(CiSigma, MatchesSlaterCondonOnRandomIntegrals) {
   }};
   for (const auto &[n, n_alpha, n_beta] : shapes) {
     SCOPED_TRACE(std::format("n = {}, N_alpha = {}, N_beta = {}", n, n_alpha, n_beta));
-    const auto alpha = fb::StringSet::create(n, n_alpha);
-    const auto beta = fb::StringSet::create(n, n_beta);
+    const auto alpha = fb::ci::StringSet::create(n, n_alpha);
+    const auto beta = fb::ci::StringSet::create(n, n_beta);
     ASSERT_TRUE(alpha.has_value() && beta.has_value());
     const Integrals ints = random_integrals(n, 100 + static_cast<std::uint64_t>(n));
     check_against_dense(*alpha, *beta, ints);
@@ -328,8 +328,8 @@ TEST(CiSigma, DenseSpectrumMatchesDirectSpin1) {
     const Integrals ints{entry["n_orbitals"].get<std::int32_t>(), entry["e_core"].get<double>(),
                          entry["h1"]["values"].get<std::vector<double>>(),
                          entry["eri"]["values"].get<std::vector<double>>()};
-    const auto alpha = fb::StringSet::create(ints.n, entry["n_alpha"].get<std::int32_t>());
-    const auto beta = fb::StringSet::create(ints.n, entry["n_beta"].get<std::int32_t>());
+    const auto alpha = fb::ci::StringSet::create(ints.n, entry["n_alpha"].get<std::int32_t>());
+    const auto beta = fb::ci::StringSet::create(ints.n, entry["n_beta"].get<std::int32_t>());
     ASSERT_TRUE(alpha.has_value() && beta.has_value());
 
     const std::vector<double> hm = check_against_dense(*alpha, *beta, ints);
@@ -345,8 +345,8 @@ TEST(CiSigma, DenseSpectrumMatchesDirectSpin1) {
 }
 
 TEST(CiSigma, RejectsMismatchedShapes) {
-  const auto four = fb::StringSet::create(4, 2);
-  const auto five = fb::StringSet::create(5, 2);
+  const auto four = fb::ci::StringSet::create(4, 2);
+  const auto five = fb::ci::StringSet::create(5, 2);
   ASSERT_TRUE(four.has_value() && five.has_value());
   const Integrals ints = random_integrals(4, 7);
   const std::size_t dim =

@@ -4,7 +4,7 @@
 /// strings' replacement lists.
 ///
 /// Written for clarity rather than speed, and linked by the test executables
-/// alone: no calculation runs them. Every vector is in CiLayout::full, element
+/// alone: no calculation runs them. Every vector is in ci::Layout::full, element
 /// I_α · beta.size() + I_β, which is `fci.direct_spin1`'s layout.
 
 export module free_breakfast.test.ci_oracles;
@@ -18,7 +18,7 @@ export namespace free_breakfast::test {
 
 /// @brief σ = H c on the host, H = E_core + Σ_tu h_tu E_tu
 /// + ½ Σ_tuvw (tu|vw) (E_tu E_vw − δ_uv E_tw), E_tu the spin-summed
-/// excitation operator: CiSigma::apply's reference.
+/// excitation operator: ci::Sigma::apply's reference.
 ///
 /// The α–α, β–β and α–β terms all go through the two sets' replacement lists.
 /// Cost is O(dim · n⁴), memory O(n²) besides the vectors.
@@ -33,26 +33,27 @@ export namespace free_breakfast::test {
 /// @param sigma Written with H c, the same size; must not overlap @p c.
 /// @return InvalidConfig when the two sets span different orbital counts or
 ///         any span has the wrong size; nothing is written then.
-[[nodiscard]] Status host_sigma(const StringSet &alpha, const StringSet &beta, double e_core,
-                                std::span<const double> h_eff, std::span<const double> eri,
-                                std::span<const double> c, std::span<double> sigma);
+[[nodiscard]] Status host_sigma(const ci::StringSet &alpha, const ci::StringSet &beta,
+                                double e_core, std::span<const double> h_eff,
+                                std::span<const double> eri, std::span<const double> c,
+                                std::span<double> sigma);
 
 /// @brief diag(H) on the host, for the same H and layout as host_sigma:
-/// CiSigma::diagonal's reference.
+/// ci::Sigma::diagonal's reference.
 ///
 /// Slater–Condon's rule for a determinant's diagonal over its occupied spin
 /// orbitals, α (ascending) then β (ascending), i < j:
 /// E_core + Σ_i h_ii + Σ_{i<j} [(ii|jj) − δ_{σ_i σ_j} (ij|ji)], summed in that
-/// order, which is CiSigma::diagonal's.
+/// order, which is ci::Sigma::diagonal's.
 ///
 /// @param diagonal Written with H_II, alpha.size() · beta.size().
 /// @return InvalidConfig as host_sigma does.
-[[nodiscard]] Status host_diagonal(const StringSet &alpha, const StringSet &beta, double e_core,
-                                   std::span<const double> h_eff, std::span<const double> eri,
-                                   std::span<double> diagonal);
+[[nodiscard]] Status host_diagonal(const ci::StringSet &alpha, const ci::StringSet &beta,
+                                   double e_core, std::span<const double> h_eff,
+                                   std::span<const double> eri, std::span<double> diagonal);
 
 /// @brief γ_tu = ⟨c| E_tu |c⟩ = Σ_σ ⟨c| a†_tσ a_uσ |c⟩ on the host, PySCF's
-/// `make_rdm1`: CiSigma::rdm1's reference.
+/// `make_rdm1`: ci::Sigma::rdm1's reference.
 ///
 /// One pass over each determinant's two replacement lists, O(dim · N (n − N +
 /// 1)). Its trace is N_α + N_β for a unit @p c.
@@ -61,10 +62,10 @@ export namespace free_breakfast::test {
 /// @param gamma Written with γ, n × n row-major.
 /// @return InvalidConfig when the sets span different orbital counts or a span
 ///         has the wrong size; nothing is written then.
-[[nodiscard]] Status host_rdm1(const StringSet &alpha, const StringSet &beta,
+[[nodiscard]] Status host_rdm1(const ci::StringSet &alpha, const ci::StringSet &beta,
                                std::span<const double> c, std::span<double> gamma);
 
-/// @brief CiRdm::rdm12's γ and Γ on the host: its reference.
+/// @brief ci::Rdm::rdm12's γ and Γ on the host: its reference.
 ///
 /// γ is Σ_r w_r host_rdm1(c_r). For Γ, per root and determinant K, d_tu =
 /// ⟨c| E_tu |K⟩ over K's lists, and Γ_tuvw += w_r d_tu d_wv (the second factor
@@ -72,13 +73,13 @@ export namespace free_breakfast::test {
 ///
 /// @return InvalidConfig, with nothing written, when the sets span different
 ///         orbital counts, @p vectors is not weights.size() · dim long, the
-///         weights are refused as CiRdm::rdm12 refuses them, or @p gamma or
+///         weights are refused as ci::Rdm::rdm12 refuses them, or @p gamma or
 ///         @p gamma2 has the wrong size.
-[[nodiscard]] Status host_rdm12(const StringSet &alpha, const StringSet &beta,
+[[nodiscard]] Status host_rdm12(const ci::StringSet &alpha, const ci::StringSet &beta,
                                 std::span<const double> vectors, std::span<const double> weights,
                                 std::span<double> gamma, std::span<double> gamma2);
 
-/// @brief S² c on the host: CiSpinSquare::apply's reference.
+/// @brief S² c on the host: ci::SpinSquare::apply's reference.
 ///
 /// S² = S_z (S_z + 1) + S₋S₊, and S₋S₊ = N_β − Σ_pq E^β_pq E^α_qp, so both
 /// terms go through the sets' own replacement lists: nothing leaves the
@@ -88,7 +89,7 @@ export namespace free_breakfast::test {
 /// @param s2c Written with S² c, the same size; must not overlap @p c.
 /// @return InvalidConfig when the sets span different orbital counts or a span
 ///         has the wrong size; nothing is written then.
-[[nodiscard]] Status host_spin_square(const StringSet &alpha, const StringSet &beta,
+[[nodiscard]] Status host_spin_square(const ci::StringSet &alpha, const ci::StringSet &beta,
                                       std::span<const double> c, std::span<double> s2c);
 
 } // namespace free_breakfast::test

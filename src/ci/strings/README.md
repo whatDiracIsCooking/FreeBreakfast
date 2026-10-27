@@ -12,11 +12,11 @@ GPU sigma.
 
 | Name | Role |
 |---|---|
-| `StringSet::create(n_orbitals, n_electrons)` | Enumerate the strings and build their replacement lists; `Result<StringSet>` |
+| `ci::StringSet::create(n_orbitals, n_electrons)` | Enumerate the strings and build their replacement lists; `Result<StringSet>` |
 | `size()` | C(n, N); addresses are [0, size()) |
 | `strings()` | Every string's bit pattern, by address |
 | `address(string)` | A pattern's address, or -1 when it is not one of the set's |
-| `replacements(address)`, `replacements_per_string()` | The N (n - N + 1) nonzero a†_p a_q \|I> for one string, as `Replacement{target, p, q, sign}` |
+| `replacements(address)`, `replacements_per_string()` | The N (n - N + 1) nonzero a†_p a_q \|I> for one string, as `ci::Replacement{target, p, q, sign}` |
 
 ## Design
 
@@ -31,7 +31,7 @@ occupied orbitals are o_0 < o_1 < ... < o_{N-1} is the sum of C(o_k, k + 1)
 (the combinatorial number system), which ranks the patterns in ascending
 numeric order. That is PySCF's `cistring` order, so CI vectors and the
 `direct_spin1` golden data compare element for element with no permutation.
-`StringSet` keeps the N × n table of those binomials, so `address` is one
+`ci::StringSet` keeps the N × n table of those binomials, so `address` is one
 addition per electron.
 
 **The sign convention** orders the creation operators by ascending orbital,
@@ -64,6 +64,6 @@ n = 64 and the rejected shapes.
 
 | File | Role |
 |------|------|
-| `strings.cppm` | Module interface: `StringSet`, `Replacement` |
+| `strings.cppm` | Module interface: `ci::StringSet`, `ci::Replacement` |
 | `strings.cpp` | Enumeration, addressing and the replacement lists |
 | `CMakeLists.txt` | The module `free_breakfast.ci.strings` |

@@ -1,5 +1,5 @@
 # S² on a block of CI vectors, the diagonal preconditioner, the lowest-value
-# select and the P-space's Hamiltonian: ci_solve's device work. Device code
+# select and the P-space's Hamiltonian: ci::solve's device work. Device code
 # in its own library, so its language and -x hip never reach the module
 # compiles. The bridge header it shares with
 # the module names int32_t, wwrStream_t and wwrError_t, hence types_headers and
@@ -20,9 +20,9 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::ci::sigma::device
 )
 
-# ci_solve is a template over the caller's sigma, instantiated in the
+# ci::solve is a template over the caller's sigma, instantiated in the
 # consumer's TU, so what it names -- davidson_solve, DeviceResources, the
-# runtime's memcpy (core::wwr), StringSet, CiLayout, ci_unpack and ci_pack
+# runtime's memcpy (core::wwr), StringSet, ci::Layout, ci::unpack and ci::pack
 # (ci::sigma) -- is PUBLIC. The FBF_TRY macro
 # expands in the interface unit, so its header is PRIVATE, and the
 # implementation unit alone GMF-includes the bridge and calls orthonormalize,

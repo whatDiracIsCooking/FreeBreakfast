@@ -54,7 +54,7 @@ struct CasscfFock {
   Buffers::device<double> gamma;
   /// @brief The weighted Gamma as given, ncas^4, Gamma_tuvw at
   /// t + ncas (u + ncas (v + ncas w)): (tu|vw)'s order in
-  /// @c ActiveSpaceHamiltonian::eri, not @c CiRdm::rdm12's row-major one.
+  /// @c ActiveSpaceHamiltonian::eri, not @c ci::Rdm::rdm12's row-major one.
   Buffers::device<double> gamma2;
 };
 
@@ -65,7 +65,7 @@ struct CasscfFock {
 /// @p basis, @p molecule, @p h, @p u and the two kinds of classes are what
 /// @c active_space_hamiltonian takes, built once per basis; @p ppaa is
 /// @c casscf_integrals' (pq|uv) over the same @p c, nmo^2 ncas^2 doubles
-/// (empty for ncas = 0). @p gamma and @p gamma2 are @c CiRdm::rdm12's, read
+/// (empty for ncas = 0). @p gamma and @p gamma2 are @c ci::Rdm::rdm12's, read
 /// back to the host, in its layout: gamma n x n row-major, Gamma n^4 row-major (t, u, v, w). Both
 /// are uploaded into the result.
 ///

@@ -1,6 +1,6 @@
 # Sigma
 
-σ = Hc and diag(H) for a determinant CI vector: `CiSigma` on the device, as a
+σ = Hc and diag(H) for a determinant CI vector: `ci::Sigma` on the device, as a
 `LinearOperator` (`recipes.linear_operator`) over a block of CI vectors, with
 the 1-RDM over the same tables. The host references it is tested against,
 `host_sigma` and `host_diagonal`, are in `test/ci_oracles/`: written for
@@ -13,23 +13,23 @@ clarity, not speed, and linked by the tests alone.
 
 | Name | Role |
 |---|---|
-| `CiSigma::create(res, alpha, beta)` | Upload the strings and replacement lists; `Result<CiSigma>` |
-| `CiSigma::set_integrals(res, e_core, h_eff, eri)` | Upload an H over them, replacing any before; `Status` |
-| `CiSigma::apply(res, k, x, y, layout = full)` | Y = H X for size(layout) × k device blocks: the `LinearOperator` member; `Status` |
-| `CiSigma::apply_fp32(res, k, x, y, layout = full)` | The same Y = H X over the same double blocks, D, G and the gemm in float, to ~1e-7 relative; `ci_solve`'s first stage; `Status` |
-| `CiSigma::set_workspace_limit(bytes)` | Bound `apply`'s and `apply_fp32`'s device workspace; past it G is computed a block of strings at a time (below) |
-| `CiSigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
-| `CiSigma::exchange()` | The device (ij\|ji), n × n, that `ci_solve`'s spin-averaged diagonal takes; null before `set_integrals` |
-| `CiSigma::contraction()` | The device ½ (tu\|vw) and k_vw, packed over the pairs, that `apply` contracts and `ci_solve`'s P-space reads its Slater–Condon elements from; null before `set_integrals` |
-| `CiSigma::rdm1(res, c, gamma, layout)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector, full or packed (`layout`, default full), into n × n device doubles; `Status` |
-| `CiSigma::size(layout = full)` | The operator's n: alpha.size() · beta.size(), or the symmetric layout's alpha.size() (alpha.size() + 1) / 2 |
-| `CiLayout` | `full`, every determinant; or `symmetric`, the packed triangle of a vector symmetric under the swap of the two strings |
-| `ci_unpack(res, n_strings, k, x, y)` | k symmetric-layout device vectors into full ones; `Status` |
-| `ci_pack(res, n_strings, k, x, y)` | k full-layout device vectors into symmetric-layout ones, `ci_unpack`'s inverse on swap-symmetric vectors (its adjoint: any other goes to its symmetric part); `ci_solve`'s start; `Status` |
+| `ci::Sigma::create(res, alpha, beta)` | Upload the strings and replacement lists; `Result<ci::Sigma>` |
+| `ci::Sigma::set_integrals(res, e_core, h_eff, eri)` | Upload an H over them, replacing any before; `Status` |
+| `ci::Sigma::apply(res, k, x, y, layout = full)` | Y = H X for size(layout) × k device blocks: the `LinearOperator` member; `Status` |
+| `ci::Sigma::apply_fp32(res, k, x, y, layout = full)` | The same Y = H X over the same double blocks, D, G and the gemm in float, to ~1e-7 relative; `ci::solve`'s first stage; `Status` |
+| `ci::Sigma::set_workspace_limit(bytes)` | Bound `apply`'s and `apply_fp32`'s device workspace; past it G is computed a block of strings at a time (below) |
+| `ci::Sigma::diagonal(res, diagonal)` | diag(H) into size() device doubles; `Status` |
+| `ci::Sigma::exchange()` | The device (ij\|ji), n × n, that `ci::solve`'s spin-averaged diagonal takes; null before `set_integrals` |
+| `ci::Sigma::contraction()` | The device ½ (tu\|vw) and k_vw, packed over the pairs, that `apply` contracts and `ci::solve`'s P-space reads its Slater–Condon elements from; null before `set_integrals` |
+| `ci::Sigma::rdm1(res, c, gamma, layout)` | The 1-RDM γ_tu = ⟨c\|E_tu\|c⟩ of one device vector, full or packed (`layout`, default full), into n × n device doubles; `Status` |
+| `ci::Sigma::size(layout = full)` | The operator's n: alpha.size() · beta.size(), or the symmetric layout's alpha.size() (alpha.size() + 1) / 2 |
+| `ci::Layout` | `full`, every determinant; or `symmetric`, the packed triangle of a vector symmetric under the swap of the two strings |
+| `ci::unpack(res, n_strings, k, x, y)` | k symmetric-layout device vectors into full ones; `Status` |
+| `ci::pack(res, n_strings, k, x, y)` | k full-layout device vectors into symmetric-layout ones, `ci::unpack`'s inverse on swap-symmetric vectors (its adjoint: any other goes to its symmetric part); `ci::solve`'s start; `Status` |
 
 `set_integrals` takes the integrals as host arrays: `h_eff` n × n and `eri`
 n⁴, row-major, (tu\|vw) in chemists' order, real with the usual symmetry.
-`CiSigma` refuses (`InvalidConfig`, nothing written) two `StringSet`s over
+`ci::Sigma` refuses (`InvalidConfig`, nothing written) two `ci::StringSet`s over
 different orbital counts, any span of the wrong size, no orbitals, more
 determinants than an `int32_t` counts, a negative block, another device than
 `create`'s, `apply`, `apply_fp32` or `diagonal` before `set_integrals`, and the
@@ -63,7 +63,7 @@ ascending then β ascending: E_core + Σ_i h_ii + Σ_{i<j} [(ii\|jj) − δ_σ (
 summed in that order. The order is documented because the test's dense H
 sums its diagonal the same way, and the two are compared for equality.
 
-**The GPU sigma is the same algorithm, regrouped.** `CiSigma::apply` takes
+**The GPU sigma is the same algorithm, regrouped.** `ci::Sigma::apply` takes
 each (vector, determinant) pair of the block as a *row*, and runs:
 
 1. a gather, one thread per row, of D_K over K's α and β lists;
@@ -80,7 +80,7 @@ symmetric in each pair; D's packed entry is D[vw] + D[wv]. The scratch is
 P = n(n+1)/2, and D for one 64 MiB chunk of them. G spans the whole vector
 because step 3 reads any J's row, but only J's in I's own vector, so `apply`
 runs the three steps one vector of the block at a time and the scratch does
-not grow with k: a whole block's G would be 60 GB for `ci_solve`'s six first
+not grow with k: a whole block's G would be 60 GB for `ci::solve`'s six first
 guesses at CAS(14,14). The rows are every determinant in the full layout and
 the triangle's in the symmetric one (below), so G is, in double:
 
@@ -137,7 +137,7 @@ ragged block.)
 
 The block is the most strings whose G and D fit the limit, at least one. While
 bounded, a call first grows the workspace to the lesser of the limit and
-`apply`'s unblocked double scratch, so `ci_solve`'s `apply_fp32` stage and its
+`apply`'s unblocked double scratch, so `ci::solve`'s `apply_fp32` stage and its
 `apply` stage carve one allocation, and the limit holds at the peak: a growth
 from the float workspace to the double one would hold both for a moment.
 `pipeline/fci` sets the limit to whatever its memory estimate leaves free.
@@ -156,12 +156,12 @@ On the RTX 3080, at N₂ cc-pVDZ CAS(12,12) (78 pairs) a sigma column costs, per
 Blocking costs the predicted 2×, and nothing more as the blocks shrink. So blocking is
 off unless asked for: unset, `apply` is the single pass it was. N₂ cc-pVDZ
 CAS(14,14), three singlets, which wants a 5 GB G unblocked and aborts on the
-workspace growth on that card, converges in `ci_solve`'s symmetric layout
+workspace growth on that card, converges in `ci::solve`'s symmetric layout
 under a 3000 MiB limit in 217 s, at a card-wide peak of 9,475 MiB, 767 of it
 held before the run.
 
 **The symmetric layout halves the work when N_α = N_β.** Over one
-`StringSet` for both spins, swapping the two strings of every determinant,
+`ci::StringSet` for both spins, swapping the two strings of every determinant,
 (I_α, I_β) → (I_β, I_α), commutes with H: E_tu = E^α_tu + E^β_tu is
 spin-free, and the replacement lists carry each spin's own sign and nothing
 across, so the matrix the lists build is unchanged by the swap. Every
@@ -169,7 +169,7 @@ eigenvector is then symmetric or antisymmetric, c(I_α, I_β) = ±c(I_β, I_α),
 and in the M_s = 0 sector the parity is (−1)^S: a singlet's is symmetric,
 which is what `fci.direct_spin0` uses. For a symmetric c, D_K = (E c)_K, and so
 G_K and σ_K, are symmetric under the swap too, so only the determinants
-K_α ≥ K_β need computing. `CiLayout::symmetric` holds just those, m (m + 1)/2
+K_α ≥ K_β need computing. `ci::Layout::symmetric` holds just those, m (m + 1)/2
 of the m² for a set of m strings, K at triangle element K_α (K_α + 1)/2 + K_β,
 each off-diagonal one scaled by √2. The scaling makes
 the packing an isometry of the symmetric subspace, so the plain dot product,
@@ -182,11 +182,11 @@ mirror, with the 1/√2 of whichever element it reads; the gemm runs over the
 triangle's rows alone; and the second gather reads G_J of such a J from its
 mirror's row, unscaled, then scales σ_I by √2 off the diagonal. So D, the gemm
 and G all halve, and nothing is atomic still. Only the symmetric parity is
-implemented: `ci_solve` wants singlets, and the antisymmetric (odd S) states of
+implemented: `ci::solve` wants singlets, and the antisymmetric (odd S) states of
 M_s = 0 are what M_s = 1 solves for. The triangle's index map is
 `ci_symmetric.h`, shared with `ci.solver`'s S² and `ci.rdm`'s gather.
-`ci_unpack` takes packed vectors back to the full layout; `rdm1` and
-`CiRdm::rdm12` read either.
+`ci::unpack` takes packed vectors back to the full layout; `rdm1` and
+`ci::Rdm::rdm12` read either.
 
 **Tables once, integrals as often as needed.** `create` uploads the two sets'
 strings and their lists (target, packed pair, sign per replacement), once per
@@ -227,7 +227,7 @@ D's, the contraction's and G's, adding in quadrature (the blocked FMA gemm
 adds little of its own): 1–2 u, ~1e-7 relative of ‖σ − E_core c‖, flat in
 P, on the RTX 3080 over the test's shapes and on both cards over N₂'s
 CAS(10,10) and CAS(12,12) ground states (`bench/ci_sigma_precision`). That is no use for a converged
-root, which needs a residual of 1e-12; it is what `ci_solve` uses for its
+root, which needs a residual of 1e-12; it is what `ci::solve` uses for its
 first iterations (see `../solver/`).
 
 **diag(H) on the device** is that rule in that order (`host_diagonal`'s too),
@@ -247,7 +247,7 @@ replacement lists. Against it:
   `direct_spin1`'s roots to 1e-10, for every golden case;
 - the refusals.
 
-`test/gtest/ci_sigma_gpu.cpp` checks `CiSigma` against the host pair: σ on
+`test/gtest/ci_sigma_gpu.cpp` checks `ci::Sigma` against the host pair: σ on
 random blocks of one to four vectors, each column to 1e-12 ‖σ‖, and diag(H)
 to 1e-12, and `rdm1` on random unit vectors against `host_rdm1` to
 1e-12, for every golden case, for random integrals at CAS(8,8),
@@ -263,9 +263,9 @@ fails too, so the double path cannot stand in for it. The symmetric layout,
 against `host_sigma`'s σ packed, to the same two tolerances, for every golden
 case with N_α = N_β and seven shapes over one set (CAS(8,8), CAS(10,10), a
 single orbital, an empty set and a full one among them), and at CAS(12,12),
-four chunks of triangle rows in double, under `slow_test.h`; `ci_unpack` of
-each packed block gives the block back; `ci_pack` of random swap-symmetric
-full blocks over 1 to 924 strings is the host's packing and `ci_unpack` of it
+four chunks of triangle rows in double, under `slow_test.h`; `ci::unpack` of
+each packed block gives the block back; `ci::pack` of random swap-symmetric
+full blocks over 1 to 924 strings is the host's packing and `ci::unpack` of it
 the block, each to 1e-15, and of blocks that are not symmetric it is the
 packing of their symmetric part; and the layout is refused over two
 sets with the same number of strings, (4, 1) and (4, 3), by `apply`,
@@ -286,9 +286,9 @@ unblocked scratch gives the unbounded result bit for bit.
 
 | File | Role |
 |------|------|
-| `sigma.cppm` | Module interface: `CiLayout`, `ci_unpack`, `ci_pack`, `CiSigma` |
-| `sigma.cpp` | `CiSigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci_unpack`'s and `ci_pack`'s launches |
+| `sigma.cppm` | Module interface: `ci::Layout`, `ci::unpack`, `ci::pack`, `ci::Sigma` |
+| `sigma.cpp` | `ci::Sigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci::unpack`'s and `ci::pack`'s launches |
 | `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
 | `ci_symmetric.h` | The symmetric layout's triangle index map and √2, for device code here and in `../solver/` |
-| `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout, whole or by string blocks), the diagonal kernel, the 1-RDM's unpacking, `ci_unpack` and `ci_pack` |
+| `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout, whole or by string blocks), the diagonal kernel, the 1-RDM's unpacking, `ci::unpack` and `ci::pack` |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.sigma.device` and the module `free_breakfast.ci.sigma` |

@@ -1,6 +1,6 @@
 /// @file
-/// @brief casscf_solve: the macro loop over casscf_integrals, ci_solve,
-/// CiRdm::rdm12 and casscf_fock, and the augmented-Hessian orbital step over
+/// @brief casscf_solve: the macro loop over casscf_integrals, ci::solve,
+/// ci::Rdm::rdm12 and casscf_fock, and the augmented-Hessian orbital step over
 /// OrbitalHessian under a trust radius.
 
 module;
@@ -132,7 +132,7 @@ struct ResponseIntegrals {
 
 // The first derivative of the active-space Hamiltonian along kappa (nmo x nmo,
 // column-major), C <- C (1 + kappa): h_eff' into @p h1 (n x n) and (tu|vw)'
-// into @p eri1 (n^4), both row-major as CiSigma::set_integrals takes them.
+// into @p eri1 (n^4), both row-major as ci::Sigma::set_integrals takes them.
 // With T = ncore + t,
 //   (tu|vw)' = X_tuvw + X_utvw + X_vwtu + X_wvtu, X_tuvw = sum_p kappa_pT (pU|vw),
 //   h_eff'_tu = sum_p kappa_pT F^I_pU + kappa_pU F^I_Tp
@@ -286,10 +286,10 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
   const int32_t n_beta = nelecas / 2;
-  const StringSet alpha = FBF_TRY(StringSet::create(ncas, nelecas - n_beta));
-  const StringSet beta = FBF_TRY(StringSet::create(ncas, n_beta));
-  CiSigma sigma = FBF_TRY(CiSigma::create(res, alpha, beta));
-  CiRdm ci_rdm = FBF_TRY(CiRdm::create(res, alpha, beta));
+  const ci::StringSet alpha = FBF_TRY(ci::StringSet::create(ncas, nelecas - n_beta));
+  const ci::StringSet beta = FBF_TRY(ci::StringSet::create(ncas, n_beta));
+  ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
+  ci::Rdm ci_rdm = FBF_TRY(ci::Rdm::create(res, alpha, beta));
   const auto dim = static_cast<size_t>(sigma.size());
   if (roots_count > dim) {
     return err_config("casscf_solve: nroots ({}) exceeds the {} determinants", nroots, dim);
@@ -337,7 +337,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
   // blocks b = H' c, delta and c +- delta (dim x nroots each); conjugate
   // gradients' three vectors; the roots' overlaps; kappa, then the gradient's
   // antisymmetric matrix; the packed gradient; and the RDMs of c +- delta.
-  CiSigma response_sigma = FBF_TRY(CiSigma::create(res, alpha, beta));
+  ci::Sigma response_sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   const size_t ci_block = dim * roots_count;
   Buffers::device<double> ci_b(ci_block, res.device());
   Buffers::device<double> ci_delta(ci_block, res.device());
@@ -356,7 +356,7 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
                            &kZero<double>, c_now.data()));
   };
 
-  std::optional<CiRoots> roots;
+  std::optional<ci::Roots> roots;
   std::vector<CasscfIteration> log;
   bool have_accepted = false;
   double e_accepted = 0.0;
@@ -399,16 +399,17 @@ casscf_solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecu
       FBF_TRY(sigma.set_integrals(res, ints.hamiltonian.e_core, h_eff, eri));
     }
     FBF_TRY(sigma.diagonal(res, diagonal.data()));
-    CiSolverOptions ci = options.ci;
+    ci::SolverOptions ci = options.ci;
     ci.davidson.residual_tolerance =
         std::max(options.ci.davidson.residual_tolerance,
                  std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
     // Warm from the last iteration's roots, rejected or not: the nearest H's
-    // (see the README). The first is cold, from ci_solve's own guesses.
+    // (see the README). The first is cold, from ci::solve's own guesses.
     const std::span<const double> start =
         roots ? std::span<const double>{roots->vectors.data(), ci_block}
               : std::span<const double>{};
-    CiRoots solved = FBF_TRY(ci_solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci, start));
+    ci::Roots solved =
+        FBF_TRY(ci::solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci, start));
     roots = std::move(solved);
 
     // 3. The weighted RDMs, the energy and the gradient.

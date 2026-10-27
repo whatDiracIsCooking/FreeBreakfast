@@ -8,7 +8,7 @@
 // The orbitals are the setup's own: the SCF (run with J unscreened), the active
 // space picked by pipeline.active_space as the Casci step picks it (by index,
 // or by AVAS), and the CI and RDMs from the Casci step's roots and ci.rdm's
-// CiRdm.
+// ci::Rdm.
 // So this executable links pipeline; mcscf itself does not. Runs the device
 // chain, so needs a GPU.
 
@@ -303,16 +303,16 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci,
   setup->weights = entry.at("weights").get<std::vector<double>>();
   const std::int32_t ncas = setup->casci->ncas;
   const std::int32_t n_beta = setup->casci->nelecas / 2;
-  auto alpha = fb::StringSet::create(ncas, setup->casci->nelecas - n_beta);
-  auto beta = fb::StringSet::create(ncas, n_beta);
+  auto alpha = fb::ci::StringSet::create(ncas, setup->casci->nelecas - n_beta);
+  auto beta = fb::ci::StringSet::create(ncas, n_beta);
   if (!alpha.has_value() || !beta.has_value()) {
     ADD_FAILURE() << "the string sets failed";
     return nullptr;
   }
   const auto n = static_cast<std::size_t>(ncas);
-  // CiRdm reads and writes the device; casscf_fock takes gamma and Gamma
+  // ci::Rdm reads and writes the device; casscf_fock takes gamma and Gamma
   // on the host, as a CASSCF loop reads them back for its energy anyway.
-  auto ci_rdm = fb::CiRdm::create(res, *alpha, *beta);
+  auto ci_rdm = fb::ci::Rdm::create(res, *alpha, *beta);
   if (!ci_rdm.has_value()) {
     ADD_FAILURE() << ci_rdm.error().message;
     return nullptr;

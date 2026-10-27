@@ -219,7 +219,7 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
 }
 
 // The weighted energy and ||g|| at orbitals c from scratch: the integrals, a
-// cold CI at ci_solve's own tolerance, the RDMs and casscf_fock, nothing of
+// cold CI at ci::solve's own tolerance, the RDMs and casscf_fock, nothing of
 // casscf_solve's.
 std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::SphericalMatrixAO &c,
                                                       const std::vector<double> &weights) {
@@ -249,14 +249,14 @@ std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::Sp
       }
     }
   }
-  auto alpha = fb::StringSet::create(ncas, nelecas - (nelecas / 2));
-  auto beta = fb::StringSet::create(ncas, nelecas / 2);
+  auto alpha = fb::ci::StringSet::create(ncas, nelecas - (nelecas / 2));
+  auto beta = fb::ci::StringSet::create(ncas, nelecas / 2);
   if (!alpha.has_value() || !beta.has_value()) {
     ADD_FAILURE() << "the string sets failed";
     return std::nullopt;
   }
-  auto sigma = fb::CiSigma::create(res, *alpha, *beta);
-  auto rdm = fb::CiRdm::create(res, *alpha, *beta);
+  auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
+  auto rdm = fb::ci::Rdm::create(res, *alpha, *beta);
   if (!sigma.has_value() || !rdm.has_value() ||
       !sigma->set_integrals(res, ints->hamiltonian.e_core, h_eff, eri).has_value()) {
     ADD_FAILURE() << "the sigma or the RDMs failed";
@@ -265,8 +265,8 @@ std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::Sp
   const auto dim = static_cast<std::size_t>(sigma->size());
   fb::Buffers::device<double> diagonal(dim, res.device());
   EXPECT_TRUE(sigma->diagonal(res, diagonal.data()).has_value());
-  auto roots = fb::ci_solve(res, *sigma, *alpha, *beta, diagonal.data(),
-                            static_cast<std::int32_t>(weights.size()));
+  auto roots = fb::ci::solve(res, *sigma, *alpha, *beta, diagonal.data(),
+                             static_cast<std::int32_t>(weights.size()));
   if (!roots.has_value()) {
     ADD_FAILURE() << roots.error().message;
     return std::nullopt;

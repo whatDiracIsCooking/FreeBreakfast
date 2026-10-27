@@ -8,7 +8,7 @@ weighted energy is stationary in both.
 
 `free_breakfast.mcscf.solve`, target `free_breakfast::mcscf::solve`,
 re-exported by `free_breakfast.mcscf`. It re-exports `free_breakfast.ci.solver`,
-whose `CiSolverOptions` its options hold and whose `CiRoots` its solution does.
+whose `ci::SolverOptions` its options hold and whose `ci::Roots` its solution does.
 
 ```cpp
 Result<CasscfSolution> casscf_solve(
@@ -26,7 +26,7 @@ for an even `nelecas`. `weights` are refused (`InvalidConfig`) if any is
 negative, if they do not sum to 1 within 1e-12 or if their count is not
 `nroots`; empty means equal.
 
-`CasscfSolution` holds C, the `CiRoots` at C (each root's energy and ⟨S²⟩,
+`CasscfSolution` holds C, the `ci::Roots` at C (each root's energy and ⟨S²⟩,
 and the CI vectors on the device), the weighted energy, ‖g‖, the weighted γ and
 Γ and each root's γ on the host, and one `CasscfIteration` per macro iteration
 (the energy, ΔE, ‖g‖, the trust radius, the CI's Davidson iterations in each
@@ -39,9 +39,9 @@ Each macro iteration, at the current C:
 
 1. **The integrals**: `casscf_integrals`, the active-space Hamiltonian and
    ppaa, papa.
-2. **The CI**: `ci_solve` over the GPU sigma (`CiSigma`, created once, its
+2. **The CI**: `ci::solve` over the GPU sigma (`ci::Sigma`, created once, its
    integrals set per iteration), **warm-started** from the last iteration's
-   roots (`ci_solve`'s `start`; the first iteration is from its own guesses).
+   roots (`ci::solve`'s `start`; the first iteration is from its own guesses).
    The last roots are those of the last orbitals, accepted or rejected: the
    nearest H either way. The root order and count do not change, and the RDMs
    do not depend on a vector's sign. Late in the loop, where C barely moves,
@@ -55,14 +55,14 @@ Each macro iteration, at the current C:
    relative residual tolerance is
    min(1e-8, 1e-4 ‖g‖²) of the last iteration, held at or above
    `options.ci`'s (1e-12 by default), so the early iterations do not
-   over-solve and the last ones are as tight as a lone `ci_solve`. ‖g‖²,
+   over-solve and the last ones are as tight as a lone `ci::solve`. ‖g‖²,
    not ‖g‖: the steps converge quadratically, so the CI has to keep ahead of
    the next ‖g‖. At 1e-4 ‖g‖ (what the learned response's linear steps took)
    the CI's error in g, up to ~60 times its residual, held the last steps
    back and cost every case one macro iteration (H₂O 8 rather than 7: ‖g‖
    went 4.2e-7 to 3.2e-7), and on H₂CO SA2 it left the final ‖g‖ at 7.6e-10
    inside the loop but 1.5e-9 recomputed with a tight CI.
-3. **The RDMs and derivatives**: `CiRdm::rdm12` at the weights, read back,
+3. **The RDMs and derivatives**: `ci::Rdm::rdm12` at the weights, read back,
    and `casscf_fock`: the weighted energy and the gradient g.
 4. **Convergence**: |ΔE| < `conv_tol` over the last accepted iteration and
    ‖g‖ < `conv_tol_grad`. The first iteration has no ΔE, so the loop takes at
@@ -128,7 +128,7 @@ and a product of H̃ is H's plus, per column:
   core. **No J or K**: every integral it takes has two active indices, so it
   is in ppaa or papa. E_core′ is left out: it multiplies c_r, which the
   projector removes.
-- **b_r = H′ c_r**: a second `CiSigma`, its integrals set to (0, h_eff′,
+- **b_r = H′ c_r**: a second `ci::Sigma`, its integrals set to (0, h_eff′,
   (tu|vw)′), applied to the roots, one sigma each.
 - **δ_r** by conjugate gradients on H₀ − E_r off every root (the projector
   1 − Σ_s c_s c_sᵀ), to 1e-8 of the right-hand side, unpreconditioned: one
@@ -140,7 +140,7 @@ and a product of H̃ is H's plus, per column:
   Krylov space stay in the roots' spin.
 - **H_oc δ** is the gradient in x of h_eff′·γ_T + ½ (tu|vw)′·Γ_T,
   γ_T = Σ_r w_r (⟨c_r|E|δ_r⟩ + ⟨δ_r|E|c_r⟩): half the difference of
-  `CiRdm::rdm12` of c + δ and of c − δ at the weights, two RDM calls, and
+  `ci::Rdm::rdm12` of c + δ and of c − δ at the weights, two RDM calls, and
   the adjoint of the H′ map above on the host, packed by
   `pack_orbital_pairs`.
 
@@ -159,7 +159,7 @@ halve with the macro iterations, and `casscf_solve`'s wall time falls 32 to
 48%. On the RTX 3080 (CUDA), both of its GPU slots held, the two builds
 interleaved, three runs each (median; the macro and product counts were the
 same in every run unless shown as a range); σ counts the sigma vectors
-applied, single precision (ci_solve's first stage) included:
+applied, single precision (ci::solve's first stage) included:
 
 | case | H + D: macro, Hx, J + K, σ, s | H̃: macro, Hx, J + K, σ, s |
 |---|---|---|
@@ -235,7 +235,7 @@ bar is 8.
 | `max_cycle` | 50 | macro iterations, rejected ones included, before `MaxIterationsExceeded` |
 | `trust_radius` | 0.5 | the initial and largest ‖x‖ of a step |
 | `max_micro` | 4 | augmented-Hessian solves per macro iteration on its frozen integrals |
-| `ci` | `CiSolverOptions{}` | the CI's spin penalty and its tightest residual tolerance |
+| `ci` | `ci::SolverOptions{}` | the CI's spin penalty and its tightest residual tolerance |
 | `tau_j`, `tau_k` | 1e-14 | the screening of every J and K build |
 
 **The cost is the Hessian products.** Each H·κ is two J and two K builds when
@@ -258,7 +258,7 @@ module's (`ah_precondition.cu`), μ passed by value. Per column added there
 are a handful of syncs (the small problem's upload, `diagonalize`, its
 readback, the residual's and the correction's norms, the new row's readback),
 against the two J and two K of its product. The kernel is this module's, not
-a shared one in `recipes/davidson`: `ci_solve`'s preconditioner divides with
+a shared one in `recipes/davidson`: `ci::solve`'s preconditioner divides with
 a 1e-3 floor over a spin-shifted diagonal, this one multiplies by the
 reciprocal with a 1e-8 floor, and a common kernel would carry both as options
 for two callers.

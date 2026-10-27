@@ -1,6 +1,6 @@
 /// @file
 /// @brief The state-averaged spin-summed 1- and 2-RDM of CI vectors, on the
-/// device. The 1-RDM of one vector is CiSigma::rdm1.
+/// device. The 1-RDM of one vector is Sigma::rdm1.
 ///
 /// The host reference it is tested against is test/ci_oracles' host_rdm12.
 
@@ -12,9 +12,9 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
-import free_breakfast.ci.sigma; // CiLayout
+import free_breakfast.ci.sigma; // Layout
 
-export namespace free_breakfast {
+export namespace free_breakfast::ci {
 
 /// @brief The state-averaged spin-summed 1- and 2-RDM of CI vectors on the
 /// device: γ = Σ_r w_r γ^(r), and
@@ -32,7 +32,7 @@ export namespace free_breakfast {
 /// Cost is O(Σ_r dim · n⁴) in the syrks.
 ///
 /// Over one StringSet for both spins, rdm12 also takes swap-symmetric vectors
-/// in CiLayout::symmetric. E_tu commutes with the swap of the two strings, so
+/// in Layout::symmetric. E_tu commutes with the swap of the two strings, so
 /// D_K is D of K's mirror, and the sums over every K are sums over the
 /// triangle with weight 2 off the diagonal: the gather takes the triangle's
 /// rows alone, each off-diagonal one scaled by √2, and the packed c carries
@@ -40,7 +40,7 @@ export namespace free_breakfast {
 ///
 /// Move-only; the buffers are on the device of the DeviceResources create was
 /// given, which every call must pass again.
-class CiRdm {
+class Rdm {
 public:
   /// @brief Upload @p alpha's and @p beta's replacement lists to @p res's
   /// device. A failed allocation aborts (CreatePolicy).
@@ -48,14 +48,14 @@ public:
   /// @return InvalidConfig when the two sets span different orbital counts or
   ///         none, or alpha.size() · beta.size() does not fit an int32_t; or
   ///         the GpuRuntime error of an upload.
-  [[nodiscard]] static Result<CiRdm> create(DeviceResources &res, const StringSet &alpha,
-                                            const StringSet &beta);
+  [[nodiscard]] static Result<Rdm> create(DeviceResources &res, const StringSet &alpha,
+                                          const StringSet &beta);
 
-  CiRdm(CiRdm &&) noexcept = default;
-  CiRdm &operator=(CiRdm &&) noexcept = default;
-  CiRdm(const CiRdm &) = delete;
-  CiRdm &operator=(const CiRdm &) = delete;
-  ~CiRdm() = default;
+  Rdm(Rdm &&) noexcept = default;
+  Rdm &operator=(Rdm &&) noexcept = default;
+  Rdm(const Rdm &) = delete;
+  Rdm &operator=(const Rdm &) = delete;
+  ~Rdm() = default;
 
   /// @brief γ and Γ of the @p weights.size() CI vectors @p vectors at
   /// @p weights, all on the device. M and one 64 MiB chunk of D are
@@ -65,31 +65,31 @@ public:
   /// @param weights w_r on the host, one per vector: each ≥ 0, summing to 1
   ///        within 1e-12.
   /// @param vectors Device, size(@p layout) × weights.size(), root r at
-  ///        [r · size(layout), (r + 1) · size(layout)): in CiLayout::full,
-  ///        what CiRoots::vectors holds, or packed in CiLayout::symmetric.
+  ///        [r · size(layout), (r + 1) · size(layout)): in Layout::full,
+  ///        what Roots::vectors holds, or packed in Layout::symmetric.
   ///        Unit vectors, for γ and Γ to be RDMs.
   /// @param gamma Device, written with γ, n × n row-major.
   /// @param gamma2 Device, written with Γ, n⁴ row-major (t, u, v, w).
-  /// @param layout The vectors' layout; CiLayout::symmetric needs one set for
+  /// @param layout The vectors' layout; Layout::symmetric needs one set for
   ///        both spins.
   /// @return InvalidConfig, with nothing queued, for another device, no
   ///         weights, a negative (or NaN) weight, weights not summing to 1, or
-  ///         CiLayout::symmetric over two different sets; or the GpuRuntime
+  ///         Layout::symmetric over two different sets; or the GpuRuntime
   ///         error of a launch, the syrk or the gemm.
   [[nodiscard]] Status rdm12(DeviceResources &res, std::span<const double> weights,
                              const double *vectors, double *gamma, double *gamma2,
-                             CiLayout layout = CiLayout::full);
+                             Layout layout = Layout::full);
 
   /// @brief The length of a vector: the number of determinants,
-  /// alpha.size() · beta.size(), or for CiLayout::symmetric the triangle's,
+  /// alpha.size() · beta.size(), or for Layout::symmetric the triangle's,
   /// alpha.size() (alpha.size() + 1) / 2.
-  [[nodiscard]] int32_t size(CiLayout layout = CiLayout::full) const noexcept {
-    return layout == CiLayout::symmetric ? n_alpha_ * (n_alpha_ + 1) / 2 : n_alpha_ * n_beta_;
+  [[nodiscard]] int32_t size(Layout layout = Layout::full) const noexcept {
+    return layout == Layout::symmetric ? n_alpha_ * (n_alpha_ + 1) / 2 : n_alpha_ * n_beta_;
   }
 
 private:
-  CiRdm(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
-        int32_t alpha_per, int32_t beta_per, bool one_set);
+  Rdm(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta, int32_t alpha_per,
+      int32_t beta_per, bool one_set);
 
   int32_t dev_idx_;
   int32_t n_orbitals_;
@@ -97,10 +97,10 @@ private:
   int32_t n_beta_;  // beta.size()
   int32_t alpha_per_;
   int32_t beta_per_;
-  bool one_set_; // alpha and beta are the same (n, N): CiLayout::symmetric applies
+  bool one_set_; // alpha and beta are the same (n, N): Layout::symmetric applies
   // Three int32_t per replacement: target, unpacked pair p · n + q, sign.
   Buffers::device<int32_t> alpha_links_;
   Buffers::device<int32_t> beta_links_;
 };
 
-} // namespace free_breakfast
+} // namespace free_breakfast::ci

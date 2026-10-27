@@ -17,7 +17,7 @@ free_breakfast_add_gpu_device_library(
 
 # The module: casscf_solve, declared in the interface and defined in the
 # implementation unit. Molecule, BasisSet, DeviceResources, Buffers, the two
-# kinds of pair class, the AO matrices and CiRoots (in the solution) are in
+# kinds of pair class, the AO matrices and ci::Roots (in the solution) are in
 # its signature or result, so molecule, basis, core::wwr, core::resources,
 # coulomb, exchange, recipes::matrix_ao and ci::solver are PUBLIC; the loop's
 # pieces are PRIVATE. Its one kernel is the preconditioner's, through the

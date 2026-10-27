@@ -47,7 +47,7 @@ TEST(CiStrings, AddressingIsABijectionOntoTheCount) {
   for (std::int32_t n = 0; n <= 10; ++n) {
     for (std::int32_t n_e = 0; n_e <= n; ++n_e) {
       SCOPED_TRACE(std::format("n = {}, N = {}", n, n_e));
-      const auto set = fb::StringSet::create(n, n_e);
+      const auto set = fb::ci::StringSet::create(n, n_e);
       ASSERT_TRUE(set.has_value()) << set.error().message;
       ASSERT_EQ(set->size(), choose(n, n_e));
       EXPECT_EQ(set->n_orbitals(), n);
@@ -83,7 +83,7 @@ TEST(CiStrings, ReplacementsMatchBruteForce) {
   for (std::int32_t n = 0; n <= 8; ++n) {
     for (std::int32_t n_e = 0; n_e <= n; ++n_e) {
       SCOPED_TRACE(std::format("n = {}, N = {}", n, n_e));
-      const auto set = fb::StringSet::create(n, n_e);
+      const auto set = fb::ci::StringSet::create(n, n_e);
       ASSERT_TRUE(set.has_value()) << set.error().message;
       ASSERT_EQ(set->replacements_per_string(), n_e * (n - n_e + 1));
 
@@ -110,7 +110,7 @@ TEST(CiStrings, ReplacementsMatchBruteForce) {
           for (std::int32_t q = 0; q < n; ++q) {
             const auto [sign, target] = apply_brute(s, p, q);
             const auto hits = std::ranges::count_if(
-                list, [&](const fb::Replacement &r) { return r.p == p && r.q == q; });
+                list, [&](const fb::ci::Replacement &r) { return r.p == p && r.q == q; });
             if (sign == 0) {
               EXPECT_EQ(hits, 0) << "p " << p << " q " << q;
               continue;
@@ -118,7 +118,7 @@ TEST(CiStrings, ReplacementsMatchBruteForce) {
             ++nonzero;
             ASSERT_EQ(hits, 1) << "p " << p << " q " << q;
             const auto r = *std::ranges::find_if(
-                list, [&](const fb::Replacement &e) { return e.p == p && e.q == q; });
+                list, [&](const fb::ci::Replacement &e) { return e.p == p && e.q == q; });
             EXPECT_EQ(r.sign, sign) << "p " << p << " q " << q;
             EXPECT_EQ(r.target, set->address(target)) << "p " << p << " q " << q;
             EXPECT_EQ(set->strings()[static_cast<std::size_t>(r.target)], target);
@@ -131,7 +131,7 @@ TEST(CiStrings, ReplacementsMatchBruteForce) {
 }
 
 TEST(CiStrings, NoElectronsIsTheVacuumAlone) {
-  const auto set = fb::StringSet::create(6, 0);
+  const auto set = fb::ci::StringSet::create(6, 0);
   ASSERT_TRUE(set.has_value()) << set.error().message;
   ASSERT_EQ(set->size(), 1);
   EXPECT_EQ(set->strings()[0], 0U);
@@ -139,14 +139,14 @@ TEST(CiStrings, NoElectronsIsTheVacuumAlone) {
   EXPECT_EQ(set->replacements_per_string(), 0);
   EXPECT_TRUE(set->replacements(0).empty());
 
-  const auto none = fb::StringSet::create(0, 0);
+  const auto none = fb::ci::StringSet::create(0, 0);
   ASSERT_TRUE(none.has_value()) << none.error().message;
   EXPECT_EQ(none->size(), 1);
   EXPECT_TRUE(none->replacements(0).empty());
 }
 
 TEST(CiStrings, FullShellHasOnlyTheDiagonal) {
-  const auto set = fb::StringSet::create(5, 5);
+  const auto set = fb::ci::StringSet::create(5, 5);
   ASSERT_TRUE(set.has_value()) << set.error().message;
   ASSERT_EQ(set->size(), 1);
   EXPECT_EQ(set->strings()[0], 0b11111U);
@@ -164,13 +164,13 @@ TEST(CiStrings, FullShellHasOnlyTheDiagonal) {
 
 TEST(CiStrings, SixtyFourOrbitalsUseEveryBit) {
   // The widest a uint64_t holds: the top bit is an orbital, not out of range.
-  const auto one = fb::StringSet::create(64, 1);
+  const auto one = fb::ci::StringSet::create(64, 1);
   ASSERT_TRUE(one.has_value()) << one.error().message;
   ASSERT_EQ(one->size(), 64);
   EXPECT_EQ(one->address(std::uint64_t{1} << 63), 63);
   EXPECT_EQ(one->strings()[63], std::uint64_t{1} << 63);
 
-  const auto full = fb::StringSet::create(64, 64);
+  const auto full = fb::ci::StringSet::create(64, 64);
   ASSERT_TRUE(full.has_value()) << full.error().message;
   ASSERT_EQ(full->size(), 1);
   EXPECT_EQ(full->strings()[0], ~std::uint64_t{0});
@@ -178,19 +178,19 @@ TEST(CiStrings, SixtyFourOrbitalsUseEveryBit) {
 }
 
 TEST(CiStrings, AddressRejectsForeignPatterns) {
-  const auto set = fb::StringSet::create(4, 2);
+  const auto set = fb::ci::StringSet::create(4, 2);
   ASSERT_TRUE(set.has_value()) << set.error().message;
   EXPECT_EQ(set->address(0b0111U), -1);  // three electrons
   EXPECT_EQ(set->address(0b10001U), -1); // orbital 4 is outside n = 4
 }
 
 TEST(CiStrings, RejectsBadShapes) {
-  EXPECT_EQ(fb::StringSet::create(-1, 0).error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_EQ(fb::StringSet::create(65, 1).error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_EQ(fb::StringSet::create(4, 5).error().kind, fb::ErrorKind::InvalidConfig);
-  EXPECT_EQ(fb::StringSet::create(4, -1).error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_EQ(fb::ci::StringSet::create(-1, 0).error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_EQ(fb::ci::StringSet::create(65, 1).error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_EQ(fb::ci::StringSet::create(4, 5).error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_EQ(fb::ci::StringSet::create(4, -1).error().kind, fb::ErrorKind::InvalidConfig);
   // C(64, 32) strings: more than an int32_t addresses.
-  EXPECT_EQ(fb::StringSet::create(64, 32).error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_EQ(fb::ci::StringSet::create(64, 32).error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 } // namespace
