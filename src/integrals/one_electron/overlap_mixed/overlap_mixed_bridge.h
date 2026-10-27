@@ -42,9 +42,9 @@ namespace free_breakfast::device {
 /// off_b, n_rows and n_cols exchanged. <n|m> = <m|n>, and its row-major
 /// n_cols x n_rows is this column-major n_rows x n_cols.
 ///
-/// cls.n_rec must be positive, and cls.la and cls.lb at most
-/// kMaxAngularMomentum. The kernels index @p s as a 32-bit int, so
-/// n_rows * n_cols must fit an int32_t.
+/// cls.n_rec must be positive, and cls.la and cls.lb at most the largest
+/// momentum kernels/overlap_mixed.h's table covers. The kernels index @p s as
+/// a 32-bit int, so n_rows * n_cols must fit an int32_t.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class with no kernel).
 ///         Launch errors only: the kernel's own faults surface at the next

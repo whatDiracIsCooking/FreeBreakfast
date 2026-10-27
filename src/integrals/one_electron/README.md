@@ -53,8 +53,9 @@ are each the same set of files, named after the directory:
 
 Every family takes its inputs, and its pre-launch checks
 (`check_one_electron_build`, `check_nuclei`), from `launch`, its kernel table
-from its generated header, and is bounded by `basis`'s `kMaxAngularMomentum`,
-the one limit for the repo. `core_hamiltonian/` has no kernels of its own, so it is
+from its generated header. Each launcher is bounded by its own table's extent;
+`check_one_electron_build` holds every class to `basis`'s `kMaxAngularMomentum`,
+the tree-wide limit, until the one-electron engine moves to f (#344). `core_hamiltonian/` has no kernels of its own, so it is
 only the module.
 
 **H is built in place.** `core_hamiltonian` checks every input, then
@@ -79,7 +80,7 @@ never as a C name per class. The generator also writes one header,
 specialization declared, and `<family>_kernels`, the `[la][lb]` table, null
 where `la > lb`. Each unit is a source of the family's device library,
 compiled on its own; the launcher includes only the header,
-`static_assert`s the table's extents against `kMaxAngularMomentum`, and
+takes its limit from the table's extent (`static_assert`ing it square), and
 indexes it. No class is named by hand, and a class the table names with no
 unit is a link error. Launching a specialization another TU defines wants
 relocatable device code under nvcc (warning #20280 otherwise), which is the

@@ -37,7 +37,8 @@ namespace free_breakfast::device {
 /// each block); @p dq is q-major, n_hermite(la + lb) x n_rec (so e_hermite's
 /// lanes, consecutive kets, read it contiguously), and @p w and @p dmax
 /// n_rec, all written whole. cls.n_rec must be positive, cls.la <=
-/// cls.lb <= kMaxAngularMomentum, and n_ao * n_ao must fit an int32_t.
+/// cls.lb <= the largest momentum kernels/dq.h's table covers, and n_ao * n_ao
+/// must fit an int32_t.
 ///
 /// @return The first launch status (wwrErrorInvalidValue for a class with no
 ///         kernel). Launch errors only, as overlap_class.

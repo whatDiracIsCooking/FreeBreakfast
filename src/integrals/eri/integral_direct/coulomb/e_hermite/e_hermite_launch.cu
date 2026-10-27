@@ -25,13 +25,16 @@
 
 namespace free_breakfast::device {
 
-// One Hermite class per lp, lq <= 2 kMaxAngularMomentum: a d-shell pair's E
-// reaches |t| = 4.
-constexpr auto kHermiteExtent = static_cast<size_t>(2 * kMaxAngularMomentum + 1);
+// One Hermite class per lp, lq <= 2 kMaxL: a d-shell pair's E reaches |t| = 4.
+// So the shell momentum the emitted table covers, its own limit rather than the
+// tree's kMaxAngularMomentum, is half its last index: this engine moves to a
+// higher l when its kernels are emitted for one.
+constexpr auto kHermiteExtent = std::extent_v<decltype(e_hermite_kernels), 0>;
+constexpr int32_t kMaxL = static_cast<int32_t>(kHermiteExtent - 1) / 2;
 
-static_assert(std::extent_v<decltype(e_hermite_kernels), 0> == kHermiteExtent &&
+static_assert(kHermiteExtent % 2 == 1 &&
                   std::extent_v<decltype(e_hermite_kernels), 1> == kHermiteExtent,
-              "kernels/ was not emitted for kMaxAngularMomentum: rerun "
+              "kernels/'s [lp][lq] table is not square over lp <= 2 l: rerun "
               "tools/emit_coulomb_kernels.py");
 
 // One warp per bra record: blockDim = (1, warp width), the block e_hermite's
@@ -44,7 +47,7 @@ static_assert(e_hermite_block_dim[0] == 1 && e_hermite_block_dim[1] == kWarpSize
 namespace {
 
 bool has_pair_kernel(const PrimitivePairClassView &cls) {
-  return cls.la >= 0 && cls.lb >= cls.la && cls.lb <= kMaxAngularMomentum && cls.n_rec >= 1;
+  return cls.la >= 0 && cls.lb >= cls.la && cls.lb <= kMaxL && cls.n_rec >= 1;
 }
 
 } // namespace

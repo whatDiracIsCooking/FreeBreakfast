@@ -40,15 +40,19 @@ __global__ void dq_weights_kernel(const int32_t n_rec, const int32_t *off_a, con
 
 namespace free_breakfast::device {
 
-static_assert(std::extent_v<decltype(dq_kernels), 0> == kMaxAngularMomentum + 1 &&
-                  std::extent_v<decltype(dq_kernels), 1> == kMaxAngularMomentum + 1,
-              "kernels/ was not emitted for kMaxAngularMomentum: rerun "
+// The largest momentum the emitted table covers, its own limit rather than
+// the tree's kMaxAngularMomentum, so this engine moves to a higher l when its
+// kernels are emitted for one.
+constexpr int32_t kMaxL = static_cast<int32_t>(std::extent_v<decltype(dq_kernels), 0>) - 1;
+
+static_assert(std::extent_v<decltype(dq_kernels), 1> == kMaxL + 1,
+              "kernels/'s [la][lb] table is not square: rerun "
               "tools/emit_coulomb_kernels.py");
 
 wwr::wwrError_t dq_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
                          const int32_t n_ao, const double *density, double *w, double *dq,
                          double *dmax) {
-  if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum || cls.n_rec < 1) {
+  if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxL || cls.n_rec < 1) {
     return wwr::wwrErrorInvalidValue;
   }
   // One thread per record, kFourWarps to a block; a whole number of warps keeps

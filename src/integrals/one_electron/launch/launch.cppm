@@ -75,7 +75,8 @@ template <std::ranges::random_access_range Classes, typename Launch>
 /// @p m and every class of @p classes must be on @p res's device, @p m's order
 /// within the generated kernels' 32-bit `m * n_ao + n` index (n_ao^2 <=
 /// INT32_MAX, about 46k AOs), and every class one with a kernel: la <= lb <=
-/// @c kMaxAngularMomentum, the one limit every family is generated to. @p what
+/// @c kMaxAngularMomentum, the tree-wide limit (each family's launcher is
+/// bounded by its own kernel table; this moves to them with #344). @p what
 /// names the build in the messages.
 ///
 /// @return Success, or InvalidConfig naming the first input refused.

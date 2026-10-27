@@ -188,7 +188,7 @@ every class of H₂O/cc-pVDZ, bit for bit against the bound
 | `mmd.cppm` | Module interface: `PrimitivePairClass`, `primitive_pair_classes`, the view re-exported |
 | `mmd.cpp` | The shell-pair sweep (each class's shell pairs and their record prefix), the swap, the ranks, the shell and shell-pair tables staged and uploaded, the launches, and the wait |
 | `mmd_bridge.h` | `PrimitivePairSource` and `PrimitivePairRecords`, and the records', the order's and the bounds' launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
-| `mmd_launch.cu` | The key and record kernels, and the launchers: `mmd_order` (key and sort), `mmd_records` (every field but the bounds, in the sorted order), `mmd_bound` (the generated `pair_bound<la, lb>`), `ordered_pair_bound` (the generated `record_bound<la, lb>`), both tables checked against `kMaxAngularMomentum` |
+| `mmd_launch.cu` | The key and record kernels, and the launchers: `mmd_order` (key and sort), `mmd_records` (every field but the bounds, in the sorted order), `mmd_bound` (the generated `pair_bound<la, lb>`), `ordered_pair_bound` (the generated `record_bound<la, lb>`), each bounded by its own table's extent, checked square |
 | `kernels/pair_bound/` | The generated `pair_bound<la, lb>` units and their template header (`tools/emit_one_electron_kernels.py`) |
 | `kernels/record_bound/` | The generated `record_bound<la, lb>` units, all nine ordered classes through d, and their template header (`tools/emit_exchange_kernels.py`) |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.mmd.headers`, the device library and the module library |

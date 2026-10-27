@@ -241,9 +241,10 @@ Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &
 // I = pair_bound(zeta, la + lb) from its zeta, which rises with zeta and so is
 // non-increasing in record order, and the dressed bound (ordered_pair_bound) of
 // the record as stored and swapped, the swap a view with la and lb, and P - A
-// and P - B, exchanged. A class above kMaxAngularMomentum has no kernel and
+// and P - B, exchanged. A class above kMaxAngularMomentum, the tree-wide limit,
 // keeps its zeroed bounds: every build refuses such a class, so nothing reads
-// them. pair_bound depends on la + lb alone, so a mixed class with la > lb
+// them. The launchers are bounded by their own tables; this moves to them when
+// the first engine lifts to f (#344). pair_bound depends on la + lb alone, so a mixed class with la > lb
 // takes the kernel of (lb, la), the one emitted.
 Status form_bounds(PrimitivePairClass &cls) {
   const auto [lo, hi] = std::minmax(cls.la, cls.lb);

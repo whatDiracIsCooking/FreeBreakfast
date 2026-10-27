@@ -93,6 +93,8 @@ Status coulomb(DeviceResources &res, const std::span<CoulombPairClass> classes,
       return err_config("coulomb: class ({}, {}) is on device {}, but the call passed device {}",
                         cls.la, cls.lb, dev, res.dev_idx());
     }
+    // The tree-wide limit, not J's tables (dq, e_hermite and jab are each
+    // bounded by their own): this moves to them when J lifts to f, #345.
     if (cls.la < 0 || cls.lb < cls.la || cls.lb > kMaxAngularMomentum) {
       return err_config("coulomb: no kernel for class ({}, {}); the kernels cover la <= lb <= {}",
                         cls.la, cls.lb, kMaxAngularMomentum);

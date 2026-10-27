@@ -132,17 +132,20 @@ __global__ void mmd_records_kernel(const int32_t n_rec, const PrimitivePairSourc
 
 namespace free_breakfast::device {
 
-// One pair class per la <= lb <= kMaxAngularMomentum.
-constexpr auto kPairExtent = static_cast<size_t>(kMaxAngularMomentum + 1);
+// The largest momentum each emitted table covers, its own limit rather than the
+// tree's kMaxAngularMomentum: the two come from different emitters, so each
+// launcher reads its own.
+constexpr int32_t kPairBoundMaxL =
+    static_cast<int32_t>(std::extent_v<decltype(pair_bound_kernels), 0>) - 1;
+constexpr int32_t kRecordBoundMaxL =
+    static_cast<int32_t>(std::extent_v<decltype(record_bound_kernels), 0>) - 1;
 
-static_assert(std::extent_v<decltype(pair_bound_kernels), 0> == kPairExtent &&
-                  std::extent_v<decltype(pair_bound_kernels), 1> == kPairExtent,
-              "kernels/pair_bound was not emitted for kMaxAngularMomentum: rerun "
+static_assert(std::extent_v<decltype(pair_bound_kernels), 1> == kPairBoundMaxL + 1,
+              "kernels/pair_bound's [la][lb] table is not square: rerun "
               "tools/emit_one_electron_kernels.py");
 
-static_assert(std::extent_v<decltype(record_bound_kernels), 0> == kPairExtent &&
-                  std::extent_v<decltype(record_bound_kernels), 1> == kPairExtent,
-              "kernels/record_bound was not emitted for kMaxAngularMomentum: rerun "
+static_assert(std::extent_v<decltype(record_bound_kernels), 1> == kRecordBoundMaxL + 1,
+              "kernels/record_bound's [la][lb] table is not square: rerun "
               "tools/emit_exchange_kernels.py");
 
 namespace {
@@ -178,7 +181,7 @@ wwr::wwrError_t mmd_records(const wwr::wwrStream_t stream, const int32_t n_rec,
 
 wwr::wwrError_t mmd_bound(const wwr::wwrStream_t stream, const int32_t la, const int32_t lb,
                           const int32_t n_rec, const double *zeta, double *bound) {
-  if (n_rec < 1 || la < 0 || lb < la || lb > kMaxAngularMomentum) {
+  if (n_rec < 1 || la < 0 || lb < la || lb > kPairBoundMaxL) {
     return wwr::wwrErrorInvalidValue;
   }
   pair_bound_kernels[la][lb]<<<mmd_record_blocks(n_rec), kFourWarps, 0, stream>>>(n_rec, zeta,
@@ -188,8 +191,8 @@ wwr::wwrError_t mmd_bound(const wwr::wwrStream_t stream, const int32_t la, const
 
 wwr::wwrError_t ordered_pair_bound(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
                                    double *bound) {
-  if (cls.n_rec < 1 || cls.la < 0 || cls.la > kMaxAngularMomentum || cls.lb < 0 ||
-      cls.lb > kMaxAngularMomentum) {
+  if (cls.n_rec < 1 || cls.la < 0 || cls.la > kRecordBoundMaxL || cls.lb < 0 ||
+      cls.lb > kRecordBoundMaxL) {
     return wwr::wwrErrorInvalidValue;
   }
   // One thread per record in 32-thread blocks, as FelizJueves's launch_shape

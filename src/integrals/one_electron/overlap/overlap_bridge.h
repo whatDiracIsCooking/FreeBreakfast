@@ -42,9 +42,9 @@ namespace free_breakfast::device {
 /// atomically added at (m, n) and at (n, m), so @p s must be zeroed before the
 /// first class of a build and is symmetric after the last.
 ///
-/// cls.n_rec must be positive, and cls.la <= cls.lb <= kMaxAngularMomentum. The
-/// kernels index @p s as a 32-bit `m * n_ao + n`, so n_ao * n_ao must fit an
-/// int32_t.
+/// cls.n_rec must be positive, and cls.la <= cls.lb <= the largest momentum
+/// kernels/overlap.h's table covers. The kernels index @p s as a 32-bit
+/// `m * n_ao + n`, so n_ao * n_ao must fit an int32_t.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class with no kernel).
 ///         Launch errors only: the kernel's own faults surface at the next
