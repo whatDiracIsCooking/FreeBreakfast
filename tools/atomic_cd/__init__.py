@@ -5,8 +5,10 @@ integrals (aCD), then a second pivoted Cholesky over uncontracted primitives
 graded by real solid harmonic content (acCD, the "compact" pass). The raw
 two-electron integrals come from PySCF (``mol.intor``) rather than a
 hand-rolled GPU kernel, which lets this package work at arbitrary angular
-momentum and with native real solid harmonics -- past the L<=2, Cartesian-only
-shape of ``src/basis``. There is no C++ counterpart in this tree.
+momentum -- past the f ceiling (``kMaxAngularMomentum``) of the GPU engines.
+There is no C++ counterpart to aCD/acCD in this tree. The C++ density fitting
+(``src/integrals/eri/density_fitting``) fits over a ready-made auxiliary
+basis (``data/aux_basis/``) and does not generate one.
 
 Modules, in dependency order:
 
@@ -22,7 +24,9 @@ Modules, in dependency order:
 
 Needs PySCF and numpy, which live in the opt-in ``tools`` dependency group of
 ``pyproject.toml`` (not ``dev``, so the image and the push gate do not carry
-them). From the repo root::
+them). From the repo root (inside the devcontainer, prefix
+``UV_PROJECT_ENVIRONMENT=$PWD/.venv`` so the group does not go into the
+image's ``/opt/venv``; ``tools/README.md``)::
 
     uv sync --group tools
     uv run --group tools python -m tools.atomic_cd.cli C sto-3g

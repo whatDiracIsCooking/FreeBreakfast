@@ -2,18 +2,18 @@
 """Run aCD and acCD for one atom's own basis, end to end (see this package's
 ``__init__.py``). It writes the acCD result out as a portable file, either
 this tool's own schema (``--aux-basis-out``) or real Basis Set Exchange
-spherical shells (``--bse-out``, see ``to_bse_spherical``'s doc comment for
-why spherical and not this repo's Cartesian ``src/basis`` shape), and by
+spherical shells (``--bse-out``, see ``to_bse_spherical``'s doc comment), and by
 default it decomposes every target angular momentum the atom's own shells can
 reach (``--max-l``, unbounded).
 
 The ORBITAL basis can itself come from a Basis Set Exchange document
 (``--bse-in``; ``tools/bse_download.py`` fetches one), not only a name PySCF's
 own library resolves -- see ``eri_quartet.basis_from_bse``. Cartesian and
-spherical BSE shells are equally acceptable: the orbital basis is always built
-Cartesian here (``eri_quartet.build_mol``, matching ``src/basis``), and the
-adapter reads only each shell's radial data (exponents/coefficients), which is
-identical regardless of which of those two tags a shell carries.
+spherical BSE shells are equally acceptable here, unlike in ``src/io/basis``,
+which rejects Cartesian ones: the orbital basis is always built over
+Cartesian AOs here (``eri_quartet.build_mol``), and the adapter reads only
+each shell's radial data (exponents/coefficients), which is identical
+regardless of which of those two tags a shell carries.
 
 Examples
 --------
@@ -116,9 +116,9 @@ def _write_aux_basis(
     path: str, element: str, basis_name: str, threshold: float, aux_shells: dict
 ) -> None:
     """Write the acCD result as this tool's own JSON schema -- NOT Basis Set
-    Exchange format (BSE assumes Cartesian shells with standard contraction
-    normalization; these are spherical, unnormalized-primitive-derived
-    shells, see compact.py's module docstring for why real solid harmonics)."""
+    Exchange format: the coefficients stay acCD's raw, unnormalized-primitive
+    ones (compact.py's module docstring). ``to_bse_spherical`` is the BSE
+    form."""
     document = {
         "generator": "tools/atomic_cd",
         "convention": (

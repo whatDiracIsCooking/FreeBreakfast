@@ -4,9 +4,11 @@ has no per-call launch cost, so there is no reason for a block-at-a-time API.
 
 CONVENTION. Coefficients as given, over a primitive-normalized basis -- this
 repo's own convention (``BasisStamp::primitive_normalized`` in
-``src/basis``): primitives normalized per Cartesian component, no contraction
-renormalization. PySCF normalizes differently (``angular.primitive_norm``,
-per-l, then a contraction renormalization), so each AO is rescaled by
+``src/basis``): every Cartesian component of a shell scaled by the one (l,0,0)
+primitive normalization ``primitive_norm(alpha, l) / sqrt((2l-1)!!)``, no
+contraction renormalization. PySCF normalizes differently
+(``angular.primitive_norm``, with no ``(2l-1)!!``, then a contraction
+renormalization), so each AO is rescaled by
 ``k_mu = sqrt(S_ours[mu,mu] / S_pyscf[mu,mu])``, the ratio of the two
 conventions' self-overlaps; the ERI picks up one factor per index.
 
@@ -38,9 +40,11 @@ Basis = str | list
 def _cartesian_self_overlap(
     exponents: list[float], coefficients: list[float], powers: tuple[int, int, int]
 ) -> float:
-    """S[mu,mu] for one Cartesian AO in this repo's own convention (primitives
-    normalized per Cartesian component, contraction coefficients as given, no
-    contraction renormalization) -- a self-overlap only, not a full engine."""
+    """S[mu,mu] for one Cartesian AO in this repo's own convention (every
+    component scaled by the shell's (l,0,0) primitive normalization,
+    contraction coefficients as given, no contraction renormalization) -- a
+    self-overlap only, not a full engine. So only the (l,0,0)-type components
+    come out unit-normalized; x*y of a d shell has self-overlap 1/3."""
     a, b, c = powers
     ell = a + b + c
     dfac = (
@@ -48,7 +52,7 @@ def _cartesian_self_overlap(
         * double_factorial_odd(2 * b - 1)
         * double_factorial_odd(2 * c - 1)
     )
-    ncart_scale = 1.0 / np.sqrt(dfac)
+    shell_scale = 1.0 / np.sqrt(double_factorial_odd(2 * ell - 1))
     total = 0.0
     for ai, ci in zip(exponents, coefficients, strict=True):
         for aj, cj in zip(exponents, coefficients, strict=True):
@@ -63,7 +67,7 @@ def _cartesian_self_overlap(
                 * radial
                 * angular
             )
-    return ncart_scale**2 * total
+    return shell_scale**2 * total
 
 
 def _our_overlap_diagonal(atoms: list[Atom], basis: Basis) -> np.ndarray:
@@ -87,7 +91,9 @@ def _our_overlap_diagonal(atoms: list[Atom], basis: Basis) -> np.ndarray:
 
 def build_mol(atoms: list[Atom], basis: Basis) -> gto.Mole:
     """A PySCF Mole for `atoms` (symbol, (x,y,z) in bohr), Cartesian AOs
-    (cart=True, matching this repo's Cartesian-only src/basis). `spin` is set
+    (cart=True: the layout src/basis's kernels evaluate, before its
+    spherical_transform_matrix maps to the spherical AOs the basis means; aCD
+    here stays over the Cartesian ones). `spin` is set
     to the neutral-atom parity so odd-electron elements build without needing
     an explicit charge/spin from the caller -- occupation is irrelevant to the
     AO integrals this module reads off `mol`."""

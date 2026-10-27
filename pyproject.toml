@@ -40,7 +40,8 @@ dev = [
     # devtools/format.sh runs it; .clang-format configures it.
     "clang-format==20.1.8",
 ]
-# tools/atomic_cd: aCD/acCD atomic Cholesky over PySCF integrals. Not part of
+# The PySCF tools: tools/atomic_cd, *_from_pyscf.py and the emit_*_reference.py
+# / golden generators (tools/README.md). Not part of
 # `dev` -- nothing on the push gate or in the image needs it, and PySCF is a
 # heavy wheel. Opt in with `uv sync --group tools` (or `uv run --group tools`).
 # tools/bse_download.py is stdlib-only and needs none of this.

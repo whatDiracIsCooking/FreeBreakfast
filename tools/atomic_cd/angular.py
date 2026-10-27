@@ -1,15 +1,16 @@
 """Small Cartesian/normalization helpers shared by more than one module here.
 
 ``cartesian_powers``/``ncart`` mirror ``src/basis``'s canonical Cartesian
-monomial order (a descending first -- see ``src/basis/shell.cppm``'s doc
-comment), which is also PySCF's own ``cart=True`` in-shell order, so nothing
-here needs to permute between the two.
+monomial order (a descending first -- see ``cartesian_powers`` in
+``src/basis/ao.cppm``), which is also PySCF's own ``cart=True`` in-shell
+order, so nothing here needs to permute between the two.
 
 ``primitive_norm`` is PySCF's own per-angular-momentum (not per-Cartesian-
--component) primitive Gaussian normalization constant -- applied uniformly
-across every Cartesian component of a shell, unlike most other conventions
-(including this repo's own ``ShellStamp::primitive_normalized``) which
-additionally divide each component by ``sqrt(dfac(a,b,c))``.
+-component) primitive Gaussian normalization constant, applied uniformly
+across every Cartesian component of a shell. This repo's own
+``ShellStamp::primitive_normalized`` is also uniform per shell but
+additionally divides by ``sqrt((2l-1)!!)``, the (l,0,0) normalization
+(``eri_quartet``'s CONVENTION).
 
 Angular momentum is spelled ``ell`` throughout this package, not ``l``: ruff's
 E741 (and plain readability) flags a bare ``l`` as too easily misread as the

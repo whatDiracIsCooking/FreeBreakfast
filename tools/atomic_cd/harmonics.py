@@ -10,10 +10,10 @@ the image of "multiply a degree-(L-2) polynomial by r^2". Recursing down to
 L=0,1 and running ordinary Gram-Schmidt gives every graded block L, L-2, ...
 with no Clebsch-Gordan/Gaunt coefficients needed.
 
-This is not capped at L=4: nothing in the construction assumes a maximum
-combined angular momentum (the ``src/basis`` production path caps there only
-because its own shells never exceed L=2, so a shell pair never combines past
-L=4). ``graded_transform`` is memoized per combined_l, built lazily.
+``src/basis`` needs the harmonics of one shell's own l (through f), but this
+needs those of a shell PAIR's combined L, with every lower block L-2, L-4, ...
+as well. Nothing in the construction assumes a maximum combined angular
+momentum. ``graded_transform`` is memoized per combined_l, built lazily.
 """
 
 from __future__ import annotations
