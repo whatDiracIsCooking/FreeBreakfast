@@ -280,9 +280,9 @@ std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::Sp
   }
   const std::vector<double> g1 = download(res, gamma.data(), n * n);
   const std::vector<double> g2 = download(res, gamma2.data(), n * n * n * n);
-  auto fock =
-      fb::response::fock(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
-                         setup.j_classes, setup.k_classes, c, ncore, ncas, ints->ppaa, g1, g2);
+  auto fock = fb::response::fock(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
+                                 setup.j_classes, setup.k_classes, c, ncore, ncas, ints->ppaa,
+                                 ints->papa, g1, g2);
   if (!fock.has_value()) {
     ADD_FAILURE() << fock.error().message;
     return std::nullopt;

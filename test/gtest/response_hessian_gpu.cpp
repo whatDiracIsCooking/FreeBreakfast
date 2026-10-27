@@ -203,9 +203,10 @@ struct Setup {
   }
 
   [[nodiscard]] fb::Result<fb::response::Fock> fock(const fb::SphericalMatrixAO &orbitals,
-                                                    const fb::Buffers::device<double> &ppaa) {
+                                                    const fb::Buffers::device<double> &ppaa,
+                                                    const fb::Buffers::device<double> &papa) {
     return fb::response::fock(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes,
-                              orbitals, ncore, ncas, ppaa, gamma, gamma2);
+                              orbitals, ncore, ncas, ppaa, papa, gamma, gamma2);
   }
 
   // response::fock over orbitals, its integrals built over them too.
@@ -214,7 +215,7 @@ struct Setup {
     if (!built.has_value()) {
       return std::unexpected(std::move(built.error()));
     }
-    return fock(orbitals, built->first);
+    return fock(orbitals, built->first, built->second);
   }
 };
 
@@ -569,7 +570,7 @@ TEST_P(ResponseHessian, MatchesPyscfAtTheCasciOrbitals) {
 
   auto integrals = setup->integrals(c);
   ASSERT_TRUE(integrals.has_value()) << integrals.error().message;
-  auto fock = setup->fock(c, integrals->first);
+  auto fock = setup->fock(c, integrals->first, integrals->second);
   ASSERT_TRUE(fock.has_value()) << fock.error().message;
   auto hessian = build_hessian(*setup, c, integrals->first, integrals->second, *fock);
   ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
@@ -644,7 +645,7 @@ void expect_whole_hessian(Setup &setup, const fb::SphericalMatrixAO &c,
                           const fb::Buffers::device<double> &ppaa,
                           const fb::Buffers::device<double> &papa) {
   fb::DeviceResources &res = setup.res();
-  auto fock = setup.fock(c, ppaa);
+  auto fock = setup.fock(c, ppaa, papa);
   ASSERT_TRUE(fock.has_value()) << fock.error().message;
   auto hessian = build_hessian(setup, c, ppaa, papa, *fock);
   ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
@@ -739,7 +740,7 @@ TEST(ResponseHessianRefusals, AreInvalidConfig) {
   ASSERT_TRUE(integrals.has_value()) << integrals.error().message;
   const fb::Buffers::device<double> &ppaa = integrals->first;
   const fb::Buffers::device<double> &papa = integrals->second;
-  auto fock = setup->fock(setup->scf->c, ppaa);
+  auto fock = setup->fock(setup->scf->c, ppaa, papa);
   ASSERT_TRUE(fock.has_value()) << fock.error().message;
   const fb::Buffers::device<double> short_ppaa(nmo * nmo, res.device());
   const auto call = [&](std::int32_t ncore, std::int32_t ncas, const fb::Buffers::device<double> &p,
