@@ -143,6 +143,7 @@ add_executable(
   exchange_gpu.cpp
   df_fit_gpu.cpp
   df_jk_gpu.cpp
+  df_metric_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
