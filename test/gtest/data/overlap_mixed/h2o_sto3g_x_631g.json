@@ -1,7 +1,7 @@
 {
  "description": "S_{B1,B2}: H2O, rows STO-3G (h2o_sto3g_j's AOs), columns 6-31G (h2o_631g_j's inputs exactly), Cartesian: libcint's gto.intor_cross('int1e_ovlp'), one molecule in two bases. -- both bases and the cross overlap only, copied by tools/extract_integral_golden.py",
  "source": {
-  "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
+  "felizjueves": "cc5d16fb16bf6b9fe32f395bdc08071b312966cb",
   "fixture": "test/oracle/fixtures/h2o_sto3g_x_631g.json",
   "rows_fixture": "test/oracle/fixtures/h2o_sto3g_j.json"
  },

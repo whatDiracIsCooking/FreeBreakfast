@@ -18,14 +18,14 @@ src/integrals/mmd/kernels/pair_bound/.
   Dmax, reading the AO density in place (`density="ao"`: Dao[off_c + i,
   off_d + j], so no gather and no transposed copy for a swapped pair);
 - `e_hermite<lp, lq>`, the [p|q] kernel J_p += SUM_q [p|q] D_q, one per
-  Hermite class, its write to J_p atomic (`passes.atomize`) because every
+  Hermite class, its write to J_p atomic (`ir.passes.atomize`) because every
   ket class of a bra class adds into the same J_p;
 - `jab<la, lb>`, the bra back-transform and scatter of J_p into J_mu_nu.
 
-Every [n, 3] record vector is split into three flat arrays (`passes.
+Every [n, 3] record vector is split into three flat arrays (`ir.passes.
 split_axes`) named as free_breakfast.integrals.mmd names its fields: pa_*,
 pb_*, and p_* / q_* for the [p|q] bra and ket centres. D_q is stored q-major,
-D[n_q, n_rec] (`passes.transpose`), in both kernels that touch it: dq writes
+D[n_q, n_rec] (`ir.passes.transpose`), in both kernels that touch it: dq writes
 it and e_hermite reads it, its lanes consecutive kets, so a warp's read is
 contiguous.
 
@@ -64,13 +64,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
-from felizjueves.device import by_name  # noqa: E402
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import WAVEFRONT, Specialization  # noqa: E402
-from felizjueves.kernel import build_pq_kernel  # noqa: E402
-from felizjueves.kernel_dq import build_dq_kernel  # noqa: E402
-from felizjueves.kernel_jab import build_jab_kernel  # noqa: E402
-from felizjueves.passes import atomize, split_axes, transpose  # noqa: E402
+from felizjueves.eri.j_coulomb.kernel_dq import build_dq_kernel  # noqa: E402
+from felizjueves.eri.j_coulomb.kernel_jab import build_jab_kernel  # noqa: E402
+from felizjueves.ir.passes import atomize, split_axes, transpose  # noqa: E402
+from felizjueves.mmd.kernel import build_pq_kernel  # noqa: E402
+from felizjueves.performance.device import by_name  # noqa: E402
 from felizjueves.spec import Operator, Spec, Target  # noqa: E402
 
 # The kernels' L limit: d. It must equal kMaxAngularMomentum

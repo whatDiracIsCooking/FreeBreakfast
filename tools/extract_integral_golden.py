@@ -22,6 +22,13 @@ tests read a small file of their own and PySCF is needed by neither:
   and the J test read the same density. It also refuses a `vk` that is not
   symmetric to 1e-14 of its largest element (libcint computes both
   triangles);
+- a molecule whose four one-electron arrays do not fit one file under
+  FelizJueves's 512 KiB hook keeps none of them in its `_j` fixture: they are
+  split into two ONE-ELECTRON PIECES, `_j_st` (S, T) and `_j_vh` (V, hcore).
+  This reassembles them as FelizJueves's `oracle.manifest.one_e_fixture`
+  does, refusing a piece unless its inputs -- every field `check_pair`
+  compares but the density, and every array both carry -- equal its owner's
+  exactly;
 - overlap_mixed/: libcint's cross-basis overlap `int1e_ovlp_cross:<rows>`
   (PySCF `gto.intor_cross`), with both bases: the row fixture's shells and
   the cross fixture's own as the columns.
@@ -47,8 +54,9 @@ OUT = ROOT / "test/gtest/data"
 # h2o_sto3g puts O's p shell before the H s shells (the la > lb swap);
 # h2o_ccpvdz reaches d; h10_chain_ccpvdz (five H2 4 bohr apart) carries an RHF
 # density, which decays with distance as the Hilbert one does not, so K's
-# density-decay factor drops below max|D| there.
-MOLECULES = ("h2o_sto3g", "h2o_ccpvdz", "h10_chain_ccpvdz")
+# density-decay factor drops below max|D| there. co_ccpvtz reaches f on both
+# atoms, its bond off every axis; its one-electron arrays are in pieces.
+MOLECULES = ("h2o_sto3g", "h2o_ccpvdz", "h10_chain_ccpvdz", "co_ccpvtz")
 # Per family, its directory under OUT, the fixture suffix it reads, and the
 # fixture arrays it keeps: libcint's S, T and V (point nuclei) and PySCF's
 # hcore = T + V; the AO density with libcint's J of it; and the same density
@@ -78,6 +86,10 @@ PAIR_FIELDS = (
     "density_recipe",
 )
 PAIR_PROVENANCE_EXEMPT = {"command", "date", "host"}
+# The one-electron pieces' stem suffixes after their `_j` owner's, and the
+# half of the four arrays each carries (FelizJueves's ONE_E_PIECE_SUFFIXES and
+# ONE_E_HALVES).
+ONE_E_PIECES = {"_st": ("int1e_ovlp", "int1e_kin"), "_vh": ("int1e_nuc", "hcore")}
 # vk's asymmetry bound, relative to max|vk|.
 SYMMETRY_TOLERANCE = 1e-14
 
@@ -93,22 +105,53 @@ def load(name: str) -> tuple[str, dict]:
     return source, json.loads((FJ / source).read_text())
 
 
-def check_pair(j_source: str, j: dict, k_source: str, k: dict) -> None:
+def check_pair(
+    j_source: str, j: dict, k_source: str, k: dict, *, density: bool = True
+) -> None:
     """Refuse, naming both files and the field, unless the `_k` fixture was
-    computed on the `_j` fixture's inputs. Every comparison is exact."""
+    computed on the `_j` fixture's inputs, every array both carry included.
+    `density=False` (a density-free one-electron piece against its owner)
+    skips the density and its recipe. Every comparison is exact."""
 
     def fail(field: str) -> SystemExit:
         return SystemExit(f"{k_source} and {j_source}: {field} differ")
 
     for field in PAIR_FIELDS:
-        if j.get(field) != k.get(field):
+        if (density or field != "density_recipe") and j.get(field) != k.get(field):
             raise fail(field)
     pj, pk = j["provenance"], k["provenance"]
     for field in sorted((set(pj) | set(pk)) - PAIR_PROVENANCE_EXEMPT):
         if pj.get(field) != pk.get(field):
             raise fail(f"provenance.{field}")
-    if j["arrays"]["density"] != k["arrays"]["density"]:
-        raise fail("arrays.density")
+    shared = set(j["arrays"]) & set(k["arrays"])
+    for name in sorted(shared if density else shared - {"density"}):
+        if j["arrays"][name] != k["arrays"][name]:
+            raise fail(f"arrays.{name}")
+
+
+def load_one_electron(stem: str) -> tuple[str, dict, list]:
+    """The `_j` fixture of `stem` with all four one-electron arrays, and the
+    sources of the pieces they came from: none when it carries them itself,
+    else its `_j_st` and `_j_vh` pieces' halves merged in. Refuses an owner
+    carrying only some of the four, and a piece that is not its owner's."""
+    source, fixture = load(stem + "_j")
+    names = [n for half in ONE_E_PIECES.values() for n in half]
+    present = [n for n in names if n in fixture["arrays"]]
+    if present == names:
+        return source, fixture, []
+    if present:
+        raise SystemExit(f"{source}: carries {present} of the one-electron arrays")
+    arrays = dict(fixture["arrays"])
+    pieces = []
+    for suffix, half in ONE_E_PIECES.items():
+        piece_source, piece = load(stem + "_j" + suffix)
+        check_pair(source, fixture, piece_source, piece, density=False)
+        missing = [n for n in half if n not in piece["arrays"]]
+        if missing:
+            raise SystemExit(f"{piece_source}: no {missing}")
+        arrays.update({n: piece["arrays"][n] for n in half})
+        pieces.append(piece_source)
+    return source, {**fixture, "arrays": arrays}, pieces
 
 
 def check_symmetric(source: str, name: str, array: dict) -> None:
@@ -175,7 +218,12 @@ def extract_cross(stem: str, commit: str) -> dict:
 
 
 def extract(
-    fixture: dict, source: str, commit: str, family: str, arrays: tuple
+    fixture: dict,
+    source: str,
+    commit: str,
+    family: str,
+    arrays: tuple,
+    pieces: list = (),
 ) -> dict:
     check_cartesian(fixture, source)
     out = {
@@ -192,6 +240,8 @@ def extract(
         # nao x nao, row-major, AO order.
         "arrays": {name: fixture["arrays"][name] for name in arrays},
     }
+    if pieces:
+        out["source"]["pieces"] = pieces
     if "density" in arrays:
         out["density_recipe"] = fixture["density_recipe"]
     return out
@@ -203,11 +253,15 @@ def main() -> int:
         out = OUT / family
         out.mkdir(parents=True, exist_ok=True)
         for stem in MOLECULES:
-            source, fixture = load(stem + suffix)
+            pieces = []
+            if family == "one_electron":
+                source, fixture, pieces = load_one_electron(stem)
+            else:
+                source, fixture = load(stem + suffix)
             if suffix == "_k":
                 check_pair(*load(stem + "_j"), source, fixture)
                 check_symmetric(source, "vk", fixture["arrays"]["vk"])
-            doc = extract(fixture, source, commit, family, arrays)
+            doc = extract(fixture, source, commit, family, arrays, pieces)
             path = out / f"{stem}.json"
             path.write_text(json.dumps(doc, indent=1) + "\n")
             print(path.relative_to(ROOT))

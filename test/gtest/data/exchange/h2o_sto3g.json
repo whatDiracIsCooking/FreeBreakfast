@@ -1,7 +1,7 @@
 {
  "description": "#199: h2o_sto3g_j's molecule, basis and recorded density, with PySCF's get_jk exchange matrix K (vk_il = sum_jk (ij|kl) D_jk) in place of J. -- the basis and the exchange arrays only, copied by tools/extract_integral_golden.py",
  "source": {
-  "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
+  "felizjueves": "cc5d16fb16bf6b9fe32f395bdc08071b312966cb",
   "fixture": "test/oracle/fixtures/h2o_sto3g_k.json"
  },
  "provenance": {

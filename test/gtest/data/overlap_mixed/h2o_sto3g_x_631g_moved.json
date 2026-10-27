@@ -1,7 +1,7 @@
 {
  "description": "S_{B1,B2} across two geometries: rows H2O/STO-3G (h2o_sto3g_j's AOs), columns H2O/6-31G displaced and distorted, so no column shell sits on a row shell's centre: libcint's gto.intor_cross('int1e_ovlp'). Carries its own one-electron arrays (no twin has its inputs). -- both bases and the cross overlap only, copied by tools/extract_integral_golden.py",
  "source": {
-  "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
+  "felizjueves": "cc5d16fb16bf6b9fe32f395bdc08071b312966cb",
   "fixture": "test/oracle/fixtures/h2o_sto3g_x_631g_moved.json",
   "rows_fixture": "test/oracle/fixtures/h2o_sto3g_j.json"
  },

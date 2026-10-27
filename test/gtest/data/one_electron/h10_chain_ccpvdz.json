@@ -1,7 +1,7 @@
 {
  "description": "#486: an H10 chain -- five H2 on z, bond 1.4 bohr, 4.0 bohr between molecules -- in cc-pVDZ, Cartesian, with PySCF's converged RHF density recorded: the first fixture whose density decays with distance (#484's per-block density factor can fire on it). Records the converted basis and PySCF's get_jk J for the recorded density. -- the basis and the one-electron arrays only, copied by tools/extract_integral_golden.py",
  "source": {
-  "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
+  "felizjueves": "cc5d16fb16bf6b9fe32f395bdc08071b312966cb",
   "fixture": "test/oracle/fixtures/h10_chain_ccpvdz_j.json"
  },
  "provenance": {
