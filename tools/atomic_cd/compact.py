@@ -43,10 +43,11 @@ that, carbon/cc-pVDZ l=0 reconstructs to ~5e-9, in line with l=1..4, and the
 matrix `compact_cholesky_for_l` decomposes is numerically PSD (min eigenvalue
 ~1e-12, pure roundoff).
 
-WHAT THIS DOES NOT DO. ``AuxShell`` is spherical, not Cartesian, and this
-module does not evaluate density-fitting integrals from these shells back onto
-an orbital basis. There is no L ceiling (harmonics.py has none); cli.py adds
-the file I/O.
+WHAT THIS DOES NOT DO. This module does not evaluate density-fitting
+integrals from these (spherical) shells back onto an orbital basis; that is
+``src/integrals/eri/density_fitting``'s job, over an aux basis it is handed.
+There is no L ceiling (harmonics.py has none), so a target l can exceed the
+g limit of the C++ fitting kernels; cli.py adds the file I/O.
 """
 
 from __future__ import annotations
