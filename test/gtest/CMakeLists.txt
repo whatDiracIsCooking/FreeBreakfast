@@ -112,6 +112,7 @@ add_executable(
   gemmwich_gpu.cpp
   gmmwich_gpu.cpp
   complex_cast_gpu.cpp
+  norm_gpu.cpp
   polynomial_roots_gpu.cpp
   sort_gpu.cpp
   mmd_gpu.cpp

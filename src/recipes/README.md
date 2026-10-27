@@ -15,6 +15,7 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 | `expm/` | `free_breakfast.recipes.expm` | The exponential of a skew-Hermitian H, exp(tH) = U diag(e^{-itw}) U^H, from one Hermitian eigendecomposition of iH (`skew_eig`) and evaluated at any t (`skew_expm`). |
 | `linear_operator/` | `free_breakfast.recipes.linear_operator` | The `LinearOperator` concept: a matrix known only by `op.apply(res, k, x, y)`, Y = A X. |
 | `matrix_ao/` | `free_breakfast.recipes.matrix_ao` | AO-basis matrices tagged Cartesian or spherical, and a pair holding both that converts through a shared transform. |
+| `norm/` | `free_breakfast.recipes.norm` | A chosen norm (`Norm::l1`, `l2`, `inf`) of a real device vector, in either pointer mode (`norm`). |
 | `orthogonalize/` | `free_breakfast.recipes.orthogonalize` | The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, and `orthonormalize`, a block of vectors orthonormalized in place with dependent columns dropped, both over `diagonalize`. |
 | `polynomial_roots/` | `free_breakfast.recipes.polynomial_roots` | Every root of a batch of polynomials by the Aberth-Ehrlich iteration, one warp per polynomial and one lane per root (`polynomial_roots`). |
 | `sort/` | `free_breakfast.recipes.sort` | Stable merge sort of `double` keys in IEEE-754 total order, optionally carrying `uint32_t` values (`merge_sort`), and the column gather that applies its permutation to a matrix (`gather_columns`). Its device library is also linked directly by the integral builds' kernels. |

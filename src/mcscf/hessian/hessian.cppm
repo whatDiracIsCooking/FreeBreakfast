@@ -85,7 +85,7 @@ public:
   /// Per column: kappa(x) unpacked, the MO gemms and one gemv over H_act, and
   /// for ncore > 0 one @c coulomb and one @c exchange of each of two
   /// transition densities, each under the prune cap (its max |D| read back
-  /// through iamax, which synchronizes); then 2 (X2 - X2^T) packed. Queued on
+  /// through norm<Norm::inf>, which synchronizes); then 2 (X2 - X2^T) packed. Queued on
   /// res.stream() with res.blas(), whose pointer mode must be host (its
   /// default, and what davidson_solve holds). Its scratch is
   /// res.device_workspace()'s. The device res.dev_idx() names is made current
