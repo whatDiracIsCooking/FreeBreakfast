@@ -15,20 +15,20 @@ Examples
 --------
 Download STO-3G for every element it defines, into the current directory::
 
-    tools/bse_download.py sto-3g
+    tools/basis/bse_download.py sto-3g
 
 Several basis sets at once, into a chosen directory::
 
-    tools/bse_download.py sto-3g cc-pVDZ def2-SVP -o data/basis
+    tools/basis/bse_download.py sto-3g cc-pVDZ def2-SVP -o data/basis
 
 Only a few elements (BSE accepts symbols, atomic numbers and hyphen ranges)::
 
-    tools/bse_download.py cc-pVTZ --elements H,C,N,O
-    tools/bse_download.py cc-pVTZ --elements 1,6-8
+    tools/basis/bse_download.py cc-pVTZ --elements H,C,N,O
+    tools/basis/bse_download.py cc-pVTZ --elements 1,6-8
 
 List the available basis-set names and exit::
 
-    tools/bse_download.py --list
+    tools/basis/bse_download.py --list
 """
 
 from __future__ import annotations

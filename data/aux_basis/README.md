@@ -71,7 +71,7 @@ unlike `data/basis/` there is no `data/sad/` to regenerate.
 ## Adding a set
 
 Fitting sets BSE does carry (`def2-universal-jkfit`, `cc-pvqz-jkfit`, ...)
-can come from `tools/bse_download.py <name> -o data/aux_basis`. Check the
+can come from `tools/basis/bse_download.py <name> -o data/aux_basis`. Check the
 harmonic types first, as `data/basis/README.md` describes: one
 `gto_cartesian` shell makes the whole file unreadable. Then extend the host
 tests in `test/gtest/io_basis_host.cpp`, and reconfigure.

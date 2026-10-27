@@ -422,7 +422,7 @@ understands `import std` nor takes part in module dependency scanning.
 ## Basis sets and SAD stamps are build input
 
 `data/basis/*.json` is Basis Set Exchange JSON downloaded by
-`tools/bse_download.py` and **compiled into the binary**: the build wraps each
+`tools/basis/bse_download.py` and **compiled into the binary**: the build wraps each
 file verbatim in a raw string literal, and `resolve_basis("sto-3g")` parses it
 back out. This tree installs nothing of its own, so the alternative — a runtime
 data directory — would mean an install rule and a search path that can work on
@@ -432,8 +432,10 @@ rebuild.
 
 Only **spherical** sets can be carried: `src/io/basis` rejects `gto_cartesian`
 at any l, and the parser walks the whole document, so one Cartesian shell makes
-the whole file unreadable — which is why `6-31g.json` stops at argon. Check the
-harmonic types before adding a set; [`data/basis/README.md`](data/basis/README.md)
+the whole file unreadable. 6-31G's d shells are Cartesian from K up, so
+`6-31g.json` is carried relabelled spherical (5D) by
+`tools/basis/cartesian_to_spherical.py`: from K on, a different basis from the
+one BSE publishes. Check the harmonic types before adding a set; [`data/basis/README.md`](data/basis/README.md)
 has the detail.
 
 `data/sad/<basis>/<Z>.npy` is every element's atomic density in every carried
