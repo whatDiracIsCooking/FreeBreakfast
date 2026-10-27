@@ -1,8 +1,12 @@
 """aCD and acCD atomic Cholesky decomposition, in Python.
 
 The full pipeline: pivoted/incomplete Cholesky of an atom's own two-electron
-integrals (aCD), then a second pivoted Cholesky over uncontracted primitives
-graded by real solid harmonic content (acCD, the "compact" pass). The raw
+integrals over its uncontracted primitives (aCD), whose pivots pick the
+primitive pairs worth a candidate; a second pivoted Cholesky over those
+candidates per angular momentum, whose pivots are the auxiliary basis (acCD,
+the "compact" pass; Lehtola, JCTC 17, 6886 (2021)); and an SVD contraction of
+them against the atom's own orbital products (Lehtola, JCTC 19, 6242
+(2023)). The raw
 two-electron integrals come from PySCF (``mol.intor``) rather than a
 hand-rolled GPU kernel, which lets this package work at arbitrary angular
 momentum -- past the f ceiling (``kMaxAngularMomentum``) of the GPU engines.
@@ -12,14 +16,18 @@ basis (``data/aux_basis/``) and does not generate one.
 
 Modules, in dependency order:
 
-- ``angular``    -- small Cartesian/normalization helpers shared below.
-- ``harmonics``  -- real solid harmonic graded transform, at arbitrary combined
-                    angular momentum (memoized per combined_l).
-- ``eri_quartet``-- one atom's raw AO-basis (ab|cd) tensor, in this repo's own
-                    AO convention.
-- ``cholesky``   -- aCD: ``atomic_cholesky`` over the dense AO-pair space.
+- ``cholesky``   -- the pivoted Cholesky both stages run: aCD on the
+                    primitive ERIs, acCD on each l's candidate metric.
+- ``eri_quartet``-- the orbital primitives, their ERIs (eight-fold packed)
+                    and aCD's screening of primitive pairs; Mole and BSE
+                    input helpers.
 - ``compact``    -- acCD: the candidate-pool Cholesky at a fixed target angular
-                    momentum.
+                    momentum, and its pivots as uncontracted auxiliary shells.
+- ``contract``   -- SVD contraction of those pivots against the atom's own
+                    orbital products (Lehtola 2023), one general contraction
+                    per l.
+- ``df_check``   -- how well a generated auxiliary basis fits: one-centre ERI
+                    error and DF-RHF energy error for small molecules.
 - ``cli``        -- ``python3 -m atomic_cd.cli`` end-to-end driver.
 
 Needs PySCF and numpy, which live in the opt-in ``tools`` dependency group of
