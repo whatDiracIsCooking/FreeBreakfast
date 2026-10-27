@@ -319,6 +319,51 @@ TEST(IoBasisAux, TheAccdSetCoversCcPvdzAndStopsAtG) {
   }
 }
 
+TEST(IoBasisAux, EveryAccdSixSixSetCoversItsOrbitalSetAndStopsAtI) {
+  // tools/atomic_cd/aux_set.py at --threshold 1e-6 --contract-threshold 1e-6
+  // --max-l 6: every element its orbital set has, and no fitting shell past
+  // the DF kernels' i.
+  struct Pair {
+    std::string_view aux;
+    std::string_view orbital;
+  };
+  for (const auto &[aux_name, orbital_name] :
+       std::array<Pair, 7>{{{"cc-pVDZ-acCD-6-6", "cc-pVDZ"},
+                            {"cc-pVTZ-acCD-6-6", "cc-pVTZ"},
+                            {"aug-cc-pVDZ-acCD-6-6", "aug-cc-pVDZ"},
+                            {"aug-cc-pVTZ-acCD-6-6", "aug-cc-pVTZ"},
+                            {"def2-SVP-acCD-6-6", "def2-SVP"},
+                            {"def2-TZVP-acCD-6-6", "def2-TZVP"},
+                            {"6-31G**-acCD-6-6", "6-31G**"}}}) {
+    SCOPED_TRACE(aux_name);
+    auto aux = fb::resolve_aux_basis(aux_name);
+    auto orbital = fb::resolve_basis(orbital_name);
+    ASSERT_TRUE(aux.has_value()) << aux.error().message;
+    ASSERT_TRUE(orbital.has_value()) << orbital.error().message;
+    EXPECT_EQ(aux->name(), aux_name);
+    EXPECT_EQ(aux->element_shells().size(), orbital->element_shells().size());
+    for (const auto &[z, shells] : orbital->element_shells()) {
+      SCOPED_TRACE(std::format("Z={}", z));
+      const std::vector<fb::ShellStamp> *fit = aux->shells_for(z);
+      ASSERT_NE(fit, nullptr);
+      for (const fb::ShellStamp &shell : *fit) {
+        EXPECT_LE(shell.angular_momentum(), 6);
+      }
+    }
+  }
+}
+
+TEST(IoBasisAux, TheDef2SetIsUniversalJkfitOverHToKr) {
+  // tools/jkfit_from_pyscf.py's conversion of PySCF's def2-universal-jkfit,
+  // the one fitting set PySCF pairs with every def2 orbital set.
+  auto aux = fb::resolve_aux_basis("def2-universal-jkfit");
+  ASSERT_TRUE(aux.has_value()) << aux.error().message;
+  EXPECT_EQ(aux->name(), "def2-universal-JKFIT");
+  EXPECT_EQ(aux->element_shells().size(), 36U);
+  EXPECT_NE(aux->shells_for(1), nullptr);
+  EXPECT_NE(aux->shells_for(36), nullptr);
+}
+
 TEST(IoBasisAux, TheFittingAndOrbitalTablesAreDisjoint) {
   // A fitting set is no orbital set: tools/sad and io_sad_host see only the
   // five that carry data/sad/ stamps.

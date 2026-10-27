@@ -138,7 +138,8 @@ export namespace free_breakfast {
 /// @ref resolve_basis's rules exactly -- name first, spelling folded, a path
 /// otherwise, a compiled-in set named and a file not, IO for neither -- over
 /// the fitting sets compiled in from `data/aux_basis/` (`cc-pVDZ-JKFIT`,
-/// `cc-pVTZ-JKFIT`) instead of the orbital ones. The two tables are disjoint
+/// `cc-pVTZ-JKFIT`, `def2-universal-JKFIT` and the acCD sets; that
+/// directory's README lists them) instead of the orbital ones. The two tables are disjoint
 /// on purpose: an orbital set carries baked SAD densities, a fitting set none.
 ///
 /// The caller places the stamp over the orbital basis's molecule, as the

@@ -11,7 +11,8 @@ turns a BSE document into a geometry-free `BasisStamp` (from
   a BSE JSON file → `BasisStamp`. What a front end calls.
 * `is_builtin_basis(spec)` — whether `spec` is a name rather than a path.
 * `resolve_aux_basis(spec)` — `resolve_basis` over the compiled-in
-  **density-fitting** sets (`cc-pVDZ-JKFIT`, `cc-pVTZ-JKFIT`) instead. The
+  **density-fitting** sets (`cc-pVDZ-JKFIT`, `def2-universal-JKFIT`, the
+  acCD sets; `data/aux_basis/README.md` lists them) instead. The
   caller places it over the orbital basis's molecule with
   `place(stamp.primitive_normalized(), molecule)`; an element the set lacks is
   `InvalidConfig` from `place`.

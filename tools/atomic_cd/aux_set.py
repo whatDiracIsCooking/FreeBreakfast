@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Generate a whole auxiliary basis set: every element of an orbital Basis Set
-Exchange document, each run through ``cli.build_aux_shells`` at its default
-settings, written as one named BSE document of the kind ``data/aux_basis/``
+Exchange document, each run through ``cli.build_aux_shells`` (at ``cli``'s
+default thresholds unless ``--threshold``/``--contract-threshold`` say
+otherwise), written as one named BSE document of the kind ``data/aux_basis/``
 carries and ``resolve_aux_basis`` finds by its ``name``.
 
 ``cli`` builds one element and writes a nameless "minimal" document; this is
@@ -52,11 +53,17 @@ REFERENCE = {
 }
 
 
-def aux_set(orbital: dict, name: str, source: str, max_l: int | None) -> dict:
+def aux_set(
+    orbital: dict,
+    name: str,
+    source: str,
+    max_l: int | None,
+    threshold: float = cli.THRESHOLD[True],
+    contract_threshold: float = cli.CONTRACT_THRESHOLD,
+) -> dict:
     """The auxiliary set of every element in the BSE document `orbital`, as a
     BSE document called `name`; `source` is the orbital file's path, recorded
-    in its provenance."""
-    threshold = cli.THRESHOLD[True]
+    in its provenance with the settings."""
     elements = {}
     for z in sorted(orbital["elements"], key=int):
         symbol = ELEMENTS[int(z)]
@@ -66,7 +73,7 @@ def aux_set(orbital: dict, name: str, source: str, max_l: int | None) -> dict:
             basis,
             threshold,
             max_l,
-            contract_threshold=cli.CONTRACT_THRESHOLD,
+            contract_threshold=contract_threshold,
         )
         elements[z] = {
             **cli.to_bse_spherical(symbol, shells)["elements"][z],
@@ -76,9 +83,8 @@ def aux_set(orbital: dict, name: str, source: str, max_l: int | None) -> dict:
     function_types = sorted(
         {s["function_type"] for e in elements.values() for s in e["electron_shells"]}
     )
-    settings = (
-        f"threshold {threshold:g}, contract threshold {cli.CONTRACT_THRESHOLD:g}"
-        + (f", max l {max_l}" if max_l is not None else "")
+    settings = f"threshold {threshold:g}, contract threshold {contract_threshold:g}" + (
+        f", max l {max_l}" if max_l is not None else ""
     )
     return {
         "molssi_bse_schema": {"schema_type": "complete", "schema_version": "0.1"},
@@ -116,6 +122,20 @@ def main(argv: list[str] | None = None) -> int:
         "(default: 2x each element's highest shell ell)",
     )
     parser.add_argument(
+        "--threshold",
+        type=float,
+        default=cli.THRESHOLD[True],
+        metavar="TAU",
+        help=f"Cholesky threshold, as cli's (default: {cli.THRESHOLD[True]:g})",
+    )
+    parser.add_argument(
+        "--contract-threshold",
+        type=float,
+        default=cli.CONTRACT_THRESHOLD,
+        metavar="EPS",
+        help=f"contraction threshold, as cli's (default: {cli.CONTRACT_THRESHOLD:g})",
+    )
+    parser.add_argument(
         "-o",
         "--output",
         metavar="PATH",
@@ -124,10 +144,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.max_l is not None and args.max_l < 0:
         parser.error(f"--max-l must be >= 0, got {args.max_l}")
+    for flag, value in (
+        ("--threshold", args.threshold),
+        ("--contract-threshold", args.contract_threshold),
+    ):
+        if not value > 0.0:
+            parser.error(f"{flag} must be > 0, got {value:g}")
 
     with open(args.orbital, encoding="utf-8") as f:
         orbital = json.load(f)
-    document = aux_set(orbital, args.name, args.orbital, args.max_l)
+    document = aux_set(
+        orbital,
+        args.name,
+        args.orbital,
+        args.max_l,
+        args.threshold,
+        args.contract_threshold,
+    )
     out = pathlib.Path(args.output) if args.output else OUT_DIR / f"{args.name}.json"
     out.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
     print(f"wrote {out}")
