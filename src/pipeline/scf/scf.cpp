@@ -1,6 +1,7 @@
 /// @file
-/// @brief ScfStep::run: the step's checks and its integral-direct Fock
-/// builder, run by the RHF loop of `:loop`.
+/// @brief ScfStep::run: the step's checks and its two Fock builders, the
+/// integral-direct one and the density-fitted one, run by the RHF loop of
+/// `:loop`.
 
 module free_breakfast.pipeline.scf;
 
@@ -10,7 +11,11 @@ import free_breakfast.core.constants;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.core.log;
 import free_breakfast.recipes.diis;
+import free_breakfast.recipes.diagonalize;
+import free_breakfast.pipeline.density_fitting;
+import free_breakfast.integrals.eri.density_fitting.jk;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 import :loop;
@@ -102,6 +107,97 @@ struct DirectFockBuilder {
   }
 };
 
+// Eigenvalues of the first build's density at or under this fraction of its
+// largest are dropped from its factor. The guess is a sum of atomic densities
+// with non-negative occupations, so positive semidefinite, and what this drops
+// is syevd's round-off (about n * eps of the largest).
+constexpr double kDensityFactorFloor = 1e-12;
+
+// The density-fitted Fock build, F = H + J - K/2: J from D, by df_coulomb, and
+// K from a factor C of D = 2 C C^T, by df_exchange, over the B the step built.
+// The factor is the occupied orbitals D came from; the first build's D, the
+// guess, has none, so its own is made, V (Lambda/2)^{1/2} from D = V Lambda V^T
+// over the eigenvalues above kDensityFactorFloor of the largest. Every build is
+// full: DF's cost is dense BLAS, which a small density difference does not
+// shrink, and K from orbitals is no function of the difference anyway. So DIIS
+// is never reset either.
+struct DfFockBuilder {
+  DensityFittingOutput fit;
+  SphericalMatrixAO j;
+  SphericalMatrixAO k;
+  int32_t nocc;
+
+  [[nodiscard]] Result<bool> build(DeviceResources &res, const SphericalMatrixAO &d,
+                                   const SphericalMatrixAO *c, const SphericalMatrixAO &h,
+                                   SphericalMatrixAO &f) {
+    const wwr::wwrblasHandle_t blas = res.blas().get();
+    const auto n = static_cast<int32_t>(d.n());
+    FBF_TRY(df_coulomb(res, n, fit.naux, fit.b.data(), d.data(), j.data()));
+    if (c != nullptr) {
+      // The loop's C is every MO, ascending: the first nocc columns are C_occ.
+      FBF_TRY(df_exchange(res, n, fit.naux, nocc, fit.b.data(), c->data(), k.data()));
+    } else {
+      FBF_TRY(guess_exchange(res, d));
+    }
+    const size_t bytes = d.num_elements() * sizeof(double);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(f.data(), h.data(), bytes, wwr::wwrMemcpyDeviceToDevice,
+                                           res.stream())));
+    const auto len = static_cast<int32_t>(f.num_elements());
+    FBF_TRY(
+        gpu_status(wwr::axpy<double, int32_t>(blas, len, &kOne<double>, j.data(), 1, f.data(), 1)));
+    constexpr double kMinusHalf = -0.5;
+    FBF_TRY(
+        gpu_status(wwr::axpy<double, int32_t>(blas, len, &kMinusHalf, k.data(), 1, f.data(), 1)));
+    return true;
+  }
+
+  // K of the guess D, from the factor of its eigendecomposition. Once per run,
+  // so its scratch is allocated here and freed stream-ordered at return.
+  [[nodiscard]] Status guess_exchange(DeviceResources &res, const SphericalMatrixAO &d) {
+    const auto n = static_cast<int32_t>(d.n());
+    const size_t nn = d.num_elements();
+    Buffers::device<double> v(nn, res.device());
+    Buffers::device<double> lambda(static_cast<size_t>(n), res.device());
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(v.data(), d.data(), nn * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    FBF_TRY(diagonalize<double>(res, n, v.data(), lambda.data()));
+    std::vector<double> host(static_cast<size_t>(n));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(host.data(), lambda.data(), host.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, res.stream())));
+    FBF_TRY(res.sync());
+    // Ascending, so the kept eigenvalues are the last columns of V.
+    const double largest = host.empty() ? 0.0 : host.back();
+    const double floor = kDensityFactorFloor * std::max(largest, 0.0);
+    const auto first = static_cast<int32_t>(std::ranges::upper_bound(host, floor) - host.begin());
+    const int32_t rank = n - first;
+    if (!host.empty() && host.front() < -floor) {
+      // Only a density loaded from a file can be: the SAD guess is PSD. Its
+      // negative part is left out of this first K, which only moves the first
+      // iterate.
+      FBF_LOG_WARN("scf: the first density has an eigenvalue {:.3e}, below -{:.1e} of its "
+                   "largest; its exchange is of the positive part",
+                   host.front(), kDensityFactorFloor);
+    }
+    for (int32_t i = first; i < n; ++i) {
+      host[static_cast<size_t>(i)] = std::sqrt(0.5 * host[static_cast<size_t>(i)]);
+    }
+    // C = V (Lambda/2)^{1/2} over the kept columns, in place.
+    double *factor = v.data() + (static_cast<size_t>(first) * static_cast<size_t>(n));
+    if (rank > 0) {
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(lambda.data(), host.data() + first,
+                                             static_cast<size_t>(rank) * sizeof(double),
+                                             wwr::wwrMemcpyHostToDevice, res.stream())));
+      FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(res.blas().get(), wwr::WWRBLAS_SIDE_RIGHT, n,
+                                                    rank, factor, n, lambda.data(), 1, factor, n)));
+    }
+    FBF_TRY(df_exchange(res, n, fit.naux, rank, fit.b.data(), factor, k.data()));
+    // host is read by the upload above.
+    return res.sync();
+  }
+
+  [[nodiscard]] static bool reset_diis(double /*norm*/) { return false; }
+};
+
 [[nodiscard]] Result<ScfOutput> ScfStep::run(
     View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
          OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
@@ -145,6 +241,26 @@ struct DirectFockBuilder {
   }
 
   const ScopedDeviceIndex on{res.dev_idx()};
+  const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
+  const SphericalMatrixAO &x = in.get<OrthogonalizerOutput>().x;
+  const SphericalMatrixAO &h = in.get<CoreHamiltonianOutput>().h;
+  if (!aux_basis.empty()) {
+    // B is DensityFittingStep's, over the products this step reads anyway; it
+    // is the run's own, freed when the loop returns.
+    DensityFittingOutput fit = FBF_TRY(DensityFittingStep{.aux_basis = aux_basis}.run(
+        View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput>{
+            in.get<MoleculeOutput>(), in.get<BasisSetOutput>(),
+            in.get<PrimitivePairClassesOutput>()},
+        res));
+    DfFockBuilder builder{
+        .fit = std::move(fit),
+        .j = SphericalMatrixAO(res, basis),
+        .k = SphericalMatrixAO(res, basis),
+        .nocc = nocc,
+    };
+    return rhf_loop(res, builder, molecule, basis, s, x, h, guess, max_iterations, energy_tolerance,
+                    commutator_tolerance, diis_history, molden);
+  }
   const std::shared_ptr<const Buffers::device<double>> &u = in.get<SphericalTransformOutput>().u;
   const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
   std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
@@ -160,9 +276,8 @@ struct DirectFockBuilder {
       .fock_rebuild_interval = fock_rebuild_interval,
       .commutator_tolerance = commutator_tolerance,
   };
-  return rhf_loop(res, builder, molecule, basis, in.get<OverlapOutput>().s,
-                  in.get<OrthogonalizerOutput>().x, in.get<CoreHamiltonianOutput>().h, guess,
-                  max_iterations, energy_tolerance, commutator_tolerance, diis_history, molden);
+  return rhf_loop(res, builder, molecule, basis, s, x, h, guess, max_iterations, energy_tolerance,
+                  commutator_tolerance, diis_history, molden);
 }
 
 } // namespace free_breakfast

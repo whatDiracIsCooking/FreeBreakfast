@@ -200,7 +200,32 @@ template <class S>
   } else if constexpr (std::same_as<S, ScfStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"max_iterations", "energy_tolerance", "commutator_tolerance",
-                        "diis_history", "fock_rebuild_interval"}));
+                        "diis_history", "fock_rebuild_interval", "eri", "aux_basis"}));
+    // The two-electron integrals: integral-direct, or density-fitted over an
+    // aux basis, which is then required. Each refuses the other's options.
+    std::string eri = "direct";
+    FBF_TRY(read_key(table, kStep, "eri", base_dir, eri));
+    if (eri == "density_fitting") {
+      FBF_TRY(read_required_key(table, kStep, "aux_basis", base_dir, step.aux_basis));
+      if (step.aux_basis.empty()) {
+        return err_config("[{}] aux_basis is empty", kStep);
+      }
+      // DensityFittingStep's rule.
+      if (!is_builtin_aux_basis(step.aux_basis)) {
+        step.aux_basis = (base_dir / step.aux_basis).string();
+      }
+      if (table.contains("fock_rebuild_interval")) {
+        return err_config("[{}] fock_rebuild_interval is the direct Fock build's, and eri is "
+                          "'density_fitting', whose every build is full",
+                          kStep);
+      }
+    } else if (eri == "direct") {
+      if (table.contains("aux_basis")) {
+        return err_config("[{}] aux_basis needs eri = 'density_fitting'", kStep);
+      }
+    } else {
+      return err_config("[{}] has no eri '{}' (known: 'direct', 'density_fitting')", kStep, eri);
+    }
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, step.max_iterations));
     FBF_TRY(read_key(table, kStep, "energy_tolerance", base_dir, step.energy_tolerance));
     FBF_TRY(read_key(table, kStep, "commutator_tolerance", base_dir, step.commutator_tolerance));
@@ -364,7 +389,7 @@ template <class S>
 [[nodiscard]] Status check_inputs_apart(const Calculation &calc,
                                         const std::filesystem::path &output_dir) {
   // Every path an input key names: the molecule's, a basis or an aux basis
-  // read from disk, and each product loaded 'from' a file.
+  // ([density_fitting]'s or [scf]'s) read from disk, and each product loaded 'from' a file.
   std::vector<std::filesystem::path> inputs;
   if (const auto &molecule = calc.step<MoleculeStep>()) {
     inputs.push_back(molecule->xyz);
@@ -375,6 +400,10 @@ template <class S>
   if (const auto &fit = calc.step<DensityFittingStep>();
       fit && !is_builtin_aux_basis(fit->aux_basis)) {
     inputs.emplace_back(fit->aux_basis);
+  }
+  if (const auto &scf = calc.step<ScfStep>();
+      scf && !scf->aux_basis.empty() && !is_builtin_aux_basis(scf->aux_basis)) {
+    inputs.emplace_back(scf->aux_basis);
   }
   [&]<class... Ss>(std::type_identity<Pipeline<Ss...>>) {
     const auto add_from = [&]<class S>() {

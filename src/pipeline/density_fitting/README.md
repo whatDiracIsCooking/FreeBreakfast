@@ -60,6 +60,10 @@ shell or the bytes; a metric that is not positive definite is `Numerical`.
   builds its own U and U_aux, and the metric needs only the aux basis's U,
   which the step uploads itself. A `View` entry the step does not read would
   only order the pipeline for no reason.
+- **`ScfStep` calls `run` itself** under `[scf] eri = "density_fitting"`,
+  over the products its own `View` holds, and keeps the B as its own
+  (`scf/README.md`): this step's product is for a reader that wants B
+  without an SCF, and the SCF does not read it.
 - **`Device`-shaped**, because B lives on the device.
 - **The transients are freed stream-ordered.** The metric, which becomes L, is
   released at return, after the trsm that reads it was queued on the same

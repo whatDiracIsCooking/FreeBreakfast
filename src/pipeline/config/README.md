@@ -54,6 +54,7 @@ type = "sad"              # default "sad", the only kind so far
 
 [scf]                     # every option has a default
 max_iterations = 100
+eri = "direct"            # default "direct"; or "density_fitting"
 
 [localization]            # every option has a default
 mode = "pipek_mezey"      # default "pipek_mezey"; or "ibo"
@@ -75,6 +76,29 @@ from MINAO AO labels, and refuses any of the three beside it:
 avas = ["O 2p", "H 1s"]   # "<symbol> <n><l>"; every m, every atom of the element
 avas_threshold = 0.2      # default 0.2; needs avas
 ```
+
+`[scf]` picks its two-electron integrals with `eri`. `"direct"`, the
+default, is the integral-direct Fock build. `"density_fitting"` fits J and K
+over an aux basis, which it then needs:
+
+```toml
+[scf]
+eri = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"   # required with it: a compiled-in fitting set, or a BSE JSON path
+```
+
+`aux_basis` follows `[density_fitting]`'s rule, joined to the input directory
+only when it is not a compiled-in fitting set's name, and is an input file
+like any other. Each mode refuses the other's options: `aux_basis` without
+`eri = "density_fitting"` is `InvalidConfig`, and so is
+`fock_rebuild_interval` with it, since every DF build is full. Density
+fitting is chosen **only** through `[scf]`. The step builds its own B and
+does not read `[density_fitting]`'s, so `[density_fitting]` beside a
+filled-in `[scf]` leaves that `[scf]` direct. `ScfStep` is the one producer
+of `ScfOutput`, so every step after it reads the DF orbitals unchanged
+(`scf/README.md`). Why `eri` and `aux_basis` as the keys: `eri` says what is
+being chosen, the electron-repulsion integrals, with room for another
+method, and `aux_basis` is the spelling `[density_fitting]` already uses.
 
 `[localization]`'s method options sit in the table beside `mode`, not in
 a subtable named after `LocalizationStep::pipek_mezey`: both modes run the
@@ -146,7 +170,7 @@ It is a path, resolved like every other.
 
 **Every path in a config is an input, relative to the input directory**:
 `[molecule] xyz`, a `[basis_set] basis` that is not a compiled-in name, a
-`[density_fitting] aux_basis` that is not a compiled-in fitting set's name
+`[density_fitting] aux_basis` or `[scf] aux_basis` that is not a compiled-in fitting set's name
 (`is_builtin_aux_basis`, the other table), and every `from`. The input directory is the run's, not the config file's:
 `free-breakfast -i <dir>`, default `.`, so a config can be shared between
 runs that each bring their own inputs. An empty `input_dir` leaves the paths
@@ -196,9 +220,11 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
+  only `"sad"`; `[scf] eri`, which knows `"direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
   `[localization] exponent`, 2 or 4);
 - `from` beside another key, or on a step with no `load`;
+- an option of the other ERI mode in `[scf]` (above), or an empty
+  `aux_basis`;
 - a value of the wrong type. A boolean (`[localization] livvo`) is `true` or
   `false`, not `1` or `"true"`. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`

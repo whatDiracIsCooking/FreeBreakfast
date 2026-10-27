@@ -131,6 +131,7 @@ add_executable(
   pipeline_core_hamiltonian_gpu.cpp
   pipeline_guess_gpu.cpp
   pipeline_scf_gpu.cpp
+  pipeline_df_scf_gpu.cpp
   pipeline_calculation_gpu.cpp
   launch_gpu.cpp
   overlap_gpu.cpp
@@ -269,8 +270,27 @@ gtest_discover_tests(
 # instead of a wall of skips. Label the ENTRIES, not the binary: a GPU case that
 # also needs a lot of memory or wall clock gets `no_sanitizer` here too, which
 # the asan preset excludes.
+#
+# The cases that launch three_center's (ff|g) class are registered apart, and
+# RUN_SERIAL: the runtime reserves that kernel's per-thread stack, about 7.3 GB
+# of a 10 GB RTX 3080, for the rest of the process
+# (src/integrals/eri/density_fitting/three_center/README.md), so a GPU case
+# beside one fails its first allocation. Each takes about a second.
+set(_fb_ff_g_cases
+    "DfThreeCenter.TzThroughFfG*"
+    "PipelineDensityFitting.TzWithFOrbitals*"
+    "*PipelineDfScf.*h2o_ccpvtz"
+)
+list(JOIN _fb_ff_g_cases ":" _fb_ff_g_cases)
 gtest_discover_tests(
   free_breakfast_tests_gpu
   DISCOVERY_MODE PRE_TEST
+  TEST_FILTER "-${_fb_ff_g_cases}"
   PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu
+)
+gtest_discover_tests(
+  free_breakfast_tests_gpu
+  DISCOVERY_MODE PRE_TEST
+  TEST_FILTER "${_fb_ff_g_cases}"
+  PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu RUN_SERIAL TRUE
 )

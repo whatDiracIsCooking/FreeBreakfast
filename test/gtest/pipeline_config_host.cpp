@@ -214,6 +214,69 @@ TEST(PipelineConfig, EveryScfOptionIsRead) {
   EXPECT_EQ(scf.fock_rebuild_interval, 1);
 }
 
+TEST(PipelineConfig, TheScfIsDirectByDefault) {
+  auto calc = fb::parse_config(with_inputs("[scf]\neri = \"direct\"\n"), "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_TRUE(calc->step<fb::ScfStep>()->aux_basis.empty());
+  auto plain = fb::parse_config(with_inputs("[scf]\n"), "", kOut);
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  EXPECT_TRUE(plain->step<fb::ScfStep>()->aux_basis.empty());
+}
+
+TEST(PipelineConfig, TheScfSelectsDensityFittingOverItsOwnAuxBasis) {
+  // A compiled-in name is kept verbatim, as [density_fitting]'s is.
+  auto calc = fb::parse_config(
+      with_inputs("[scf]\neri = \"density_fitting\"\naux_basis = \"cc-pVDZ-JKFIT\"\n"
+                  "max_iterations = 30\n"),
+      "/inputs", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::ScfStep &scf = *calc->step<fb::ScfStep>();
+  EXPECT_EQ(scf.aux_basis, "cc-pVDZ-JKFIT");
+  EXPECT_EQ(scf.max_iterations, 30);
+  EXPECT_EQ(scf.molden, kOut / "scf.molden");
+  // The step builds its own B: no DensityFitting step is planned for it.
+  EXPECT_FALSE(calc->step<fb::DensityFittingStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::PrimitivePairClassesStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::GuessStep>().has_value());
+  // Anything else is a path, anchored to the input directory.
+  auto path = fb::parse_config(
+      with_inputs("[scf]\neri = \"density_fitting\"\naux_basis = \"fit.json\"\n"), "/inputs", kOut);
+  ASSERT_TRUE(path.has_value()) << path.error().message;
+  EXPECT_EQ(path->step<fb::ScfStep>()->aux_basis, "/inputs/fit.json");
+}
+
+TEST(PipelineConfig, DensityFittingIsChosenOnlyThroughTheScf) {
+  // [density_fitting] beside a filled-in [scf] leaves that one direct.
+  auto calc = fb::parse_config(
+      with_inputs("[density_fitting]\naux_basis = \"cc-pvdz-jkfit\"\n[localization]\n"), "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_TRUE(calc->step<fb::DensityFittingStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::ScfStep>()->aux_basis.empty());
+}
+
+TEST(PipelineConfig, TheScfsEriOptionsAreRefusedOutOfPlace) {
+  expect_config_error(with_inputs("[scf]\neri = \"ri\"\n"),
+                      "[scf] has no eri 'ri' (known: 'direct', 'density_fitting')");
+  expect_config_error(with_inputs("[scf]\neri = \"density_fitting\"\n"), "[scf] needs 'aux_basis'");
+  expect_config_error(with_inputs("[scf]\neri = \"density_fitting\"\naux_basis = \"\"\n"),
+                      "[scf] aux_basis is empty");
+  expect_config_error(with_inputs("[scf]\naux_basis = \"cc-pvdz-jkfit\"\n"),
+                      "[scf] aux_basis needs eri = 'density_fitting'");
+  expect_config_error(with_inputs("[scf]\neri = \"direct\"\naux_basis = \"cc-pvdz-jkfit\"\n"),
+                      "[scf] aux_basis needs eri = 'density_fitting'");
+  expect_config_error(with_inputs("[scf]\neri = \"density_fitting\"\naux_basis = "
+                                  "\"cc-pvdz-jkfit\"\nfock_rebuild_interval = 1\n"),
+                      "[scf] fock_rebuild_interval is the direct Fock build's");
+  expect_config_error(with_inputs("[scf]\neri = 1\n"), "[scf] eri is not a string");
+  // An aux basis file is an input like any other.
+  auto calc = fb::parse_config(
+      with_inputs("[scf]\neri = \"density_fitting\"\naux_basis = \"../out/fit.json\"\n"), "/run",
+      "/out");
+  ASSERT_FALSE(calc.has_value());
+  EXPECT_NE(calc.error().message.find("is in the output directory '/out'"), std::string::npos)
+      << calc.error().message;
+}
+
 TEST(PipelineConfig, AnOutputIsNamedByTheRunNotTheConfig) {
   // The four steps that write a Molden file, each under its own kName.
   auto calc = fb::parse_config(

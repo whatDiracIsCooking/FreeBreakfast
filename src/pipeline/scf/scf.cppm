@@ -3,8 +3,10 @@
 /// module-private `:loop`), its Fock build and its DIIS history all private to
 /// one `run`.
 ///
-/// Device-shaped. The step's first device consumer of the host `GuessOutput`, which
-/// it uploads and rescales to the molecule's electron count. See README.md.
+/// Device-shaped. The two-electron part is integral-direct, or density-fitted
+/// when @ref free_breakfast::ScfStep::aux_basis is set. The step's first device
+/// consumer of the host `GuessOutput`, which it uploads and rescales to the
+/// molecule's electron count. See README.md.
 
 export module free_breakfast.pipeline.scf;
 
@@ -22,7 +24,8 @@ export import :output;
 export namespace free_breakfast {
 
 /// @brief Iterates RHF to self-consistency from the @ref GuessOutput, with Pulay
-/// DIIS on the Fock matrix and incremental Fock builds.
+/// DIIS on the Fock matrix, its two-electron part either integral-direct, with
+/// incremental Fock builds, or density-fitted over @ref aux_basis.
 struct ScfStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "scf";
@@ -37,6 +40,13 @@ struct ScfStep {
   double commutator_tolerance = 1e-7;
   /// @brief The most (F, error) pairs DIIS keeps, 1..kDiisMaxHistoryLimit.
   int32_t diis_history = 8;
+  /// @brief The density-fitting aux basis, a compiled-in fitting set's name
+  /// (`cc-pvdz-jkfit`) or the path to a BSE JSON file, as
+  /// DensityFittingStep::aux_basis. Empty: the integral-direct Fock build.
+  /// Otherwise G = J - K/2 is density-fitted over it, from a B the step builds
+  /// itself, and every build is full, so @ref fock_rebuild_interval and
+  /// @ref tau_j are the direct build's only and not read.
+  std::string aux_basis{};
   /// @brief Every this many Fock builds, one is full: G of the density itself.
   /// The rest are incremental, F plus G of the density's change since the last
   /// build, which J's and K's screens skip more of. Convergence is only taken
@@ -60,7 +70,10 @@ struct ScfStep {
   /// ErrorKind::MaxIterationsExceeded; a non-converged eigensolve is
   /// ErrorKind::Numerical; a failed runtime, BLAS, solver or launch call is
   /// ErrorKind::GpuRuntime; a @ref molden file that cannot be written is
-  /// @c write_molden's error.
+  /// @c write_molden's error. Under @ref aux_basis, building B fails with
+  /// DensityFittingStep::run's errors (an unreadable aux file is
+  /// ErrorKind::IO, an unknown or incomplete set ErrorKind::InvalidConfig, a
+  /// B past the device's free memory ErrorKind::Unsupported).
   [[nodiscard]] Result<ScfOutput>
   run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
            OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,

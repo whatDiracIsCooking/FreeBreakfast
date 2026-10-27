@@ -2,8 +2,9 @@
 # SphericalMatrixAOs), and so are the orthogonalizer, core_hamiltonian and guess
 # steps, which re-export every other product in run's signature, plus
 # pipeline::step and core::resources. Everything run uses -- J, K, DIIS, the
-# BLAS conveniences, the log, the Molden writer -- is PRIVATE: run and its Fock
-# builder are defined in the implementation unit and the loop in the internal
+# BLAS conveniences, the log, the Molden writer, and under density fitting the
+# DensityFitting step (its B) and DF J and K -- is PRIVATE: run and its Fock
+# builders are defined in the implementation unit and the loop in the internal
 # partition :loop, so no importer compiles against them. :output is an interface
 # partition only so that :loop can name ScfOutput.
 free_breakfast_add_cxx_module_library(
@@ -37,4 +38,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::molden
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
+  free_breakfast::integrals::eri::density_fitting::jk
+  free_breakfast::pipeline::density_fitting
 )
