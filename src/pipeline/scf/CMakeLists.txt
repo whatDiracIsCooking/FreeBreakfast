@@ -2,13 +2,18 @@
 # SphericalMatrixAOs), and so are the orthogonalizer, core_hamiltonian and guess
 # steps, which re-export every other product in run's signature, plus
 # pipeline::step and core::resources. Everything run uses -- J, K, DIIS, the
-# BLAS conveniences, the log, the Molden writer -- is PRIVATE: run is defined in
-# the implementation unit, so no importer compiles against them.
+# BLAS conveniences, the log, the Molden writer -- is PRIVATE: run and its Fock
+# builder are defined in the implementation unit and the loop in the internal
+# partition :loop, so no importer compiles against them. :output is an interface
+# partition only so that :loop can name ScfOutput.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.scf
   PRIMARY_INTERFACE
   scf.cppm
+  PARTITIONS
+  scf_output.cppm
+  scf_loop.cppm
   IMPLEMENTATION
   scf.cpp
   IMPORT_STD
