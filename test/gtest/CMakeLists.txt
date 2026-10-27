@@ -144,6 +144,7 @@ add_executable(
   df_fit_gpu.cpp
   df_jk_gpu.cpp
   df_metric_gpu.cpp
+  df_three_center_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
@@ -185,6 +186,7 @@ target_link_libraries(
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
   free_breakfast::integrals::eri::density_fitting::fit
   free_breakfast::integrals::eri::density_fitting::jk
+  free_breakfast::integrals::eri::density_fitting::three_center
   free_breakfast::io
   free_breakfast::pipeline::molecule
   free_breakfast::pipeline::basis_set

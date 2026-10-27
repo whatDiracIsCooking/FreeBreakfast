@@ -1,20 +1,23 @@
-# The DF three-center integrals' generated kernels, eri3<la, lb, lP> (kernels/,
-# written by tools/emit_df_kernels.py), one per class la <= lb through f
-# against lP through g, each compiled on its own, and three_center_table.cu,
-# which checks their table (kernels/eri3.h) against the limits in
-# three_center_bridge.h at compile time. No launcher yet. Device code in its own
-# library, so its language and -x hip never reach a module compile. Under CUDA
-# a launcher in another TU of this library will want relocatable device code,
-# this library's default, so it must never pass NO_DEVICE_LINKING (nvcc warns
-# #20280 without it). The bridge header names int32_t and kMaxAngularMomentum,
-# hence types_headers and basis::headers PUBLIC. The kernels include
+# The DF three-center integrals' device library: the generated kernels
+# eri3<la, lb, lP> (kernels/, written by tools/emit_df_kernels.py), one per
+# class la <= lb through f against lP through g, each compiled on its own, and
+# three_center_launch.cu, the per-class launcher and the (m, n)
+# symmetrization, which checks their table (kernels/eri3.h) against the limits
+# in three_center_bridge.h at compile time. Device code in its own library, so
+# its language and -x hip never reach a module compile. Under CUDA the launcher
+# launches specializations other TUs define, which wants relocatable device
+# code, this library's default, so it must never pass NO_DEVICE_LINKING (nvcc
+# warns #20280 without it). The bridge header it shares with the module names
+# int32_t, kMaxAngularMomentum, wwrStream_t and wwrError_t, hence
+# types_headers, basis::headers and wwr::device PUBLIC. The kernels include
 # FelizJueves's felizjueves/runtime.h (felizjueves::headers) and the shared
-# eval_boys.h (shared::headers); both PRIVATE.
+# eval_boys.h (shared::headers), and the launcher sizes its grids with
+# kFourWarps and math::idivup (core::kernel_headers); all PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.eri.density_fitting.three_center.device
   SOURCES
-  three_center_table.cu
+  three_center_launch.cu
   kernels/eri3_000.cu
   kernels/eri3_001.cu
   kernels/eri3_002.cu
@@ -68,7 +71,37 @@ free_breakfast_add_gpu_device_library(
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::basis::headers
+  wwr::device
   LINK_PRIVATE
+  free_breakfast::core::kernel_headers
   felizjueves::headers
   free_breakfast::integrals::shared::headers
+)
+
+# The module. DeviceResources, BasisSet and PrimitivePairClass are in its
+# signature, so core::resources, basis and mmd are PUBLIC. The device library
+# is PRIVATE: the implementation unit includes the bridge header in its GMF and
+# calls the launchers, and a static library's private link dependencies still
+# reach the final link.
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.integrals.eri.density_fitting.three_center
+  PRIMARY_INTERFACE
+  three_center.cppm
+  IMPLEMENTATION
+  three_center.cpp
+  IMPORT_STD
+  LINK_PUBLIC
+  free_breakfast::core::types
+  free_breakfast::core::error_handling
+  free_breakfast::core::resources
+  free_breakfast::basis
+  free_breakfast::integrals::mmd
+  LINK_PRIVATE
+  free_breakfast::core::constants
+  free_breakfast::core::primitives
+  free_breakfast::core::wwr
+  free_breakfast::core::diagnostics_macros
+  free_breakfast::recipes::blas
+  free_breakfast::integrals::eri::density_fitting::three_center::device
 )

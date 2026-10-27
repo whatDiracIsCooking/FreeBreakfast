@@ -21,9 +21,9 @@ one_electron/  free_breakfast.integrals.one_electron: the one-electron matrices 
   potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
   core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V
 eri/           the electron-repulsion integrals
-  density_fitting/   free_breakfast.integrals.eri.density_fitting: the aggregate over metric, fit and jk (the Coulomb metric (P|Q), the fit B = L^-1 (mn|P), DF J and K); the three-center (mn|P) launcher is still to come
+  density_fitting/   free_breakfast.integrals.eri.density_fitting: the aggregate over metric, three_center, fit and jk (the Coulomb metric (P|Q), the three-center (mn|P), the fit B = L^-1 (mn|P), DF J and K)
     metric/          free_breakfast::integrals::eri::density_fitting::metric::device: the generated Coulomb metric kernels metric<lP, lQ>, one thread per aux shell pair, 15 classes lP <= lQ through g
-    three_center/    free_breakfast::integrals::eri::density_fitting::three_center::device: the generated three-center kernels eri3<la, lb, lP>, one thread per (AO shell pair, aux shell), 50 classes la <= lb through f, lP through g
+    three_center/    free_breakfast.integrals.eri.density_fitting.three_center: the spherical three-center (mn|P) on the GPU over the generated eri3<la, lb, lP>, one thread per (AO shell pair, aux shell), 50 classes la <= lb through f, lP through g
   integral_direct/   J and K contracted from the integrals as they are formed, never stored
     coulomb/         free_breakfast.integrals.eri.integral_direct.coulomb: the Coulomb matrix J of an AO density on the GPU, Schwarz-screened, over its own device-only classes: mmd's records with the negligible primitive pairs pruned on the device
       pair_class/    free_breakfast.integrals.eri.integral_direct.coulomb.pair_class: J's device-only classes, CoulombPairClass, and the prune that makes them from mmd's
