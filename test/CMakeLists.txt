@@ -20,6 +20,10 @@
 # from the root CMakeLists, outside the FREE_BREAKFAST_COMPILE_TIME_ONLY gate
 # that skips this whole directory, so cross-backend-check.sh still compiles it.
 #
+# ci_oracles/ -- the host references the CI tests check the device against --
+# is a module library the two binaries link, kept out of src/ so the ci modules
+# export only what a calculation runs.
+#
 # NOTE: `ctest` here runs THIS project's suites and nothing else. The WarpWraps
 # submodule is added with WWR_BUILD_TESTS and WWR_BUILD_EXAMPLES forced OFF
 # (deps/CMakeLists.txt), so it calls no enable_testing() and registers no
@@ -27,4 +31,5 @@
 # run does get scoped by is the device: the GPU binary's entries carry the
 # `gpu` label, which the ci-cuda and ci-hip test presets exclude (gtest/
 # CMakeLists.txt says why).
+add_subdirectory(ci_oracles)
 add_subdirectory(gtest)

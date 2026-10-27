@@ -18,7 +18,7 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::ci::sigma::device
 )
 
-# The module: rdm1, host_rdm12 and CiRdm. ci::strings is PUBLIC because the
+# The module: CiRdm. ci::strings is PUBLIC because the
 # interface takes StringSets, core::error_handling because it returns a
 # Status, core::resources because CiRdm takes DeviceResources, core::wwr
 # because CiRdm holds Buffers, and ci::sigma because rdm12 takes its

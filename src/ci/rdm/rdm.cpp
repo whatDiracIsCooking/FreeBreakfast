@@ -1,6 +1,6 @@
 /// @file
-/// @brief The spin-summed 1-RDM, and the state-averaged 1- and 2-RDM on the
-/// host and the device.
+/// @brief CiRdm's uploads and launches: the state-averaged 1- and 2-RDM on
+/// the device.
 
 module;
 
@@ -23,34 +23,7 @@ import free_breakfast.ci.sigma; // CiLayout
 
 namespace free_breakfast {
 
-Status rdm1(const StringSet &alpha, const StringSet &beta, const std::span<const double> c,
-            const std::span<double> gamma) {
-  const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
-  const auto n = static_cast<size_t>(alpha.n_orbitals());
-  if (alpha.n_orbitals() != beta.n_orbitals() || c.size() != dim || gamma.size() != n * n) {
-    return err_config("ci rdm1: orbitals {} and {}, {} determinants, given c of {} and gamma of {}",
-                      alpha.n_orbitals(), beta.n_orbitals(), dim, c.size(), gamma.size());
-  }
-  const auto nb = static_cast<size_t>(beta.size());
-  std::ranges::fill(gamma, 0.0);
-  // a†_p a_q |K> = sign |J> adds c_J sign c_K to γ_pq, for each spin's list.
-  for (int32_t ka = 0; ka < alpha.size(); ++ka) {
-    for (int32_t kb = 0; kb < beta.size(); ++kb) {
-      const double ck = c[static_cast<size_t>(ka) * nb + static_cast<size_t>(kb)];
-      for (const Replacement &r : alpha.replacements(ka)) {
-        const size_t j = static_cast<size_t>(r.target) * nb + static_cast<size_t>(kb);
-        gamma[static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)] += r.sign * c[j] * ck;
-      }
-      for (const Replacement &r : beta.replacements(kb)) {
-        const size_t j = static_cast<size_t>(ka) * nb + static_cast<size_t>(r.target);
-        gamma[static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)] += r.sign * c[j] * ck;
-      }
-    }
-  }
-  return {};
-}
-
-// What both rdm12s refuse in the weights: none, or any that do not make an
+// What rdm12 refuses in the weights: none, or any that do not make an
 // average.
 Status check_rdm12_weights(const std::span<const double> weights) {
   if (weights.empty()) {
@@ -66,70 +39,6 @@ Status check_rdm12_weights(const std::span<const double> weights) {
   if (!(std::abs(sum - 1.0) <= 1e-12)) {
     return err_config("ci rdm12: the {} weights sum to {:.17g}, not 1", weights.size(), sum);
   }
-  return {};
-}
-
-Status host_rdm12(const StringSet &alpha, const StringSet &beta,
-                  const std::span<const double> vectors, const std::span<const double> weights,
-                  const std::span<double> gamma, const std::span<double> gamma2) {
-  const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());
-  const auto n = static_cast<size_t>(alpha.n_orbitals());
-  if (alpha.n_orbitals() != beta.n_orbitals() || vectors.size() != weights.size() * dim ||
-      gamma.size() != n * n || gamma2.size() != n * n * n * n) {
-    return err_config("ci rdm12: orbitals {} and {}, {} determinants, {} weights, given vectors "
-                      "of {}, gamma of {} and gamma2 of {}",
-                      alpha.n_orbitals(), beta.n_orbitals(), dim, weights.size(), vectors.size(),
-                      gamma.size(), gamma2.size());
-  }
-  FBF_TRY(check_rdm12_weights(weights));
-  const size_t nn = n * n;
-  const auto nb = static_cast<size_t>(beta.size());
-
-  std::vector<double> one(nn, 0.0);
-  std::vector<double> two(nn * nn, 0.0);
-  std::vector<double> root_gamma(nn);
-  std::vector<double> d(nn);
-  for (size_t r = 0; r < weights.size(); ++r) {
-    const double weight = weights[r];
-    const std::span<const double> c = vectors.subspan(r * dim, dim);
-    FBF_TRY(rdm1(alpha, beta, c, root_gamma));
-    for (size_t tu = 0; tu < nn; ++tu) {
-      one[tu] += weight * root_gamma[tu];
-    }
-    // ⟨c| E_tu E_vw |c⟩ = Σ_K ⟨c| E_tu |K⟩ ⟨K| E_vw |c⟩, and for c real
-    // ⟨K| E_vw |c⟩ = ⟨c| E_wv |K⟩. a†_p a_q |K> = sign |J> in K's lists is
-    // ⟨J| E_pq |K⟩ = sign, so d_pq = ⟨c| E_pq |K⟩ gathers c_J sign.
-    for (int32_t ka = 0; ka < alpha.size(); ++ka) {
-      for (int32_t kb = 0; kb < beta.size(); ++kb) {
-        std::ranges::fill(d, 0.0);
-        for (const Replacement &x : alpha.replacements(ka)) {
-          const size_t j = static_cast<size_t>(x.target) * nb + static_cast<size_t>(kb);
-          d[static_cast<size_t>(x.p) * n + static_cast<size_t>(x.q)] += x.sign * c[j];
-        }
-        for (const Replacement &x : beta.replacements(kb)) {
-          const size_t j = static_cast<size_t>(ka) * nb + static_cast<size_t>(x.target);
-          d[static_cast<size_t>(x.p) * n + static_cast<size_t>(x.q)] += x.sign * c[j];
-        }
-        for (size_t tu = 0; tu < nn; ++tu) {
-          for (size_t v = 0; v < n; ++v) {
-            for (size_t w = 0; w < n; ++w) {
-              two[tu * nn + v * n + w] += weight * d[tu] * d[w * n + v];
-            }
-          }
-        }
-      }
-    }
-  }
-  // − δ_uv E_tw, weighted: − δ_uv γ_tw.
-  for (size_t t = 0; t < n; ++t) {
-    for (size_t u = 0; u < n; ++u) {
-      for (size_t w = 0; w < n; ++w) {
-        two[((t * n + u) * n + u) * n + w] -= one[t * n + w];
-      }
-    }
-  }
-  std::ranges::copy(one, gamma.begin());
-  std::ranges::copy(two, gamma2.begin());
   return {};
 }
 

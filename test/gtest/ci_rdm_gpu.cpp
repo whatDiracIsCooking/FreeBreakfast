@@ -15,6 +15,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.json;
 import free_breakfast.ci;
+import free_breakfast.test.ci_oracles;
 
 namespace {
 
@@ -72,7 +73,7 @@ void expect_identities(std::span<const double> gamma, std::span<const double> ga
 }
 
 // γ and Γ of @p vectors at @p weights, on the device and the host, checked
-// against each other, γ against Σ_r w_r rdm1(c_r), and the identities.
+// against each other, γ against Σ_r w_r host_rdm1(c_r), and the identities.
 struct Rdm12 {
   std::vector<double> gamma;
   std::vector<double> gamma2;
@@ -126,7 +127,7 @@ std::pair<Rdm12, Rdm12> both_rdm12(fb::DeviceResources &res, const fb::StringSet
       static_cast<std::size_t>(alpha.size()) * static_cast<std::size_t>(beta.size());
   Rdm12 device = device_rdm12(res, alpha, beta, vectors, weights);
   Rdm12 host{std::vector<double>(n * n), std::vector<double>(n * n * n * n)};
-  const auto want = fb::host_rdm12(alpha, beta, vectors, weights, host.gamma, host.gamma2);
+  const auto want = fb::test::host_rdm12(alpha, beta, vectors, weights, host.gamma, host.gamma2);
   EXPECT_TRUE(want.has_value()) << want.error().message;
 
   const double scale = std::max(1.0, max_abs(host.gamma2));
@@ -136,7 +137,7 @@ std::pair<Rdm12, Rdm12> both_rdm12(fb::DeviceResources &res, const fb::StringSet
   std::vector<double> averaged(n * n, 0.0);
   std::vector<double> one(n * n);
   for (std::size_t r = 0; r < weights.size(); ++r) {
-    EXPECT_TRUE(fb::rdm1(alpha, beta, vectors.subspan(r * dim, dim), one).has_value());
+    EXPECT_TRUE(fb::test::host_rdm1(alpha, beta, vectors.subspan(r * dim, dim), one).has_value());
     for (std::size_t i = 0; i < one.size(); ++i) {
       averaged[i] += weights[r] * one[i];
     }
@@ -236,7 +237,7 @@ std::vector<double> sigma_rdm1(fb::DeviceResources &res, fb::CiSigma &sigma, std
 // The @p weights.size() packed swap-symmetric vectors @p packed over @p set
 // for both spins: rdm12 in the symmetric layout against the full layout on
 // the unpacked vectors and against host_rdm12, and per root CiSigma::rdm1 the
-// same way against rdm1, all to 1e-12; and the identities.
+// same way against host_rdm1, all to 1e-12; and the identities.
 void check_symmetric(fb::DeviceResources &res, const fb::StringSet &set,
                      std::span<const double> packed, std::span<const double> weights) {
   const auto n = static_cast<std::size_t>(set.n_orbitals());
@@ -248,7 +249,7 @@ void check_symmetric(fb::DeviceResources &res, const fb::StringSet &set,
   const Rdm12 symmetric = device_rdm12(res, set, set, packed, weights, fb::CiLayout::symmetric);
   const Rdm12 unpacked = device_rdm12(res, set, set, full, weights);
   Rdm12 host{std::vector<double>(n * n), std::vector<double>(n * n * n * n)};
-  const auto want = fb::host_rdm12(set, set, full, weights, host.gamma, host.gamma2);
+  const auto want = fb::test::host_rdm12(set, set, full, weights, host.gamma, host.gamma2);
   ASSERT_TRUE(want.has_value()) << want.error().message;
   const double scale = std::max(1.0, max_abs(host.gamma2));
   EXPECT_LE(max_abs_diff(symmetric.gamma2, unpacked.gamma2), kHostTol * scale)
@@ -268,7 +269,7 @@ void check_symmetric(fb::DeviceResources &res, const fb::StringSet &set,
     const auto got =
         sigma_rdm1(res, *sigma, n, packed.subspan(r * triangle, triangle), fb::CiLayout::symmetric);
     const auto got_full = sigma_rdm1(res, *sigma, n, c, fb::CiLayout::full);
-    ASSERT_TRUE(fb::rdm1(set, set, c, one).has_value());
+    ASSERT_TRUE(fb::test::host_rdm1(set, set, c, one).has_value());
     EXPECT_LE(max_abs_diff(got, got_full), kHostTol) << "symmetric rdm1 vs full";
     EXPECT_LE(max_abs_diff(got, one), kHostTol) << "symmetric rdm1 vs host";
   }
@@ -449,7 +450,7 @@ TEST(CiRdm12Gpu, Refuses) {
                            std::size_t gamma_size, std::size_t gamma2_size, bool on_device_too) {
     std::vector<double> gamma(gamma_size, kSentinel);
     std::vector<double> gamma2(gamma2_size, kSentinel);
-    const auto got = fb::host_rdm12(*four, *four, vectors, weights, gamma, gamma2);
+    const auto got = fb::test::host_rdm12(*four, *four, vectors, weights, gamma, gamma2);
     ASSERT_FALSE(got.has_value());
     EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
     EXPECT_TRUE(std::ranges::all_of(gamma, [](double x) { return x == kSentinel; }));
@@ -508,10 +509,10 @@ TEST(CiRdm12Gpu, Refuses) {
     SCOPED_TRACE("sets over different orbital counts");
     std::vector<double> gamma(g1, kSentinel);
     std::vector<double> gamma2(g2, kSentinel);
-    EXPECT_FALSE(fb::host_rdm12(*four, *five,
-                                std::vector<double>(static_cast<std::size_t>(four->size()) *
-                                                    static_cast<std::size_t>(five->size())),
-                                std::array{1.0}, gamma, gamma2)
+    EXPECT_FALSE(fb::test::host_rdm12(*four, *five,
+                                      std::vector<double>(static_cast<std::size_t>(four->size()) *
+                                                          static_cast<std::size_t>(five->size())),
+                                      std::array{1.0}, gamma, gamma2)
                      .has_value());
   }
 
@@ -548,7 +549,7 @@ TEST(CiRdm12Gpu, Refuses) {
   fb::Buffers::device<double> gamma_dev(g1, res.device());
   fb::Buffers::device<double> gamma2_dev(g2, res.device());
   EXPECT_TRUE(rdm->rdm12(res, weights, c.data(), gamma_dev.data(), gamma2_dev.data()).has_value());
-  EXPECT_TRUE(fb::host_rdm12(*four, *four, two_vectors, weights, gamma, gamma2).has_value());
+  EXPECT_TRUE(fb::test::host_rdm12(*four, *four, two_vectors, weights, gamma, gamma2).has_value());
   EXPECT_TRUE(res.sync().has_value());
 }
 

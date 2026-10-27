@@ -18,6 +18,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.json;
 import free_breakfast.ci;
+import free_breakfast.test.ci_oracles;
 
 namespace {
 
@@ -79,9 +80,9 @@ struct HostSigma {
       return s;
     }
     for (std::size_t col = 0; col < static_cast<std::size_t>(k); ++col) {
-      if (auto s = fb::host_sigma(alpha, beta, e_core, h1, eri,
-                                  std::span<const double>{xh}.subspan(col * dim, dim),
-                                  std::span<double>{yh}.subspan(col * dim, dim));
+      if (auto s = fb::test::host_sigma(alpha, beta, e_core, h1, eri,
+                                        std::span<const double>{xh}.subspan(col * dim, dim),
+                                        std::span<double>{yh}.subspan(col * dim, dim));
           !s) {
         return s;
       }
@@ -137,7 +138,8 @@ Case make_case(const fb::json &entry, std::int32_t shift = 0) {
          na + nb};
   c.diagonal.resize(static_cast<std::size_t>(c.alpha.size()) *
                     static_cast<std::size_t>(c.beta.size()));
-  EXPECT_TRUE(fb::host_diagonal(c.alpha, c.beta, c.e_core, c.h1, c.eri, c.diagonal).has_value());
+  EXPECT_TRUE(
+      fb::test::host_diagonal(c.alpha, c.beta, c.e_core, c.h1, c.eri, c.diagonal).has_value());
   return c;
 }
 
@@ -229,9 +231,9 @@ void expect_roots(fb::DeviceResources &res, const Case &c, const fb::CiRoots &go
     EXPECT_NEAR(got.spin_squares[r], s2, kSpinTol);
 
     std::vector<double> gamma(m * m);
-    ASSERT_TRUE(
-        fb::rdm1(c.alpha, c.beta, std::span<const double>{vectors}.subspan(r * dim, dim), gamma)
-            .has_value());
+    ASSERT_TRUE(fb::test::host_rdm1(c.alpha, c.beta,
+                                    std::span<const double>{vectors}.subspan(r * dim, dim), gamma)
+                    .has_value());
     double trace = 0.0;
     for (std::size_t t = 0; t < m; ++t) {
       trace += gamma[t * m + t];
@@ -550,13 +552,13 @@ TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
           }
           std::vector<double> warm_gamma(m * m);
           std::vector<double> cold_gamma(m * m);
-          ASSERT_TRUE(fb::rdm1(c.alpha, c.beta,
-                               std::span<const double>{warm_vectors}.subspan(r * dim, dim),
-                               warm_gamma)
+          ASSERT_TRUE(fb::test::host_rdm1(
+                          c.alpha, c.beta,
+                          std::span<const double>{warm_vectors}.subspan(r * dim, dim), warm_gamma)
                           .has_value());
-          ASSERT_TRUE(fb::rdm1(c.alpha, c.beta,
-                               std::span<const double>{cold_vectors}.subspan(r * dim, dim),
-                               cold_gamma)
+          ASSERT_TRUE(fb::test::host_rdm1(
+                          c.alpha, c.beta,
+                          std::span<const double>{cold_vectors}.subspan(r * dim, dim), cold_gamma)
                           .has_value());
           for (std::size_t i = 0; i < m * m; ++i) {
             EXPECT_NEAR(warm_gamma[i], cold_gamma[i], 1e-10) << "element " << i;
@@ -652,9 +654,10 @@ TEST(CiSolver, PspaceHamiltonianMatchesDense) {
         std::vector<std::vector<double>> applied(length, std::vector<double>(dim));
         std::vector<double> s2(dim);
         for (std::size_t j = 0; j < length; ++j) {
-          ASSERT_TRUE(fb::host_sigma(c.alpha, c.beta, c.e_core, c.h1, c.eri, basis[j], applied[j])
-                          .has_value());
-          ASSERT_TRUE(fb::host_spin_square(c.alpha, c.beta, basis[j], s2).has_value());
+          ASSERT_TRUE(
+              fb::test::host_sigma(c.alpha, c.beta, c.e_core, c.h1, c.eri, basis[j], applied[j])
+                  .has_value());
+          ASSERT_TRUE(fb::test::host_spin_square(c.alpha, c.beta, basis[j], s2).has_value());
           for (std::size_t i = 0; i < dim; ++i) {
             applied[j][i] += lambda * (s2[i] - target * basis[j][i]);
           }
@@ -873,12 +876,13 @@ TEST(CiSolver, RejectsBadShapes) {
 
   std::vector<double> vector(c.diagonal.size(), 0.0);
   std::vector<double> gamma(static_cast<std::size_t>(c.n * c.n));
+  EXPECT_FALSE(fb::test::host_rdm1(c.alpha, c.beta, std::span<const double>{vector}.first(1), gamma)
+                   .has_value());
   EXPECT_FALSE(
-      fb::rdm1(c.alpha, c.beta, std::span<const double>{vector}.first(1), gamma).has_value());
-  EXPECT_FALSE(fb::rdm1(c.alpha, c.beta, vector, std::span<double>{gamma}.first(1)).has_value());
+      fb::test::host_rdm1(c.alpha, c.beta, vector, std::span<double>{gamma}.first(1)).has_value());
   std::vector<double> out(vector.size());
-  EXPECT_FALSE(
-      fb::host_spin_square(c.alpha, c.beta, vector, std::span<double>{out}.first(1)).has_value());
+  EXPECT_FALSE(fb::test::host_spin_square(c.alpha, c.beta, vector, std::span<double>{out}.first(1))
+                   .has_value());
 }
 
 // CiSpinSquare against host_spin_square on random blocks of three vectors,
@@ -971,7 +975,7 @@ TEST(CiSpinSquareGpu, MatchesHost) {
     std::vector<double> s2x(dim);
     for (std::size_t j = 0; j < k; ++j) {
       const std::span<const double> column{x.data() + j * dim, dim};
-      ASSERT_TRUE(fb::host_spin_square(*alpha, *beta, column, s2x).has_value());
+      ASSERT_TRUE(fb::test::host_spin_square(*alpha, *beta, column, s2x).has_value());
       double norm = 0.0;
       double error = 0.0;
       double penalized_error = 0.0;
@@ -1055,7 +1059,7 @@ TEST(CiSpinSquareGpu, SymmetricLayoutMatchesHost) {
     std::vector<double> s2x(dim);
     for (std::size_t j = 0; j < k; ++j) {
       const std::span<const double> column{x.data() + j * dim, dim};
-      ASSERT_TRUE(fb::host_spin_square(*set, *set, column, s2x).has_value());
+      ASSERT_TRUE(fb::test::host_spin_square(*set, *set, column, s2x).has_value());
       const std::vector<double> want = pack(s2x);
       double norm = 0.0;
       double error = 0.0;

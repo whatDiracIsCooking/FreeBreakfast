@@ -13,9 +13,9 @@ covers the layer, and each sub-module stays importable on its own.
 | Directory | Module | Role |
 |-----------|--------|------|
 | `strings/` | `free_breakfast.ci.strings` | The occupation strings of one spin (`StringSet`): enumeration, lexical addressing onto [0, C(n, N)), and the single-replacement lists for E_pq. Host-side. |
-| `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `StringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays: `CiSigma` on the device, a `LinearOperator` over blocks of CI vectors, with the 1-RDM over the same tables, and the host reference written for clarity, its oracle. |
-| `solver/` | `free_breakfast.ci.solver` | `ci_solve`: the lowest roots of one spin through `davidson_solve` over any sigma that is a `LinearOperator`, spin held by a penalty λ (S² − S(S+1)), with ⟨S²⟩ per root; and S² on a vector, on the host and as `CiSpinSquare` on the device. |
-| `rdm/` | `free_breakfast.ci.rdm` | The spin-summed RDMs: γ_tu of a CI vector on the host (`rdm1`, the oracle for `CiSigma::rdm1`, its device form), and the state-averaged γ and 2-RDM Γ_tuvw of several (`CiRdm::rdm12`, on the device, with `host_rdm12` its oracle), in PySCF's `make_rdm12` convention. |
+| `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `StringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays: `CiSigma` on the device, a `LinearOperator` over blocks of CI vectors, with the 1-RDM over the same tables. |
+| `solver/` | `free_breakfast.ci.solver` | `ci_solve`: the lowest roots of one spin through `davidson_solve` over any sigma that is a `LinearOperator`, spin held by a penalty λ (S² − S(S+1)), with ⟨S²⟩ per root; and S² on a vector, as `CiSpinSquare` on the device. |
+| `rdm/` | `free_breakfast.ci.rdm` | The state-averaged spin-summed γ and 2-RDM Γ_tuvw of CI vectors (`CiRdm::rdm12`, on the device), in PySCF's `make_rdm12` convention. One vector's γ is `CiSigma::rdm1`. |
 
 A determinant is a pair of strings, alpha and beta, each from its own
 `StringSet`. The strings are in PySCF's `cistring` order, so a CI vector laid
@@ -28,6 +28,12 @@ device, in `test/gtest/ci_<name>_gpu.cpp`, linked into `free_breakfast_tests_gpu
 The golden data, PySCF's `fci.direct_spin1` over its own active-space
 integrals and its `make_rdm12` over stored CI vectors, is `test/gtest/data/ci/`,
 written by `tools/emit_fci_reference.py`.
+
+The host references the device is checked against, `host_sigma`,
+`host_diagonal`, `host_rdm1`, `host_rdm12` and `host_spin_square`, are plain
+loops written for clarity, in `test/ci_oracles/`
+(`free_breakfast.test.ci_oracles`, namespace `free_breakfast::test`). Only
+the test binaries link them; no calculation runs them.
 
 ## Files
 

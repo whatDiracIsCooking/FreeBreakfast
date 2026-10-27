@@ -270,7 +270,7 @@ __global__ void ci_diagonal_kernel(const int32_t n, const int32_t n_alpha, const
   const auto m = static_cast<size_t>(n);
   const double *const coulomb = terms + m;
   const double *const exchange = terms + m + (m * m);
-  // host_diagonal's order: the one-electron terms over the occupied spin
+  // CiSigma::diagonal's order: the one-electron terms over the occupied spin
   // orbitals ascending, then the pairs x < y in the same order.
   double sum = e_core;
   for (int32_t x = 0; x < 2 * n; ++x) {

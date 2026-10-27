@@ -16,10 +16,10 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::kernel_headers
 )
 
-# The module: the host reference sigma, the oracle the GPU sigma is tested
-# against, and CiSigma. ci::strings is PUBLIC because the interface takes
-# StringSets, core::error_handling because it returns a Status, core::wwr and
-# core::resources because CiSigma holds Buffers and takes DeviceResources. The
+# The module: CiSigma, ci_unpack and ci_pack. ci::strings is PUBLIC because
+# the interface takes StringSets, core::error_handling because it returns a
+# Status, core::wwr and core::resources because CiSigma holds Buffers and takes
+# DeviceResources. The
 # implementation unit alone GMF-includes the bridge, calls the gemm and checks
 # the LinearOperator concept, so the device library, constants, primitives,
 # the FBF_TRY header and recipes::linear_operator are PRIVATE.

@@ -10,6 +10,7 @@ import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.io.json;
 import free_breakfast.ci;
+import free_breakfast.test.ci_oracles;
 
 namespace {
 
@@ -269,7 +270,8 @@ std::vector<double> check_against_dense(const fb::StringSet &alpha, const fb::St
       static_cast<std::size_t>(alpha.size()) * static_cast<std::size_t>(beta.size());
 
   std::vector<double> diagonal(dim);
-  const auto diag_status = fb::host_diagonal(alpha, beta, ints.e_core, ints.h1, ints.eri, diagonal);
+  const auto diag_status =
+      fb::test::host_diagonal(alpha, beta, ints.e_core, ints.h1, ints.eri, diagonal);
   EXPECT_TRUE(diag_status.has_value()) << diag_status.error().message;
   for (std::size_t i = 0; i < dim; ++i) {
     EXPECT_EQ(diagonal[i], hm[i * dim + i]) << "determinant " << i;
@@ -278,7 +280,7 @@ std::vector<double> check_against_dense(const fb::StringSet &alpha, const fb::St
   for (std::uint64_t seed = 1; seed <= 3; ++seed) {
     const std::vector<double> c = random_vector(dim, seed);
     std::vector<double> sigma(dim);
-    const auto status = fb::host_sigma(alpha, beta, ints.e_core, ints.h1, ints.eri, c, sigma);
+    const auto status = fb::test::host_sigma(alpha, beta, ints.e_core, ints.h1, ints.eri, c, sigma);
     EXPECT_TRUE(status.has_value()) << status.error().message;
     double worst = 0.0;
     for (std::size_t i = 0; i < dim; ++i) {
@@ -356,22 +358,22 @@ TEST(CiSigma, RejectsMismatchedShapes) {
     return status.has_value() ? std::optional<fb::ErrorKind>{} : status.error().kind;
   };
   const auto invalid = std::optional{fb::ErrorKind::InvalidConfig};
-  EXPECT_EQ(kind(fb::host_sigma(*four, *five, 0.0, ints.h1, ints.eri, c, sigma)), invalid);
-  EXPECT_EQ(
-      kind(fb::host_sigma(*four, *four, 0.0, std::span{ints.h1}.first(15), ints.eri, c, sigma)),
-      invalid);
-  EXPECT_EQ(
-      kind(fb::host_sigma(*four, *four, 0.0, ints.h1, std::span{ints.eri}.first(255), c, sigma)),
-      invalid);
-  EXPECT_EQ(kind(fb::host_sigma(*four, *four, 0.0, ints.h1, ints.eri, std::span{c}.first(35),
-                                std::span{sigma}.first(35))),
+  EXPECT_EQ(kind(fb::test::host_sigma(*four, *five, 0.0, ints.h1, ints.eri, c, sigma)), invalid);
+  EXPECT_EQ(kind(fb::test::host_sigma(*four, *four, 0.0, std::span{ints.h1}.first(15), ints.eri, c,
+                                      sigma)),
             invalid);
-  EXPECT_EQ(
-      kind(fb::host_sigma(*four, *four, 0.0, ints.h1, ints.eri, c, std::span{sigma}.first(35))),
-      invalid);
-  EXPECT_EQ(
-      kind(fb::host_diagonal(*four, *four, 0.0, ints.h1, ints.eri, std::span{sigma}.first(35))),
-      invalid);
+  EXPECT_EQ(kind(fb::test::host_sigma(*four, *four, 0.0, ints.h1, std::span{ints.eri}.first(255), c,
+                                      sigma)),
+            invalid);
+  EXPECT_EQ(kind(fb::test::host_sigma(*four, *four, 0.0, ints.h1, ints.eri, std::span{c}.first(35),
+                                      std::span{sigma}.first(35))),
+            invalid);
+  EXPECT_EQ(kind(fb::test::host_sigma(*four, *four, 0.0, ints.h1, ints.eri, c,
+                                      std::span{sigma}.first(35))),
+            invalid);
+  EXPECT_EQ(kind(fb::test::host_diagonal(*four, *four, 0.0, ints.h1, ints.eri,
+                                         std::span{sigma}.first(35))),
+            invalid);
   // Nothing was written by the refusals.
   EXPECT_TRUE(std::ranges::all_of(sigma, [](double x) { return x == 0.0; }));
 }

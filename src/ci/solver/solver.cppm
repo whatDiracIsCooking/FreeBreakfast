@@ -81,20 +81,6 @@ namespace free_breakfast {
 
 export namespace free_breakfast {
 
-/// @brief S² c on the host, for a CI vector over two StringSets in
-/// host_sigma's layout.
-///
-/// S² = S_z (S_z + 1) + S₋S₊, and S₋S₊ = N_β − Σ_pq E^β_pq E^α_qp, so both
-/// terms go through the sets' own replacement lists: nothing leaves the
-/// (N_α, N_β) sector. Cost is O(dim · N_α (n − N_α + 1)).
-///
-/// @param c The CI vector, alpha.size() · beta.size().
-/// @param s2c Written with S² c, the same size; must not overlap @p c.
-/// @return InvalidConfig when the sets span different orbital counts or a span
-///         has the wrong size; nothing is written then.
-[[nodiscard]] Status host_spin_square(const StringSet &alpha, const StringSet &beta,
-                                      std::span<const double> c, std::span<double> s2c);
-
 /// @brief ci_solve's P-space operator: H_PP = <φ_i| H + λ (S² − S(S+1)) |φ_j>
 /// over the @p p elements @p picks (device, distinct) of a vector in
 /// @p layout, into the p × p column-major device block @p hamiltonian, on the
@@ -120,7 +106,8 @@ export namespace free_breakfast {
                                            const int32_t *picks, double *hamiltonian,
                                            CiLayout layout = CiLayout::full);
 
-/// @brief S² on the device, for host_spin_square's operator and layout: a
+/// @brief S² on the device, S² = S_z (S_z + 1) + S₋S₊ with
+/// S₋S₊ = N_β − Σ_pq E^β_pq E^α_qp, over CI vectors in CiLayout::full: a
 /// `LinearOperator<CiSpinSquare, double>` over blocks of CI vectors, and the
 /// spin penalty ci_solve adds into its sigma's output.
 ///
@@ -279,7 +266,7 @@ struct CiRoots {
   /// @brief ⟨S²⟩ per root.
   std::vector<double> spin_squares;
   /// @brief The unit CI vectors on the device of the ci_solve call, root r at
-  /// [r · dim, (r + 1) · dim), each in host_sigma's layout.
+  /// [r · dim, (r + 1) · dim), each in CiLayout::full.
   Buffers::device<double> vectors;
   /// @brief What the final davidson_solve did, over the sigma's apply.
   DavidsonInfo davidson;
@@ -326,7 +313,7 @@ struct CiRoots {
 /// accurate as an FP64-only solve's.
 ///
 /// @p start, when not empty, replaces the guesses, the P-space's included: n_roots
-/// unit CI vectors in host_sigma's layout, as CiRoots::vectors holds them (a
+/// unit CI vectors in CiLayout::full, as CiRoots::vectors holds them (a
 /// previous solve's roots, say, of a nearby H). They are packed with ci_pack
 /// on the symmetric path, orthonormalized, and start the first stage, so, as
 /// with the guesses, the single-precision stage only chooses where the second
@@ -334,12 +321,11 @@ struct CiRoots {
 /// preconditions, and one that covers the space solves it exactly with the
 /// start unused. Empty, the solve is the one without it, to the bit.
 ///
-/// @param sigma    Applies H to a device block of CI vectors (host_sigma's
-///                 layout); a LinearOperator over dim = alpha.size() ·
+/// @param sigma    Applies H to a device block of CI vectors (CiLayout::full); a LinearOperator over dim = alpha.size() ·
 ///                 beta.size().
 /// @param alpha, beta The sector's strings.
 /// @param diagonal diag(H) on the device, dim doubles, as CiSigma::diagonal
-///                 (or host_diagonal) writes it.
+///                 writes it.
 /// @param n_roots  Roots wanted, in [1, dim].
 /// @param start    Empty, or n_roots · dim device doubles: the starting
 ///                 vectors, root r at [r · dim, (r + 1) · dim).
