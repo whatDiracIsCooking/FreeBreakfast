@@ -2,7 +2,7 @@
 // limit, per column, with the workspace each grows to; or ci_solve's singlets
 // in the symmetric layout under that limit, the solve that past ~CAS(13,13)
 // does not fit a 10 GB card unblocked. Over the active spaces of a
-// direct_spin1-schema JSON file (tools/emit_ci_bench_integrals.py's schema).
+// direct_spin1-schema JSON file (tools/emit/ci_bench_integrals.py's schema).
 //
 //   free_breakfast_ci_sigma_blocked CASES.json columns LIMIT_MIB [device = 0]
 //   free_breakfast_ci_sigma_blocked CASES.json solve   LIMIT_MIB [n_roots = 3]

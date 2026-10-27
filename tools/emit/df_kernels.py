@@ -5,7 +5,7 @@ src/integrals/eri/density_fitting/{metric,three_center}/kernels/.
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
 
-    tools/emit_df_kernels.py
+    tools/emit/df_kernels.py
 
 Two families, one per FelizJueves target, each its module's own directory:
 
@@ -21,7 +21,7 @@ Two families, one per FelizJueves target, each its module's own directory:
   (g), 50 classes, the top one (ff|g) at L = 10.
 
 Pair classes are written `la <= lb` (and `lP <= lQ`) only, for the reason
-tools/emit_one_electron_kernels.py gives: each kernel writes every element and
+tools/emit/one_electron_kernels.py gives: each kernel writes every element and
 its mirror, so a pair staged swapped needs no class of its own.
 
 Every [n, 3] record vector is split into three flat arrays
@@ -44,7 +44,7 @@ nvcc under CUDA and clang `-x hip` under HIP. Neither family has a shuffle or
 a shared array, so they are emitted with the default options and their text
 has no width. Nothing is added to the text here.
 
-As tools/emit_coulomb_kernels.py does, each class is one explicit
+As tools/emit/coulomb_kernels.py does, each class is one explicit
 specialization of its family's template, and each directory gets one header,
 `metric.h` or `eri3.h`, every unit includes: the primary, each class's
 declaration and `metric_kernels` / `eri3_kernels`, the table a launcher
@@ -62,7 +62,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
 from felizjueves.emit import gpu  # noqa: E402

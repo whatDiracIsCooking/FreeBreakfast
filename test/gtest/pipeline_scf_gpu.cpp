@@ -1,4 +1,4 @@
-// The Scf step against PySCF's RHF (data/scf/rhf.json, tools/emit_scf_reference.py):
+// The Scf step against PySCF's RHF (data/scf/rhf.json, tools/emit/scf_reference.py):
 // the energy and orbital energies, and the invariants of a closed-shell
 // wavefunction, over the setup steps and the guess run by hand; then through
 // the real registry from a config naming only [scf]. Runs the device chain, so

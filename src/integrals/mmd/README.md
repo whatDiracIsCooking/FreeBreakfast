@@ -92,14 +92,14 @@ record order, kets through their class's sorted `ket_` copy). The K build does n
 its screen is proved against the DRESSED bound (contraction coefficients and
 pair factor in), which depends on the pair's orientation, so the ordered
 classes carry it ([`exchange/pairs`](../eri/integral_direct/exchange/pairs/README.md)).
-`tools/emit_one_electron_kernels.py` writes the kernels (its small `mmd`
+`tools/emit/one_electron_kernels.py` writes the kernels (its small `mmd`
 section); `kernels/.clang-format` turns formatting off so they stay as emitted.
 
 **So is the dressed bound, both ways.** `ao.k.record_bounds`, `max_{i∈a}
 Σ_{k∈b} Σ_p |s E^{ik}_p| I_p(ζ)`, carries the coefficients and the pair factor,
 and takes its max over the FIRST shell, so it depends on the orientation. On the
 class's stream, after the order, the generated `record_bound<la, lb>`
-(`kernels/record_bound/`, written by `tools/emit_exchange_kernels.py`, one
+(`kernels/record_bound/`, written by `tools/emit/exchange_kernels.py`, one
 thread per record) writes `bound_ab` from the record as stored, and
 `record_bound<lb, la>` writes `bound_ba` from a swapped view (`la`/`lb` and
 `P − A`/`P − B` exchanged). The launcher, `ordered_pair_bound`
@@ -194,6 +194,6 @@ every class of H₂O/cc-pVDZ, bit for bit against the bound
 | `mmd.cpp` | The shell-pair sweep (each class's shell pairs and their record prefix), the swap, the ranks, the shell and shell-pair tables staged and uploaded, the launches, and the wait |
 | `mmd_bridge.h` | `PrimitivePairSource` and `PrimitivePairRecords`, and the records', the order's and the bounds' launchers, declared once for `mmd.cpp`'s GMF and the `.cu` |
 | `mmd_launch.cu` | The key and record kernels, and the launchers: `mmd_order` (key and sort), `mmd_records` (every field but the bounds, in the sorted order), `mmd_bound` (the generated `pair_bound<la, lb>`), `ordered_pair_bound` (the generated `record_bound<la, lb>`), each bounded by its own table's extent, checked square |
-| `kernels/pair_bound/` | The generated `pair_bound<la, lb>` units and their template header (`tools/emit_one_electron_kernels.py`) |
-| `kernels/record_bound/` | The generated `record_bound<la, lb>` units, all nine ordered classes through d, and their template header (`tools/emit_exchange_kernels.py`) |
+| `kernels/pair_bound/` | The generated `pair_bound<la, lb>` units and their template header (`tools/emit/one_electron_kernels.py`) |
+| `kernels/record_bound/` | The generated `record_bound<la, lb>` units, all nine ordered classes through d, and their template header (`tools/emit/exchange_kernels.py`) |
 | `CMakeLists.txt` | The interface library `free_breakfast.integrals.mmd.headers`, the device library and the module library |

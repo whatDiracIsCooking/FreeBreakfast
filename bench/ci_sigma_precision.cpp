@@ -2,7 +2,7 @@
 // the symmetric layout with the device workspace each takes, and ci_solve with
 // its single-precision stage off and at several fp32_tolerance values, wall
 // clock, over the active spaces of a direct_spin1-schema JSON file
-// (tools/emit_ci_bench_integrals.py writes N2's CAS(10,10) and CAS(12,12)).
+// (tools/emit/ci_bench_integrals.py writes N2's CAS(10,10) and CAS(12,12)).
 // ci_solve runs a singlet in the symmetric layout; it is also run held to the
 // full one, as it was before that layout, FP64-only and at 1e-6. Every solve
 // runs twice, with spin_averaged_diagonal off and on. A shift moves that many

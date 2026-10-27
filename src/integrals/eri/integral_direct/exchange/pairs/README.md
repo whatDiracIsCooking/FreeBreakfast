@@ -176,7 +176,7 @@ reads a field copied back explicitly.
 On H₂O/cc-pVDZ and the chain, every record's `record_bound` against
 FelizJueves's `ao.k.record_bounds` of the same ordered shell pair
 (`test/gtest/data/record_bound/`, written by
-`tools/emit_record_bound_golden.py`), matched by its two shells and ζ, a host
+`tools/emit/record_bound_golden.py`), matched by its two shells and ζ, a host
 zero exactly zero. Each record passes within 16 eps (FelizJueves's bar for
 the kernel) or within 10⁻¹³ absolutely. `mmd` forms P's numerator with an FMA
 and the golden with two roundings, so P can sit an ulp of the coordinates

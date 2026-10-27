@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the reference data the active-space Hamiltonian's tests read.
 
-For each case below, PySCF's closed-shell RHF (as emit_scf_reference.py runs
+For each case below, PySCF's closed-shell RHF (as scf_reference.py runs
 it, over this tree's own basis files, converged tighter) is handed to PySCF's
 CASCI over a chosen core and active set of its canonical orbitals, and its
 active-space Hamiltonian recorded: `get_h1eff`'s constant E_core and h_eff, and
@@ -24,7 +24,7 @@ summed over p's degenerate set and u's, which is invariant under both
 rotations (a trace of J[C_u C_u^T] or K[C_u C_u^T] over p's set, summed over
 u's), and is the element itself where both sets are single orbitals.
 
-    uv run --group tools tools/emit_active_integrals_reference.py
+    uv run --group tools tools/emit/active_integrals_reference.py
 
 writes test/gtest/data/active_space/active_space.json. Re-run it to regenerate;
 the file is never hand-edited.
@@ -39,10 +39,10 @@ import platform
 
 import numpy
 import pyscf
-from emit_scf_reference import BASES, WATER, pyscf_basis
 from pyscf import ao2mo, gto, mcscf, scf
+from scf_reference import BASES, WATER, pyscf_basis
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "active_space" / "active_space.json"
 
 # N2 near its equilibrium bond (2.074 bohr), along z. Bohr.
@@ -127,7 +127,7 @@ def case_reference(case: dict) -> dict:
         verbose=0,
     )
     mf = scf.RHF(mol)
-    # Tighter than emit_scf_reference.py: h_eff_tt moves to first order in the
+    # Tighter than scf_reference.py: h_eff_tt moves to first order in the
     # orbitals, and the comparison is at 1e-10.
     mf.conv_tol = 1e-14
     mf.conv_tol_grad = 1e-11
@@ -217,7 +217,7 @@ def main() -> None:
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools tools/emit_active_integrals_reference.py",
+            "command": "uv run --group tools tools/emit/active_integrals_reference.py",
         },
         "cases": [case_reference(case) for case in CASES],
     }

@@ -10,17 +10,17 @@ file names the tool that wrote it and the source it came from.
 | `coulomb/` | The same bases and nuclei, an AO density (a Hilbert matrix, `density_recipe`) and libcint's Coulomb matrix `vj` of it, for the same four molecules, recorded by PySCF | `tools/extract_integral_golden.py`, from the same fixtures |
 | `exchange/` | The same bases, nuclei and density as `coulomb/`, and libcint's exchange matrix `vk` of it (PySCF `get_jk`, `vk_il = Σ_jk (ij\|kl) D_jk`), for the same four molecules, recorded by PySCF. The tool refuses to write one unless its `_k` fixture's basis, geometry and density equal the `_j` fixture's exactly, so a K test reads the J test's density, and unless `vk` is symmetric to 1e-14 · max\|vk\| | `tools/extract_integral_golden.py`, from FelizJueves's `_k` fixtures |
 | `overlap_mixed/` | Two Cartesian bases, `rows` and `cols`, and libcint's cross-basis overlap `int1e_ovlp_cross` between them (PySCF `gto.intor_cross`): H₂O, rows STO-3G, columns 6-31G or cc-pVDZ at the same geometry, or 6-31G at another. The tool refuses one whose shape is not the two AO counts | `tools/extract_integral_golden.py`, from FelizJueves's `h2o_sto3g_x_*` fixtures and their row fixture `h2o_sto3g_j` |
-| `record_bound/` | K's dressed record bound, FelizJueves's host `ao.k.record_bounds`, of every record of every ordered shell pair of H₂O/cc-pVDZ and the H₁₀ chain, the shells read from `exchange/` | `tools/emit_record_bound_golden.py`, which imports FelizJueves's `src/` (numpy, for its reference Boys) |
-| `e_table/` | The rolled K kernel's E table, FelizJueves's host `launch_kblock.e_table` (each record's undressed `E^{la lb}`, nonzero entries), of every record of every ordered shell pair of H₂O/cc-pVDZ and CO/cc-pVTZ (through f), with each record's inputs, the shells read from `exchange/`. FelizJueves checking itself: the table has no libcint counterpart | `tools/emit_e_table_golden.py`, which imports FelizJueves's `src/` |
-| `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr | `tools/emit_scf_reference.py`, which runs PySCF |
-| `density_fitting/` | libcint's spherical Coulomb metric `int2c2e` (P\|Q) and three-centre `int3c2e` (mn\|P) for H₂O in cc-pVDZ / cc-pVDZ-JKFIT (orbitals to d, aux to f) and cc-pVTZ / cc-pVTZ-JKFIT (O's f orbitals and g fitting functions, so (ff\|g)), PySCF's DF `vj` and `vk` of one RHF density in the cc-pVDZ case, and PySCF's DF-RHF energies and orbital energies for H₂O and NH₄⁺ in cc-pVDZ / cc-pVDZ-JKFIT and H₂O in cc-pVTZ / cc-pVTZ-JKFIT, all over this tree's own `data/basis` and `data/aux_basis` files: `.npy` arrays and the manifest `density_fitting.json` | `tools/emit_df_reference.py`, which runs PySCF |
-| `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges | `tools/emit_localization_reference.py`, which runs PySCF |
-| `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit_active_integrals_reference.py`, which runs PySCF |
-| `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit_sad_reference.py`, which runs PySCF |
-| `casci/` | `casci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF `mcscf.CASCI` over its orbitals, H₂O CAS(4,4) (frontier, and an explicit set in cc-pVDZ) and N₂ CAS(6,6), and `mcscf.avas`'s picks over MINAO (H₂O O 2p + H 1s, N₂ 2s + 2p, and N₂ 2p at threshold 0.5, in cc-pVDZ): the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit_casci_reference.py`, which runs PySCF |
-| `ci/` | `direct_spin1.json`: active-space integrals (E_core, h_eff, (tu\|vw)) from PySCF's CASCI over its own RHF in its own basis library, and `fci.direct_spin1`'s lowest 12 roots over them, each with ⟨S²⟩ and its spin-summed 1-RDM, and state averages (`rdm12`: CI vectors with their weighted `make_rdm12` 1- and 2-RDM), for H₂O STO-3G CAS(4,4), H₂O 6-31G CAS(6,6), N₂ cc-pVDZ CAS(6,6) and CH₂O STO-3G CAS(4,4) | `tools/emit_fci_reference.py`, which runs PySCF |
-| `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit_fci_step_reference.py`, which runs PySCF |
-| `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ: at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit_casscf_reference.py`, which runs PySCF |
+| `record_bound/` | K's dressed record bound, FelizJueves's host `ao.k.record_bounds`, of every record of every ordered shell pair of H₂O/cc-pVDZ and the H₁₀ chain, the shells read from `exchange/` | `tools/emit/record_bound_golden.py`, which imports FelizJueves's `src/` (numpy, for its reference Boys) |
+| `e_table/` | The rolled K kernel's E table, FelizJueves's host `launch_kblock.e_table` (each record's undressed `E^{la lb}`, nonzero entries), of every record of every ordered shell pair of H₂O/cc-pVDZ and CO/cc-pVTZ (through f), with each record's inputs, the shells read from `exchange/`. FelizJueves checking itself: the table has no libcint counterpart | `tools/emit/e_table_golden.py`, which imports FelizJueves's `src/` |
+| `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr | `tools/emit/scf_reference.py`, which runs PySCF |
+| `density_fitting/` | libcint's spherical Coulomb metric `int2c2e` (P\|Q) and three-centre `int3c2e` (mn\|P) for H₂O in cc-pVDZ / cc-pVDZ-JKFIT (orbitals to d, aux to f) and cc-pVTZ / cc-pVTZ-JKFIT (O's f orbitals and g fitting functions, so (ff\|g)), PySCF's DF `vj` and `vk` of one RHF density in the cc-pVDZ case, and PySCF's DF-RHF energies and orbital energies for H₂O and NH₄⁺ in cc-pVDZ / cc-pVDZ-JKFIT and H₂O in cc-pVTZ / cc-pVTZ-JKFIT, all over this tree's own `data/basis` and `data/aux_basis` files: `.npy` arrays and the manifest `density_fitting.json` | `tools/emit/df_reference.py`, which runs PySCF |
+| `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges | `tools/emit/localization_reference.py`, which runs PySCF |
+| `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit/active_integrals_reference.py`, which runs PySCF |
+| `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit/sad_reference.py`, which runs PySCF |
+| `casci/` | `casci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF `mcscf.CASCI` over its orbitals, H₂O CAS(4,4) (frontier, and an explicit set in cc-pVDZ) and N₂ CAS(6,6), and `mcscf.avas`'s picks over MINAO (H₂O O 2p + H 1s, N₂ 2s + 2p, and N₂ 2p at threshold 0.5, in cc-pVDZ): the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit/casci_reference.py`, which runs PySCF |
+| `ci/` | `direct_spin1.json`: active-space integrals (E_core, h_eff, (tu\|vw)) from PySCF's CASCI over its own RHF in its own basis library, and `fci.direct_spin1`'s lowest 12 roots over them, each with ⟨S²⟩ and its spin-summed 1-RDM, and state averages (`rdm12`: CI vectors with their weighted `make_rdm12` 1- and 2-RDM), for H₂O STO-3G CAS(4,4), H₂O 6-31G CAS(6,6), N₂ cc-pVDZ CAS(6,6) and CH₂O STO-3G CAS(4,4) | `tools/emit/fci_reference.py`, which runs PySCF |
+| `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit/fci_step_reference.py`, which runs PySCF |
+| `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ: at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit/casscf_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
 
@@ -62,7 +62,7 @@ Written by the same `tools/extract_integral_golden.py` run.
 Regenerate after `tools/extract_integral_golden.py`:
 
 ```sh
-uv run --group tools tools/emit_record_bound_golden.py
+uv run --group tools tools/emit/record_bound_golden.py
 ```
 
 ## `e_table/*.json`
@@ -77,7 +77,7 @@ uv run --group tools tools/emit_record_bound_golden.py
 Regenerate after `tools/extract_integral_golden.py`:
 
 ```sh
-uv run --group tools tools/emit_e_table_golden.py
+uv run --group tools tools/emit/e_table_golden.py
 ```
 
 ## `active_space/active_space.json`
@@ -98,7 +98,7 @@ too: N₂'s core takes the 1π_u pair and leaves 3σ_g, below it, to the active
 space. Regenerate with:
 
 ```sh
-uv run --group tools tools/emit_active_integrals_reference.py
+uv run --group tools tools/emit/active_integrals_reference.py
 ```
 
 ## `sad/atomic_scf.json`
@@ -115,7 +115,7 @@ Every element is one whose per-l electron counts in PySCF's
 with:
 
 ```sh
-uv run --group tools tools/emit_sad_reference.py
+uv run --group tools tools/emit/sad_reference.py
 ```
 
 ## `scf/rhf.json`
@@ -131,7 +131,7 @@ handed the basis from `data/basis/*.json` itself, not its own library's copy, so
 the two sides compute over one basis. Regenerate with:
 
 ```sh
-uv run --group tools tools/emit_scf_reference.py
+uv run --group tools tools/emit/scf_reference.py
 ```
 
 ## `density_fitting/`
@@ -189,7 +189,7 @@ so its energies sit beside the exact-integral ones there (the DF error is
 Regenerate with (one thread; the output is byte-identical run to run):
 
 ```sh
-UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_df_reference.py
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/df_reference.py
 ```
 
 ## `localization/pipek_mezey.json`
@@ -209,7 +209,7 @@ alternates it with PySCF's Jacobi stability check until no uphill rotation is
 left. Regenerate with:
 
 ```sh
-UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_localization_reference.py
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/localization_reference.py
 ```
 
 ## `localization/ibo.json`
@@ -245,7 +245,7 @@ tool also checks the roots against a dense diagonalisation of the sector.
 Regenerate with:
 
 ```sh
-UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_fci_reference.py
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/fci_reference.py
 ```
 
 ## `casci/casci.json`
@@ -267,7 +267,7 @@ lowest 12 of the M_s = 0 sector, checked against a dense diagonalisation of
 it, with the singlets kept. Regenerate with:
 
 ```sh
-UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_casci_reference.py
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casci_reference.py
 ```
 
 ## `fci/fci.json`
@@ -287,7 +287,7 @@ dense diagonalisation up to 20,000 determinants, and above that by
 seeded noise, the two agreeing to 1e-10. Regenerate with:
 
 ```sh
-UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_fci_step_reference.py
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/fci_step_reference.py
 ```
 
 ## `casscf/casscf.json`
@@ -346,5 +346,5 @@ and natural occupations moved by at most 3e-12). The stated tolerance is 1e-9: a
 moves any value by more than that is a change, not noise. Regenerate with:
 
 ```sh
-UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit_casscf_reference.py
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casscf_reference.py
 ```

@@ -5,7 +5,7 @@
   "numpy": "2.5.4",
   "date": "2026-10-23",
   "host": "83c85945f20b",
-  "command": "uv run --group tools tools/emit_localization_reference.py"
+  "command": "uv run --group tools tools/emit/localization_reference.py"
  },
  "cases": [
   {

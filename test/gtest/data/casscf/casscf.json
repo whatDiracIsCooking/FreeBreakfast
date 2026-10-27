@@ -5,7 +5,7 @@
   "numpy": "2.5.4",
   "date": "2026-10-24",
   "host": "fe6aa7dc4452",
-  "command": "uv run --group tools tools/emit_casscf_reference.py",
+  "command": "uv run --group tools tools/emit/casscf_reference.py",
   "threads": 8
  },
  "cases": [

@@ -8,7 +8,7 @@ ordered record's bound
     I = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)
 
 on the device, through the record_bound kernels FelizJueves generates
-(tools/emit_exchange_kernels.py). This writes the host reference those
+(tools/emit/exchange_kernels.py). This writes the host reference those
 kernels are held to: `ao.k.record_bounds(epair(sa, sb), pq=reference.pq.pq)`
 for every ORDERED shell pair (sa, sb) of the molecule, the bound orientation-
 dependent (the max runs over the first shell's Cartesians).
@@ -31,7 +31,7 @@ its zeta, so it does not depend on either side's record order.
 FelizJueves's reference Boys function needs numpy, so this runs in the `tools`
 group (in the devcontainer, with UV_PROJECT_ENVIRONMENT=$PWD/.venv):
 
-    uv run --group tools tools/emit_record_bound_golden.py
+    uv run --group tools tools/emit/record_bound_golden.py
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 FJ = ROOT / "deps/FelizJueves"
 sys.path.insert(0, str(FJ / "src"))
 
@@ -92,7 +92,7 @@ def emit(stem: str, commit: str) -> dict:
     return {
         "description": (
             f"K's dressed record bound, ao.k.record_bounds, of every ordered shell "
-            f"pair of {stem}'s basis -- written by tools/emit_record_bound_golden.py"
+            f"pair of {stem}'s basis -- written by tools/emit/record_bound_golden.py"
         ),
         "source": {
             "felizjueves": commit,

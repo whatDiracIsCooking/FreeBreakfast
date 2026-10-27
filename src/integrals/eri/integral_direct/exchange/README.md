@@ -243,7 +243,7 @@ latter. The records themselves are device only.
 shuffles and its shared array read `FJ_WAVEFRONT`, which `deps/CMakeLists.txt`
 sets from `WWR_WARP_SIZE`.
 
-**Generated kernels are committed, not built.** `tools/emit_exchange_kernels.py`
+**Generated kernels are committed, not built.** `tools/emit/exchange_kernels.py`
 writes `kernels/kb/` and `kernels/kbr/` (with `kbr_tables.h`) from the
 FelizJueves submodule; re-run it after bumping the
 submodule. `kernels/.clang-format` turns formatting off, and

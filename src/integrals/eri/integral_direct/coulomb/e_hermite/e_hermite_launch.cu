@@ -35,11 +35,11 @@ constexpr int32_t kMaxL = static_cast<int32_t>(kHermiteExtent - 1) / 2;
 static_assert(kHermiteExtent % 2 == 1 &&
                   std::extent_v<decltype(e_hermite_kernels), 1> == kHermiteExtent,
               "kernels/'s [lp][lq] table is not square over lp <= 2 l: rerun "
-              "tools/emit_coulomb_kernels.py");
+              "tools/emit/coulomb_kernels.py");
 
 static_assert(kMaxL == kCoulombMaxMomentum,
               "kernels/'s table and kCoulombMaxMomentum disagree: rerun "
-              "tools/emit_coulomb_kernels.py");
+              "tools/emit/coulomb_kernels.py");
 
 // One warp per bra record: blockDim = (1, warp width), the block e_hermite's
 // Jsh[n_p * FJ_WAVEFRONT] was sized for. FJ_WAVEFRONT comes from WWR_WARP_SIZE

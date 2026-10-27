@@ -1,7 +1,7 @@
 // active_space_hamiltonian on the device, over the Scf step's orbitals (run with
 // J unscreened, kExactScf below), against
 // PySCF's CASCI (data/active_space/active_space.json,
-// tools/emit_active_integrals_reference.py): E_core and the sign-invariant
+// tools/emit/active_integrals_reference.py): E_core and the sign-invariant
 // elements h_eff_tt, (tt|uu) and (tu|tu); the RHF energy given back by an
 // active space spanning occupied and virtual orbitals; (tu|vw)'s 8-fold
 // symmetry; the prune cap, on orbitals scaled past it; and the refusals. Each

@@ -29,14 +29,14 @@
 namespace free_breakfast::device {
 
 /// @brief The largest momentum kernels/record_bound's table covers, f, the
-/// dressed bounds' limit: written by tools/emit_exchange_kernels.py with K's
+/// dressed bounds' limit: written by tools/emit/exchange_kernels.py with K's
 /// kernels, and checked against the table in mmd_launch.cu, which a host
 /// module unit cannot include. pair_bound's limit is
 /// @ref kPairBoundMaxMomentum: the two tables come from different emitters.
 inline constexpr int32_t kRecordBoundMaxMomentum = 3;
 
 /// @brief The largest momentum kernels/pair_bound's table covers, f, the
-/// undressed bound's limit: written by tools/emit_one_electron_kernels.py with
+/// undressed bound's limit: written by tools/emit/one_electron_kernels.py with
 /// the one-electron kernels, and checked against the table in mmd_launch.cu,
 /// which a host module unit cannot include.
 inline constexpr int32_t kPairBoundMaxMomentum = 3;
@@ -167,7 +167,7 @@ struct PrimitivePairRecords {
 
 /// @brief Each record's DRESSED Schwarz bound into @p bound, on @p stream: the
 /// generated record_bound<cls.la, cls.lb> (kernels/record_bound/, written by
-/// tools/emit_exchange_kernels.py), one thread per record, FelizJueves's
+/// tools/emit/exchange_kernels.py), one thread per record, FelizJueves's
 /// ao.k.record_bounds,
 ///
 ///     I = max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p| I_p(zeta)

@@ -31,11 +31,11 @@ namespace free_breakfast::device {
 
 /// @brief (mn|P)'s orbital L limit: the largest momentum of an orbital shell m
 /// or n in any class it takes, f. Its kernels are emitted through it
-/// (tools/emit_df_kernels.py's MAX_L, which the tool checks against this).
+/// (tools/emit/df_kernels.py's MAX_L, which the tool checks against this).
 inline constexpr int32_t kThreeCenterMaxMomentum = 3;
 
 /// @brief (mn|P)'s aux L limit: the largest momentum of an auxiliary shell P
-/// in any class it takes, g (tools/emit_df_kernels.py's AUX_MAX_L, as
+/// in any class it takes, g (tools/emit/df_kernels.py's AUX_MAX_L, as
 /// kMetricMaxMomentum is).
 inline constexpr int32_t kThreeCenterAuxMaxMomentum = 4;
 

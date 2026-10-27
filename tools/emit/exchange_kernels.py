@@ -6,7 +6,7 @@ bound under src/integrals/mmd/kernels/.
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
 
-    tools/emit_exchange_kernels.py
+    tools/emit/exchange_kernels.py
 
 The K build's family is `kb<la, lc, lb, ld>`: FelizJueves's `Target.K` on
 opt-UM's mapping (`eri/k_exchange/kernel_kblock.py`), K_ab += SUM_cd D_cd
@@ -56,7 +56,7 @@ pair's, `bd_*` its ket pair's) and `hpq` per `(lp, lq)` (`kbr_hpq`), each with
 a host table of offsets. Every class's five tables are checked against those
 slices before anything is written.
 
-As tools/emit_coulomb_kernels.py does, each class is one explicit
+As tools/emit/coulomb_kernels.py does, each class is one explicit
 specialization of its family's template, and each directory gets one header,
 `kb.h` or `kbr.h`, every unit includes: the primary, each class's declaration
 and `kb_kernels` / `kbr_kernels`, the table a launcher indexes (`nullptr`
@@ -90,7 +90,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
 from felizjueves.emit import gpu  # noqa: E402
@@ -237,7 +237,7 @@ def kbr_tables(every) -> str:
         return "{" + ", ".join(map(str, v)) + "}"
 
     return f"""\
-// kbr's class tables: written by tools/emit_exchange_kernels.py from
+// kbr's class tables: written by tools/emit/exchange_kernels.py from
 // FelizJueves's kernel_kblock_rolled.tables. Do not edit.
 // Included by exchange_launch.cu alone: it defines the arrays.
 //

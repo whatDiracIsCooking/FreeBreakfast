@@ -18,21 +18,21 @@ jkfit_from_pyscf.py
                   Exchange has no cc-pVDZ-JKFIT. Needs PySCF.
 atomic_cd/        aCD / acCD atomic Cholesky decomposition over PySCF
                   integrals; writes acCD auxiliary shells as BSE JSON.
-emit_one_electron_kernels.py
+emit/one_electron_kernels.py
                   Regenerate src/integrals/one_electron/{overlap,kinetic,
                   potential_en}/kernels/, and the mmd record bound
                   src/integrals/mmd/kernels/pair_bound/, from the
                   FelizJueves submodule. Standard library only.
-emit_coulomb_kernels.py
+emit/coulomb_kernels.py
                   Regenerate src/integrals/eri/integral_direct/coulomb/
                   {dq,e_hermite,j_coulomb}/kernels/ from the FelizJueves
                   submodule. Standard library only.
-emit_exchange_kernels.py
+emit/exchange_kernels.py
                   Regenerate src/integrals/eri/integral_direct/exchange/
                   kernels/{kb,kbr}/, and the dressed record bound
                   src/integrals/mmd/kernels/record_bound/, from the
                   FelizJueves submodule. Standard library only.
-emit_df_kernels.py
+emit/df_kernels.py
                   Regenerate src/integrals/eri/density_fitting/{metric,
                   three_center}/kernels/ from the FelizJueves submodule.
                   Standard library only.
@@ -40,57 +40,57 @@ extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,
                   coulomb,exchange}/ hold out of FelizJueves's fixtures.
                   Standard library only.
-emit_record_bound_golden.py
+emit/record_bound_golden.py
                   Write test/gtest/data/record_bound/: FelizJueves's host
                   ao.k.record_bounds for every ordered shell pair of the
                   exchange goldens' bases. Needs numpy (FelizJueves's
                   reference Boys).
-emit_sad_reference.py
+emit/sad_reference.py
                   Write test/gtest/data/sad/atomic_scf.json: PySCF's
                   spherically averaged atomic RHF densities, the reference
                   src/sad's guess is tested against. Needs PySCF.
-emit_scf_reference.py
+emit/scf_reference.py
                   Write test/gtest/data/scf/rhf.json: PySCF's closed-shell
                   RHF energies and orbital energies over this tree's
                   data/basis files, the reference the Scf step is tested
                   against. Needs PySCF.
-emit_df_reference.py
+emit/df_reference.py
                   Write test/gtest/data/density_fitting/: libcint's spherical
                   (P|Q) and (mn|P), PySCF's DF vj/vk of one density and its
                   DF-RHF energies, over this tree's data/basis and
                   data/aux_basis files, the reference density fitting is
                   tested against. Needs PySCF.
-emit_localization_reference.py
+emit/localization_reference.py
                   Write test/gtest/data/localization/{pipek_mezey,ibo}.json:
                   PySCF's Mulliken Pipek-Mezey and IBOs of those RHF orbitals, both
                   exponents, as the functional and per-orbital atomic
                   populations, the reference the Localization step is tested
                   against. Needs PySCF.
-emit_fci_reference.py
+emit/fci_reference.py
                   Write test/gtest/data/ci/direct_spin1.json: PySCF's
                   active-space integrals in its own MO basis, and
                   fci.direct_spin1's lowest roots over them, with <S^2> and
                   1-RDMs, and state averages (CI vectors with their weighted
                   make_rdm12 1- and 2-RDMs), the reference src/ci is tested
                   against. Needs PySCF.
-emit_active_integrals_reference.py
+emit/active_integrals_reference.py
                   Write test/gtest/data/active_space/active_space.json:
                   PySCF CASCI's E_core and the sign-invariant elements of
                   h_eff and (tu|vw) over this tree's basis files, the
                   reference integrals.active_space is tested against. Needs
                   PySCF.
-emit_casci_reference.py
+emit/casci_reference.py
                   Write test/gtest/data/casci/casci.json: PySCF mcscf.CASCI
                   over its RHF in this tree's basis files (and mcscf.avas's
                   active spaces over this tree's MINAO), the lowest
                   singlets' energies, <S^2> and natural occupations, the
                   reference the Casci step is tested against. Needs PySCF.
-emit_fci_step_reference.py
+emit/fci_step_reference.py
                   Write test/gtest/data/fci/fci.json: PySCF fci.FCI over
                   every orbital of its RHF in this tree's basis files, the
                   lowest singlets' energies, <S^2> and natural occupations,
                   the reference the Fci step is tested against. Needs PySCF.
-emit_casscf_reference.py
+emit/casscf_reference.py
                   Write test/gtest/data/casscf/casscf.json: PySCF
                   mcscf.CASSCF (one root, or two singlets state-averaged)
                   over its RHF in this tree's basis files, checked against
@@ -100,7 +100,7 @@ emit_casscf_reference.py
                   each space's orbital energies and the natural occupations,
                   the reference src/response, src/mcscf and the Casscf step
                   are tested against. Needs PySCF.
-emit_ci_bench_integrals.py
+emit/ci_bench_integrals.py
                   Write the given JSON path (untracked): PySCF's CAS(10,10)
                   and CAS(12,12) integrals of N2 cc-pVDZ at 1.0977 and
                   2.0 A, in direct_spin1.json's schema, the input
@@ -111,10 +111,10 @@ sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   itself. data/sad/README.md has when and how.
 ```
 
-Re-run the four `emit_*_kernels.py`, `extract_integral_golden.py` and then
-`emit_record_bound_golden.py` (it reads the exchange goldens' shells) after
+Re-run the four `emit/*_kernels.py`, `extract_integral_golden.py` and then
+`emit/record_bound_golden.py` (it reads the exchange goldens' shells) after
 bumping `deps/FelizJueves`. Everything but `bse_download.py`, `atomic_cd` and
-`emit_ci_bench_integrals.py` writes tracked files, so the diff is the review.
+`emit/ci_bench_integrals.py` writes tracked files, so the diff is the review.
 
 ## Running
 
@@ -126,7 +126,7 @@ tools/bse_download.py --list
 ```
 
 `atomic_cd`, `minao_from_pyscf.py`, `jkfit_from_pyscf.py` and the
-`emit_*_reference.py` scripts need PySCF and numpy, which sit in the opt-in
+`emit/*_reference.py` scripts need PySCF and numpy, which sit in the opt-in
 `tools` dependency group in `pyproject.toml` rather than in `dev`, so the
 image and the push gate do not carry them. Inside the devcontainer, add
 `UV_PROJECT_ENVIRONMENT=$PWD/.venv` so the group goes into a worktree-local
@@ -135,14 +135,14 @@ venv rather than the image's `/opt/venv`:
 ```sh
 uv run --group tools tools/minao_from_pyscf.py
 uv run --group tools tools/jkfit_from_pyscf.py
-uv run --group tools tools/emit_sad_reference.py
-uv run --group tools tools/emit_scf_reference.py
-uv run --group tools tools/emit_df_reference.py
-uv run --group tools tools/emit_localization_reference.py
-uv run --group tools tools/emit_casci_reference.py
-uv run --group tools tools/emit_fci_step_reference.py
-uv run --group tools tools/emit_casscf_reference.py
-uv run --group tools tools/emit_record_bound_golden.py
+uv run --group tools tools/emit/sad_reference.py
+uv run --group tools tools/emit/scf_reference.py
+uv run --group tools tools/emit/df_reference.py
+uv run --group tools tools/emit/localization_reference.py
+uv run --group tools tools/emit/casci_reference.py
+uv run --group tools tools/emit/fci_step_reference.py
+uv run --group tools tools/emit/casscf_reference.py
+uv run --group tools tools/emit/record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ --threshold 1e-8 \
     --bse-out c_ccpvdz_accd.bse.json

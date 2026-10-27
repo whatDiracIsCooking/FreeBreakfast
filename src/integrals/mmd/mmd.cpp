@@ -242,9 +242,9 @@ Status form_records(PrimitivePairClass &cls, const device::PrimitivePairSource &
 // non-increasing in record order, and the dressed bound (ordered_pair_bound) of
 // the record as stored and swapped, the swap a view with la and lb, and P - A
 // and P - B, exchanged. Each family has its own limit, because two emitters
-// write them: pair_bound (tools/emit_one_electron_kernels.py, J's screen)
+// write them: pair_bound (tools/emit/one_electron_kernels.py, J's screen)
 // through device::kPairBoundMaxMomentum, and the dressed bounds
-// (tools/emit_exchange_kernels.py, K's screen) through
+// (tools/emit/exchange_kernels.py, K's screen) through
 // device::kRecordBoundMaxMomentum, both f today. A class above a family's
 // limit keeps that family's zeroed bounds, and every build that reads them
 // refuses such a class.

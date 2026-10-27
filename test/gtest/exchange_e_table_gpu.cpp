@@ -3,7 +3,7 @@
 // ordered shell pair of H2O/cc-pVDZ (s, p, d) and CO/cc-pVTZ (through f, every
 // class to (f, f)), as a bra (unsigned) and a ket (odd |t| negated), against
 // FelizJueves's host launch_kblock.e_table (test/gtest/data/e_table/,
-// tools/emit_e_table_golden.py), and the launcher's refusals.
+// tools/emit/e_table_golden.py), and the launcher's refusals.
 //
 // The records are the golden's own zeta, P - A and P - B, uploaded as they
 // are, so what is compared is the table's arithmetic and layout alone: the

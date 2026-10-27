@@ -16,7 +16,7 @@ NRSRHF_CONFIGURATION equal the plain Madelung fill free_breakfast.sad uses; the
 two differ from Sc onwards for some transition metals and lanthanides, where a
 comparison would test the configuration table rather than the SCF.
 
-    uv run --group tools tools/emit_sad_reference.py
+    uv run --group tools tools/emit/sad_reference.py
 
 writes test/gtest/data/sad/atomic_scf.json. Re-run it to regenerate; the file
 is never hand-edited.
@@ -41,7 +41,7 @@ CASES: dict[str, list[str]] = {
 }
 
 OUT = (
-    pathlib.Path(__file__).resolve().parents[1]
+    pathlib.Path(__file__).resolve().parents[2]
     / "test"
     / "gtest"
     / "data"
@@ -125,7 +125,7 @@ def main() -> None:
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools tools/emit_sad_reference.py",
+            "command": "uv run --group tools tools/emit/sad_reference.py",
         },
         "bases": bases,
         "atoms": atoms,

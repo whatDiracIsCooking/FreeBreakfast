@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the reference data the Localization step's tests read.
 
-For each case below, PySCF's closed-shell RHF (as emit_scf_reference.py runs
+For each case below, PySCF's closed-shell RHF (as scf_reference.py runs
 it, over this tree's own basis files) is localized by PySCF's Pipek-Mezey with
 Mulliken populations, for both exponents. PySCF's optimizer stops at any
 stationary point, and from a symmetric molecule's canonical orbitals that is
@@ -24,7 +24,7 @@ functional over the IAO populations, every IBO's Mulliken population on every
 atom (as above, the convention-free match), and the IAO partial charges of
 eq 3, Z_A - 2 sum_i sum_{r in A} (A^T S C)_ri^2, which check the IAOs alone.
 
-    uv run --group tools tools/emit_localization_reference.py
+    uv run --group tools tools/emit/localization_reference.py
 
 writes test/gtest/data/localization/pipek_mezey.json and ibo.json. Re-run it
 to regenerate; the files are never hand-edited.
@@ -39,10 +39,10 @@ import platform
 
 import numpy
 import pyscf
-from emit_scf_reference import AMMONIUM, BASES, WATER, pyscf_basis
 from pyscf import gto, lo, scf
+from scf_reference import AMMONIUM, BASES, WATER, pyscf_basis
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "localization" / "pipek_mezey.json"
 OUT_IBO = OUT.with_name("ibo.json")
 
@@ -182,7 +182,7 @@ def main() -> None:
         "numpy": numpy.__version__,
         "date": datetime.date.today().isoformat(),
         "host": platform.node(),
-        "command": "uv run --group tools tools/emit_localization_reference.py",
+        "command": "uv run --group tools tools/emit/localization_reference.py",
     }
     pm_cases, ibo_cases = zip(*(case_reference(case) for case in CASES), strict=True)
     doc = {

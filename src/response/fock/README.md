@@ -105,7 +105,7 @@ all of them again with no J or K.
 ## Tests
 
 `test/gtest/response_fock_gpu.cpp`, against `test/gtest/data/casscf/casscf.json`
-(PySCF's `mc1step.gen_g_hop`, `tools/emit_casscf_reference.py`), at each case's
+(PySCF's `mc1step.gen_g_hop`, `tools/emit/casscf_reference.py`), at each case's
 recorded start: H₂O cc-pVDZ CAS(4,4) from RHF orbitals [2, 3, 5, 6], N₂ cc-pVDZ
 CAS(6,6) frontier, H₂CO cc-pVDZ CAS(4,3) at two singlets weighted [0.5, 0.5]
 and [0.7, 0.3], and H₂O cc-pVDZ by AVAS (O 2p, H 1s). The test reaches each

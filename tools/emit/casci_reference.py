@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the reference data the Casci step's tests read.
 
-For each case below, PySCF's closed-shell RHF (as emit_scf_reference.py runs
+For each case below, PySCF's closed-shell RHF (as scf_reference.py runs
 it, over this tree's own basis files, converged tighter) is handed to PySCF's
 `mcscf.CASCI` over a core and an active set of its canonical orbitals: the
 frontier ones (the step's default), or an explicit list put in place by
@@ -27,7 +27,7 @@ space, so each active space keeps every degenerate set of orbitals whole; the
 tool refuses one that splits a set.
 
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit_casci_reference.py
+        tools/emit/casci_reference.py
 
 writes test/gtest/data/casci/casci.json. Re-run it to regenerate; the file is
 never hand-edited.
@@ -42,13 +42,13 @@ import platform
 
 import numpy
 import pyscf
-from emit_active_integrals_reference import NITROGEN
-from emit_fci_reference import dense_hamiltonian
-from emit_scf_reference import BASES, WATER, pyscf_basis
+from active_integrals_reference import NITROGEN
+from fci_reference import dense_hamiltonian
 from pyscf import ao2mo, fci, gto, mcscf, scf
 from pyscf.mcscf import avas
+from scf_reference import BASES, WATER, pyscf_basis
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "casci" / "casci.json"
 
 # `active` is None for the frontier orbitals: the ncas above the
@@ -132,7 +132,7 @@ def case_reference(case: dict) -> dict:
         verbose=0,
     )
     mf = scf.RHF(mol)
-    # As emit_active_integrals_reference.py: a CASCI energy moves to first
+    # As active_integrals_reference.py: a CASCI energy moves to first
     # order in the orbitals.
     mf.conv_tol = 1e-14
     mf.conv_tol_grad = 1e-11
@@ -240,7 +240,7 @@ def main() -> None:
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools tools/emit_casci_reference.py",
+            "command": "uv run --group tools tools/emit/casci_reference.py",
         },
         "cases": [case_reference(case) for case in CASES],
     }

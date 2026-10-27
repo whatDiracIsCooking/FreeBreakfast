@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Write the reference data the CASSCF tests read.
 
-For each case below, PySCF's closed-shell RHF (as emit_casci_reference.py runs
+For each case below, PySCF's closed-shell RHF (as casci_reference.py runs
 it, over this tree's own basis files) is handed to PySCF's `mcscf.CASSCF` over
 a core and an active set of its canonical orbitals: the frontier ones, an
 explicit `active` list (0-based indices into the RHF orbitals in ascending
@@ -68,7 +68,7 @@ each of the core, active and virtual spaces, and the state-averaged natural
 occupations.
 
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit_casscf_reference.py
+        tools/emit/casscf_reference.py
 
 writes test/gtest/data/casscf/casscf.json. Re-run it to regenerate; the file is
 never hand-edited. BLAS and OpenMP are pinned to THREADS, so a run does not
@@ -92,14 +92,14 @@ import platform  # noqa: E402
 
 import numpy  # noqa: E402
 import pyscf  # noqa: E402
-from emit_active_integrals_reference import NITROGEN  # noqa: E402
-from emit_casci_reference import WEIGHT_MARGIN  # noqa: E402
-from emit_fci_reference import dense_hamiltonian  # noqa: E402
-from emit_scf_reference import BASES, WATER, pyscf_basis  # noqa: E402
+from active_integrals_reference import NITROGEN  # noqa: E402
+from casci_reference import WEIGHT_MARGIN  # noqa: E402
+from fci_reference import dense_hamiltonian  # noqa: E402
 from pyscf import ao2mo, fci, gto, lib, mcscf, scf  # noqa: E402
 from pyscf.mcscf import avas, mc1step  # noqa: E402
+from scf_reference import BASES, WATER, pyscf_basis  # noqa: E402
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "casscf" / "casscf.json"
 
 # Formaldehyde in the yz plane, C=O along z: C=O 1.203 A, C-H 1.101 A,
@@ -534,7 +534,7 @@ def main() -> None:
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools tools/emit_casscf_reference.py",
+            "command": "uv run --group tools tools/emit/casscf_reference.py",
             "threads": THREADS,
         },
         "cases": [case_reference(case) for case in CASES],

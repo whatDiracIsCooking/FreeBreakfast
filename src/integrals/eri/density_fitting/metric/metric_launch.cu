@@ -29,7 +29,7 @@ static_assert(std::extent_v<decltype(metric_kernels), 0> ==
                   std::extent_v<decltype(metric_kernels), 1> ==
                       free_breakfast::device::kMetricMaxMomentum + 1,
               "kernels/'s [lP][lQ] table and kMetricMaxMomentum disagree: rerun "
-              "tools/emit_df_kernels.py");
+              "tools/emit/df_kernels.py");
 
 namespace free_breakfast::device {
 

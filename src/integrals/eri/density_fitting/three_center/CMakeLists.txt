@@ -1,5 +1,5 @@
 # The DF three-center integrals' device library: the generated kernels
-# eri3<la, lb, lP> (kernels/, written by tools/emit_df_kernels.py), one per
+# eri3<la, lb, lP> (kernels/, written by tools/emit/df_kernels.py), one per
 # class la <= lb through f against lP through g, each compiled on its own, and
 # three_center_launch.cu, the per-class launcher and the (m, n)
 # symmetrization, which checks their table (kernels/eri3.h) against the limits

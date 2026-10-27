@@ -37,7 +37,7 @@ Host, in `test/gtest/ci_<name>_host.cpp`, linked into `free_breakfast_tests_host
 device, in `test/gtest/ci_<name>_gpu.cpp`, linked into `free_breakfast_tests_gpu`.
 The golden data, PySCF's `fci.direct_spin1` over its own active-space
 integrals and its `make_rdm12` over stored CI vectors, is `test/gtest/data/ci/`,
-written by `tools/emit_fci_reference.py`.
+written by `tools/emit/fci_reference.py`.
 
 The host references the device is checked against, `host_sigma`,
 `host_diagonal`, `host_rdm1`, `host_rdm12` and `host_spin_square`, are plain

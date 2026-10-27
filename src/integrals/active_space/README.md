@@ -118,7 +118,7 @@ per call.
 ## Tests
 
 `test/gtest/active_space_gpu.cpp`, against PySCF's CASCI through
-`test/gtest/data/active_space/` (`tools/emit_active_integrals_reference.py`),
+`test/gtest/data/active_space/` (`tools/emit/active_integrals_reference.py`),
 over H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, each at `tau = 0` and the
 defaults: E_core and the sign-invariant h_eff_tt, (tt|uu) and (tu|tu) to 1e-10;
 the RHF energy given back by an active space spanning occupied and virtual

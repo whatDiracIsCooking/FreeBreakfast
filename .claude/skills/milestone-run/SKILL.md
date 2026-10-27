@@ -329,7 +329,7 @@ Rules:
   working in parallel, and a generated kernel has no clean 3-way merge — if
   you need to change a file outside your partition, reply "STUCK: <what>"
   instead. If asked to rebase, REGENERATE emitted kernels (the FelizJueves
-  tools/emit_*_kernels.py scripts) rather than hand-merging their text.
+  tools/emit/*_kernels.py scripts) rather than hand-merging their text.
 - If the issue is ambiguous in a way the code can't answer, reply
   "STUCK: <question>" rather than guessing.
 ```

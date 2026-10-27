@@ -3,9 +3,9 @@
 // once per basis, in descending zeta order (the order sorted from zeta alone,
 // then every field written once, already in it), then each record's Schwarz
 // bound through the generated pair_bound<la, lb> (kernels/pair_bound/,
-// written by tools/emit_one_electron_kernels.py) and its dressed bound, as
+// written by tools/emit/one_electron_kernels.py) and its dressed bound, as
 // stored and swapped, through the generated record_bound<la, lb>
-// (kernels/record_bound/, written by tools/emit_exchange_kernels.py), each
+// (kernels/record_bound/, written by tools/emit/exchange_kernels.py), each
 // class its own unit of this library: launching a specialization another TU
 // defines wants relocatable device code under nvcc. One source for both
 // backends -- nvcc under CUDA, clang -x hip under HIP.
@@ -142,13 +142,13 @@ constexpr int32_t kRecordBoundMaxL =
 
 static_assert(std::extent_v<decltype(pair_bound_kernels), 1> == kPairBoundMaxL + 1,
               "kernels/pair_bound's [la][lb] table is not square: rerun "
-              "tools/emit_one_electron_kernels.py");
+              "tools/emit/one_electron_kernels.py");
 static_assert(kPairBoundMaxL == kPairBoundMaxMomentum,
               "kernels/pair_bound's table and kPairBoundMaxMomentum disagree");
 
 static_assert(std::extent_v<decltype(record_bound_kernels), 1> == kRecordBoundMaxL + 1,
               "kernels/record_bound's [la][lb] table is not square: rerun "
-              "tools/emit_exchange_kernels.py");
+              "tools/emit/exchange_kernels.py");
 static_assert(kRecordBoundMaxL == kRecordBoundMaxMomentum,
               "kernels/record_bound's table and kRecordBoundMaxMomentum disagree");
 

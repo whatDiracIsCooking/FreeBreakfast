@@ -4,13 +4,13 @@
 N2 in cc-pVDZ at its equilibrium bond (1.0977 A) and stretched to 2.0 A, the
 second strongly multireference, each with a CAS(10,10) and a CAS(12,12) over
 PySCF's closed-shell RHF orbitals, the lowest-energy ones above the frozen
-core. As in emit_fci_reference.py: E_core and h_eff from `get_h1eff`, (tu|vw)
+core. As in fci_reference.py: E_core and h_eff from `get_h1eff`, (tu|vw)
 from `get_h2eff` restored to n^4, chemists' order, row-major, in that file's
 `cases` schema, so the bench reads either file. Nothing is solved here; the
 bench compares its solves with each other, not with PySCF.
 
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit_ci_bench_integrals.py build-bench/ci_bench_integrals.json
+        tools/emit/ci_bench_integrals.py build-bench/ci_bench_integrals.json
 
 The output is not committed: it is a few MB of benchmark input, regenerated in
 seconds.
@@ -62,7 +62,7 @@ def case(name: str, bond: float, n: int) -> dict:
 
 def main() -> None:
     if len(sys.argv) != 2:
-        sys.exit("usage: emit_ci_bench_integrals.py OUT.json")
+        sys.exit("usage: ci_bench_integrals.py OUT.json")
     out = pathlib.Path(sys.argv[1])
     out.parent.mkdir(parents=True, exist_ok=True)
     doc = {"cases": [case(*c) for c in CASES]}

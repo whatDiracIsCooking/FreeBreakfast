@@ -96,7 +96,7 @@ GpuRuntime for a failed copy or gemm.
 
 `test/gtest/pipeline_casci_gpu.cpp`, against PySCF's `mcscf.CASCI` over its own
 RHF in this tree's basis files (`test/gtest/data/casci/`,
-`tools/emit_casci_reference.py`), through the real registry from a config
+`tools/emit/casci_reference.py`), through the real registry from a config
 naming `[casci]`, its Scf step at the defaults: H₂O STO-3G and
 cc-pVDZ CAS(4,4) and N₂ cc-pVDZ CAS(6,6) on the frontier orbitals, and H₂O
 cc-pVDZ CAS(4,4) on an explicit, non-contiguous set. No active space splits a

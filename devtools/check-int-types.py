@@ -40,7 +40,7 @@ EXEMPT_FILES = frozenset({"src/core/types/vec.h"})
 
 SUPPRESS_MARKER = "int-type-ok:"
 
-# FelizJueves's banner, which tools/emit_one_electron_kernels.py keeps as the
+# FelizJueves's banner, which tools/emit/one_electron_kernels.py keeps as the
 # first line. Matched on the first line only, so quoting it elsewhere exempts
 # nothing.
 _GENERATED_BANNER = re.compile(

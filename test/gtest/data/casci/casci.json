@@ -5,7 +5,7 @@
   "numpy": "2.5.4",
   "date": "2026-10-24",
   "host": "fe6aa7dc4452",
-  "command": "uv run --group tools tools/emit_casci_reference.py"
+  "command": "uv run --group tools tools/emit/casci_reference.py"
  },
  "cases": [
   {

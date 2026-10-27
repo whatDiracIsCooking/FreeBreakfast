@@ -114,7 +114,7 @@ are reproduced in [Appendix C](#appendix-c-pyscf-notice).
 ### 3. Reference data for the test suite (no obligation)
 
 `test/gtest/data/` holds numerical reference values produced by **running**
-PySCF — the `tools/emit_*_reference.py` scripts import it and record its
+PySCF — the `tools/emit/*_reference.py` scripts import it and record its
 output. Those scripts vendor no PySCF code, and the output of running a program
 is not covered by the program's licence, so nothing is owed for this. It is
 listed because the dependency is real and worth knowing about: PySCF is an

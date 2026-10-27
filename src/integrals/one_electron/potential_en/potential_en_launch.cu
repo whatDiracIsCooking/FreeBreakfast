@@ -33,7 +33,7 @@ constexpr int32_t kMaxL =
 
 static_assert(std::extent_v<decltype(potential_en_kernels), 1> == kMaxL + 1,
               "kernels/'s [la][lb] table is not square: rerun "
-              "tools/emit_one_electron_kernels.py");
+              "tools/emit/one_electron_kernels.py");
 
 wwr::wwrError_t potential_en_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
                                    const NucleiView &nuclei, const int32_t n_ao, double *v) {

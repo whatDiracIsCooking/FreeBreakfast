@@ -154,7 +154,7 @@ Every test needs a GPU.
 - `test/gtest/pipeline_localization_gpu.cpp`, the oracle: water in STO-3G and
   cc-pVDZ and NH4+ in cc-pVDZ, both exponents, through the step
   (`pipeline/localization`), against PySCF's Pipek-Mezey
-  (`tools/emit_localization_reference.py`): L to 1e-8, and every orbital's
+  (`tools/emit/localization_reference.py`): L to 1e-8, and every orbital's
   Mulliken population on every atom matched to a PySCF orbital to 1e-5. The
   populations stand in for the orbitals, which the two codes express over
   differently normalised and ordered AOs. Water has an odd occupied count, so

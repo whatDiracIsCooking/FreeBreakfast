@@ -1,5 +1,5 @@
 {
- "description": "K's dressed record bound, ao.k.record_bounds, of every ordered shell pair of h10_chain_ccpvdz's basis -- written by tools/emit_record_bound_golden.py",
+ "description": "K's dressed record bound, ao.k.record_bounds, of every ordered shell pair of h10_chain_ccpvdz's basis -- written by tools/emit/record_bound_golden.py",
  "source": {
   "felizjueves": "427810aa3b9e70bf6ec82dcfa2507e9527ab47dc",
   "reference": "felizjueves.ao.k.record_bounds(epair(sa, sb), pq=felizjueves.reference.pq.pq)",

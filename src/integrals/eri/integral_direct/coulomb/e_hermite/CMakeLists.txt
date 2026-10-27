@@ -1,7 +1,7 @@
 # The [p|q] contraction's launcher. Device code in its own library, so its
 # language and -x hip never reach the module compiles. Its sources are the
 # launcher and the generated kernels (kernels/, written by
-# tools/emit_coulomb_kernels.py), one per Hermite class, each compiled on its
+# tools/emit/coulomb_kernels.py), one per Hermite class, each compiled on its
 # own: the launcher includes only kernels/e_hermite.h and launches through its
 # table. Under CUDA that wants relocatable device code, this library's
 # default, so it must never pass NO_DEVICE_LINKING (nvcc warns #20280 without

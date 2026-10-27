@@ -10,7 +10,7 @@ in. Recorded: the total energy, the nuclear repulsion, and the orbital
 energies, all invariant under the AO normalisation, which differs between the
 two codes.
 
-    uv run --group tools tools/emit_scf_reference.py
+    uv run --group tools tools/emit/scf_reference.py
 
 writes test/gtest/data/scf/rhf.json. Re-run it to regenerate; the file is
 never hand-edited.
@@ -27,7 +27,7 @@ import numpy
 import pyscf
 from pyscf import gto, scf
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "scf" / "rhf.json"
 
 # The builtin basis name the C++ side resolves, and its file under data/basis.
@@ -139,7 +139,7 @@ def main() -> None:
             "numpy": numpy.__version__,
             "date": datetime.date.today().isoformat(),
             "host": platform.node(),
-            "command": "uv run --group tools tools/emit_scf_reference.py",
+            "command": "uv run --group tools tools/emit/scf_reference.py",
         },
         "cases": [rhf(case) for case in CASES],
     }

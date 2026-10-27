@@ -42,7 +42,7 @@ namespace free_breakfast::device {
 
 /// @brief K's L limit: the largest momentum of a shell in any class the K
 /// build takes, f. Its kernels are emitted through it
-/// (tools/emit_exchange_kernels.py's MAX_L), and exchange_launch.cu checks it
+/// (tools/emit/exchange_kernels.py's MAX_L), and exchange_launch.cu checks it
 /// against their tables, which a host module unit cannot include; the tree-wide
 /// kMaxAngularMomentum is not K's.
 inline constexpr int32_t kExchangeMaxMomentum = 3;

@@ -5,13 +5,13 @@ src/integrals/eri/integral_direct/coulomb/.
 The kernels are FelizJueves's (deps/FelizJueves), emitted here and committed,
 so a build never runs Python. Run this after bumping that submodule:
 
-    tools/emit_coulomb_kernels.py
+    tools/emit/coulomb_kernels.py
 
 They are the three generated steps of FelizJueves's McMurchie-Davidson J
 build (its docs/implementation/j_engine.md, "The J chain as device code"),
 one kernel template per family. The record bound its screen reads,
 `pair_bound<la, lb>`, is not here: it is a field of every mmd record, computed
-once per basis, so tools/emit_one_electron_kernels.py writes it, to
+once per basis, so tools/emit/one_electron_kernels.py writes it, to
 src/integrals/mmd/kernels/pair_bound/.
 
 - `dq<lc, ld>`, the ket pre-contraction D_q = w SUM_cd D_cd s E^cd_q and
@@ -37,7 +37,7 @@ serves a 32- and a 64-lane build; its header's `e_hermite_block_dim` is the
 block to launch it with, {1, FJ_WAVEFRONT}. `dq` and `jab`
 have no shuffle, so their text has no width at all. Nothing is added to the text here.
 
-As tools/emit_one_electron_kernels.py does, each class is one explicit
+As tools/emit/one_electron_kernels.py does, each class is one explicit
 specialization of its family's template, written to the `kernels/` of the
 family's module (coulomb/dq/, coulomb/e_hermite/, and coulomb/j_coulomb/ for
 jab), which also gets one header, `<family>.h`, every unit includes: the
@@ -49,7 +49,7 @@ Hermite classes are every (lp, lq) with both at most 2 MAX_L.
 The device Boys routine the units with a fundamental include, `eval_boys.h`,
 and the per-order `eval_boys_{M}.h` it includes for M in 0..20 (all of
 `gpu.emit_boys()`), are written once, to src/integrals/shared/, by this tool
-and tools/emit_one_electron_kernels.py alike: they are one text, so either leaves
+and tools/emit/one_electron_kernels.py alike: they are one text, so either leaves
 them as the other would.
 
 FelizJueves needs only the standard library to import, so this needs no
@@ -61,7 +61,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 
 from felizjueves.emit import gpu  # noqa: E402

@@ -1,5 +1,5 @@
 // response::fock on the device, at each case's CASCI orbitals, against PySCF's
-// mc1step.gen_g_hop (data/casscf/casscf.json, tools/emit_casscf_reference.py):
+// mc1step.gen_g_hop (data/casscf/casscf.json, tools/emit/casscf_reference.py):
 // the weighted energy against the CASCI energy; the gradient's sign-invariant
 // sqrt(sum g_pq^2) per pair of orbital sets, and |g|; the gradient against a
 // central finite difference of the energy along random kappa, the RDMs fixed;

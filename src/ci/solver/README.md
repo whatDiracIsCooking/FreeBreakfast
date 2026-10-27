@@ -220,7 +220,7 @@ further, and where it stalls it spends its whole `max_iterations` (N₂
 CAS(12,12) at 1e-7: 400 FP32 iterations on the 3080, though not on the
 gfx1200). 1e-6, the default, converged in every case measured and was the
 fastest setting that did. `bench/ci_sigma_precision` over
-`tools/emit_ci_bench_integrals.py`'s N₂ cc-pVDZ active spaces, three singlets,
+`tools/emit/ci_bench_integrals.py`'s N₂ cc-pVDZ active spaces, three singlets,
 `max_iterations` 400 (100, the default, does not converge these
 FP64-only), each card idle (the 3080 held through `devtools/lib.sh`'s GPU
 slots), all in the full layout, before the symmetric one (whose numbers

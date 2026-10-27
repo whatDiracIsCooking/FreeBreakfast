@@ -5,7 +5,7 @@
   "numpy": "2.5.4",
   "date": "2026-10-27",
   "host": "679c90eaf251",
-  "command": "uv run --group tools tools/emit_sad_reference.py"
+  "command": "uv run --group tools tools/emit/sad_reference.py"
  },
  "bases": {
   "sto-3g": {

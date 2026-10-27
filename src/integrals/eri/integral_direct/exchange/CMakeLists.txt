@@ -7,7 +7,7 @@ add_subdirectory(pairs)
 
 # The K launchers. Device code in its own library, so its language and -x hip
 # never reach a module compile. Its sources are the launcher and the generated
-# kernels (written by tools/emit_exchange_kernels.py), one per K class through
+# kernels (written by tools/emit/exchange_kernels.py), one per K class through
 # f, each compiled on its own: kb<la, lc, lb, ld> (kernels/kb/) for the 81
 # classes through d, and the rolled kbr<la, lc, lb, ld> (kernels/kbr/) for the
 # 175 with an f shell. The launcher includes kernels/kb/kb.h, kernels/kbr/kbr.h
