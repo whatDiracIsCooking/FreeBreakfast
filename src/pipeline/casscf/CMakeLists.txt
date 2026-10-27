@@ -30,7 +30,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
   free_breakfast::integrals::active_space
-  free_breakfast::mcscf::fock
+  free_breakfast::response::fock
   free_breakfast::io::molden
   free_breakfast::recipes::blas
   free_breakfast::recipes::diagonalize

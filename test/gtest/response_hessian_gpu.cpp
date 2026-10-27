@@ -1,15 +1,15 @@
-// mcscf::Hessian on the device, at each case's CASCI orbitals, against PySCF's
+// response::Hessian on the device, at each case's CASCI orbitals, against PySCF's
 // mc1step.gen_g_hop (data/casscf/casscf.json, tools/emit_casscf_reference.py,
 // doubled there as here): the sign-invariant gᵀHg, |Hg| and the diagonal
 // summed per pair of orbital sets; H x against a central finite difference of
-// mcscf::fock's gradient along random kappa, the RDMs fixed; and symmetry.
+// response::fock's gradient along random kappa, the RDMs fixed; and symmetry.
 // On H2O STO-3G, H e_i for every unit vector against the diagonal, at a
 // two-root CAS(2,2) and at ncas = 0; and the refusals.
 //
-// The orbitals are the setup's own, as in mcscf_fock_gpu.cpp: the SCF (run
+// The orbitals are the setup's own, as in response_fock_gpu.cpp: the SCF (run
 // with J unscreened), the active space picked by pipeline.active_space as the
 // Casci step picks it (by index, or by AVAS), and the RDMs from the CasciOutput
-// step's roots and ci.rdm's ci::Rdm. So this executable links pipeline; mcscf
+// step's roots and ci.rdm's ci::Rdm. So this executable links pipeline; response
 // itself does not. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
@@ -25,7 +25,7 @@ import free_breakfast.io.json;
 import free_breakfast.recipes.expm;
 import free_breakfast.integrals;
 import free_breakfast.ci;
-import free_breakfast.mcscf;
+import free_breakfast.response;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -42,10 +42,10 @@ namespace fb = free_breakfast;
 constexpr double kInvariantTolerance = 1e-7; // gᵀHg and |Hg|, relative
 constexpr double kDiagonalTolerance = 1e-7;
 constexpr double kFiniteDifferenceTolerance = 1e-6; // relative to |H x|
-// mcscf::Hessian's default tau_j and tau_k, which every operator here is built
+// response::Hessian's default tau_j and tau_k, which every operator here is built
 // at.
 constexpr double kTau = 1e-14;
-// |x^T H y - y^T H x| <= this max |H| |x| |y|: 100 tau, src/mcscf/hessian's
+// |x^T H y - y^T H x| <= this max |H| |x| |y|: 100 tau, src/response/hessian's
 // README says why (seen: 1e-13 at most, of max |diag H|).
 constexpr double kSymmetryTolerance = 100.0 * kTau;
 // The orbital energies only pair our orbitals with PySCF's by index.
@@ -98,7 +98,7 @@ void upload(fb::DeviceResources &res, const std::vector<double> &host, double *d
   EXPECT_EQ(wwr::wwrStreamSynchronize(res.stream()), wwr::wwrSuccess);
 }
 
-// The packed order, as src/mcscf/README.md documents it: (p, q) per packed
+// The packed order, as src/response/README.md documents it: (p, q) per packed
 // element.
 std::vector<std::pair<std::size_t, std::size_t>> packed_pairs(std::size_t nmo, std::size_t ncore,
                                                               std::size_t ncas) {
@@ -119,7 +119,7 @@ std::vector<std::pair<std::size_t, std::size_t>> packed_pairs(std::size_t nmo, s
 // The reference's molecule through the real registry to the Scf step's inputs. The
 // Scf step itself is run by hand: tau_j is not a TOML key.
 std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeResources &node) {
-  const fb::test::ScratchDir dir("mcscf_hessian");
+  const fb::test::ScratchDir dir("response_hessian");
   // Bohr in the reference, Angstrom in an XYZ file.
   std::string xyz =
       std::format("{}\n{}\n", entry.at("atoms").size(), entry.at("name").get<std::string>());
@@ -165,7 +165,7 @@ fb::CasciStep casci_step(const fb::json &entry) {
   return step;
 }
 
-// Everything mcscf::fock and mcscf::Hessian read, from one converged SCF,
+// Everything response::fock and response::Hessian read, from one converged SCF,
 // and with a CASCI, its orbitals and the weighted RDMs of its roots.
 struct Setup {
   fb::NodeResources node;
@@ -202,14 +202,14 @@ struct Setup {
     return std::pair{std::move(built->ppaa), std::move(built->papa)};
   }
 
-  [[nodiscard]] fb::Result<fb::mcscf::Fock> fock(const fb::SphericalMatrixAO &orbitals,
-                                                 const fb::Buffers::device<double> &ppaa) {
-    return fb::mcscf::fock(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes,
-                           orbitals, ncore, ncas, ppaa, gamma, gamma2);
+  [[nodiscard]] fb::Result<fb::response::Fock> fock(const fb::SphericalMatrixAO &orbitals,
+                                                    const fb::Buffers::device<double> &ppaa) {
+    return fb::response::fock(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes,
+                              orbitals, ncore, ncas, ppaa, gamma, gamma2);
   }
 
-  // mcscf::fock over orbitals, its integrals built over them too.
-  [[nodiscard]] fb::Result<fb::mcscf::Fock> fock(const fb::SphericalMatrixAO &orbitals) {
+  // response::fock over orbitals, its integrals built over them too.
+  [[nodiscard]] fb::Result<fb::response::Fock> fock(const fb::SphericalMatrixAO &orbitals) {
     auto built = integrals(orbitals);
     if (!built.has_value()) {
       return std::unexpected(std::move(built.error()));
@@ -345,8 +345,8 @@ std::optional<fb::SphericalMatrixAO> rotate(Setup &setup, const fb::SphericalMat
   fb::Buffers::device<double> w(setup.nmo, res.device());
   fb::Buffers::device<double> e(nn, res.device());
   upload(res, x, packed.data());
-  if (!fb::mcscf::unpack_orbital_pairs(res, nmo, setup.ncore, setup.ncas, packed.data(),
-                                       kappa.data())
+  if (!fb::response::unpack_orbital_pairs(res, nmo, setup.ncore, setup.ncas, packed.data(),
+                                          kappa.data())
            .has_value() ||
       !fb::skew_eig<double>(res, nmo, kappa.data(), u.data(), w.data()).has_value() ||
       !fb::skew_expm<double>(res, nmo, u.data(), w.data(), t, e.data()).has_value()) {
@@ -392,7 +392,8 @@ double norm(const std::vector<double> &a) {
 }
 
 // H X for the columns of x, applied as one block.
-std::vector<std::vector<double>> apply_block(fb::DeviceResources &res, fb::mcscf::Hessian &hessian,
+std::vector<std::vector<double>> apply_block(fb::DeviceResources &res,
+                                             fb::response::Hessian &hessian,
                                              const std::vector<std::vector<double>> &x) {
   const auto n = static_cast<std::size_t>(hessian.size());
   std::vector<double> block;
@@ -414,12 +415,12 @@ std::vector<std::vector<double>> apply_block(fb::DeviceResources &res, fb::mcscf
   return columns;
 }
 
-// The gradient of f(K) = E(C exp(K)) at K = t kappa(x), from mcscf::fock at
+// The gradient of f(K) = E(C exp(K)) at K = t kappa(x), from response::fock at
 // C' = C exp(t kappa): exp(K + Y) = exp(K) exp(Y - [K, Y] / 2 + O(K^2 Y)), so
 // df/dY = G' + t [kappa, G'] / 2 packed, G' = 2 (F' - F'^T) over every pair.
-// mcscf::fock's gradient alone is G' packed: its t derivative differs from
+// response::fock's gradient alone is G' packed: its t derivative differs from
 // H x by [kappa, G] / 2, which is not small off a stationary point.
-std::optional<std::vector<double>> reference_gradient(Setup &setup, const fb::mcscf::Fock &fock,
+std::optional<std::vector<double>> reference_gradient(Setup &setup, const fb::response::Fock &fock,
                                                       const std::vector<double> &kappa, double t) {
   const std::size_t nmo = setup.nmo;
   const std::vector<double> f = download(setup.res(), fock.fock.data(), nmo * nmo);
@@ -449,7 +450,7 @@ std::optional<std::vector<double>> reference_gradient(Setup &setup, const fb::mc
 }
 
 // d/dt of reference_gradient along x at t = 0, by Richardson's extrapolation
-// of two central differences: H x, with fock(orbitals) mcscf::fock's result
+// of two central differences: H x, with fock(orbitals) response::fock's result
 // at the setup's RDMs.
 template <typename Fock>
 std::optional<std::vector<double>> gradient_slope(Setup &setup, const fb::SphericalMatrixAO &c,
@@ -529,13 +530,13 @@ void expect_symmetric(const std::vector<std::vector<double>> &x,
 }
 
 // The operator at the setup's orbitals; tau is both J's and K's screen.
-fb::Result<fb::mcscf::Hessian> build_hessian(Setup &setup, const fb::SphericalMatrixAO &c,
-                                             const fb::Buffers::device<double> &ppaa,
-                                             const fb::Buffers::device<double> &papa,
-                                             const fb::mcscf::Fock &fock, double tau = kTau) {
-  return fb::mcscf::Hessian::create(setup.res(), *setup.basis, setup.h->h, setup.transform->u,
-                                    setup.j_classes, setup.k_classes, c, setup.ncore, setup.ncas,
-                                    ppaa, papa, fock, tau, tau);
+fb::Result<fb::response::Hessian> build_hessian(Setup &setup, const fb::SphericalMatrixAO &c,
+                                                const fb::Buffers::device<double> &ppaa,
+                                                const fb::Buffers::device<double> &papa,
+                                                const fb::response::Fock &fock, double tau = kTau) {
+  return fb::response::Hessian::create(setup.res(), *setup.basis, setup.h->h, setup.transform->u,
+                                       setup.j_classes, setup.k_classes, c, setup.ncore, setup.ncas,
+                                       ppaa, papa, fock, tau, tau);
 }
 
 struct Case {
@@ -549,9 +550,9 @@ void PrintTo(const Case &c, std::ostream *os) {
   *os << c.name;
 }
 
-class McscfHessian : public ::testing::TestWithParam<Case> {};
+class ResponseHessian : public ::testing::TestWithParam<Case> {};
 
-TEST_P(McscfHessian, MatchesPyscfAtTheCasciOrbitals) {
+TEST_P(ResponseHessian, MatchesPyscfAtTheCasciOrbitals) {
   FBF_REQUIRE_GPU();
   if (GetParam().slow) {
     FBF_SKIP_IF_FAST_TESTS();
@@ -628,7 +629,7 @@ TEST_P(McscfHessian, MatchesPyscfAtTheCasciOrbitals) {
   expect_symmetric(x, hx, top);
 }
 
-INSTANTIATE_TEST_SUITE_P(Pyscf, McscfHessian,
+INSTANTIATE_TEST_SUITE_P(Pyscf, ResponseHessian,
                          ::testing::Values(Case{.name = "h2o_ccpvdz", .slow = false},
                                            Case{.name = "n2_ccpvdz", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2", .slow = true},
@@ -680,7 +681,7 @@ void expect_whole_hessian(Setup &setup, const fb::SphericalMatrixAO &c,
 // H2O STO-3G, frontier CAS(2,2) at two singlets weighted [0.6, 0.4]: every
 // kind of pair (core-active, core-virtual, active-virtual) and the weighted
 // RDMs.
-TEST(McscfHessianUnitVectors, DiagonalIsHOnEveryUnitVector) {
+TEST(ResponseHessianUnitVectors, DiagonalIsHOnEveryUnitVector) {
   FBF_REQUIRE_GPU();
   fb::json entry = reference_case("h2o_ccpvdz");
   entry["name"] = "h2o_sto3g_cas22";
@@ -702,7 +703,7 @@ TEST(McscfHessianUnitVectors, DiagonalIsHOnEveryUnitVector) {
 
 // ncas = 0, the RHF orbital Hessian, at and off the SCF: with no active space
 // there is no H_act, and every pair is core-virtual.
-TEST(McscfHessianRhfLimit, DiagonalIsHOnEveryUnitVector) {
+TEST(ResponseHessianRhfLimit, DiagonalIsHOnEveryUnitVector) {
   FBF_REQUIRE_GPU();
   fb::json entry = reference_case("h2o_ccpvdz");
   entry["basis"] = "sto-3g";
@@ -721,7 +722,7 @@ TEST(McscfHessianRhfLimit, DiagonalIsHOnEveryUnitVector) {
 }
 
 // Everything create refuses, and apply's.
-TEST(McscfHessianRefusals, AreInvalidConfig) {
+TEST(ResponseHessianRefusals, AreInvalidConfig) {
   FBF_REQUIRE_GPU();
   fb::json entry = reference_case("h2o_ccpvdz");
   entry["basis"] = "sto-3g";
@@ -743,11 +744,11 @@ TEST(McscfHessianRefusals, AreInvalidConfig) {
   const fb::Buffers::device<double> short_ppaa(nmo * nmo, res.device());
   const auto call = [&](std::int32_t ncore, std::int32_t ncas, const fb::Buffers::device<double> &p,
                         double tau = kTau) {
-    return fb::mcscf::Hessian::create(res, *setup->basis, setup->h->h, setup->transform->u,
-                                      setup->j_classes, setup->k_classes, setup->scf->c, ncore,
-                                      ncas, p, papa, *fock, tau, tau);
+    return fb::response::Hessian::create(res, *setup->basis, setup->h->h, setup->transform->u,
+                                         setup->j_classes, setup->k_classes, setup->scf->c, ncore,
+                                         ncas, p, papa, *fock, tau, tau);
   };
-  const auto refused = [](const fb::Result<fb::mcscf::Hessian> &r, std::string_view what) {
+  const auto refused = [](const fb::Result<fb::response::Hessian> &r, std::string_view what) {
     ASSERT_FALSE(r.has_value());
     EXPECT_EQ(r.error().kind, fb::ErrorKind::InvalidConfig);
     EXPECT_NE(r.error().message.find(what), std::string::npos) << r.error().message;

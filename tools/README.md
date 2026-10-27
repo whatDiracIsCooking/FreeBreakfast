@@ -98,8 +98,8 @@ emit_casscf_reference.py
                   CASCI energies and the sign-invariant parts of gen_g_hop's
                   gradient and orbital Hessian; converged, the energies,
                   each space's orbital energies and the natural occupations,
-                  the reference src/mcscf and the Casscf step are tested
-                  against. Needs PySCF.
+                  the reference src/response, src/mcscf and the Casscf step
+                  are tested against. Needs PySCF.
 emit_ci_bench_integrals.py
                   Write the given JSON path (untracked): PySCF's CAS(10,10)
                   and CAS(12,12) integrals of N2 cc-pVDZ at 1.0977 and

@@ -31,8 +31,8 @@ import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;
 import free_breakfast.ci.rdm;
 import free_breakfast.ci.solver;
-import free_breakfast.mcscf.fock;
-import free_breakfast.mcscf.hessian;
+import free_breakfast.response.fock;
+import free_breakfast.response.hessian;
 
 #include "diagnostics.h"
 
@@ -415,8 +415,9 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     FBF_TRY(ci_rdm.rdm12(res, w, roots->vectors.data(), gamma_device.data(), gamma2_device.data()));
     std::vector<double> gamma = FBF_TRY(casscf_download(res, gamma_device.data(), n * n));
     std::vector<double> gamma2 = FBF_TRY(casscf_download(res, gamma2_device.data(), n * n * n * n));
-    Fock fock = FBF_TRY(mcscf::fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore,
-                                    ncas, ints.ppaa, gamma, gamma2, options.tau_j, options.tau_k));
+    response::Fock fock =
+        FBF_TRY(response::fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore, ncas,
+                               ints.ppaa, gamma, gamma2, options.tau_j, options.tau_k));
     const std::vector<double> g = FBF_TRY(casscf_download(res, fock.gradient.data(), pairs));
     const double g_norm = std::sqrt(casscf_dot(g, g));
     last_gradient = g_norm;
@@ -476,9 +477,9 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     //    until it is small, the radius is reached or max_micro is. H~ is fixed
     //    for the macro iteration, so the solves share one subspace Q (see the
     //    README).
-    Hessian hessian =
-        FBF_TRY(Hessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                                ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
+    response::Hessian hessian = FBF_TRY(
+        response::Hessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
+                                  ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
     // diag(H) for the preconditioner, copied once for the macro iteration, and
     // read back for its scale.
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_diagonal.data(), hessian.diagonal().data(),
@@ -517,7 +518,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     // y += R x.
     const auto respond = [&](const double *x, double *y) -> Status {
       // H'(x) from kappa(x), and b_r = H' c_r for every root.
-      FBF_TRY(unpack_orbital_pairs(res, nmo, ncore, ncas, x, response_matrix.data()));
+      FBF_TRY(response::unpack_orbital_pairs(res, nmo, ncore, ncas, x, response_matrix.data()));
       const std::vector<double> kappa_host =
           FBF_TRY(casscf_download(res, response_matrix.data(), mo * mo));
       std::vector<double> h1(n * n);
@@ -618,8 +619,8 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       std::vector<double> a(mo * mo);
       response_gradient(response_ints, gamma_t, gamma2_t, a);
       FBF_TRY(casscf_upload(res, a, response_matrix.data()));
-      FBF_TRY(pack_orbital_pairs(res, nmo, ncore, ncas, response_matrix.data(),
-                                 response_packed.data()));
+      FBF_TRY(response::pack_orbital_pairs(res, nmo, ncore, ncas, response_matrix.data(),
+                                           response_packed.data()));
       return gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>,
                                                    response_packed.data(), 1, y, 1));
     };
@@ -855,7 +856,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
 
     // 6. C <- C exp(kappa(x)).
     FBF_TRY(casscf_upload(res, x_total, step.data()));
-    FBF_TRY(unpack_orbital_pairs(res, nmo, ncore, ncas, step.data(), kappa.data()));
+    FBF_TRY(response::unpack_orbital_pairs(res, nmo, ncore, ncas, step.data(), kappa.data()));
     FBF_TRY(skew_eig<double>(res, nmo, kappa.data(), kappa_u.data(), kappa_w.data()));
     FBF_TRY(rotate(1.0));
   }

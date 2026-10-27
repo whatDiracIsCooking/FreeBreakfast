@@ -9,7 +9,7 @@
 /// Fock's two-electron part is one gemm over @c casscf_integrals' (pq|uv). No
 /// AO two-electron integral is stored. See README.md.
 
-export module free_breakfast.mcscf.fock;
+export module free_breakfast.response.fock;
 
 import std;
 import free_breakfast.core.types;
@@ -22,7 +22,7 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 
-export namespace free_breakfast::mcscf {
+export namespace free_breakfast::response {
 
 /// @brief A CASSCF wavefunction's energy and first derivatives at fixed
 /// orbitals C and RDMs, on the device it was built on.
@@ -136,4 +136,4 @@ struct Fock {
 [[nodiscard]] Status unpack_orbital_pairs(DeviceResources &res, int32_t nmo, int32_t ncore,
                                           int32_t ncas, const double *packed, double *kappa);
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response

@@ -4,7 +4,7 @@
 /// antisymmetric part over the packed pairs, and the energy off their
 /// diagonals; and the packed order's two copies each way.
 
-module free_breakfast.mcscf.fock;
+module free_breakfast.response.fock;
 
 import std;
 import free_breakfast.core.types;
@@ -21,7 +21,7 @@ import free_breakfast.integrals.eri.integral_direct.exchange;
 
 #include "diagnostics.h"
 
-namespace free_breakfast::mcscf {
+namespace free_breakfast::response {
 
 // What both packing functions refuse; caller names the function.
 Status check_orbital_pairs(const std::string_view caller, const int32_t nmo, const int32_t ncore,
@@ -133,28 +133,30 @@ Result<Fock> fock(DeviceResources &res, const BasisSet &basis, const Molecule &m
   const uint32_t n_orbitals = c.n();
   FBF_TRY(check_orbital_pairs("fock", static_cast<int32_t>(n_orbitals), ncore, ncas));
   if (ncore + ncas == 0) {
-    return err_config("mcscf::fock: ncore and ncas are both 0, so nothing is occupied");
+    return err_config("response::fock: ncore and ncas are both 0, so nothing is occupied");
   }
   // Written so that NaN fails too.
   if (!(tau_j >= 0.0) || !(tau_k >= 0.0)) {
-    return err_config("mcscf::fock: tau_j ({}) and tau_k ({}) must be 0 or above", tau_j, tau_k);
+    return err_config("response::fock: tau_j ({}) and tau_k ({}) must be 0 or above", tau_j, tau_k);
   }
   if (h.n() != n_sphe || n_orbitals != n_sphe) {
-    return err_config("mcscf::fock: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
-                      h.n(), h.n(), n_orbitals, n_orbitals, n_sphe);
+    return err_config(
+        "response::fock: h is {} x {} and C {} x {}, but the basis has {} spherical AOs", h.n(),
+        h.n(), n_orbitals, n_orbitals, n_sphe);
   }
   if (h.dev_idx() != res.dev_idx() || c.dev_idx() != res.dev_idx()) {
-    return err_config("mcscf::fock: h is on device {} and C on {}, but the call passed device {}",
-                      h.dev_idx(), c.dev_idx(), res.dev_idx());
+    return err_config(
+        "response::fock: h is on device {} and C on {}, but the call passed device {}", h.dev_idx(),
+        c.dev_idx(), res.dev_idx());
   }
   const auto na = static_cast<size_t>(ncas);
   const size_t n_all = n_orbitals;
   if (ppaa.num_elements() != n_all * n_all * na * na) {
-    return err_config("mcscf::fock: ppaa holds {} doubles, but nmo^2 ncas^2 is {}",
+    return err_config("response::fock: ppaa holds {} doubles, but nmo^2 ncas^2 is {}",
                       ppaa.num_elements(), n_all * n_all * na * na);
   }
   if (gamma.size() != na * na || gamma2.size() != na * na * na * na) {
-    return err_config("mcscf::fock: gamma holds {} and Gamma {} doubles, but ncas is {}",
+    return err_config("response::fock: gamma holds {} and Gamma {} doubles, but ncas is {}",
                       gamma.size(), gamma2.size(), ncas);
   }
 
@@ -354,4 +356,4 @@ Result<Fock> fock(DeviceResources &res, const BasisSet &basis, const Molecule &m
   return out;
 }
 
-} // namespace free_breakfast::mcscf
+} // namespace free_breakfast::response

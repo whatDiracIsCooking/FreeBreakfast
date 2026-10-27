@@ -1,4 +1,4 @@
-# The module: mcscf::fock and the packed order's two copies, declared in the
+# The module: response::fock and the packed order's two copies, declared in the
 # interface and defined in the implementation unit. Molecule, BasisSet,
 # DeviceResources, Buffers, the two kinds of pair class and the AO matrices
 # are in its signature, so molecule, basis, core::wwr, core::resources,
@@ -7,7 +7,7 @@
 # exchange's, the rest BLAS and copies, so there is no device library.
 free_breakfast_add_cxx_module_library(
   NAME
-  free_breakfast.mcscf.fock
+  free_breakfast.response.fock
   PRIMARY_INTERFACE
   fock.cppm
   IMPLEMENTATION

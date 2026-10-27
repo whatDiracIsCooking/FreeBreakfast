@@ -7,11 +7,11 @@ Hessian is then built from.
 
 ## Module
 
-`free_breakfast.mcscf.fock`, target `free_breakfast::mcscf::fock`, re-exported
-by `free_breakfast.mcscf`.
+`free_breakfast.response.fock`, target `free_breakfast::response::fock`,
+re-exported by `free_breakfast.response`.
 
 ```cpp
-struct mcscf::Fock {
+struct response::Fock {
   double energy;                        // E, the weighted energy, E_nuc included (hartree)
   Buffers::device<double> fock_inactive; // F^I, nmo x nmo, MO basis
   Buffers::device<double> fock_active;   // F^A, nmo x nmo, MO basis
@@ -21,7 +21,7 @@ struct mcscf::Fock {
   Buffers::device<double> gamma2;        // Γ_tuvw at t + ncas (u + ncas (v + ncas w))
 };
 
-Result<mcscf::Fock> mcscf::fock(
+Result<response::Fock> response::fock(
     DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
     std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
@@ -99,14 +99,12 @@ all of them again with no J or K.
 
 ## Not done
 
-- **The macro loop** (#251) builds on this and on `../hessian/`'s orbital
-  Hessian.
 - **Frozen orbitals**: every core orbital rotates.
 - **Density fitting** (#177), as for `active_space`.
 
 ## Tests
 
-`test/gtest/mcscf_fock_gpu.cpp`, against `test/gtest/data/casscf/casscf.json`
+`test/gtest/response_fock_gpu.cpp`, against `test/gtest/data/casscf/casscf.json`
 (PySCF's `mc1step.gen_g_hop`, `tools/emit_casscf_reference.py`), at each case's
 recorded start: H₂O cc-pVDZ CAS(4,4) from RHF orbitals [2, 3, 5, 6], N₂ cc-pVDZ
 CAS(6,6) frontier, H₂CO cc-pVDZ CAS(4,3) at two singlets weighted [0.5, 0.5]
