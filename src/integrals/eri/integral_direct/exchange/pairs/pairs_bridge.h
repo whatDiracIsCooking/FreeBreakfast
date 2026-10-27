@@ -45,7 +45,7 @@ namespace free_breakfast::device {
 /// descending dressed bound (mmd's bound_ab as stored, bound_ba swapped),
 /// equal bounds in slot order; and the groups' bounds into @p group_start.
 ///
-/// Two stable sorts (src/integrals/sort's merge_sort_passes): every slot by
+/// Two stable sorts (src/recipes/sort's merge_sort_passes): every slot by
 /// -bound, then the result by its first shell's rank, a slot that does not
 /// exist by @p n_groups, so it lands past every record. @p group_start, of
 /// @p n_groups + 1 entries, is then each group's first record, by bisection

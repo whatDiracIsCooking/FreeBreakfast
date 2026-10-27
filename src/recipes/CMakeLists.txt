@@ -9,6 +9,7 @@ add_subdirectory(linear_operator)
 add_subdirectory(matrix_ao)
 add_subdirectory(orthogonalize)
 add_subdirectory(polynomial_roots)
+add_subdirectory(sort)
 
 # The aggregate: one import for the dense linear-algebra layer.
 free_breakfast_add_cxx_module_library(
@@ -29,4 +30,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   free_breakfast::recipes::orthogonalize
   free_breakfast::recipes::polynomial_roots
+  free_breakfast::recipes::sort
 )

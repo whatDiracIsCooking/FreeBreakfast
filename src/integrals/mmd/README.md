@@ -67,7 +67,7 @@ waits for every class's stream before it returns.
 the class's stream, after its shell pairs' upload and a fork from the shell
 table's stream: `mmd_order` writes each enumerated record's key `-ζ` (from its
 two exponents alone) and its index, and sorts them stably
-([`src/integrals/sort`](../sort/README.md)); then `mmd_records` writes record
+([`src/recipes/sort`](../../recipes/sort/README.md)); then `mmd_records` writes record
 `k` from enumerated record `perm[k]`, every field at once. Nothing is permuted
 after. Equal ζ keep the enumeration order (shell pair, then bra primitive).
 Within a class the

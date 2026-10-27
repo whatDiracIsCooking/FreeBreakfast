@@ -33,7 +33,6 @@ eri/           the electron-repulsion integrals
       kernels/kb/    free_breakfast::integrals::eri::integral_direct::exchange::device: the generated K kernels kb<la, lc, lb, ld>, one warp per K_ab block, 81 classes through d
       pairs/         free_breakfast.integrals.eri.integral_direct.exchange.pairs: mmd's records in both orientations, one device-only class per ordered (la, lb), grouped by first shell, each with K's dressed record bound (mmd's bound_ab or bound_ba), each group sorted by it
 shared/        free_breakfast::integrals::shared::headers: device headers more than one kernel family includes (eval_boys.h)
-sort/          free_breakfast::integrals::sort::device: the stable GPU merge sort mmd, coulomb/sort_bounds and exchange/pairs sort with
 ```
 
 ## How the pieces fit

@@ -6,7 +6,7 @@
 /// cub_merge_sort.cu directly: a declaration in a module's purview would get
 /// module linkage and never bind to the definition in the .cu (see
 /// src/recipes/orthogonalize/inverse_sqrt_bridge.h). merge_sort itself is
-/// src/integrals/sort's merge_sort.cu, declared by its merge_sort_bridge.h.
+/// src/recipes/sort's merge_sort.cu, declared by its merge_sort_bridge.h.
 /// wwrError_t comes from a different wwr header in each pass, as
 /// src/integrals/one_electron/overlap/overlap_bridge.h explains.
 

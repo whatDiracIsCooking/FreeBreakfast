@@ -33,7 +33,9 @@ enum class LocalizationMode : uint8_t {
 /// on the device the step ran on.
 struct LocalizationOutput {
   /// @brief The occupied orbitals localized: nao_sphe x @ref n_occ,
-  /// column-major, C_local = C_occ U.
+  /// column-major, C_local = C_occ U, in ascending order of their Fock
+  /// expectation value sum_k U_ki^2 eps_k (stably, so ties keep the
+  /// localizer's order).
   Buffers::device<double> c;
   /// @brief The n_occ x n_occ orthogonal U, column-major.
   Buffers::device<double> u;
@@ -101,7 +103,9 @@ struct LocalizationStep {
   std::filesystem::path livvo_molden{};
 
   /// @brief The localized orbitals. The Scf step has already refused an open
-  /// shell, so the occupied count is half the electrons. For IBO, MINAO is
+  /// shell, so the occupied count is half the electrons. They are sorted by
+  /// energy before anything reads them, so every product and file is in that
+  /// order. For IBO, MINAO is
   /// resolved and placed over the Molecule first, and an element it does not
   /// carry is place's error; the IAOs it localized over then give the IBOs'
   /// populations and bond centers and the atoms' charges, the charges and

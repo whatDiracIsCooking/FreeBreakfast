@@ -1,6 +1,6 @@
 # The vendor reference over CUB / hipCUB. Device code in its own library, so
 # its language and -x hip never reach the module compiles. The merge sort
-# itself is src/integrals/sort's merge_sort.cu, which the integral builds sort
+# itself is src/recipes/sort's merge_sort.cu, which the integral builds sort
 # with; this tree links it rather than keeping a copy.
 # The bridge header this library shares with the module names wwrStream_t and
 # wwrError_t, hence kernel_headers PUBLIC: it brings types_headers and
@@ -15,8 +15,10 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::kernel_headers
 )
 
-# The module. Both device libraries are PRIVATE: the implementation unit
-# includes their bridge headers in its GMF and calls the launchers.
+# The module. merge_sort itself is src/recipes/sort's, PUBLIC: the interface
+# re-exports it. The vendor reference's device library is PRIVATE: the
+# implementation unit includes its bridge header in its GMF and calls the
+# launchers.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.experimental.sort.merge
@@ -29,12 +31,11 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::types
   free_breakfast::core::error_handling
   free_breakfast::core::resources
+  free_breakfast::recipes::sort
   LINK_PRIVATE
-  free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::experimental::sort::merge::device
-  free_breakfast::integrals::sort::device
 )
 
 # merge_sort against radix_sort and the vendor's merge and radix sorts, wall

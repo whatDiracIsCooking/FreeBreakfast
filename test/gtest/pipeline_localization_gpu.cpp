@@ -693,6 +693,7 @@ TEST(PipelineIbo, BenzeneHasThreePiBonds) {
 // n_occ of them at occupation 2, then the canonical virtuals at occupation 0.
 // Each localized energy is <i|F|i> = sum_k U_ki^2 eps_k, and U is orthogonal,
 // so they sum to the canonical occupied energies; each virtual keeps its own.
+// The step sorts the localized ones, so the whole file ascends.
 TEST(PipelineLocalizationMolden, WritesTheLocalizedOrbitals) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_localization_molden");
@@ -723,6 +724,7 @@ TEST(PipelineLocalizationMolden, WritesTheLocalizedOrbitals) {
   }
   ASSERT_EQ(energies.size(), n_mo);
   ASSERT_EQ(occupations.size(), n_mo);
+  EXPECT_TRUE(std::ranges::is_sorted(energies));
   double energy_sum = 0.0;
   double expected_sum = 0.0;
   for (std::size_t k = 0; k < occ; ++k) {
@@ -787,6 +789,51 @@ TEST_P(PipelineLivvo, WatersTwoSigmaStarOh) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Modes, PipelineLivvo, ::testing::Values("pipek_mezey", "ibo"),
+                         [](const ::testing::TestParamInfo<std::string_view> &info) {
+                           return std::string{info.param};
+                         });
+
+// The localized orbitals come out in ascending order of <i|F|i> =
+// sum_k U_ki^2 eps_k, in either mode, with C and U permuted together: C is
+// still C_occ U, column for column.
+class PipelineLocalizationOrder : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(PipelineLocalizationOrder, AscendsInFockEnergy) {
+  FBF_REQUIRE_GPU();
+  const bool ibo = GetParam() == "ibo";
+  auto calc = localize(reference_case("h2o_ccpvdz"), ibo ? 4 : 2,
+                       std::format("mode = \"{}\"\n", GetParam()));
+  ASSERT_TRUE(calc.has_value());
+  const auto &local = calc->get<fb::LocalizationOutput>();
+  const auto &scf = calc->get<fb::ScfOutput>();
+  ASSERT_TRUE(local.has_value() && scf.has_value());
+  const std::size_t n = calc->get<fb::BasisSetOutput>()->basis.nao_sphe();
+  const auto occ = static_cast<std::size_t>(local->n_occ);
+  const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
+  fb::DeviceResources res(scf->c.dev_idx());
+  const std::vector<double> c = download(res, local->c, n * occ);
+  const std::vector<double> u = download(res, local->u, occ * occ);
+  const std::vector<double> c_occ = download(res, scf->c, n * occ);
+
+  std::vector<double> energies(occ, 0.0);
+  for (std::size_t i = 0; i < occ; ++i) {
+    for (std::size_t k = 0; k < occ; ++k) {
+      energies[i] += u[k + (occ * i)] * u[k + (occ * i)] * scf->mo_energies[k];
+    }
+  }
+  EXPECT_TRUE(std::ranges::is_sorted(energies)) << "water's 1s first, then up to the HOMO";
+  for (std::size_t i = 0; i < occ; ++i) {
+    for (std::size_t mu = 0; mu < n; ++mu) {
+      double cu = 0.0;
+      for (std::size_t k = 0; k < occ; ++k) {
+        cu += c_occ[mu + (n * k)] * u[k + (occ * i)];
+      }
+      EXPECT_NEAR(c[mu + (n * i)], cu, 1e-12) << "AO " << mu << ", orbital " << i;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Modes, PipelineLocalizationOrder, ::testing::Values("pipek_mezey", "ibo"),
                          [](const ::testing::TestParamInfo<std::string_view> &info) {
                            return std::string{info.param};
                          });

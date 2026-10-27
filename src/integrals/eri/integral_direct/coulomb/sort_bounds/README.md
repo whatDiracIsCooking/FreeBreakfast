@@ -41,7 +41,7 @@ steps on the class's stream, into scratch and sorted copies the caller owns:
 | Step | Kernel | Does |
 |---|---|---|
 | key | `sort_bounds_key_kernel`, one thread per record | `key[k] = -(Iq · Dmax)`, `perm[k] = k` |
-| sort | `merge_sort_passes` ([`src/integrals/sort`](../../../../sort/README.md)) | `key` ascending in IEEE-754 total order, `perm` carried, stably |
+| sort | `merge_sort_passes` ([`src/recipes/sort`](../../../../../recipes/sort/README.md)) | `key` ascending in IEEE-754 total order, `perm` carried, stably |
 | gather | `sort_bounds_gather_kernel`, one thread per `D_q` element | place `k` of each sorted copy from record `perm[k]`: `zeta`, P, `Iq`, `Dmax`, and column `k` of each q-major `D_q` row |
 
 - **Descending for free.** The sort only ascends. The bound is never
@@ -58,7 +58,7 @@ steps on the class's stream, into scratch and sorted copies the caller owns:
   and the bound aimed at the sorted copies, which is all `e_hermite` reads of
   a ket. Its other pointers are null.
 
-The merge sort is [`src/integrals/sort`](../../../../sort/README.md)'s, shared with
+The merge sort is [`src/recipes/sort`](../../../../../recipes/sort/README.md)'s, shared with
 `mmd`, which orders each class's records with it.
 
 ## Public API

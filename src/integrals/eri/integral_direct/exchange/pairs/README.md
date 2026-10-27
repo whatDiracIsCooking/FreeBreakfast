@@ -96,7 +96,7 @@ swapped, a slot a diagonal record does not have. On a new `DeviceStream`,
 `ordered_pair_classes` queues:
 
 1. **The order** (`ordered_pair_order`): two stable merge sorts
-   ([`src/integrals/sort`](../../../../sort/README.md)), every slot by `-I`, then
+   ([`src/recipes/sort`](../../../../../recipes/sort/README.md)), every slot by `-I`, then
    the result by its first shell's rank (`mmd`'s `rank_a` as stored, `rank_b`
    swapped), a diagonal record's swapped slot past every group. Slot order is
    `mmd`'s record order, so equal bounds stay in it. Then `group_start`, by
