@@ -11,12 +11,12 @@ orbitals optionally written as Molden.
 
 `free_breakfast.pipeline.casscf`, target `free_breakfast::pipeline::casscf`.
 It re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
-`run`'s signature), `free_breakfast.pipeline.active_space` (the selection,
-`CasscfStep`'s base), and `free_breakfast.mcscf.solve` (`mcscf::Iteration`, in
-the product, and `mcscf::Options`, whose defaults the step's are). `run` is
-defined in the implementation unit, so J's and K's classes,
-`integrals.active_space`, `response.fock`, `diagonalize`, `io.molden` and
-`pipeline.density_fitting` (the B under `aux_basis`) are PRIVATE links.
+`run`'s signature, the `EriOutput` among them),
+`free_breakfast.pipeline.active_space` (the selection, `CasscfStep`'s base),
+and `free_breakfast.mcscf.solve` (`mcscf::Iteration`, in the product, and
+`mcscf::Options`, whose defaults the step's are). `run` is defined in the
+implementation unit, so `integrals.active_space`, `response.fock`,
+`diagonalize` and `io.molden` are PRIVATE links.
 
 The selection -- `ncas`, `nelecas`, `active`, `avas`, `avas_threshold` -- is
 `pipeline/active_space`'s ([`active_space/README.md`](../active_space/README.md)).
@@ -49,11 +49,10 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
   double conv_tol = 1e-10;             // mcscf::Options{}'s
   double conv_tol_grad = 1e-6;
   int32_t max_cycle = 50;
-  std::string aux_basis{};             // empty: direct; else DF-CASSCF over it
   std::filesystem::path molden{};      // the state-averaged natural orbitals, if set
 
   Result<CasscfOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
-                                PrimitivePairClassesOutput, CoreHamiltonianOutput, ScfOutput> in,
+                                EriOutput, CoreHamiltonianOutput, ScfOutput> in,
                            DeviceResources &res) const;
 };
 ```
@@ -61,17 +60,17 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
 `run`, all on `res.stream()`:
 
 1. **The start**: `ActiveSpaceSelection::select`'s C R, as the Casci step's.
-2. **The two-electron integrals' input**: with `aux_basis` empty, J and K
-   classes built from `PrimitivePairClassesOutput` per run; otherwise B, by
-   `DensityFittingStep` over `aux_basis` (below), and no classes.
+2. **The two-electron integrals' input**: the `EriOutput`'s
+   (`pipeline/eri`), J and K classes under `IntegralDirect`, or B under
+   `DensityFitted` (below) and no classes.
 3. **The optimization**: `mcscf::solve` from it, at the step's `nroots`,
    `weights`, `conv_tol`, `conv_tol_grad` and `max_cycle`, and in
-   `mcscf::DensityFitting::Full` over B under `aux_basis`, every other option
-   at `mcscf::Options`' default. Each macro iteration's weighted energy and
+   `mcscf::DensityFitting::Full` over a fitted `EriOutput`'s B, every other
+   option at `mcscf::Options`' default. Each macro iteration's weighted energy and
    ‖g‖ is logged at info once it returns.
 4. **The state-averaged Fock** F = F^I + F^A at the solution, PySCF's
    `mc.get_fock`: `response::fock` over one more `casscf_integrals`, since the
-   solution keeps neither, both over B under `aux_basis`. One macro
+   solution keeps neither, both over B when fitted. One macro
    iteration's integrals, no Hessian.
 5. **Canonicalization**, PySCF's default (`canonicalization = True`,
    `natorb = False`): the core and the virtual columns each rotated to F's
@@ -87,34 +86,33 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
 
 ## Density fitting
 
-`[casscf]` takes it as `[scf]` does, with the same keys and refusals
-(`config/README.md`):
+`[eri]` chooses it for the whole pipeline (`eri/README.md`), so the SCF the
+CASSCF starts from is fitted over the same B:
 
 ```toml
+[eri]
+mode = "density_fitting"      # default "integral_direct"
+aux_basis = "cc-pvdz-jkfit"   # optional: <basis>-acCD-6-6 when carried
 [casscf]
 ncas = 4
 nelecas = 4
-eri = "density_fitting"       # default "direct"
-aux_basis = "cc-pvdz-jkfit"   # required with it: a compiled-in fitting set, or a BSE JSON path
 ```
 
 With it the step runs `mcscf::DensityFitting::Full`: every build of the loop
 is fitted, and so is the Fock it canonicalizes over, so the product is the
 DF-CASSCF (PySCF's `mcscf.CASSCF(mf, ...).density_fit()`), its orbital
 energies the fitted Fock's eigenvalues. Its J and K are never
-integral-direct, so the step builds no J or K classes. The `[scf]` it starts
-from is fitted or not by its own table; the two choose apart.
-`ApproxHessian` (the exact CASSCF, only the Hessian fitted) is not a config
-choice.
+integral-direct, and the `EriOutput` holds no J or K classes. A fitted SCF
+with a direct CASSCF, or the reverse, is not one pipeline, by decision: one
+aux basis per pipeline, and a mix is two runs. `ApproxHessian` (the exact
+CASSCF, only the Hessian fitted) is not a config choice.
 
-**B is the step's own.** `DensityFittingStep::run` builds it over the
-products the step reads anyway, as the Scf step does, and it is freed when
-`run` returns. The SCF's B is not shared: the Scf step does not output it
-(sharing it is a follow-up).
+**B is the pipeline's**, built once by the Eri step and shared with the SCF;
+it lives until the run ends.
 
 **Memory.** B, naux nmo² doubles, is refused past the device's free memory
-by `DensityFittingStep` itself (`Unsupported`, naming the bytes). Once it is
-held, the step refuses, again `Unsupported`, a loop whose fitted
+by the Eri step (`Unsupported`, naming the bytes). With it held, the step
+refuses, again `Unsupported`, a loop whose fitted
 `casscf_integrals` scratch is past what B leaves free:
 
 | Region | Doubles |
@@ -132,17 +130,8 @@ returning. The rest of the loop (the CI, the Hessian's products, the core's
 three nmo² matrices) is not counted; it is small beside these at the sizes
 this step runs.
 
-**Two Bs at once.** A fitted `[scf]` builds its own B too, freed when its
-step returns; so at the step boundary the device holds the SCF's B until it
-is freed and then the CASSCF's: never both live. But the free goes to the
-device's memory pool, which keeps up to its release threshold
-(`DeviceResources::kDefaultPoolReleaseThreshold`, 1 GiB) reserved, so
-`wwrMemGetInfo` may still count up to that much of the SCF's B as used when
-this step checks its own: the check is conservative by up to min(B, 1 GiB),
-though the pool can reuse that memory for the CASSCF's B. Where the SCF's B is still
-alive -- a `[density_fitting]` step's product, which the run holds to its end,
-or the SCF's own once it is shared -- the peak is **2·B**, plus the scratch
-above, and the check sees the first B as used memory.
+**One B.** The SCF and the CASSCF read the same B, so the peak is one B
+plus the scratch above, where each step building its own once held two.
 
 What it settled:
 
@@ -156,8 +145,8 @@ What it settled:
   what canonicalization is for, and recomputing F from C costs a set of
   integrals.
 
-Errors: `ActiveSpaceSelection::select`'s; under `aux_basis`,
-`DensityFittingStep::run`'s and `Unsupported` for the scratch above;
+Errors: `ActiveSpaceSelection::select`'s; under a fitted `EriOutput`,
+`Unsupported` for the scratch above;
 `mcscf::solve`'s (InvalidConfig for
 `nroots` past the determinant count, MaxIterationsExceeded); the module
 calls' own (`casscf_integrals`', `response::fock`'s, `diagonalize`'s,
@@ -179,21 +168,24 @@ for why):
 - each CI vector of unit norm, and the weights as written;
 - the Molden file: every orbital, at 2, the natural occupations, then 0.
 
-Each case runs again with `eri = "density_fitting"` and `aux_basis =
-"cc-pVDZ-JKFIT"` (compiled in), against PySCF's DF-CASSCF from the same
-start in `test/gtest/data/casscf/casscf_df.json` (fitted over this tree's own
-`data/aux_basis/cc-pVDZ-JKFIT.json`), to the same bars; its `[scf]` stays
-direct, as the reference's start is the exact RHF.
+Each case runs again with `[eri] mode = "density_fitting"` and `aux_basis =
+"cc-pVDZ-JKFIT"` (compiled in), against PySCF's DF-CASSCF in
+`test/gtest/data/casscf/casscf_df.json` (fitted over this tree's own
+`data/aux_basis/cc-pVDZ-JKFIT.json`), to the same bars. The reference starts
+from the exact RHF and this run from the DF-RHF, since one `[eri]` serves
+both steps; the converged DF-CASSCF does not depend on the start, only on
+which stationary point it reaches.
 
 Also `max_cycle` running out failing the step. The `[casscf]` parsing and its
 refusals are in `pipeline_config_host.cpp`, and an end-to-end run with
 `[casci]` beside it, against the step called by hand, in
-`pipeline_calculation_gpu.cpp`.
+`pipeline_calculation_gpu.cpp`, which also runs an `[scf]` and a `[casscf]`
+over one `EriOutput` in each mode.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `casscf.cppm` | Module interface: `CasscfOutput`, `CasscfStep` |
-| `casscf.cpp` | `run`: the selection, B and its memory check under `aux_basis`, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden file |
+| `casscf.cpp` | `run`: the selection, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden file |
 | `CMakeLists.txt` | The module library |

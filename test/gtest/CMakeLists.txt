@@ -126,7 +126,7 @@ add_executable(
   pipeline_basis_set_gpu.cpp
   pipeline_spherical_transform_gpu.cpp
   pipeline_primitive_pair_classes_gpu.cpp
-  pipeline_density_fitting_gpu.cpp
+  pipeline_eri_gpu.cpp
   pipeline_overlap_gpu.cpp
   pipeline_orthogonalizer_gpu.cpp
   pipeline_core_hamiltonian_gpu.cpp
@@ -198,7 +198,7 @@ target_link_libraries(
   free_breakfast::pipeline::basis_set
   free_breakfast::pipeline::spherical_transform
   free_breakfast::pipeline::primitive_pair_classes
-  free_breakfast::pipeline::density_fitting
+  free_breakfast::pipeline::eri
   free_breakfast::pipeline::overlap
   free_breakfast::pipeline::orthogonalizer
   free_breakfast::pipeline::core_hamiltonian

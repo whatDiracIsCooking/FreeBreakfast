@@ -24,8 +24,8 @@ namespace {
 namespace fb = free_breakfast;
 
 using ScfInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
-                          fb::PrimitivePairClassesOutput, fb::OverlapOutput,
-                          fb::OrthogonalizerOutput, fb::CoreHamiltonianOutput, fb::GuessOutput>;
+                          fb::EriOutput, fb::OverlapOutput, fb::OrthogonalizerOutput,
+                          fb::CoreHamiltonianOutput, fb::GuessOutput>;
 
 static_assert(fb::PipelineStep<fb::ScfStep>);
 static_assert(fb::kRunShape<fb::ScfStep> == fb::RunShape::Device);
@@ -92,25 +92,26 @@ std::vector<double> matmul(const std::vector<double> &a, const std::vector<doubl
 }
 
 // Every product the Scf step reads, made by the steps called by hand in the
-// order the planner would choose.
+// order the planner would choose; the ERIs integral-direct.
 struct Inputs {
   fb::MoleculeOutput molecule;
   fb::BasisSetOutput basis;
   fb::SphericalTransformOutput transform;
-  fb::PrimitivePairClassesOutput pairs;
+  fb::EriOutput eri;
   fb::OverlapOutput overlap;
   fb::OrthogonalizerOutput x;
   fb::CoreHamiltonianOutput h;
   fb::GuessOutput guess;
 
   [[nodiscard]] ScfInput view() const {
-    return ScfInput{molecule, basis, transform, pairs, overlap, x, h, guess};
+    return ScfInput{molecule, basis, transform, eri, overlap, x, h, guess};
   }
 };
 
 std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom> atoms,
                                   std::string_view basis_name, std::int32_t charge,
                                   std::int32_t multiplicity = 1) {
+  const fb::EriStep eri_step{};
   fb::MoleculeOutput molecule{fb::Molecule(res, std::move(atoms), charge, multiplicity)};
   auto basis = fb::BasisSetStep{.basis = std::string(basis_name)}.run(
       fb::View<fb::MoleculeOutput>{molecule});
@@ -122,6 +123,14 @@ std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom
   auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
   if (!transform.has_value() || !pairs.has_value()) {
     ADD_FAILURE() << "spherical transform or pair classes failed";
+    return std::nullopt;
+  }
+  auto eri = eri_step.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          molecule, *basis, *pairs},
+      res);
+  if (!eri.has_value()) {
+    ADD_FAILURE() << eri.error().message;
     return std::nullopt;
   }
   auto overlap = fb::OverlapStep{}.run(
@@ -154,7 +163,7 @@ std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom
     ADD_FAILURE() << guess.error().message;
     return std::nullopt;
   }
-  return Inputs{std::move(molecule), std::move(*basis), std::move(*transform), std::move(*pairs),
+  return Inputs{std::move(molecule), std::move(*basis), std::move(*transform), std::move(*eri),
                 std::move(*overlap), std::move(*x),     std::move(*h),         std::move(*guess)};
 }
 

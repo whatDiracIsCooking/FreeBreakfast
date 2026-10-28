@@ -42,7 +42,7 @@ Result<response::Fock> response::fock(
 
 The integral-direct overload's arguments through `k_classes` are
 `active_space_hamiltonian`'s, built once per basis. The density-fitted one
-takes B in their place: `b` is `DensityFittingOutput::b`, naux × nmo²
+takes B in their place: `b` is `DensityFitted::b`, naux × nmo²
 over the spherical AOs, `[Q][n][m]` as `df_coulomb` reads it. In both, `ppaa`
 and `papa` are `casscf_integrals`' (pq|uv) and (pu|qv) over the same C (both
 empty for ncas = 0), and γ and Γ are `ci::Rdm::rdm12`'s, row-major, read back

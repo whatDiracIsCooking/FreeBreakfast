@@ -79,13 +79,6 @@ struct CasscfStep : ActiveSpaceSelection {
   /// @brief @ref mcscf::Options::max_cycle, macro iterations before
   /// MaxIterationsExceeded.
   int32_t max_cycle = mcscf::Options{}.max_cycle;
-  /// @brief The density-fitting aux basis, a compiled-in fitting set's name
-  /// (`cc-pvdz-jkfit`) or the path to a BSE JSON file, as
-  /// ScfStep::aux_basis. Empty: every J and K integral-direct. Otherwise the
-  /// step builds its own B over it, by DensityFittingStep, and runs
-  /// `mcscf::solve` in mcscf::DensityFitting::Full, so the result is the
-  /// DF-CASSCF; the Fock at the solution is fitted too.
-  std::string aux_basis{};
   /// @brief Where the state-averaged natural orbitals are written as a
   /// Molden file, if not empty: the canonical core at occupation 2, the
   /// active space's natural orbitals by descending weighted occupation, the
@@ -96,24 +89,22 @@ struct CasscfStep : ActiveSpaceSelection {
   /// @brief The optimized orbitals and roots. The start is the orbitals
   /// @ref ActiveSpaceSelection::select gives; `mcscf::solve` optimizes them
   /// at @ref conv_tol, @ref conv_tol_grad and @ref max_cycle, its other
-  /// options at their defaults, over J and K classes built per run, or over
-  /// the B the run builds under @ref aux_basis; the state-averaged Fock at
-  /// the solution is `response::fock`'s F^I + F^A over one more
-  /// `casscf_integrals`, both fitted under @ref aux_basis. Logs each macro
-  /// iteration's energy and ||g|| at info. Synchronizes res.stream() many
-  /// times.
+  /// options at their defaults, over the @ref EriOutput: its J and K classes,
+  /// or its B in mcscf::DensityFitting::Full, the DF-CASSCF. The
+  /// state-averaged Fock at the solution is `response::fock`'s F^I + F^A over
+  /// one more `casscf_integrals`, both fitted under a fitted EriOutput. Logs
+  /// each macro iteration's energy and ||g|| at info. Synchronizes
+  /// res.stream() many times.
   ///
   /// @return The CASSCF; @ref ActiveSpaceSelection::select's error;
-  ///         under @ref aux_basis DensityFittingStep::run's (B past the
-  ///         device's free memory among them), and Unsupported when the
-  ///         fitted integrals' scratch, L and J_AO, is past what B leaves
-  ///         free; `mcscf::solve`'s (InvalidConfig for @ref nroots above the
+  ///         under a fitted EriOutput, Unsupported when the fitted
+  ///         integrals' scratch, L and J_AO, is past what B leaves free; `mcscf::solve`'s (InvalidConfig for @ref nroots above the
   ///         determinant count or bad @ref weights, MaxIterationsExceeded);
   ///         or the error of the first module call that failed:
   ///         `casscf_integrals`', `response::fock`'s, `diagonalize`'s or
   ///         `write_molden`'s, and GpuRuntime for a failed copy or BLAS call.
   [[nodiscard]] Result<CasscfOutput>
-  run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+  run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput,
            CoreHamiltonianOutput, ScfOutput> in,
       DeviceResources &res) const;
 };

@@ -121,7 +121,7 @@ struct Solution {
 /// DensityFitting::Full reads neither them nor @p u. @p weights
 /// are w_r, empty for equal ones. @p b is B over @p naux fitting functions,
 /// as the density-fitted @c Hessian::create reads it
-/// (@c DensityFittingOutput::b, naux nmo^2), for the builds
+/// (@c DensityFitted::b, naux nmo^2), for the builds
 /// options.density_fitting fits; null for none, which only
 /// DensityFitting::Direct accepts. Its storage must outlive the call.
 ///

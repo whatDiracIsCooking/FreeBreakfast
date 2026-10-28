@@ -18,7 +18,7 @@ analysis/  Wavefunction analysis: atomic populations and partial charges over th
 ci/        Determinant CI over plain arrays: alpha/beta occupation strings, their lexical addresses and single-replacement lists
 response/  The energy's orbital-rotation derivatives at fixed orbitals and RDMs on the GPU: the energy, the inactive, active and generalized Fock matrices, the orbital gradient and its packed pair order, and the orbital Hessian
 mcscf/     CASSCF on the GPU: the two-step state-averaged loop over response's gradient and Hessian
-pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the RHF SCF, Pipek-Mezey and IBO localization, CASCI, FCI and state-averaged CASSCF, and Pipeline<Steps...>, which plans and runs them
+pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the ERIs (integral-direct or density-fitted, once per pipeline), the RHF SCF, Pipek-Mezey and IBO localization, CASCI, FCI and state-averaged CASSCF, and Pipeline<Steps...>, which plans and runs them
 main.cpp   The free-breakfast executable: a TOML config planned and run as a pipeline, and the one Error -> exit-code boundary
 ```
 

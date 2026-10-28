@@ -1,40 +1,74 @@
-# Pipeline: DensityFitting
+# Pipeline: Eri
 
-The density-fitting factor B = L⁻¹ (P|mn), M = L Lᵀ, of the orbital basis
-over an auxiliary one, built once per geometry for the DF J and K builds to
-read.
+The pipeline's two-electron integrals, chosen once by `[eri]` and built once
+for every reader: integral-direct (J's and K's pair classes) or
+density-fitted (the factor B = L⁻¹ (P|mn), M = L Lᵀ, of the orbital basis
+over an auxiliary one).
 
 ## Module
 
-`free_breakfast.pipeline.density_fitting`, target
-`free_breakfast::pipeline::density_fitting`. It re-exports `core.wwr` (the
-product holds `Buffers`) and the `basis_set` and `primitive_pair_classes`
-steps, whose products its `View` names. `io.basis`, `recipes.matrix_ao` and
-`integrals.eri.density_fitting` are private: `run` is defined in the
-implementation unit.
+`free_breakfast.pipeline.eri`, target `free_breakfast::pipeline::eri`. It
+re-exports `core.wwr` (the product holds `Buffers`), J's and K's
+integral-direct modules (for `CoulombPairClass` and `OrderedPairClass`), and
+the `basis_set` and `primitive_pair_classes` steps, whose products its `View`
+names. `io.basis`, `recipes.matrix_ao` and `integrals.eri.density_fitting`
+are private: `run` is defined in the implementation unit.
 
 ## The step
 
 ```cpp
-struct DensityFittingOutput {
+enum class EriMode : uint8_t { IntegralDirect, DensityFitting };
+
+struct IntegralDirect {
+  mutable std::vector<CoulombPairClass> j_classes;  // coulomb's
+  mutable std::vector<OrderedPairClass> k_classes;  // exchange's
+};
+
+struct DensityFitted {
   Buffers::device<double> b;  // naux x nao^2, [Q][n][m], Q fastest
   int32_t naux;
 };
 
-struct DensityFittingStep {
-  static constexpr std::string_view kName = "density_fitting";
+struct EriOutput {
+  std::variant<IntegralDirect, DensityFitted> eri;
+};
 
+struct EriStep {
+  static constexpr std::string_view kName = "eri";
+
+  EriMode mode = EriMode::IntegralDirect;
   std::string aux_basis{};  // a compiled-in fitting set's name, or a path
 
-  Result<DensityFittingOutput>
+  Result<EriOutput>
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> in,
       DeviceResources &res) const;
 };
 ```
 
-`run`, on `res.stream()`:
+`ScfStep` and `CasscfStep` read `EriOutput` as an ordinary `View` entry and
+branch on the alternative, so one pipeline builds its integrals once and
+cannot mix a fitted SCF with a direct CASSCF: one aux basis per pipeline, and
+a mix is two runs.
 
-1. `resolve_aux_basis(aux_basis)`, then `place(stamp.primitive_normalized(),
+### Integral-direct
+
+`coulomb_pair_classes` and `ordered_pair_classes` over the shared
+`PrimitivePairClassesOutput`, at their default thresholds. An `aux_basis` is
+`InvalidConfig`.
+
+**The classes are `mutable`.** `coulomb` and `exchange` write each class's
+scratch (`std::span<CoulombPairClass>`, not `const`), one call at a time per
+set. A product is read through a `const` `View`, and every reader of this one
+is a device step, which the planner runs one at a time on the device chain
+(`pipeline/README.md`), so the classes are written by one build at a time
+whichever step reads them.
+
+### Density-fitted
+
+On `res.stream()`:
+
+1. The aux basis: `aux_basis`, or, left empty, `<BasisSet::name()>-acCD-6-6`
+   (below). Then `resolve_aux_basis`, and `place(stamp.primitive_normalized(),
    molecule)`, as the `BasisSet` step places the orbital basis.
 2. B's bytes, `naux · nao²` doubles, against the device's free memory:
    past it, `Unsupported` naming the bytes, since the allocation would
@@ -48,9 +82,18 @@ struct DensityFittingStep {
 
 Each failure is the call's own, passed through: an unreadable aux file is
 `IO`; an unknown name, a malformed set or a missing element is
-`InvalidConfig`; an orbital shell above f, an aux shell above g, or
+`InvalidConfig`; an orbital shell above f, an aux shell above i, or
 three_center's scratch past the device's memory is `Unsupported`, naming the
 shell or the bytes; a metric that is not positive definite is `Numerical`.
+
+**The default aux basis is keyed off `BasisSet::name()`**, not the config's
+spelling of the basis, since only `resolve_basis`'s compiled-in branch sets
+it (the SAD stamps' rule): a basis read from a path gets no default, even if
+its document claims a carried name. A basis with no carried `-acCD-6-6` set
+(6-31G, 6-31G*, STO-3G, MINAO, or any read from a path) and no `aux_basis` is
+`InvalidConfig`, naming the basis and asking for `aux_basis`. The default is
+picked here rather than in `pipeline/config` so that config never loads a
+basis.
 
 - **The aux basis is the step's own, not a second product.** Products are
   keyed by type, so a second `BasisSetOutput` cannot exist. A product of its
@@ -60,11 +103,7 @@ shell or the bytes; a metric that is not positive definite is `Numerical`.
   builds its own U and U_aux, and the metric needs only the aux basis's U,
   which the step uploads itself. A `View` entry the step does not read would
   only order the pipeline for no reason.
-- **`ScfStep` calls `run` itself** under `[scf] eri = "density_fitting"`,
-  over the products its own `View` holds, and keeps the B as its own
-  (`scf/README.md`): this step's product is for a reader that wants B
-  without an SCF, and the SCF does not read it.
-- **`Device`-shaped**, because B lives on the device.
+- **`Device`-shaped**, because B and the classes live on the device.
 - **The transients are freed stream-ordered.** The metric, which becomes L, is
   released at return, after the trsm that reads it was queued on the same
   stream. `three_center` and `density_fit` each synchronize the stream
@@ -86,17 +125,20 @@ free memory than the reservation wants fails that launch with `GpuRuntime`.
 ## Config
 
 ```toml
-[density_fitting]
-aux_basis = "cc-pvdz-jkfit"   # required: a compiled-in fitting set, or a BSE JSON path
+[eri]
+mode = "density_fitting"      # default "integral_direct"
+aux_basis = "cc-pvdz-jkfit"   # optional: a compiled-in fitting set, or a BSE JSON path
 ```
 
-A path is joined to the input directory only when it is not a compiled-in
-fitting set's name (`is_builtin_aux_basis`), which is `BasisSetStep::basis`'s
-rule over the other table (`pipeline/config`).
+A missing or empty `[eri]` is filled in, integral-direct, for any step that
+reads `EriOutput`. `aux_basis` is valid only under `"density_fitting"`. A path
+is joined to the input directory only when it is not a compiled-in fitting
+set's name (`is_builtin_aux_basis`), which is `BasisSetStep::basis`'s rule
+over the other table (`pipeline/config`).
 
 ## Tests
 
-`test/gtest/pipeline_density_fitting_gpu.cpp`:
+`test/gtest/pipeline_eri_gpu.cpp`:
 
 - The step's contract is checked by `static_assert`.
 - The step's B for water in cc-pVDZ / cc-pVDZ-JKFIT and in cc-pVTZ /
@@ -111,6 +153,11 @@ rule over the other table (`pipeline/config`).
   check: its last rows, the metric's smallest pivots, amplify the integrals'
   ~1e-14 differences by L's conditioning, to 5.5e-12 (DZ) and 9.8e-12 (TZ)
   of max|B|.
+- Integral-direct holds as many J and K classes as `coulomb_pair_classes` and
+  `ordered_pair_classes` make, and refuses an `aux_basis`.
+- Density fitting with no `aux_basis` over cc-pVDZ is the B of
+  cc-pVDZ-acCD-6-6; over STO-3G, or over cc-pVDZ read from its file, it is
+  `InvalidConfig`.
 - An aux basis lacking an element of the molecule is `InvalidConfig`, and an
   unknown name is `IO` that lists the compiled-in names.
 
@@ -118,6 +165,6 @@ rule over the other table (`pipeline/config`).
 
 | File | Role |
 |------|------|
-| `density_fitting.cppm` | Module interface: `DensityFittingOutput`, `DensityFittingStep` |
-| `density_fitting.cpp` | `DensityFittingStep::run` |
+| `eri.cppm` | Module interface: `EriMode`, `IntegralDirect`, `DensityFitted`, `EriOutput`, `EriStep` |
+| `eri.cpp` | `EriStep::run`, the default aux basis, and B's build |
 | `CMakeLists.txt` | The module library |

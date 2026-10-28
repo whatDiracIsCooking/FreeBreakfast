@@ -23,7 +23,7 @@ import free_breakfast.integrals.eri.integral_direct.exchange;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.primitive_pair_classes;
-import free_breakfast.pipeline.density_fitting;
+import free_breakfast.pipeline.eri;
 
 namespace {
 
@@ -496,7 +496,7 @@ TEST_F(DfJk, ExchangeOfOneFactorTwiceIsTheOneFactorExchange) {
                            worst / scale);
 }
 
-// The same A B^T over this tree's own basis and B (the DensityFitting step's),
+// The same A B^T over this tree's own basis and B (the Eri step's),
 // against integral-direct exchange: S = (D + D^T) / 2 and the antisymmetric
 // rest each by its own sweep, unscreened, carried to the spherical layout.
 // Their difference is the fitting error, not rounding.
@@ -525,11 +525,16 @@ TEST(DfJkDirect, ExchangeOfTwoFactorsMatchesIntegralDirectWithinTheFittingError)
   ASSERT_TRUE(basis) << basis.error().message;
   auto classes = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
   ASSERT_TRUE(classes) << classes.error().message;
-  auto fit = fb::DensityFittingStep{.aux_basis = (*c)["aux_basis"].get<std::string>()}.run(
-      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
-          molecule, *basis, *classes},
-      res);
+  auto fit =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting,
+                  .aux_basis = (*c)["aux_basis"].get<std::string>()}
+          .run(
+              fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+                  molecule, *basis, *classes},
+              res);
   ASSERT_TRUE(fit) << fit.error().message;
+  const auto *b_fit = std::get_if<fb::DensityFitted>(&fit->eri);
+  ASSERT_NE(b_fit, nullptr);
   auto k_classes = fb::ordered_pair_classes(res, basis->basis, classes->classes);
   ASSERT_TRUE(k_classes) << k_classes.error().message;
   auto u = fb::upload_spherical_transform_matrix(res, basis->basis);
@@ -547,8 +552,8 @@ TEST(DfJkDirect, ExchangeOfTwoFactorsMatchesIntegralDirectWithinTheFittingError)
   fb::Buffers::device<double> d_k(n * n, res.device());
   upload(res, a, d_a.data());
   upload(res, b, d_b.data());
-  const fb::Status built = fb::df_exchange(res, nao, fit->naux, static_cast<std::int32_t>(kRank),
-                                           fit->b.data(), d_a.data(), d_b.data(), d_k.data());
+  const fb::Status built = fb::df_exchange(res, nao, b_fit->naux, static_cast<std::int32_t>(kRank),
+                                           b_fit->b.data(), d_a.data(), d_b.data(), d_k.data());
   ASSERT_TRUE(built) << built.error().message;
   const std::vector<double> got = download(res, d_k.data(), d_k.num_elements());
 

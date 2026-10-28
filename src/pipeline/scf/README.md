@@ -2,17 +2,17 @@
 
 Iterate closed-shell restricted Hartree-Fock to self-consistency, from the
 `GuessOutput`, with Pulay DIIS on the Fock matrix. The two-electron part is
-integral-direct, with incremental Fock builds, or density-fitted over an aux
-basis (`aux_basis`, below).
+the `EriOutput`'s (`pipeline/eri`): integral-direct, with incremental Fock
+builds, or density-fitted.
 
 ## Module
 
 `free_breakfast.pipeline.scf`, target `free_breakfast::pipeline::scf`. It
 re-exports `free_breakfast.recipes.matrix_ao` and the `orthogonalizer`,
-`core_hamiltonian` and `guess` steps, which between them re-export every other
-product in `run`'s signature. `run` is defined in the implementation unit, so
-J, K, DIIS, the BLAS calls it uses, and under density fitting the
-`DensityFitting` step and DF J and K are PRIVATE links.
+`core_hamiltonian`, `guess` and `eri` steps, which between them re-export every
+other product in `run`'s signature. `run` is defined in the implementation
+unit, so J, K, DIIS, the BLAS calls it uses, and DF J and K are PRIVATE
+links.
 
 ## The step
 
@@ -32,12 +32,11 @@ struct ScfStep {
   double energy_tolerance = 1e-10;     // |dE| between two Fock builds
   double commutator_tolerance = 1e-7;  // ||X^T (F D S - S D F) X||_F
   int32_t diis_history = 8;
-  std::string aux_basis{};             // empty: direct; else DF over this fitting set (name or path)
   int32_t fock_rebuild_interval = 20;  // every this many builds, one is full; 1: all full
   double tau_j = 1e-10;                // J's screen, coulomb's tau; not a TOML key
   std::filesystem::path molden{};      // if set, the converged orbitals are written here
 
-  Result<ScfOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
+  Result<ScfOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput,
                        OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
                   DeviceResources &res) const;
 };
@@ -45,7 +44,7 @@ struct ScfStep {
 
 Each iteration, all on `res.stream()`:
 
-1. **Fock build**: density-fitted under `aux_basis` (below), or
+1. **Fock build**: density-fitted under a `DensityFitted` ERI (below), or
    integral-direct, full or incremental (below): the Cartesian form
    (`spherical_to_cartesian`) of D or of D - D_built, J and K from it
    (`coulomb` at `tau_j`, `exchange` at its default screening), G = J - K/2 carried
@@ -113,17 +112,15 @@ What it settled:
   10x `commutator_tolerance` without the reset tied (209 s on gly5); at 10x
   and 100x with it, 226 and 234 s.
 
-- **Density fitting is an ERI option of this step, not a step of its own.**
-  With `aux_basis` set, the step builds B = L⁻¹ (P|mn) itself by calling
-  `DensityFittingStep::run` over the molecule, basis and pair classes its
-  `View` already holds, and `DfFockBuilder` makes F = H + J − K/2 from it:
-  J from D (`df_coulomb`), K from the occupied orbitals the density came
-  from (`df_exchange`, which takes a factor C of D = 2 C Cᵀ). B is the run's
-  own and freed when the loop returns. A second step producing `ScfOutput`
-  would need the planner to admit two producers of one product, and
-  `ScfOutput` is what localization, CASCI, CASSCF and FCI read; and the step
-  does not read `DensityFittingOutput`, because a `View` has no optional
-  entries. The standalone `DensityFitting` step is unchanged.
+- **The ERIs are the pipeline's, read from `EriOutput`.** One `[eri]`
+  (`pipeline/eri`) chooses them for the whole pipeline and its step builds
+  them once; this step branches on the alternative. Under `DensityFitted`,
+  `DfFockBuilder` makes F = H + J − K/2 from its B: J from D
+  (`df_coulomb`), K from the occupied orbitals the density came from
+  (`df_exchange`, which takes a factor C of D = 2 C Cᵀ). Under
+  `IntegralDirect`, `DirectFockBuilder` launches J and K over its classes.
+  The step builds neither: B and the classes outlive the SCF for the
+  CASSCF (and every later reader) to use.
   **Every DF build is full**, so `fock_rebuild_interval` and `tau_j` are not
   read and DIIS is never reset: DF's cost is dense BLAS, which a small ΔD
   does not shrink, and K from orbitals is not a function of ΔD. **The first
@@ -150,7 +147,7 @@ What it settled:
   loop's 208 s.
 
   B itself (metric, three-center, fit) takes about 6.4 s of the DF run: a
-  config planning only `[density_fitting]` ran in 6.85 s against 0.42 s for
+  config planning only the density-fitting step ran in 6.85 s against 0.42 s for
   its setup steps alone. The step, B included, is about 12.6 s, some 15x
   faster than the direct SCF. The DF energy, −1110.135779508 Eh, is 2.0 mEh above
   the direct one, −1110.137794144 Eh: that is the fit's error at gly5 in
@@ -162,11 +159,10 @@ What it settled:
   cannot absorb, so that test runs at 0. K's default screen (1e-13) does not
   bind there, so K has no option. `tau_j` is not a `[scf]` TOML key: that
   would be a change to `pipeline/config`.
-- **One coarse step owns the loop** (design section 14). D, F, the DIIS
-  history and the J and K classes are its private state, not products. The
-  classes are rebuilt from `PrimitivePairClassesOutput` per run
-  (`coulomb_pair_classes`, `ordered_pair_classes`), as design section 8 has
-  them until their scratch is refactored away.
+- **One coarse step owns the loop** (design section 14). D, F and the DIIS
+  history are its private state, not products. The J and K classes are the
+  `EriOutput`'s, shared, and their scratch is written by one build at a time
+  because device steps run one at a time (`pipeline/eri/README.md`).
 - **`syevd`'s work is `res.device_workspace()`'s**: `recipes.diagonalize`
   takes it per call and drops it when it returns, since nothing reads it after.
   Everything else the loop holds lives across calls (DIIS writes into `tmp`,
@@ -195,9 +191,7 @@ What it settled:
   aufbau fill can pick. A canonical orthogonalizer with fewer columns than AOs
   is the fix, once a basis needs it.
 
-Errors: under `aux_basis`, building B is `DensityFittingStep::run`'s errors
-(an unreadable aux file `IO`, an unknown or incomplete set `InvalidConfig`, B
-past the device's free memory `Unsupported`, naming the bytes); an option out of range, more electron pairs than orbitals, or a guess
+Errors: an option out of range, more electron pairs than orbitals, or a guess
 of the wrong size is `InvalidConfig`; a class above f is J's and K's
 `InvalidConfig`; no convergence within `max_iterations` is
 `MaxIterationsExceeded`; a non-converged eigensolve is `Numerical`; a failed
@@ -231,10 +225,10 @@ orbital and fitting sets (`test/gtest/data/density_fitting/`,
 `tools/emit/df_reference.py`):
 
 - H2O and NH4+ in cc-pVDZ / cc-pVDZ-JKFIT and H2O in cc-pVTZ /
-  cc-pVTZ-JKFIT (f orbitals, g fitting functions), each over the setup steps
-  and the guess run by hand: the energy to 1e-8 Eh and every orbital energy
-  to 1e-6 Eh, and the invariants C^T S C = I, tr(D S) = N and D S D = 2 D.
-- An unknown aux basis is the fit's `IO`, passed through.
+  cc-pVTZ-JKFIT (f orbitals, g fitting functions), each over the setup steps,
+  the fitted `EriOutput` and the guess run by hand: the energy to 1e-8 Eh and
+  every orbital energy to 1e-6 Eh, and the invariants C^T S C = I,
+  tr(D S) = N and D S D = 2 D.
 - The cc-pVTZ case launches three_center's (ff|g) and (dd|g) classes, whose
   per-thread stack the CUDA runtime reserves for the life of the process, so
   it is registered `RUN_SERIAL` in `test/gtest/CMakeLists.txt`, with the two
@@ -244,9 +238,8 @@ orbital and fitting sets (`test/gtest/data/density_fitting/`,
   `integrals/eri/density_fitting/three_center/README.md`, "The stack"). The
   `RUN_SERIAL` is kept: it is still the largest single reservation these
   cases make.
-- A config whose `[scf]` selects density fitting plans the whole chain, with
-  no `DensityFitting` step, and runs it to PySCF's energy and orbital
-  energies.
+- A config whose `[eri]` selects density fitting plans the whole chain and
+  runs it to PySCF's energy and orbital energies.
 
 ## Files
 

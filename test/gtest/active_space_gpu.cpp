@@ -182,8 +182,16 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry) {
   setup->basis = &basis->basis;
   setup->transform = &*transform;
   setup->h = &*h;
+  auto eri = fb::EriStep{}.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          *molecule, *basis, *pairs},
+      setup->res());
+  if (!eri.has_value()) {
+    ADD_FAILURE() << eri.error().message;
+    return nullptr;
+  }
   auto scf = kExactScf.run(
-      fb::StepInput<fb::ScfStep>{*molecule, *basis, *transform, *pairs, *overlap, *x, *h, *guess},
+      fb::StepInput<fb::ScfStep>{*molecule, *basis, *transform, *eri, *overlap, *x, *h, *guess},
       setup->res());
   if (!scf.has_value()) {
     ADD_FAILURE() << scf.error().message;
@@ -573,13 +581,13 @@ TEST(ActiveSpaceGpuRefusals, RefusesAnActiveSpacePastTheOrbitalsOrEmpty) {
   EXPECT_TRUE(!negative.has_value() && negative.error().kind == fb::ErrorKind::InvalidConfig);
 }
 
-// casscf_integrals over density fitting: B from the DensityFitting step over
+// casscf_integrals over density fitting: B from the Eri step over
 // aug-cc-pVDZ-acCD-6-6, for the setup's orbitals. Not cc-pVDZ-JKFIT: built for
 // occupied pairs, its Coulomb-metric fitting error reaches 1.6e-3 on the
 // virtual-orbital pairs ppaa and papa span (2.3e-4 on N2's E_core).
 struct DfSetup {
   std::unique_ptr<Setup> setup;
-  std::optional<fb::DensityFittingOutput> fit;
+  std::optional<fb::DensityFitted> fit;
 
   [[nodiscard]] fb::Result<fb::CasscfIntegrals> build() {
     return fb::casscf_integrals(setup->res(), *setup->basis, *setup->molecule, setup->h->h, fit->b,
@@ -595,15 +603,16 @@ std::optional<DfSetup> make_df_setup(std::string_view name) {
   const auto &molecule = df.setup->calc->get<fb::MoleculeOutput>();
   const auto &basis = df.setup->calc->get<fb::BasisSetOutput>();
   const auto &pairs = df.setup->calc->get<fb::PrimitivePairClassesOutput>();
-  auto fit = fb::DensityFittingStep{.aux_basis = "aug-cc-pvdz-accd-6-6"}.run(
-      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
-          *molecule, *basis, *pairs},
-      df.setup->res());
+  auto fit =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "aug-cc-pvdz-accd-6-6"}.run(
+          fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+              *molecule, *basis, *pairs},
+          df.setup->res());
   if (!fit.has_value()) {
     ADD_FAILURE() << fit.error().message;
     return std::nullopt;
   }
-  df.fit.emplace(std::move(*fit));
+  df.fit.emplace(std::get<fb::DensityFitted>(std::move(fit->eri)));
   return df;
 }
 

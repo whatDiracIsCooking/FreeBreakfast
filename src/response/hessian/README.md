@@ -37,7 +37,7 @@ public:
 The integral-direct overload's arguments through `k_classes` are
 `response::fock`'s; the density-fitted one takes B in place of the basis, U
 and the classes, as the density-fitted `response::fock` does: `b` is
-`DensityFittingOutput::b`, naux × nmo² over the spherical AOs. In both, `fock`
+`DensityFitted::b`, naux × nmo² over the spherical AOs. In both, `fock`
 is `response::fock`'s result over the same C, ncore and ncas, and `ppaa` and
 `papa` are `casscf_integrals`' over the same C (both empty for ncas = 0, the
 RHF orbital Hessian), each fitted or not as the caller chose: H is wholly

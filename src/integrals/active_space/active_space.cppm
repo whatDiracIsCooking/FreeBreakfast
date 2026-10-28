@@ -156,7 +156,7 @@ casscf_integrals(DeviceResources &res, const BasisSet &basis, const Molecule &mo
 /// so there is no prune cap.
 ///
 /// @p b is B as @c density_fit leaves it (the pipeline's
-/// DensityFittingOutput::b): @p naux x nao^2, element (Q, n + nao m) at
+/// DensityFitted::b): @p naux x nao^2, element (Q, n + nao m) at
 /// Q + naux (n + nao m). @p basis, @p molecule, @p h, @p c, @p ncore and
 /// @p ncas are as for the integral-direct overload, and checked and refused
 /// alike.

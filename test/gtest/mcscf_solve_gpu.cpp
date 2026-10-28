@@ -173,19 +173,20 @@ struct Setup {
   }
 
   // B over the setup's basis and aux_basis.
-  [[nodiscard]] std::optional<fb::DensityFittingOutput> fit(std::string_view aux_basis) {
+  [[nodiscard]] std::optional<fb::DensityFitted> fit(std::string_view aux_basis) {
     const auto &mol = calc->get<fb::MoleculeOutput>();
     const auto &basis_set = calc->get<fb::BasisSetOutput>();
     const auto &pairs = calc->get<fb::PrimitivePairClassesOutput>();
-    auto b = fb::DensityFittingStep{.aux_basis = std::string{aux_basis}}.run(
-        fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
-            *mol, *basis_set, *pairs},
-        res());
+    auto b =
+        fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = std::string{aux_basis}}.run(
+            fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+                *mol, *basis_set, *pairs},
+            res());
     if (!b.has_value()) {
       ADD_FAILURE() << b.error().message;
       return std::nullopt;
     }
-    return std::move(*b);
+    return std::get<fb::DensityFitted>(std::move(b->eri));
   }
 };
 
@@ -218,9 +219,17 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
   setup->transform = &*transform;
   setup->h = &*h;
   setup->overlap = &*overlap;
-  auto scf = fb::test::kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform,
-                                                                *pairs, *overlap, *x, *h, *guess},
-                                     setup->res());
+  auto eri = fb::EriStep{}.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          *molecule, *basis_set, *pairs},
+      setup->res());
+  if (!eri.has_value()) {
+    ADD_FAILURE() << eri.error().message;
+    return nullptr;
+  }
+  auto scf = fb::test::kExactScf.run(
+      fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform, *eri, *overlap, *x, *h, *guess},
+      setup->res());
   if (!scf.has_value()) {
     ADD_FAILURE() << scf.error().message;
     return nullptr;
@@ -255,9 +264,9 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
 // The weighted energy and ||g|| at orbitals c from scratch: the integrals, a
 // cold CI at ci::solve's own tolerance, the RDMs and response::fock, nothing of
 // mcscf::solve's. Integral-direct, or over df's B when it is given.
-std::optional<std::pair<double, double>>
-from_scratch(Setup &setup, const fb::SphericalMatrixAO &c, const std::vector<double> &weights,
-             const fb::DensityFittingOutput *df = nullptr) {
+std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::SphericalMatrixAO &c,
+                                                      const std::vector<double> &weights,
+                                                      const fb::DensityFitted *df = nullptr) {
   fb::DeviceResources &res = setup.res();
   const std::int32_t ncore = setup.start->ncore;
   const std::int32_t ncas = setup.start->ncas;
@@ -420,7 +429,7 @@ class McscfSolve : public ::testing::TestWithParam<Case> {};
 // recomputed over df's B when it is given (the DF-CASSCF's own gradient).
 void expect_polished(Setup &setup, const fb::mcscf::Solution &sol, const fb::json &entry,
                      const std::vector<double> &weights, std::string_view mode, double seconds,
-                     const fb::DensityFittingOutput *df = nullptr) {
+                     const fb::DensityFitted *df = nullptr) {
   SCOPED_TRACE(mode);
   const fb::json &want = entry.at("casscf");
 

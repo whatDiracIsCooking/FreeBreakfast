@@ -263,9 +263,17 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci,
   setup->transform = &*transform;
   setup->h = &*h;
   setup->nmo = basis_set->basis.nao_sphe();
-  auto scf = fb::test::kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform,
-                                                                *pairs, *overlap, *x, *h, *guess},
-                                     setup->res());
+  auto eri = fb::EriStep{}.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          *molecule, *basis_set, *pairs},
+      setup->res());
+  if (!eri.has_value()) {
+    ADD_FAILURE() << eri.error().message;
+    return nullptr;
+  }
+  auto scf = fb::test::kExactScf.run(
+      fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform, *eri, *overlap, *x, *h, *guess},
+      setup->res());
   if (!scf.has_value()) {
     ADD_FAILURE() << scf.error().message;
     return nullptr;
@@ -670,7 +678,7 @@ TEST(ResponseFockActive, MatchesTheAoRoute) {
 
 // What the density-fitted tests read: B over the setup's basis and the aux
 // set, on the setup's device.
-std::optional<fb::DensityFittingOutput> fit(Setup &setup) {
+std::optional<fb::DensityFitted> fit(Setup &setup) {
   const auto &molecule = setup.calc->get<fb::MoleculeOutput>();
   const auto &basis = setup.calc->get<fb::BasisSetOutput>();
   const auto &pairs = setup.calc->get<fb::PrimitivePairClassesOutput>();
@@ -678,20 +686,21 @@ std::optional<fb::DensityFittingOutput> fit(Setup &setup) {
     ADD_FAILURE() << "a product of the setup steps is missing";
     return std::nullopt;
   }
-  auto b = fb::DensityFittingStep{.aux_basis = std::string{kAuxBasis}}.run(
-      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
-          *molecule, *basis, *pairs},
-      setup.res());
+  auto b =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = std::string{kAuxBasis}}.run(
+          fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+              *molecule, *basis, *pairs},
+          setup.res());
   if (!b.has_value()) {
     ADD_FAILURE() << b.error().message;
     return std::nullopt;
   }
-  return std::move(*b);
+  return std::get<fb::DensityFitted>(std::move(b->eri));
 }
 
 // The MO two-electron integrals (pq|rs) ~ sum_Q B_Q,pq B_Q,rs over C's
 // orbitals on the host, at p + nmo (q + nmo (r + nmo s)).
-std::vector<double> fitted_mo_eri(fb::DeviceResources &res, const fb::DensityFittingOutput &b,
+std::vector<double> fitted_mo_eri(fb::DeviceResources &res, const fb::DensityFitted &b,
                                   const std::vector<double> &c, std::size_t nmo) {
   const auto naux = static_cast<std::size_t>(b.naux);
   const std::size_t nn = nmo * nmo;
@@ -899,10 +908,15 @@ TEST(ResponseFockRhfLimit, DensityFittedIsTheDfRhfGradient) {
   const auto &x = setup->calc->get<fb::OrthogonalizerOutput>();
   const auto &h = setup->calc->get<fb::CoreHamiltonianOutput>();
   const auto &guess = setup->calc->get<fb::GuessOutput>();
-  fb::ScfStep step = fb::test::kExactScf;
-  step.aux_basis = std::string{kAuxBasis};
-  auto scf = step.run(
-      fb::StepInput<fb::ScfStep>{*molecule, *basis, *transform, *pairs, *overlap, *x, *h, *guess},
+  // The SCF's ERIs fitted over the same aux set as b.
+  auto eri =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = std::string{kAuxBasis}}.run(
+          fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+              *molecule, *basis, *pairs},
+          res);
+  ASSERT_TRUE(eri.has_value()) << eri.error().message;
+  auto scf = fb::test::kExactScf.run(
+      fb::StepInput<fb::ScfStep>{*molecule, *basis, *transform, *eri, *overlap, *x, *h, *guess},
       res);
   ASSERT_TRUE(scf.has_value()) << scf.error().message;
 

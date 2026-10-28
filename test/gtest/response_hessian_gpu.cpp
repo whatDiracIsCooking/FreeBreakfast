@@ -269,9 +269,17 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci) {
   setup->transform = &*transform;
   setup->h = &*h;
   setup->nmo = basis_set->basis.nao_sphe();
-  auto scf = fb::test::kExactScf.run(fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform,
-                                                                *pairs, *overlap, *x, *h, *guess},
-                                     setup->res());
+  auto eri = fb::EriStep{}.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          *molecule, *basis_set, *pairs},
+      setup->res());
+  if (!eri.has_value()) {
+    ADD_FAILURE() << eri.error().message;
+    return nullptr;
+  }
+  auto scf = fb::test::kExactScf.run(
+      fb::StepInput<fb::ScfStep>{*molecule, *basis_set, *transform, *eri, *overlap, *x, *h, *guess},
+      setup->res());
   if (!scf.has_value()) {
     ADD_FAILURE() << scf.error().message;
     return nullptr;
@@ -816,7 +824,7 @@ double max_abs_difference(const std::vector<double> &a, const std::vector<double
 }
 
 // B over the setup's basis and the aux set, on the setup's device.
-std::optional<fb::DensityFittingOutput> fit(Setup &setup, std::string_view aux_basis) {
+std::optional<fb::DensityFitted> fit(Setup &setup, std::string_view aux_basis) {
   const auto &molecule = setup.calc->get<fb::MoleculeOutput>();
   const auto &basis = setup.calc->get<fb::BasisSetOutput>();
   const auto &pairs = setup.calc->get<fb::PrimitivePairClassesOutput>();
@@ -824,20 +832,21 @@ std::optional<fb::DensityFittingOutput> fit(Setup &setup, std::string_view aux_b
     ADD_FAILURE() << "a product of the setup steps is missing";
     return std::nullopt;
   }
-  auto b = fb::DensityFittingStep{.aux_basis = std::string{aux_basis}}.run(
-      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
-          *molecule, *basis, *pairs},
-      setup.res());
+  auto b =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = std::string{aux_basis}}.run(
+          fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+              *molecule, *basis, *pairs},
+          setup.res());
   if (!b.has_value()) {
     ADD_FAILURE() << b.error().message;
     return std::nullopt;
   }
-  return std::move(*b);
+  return std::get<fb::DensityFitted>(std::move(b->eri));
 }
 
 // The MO two-electron integrals (pq|rs) ~ sum_Q B_Q,pq B_Q,rs over C's
 // orbitals on the host, at p + nmo (q + nmo (r + nmo s)).
-std::vector<double> fitted_mo_eri(fb::DeviceResources &res, const fb::DensityFittingOutput &b,
+std::vector<double> fitted_mo_eri(fb::DeviceResources &res, const fb::DensityFitted &b,
                                   const std::vector<double> &c, std::size_t nmo) {
   const auto naux = static_cast<std::size_t>(b.naux);
   const std::size_t nn = nmo * nmo;
@@ -1018,7 +1027,7 @@ private:
 // MO integrals, ppaa and papa contracted from them, the density-fitted Fock
 // over them, the operator, and its host twin.
 struct FittedHessian {
-  fb::DensityFittingOutput b;
+  fb::DensityFitted b;
   fb::Buffers::device<double> ppaa;
   fb::Buffers::device<double> papa;
   fb::response::Fock fock;

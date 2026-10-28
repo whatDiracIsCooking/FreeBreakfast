@@ -12,7 +12,7 @@ names them all. It is the one library that imports every step, so only it and
 
 ```cpp
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
-                             PrimitivePairClassesStep, DensityFittingStep, OverlapStep,
+                             PrimitivePairClassesStep, EriStep, OverlapStep,
                              OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
                              LocalizationStep, CasciStep, CasscfStep, FciStep>;
 
@@ -41,8 +41,8 @@ multiplicity = 1    # default 1
 [basis_set]
 basis = "sto-3g.json"   # required, a BSE JSON basis
 
-[density_fitting]
-aux_basis = "cc-pvdz-jkfit"   # required, a compiled-in fitting set or a BSE JSON path
+[eri]                     # every option has a default
+mode = "integral_direct"  # default "integral_direct"; or "density_fitting"
 
 [orthogonalizer]          # every option has a default
 eigenvalue_floor = 1e-10  # default 1e-10
@@ -54,7 +54,6 @@ type = "sad"              # default "sad", the only kind so far
 
 [scf]                     # every option has a default
 max_iterations = 100
-eri = "direct"            # default "direct"; or "density_fitting"
 
 [localization]            # every option has a default
 mode = "pipek_mezey"      # default "pipek_mezey"; or "ibo"
@@ -77,29 +76,33 @@ avas = ["O 2p", "H 1s"]   # "<symbol> <n><l>"; every m, every atom of the elemen
 avas_threshold = 0.2      # default 0.2; needs avas
 ```
 
-`[scf]` picks its two-electron integrals with `eri`. `"direct"`, the
-default, is the integral-direct Fock build. `"density_fitting"` fits J and K
-over an aux basis, which it then needs:
+`[eri]` picks the two-electron integrals for the **whole pipeline**: the
+`EriStep` builds them once, and `[scf]` and `[casscf]` both read its product
+(`eri/README.md`). `mode = "integral_direct"`, the default, is J's and K's
+pair classes. `"density_fitting"` fits J and K over an aux basis:
 
 ```toml
-[scf]
-eri = "density_fitting"
-aux_basis = "cc-pvdz-jkfit"   # required with it: a compiled-in fitting set, or a BSE JSON path
+[eri]
+mode = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"   # optional: a compiled-in fitting set, or a BSE JSON path
 ```
 
-`aux_basis` follows `[density_fitting]`'s rule, joined to the input directory
-only when it is not a compiled-in fitting set's name, and is an input file
-like any other. Each mode refuses the other's options: `aux_basis` without
-`eri = "density_fitting"` is `InvalidConfig`, and so is
-`fock_rebuild_interval` with it, since every DF build is full. Density
-fitting is chosen **only** through `[scf]` (and, for the CASSCF alone,
-`[casscf]`, below). The step builds its own B and
-does not read `[density_fitting]`'s, so `[density_fitting]` beside a
-filled-in `[scf]` leaves that `[scf]` direct. `ScfStep` is the one producer
-of `ScfOutput`, so every step after it reads the DF orbitals unchanged
-(`scf/README.md`). Why `eri` and `aux_basis` as the keys: `eri` says what is
-being chosen, the electron-repulsion integrals, with room for another
-method, and `aux_basis` is the spelling `[density_fitting]` already uses.
+Left out, `aux_basis` is `<basis>-acCD-6-6` when the basis is a compiled-in
+set that has one carried; `EriStep::run` picks it from `BasisSet::name()`, so
+this front end never loads a basis, and a basis with none is `InvalidConfig`
+then, asking for `aux_basis`. Written, it follows `[basis_set]`'s rule over
+the fitting sets: joined to the input directory only when it is not a
+compiled-in fitting set's name, and an input file like any other. A missing
+`[eri]` is filled in, integral-direct, as every defaulted table is.
+
+Each mode refuses the other's options: `aux_basis` under `"integral_direct"`
+is `InvalidConfig`, and so is `[scf] fock_rebuild_interval` beside `mode =
+"density_fitting"`, since every DF build is full. That one spans two tables,
+so `parse_config` checks it once the pipeline is planned (`[eri]` may be
+filled in, or written after `[scf]`). `[scf]` and `[casscf]` take no `eri` or
+`aux_basis` of their own, and there is no `[density_fitting]`: one pipeline
+cannot mix a fitted SCF with a direct CASSCF (one aux basis per pipeline; a
+mix is two runs).
 
 `[localization]`'s method options sit in the table beside `mode`, not in
 a subtable named after `LocalizationStep::pipek_mezey`: both modes run the
@@ -123,7 +126,6 @@ weights = [0.5, 0.5]      # default equal; nroots of them, >= 0, summing to 1
 conv_tol = 1e-10          # default 1e-10: |dE| at convergence
 conv_tol_grad = 1e-6      # default 1e-6: ||g|| at convergence
 max_cycle = 50            # default 50 macro iterations
-eri = "direct"            # default "direct"; or "density_fitting", as [scf]'s
 ```
 
 `[casscf]` reads the selection as `[casci]` does, and its own keys are checked
@@ -132,24 +134,8 @@ not summing to 1 within 1e-12 (`mcscf::solve`'s own bar), a tolerance not
 positive, or `max_cycle` below 1 is InvalidConfig. Unlike the active space's
 ranges, none of these needs the molecule.
 
-`[casscf]` picks its two-electron integrals as `[scf]` does, with the same
-keys, rules and refusals (one reader, `read_eri`, for both tables):
-
-```toml
-[casscf]
-ncas = 4
-nelecas = 4
-eri = "density_fitting"
-aux_basis = "cc-pvdz-jkfit"   # required with it: a compiled-in fitting set, or a BSE JSON path
-```
-
-`aux_basis` is joined to the input directory only when it is not a compiled-in
-fitting set's name, and is an input file like any other; `aux_basis` without
-`eri = "density_fitting"`, `eri = "density_fitting"` without it, an empty one,
-or an unknown `eri` is InvalidConfig. The two tables choose apart: a fitted
-`[casscf]` leaves its filled-in `[scf]` direct, and a fitted `[scf]` leaves
-`[casscf]` direct, each over its own aux basis. The step builds its own B and
-runs the DF-CASSCF (`casscf/README.md`).
+`[casscf]` runs the DF-CASSCF under a density-fitted `[eri]`
+(`casscf/README.md`).
 
 ```toml
 [fci]
@@ -191,7 +177,7 @@ It is a path, resolved like every other.
 
 **Every path in a config is an input, relative to the input directory**:
 `[molecule] xyz`, a `[basis_set] basis` that is not a compiled-in name, a
-`[density_fitting]`, `[scf]` or `[casscf]` `aux_basis` that is not a compiled-in fitting set's name
+`[eri] aux_basis` that is not a compiled-in fitting set's name
 (`is_builtin_aux_basis`, the other table), and every `from`. The input directory is the run's, not the config file's:
 `free-breakfast -i <dir>`, default `.`, so a config can be shared between
 runs that each bring their own inputs. An empty `input_dir` leaves the paths
@@ -241,11 +227,12 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[scf] eri` and `[casscf] eri`, which know `"direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
+  only `"sad"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
   `[localization] exponent`, 2 or 4);
 - `from` beside another key, or on a step with no `load`;
-- an option of the other ERI mode in `[scf]` or `[casscf]` (above), or an
-  empty `aux_basis`;
+- an option of the other ERI mode (above): `[eri] aux_basis` under
+  `"integral_direct"`, or `[scf] fock_rebuild_interval` under
+  `"density_fitting"`; or an empty `aux_basis`;
 - a value of the wrong type. A boolean (`[localization] livvo`) is `true` or
   `false`, not `1` or `"true"`. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`

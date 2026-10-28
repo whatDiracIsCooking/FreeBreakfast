@@ -14,7 +14,6 @@ import free_breakfast.core.resources;
 import free_breakfast.core.log;
 import free_breakfast.recipes.diis;
 import free_breakfast.recipes.diagonalize;
-import free_breakfast.pipeline.density_fitting;
 import free_breakfast.integrals.eri.density_fitting.jk;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
@@ -29,11 +28,9 @@ namespace free_breakfast {
 // build makes G of D itself; an incremental one adds G(D - d_built) to the F of
 // d_built, which G's linearity makes the same matrix. J's and K's screens scale
 // with the density they read, and the difference shrinks as the SCF converges,
-// so they skip more of it. The J and K classes are made from the shared
-// PrimitivePairClassesOutput and never published.
+// so they skip more of it. The J and K classes are the shared EriOutput's.
 struct DirectFockBuilder {
-  std::vector<CoulombPairClass> j_classes;
-  std::vector<OrderedPairClass> k_classes;
+  const IntegralDirect &eri;
   SphericalMatrixAO d_built; // the density f is the Fock matrix of
   MatrixAOPair dd;           // what J and K read: D on a full build, D - d_built otherwise
   MatrixAOPair g;            // J - K/2 of dd, built Cartesian and carried onto the spherical layout
@@ -77,8 +74,8 @@ struct DirectFockBuilder {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_built.data(), d.data(), bytes,
                                            wwr::wwrMemcpyDeviceToDevice, res.stream())));
     FBF_TRY(dd.spherical_to_cartesian(res));
-    FBF_TRY(coulomb(res, j_classes, dd.cartesian(), g.cartesian(), tau_j));
-    FBF_TRY(exchange(res, k_classes, dd.cartesian(), k));
+    FBF_TRY(coulomb(res, eri.j_classes, dd.cartesian(), g.cartesian(), tau_j));
+    FBF_TRY(exchange(res, eri.k_classes, dd.cartesian(), k));
     constexpr double kMinusHalf = -0.5;
     FBF_TRY(
         gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(k.num_elements()),
@@ -114,7 +111,7 @@ struct DirectFockBuilder {
 constexpr double kDensityFactorFloor = 1e-12;
 
 // The density-fitted Fock build, F = H + J - K/2: J from D, by df_coulomb, and
-// K from a factor C of D = 2 C C^T, by df_exchange, over the B the step built.
+// K from a factor C of D = 2 C C^T, by df_exchange, over the EriOutput's B.
 // The factor is the occupied orbitals D came from; the first build's D, the
 // guess, has none, so its own is made, V (Lambda/2)^{1/2} from D = V Lambda V^T
 // over the eigenvalues above kDensityFactorFloor of the largest. Every build is
@@ -122,7 +119,7 @@ constexpr double kDensityFactorFloor = 1e-12;
 // shrink, and K from orbitals is no function of the difference anyway. So DIIS
 // is never reset either.
 struct DfFockBuilder {
-  DensityFittingOutput fit;
+  const DensityFitted &fit;
   SphericalMatrixAO j;
   SphericalMatrixAO k;
   int32_t nocc;
@@ -198,10 +195,10 @@ struct DfFockBuilder {
   [[nodiscard]] static bool reset_diis(double /*norm*/) { return false; }
 };
 
-[[nodiscard]] Result<ScfOutput> ScfStep::run(
-    View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput,
-         OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
-    DeviceResources &res) const {
+[[nodiscard]] Result<ScfOutput>
+ScfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput,
+                  OverlapOutput, OrthogonalizerOutput, CoreHamiltonianOutput, GuessOutput> in,
+             DeviceResources &res) const {
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
   const std::vector<double> &guess = in.get<GuessOutput>().d;
@@ -244,16 +241,10 @@ struct DfFockBuilder {
   const SphericalMatrixAO &s = in.get<OverlapOutput>().s;
   const SphericalMatrixAO &x = in.get<OrthogonalizerOutput>().x;
   const SphericalMatrixAO &h = in.get<CoreHamiltonianOutput>().h;
-  if (!aux_basis.empty()) {
-    // B is DensityFittingStep's, over the products this step reads anyway; it
-    // is the run's own, freed when the loop returns.
-    DensityFittingOutput fit = FBF_TRY(DensityFittingStep{.aux_basis = aux_basis}.run(
-        View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput>{
-            in.get<MoleculeOutput>(), in.get<BasisSetOutput>(),
-            in.get<PrimitivePairClassesOutput>()},
-        res));
+  const EriOutput &eri = in.get<EriOutput>();
+  if (const auto *fit = std::get_if<DensityFitted>(&eri.eri)) {
     DfFockBuilder builder{
-        .fit = std::move(fit),
+        .fit = *fit,
         .j = SphericalMatrixAO(res, basis),
         .k = SphericalMatrixAO(res, basis),
         .nocc = nocc,
@@ -262,12 +253,8 @@ struct DfFockBuilder {
                     commutator_tolerance, diis_history, molden);
   }
   const std::shared_ptr<const Buffers::device<double>> &u = in.get<SphericalTransformOutput>().u;
-  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
-  std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
-  std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
   DirectFockBuilder builder{
-      .j_classes = std::move(j_classes),
-      .k_classes = std::move(k_classes),
+      .eri = std::get<IntegralDirect>(eri.eri),
       .d_built = SphericalMatrixAO(res, basis),
       .dd = MatrixAOPair(res, basis, u),
       .g = MatrixAOPair(res, basis, u),
