@@ -325,8 +325,8 @@ starts, which was most of the tier's wall clock. So it lists the entries
 (`ctest --show-only=json-v1`, so the preset's filters and `-- -R …` still
 select), and `devtools/split-gpu-entries.py` takes out the GPU ones that can
 share a process. Those run as `GPU_TEST_JOBS` gtest shards, as in
-`cpp-smoke.sh`. ctest runs the rest: the host entries, the `RUN_SERIAL` (ff|g)
-cases it keeps alone on the card, and every entry when a launcher such as
+`cpp-smoke.sh`. ctest runs the rest: the host entries, the `RUN_SERIAL` cases
+it keeps alone on the card, and every entry when a launcher such as
 compute-sanitizer wraps them. So its ctest summary counts only those, and the
 batch reports in the `[shard i/N]` lines below it. `cpp-slow-tier.sh` still
 runs plain ctest.

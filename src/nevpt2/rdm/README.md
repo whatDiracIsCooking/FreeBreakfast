@@ -110,8 +110,8 @@ random unit vector at the default budget, prints the tile count and the
 pool's peak, and checks Σ_pqr dm3[p, p, q, q, r, r] = N³.
 On the 16 GiB RX 9060 XT (gfx1200, HIP) with the card otherwise idle it
 took 9 tiles, a 16.1 GB workspace and a pool peak of 16.2 GB (79 MB of it the
-inputs and outputs), in 42 s. It is registered RUN_SERIAL beside the (ff|g)
-cases, since its default budget is nearly the whole card.
+inputs and outputs), in 42 s. It is registered RUN_SERIAL, since its default
+budget is nearly the whole card.
 
 ## Files
 

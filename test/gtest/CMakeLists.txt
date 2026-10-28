@@ -285,30 +285,28 @@ gtest_discover_tests(
 # also needs a lot of memory or wall clock gets `no_sanitizer` here too, which
 # the asan preset excludes.
 #
-# The cases that launch three_center's (ff|g) class are registered apart, and
-# RUN_SERIAL: the runtime reserves that kernel's per-thread stack, about 7.3 GB
-# of a 10 GB RTX 3080, for the rest of the process
-# (src/integrals/eri/density_fitting/three_center/README.md), so a GPU case
-# beside one fails its first allocation. Each takes about a second.
-# NevptRdm's CAS(12,12) case is registered with them for the same reason: at
-# its default budget its tiles take all but 512 MiB of the card's free memory
-# (src/nevpt2/rdm/README.md), for about 40 s.
-set(_fb_ff_g_cases
-    "DfThreeCenter.TzThroughFfG*"
-    "PipelineDensityFitting.TzWithFOrbitals*"
-    "*PipelineDfScf.*h2o_ccpvtz"
-    "NevptRdm.Cas1212*"
-)
-list(JOIN _fb_ff_g_cases ":" _fb_ff_g_cases)
+# The cases that need the card to themselves are registered apart, and
+# RUN_SERIAL. NevptRdm's CAS(12,12) case: at its default budget its tiles take
+# all but 512 MiB of the card's free memory (src/nevpt2/rdm/README.md), for
+# about 40 s, so a GPU case beside it fails its first allocation.
+#
+# The (ff|g) cases are no longer here. The runtime reserves the largest
+# per-thread stack a process has launched, for every thread the card holds,
+# and keeps it; (ff|g) was a 70,232 B frame, about 7.3 GB of a 10 GB RTX 3080.
+# FelizJueves's low-stack eri3 cut it to 6,320 B, and the worst frame in the
+# binary is now (dd|g)'s 13,856 B, about 1.4 GB
+# (src/integrals/eri/density_fitting/three_center/README.md, "The stack"). The
+# cc-pVTZ DF cases peak at about 1.5 GB a process, which the shards share.
+set(_fb_serial_cases "NevptRdm.Cas1212*")
 gtest_discover_tests(
   free_breakfast_tests_gpu
   DISCOVERY_MODE PRE_TEST
-  TEST_FILTER "-${_fb_ff_g_cases}"
+  TEST_FILTER "-${_fb_serial_cases}"
   PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu
 )
 gtest_discover_tests(
   free_breakfast_tests_gpu
   DISCOVERY_MODE PRE_TEST
-  TEST_FILTER "${_fb_ff_g_cases}"
+  TEST_FILTER "${_fb_serial_cases}"
   PROPERTIES TIMEOUT ${_fb_test_timeout} LABELS gpu RUN_SERIAL TRUE
 )

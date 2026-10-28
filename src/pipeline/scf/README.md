@@ -230,14 +230,12 @@ orbital and fitting sets (`test/gtest/data/density_fitting/`,
   every orbital energy to 1e-6 Eh, and the invariants C^T S C = I,
   tr(D S) = N and D S D = 2 D.
 - The cc-pVTZ case launches three_center's (ff|g) and (dd|g) classes, whose
-  per-thread stack the CUDA runtime reserves for the life of the process, so
-  it is registered `RUN_SERIAL` in `test/gtest/CMakeLists.txt`, with the two
-  other (ff|g) cases. That reservation is about 1.4 GB of a 10 GB card now,
-  not the 7.3 GB it was before FelizJueves's low-stack eri3 ((dd|g)'s 13,856 B
-  is the family's worst frame, and (ff|g) fell from 70,232 B to 6,320 B —
-  `integrals/eri/density_fitting/three_center/README.md`, "The stack"). The
-  `RUN_SERIAL` is kept: it is still the largest single reservation these
-  cases make.
+  per-thread stack the CUDA runtime reserves for the life of the process:
+  about 1.4 GB of a 10 GB card, (dd|g)'s 13,856 B being the family's worst
+  frame (`integrals/eri/density_fitting/three_center/README.md`, "The
+  stack"). It was 7.3 GB before FelizJueves's low-stack eri3 cut (ff|g) from
+  70,232 B to 6,320 B, and the case was `RUN_SERIAL` then. It peaks at about
+  1.5 GB now and shares the card like any other case.
 - A config whose `[eri]` selects density fitting plans the whole chain and
   runs it to PySCF's energy and orbital energies.
 

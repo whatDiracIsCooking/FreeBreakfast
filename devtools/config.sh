@@ -351,8 +351,10 @@ HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_
 #
 # ONE RUN PER CARD. Two runs sharing the 10 GB RTX 3080 ran it out of memory
 # (2026-10-28), even at 3 jobs each and admitted at 29% VRAM: the first run
-# grew after the second joined, and three_center's (ff|g) class alone reserves
-# about 7.3 GB. A failed allocation ABORTS here, it does not queue. And sharing
+# grew after the second joined, and each shard keeps the stack of the largest
+# kernel it has launched, up to about 1.4 GB ((dd|g),
+# src/integrals/eri/density_fitting/three_center/README.md). A failed
+# allocation ABORTS here, it does not queue. And sharing
 # bought no speed: one run's shards already keep the card busy, so two runs
 # sharing it each got about half of it. So a run takes the whole card, and the
 # next one waits for it.
