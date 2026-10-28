@@ -21,6 +21,7 @@ import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 import free_breakfast.integrals.eri.density_fitting.jk; // df_coulomb, df_exchange
 import free_breakfast.response.fock;
+import free_breakfast.response.orbital_pairs;
 
 #include "diagnostics.h"
 

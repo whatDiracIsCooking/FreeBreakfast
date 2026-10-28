@@ -155,6 +155,7 @@ add_executable(
   pipeline_casci_gpu.cpp
   pipeline_casscf_gpu.cpp
   pipeline_fci_gpu.cpp
+  response_orbital_pairs_gpu.cpp
   response_fock_gpu.cpp
   response_hessian_gpu.cpp
   mcscf_solve_gpu.cpp

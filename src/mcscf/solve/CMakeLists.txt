@@ -56,5 +56,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::ci::rdm
   free_breakfast::response::fock
   free_breakfast::response::hessian
+  free_breakfast::response::orbital_pairs
   free_breakfast::mcscf::solve::device
 )

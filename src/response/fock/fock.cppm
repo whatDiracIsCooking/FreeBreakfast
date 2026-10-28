@@ -1,9 +1,8 @@
 /// @file
 /// @brief The energy, the inactive, active and generalized Fock matrices and
 /// the orbital gradient of a (state-averaged) CASSCF wavefunction at fixed
-/// orbitals and RDMs, on the device, integral-direct or density-fitted; and
-/// the packed order of the non-redundant orbital pairs that the gradient, the
-/// Hessian and the optimizer share.
+/// orbitals and RDMs, on the device, integral-direct or density-fitted. The
+/// gradient is in @c response.orbital_pairs' packed order.
 ///
 /// F^I is one J and one K of the core density, by @c coulomb and @c exchange
 /// or by @c df_coulomb and @c df_exchange; F^A is two gemvs over
@@ -137,34 +136,5 @@ fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
                                 int32_t ncas, const Buffers::device<double> &ppaa,
                                 const Buffers::device<double> &papa, std::span<const double> gamma,
                                 std::span<const double> gamma2);
-
-/// @brief The non-redundant pairs of the nmo x nmo column-major device matrix
-/// @p full into the device vector @p packed, in the packed order: element
-/// (p, q), p > q, for q core and p active or virtual, then q active and p
-/// virtual, column by column (q outer), p ascending within a column. So
-/// @p packed is two column-major blocks back to back: rows [ncore, nmo) of
-/// columns [0, ncore), then rows [nocc, nmo) of columns [ncore, nocc),
-/// ncore (nmo - ncore) + ncas (nmo - nocc) doubles in all.
-///
-/// Two 2D copies on res.stream(), not synchronized.
-///
-/// @return InvalidConfig if ncore or ncas is negative or ncore + ncas
-///         exceeds nmo; or a copy's GpuRuntime error.
-[[nodiscard]] Status pack_orbital_pairs(DeviceResources &res, int32_t nmo, int32_t ncore,
-                                        int32_t ncas, const double *full, double *packed);
-
-/// @brief The antisymmetric kappa of the packed @p packed into the nmo x nmo
-/// column-major device matrix @p kappa: kappa_pq = x_pq and kappa_qp = -x_pq
-/// for each packed pair p > q, every other element 0. C exp(kappa) is then
-/// the rotation along x that @ref Fock::gradient differentiates.
-/// @p kappa and @p packed must not overlap.
-///
-/// A memset, two 2D copies and two transposing geams on res.stream() with
-/// res.blas() (host pointer mode), not synchronized.
-///
-/// @return InvalidConfig as @ref pack_orbital_pairs; or the GpuRuntime error
-///         of a copy or a geam.
-[[nodiscard]] Status unpack_orbital_pairs(DeviceResources &res, int32_t nmo, int32_t ncore,
-                                          int32_t ncas, const double *packed, double *kappa);
 
 } // namespace free_breakfast::response

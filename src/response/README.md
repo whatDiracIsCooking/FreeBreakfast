@@ -2,7 +2,8 @@
 
 The derivatives of a (state-averaged) CASSCF energy with respect to the
 orbital rotation κ, at fixed orbitals and fixed RDMs, on the GPU: the energy
-and its gradient (`fock/`) and the orbital Hessian (`hessian/`). They are what
+and its gradient (`fock/`) and the orbital Hessian (`hessian/`), both over the
+packed orbital pairs (`orbital_pairs/`). They are what
 an optimizer steps over (`mcscf/solve`), and what a response solve inverts: a
 CASSCF nuclear gradient's Z-vector, E⁽²⁾ z = −∂L/∂κ, and CPHF for MP2
 gradients, which is the ncas = 0 RHF limit `fock/` already covers. The mature
@@ -12,7 +13,7 @@ MCSCF codes split the two the same way: OpenMolcas `RASSCF` / `MCLR`, Dalton
 It sits over `core`, `recipes` and `integrals` (J, K and `active_space`),
 takes the RDMs `ci.rdm` writes as plain host arrays, and **never imports
 `pipeline`** (nor `ci`, nor `mcscf`). `response.cppm`
-(`free_breakfast.response`) re-exports both sub-modules, and each stays
+(`free_breakfast.response`) re-exports all three sub-modules, and each stays
 importable on its own. `free_breakfast.mcscf` does not re-export this layer:
 a consumer that wants both imports both.
 
@@ -29,7 +30,8 @@ the optimizer's coupled step and stays in `solve`; it is not this layer.
 
 | Directory | Module | Role |
 |-----------|--------|------|
-| `fock/` | `free_breakfast.response.fock` | At fixed orbitals and RDMs: the energy, the inactive and active Fock matrices F^I and F^A, the generalized Fock F and the orbital gradient (`response::fock`); and the packed order of the non-redundant orbital pairs (`pack_orbital_pairs`, `unpack_orbital_pairs`). |
+| `orbital_pairs/` | `free_breakfast.response.orbital_pairs` | The packed order of the non-redundant orbital pairs: a full matrix's pairs into the packed vector, and a packed vector out to the antisymmetric κ (`pack_orbital_pairs`, `unpack_orbital_pairs`). |
+| `fock/` | `free_breakfast.response.fock` | At fixed orbitals and RDMs: the energy, the inactive and active Fock matrices F^I and F^A, the generalized Fock F and the orbital gradient (`response::fock`). |
 | `hessian/` | `free_breakfast.response.hessian` | At the same point: the exact orbital Hessian at fixed CI as a `LinearOperator` over the packed pairs, and its diagonal (`response::Hessian`). |
 
 ## Orbitals and the packed order
@@ -81,8 +83,9 @@ writes the full κ that `recipes.expm` exponentiates.
 
 ## Tests
 
-`test/gtest/response_fock_gpu.cpp` and `test/gtest/response_hessian_gpu.cpp`
-(suites `ResponseFock*` and `ResponseHessian*`), linked into
+`test/gtest/response_orbital_pairs_gpu.cpp`, `test/gtest/response_fock_gpu.cpp`
+and `test/gtest/response_hessian_gpu.cpp` (suites `ResponseOrbitalPairs`,
+`ResponseFock*` and `ResponseHessian*`), linked into
 `free_breakfast_tests_gpu`, against PySCF's `mc1step.gen_g_hop` through
 `test/gtest/data/casscf/`. They set their active spaces up with
 `pipeline.active_space` and the `Casci` step from the test executable
@@ -93,5 +96,5 @@ own targets link nothing of `pipeline`.
 
 | File | Role |
 |------|------|
-| `response.cppm` | Aggregate module interface; `export import`s both sub-modules |
+| `response.cppm` | Aggregate module interface; `export import`s the three sub-modules |
 | `CMakeLists.txt` | Build configuration: `add_subdirectory` per module, and the `free_breakfast.response` module target |

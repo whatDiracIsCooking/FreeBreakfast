@@ -6,5 +6,6 @@
 
 export module free_breakfast.response;
 
+export import free_breakfast.response.orbital_pairs;
 export import free_breakfast.response.fock;
 export import free_breakfast.response.hessian;
