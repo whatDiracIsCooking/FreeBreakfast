@@ -98,6 +98,7 @@ add_executable(
   mirrored_buffer_gpu.cpp
   scoped_device_index_gpu.cpp
   diagonalize_gpu.cpp
+  cholesky_gpu.cpp
   orthogonalize_gpu.cpp
   orthonormalize_gpu.cpp
   diis_gpu.cpp

@@ -8,6 +8,7 @@ export module free_breakfast.recipes;
 
 export import free_breakfast.recipes.blas;
 export import free_breakfast.recipes.cg_unitary;
+export import free_breakfast.recipes.cholesky;
 export import free_breakfast.recipes.complex_cast;
 export import free_breakfast.recipes.davidson;
 export import free_breakfast.recipes.diagonalize;

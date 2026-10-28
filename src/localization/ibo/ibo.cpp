@@ -9,10 +9,11 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kNegOne, kTwo
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // potrf, potrs, dgmm, wwrMemcpy{,2D}Async, gpu_status
+import free_breakfast.core.wwr; // potrs, dgmm, wwrMemcpy{,2D}Async, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.recipes.blas; // gemm
+import free_breakfast.recipes.cholesky;
 import free_breakfast.recipes.orthogonalize;
 import free_breakfast.integrals.one_electron.overlap_mixed;
 
@@ -38,7 +39,7 @@ namespace free_breakfast::localization {
 }
 
 // The solver's flag: info < 0 is a bad argument, a bug here; info > 0 is
-// potrf's leading minor that is not positive, the matrix's doing.
+// the leading minor that is not positive, the matrix's doing.
 [[nodiscard]] Status ibo_check_info(DeviceResources &res, const std::string_view what) {
   const int32_t info = FBF_TRY(res.fetch_info());
   if (info < 0) {
@@ -52,37 +53,27 @@ namespace free_breakfast::localization {
   return {};
 }
 
-// L L^T = A in place, the lower triangle, potrf's flag left in res.info(); the
-// work is the device workspace.
-[[nodiscard]] Status ibo_potrf(DeviceResources &res, const int32_t n, double *a) {
-  int32_t lwork = 0;
-  FBF_TRY(gpu_status(wwr::potrf_bufferSize<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
-                                                   n, a, n, &lwork)));
-  auto work = wwr::extension::reinterpret_buffer_view<double>(
-      res.device_workspace(static_cast<size_t>(std::max(lwork, 1)) * sizeof(double)));
-  return gpu_status(wwr::potrf<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER, n, a, n,
-                                       work.data(), lwork, res.info().data()));
-}
-
-// S = L L^T in place; an error if S is not positive definite.
+// S = L L^T in place, by recipes/cholesky rather than the solver's potrf (its
+// README has why); an error if S is not positive definite.
 [[nodiscard]] Status ibo_cholesky(DeviceResources &res, const int32_t n, double *a,
                                   const std::string_view what) {
-  FBF_TRY(ibo_potrf(res, n, a));
-  return ibo_check_info(res, what);
+  const int32_t info = FBF_TRY(cholesky(res, n, a));
+  if (info > 0) {
+    return err_numerical(
+        "localization::intrinsic_atomic_orbitals: {} is not positive definite (minor {})", what,
+        info);
+  }
+  return {};
 }
 
 // The basis's overlap S1 = L L^T in place, and whether a solve over L is to be
-// trusted: false when potrf meets a minor that is not positive, or a pivot
+// trusted: false when cholesky meets a minor that is not positive, or a pivot
 // L_jj^2 at or below orthogonalize's floor. Every pivot bounds S1's smallest
 // eigenvalue from above, so such a pivot means a mode that floor would drop,
 // and a solve over L amplifies rounding by its inverse. On false @p a holds
 // no usable factor.
 [[nodiscard]] Result<bool> ibo_basis_cholesky(DeviceResources &res, const int32_t n, double *a) {
-  FBF_TRY(ibo_potrf(res, n, a));
-  const int32_t info = FBF_TRY(res.fetch_info());
-  if (info < 0) {
-    return err_gpu("localization::intrinsic_atomic_orbitals: potrf rejected argument {}", -info);
-  }
+  const int32_t info = FBF_TRY(cholesky(res, n, a));
   if (info > 0) {
     FBF_LOG_WARN(
         "localization::intrinsic_atomic_orbitals: the basis's overlap is not positive definite "

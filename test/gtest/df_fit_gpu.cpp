@@ -109,7 +109,7 @@ std::vector<double> download(fb::DeviceResources &res, const fb::Buffers::device
 
 // X = M^-1 A for the naux x cols A, column-major, by a host Cholesky
 // factorization of M and two triangular solves per column: the oracle's own,
-// sharing nothing with the device's potrf and trsm.
+// sharing nothing with the device's cholesky and trsm.
 std::vector<double> host_solve(const std::vector<double> &metric, const std::vector<double> &a,
                                const std::size_t naux) {
   std::vector<double> l(naux * naux, 0.0);
@@ -201,13 +201,13 @@ TEST(DfFit, BtBIsTheFittedEriInCcPvtz) {
 }
 
 // The golden metric with one diagonal element made negative: the leading
-// minors before it are untouched and positive, so potrf stops exactly there.
+// minors before it are untouched and positive, so cholesky stops exactly there.
 TEST(DfFit, NonPositiveDefiniteMetricIsNumericalNamingThePivot) {
   FBF_REQUIRE_GPU();
   Golden g = read_golden("h2o_ccpvdz");
   ASSERT_GT(g.naux, 40);
   const auto naux = static_cast<std::size_t>(g.naux);
-  constexpr std::size_t kBroken = 40; // 0-based; potrf's pivot 41
+  constexpr std::size_t kBroken = 40; // 0-based; the 1-based pivot 41
   g.metric[kBroken + naux * kBroken] = -g.metric[kBroken + naux * kBroken];
 
   fb::DeviceResources res{0};

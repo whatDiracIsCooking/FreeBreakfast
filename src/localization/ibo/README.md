@@ -7,8 +7,8 @@ span its occupied orbitals exactly. The IBOs are the occupied orbitals
 localized over the IAOs' atomic populations: Pipek-Mezey with chemically
 sound populations in place of Mulliken's.
 
-No kernels of its own: `recipes/blas`'s `gemm`, wwr's `potrf` and `potrs`,
-`recipes/orthogonalize`, `integrals/one_electron/overlap_mixed`, and
+No kernels of its own: `recipes/blas`'s `gemm`, `recipes/cholesky`, wwr's
+`potrs`, `recipes/orthogonalize`, `integrals/one_electron/overlap_mixed`, and
 `localization/pipek_mezey`'s sweep.
 
 ## Module
@@ -63,19 +63,22 @@ n_occ-wide products only:
 A = P12 - C E - C~ F + 2 C O F,   E = C^T S12,  F = C~^T S12,  O = C^T S1 C~
 ```
 
-**S^-1 is a Cholesky solve**, never an inverse, as the paper advises: `potrf`
-once per overlap, `potrs` per right-hand side. S2, a free-atom minimal basis,
+**S^-1 is a Cholesky solve**, never an inverse, as the paper advises:
+`cholesky` once per overlap (not the solver's `potrf`, whose small-matrix
+kernel races on ROCm 7.2: `recipes/cholesky/README.md`), `potrs` per
+right-hand side. S2, a free-atom minimal basis,
 failing to be positive definite is `Numerical`.
 
 **A near-singular S1 falls back to S^-1/2.** A basis read from a path can be
 near-linearly dependent (diffuse sets, near-duplicate exponents), and a
 Cholesky solve over S1 then amplifies rounding by the inverse of its smallest
-pivot. So S1's factor is used only if `potrf` succeeds and every pivot L_jj^2
+pivot. So S1's factor is used only if `cholesky` succeeds and every pivot L_jj^2
 clears `kOrthogonalizeEigenvalueFloor` (1e-10). Every pivot bounds S1's
 smallest eigenvalue from above, so a pivot under the floor means a mode
 `orthogonalize` would drop. The pivot test is what does the work: on the
-test's exactly singular S1, `potrf` succeeds with a pivot of ~3e-18, so a
-fallback keyed on its failure alone would never run. Otherwise S1^-1 B is
+test's exactly singular S1, the factorization can succeed with a pivot at
+rounding (`potrf`'s was ~3e-18), so a
+fallback keyed on its failure alone could not be relied on. Otherwise S1^-1 B is
 applied as X (X B), with
 X = S1^-1/2 from `recipes/orthogonalize`: the floored modes drop, so X X^T is
 the pseudo-inverse on the rest. That is the paper's "twice multiplying with

@@ -2,7 +2,7 @@
 
 `density_fit(res, nao, naux, metric, b)`: the density-fitting factor
 
-    M = L L^T            (potrf, lower)
+    M = L L^T            (recipes/cholesky, lower)
     B = L^-1 (P|mn)      (one trsm: left, lower, no transpose)
 
 in place, so that `(mn|ls) ~ sum_Q B_Q,mn B_Q,ls = (mn|P) M^-1 (P|ls)`. Link
@@ -24,12 +24,18 @@ the tensor, and the fit keeps it.
 
 B is the caller's buffer, not scratch: at `naux · nao²` doubles it is the
 largest thing a DF calculation holds (H₂O in cc-pVTZ / cc-pVTZ-JKFIT, 139 x
-58², is 3.7 MB). The only scratch is potrf's work, from
-`res.device_workspace()`.
+58², is 3.7 MB). The fit takes no scratch.
 
 ## Failure
 
-A metric that is not positive definite is `Numerical`, naming potrf's pivot
-(the 1-based leading minor it stopped at). There is no eigen-decomposition
+A metric that is not positive definite is `Numerical`, naming the pivot
+(the 1-based leading minor the factorization stopped at). There is no eigen-decomposition
 fallback: no basis in the tree needs one yet, and a regularized metric would
 change what B means for every caller.
+
+## Why not potrf
+
+The factorization was the dense solver's `potrf` until #404: on ROCm 7.2,
+rocSOLVER's small-matrix kernel races, and the metric came out "not positive
+definite", or its factor slightly wrong, whenever other processes shared the
+AMD card. `recipes/cholesky/README.md` has the race.
