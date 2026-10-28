@@ -8,3 +8,4 @@ export module free_breakfast.nevpt2;
 
 export import free_breakfast.nevpt2.density_fitting;
 export import free_breakfast.nevpt2.rdm;
+export import free_breakfast.nevpt2.energy;
