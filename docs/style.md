@@ -303,6 +303,11 @@ that disagrees with them. Call `wwr::gemm` only when that derivation is not
 the call you want: a leading dimension that is not the operand's own row count
 (a row block of a larger matrix), or an op chosen at run time.
 
+Spell an op as `wwr::WWRBLAS_OP_N`, `_T` or `_C` at the call, inside a
+template argument list too. Don't alias it per file
+(`constexpr auto kT = wwr::WWRBLAS_OP_T;`): every other call site names the wwr
+op, and the alias only saves a few characters at the cost of a lookup.
+
 Don't write a module-local gemm helper that derives the leading dimensions.
 `livvo_gemm` and `ibo_gemm` were two copies of the rectangular overload, each
 taking its ops as `bool`s. (A lambda that only shortens a run of `wwr::gemm`
