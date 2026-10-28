@@ -19,7 +19,7 @@ ci/        Determinant CI over plain arrays: alpha/beta occupation strings, thei
 response/  The energy's orbital-rotation derivatives at fixed orbitals and RDMs on the GPU: the energy, the inactive, active and generalized Fock matrices, the orbital gradient and its packed pair order, and the orbital Hessian
 mcscf/     CASSCF on the GPU: the two-step state-averaged loop over response's gradient and Hessian
 nevpt2/    SC-NEVPT2 on the GPU: the density-fitted MO blocks and the external-integral slabs, and dm3 and the integral-contracted 4-RDMs f3ca and f3ac of the reference state
-pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the ERIs (integral-direct or density-fitted, once per pipeline), the RHF SCF, Pipek-Mezey and IBO localization, CASCI, FCI and state-averaged CASSCF, and Pipeline<Steps...>, which plans and runs them
+pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the ERIs (integral-direct or density-fitted, once per pipeline), the RHF SCF, Pipek-Mezey and IBO localization, CASCI, FCI, state-averaged CASSCF and SC-NEVPT2 over it, and Pipeline<Steps...>, which plans and runs them
 main.cpp   The free-breakfast executable: a TOML config planned and run as a pipeline, and the one Error -> exit-code boundary
 ```
 

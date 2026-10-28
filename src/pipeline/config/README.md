@@ -14,7 +14,7 @@ names them all. It is the one library that imports every step, so only it and
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, EriStep, OverlapStep,
                              OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
-                             LocalizationStep, CasciStep, CasscfStep, FciStep>;
+                             LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
                                  const std::filesystem::path &output_dir);
@@ -138,6 +138,23 @@ ranges, none of these needs the molecule.
 (`casscf/README.md`).
 
 ```toml
+[eri]
+mode = "density_fitting"  # required by [nevpt2]
+[casscf]
+ncas = 6
+nelecas = 6
+[nevpt2]                  # no options: the table is the request
+```
+
+`[nevpt2]` runs SC-NEVPT2 on every root of the `[casscf]` it reads
+(`nevpt2/README.md`), and only over density fitting. Under an
+integral-direct `[eri]`, written so or filled in, it is `Unsupported`,
+naming `[eri]`: across two tables, so `parse_config` checks it once the
+pipeline is planned, before a GPU is touched rather than after the SCF and
+the CASSCF have converged. The step refuses it again, for a pipeline built
+by hand.
+
+```toml
 [fci]
 nroots = 3                # default 1
 ```
@@ -242,6 +259,10 @@ than after the SCF has converged. `parse_config` touches no disk.
   integer-array option (`[casci] active`) holds integers only, each read the
   same way, and a string-array option (`[casci] avas`) strings only;
 - what `Pipeline::create` refuses (a cycle).
+
+One refusal is not `InvalidConfig` but `Unsupported`, since the request is
+well formed and the method is what is missing: `[nevpt2]` under an
+integral-direct `[eri]` (above).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`

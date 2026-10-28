@@ -77,7 +77,10 @@ struct CasscfStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas
    eigenvectors within their space, by ascending eigenvalue, by
    `diagonalize`; C ← C R in one gemm. The active orbitals are left as
    optimized, so the CI vectors and 1-RDMs stay over them, and their
-   `mo_energies` are F's diagonal there.
+   `mo_energies` are F's diagonal there. R and the energies are the
+   exported `canonicalize_core_virtual(res, nmo, ncore, nocc, fock, r,
+   energies)`, which the Nevpt2 step calls again per root over that root's
+   own Fock (`nevpt2/README.md`).
 6. **The Molden file**, if `molden` is set: the canonical C with its active
    columns rotated to the weighted γ's eigenvectors by descending occupation;
    the core at occupation 2, the virtuals at 0. Each energy is the orbital's
@@ -186,6 +189,6 @@ over one `EriOutput` in each mode.
 
 | File | Role |
 |------|------|
-| `casscf.cppm` | Module interface: `CasscfOutput`, `CasscfStep` |
+| `casscf.cppm` | Module interface: `CasscfOutput`, `CasscfStep`, `canonicalize_core_virtual` |
 | `casscf.cpp` | `run`: the selection, the fitted scratch's memory check, `mcscf::solve`, the Fock at the solution, the canonicalization, the Molden file |
 | `CMakeLists.txt` | The module library |
