@@ -403,9 +403,28 @@ TEST(PipelineConfig, MisspeltOptionIsInvalidConfig) {
       "[molecule]\nxyz = \"w.xyz\"\nmultiplicty = 3\n[basis_set]\nbasis = \"b.json\"\n",
       "'multiplicty'");
   expect_config_error(with_inputs("[orthogonalizer]\nfloor = 1e-8\n"), "'floor'");
-  // A step with no options has no keys to give.
   expect_config_error(with_inputs("[overlap]\nscreen = 1e-12\n"),
                       "[overlap] has no option 'screen'");
+  // A step with no options has no keys to give.
+  expect_config_error(with_inputs("[spherical_transform]\nscreen = 1e-12\n"),
+                      "[spherical_transform] has no option 'screen'");
+}
+
+TEST(PipelineConfig, WriteNpyNamesTheOverlapsOwnFile) {
+  // Off unless [overlap] asks, and a filled-in overlap is read from an empty
+  // table, so planning it for another step writes nothing.
+  auto calc = fb::parse_config(with_inputs("[overlap]\nwrite_npy = true\n"), "/run", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::OverlapStep>()->npy, kOut / "overlap.npy");
+  for (std::string_view table : {"[overlap]\n", "[overlap]\nwrite_npy = false\n", "[scf]\n"}) {
+    auto off = fb::parse_config(with_inputs(table), "/run", kOut);
+    ASSERT_TRUE(off.has_value()) << off.error().message;
+    EXPECT_TRUE(off->step<fb::OverlapStep>()->npy.empty()) << table;
+  }
+  expect_config_error(with_inputs("[overlap]\nwrite_npy = 1\n"),
+                      "[overlap] write_npy is not a boolean");
+  // A config names no output, so not this one either.
+  expect_config_error(with_inputs("[overlap]\nnpy = \"s.npy\"\n"), "[overlap] has no option 'npy'");
 }
 
 TEST(PipelineConfig, AnUnknownGuessTypeIsInvalidConfig) {
