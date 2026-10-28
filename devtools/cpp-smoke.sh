@@ -160,52 +160,6 @@ run_suite() {
   return $rc2
 }
 
-# Run the gpu binary as GPU_TEST_JOBS concurrent gtest shards, all inside the
-# ONE slot with_gpu_slot takes around this function. gtest deals cases to
-# shards round-robin, so each shard gets a slice of every suite. Each shard
-# logs to its own file; the parent waits on every pid and records its status,
-# so a crashed shard fails the run even when its siblings pass.
-gpu_shards() {
-  local bin=$1 n=$2 dir=$3 i rc=0
-  local -a pids=()
-  for ((i = 0; i < n; i++)); do
-    GTEST_TOTAL_SHARDS=$n GTEST_SHARD_INDEX=$i "$bin" >"$dir/$i.log" 2>&1 &
-    pids+=("$!")
-  done
-  for ((i = 0; i < n; i++)); do
-    wait "${pids[$i]}" && echo 0 >"$dir/$i.rc" || { echo $? >"$dir/$i.rc"; rc=1; }
-  done
-  return $rc
-}
-
-# The sharded counterpart of run_suite: every shard's output goes to the log
-# under its own header, its summary lines are echoed with the shard named, and
-# a failed shard names its status and -- for a crash, where gtest prints no
-# FAILED line -- the case that was running (a [ RUN ] with no verdict).
-run_gpu_sharded() {
-  local bin=$1 n=$2 dir i src rc2=0
-  [ -x "$bin" ] || {
-    echo "cpp-smoke: missing binary $bin -- see $BUILD_LOG" >&2
-    return 1
-  }
-  dir=$(mktemp -d)
-  with_gpu_slot "$backend" gpu_shards "$bin" "$n" "$dir" || rc2=1
-  for ((i = 0; i < n; i++)); do
-    echo "--- gpu shard $i/$n: $bin ---" >>"$BUILD_LOG"
-    cat "$dir/$i.log" >>"$BUILD_LOG"
-    grep -E 'ran\.|PASSED|SKIPPED|FAILED' "$dir/$i.log" |
-      sed "s|^|cpp-smoke:   [shard $i/$n] |"
-    src=$(cat "$dir/$i.rc" 2>/dev/null || echo '?')
-    [ "$src" = 0 ] && continue
-    echo "cpp-smoke:   [shard $i/$n] exited $src" >&2
-    awk '/^\[ RUN      \]/ { t = $NF } /^\[ *(OK|FAILED|SKIPPED) *\]/ { t = "" }
-         END { if (t != "") print t }' "$dir/$i.log" |
-      sed "s|^|cpp-smoke:   [shard $i/$n] died in |" >&2
-  done
-  rm -rf "$dir"
-  return $rc2
-}
-
 # Both suites: the host one has reference-grade cases too (io_sad_host's
 # through-argon SCFs), and exporting this only for the gpu suite ran them.
 export FREE_BREAKFAST_FAST_TESTS=1
@@ -215,7 +169,8 @@ run_suite host "$host_bin" 0 || rc=$?
 
 echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
 if [ "$GPU_TEST_JOBS" -gt 1 ]; then
-  run_gpu_sharded "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
+  # GPU_TEST_JOBS shards, all inside ONE slot (run_gpu_sharded, lib.sh).
+  with_gpu_slot "$backend" run_gpu_sharded cpp-smoke "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
 else
   run_suite gpu "$gpu_bin" 1 || rc=$?
 fi

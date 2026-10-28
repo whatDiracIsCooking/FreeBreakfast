@@ -104,7 +104,7 @@ EOF
 #
 # Admission of GPU-bound commands across every worktree/session on this host.
 # One run's own concurrency is GPU_TEST_JOBS (config.sh: gtest shards in
-# cpp-smoke.sh, ctest -j in cpp-tier.sh), but nothing in that run coordinates with
+# both, and ctest -j in cpp-tier.sh), but nothing in that run coordinates with
 # a second session's cpp-tier.sh or cpp-smoke.sh running its own ctest/gtest
 # binary against the same physical GPU at the same time, which is what
 # actually timed out a full-tier run under cross-worktree contention.
@@ -387,6 +387,49 @@ with_gpu_slot() {
   "$@" && rc=0 || rc=$?
   gpu_drop_slots
   return "$rc"
+}
+
+# Run a gtest binary as `n` concurrent shards, inside whatever slot the caller
+# holds -- call it under with_gpu_slot:
+#
+#   with_gpu_slot "$backend" run_gpu_sharded cpp-smoke "$bin" "$GPU_TEST_JOBS"
+#
+# One process per shard, not per case, so the GPU runtime's context creation
+# (about 0.45s on the 3080) is paid n times rather than once per case. gtest
+# deals cases to shards round-robin, so each gets a slice of every suite; a
+# GTEST_FILTER in the environment narrows what is dealt. Every shard's output
+# is appended to BUILD_LOG under its own header and its summary lines printed,
+# tagged `<tag>:   [shard i/n]`. Each pid's status is waited for, so a crashed
+# shard fails the run even when its siblings pass, and for a crash, where gtest
+# prints no FAILED line, the case that was running (a [ RUN ] with no verdict)
+# is named.
+run_gpu_sharded() {
+  local tag=$1 bin=$2 n=$3 dir i src rc=0
+  local -a pids=()
+  [ -x "$bin" ] || {
+    echo "$tag: missing binary $bin -- see $BUILD_LOG" >&2
+    return 1
+  }
+  dir=$(mktemp -d)
+  for ((i = 0; i < n; i++)); do
+    GTEST_TOTAL_SHARDS=$n GTEST_SHARD_INDEX=$i "$bin" >"$dir/$i.log" 2>&1 &
+    pids+=("$!")
+  done
+  for ((i = 0; i < n; i++)); do
+    wait "${pids[$i]}" && src=0 || src=$?
+    echo "--- gpu shard $i/$n: $bin ---" >>"$BUILD_LOG"
+    cat "$dir/$i.log" >>"$BUILD_LOG"
+    grep -E 'ran\.|PASSED|SKIPPED|FAILED' "$dir/$i.log" |
+      sed "s|^|$tag:   [shard $i/$n] |"
+    [ "$src" = 0 ] && continue
+    rc=1
+    echo "$tag:   [shard $i/$n] exited $src" >&2
+    awk '/^\[ RUN      \]/ { t = $NF } /^\[ *(OK|FAILED|SKIPPED) *\]/ { t = "" }
+         END { if (t != "") print t }' "$dir/$i.log" |
+      sed "s|^|$tag:   [shard $i/$n] died in |" >&2
+  done
+  rm -rf "$dir"
+  return $rc
 }
 
 # The xdist worker flag, or nothing when JOBS is empty (a suite without

@@ -91,7 +91,7 @@ ctest phase (and cpp-smoke's GPU suite) then holds one of that card's
 or the card's load is at or above `GPU_BUSY_PCT` (80%), and takes a free slot
 anyway after `GPU_BUSY_WAIT` (900 s) of load that holds no slot. The two cards
 never block each other. Inside its one slot a run is `GPU_TEST_JOBS` (3)
-processes: ctest `-j` in the tier, gtest shards in the smoke, each shard's
+processes: ctest `-j` and then gtest shards in the tier, gtest shards in the smoke, each shard's
 summary lines tagged `[shard i/N]`. A crashed shard prints the case it died in.
 Knobs are the `GPU_*` variables in `config.sh`; `GPU_TEST_JOBS=1` is the
 serial run, for a crash that only reproduces alone.
@@ -131,7 +131,11 @@ Things that will bite:
   (`DISCOVERY_MODE PRE_TEST`), so `-R` selects by gtest suite name and a skip
   is named rather than hidden. A GPU-less box reports a large `***Skipped`
   count and is still green — read the skip list before calling it verified,
-  exactly as with `pytest -rs`. Deliberately no case counts quoted here: the
+  exactly as with `pytest -rs`. `cpp-tier.sh` hands most GPU entries to
+  gtest shards rather than one process each (the CUDA context costs ~0.45s
+  per process). ctest's summary then counts only the host, `RUN_SERIAL` and
+  launcher-wrapped entries, and the rest report in the `[shard i/N]` lines
+  after it, each with its own `[  SKIPPED ]` list. `-- -R` still selects both. Deliberately no case counts quoted here: the
   suite grows, and a stale number in a skill is worse than none.
 
 ## The Python tier: pick the tier

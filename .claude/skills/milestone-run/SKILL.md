@@ -307,7 +307,8 @@ Rules:
   slots; quote that preset in the PR. The ctest phase takes one of that card's
   slots (with_gpu_slot, devtools/lib.sh) and says it is waiting when the
   slots are full or the card is busy — that is expected, not a hang. Read the
-  ***Skipped list: if the gpu cases skip with "no GPU device visible", your
+  ***Skipped list and each [shard i/N] SKIPPED list (most gpu cases run in
+  the shards): if the gpu cases skip with "no GPU device visible", your
   card is down (nvidia-smi -L / rocminfo) — rerun on the other preset and say
   so in the PR. If the issue touches code the FBF_SKIP_IF_FAST_TESTS cases
   validate, also run devtools/cpp-slow-tier.sh --preset <the same preset>.

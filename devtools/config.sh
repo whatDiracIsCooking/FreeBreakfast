@@ -394,14 +394,18 @@ GPU_EXCLUSIVE=${GPU_EXCLUSIVE:-0}
 GPU_BUSY_WAIT=${GPU_BUSY_WAIT:-900}
 GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
 # Concurrent GPU test processes WITHIN the one slot a run holds: cpp-smoke.sh
-# splits the gpu binary into this many gtest shards, cpp-tier.sh passes it to
-# ctest as -j. 1 is fully serial. Measured on idle cards (2026-10-25), N=1/2/3:
+# splits the gpu binary into this many gtest shards, cpp-tier.sh does the same
+# for the GPU entries it batches and passes it to ctest as -j for the rest. 1
+# is fully serial. Measured on idle cards (2026-10-25), N=1/2/3, when
+# cpp-tier.sh still ran every entry through ctest:
 #   cpp-tier   cuda 343/249/219s  hip 378/270/243s
 #   cpp-smoke  cuda 143/137/137s  hip 193/177/180s  (GPU phase)
-# ctest gains because every entry is its own process paying GPU runtime init,
+# ctest gained because every entry was its own process paying GPU runtime init,
 # which overlaps; the smoke binary pays that once, so its cases already keep
-# the card busy and shards barely help. Past 3 neither moves. A slot is now up
-# to this many processes of load, which GPU_BUSY_PCT still sees.
+# the card busy and shards barely help. Past 3 neither moves. Do not raise it
+# to buy speed: 6 processes as a card's second tenant ran the 3080 out of
+# memory (2026-10-28). A slot is up to this many processes of load, which
+# GPU_BUSY_PCT still sees.
 GPU_TEST_JOBS=${GPU_TEST_JOBS:-3}
 # Readings averaged into one load figure (0.3s apart); one is too noisy.
 GPU_LOAD_SAMPLES=${GPU_LOAD_SAMPLES:-4}
