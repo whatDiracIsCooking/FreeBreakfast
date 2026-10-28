@@ -284,7 +284,7 @@ iterations here take one solve. Steihaug was not measured.
 ## Density fitting
 
 `mcscf::DensityFitting` picks which of the loop's builds are fitted over the B
-`solve` is given (`DensityFittingOutput::b`, naux × nmo², as the density-fitted
+`solve` is given (`DensityFitted::b`, naux × nmo², as the density-fitted
 `response::Hessian::create` reads it):
 
 | Mode | Fitted | Converges to |

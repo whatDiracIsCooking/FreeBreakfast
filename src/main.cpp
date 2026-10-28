@@ -46,6 +46,13 @@ void print_products(const fb::Calculation &calc) {
   if (const auto &pairs = calc.get<fb::PrimitivePairClassesOutput>()) {
     std::println("pair classes:      {}", pairs->classes.size());
   }
+  if (const auto &eri = calc.get<fb::EriOutput>()) {
+    if (const auto *fit = std::get_if<fb::DensityFitted>(&eri->eri)) {
+      std::println("ERIs:              density-fitted, {} fitting functions", fit->naux);
+    } else {
+      std::println("ERIs:              integral-direct");
+    }
+  }
   if (const auto &overlap = calc.get<fb::OverlapOutput>()) {
     std::println("overlap:           {0} x {0} (spherical)", overlap->s.n());
   }

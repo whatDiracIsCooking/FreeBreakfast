@@ -252,12 +252,74 @@ TEST(PipelineCalculation, ACasscfConfigRunsEndToEnd) {
   auto by_hand = calc->step<fb::CasscfStep>()->run(
       fb::StepInput<fb::CasscfStep>{
           *calc->get<fb::MoleculeOutput>(), *calc->get<fb::BasisSetOutput>(),
-          *calc->get<fb::SphericalTransformOutput>(), *calc->get<fb::PrimitivePairClassesOutput>(),
+          *calc->get<fb::SphericalTransformOutput>(), *calc->get<fb::EriOutput>(),
           *calc->get<fb::CoreHamiltonianOutput>(), *calc->get<fb::ScfOutput>()},
       res);
   ASSERT_TRUE(by_hand.has_value()) << by_hand.error().message;
   EXPECT_NEAR(by_hand->energy, casscf->energy, 1e-10);
 }
+
+// No [eri]: integral-direct, filled in for the SCF.
+TEST(PipelineCalculation, AConfigWithNoEriRunsIntegralDirect) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_calculation");
+  write_inputs(dir, "[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n[scf]\n");
+  fb::NodeResources node;
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::EriStep>().has_value());
+  EXPECT_EQ(calc->step<fb::EriStep>()->mode, fb::EriMode::IntegralDirect);
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  ASSERT_TRUE(calc->get<fb::EriOutput>().has_value());
+  EXPECT_TRUE(std::holds_alternative<fb::IntegralDirect>(calc->get<fb::EriOutput>()->eri));
+  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
+}
+
+// An SCF and a CASSCF read one EriOutput, built once by the pipeline's one
+// EriStep, in each mode; and the CASSCF run by hand on that same product
+// agrees with the pipeline's. Density-fitted, the aux basis is cc-pVDZ's
+// default, its acCD-6-6 set.
+class PipelineCalculationEri : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(PipelineCalculationEri, AnScfAndACasscfShareOneEriOutput) {
+  FBF_REQUIRE_GPU();
+  const bool fitted = GetParam() == "density_fitting";
+  const fb::test::ScratchDir dir("pipeline_calculation");
+  write_inputs(dir, std::format("[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = "
+                                "\"cc-pvdz\"\n[eri]\nmode = \"{}\"\n[scf]\n"
+                                "[casscf]\nncas = 4\nnelecas = 4\n",
+                                GetParam()));
+  fb::NodeResources node;
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  // The planner holds one step per kind: one EriStep, so one EriOutput.
+  ASSERT_TRUE(calc->step<fb::EriStep>().has_value());
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &eri = calc->get<fb::EriOutput>();
+  ASSERT_TRUE(eri.has_value());
+  EXPECT_EQ(std::holds_alternative<fb::DensityFitted>(eri->eri), fitted);
+  const auto &scf = calc->get<fb::ScfOutput>();
+  const auto &casscf = calc->get<fb::CasscfOutput>();
+  ASSERT_TRUE(scf.has_value() && casscf.has_value());
+  EXPECT_LT(casscf->energy, scf->energy);
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto by_hand = calc->step<fb::CasscfStep>()->run(
+      fb::StepInput<fb::CasscfStep>{*calc->get<fb::MoleculeOutput>(),
+                                    *calc->get<fb::BasisSetOutput>(),
+                                    *calc->get<fb::SphericalTransformOutput>(), *eri,
+                                    *calc->get<fb::CoreHamiltonianOutput>(), *scf},
+      res);
+  ASSERT_TRUE(by_hand.has_value()) << by_hand.error().message;
+  EXPECT_NEAR(by_hand->energy, casscf->energy, 1e-10);
+}
+
+INSTANTIATE_TEST_SUITE_P(Modes, PipelineCalculationEri,
+                         ::testing::Values("integral_direct", "density_fitting"),
+                         [](const auto &info) { return std::string(info.param); });
 
 TEST(PipelineCalculation, AFailedRootFailsEveryProductAfterIt) {
   FBF_REQUIRE_GPU();

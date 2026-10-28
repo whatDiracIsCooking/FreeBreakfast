@@ -15,11 +15,8 @@ import free_breakfast.core.resources;
 import free_breakfast.io.molden;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.diagonalize;
-import free_breakfast.integrals.eri.integral_direct.coulomb;
-import free_breakfast.integrals.eri.integral_direct.exchange;
 import free_breakfast.integrals.active_space;
 import free_breakfast.response.fock;
-import free_breakfast.pipeline.density_fitting;
 
 #include "diagnostics.h"
 
@@ -121,8 +118,8 @@ namespace free_breakfast {
 }
 
 [[nodiscard]] Result<CasscfOutput>
-CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
-                     PrimitivePairClassesOutput, CoreHamiltonianOutput, ScfOutput> in,
+CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput,
+                     CoreHamiltonianOutput, ScfOutput> in,
                 DeviceResources &res) const {
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
@@ -136,22 +133,16 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   options.conv_tol = conv_tol;
   options.conv_tol_grad = conv_tol_grad;
   options.max_cycle = max_cycle;
-  // Integral-direct, the J and K classes; or density-fitted, the run's own B,
-  // which DensityFittingStep refuses past the device's free memory, and no
-  // classes: DensityFitting::Full reads none.
-  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
-  std::vector<CoulombPairClass> j_classes;
-  std::vector<OrderedPairClass> k_classes;
-  std::optional<DensityFittingOutput> fit;
-  if (aux_basis.empty()) {
-    j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
-    k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
-  } else {
-    fit = FBF_TRY(DensityFittingStep{.aux_basis = aux_basis}.run(
-        View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput>{
-            in.get<MoleculeOutput>(), in.get<BasisSetOutput>(),
-            in.get<PrimitivePairClassesOutput>()},
-        res));
+  // Integral-direct, the EriOutput's J and K classes; or density-fitted, its
+  // B, and no classes: DensityFitting::Full reads none.
+  const EriOutput &eri = in.get<EriOutput>();
+  const auto *const direct = std::get_if<IntegralDirect>(&eri.eri);
+  const auto *const fit = std::get_if<DensityFitted>(&eri.eri);
+  std::vector<CoulombPairClass> no_j_classes;
+  std::vector<OrderedPairClass> no_k_classes;
+  std::vector<CoulombPairClass> &j_classes = direct ? direct->j_classes : no_j_classes;
+  std::vector<OrderedPairClass> &k_classes = direct ? direct->k_classes : no_k_classes;
+  if (fit) {
     // Each macro iteration's fitted casscf_integrals holds, past B, L and the
     // first half transform X (naux ncas nmo each), J_AO in ppaa's buffer, the
     // gemm intermediate of C^T J_AO C and papa (nmo^2 ncas^2 each): refused

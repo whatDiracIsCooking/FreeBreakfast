@@ -111,7 +111,7 @@ fock(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
 /// the fitted factor @p b in place of the J and K classes, the rest as there.
 ///
 /// @p b is B over @p naux fitting functions and C's nmo = h.n() spherical
-/// AOs, as @c df_coulomb reads it (@c DensityFittingOutput::b): naux nmo^2
+/// AOs, as @c df_coulomb reads it (@c DensityFitted::b): naux nmo^2
 /// doubles. F^I = C^T h C + C^T (2 J[P_c] - K[P_c]) C takes one
 /// @c df_coulomb of 2 P_c and one @c df_exchange of the factor C_core,
 /// skipped for ncore = 0: spherical throughout, with no screen and no prune

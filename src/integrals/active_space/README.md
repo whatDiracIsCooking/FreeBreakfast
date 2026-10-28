@@ -120,7 +120,7 @@ per call.
 ## Over density fitting
 
 The second `casscf_integrals` takes the fitted factor B (`density_fit`'s, the
-pipeline's `DensityFittingOutput::b` and `naux`), naux × nao², element
+pipeline's `DensityFitted::b` and `naux`), naux × nao², element
 (Q, n + nao m) at Q + naux (n + nao m), so that (mn|ls) ≈ Σ_Q B_Q,mn B_Q,ls.
 Everything is spherical: no U C, no Cartesian matrices, no screening and so
 no prune cap, and no per-pair J or K. It returns the same `CasscfIntegrals` in

@@ -1,9 +1,10 @@
-// The DensityFitting step: its B for FelizJueves's water in cc-pVDZ /
+// The Eri step. Density-fitted: its B for FelizJueves's water in cc-pVDZ /
 // cc-pVDZ-JKFIT and cc-pVTZ / cc-pVTZ-JKFIT (f orbitals, g fitting functions)
 // against the B density_fit makes of PySCF's int2c2e and int3c2e
-// (data/density_fitting/), and the step's refusals of an aux basis it cannot
-// resolve or place. The step's contract is checked by static_assert; the rest
-// builds B on the device, so needs a GPU.
+// (data/density_fitting/), the default aux basis, and the step's refusals of
+// an aux basis it cannot resolve, place or default. Integral-direct: J's and
+// K's classes, and an aux basis refused. The step's contract is checked by
+// static_assert; the rest builds on the device, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -20,20 +21,20 @@ import free_breakfast.integrals.eri.density_fitting.fit;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.basis_set;
 import free_breakfast.pipeline.primitive_pair_classes;
-import free_breakfast.pipeline.density_fitting;
+import free_breakfast.pipeline.eri;
 
 namespace {
 
 namespace fb = free_breakfast;
 
-using DensityFittingInput =
-    fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>;
+using EriInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>;
 
-static_assert(fb::PipelineStep<fb::DensityFittingStep>);
-static_assert(fb::kRunShape<fb::DensityFittingStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::DensityFittingStep>, DensityFittingInput>);
-static_assert(std::same_as<fb::StepOutput<fb::DensityFittingStep>, fb::DensityFittingOutput>);
-static_assert(!fb::LoadableStep<fb::DensityFittingStep>);
+static_assert(fb::PipelineStep<fb::EriStep>);
+static_assert(fb::kRunShape<fb::EriStep> == fb::RunShape::Device);
+static_assert(std::same_as<fb::StepInput<fb::EriStep>, EriInput>);
+static_assert(std::same_as<fb::StepOutput<fb::EriStep>, fb::EriOutput>);
+static_assert(!fb::LoadableStep<fb::EriStep>);
+static_assert(fb::EriStep{}.mode == fb::EriMode::IntegralDirect);
 
 // The integrals each agree with PySCF to 1e-12 of their own maximum
 // (df_metric_gpu, df_three_center_gpu), and so does the fitted (mn|ls) = B^T B
@@ -178,9 +179,12 @@ void check_b(const std::string &name) {
   ASSERT_TRUE(basis) << basis.error().message;
   auto classes = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
   ASSERT_TRUE(classes) << classes.error().message;
-  auto fit = fb::DensityFittingStep{.aux_basis = (*c)["aux_basis"].get<std::string>()}.run(
-      DensityFittingInput{molecule, *basis, *classes}, res);
-  ASSERT_TRUE(fit) << fit.error().message;
+  auto eri = fb::EriStep{.mode = fb::EriMode::DensityFitting,
+                         .aux_basis = (*c)["aux_basis"].get<std::string>()}
+                 .run(EriInput{molecule, *basis, *classes}, res);
+  ASSERT_TRUE(eri) << eri.error().message;
+  const auto *fit = std::get_if<fb::DensityFitted>(&eri->eri);
+  ASSERT_NE(fit, nullptr);
 
   const auto nao = (*c)["nao"].get<std::size_t>();
   const auto naux = (*c)["naux"].get<std::size_t>();
@@ -246,17 +250,131 @@ void check_b(const std::string &name) {
                            name, nao, naux, scale, worst / scale, b_scale, b_worst / b_scale);
 }
 
-TEST(PipelineDensityFitting, DzMatchesTheGoldenBuiltB) {
+TEST(PipelineEri, DzMatchesTheGoldenBuiltB) {
   check_b("h2o_ccpvdz");
 }
 
-TEST(PipelineDensityFitting, TzWithFOrbitalsMatchesTheGoldenBuiltB) {
+TEST(PipelineEri, TzWithFOrbitalsMatchesTheGoldenBuiltB) {
   check_b("h2o_ccpvtz");
+}
+
+// The molecule, a compiled-in basis over it and its pair classes, for the
+// cases that need only the step's input.
+struct Water {
+  fb::MoleculeOutput molecule;
+  fb::BasisSetOutput basis;
+  fb::PrimitivePairClassesOutput classes;
+
+  [[nodiscard]] EriInput view() const { return EriInput{molecule, basis, classes}; }
+};
+
+std::optional<Water> water(fb::DeviceResources &res, const std::string &basis_name) {
+  fb::MoleculeOutput molecule{
+      fb::Molecule(res, {fb::Atom{fb::Vec<double, 3>{0.0, 0.0, 0.221665}, fb::Element::O},
+                         fb::Atom{fb::Vec<double, 3>{0.0, 1.430901, -0.886659}, fb::Element::H},
+                         fb::Atom{fb::Vec<double, 3>{0.0, -1.430901, -0.886659}, fb::Element::H}})};
+  auto basis = fb::BasisSetStep{.basis = basis_name}.run(fb::View<fb::MoleculeOutput>{molecule});
+  if (!basis) {
+    ADD_FAILURE() << basis.error().message;
+    return std::nullopt;
+  }
+  auto classes = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
+  if (!classes) {
+    ADD_FAILURE() << classes.error().message;
+    return std::nullopt;
+  }
+  return Water{std::move(molecule), std::move(*basis), std::move(*classes)};
+}
+
+// The default mode: J's and K's classes, one of each per class J and K can
+// need, and no B.
+TEST(PipelineEri, IntegralDirectHoldsJsAndKsClasses) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto in = water(res, "cc-pvdz");
+  ASSERT_TRUE(in);
+  auto eri = fb::EriStep{}.run(in->view(), res);
+  ASSERT_TRUE(eri) << eri.error().message;
+  const auto *direct = std::get_if<fb::IntegralDirect>(&eri->eri);
+  ASSERT_NE(direct, nullptr);
+  auto j_classes = fb::coulomb_pair_classes(res, in->classes.classes);
+  auto k_classes = fb::ordered_pair_classes(res, in->basis.basis, in->classes.classes);
+  ASSERT_TRUE(j_classes && k_classes);
+  EXPECT_FALSE(direct->j_classes.empty());
+  EXPECT_FALSE(direct->k_classes.empty());
+  EXPECT_EQ(direct->j_classes.size(), j_classes->size());
+  EXPECT_EQ(direct->k_classes.size(), k_classes->size());
+}
+
+TEST(PipelineEri, AnAuxBasisUnderIntegralDirectIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto in = water(res, "cc-pvdz");
+  ASSERT_TRUE(in);
+  auto eri = fb::EriStep{.aux_basis = "cc-pvdz-jkfit"}.run(in->view(), res);
+  ASSERT_FALSE(eri);
+  EXPECT_EQ(eri.error().kind, fb::ErrorKind::InvalidConfig) << eri.error().message;
+}
+
+// No aux_basis: the orbital set's acCD-6-6, the same B as naming it.
+TEST(PipelineEri, DensityFittingDefaultsToTheBasissAcCdSet) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto in = water(res, "cc-pvdz");
+  ASSERT_TRUE(in);
+  auto by_default = fb::EriStep{.mode = fb::EriMode::DensityFitting}.run(in->view(), res);
+  auto named =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pVDZ-acCD-6-6"}.run(
+          in->view(), res);
+  auto jkfit = fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pVDZ-JKFIT"}.run(
+      in->view(), res);
+  ASSERT_TRUE(by_default) << by_default.error().message;
+  ASSERT_TRUE(named) << named.error().message;
+  ASSERT_TRUE(jkfit) << jkfit.error().message;
+  const auto &b_default = std::get<fb::DensityFitted>(by_default->eri);
+  const auto &b_named = std::get<fb::DensityFitted>(named->eri);
+  ASSERT_EQ(b_default.naux, b_named.naux);
+  EXPECT_NE(b_default.naux, std::get<fb::DensityFitted>(jkfit->eri).naux);
+  const std::vector<double> ours = download(res, b_default.b.data(), b_default.b.num_elements());
+  const std::vector<double> theirs = download(res, b_named.b.data(), b_named.b.num_elements());
+  ASSERT_EQ(ours.size(), theirs.size());
+  double scale = 0.0;
+  double worst = 0.0;
+  for (std::size_t i = 0; i < ours.size(); ++i) {
+    scale = std::max(scale, std::abs(theirs[i]));
+    worst = std::max(worst, std::abs(ours[i] - theirs[i]));
+  }
+  EXPECT_LE(worst, kRelTol * scale);
+}
+
+// A basis with no carried acCD-6-6 set, or none known to be a carried set at
+// all, has no default: the step asks for aux_basis.
+TEST(PipelineEri, DensityFittingWithNoDefaultAuxBasisIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const auto in = water(res, "sto-3g");
+  ASSERT_TRUE(in);
+  auto eri = fb::EriStep{.mode = fb::EriMode::DensityFitting}.run(in->view(), res);
+  ASSERT_FALSE(eri);
+  EXPECT_EQ(eri.error().kind, fb::ErrorKind::InvalidConfig) << eri.error().message;
+  EXPECT_NE(eri.error().message.find("STO-3G"), std::string::npos) << eri.error().message;
+  EXPECT_NE(eri.error().message.find("aux_basis"), std::string::npos) << eri.error().message;
+
+  // A path-read basis is unnamed, whatever its document claims: the carried
+  // cc-pVDZ, read from its file, gets no default.
+  const auto from_file = water(
+      res,
+      (std::filesystem::path{FBF_TEST_DATA_DIR} / "../../../data/basis/cc-pVDZ.json").string());
+  ASSERT_TRUE(from_file);
+  ASSERT_TRUE(from_file->basis.basis.name().empty());
+  auto unnamed = fb::EriStep{.mode = fb::EriMode::DensityFitting}.run(from_file->view(), res);
+  ASSERT_FALSE(unnamed);
+  EXPECT_EQ(unnamed.error().kind, fb::ErrorKind::InvalidConfig) << unnamed.error().message;
 }
 
 // An aux basis the step cannot resolve, or cannot place over the molecule, is
 // the step's error, before anything is built.
-TEST(PipelineDensityFitting, AnAuxBasisItCannotResolveOrPlaceIsItsError) {
+TEST(PipelineEri, AnAuxBasisItCannotResolveOrPlaceIsItsError) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   // cc-pVDZ carries helium; neither fitting set does.
@@ -266,15 +384,17 @@ TEST(PipelineDensityFitting, AnAuxBasisItCannotResolveOrPlaceIsItsError) {
   ASSERT_TRUE(basis) << basis.error().message;
   auto classes = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
   ASSERT_TRUE(classes) << classes.error().message;
-  const DensityFittingInput in{helium, *basis, *classes};
+  const EriInput in{helium, *basis, *classes};
 
-  auto unplaced = fb::DensityFittingStep{.aux_basis = "cc-pvdz-jkfit"}.run(in, res);
+  auto unplaced =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"}.run(in, res);
   ASSERT_FALSE(unplaced);
   EXPECT_EQ(unplaced.error().kind, fb::ErrorKind::InvalidConfig) << unplaced.error().message;
 
   // Neither a fitting set's name nor a file: read as a path, and the
   // compiled-in names offered.
-  auto unknown = fb::DensityFittingStep{.aux_basis = "cc-pvqz-jkfit"}.run(in, res);
+  auto unknown =
+      fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvqz-jkfit"}.run(in, res);
   ASSERT_FALSE(unknown);
   EXPECT_EQ(unknown.error().kind, fb::ErrorKind::IO) << unknown.error().message;
   EXPECT_NE(unknown.error().message.find("cc-pVDZ-JKFIT"), std::string::npos)

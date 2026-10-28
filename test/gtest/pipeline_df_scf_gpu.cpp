@@ -1,9 +1,9 @@
-// The Scf step with density-fitted J and K ([scf] eri = "density_fitting")
+// The Scf step with density-fitted J and K ([eri] mode = "density_fitting")
 // against PySCF's DF-RHF over the same orbital and fitting sets
 // (data/density_fitting/density_fitting.json, tools/emit/df_reference.py): the
 // energy and orbital energies, and the invariants of a closed-shell
 // wavefunction, over the setup steps and the guess run by hand; then through
-// the real registry from a config whose [scf] selects density fitting. Runs
+// the real registry from a config whose [eri] selects density fitting. Runs
 // the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
@@ -26,8 +26,8 @@ namespace {
 namespace fb = free_breakfast;
 
 using ScfInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
-                          fb::PrimitivePairClassesOutput, fb::OverlapOutput,
-                          fb::OrthogonalizerOutput, fb::CoreHamiltonianOutput, fb::GuessOutput>;
+                          fb::EriOutput, fb::OverlapOutput, fb::OrthogonalizerOutput,
+                          fb::CoreHamiltonianOutput, fb::GuessOutput>;
 
 // Against PySCF's DF-RHF converged to conv_tol 1e-12, with the same fit: what
 // is left is B's rounding and the step's own tolerances. DF has no screening.
@@ -86,25 +86,27 @@ std::vector<double> matmul(const std::vector<double> &a, const std::vector<doubl
 }
 
 // Every product the Scf step reads, made by the steps called by hand in the
-// order the planner would choose.
+// order the planner would choose; the ERIs fitted over @p aux_basis.
 struct Inputs {
   fb::MoleculeOutput molecule;
   fb::BasisSetOutput basis;
   fb::SphericalTransformOutput transform;
-  fb::PrimitivePairClassesOutput pairs;
+  fb::EriOutput eri;
   fb::OverlapOutput overlap;
   fb::OrthogonalizerOutput x;
   fb::CoreHamiltonianOutput h;
   fb::GuessOutput guess;
 
   [[nodiscard]] ScfInput view() const {
-    return ScfInput{molecule, basis, transform, pairs, overlap, x, h, guess};
+    return ScfInput{molecule, basis, transform, eri, overlap, x, h, guess};
   }
 };
 
 std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom> atoms,
-                                  std::string_view basis_name, std::int32_t charge,
-                                  std::int32_t multiplicity = 1) {
+                                  std::string_view basis_name, std::string_view aux_basis,
+                                  std::int32_t charge, std::int32_t multiplicity = 1) {
+  const fb::EriStep eri_step{.mode = fb::EriMode::DensityFitting,
+                             .aux_basis = std::string(aux_basis)};
   fb::MoleculeOutput molecule{fb::Molecule(res, std::move(atoms), charge, multiplicity)};
   auto basis = fb::BasisSetStep{.basis = std::string(basis_name)}.run(
       fb::View<fb::MoleculeOutput>{molecule});
@@ -116,6 +118,14 @@ std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom
   auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{*basis}, res);
   if (!transform.has_value() || !pairs.has_value()) {
     ADD_FAILURE() << "spherical transform or pair classes failed";
+    return std::nullopt;
+  }
+  auto eri = eri_step.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          molecule, *basis, *pairs},
+      res);
+  if (!eri.has_value()) {
+    ADD_FAILURE() << eri.error().message;
     return std::nullopt;
   }
   auto overlap = fb::OverlapStep{}.run(
@@ -148,7 +158,7 @@ std::optional<Inputs> make_inputs(fb::DeviceResources &res, std::vector<fb::Atom
     ADD_FAILURE() << guess.error().message;
     return std::nullopt;
   }
-  return Inputs{std::move(molecule), std::move(*basis), std::move(*transform), std::move(*pairs),
+  return Inputs{std::move(molecule), std::move(*basis), std::move(*transform), std::move(*eri),
                 std::move(*overlap), std::move(*x),     std::move(*h),         std::move(*guess)};
 }
 
@@ -176,13 +186,13 @@ TEST_P(PipelineDfScf, MatchesPyscf) {
   fb::DeviceResources res{0};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
+                            expected.at("aux_basis").get<std::string>(),
                             expected.at("charge").get<std::int32_t>());
   ASSERT_TRUE(inputs.has_value());
   const std::size_t n = inputs->basis.basis.nao_sphe();
   ASSERT_EQ(n, expected.at("nao").get<std::size_t>());
 
-  auto scf = fb::ScfStep{.aux_basis = expected.at("aux_basis").get<std::string>()}.run(
-      inputs->view(), res);
+  auto scf = fb::ScfStep{}.run(inputs->view(), res);
   ASSERT_TRUE(scf.has_value()) << scf.error().message;
   EXPECT_NEAR(fb::nuclear_repulsion_energy(inputs->molecule.molecule),
               expected.at("nuclear_repulsion").get<double>(), 1e-10);
@@ -220,21 +230,7 @@ INSTANTIATE_TEST_SUITE_P(DfRhf, PipelineDfScf,
                                            "h2o_ccpvdz_accd"),
                          [](const auto &info) { return std::string(info.param); });
 
-// The aux basis is resolved when the step runs: an unknown name is
-// DensityFittingStep's error, passed through.
-TEST(PipelineDfScfErrors, AnUnknownAuxBasisIsTheFitsError) {
-  FBF_REQUIRE_GPU();
-  const fb::json &expected = reference_case("h2o_ccpvdz");
-  fb::DeviceResources res{0};
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  auto inputs = make_inputs(res, atoms_of(expected), "cc-pvdz", 0);
-  ASSERT_TRUE(inputs.has_value());
-  auto scf = fb::ScfStep{.aux_basis = "no-such-jkfit"}.run(inputs->view(), res);
-  ASSERT_FALSE(scf.has_value());
-  EXPECT_EQ(scf.error().kind, fb::ErrorKind::IO) << scf.error().message;
-}
-
-TEST(PipelineDfScfCalculation, AConfigWhoseScfSelectsDensityFittingPlansAndRunsTheWholeChain) {
+TEST(PipelineDfScfCalculation, AConfigWhoseEriSelectsDensityFittingPlansAndRunsTheWholeChain) {
   FBF_REQUIRE_GPU();
   const fb::json &expected = reference_case("h2o_ccpvdz");
   // The reference geometry is in bohr; XYZ is in Angstrom, read back through
@@ -251,8 +247,8 @@ TEST(PipelineDfScfCalculation, AConfigWhoseScfSelectsDensityFittingPlansAndRunsT
   ASSERT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
   ASSERT_TRUE(fb::write_file(dir / "run.toml",
                              std::format("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\n"
-                                         "basis = \"{}\"\n[scf]\neri = \"density_fitting\"\n"
-                                         "aux_basis = \"{}\"\n",
+                                         "basis = \"{}\"\n[eri]\nmode = \"density_fitting\"\n"
+                                         "aux_basis = \"{}\"\n[scf]\n",
                                          expected.at("basis").get<std::string>(),
                                          expected.at("aux_basis").get<std::string>()))
                   .has_value());
@@ -260,7 +256,8 @@ TEST(PipelineDfScfCalculation, AConfigWhoseScfSelectsDensityFittingPlansAndRunsT
   fb::NodeResources node;
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  EXPECT_FALSE(calc->step<fb::DensityFittingStep>().has_value());
+  ASSERT_TRUE(calc->step<fb::EriStep>().has_value());
+  EXPECT_EQ(calc->step<fb::EriStep>()->mode, fb::EriMode::DensityFitting);
   EXPECT_TRUE(calc->step<fb::OverlapStep>().has_value());
   EXPECT_TRUE(calc->step<fb::OrthogonalizerStep>().has_value());
   EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());

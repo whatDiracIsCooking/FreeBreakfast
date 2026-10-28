@@ -81,7 +81,7 @@ public:
   /// as there.
   ///
   /// @p b is B over @p naux fitting functions and C's nmo = h.n() spherical
-  /// AOs, as @c df_coulomb reads it (@c DensityFittingOutput::b): naux nmo^2
+  /// AOs, as @c df_coulomb reads it (@c DensityFitted::b): naux nmo^2
   /// doubles, whose storage is kept (by pointer, so the buffer may be moved
   /// but not freed) for every @ref apply. @p h, @p c, @p ppaa,
   /// @p papa and @p fock are as there; @p ppaa, @p papa and @p fock are

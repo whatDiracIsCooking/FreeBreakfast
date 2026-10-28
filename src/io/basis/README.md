@@ -54,8 +54,10 @@ known to be that set's.
 relative path is anchored to a config file's directory — joining a name to
 that directory would turn `sto-3g` into a file nobody wrote.
 `is_builtin_aux_basis` asks the same of the fitting table, for
-`[density_fitting] aux_basis`. Only `free_breakfast.pipeline.config` needs
-either; everything else calls `resolve_basis` or `resolve_aux_basis`.
+`[eri] aux_basis`. Only `free_breakfast.pipeline.config` needs either for
+that; `pipeline.eri` also asks `is_builtin_aux_basis` whether a basis's
+`<name>-acCD-6-6` default is carried. Everything else calls `resolve_basis`
+or `resolve_aux_basis`.
 
 Each `electron_shells` block maps to shells by pairing momentum *i* with
 coefficient column *i* (an sp / spd block), or — with one momentum and several

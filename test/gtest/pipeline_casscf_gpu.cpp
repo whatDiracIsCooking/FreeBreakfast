@@ -6,7 +6,7 @@
 // the state-averaged natural occupations, and the canonical core and virtual
 // orbital energies, the state-averaged Fock's eigenvalues in each space. Each
 // case also writes its natural orbitals as Molden, read back as
-// io_molden_host reads one. Each case runs again with [casscf] density-fitted,
+// io_molden_host reads one. Each case runs again with [eri] density-fitted,
 // against the DF-CASSCF of data/casscf/casscf_df.json. Runs the device chain,
 // so needs a GPU.
 
@@ -31,10 +31,10 @@ namespace fb = free_breakfast;
 
 static_assert(fb::PipelineStep<fb::CasscfStep>);
 static_assert(fb::kRunShape<fb::CasscfStep> == fb::RunShape::Device);
-static_assert(std::same_as<
-              fb::StepInput<fb::CasscfStep>,
-              fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
-                       fb::PrimitivePairClassesOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>>);
+static_assert(
+    std::same_as<fb::StepInput<fb::CasscfStep>,
+                 fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
+                          fb::EriOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::CasscfStep>, fb::CasscfOutput>);
 
 // The issue's bars.
@@ -309,12 +309,14 @@ TEST_P(PipelineCasscf, MatchesPyscf) {
   expect_matches(entry, casscf_table(entry));
 }
 
-// [casscf] eri = "density_fitting" over the compiled-in cc-pVDZ-JKFIT, against
-// PySCF's DF-CASSCF from the same start (data/casscf/casscf_df.json), to the
-// same bars: the step builds its own B and runs mcscf::DensityFitting::Full,
-// and canonicalizes over the fitted Fock, whose eigenvalues the reference's
-// orbital energies are. The [scf] stays integral-direct, as the reference's
-// exact RHF start is.
+// [eri] mode = "density_fitting" over the compiled-in cc-pVDZ-JKFIT, against
+// PySCF's DF-CASSCF (data/casscf/casscf_df.json), to the same bars: the step
+// runs mcscf::DensityFitting::Full over the pipeline's B and canonicalizes
+// over the fitted Fock, whose eigenvalues the reference's orbital energies
+// are. One [eri] serves the whole pipeline, so the start is the DF-RHF's
+// orbitals where the reference's is the exact RHF's: the same active
+// orbitals, and the converged DF-CASSCF is the start's only through which
+// stationary point it finds.
 TEST_P(PipelineCasscf, MatchesPyscfDensityFitted) {
   FBF_REQUIRE_GPU();
   if (GetParam().slow) {
@@ -322,9 +324,9 @@ TEST_P(PipelineCasscf, MatchesPyscfDensityFitted) {
   }
   const fb::json &entry = reference_case(GetParam().name, "casscf_df.json");
   ASSERT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
-  expect_matches(entry,
-                 casscf_table(entry) +
-                     std::format("eri = \"density_fitting\"\naux_basis = \"{}\"\n", kDfAuxBasis));
+  expect_matches(entry, casscf_table(entry) +
+                            std::format("[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
+                                        kDfAuxBasis));
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasscf,
