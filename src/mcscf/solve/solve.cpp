@@ -292,6 +292,9 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
                       nroots, w.size(), weight_sum);
   }
 
+  // Every build over B: no integral-direct J or K in the loop.
+  const bool full = options.density_fitting == DensityFitting::Full;
+
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
@@ -387,10 +390,12 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
   std::vector<double> hx_total(pairs, 0.0);
 
   for (int32_t cycle = 1; cycle <= options.max_cycle; ++cycle) {
-    // 1. The active-space Hamiltonian and ppaa, papa over C.
+    // 1. The active-space Hamiltonian and ppaa, papa over C: fitted over B in
+    //    Full, integral-direct otherwise.
     CasscfIntegrals ints =
-        FBF_TRY(casscf_integrals(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore,
-                                 ncas, options.tau_j, options.tau_k));
+        FBF_TRY(full ? casscf_integrals(res, basis, molecule, h, *b, naux, c_now, ncore, ncas)
+                     : casscf_integrals(res, basis, molecule, h, u, j_classes, k_classes, c_now,
+                                        ncore, ncas, options.tau_j, options.tau_k));
 
     // 2. The CI, from the last roots. The sigma takes host arrays, row-major,
     //    and the Hamiltonian's are column-major, which needs no reorder: h_eff
@@ -426,9 +431,11 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     FBF_TRY(ci_rdm.rdm12(res, w, roots->vectors.data(), gamma_device.data(), gamma2_device.data()));
     std::vector<double> gamma = FBF_TRY(casscf_download(res, gamma_device.data(), n * n));
     std::vector<double> gamma2 = FBF_TRY(casscf_download(res, gamma2_device.data(), n * n * n * n));
-    response::Fock fock =
-        FBF_TRY(response::fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                               ints.ppaa, ints.papa, gamma, gamma2, options.tau_j, options.tau_k));
+    response::Fock fock = FBF_TRY(
+        full ? response::fock(res, molecule, h, *b, naux, c_now, ncore, ncas, ints.ppaa, ints.papa,
+                              gamma, gamma2)
+             : response::fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore, ncas,
+                              ints.ppaa, ints.papa, gamma, gamma2, options.tau_j, options.tau_k));
     const std::vector<double> g = FBF_TRY(casscf_download(res, fock.gradient.data(), pairs));
     const double g_norm = std::sqrt(casscf_dot(g, g));
     last_gradient = g_norm;
@@ -488,10 +495,10 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     //    until it is small, the radius is reached or max_micro is. H~ is fixed
     //    for the macro iteration, so the solves share one subspace Q (see the
     //    README).
-    //    H is density-fitted in ApproxHessian (over the caller's B, which
-    //    outlives it), integral-direct otherwise.
+    //    H is density-fitted in ApproxHessian and Full (over the caller's B,
+    //    which outlives it), integral-direct in Direct.
     response::Hessian hessian = FBF_TRY(
-        options.density_fitting == DensityFitting::ApproxHessian
+        options.density_fitting != DensityFitting::Direct
             ? response::Hessian::create(res, h, *b, naux, c_now, ncore, ncas, ints.ppaa, ints.papa,
                                         fock)
             : response::Hessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,

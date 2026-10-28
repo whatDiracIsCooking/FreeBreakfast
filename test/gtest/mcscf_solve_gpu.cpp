@@ -6,7 +6,10 @@
 // the energy; at most 20 macro iterations; and the refusals. Each case runs
 // twice: integral-direct, and with the Hessian density-fitted
 // (DensityFitting::ApproxHessian, over kAuxBasis), which must reach the same
-// exact references in at most one macro iteration more.
+// exact references in at most one macro iteration more. And each case runs
+// wholly density-fitted (DensityFitting::Full, over kDfAuxBasis) against
+// data/casscf/casscf_df.json's DF-CASSCF to the same bars, its ||g|| recomputed
+// from scratch over the same B.
 //
 // The setup is response_fock_gpu.cpp's: the SCF (run with J unscreened), and the
 // start picked by pipeline.active_space (by index, or by AVAS). So this
@@ -55,23 +58,29 @@ constexpr double kConvTolGrad = 1e-9;
 // not the solution: macro iterations within one of direct's (the issue's bar).
 constexpr std::string_view kAuxBasis = "aug-cc-pvdz-accd-6-6";
 constexpr std::size_t kApproxHessianExtraMacroIterations = 1;
+// Full's B: the set casscf_df.json was fitted over (its aux_basis.file), so
+// the comparison is of one fitting set, not two.
+constexpr std::string_view kDfAuxBasis = "cc-pVDZ-JKFIT";
 
-const fb::json &reference() {
-  static const fb::json doc = [] {
-    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf" / "casscf.json");
-    EXPECT_TRUE(read.has_value()) << read.error().message;
-    return read.has_value() ? std::move(*read) : fb::json{};
-  }();
-  return doc;
+// data/casscf/<file>, read once per file.
+const fb::json &reference(std::string_view file) {
+  static std::map<std::string, fb::json, std::less<>> docs;
+  if (const auto found = docs.find(file); found != docs.end()) {
+    return found->second;
+  }
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf" / file);
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return docs.emplace(std::string{file}, read.has_value() ? std::move(*read) : fb::json{})
+      .first->second;
 }
 
-const fb::json &reference_case(std::string_view name) {
-  for (const fb::json &entry : reference().at("cases")) {
+const fb::json &reference_case(std::string_view name, std::string_view file = "casscf.json") {
+  for (const fb::json &entry : reference(file).at("cases")) {
     if (entry.at("name").get<std::string>() == name) {
       return entry;
     }
   }
-  ADD_FAILURE() << "no case " << name << " in casscf/casscf.json";
+  ADD_FAILURE() << "no case " << name << " in casscf/" << file;
   static const fb::json kNone;
   return kNone;
 }
@@ -163,12 +172,12 @@ struct Setup {
                             naux);
   }
 
-  // B over the setup's basis and kAuxBasis.
-  [[nodiscard]] std::optional<fb::DensityFittingOutput> fit() {
+  // B over the setup's basis and aux_basis.
+  [[nodiscard]] std::optional<fb::DensityFittingOutput> fit(std::string_view aux_basis) {
     const auto &mol = calc->get<fb::MoleculeOutput>();
     const auto &basis_set = calc->get<fb::BasisSetOutput>();
     const auto &pairs = calc->get<fb::PrimitivePairClassesOutput>();
-    auto b = fb::DensityFittingStep{.aux_basis = std::string{kAuxBasis}}.run(
+    auto b = fb::DensityFittingStep{.aux_basis = std::string{aux_basis}}.run(
         fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
             *mol, *basis_set, *pairs},
         res());
@@ -245,16 +254,19 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
 
 // The weighted energy and ||g|| at orbitals c from scratch: the integrals, a
 // cold CI at ci::solve's own tolerance, the RDMs and response::fock, nothing of
-// mcscf::solve's.
-std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::SphericalMatrixAO &c,
-                                                      const std::vector<double> &weights) {
+// mcscf::solve's. Integral-direct, or over df's B when it is given.
+std::optional<std::pair<double, double>>
+from_scratch(Setup &setup, const fb::SphericalMatrixAO &c, const std::vector<double> &weights,
+             const fb::DensityFittingOutput *df = nullptr) {
   fb::DeviceResources &res = setup.res();
   const std::int32_t ncore = setup.start->ncore;
   const std::int32_t ncas = setup.start->ncas;
   const std::int32_t nelecas = setup.start->nelecas;
-  auto ints =
-      fb::casscf_integrals(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
-                           setup.j_classes, setup.k_classes, c, ncore, ncas);
+  auto ints = df != nullptr ? fb::casscf_integrals(res, *setup.basis, *setup.molecule, setup.h->h,
+                                                   df->b, df->naux, c, ncore, ncas)
+                            : fb::casscf_integrals(res, *setup.basis, *setup.molecule, setup.h->h,
+                                                   setup.transform->u, setup.j_classes,
+                                                   setup.k_classes, c, ncore, ncas);
   if (!ints.has_value()) {
     ADD_FAILURE() << ints.error().message;
     return std::nullopt;
@@ -304,9 +316,12 @@ std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::Sp
   }
   const std::vector<double> g1 = download(res, gamma.data(), n * n);
   const std::vector<double> g2 = download(res, gamma2.data(), n * n * n * n);
-  auto fock = fb::response::fock(res, *setup.basis, *setup.molecule, setup.h->h, setup.transform->u,
-                                 setup.j_classes, setup.k_classes, c, ncore, ncas, ints->ppaa,
-                                 ints->papa, g1, g2);
+  auto fock = df != nullptr
+                  ? fb::response::fock(res, *setup.molecule, setup.h->h, df->b, df->naux, c, ncore,
+                                       ncas, ints->ppaa, ints->papa, g1, g2)
+                  : fb::response::fock(res, *setup.basis, *setup.molecule, setup.h->h,
+                                       setup.transform->u, setup.j_classes, setup.k_classes, c,
+                                       ncore, ncas, ints->ppaa, ints->papa, g1, g2);
   if (!fock.has_value()) {
     ADD_FAILURE() << fock.error().message;
     return std::nullopt;
@@ -401,9 +416,11 @@ void PrintTo(const Case &c, std::ostream *os) {
 class McscfSolve : public ::testing::TestWithParam<Case> {};
 
 // Every check of one solve's solution sol against the case's reference,
-// logged (with the solve's wall time, seconds) and traced as mode.
+// logged (with the solve's wall time, seconds) and traced as mode. ||g|| is
+// recomputed over df's B when it is given (the DF-CASSCF's own gradient).
 void expect_polished(Setup &setup, const fb::mcscf::Solution &sol, const fb::json &entry,
-                     const std::vector<double> &weights, std::string_view mode, double seconds) {
+                     const std::vector<double> &weights, std::string_view mode, double seconds,
+                     const fb::DensityFittingOutput *df = nullptr) {
   SCOPED_TRACE(mode);
   const fb::json &want = entry.at("casscf");
 
@@ -460,7 +477,7 @@ void expect_polished(Setup &setup, const fb::mcscf::Solution &sol, const fb::jso
 
   // ||g|| from scratch, and the energy with it.
   EXPECT_LT(sol.gradient_norm, kConvTolGrad);
-  const auto scratch = from_scratch(setup, sol.c, weights);
+  const auto scratch = from_scratch(setup, sol.c, weights, df);
   ASSERT_TRUE(scratch.has_value());
   EXPECT_LT(scratch->second, kConvTolGrad);
   EXPECT_NEAR(scratch->first, sol.energy, 1e-10);
@@ -500,7 +517,7 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
   ASSERT_TRUE(direct.has_value()) << direct.error().message;
   expect_polished(*setup, *direct, entry, weights, "direct", direct_time.count());
 
-  const auto b = setup->fit();
+  const auto b = setup->fit(kAuxBasis);
   ASSERT_TRUE(b.has_value());
   options.density_fitting = fb::mcscf::DensityFitting::ApproxHessian;
   start = std::chrono::steady_clock::now();
@@ -511,6 +528,38 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
   // The fitted Hessian moves the path only so far.
   EXPECT_LE(approx->iterations.size(),
             direct->iterations.size() + kApproxHessianExtraMacroIterations);
+}
+
+// Wholly density-fitted, from the same start (casscf_df.json's cases start
+// from the exact RHF and the same pick), against the DF-CASSCF over the same
+// fitting set.
+TEST_P(McscfSolve, FullDensityFittingConvergesToThePolishedDfCasscf) {
+  FBF_REQUIRE_GPU();
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::json &entry = reference_case(GetParam().name, "casscf_df.json");
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
+
+  // The reference's set, by name and size.
+  const fb::json &aux = entry.at("aux_basis");
+  ASSERT_EQ(aux.at("name").get<std::string>(), kDfAuxBasis);
+  const auto b = setup->fit(kDfAuxBasis);
+  ASSERT_TRUE(b.has_value());
+  ASSERT_EQ(b->naux, aux.at("naux").get<std::int32_t>());
+
+  fb::mcscf::Options options;
+  options.conv_tol_grad = kConvTolGrad;
+  options.density_fitting = fb::mcscf::DensityFitting::Full;
+  const auto start = std::chrono::steady_clock::now();
+  auto full = setup->solve(setup->start->c, nroots, weights, options, &b->b, b->naux);
+  const std::chrono::duration<double> full_time = std::chrono::steady_clock::now() - start;
+  ASSERT_TRUE(full.has_value()) << full.error().message;
+  expect_polished(*setup, *full, entry, weights, "full_df", full_time.count(), &*b);
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, McscfSolve,
@@ -566,11 +615,14 @@ TEST(McscfSolveRefusals, AreInvalidConfig) {
   bad.trust_radius = -1.0;
   refused(setup->solve(c, 1, {}, bad), "trust_radius");
   // A density-fitted mode without B, and a B of the wrong size.
-  bad = defaults;
-  bad.density_fitting = fb::mcscf::DensityFitting::ApproxHessian;
-  refused(setup->solve(c, 1, {}, bad), "needs B");
   const fb::Buffers::device<double> short_b(3, setup->res().device());
-  refused(setup->solve(c, 1, {}, bad, &short_b, 1), "naux nmo^2");
+  for (const auto mode :
+       {fb::mcscf::DensityFitting::ApproxHessian, fb::mcscf::DensityFitting::Full}) {
+    bad = defaults;
+    bad.density_fitting = mode;
+    refused(setup->solve(c, 1, {}, bad), "needs B");
+    refused(setup->solve(c, 1, {}, bad, &short_b, 1), "naux nmo^2");
+  }
   const auto wrong_space =
       fb::mcscf::solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
                        setup->transform->u, setup->j_classes, setup->k_classes, c, 6, 2, 4, 1);

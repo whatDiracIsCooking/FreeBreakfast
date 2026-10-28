@@ -291,6 +291,7 @@ iterations here take one solve. Steihaug was not measured.
 |---|---|---|
 | `Direct` (default) | nothing; B, if given, is unused | the exact CASSCF |
 | `ApproxHessian` | the orbital Hessian H alone (PySCF's `approx_hessian`) | the exact CASSCF |
+| `Full` | every build: the integrals, the Fock, the energy, the gradient and H | the DF-CASSCF |
 
 The B input is the shape of the density-fitted `casscf_integrals`,
 `response::fock` and `Hessian::create` overloads, a `Buffers::device<double>`
@@ -337,9 +338,39 @@ issue sets it: `ApproxHessian` needs a B the caller builds and holds
 (naux nmo² doubles) and a fitting set chosen, which a default cannot assume.
 Choosing it from the config is #386's.
 
-The full density-fitted mode (integrals, Fock and Hessian all over B, to the
-DF-CASSCF's own references) is #385's and fills in the third enumerator this
-leaves room for; the signature does not change.
+**In `Full` every build is fitted, and the loop converges to the DF-CASSCF.**
+Each macro iteration takes the density-fitted `casscf_integrals`
+(`../../integrals/active_space/`), `response::fock` (`../../response/fock/`)
+and `Hessian::create` (`../../response/hessian/`), all over the one B, so no J
+or K in the loop is integral-direct: `u`, the J and K classes and the taus go
+unread. The stationary point, and the convergence test with it, are now the
+fitted energy's, which is PySCF's `mcscf.CASSCF(mf, ...).density_fit()`: the
+tests compare it to `test/gtest/data/casscf/casscf_df.json`, fitted over
+cc-pVDZ-JKFIT. The CI's response R takes ppaa and papa as the integrals left
+them, fitted too.
+
+**`Full` takes `Direct`'s macro iterations in every case, and under 2% of its
+wall time.** Measured as the table above was (RTX 3080, preset `default`,
+both GPU slots held and no other compute process on the card before or after,
+median of three runs at `conv_tol_grad` 1e-9, the solve alone with B built
+outside it), in one session for all three modes; `Full` over cc-pVDZ-JKFIT,
+the other two as above:
+
+| case | `Direct`: macro, Hx, s | `ApproxHessian`: macro, Hx, s | `Full`: macro, Hx, s |
+|---|---|---|---|
+| H₂O CAS(4,4) | 7, 50, 8.80 | 7, 50, 4.55 | 7, 50, 0.15 |
+| N₂ CAS(6,6) | 8, 45–46, 21.50 | 8, 45–46, 15.37 | 8, 45–46, 0.22 |
+| H₂CO SA2 | 6, 31, 12.04 | 6, 31, 4.98 | 6, 31, 0.10 |
+| H₂CO SA2 [0.7, 0.3] | 6, 26–27, 11.29 | 6, 25–26, 4.98 | 6, 25–26, 0.09 |
+| H₂O AVAS CAS(8,6) | 8, 70, 15.99 | 8, 70, 10.76 | 8, 68, 0.28 |
+
+What `ApproxHessian` leaves, the integrals' and the gradient's
+integral-direct J and K, was nearly all of the time: over B at cc-pVDZ each is
+a few gemms, and the loop's cost falls to the CI and its response. It is a
+different answer, though, not a faster route to the same one: the fitted
+energy sits 2e-5 (water) to 2.6e-4 Eh (N₂) from the exact CASSCF over this
+set (`test/gtest/data/casscf/README.md`). So `Direct` stays the default, as
+the issue sets it; choosing a mode from the config is #386's.
 
 ## Not done
 
@@ -380,6 +411,14 @@ aug-cc-pVDZ-acCD-6-6 (built once per case, outside the timed solve): the
 same references to the same tolerances, and at most one macro iteration more
 than `Direct`. Each run's macro iterations, Hessian products and wall time
 are printed.
+
+Each case also runs in `Full` over cc-pVDZ-JKFIT, against
+`test/gtest/data/casscf/casscf_df.json`'s DF-CASSCF from the same start, to
+the same bars; ‖g‖ is recomputed from scratch over the same B (the fitted
+integrals and Fock), and the B's naux must be the reference's. The set is
+the one that file was fitted over (its `aux_basis`; the sha256 recorded there
+is the tree's `data/aux_basis/cc-pVDZ-JKFIT.json`'s), not the acCD set above:
+at 1e-8 two fitting sets would differ by far more than the bar.
 
 ## Files
 
