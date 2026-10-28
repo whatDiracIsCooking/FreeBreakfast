@@ -22,6 +22,7 @@ file names the tool that wrote it and the source it came from.
 | `ci/` | `direct_spin1.json`: active-space integrals (E_core, h_eff, (tu\|vw)) from PySCF's CASCI over its own RHF in its own basis library, and `fci.direct_spin1`'s lowest 12 roots over them, each with ⟨S²⟩ and its spin-summed 1-RDM, and state averages (`rdm12`: CI vectors with their weighted `make_rdm12` 1- and 2-RDM), for H₂O STO-3G CAS(4,4), H₂O 6-31G CAS(6,6), N₂ cc-pVDZ CAS(6,6) and CH₂O STO-3G CAS(4,4) | `tools/emit/fci_reference.py`, which runs PySCF |
 | `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit/fci_step_reference.py`, which runs PySCF |
 | `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ: at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit/casscf_reference.py`, which runs PySCF |
+| `nevpt2/` | `nevpt2_df.json`: PySCF's strongly contracted NEVPT2 (`mrpt.NEVPT`, density-fitted throughout) per root, on the polished DF (SA-)CASSCF orbitals of each `casscf/casscf_df.json` case, from the same starts and over the same `data/aux_basis/cc-pVDZ-JKFIT.json`: each root's eight classes' norms and energies, their sum and the total, plus the CASSCF energies it sits on and the active-rotation invariance check | `tools/emit/nevpt2_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
 
@@ -394,4 +395,79 @@ moves any value by more than that is a change, not noise. Regenerate with:
 
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casscf_reference.py
+```
+
+## `nevpt2/nevpt2_df.json`
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF and numpy versions, `threads` (1: BLAS and OpenMP pinned to it), the command that wrote it, and `casscf`, the file whose cases these are. No date or host, so a rerun is byte-identical |
+| `invariance` | The check the tool makes of every root: `check` (what was compared), `tolerance` (1e-10) and `max_difference` (the largest disagreement over all cases and roots, 5.2e-15) |
+| `cases` | One per `casscf_df.json` case, by the same `name`: `ncas`, `nelecas`, `ncore`, `weights`, `aux_basis` (`name`, `file`, its `sha256`, `naux`), `casscf_energies` (each root's energy at the polished orbitals) and `casscf_energy` (weighted), and `roots` |
+| `roots` | One per state, lowest first: `casci_energy` (the root's energy over the polished orbitals, the zeroth order), `classes`, `e_corr` (their energies' sum, the NEVPT2 correction) and `energy` (`casci_energy` + `e_corr`) |
+| `classes` | Eight, in PySCF's summation order: `name` (PySCF's: `Sr`, `Si`, `Sijrs`, `Sijr`, `Srsi`, `Srs`, `Sij`, `Sir`), `excitation` (the change in active-electron count PySCF's log gives it, primed for the two semi-internal classes), `norm` (the class's perturbers' summed squared norm) and `energy` (its second-order contribution). A class can be empty to rounding (H₂CO's excited root's `Sij`: norm ±1e-17, energy `-0.0`), so compare norms and energies absolutely |
+
+**The cases and the orbitals.** The tool imports `casscf_reference.py`'s
+cases, its molecule and fitting-set parsing (this tree's
+`data/aux_basis/cc-pVDZ-JKFIT.json` as parsed shells, never PySCF's library
+`cc-pvdz-jkfit`, with the aux molecule checked against the file shell for
+shell), its start selection and its CASSCF settings, runs the DF `mc1step`
+from the same start and polishes it by the same Newton steps to
+\|g\| < 1e-10, and refuses a run whose polished energies are more than 1e-9
+(that file's stated drift) from `casscf_df.json`'s. NEVPT2 then runs over a
+multi-root CASCI on those orbitals, as PySCF's
+`examples/mrpt/41-for_state_average.py` does (`mcscf.CASCI`, `nroots` the
+case's state count, `fix_spin_(ss=0)`), then `mrpt.NEVPT(casci, root=r)` per
+root, each from a deep copy of the CI (`NEVPT.kernel` writes its
+canonicalized vector back into the shared list).
+
+**Everything is fitted.** The CASCI is made from the exact RHF's converged
+orbitals wrapped as a DF-RHF over the same fitting set (`mf.density_fit`,
+not re-run), so it is PySCF's DFCASCI and NEVPT takes its DF branch
+(`dfnevpt2._ERIS`): the MO integrals, the core Fock and the canonicalizing
+Fock all over the fitted integrals. NEVPT falls back to exact integrals
+silently when it judges memory short; the tool counts its `_ERIS` calls and
+refuses a root that did not take the DF branch.
+
+**The CI.** The CASCI's own spin-penalised Davidson stalls short of the
+eigenvectors (N₂: residual 8e-7, `fcisolver.converged` unset, `conv_tol_residual`
+ignored), and NEVPT2 is first order in the CI vector, so it moved N₂'s
+correction by 1.1e-6. The tool swaps in the dense singlets of the same
+active-space Hamiltonian (as `casscf_reference.py`'s polish takes them),
+checking each against the Davidson root it replaces (overlap above
+1 − 1e-8, energies within 1e-10, and within 1e-10 of the polish's).
+
+**Canonicalization, and the invariance.** Per root, `NEVPT.kernel`
+canonicalizes the core and virtuals over **that root's** Fock (its own
+1-RDM, not the state average's) and rotates the active space to the root's
+natural orbitals (`cas_natorb=True`). SC-NEVPT2 is invariant to that active
+rotation, and a test or a C++ step may rely on it and leave the active
+orbitals alone: the tool runs every root a second time with core and
+virtuals canonicalized over the root's Fock and the active orbitals
+unrotated (`cas_natorb=False`) and fails emission unless every class's norm
+and energy and `e_corr` agree to 1e-10. They agree to 5.2e-15.
+
+**Tolerance.** Within this file the numbers are PySCF's to rounding: the
+CI is exact, the orbital gradient is below 1e-10, and the output is
+byte-identical run to run. A test that runs its own CASSCF does not inherit
+that. The CASSCF energy is stationary in the orbitals; NEVPT2 is not, so it
+moves to first order in whatever separates the test's orbitals from these.
+Measured here by running NEVPT2 at `mc1step`'s own unpolished orbitals
+(\|g\| from 2e-7 to 1.5e-6, `conv_tol_grad` 1e-7) against the polished ones:
+
+| Case | \|g\| at `mc1step` | CASSCF energy moved | NEVPT2 correction moved |
+|---|---|---|---|
+| `h2o_ccpvdz` | 1.5e-6 | 2.7e-13 | 1.3e-9 |
+| `n2_ccpvdz` | 2.2e-7 | 1.4e-14 | 4.7e-6 |
+| `h2co_ccpvdz_sa2` | 1.0e-6 | 2.7e-8 (per root) | 4.9e-8 |
+| `h2co_ccpvdz_sa2_weighted` | 6.5e-7 | 2.7e-8 (per root) | 4.3e-8 |
+
+So a test's tolerance is set by how closely its CASSCF reaches these
+orbitals (its orbital gradient against PySCF's, and its per-root energies,
+which are not stationary either), not by the 1e-9 the CASSCF energy alone
+would suggest; N₂, with its degenerate π pairs, is the sensitive case.
+Regenerate with (one thread; the output is byte-identical run to run):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/nevpt2_reference.py
 ```
