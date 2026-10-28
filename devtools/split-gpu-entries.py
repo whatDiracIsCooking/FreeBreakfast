@@ -11,7 +11,7 @@ An entry is batchable when its command is exactly the gpu binary with one
 `--gtest_filter=<case>` (and gtest's own flags): a TEST_LAUNCHER such as
 compute-sanitizer puts itself first, and running the binary bare would drop
 it. RUN_SERIAL entries stay with ctest, which is what keeps them alone on the
-card (test/gtest/CMakeLists.txt, the (ff|g) cases).
+card (test/gtest/CMakeLists.txt, `_fb_serial_cases`).
 
 Reads `ctest --show-only=json-v1` on stdin, so the preset's filters and any
 `-R`/`-E`/`-L` the caller passed are already applied. Writes the batched
