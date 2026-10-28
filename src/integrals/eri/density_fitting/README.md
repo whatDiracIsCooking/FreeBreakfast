@@ -16,7 +16,7 @@ importable individually.
 
 ```
 metric/        free_breakfast.integrals.eri.density_fitting.metric: the Coulomb metric (P|Q) of an aux basis on the GPU, Cartesian and spherical, over the generated metric<lP, lQ>, 28 classes lP <= lQ through i
-fit/           free_breakfast.integrals.eri.density_fitting.fit: the fit B = L^-1 (mn|P), M = L L^T, one potrf and one trsm in place
+fit/           free_breakfast.integrals.eri.density_fitting.fit: the fit B = L^-1 (mn|P), M = L L^T, one Cholesky factorization (recipes/cholesky) and one trsm in place
 jk/            free_breakfast.integrals.eri.density_fitting.jk: density-fitted J and K over B, spherical
 three_center/  free_breakfast.integrals.eri.density_fitting.three_center: the spherical three-center (mn|P) on the GPU, [m][n][P] with P fastest (what density_fit takes), over the generated eri3<la, lb, lP>, 70 classes la <= lb through f, lP through i
 ```
@@ -27,7 +27,7 @@ three_center/  free_breakfast.integrals.eri.density_fitting.three_center: the sp
 resolve_aux_basis --place--> BasisSet aux          (io.basis, primitive_normalized, over the orbital basis's molecule)
 aux --metric-->              MatrixAOPair M        (one launch per class into the Cartesian M, U^T M U, made exactly symmetric)
 basis, mmd classes, aux --three_center--> (P|mn)   (one launch per class into the Cartesian tensor, spherical on all three indices, made exactly (m, n)-symmetric)
-M.spherical(), (P|mn) --density_fit--> L, B        (potrf of M, trsm of (P|mn), in place)
+M.spherical(), (P|mn) --density_fit--> L, B        (Cholesky of M, trsm of (P|mn), in place)
 B, D --jk-->                 J, K                  (jk/'s README has the products)
 ```
 

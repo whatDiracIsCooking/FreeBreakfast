@@ -1,5 +1,5 @@
 /// @file
-/// @brief density_fit: potrf of the metric, then one trsm over (P|mn).
+/// @brief density_fit: the metric's Cholesky factor, then one trsm over (P|mn).
 
 module free_breakfast.integrals.eri.density_fitting.fit;
 
@@ -7,8 +7,9 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // potrf, trsm, ScopedDeviceIndex, gpu_status
+import free_breakfast.core.wwr; // trsm, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.recipes.cholesky;
 
 #include "diagnostics.h"
 
@@ -30,24 +31,12 @@ Status density_fit(DeviceResources &res, const int32_t nao, const int32_t naux, 
   }
   const ScopedDeviceIndex on{res.dev_idx()};
 
-  // M = L L^T in the lower triangle; the work is the workspace's, dead once
-  // potrf returns.
-  int32_t lwork = 0;
-  FBF_TRY(gpu_status(wwr::potrf_bufferSize<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
-                                                   naux, metric, naux, &lwork)));
-  const auto [work] = res.device_regions<double>(static_cast<size_t>(std::max(lwork, 1)));
-  FBF_TRY(gpu_status(wwr::potrf<double>(res.solver().get(), wwr::WWRBLAS_FILL_MODE_LOWER, naux,
-                                        metric, naux, work, lwork, res.info().data())));
-  // info < 0 is a bad argument, a bug here; info > 0 is the leading minor that
-  // is not positive, the metric's doing.
-  const int32_t info = FBF_TRY(res.fetch_info());
-  if (info < 0) {
-    return err_gpu("density_fit: potrf rejected argument {}", -info);
-  }
+  // M = L L^T in the lower triangle. Not the solver's potrf: on ROCm 7.2 its
+  // small-matrix kernel races (recipes/cholesky/README.md, #404).
+  const int32_t info = FBF_TRY(cholesky(res, naux, metric));
   if (info > 0) {
     return err_numerical(
-        "density_fit: the metric is not positive definite (potrf's pivot {} of {}, 1-based)", info,
-        naux);
+        "density_fit: the metric is not positive definite (pivot {} of {}, 1-based)", info, naux);
   }
 
   // B = L^-1 (P|mn): every column of the naux x nao^2 view at once.
