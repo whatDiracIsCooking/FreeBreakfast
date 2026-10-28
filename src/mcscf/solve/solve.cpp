@@ -246,7 +246,8 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
       const std::span<CoulombPairClass> j_classes, const std::span<OrderedPairClass> k_classes,
       const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas, const int32_t nelecas,
-      const int32_t nroots, const std::span<const double> weights, const Options &options) {
+      const int32_t nroots, const std::span<const double> weights, const Options &options,
+      const Buffers::device<double> *const b, const int32_t naux) {
   const auto nmo = static_cast<int32_t>(c.n());
   if (c.n() != basis.nao_sphe() || c.dev_idx() != res.dev_idx()) {
     return err_config("mcscf::solve: c must be {0} x {0}, basis's spherical order, on device {1} "
@@ -264,6 +265,16 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
                       "max_cycle and max_micro at least 1 ({}, {}, {}, {}, {})",
                       options.conv_tol, options.conv_tol_grad, options.trust_radius,
                       options.max_cycle, options.max_micro);
+  }
+  if (options.density_fitting != DensityFitting::Direct && b == nullptr) {
+    return err_config("mcscf::solve: density_fitting {} needs B, and none was given",
+                      std::to_underlying(options.density_fitting));
+  }
+  if (b != nullptr &&
+      (naux < 1 || b->num_elements() != static_cast<size_t>(naux) * c.n() * c.n())) {
+    return err_config("mcscf::solve: B must be naux nmo^2 doubles over naux >= 1 (naux {}, nmo {}, "
+                      "got {})",
+                      naux, nmo, b->num_elements());
   }
   if (nroots < 1) {
     return err_config("mcscf::solve: nroots ({}) must be at least 1", nroots);
@@ -477,9 +488,14 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     //    until it is small, the radius is reached or max_micro is. H~ is fixed
     //    for the macro iteration, so the solves share one subspace Q (see the
     //    README).
+    //    H is density-fitted in ApproxHessian (over the caller's B, which
+    //    outlives it), integral-direct otherwise.
     response::Hessian hessian = FBF_TRY(
-        response::Hessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                                  ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
+        options.density_fitting == DensityFitting::ApproxHessian
+            ? response::Hessian::create(res, h, *b, naux, c_now, ncore, ncas, ints.ppaa, ints.papa,
+                                        fock)
+            : response::Hessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
+                                        ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
     // diag(H) for the preconditioner, copied once for the macro iteration, and
     // read back for its scale.
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_diagonal.data(), hessian.diagonal().data(),

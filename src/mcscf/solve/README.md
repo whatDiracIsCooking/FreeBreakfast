@@ -16,7 +16,8 @@ Result<mcscf::Solution> mcscf::solve(
     const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
     std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas,
-    int32_t nroots, std::span<const double> weights = {}, const mcscf::Options &options = {});
+    int32_t nroots, std::span<const double> weights = {}, const mcscf::Options &options = {},
+    const Buffers::device<double> *b = nullptr, int32_t naux = 0);
 ```
 
 The arguments through `k_classes` are `response::fock`'s; `c` is the start, its
@@ -24,7 +25,8 @@ columns core, active, virtual as `../../response/README.md` orders them. The roo
 are the `nroots` lowest of spin |N_α − N_β| / 2, N_β = nelecas / 2: singlets
 for an even `nelecas`. `weights` are refused (`InvalidConfig`) if any is
 negative, if they do not sum to 1 within 1e-12 or if their count is not
-`nroots`; empty means equal.
+`nroots`; empty means equal. `b` and `naux` are B for the builds
+`options.density_fitting` fits (see "Density fitting" below); null means none.
 
 `mcscf::Solution` holds C, the `ci::Roots` at C (each root's energy and ⟨S²⟩,
 and the CI vectors on the device), the weighted energy, ‖g‖, the weighted γ and
@@ -236,7 +238,8 @@ bar is 8.
 | `trust_radius` | 0.5 | the initial and largest ‖x‖ of a step |
 | `max_micro` | 4 | augmented-Hessian solves per macro iteration on its frozen integrals |
 | `ci` | `ci::SolverOptions{}` | the CI's spin penalty and its tightest residual tolerance |
-| `tau_j`, `tau_k` | 1e-14 | the screening of every J and K build |
+| `tau_j`, `tau_k` | 1e-14 | the screening of every integral-direct J and K build |
+| `density_fitting` | `Direct` | which builds take B (below) |
 
 **The cost is the Hessian products.** Each H·κ is two J and two K builds when
 there is a core (`response/hessian/`), plus the CI's response to it (sigmas and RDMs,
@@ -278,6 +281,66 @@ save are few: past a macro iteration's first solve, the persistent subspace
 already prices a later one at its residual's few columns, and most macro
 iterations here take one solve. Steihaug was not measured.
 
+## Density fitting
+
+`mcscf::DensityFitting` picks which of the loop's builds are fitted over the B
+`solve` is given (`DensityFittingOutput::b`, naux × nmo², as the density-fitted
+`response::Hessian::create` reads it):
+
+| Mode | Fitted | Converges to |
+|---|---|---|
+| `Direct` (default) | nothing; B, if given, is unused | the exact CASSCF |
+| `ApproxHessian` | the orbital Hessian H alone (PySCF's `approx_hessian`) | the exact CASSCF |
+
+The B input is the shape of the density-fitted `casscf_integrals`,
+`response::fock` and `Hessian::create` overloads, a `Buffers::device<double>`
+and naux, but by pointer, since a wrapper cannot be default-constructed and
+none is the common case. A mode that needs B without one is `InvalidConfig`,
+as is a B that is not naux nmo² doubles over naux ≥ 1, both before the loop
+runs. The `Hessian` keeps B's storage by pointer, and B is the caller's, so it
+outlives every macro iteration's operator.
+
+**In `ApproxHessian` only the step's model is fitted.** The integrals, the CI,
+the energy and the gradient stay integral-direct, so the loop's stationary
+point, and its convergence test, are the exact CASSCF's: the fit moves the
+path to it, and nothing else. Each product of H then takes its two J and two K
+from B, and so does the diagonal in its create (`../../response/hessian/`);
+the CI's response R, which takes no J or K, the integrals' J and K and the
+gradient's are what they were. The fitted H is not the exact one's Hessian,
+so the Newton step is not exact either; how far that costs macro iterations
+depends on the fitting set, which is why the issue's bar was within one
+macro iteration of `Direct`.
+
+**The fit costs no macro iterations here, and saves 29 to 58% of the wall
+time.** Over aug-cc-pVDZ-acCD-6-6, the set `../../response/hessian/` compares
+the fitted H to the exact one over, every case takes `Direct`'s macro
+iterations, and its Hessian products to within one. On the RTX 3080 (CUDA,
+preset `default`), both of its GPU slots held and no other compute process on
+the card before or after, three runs each (median; counts the same in every
+run unless shown as a range), at `conv_tol_grad` 1e-9, the solve alone (B is
+built once per case, outside it):
+
+| case | `Direct`: macro, Hx, s | `ApproxHessian`: macro, Hx, s | saved |
+|---|---|---|---|
+| H₂O CAS(4,4) | 7, 50, 8.53 | 7, 50, 4.42 | 48% |
+| N₂ CAS(6,6) | 8, 45–46, 21.14 | 8, 45–46, 14.92 | 29% |
+| H₂CO SA2 | 6, 31, 11.64 | 6, 31, 4.89 | 58% |
+| H₂CO SA2 [0.7, 0.3] | 6, 26–27, 10.95 | 6, 26–27, 4.85 | 56% |
+| H₂O AVAS CAS(8,6) | 8, 68–70, 15.44 | 8, 68–70, 10.60 | 31% |
+
+What is left of `ApproxHessian`'s time is the integrals' and the gradient's
+integral-direct J and K, once per macro iteration, which the products no longer
+dominate. Each case ran `Direct` first in the process, so any warm-up falls on
+`Direct`'s side; it is small next to these gaps (H₂O's `Direct` is the 8.7 s of
+the table above, measured alone). `Direct` stays the default all the same, as the
+issue sets it: `ApproxHessian` needs a B the caller builds and holds
+(naux nmo² doubles) and a fitting set chosen, which a default cannot assume.
+Choosing it from the config is #386's.
+
+The full density-fitted mode (integrals, Fock and Hessian all over B, to the
+DF-CASSCF's own references) is #385's and fills in the third enumerator this
+leaves room for; the signature does not change.
+
 ## Not done
 
 - **A one-step joint (x, c) augmented Hessian** (Werner–Knowles,
@@ -309,7 +372,14 @@ by AVAS, at `conv_tol_grad` 1e-9:
 - no accepted iteration's ΔE above 1e-11;
 - each case's macro iterations printed, with the CI's iterations per stage,
   and at most 20;
-- `MaxIterationsExceeded`, and the refusals.
+- `MaxIterationsExceeded`, and the refusals (a density-fitted mode without B,
+  and a B of the wrong size among them).
+
+Each case runs twice, `Direct` and then `ApproxHessian` over
+aug-cc-pVDZ-acCD-6-6 (built once per case, outside the timed solve): the
+same references to the same tolerances, and at most one macro iteration more
+than `Direct`. Each run's macro iterations, Hessian products and wall time
+are printed.
 
 ## Files
 
