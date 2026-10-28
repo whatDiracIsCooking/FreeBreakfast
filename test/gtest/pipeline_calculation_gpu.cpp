@@ -290,11 +290,14 @@ TEST_P(PipelineCalculationEri, AnScfAndACasscfShareOneEriOutput) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const bool fitted = GetParam() == "density_fitting";
+  // Integral-direct in 6-31G: in cc-pVDZ it took 50 s alone and past the 120 s
+  // backstop on a busy card (#433), and sharing one EriOutput does not depend
+  // on the basis. Density-fitted keeps cc-pVDZ, which has a default aux set.
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, std::format("[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = "
-                                "\"cc-pvdz\"\n[eri]\nmode = \"{}\"\n[scf]\n"
+                                "\"{}\"\n[eri]\nmode = \"{}\"\n[scf]\n"
                                 "[casscf]\nncas = 4\nnelecas = 4\n",
-                                GetParam()));
+                                fitted ? "cc-pvdz" : "6-31g", GetParam()));
   fb::NodeResources node;
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
