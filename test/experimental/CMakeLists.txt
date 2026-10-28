@@ -14,7 +14,7 @@ include(GoogleTest)
 
 add_executable(
   free_breakfast_tests_experimental_gpu radix_sort_gpu.cpp merge_sort_gpu.cpp
-                                        fp16_gemm_gpu.cpp
+                                        fp16_gemm_gpu.cpp output_ring_gpu.cpp
 )
 
 set_target_properties(
@@ -29,6 +29,9 @@ target_link_libraries(
           free_breakfast::experimental::sort::radix
           free_breakfast::experimental::sort::merge
           free_breakfast::experimental::fp16_gemm
+          free_breakfast::experimental::output_ring
+          free_breakfast::io::base
+          free_breakfast::io::npy
           wwr::fp16
           GTest::gtest
           GTest::gtest_main
