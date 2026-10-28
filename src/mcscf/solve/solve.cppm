@@ -29,6 +29,9 @@ enum class DensityFitting : uint8_t {
   ApproxHessian, ///< The orbital Hessian's alone (PySCF's approx_hessian); the
                  ///< integrals, energy and gradient stay integral-direct, so
                  ///< the loop converges to the exact CASSCF
+  Full,          ///< Every one: the integrals, the Fock, the gradient and
+                 ///< the Hessian, so the loop converges to the DF-CASSCF
+                 ///< and no J or K is integral-direct
 };
 
 /// @brief The knobs of one solve call.
@@ -51,7 +54,8 @@ struct Options {
   /// @brief The CI's: its spin penalty, and in davidson.residual_tolerance the
   /// tightest residual tolerance the schedule reaches near convergence.
   ci::SolverOptions ci;
-  /// @brief The screening of every integral-direct J and K build.
+  /// @brief The screening of every integral-direct J and K build (none in
+  /// DensityFitting::Full).
   double tau_j = 1e-14;
   double tau_k = 1e-14;
   /// @brief Which builds take B rather than J and K integral-direct.
@@ -113,7 +117,8 @@ struct Solution {
 /// (columns [0, ncore) the core, [ncore, ncore + ncas) the active space).
 ///
 /// @p basis, @p molecule, @p h, @p u and the two kinds of classes are what
-/// @c fock takes; the classes must stay alive for the call. @p weights
+/// @c fock takes; the classes must stay alive for the call, though
+/// DensityFitting::Full reads neither them nor @p u. @p weights
 /// are w_r, empty for equal ones. @p b is B over @p naux fitting functions,
 /// as the density-fitted @c Hessian::create reads it
 /// (@c DensityFittingOutput::b, naux nmo^2), for the builds
