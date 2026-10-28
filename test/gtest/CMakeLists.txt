@@ -165,6 +165,7 @@ add_executable(
   response_hessian_gpu.cpp
   mcscf_solve_gpu.cpp
   nevpt2_density_fitting_gpu.cpp
+  nevpt2_rdm_gpu.cpp
 )
 
 set_target_properties(
@@ -287,10 +288,14 @@ gtest_discover_tests(
 # of a 10 GB RTX 3080, for the rest of the process
 # (src/integrals/eri/density_fitting/three_center/README.md), so a GPU case
 # beside one fails its first allocation. Each takes about a second.
+# NevptRdm's CAS(12,12) case is registered with them for the same reason: at
+# its default budget its tiles take all but 512 MiB of the card's free memory
+# (src/nevpt2/rdm/README.md), for about 40 s.
 set(_fb_ff_g_cases
     "DfThreeCenter.TzThroughFfG*"
     "PipelineDensityFitting.TzWithFOrbitals*"
     "*PipelineDfScf.*h2o_ccpvtz"
+    "NevptRdm.Cas1212*"
 )
 list(JOIN _fb_ff_g_cases ":" _fb_ff_g_cases)
 gtest_discover_tests(
