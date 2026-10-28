@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -361,6 +362,7 @@ TYPED_TEST(CgUnitary, OrderOneIsConvergedAtTheStart) {
 // steepest descent, which turns 90 degrees each step and so takes longer.
 TEST(CgUnitaryConjugacy, BeatsSteepestDescent) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
 
   fb::DeviceResources res{0};
   BrockettProblem<wwr::wwrDoubleComplex> cg{res, kN};

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -171,6 +172,10 @@ class PipelineScf : public ::testing::TestWithParam<std::string_view> {};
 
 TEST_P(PipelineScf, MatchesPyscf) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: CO cc-pVTZ, the dearest case.
+  if (GetParam() == "co_ccpvtz") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const fb::json &expected = reference_case(GetParam());
   fb::DeviceResources res{0};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
@@ -316,6 +321,10 @@ class PipelineScfCalculation : public ::testing::TestWithParam<std::string_view>
 
 TEST_P(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: CO cc-pVTZ, the dearest case.
+  if (GetParam() == "co_ccpvtz") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const fb::json &expected = reference_case(GetParam());
   // The reference geometry is in bohr; XYZ is in Angstrom, read back through
   // the same constant, so the molecule is the reference's to rounding.

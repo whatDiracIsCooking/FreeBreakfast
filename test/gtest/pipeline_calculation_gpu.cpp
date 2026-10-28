@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -284,6 +285,10 @@ class PipelineCalculationEri : public ::testing::TestWithParam<std::string_view>
 
 TEST_P(PipelineCalculationEri, AnScfAndACasscfShareOneEriOutput) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the integral-direct mode, by far the dearer.
+  if (GetParam() == "integral_direct") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const bool fitted = GetParam() == "density_fitting";
   const fb::test::ScratchDir dir("pipeline_calculation");
   write_inputs(dir, std::format("[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = "

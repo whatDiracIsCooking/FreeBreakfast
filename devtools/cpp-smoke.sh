@@ -8,8 +8,8 @@
 #     reusing devtools/build.sh's cpp_build -- the one copy of the cmake phases.
 #     Warm (you have been building), this is seconds; cold (a fresh worktree),
 #     ~1 min. It never passes --fresh.
-#   * runs free_breakfast_tests_host in full (~0.3s), then
-#     free_breakfast_tests_gpu with FREE_BREAKFAST_FAST_TESTS=1,
+#   * runs free_breakfast_tests_host, then free_breakfast_tests_gpu, both
+#     with FREE_BREAKFAST_FAST_TESTS=1,
 #     which makes every reference-grade case GTEST_SKIP (see
 #     test/gtest/slow_test.h) -- not just end-to-end capstones, but any case
 #     that checks a result against an external oracle to tight tolerance, or
@@ -206,11 +206,14 @@ run_gpu_sharded() {
   return $rc2
 }
 
+# Both suites: the host one has reference-grade cases too (io_sad_host's
+# through-argon SCFs), and exporting this only for the gpu suite ran them.
+export FREE_BREAKFAST_FAST_TESTS=1
+
 echo "cpp-smoke: host tests ..."
 run_suite host "$host_bin" 0 || rc=$?
 
 echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
-export FREE_BREAKFAST_FAST_TESTS=1
 if [ "$GPU_TEST_JOBS" -gt 1 ]; then
   run_gpu_sharded "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
 else
