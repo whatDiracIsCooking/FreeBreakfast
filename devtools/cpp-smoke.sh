@@ -26,10 +26,10 @@
 # validation (every reference case) stays in devtools/cpp-tier.sh and the
 # nightly / self-hosted path.
 #
-# The GPU suite runs under with_gpu_slot (lib.sh), holding one of its card's
-# slots so concurrent cpp-tier.sh runs in other worktrees cannot overload that
-# card. Inside that one slot it runs as GPU_TEST_JOBS (config.sh) concurrent
-# gtest shards. The host suite does not touch the GPU and runs unlocked.
+# The GPU suite runs under with_gpu_card (lib.sh), holding its whole card so
+# concurrent cpp-tier.sh runs in other worktrees cannot overload it -- one run
+# per card (config.sh says why). Inside it the suite runs as GPU_TEST_JOBS
+# (config.sh) concurrent gtest shards. The host suite does not touch the GPU and runs unlocked.
 #
 # It SKIPS (exit 0, not a failure) when the toolchain or a GPU is absent: the
 # clang/CMake/nvcc stack lives in docker/Dockerfile.{cuda,hip,combined}, and
@@ -137,7 +137,7 @@ host_bin="$build_dir/test/gtest/free_breakfast_tests_host"
 gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 
 # Run one binary: append its full output to the log, echo its summary lines,
-# return its status. `lock` gates with_gpu_slot (lib.sh) -- the host suite
+# return its status. `lock` gates with_gpu_card (lib.sh) -- the host suite
 # doesn't touch the GPU, so it shouldn't queue behind another session's GPU
 # tests, but the gpu suite must serialize against them.
 run_suite() {
@@ -150,7 +150,7 @@ run_suite() {
   echo "--- $label: $bin ---" >>"$BUILD_LOG"
   local out rc2
   if [ "$lock" -eq 1 ]; then
-    out=$(with_gpu_slot "$backend" "$bin" "$@" 2>&1)
+    out=$(with_gpu_card "$backend" "$bin" "$@" 2>&1)
   else
     out=$("$bin" "$@" 2>&1)
   fi
@@ -169,8 +169,8 @@ run_suite host "$host_bin" 0 || rc=$?
 
 echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
 if [ "$GPU_TEST_JOBS" -gt 1 ]; then
-  # GPU_TEST_JOBS shards, all inside ONE slot (run_gpu_sharded, lib.sh).
-  with_gpu_slot "$backend" run_gpu_sharded cpp-smoke "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
+  # GPU_TEST_JOBS shards, all inside the one card lock (run_gpu_sharded, lib.sh).
+  with_gpu_card "$backend" run_gpu_sharded cpp-smoke "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
 else
   run_suite gpu "$gpu_bin" 1 || rc=$?
 fi

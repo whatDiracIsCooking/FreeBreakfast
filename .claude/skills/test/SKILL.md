@@ -77,20 +77,23 @@ failing when clang-tidy is absent.
 
 The default preset is **`auto`** (`CMAKE_PRESET` in `devtools/config.sh`).
 Several sessions usually test at once and one backend passing is normally
-enough, so before building, `auto` picks the live card with a free slot and
-the lowest load (max of compute % and VRAM %), and prints why:
+enough, so before building, `auto` picks the live card no other run holds,
+then the lowest load (max of compute % and VRAM %), and prints why:
 
 ```
-gpu: auto -> hip (hip) [ cuda=load:12%,slots:1/2 hip=load:0%,slots:0/2 ]
+gpu: auto -> hip (hip) [ cuda=load:97%,vram:31%,held hip=load:0%,vram:2%,free ]
 ```
 
 A card counts as live only if its device nodes and compiler both exist, so in
 the single-backend `cuda`/`hip` containers `auto` is just that backend. The
-ctest phase (and cpp-smoke's GPU suite) then holds one of that card's
-`GPU_SLOTS` (2) slot locks; it waits, printing why, while every slot is held
-or the card's load is at or above `GPU_BUSY_PCT` (80%), and takes a free slot
-anyway after `GPU_BUSY_WAIT` (900 s) of load that holds no slot. The two cards
-never block each other. Inside its one slot a run is `GPU_TEST_JOBS` (3)
+ctest phase (and cpp-smoke's GPU suite) then holds the WHOLE card
+(`with_gpu_card`): **one run per card**, because two runs sharing the 10 GB
+3080 ran it out of memory and bought no speed. It waits, printing why, while
+another run holds the card, and then while the card's VRAM is at or above
+`GPU_FOREIGN_VRAM_PCT` (20%) -- memory held by something that takes no lock,
+such as a binary run by hand. That second wait has no timeout. Compute load
+never makes a run wait. The two cards never block each other. Inside its card
+a run is `GPU_TEST_JOBS` (3)
 processes: ctest `-j` and then gtest shards in the tier, gtest shards in the smoke, each shard's
 summary lines tagged `[shard i/N]`. A crashed shard prints the case it died in.
 Knobs are the `GPU_*` variables in `config.sh`; `GPU_TEST_JOBS=1` is the

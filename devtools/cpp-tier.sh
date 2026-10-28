@@ -3,7 +3,7 @@
 # fast pytest gate and devtools/cpp-slow-tier.sh.
 #
 #   devtools/cpp-tier.sh [--preset NAME] [--fresh] [--clean] [--no-test]
-#                        [--tidy] [--exclusive] [-j N] [--report DIR]
+#                        [--tidy] [-j N] [--report DIR]
 #                        [-- <ctest args>]
 #
 # It is NOT on the push gate -- cpp-smoke.sh is -- but it is the gate before
@@ -53,16 +53,6 @@
 #                   the run, because the tree is not clean yet (see
 #                   .clang-tidy). Off by default so the normal tier stays
 #                   a build-and-test.
-#   --exclusive     hold EVERY slot of the card for the test phase, so no
-#                   other session can share it (GPU_EXCLUSIVE=1,
-#                   devtools/config.sh). The admission rules already refuse
-#                   to JOIN a card whose VRAM is past GPU_MEM_SHARE_PCT, but
-#                   two runs that both start on an empty card and then grow
-#                   cannot be separated after the fact -- one dies with
-#                   `cudaErrorMemoryAllocation`. Pass this when the run will
-#                   want most of the card, or when a failure that costs
-#                   minutes to repeat matters more than another session's
-#                   wait. cpp-slow-tier.sh does it by default.
 #   -j N            parallel COMPILE jobs (default: BUILD_JOBS from config.sh,
 #                   or Ninja's own choice when that is empty). Module builds
 #                   are memory-hungry per job -- a too-high N OOMs rather than
@@ -119,7 +109,6 @@ while [ $# -gt 0 ]; do
     --clean)   clean=1; shift;;
     --no-test) run_tests=0; shift;;
     --tidy)    tidy=1; shift;;
-    --exclusive) export GPU_EXCLUSIVE=1; shift;;
     -j|--jobs) jobs=$2; shift 2;;
     --report)  report_dir=$2; shift 2;;
     --)        shift; passthrough=("$@"); break;;
@@ -167,7 +156,7 @@ has_test_preset() {
 
 gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 
-# The test phase, inside the one slot the caller holds. Each ctest entry is its
+# The test phase, inside the card the caller holds. Each ctest entry is its
 # own process, and a GPU one spends about 0.45s creating the runtime's context
 # before its case starts -- most of the phase once the cases are cheap. So the
 # GPU entries that can share a process (devtools/split-gpu-entries.py says
@@ -218,7 +207,7 @@ if [ "$rc" -eq 0 ] && [ "$run_tests" -eq 1 ]; then
     echo "cpp-tier: skipping reference-grade validation cases (FREE_BREAKFAST_FAST_TESTS=1)" \
       | tee -a "$log"
     export FREE_BREAKFAST_FAST_TESTS=1
-    with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" run_tier_tests || rc=$?
+    with_gpu_card "$(gpu_backend_of_preset "$test_preset")" run_tier_tests || rc=$?
     unset FREE_BREAKFAST_FAST_TESTS
   else
     echo "cpp-tier: no test preset '${test_preset:-<empty>}' -- built only" \
