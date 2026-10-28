@@ -13,6 +13,7 @@ export import free_breakfast.recipes.complex_cast;
 export import free_breakfast.recipes.davidson;
 export import free_breakfast.recipes.diagonalize;
 export import free_breakfast.recipes.diis;
+export import free_breakfast.recipes.einsum;
 export import free_breakfast.recipes.expm;
 export import free_breakfast.recipes.linear_operator;
 export import free_breakfast.recipes.matrix_ao;

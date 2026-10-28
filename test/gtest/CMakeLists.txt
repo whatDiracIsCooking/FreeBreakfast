@@ -51,6 +51,7 @@ add_executable(
   pipeline_step_host.cpp
   pipeline_pipeline_host.cpp
   pipeline_config_host.cpp
+  recipes_einsum_host.cpp
 )
 
 # Both executables consume `import std` and this project's C++23 modules, so
@@ -77,6 +78,7 @@ target_link_libraries(
           free_breakfast::pipeline::step
           free_breakfast::pipeline::pipeline
           free_breakfast::pipeline::config
+          free_breakfast::recipes::einsum
           GTest::gtest
           GTest::gtest_main
 )
@@ -99,6 +101,7 @@ add_executable(
   scoped_device_index_gpu.cpp
   diagonalize_gpu.cpp
   cholesky_gpu.cpp
+  recipes_einsum_gpu.cpp
   orthogonalize_gpu.cpp
   orthonormalize_gpu.cpp
   diis_gpu.cpp
