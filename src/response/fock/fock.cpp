@@ -142,7 +142,6 @@ Result<Fock> finish_fock(DeviceResources &res, FockBuild &build, const int32_t n
   const size_t nn = n_all * n_all;
   const auto na = static_cast<size_t>(ncas);
   const auto nmo = static_cast<int32_t>(n_all);
-  constexpr double kMinusHalf = -0.5;
 
   // F^A_pq = sum_tu gamma_tu [(pq|tu) - 1/2 (pt|qu)]: ppaa and papa as
   // nmo^2 x ncas^2 matrices, their column t + ncas u block (t, u), against
@@ -153,9 +152,9 @@ Result<Fock> finish_fock(DeviceResources &res, FockBuild &build, const int32_t n
     FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, rows, cols, &kOne<double>, ppaa.data(), rows, out.gamma.data(), 1,
         &kZero<double>, out.fock_active.data(), 1)));
-    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_N, rows, cols, &kMinusHalf,
-                                                  papa.data(), rows, out.gamma.data(), 1,
-                                                  &kOne<double>, out.fock_active.data(), 1)));
+    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, rows, cols, &kNegHalf<double>, papa.data(), rows, out.gamma.data(),
+        1, &kOne<double>, out.fock_active.data(), 1)));
   } else {
     FBF_TRY(
         gpu_status(wwr::wwrMemsetAsync(out.fock_active.data(), 0, nn * sizeof(double), stream)));
@@ -190,10 +189,9 @@ Result<Fock> finish_fock(DeviceResources &res, FockBuild &build, const int32_t n
   }
 
   // g = 2 (F - F^T) over the packed pairs.
-  constexpr double kMinusTwo = -2.0;
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nmo,
-                                                nmo, &kTwo<double>, f, nmo, &kMinusTwo, f, nmo,
-                                                block, nmo)));
+                                                nmo, &kTwo<double>, f, nmo, &kNegTwo<double>, f,
+                                                nmo, block, nmo)));
   FBF_TRY(pack_orbital_pairs(res, nmo, ncore, ncas, block, out.gradient.data()));
 
   // E = E_nuc + sum_i (h_ii + F^I_ii) + sum_tu F^I_tu gamma_tu
@@ -283,7 +281,6 @@ Result<Fock> fock(DeviceResources &res, const BasisSet &basis, const Molecule &m
   CartesianMatrixAO j(res, basis);
   CartesianMatrixAO k(res, basis);
   const CasscfFockScratch scratch(res, n_cart, n_all, static_cast<size_t>(ncas));
-  constexpr double kMinusOne = -1.0;
   const auto len_cart = static_cast<int32_t>(j.num_elements());
 
   FockBuild build =
@@ -307,7 +304,7 @@ Result<Fock> fock(DeviceResources &res, const BasisSet &basis, const Molecule &m
     FBF_TRY(exchange(res, k_classes, density, k, tau_k));
     FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, len_cart, &kTwo<double>, j.data(), 1)));
     FBF_TRY(gpu_status(
-        wwr::axpy<double, int32_t>(blas, len_cart, &kMinusOne, k.data(), 1, j.data(), 1)));
+        wwr::axpy<double, int32_t>(blas, len_cart, &kNegOne<double>, k.data(), 1, j.data(), 1)));
     FBF_TRY(
         gpu_status(gemmwich(blas, nmo, nc, scratch.c_cart, j.data(), scratch.work, scratch.block)));
     FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, len_block, &kOne<double>, scratch.block, 1,
@@ -346,7 +343,6 @@ Result<Fock> fock(DeviceResources &res, const Molecule &molecule, const Spherica
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto nmo = static_cast<int32_t>(n_orbitals);
   const auto len_block = static_cast<int32_t>(nn);
-  constexpr double kMinusHalf = -0.5;
 
   // 2 P_c, then gemmwich's intermediate; J; and K, then the projected G.
   // Allocated per call: df_coulomb and df_exchange take the workspace.
@@ -365,7 +361,7 @@ Result<Fock> fock(DeviceResources &res, const Molecule &molecule, const Spherica
     FBF_TRY(df_coulomb(res, nmo, naux, b.data(), density.data(), j.data()));
     FBF_TRY(df_exchange(res, nmo, naux, ncore, b.data(), c.data(), k.data()));
     FBF_TRY(gpu_status(
-        wwr::axpy<double, int32_t>(blas, len_block, &kMinusHalf, k.data(), 1, j.data(), 1)));
+        wwr::axpy<double, int32_t>(blas, len_block, &kNegHalf<double>, k.data(), 1, j.data(), 1)));
     FBF_TRY(gpu_status(gemmwich(blas, nmo, nmo, c.data(), j.data(), density.data(), k.data())));
     FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, len_block, &kOne<double>, k.data(), 1,
                                                   build.out.fock_inactive.data(), 1)));

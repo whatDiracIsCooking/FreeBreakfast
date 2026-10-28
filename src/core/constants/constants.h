@@ -13,9 +13,10 @@ namespace free_breakfast {
 
 // Numeric literals
 //
-// Typed 0/1/2/-1 for use where a scalar must be passed by address -- cuBLAS and
-// cuSOLVER take alpha/beta through a host pointer, so a named constant replaces
-// the per-call `const T one{1}` local while keeping the call site readable.
+// Typed 0, 1, 2, -1, -2, 1/2 and -1/2 for use where a scalar must be passed by
+// address -- cuBLAS and cuSOLVER take alpha/beta through a host pointer, so a
+// named constant replaces the per-call `const T one{1}` (or a per-file
+// `constexpr double kMinusOne = -1.0;`) while keeping the call site readable.
 //
 // Each also holds for the two GPU complex types, as value + 0i. Those need the
 // explicit specializations after each primary: a complex type is a vector type,
@@ -56,6 +57,30 @@ template <>
 inline constexpr wwr::wwrFloatComplex kNegOne<wwr::wwrFloatComplex>{-1, 0};
 template <>
 inline constexpr wwr::wwrDoubleComplex kNegOne<wwr::wwrDoubleComplex>{-1, 0};
+
+/// @brief Typed negative two (-2)
+template <typename T>
+constexpr T kNegTwo = static_cast<T>(-2);
+template <>
+inline constexpr wwr::wwrFloatComplex kNegTwo<wwr::wwrFloatComplex>{-2, 0};
+template <>
+inline constexpr wwr::wwrDoubleComplex kNegTwo<wwr::wwrDoubleComplex>{-2, 0};
+
+/// @brief Typed one half (0.5)
+template <typename T>
+constexpr T kHalf = static_cast<T>(0.5);
+template <>
+inline constexpr wwr::wwrFloatComplex kHalf<wwr::wwrFloatComplex>{0.5F, 0};
+template <>
+inline constexpr wwr::wwrDoubleComplex kHalf<wwr::wwrDoubleComplex>{0.5, 0};
+
+/// @brief Typed negative one half (-0.5)
+template <typename T>
+constexpr T kNegHalf = static_cast<T>(-0.5);
+template <>
+inline constexpr wwr::wwrFloatComplex kNegHalf<wwr::wwrFloatComplex>{-0.5F, 0};
+template <>
+inline constexpr wwr::wwrDoubleComplex kNegHalf<wwr::wwrDoubleComplex>{-0.5, 0};
 
 /// @brief Typed imaginary unit (0 + 1i), for the two GPU complex types only
 ///
@@ -98,9 +123,21 @@ constexpr T kFaraday = static_cast<T>(96485.33212331001);
 template <typename T>
 constexpr T kGasConstant = static_cast<T>(8.31446261815324);
 
+// Mathematical constants
+//
+// Written as literals: std::sqrt is not constexpr until C++26.
+
 /// @brief Mathematical constant pi (3.141592653589793)
 template <typename T>
 constexpr T kPi = static_cast<T>(3.141592653589793);
+
+/// @brief Square root of two (1.4142135623730950488)
+template <typename T>
+constexpr T kSqrt2 = static_cast<T>(1.4142135623730950488);
+
+/// @brief Reciprocal square root of two, 1/√2 (0.70710678118654752440)
+template <typename T>
+constexpr T kInvSqrt2 = static_cast<T>(0.70710678118654752440);
 
 // Length conversions (atomic units)
 

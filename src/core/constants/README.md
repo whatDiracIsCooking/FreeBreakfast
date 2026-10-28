@@ -11,7 +11,7 @@ re-exported by `free_breakfast.core`.
 
 ### Numeric literals
 
-Typed `0`/`1`/`2`/`-1`, for scalars that must be passed by address (e.g. the
+Typed `0`, `1`, `2`, `-1`, `-2`, `1/2` and `-1/2`, for scalars that must be passed by address (e.g. the
 BLAS / solver `alpha`/`beta` host pointers).
 
 | Name | Value |
@@ -20,6 +20,9 @@ BLAS / solver `alpha`/`beta` host pointers).
 | `kOne<T>` | 1 |
 | `kTwo<T>` | 2 |
 | `kNegOne<T>` | -1 |
+| `kNegTwo<T>` | -2 |
+| `kHalf<T>` | 0.5 |
+| `kNegHalf<T>` | -0.5 |
 | `kImaginaryUnit<T>` | i (complex `T` only) |
 
 Each is also defined for the two GPU complex types, `wwr::wwrFloatComplex` and
@@ -45,7 +48,19 @@ a skew-Hermitian matrix into a Hermitian one (`recipes/expm`).
 | `kAvogadro<T>` | N_A | 6.02214076e+23 |
 | `kFaraday<T>` | F | 96485.33212331001 |
 | `kGasConstant<T>` | R | 8.31446261815324 |
+
+### Mathematical
+
+Real-only, and literals rather than `std::sqrt` (not `constexpr` until C++26).
+
+| Name | Symbol | Value |
+|------|--------|-------|
 | `kPi<T>` | pi | 3.141592653589793 |
+| `kSqrt2<T>` | √2 | 1.4142135623730950488 |
+| `kInvSqrt2<T>` | 1/√2 | 0.70710678118654752440 |
+
+Add one here when a second file would otherwise define it, not ahead of a use:
+a name nothing reads is still a name every reader has to skip.
 
 ### Length conversions (atomic units)
 

@@ -290,6 +290,6 @@ unblocked scratch gives the unbounded result bit for bit.
 | `sigma.cppm` | Module interface: `ci::Layout`, `ci::unpack`, `ci::pack`, `ci::Sigma` |
 | `sigma.cpp` | `ci::Sigma`'s uploads, chunked (and, past the limit, blocked) gemm in double or float, gemv, and launches; `ci::unpack`'s and `ci::pack`'s launches |
 | `ci_sigma_bridge.h` | The launchers' declarations, shared by `sigma.cpp`'s GMF and the `.cu` |
-| `ci_symmetric.h` | The symmetric layout's triangle index map and √2, for device code here and in `../solver/` |
+| `ci_symmetric.h` | The symmetric layout's triangle index map (its √2 is `kSqrt2` in `core/constants`), for device code here and in `../solver/` |
 | `ci_sigma.cu` | The two gathers (over double or float D and G, in either layout, whole or by string blocks), the diagonal kernel, the 1-RDM's unpacking, `ci::unpack` and `ci::pack` |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.sigma.device` and the module `free_breakfast.ci.sigma` |

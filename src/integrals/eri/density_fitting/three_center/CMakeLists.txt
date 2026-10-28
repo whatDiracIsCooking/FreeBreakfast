@@ -12,7 +12,8 @@
 # types_headers, basis::headers and wwr::device PUBLIC. The kernels include
 # FelizJueves's felizjueves/runtime.h (felizjueves::headers) and the shared
 # eval_boys.h (shared::headers), and the launcher sizes its grids with
-# kFourWarps and math::idivup (core::kernel_headers); all PRIVATE.
+# kFourWarps and math::idivup (core::kernel_headers) and symmetrizes with kHalf
+# (core::constants_header); all PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.eri.density_fitting.three_center.device
@@ -94,6 +95,7 @@ free_breakfast_add_gpu_device_library(
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
+  free_breakfast::core::constants_header
   felizjueves::headers
   free_breakfast::integrals::shared::headers
 )

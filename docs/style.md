@@ -286,6 +286,40 @@ not there, add it there rather than writing a second copy.
 A `.cu` includes `"block_params.h"` and `"primitives.h"`, and its target links
 `free_breakfast::core::kernel_headers`, which brings in both.
 
+## Numeric constants
+
+**A typed literal or a mathematical constant is `src/core/constants/`'s
+variable template**, written at the use: `&kNegOne<double>`, not a local
+`constexpr double kMinusOne = -1.0;`. Eight files used to carry their own
+`kMinusOne`, six their own `kMinusHalf`, and `src/ci/` its own `kSqrt2`. What
+is there:
+
+| Kind | Names |
+| --- | --- |
+| BLAS / solver scalars, also for the two GPU complex types | `kZero`, `kOne`, `kTwo`, `kNegOne`, `kNegTwo`, `kHalf`, `kNegHalf`, `kImaginaryUnit` |
+| Mathematical, real only | `kPi`, `kSqrt2`, `kInvSqrt2` |
+
+- **Don't rename one per file.** `kMetricHalf = 0.5` and `kOneScale = 1.0`
+  said nothing that `kHalf<double>` and `kOne<double>` don't, for the same
+  reason as `kCiBlock` above. A constant whose *meaning* is its own keeps its
+  own name, even when its value is 0.5: a tolerance, a trust-region fraction,
+  `kTrustAgreement = 0.25`.
+- **Add one when a second file would define it, not before.** There is no
+  `kTwoPi` or `kSqrtPi` because nothing reads them; a name with no reader is
+  one more for every reader to skip. Add it in `constants.h`, export it from
+  `constants.cppm`, and list it in `src/core/constants/README.md`. A scalar
+  that a BLAS call takes by address also gets the two complex specializations
+  (the README says why `static_cast` cannot build them).
+- **Write a new one as a literal**, not `std::sqrt(2.0)`, which is not
+  `constexpr` until C++26.
+- A plain arithmetic `0.5 * x` needs no name. The rule is about a constant
+  someone has already named, and about scalars passed by address.
+
+On the host, import `free_breakfast.core.constants` and link
+`free_breakfast::core::constants`. Host code that only needs π may keep
+`std::numbers::pi`. A `.cu` includes `"constants.h"` and links
+`free_breakfast::core::constants_header`.
+
 ## Matrix products
 
 **A gemm on packed operands is `recipes/blas`'s `gemm`**, square or

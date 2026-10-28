@@ -19,6 +19,7 @@
 #include <type_traits>
 
 #include "block_params.h"
+#include "constants.h"
 #include "primitives.h"
 
 #include "three_center_bridge.h"
@@ -39,9 +40,6 @@ static_assert(std::extent_v<decltype(eri3_kernels), 2> ==
 
 namespace {
 
-// The symmetrization's weight on each of the two mirrored elements.
-constexpr double kThreeCenterHalf = 0.5;
-
 // One thread per element (P, n, m): half of it plus half of its mirror
 // (P, m, n), so the two threads of a mirrored pair write the same bits (the
 // halving is exact, and a + b = b + a). Out of place: a thread reads its
@@ -56,7 +54,7 @@ __global__ void three_center_symmetrize_kernel(const int32_t n_ao, const int32_t
   const int32_t nm = i / n_aux;
   const int32_t n = nm % n_ao;
   const int32_t m = nm / n_ao;
-  out[i] = kThreeCenterHalf * (in[i] + in[p + (n_aux * (m + (n_ao * n)))]);
+  out[i] = free_breakfast::kHalf<double> * (in[i] + in[p + (n_aux * (m + (n_ao * n)))]);
 }
 
 } // namespace
