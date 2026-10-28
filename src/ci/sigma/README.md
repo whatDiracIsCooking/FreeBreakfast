@@ -188,9 +188,10 @@ M_s = 0 are what M_s = 1 solves for. The triangle's index map is
 `ci::unpack` takes packed vectors back to the full layout; `rdm1` and
 `ci::Rdm::rdm12` read either.
 
-**Tables once, integrals as often as needed.** `create` uploads the two sets'
-strings and their lists (target, packed pair, sign per replacement), once per
-(n, N_α, N_β); `set_integrals` uploads the packed contraction matrix and the
+**Tables once, integrals as often as needed.** `create` borrows the two
+`ci::DeviceStringSet`s' strings and lists, already on the device and shared
+with `ci::Rdm` and `ci::SpinSquare` (each link carries (p, q), and the gathers
+form the packed pair from them); `set_integrals` uploads the packed contraction matrix and the
 diagonal's terms, and a CASSCF can call it again each macro-iteration. The
 gemm passes host scalars, so `res.blas()` must be in host pointer mode, its
 default and what `davidson_solve` holds.

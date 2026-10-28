@@ -32,9 +32,6 @@ namespace free_breakfast::ci::device {
 
 namespace {
 
-// The fields of one link (see the bridge header).
-constexpr int32_t kLinkWidth = 3;
-
 // One row's place: which vector, and which α and β strings.
 struct CiRow {
   size_t vector_base; // j * n_det, the row's vector's first element
@@ -82,23 +79,31 @@ __device__ size_t ci_element(const int32_t a, const int32_t b, const int32_t n_b
   }
 }
 
+// The packed pair of a link's (p, q): the triangle's indexing, symmetric in
+// the two.
+__device__ int32_t ci_link_pair(const Replacement l) {
+  return static_cast<int32_t>(triangle(l.p, l.q));
+}
+
 // For each of the row's links, f(element, pair, sign, weight): element is the
-// linked determinant's offset in the row's vector and weight its factor, as
-// ci_element gives them.
+// linked determinant's offset in the row's vector, pair the packed (p, q) and
+// weight the element's factor, as ci_element gives them.
 template <bool Symmetric, typename F>
 __device__ void ci_walk_links(const CiRow row, const int32_t n_beta,
-                              const int32_t *const alpha_links, const int32_t alpha_per,
-                              const int32_t *const beta_links, const int32_t beta_per, F &&f) {
+                              const Replacement *const alpha_links, const int32_t alpha_per,
+                              const Replacement *const beta_links, const int32_t beta_per, F &&f) {
   double weight = 1.0;
-  const int32_t *a = alpha_links + (static_cast<size_t>(row.alpha) * alpha_per * kLinkWidth);
-  for (int32_t e = 0; e < alpha_per; ++e, a += kLinkWidth) {
-    const size_t element = ci_element<Symmetric>(a[0], row.beta, n_beta, weight);
-    f(row.vector_base + element, a[1], a[2], weight);
+  const Replacement *const a = alpha_links + (static_cast<size_t>(row.alpha) * alpha_per);
+  for (int32_t e = 0; e < alpha_per; ++e) {
+    const Replacement l = a[e];
+    const size_t element = ci_element<Symmetric>(l.target, row.beta, n_beta, weight);
+    f(row.vector_base + element, ci_link_pair(l), static_cast<int32_t>(l.sign), weight);
   }
-  const int32_t *b = beta_links + (static_cast<size_t>(row.beta) * beta_per * kLinkWidth);
-  for (int32_t e = 0; e < beta_per; ++e, b += kLinkWidth) {
-    const size_t element = ci_element<Symmetric>(row.alpha, b[0], n_beta, weight);
-    f(row.vector_base + element, b[1], b[2], weight);
+  const Replacement *const b = beta_links + (static_cast<size_t>(row.beta) * beta_per);
+  for (int32_t e = 0; e < beta_per; ++e) {
+    const Replacement l = b[e];
+    const size_t element = ci_element<Symmetric>(row.alpha, l.target, n_beta, weight);
+    f(row.vector_base + element, ci_link_pair(l), static_cast<int32_t>(l.sign), weight);
   }
 }
 
@@ -109,8 +114,8 @@ __device__ void ci_walk_links(const CiRow row, const int32_t n_beta,
 template <bool Symmetric, bool Block, typename T>
 __global__ void ci_gather_d_kernel(const int32_t row_begin, const int32_t rows, const int32_t n_det,
                                    const int32_t n_beta, const int32_t first, const int32_t n_minor,
-                                   const bool beta_major, const int32_t *const alpha_links,
-                                   const int32_t alpha_per, const int32_t *const beta_links,
+                                   const bool beta_major, const Replacement *const alpha_links,
+                                   const int32_t alpha_per, const Replacement *const beta_links,
                                    const int32_t beta_per, const bool scale_off_diagonal,
                                    const double *const c, T *const d) {
   const int64_t r = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
@@ -144,12 +149,12 @@ __global__ void ci_gather_d_kernel(const int32_t row_begin, const int32_t rows, 
 // the swap; σ_I is stored times √2 off the diagonal, and c_I's own scaling
 // cancels in e_core's term.
 template <bool Symmetric, typename T>
-__global__ void ci_sigma_from_g_kernel(const int32_t rows, const int32_t n_det,
-                                       const int32_t n_beta, const int32_t n_pairs,
-                                       const int32_t *const alpha_links, const int32_t alpha_per,
-                                       const int32_t *const beta_links, const int32_t beta_per,
-                                       const double e_core, const double *const c, const T *const g,
-                                       double *const sigma) {
+__global__ void
+ci_sigma_from_g_kernel(const int32_t rows, const int32_t n_det, const int32_t n_beta,
+                       const int32_t n_pairs, const Replacement *const alpha_links,
+                       const int32_t alpha_per, const Replacement *const beta_links,
+                       const int32_t beta_per, const double e_core, const double *const c,
+                       const T *const g, double *const sigma) {
   const int64_t r = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (r >= rows) {
     return;
@@ -193,8 +198,8 @@ template <bool Symmetric, typename T>
 __global__ void
 ci_sigma_from_g_block_kernel(const bool beta_major, const int32_t first, const int32_t count,
                              const int32_t rows, const int32_t n_minor, const int32_t n_beta,
-                             const int32_t n_pairs, const int32_t *const alpha_links,
-                             const int32_t alpha_per, const int32_t *const beta_links,
+                             const int32_t n_pairs, const Replacement *const alpha_links,
+                             const int32_t alpha_per, const Replacement *const beta_links,
                              const int32_t beta_per, const double e_core, const double *const c,
                              const T *const g, double *const sigma) {
   const int64_t r = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
@@ -232,15 +237,17 @@ ci_sigma_from_g_block_kernel(const bool beta_major, const int32_t first, const i
   double sum = 0.0;
   if (beta_part) {
     sum += g_at(n_pairs, a, b);
-    const int32_t *l = beta_links + (static_cast<size_t>(b) * beta_per * kLinkWidth);
-    for (int32_t e = 0; e < beta_per; ++e, l += kLinkWidth) {
-      sum += static_cast<double>(l[2]) * g_at(l[1], a, l[0]);
+    const Replacement *const links = beta_links + (static_cast<size_t>(b) * beta_per);
+    for (int32_t e = 0; e < beta_per; ++e) {
+      const Replacement l = links[e];
+      sum += static_cast<double>(l.sign) * g_at(ci_link_pair(l), a, l.target);
     }
   }
   if (alpha_part) {
-    const int32_t *l = alpha_links + (static_cast<size_t>(a) * alpha_per * kLinkWidth);
-    for (int32_t e = 0; e < alpha_per; ++e, l += kLinkWidth) {
-      sum += static_cast<double>(l[2]) * g_at(l[1], b, l[0]);
+    const Replacement *const links = alpha_links + (static_cast<size_t>(a) * alpha_per);
+    for (int32_t e = 0; e < alpha_per; ++e) {
+      const Replacement l = links[e];
+      sum += static_cast<double>(l.sign) * g_at(ci_link_pair(l), b, l.target);
     }
   }
   if constexpr (Symmetric) {
@@ -358,8 +365,8 @@ template <bool Block, typename T>
 wwr::wwrError_t
 ci_gather_d_as(const wwr::wwrStream_t stream, const bool symmetric, const int32_t row_begin,
                const int32_t rows, const int32_t n_det, const int32_t n_beta, const int32_t first,
-               const int32_t n_minor, const bool beta_major, const int32_t *const alpha_links,
-               const int32_t alpha_per, const int32_t *const beta_links, const int32_t beta_per,
+               const int32_t n_minor, const bool beta_major, const Replacement *const alpha_links,
+               const int32_t alpha_per, const Replacement *const beta_links, const int32_t beta_per,
                const bool scale_off_diagonal, const double *const c, T *const d) {
   if (rows == 0) {
     return wwr::wwrSuccess;
@@ -377,14 +384,12 @@ ci_gather_d_as(const wwr::wwrStream_t stream, const bool symmetric, const int32_
 }
 
 template <typename T>
-wwr::wwrError_t ci_sigma_from_g_block_as(const wwr::wwrStream_t stream, const bool symmetric,
-                                         const bool beta_major, const int32_t first,
-                                         const int32_t count, const int32_t n_alpha,
-                                         const int32_t n_beta, const int32_t n_pairs,
-                                         const int32_t *const alpha_links, const int32_t alpha_per,
-                                         const int32_t *const beta_links, const int32_t beta_per,
-                                         const double e_core, const double *const c,
-                                         const T *const g, double *const sigma) {
+wwr::wwrError_t ci_sigma_from_g_block_as(
+    const wwr::wwrStream_t stream, const bool symmetric, const bool beta_major, const int32_t first,
+    const int32_t count, const int32_t n_alpha, const int32_t n_beta, const int32_t n_pairs,
+    const Replacement *const alpha_links, const int32_t alpha_per,
+    const Replacement *const beta_links, const int32_t beta_per, const double e_core,
+    const double *const c, const T *const g, double *const sigma) {
   const int32_t n_minor = beta_major ? n_alpha : n_beta;
   // The block's rows, or in the symmetric layout the triangle's from (first, 0).
   const int64_t rows = symmetric ? (static_cast<int64_t>(n_alpha) * (n_alpha + 1) / 2) -
@@ -408,8 +413,8 @@ wwr::wwrError_t ci_sigma_from_g_block_as(const wwr::wwrStream_t stream, const bo
 template <typename T>
 wwr::wwrError_t ci_sigma_from_g_as(const wwr::wwrStream_t stream, const bool symmetric,
                                    const int32_t rows, const int32_t n_det, const int32_t n_beta,
-                                   const int32_t n_pairs, const int32_t *const alpha_links,
-                                   const int32_t alpha_per, const int32_t *const beta_links,
+                                   const int32_t n_pairs, const Replacement *const alpha_links,
+                                   const int32_t alpha_per, const Replacement *const beta_links,
                                    const int32_t beta_per, const double e_core,
                                    const double *const c, const T *const g, double *const sigma) {
   if (rows == 0) {
@@ -431,8 +436,8 @@ wwr::wwrError_t ci_sigma_from_g_as(const wwr::wwrStream_t stream, const bool sym
 
 wwr::wwrError_t gather_d(const wwr::wwrStream_t stream, const bool symmetric,
                          const int32_t row_begin, const int32_t rows, const int32_t n_det,
-                         const int32_t n_beta, const int32_t *const alpha_links,
-                         const int32_t alpha_per, const int32_t *const beta_links,
+                         const int32_t n_beta, const Replacement *const alpha_links,
+                         const int32_t alpha_per, const Replacement *const beta_links,
                          const int32_t beta_per, const bool scale_off_diagonal,
                          const double *const c, double *const d) {
   return ci_gather_d_as<false>(stream, symmetric, row_begin, rows, n_det, n_beta, 0, 1, false,
@@ -443,8 +448,8 @@ wwr::wwrError_t gather_d(const wwr::wwrStream_t stream, const bool symmetric,
 wwr::wwrError_t gather_d_block(const wwr::wwrStream_t stream, const bool symmetric,
                                const bool beta_major, const int32_t first, const int32_t row_begin,
                                const int32_t rows, const int32_t n_alpha, const int32_t n_beta,
-                               const int32_t *const alpha_links, const int32_t alpha_per,
-                               const int32_t *const beta_links, const int32_t beta_per,
+                               const Replacement *const alpha_links, const int32_t alpha_per,
+                               const Replacement *const beta_links, const int32_t beta_per,
                                const double *const c, double *const d) {
   return ci_gather_d_as<true>(stream, symmetric, row_begin, rows, 0, n_beta, first,
                               beta_major ? n_alpha : n_beta, beta_major, alpha_links, alpha_per,
@@ -453,8 +458,8 @@ wwr::wwrError_t gather_d_block(const wwr::wwrStream_t stream, const bool symmetr
 
 wwr::wwrError_t gather_d(const wwr::wwrStream_t stream, const bool symmetric,
                          const int32_t row_begin, const int32_t rows, const int32_t n_det,
-                         const int32_t n_beta, const int32_t *const alpha_links,
-                         const int32_t alpha_per, const int32_t *const beta_links,
+                         const int32_t n_beta, const Replacement *const alpha_links,
+                         const int32_t alpha_per, const Replacement *const beta_links,
                          const int32_t beta_per, const bool scale_off_diagonal,
                          const double *const c, float *const d) {
   return ci_gather_d_as<false>(stream, symmetric, row_begin, rows, n_det, n_beta, 0, 1, false,
@@ -465,8 +470,8 @@ wwr::wwrError_t gather_d(const wwr::wwrStream_t stream, const bool symmetric,
 wwr::wwrError_t gather_d_block(const wwr::wwrStream_t stream, const bool symmetric,
                                const bool beta_major, const int32_t first, const int32_t row_begin,
                                const int32_t rows, const int32_t n_alpha, const int32_t n_beta,
-                               const int32_t *const alpha_links, const int32_t alpha_per,
-                               const int32_t *const beta_links, const int32_t beta_per,
+                               const Replacement *const alpha_links, const int32_t alpha_per,
+                               const Replacement *const beta_links, const int32_t beta_per,
                                const double *const c, float *const d) {
   return ci_gather_d_as<true>(stream, symmetric, row_begin, rows, 0, n_beta, first,
                               beta_major ? n_alpha : n_beta, beta_major, alpha_links, alpha_per,
@@ -475,8 +480,8 @@ wwr::wwrError_t gather_d_block(const wwr::wwrStream_t stream, const bool symmetr
 
 wwr::wwrError_t sigma_from_g(const wwr::wwrStream_t stream, const bool symmetric,
                              const int32_t rows, const int32_t n_det, const int32_t n_beta,
-                             const int32_t n_pairs, const int32_t *const alpha_links,
-                             const int32_t alpha_per, const int32_t *const beta_links,
+                             const int32_t n_pairs, const Replacement *const alpha_links,
+                             const int32_t alpha_per, const Replacement *const beta_links,
                              const int32_t beta_per, const double e_core, const double *const c,
                              const double *const g, double *const sigma) {
   return ci_sigma_from_g_as(stream, symmetric, rows, n_det, n_beta, n_pairs, alpha_links, alpha_per,
@@ -486,8 +491,8 @@ wwr::wwrError_t sigma_from_g(const wwr::wwrStream_t stream, const bool symmetric
 wwr::wwrError_t sigma_from_g_block(const wwr::wwrStream_t stream, const bool symmetric,
                                    const bool beta_major, const int32_t first, const int32_t count,
                                    const int32_t n_alpha, const int32_t n_beta,
-                                   const int32_t n_pairs, const int32_t *const alpha_links,
-                                   const int32_t alpha_per, const int32_t *const beta_links,
+                                   const int32_t n_pairs, const Replacement *const alpha_links,
+                                   const int32_t alpha_per, const Replacement *const beta_links,
                                    const int32_t beta_per, const double e_core,
                                    const double *const c, const double *const g,
                                    double *const sigma) {
@@ -498,8 +503,8 @@ wwr::wwrError_t sigma_from_g_block(const wwr::wwrStream_t stream, const bool sym
 
 wwr::wwrError_t sigma_from_g(const wwr::wwrStream_t stream, const bool symmetric,
                              const int32_t rows, const int32_t n_det, const int32_t n_beta,
-                             const int32_t n_pairs, const int32_t *const alpha_links,
-                             const int32_t alpha_per, const int32_t *const beta_links,
+                             const int32_t n_pairs, const Replacement *const alpha_links,
+                             const int32_t alpha_per, const Replacement *const beta_links,
                              const int32_t beta_per, const double e_core, const double *const c,
                              const float *const g, double *const sigma) {
   return ci_sigma_from_g_as(stream, symmetric, rows, n_det, n_beta, n_pairs, alpha_links, alpha_per,
@@ -509,8 +514,8 @@ wwr::wwrError_t sigma_from_g(const wwr::wwrStream_t stream, const bool symmetric
 wwr::wwrError_t sigma_from_g_block(const wwr::wwrStream_t stream, const bool symmetric,
                                    const bool beta_major, const int32_t first, const int32_t count,
                                    const int32_t n_alpha, const int32_t n_beta,
-                                   const int32_t n_pairs, const int32_t *const alpha_links,
-                                   const int32_t alpha_per, const int32_t *const beta_links,
+                                   const int32_t n_pairs, const Replacement *const alpha_links,
+                                   const int32_t alpha_per, const Replacement *const beta_links,
                                    const int32_t beta_per, const double e_core,
                                    const double *const c, const float *const g,
                                    double *const sigma) {

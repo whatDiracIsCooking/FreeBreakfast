@@ -62,23 +62,6 @@ size_t ci_pair(const size_t t, const size_t u) {
   return (hi * (hi + 1) / 2) + std::min(t, u);
 }
 
-// A set's replacement lists as the device takes them: target, packed pair,
-// sign, three int32_t per replacement, by string then list order.
-std::vector<int32_t> ci_link_table(const StringSet &set) {
-  std::vector<int32_t> links;
-  links.reserve(static_cast<size_t>(set.size()) *
-                static_cast<size_t>(set.replacements_per_string()) * 3);
-  for (int32_t address = 0; address < set.size(); ++address) {
-    for (const Replacement &r : set.replacements(address)) {
-      links.push_back(r.target);
-      links.push_back(
-          static_cast<int32_t>(ci_pair(static_cast<size_t>(r.p), static_cast<size_t>(r.q))));
-      links.push_back(r.sign);
-    }
-  }
-  return links;
-}
-
 template <typename T>
 Status ci_upload(const wwr::wwrStream_t stream, Buffers::device<T> &to,
                  const std::vector<T> &from) {
@@ -86,23 +69,27 @@ Status ci_upload(const wwr::wwrStream_t stream, Buffers::device<T> &to,
                                         wwr::wwrMemcpyHostToDevice, stream));
 }
 
-Sigma::Sigma(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
-             const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per,
-             const bool one_set)
-    : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
-      alpha_per_{alpha_per}, beta_per_{beta_per}, one_set_{one_set},
-      alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
-      beta_links_(static_cast<size_t>(n_beta) * static_cast<size_t>(beta_per) * 3, res.device()),
-      alpha_strings_(static_cast<size_t>(n_alpha), res.device()),
-      beta_strings_(static_cast<size_t>(n_beta), res.device()),
-      contraction_(ci_pair(static_cast<size_t>(n_orbitals), 0) *
-                       (ci_pair(static_cast<size_t>(n_orbitals), 0) + 1),
+Sigma::Sigma(DeviceResources &res, const DeviceStringSet &alpha, const DeviceStringSet &beta)
+    : dev_idx_{res.dev_idx()}, n_orbitals_{alpha.n_orbitals()}, n_alpha_{alpha.size()},
+      n_beta_{beta.size()}, alpha_per_{alpha.replacements_per_string()},
+      beta_per_{beta.replacements_per_string()},
+      one_set_{alpha.n_electrons() == beta.n_electrons()},
+      alpha_links_{alpha.device_replacements()}, beta_links_{beta.device_replacements()},
+      alpha_strings_{alpha.device_strings()}, beta_strings_{beta.device_strings()},
+      contraction_(ci_pair(static_cast<size_t>(n_orbitals_), 0) *
+                       (ci_pair(static_cast<size_t>(n_orbitals_), 0) + 1),
                    res.device()),
       contraction_fp32_(contraction_.num_elements(), res.device()),
-      diagonal_terms_(static_cast<size_t>(n_orbitals) * (1 + (2 * static_cast<size_t>(n_orbitals))),
+      diagonal_terms_(static_cast<size_t>(n_orbitals_) *
+                          (1 + (2 * static_cast<size_t>(n_orbitals_))),
                       res.device()) {}
 
-Result<Sigma> Sigma::create(DeviceResources &res, const StringSet &alpha, const StringSet &beta) {
+Result<Sigma> Sigma::create(DeviceResources &res, const DeviceStringSet &alpha,
+                            const DeviceStringSet &beta) {
+  if (alpha.dev_idx() != res.dev_idx() || beta.dev_idx() != res.dev_idx()) {
+    return err_config("ci::Sigma: strings are on devices {} and {}, but the call passed device {}",
+                      alpha.dev_idx(), beta.dev_idx(), res.dev_idx());
+  }
   if (alpha.n_orbitals() != beta.n_orbitals()) {
     return err_config("ci::Sigma: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
                       beta.n_orbitals());
@@ -115,20 +102,7 @@ Result<Sigma> Sigma::create(DeviceResources &res, const StringSet &alpha, const 
                       alpha.size(), beta.size());
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  Sigma sigma(res, alpha.n_orbitals(), alpha.size(), beta.size(), alpha.replacements_per_string(),
-              beta.replacements_per_string(), alpha.n_electrons() == beta.n_electrons());
-  const std::vector<int32_t> alpha_links = ci_link_table(alpha);
-  const std::vector<int32_t> beta_links = ci_link_table(beta);
-  const std::vector<uint64_t> alpha_strings{alpha.strings().begin(), alpha.strings().end()};
-  const std::vector<uint64_t> beta_strings{beta.strings().begin(), beta.strings().end()};
-  const wwr::wwrStream_t stream = res.stream();
-  FBF_TRY(ci_upload(stream, sigma.alpha_links_, alpha_links));
-  FBF_TRY(ci_upload(stream, sigma.beta_links_, beta_links));
-  FBF_TRY(ci_upload(stream, sigma.alpha_strings_, alpha_strings));
-  FBF_TRY(ci_upload(stream, sigma.beta_strings_, beta_strings));
-  // Pageable sources, which die at return.
-  FBF_TRY(res.sync());
-  return sigma;
+  return Sigma(res, alpha, beta);
 }
 
 Status Sigma::set_integrals(DeviceResources &res, const double e_core,
@@ -246,16 +220,16 @@ Status Sigma::apply_as(DeviceResources &res, const int32_t k, const double *cons
       const int32_t count = std::min(chunk, rows - begin);
       FBF_TRY(gpu_status(
           wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(count) * pairs, stream)));
-      FBF_TRY(gpu_status(device::gather_d(stream, symmetric, begin, count, rows, n_beta_,
-                                          alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                          beta_per_, false, xj, d)));
+      FBF_TRY(
+          gpu_status(device::gather_d(stream, symmetric, begin, count, rows, n_beta_, alpha_links_,
+                                      alpha_per_, beta_links_, beta_per_, false, xj, d)));
       FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
           res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, count, n_pairs + 1, n_pairs,
           &kOne<T>, d, count, contraction, n_pairs, &kZero<T>, g + begin, rows)));
     }
     FBF_TRY(gpu_status(device::sigma_from_g(stream, symmetric, rows, rows, n_beta_, n_pairs,
-                                            alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                            beta_per_, e_core_, xj, g, yj)));
+                                            alpha_links_, alpha_per_, beta_links_, beta_per_,
+                                            e_core_, xj, g, yj)));
   }
   return {};
 }
@@ -320,16 +294,16 @@ Status Sigma::apply_blocked(DeviceResources &res, const int32_t k, const double 
           const int32_t many = std::min(step, rows_here - begin);
           FBF_TRY(gpu_status(
               wwr::wwrMemsetAsync(d, 0, sizeof(T) * static_cast<size_t>(many) * pairs, stream)));
-          FBF_TRY(gpu_status(device::gather_d_block(
-              stream, symmetric, beta_major, first, begin, many, n_alpha_, n_beta_,
-              alpha_links_.data(), alpha_per_, beta_links_.data(), beta_per_, xj, d)));
+          FBF_TRY(gpu_status(device::gather_d_block(stream, symmetric, beta_major, first, begin,
+                                                    many, n_alpha_, n_beta_, alpha_links_,
+                                                    alpha_per_, beta_links_, beta_per_, xj, d)));
           FBF_TRY(gpu_status(wwr::gemm<T, int32_t>(
               res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, many, n_pairs + 1, n_pairs,
               &kOne<T>, d, many, contraction, n_pairs, &kZero<T>, g + begin, rows_here)));
         }
         FBF_TRY(gpu_status(device::sigma_from_g_block(
-            stream, symmetric, beta_major, first, count, n_alpha_, n_beta_, n_pairs,
-            alpha_links_.data(), alpha_per_, beta_links_.data(), beta_per_, e_core_, xj, g, yj)));
+            stream, symmetric, beta_major, first, count, n_alpha_, n_beta_, n_pairs, alpha_links_,
+            alpha_per_, beta_links_, beta_per_, e_core_, xj, g, yj)));
       }
     }
   }
@@ -355,9 +329,8 @@ Status Sigma::diagonal(DeviceResources &res, double *const diagonal) {
                       res.dev_idx());
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::diagonal(res.stream(), n_orbitals_, n_alpha_, n_beta_,
-                                     alpha_strings_.data(), beta_strings_.data(), e_core_,
-                                     diagonal_terms_.data(), diagonal));
+  return gpu_status(device::diagonal(res.stream(), n_orbitals_, n_alpha_, n_beta_, alpha_strings_,
+                                     beta_strings_, e_core_, diagonal_terms_.data(), diagonal));
 }
 
 Status Sigma::rdm1(DeviceResources &res, const double *const c, double *const gamma,
@@ -389,9 +362,9 @@ Status Sigma::rdm1(DeviceResources &res, const double *const c, double *const ga
     const int32_t count = std::min(chunk, rows - begin);
     FBF_TRY(gpu_status(
         wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * pairs, stream)));
-    FBF_TRY(gpu_status(device::gather_d(stream, symmetric, begin, count, rows, n_beta_,
-                                        alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                        beta_per_, true, c, d)));
+    FBF_TRY(
+        gpu_status(device::gather_d(stream, symmetric, begin, count, rows, n_beta_, alpha_links_,
+                                    alpha_per_, beta_links_, beta_per_, true, c, d)));
     FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
         res.blas().get(), wwr::WWRBLAS_OP_T, count, n_pairs, &kOne<double>, d, count, c + begin, 1,
         begin == 0 ? &kZero<double> : &kOne<double>, packed, 1)));

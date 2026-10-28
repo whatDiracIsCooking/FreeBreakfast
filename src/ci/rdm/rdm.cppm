@@ -9,7 +9,6 @@ export module free_breakfast.ci.rdm;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma; // Layout
@@ -22,8 +21,9 @@ export namespace free_breakfast::ci {
 /// (Γ_pqrs = ⟨a†_p a†_r a_s a_q⟩, spin summed). A single state is
 /// weights = {1}.
 ///
-/// create uploads the two sets' replacement lists, once per (n, N_α, N_β), so
-/// a CASSCF's every macro-iteration reuses them. rdm12 then gathers, per root,
+/// create borrows the two sets' replacement lists, already on the device in
+/// their DeviceStringSets, which a CASSCF's every macro-iteration and its
+/// sigma share. rdm12 then gathers, per root,
 /// the one-replacement intermediate D_{tu,K} = ⟨c| E_tu |K⟩ over each
 /// determinant's own lists, one thread per determinant, in chunks of
 /// determinants; M += w_r Dᵀ D is a syrk and γ += w_r Dᵀ c a gemm per chunk,
@@ -38,18 +38,19 @@ export namespace free_breakfast::ci {
 /// rows alone, each off-diagonal one scaled by √2, and the packed c carries
 /// the other √2 of γ's product. That halves the gather and the syrk.
 ///
-/// Move-only; the buffers are on the device of the DeviceResources create was
-/// given, which every call must pass again.
+/// Move-only; the tables are on the device of the DeviceResources create was
+/// given, which every call must pass again, and @p alpha and @p beta must
+/// outlive it.
 class Rdm {
 public:
-  /// @brief Upload @p alpha's and @p beta's replacement lists to @p res's
-  /// device. A failed allocation aborts (CreatePolicy).
+  /// @brief An Rdm over @p alpha's and @p beta's device tables, which it
+  /// reads in place (one set may be both).
   ///
-  /// @return InvalidConfig when the two sets span different orbital counts or
-  ///         none, or alpha.size() · beta.size() does not fit an int32_t; or
-  ///         the GpuRuntime error of an upload.
-  [[nodiscard]] static Result<Rdm> create(DeviceResources &res, const StringSet &alpha,
-                                          const StringSet &beta);
+  /// @return InvalidConfig when either set is on another device than @p res,
+  ///         the two span different orbital counts or none, or
+  ///         alpha.size() · beta.size() does not fit an int32_t.
+  [[nodiscard]] static Result<Rdm> create(DeviceResources &res, const DeviceStringSet &alpha,
+                                          const DeviceStringSet &beta);
 
   Rdm(Rdm &&) noexcept = default;
   Rdm &operator=(Rdm &&) noexcept = default;
@@ -88,8 +89,7 @@ public:
   }
 
 private:
-  Rdm(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta, int32_t alpha_per,
-      int32_t beta_per, bool one_set);
+  Rdm(DeviceResources &res, const DeviceStringSet &alpha, const DeviceStringSet &beta);
 
   int32_t dev_idx_;
   int32_t n_orbitals_;
@@ -98,9 +98,9 @@ private:
   int32_t alpha_per_;
   int32_t beta_per_;
   bool one_set_; // alpha and beta are the same (n, N): Layout::symmetric applies
-  // Three int32_t per replacement: target, unpacked pair p · n + q, sign.
-  Buffers::device<int32_t> alpha_links_;
-  Buffers::device<int32_t> beta_links_;
+  // The sets' device lists, borrowed: one per spin, the same for one set.
+  const Replacement *alpha_links_;
+  const Replacement *beta_links_;
 };
 
 } // namespace free_breakfast::ci

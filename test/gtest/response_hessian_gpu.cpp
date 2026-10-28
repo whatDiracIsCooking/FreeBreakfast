@@ -328,8 +328,8 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_casci) {
 
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const std::int32_t n_beta = setup->casci->nelecas / 2;
-  auto alpha = fb::ci::StringSet::create(setup->ncas, setup->casci->nelecas - n_beta);
-  auto beta = fb::ci::StringSet::create(setup->ncas, n_beta);
+  auto alpha = fb::ci::DeviceStringSet::create(res, setup->ncas, setup->casci->nelecas - n_beta);
+  auto beta = fb::ci::DeviceStringSet::create(res, setup->ncas, n_beta);
   if (!alpha.has_value() || !beta.has_value()) {
     ADD_FAILURE() << "the string sets failed";
     return nullptr;

@@ -1,11 +1,16 @@
 /// @file
-/// @brief StringSet: enumeration, addressing and the replacement lists.
+/// @brief StringSet: enumeration, addressing and the replacement lists; and
+/// DeviceStringSet's upload of them.
 
 module free_breakfast.ci.strings;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.wwr;
+import free_breakfast.core.resources;
+
+#include "diagnostics.h"
 
 namespace free_breakfast::ci {
 
@@ -79,7 +84,7 @@ Result<StringSet> StringSet::create(const int32_t n_orbitals, const int32_t n_el
       ((s >> o) & 1U ? occupied : empty).push_back(o);
     }
     for (const int32_t q : occupied) {
-      replacements.push_back({address, q, q, 1});
+      replacements.push_back({address, 1, static_cast<int8_t>(q), static_cast<int8_t>(q)});
     }
     for (const int32_t q : occupied) {
       for (const int32_t p : empty) {
@@ -87,9 +92,10 @@ Result<StringSet> StringSet::create(const int32_t n_orbitals, const int32_t n_el
         const int32_t hi = std::max(p, q);
         // Bits lo + 1 .. hi - 1; hi <= 63, so neither shift reaches 64.
         const uint64_t between = ((uint64_t{1} << hi) - 1) & ~((uint64_t{1} << (lo + 1)) - 1);
-        const int32_t sign = std::popcount(s & between) % 2 == 0 ? 1 : -1;
+        const int16_t sign = std::popcount(s & between) % 2 == 0 ? 1 : -1;
         const uint64_t target = (s & ~(uint64_t{1} << q)) | (uint64_t{1} << p);
-        replacements.push_back({set.address(target), p, q, sign});
+        replacements.push_back(
+            {set.address(target), sign, static_cast<int8_t>(p), static_cast<int8_t>(q)});
       }
     }
   }
@@ -112,6 +118,32 @@ int32_t StringSet::address(const uint64_t string) const noexcept {
     ++k;
   }
   return address;
+}
+
+DeviceStringSet::DeviceStringSet(DeviceResources &res, StringSet set)
+    : StringSet{std::move(set)}, dev_idx_{res.dev_idx()},
+      device_strings_(strings_.size(), res.device()),
+      device_replacements_(replacements_.size(), res.device()) {}
+
+Result<DeviceStringSet> DeviceStringSet::create(DeviceResources &res, const int32_t n_orbitals,
+                                                const int32_t n_electrons) {
+  StringSet set = FBF_TRY(StringSet::create(n_orbitals, n_electrons));
+  const ScopedDeviceIndex on{res.dev_idx()};
+  DeviceStringSet device_set(res, std::move(set));
+  const wwr::wwrStream_t stream = res.stream();
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(
+      device_set.device_strings_.data(), device_set.strings_.data(),
+      sizeof(uint64_t) * device_set.strings_.size(), wwr::wwrMemcpyHostToDevice, stream)));
+  // No electrons, no lists, and the empty buffer is null.
+  if (!device_set.replacements_.empty()) {
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(device_set.device_replacements_.data(),
+                                           device_set.replacements_.data(),
+                                           sizeof(Replacement) * device_set.replacements_.size(),
+                                           wwr::wwrMemcpyHostToDevice, stream)));
+  }
+  // Pageable sources, which the move out of here must not race.
+  FBF_TRY(res.sync());
+  return device_set;
 }
 
 } // namespace free_breakfast::ci

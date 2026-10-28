@@ -56,9 +56,10 @@ double fci_sigma_bytes(int32_t n, double rows) {
 //   davidson       2 m t for V and A V, 3 nroots t for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta;
 //                  its GD+k collapse works in R and V^T C, adding nothing
-//   ci::Sigma tables two sets of strings (8 bytes) and links (12 bytes per
-//                  replacement), the P x (P + 1) contraction in double and
-//                  again in float (apply_fp32's), n + 2 n^2 terms
+//   strings        the one DeviceStringSet both spins share: s strings
+//                  (8 bytes) and their links (8 bytes per replacement)
+//   ci::Sigma      the P x (P + 1) contraction in double and again in float
+//                  (apply_fp32's), n + 2 n^2 terms
 //   integrals      (tu|vw) n^4 and h_eff n^2
 //
 // The scratch is the device workspace, which outlives the Davidson, so it
@@ -88,7 +89,7 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
                          (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) +
                          (orbitals * orbitals);
   const double tables =
-      2.0 * strings * (8.0 + (12.0 * replacements)) + (pairs * (pairs + 1.0) * sizeof(float));
+      (strings * (8.0 + (8.0 * replacements))) + (pairs * (pairs + 1.0) * sizeof(float));
   return (doubles * sizeof(double)) + tables;
 }
 
@@ -159,8 +160,11 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
     }
   }
 
-  const ci::StringSet alpha = FBF_TRY(ci::StringSet::create(nmo, n_electrons / 2));
-  const ci::StringSet beta = FBF_TRY(ci::StringSet::create(nmo, n_electrons / 2));
+  // The one set of N/2 electrons serves both spins.
+  const ci::DeviceStringSet strings =
+      FBF_TRY(ci::DeviceStringSet::create(res, nmo, n_electrons / 2));
+  const ci::DeviceStringSet &alpha = strings;
+  const ci::DeviceStringSet &beta = strings;
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   // Everything the estimate leaves free, which is G for the whole triangle
   // (and the solve as it was) whenever that fits.

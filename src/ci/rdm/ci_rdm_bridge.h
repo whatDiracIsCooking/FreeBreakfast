@@ -10,10 +10,9 @@
 ///
 /// The layout is the GPU sigma's (see ../sigma/ci_sigma_bridge.h): a
 /// determinant (K_α, K_β) is element K_α · n_beta + K_β of a CI vector. A link
-/// table holds a StringSet's replacement lists, `per` links per string, three
-/// int32_t per link a†_p a_q: the target string's address, the *unpacked* pair
-/// index p · n + q (D is not symmetric in its pair, as sigma's is), and the
-/// sign.
+/// table is a DeviceStringSet's replacement lists, `per` Replacements per
+/// string (replacement.h), of which D's column is the *unpacked* pair index
+/// p · n + q (D is not symmetric in its pair, as sigma's is).
 ///
 /// It returns the launch status and does not synchronize.
 
@@ -22,6 +21,7 @@
 // Standard (via integral_types.h) before runtime.h: under HIP a libc++ header
 // must not follow the vendor runtime header (see primitives.h).
 #include "integral_types.h"
+#include "replacement.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see src/integrals/one_electron/overlap/overlap_bridge.h.
@@ -47,9 +47,10 @@ namespace free_breakfast::ci::device {
 /// @p d is rows × n², column-major with leading dimension @p rows (column
 /// p · n + q), and is accumulated into: it must be zero on entry.
 [[nodiscard]] wwr::wwrError_t rdm_gather_d(wwr::wwrStream_t stream, bool symmetric, int32_t begin,
-                                           int32_t rows, int32_t n_beta, const int32_t *alpha_links,
-                                           int32_t alpha_per, const int32_t *beta_links,
-                                           int32_t beta_per, const double *c, double *d);
+                                           int32_t rows, int32_t n, int32_t n_beta,
+                                           const Replacement *alpha_links, int32_t alpha_per,
+                                           const Replacement *beta_links, int32_t beta_per,
+                                           const double *c, double *d);
 
 /// @brief Γ_tuvw = M_{tu,wv} − δ_uv γ_tw into @p gamma2, n⁴ row-major (t, u,
 /// v, w), from @p m, n² × n² column-major with only its lower triangle

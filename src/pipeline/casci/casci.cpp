@@ -142,8 +142,14 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   }
 
   const int32_t n_beta = n_electrons / 2;
-  const ci::StringSet alpha = FBF_TRY(ci::StringSet::create(n_active, n_electrons - n_beta));
-  const ci::StringSet beta = FBF_TRY(ci::StringSet::create(n_active, n_beta));
+  // One set serves both spins when N_α = N_β.
+  const ci::DeviceStringSet alpha =
+      FBF_TRY(ci::DeviceStringSet::create(res, n_active, n_electrons - n_beta));
+  std::optional<ci::DeviceStringSet> own_beta;
+  if (n_electrons - n_beta != n_beta) {
+    own_beta = FBF_TRY(ci::DeviceStringSet::create(res, n_active, n_beta));
+  }
+  const ci::DeviceStringSet &beta = own_beta ? *own_beta : alpha;
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   FBF_TRY(sigma.set_integrals(res, ham.e_core, h_eff, eri));
   const auto dim = static_cast<size_t>(sigma.size());

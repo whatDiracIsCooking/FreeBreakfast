@@ -22,8 +22,8 @@ suite names among them.
 
 | Directory | Module | Role |
 |-----------|--------|------|
-| `strings/` | `free_breakfast.ci.strings` | The occupation strings of one spin (`ci::StringSet`): enumeration, lexical addressing onto [0, C(n, N)), and the single-replacement lists for E_pq. Host-side. |
-| `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `ci::StringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays: `ci::Sigma` on the device, a `LinearOperator` over blocks of CI vectors, with the 1-RDM over the same tables. |
+| `strings/` | `free_breakfast.ci.strings` | The occupation strings of one spin (`ci::StringSet`): enumeration, lexical addressing onto [0, C(n, N)), and the single-replacement lists for E_pq, on the host; `ci::DeviceStringSet`, the one device copy of them every GPU consumer below reads. |
+| `sigma/` | `free_breakfast.ci.sigma` | σ = Hc and diag(H) over two `ci::DeviceStringSet`s, from E_core, h_eff and (tu\|vw) as plain arrays: `ci::Sigma` on the device, a `LinearOperator` over blocks of CI vectors, with the 1-RDM over the same tables. |
 | `solver/` | `free_breakfast.ci.solver` | `ci::solve`: the lowest roots of one spin through `davidson_solve` over any sigma that is a `LinearOperator`, spin held by a penalty λ (S² − S(S+1)), with ⟨S²⟩ per root; and S² on a vector, as `ci::SpinSquare` on the device. |
 | `rdm/` | `free_breakfast.ci.rdm` | The state-averaged spin-summed γ and 2-RDM Γ_tuvw of CI vectors (`ci::Rdm::rdm12`, on the device), in PySCF's `make_rdm12` convention. One vector's γ is `ci::Sigma::rdm1`. |
 
