@@ -110,28 +110,31 @@ export namespace free_breakfast::ci {
 /// `LinearOperator<SpinSquare, double>` over blocks of CI vectors, and the
 /// spin penalty solve adds into its sigma's output.
 ///
-/// create uploads the α set's replacement lists and, per β string, a table of
-/// its replacements by (p, q), so each α link a†_p a_q finds its β partner
-/// a†_q a_p in one read. Both calls gather one thread per row over the row's
-/// own links, since S² is real symmetric: nothing is atomic and the result
-/// does not depend on the run. Cost is O(k · dim · N_α (n − N_α + 1)).
+/// create borrows the α set's device replacement lists and uploads, per β
+/// string, a table of its replacements by (p, q), so each α link a†_p a_q
+/// finds its β partner a†_q a_p in one read. Both calls gather one thread per
+/// row over the row's own links, since S² is real symmetric: nothing is atomic
+/// and the result does not depend on the run. Cost is
+/// O(k · dim · N_α (n − N_α + 1)).
 ///
 /// Over one StringSet for both spins, apply, penalize and penalize_diagonal
 /// also take Layout::symmetric (see ci.sigma): S² commutes with the swap of
 /// the two strings, so it maps the packed vectors to packed vectors.
 ///
 /// Move-only; the buffers are on the device of the DeviceResources create was
-/// given, which every call must pass again.
+/// given, which every call must pass again, and @p alpha must outlive it.
 class SpinSquare {
 public:
-  /// @brief Upload @p alpha's lists and @p beta's slot tables to @p res's
-  /// device. A failed allocation aborts (CreatePolicy).
+  /// @brief An S² over @p alpha's device lists, read in place, with
+  /// @p beta's slot tables uploaded to @p res's device. A failed allocation
+  /// aborts (CreatePolicy).
   ///
-  /// @return InvalidConfig when the two sets span different orbital counts or
+  /// @return InvalidConfig when either set is on another device than @p res,
+  ///         the two span different orbital counts, or
   ///         alpha.size() · beta.size() does not fit an int32_t; or the
   ///         GpuRuntime error of an upload.
-  [[nodiscard]] static Result<SpinSquare> create(DeviceResources &res, const StringSet &alpha,
-                                                 const StringSet &beta);
+  [[nodiscard]] static Result<SpinSquare> create(DeviceResources &res, const DeviceStringSet &alpha,
+                                                 const DeviceStringSet &beta);
 
   SpinSquare(SpinSquare &&) noexcept = default;
   SpinSquare &operator=(SpinSquare &&) noexcept = default;
@@ -186,8 +189,8 @@ public:
   }
 
 private:
-  SpinSquare(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
-             int32_t alpha_per, double constant, bool one_set);
+  SpinSquare(DeviceResources &res, const DeviceStringSet &alpha, const DeviceStringSet &beta,
+             double constant);
 
   Status check(DeviceResources &res, Layout layout) const;
   Status launch(DeviceResources &res, int32_t k, double shift, double scale, bool accumulate,
@@ -200,8 +203,9 @@ private:
   int32_t alpha_per_;
   double constant_; // S_z (S_z + 1) + N_β
   bool one_set_;    // alpha and beta are the same (n, N): Layout::symmetric applies
-  // Three int32_t per α replacement: target, its β partner's slot, sign.
-  Buffers::device<int32_t> alpha_links_;
+  // The α set's device lists, borrowed; a link a†_p a_q's β partner a†_q a_p
+  // is slot q · n + p.
+  const Replacement *alpha_links_;
   // n_beta × n × n: sign · (target + 1) of a†_p a_q on each β string, or 0.
   Buffers::device<int32_t> beta_slots_;
 };
@@ -322,7 +326,8 @@ struct Roots {
 ///
 /// @param sigma    Applies H to a device block of CI vectors (Layout::full); a LinearOperator over dim = alpha.size() ·
 ///                 beta.size().
-/// @param alpha, beta The sector's strings.
+/// @param alpha, beta The sector's strings, on @p res's device; S² reads them
+///                 in place.
 /// @param diagonal diag(H) on the device, dim doubles, as Sigma::diagonal
 ///                 writes it.
 /// @param n_roots  Roots wanted, in [1, dim].
@@ -339,8 +344,8 @@ struct Roots {
 ///         is more than 1e-6 off S(S+1): a state of another spin lay too far
 ///         below for the penalty to lift.
 template <LinearOperator<double> Op>
-[[nodiscard]] Result<Roots> solve(DeviceResources &res, Op &sigma, const StringSet &alpha,
-                                  const StringSet &beta, const double *const diagonal,
+[[nodiscard]] Result<Roots> solve(DeviceResources &res, Op &sigma, const DeviceStringSet &alpha,
+                                  const DeviceStringSet &beta, const double *const diagonal,
                                   const int32_t n_roots, const SolverOptions &options = {},
                                   const std::span<const double> start = {}) {
   const size_t dim = static_cast<size_t>(alpha.size()) * static_cast<size_t>(beta.size());

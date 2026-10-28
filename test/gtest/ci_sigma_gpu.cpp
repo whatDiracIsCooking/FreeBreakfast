@@ -97,8 +97,9 @@ std::vector<double> to_host(fb::DeviceResources &res, const fb::Buffers::device<
 
 // The 1-RDM of a random unit vector, to 1e-12 (N_α + N_β), its trace, of
 // host_rdm1's.
-void check_rdm1(fb::DeviceResources &res, fb::ci::Sigma &sigma, const fb::ci::StringSet &alpha,
-                const fb::ci::StringSet &beta, std::uint64_t seed) {
+void check_rdm1(fb::DeviceResources &res, fb::ci::Sigma &sigma,
+                const fb::ci::DeviceStringSet &alpha, const fb::ci::DeviceStringSet &beta,
+                std::uint64_t seed) {
   const auto dim = static_cast<std::size_t>(sigma.size());
   const auto n = static_cast<std::size_t>(alpha.n_orbitals());
   std::vector<double> c = random_block(dim, seed);
@@ -126,8 +127,8 @@ void check_rdm1(fb::DeviceResources &res, fb::ci::Sigma &sigma, const fb::ci::St
 // diag(H) to 1e-12 of host_diagonal's, and the 1-RDM by check_rdm1.
 void check_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int32_t n_beta,
                         const Integrals &ints, std::int32_t k, std::uint64_t seed) {
-  const auto alpha = fb::ci::StringSet::create(ints.n, n_alpha);
-  const auto beta = fb::ci::StringSet::create(ints.n, n_beta);
+  const auto alpha = fb::ci::DeviceStringSet::create(res, ints.n, n_alpha);
+  const auto beta = fb::ci::DeviceStringSet::create(res, ints.n, n_beta);
   ASSERT_TRUE(alpha.has_value() && beta.has_value());
   auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
@@ -197,8 +198,8 @@ double fp32_tolerance(std::size_t pairs) {
 
 void check_fp32_against_host(fb::DeviceResources &res, std::int32_t n_alpha, std::int32_t n_beta,
                              const Integrals &ints, std::int32_t k, std::uint64_t seed) {
-  const auto alpha = fb::ci::StringSet::create(ints.n, n_alpha);
-  const auto beta = fb::ci::StringSet::create(ints.n, n_beta);
+  const auto alpha = fb::ci::DeviceStringSet::create(res, ints.n, n_alpha);
+  const auto beta = fb::ci::DeviceStringSet::create(res, ints.n, n_beta);
   ASSERT_TRUE(alpha.has_value() && beta.has_value());
   auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
@@ -294,7 +295,7 @@ std::vector<double> pack(const std::vector<double> &full, std::size_t m) {
 // unpacked one and the host's to 1e-12 of max |γ|.
 void check_symmetric(fb::DeviceResources &res, std::int32_t n_electrons, const Integrals &ints,
                      std::int32_t k, std::uint64_t seed, bool fp32) {
-  const auto set = fb::ci::StringSet::create(ints.n, n_electrons);
+  const auto set = fb::ci::DeviceStringSet::create(res, ints.n, n_electrons);
   ASSERT_TRUE(set.has_value());
   auto sigma = fb::ci::Sigma::create(res, *set, *set);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
@@ -507,7 +508,7 @@ TEST(CiSigmaGpu, Fp32MatchesHostAtCas1212) {
 TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto set = fb::ci::StringSet::create(12, 6);
+  const auto set = fb::ci::DeviceStringSet::create(res, 12, 6);
   ASSERT_TRUE(set.has_value());
   auto sigma = fb::ci::Sigma::create(res, *set, *set);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
@@ -525,8 +526,10 @@ TEST(CiSigmaGpu, Rdm1MatchesHostAtCas1212) {
 void check_blocked(std::int32_t n_alpha, std::int32_t n_beta, const Integrals &ints, std::int32_t k,
                    std::uint64_t seed, fb::ci::Layout layout, bool fp32) {
   const bool symmetric = layout == fb::ci::Layout::symmetric;
-  const auto alpha = fb::ci::StringSet::create(ints.n, n_alpha);
-  const auto beta = fb::ci::StringSet::create(ints.n, n_beta);
+  // The sets on device 0 for every run, each run's own DeviceResources there.
+  fb::DeviceResources strings_res{0};
+  const auto alpha = fb::ci::DeviceStringSet::create(strings_res, ints.n, n_alpha);
+  const auto beta = fb::ci::DeviceStringSet::create(strings_res, ints.n, n_beta);
   ASSERT_TRUE(alpha.has_value() && beta.has_value());
   const auto m = static_cast<std::size_t>(alpha->size());
   const std::vector<double> c =
@@ -698,9 +701,9 @@ TEST(CiSigmaGpu, CiPackInvertsCiUnpack) {
 TEST(CiSigmaGpu, Refuses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto four = fb::ci::StringSet::create(4, 2);
-  const auto five = fb::ci::StringSet::create(5, 2);
-  const auto none = fb::ci::StringSet::create(0, 0);
+  const auto four = fb::ci::DeviceStringSet::create(res, 4, 2);
+  const auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
+  const auto none = fb::ci::DeviceStringSet::create(res, 0, 0);
   ASSERT_TRUE(four.has_value() && five.has_value() && none.has_value());
   EXPECT_FALSE(fb::ci::Sigma::create(res, *four, *five).has_value());
   EXPECT_FALSE(fb::ci::Sigma::create(res, *none, *none).has_value());
@@ -732,8 +735,8 @@ TEST(CiSigmaGpu, Refuses) {
 
   // The symmetric layout wants one set for both spins: (4, 1) and (4, 3) have
   // the same number of strings, and are still two sets.
-  const auto one = fb::ci::StringSet::create(4, 1);
-  const auto three = fb::ci::StringSet::create(4, 3);
+  const auto one = fb::ci::DeviceStringSet::create(res, 4, 1);
+  const auto three = fb::ci::DeviceStringSet::create(res, 4, 3);
   ASSERT_TRUE(one.has_value() && three.has_value());
   auto mixed = fb::ci::Sigma::create(res, *one, *three);
   ASSERT_TRUE(mixed.has_value()) << mixed.error().message;

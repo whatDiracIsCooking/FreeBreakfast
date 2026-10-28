@@ -1,5 +1,5 @@
 /// @file
-/// @brief SpinSquare's uploads and launches, S² on a CI vector over the
+/// @brief SpinSquare's upload and launches, S² on a CI vector over the
 /// replacement lists; and solve's device preconditioner, guesses and
 /// P-space.
 
@@ -28,18 +28,23 @@ namespace free_breakfast::ci {
 
 static_assert(LinearOperator<SpinSquare, double>);
 
-SpinSquare::SpinSquare(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
-                       const int32_t n_beta, const int32_t alpha_per, const double constant,
-                       const bool one_set)
-    : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
-      alpha_per_{alpha_per}, constant_{constant}, one_set_{one_set},
-      alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
-      beta_slots_(static_cast<size_t>(n_beta) * static_cast<size_t>(n_orbitals) *
-                      static_cast<size_t>(n_orbitals),
+SpinSquare::SpinSquare(DeviceResources &res, const DeviceStringSet &alpha,
+                       const DeviceStringSet &beta, const double constant)
+    : dev_idx_{res.dev_idx()}, n_orbitals_{alpha.n_orbitals()}, n_alpha_{alpha.size()},
+      n_beta_{beta.size()}, alpha_per_{alpha.replacements_per_string()}, constant_{constant},
+      one_set_{alpha.n_electrons() == beta.n_electrons()},
+      alpha_links_{alpha.device_replacements()},
+      beta_slots_(static_cast<size_t>(n_beta_) * static_cast<size_t>(n_orbitals_) *
+                      static_cast<size_t>(n_orbitals_),
                   res.device()) {}
 
-Result<SpinSquare> SpinSquare::create(DeviceResources &res, const StringSet &alpha,
-                                      const StringSet &beta) {
+Result<SpinSquare> SpinSquare::create(DeviceResources &res, const DeviceStringSet &alpha,
+                                      const DeviceStringSet &beta) {
+  if (alpha.dev_idx() != res.dev_idx() || beta.dev_idx() != res.dev_idx()) {
+    return err_config(
+        "ci::SpinSquare: strings are on devices {} and {}, but the call passed device {}",
+        alpha.dev_idx(), beta.dev_idx(), res.dev_idx());
+  }
   if (alpha.n_orbitals() != beta.n_orbitals()) {
     return err_config("ci::SpinSquare: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
                       beta.n_orbitals());
@@ -53,18 +58,6 @@ Result<SpinSquare> SpinSquare::create(DeviceResources &res, const StringSet &alp
   const double two_sz = alpha.n_electrons() - beta.n_electrons();
   const double constant = 0.25 * two_sz * (two_sz + 2.0) + beta.n_electrons();
 
-  // Each α link a†_p a_q names the slot q · n + p of its partner a†_q a_p.
-  std::vector<int32_t> links;
-  links.reserve(static_cast<size_t>(alpha.size()) *
-                static_cast<size_t>(alpha.replacements_per_string()) * 3);
-  for (int32_t address = 0; address < alpha.size(); ++address) {
-    for (const Replacement &r : alpha.replacements(address)) {
-      links.push_back(r.target);
-      links.push_back(
-          static_cast<int32_t>(static_cast<size_t>(r.q) * n + static_cast<size_t>(r.p)));
-      links.push_back(r.sign);
-    }
-  }
   // Each (p, q) appears at most once in a list, so a slot holds one link.
   std::vector<int32_t> slots(static_cast<size_t>(beta.size()) * n * n, 0);
   for (int32_t address = 0; address < beta.size(); ++address) {
@@ -75,13 +68,8 @@ Result<SpinSquare> SpinSquare::create(DeviceResources &res, const StringSet &alp
   }
 
   const ScopedDeviceIndex on{res.dev_idx()};
-  SpinSquare spin(res, alpha.n_orbitals(), alpha.size(), beta.size(),
-                  alpha.replacements_per_string(), constant,
-                  alpha.n_electrons() == beta.n_electrons());
+  SpinSquare spin(res, alpha, beta, constant);
   const wwr::wwrStream_t stream = res.stream();
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(spin.alpha_links_.data(), links.data(),
-                                         sizeof(int32_t) * links.size(), wwr::wwrMemcpyHostToDevice,
-                                         stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(spin.beta_slots_.data(), slots.data(),
                                          sizeof(int32_t) * slots.size(), wwr::wwrMemcpyHostToDevice,
                                          stream)));
@@ -112,10 +100,9 @@ Status SpinSquare::launch(DeviceResources &res, const int32_t k, const double sh
                       length);
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::spin_square(res.stream(), layout == Layout::symmetric, k * length,
-                                        length, n_beta_, n_orbitals_, alpha_links_.data(),
-                                        alpha_per_, beta_slots_.data(), constant_, shift, scale,
-                                        accumulate, x, y));
+  return gpu_status(device::spin_square(
+      res.stream(), layout == Layout::symmetric, k * length, length, n_beta_, n_orbitals_,
+      alpha_links_, alpha_per_, beta_slots_.data(), constant_, shift, scale, accumulate, x, y));
 }
 
 Status SpinSquare::apply(DeviceResources &res, const int32_t k, const double *const x,
@@ -134,10 +121,9 @@ Status SpinSquare::penalize_diagonal(DeviceResources &res, const double lambda, 
                                      const Layout layout, const double *const exchange) {
   FBF_TRY(check(res, layout));
   const ScopedDeviceIndex on{res.dev_idx()};
-  return gpu_status(device::spin_diagonal(res.stream(), layout == Layout::symmetric, size(layout),
-                                          n_beta_, n_orbitals_, alpha_links_.data(), alpha_per_,
-                                          beta_slots_.data(), constant_, target, lambda, exchange,
-                                          diagonal, shifted));
+  return gpu_status(device::spin_diagonal(
+      res.stream(), layout == Layout::symmetric, size(layout), n_beta_, n_orbitals_, alpha_links_,
+      alpha_per_, beta_slots_.data(), constant_, target, lambda, exchange, diagonal, shifted));
 }
 
 Status precondition(DeviceResources &res, const int32_t n, const std::span<const double> theta,

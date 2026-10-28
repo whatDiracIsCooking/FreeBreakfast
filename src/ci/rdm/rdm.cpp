@@ -1,6 +1,5 @@
 /// @file
-/// @brief Rdm's uploads and launches: the state-averaged 1- and 2-RDM on
-/// the device.
+/// @brief Rdm's launches: the state-averaged 1- and 2-RDM on the device.
 
 module;
 
@@ -46,33 +45,12 @@ Status check_rdm12_weights(const std::span<const double> weights) {
 // products over a chunk are wide ones, small enough to stay a modest scratch.
 constexpr size_t kRdmChunkBytes = size_t{64} << 20;
 
-// A set's replacement lists as Rdm's gather takes them: target, unpacked
-// pair p · n + q, sign, three int32_t per replacement, by string then list
-// order.
-std::vector<int32_t> rdm_link_table(const StringSet &set) {
-  const auto n = static_cast<size_t>(set.n_orbitals());
-  std::vector<int32_t> links;
-  links.reserve(static_cast<size_t>(set.size()) *
-                static_cast<size_t>(set.replacements_per_string()) * 3);
-  for (int32_t address = 0; address < set.size(); ++address) {
-    for (const Replacement &r : set.replacements(address)) {
-      links.push_back(r.target);
-      links.push_back(
-          static_cast<int32_t>(static_cast<size_t>(r.p) * n + static_cast<size_t>(r.q)));
-      links.push_back(r.sign);
-    }
+Result<Rdm> Rdm::create(DeviceResources &res, const DeviceStringSet &alpha,
+                        const DeviceStringSet &beta) {
+  if (alpha.dev_idx() != res.dev_idx() || beta.dev_idx() != res.dev_idx()) {
+    return err_config("ci::Rdm: strings are on devices {} and {}, but the call passed device {}",
+                      alpha.dev_idx(), beta.dev_idx(), res.dev_idx());
   }
-  return links;
-}
-
-Rdm::Rdm(DeviceResources &res, const int32_t n_orbitals, const int32_t n_alpha,
-         const int32_t n_beta, const int32_t alpha_per, const int32_t beta_per, const bool one_set)
-    : dev_idx_{res.dev_idx()}, n_orbitals_{n_orbitals}, n_alpha_{n_alpha}, n_beta_{n_beta},
-      alpha_per_{alpha_per}, beta_per_{beta_per}, one_set_{one_set},
-      alpha_links_(static_cast<size_t>(n_alpha) * static_cast<size_t>(alpha_per) * 3, res.device()),
-      beta_links_(static_cast<size_t>(n_beta) * static_cast<size_t>(beta_per) * 3, res.device()) {}
-
-Result<Rdm> Rdm::create(DeviceResources &res, const StringSet &alpha, const StringSet &beta) {
   if (alpha.n_orbitals() != beta.n_orbitals()) {
     return err_config("ci::Rdm: alpha strings span {} orbitals, beta {}", alpha.n_orbitals(),
                       beta.n_orbitals());
@@ -84,22 +62,15 @@ Result<Rdm> Rdm::create(DeviceResources &res, const StringSet &alpha, const Stri
     return err_config("ci::Rdm: {} x {} determinants is more than an int32_t counts", alpha.size(),
                       beta.size());
   }
-  const ScopedDeviceIndex on{res.dev_idx()};
-  Rdm rdm(res, alpha.n_orbitals(), alpha.size(), beta.size(), alpha.replacements_per_string(),
-          beta.replacements_per_string(), alpha.n_electrons() == beta.n_electrons());
-  const std::vector<int32_t> alpha_links = rdm_link_table(alpha);
-  const std::vector<int32_t> beta_links = rdm_link_table(beta);
-  const wwr::wwrStream_t stream = res.stream();
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rdm.alpha_links_.data(), alpha_links.data(),
-                                         sizeof(int32_t) * alpha_links.size(),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rdm.beta_links_.data(), beta_links.data(),
-                                         sizeof(int32_t) * beta_links.size(),
-                                         wwr::wwrMemcpyHostToDevice, stream)));
-  // Pageable sources, which die at return.
-  FBF_TRY(res.sync());
-  return rdm;
+  return Rdm(res, alpha, beta);
 }
+
+Rdm::Rdm(DeviceResources &res, const DeviceStringSet &alpha, const DeviceStringSet &beta)
+    : dev_idx_{res.dev_idx()}, n_orbitals_{alpha.n_orbitals()}, n_alpha_{alpha.size()},
+      n_beta_{beta.size()}, alpha_per_{alpha.replacements_per_string()},
+      beta_per_{beta.replacements_per_string()},
+      one_set_{alpha.n_electrons() == beta.n_electrons()},
+      alpha_links_{alpha.device_replacements()}, beta_links_{beta.device_replacements()} {}
 
 Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
                   const double *const vectors, double *const gamma, double *const gamma2,
@@ -142,9 +113,9 @@ Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
       const int32_t count = std::min(chunk, rows - begin);
       FBF_TRY(gpu_status(
           wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * nn, stream)));
-      FBF_TRY(gpu_status(device::rdm_gather_d(stream, symmetric, begin, count, n_beta_,
-                                              alpha_links_.data(), alpha_per_, beta_links_.data(),
-                                              beta_per_, c, d)));
+      FBF_TRY(
+          gpu_status(device::rdm_gather_d(stream, symmetric, begin, count, n_orbitals_, n_beta_,
+                                          alpha_links_, alpha_per_, beta_links_, beta_per_, c, d)));
       FBF_TRY(gpu_status(wwr::syrk<double, int32_t>(res.blas().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
                                                     wwr::WWRBLAS_OP_T, nn32, count, &weights[r], d,
                                                     count, &kOne<double>, m, nn32)));

@@ -286,8 +286,8 @@ from_scratch(Setup &setup, const fb::SphericalMatrixAO &c, const std::vector<dou
       }
     }
   }
-  auto alpha = fb::ci::StringSet::create(ncas, nelecas - (nelecas / 2));
-  auto beta = fb::ci::StringSet::create(ncas, nelecas / 2);
+  auto alpha = fb::ci::DeviceStringSet::create(res, ncas, nelecas - (nelecas / 2));
+  auto beta = fb::ci::DeviceStringSet::create(res, ncas, nelecas / 2);
   if (!alpha.has_value() || !beta.has_value()) {
     ADD_FAILURE() << "the string sets failed";
     return std::nullopt;

@@ -68,8 +68,9 @@ gives M exactly, and the gemm with the packed c, whose off-diagonal elements
 carry the other √2, gives γ. `ci::solve` still unpacks its roots, so
 `ci::Roots` callers read the full layout; packed roots are a follow-up.
 
-**Tables once, vectors as often as needed.** `ci::Rdm::create` uploads the link
-tables once per (n, N_α, N_β), as `ci::Sigma::create` does, and `rdm12` reads
+**Tables once, vectors as often as needed.** `ci::Rdm::create` borrows the
+link tables of the two `ci::DeviceStringSet`s, the copy `ci::Sigma` reads
+too, and `rdm12` reads
 device vectors and writes device γ and Γ, so a CASSCF macro-iteration calls
 it on `ci::solve`'s roots where they are, with nothing rebuilt or copied.
 
@@ -77,8 +78,9 @@ it on `ci::solve`'s roots where they are, with nothing rebuilt or copied.
 `rdm1` it shares the idea with: `ci::Sigma` packs D over v ≥ w as
 D_vw + D_wv, which is all σ and γ need (both contract it with something
 symmetric in the pair) but loses Γ, whose q and v in Σ (pv\|wx) Γ_qvwx are
-not symmetric. So its link tables carry the unpacked pair p · n + q, and it
-takes only the two `ci::StringSet`s: no `ci::Sigma` and no integrals.
+not symmetric. So its gather writes D's column p · n + q from each link's
+(p, q), and it takes only the two `ci::DeviceStringSet`s: no `ci::Sigma` and
+no integrals.
 
 The host reference, `host_rdm12`, builds the same d_K per determinant and adds
 the outer product w_r d_tu d_wv, O(Σ_r dim · n⁴) scalar work, and takes γ from
@@ -116,7 +118,7 @@ over the two sets (4, 1) and (4, 3).
 | File | Role |
 |------|------|
 | `rdm.cppm` | Module interface: `ci::Rdm` |
-| `rdm.cpp` | `ci::Rdm`'s link tables, uploads, syrk and gemm |
+| `rdm.cpp` | `ci::Rdm`'s checks, syrk and gemm, and the gather's launch |
 | `ci_rdm_bridge.h` | The launchers, shared by the module (GMF) and the `.cu` |
 | `ci_rdm.cu` | The gather of D, one thread per determinant (or triangle element), and Γ's assembly |
 | `CMakeLists.txt` | The device library `free_breakfast.ci.rdm.device` and the module `free_breakfast.ci.rdm` |

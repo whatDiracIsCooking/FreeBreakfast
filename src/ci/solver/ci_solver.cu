@@ -27,8 +27,10 @@ namespace free_breakfast::ci::device {
 
 namespace {
 
-// The fields of one α link (see the bridge header).
-constexpr int32_t kLinkWidth = 3;
+// The β slot of an α link a†_p a_q's partner a†_q a_p: q · n + p.
+__device__ int32_t ci_partner_slot(const Replacement l, const int32_t n) {
+  return (static_cast<int32_t>(l.q) * n) + static_cast<int32_t>(l.p);
+}
 
 // The preconditioner's floor on |theta − diag|: a root concentrated on one
 // determinant has theta ≈ its diagonal.
@@ -47,7 +49,7 @@ __device__ void ci_strings(const int32_t det, const int32_t n_beta, int32_t &a, 
 
 template <bool Symmetric>
 __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, const int32_t n_beta,
-                                      const int32_t n, const int32_t *const alpha_links,
+                                      const int32_t n, const Replacement *const alpha_links,
                                       const int32_t alpha_per, const int32_t *const beta_slots,
                                       const double constant, const double shift, const double scale,
                                       const bool accumulate, const double *const x,
@@ -67,22 +69,24 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
   // element (its mirror's, below the triangle) over √2 off the diagonal, and
   // the row's own is stored times √2 off the diagonal.
   double links = 0.0;
-  const int32_t *a = alpha_links + (static_cast<size_t>(ja) * alpha_per * kLinkWidth);
+  const Replacement *const a = alpha_links + (static_cast<size_t>(ja) * alpha_per);
   const int32_t *const slots =
       beta_slots + (static_cast<size_t>(jb) * static_cast<size_t>(n) * static_cast<size_t>(n));
-  for (int32_t e = 0; e < alpha_per; ++e, a += kLinkWidth) {
-    const int32_t slot = slots[a[1]];
+  for (int32_t e = 0; e < alpha_per; ++e) {
+    const Replacement l = a[e];
+    const int32_t slot = slots[ci_partner_slot(l, n)];
     if (slot == 0) {
       continue;
     }
     const int32_t kb = (slot < 0 ? -slot : slot) - 1;
-    const double sign = static_cast<double>(slot < 0 ? -a[2] : a[2]);
+    const double sign = static_cast<double>(slot < 0 ? -l.sign : l.sign);
     if constexpr (Symmetric) {
-      const double weight = a[0] == kb ? 1.0 : kInvSqrt2;
-      links += sign * (weight * x[vector_base + triangle(a[0], kb)]);
+      const double weight = l.target == kb ? 1.0 : kInvSqrt2;
+      links += sign * (weight * x[vector_base + triangle(l.target, kb)]);
     } else {
-      links += sign * x[vector_base + (static_cast<size_t>(a[0]) * static_cast<size_t>(n_beta)) +
-                        static_cast<size_t>(kb)];
+      links +=
+          sign * x[vector_base + (static_cast<size_t>(l.target) * static_cast<size_t>(n_beta)) +
+                   static_cast<size_t>(kb)];
     }
   }
   double sum = (constant - shift) * x[row];
@@ -134,11 +138,11 @@ __global__ void ci_olsen_kernel(const int32_t n, const double theta, const doubl
 // over the configuration's determinants, which is the same for every pair.
 template <bool Symmetric>
 __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_beta, const int32_t n,
-                                        const int32_t *const alpha_links, const int32_t alpha_per,
-                                        const int32_t *const beta_slots, const double constant,
-                                        const double shift, const double scale,
-                                        const double *const exchange, const double *const diagonal,
-                                        double *const shifted) {
+                                        const Replacement *const alpha_links,
+                                        const int32_t alpha_per, const int32_t *const beta_slots,
+                                        const double constant, const double shift,
+                                        const double scale, const double *const exchange,
+                                        const double *const diagonal, double *const shifted) {
   const int64_t det = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (det >= n_det) {
     return;
@@ -151,13 +155,14 @@ __global__ void ci_spin_diagonal_kernel(const int32_t n_det, const int32_t n_bet
   // index is p · n + p.
   int32_t doubles = 0;
   uint64_t alpha_occupied = 0;
-  const int32_t *a = alpha_links + (static_cast<size_t>(ja) * alpha_per * kLinkWidth);
+  const Replacement *const a = alpha_links + (static_cast<size_t>(ja) * alpha_per);
   const int32_t *const slots =
       beta_slots + (static_cast<size_t>(jb) * static_cast<size_t>(n) * static_cast<size_t>(n));
-  for (int32_t e = 0; e < alpha_per; ++e, a += kLinkWidth) {
-    if (a[0] == ja) {
-      alpha_occupied |= uint64_t{1} << (a[1] / (n + 1));
-      if (slots[a[1]] != 0) {
+  for (int32_t e = 0; e < alpha_per; ++e) {
+    const Replacement l = a[e];
+    if (l.target == ja) {
+      alpha_occupied |= uint64_t{1} << l.p;
+      if (slots[ci_partner_slot(l, n)] != 0) {
         ++doubles;
       }
     }
@@ -546,7 +551,7 @@ uint32_t ci_blocks(const int64_t items) {
 
 wwr::wwrError_t spin_square(const wwr::wwrStream_t stream, const bool symmetric, const int32_t rows,
                             const int32_t n_det, const int32_t n_beta, const int32_t n,
-                            const int32_t *const alpha_links, const int32_t alpha_per,
+                            const Replacement *const alpha_links, const int32_t alpha_per,
                             const int32_t *const beta_slots, const double constant,
                             const double shift, const double scale, const bool accumulate,
                             const double *const x, double *const y) {
@@ -589,7 +594,7 @@ wwr::wwrError_t olsen(const wwr::wwrStream_t stream, const int32_t n, const doub
 
 wwr::wwrError_t spin_diagonal(const wwr::wwrStream_t stream, const bool symmetric,
                               const int32_t n_det, const int32_t n_beta, const int32_t n,
-                              const int32_t *const alpha_links, const int32_t alpha_per,
+                              const Replacement *const alpha_links, const int32_t alpha_per,
                               const int32_t *const beta_slots, const double constant,
                               const double shift, const double scale, const double *const exchange,
                               const double *const diagonal, double *const shifted) {

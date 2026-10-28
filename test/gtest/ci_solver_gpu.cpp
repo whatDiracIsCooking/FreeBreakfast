@@ -52,8 +52,8 @@ const std::vector<std::int32_t> kPspaceSizes = [] {
 // diagonal, or null; h the same H as ci::Sigma::contraction holds it, for the
 // P-space, or null.
 struct HostSigma {
-  const fb::ci::StringSet &alpha;
-  const fb::ci::StringSet &beta;
+  const fb::ci::DeviceStringSet &alpha;
+  const fb::ci::DeviceStringSet &beta;
   double e_core;
   const std::vector<double> &h1;
   const std::vector<double> &eri;
@@ -104,8 +104,8 @@ struct Case {
   double e_core;
   std::vector<double> h1;
   std::vector<double> eri;
-  fb::ci::StringSet alpha;
-  fb::ci::StringSet beta;
+  fb::ci::DeviceStringSet alpha;
+  fb::ci::DeviceStringSet beta;
   std::vector<double> diagonal;
   fb::json roots;
   std::int32_t n_electrons;
@@ -119,12 +119,12 @@ fb::json load_cases() {
 
 // The case in sector (N_α, N_β) = its own, moved by @p shift electrons from β
 // to α: shift 1 is the M_s = 1 sector, of the same total electron count.
-Case make_case(const fb::json &entry, std::int32_t shift = 0) {
+Case make_case(fb::DeviceResources &res, const fb::json &entry, std::int32_t shift = 0) {
   const auto n = entry["n_orbitals"].get<std::int32_t>();
   const auto na = entry["n_alpha"].get<std::int32_t>() + shift;
   const auto nb = entry["n_beta"].get<std::int32_t>() - shift;
-  auto alpha = fb::ci::StringSet::create(n, na);
-  auto beta = fb::ci::StringSet::create(n, nb);
+  auto alpha = fb::ci::DeviceStringSet::create(res, n, na);
+  auto beta = fb::ci::DeviceStringSet::create(res, n, nb);
   EXPECT_TRUE(alpha.has_value() && beta.has_value());
   Case c{entry["name"].get<std::string>(),
          n,
@@ -260,7 +260,7 @@ TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
-    const Case c = make_case(entry);
+    const Case c = make_case(res, entry);
     SCOPED_TRACE(c.name);
     // The spin control is exercised: a triplet lies below the second singlet.
     const std::vector<std::size_t> singlets = golden_of_spin(c.roots, 0.0);
@@ -301,7 +301,7 @@ TEST(CiSolver, LowestTripletsFromTheMsOneSector) {
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
-    const Case c = make_case(entry, 1);
+    const Case c = make_case(res, entry, 1);
     SCOPED_TRACE(c.name);
     const auto exchange = exchange_on_device(res, c);
     const fb::ci::Sigma packed = sigma_of(res, c);
@@ -335,7 +335,7 @@ TEST(CiSolver, NoPenaltyKeepsEverySpin) {
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
   // 36 determinants in the full layout, so a P-space of 24 leaves a Davidson.
-  const Case c = make_case(cases[0]);
+  const Case c = make_case(res, cases[0]);
   const auto exchange = exchange_on_device(res, c);
   const fb::ci::Sigma packed = sigma_of(res, c);
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri, 0, exchange.data(), packed.contraction()};
@@ -403,7 +403,7 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
     for (const std::int32_t shift : {0, 1}) {
-      const Case c = make_case(entry, shift);
+      const Case c = make_case(res, entry, shift);
       SCOPED_TRACE(std::format("{}, M_s {}", c.name, shift));
       auto sigma = fb::ci::Sigma::create(res, c.alpha, c.beta);
       ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
@@ -478,7 +478,7 @@ TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
     for (const std::int32_t shift : {0, 1}) {
-      const Case c = make_case(entry, shift);
+      const Case c = make_case(res, entry, shift);
       SCOPED_TRACE(std::format("{}, M_s {}", c.name, shift));
       auto sigma = fb::ci::Sigma::create(res, c.alpha, c.beta);
       ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
@@ -577,7 +577,7 @@ TEST(CiSolver, NoPenaltyOverCiSigmaKeepsEverySpin) {
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
-  const Case c = make_case(cases[0]);
+  const Case c = make_case(res, cases[0]);
   auto sigma = fb::ci::Sigma::create(res, c.alpha, c.beta);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   ASSERT_TRUE(sigma->set_integrals(res, c.e_core, c.h1, c.eri).has_value());
@@ -622,7 +622,7 @@ TEST(CiSolver, PspaceHamiltonianMatchesDense) {
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
     for (const std::int32_t shift : {0, 1}) {
-      const Case c = make_case(entry, shift);
+      const Case c = make_case(res, entry, shift);
       const fb::ci::Sigma sigma = sigma_of(res, c);
       const auto diagonal = on_device(res, c.diagonal);
       const double target = shift == 0 ? 0.0 : 2.0;
@@ -697,7 +697,7 @@ TEST(CiSolver, PspaceHamiltonianMatchesDense) {
     }
   }
   // Without a contraction, refused.
-  const Case c = make_case(cases[0]);
+  const Case c = make_case(res, cases[0]);
   const auto diagonal = on_device(res, c.diagonal);
   fb::Buffers::device<std::int32_t> picks(1, res.device());
   fb::Buffers::device<double> h(1, res.device());
@@ -718,7 +718,7 @@ TEST(CiSolver, PspaceCoveringTheSpaceIsExact) {
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
     for (const std::int32_t shift : {0, 1}) {
-      const Case c = make_case(entry, shift);
+      const Case c = make_case(res, entry, shift);
       SCOPED_TRACE(std::format("{}, M_s {}", c.name, shift));
       fb::ci::Sigma sigma = sigma_of(res, c);
       const auto diagonal = on_device(res, c.diagonal);
@@ -759,7 +759,7 @@ TEST(CiSolver, PspaceJustBelowTheSpaceConverges) {
   ASSERT_FALSE(cases.empty());
   for (const std::size_t index : {std::size_t{1}, std::size_t{2}}) {
     for (const std::int32_t shift : {0, 1}) {
-      const Case c = make_case(cases[index], shift);
+      const Case c = make_case(res, cases[index], shift);
       fb::ci::Sigma sigma = sigma_of(res, c);
       const auto diagonal = on_device(res, c.diagonal);
       const std::int32_t length = solve_length(c, shift == 0);
@@ -800,7 +800,7 @@ TEST(CiSolver, PspaceDefaultRunsWithoutAContraction) {
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
-  const Case c = make_case(cases[2]);
+  const Case c = make_case(res, cases[2]);
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
   const auto diagonal = on_device(res, c.diagonal);
   const auto got = fb::ci::solve(res, sigma, c.alpha, c.beta, diagonal.data(), 3);
@@ -814,7 +814,7 @@ TEST(CiSolver, TooFewIterationsIsMaxIterationsExceeded) {
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
-  const Case c = make_case(cases[1]);
+  const Case c = make_case(res, cases[1]);
   const auto exchange = exchange_on_device(res, c);
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri, 0, exchange.data()};
   const auto diagonal = on_device(res, c.diagonal);
@@ -834,7 +834,7 @@ TEST(CiSolver, RejectsBadShapes) {
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
-  const Case c = make_case(cases[0]);
+  const Case c = make_case(res, cases[0]);
   HostSigma sigma{c.alpha, c.beta, c.e_core, c.h1, c.eri};
   const auto dim = static_cast<std::int32_t>(c.diagonal.size());
   const auto diagonal = on_device(res, c.diagonal);
@@ -844,7 +844,7 @@ TEST(CiSolver, RejectsBadShapes) {
   const auto invalid = std::optional{fb::ErrorKind::InvalidConfig};
   EXPECT_EQ(kind(fb::ci::solve(res, sigma, c.alpha, c.beta, diagonal.data(), 0)), invalid);
   EXPECT_EQ(kind(fb::ci::solve(res, sigma, c.alpha, c.beta, diagonal.data(), dim + 1)), invalid);
-  const auto other = fb::ci::StringSet::create(c.n + 1, c.beta.n_electrons());
+  const auto other = fb::ci::DeviceStringSet::create(res, c.n + 1, c.beta.n_electrons());
   ASSERT_TRUE(other.has_value());
   EXPECT_EQ(kind(fb::ci::solve(res, sigma, c.alpha, *other, diagonal.data(), 1)), invalid);
   fb::ci::SolverOptions negative;
@@ -904,8 +904,8 @@ TEST(CiSpinSquareGpu, MatchesHost) {
   for (const Sector s : {Sector{6, 3, 3}, Sector{7, 4, 2}, Sector{8, 3, 5}, Sector{5, 0, 3},
                          Sector{5, 5, 2}, Sector{1, 1, 0}, Sector{10, 5, 5}}) {
     SCOPED_TRACE(std::format("n {} alpha {} beta {}", s.n, s.n_alpha, s.n_beta));
-    const auto alpha = fb::ci::StringSet::create(s.n, s.n_alpha);
-    const auto beta = fb::ci::StringSet::create(s.n, s.n_beta);
+    const auto alpha = fb::ci::DeviceStringSet::create(res, s.n, s.n_alpha);
+    const auto beta = fb::ci::DeviceStringSet::create(res, s.n, s.n_beta);
     ASSERT_TRUE(alpha.has_value() && beta.has_value());
     auto spin = fb::ci::SpinSquare::create(res, *alpha, *beta);
     ASSERT_TRUE(spin.has_value()) << spin.error().message;
@@ -1009,7 +1009,7 @@ TEST(CiSpinSquareGpu, SymmetricLayoutMatchesHost) {
   for (const auto [n, n_electrons] : std::array<std::pair<std::int32_t, std::int32_t>, 6>{
            {{6, 3}, {8, 4}, {7, 2}, {5, 0}, {4, 4}, {1, 1}}}) {
     SCOPED_TRACE(std::format("n {} N {}", n, n_electrons));
-    const auto set = fb::ci::StringSet::create(n, n_electrons);
+    const auto set = fb::ci::DeviceStringSet::create(res, n, n_electrons);
     ASSERT_TRUE(set.has_value());
     auto spin = fb::ci::SpinSquare::create(res, *set, *set);
     ASSERT_TRUE(spin.has_value()) << spin.error().message;
@@ -1114,7 +1114,7 @@ TEST(CiSpinSquareGpu, SpinAveragedDiagonalMatchesHost) {
   ASSERT_FALSE(cases.empty());
   for (const auto &entry : cases) {
     for (const std::int32_t shift : {0, 1, 2, -1}) {
-      const Case c = make_case(entry, shift);
+      const Case c = make_case(res, entry, shift);
       SCOPED_TRACE(std::format("{}, shift {}", c.name, shift));
       auto sigma = fb::ci::Sigma::create(res, c.alpha, c.beta);
       ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
@@ -1185,8 +1185,8 @@ TEST(CiSpinSquareGpu, SpinAveragedDiagonalMatchesHost) {
 TEST(CiSpinSquareGpu, Refuses) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
-  const auto four = fb::ci::StringSet::create(4, 2);
-  const auto five = fb::ci::StringSet::create(5, 2);
+  const auto four = fb::ci::DeviceStringSet::create(res, 4, 2);
+  const auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
   ASSERT_TRUE(four.has_value() && five.has_value());
   EXPECT_FALSE(fb::ci::SpinSquare::create(res, *four, *five).has_value());
 
@@ -1199,8 +1199,8 @@ TEST(CiSpinSquareGpu, Refuses) {
   EXPECT_TRUE(spin->apply(res, 0, x.data(), y.data()).has_value());
 
   // The symmetric layout wants one set for both spins.
-  const auto one = fb::ci::StringSet::create(4, 1);
-  const auto three = fb::ci::StringSet::create(4, 3);
+  const auto one = fb::ci::DeviceStringSet::create(res, 4, 1);
+  const auto three = fb::ci::DeviceStringSet::create(res, 4, 3);
   ASSERT_TRUE(one.has_value() && three.has_value());
   auto mixed = fb::ci::SpinSquare::create(res, *one, *three);
   ASSERT_TRUE(mixed.has_value()) << mixed.error().message;

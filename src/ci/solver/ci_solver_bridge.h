@@ -14,9 +14,9 @@
 /// column-major with leading dimension n_det, and a *row* is one (vector j,
 /// determinant I) pair, row j · n_det + I. The tables are S²'s own:
 ///
-/// - An α link table holds the α set's replacement lists, `alpha_per` links per
-///   string, three int32_t per link a†_p a_q: the target string's address, the
-///   index q · n + p of its β partner a†_q a_p in a β slot table, and the sign.
+/// - An α link table is the α DeviceStringSet's replacement lists,
+///   `alpha_per` Replacements per string (replacement.h); a link a†_p a_q's β
+///   partner a†_q a_p is index q · n + p of a β slot table.
 /// - A β slot table holds, per β string and n × n over (p, q) row-major, the
 ///   replacement a†_p a_q of that string as sign · (target + 1), or 0 when it
 ///   annihilates the string.
@@ -31,6 +31,7 @@
 // Standard (via integral_types.h) before runtime.h: under HIP a libc++ header
 // must not follow the vendor runtime header (see primitives.h).
 #include "integral_types.h"
+#include "replacement.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see src/integrals/one_electron/overlap/overlap_bridge.h.
@@ -50,7 +51,7 @@ namespace free_breakfast::ci::device {
 /// S² is real symmetric. @p y has @p x's layout and must not overlap it.
 [[nodiscard]] wwr::wwrError_t spin_square(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
                                           int32_t n_det, int32_t n_beta, int32_t n,
-                                          const int32_t *alpha_links, int32_t alpha_per,
+                                          const Replacement *alpha_links, int32_t alpha_per,
                                           const int32_t *beta_slots, double constant, double shift,
                                           double scale, bool accumulate, const double *x,
                                           double *y);
@@ -71,11 +72,11 @@ namespace free_breakfast::ci::device {
 /// The same links give the α occupations, and the slot table's (p, p)
 /// entries the β ones.
 [[nodiscard]] wwr::wwrError_t spin_diagonal(wwr::wwrStream_t stream, bool symmetric, int32_t n_det,
-                                            int32_t n_beta, int32_t n, const int32_t *alpha_links,
-                                            int32_t alpha_per, const int32_t *beta_slots,
-                                            double constant, double shift, double scale,
-                                            const double *exchange, const double *diagonal,
-                                            double *shifted);
+                                            int32_t n_beta, int32_t n,
+                                            const Replacement *alpha_links, int32_t alpha_per,
+                                            const int32_t *beta_slots, double constant,
+                                            double shift, double scale, const double *exchange,
+                                            const double *diagonal, double *shifted);
 
 /// @brief out_i = in_i / (theta − shifted_i) for the @p n elements of one
 /// column, the denominator held off zero at ±1e-3: M⁻¹ in, M = theta − shifted.

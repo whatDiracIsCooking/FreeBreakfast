@@ -300,8 +300,15 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
   const int32_t n_beta = nelecas / 2;
-  const ci::StringSet alpha = FBF_TRY(ci::StringSet::create(ncas, nelecas - n_beta));
-  const ci::StringSet beta = FBF_TRY(ci::StringSet::create(ncas, n_beta));
+  // One set serves both spins when N_α = N_β, so its tables are on the device
+  // once for the two sigmas, the RDMs and S².
+  const ci::DeviceStringSet alpha =
+      FBF_TRY(ci::DeviceStringSet::create(res, ncas, nelecas - n_beta));
+  std::optional<ci::DeviceStringSet> own_beta;
+  if (nelecas - n_beta != n_beta) {
+    own_beta = FBF_TRY(ci::DeviceStringSet::create(res, ncas, n_beta));
+  }
+  const ci::DeviceStringSet &beta = own_beta ? *own_beta : alpha;
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   ci::Rdm ci_rdm = FBF_TRY(ci::Rdm::create(res, alpha, beta));
   const auto dim = static_cast<size_t>(sigma.size());

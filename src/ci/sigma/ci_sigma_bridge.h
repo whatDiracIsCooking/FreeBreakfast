@@ -15,9 +15,9 @@
 ///   row j · n_det + I, so a block of k vectors has k · n_det rows.
 /// - An orbital pair (t, u) is packed as hi (hi + 1) / 2 + lo, lo = min(t, u),
 ///   hi = max(t, u): n_pairs = n (n + 1) / 2.
-/// - A link table holds a StringSet's replacement lists, `per` links per
-///   string, three int32_t per link: the target string's address, the packed
-///   pair (p, q), and the sign of a†_p a_q.
+/// - A link table is a DeviceStringSet's replacement lists, `per` Replacements
+///   per string (replacement.h): the target string's address, the sign, and
+///   the (p, q) of a†_p a_q, whose packed pair the kernels form.
 /// - With @p symmetric, the vectors are in ci::Layout::symmetric (see
 ///   ci_symmetric.h): n_alpha = n_beta strings, n_det the triangle's
 ///   n_alpha (n_alpha + 1) / 2, and a row a triangle element.
@@ -29,6 +29,7 @@
 // Standard (via integral_types.h) before runtime.h: under HIP a libc++ header
 // must not follow the vendor runtime header (see primitives.h).
 #include "integral_types.h"
+#include "replacement.h"
 
 // wwr/runtime_api.h #errors in a device pass, and runtime.h's host part lacks
 // wwrError_t: see src/integrals/one_electron/overlap/overlap_bridge.h.
@@ -54,13 +55,13 @@ namespace free_breakfast::ci::device {
 /// @p symmetric, @p scale_off_diagonal is ignored.
 [[nodiscard]] wwr::wwrError_t gather_d(wwr::wwrStream_t stream, bool symmetric, int32_t row_begin,
                                        int32_t rows, int32_t n_det, int32_t n_beta,
-                                       const int32_t *alpha_links, int32_t alpha_per,
-                                       const int32_t *beta_links, int32_t beta_per,
+                                       const Replacement *alpha_links, int32_t alpha_per,
+                                       const Replacement *beta_links, int32_t beta_per,
                                        bool scale_off_diagonal, const double *c, double *d);
 [[nodiscard]] wwr::wwrError_t gather_d(wwr::wwrStream_t stream, bool symmetric, int32_t row_begin,
                                        int32_t rows, int32_t n_det, int32_t n_beta,
-                                       const int32_t *alpha_links, int32_t alpha_per,
-                                       const int32_t *beta_links, int32_t beta_per,
+                                       const Replacement *alpha_links, int32_t alpha_per,
+                                       const Replacement *beta_links, int32_t beta_per,
                                        bool scale_off_diagonal, const double *c, float *d);
 
 /// @brief gather_d over rows [@p row_begin, @p row_begin + @p rows) of a
@@ -75,14 +76,14 @@ namespace free_breakfast::ci::device {
 [[nodiscard]] wwr::wwrError_t gather_d_block(wwr::wwrStream_t stream, bool symmetric,
                                              bool beta_major, int32_t first, int32_t row_begin,
                                              int32_t rows, int32_t n_alpha, int32_t n_beta,
-                                             const int32_t *alpha_links, int32_t alpha_per,
-                                             const int32_t *beta_links, int32_t beta_per,
+                                             const Replacement *alpha_links, int32_t alpha_per,
+                                             const Replacement *beta_links, int32_t beta_per,
                                              const double *c, double *d);
 [[nodiscard]] wwr::wwrError_t gather_d_block(wwr::wwrStream_t stream, bool symmetric,
                                              bool beta_major, int32_t first, int32_t row_begin,
                                              int32_t rows, int32_t n_alpha, int32_t n_beta,
-                                             const int32_t *alpha_links, int32_t alpha_per,
-                                             const int32_t *beta_links, int32_t beta_per,
+                                             const Replacement *alpha_links, int32_t alpha_per,
+                                             const Replacement *beta_links, int32_t beta_per,
                                              const double *c, float *d);
 
 /// @brief σ for every one of the @p rows rows, from G:
@@ -96,14 +97,14 @@ namespace free_breakfast::ci::device {
 /// triangle is read from its mirror's row.
 [[nodiscard]] wwr::wwrError_t sigma_from_g(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
                                            int32_t n_det, int32_t n_beta, int32_t n_pairs,
-                                           const int32_t *alpha_links, int32_t alpha_per,
-                                           const int32_t *beta_links, int32_t beta_per,
+                                           const Replacement *alpha_links, int32_t alpha_per,
+                                           const Replacement *beta_links, int32_t beta_per,
                                            double e_core, const double *c, const double *g,
                                            double *sigma);
 [[nodiscard]] wwr::wwrError_t sigma_from_g(wwr::wwrStream_t stream, bool symmetric, int32_t rows,
                                            int32_t n_det, int32_t n_beta, int32_t n_pairs,
-                                           const int32_t *alpha_links, int32_t alpha_per,
-                                           const int32_t *beta_links, int32_t beta_per,
+                                           const Replacement *alpha_links, int32_t alpha_per,
+                                           const Replacement *beta_links, int32_t beta_per,
                                            double e_core, const double *c, const float *g,
                                            double *sigma);
 
@@ -123,14 +124,14 @@ namespace free_breakfast::ci::device {
 [[nodiscard]] wwr::wwrError_t sigma_from_g_block(wwr::wwrStream_t stream, bool symmetric,
                                                  bool beta_major, int32_t first, int32_t count,
                                                  int32_t n_alpha, int32_t n_beta, int32_t n_pairs,
-                                                 const int32_t *alpha_links, int32_t alpha_per,
-                                                 const int32_t *beta_links, int32_t beta_per,
+                                                 const Replacement *alpha_links, int32_t alpha_per,
+                                                 const Replacement *beta_links, int32_t beta_per,
                                                  double e_core, const double *c, const double *g,
                                                  double *sigma);
 [[nodiscard]] wwr::wwrError_t
 sigma_from_g_block(wwr::wwrStream_t stream, bool symmetric, bool beta_major, int32_t first,
                    int32_t count, int32_t n_alpha, int32_t n_beta, int32_t n_pairs,
-                   const int32_t *alpha_links, int32_t alpha_per, const int32_t *beta_links,
+                   const Replacement *alpha_links, int32_t alpha_per, const Replacement *beta_links,
                    int32_t beta_per, double e_core, const double *c, const float *g, double *sigma);
 
 /// @brief diag(H) for the @p n_alpha · @p n_beta determinants, by ci::Sigma::diagonal's

@@ -62,9 +62,10 @@ enum class Layout : int32_t { full, symmetric };
 /// E_tu the spin-summed excitation operator, over the determinants of two
 /// StringSets in Layout::full (or, over one set, Layout::symmetric).
 ///
-/// create uploads the two sets' strings and replacement lists, once per
-/// (n, N_α, N_β); set_integrals uploads an H over them, and may be called again
-/// for another (a CASSCF macro-iteration's) without touching the tables.
+/// create borrows the two sets' strings and replacement lists, already on the
+/// device in their DeviceStringSets; set_integrals uploads an H over them, and
+/// may be called again for another (a CASSCF macro-iteration's) without
+/// touching the tables.
 ///
 /// apply gathers D_K[vw] = (E_vw c)_K over each determinant's replacement
 /// lists, contracts it with the integrals in one gemm per chunk of rows,
@@ -87,17 +88,19 @@ enum class Layout : int32_t { full, symmetric };
 /// gathers and gemm.
 ///
 /// Move-only; the buffers are on the device of the DeviceResources create was
-/// given, which every call must pass again.
+/// given, which every call must pass again, and @p alpha and @p beta must
+/// outlive it.
 class Sigma {
 public:
-  /// @brief Upload @p alpha's and @p beta's strings and replacement lists to
+  /// @brief A sigma over @p alpha's and @p beta's device tables, which it
+  /// reads in place (one set may be both), with its integral buffers on
   /// @p res's device. A failed allocation aborts (CreatePolicy).
   ///
-  /// @return InvalidConfig when the two sets span different orbital counts or
-  ///         none, or alpha.size() · beta.size() does not fit an int32_t; or the
-  ///         GpuRuntime error of an upload.
-  [[nodiscard]] static Result<Sigma> create(DeviceResources &res, const StringSet &alpha,
-                                            const StringSet &beta);
+  /// @return InvalidConfig when either set is on another device, the two span
+  ///         different orbital counts or none, or alpha.size() · beta.size()
+  ///         does not fit an int32_t.
+  [[nodiscard]] static Result<Sigma> create(DeviceResources &res, const DeviceStringSet &alpha,
+                                            const DeviceStringSet &beta);
 
   Sigma(Sigma &&) noexcept = default;
   Sigma &operator=(Sigma &&) noexcept = default;
@@ -224,8 +227,7 @@ public:
   }
 
 private:
-  Sigma(DeviceResources &res, int32_t n_orbitals, int32_t n_alpha, int32_t n_beta,
-        int32_t alpha_per, int32_t beta_per, bool one_set);
+  Sigma(DeviceResources &res, const DeviceStringSet &alpha, const DeviceStringSet &beta);
 
   // apply and apply_fp32: D and G of T, over the contraction of T.
   template <typename T>
@@ -248,11 +250,11 @@ private:
   double e_core_ = 0.0;
   // set_workspace_limit's bound on apply's scratch, in bytes.
   size_t workspace_limit_ = std::numeric_limits<size_t>::max();
-  // The link tables, three int32_t per replacement: target, packed pair, sign.
-  Buffers::device<int32_t> alpha_links_;
-  Buffers::device<int32_t> beta_links_;
-  Buffers::device<uint64_t> alpha_strings_;
-  Buffers::device<uint64_t> beta_strings_;
+  // The sets' device tables, borrowed: one per spin, the same for one set.
+  const Replacement *alpha_links_;
+  const Replacement *beta_links_;
+  const uint64_t *alpha_strings_;
+  const uint64_t *beta_strings_;
   // n_pairs × (n_pairs + 1), column-major: column pair(t, u) is ½ (tu|vw) over
   // the rows pair(v, w), and the last column k_vw.
   Buffers::device<double> contraction_;
