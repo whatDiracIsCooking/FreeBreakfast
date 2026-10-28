@@ -41,10 +41,11 @@ FBF_TRY(metric(res, *aux, m));
 5. **The average.** U^T M U is two gemms, which round (a, b) and (b, a) in
    different orders: on water in cc-pVDZ-JKFIT the two differ by up to
    3.6e-15 of max|M|. `m.spherical()` is replaced by half of itself plus half
-   of its transpose (one geam, through the workspace, and a copy back), which
-   is exactly symmetric: the halving is exact and addition commutes.
+   of its transpose, in place by
+   [`recipes.symmetrize`](../../../../recipes/symmetrize/README.md), which is
+   exactly symmetric: each pair is summed once, and addition commutes.
 
-The staging and the average's scratch come from `res.device_workspace()`. The
+The staging comes from `res.device_workspace()`. The
 call synchronizes once, after the upload, so the host staging can go.
 
 ## The normalisation: no factor reconciles them, because none is needed

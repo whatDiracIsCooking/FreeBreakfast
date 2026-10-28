@@ -39,11 +39,11 @@ export namespace free_breakfast {
 /// construction. Every element of the Cartesian metric belongs to one pair,
 /// so nothing is zeroed first, and the result is bit-reproducible run to run.
 ///
-/// Queued on res.stream(). The staging and the average's scratch come from
-/// res.device_workspace(), and the call synchronizes res.stream() once, after
-/// its upload, so the host staging can be released; it does not wait for the
-/// launches, the transform or the average. The device res.dev_idx() names is made current for the call and
-/// the previous one restored.
+/// Queued on res.stream(). The staging comes from res.device_workspace(), and
+/// the call synchronizes res.stream() once, after its upload, so the host
+/// staging can be released; it does not wait for the launches, the transform
+/// or the average. The device res.dev_idx() names is made current for the
+/// call and the previous one restored.
 ///
 /// @return Success (and nothing written for an empty @p aux); InvalidConfig if
 ///         @p res is not on @p m's device, if @p m's orders are not @p aux's,
