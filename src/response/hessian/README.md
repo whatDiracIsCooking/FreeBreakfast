@@ -201,11 +201,12 @@ cc-pVDZ cases, max |xᵀHy − yᵀHx| / (max |diag H| ‖x‖ ‖y‖) is at mo
 The tests hold it to the integral-direct bar, 100 τ at the default τ, which
 it passes by over four orders of magnitude.
 
-**Accuracy** is the fit's: against the integral-direct H over cc-pVDZ-JKFIT,
-with ppaa, papa and the Fock fitted from the same B, an element of H x differs
-by at most 2.8e-3 ‖x‖ and of the diagonal by 6.2e-3 (both N₂), where
-max |diag H| is 73 to 95, about 1e-4 of H's scale; the same order as the
-density-fitted `fock`'s 1.2e-3 per element of F.
+**Accuracy** is the fit's, and depends on the set. Against the
+integral-direct H, with ppaa, papa and the Fock fitted from the same B, an
+element of H x differs by at most 1.2e-4 ‖x‖ and of the diagonal by 4.7e-4
+over aug-cc-pVDZ-acCD-6-6, where max |diag H| is 73 to 95. cc-pVDZ-JKFIT,
+built for occupied pairs, gives 2.8e-3 and 6.2e-3 (N₂): H, like ppaa and
+papa, reads virtual-orbital pairs.
 
 ## Not done
 
@@ -238,18 +239,18 @@ by AVAS.
   finite difference, both at a two-root frontier CAS(2,2) weighted
   [0.6, 0.4] (every kind of pair) and at ncas = 0 at and off the SCF;
 - the refusals;
-- the density-fitted H over cc-pVDZ-JKFIT, at each case's CASCI orbitals and
+- the density-fitted H over aug-cc-pVDZ-acCD-6-6, at each case's CASCI orbitals and
   RDMs, over ppaa, papa and a Fock (the density-fitted `fock`) contracted
   from the same B on the host: H x along the gradient and the random x, and
   the whole diagonal, against a host product from those MO integrals to 1e-12
-  of max |diag H| (seen: 5e-15). The host product is H x analytically, the t
+  of max |diag H| (seen: 6e-15). The host product is H x analytically, the t
   derivative of the finite difference's corrected gradient: (pq\|rs) and h
   rotated to first order in κ, through the generalized Fock, which is linear
   in them at fixed RDMs, plus [κ, G] / 2. Then symmetry at the integral-direct
   bar (seen: 9e-17), and against the integral-direct H within the fit's error:
-  1e-2 ‖x‖ per element of H x and 2e-2 per element of the diagonal (seen:
-  2.8e-3 and 6.2e-3);
-- on H₂O STO-3G density-fitted, every H e_i against the host product and
+  3e-4 ‖x‖ per element of H x and 1.5e-3 per element of the diagonal (seen:
+  1.2e-4 and 4.7e-4);
+- on H₂O STO-3G density-fitted over cc-pVDZ-JKFIT, every H e_i against the host product and
   the diagonal, and symmetric, at the CAS(2,2) above (ncore 4 of 7 orbitals,
   so the diagonal's last block of C is narrower than ncore) and at ncas = 0,
   at and off the SCF;
