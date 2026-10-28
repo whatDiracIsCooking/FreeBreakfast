@@ -9,8 +9,9 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kTwo
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemv, gemm(StridedBatched), syrk, geam, copy, gpu_status
+import free_breakfast.core.wwr; // gemv, gemm(StridedBatched), syrk, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.recipes.symmetrize;
 
 #include "diagnostics.h"
 
@@ -67,7 +68,7 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
   }
   const auto rows32 = static_cast<int32_t>(rows);
   const auto block = int64_t{naux} * nao; // B_m's stride
-  const auto [x, lower] = res.device_regions<double>(static_cast<size_t>(rows) * nao, nn);
+  const auto [x] = res.device_regions<double>(static_cast<size_t>(rows) * nao);
   const wwr::wwrblasHandle_t blas = res.blas().get();
 
   // X_m = B_m C for every m: naux x nocc from naux x nao times nao x nocc, C
@@ -76,19 +77,12 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux, nocc, nao, &kOne<double>, b, naux, block, c,
       nao, 0, &kZero<double>, x, naux, rows, nao)));
 
-  // K = 2 X^T X in the lower triangle of a zeroed scratch, so its strict upper
-  // triangle stays exactly 0.
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(lower, 0, sizeof(double) * nn, stream)));
+  // K = 2 X^T X in the lower triangle, then its mirror onto the upper, so
+  // (m, n) and (n, m) are the same bits.
   FBF_TRY(gpu_status(wwr::syrk<double, int32_t>(blas, wwr::WWRBLAS_FILL_MODE_LOWER,
                                                 wwr::WWRBLAS_OP_T, nao, rows32, &kTwo<double>, x,
-                                                rows32, &kZero<double>, lower, nao)));
-  // K = L + L^T: off the diagonal each element is one of L's plus an exact 0,
-  // so (m, n) and (n, m) are the same bits. The diagonal comes out doubled and
-  // is copied back from L.
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nao,
-                                                nao, &kOne<double>, lower, nao, &kOne<double>,
-                                                lower, nao, k, nao)));
-  return gpu_status(wwr::copy<double, int32_t>(blas, nao, lower, nao + 1, k, nao + 1));
+                                                rows32, &kZero<double>, k, nao)));
+  return symmetrize(res, wwr::WWRBLAS_FILL_MODE_LOWER, nao, k, nao);
 }
 
 Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, const int32_t rank,

@@ -12,12 +12,12 @@ module free_breakfast.integrals.eri.density_fitting.metric;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
+import free_breakfast.recipes.symmetrize;
 
 #include "diagnostics.h"
 
@@ -158,18 +158,9 @@ Status metric(DeviceResources &res, const BasisSet &aux, MatrixAOPair &m) {
   // U^T M U is two gemms, so element (a, b) and its mirror (b, a) are summed
   // in different orders and differ in the last bits (3.6e-15 of max|M| on
   // water in cc-pVDZ-JKFIT). Half of each plus half of its mirror is exactly
-  // symmetric: the halving is exact, and a + b = b + a. geam may not write
-  // over an operand it transposes, so it goes through the workspace; the
-  // records there are dead, their launches queued before this on stream.
+  // symmetric.
   const auto ns = static_cast<int32_t>(m.spherical().n());
-  double *const spherical = m.spherical().data();
-  const auto [symmetric] = res.device_regions<double>(m.spherical().num_elements());
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(res.blas(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T,
-                                                ns, ns, &kHalf<double>, spherical, ns,
-                                                &kHalf<double>, spherical, ns, symmetric, ns)));
-  return gpu_status(wwr::wwrMemcpyAsync(spherical, symmetric,
-                                        sizeof(double) * m.spherical().num_elements(),
-                                        wwr::wwrMemcpyDeviceToDevice, stream));
+  return symmetrize(res, ns, m.spherical().data(), ns);
 }
 
 } // namespace free_breakfast

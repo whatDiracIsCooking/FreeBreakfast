@@ -74,8 +74,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::types
-  free_breakfast::core::constants
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::integrals::eri::density_fitting::metric::device
+  free_breakfast::recipes::symmetrize
 )

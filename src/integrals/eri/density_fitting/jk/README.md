@@ -12,7 +12,7 @@ J and K over the fitted factor B of
     df_exchange(res, nao, naux, nocc, b, c, k)      D = 2 C C^T
         X_m = B_m C                 (one gemmStridedBatched over m)
         K / 2 = X^T X               (one syrk, lower)
-        K = L + L^T, diagonal L's   (a geam and a strided copy)
+        upper = lower^T             (recipes' symmetrize, in place)
 
     df_exchange(res, nao, naux, rank, b, left, right, k)    D = A B^T
         X_m = B_m A                 (one gemmStridedBatched over m)
@@ -25,9 +25,9 @@ Here A is `left` and B is `right`, nao x rank factors, not the fitted B.
 factor of a positive semidefinite density (the SAD guess's). Two factors of
 one D give the same K to rounding: K depends on C only through C C^T.
 
-**K is exactly symmetric.** syrk writes one triangle, into a zeroed scratch;
-`L + L^T` adds an exact 0 to each off-diagonal element, so (m, n) and (n, m)
-carry the same bits, and the doubled diagonal is copied back from L.
+**K is exactly symmetric.** syrk writes the lower triangle of `k`, and
+[`recipes.symmetrize`](../../../../recipes/symmetrize/README.md) copies its
+transpose onto the upper one, so (m, n) and (n, m) carry the same bits.
 
 **The two-factor form is for every other D.** The one-factor form's D is
 `2 C Cᵀ`, symmetric and positive semidefinite; a response or transition
@@ -57,7 +57,6 @@ Every matrix is column-major and packed.
 | `left`, `right` | A, B, `nao` x `rank` | `n + nao i` | `nao · rank` doubles each |
 | gamma (scratch, J) | `naux` | `Q` | `naux` doubles |
 | X (scratch, K) | `(naux · nocc)` x `nao` | `Q + naux (i + nocc m)`: `[Q][i][m]` | `naux · nocc · nao` doubles |
-| L (scratch, K) | `nao` x `nao`, lower | `n + nao m` | `nao²` doubles |
 | X, Y (scratch, two-factor K) | `(naux · rank)` x `nao` | `Q + naux (i + rank m)` | `naux · rank · nao` doubles each |
 
 B, at `naux · nao²` doubles, is still the largest thing DF holds; X is B's

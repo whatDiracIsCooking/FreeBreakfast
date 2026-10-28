@@ -55,9 +55,8 @@ export namespace free_breakfast {
 /// nao, column-major and packed, overwritten, and exactly symmetric: syrk
 /// writes the lower triangle, and the upper one is its transpose bit for bit.
 ///
-/// The scratch is X, naux nocc nao doubles, and the lower triangle syrk
-/// writes, nao^2 doubles, both from res.device_workspace(), which grows if it
-/// is smaller; none of @p b, @p c and @p k may point into it, and @p k must
+/// The scratch is X, naux nocc nao doubles, from res.device_workspace(),
+/// which grows if it is smaller; none of @p b, @p c and @p k may point into it, and @p k must
 /// not overlap @p b or @p c.
 ///
 /// Queued on res.stream() with res.blas() in host pointer mode (its default),
