@@ -15,14 +15,14 @@ is deliberately not part of the project's Python tooling layer.
 
     export ANTHROPIC_API_KEY=sk-ant-...     # or `ant auth login`
 
-    uv run --script .claude/batch.py run prompts.jsonl -o results.jsonl
+    uv run --script .claude/batch/batch.py run prompts.jsonl
 
     # or drive the three phases separately
-    uv run --script .claude/batch.py submit prompts.jsonl --dry-run
-    uv run --script .claude/batch.py submit prompts.jsonl
-    uv run --script .claude/batch.py status             # last batch submitted
-    uv run --script .claude/batch.py results -o results.jsonl
-    uv run --script .claude/batch.py retry              # just the failures
+    uv run --script .claude/batch/batch.py submit prompts.jsonl --dry-run
+    uv run --script .claude/batch/batch.py submit prompts.jsonl
+    uv run --script .claude/batch/batch.py status             # last batch submitted
+    uv run --script .claude/batch/batch.py results      # -> results/<id>.jsonl
+    uv run --script .claude/batch/batch.py retry              # just the failures
 
 `--max-spend` (default $10) refuses any submission whose *worst case* exceeds
 it, so a run that clears the check cannot overspend. The worst case assumes
@@ -31,11 +31,11 @@ cheap fix is a realistic `--max-tokens`, not a bigger ceiling.
 
 `--json-schema FILE` constrains every reply to a JSON Schema, so the `text`
 field of each result is parseable rather than prose you have to re-read.
-`.claude/schemas/audit.json` is one such schema, shaped to the `audit`
+`.claude/batch/audit.json` is one such schema, shaped to the `audit`
 skill's findings contract:
 
-    uv run --script .claude/batch.py run docs.jsonl \
-        --system CLAUDE.md --json-schema .claude/schemas/audit.json
+    uv run --script .claude/batch/batch.py run docs.jsonl \
+        --system CLAUDE.md --json-schema .claude/batch/audit.json
 
 Input
 -----
@@ -54,15 +54,24 @@ at ~0.1x on every request after -- stacking with the 50% batch discount.
 
 Credentials
 -----------
-The key is never read, logged or stored by this script -- the SDK resolves it
-from the environment or an `ant auth login` profile, and `batch-state.json`
-holds only batch ids. Every line printed is passed through a redactor as a
-backstop, so an `sk-ant-...` string arriving from somewhere we do not control
+The SDK resolves the key from ANTHROPIC_API_KEY or an `ant auth login`
+profile. When ANTHROPIC_API_KEY is unset, this script hands it
+ANTHROPIC_API_KEY_FREE_BREAKFAST instead: that is the name the devcontainer
+carries it under (`HOST_ENV_PASSTHROUGH` in devtools/config.sh), because an
+ANTHROPIC_API_KEY in the environment Claude Code starts in would be taken up
+by Claude Code itself. The key is never logged or stored -- `batch-state.json`
+holds only batch ids -- and every line printed is passed through a redactor as
+a backstop, so an `sk-ant-...` string arriving from somewhere we do not control
 (an error body, a prompt file) is masked rather than echoed.
 
 Output
 ------
-JSONL, one object per request: custom_id, status, text, stop_reason, usage.
+JSONL, one object per request: custom_id, status, text, stop_reason, usage,
+written to `results/<batch id>.jsonl` beside this script unless `-o` names
+another file (`-o -` for stdout). Both that directory and `batch-state.json`
+live beside the script and are gitignored, so run it from the main checkout:
+a copy in a worktree keeps its state and results there, and they go with it.
+The results stay downloadable from the API for 29 days either way.
 The API returns results in arbitrary order, so they are keyed by custom_id and
 never by position. The closing summary reports real spend from the returned
 usage, not the pre-flight estimate.
@@ -71,6 +80,7 @@ usage, not the pre-flight estimate.
 import argparse
 import contextlib
 import json
+import os
 import re
 import sys
 import time
@@ -115,13 +125,21 @@ MAX_REQUESTS = 100_000
 # rejected over our own framing overhead.
 MAX_BYTES = 250_000_000
 
+# A reply's thinking counts against its max_tokens, so a small cap can be
+# spent before any text is written. Below this, warn before submitting.
+THIN_MAX_TOKENS = 4000
+
 STATE = Path(__file__).with_name("batch-state.json")
+RESULTS = Path(__file__).with_name("results")
 
+PROJECT_KEY = "ANTHROPIC_API_KEY_FREE_BREAKFAST"
+AUTH_HINT = (
+    f"no usable credentials -- export ANTHROPIC_API_KEY or {PROJECT_KEY}, "
+    "or run `ant auth login`"
+)
 
-AUTH_HINT = "no usable credentials -- export ANTHROPIC_API_KEY, or run `ant auth login`"
-
-# Nothing here ever reads the key itself -- the SDK resolves it, and the state
-# file holds only batch ids. This is the backstop for the paths we do not
+# The key is never logged or stored, and the state file holds only batch ids.
+# This is the backstop for the paths we do not
 # control: an error body, a proxy that echoes a header, a key pasted into a
 # prompt file. Everything printed goes through it.
 _SECRET = re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{8,}")
@@ -138,7 +156,13 @@ def _log(msg: str) -> None:
 def _client() -> anthropic.Anthropic:
     """Construction never fails for want of a key: the SDK resolves
     credentials lazily at the first request, raising TypeError there. That is
-    what `_is_auth_error` and the handlers in `main` are for."""
+    what `_is_auth_error` and the handlers in `main` are for.
+
+    The SDK's own sources win: PROJECT_KEY is handed over only when
+    ANTHROPIC_API_KEY is unset."""
+    key = os.environ.get(PROJECT_KEY)
+    if key and not os.environ.get("ANTHROPIC_API_KEY"):
+        return anthropic.Anthropic(api_key=key)
     return anthropic.Anthropic()
 
 
@@ -413,6 +437,10 @@ def _estimate(
     else:
         _log(f"  cost            ${low:.2f} input, up to ${high:.2f} all-in")
         _log("                  (batch rate; caching lowers it further)")
+    thin = min(r["params"]["max_tokens"] for r in requests)
+    if thin < THIN_MAX_TOKENS:
+        _log(f"  note            max_tokens {thin:,} is tight: thinking counts against")
+        _log("                  it, so a reply can be cut off before its text")
     if not exact:
         _log(f"  note            {AUTH_HINT};")
         _log("                  the estimate above is a 4-chars-per-token guess")
@@ -629,8 +657,14 @@ def cmd_results(args: argparse.Namespace) -> None:
         (e["model"] for e in reversed(_history()) if e["id"] == batch_id), ""
     )
 
+    out = args.out
+    if out is None:
+        RESULTS.mkdir(exist_ok=True)
+        out = RESULTS / f"{batch_id}.jsonl"
+    to_stdout = out == Path("-")
+
     with contextlib.ExitStack() as stack:
-        fh = sys.stdout if args.out is None else stack.enter_context(args.out.open("w"))
+        fh = sys.stdout if to_stdout else stack.enter_context(out.open("w"))
         for result in client.messages.batches.results(batch_id):
             kind = result.result.type
             seen[kind] += 1
@@ -685,8 +719,8 @@ def cmd_results(args: argparse.Namespace) -> None:
             f"{totals['output_tokens']:,} out"
         )
         _log(f"  spend      ${spend:.2f} at batch rates")
-    if args.out is not None:
-        _log(f"  written    {args.out}")
+    if not to_stdout:
+        _log(f"  written    {out}")
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -782,6 +816,9 @@ def _add_poll_flags(p: argparse.ArgumentParser) -> None:
     )
 
 
+OUT_HELP = "results JSONL (default: results/<batch id>.jsonl here; - for stdout)"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="batch.py",
@@ -797,7 +834,7 @@ def main() -> None:
     p_run = sub.add_parser("run", help="submit, poll to completion, collect")
     _add_submit_flags(p_run)
     _add_poll_flags(p_run)
-    p_run.add_argument("-o", "--out", type=Path, help="results JSONL (default stdout)")
+    p_run.add_argument("-o", "--out", type=Path, help=OUT_HELP)
     p_run.set_defaults(func=cmd_run)
 
     p_retry = sub.add_parser(
@@ -818,9 +855,7 @@ def main() -> None:
 
     p_results = sub.add_parser("results", help="collect an ended batch")
     p_results.add_argument("batch_id", nargs="?", help="default: last submitted")
-    p_results.add_argument(
-        "-o", "--out", type=Path, help="results JSONL (default stdout)"
-    )
+    p_results.add_argument("-o", "--out", type=Path, help=OUT_HELP)
     p_results.set_defaults(func=cmd_results)
 
     p_list = sub.add_parser("list", help="recent batches")

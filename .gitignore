@@ -67,8 +67,6 @@ scratch/
 .claude/worktrees/
 # Personal overrides -- .claude/settings.json is tracked, this is not.
 .claude/settings.local.json
-# Batch ids written by .claude/batch.py; per-run bookkeeping, not source.
-.claude/batch-state.json
 
 # --- Editors and OS --------------------------------------------------------
 .vscode/

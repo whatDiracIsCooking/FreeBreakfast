@@ -336,7 +336,13 @@ HOST_MOUNTS=${HOST_MOUNTS:-"~/.gemini:/home/ubuntu/.gemini"}
 # GEMINI_API_KEY is what it authenticates with, and GOOGLE_GEMINI_BASE_URL
 # points it at a non-default endpoint. Neither is needed when `agy` is logged
 # in through a Google account.
-HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL"}
+#
+# ANTHROPIC_API_KEY_FREE_BREAKFAST is .claude/batch/batch.py's key, under a
+# project-specific name for the opposite reason from GH_TOKEN_FREE_BREAKFAST
+# below: an ANTHROPIC_API_KEY in the environment Claude Code starts in can be
+# taken up by Claude Code itself, billing the API instead of the subscription.
+# So it is never mapped here; batch.py reads this name itself.
+HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL ANTHROPIC_API_KEY_FREE_BREAKFAST"}
 
 # Cross-session GPU admission (see with_gpu_slot() and gpu_auto_preset() in
 # lib.sh). One run's own concurrency is GPU_TEST_JOBS below, but nothing in

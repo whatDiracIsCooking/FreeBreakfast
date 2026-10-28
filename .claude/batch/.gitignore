@@ -1,0 +1,3 @@
+# Written by batch.py beside itself: per-run bookkeeping, not source.
+batch-state.json
+results/

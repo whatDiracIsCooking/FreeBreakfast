@@ -700,9 +700,10 @@ report_agy_pin() {
 # all. Everything below routes through this so a secret cannot reach the
 # terminal; the exit status is the CLI's, not sed's.
 #
-# GEMINI_API_KEY is on the list for a second reason: remote_env_args puts it on
-# the CLI's own command line as a `--remote-env`, so it can be echoed back by
-# any error that quotes the invocation, not only by a failed `docker run`.
+# GEMINI_API_KEY and ANTHROPIC_API_KEY_FREE_BREAKFAST are on the list for a
+# second reason: remote_env_args puts them on the CLI's own command line as a
+# `--remote-env`, so either can be echoed back by any error that quotes the
+# invocation, not only by a failed `docker run`.
 #
 # `sed -u` is load-bearing, not a micro-optimisation. sed's own stdout is the
 # terminal, so without it sed is LINE-buffered: anything not terminated by a
@@ -713,8 +714,8 @@ report_agy_pin() {
 # Ubuntu.
 run_cli() {
   local rc=0
-  "${CLI[@]}" "$@" > >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g') \
-    2> >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g' >&2) || rc=$?
+  "${CLI[@]}" "$@" > >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY|ANTHROPIC_API_KEY_FREE_BREAKFAST)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g') \
+    2> >(sed -u -E 's/(GH_TOKEN|GITHUB_TOKEN|GEMINI_API_KEY|ANTHROPIC_API_KEY_FREE_BREAKFAST)=[A-Za-z0-9_.-]+/\1=***REDACTED***/g' >&2) || rc=$?
   # Let the redirections drain before the caller reads the next line.
   wait
   return "$rc"
