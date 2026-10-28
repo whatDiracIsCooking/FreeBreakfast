@@ -6,11 +6,10 @@
 #                        [--tidy] [--exclusive] [-j N] [--report DIR]
 #                        [-- <ctest args>]
 #
-# It is NOT on the push gate, for the same reason the slow tier is not: a C++23
-# named-module build with CUDA separable compilation costs minutes even warm,
-# and a gate that costs minutes is one people learn to bypass with --no-verify.
-# Run it before opening a PR, and let CI run it on a machine that has the
-# toolchain.
+# It is NOT on the push gate -- cpp-smoke.sh is -- but it is the gate before
+# opening a PR (milestone-run requires it), and like the smoke gate it is
+# budgeted at under five minutes on a busy card: test/gtest/slow_test.h keeps
+# the fast set inside it, and the GPU entries run batched (run_tier_tests).
 #
 # ALWAYS runs with FREE_BREAKFAST_FAST_TESTS=1 -- the same env var
 # cpp-smoke.sh sets -- so every case guarded by
@@ -72,9 +71,12 @@
 #                   SLOW_TIER_REPORTS from config.sh).
 #   -- <args>       everything after `--` is passed to ctest verbatim
 #                   (e.g. `-- -R Constants` to scope the run). ctest has
-#                   one entry per gtest case, so -R matches suite names.
-#                   ctest itself runs GPU_TEST_JOBS (config.sh) entries at
-#                   once; `-- -j 1` overrides that for one run.
+#                   one entry per gtest case, so -R matches suite names, and
+#                   the selection also picks which GPU entries are batched
+#                   into gtest shards (run_tier_tests below). ctest itself
+#                   runs GPU_TEST_JOBS (config.sh) entries at once; `-- -j 1`
+#                   overrides that for one run, and GPU_TEST_JOBS=1 makes the
+#                   batch one process.
 #
 # Exit status is the first failing phase's, so a scheduler can alert on it.
 #: -- help stops here --
@@ -163,6 +165,45 @@ has_test_preset() {
   ctest --preset "$test_preset" --show-only >/dev/null 2>&1
 }
 
+gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
+
+# The test phase, inside the one slot the caller holds. Each ctest entry is its
+# own process, and a GPU one spends about 0.45s creating the runtime's context
+# before its case starts -- most of the phase once the cases are cheap. So the
+# GPU entries that can share a process (devtools/split-gpu-entries.py says
+# which: no launcher, not RUN_SERIAL) run as GPU_TEST_JOBS gtest shards, as in
+# cpp-smoke.sh, and ctest runs everything else: the host entries, the
+# RUN_SERIAL ones it keeps alone on the card, and every entry when a launcher
+# such as compute-sanitizer wraps them. The split reads ctest's own listing, so
+# the preset's filters and a `-- -R ...` pick the batch too. When the listing
+# cannot be read, ctest runs every entry, as before the batch existed.
+run_tier_tests() {
+  local dir trc=0 n
+  dir=$(mktemp -d)
+  if ! ctest --preset "$test_preset" --show-only=json-v1 "${passthrough[@]}" 2>/dev/null |
+      python3 "$REPO_ROOT/devtools/split-gpu-entries.py" "$gpu_bin" "$dir/exclude" "$dir/filter"; then
+    echo "cpp-tier: could not split the GPU entries -- ctest runs them all" | tee -a "$log"
+    : >"$dir/exclude"
+    : >"$dir/filter"
+  fi
+  # Before the passthrough, so a `-- -j 1` still wins.
+  run_phase ctest ctest --preset "$test_preset" --parallel "$GPU_TEST_JOBS" \
+    --exclude-from-file "$dir/exclude" "${passthrough[@]}" || trc=$?
+  if [ -s "$dir/filter" ]; then
+    n=$(wc -l <"$dir/exclude")
+    echo "--- gpu batch: $n entries as $GPU_TEST_JOBS shards of $gpu_bin ---" | tee -a "$log"
+    # ctest's WORKING_DIRECTORY, and its --gtest_also_run_disabled_tests.
+    (
+      cd "$build_dir/test/gtest" &&
+        GTEST_FILTER=$(<"$dir/filter") GTEST_ALSO_RUN_DISABLED_TESTS=1 \
+          run_gpu_sharded cpp-tier "$gpu_bin" "$GPU_TEST_JOBS"
+    ) | tee -a "$log"
+    [ "${PIPESTATUS[0]}" -eq 0 ] || trc=1
+  fi
+  rm -rf "$dir"
+  return "$trc"
+}
+
 rc=0
 set +e
 
@@ -177,11 +218,7 @@ if [ "$rc" -eq 0 ] && [ "$run_tests" -eq 1 ]; then
     echo "cpp-tier: skipping reference-grade validation cases (FREE_BREAKFAST_FAST_TESTS=1)" \
       | tee -a "$log"
     export FREE_BREAKFAST_FAST_TESTS=1
-    # GPU_TEST_JOBS concurrent entries, all inside the one slot. Before the
-    # passthrough, so a `-- -j 1` still wins.
-    run_phase ctest with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" \
-      ctest --preset "$test_preset" --parallel "$GPU_TEST_JOBS" \
-      "${passthrough[@]}" || rc=$?
+    with_gpu_slot "$(gpu_backend_of_preset "$test_preset")" run_tier_tests || rc=$?
     unset FREE_BREAKFAST_FAST_TESTS
   else
     echo "cpp-tier: no test preset '${test_preset:-<empty>}' -- built only" \

@@ -295,8 +295,9 @@ variant. It does not check the container `name` field.
 
 - C++ GPU cases call `FBF_REQUIRE_GPU()` (see
   `test/gtest/gpu_requirement.h`) and `GTEST_SKIP` with a reason rather than
-  failing, so the suite stays usable on a device-less host. Read the
-  `***Skipped` list.
+  failing, so the suite stays usable on a device-less host. Read the skip
+  lists: ctest's `***Skipped`, and gtest's `[  SKIPPED ]` in each
+  `[shard i/N]` summary that `cpp-smoke.sh` and `cpp-tier.sh` print.
 - Python: always pass `-rs`. Without it the suite looks identical on a GPU box
   and a laptop.
 - `FREE_BREAKFAST_FAST_TESTS` makes `slow_test.h`'s macro skip the heavy
@@ -317,6 +318,23 @@ to the start of the ctest run on the machine that will run the tests, and
 runtime. A single `add_test` entry instead would make `ctest -R` select nothing
 while still reporting success, and `1 of 1 passed` would read identically
 whether every case ran or most of them skipped.
+
+**`cpp-tier.sh` does not run every entry as its own process, though.** A GPU
+process spends about 0.45s creating the runtime's context before its case
+starts, which was most of the tier's wall clock. So it lists the entries
+(`ctest --show-only=json-v1`, so the preset's filters and `-- -R …` still
+select), and `devtools/split-gpu-entries.py` takes out the GPU ones that can
+share a process. Those run as `GPU_TEST_JOBS` gtest shards, as in
+`cpp-smoke.sh`. ctest runs the rest: the host entries, the `RUN_SERIAL` (ff|g)
+cases it keeps alone on the card, and every entry when a launcher such as
+compute-sanitizer wraps them. So its ctest summary counts only those, and the
+batch reports in the `[shard i/N]` lines below it. `cpp-slow-tier.sh` still
+runs plain ctest.
+
+**Both PR gates have a budget: under five minutes on a busy card.** Those are
+`cpp-smoke.sh` at push and `cpp-tier.sh` before a PR. `test/gtest/slow_test.h`
+has the rule that keeps them inside it: a case past about ten seconds goes
+under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's cheapest.
 
 ### The one portability hole no tier sees
 
