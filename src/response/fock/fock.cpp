@@ -2,8 +2,7 @@
 /// @brief fock: F^I from one J and one K, integral-direct or density-fitted,
 /// F^A from two gemvs over ppaa and papa, the generalized Fock from them,
 /// gamma and one gemm over (pu|vw), the gradient as its antisymmetric part
-/// over the packed pairs, and the energy off their diagonals; and the packed
-/// order's two copies each way.
+/// over the packed pairs, and the energy off their diagonals.
 
 module free_breakfast.response.fock;
 
@@ -20,98 +19,24 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 import free_breakfast.integrals.eri.density_fitting.jk;
+import free_breakfast.response.orbital_pairs;
 
 #include "diagnostics.h"
 
 namespace free_breakfast::response {
-
-// What both packing functions refuse; caller names the function.
-Status check_orbital_pairs(const std::string_view caller, const int32_t nmo, const int32_t ncore,
-                           const int32_t ncas) {
-  if (ncore < 0 || ncas < 0) {
-    return err_config("{}: ncore ({}) and ncas ({}) must not be negative", caller, ncore, ncas);
-  }
-  if (std::cmp_greater(int64_t{ncore} + ncas, nmo)) {
-    return err_config("{}: ncore {} + ncas {} exceeds the {} orbitals", caller, ncore, ncas, nmo);
-  }
-  return {};
-}
-
-// The packed order's two blocks, as 2D copies between the nmo x nmo matrix and
-// the packed vector: from the matrix @p from into the vector @p to when
-// to_packed, otherwise from the vector into the matrix. A block with no rows
-// or no columns is skipped, since a zero-extent copy is not portable across
-// the two runtimes.
-Status copy_orbital_pairs(DeviceResources &res, const int32_t nmo, const int32_t ncore,
-                          const int32_t ncas, const double *const from, double *const to,
-                          const bool to_packed) {
-  const auto n = static_cast<size_t>(nmo);
-  const auto core = static_cast<size_t>(ncore);
-  const auto occ = core + static_cast<size_t>(ncas);
-  const size_t n_rot = n - core; // the active and virtual rows of a core column
-  const size_t n_vir = n - occ;  // the virtual rows of an active column
-  const size_t pitch = n * sizeof(double);
-  // (first row, row count, first column, column count, offset into the vector)
-  const std::array<std::array<size_t, 5>, 2> blocks{
-      {{core, n_rot, 0, core, 0}, {occ, n_vir, core, occ - core, core * n_rot}}};
-  for (const auto &[row, rows, col, cols, at] : blocks) {
-    if (rows == 0 || cols == 0) {
-      continue;
-    }
-    const size_t width = rows * sizeof(double);
-    const size_t offset = row + (n * col);
-    FBF_TRY(gpu_status(
-        wwr::wwrMemcpy2DAsync(to_packed ? to + at : to + offset, to_packed ? width : pitch,
-                              to_packed ? from + offset : from + at, to_packed ? pitch : width,
-                              width, cols, wwr::wwrMemcpyDeviceToDevice, res.stream())));
-  }
-  return {};
-}
-
-Status pack_orbital_pairs(DeviceResources &res, const int32_t nmo, const int32_t ncore,
-                          const int32_t ncas, const double *const full, double *const packed) {
-  FBF_TRY(check_orbital_pairs("pack_orbital_pairs", nmo, ncore, ncas));
-  const ScopedDeviceIndex on{res.dev_idx()};
-  return copy_orbital_pairs(res, nmo, ncore, ncas, full, packed, true);
-}
-
-Status unpack_orbital_pairs(DeviceResources &res, const int32_t nmo, const int32_t ncore,
-                            const int32_t ncas, const double *const packed, double *const kappa) {
-  FBF_TRY(check_orbital_pairs("unpack_orbital_pairs", nmo, ncore, ncas));
-  const ScopedDeviceIndex on{res.dev_idx()};
-  const auto n = static_cast<size_t>(nmo);
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(kappa, 0, n * n * sizeof(double), res.stream())));
-  FBF_TRY(copy_orbital_pairs(res, nmo, ncore, ncas, packed, kappa, false));
-
-  // The upper blocks, kappa_qp = -kappa_pq: each the negated transpose of a
-  // lower block it shares no element with. geam's B is C itself at beta = 0,
-  // its in-place mode, so nothing past kappa is read.
-  const wwr::wwrblasHandle_t blas = res.blas().get();
-  constexpr double kMinusOne = -1.0;
-  const int32_t nocc = ncore + ncas;
-  // (rows of the upper block, its columns, the lower block's first row, the
-  // shared first column of the lower block and row of the upper one)
-  const std::array<std::array<int32_t, 4>, 2> blocks{
-      {{ncore, nmo - ncore, ncore, 0}, {ncas, nmo - nocc, nocc, ncore}}};
-  for (const auto &[rows, cols, lower_row, first] : blocks) {
-    if (rows == 0 || cols == 0) {
-      continue;
-    }
-    const double *const lower = kappa + lower_row + (n * static_cast<size_t>(first));
-    double *const upper = kappa + first + (n * static_cast<size_t>(lower_row));
-    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, rows,
-                                                  cols, &kMinusOne, lower, nmo, &kZero<double>,
-                                                  upper, nmo, upper, nmo)));
-  }
-  return {};
-}
 
 // What both fock overloads refuse past their own arguments: the spaces, and
 // ppaa's, papa's, gamma's and Gamma's lengths.
 Status check_fock(const uint32_t n_orbitals, const int32_t ncore, const int32_t ncas,
                   const Buffers::device<double> &ppaa, const Buffers::device<double> &papa,
                   const std::span<const double> gamma, const std::span<const double> gamma2) {
-  FBF_TRY(check_orbital_pairs("fock", static_cast<int32_t>(n_orbitals), ncore, ncas));
+  if (ncore < 0 || ncas < 0) {
+    return err_config("response::fock: ncore ({}) and ncas ({}) must not be negative", ncore, ncas);
+  }
+  if (std::cmp_greater(int64_t{ncore} + ncas, n_orbitals)) {
+    return err_config("response::fock: ncore {} + ncas {} exceeds the {} orbitals", ncore, ncas,
+                      n_orbitals);
+  }
   if (ncore + ncas == 0) {
     return err_config("response::fock: ncore and ncas are both 0, so nothing is occupied");
   }
@@ -269,7 +194,7 @@ Result<Fock> finish_fock(DeviceResources &res, FockBuild &build, const int32_t n
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nmo,
                                                 nmo, &kTwo<double>, f, nmo, &kMinusTwo, f, nmo,
                                                 block, nmo)));
-  FBF_TRY(copy_orbital_pairs(res, nmo, ncore, ncas, block, out.gradient.data(), true));
+  FBF_TRY(pack_orbital_pairs(res, nmo, ncore, ncas, block, out.gradient.data()));
 
   // E = E_nuc + sum_i (h_ii + F^I_ii) + sum_tu F^I_tu gamma_tu
   //   + 1/2 sum_tuvw (tu|vw) Gamma_tuvw, and sum_t F_tt over the active t is

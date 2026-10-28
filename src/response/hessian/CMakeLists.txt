@@ -3,9 +3,10 @@
 # pair class, the AO matrices and response::Fock are in its signature or
 # members, so basis, core::wwr, core::resources, coulomb, exchange,
 # recipes::matrix_ao and response::fock are PUBLIC; the density-fitted J and K
-# are only called, so jk is PRIVATE. It launches nothing of its own: J and K
-# are coulomb's and exchange's or df_coulomb's and df_exchange's, the rest BLAS
-# and copies, so there is no device library.
+# and the packed order's copies are only called, so jk and orbital_pairs are
+# PRIVATE. It launches nothing of its own: J and K are coulomb's and
+# exchange's or df_coulomb's and df_exchange's, the rest BLAS and copies, so
+# there is no device library.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.response.hessian
@@ -31,4 +32,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::linear_operator
   free_breakfast::recipes::norm
   free_breakfast::integrals::eri::density_fitting::jk
+  free_breakfast::response::orbital_pairs
 )

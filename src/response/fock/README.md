@@ -38,11 +38,6 @@ Result<response::Fock> response::fock(
     int32_t ncore, int32_t ncas, const Buffers::device<double> &ppaa,
     const Buffers::device<double> &papa, std::span<const double> gamma,
     std::span<const double> gamma2);
-
-Status pack_orbital_pairs(DeviceResources &res, int32_t nmo, int32_t ncore, int32_t ncas,
-                          const double *full, double *packed);
-Status unpack_orbital_pairs(DeviceResources &res, int32_t nmo, int32_t ncore, int32_t ncas,
-                            const double *packed, double *kappa);
 ```
 
 The integral-direct overload's arguments through `k_classes` are
@@ -52,7 +47,9 @@ over the spherical AOs, `[Q][n][m]` as `df_coulomb` reads it. In both, `ppaa`
 and `papa` are `casscf_integrals`' (pq|uv) and (pu|qv) over the same C (both
 empty for ncas = 0), and γ and Γ are `ci::Rdm::rdm12`'s, row-major, read back
 to the host (the energy reads them there). Every matrix is column-major, (p, q)
-at p + nmo q. The packed order is [`../README.md`](../README.md)'s. The tau
+at p + nmo q. The gradient is packed by
+[`../orbital_pairs/`](../orbital_pairs/README.md), in
+[`../README.md`](../README.md)'s order. The tau
 defaults are `casscf_integrals`', so F^I's screens are the integrals' own.
 
 **The two differ only in how F^I is built.** F^A, the generalized Fock, the
@@ -70,7 +67,7 @@ With P_c = C_core C_coreᵀ and P_a = C_act γ C_actᵀ:
 | F_pq, q core | 2 (F^I + F^A)_pq: one `geam` |
 | F_pt, t active | Σ_v F^I_pv γ_vt + Σ_uvw (pu\|vw) Γ_tuvw: two gemms |
 | F_pq, q virtual | 0 |
-| g_pq = 2 (F_pq − F_qp) | one `geam` over all of F, then the two packing copies |
+| g_pq = 2 (F_pq − F_qp) | one `geam` over all of F, then `pack_orbital_pairs`' two copies |
 | E = E_core + Σ_tu h_eff,tu γ_tu + ½ Σ_tuvw (tu\|vw) Γ_tuvw | off F^I's and F's diagonals, on the host |
 
 This is Helgaker's generalized Fock, F_pq = Σ_r h_pr D_rq + Σ_rst (pr\|st) d_qrst
@@ -157,8 +154,6 @@ orbitals pair with PySCF's by their energies, checked to 1e-6.
 - the RHF limit, ncas = 0 on H₂O cc-pVDZ: |g_ai| < 1e-6 at the converged SCF
   and E its energy to 1e-9; off it, g = 4 F^I_ai and F = 2 F^I in the core
   columns, and g against a finite difference of the energy;
-- the packed order element by element, and unpack as its antisymmetric
-  inverse, over empty and non-empty spaces;
 - F^A from ppaa and papa against the AO route it replaced,
   Cᵀ (J[P_a] − ½ K[P_a]) C by one `coulomb` and one `exchange` at the old
   prune cap, on H₂O cc-pVDZ CAS(4,4), to 1e-10 (2.4e-13 measured);

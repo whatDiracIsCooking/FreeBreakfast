@@ -3,7 +3,7 @@
 // the weighted energy against the CASCI energy; the gradient's sign-invariant
 // sqrt(sum g_pq^2) per pair of orbital sets, and |g|; the gradient against a
 // central finite difference of the energy along random kappa, the RDMs fixed;
-// the RHF limit, ncas = 0; the packed order; and the refusals.
+// the RHF limit, ncas = 0; and the refusals.
 //
 // The orbitals are the setup's own: the SCF (run with J unscreened), the active
 // space picked by pipeline.active_space as the Casci step picks it (by index,
@@ -570,65 +570,6 @@ TEST(ResponseFockRhfLimit, IsTheRhfGradient) {
     const double gx = std::inner_product(g.begin(), g.end(), x.begin(), 0.0);
     EXPECT_NEAR(*fd, gx, kFiniteDifferenceTolerance * std::max(std::abs(gx), norm));
   }
-}
-
-// The packed order, element by element, and unpack as its antisymmetric
-// inverse, over every combination of empty and non-empty spaces.
-TEST(ResponseFockPackedOrder, PacksAndUnpacksTheNonRedundantPairs) {
-  FBF_REQUIRE_GPU();
-  fb::NodeResources node;
-  fb::DeviceResources &res = node.device(0);
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  constexpr std::size_t kNmo = 7;
-  const std::vector<std::pair<std::int32_t, std::int32_t>> spaces{{2, 3}, {0, 3}, {3, 0}, {0, 7},
-                                                                  {7, 0}, {2, 5}, {1, 1}};
-  for (const auto &[ncore, ncas] : spaces) {
-    const auto order =
-        packed_pairs(kNmo, static_cast<std::size_t>(ncore), static_cast<std::size_t>(ncas));
-    std::vector<double> full(kNmo * kNmo);
-    for (std::size_t i = 0; i < full.size(); ++i) {
-      full[i] = static_cast<double>(i + 1);
-    }
-    fb::Buffers::device<double> full_device(full.size(), res.device());
-    fb::Buffers::device<double> packed(std::max<std::size_t>(order.size(), 1), res.device());
-    upload(res, full, full_device.data());
-    ASSERT_TRUE(
-        fb::response::pack_orbital_pairs(res, kNmo, ncore, ncas, full_device.data(), packed.data())
-            .has_value());
-    const std::vector<double> got = download(res, packed.data(), order.size());
-    for (std::size_t i = 0; i < order.size(); ++i) {
-      const auto [p, q] = order[i];
-      EXPECT_EQ(got[i], full[p + (kNmo * q)]) << ncore << ", " << ncas << ": element " << i;
-    }
-
-    std::vector<double> x(order.size());
-    for (std::size_t i = 0; i < x.size(); ++i) {
-      x[i] = static_cast<double>(i) + 0.5;
-    }
-    if (!x.empty()) {
-      upload(res, x, packed.data());
-    }
-    ASSERT_TRUE(fb::response::unpack_orbital_pairs(res, kNmo, ncore, ncas, packed.data(),
-                                                   full_device.data())
-                    .has_value());
-    const std::vector<double> kappa = download(res, full_device.data(), full.size());
-    std::vector<double> want(kNmo * kNmo, 0.0);
-    for (std::size_t i = 0; i < order.size(); ++i) {
-      const auto [p, q] = order[i];
-      want[p + (kNmo * q)] = x[i];
-      want[q + (kNmo * p)] = -x[i];
-    }
-    for (std::size_t i = 0; i < want.size(); ++i) {
-      EXPECT_EQ(kappa[i], want[i]) << ncore << ", " << ncas << ": element " << i;
-    }
-  }
-  const fb::Status refused = fb::response::pack_orbital_pairs(res, kNmo, 4, 4, nullptr, nullptr);
-  ASSERT_FALSE(refused.has_value());
-  EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
-  const fb::Status negative =
-      fb::response::unpack_orbital_pairs(res, kNmo, -1, 2, nullptr, nullptr);
-  ASSERT_FALSE(negative.has_value());
-  EXPECT_EQ(negative.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 // The column-major m x n product of op(a) and op(b) on the host, op(a) m x k

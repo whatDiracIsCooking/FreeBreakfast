@@ -33,6 +33,7 @@ import free_breakfast.ci.rdm;
 import free_breakfast.ci.solver;
 import free_breakfast.response.fock;
 import free_breakfast.response.hessian;
+import free_breakfast.response.orbital_pairs;
 
 #include "diagnostics.h"
 
