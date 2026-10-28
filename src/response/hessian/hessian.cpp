@@ -51,8 +51,6 @@ Result<std::pair<const double *, double>> Hessian::two_j_minus_k(DeviceResources
                                                                  const int32_t rank) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const int32_t nc = n_cart_;
-  constexpr auto kN = wwr::WWRBLAS_OP_N;
-  constexpr auto kT = wwr::WWRBLAS_OP_T;
   constexpr double kMinusOne = -1.0;
   if (auto *const fitted = std::get_if<Fitted>(&jk_); fitted != nullptr) {
     // K[L R^T + R L^T] = K[L R^T] + K[L R^T]^T: one two-factor call.
@@ -61,10 +59,12 @@ Result<std::pair<const double *, double>> Hessian::two_j_minus_k(DeviceResources
     double *const k = fitted->k.data();
     FBF_TRY(df_coulomb(res, nc, fitted->naux, b, density, j));
     FBF_TRY(df_exchange(res, nc, fitted->naux, rank, b, c_cart_.data(), right, k));
-    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>, j, nc,
-                                                  &kMinusOne, k, nc, j, nc)));
-    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kT, nc, nc, &kOne<double>, j, nc,
-                                                  &kMinusOne, k, nc, j, nc)));
+    FBF_TRY(
+        gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc,
+                                              &kTwo<double>, j, nc, &kMinusOne, k, nc, j, nc)));
+    FBF_TRY(
+        gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc, nc,
+                                              &kOne<double>, j, nc, &kMinusOne, k, nc, j, nc)));
     return std::pair{static_cast<const double *>(j), 1.0};
   }
   Direct &direct = std::get<Direct>(jk_);
@@ -72,14 +72,14 @@ Result<std::pair<const double *, double>> Hessian::two_j_minus_k(DeviceResources
   double top = 0.0;
   FBF_TRY(norm<Norm::inf>(res, nc * nc, density, 1, &top));
   const double s = top > 2.0 ? 2.0 / top : 1.0;
-  FBF_TRY(
-      gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &s, density, nc, &kZero<double>,
-                                            density, nc, direct.density.data(), nc)));
+  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc,
+                                                &s, density, nc, &kZero<double>, density, nc,
+                                                direct.density.data(), nc)));
   FBF_TRY(coulomb(res, direct.j_classes, direct.density, direct.j, direct.tau_j * s));
   FBF_TRY(exchange(res, direct.k_classes, direct.density, direct.k, direct.tau_k * s));
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>,
-                                                direct.j.data(), nc, &kMinusOne, direct.k.data(),
-                                                nc, direct.j.data(), nc)));
+  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc,
+                                                &kTwo<double>, direct.j.data(), nc, &kMinusOne,
+                                                direct.k.data(), nc, direct.j.data(), nc)));
   return std::pair{static_cast<const double *>(direct.j.data()), s};
 }
 
@@ -519,8 +519,6 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
     return gpu_status(wwr::gemm<double, int32_t>(blas, op_a, op_b, m, n, kk, &alpha, a, lda, b, ldb,
                                                  &beta, cc, ldc));
   };
-  constexpr auto kN = wwr::WWRBLAS_OP_N;
-  constexpr auto kT = wwr::WWRBLAS_OP_T;
 
   for (size_t column = 0; column < static_cast<size_t>(k); ++column) {
     const double *const xi = x + (column * static_cast<size_t>(n_pairs_));
@@ -538,13 +536,13 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
     FBF_TRY(gpu_status(gemm(blas, nmo, &kMinusHalf, fock_sym_.data(), kappa, &kOne<double>, x2)));
     // Core rows: 2 kappa[core, ncore:] (V^c + V^a)[ncore:, :].
     if (ncore > 0 && n_rot > 0) {
-      FBF_TRY(block_gemm(kN, kN, ncore, nmo, n_rot, 2.0, kappa + (n_all * core), nmo,
-                         vhf_ca_.data() + core, nmo, 1.0, x2, nmo));
+      FBF_TRY(block_gemm(wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, ncore, nmo, n_rot, 2.0,
+                         kappa + (n_all * core), nmo, vhf_ca_.data() + core, nmo, 1.0, x2, nmo));
     }
     // Active rows, gamma (kappa[act, :] V^c + va), va's J and K below.
     if (ncas > 0) {
-      FBF_TRY(block_gemm(kN, kN, ncas, nmo, nmo, 1.0, kappa + core, nmo, vhf_c_.data(), nmo, 0.0,
-                         t_act, ncas));
+      FBF_TRY(block_gemm(wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, ncas, nmo, nmo, 1.0, kappa + core,
+                         nmo, vhf_c_.data(), nmo, 0.0, t_act, ncas));
     }
 
     // update_jk_in_ah: D3 = C_core kappa[core, ncore:] C_rot^T + its
@@ -557,57 +555,63 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
     // L = [C_core C_act], U C's first nocc columns, and R = [2 R3, R4],
     // R4 = C (gamma kappa[act, :])^T: the density-fitted K's factors.
     if (ncore > 0 && n_rot > 0) {
-      FBF_TRY(block_gemm(kN, kT, ncore, nc, n_rot, 1.0, kappa + (n_all * core), nmo,
-                         c_cart + (n_cart * core), nc, 0.0, w, ncore));
+      FBF_TRY(block_gemm(wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, ncore, nc, n_rot, 1.0,
+                         kappa + (n_all * core), nmo, c_cart + (n_cart * core), nc, 0.0, w, ncore));
       FBF_TRY(
           gpu_status(gemm(blas, nc, nc, ncore, &kOne<double>, c_cart, w, &kZero<double>, cart)));
-      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kT, nc, nc, &kOne<double>, cart, nc,
-                                                    &kOne<double>, cart, nc, dm3, nc)));
-      FBF_TRY(block_gemm(kN, kT, nc, ncore, n_rot, 1.0, c_cart + (n_cart * core), nc,
-                         kappa + (n_all * core), nmo, 0.0, right, nc));
+      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
+                                                    nc, &kOne<double>, cart, nc, &kOne<double>,
+                                                    cart, nc, dm3, nc)));
+      FBF_TRY(block_gemm(wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc, ncore, n_rot, 1.0,
+                         c_cart + (n_cart * core), nc, kappa + (n_all * core), nmo, 0.0, right,
+                         nc));
       const auto [g3, s3] = FBF_TRY(two_j_minus_k(res, dm3, right, ncore));
       FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, nc * ncore, &kTwo<double>, right, 1)));
       if (ncas > 0) {
         FBF_TRY(gpu_status(gemm(blas, nc, nmo, nc, &kOne<double>, g3, c_cart, &kZero<double>, jc)));
         // BLAS reads alpha through a pointer, and an expression has no address.
         const double inv_s3 = 1.0 / s3;
-        FBF_TRY(gpu_status(
-            gemm<kT>(blas, ncas, nmo, nc, &inv_s3, c_cart_act, jc, &kOne<double>, t_act)));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, ncas, nmo, nc, &inv_s3, c_cart_act, jc,
+                                                   &kOne<double>, t_act)));
         // D' = 2 D3 + C_act (gamma kappa[act, :] C^T) + its transpose.
-        FBF_TRY(block_gemm(kN, kN, ncas, nmo, ncas, 1.0, gamma_.data(), ncas, kappa + core, nmo,
-                           0.0, t2, ncas));
-        FBF_TRY(gpu_status(
-            gemm<kN, kT>(blas, ncas, nc, nmo, &kOne<double>, t2, c_cart, &kZero<double>, w)));
+        FBF_TRY(block_gemm(wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, ncas, nmo, ncas, 1.0,
+                           gamma_.data(), ncas, kappa + core, nmo, 0.0, t2, ncas));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+            blas, ncas, nc, nmo, &kOne<double>, t2, c_cart, &kZero<double>, w)));
         FBF_TRY(gpu_status(
             gemm(blas, nc, nc, ncas, &kOne<double>, c_cart_act, w, &kZero<double>, cart)));
-        FBF_TRY(gpu_status(gemm<kN, kT>(blas, nc, ncas, nmo, &kOne<double>, c_cart, t2,
-                                        &kZero<double>, right + (n_cart * core))));
-        FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>, dm3, nc,
-                                                      &kOne<double>, cart, nc, dm3, nc)));
-        FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kT, nc, nc, &kOne<double>, dm3, nc,
-                                                      &kOne<double>, cart, nc, dm3, nc)));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+            blas, nc, ncas, nmo, &kOne<double>, c_cart, t2, &kZero<double>,
+            right + (n_cart * core))));
+        FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N,
+                                                      nc, nc, &kTwo<double>, dm3, nc, &kOne<double>,
+                                                      cart, nc, dm3, nc)));
+        FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T,
+                                                      nc, nc, &kOne<double>, dm3, nc, &kOne<double>,
+                                                      cart, nc, dm3, nc)));
       } else {
         FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, nc * nc, &kTwo<double>, dm3, 1)));
       }
       const auto [g4, s4] = FBF_TRY(two_j_minus_k(res, dm3, right, nocc));
       FBF_TRY(gpu_status(gemm(blas, nc, n_rot, nc, &kOne<double>, g4, c_cart + (n_cart * core),
                               &kZero<double>, jc)));
-      FBF_TRY(block_gemm(kT, kN, ncore, n_rot, nc, 1.0 / s4, c_cart, nc, jc, nc, 1.0,
-                         x2 + (n_all * core), nmo));
+      FBF_TRY(block_gemm(wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, ncore, n_rot, nc, 1.0 / s4, c_cart,
+                         nc, jc, nc, 1.0, x2 + (n_all * core), nmo));
     }
 
     if (ncas > 0) {
-      FBF_TRY(block_gemm(kN, kN, ncas, nmo, ncas, 1.0, gamma_.data(), ncas, t_act, ncas, 1.0,
-                         x2 + core, nmo));
+      FBF_TRY(block_gemm(wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, ncas, nmo, ncas, 1.0, gamma_.data(),
+                         ncas, t_act, ncas, 1.0, x2 + core, nmo));
       // Active columns: H_act vec(kappa[:, act]), both nmo ncas contiguous.
-      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, kN, n_act, n_act, &kOne<double>,
-                                                    h_act_.data(), n_act, kappa + (n_all * core), 1,
-                                                    &kOne<double>, x2 + (n_all * core), 1)));
+      FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, n_act, n_act, &kOne<double>, h_act_.data(), n_act,
+          kappa + (n_all * core), 1, &kOne<double>, x2 + (n_all * core), 1)));
     }
 
     // 2 (x2 - x2^T), the derivative's, over kappa (no longer read).
-    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kT, nmo, nmo, &kTwo<double>, x2, nmo,
-                                                  &kMinusTwo, x2, nmo, kappa, nmo)));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nmo,
+                                                  nmo, &kTwo<double>, x2, nmo, &kMinusTwo, x2, nmo,
+                                                  kappa, nmo)));
     FBF_TRY(pack_orbital_pairs(res, nmo, ncore, ncas, kappa, yi));
   }
   return {};
