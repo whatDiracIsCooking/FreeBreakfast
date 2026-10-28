@@ -19,6 +19,8 @@ struct OverlapOutput {
 struct OverlapStep {
   static constexpr std::string_view kName = "overlap";
 
+  std::filesystem::path npy{};  // S written here as .npy if not empty
+
   Result<OverlapOutput> run(View<BasisSetOutput, SphericalTransformOutput, PrimitivePairClassesOutput> in,
                       DeviceResources &res) const;
 };
@@ -26,7 +28,8 @@ struct OverlapStep {
 
 A thin wrapper over `integrals.one_electron`'s `overlap` and `recipes.matrix_ao`'s
 `cartesian_to_spherical`. Its errors are theirs: a failed launch or BLAS call is
-`GpuRuntime`, and a class above f is `InvalidConfig`.
+`GpuRuntime`, and a class above f is `InvalidConfig`; an `npy` file that cannot
+be written is `write_npy`'s.
 
 - **Spherical across the step boundary** (section 8 of the design). The kernels
   build Cartesian S into a transient `MatrixAOPair` over the shared U, which
@@ -36,10 +39,17 @@ A thin wrapper over `integrals.one_electron`'s `overlap` and `recipes.matrix_ao`
   waits for them.
 - **`Device`-shaped.** Everything is queued on `res.stream()`; each class's
   launch is forked from it and joined back (`launch_each`). No host
-  synchronization.
+  synchronization, unless `npy` is set: S is then downloaded and the stream
+  synchronized once to write it.
 - **`BasisSet` is read for the orders only**: the pair is sized from it.
-- **No options.** The config fills it in when a step it plans reads its
-  product; an empty table asks for it directly (`pipeline.config`).
+- **`npy`, off by default.** If not empty, S is written there as a float64
+  `.npy`, `nao_sphe` square in Fortran order, which a plain `np.load` reads.
+  The config sets it to `overlap.npy` in the output directory for
+  `[overlap] write_npy = true` (`pipeline.config`). The config fills the step
+  in when a step it plans reads its product, from an empty table, so S is not
+  written unless `[overlap]` asks.
+- **`run` lives in `overlap.cpp`**, so the kernels, the copy and the `.npy`
+  writer stay private to the module.
 
 ## Tests
 
@@ -58,4 +68,5 @@ A thin wrapper over `integrals.one_electron`'s `overlap` and `recipes.matrix_ao`
 | File | Role |
 |------|------|
 | `overlap.cppm` | Module interface: `OverlapOutput`, `OverlapStep` |
+| `overlap.cpp` | `OverlapStep::run`, and the `.npy` write |
 | `CMakeLists.txt` | The module library |

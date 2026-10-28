@@ -12,6 +12,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.io.base;
+import free_breakfast.io.npy;
 import free_breakfast.integrals.one_electron.overlap;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.basis_set;
@@ -78,6 +79,29 @@ TEST(PipelineOverlap, MatchesOverlapThenCartesianToSpherical) {
   ASSERT_TRUE(direct.cartesian_to_spherical(res).has_value());
 
   EXPECT_EQ(download(res, s->s), download(res, direct.spherical()));
+}
+
+TEST(PipelineOverlap, NpyHoldsTheStepsS) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::test::ScratchDir dir("pipeline_overlap");
+  const fb::Vec<double, 3> a{0.0, 0.0, 0.0};
+  const fb::Vec<double, 3> b{0.0, 0.3, 1.4};
+  const fb::BasisSetOutput basis{
+      fb::BasisSet({fb::Shell(0, {{3.42, 0.15}, {0.62, 0.53}}, a), fb::Shell(1, {{0.62, 1.0}}, a),
+                    fb::Shell(2, {{0.8, 1.0}}, b), fb::Shell(0, {{0.5, 1.0}}, b)})};
+  auto transform = fb::SphericalTransformStep{}.run(fb::View<fb::BasisSetOutput>{basis}, res);
+  auto pairs = fb::PrimitivePairClassesStep{}.run(fb::View<fb::BasisSetOutput>{basis}, res);
+  ASSERT_TRUE(transform.has_value());
+  ASSERT_TRUE(pairs.has_value());
+
+  const fb::OverlapStep step{.npy = dir / "overlap.npy"};
+  auto s = step.run(OverlapInput{basis, *transform, *pairs}, res);
+  ASSERT_TRUE(s.has_value()) << s.error().message;
+  auto npy = fb::read_npy(step.npy);
+  ASSERT_TRUE(npy.has_value()) << npy.error().message;
+  EXPECT_EQ(npy->shape, (std::vector<std::size_t>{10, 10}));
+  EXPECT_EQ(npy->data, download(res, s->s));
 }
 
 // One primitive per shell, so every normalized function is exactly normalized:

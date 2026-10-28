@@ -191,17 +191,19 @@ step, so no two collide:
 
 | Step | File |
 |------|------|
+| `[overlap]` with `write_npy = true` | `overlap.npy`: S, `nao_sphe` square, float64 |
 | `[scf]` | `scf.molden`: every MO, the occupied at 2 |
 | `[localization]` | `localization.molden`: the localized occupied orbitals in ascending energy, then the canonical virtuals |
 | `[localization]` with `livvo = true` | `localization_livvo.molden`: the LIVVOs, at 0 |
 | `[casci]` | `casci.molden`: the lowest root's natural orbitals |
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
 
-There is no `molden` key, nor a `livvo_molden` one: a config names no
-output, so a later config can rely on what an earlier run wrote. A file
-already there is overwritten; a directory per run is what `-o` is for. The
-steps keep their `molden` member (and `LocalizationStep` its `livvo_molden`),
-empty meaning not written, for a pipeline built by hand.
+There is no `molden` key, nor a `livvo_molden` or `npy` one: a config names
+no output, so a later config can rely on what an earlier run wrote.
+`write_npy` is a switch, off by default, not a path. A file already there is
+overwritten; a directory per run is what `-o` is for. The steps keep their
+`molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
+`npy`), empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
 comparing the directories named rather than their spelling (`.`, `''` and the
