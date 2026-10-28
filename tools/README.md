@@ -119,6 +119,12 @@ emit/nevpt2_reference.py
                   casscf_df.json's cases, each class's norm and energy and
                   the total, with the cas_natorb invariance checked. Needs
                   PySCF.
+emit/nevpt2_golden.py
+                  Write test/gtest/data/nevpt2/<case>/<array>.npy: the
+                  nevpt2-gpu-demo's density-fitted goldens as .npy, plus
+                  PySCF's dm3, f3ca and f3ac (CAS(4,4) and CAS(8,8) only),
+                  each checked against the golden's Sr and Si before
+                  writing. Needs PySCF and a clone of the demo.
 emit/ci_bench_integrals.py
                   Write the given JSON path (untracked): PySCF's CAS(10,10)
                   and CAS(12,12) integrals of N2 cc-pVDZ at 1.0977 and
@@ -163,6 +169,7 @@ uv run --group tools tools/emit/casci_reference.py
 uv run --group tools tools/emit/fci_step_reference.py
 uv run --group tools tools/emit/casscf_reference.py
 uv run --group tools tools/emit/nevpt2_reference.py
+uv run --group tools tools/emit/nevpt2_golden.py <demo clone>
 uv run --group tools tools/emit/record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ \
