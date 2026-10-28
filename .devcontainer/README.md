@@ -203,7 +203,7 @@ arguments for the devcontainer CLI on `up`/`rebuild`:
 | Knob | Becomes | For |
 | --- | --- | --- |
 | `HOST_MOUNTS` | one `--mount type=bind,…` per line | optional, personal directories — defaults to `~/.gemini:/home/ubuntu/.gemini` |
-| `HOST_ENV_PASSTHROUGH` | one `--remote-env NAME=value` per **non-empty** variable | `GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL` |
+| `HOST_ENV_PASSTHROUGH` | one `--remote-env NAME=value` per **non-empty** variable | `GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL`, `ANTHROPIC_API_KEY_FREE_BREAKFAST` |
 
 **Why not in `devcontainer.json`, when the sccache and `.git` mounts are?**
 Those two are mounts the container cannot work without, so they are declared

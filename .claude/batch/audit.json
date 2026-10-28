@@ -1,5 +1,5 @@
 {
-  "$comment": "Structured-output schema for the `audit` skill, one request per doc. Mirrors that skill's output contract: doc -> claim -> actual -> suggested fix, most load-bearing drift first. Pass with: batch.py run docs.jsonl --json-schema .claude/schemas/audit.json",
+  "$comment": "Structured-output schema for the `audit` skill, one request per doc. Mirrors that skill's output contract: doc -> claim -> actual -> suggested fix, most load-bearing drift first. Pass with: batch.py run docs.jsonl --json-schema .claude/batch/audit.json",
   "type": "object",
   "properties": {
     "doc": {
