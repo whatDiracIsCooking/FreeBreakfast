@@ -113,6 +113,12 @@ emit/casscf_reference.py
                   each space's orbital energies and the natural occupations,
                   the reference src/response, src/mcscf and the Casscf step
                   are tested against. Needs PySCF.
+emit/nevpt2_reference.py
+                  Write test/gtest/data/nevpt2/nevpt2_df.json: PySCF's SC
+                  DF-NEVPT2 per root on the polished DF CASSCF orbitals of
+                  casscf_df.json's cases, each class's norm and energy and
+                  the total, with the cas_natorb invariance checked. Needs
+                  PySCF.
 emit/ci_bench_integrals.py
                   Write the given JSON path (untracked): PySCF's CAS(10,10)
                   and CAS(12,12) integrals of N2 cc-pVDZ at 1.0977 and
@@ -156,6 +162,7 @@ uv run --group tools tools/emit/localization_reference.py
 uv run --group tools tools/emit/casci_reference.py
 uv run --group tools tools/emit/fci_step_reference.py
 uv run --group tools tools/emit/casscf_reference.py
+uv run --group tools tools/emit/nevpt2_reference.py
 uv run --group tools tools/emit/record_bound_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ \

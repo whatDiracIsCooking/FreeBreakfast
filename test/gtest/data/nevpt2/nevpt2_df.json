@@ -1,0 +1,511 @@
+{
+ "description": "PySCF strongly contracted NEVPT2 (mrpt.NEVPT, density fitted throughout) per root over a multi-root DFCASCI on the polished DF (SA-)CASSCF orbitals of casscf_df.json's cases, from the same starts and over the same data/aux_basis fitting set: each root's eight classes' norms and energies, their sum e_corr and the total. Hartree",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "numpy": "2.5.4",
+  "threads": 1,
+  "command": "uv run --group tools tools/emit/nevpt2_reference.py",
+  "casscf": "test/gtest/data/casscf/casscf_df.json"
+ },
+ "invariance": {
+  "check": "every root again with cas_natorb=False (core and virtuals canonicalized over the root's Fock, active orbitals unrotated): every class's norm and energy and e_corr",
+  "tolerance": 1e-10,
+  "max_difference": 5.162537064506978e-15
+ },
+ "cases": [
+  {
+   "name": "h2o_ccpvdz",
+   "ncas": 4,
+   "nelecas": 4,
+   "ncore": 3,
+   "weights": [
+    1.0
+   ],
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 116
+   },
+   "casscf_energies": [
+    -76.07783581719617
+   ],
+   "casscf_energy": -76.07783581719617,
+   "roots": [
+    {
+     "casci_energy": -76.07783581719619,
+     "classes": [
+      {
+       "name": "Sr",
+       "excitation": "(-1)'",
+       "norm": 0.01882285859669,
+       "energy": -0.005322709460844282
+      },
+      {
+       "name": "Si",
+       "excitation": "(+1)'",
+       "norm": 0.0011424241891536267,
+       "energy": -0.00011289843626063244
+      },
+      {
+       "name": "Sijrs",
+       "excitation": "(0)",
+       "norm": 0.22839440950944073,
+       "energy": -0.03982840091180134
+      },
+      {
+       "name": "Sijr",
+       "excitation": "(+1)",
+       "norm": 0.04320800325191325,
+       "energy": -0.005527561130376774
+      },
+      {
+       "name": "Srsi",
+       "excitation": "(-1)",
+       "norm": 0.1983848086351389,
+       "energy": -0.03203773891497176
+      },
+      {
+       "name": "Srs",
+       "excitation": "(-2)",
+       "norm": 0.13222485476644794,
+       "energy": -0.020504861565306065
+      },
+      {
+       "name": "Sij",
+       "excitation": "(+2)",
+       "norm": 0.010358565863763238,
+       "energy": -0.0011227106462360747
+      },
+      {
+       "name": "Sir",
+       "excitation": "(0)'",
+       "norm": 0.17233708992543498,
+       "energy": -0.044936514706145674
+      }
+     ],
+     "e_corr": -0.1493933957719426,
+     "energy": -76.22722921296813
+    }
+   ]
+  },
+  {
+   "name": "n2_ccpvdz",
+   "ncas": 6,
+   "nelecas": 6,
+   "ncore": 4,
+   "weights": [
+    1.0
+   ],
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 140
+   },
+   "casscf_energies": [
+    -109.08975155005821
+   ],
+   "casscf_energy": -109.08975155005821,
+   "roots": [
+    {
+     "casci_energy": -109.08975155005824,
+     "classes": [
+      {
+       "name": "Sr",
+       "excitation": "(-1)'",
+       "norm": 0.027454600393317298,
+       "energy": -0.006510413985702632
+      },
+      {
+       "name": "Si",
+       "excitation": "(+1)'",
+       "norm": 0.007620503599152773,
+       "energy": -0.0019686641182478084
+      },
+      {
+       "name": "Sijrs",
+       "excitation": "(0)",
+       "norm": 0.10147115714099535,
+       "energy": -0.017421305038309732
+      },
+      {
+       "name": "Sijr",
+       "excitation": "(+1)",
+       "norm": 0.04924206188787189,
+       "energy": -0.006670663794846574
+      },
+      {
+       "name": "Srsi",
+       "excitation": "(-1)",
+       "norm": 0.11575680913661605,
+       "energy": -0.0230437699458211
+      },
+      {
+       "name": "Srs",
+       "excitation": "(-2)",
+       "norm": 0.22042286497472635,
+       "energy": -0.04068310061141778
+      },
+      {
+       "name": "Sij",
+       "excitation": "(+2)",
+       "norm": 0.02764839815013894,
+       "energy": -0.00521787385689995
+      },
+      {
+       "name": "Sir",
+       "excitation": "(0)'",
+       "norm": 0.2059678842526893,
+       "energy": -0.054644138507188335
+      }
+     ],
+     "e_corr": -0.1561599298584339,
+     "energy": -109.24591147991667
+    }
+   ]
+  },
+  {
+   "name": "h2co_ccpvdz_sa2",
+   "ncas": 3,
+   "nelecas": 4,
+   "ncore": 6,
+   "weights": [
+    0.5,
+    0.5
+   ],
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "casscf_energies": [
+    -113.9049288584831,
+    -113.75507875380869
+   ],
+   "casscf_energy": -113.8300038061459,
+   "roots": [
+    {
+     "casci_energy": -113.90492885848315,
+     "classes": [
+      {
+       "name": "Sr",
+       "excitation": "(-1)'",
+       "norm": 0.03093386704459411,
+       "energy": -0.015350810780076656
+      },
+      {
+       "name": "Si",
+       "excitation": "(+1)'",
+       "norm": 2.26809826564723e-05,
+       "energy": -2.219876782336871e-05
+      },
+      {
+       "name": "Sijrs",
+       "excitation": "(0)",
+       "norm": 0.49198448512436804,
+       "energy": -0.10063713057225832
+      },
+      {
+       "name": "Sijr",
+       "excitation": "(+1)",
+       "norm": 0.03615260047387086,
+       "energy": -0.008027157115001553
+      },
+      {
+       "name": "Srsi",
+       "excitation": "(-1)",
+       "norm": 0.4287977381676137,
+       "energy": -0.09203193727509561
+      },
+      {
+       "name": "Srs",
+       "excitation": "(-2)",
+       "norm": 0.17348256154971164,
+       "energy": -0.0314579583839526
+      },
+      {
+       "name": "Sij",
+       "excitation": "(+2)",
+       "norm": 0.004517227135048486,
+       "energy": -0.00146153460638846
+      },
+      {
+       "name": "Sir",
+       "excitation": "(0)'",
+       "norm": 0.11082808265972516,
+       "energy": -0.03918623549757058
+      }
+     ],
+     "e_corr": -0.28817496299816714,
+     "energy": -114.19310382148132
+    },
+    {
+     "casci_energy": -113.75507875380873,
+     "classes": [
+      {
+       "name": "Sr",
+       "excitation": "(-1)'",
+       "norm": 0.01505831003975817,
+       "energy": -0.006569078047770235
+      },
+      {
+       "name": "Si",
+       "excitation": "(+1)'",
+       "norm": 0.001865648753294688,
+       "energy": -0.0019851924043621286
+      },
+      {
+       "name": "Sijrs",
+       "excitation": "(0)",
+       "norm": 0.49198448512436793,
+       "energy": -0.10072725484961625
+      },
+      {
+       "name": "Sijr",
+       "excitation": "(+1)",
+       "norm": 0.055457622336482146,
+       "energy": -0.014800462707728617
+      },
+      {
+       "name": "Srsi",
+       "excitation": "(-1)",
+       "norm": 0.42094947237615044,
+       "energy": -0.09161012031523824
+      },
+      {
+       "name": "Srs",
+       "excitation": "(-2)",
+       "norm": 0.15136995752987187,
+       "energy": -0.02696144366875785
+      },
+      {
+       "name": "Sij",
+       "excitation": "(+2)",
+       "norm": -2.267602677121965e-17,
+       "energy": -0.0
+      },
+      {
+       "name": "Sir",
+       "excitation": "(0)'",
+       "norm": 0.10296505607004108,
+       "energy": -0.038142113485305544
+      }
+     ],
+     "e_corr": -0.2807956654787789,
+     "energy": -114.03587441928751
+    }
+   ]
+  },
+  {
+   "name": "h2co_ccpvdz_sa2_weighted",
+   "ncas": 3,
+   "nelecas": 4,
+   "ncore": 6,
+   "weights": [
+    0.7,
+    0.3
+   ],
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "casscf_energies": [
+    -113.90753588784527,
+    -113.75105384760654
+   ],
+   "casscf_energy": -113.86059127577364,
+   "roots": [
+    {
+     "casci_energy": -113.90753588784527,
+     "classes": [
+      {
+       "name": "Sr",
+       "excitation": "(-1)'",
+       "norm": 0.028946155737393148,
+       "energy": -0.014113452465108933
+      },
+      {
+       "name": "Si",
+       "excitation": "(+1)'",
+       "norm": 2.0192307963871824e-05,
+       "energy": -1.9449713058158543e-05
+      },
+      {
+       "name": "Sijrs",
+       "excitation": "(0)",
+       "norm": 0.4923710943641971,
+       "energy": -0.10078134909076994
+      },
+      {
+       "name": "Sijr",
+       "excitation": "(+1)",
+       "norm": 0.036232588516445265,
+       "energy": -0.008007027313599546
+      },
+      {
+       "name": "Srsi",
+       "excitation": "(-1)",
+       "norm": 0.42589617796282453,
+       "energy": -0.09136043675346439
+      },
+      {
+       "name": "Srs",
+       "excitation": "(-2)",
+       "norm": 0.1724976144722324,
+       "energy": -0.03124684371521439
+      },
+      {
+       "name": "Sij",
+       "excitation": "(+2)",
+       "norm": 0.004637105717773694,
+       "energy": -0.0014678066216258572
+      },
+      {
+       "name": "Sir",
+       "excitation": "(0)'",
+       "norm": 0.11139103593378513,
+       "energy": -0.03916400753917958
+      }
+     ],
+     "e_corr": -0.2861603732120208,
+     "energy": -114.1936962610573
+    },
+    {
+     "casci_energy": -113.75105384760654,
+     "classes": [
+      {
+       "name": "Sr",
+       "excitation": "(-1)'",
+       "norm": 0.018846886493329485,
+       "energy": -0.008713184890689596
+      },
+      {
+       "name": "Si",
+       "excitation": "(+1)'",
+       "norm": 0.001961894114231741,
+       "energy": -0.0020736728787483292
+      },
+      {
+       "name": "Sijrs",
+       "excitation": "(0)",
+       "norm": 0.49237109436419746,
+       "energy": -0.10090084459885339
+      },
+      {
+       "name": "Sijr",
+       "excitation": "(+1)",
+       "norm": 0.05580270292525,
+       "energy": -0.014937331627458222
+      },
+      {
+       "name": "Srsi",
+       "excitation": "(-1)",
+       "norm": 0.41950283212832284,
+       "energy": -0.09136889222461249
+      },
+      {
+       "name": "Srs",
+       "excitation": "(-2)",
+       "norm": 0.15094531324495145,
+       "energy": -0.026820362167746706
+      },
+      {
+       "name": "Sij",
+       "excitation": "(+2)",
+       "norm": 5.902629081306827e-17,
+       "energy": -0.0
+      },
+      {
+       "name": "Sir",
+       "excitation": "(0)'",
+       "norm": 0.10634374066430168,
+       "energy": -0.03976672218693539
+      }
+     ],
+     "e_corr": -0.2845810105750441,
+     "energy": -114.03563485818158
+    }
+   ]
+  },
+  {
+   "name": "h2o_ccpvdz_avas",
+   "ncas": 6,
+   "nelecas": 8,
+   "ncore": 1,
+   "weights": [
+    1.0
+   ],
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 116
+   },
+   "casscf_energies": [
+    -76.07972181965056
+   ],
+   "casscf_energy": -76.07972181965056,
+   "roots": [
+    {
+     "casci_energy": -76.07972181965056,
+     "classes": [
+      {
+       "name": "Sr",
+       "excitation": "(-1)'",
+       "norm": 0.2174049769802581,
+       "energy": -0.05663755544638514
+      },
+      {
+       "name": "Si",
+       "excitation": "(+1)'",
+       "norm": 0.0005905649733961623,
+       "energy": -2.6326620688533426e-05
+      },
+      {
+       "name": "Sijrs",
+       "excitation": "(0)",
+       "norm": 0.007673761984657502,
+       "energy": -0.00017387194560633513
+      },
+      {
+       "name": "Sijr",
+       "excitation": "(+1)",
+       "norm": 0.005625467398600548,
+       "energy": -0.00012791010691534286
+      },
+      {
+       "name": "Srsi",
+       "excitation": "(-1)",
+       "norm": 0.023578681438954707,
+       "energy": -0.0009340753499276278
+      },
+      {
+       "name": "Srs",
+       "excitation": "(-2)",
+       "norm": 0.5212271210765308,
+       "energy": -0.08150550235498907
+      },
+      {
+       "name": "Sij",
+       "excitation": "(+2)",
+       "norm": 0.003927949530911675,
+       "energy": -9.058368233990251e-05
+      },
+      {
+       "name": "Sir",
+       "excitation": "(0)'",
+       "norm": 0.019796518904248706,
+       "energy": -0.0008317406079505624
+      }
+     ],
+     "e_corr": -0.14032756611480252,
+     "energy": -76.22004938576536
+    }
+   ]
+  }
+ ]
+}
