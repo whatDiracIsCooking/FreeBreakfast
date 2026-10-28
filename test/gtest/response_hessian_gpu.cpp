@@ -4,9 +4,9 @@
 // summed per pair of orbital sets; H x against a central finite difference of
 // response::fock's gradient along random kappa, the RDMs fixed; and symmetry.
 // On H2O STO-3G, H e_i for every unit vector against the diagonal, at a
-// two-root CAS(2,2) and at ncas = 0; and the refusals. The density-fitted H,
-// over cc-pVDZ-JKFIT, against a host contraction of the same B and against the
-// integral-direct H.
+// two-root CAS(2,2) and at ncas = 0; and the refusals. The density-fitted H
+// against a host contraction of the same B, and, over aug-cc-pVDZ-acCD-6-6,
+// against the integral-direct H.
 //
 // The orbitals are the setup's own, as in response_fock_gpu.cpp: the SCF (run
 // with J unscreened), the active space picked by pipeline.active_space as the
@@ -58,18 +58,23 @@ constexpr double kStep = 2e-3;
 constexpr std::int32_t kDirections = 2;
 // The density-fitted H against the host product over the same B, ppaa, papa
 // and Fock: rounding only, as a fraction of max |diag H| (seen over the five
-// cases and two runs: 5.0e-15 in the diagonal, 1.0e-15 in H x per |x|).
+// cases, over either aux set: 5.7e-15 in the diagonal, 1.2e-15 in H x per
+// |x|).
 constexpr double kDfHostTolerance = 1e-12;
-// ...and against the integral-direct H over cc-pVDZ-JKFIT: the fit's error,
-// as response_fock_gpu.cpp's 3e-3 per element of F is, here contracted into
-// H through the fitted ppaa, papa and Fock as well as the J and K. Over the
-// five cases it reaches 2.8e-3 in an element of H x per |x| and
-// 6.2e-3 in the diagonal (both N2), where max |diag H| is 73 to 95: about
-// 1e-4 of H's scale. The bars sit about 3x above that, as a fit's error, not
-// rounding, is what they bound.
-constexpr double kDfProductTolerance = 1e-2;
-constexpr double kDfDiagonalTolerance = 2e-2;
+// ...and against the integral-direct H: the fit's error, contracted into H
+// through the fitted ppaa, papa and Fock as well as the J and K. Over
+// aug-cc-pVDZ-acCD-6-6 (kComparisonAuxBasis) it reaches 1.2e-4 in an element
+// of H x per |x| (H2O AVAS) and 4.7e-4 in the diagonal (H2O), where
+// max |diag H| is 73 to 95; the bars sit about 3x above that, as a fit's
+// error, not rounding, is what they bound. cc-pVDZ-JKFIT, built for occupied
+// pairs, gave 2.8e-3 and 6.2e-3 (N2), as active_space_gpu.cpp found for
+// ppaa and papa, so the comparison is over the acCD set.
+constexpr double kDfProductTolerance = 3e-4;
+constexpr double kDfDiagonalTolerance = 1.5e-3;
+// The fitting set of the STO-3G tests, which compare against the host only.
 constexpr std::string_view kAuxBasis = "cc-pvdz-jkfit";
+// The fitting set of the comparison with the integral-direct H.
+constexpr std::string_view kComparisonAuxBasis = "aug-cc-pvdz-accd-6-6";
 
 const fb::json &reference() {
   static const fb::json doc = [] {
@@ -811,7 +816,7 @@ double max_abs_difference(const std::vector<double> &a, const std::vector<double
 }
 
 // B over the setup's basis and the aux set, on the setup's device.
-std::optional<fb::DensityFittingOutput> fit(Setup &setup) {
+std::optional<fb::DensityFittingOutput> fit(Setup &setup, std::string_view aux_basis) {
   const auto &molecule = setup.calc->get<fb::MoleculeOutput>();
   const auto &basis = setup.calc->get<fb::BasisSetOutput>();
   const auto &pairs = setup.calc->get<fb::PrimitivePairClassesOutput>();
@@ -819,7 +824,7 @@ std::optional<fb::DensityFittingOutput> fit(Setup &setup) {
     ADD_FAILURE() << "a product of the setup steps is missing";
     return std::nullopt;
   }
-  auto b = fb::DensityFittingStep{.aux_basis = std::string{kAuxBasis}}.run(
+  auto b = fb::DensityFittingStep{.aux_basis = std::string{aux_basis}}.run(
       fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
           *molecule, *basis, *pairs},
       setup.res());
@@ -1021,12 +1026,13 @@ struct FittedHessian {
   HostHessian host;
 };
 
-std::optional<FittedHessian> fitted_hessian(Setup &setup, const fb::SphericalMatrixAO &c) {
+std::optional<FittedHessian> fitted_hessian(Setup &setup, const fb::SphericalMatrixAO &c,
+                                            std::string_view aux_basis = kAuxBasis) {
   fb::DeviceResources &res = setup.res();
   const std::size_t nmo = setup.nmo;
   const auto ncore = static_cast<std::size_t>(setup.ncore);
   const auto ncas = static_cast<std::size_t>(setup.ncas);
-  auto b = fit(setup);
+  auto b = fit(setup, aux_basis);
   if (!b.has_value()) {
     return std::nullopt;
   }
@@ -1058,7 +1064,7 @@ std::optional<FittedHessian> fitted_hessian(Setup &setup, const fb::SphericalMat
 }
 
 // The density-fitted H at each case's CASCI orbitals and RDMs, over ppaa,
-// papa and a Fock fitted from the same B: its products along the gradient and
+// papa and a Fock fitted from the same B (over aug-cc-pVDZ-acCD-6-6): its products along the gradient and
 // random x, and its diagonal, against the host product tightly; symmetric to
 // the same bar as the integral-direct H; and against the integral-direct H
 // within the fit's error.
@@ -1073,7 +1079,7 @@ TEST_P(ResponseHessian, DensityFittedMatchesItsHostReferenceAndTheDirectOne) {
   fb::DeviceResources &res = setup->res();
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const fb::SphericalMatrixAO &c = setup->casci->c;
-  auto fitted = fitted_hessian(*setup, c);
+  auto fitted = fitted_hessian(*setup, c, kComparisonAuxBasis);
   ASSERT_TRUE(fitted.has_value());
   const auto n = static_cast<std::size_t>(fitted->hessian.size());
 
