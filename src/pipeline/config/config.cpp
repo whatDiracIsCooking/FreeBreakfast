@@ -156,6 +156,35 @@ template <class T>
   return read_key(table, step, "active", base_dir, out.active);
 }
 
+/// @brief The two-electron integrals' keys of the `[step]` table, the same in
+/// every step that takes them: `eri`, `"direct"` (the default) or
+/// `"density_fitting"`, and with the latter a required, non-empty
+/// `aux_basis`, which @p out receives (a path joined to @p base_dir, a
+/// compiled-in fitting set's name kept as written: DensityFittingStep's rule).
+/// `aux_basis` under `"direct"` is refused, and @p out stays empty.
+[[nodiscard]] Status read_eri(const toml::table &table, std::string_view step,
+                              const std::filesystem::path &base_dir, std::string &out) {
+  std::string eri = "direct";
+  FBF_TRY(read_key(table, step, "eri", base_dir, eri));
+  if (eri == "density_fitting") {
+    FBF_TRY(read_required_key(table, step, "aux_basis", base_dir, out));
+    if (out.empty()) {
+      return err_config("[{}] aux_basis is empty", step);
+    }
+    if (!is_builtin_aux_basis(out)) {
+      out = (base_dir / out).string();
+    }
+    return {};
+  }
+  if (eri == "direct") {
+    if (table.contains("aux_basis")) {
+      return err_config("[{}] aux_basis needs eri = 'density_fitting'", step);
+    }
+    return {};
+  }
+  return err_config("[{}] has no eri '{}' (known: 'direct', 'density_fitting')", step, eri);
+}
+
 /// @brief Step `S` from its table. A filled-in step is read from an empty
 /// one, so a required option it lacks is reported as for a written table.
 /// Every output a step can write is written, into @p output_dir under the
@@ -201,30 +230,11 @@ template <class S>
     FBF_TRY(check_keys(table, kStep,
                        {"max_iterations", "energy_tolerance", "commutator_tolerance",
                         "diis_history", "fock_rebuild_interval", "eri", "aux_basis"}));
-    // The two-electron integrals: integral-direct, or density-fitted over an
-    // aux basis, which is then required. Each refuses the other's options.
-    std::string eri = "direct";
-    FBF_TRY(read_key(table, kStep, "eri", base_dir, eri));
-    if (eri == "density_fitting") {
-      FBF_TRY(read_required_key(table, kStep, "aux_basis", base_dir, step.aux_basis));
-      if (step.aux_basis.empty()) {
-        return err_config("[{}] aux_basis is empty", kStep);
-      }
-      // DensityFittingStep's rule.
-      if (!is_builtin_aux_basis(step.aux_basis)) {
-        step.aux_basis = (base_dir / step.aux_basis).string();
-      }
-      if (table.contains("fock_rebuild_interval")) {
-        return err_config("[{}] fock_rebuild_interval is the direct Fock build's, and eri is "
-                          "'density_fitting', whose every build is full",
-                          kStep);
-      }
-    } else if (eri == "direct") {
-      if (table.contains("aux_basis")) {
-        return err_config("[{}] aux_basis needs eri = 'density_fitting'", kStep);
-      }
-    } else {
-      return err_config("[{}] has no eri '{}' (known: 'direct', 'density_fitting')", kStep, eri);
+    FBF_TRY(read_eri(table, kStep, base_dir, step.aux_basis));
+    if (!step.aux_basis.empty() && table.contains("fock_rebuild_interval")) {
+      return err_config("[{}] fock_rebuild_interval is the direct Fock build's, and eri is "
+                        "'density_fitting', whose every build is full",
+                        kStep);
     }
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, step.max_iterations));
     FBF_TRY(read_key(table, kStep, "energy_tolerance", base_dir, step.energy_tolerance));
@@ -272,8 +282,9 @@ template <class S>
   } else if constexpr (std::same_as<S, CasscfStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"ncas", "nelecas", "nroots", "active", "avas", "avas_threshold", "weights",
-                        "conv_tol", "conv_tol_grad", "max_cycle"}));
+                        "conv_tol", "conv_tol_grad", "max_cycle", "eri", "aux_basis"}));
     FBF_TRY(read_active_space(table, kStep, base_dir, step));
+    FBF_TRY(read_eri(table, kStep, base_dir, step.aux_basis));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
     FBF_TRY(read_key(table, kStep, "weights", base_dir, step.weights));
     FBF_TRY(read_key(table, kStep, "conv_tol", base_dir, step.conv_tol));
@@ -389,7 +400,8 @@ template <class S>
 [[nodiscard]] Status check_inputs_apart(const Calculation &calc,
                                         const std::filesystem::path &output_dir) {
   // Every path an input key names: the molecule's, a basis or an aux basis
-  // ([density_fitting]'s or [scf]'s) read from disk, and each product loaded 'from' a file.
+  // ([density_fitting]'s, [scf]'s or [casscf]'s) read from disk, and each
+  // product loaded 'from' a file.
   std::vector<std::filesystem::path> inputs;
   if (const auto &molecule = calc.step<MoleculeStep>()) {
     inputs.push_back(molecule->xyz);
@@ -404,6 +416,10 @@ template <class S>
   if (const auto &scf = calc.step<ScfStep>();
       scf && !scf->aux_basis.empty() && !is_builtin_aux_basis(scf->aux_basis)) {
     inputs.emplace_back(scf->aux_basis);
+  }
+  if (const auto &casscf = calc.step<CasscfStep>();
+      casscf && !casscf->aux_basis.empty() && !is_builtin_aux_basis(casscf->aux_basis)) {
+    inputs.emplace_back(casscf->aux_basis);
   }
   [&]<class... Ss>(std::type_identity<Pipeline<Ss...>>) {
     const auto add_from = [&]<class S>() {

@@ -6,7 +6,9 @@
 // the state-averaged natural occupations, and the canonical core and virtual
 // orbital energies, the state-averaged Fock's eigenvalues in each space. Each
 // case also writes its natural orbitals as Molden, read back as
-// io_molden_host reads one. Runs the device chain, so needs a GPU.
+// io_molden_host reads one. Each case runs again with [casscf] density-fitted,
+// against the DF-CASSCF of data/casscf/casscf_df.json. Runs the device chain,
+// so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -44,22 +46,28 @@ constexpr double kOrbitalEnergyTolerance = 1e-6;
 // as mcscf_solve_gpu.cpp runs, ~1e-8 (see src/mcscf/solve/README.md).
 constexpr double kConvTolGrad = 1e-9;
 
-const fb::json &reference() {
-  static const fb::json doc = [] {
-    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf" / "casscf.json");
-    EXPECT_TRUE(read.has_value()) << read.error().message;
-    return read.has_value() ? std::move(*read) : fb::json{};
-  }();
-  return doc;
+// The density-fitted references' fitting set, compiled in, by the name
+// casscf_df.json records.
+constexpr std::string_view kDfAuxBasis = "cc-pVDZ-JKFIT";
+
+// data/casscf/<file>, read once per file.
+const fb::json &reference(std::string_view file) {
+  static std::map<std::string, fb::json, std::less<>> docs;
+  if (const auto it = docs.find(file); it != docs.end()) {
+    return it->second;
+  }
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf" / file);
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return docs.emplace(file, read.has_value() ? std::move(*read) : fb::json{}).first->second;
 }
 
-const fb::json &reference_case(std::string_view name) {
-  for (const fb::json &entry : reference().at("cases")) {
+const fb::json &reference_case(std::string_view name, std::string_view file = "casscf.json") {
+  for (const fb::json &entry : reference(file).at("cases")) {
     if (entry.at("name").get<std::string>() == name) {
       return entry;
     }
   }
-  ADD_FAILURE() << "no case " << name << " in casscf/casscf.json";
+  ADD_FAILURE() << "no case " << name << " in casscf/" << file;
   static const fb::json kNone;
   return kNone;
 }
@@ -204,19 +212,13 @@ void PrintTo(const Case &c, std::ostream *os) {
   *os << c.name;
 }
 
-class PipelineCasscf : public ::testing::TestWithParam<Case> {};
-
-TEST_P(PipelineCasscf, MatchesPyscf) {
-  FBF_REQUIRE_GPU();
-  if (GetParam().slow) {
-    FBF_SKIP_IF_FAST_TESTS();
-  }
-  const fb::json &entry = reference_case(GetParam().name);
+// Runs the config of entry's molecule and the [casscf] table casscf, and
+// checks the step's product against entry's reference.
+void expect_matches(const fb::json &entry, const std::string &casscf_toml) {
   const fb::json &want = entry.at("casscf");
   const fb::test::ScratchDir dir("pipeline_casscf");
   const std::filesystem::path molden = dir / "out/casscf.molden";
-  auto calc =
-      fb::read_config(write_config(dir, entry, casscf_table(entry)), dir.path(), dir / "out");
+  auto calc = fb::read_config(write_config(dir, entry, casscf_toml), dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
@@ -224,8 +226,9 @@ TEST_P(PipelineCasscf, MatchesPyscf) {
   const auto &casscf = calc->get<fb::CasscfOutput>();
   const auto &basis = calc->get<fb::BasisSetOutput>();
   ASSERT_TRUE(casscf.has_value() && basis.has_value());
-  std::cout << std::format("[ casscf   ] {}: {} macro iterations, |g| {:.3e}\n", GetParam().name,
-                           casscf->iterations.size(), casscf->gradient_norm);
+  std::cout << std::format("[ casscf   ] {}: {} macro iterations, |g| {:.3e}\n",
+                           entry.at("name").get<std::string>(), casscf->iterations.size(),
+                           casscf->gradient_norm);
 
   EXPECT_EQ(casscf->ncore, entry.at("ncore").get<std::int32_t>());
   EXPECT_EQ(casscf->ncas, entry.at("ncas").get<std::int32_t>());
@@ -293,6 +296,35 @@ TEST_P(PipelineCasscf, MatchesPyscf) {
     const double expected = j < ncore ? 2.0 : (j < ncore + n ? occupations[j - ncore] : 0.0);
     EXPECT_NEAR(written[j], expected, 1e-6) << "orbital " << j;
   }
+}
+
+class PipelineCasscf : public ::testing::TestWithParam<Case> {};
+
+TEST_P(PipelineCasscf, MatchesPyscf) {
+  FBF_REQUIRE_GPU();
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::json &entry = reference_case(GetParam().name);
+  expect_matches(entry, casscf_table(entry));
+}
+
+// [casscf] eri = "density_fitting" over the compiled-in cc-pVDZ-JKFIT, against
+// PySCF's DF-CASSCF from the same start (data/casscf/casscf_df.json), to the
+// same bars: the step builds its own B and runs mcscf::DensityFitting::Full,
+// and canonicalizes over the fitted Fock, whose eigenvalues the reference's
+// orbital energies are. The [scf] stays integral-direct, as the reference's
+// exact RHF start is.
+TEST_P(PipelineCasscf, MatchesPyscfDensityFitted) {
+  FBF_REQUIRE_GPU();
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::json &entry = reference_case(GetParam().name, "casscf_df.json");
+  ASSERT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
+  expect_matches(entry,
+                 casscf_table(entry) +
+                     std::format("eri = \"density_fitting\"\naux_basis = \"{}\"\n", kDfAuxBasis));
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasscf,
