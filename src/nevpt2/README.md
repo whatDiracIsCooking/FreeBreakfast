@@ -19,6 +19,7 @@ name needs a prefix" has the rule.
 |-----------|--------|------|
 | `density_fitting/` | `free_breakfast.nevpt2.density_fitting` | The MO blocks of the fitted B (B_aa, B_ca, B_va, B_cv, B_vc), the active h2e, and the ten external blocks built slab by slab: one strided-batched gemm and a permute each. |
 | `rdm/` | `free_breakfast.nevpt2.rdm` | `nevpt2::rdms`: dm3 and the integral-contracted 4-RDMs f3ca and f3ac of one CI vector, n_act⁶ each, on the device, tiled over the determinants against a byte budget. |
+| `energy/` | `free_breakfast.nevpt2.energy` | The eight SC class norms and energies, each class walking its external index in batches over the density-fitted slabs: the demo's einsums, subscripts unchanged, and PySCF's `_norm_to_energy`. |
 
 ## Tests
 

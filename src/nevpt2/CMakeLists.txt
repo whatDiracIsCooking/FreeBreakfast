@@ -2,6 +2,7 @@
 # MO blocks and external-integral slabs, and the reference state's RDMs.
 add_subdirectory(density_fitting)
 add_subdirectory(rdm)
+add_subdirectory(energy)
 
 # The aggregate: one import for the NEVPT2 layer.
 free_breakfast_add_cxx_module_library(
@@ -13,4 +14,5 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::nevpt2::density_fitting
   free_breakfast::nevpt2::rdm
+  free_breakfast::nevpt2::energy
 )
