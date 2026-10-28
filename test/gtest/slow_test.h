@@ -7,6 +7,12 @@
 /// FREE_BREAKFAST_FAST_TESTS. Default -- the variable unset -- runs everything,
 /// so nothing changes for a bare ctest run.
 ///
+/// The fast set has a budget: cpp-tier.sh and cpp-smoke.sh gate a PR, and
+/// must finish in under five minutes on a busy card, where every case runs
+/// slower. So a case that takes more than about ten seconds there goes under
+/// this macro, unless it is the cheapest of its family: one parameter, one
+/// molecule or one mode stays in the fast set to stand for the rest.
+///
 /// Put the macro at the TOP of a test body, after FBF_REQUIRE_GPU():
 /// a slow test is also a GPU test, so it should still skip cleanly on a
 /// device-less host.

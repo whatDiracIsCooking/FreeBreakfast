@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -480,6 +481,7 @@ TEST(ActiveSpaceGpuCap, ScaledOrbitalsOnPrunedClassesMatchUnprunedOnes) {
   // Orbitals scaled so that every m_v m_w is past the prune's |D| <= 2: the
   // pruned classes, with the cap, give unpruned classes' (tu|vw) at tau = 0.
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   auto setup = make_setup(reference_case("h2o_ccpvdz"));
   ASSERT_NE(setup, nullptr);
   fb::DeviceResources &res = setup->res();

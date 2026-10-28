@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -256,6 +257,7 @@ void expect_roots(fb::DeviceResources &res, const Case &c, const fb::ci::Roots &
 
 TEST(CiSolver, LowestSingletsMatchDirectSpin1) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
@@ -398,6 +400,7 @@ struct RecordingSigma {
 // space applies nothing.
 TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());
@@ -473,6 +476,7 @@ TEST(CiSolver, TwoStageOverCiSigmaMatchesDirectSpin1) {
 // alone. An empty start is the solve without one, to the bit.
 TEST(CiSolver, WarmStartFromConvergedRootsOverCiSigma) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   fb::DeviceResources res{0};
   const fb::json cases = load_cases();
   ASSERT_FALSE(cases.empty());

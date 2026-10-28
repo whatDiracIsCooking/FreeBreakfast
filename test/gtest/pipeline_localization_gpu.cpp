@@ -13,6 +13,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -672,6 +673,7 @@ TEST(PipelineIbo, EthyleneHasOnePiBond) {
 // centers at the default threshold, every one of them all p.
 TEST(PipelineIbo, BenzeneHasThreePiBonds) {
   FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
   constexpr double kCarbon = 1.3915;
   constexpr double kHydrogen = 2.4715;
   std::vector<std::pair<std::string_view, fb::Vec<double, 3>>> atoms;

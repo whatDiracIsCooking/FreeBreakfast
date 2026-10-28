@@ -302,9 +302,9 @@ class PipelineCasscf : public ::testing::TestWithParam<Case> {};
 
 TEST_P(PipelineCasscf, MatchesPyscf) {
   FBF_REQUIRE_GPU();
-  if (GetParam().slow) {
-    FBF_SKIP_IF_FAST_TESTS();
-  }
+  // Under slow_test.h: every case. H2O cc-pVDZ is McscfSolve's fast case over
+  // the same reference, and MatchesPyscfDensityFitted's keeps this step's.
+  FBF_SKIP_IF_FAST_TESTS();
   const fb::json &entry = reference_case(GetParam().name);
   expect_matches(entry, casscf_table(entry));
 }
