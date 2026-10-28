@@ -28,6 +28,7 @@ export import free_breakfast.pipeline.localization;
 export import free_breakfast.pipeline.casci;
 export import free_breakfast.pipeline.casscf;
 export import free_breakfast.pipeline.fci;
+export import free_breakfast.pipeline.nevpt2;
 
 export namespace free_breakfast {
 
@@ -35,7 +36,7 @@ export namespace free_breakfast {
 using Calculation =
     Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep, EriStep,
              OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
-             LocalizationStep, CasciStep, CasscfStep, FciStep>;
+             LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step>;
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.
@@ -50,7 +51,8 @@ using Calculation =
 /// required key -- in a written table or in one a filled-in step was read
 /// from -- is ErrorKind::InvalidConfig naming it. So is an @p output_dir that
 /// is @p input_dir, or holds an input file, compared as the directories they
-/// name rather than as spelt.
+/// name rather than as spelt. A `[nevpt2]` under an integral-direct `[eri]`,
+/// written or filled in, is ErrorKind::Unsupported naming `[eri]`.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &input_dir,
                                                const std::filesystem::path &output_dir);

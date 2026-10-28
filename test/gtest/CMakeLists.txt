@@ -160,6 +160,7 @@ add_executable(
   livvo_gpu.cpp
   pipeline_casci_gpu.cpp
   pipeline_casscf_gpu.cpp
+  pipeline_nevpt2_gpu.cpp
   pipeline_fci_gpu.cpp
   response_orbital_pairs_gpu.cpp
   response_fock_gpu.cpp
@@ -219,6 +220,7 @@ target_link_libraries(
   free_breakfast::pipeline::casci
   free_breakfast::pipeline::casscf
   free_breakfast::pipeline::fci
+  free_breakfast::pipeline::nevpt2
   free_breakfast::pipeline::config
   free_breakfast::test::gpu_kernels
   GTest::gtest

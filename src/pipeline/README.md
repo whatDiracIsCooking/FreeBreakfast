@@ -21,6 +21,7 @@ active_space/  free_breakfast.pipeline.active_space: ActiveSpaceSelection -- not
 casci/      free_breakfast.pipeline.casci: CasciStep -- CASCI over the SCF's orbitals: the active space by index or by AVAS over MINAO, the active-space Hamiltonian, the CI over the GPU sigma, each root's 1-RDM, and the natural orbitals as Molden
 casscf/     free_breakfast.pipeline.casscf: CasscfStep -- state-averaged CASSCF from the SCF's orbitals, the start picked as Casci picks its space, mcscf::solve over the EriOutput (integral-direct, or fully density-fitted), the core and virtuals canonicalized, and the natural orbitals as Molden
 fci/        free_breakfast.pipeline.fci: FciStep -- FCI over every SCF orbital, CASCI's calls with no core, refused up front past the device's free memory
+nevpt2/     free_breakfast.pipeline.nevpt2: Nevpt2Step -- SC-NEVPT2 per root of the CASSCF, over the density-fitted EriOutput only: each root's core and virtuals canonicalized over its own Fock, its RDMs, dm3 and f3, and the eight classes
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 ```
 
@@ -37,9 +38,11 @@ mode = "density_fitting"      # default "integral_direct"
 aux_basis = "cc-pvdz-jkfit"   # optional: <basis>-acCD-6-6 when carried
 ```
 
-`EriStep` builds them once, B or the J and K pair classes, and `[scf]` and
-`[casscf]` both read that one `EriOutput`: `[scf]` fits its Fock build,
-`[casscf]` runs `mcscf::DensityFitting::Full`, the DF-CASSCF. A missing
+`EriStep` builds them once, B or the J and K pair classes, and `[scf]`,
+`[casscf]` and `[nevpt2]` all read that one `EriOutput`: `[scf]` fits its
+Fock build, `[casscf]` runs `mcscf::DensityFitting::Full`, the DF-CASSCF,
+and `[nevpt2]` its MO blocks and Fock over the same B. `[nevpt2]` runs over
+density fitting only, and is `Unsupported` under an integral-direct `[eri]`. A missing
 `[eri]` is filled in, integral-direct. The rules and refusals are
 `config/README.md`'s; what the CASSCF's scratch costs past B, and the memory
 check before its loop, `casscf/README.md`'s.

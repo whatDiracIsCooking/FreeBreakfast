@@ -28,6 +28,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::casci
   free_breakfast::pipeline::casscf
   free_breakfast::pipeline::fci
+  free_breakfast::pipeline::nevpt2
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::io::base

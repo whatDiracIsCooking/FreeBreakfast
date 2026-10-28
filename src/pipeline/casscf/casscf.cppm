@@ -59,6 +59,25 @@ struct CasscfOutput {
   std::vector<mcscf::Iteration> iterations;
 };
 
+/// @brief PySCF's canonicalization of a CASSCF's orbitals over the nmo x nmo
+/// Fock @p fock (host, column-major, symmetric): the rotation @p r, @p nmo square,
+/// column-major, the identity but on the core [0, @p ncore) and the virtuals
+/// [@p nocc, nmo), each block F's eigenvectors there by ascending eigenvalue,
+/// and @p energies, F's diagonal but its eigenvalues within those two
+/// blocks. The active orbitals are not rotated. C <- C R is the caller's.
+///
+/// The Casscf step's over the state-averaged Fock, and the Nevpt2 step's
+/// over each root's own. Each eigenproblem is `diagonalize` on @p res's
+/// device, and synchronizes res.stream().
+///
+/// @return Success; InvalidConfig if @p fock is not @p nmo square or the
+///         ranges are out of order; or `diagonalize`'s error, or the GpuRuntime error
+///         of a copy.
+[[nodiscard]] Status canonicalize_core_virtual(DeviceResources &res, size_t nmo, size_t ncore,
+                                               size_t nocc, std::span<const double> fock,
+                                               std::vector<double> &r,
+                                               std::vector<double> &energies);
+
 /// @brief State-averaged CASSCF from the @ref ScfOutput's orbitals, on
 /// @p res's device. The starting active space is the
 /// @ref ActiveSpaceSelection's: `ncas`, `nelecas`, `active`, or `avas` with

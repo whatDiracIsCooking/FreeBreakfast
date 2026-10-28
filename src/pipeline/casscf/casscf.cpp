@@ -68,6 +68,24 @@ namespace free_breakfast {
   return {};
 }
 
+Status canonicalize_core_virtual(DeviceResources &res, size_t nmo, size_t ncore, size_t nocc,
+                                 std::span<const double> fock, std::vector<double> &r,
+                                 std::vector<double> &energies) {
+  if (fock.size() != nmo * nmo || ncore > nocc || nocc > nmo) {
+    return err_config("canonicalize_core_virtual: a Fock of {} elements over {} orbitals, {} core "
+                      "and {} occupied",
+                      fock.size(), nmo, ncore, nocc);
+  }
+  r.assign(nmo * nmo, 0.0);
+  energies.resize(nmo);
+  for (size_t p = 0; p < nmo; ++p) {
+    r[p + (nmo * p)] = 1.0;
+    energies[p] = fock[p + (nmo * p)];
+  }
+  FBF_TRY(canonicalize_block(res, nmo, 0, ncore, fock, r, energies));
+  return canonicalize_block(res, nmo, nocc, nmo, fock, r, energies);
+}
+
 // The state-averaged natural orbitals to @p path as Molden: the canonical
 // @p c with its active columns rotated to the weighted gamma's eigenvectors by
 // descending occupation. Core and virtual energies are @p mo_energies; an
@@ -198,18 +216,12 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
   FBF_TRY(res.sync());
   std::ranges::transform(f, f_active, f.begin(), std::plus<>{});
 
-  // Canonicalization, PySCF's default: R the identity but on the core and the
-  // virtual blocks, each F's eigenvectors there; C <- C R.
+  // Canonicalization, PySCF's default; C <- C R.
   const auto ncore = static_cast<size_t>(space.ncore);
-  const auto nocc = ncore + static_cast<size_t>(space.ncas);
-  std::vector<double> r(nmo * nmo, 0.0);
-  std::vector<double> mo_energies(nmo);
-  for (size_t p = 0; p < nmo; ++p) {
-    r[p + (nmo * p)] = 1.0;
-    mo_energies[p] = f[p + (nmo * p)];
-  }
-  FBF_TRY(canonicalize_block(res, nmo, 0, ncore, f, r, mo_energies));
-  FBF_TRY(canonicalize_block(res, nmo, nocc, nmo, f, r, mo_energies));
+  std::vector<double> r;
+  std::vector<double> mo_energies;
+  FBF_TRY(canonicalize_core_virtual(res, nmo, ncore, ncore + static_cast<size_t>(space.ncas), f, r,
+                                    mo_energies));
   Buffers::device<double> r_device(r.size(), res.device());
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(r_device.data(), r.data(), r.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, stream)));

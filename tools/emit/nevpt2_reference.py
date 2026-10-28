@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Write the reference data the DF-NEVPT2 tests read.
 
-For each density-fitted case of casscf_reference.py (casscf_df.json), from
+For each density-fitted case of casscf_reference.py (casscf_df.json) but
+those in EXCLUDED (N2: see there), from
 the same start, over the same fitting set (this tree's
 data/aux_basis/cc-pVDZ-JKFIT.json, parsed as that tool parses it, never
 PySCF's library copy): PySCF's DF (SA-)CASSCF, mc1step polished by Newton
@@ -108,6 +109,23 @@ SAME_STATE = 1e-8
 # on the total to this (hartree for energies).
 INVARIANCE = 1e-10
 
+# casscf_df.json's cases left out, with the reason. N2's canonical virtuals
+# hold six exactly degenerate pi* pairs, and SC-NEVPT2 is not invariant to a
+# rotation inside one: its Srs class contracts per virtual pair, so its
+# energy depends on how each pair is split, which canonicalization leaves
+# arbitrary. Measured on PySCF 2.14.0's own N2 DF-CASSCF(6,6) with the CI and
+# integrals fixed: one pair rotated by 0.1, 0.3 and pi/4 moves Srs by
+# -3.2e-8, -6.2e-7 and -4.6e-6, random relative rotations of all six by up
+# to 5.0e-6, and two PySCF runs landed at opposite ends of that band. So
+# PySCF's N2 value is defined only to ~5e-6, and no test can hold the C++
+# step to it. The invariance check below rotates only the active space, so
+# it cannot see this; DEGENERATE refuses any other such case.
+EXCLUDED = {"n2_ccpvdz": "degenerate pi* virtual pairs (see above)"}
+# Two canonical core or two canonical virtual orbital energies of a root
+# closer than this (hartree) refuse emission: the split of a degenerate pair
+# is arbitrary, and SC-NEVPT2 depends on it (EXCLUDED).
+DEGENERATE = 1e-6
+
 # PySCF's SC-NEVPT2 classes, in the order kernel sums them, with the change
 # in the number of active electrons each perturber carries.
 CLASSES = {
@@ -175,6 +193,16 @@ def nevpt(casci, ci, root: int, natorb: bool) -> tuple[float, dict]:
         else:
             pt.ci[root] = root_ci
         pt.canonicalized = True
+        nocc = casci.ncore + casci.ncas
+        for space, energies in (
+            ("core", pt.mo_energy[: casci.ncore]),
+            ("virtual", pt.mo_energy[nocc:]),
+        ):
+            gaps = numpy.diff(numpy.sort(energies))
+            assert gaps.size == 0 or gaps.min() >= DEGENERATE, (
+                f"root {root}: two canonical {space} energies {gaps.min():.1e} apart, "
+                f"below DEGENERATE {DEGENERATE}: SC-NEVPT2 depends on their split"
+            )
     with Recorder() as recorder:
         total = float(pt.kernel())
     assert recorder.df_eris == 1, "NEVPT did not take its DF branch"
@@ -316,6 +344,8 @@ def main() -> None:
     recorded = {c["name"]: c for c in json.loads(OUT_DF.read_text())["cases"]}
     cases, worst = [], 0.0
     for case in CASES:
+        if case["name"] in EXCLUDED:
+            continue
         record, miss = case_reference(case, recorded[case["name"]])
         cases.append(record)
         worst = max(worst, miss)
