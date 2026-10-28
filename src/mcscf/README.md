@@ -1,7 +1,8 @@
 # MCSCF
 
-CASSCF on the GPU, integral-direct and state-averaged: the loop that optimizes
-the orbitals and the CI together. It sits over `core`, `recipes`, `integrals`
+CASSCF on the GPU, integral-direct (or with its orbital Hessian
+density-fitted) and state-averaged: the loop that optimizes the orbitals and
+the CI together. It sits over `core`, `recipes`, `integrals`
 (J, K and `active_space`), `ci` (the loop's CI and RDMs) and `response` (the
 energy, gradient and orbital Hessian it steps over), and **never imports
 `pipeline`**: a step that runs a CASSCF wraps this layer, not the other way

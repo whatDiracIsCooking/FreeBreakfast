@@ -22,6 +22,15 @@ export import free_breakfast.ci.solver;
 
 export namespace free_breakfast::mcscf {
 
+/// @brief Which of the loop's builds are density-fitted, over the B
+/// @ref solve is given.
+enum class DensityFitting : uint8_t {
+  Direct,        ///< None: every J and K integral-direct, B unused
+  ApproxHessian, ///< The orbital Hessian's alone (PySCF's approx_hessian); the
+                 ///< integrals, energy and gradient stay integral-direct, so
+                 ///< the loop converges to the exact CASSCF
+};
+
 /// @brief The knobs of one solve call.
 struct Options {
   /// @brief Converged when |Delta E| of the weighted energy over the last
@@ -42,9 +51,11 @@ struct Options {
   /// @brief The CI's: its spin penalty, and in davidson.residual_tolerance the
   /// tightest residual tolerance the schedule reaches near convergence.
   ci::SolverOptions ci;
-  /// @brief The J and K screening of every integral, Fock and Hessian build.
+  /// @brief The screening of every integral-direct J and K build.
   double tau_j = 1e-14;
   double tau_k = 1e-14;
+  /// @brief Which builds take B rather than J and K integral-direct.
+  DensityFitting density_fitting = DensityFitting::Direct;
 };
 
 /// @brief What one macro iteration did, for the log.
@@ -103,7 +114,11 @@ struct Solution {
 ///
 /// @p basis, @p molecule, @p h, @p u and the two kinds of classes are what
 /// @c fock takes; the classes must stay alive for the call. @p weights
-/// are w_r, empty for equal ones.
+/// are w_r, empty for equal ones. @p b is B over @p naux fitting functions,
+/// as the density-fitted @c Hessian::create reads it
+/// (@c DensityFittingOutput::b, naux nmo^2), for the builds
+/// options.density_fitting fits; null for none, which only
+/// DensityFitting::Direct accepts. Its storage must outlive the call.
 ///
 /// Each macro iteration: @c casscf_integrals over the current C; @c ci::solve
 /// over the GPU sigma, warm-started from the last iteration's roots (the first
@@ -136,8 +151,10 @@ struct Solution {
 ///         ncore + ncas exceeds nmo, nelecas is outside [0, 2 ncas], nroots
 ///         is below 1 or above the determinant count, a weight is negative,
 ///         the weights do not sum to 1 within 1e-12 or their count is not
-///         nroots, an option is out of range, or @p c is not of @p basis's
-///         spherical order; MaxIterationsExceeded once max_cycle runs out; or
+///         nroots, an option is out of range, @p c is not of @p basis's
+///         spherical order, options.density_fitting needs B and @p b is
+///         null, or @p b is given but not naux nmo^2 doubles over naux >= 1;
+///         MaxIterationsExceeded once max_cycle runs out; or
 ///         the first error of an integral, CI, RDM, Fock, Hessian or rotation
 ///         call.
 [[nodiscard]] Result<Solution>
@@ -145,6 +162,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       const SphericalMatrixAO &h, const std::shared_ptr<const Buffers::device<double>> &u,
       std::span<CoulombPairClass> j_classes, std::span<OrderedPairClass> k_classes,
       const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nelecas, int32_t nroots,
-      std::span<const double> weights = {}, const Options &options = {});
+      std::span<const double> weights = {}, const Options &options = {},
+      const Buffers::device<double> *b = nullptr, int32_t naux = 0);
 
 } // namespace free_breakfast::mcscf

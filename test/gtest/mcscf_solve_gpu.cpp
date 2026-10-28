@@ -3,7 +3,10 @@
 // (tools/emit/casscf_reference.py): each root's energy and the weighted one;
 // the state-averaged natural occupations; ||g|| recomputed from scratch at the
 // solution, with its own cold CI; C^T S C = 1; no accepted step that raises
-// the energy; at most 20 macro iterations; and the refusals.
+// the energy; at most 20 macro iterations; and the refusals. Each case runs
+// twice: integral-direct, and with the Hessian density-fitted
+// (DensityFitting::ApproxHessian, over kAuxBasis), which must reach the same
+// exact references in at most one macro iteration more.
 //
 // The setup is response_fock_gpu.cpp's: the SCF (run with J unscreened), and the
 // start picked by pipeline.active_space (by index, or by AVAS). So this
@@ -48,6 +51,10 @@ constexpr double kEnergyRiseTolerance = 1e-11;
 // conv_tol_grad of 1e-6 that is ~1e-5, past both bars. At 1e-9 it is ~1e-8,
 // and a root's energy moves by its own gradient (~0.1) times that.
 constexpr double kConvTolGrad = 1e-9;
+// ApproxHessian's B. Only the Hessian is fitted, so the set moves the path,
+// not the solution: macro iterations within one of direct's (the issue's bar).
+constexpr std::string_view kAuxBasis = "aug-cc-pvdz-accd-6-6";
+constexpr std::size_t kApproxHessianExtraMacroIterations = 1;
 
 const fb::json &reference() {
   static const fb::json doc = [] {
@@ -147,12 +154,29 @@ struct Setup {
 
   [[nodiscard]] fb::DeviceResources &res() { return node.device(0); }
 
-  [[nodiscard]] fb::Result<fb::mcscf::Solution> solve(const fb::SphericalMatrixAO &c,
-                                                      std::int32_t nroots,
-                                                      std::span<const double> weights,
-                                                      const fb::mcscf::Options &options) {
+  [[nodiscard]] fb::Result<fb::mcscf::Solution>
+  solve(const fb::SphericalMatrixAO &c, std::int32_t nroots, std::span<const double> weights,
+        const fb::mcscf::Options &options, const fb::Buffers::device<double> *b = nullptr,
+        std::int32_t naux = 0) {
     return fb::mcscf::solve(res(), *basis, *molecule, h->h, transform->u, j_classes, k_classes, c,
-                            start->ncore, start->ncas, start->nelecas, nroots, weights, options);
+                            start->ncore, start->ncas, start->nelecas, nroots, weights, options, b,
+                            naux);
+  }
+
+  // B over the setup's basis and kAuxBasis.
+  [[nodiscard]] std::optional<fb::DensityFittingOutput> fit() {
+    const auto &mol = calc->get<fb::MoleculeOutput>();
+    const auto &basis_set = calc->get<fb::BasisSetOutput>();
+    const auto &pairs = calc->get<fb::PrimitivePairClassesOutput>();
+    auto b = fb::DensityFittingStep{.aux_basis = std::string{kAuxBasis}}.run(
+        fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+            *mol, *basis_set, *pairs},
+        res());
+    if (!b.has_value()) {
+      ADD_FAILURE() << b.error().message;
+      return std::nullopt;
+    }
+    return std::move(*b);
   }
 };
 
@@ -376,29 +400,21 @@ void PrintTo(const Case &c, std::ostream *os) {
 
 class McscfSolve : public ::testing::TestWithParam<Case> {};
 
-TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
-  FBF_REQUIRE_GPU();
-  if (GetParam().slow) {
-    FBF_SKIP_IF_FAST_TESTS();
-  }
-  const fb::json &entry = reference_case(GetParam().name);
+// Every check of one solve's solution sol against the case's reference,
+// logged (with the solve's wall time, seconds) and traced as mode.
+void expect_polished(Setup &setup, const fb::mcscf::Solution &sol, const fb::json &entry,
+                     const std::vector<double> &weights, std::string_view mode, double seconds) {
+  SCOPED_TRACE(mode);
   const fb::json &want = entry.at("casscf");
-  auto setup = make_setup(entry, true);
-  ASSERT_NE(setup, nullptr);
-  fb::DeviceResources &res = setup->res();
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  const auto weights = entry.at("weights").get<std::vector<double>>();
-  const auto nroots = static_cast<std::int32_t>(weights.size());
-
-  fb::mcscf::Options options;
-  options.conv_tol_grad = kConvTolGrad;
-  auto solved = setup->solve(setup->start->c, nroots, weights, options);
-  ASSERT_TRUE(solved.has_value()) << solved.error().message;
-  const fb::mcscf::Solution &sol = *solved;
 
   // The macro iterations, logged and within the regression bar.
   const auto macro = static_cast<std::int32_t>(sol.iterations.size());
-  std::cout << std::format("[ casscf   ] {}: {} macro iterations\n", GetParam().name, macro);
+  const std::int32_t products = std::accumulate(
+      sol.iterations.begin(), sol.iterations.end(), 0,
+      [](std::int32_t sum, const fb::mcscf::Iteration &it) { return sum + it.hessian_products; });
+  std::cout << std::format(
+      "[ casscf   ] {} {}: {} macro iterations, {} Hessian products, {:.2f} s\n",
+      entry.at("name").get<std::string>(), mode, macro, products, seconds);
   for (std::size_t i = 0; i < sol.iterations.size(); ++i) {
     const fb::mcscf::Iteration &it = sol.iterations[i];
     std::cout << std::format("[ casscf   ]   {:2} E {:.12f} dE {:+.3e} |g| {:.3e} radius {:.3f} "
@@ -407,7 +423,7 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
                              it.ci_fp32_iterations, it.ci_iterations, it.micro_iterations,
                              it.hessian_products, it.accepted ? "" : " rejected");
   }
-  RecordProperty("macro_iterations", macro);
+  ::testing::Test::RecordProperty(std::format("{}_macro_iterations", mode), macro);
   EXPECT_LE(macro, kMaxMacroIterations);
 
   // The energies: each root's and the weighted one.
@@ -424,7 +440,7 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
 
   // The state-averaged natural occupations, and the weighted gamma as the
   // weighted sum of the roots'.
-  const auto n = static_cast<std::size_t>(setup->start->ncas);
+  const auto n = static_cast<std::size_t>(setup.start->ncas);
   ASSERT_EQ(sol.gamma.size(), n * n);
   ASSERT_EQ(sol.gamma2.size(), n * n * n * n);
   ASSERT_EQ(sol.root_gammas.size(), weights.size() * n * n);
@@ -444,13 +460,13 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
 
   // ||g|| from scratch, and the energy with it.
   EXPECT_LT(sol.gradient_norm, kConvTolGrad);
-  const auto scratch = from_scratch(*setup, sol.c, weights);
+  const auto scratch = from_scratch(setup, sol.c, weights);
   ASSERT_TRUE(scratch.has_value());
   EXPECT_LT(scratch->second, kConvTolGrad);
   EXPECT_NEAR(scratch->first, sol.energy, 1e-10);
 
   // C stays orthonormal.
-  EXPECT_LT(orthonormality_error(res, sol.c, setup->overlap->s), kOrthonormalTolerance);
+  EXPECT_LT(orthonormality_error(setup.res(), sol.c, setup.overlap->s), kOrthonormalTolerance);
 
   // No accepted step raises the energy, and a rejected iteration did rise.
   for (std::size_t i = 1; i < sol.iterations.size(); ++i) {
@@ -462,6 +478,39 @@ TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
     }
   }
   EXPECT_TRUE(sol.iterations.back().accepted);
+}
+
+TEST_P(McscfSolve, ConvergesToThePolishedCasscf) {
+  FBF_REQUIRE_GPU();
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::json &entry = reference_case(GetParam().name);
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
+
+  fb::mcscf::Options options;
+  options.conv_tol_grad = kConvTolGrad;
+  auto start = std::chrono::steady_clock::now();
+  auto direct = setup->solve(setup->start->c, nroots, weights, options);
+  const std::chrono::duration<double> direct_time = std::chrono::steady_clock::now() - start;
+  ASSERT_TRUE(direct.has_value()) << direct.error().message;
+  expect_polished(*setup, *direct, entry, weights, "direct", direct_time.count());
+
+  const auto b = setup->fit();
+  ASSERT_TRUE(b.has_value());
+  options.density_fitting = fb::mcscf::DensityFitting::ApproxHessian;
+  start = std::chrono::steady_clock::now();
+  auto approx = setup->solve(setup->start->c, nroots, weights, options, &b->b, b->naux);
+  const std::chrono::duration<double> approx_time = std::chrono::steady_clock::now() - start;
+  ASSERT_TRUE(approx.has_value()) << approx.error().message;
+  expect_polished(*setup, *approx, entry, weights, "approx_hessian", approx_time.count());
+  // The fitted Hessian moves the path only so far.
+  EXPECT_LE(approx->iterations.size(),
+            direct->iterations.size() + kApproxHessianExtraMacroIterations);
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, McscfSolve,
@@ -516,6 +565,12 @@ TEST(McscfSolveRefusals, AreInvalidConfig) {
   bad = defaults;
   bad.trust_radius = -1.0;
   refused(setup->solve(c, 1, {}, bad), "trust_radius");
+  // A density-fitted mode without B, and a B of the wrong size.
+  bad = defaults;
+  bad.density_fitting = fb::mcscf::DensityFitting::ApproxHessian;
+  refused(setup->solve(c, 1, {}, bad), "needs B");
+  const fb::Buffers::device<double> short_b(3, setup->res().device());
+  refused(setup->solve(c, 1, {}, bad, &short_b, 1), "naux nmo^2");
   const auto wrong_space =
       fb::mcscf::solve(setup->res(), *setup->basis, *setup->molecule, setup->h->h,
                        setup->transform->u, setup->j_classes, setup->k_classes, c, 6, 2, 4, 1);
