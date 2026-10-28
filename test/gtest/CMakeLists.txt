@@ -146,6 +146,7 @@ add_executable(
   exchange_gpu.cpp
   df_fit_gpu.cpp
   df_jk_gpu.cpp
+  df_mo_gpu.cpp
   df_metric_gpu.cpp
   df_three_center_gpu.cpp
   df_high_aux_gpu.cpp
@@ -192,6 +193,7 @@ target_link_libraries(
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
   free_breakfast::integrals::eri::density_fitting::fit
   free_breakfast::integrals::eri::density_fitting::jk
+  free_breakfast::integrals::eri::density_fitting::mo
   free_breakfast::integrals::eri::density_fitting::three_center
   free_breakfast::io
   free_breakfast::pipeline::molecule

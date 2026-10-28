@@ -13,6 +13,9 @@ explicit shells (not its library's copies), spherical throughout:
   of one fixed density on the cc-pVDZ case: D = 2 C C^T over the five
   occupied orbitals of that case's own converged DF-RHF, so a test can
   factor it again.
+- On the same case, that DF-RHF's orbitals C and PySCF's density-fitted MO
+  integrals over them (`with_df.ao2mo`, the same fitting set): the
+  occ-virt-occ-virt, occ^4 and virt^4 blocks of (pq|rs).
 - DF-RHF (`conv_tol` 1e-12): total energy and orbital energies for H2O and
   NH4+ in cc-pVDZ / cc-pVDZ-JKFIT, H2O in cc-pVTZ / cc-pVTZ-JKFIT and H2O in
   cc-pVDZ / cc-pVDZ-acCD (general-contracted fitting shells), at
@@ -179,17 +182,23 @@ def save(name: str, array: numpy.ndarray) -> str:
     return path.name
 
 
-def save_by_aux(name: str, array: numpy.ndarray) -> list[dict]:
-    """Write (nao, nao, naux) in balanced pieces along P, each under the limit."""
-    nao, _, naux = array.shape
-    per_slab = nao * nao * 8
-    pieces = math.ceil(naux / ((LIMIT - NPY_HEADER) // per_slab))
-    bounds = [naux * k // pieces for k in range(pieces + 1)]
+def save_by_last(name: str, array: numpy.ndarray, key: str) -> list[dict]:
+    """Write array in balanced pieces along its last index, each under the
+    limit and listed with its [begin, end) under key."""
+    total = array.shape[-1]
+    per_slab = math.prod(array.shape[:-1]) * 8
+    pieces = math.ceil(total / ((LIMIT - NPY_HEADER) // per_slab))
+    bounds = [total * k // pieces for k in range(pieces + 1)]
     out = []
     for begin, end in zip(bounds, bounds[1:], strict=False):
-        stem = name if pieces == 1 else f"{name}_aux{begin}_{end}"
-        out.append({"file": save(stem, array[:, :, begin:end]), "aux": [begin, end]})
+        stem = name if pieces == 1 else f"{name}_{key}{begin}_{end}"
+        out.append({"file": save(stem, array[..., begin:end]), key: [begin, end]})
     return out
+
+
+def save_by_aux(name: str, array: numpy.ndarray) -> list[dict]:
+    """Write (nao, nao, naux) in balanced pieces along P, each under the limit."""
+    return save_by_last(name, array, "aux")
 
 
 def atoms(case: dict) -> list[dict]:
@@ -250,6 +259,21 @@ def integral_case(case: dict) -> dict:
         "occupied": nocc,
         "df_rhf_energy": float(mf.e_tot),
     }
+
+    # (pq|rs) = sum_Q B_Q,pq B_Q,rs over PySCF's own cderi, each block
+    # (np, nq, nr, ns), and the same from the integrals written above.
+    mo = mf.mo_coeff
+    spaces = {"o": mo[:, :nocc], "v": mo[:, nocc:]}
+    out["mo"] = {"coefficients": save(f"{case['name']}_mo_coeff", mo), "occupied": nocc}
+    for block in ("ovov", "oooo", "vvvv"):
+        cs = [spaces[x] for x in block]
+        eri = mf.with_df.ao2mo(tuple(cs), compact=False)
+        eri = eri.reshape([c.shape[1] for c in cs])
+        check = numpy.einsum(
+            "mnP,lsP,mp,nq,lr,st->pqrt", eri3, fitted, *cs, optimize=True
+        )
+        assert numpy.abs(eri - check).max() < 1e-10 * numpy.abs(eri).max(), block
+        out["mo"][block] = save_by_last(f"{case['name']}_{block}", eri, "s")
     return out
 
 
