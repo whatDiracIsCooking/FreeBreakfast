@@ -416,6 +416,20 @@ error — a guard bug must never brick editing.
 `devtools/hooks/session-env.py` runs at SessionStart and reports whether you are
 on the host or in the container.
 
+### Waiting on a run: never `until ! pgrep -f …`
+
+**Start a long build or tier with `run_in_background` and wait for its exit
+notice. Don't poll for it with a `pgrep -f` loop**: such a loop never exits. The
+Bash tool runs a command as `bash -c '<the whole script>'`, so that shell's own
+command line contains the pattern, and `pgrep -f` matches the full command line
+and skips only its own PID, not its parent's. A loop like
+`until ! pgrep -f "cpp-tier.sh --preset default"; do sleep 5; done` therefore
+always finds itself. One sat for hours as the status bar's "1 shell still
+running", while a parallel session ran the same bug. If you really must wait on
+something you did not start, wait on its PID (`while kill -0 "$pid"; do …`) or
+use the bracket trick (`pgrep -f "[c]pp-tier.sh …"`). When hunting a stray shell
+with `ps | grep`, don't filter out `pgrep`, which hides exactly this loop.
+
 ### Worktrees
 
 There are two kinds, and which one you can make depends on which side you are
