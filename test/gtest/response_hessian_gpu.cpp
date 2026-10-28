@@ -4,7 +4,9 @@
 // summed per pair of orbital sets; H x against a central finite difference of
 // response::fock's gradient along random kappa, the RDMs fixed; and symmetry.
 // On H2O STO-3G, H e_i for every unit vector against the diagonal, at a
-// two-root CAS(2,2) and at ncas = 0; and the refusals.
+// two-root CAS(2,2) and at ncas = 0; and the refusals. The density-fitted H,
+// over cc-pVDZ-JKFIT, against a host contraction of the same B and against the
+// integral-direct H.
 //
 // The orbitals are the setup's own, as in response_fock_gpu.cpp: the SCF (run
 // with J unscreened), the active space picked by pipeline.active_space as the
@@ -54,6 +56,20 @@ constexpr double kOrbitalEnergyTolerance = 1e-6;
 // differences, at steps kStep and kStep / 2, which cancels the step^2 term.
 constexpr double kStep = 2e-3;
 constexpr std::int32_t kDirections = 2;
+// The density-fitted H against the host product over the same B, ppaa, papa
+// and Fock: rounding only, as a fraction of max |diag H| (seen over the five
+// cases and two runs: 5.0e-15 in the diagonal, 1.0e-15 in H x per |x|).
+constexpr double kDfHostTolerance = 1e-12;
+// ...and against the integral-direct H over cc-pVDZ-JKFIT: the fit's error,
+// as response_fock_gpu.cpp's 3e-3 per element of F is, here contracted into
+// H through the fitted ppaa, papa and Fock as well as the J and K. Over the
+// five cases it reaches 2.8e-3 in an element of H x per |x| and
+// 6.2e-3 in the diagonal (both N2), where max |diag H| is 73 to 95: about
+// 1e-4 of H's scale. The bars sit about 3x above that, as a fit's error, not
+// rounding, is what they bound.
+constexpr double kDfProductTolerance = 1e-2;
+constexpr double kDfDiagonalTolerance = 2e-2;
+constexpr std::string_view kAuxBasis = "cc-pvdz-jkfit";
 
 const fb::json &reference() {
   static const fb::json doc = [] {
@@ -767,6 +783,469 @@ TEST(ResponseHessianRefusals, AreInvalidConfig) {
   ASSERT_FALSE(negative.has_value());
   EXPECT_EQ(negative.error().kind, fb::ErrorKind::InvalidConfig);
   EXPECT_TRUE(built->apply(res, 0, nullptr, nullptr).has_value());
+}
+
+// The column-major m x n product of op(a) and op(b) on the host, op(a) m x k
+// and op(b) k x n, each transposed when its flag is set.
+std::vector<double> host_gemm(const std::vector<double> &a, bool ta, const std::vector<double> &b,
+                              bool tb, std::size_t m, std::size_t n, std::size_t k) {
+  std::vector<double> c(m * n, 0.0);
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t l = 0; l < k; ++l) {
+      const double blj = tb ? b[j + (n * l)] : b[l + (k * j)];
+      for (std::size_t i = 0; i < m; ++i) {
+        c[i + (m * j)] += (ta ? a[l + (k * i)] : a[i + (m * l)]) * blj;
+      }
+    }
+  }
+  return c;
+}
+
+double max_abs_difference(const std::vector<double> &a, const std::vector<double> &b) {
+  EXPECT_EQ(a.size(), b.size());
+  double most = 0.0;
+  for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+    most = std::max(most, std::abs(a[i] - b[i]));
+  }
+  return most;
+}
+
+// B over the setup's basis and the aux set, on the setup's device.
+std::optional<fb::DensityFittingOutput> fit(Setup &setup) {
+  const auto &molecule = setup.calc->get<fb::MoleculeOutput>();
+  const auto &basis = setup.calc->get<fb::BasisSetOutput>();
+  const auto &pairs = setup.calc->get<fb::PrimitivePairClassesOutput>();
+  if (!molecule.has_value() || !basis.has_value() || !pairs.has_value()) {
+    ADD_FAILURE() << "a product of the setup steps is missing";
+    return std::nullopt;
+  }
+  auto b = fb::DensityFittingStep{.aux_basis = std::string{kAuxBasis}}.run(
+      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
+          *molecule, *basis, *pairs},
+      setup.res());
+  if (!b.has_value()) {
+    ADD_FAILURE() << b.error().message;
+    return std::nullopt;
+  }
+  return std::move(*b);
+}
+
+// The MO two-electron integrals (pq|rs) ~ sum_Q B_Q,pq B_Q,rs over C's
+// orbitals on the host, at p + nmo (q + nmo (r + nmo s)).
+std::vector<double> fitted_mo_eri(fb::DeviceResources &res, const fb::DensityFittingOutput &b,
+                                  const std::vector<double> &c, std::size_t nmo) {
+  const auto naux = static_cast<std::size_t>(b.naux);
+  const std::size_t nn = nmo * nmo;
+  const std::vector<double> b_ao = download(res, b.b.data(), naux * nn);
+  std::vector<double> b_mo(naux * nn);
+  std::vector<double> slice(nn);
+  for (std::size_t q = 0; q < naux; ++q) {
+    for (std::size_t i = 0; i < nn; ++i) {
+      slice[i] = b_ao[q + (naux * i)];
+    }
+    const std::vector<double> mo =
+        host_gemm(host_gemm(c, true, slice, false, nmo, nmo, nmo), false, c, false, nmo, nmo, nmo);
+    for (std::size_t i = 0; i < nn; ++i) {
+      b_mo[q + (naux * i)] = mo[i];
+    }
+  }
+  return host_gemm(b_mo, true, b_mo, false, nn, nn, naux);
+}
+
+// ppaa (pq|uv) and papa (pu|qv) from the MO integrals, in casscf_integrals'
+// layout, uploaded.
+std::pair<fb::Buffers::device<double>, fb::Buffers::device<double>>
+upload_ppaa_papa(fb::DeviceResources &res, const std::vector<double> &eri, std::size_t nmo,
+                 std::size_t ncore, std::size_t ncas) {
+  const std::size_t count = nmo * nmo * ncas * ncas;
+  std::vector<double> ppaa(count);
+  std::vector<double> papa(count);
+  for (std::size_t v = 0; v < ncas; ++v) {
+    for (std::size_t u = 0; u < ncas; ++u) {
+      for (std::size_t q = 0; q < nmo; ++q) {
+        for (std::size_t p = 0; p < nmo; ++p) {
+          const std::size_t i = p + (nmo * (q + (nmo * (u + (ncas * v)))));
+          const std::size_t a = ncore + u;
+          const std::size_t b = ncore + v;
+          ppaa[i] = eri[p + (nmo * (q + (nmo * (a + (nmo * b)))))];
+          papa[i] = eri[p + (nmo * (a + (nmo * (q + (nmo * b)))))];
+        }
+      }
+    }
+  }
+  std::pair out{fb::Buffers::device<double>(count, res.device()),
+                fb::Buffers::device<double>(count, res.device())};
+  upload(res, ppaa, out.first.data());
+  upload(res, papa, out.second.data());
+  return out;
+}
+
+// H x on the host from the MO integrals: the t derivative of
+// reference_gradient's corrected gradient at C exp(t kappa), analytically.
+// C' = C (1 + t kappa) carries h to h + t (kappa^T h + h kappa) and each index
+// of (pq|rs) the same way; the generalized Fock F is linear in (h, (pq|rs)) at
+// fixed RDMs, so dF is F of those derivatives, and
+// H x = 2 (dF - dF^T) + [kappa, G] / 2 packed, G = 2 (F - F^T).
+class HostHessian {
+public:
+  HostHessian(std::vector<double> eri, std::vector<double> h_mo, std::size_t nmo, std::size_t ncore,
+              std::size_t ncas, std::vector<double> gamma, std::vector<double> gamma2)
+      : eri_(std::move(eri)), h_mo_(std::move(h_mo)), nmo_(nmo), ncore_(ncore), ncas_(ncas),
+        gamma_(std::move(gamma)), gamma2_(std::move(gamma2)) {
+    const std::vector<double> f = fock(eri_, h_mo_);
+    g_.resize(nmo * nmo);
+    for (std::size_t q = 0; q < nmo; ++q) {
+      for (std::size_t p = 0; p < nmo; ++p) {
+        g_[p + (nmo * q)] = 2.0 * (f[p + (nmo * q)] - f[q + (nmo * p)]);
+      }
+    }
+  }
+
+  [[nodiscard]] std::vector<double> apply(const std::vector<double> &x) const {
+    const std::size_t n = nmo_;
+    const auto order = packed_pairs(n, ncore_, ncas_);
+    std::vector<double> kappa(n * n, 0.0);
+    for (std::size_t i = 0; i < order.size(); ++i) {
+      const auto [p, q] = order[i];
+      kappa[p + (n * q)] = x[i];
+      kappa[q + (n * p)] = -x[i];
+    }
+    std::vector<double> dh = host_gemm(h_mo_, false, kappa, false, n, n, n);
+    const std::vector<double> kh = host_gemm(kappa, true, h_mo_, false, n, n, n);
+    for (std::size_t i = 0; i < dh.size(); ++i) {
+      dh[i] += kh[i];
+    }
+    // d(pq|rs) = sum_a kappa_ap (aq|rs) + kappa_aq (pa|rs) + kappa_ar (pq|as)
+    // + kappa_as (pq|ra), over kappa's non-zero elements only.
+    const auto at = [n](std::size_t p, std::size_t q, std::size_t r, std::size_t s) {
+      return p + (n * (q + (n * (r + (n * s)))));
+    };
+    std::vector<double> deri(eri_.size(), 0.0);
+    for (std::size_t p = 0; p < n; ++p) {
+      for (std::size_t a = 0; a < n; ++a) {
+        const double v = kappa[a + (n * p)];
+        if (v == 0.0) {
+          continue;
+        }
+        for (std::size_t s = 0; s < n; ++s) {
+          for (std::size_t r = 0; r < n; ++r) {
+            for (std::size_t q = 0; q < n; ++q) {
+              deri[at(p, q, r, s)] += v * eri_[at(a, q, r, s)];
+              deri[at(q, p, r, s)] += v * eri_[at(q, a, r, s)];
+              deri[at(q, r, p, s)] += v * eri_[at(q, r, a, s)];
+              deri[at(q, r, s, p)] += v * eri_[at(q, r, s, a)];
+            }
+          }
+        }
+      }
+    }
+    const std::vector<double> df = fock(deri, dh);
+    std::vector<double> out;
+    for (const auto &[p, q] : order) {
+      double commutator = 0.0;
+      for (std::size_t r = 0; r < n; ++r) {
+        commutator +=
+            (kappa[p + (n * r)] * g_[r + (n * q)]) - (g_[p + (n * r)] * kappa[r + (n * q)]);
+      }
+      out.push_back((2.0 * (df[p + (n * q)] - df[q + (n * p)])) + (0.5 * commutator));
+    }
+    return out;
+  }
+
+private:
+  // The generalized Fock over eri and h, as response::fock builds it.
+  [[nodiscard]] std::vector<double> fock(const std::vector<double> &eri,
+                                         const std::vector<double> &h) const {
+    const std::size_t n = nmo_;
+    const std::size_t core = ncore_;
+    const std::size_t na = ncas_;
+    const auto at = [&](std::size_t p, std::size_t q, std::size_t r, std::size_t s) {
+      return eri[p + (n * (q + (n * (r + (n * s)))))];
+    };
+    std::vector<double> fi = h;
+    std::vector<double> fa(n * n, 0.0);
+    for (std::size_t q = 0; q < n; ++q) {
+      for (std::size_t p = 0; p < n; ++p) {
+        for (std::size_t i = 0; i < core; ++i) {
+          fi[p + (n * q)] += (2.0 * at(p, q, i, i)) - at(p, i, q, i);
+        }
+        for (std::size_t t = 0; t < na; ++t) {
+          for (std::size_t u = 0; u < na; ++u) {
+            fa[p + (n * q)] += gamma_[(t * na) + u] * (at(p, q, core + t, core + u) -
+                                                       (0.5 * at(p, core + t, q, core + u)));
+          }
+        }
+      }
+    }
+    std::vector<double> f(n * n, 0.0);
+    for (std::size_t p = 0; p < n; ++p) {
+      for (std::size_t q = 0; q < core; ++q) {
+        f[p + (n * q)] = 2.0 * (fi[p + (n * q)] + fa[p + (n * q)]);
+      }
+      for (std::size_t t = 0; t < na; ++t) {
+        double value = 0.0;
+        for (std::size_t v = 0; v < na; ++v) {
+          value += fi[p + (n * (core + v))] * gamma_[(v * na) + t];
+          for (std::size_t u = 0; u < na; ++u) {
+            for (std::size_t w = 0; w < na; ++w) {
+              value += at(p, core + u, core + v, core + w) *
+                       gamma2_[(((((t * na) + u) * na) + v) * na) + w];
+            }
+          }
+        }
+        f[p + (n * (core + t))] = value;
+      }
+    }
+    return f;
+  }
+
+  std::vector<double> eri_;
+  std::vector<double> h_mo_;
+  std::size_t nmo_;
+  std::size_t ncore_;
+  std::size_t ncas_;
+  std::vector<double> gamma_;
+  std::vector<double> gamma2_;
+  std::vector<double> g_;
+};
+
+// Everything the density-fitted H reads at orbitals c, from one B: the host
+// MO integrals, ppaa and papa contracted from them, the density-fitted Fock
+// over them, the operator, and its host twin.
+struct FittedHessian {
+  fb::DensityFittingOutput b;
+  fb::Buffers::device<double> ppaa;
+  fb::Buffers::device<double> papa;
+  fb::response::Fock fock;
+  fb::response::Hessian hessian;
+  HostHessian host;
+};
+
+std::optional<FittedHessian> fitted_hessian(Setup &setup, const fb::SphericalMatrixAO &c) {
+  fb::DeviceResources &res = setup.res();
+  const std::size_t nmo = setup.nmo;
+  const auto ncore = static_cast<std::size_t>(setup.ncore);
+  const auto ncas = static_cast<std::size_t>(setup.ncas);
+  auto b = fit(setup);
+  if (!b.has_value()) {
+    return std::nullopt;
+  }
+  const std::vector<double> c_host = download(res, c.data(), nmo * nmo);
+  std::vector<double> eri = fitted_mo_eri(res, *b, c_host, nmo);
+  std::vector<double> h_mo = host_gemm(
+      host_gemm(c_host, true, download(res, setup.h->h.data(), nmo * nmo), false, nmo, nmo, nmo),
+      false, c_host, false, nmo, nmo, nmo);
+  auto [ppaa, papa] = upload_ppaa_papa(res, eri, nmo, ncore, ncas);
+  auto fock = fb::response::fock(res, *setup.molecule, setup.h->h, b->b, b->naux, c, setup.ncore,
+                                 setup.ncas, ppaa, papa, setup.gamma, setup.gamma2);
+  if (!fock.has_value()) {
+    ADD_FAILURE() << fock.error().message;
+    return std::nullopt;
+  }
+  auto hessian = fb::response::Hessian::create(res, setup.h->h, b->b, b->naux, c, setup.ncore,
+                                               setup.ncas, ppaa, papa, *fock);
+  if (!hessian.has_value()) {
+    ADD_FAILURE() << hessian.error().message;
+    return std::nullopt;
+  }
+  return FittedHessian{.b = std::move(*b),
+                       .ppaa = std::move(ppaa),
+                       .papa = std::move(papa),
+                       .fock = std::move(*fock),
+                       .hessian = std::move(*hessian),
+                       .host = HostHessian(std::move(eri), std::move(h_mo), nmo, ncore, ncas,
+                                           setup.gamma, setup.gamma2)};
+}
+
+// The density-fitted H at each case's CASCI orbitals and RDMs, over ppaa,
+// papa and a Fock fitted from the same B: its products along the gradient and
+// random x, and its diagonal, against the host product tightly; symmetric to
+// the same bar as the integral-direct H; and against the integral-direct H
+// within the fit's error.
+TEST_P(ResponseHessian, DensityFittedMatchesItsHostReferenceAndTheDirectOne) {
+  FBF_REQUIRE_GPU();
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::json &entry = reference_case(GetParam().name);
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::SphericalMatrixAO &c = setup->casci->c;
+  auto fitted = fitted_hessian(*setup, c);
+  ASSERT_TRUE(fitted.has_value());
+  const auto n = static_cast<std::size_t>(fitted->hessian.size());
+
+  std::vector<std::vector<double>> x{download(res, fitted->fock.gradient.data(), n)};
+  for (auto &d : directions(kDirections, n)) {
+    x.push_back(std::move(d));
+  }
+  const auto hx = apply_block(res, fitted->hessian, x);
+  const std::vector<double> diagonal = download(res, fitted->hessian.diagonal().data(), n);
+  double top = 0.0;
+  for (const double d : diagonal) {
+    top = std::max(top, std::abs(d));
+  }
+  double product_error = 0.0;
+  for (std::size_t a = 0; a < x.size(); ++a) {
+    product_error = std::max(product_error, max_abs_difference(hx[a], fitted->host.apply(x[a])) /
+                                                (norm(x[a]) * top));
+  }
+  std::vector<double> want_diagonal(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    std::vector<double> unit(n, 0.0);
+    unit[i] = 1.0;
+    want_diagonal[i] = fitted->host.apply(unit)[i];
+  }
+  const double diagonal_error = max_abs_difference(diagonal, want_diagonal) / top;
+  EXPECT_LT(product_error, kDfHostTolerance);
+  EXPECT_LT(diagonal_error, kDfHostTolerance);
+  expect_symmetric(x, hx, top);
+  double asymmetry = 0.0;
+  for (std::size_t a = 0; a < x.size(); ++a) {
+    for (std::size_t b = a + 1; b < x.size(); ++b) {
+      asymmetry = std::max(asymmetry, std::abs(dot(x[a], hx[b]) - dot(x[b], hx[a])) /
+                                          (top * norm(x[a]) * norm(x[b])));
+    }
+  }
+
+  auto integrals = setup->integrals(c);
+  ASSERT_TRUE(integrals.has_value()) << integrals.error().message;
+  auto fock = setup->fock(c, integrals->first, integrals->second);
+  ASSERT_TRUE(fock.has_value()) << fock.error().message;
+  auto direct = build_hessian(*setup, c, integrals->first, integrals->second, *fock);
+  ASSERT_TRUE(direct.has_value()) << direct.error().message;
+  const auto direct_hx = apply_block(res, *direct, x);
+  double d_product = 0.0;
+  for (std::size_t a = 0; a < x.size(); ++a) {
+    d_product = std::max(d_product, max_abs_difference(hx[a], direct_hx[a]) / norm(x[a]));
+  }
+  const double d_diagonal =
+      max_abs_difference(diagonal, download(res, direct->diagonal().data(), n));
+  std::cout << std::format("{}: DF against host, max |d H x| / (|x| max |diag H|) = {:.2e}, "
+                           "max |d diag| / max |diag H| = {:.2e}, asymmetry {:.2e}; against "
+                           "direct, max |d H x| / |x| = {:.2e}, max |d diag| = {:.2e} "
+                           "(max |diag H| {:.2e})\n",
+                           GetParam().name, product_error, diagonal_error, asymmetry, d_product,
+                           d_diagonal, top);
+  EXPECT_LT(d_product, kDfProductTolerance);
+  EXPECT_LT(d_diagonal, kDfDiagonalTolerance);
+}
+
+// The whole density-fitted H, one column per unit vector in one block,
+// against the host product column by column, its diagonal against
+// diagonal(), and symmetric.
+void expect_whole_fitted_hessian(Setup &setup, const fb::SphericalMatrixAO &c) {
+  fb::DeviceResources &res = setup.res();
+  auto fitted = fitted_hessian(setup, c);
+  ASSERT_TRUE(fitted.has_value());
+  const auto n = static_cast<std::size_t>(fitted->hessian.size());
+  ASSERT_GT(n, 0U);
+  std::vector<std::vector<double>> unit(n, std::vector<double>(n, 0.0));
+  for (std::size_t i = 0; i < n; ++i) {
+    unit[i][i] = 1.0;
+  }
+  const auto columns = apply_block(res, fitted->hessian, unit);
+  const std::vector<double> diagonal = download(res, fitted->hessian.diagonal().data(), n);
+  double top = 0.0;
+  for (const auto &column : columns) {
+    for (const double value : column) {
+      top = std::max(top, std::abs(value));
+    }
+  }
+  double host_error = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    host_error = std::max(host_error, max_abs_difference(columns[i], fitted->host.apply(unit[i])));
+    EXPECT_NEAR(diagonal[i], columns[i][i], kDfHostTolerance * top) << "pair " << i;
+    for (std::size_t j = 0; j < i; ++j) {
+      EXPECT_LE(std::abs(columns[j][i] - columns[i][j]), kSymmetryTolerance * top)
+          << "(" << i << ", " << j << ")";
+    }
+  }
+  std::cout << std::format("whole DF H: max |d H e_i| against host / max |H| = {:.2e}\n",
+                           host_error / top);
+  EXPECT_LT(host_error, kDfHostTolerance * top);
+}
+
+// H2O STO-3G, the density-fitted twin of DiagonalIsHOnEveryUnitVector: every
+// kind of pair, and ncore = 4 over nmo = 7, so the diagonal's last block of
+// core columns is narrower than ncore.
+TEST(ResponseHessianUnitVectors, DensityFittedIsItsHostReference) {
+  FBF_REQUIRE_GPU();
+  fb::json entry = reference_case("h2o_ccpvdz");
+  entry["name"] = "h2o_sto3g_cas22";
+  entry["basis"] = "sto-3g";
+  entry["active"] = nullptr;
+  entry["ncas"] = 2;
+  entry["nelecas"] = 2;
+  entry["ncore"] = 4;
+  entry["weights"] = std::vector<double>{0.6, 0.4};
+  entry.erase("casci");
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  expect_whole_fitted_hessian(*setup, setup->casci->c);
+}
+
+// ncas = 0 density-fitted, at and off the SCF.
+TEST(ResponseHessianRhfLimit, DensityFittedIsItsHostReference) {
+  FBF_REQUIRE_GPU();
+  fb::json entry = reference_case("h2o_ccpvdz");
+  entry["basis"] = "sto-3g";
+  auto setup = make_setup(entry, false);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  setup->ncore = setup->molecule->electron_count() / 2;
+  setup->ncas = 0;
+  expect_whole_fitted_hessian(*setup, setup->scf->c);
+  const auto n = packed_pairs(setup->nmo, static_cast<std::size_t>(setup->ncore), 0).size();
+  auto off = rotate(*setup, setup->scf->c, directions(1, n).front(), 0.05);
+  ASSERT_TRUE(off.has_value());
+  expect_whole_fitted_hessian(*setup, *off);
+}
+
+// Everything the density-fitted create refuses.
+TEST(ResponseHessianRefusals, DensityFittedAreInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  fb::json entry = reference_case("h2o_ccpvdz");
+  entry["basis"] = "sto-3g";
+  auto setup = make_setup(entry, false);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const std::size_t nmo = setup->nmo;
+  setup->ncore = 4;
+  setup->ncas = 2;
+  setup->gamma = {1.0, 0.0, 0.0, 1.0};
+  setup->gamma2.assign(16, 0.0);
+  auto integrals = setup->integrals(setup->scf->c);
+  ASSERT_TRUE(integrals.has_value()) << integrals.error().message;
+  const fb::Buffers::device<double> &ppaa = integrals->first;
+  const fb::Buffers::device<double> &papa = integrals->second;
+  auto fock = setup->fock(setup->scf->c, ppaa, papa);
+  ASSERT_TRUE(fock.has_value()) << fock.error().message;
+  const fb::Buffers::device<double> short_ppaa(nmo * nmo, res.device());
+  constexpr std::int32_t kNaux = 3;
+  const fb::Buffers::device<double> b(kNaux * nmo * nmo, res.device());
+  const auto call = [&](std::int32_t ncore, std::int32_t ncas, std::int32_t naux,
+                        const fb::Buffers::device<double> &p) {
+    return fb::response::Hessian::create(res, setup->h->h, b, naux, setup->scf->c, ncore, ncas, p,
+                                         papa, *fock);
+  };
+  const auto refused = [](const fb::Result<fb::response::Hessian> &r, std::string_view what) {
+    ASSERT_FALSE(r.has_value());
+    EXPECT_EQ(r.error().kind, fb::ErrorKind::InvalidConfig);
+    EXPECT_NE(r.error().message.find(what), std::string::npos) << r.error().message;
+  };
+  ASSERT_TRUE(call(4, 2, kNaux, ppaa).has_value());
+  refused(call(-1, 2, kNaux, ppaa), "must not be negative");
+  refused(call(6, 2, kNaux, ppaa), "exceeds the 7 orbitals");
+  refused(call(0, 0, kNaux, ppaa), "nothing is occupied");
+  refused(call(4, 2, kNaux, short_ppaa), "ppaa holds");
+  refused(call(3, 2, kNaux, ppaa), "the Fock is not of");
+  refused(call(4, 2, -1, ppaa), "naux (-1) must not be negative");
+  refused(call(4, 2, kNaux + 1, ppaa), "B holds");
 }
 
 } // namespace

@@ -1,7 +1,8 @@
 /// @file
 /// @brief Hessian: gen_g_hop's h_op as gemms over MO intermediates
-/// built once and two J and K of transition densities per product, and its
-/// h_diag assembled on the host from diagonals read back once.
+/// built once and two J and K of transition densities per product,
+/// integral-direct or density-fitted, and its h_diag assembled on the host
+/// from diagonals read back once.
 
 module free_breakfast.response.hessian;
 
@@ -18,6 +19,7 @@ import free_breakfast.recipes.norm; // norm, Norm
 import free_breakfast.recipes.linear_operator;
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
+import free_breakfast.integrals.eri.density_fitting.jk; // df_coulomb, df_exchange
 import free_breakfast.response.fock;
 
 #include "diagnostics.h"
@@ -26,14 +28,11 @@ namespace free_breakfast::response {
 
 static_assert(LinearOperator<Hessian, double>);
 
-Hessian::Hessian(DeviceResources &res, const BasisSet &basis,
-                 const std::span<CoulombPairClass> j_classes,
-                 const std::span<OrderedPairClass> k_classes, const int32_t nmo,
-                 const int32_t ncore, const int32_t ncas, const double tau_j, const double tau_k)
-    : j_classes_(j_classes), k_classes_(k_classes), dev_idx_(res.dev_idx()), nmo_(nmo),
-      ncore_(ncore), ncas_(ncas), n_cart_(static_cast<int32_t>(basis.nao_cart())),
-      n_pairs_((ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas))), tau_j_(tau_j),
-      tau_k_(tau_k), c_cart_(static_cast<size_t>(n_cart_) * static_cast<size_t>(nmo), res.device()),
+Hessian::Hessian(DeviceResources &res, const int32_t nmo, const int32_t ncore, const int32_t ncas,
+                 const int32_t n_cart, std::variant<Direct, Fitted> jk)
+    : jk_(std::move(jk)), dev_idx_(res.dev_idx()), nmo_(nmo), ncore_(ncore), ncas_(ncas),
+      n_cart_(n_cart), n_pairs_((ncore * (nmo - ncore)) + (ncas * (nmo - ncore - ncas))),
+      c_cart_(static_cast<size_t>(n_cart_) * static_cast<size_t>(nmo), res.device()),
       h_mo_(static_cast<size_t>(nmo) * static_cast<size_t>(nmo), res.device()),
       fock_sym_(static_cast<size_t>(nmo) * static_cast<size_t>(nmo), res.device()),
       vhf_c_(static_cast<size_t>(nmo) * static_cast<size_t>(nmo), res.device()),
@@ -43,20 +42,44 @@ Hessian::Hessian(DeviceResources &res, const BasisSet &basis,
       h_act_(static_cast<size_t>(nmo) * static_cast<size_t>(ncas) * static_cast<size_t>(nmo) *
                  static_cast<size_t>(ncas),
              res.device()),
-      diagonal_(static_cast<size_t>(n_pairs_), res.device()), density_(res, basis), j_(res, basis),
-      k_(res, basis) {}
+      diagonal_(static_cast<size_t>(n_pairs_), res.device()) {}
 
-Result<double> Hessian::capped_density(DeviceResources &res, const double *const from) {
+Result<std::pair<const double *, double>> Hessian::two_j_minus_k(DeviceResources &res,
+                                                                 const double *const density,
+                                                                 const double *const right,
+                                                                 const int32_t rank) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const int32_t nc = n_cart_;
+  constexpr auto kN = wwr::WWRBLAS_OP_N;
+  constexpr auto kT = wwr::WWRBLAS_OP_T;
+  constexpr double kMinusOne = -1.0;
+  if (auto *const fitted = std::get_if<Fitted>(&jk_); fitted != nullptr) {
+    // K[L R^T + R L^T] = K[L R^T] + K[L R^T]^T: one two-factor call.
+    const double *const b = fitted->b;
+    double *const j = fitted->j.data();
+    double *const k = fitted->k.data();
+    FBF_TRY(df_coulomb(res, nc, fitted->naux, b, density, j));
+    FBF_TRY(df_exchange(res, nc, fitted->naux, rank, b, c_cart_.data(), right, k));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>, j, nc,
+                                                  &kMinusOne, k, nc, j, nc)));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kT, nc, nc, &kOne<double>, j, nc,
+                                                  &kMinusOne, k, nc, j, nc)));
+    return std::pair{static_cast<const double *>(j), 1.0};
+  }
+  Direct &direct = std::get<Direct>(jk_);
   // Host pointer mode, so the call has waited for it.
   double top = 0.0;
-  FBF_TRY(norm<Norm::inf>(res, nc * nc, from, 1, &top));
+  FBF_TRY(norm<Norm::inf>(res, nc * nc, density, 1, &top));
   const double s = top > 2.0 ? 2.0 / top : 1.0;
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc,
-                                                &s, from, nc, &kZero<double>, from, nc,
-                                                density_.data(), nc)));
-  return s;
+  FBF_TRY(
+      gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &s, density, nc, &kZero<double>,
+                                            density, nc, direct.density.data(), nc)));
+  FBF_TRY(coulomb(res, direct.j_classes, direct.density, direct.j, direct.tau_j * s));
+  FBF_TRY(exchange(res, direct.k_classes, direct.density, direct.k, direct.tau_k * s));
+  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>,
+                                                direct.j.data(), nc, &kMinusOne, direct.k.data(),
+                                                nc, direct.j.data(), nc)));
+  return std::pair{static_cast<const double *>(direct.j.data()), s};
 }
 
 Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
@@ -68,7 +91,57 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
                                 const Buffers::device<double> &ppaa,
                                 const Buffers::device<double> &papa, const Fock &fock,
                                 const double tau_j, const double tau_k) {
+  // Written so that NaN fails too.
+  if (!(tau_j >= 0.0) || !(tau_k >= 0.0)) {
+    return err_config("response::Hessian::create: tau_j ({}) and tau_k ({}) must be 0 or above",
+                      tau_j, tau_k);
+  }
   const uint32_t n_sphe = basis.nao_sphe();
+  if (h.n() != n_sphe || c.n() != n_sphe) {
+    return err_config(
+        "response::Hessian::create: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
+        h.n(), h.n(), c.n(), c.n(), n_sphe);
+  }
+  return build(res, h, u, c, ncore, ncas, ppaa, papa, fock, static_cast<int32_t>(basis.nao_cart()),
+               Direct{.j_classes = j_classes,
+                      .k_classes = k_classes,
+                      .tau_j = tau_j,
+                      .tau_k = tau_k,
+                      .density = CartesianMatrixAO(res, basis),
+                      .j = CartesianMatrixAO(res, basis),
+                      .k = CartesianMatrixAO(res, basis)});
+}
+
+Result<Hessian> Hessian::create(DeviceResources &res, const SphericalMatrixAO &h,
+                                const Buffers::device<double> &b, const int32_t naux,
+                                const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
+                                const Buffers::device<double> &ppaa,
+                                const Buffers::device<double> &papa, const Fock &fock) {
+  if (naux < 0) {
+    return err_config("response::Hessian::create: naux ({}) must not be negative", naux);
+  }
+  if (h.n() != c.n()) {
+    return err_config("response::Hessian::create: h is {} x {} but C {} x {}", h.n(), h.n(), c.n(),
+                      c.n());
+  }
+  const size_t nn = static_cast<size_t>(c.n()) * c.n();
+  if (b.num_elements() != static_cast<size_t>(naux) * nn) {
+    return err_config("response::Hessian::create: B holds {} doubles, but naux nmo^2 is {}",
+                      b.num_elements(), static_cast<size_t>(naux) * nn);
+  }
+  return build(res, h, nullptr, c, ncore, ncas, ppaa, papa, fock, static_cast<int32_t>(c.n()),
+               Fitted{.b = b.data(),
+                      .naux = naux,
+                      .j = Buffers::device<double>(nn, res.device()),
+                      .k = Buffers::device<double>(nn, res.device())});
+}
+
+Result<Hessian> Hessian::build(DeviceResources &res, const SphericalMatrixAO &h,
+                               const std::shared_ptr<const Buffers::device<double>> &u,
+                               const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
+                               const Buffers::device<double> &ppaa,
+                               const Buffers::device<double> &papa, const Fock &fock,
+                               const int32_t n_cart_rows, std::variant<Direct, Fitted> jk) {
   const uint32_t n_orbitals = c.n();
   if (ncore < 0 || ncas < 0) {
     return err_config("response::Hessian::create: ncore ({}) and ncas ({}) must not be negative",
@@ -81,16 +154,6 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
   if (std::cmp_greater(int64_t{ncore} + ncas, n_orbitals)) {
     return err_config("response::Hessian::create: ncore {} + ncas {} exceeds the {} orbitals",
                       ncore, ncas, n_orbitals);
-  }
-  // Written so that NaN fails too.
-  if (!(tau_j >= 0.0) || !(tau_k >= 0.0)) {
-    return err_config("response::Hessian::create: tau_j ({}) and tau_k ({}) must be 0 or above",
-                      tau_j, tau_k);
-  }
-  if (h.n() != n_sphe || n_orbitals != n_sphe) {
-    return err_config(
-        "response::Hessian::create: h is {} x {} and C {} x {}, but the basis has {} spherical AOs",
-        h.n(), h.n(), n_orbitals, n_orbitals, n_sphe);
   }
   if (h.dev_idx() != res.dev_idx() || c.dev_idx() != res.dev_idx()) {
     return err_config(
@@ -121,27 +184,33 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
   const wwr::wwrStream_t stream = res.stream();
   const auto nmo = static_cast<int32_t>(n_orbitals);
   const int32_t nocc = ncore + ncas;
-  Hessian out(res, basis, j_classes, k_classes, nmo, ncore, ncas, tau_j, tau_k);
+  Hessian out(res, nmo, ncore, ncas, n_cart_rows, std::move(jk));
+  const Fitted *const fitted = std::get_if<Fitted>(&out.jk_);
   const int32_t nc = out.n_cart_;
   const auto n_cart = static_cast<size_t>(nc);
-  const auto ns = static_cast<int32_t>(n_sphe);
   constexpr double kMinusOne = -1.0;
 
   // Scratch: gemmwich's intermediate, one projected nmo x nmo block, and
-  // the permuted Gamma of H_act's exchange part. coulomb and exchange, called
-  // while it is live, do not take the workspace.
-  const auto [work, block, gamma2_exchange] =
-      res.device_regions<double>(n_cart * n_all, nn, na * na * na * na);
+  // the permuted Gamma of H_act's exchange part; density-fitted, B half-
+  // and fully transformed over C_core, (Q|pp), and (pp|ii) and (pi|pi) over
+  // every p and core i. coulomb and exchange, called while it is live, do
+  // not take the workspace; df_coulomb and df_exchange are not called here.
+  const size_t naux = fitted != nullptr ? static_cast<size_t>(fitted->naux) : 0;
+  const size_t mo_core = naux * core * n_all;
+  const size_t pc = fitted != nullptr ? n_all * core : 0;
+  const auto [work, block, gamma2_exchange, half, l_core, q_pp, j_core, k_core] =
+      res.device_regions<double>(n_cart * n_all, nn, na * na * na * na, mo_core, mo_core,
+                                 naux * n_all, pc, pc);
 
   // U C, then C^T h C, and the MO matrices the product reads.
   if (u != nullptr) {
-    FBF_TRY(gpu_status(gemm(blas, nc, nmo, ns, &kOne<double>, u->data(), c.data(), &kZero<double>,
+    FBF_TRY(gpu_status(gemm(blas, nc, nmo, nmo, &kOne<double>, u->data(), c.data(), &kZero<double>,
                             out.c_cart_.data())));
   } else {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.c_cart_.data(), c.data(), sizeof(double) * nn,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
   }
-  FBF_TRY(gpu_status(gemmwich(blas, nmo, ns, c.data(), h.data(), work, out.h_mo_.data())));
+  FBF_TRY(gpu_status(gemmwich(blas, nmo, nmo, c.data(), h.data(), work, out.h_mo_.data())));
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nmo, nmo, &kOne<double>,
       fock.fock_inactive.data(), nmo, &kMinusOne, out.h_mo_.data(), nmo, out.vhf_c_.data(), nmo)));
@@ -153,11 +222,11 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
       &kOne<double>, fock.fock.data(), nmo, out.fock_sym_.data(), nmo)));
 
   // gamma and Gamma back to the host, for the 1-RDM's occupied block, H_act's
-  // permuted Gamma and the diagonal; and the core orbitals' columns of U C,
-  // for the prune cap of each C_i C_i^T.
+  // permuted Gamma and the diagonal; and, integral-direct, the core orbitals'
+  // columns of U C, for the prune cap of each C_i C_i^T.
   std::vector<double> gamma(na * na);
   std::vector<double> gamma2(na * na * na * na);
-  std::vector<double> c_core(n_cart * core);
+  std::vector<double> c_core(fitted == nullptr ? n_cart * core : 0);
   if (ncas > 0) {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.gamma_.data(), fock.gamma.data(),
                                            gamma.size() * sizeof(double),
@@ -169,7 +238,7 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
                                            gamma2.size() * sizeof(double),
                                            wwr::wwrMemcpyDeviceToHost, stream)));
   }
-  if (ncore > 0) {
+  if (!c_core.empty()) {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c_core.data(), out.c_cart_.data(),
                                            c_core.size() * sizeof(double),
                                            wwr::wwrMemcpyDeviceToHost, stream)));
@@ -233,7 +302,7 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
 
   // The diagonal's inputs, read back: diag of C^T h C, F, F^I - C^T h C and
   // F^I + F^A - C^T h C; diag H_act; ppaa's and papa's core rows; and
-  // (pp|ii) and (pi|pi) for each core i, of one J and one K of C_i C_i^T.
+  // (pp|ii) and (pi|pi) for each core i.
   const auto diagonal = [&](double *to, const double *matrix, size_t count, size_t ld) {
     return gpu_status(wwr::wwrMemcpy2DAsync(to, sizeof(double), matrix, (ld + 1) * sizeof(double),
                                             sizeof(double), count, wwr::wwrMemcpyDeviceToHost,
@@ -265,24 +334,72 @@ Result<Hessian> Hessian::create(DeviceResources &res, const BasisSet &basis,
     }
   }
   std::vector<double> scale(core, 1.0);
-  for (size_t i = 0; i < core; ++i) {
-    // |(C_i C_i^T)_cd| <= m_i^2, m_i = max_mu |(U C)_mu i|: the classes prune
-    // for |D| <= 2, so the build is of s C_i C_i^T at s tau.
-    double m = 0.0;
-    for (size_t mu = 0; mu < n_cart; ++mu) {
-      m = std::max(m, std::abs(c_core[mu + (n_cart * i)]));
+  if (fitted != nullptr && ncore > 0 && naux > 0) {
+    // (pp|ii) = sum_Q (Q|pp) (Q|ii) and (pi|pi) = sum_Q (Q|ip)^2 from
+    // L_Q,ip = (Q|ip) at Q + naux (i + ncore p) and (Q|pp) at Q + naux p.
+    // B is half-transformed ncore columns of C at a time, the first block
+    // C_core, which L completes; (Q|pp) is a gemv per p of each block.
+    const auto nq = static_cast<int32_t>(naux);
+    const auto nq64 = static_cast<int64_t>(naux);
+    const double *const b = fitted->b;
+    const double *const cc = out.c_cart_.data();
+    for (int32_t p0 = 0; p0 < nmo; p0 += ncore) {
+      const int32_t width = std::min(ncore, nmo - p0);
+      // half[Q, p, m] = sum_n B_Q,nm C_n,p0+p at Q + naux (p + width m): one
+      // gemm per m.
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nq, width, nmo, &kOne<double>, b, nq,
+          nq64 * nmo, cc + (n_all * static_cast<size_t>(p0)), nmo, 0, &kZero<double>, half, nq,
+          nq64 * width, nmo)));
+      if (p0 == 0) {
+        FBF_TRY(gpu_status(
+            gemm(blas, nq * ncore, nmo, nmo, &kOne<double>, half, cc, &kZero<double>, l_core)));
+      }
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nq, 1, nmo, &kOne<double>, half, nq * width,
+          nq64, cc + (n_all * static_cast<size_t>(p0)), nmo, static_cast<int64_t>(n_all),
+          &kZero<double>, q_pp + (naux * static_cast<size_t>(p0)), nq, nq64, width)));
     }
-    const double s = m * m > 2.0 ? 2.0 / (m * m) : 1.0;
-    scale[i] = s;
-    const double *const c_i = out.c_cart_.data() + (n_cart * i);
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-        blas, nc, nc, 1, &s, c_i, c_i, &kZero<double>, out.density_.data())));
-    FBF_TRY(coulomb(res, j_classes, out.density_, out.j_, tau_j * s));
-    FBF_TRY(exchange(res, k_classes, out.density_, out.k_, tau_k * s));
-    FBF_TRY(gpu_status(gemmwich(blas, nmo, nc, out.c_cart_.data(), out.j_.data(), work, block)));
-    FBF_TRY(diagonal(j_pc.data() + (n_all * i), block, n_all, n_all));
-    FBF_TRY(gpu_status(gemmwich(blas, nmo, nc, out.c_cart_.data(), out.k_.data(), work, block)));
-    FBF_TRY(diagonal(k_pc.data() + (n_all * i), block, n_all, n_all));
+    // (Q|ii) is L's (i, i), every naux (ncore + 1).
+    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nmo,
+                                                  ncore, nq, &kOne<double>, q_pp, nq, l_core,
+                                                  nq * (ncore + 1), &kZero<double>, j_core, nmo)));
+    for (int32_t i = 0; i < ncore; ++i) {
+      // A dot over Q per p, of L's column (i, p) with itself.
+      const double *const l_i = l_core + (naux * static_cast<size_t>(i));
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, 1, 1, nq, &kOne<double>, l_i, nq,
+          nq64 * ncore, l_i, nq, nq64 * ncore, &kZero<double>,
+          k_core + (n_all * static_cast<size_t>(i)), 1, 1, nmo)));
+    }
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(j_pc.data(), j_core, j_pc.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(k_pc.data(), k_core, k_pc.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+  } else if (auto *const direct = std::get_if<Direct>(&out.jk_); direct != nullptr) {
+    // One J and one K of C_i C_i^T per core i, (pp|ii) and (pi|pi) the
+    // diagonals of C^T J C and C^T K C.
+    for (size_t i = 0; i < core; ++i) {
+      // |(C_i C_i^T)_cd| <= m_i^2, m_i = max_mu |(U C)_mu i|: the classes
+      // prune for |D| <= 2, so the build is of s C_i C_i^T at s tau.
+      double m = 0.0;
+      for (size_t mu = 0; mu < n_cart; ++mu) {
+        m = std::max(m, std::abs(c_core[mu + (n_cart * i)]));
+      }
+      const double s = m * m > 2.0 ? 2.0 / (m * m) : 1.0;
+      scale[i] = s;
+      const double *const c_i = out.c_cart_.data() + (n_cart * i);
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, nc, nc, 1, &s, c_i, c_i, &kZero<double>, direct->density.data())));
+      FBF_TRY(coulomb(res, direct->j_classes, direct->density, direct->j, direct->tau_j * s));
+      FBF_TRY(exchange(res, direct->k_classes, direct->density, direct->k, direct->tau_k * s));
+      FBF_TRY(
+          gpu_status(gemmwich(blas, nmo, nc, out.c_cart_.data(), direct->j.data(), work, block)));
+      FBF_TRY(diagonal(j_pc.data() + (n_all * i), block, n_all, n_all));
+      FBF_TRY(
+          gpu_status(gemmwich(blas, nmo, nc, out.c_cart_.data(), direct->k.data(), work, block)));
+      FBF_TRY(diagonal(k_pc.data() + (n_all * i), block, n_all, n_all));
+    }
   }
   FBF_TRY(res.sync());
 
@@ -365,11 +482,30 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
   constexpr double kMinusOne = -1.0;
   constexpr double kMinusTwo = -2.0;
 
-  // Scratch, carved once for the block: coulomb and exchange, called while it
-  // is live, do not take the workspace.
-  const auto [kappa, x2, hx, t_act, t2, w, cart, dm3, jc] = res.device_regions<double>(
-      nn, nn, n_all * (core + na), na * n_all, na * n_all, std::max(core, na) * n_cart,
-      n_cart * n_cart, n_cart * n_cart, n_cart * n_all);
+  // Scratch, carved once for the block: kappa, X2, h kappa, two ncas x nmo
+  // blocks, W, two n_cart^2 densities, J C, and the n_cart x nocc right
+  // factor R. coulomb and exchange do not take the workspace, so the
+  // integral-direct path carves it from there; df_coulomb and df_exchange do,
+  // so the density-fitted one allocates it.
+  const std::array<size_t, 10> counts{nn,
+                                      nn,
+                                      n_all * (core + na),
+                                      na * n_all,
+                                      na * n_all,
+                                      std::max(core, na) * n_cart,
+                                      n_cart * n_cart,
+                                      n_cart * n_cart,
+                                      n_cart * n_all,
+                                      n_cart * (core + na)};
+  const size_t total = std::reduce(counts.begin(), counts.end());
+  const bool fitted = std::holds_alternative<Fitted>(jk_);
+  Buffers::device<double> owned(fitted ? total : 0, res.device());
+  double *at = fitted ? owned.data() : std::get<0>(res.device_regions<double>(total));
+  std::array<double *, counts.size()> regions{};
+  for (size_t r = 0; r < counts.size(); ++r) {
+    regions[r] = std::exchange(at, at + counts[r]);
+  }
+  const auto [kappa, x2, hx, t_act, t2, w, cart, dm3, jc, right] = regions;
   const double *const c_cart = c_cart_.data();
   const double *const c_cart_act = c_cart + (n_cart * core);
   // A gemm over a row block of kappa, x2 or V^c + V^a, whose leading dimension
@@ -414,7 +550,11 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
     // transpose, D4 = C_act gamma kappa[act, :] C^T + its transpose;
     // va = gamma C_act^T (2 J[D3] - K[D3]) C, and
     // vc = C_core^T (2 J[D'] - K[D']) C_rot, D' = 2 D3 + D4, onto the
-    // core rows' active and virtual columns. All over U C.
+    // core rows' active and virtual columns. All over U C. As two-factor
+    // densities, D3 = L R3^T + R3 L^T with L = C_core and
+    // R3 = C_rot kappa[core, ncore:]^T, and D' = L R^T + R L^T with
+    // L = [C_core C_act], U C's first nocc columns, and R = [2 R3, R4],
+    // R4 = C (gamma kappa[act, :])^T: the density-fitted K's factors.
     if (ncore > 0 && n_rot > 0) {
       FBF_TRY(block_gemm(kN, kT, ncore, nc, n_rot, 1.0, kappa + (n_all * core), nmo,
                          c_cart + (n_cart * core), nc, 0.0, w, ncore));
@@ -422,14 +562,12 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
           gpu_status(gemm(blas, nc, nc, ncore, &kOne<double>, c_cart, w, &kZero<double>, cart)));
       FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kT, nc, nc, &kOne<double>, cart, nc,
                                                     &kOne<double>, cart, nc, dm3, nc)));
-      const double s3 = FBF_TRY(capped_density(res, dm3));
-      FBF_TRY(coulomb(res, j_classes_, density_, j_, tau_j_ * s3));
-      FBF_TRY(exchange(res, k_classes_, density_, k_, tau_k_ * s3));
-      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>, j_.data(),
-                                                    nc, &kMinusOne, k_.data(), nc, j_.data(), nc)));
+      FBF_TRY(block_gemm(kN, kT, nc, ncore, n_rot, 1.0, c_cart + (n_cart * core), nc,
+                         kappa + (n_all * core), nmo, 0.0, right, nc));
+      const auto [g3, s3] = FBF_TRY(two_j_minus_k(res, dm3, right, ncore));
+      FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, nc * ncore, &kTwo<double>, right, 1)));
       if (ncas > 0) {
-        FBF_TRY(gpu_status(
-            gemm(blas, nc, nmo, nc, &kOne<double>, j_.data(), c_cart, &kZero<double>, jc)));
+        FBF_TRY(gpu_status(gemm(blas, nc, nmo, nc, &kOne<double>, g3, c_cart, &kZero<double>, jc)));
         // BLAS reads alpha through a pointer, and an expression has no address.
         const double inv_s3 = 1.0 / s3;
         FBF_TRY(gpu_status(
@@ -441,6 +579,8 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
             gemm<kN, kT>(blas, ncas, nc, nmo, &kOne<double>, t2, c_cart, &kZero<double>, w)));
         FBF_TRY(gpu_status(
             gemm(blas, nc, nc, ncas, &kOne<double>, c_cart_act, w, &kZero<double>, cart)));
+        FBF_TRY(gpu_status(gemm<kN, kT>(blas, nc, ncas, nmo, &kOne<double>, c_cart, t2,
+                                        &kZero<double>, right + (n_cart * core))));
         FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>, dm3, nc,
                                                       &kOne<double>, cart, nc, dm3, nc)));
         FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kT, nc, nc, &kOne<double>, dm3, nc,
@@ -448,13 +588,9 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
       } else {
         FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, nc * nc, &kTwo<double>, dm3, 1)));
       }
-      const double s4 = FBF_TRY(capped_density(res, dm3));
-      FBF_TRY(coulomb(res, j_classes_, density_, j_, tau_j_ * s4));
-      FBF_TRY(exchange(res, k_classes_, density_, k_, tau_k_ * s4));
-      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, kN, kN, nc, nc, &kTwo<double>, j_.data(),
-                                                    nc, &kMinusOne, k_.data(), nc, j_.data(), nc)));
-      FBF_TRY(gpu_status(gemm(blas, nc, n_rot, nc, &kOne<double>, j_.data(),
-                              c_cart + (n_cart * core), &kZero<double>, jc)));
+      const auto [g4, s4] = FBF_TRY(two_j_minus_k(res, dm3, right, nocc));
+      FBF_TRY(gpu_status(gemm(blas, nc, n_rot, nc, &kOne<double>, g4, c_cart + (n_cart * core),
+                              &kZero<double>, jc)));
       FBF_TRY(block_gemm(kT, kN, ncore, n_rot, nc, 1.0 / s4, c_cart, nc, jc, nc, 1.0,
                          x2 + (n_all * core), nmo));
     }
