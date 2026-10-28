@@ -315,6 +315,51 @@
     "vk": "h2o_ccpvdz_vk.npy",
     "occupied": 5,
     "df_rhf_energy": -76.0267446953953
+   },
+   "mo": {
+    "coefficients": "h2o_ccpvdz_mo_coeff.npy",
+    "occupied": 5,
+    "ovov": [
+     {
+      "file": "h2o_ccpvdz_ovov.npy",
+      "s": [
+       0,
+       19
+      ]
+     }
+    ],
+    "oooo": [
+     {
+      "file": "h2o_ccpvdz_oooo.npy",
+      "s": [
+       0,
+       5
+      ]
+     }
+    ],
+    "vvvv": [
+     {
+      "file": "h2o_ccpvdz_vvvv_s0_6.npy",
+      "s": [
+       0,
+       6
+      ]
+     },
+     {
+      "file": "h2o_ccpvdz_vvvv_s6_12.npy",
+      "s": [
+       6,
+       12
+      ]
+     },
+     {
+      "file": "h2o_ccpvdz_vvvv_s12_19.npy",
+      "s": [
+       12,
+       19
+      ]
+     }
+    ]
    }
   },
   {

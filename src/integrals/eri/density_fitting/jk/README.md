@@ -73,3 +73,11 @@ two-factor K's gemm over `naux · rank` in the `int32_t` BLAS dispatch both
 backends carry, so any of them past `INT32_MAX` is `InvalidConfig`, as is a
 negative count. An empty `naux` (or `nocc`, or `rank`) gives J (or K) = 0;
 `nao = 0` writes nothing.
+
+## X is `mo`'s `b_half`, kept as its own copy
+
+The one-factor K's X is [`mo/`](../mo/README.md)'s `b_half` over the occupied
+block: the same call on the same operands. jk does not call it, deliberately:
+X here is private scratch, laid out for the syrk that follows, on the SCF's
+per-iteration hot path. `mo/`'s README has the reasons, and `df_mo_gpu` pins
+the two to the same K.
