@@ -6,7 +6,7 @@
 /// Determinant (a, b), a ≥ b, of a vector over one StringSet for both spins is
 /// triangle element a (a + 1) / 2 + b; one below the triangle, a < b, is read
 /// from its mirror (b, a), and every off-diagonal element is stored scaled by
-/// √2.
+/// √2 (kSqrt2, and kInvSqrt2 to undo it, from constants.h).
 
 #pragma once
 
@@ -17,10 +17,6 @@
 #include "runtime.h"
 
 namespace free_breakfast::ci::device {
-
-/// @brief √2 and 1/√2, the off-diagonal scaling and its inverse.
-inline constexpr double kSqrt2 = 1.4142135623730950488;
-inline constexpr double kInvSqrt2 = 0.70710678118654752440;
 
 /// @brief The triangle element of determinant (a, b) or its mirror.
 __device__ inline size_t triangle(const int32_t a, const int32_t b) {

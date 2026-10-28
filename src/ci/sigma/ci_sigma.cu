@@ -23,6 +23,7 @@
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
 #include "block_params.h"
+#include "constants.h"
 #include "primitives.h"
 
 #include "ci_sigma_bridge.h"
@@ -71,7 +72,7 @@ template <bool Symmetric>
 __device__ size_t ci_element(const int32_t a, const int32_t b, const int32_t n_beta,
                              double &weight) {
   if constexpr (Symmetric) {
-    weight = a == b ? 1.0 : kInvSqrt2;
+    weight = a == b ? 1.0 : kInvSqrt2<double>;
     return triangle(a, b);
   } else {
     weight = 1.0;
@@ -128,7 +129,7 @@ __global__ void ci_gather_d_kernel(const int32_t row_begin, const int32_t rows, 
   double scale = 1.0;
   if constexpr (Symmetric) {
     if (scale_off_diagonal && place.alpha != place.beta) {
-      scale = kSqrt2;
+      scale = kSqrt2<double>;
     }
   }
   // α and β links can name the same pair, so the row accumulates: at most one
@@ -175,7 +176,7 @@ ci_sigma_from_g_kernel(const int32_t rows, const int32_t n_det, const int32_t n_
   if constexpr (Symmetric) {
     double sum = static_cast<double>(g[(static_cast<size_t>(n_pairs) * ld) + row]);
     add_links(sum);
-    sigma[row] = (e_core * c[row]) + (place.alpha == place.beta ? sum : kSqrt2 * sum);
+    sigma[row] = (e_core * c[row]) + (place.alpha == place.beta ? sum : kSqrt2<double> * sum);
   } else {
     double sum =
         (e_core * c[row]) + static_cast<double>(g[(static_cast<size_t>(n_pairs) * ld) + row]);
@@ -252,7 +253,7 @@ ci_sigma_from_g_block_kernel(const bool beta_major, const int32_t first, const i
   }
   if constexpr (Symmetric) {
     if (a != b) {
-      sum *= kSqrt2;
+      sum *= kSqrt2<double>;
     }
   }
   sigma[at] += beta_part ? (e_core * c[at]) + sum : sum;
@@ -332,7 +333,7 @@ __global__ void ci_unpack_kernel(const int32_t n_strings, const int64_t elements
   const int32_t b = det % n_strings;
   const size_t packed = static_cast<size_t>(n_strings) * static_cast<size_t>(n_strings + 1) / 2;
   const double stored = x[(static_cast<size_t>(column) * packed) + triangle(a, b)];
-  y[at] = a == b ? stored : kInvSqrt2 * stored;
+  y[at] = a == b ? stored : kInvSqrt2<double> * stored;
 }
 
 // One thread per triangle element of one column: x is k full vectors of
@@ -353,7 +354,7 @@ __global__ void ci_pack_kernel(const int32_t n_strings, const int64_t elements,
   const size_t ab = (static_cast<size_t>(a) * n_strings) + b;
   const size_t ba = (static_cast<size_t>(b) * n_strings) + a;
   // unpack's adjoint: √2 times the mean of (a, b) and its mirror.
-  y[at] = a == b ? v[ab] : kInvSqrt2 * (v[ab] + v[ba]);
+  y[at] = a == b ? v[ab] : kInvSqrt2<double> * (v[ab] + v[ba]);
 }
 
 uint32_t ci_blocks(const int64_t items) {

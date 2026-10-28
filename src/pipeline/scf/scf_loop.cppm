@@ -66,9 +66,8 @@ struct ScfState {
       gemm(blas, n, &kOne<double>, st.f.data(), st.d.data(), &kZero<double>, st.work.data())));
   FBF_TRY(gpu_status(
       gemm(blas, n, &kOne<double>, st.work.data(), s.data(), &kZero<double>, st.tmp.data())));
-  constexpr double kMinusOne = -1.0;
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n,
-                                                &kOne<double>, st.tmp.data(), n, &kMinusOne,
+                                                &kOne<double>, st.tmp.data(), n, &kNegOne<double>,
                                                 st.tmp.data(), n, st.e.data(), n)));
   FBF_TRY(gpu_status(gemmwich(blas, n, x.data(), st.e.data(), st.work.data(), st.tmp.data())));
   double norm = 0.0;

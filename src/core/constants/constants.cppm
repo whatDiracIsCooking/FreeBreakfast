@@ -17,6 +17,12 @@ export using free_breakfast::kOne;
 export using free_breakfast::kTwo;
 /// @brief Typed negative one (-1)
 export using free_breakfast::kNegOne;
+/// @brief Typed negative two (-2)
+export using free_breakfast::kNegTwo;
+/// @brief Typed one half (0.5)
+export using free_breakfast::kHalf;
+/// @brief Typed negative one half (-0.5)
+export using free_breakfast::kNegHalf;
 export using free_breakfast::kImaginaryUnit;
 
 /// @brief Boltzmann constant k_B in J/K (1.380649e-23)
@@ -33,6 +39,10 @@ export using free_breakfast::kFaraday;
 export using free_breakfast::kGasConstant;
 /// @brief Mathematical constant pi (3.141592653589793)
 export using free_breakfast::kPi;
+/// @brief Square root of two (1.4142135623730950488)
+export using free_breakfast::kSqrt2;
+/// @brief Reciprocal square root of two, 1/√2 (0.70710678118654752440)
+export using free_breakfast::kInvSqrt2;
 
 /// @brief Bohr radius a_0 in Angstrom (CODATA 0.529177210903)
 export using free_breakfast::kAngstromPerBohr;

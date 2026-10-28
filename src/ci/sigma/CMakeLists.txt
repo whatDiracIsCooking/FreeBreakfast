@@ -4,7 +4,8 @@
 # and wwrError_t, hence types_headers, ci::strings::headers and wwr::device
 # PUBLIC; block_params.h
 # (kFourWarps) and primitives.h (math::idivup), both from
-# core::kernel_headers, are its own business.
+# core::kernel_headers, and constants.h (kSqrt2, kInvSqrt2), from
+# core::constants_header, are its own business.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.ci.sigma.device
@@ -16,6 +17,7 @@ free_breakfast_add_gpu_device_library(
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
+  free_breakfast::core::constants_header
 )
 
 # The module: ci::Sigma, ci::unpack and ci::pack. ci::strings is PUBLIC because

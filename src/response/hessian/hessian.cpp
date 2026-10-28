@@ -51,7 +51,6 @@ Result<std::pair<const double *, double>> Hessian::two_j_minus_k(DeviceResources
                                                                  const int32_t rank) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const int32_t nc = n_cart_;
-  constexpr double kMinusOne = -1.0;
   if (auto *const fitted = std::get_if<Fitted>(&jk_); fitted != nullptr) {
     // K[L R^T + R L^T] = K[L R^T] + K[L R^T]^T: one two-factor call.
     const double *const b = fitted->b;
@@ -59,12 +58,12 @@ Result<std::pair<const double *, double>> Hessian::two_j_minus_k(DeviceResources
     double *const k = fitted->k.data();
     FBF_TRY(df_coulomb(res, nc, fitted->naux, b, density, j));
     FBF_TRY(df_exchange(res, nc, fitted->naux, rank, b, c_cart_.data(), right, k));
-    FBF_TRY(
-        gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc,
-                                              &kTwo<double>, j, nc, &kMinusOne, k, nc, j, nc)));
-    FBF_TRY(
-        gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc, nc,
-                                              &kOne<double>, j, nc, &kMinusOne, k, nc, j, nc)));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc,
+                                                  nc, &kTwo<double>, j, nc, &kNegOne<double>, k, nc,
+                                                  j, nc)));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nc,
+                                                  nc, &kOne<double>, j, nc, &kNegOne<double>, k, nc,
+                                                  j, nc)));
     return std::pair{static_cast<const double *>(j), 1.0};
   }
   Direct &direct = std::get<Direct>(jk_);
@@ -77,9 +76,9 @@ Result<std::pair<const double *, double>> Hessian::two_j_minus_k(DeviceResources
                                                 direct.density.data(), nc)));
   FBF_TRY(coulomb(res, direct.j_classes, direct.density, direct.j, direct.tau_j * s));
   FBF_TRY(exchange(res, direct.k_classes, direct.density, direct.k, direct.tau_k * s));
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc,
-                                                &kTwo<double>, direct.j.data(), nc, &kMinusOne,
-                                                direct.k.data(), nc, direct.j.data(), nc)));
+  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc, &kTwo<double>, direct.j.data(), nc,
+      &kNegOne<double>, direct.k.data(), nc, direct.j.data(), nc)));
   return std::pair{static_cast<const double *>(direct.j.data()), s};
 }
 
@@ -189,7 +188,6 @@ Result<Hessian> Hessian::build(DeviceResources &res, const SphericalMatrixAO &h,
   const Fitted *const fitted = std::get_if<Fitted>(&out.jk_);
   const int32_t nc = out.n_cart_;
   const auto n_cart = static_cast<size_t>(nc);
-  constexpr double kMinusOne = -1.0;
 
   // Scratch: gemmwich's intermediate, one projected nmo x nmo block, and
   // the permuted Gamma of H_act's exchange part; density-fitted, B half-
@@ -212,9 +210,10 @@ Result<Hessian> Hessian::build(DeviceResources &res, const SphericalMatrixAO &h,
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
   }
   FBF_TRY(gpu_status(gemmwich(blas, nmo, nmo, c.data(), h.data(), work, out.h_mo_.data())));
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
-      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nmo, nmo, &kOne<double>,
-      fock.fock_inactive.data(), nmo, &kMinusOne, out.h_mo_.data(), nmo, out.vhf_c_.data(), nmo)));
+  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nmo,
+                                                nmo, &kOne<double>, fock.fock_inactive.data(), nmo,
+                                                &kNegOne<double>, out.h_mo_.data(), nmo,
+                                                out.vhf_c_.data(), nmo)));
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nmo, nmo, &kOne<double>, out.vhf_c_.data(), nmo,
       &kOne<double>, fock.fock_active.data(), nmo, out.vhf_ca_.data(), nmo)));
@@ -479,9 +478,6 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
   const auto na = static_cast<size_t>(ncas);
   const int32_t n_rot = nmo - ncore; // the active and virtual columns
   const auto n_act = nmo * ncas;     // the order of H_act
-  constexpr double kMinusHalf = -0.5;
-  constexpr double kMinusOne = -1.0;
-  constexpr double kMinusTwo = -2.0;
 
   // Scratch, carved once for the block: kappa, X2, h kappa, two ncas x nmo
   // blocks, W, two n_cart^2 densities, J C, and the n_cart x nocc right
@@ -533,7 +529,8 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
     FBF_TRY(gpu_status(
         gemm(blas, nmo, nocc, nocc, &kOne<double>, hx, dm1_occ_.data(), &kZero<double>, x2)));
     // - (F + F^T) kappa / 2.
-    FBF_TRY(gpu_status(gemm(blas, nmo, &kMinusHalf, fock_sym_.data(), kappa, &kOne<double>, x2)));
+    FBF_TRY(
+        gpu_status(gemm(blas, nmo, &kNegHalf<double>, fock_sym_.data(), kappa, &kOne<double>, x2)));
     // Core rows: 2 kappa[core, ncore:] (V^c + V^a)[ncore:, :].
     if (ncore > 0 && n_rot > 0) {
       FBF_TRY(block_gemm(wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, ncore, nmo, n_rot, 2.0,
@@ -610,8 +607,8 @@ Status Hessian::apply(DeviceResources &res, const int32_t k, const double *const
 
     // 2 (x2 - x2^T), the derivative's, over kappa (no longer read).
     FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nmo,
-                                                  nmo, &kTwo<double>, x2, nmo, &kMinusTwo, x2, nmo,
-                                                  kappa, nmo)));
+                                                  nmo, &kTwo<double>, x2, nmo, &kNegTwo<double>, x2,
+                                                  nmo, kappa, nmo)));
     FBF_TRY(pack_orbital_pairs(res, nmo, ncore, ncas, kappa, yi));
   }
   return {};

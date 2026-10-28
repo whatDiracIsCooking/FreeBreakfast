@@ -3,7 +3,8 @@
 # shares with the module names int32_t, Replacement, wwrStream_t and
 # wwrError_t, hence types_headers, ci::strings::headers and wwr::device PUBLIC;
 # block_params.h (kFourWarps),
-# primitives.h (math::idivup), both from core::kernel_headers, and the sigma's
+# primitives.h (math::idivup), both from core::kernel_headers, constants.h
+# (kSqrt2, kInvSqrt2) from core::constants_header, and the sigma's
 # ci_symmetric.h, reached through ci::sigma::device's include directory, are
 # its own business.
 free_breakfast_add_gpu_device_library(
@@ -17,6 +18,7 @@ free_breakfast_add_gpu_device_library(
   wwr::device
   LINK_PRIVATE
   free_breakfast::core::kernel_headers
+  free_breakfast::core::constants_header
   free_breakfast::ci::sigma::device
 )
 

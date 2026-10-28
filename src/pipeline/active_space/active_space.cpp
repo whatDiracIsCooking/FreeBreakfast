@@ -6,6 +6,7 @@ module free_breakfast.pipeline.active_space;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -195,11 +196,9 @@ struct AvasRotation {
   Buffers::device<double> s_mo_device(nms * nmo, res.device());
   FBF_TRY(overlap_mixed_spherical(res, minao, basis, s_mix_device));
   FBF_TRY(overlap_mixed_spherical(res, minao, minao, s_mm_device));
-  constexpr double kOneScale = 1.0;
-  constexpr double kNoAccumulate = 0.0;
   FBF_TRY(gpu_status(gemm(res.blas(), static_cast<int32_t>(nms), static_cast<int32_t>(nmo),
-                          static_cast<int32_t>(nao), &kOneScale, s_mix_device.data(), scf.c.data(),
-                          &kNoAccumulate, s_mo_device.data())));
+                          static_cast<int32_t>(nao), &kOne<double>, s_mix_device.data(),
+                          scf.c.data(), &kZero<double>, s_mo_device.data())));
   std::vector<double> s_mo(nms * nmo);
   std::vector<double> s_mm(nms * nms);
   FBF_TRY(
@@ -334,10 +333,8 @@ struct AvasRotation {
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(r_device.data(), space.r.data(),
                                          space.r.size() * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
-  constexpr double kOneScale = 1.0;
-  constexpr double kNoAccumulate = 0.0;
-  FBF_TRY(gpu_status(gemm(res.blas(), static_cast<int32_t>(nao), nmo, nmo, &kOneScale, scf.c.data(),
-                          r_device.data(), &kNoAccumulate, c.data())));
+  FBF_TRY(gpu_status(gemm(res.blas(), static_cast<int32_t>(nao), nmo, nmo, &kOne<double>,
+                          scf.c.data(), r_device.data(), &kZero<double>, c.data())));
   return ActiveSpace{
       .ncore = space.ncore,
       .ncas = space.ncas,

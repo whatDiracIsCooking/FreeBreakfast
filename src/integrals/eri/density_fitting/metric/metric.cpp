@@ -12,6 +12,7 @@ module free_breakfast.integrals.eri.density_fitting.metric;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.constants; // kHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -25,9 +26,6 @@ namespace free_breakfast {
 // One extent per aux momentum the kernels cover; a class (lP, lQ) is entry
 // lP * kMetricMomenta + lQ of the per-class tables below.
 constexpr auto kMetricMomenta = static_cast<size_t>(device::kMetricMaxMomentum + 1);
-
-// The symmetrization's weight on each of M and M^T.
-constexpr double kMetricHalf = 0.5;
 
 Status metric(DeviceResources &res, const BasisSet &aux, MatrixAOPair &m) {
   if (m.dev_idx() != res.dev_idx()) {
@@ -167,8 +165,8 @@ Status metric(DeviceResources &res, const BasisSet &aux, MatrixAOPair &m) {
   double *const spherical = m.spherical().data();
   const auto [symmetric] = res.device_regions<double>(m.spherical().num_elements());
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(res.blas(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T,
-                                                ns, ns, &kMetricHalf, spherical, ns, &kMetricHalf,
-                                                spherical, ns, symmetric, ns)));
+                                                ns, ns, &kHalf<double>, spherical, ns,
+                                                &kHalf<double>, spherical, ns, symmetric, ns)));
   return gpu_status(wwr::wwrMemcpyAsync(spherical, symmetric,
                                         sizeof(double) * m.spherical().num_elements(),
                                         wwr::wwrMemcpyDeviceToDevice, stream));

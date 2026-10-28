@@ -66,9 +66,8 @@ struct DirectFockBuilder {
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dd.spherical().data(), d.data(), bytes,
                                              wwr::wwrMemcpyDeviceToDevice, res.stream())));
     } else {
-      constexpr double kMinusOne = -1.0;
       FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n,
-                                                    n, &kOne<double>, d.data(), n, &kMinusOne,
+                                                    n, &kOne<double>, d.data(), n, &kNegOne<double>,
                                                     d_built.data(), n, dd.spherical().data(), n)));
     }
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_built.data(), d.data(), bytes,
@@ -76,10 +75,9 @@ struct DirectFockBuilder {
     FBF_TRY(dd.spherical_to_cartesian(res));
     FBF_TRY(coulomb(res, eri.j_classes, dd.cartesian(), g.cartesian(), tau_j));
     FBF_TRY(exchange(res, eri.k_classes, dd.cartesian(), k));
-    constexpr double kMinusHalf = -0.5;
-    FBF_TRY(
-        gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(k.num_elements()),
-                                              &kMinusHalf, k.data(), 1, g.cartesian().data(), 1)));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(k.num_elements()),
+                                                  &kNegHalf<double>, k.data(), 1,
+                                                  g.cartesian().data(), 1)));
     FBF_TRY(g.cartesian_to_spherical(res));
     if (full) {
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(f.data(), h.data(), bytes,
@@ -142,9 +140,8 @@ struct DfFockBuilder {
     const auto len = static_cast<int32_t>(f.num_elements());
     FBF_TRY(
         gpu_status(wwr::axpy<double, int32_t>(blas, len, &kOne<double>, j.data(), 1, f.data(), 1)));
-    constexpr double kMinusHalf = -0.5;
-    FBF_TRY(
-        gpu_status(wwr::axpy<double, int32_t>(blas, len, &kMinusHalf, k.data(), 1, f.data(), 1)));
+    FBF_TRY(gpu_status(
+        wwr::axpy<double, int32_t>(blas, len, &kNegHalf<double>, k.data(), 1, f.data(), 1)));
     return true;
   }
 

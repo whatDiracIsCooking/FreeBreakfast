@@ -18,6 +18,7 @@
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
 #include "block_params.h"
+#include "constants.h"
 #include "primitives.h"
 
 #include "ci_solver_bridge.h"
@@ -81,7 +82,7 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
     const int32_t kb = (slot < 0 ? -slot : slot) - 1;
     const double sign = static_cast<double>(slot < 0 ? -l.sign : l.sign);
     if constexpr (Symmetric) {
-      const double weight = l.target == kb ? 1.0 : kInvSqrt2;
+      const double weight = l.target == kb ? 1.0 : kInvSqrt2<double>;
       links += sign * (weight * x[vector_base + triangle(l.target, kb)]);
     } else {
       links +=
@@ -91,7 +92,7 @@ __global__ void ci_spin_square_kernel(const int32_t rows, const int32_t n_det, c
   }
   double sum = (constant - shift) * x[row];
   if constexpr (Symmetric) {
-    sum -= ja == jb ? links : kSqrt2 * links;
+    sum -= ja == jb ? links : kSqrt2<double> * links;
   } else {
     sum -= links;
   }
@@ -536,7 +537,7 @@ __global__ void ci_pspace_kernel(const int32_t p, const int32_t *const picks, co
         sum += element(ib, ia, jb, ja);
       }
     }
-    const double weight = (ia == ib ? 1.0 : kInvSqrt2) * (ja == jb ? 1.0 : kInvSqrt2);
+    const double weight = (ia == ib ? 1.0 : kInvSqrt2<double>)*(ja == jb ? 1.0 : kInvSqrt2<double>);
     h[at] = weight * sum;
   } else {
     h[at] = element(ia, ib, ja, jb);

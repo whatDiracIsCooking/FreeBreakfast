@@ -133,10 +133,9 @@ Result<ActiveSpaceHamiltonian> build_active_space(
     FBF_TRY(coulomb(res, j_classes, density, j, tau_j));
     FBF_TRY(exchange(res, k_classes, density, k, tau_k));
     const auto len_cart = static_cast<int32_t>(j.num_elements());
-    constexpr double kMinusOne = -1.0;
     FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, len_cart, &kTwo<double>, j.data(), 1)));
     FBF_TRY(gpu_status(
-        wwr::axpy<double, int32_t>(blas, len_cart, &kMinusOne, k.data(), 1, j.data(), 1)));
+        wwr::axpy<double, int32_t>(blas, len_cart, &kNegOne<double>, k.data(), 1, j.data(), 1)));
 
     // E_core = E_nuc + 2 tr(P h) + tr(P G); P, h and G are symmetric, so each
     // trace is the elementwise dot. h is spherical, so its P is too.
@@ -339,9 +338,8 @@ Result<CasscfIntegrals> casscf_integrals(DeviceResources &res, const BasisSet &b
     FBF_TRY(df_coulomb(res, n, naux, b.data(), p, j));
     FBF_TRY(df_exchange(res, n, naux, ncore, b.data(), c.data(), k));
     const auto len = static_cast<int32_t>(nn);
-    constexpr double kMinusHalf = -0.5;
     FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, len, &kTwo<double>, j, 1)));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, len, &kMinusHalf, k, 1, j, 1)));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, len, &kNegHalf<double>, k, 1, j, 1)));
     // E_core = E_nuc + 2 tr(P h) + tr(P G), each trace the elementwise dot of
     // two symmetric matrices.
     double ph = 0.0;

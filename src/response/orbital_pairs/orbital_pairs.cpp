@@ -77,7 +77,6 @@ Status unpack_orbital_pairs(DeviceResources &res, const int32_t nmo, const int32
   // lower block it shares no element with. geam's B is C itself at beta = 0,
   // its in-place mode, so nothing past kappa is read.
   const wwr::wwrblasHandle_t blas = res.blas().get();
-  constexpr double kMinusOne = -1.0;
   const int32_t nocc = ncore + ncas;
   // (rows of the upper block, its columns, the lower block's first row, the
   // shared first column of the lower block and row of the upper one)
@@ -90,8 +89,8 @@ Status unpack_orbital_pairs(DeviceResources &res, const int32_t nmo, const int32
     const double *const lower = kappa + lower_row + (n * static_cast<size_t>(first));
     double *const upper = kappa + first + (n * static_cast<size_t>(lower_row));
     FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, rows,
-                                                  cols, &kMinusOne, lower, nmo, &kZero<double>,
-                                                  upper, nmo, upper, nmo)));
+                                                  cols, &kNegOne<double>, lower, nmo,
+                                                  &kZero<double>, upper, nmo, upper, nmo)));
   }
   return {};
 }

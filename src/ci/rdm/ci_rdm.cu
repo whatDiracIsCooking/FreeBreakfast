@@ -16,6 +16,7 @@
 // Standard and FBF headers before anything that reaches the vendor runtime:
 // under HIP a libc++ header must not follow it (see primitives.h).
 #include "block_params.h"
+#include "constants.h"
 #include "primitives.h"
 
 #include "ci_rdm_bridge.h"
@@ -46,7 +47,7 @@ __global__ void ci_rdm_gather_d_kernel(const int32_t begin, const int32_t rows, 
   double scale = 1.0;
   if constexpr (Symmetric) {
     triangle_strings(det, ka, kb);
-    scale = ka == kb ? 1.0 : kSqrt2;
+    scale = ka == kb ? 1.0 : kSqrt2<double>;
   } else {
     ka = det / n_beta;
     kb = det % n_beta;
@@ -54,7 +55,7 @@ __global__ void ci_rdm_gather_d_kernel(const int32_t begin, const int32_t rows, 
   // c(a, b) of the unpacked vector.
   const auto at = [&](const int32_t a, const int32_t b) {
     if constexpr (Symmetric) {
-      return a == b ? c[triangle(a, b)] : kInvSqrt2 * c[triangle(a, b)];
+      return a == b ? c[triangle(a, b)] : kInvSqrt2<double> * c[triangle(a, b)];
     } else {
       return c[(static_cast<size_t>(a) * static_cast<size_t>(n_beta)) + static_cast<size_t>(b)];
     }
