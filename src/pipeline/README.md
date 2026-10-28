@@ -19,10 +19,27 @@ scf/        free_breakfast.pipeline.scf: ScfStep -- closed-shell RHF to self-con
 localization/  free_breakfast.pipeline.localization: LocalizationStep -- the SCF's occupied orbitals localized, by Pipek-Mezey or as intrinsic bond orbitals
 active_space/  free_breakfast.pipeline.active_space: ActiveSpaceSelection -- not a step: the active space by index or by AVAS over MINAO, and C R, shared by the steps that take one
 casci/      free_breakfast.pipeline.casci: CasciStep -- CASCI over the SCF's orbitals: the active space by index or by AVAS over MINAO, the active-space Hamiltonian, the CI over the GPU sigma, each root's 1-RDM, and the natural orbitals as Molden
-casscf/     free_breakfast.pipeline.casscf: CasscfStep -- state-averaged CASSCF from the SCF's orbitals, the start picked as Casci picks its space, mcscf::solve, the core and virtuals canonicalized, and the natural orbitals as Molden
+casscf/     free_breakfast.pipeline.casscf: CasscfStep -- state-averaged CASSCF from the SCF's orbitals, the start picked as Casci picks its space, mcscf::solve (integral-direct, or fully density-fitted over a B it builds itself), the core and virtuals canonicalized, and the natural orbitals as Molden
 fci/        free_breakfast.pipeline.fci: FciStep -- FCI over every SCF orbital, CASCI's calls with no core, refused up front past the device's free memory
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 ```
 
 `src/main.cpp` reads a config into a `Calculation`, runs it, and prints the
 products.
+
+## Density fitting
+
+Two steps take it, each for itself and with the same keys:
+
+```toml
+[scf]                         # or [casscf]
+eri = "density_fitting"       # default "direct"
+aux_basis = "cc-pvdz-jkfit"   # required with it: a compiled-in fitting set, or a BSE JSON path
+```
+
+Each builds its own B by `DensityFittingStep` and frees it when it returns, so
+a fitted `[scf]` and a fitted `[casscf]` build B twice, and `[density_fitting]`
+beside them is a third, unread by either. `[scf]` fits its Fock build;
+`[casscf]` runs `mcscf::DensityFitting::Full`, the DF-CASSCF. The rules and
+refusals are `config/README.md`'s; what the CASSCF's B and scratch cost, and
+the memory check before its loop, `casscf/README.md`'s.

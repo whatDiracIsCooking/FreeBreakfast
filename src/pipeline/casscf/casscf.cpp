@@ -19,6 +19,7 @@ import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 import free_breakfast.integrals.active_space;
 import free_breakfast.response.fock;
+import free_breakfast.pipeline.density_fitting;
 
 #include "diagnostics.h"
 
@@ -131,16 +132,52 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const wwr::wwrStream_t stream = res.stream();
 
   const ActiveSpace space = FBF_TRY(select(res, molecule, basis, in.get<ScfOutput>()));
-  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
-  std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
-  std::vector<OrderedPairClass> k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
   mcscf::Options options;
   options.conv_tol = conv_tol;
   options.conv_tol_grad = conv_tol_grad;
   options.max_cycle = max_cycle;
+  // Integral-direct, the J and K classes; or density-fitted, the run's own B,
+  // which DensityFittingStep refuses past the device's free memory, and no
+  // classes: DensityFitting::Full reads none.
+  const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
+  std::vector<CoulombPairClass> j_classes;
+  std::vector<OrderedPairClass> k_classes;
+  std::optional<DensityFittingOutput> fit;
+  if (aux_basis.empty()) {
+    j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
+    k_classes = FBF_TRY(ordered_pair_classes(res, basis, pairs));
+  } else {
+    fit = FBF_TRY(DensityFittingStep{.aux_basis = aux_basis}.run(
+        View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput>{
+            in.get<MoleculeOutput>(), in.get<BasisSetOutput>(),
+            in.get<PrimitivePairClassesOutput>()},
+        res));
+    // Each macro iteration's fitted casscf_integrals holds, past B, L and the
+    // first half transform X (naux ncas nmo each), J_AO in ppaa's buffer, the
+    // gemm intermediate of C^T J_AO C and papa (nmo^2 ncas^2 each): refused
+    // here, since past the device's memory an allocation aborts.
+    const auto nmo = static_cast<size_t>(space.c.n());
+    const auto ncas = static_cast<size_t>(space.ncas);
+    const auto naux = static_cast<size_t>(fit->naux);
+    const size_t scratch_bytes =
+        sizeof(double) * ((2 * naux * ncas * nmo) + (3 * nmo * nmo * ncas * ncas));
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
+    if (scratch_bytes > free_bytes) {
+      return err_unsupported("casscf: the fitted integrals over {} orbitals, {} active and {} "
+                             "fitting functions need {} bytes of device memory past B's {}, and "
+                             "device {} has {} free",
+                             nmo, ncas, naux, scratch_bytes, fit->b.num_elements() * sizeof(double),
+                             res.dev_idx(), free_bytes);
+    }
+    options.density_fitting = mcscf::DensityFitting::Full;
+  }
+  const Buffers::device<double> *const b = fit ? &fit->b : nullptr;
+  const int32_t naux = fit ? fit->naux : 0;
   mcscf::Solution sol =
       FBF_TRY(mcscf::solve(res, basis, molecule, h, u, j_classes, k_classes, space.c, space.ncore,
-                           space.ncas, space.nelecas, nroots, weights, options));
+                           space.ncas, space.nelecas, nroots, weights, options, b, naux));
   for (size_t i = 0; i < sol.iterations.size(); ++i) {
     const mcscf::Iteration &it = sol.iterations[i];
     log::info(std::format("CASSCF macro {:2}: E {:.12f} |g| {:.3e}{}", i + 1, it.energy,
@@ -148,12 +185,16 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   }
 
   // The state-averaged Fock F^I + F^A at the solution: mcscf::solve keeps
-  // neither, so one more set of integrals.
-  const CasscfIntegrals ints = FBF_TRY(casscf_integrals(res, basis, molecule, h, u, j_classes,
-                                                        k_classes, sol.c, space.ncore, space.ncas));
-  const response::Fock fock =
-      FBF_TRY(response::fock(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
-                             space.ncas, ints.ppaa, ints.papa, sol.gamma, sol.gamma2));
+  // neither, so one more set of integrals, fitted as the loop's were.
+  const CasscfIntegrals ints = FBF_TRY(
+      fit ? casscf_integrals(res, basis, molecule, h, *b, naux, sol.c, space.ncore, space.ncas)
+          : casscf_integrals(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
+                             space.ncas));
+  const response::Fock fock = FBF_TRY(
+      fit ? response::fock(res, molecule, h, *b, naux, sol.c, space.ncore, space.ncas, ints.ppaa,
+                           ints.papa, sol.gamma, sol.gamma2)
+          : response::fock(res, basis, molecule, h, u, j_classes, k_classes, sol.c, space.ncore,
+                           space.ncas, ints.ppaa, ints.papa, sol.gamma, sol.gamma2));
   const size_t nmo = sol.c.n();
   std::vector<double> f(nmo * nmo);
   std::vector<double> f_active(nmo * nmo);

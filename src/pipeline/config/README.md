@@ -92,7 +92,8 @@ only when it is not a compiled-in fitting set's name, and is an input file
 like any other. Each mode refuses the other's options: `aux_basis` without
 `eri = "density_fitting"` is `InvalidConfig`, and so is
 `fock_rebuild_interval` with it, since every DF build is full. Density
-fitting is chosen **only** through `[scf]`. The step builds its own B and
+fitting is chosen **only** through `[scf]` (and, for the CASSCF alone,
+`[casscf]`, below). The step builds its own B and
 does not read `[density_fitting]`'s, so `[density_fitting]` beside a
 filled-in `[scf]` leaves that `[scf]` direct. `ScfStep` is the one producer
 of `ScfOutput`, so every step after it reads the DF orbitals unchanged
@@ -122,6 +123,7 @@ weights = [0.5, 0.5]      # default equal; nroots of them, >= 0, summing to 1
 conv_tol = 1e-10          # default 1e-10: |dE| at convergence
 conv_tol_grad = 1e-6      # default 1e-6: ||g|| at convergence
 max_cycle = 50            # default 50 macro iterations
+eri = "direct"            # default "direct"; or "density_fitting", as [scf]'s
 ```
 
 `[casscf]` reads the selection as `[casci]` does, and its own keys are checked
@@ -129,6 +131,25 @@ when the file is read: `weights` of the wrong count, with a negative entry or
 not summing to 1 within 1e-12 (`mcscf::solve`'s own bar), a tolerance not
 positive, or `max_cycle` below 1 is InvalidConfig. Unlike the active space's
 ranges, none of these needs the molecule.
+
+`[casscf]` picks its two-electron integrals as `[scf]` does, with the same
+keys, rules and refusals (one reader, `read_eri`, for both tables):
+
+```toml
+[casscf]
+ncas = 4
+nelecas = 4
+eri = "density_fitting"
+aux_basis = "cc-pvdz-jkfit"   # required with it: a compiled-in fitting set, or a BSE JSON path
+```
+
+`aux_basis` is joined to the input directory only when it is not a compiled-in
+fitting set's name, and is an input file like any other; `aux_basis` without
+`eri = "density_fitting"`, `eri = "density_fitting"` without it, an empty one,
+or an unknown `eri` is InvalidConfig. The two tables choose apart: a fitted
+`[casscf]` leaves its filled-in `[scf]` direct, and a fitted `[scf]` leaves
+`[casscf]` direct, each over its own aux basis. The step builds its own B and
+runs the DF-CASSCF (`casscf/README.md`).
 
 ```toml
 [fci]
@@ -170,7 +191,7 @@ It is a path, resolved like every other.
 
 **Every path in a config is an input, relative to the input directory**:
 `[molecule] xyz`, a `[basis_set] basis` that is not a compiled-in name, a
-`[density_fitting] aux_basis` or `[scf] aux_basis` that is not a compiled-in fitting set's name
+`[density_fitting]`, `[scf]` or `[casscf]` `aux_basis` that is not a compiled-in fitting set's name
 (`is_builtin_aux_basis`, the other table), and every `from`. The input directory is the run's, not the config file's:
 `free-breakfast -i <dir>`, default `.`, so a config can be shared between
 runs that each bring their own inputs. An empty `input_dir` leaves the paths
@@ -220,11 +241,11 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[scf] eri`, which knows `"direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
+  only `"sad"`; `[scf] eri` and `[casscf] eri`, which know `"direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
   `[localization] exponent`, 2 or 4);
 - `from` beside another key, or on a step with no `load`;
-- an option of the other ERI mode in `[scf]` (above), or an empty
-  `aux_basis`;
+- an option of the other ERI mode in `[scf]` or `[casscf]` (above), or an
+  empty `aux_basis`;
 - a value of the wrong type. A boolean (`[localization] livvo`) is `true` or
   `false`, not `1` or `"true"`. Integers are read exactly, so `charge = 1.5` is
   refused, not truncated, and so is a value outside `int32_t`. A `double`
