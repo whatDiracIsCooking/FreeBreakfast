@@ -41,6 +41,6 @@ IEEE-754 host.
 | `npy.cppm` | Primary interface `free_breakfast.io.npy`; `export import`s the partitions |
 | `npy_shared.cppm` | `:shared` — `NpyArray` and `element_count` |
 | `npy_reader.cppm` | `:reader` — `parse_npy(bytes)` / `read_npy(path)` |
-| `npy_writer.cppm` | `:writer` — `npy_to_bytes(array)` / `write_npy(path, array)` |
+| `npy_writer.cppm` | `:writer` — `npy_to_bytes(array)` / `write_npy(path, array)`, and `npy_header(shape)`, the header alone, for a writer that streams the payload |
 | `npy_shared.cpp`, `npy_reader.cpp`, `npy_writer.cpp` | Implementations |
 | `CMakeLists.txt` | The `free_breakfast.io.npy` module target |

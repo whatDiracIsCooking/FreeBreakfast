@@ -14,6 +14,14 @@ import :shared;
 
 export namespace free_breakfast {
 
+/// @brief The .npy header for a float64 array of @p shape: magic, version,
+/// length field and the padded dict, ending where the payload begins (a
+/// multiple of 64 bytes). npy_to_bytes is this followed by the payload, so a
+/// writer that streams the payload in pieces emits the same file.
+///
+/// A shape whose element count overflows yields ErrorKind::InvalidConfig.
+[[nodiscard]] Result<std::string> npy_header(std::span<const size_t> shape);
+
 /// @brief Serialize @p array to .npy bytes.
 ///
 /// A shape whose element count disagrees with `data.size()` (or overflows)

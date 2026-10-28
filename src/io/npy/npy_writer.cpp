@@ -54,18 +54,14 @@ static_assert(std::endian::native == std::endian::little,
   return std::ranges::count_if(shape, [](size_t dim) { return dim > 1; }) > 1;
 }
 
-[[nodiscard]] Result<std::string> npy_to_bytes(const NpyArray &array) {
-  auto count = FBF_TRY(element_count(array.shape));
-  if (count != array.data.size()) {
-    return err_config("NPY shape {} describes {} elements but data has {}",
-                      format_shape(array.shape), count, array.data.size());
-  }
+[[nodiscard]] Result<std::string> npy_header(std::span<const size_t> shape) {
+  FBF_TRY(element_count(shape));
 
   // The canonical dict, then space padding so magic + version + length field
   // + header is a multiple of 64, with the final byte a newline.
   const std::string dict =
       std::format("{{'descr': '<f8', 'fortran_order': {}, 'shape': {}, }}",
-                  layouts_differ(array.shape) ? "True" : "False", format_shape(array.shape));
+                  layouts_differ(shape) ? "True" : "False", format_shape(shape));
   const size_t unpadded = 6 + 2 + 2 + dict.size() + 1;
   const size_t padded = ((unpadded + 63) / 64) * 64;
   const size_t header_len = padded - (6 + 2 + 2);
@@ -74,7 +70,7 @@ static_assert(std::endian::native == std::endian::little,
   }
 
   std::string out;
-  out.reserve(padded + array.data.size() * sizeof(double));
+  out.reserve(padded);
   out.append(kMagic);
   out.push_back('\x01'); // format version 1.0
   out.push_back('\x00');
@@ -83,6 +79,16 @@ static_assert(std::endian::native == std::endian::little,
   out += dict;
   out.append(header_len - dict.size() - 1, ' ');
   out.push_back('\n');
+  return out;
+}
+
+[[nodiscard]] Result<std::string> npy_to_bytes(const NpyArray &array) {
+  auto count = FBF_TRY(element_count(array.shape));
+  if (count != array.data.size()) {
+    return err_config("NPY shape {} describes {} elements but data has {}",
+                      format_shape(array.shape), count, array.data.size());
+  }
+  std::string out = FBF_TRY(npy_header(array.shape));
   out.append(reinterpret_cast<const char *>(array.data.data()), array.data.size() * sizeof(double));
   return out;
 }
