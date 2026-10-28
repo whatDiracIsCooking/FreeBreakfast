@@ -146,12 +146,12 @@ While any issue is ready or in flight:
 
    - **no backend** (unless `both`): agents run the default `auto` preset,
      which picks the least-loaded live card at the start of each run
-     (`gpu_auto_preset` in `devtools/lib.sh`) and prints the choice. Each
-     card has `GPU_SLOTS` (default 2) slot locks (`with_gpu_slot`, lock files
+     (`gpu_auto_preset` in `devtools/lib.sh`) and prints the choice. A
+     run's test phase holds its whole card (`with_gpu_card`, lock files
      under `GPU_LOCK_DIR` in `devtools/config.sh`), so the two cards never
-     block each other and up to two siblings share one card; a run waits only
-     when its card's slots are all held or its load is at `GPU_BUSY_PCT`
-     (80%). Compiles hold no slot. Both compilers seeing the milestone is
+     block each other and siblings on one card take turns: one run per card,
+     since sharing the 3080 ran it out of memory. A gate holds a card for
+     about two minutes. Compiles hold no lock. Both compilers seeing the milestone is
      then a matter of load, not schedule — `both`, or the `.cu` rule below,
      is what guarantees it.
    - **the files it owns.** Two agents editing the same module, or both
@@ -304,9 +304,10 @@ Rules:
     devtools/cpp-tier.sh --preset <preset> -j <J>
   Bash needs dangerouslyDisableSandbox to see the GPU. With --preset auto the
   run prints "gpu: auto -> <preset> (<backend>)" with each card's load and
-  slots; quote that preset in the PR. The ctest phase takes one of that card's
-  slots (with_gpu_slot, devtools/lib.sh) and says it is waiting when the
-  slots are full or the card is busy — that is expected, not a hang. Read the
+  whether another run holds it; quote that preset in the PR. The test phase
+  takes the whole card (with_gpu_card, devtools/lib.sh) and says it is waiting
+  while another run holds it or its VRAM is taken — that is expected, not a
+  hang. Read the
   ***Skipped list and each [shard i/N] SKIPPED list (most gpu cases run in
   the shards): if the gpu cases skip with "no GPU device visible", your
   card is down (nvidia-smi -L / rocminfo) — rerun on the other preset and say

@@ -125,7 +125,7 @@ GPU_AUTO_PRESETS=${GPU_AUTO_PRESETS:-"cuda:default hip:hip"}
 # What `auto` resolves to when no card is live (a bare host, a dropped card).
 GPU_AUTO_FALLBACK=${GPU_AUTO_FALLBACK:-default}
 # Presets that build the HIP backend; every other preset is CUDA. Decides
-# which card's slot a test run takes.
+# which card a test run takes.
 GPU_HIP_PRESETS=${GPU_HIP_PRESETS:-"hip hip-asan ci-hip"}
 
 # Parallel compile jobs for `cmake --build`. Distinct from JOBS below, which is
@@ -344,12 +344,20 @@ HOST_MOUNTS=${HOST_MOUNTS:-"~/.gemini:/home/ubuntu/.gemini"}
 # So it is never mapped here; batch.py reads this name itself.
 HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL ANTHROPIC_API_KEY_FREE_BREAKFAST"}
 
-# Cross-session GPU admission (see with_gpu_slot() and gpu_auto_preset() in
+# Cross-session GPU admission (see with_gpu_card() and gpu_auto_preset() in
 # lib.sh). One run's own concurrency is GPU_TEST_JOBS below, but nothing in
 # that run coordinates with a second worktree's cpp-tier.sh or cpp-smoke.sh
 # running its own GPU binary against the same physical card at the same time.
 #
-# GPU_LOCK_DIR holds GPU_SLOTS lock files per card. Resolved the same way
+# ONE RUN PER CARD. Two runs sharing the 10 GB RTX 3080 ran it out of memory
+# (2026-10-28), even at 3 jobs each and admitted at 29% VRAM: the first run
+# grew after the second joined, and three_center's (ff|g) class alone reserves
+# about 7.3 GB. A failed allocation ABORTS here, it does not queue. And sharing
+# bought no speed: one run's shards already keep the card busy, so two runs
+# sharing it each got about half of it. So a run takes the whole card, and the
+# next one waits for it.
+#
+# GPU_LOCK_DIR holds each card's lock files. Resolved the same way
 # HOST_BIND_DIRS is: a relative path sits under the MAIN checkout, not the
 # calling worktree, which is the point -- every worktree needs to see the same
 # files. Defaults inside .sccache because that directory is already a bind
@@ -357,43 +365,16 @@ HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_
 # (see docker/compose.yaml and .devcontainer/<variant>/devcontainer.json);
 # reusing it costs no new mount.
 GPU_LOCK_DIR=${GPU_LOCK_DIR:-.sccache/gpu-locks}
-# How many runs may share one card at once. 1 restores strict per-card
-# serialization.
-GPU_SLOTS=${GPU_SLOTS:-2}
-# A card whose load -- max(compute %, VRAM %) -- is at or above this is busy:
-# `auto` prefers the other card, and a run waits before taking a slot on it.
-GPU_BUSY_PCT=${GPU_BUSY_PCT:-80}
-# VRAM use at or above which a card is no longer SHARED: a run that would be
-# its second tenant waits instead of joining it (with_gpu_slot in lib.sh).
-#
-# GPU_BUSY_PCT cannot do this job, which is why there are two numbers. It is
-# max(compute, VRAM), and compute sits near 100% through any normal GPU test
-# run, so the combined figure is pinned high by work that costs no memory and
-# says nothing about headroom -- and a threshold of 80 on VRAM alone would
-# still be too late, since this tree's heaviest launch reserves per-thread
-# stack for every thread the card can hold (about 1.4 GB of a 10 GB RTX 3080
-# for three_center's worst class) on top of whatever it allocates. 45 leaves
-# a second tenant room to exist. Raise it on a card with more memory than
-# this one; set it to 100 to go back to sharing regardless.
-#
-# Admission only. Nothing is evicted: a run that already holds the card's
-# only slot keeps it however full the card gets.
-GPU_MEM_SHARE_PCT=${GPU_MEM_SHARE_PCT:-45}
-# 1: hold EVERY slot of the card for the whole run, so nothing joins it.
-#
-# This is the case GPU_MEM_SHARE_PCT cannot catch: two runs that both start
-# on an empty card both pass its check, then both grow, and by then neither
-# can give memory back -- one of them dies with
-# `cudaErrorMemoryAllocation`. The check above only stops a run JOINING a
-# card that is already heavy. A run that knows in advance it will want most
-# of the card declares it here instead; cpp-slow-tier.sh does, since its
-# un-skipped validation cases are the heavy ones.
-GPU_EXCLUSIVE=${GPU_EXCLUSIVE:-0}
-# Seconds a run waits on a busy card that still has a slot free before taking
-# it anyway (load from something that holds no slot). 0 waits for ever.
-GPU_BUSY_WAIT=${GPU_BUSY_WAIT:-900}
+# VRAM use, in percent, at or above which a card is taken by something that
+# holds no lock -- another user's job, or a binary run by hand. A run holding
+# the card's lock waits until it drops below this, with no timeout: starting
+# into memory that is not there only trades a wait for an abort. Compute load
+# alone never makes a run wait; a foreign job that uses little memory slows it
+# down but cannot crash it. 20 leaves this tree's worst case room on the 3080
+# (an idle card reads about 8%); raise it on a card with more memory.
+GPU_FOREIGN_VRAM_PCT=${GPU_FOREIGN_VRAM_PCT:-20}
 GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
-# Concurrent GPU test processes WITHIN the one slot a run holds: cpp-smoke.sh
+# Concurrent GPU test processes WITHIN the run that holds a card: cpp-smoke.sh
 # splits the gpu binary into this many gtest shards, cpp-tier.sh does the same
 # for the GPU entries it batches and passes it to ctest as -j for the rest. 1
 # is fully serial. Measured on idle cards (2026-10-25), N=1/2/3, when
@@ -402,12 +383,10 @@ GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
 #   cpp-smoke  cuda 143/137/137s  hip 193/177/180s  (GPU phase)
 # ctest gained because every entry was its own process paying GPU runtime init,
 # which overlaps; the smoke binary pays that once, so its cases already keep
-# the card busy and shards barely help. Past 3 neither moves. Do not raise it
-# to buy speed: 6 processes as a card's second tenant ran the 3080 out of
-# memory (2026-10-28). A slot is up to this many processes of load, which
-# GPU_BUSY_PCT still sees.
+# the card busy and shards barely help. Past 3 neither moves.
 GPU_TEST_JOBS=${GPU_TEST_JOBS:-3}
-# Readings averaged into one load figure (0.3s apart); one is too noisy.
+# Readings averaged into one load figure (0.3s apart); one is too noisy. Load
+# only ranks the cards for `auto`.
 GPU_LOAD_SAMPLES=${GPU_LOAD_SAMPLES:-4}
 
 # The marker expression separating the fast iteration loop from the expensive
@@ -484,7 +463,7 @@ hipconfig:the HIP backend, and devtools/cross-backend-check.sh; present only in 
 compute-sanitizer:the GPU memcheck/racecheck run (docker compose run --rm compute-sanitizer)
 nsys:Nsight Systems profiling from inside the container
 sccache:warm rebuilds (the compiler cache the default preset wires in as CMAKE_*_COMPILER_LAUNCHER); without it every configure recompiles from scratch
-flock:cross-session GPU admission (per-card slots, with_gpu_slot in lib.sh); without it cpp-tier.sh/cpp-smoke.sh run unlocked
+flock:cross-session GPU admission (one run per card, with_gpu_card in lib.sh); without it cpp-tier.sh/cpp-smoke.sh run unlocked
 clang-tidy:the advisory lint pass (cpp-tier.sh --tidy, and CI's cuda leg)
 clang-format:the C++ formatting pass (see CLAUDE.md -- it is not a git hook)
 cmake-format:the CMake formatting pass; run by hand, not by any hook
