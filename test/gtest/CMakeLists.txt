@@ -164,6 +164,7 @@ add_executable(
   response_fock_gpu.cpp
   response_hessian_gpu.cpp
   mcscf_solve_gpu.cpp
+  nevpt2_density_fitting_gpu.cpp
 )
 
 set_target_properties(
@@ -191,6 +192,7 @@ target_link_libraries(
   free_breakfast::integrals
   free_breakfast::response
   free_breakfast::mcscf
+  free_breakfast::nevpt2
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
