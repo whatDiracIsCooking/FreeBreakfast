@@ -106,6 +106,16 @@
       }
     },
     {
+      "name": "hip-experimental",
+      "displayName": "Experimental (HIP)",
+      "description": "hip plus FREE_BREAKFAST_BUILD_EXPERIMENTAL=ON, into build-hip-experimental/. The experimental preset is CUDA, so without this one nothing under experimental/ is ever compiled for ROCm -- which matters for anything there whose whole question is whether the AMD library supports it.",
+      "inherits": "hip",
+      "binaryDir": "${sourceDir}/build-hip-experimental",
+      "cacheVariables": {
+        "FREE_BREAKFAST_BUILD_EXPERIMENTAL": "ON"
+      }
+    },
+    {
       "name": "ci-cuda",
       "displayName": "CI (CUDA)",
       "description": "What .github/workflows/ci.yml builds for CUDA: the whole tree with the architecture PINNED, so configure never queries a driver, and a test preset that excludes the gpu label. Runnable here to reproduce a CI failure exactly.",
@@ -159,6 +169,10 @@
     {
       "name": "experimental",
       "configurePreset": "experimental"
+    },
+    {
+      "name": "hip-experimental",
+      "configurePreset": "hip-experimental"
     },
     {
       "name": "ci-cuda",
