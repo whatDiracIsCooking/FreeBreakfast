@@ -22,9 +22,11 @@ import free_breakfast.recipes.sort; // merge_sort, gather_columns
 namespace free_breakfast {
 
 // The localized orbitals in ascending order of their Fock expectation value,
-// <i|F|i> = sum_k U_ki^2 eps_k, the diagonal of U^T diag(eps_occ) U. The sort
-// is stable, so orbitals of equal energy keep the localizer's order. C and U
-// are permuted together, so C_local = C_occ U still holds.
+// <i|F|i> = sum_k U_ki^2 eps_k, the diagonal of U^T diag(eps_occ) U, each
+// space within its own columns: the doubly occupied, then the singly
+// occupied. The sort is stable, so orbitals of equal energy keep the
+// localizer's order. C and U are permuted together, so C_local = C_occ U
+// still holds.
 [[nodiscard]] Status sort_localized_orbitals(DeviceResources &res, const size_t n_ao,
                                              const ScfOutput &scf, LocalizationOutput &out) {
   const int32_t n = out.n_occ;
@@ -44,15 +46,23 @@ namespace free_breakfast {
                                              (occ + 1) * sizeof(double), sizeof(double), occ,
                                              wwr::wwrMemcpyDeviceToDevice, res.stream())));
   }
+  // Each space's permutation counts from its own first column.
+  const auto doubly = static_cast<size_t>(out.n_doubly);
   std::vector<uint32_t> identity(occ);
-  std::iota(identity.begin(), identity.end(), uint32_t{0});
+  std::iota(identity.begin(), identity.begin() + doubly, uint32_t{0});
+  std::iota(identity.begin() + doubly, identity.end(), uint32_t{0});
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(perm.data(), identity.data(), occ * sizeof(uint32_t),
                                          wwr::wwrMemcpyHostToDevice, res.stream())));
-  FBF_TRY(merge_sort(res, n, keys.data(), perm.data()));
   Buffers::device<double> c(n_ao * occ, res.device());
   Buffers::device<double> u(occ * occ, res.device());
-  FBF_TRY(gather_columns(res, static_cast<int32_t>(n_ao), n, perm.data(), out.c.data(), c.data()));
-  FBF_TRY(gather_columns(res, n, n, perm.data(), out.u.data(), u.data()));
+  for (const auto [first, count] :
+       {std::pair{size_t{0}, out.n_doubly}, std::pair{doubly, n - out.n_doubly}}) {
+    FBF_TRY(merge_sort(res, count, keys.data() + first, perm.data() + first));
+    FBF_TRY(gather_columns(res, static_cast<int32_t>(n_ao), count, perm.data() + first,
+                           out.c.data() + (n_ao * first), c.data() + (n_ao * first)));
+    FBF_TRY(gather_columns(res, n, count, perm.data() + first, out.u.data() + (occ * first),
+                           u.data() + (occ * first)));
+  }
   // Pageable uploads above, and the unsorted buffers freed below: both wait
   // for the stream.
   FBF_TRY(res.sync());
@@ -86,7 +96,9 @@ namespace free_breakfast {
   return text;
 }
 
-// The localized orbitals to @p path as Molden, then the canonical virtuals:
+// The localized orbitals to @p path as Molden, the doubly occupied at
+// occupation 2 and an open shell's singly occupied at 1, then the canonical
+// virtuals:
 // the localization mixes only occupied orbitals, so together they are still
 // an orthonormal set spanning every MO. The localized ones are not
 // eigenvectors of F, so each is given its expectation value,
@@ -119,7 +131,8 @@ namespace free_breakfast {
     }
   }
   std::vector<double> occupations(n_mo, 0.0);
-  std::fill_n(occupations.begin(), occ, 2.0);
+  std::fill_n(occupations.begin(), out.n_doubly, 2.0);
+  std::fill_n(occupations.begin() + out.n_doubly, out.n_occ - out.n_doubly, 1.0);
   return write_molden(path, molecule.atoms(), basis, c, energies, occupations);
 }
 
@@ -172,13 +185,9 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
   const ScfOutput &scf = in.get<ScfOutput>();
-  if (scf.n_alpha != scf.n_beta) {
-    return err_unsupported("localization: only a closed-shell reference is implemented, and the "
-                           "ScfOutput has {} alpha and {} beta electrons",
-                           scf.n_alpha, scf.n_beta);
-  }
   const double *s = in.get<OverlapOutput>().s.data();
   const int32_t n_occ = scf.n_alpha;
+  const int32_t n_doubly = scf.n_beta;
   const size_t n_ao = basis.nao_sphe();
   const auto occ = static_cast<size_t>(n_occ);
   // MINAO and the IAOs over it, for IBO or the LIVVOs or both: built once.
@@ -196,6 +205,7 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
       .c = Buffers::device<double>(n_ao * occ, res.device()),
       .u = Buffers::device<double>(occ * occ, res.device()),
       .n_occ = n_occ,
+      .n_doubly = n_doubly,
       .info = {},
       .populations = {},
       .charges = {},
@@ -203,29 +213,68 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
       .livvo = Buffers::device<double>(n_ao * static_cast<size_t>(n_vvo), res.device()),
       .n_vvo = n_vvo,
   };
-  // C is AO by MO with the occupied orbitals first, so its first n_occ
-  // columns are the occupied block, packed.
-  switch (mode) {
-  case LocalizationMode::PipekMezey:
-    out.info = FBF_TRY(localization::pm_localize(res, basis, n_occ, s, scf.c.data(), out.c.data(),
-                                                 out.u.data(), pipek_mezey));
-    FBF_TRY(sort_localized_orbitals(res, n_ao, scf, out));
-    if (livvo) {
-      FBF_TRY(localization::intrinsic_atomic_orbitals(res, basis, *minao, n_occ, s, scf.c.data(),
-                                                      iao.data()));
+  // The IAOs of the whole occupied space, n_alpha, which span each space's
+  // orbitals and the LIVVOs' complement alike.
+  if (minao) {
+    FBF_TRY(localization::intrinsic_atomic_orbitals(res, basis, *minao, n_occ, s, scf.c.data(),
+                                                    iao.data()));
+  }
+  // Each space localized on its own, from its columns of C into the same
+  // columns of out.c and its diagonal block of U: the doubly occupied
+  // orbitals, then an open shell's singly occupied ones. C is AO by MO with
+  // the occupied orbitals first, doubly before singly, so each space is a
+  // packed run of columns. A closed shell is the first space alone, whose U
+  // is all of out.u.
+  Buffers::device<double> block(n_doubly < n_occ ? occ * occ : 0, res.device());
+  if (n_doubly < n_occ) {
+    FBF_TRY(
+        gpu_status(wwr::wwrMemsetAsync(out.u.data(), 0, occ * occ * sizeof(double), res.stream())));
+  }
+  for (const auto [first, count] : {std::pair{size_t{0}, n_doubly},
+                                    std::pair{static_cast<size_t>(n_doubly), n_occ - n_doubly}}) {
+    if (count == 0) {
+      continue;
     }
-    break;
-  case LocalizationMode::Ibo: {
-    out.info =
-        FBF_TRY(localization::ibo_localize(res, basis, *minao, n_occ, s, scf.c.data(), out.c.data(),
-                                           out.u.data(), iao.data(), pipek_mezey));
-    FBF_TRY(sort_localized_orbitals(res, n_ao, scf, out));
+    const double *c_space = scf.c.data() + (n_ao * first);
+    double *c_local = out.c.data() + (n_ao * first);
+    double *u = count == n_occ ? out.u.data() : block.data();
+    const localization::Info info = FBF_TRY(
+        mode == LocalizationMode::PipekMezey
+            ? localization::pm_localize(res, basis, count, s, c_space, c_local, u, pipek_mezey)
+            : localization::iao_localize(res, basis, *minao, count, s, iao.data(), c_space, c_local,
+                                         u, pipek_mezey));
+    out.info.sweeps += info.sweeps;
+    out.info.initial_functional += info.initial_functional;
+    out.info.functional += info.functional;
+    if (u != out.u.data()) {
+      const auto k = static_cast<size_t>(count);
+      FBF_TRY(gpu_status(wwr::wwrMemcpy2DAsync(
+          out.u.data() + first + (occ * first), occ * sizeof(double), u, k * sizeof(double),
+          k * sizeof(double), k, wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    }
+  }
+  if (n_doubly < n_occ) {
+    // The block is freed below, and its copies wait for the stream.
+    FBF_TRY(res.sync());
+  }
+  FBF_TRY(sort_localized_orbitals(res, n_ao, scf, out));
+  if (mode == LocalizationMode::Ibo) {
     // Over the IBOs, so each orbital's populations are its bonding picture;
-    // the charges are the same over any rotation of the occupied orbitals.
+    // the charges are the same over any rotation within each space.
     const std::vector<double> weights =
         FBF_TRY(orbital_weights(res, basis, *minao, n_occ, s, out.c.data(), iao.data()));
     out.populations = FBF_TRY(orbital_populations(*minao, n_occ, weights));
-    out.charges = FBF_TRY(partial_charges(molecule.atoms(), out.populations));
+    // Eq 3 at each orbital's occupation: two for the doubly occupied, then
+    // one for each singly occupied orbital's population.
+    const size_t n_atoms = molecule.atoms().size();
+    out.charges = FBF_TRY(
+        partial_charges(molecule.atoms(),
+                        std::span(out.populations).first(n_atoms * static_cast<size_t>(n_doubly))));
+    for (size_t i = static_cast<size_t>(n_doubly); i < occ; ++i) {
+      for (size_t a = 0; a < n_atoms; ++a) {
+        out.charges[a] -= out.populations[a + (n_atoms * i)];
+      }
+    }
     out.bonds = FBF_TRY(bond_orbitals(*minao, n_occ, weights));
     for (size_t a = 0; a < out.charges.size(); ++a) {
       FBF_LOG_INFO("localization: IAO charge {:>3} {:<2} {:+.6f}", a,
@@ -235,8 +284,6 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
       FBF_LOG_INFO("localization: IBO {:>3} {}", i,
                    describe_bond_orbital(out.bonds[i], molecule.atoms()));
     }
-    break;
-  }
   }
   if (livvo) {
     // The VVOs are a step-local buffer: the product is their localized form.

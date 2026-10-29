@@ -22,7 +22,7 @@ needs a prefix" has the rule.
 | Directory | Module | Role |
 |-----------|--------|------|
 | `pipek_mezey/` | `free_breakfast.localization.pipek_mezey` | Pipek-Mezey on the GPU (`localization::pm_localize`), maximizing the sum of squared (or fourth powers of) Mulliken atomic populations |
-| `ibo/` | `free_breakfast.localization.ibo` | Intrinsic atomic orbitals over a minimal basis (`intrinsic_atomic_orbitals`), and intrinsic bond orbitals (`localization::ibo_localize`): Pipek-Mezey's sweep over the IAO populations |
+| `ibo/` | `free_breakfast.localization.ibo` | Intrinsic atomic orbitals over a minimal basis (`intrinsic_atomic_orbitals`), and intrinsic bond orbitals (`localization::ibo_localize`, or `localization::iao_localize` over IAOs already built): Pipek-Mezey's sweep over the IAO populations |
 | `livvo/` | `free_breakfast.localization.livvo` | Valence virtual orbitals (`valence_virtual_orbitals`): the part of the IAOs' span orthogonal to the occupied orbitals, m - n_occ of them; their localization over the IAO populations (`localization::livvo_localize`, the LIVVOs); and each orbital's valence character (`valence_character`) |
 
 Pipek-Mezey came first because it needs nothing the SCF does not already have:

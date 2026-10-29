@@ -1,7 +1,8 @@
 # Pipeline: Localization
 
 Localize the SCF's occupied orbitals, by the method a `LocalizationMode`
-names: Pipek-Mezey, or intrinsic bond orbitals. In either mode it can also
+names: Pipek-Mezey, or intrinsic bond orbitals. An ROHF reference's doubly
+and singly occupied orbitals are localized each within its own space. In either mode it can also
 build the localized intrinsic valence virtual orbitals (LIVVOs).
 
 ## Module
@@ -20,10 +21,11 @@ everything in `run`'s signature without a second import.
 enum class LocalizationMode : uint8_t { PipekMezey, Ibo };
 
 struct LocalizationOutput {
-  Buffers::device<double> c;  // nao_sphe x n_occ, column-major: C_occ U
-  Buffers::device<double> u;  // n_occ x n_occ
+  Buffers::device<double> c;  // nao_sphe x n_occ, column-major: C_occ U, doubly then singly
+  Buffers::device<double> u;  // n_occ x n_occ, block-diagonal over the two spaces
   int32_t n_occ;              // ScfOutput::n_alpha
-  localization::Info info;        // sweeps, functional before and after
+  int32_t n_doubly;           // ScfOutput::n_beta: c's first columns
+  localization::Info info;        // sweeps, functional before and after, summed over the spaces
   std::vector<double> populations{}; // IBO only: natoms x n_occ IAO populations of the IBOs
   std::vector<double> charges{};     // IBO only: the IAO partial charges, one per atom
   std::vector<BondOrbital> bonds{};  // IBO only: each IBO's centers and their s/p/d character
@@ -49,16 +51,32 @@ struct LocalizationStep {
 
 A thin wrapper over the method's localizer, with the same errors: for
 `PipekMezey`, `localization.pipek_mezey`'s `localization::pm_localize`; for `Ibo`,
-`localization.ibo`'s `localization::ibo_localize`, over MINAO (`resolve_basis("minao")`)
+`localization.ibo`'s `intrinsic_atomic_orbitals` then `localization::iao_localize`,
+over MINAO (`resolve_basis("minao")`)
 placed over the Molecule here, so an element MINAO lacks is `place`'s error.
 Both take `pipek_mezey`'s options, since IBO is the same sweep over IAO
 populations. `ScfOutput::c` is
 column-major with the occupied orbitals first, so its first `n_occ` columns
 are passed as they are: no transpose and no copy. `n_occ` is the ScfOutput's
-`n_alpha`, and an open shell, `n_alpha != n_beta`, is `Unsupported` before
-anything is allocated.
+`n_alpha`.
 
-**The localized orbitals come out in ascending order of energy.** The
+**An open shell is localized per space.** ROHF's C has the `n_beta` doubly
+occupied orbitals first and the `n_alpha - n_beta` singly occupied next, and
+its energy is invariant only under rotations within each, so each space is
+localized among itself: the first `n_doubly = n_beta` columns of `c`, then the
+rest, each from its own run of C's columns, and `u` is block-diagonal, its
+zero blocks written by a memset. A closed shell is the first space alone,
+`n_doubly == n_occ`, and its localizer writes all of `u` directly. `info`
+sums the two calls' sweeps and functionals. For IBO, the IAOs are built once
+from all `n_alpha` occupied orbitals, which span both spaces, and each space
+is localized over them (`iao_localize`); that is PySCF's
+`lo.ibo.PipekMezey` per space over `lo.iao.iao` of every occupied orbital,
+which the tests compare against. IAOs of one space alone would not span the
+other, nor give one set for the populations, charges and LIVVOs. The density,
+`2 C_d C_dᵀ + C_s C_sᵀ`, is unchanged by the rotation.
+
+**The localized orbitals come out in ascending order of energy**, within each
+space. The
 localizer's own order is whatever its Jacobi sweeps leave, so the step sorts
 `c` and `u` by each orbital's Fock expectation value, `<i|F|i> = sum_k U_ki^2
 eps_k`, the diagonal of `Uᵀ diag(eps_occ) U` (`recipes.blas`'s `gmmwich`). It
@@ -68,11 +86,12 @@ so `c = C_occ u` still holds. It runs before anything reads the orbitals, so
 `populations`, `bonds`, the log and the Molden file all use the sorted order:
 cores first, then bonds, then lone pairs up to the HOMO.
 
-**IBO mode also reports the IAO charges and the bonds.** `localization::ibo_localize` hands
-back the IAOs it ran over, and `analysis.population`'s `orbital_weights`
+**IBO mode also reports the IAO charges and the bonds.** The step holds the
+IAOs it localized over, and `analysis.population`'s `orbital_weights`
 gives each IBO's weight on each of them, once. From those:
 `populations`, each IBO's population on each atom (their fourth powers sum
-to `info.functional`); `charges`, Knizia's eq 3; and `bonds`,
+to `info.functional`); `charges`, Knizia's eq 3, at each orbital's
+occupation, two for the doubly occupied and one for the singly occupied; and `bonds`,
 `analysis.bond`'s reading of each IBO as a lone pair, bond or multi-center
 bond. The charges and the bonds are logged at info level, one atom or IBO
 per line:
@@ -99,7 +118,8 @@ The options are read from a `[localization]` table (`pipeline.config`):
 
 **`molden` writes the localized orbitals.** When it is set, `c` and `u` are
 downloaded and written by `io.molden`'s `write_molden`: the `n_occ` localized
-orbitals at occupation 2, then the SCF's canonical virtuals at occupation 0,
+orbitals, the doubly occupied at occupation 2 and the singly occupied at 1,
+then the SCF's canonical virtuals at occupation 0,
 so the file holds every MO, as viewers and readers expect. The localization
 mixes only occupied orbitals, so the set is still orthonormal and spans the
 same space. The localized orbitals are not eigenvectors of F, so each is
@@ -107,16 +127,16 @@ given its Fock expectation value, `<i|F|i> = sum_k U_ki^2 eps_k` over the
 SCF's occupied orbital energies; F is block-diagonal between occupied and
 virtual, so each virtual keeps its own `eps_a`. The localized orbitals are
 already sorted by that energy, and each is a weighted mean of occupied ones,
-so it is at most the HOMO's: the whole file ascends. It is not a TOML key: `pipeline/config` sets
+so it is at most the HOMO's: a closed shell's whole file ascends (an open
+shell's ascends within each space). It is not a TOML key: `pipeline/config` sets
 it to `localization.molden` in the run's output directory. A failed write
 fails the step.
 
 **`livvo` adds the LIVVOs**, in either mode, from
 `localization.livvo` (its README has the formulas). MINAO is then resolved
-and placed whichever mode runs, and the IAOs are built once: `localization::ibo_localize`
-hands them back in IBO mode, and `intrinsic_atomic_orbitals` builds them from
-the canonical occupied orbitals in Pipek-Mezey mode (the IAOs depend only on
-the occupied space). From them, `valence_virtual_orbitals` and then
+and placed whichever mode runs, and the IAOs are built once, by
+`intrinsic_atomic_orbitals` from the canonical occupied orbitals, before
+either mode localizes (the IAOs depend only on the occupied space). From them, `valence_virtual_orbitals` and then
 `localization::livvo_localize` give `livvo`, its `n_vvo = m - n_occ` columns. The sweep takes
 `pipek_mezey`'s sweep count and tolerances at Knizia's exponent four, whatever
 exponent the occupied orbitals ran at. Then:
@@ -177,6 +197,15 @@ characters each in [0, 1] and summing to 2, and `populations`, `charges` and
 `bonds` empty in Pipek-Mezey mode; the LIVVO Molden file holds `n_vvo`
 orbitals at occupation 0 with energies inside the canonical virtual range;
 and a hand-built `livvo_molden` without `livvo` is `InvalidConfig`.
+Open shells, against PySCF's per-space localization of its DF-ROHF
+(`localization/rohf.json`): doublet H2O+ and triplet CH2 in cc-pVDZ /
+cc-pVDZ-JKFIT, from a config at their multiplicity, both modes and both
+exponents. `n_occ` and `n_doubly` are `n_alpha` and `n_beta`; L, summed over
+the spaces, to 1e-8; each space's populations matched to PySCF's to 1e-5;
+the orbitals S-orthonormal and giving back the SCF's density,
+`2 C_d C_dᵀ + C_s C_sᵀ`; `u` block-diagonal, `c = C_occ u`, each space
+ascending in `<i|F|i>`; for IBO the populations reproducing L and the charges
+PySCF's to 1e-7; and the Molden file at occupations 2, 1 and 0.
 
 ## Files
 
