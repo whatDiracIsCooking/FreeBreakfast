@@ -4,12 +4,14 @@
 # hook in .pre-commit-config.yaml, not anything in here.
 #
 # What it does, and why it is shaped this way:
-#   * INCREMENTAL configure + build of the whole tree (both test binaries),
+#   * INCREMENTAL configure + build of the whole tree (all four test binaries),
 #     reusing devtools/build.sh's cpp_build -- the one copy of the cmake phases.
 #     Warm (you have been building), this is seconds; cold (a fresh worktree),
 #     ~1 min. It never passes --fresh.
-#   * runs free_breakfast_tests_host, then free_breakfast_tests_gpu, both
-#     with FREE_BREAKFAST_FAST_TESTS=1,
+#   * runs the two host binaries, free_breakfast_core_tests_host (test/core)
+#     and free_breakfast_tests_host (test/gtest), then the two GPU ones,
+#     free_breakfast_core_tests_gpu and free_breakfast_tests_gpu, one after
+#     the other, all with FREE_BREAKFAST_FAST_TESTS=1,
 #     which makes every reference-grade case GTEST_SKIP (see
 #     test/support/slow_test.h) -- not just end-to-end capstones, but any case
 #     that checks a result against an external oracle to tight tolerance, or
@@ -26,11 +28,11 @@
 # validation (every reference case) stays in devtools/cpp-tier.sh and the
 # nightly / self-hosted path.
 #
-# The GPU suite runs under with_gpu_card (lib.sh), holding its whole card so
+# Each GPU suite runs under with_gpu_card (lib.sh), holding its whole card so
 # concurrent cpp-tier.sh runs in other worktrees cannot overload it -- one run
 # per card (config.sh says why). Inside it the suite runs as one gtest process
-# (config.sh, by CTEST_JOBS, says why not shards). The host suite does not
-# touch the GPU and runs unlocked.
+# (config.sh, by CTEST_JOBS, says why not shards), and the two suites run in
+# turn, never at once. The host suites do not touch the GPU and run unlocked.
 # A batch that hangs is killed and its case named (GPU_BATCH_STALL_SECONDS and
 # GPU_BATCH_BUDGET_SECONDS in config.sh; issue #477), so a wedged card fails
 # the push rather than hanging it.
@@ -126,7 +128,7 @@ build_dir=$(cpp_build_dir "$preset")
 rc=0
 set +e
 
-# Incremental build of the whole tree (both binaries). Quiet to the terminal --
+# Incremental build of the whole tree (every test binary). Quiet to the terminal --
 # run_phase still tees everything into BUILD_LOG; only its stdout is dropped.
 echo "cpp-smoke: building (incremental, preset=$preset, -j ${jobs:-auto}) ..."
 cpp_build "$preset" 0 0 "$jobs" >/dev/null 2>&1 || rc=$?
@@ -137,13 +139,15 @@ if [ "$rc" -ne 0 ]; then
   exit "$rc"
 fi
 
+core_host_bin="$build_dir/test/core/free_breakfast_core_tests_host"
+core_gpu_bin="$build_dir/test/core/free_breakfast_core_tests_gpu"
 host_bin="$build_dir/test/gtest/free_breakfast_tests_host"
 gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 
-# Run the host binary: append its full output to the log, echo its summary
+# Run a host binary: append its full output to the log, echo its summary
 # lines, return its status. It doesn't touch the GPU, so it runs unlocked and
-# doesn't queue behind another session's GPU tests; the gpu suite below
-# serializes against them under with_gpu_card.
+# doesn't queue behind another session's GPU tests; the gpu suites below
+# serialize against them under with_gpu_card.
 run_suite() {
   local label=$1 bin=$2
   shift 2
@@ -152,6 +156,7 @@ run_suite() {
     return 1
   }
   echo "--- $label: $bin ---" >>"$BUILD_LOG"
+  echo "cpp-smoke:   --- $(basename "$bin") ---"
   local out rc2
   out=$("$bin" "$@" 2>&1)
   rc2=$?
@@ -160,18 +165,29 @@ run_suite() {
   return $rc2
 }
 
-# Both suites: the host one has reference-grade cases too (io_sad_host's
-# through-argon SCFs), and exporting this only for the gpu suite ran them.
+# Every suite: the host ones have reference-grade cases too (io_sad_host's
+# through-argon SCFs), and exporting this only for the gpu suites ran them.
 export FREE_BREAKFAST_FAST_TESTS=1
 
 echo "cpp-smoke: host tests ..."
+run_suite core-host "$core_host_bin" || rc=$?
 run_suite host "$host_bin" || rc=$?
 
 echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
 # One process inside the card lock (run_gpu_batch, lib.sh), not the bare
 # binary: the launcher's watchdog is what turns a wedged card (issue #477)
-# into a named failure rather than a push that never returns.
-with_gpu_card "$backend" run_gpu_batch cpp-smoke "$gpu_bin" || rc=$?
+# into a named failure rather than a push that never returns. One batch per GPU
+# binary, in turn under the one hold of the card, each printing its own [gpu]
+# lines.
+run_gpu_batches() {
+  local bin brc=0
+  for bin in "$core_gpu_bin" "$gpu_bin"; do
+    echo "cpp-smoke:   --- $(basename "$bin") ---"
+    run_gpu_batch cpp-smoke "$bin" || brc=1
+  done
+  return "$brc"
+}
+with_gpu_card "$backend" run_gpu_batches || rc=$?
 unset FREE_BREAKFAST_FAST_TESTS
 
 set -e

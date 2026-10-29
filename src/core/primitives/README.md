@@ -92,10 +92,10 @@ __device__ float f(float x) { return free_breakfast::math::exp(-x * x); }
 
 ## Tests
 
-- Host: `test/gtest/core_vocabulary_host.cpp` pins the host results to `std::`,
+- Host: `test/core/core_vocabulary_host.cpp` pins the host results to `std::`,
   the float/double-only constraint, and the integer rounding.
-- Device: `test/gtest/primitives_gpu.cpp` runs every function on the GPU
-  through `test/gpu_kernels/primitives_kernels.cu` (the `.cu` that includes
+- Device: `test/core/primitives_gpu.cpp` runs every function on the GPU
+  through `test/core/gpu_kernels/primitives_kernels.cu` (the `.cu` that includes
   this header) and compares against the host standard library: bit-exact for
   the exact operations and the combinatorics, within 8 ulp for the
   transcendentals.

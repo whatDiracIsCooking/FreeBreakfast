@@ -1,4 +1,4 @@
-// Device side of test/gtest/reduce_gpu.cpp: a kernel that runs block_reduce
+// Device side of test/core/reduce_gpu.cpp: a kernel that runs block_reduce
 // (warp_reduce underneath), and the host launchers reduce_kernels.h declares.
 // This is the first .cu in the tree to include src/core/kernel/block_reduce.cuh,
 // so it is also what proves the kernel headers compile -- under nvcc in the

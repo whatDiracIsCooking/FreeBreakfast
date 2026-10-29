@@ -212,7 +212,7 @@ check in `test/gtest/io_sad_host.cpp` fails until you do. The commands are in
 | | C++ | Python |
 |---|---|---|
 | Source | `src/`, `cmake/`, `deps/` (+ opt-in `bench/`, `experimental/`) | `test/pytest/`, `devtools/hooks/*.py`, `tools/` |
-| Tests | `test/gtest/`, run by ctest | `test/pytest/`, run by pytest |
+| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/cpp-tier.sh`, `cpp-slow-tier.sh` | `pytest`, `devtools/slow-tier.sh` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
 | Gated by | `cmake-lint` + format check at commit, `cpp-smoke.sh` at push; on the server **format + cmake-lint only, no build or test** | pre-push hook + CI |
@@ -335,12 +335,14 @@ process spends about 0.45s creating the runtime's context before its case
 starts, which was most of the tier's wall clock. So it lists the entries
 (`ctest --show-only=json-v1`, so the preset's filters and `-- -R …` still
 select), and `devtools/split-gpu-entries.py` takes out the GPU ones that can
-share a process. Those run as one gtest process, as in `cpp-smoke.sh`. ctest
-runs the rest, `CTEST_JOBS` at once: the host entries, the `RUN_SERIAL` cases
-it keeps alone on the card, and every entry when a launcher such as
-compute-sanitizer wraps them. So its ctest summary counts only those, and the
-batch reports in the `[gpu]` lines below it. `cpp-slow-tier.sh` still runs
-plain ctest.
+share a process. Those run as one gtest process per GPU binary
+(`free_breakfast_core_tests_gpu`, then `free_breakfast_tests_gpu`), one after
+the other and never at once, as in `cpp-smoke.sh`. ctest runs the rest,
+`CTEST_JOBS` at once: the host entries, the `RUN_SERIAL` cases it keeps alone
+on the card, and every entry when a launcher such as compute-sanitizer wraps
+them. So its ctest summary counts only those, and each batch reports in its own
+`--- gpu batch` and `[gpu]` lines below it: read both. `cpp-slow-tier.sh` still
+runs plain ctest.
 
 **One process, not shards.** Processes on one card time-slice it, and a
 latency-bound case (a CASSCF's thousands of tiny synchronised launches) waits
@@ -409,7 +411,7 @@ hook: a full ladder is minutes of compiler time, the slow tier's budget.
   `(n + b - 1) / b`. `src/core/README.md` lists each directory's names, and
   `docs/style.md` "Launch shape and integer rounding" has the rule.
 - **No anonymous namespaces, no `detail` namespaces** — except anonymous
-  namespaces in `.cu`, `test/gtest/*.cpp` and the `main.cpp` of `src/` and
+  namespaces in `.cu`, `test/gtest/*.cpp`, `test/core/*.cpp` and the `main.cpp` of `src/` and
   `tools/*/`, which are not module units. In a
   module, not exporting *is* the privacy; module-private code shared between
   units goes in a partition. `docs/style.md` "Module-private code" says which

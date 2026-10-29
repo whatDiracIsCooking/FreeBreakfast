@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Device kernels the GPU tests drive
 # ---------------------------------------------------------------------------
-# Kept apart from test/gtest because a .cu never goes into a test executable
+# Kept apart from test/core because a .cu never goes into a test executable
 # (those are module-scanned and built with CXX_MODULE_STD, which nvcc
 # understands neither of), and because this directory needs no GoogleTest: the
 # root CMakeLists adds it even under FREE_BREAKFAST_COMPILE_TIME_ONLY, so

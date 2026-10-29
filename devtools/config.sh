@@ -392,7 +392,7 @@ CTEST_JOBS=${CTEST_JOBS:-3}
 # is named, so a wedged card (issue #477: gfx1200, every process spinning in a
 # HIP sync, nothing printed) fails the gate instead of holding it -- and the
 # card lock -- for hours. Both are generous on purpose: every case also has
-# ctest's 120s backstop TIMEOUT (test/gtest/CMakeLists.txt), and a whole
+# ctest's 120s backstop TIMEOUT (test/CMakeLists.txt), and a whole
 # batch is about 3 minutes, so a trip means a hang, not a slow card. 0 turns
 # either off.
 GPU_BATCH_STALL_SECONDS=${GPU_BATCH_STALL_SECONDS:-600}

@@ -22,6 +22,9 @@
 # devtools/cpp-smoke.sh and devtools/cpp-tier.sh name both binaries, as
 # free_breakfast_tests_{host,gpu} (docker/compose.yaml runs `ctest --test-dir`
 # and names neither). Keep the target names in step if you rename them.
+#
+# The src/core tests are not here: test/core builds them as their own pair,
+# free_breakfast_core_tests_{host,gpu}.
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
@@ -30,9 +33,6 @@ include(GoogleTest)
 # Add new host-only (no device needed at run time) TUs to this list.
 add_executable(
   free_breakfast_tests_host
-  version_host.cpp
-  core_vocabulary_host.cpp
-  diagnostics_host.cpp
   atom_host.cpp
   molecule_host.cpp
   basis_host.cpp
@@ -47,8 +47,6 @@ add_executable(
   io_npy_host.cpp
   io_sad_host.cpp
   io_toml_host.cpp
-  gpu_policy_host.cpp
-  node_resources_host.cpp
   pipeline_step_host.cpp
   pipeline_pipeline_host.cpp
   pipeline_config_host.cpp
@@ -67,7 +65,6 @@ set_target_properties(
 target_link_libraries(
   free_breakfast_tests_host
   PRIVATE free_breakfast::core
-          free_breakfast::core::diagnostics_macros
           free_breakfast::atom
           free_breakfast::molecule
           free_breakfast::basis
@@ -92,16 +89,6 @@ target_link_libraries(
 # Add new device-dependent TUs to this list.
 add_executable(
   free_breakfast_tests_gpu
-  device_gpu.cpp
-  gpu_policy_gpu.cpp
-  node_resources_gpu.cpp
-  primitives_gpu.cpp
-  reduce_gpu.cpp
-  device_resources_gpu.cpp
-  fork_stream_gpu.cpp
-  device_stream_gpu.cpp
-  mirrored_buffer_gpu.cpp
-  scoped_device_index_gpu.cpp
   diagonalize_gpu.cpp
   cholesky_gpu.cpp
   recipes_einsum_gpu.cpp
@@ -182,13 +169,12 @@ set_target_properties(
   free_breakfast_tests_gpu PROPERTIES CXX_MODULE_STD 1 CXX_SCAN_FOR_MODULES ON
 )
 
-# free_breakfast::test::gpu_kernels is the device library (test/gpu_kernels)
-# primitives_gpu.cpp and reduce_gpu.cpp launch through: its .cu files stay out
-# of this executable, and only their plain-C++ launcher headers are #included
-# here. free_breakfast::integrals::eri::integral_direct::exchange::helpers and
+# free_breakfast::integrals::eri::integral_direct::exchange::helpers and
 # free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
-# are the same arrangement for exchange_helpers_gpu.cpp and sort_bounds_gpu.cpp:
-# device libraries with no module face, driven through their bridge headers.
+# are device libraries with no module face, driven through their bridge headers
+# by exchange_helpers_gpu.cpp and sort_bounds_gpu.cpp: their .cu files stay out
+# of this executable, and only the plain-C++ headers are #included here
+# (test/core's gpu_kernels is the same arrangement).
 target_link_libraries(
   free_breakfast_tests_gpu
   PRIVATE
@@ -231,7 +217,6 @@ target_link_libraries(
   free_breakfast::pipeline::fci
   free_breakfast::pipeline::nevpt2
   free_breakfast::pipeline::config
-  free_breakfast::test::gpu_kernels
   free_breakfast::test::support
   GTest::gtest
   GTest::gtest_main
@@ -270,12 +255,8 @@ endforeach()
 #
 # The trade is that ctest shells out once per binary before the run to
 # enumerate. That is milliseconds, and it buys per-case reporting and -R.
-# The backstop timeout, scaled by FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER (root
-# CMakeLists). A case that hangs should fail its own entry rather than the whole
-# run; the suite is milliseconds today, so 120s is purely a backstop -- until
-# compute-sanitizer slows every GPU test by an order of magnitude, which is what
-# the multiplier is for.
-math(EXPR _fb_test_timeout "120 * ${FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER}")
+# Each entry's TIMEOUT is _fb_test_timeout, set in test/CMakeLists.txt so this
+# tree and test/core share one value.
 
 gtest_discover_tests(
   free_breakfast_tests_host

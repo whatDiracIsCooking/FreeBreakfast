@@ -153,43 +153,57 @@ has_test_preset() {
   ctest --preset "$test_preset" --show-only >/dev/null 2>&1
 }
 
-gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
+# The GPU binaries, one batch each: test/core's, then test/gtest's.
+gpu_bins=(
+  "$build_dir/test/core/free_breakfast_core_tests_gpu"
+  "$build_dir/test/gtest/free_breakfast_tests_gpu"
+)
 
 # The test phase, inside the card the caller holds. Each ctest entry is its
 # own process, and a GPU one spends about 0.45s creating the runtime's context
 # before its case starts -- most of the phase once the cases are cheap. So the
 # GPU entries that can share a process (devtools/split-gpu-entries.py says
-# which: no launcher, not RUN_SERIAL) run as one gtest process, as in
-# cpp-smoke.sh, and ctest runs everything else: the host entries, the
+# which: no launcher, not RUN_SERIAL) run as one gtest process per GPU binary,
+# as in cpp-smoke.sh, and ctest runs everything else: the host entries, the
 # RUN_SERIAL ones it keeps alone on the card, and every entry when a launcher
 # such as compute-sanitizer wraps them. The split reads ctest's own listing, so
-# the preset's filters and a `-- -R ...` pick the batch too. When the listing
+# the preset's filters and a `-- -R ...` pick the batches too. When the listing
 # cannot be read, ctest runs every entry, as before the batch existed.
-# ctest bounds each of its entries with the TIMEOUT property; the batch is
+# The batches run one after another, never at once: processes on one card
+# time-slice it (config.sh, by CTEST_JOBS), and each is its own watched run
+# with its own `--- gpu batch` and `[gpu]` lines.
+# ctest bounds each of its entries with the TIMEOUT property; each batch is
 # bounded by run_gpu_batch's watchdog (GPU_BATCH_* in config.sh, issue #477).
 run_tier_tests() {
-  local dir trc=0 n
+  local dir trc=0 n i bin
+  local -a split_args=()
   dir=$(mktemp -d)
+  for i in "${!gpu_bins[@]}"; do
+    split_args+=("${gpu_bins[$i]}" "$dir/filter.$i")
+  done
   if ! ctest --preset "$test_preset" --show-only=json-v1 "${passthrough[@]}" 2>/dev/null |
-      python3 "$REPO_ROOT/devtools/split-gpu-entries.py" "$gpu_bin" "$dir/exclude" "$dir/filter"; then
+      python3 "$REPO_ROOT/devtools/split-gpu-entries.py" "$dir/exclude" "${split_args[@]}"; then
     echo "cpp-tier: could not split the GPU entries -- ctest runs them all" | tee -a "$log"
     : >"$dir/exclude"
-    : >"$dir/filter"
+    for i in "${!gpu_bins[@]}"; do : >"$dir/filter.$i"; done
   fi
   # Before the passthrough, so a `-- -j 1` still wins.
   run_phase ctest ctest --preset "$test_preset" --parallel "$CTEST_JOBS" \
     --exclude-from-file "$dir/exclude" "${passthrough[@]}" || trc=$?
-  if [ -s "$dir/filter" ]; then
-    n=$(wc -l <"$dir/exclude")
-    echo "--- gpu batch: $n entries in one process of $gpu_bin ---" | tee -a "$log"
-    # ctest's WORKING_DIRECTORY, and its --gtest_also_run_disabled_tests.
+  for i in "${!gpu_bins[@]}"; do
+    bin=${gpu_bins[$i]}
+    [ -s "$dir/filter.$i" ] || continue
+    n=$(awk -F: '{ print NF }' "$dir/filter.$i")
+    echo "--- gpu batch: $n entries in one process of $bin ---" | tee -a "$log"
+    # ctest's WORKING_DIRECTORY (the binary's own build directory), and its
+    # --gtest_also_run_disabled_tests.
     (
-      cd "$build_dir/test/gtest" &&
-        GTEST_FILTER=$(<"$dir/filter") GTEST_ALSO_RUN_DISABLED_TESTS=1 \
-          run_gpu_batch cpp-tier "$gpu_bin"
+      cd "$(dirname "$bin")" &&
+        GTEST_FILTER=$(<"$dir/filter.$i") GTEST_ALSO_RUN_DISABLED_TESTS=1 \
+          run_gpu_batch cpp-tier "$bin"
     ) | tee -a "$log"
     [ "${PIPESTATUS[0]}" -eq 0 ] || trc=1
-  fi
+  done
   rm -rf "$dir"
   return "$trc"
 }

@@ -454,7 +454,7 @@ endif()
 # Test timeouts
 # ========================================================================
 # Multiplies every TIMEOUT this project sets on a ctest entry (see
-# test/gtest/CMakeLists.txt). 1 is the default and changes nothing.
+# test/CMakeLists.txt). 1 is the default and changes nothing.
 #
 # It exists for the sanitizer runs: compute-sanitizer slows a GPU test by an
 # order of magnitude, so the timeout that is a generous backstop for a normal
@@ -506,11 +506,11 @@ add_subdirectory(src)
 # tree, so a generator cannot rot unbuilt between regenerations.
 add_subdirectory(tools/sad)
 
-# The device kernels the GPU tests drive. Outside the gate below on purpose:
-# they need no GoogleTest, and devtools/cross-backend-check.sh (which configures
-# with FREE_BREAKFAST_COMPILE_TIME_ONLY) exists precisely to compile .cu code
-# for the other backend.
-add_subdirectory(test/gpu_kernels)
+# The device kernels the core GPU tests drive. Outside the gate below on
+# purpose: they need no GoogleTest, and devtools/cross-backend-check.sh (which
+# configures with FREE_BREAKFAST_COMPILE_TIME_ONLY) exists precisely to compile
+# .cu code for the other backend.
+add_subdirectory(test/core/gpu_kernels)
 
 # Skipped under FREE_BREAKFAST_COMPILE_TIME_ONLY: there is no GoogleTest to
 # link against in that configuration (see the option's comment).
