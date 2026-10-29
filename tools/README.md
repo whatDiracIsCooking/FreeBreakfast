@@ -63,14 +63,14 @@ emit/sad_reference.py
                   spherically averaged atomic RHF densities, the reference
                   src/sad's guess is tested against. Needs PySCF.
 emit/scf_reference.py
-                  Write test/gtest/data/scf/rhf.json: PySCF's closed-shell
-                  RHF energies and orbital energies over this tree's
-                  data/basis files, the reference the Scf step is tested
-                  against. Needs PySCF.
+                  Write test/gtest/data/scf/rhf.json and rohf.json: PySCF's
+                  closed-shell RHF and open-shell ROHF energies and orbital
+                  energies over this tree's data/basis files, the reference
+                  the Scf step is tested against. Needs PySCF.
 emit/df_reference.py
                   Write test/gtest/data/density_fitting/: libcint's spherical
                   (P|Q) and (mn|P), PySCF's DF vj/vk of one density and its
-                  DF-RHF energies, over this tree's data/basis and
+                  DF-RHF and DF-ROHF energies, over this tree's data/basis and
                   data/aux_basis files, the reference density fitting is
                   tested against. Needs PySCF.
 emit/localization_reference.py
