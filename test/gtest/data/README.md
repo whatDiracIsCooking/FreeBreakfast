@@ -18,7 +18,7 @@ file names the tool that wrote it and the source it came from.
 | `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges; `rohf.json`: both, per occupied space, of the DF-ROHF orbitals of H₂O⁺ and triplet CH₂ in cc-pVDZ / cc-pVDZ-JKFIT (`density_fitting/df_rohf.json`'s cases) | `tools/emit/localization_reference.py`, which runs PySCF |
 | `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit/active_integrals_reference.py`, which runs PySCF |
 | `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit/sad_reference.py`, which runs PySCF |
-| `casci/` | `casci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF `mcscf.CASCI` over its orbitals, H₂O CAS(4,4) (frontier, and an explicit set in cc-pVDZ) and N₂ CAS(6,6), and `mcscf.avas`'s picks over MINAO (H₂O O 2p + H 1s, N₂ 2s + 2p, and N₂ 2p at threshold 0.5, in cc-pVDZ): the lowest three singlets' energies, ⟨S²⟩ and natural occupations; and over PySCF's DF-ROHF (cc-pVDZ-JKFIT) orbitals, NH₂'s doublet CAS(5,5) and CH₂'s triplet CAS(4,4) | `tools/emit/casci_reference.py`, which runs PySCF |
+| `casci/` | `casci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF `mcscf.CASCI` over its orbitals, H₂O CAS(4,4) (frontier, and an explicit set in cc-pVDZ) and N₂ CAS(6,6), and `mcscf.avas`'s picks over MINAO (H₂O O 2p + H 1s, N₂ 2s + 2p, and N₂ 2p at threshold 0.5, in cc-pVDZ): the lowest three singlets' energies, ⟨S²⟩ and natural occupations; and over PySCF's DF-ROHF (cc-pVDZ-JKFIT) orbitals, NH₂'s doublet CAS(5,5) and CH₂'s triplet CAS(4,4), and `mcscf.avas`'s full-valence picks over them (NH₂ CAS(7,6), CH₂ CAS(6,6)) with their active orbitals up to sign | `tools/emit/casci_reference.py`, which runs PySCF |
 | `ci/` | `direct_spin1.json`: active-space integrals (E_core, h_eff, (tu\|vw)) from PySCF's CASCI over its own RHF in its own basis library, and `fci.direct_spin1`'s lowest 12 roots over them, each with ⟨S²⟩ and its spin-summed 1-RDM, and state averages (`rdm12`: CI vectors with their weighted `make_rdm12` 1- and 2-RDM), for H₂O STO-3G CAS(4,4), H₂O 6-31G CAS(6,6), N₂ cc-pVDZ CAS(6,6) and CH₂O STO-3G CAS(4,4) | `tools/emit/fci_reference.py`, which runs PySCF |
 | `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit/fci_step_reference.py`, which runs PySCF |
 | `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ (and in `casscf_df.json` alone, NH₂'s doublet CAS(5,5) and CH₂'s triplet CAS(6,6) from PySCF's DF-ROHF orbitals): at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit/casscf_reference.py`, which runs PySCF |
@@ -321,7 +321,8 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/fci_reference.
 | Key | Meaning |
 |---|---|
 | `provenance` | PySCF and numpy versions, date, host, the command that wrote it |
-| `cases` | One per active space: `name`, `basis` (this tree's builtin name), `charge`, `atoms` (`symbol`, `z`, `coord` in bohr), `electrons`, `ncas`, `nelecas`, `ncore`, `active` (the 0-based MO indices, or `null` for the frontier orbitals), `avas` (`labels` and `threshold` of an AVAS case, whose `ncas` and `nelecas` are `mcscf.avas`'s, or `null`), `rhf_energy`, `mo_energies` (ascending), `e_core` (hartree, nuclear repulsion included), and `roots`; an ROHF case adds `scf` (`"rohf"`), `multiplicity` and `aux_basis` (`name`, `file`, its `sha256`, `naux`), and its `rhf_energy` and `mo_energies` are the DF-ROHF's (the Roothaan effective Fock's eigenvalues) |
+| `cases` | One per active space: `name`, `basis` (this tree's builtin name), `charge`, `atoms` (`symbol`, `z`, `coord` in bohr), `electrons`, `ncas`, `nelecas`, `ncore`, `active` (the 0-based MO indices, or `null` for the frontier orbitals), `avas` (`labels` and `threshold` of an AVAS case, whose `ncas` and `nelecas` are `mcscf.avas`'s, or `null`), `rhf_energy`, `mo_energies` (ascending), `e_core` (hartree, nuclear repulsion included), and `roots`; an ROHF case adds `scf` (`"rohf"`), `multiplicity` and `aux_basis` (`name`, `file`, its `sha256`, `naux`), and its `rhf_energy` and `mo_energies` are the DF-ROHF's (the Roothaan effective Fock's eigenvalues); the ROHF AVAS cases add `active_overlaps`, below |
+| `active_overlaps` | Per active orbital, in column order, \|⟨SCF orbital k\|active orbital⟩\| over every k (nmo values): PySCF's AVAS orbitals as columns of R over the SCF's, up to sign |
 | `roots` | The lowest three singlets (one for N₂'s AVAS CAS(10,8), whose excited roots `ci::solve` does not converge at its defaults), or for a case with a `multiplicity` (2S + 1, absent for a singlet: H₂O cc-pVDZ's triplet and the ROHF cases) the lowest three roots of that S in the M_s = S sector, ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another root of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
 
 **The ROHF cases** (`"scf": "rohf"`: NH₂ cc-pVDZ CAS(5,5) at multiplicity 2,
@@ -330,9 +331,19 @@ density-fitted ROHF at the case's multiplicity (`conv_tol` 1e-14,
 `conv_tol_grad` 1e-10), fitted over this tree's
 `data/aux_basis/cc-pVDZ-JKFIT.json` as parsed shells, which is the open shell
 the Scf step runs. The tool checks the ROHF's occupation is aufbau, its core
-doubly occupied and every singly occupied orbital active. The CASCI itself
+doubly occupied and every singly occupied orbital active (an index case's
+only). The CASCI itself
 is exact: the orbitals are handed to an unfitted ROHF object, so its core J
 and K and its active integrals are, as the Casci step builds them.
+
+**The ROHF AVAS cases** (`nh2_ccpvdz_rohf_avas`, N 2s + 2p + H 1s, CAS(7,6);
+`ch2_ccpvdz_rohf_avas`, C 2s + 2p + H 1s, CAS(6,6); both at threshold 0.2)
+run `mcscf.avas` over the same DF-ROHFs at its default `openshell_option` 2:
+the occupied orbitals it projects are the first n_alpha, singly occupied
+ones among them, and nelecas is N − 2 ncore. They record `active_overlaps`,
+which no orbital's sign moves; the tool refuses it when two SCF orbitals, or
+two canonical active ones, lie within 1e-6, since a rotation within the pair
+would move it.
 
 The 1-RDM itself is not recorded: it depends on the signs of the active
 orbitals, which the two codes pick independently, and its eigenvalues do not.
@@ -350,7 +361,8 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casci_referenc
 
 A full rerun moves the recorded cases in their last digits (threaded BLAS);
 `--append` keeps the file's cases byte for byte and computes only the ones
-the tool's `CASES` adds, which is how the ROHF cases were written.
+the tool's `CASES` adds, which is how the ROHF cases, and the ROHF AVAS
+ones, were written.
 
 ## `fci/fci.json`
 

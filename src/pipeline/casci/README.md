@@ -2,7 +2,7 @@
 
 Complete active space CI over the SCF's orbitals, RHF or ROHF: the lowest
 roots of the molecule's spin of an active space, named by index or picked by
-AVAS over MINAO (a closed shell's only), its Hamiltonian
+AVAS over MINAO, its Hamiltonian
 built integral-direct, the CI solved over the GPU sigma, each root's 1-RDM,
 and the lowest root's natural orbitals as Molden.
 
@@ -81,12 +81,14 @@ What it settled:
   other parity, or N_α above ncas) is `InvalidConfig`, before the
   Hamiltonian is built.
 - **Over ROHF orbitals** (`n_alpha > n_beta`, the Scf step's open shell at
-  the same multiplicity) the active space is by index, its core the doubly
+  the same multiplicity) an active space by index has its core the doubly
   occupied orbitals and every singly occupied one active, or the selection
-  refuses it `InvalidConfig` (`active_space/README.md`); `avas` over an open
-  shell is `Unsupported`. The core is then doubly occupied in the ROHF too,
-  so E_core and h_eff are the closed-core ones above, and the CI is PySCF's
-  `mcscf.CASCI` over its ROHF. The Hamiltonian is exact even when the SCF was
+  refuses it `InvalidConfig`; under `avas` it is PySCF's `openshell_option`
+  2, the singly occupied orbitals projected with the doubly occupied ones
+  (`active_space/README.md`). Either way the core is taken as doubly
+  occupied, so E_core and h_eff are the closed-core ones above, and the CI is
+  PySCF's `mcscf.CASCI` over its ROHF (or over `mcscf.avas`'s orbitals of
+  it). The Hamiltonian is exact even when the SCF was
   density-fitted (ROHF is density-fitted only today): the step builds its own
   classes and reads no `EriOutput`.
 - **The range checks are the selection's,** when the step runs; a config
@@ -129,7 +131,8 @@ threshold, over this tree's MINAO, then `mcscf.CASCI`: H₂O cc-pVDZ
 and `["N 2p"]` at 0.5 (CAS(8,6)). N₂'s CAS(10,8) compares its lowest singlet
 only: `ci::solve` at its defaults converges the ground state in 36 Davidson
 iterations, but no block of 2 to 5 roots within its 100. Compared as above, with ncore, ncas and
-nelecas equal to PySCF's; the orbital checks are the index path's only. The
+nelecas equal to PySCF's; the orbital checks are the index path's, and the
+ROHF AVAS cases' below. The
 reference refuses a case with a weight within 1e-3 of the threshold. With
 `molden`, H₂O's natural orbitals read back as `io_molden_host.cpp` reads a
 file: every orbital written, at occupation 2, PySCF's natural occupations,
@@ -147,9 +150,16 @@ molecule's multiplicity with `[eri] mode = "density_fitting"`, so its Scf
 step is the same DF-ROHF; compared as above, the lowest three roots of the
 spin, ⟨S²⟩ = 3/4 and 2. The open shell's selection is checked over a
 hand-built ScfOutput (6 α and 4 β electrons over water's STO-3G orbitals):
-the frontier CAS(4,4) taken, a core reaching an empty orbital and a singly
-occupied orbital left out refused `InvalidConfig`, and `avas` refused
-`Unsupported`.
+the frontier CAS(4,4) taken, and a core reaching an empty orbital and a
+singly occupied orbital left out refused `InvalidConfig`.
+
+AVAS over the same DF-ROHFs, full valence, against `mcscf.avas` over PySCF's
+DF-ROHF and `mcscf.CASCI` over its orbitals: NH₂ `["N 2s", "N 2p", "H 1s"]`
+(CAS(7,6), the singly occupied 1b1 active) and CH₂ `["C 2s", "C 2p", "H
+1s"]` (CAS(6,6), both singly occupied orbitals active, its core 1a1 with a
+0.017 share of the singly occupied 3a1, as PySCF's has it). Compared as
+above, and the active orbitals up to sign: each one's |overlap| with every
+ScfOutput orbital, from the selection's R, against PySCF's to 1e-7.
 
 Also an active space past the orbitals, an AVAS label naming no MINAO AO, and
 a multiplicity that does not fit the active space (0, 2 and 7 for CAS(4,4)),

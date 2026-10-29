@@ -142,8 +142,9 @@ What it settled:
 - **The roots are of the molecule's spin**, `mcscf::solve`'s N_α − N_β = 2S
   from `Molecule::multiplicity()`. From ROHF orbitals (`n_alpha > n_beta`)
   the start is the Casci step's: by index, the core doubly occupied and every
-  singly occupied orbital active, or the selection's `InvalidConfig`; `avas`
-  over an open shell is `Unsupported` (`active_space/README.md`). Only the
+  singly occupied orbital active, or the selection's `InvalidConfig`; under
+  `avas`, PySCF's `openshell_option` 2 (`active_space/README.md`; tested
+  through the Casci step, with no CASSCF case of its own). Only the
   start is the ROHF's: the core stays doubly occupied, so the optimization is
   the closed-core one, PySCF's `mcscf.CASSCF(mf, ncas, (n_α, n_β))` from its
   ROHF. ROHF is density-fitted only today, so such a run is a DF-CASSCF.

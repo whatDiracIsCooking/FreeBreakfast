@@ -69,10 +69,23 @@ this.
 ## AVAS
 
 `avas` names MINAO AOs (Sayfutyarova et al., JCTC 13, 4063 (2017)), and the
-selection is PySCF's `mcscf.avas` at its defaults for a closed shell: ncore 0,
-no IAOs, `openshell_option` 2 (which for a closed shell is no option at all),
-canonicalized. An open-shell ScfOutput under `avas` is `Unsupported`:
-PySCF's open-shell options are a choice this does not make yet.
+selection is PySCF's `mcscf.avas` at its defaults: ncore 0, no IAOs,
+`openshell_option` 2, canonicalized.
+
+**An open shell** (ROHF, `n_alpha > n_beta`) is taken as `openshell_option`
+2 takes it: the occupied block is the first `n_alpha` orbitals, the singly
+occupied ones projected together with the doubly occupied, so either kind
+can land in the core or the active space by its weight, and nelecas is N −
+2 ncore, `n_alpha − ncore` alpha and `n_beta − ncore` beta. So the core is
+not checked to be doubly occupied, as the index path's is: a core orbital
+can mix in a singly occupied one (CH₂'s 1a1 takes 0.017 of its 3a1), and
+the Casci and Casscf steps then treat it as doubly occupied, as PySCF's
+`mcscf.CASCI` over the AVAS orbitals does. PySCF's option 3 (the singly
+occupied orbitals active outright, only the doubly occupied projected) is
+not offered: one option is PySCF's default, and a second would be a key
+nothing asks for yet. A core that took more than `n_beta` orbitals would
+leave a negative beta count; the Casci step's and `mcscf::solve`'s
+multiplicity checks refuse that (2S above nelecas).
 
 - **The labels** are `<symbol> <n><l>`: every component of that shell of
   MINAO on every atom of the element, n counted from l + 1 over the atom's
@@ -119,9 +132,8 @@ What it settled:
 - **Host synchronizations:** none by index; under `avas`, one for the
   overlaps and C and one per eigenproblem.
 
-Errors, each message prefixed `active space:`: under `avas`, first,
-Unsupported for an open-shell ScfOutput, `n_alpha != n_beta`; then
-InvalidConfig for a label not of the form, a label naming no MINAO AO of the molecule, a
+Errors, each message prefixed `active space:`: under `avas`, InvalidConfig
+for a label not of the form, a label naming no MINAO AO of the molecule, a
 threshold outside (0, 1), `ncas`, `nelecas` or `active` set beside it, or no
 orbital selected; Numerical for an S2 not positive definite. Otherwise
 `orbital_order`'s InvalidConfig (ncas below 1; nelecas negative, above 2 ncas
@@ -137,8 +149,9 @@ Through the Casci step, which is the selection's one caller so far:
 `test/gtest/pipeline_casci_gpu.cpp` checks the index path's C R against the
 ScfOutput's columns in `orbital_order`'s order, exactly, and the AVAS cases' ncore,
 ncas and nelecas against PySCF's `mcscf.avas` (`casci/README.md` has the
-cases); and the open shell's two refusals, and its AVAS one, over a hand-built
-ScfOutput. `pipeline_config_host.cpp` has the `[casci]` selection keys and every
+cases), over ROHF orbitals too, a doublet and a triplet, whose active
+orbitals are compared up to sign as well; and the open shell's two refusals
+by index, over a hand-built ScfOutput. `pipeline_config_host.cpp` has the `[casci]` selection keys and every
 `orbital_order` refusal.
 
 ## Files
