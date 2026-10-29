@@ -358,6 +358,12 @@ with_gpu_card() {
 # shard fails the run even when its siblings pass, and for a crash, where gtest
 # prints no FAILED line, the case that was running (a [ RUN ] with no verdict)
 # is named.
+#
+# A shard that HANGS is killed, not waited on forever: gpu_shard_watchdog
+# below. On gfx1200 a card can wedge with every process on it spinning in a
+# HIP sync at full CPU, printing nothing, until killed (issue #477) -- and
+# before this a wedge held the gate, and the card lock, for hours with no test
+# named.
 run_gpu_sharded() {
   local tag=$1 bin=$2 n=$3 dir i src rc=0
   local -a pids=()
@@ -370,21 +376,92 @@ run_gpu_sharded() {
     GTEST_TOTAL_SHARDS=$n GTEST_SHARD_INDEX=$i "$bin" >"$dir/$i.log" 2>&1 &
     pids+=("$!")
   done
+  gpu_shard_watchdog "$tag" "$dir" "${pids[@]}"
   for ((i = 0; i < n; i++)); do
     wait "${pids[$i]}" && src=0 || src=$?
     echo "--- gpu shard $i/$n: $bin ---" >>"$BUILD_LOG"
     cat "$dir/$i.log" >>"$BUILD_LOG"
     grep -E 'ran\.|PASSED|SKIPPED|FAILED' "$dir/$i.log" |
       sed "s|^|$tag:   [shard $i/$n] |"
+    if [ -e "$dir/$i.killed" ]; then
+      rc=1
+      echo "$tag:   [shard $i/$n] KILLED by the watchdog: $(<"$dir/$i.killed")" >&2
+      echo "$tag:   [shard $i/$n] hung in $(gtest_running_case "$dir/$i.log")" >&2
+      continue
+    fi
     [ "$src" = 0 ] && continue
     rc=1
     echo "$tag:   [shard $i/$n] exited $src" >&2
-    awk '/^\[ RUN      \]/ { t = $NF } /^\[ *(OK|FAILED|SKIPPED) *\]/ { t = "" }
-         END { if (t != "") print t }' "$dir/$i.log" |
-      sed "s|^|$tag:   [shard $i/$n] died in |" >&2
+    gtest_running_case "$dir/$i.log" | sed "s|^|$tag:   [shard $i/$n] died in |" >&2
   done
+  if compgen -G "$dir/*.killed" >/dev/null; then
+    echo "$tag: a GPU shard hung -- possibly a card wedge (issue #477: host" \
+      "spinning, GPU 100% busy, no memory activity). Check the card" \
+      "(devtools/doctor.sh; dmesg on the HOST), and rerun the gate on the" \
+      "other backend if it is the card." >&2
+  fi
   rm -rf "$dir"
   return $rc
+}
+
+# The gtest case a log was in the middle of: the last `[ RUN ]` with no verdict
+# after it, or `<unknown>` when every case it started finished.
+gtest_running_case() {
+  awk '/^\[ RUN      \]/ { t = $NF } /^\[ *(OK|FAILED|SKIPPED) *\]/ { t = "" }
+       END { print (t != "" ? t : "<unknown>") }' "$1"
+}
+
+# Wait for the shards in `pids` (their logs are <dir>/<i>.log), killing any
+# that prints nothing for GPU_SHARD_STALL_SECONDS or is still running
+# GPU_SHARD_BUDGET_SECONDS after the start (config.sh; 0 turns either off).
+# A killed shard gets <dir>/<i>.killed holding the reason, which
+# run_gpu_sharded reports. It is TERMed, then KILLed if it has not gone in 10s.
+# Returns once every shard has exited or been killed.
+#
+# The kill is reported the moment it happens, not only in the summary: a
+# process stuck in the driver can outlive even SIGKILL, and then the wait that
+# follows is the hang, but by then the case has been named.
+gpu_shard_watchdog() {
+  local tag=$1 dir=$2 i t live size reason start=$SECONDS
+  shift 2
+  local -a pids=("$@") sizes=() quiet=()
+  for i in "${!pids[@]}"; do
+    sizes[i]=-1
+    quiet[i]=$SECONDS
+  done
+  while :; do
+    live=0
+    for i in "${!pids[@]}"; do
+      [ -e "$dir/$i.killed" ] && continue
+      kill -0 "${pids[i]}" 2>/dev/null || continue
+      live=1
+      size=$(stat -c %s "$dir/$i.log" 2>/dev/null || echo 0)
+      if [ "$size" != "${sizes[i]}" ]; then
+        sizes[i]=$size
+        quiet[i]=$SECONDS
+      fi
+      reason=""
+      if [ "$GPU_SHARD_STALL_SECONDS" -gt 0 ] &&
+         [ $((SECONDS - quiet[i])) -ge "$GPU_SHARD_STALL_SECONDS" ]; then
+        reason="no output for ${GPU_SHARD_STALL_SECONDS}s (GPU_SHARD_STALL_SECONDS)"
+      elif [ "$GPU_SHARD_BUDGET_SECONDS" -gt 0 ] &&
+           [ $((SECONDS - start)) -ge "$GPU_SHARD_BUDGET_SECONDS" ]; then
+        reason="still running after ${GPU_SHARD_BUDGET_SECONDS}s (GPU_SHARD_BUDGET_SECONDS)"
+      fi
+      [ -n "$reason" ] || continue
+      echo "$reason" >"$dir/$i.killed"
+      echo "$tag:   [shard $i/${#pids[@]}] watchdog: $reason -- killing pid" \
+        "${pids[i]}, in $(gtest_running_case "$dir/$i.log") (see issue #477)" >&2
+      kill -TERM "${pids[i]}" 2>/dev/null
+      for ((t = 0; t < 10; t++)); do
+        kill -0 "${pids[i]}" 2>/dev/null || break
+        sleep 1
+      done
+      kill -KILL "${pids[i]}" 2>/dev/null
+    done
+    [ "$live" -eq 1 ] || return 0
+    sleep 1
+  done
 }
 
 # The xdist worker flag, or nothing when JOBS is empty (a suite without

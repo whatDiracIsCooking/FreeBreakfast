@@ -387,6 +387,17 @@ GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
 # which overlaps; the smoke binary pays that once, so its cases already keep
 # the card busy and shards barely help. Past 3 neither moves.
 GPU_TEST_JOBS=${GPU_TEST_JOBS:-3}
+# The watchdog on those shards (gpu_shard_watchdog in lib.sh). A shard that
+# prints nothing for GPU_SHARD_STALL_SECONDS, or is still running
+# GPU_SHARD_BUDGET_SECONDS after it started, is killed and the case it was in
+# is named, so a wedged card (issue #477: gfx1200, every process spinning in a
+# HIP sync, nothing printed) fails the gate instead of holding it -- and the
+# card lock -- for hours. Both are generous on purpose: every case also has
+# ctest's 120s backstop TIMEOUT (test/gtest/CMakeLists.txt), and a whole
+# unsharded smoke run is about 3 minutes, so a trip means a hang, not a slow
+# card. 0 turns either off.
+GPU_SHARD_STALL_SECONDS=${GPU_SHARD_STALL_SECONDS:-600}
+GPU_SHARD_BUDGET_SECONDS=${GPU_SHARD_BUDGET_SECONDS:-2700}
 # Readings averaged into one load figure (0.3s apart); one is too noisy. Load
 # only ranks the cards for `auto`.
 GPU_LOAD_SAMPLES=${GPU_LOAD_SAMPLES:-4}
