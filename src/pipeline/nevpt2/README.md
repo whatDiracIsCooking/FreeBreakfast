@@ -1,8 +1,9 @@
 # Pipeline: Nevpt2
 
-Strongly contracted NEVPT2 of every root of the state-averaged CASSCF, on its
-orbitals, over the density-fitted B the CASSCF ran on: PySCF's
-`mrpt.NEVPT(mc, root=r)` with `dfnevpt2`'s fitted integrals. The work is the
+Strongly and partially contracted NEVPT2 of every root of the
+state-averaged CASSCF, on its orbitals, over the density-fitted B the CASSCF
+ran on: PySCF's `mrpt.NEVPT(mc, root=r)` with `dfnevpt2`'s fitted integrals
+for SC, and PC-NEVPT2 (block2's, at the energy layer) over the same inputs. The work is the
 [`nevpt2`](../../nevpt2/README.md) layer's; this step builds what that layer
 reads of each root.
 
@@ -11,7 +12,8 @@ reads of each root.
 `free_breakfast.pipeline.nevpt2`, target `free_breakfast::pipeline::nevpt2`.
 It re-exports `free_breakfast.pipeline.casscf` (the `CasscfOutput` and every
 product it re-exports, the `EriOutput` among them) and
-`free_breakfast.nevpt2.energy` (`nevpt2::ClassEnergies`, in the product).
+`free_breakfast.nevpt2.energy` (`nevpt2::ClassEnergies` and
+`nevpt2::PcClassEnergies`, in the product).
 `run` is defined in the implementation unit, so `integrals.active_space`,
 `response.fock`, `ci.strings`, `ci.rdm`, `nevpt2.density_fitting` and
 `nevpt2.rdm` are PRIVATE links.
@@ -20,7 +22,8 @@ product it re-exports, the `EriOutput` among them) and
 
 ```cpp
 struct Nevpt2Output {
-  std::vector<nevpt2::ClassEnergies> roots; // per root: norms[8], energies[8], total
+  std::vector<nevpt2::ClassEnergies> roots;      // SC per root: norms[8], energies[8], total
+  std::vector<nevpt2::PcClassEnergies> pc_roots; // PC per root: energies[8], dropped[8], total
 };
 
 struct Nevpt2Step {
@@ -32,8 +35,12 @@ struct Nevpt2Step {
 };
 ```
 
-No options: `[nevpt2]` is the request. Root r's total energy is
-`CasscfOutput::energies[r] + roots[r].total`; `main` prints both.
+No options: `[nevpt2]` is the request, and it gets both variants. They share
+every input (the RDMs, the Fock blocks, the MO blocks and slabs), so a choice
+between them would save only PC's energy stage, about 1.2–1.5× SC's, on top
+of RDMs that dominate as the active space grows. Root r's SC total energy is
+`CasscfOutput::energies[r] + roots[r].total`, and its PC one
+`CasscfOutput::energies[r] + pc_roots[r].total`; `main` prints both.
 
 `run`, all on `res.stream()`:
 
@@ -71,7 +78,14 @@ No options: `[nevpt2]` is the request. Root r's total energy is
    5. **The RDMs** in PySCF's `make_dm123` convention: dm1 = γ_r, dm2 =
       Γ_r + δ_qr γ_ps (⟨E_pq E_rs⟩, `ci::Rdm`'s Γ is `make_rdm12`'s), and dm3,
       f3ca, f3ac by `nevpt2::rdms` over (tu|vw).
-   6. `nevpt2::class_energies` over them.
+   6. `nevpt2::class_energies` over them, then `nevpt2::pc_class_energies`
+      over the same blocks, inputs and slab batch. **PC is invariant to the
+      active orbitals too**, so not rotating them is as right for PC as for
+      SC: an active rotation U transforms each class's metric S and Dyall
+      matrix K by the same congruence (each internal index carries one U),
+      which leaves the span and the eigenvalues of the pencil (K, S), and so
+      every class energy, unchanged. That is an argument, not a measurement:
+      no reference checks PC on unrotated orbitals.
 
 ## Memory
 
@@ -90,7 +104,10 @@ CASSCF's products are held, and
   after `rdms`: the most of a class's external index whose widest slab fits.
   A class holds two slabs at once (Sir, Srsi), and `nevpt2::slab` grows the
   workspace to a third for its gemm product. At the tests' sizes every class
-  takes one slab.
+  takes one slab. PC reuses that batch. Its solve's d × d matrices, d a
+  class's internal dimension (n_act³ for Sr and Si), are allocated past that
+  budget and freed when the class returns: at n_act = 12 each is 24 MB, the
+  size of dm3.
 
 The per-root arrays (the RDMs, the one-electron blocks, R, Rᵀ F^I R, C_r)
 are the step's own buffers, not the workspace's: each is held across calls
@@ -101,7 +118,11 @@ that use it. The largest are dm3, f3ca and f3ac, n_act⁶ doubles each.
 `Unsupported` under an integral-direct `EriOutput`; the module calls' own
 (`casscf_integrals`', `ci::DeviceStringSet::create`'s and `ci::Rdm`'s,
 `response::fock`'s, the canonicalization's, `nevpt2::mo_blocks`', `h2e`'s,
-`rdms`' and `class_energies`'); GpuRuntime for a failed copy or gemm.
+`rdms`', `class_energies`' and `pc_class_energies`'); GpuRuntime for a
+failed copy or gemm. A PC class refused as `Numerical` (its metric has no
+clean gap above its null space, `nevpt2/energy` "The cut, and refusals")
+fails the whole step, SC's energies with it: none of the four test cases is
+refused, but a state like the demo's N₂ CAS(12,12) would be.
 
 ## Not done
 
@@ -129,6 +150,13 @@ does nothing about such a split: within a degenerate core or virtual set its
 answer is as arbitrary as the eigenvectors `diagonalize` returns. And
 `[nevpt2]` with an integral-direct `[eri]`, written or filled in, refused
 `Unsupported` naming `[eri]` when the config is read.
+
+PC has no reference at this level: PySCF has no PC-NEVPT2, and block2's
+(`nevpt2_energy_gpu.cpp`'s goldens, at 1e-7 on identical inputs) is not a
+`tools` dependency. So each case checks, per root, what must hold of PC beside
+SC: every class finite, none above SC's (PC minimizes the same Hylleraas
+functional over a span holding SC's function), Sijrs equal to SC's (it has no
+active index), and the total the sum, all to 1e-12.
 
 ## Files
 

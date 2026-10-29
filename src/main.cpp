@@ -101,6 +101,10 @@ void print_products(const fb::Calculation &calc) {
       std::println("SC-NEVPT2 root {}:  {:.10f} Ha, E_corr {:.10f} Ha", r,
                    casscf->energies[r] + nevpt2->roots[r].total, nevpt2->roots[r].total);
     }
+    for (std::size_t r = 0; r < nevpt2->pc_roots.size(); ++r) {
+      std::println("PC-NEVPT2 root {}:  {:.10f} Ha, E_corr {:.10f} Ha", r,
+                   casscf->energies[r] + nevpt2->pc_roots[r].total, nevpt2->pc_roots[r].total);
+    }
   }
   if (const auto &fci = calc.get<fb::FciOutput>()) {
     std::println("FCI:               {} electrons in {} orbitals, {} Davidson iterations",

@@ -3,6 +3,9 @@
 // [casscf], a density-fitted [eri] and [nevpt2] plans the whole chain, runs
 // our own DF-CASSCF from each data/casscf/casscf_df.json start, then SC-NEVPT2
 // per root. Compared per root: each class's norm and energy and their sum.
+// PC-NEVPT2 has no pipeline-level reference (PySCF has no PC); its numbers
+// are checked against block2 in nevpt2_energy_gpu.cpp, and here only for what
+// must hold of them beside SC's: see kPcSlack.
 // N2 is not among the cases: SC-NEVPT2 depends on the arbitrary split of its
 // degenerate pi* virtual pairs by up to 5e-6 (data/README.md
 // "nevpt2/nevpt2_df.json"), so the reference leaves it out.
@@ -61,6 +64,13 @@ constexpr double kCasscfEnergyTolerance = 1e-8;
 // Not the 1e-7 of nevpt2_energy_gpu.cpp, which is the demo's bar on
 // identical inputs; and nothing here is loosened for a case.
 constexpr double kTolerance = 1e-9;
+
+// PC is SC without the final contraction: each class minimizes the same
+// Hylleraas functional over a span holding SC's one function per tuple, so
+// no PC class lies above its SC class, and Sijrs, with no active index, is
+// SC's own. Both are checked to this, which is only rounding: the two are
+// computed from the same slabs, in the same order.
+constexpr double kPcSlack = 1e-12;
 
 // The fitting set both references were made over, compiled in.
 constexpr std::string_view kDfAuxBasis = "cc-pVDZ-JKFIT";
@@ -203,12 +213,29 @@ TEST_P(PipelineNevpt2, MatchesPyscf) {
     }
     const double e_corr = root.at("e_corr").get<double>();
     EXPECT_NEAR(got.total, e_corr, kTolerance) << "root " << r << " E_corr";
+
+    // PC beside SC: every class computed, none above SC's, Sijrs SC's own.
+    ASSERT_EQ(nevpt2->pc_roots.size(), roots.size());
+    const fb::nevpt2::PcClassEnergies &pc = nevpt2->pc_roots[r];
+    double pc_sum = 0.0;
+    for (std::size_t k = 0; k < 8; ++k) {
+      const std::string name = classes[k].at("name").get<std::string>();
+      EXPECT_TRUE(std::isfinite(pc.energies[k])) << "root " << r << " PC " << name;
+      EXPECT_LE(pc.energies[k], got.energies[k] + kPcSlack) << "root " << r << " PC " << name;
+      pc_sum += pc.energies[k];
+    }
+    EXPECT_NEAR(pc.energies[2], got.energies[2], kPcSlack) << "root " << r << " PC Sijrs";
+    EXPECT_EQ(pc.dropped[2], 0) << "root " << r << " PC Sijrs";
+    EXPECT_NEAR(pc.total, pc_sum, kPcSlack) << "root " << r << " PC E_corr";
     // What kTolerance's derivation rests on, printed for the record.
     std::cout << std::format("[ nevpt2   ] {} root {}: |g| {:.2e}, CASSCF dE {:+.2e}, "
                              "E_corr {:.12f} dE_corr {:+.2e}, worst class {:.2e} (tol {:.0e})\n",
                              c.name, r, casscf->gradient_norm,
                              casscf->energies[r] - casscf_energies[r], got.total,
                              got.total - e_corr, worst, kTolerance);
+    std::cout << std::format("[ nevpt2   ] {} root {}: PC E_corr {:.12f} (PC - SC {:+.2e}), "
+                             "dropped {}\n",
+                             c.name, r, pc.total, pc.total - got.total, pc.dropped);
   }
 }
 
