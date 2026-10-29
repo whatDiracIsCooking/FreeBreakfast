@@ -20,6 +20,10 @@
 # from the root CMakeLists, outside the FREE_BREAKFAST_COMPILE_TIME_ONLY gate
 # that skips this whole directory, so cross-backend-check.sh still compiles it.
 #
+# support/ -- gpu_requirement.h, slow_test.h and scratch_dir.h, the helpers
+# every gtest binary #includes -- is a header-only INTERFACE target,
+# free_breakfast::test::support, added first so each tree links the one copy.
+#
 # ci_oracles/ -- the host references the CI tests check the device against --
 # is a module library the two binaries link, kept out of src/ so the ci modules
 # export only what a calculation runs.
@@ -31,5 +35,6 @@
 # run does get scoped by is the device: the GPU binary's entries carry the
 # `gpu` label, which the ci-cuda and ci-hip test presets exclude (gtest/
 # CMakeLists.txt says why).
+add_subdirectory(support)
 add_subdirectory(ci_oracles)
 add_subdirectory(gtest)

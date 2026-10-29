@@ -1,6 +1,9 @@
 /// @file
 /// @brief A per-test scratch directory for the I/O tests that touch disk.
 ///
+/// Lives in test/support/ (target free_breakfast::test::support), the one home
+/// of the helpers every gtest tree shares; consumers include it by bare name.
+///
 /// Include it AFTER `import std;` and `import free_breakfast.core.nontransferrable;`,
 /// like diagnostics.h: it includes no standard header itself and names `std::`
 /// and the mixin only through the including TU's imports, so the header build

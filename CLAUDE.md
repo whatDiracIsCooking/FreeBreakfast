@@ -294,7 +294,7 @@ variant. It does not check the container `name` field.
 **A green run means nothing until you know what skipped.**
 
 - C++ GPU cases call `FBF_REQUIRE_GPU()` (see
-  `test/gtest/gpu_requirement.h`) and `GTEST_SKIP` with a reason rather than
+  `test/support/gpu_requirement.h`) and `GTEST_SKIP` with a reason rather than
   failing, so the suite stays usable on a device-less host. Read the skip
   lists: ctest's `***Skipped`, and gtest's `[  SKIPPED ]` in the `[gpu]`
   summary that `cpp-smoke.sh` and `cpp-tier.sh` print.
@@ -351,7 +351,7 @@ every per-case time in a log unreadable, so the times in a `[gpu]` log are
 what `slow_test.h`'s rule is applied to.
 
 **Both PR gates have a budget: under five minutes on a busy card.** Those are
-`cpp-smoke.sh` at push and `cpp-tier.sh` before a PR. `test/gtest/slow_test.h`
+`cpp-smoke.sh` at push and `cpp-tier.sh` before a PR. `test/support/slow_test.h`
 has the rule that keeps them inside it: a case past about ten seconds goes
 under `FBF_SKIP_IF_FAST_TESTS()` unless it is its family's cheapest.
 

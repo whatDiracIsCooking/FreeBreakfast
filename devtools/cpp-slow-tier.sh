@@ -8,7 +8,7 @@
 #
 # devtools/cpp-tier.sh ALWAYS runs with FREE_BREAKFAST_FAST_TESTS=1,
 # which GTEST_SKIPs every case guarded by
-# FBF_SKIP_IF_FAST_TESTS() (see test/gtest/slow_test.h and
+# FBF_SKIP_IF_FAST_TESTS() (see test/support/slow_test.h and
 # cpp-tier.sh's own header) -- the reference-grade and end-to-end validation
 # cases, which in a mature tree are a handful of entries and the majority of a
 # full run's wall time. This script is where they run: every gtest case,

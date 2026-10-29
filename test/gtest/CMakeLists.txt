@@ -19,9 +19,9 @@
 # and CXX_SCAN_FOR_MODULES, and nvcc neither understands `import std` nor
 # participates in module dependency scanning.
 #
-# docker/compose.yaml invokes both binaries by path as
-# build*/test/gtest/free_breakfast_tests_{host,gpu}. Keep the target names in
-# step if you rename them.
+# devtools/cpp-smoke.sh and devtools/cpp-tier.sh name both binaries, as
+# free_breakfast_tests_{host,gpu} (docker/compose.yaml runs `ctest --test-dir`
+# and names neither). Keep the target names in step if you rename them.
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
@@ -81,6 +81,7 @@ target_link_libraries(
           free_breakfast::pipeline::pipeline
           free_breakfast::pipeline::config
           free_breakfast::recipes::einsum
+          free_breakfast::test::support
           GTest::gtest
           GTest::gtest_main
 )
@@ -231,16 +232,9 @@ target_link_libraries(
   free_breakfast::pipeline::nevpt2
   free_breakfast::pipeline::config
   free_breakfast::test::gpu_kernels
+  free_breakfast::test::support
   GTest::gtest
   GTest::gtest_main
-)
-
-# gpu_requirement.h and slow_test.h are #included by the TUs in this directory.
-target_include_directories(
-  free_breakfast_tests_gpu PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
-)
-target_include_directories(
-  free_breakfast_tests_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
 # Golden reference data (data/README.md). An absolute path, so a test finds it

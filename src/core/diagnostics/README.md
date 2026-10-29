@@ -17,7 +17,7 @@ call.
 
 `diagnostics.h`, target `free_breakfast::core::diagnostics_macros`. Macros cannot
 cross a module boundary, so they live in a plain header. Include it **after**
-the imports it expands against — like `test/gtest/gpu_requirement.h`, the macros
+the imports it expands against — like `test/support/gpu_requirement.h`, the macros
 need `free_breakfast::*` and `std` visible in the including TU.
 
 ```cpp

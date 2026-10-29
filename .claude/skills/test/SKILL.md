@@ -51,7 +51,7 @@ devtools/cpp-tier.sh -- -R MemoryBuffer    # ctest -R matches gtest suite names
 **`cpp-tier.sh` always skips the reference-grade/end-to-end validation cases**
 (it exports `FREE_BREAKFAST_FAST_TESTS=1` for the ctest phase, which makes
 every case guarded by `FBF_SKIP_IF_FAST_TESTS()` `GTEST_SKIP` — see
-`test/gtest/slow_test.h`). Those are the cases that check a result against an
+`test/support/slow_test.h`). Those are the cases that check a result against an
 external oracle to tight tolerance, or re-run a production-scale solve to
 compare timing or convergence. There is no flag on this script that turns them
 back on, and in a mature tree they are a handful of entries and the majority of
