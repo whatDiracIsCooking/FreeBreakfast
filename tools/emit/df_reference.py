@@ -20,6 +20,10 @@ explicit shells (not its library's copies), spherical throughout:
   NH4+ in cc-pVDZ / cc-pVDZ-JKFIT, H2O in cc-pVTZ / cc-pVTZ-JKFIT and H2O in
   cc-pVDZ / cc-pVDZ-acCD (general-contracted fitting shells), at
   `scf/rhf.json`'s geometries.
+- DF-ROHF (`conv_tol` 1e-12, internally stable), in `df_rohf.json`: total
+  energy, orbital energies (PySCF's default Roothaan effective Fock), spin
+  and n_alpha / n_beta for every `scf/rohf.json` case whose orbital basis
+  has a JKFIT pairing here (all but STO-3G), at its geometry.
 
 Arrays are .npy, '<f8' in Fortran order, the layout `src/io/npy` reads; the
 manifest `density_fitting.json` says which file holds what. A file over the
@@ -51,11 +55,18 @@ import re  # noqa: E402
 import numpy  # noqa: E402
 import pyscf  # noqa: E402
 from pyscf import df, gto, lib, scf  # noqa: E402
-from scf_reference import AMMONIUM, BASES, WATER, pyscf_basis  # noqa: E402
+from scf_reference import (  # noqa: E402
+    AMMONIUM,
+    BASES,
+    ROHF_CASES,
+    WATER,
+    pyscf_basis,
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "density_fitting"
 MANIFEST = OUT / "density_fitting.json"
+ROHF_MANIFEST = OUT / "df_rohf.json"
 
 # Under FelizJueves's pre-commit large-file hook, which this tree's data
 # follows.
@@ -103,6 +114,9 @@ SCF_CASES = [
     },
 ]
 
+# scf_reference's open-shell cases, wherever their basis has a fitting set.
+ROHF_SCF_CASES = [case for case in ROHF_CASES if case["basis"] in AUX_BASES]
+
 COMMAND = (
     "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/df_reference.py"
 )
@@ -128,7 +142,7 @@ def molecules(case: dict) -> tuple[gto.Mole, gto.Mole, str]:
         unit="Bohr",
         basis=pyscf_basis(BASES[case["basis"]], symbols),
         charge=case.get("charge", 0),
-        spin=0,
+        spin=case.get("spin", 0),
         cart=False,
         verbose=0,
     )
@@ -141,9 +155,10 @@ def molecules(case: dict) -> tuple[gto.Mole, gto.Mole, str]:
     return mol, auxmol, aux_name
 
 
-def df_rhf(mol: gto.Mole, auxmol: gto.Mole) -> scf.hf.RHF:
-    """PySCF's converged DF-RHF over exactly auxmol's fitting functions."""
-    mf = scf.RHF(mol).density_fit(auxbasis=auxmol._basis)
+def df_scf(mol: gto.Mole, auxmol: gto.Mole, method: type = scf.RHF) -> scf.hf.SCF:
+    """PySCF's converged DF-RHF (or method's, scf.ROHF) over exactly auxmol's
+    fitting functions."""
+    mf = method(mol).density_fit(auxbasis=auxmol._basis)
     mf.conv_tol = 1e-12
     mf.conv_tol_grad = 1e-9
     mf.max_cycle = 200
@@ -239,7 +254,7 @@ def integral_case(case: dict) -> dict:
     if case["name"] != JK_CASE:
         return out
 
-    mf = df_rhf(mol, auxmol)
+    mf = df_scf(mol, auxmol)
     nocc = mol.nelectron // 2
     occupied = mf.mo_coeff[:, :nocc]
     density = 2.0 * occupied @ occupied.T
@@ -280,7 +295,7 @@ def integral_case(case: dict) -> dict:
 def scf_case(case: dict) -> dict:
     """One DF-RHF reference: total energy and orbital energies."""
     mol, auxmol, aux_name = molecules(case)
-    mf = df_rhf(mol, auxmol)
+    mf = df_scf(mol, auxmol)
     return {
         "name": case["name"],
         "basis": case["basis"],
@@ -296,27 +311,66 @@ def scf_case(case: dict) -> dict:
     }
 
 
+def rohf_case(case: dict) -> dict:
+    """One DF-ROHF reference, internally stable: total energy, orbital
+    energies and the spin."""
+    mol, auxmol, aux_name = molecules(case)
+    mf = df_scf(mol, auxmol, scf.ROHF)
+    _, _, stable, _ = mf.stability(return_status=True)
+    assert stable, f"{case['name']} is not internally stable"
+    n_alpha, n_beta = mol.nelec
+    assert n_alpha - n_beta == case["spin"]
+    return {
+        "name": case["name"],
+        "basis": case["basis"],
+        "aux_basis": aux_name,
+        "charge": case["charge"],
+        "spin": case["spin"],
+        "multiplicity": case["spin"] + 1,
+        "atoms": atoms(case),
+        "nao": int(mol.nao),
+        "naux": int(auxmol.nao),
+        "electrons": int(mol.nelectron),
+        "n_alpha": int(n_alpha),
+        "n_beta": int(n_beta),
+        "energy": float(mf.e_tot),
+        "nuclear_repulsion": float(mol.energy_nuc()),
+        "mo_energies": [float(e) for e in mf.mo_energy],
+    }
+
+
 def main() -> None:
     lib.num_threads(1)
     OUT.mkdir(parents=True, exist_ok=True)
     for stale in OUT.glob("*.npy"):
         stale.unlink()
+    provenance = {
+        "pyscf": pyscf.__version__,
+        "libcint": libcint_version(),
+        "numpy": numpy.__version__,
+        "threads": 1,
+        "command": COMMAND,
+    }
     doc = {
         "description": "PySCF/libcint density fitting over this tree's data/basis "
         "and data/aux_basis files, spherical: (P|Q), (mn|P), DF vj/vk of one "
         "density, DF-RHF energies (hartree); coordinates in bohr. Arrays are "
         "'<f8' Fortran-order .npy files beside this one",
-        "provenance": {
-            "pyscf": pyscf.__version__,
-            "libcint": libcint_version(),
-            "numpy": numpy.__version__,
-            "threads": 1,
-            "command": COMMAND,
-        },
+        "provenance": provenance,
         "integrals": [integral_case(case) for case in INTEGRAL_CASES],
         "df_rhf": [scf_case(case) for case in SCF_CASES],
     }
     MANIFEST.write_text(json.dumps(doc, indent=1) + "\n")
+    rohf_doc = {
+        "description": "PySCF DF-ROHF (spherical, conv_tol 1e-12, conv_tol_grad "
+        "1e-9, internally stable) over this tree's data/basis and "
+        "data/aux_basis files: total energy, nuclear repulsion and orbital "
+        "energies, the eigenvalues of PySCF's default Roothaan effective Fock "
+        "(hartree); spin is 2S = n_alpha - n_beta; coordinates in bohr",
+        "provenance": provenance,
+        "df_rohf": [rohf_case(case) for case in ROHF_SCF_CASES],
+    }
+    ROHF_MANIFEST.write_text(json.dumps(rohf_doc, indent=1) + "\n")
     print(f"wrote {OUT}")
 
 
