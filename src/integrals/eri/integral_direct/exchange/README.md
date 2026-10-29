@@ -304,6 +304,52 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 - **`kb` is not measured against `kernel_k`.** Only the pruning above timed
   K at all; FelizJueves has not timed `kb` against `kernel_k` either (its
   `measure.sh kblock` run was refused by the card gate).
+- **One pass over two densities** (#451). An open shell's direct build
+  (`pipeline/scf`) makes two `exchange` calls, `K(Da)` and `K(Db)`, over the
+  same classes. Measured first, on the RTX 3080 with the whole card held,
+  `nsys` over `free-breakfast` from the first `kb` launch to the run's last
+  kernel (setup excluded), each build one `coulomb` and one or two
+  `exchange` calls, the first full and the rest incremental:
+
+  | Case | AOs (Cartesian) | Builds | Wall | `kb` / `kbr` busy | Share |
+  |---|---|---|---|---|---|
+  | CH₂ triplet, cc-pVTZ, ROHF | 65 | 14 (converged) | 19.90 s | 19.76 s | 99.3% |
+  | gly5⁺ doublet, cc-pVDZ, ROHF | 400 | 6 | 129.6 s | 113.4 s | 87.5% |
+  | gly5 singlet, cc-pVDZ, RHF | 400 | 6 | 72.6 s | 56.8 s | 78.1% |
+
+  "Busy" is the union of the `kb` and `kbr` launches' intervals, so streams
+  that overlap are counted once; every other kernel of the build, the K
+  helpers, J (mostly `e_hermite`, about 3 s of kernel time a gly5 build) and the
+  loop's linear algebra among them, is the rest. One `exchange` costs the
+  same in either shell, 9.45 s a gly5 build, so the second is the whole
+  difference between the open shell's 21.6 s a build and the closed shell's
+  12.1 s. On CH₂ in cc-pVTZ, 93% of the kernel time is `kbr`.
+
+  **It would pay.** Per (bra record, ket record) every step of `kb` and
+  `kbr` is independent of the density, the Boys function, `R`, `E^bd`,
+  stage 1's `I[p]` and stage 2's `v = Σ_p E^ac_p I[p]`, except the last:
+  `K_ab += D_cd v`. A second density adds one `Dcd` load and one FMA per
+  Cartesian `(a, c, b, d)` and `n_a n_b` accumulator slots, so a two-density
+  pass costs little more than one call, and would take up to about 44% off a
+  gly5⁺ build and half off CH₂'s. It is not done yet, for two reasons:
+
+  - **The f classes do not fit.** The second accumulators make `Ksh`
+    `(n_p + 2 n_a n_b) · FJ_WAVEFRONT · 8` bytes. Through d that is at most
+    107 slots, 27.4 KiB at 32 lanes, at `(dd|dd)`; but every class with
+    `la = lb = 3` passes the 48 KiB of static shared memory (`n_p + 200 >
+    192`), and `(ff|ff)`'s 284 slots, 72.7 KiB, pass even the RX 9060 XT's
+    64 KiB of LDS. So `kbr` needs another layout for the second density's
+    `K_ab` (registers, or the slots split across passes), not a second column.
+  - **It is a new family on both sides.** The kernels are FelizJueves's
+    (`kernel_kblock.py`, `kernel_kblock_rolled.py`), and the emitter that
+    writes them here is this tree's `tools/emit/exchange_kernels.py`; then a
+    launcher and an `exchange` over two densities and two `K`s, and the open
+    shell's builder calling it.
+
+  One more cost to settle then: a block's factor `F_ab` would have to bound
+  both densities, `max(F_ab[Da], F_ab[Db])`, so each `K` visits a superset of
+  its own call's terms. The two `K`s then match the single calls to rounding
+  at `tau = 0` and within the screen's error otherwise.
 
 ## Public API
 

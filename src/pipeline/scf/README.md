@@ -133,7 +133,9 @@ What it settled:
   kept there for both spins; each spin's K goes to `g` and its G = J − K to
   `dd`, which J and K have read by then. A closed shell allocates neither
   spin's built density and takes the closed-shell build, operation for
-  operation. A second K pass over both densities at once is #451's.
+  operation. The two K calls are 87.5% of a gly5⁺/cc-pVDZ build and 99.3%
+  of CH₂/cc-pVTZ's; one pass over both densities would pay, and what it
+  needs is the exchange README's ("Not done").
 
   Measured on an RTX 3080, cc-pVDZ, from the first Fock build to converged,
   every run to the same energy within 1e-12 Eh:
