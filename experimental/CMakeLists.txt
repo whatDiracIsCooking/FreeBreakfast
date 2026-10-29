@@ -37,3 +37,8 @@ add_subdirectory(fp16_gemm)
 # Device arrays streamed into .npy files through a fixed ring of pinned slots,
 # several files at once. Its GPU test is test/experimental.
 add_subdirectory(output_ring)
+
+# fp64 GEMM through the cuBLASLt / hipBLASLt heuristic, on the shapes
+# nevpt2::rdms' digest runs. Benchmark only: there is nothing to assert about
+# which algorithm a vendor heuristic picks.
+add_subdirectory(blas_lt)
