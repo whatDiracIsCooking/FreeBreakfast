@@ -172,8 +172,13 @@ LocalizationStep::run(View<MoleculeOutput, BasisSetOutput, OverlapOutput, ScfOut
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
   const ScfOutput &scf = in.get<ScfOutput>();
+  if (scf.n_alpha != scf.n_beta) {
+    return err_unsupported("localization: only a closed-shell reference is implemented, and the "
+                           "ScfOutput has {} alpha and {} beta electrons",
+                           scf.n_alpha, scf.n_beta);
+  }
   const double *s = in.get<OverlapOutput>().s.data();
-  const int32_t n_occ = molecule.electron_count() / 2;
+  const int32_t n_occ = scf.n_alpha;
   const size_t n_ao = basis.nao_sphe();
   const auto occ = static_cast<size_t>(n_occ);
   // MINAO and the IAOs over it, for IBO or the LIVVOs or both: built once.

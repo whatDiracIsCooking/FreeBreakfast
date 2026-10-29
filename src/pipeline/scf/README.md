@@ -20,6 +20,8 @@ links.
 struct ScfOutput {
   double energy;                    // total: electronic + nuclear repulsion (hartree)
   int32_t iterations;               // Fock builds
+  int32_t n_alpha;                  // occupied in alpha: the first n_alpha columns of c
+  int32_t n_beta;                   // occupied in beta; == n_alpha for RHF
   std::vector<double> mo_energies;  // ascending, host
   SphericalMatrixAO c;              // AO x MO
   SphericalMatrixAO d;              // spin-summed, 2 C_occ C_occ^T

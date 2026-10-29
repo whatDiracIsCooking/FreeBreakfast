@@ -32,12 +32,16 @@ struct Nevpt2Step {
   static constexpr std::string_view kName = "nevpt2";
 
   Result<Nevpt2Output> run(View<MoleculeOutput, BasisSetOutput, EriOutput,
-                                CoreHamiltonianOutput, CasscfOutput> in,
+                                CoreHamiltonianOutput, ScfOutput, CasscfOutput> in,
                            DeviceResources &res) const;
 };
 ```
 
-No options: `[nevpt2]` is the request, and it gets both variants. They share
+No options: `[nevpt2]` is the request, and it gets both variants. The
+`ScfOutput` is read for its spin occupations alone: an open shell,
+`n_alpha != n_beta`, is refused `Unsupported` before anything is queued.
+The Casscf step refuses one first today; this guard is for the day it
+does not, since the step's strings are `nelecas / 2` of each spin. They share
 every input (the RDMs, the Fock blocks, the MO blocks and slabs), so a choice
 between them would save only PC's energy stage, about 1.2–1.5× SC's, on top
 of RDMs that dominate as the active space grows. Root r's SC total energy is

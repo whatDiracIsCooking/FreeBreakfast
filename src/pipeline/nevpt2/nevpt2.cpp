@@ -61,9 +61,17 @@ namespace free_breakfast {
   return static_cast<int32_t>(std::clamp<size_t>(batch, 1, std::numeric_limits<int32_t>::max()));
 }
 
-[[nodiscard]] Result<Nevpt2Output> Nevpt2Step::run(
-    View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianOutput, CasscfOutput> in,
-    DeviceResources &res) const {
+[[nodiscard]] Result<Nevpt2Output>
+Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianOutput, ScfOutput,
+                     CasscfOutput> in,
+                DeviceResources &res) const {
+  // The CASSCF's own refusal stands in for this one today; this one is for the
+  // day it takes an open shell, since the strings below are nelecas / 2 a spin.
+  if (const ScfOutput &scf = in.get<ScfOutput>(); scf.n_alpha != scf.n_beta) {
+    return err_unsupported("[{}] needs a closed-shell reference, and the ScfOutput has {} alpha "
+                           "and {} beta electrons",
+                           kName, scf.n_alpha, scf.n_beta);
+  }
   const auto *const fit = std::get_if<DensityFitted>(&in.get<EriOutput>().eri);
   if (fit == nullptr) {
     return err_unsupported("[{}] runs over density fitting only, and [eri] mode is "

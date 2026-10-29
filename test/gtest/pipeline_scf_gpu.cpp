@@ -351,6 +351,9 @@ TEST_P(PipelineScfCalculation, AConfigNamingOnlyScfPlansAndRunsTheWholeChain) {
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
   const auto &scf = calc->get<fb::ScfOutput>();
   ASSERT_TRUE(scf.has_value());
+  const std::int32_t n_occ = calc->get<fb::MoleculeOutput>()->molecule.electron_count() / 2;
+  EXPECT_EQ(scf->n_alpha, n_occ);
+  EXPECT_EQ(scf->n_beta, n_occ);
   EXPECT_NEAR(scf->energy, expected.at("energy").get<double>(), kEnergyTolerance);
   const auto mo_energies = expected.at("mo_energies").get<std::vector<double>>();
   ASSERT_EQ(scf->mo_energies.size(), mo_energies.size());

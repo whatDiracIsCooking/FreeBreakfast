@@ -188,7 +188,7 @@ struct AvasRotation {
   const size_t nms = minao.nao_sphe();
   const size_t nao = basis.nao_sphe();
   const size_t nmo = scf.mo_energies.size();
-  const auto nocc = static_cast<size_t>(molecule.electron_count() / 2);
+  const auto nocc = static_cast<size_t>(scf.n_alpha);
   const wwr::wwrStream_t stream = res.stream();
   // <MINAO AO | MO> = S(MINAO, basis) C, nms x nmo, and S(MINAO, MINAO).
   Buffers::device<double> s_mix_device(nms * nao, res.device());
@@ -305,6 +305,12 @@ struct AvasRotation {
                                                                const Molecule &molecule,
                                                                const BasisSet &basis,
                                                                const ScfOutput &scf) const {
+  if (scf.n_alpha != scf.n_beta) {
+    return err_unsupported("active space: only a closed-shell reference is implemented, and the "
+                           "ScfOutput has {} alpha and {} beta electrons",
+                           scf.n_alpha, scf.n_beta);
+  }
+  const int32_t n_electrons = scf.n_alpha + scf.n_beta;
   const auto nmo = static_cast<int32_t>(scf.mo_energies.size());
   const ScopedDeviceIndex on{res.dev_idx()};
   const size_t nao = basis.nao_sphe();
@@ -313,8 +319,8 @@ struct AvasRotation {
   AvasRotation space{.r = std::vector<double>(mo_count * mo_count, 0.0), .ncore = 0, .ncas = ncas};
   if (avas.empty()) {
     // orbital_order's permutation as R: C R's columns are C's, exactly.
-    const std::vector<int32_t> order = FBF_TRY(orbital_order(molecule.electron_count(), nmo));
-    space.ncore = (molecule.electron_count() - nelecas) / 2;
+    const std::vector<int32_t> order = FBF_TRY(orbital_order(n_electrons, nmo));
+    space.ncore = (n_electrons - nelecas) / 2;
     for (size_t col = 0; col < order.size(); ++col) {
       space.r[static_cast<size_t>(order[col]) + (mo_count * col)] = 1.0;
     }
@@ -338,7 +344,7 @@ struct AvasRotation {
   return ActiveSpace{
       .ncore = space.ncore,
       .ncas = space.ncas,
-      .nelecas = molecule.electron_count() - (2 * space.ncore),
+      .nelecas = n_electrons - (2 * space.ncore),
       .r = std::move(space.r),
       .c = std::move(c),
   };

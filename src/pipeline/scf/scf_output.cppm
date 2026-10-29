@@ -23,6 +23,13 @@ struct ScfOutput {
   double energy;
   /// @brief The Fock builds it took.
   int32_t iterations;
+  /// @brief The alpha electrons: the first n_alpha columns of @ref c are
+  /// occupied in alpha. Equal to @ref n_beta for RHF.
+  int32_t n_alpha;
+  /// @brief The beta electrons: the first n_beta columns of @ref c are
+  /// occupied in beta, n_beta <= @ref n_alpha. A step that handles only a
+  /// closed shell refuses n_alpha != n_beta as Unsupported.
+  int32_t n_beta;
   /// @brief The orbital energies, ascending, one per column of @ref c
   /// (hartree), on the host.
   std::vector<double> mo_energies;

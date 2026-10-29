@@ -115,7 +115,9 @@ struct CasscfStep : ActiveSpaceSelection {
   /// each macro iteration's energy and ||g|| at info. Synchronizes
   /// res.stream() many times.
   ///
-  /// @return The CASSCF; @ref ActiveSpaceSelection::select's error;
+  /// @return The CASSCF; Unsupported, before anything is queued, for an
+  ///         open-shell ScfOutput (n_alpha != n_beta);
+  ///         @ref ActiveSpaceSelection::select's error;
   ///         under a fitted EriOutput, Unsupported when the fitted
   ///         integrals' scratch, L and J_AO, is past what B leaves free; `mcscf::solve`'s (InvalidConfig for @ref nroots above the
   ///         determinant count or bad @ref weights, MaxIterationsExceeded);

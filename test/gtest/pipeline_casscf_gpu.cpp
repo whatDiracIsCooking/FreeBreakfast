@@ -354,4 +354,43 @@ TEST(PipelineCasscf, OutOfMacroIterationsIsMaxIterationsExceeded) {
   EXPECT_FALSE(calc->get<fb::CasscfOutput>().has_value());
 }
 
+// An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
+// naming the step. The rest of the chain is water's in cc-pVDZ, its CASSCF cut
+// at one macro iteration since only its inputs are wanted; the open shell's
+// orbitals are never read.
+TEST(PipelineCasscf, AnOpenShellScfOutputIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz");
+  const fb::test::ScratchDir dir("pipeline_casscf");
+  auto calc =
+      fb::read_config(write_config(dir, entry, "[casscf]\nncas = 4\nnelecas = 4\nmax_cycle = 1\n"),
+                      dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  (void)calc->run(node); // out of macro iterations, as above
+  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
+  const fb::ScfOutput open{.energy = 0.0,
+                           .iterations = 0,
+                           .n_alpha = 6,
+                           .n_beta = 4,
+                           .mo_energies = {},
+                           .c = fb::SphericalMatrixAO(res, basis),
+                           .d = fb::SphericalMatrixAO(res, basis)};
+  const auto refused = calc->step<fb::CasscfStep>()->run(
+      fb::StepInput<fb::CasscfStep>{
+          *calc->get<fb::MoleculeOutput>(), *calc->get<fb::BasisSetOutput>(),
+          *calc->get<fb::SphericalTransformOutput>(), *calc->get<fb::EriOutput>(),
+          *calc->get<fb::CoreHamiltonianOutput>(), open},
+      res);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(refused.error().message.find("casscf: only a closed-shell reference"),
+            std::string::npos)
+      << refused.error().message;
+}
+
 } // namespace

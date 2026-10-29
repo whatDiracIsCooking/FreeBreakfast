@@ -100,6 +100,11 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
   const ScfOutput &scf = in.get<ScfOutput>();
+  if (scf.n_alpha != scf.n_beta) {
+    return err_unsupported("casci: only a closed-shell reference is implemented, and the "
+                           "ScfOutput has {} alpha and {} beta electrons",
+                           scf.n_alpha, scf.n_beta);
+  }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
 

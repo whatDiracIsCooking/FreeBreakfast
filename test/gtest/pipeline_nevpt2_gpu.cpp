@@ -8,8 +8,8 @@
 // N2 is not among the cases: SC-NEVPT2 depends on the arbitrary split of its
 // degenerate pi* virtual pairs by up to 5e-6 (data/README.md
 // "nevpt2/nevpt2_df.json"), so the reference leaves it out.
-// Then a state PC refuses, which keeps its SC; and the refusal of an
-// integral-direct [eri], which needs no GPU.
+// Then a state PC refuses, which keeps its SC; the refusal of an open-shell
+// ScfOutput; and the refusal of an integral-direct [eri], which needs no GPU.
 
 #include <gtest/gtest.h>
 
@@ -34,7 +34,7 @@ static_assert(fb::PipelineStep<fb::Nevpt2Step>);
 static_assert(fb::kRunShape<fb::Nevpt2Step> == fb::RunShape::Device);
 static_assert(std::same_as<fb::StepInput<fb::Nevpt2Step>,
                            fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::EriOutput,
-                                    fb::CoreHamiltonianOutput, fb::CasscfOutput>>);
+                                    fb::CoreHamiltonianOutput, fb::ScfOutput, fb::CasscfOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::Nevpt2Step>, fb::Nevpt2Output>);
 
 // The CASSCF's convergence, as pipeline_casscf_gpu.cpp runs it.
@@ -319,6 +319,50 @@ TEST(PipelineNevpt2, IntegralDirectEriIsUnsupported) {
     EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
     EXPECT_NE(calc.error().message.find("[eri]"), std::string::npos) << calc.error().message;
   }
+}
+
+// An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
+// naming the step, before anything is queued. The rest of the chain is water's
+// DF-CASSCF(4,4) in STO-3G; the open shell's orbitals are never read.
+TEST(PipelineNevpt2, AnOpenShellScfOutputIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_nevpt2");
+  ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
+                                                "H 0 -0.7572 -0.4692\n")
+                  .has_value());
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"water.xyz\"\n[basis_set]\nbasis = \"sto-3g\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+                  "[casscf]\nncas = 4\nnelecas = 4\n",
+                  kDfAuxBasis);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
+  const fb::ScfOutput open{.energy = 0.0,
+                           .iterations = 0,
+                           .n_alpha = 6,
+                           .n_beta = 4,
+                           .mo_energies = {},
+                           .c = fb::SphericalMatrixAO(res, basis),
+                           .d = fb::SphericalMatrixAO(res, basis)};
+  const auto refused = fb::Nevpt2Step{}.run(
+      fb::StepInput<fb::Nevpt2Step>{*calc->get<fb::MoleculeOutput>(),
+                                    *calc->get<fb::BasisSetOutput>(), *calc->get<fb::EriOutput>(),
+                                    *calc->get<fb::CoreHamiltonianOutput>(), open,
+                                    *calc->get<fb::CasscfOutput>()},
+      res);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(refused.error().message.find("[nevpt2] needs a closed-shell reference"),
+            std::string::npos)
+      << refused.error().message;
 }
 
 } // namespace
