@@ -15,7 +15,7 @@ file names the tool that wrote it and the source it came from.
 | `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr; `rohf.json`: PySCF's ROHF (`conv_tol` 1e-12, `conv_tol_grad` 1e-9) for OH in STO-3G and cc-pVDZ, NH₂, triplet CH₂ and H₂O⁺ in cc-pVDZ and triplet CH₂ in cc-pVTZ (f shells), the same fields plus `spin`, `multiplicity`, `n_alpha` and `n_beta`, orbital energies those of PySCF's Roothaan effective Fock | `tools/emit/scf_reference.py`, which runs PySCF |
 | `density_fitting/` | libcint's spherical Coulomb metric `int2c2e` (P\|Q) and three-centre `int3c2e` (mn\|P) for H₂O in cc-pVDZ / cc-pVDZ-JKFIT (orbitals to d, aux to f) and cc-pVTZ / cc-pVTZ-JKFIT (O's f orbitals and g fitting functions, so (ff\|g)), PySCF's DF `vj` and `vk` of one RHF density in the cc-pVDZ case, that RHF's orbitals and PySCF's DF MO integrals over them (the ovov, oooo and vvvv blocks of (pq\|rs)), and PySCF's DF-RHF energies and orbital energies for H₂O and NH₄⁺ in cc-pVDZ / cc-pVDZ-JKFIT and H₂O in cc-pVTZ / cc-pVTZ-JKFIT, and in `df_rohf.json` PySCF's DF-ROHF for `scf/rohf.json`'s cases but the STO-3G one, over the matching JKFIT set, all over this tree's own `data/basis` and `data/aux_basis` files: `.npy` arrays and the manifest `density_fitting.json` | `tools/emit/df_reference.py`, which runs PySCF |
 | `df_high_aux/` | The top of the DF aux ladder, which no carried fitting set reaches: libcint's `int2c2e_sph` (P\|Q) and `int3c2e_sph` (mn\|P) over a **hand-built** basis — one single-primitive shell per l on two skew centres, orbitals to f and auxiliary to i — the smallest basis reaching every emitted class, all 28 metric (lP ≤ lQ ≤ 6) and all 70 eri3 (la ≤ lb ≤ 3, lP ≤ 6), each by a one-centre pair and a two-centre one. Coefficients are the primitives' own normalisers, so both sides are unit-normalised and the test needs no norm factor. `.npy` arrays, `int3c2e` split along the aux index, and the manifest `df_high_aux.json`, which carries both bases shell by shell so the test builds exactly these | `tools/emit/df_high_aux_reference.py`, which runs PySCF |
-| `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges | `tools/emit/localization_reference.py`, which runs PySCF |
+| `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges; `rohf.json`: both, per occupied space, of the DF-ROHF orbitals of H₂O⁺ and triplet CH₂ in cc-pVDZ / cc-pVDZ-JKFIT (`density_fitting/df_rohf.json`'s cases) | `tools/emit/localization_reference.py`, which runs PySCF |
 | `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit/active_integrals_reference.py`, which runs PySCF |
 | `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit/sad_reference.py`, which runs PySCF |
 | `casci/` | `casci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF `mcscf.CASCI` over its orbitals, H₂O CAS(4,4) (frontier, and an explicit set in cc-pVDZ) and N₂ CAS(6,6), and `mcscf.avas`'s picks over MINAO (H₂O O 2p + H 1s, N₂ 2s + 2p, and N₂ 2p at threshold 0.5, in cc-pVDZ): the lowest three singlets' energies, ⟨S²⟩ and natural occupations; and over PySCF's DF-ROHF (cc-pVDZ-JKFIT) orbitals, NH₂'s doublet CAS(5,5) and CH₂'s triplet CAS(4,4) | `tools/emit/casci_reference.py`, which runs PySCF |
@@ -272,6 +272,26 @@ Loewdin-orthonormalized, and its Pipek-Mezey over their populations
 | `provenance`, `cases` | As in `pipek_mezey.json`, plus `iao_charges` per case |
 | `iao_charges` | Z_A - 2 sum_i sum_{r in A} (A^T S C)_ri^2 per atom, in `atoms` order: the IAO partial charges of Knizia's eq 3 |
 | `localized` | One per exponent: `exponent`, `functional` (sum_i sum_A of the IBO's IAO population on A, to the p), and `populations`, each IBO's *Mulliken* population on each atom, as in `pipek_mezey.json`, for the convention-free match |
+
+## `localization/rohf.json`
+
+Written by the same run: PySCF's DF-ROHF, as `tools/emit/df_reference.py`
+runs it (`conv_tol` 1e-12, internally stable, over the same orbital and
+fitting sets), of a doublet (H₂O⁺) and a triplet (CH₂), whose doubly occupied
+(`mo_occ` 2) and singly occupied (`mo_occ` 1) orbitals are localized each
+within its own space, by both methods, driven to a maximum as above. The IAOs
+are those of every occupied orbital, so they span both spaces.
+
+| Key | Meaning |
+|---|---|
+| `provenance` | As in `pipek_mezey.json` |
+| `cases` | One per molecule: `name`, `basis`, `aux_basis`, `charge`, `multiplicity`, `atoms`, `electrons`, `n_alpha`, `n_beta`, `pipek_mezey`, `ibo` and `iao_charges` |
+| `pipek_mezey`, `ibo` | One per exponent: `exponent`, then `doubly` and `singly`, each with that space's `functional` (over Mulliken populations for `pipek_mezey`, IAO ones for `ibo`) and `populations` (Mulliken, one row per localized orbital, as in `pipek_mezey.json`) |
+| `iao_charges` | Z_A minus twice the doubly and once the singly occupied orbitals' IAO population on A, per atom |
+
+The run also rewrites `pipek_mezey.json` and `ibo.json`, whose values move
+in the last digit or two from run to run (BLAS reductions are not pinned
+here); a change that only adds cases keeps the committed ones.
 
 ## `ci/direct_spin1.json`
 

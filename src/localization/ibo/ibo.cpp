@@ -288,14 +288,34 @@ Result<Info> ibo_localize(DeviceResources &res, const BasisSet &basis, const Bas
   if (c_local == c) {
     return err_config("localization::ibo_localize: c_local must not alias c (C U is a gemm)");
   }
-  const auto n = static_cast<int32_t>(basis.nao_sphe());
-  const auto m = static_cast<int32_t>(minimal.nao_sphe());
-  const int32_t k = n_occ;
-  const auto nm = static_cast<size_t>(n) * m;
+  const size_t nm = basis.nao_sphe() * minimal.nao_sphe();
   Buffers::device<double> iao = ibo_buffer(res, std::max(nm, size_t{1}));
   FBF_TRY(intrinsic_atomic_orbitals(res, basis, minimal, n_occ, s, c, iao.data()));
   if (iao_out != nullptr) {
     FBF_TRY(ibo_copy(res, iao_out, iao.data(), nm));
+  }
+  return iao_localize(res, basis, minimal, n_occ, s, iao.data(), c, c_local, u, options);
+}
+
+Result<Info> iao_localize(DeviceResources &res, const BasisSet &basis, const BasisSet &minimal,
+                          const int32_t n_orb, const double *s, const double *iao, const double *c,
+                          double *c_local, double *u, const PmOptions &options) {
+  const auto n = static_cast<int32_t>(basis.nao_sphe());
+  const auto m = static_cast<int32_t>(minimal.nao_sphe());
+  const int32_t k = n_orb;
+  if (minimal.natoms() != basis.natoms()) {
+    return err_config(
+        "localization::iao_localize: the minimal basis is over {} atoms, the basis over {}",
+        minimal.natoms(), basis.natoms());
+  }
+  if (k < 0 || k > m) {
+    return err_config("localization::iao_localize: n_orb {} is outside 0..{}", k, m);
+  }
+  if (s == nullptr || iao == nullptr || c == nullptr || c_local == nullptr) {
+    return err_config("localization::iao_localize: s, iao, c and c_local must not be null");
+  }
+  if (c_local == c) {
+    return err_config("localization::iao_localize: c_local must not alias c (C U is a gemm)");
   }
   if (k == 0) {
     return Info{};
@@ -303,7 +323,7 @@ Result<Info> ibo_localize(DeviceResources &res, const BasisSet &basis, const Bas
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto mk = static_cast<size_t>(m) * k;
 
-  // The occupied orbitals over the orthonormal IAOs, C_IAO = A^T S1 C: lossless,
+  // The orbitals over the orthonormal IAOs, C_IAO = A^T S1 C: lossless,
   // since the IAOs span them. Over an orthonormal basis S is the identity, so
   // pm_localize's Mulliken populations of C_IAO are the IAO ones,
   // each IAO owned by its minimal-basis AO's atom.
@@ -313,8 +333,8 @@ Result<Info> ibo_localize(DeviceResources &res, const BasisSet &basis, const Bas
   Buffers::device<double> rotation = ibo_buffer(res, static_cast<size_t>(k) * k);
   Buffers::device<double> identity = ibo_buffer(res, static_cast<size_t>(m) * m);
   FBF_TRY(gpu_status(gemm(res.blas(), n, k, n, &kOne<double>, s, c, &kZero<double>, sc.data())));
-  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao.data(),
-                                             sc.data(), &kZero<double>, c_iao.data())));
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), m, k, n, &kOne<double>, iao, sc.data(),
+                                             &kZero<double>, c_iao.data())));
   std::vector<double> identity_host(static_cast<size_t>(m) * m, 0.0);
   for (int32_t r = 0; r < m; ++r) {
     identity_host[static_cast<size_t>(r) * (m + 1)] = 1.0;

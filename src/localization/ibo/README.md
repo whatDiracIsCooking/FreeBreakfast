@@ -21,6 +21,7 @@ it takes and returns.
 |---|---|
 | `intrinsic_atomic_orbitals(res, basis, minimal, n_occ, s, c, iao)` | The orthonormal IAOs, n_ao x n_minimal; `Status` |
 | `localization::ibo_localize(res, basis, minimal, n_occ, s, c, c_local, u, iao, options)` | The IBOs, and the IAOs if `iao` is not null; returns `Result<localization::Info>`, exponent 4 by default |
+| `localization::iao_localize(res, basis, minimal, n_orb, s, iao, c, c_local, u, options)` | The same sweep over IAOs the caller built, for orbitals in their span: what `ibo_localize` runs after building them |
 
 Double precision only. Every matrix is a column-major device `double *`,
 packed, over the spherical AOs: `s` (n x n) and `c` (n x n_occ) as for
@@ -117,6 +118,14 @@ existing sweep.
 The localized orbitals are written back as C U, not IAO C_IAO U: the same
 orbitals, without a round trip through the IAOs' rounding.
 
+**`iao_localize` is that sweep alone**, over IAOs the caller passes, and
+`ibo_localize` is `intrinsic_atomic_orbitals` then `iao_localize`. It is
+for a subspace of the occupied orbitals the IAOs were built from: an open
+shell's doubly and singly occupied orbitals are each localized among
+themselves (`pipeline/localization`), over the IAOs of both together, which
+span each. IAOs built from one space alone would not span the other, and
+would be a different set for each.
+
 ## Charges and populations
 
 The IAO partial charges (eq 3) and each orbital's IAO population per atom are
@@ -157,6 +166,6 @@ NH4+ in cc-pVDZ:
 
 | File | Role |
 |---|---|
-| `ibo.cppm` | Module interface: `intrinsic_atomic_orbitals` and `localization::ibo_localize` |
+| `ibo.cppm` | Module interface: `intrinsic_atomic_orbitals`, `localization::ibo_localize` and `localization::iao_localize` |
 | `ibo.cpp` | The overlaps, the IAO construction and the IBO driver |
 | `CMakeLists.txt` | The module |

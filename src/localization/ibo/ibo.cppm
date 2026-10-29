@@ -76,4 +76,25 @@ export namespace free_breakfast::localization {
                                         double *iao = nullptr,
                                         const PmOptions &options = {.exponent = PmExponent::Four});
 
+/// @brief Localize @p n_orb orbitals in the span of IAOs the caller built:
+/// ibo_localize's sweep, without building them.
+///
+/// For a subspace of the occupied orbitals the IAOs were built from, each
+/// localized on its own over the same IAOs: an open shell's doubly and singly
+/// occupied orbitals, whose IAOs are those of both together. @p iao is the
+/// n x m output of intrinsic_atomic_orbitals, and that it spans @p c, the
+/// n x n_orb orbitals, is the caller's to keep; @p s, @p c_local, @p u and
+/// @p options are ibo_localize's, and @p c_local must not alias @p c.
+///
+/// @return The sweeps and L over the IAO populations, or InvalidConfig for
+///         @p minimal over a different atom count than @p basis, @p n_orb
+///         outside 0..m, a null pointer or @p c_local aliasing @p c; else
+///         pm_localize's errors. On MaxIterationsExceeded @p c_local and
+///         @p u hold the last sweep's orbitals.
+[[nodiscard]] Result<Info> iao_localize(DeviceResources &res, const BasisSet &basis,
+                                        const BasisSet &minimal, int32_t n_orb, const double *s,
+                                        const double *iao, const double *c, double *c_local,
+                                        double *u,
+                                        const PmOptions &options = {.exponent = PmExponent::Four});
+
 } // namespace free_breakfast::localization

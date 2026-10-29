@@ -74,10 +74,11 @@ emit/df_reference.py
                   data/aux_basis files, the reference density fitting is
                   tested against. Needs PySCF.
 emit/localization_reference.py
-                  Write test/gtest/data/localization/{pipek_mezey,ibo}.json:
+                  Write test/gtest/data/localization/{pipek_mezey,ibo,rohf}.json:
                   PySCF's Mulliken Pipek-Mezey and IBOs of those RHF orbitals, both
                   exponents, as the functional and per-orbital atomic
-                  populations, the reference the Localization step is tested
+                  populations, and of two DF-ROHF references per occupied
+                  space, the reference the Localization step is tested
                   against. Needs PySCF.
 emit/fci_reference.py
                   Write test/gtest/data/ci/direct_spin1.json: PySCF's

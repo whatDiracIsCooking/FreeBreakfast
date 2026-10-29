@@ -26,22 +26,29 @@ export namespace free_breakfast {
 /// @brief Which localization @ref LocalizationStep runs.
 enum class LocalizationMode : uint8_t {
   PipekMezey, ///< Mulliken populations (@ref localization::pm_localize)
-  Ibo,        ///< Intrinsic-atomic-orbital populations over MINAO (@ref localization::ibo_localize)
+  Ibo,        ///< Intrinsic-atomic-orbital populations over MINAO (@ref localization::iao_localize)
 };
 
-/// @brief The localized occupied orbitals of a closed-shell RHF wavefunction,
-/// on the device the step ran on.
+/// @brief The localized occupied orbitals of an RHF or ROHF wavefunction, on
+/// the device the step ran on.
 struct LocalizationOutput {
   /// @brief The occupied orbitals localized: nao_sphe x @ref n_occ,
-  /// column-major, C_local = C_occ U, in ascending order of their Fock
-  /// expectation value sum_k U_ki^2 eps_k (stably, so ties keep the
-  /// localizer's order).
+  /// column-major, C_local = C_occ U. The first @ref n_doubly columns are
+  /// the doubly occupied space's and the rest an open shell's singly
+  /// occupied space's, each localized within its own space and in ascending
+  /// order of its Fock expectation value sum_k U_ki^2 eps_k (stably, so ties
+  /// keep the localizer's order).
   Buffers::device<double> c;
-  /// @brief The n_occ x n_occ orthogonal U, column-major.
+  /// @brief The n_occ x n_occ orthogonal U, column-major: block-diagonal,
+  /// n_doubly then n_occ - n_doubly, since no rotation mixes the spaces.
   Buffers::device<double> u;
   /// @brief The occupied count, ScfOutput::n_alpha: the columns of @ref c.
   int32_t n_occ;
-  /// @brief The sweeps taken and the functional before and after.
+  /// @brief The doubly occupied count, ScfOutput::n_beta: @ref c's first
+  /// columns. Equal to @ref n_occ for a closed shell.
+  int32_t n_doubly;
+  /// @brief The sweeps taken and the functional before and after, summed
+  /// over the two spaces.
   localization::Info info;
   /// @brief IBO only, empty for Pipek-Mezey: each localized orbital's IAO
   /// population on each atom, natoms x @ref n_occ column-major, orbital i's
@@ -84,7 +91,8 @@ struct LocalizationStep {
   /// pipeline/config sets for mode "ibo" unless the table names another.
   localization::PmOptions pipek_mezey;
   /// @brief Where the localized orbitals are written as a Molden file, if not
-  /// empty: the n_occ of them at occupation 2, each with its Fock expectation
+  /// empty: the n_occ of them, the doubly occupied at occupation 2 and the
+  /// singly occupied at 1, each with its Fock expectation
   /// value sum_k U_ki^2 eps_k as its energy, then the SCF's canonical
   /// virtuals at occupation 0 with their own energies. Arrives resolved
   /// (pipeline/config sets it to localization.molden in the run's output
@@ -103,16 +111,18 @@ struct LocalizationStep {
   std::filesystem::path livvo_molden{};
 
   /// @brief The localized orbitals, of the ScfOutput's n_alpha occupied
-  /// orbitals; an open shell, n_alpha != n_beta, is Unsupported before
-  /// anything is allocated. They are sorted by
+  /// orbitals: its n_beta doubly occupied ones localized among themselves,
+  /// then an open shell's n_alpha - n_beta singly occupied ones among
+  /// themselves. Each space is sorted by
   /// energy before anything reads them, so every product and file is in that
   /// order. For IBO, MINAO is
   /// resolved and placed over the Molecule first, and an element it does not
-  /// carry is place's error; the IAOs it localized over then give the IBOs'
-  /// populations and bond centers and the atoms' charges, the charges and
-  /// centers logged. With @ref livvo, MINAO is placed in either mode, the
-  /// IAOs are built once (localization::ibo_localize's, or
-  /// localization::intrinsic_atomic_orbitals' for Pipek-Mezey), and the
+  /// carry is place's error; the IAOs of all n_alpha occupied orbitals
+  /// (localization::intrinsic_atomic_orbitals) are what each space is
+  /// localized over (localization::iao_localize), and they then give the
+  /// IBOs' populations and bond centers and the atoms' charges, the charges
+  /// and centers logged. With @ref livvo, MINAO is placed in either mode, the
+  /// IAOs are built once, and the
   /// LIVVOs' bonds and the virtuals' valence character
   /// are logged; their errors are livvo's. InvalidConfig for a
   /// @ref livvo_molden without @ref livvo. Errors are otherwise the method's;

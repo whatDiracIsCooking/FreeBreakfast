@@ -1,5 +1,5 @@
 // The Localization step against PySCF's Pipek-Mezey and intrinsic bond
-// orbitals (data/localization/{pipek_mezey,ibo}.json,
+// orbitals (data/localization/{pipek_mezey,ibo,rohf}.json,
 // tools/emit/localization_reference.py), through the real registry: a config
 // naming [localization] plans the whole chain to the ScfOutput and localizes its
 // occupied orbitals. The two codes normalise and order their AOs differently,
@@ -8,7 +8,9 @@
 // orbitals up to order. LocalizationOutput is a rotation of the occupied space, so
 // the localized orbitals are also S-orthonormal and give back the SCF's own
 // density, D = 2 C_local C_local^T. The IAOs are checked on their own by their
-// partial charges. Runs the device chain, so needs a GPU.
+// partial charges. An ROHF reference's doubly and singly occupied spaces are
+// each localized within itself, and matched to PySCF's per space. Runs the
+// device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -56,11 +58,13 @@ fb::json read_reference(std::string_view file) {
   return read.has_value() ? std::move(*read) : fb::json{};
 }
 
-// One case of localization/@p file: pipek_mezey.json or ibo.json.
+// One case of localization/@p file: pipek_mezey.json, ibo.json or rohf.json.
 const fb::json &reference_case(std::string_view name, std::string_view file = "pipek_mezey.json") {
   static const fb::json kPipekMezey = read_reference("pipek_mezey.json");
   static const fb::json kIbo = read_reference("ibo.json");
-  for (const fb::json &entry : (file == "ibo.json" ? kIbo : kPipekMezey).at("cases")) {
+  static const fb::json kRohf = read_reference("rohf.json");
+  const fb::json &doc = file == "ibo.json" ? kIbo : file == "rohf.json" ? kRohf : kPipekMezey;
+  for (const fb::json &entry : doc.at("cases")) {
     if (entry.at("name").get<std::string>() == name) {
       return entry;
     }
@@ -70,9 +74,10 @@ const fb::json &reference_case(std::string_view name, std::string_view file = "p
   return kNone;
 }
 
-// The entry's record for @p exponent, or null.
-const fb::json *exponent_record(const fb::json &entry, std::int32_t exponent) {
-  for (const fb::json &localized : entry.at("localized")) {
+// The entry's record for @p exponent in its @p key list, or null.
+const fb::json *exponent_record(const fb::json &entry, std::int32_t exponent,
+                                std::string_view key = "localized") {
+  for (const fb::json &localized : entry.at(key)) {
     if (localized.at("exponent").get<std::int32_t>() == exponent) {
       return &localized;
     }
@@ -91,7 +96,9 @@ std::vector<double> download(fb::DeviceResources &res, const Buffer &buffer, std
 }
 
 // The reference's molecule localized with the given exponent, from a config
-// naming only the inputs and [localization], plus @p extra in that table. A
+// naming only the inputs and [localization], plus @p extra in that table. An
+// entry with an aux_basis (rohf.json's) is run at its multiplicity over
+// density-fitted ERIs, which the ROHF loop needs. A
 // @p basis document, if given, is read from a file in place of the entry's
 // basis. The run's outputs land in @p output_dir, or in a directory removed
 // on return if none is given.
@@ -119,12 +126,19 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
   EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
+  std::string multiplicity;
+  std::string eri;
+  if (entry.contains("aux_basis")) {
+    multiplicity = std::format("multiplicity = {}\n", entry.at("multiplicity").get<std::int32_t>());
+    eri = std::format("[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
+                      entry.at("aux_basis").get<std::string>());
+  }
   // Converged past the comparison's needs: the default 1e-10 on L leaves the
   // populations ~1e-5 from the maximum.
-  const std::string toml =
-      std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
-                  "[localization]\nexponent = {}\nfunctional_tolerance = 1e-13\n{}",
-                  entry.at("charge").get<std::int32_t>(), basis_spec, exponent, extra);
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n{}[basis_set]\nbasis = \"{}\"\n{}"
+      "[localization]\nexponent = {}\nfunctional_tolerance = 1e-13\n{}",
+      entry.at("charge").get<std::int32_t>(), multiplicity, basis_spec, eri, exponent, extra);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), output_dir);
   if (!calc.has_value()) {
@@ -139,9 +153,37 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
   return std::move(*calc);
 }
 
-// The localized orbitals of @p calc against the reference record @p expected:
-// the functional, every orbital's Mulliken population on every atom matched to
-// the reference's up to order, S-orthonormality and the SCF's density.
+// Each of @p occ orbitals' Mulliken population on each atom, orbital by
+// atom: sum over the atom's AOs of C (S C). A placed basis keeps an atom's
+// shells, and so its AOs, together.
+std::vector<std::vector<double>> mulliken_populations(const fb::BasisSet &basis,
+                                                      const std::vector<double> &s,
+                                                      const std::vector<double> &c,
+                                                      std::size_t occ) {
+  const std::size_t n = basis.nao_sphe();
+  const std::uint32_t n_atoms = basis.natoms();
+  std::vector<std::size_t> first_ao(n_atoms + 1, n);
+  for (std::uint32_t a = 0; a < n_atoms; ++a) {
+    first_ao[a] = basis.ao_offset_sphe(basis.atom_shell_offset(a));
+  }
+  std::vector<std::vector<double>> q(occ, std::vector<double>(n_atoms, 0.0));
+  for (std::size_t i = 0; i < occ; ++i) {
+    for (std::uint32_t a = 0; a < n_atoms; ++a) {
+      for (std::size_t mu = first_ao[a]; mu < first_ao[a + 1]; ++mu) {
+        double sc = 0.0;
+        for (std::size_t nu = 0; nu < n; ++nu) {
+          sc += s[mu + (n * nu)] * c[nu + (n * i)];
+        }
+        q[i][a] += c[mu + (n * i)] * sc;
+      }
+    }
+  }
+  return q;
+}
+
+// Every PySCF orbital of @p theirs matches a distinct one of @p ours,
+// population by population: the orbitals are the same up to order (and sign,
+// which the populations do not see).
 //
 // @p one_center_sets is for IBO. Two orbitals both wholly on one atom by the
 // IAO populations (water's O 1s and lone pairs) can rotate into each other at
@@ -150,52 +192,15 @@ std::optional<fb::Calculation> localize(const fb::json &entry, std::int32_t expo
 // PySCF's own two IBO optimizers as much as between it and this code. Such
 // orbitals are fixed only as a set, so they are compared by the set's summed
 // populations, which are.
-void expect_matches(const fb::json &entry, const fb::json &expected, const fb::Calculation &calc,
-                    bool one_center_sets = false) {
-  const auto &local = calc.get<fb::LocalizationOutput>();
-  const auto &scf = calc.get<fb::ScfOutput>();
-  const auto &overlap = calc.get<fb::OverlapOutput>();
-  const auto &basis = calc.get<fb::BasisSetOutput>();
-  ASSERT_TRUE(local.has_value() && scf.has_value() && overlap.has_value() && basis.has_value());
-
-  const std::size_t n = basis->basis.nao_sphe();
-  const auto occ = static_cast<std::size_t>(local->n_occ);
-  ASSERT_EQ(occ * 2, entry.at("electrons").get<std::size_t>());
-  const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
-  fb::DeviceResources res(scf->c.dev_idx());
-  const std::vector<double> c = download(res, local->c, n * occ);
-  const std::vector<double> s = download(res, overlap->s, n * n);
-  const std::vector<double> d = download(res, scf->d, n * n);
-
-  EXPECT_NEAR(local->info.functional, expected.at("functional").get<double>(),
-              kFunctionalTolerance);
-  EXPECT_GT(local->info.functional, local->info.initial_functional);
-
-  // Each orbital's population on each atom: sum over the atom's AOs of
-  // C (S C). A placed basis keeps an atom's shells, and so its AOs, together.
-  const std::uint32_t n_atoms = basis->basis.natoms();
-  ASSERT_EQ(n_atoms, entry.at("atoms").size());
-  std::vector<std::size_t> first_ao(n_atoms + 1, n);
-  for (std::uint32_t a = 0; a < n_atoms; ++a) {
-    first_ao[a] = basis->basis.ao_offset_sphe(basis->basis.atom_shell_offset(a));
-  }
-  std::vector<std::vector<double>> ours(occ, std::vector<double>(n_atoms, 0.0));
-  for (std::size_t i = 0; i < occ; ++i) {
-    for (std::uint32_t a = 0; a < n_atoms; ++a) {
-      for (std::size_t mu = first_ao[a]; mu < first_ao[a + 1]; ++mu) {
-        double sc = 0.0;
-        for (std::size_t nu = 0; nu < n; ++nu) {
-          sc += s[mu + (n * nu)] * c[nu + (n * i)];
-        }
-        ours[i][a] += c[mu + (n * i)] * sc;
-      }
-    }
-  }
-  // Every PySCF orbital matches a distinct one of ours, population by
-  // population: the orbitals are the same up to order (and sign, which the
-  // populations do not see).
-  const auto theirs = expected.at("populations").get<std::vector<std::vector<double>>>();
+void expect_populations_match(const std::vector<std::vector<double>> &ours,
+                              const std::vector<std::vector<double>> &theirs,
+                              bool one_center_sets) {
+  const std::size_t occ = ours.size();
   ASSERT_EQ(theirs.size(), occ);
+  if (occ == 0) {
+    return;
+  }
+  const auto n_atoms = static_cast<std::uint32_t>(ours[0].size());
   // With @p one_center_sets, orbitals on one atom are compared as a set: the
   // atom an orbital sits on (population above kOneCenter), or n_atoms for one
   // that spans several.
@@ -245,7 +250,13 @@ void expect_matches(const fb::json &entry, const fb::json &expected, const fb::C
           << "orbitals on atom " << at << ", population on atom " << a;
     }
   }
+}
 
+// The @p occ localized orbitals @p c are S-orthonormal and give back the
+// SCF's density @p d: twice their first @p n_doubly, once the rest.
+void expect_orthonormal_with_density(const std::vector<double> &c, const std::vector<double> &s,
+                                     const std::vector<double> &d, std::size_t n, std::size_t occ,
+                                     std::size_t n_doubly) {
   for (std::size_t i = 0; i < occ; ++i) {
     for (std::size_t j = 0; j < occ; ++j) {
       double ctsc = 0.0;
@@ -261,11 +272,43 @@ void expect_matches(const fb::json &entry, const fb::json &expected, const fb::C
     for (std::size_t nu = 0; nu < n; ++nu) {
       double density = 0.0;
       for (std::size_t i = 0; i < occ; ++i) {
-        density += 2.0 * c[mu + (n * i)] * c[nu + (n * i)];
+        density += (i < n_doubly ? 2.0 : 1.0) * c[mu + (n * i)] * c[nu + (n * i)];
       }
       EXPECT_NEAR(density, d[mu + (n * nu)], 1e-10) << mu << "," << nu;
     }
   }
+}
+
+// The localized orbitals of @p calc against the reference record @p expected:
+// the functional, every orbital's Mulliken population on every atom matched to
+// the reference's up to order (expect_populations_match, which has
+// @p one_center_sets), S-orthonormality and the SCF's density.
+void expect_matches(const fb::json &entry, const fb::json &expected, const fb::Calculation &calc,
+                    bool one_center_sets = false) {
+  const auto &local = calc.get<fb::LocalizationOutput>();
+  const auto &scf = calc.get<fb::ScfOutput>();
+  const auto &overlap = calc.get<fb::OverlapOutput>();
+  const auto &basis = calc.get<fb::BasisSetOutput>();
+  ASSERT_TRUE(local.has_value() && scf.has_value() && overlap.has_value() && basis.has_value());
+
+  const std::size_t n = basis->basis.nao_sphe();
+  const auto occ = static_cast<std::size_t>(local->n_occ);
+  ASSERT_EQ(occ * 2, entry.at("electrons").get<std::size_t>());
+  EXPECT_EQ(local->n_doubly, local->n_occ);
+  const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
+  fb::DeviceResources res(scf->c.dev_idx());
+  const std::vector<double> c = download(res, local->c, n * occ);
+  const std::vector<double> s = download(res, overlap->s, n * n);
+  const std::vector<double> d = download(res, scf->d, n * n);
+
+  EXPECT_NEAR(local->info.functional, expected.at("functional").get<double>(),
+              kFunctionalTolerance);
+  EXPECT_GT(local->info.functional, local->info.initial_functional);
+  ASSERT_EQ(basis->basis.natoms(), entry.at("atoms").size());
+  expect_populations_match(mulliken_populations(basis->basis, s, c, occ),
+                           expected.at("populations").get<std::vector<std::vector<double>>>(),
+                           one_center_sets);
+  expect_orthonormal_with_density(c, s, d, n, occ, occ);
 }
 
 struct Case {
@@ -901,46 +944,161 @@ TEST(PipelineLocalization, ALivvoMoldenWithoutLivvoIsInvalidConfig) {
   EXPECT_FALSE(std::filesystem::exists(dir / "livvo.molden"));
 }
 
-// An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
-// naming the step: its occupied count is n_alpha only for a closed shell. The
-// rest of the chain is water's in STO-3G; the open shell's orbitals are never
-// read.
-TEST(PipelineLocalization, AnOpenShellScfOutputIsUnsupported) {
-  FBF_REQUIRE_GPU();
-  const fb::test::ScratchDir dir("pipeline_localization_open_shell");
-  ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
-                                                "H 0 -0.7572 -0.4692\n")
-                  .has_value());
-  auto calc = fb::Calculation::create({fb::MoleculeStep{.xyz = dir / "water.xyz"},
-                                       fb::BasisSetStep{.basis = "sto-3g"}, fb::LocalizationStep{}},
-                                      []<class S>() -> fb::Result<S> { return S{}; });
-  ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
-  const fb::Status ran = calc->run(node);
-  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+// An ROHF reference (rohf.json): the doubly occupied orbitals localized
+// among themselves, then the singly occupied ones among themselves, in
+// either mode, each space matched to PySCF's localization of that space
+// alone. H2O+ is a doublet, whose one singly occupied orbital has nothing to
+// rotate with; triplet CH2's two are localized as a pair. The step's c holds
+// the doubly occupied space first (n_doubly = n_beta columns), U is
+// block-diagonal, so no rotation mixes the spaces, and the occupied density,
+// 2 C_d C_d^T + C_s C_s^T, is the SCF's. Each space ascends in <i|F|i> on its
+// own, and the Molden file has them at occupations 2 and 1.
+struct OpenShellCase {
+  std::string_view name;
+  std::string_view mode;
+  std::int32_t exponent;
+};
 
-  fb::DeviceResources &res = node.device(0);
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
-  const fb::ScfOutput open{.energy = 0.0,
-                           .iterations = 0,
-                           .n_alpha = 6,
-                           .n_beta = 4,
-                           .mo_energies = {},
-                           .c = fb::SphericalMatrixAO(res, basis),
-                           .d = fb::SphericalMatrixAO(res, basis)};
-  const auto refused = calc->step<fb::LocalizationStep>()->run(
-      fb::StepInput<fb::LocalizationStep>{*calc->get<fb::MoleculeOutput>(),
-                                          *calc->get<fb::BasisSetOutput>(),
-                                          *calc->get<fb::OverlapOutput>(), open},
-      res);
-  ASSERT_FALSE(refused.has_value());
-  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
-  EXPECT_NE(refused.error().message.find("localization: only a closed-shell reference"),
-            std::string::npos)
-      << refused.error().message;
-  EXPECT_NE(refused.error().message.find("6 alpha and 4 beta"), std::string::npos)
-      << refused.error().message;
+void PrintTo(const OpenShellCase &c, std::ostream *os) {
+  *os << c.name << "_" << c.mode << "_p" << c.exponent;
 }
+
+class PipelineLocalizationOpenShell : public ::testing::TestWithParam<OpenShellCase> {};
+
+TEST_P(PipelineLocalizationOpenShell, EachSpaceMatchesPyscfAndKeepsTheDensity) {
+  FBF_REQUIRE_GPU();
+  const OpenShellCase param = GetParam();
+  const bool ibo = param.mode == "ibo";
+  const fb::json &entry = reference_case(param.name, "rohf.json");
+  const fb::json *expected = exponent_record(entry, param.exponent, ibo ? "ibo" : "pipek_mezey");
+  ASSERT_NE(expected, nullptr) << "no exponent " << param.exponent;
+  const fb::test::ScratchDir dir("pipeline_localization_open_shell");
+  auto calc = localize(entry, param.exponent, std::format("mode = \"{}\"\n", param.mode), nullptr,
+                       dir.path());
+  ASSERT_TRUE(calc.has_value());
+  const auto &local = calc->get<fb::LocalizationOutput>();
+  const auto &scf = calc->get<fb::ScfOutput>();
+  const auto &overlap = calc->get<fb::OverlapOutput>();
+  const auto &basis = calc->get<fb::BasisSetOutput>();
+  ASSERT_TRUE(local.has_value() && scf.has_value() && overlap.has_value() && basis.has_value());
+
+  ASSERT_EQ(local->n_occ, entry.at("n_alpha").get<std::int32_t>());
+  ASSERT_EQ(local->n_doubly, entry.at("n_beta").get<std::int32_t>());
+  ASSERT_LT(local->n_doubly, local->n_occ);
+  const std::size_t n = basis->basis.nao_sphe();
+  const auto occ = static_cast<std::size_t>(local->n_occ);
+  const auto doubly = static_cast<std::size_t>(local->n_doubly);
+  const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
+  fb::DeviceResources res(scf->c.dev_idx());
+  const std::vector<double> c = download(res, local->c, n * occ);
+  const std::vector<double> u = download(res, local->u, occ * occ);
+  const std::vector<double> c_occ = download(res, scf->c, n * occ);
+  const std::vector<double> s = download(res, overlap->s, n * n);
+  const std::vector<double> d = download(res, scf->d, n * n);
+
+  // L summed over the spaces, each PySCF's own.
+  const fb::json &doubly_ref = expected->at("doubly");
+  const fb::json &singly_ref = expected->at("singly");
+  EXPECT_NEAR(local->info.functional,
+              doubly_ref.at("functional").get<double>() + singly_ref.at("functional").get<double>(),
+              kFunctionalTolerance);
+  EXPECT_GT(local->info.functional, local->info.initial_functional);
+
+  const auto ours = mulliken_populations(basis->basis, s, c, occ);
+  {
+    SCOPED_TRACE("doubly occupied");
+    expect_populations_match({ours.begin(), ours.begin() + static_cast<std::ptrdiff_t>(doubly)},
+                             doubly_ref.at("populations").get<std::vector<std::vector<double>>>(),
+                             ibo);
+  }
+  {
+    SCOPED_TRACE("singly occupied");
+    expect_populations_match({ours.begin() + static_cast<std::ptrdiff_t>(doubly), ours.end()},
+                             singly_ref.at("populations").get<std::vector<std::vector<double>>>(),
+                             ibo);
+  }
+  expect_orthonormal_with_density(c, s, d, n, occ, doubly);
+
+  // U is block-diagonal, C is C_occ U column for column, and each space
+  // ascends in <i|F|i> = sum_k U_ki^2 eps_k.
+  std::vector<double> energies(occ, 0.0);
+  for (std::size_t i = 0; i < occ; ++i) {
+    for (std::size_t k = 0; k < occ; ++k) {
+      if ((i < doubly) != (k < doubly)) {
+        EXPECT_EQ(u[k + (occ * i)], 0.0) << "U mixes the spaces at " << k << "," << i;
+      }
+      energies[i] += u[k + (occ * i)] * u[k + (occ * i)] * scf->mo_energies[k];
+    }
+    for (std::size_t mu = 0; mu < n; ++mu) {
+      double cu = 0.0;
+      for (std::size_t k = 0; k < occ; ++k) {
+        cu += c_occ[mu + (n * k)] * u[k + (occ * i)];
+      }
+      EXPECT_NEAR(c[mu + (n * i)], cu, 1e-12) << "AO " << mu << ", orbital " << i;
+    }
+  }
+  const auto split = energies.begin() + static_cast<std::ptrdiff_t>(doubly);
+  EXPECT_TRUE(std::is_sorted(energies.begin(), split));
+  EXPECT_TRUE(std::is_sorted(split, energies.end()));
+
+  if (ibo) {
+    // The IAO populations' p-th powers sum to L over both spaces, and the
+    // charges count the doubly occupied orbitals twice and the singly
+    // occupied once, PySCF's whichever orbitals gave them.
+    const std::size_t n_atoms = entry.at("atoms").size();
+    ASSERT_EQ(local->populations.size(), n_atoms * occ);
+    double functional = 0.0;
+    for (std::size_t i = 0; i < occ; ++i) {
+      double weight = 0.0;
+      for (std::size_t a = 0; a < n_atoms; ++a) {
+        const double q = local->populations[a + (n_atoms * i)];
+        weight += q;
+        functional += std::pow(q, param.exponent);
+      }
+      EXPECT_NEAR(weight, 1.0, 1e-10) << "orbital " << i;
+    }
+    EXPECT_NEAR(functional, local->info.functional, 1e-10);
+    const auto charges = entry.at("iao_charges").get<std::vector<double>>();
+    ASSERT_EQ(local->charges.size(), charges.size());
+    for (std::size_t a = 0; a < n_atoms; ++a) {
+      EXPECT_NEAR(local->charges[a], charges[a], kChargeTolerance) << "atom " << a;
+    }
+    EXPECT_EQ(local->bonds.size(), occ);
+  } else {
+    EXPECT_TRUE(local->populations.empty() && local->charges.empty()) << "IBO only";
+  }
+
+  // The Molden file: the doubly occupied at 2, the singly occupied at 1, then
+  // the virtuals at 0.
+  std::ifstream file(dir / "localization.molden");
+  ASSERT_TRUE(file.is_open());
+  std::vector<std::string> occupations;
+  for (std::string line; std::getline(file, line);) {
+    if (line.starts_with(" Occup=")) {
+      occupations.push_back(line);
+    }
+  }
+  ASSERT_EQ(occupations.size(), scf->mo_energies.size());
+  for (std::size_t k = 0; k < occupations.size(); ++k) {
+    EXPECT_EQ(occupations[k], k < doubly ? " Occup= 2.000000"
+                              : k < occ  ? " Occup= 1.000000"
+                                         : " Occup= 0.000000")
+        << k;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineLocalizationOpenShell,
+                         ::testing::Values(OpenShellCase{"h2o_cation_ccpvdz", "pipek_mezey", 2},
+                                           OpenShellCase{"h2o_cation_ccpvdz", "pipek_mezey", 4},
+                                           OpenShellCase{"h2o_cation_ccpvdz", "ibo", 2},
+                                           OpenShellCase{"h2o_cation_ccpvdz", "ibo", 4},
+                                           OpenShellCase{"ch2_ccpvdz", "pipek_mezey", 2},
+                                           OpenShellCase{"ch2_ccpvdz", "pipek_mezey", 4},
+                                           OpenShellCase{"ch2_ccpvdz", "ibo", 2},
+                                           OpenShellCase{"ch2_ccpvdz", "ibo", 4}),
+                         [](const ::testing::TestParamInfo<OpenShellCase> &info) {
+                           return std::format("{}_{}_p{}", info.param.name, info.param.mode,
+                                              info.param.exponent);
+                         });
 
 } // namespace
