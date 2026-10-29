@@ -363,17 +363,21 @@ with_gpu_card() {
 # below. On gfx1200 a card can wedge with every process on it spinning in a
 # HIP sync at full CPU, printing nothing, until killed (issue #477) -- and
 # before this a wedge held the gate, and the card lock, for hours with no test
-# named.
+# named. Each shard is started through devtools/ptraceable-exec.py so that the
+# watchdog's debugger may attach to it before the kill: gpu_wedge_snapshot.
 run_gpu_sharded() {
   local tag=$1 bin=$2 n=$3 dir i src rc=0
-  local -a pids=()
+  local -a pids=() launch=()
   [ -x "$bin" ] || {
     echo "$tag: missing binary $bin -- see $BUILD_LOG" >&2
     return 1
   }
+  command -v python3 >/dev/null &&
+    launch=(python3 -I "$REPO_ROOT/devtools/ptraceable-exec.py" "$$")
   dir=$(mktemp -d)
   for ((i = 0; i < n; i++)); do
-    GTEST_TOTAL_SHARDS=$n GTEST_SHARD_INDEX=$i "$bin" >"$dir/$i.log" 2>&1 &
+    GTEST_TOTAL_SHARDS=$n GTEST_SHARD_INDEX=$i "${launch[@]}" "$bin" \
+      >"$dir/$i.log" 2>&1 &
     pids+=("$!")
   done
   gpu_shard_watchdog "$tag" "$dir" "${pids[@]}"
@@ -387,6 +391,8 @@ run_gpu_sharded() {
       rc=1
       echo "$tag:   [shard $i/$n] KILLED by the watchdog: $(<"$dir/$i.killed")" >&2
       echo "$tag:   [shard $i/$n] hung in $(gtest_running_case "$dir/$i.log")" >&2
+      [ -s "$dir/$i.wedge" ] &&
+        echo "$tag:   [shard $i/$n] state before the kill: $(<"$dir/$i.wedge")" >&2
       continue
     fi
     [ "$src" = 0 ] && continue
@@ -420,7 +426,9 @@ gtest_running_case() {
 #
 # The kill is reported the moment it happens, not only in the summary: a
 # process stuck in the driver can outlive even SIGKILL, and then the wait that
-# follows is the hang, but by then the case has been named.
+# follows is the hang, but by then the case has been named. Before the kill the
+# shard's state is written down (gpu_wedge_snapshot); <dir>/<i>.wedge holds
+# the path.
 gpu_shard_watchdog() {
   local tag=$1 dir=$2 i t live size reason start=$SECONDS
   shift 2
@@ -452,6 +460,8 @@ gpu_shard_watchdog() {
       echo "$reason" >"$dir/$i.killed"
       echo "$tag:   [shard $i/${#pids[@]}] watchdog: $reason -- killing pid" \
         "${pids[i]}, in $(gtest_running_case "$dir/$i.log") (see issue #477)" >&2
+      gpu_wedge_snapshot "$i" "${pids[i]}" "$dir/$i.log" "$reason" \
+        >"$dir/$i.wedge"
       kill -TERM "${pids[i]}" 2>/dev/null
       for ((t = 0; t < 10; t++)); do
         kill -0 "${pids[i]}" 2>/dev/null || break
@@ -462,6 +472,55 @@ gpu_shard_watchdog() {
     [ "$live" -eq 1 ] || return 0
     sleep 1
   done
+}
+
+# Write down what a hung shard (index, pid, log, reason) was doing, before the
+# watchdog kills it, and echo the file's path. The kill frees the card at once,
+# so this is the only moment a wedge (issue #477) can be read: what each GPU
+# tool reports about its card, every thread's scheduler state, CPU time and
+# kernel wait channel, a debugger's backtrace of every thread (rocgdb, else
+# gdb; the shard was started through ptraceable-exec.py, which is what allows
+# it), and the end of the shard's log. A wedge can hang the vendor tools and
+# the debugger too, so each is cut off after GPU_WEDGE_TOOL_SECONDS.
+#
+# The file sits beside BUILD_LOG, as <log>.shard<i>-wedge.txt, so it outlives
+# the shard directory; with no BUILD_LOG file it goes in TMPDIR. What it cannot
+# hold is the kernel's side -- an amdgpu ring timeout or MES fault is in dmesg,
+# which the container cannot read -- so it ends with the host command for that.
+gpu_wedge_snapshot() {
+  local i=$1 pid=$2 log=$3 reason=$4 out t tool secs=$GPU_WEDGE_TOOL_SECONDS
+  case "${BUILD_LOG:-}" in
+    "" | /dev/null) out=$(mktemp "${TMPDIR:-/tmp}/gpu-wedge-shard$i.XXXXXX");;
+    *) out="${BUILD_LOG%.log}.shard$i-wedge.txt";;
+  esac
+  {
+    echo "=== GPU shard $i, pid $pid, $(date -u '+%F %T') UTC"
+    echo "watchdog: $reason; in $(gtest_running_case "$log")"
+    for tool in "rocm-smi --showuse --showmemuse --showmeminfo vram" \
+                "nvidia-smi"; do
+      command -v "${tool%% *}" >/dev/null || continue
+      echo; echo "=== $tool"
+      # shellcheck disable=SC2086  # the tool and its flags, split on purpose
+      timeout "$secs" $tool || echo "($tool: exit $?)"
+    done
+    echo; echo "=== threads: tid state utime stime (clock ticks) wchan"
+    for t in /proc/"$pid"/task/*; do
+      # stat's comm is parenthesised and may hold spaces: read after the `)`.
+      echo "${t##*/} $(sed 's/.*) //' "$t/stat" | awk '{print $1, $12, $13}')" \
+        "$(cat "$t/wchan")"
+    done
+    tool=$(command -v rocgdb || command -v /opt/rocm/bin/rocgdb ||
+      command -v gdb) || tool=""
+    echo; echo "=== backtrace (${tool:-no debugger found})"
+    [ -z "$tool" ] || timeout "$secs" "$tool" -p "$pid" -batch \
+      -ex "info threads" -ex "thread apply all bt 30" </dev/null
+    echo; echo "=== the last 40 lines of the shard's log"
+    tail -n 40 "$log"
+    echo
+    echo "=== the kernel's side is in the HOST's dmesg; there, before a reboot:"
+    echo "  sudo dmesg -T | grep -iE 'amdgpu|kfd|mes|ring|timeout|reset|NVRM|Xid'"
+  } >"$out" 2>&1
+  echo "$out"
 }
 
 # The xdist worker flag, or nothing when JOBS is empty (a suite without
