@@ -302,7 +302,7 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/fci_reference.
 |---|---|
 | `provenance` | PySCF and numpy versions, date, host, the command that wrote it |
 | `cases` | One per active space: `name`, `basis` (this tree's builtin name), `charge`, `atoms` (`symbol`, `z`, `coord` in bohr), `electrons`, `ncas`, `nelecas`, `ncore`, `active` (the 0-based MO indices, or `null` for the frontier orbitals), `avas` (`labels` and `threshold` of an AVAS case, whose `ncas` and `nelecas` are `mcscf.avas`'s, or `null`), `rhf_energy`, `mo_energies` (ascending), `e_core` (hartree, nuclear repulsion included), and `roots` |
-| `roots` | The lowest three singlets (one for N₂'s AVAS CAS(10,8), whose excited roots `ci::solve` does not converge at its defaults), ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another root of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
+| `roots` | The lowest three singlets (one for N₂'s AVAS CAS(10,8), whose excited roots `ci::solve` does not converge at its defaults), or for a case with a `multiplicity` (2S + 1, absent for a singlet: H₂O cc-pVDZ's triplet) the lowest roots of that S in the M_s = S sector, ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another root of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
 
 The 1-RDM itself is not recorded: it depends on the signs of the active
 orbitals, which the two codes pick independently, and its eigenvalues do not.
@@ -324,7 +324,7 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casci_referenc
 |---|---|
 | `provenance` | PySCF and numpy versions, date, host, the command that wrote it |
 | `cases` | One per molecule: `name`, `basis` (this tree's builtin name), `charge`, `atoms` (`symbol`, `z`, `coord` in bohr), `electrons`, `nmo`, `determinants` (C(nmo, electrons / 2)²), `rhf_energy`, and `roots` |
-| `roots` | The lowest three singlets, ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another of the lowest 12 roots of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
+| `roots` | The lowest three singlets, or for a case with a `multiplicity` (2S + 1, absent for a singlet: H₂O STO-3G's triplet) the lowest roots of that S in the M_s = S sector, ascending: `energy` (hartree, total), `s2` (⟨S²⟩), `degenerate` (another of the lowest 12 roots of the sector lies within 1e-8), and `natural_occupations` (the spin-summed 1-RDM's eigenvalues, descending) |
 
 As in `casci/`, the 1-RDM itself is not recorded, and a degenerate root's
 occupations are skipped by a test. Unlike a CASCI's, an FCI energy and its
