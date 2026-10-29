@@ -53,6 +53,12 @@ extract_integral_golden.py
                   Copy the libcint golden data test/gtest/data/{one_electron,
                   coulomb,exchange}/ hold out of FelizJueves's fixtures.
                   Standard library only.
+emit/nonsymmetric_jk_golden.py
+                  Write test/gtest/data/exchange/*_nonsymmetric.json:
+                  PySCF's get_jk(hermi=0), vj and vk, of a random
+                  non-symmetric density (fixed seed) over the H2O exchange
+                  goldens' molecules and bases, which FelizJueves's fixtures
+                  do not carry. Needs PySCF.
 emit/record_bound_golden.py
                   Write test/gtest/data/record_bound/: FelizJueves's host
                   ao.k.record_bounds for every ordered shell pair of the
@@ -155,7 +161,8 @@ sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
 ```
 
 Re-run the four `emit/*_kernels.py`, `extract_integral_golden.py` and then
-`emit/record_bound_golden.py` (it reads the exchange goldens' shells) after
+`emit/record_bound_golden.py` and `emit/nonsymmetric_jk_golden.py` (both read
+the exchange goldens' shells) after
 bumping `deps/FelizJueves`. Everything but `basis/`, `atomic_cd` and
 `emit/ci_bench_integrals.py` writes tracked files, so the diff is the review.
 
@@ -190,6 +197,7 @@ uv run --group tools tools/emit/casscf_reference.py
 uv run --group tools tools/emit/nevpt2_reference.py
 uv run --group tools tools/emit/nevpt2_golden.py <demo clone>
 uv run --group tools tools/emit/record_bound_golden.py
+uv run --group tools tools/emit/nonsymmetric_jk_golden.py
 uv run --group tools python -m tools.atomic_cd.cli C sto-3g
 uv run --group tools python -m tools.atomic_cd.cli C cc-pVDZ \
     --bse-out c_ccpvdz_accd.bse.json --df-check

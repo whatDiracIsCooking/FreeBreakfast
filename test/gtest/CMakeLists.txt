@@ -148,6 +148,7 @@ add_executable(
   exchange_e_table_gpu.cpp
   exchange_pairs_gpu.cpp
   exchange_gpu.cpp
+  nonsymmetric_jk_gpu.cpp
   df_fit_gpu.cpp
   df_jk_gpu.cpp
   df_mo_gpu.cpp
