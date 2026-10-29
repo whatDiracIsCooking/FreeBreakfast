@@ -316,7 +316,10 @@ variant. It does not check the container `name` field.
   `GPU_SHARD_BUDGET_SECONDS` in `devtools/config.sh`): a silent shard is
   killed and the line `[shard i/N] hung in <case>` names where. When two
   shards hang together, suspect the card before the case, and rerun the gate
-  on the other backend.
+  on the other backend. Before the kill the watchdog writes the shard's state
+  (vendor tools, a rocgdb backtrace of every thread) beside the tier's log, as
+  `<log>.shard<i>-wedge.txt`, and the `state before the kill:` line names it —
+  attach it to #477, with the host's `dmesg` it ends by asking for.
 
 Tests are registered **one ctest entry per gtest case** via
 `gtest_discover_tests(… DISCOVERY_MODE PRE_TEST)`. `PRE_TEST` defers enumeration

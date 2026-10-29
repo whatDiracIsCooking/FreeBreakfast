@@ -10,6 +10,7 @@ so no GPU and no real wedge is needed.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ def run_sharded(
         os.environ,
         GPU_SHARD_STALL_SECONDS=str(stall),
         GPU_SHARD_BUDGET_SECONDS=str(budget),
+        GPU_WEDGE_TOOL_SECONDS="20",
         BUILD_LOG=str(tmp_path / "build.log"),
     )
     script = f'. "{_LIB}"; run_gpu_sharded fake "{shard}" {n}'
@@ -72,6 +74,36 @@ def test_silent_shard_is_killed_and_its_case_named(tmp_path: Path) -> None:
     assert "#477" in proc.stderr
     # The killed shard's output still reaches the build log.
     assert "Wedge.Hangs/h2o" in (tmp_path / "build.log").read_text()
+    # Its state was written down before the kill, beside the build log.
+    snapshot = tmp_path / "build.shard1-wedge.txt"
+    assert f"state before the kill: {snapshot}" in proc.stderr
+    text = snapshot.read_text()
+    assert "in Wedge.Hangs/h2o" in text
+    assert "=== threads:" in text
+    assert "sudo dmesg" in text
+    assert not (tmp_path / "build.shard0-wedge.txt").exists()
+
+
+@pytest.mark.skipif(
+    not (
+        shutil.which("rocgdb")
+        or Path("/opt/rocm/bin/rocgdb").exists()
+        or shutil.which("gdb")
+    ),
+    reason="no rocgdb or gdb to attach",
+)
+def test_snapshot_backtraces_the_hung_shard(tmp_path: Path) -> None:
+    # Yama's ptrace_scope=1 forbids a sibling attaching; ptraceable-exec.py is
+    # what lets the watchdog's debugger in, so a refusal here is a regression.
+    proc, _ = run_sharded(
+        tmp_path,
+        'echo "[ RUN      ] Wedge.Spins"\nexec sleep 300\n',
+        n=1,
+    )
+    assert proc.returncode == 1
+    text = (tmp_path / "build.shard0-wedge.txt").read_text()
+    assert "Operation not permitted" not in text, text
+    assert "Thread 1" in text, text
 
 
 def test_chatty_shard_is_killed_at_its_budget(tmp_path: Path) -> None:

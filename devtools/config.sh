@@ -398,6 +398,10 @@ GPU_TEST_JOBS=${GPU_TEST_JOBS:-3}
 # card. 0 turns either off.
 GPU_SHARD_STALL_SECONDS=${GPU_SHARD_STALL_SECONDS:-600}
 GPU_SHARD_BUDGET_SECONDS=${GPU_SHARD_BUDGET_SECONDS:-2700}
+# Before it kills a hung shard the watchdog writes down the shard's state
+# (gpu_wedge_snapshot in lib.sh): the vendor tools, every thread's backtrace.
+# A wedged card can hang those as well, so each is cut off after this long.
+GPU_WEDGE_TOOL_SECONDS=${GPU_WEDGE_TOOL_SECONDS:-120}
 # Readings averaged into one load figure (0.3s apart); one is too noisy. Load
 # only ranks the cards for `auto`.
 GPU_LOAD_SAMPLES=${GPU_LOAD_SAMPLES:-4}
