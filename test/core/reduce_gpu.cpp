@@ -1,5 +1,5 @@
 // GPU cases for core/kernel: block_reduce -- warp_reduce underneath -- run on
-// the device through test/gpu_kernels/reduce_kernels.cu and compared against a
+// the device through test/core/gpu_kernels/reduce_kernels.cu and compared against a
 // left fold on the host, at 1, 2, 4 and the most warps a block holds.
 //
 // The inputs are small integers (as doubles too), so every sum is exact

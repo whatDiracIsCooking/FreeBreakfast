@@ -1,4 +1,4 @@
-// Device side of test/gtest/primitives_gpu.cpp: kernels that evaluate every
+// Device side of test/core/primitives_gpu.cpp: kernels that evaluate every
 // free_breakfast::math function, and the host launchers primitives_kernels.h
 // declares. This is the tree's first .cu to include src/core/primitives/
 // primitives.h, so it is also what proves that header's device half compiles --

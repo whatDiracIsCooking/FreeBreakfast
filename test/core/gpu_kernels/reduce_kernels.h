@@ -1,6 +1,6 @@
 /// @file
 /// @brief Host-callable launchers that run free_breakfast::device::block_reduce
-/// (and through it warp_reduce) on the device, for test/gtest/reduce_gpu.cpp.
+/// (and through it warp_reduce) on the device, for test/core/reduce_gpu.cpp.
 ///
 /// Plain C++ with no device code, as primitives_kernels.h is. Each launcher runs
 /// ONE block, takes HOST arrays holding one input per thread, and writes one

@@ -1,6 +1,6 @@
 // GPU cases for core/primitives: every free_breakfast::math function evaluated
 // on the device -- through primitives.h's device half, in
-// test/gpu_kernels/primitives_kernels.cu -- and compared against the host
+// test/core/gpu_kernels/primitives_kernels.cu -- and compared against the host
 // standard library on the same inputs.
 //
 // The reference is std:: rather than the host free_breakfast::math, so a

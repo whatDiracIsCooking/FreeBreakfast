@@ -94,10 +94,10 @@ or vendor header. A `.cu` should include `block_reduce.cuh` (or
 
 ## Tests
 
-- Host: `test/gtest/core_vocabulary_host.cpp` pins `kWarpSize`, `kFourWarps`, `kMaxThreads` and the bounds
+- Host: `test/core/core_vocabulary_host.cpp` pins `kWarpSize`, `kFourWarps`, `kMaxThreads` and the bounds
   `NumWarps` accepts and rejects.
-- Device: `test/gtest/reduce_gpu.cpp` runs `block_reduce` (and so
-  `warp_reduce`) through `test/gpu_kernels/reduce_kernels.cu`, over `double`
+- Device: `test/core/reduce_gpu.cpp` runs `block_reduce` (and so
+  `warp_reduce`) through `test/core/gpu_kernels/reduce_kernels.cu`, over `double`
   and `int32_t`, checking every thread's result for `Add`, `MaxNan`, and two
   non-commutative folds (`First`, `Last`). It covers 1, 2, 4 and the maximum
   number of warps, a range of `nactive` values, and a NaN past `nactive` being

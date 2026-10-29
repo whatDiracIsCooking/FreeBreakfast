@@ -74,7 +74,7 @@ nothing. Without the prefix, element symbols read as they should
 (`Element::Fe`, not `Element::kFe`).
 
 **Macros** all start with `FBF_`, wherever they are defined: `src/`
-(`FBF_TRY`, `FBF_HOST_DEVICE`), `test/gtest/` (`FBF_REQUIRE_GPU`) or anywhere
+(`FBF_TRY`, `FBF_HOST_DEVICE`), `test/support/` (`FBF_REQUIRE_GPU`) or anywhere
 else. The prefix keeps a macro clear of any name that an including file, or a
 third-party header it pulls in, might also define, such as `TRY` or `MUST`.
 A bare `UPPER_CASE` macro gets no such protection.
@@ -254,7 +254,7 @@ unqualified. To make them visible:
 ABI change. The reasons for the rule are that the scalar and width are
 parameters, so generic code can write `Vec<T, 3>`, and that `Vec` covers the
 64-bit 4-vectors (`double4`, `long4`, …) that wwr leaves out. The one place
-wwr's aliases appear on purpose is `test/gtest/core_vocabulary_host.cpp`,
+wwr's aliases appear on purpose is `test/core/core_vocabulary_host.cpp`,
 which checks that `Vec` maps onto them.
 
 ## Launch shape and integer rounding
@@ -386,9 +386,9 @@ that type for the whole pipeline.
 
 ## Module-private code
 
-**There are no anonymous namespaces and no `detail` namespaces**, with four
+**There are no anonymous namespaces and no `detail` namespaces**, with five
 exceptions where an anonymous namespace is allowed: `.cu` files,
-`test/gtest/*.cpp`, `src/main.cpp` and `tools/*/main.cpp`. None of those is a module unit, so the alternatives
+`test/gtest/*.cpp`, `test/core/*.cpp`, `src/main.cpp` and `tools/*/main.cpp`. None of those is a module unit, so the alternatives
 below are not available there.
 
 In a named module, `export` already decides what is visible. Anything not
@@ -539,7 +539,7 @@ the copy on the stream and let the ordering be the stream's.
 Where a helper has no `DeviceResources` in reach, pass it the stream it should
 order against (`out.device_stream()->stream()`, or a `DeviceResources` for a
 finished calculation's outputs) rather than falling back to the null stream.
-Code that launches on the legacy default stream, as `test/gpu_kernels/` does,
+Code that launches on the legacy default stream, as `test/core/gpu_kernels/` does,
 names that stream explicitly. `devtools/check-blocking-memcpy.py` flags a
 bare call at commit and in CI.
 

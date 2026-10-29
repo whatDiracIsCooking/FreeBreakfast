@@ -1,6 +1,6 @@
 /// @file
 /// @brief Host-callable launchers that evaluate free_breakfast::math on the
-/// device, for test/gtest/primitives_gpu.cpp.
+/// device, for test/core/primitives_gpu.cpp.
 ///
 /// Plain C++ with no device code and no vendor header, so the gtest TU (a
 /// module-importing .cpp, which cannot include a kernel) and primitives_kernels.cu
