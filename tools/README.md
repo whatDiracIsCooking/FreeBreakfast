@@ -73,6 +73,14 @@ emit/df_reference.py
                   DF-RHF and DF-ROHF energies, over this tree's data/basis and
                   data/aux_basis files, the reference density fitting is
                   tested against. Needs PySCF.
+emit/cis_reference.py
+                  Write test/gtest/data/cis/: PySCF's RHF + TDA (CIS)
+                  singlet and triplet roots and singlet oscillator
+                  strengths, exact and density-fitted over cc-pVDZ-JKFIT,
+                  each checked against a dense diagonalization of the
+                  explicit A matrix, and the spherical AO dipole int1e_r,
+                  the reference the CIS sigma is tested against. Needs
+                  PySCF.
 emit/localization_reference.py
                   Write test/gtest/data/localization/{pipek_mezey,ibo,rohf}.json:
                   PySCF's Mulliken Pipek-Mezey and IBOs of those RHF orbitals, both
@@ -174,6 +182,7 @@ uv run --group tools tools/jkfit_from_pyscf.py
 uv run --group tools tools/emit/sad_reference.py
 uv run --group tools tools/emit/scf_reference.py
 uv run --group tools tools/emit/df_reference.py
+uv run --group tools tools/emit/cis_reference.py
 uv run --group tools tools/emit/localization_reference.py
 uv run --group tools tools/emit/casci_reference.py
 uv run --group tools tools/emit/fci_step_reference.py
