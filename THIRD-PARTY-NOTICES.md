@@ -15,7 +15,8 @@ Everything below is one of three kinds:
   redistributing one.
 - **Code derived from a third-party implementation** — one module.
 - **Acknowledgements with no obligation attached**, kept so this file and the
-  source comments agree.
+  source comments agree. One of them, GPU4PySCF's, covers a table of published
+  constants that is compiled into the binary.
 
 ## Basis Set Exchange — BSD 3-Clause
 
@@ -159,12 +160,35 @@ not a build or runtime one.
 Copyright 2021-2024 The PySCF Developers. All Rights Reserved. (GPU4PySCF
 ships no `NOTICE`; this is the copyright line its own sources carry.)
 
+GPU4PySCF (<https://github.com/pyscf/gpu4pyscf>) is the source of two things
+in the tree. Neither carries an attribution obligation, as explained below.
+This entry exists so that the source comments and this file do not disagree.
+
+### 1. The `orthogonalize` warning threshold
+
 `src/recipes/orthogonalize/orthogonalize.cpp` sets its `cond(S)` warning
 threshold to `1e10`, the value GPU4PySCF's `check_linear_dependency` warns at,
 and the comment there says so. A single numeric threshold is not a
-copyrightable work and no attribution is required; this entry exists so that
-the source comment and this file do not disagree. No GPU4PySCF code is present
-in the tree.
+copyrightable work.
+
+### 2. The RIS minimal auxiliary basis (`src/cis/ris_basis/`)
+
+`free_breakfast.cis.ris_basis` follows GPU4PySCF's `gpu4pyscf/tdscf/ris.py`
+`get_minimal_auxbasis` as of commit `8d132c7` (2025-04-28). On each atom it
+builds one uncontracted shell per l, of exponent θ / R_A². The defaults are
+GPU4PySCF's (θ = 0.2, s + p on a heavy atom, s alone on H). The method is
+Zhou and Parker's TDDFT-ris; the C++ is this project's own, written against
+this tree's `ShellStamp` / `BasisSet`, not translated line by line.
+
+`kGhoshRadii` in `ris_basis.cpp` is GPU4PySCF's `gpu4pyscf/tdscf/parameter.py`
+`radii`, copied verbatim for H..Kr and compiled into the binary. These are
+published physical constants: the GB radii of D. C. Ghosh, R. Biswas,
+T. Chakraborty, N. Islam and S. K. Rajak, J. Mol. Struct. THEOCHEM **865**,
+60–67 (2008). They are reproducible from Slater's rules. The As entry
+(1.145 Å, where the rule gives 1.150) is kept as GPU4PySCF has it.
+`src/cis/ris_basis/README.md` records the cross-check. Like the basis-set
+exponents, the numbers are data from the literature, not a copyrightable
+expression; GPU4PySCF is the carrier this tree read them from.
 
 ## Build and link dependencies
 
