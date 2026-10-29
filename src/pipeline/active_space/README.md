@@ -51,12 +51,28 @@ core; the rest, ascending. That is PySCF's `sort_mo`, except that `active` is
 R is returned as well as C R: a natural-orbital Molden file rotates R's
 active block, and the energy it prints per orbital is Σ_k R_kj² ε_k.
 
+**An open shell** (ROHF, `n_alpha > n_beta`) is taken by index. N is
+`n_alpha + n_beta`, the ScfOutput's first `n_beta` orbitals are doubly
+occupied and the next `n_alpha − n_beta` singly, and the order must keep
+them apart: every core orbital among the doubly occupied ones, and every
+singly occupied one active. Either broken is `InvalidConfig`, naming the
+orbital. With both kept the active space holds `n_alpha − ncore` alpha and
+`n_beta − ncore` beta electrons, whose difference is the SCF's 2S, as
+PySCF's `mcscf.CASCI(mf, ncas, (n_α, n_β))` over its ROHF has it. The frontier
+default keeps both whenever `nelecas` ≥ `n_alpha − n_beta` (the core stops at
+`n_beta`) and ncore + ncas ≥ `n_alpha` (the active space reaches the last
+singly occupied orbital). A closed
+shell's order is `orbital_order`'s alone, as before: `sort_mo` does not ask
+whether a core it fills reaches past the occupied orbitals, and neither does
+this.
+
 ## AVAS
 
 `avas` names MINAO AOs (Sayfutyarova et al., JCTC 13, 4063 (2017)), and the
 selection is PySCF's `mcscf.avas` at its defaults for a closed shell: ncore 0,
 no IAOs, `openshell_option` 2 (which for a closed shell is no option at all),
-canonicalized.
+canonicalized. An open-shell ScfOutput under `avas` is `Unsupported`:
+PySCF's open-shell options are a choice this does not make yet.
 
 - **The labels** are `<symbol> <n><l>`: every component of that shell of
   MINAO on every atom of the element, n counted from l + 1 over the atom's
@@ -103,15 +119,16 @@ What it settled:
 - **Host synchronizations:** none by index; under `avas`, one for the
   overlaps and C and one per eigenproblem.
 
-Errors, each message prefixed `active space:`: first, Unsupported for an
-open-shell ScfOutput, `n_alpha != n_beta` (N is their sum, and AVAS's
-occupied block the first `n_alpha` orbitals); under `avas`, InvalidConfig
-for a label not of the form, a label naming no MINAO AO of the molecule, a
+Errors, each message prefixed `active space:`: under `avas`, first,
+Unsupported for an open-shell ScfOutput, `n_alpha != n_beta`; then
+InvalidConfig for a label not of the form, a label naming no MINAO AO of the molecule, a
 threshold outside (0, 1), `ncas`, `nelecas` or `active` set beside it, or no
 orbital selected; Numerical for an S2 not positive definite. Otherwise
 `orbital_order`'s InvalidConfig (ncas below 1; nelecas negative, above 2 ncas
 or above N; an odd core electron count; ncore + ncas above nmo; `active` not
-ncas distinct indices in [0, nmo)); `overlap_mixed_spherical`'s and
+ncas distinct indices in [0, nmo)), and for an open shell by index
+InvalidConfig for a core orbital not doubly occupied or a singly occupied one
+not active; `overlap_mixed_spherical`'s and
 `diagonalize`'s own errors; GpuRuntime for a failed copy or gemm.
 
 ## Tests
@@ -120,7 +137,8 @@ Through the Casci step, which is the selection's one caller so far:
 `test/gtest/pipeline_casci_gpu.cpp` checks the index path's C R against the
 ScfOutput's columns in `orbital_order`'s order, exactly, and the AVAS cases' ncore,
 ncas and nelecas against PySCF's `mcscf.avas` (`casci/README.md` has the
-cases); `pipeline_config_host.cpp` has the `[casci]` selection keys and every
+cases); and the open shell's two refusals, and its AVAS one, over a hand-built
+ScfOutput. `pipeline_config_host.cpp` has the `[casci]` selection keys and every
 `orbital_order` refusal.
 
 ## Files

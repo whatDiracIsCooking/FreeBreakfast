@@ -7,10 +7,12 @@
 // occupations, the 1-RDM's eigenvalues, which unlike the 1-RDM do not depend
 // on the active orbitals' signs. Every 1-RDM is symmetric with trace nelecas,
 // and the orbitals are the ScfOutput's, reordered. A case at a multiplicity
-// other than 1 is a CASCI of that spin over the RHF orbitals: the Scf step
-// refuses such a molecule, so the chain runs as the singlet and the step again
-// by hand with the molecule at the multiplicity. Runs the device chain, so needs
-// a GPU.
+// other than 1 is a CASCI of that spin over the RHF orbitals: the chain runs as
+// the singlet and the step again by hand with the molecule at the
+// multiplicity. An "rohf" case is over the Scf step's own open shell instead:
+// the chain runs at its multiplicity with [eri] density-fitted, the DF-ROHF the
+// reference's orbitals are. Then the open shell's refusals, over a hand-built
+// ScfOutput. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -76,8 +78,18 @@ std::vector<double> download(fb::DeviceResources &res, const double *data, std::
   return host;
 }
 
+// The reference's fitting set for an "rohf" case's DF-ROHF, compiled in, by
+// the name casci.json records.
+constexpr std::string_view kDfAuxBasis = "cc-pVDZ-JKFIT";
+
+// Whether the reference's orbitals are its DF-ROHF's.
+bool over_rohf(const fb::json &entry) {
+  return entry.value("scf", std::string{"rhf"}) == "rohf";
+}
+
 // The reference's molecule written as an XYZ file in dir, and a config naming
-// it with the given tables after it.
+// it with the given tables after it: at its multiplicity for an "rohf" case,
+// whose [eri] is then density-fitted.
 std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::json &entry,
                                    std::string_view tables) {
   // Bohr in the reference, Angstrom in an XYZ file.
@@ -91,9 +103,16 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
   EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
-  const std::string toml = std::format(
-      "[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n{}",
-      entry.at("charge").get<std::int32_t>(), entry.at("basis").get<std::string>(), tables);
+  std::string toml = std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n",
+                                 entry.at("charge").get<std::int32_t>());
+  if (over_rohf(entry)) {
+    EXPECT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
+    toml += std::format("multiplicity = {}\n[eri]\nmode = \"density_fitting\"\naux_basis = "
+                        "\"{}\"\n",
+                        entry.at("multiplicity").get<std::int32_t>(), kDfAuxBasis);
+  }
+  toml +=
+      std::format("[basis_set]\nbasis = \"{}\"\n{}", entry.at("basis").get<std::string>(), tables);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   return dir / "run.toml";
 }
@@ -200,9 +219,10 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   ASSERT_TRUE(chain.has_value() && scf.has_value() && basis.has_value());
 
   // The step again by hand over the same products, but the molecule's
-  // multiplicity, when the reference's is not 1.
+  // multiplicity, when the reference's is not 1 over RHF orbitals.
   std::optional<fb::CasciOutput> by_hand;
-  if (const auto multiplicity = entry.value("multiplicity", std::int32_t{1}); multiplicity != 1) {
+  if (const auto multiplicity = entry.value("multiplicity", std::int32_t{1});
+      multiplicity != 1 && !over_rohf(entry)) {
     fb::DeviceResources &res = node.device(0);
     const fb::ScopedDeviceIndex on{res.dev_idx()};
     const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
@@ -295,7 +315,8 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasci,
                          ::testing::Values(Case{"h2o_sto3g"}, Case{"h2o_ccpvdz"}, Case{"n2_ccpvdz"},
                                            Case{"h2o_ccpvdz_explicit"}, Case{"h2o_ccpvdz_triplet"},
                                            Case{"h2o_ccpvdz_avas"}, Case{"n2_ccpvdz_avas"},
-                                           Case{"n2_ccpvdz_avas_2p"}),
+                                           Case{"n2_ccpvdz_avas_2p"}, Case{"nh2_ccpvdz_rohf"},
+                                           Case{"ch2_ccpvdz_rohf"}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // An active space past the orbitals is refused when the step runs, and the
@@ -389,11 +410,13 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
   EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 }
 
-// An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
-// naming the step, and by the active-space selection called on its own. The
-// rest of the chain is water's CAS(4,4) in STO-3G; the open shell's orbitals
-// are never read.
-TEST(PipelineCasci, AnOpenShellScfOutputIsUnsupported) {
+// An open-shell ScfOutput, n_alpha != n_beta, is taken by index only, with its
+// core doubly occupied and every singly occupied orbital active: each broken
+// is refused by the selection, naming the orbital, and AVAS over it as
+// Unsupported. The rest of the chain is water's in STO-3G, 7 orbitals, under
+// a hand-built ScfOutput of 6 alpha and 4 beta electrons, orbitals 4 and 5
+// singly occupied; its orbitals are never read.
+TEST(PipelineCasci, AnOpenShellSelectionKeepsItsOccupations) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_sto3g");
   const fb::test::ScratchDir dir("pipeline_casci");
@@ -406,33 +429,45 @@ TEST(PipelineCasci, AnOpenShellScfOutputIsUnsupported) {
 
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::Molecule &molecule = calc->get<fb::MoleculeOutput>()->molecule;
   const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
   const fb::ScfOutput open{.energy = 0.0,
                            .iterations = 0,
                            .n_alpha = 6,
                            .n_beta = 4,
-                           .mo_energies = {},
+                           .mo_energies = std::vector<double>(7, 0.0),
                            .c = fb::SphericalMatrixAO(res, basis),
                            .d = fb::SphericalMatrixAO(res, basis)};
-  const fb::CasciStep &step = *calc->step<fb::CasciStep>();
-  const auto refused =
-      step.run(fb::StepInput<fb::CasciStep>{*calc->get<fb::MoleculeOutput>(),
-                                            *calc->get<fb::BasisSetOutput>(),
-                                            *calc->get<fb::SphericalTransformOutput>(),
-                                            *calc->get<fb::PrimitivePairClassesOutput>(),
-                                            *calc->get<fb::CoreHamiltonianOutput>(), open},
-               res);
-  ASSERT_FALSE(refused.has_value());
-  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
-  EXPECT_NE(refused.error().message.find("casci: only a closed-shell reference"), std::string::npos)
-      << refused.error().message;
+  const auto refusal = [&](const fb::ActiveSpaceSelection &selection) {
+    const auto selected = selection.select(res, molecule, basis, open);
+    EXPECT_FALSE(selected.has_value());
+    return selected.has_value() ? fb::Error{} : selected.error();
+  };
 
-  const auto selected = step.select(res, calc->get<fb::MoleculeOutput>()->molecule, basis, open);
-  ASSERT_FALSE(selected.has_value());
-  EXPECT_EQ(selected.error().kind, fb::ErrorKind::Unsupported);
-  EXPECT_NE(selected.error().message.find("active space: only a closed-shell reference"),
-            std::string::npos)
-      << selected.error().message;
+  // The frontier CAS(4,4) is 3..6 over a core of 0..2: both kept.
+  const auto frontier =
+      fb::ActiveSpaceSelection{.ncas = 4, .nelecas = 4}.select(res, molecule, basis, open);
+  ASSERT_TRUE(frontier.has_value()) << frontier.error().message;
+  EXPECT_EQ(frontier->ncore, 3);
+  EXPECT_EQ(frontier->nelecas, 4);
+
+  // Active 0, 1, 4 and 5 push the core to 2, 3 and 6: 6 is empty.
+  const fb::Error core =
+      refusal(fb::ActiveSpaceSelection{.ncas = 4, .nelecas = 4, .active = {0, 1, 4, 5}});
+  EXPECT_EQ(core.kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(core.message.find("core orbital 6 is not doubly occupied"), std::string::npos)
+      << core.message;
+
+  // CAS(4,2) over 3 and 4 leaves 5, singly occupied, outside.
+  const fb::Error single =
+      refusal(fb::ActiveSpaceSelection{.ncas = 2, .nelecas = 4, .active = {3, 4}});
+  EXPECT_EQ(single.kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(single.message.find("singly occupied orbital 5"), std::string::npos) << single.message;
+
+  const fb::Error avas = refusal(fb::ActiveSpaceSelection{.avas = {"O 2p"}});
+  EXPECT_EQ(avas.kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(avas.message.find("active space: avas over an open-shell reference"), std::string::npos)
+      << avas.message;
 }
 
 // A multiplicity that does not fit the active space is refused when the step

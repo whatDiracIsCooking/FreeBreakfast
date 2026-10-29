@@ -21,7 +21,8 @@ export namespace free_breakfast {
 struct ActiveSpace {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.
   int32_t ncore;
-  /// @brief The active orbitals: columns [ncore, ncore + ncas) of @ref c.
+  /// @brief The active orbitals, an open shell's singly occupied ones among
+  /// them: columns [ncore, ncore + ncas) of @ref c.
   int32_t ncas;
   /// @brief The active electrons, N - 2 ncore.
   int32_t nelecas;
@@ -77,11 +78,15 @@ struct ActiveSpaceSelection {
   /// @brief The active space over @p scf's orbitals, on @p res's device: by
   /// @ref orbital_order's permutation over its n_alpha + n_beta electrons, or,
   /// under @ref avas, AVAS's rotation with its first n_alpha orbitals occupied.
-  /// Synchronizes res.stream(): under @ref avas, once for the overlaps and
-  /// once per eigenproblem.
+  /// For an open shell (ROHF, n_alpha > n_beta) by index, the core is of the
+  /// first n_beta orbitals, the doubly occupied ones, and the singly occupied
+  /// ones, [n_beta, n_alpha), are all active. Synchronizes res.stream(): under
+  /// @ref avas, once for the overlaps and once per eigenproblem.
   ///
-  /// @return The space; Unsupported, before anything is queued, for an open
-  ///         shell, n_alpha != n_beta; @ref orbital_order's InvalidConfig; under @ref avas,
+  /// @return The space; @ref orbital_order's InvalidConfig; for an open shell
+  ///         by index, InvalidConfig for a core orbital not doubly occupied
+  ///         or a singly occupied one not active; under @ref avas, Unsupported,
+  ///         before anything is queued, for an open shell, and
   ///         InvalidConfig for a malformed label or one naming no MINAO AO of
   ///         the molecule, @ref avas_threshold outside (0, 1), @ref ncas,
   ///         @ref nelecas or @ref active set beside it, or no orbital

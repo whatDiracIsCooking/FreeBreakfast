@@ -97,7 +97,10 @@ emit/casci_reference.py
                   over its RHF in this tree's basis files (and mcscf.avas's
                   active spaces over this tree's MINAO), the lowest
                   singlets' (or a triplet case's) energies, <S^2> and natural occupations, the
-                  reference the Casci step is tested against. Needs PySCF.
+                  reference the Casci step is tested against; and over a
+                  DF-ROHF's orbitals, a doublet and a triplet. --append
+                  keeps the file's cases and adds only new ones. Needs
+                  PySCF.
 emit/fci_step_reference.py
                   Write test/gtest/data/fci/fci.json: PySCF fci.FCI over
                   every orbital of its RHF in this tree's basis files, the
@@ -106,13 +109,16 @@ emit/fci_step_reference.py
 emit/casscf_reference.py
                   Write test/gtest/data/casscf/casscf.json: PySCF
                   mcscf.CASSCF (one root, or two singlets state-averaged)
-                  over its RHF in this tree's basis files, checked against
+                  over its RHF in this tree's basis files (and, fitted only,
+                  from a DF-ROHF's orbitals, a doublet and a triplet),
+                  checked against
                   mc2step and polished by Newton steps; at the start, the
                   CASCI energies and the sign-invariant parts of gen_g_hop's
                   gradient and orbital Hessian; converged, the energies,
                   each space's orbital energies and the natural occupations,
                   the reference src/response, src/mcscf and the Casscf step
-                  are tested against. Needs PySCF.
+                  are tested against. --append keeps each file's cases and
+                  adds only new ones. Needs PySCF.
 emit/nevpt2_reference.py
                   Write test/gtest/data/nevpt2/nevpt2_df.json: PySCF's SC
                   DF-NEVPT2 per root on the polished DF CASSCF orbitals of

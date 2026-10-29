@@ -1,7 +1,8 @@
 # Pipeline: Casci
 
-Complete active space CI over the SCF's orbitals: the lowest singlets of an
-active space, named by index or picked by AVAS over MINAO, its Hamiltonian
+Complete active space CI over the SCF's orbitals, RHF or ROHF: the lowest
+roots of the molecule's spin of an active space, named by index or picked by
+AVAS over MINAO (a closed shell's only), its Hamiltonian
 built integral-direct, the CI solved over the GPU sigma, each root's 1-RDM,
 and the lowest root's natural orbitals as Molden.
 
@@ -71,18 +72,23 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
 
 What it settled:
 
-- **The spin is the molecule's, the orbitals the SCF's.** The SCF must be
-  closed-shell: an open-shell ScfOutput (`n_alpha != n_beta`) is refused
-  `Unsupported` before anything is queued. That guard is on the SCF's spin,
-  not the molecule's: the CI's sector is N_α − N_β = 2S from
-  `Molecule::multiplicity()`, whose lowest spin is S, so a triplet molecule
-  over RHF orbitals is a triplet CASCI (PySCF's `mcscf.CASCI(mf, ncas,
-  (n_α, n_β))` over an RHF). A multiplicity that does not fit the active
-  space (2S above nelecas, of the other parity, or N_α above ncas) is
-  `InvalidConfig`, before the Hamiltonian is built. The Scf step itself
-  refuses a multiplicity other than 1 today, so a triplet over RHF orbitals is
-  reached by running the step by hand with a triplet `MoleculeOutput`, as its
-  test does.
+- **The spin is the molecule's, the orbitals the SCF's.** The CI's sector is
+  N_α − N_β = 2S from `Molecule::multiplicity()`, whose lowest spin is S, so
+  a triplet molecule over RHF orbitals is a triplet CASCI (PySCF's
+  `mcscf.CASCI(mf, ncas, (n_α, n_β))` over an RHF), reached by running the
+  step by hand with a triplet `MoleculeOutput`, as its test does. A
+  multiplicity that does not fit the active space (2S above nelecas, of the
+  other parity, or N_α above ncas) is `InvalidConfig`, before the
+  Hamiltonian is built.
+- **Over ROHF orbitals** (`n_alpha > n_beta`, the Scf step's open shell at
+  the same multiplicity) the active space is by index, its core the doubly
+  occupied orbitals and every singly occupied one active, or the selection
+  refuses it `InvalidConfig` (`active_space/README.md`); `avas` over an open
+  shell is `Unsupported`. The core is then doubly occupied in the ROHF too,
+  so E_core and h_eff are the closed-core ones above, and the CI is PySCF's
+  `mcscf.CASCI` over its ROHF. The Hamiltonian is exact even when the SCF was
+  density-fitted (ROHF is density-fitted only today): the step builds its own
+  classes and reads no `EriOutput`.
 - **The range checks are the selection's,** when the step runs; a config
   reads only types: the selection's keys as `active_space/README.md` says,
   and `nroots` an integer. `molden` is not a key: `pipeline/config` sets it
@@ -104,7 +110,7 @@ GpuRuntime for a failed copy or gemm.
 ## Tests
 
 `test/gtest/pipeline_casci_gpu.cpp`, against PySCF's `mcscf.CASCI` over its own
-RHF in this tree's basis files (`test/gtest/data/casci/`,
+RHF (or DF-ROHF, below) in this tree's basis files (`test/gtest/data/casci/`,
 `tools/emit/casci_reference.py`), through the real registry from a config
 naming `[casci]`, its Scf step at the defaults: H₂O STO-3G and
 cc-pVDZ CAS(4,4) and N₂ cc-pVDZ CAS(6,6) on the frontier orbitals, and H₂O
@@ -133,6 +139,17 @@ A triplet, H₂O cc-pVDZ CAS(4,4) frontier against PySCF's `mcscf.CASCI(mf,
 4, (3, 1))` over the RHF: the chain runs as the singlet, then the step by hand
 with the molecule at multiplicity 3; compared as above, the lowest three
 triplets, ⟨S²⟩ = 2.
+
+Over ROHF orbitals: NH₂'s doublet, cc-pVDZ CAS(5,5) frontier, and CH₂'s ³B₁
+triplet, cc-pVDZ CAS(4,4) frontier, against PySCF's `mcscf.CASCI` over its
+DF-ROHF (this tree's `cc-pVDZ-JKFIT`), exact integrals. The chain runs at the
+molecule's multiplicity with `[eri] mode = "density_fitting"`, so its Scf
+step is the same DF-ROHF; compared as above, the lowest three roots of the
+spin, ⟨S²⟩ = 3/4 and 2. The open shell's selection is checked over a
+hand-built ScfOutput (6 α and 4 β electrons over water's STO-3G orbitals):
+the frontier CAS(4,4) taken, a core reaching an empty orbital and a singly
+occupied orbital left out refused `InvalidConfig`, and `avas` refused
+`Unsupported`.
 
 Also an active space past the orbitals, an AVAS label naming no MINAO AO, and
 a multiplicity that does not fit the active space (0, 2 and 7 for CAS(4,4)),

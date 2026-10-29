@@ -77,25 +77,37 @@ energy, the eigenvalues of the state-averaged Fock (`mc.get_fock`) within
 each of the core, active and virtual spaces, and the state-averaged natural
 occupations.
 
-**Density-fitted**: the same five cases again, from the same starts (the
+**Density-fitted**: the same six cases again, from the same starts (the
 exact RHF's orbitals, the same `active` or AVAS pick), with
 `mcscf.CASSCF(...).density_fit(auxbasis=...)`: every two-electron quantity
 of the CASSCF, the core's J and K included, over the fitted integrals, and
 gated, polished and recorded exactly as above. The fitting set is this
-tree's data/aux_basis/cc-pVDZ-JKFIT.json (AUX_FILES), handed to PySCF as
-parsed shells as df_reference.py does: `auxbasis="cc-pvdz-jkfit"` would load
+tree's data/aux_basis/cc-pVDZ-JKFIT.json (casci_reference.py's AUX_FILES),
+handed to PySCF as parsed shells as df_reference.py does:
+`auxbasis="cc-pvdz-jkfit"` would load
 PySCF's own library copy, and a test comparing at 1e-8 would then be
 comparing two fitting sets. The tool checks that the auxiliary molecule
 PySCF fitted over is exactly the one the file gives. The RHF is the exact
 one, as above, so the starts are the exact cases' starts; only the CASSCF
 is fitted.
 
+**Over ROHF**: an "rohf" case is density-fitted only, and starts from PySCF's
+DF-ROHF orbitals at its multiplicity over the same fitting set (casci_reference.py's
+`df_rohf`, aufbau-checked), since that is the open shell the Scf step runs;
+the ROHF's own Roothaan effective Fock is what the start's canonical check
+reads. Its core must be doubly occupied and its active space hold every
+singly occupied orbital. It has no casscf.json counterpart, until the Scf
+step runs an integral-direct ROHF.
+
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit/casscf_reference.py [--only exact|df]
+        tools/emit/casscf_reference.py [--only exact|df] [--append]
 
 writes test/gtest/data/casscf/casscf.json (the exact cases) and
 casscf_df.json (the density-fitted ones), or the one `--only` names. Re-run
-it to regenerate; the files are never hand-edited. BLAS and OpenMP are
+it to regenerate; the files are never hand-edited. `--append` keeps every
+case a file already has byte for byte and computes only the ones CASES adds
+(the description and provenance are the run's), since a full rerun moves
+the recorded cases by the drift below. BLAS and OpenMP are
 pinned to THREADS, so a run does not depend on the machine's core count; the
 output is still not bit-for-bit reproducible (threaded reductions), only to
 the drift the data READMEs state.
@@ -112,7 +124,6 @@ for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
 
 import argparse  # noqa: E402
 import datetime  # noqa: E402
-import hashlib  # noqa: E402
 import json  # noqa: E402
 import pathlib  # noqa: E402
 import platform  # noqa: E402
@@ -120,21 +131,20 @@ import platform  # noqa: E402
 import numpy  # noqa: E402
 import pyscf  # noqa: E402
 from active_integrals_reference import NITROGEN  # noqa: E402
-from casci_reference import WEIGHT_MARGIN  # noqa: E402
+from casci_reference import (  # noqa: E402
+    WEIGHT_MARGIN,
+    aux_basis,
+    check_open_shell,
+    df_rohf,
+)
 from fci_reference import dense_hamiltonian  # noqa: E402
 from pyscf import ao2mo, df, fci, gto, lib, mcscf, scf  # noqa: E402
 from pyscf.mcscf import avas, mc1step  # noqa: E402
-from scf_reference import BASES, WATER, pyscf_basis  # noqa: E402
+from scf_reference import AMIDOGEN, BASES, METHYLENE, WATER, pyscf_basis  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "casscf" / "casscf.json"
 OUT_DF = OUT.with_name("casscf_df.json")
-
-# The fitting set of each orbital basis, under data/aux_basis (pyscf_basis
-# reads from data/basis, hence the relative path): df_reference.py's pairing.
-# Not imported from there, because importing it pins BLAS and OpenMP to one
-# thread.
-AUX_FILES = {"cc-pvdz": ("cc-pVDZ-JKFIT", "../aux_basis/cc-pVDZ-JKFIT.json")}
 
 # Formaldehyde in the yz plane, C=O along z: C=O 1.203 A, C-H 1.101 A,
 # H-C-H 116.5 degrees. Bohr.
@@ -185,6 +195,26 @@ CASES = [
         "basis": "cc-pvdz",
         "avas": {"labels": ["O 2p", "H 1s"], "threshold": 0.2},
     },
+    # From DF-ROHF orbitals, density-fitted only, frontier: NH2's doublet
+    # CAS(5,5) (casci_reference.py's) and CH2's 3B1 triplet CAS(6,6), its core
+    # the 1a1 alone. CH2's CAS(4,4), casci_reference.py's, is not clean: both
+    # optimizers reach a saddle point, H's least eigenvalue -0.025 there.
+    {
+        "name": "nh2_ccpvdz_rohf",
+        "atoms": AMIDOGEN,
+        "basis": "cc-pvdz",
+        "cas": (5, 5),
+        "multiplicity": 2,
+        "rohf": True,
+    },
+    {
+        "name": "ch2_ccpvdz_rohf",
+        "atoms": METHYLENE,
+        "basis": "cc-pvdz",
+        "cas": (6, 6),
+        "multiplicity": 3,
+        "rohf": True,
+    },
 ]
 
 CONV_TOL = 1e-12
@@ -218,13 +248,14 @@ FD_DIRECTIONS = 3
 
 
 def molecule(case: dict) -> gto.Mole:
+    """The case's molecule: a closed shell, or an "rohf" case's open one."""
     symbols = {symbol for symbol, _ in case["atoms"]}
     return gto.M(
         atom=[[symbol, coord] for symbol, coord in case["atoms"]],
         unit="Bohr",
         basis=pyscf_basis(BASES[case["basis"]], symbols),
         charge=0,
-        spin=0,
+        spin=case.get("multiplicity", 1) - 1 if case.get("rohf") else 0,
         cart=False,
         verbose=0,
     )
@@ -508,20 +539,6 @@ def converged(case, mf, mo, ncas, nelecas, weights, auxbasis=None) -> dict:
     }
 
 
-def aux_basis(case: dict, mol: gto.Mole) -> tuple[dict, dict]:
-    """The case's fitting set as PySCF shells, and its provenance."""
-    name, file = AUX_FILES[case["basis"]]
-    symbols = {symbol for symbol, _ in case["atoms"]}
-    path = (ROOT / "data" / "basis" / file).resolve()
-    provenance = {
-        "name": name,
-        "file": str(path.relative_to(ROOT)),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-        "naux": int(df.addons.make_auxmol(mol, pyscf_basis(file, symbols)).nao),
-    }
-    return pyscf_basis(file, symbols), provenance
-
-
 def check_aux(name: str, mc, mol: gto.Mole, auxbasis: dict) -> None:
     """Refuse a fit over any set but exactly `auxbasis`'s shells."""
     expected = df.addons.make_auxmol(mol, auxbasis)
@@ -537,12 +554,18 @@ def case_reference(case: dict, fitted: bool = False) -> dict:
     name = case["name"]
     mol = molecule(case)
     auxbasis, aux_provenance = aux_basis(case, mol) if fitted else (None, None)
-    mf = scf.RHF(mol)
-    mf.conv_tol = 1e-14
-    mf.conv_tol_grad = 1e-11
-    mf.max_cycle = 200
-    mf.kernel()
-    assert mf.converged, f"{name}: RHF did not converge"
+    if case.get("rohf"):
+        # The fitted ROHF itself: the start's canonical check reads its
+        # (fitted, Roothaan effective) Fock matrix.
+        assert fitted, f"{name}: an ROHF case is density-fitted only"
+        mf, _ = df_rohf(case, mol)
+    else:
+        mf = scf.RHF(mol)
+        mf.conv_tol = 1e-14
+        mf.conv_tol_grad = 1e-11
+        mf.max_cycle = 200
+        mf.kernel()
+        assert mf.converged, f"{name}: RHF did not converge"
 
     weights = case.get("weights", [1.0])
     if "avas" in case:
@@ -565,6 +588,10 @@ def case_reference(case: dict, fitted: bool = False) -> dict:
         if "active" in case:
             mo = casscf(mf, ncas, nelecas, [1.0]).sort_mo(case["active"], base=0)
     ncore = (mol.nelectron - nelecas) // 2
+    if case.get("rohf"):
+        check_open_shell(
+            name, mol, ncore, case.get("active") or list(range(ncore, ncore + ncas))
+        )
     # N_alpha - N_beta = 2S; an int nelecas is PySCF's (n - n // 2, n // 2).
     two_s = case.get("multiplicity", 1) - 1
     nelec = ((nelecas + two_s) // 2, (nelecas - two_s) // 2)
@@ -593,6 +620,8 @@ def case_reference(case: dict, fitted: bool = False) -> dict:
     }
     if "multiplicity" in case:
         out["multiplicity"] = case["multiplicity"]
+    if case.get("rohf"):
+        out["scf"] = "rohf"
     if fitted:
         check_aux(name, start, mol, auxbasis)
         out["aux_basis"] = aux_provenance
@@ -610,7 +639,19 @@ def provenance() -> dict:
     }
 
 
-def exact() -> dict:
+def cases(out: pathlib.Path, wanted: list[dict], fit: bool, append: bool) -> list[dict]:
+    """The records of `wanted`; when `append`, out's own cases as written
+    and only the ones it lacks computed."""
+    kept = json.loads(out.read_text())["cases"] if append else []
+    written = {case["name"] for case in kept}
+    return kept + [
+        case_reference(case, fitted=fit)
+        for case in wanted
+        if case["name"] not in written
+    ]
+
+
+def exact(append: bool) -> dict:
     return {
         "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, "
         "conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF "
@@ -627,11 +668,11 @@ def exact() -> dict:
         "in each space and the state-averaged natural occupations. Hartree; "
         "coordinates in bohr",
         "provenance": provenance(),
-        "cases": [case_reference(case) for case in CASES],
+        "cases": cases(OUT, [c for c in CASES if not c.get("rohf")], False, append),
     }
 
 
-def fitted() -> dict:
+def fitted(append: bool) -> dict:
     return {
         "description": "As casscf.json's cases, from the same starts (the "
         "exact RHF's orbitals and the same 'active' or AVAS pick), with "
@@ -640,9 +681,13 @@ def fitted() -> dict:
         "over the fitted integrals, gated against mc2step and polished to "
         "|g| < 1e-10 as there. The fitting set is this tree's "
         "data/aux_basis file each case's 'aux_basis' names, handed to PySCF "
-        "as parsed shells, not its library copy. Hartree; coordinates in bohr",
+        "as parsed shells, not its library copy. A case with 'scf' 'rohf' "
+        "starts instead from PySCF's DF-ROHF orbitals over that set (at its "
+        "'multiplicity', conv_tol 1e-14, conv_tol_grad 1e-10), its "
+        "'rhf_energy' and 'mo_energies' that ROHF's, and has no exact "
+        "counterpart. Hartree; coordinates in bohr",
         "provenance": provenance(),
-        "cases": [case_reference(case, fitted=True) for case in CASES],
+        "cases": cases(OUT_DF, CASES, True, append),
     }
 
 
@@ -653,12 +698,17 @@ def main() -> None:
         choices=("exact", "df"),
         help="write only casscf.json (exact) or casscf_df.json (df)",
     )
-    only = parser.parse_args().only
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="keep each file's cases as written; compute only the ones it lacks",
+    )
+    args = parser.parse_args()
     lib.num_threads(THREADS)
     for kind, out, build in (("exact", OUT, exact), ("df", OUT_DF, fitted)):
-        if only not in (None, kind):
+        if args.only not in (None, kind):
             continue
-        doc = build()
+        doc = build(args.append)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(doc, indent=1) + "\n")
         print(f"wrote {out}")

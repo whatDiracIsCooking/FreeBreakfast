@@ -1,5 +1,5 @@
 {
- "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF mcscf.CASCI over its canonical orbitals (the frontier ones, or 'active' by sort_mo, 0-based, or by mcscf.avas over data/basis/minao.json) with fci.direct_spin1 (conv_tol 1e-13, checked against the dense spectrum) at N_alpha - N_beta = 'multiplicity' - 1 (1 when absent): the lowest roots of that spin, their total energy (hartree), <S^2> and natural occupations; coordinates in bohr",
+ "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF mcscf.CASCI over its canonical orbitals (the frontier ones, or 'active' by sort_mo, 0-based, or by mcscf.avas over data/basis/minao.json) with fci.direct_spin1 (conv_tol 1e-13, checked against the dense spectrum) at N_alpha - N_beta = 'multiplicity' - 1 (1 when absent): the lowest roots of that spin, their total energy (hartree), <S^2> and natural occupations. A case with 'scf' 'rohf' is over PySCF's DF-ROHF orbitals instead (at its multiplicity, its 'aux_basis' this tree's data/aux_basis file, conv_tol 1e-14, conv_tol_grad 1e-10), its 'rhf_energy' and 'mo_energies' that ROHF's, and its CASCI integrals exact; coordinates in bohr",
  "provenance": {
   "pyscf": "2.14.0",
   "numpy": "2.5.4",
@@ -822,6 +822,231 @@
      ]
     }
    ]
+  },
+  {
+   "name": "nh2_ccpvdz_rohf",
+   "basis": "cc-pvdz",
+   "charge": 0,
+   "atoms": [
+    {
+     "symbol": "N",
+     "z": 7,
+     "coord": [
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.0,
+      1.514,
+      -1.205
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.0,
+      -1.514,
+      -1.205
+     ]
+    }
+   ],
+   "electrons": 9,
+   "ncas": 5,
+   "nelecas": 5,
+   "ncore": 2,
+   "active": null,
+   "avas": null,
+   "rhf_energy": -55.562832464024126,
+   "mo_energies": [
+    -15.57553382177764,
+    -1.0943610172663192,
+    -0.6237635081294117,
+    -0.4755983606458556,
+    -0.1580301833536475,
+    0.18867842604026874,
+    0.2605571495124206,
+    0.7229681595448922,
+    0.8318428664716659,
+    0.9749087205086124,
+    0.9875536852280953,
+    1.0680779744331632,
+    1.2983346218983116,
+    1.4074044251440236,
+    1.4677564843258397,
+    1.5600941546895701,
+    1.8557649690059626,
+    2.2454062981234353,
+    2.2623114654646503,
+    2.4795402509202695,
+    2.5133671802635877,
+    2.7593603983883224,
+    3.0276239316360845,
+    3.3110030353136177
+   ],
+   "e_core": -47.42656872526077,
+   "roots": [
+    {
+     "energy": -55.56644080421628,
+     "s2": 0.7500000000000002,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9983679135800638,
+      1.995895613113991,
+      0.9999999999999996,
+      0.004043541087181264,
+      0.001692932218762678
+     ]
+    },
+    {
+     "energy": -55.47396895257015,
+     "s2": 0.7499999999999996,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9996634768140364,
+      1.9963037923852491,
+      0.9996684626876438,
+      0.003299300301583926,
+      0.0010649678114844376
+     ]
+    },
+    {
+     "energy": -55.29500594880867,
+     "s2": 0.7499999999999997,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9973221101019154,
+      1.9901007141167788,
+      1.0040522040369175,
+      0.006282984614196484,
+      0.0022419871301904166
+     ]
+    }
+   ],
+   "multiplicity": 2,
+   "scf": "rohf",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 116
+   }
+  },
+  {
+   "name": "ch2_ccpvdz_rohf",
+   "basis": "cc-pvdz",
+   "charge": 0,
+   "atoms": [
+    {
+     "symbol": "C",
+     "z": 6,
+     "coord": [
+      0.13,
+      -0.21,
+      0.17
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      -1.4343,
+      1.0313,
+      0.5717
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.9901,
+      -0.8926,
+      -1.5457
+     ]
+    }
+   ],
+   "electrons": 8,
+   "ncas": 4,
+   "nelecas": 4,
+   "ncore": 2,
+   "active": null,
+   "avas": null,
+   "rhf_energy": -38.92139228074906,
+   "mo_energies": [
+    -11.246283392904653,
+    -0.8499121926014102,
+    -0.5995904120064948,
+    -0.14488112920321816,
+    -0.10357416844131917,
+    0.2097457767262787,
+    0.26548415201303577,
+    0.6149045795543069,
+    0.6940473075777578,
+    0.7196526058882475,
+    0.7330105148026864,
+    0.9220777337419861,
+    1.020796273118051,
+    1.1939585206454468,
+    1.3523981162042595,
+    1.3695482423786587,
+    1.5556245426488944,
+    1.757426247211586,
+    1.8903305804158443,
+    2.119931986177848,
+    2.209794752379641,
+    2.2457086678977514,
+    2.7758649370706285,
+    2.9504033319753598
+   ],
+   "e_core": -34.06423856774497,
+   "roots": [
+    {
+     "energy": -38.92183717766618,
+     "s2": 2.0,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9992792475322336,
+      1.0000207530261906,
+      0.9999999999999993,
+      0.0006999994415748573
+     ]
+    },
+    {
+     "energy": -38.60406372270775,
+     "s2": 1.999999999999999,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9973756107219651,
+      0.999999999999999,
+      0.9999999961418965,
+      0.0026243931361370487
+     ]
+    },
+    {
+     "energy": -38.60209215414199,
+     "s2": 2.0,
+     "degenerate": false,
+     "natural_occupations": [
+      1.997053536409982,
+      1.0000000000167264,
+      1.0,
+      0.002946463573291825
+     ]
+    }
+   ],
+   "multiplicity": 3,
+   "scf": "rohf",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 116
+   }
   }
  ]
 }

@@ -10,9 +10,20 @@ constraint, solved for the lowest NROOTS roots of the M_s = S sector, S from
 the case's "multiplicity" 2S + 1 (default 1), and checked against a dense
 diagonalisation of it, so a Davidson that skipped a root cannot be written
 out; the lowest NKEEP roots of spin S among them are recorded. The RHF is
-always the closed-shell one, so a triplet case is a triplet CASCI over RHF
-orbitals, `mcscf.CASCI(mf, ncas, (n_alpha, n_beta))`; its multiplicity is
-recorded, and only its.
+the closed-shell one unless the case says "rohf", so a triplet case is a
+triplet CASCI over RHF orbitals, `mcscf.CASCI(mf, ncas, (n_alpha, n_beta))`;
+its multiplicity is recorded, and only its.
+
+An "rohf" case's SCF is instead PySCF's density-fitted ROHF at the case's
+multiplicity, over this tree's data/aux_basis file AUX_FILES pairs with the
+orbital basis (handed to PySCF as parsed shells, and checked to be the set it
+fitted over), since that is the open shell the Scf step runs. Its orbitals
+are handed to an exact ROHF object, so the CASCI's core J and K and its
+active integrals are exact, as the Casci step builds them. The tool refuses
+an ROHF whose occupation is not aufbau over its orbital energies (the doubly
+occupied, then the singly occupied, then the empty), whose core reaches past
+the doubly occupied orbitals, or whose active space leaves a singly occupied
+one out; such a case records "scf": "rohf" and its "aux_basis".
 
 An AVAS case names MINAO AO labels and a threshold instead of an active
 space: PySCF's `mcscf.avas` (this tree's data/basis/minao.json as its MINAO,
@@ -30,15 +41,20 @@ space, so each active space keeps every degenerate set of orbitals whole; the
 tool refuses one that splits a set.
 
     UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \\
-        tools/emit/casci_reference.py
+        tools/emit/casci_reference.py [--append]
 
 writes test/gtest/data/casci/casci.json. Re-run it to regenerate; the file is
-never hand-edited.
+never hand-edited. A rerun moves the recorded cases in their last digits
+(threaded BLAS), so `--append` keeps every case the file already has byte for
+byte and computes only the ones CASES adds; the description and provenance
+are the run's.
 """
 
 from __future__ import annotations
 
+import argparse
 import datetime
+import hashlib
 import json
 import pathlib
 import platform
@@ -47,9 +63,9 @@ import numpy
 import pyscf
 from active_integrals_reference import NITROGEN
 from fci_reference import dense_hamiltonian
-from pyscf import ao2mo, fci, gto, mcscf, scf
+from pyscf import ao2mo, df, fci, gto, mcscf, scf
 from pyscf.mcscf import avas
-from scf_reference import BASES, WATER, pyscf_basis
+from scf_reference import AMIDOGEN, BASES, METHYLENE, WATER, pyscf_basis
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "casci" / "casci.json"
@@ -103,7 +119,32 @@ CASES = [
         "basis": "cc-pvdz",
         "avas": {"labels": ["N 2p"], "threshold": 0.5},
     },
+    # Over DF-ROHF orbitals: NH2's doublet CAS(5,5), its core 1a1 and 2a1 and
+    # its singly occupied 1b1 active; CH2's 3B1 triplet CAS(4,4), its core 1a1
+    # and 2a1 and both singly occupied orbitals active.
+    {
+        "name": "nh2_ccpvdz_rohf",
+        "atoms": AMIDOGEN,
+        "basis": "cc-pvdz",
+        "cas": (5, 5),
+        "multiplicity": 2,
+        "rohf": True,
+    },
+    {
+        "name": "ch2_ccpvdz_rohf",
+        "atoms": METHYLENE,
+        "basis": "cc-pvdz",
+        "cas": (4, 4),
+        "multiplicity": 3,
+        "rohf": True,
+    },
 ]
+
+# The fitting set of each orbital basis an "rohf" case's DF-ROHF is over,
+# under data/aux_basis (pyscf_basis reads from data/basis, hence the relative
+# path): df_reference.py's pairing. Not imported from there, because
+# importing it pins BLAS and OpenMP to one thread.
+AUX_FILES = {"cc-pvdz": ("cc-pVDZ-JKFIT", "../aux_basis/cc-pVDZ-JKFIT.json")}
 
 # Roots solved for, and those of the case's spin kept among them, unless a
 # case says "nkeep".
@@ -131,28 +172,90 @@ def check_degeneracies(name: str, mo_energy: numpy.ndarray, active: list[int]):
             start = i
 
 
+def aux_basis(case: dict, mol: gto.Mole) -> tuple[dict, dict]:
+    """The case's fitting set as PySCF shells, and its provenance."""
+    name, file = AUX_FILES[case["basis"]]
+    symbols = {symbol for symbol, _ in case["atoms"]}
+    path = (ROOT / "data" / "basis" / file).resolve()
+    provenance = {
+        "name": name,
+        "file": str(path.relative_to(ROOT)),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "naux": int(df.addons.make_auxmol(mol, pyscf_basis(file, symbols)).nao),
+    }
+    return pyscf_basis(file, symbols), provenance
+
+
+def df_rohf(case: dict, mol: gto.Mole) -> tuple[scf.hf.SCF, dict]:
+    """PySCF's converged DF-ROHF over exactly the case's fitting set, its
+    occupation checked to be aufbau, and the set's provenance."""
+    name = case["name"]
+    auxbasis, provenance = aux_basis(case, mol)
+    mf = scf.ROHF(mol).density_fit(auxbasis=auxbasis)
+    mf.conv_tol = 1e-14
+    mf.conv_tol_grad = 1e-10
+    mf.max_cycle = 200
+    mf.kernel()
+    assert mf.converged, f"{name}: DF-ROHF did not converge"
+    expected = df.addons.make_auxmol(mol, auxbasis)
+    used = mf.with_df.auxmol
+    assert used.nao == expected.nao, f"{name}: aux size {used.nao}"
+    assert numpy.array_equal(used._bas, expected._bas), f"{name}: aux shells"
+    assert numpy.array_equal(used._env, expected._env), f"{name}: aux exponents"
+    n_alpha, n_beta = mol.nelec
+    aufbau = numpy.zeros(len(mf.mo_occ))
+    aufbau[:n_alpha] = 1
+    aufbau[:n_beta] = 2
+    assert numpy.array_equal(mf.mo_occ, aufbau), f"{name}: ROHF not aufbau"
+    return mf, provenance
+
+
+def check_open_shell(name: str, mol: gto.Mole, ncore: int, active: list[int]):
+    """Refuse an ROHF active space whose core, sort_mo's lowest ncore
+    orbitals not active, reaches past the doubly occupied orbitals, or which
+    leaves a singly occupied one out."""
+    n_alpha, n_beta = mol.nelec
+    core = [i for i in range(mol.nao) if i not in active][:ncore]
+    assert all(i < n_beta for i in core), f"{name}: core past doubly occupied"
+    assert all(i in active for i in range(n_beta, n_alpha)), (
+        f"{name}: a singly occupied orbital is not active"
+    )
+
+
 def case_reference(case: dict) -> dict:
     """The CASCI reference of one active space."""
+    name = case["name"]
     symbols = {symbol for symbol, _ in case["atoms"]}
+    # N_alpha - N_beta = 2S.
+    two_s = case.get("multiplicity", 1) - 1
+    rohf = case.get("rohf", False)
     mol = gto.M(
         atom=[[symbol, coord] for symbol, coord in case["atoms"]],
         unit="Bohr",
         basis=pyscf_basis(BASES[case["basis"]], symbols),
         charge=0,
-        spin=0,
+        spin=two_s if rohf else 0,
         cart=False,
         verbose=0,
     )
-    mf = scf.RHF(mol)
-    # As active_integrals_reference.py: a CASCI energy moves to first
-    # order in the orbitals.
-    mf.conv_tol = 1e-14
-    mf.conv_tol_grad = 1e-11
-    mf.max_cycle = 200
-    mf.kernel()
-    assert mf.converged, f"{case['name']}: RHF did not converge"
-
-    name = case["name"]
+    if rohf:
+        fitted, aux_provenance = df_rohf(case, mol)
+        # The fitted orbitals, over exact integrals: the core's J and K are
+        # the SCF object's get_jk, so it must not be the fitted one.
+        mf = scf.ROHF(mol)
+        mf.mo_coeff = fitted.mo_coeff
+        mf.mo_occ = fitted.mo_occ
+        mf.mo_energy = fitted.mo_energy
+        mf.e_tot = fitted.e_tot
+    else:
+        mf = scf.RHF(mol)
+        # As active_integrals_reference.py: a CASCI energy moves to first
+        # order in the orbitals.
+        mf.conv_tol = 1e-14
+        mf.conv_tol_grad = 1e-11
+        mf.max_cycle = 200
+        mf.kernel()
+        assert mf.converged, f"{name}: RHF did not converge"
     if "avas" in case:
         # AVAS is invariant to rotations within the occupied and within the
         # virtual orbitals, so no degenerate set can be split by it.
@@ -176,8 +279,8 @@ def case_reference(case: dict) -> dict:
         ncore = (mol.nelectron - nelecas) // 2
         active = case.get("active") or list(range(ncore, ncore + ncas))
         check_degeneracies(name, mf.mo_energy, active)
-    # N_alpha - N_beta = 2S.
-    two_s = case.get("multiplicity", 1) - 1
+        if rohf:
+            check_open_shell(name, mol, ncore, active)
     nelec = ((nelecas + two_s) // 2, (nelecas - two_s) // 2)
     mc = mcscf.CASCI(mf, ncas, nelec)
     if "active" in case:
@@ -241,10 +344,21 @@ def case_reference(case: dict) -> dict:
     }
     if "multiplicity" in case:
         out["multiplicity"] = case["multiplicity"]
+    if rohf:
+        out["scf"] = "rohf"
+        out["aux_basis"] = aux_provenance
     return out
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="keep the file's cases as written; compute only the ones it lacks",
+    )
+    kept = json.loads(OUT.read_text())["cases"] if parser.parse_args().append else []
+    written = {case["name"] for case in kept}
     doc = {
         "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, "
         "conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF "
@@ -253,7 +367,11 @@ def main() -> None:
         "data/basis/minao.json) with fci.direct_spin1 (conv_tol 1e-13, "
         "checked against the dense spectrum) at N_alpha - N_beta = "
         "'multiplicity' - 1 (1 when absent): the lowest roots of that spin, "
-        "their total energy (hartree), <S^2> and natural occupations; "
+        "their total energy (hartree), <S^2> and natural occupations. A case "
+        "with 'scf' 'rohf' is over PySCF's DF-ROHF orbitals instead (at its "
+        "multiplicity, its 'aux_basis' this tree's data/aux_basis file, "
+        "conv_tol 1e-14, conv_tol_grad 1e-10), its 'rhf_energy' and "
+        "'mo_energies' that ROHF's, and its CASCI integrals exact; "
         "coordinates in bohr",
         "provenance": {
             "pyscf": pyscf.__version__,
@@ -262,7 +380,8 @@ def main() -> None:
             "host": platform.node(),
             "command": "uv run --group tools tools/emit/casci_reference.py",
         },
-        "cases": [case_reference(case) for case in CASES],
+        "cases": kept
+        + [case_reference(case) for case in CASES if case["name"] not in written],
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(doc, indent=1) + "\n")

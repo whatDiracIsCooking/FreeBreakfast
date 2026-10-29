@@ -5,7 +5,8 @@ hand-edited:
 
 - `casscf.json`: the exact CASSCF references. Its keys, its starts and its
   tolerances are documented in `../README.md` (`casscf/casscf.json`).
-- `casscf_df.json`: the same six cases density-fitted, below.
+- `casscf_df.json`: the same six cases density-fitted, and two more from
+  ROHF orbitals, below.
 
 ## `casscf_df.json`
 
@@ -19,6 +20,19 @@ the CASSCF is fitted: `mcscf.CASSCF(mf, ...).density_fit(auxbasis=...)`, which
 puts every two-electron quantity of the CASSCF over the fitted integrals:
 the core's J and K, the active-space integrals, the orbital gradient and
 Hessian, and the state-averaged Fock.
+
+**Two ROHF cases follow** (`"scf": "rohf"`), with no `casscf.json`
+counterpart: NH₂'s doublet CAS(5,5) and CH₂'s ³B₁ triplet CAS(6,6), cc-pVDZ,
+both frontier. Their start is PySCF's density-fitted ROHF at the case's
+`multiplicity` over the same fitting set (`conv_tol` 1e-14, `conv_tol_grad`
+1e-10), the open shell the Scf step runs, and the CASSCF is fitted as above
+from it, `mcscf.CASSCF(mf, ncas, (n_α, n_β))` with N_α − N_β = 2S. The tool
+checks the ROHF's occupation is aufbau, its core (the 2 and 1 lowest
+orbitals) doubly occupied, and every singly occupied orbital active.
+`casci`'s `orbital_energies` are then over the ROHF's Roothaan effective
+Fock, whose eigenvalues `mo_energies` and `rhf_energy` record. CH₂'s
+CAS(4,4) was tried first and refused: `mc1step` and `mc2step` agree on a
+saddle point, H's least eigenvalue −0.025 there.
 
 Each case is gated, polished and recorded as the exact ones are: `mc1step` at
 `conv_tol` 1e-12 and `conv_tol_grad` 1e-7, `mc.converged` set and checked
@@ -48,7 +62,7 @@ Every case has the keys of a `casscf.json` case (`name`, `basis`, `charge`,
 `atoms`, `electrons`, `nmo`, `ncas`, `nelecas`, `ncore`, `active`, `avas`,
 `weights`, `rhf_energy`, `mo_energies`, `casci`, `casscf`, and
 `multiplicity` where it is not 1), with the same meaning, over the fitted integrals: `rhf_energy` and `mo_energies` are the
-exact RHF's, which is the start; `casci` is the fitted CASCI at it; `casscf`
+exact RHF's, which is the start (an ROHF case's DF-ROHF's); `casci` is the fitted CASCI at it; `casscf`
 is the fitted, polished minimum (`energies` per root, `energy` weighted,
 `orbital_energies` of the fitted state-averaged Fock, `natural_occupations`
 descending, `gradient_norm` below 1e-10). One key more:
@@ -56,6 +70,7 @@ descending, `gradient_norm` below 1e-10). One key more:
 | Key | Meaning |
 |---|---|
 | `aux_basis` | `name` (`cc-pVDZ-JKFIT`), `file` (its path from the repository root), `sha256` (of that file, when written) and `naux` (the case's fitting functions, spherical) |
+| `scf` | `"rohf"` on an ROHF case; absent otherwise |
 
 ### Drift
 
@@ -76,4 +91,6 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 writes `casscf_df.json` alone (about 30 s at 8 threads); `--only exact`
 writes `casscf.json` alone, and no `--only` writes both. Regenerating one
 leaves the other's bytes alone, so a change to the fitted cases does not
-rewrite the exact references' provenance or noise.
+rewrite the exact references' provenance or noise. `--append` keeps every
+case a file already has byte for byte, computing only the ones the tool's
+`CASES` adds; the ROHF cases were written so.

@@ -7,8 +7,10 @@
 // orbital energies, the state-averaged Fock's eigenvalues in each space. Each
 // case also writes its natural orbitals as Molden, read back as
 // io_molden_host reads one. Each case runs again with [eri] density-fitted,
-// against the DF-CASSCF of data/casscf/casscf_df.json. Runs the device chain,
-// so needs a GPU.
+// against the DF-CASSCF of data/casscf/casscf_df.json; so do that file's
+// "rohf" cases, a doublet and a triplet from the Scf step's DF-ROHF at their
+// multiplicity, which have no exact counterpart. Runs the device chain, so
+// needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -73,7 +75,8 @@ const fb::json &reference_case(std::string_view name, std::string_view file = "c
 }
 
 // The reference's molecule written as an XYZ file in dir, and a config naming
-// it with the given tables after it.
+// it with the given tables after it; at its multiplicity for an "rohf" case,
+// whose Scf step is then ROHF.
 std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::json &entry,
                                    std::string_view tables) {
   // Bohr in the reference, Angstrom in an XYZ file.
@@ -87,9 +90,13 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
   EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
-  const std::string toml = std::format(
-      "[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n{}",
-      entry.at("charge").get<std::int32_t>(), entry.at("basis").get<std::string>(), tables);
+  const std::int32_t multiplicity = entry.value("scf", std::string{"rhf"}) == "rohf"
+                                        ? entry.at("multiplicity").get<std::int32_t>()
+                                        : 1;
+  const std::string toml = std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n"
+                                       "multiplicity = {}\n[basis_set]\nbasis = \"{}\"\n{}",
+                                       entry.at("charge").get<std::int32_t>(), multiplicity,
+                                       entry.at("basis").get<std::string>(), tables);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   return dir / "run.toml";
 }
@@ -235,7 +242,9 @@ void expect_matches(const fb::json &entry, const std::string &casscf_toml) {
   EXPECT_EQ(casscf->nelecas, entry.at("nelecas").get<std::int32_t>());
   EXPECT_LT(casscf->gradient_norm, kConvTolGrad);
 
-  // The energies: each root's and the weighted one.
+  // The energies: each root's and the weighted one; each root of the
+  // molecule's spin S, <S^2> = S(S + 1).
+  const double s = (entry.value("multiplicity", std::int32_t{1}) - 1) / 2.0;
   const auto weights = entry.at("weights").get<std::vector<double>>();
   const auto energies = want.at("energies").get<std::vector<double>>();
   ASSERT_EQ(casscf->energies.size(), weights.size());
@@ -243,7 +252,7 @@ void expect_matches(const fb::json &entry, const std::string &casscf_toml) {
   EXPECT_EQ(casscf->weights, weights);
   for (std::size_t r = 0; r < weights.size(); ++r) {
     EXPECT_NEAR(casscf->energies[r], energies[r], kEnergyTolerance) << "root " << r;
-    EXPECT_NEAR(casscf->spin_squares[r], 0.0, 1e-8) << "root " << r;
+    EXPECT_NEAR(casscf->spin_squares[r], s * (s + 1.0), 1e-8) << "root " << r;
   }
   EXPECT_NEAR(casscf->energy, want.at("energy").get<double>(), kEnergyTolerance);
 
@@ -317,16 +326,20 @@ TEST_P(PipelineCasscf, MatchesPyscf) {
 // orbitals where the reference's is the exact RHF's: the same active
 // orbitals, and the converged DF-CASSCF is the start's only through which
 // stationary point it finds.
+void expect_matches_density_fitted(std::string_view name) {
+  const fb::json &entry = reference_case(name, "casscf_df.json");
+  ASSERT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
+  expect_matches(entry, casscf_table(entry) +
+                            std::format("[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
+                                        kDfAuxBasis));
+}
+
 TEST_P(PipelineCasscf, MatchesPyscfDensityFitted) {
   FBF_REQUIRE_GPU();
   if (GetParam().slow) {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  const fb::json &entry = reference_case(GetParam().name, "casscf_df.json");
-  ASSERT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
-  expect_matches(entry, casscf_table(entry) +
-                            std::format("[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
-                                        kDfAuxBasis));
+  expect_matches_density_fitted(GetParam().name);
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasscf,
@@ -335,6 +348,25 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasscf,
                                            Case{.name = "h2co_ccpvdz_sa2", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},
                                            Case{.name = "h2o_ccpvdz_avas", .slow = true}),
+                         [](const auto &info) { return std::string(info.param.name); });
+
+// From the Scf step's DF-ROHF, at the molecule's multiplicity, against PySCF's
+// DF-CASSCF from its DF-ROHF (casscf_df.json's "rohf" cases), to the same
+// bars: the core doubly occupied, the singly occupied orbitals active, the
+// roots of the molecule's spin. Density-fitted only, as the ROHF is.
+class PipelineCasscfOverRohf : public ::testing::TestWithParam<Case> {};
+
+TEST_P(PipelineCasscfOverRohf, MatchesPyscfDensityFitted) {
+  FBF_REQUIRE_GPU();
+  if (GetParam().slow) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  expect_matches_density_fitted(GetParam().name);
+}
+
+INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasscfOverRohf,
+                         ::testing::Values(Case{.name = "nh2_ccpvdz_rohf", .slow = false},
+                                           Case{.name = "ch2_ccpvdz_rohf", .slow = true}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // max_cycle running out fails the step, and the error is its product.
@@ -352,45 +384,6 @@ TEST(PipelineCasscf, OutOfMacroIterationsIsMaxIterationsExceeded) {
   EXPECT_EQ(ran.error().kind, fb::ErrorKind::MaxIterationsExceeded) << ran.error().message;
   ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
   EXPECT_FALSE(calc->get<fb::CasscfOutput>().has_value());
-}
-
-// An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
-// naming the step. The rest of the chain is water's in cc-pVDZ, its CASSCF cut
-// at one macro iteration since only its inputs are wanted; the open shell's
-// orbitals are never read.
-TEST(PipelineCasscf, AnOpenShellScfOutputIsUnsupported) {
-  FBF_REQUIRE_GPU();
-  const fb::json &entry = reference_case("h2o_ccpvdz");
-  const fb::test::ScratchDir dir("pipeline_casscf");
-  auto calc =
-      fb::read_config(write_config(dir, entry, "[casscf]\nncas = 4\nnelecas = 4\nmax_cycle = 1\n"),
-                      dir.path(), dir / "out");
-  ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  fb::NodeResources node;
-  (void)calc->run(node); // out of macro iterations, as above
-  ASSERT_TRUE(calc->get<fb::ScfOutput>().has_value());
-
-  fb::DeviceResources &res = node.device(0);
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
-  const fb::ScfOutput open{.energy = 0.0,
-                           .iterations = 0,
-                           .n_alpha = 6,
-                           .n_beta = 4,
-                           .mo_energies = {},
-                           .c = fb::SphericalMatrixAO(res, basis),
-                           .d = fb::SphericalMatrixAO(res, basis)};
-  const auto refused = calc->step<fb::CasscfStep>()->run(
-      fb::StepInput<fb::CasscfStep>{
-          *calc->get<fb::MoleculeOutput>(), *calc->get<fb::BasisSetOutput>(),
-          *calc->get<fb::SphericalTransformOutput>(), *calc->get<fb::EriOutput>(),
-          *calc->get<fb::CoreHamiltonianOutput>(), open},
-      res);
-  ASSERT_FALSE(refused.has_value());
-  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
-  EXPECT_NE(refused.error().message.find("casscf: only a closed-shell reference"),
-            std::string::npos)
-      << refused.error().message;
 }
 
 } // namespace

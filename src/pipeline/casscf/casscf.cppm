@@ -1,7 +1,8 @@
 /// @file
-/// @brief The `Casscf` step: the state-averaged CASSCF of the lowest singlets
-/// of an active space of the @ref ScfOutput's orbitals, named by index or
-/// picked by AVAS, its core and virtual orbitals canonicalized.
+/// @brief The `Casscf` step: the state-averaged CASSCF of the lowest roots of
+/// the molecule's spin of an active space of the @ref ScfOutput's orbitals (RHF
+/// or ROHF), named by index or picked by AVAS, its core and virtual orbitals
+/// canonicalized.
 ///
 /// Device-shaped. The selection is `pipeline.active_space`'s, which
 /// `CasscfStep` derives from, as `CasciStep` does. `mcscf.solve`'s
@@ -21,7 +22,8 @@ export import free_breakfast.pipeline.active_space; // CasscfStep's base
 
 export namespace free_breakfast {
 
-/// @brief A converged state-averaged CASSCF over a set of RHF orbitals.
+/// @brief A converged state-averaged CASSCF from a set of RHF or ROHF
+/// orbitals.
 struct CasscfOutput {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.
   int32_t ncore;
@@ -87,7 +89,7 @@ struct CasscfStep : ActiveSpaceSelection {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "casscf";
 
-  /// @brief The singlet roots averaged, at least 1.
+  /// @brief The roots averaged, of the molecule's spin, at least 1.
   int32_t nroots = 1;
   /// @brief Their weights, @ref nroots of them, non-negative and summing to
   /// 1; empty for equal ones.
@@ -116,9 +118,8 @@ struct CasscfStep : ActiveSpaceSelection {
   /// each macro iteration's energy and ||g|| at info. Synchronizes
   /// res.stream() many times.
   ///
-  /// @return The CASSCF; Unsupported, before anything is queued, for an
-  ///         open-shell ScfOutput (n_alpha != n_beta);
-  ///         @ref ActiveSpaceSelection::select's error;
+  /// @return The CASSCF; @ref ActiveSpaceSelection::select's error (an
+  ///         open-shell ScfOutput's among them);
   ///         under a fitted EriOutput, Unsupported when the fitted
   ///         integrals' scratch, L and J_AO, is past what B leaves free; `mcscf::solve`'s (InvalidConfig for @ref nroots above the
   ///         determinant count or bad @ref weights, MaxIterationsExceeded);
