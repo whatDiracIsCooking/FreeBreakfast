@@ -114,6 +114,7 @@ add_executable(
   ci_solver_gpu.cpp
   ci_rdm_gpu.cpp
   cis_precondition_gpu.cpp
+  cis_sigma_gpu.cpp
   matrix_ao_gpu.cpp
   gemm_gpu.cpp
   gemmwich_gpu.cpp
@@ -199,6 +200,7 @@ target_link_libraries(
   free_breakfast::ci
   free_breakfast::test::ci_oracles
   free_breakfast::cis::precondition
+  free_breakfast::cis::sigma
   free_breakfast::integrals
   free_breakfast::response
   free_breakfast::mcscf
