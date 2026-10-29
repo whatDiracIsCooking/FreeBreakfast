@@ -366,7 +366,7 @@ TEST_P(PipelineCasscfOverRohf, MatchesPyscfDensityFitted) {
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasscfOverRohf,
                          ::testing::Values(Case{.name = "nh2_ccpvdz_rohf", .slow = false},
-                                           Case{.name = "ch2_ccpvdz_rohf", .slow = true}),
+                                           Case{.name = "ch2_ccpvdz_rohf", .slow = false}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // max_cycle running out fails the step, and the error is its product.
