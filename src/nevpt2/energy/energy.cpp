@@ -20,6 +20,7 @@ import free_breakfast.core.wwr; // Buffers, wwrMemcpyAsync, wwrMemsetAsync, gpu_
 import free_breakfast.core.resources;
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
+import :shared;
 
 #include "diagnostics.h"
 
@@ -931,20 +932,12 @@ Result<std::pair<double, double>> energy_sir(DeviceResources &res, const MoBlock
   return std::pair{norm_sum, energy_sum};
 }
 
-Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &blocks,
-                                     const EnergyInputs &in, const int32_t batch) {
-  const ScopedDeviceIndex on{res.dev_idx()};
+Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blocks,
+                                       const EnergyInputs &in) {
   const int64_t n = blocks.ncas;
   const std::vector<int64_t> d2{n, n};
   const std::vector<int64_t> d4(4, n);
   const std::vector<int64_t> d6(6, n);
-  const EinsumOperand h1e = column_major(in.h1e, d2);
-  const EinsumOperand h2e = column_major(in.h2e, d4);
-  const EinsumOperand dm1{.data = in.dm1, .dims = d2};
-  const EinsumOperand dm2{.data = in.dm2, .dims = d4};
-  const EinsumOperand dm3{.data = in.dm3, .dims = d6};
-  const EinsumOperand f3ca{.data = in.f3ca, .dims = d6};
-  const EinsumOperand f3ac{.data = in.f3ac, .dims = d6};
 
   // The demo's deviceEye, made once: every make_* that reads delta reads it.
   std::vector<double> identity(static_cast<size_t>(n * n), 0.0);
@@ -957,12 +950,30 @@ Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &block
                                            sizeof(double) * identity.size(),
                                            wwr::wwrMemcpyHostToDevice, res.stream())));
   }
-  const EinsumOperand delta{.data = delta_buf.data(), .dims = d2};
+  const double *const delta = delta_buf.data();
 
   // The host finish's orbital energies. This download also synchronizes, so
   // the pageable identity upload above has been read before it goes away.
-  const std::vector<double> e_core = FBF_TRY(download(res, in.e_core, blocks.ncore));
-  const std::vector<double> e_virt = FBF_TRY(download(res, in.e_virt, blocks.nvirt));
+  std::vector<double> e_core = FBF_TRY(download(res, in.e_core, blocks.ncore));
+  std::vector<double> e_virt = FBF_TRY(download(res, in.e_virt, blocks.nvirt));
+  return ActiveOperands{.h1e = column_major(in.h1e, d2),
+                        .h2e = column_major(in.h2e, d4),
+                        .dm1 = {.data = in.dm1, .dims = d2},
+                        .dm2 = {.data = in.dm2, .dims = d4},
+                        .dm3 = {.data = in.dm3, .dims = d6},
+                        .f3ca = {.data = in.f3ca, .dims = d6},
+                        .f3ac = {.data = in.f3ac, .dims = d6},
+                        .delta = {.data = delta, .dims = d2},
+                        .delta_buf = std::move(delta_buf),
+                        .e_core = std::move(e_core),
+                        .e_virt = std::move(e_virt)};
+}
+
+Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &blocks,
+                                     const EnergyInputs &in, const int32_t batch) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const ActiveOperands ops = FBF_TRY(active_operands(res, blocks, in));
+  const auto &[h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta, delta_buf, e_core, e_virt] = ops;
 
   ClassEnergies out;
   std::tie(out.norms[0], out.energies[0]) =

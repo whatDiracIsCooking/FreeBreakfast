@@ -1,10 +1,11 @@
-// GPU cases for nevpt2.energy's class_energies: from PySCF's dm1/dm2/dm3/f3ca/
-// f3ac and the slabs nevpt2.density_fitting builds over the golden B blocks
-// (data/nevpt2/), every class norm and energy and the total against PySCF's
-// DF-NEVPT2 at 1e-7 Ha (the demo's tolerance), on every case that carries
-// dm3 and f3, walked whole and in batches of three, the last one partial.
-// Then the chain: nevpt2::rdms' dm3/f3ca/f3ac from the golden CI vector in
-// place of PySCF's, on every case, CAS(10,10)'s included.
+// GPU cases for nevpt2.energy's class_energies and pc_class_energies: from
+// PySCF's dm1/dm2/dm3/f3ca/f3ac and the slabs nevpt2.density_fitting builds
+// over the golden B blocks (data/nevpt2/), every SC class norm and energy and
+// the total against PySCF's DF-NEVPT2, and every PC class energy and the total
+// against block2's, at 1e-7 Ha (the demo's tolerance), on every case that
+// carries dm3 and f3, walked whole and in batches of three, the last one
+// partial. Then the chain: nevpt2::rdms' dm3/f3ca/f3ac from the golden CI
+// vector in place of PySCF's, on every case, CAS(10,10)'s included.
 
 #include <gtest/gtest.h>
 
@@ -23,7 +24,9 @@ namespace fb = free_breakfast;
 namespace nevpt2 = free_breakfast::nevpt2;
 
 // The demo's tolerance against the golden class energies: the einsums'
-// atomics reassociate every sum, and PySCF's are NumPy's.
+// atomics reassociate every sum, and PySCF's are NumPy's. Against block2's PC
+// energies the largest miss is Sr's, which block2 builds from the dense 4-RDM
+// rather than the f3 digests: 6.8e-10 at cc-pVTZ in the demo.
 constexpr double kEnergyTol = 1e-7;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2";
@@ -141,6 +144,36 @@ void expect_golden(const std::filesystem::path &dir, const nevpt2::ClassEnergies
   EXPECT_NEAR(got.total, total.data[0], kEnergyTol) << what;
 }
 
+// The PC modes each class's metric cuts as null, per case: the demo's
+// measured table (docs/pc-nevpt2.md, "The singular-metric convention"), the
+// same on both its cards and in every DF twin. Sr, Si and Sir drop; the
+// n- and n²-dimensional classes drop nothing, and Sijrs has no metric.
+std::array<std::int64_t, 8> pc_dropped(const std::string &name) {
+  if (name.starts_with("n2_ccpvdz_cas44")) {
+    return {44, 44, 0, 0, 0, 0, 0, 2};
+  }
+  if (name == "n2_ccpvdz_cas88_df") {
+    return {16, 16, 0, 0, 0, 0, 0, 2};
+  }
+  return {10, 10, 0, 0, 0, 0, 0, 1}; // both CAS(10,10)s
+}
+
+// pc_class_energies against the golden's block2 pc_class_energies and
+// e_pc_total, and the dropped counts against pc_dropped.
+void expect_pc_golden(const std::filesystem::path &dir, const std::string &name,
+                      const nevpt2::PcClassEnergies &got, const std::string &what) {
+  const fb::NpyArray energies = read_array(dir / "pc_class_energies.npy");
+  const fb::NpyArray total = read_array(dir / "e_pc_total.npy");
+  ASSERT_EQ(energies.data.size(), 8U);
+  ASSERT_EQ(total.data.size(), 1U);
+  const std::array<std::int64_t, 8> dropped = pc_dropped(name);
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(got.energies[k], energies.data[k], kEnergyTol) << what << " PC " << kClassNames[k];
+    EXPECT_EQ(got.dropped[k], dropped[k]) << what << " PC " << kClassNames[k];
+  }
+  EXPECT_NEAR(got.total, total.data[0], kEnergyTol) << what << " PC";
+}
+
 // ---------------------------------------------------------------------------
 // From PySCF's RDMs
 // ---------------------------------------------------------------------------
@@ -171,9 +204,13 @@ TEST_P(Nevpt2EnergyPyscfRdms, ClassEnergiesMatchGolden) {
   g.in.f3ca = rdm("f3ca");
   g.in.f3ac = rdm("f3ac");
 
+  const std::string what = name + " batch " + std::to_string(batch);
   const auto got = nevpt2::class_energies(res, *g.blocks, g.in, batch);
   ASSERT_TRUE(got) << got.error().message;
-  expect_golden(dir, *got, name + " batch " + std::to_string(batch));
+  expect_golden(dir, *got, what);
+  const auto pc = nevpt2::pc_class_energies(res, *g.blocks, g.in, batch);
+  ASSERT_TRUE(pc) << pc.error().message;
+  expect_pc_golden(dir, name, *pc, what);
 }
 
 // Batch 0 is each class's whole extent in one slab. 3 divides none of the
@@ -260,9 +297,13 @@ TEST_P(Nevpt2EnergyDeviceRdms, ClassEnergiesMatchGolden) {
   g.in.f3ca = f3ca.data();
   g.in.f3ac = f3ac.data();
 
+  const std::string what = std::string{c.name} + " batch " + std::to_string(batch);
   const auto got = nevpt2::class_energies(res, *g.blocks, g.in, batch);
   ASSERT_TRUE(got) << got.error().message;
-  expect_golden(dir, *got, std::string{c.name} + " batch " + std::to_string(batch));
+  expect_golden(dir, *got, what);
+  const auto pc = nevpt2::pc_class_energies(res, *g.blocks, g.in, batch);
+  ASSERT_TRUE(pc) << pc.error().message;
+  expect_pc_golden(dir, c.name, *pc, what);
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2EnergyDeviceRdms,
@@ -272,5 +313,33 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2EnergyDeviceRdms,
                            return std::string{std::get<0>(info.param).name} + "_batch" +
                                   std::to_string(std::get<1>(info.param));
                          });
+
+// ---------------------------------------------------------------------------
+// PC refusals
+// ---------------------------------------------------------------------------
+
+// Zero RDMs make every metric zero: PC has no internal function to span, so
+// it refuses with a Numerical error naming the first class, Sr, rather than
+// return a number.
+TEST(Nevpt2PcEnergy, ZeroMetricIsRefused) {
+  FBF_REQUIRE_GPU();
+  const std::filesystem::path dir = kDataDir / "n2_ccpvdz_cas44_df";
+  fb::DeviceResources res(0);
+  Integrals g = load_integrals(res, dir);
+  ASSERT_TRUE(g.blocks.has_value());
+  const auto n = static_cast<std::size_t>(g.blocks->ncas);
+  g.arrays.push_back(upload(res, std::vector<double>(n * n * n * n * n * n, 0.0)));
+  const double *const zeros = g.arrays.back().data();
+  g.in.dm1 = zeros;
+  g.in.dm2 = zeros;
+  g.in.dm3 = zeros;
+  g.in.f3ca = zeros;
+  g.in.f3ac = zeros;
+
+  const auto pc = nevpt2::pc_class_energies(res, *g.blocks, g.in, 0);
+  ASSERT_FALSE(pc);
+  EXPECT_EQ(pc.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(pc.error().message.find("Sr"), std::string::npos) << pc.error().message;
+}
 
 } // namespace
