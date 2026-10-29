@@ -28,10 +28,11 @@
 #
 # The GPU suite runs under with_gpu_card (lib.sh), holding its whole card so
 # concurrent cpp-tier.sh runs in other worktrees cannot overload it -- one run
-# per card (config.sh says why). Inside it the suite runs as GPU_TEST_JOBS
-# (config.sh) concurrent gtest shards. The host suite does not touch the GPU and runs unlocked.
-# A shard that hangs is killed and its case named (GPU_SHARD_STALL_SECONDS and
-# GPU_SHARD_BUDGET_SECONDS in config.sh; issue #477), so a wedged card fails
+# per card (config.sh says why). Inside it the suite runs as one gtest process
+# (config.sh, by CTEST_JOBS, says why not shards). The host suite does not
+# touch the GPU and runs unlocked.
+# A batch that hangs is killed and its case named (GPU_BATCH_STALL_SECONDS and
+# GPU_BATCH_BUDGET_SECONDS in config.sh; issue #477), so a wedged card fails
 # the push rather than hanging it.
 #
 # It SKIPS (exit 0, not a failure) when the toolchain or a GPU is absent: the
@@ -167,10 +168,10 @@ echo "cpp-smoke: host tests ..."
 run_suite host "$host_bin" || rc=$?
 
 echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
-# GPU_TEST_JOBS shards, all inside the one card lock (run_gpu_sharded, lib.sh),
-# even when that is 1: the launcher's watchdog is what turns a wedged card
-# (issue #477) into a named failure rather than a push that never returns.
-with_gpu_card "$backend" run_gpu_sharded cpp-smoke "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
+# One process inside the card lock (run_gpu_batch, lib.sh), not the bare
+# binary: the launcher's watchdog is what turns a wedged card (issue #477)
+# into a named failure rather than a push that never returns.
+with_gpu_card "$backend" run_gpu_batch cpp-smoke "$gpu_bin" || rc=$?
 unset FREE_BREAKFAST_FAST_TESTS
 
 set -e

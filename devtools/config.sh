@@ -345,17 +345,17 @@ HOST_MOUNTS=${HOST_MOUNTS:-"~/.gemini:/home/ubuntu/.gemini"}
 HOST_ENV_PASSTHROUGH=${HOST_ENV_PASSTHROUGH:-"GEMINI_API_KEY GOOGLE_GEMINI_BASE_URL ANTHROPIC_API_KEY_FREE_BREAKFAST"}
 
 # Cross-session GPU admission (see with_gpu_card() and gpu_auto_preset() in
-# lib.sh). One run's own concurrency is GPU_TEST_JOBS below, but nothing in
-# that run coordinates with a second worktree's cpp-tier.sh or cpp-smoke.sh
+# lib.sh). One run's own GPU batch is one process (CTEST_JOBS below), but
+# nothing in that run coordinates with a second worktree's cpp-tier.sh or cpp-smoke.sh
 # running its own GPU binary against the same physical card at the same time.
 #
 # ONE RUN PER CARD. Two runs sharing the 10 GB RTX 3080 ran it out of memory
 # (2026-10-28), even at 3 jobs each and admitted at 29% VRAM: the first run
-# grew after the second joined, and each shard keeps the stack of the largest
-# kernel it has launched, up to about 1.4 GB ((dd|g),
+# grew after the second joined, and each process keeps the stack of the
+# largest kernel it has launched, up to about 1.4 GB ((dd|g),
 # src/integrals/eri/density_fitting/three_center/README.md). A failed
 # allocation ABORTS here, it does not queue. And sharing
-# bought no speed: one run's shards already keep the card busy, so two runs
+# bought no speed: one run's GPU batch already keeps the card busy, so two runs
 # sharing it each got about half of it. So a run takes the whole card, and the
 # next one waits for it.
 #
@@ -376,29 +376,28 @@ GPU_LOCK_DIR=${GPU_LOCK_DIR:-.sccache/gpu-locks}
 # (an idle card reads about 8%); raise it on a card with more memory.
 GPU_FOREIGN_VRAM_PCT=${GPU_FOREIGN_VRAM_PCT:-20}
 GPU_POLL_SECONDS=${GPU_POLL_SECONDS:-5}
-# Concurrent GPU test processes WITHIN the run that holds a card: cpp-smoke.sh
-# splits the gpu binary into this many gtest shards, cpp-tier.sh does the same
-# for the GPU entries it batches and passes it to ctest as -j for the rest. 1
-# is fully serial. Measured on idle cards (2026-10-25), N=1/2/3, when
-# cpp-tier.sh still ran every entry through ctest:
-#   cpp-tier   cuda 343/249/219s  hip 378/270/243s
-#   cpp-smoke  cuda 143/137/137s  hip 193/177/180s  (GPU phase)
-# ctest gained because every entry was its own process paying GPU runtime init,
-# which overlaps; the smoke binary pays that once, so its cases already keep
-# the card busy and shards barely help. Past 3 neither moves.
-GPU_TEST_JOBS=${GPU_TEST_JOBS:-3}
-# The watchdog on those shards (gpu_shard_watchdog in lib.sh). A shard that
-# prints nothing for GPU_SHARD_STALL_SECONDS, or is still running
-# GPU_SHARD_BUDGET_SECONDS after it started, is killed and the case it was in
+# cpp-tier.sh's ctest -j: the host entries, and those it cannot batch (the
+# RUN_SERIAL ones run alone regardless). The GPU batch, in both gates, is ONE
+# gtest process (run_gpu_batch in lib.sh), not shards. Measured 2026-10-29,
+# the GPU batch at 1/2/3 shards, slowest shard: cuda 145/141/144s, hip 179/-/168s.
+# The card was already busy, so shards only spread its time and time-sliced it:
+# PipelineNevpt2.PcRefusalKeepsSc is 2.3s alone and 158s beside two
+# F/ExchangeGolden processes, so a sharded log's per-case times mislead, and
+# each extra process holds another kernel stack in VRAM. ctest's entries do
+# gain from -j (cuda 31s -> 13s at 3).
+CTEST_JOBS=${CTEST_JOBS:-3}
+# The watchdog on the GPU batch (gpu_batch_watchdog in lib.sh). A batch that
+# prints nothing for GPU_BATCH_STALL_SECONDS, or is still running
+# GPU_BATCH_BUDGET_SECONDS after it started, is killed and the case it was in
 # is named, so a wedged card (issue #477: gfx1200, every process spinning in a
 # HIP sync, nothing printed) fails the gate instead of holding it -- and the
 # card lock -- for hours. Both are generous on purpose: every case also has
 # ctest's 120s backstop TIMEOUT (test/gtest/CMakeLists.txt), and a whole
-# unsharded smoke run is about 3 minutes, so a trip means a hang, not a slow
-# card. 0 turns either off.
-GPU_SHARD_STALL_SECONDS=${GPU_SHARD_STALL_SECONDS:-600}
-GPU_SHARD_BUDGET_SECONDS=${GPU_SHARD_BUDGET_SECONDS:-2700}
-# Before it kills a hung shard the watchdog writes down the shard's state
+# batch is about 3 minutes, so a trip means a hang, not a slow card. 0 turns
+# either off.
+GPU_BATCH_STALL_SECONDS=${GPU_BATCH_STALL_SECONDS:-600}
+GPU_BATCH_BUDGET_SECONDS=${GPU_BATCH_BUDGET_SECONDS:-2700}
+# Before it kills a hung batch the watchdog writes down the batch's state
 # (gpu_wedge_snapshot in lib.sh): the vendor tools, every thread's backtrace.
 # A wedged card can hang those as well, so each is cut off after this long.
 GPU_WEDGE_TOOL_SECONDS=${GPU_WEDGE_TOOL_SECONDS:-120}
