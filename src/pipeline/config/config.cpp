@@ -439,19 +439,6 @@ template <class S>
   return {};
 }
 
-/// @brief Refuse a `[cis]` over density-fitted ERIs, which its step does not
-/// run yet (#200): here, before the SCF it would follow has run. Across two
-/// tables, as check_scf_against_eri.
-[[nodiscard]] Status check_cis_against_eri(const Calculation &calc) {
-  const auto &eri = calc.step<EriStep>();
-  if (calc.step<CisStep>() && eri && eri->mode == EriMode::DensityFitting) {
-    return err_unsupported("[{}] runs over integral-direct ERIs only so far, and [{}] mode is "
-                           "'density_fitting': set [{}] mode = 'integral_direct'",
-                           CisStep::kName, EriStep::kName, EriStep::kName);
-  }
-  return {};
-}
-
 /// @brief Refuse an input file directly in @p output_dir, where a step's
 /// output could overwrite it before or after it is read. An absolute path, or
 /// one through '..', reaches there however the two directories differ.
@@ -512,7 +499,6 @@ template <class S>
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
   FBF_TRY(check_scf_against_eri(calc, doc));
   FBF_TRY(check_nevpt2_against_eri(calc));
-  FBF_TRY(check_cis_against_eri(calc));
   FBF_TRY(check_inputs_apart(calc, output_dir));
   return calc;
 }

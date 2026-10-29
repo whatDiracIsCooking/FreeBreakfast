@@ -1,10 +1,11 @@
 /// @file
-/// @brief The integral-direct CIS operator σ = A b over the n_ov excitation
-/// vectors of an RHF reference, as a LinearOperator, and the method's small
+/// @brief The CIS operator σ = A b over the n_ov excitation vectors of an RHF
+/// reference, as a LinearOperator, integral-direct (cis::Sigma) or
+/// density-fitted in the MO basis (cis::DfSigma), and the method's small
 /// vocabulary: the spin (cis::Spin) and the knobs of a solve (cis::Options).
 ///
-/// The README has the five steps of a column, why they are gemms and not
-/// gemmwich, and the screen.
+/// The README has the five steps of a direct column, why they are gemms and
+/// not gemmwich, the screen, and the fitted operator's four products.
 
 export module free_breakfast.cis.sigma;
 
@@ -133,6 +134,91 @@ private:
   MatrixAOPair response_;
   CartesianMatrixAO other_;
   Buffers::device<double> half_;
+};
+
+/// @brief σ = A b on the device, density-fitted in the MO basis: a
+/// `LinearOperator<DfSigma, double>` over the same n_ov excitation vectors as
+/// @ref Sigma, element ia at i · n_virt + a, with (pq|rs) ≈ Σ_Q B_Q,pq B_Q,rs
+/// over pipeline.eri's DensityFitted B.
+///
+/// create transforms B once into the MO blocks B_vo, B_oo and B_vv
+/// (b_mo over C's occupied and virtual columns). Then, on a whole n_ov × k
+/// block X, with w = 2 for a singlet and the Coulomb term dropped for a
+/// triplet:
+///
+///   σ = Δε ∘ X + w · B_voᵀ (B_vo X) − Σ_Q B_oo^Q X B_vv^Q,
+///
+/// a dgmm, two gemms for the Coulomb term, and two strided-batched gemms for
+/// the exchange term: four BLAS calls past the dgmm, however many columns.
+///
+/// Every buffer is allocated, and the device workspace grown to the exchange
+/// term's scratch for @p max_block columns, by create; apply allocates nothing,
+/// and runs a block wider than that in slices of @p max_block.
+///
+/// Borrows only the Δε vector, which the caller keeps alive and unchanged
+/// while the sigma is in use; C and B are read only by the transforms create
+/// queues on res.stream(), and not held. Move-only;
+/// the buffers are on the device of the DeviceResources create was given,
+/// which every apply must pass again.
+class DfSigma {
+public:
+  /// @brief A fitted sigma over the RHF orbitals @p c (square, AO by MO,
+  /// spherical, the first @p n_occ columns occupied) and the fitted factor
+  /// @p b over @p naux functions (DensityFitted::b, naux × nao², [Q][n][m]),
+  /// with @p delta the device Δε of cis::diagonal over the same split, for
+  /// the excitations of @p spin, applying up to @p max_block columns at once.
+  ///
+  /// @return InvalidConfig when @p c is on another device or is not square,
+  ///         when @p b does not hold naux × nao² elements, when @p delta
+  ///         is null, when @p naux or @p max_block is below 1, unless
+  ///         1 <= n_occ < nao, or when n_occ · n_virt, naux · n_virt or
+  ///         naux · n_occ · max_block does not fit an int32_t; Unsupported,
+  ///         naming the bytes, before anything is allocated, when the MO
+  ///         blocks and the scratch exceed the device's free memory (an
+  ///         allocation past it would abort under CreatePolicy); else
+  ///         b_mo's errors.
+  [[nodiscard]] static Result<DfSigma> create(DeviceResources &res,
+                                              const Buffers::device<double> &b, int32_t naux,
+                                              const SphericalMatrixAO &c, int32_t n_occ,
+                                              const double *delta, Spin spin, int32_t max_block);
+
+  DfSigma(DfSigma &&) noexcept = default;
+  DfSigma &operator=(DfSigma &&) noexcept = default;
+  DfSigma(const DfSigma &) = delete;
+  DfSigma &operator=(const DfSigma &) = delete;
+  ~DfSigma() = default;
+
+  /// @brief Y = A X for the n_ov × @p k column-major device blocks @p x and
+  /// @p y, leading dimension n_ov, at most create's max_block columns per
+  /// pass. Queued on res.stream() with res.blas(), whose pointer mode must be
+  /// host (its default, and what davidson_solve holds); no host
+  /// synchronization.
+  ///
+  /// @return InvalidConfig for another device or a negative @p k; else the
+  ///         GpuRuntime error of the first BLAS call that failed, which leaves
+  ///         @p y unspecified.
+  [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *x, double *y);
+
+  /// @brief n_ov = n_occ · n_virt, the operator's order.
+  [[nodiscard]] int32_t size() const noexcept { return n_occ_ * n_virt_; }
+
+private:
+  DfSigma(DeviceResources &res, int32_t naux, int32_t n_occ, int32_t n_virt, const double *delta,
+          Spin spin, int32_t max_block);
+
+  int32_t dev_idx_;
+  int32_t naux_;
+  int32_t n_occ_;
+  int32_t n_virt_;
+  int32_t max_block_;
+  Spin spin_;
+  const double *delta_;
+  // State across applies, so the sigma's own: B_vo, the naux × n_ov matrix
+  // whose column is the excitation index a + n_virt i; B_oo, [Q][i][j]; and
+  // B_vv, [Q][a][b].
+  Buffers::device<double> b_vo_;
+  Buffers::device<double> b_oo_;
+  Buffers::device<double> b_vv_;
 };
 
 } // namespace free_breakfast::cis

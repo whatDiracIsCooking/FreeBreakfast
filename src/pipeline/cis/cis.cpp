@@ -1,7 +1,7 @@
 /// @file
-/// @brief CisStep: the refusals, then Δε, the sigma, the guess and the
-/// preconditioner over the ScfOutput, davidson_solve, and the roots copied
-/// off the device.
+/// @brief CisStep: the refusals, then Δε, the guess and the preconditioner
+/// over the ScfOutput, the sigma the EriOutput selects (integral-direct or
+/// fitted), davidson_solve, and the roots copied off the device.
 
 module free_breakfast.pipeline.cis;
 
@@ -52,12 +52,6 @@ namespace free_breakfast {
                       "virtual orbitals",
                       n_states, n_ov, n_occ, n_virt);
   }
-  const auto *const direct = std::get_if<IntegralDirect>(&in.get<EriOutput>().eri);
-  if (direct == nullptr) {
-    return err_unsupported("cis: runs over integral-direct ERIs only so far, and the EriOutput is "
-                           "density-fitted: set [eri] mode = 'integral_direct'");
-  }
-
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
   const auto n = static_cast<size_t>(n_ov);
@@ -71,9 +65,6 @@ namespace free_breakfast {
                                          wwr::wwrMemcpyHostToDevice, stream)));
   Buffers::device<double> delta(n, res.device());
   FBF_TRY(cis::diagonal(res, n_occ, static_cast<int32_t>(n_virt), energies.data(), delta.data()));
-  cis::Sigma sigma = FBF_TRY(cis::Sigma::create(
-      res, in.get<BasisSetOutput>().basis, in.get<SphericalTransformOutput>().u, direct->j_classes,
-      direct->k_classes, scf.c, n_occ, delta.data(), options.spin));
 
   // davidson_solve needs max_subspace >= 2 n_states, and past n_ov the
   // subspace has nothing left to hold, so the lower bound wins when the two
@@ -85,9 +76,27 @@ namespace free_breakfast {
   const cis::Preconditioner precondition{res, n_ov, delta.data(), n_states};
   Buffers::device<double> values(roots, res.device());
   Buffers::device<double> vectors(n * roots, res.device());
-  const DavidsonInfo info = FBF_TRY(
-      davidson_solve<double>(res, sigma, precondition, n_ov, n_states, subspace, start.data(),
-                             guess_count, values.data(), vectors.data(), options.davidson));
+  const auto solve = [&](auto &sigma) {
+    return davidson_solve<double>(res, sigma, precondition, n_ov, n_states, subspace, start.data(),
+                                  guess_count, values.data(), vectors.data(), options.davidson);
+  };
+  // The sigma the EriOutput's alternative selects. The fitted one's block is
+  // the widest davidson_solve applies: the guess's columns first, then at
+  // most n_states corrections, which the guess's min(n_ov, 2 n_states) is
+  // never below.
+  const EriOutput &eri = in.get<EriOutput>();
+  DavidsonInfo info;
+  if (const auto *const fit = std::get_if<DensityFitted>(&eri.eri)) {
+    cis::DfSigma sigma = FBF_TRY(cis::DfSigma::create(res, fit->b, fit->naux, scf.c, n_occ,
+                                                      delta.data(), options.spin, guess_count));
+    info = FBF_TRY(solve(sigma));
+  } else {
+    const auto &direct = std::get<IntegralDirect>(eri.eri);
+    cis::Sigma sigma = FBF_TRY(cis::Sigma::create(
+        res, in.get<BasisSetOutput>().basis, in.get<SphericalTransformOutput>().u, direct.j_classes,
+        direct.k_classes, scf.c, n_occ, delta.data(), options.spin));
+    info = FBF_TRY(solve(sigma));
+  }
 
   // The Ritz vectors are column-major n_ov x n_states, so each root's column
   // is already its amplitudes in (i, a) row-major order.

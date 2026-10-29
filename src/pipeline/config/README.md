@@ -179,9 +179,8 @@ flattened into the table as `[localization]`'s are, and `max_subspace`.
 `n_states` below 1, a `residual_tolerance` not positive or `max_iterations`
 below 1 is `InvalidConfig` when the file is read; `n_states` past the single
 excitations needs the molecule and the basis, so the step refuses it when it
-runs. It runs over integral-direct ERIs only so far: under a density-fitted
-`[eri]` it is `Unsupported`, naming `[eri]`, checked once the pipeline is
-planned as `[nevpt2]`'s is, and refused again by the step (#200 lifts both).
+runs. It runs over either `[eri]`: integral-direct, or density-fitted with
+the fitted sigma over B's MO blocks.
 
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the

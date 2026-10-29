@@ -8,7 +8,7 @@ forming it. The pipeline's `CisStep` (`../pipeline/cis/`) runs that solve
 over an SCF's products.
 
 Everything it exports is in **`namespace free_breakfast::cis`**, spelled bare
-inside it — `cis::Preconditioner`, `cis::guess`, `cis::Sigma` — and the `.cu`
+inside it — `cis::Preconditioner`, `cis::guess`, `cis::Sigma`, `cis::DfSigma` — and the `.cu`
 launchers its bridge headers declare are in **`free_breakfast::cis::device`**,
 bare too (`device::precondition`). CIS is a *method*, and a method's
 vocabulary (`diagonal`, `guess`, `sigma`) recurs once per method, so it takes a
@@ -31,7 +31,7 @@ imported and linked on its own, and `CMakeLists.txt` is a plain
 |-----------|--------|------|
 | `precondition/` | `free_breakfast.cis.precondition` | The orbital-energy diagonal Δε_ia = ε_a − ε_i (`cis::diagonal`), the unit-vector Davidson start on its lowest entries (`cis::guess`), and the diagonal correction r / (θ − Δε) as a `DavidsonPreconditioner` (`cis::Preconditioner`), all on the device. |
 | `ris_basis/` | `free_breakfast.cis.ris_basis` | The RIS minimal auxiliary basis (`cis::ris_basis`): one uncontracted shell per l on each atom, of exponent θ / R_A² over the Ghosh radius, `s` on H and `s`, `Sp` or `Spd` (`cis::RisShells`) on a heavy atom, as a spherical `BasisSet` over a molecule's atoms. Host-only. |
-| `sigma/` | `free_breakfast.cis.sigma` | The method's vocabulary, `cis::Spin` (`Singlet`, `Triplet`) and `cis::Options` (`n_states`, `spin`, the `DavidsonOptions`), and `cis::Sigma`, the integral-direct σ = A b as a `LinearOperator<…, double>`: per column, the spherical transition density C_occ X C_virtᵀ, its Cartesian form, `nonsymmetric_jk`'s G or K, and σ = Δε ∘ b + w · C_occᵀ R C_virt. |
+| `sigma/` | `free_breakfast.cis.sigma` | The method's vocabulary, `cis::Spin` (`Singlet`, `Triplet`) and `cis::Options` (`n_states`, `spin`, the `DavidsonOptions`), and `cis::Sigma`, the integral-direct σ = A b as a `LinearOperator<…, double>`: per column, the spherical transition density C_occ X C_virtᵀ, its Cartesian form, `nonsymmetric_jk`'s G or K, and σ = Δε ∘ b + w · C_occᵀ R C_virt; and `cis::DfSigma`, the density-fitted one over B's MO blocks B_vo, B_oo and B_vv, a whole block in a dgmm, two gemms (Coulomb) and two strided-batched gemms (exchange). |
 
 ## Tests
 
