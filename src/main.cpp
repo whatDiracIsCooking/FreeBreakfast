@@ -102,8 +102,12 @@ void print_products(const fb::Calculation &calc) {
                    casscf->energies[r] + nevpt2->roots[r].total, nevpt2->roots[r].total);
     }
     for (std::size_t r = 0; r < nevpt2->pc_roots.size(); ++r) {
-      std::println("PC-NEVPT2 root {}:  {:.10f} Ha, E_corr {:.10f} Ha", r,
-                   casscf->energies[r] + nevpt2->pc_roots[r].total, nevpt2->pc_roots[r].total);
+      if (const auto &pc = nevpt2->pc_roots[r]) {
+        std::println("PC-NEVPT2 root {}:  {:.10f} Ha, E_corr {:.10f} Ha", r,
+                     casscf->energies[r] + pc->total, pc->total);
+      } else {
+        std::println("PC-NEVPT2 root {}:  refused ({})", r, nevpt2->pc_refusals[r]);
+      }
     }
   }
   if (const auto &fci = calc.get<fb::FciOutput>()) {

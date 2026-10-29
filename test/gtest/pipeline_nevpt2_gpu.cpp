@@ -2,14 +2,14 @@
 // tools/emit/nevpt2_reference.py), through the real registry: a config naming
 // [casscf], a density-fitted [eri] and [nevpt2] plans the whole chain, runs
 // our own DF-CASSCF from each data/casscf/casscf_df.json start, then SC-NEVPT2
-// per root. Compared per root: each class's norm and energy and their sum.
-// PC-NEVPT2 has no pipeline-level reference (PySCF has no PC); its numbers
-// are checked against block2 in nevpt2_energy_gpu.cpp, and here only for what
-// must hold of them beside SC's: see kPcSlack.
+// per root. Compared per root: each class's norm and energy and their sum,
+// and each PC-NEVPT2 class energy and their sum against block2's on the same
+// state (PySCF has no PC), with what must hold of PC beside SC: see kPcSlack.
 // N2 is not among the cases: SC-NEVPT2 depends on the arbitrary split of its
 // degenerate pi* virtual pairs by up to 5e-6 (data/README.md
 // "nevpt2/nevpt2_df.json"), so the reference leaves it out.
-// Also the refusal of an integral-direct [eri], which needs no GPU.
+// Then a state PC refuses, which keeps its SC; and the refusal of an
+// integral-direct [eri], which needs no GPU.
 
 #include <gtest/gtest.h>
 
@@ -62,7 +62,9 @@ constexpr double kCasscfEnergyTolerance = 1e-8;
 // within 4e-11.
 //
 // Not the 1e-7 of nevpt2_energy_gpu.cpp, which is the demo's bar on
-// identical inputs; and nothing here is loosened for a case.
+// identical inputs; and nothing here is loosened for a case. PC is first
+// order in the orbitals and the CI vectors as SC is, so the same derivation
+// sets its bar against block2's PC on the reference's state.
 constexpr double kTolerance = 1e-9;
 
 // PC is SC without the final contraction: each class minimizes the same
@@ -214,16 +216,25 @@ TEST_P(PipelineNevpt2, MatchesPyscf) {
     const double e_corr = root.at("e_corr").get<double>();
     EXPECT_NEAR(got.total, e_corr, kTolerance) << "root " << r << " E_corr";
 
-    // PC beside SC: every class computed, none above SC's, Sijrs SC's own.
+    // PC against block2's, and beside SC: none above SC's, Sijrs SC's own.
     ASSERT_EQ(nevpt2->pc_roots.size(), roots.size());
-    const fb::nevpt2::PcClassEnergies &pc = nevpt2->pc_roots[r];
+    ASSERT_TRUE(nevpt2->pc_roots[r].has_value()) << "root " << r << ": " << nevpt2->pc_refusals[r];
+    const fb::nevpt2::PcClassEnergies &pc = *nevpt2->pc_roots[r];
+    const fb::json &pc_classes = root.at("pc_class_energies");
+    ASSERT_EQ(pc_classes.size(), 8U);
     double pc_sum = 0.0;
+    double pc_worst = 0.0;
     for (std::size_t k = 0; k < 8; ++k) {
       const std::string name = classes[k].at("name").get<std::string>();
-      EXPECT_TRUE(std::isfinite(pc.energies[k])) << "root " << r << " PC " << name;
+      ASSERT_EQ(pc_classes[k].at("name").get<std::string>(), name);
+      const double energy = pc_classes[k].at("energy").get<double>();
+      EXPECT_NEAR(pc.energies[k], energy, kTolerance) << "root " << r << " PC " << name;
       EXPECT_LE(pc.energies[k], got.energies[k] + kPcSlack) << "root " << r << " PC " << name;
       pc_sum += pc.energies[k];
+      pc_worst = std::max(pc_worst, std::abs(pc.energies[k] - energy));
     }
+    const double e_pc = root.at("e_pc_total").get<double>();
+    EXPECT_NEAR(pc.total, e_pc, kTolerance) << "root " << r << " PC E_corr";
     EXPECT_NEAR(pc.energies[2], got.energies[2], kPcSlack) << "root " << r << " PC Sijrs";
     EXPECT_EQ(pc.dropped[2], 0) << "root " << r << " PC Sijrs";
     EXPECT_NEAR(pc.total, pc_sum, kPcSlack) << "root " << r << " PC E_corr";
@@ -233,9 +244,10 @@ TEST_P(PipelineNevpt2, MatchesPyscf) {
                              c.name, r, casscf->gradient_norm,
                              casscf->energies[r] - casscf_energies[r], got.total,
                              got.total - e_corr, worst, kTolerance);
-    std::cout << std::format("[ nevpt2   ] {} root {}: PC E_corr {:.12f} (PC - SC {:+.2e}), "
-                             "dropped {}\n",
-                             c.name, r, pc.total, pc.total - got.total, pc.dropped);
+    std::cout << std::format("[ nevpt2   ] {} root {}: PC E_corr {:.12f} dE_corr {:+.2e}, "
+                             "worst class {:.2e} (PC - SC {:+.2e}), dropped {}\n",
+                             c.name, r, pc.total, pc.total - e_pc, pc_worst, pc.total - got.total,
+                             pc.dropped);
   }
 }
 
@@ -245,6 +257,52 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineNevpt2,
                                            Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},
                                            Case{.name = "h2o_ccpvdz_avas", .slow = true}),
                          [](const auto &info) { return std::string(info.param.name); });
+
+// A state whose PC is refused keeps its SC. HF in cc-pVDZ, CAS(10,7) over
+// every electron: the F 1s is active and all but doubly occupied (2 - n
+// ~1e-5), and Sr's metric has eigenvalues of its products with the other
+// small occupations that run through the cut at 1e-13 with no gap (smallest
+// kept / largest dropped 1.7 on an RTX 3080, against the 1e3 the layer asks;
+// PySCF's own DF-CASSCF lands at 2.9). The demo's N2 CAS(12,12) fails the
+// same way, with the N 1s; this is 441 determinants against its 854k.
+TEST(PipelineNevpt2, PcRefusalKeepsSc) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_nevpt2");
+  ASSERT_TRUE(
+      fb::write_file(dir / "hf.xyz", "2\nhydrogen fluoride\nH 0 0 0\nF 0 0 0.917\n").has_value());
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"hf.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+                  "[casscf]\nncas = 7\nnelecas = 10\nconv_tol_grad = {:g}\n[nevpt2]\n",
+                  kDfAuxBasis, kConvTolGrad);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(nevpt2.has_value());
+
+  // SC stands: every class computed, the correlation energy their sum.
+  ASSERT_EQ(nevpt2->roots.size(), 1U);
+  const fb::nevpt2::ClassEnergies &sc = nevpt2->roots[0];
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_TRUE(std::isfinite(sc.energies[k])) << k;
+    EXPECT_LE(sc.energies[k], 0.0) << k;
+  }
+  EXPECT_NEAR(sc.total, std::ranges::fold_left(sc.energies, 0.0, std::plus{}), kPcSlack);
+  EXPECT_LT(sc.total, -0.05);
+
+  // PC is empty, and says which class refused.
+  ASSERT_EQ(nevpt2->pc_roots.size(), 1U);
+  ASSERT_EQ(nevpt2->pc_refusals.size(), 1U);
+  EXPECT_FALSE(nevpt2->pc_roots[0].has_value());
+  EXPECT_NE(nevpt2->pc_refusals[0].find("Sr's metric has no gap"), std::string::npos)
+      << nevpt2->pc_refusals[0];
+  std::cout << std::format("[ nevpt2   ] HF CAS(10,7): SC E_corr {:.12f}; PC {}\n", sc.total,
+                           nevpt2->pc_refusals[0]);
+}
 
 // [nevpt2] over integral-direct ERIs, [eri] written so or filled in, is
 // refused when the config is read, before the SCF and CASSCF it would follow.

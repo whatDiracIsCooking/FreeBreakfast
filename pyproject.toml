@@ -48,6 +48,15 @@ dev = [
 tools = [
     "numpy>=2.0",
     "pyscf>=2.6",
+    # block2's ic-MRPT module (pyblock2.icmr): the PC-NEVPT2 reference
+    # tools/emit/nevpt2_reference.py records, which PySCF does not implement.
+    "block2>=0.5",
+    # The linux-x86_64 block2 wheel links libmkl_intel_lp64.so.2 and declares
+    # these in ITS metadata, but uv locks block2 from metadata that lacks them
+    # (the sdist / macOS wheel), so without these the import fails with
+    # "libmkl_intel_lp64.so.2: cannot open shared object file".
+    "mkl<=2024.2.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "intel-openmp; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 # The numeric stack the Python suite typically needs to validate GPU output
