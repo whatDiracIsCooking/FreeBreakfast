@@ -146,7 +146,7 @@ nelecas = 6
 [nevpt2]                  # no options: the table is the request
 ```
 
-`[nevpt2]` runs SC-NEVPT2 on every root of the `[casscf]` it reads
+`[nevpt2]` runs SC- and PC-NEVPT2 on every root of the `[casscf]` it reads
 (`nevpt2/README.md`), and only over density fitting. Under an
 integral-direct `[eri]`, written so or filled in, it is `Unsupported`,
 naming `[eri]`: across two tables, so `parse_config` checks it once the

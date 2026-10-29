@@ -1,7 +1,7 @@
 /// @file
 /// @brief Nevpt2Step::run: per root, the root's canonical orbitals, its RDMs
-/// and the inactive Fock's blocks, then the eight SC classes over the fitted
-/// B.
+/// and the inactive Fock's blocks, then the eight SC and the eight PC
+/// classes over the fitted B.
 
 module free_breakfast.pipeline.nevpt2;
 
@@ -149,6 +149,7 @@ namespace free_breakfast {
 
   Nevpt2Output out;
   out.roots.reserve(nroots);
+  out.pc_roots.reserve(nroots);
   const std::array<double, 1> one_root{1.0};
   for (size_t root = 0; root < nroots; ++root) {
     const double *const vector = vectors.data() + (root * dim);
@@ -246,8 +247,10 @@ namespace free_breakfast {
                                       .f3ca = f3ca.data(),
                                       .f3ac = f3ac.data()};
     out.roots.push_back(FBF_TRY(nevpt2::class_energies(res, blocks, inputs, batch)));
-    log::info(std::format("NEVPT2 root {}: E_corr {:.12f} ({} RDM tiles, slab batch {})", root,
-                          out.roots.back().total, tiles, batch));
+    out.pc_roots.push_back(FBF_TRY(nevpt2::pc_class_energies(res, blocks, inputs, batch)));
+    log::info(std::format("NEVPT2 root {}: SC E_corr {:.12f}, PC E_corr {:.12f} ({} RDM tiles, "
+                          "slab batch {})",
+                          root, out.roots.back().total, out.pc_roots.back().total, tiles, batch));
   }
   return out;
 }
