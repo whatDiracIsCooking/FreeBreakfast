@@ -375,6 +375,11 @@ TEST_P(ActiveSpaceGpu, MatchesPyscfGivesBackTheRhfEnergyAndIsSymmetric) {
 
 TEST_P(ActiveSpaceGpu, CasscfIntegralsMatchPyscfTheHamiltonianAndAreSymmetric) {
   FBF_REQUIRE_GPU();
+  // Under slow_test.h: the cc-pVDZ cases, 3 to 5.5 s each, but N2's at the
+  // defaults, the cheapest; STO-3G keeps both modes.
+  if (GetParam().name != "h2o_sto3g" && !(GetParam().name == "n2_ccpvdz" && GetParam().screened)) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const fb::json &entry = reference_case(GetParam().name);
   auto setup = make_setup(entry);
   ASSERT_NE(setup, nullptr);
@@ -799,6 +804,10 @@ TEST_P(ActiveSpaceDfGpu, MatchesTheIntegralDirectIntegralsWithinTheFit) {
   // Measured worst (H2O / N2): E_core 2.4e-8 / 6.1e-6, h_eff 6.6e-8 / 2.7e-6,
   // (tu|vw) 9.3e-6 / 4.3e-6, ppaa 4.1e-5 / 2.4e-5, papa 6.3e-5 / 5.1e-5.
   constexpr double kFitTolerance = 1e-4;
+  // Under slow_test.h: H2O, 5.5 s; N2, the cheaper, stands for it.
+  if (GetParam() != "n2_ccpvdz") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   auto df = make_df_setup(GetParam());
   ASSERT_TRUE(df.has_value());
   fb::DeviceResources &res = df->setup->res();

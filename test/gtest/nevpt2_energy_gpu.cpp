@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -319,6 +320,13 @@ class Nevpt2EnergyDeviceRdms
 TEST_P(Nevpt2EnergyDeviceRdms, ClassEnergiesMatchGolden) {
   FBF_REQUIRE_GPU();
   const auto [c, batch] = GetParam();
+  // Under slow_test.h: the cc-pVTZ CAS(10,10), and its cc-pVDZ batch 3, each
+  // ~2.3 s of tiled rdms. cc-pVDZ batch 0 stands for the tiling, CAS(8,8)
+  // batch 3 for the batching.
+  if (std::string_view{c.name} == "n2_ccpvtz_cas1010_df" ||
+      (std::string_view{c.name} == "n2_ccpvdz_cas1010_df" && batch != 0)) {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const std::filesystem::path dir = kDataDir / c.name;
   fb::DeviceResources res(0);
   Integrals g = load_integrals(res, dir);
