@@ -39,9 +39,9 @@ struct Nevpt2Step {
 
 No options: `[nevpt2]` is the request, and it gets both variants. The
 `ScfOutput` is read for its spin occupations alone: an open shell,
-`n_alpha != n_beta`, is refused `Unsupported` before anything is queued.
-The Casscf step refuses one first today; this guard is for the day it
-does not, since the step's strings are `nelecas / 2` of each spin. For the
+`n_alpha != n_beta`, is refused `Unsupported` before anything is queued:
+the Casscf step takes an open shell, but this step's strings are
+`nelecas / 2` of each spin. For the
 same reason a molecule of multiplicity other than 1, whose CASSCF roots are of
 its spin S (`../../mcscf/solve/README.md`), is refused `Unsupported` too. They share
 every input (the RDMs, the Fock blocks, the MO blocks and slabs), so a choice

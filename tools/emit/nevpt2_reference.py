@@ -166,7 +166,12 @@ B2_TO_CLASS = {
 # PySCF's N2 value is defined only to ~5e-6, and no test can hold the C++
 # step to it. The invariance check below rotates only the active space, so
 # it cannot see this; DEGENERATE refuses any other such case.
-EXCLUDED = {"n2_ccpvdz": "degenerate pi* virtual pairs (see above)"}
+EXCLUDED = {
+    "n2_ccpvdz": "degenerate pi* virtual pairs (see above)",
+    "n2_ccpvdz_triplet": "not a singlet: the step refuses multiplicity != 1",
+    "nh2_ccpvdz_rohf": "open shell: the step refuses n_alpha != n_beta",
+    "ch2_ccpvdz_rohf": "open shell: the step refuses n_alpha != n_beta",
+}
 # Two canonical core or two canonical virtual orbital energies of a root
 # closer than this (hartree) refuse emission: the split of a degenerate pair
 # is arbitrary, and SC-NEVPT2 depends on it (EXCLUDED).

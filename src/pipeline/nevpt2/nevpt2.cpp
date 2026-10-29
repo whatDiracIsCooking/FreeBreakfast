@@ -65,8 +65,8 @@ namespace free_breakfast {
 Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianOutput, ScfOutput,
                      CasscfOutput> in,
                 DeviceResources &res) const {
-  // The CASSCF's own refusal stands in for this one today; this one is for the
-  // day it takes an open shell, since the strings below are nelecas / 2 a spin.
+  // The Casscf step takes an open shell, so this refusal is the one that
+  // applies: the strings below are nelecas / 2 a spin.
   if (const ScfOutput &scf = in.get<ScfOutput>(); scf.n_alpha != scf.n_beta) {
     return err_unsupported("[{}] needs a closed-shell reference, and the ScfOutput has {} alpha "
                            "and {} beta electrons",
