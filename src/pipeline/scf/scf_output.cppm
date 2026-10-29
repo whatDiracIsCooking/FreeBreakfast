@@ -1,6 +1,6 @@
 /// @file
-/// @brief @ref free_breakfast::ScfOutput, the converged closed-shell RHF
-/// wavefunction.
+/// @brief @ref free_breakfast::ScfOutput, the converged restricted (RHF or
+/// ROHF) wavefunction.
 ///
 /// An interface partition so that the module-private `:loop` can name the
 /// product it returns. The primary interface re-exports it.
@@ -13,7 +13,9 @@ import free_breakfast.recipes.matrix_ao;
 
 export namespace free_breakfast {
 
-/// @brief A converged closed-shell RHF wavefunction.
+/// @brief A converged restricted wavefunction: closed-shell RHF, or ROHF, one
+/// set of orbitals whose n_beta lowest are doubly occupied and the next
+/// n_alpha - n_beta singly.
 ///
 /// The matrices are over the spherical AOs, @c nao_sphe square, column-major,
 /// on the device the step ran on.
@@ -31,12 +33,15 @@ struct ScfOutput {
   /// closed shell refuses n_alpha != n_beta as Unsupported.
   int32_t n_beta;
   /// @brief The orbital energies, ascending, one per column of @ref c
-  /// (hartree), on the host.
+  /// (hartree), on the host. For ROHF, the eigenvalues of the Roothaan
+  /// effective Fock matrix in PySCF's convention (its @c get_roothaan_fock).
   std::vector<double> mo_energies;
-  /// @brief The MO coefficients C, AO by MO: F C = S C eps.
+  /// @brief The MO coefficients C, AO by MO: F C = S C eps, F the effective
+  /// Fock matrix for ROHF.
   SphericalMatrixAO c;
   /// @brief The spin-summed density D = 2 C_occ C_occ^T, of the canonical
-  /// orbitals of the last Fock matrix.
+  /// orbitals of the last Fock matrix; for ROHF, Da + Db, with
+  /// Da = C[:, :n_alpha] C[:, :n_alpha]^T and Db likewise over n_beta.
   SphericalMatrixAO d;
 };
 

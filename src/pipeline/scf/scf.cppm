@@ -1,5 +1,6 @@
 /// @file
-/// @brief The `Scf` step: closed-shell restricted Hartree-Fock, its loop (the
+/// @brief The `Scf` step: restricted Hartree-Fock, closed-shell or (density
+/// fitted) open-shell ROHF, its loop (the
 /// module-private `:loop`), its Fock build and its DIIS history all private to
 /// one `run`.
 ///
@@ -26,7 +27,9 @@ export namespace free_breakfast {
 
 /// @brief Iterates RHF to self-consistency from the @ref GuessOutput, with Pulay
 /// DIIS on the Fock matrix, its two-electron part the @ref EriOutput's: either
-/// integral-direct, with incremental Fock builds, or density-fitted.
+/// integral-direct, with incremental Fock builds, or density-fitted. A molecule
+/// at a multiplicity above 1 is ROHF, over the Roothaan effective Fock matrix
+/// in PySCF's convention, and density-fitted only.
 struct ScfStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "scf";
@@ -54,14 +57,16 @@ struct ScfStep {
   /// so a comparison tighter than that runs at 0. Not a [scf] TOML key.
   double tau_j = 1e-10;
   /// @brief Where the converged orbitals are written as a Molden file, if not
-  /// empty: every MO, occupation 2 for the occupied ones. Arrives resolved
+  /// empty: every MO, occupation 2 for the doubly occupied ones and 1 for an
+  /// open shell's singly occupied ones. Arrives resolved
   /// (pipeline/config sets it to scf.molden in the run's output directory).
   std::filesystem::path molden{};
 
-  /// @brief The converged wavefunction. An open shell (an odd electron count,
-  /// or a multiplicity other than 1) is ErrorKind::Unsupported; an option out
-  /// of range (a negative or NaN @ref tau_j among them), more electron pairs than orbitals, or a guess of the wrong size
-  /// is ErrorKind::InvalidConfig; a class above f is J's and K's
+  /// @brief The converged wavefunction. An open shell under an integral-direct
+  /// @ref EriOutput is ErrorKind::Unsupported; an option out of range (a
+  /// negative or NaN @ref tau_j among them), an electron count whose parity
+  /// the multiplicity cannot have, more alpha electrons than orbitals, or a
+  /// guess of the wrong size is ErrorKind::InvalidConfig; a class above f is J's and K's
   /// InvalidConfig; no convergence within @ref max_iterations is
   /// ErrorKind::MaxIterationsExceeded; a non-converged eigensolve is
   /// ErrorKind::Numerical; a failed runtime, BLAS, solver or launch call is

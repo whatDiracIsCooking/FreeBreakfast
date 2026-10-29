@@ -276,7 +276,9 @@ TEST(PipelineScfMolden, WritesTheConvergedOrbitals) {
   EXPECT_EQ(occupied, expected.at("electrons").get<std::size_t>() / 2);
 }
 
-TEST(PipelineScfErrors, AnOpenShellIsUnsupported) {
+// ROHF is density-fitted only (pipeline_df_scf_gpu.cpp): the integral-direct
+// Fock build makes no spin Fock matrices yet.
+TEST(PipelineScfErrors, AnIntegralDirectOpenShellIsUnsupported) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
   const fb::ScopedDeviceIndex on{res.dev_idx()};
@@ -285,6 +287,23 @@ TEST(PipelineScfErrors, AnOpenShellIsUnsupported) {
   auto scf = fb::ScfStep{}.run(inputs->view(), res);
   ASSERT_FALSE(scf.has_value());
   EXPECT_EQ(scf.error().kind, fb::ErrorKind::Unsupported);
+}
+
+// Ten electrons cannot be a doublet, nor H2O+'s nine a singlet: n_alpha -
+// n_beta = multiplicity - 1 has N's parity.
+TEST(PipelineScfErrors, AMultiplicityOfTheWrongParityIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  for (const auto [charge, multiplicity] :
+       {std::pair{0, 2}, std::pair{1, 1}, std::pair{0, 0}, std::pair{0, 13}}) {
+    auto inputs =
+        make_inputs(res, atoms_of(reference_case("h2o_sto3g")), "sto-3g", charge, multiplicity);
+    ASSERT_TRUE(inputs.has_value());
+    auto scf = fb::ScfStep{}.run(inputs->view(), res);
+    ASSERT_FALSE(scf.has_value()) << charge << " " << multiplicity;
+    EXPECT_EQ(scf.error().kind, fb::ErrorKind::InvalidConfig) << charge << " " << multiplicity;
+  }
 }
 
 TEST(PipelineScfErrors, TooFewIterationsIsMaxIterationsExceeded) {

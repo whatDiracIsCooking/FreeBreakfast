@@ -1,7 +1,7 @@
 /// @file
 /// @brief ScfStep::run: the step's checks and its two Fock builders, the
-/// integral-direct one and the density-fitted one, run by the RHF loop of
-/// `:loop`.
+/// integral-direct one and the density-fitted one, run by the restricted loop
+/// of `:loop`.
 
 module free_breakfast.pipeline.scf;
 
@@ -29,6 +29,7 @@ namespace free_breakfast {
 // d_built, which G's linearity makes the same matrix. J's and K's screens scale
 // with the density they read, and the difference shrinks as the SCF converges,
 // so they skip more of it. The J and K classes are the shared EriOutput's.
+// Closed-shell only: the step refuses an open shell before making one.
 struct DirectFockBuilder {
   const IntegralDirect &eri;
   SphericalMatrixAO d_built; // the density f is the Fock matrix of
@@ -50,10 +51,11 @@ struct DirectFockBuilder {
   // convergence needs a full build anyway.
   bool full_from_now = false;
 
-  // The orbitals are not read: J and K are both built from D.
+  // The orbitals are not read: J and K are both built from D. fb is always
+  // null, the shell being closed.
   [[nodiscard]] Result<bool> build(DeviceResources &res, const SphericalMatrixAO &d,
                                    const SphericalMatrixAO * /*c*/, const SphericalMatrixAO &h,
-                                   SphericalMatrixAO &f) {
+                                   SphericalMatrixAO &f, SphericalMatrixAO * /*fb*/) {
     // Only a full build may converge: an incremental F carries the screening
     // error of every build since the last full one.
     full = !built || full_from_now || incremental_builds + 1 >= fock_rebuild_interval;
@@ -116,21 +118,29 @@ constexpr double kDensityFactorFloor = 1e-12;
 // full: DF's cost is dense BLAS, which a small density difference does not
 // shrink, and K from orbitals is no function of the difference anyway. So DIIS
 // is never reset either.
+//
+// An open shell's Fa = H + J - K(Da) and Fb = H + J - K(Db), J of D = Da + Db:
+// df_exchange of C[:, :n_alpha] is K(2 Da), so each spin's K is the same call
+// over its own columns, halved as a closed shell's is. The guess's Da = Db = D/2,
+// so the first build's K(Da) is K(D)/2, the closed shell's term, and its Kb
+// is the same matrix: one factor and one K for both spins.
 struct DfFockBuilder {
   const DensityFitted &fit;
   SphericalMatrixAO j;
   SphericalMatrixAO k;
-  int32_t nocc;
+  int32_t n_alpha;
+  int32_t n_beta;
 
   [[nodiscard]] Result<bool> build(DeviceResources &res, const SphericalMatrixAO &d,
                                    const SphericalMatrixAO *c, const SphericalMatrixAO &h,
-                                   SphericalMatrixAO &f) {
+                                   SphericalMatrixAO &f, SphericalMatrixAO *fb) {
     const wwr::wwrblasHandle_t blas = res.blas().get();
     const auto n = static_cast<int32_t>(d.n());
     FBF_TRY(df_coulomb(res, n, fit.naux, fit.b.data(), d.data(), j.data()));
     if (c != nullptr) {
-      // The loop's C is every MO, ascending: the first nocc columns are C_occ.
-      FBF_TRY(df_exchange(res, n, fit.naux, nocc, fit.b.data(), c->data(), k.data()));
+      // The loop's C is every MO, ascending: the first n_alpha columns are
+      // C_occ, or an open shell's alpha occupied.
+      FBF_TRY(df_exchange(res, n, fit.naux, n_alpha, fit.b.data(), c->data(), k.data()));
     } else {
       FBF_TRY(guess_exchange(res, d));
     }
@@ -140,8 +150,19 @@ struct DfFockBuilder {
     const auto len = static_cast<int32_t>(f.num_elements());
     FBF_TRY(
         gpu_status(wwr::axpy<double, int32_t>(blas, len, &kOne<double>, j.data(), 1, f.data(), 1)));
+    if (fb != nullptr) {
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(fb->data(), f.data(), bytes,
+                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    }
     FBF_TRY(gpu_status(
         wwr::axpy<double, int32_t>(blas, len, &kNegHalf<double>, k.data(), 1, f.data(), 1)));
+    if (fb != nullptr) {
+      if (c != nullptr) {
+        FBF_TRY(df_exchange(res, n, fit.naux, n_beta, fit.b.data(), c->data(), k.data()));
+      }
+      FBF_TRY(gpu_status(
+          wwr::axpy<double, int32_t>(blas, len, &kNegHalf<double>, k.data(), 1, fb->data(), 1)));
+    }
     return true;
   }
 
@@ -219,16 +240,19 @@ ScfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriO
     return err_config("[scf] diis_history is {}, outside 1..{}", diis_history,
                       kDiisMaxHistoryLimit);
   }
+  // n_alpha - n_beta = 2S = multiplicity - 1, and N has its parity.
   const int32_t electrons = molecule.electron_count();
-  if (molecule.multiplicity() != 1 || electrons % 2 != 0) {
-    return err_unsupported("scf: only closed-shell RHF is implemented, and the molecule has {} "
-                           "electrons at multiplicity {}",
-                           electrons, molecule.multiplicity());
+  const int32_t n_open = molecule.multiplicity() - 1;
+  if (n_open < 0 || electrons < n_open || (electrons - n_open) % 2 != 0) {
+    return err_config("scf: {} electrons cannot be at multiplicity {}", electrons,
+                      molecule.multiplicity());
   }
   const uint32_t n = basis.nao_sphe();
-  const int32_t nocc = electrons / 2;
-  if (electrons < 0 || std::cmp_greater(nocc, n)) {
-    return err_config("scf: {} electrons do not fit {} spatial orbitals", electrons, n);
+  const int32_t n_alpha = (electrons + n_open) / 2;
+  const int32_t n_beta = (electrons - n_open) / 2;
+  if (std::cmp_greater(n_alpha, n)) {
+    return err_config("scf: {} electrons at multiplicity {} do not fit {} spatial orbitals",
+                      electrons, molecule.multiplicity(), n);
   }
   if (guess.size() != std::size_t{n} * n) {
     return err_config("scf: the guess has {} elements, not {} squared", guess.size(), n);
@@ -244,10 +268,17 @@ ScfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriO
         .fit = *fit,
         .j = SphericalMatrixAO(res, basis),
         .k = SphericalMatrixAO(res, basis),
-        .nocc = nocc,
+        .n_alpha = n_alpha,
+        .n_beta = n_beta,
     };
-    return rhf_loop(res, builder, molecule, basis, s, x, h, guess, max_iterations, energy_tolerance,
-                    commutator_tolerance, diis_history, molden);
+    return scf_loop(res, builder, molecule, basis, s, x, h, guess, n_alpha, n_beta, max_iterations,
+                    energy_tolerance, commutator_tolerance, diis_history, molden);
+  }
+  if (n_open != 0) {
+    return err_unsupported("scf: the integral-direct Fock build is closed-shell only, and the "
+                           "molecule is at multiplicity {}; [eri] mode = \"density_fitting\" "
+                           "runs ROHF",
+                           molecule.multiplicity());
   }
   const std::shared_ptr<const Buffers::device<double>> &u = in.get<SphericalTransformOutput>().u;
   DirectFockBuilder builder{
@@ -260,8 +291,8 @@ ScfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriO
       .fock_rebuild_interval = fock_rebuild_interval,
       .commutator_tolerance = commutator_tolerance,
   };
-  return rhf_loop(res, builder, molecule, basis, s, x, h, guess, max_iterations, energy_tolerance,
-                  commutator_tolerance, diis_history, molden);
+  return scf_loop(res, builder, molecule, basis, s, x, h, guess, n_alpha, n_beta, max_iterations,
+                  energy_tolerance, commutator_tolerance, diis_history, molden);
 }
 
 } // namespace free_breakfast
