@@ -96,12 +96,12 @@ emit/casci_reference.py
                   Write test/gtest/data/casci/casci.json: PySCF mcscf.CASCI
                   over its RHF in this tree's basis files (and mcscf.avas's
                   active spaces over this tree's MINAO), the lowest
-                  singlets' energies, <S^2> and natural occupations, the
+                  singlets' (or a triplet case's) energies, <S^2> and natural occupations, the
                   reference the Casci step is tested against. Needs PySCF.
 emit/fci_step_reference.py
                   Write test/gtest/data/fci/fci.json: PySCF fci.FCI over
                   every orbital of its RHF in this tree's basis files, the
-                  lowest singlets' energies, <S^2> and natural occupations,
+                  lowest singlets' (or a triplet case's) energies, <S^2> and natural occupations,
                   the reference the Fci step is tested against. Needs PySCF.
 emit/casscf_reference.py
                   Write test/gtest/data/casscf/casscf.json: PySCF

@@ -27,7 +27,8 @@ struct CasscfOutput {
   int32_t ncore;
   /// @brief The active orbitals: columns [ncore, ncore + ncas) of @ref c.
   int32_t ncas;
-  /// @brief The active electrons, nelecas / 2 of each spin.
+  /// @brief The active electrons, split by the molecule's multiplicity:
+  /// N_alpha - N_beta = 2S.
   int32_t nelecas;
   /// @brief The optimized orbitals, AO by MO: core, active, virtual. The core
   /// and the virtuals each diagonalize the state-averaged Fock within their
