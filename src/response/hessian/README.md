@@ -211,7 +211,9 @@ papa, reads virtual-orbital pairs.
 ## Not done
 
 - **Frozen orbitals**: every core orbital rotates, as in `fock`.
-- **Batched J and K** (#200): a block's 2k J and 2k K are built one at a time.
+- **Batched J and K**: a block's 2k J and 2k K are built one at a time.
+  Batching the integral-direct builds is an open kernel question (#200 was
+  repurposed to the fitted CIS sigma, whose block costs one pass).
 
 ## Tests
 

@@ -157,7 +157,9 @@ E_core dot, none for `ncore = 0`.
 
 ## Not done
 
-- **Batched J** (#200): one call over every pair density, once it lands.
+- **Batched J**: one call over every pair density. Batching the
+  integral-direct J is an open kernel question with no issue yet (#200 was
+  repurposed to the fitted CIS sigma).
 - **A density-fitted `active_space_hamiltonian`**: the Hamiltonian alone over
   B, without ppaa and papa. `casscf_integrals` carries it, at ppaa's and papa's
   cost.

@@ -1,8 +1,8 @@
 /// @file
 /// @brief The `Cis` step: the lowest singlet or triplet excitations of CIS
 /// (the Tamm-Dancoff approximation) over the @ref ScfOutput's closed-shell
-/// RHF, by `davidson_solve` over `cis::Sigma`, from `cis::guess`'s start with
-/// `cis::Preconditioner`.
+/// RHF, by `davidson_solve` over `cis::Sigma` or, density-fitted,
+/// `cis::DfSigma`, from `cis::guess`'s start with `cis::Preconditioner`.
 ///
 /// Device-shaped. The sigma, the guess and the preconditioner are the `cis`
 /// modules'; `run` only wires them over the pipeline's products and copies the
@@ -71,7 +71,9 @@ struct CisStep {
   /// @brief The @ref cis::Options::n_states lowest excitations of
   /// @ref cis::Options::spin. n_occ is half the molecule's electrons; C, the
   /// orbital energies and the reference energy are the ScfOutput's; σ = A b is
-  /// `cis::Sigma` over the EriOutput's J and K classes. The start is
+  /// `cis::Sigma` over the EriOutput's J and K classes when it is
+  /// IntegralDirect, and `cis::DfSigma` over its B when it is DensityFitted,
+  /// at a block of the guess's column count. The start is
   /// `cis::guess`'s min(n_ov, 2 · n_states) unit vectors, the preconditioner
   /// `cis::Preconditioner`, and `davidson_solve` runs at @ref options'
   /// davidson. The transition dipoles and oscillator strengths are left zero.
@@ -82,10 +84,11 @@ struct CisStep {
   ///         n_states below 1, a molecule that is not a closed-shell singlet
   ///         (odd electrons or multiplicity other than 1) or whose electrons
   ///         the ScfOutput does not hold as n_alpha = n_beta, no virtual
-  ///         orbital, an n_ov past int32_t, or more states than n_ov;
-  ///         Unsupported for a density-fitted EriOutput (#200); or the error
-  ///         of the first call that failed: `cis::diagonal`'s,
-  ///         `cis::Sigma::create`'s, `cis::guess`'s or `davidson_solve`'s
+  ///         orbital, an n_ov past int32_t, or more states than n_ov; or the
+  ///         error of the first call that failed: `cis::diagonal`'s,
+  ///         `cis::guess`'s, `cis::Sigma::create`'s or
+  ///         `cis::DfSigma::create`'s (Unsupported for MO blocks past the
+  ///         device's free memory), or `davidson_solve`'s
   ///         (MaxIterationsExceeded, Divergence), and GpuRuntime for a failed
   ///         copy.
   [[nodiscard]] Result<CisOutput>

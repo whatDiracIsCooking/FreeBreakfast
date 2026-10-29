@@ -1,13 +1,14 @@
 // The Cis step against PySCF's TDA (data/cis/cis.json,
-// tools/emit/cis_reference.py) to 1e-6 hartree: H2O in STO-3G and 6-31G,
-// singlets and triplets, each through the real registry (a config naming
-// [cis] plans the chain to the ScfOutput and the EriOutput) and through the
-// step run again by hand over the same products. Each state's amplitudes are
-// checked unit-norm and orthogonal to the others'. Then the refusals: too
-// few or too many states, a molecule that is not a closed-shell singlet, an
-// open-shell ScfOutput, and a density-fitted EriOutput (#200), refused when
-// the config is read and again when the step runs. Runs the device chain, so
-// needs a GPU, but for the config refusal.
+// tools/emit/cis_reference.py) to 1e-6 hartree: H2O in STO-3G and 6-31G
+// exact, and H2O in cc-pVDZ density-fitted over cc-pVDZ-JKFIT against PySCF's
+// DF RHF + TDA over the same set (cis::DfSigma), singlets and triplets, each
+// through the real registry (a config naming [cis] plans the chain to the
+// ScfOutput and the EriOutput) and through the step run again by hand over
+// the same products. Each state's amplitudes are checked unit-norm and
+// orthogonal to the others'. Then the refusals: too few or too many states,
+// a molecule that is not a closed-shell singlet, and an open-shell
+// ScfOutput; and [cis] under a density-fitted [eri] planned when the config
+// is read. Runs the device chain, so needs a GPU, but for the config case.
 
 #include <gtest/gtest.h>
 
@@ -42,9 +43,10 @@ constexpr double kEnergyTolerance = 1e-6;
 constexpr double kOrthonormalTolerance = 1e-10;
 
 // The SCF converged tightly, so the reference's error is not the 1e-6 the
-// excitations are held to.
-constexpr std::string_view kScf =
-    "[scf]\nenergy_tolerance = 1e-11\ncommutator_tolerance = 1e-10\nfock_rebuild_interval = 1\n";
+// excitations are held to; integral-direct, every Fock build full too, which
+// a fitted [eri] refuses to be told (its every build is full).
+constexpr std::string_view kScf = "[scf]\nenergy_tolerance = 1e-11\ncommutator_tolerance = 1e-10\n";
+constexpr std::string_view kDirectScf = "fock_rebuild_interval = 1\n";
 
 const fb::json &reference_case(std::string_view name) {
   static const fb::json kDoc = [] {
@@ -63,7 +65,8 @@ const fb::json &reference_case(std::string_view name) {
 }
 
 // The reference's molecule written as an XYZ file in dir, and a config naming
-// it in its basis with the given tables after it.
+// it in its basis, fitted over the reference's aux basis when it has one,
+// with the given tables after it.
 std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::json &entry,
                                    std::string_view tables) {
   // Bohr in the reference, Angstrom in an XYZ file.
@@ -77,9 +80,14 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
   EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
-  const std::string toml =
-      std::format("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n{}{}",
-                  entry.at("basis").get<std::string>(), kScf, tables);
+  const fb::json &aux = entry.at("aux_basis");
+  const std::string eri =
+      aux.is_null() ? std::string{}
+                    : std::format("[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
+                                  aux.get<std::string>());
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n{}{}{}{}",
+      entry.at("basis").get<std::string>(), eri, kScf, aux.is_null() ? kDirectScf : "", tables);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   return dir / "run.toml";
 }
@@ -88,13 +96,11 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
 // MoleculeOutput replaceable.
 fb::StepInput<fb::CisStep> step_input(const fb::Calculation &calc,
                                       const fb::MoleculeOutput *molecule = nullptr,
-                                      const fb::ScfOutput *scf = nullptr,
-                                      const fb::EriOutput *eri = nullptr) {
+                                      const fb::ScfOutput *scf = nullptr) {
   return fb::StepInput<fb::CisStep>{
       molecule != nullptr ? *molecule : *calc.get<fb::MoleculeOutput>(),
       *calc.get<fb::BasisSetOutput>(), *calc.get<fb::SphericalTransformOutput>(),
-      eri != nullptr ? *eri : *calc.get<fb::EriOutput>(),
-      scf != nullptr ? *scf : *calc.get<fb::ScfOutput>()};
+      *calc.get<fb::EriOutput>(), scf != nullptr ? *scf : *calc.get<fb::ScfOutput>()};
 }
 
 // The reference's roots of one spin: the excitation energies to 1e-6, the
@@ -146,7 +152,8 @@ void PrintTo(const Case &c, std::ostream *os) {
 class CisStepReference : public ::testing::TestWithParam<Case> {};
 
 // The config runs the chain and the step; then the step runs again by hand
-// over the same products, from a CisStep built in code.
+// over the same products, from a CisStep built in code. The h2o_ccpvdz_df
+// cases run the chain fitted, so the step takes cis::DfSigma.
 TEST_P(CisStepReference, MatchesPyscf) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case(GetParam().name);
@@ -181,7 +188,9 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, CisStepReference,
                          ::testing::Values(Case{.name = "h2o_sto3g", .spin = "singlet"},
                                            Case{.name = "h2o_sto3g", .spin = "triplet"},
                                            Case{.name = "h2o_631g", .spin = "singlet"},
-                                           Case{.name = "h2o_631g", .spin = "triplet"}),
+                                           Case{.name = "h2o_631g", .spin = "triplet"},
+                                           Case{.name = "h2o_ccpvdz_df", .spin = "singlet"},
+                                           Case{.name = "h2o_ccpvdz_df", .spin = "triplet"}),
                          [](const auto &info) {
                            return std::format("{}_{}", info.param.name, info.param.spin);
                          });
@@ -228,7 +237,7 @@ void expect_refused(const fb::Result<fb::CisOutput> &refused, fb::ErrorKind kind
 // Each refused when the step runs, naming the step, before anything is
 // allocated: n_states below 1 or past H2O / STO-3G's n_ov = 10; a triplet
 // molecule; an odd electron count; an ScfOutput whose electrons are not the
-// molecule's closed shell; and a density-fitted EriOutput (#200).
+// molecule's closed shell.
 TEST(CisStep, Refusals) {
   FBF_REQUIRE_GPU();
   const fb::json &entry = reference_case("h2o_sto3g");
@@ -266,31 +275,23 @@ TEST(CisStep, Refusals) {
                            .d = fb::SphericalMatrixAO(res, basis)};
   expect_refused(fb::CisStep{}.run(step_input(*calc, nullptr, &open), res),
                  fb::ErrorKind::InvalidConfig, "the ScfOutput has 6 alpha and 4 beta");
-
-  // A real fit of the same basis, so the refusal is of the alternative alone.
-  auto fitted = fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"}.run(
-      fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
-          *calc->get<fb::MoleculeOutput>(), *calc->get<fb::BasisSetOutput>(),
-          *calc->get<fb::PrimitivePairClassesOutput>()},
-      res);
-  ASSERT_TRUE(fitted.has_value()) << fitted.error().message;
-  expect_refused(fb::CisStep{}.run(step_input(*calc, nullptr, nullptr, &*fitted), res),
-                 fb::ErrorKind::Unsupported, "cis: runs over integral-direct ERIs only");
 }
 
-// [cis] under a density-fitted [eri] is refused when the config is read,
-// before the SCF it would follow. Nothing runs, so no GPU is needed.
-TEST(CisStep, DensityFittedEriIsUnsupported) {
+// [cis] under a density-fitted [eri] is planned when the config is read: the
+// Cis step after an Eri step in fitting mode over the named aux basis, with
+// nothing refused. Nothing runs, so no GPU is needed.
+TEST(CisStep, DensityFittedEriIsPlanned) {
   const fb::test::ScratchDir dir("cis_step");
   const auto calc =
       fb::parse_config("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
                        "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n[cis]\n",
                        dir.path(), dir / "out");
-  ASSERT_FALSE(calc.has_value());
-  EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
-  EXPECT_NE(calc.error().message.find("[cis] runs over integral-direct ERIs only"),
-            std::string::npos)
-      << calc.error().message;
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::CisStep>().has_value());
+  const auto &eri = calc->step<fb::EriStep>();
+  ASSERT_TRUE(eri.has_value());
+  EXPECT_EQ(eri->mode, fb::EriMode::DensityFitting);
+  EXPECT_EQ(eri->aux_basis, "cc-pvdz-jkfit");
 }
 
 } // namespace

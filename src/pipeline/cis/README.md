@@ -50,8 +50,9 @@ struct CisStep {
 1. **The refusals**, before anything is allocated (below).
 2. **Δε** = ε_a − ε_i, `cis::diagonal` over the ScfOutput's orbital energies
    uploaded, n_occ = N / 2 from the molecule.
-3. **The sigma**, `cis::Sigma::create` over the ScfOutput's C, the
-   `SphericalTransformOutput`'s U, and the `EriOutput`'s J and K classes.
+3. **The sigma**, over the ScfOutput's C: `cis::Sigma::create` with the
+   `SphericalTransformOutput`'s U and an `IntegralDirect` `EriOutput`'s J and
+   K classes, or `cis::DfSigma::create` with a `DensityFitted` one's B.
 4. **The Davidson.** `cis::guess`'s min(n_ov, 2 · n_states) unit vectors on
    the lowest Δε, `cis::Preconditioner`'s r / (θ − Δε), and `davidson_solve`
    at `options.davidson` with `max_subspace` clamped to
@@ -81,30 +82,38 @@ What it settled:
   `max_subspace` is the step's, as `davidson_solve` takes it beside the
   options rather than in them.
 - **The oscillator strengths and transition dipoles are zero** until #201
-  computes them, and **a density-fitted `EriOutput` is `Unsupported`** until
-  #200 wires `cis.sigma`'s DF operator in.
+  computes them.
+- **The `EriOutput`'s alternative picks the sigma**: `cis::Sigma` over the
+  J and K classes, or `cis::DfSigma` over B. The fitted one is created for a
+  block of the guess's min(n_ov, 2 · n_states) columns, the widest
+  `davidson_solve` applies (the guess, then at most n_states corrections
+  per iteration), so its scratch is sized once and no apply slices.
+  `davidson_solve` is the same call over either, through a generic lambda,
+  rather than a variant or a wrapper type around the two.
 
 Errors: InvalidConfig, before anything is allocated, for `n_states` below 1;
 a molecule that is not a closed-shell singlet (odd electrons, or a
 multiplicity other than 1); an ScfOutput whose `n_alpha`, `n_beta` are not the
 molecule's N / 2 each; no virtual orbital, or an n_ov past `int32_t`; or more
-states than n_ov. Unsupported for a density-fitted `EriOutput`. Then the
-module calls' own: `cis::Sigma::create`'s, `davidson_solve`'s
+states than n_ov. Then the module calls' own: `cis::Sigma::create`'s,
+`cis::DfSigma::create`'s (Unsupported, naming the bytes, for MO blocks and
+scratch past the device's free memory), `davidson_solve`'s
 MaxIterationsExceeded or Divergence, and GpuRuntime for a failed copy.
 
 ## Tests
 
 `test/gtest/cis_step_gpu.cpp`, against PySCF's RHF + TDA in this tree's basis
 files (`test/gtest/data/cis/`, `tools/emit/cis_reference.py`): H₂O STO-3G
-and 6-31G, singlets and triplets, the five lowest of each, through the real
+and 6-31G exact, and H₂O cc-pVDZ density-fitted over cc-pVDZ-JKFIT against
+PySCF's DF RHF + TDA over the same set, singlets and triplets, the five
+lowest of each, through the real
 registry from a config naming `[cis]` (its `[scf]` converged tightly), and
 the step again by hand over the same products. The excitation energies and
 the reference energy to 1e-6 hartree, the states ascending, and their
 amplitudes orthonormal. Then n_states = n_ov and `max_subspace = 1`, both
-clamped, still the reference's roots; and the refusals above, a fitted
-`EriOutput` among them (a real fit over cc-pVDZ-JKFIT), and `[cis]` under a
-density-fitted `[eri]` refused when the config is read. The `[cis]` parsing is
-in `pipeline_config_host.cpp`.
+clamped, still the reference's roots; the refusals above; and `[cis]` under a
+density-fitted `[eri]` planned when the config is read, with nothing refused.
+The `[cis]` parsing is in `pipeline_config_host.cpp`.
 
 ## Files
 

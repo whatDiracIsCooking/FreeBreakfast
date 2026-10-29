@@ -1,7 +1,10 @@
 // GPU cases for cis.sigma: <b1, A b2> = <b2, A b1> for both spins on H2O /
 // cc-pVDZ with synthetic orbitals and orbital energies (d shells, so the
 // spherical bridge is exercised); a block equal to its columns applied one at
-// a time; a second apply that allocates nothing of its own; and the physics
+// a time; a second apply that allocates nothing of its own; the same three
+// for the density-fitted cis::DfSigma over a cc-pVDZ-JKFIT fit, and its
+// refusals (its physics, DF against PySCF's DF, is cis_step_gpu.cpp's); and
+// the physics
 // over the engine's own RHF, against data/cis/cis.json
 // (tools/emit/cis_reference.py) to the issue's 1e-5 hartree: H2O / STO-3G's
 // singlets and triplets from the full A, assembled column by column and
@@ -124,6 +127,7 @@ struct Setup {
   const fb::SphericalTransformOutput *transform = nullptr;
   std::vector<fb::CoulombPairClass> j_classes;
   std::vector<fb::OrderedPairClass> k_classes;
+  std::optional<fb::DensityFitted> fit;
   std::optional<fb::ScfOutput> scf;
 
   [[nodiscard]] fb::DeviceResources &res() { return node.device(0); }
@@ -133,9 +137,16 @@ struct Setup {
     return cis::Sigma::create(res(), *basis, transform->u, j_classes, k_classes, c, n_occ, delta,
                               spin);
   }
+
+  [[nodiscard]] fb::Result<cis::DfSigma> df_sigma(const fb::SphericalMatrixAO &c,
+                                                  std::int32_t n_occ, const double *delta,
+                                                  cis::Spin spin, std::int32_t max_block) {
+    return cis::DfSigma::create(res(), fit->b, fit->naux, c, n_occ, delta, spin, max_block);
+  }
 };
 
-std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_scf) {
+// fitted: the EriOutput is a fit over cc-pVDZ-JKFIT instead, held as fit.
+std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_scf, bool fitted = false) {
   auto setup = std::make_unique<Setup>();
   const fb::test::ScratchDir dir("cis_sigma");
   // Bohr in the reference, Angstrom in an XYZ file.
@@ -183,7 +194,10 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_scf) {
   EXPECT_EQ(setup->basis->nao_sphe(), entry.at("nao").get<std::uint32_t>());
 
   fb::DeviceResources &res = setup->res();
-  auto eri = fb::EriStep{}.run(
+  const fb::EriStep eri_step =
+      fitted ? fb::EriStep{.mode = fb::EriMode::DensityFitting, .aux_basis = "cc-pvdz-jkfit"}
+             : fb::EriStep{};
+  auto eri = eri_step.run(
       fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>{
           *molecule, *basis_set, *pairs},
       res);
@@ -201,6 +215,10 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_scf) {
     }
     EXPECT_NEAR(scf->energy, entry.at("rhf_energy").get<double>(), 1e-8);
     setup->scf.emplace(std::move(*scf));
+  }
+  if (fitted) {
+    setup->fit.emplace(std::move(std::get<fb::DensityFitted>(eri->eri)));
+    return setup;
   }
   // The sigma's own classes, as pipeline.eri's IntegralDirect holds them.
   auto &direct = std::get<fb::IntegralDirect>(eri->eri);
@@ -360,8 +378,11 @@ INSTANTIATE_TEST_SUITE_P(Spins, CisSigmaSpin, ::testing::Values("Singlet", "Trip
                            return info.param;
                          });
 
-// The pool's high-water mark over fn, above what was in use when it started,
-// with res synchronized on both sides.
+// The pool's high-water mark over fn, above what was in use when it started
+// (zero if it never rose past that), with res synchronized on both sides. On
+// HIP the mark has read 2.8 MB below the starting use after an fn that
+// allocates nothing (a second DF apply, RX 9060 XT), which the bare unsigned
+// difference turned into nearly 2^64.
 std::uint64_t pool_peak(fb::DeviceResources &res, const std::function<void()> &fn) {
   wwr::wwrMemPool_t pool = res.device()->pool().get();
   EXPECT_TRUE(res.sync().has_value());
@@ -376,7 +397,7 @@ std::uint64_t pool_peak(fb::DeviceResources &res, const std::function<void()> &f
   std::uint64_t high = 0;
   EXPECT_EQ(wwr::wwrMemPoolGetAttribute(pool, wwr::wwrMemPoolAttrUsedMemHigh, &high),
             wwr::wwrSuccess);
-  return high - before;
+  return high > before ? high - before : 0;
 }
 
 // create allocates every buffer of the sigma's and grows the workspace, so a
@@ -435,6 +456,126 @@ TEST(CisSigma, Refusals) {
   EXPECT_EQ(no_delta.error().kind, fb::ErrorKind::InvalidConfig);
 
   auto sigma = setup->sigma(syn.c, 5, syn.delta.data(), cis::Spin::Singlet);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  const auto refused = sigma->apply(res, -1, nullptr, nullptr);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_TRUE(sigma->apply(res, 0, nullptr, nullptr).has_value());
+}
+
+// The density-fitted operator's symmetry, <b1, A b2> = <b2, A b1>, on the
+// same synthetic C and ε. B_voᵀ B_vo is symmetric by construction and the
+// exchange term is through B_oo's and B_vv's own symmetry, so only rounding
+// separates the two sides.
+TEST_P(CisSigmaSpin, DfIsSymmetric) {
+  FBF_REQUIRE_GPU();
+  auto setup = make_setup(reference_case("h2o_ccpvdz"), false, true);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  auto syn = synthetic(*setup, 5);
+  auto sigma = setup->df_sigma(syn.c, syn.n_occ, syn.delta.data(), spin(), 2);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  ASSERT_EQ(sigma->size(), syn.n_ov);
+
+  const auto n = static_cast<std::size_t>(syn.n_ov);
+  auto b = random_vector(2 * n, 23, -1.0, 1.0);
+  const auto d_b = to_device(res, b);
+  fb::Buffers::device<double> d_s(2 * n, res.device());
+  ASSERT_TRUE(sigma->apply(res, 2, d_b.data(), d_s.data()).has_value());
+  const auto s = to_host(res, d_s.data(), 2 * n);
+  const std::vector<double> b1(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(n));
+  const std::vector<double> b2(b.begin() + static_cast<std::ptrdiff_t>(n), b.end());
+  const std::vector<double> s1(s.begin(), s.begin() + static_cast<std::ptrdiff_t>(n));
+  const std::vector<double> s2(s.begin() + static_cast<std::ptrdiff_t>(n), s.end());
+  const double scale = max_abs(s) * static_cast<double>(n);
+  const double b1_ab2 = dot(b1, s2);
+  const double b2_ab1 = dot(b2, s1);
+  ASSERT_GT(max_abs(s), 1.0);
+  std::cout << "DF symmetry: " << std::abs(b1_ab2 - b2_ab1) / scale << " of max|sigma| n_ov\n";
+  EXPECT_LE(std::abs(b1_ab2 - b2_ab1), kOperatorTolerance * scale) << b1_ab2 << " vs " << b2_ab1;
+}
+
+// A block of five is its five columns applied one call each, with the sigma
+// created for blocks of four: the first four in one pass, the fifth in a
+// second.
+TEST_P(CisSigmaSpin, DfBlockEqualsColumns) {
+  FBF_REQUIRE_GPU();
+  auto setup = make_setup(reference_case("h2o_ccpvdz"), false, true);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  auto syn = synthetic(*setup, 5);
+  auto sigma = setup->df_sigma(syn.c, syn.n_occ, syn.delta.data(), spin(), 4);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+
+  constexpr std::int32_t kColumns = 5;
+  const auto n = static_cast<std::size_t>(syn.n_ov);
+  const auto d_b = to_device(res, random_vector(kColumns * n, 31, -1.0, 1.0));
+  fb::Buffers::device<double> block(kColumns * n, res.device());
+  fb::Buffers::device<double> single(kColumns * n, res.device());
+  ASSERT_TRUE(sigma->apply(res, kColumns, d_b.data(), block.data()).has_value());
+  for (std::size_t col = 0; col < kColumns; ++col) {
+    ASSERT_TRUE(sigma->apply(res, 1, d_b.data() + (col * n), single.data() + (col * n)));
+  }
+  const auto got = to_host(res, block.data(), kColumns * n);
+  const auto want = to_host(res, single.data(), kColumns * n);
+  double diff = 0.0;
+  for (std::size_t i = 0; i < got.size(); ++i) {
+    diff = std::max(diff, std::abs(got[i] - want[i]));
+  }
+  std::cout << "DF block vs columns: " << diff / max_abs(want) << " of max|sigma|\n";
+  EXPECT_LE(diff, kOperatorTolerance * max_abs(want));
+}
+
+// create allocates the MO blocks and grows the workspace to apply's scratch
+// for its block, so a second apply of that block takes nothing from the
+// device's pool and leaves the workspace where it was.
+TEST(CisSigma, DfSecondApplyAllocatesNothing) {
+  FBF_REQUIRE_GPU();
+  auto setup = make_setup(reference_case("h2o_ccpvdz"), false, true);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  auto syn = synthetic(*setup, 5);
+  constexpr std::int32_t kColumns = 4;
+  auto sigma = setup->df_sigma(syn.c, syn.n_occ, syn.delta.data(), cis::Spin::Singlet, kColumns);
+  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
+  const auto n = static_cast<std::size_t>(syn.n_ov);
+  const auto d_b = to_device(res, random_vector(kColumns * n, 41, -1.0, 1.0));
+  fb::Buffers::device<double> d_s(kColumns * n, res.device());
+  ASSERT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
+
+  const std::byte *const workspace = res.device_workspace(0).data();
+  const std::size_t workspace_bytes = res.device_workspace(0).num_elements();
+  const std::uint64_t second = pool_peak(
+      res, [&] { EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value()); });
+  std::cout << "pool peak: second DF apply " << second << " B\n";
+  EXPECT_EQ(second, 0U);
+  EXPECT_EQ(res.device_workspace(0).data(), workspace);
+  EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
+}
+
+TEST(CisSigma, DfRefusals) {
+  FBF_REQUIRE_GPU();
+  auto setup = make_setup(reference_case("h2o_ccpvdz"), false, true);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  auto syn = synthetic(*setup, 5);
+  const auto nao = static_cast<std::int32_t>(setup->basis->nao_sphe());
+  const auto expect_config = [](const fb::Result<cis::DfSigma> &bad, std::string_view what) {
+    ASSERT_FALSE(bad.has_value()) << what;
+    EXPECT_EQ(bad.error().kind, fb::ErrorKind::InvalidConfig) << bad.error().message;
+    EXPECT_NE(bad.error().message.find("cis::DfSigma::create"), std::string::npos)
+        << bad.error().message;
+  };
+  for (const std::int32_t n_occ : {0, nao, -1}) {
+    expect_config(setup->df_sigma(syn.c, n_occ, syn.delta.data(), cis::Spin::Singlet, 2), "n_occ");
+  }
+  expect_config(setup->df_sigma(syn.c, 5, nullptr, cis::Spin::Singlet, 2), "delta");
+  expect_config(setup->df_sigma(syn.c, 5, syn.delta.data(), cis::Spin::Singlet, 0), "max_block");
+  expect_config(cis::DfSigma::create(res, setup->fit->b, setup->fit->naux + 1, syn.c, 5,
+                                     syn.delta.data(), cis::Spin::Singlet, 2),
+                "naux");
+
+  auto sigma = setup->df_sigma(syn.c, 5, syn.delta.data(), cis::Spin::Singlet, 2);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   const auto refused = sigma->apply(res, -1, nullptr, nullptr);
   ASSERT_FALSE(refused.has_value());
