@@ -1,9 +1,10 @@
 # Pipeline: Casscf
 
-State-averaged CASSCF from the SCF's orbitals: the start is an active space
-named by index or picked by AVAS over MINAO, as the Casci step picks its own;
-`mcscf.solve`'s `mcscf::solve` optimizes the orbitals and the CI of the lowest
-singlets at fixed weights, integral-direct or fully density-fitted; the core
+State-averaged CASSCF from the SCF's orbitals, RHF or ROHF: the start is an
+active space named by index or picked by AVAS over MINAO, as the Casci step
+picks its own; `mcscf.solve`'s `mcscf::solve` optimizes the orbitals and the
+CI of the lowest roots of the molecule's spin at fixed weights,
+integral-direct or fully density-fitted; the core
 and the virtuals are then canonicalized, and the state-averaged natural
 orbitals optionally written as Molden.
 
@@ -138,9 +139,14 @@ plus the scratch above, where each step building its own once held two.
 
 What it settled:
 
-- **Singlets only**, for the Casci step's reason: the SCF is closed-shell,
-  and an open-shell ScfOutput (`n_alpha != n_beta`) is refused `Unsupported`
-  before anything is queued.
+- **The roots are of the molecule's spin**, `mcscf::solve`'s N_α − N_β = 2S
+  from `Molecule::multiplicity()`. From ROHF orbitals (`n_alpha > n_beta`)
+  the start is the Casci step's: by index, the core doubly occupied and every
+  singly occupied orbital active, or the selection's `InvalidConfig`; `avas`
+  over an open shell is `Unsupported` (`active_space/README.md`). Only the
+  start is the ROHF's: the core stays doubly occupied, so the optimization is
+  the closed-core one, PySCF's `mcscf.CASSCF(mf, ncas, (n_α, n_β))` from its
+  ROHF. ROHF is density-fitted only today, so such a run is a DF-CASSCF.
 - **The weights, tolerances and `max_cycle` are refused when the config is
   read**, since none needs the molecule (`config/README.md`); `mcscf::solve`
   checks them again for a step built by hand. The active space's ranges are
@@ -180,6 +186,12 @@ Each case runs again with `[eri] mode = "density_fitting"` and `aux_basis =
 from the exact RHF and this run from the DF-RHF, since one `[eri]` serves
 both steps; the converged DF-CASSCF does not depend on the start, only on
 which stationary point it reaches.
+
+From ROHF orbitals, density-fitted (`casscf_df.json`'s `"scf": "rohf"`
+cases, which have no exact counterpart): NH₂'s doublet CAS(5,5) and CH₂'s ³B₁
+triplet CAS(6,6), cc-pVDZ, frontier, the chain at the molecule's
+multiplicity so its Scf step is the DF-ROHF the reference starts from; to the
+same bars, ⟨S²⟩ = S(S + 1).
 
 Also `max_cycle` running out failing the step. The `[casscf]` parsing and its
 refusals are in `pipeline_config_host.cpp`, and an end-to-end run with

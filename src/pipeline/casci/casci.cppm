@@ -22,8 +22,8 @@ export import free_breakfast.pipeline.active_space; // CasciStep's base
 
 export namespace free_breakfast {
 
-/// @brief The lowest roots of a complete active space over a set of RHF
-/// orbitals, of the molecule's spin S, ascending in energy.
+/// @brief The lowest roots of a complete active space over a set of RHF or
+/// ROHF orbitals, of the molecule's spin S, ascending in energy.
 struct CasciOutput {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.
   int32_t ncore;
@@ -75,12 +75,11 @@ struct CasciStep : ActiveSpaceSelection {
   /// tolerance; each 1-RDM is `ci::Sigma::rdm1`'s. Synchronizes res.stream():
   /// the integrals and every Davidson iteration are read back to the host.
   ///
-  /// @return The roots; Unsupported, before anything is queued, for an
-  ///         open-shell ScfOutput (n_alpha != n_beta);
-  ///         InvalidConfig, before the Hamiltonian is built, for a
+  /// @return The roots; InvalidConfig, before the Hamiltonian is built, for a
   ///         multiplicity that does not fit the active space (2S above
   ///         nelecas, of the other parity, or N_alpha above ncas);
-  ///         @ref ActiveSpaceSelection::select's error; or the
+  ///         @ref ActiveSpaceSelection::select's error (an open-shell
+  ///         ScfOutput's among them); or the
   ///         error of the first module call that failed:
   ///         `active_space_hamiltonian`'s, `ci::Sigma`'s, `ci::solve`'s
   ///         (InvalidConfig for @ref nroots outside [1, dim],

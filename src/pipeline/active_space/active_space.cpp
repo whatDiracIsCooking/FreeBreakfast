@@ -305,11 +305,6 @@ struct AvasRotation {
                                                                const Molecule &molecule,
                                                                const BasisSet &basis,
                                                                const ScfOutput &scf) const {
-  if (scf.n_alpha != scf.n_beta) {
-    return err_unsupported("active space: only a closed-shell reference is implemented, and the "
-                           "ScfOutput has {} alpha and {} beta electrons",
-                           scf.n_alpha, scf.n_beta);
-  }
   const int32_t n_electrons = scf.n_alpha + scf.n_beta;
   const auto nmo = static_cast<int32_t>(scf.mo_energies.size());
   const ScopedDeviceIndex on{res.dev_idx()};
@@ -321,10 +316,35 @@ struct AvasRotation {
     // orbital_order's permutation as R: C R's columns are C's, exactly.
     const std::vector<int32_t> order = FBF_TRY(orbital_order(n_electrons, nmo));
     space.ncore = (n_electrons - nelecas) / 2;
+    // An open shell's first n_beta orbitals are doubly occupied and the next
+    // n_alpha - n_beta singly: the core holds only the first kind, and the
+    // active space every one of the second. (A closed shell's core is
+    // orbital_order's alone, as PySCF's sort_mo leaves it.)
+    if (scf.n_alpha != scf.n_beta) {
+      const auto ncore = static_cast<size_t>(space.ncore);
+      for (size_t col = 0; col < order.size(); ++col) {
+        const int32_t mo = order[col];
+        if (col < ncore && mo >= scf.n_beta) {
+          return err_config("active space: core orbital {} is not doubly occupied by the "
+                            "ScfOutput's {} alpha and {} beta electrons",
+                            mo, scf.n_alpha, scf.n_beta);
+        }
+        if (col >= ncore + static_cast<size_t>(ncas) && mo >= scf.n_beta && mo < scf.n_alpha) {
+          return err_config("active space: singly occupied orbital {} of the ScfOutput's {} alpha "
+                            "and {} beta electrons is not active",
+                            mo, scf.n_alpha, scf.n_beta);
+        }
+      }
+    }
     for (size_t col = 0; col < order.size(); ++col) {
       space.r[static_cast<size_t>(order[col]) + (mo_count * col)] = 1.0;
     }
   } else {
+    if (scf.n_alpha != scf.n_beta) {
+      return err_unsupported("active space: avas over an open-shell reference is not "
+                             "implemented, and the ScfOutput has {} alpha and {} beta electrons",
+                             scf.n_alpha, scf.n_beta);
+    }
     if (ncas != 0 || nelecas != 0 || !active.empty()) {
       return err_config(
           "active space: ncas, nelecas and active are avas's to pick, so are not set");

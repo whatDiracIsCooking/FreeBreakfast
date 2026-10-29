@@ -139,12 +139,6 @@ Status canonicalize_core_virtual(DeviceResources &res, size_t nmo, size_t ncore,
 CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput,
                      CoreHamiltonianOutput, ScfOutput> in,
                 DeviceResources &res) const {
-  const ScfOutput &scf = in.get<ScfOutput>();
-  if (scf.n_alpha != scf.n_beta) {
-    return err_unsupported("casscf: only a closed-shell reference is implemented, and the "
-                           "ScfOutput has {} alpha and {} beta electrons",
-                           scf.n_alpha, scf.n_beta);
-  }
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
   const SphericalMatrixAO &h = in.get<CoreHamiltonianOutput>().h;
@@ -152,7 +146,7 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
 
-  const ActiveSpace space = FBF_TRY(select(res, molecule, basis, scf));
+  const ActiveSpace space = FBF_TRY(select(res, molecule, basis, in.get<ScfOutput>()));
   mcscf::Options options;
   options.conv_tol = conv_tol;
   options.conv_tol_grad = conv_tol_grad;
