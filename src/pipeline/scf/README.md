@@ -1,9 +1,10 @@
 # Pipeline: Scf
 
-Iterate closed-shell restricted Hartree-Fock to self-consistency, from the
-`GuessOutput`, with Pulay DIIS on the Fock matrix. The two-electron part is
-the `EriOutput`'s (`pipeline/eri`): integral-direct, with incremental Fock
-builds, or density-fitted.
+Iterate restricted Hartree-Fock to self-consistency, from the `GuessOutput`,
+with Pulay DIIS on the Fock matrix: closed-shell RHF, or ROHF at a
+multiplicity above 1. The two-electron part is the `EriOutput`'s
+(`pipeline/eri`): integral-direct, with incremental Fock builds, or
+density-fitted. ROHF is density-fitted only.
 
 ## Module
 
@@ -24,7 +25,7 @@ struct ScfOutput {
   int32_t n_beta;                   // occupied in beta; == n_alpha for RHF
   std::vector<double> mo_energies;  // ascending, host
   SphericalMatrixAO c;              // AO x MO
-  SphericalMatrixAO d;              // spin-summed, 2 C_occ C_occ^T
+  SphericalMatrixAO d;              // spin-summed, 2 C_occ C_occ^T; ROHF: Da + Db
 };
 
 struct ScfStep {
@@ -63,22 +64,41 @@ Each iteration, all on `res.stream()`:
    build that switches to full ones, the history is then dropped.
 6. **Diagonalize** F' = X^T F X (`recipes.diagonalize`), C = X C', and D = 2 C_occ C_occ^T.
 
+An open shell (ROHF, n_alpha > n_beta) changes steps 1, 2 and 6 only:
+
+1. The builder makes **Fa = H + J(D) − K(Da)** and **Fb = H + J(D) − K(Db)**,
+   D = Da + Db, and the loop assembles the **Roothaan effective Fock matrix**
+   F from them (`roothaan_fock`) in PySCF's `get_roothaan_fock` convention:
+   Fc = (Fa + Fb)/2, the projectors Pc = Db S, Po = (Da − Db) S and
+   Pv = I − Da S, A = ½ (Pcᵀ Fc Pc + Poᵀ Fc Po + Pvᵀ Fc Pv) + Poᵀ Fb Pc +
+   Poᵀ Fa Pv + Pvᵀ Fc Pc, F = A + Aᵀ. It is made from the densities, so the
+   first build, whose Da = Db = D/2 are the guess split per spin, needs no C.
+2. E = tr((Da + Db) H + Da Fa + Db Fb)/2 + E_nuc.
+6. Da = C[:, :n_alpha] C[:, :n_alpha]ᵀ, Db over n_beta, and D = Da + Db.
+
+DIIS and the residual are unchanged, on (F, Da + Db), and F's eigenvalues are
+the orbital energies: PySCF's ROHF `mo_energy`. A closed shell allocates none
+of the open-shell state and runs none of it, the second K included, so its
+path is the RHF loop's operation for operation.
+
 On convergence step 5 is skipped: the published orbitals are the canonical
 ones of the Fock matrix as built, not of an extrapolation, and D is theirs.
 The energy is that of the density the last Fock matrix was built from.
 
 What it settled:
 
-- **The loop and the Fock build are apart.** `:loop`'s `rhf_loop` is the
-  RHF iteration, written against a Fock builder with two members: `build`,
-  which makes F = H + G(D) from the density and the orbitals it came from
-  (null on the first build, whose D is the guess) and says whether that F is
-  exact for D, so may be taken as converged; and `reset_diis`, told the
+- **The loop and the Fock build are apart.** `:loop`'s `scf_loop` is the
+  restricted iteration, written against a Fock builder with two members:
+  `build`, which makes F = H + G(D) from the density and the orbitals it came
+  from (null on the first build, whose D is the guess), or for an open shell
+  Fa and Fb, and says whether that F is exact for D, so may be taken as
+  converged; and `reset_diis`, told the
   commutator norm, which says whether DIIS's history is to be dropped. The
   incremental builds, `fock_rebuild_interval`, the switch to full builds and
   the DIIS reset are the direct builder's policy (`DirectFockBuilder` in
   `scf.cpp`); the guess upload and rescale, convergence and the Molden write
-  are the loop's, so a second builder gets them unchanged. The orbitals are
+  are the loop's, so a second builder gets them unchanged; so is the open
+  shell's Roothaan assembly. The orbitals are
   passed because a density-fitted K is built from `C_occ`, not from D. The
   loop is a template in an internal partition, not a public one.
 
@@ -119,7 +139,11 @@ What it settled:
   them once; this step branches on the alternative. Under `DensityFitted`,
   `DfFockBuilder` makes F = H + J − K/2 from its B: J from D
   (`df_coulomb`), K from the occupied orbitals the density came from
-  (`df_exchange`, which takes a factor C of D = 2 C Cᵀ). Under
+  (`df_exchange`, which takes a factor C of D = 2 C Cᵀ). For an open shell
+  it makes Fa and Fb the same way, K(Da) and K(Db) being half of
+  `df_exchange` over C's first n_alpha and n_beta columns: a second K. The
+  first build's Da = Db = D/2, so its K(Da) = K(Db) is the closed shell's
+  K(D)/2, from the guess's one factor, below. Under
   `IntegralDirect`, `DirectFockBuilder` launches J and K over its classes.
   The step builds neither: B and the classes outlive the SCF for the
   CASSCF (and every later reader) to use.
@@ -180,21 +204,27 @@ What it settled:
   N / sum Z before the first Fock build.
 - **`molden` writes on convergence.** When it is set, the converged C is
   downloaded and written by `io.molden`'s `write_molden`: every MO, the
-  `nocc` lowest at occupation 2. It is not a TOML key: `pipeline/config` sets
+  n_beta lowest at occupation 2 and the next n_alpha − n_beta at 1. It is not a TOML key: `pipeline/config` sets
   it to `scf.molden` in the run's output directory. Writing it is part of the
   step, so a failed write fails the step.
-- **Closed shell only.** An odd electron count or a multiplicity other than 1
-  is `Unsupported`.
-- **Host synchronizations**: the energy's two dots and the residual norm read
-  host scalars, DIIS reads its singular flag, and `syevd`'s flag is fetched:
-  five per iteration. Batching them into one read is a later optimization.
+- **ROHF is density-fitted only.** n_alpha − n_beta = multiplicity − 1, so
+  N and the multiplicity must agree in parity, or it is `InvalidConfig`. An
+  open shell under `IntegralDirect` is `Unsupported`, until the direct build
+  makes spin Fock matrices. PySCF's `get_occ` takes the open orbitals as the
+  lowest non-core ones by their alpha energy; here they are the next ones up
+  F's spectrum, aufbau. The two agree on every reference case, which PySCF
+  found internally stable.
+- **Host synchronizations**: the energy's two dots (three for an open shell)
+  and the residual norm read host scalars, DIIS reads its singular flag, and
+  `syevd`'s flag is fetched: five per iteration (six). Batching them into one read is a later optimization.
 - **A dropped overlap mode** (an eigenvalue under the orthogonalizer's floor)
   leaves a zero column in X, so F' has a spurious zero eigenvalue that the
   aufbau fill can pick. A canonical orthogonalizer with fewer columns than AOs
   is the fix, once a basis needs it.
 
-Errors: an option out of range, more electron pairs than orbitals, or a guess
-of the wrong size is `InvalidConfig`; a class above f is J's and K's
+Errors: an option out of range, an electron count of the wrong parity for the
+multiplicity, more alpha electrons than orbitals, or a guess of the wrong size
+is `InvalidConfig`; an open shell under integral-direct ERIs is `Unsupported`; a class above f is J's and K's
 `InvalidConfig`; no convergence within `max_iterations` is
 `MaxIterationsExceeded`; a non-converged eigensolve is `Numerical`; a failed
 runtime, BLAS, solver or launch call is `GpuRuntime`; a `molden` file that
@@ -216,8 +246,9 @@ this tree's own `data/basis` files:
 - A config naming only `[scf]` plans the whole chain, for H2O/cc-pVDZ and
   CO/cc-pVTZ, and its energy and orbital energies match PySCF's to the same
   tolerances.
-- An open shell is `Unsupported`, too few iterations `MaxIterationsExceeded`,
-  and an option out of range `InvalidConfig`.
+- An integral-direct open shell is `Unsupported`, a multiplicity of the wrong
+  parity (or below 1, or above N + 1) `InvalidConfig`, too few iterations
+  `MaxIterationsExceeded`, and an option out of range `InvalidConfig`.
 - `molden` set writes a file a Molden reader takes: the header, one `[MO]`
   entry per orbital, `nocc` of them at occupation 2.
 - The `[scf]` config cases are in `pipeline_config_host.cpp`.
@@ -241,12 +272,23 @@ orbital and fitting sets (`test/gtest/data/density_fitting/`,
 - A config whose `[eri]` selects density fitting plans the whole chain and
   runs it to PySCF's energy and orbital energies.
 
+Against PySCF's DF-ROHF (`test/gtest/data/density_fitting/df_rohf.json`), the
+orbital energies being its Roothaan effective Fock matrix's eigenvalues:
+
+- Doublets OH, NH2 and H2O+ (charged) and triplet CH2 in cc-pVDZ /
+  cc-pVDZ-JKFIT, and CH2 in cc-pVTZ / cc-pVTZ-JKFIT: the energy to 1e-8 Eh,
+  every orbital energy to 1e-6 Eh, n_alpha and n_beta, C^T S C = I, and for
+  each spin density tr(Ds S) = n_s and Ds S Ds = Ds, with D = Da + Db.
+- A config at `multiplicity = 2` (H2O+) plans and runs DF-ROHF to the same
+  tolerances, and its Molden file has n_beta orbitals at occupation 2 and
+  n_alpha − n_beta at 1.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `scf.cppm` | Module interface: `ScfStep`; re-exports `:output` |
 | `scf_output.cppm` | Interface partition `:output`: `ScfOutput`, so that `:loop` can name it |
-| `scf_loop.cppm` | Internal partition `:loop`: `rhf_loop`, the energy, the residual, convergence, DIIS, the eigensolve and the Molden write, against a Fock builder |
-| `scf.cpp` | `ScfStep::run`: the checks; `DirectFockBuilder`, the integral-direct Fock build and its full/incremental policy; and `DfFockBuilder`, the density-fitted one, with the first build's K from the guess's factor |
+| `scf_loop.cppm` | Internal partition `:loop`: `scf_loop`, the Roothaan effective Fock matrix, the energy, the residual, convergence, DIIS, the eigensolve and the Molden write, against a Fock builder |
+| `scf.cpp` | `ScfStep::run`: the checks; `DirectFockBuilder`, the integral-direct Fock build and its full/incremental policy; and `DfFockBuilder`, the density-fitted one, closed or open shell, with the first build's K from the guess's factor |
 | `CMakeLists.txt` | The module library |
