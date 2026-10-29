@@ -705,6 +705,46 @@ TEST(PipelineConfig, AMalformedFciTableIsInvalidConfig) {
   expect_config_error(with_inputs("[fci]\nnroots = 1.5\n"), "[fci] nroots");
 }
 
+TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
+  auto calc = fb::parse_config(with_inputs("[cis]\nn_states = 3\nspin = \"triplet\"\n"
+                                           "residual_tolerance = 1e-8\nmax_iterations = 50\n"
+                                           "max_subspace = 12\n"),
+                               "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::CisStep &cis = *calc->step<fb::CisStep>();
+  EXPECT_EQ(cis.options.n_states, 3);
+  EXPECT_EQ(cis.options.spin, fb::cis::Spin::Triplet);
+  EXPECT_EQ(cis.options.davidson.residual_tolerance, 1e-8);
+  EXPECT_EQ(cis.options.davidson.max_iterations, 50);
+  EXPECT_EQ(cis.max_subspace, 12);
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::EriStep>().has_value());
+  EXPECT_FALSE(calc->step<fb::CasciStep>().has_value());
+
+  // The defaults are cis::Options' own.
+  auto plain = fb::parse_config(with_inputs("[cis]\n"), "", kOut);
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  const fb::CisStep &defaults = *plain->step<fb::CisStep>();
+  const fb::cis::Options options;
+  EXPECT_EQ(defaults.options.n_states, options.n_states);
+  EXPECT_EQ(defaults.options.spin, fb::cis::Spin::Singlet);
+  EXPECT_EQ(defaults.options.davidson.residual_tolerance, options.davidson.residual_tolerance);
+  EXPECT_EQ(defaults.options.davidson.max_iterations, options.davidson.max_iterations);
+  EXPECT_EQ(defaults.max_subspace, fb::CisStep{}.max_subspace);
+}
+
+TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
+  expect_config_error(with_inputs("[cis]\nnroots = 3\n"), "[cis] has no option 'nroots'");
+  expect_config_error(with_inputs("[cis]\nspin = \"quintet\"\n"), "[cis] has no spin 'quintet'");
+  expect_config_error(with_inputs("[cis]\nspin = 1\n"), "[cis] spin is not a string");
+  expect_config_error(with_inputs("[cis]\nn_states = 0\n"), "[cis] n_states is 0, below 1");
+  expect_config_error(with_inputs("[cis]\nn_states = 1.5\n"), "[cis] n_states");
+  expect_config_error(with_inputs("[cis]\nresidual_tolerance = 0\n"),
+                      "[cis] residual_tolerance must be positive");
+  expect_config_error(with_inputs("[cis]\nmax_iterations = 0\n"),
+                      "[cis] max_iterations is 0, below 1");
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",

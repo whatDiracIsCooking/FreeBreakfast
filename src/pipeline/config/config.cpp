@@ -307,6 +307,34 @@ template <class S>
     // it when the step runs.
     FBF_TRY(check_keys(table, kStep, {"nroots"}));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
+  } else if constexpr (std::same_as<S, CisStep>) {
+    FBF_TRY(
+        check_keys(table, kStep,
+                   {"n_states", "spin", "residual_tolerance", "max_iterations", "max_subspace"}));
+    cis::Options &options = step.options;
+    FBF_TRY(read_key(table, kStep, "n_states", base_dir, options.n_states));
+    std::string spin = "singlet";
+    FBF_TRY(read_key(table, kStep, "spin", base_dir, spin));
+    if (spin != "singlet" && spin != "triplet") {
+      return err_config("[{}] has no spin '{}' (known: 'singlet', 'triplet')", kStep, spin);
+    }
+    options.spin = spin == "triplet" ? cis::Spin::Triplet : cis::Spin::Singlet;
+    FBF_TRY(read_key(table, kStep, "residual_tolerance", base_dir,
+                     options.davidson.residual_tolerance));
+    FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, options.davidson.max_iterations));
+    FBF_TRY(read_key(table, kStep, "max_subspace", base_dir, step.max_subspace));
+    // Whether n_states fits the single excitations needs the molecule and the
+    // basis, so CisStep::run checks that; these need neither.
+    if (options.n_states < 1) {
+      return err_config("[{}] n_states is {}, below 1", kStep, options.n_states);
+    }
+    if (!(options.davidson.residual_tolerance > 0.0)) {
+      return err_config("[{}] residual_tolerance must be positive", kStep);
+    }
+    if (options.davidson.max_iterations < 1) {
+      return err_config("[{}] max_iterations is {}, below 1", kStep,
+                        options.davidson.max_iterations);
+    }
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.
@@ -411,6 +439,19 @@ template <class S>
   return {};
 }
 
+/// @brief Refuse a `[cis]` over density-fitted ERIs, which its step does not
+/// run yet (#200): here, before the SCF it would follow has run. Across two
+/// tables, as check_scf_against_eri.
+[[nodiscard]] Status check_cis_against_eri(const Calculation &calc) {
+  const auto &eri = calc.step<EriStep>();
+  if (calc.step<CisStep>() && eri && eri->mode == EriMode::DensityFitting) {
+    return err_unsupported("[{}] runs over integral-direct ERIs only so far, and [{}] mode is "
+                           "'density_fitting': set [{}] mode = 'integral_direct'",
+                           CisStep::kName, EriStep::kName, EriStep::kName);
+  }
+  return {};
+}
+
 /// @brief Refuse an input file directly in @p output_dir, where a step's
 /// output could overwrite it before or after it is read. An absolute path, or
 /// one through '..', reaches there however the two directories differ.
@@ -471,6 +512,7 @@ template <class S>
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
   FBF_TRY(check_scf_against_eri(calc, doc));
   FBF_TRY(check_nevpt2_against_eri(calc));
+  FBF_TRY(check_cis_against_eri(calc));
   FBF_TRY(check_inputs_apart(calc, output_dir));
   return calc;
 }

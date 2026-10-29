@@ -14,7 +14,8 @@ names them all. It is the one library that imports every step, so only it and
 using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, EriStep, OverlapStep,
                              OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
-                             LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step>;
+                             LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step,
+                             CisStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
                                  const std::filesystem::path &output_dir);
@@ -163,6 +164,25 @@ nroots = 3                # default 1
 the determinant space fits is the device's to say, so `FciStep::run` estimates
 it against the free memory when the step runs (`fci/README.md`).
 
+```toml
+[cis]
+n_states = 5              # default 5: the lowest excitations
+spin = "singlet"          # default "singlet"; or "triplet"
+residual_tolerance = 1e-6 # default 1e-6, relative (cis::Options)
+max_iterations = 100      # default 100
+max_subspace = 40         # default 40; clamped to [2 n_states, n_ov] when run
+```
+
+`[cis]` is CIS over the RHF (`cis/README.md`). Its keys are `CisStep`'s
+`options` (`cis::Options`: `n_states`, `spin`, and two of its `davidson`'s),
+flattened into the table as `[localization]`'s are, and `max_subspace`.
+`n_states` below 1, a `residual_tolerance` not positive or `max_iterations`
+below 1 is `InvalidConfig` when the file is read; `n_states` past the single
+excitations needs the molecule and the basis, so the step refuses it when it
+runs. It runs over integral-direct ERIs only so far: under a density-fitted
+`[eri]` it is `Unsupported`, naming `[eri]`, checked once the pipeline is
+planned as `[nevpt2]`'s is, and refused again by the step (#200 lifts both).
+
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
@@ -246,8 +266,9 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`; and
-  `[localization] exponent`, 2 or 4);
+  only `"sad"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
+  `[localization] exponent`, 2 or 4; and `[cis] spin`, which knows
+  `"singlet"` and `"triplet"`);
 - `from` beside another key, or on a step with no `load`;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
@@ -260,9 +281,9 @@ than after the SCF has converged. `parse_config` touches no disk.
   same way, and a string-array option (`[casci] avas`) strings only;
 - what `Pipeline::create` refuses (a cycle).
 
-One refusal is not `InvalidConfig` but `Unsupported`, since the request is
+Two refusals are not `InvalidConfig` but `Unsupported`, since the request is
 well formed and the method is what is missing: `[nevpt2]` under an
-integral-direct `[eri]` (above).
+integral-direct `[eri]`, and `[cis]` under a density-fitted one (above).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`
