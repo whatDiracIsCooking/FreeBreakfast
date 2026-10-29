@@ -366,4 +366,50 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
   EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 }
 
+// An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
+// naming the step, and by the active-space selection called on its own. The
+// rest of the chain is water's CAS(4,4) in STO-3G; the open shell's orbitals
+// are never read.
+TEST(PipelineCasci, AnOpenShellScfOutputIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_sto3g");
+  const fb::test::ScratchDir dir("pipeline_casci");
+  auto calc = fb::read_config(write_config(dir, entry, "[casci]\nncas = 4\nnelecas = 4\n"),
+                              dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
+  const fb::ScfOutput open{.energy = 0.0,
+                           .iterations = 0,
+                           .n_alpha = 6,
+                           .n_beta = 4,
+                           .mo_energies = {},
+                           .c = fb::SphericalMatrixAO(res, basis),
+                           .d = fb::SphericalMatrixAO(res, basis)};
+  const fb::CasciStep &step = *calc->step<fb::CasciStep>();
+  const auto refused =
+      step.run(fb::StepInput<fb::CasciStep>{*calc->get<fb::MoleculeOutput>(),
+                                            *calc->get<fb::BasisSetOutput>(),
+                                            *calc->get<fb::SphericalTransformOutput>(),
+                                            *calc->get<fb::PrimitivePairClassesOutput>(),
+                                            *calc->get<fb::CoreHamiltonianOutput>(), open},
+               res);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(refused.error().message.find("casci: only a closed-shell reference"), std::string::npos)
+      << refused.error().message;
+
+  const auto selected = step.select(res, calc->get<fb::MoleculeOutput>()->molecule, basis, open);
+  ASSERT_FALSE(selected.has_value());
+  EXPECT_EQ(selected.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(selected.error().message.find("active space: only a closed-shell reference"),
+            std::string::npos)
+      << selected.error().message;
+}
+
 } // namespace

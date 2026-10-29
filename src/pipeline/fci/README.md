@@ -93,8 +93,10 @@ What it settled:
   options, so the step makes its calls itself, with `ci::solve` at a 1e-11
   relative residual and 400 iterations. The energies' error is second order in
   the residual, ~1e-19 hartree; the 1-RDMs' first order, ~1e-9.
-- **Singlets only**, as `CasciStep`: the SCF is closed-shell, and the spin
-  penalty is `ci::solve`'s default.
+- **Singlets only**, as `CasciStep`: the SCF is closed-shell, an open-shell
+  ScfOutput (`n_alpha != n_beta`) is refused `Unsupported` first, and the
+  spin penalty is `ci::solve`'s default. The electron count is the
+  ScfOutput's `n_alpha + n_beta`.
 - **No range check of its own** beyond `nroots >= 1`, which the estimate
   needs; `nroots` past the space is `ci::solve`'s InvalidConfig. With no core
   and every orbital active, none of `orbital_order`'s range checks can fail.

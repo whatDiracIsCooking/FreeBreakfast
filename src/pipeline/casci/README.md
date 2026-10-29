@@ -70,7 +70,9 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
 
 What it settled:
 
-- **Singlets only.** The SCF is closed-shell, so N is even, and with an even
+- **Singlets only.** The SCF is closed-shell, and an open-shell ScfOutput
+  (`n_alpha != n_beta`) is refused `Unsupported` before anything is queued;
+  so N, `n_alpha + n_beta`, is even, and with an even
   core count nelecas is too: the sector is N_α = N_β, whose lowest spin is 0.
   A triplet CASCI is the sector N_α − N_β = 2, a `spin` option, once a caller
   needs it.

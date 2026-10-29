@@ -901,4 +901,46 @@ TEST(PipelineLocalization, ALivvoMoldenWithoutLivvoIsInvalidConfig) {
   EXPECT_FALSE(std::filesystem::exists(dir / "livvo.molden"));
 }
 
+// An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
+// naming the step: its occupied count is n_alpha only for a closed shell. The
+// rest of the chain is water's in STO-3G; the open shell's orbitals are never
+// read.
+TEST(PipelineLocalization, AnOpenShellScfOutputIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_localization_open_shell");
+  ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
+                                                "H 0 -0.7572 -0.4692\n")
+                  .has_value());
+  auto calc = fb::Calculation::create({fb::MoleculeStep{.xyz = dir / "water.xyz"},
+                                       fb::BasisSetStep{.basis = "sto-3g"}, fb::LocalizationStep{}},
+                                      []<class S>() -> fb::Result<S> { return S{}; });
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::BasisSet &basis = calc->get<fb::BasisSetOutput>()->basis;
+  const fb::ScfOutput open{.energy = 0.0,
+                           .iterations = 0,
+                           .n_alpha = 6,
+                           .n_beta = 4,
+                           .mo_energies = {},
+                           .c = fb::SphericalMatrixAO(res, basis),
+                           .d = fb::SphericalMatrixAO(res, basis)};
+  const auto refused = calc->step<fb::LocalizationStep>()->run(
+      fb::StepInput<fb::LocalizationStep>{*calc->get<fb::MoleculeOutput>(),
+                                          *calc->get<fb::BasisSetOutput>(),
+                                          *calc->get<fb::OverlapOutput>(), open},
+      res);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(refused.error().message.find("localization: only a closed-shell reference"),
+            std::string::npos)
+      << refused.error().message;
+  EXPECT_NE(refused.error().message.find("6 alpha and 4 beta"), std::string::npos)
+      << refused.error().message;
+}
+
 } // namespace

@@ -22,7 +22,7 @@ enum class LocalizationMode : uint8_t { PipekMezey, Ibo };
 struct LocalizationOutput {
   Buffers::device<double> c;  // nao_sphe x n_occ, column-major: C_occ U
   Buffers::device<double> u;  // n_occ x n_occ
-  int32_t n_occ;              // electron_count() / 2
+  int32_t n_occ;              // ScfOutput::n_alpha
   localization::Info info;        // sweeps, functional before and after
   std::vector<double> populations{}; // IBO only: natoms x n_occ IAO populations of the IBOs
   std::vector<double> charges{};     // IBO only: the IAO partial charges, one per atom
@@ -54,8 +54,9 @@ placed over the Molecule here, so an element MINAO lacks is `place`'s error.
 Both take `pipek_mezey`'s options, since IBO is the same sweep over IAO
 populations. `ScfOutput::c` is
 column-major with the occupied orbitals first, so its first `n_occ` columns
-are passed as they are: no transpose and no copy. The Scf step has already refused
-an open shell, so `n_occ` is half the electrons.
+are passed as they are: no transpose and no copy. `n_occ` is the ScfOutput's
+`n_alpha`, and an open shell, `n_alpha != n_beta`, is `Unsupported` before
+anything is allocated.
 
 **The localized orbitals come out in ascending order of energy.** The
 localizer's own order is whatever its Jacobi sweeps leave, so the step sorts

@@ -73,7 +73,9 @@ struct CasciStep : ActiveSpaceSelection {
   /// tolerance; each 1-RDM is `ci::Sigma::rdm1`'s. Synchronizes res.stream():
   /// the integrals and every Davidson iteration are read back to the host.
   ///
-  /// @return The roots; @ref ActiveSpaceSelection::select's error; or the
+  /// @return The roots; Unsupported, before anything is queued, for an
+  ///         open-shell ScfOutput (n_alpha != n_beta);
+  ///         @ref ActiveSpaceSelection::select's error; or the
   ///         error of the first module call that failed:
   ///         `active_space_hamiltonian`'s, `ci::Sigma`'s, `ci::solve`'s
   ///         (InvalidConfig for @ref nroots outside [1, dim],

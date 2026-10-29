@@ -103,7 +103,12 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
   const ScfOutput &scf = in.get<ScfOutput>();
-  const int32_t n_electrons = molecule.electron_count();
+  if (scf.n_alpha != scf.n_beta) {
+    return err_unsupported("fci: only a closed-shell reference is implemented, and the "
+                           "ScfOutput has {} alpha and {} beta electrons",
+                           scf.n_alpha, scf.n_beta);
+  }
+  const int32_t n_electrons = scf.n_alpha + scf.n_beta;
   const auto nmo = static_cast<int32_t>(scf.mo_energies.size());
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();

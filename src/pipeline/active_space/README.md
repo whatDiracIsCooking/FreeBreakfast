@@ -103,7 +103,9 @@ What it settled:
 - **Host synchronizations:** none by index; under `avas`, one for the
   overlaps and C and one per eigenproblem.
 
-Errors, each message prefixed `active space:`: under `avas`, InvalidConfig
+Errors, each message prefixed `active space:`: first, Unsupported for an
+open-shell ScfOutput, `n_alpha != n_beta` (N is their sum, and AVAS's
+occupied block the first `n_alpha` orbitals); under `avas`, InvalidConfig
 for a label not of the form, a label naming no MINAO AO of the molecule, a
 threshold outside (0, 1), `ncas`, `nelecas` or `active` set beside it, or no
 orbital selected; Numerical for an S2 not positive definite. Otherwise

@@ -56,7 +56,10 @@ struct FciStep {
   /// Synchronizes res.stream(): the integrals and every Davidson iteration
   /// are read back to the host.
   ///
-  /// @return The roots; InvalidConfig for @ref nroots below 1; Allocation when
+  /// @return The roots; InvalidConfig for @ref nroots below 1; Unsupported,
+  ///         before anything is allocated, for an open-shell ScfOutput
+  ///         (n_alpha != n_beta), whose n_alpha + n_beta is otherwise the
+  ///         electron count; Allocation when
   ///         the estimate exceeds the device's free memory; GpuRuntime for a
   ///         failed memory query or copy; or the error of the first module
   ///         call that failed: `active_space_hamiltonian`'s, `ci::Sigma`'s, or

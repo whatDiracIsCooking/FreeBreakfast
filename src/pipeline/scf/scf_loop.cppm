@@ -193,6 +193,8 @@ rhf_loop(DeviceResources &res, FockBuilder &builder, const Molecule &molecule,
       }
       return ScfOutput{.energy = energy,
                        .iterations = iteration,
+                       .n_alpha = nocc,
+                       .n_beta = nocc,
                        .mo_energies = std::move(mo_energies),
                        .c = std::move(st.c),
                        .d = std::move(st.d)};

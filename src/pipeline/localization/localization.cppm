@@ -39,7 +39,7 @@ struct LocalizationOutput {
   Buffers::device<double> c;
   /// @brief The n_occ x n_occ orthogonal U, column-major.
   Buffers::device<double> u;
-  /// @brief The occupied count, electron_count() / 2: the columns of @ref c.
+  /// @brief The occupied count, ScfOutput::n_alpha: the columns of @ref c.
   int32_t n_occ;
   /// @brief The sweeps taken and the functional before and after.
   localization::Info info;
@@ -102,8 +102,9 @@ struct LocalizationStep {
   /// is set).
   std::filesystem::path livvo_molden{};
 
-  /// @brief The localized orbitals. The Scf step has already refused an open
-  /// shell, so the occupied count is half the electrons. They are sorted by
+  /// @brief The localized orbitals, of the ScfOutput's n_alpha occupied
+  /// orbitals; an open shell, n_alpha != n_beta, is Unsupported before
+  /// anything is allocated. They are sorted by
   /// energy before anything reads them, so every product and file is in that
   /// order. For IBO, MINAO is
   /// resolved and placed over the Molecule first, and an element it does not

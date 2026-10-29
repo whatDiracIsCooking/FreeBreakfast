@@ -138,7 +138,9 @@ plus the scratch above, where each step building its own once held two.
 
 What it settled:
 
-- **Singlets only**, for the Casci step's reason: the SCF is closed-shell.
+- **Singlets only**, for the Casci step's reason: the SCF is closed-shell,
+  and an open-shell ScfOutput (`n_alpha != n_beta`) is refused `Unsupported`
+  before anything is queued.
 - **The weights, tolerances and `max_cycle` are refused when the config is
   read**, since none needs the molecule (`config/README.md`); `mcscf::solve`
   checks them again for a step built by hand. The active space's ranges are

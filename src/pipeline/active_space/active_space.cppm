@@ -75,11 +75,13 @@ struct ActiveSpaceSelection {
   [[nodiscard]] Result<std::vector<int32_t>> orbital_order(int32_t n_electrons, int32_t nmo) const;
 
   /// @brief The active space over @p scf's orbitals, on @p res's device: by
-  /// @ref orbital_order's permutation, or, under @ref avas, AVAS's rotation.
+  /// @ref orbital_order's permutation over its n_alpha + n_beta electrons, or,
+  /// under @ref avas, AVAS's rotation with its first n_alpha orbitals occupied.
   /// Synchronizes res.stream(): under @ref avas, once for the overlaps and
   /// once per eigenproblem.
   ///
-  /// @return The space; @ref orbital_order's InvalidConfig; under @ref avas,
+  /// @return The space; Unsupported, before anything is queued, for an open
+  ///         shell, n_alpha != n_beta; @ref orbital_order's InvalidConfig; under @ref avas,
   ///         InvalidConfig for a malformed label or one naming no MINAO AO of
   ///         the molecule, @ref avas_threshold outside (0, 1), @ref ncas,
   ///         @ref nelecas or @ref active set beside it, or no orbital
