@@ -5,13 +5,14 @@ hand-edited:
 
 - `casscf.json`: the exact CASSCF references. Its keys, its starts and its
   tolerances are documented in `../README.md` (`casscf/casscf.json`).
-- `casscf_df.json`: the same five cases density-fitted, below.
+- `casscf_df.json`: the same six cases density-fitted, below.
 
 ## `casscf_df.json`
 
-The five cases of `casscf.json` (H₂O CAS(4,4) from `active` [2, 3, 5, 6], N₂
+The six cases of `casscf.json` (H₂O CAS(4,4) from `active` [2, 3, 5, 6], N₂
 CAS(6,6) frontier, H₂CO CAS(4,3) at two singlets weighted [0.5, 0.5] and
-[0.7, 0.3], H₂O AVAS O 2p + H 1s, all cc-pVDZ) **from the same starts**: the
+[0.7, 0.3], H₂O AVAS O 2p + H 1s, and N₂ CAS(6,6) frontier at its lowest
+triplet, all cc-pVDZ) **from the same starts**: the
 same exact RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) and the same
 `active` or AVAS pick, so the starting orbitals are the exact cases' own. Only
 the CASSCF is fitted: `mcscf.CASSCF(mf, ...).density_fit(auxbasis=...)`, which
@@ -45,8 +46,8 @@ these references are of the fitted energy, not of the exact one.
 
 Every case has the keys of a `casscf.json` case (`name`, `basis`, `charge`,
 `atoms`, `electrons`, `nmo`, `ncas`, `nelecas`, `ncore`, `active`, `avas`,
-`weights`, `rhf_energy`, `mo_energies`, `casci`, `casscf`), with the same
-meaning, over the fitted integrals: `rhf_energy` and `mo_energies` are the
+`weights`, `rhf_energy`, `mo_energies`, `casci`, `casscf`, and
+`multiplicity` where it is not 1), with the same meaning, over the fitted integrals: `rhf_energy` and `mo_energies` are the
 exact RHF's, which is the start; `casci` is the fitted CASCI at it; `casscf`
 is the fitted, polished minimum (`energies` per root, `energy` weighted,
 `orbital_energies` of the fitted state-averaged Fock, `natural_occupations`

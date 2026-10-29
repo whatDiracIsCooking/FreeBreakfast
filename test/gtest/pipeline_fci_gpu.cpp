@@ -1,11 +1,14 @@
 // The Fci step against PySCF's fci.FCI (data/fci/fci.json,
 // tools/emit/fci_step_reference.py), through the real registry: a config
 // naming [fci] plans the whole chain to the ScfOutput and solves the full CI over
-// every orbital on the GPU sigma. Compared: each singlet's total energy and
+// every orbital on the GPU sigma. Compared: each root's total energy and
 // <S^2>, and, for a root of no degenerate level, its natural occupations.
 // Both are invariant under any rotation of the orbitals, so they depend on
 // neither SCF's convergence nor the orbitals' signs. Every 1-RDM is symmetric
-// with trace N. Then a space past the device's memory, refused before it is
+// with trace N. A case at a multiplicity other than 1 is an FCI of that spin
+// over the RHF orbitals: the Scf step refuses such a molecule, so the chain
+// runs as the singlet and the step again by hand with the molecule at the
+// multiplicity. Then a space past the device's memory, refused before it is
 // allocated. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
@@ -156,24 +159,42 @@ TEST_P(PipelineFci, MatchesPyscf) {
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  const auto &fci = calc->get<fb::FciOutput>();
-  ASSERT_TRUE(fci.has_value());
+  const auto &chain = calc->get<fb::FciOutput>();
+  ASSERT_TRUE(chain.has_value());
 
-  EXPECT_EQ(fci->nmo, entry.at("nmo").get<std::int32_t>());
-  EXPECT_EQ(fci->n_electrons, entry.at("electrons").get<std::int32_t>());
-  const auto n = static_cast<std::size_t>(fci->nmo);
-  ASSERT_EQ(fci->energies.size(), roots.size());
-  ASSERT_EQ(fci->spin_squares.size(), roots.size());
-  ASSERT_EQ(fci->rdm1.size(), roots.size() * n * n);
+  // The step again by hand over the same products, but the molecule's
+  // multiplicity, when the reference's is not 1.
+  std::optional<fb::FciOutput> by_hand;
+  if (const auto multiplicity = entry.value("multiplicity", std::int32_t{1}); multiplicity != 1) {
+    fb::DeviceResources &res = node.device(0);
+    const fb::ScopedDeviceIndex on{res.dev_idx()};
+    const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
+    const fb::MoleculeOutput molecule{
+        fb::Molecule(res, singlet.atoms(), singlet.charge(), multiplicity)};
+    auto ran_by_hand = calc->step<fb::FciStep>()->run(
+        fb::StepInput<fb::FciStep>{
+            molecule, *calc->get<fb::BasisSetOutput>(), *calc->get<fb::SphericalTransformOutput>(),
+            *calc->get<fb::PrimitivePairClassesOutput>(), *calc->get<fb::CoreHamiltonianOutput>(),
+            *calc->get<fb::ScfOutput>()},
+        res);
+    ASSERT_TRUE(ran_by_hand.has_value()) << ran_by_hand.error().message;
+    by_hand.emplace(std::move(*ran_by_hand));
+  }
+  const fb::FciOutput &fci = by_hand ? *by_hand : *chain;
+
+  EXPECT_EQ(fci.nmo, entry.at("nmo").get<std::int32_t>());
+  EXPECT_EQ(fci.n_electrons, entry.at("electrons").get<std::int32_t>());
+  const auto n = static_cast<std::size_t>(fci.nmo);
+  ASSERT_EQ(fci.energies.size(), roots.size());
+  ASSERT_EQ(fci.spin_squares.size(), roots.size());
+  ASSERT_EQ(fci.rdm1.size(), roots.size() * n * n);
   for (std::size_t r = 0; r < roots.size(); ++r) {
     const fb::json &root = roots.at(r);
-    EXPECT_NEAR(fci->energies[r], root.at("energy").get<double>(), kEnergyTolerance)
-        << "root " << r;
-    EXPECT_NEAR(fci->spin_squares[r], root.at("s2").get<double>(), kEnergyTolerance)
-        << "root " << r;
+    EXPECT_NEAR(fci.energies[r], root.at("energy").get<double>(), kEnergyTolerance) << "root " << r;
+    EXPECT_NEAR(fci.spin_squares[r], root.at("s2").get<double>(), kEnergyTolerance) << "root " << r;
 
-    const std::vector<double> gamma(fci->rdm1.begin() + static_cast<std::ptrdiff_t>(r * n * n),
-                                    fci->rdm1.begin() +
+    const std::vector<double> gamma(fci.rdm1.begin() + static_cast<std::ptrdiff_t>(r * n * n),
+                                    fci.rdm1.begin() +
                                         static_cast<std::ptrdiff_t>((r + 1) * n * n));
     double trace = 0.0;
     for (std::size_t t = 0; t < n; ++t) {
@@ -182,7 +203,7 @@ TEST_P(PipelineFci, MatchesPyscf) {
         EXPECT_NEAR(gamma[(t * n) + u], gamma[(u * n) + t], 1e-12) << "root " << r;
       }
     }
-    EXPECT_NEAR(trace, fci->n_electrons, 1e-10) << "root " << r;
+    EXPECT_NEAR(trace, fci.n_electrons, 1e-10) << "root " << r;
     if (root.at("degenerate").get<bool>()) {
       continue; // its 1-RDM depends on the rotation within the level
     }
@@ -198,7 +219,8 @@ TEST_P(PipelineFci, MatchesPyscf) {
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineFci,
                          ::testing::Values(Case{.name = "h2o_sto3g", .slow = false},
                                            Case{.name = "n2_sto3g", .slow = false},
-                                           Case{.name = "h2o_631g", .slow = true}),
+                                           Case{.name = "h2o_631g", .slow = true},
+                                           Case{.name = "h2o_sto3g_triplet", .slow = false}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // H2O in cc-pVDZ: 10 electrons in 24 orbitals, C(24, 5)^2 = 1.8e9
@@ -257,6 +279,42 @@ TEST(PipelineFci, AnOpenShellScfOutputIsUnsupported) {
   EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported);
   EXPECT_NE(refused.error().message.find("fci: only a closed-shell reference"), std::string::npos)
       << refused.error().message;
+}
+
+// A multiplicity that does not fit the electrons is refused when the step
+// runs, naming it, before the memory estimate: 2S of the other parity from
+// water's 10 electrons, N_alpha above its 7 orbitals, or 2S above the
+// electrons. The step run by hand with the molecule at each.
+TEST(PipelineFci, AMultiplicityThatDoesNotFitIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_sto3g");
+  const fb::test::ScratchDir dir("pipeline_fci");
+  auto calc =
+      fb::read_config(write_config(dir, entry, "sto-3g", "[fci]\n"), dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
+  for (const std::int32_t multiplicity : {2, 11, 13}) {
+    const fb::MoleculeOutput molecule{
+        fb::Molecule(res, singlet.atoms(), singlet.charge(), multiplicity)};
+    const auto refused = calc->step<fb::FciStep>()->run(
+        fb::StepInput<fb::FciStep>{
+            molecule, *calc->get<fb::BasisSetOutput>(), *calc->get<fb::SphericalTransformOutput>(),
+            *calc->get<fb::PrimitivePairClassesOutput>(), *calc->get<fb::CoreHamiltonianOutput>(),
+            *calc->get<fb::ScfOutput>()},
+        res);
+    ASSERT_FALSE(refused.has_value()) << "multiplicity " << multiplicity;
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
+    EXPECT_NE(refused.error().message.find(
+                  std::format("fci: multiplicity {} does not fit 10", multiplicity)),
+              std::string::npos)
+        << refused.error().message;
+  }
 }
 
 } // namespace

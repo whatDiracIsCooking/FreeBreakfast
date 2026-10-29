@@ -9,7 +9,10 @@
 // exact references in at most one macro iteration more. And each case runs
 // wholly density-fitted (DensityFitting::Full, over kDfAuxBasis) against
 // data/casscf/casscf_df.json's DF-CASSCF to the same bars, its ||g|| recomputed
-// from scratch over the same B.
+// from scratch over the same B. A case at a multiplicity other than 1 is a
+// CASSCF of that spin from the RHF orbitals: the SCF runs as the singlet (the
+// Scf step refuses another multiplicity) and mcscf::solve is handed the
+// molecule at the reference's multiplicity, which sets N_alpha - N_beta.
 //
 // The setup is response_fock_gpu.cpp's: the SCF (run with J unscreened), and the
 // start picked by pipeline.active_space (by index, or by AVAS). So this
@@ -160,6 +163,9 @@ struct Setup {
   std::vector<fb::CoulombPairClass> j_classes;
   std::vector<fb::OrderedPairClass> k_classes;
   std::optional<fb::ActiveSpace> start;
+  // The molecule at the reference's multiplicity, when it is not 1: what
+  // molecule points at then.
+  std::optional<fb::Molecule> at_multiplicity;
 
   [[nodiscard]] fb::DeviceResources &res() { return node.device(0); }
 
@@ -215,6 +221,11 @@ std::unique_ptr<Setup> make_setup(const fb::json &entry, bool with_start,
     return nullptr;
   }
   setup->molecule = &molecule->molecule;
+  if (const auto multiplicity = entry.value("multiplicity", std::int32_t{1}); multiplicity != 1) {
+    setup->at_multiplicity.emplace(setup->res(), molecule->molecule.atoms(),
+                                   molecule->molecule.charge(), multiplicity);
+    setup->molecule = &*setup->at_multiplicity;
+  }
   setup->basis = &basis_set->basis;
   setup->transform = &*transform;
   setup->h = &*h;
@@ -295,8 +306,10 @@ std::optional<std::pair<double, double>> from_scratch(Setup &setup, const fb::Sp
       }
     }
   }
-  auto alpha = fb::ci::DeviceStringSet::create(res, ncas, nelecas - (nelecas / 2));
-  auto beta = fb::ci::DeviceStringSet::create(res, ncas, nelecas / 2);
+  // N_alpha - N_beta = 2S, the multiplicity 2S + 1.
+  const std::int32_t n_beta = (nelecas - (setup.molecule->multiplicity() - 1)) / 2;
+  auto alpha = fb::ci::DeviceStringSet::create(res, ncas, nelecas - n_beta);
+  auto beta = fb::ci::DeviceStringSet::create(res, ncas, n_beta);
   if (!alpha.has_value() || !beta.has_value()) {
     ADD_FAILURE() << "the string sets failed";
     return std::nullopt;
@@ -452,13 +465,15 @@ void expect_polished(Setup &setup, const fb::mcscf::Solution &sol, const fb::jso
   ::testing::Test::RecordProperty(std::format("{}_macro_iterations", mode), macro);
   EXPECT_LE(macro, kMaxMacroIterations);
 
-  // The energies: each root's and the weighted one.
+  // The energies: each root's and the weighted one; each root's <S^2> is
+  // S(S+1), 2S + 1 the multiplicity.
+  const double two_s = setup.molecule->multiplicity() - 1;
   ASSERT_EQ(sol.roots.energies.size(), weights.size());
   const auto energies = want.at("energies").get<std::vector<double>>();
   double weighted = 0.0;
   for (std::size_t r = 0; r < weights.size(); ++r) {
     EXPECT_NEAR(sol.roots.energies[r], energies[r], kEnergyTolerance) << "root " << r;
-    EXPECT_NEAR(sol.roots.spin_squares[r], 0.0, 1e-8) << "root " << r;
+    EXPECT_NEAR(sol.roots.spin_squares[r], two_s * (two_s + 2.0) / 4.0, 1e-8) << "root " << r;
     weighted += weights[r] * sol.roots.energies[r];
   }
   EXPECT_NEAR(sol.energy, want.at("energy").get<double>(), kEnergyTolerance);
@@ -576,7 +591,8 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfSolve,
                                            Case{.name = "n2_ccpvdz", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2", .slow = true},
                                            Case{.name = "h2co_ccpvdz_sa2_weighted", .slow = true},
-                                           Case{.name = "h2o_ccpvdz_avas", .slow = true}),
+                                           Case{.name = "h2o_ccpvdz_avas", .slow = true},
+                                           Case{.name = "n2_ccpvdz_triplet", .slow = true}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // max_cycle running out is MaxIterationsExceeded.

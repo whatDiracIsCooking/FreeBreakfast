@@ -4,15 +4,18 @@
 For each case below, PySCF's closed-shell RHF (as casci_reference.py runs
 it, over this tree's own basis files, converged tighter) is handed to PySCF's
 `fci.FCI`: `fci.direct_spin1` over every orbital and every electron, with no
-spin constraint, solved for the lowest NROOTS roots of the M_s = 0 sector; the
-lowest NSINGLETS singlets among them are recorded.
+spin constraint, solved for the lowest NROOTS roots of the M_s = S sector, S
+from the case's "multiplicity" 2S + 1 (1 when absent); the lowest NKEEP roots
+of spin S among them are recorded. The RHF is the closed-shell one either way,
+so a triplet case is a triplet FCI over RHF orbitals; its multiplicity is
+recorded, and only its.
 
 So that a Davidson that skipped a root cannot be written out, a sector small
 enough (DENSE_MAX determinants) is diagonalised densely instead, and a larger
 one is solved twice, from PySCF's guesses spread by differently seeded noise,
 and the two must agree.
 
-Per singlet: the total energy, <S^2>, and the natural occupations (the 1-RDM's
+Per root: the total energy, <S^2>, and the natural occupations (the 1-RDM's
 eigenvalues, descending). An FCI energy and its natural occupations are
 invariant under any rotation of the orbitals, so they depend on neither the
 two SCFs' convergence nor the orbitals' signs. A root of a degenerate level is
@@ -49,11 +52,12 @@ CASES = [
     {"name": "h2o_sto3g", "atoms": WATER, "basis": "sto-3g"},
     {"name": "n2_sto3g", "atoms": NITROGEN, "basis": "sto-3g"},
     {"name": "h2o_631g", "atoms": WATER, "basis": "6-31g"},
+    {"name": "h2o_sto3g_triplet", "atoms": WATER, "basis": "sto-3g", "multiplicity": 3},
 ]
 
-# Roots solved for, and the singlets kept among them.
+# Roots solved for, and those of the case's spin kept among them.
 NROOTS = 12
-NSINGLETS = 3
+NKEEP = 3
 
 # Two roots closer than this are one degenerate level.
 ROOT_DEGENERACY = 1e-8
@@ -118,7 +122,8 @@ def roots_of(name: str, mf: scf.hf.RHF, nelec: tuple[int, int]):
     """
     nmo = mf.mo_coeff.shape[1]
     na = fci.cistring.num_strings(nmo, nelec[0])
-    if na * na <= DENSE_MAX:
+    nb = fci.cistring.num_strings(nmo, nelec[1])
+    if na * nb <= DENSE_MAX:
         return dense(mf, nelec)
     energies, vectors = davidson(mf, nelec, seed=229)
     again, _ = davidson(mf, nelec, seed=230)
@@ -148,15 +153,18 @@ def case_reference(case: dict) -> dict:
     assert mf.converged, f"{name}: RHF did not converge"
 
     nmo = mf.mo_coeff.shape[1]
-    nelec = (mol.nelectron // 2, mol.nelectron // 2)
+    # N_alpha - N_beta = 2S.
+    two_s = case.get("multiplicity", 1) - 1
+    nelec = ((mol.nelectron + two_s) // 2, (mol.nelectron - two_s) // 2)
     energies, vectors = roots_of(name, mf, nelec)
     na = fci.cistring.num_strings(nmo, nelec[0])
+    nb = fci.cistring.num_strings(nmo, nelec[1])
 
     roots = []
     for energy, vector in zip(energies, vectors, strict=True):
-        vector = vector.reshape(na, na)
+        vector = vector.reshape(na, nb)
         s2, _ = fci.spin_op.spin_square0(vector, nmo, nelec)
-        if abs(s2) < 1e-6:
+        if abs(s2 - two_s * (two_s + 2) / 4) < 1e-6:
             rdm1 = fci.direct_spin1.make_rdm1(vector, nmo, nelec)
             occupations = numpy.linalg.eigvalsh(rdm1)
             roots.append(
@@ -169,9 +177,9 @@ def case_reference(case: dict) -> dict:
                     "natural_occupations": [float(v) for v in occupations[::-1]],
                 }
             )
-    assert len(roots) >= NSINGLETS, f"{name}: fewer than {NSINGLETS} singlets"
+    assert len(roots) >= NKEEP, f"{name}: fewer than {NKEEP} roots of its spin"
 
-    return {
+    out = {
         "name": name,
         "basis": case["basis"],
         "charge": 0,
@@ -181,10 +189,13 @@ def case_reference(case: dict) -> dict:
         ],
         "electrons": int(mol.nelectron),
         "nmo": int(nmo),
-        "determinants": int(na * na),
+        "determinants": int(na * nb),
         "rhf_energy": float(mf.e_tot),
-        "roots": roots[:NSINGLETS],
+        "roots": roots[:NKEEP],
     }
+    if "multiplicity" in case:
+        out["multiplicity"] = case["multiplicity"]
+    return out
 
 
 def main() -> None:
@@ -193,8 +204,9 @@ def main() -> None:
         "conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF "
         "fci.FCI (direct_spin1, conv_tol 1e-13, a dense diagonalisation where "
         "small, else checked by a second, differently seeded solve) over its "
-        "orbitals: the lowest singlets' total energy (hartree), <S^2> and "
-        "natural occupations; coordinates in bohr",
+        "orbitals, at N_alpha - N_beta = 'multiplicity' - 1 (1 when absent): "
+        "the lowest roots of that spin, their total energy (hartree), <S^2> "
+        "and natural occupations; coordinates in bohr",
         "provenance": {
             "pyscf": pyscf.__version__,
             "numpy": numpy.__version__,

@@ -22,8 +22,10 @@ Result<mcscf::Solution> mcscf::solve(
 
 The arguments through `k_classes` are `response::fock`'s; `c` is the start, its
 columns core, active, virtual as `../../response/README.md` orders them. The roots
-are the `nroots` lowest of spin |N_α − N_β| / 2, N_β = nelecas / 2: singlets
-for an even `nelecas`. `weights` are refused (`InvalidConfig`) if any is
+are the `nroots` lowest of spin S, 2S + 1 `molecule.multiplicity()`: N_α − N_β
+= 2S of the `nelecas`, so a singlet molecule's are singlets and a triplet's
+triplets. A multiplicity that does not fit (2S above `nelecas`, of the other
+parity, or N_α above `ncas`) is `InvalidConfig`. `weights` are refused (`InvalidConfig`) if any is
 negative, if they do not sum to 1 within 1e-12 or if their count is not
 `nroots`; empty means equal. `b` and `naux` are B for the builds
 `options.density_fitting` fits (see "Density fitting" below); null means none.
@@ -139,7 +141,7 @@ and a product of H̃ is H's plus, per column:
   roots' part is exact, −(c_s · b_r) / (E_s − E_r) c_s: it is what makes H̃
   the Hessian of
   Σ_r w_r E_r for unequal weights, and cancels for equal ones. Off the roots
-  H₀ − E_r is positive on the singlets; H′ is spin-free, so b_r and the
+  H₀ − E_r is positive on the roots' spin; H′ is spin-free, so b_r and the
   Krylov space stay in the roots' spin.
 - **H_oc δ** is the gradient in x of h_eff′·γ_T + ½ (tu|vw)′·Γ_T,
   γ_T = Σ_r w_r (⟨c_r|E|δ_r⟩ + ⟨δ_r|E|c_r⟩): half the difference of
@@ -431,8 +433,9 @@ the issue sets it; choosing a mode from the config is #386's.
 `test/gtest/mcscf_solve_gpu.cpp`, against `test/gtest/data/casscf/casscf.json`'s
 converged, polished results, from each case's recorded start, set up as
 `response_fock_gpu.cpp` does: H₂O cc-pVDZ CAS(4,4) [2, 3, 5, 6], N₂ cc-pVDZ
-CAS(6,6), H₂CO cc-pVDZ CAS(4,3) at [0.5, 0.5] and [0.7, 0.3], and H₂O cc-pVDZ
-by AVAS, at `conv_tol_grad` 1e-9:
+CAS(6,6), H₂CO cc-pVDZ CAS(4,3) at [0.5, 0.5] and [0.7, 0.3], H₂O cc-pVDZ
+by AVAS, and N₂ cc-pVDZ CAS(6,6) at its lowest triplet (the SCF run as the
+singlet, `molecule` at multiplicity 3; ⟨S²⟩ = 2), at `conv_tol_grad` 1e-9:
 
 - each root's energy and the weighted one to 1e-8;
 - the state-averaged natural occupations to 1e-6;

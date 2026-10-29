@@ -2,12 +2,15 @@
 // tools/emit/casci_reference.py), through the real registry: a config naming
 // [casci] plans the whole chain to the ScfOutput, picks the active space (by index,
 // or by AVAS against PySCF's mcscf.avas), builds its Hamiltonian and solves it
-// over the GPU sigma. Compared: each singlet's total
+// over the GPU sigma. Compared: each root's total
 // energy and <S^2>, and, for a root of no degenerate level, its natural
 // occupations, the 1-RDM's eigenvalues, which unlike the 1-RDM do not depend
 // on the active orbitals' signs. Every 1-RDM is symmetric with trace nelecas,
-// and the orbitals are the ScfOutput's, reordered. Runs the device chain, so needs a
-// GPU.
+// and the orbitals are the ScfOutput's, reordered. A case at a multiplicity
+// other than 1 is a CASCI of that spin over the RHF orbitals: the Scf step
+// refuses such a molecule, so the chain runs as the singlet and the step again
+// by hand with the molecule at the multiplicity. Runs the device chain, so needs
+// a GPU.
 
 #include <gtest/gtest.h>
 
@@ -95,7 +98,7 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
   return dir / "run.toml";
 }
 
-// The [casci] table of the reference's active space, nroots singlets. The Scf step
+// The [casci] table of the reference's active space, nroots roots. The Scf step
 // it fills in runs at its defaults: they leave the energies within 1e-9 of
 // PySCF's here, though a CASCI energy moves to first order in the orbitals.
 std::string casci_tables(const fb::json &entry, std::size_t nroots) {
@@ -191,10 +194,29 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   fb::NodeResources node;
   const fb::Status ran = calc->run(node);
   ASSERT_TRUE(ran.has_value()) << ran.error().message;
-  const auto &casci = calc->get<fb::CasciOutput>();
+  const auto &chain = calc->get<fb::CasciOutput>();
   const auto &scf = calc->get<fb::ScfOutput>();
   const auto &basis = calc->get<fb::BasisSetOutput>();
-  ASSERT_TRUE(casci.has_value() && scf.has_value() && basis.has_value());
+  ASSERT_TRUE(chain.has_value() && scf.has_value() && basis.has_value());
+
+  // The step again by hand over the same products, but the molecule's
+  // multiplicity, when the reference's is not 1.
+  std::optional<fb::CasciOutput> by_hand;
+  if (const auto multiplicity = entry.value("multiplicity", std::int32_t{1}); multiplicity != 1) {
+    fb::DeviceResources &res = node.device(0);
+    const fb::ScopedDeviceIndex on{res.dev_idx()};
+    const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
+    const fb::MoleculeOutput molecule{
+        fb::Molecule(res, singlet.atoms(), singlet.charge(), multiplicity)};
+    auto ran_by_hand = calc->step<fb::CasciStep>()->run(
+        fb::StepInput<fb::CasciStep>{molecule, *basis, *calc->get<fb::SphericalTransformOutput>(),
+                                     *calc->get<fb::PrimitivePairClassesOutput>(),
+                                     *calc->get<fb::CoreHamiltonianOutput>(), *scf},
+        res);
+    ASSERT_TRUE(ran_by_hand.has_value()) << ran_by_hand.error().message;
+    by_hand.emplace(std::move(*ran_by_hand));
+  }
+  const fb::CasciOutput &casci = by_hand ? *by_hand : *chain;
 
   // The frontier selection, and PySCF's, pick orbitals by index: the two
   // agree only if their orbital order does.
@@ -204,30 +226,30 @@ TEST_P(PipelineCasci, MatchesPyscf) {
     EXPECT_NEAR(scf->mo_energies[i], mo_energies[i], kOrbitalEnergyTolerance) << "orbital " << i;
   }
 
-  EXPECT_EQ(casci->ncore, entry.at("ncore").get<std::int32_t>());
-  EXPECT_EQ(casci->ncas, entry.at("ncas").get<std::int32_t>());
-  EXPECT_EQ(casci->nelecas, entry.at("nelecas").get<std::int32_t>());
-  const auto n = static_cast<std::size_t>(casci->ncas);
-  ASSERT_EQ(casci->energies.size(), roots.size());
-  ASSERT_EQ(casci->spin_squares.size(), roots.size());
-  ASSERT_EQ(casci->rdm1.size(), roots.size() * n * n);
-  ASSERT_FALSE(casci->vectors.empty());
-  ASSERT_EQ(casci->vectors.size() % roots.size(), 0U);
-  const std::size_t dim = casci->vectors.size() / roots.size();
+  EXPECT_EQ(casci.ncore, entry.at("ncore").get<std::int32_t>());
+  EXPECT_EQ(casci.ncas, entry.at("ncas").get<std::int32_t>());
+  EXPECT_EQ(casci.nelecas, entry.at("nelecas").get<std::int32_t>());
+  const auto n = static_cast<std::size_t>(casci.ncas);
+  ASSERT_EQ(casci.energies.size(), roots.size());
+  ASSERT_EQ(casci.spin_squares.size(), roots.size());
+  ASSERT_EQ(casci.rdm1.size(), roots.size() * n * n);
+  ASSERT_FALSE(casci.vectors.empty());
+  ASSERT_EQ(casci.vectors.size() % roots.size(), 0U);
+  const std::size_t dim = casci.vectors.size() / roots.size();
   for (std::size_t r = 0; r < roots.size(); ++r) {
     const fb::json &root = roots.at(r);
-    EXPECT_NEAR(casci->energies[r], root.at("energy").get<double>(), kEnergyTolerance)
+    EXPECT_NEAR(casci.energies[r], root.at("energy").get<double>(), kEnergyTolerance)
         << "root " << r;
-    EXPECT_NEAR(casci->spin_squares[r], root.at("s2").get<double>(), kEnergyTolerance)
+    EXPECT_NEAR(casci.spin_squares[r], root.at("s2").get<double>(), kEnergyTolerance)
         << "root " << r;
 
     double norm = 0.0;
     for (std::size_t i = 0; i < dim; ++i) {
-      norm += casci->vectors[(r * dim) + i] * casci->vectors[(r * dim) + i];
+      norm += casci.vectors[(r * dim) + i] * casci.vectors[(r * dim) + i];
     }
     EXPECT_NEAR(norm, 1.0, 1e-12) << "root " << r;
-    const std::vector<double> gamma(casci->rdm1.begin() + static_cast<std::ptrdiff_t>(r * n * n),
-                                    casci->rdm1.begin() +
+    const std::vector<double> gamma(casci.rdm1.begin() + static_cast<std::ptrdiff_t>(r * n * n),
+                                    casci.rdm1.begin() +
                                         static_cast<std::ptrdiff_t>((r + 1) * n * n));
     double trace = 0.0;
     for (std::size_t t = 0; t < n; ++t) {
@@ -236,7 +258,7 @@ TEST_P(PipelineCasci, MatchesPyscf) {
         EXPECT_NEAR(gamma[(t * n) + u], gamma[(u * n) + t], 1e-12) << "root " << r;
       }
     }
-    EXPECT_NEAR(trace, casci->nelecas, 1e-10) << "root " << r;
+    EXPECT_NEAR(trace, casci.nelecas, 1e-10) << "root " << r;
     if (root.at("degenerate").get<bool>()) {
       continue; // its 1-RDM depends on the rotation within the level
     }
@@ -259,7 +281,7 @@ TEST_P(PipelineCasci, MatchesPyscf) {
   const std::size_t nao = basis->basis.nao_sphe();
   const fb::ScopedDeviceIndex on{scf->c.dev_idx()};
   fb::DeviceResources res(scf->c.dev_idx());
-  const std::vector<double> c = download(res, casci->c.data(), nao * nao);
+  const std::vector<double> c = download(res, casci.c.data(), nao * nao);
   const std::vector<double> scf_c = download(res, scf->c.data(), nao * nao);
   for (std::size_t col = 0; col < nao; ++col) {
     for (std::size_t mu = 0; mu < nao; ++mu) {
@@ -271,8 +293,9 @@ TEST_P(PipelineCasci, MatchesPyscf) {
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasci,
                          ::testing::Values(Case{"h2o_sto3g"}, Case{"h2o_ccpvdz"}, Case{"n2_ccpvdz"},
-                                           Case{"h2o_ccpvdz_explicit"}, Case{"h2o_ccpvdz_avas"},
-                                           Case{"n2_ccpvdz_avas"}, Case{"n2_ccpvdz_avas_2p"}),
+                                           Case{"h2o_ccpvdz_explicit"}, Case{"h2o_ccpvdz_triplet"},
+                                           Case{"h2o_ccpvdz_avas"}, Case{"n2_ccpvdz_avas"},
+                                           Case{"n2_ccpvdz_avas_2p"}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // An active space past the orbitals is refused when the step runs, and the
@@ -410,6 +433,41 @@ TEST(PipelineCasci, AnOpenShellScfOutputIsUnsupported) {
   EXPECT_NE(selected.error().message.find("active space: only a closed-shell reference"),
             std::string::npos)
       << selected.error().message;
+}
+
+// A multiplicity that does not fit the active space is refused when the step
+// runs, naming it: 2S below 0, of the other parity from nelecas, or above it.
+// Water's CAS(4,4) in STO-3G, the step run by hand with the molecule at each.
+TEST(PipelineCasci, AMultiplicityThatDoesNotFitIsInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_sto3g");
+  const fb::test::ScratchDir dir("pipeline_casci");
+  auto calc = fb::read_config(write_config(dir, entry, "[casci]\nncas = 4\nnelecas = 4\n"),
+                              dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
+  for (const std::int32_t multiplicity : {0, 2, 7}) {
+    const fb::MoleculeOutput molecule{
+        fb::Molecule(res, singlet.atoms(), singlet.charge(), multiplicity)};
+    const auto refused = calc->step<fb::CasciStep>()->run(
+        fb::StepInput<fb::CasciStep>{
+            molecule, *calc->get<fb::BasisSetOutput>(), *calc->get<fb::SphericalTransformOutput>(),
+            *calc->get<fb::PrimitivePairClassesOutput>(), *calc->get<fb::CoreHamiltonianOutput>(),
+            *calc->get<fb::ScfOutput>()},
+        res);
+    ASSERT_FALSE(refused.has_value()) << "multiplicity " << multiplicity;
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
+    EXPECT_NE(refused.error().message.find(
+                  std::format("casci: multiplicity {} does not fit 4", multiplicity)),
+              std::string::npos)
+        << refused.error().message;
+  }
 }
 
 } // namespace

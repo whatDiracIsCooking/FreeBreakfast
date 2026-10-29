@@ -113,7 +113,8 @@ struct Solution {
 };
 
 /// @brief The state-averaged CASSCF of the @p nroots lowest roots of spin
-/// |N_alpha - N_beta| / 2, N_beta = @p nelecas / 2, from the orbitals @p c
+/// S, 2S + 1 = @p molecule's multiplicity, so N_alpha - N_beta = 2S of the
+/// @p nelecas, from the orbitals @p c
 /// (columns [0, ncore) the core, [ncore, ncore + ncas) the active space).
 ///
 /// @p basis, @p molecule, @p h, @p u and the two kinds of classes are what
@@ -153,7 +154,9 @@ struct Solution {
 /// made current for the call and the previous one restored.
 ///
 /// @return The solution; InvalidConfig if ncore is negative, ncas is below 1,
-///         ncore + ncas exceeds nmo, nelecas is outside [0, 2 ncas], nroots
+///         ncore + ncas exceeds nmo, nelecas is outside [0, 2 ncas], the
+///         multiplicity does not fit it (2S above nelecas, of the other
+///         parity, or N_alpha above ncas), nroots
 ///         is below 1 or above the determinant count, a weight is negative,
 ///         the weights do not sum to 1 within 1e-12 or their count is not
 ///         nroots, an option is out of range, @p c is not of @p basis's

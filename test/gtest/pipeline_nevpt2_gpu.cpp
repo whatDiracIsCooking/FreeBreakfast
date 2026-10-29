@@ -322,9 +322,11 @@ TEST(PipelineNevpt2, IntegralDirectEriIsUnsupported) {
 }
 
 // An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,
-// naming the step, before anything is queued. The rest of the chain is water's
-// DF-CASSCF(4,4) in STO-3G; the open shell's orbitals are never read.
-TEST(PipelineNevpt2, AnOpenShellScfOutputIsUnsupported) {
+// naming the step, before anything is queued; so is a molecule of
+// multiplicity other than 1 over the closed-shell one. The rest of the chain
+// is water's DF-CASSCF(4,4) in STO-3G; the open shell's orbitals are never
+// read.
+TEST(PipelineNevpt2, AnOpenShellOrANonSingletIsUnsupported) {
   FBF_REQUIRE_GPU();
   const fb::test::ScratchDir dir("pipeline_nevpt2");
   ASSERT_TRUE(fb::write_file(dir / "water.xyz", "3\nwater\nO 0 0 0.1173\nH 0 0.7572 -0.4692\n"
@@ -363,6 +365,21 @@ TEST(PipelineNevpt2, AnOpenShellScfOutputIsUnsupported) {
   EXPECT_NE(refused.error().message.find("[nevpt2] needs a closed-shell reference"),
             std::string::npos)
       << refused.error().message;
+
+  const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
+  const fb::MoleculeOutput triplet{fb::Molecule(res, singlet.atoms(), singlet.charge(), 3)};
+  const auto not_singlet = fb::Nevpt2Step{}.run(
+      fb::StepInput<fb::Nevpt2Step>{triplet, *calc->get<fb::BasisSetOutput>(),
+                                    *calc->get<fb::EriOutput>(),
+                                    *calc->get<fb::CoreHamiltonianOutput>(),
+                                    *calc->get<fb::ScfOutput>(), *calc->get<fb::CasscfOutput>()},
+      res);
+  ASSERT_FALSE(not_singlet.has_value());
+  EXPECT_EQ(not_singlet.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_NE(not_singlet.error().message.find("[nevpt2] is implemented for a singlet only, and the "
+                                             "molecule's multiplicity is 3"),
+            std::string::npos)
+      << not_singlet.error().message;
 }
 
 } // namespace

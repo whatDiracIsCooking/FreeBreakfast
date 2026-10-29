@@ -62,8 +62,9 @@ struct Nevpt2Step {
   /// res.stream() many times.
   ///
   /// @return The class energies per root; Unsupported, before anything is
-  ///         queued, for an open-shell ScfOutput (n_alpha != n_beta), and
-  ///         under an integral-direct EriOutput, naming `[eri]`; or
+  ///         queued, for an open-shell ScfOutput (n_alpha != n_beta), for a
+  ///         molecule of multiplicity other than 1, and under an
+  ///         integral-direct EriOutput, naming `[eri]`; or
   ///         the error of the first module call that failed:
   ///         `casscf_integrals`', `ci`'s, `response::fock`'s, the
   ///         canonicalization's or `nevpt2`'s, and GpuRuntime for a failed

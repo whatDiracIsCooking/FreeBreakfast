@@ -57,10 +57,11 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
    E_core holds the core's energy and the nuclear repulsion, so every energy
    is a total.
 3. **The CI.** h_eff and (tu|vw) are read back and reordered row-major,
-   `ci::Sigma` (the GPU sigma) is built over the strings of nelecas / 2
-   electrons of each spin, its diagonal taken on the device, and `ci::solve`
-   finds the `nroots` lowest roots at its defaults: spin penalty 1 hartree,
-   so they are singlets, and residual 1e-12 relative.
+   `ci::Sigma` (the GPU sigma) is built over the strings of N_α and N_β
+   electrons, N_α − N_β = 2S from the molecule's multiplicity 2S + 1, its
+   diagonal taken on the device, and `ci::solve` finds the `nroots` lowest
+   roots at its defaults: spin penalty 1 hartree, so they are of spin S, and
+   residual 1e-12 relative.
 4. **The 1-RDMs**, one `ci::Sigma::rdm1` per root, on the device.
 5. **The Molden file**, if `molden` is set: the lowest root's natural
    orbitals, C R with R's active block rotated to its 1-RDM's eigenvectors
@@ -70,12 +71,18 @@ struct CasciStep : ActiveSpaceSelection {  // ncas, nelecas, active, avas, avas_
 
 What it settled:
 
-- **Singlets only.** The SCF is closed-shell, and an open-shell ScfOutput
-  (`n_alpha != n_beta`) is refused `Unsupported` before anything is queued;
-  so N, `n_alpha + n_beta`, is even, and with an even
-  core count nelecas is too: the sector is N_α = N_β, whose lowest spin is 0.
-  A triplet CASCI is the sector N_α − N_β = 2, a `spin` option, once a caller
-  needs it.
+- **The spin is the molecule's, the orbitals the SCF's.** The SCF must be
+  closed-shell: an open-shell ScfOutput (`n_alpha != n_beta`) is refused
+  `Unsupported` before anything is queued. That guard is on the SCF's spin,
+  not the molecule's: the CI's sector is N_α − N_β = 2S from
+  `Molecule::multiplicity()`, whose lowest spin is S, so a triplet molecule
+  over RHF orbitals is a triplet CASCI (PySCF's `mcscf.CASCI(mf, ncas,
+  (n_α, n_β))` over an RHF). A multiplicity that does not fit the active
+  space (2S above nelecas, of the other parity, or N_α above ncas) is
+  `InvalidConfig`, before the Hamiltonian is built. The Scf step itself
+  refuses a multiplicity other than 1 today, so a triplet over RHF orbitals is
+  reached by running the step by hand with a triplet `MoleculeOutput`, as its
+  test does.
 - **The range checks are the selection's,** when the step runs; a config
   reads only types: the selection's keys as `active_space/README.md` says,
   and `nroots` an integer. `molden` is not a key: `pipeline/config` sets it
@@ -122,7 +129,13 @@ reference refuses a case with a weight within 1e-3 of the threshold. With
 file: every orbital written, at occupation 2, PySCF's natural occupations,
 then 0.
 
-Also an active space past the orbitals, and an AVAS label naming no MINAO AO,
+A triplet, H₂O cc-pVDZ CAS(4,4) frontier against PySCF's `mcscf.CASCI(mf,
+4, (3, 1))` over the RHF: the chain runs as the singlet, then the step by hand
+with the molecule at multiplicity 3; compared as above, the lowest three
+triplets, ⟨S²⟩ = 2.
+
+Also an active space past the orbitals, an AVAS label naming no MINAO AO, and
+a multiplicity that does not fit the active space (0, 2 and 7 for CAS(4,4)),
 refused when the step runs. The
 `[casci]` parsing (the `avas` keys too) and every `orbital_order` refusal are in
 `pipeline_config_host.cpp`, and an end-to-end run against the step called by

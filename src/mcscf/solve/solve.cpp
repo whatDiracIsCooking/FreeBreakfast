@@ -267,6 +267,13 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
                       "in [0, 2 ncas] (ncore {}, ncas {}, nelecas {})",
                       nmo, ncore, ncas, nelecas);
   }
+  const int32_t two_s = molecule.multiplicity() - 1;
+  if (two_s < 0 || two_s > nelecas || (nelecas - two_s) % 2 != 0 || nelecas + two_s > 2 * ncas) {
+    return err_config("mcscf::solve: multiplicity {} does not fit {} active electrons in {} "
+                      "orbitals: N_alpha - N_beta = multiplicity - 1 must have nelecas's parity "
+                      "and N_alpha be at most ncas",
+                      molecule.multiplicity(), nelecas, ncas);
+  }
   if (!(options.conv_tol > 0.0) || !(options.conv_tol_grad > 0.0) || options.max_cycle < 1 ||
       !(options.trust_radius > 0.0) || options.max_micro < 1) {
     return err_config("mcscf::solve: conv_tol, conv_tol_grad and trust_radius must be above 0 and "
@@ -306,9 +313,10 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
-  const int32_t n_beta = nelecas / 2;
+  // N_α − N_β = 2S from the molecule's multiplicity 2S + 1, checked above.
   // One set serves both spins when N_α = N_β, so its tables are on the device
   // once for the two sigmas, the RDMs and S².
+  const int32_t n_beta = (nelecas - two_s) / 2;
   const ci::DeviceStringSet alpha =
       FBF_TRY(ci::DeviceStringSet::create(res, ncas, nelecas - n_beta));
   std::optional<ci::DeviceStringSet> own_beta;

@@ -1,8 +1,8 @@
 /// @file
-/// @brief The `Casci` step: the lowest singlets of an active space of the
-/// @ref ScfOutput's orbitals, named by index or picked by AVAS, its Hamiltonian
-/// built integral-direct and solved over the GPU sigma, with each root's
-/// 1-RDM.
+/// @brief The `Casci` step: the lowest roots of the molecule's spin of an
+/// active space of the @ref ScfOutput's orbitals, named by index or picked by
+/// AVAS, its Hamiltonian built integral-direct and solved over the GPU sigma,
+/// with each root's 1-RDM.
 ///
 /// Device-shaped. The selection is `pipeline.active_space`'s, which
 /// `CasciStep` derives from. A wrapper over `integrals.active_space`,
@@ -23,13 +23,14 @@ export import free_breakfast.pipeline.active_space; // CasciStep's base
 export namespace free_breakfast {
 
 /// @brief The lowest roots of a complete active space over a set of RHF
-/// orbitals, ascending in energy.
+/// orbitals, of the molecule's spin S, ascending in energy.
 struct CasciOutput {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.
   int32_t ncore;
   /// @brief The active orbitals: columns [ncore, ncore + ncas) of @ref c.
   int32_t ncas;
-  /// @brief The active electrons, nelecas / 2 of each spin.
+  /// @brief The active electrons: N_alpha = (nelecas + 2S) / 2 and
+  /// N_beta = (nelecas - 2S) / 2, 2S + 1 the molecule's multiplicity.
   int32_t nelecas;
   /// @brief The orbitals, AO by MO: core, active, the rest. The selection's
   /// @ref ActiveSpace::c.
@@ -40,9 +41,9 @@ struct CasciOutput {
   /// @brief <S^2> per root.
   std::vector<double> spin_squares;
   /// @brief The unit CI vectors, root r at [r dim, (r + 1) dim), dim =
-  /// C(ncas, nelecas / 2)^2, in `ci.sigma`'s layout: determinant
-  /// (I_alpha, I_beta) at I_alpha C(ncas, nelecas / 2) + I_beta, the strings
-  /// in PySCF's `cistring` order.
+  /// C(ncas, N_alpha) C(ncas, N_beta), in `ci.sigma`'s layout: determinant
+  /// (I_alpha, I_beta) at I_alpha C(ncas, N_beta) + I_beta, the strings in
+  /// PySCF's `cistring` order.
   std::vector<double> vectors;
   /// @brief The spin-summed 1-RDM per root over the active orbitals, root r
   /// at [r ncas^2, (r + 1) ncas^2), ncas x ncas, row-major.
@@ -58,7 +59,7 @@ struct CasciStep : ActiveSpaceSelection {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "casci";
 
-  /// @brief The singlet roots wanted, at least 1.
+  /// @brief The roots wanted, at least 1.
   int32_t nroots = 1;
   /// @brief Where the lowest root's natural orbitals are written as a Molden
   /// file, if not empty: the core at occupation 2, the active space's
@@ -66,7 +67,8 @@ struct CasciStep : ActiveSpaceSelection {
   /// energy in the ScfOutput's Fock matrix.
   std::filesystem::path molden{};
 
-  /// @brief The @ref nroots lowest singlets. The active-space Hamiltonian is
+  /// @brief The @ref nroots lowest roots of spin S, 2S + 1 the molecule's
+  /// multiplicity: N_alpha - N_beta = 2S. The active-space Hamiltonian is
   /// `active_space_hamiltonian`'s over the orbitals
   /// @ref ActiveSpaceSelection::select gives, at its own default screens; the
   /// roots are `ci::solve`'s over `ci::Sigma`, at its default spin penalty and
@@ -75,6 +77,9 @@ struct CasciStep : ActiveSpaceSelection {
   ///
   /// @return The roots; Unsupported, before anything is queued, for an
   ///         open-shell ScfOutput (n_alpha != n_beta);
+  ///         InvalidConfig, before the Hamiltonian is built, for a
+  ///         multiplicity that does not fit the active space (2S above
+  ///         nelecas, of the other parity, or N_alpha above ncas);
   ///         @ref ActiveSpaceSelection::select's error; or the
   ///         error of the first module call that failed:
   ///         `active_space_hamiltonian`'s, `ci::Sigma`'s, `ci::solve`'s
