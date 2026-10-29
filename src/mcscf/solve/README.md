@@ -89,10 +89,11 @@ Each macro iteration, at the current C:
    orthonormal Q (n_pairs × q) and H̃ Q, grown by every product taken
    and dropped when the macro iteration ends. A solve projects:
    the lowest root (μ, (u₀, u)) of the (q + 1)-square
-   [[0, (Qᵀgₘ)ᵀ], [Qᵀgₘ, QᵀH̃Q]] (`diagonalize`), and its residual
-   r = u₀ gₘ + H̃ Q u − μ Q u (its first row is 0 by the small
+   [[0, (Qᵀgₘ)ᵀ], [Qᵀgₘ, QᵀH̃Q + σ]] (`diagonalize`), σ = 1e-8 the level
+   shift (see "The level shift" below), and its residual
+   r = u₀ gₘ + H̃ Q u − (μ − σ) Q u (its first row is 0 by the small
    problem's own equation). Only while ‖r‖ is above the tolerance below does
-   Q grow, by r / (μ − diag(H)) (the denominator held off zero at 1e-8),
+   Q grow, by r / (μ − σ − diag(H)) (the denominator held off zero at 1e-8),
    orthogonalized against Q twice and normalized, and one product. Then
    dx = Q u / u₀ and H̃ dx = H̃ Q u / u₀, a gemv of products
    already taken. Q holds at most 40 columns (`kAhMaxSubspace`); past that
@@ -227,6 +228,43 @@ iterations at most ceilings but 12 at 1e-5, and H₂O CAS(4,4) went from 7 to 8.
 A line search on rejection (a cubic through E and g·x at both ends of the
 step) was not tried: it still spends the rejected macro iteration, and AVAS's
 bar is 8.
+
+## The level shift
+
+The augmented Hessian's model is H̃ + σ, σ = 1e-8 (`kAhLevelShift`, PySCF's
+`ah_level_shift`), so no step divides by a curvature below σ. The gradient,
+gₘ's updates and the energy test still take H̃ itself: the shift moves the
+step, not what the step is judged by.
+
+**H̃ cannot resolve a curvature below ~1e-10.** Its products carry the CI
+response's conjugate gradients (to 1e-8 of their right-hand side) and the
+CI's own residual: QᵀH̃Q's two triangles differ by 1e-11 to 1e-10 at every
+column. A mode flatter than that is noise, and a step along it is noise
+divided by noise.
+
+HF cc-pVDZ DF CAS(10,7) (`PipelineNevpt2.PcRefusalKeepsSc`) has one. The
+F 1s is active, its occupation 2 − ~1e-5, and so is its correlating partner,
+an active natural orbital of occupation ~1e-5 (a mix of the two weakly
+occupied orbitals, 0.016 and 0.018 on the diagonal): rotating it into the
+virtuals all but leaves the energy alone. Once ‖g‖ fell to ~5e-9 the
+subspace solve, its tolerance then ~1e-12, grew to 25–30 columns and found
+that mode at a Ritz value of 5e-12, under the lowest genuine one (6.5e-3);
+a gradient component of ~1e-14 along it made a step of 1e-2 to 1e-1. That
+left the quadratic region: ‖g‖ rose to 4e-6–6e-4, and the energy, flat to
+~1e-10 there, was rejected or accepted on noise. The loop then cycled,
+reject, a small Newton step back to ‖g‖ ~3e-9, the same long step, until
+`max_cycle`. Which run cycled was chaotic in the last digits, so it showed
+as a flake: unshifted, 2 of 12 runs failed on the RTX 3080 and 4 of 19 on
+the RX 9060 XT (the passing ones in 16 to 47 macro iterations); shifted, 20
+of 20 passed on each card, in 12 to 18 (#463). The shift bounds the step along
+the mode at the same point to ~1e-4.
+
+Along a curvature λ the shift scales the step by λ / (λ + σ): nothing at
+the 6.5e-3 above, and a mode with λ ≪ σ is left to converge by a factor
+σ / (λ + σ) per step, where its gradient, λ times the displacement, is
+already ~λ or less. `mcscf_solve_gpu.cpp`'s five cases take the macro
+iterations and Hessian products of the tables above with the shift (the RX
+9060 XT, the slow tier).
 
 ## Defaults, and what each settles
 
