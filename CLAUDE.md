@@ -310,6 +310,13 @@ variant. It does not check the container `name` field.
   PCI device's runtime-PM state and warns rather than reporting the card `ok`,
   on both sides of the host/container split. The cause is host-side (a reboot
   fixes it), so believe doctor over the enumeration.
+- **A card can also wedge mid-run** (gfx1200, #477): every process on it
+  spins in a HIP sync and prints nothing. The GPU shards of `cpp-tier.sh` and
+  `cpp-smoke.sh` are watched for that (`GPU_SHARD_STALL_SECONDS` and
+  `GPU_SHARD_BUDGET_SECONDS` in `devtools/config.sh`): a silent shard is
+  killed and the line `[shard i/N] hung in <case>` names where. When two
+  shards hang together, suspect the card before the case, and rerun the gate
+  on the other backend.
 
 Tests are registered **one ctest entry per gtest case** via
 `gtest_discover_tests(… DISCOVERY_MODE PRE_TEST)`. `PRE_TEST` defers enumeration
