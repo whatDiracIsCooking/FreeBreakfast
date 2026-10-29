@@ -6,8 +6,10 @@ symmetry, in the layout of `test/gtest/data/nevpt2/` (that README has every
 array's shape and convention), plus its dm3, f3ca and f3ac.
 
 No CMake target yet: this directory holds a generator and its output only.
-`design.md` has what the case says about dm3, and two exact ways to compress
-it.
+`design.md` has what the case says about dm3, two exact ways to compress it,
+and why **neither is worth building against `src/nevpt2` as it stands** —
+the layer's cost is one n⁶ · ndet gemm that the first cannot reach and the
+second would replace with more arithmetic.
 
 ## The case
 

@@ -7,6 +7,13 @@ introduce **no error beyond density fitting itself**. Each claim is marked
 (follows from the algebra), or *unverified* (derived here, not yet checked
 numerically).
 
+**Neither idea is worth building against `src/nevpt2` as it stands**, and
+"What this would buy `src/nevpt2`" below is where that is counted out: the
+layer's cost is one n⁶ · ndet gemm that idea 2 structurally cannot touch and
+idea 1 would replace with more arithmetic. Both keep the home "Scaling,
+honestly" already gives idea 1 — a compressed CI reference. The note stays
+because the algebra is right and that reference may come.
+
 ## What the case says about dm3
 
 n = 10 active orbitals, so dm3 has n⁶ = 10⁶ elements. Γ3 below is the
@@ -184,7 +191,91 @@ survives, worth about 2×. Idea 1 also wants the raw dm3, a product of E's,
 while idea 2 wants the normal-ordered Γ3. Idea 2 is a fixed factor of about
 8; idea 1's gain grows with n.
 
+## What this would buy `src/nevpt2`
+
+**Nothing today** — the layer's cost is somewhere neither idea reaches.
+
+It is `nevpt2::rdms`, and inside it the three `rdms_digest` calls
+(`src/nevpt2/rdm/rdm.cpp:153`, `:155`, `:157`). Each is an n⁴ × n² × width
+gemm, so the build is **3 n⁶ ndet** flops (*exact*, from the shapes);
+`rdms_consume` is n⁵ · width, a factor of n below, and fdm2 and the wedge
+run once. Everything downstream is noise: at CAS(10,10) the digests are
+~2e11 flops against ~5e7 for the SC class contractions (nvirt · n⁶) and
+~2e9 for the two PC eigensolves ((n³)³ each). The gap widens with the active
+space, since ndet grows exponentially and the consumers polynomially.
+
+`experimental/split_gemm`'s probe 1 is the other half: that digest shape
+already runs at the card's fp64 ceiling — 377.7 GF/s on the 3080 against a
+426 GF/s square-`Dgemm` peak (*measured*) — so there is no shape, tiling or
+library win left beside it either.
+
+**Idea 2 cannot reach the digest** (*exact*). Its rows come from
+`L2[pqrs, K]` and its columns from `R[tu, K]`, while S3 permutes the three
+pairs simultaneously across rows and columns: the projection lands on
+neither factor. The per-tile partial sums do not carry the symmetry in any
+case — it holds only for the summed Γ3.
+
+Nor does it shrink the PC metric. Sr's and Si's S is the **raw** dm3, which
+is not symmetric under the pairing (off by 3.9, above), so the irrep blocks
+do not exist there; that is why PC drops 10 of 1000 modes rather than Γ3's
+220 (*measured*, `src/nevpt2/energy/README.md`). Splitting
+S = Γ3 + (dm1, dm2 terms) does not rescue it: the additive part is not
+S3-invariant, so the sum does not block-diagonalize. And 8× on 2e9 flops is
+invisible beside 2e11.
+
+**Idea 1 loses on an exact-FCI determinant tree** (*exact*, the counting
+here; the same conclusion "Scaling, honestly" reaches, costed against this
+implementation). A sigma is about n⁴ · ndet, so the whole dm3 and f3 build
+is worth about n² sigmas — 100 at n = 10, 196 at n = 14. Idea 1 wants
+n · r_A sigmas on the N±1 spaces, which at B_aa's exact rank n(n+1)/2 is
+550 and 1470: three to seven times more arithmetic, moved out of a
+ceiling-rate gemm into the sigma kernel. Crossover needs r_A < n, an order
+below the exact rank (55 at n = 10).
+
+PC is worse, not better: it needs K as an explicit n³ × n³ matrix
+(`solve_class`, `src/nevpt2/energy/pc.cpp`), which from operators means n³
+sigma applications rather than one f3 build. f3ca and f3ac are the right
+algorithm for PC, and this tree ships PC.
+
+The one competitive corner is SC alone, where only the quadratic forms
+⟨V†[Ĥ_act, V]⟩ per external index are wanted: nvirt + ncore sigmas against
+the two thirds of `rdms` that f3 costs. Crossover is roughly nvirt against
+n² — about 1.8× at this case's CAS(10,10)/cc-pVDZ, gone with basis size,
+and bought by giving up PC.
+
+## Prior art, and what of it this tree already has
+
+Resolving the identity in the CI space to avoid the 4-RDM — Chatterjee and
+Sokolov, *J. Chem. Theory Comput.* **16**, 6343 (2020), and Kollmar,
+Sivalingam, Guo and Neese, *J. Chem. Phys.* **155**, 234104 (2021) — is
+**already what this tree does**. PySCF's `_contract4pdm`, which
+`nevpt2::rdms` ports, contracts the integrals into W and digests that in one
+gemm: f3ca and f3ac cost the same n⁶ · ndet as dm3 and the 4-RDM never
+exists. The latter paper's two orders of magnitude are against ORCA's old
+explicit-4-RDM code, which is not where this tree starts.
+
+Idea 1 is a different decomposition — an a priori aux fit of ρ̂, not a
+complete CI-space RI — so that is not its prior art. But the route it has to
+beat is the CI-space RI, not an explicit 4-RDM, and "What this would buy
+`src/nevpt2`" above is that comparison.
+
+The one piece of JCP **155**, 234104 this tree does not have is its Sec. II B,
+the FR-NEVPT2 residual ⟨Ψ₀|E E E (Ĥ_D − E₀)|Ψ₀⟩, which vanishes only for an
+exact CASCI solution. In this tiling it is nearly free: Z^I = ⟨Φ_I|Ĥ_v|Ψ₀⟩
+is one `ci::Sigma`, and the residual is Σ_K L2[pqrs, K] R_σ[tu, K] with
+R_σ[tu, K] = ⟨K|E_tu|σ⟩ — one more R gather and one more `rdms_digest` per
+tile, at most +⅓ on `rdms` (*unverified*: derived here, not coded). It is
+not a speedup. It buys a direct measure of the asymmetry in K that
+`src/nevpt2/energy/README.md` notes, and it is the prerequisite for the same
+compressed reference idea 1 wants, where neglecting it is what produces
+false intruder states.
+
 ## Unverified, and the first checks
+
+Not a to-do list: the section above says why nothing here is worth building
+against this tree. These are the checks a compressed CI reference would make
+worth running, in order. 5 stands on its own — it is a property of Γ3, cheap
+to confirm, and the only one that needs no new code path.
 
 1. **The one-body exchange term.** The term from writing Ĥ₂ as ½ρ̂ρ̂ must
    match PySCF's own one-body folding (the `'mbbn->mn'` subtractions in its
@@ -201,7 +292,3 @@ while idea 2 wants the normal-ordered Γ3. Idea 2 is a fixed factor of about
    against r_A as n grows.
 5. **Idea 2 directly.** Project Γ3 onto the three irreps and confirm the
    block structure: symmetric block zero, mixed blocks identical.
-
-Prior art: avoiding the 4-RDM in NEVPT2 by working with N±1 perturber
-vectors is known in spirit. Before building idea 1, check whether this form
-— an a priori aux basis for the perturber operators — is already published.
