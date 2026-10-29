@@ -27,8 +27,13 @@ struct Nevpt2Output {
   std::vector<nevpt2::ClassEnergies> roots;
   /// @brief Root r's eight PC-NEVPT2 class energies and their sum, over the
   /// same RDMs and slabs as roots[r]: root r's PC total energy is
-  /// CasscfOutput::energies[r] + pc_roots[r].total.
-  std::vector<nevpt2::PcClassEnergies> pc_roots;
+  /// CasscfOutput::energies[r] + pc_roots[r]->total. Empty for a root whose
+  /// PC was refused as Numerical (a class's metric with no clean gap above
+  /// its null space); its SC energies stand.
+  std::vector<std::optional<nevpt2::PcClassEnergies>> pc_roots;
+  /// @brief Why root r's PC was refused, `nevpt2::pc_class_energies`'
+  /// message naming the class; empty where pc_roots[r] holds a value.
+  std::vector<std::string> pc_refusals;
 };
 
 /// @brief Strongly and partially contracted NEVPT2 of every root of the
@@ -60,9 +65,11 @@ struct Nevpt2Step {
   ///         queued, under an integral-direct EriOutput, naming `[eri]`; or
   ///         the error of the first module call that failed:
   ///         `casscf_integrals`', `ci`'s, `response::fock`'s, the
-  ///         canonicalization's or `nevpt2`'s (a PC class whose metric
-  ///         has no clean null-space gap is Numerical, and fails the step),
-  ///         and GpuRuntime for a failed copy or BLAS call.
+  ///         canonicalization's or `nevpt2`'s, and GpuRuntime for a failed
+  ///         copy or BLAS call. A Numerical error from
+  ///         `nevpt2::pc_class_energies` alone does not fail the step: it is
+  ///         logged as a warning and that root's PC left empty
+  ///         (@ref Nevpt2Output::pc_roots).
   [[nodiscard]] Result<Nevpt2Output>
   run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianOutput, CasscfOutput> in,
       DeviceResources &res) const;

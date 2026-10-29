@@ -3,7 +3,7 @@
 Strongly and partially contracted NEVPT2 of every root of the
 state-averaged CASSCF, on its orbitals, over the density-fitted B the CASSCF
 ran on: PySCF's `mrpt.NEVPT(mc, root=r)` with `dfnevpt2`'s fitted integrals
-for SC, and PC-NEVPT2 (block2's, at the energy layer) over the same inputs. The work is the
+for SC, and PC-NEVPT2 (block2's `WickICNEVPT2`) over the same inputs. The work is the
 [`nevpt2`](../../nevpt2/README.md) layer's; this step builds what that layer
 reads of each root.
 
@@ -23,7 +23,9 @@ product it re-exports, the `EriOutput` among them) and
 ```cpp
 struct Nevpt2Output {
   std::vector<nevpt2::ClassEnergies> roots;      // SC per root: norms[8], energies[8], total
-  std::vector<nevpt2::PcClassEnergies> pc_roots; // PC per root: energies[8], dropped[8], total
+  // PC per root: energies[8], dropped[8], total; empty where PC was refused
+  std::vector<std::optional<nevpt2::PcClassEnergies>> pc_roots;
+  std::vector<std::string> pc_refusals; // why, where pc_roots[r] is empty
 };
 
 struct Nevpt2Step {
@@ -40,7 +42,9 @@ every input (the RDMs, the Fock blocks, the MO blocks and slabs), so a choice
 between them would save only PC's energy stage, about 1.2–1.5× SC's, on top
 of RDMs that dominate as the active space grows. Root r's SC total energy is
 `CasscfOutput::energies[r] + roots[r].total`, and its PC one
-`CasscfOutput::energies[r] + pc_roots[r].total`; `main` prints both.
+`CasscfOutput::energies[r] + pc_roots[r]->total`; `main` prints both, or
+`PC-NEVPT2 root r:  refused (<message>)`, the message naming the class, for
+a root whose PC was refused (Errors).
 
 `run`, all on `res.stream()`:
 
@@ -84,8 +88,13 @@ of RDMs that dominate as the active space grows. Root r's SC total energy is
       SC: an active rotation U transforms each class's metric S and Dyall
       matrix K by the same congruence (each internal index carries one U),
       which leaves the span and the eigenvalues of the pencil (K, S), and so
-      every class energy, unchanged. That is an argument, not a measurement:
-      no reference checks PC on unrotated orbitals.
+      every class energy, unchanged; the cut, relative to S's largest
+      eigenvalue, is unchanged with them. Measured twice:
+      `Nevpt2PcInvariance` (`nevpt2_energy_gpu.cpp`) rotates every input of
+      the energy layer by a random U at CAS(4,4) and CAS(8,8), both of which
+      cut modes, and gets every class back to 4e-15 with the same dropped
+      counts; and `nevpt2_reference.py` checks block2's PC on each root's
+      natural orbitals against the unrotated one it records, to 1.8e-14.
 
 ## Memory
 
@@ -119,10 +128,20 @@ that use it. The largest are dm3, f3ca and f3ac, n_act⁶ doubles each.
 (`casscf_integrals`', `ci::DeviceStringSet::create`'s and `ci::Rdm`'s,
 `response::fock`'s, the canonicalization's, `nevpt2::mo_blocks`', `h2e`'s,
 `rdms`', `class_energies`' and `pc_class_energies`'); GpuRuntime for a
-failed copy or gemm. A PC class refused as `Numerical` (its metric has no
-clean gap above its null space, `nevpt2/energy` "The cut, and refusals")
-fails the whole step, SC's energies with it: none of the four test cases is
-refused, but a state like the demo's N₂ CAS(12,12) would be.
+failed copy or gemm. Each fails the step.
+
+**A PC refusal does not.** `nevpt2::pc_class_energies` refuses a class as
+`Numerical` when its metric has no clean gap above its null space (no
+positive eigenvalue, a smallest kept eigenvalue under 1e3 times the largest
+cut one, or a non-positive λ + Δ: `nevpt2/energy` "The cut, and refusals").
+That says PC is not defined to the precision asked of it on this state; SC,
+which solves no such system, is. So the step logs a warning naming the root
+and the layer's message (which names the class), leaves that root's
+`pc_roots[r]` empty with the message in `pc_refusals[r]`, and goes on; SC's
+energies for the root stand. Any other error from `pc_class_energies` still
+fails the step. A state with an all but doubly occupied orbital in the
+active space is the usual cause: the demo's N₂ CAS(12,12), with a 1s
+combination active, and the test's HF CAS(10,7), with the F 1s.
 
 ## Not done
 
@@ -151,12 +170,23 @@ answer is as arbitrary as the eigenvectors `diagonalize` returns. And
 `[nevpt2]` with an integral-direct `[eri]`, written or filled in, refused
 `Unsupported` naming `[eri]` when the config is read.
 
-PC has no reference at this level: PySCF has no PC-NEVPT2, and block2's
-(`nevpt2_energy_gpu.cpp`'s goldens, at 1e-7 on identical inputs) is not a
-`tools` dependency. So each case checks, per root, what must hold of PC beside
-SC: every class finite, none above SC's (PC minimizes the same Hylleraas
-functional over a span holding SC's function), Sijrs equal to SC's (it has no
-active index), and the total the sum, all to 1e-12.
+PC against block2's, the same file's `pc_class_energies` and `e_pc_total`
+(`nevpt2_reference.py`, on the reference's state with the active orbitals
+unrotated, as the step leaves them): every class and the total per root at
+the same 1e-9, which the same derivation sets, since PC is first order in
+the orbitals and the CI vectors as SC is. Measured on an RTX 3080 (CUDA):
+every class within 7.4e-12. And per root what must hold of PC beside SC:
+none above SC's (PC minimizes the same Hylleraas functional over a span
+holding SC's function), Sijrs equal to SC's (it has no active index), and
+the total the sum, to 1e-12.
+
+`PipelineNevpt2.PcRefusalKeepsSc`: HF in cc-pVDZ, CAS(10,7) over every
+electron, from its own config. The F 1s is active and all but doubly
+occupied, and Sr's metric has eigenvalues running through the cut with no
+gap (smallest kept / largest dropped 1.7, far under 1e3), so PC is refused.
+The step succeeds, SC's eight classes are there and sum to the total, and
+`pc_roots[0]` is empty with a `pc_refusals[0]` naming Sr. 441 determinants,
+3 s, in the fast tier.
 
 ## Files
 

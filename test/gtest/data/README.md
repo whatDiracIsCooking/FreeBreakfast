@@ -401,10 +401,11 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casscf_referen
 
 | Key | Meaning |
 |---|---|
-| `provenance` | PySCF and numpy versions, `threads` (1: BLAS and OpenMP pinned to it), the command that wrote it, and `casscf`, the file whose cases these are. No date or host, so a rerun is byte-identical |
-| `invariance` | The check the tool makes of every root: `check` (what was compared), `tolerance` (1e-10) and `max_difference` (the largest disagreement over all cases and roots, 3.1e-15) |
+| `provenance` | PySCF, block2 and numpy versions, `threads` (1: BLAS and OpenMP pinned to it), the command that wrote it, and `casscf`, the file whose cases these are. No date or host, so a rerun is byte-identical |
+| `invariance` | The check the tool makes of every root: `check` (what was compared), `tolerance` (1e-10) and `max_difference` (the largest disagreement over all cases and roots, 3.1e-15); and the same of PC, `pc_check` and `pc_max_difference` (1.8e-14) |
+| `block2` | The gates on the PC fields: `sc_tolerance` (1e-10, block2's SC against PySCF's per class, and PC Sijrs against SC Sijrs), `pc_tau` (1e-13) and `pc_min_gap` (1e3), the cut and gap every PC solve must clear |
 | `cases` | One per `casscf_df.json` case but `n2_ccpvdz` (below), by the same `name`: `ncas`, `nelecas`, `ncore`, `weights`, `aux_basis` (`name`, `file`, its `sha256`, `naux`), `casscf_energies` (each root's energy at the polished orbitals) and `casscf_energy` (weighted), and `roots` |
-| `roots` | One per state, lowest first: `casci_energy` (the root's energy over the polished orbitals, the zeroth order), `classes`, `e_corr` (their energies' sum, the NEVPT2 correction) and `energy` (`casci_energy` + `e_corr`) |
+| `roots` | One per state, lowest first: `casci_energy` (the root's energy over the polished orbitals, the zeroth order), `classes`, `e_corr` (their energies' sum, the NEVPT2 correction) and `energy` (`casci_energy` + `e_corr`), and `pc_class_energies` (eight `name`/`energy` pairs in the same order, block2's PC-NEVPT2) and `e_pc_total` (their sum) |
 | `classes` | Eight, in PySCF's summation order: `name` (PySCF's: `Sr`, `Si`, `Sijrs`, `Sijr`, `Srsi`, `Srs`, `Sij`, `Sir`), `excitation` (the change in active-electron count PySCF's log gives it, primed for the two semi-internal classes), `norm` (the class's perturbers' summed squared norm) and `energy` (its second-order contribution). A class can be empty to rounding (H₂CO's excited root's `Sij`: norm ±1e-17, energy `-0.0`), so compare norms and energies absolutely |
 
 **The cases and the orbitals.** The tool imports `casscf_reference.py`'s
@@ -446,6 +447,30 @@ orbitals alone: the tool runs every root a second time with core and
 virtuals canonicalized over the root's Fock and the active orbitals
 unrotated (`cas_natorb=False`) and fails emission unless every class's norm
 and energy and `e_corr` agree to 1e-10. They agree to 3.1e-15.
+
+**PC, from block2.** PySCF has no PC-NEVPT2, so the PC fields are block2's
+(`pyblock2.icmr.icnevpt2_full.WickICNEVPT2`, the `tools` group's `block2`,
+also the source of `nevpt2/<case>/`'s PC goldens), run on exactly the state
+the C++ step computes from: the root's CI vector, its core and virtuals
+canonicalized over its own Fock, its active orbitals **unrotated**, and
+PySCF's own fitted integrals for those orbitals (`dfnevpt2._ERIS`) injected
+in place of block2's transform, `canonicalized = True` so block2 takes the
+orbitals and energies as given. Two block2 facts the tool works around:
+`eri_helper.init_eris` always transforms the exact 4-index ERIs (so handed a
+DFCASCI it would compute a mixed answer), and `kernel(eris=...)` raises in
+0.5.4 (its `teris` timer is bound only on the build path), so the fitted
+integrals go in by replacing `init_eris` for the call. Three gates, each
+failing emission: block2's SC (`WickSCNEVPT2`) on the same state equals
+PySCF's per class to 1e-10 (it does to 4.3e-15), so block2 sees the state the
+SC fields were recorded on; PC Sijrs, with no active index, equals SC Sijrs
+to the same; and every per-tuple solve's matrix has a gap of at least 1e3 at
+1e-13 of its largest singular value, `nevpt2::pc_class_energies`' own
+refusal rule, so the energy does not depend on where a cut fell (block2's
+lstsq cuts lower, at eps · d, inside the structural null modes' noise, which
+carries no energy). **PC is invariant to the active rotation too**, and is
+checked like SC: block2's PC again on each root's natural orbitals, every
+class to 1e-10. They agree to 1.8e-14. The C++ energy layer measures the
+same thing on its own (`Nevpt2PcInvariance` in `nevpt2_energy_gpu.cpp`).
 
 **No N₂: degenerate virtuals.** SC-NEVPT2 is **not** invariant to a rotation
 inside a set of degenerate core or virtual orbitals, and canonicalization

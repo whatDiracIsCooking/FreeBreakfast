@@ -1,7 +1,8 @@
 {
- "description": "PySCF strongly contracted NEVPT2 (mrpt.NEVPT, density fitted throughout) per root over a multi-root DFCASCI on the polished DF (SA-)CASSCF orbitals of casscf_df.json's cases, from the same starts and over the same data/aux_basis fitting set: each root's eight classes' norms and energies, their sum e_corr and the total. Hartree",
+ "description": "PySCF strongly contracted NEVPT2 (mrpt.NEVPT, density fitted throughout) per root over a multi-root DFCASCI on the polished DF (SA-)CASSCF orbitals of casscf_df.json's cases, from the same starts and over the same data/aux_basis fitting set: each root's eight classes' norms and energies, their sum e_corr and the total, and block2's PC-NEVPT2 per class and pc total on the same state with the active orbitals unrotated. Hartree",
  "provenance": {
   "pyscf": "2.14.0",
+  "block2": "0.5.4",
   "numpy": "2.5.4",
   "threads": 1,
   "command": "uv run --group tools tools/emit/nevpt2_reference.py",
@@ -10,7 +11,14 @@
  "invariance": {
   "check": "every root again with cas_natorb=False (core and virtuals canonicalized over the root's Fock, active orbitals unrotated): every class's norm and energy and e_corr",
   "tolerance": 1e-10,
-  "max_difference": 3.1363800445660672e-15
+  "max_difference": 3.1363800445660672e-15,
+  "pc_check": "block2's PC on each root's natural orbitals (cas_natorb=True) against the recorded unrotated one, per class",
+  "pc_max_difference": 1.7603973834212638e-14
+ },
+ "block2": {
+  "sc_tolerance": 1e-10,
+  "pc_tau": 1e-13,
+  "pc_min_gap": 1000.0
  },
  "cases": [
   {
@@ -85,7 +93,42 @@
       }
      ],
      "e_corr": -0.1493933957719426,
-     "energy": -76.22722921296813
+     "energy": -76.22722921296813,
+     "pc_class_energies": [
+      {
+       "name": "Sr",
+       "energy": -0.0053967007920655225
+      },
+      {
+       "name": "Si",
+       "energy": -0.00011348943237639585
+      },
+      {
+       "name": "Sijrs",
+       "energy": -0.03982840091180133
+      },
+      {
+       "name": "Sijr",
+       "energy": -0.0055447071926781845
+      },
+      {
+       "name": "Srsi",
+       "energy": -0.032097824987362175
+      },
+      {
+       "name": "Srs",
+       "energy": -0.020580923518419357
+      },
+      {
+       "name": "Sij",
+       "energy": -0.0011342002268309099
+      },
+      {
+       "name": "Sir",
+       "energy": -0.04501787405947909
+      }
+     ],
+     "e_pc_total": -0.14971412112101296
     }
    ]
   },
@@ -163,7 +206,42 @@
       }
      ],
      "e_corr": -0.28817496299816714,
-     "energy": -114.19310382148132
+     "energy": -114.19310382148132,
+     "pc_class_energies": [
+      {
+       "name": "Sr",
+       "energy": -0.015924006033037036
+      },
+      {
+       "name": "Si",
+       "energy": -2.219876782324771e-05
+      },
+      {
+       "name": "Sijrs",
+       "energy": -0.10063713057225834
+      },
+      {
+       "name": "Sijr",
+       "energy": -0.008028852207104866
+      },
+      {
+       "name": "Srsi",
+       "energy": -0.09206010331294495
+      },
+      {
+       "name": "Srs",
+       "energy": -0.031562822899476664
+      },
+      {
+       "name": "Sij",
+       "energy": -0.0014615346063884484
+      },
+      {
+       "name": "Sir",
+       "energy": -0.03930445726402271
+      }
+     ],
+     "e_pc_total": -0.28900110566305626
     },
     {
      "casci_energy": -113.75507875380873,
@@ -218,7 +296,42 @@
       }
      ],
      "e_corr": -0.2807956654787789,
-     "energy": -114.03587441928751
+     "energy": -114.03587441928751,
+     "pc_class_energies": [
+      {
+       "name": "Sr",
+       "energy": -0.006775642201962652
+      },
+      {
+       "name": "Si",
+       "energy": -0.0020245287369153398
+      },
+      {
+       "name": "Sijrs",
+       "energy": -0.10072725484961624
+      },
+      {
+       "name": "Sijr",
+       "energy": -0.014800462707728609
+      },
+      {
+       "name": "Srsi",
+       "energy": -0.09173772583345816
+      },
+      {
+       "name": "Srs",
+       "energy": -0.027016953743661073
+      },
+      {
+       "name": "Sij",
+       "energy": 3.605855110502532e-19
+      },
+      {
+       "name": "Sir",
+       "energy": -0.03843379075045451
+      }
+     ],
+     "e_pc_total": -0.2815163588237966
     }
    ]
   },
@@ -296,7 +409,42 @@
       }
      ],
      "e_corr": -0.2861603732120208,
-     "energy": -114.1936962610573
+     "energy": -114.1936962610573,
+     "pc_class_energies": [
+      {
+       "name": "Sr",
+       "energy": -0.014596481095712686
+      },
+      {
+       "name": "Si",
+       "energy": -1.9449713058730974e-05
+      },
+      {
+       "name": "Sijrs",
+       "energy": -0.10078134909076995
+      },
+      {
+       "name": "Sijr",
+       "energy": -0.008008737870668123
+      },
+      {
+       "name": "Srsi",
+       "energy": -0.09138890465977814
+      },
+      {
+       "name": "Srs",
+       "energy": -0.03135110946685937
+      },
+      {
+       "name": "Sij",
+       "energy": -0.0014678066216258845
+      },
+      {
+       "name": "Sir",
+       "energy": -0.03925938509254197
+      }
+     ],
+     "e_pc_total": -0.28687322361101486
     },
     {
      "casci_energy": -113.75105384760654,
@@ -351,7 +499,42 @@
       }
      ],
      "e_corr": -0.2845810105750441,
-     "energy": -114.03563485818158
+     "energy": -114.03563485818158,
+     "pc_class_energies": [
+      {
+       "name": "Sr",
+       "energy": -0.00912219677184604
+      },
+      {
+       "name": "Si",
+       "energy": -0.002115639279263122
+      },
+      {
+       "name": "Sijrs",
+       "energy": -0.10090084459885341
+      },
+      {
+       "name": "Sijr",
+       "energy": -0.014937331627458183
+      },
+      {
+       "name": "Srsi",
+       "energy": -0.09149733220348776
+      },
+      {
+       "name": "Srs",
+       "energy": -0.026876045023801632
+      },
+      {
+       "name": "Sij",
+       "energy": 2.959935451875122e-19
+      },
+      {
+       "name": "Sir",
+       "energy": -0.040088875353486236
+      }
+     ],
+     "e_pc_total": -0.2855382648581964
     }
    ]
   },
@@ -427,7 +610,42 @@
       }
      ],
      "e_corr": -0.14032756611480252,
-     "energy": -76.22004938576536
+     "energy": -76.22004938576536,
+     "pc_class_energies": [
+      {
+       "name": "Sr",
+       "energy": -0.05829913635981441
+      },
+      {
+       "name": "Si",
+       "energy": -2.633358321504156e-05
+      },
+      {
+       "name": "Sijrs",
+       "energy": -0.00017387194560633513
+      },
+      {
+       "name": "Sijr",
+       "energy": -0.0001279139275801164
+      },
+      {
+       "name": "Srsi",
+       "energy": -0.0009341593648193818
+      },
+      {
+       "name": "Srs",
+       "energy": -0.08225640281646941
+      },
+      {
+       "name": "Sij",
+       "energy": -9.059311675513267e-05
+      },
+      {
+       "name": "Sir",
+       "energy": -0.0008318784302305767
+      }
+     ],
+     "e_pc_total": -0.14274028954449042
     }
    ]
   }

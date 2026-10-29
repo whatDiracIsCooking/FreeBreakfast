@@ -5,7 +5,9 @@
 // against block2's, at 1e-7 Ha (the demo's tolerance), on every case that
 // carries dm3 and f3, walked whole and in batches of three, the last one
 // partial. Then the chain: nevpt2::rdms' dm3/f3ca/f3ac from the golden CI
-// vector in place of PySCF's, on every case, CAS(10,10)'s included.
+// vector in place of PySCF's, on every case, CAS(10,10)'s included. And PC's
+// invariance to a rotation of the active orbitals, which the pipeline step
+// relies on: it does not rotate to each root's natural orbitals.
 
 #include <gtest/gtest.h>
 
@@ -60,6 +62,58 @@ std::vector<double> row_major(const fb::NpyArray &a) {
   return out;
 }
 
+// @p a, column-major as io.npy returns it, with each of @p axes (each n long)
+// carried by the active rotation @p u, n x n column-major: the orbitals
+// φ'_p = Σ_q φ_q u(q, p), so x'[.., p, ..] = Σ_q u(q, p) x[.., q, ..] on every
+// axis, the integrals' and the RDMs' alike. Nothing when @p u is empty.
+void rotate(fb::NpyArray &a, std::initializer_list<std::size_t> axes,
+            const std::vector<double> &u) {
+  if (u.empty()) {
+    return;
+  }
+  std::size_t stride = 1;
+  for (std::size_t d = 0; d < a.shape.size(); ++d) {
+    if (std::ranges::find(axes, d) != axes.end()) {
+      const std::size_t n = a.shape[d];
+      EXPECT_EQ(u.size(), n * n) << "axis " << d;
+      std::vector<double> out(a.data.size(), 0.0);
+      for (std::size_t at = 0; at < a.data.size(); ++at) {
+        const std::size_t q = (at / stride) % n;
+        const std::size_t base = at - (q * stride);
+        for (std::size_t p = 0; p < n; ++p) {
+          out[base + (p * stride)] += u[q + (n * p)] * a.data[at];
+        }
+      }
+      a.data = std::move(out);
+    }
+    stride *= a.shape[d];
+  }
+}
+
+// A random n x n orthogonal matrix, column-major, from a fixed seed: Gram-Schmidt
+// over normal deviates, twice for each column.
+std::vector<double> random_rotation(std::size_t n, std::uint64_t seed) {
+  std::mt19937_64 engine(seed);
+  std::normal_distribution<double> normal;
+  std::vector<double> u(n * n);
+  for (double &x : u) {
+    x = normal(engine);
+  }
+  for (std::size_t j = 0; j < n; ++j) {
+    double *const col = u.data() + (n * j);
+    for (std::int32_t pass = 0; pass < 2; ++pass) {
+      for (std::size_t k = 0; k < j; ++k) {
+        const double *const prev = u.data() + (n * k);
+        const double dot = std::inner_product(col, col + n, prev, 0.0);
+        std::transform(col, col + n, prev, col, [dot](double c, double v) { return c - dot * v; });
+      }
+    }
+    const double norm = std::sqrt(std::inner_product(col, col + n, col, 0.0));
+    std::transform(col, col + n, col, [norm](double c) { return c / norm; });
+  }
+  return u;
+}
+
 fb::Buffers::device<double> upload(fb::DeviceResources &res, const std::vector<double> &host) {
   fb::Buffers::device<double> d(host.size(), res.device());
   EXPECT_EQ(wwr::wwrMemcpyAsync(d.data(), host.data(), sizeof(double) * host.size(),
@@ -72,17 +126,22 @@ fb::Buffers::device<double> upload(fb::DeviceResources &res, const std::vector<d
 
 // One case's integrals on the device: the MO blocks the slabs are built from
 // and every column-major input class_energies reads, as data/nevpt2/ stores
-// them. The RDMs are the caller's.
+// them, the active orbitals rotated by @p u when it is given. The RDMs are
+// the caller's.
 struct Integrals {
   std::optional<nevpt2::MoBlocks> blocks;
   std::vector<fb::Buffers::device<double>> arrays;
   nevpt2::EnergyInputs in;
 };
 
-Integrals load_integrals(fb::DeviceResources &res, const std::filesystem::path &dir) {
-  const fb::NpyArray aa = read_array(dir / "B_aa.npy");
-  const fb::NpyArray ca = read_array(dir / "B_ca.npy");
-  const fb::NpyArray va = read_array(dir / "B_va.npy");
+Integrals load_integrals(fb::DeviceResources &res, const std::filesystem::path &dir,
+                         const std::vector<double> &u = {}) {
+  fb::NpyArray aa = read_array(dir / "B_aa.npy");
+  fb::NpyArray ca = read_array(dir / "B_ca.npy");
+  fb::NpyArray va = read_array(dir / "B_va.npy");
+  rotate(aa, {1, 2}, u);
+  rotate(ca, {2}, u);
+  rotate(va, {2}, u);
   const fb::NpyArray cv = read_array(dir / "B_cv.npy");
   Integrals g;
   if (aa.shape.size() != 3 || cv.shape.size() != 3) {
@@ -111,19 +170,22 @@ Integrals load_integrals(fb::DeviceResources &res, const std::filesystem::path &
                                     .va = upload(res, va.data),
                                     .cv = upload(res, cv.data),
                                     .vc = upload(res, vc)});
-  const auto put = [&](const char *name, const std::vector<std::size_t> &shape) {
-    const fb::NpyArray a = read_array(dir / (std::string{name} + ".npy"));
+  // Each array, its active axes rotated by u.
+  const auto put = [&](const char *name, const std::vector<std::size_t> &shape,
+                       std::initializer_list<std::size_t> active) {
+    fb::NpyArray a = read_array(dir / (std::string{name} + ".npy"));
     EXPECT_EQ(a.shape, shape) << name;
+    rotate(a, active, u);
     g.arrays.push_back(upload(res, a.data));
     return static_cast<const double *>(g.arrays.back().data());
   };
-  g.in.h1e = put("h1e", {na, na});
-  g.in.h2e = put("h2e", {na, na, na, na});
-  g.in.e_core = put("e_core", {nc});
-  g.in.e_virt = put("e_virt", {nv});
-  g.in.h1e_v_sr = put("h1e_v_Sr", {nv, na});
-  g.in.h1e_v_si = put("h1e_v_Si", {na, nc});
-  g.in.h1e_v_sir = put("h1e_v_Sir", {nv, nc});
+  g.in.h1e = put("h1e", {na, na}, {0, 1});
+  g.in.h2e = put("h2e", {na, na, na, na}, {0, 1, 2, 3});
+  g.in.e_core = put("e_core", {nc}, {});
+  g.in.e_virt = put("e_virt", {nv}, {});
+  g.in.h1e_v_sr = put("h1e_v_Sr", {nv, na}, {1});
+  g.in.h1e_v_si = put("h1e_v_Si", {na, nc}, {0});
+  g.in.h1e_v_sir = put("h1e_v_Sir", {nv, nc}, {});
   return g;
 }
 
@@ -313,6 +375,92 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2EnergyDeviceRdms,
                            return std::string{std::get<0>(info.param).name} + "_batch" +
                                   std::to_string(std::get<1>(info.param));
                          });
+
+// ---------------------------------------------------------------------------
+// Invariance to the active orbitals
+// ---------------------------------------------------------------------------
+
+// The pipeline step does not rotate the active orbitals to each root's
+// natural orbitals, as PySCF's NEVPT.kernel does (cas_natorb), and leans on
+// both variants being invariant to it. For PC the argument is that a
+// rotation U carries each class's S and K by the same congruence, which
+// leaves the pencil (K, S)'s eigenvalues, and the cut, relative to S's
+// largest eigenvalue, unchanged. Measured here: every input with an active
+// index rotated by a random U, then every SC and PC class energy, SC's norms
+// and PC's dropped counts against the unrotated run's. SC is the control: its
+// invariance is PySCF's (tools/emit/nevpt2_reference.py checks it to 1e-10),
+// so an SC miss would be the rotation's fault, not PC's.
+//
+// Both cases cut modes (Sr, Si and Sir; pc_dropped), so the cut is tested too.
+constexpr double kInvarianceTol = 1e-10;
+
+class Nevpt2PcInvariance : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2PcInvariance, ActiveRotationLeavesEnergiesUnchanged) {
+  FBF_REQUIRE_GPU();
+  const std::string name = GetParam();
+  const std::filesystem::path dir = kDataDir / name;
+  fb::DeviceResources res(0);
+  const auto run = [&](const std::vector<double> &u)
+      -> std::optional<std::pair<nevpt2::ClassEnergies, nevpt2::PcClassEnergies>> {
+    Integrals g = load_integrals(res, dir, u);
+    if (!g.blocks.has_value()) {
+      return std::nullopt;
+    }
+    const auto rdm = [&](const char *array) {
+      fb::NpyArray a = read_array(dir / (std::string{array} + ".npy"));
+      std::vector<std::size_t> axes(a.shape.size());
+      std::iota(axes.begin(), axes.end(), std::size_t{0});
+      for (const std::size_t axis : axes) {
+        rotate(a, {axis}, u);
+      }
+      g.arrays.push_back(upload(res, row_major(a)));
+      return static_cast<const double *>(g.arrays.back().data());
+    };
+    g.in.dm1 = rdm("dm1");
+    g.in.dm2 = rdm("dm2");
+    g.in.dm3 = rdm("dm3");
+    g.in.f3ca = rdm("f3ca");
+    g.in.f3ac = rdm("f3ac");
+    auto sc = nevpt2::class_energies(res, *g.blocks, g.in, 0);
+    EXPECT_TRUE(sc) << sc.error().message;
+    auto pc = nevpt2::pc_class_energies(res, *g.blocks, g.in, 0);
+    EXPECT_TRUE(pc) << pc.error().message;
+    if (!sc || !pc) {
+      return std::nullopt;
+    }
+    return std::pair{*sc, *pc};
+  };
+
+  const auto plain = run({});
+  ASSERT_TRUE(plain.has_value());
+  const std::size_t n = read_array(dir / "dm1.npy").shape[0];
+  const auto rotated = run(random_rotation(n, 455));
+  ASSERT_TRUE(rotated.has_value());
+  const auto &[sc, pc] = *plain;
+  const auto &[sc_u, pc_u] = *rotated;
+  double worst = 0.0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(sc_u.norms[k], sc.norms[k], kInvarianceTol) << name << " SC " << kClassNames[k];
+    EXPECT_NEAR(sc_u.energies[k], sc.energies[k], kInvarianceTol)
+        << name << " SC " << kClassNames[k];
+    EXPECT_NEAR(pc_u.energies[k], pc.energies[k], kInvarianceTol)
+        << name << " PC " << kClassNames[k];
+    EXPECT_EQ(pc_u.dropped[k], pc.dropped[k]) << name << " PC " << kClassNames[k];
+    worst = std::max(worst, std::abs(pc_u.energies[k] - pc.energies[k]));
+  }
+  EXPECT_NEAR(pc_u.total, pc.total, kInvarianceTol) << name << " PC";
+  EXPECT_EQ(pc.dropped, pc_dropped(name)) << name;
+  std::cout << std::format("[ nevpt2   ] {}: PC under a random active rotation, worst class "
+                           "{:.2e}, total {:+.2e}; SC total {:+.2e}\n",
+                           name, worst, pc_u.total - pc.total, sc_u.total - sc.total);
+}
+
+// CAS(4,4) and CAS(8,8); each cuts modes in Sr, Si and Sir.
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcInvariance,
+                         ::testing::Values(std::string{"n2_ccpvdz_cas44_df"},
+                                           std::string{"n2_ccpvdz_cas88_df"}),
+                         [](const auto &info) { return info.param; });
 
 // ---------------------------------------------------------------------------
 // PC refusals

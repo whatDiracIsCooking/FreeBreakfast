@@ -150,6 +150,7 @@ namespace free_breakfast {
   Nevpt2Output out;
   out.roots.reserve(nroots);
   out.pc_roots.reserve(nroots);
+  out.pc_refusals.reserve(nroots);
   const std::array<double, 1> one_root{1.0};
   for (size_t root = 0; root < nroots; ++root) {
     const double *const vector = vectors.data() + (root * dim);
@@ -247,10 +248,22 @@ namespace free_breakfast {
                                       .f3ca = f3ca.data(),
                                       .f3ac = f3ac.data()};
     out.roots.push_back(FBF_TRY(nevpt2::class_energies(res, blocks, inputs, batch)));
-    out.pc_roots.push_back(FBF_TRY(nevpt2::pc_class_energies(res, blocks, inputs, batch)));
-    log::info(std::format("NEVPT2 root {}: SC E_corr {:.12f}, PC E_corr {:.12f} ({} RDM tiles, "
+    // A PC class refused as Numerical costs that root its PC, not its SC.
+    Result<nevpt2::PcClassEnergies> pc = nevpt2::pc_class_energies(res, blocks, inputs, batch);
+    if (!pc && pc.error().kind != ErrorKind::Numerical) {
+      return std::unexpected(std::move(pc).error());
+    }
+    out.pc_refusals.push_back(pc ? std::string{} : std::move(pc.error().message));
+    out.pc_roots.push_back(pc ? std::optional{*pc} : std::nullopt);
+    if (!pc) {
+      log::warn(
+          std::format("NEVPT2 root {}: PC refused, SC kept: {}", root, out.pc_refusals.back()));
+    }
+    log::info(std::format("NEVPT2 root {}: SC E_corr {:.12f}, PC E_corr {} ({} RDM tiles, "
                           "slab batch {})",
-                          root, out.roots.back().total, out.pc_roots.back().total, tiles, batch));
+                          root, out.roots.back().total,
+                          pc ? std::format("{:.12f}", pc->total) : std::string{"refused"}, tiles,
+                          batch));
   }
   return out;
 }

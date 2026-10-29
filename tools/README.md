@@ -117,8 +117,9 @@ emit/nevpt2_reference.py
                   Write test/gtest/data/nevpt2/nevpt2_df.json: PySCF's SC
                   DF-NEVPT2 per root on the polished DF CASSCF orbitals of
                   casscf_df.json's cases, each class's norm and energy and
-                  the total, with the cas_natorb invariance checked. Needs
-                  PySCF.
+                  the total, and block2's PC-NEVPT2 per class on the same
+                  state (active orbitals unrotated), with the cas_natorb
+                  invariance of both checked. Needs PySCF and block2.
 emit/nevpt2_golden.py
                   Write test/gtest/data/nevpt2/<case>/<array>.npy: the
                   nevpt2-gpu-demo's density-fitted goldens as .npy, plus

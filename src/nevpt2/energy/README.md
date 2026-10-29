@@ -118,7 +118,8 @@ eigenvalue, when its smallest kept eigenvalue is under 1e3 times its largest
 dropped one (the rank, and so the energy, would depend on where the cut
 fell: the demo's N₂ CAS(12,12) is such a state), or when a denominator
 λ_k + Δ_t is not positive. The demo reported a refused class and carried on;
-here the call fails, since a total without that class is not PC-NEVPT2.
+here the call fails, since a total without that class is not PC-NEVPT2
+(the pipeline step then drops that root's PC and keeps its SC).
 
 **Memory.** The solve's d × d matrices (S, K, their symmetrized copies, V,
 and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
@@ -146,3 +147,13 @@ class's dropped count against the demo's measured table, from PySCF's RDMs
 and from `nevpt2::rdms`', walked whole and in threes. And
 `Nevpt2PcEnergy.ZeroMetricIsRefused`: zero RDMs are a Numerical error
 naming Sr.
+
+`Nevpt2PcInvariance`: PC's invariance to the active orbitals, which the
+pipeline step relies on (it does not rotate to each root's natural
+orbitals). Every input with an active index (B_aa, B_ca, B_va, h1e, h2e,
+`h1e_v_Sr`, `h1e_v_Si`, dm1, dm2, dm3, f3ca, f3ac) is rotated by one random
+orthogonal U, and every SC norm and energy, every PC energy and the PC total
+must match the unrotated run's to 1e-10, with the same dropped counts.
+CAS(4,4) and CAS(8,8), both of which cut modes in Sr, Si and Sir. SC is the
+control: its invariance is PySCF's, so an SC miss would be the rotation's.
+Measured on an RTX 3080: PC within 4e-15.
