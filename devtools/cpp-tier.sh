@@ -63,10 +63,9 @@
 #                   (e.g. `-- -R Constants` to scope the run). ctest has
 #                   one entry per gtest case, so -R matches suite names, and
 #                   the selection also picks which GPU entries are batched
-#                   into gtest shards (run_tier_tests below). ctest itself
-#                   runs GPU_TEST_JOBS (config.sh) entries at once; `-- -j 1`
-#                   overrides that for one run, and GPU_TEST_JOBS=1 makes the
-#                   batch one process.
+#                   into one gtest process (run_tier_tests below). ctest
+#                   itself runs CTEST_JOBS (config.sh) entries at once;
+#                   `-- -j 1` overrides that for one run.
 #
 # Exit status is the first failing phase's, so a scheduler can alert on it.
 #: -- help stops here --
@@ -160,14 +159,14 @@ gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 # own process, and a GPU one spends about 0.45s creating the runtime's context
 # before its case starts -- most of the phase once the cases are cheap. So the
 # GPU entries that can share a process (devtools/split-gpu-entries.py says
-# which: no launcher, not RUN_SERIAL) run as GPU_TEST_JOBS gtest shards, as in
+# which: no launcher, not RUN_SERIAL) run as one gtest process, as in
 # cpp-smoke.sh, and ctest runs everything else: the host entries, the
 # RUN_SERIAL ones it keeps alone on the card, and every entry when a launcher
 # such as compute-sanitizer wraps them. The split reads ctest's own listing, so
 # the preset's filters and a `-- -R ...` pick the batch too. When the listing
 # cannot be read, ctest runs every entry, as before the batch existed.
-# ctest bounds each of its entries with the TIMEOUT property; the shards are
-# bounded by run_gpu_sharded's watchdog (GPU_SHARD_* in config.sh, issue #477).
+# ctest bounds each of its entries with the TIMEOUT property; the batch is
+# bounded by run_gpu_batch's watchdog (GPU_BATCH_* in config.sh, issue #477).
 run_tier_tests() {
   local dir trc=0 n
   dir=$(mktemp -d)
@@ -178,16 +177,16 @@ run_tier_tests() {
     : >"$dir/filter"
   fi
   # Before the passthrough, so a `-- -j 1` still wins.
-  run_phase ctest ctest --preset "$test_preset" --parallel "$GPU_TEST_JOBS" \
+  run_phase ctest ctest --preset "$test_preset" --parallel "$CTEST_JOBS" \
     --exclude-from-file "$dir/exclude" "${passthrough[@]}" || trc=$?
   if [ -s "$dir/filter" ]; then
     n=$(wc -l <"$dir/exclude")
-    echo "--- gpu batch: $n entries as $GPU_TEST_JOBS shards of $gpu_bin ---" | tee -a "$log"
+    echo "--- gpu batch: $n entries in one process of $gpu_bin ---" | tee -a "$log"
     # ctest's WORKING_DIRECTORY, and its --gtest_also_run_disabled_tests.
     (
       cd "$build_dir/test/gtest" &&
         GTEST_FILTER=$(<"$dir/filter") GTEST_ALSO_RUN_DISABLED_TESTS=1 \
-          run_gpu_sharded cpp-tier "$gpu_bin" "$GPU_TEST_JOBS"
+          run_gpu_batch cpp-tier "$gpu_bin"
     ) | tee -a "$log"
     [ "${PIPESTATUS[0]}" -eq 0 ] || trc=1
   fi

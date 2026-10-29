@@ -4,7 +4,7 @@
 cpp-tier.sh runs every ctest entry as its own process, and each GPU entry pays
 the runtime's context creation, about 0.45s on the RTX 3080, before its case
 starts: most of the tier's wall clock once the cases are cheap. So it runs the
-batchable GPU entries as a few sharded processes of the gpu binary instead, as
+batchable GPU entries as one process of the gpu binary instead, as
 cpp-smoke.sh does, and ctest runs the rest.
 
 An entry is batchable when its command is exactly the gpu binary with one

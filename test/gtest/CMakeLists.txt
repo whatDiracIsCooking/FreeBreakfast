@@ -306,7 +306,7 @@ gtest_discover_tests(
 # FelizJueves's low-stack eri3 cut it to 6,320 B, and the worst frame in the
 # binary is now (dd|g)'s 13,856 B, about 1.4 GB
 # (src/integrals/eri/density_fitting/three_center/README.md, "The stack"). The
-# cc-pVTZ DF cases peak at about 1.5 GB a process, which the shards share.
+# cc-pVTZ DF cases peak at about 1.5 GB a process.
 set(_fb_serial_cases "NevptRdm.Cas1212*")
 gtest_discover_tests(
   free_breakfast_tests_gpu

@@ -93,11 +93,12 @@ another run holds the card, and then while the card's VRAM is at or above
 `GPU_FOREIGN_VRAM_PCT` (20%) -- memory held by something that takes no lock,
 such as a binary run by hand. That second wait has no timeout. Compute load
 never makes a run wait. The two cards never block each other. Inside its card
-a run is `GPU_TEST_JOBS` (3)
-processes: ctest `-j` and then gtest shards in the tier, gtest shards in the smoke, each shard's
-summary lines tagged `[shard i/N]`. A crashed shard prints the case it died in.
-Knobs are the `GPU_*` variables in `config.sh`; `GPU_TEST_JOBS=1` is the
-serial run, for a crash that only reproduces alone.
+the tier runs ctest at `-j CTEST_JOBS` (3) and then the GPU batch as one gtest
+process; the smoke runs only the batch. The batch's summary lines are tagged
+`[gpu]`, and a crash prints the case it died in. One process, not shards:
+processes on one card time-slice it and gained nothing (CLAUDE.md, "One
+process, not shards"), so a `[gpu]` log's per-case times are real. Knobs are
+the `GPU_*` variables and `CTEST_JOBS` in `config.sh`.
 
 **Report the preset the run resolved to**, not `auto` — the summary line and
 the log name carry it. Pin a backend with `--preset` when it matters: a change
@@ -135,10 +136,10 @@ Things that will bite:
   is named rather than hidden. A GPU-less box reports a large `***Skipped`
   count and is still green — read the skip list before calling it verified,
   exactly as with `pytest -rs`. `cpp-tier.sh` hands most GPU entries to
-  gtest shards rather than one process each (the CUDA context costs ~0.45s
-  per process). ctest's summary then counts only the host, `RUN_SERIAL` and
-  launcher-wrapped entries, and the rest report in the `[shard i/N]` lines
-  after it, each with its own `[  SKIPPED ]` list. `-- -R` still selects both. Deliberately no case counts quoted here: the
+  one gtest process rather than one process each (the CUDA context costs
+  ~0.45s per process). ctest's summary then counts only the host,
+  `RUN_SERIAL` and launcher-wrapped entries, and the rest report in the
+  `[gpu]` lines after it, with their own `[  SKIPPED ]` list. `-- -R` still selects both. Deliberately no case counts quoted here: the
   suite grows, and a stale number in a skill is worse than none.
 
 ## The Python tier: pick the tier

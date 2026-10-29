@@ -296,8 +296,8 @@ variant. It does not check the container `name` field.
 - C++ GPU cases call `FBF_REQUIRE_GPU()` (see
   `test/gtest/gpu_requirement.h`) and `GTEST_SKIP` with a reason rather than
   failing, so the suite stays usable on a device-less host. Read the skip
-  lists: ctest's `***Skipped`, and gtest's `[  SKIPPED ]` in each
-  `[shard i/N]` summary that `cpp-smoke.sh` and `cpp-tier.sh` print.
+  lists: ctest's `***Skipped`, and gtest's `[  SKIPPED ]` in the `[gpu]`
+  summary that `cpp-smoke.sh` and `cpp-tier.sh` print.
 - Python: always pass `-rs`. Without it the suite looks identical on a GPU box
   and a laptop.
 - `FREE_BREAKFAST_FAST_TESTS` makes `slow_test.h`'s macro skip the heavy
@@ -311,14 +311,15 @@ variant. It does not check the container `name` field.
   on both sides of the host/container split. The cause is host-side (a reboot
   fixes it), so believe doctor over the enumeration.
 - **A card can also wedge mid-run** (gfx1200, #477): every process on it
-  spins in a HIP sync and prints nothing. The GPU shards of `cpp-tier.sh` and
-  `cpp-smoke.sh` are watched for that (`GPU_SHARD_STALL_SECONDS` and
-  `GPU_SHARD_BUDGET_SECONDS` in `devtools/config.sh`): a silent shard is
-  killed and the line `[shard i/N] hung in <case>` names where. When two
-  shards hang together, suspect the card before the case, and rerun the gate
-  on the other backend. Before the kill the watchdog writes the shard's state
-  (vendor tools, a rocgdb backtrace of every thread) beside the tier's log, as
-  `<log>.shard<i>-wedge.txt`, and the `state before the kill:` line names it —
+  spins in a HIP sync and prints nothing. The GPU batch of `cpp-tier.sh` and
+  `cpp-smoke.sh` is watched for that (`GPU_BATCH_STALL_SECONDS` and
+  `GPU_BATCH_BUDGET_SECONDS` in `devtools/config.sh`): a silent batch is
+  killed and the line `[gpu] hung in <case>` names where. When the same gate
+  hangs in a different case each time, suspect the card before the case, and
+  rerun the gate on the other backend. Before the kill the watchdog writes the
+  batch's state (vendor tools, a rocgdb backtrace of every thread) beside the
+  tier's log, as `<log>.gpu-wedge.txt`, and the `state before the kill:` line
+  names it —
   attach it to #477, with the host's `dmesg` it ends by asking for.
 
 Tests are registered **one ctest entry per gtest case** via
@@ -334,12 +335,20 @@ process spends about 0.45s creating the runtime's context before its case
 starts, which was most of the tier's wall clock. So it lists the entries
 (`ctest --show-only=json-v1`, so the preset's filters and `-- -R …` still
 select), and `devtools/split-gpu-entries.py` takes out the GPU ones that can
-share a process. Those run as `GPU_TEST_JOBS` gtest shards, as in
-`cpp-smoke.sh`. ctest runs the rest: the host entries, the `RUN_SERIAL` cases
+share a process. Those run as one gtest process, as in `cpp-smoke.sh`. ctest
+runs the rest, `CTEST_JOBS` at once: the host entries, the `RUN_SERIAL` cases
 it keeps alone on the card, and every entry when a launcher such as
 compute-sanitizer wraps them. So its ctest summary counts only those, and the
-batch reports in the `[shard i/N]` lines below it. `cpp-slow-tier.sh` still
-runs plain ctest.
+batch reports in the `[gpu]` lines below it. `cpp-slow-tier.sh` still runs
+plain ctest.
+
+**One process, not shards.** Processes on one card time-slice it, and a
+latency-bound case (a CASSCF's thousands of tiny synchronised launches) waits
+behind its neighbours' long kernels: `PipelineNevpt2.PcRefusalKeepsSc` is
+2.3s alone and 158s beside two `F/ExchangeGolden` processes. Shards bought no
+wall clock on either card (`devtools/config.sh` has the numbers) and made
+every per-case time in a log unreadable, so the times in a `[gpu]` log are
+what `slow_test.h`'s rule is applied to.
 
 **Both PR gates have a budget: under five minutes on a busy card.** Those are
 `cpp-smoke.sh` at push and `cpp-tier.sh` before a PR. `test/gtest/slow_test.h`
