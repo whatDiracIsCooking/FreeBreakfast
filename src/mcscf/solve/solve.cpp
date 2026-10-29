@@ -58,6 +58,13 @@ constexpr int32_t kAhMaxSubspace = 40;
 constexpr int32_t kAhMaxIterations = 50;
 // The preconditioner's denominator mu - diag(H) is held off zero here.
 constexpr double kAhDenominatorFloor = 1e-8;
+// The model's Hessian is H~ + kAhLevelShift (PySCF's ah_level_shift), so no
+// step divides by a curvature below it. H~'s products are good to ~1e-10 (its
+// CI response's conjugate gradients, the CI's residual), and a mode flatter
+// than that is noise: rotating a near-empty active natural orbital into the
+// virtuals (HF CAS(10,7)'s, occupation ~1e-5, a Ritz value of 5e-12), where
+// a step of g / 5e-12 at ||g|| ~ 1e-9 left the quadratic region (#463).
+constexpr double kAhLevelShift = 1e-8;
 // A correction re-orthogonalized against Q to this norm or below has nothing
 // new in it, and the solve stops on the solution it has: davidson_solve's
 // default floor, which the subspace solve replaced.
@@ -704,9 +711,10 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       const double g_model_norm = std::sqrt(casscf_dot(g_model, g_model));
       const double tolerance = std::clamp(kAhPerGradient * g_model_norm / h_scale, 1e-14, 1e-4);
 
-      // The lowest root mu, (u_0, u), of [[0, b^T], [b, A]], and Q grown by
-      // its preconditioned residual until that is below the tolerance, the
-      // correction has nothing new, or kAhMaxIterations columns are added.
+      // The lowest root mu, (u_0, u), of [[0, b^T], [b, A + kAhLevelShift]],
+      // and Q grown by its preconditioned residual until that is below the
+      // tolerance, the correction has nothing new, or kAhMaxIterations
+      // columns are added.
       double mu = 0.0;
       std::vector<double> root;
       for (int32_t added = 0;; ++added) {
@@ -718,22 +726,26 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
           for (size_t i = j; i + 1 < kz; ++i) {
             projected[(i + 1) + ((j + 1) * kz)] = a_host[i + (j * q_width)];
           }
+          projected[(j + 1) + ((j + 1) * kz)] += kAhLevelShift;
         }
         FBF_TRY(casscf_upload(res, projected, ah_projected.data()));
         FBF_TRY(diagonalize<double>(res, k, ah_projected.data(), ah_ritz.data()));
         const std::vector<double> ritz = FBF_TRY(casscf_download(res, ah_ritz.data(), kz));
         root = FBF_TRY(casscf_download(res, ah_projected.data(), kz));
         mu = ritz.front();
+        // mu less the shift, against H~ itself in the residual and the
+        // preconditioner.
+        const double unshifted = mu - kAhLevelShift;
         const double spectrum = std::max(std::abs(ritz.front()), std::abs(ritz.back()));
 
-        // r = u_0 g_model + H~ Q u - mu Q u: its first row, b.u - mu
-        // u_0, is 0 by the small problem's own equation.
+        // r = u_0 g_model + (H~ + shift) Q u - mu Q u: its first row,
+        // b.u - mu u_0, is 0 by the small problem's own equation.
         FBF_TRY(casscf_upload(res, root, ah_coefficients.data()));
         FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
             blas, wwr::WWRBLAS_OP_N, n_pairs, k, &kOne<double>, ah_image.data(), n_pairs,
             ah_coefficients.data(), 1, &kZero<double>, ah_residual.data(), 1)));
         if (q > 0) {
-          const double neg_mu = -mu;
+          const double neg_mu = -unshifted;
           FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
               blas, wwr::WWRBLAS_OP_N, n_pairs, q, &neg_mu, ah_basis.data(), n_pairs,
               ah_coefficients.data() + 1, 1, &kOne<double>, ah_residual.data(), 1)));
@@ -745,7 +757,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
             added == kAhMaxIterations) {
           break;
         }
-        FBF_TRY(gpu_status(device::ah_precondition(stream, n_pairs, mu, kAhDenominatorFloor,
+        FBF_TRY(gpu_status(device::ah_precondition(stream, n_pairs, unshifted, kAhDenominatorFloor,
                                                    ah_diagonal.data(), ah_residual.data(),
                                                    ah_correction.data())));
 
