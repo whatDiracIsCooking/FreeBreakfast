@@ -178,8 +178,11 @@ does the same: it uses only this symmetry (§4.3.1), and FelizJueves's
 `exchange` on `A` as `Antisymmetric` is `K[D]`, at the same `kb` work as one
 sweep over every block, plus the `geam` and two mirrors; and each half fits
 its own decay, so it screens at least as tightly. There is no every-block
-sweep and no general-`D` wrapper, since nothing in the tree has a
-non-symmetric `D` yet. **Codes usually have the two parts already:** TDHF/RPA
+sweep. The general-`D` wrapper is
+[`nonsymmetric_jk`](../nonsymmetric_jk/README.md), which does exactly this
+and, beside `K[D]`, gives `J[D] - K[D]/2` from one `coulomb` of `S` (`J[A]`
+is zero): the two results a CIS sigma needs. **Codes usually have the two
+parts already:** TDHF/RPA
 works with `X + Y` and `X − Y`, which are exactly the symmetric and the
 antisymmetric parts; so do CIS transition densities, and the response to an
 imaginary perturbation (a magnetic field gives an antisymmetric density).
@@ -356,7 +359,7 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 | Symbol | Role |
 |---|---|
 | `exchange(res, classes, density, k, tau = 1e-13, symmetry = DensitySymmetry::Symmetric)` | `Status`: the Cartesian K of `density` into `k`, from the whole set of `ordered_pair_classes` of the same basis, in its order, screened at `tau` (`0` screens nothing), by the `a <= b` blocks, the rest mirrored as `symmetry` says (a contract on `density`, unchecked). Writes the classes' scratch. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above f, classes of a basis of another order, a subset or reordering of the classes, or `k.n()^2` past `INT32_MAX` |
-| `DensitySymmetry` | `Symmetric` or `Antisymmetric`: the density's, which `K` shares, and the mirror's sign. A general `D` is one call per part |
+| `DensitySymmetry` | `Symmetric` or `Antisymmetric`: the density's, which `K` shares, and the mirror's sign. A general `D` is one call per part, which [`nonsymmetric_jk`](../nonsymmetric_jk/README.md) makes |
 | `exchange_block_factors(res, classes, density, tau = 1e-13)` | `Result<std::vector<double>>`: every block's density factor `F_ab` as `exchange` makes it for the same arguments (the same code path, with no `K`: no zeroing, no `kb`, no mirror), read back, bra class major, then ket class, then table order. A diagnostic: how many blocks the decay screens below `max\|D\|` decides whether it pays. Synchronizes `res.stream()` |
 | `OrderedPairClass`, `ordered_pair_classes`, ... | re-exported from [`pairs/`](pairs/README.md) |
 
@@ -380,7 +383,9 @@ against libcint's `vk` (the symmetric part is the recorded density; libcint
 gave no `K` of a non-symmetric one), and the sum against `K[D]` assembled from
 computed blocks only, by `K[D]^T = K[D^T]` (the `a <= b` blocks of `D`'s sweep
 and the transposes of `D^T`'s), so a wrong mirror sign would miss by
-`2 |K[A]|`; the antisymmetric part's `K` antisymmetric to round-off. A `tau`
+`2 |K[A]|`; the antisymmetric part's `K` antisymmetric to round-off. (A
+random non-symmetric density's `K` against libcint's is
+[`nonsymmetric_jk`](../nonsymmetric_jk/README.md)'s test.) A `tau`
 above every bound gives exactly zero, which shows the screen reaches the
 kernel and fires; the zeroing; and the refusals, a subset or a reordering of
 the classes among them. The helpers are `exchange_helpers_gpu.cpp`'s test,

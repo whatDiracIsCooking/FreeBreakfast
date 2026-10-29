@@ -5,6 +5,8 @@ add_subdirectory(one_electron)
 # After one_electron: J reuses its per-class launch and checks.
 add_subdirectory(eri/integral_direct/coulomb)
 add_subdirectory(eri/integral_direct/exchange)
+# After J and K: a non-symmetric density's J - K/2 and K, built from both.
+add_subdirectory(eri/integral_direct/nonsymmetric_jk)
 # Density fitting, after shared: its generated kernels include its
 # eval_boys.h.
 add_subdirectory(eri/density_fitting)
@@ -23,6 +25,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::one_electron
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
+  free_breakfast::integrals::eri::integral_direct::nonsymmetric_jk
   free_breakfast::integrals::eri::density_fitting
   free_breakfast::integrals::active_space
 )
