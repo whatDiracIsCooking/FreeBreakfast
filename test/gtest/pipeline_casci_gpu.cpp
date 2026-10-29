@@ -6,7 +6,8 @@
 // energy and <S^2>, and, for a root of no degenerate level, its natural
 // occupations, the 1-RDM's eigenvalues, which unlike the 1-RDM do not depend
 // on the active orbitals' signs. Every 1-RDM is symmetric with trace nelecas,
-// and the orbitals are the ScfOutput's, reordered. A case at a multiplicity
+// and the orbitals are the ScfOutput's, reordered; an AVAS case that records
+// "active_overlaps" has its active orbitals, up to sign, compared. A case at a multiplicity
 // other than 1 is a CASCI of that spin over the RHF orbitals: the chain runs as
 // the singlet and the step again by hand with the molecule at the
 // multiplicity. An "rohf" case is over the Scf step's own open shell instead:
@@ -48,6 +49,9 @@ constexpr double kEnergyTolerance = 1e-8;
 constexpr double kOccupationTolerance = 1e-7;
 // The orbital energies only pair our orbitals with PySCF's by index.
 constexpr double kOrbitalEnergyTolerance = 1e-6;
+// AVAS's active orbitals over the ScfOutput's, |R|, move to first order in
+// the two SCFs' orbitals. Measured: within 4e-9.
+constexpr double kOverlapTolerance = 1e-7;
 
 const fb::json &reference() {
   static const fb::json doc = [] {
@@ -290,6 +294,26 @@ TEST_P(PipelineCasci, MatchesPyscf) {
     }
   }
 
+  if (entry.contains("active_overlaps")) {
+    // AVAS's active orbitals up to sign: |R|'s active columns, R the
+    // selection's rotation of the ScfOutput's orbitals, against PySCF's.
+    fb::DeviceResources &res = node.device(0);
+    const fb::ScopedDeviceIndex on{res.dev_idx()};
+    const auto space = calc->step<fb::CasciStep>()->select(
+        res, calc->get<fb::MoleculeOutput>()->molecule, basis->basis, *scf);
+    ASSERT_TRUE(space.has_value()) << space.error().message;
+    const auto overlaps = entry.at("active_overlaps").get<std::vector<std::vector<double>>>();
+    ASSERT_EQ(overlaps.size(), n);
+    const std::size_t nmo = mo_energies.size();
+    const auto ncore = static_cast<std::size_t>(space->ncore);
+    for (std::size_t j = 0; j < n; ++j) {
+      ASSERT_EQ(overlaps[j].size(), nmo);
+      for (std::size_t k = 0; k < nmo; ++k) {
+        EXPECT_NEAR(std::abs(space->r[k + (nmo * (ncore + j))]), overlaps[j][k], kOverlapTolerance)
+            << "active orbital " << j << ", orbital " << k;
+      }
+    }
+  }
   if (!entry.at("avas").is_null()) {
     return; // AVAS rotates the ScfOutput's orbitals rather than ordering them
   }
@@ -316,7 +340,8 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, PipelineCasci,
                                            Case{"h2o_ccpvdz_explicit"}, Case{"h2o_ccpvdz_triplet"},
                                            Case{"h2o_ccpvdz_avas"}, Case{"n2_ccpvdz_avas"},
                                            Case{"n2_ccpvdz_avas_2p"}, Case{"nh2_ccpvdz_rohf"},
-                                           Case{"ch2_ccpvdz_rohf"}),
+                                           Case{"ch2_ccpvdz_rohf"}, Case{"nh2_ccpvdz_rohf_avas"},
+                                           Case{"ch2_ccpvdz_rohf_avas"}),
                          [](const auto &info) { return std::string(info.param.name); });
 
 // An active space past the orbitals is refused when the step runs, and the
@@ -410,10 +435,9 @@ TEST(PipelineCasci, AnAvasLabelNamingNoMinaoAoIsInvalidConfig) {
   EXPECT_FALSE(calc->get<fb::CasciOutput>().has_value());
 }
 
-// An open-shell ScfOutput, n_alpha != n_beta, is taken by index only, with its
-// core doubly occupied and every singly occupied orbital active: each broken
-// is refused by the selection, naming the orbital, and AVAS over it as
-// Unsupported. The rest of the chain is water's in STO-3G, 7 orbitals, under
+// An open-shell ScfOutput, n_alpha != n_beta, by index, with its core doubly
+// occupied and every singly occupied orbital active: each broken is refused by
+// the selection, naming the orbital. The rest of the chain is water's in STO-3G, 7 orbitals, under
 // a hand-built ScfOutput of 6 alpha and 4 beta electrons, orbitals 4 and 5
 // singly occupied; its orbitals are never read.
 TEST(PipelineCasci, AnOpenShellSelectionKeepsItsOccupations) {
@@ -463,11 +487,6 @@ TEST(PipelineCasci, AnOpenShellSelectionKeepsItsOccupations) {
       refusal(fb::ActiveSpaceSelection{.ncas = 2, .nelecas = 4, .active = {3, 4}});
   EXPECT_EQ(single.kind, fb::ErrorKind::InvalidConfig);
   EXPECT_NE(single.message.find("singly occupied orbital 5"), std::string::npos) << single.message;
-
-  const fb::Error avas = refusal(fb::ActiveSpaceSelection{.avas = {"O 2p"}});
-  EXPECT_EQ(avas.kind, fb::ErrorKind::Unsupported);
-  EXPECT_NE(avas.message.find("active space: avas over an open-shell reference"), std::string::npos)
-      << avas.message;
 }
 
 // A multiplicity that does not fit the active space is refused when the step

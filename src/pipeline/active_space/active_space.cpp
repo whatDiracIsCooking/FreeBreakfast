@@ -166,9 +166,11 @@ struct AvasRotation {
   return chosen;
 }
 
-// AVAS, as PySCF's mcscf.avas at its defaults for a closed shell (ncore 0,
-// no IAOs, canonicalized): the occupied and the virtual orbitals each rotated
-// to the eigenvectors of P, the projector onto the labelled MINAO AOs, sa =
+// AVAS, as PySCF's mcscf.avas at its defaults (ncore 0, no IAOs,
+// openshell_option 2, canonicalized): the occupied orbitals, the first
+// n_alpha (an open shell's singly occupied ones among them, projected with
+// the doubly occupied ones), and the virtual orbitals each rotated to the
+// eigenvectors of P, the projector onto the labelled MINAO AOs, sa =
 // S21^T S2^-1 S21 in the MO basis; weight >= threshold active. Then each
 // space is made canonical: rotated to diagonalize the ScfOutput's Fock matrix,
 // diag(eps) in the MO basis, within it. The overlaps are built on the device;
@@ -340,11 +342,6 @@ struct AvasRotation {
       space.r[static_cast<size_t>(order[col]) + (mo_count * col)] = 1.0;
     }
   } else {
-    if (scf.n_alpha != scf.n_beta) {
-      return err_unsupported("active space: avas over an open-shell reference is not "
-                             "implemented, and the ScfOutput has {} alpha and {} beta electrons",
-                             scf.n_alpha, scf.n_beta);
-    }
     if (ncas != 0 || nelecas != 0 || !active.empty()) {
       return err_config(
           "active space: ncas, nelecas and active are avas's to pick, so are not set");

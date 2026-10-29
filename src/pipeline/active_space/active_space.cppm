@@ -22,7 +22,7 @@ struct ActiveSpace {
   /// @brief The doubly occupied core orbitals: columns [0, ncore) of @ref c.
   int32_t ncore;
   /// @brief The active orbitals, an open shell's singly occupied ones among
-  /// them: columns [ncore, ncore + ncas) of @ref c.
+  /// them by index: columns [ncore, ncore + ncas) of @ref c.
   int32_t ncas;
   /// @brief The active electrons, N - 2 ncore.
   int32_t nelecas;
@@ -58,7 +58,9 @@ struct ActiveSpaceSelection {
   /// @ref ncas, @ref nelecas and @ref active. The occupied and the virtual
   /// orbitals are each rotated to the eigenvectors of their projector onto
   /// the labelled AOs; those of weight at least @ref avas_threshold are
-  /// active, and core, active and the rest are each made canonical.
+  /// active, and core, active and the rest are each made canonical. An open
+  /// shell's occupied orbitals are its first n_alpha, the singly occupied
+  /// ones projected with the doubly occupied (PySCF's `openshell_option` 2).
   std::vector<std::string> avas;
   /// @brief The projection weight an orbital needs to be active under
   /// @ref avas, in (0, 1): PySCF's default.
@@ -85,8 +87,7 @@ struct ActiveSpaceSelection {
   ///
   /// @return The space; @ref orbital_order's InvalidConfig; for an open shell
   ///         by index, InvalidConfig for a core orbital not doubly occupied
-  ///         or a singly occupied one not active; under @ref avas, Unsupported,
-  ///         before anything is queued, for an open shell, and
+  ///         or a singly occupied one not active; under @ref avas,
   ///         InvalidConfig for a malformed label or one naming no MINAO AO of
   ///         the molecule, @ref avas_threshold outside (0, 1), @ref ncas,
   ///         @ref nelecas or @ref active set beside it, or no orbital

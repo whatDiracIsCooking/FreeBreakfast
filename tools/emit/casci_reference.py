@@ -30,7 +30,15 @@ space: PySCF's `mcscf.avas` (this tree's data/basis/minao.json as its MINAO,
 canonicalized, as by default) picks ncas, nelecas and the orbitals, and the
 CASCI runs over those. Its ncas and nelecas are recorded; the tool refuses a
 case whose projection weights come within WEIGHT_MARGIN of the threshold, so
-a selection cannot hinge on the last digits of two SCFs.
+a selection cannot hinge on the last digits of two SCFs. Over an "rohf" case
+AVAS is at its default `openshell_option` 2: the occupied orbitals it projects
+are the first n_alpha, the singly occupied ones among them, and nelecas is N
+less twice the core, n_alpha - ncore alpha and n_beta - ncore beta. A case
+that says "orbitals" also records its active orbitals, up to sign, as
+"active_overlaps": per active orbital, |<SCF orbital k|active orbital>| over
+every k, which no orbital's sign moves; the tool refuses it if two SCF
+orbitals, or two of the canonical active ones, are degenerate, since a
+rotation within the pair would then move it.
 
 Per root: the total energy, <S^2>, and the natural occupations (the 1-RDM's
 eigenvalues, descending), which unlike the 1-RDM itself do not depend on the
@@ -138,6 +146,28 @@ CASES = [
         "multiplicity": 3,
         "rohf": True,
     },
+    # AVAS over the same DF-ROHFs, full valence: NH2's N 2s, N 2p and H 1s
+    # pick CAS(7,6), the singly occupied 1b1 active, over a core of 1a1;
+    # CH2's C 2s, C 2p and H 1s pick CAS(6,6), both singly occupied orbitals
+    # active, over a core of 1a1. Their active orbitals are recorded.
+    {
+        "name": "nh2_ccpvdz_rohf_avas",
+        "atoms": AMIDOGEN,
+        "basis": "cc-pvdz",
+        "avas": {"labels": ["N 2s", "N 2p", "H 1s"], "threshold": 0.2},
+        "multiplicity": 2,
+        "rohf": True,
+        "orbitals": True,
+    },
+    {
+        "name": "ch2_ccpvdz_rohf_avas",
+        "atoms": METHYLENE,
+        "basis": "cc-pvdz",
+        "avas": {"labels": ["C 2s", "C 2p", "H 1s"], "threshold": 0.2},
+        "multiplicity": 3,
+        "rohf": True,
+        "orbitals": True,
+    },
 ]
 
 # The fitting set of each orbital basis an "rohf" case's DF-ROHF is over,
@@ -222,6 +252,24 @@ def check_open_shell(name: str, mol: gto.Mole, ncore: int, active: list[int]):
     )
 
 
+def active_overlaps(
+    name: str, mf: scf.hf.SCF, mo: numpy.ndarray, ncore: int, ncas: int
+) -> list[list[float]]:
+    """|<SCF orbital k|active orbital j>| over every k, per active j: the
+    active orbitals up to sign, refused when a degenerate pair, of SCF
+    orbitals or of canonical active ones, would let a rotation move them."""
+    r = mf.mo_coeff.T @ mf.mol.intor_symmetric("int1e_ovlp") @ mo
+    assert numpy.abs(r.T @ r - numpy.eye(len(r))).max() < 1e-10, (
+        f"{name}: R not orthogonal"
+    )
+    active = r[:, ncore : ncore + ncas]
+    canonical = numpy.einsum("kj,k,kj->j", active, mf.mo_energy, active)
+    for energies in (numpy.sort(mf.mo_energy), numpy.sort(canonical)):
+        gap = numpy.diff(energies).min()
+        assert gap > ORBITAL_DEGENERACY, f"{name}: orbitals {gap} apart"
+    return [[float(v) for v in numpy.abs(active[:, j])] for j in range(ncas)]
+
+
 def case_reference(case: dict) -> dict:
     """The CASCI reference of one active space."""
     name = case["name"]
@@ -274,6 +322,8 @@ def case_reference(case: dict) -> dict:
             f"{name}: a weight within {margin} of the threshold"
         )
         ncore = (mol.nelectron - nelecas) // 2
+        if case.get("orbitals"):
+            overlaps = active_overlaps(name, mf, mo, ncore, ncas)
     else:
         nelecas, ncas = case["cas"]
         ncore = (mol.nelectron - nelecas) // 2
@@ -342,6 +392,8 @@ def case_reference(case: dict) -> dict:
         "e_core": float(e_core),
         "roots": roots[:nkeep],
     }
+    if case.get("orbitals"):
+        out["active_overlaps"] = overlaps
     if "multiplicity" in case:
         out["multiplicity"] = case["multiplicity"]
     if rohf:
@@ -371,7 +423,10 @@ def main() -> None:
         "with 'scf' 'rohf' is over PySCF's DF-ROHF orbitals instead (at its "
         "multiplicity, its 'aux_basis' this tree's data/aux_basis file, "
         "conv_tol 1e-14, conv_tol_grad 1e-10), its 'rhf_energy' and "
-        "'mo_energies' that ROHF's, and its CASCI integrals exact; "
+        "'mo_energies' that ROHF's, and its CASCI integrals exact (by "
+        "mcscf.avas at openshell_option 2, its first n_alpha orbitals the "
+        "occupied ones). 'active_overlaps', where present, is per active "
+        "orbital |<SCF orbital k|active orbital>| over every k; "
         "coordinates in bohr",
         "provenance": {
             "pyscf": pyscf.__version__,

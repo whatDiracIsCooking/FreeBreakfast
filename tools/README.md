@@ -99,7 +99,9 @@ emit/casci_reference.py
                   active spaces over this tree's MINAO), the lowest
                   singlets' (or a triplet case's) energies, <S^2> and natural occupations, the
                   reference the Casci step is tested against; and over a
-                  DF-ROHF's orbitals, a doublet and a triplet. --append
+                  DF-ROHF's orbitals, a doublet and a triplet, by index and
+                  by mcscf.avas (its active orbitals recorded up to
+                  sign). --append
                   keeps the file's cases and adds only new ones. Needs
                   PySCF.
 emit/fci_step_reference.py
