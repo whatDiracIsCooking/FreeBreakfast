@@ -29,7 +29,7 @@ export namespace free_breakfast {
 /// DIIS on the Fock matrix, its two-electron part the @ref EriOutput's: either
 /// integral-direct, with incremental Fock builds, or density-fitted. A molecule
 /// at a multiplicity above 1 is ROHF, over the Roothaan effective Fock matrix
-/// in PySCF's convention, and density-fitted only.
+/// in PySCF's convention, under either ERI.
 struct ScfStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "scf";
@@ -62,8 +62,7 @@ struct ScfStep {
   /// (pipeline/config sets it to scf.molden in the run's output directory).
   std::filesystem::path molden{};
 
-  /// @brief The converged wavefunction. An open shell under an integral-direct
-  /// @ref EriOutput is ErrorKind::Unsupported; an option out of range (a
+  /// @brief The converged wavefunction. An option out of range (a
   /// negative or NaN @ref tau_j among them), an electron count whose parity
   /// the multiplicity cannot have, more alpha electrons than orbitals, or a
   /// guess of the wrong size is ErrorKind::InvalidConfig; a class above f is J's and K's

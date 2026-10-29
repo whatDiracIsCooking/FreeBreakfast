@@ -1,8 +1,8 @@
-// The Scf step against PySCF's RHF (data/scf/rhf.json, tools/emit/scf_reference.py):
-// the energy and orbital energies, and the invariants of a closed-shell
-// wavefunction, over the setup steps and the guess run by hand; then through
-// the real registry from a config naming only [scf]. Runs the device chain, so
-// needs a GPU.
+// The Scf step against PySCF's RHF and ROHF (data/scf/rhf.json and rohf.json,
+// tools/emit/scf_reference.py), integral-direct: the energy and orbital
+// energies, and the invariants of the wavefunction, over the setup steps and
+// the guess run by hand; then through the real registry from a config naming
+// only [scf]. Runs the device chain, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -38,24 +38,31 @@ static_assert(std::same_as<fb::StepOutput<fb::ScfStep>, fb::ScfOutput>);
 constexpr double kEnergyTolerance = 1e-8;
 constexpr double kOrbitalEnergyTolerance = 1e-6;
 
-const fb::json &reference() {
-  static const fb::json doc = [] {
-    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "scf" / "rhf.json");
-    EXPECT_TRUE(read.has_value()) << read.error().message;
-    return read.has_value() ? std::move(*read) : fb::json{};
-  }();
-  return doc;
+fb::json read_reference(std::string_view file) {
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "scf" / file);
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return read.has_value() ? std::move(*read) : fb::json{};
 }
 
-const fb::json &reference_case(std::string_view name) {
-  for (const fb::json &entry : reference().at("cases")) {
+const fb::json &find_case(const fb::json &doc, std::string_view file, std::string_view name) {
+  for (const fb::json &entry : doc.at("cases")) {
     if (entry.at("name").get<std::string>() == name) {
       return entry;
     }
   }
-  ADD_FAILURE() << "no case " << name << " in scf/rhf.json";
+  ADD_FAILURE() << "no case " << name << " in scf/" << file;
   static const fb::json kNone;
   return kNone;
+}
+
+const fb::json &reference_case(std::string_view name) {
+  static const fb::json doc = read_reference("rhf.json");
+  return find_case(doc, "rhf.json", name);
+}
+
+const fb::json &rohf_case(std::string_view name) {
+  static const fb::json doc = read_reference("rohf.json");
+  return find_case(doc, "rohf.json", name);
 }
 
 std::vector<fb::Atom> atoms_of(const fb::json &entry) {
@@ -247,6 +254,118 @@ TEST(PipelineScfIncremental, MatchesFullBuilds) {
   }
 }
 
+class PipelineScfRohf : public ::testing::TestWithParam<std::string_view> {};
+
+// The density of the first @p nocc columns of @p c, C_occ C_occ^T, on the host.
+std::vector<double> spin_density(const std::vector<double> &c, std::size_t n, std::size_t nocc) {
+  std::vector<double> d(n * n, 0.0);
+  for (std::size_t k = 0; k < nocc; ++k) {
+    for (std::size_t j = 0; j < n; ++j) {
+      for (std::size_t i = 0; i < n; ++i) {
+        d[i + (n * j)] += c[i + (n * k)] * c[j + (n * k)];
+      }
+    }
+  }
+  return d;
+}
+
+TEST_P(PipelineScfRohf, MatchesPyscf) {
+  FBF_REQUIRE_GPU();
+  // Under slow_test.h: CH2 cc-pVTZ, the dearest case.
+  if (GetParam() == "ch2_ccpvtz") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
+  const fb::json &expected = rohf_case(GetParam());
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
+                            expected.at("charge").get<std::int32_t>(),
+                            expected.at("multiplicity").get<std::int32_t>());
+  ASSERT_TRUE(inputs.has_value());
+  const std::size_t n = inputs->basis.basis.nao_sphe();
+  ASSERT_EQ(n, expected.at("nao").get<std::size_t>());
+
+  auto scf = fb::ScfStep{}.run(inputs->view(), res);
+  ASSERT_TRUE(scf.has_value()) << scf.error().message;
+  EXPECT_NEAR(fb::nuclear_repulsion_energy(inputs->molecule.molecule),
+              expected.at("nuclear_repulsion").get<double>(), 1e-10);
+  const auto n_alpha = expected.at("n_alpha").get<std::int32_t>();
+  const auto n_beta = expected.at("n_beta").get<std::int32_t>();
+  EXPECT_EQ(scf->n_alpha, n_alpha);
+  EXPECT_EQ(scf->n_beta, n_beta);
+  EXPECT_NEAR(scf->energy, expected.at("energy").get<double>(), kEnergyTolerance);
+  const auto mo_energies = expected.at("mo_energies").get<std::vector<double>>();
+  ASSERT_EQ(scf->mo_energies.size(), mo_energies.size());
+  double orbital_error = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    EXPECT_NEAR(scf->mo_energies[i], mo_energies[i], kOrbitalEnergyTolerance) << i;
+    orbital_error = std::max(orbital_error, std::abs(scf->mo_energies[i] - mo_energies[i]));
+  }
+  EXPECT_LT(scf->iterations, fb::ScfStep{}.max_iterations);
+  // The errors themselves, for the record a PR reports.
+  std::cout << std::format(
+      "{}: {} iterations, |dE| = {:.2e} Eh, max |d eps| = {:.2e} Eh\n", GetParam(), scf->iterations,
+      std::abs(scf->energy - expected.at("energy").get<double>()), orbital_error);
+
+  // The invariants of the open-shell wavefunction: C^T S C = I; each spin
+  // density, Da = C[:, :n_alpha] C[:, :n_alpha]^T and Db over n_beta, holds
+  // its own electrons, tr(Ds S) = n_s, and is idempotent in S, Ds S Ds = Ds;
+  // and the published D is their sum.
+  const std::vector<double> s = download(res, inputs->overlap.s);
+  const std::vector<double> c = download(res, scf->c);
+  const std::vector<double> d = download(res, scf->d);
+  const std::vector<double> ctsc = matmul(c, matmul(s, c, n), n, /*transpose_a=*/true);
+  for (std::size_t j = 0; j < n; ++j) {
+    for (std::size_t i = 0; i < n; ++i) {
+      EXPECT_NEAR(ctsc[i + (n * j)], i == j ? 1.0 : 0.0, 1e-10) << i << "," << j;
+    }
+  }
+  const std::vector<double> da = spin_density(c, n, static_cast<std::size_t>(n_alpha));
+  const std::vector<double> db = spin_density(c, n, static_cast<std::size_t>(n_beta));
+  for (const auto &[density, electrons] : {std::pair{&da, n_alpha}, std::pair{&db, n_beta}}) {
+    double trace = 0.0;
+    for (std::size_t k = 0; k < n * n; ++k) {
+      trace += (*density)[k] * s[k]; // both symmetric
+    }
+    EXPECT_NEAR(trace, electrons, 1e-10);
+    const std::vector<double> dsd = matmul(*density, matmul(s, *density, n), n);
+    for (std::size_t k = 0; k < n * n; ++k) {
+      EXPECT_NEAR(dsd[k], (*density)[k], 1e-10) << k;
+    }
+  }
+  for (std::size_t k = 0; k < n * n; ++k) {
+    EXPECT_NEAR(d[k], da[k] + db[k], 1e-12) << k;
+  }
+}
+
+// Doublets OH (STO-3G and cc-pVDZ), NH2 and H2O+ (charged, so the guess is
+// rescaled before it is split) and triplet CH2 (off every axis) in cc-pVDZ,
+// and CH2 in cc-pVTZ: f shells.
+INSTANTIATE_TEST_SUITE_P(Rohf, PipelineScfRohf,
+                         ::testing::Values("oh_sto3g", "oh_ccpvdz", "nh2_ccpvdz", "ch2_ccpvdz",
+                                           "h2o_cation_ccpvdz", "ch2_ccpvtz"),
+                         [](const auto &info) { return std::string(info.param); });
+
+// The open shell's incremental builds, J of D - D_built and each spin's K of
+// Ds - Ds_built, against a full build every iteration, on a doublet.
+TEST(PipelineScfIncremental, RohfMatchesFullBuilds) {
+  FBF_REQUIRE_GPU();
+  const fb::json &expected = rohf_case("oh_ccpvdz");
+  fb::DeviceResources res{0};
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  auto inputs = make_inputs(res, atoms_of(expected), expected.at("basis").get<std::string>(),
+                            expected.at("charge").get<std::int32_t>(),
+                            expected.at("multiplicity").get<std::int32_t>());
+  ASSERT_TRUE(inputs.has_value());
+  ASSERT_GT(fb::ScfStep{}.fock_rebuild_interval, 1);
+
+  auto incremental = fb::ScfStep{}.run(inputs->view(), res);
+  auto full = fb::ScfStep{.fock_rebuild_interval = 1}.run(inputs->view(), res);
+  ASSERT_TRUE(incremental.has_value()) << incremental.error().message;
+  ASSERT_TRUE(full.has_value()) << full.error().message;
+  EXPECT_NEAR(incremental->energy, full->energy, 1e-9);
+}
+
 // molden set: the converged orbitals land in a Molden file, every MO, the
 // occupied ones at 2. The writer's own conversions are io_molden_host's.
 TEST(PipelineScfMolden, WritesTheConvergedOrbitals) {
@@ -274,19 +393,6 @@ TEST(PipelineScfMolden, WritesTheConvergedOrbitals) {
   }
   EXPECT_EQ(orbitals, inputs->basis.basis.nao_sphe());
   EXPECT_EQ(occupied, expected.at("electrons").get<std::size_t>() / 2);
-}
-
-// ROHF is density-fitted only (pipeline_df_scf_gpu.cpp): the integral-direct
-// Fock build makes no spin Fock matrices yet.
-TEST(PipelineScfErrors, AnIntegralDirectOpenShellIsUnsupported) {
-  FBF_REQUIRE_GPU();
-  fb::DeviceResources res{0};
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  auto inputs = make_inputs(res, atoms_of(reference_case("h2o_sto3g")), "sto-3g", 0, 3);
-  ASSERT_TRUE(inputs.has_value());
-  auto scf = fb::ScfStep{}.run(inputs->view(), res);
-  ASSERT_FALSE(scf.has_value());
-  EXPECT_EQ(scf.error().kind, fb::ErrorKind::Unsupported);
 }
 
 // Ten electrons cannot be a doublet, nor H2O+'s nine a singlet: n_alpha -

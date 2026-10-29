@@ -212,12 +212,14 @@ struct OpenShellState {
 //
 // @p builder makes the Fock matrix and owns how. Two members:
 //
-// - `Result<bool> build(res, d, c, h, f, fb)` makes F = H + G(D) into f, where
-//   c is the orbitals D came from, or null on the first build, whose D is the
-//   guess. f holds the previous build's F, untouched by the loop, so a builder
-//   may add to it. For an open shell f is Fa and fb is Fb, D being Da + Db; a
-//   closed shell's fb is null. Returns whether this F is exact for D: only
-//   such a build may be taken as converged.
+// - `Result<bool> build(res, d, c, h, f, open)` makes F = H + G(D) into f,
+//   where c is the orbitals D came from, or null on the first build, whose D
+//   is the guess. f holds the previous build's F, untouched by the loop, so a
+//   builder may add to it. For an open shell f is open->fa, and the builder
+//   makes Fb into open->fb, from D = Da + Db and open's da and db, which are
+//   the densities D is the sum of; a closed shell's open is null. Returns
+//   whether this F is exact for D: only such a build may be taken as
+//   converged.
 // - `bool reset_diis(double norm)` is told the commutator norm of the F just
 //   built, and returns whether DIIS's history is stale and is to be dropped
 //   after this iteration's extrapolation.
@@ -285,8 +287,7 @@ scf_loop(DeviceResources &res, FockBuilder &builder, const Molecule &molecule,
   double previous = 0.0;
   for (int32_t iteration = 1; iteration <= max_iterations; ++iteration) {
     const bool full = FBF_TRY(builder.build(res, st.d, iteration == 1 ? nullptr : &st.c, h,
-                                            open != nullptr ? open->fa : st.f,
-                                            open != nullptr ? &open->fb : nullptr));
+                                            open != nullptr ? open->fa : st.f, open));
     if (open != nullptr) {
       FBF_TRY(roothaan_fock(res, st, *open, s));
     }
