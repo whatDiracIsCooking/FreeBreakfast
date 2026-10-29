@@ -8,8 +8,12 @@ explicit `active` list (0-based indices into the RHF orbitals in ascending
 energy, put in place by `sort_mo`: the remaining occupied orbitals, lowest
 first, are the core, then `active` in the given order, then the remaining
 virtuals), or `mcscf.avas`'s pick over this tree's data/basis/minao.json. A
-state-averaged case takes the lowest singlets (`fix_spin_(ss=0)`) at the
-given weights. Two kinds of data are recorded.
+case's roots are of spin S, its "multiplicity" 2S + 1 (1 when absent): the
+CASSCF is `mcscf.CASSCF(mf, ncas, (n_alpha, n_beta))`, N_alpha - N_beta = 2S,
+over the closed-shell RHF either way, and a multiplicity other than 1 is
+recorded. A state-averaged case takes the lowest roots of that spin
+(`fix_spin_(ss=S(S+1))`) at the given weights. Two kinds of data are
+recorded.
 
 Each case's start is one whose CASSCF landscape the tool finds clean: mc1step
 and mc2step from it reach one minimum, run after run. Water's frontier
@@ -20,14 +24,20 @@ a second minimum 6 mEh up), so water starts from its sigma O-H bonds,
 but not at two (about one run in three lands 20 mEh up), and LiH's frontier
 CAS(2,4) has an orbital Hessian with a zero eigenvalue at its minimum, so the
 two-root cases are formaldehyde's frontier CAS(4,3): pi, n and pi*, the
-ground state and the n -> pi* singlet.
+ground state and the n -> pi* singlet. The triplet is N2's frontier CAS(6,6)
+at N_alpha - N_beta = 2, its lowest triplet. Formaldehyde's are not clean:
+its CAS(4,3) triplet fills the active space with three alpha electrons and
+has an orbital Hessian with zero eigenvalues at its minimum, which the polish
+cannot pass, and from its frontier CAS(4,4) mcscf::solve lands on a second
+minimum 1.9 mEh above PySCF's.
 
 **At the starting orbitals** (the CASCI orbitals, before any rotation): the
-lowest singlets of the active-space Hamiltonian by a dense diagonalisation of
-its M_s = 0 sector, their energies, and what PySCF's `mc1step.gen_g_hop`
-gives over their weighted 1- and 2-RDMs. Its gradient g and Hessian H are
-over the packed non-redundant pairs x_pq, p > q (active-core, virtual-core,
-virtual-active, no internal rotation), in the expansion
+lowest roots of spin S of the active-space Hamiltonian by a dense
+diagonalisation of its M_s = S sector, their energies, and what PySCF's
+`mc1step.gen_g_hop` gives over their weighted 1- and 2-RDMs. Its gradient g
+and Hessian H are over the packed non-redundant pairs x_pq, p > q
+(active-core, virtual-core, virtual-active, no internal rotation), in the
+expansion
 
     E(C exp(kappa(x))) = E + g.x + x.H.x / 2 + O(x^3),
     kappa_pq = x_pq, kappa_qp = -x_pq,
@@ -163,6 +173,13 @@ CASES = [
         "weights": [0.7, 0.3],
     },
     {
+        "name": "n2_ccpvdz_triplet",
+        "atoms": NITROGEN,
+        "basis": "cc-pvdz",
+        "cas": (6, 6),
+        "multiplicity": 3,
+    },
+    {
         "name": "h2o_ccpvdz_avas",
         "atoms": WATER,
         "basis": "cc-pvdz",
@@ -181,11 +198,11 @@ POLISH_STEPS = 50
 POLISH_CURVATURE = 1e-3
 # Two orbital energies closer than this are one degenerate set (hartree).
 ORBITAL_DEGENERACY = 1e-6
-# The weighted roots must lie this far from the next singlet, so the
-# state average does not depend on a rotation within a level.
+# The weighted roots must lie this far from the next root of their spin, so
+# the state average does not depend on a rotation within a level.
 ROOT_GAP = 1e-6
-# A singlet is a root with <S^2> below this.
-SINGLET_S2 = 1e-6
+# A root is of spin S when its <S^2> is within this of S(S+1).
+SPIN_S2 = 1e-6
 # mc1step, mc2step and the polish must agree on the weighted energy to this
 # (hartree). Each root's energy is not stationary, so at conv_tol_grad 1e-7 it
 # is only good to a few 1e-8 (formaldehyde's two optimizers differ by 3.4e-8);
@@ -213,13 +230,15 @@ def molecule(case: dict) -> gto.Mole:
     )
 
 
-def singlets(mc: mcscf.casci.CASCI, mo: numpy.ndarray, count: int):
-    """The lowest `count` singlets over mo, by a dense diagonalisation.
+def spin_roots(mc: mcscf.casci.CASCI, mo: numpy.ndarray, count: int):
+    """The lowest `count` roots of the sector's lowest spin over mo, by a
+    dense diagonalisation.
 
-    Returns their total energies and CI vectors, and the next singlet's
+    Returns their total energies and CI vectors, and the next such root's
     energy (None when the sector has no more).
     """
     ncas, nelec = mc.ncas, mc.nelecas
+    two_s = nelec[0] - nelec[1]
     h1, e_core = mc.get_h1eff(mo)
     eri = ao2mo.restore(1, mc.get_h2eff(mo), ncas)
     h2e = fci.direct_spin1.absorb_h1e(h1, eri, ncas, nelec, 0.5)
@@ -229,22 +248,22 @@ def singlets(mc: mcscf.casci.CASCI, mo: numpy.ndarray, count: int):
     for value, vector in zip(values, vectors.T, strict=True):
         vector = vector.reshape(na, -1)
         s2, _ = fci.spin_op.spin_square0(vector, ncas, nelec)
-        if abs(s2) < SINGLET_S2:
+        if abs(s2 - two_s * (two_s + 2) / 4) < SPIN_S2:
             energies.append(float(value + e_core))
             kept.append(vector)
-    assert len(energies) >= count, "too few singlets in the sector"
+    assert len(energies) >= count, "too few roots of the spin in the sector"
     following = energies[count] if len(energies) > count else None
     return energies[:count], kept[:count], following
 
 
 def derivatives(mc: mcscf.mc1step.CASSCF, mo: numpy.ndarray, weights: list[float]):
-    """The singlets over mo, their weighted RDMs, and g and H over those.
+    """The roots over mo, their weighted RDMs, and g and H over those.
 
     Refuses a state average whose last root is degenerate with the next.
     Returns the roots' energies, the weighted 1- and 2-RDMs, g, H, and
     gen_g_hop's own (half) h_diag.
     """
-    energies, vectors, following = singlets(mc, mo, len(weights))
+    energies, vectors, following = spin_roots(mc, mo, len(weights))
     if following is not None:
         assert following - energies[-1] > ROOT_GAP, "the last root is degenerate"
     ncas, nelec = mc.ncas, mc.nelecas
@@ -397,7 +416,8 @@ def casscf(mf, ncas, nelecas, weights, auxbasis=None) -> mcscf.mc1step.CASSCF:
     mc.ah_conv_tol = 1e-14
     mc.verbose = 0
     if len(weights) > 1:
-        mc.fix_spin_(ss=0)
+        two_s = mc.nelecas[0] - mc.nelecas[1]
+        mc.fix_spin_(ss=two_s * (two_s + 2) / 4)
         mc = mc.state_average_(weights)
     return mc
 
@@ -545,8 +565,11 @@ def case_reference(case: dict, fitted: bool = False) -> dict:
         if "active" in case:
             mo = casscf(mf, ncas, nelecas, [1.0]).sort_mo(case["active"], base=0)
     ncore = (mol.nelectron - nelecas) // 2
+    # N_alpha - N_beta = 2S; an int nelecas is PySCF's (n - n // 2, n // 2).
+    two_s = case.get("multiplicity", 1) - 1
+    nelec = ((nelecas + two_s) // 2, (nelecas - two_s) // 2)
 
-    start = casscf(mf, ncas, nelecas, [1.0], auxbasis)
+    start = casscf(mf, ncas, nelec, [1.0], auxbasis)
     out = {
         "name": name,
         "basis": case["basis"],
@@ -566,8 +589,10 @@ def case_reference(case: dict, fitted: bool = False) -> dict:
         "rhf_energy": float(mf.e_tot),
         "mo_energies": [float(e) for e in mf.mo_energy],
         "casci": intermediates(case, mf, start, mo, weights),
-        "casscf": converged(case, mf, mo, ncas, nelecas, weights, auxbasis),
+        "casscf": converged(case, mf, mo, ncas, nelec, weights, auxbasis),
     }
+    if "multiplicity" in case:
+        out["multiplicity"] = case["multiplicity"]
     if fitted:
         check_aux(name, start, mol, auxbasis)
         out["aux_basis"] = aux_provenance
@@ -590,7 +615,8 @@ def exact() -> dict:
         "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, "
         "conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF "
         "mcscf.CASSCF (conv_tol 1e-12, conv_tol_grad 1e-7, the lowest "
-        "singlets at the given weights, checked against mc2step, then "
+        "roots of spin S, 'multiplicity' 2S + 1 (1 when absent), at the given "
+        "weights, checked against mc2step, then "
         "polished to |g| < 1e-10) from its frontier orbitals, an explicit "
         "'active' set (0-based RHF orbital indices, by sort_mo) or "
         "mcscf.avas's over data/basis/minao.json: at those starting "

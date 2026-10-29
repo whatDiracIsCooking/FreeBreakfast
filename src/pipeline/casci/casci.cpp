@@ -113,6 +113,14 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const int32_t ncore = space.ncore;
   const int32_t n_active = space.ncas;
   const int32_t n_electrons = space.nelecas;
+  const int32_t two_s = molecule.multiplicity() - 1;
+  if (two_s < 0 || two_s > n_electrons || (n_electrons - two_s) % 2 != 0 ||
+      n_electrons + two_s > 2 * n_active) {
+    return err_config("casci: multiplicity {} does not fit {} active electrons in {} orbitals: "
+                      "N_alpha - N_beta = multiplicity - 1 must have nelecas's parity and "
+                      "N_alpha be at most ncas",
+                      molecule.multiplicity(), n_electrons, n_active);
+  }
 
   const std::vector<PrimitivePairClass> &pairs = in.get<PrimitivePairClassesOutput>().classes;
   std::vector<CoulombPairClass> j_classes = FBF_TRY(coulomb_pair_classes(res, pairs));
@@ -146,8 +154,10 @@ CasciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
     }
   }
 
-  const int32_t n_beta = n_electrons / 2;
-  // One set serves both spins when N_α = N_β.
+  // N_α − N_β = 2S from the molecule's multiplicity 2S + 1, so the strings
+  // and ci::solve's spin penalty are the molecule's S. One set serves both
+  // spins when N_α = N_β.
+  const int32_t n_beta = (n_electrons - two_s) / 2;
   const ci::DeviceStringSet alpha =
       FBF_TRY(ci::DeviceStringSet::create(res, n_active, n_electrons - n_beta));
   std::optional<ci::DeviceStringSet> own_beta;

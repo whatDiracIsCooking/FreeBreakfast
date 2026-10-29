@@ -1,7 +1,7 @@
 # Pipeline: Fci
 
-Full CI over the SCF's canonical orbitals: the lowest singlets of every
-electron in every orbital, and each root's 1-RDM. It is CASCI with no core and
+Full CI over the SCF's canonical orbitals: the lowest roots of the
+molecule's spin of every electron in every orbital, and each root's 1-RDM. It is CASCI with no core and
 every orbital active, and it makes `CasciStep`'s calls, so it adds no
 numerics: what it adds is a refusal, up front, of a determinant space the
 device cannot hold, and Davidson options a space of millions of determinants
@@ -56,7 +56,10 @@ struct FciStep {
 
 A singlet solve runs in the symmetric layout (`../../ci/solver/`), on packed
 vectors. With s = C(n, N/2) strings, dim = s² determinants, t = s (s + 1) / 2
-packed elements, g = min(t, 2 nroots) guesses, m = max(2 nroots,
+packed elements (for any other spin s_α = C(n, N_α) and s_β = C(n, N_β)
+strings, dim = s_α s_β, and the full layout's t = dim; two string sets; and
+one string's block of G is the larger of s_α and s_β rows),
+g = min(t, 2 nroots) guesses, m = max(2 nroots,
 min(t, 16 nroots)) subspace columns (`ci::solve`'s choices) and
 P = n (n + 1) / 2, the estimate counts, in doubles:
 
@@ -93,17 +96,21 @@ What it settled:
   options, so the step makes its calls itself, with `ci::solve` at a 1e-11
   relative residual and 400 iterations. The energies' error is second order in
   the residual, ~1e-19 hartree; the 1-RDMs' first order, ~1e-9.
-- **Singlets only**, as `CasciStep`: the SCF is closed-shell, an open-shell
-  ScfOutput (`n_alpha != n_beta`) is refused `Unsupported` first, and the
-  spin penalty is `ci::solve`'s default. The electron count is the
-  ScfOutput's `n_alpha + n_beta`.
+- **The molecule's spin over closed-shell orbitals**, as `CasciStep`: an
+  open-shell ScfOutput (`n_alpha != n_beta`) is refused `Unsupported` first,
+  and the sector is N_α − N_β = 2S from `Molecule::multiplicity()`, at
+  `ci::solve`'s default spin penalty. The electron count is the ScfOutput's
+  `n_alpha + n_beta`; a multiplicity that does not fit it (2S above N, of the
+  other parity, or N_α above the orbitals) is `InvalidConfig`, before the
+  estimate.
 - **No range check of its own** beyond `nroots >= 1`, which the estimate
   needs; `nroots` past the space is `ci::solve`'s InvalidConfig. With no core
   and every orbital active, none of `orbital_order`'s range checks can fail.
 - **The estimate is not exported.** Nothing outside the step needs it, and
   the oversized case is tested through the step.
 
-Errors: InvalidConfig for `nroots` below 1; Allocation for a space past the
+Errors: InvalidConfig for `nroots` below 1 or a multiplicity that does not
+fit the electrons; Allocation for a space past the
 device's free memory, naming the electrons, orbitals, roots, the estimate and
 the free memory; GpuRuntime for a failed memory query or copy; then the module
 calls' own: `ci::solve`'s InvalidConfig for `nroots` past the space,
@@ -116,7 +123,9 @@ in this tree's basis files (`test/gtest/data/fci/`,
 `tools/emit/fci_step_reference.py`), through the real registry from a config
 naming `[fci]`, its Scf step at the defaults: H₂O STO-3G (7 orbitals, 441
 determinants), N₂ STO-3G (10 orbitals, 14,400) and, under `slow_test.h`, H₂O
-6-31G (13 orbitals, 1,656,369). For the lowest three singlets:
+6-31G (13 orbitals, 1,656,369), and H₂O STO-3G's triplet (245 determinants,
+the chain run as the singlet, then the step by hand with the molecule at
+multiplicity 3). For the lowest three roots of the spin:
 
 - the energy and ⟨S²⟩ to 1e-8;
 - the natural occupations to 1e-7, for each root of no degenerate level;
@@ -124,7 +133,8 @@ determinants), N₂ STO-3G (10 orbitals, 14,400) and, under `slow_test.h`, H₂O
 
 An FCI energy and its natural occupations are invariant under any rotation of
 the orbitals, so the two SCFs' convergence does not enter. Also H₂O cc-pVDZ
-(1.8e9 determinants) refused as Allocation when the step runs, its ScfOutput built.
+(1.8e9 determinants) refused as Allocation when the step runs, its ScfOutput built,
+and multiplicities 2, 11 and 13 for H₂O STO-3G refused as InvalidConfig.
 The `[fci]` parsing is in `pipeline_config_host.cpp`.
 
 ## Files

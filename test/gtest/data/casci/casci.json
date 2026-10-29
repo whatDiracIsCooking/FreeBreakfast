@@ -1,10 +1,10 @@
 {
- "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF mcscf.CASCI over its canonical orbitals (the frontier ones, or 'active' by sort_mo, 0-based, or by mcscf.avas over data/basis/minao.json) with fci.direct_spin1 (conv_tol 1e-13, checked against the dense spectrum): the lowest singlets' total energy (hartree), <S^2> and natural occupations; coordinates in bohr",
+ "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF mcscf.CASCI over its canonical orbitals (the frontier ones, or 'active' by sort_mo, 0-based, or by mcscf.avas over data/basis/minao.json) with fci.direct_spin1 (conv_tol 1e-13, checked against the dense spectrum) at N_alpha - N_beta = 'multiplicity' - 1 (1 when absent): the lowest roots of that spin, their total energy (hartree), <S^2> and natural occupations; coordinates in bohr",
  "provenance": {
   "pyscf": "2.14.0",
   "numpy": "2.5.4",
-  "date": "2026-10-24",
-  "host": "fe6aa7dc4452",
+  "date": "2026-10-29",
+  "host": "206f435a9678",
   "command": "uv run --group tools tools/emit/casci_reference.py"
  },
  "cases": [
@@ -408,6 +408,110 @@
      ]
     }
    ]
+  },
+  {
+   "name": "h2o_ccpvdz_triplet",
+   "basis": "cc-pvdz",
+   "charge": 0,
+   "atoms": [
+    {
+     "symbol": "O",
+     "z": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.2216
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.0,
+      1.4309,
+      -0.8867
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.0,
+      -1.4309,
+      -0.8867
+     ]
+    }
+   ],
+   "electrons": 10,
+   "ncas": 4,
+   "nelecas": 4,
+   "ncore": 3,
+   "active": null,
+   "avas": null,
+   "rhf_energy": -76.02677243088584,
+   "mo_energies": [
+    -20.55053592580323,
+    -1.336451014230283,
+    -0.698957910608895,
+    -0.5665425026278728,
+    -0.4931207209282418,
+    0.18547577188628495,
+    0.25618050769437684,
+    0.7888344692890157,
+    0.8539879305625804,
+    1.1635683609727687,
+    1.2003723691286137,
+    1.253365420112587,
+    1.4443862003927364,
+    1.476231231340349,
+    1.6744016898590943,
+    1.867339957167839,
+    1.934530468049246,
+    2.451599940154988,
+    2.489163258918352,
+    3.285381114593953,
+    3.3382946286918864,
+    3.5100158800855517,
+    3.8650955949323134,
+    4.147112141991837
+   ],
+   "e_core": -69.84932845818103,
+   "roots": [
+    {
+     "energy": -75.69892187695072,
+     "s2": 2.0000000000000004,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9996863884029983,
+      1.0000000000000002,
+      0.999748042264706,
+      0.0005655693322961229
+     ]
+    },
+    {
+     "energy": -75.61454228105417,
+     "s2": 2.0000000000000004,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9999767843623746,
+      1.0000000000000004,
+      1.0000000000000002,
+      2.3215637626333718e-05
+     ]
+    },
+    {
+     "energy": -75.61270212978555,
+     "s2": 2.000000000000001,
+     "degenerate": false,
+     "natural_occupations": [
+      1.999238586415722,
+      1.0000000000000016,
+      0.9999999999999993,
+      0.0007614135842788621
+     ]
+    }
+   ],
+   "multiplicity": 3
   },
   {
    "name": "h2o_ccpvdz_avas",

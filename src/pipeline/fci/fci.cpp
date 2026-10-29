@@ -21,11 +21,11 @@ import free_breakfast.ci.solver;
 
 namespace free_breakfast {
 
-// C(n, n_alpha), the strings of one spin, in double, as the space the step
-// refuses can pass any integer type: C(n, n_alpha)^2 is 1.4e12 for N2 cc-pVDZ.
-double fci_strings(int32_t n, int32_t n_alpha) {
+// C(n, k), the strings of k electrons of one spin, in double, as the space the
+// step refuses can pass any integer type: C(n, N/2)^2 is 1.4e12 for N2 cc-pVDZ.
+double fci_strings(int32_t n, int32_t electrons) {
   double strings = 1.0;
-  for (int32_t k = 0; k < n_alpha; ++k) {
+  for (int32_t k = 0; k < electrons; ++k) {
     strings = strings * static_cast<double>(n - k) / static_cast<double>(k + 1);
   }
   return std::round(strings);
@@ -40,14 +40,16 @@ double fci_sigma_bytes(int32_t n, double rows) {
          std::min(static_cast<double>(size_t{64} << 20U), rows * pairs * sizeof(double));
 }
 
-// The device bytes the solve over all n orbitals, n_alpha electrons of each
-// spin and nroots roots holds at its peak, besides ci::Sigma apply's scratch
-// (fci_sigma_bytes). A singlet solve runs on the symmetric layout's packed
-// vectors, s = C(n, n_alpha) strings giving dim = s^2 determinants and
-// t = s (s + 1) / 2 packed elements; g = min(t, 2 nroots) guesses,
-// m = max(2 nroots, min(t, 16 nroots)) subspace columns, p P-space elements
-// (ci::solve's choices: 0 with the P-space off, else max(pspace_size, g), or t
-// once that leaves out fewer than g), P = n (n + 1) / 2 packed pairs:
+// The device bytes the solve over all n orbitals, n_alpha and n_beta
+// electrons and nroots roots holds at its peak, besides ci::Sigma apply's
+// scratch (fci_sigma_bytes). With s_a = C(n, n_alpha) and s_b = C(n, n_beta)
+// strings there are dim = s_a s_b determinants. A singlet solve (n_alpha =
+// n_beta, s = s_a) runs on the symmetric layout's packed vectors, of
+// t = s (s + 1) / 2 elements; any other on the full layout's, t = dim.
+// g = min(t, 2 nroots) guesses, m = max(2 nroots, min(t, 16 nroots)) subspace
+// columns, p P-space elements (ci::solve's choices: 0 with the P-space off,
+// else max(pspace_size, g), or t once that leaves out fewer than g),
+// P = n (n + 1) / 2 packed pairs:
 //
 //   ci::solve       g t guesses, nroots t vectors, its t penalized diagonal, and
 //                  the step's dim diagonal; the P-space's U, p^2, and Λ, p, and
@@ -56,18 +58,21 @@ double fci_sigma_bytes(int32_t n, double rows) {
 //   davidson       2 m t for V and A V, 3 nroots t for A X, R and the
 //                  corrections, m^2 + m nroots + m for H, V^T C and theta;
 //                  its GD+k collapse works in R and V^T C, adding nothing
-//   strings        the one DeviceStringSet both spins share: s strings
-//                  (8 bytes) and their links (8 bytes per replacement)
+//   strings        one DeviceStringSet per spin, or the one both share when
+//                  n_alpha = n_beta: s strings (8 bytes) and their links (8
+//                  bytes per replacement)
 //   ci::Sigma      the P x (P + 1) contraction in double and again in float
 //                  (apply_fp32's), n + 2 n^2 terms
 //   integrals      (tu|vw) n^4 and h_eff n^2
 //
 // The scratch is the device workspace, which outlives the Davidson, so it
 // is added to whichever of the Davidson and the unpacked roots is more.
-double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
-  const double strings = fci_strings(n, n_alpha);
-  const double dim = strings * strings;
-  const double packed = strings * (strings + 1.0) / 2.0;
+double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t n_beta, int32_t nroots) {
+  const double orbitals = n;
+  const double alpha_strings = fci_strings(n, n_alpha);
+  const double beta_strings = fci_strings(n, n_beta);
+  const double dim = alpha_strings * beta_strings;
+  const double packed = n_alpha == n_beta ? alpha_strings * (alpha_strings + 1.0) / 2.0 : dim;
   const double roots = nroots;
   const double guesses = std::min(packed, 2.0 * roots);
   const double subspace = std::max(2.0 * roots, std::min(packed, 16.0 * roots));
@@ -75,9 +80,9 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const double pspace = ci::SolverOptions{}.pspace_size <= 0 ? 0.0
                         : packed - requested < guesses       ? packed
                                                              : requested;
-  const double orbitals = n;
   const double pairs = orbitals * (orbitals + 1.0) / 2.0;
-  const double replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
+  const double alpha_replacements = static_cast<double>(n_alpha) * (orbitals - n_alpha + 1.0);
+  const double beta_replacements = static_cast<double>(n_beta) * (orbitals - n_beta + 1.0);
 
   // ci::solve's own and the step's diagonal throughout; then the Davidson, or
   // after it the unpacked roots, whichever is more.
@@ -88,8 +93,10 @@ double fci_device_bytes(int32_t n, int32_t n_alpha, int32_t nroots) {
   const double doubles = held + std::max(davidson, roots * dim) + (pairs * (pairs + 1.0)) +
                          (orbitals + (2.0 * orbitals * orbitals)) + std::pow(orbitals, 4.0) +
                          (orbitals * orbitals);
-  const double tables =
-      (strings * (8.0 + (8.0 * replacements))) + (pairs * (pairs + 1.0) * sizeof(float));
+  const double beta_tables =
+      n_alpha == n_beta ? 0.0 : beta_strings * (8.0 + (8.0 * beta_replacements));
+  const double tables = (alpha_strings * (8.0 + (8.0 * alpha_replacements))) + beta_tables +
+                        (pairs * (pairs + 1.0) * sizeof(float));
   return (doubles * sizeof(double)) + tables;
 }
 
@@ -110,15 +117,29 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   }
   const int32_t n_electrons = scf.n_alpha + scf.n_beta;
   const auto nmo = static_cast<int32_t>(scf.mo_energies.size());
+  // N_α − N_β = 2S from the molecule's multiplicity 2S + 1, so the strings
+  // and ci::solve's spin penalty are the molecule's S.
+  const int32_t two_s = molecule.multiplicity() - 1;
+  if (two_s < 0 || two_s > n_electrons || (n_electrons - two_s) % 2 != 0 ||
+      n_electrons + two_s > 2 * nmo) {
+    return err_config("fci: multiplicity {} does not fit {} electrons in {} orbitals: "
+                      "N_alpha - N_beta = multiplicity - 1 must have the electron count's parity "
+                      "and N_alpha be at most the orbitals",
+                      molecule.multiplicity(), n_electrons, nmo);
+  }
+  const int32_t n_beta = (n_electrons - two_s) / 2;
+  const int32_t n_alpha = n_electrons - n_beta;
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
 
   // Refused before anything is allocated: past the device's memory, the
   // first allocation to fail would abort (CreatePolicy), not return. The
   // sigma's scratch is what is left: G for the whole triangle when it fits,
-  // else ci::Sigma blocks it, down to one string's rows a block.
-  const double held = fci_device_bytes(nmo, n_electrons / 2, nroots);
-  const double need = held + fci_sigma_bytes(nmo, fci_strings(nmo, n_electrons / 2));
+  // else ci::Sigma blocks it, down to one string's rows a block: an alpha
+  // string's C(n, n_beta) and a beta string's C(n, n_alpha) in the full layout.
+  const double held = fci_device_bytes(nmo, n_alpha, n_beta, nroots);
+  const double need =
+      held + fci_sigma_bytes(nmo, std::max(fci_strings(nmo, n_alpha), fci_strings(nmo, n_beta)));
   size_t free_bytes = 0;
   size_t total_bytes = 0;
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
@@ -165,11 +186,13 @@ FciStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
     }
   }
 
-  // The one set of N/2 electrons serves both spins.
-  const ci::DeviceStringSet strings =
-      FBF_TRY(ci::DeviceStringSet::create(res, nmo, n_electrons / 2));
-  const ci::DeviceStringSet &alpha = strings;
-  const ci::DeviceStringSet &beta = strings;
+  // One set serves both spins when N_α = N_β.
+  const ci::DeviceStringSet alpha = FBF_TRY(ci::DeviceStringSet::create(res, nmo, n_alpha));
+  std::optional<ci::DeviceStringSet> own_beta;
+  if (n_alpha != n_beta) {
+    own_beta = FBF_TRY(ci::DeviceStringSet::create(res, nmo, n_beta));
+  }
+  const ci::DeviceStringSet &beta = own_beta ? *own_beta : alpha;
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   // Everything the estimate leaves free, which is G for the whole triangle
   // (and the solve as it was) whenever that fits.

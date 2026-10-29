@@ -6,10 +6,13 @@ it, over this tree's own basis files, converged tighter) is handed to PySCF's
 `mcscf.CASCI` over a core and an active set of its canonical orbitals: the
 frontier ones (the step's default), or an explicit list put in place by
 `sort_mo`, 0-based. The fcisolver is `fci.direct_spin1` with no spin
-constraint, solved for the lowest NROOTS roots of the M_s = 0 sector and
-checked against a dense diagonalisation of it, so a Davidson that skipped a
-root cannot be written out; the lowest NSINGLETS singlets among them are
-recorded.
+constraint, solved for the lowest NROOTS roots of the M_s = S sector, S from
+the case's "multiplicity" 2S + 1 (default 1), and checked against a dense
+diagonalisation of it, so a Davidson that skipped a root cannot be written
+out; the lowest NKEEP roots of spin S among them are recorded. The RHF is
+always the closed-shell one, so a triplet case is a triplet CASCI over RHF
+orbitals, `mcscf.CASCI(mf, ncas, (n_alpha, n_beta))`; its multiplicity is
+recorded, and only its.
 
 An AVAS case names MINAO AO labels and a threshold instead of an active
 space: PySCF's `mcscf.avas` (this tree's data/basis/minao.json as its MINAO,
@@ -18,7 +21,7 @@ CASCI runs over those. Its ncas and nelecas are recorded; the tool refuses a
 case whose projection weights come within WEIGHT_MARGIN of the threshold, so
 a selection cannot hinge on the last digits of two SCFs.
 
-Per singlet: the total energy, <S^2>, and the natural occupations (the 1-RDM's
+Per root: the total energy, <S^2>, and the natural occupations (the 1-RDM's
 eigenvalues, descending), which unlike the 1-RDM itself do not depend on the
 signs, or any rotation, of the active orbitals. A root of a degenerate level is
 flagged: its 1-RDM depends on the solver's rotation within the level. The
@@ -67,9 +70,18 @@ CASES = [
         "cas": (4, 4),
         "active": [2, 4, 5, 7],
     },
+    # Water's frontier CAS(4,4) at N_alpha - N_beta = 2: its lowest triplets
+    # over the RHF orbitals.
+    {
+        "name": "h2o_ccpvdz_triplet",
+        "atoms": WATER,
+        "basis": "cc-pvdz",
+        "cas": (4, 4),
+        "multiplicity": 3,
+    },
     # AVAS: water's O 2p and H 1s, CAS(8,6); N2's full valence, CAS(10,8);
     # and N2's 2p at a threshold that drops the 0.22 virtual, CAS(8,6). N2's
-    # CAS(10,8) keeps its lowest singlet only: ci_solve, at its defaults (100
+    # CAS(10,8) keeps its lowest root only: ci_solve, at its defaults (100
     # Davidson iterations, residual 1e-12 relative), converges the ground
     # state in 36 iterations but no block of 2 to 5 roots in 100.
     {
@@ -83,7 +95,7 @@ CASES = [
         "atoms": NITROGEN,
         "basis": "cc-pvdz",
         "avas": {"labels": ["N 2s", "N 2p"], "threshold": 0.2},
-        "nsinglets": 1,
+        "nkeep": 1,
     },
     {
         "name": "n2_ccpvdz_avas_2p",
@@ -93,10 +105,10 @@ CASES = [
     },
 ]
 
-# Roots solved for, and the singlets kept among them, unless a case says
-# "nsinglets".
+# Roots solved for, and those of the case's spin kept among them, unless a
+# case says "nkeep".
 NROOTS = 12
-NSINGLETS = 3
+NKEEP = 3
 
 # Two orbital energies closer than this are one degenerate set (hartree).
 ORBITAL_DEGENERACY = 1e-6
@@ -159,15 +171,19 @@ def case_reference(case: dict) -> dict:
             f"{name}: a weight within {margin} of the threshold"
         )
         ncore = (mol.nelectron - nelecas) // 2
-        mc = mcscf.CASCI(mf, ncas, nelecas)
     else:
         nelecas, ncas = case["cas"]
         ncore = (mol.nelectron - nelecas) // 2
         active = case.get("active") or list(range(ncore, ncore + ncas))
         check_degeneracies(name, mf.mo_energy, active)
-
-        mc = mcscf.CASCI(mf, ncas, nelecas)
-        mo = mc.sort_mo(active, base=0) if "active" in case else mf.mo_coeff
+    # N_alpha - N_beta = 2S.
+    two_s = case.get("multiplicity", 1) - 1
+    nelec = ((nelecas + two_s) // 2, (nelecas - two_s) // 2)
+    mc = mcscf.CASCI(mf, ncas, nelec)
+    if "active" in case:
+        mo = mc.sort_mo(case["active"], base=0)
+    elif "avas" not in case:
+        mo = mf.mo_coeff
     solver = fci.direct_spin1.FCI(mol)
     solver.conv_tol = 1e-13
     solver.max_cycle = 1000
@@ -179,7 +195,6 @@ def case_reference(case: dict) -> dict:
     energies, _, vectors, _, _ = mc.kernel(mo)
     assert numpy.all(solver.converged), f"{name}: Davidson did not converge"
 
-    nelec = (nelecas // 2, nelecas - nelecas // 2)
     h1, e_core = mc.get_h1eff(mo)
     eri = ao2mo.restore(1, mc.get_h2eff(mo), ncas)
     h2e = fci.direct_spin1.absorb_h1e(h1, eri, ncas, nelec, 0.5)
@@ -190,7 +205,7 @@ def case_reference(case: dict) -> dict:
     roots = []
     for energy, vector in zip(energies, vectors, strict=True):
         s2, _ = fci.spin_op.spin_square0(vector, ncas, nelec)
-        if abs(s2) < 1e-6:
+        if abs(s2 - two_s * (two_s + 2) / 4) < 1e-6:
             occupations = numpy.linalg.eigvalsh(solver.make_rdm1(vector, ncas, nelec))
             roots.append(
                 {
@@ -202,10 +217,10 @@ def case_reference(case: dict) -> dict:
                     "natural_occupations": [float(v) for v in occupations[::-1]],
                 }
             )
-    nsinglets = case.get("nsinglets", NSINGLETS)
-    assert len(roots) >= nsinglets, f"{name}: fewer than {nsinglets} singlets"
+    nkeep = case.get("nkeep", NKEEP)
+    assert len(roots) >= nkeep, f"{name}: fewer than {nkeep} roots of its spin"
 
-    return {
+    out = {
         "name": name,
         "basis": case["basis"],
         "charge": 0,
@@ -222,8 +237,11 @@ def case_reference(case: dict) -> dict:
         "rhf_energy": float(mf.e_tot),
         "mo_energies": [float(e) for e in mf.mo_energy],
         "e_core": float(e_core),
-        "roots": roots[:nsinglets],
+        "roots": roots[:nkeep],
     }
+    if "multiplicity" in case:
+        out["multiplicity"] = case["multiplicity"]
+    return out
 
 
 def main() -> None:
@@ -233,8 +251,10 @@ def main() -> None:
         "mcscf.CASCI over its canonical orbitals (the frontier ones, or "
         "'active' by sort_mo, 0-based, or by mcscf.avas over "
         "data/basis/minao.json) with fci.direct_spin1 (conv_tol 1e-13, "
-        "checked against the dense spectrum): the lowest singlets' total "
-        "energy (hartree), <S^2> and natural occupations; coordinates in bohr",
+        "checked against the dense spectrum) at N_alpha - N_beta = "
+        "'multiplicity' - 1 (1 when absent): the lowest roots of that spin, "
+        "their total energy (hartree), <S^2> and natural occupations; "
+        "coordinates in bohr",
         "provenance": {
             "pyscf": pyscf.__version__,
             "numpy": numpy.__version__,

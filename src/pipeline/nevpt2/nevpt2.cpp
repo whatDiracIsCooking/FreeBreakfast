@@ -72,6 +72,14 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
                            "and {} beta electrons",
                            kName, scf.n_alpha, scf.n_beta);
   }
+  // The CASSCF's roots are of the molecule's spin, and the strings and the
+  // NEVPT2 below are a singlet's, nelecas / 2 a spin.
+  if (const int32_t multiplicity = in.get<MoleculeOutput>().molecule.multiplicity();
+      multiplicity != 1) {
+    return err_unsupported("[{}] is implemented for a singlet only, and the molecule's "
+                           "multiplicity is {}",
+                           kName, multiplicity);
+  }
   const auto *const fit = std::get_if<DensityFitted>(&in.get<EriOutput>().eri);
   if (fit == nullptr) {
     return err_unsupported("[{}] runs over density fitting only, and [eri] mode is "

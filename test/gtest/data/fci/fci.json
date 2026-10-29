@@ -1,10 +1,10 @@
 {
- "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF fci.FCI (direct_spin1, conv_tol 1e-13, a dense diagonalisation where small, else checked by a second, differently seeded solve) over its orbitals: the lowest singlets' total energy (hartree), <S^2> and natural occupations; coordinates in bohr",
+ "description": "PySCF closed-shell RHF (spherical, conv_tol 1e-14, conv_tol_grad 1e-11) over this tree's data/basis files, and PySCF fci.FCI (direct_spin1, conv_tol 1e-13, a dense diagonalisation where small, else checked by a second, differently seeded solve) over its orbitals, at N_alpha - N_beta = 'multiplicity' - 1 (1 when absent): the lowest roots of that spin, their total energy (hartree), <S^2> and natural occupations; coordinates in bohr",
  "provenance": {
   "pyscf": "2.14.0",
   "numpy": "2.5.4",
-  "date": "2026-10-24",
-  "host": "fe6aa7dc4452",
+  "date": "2026-10-29",
+  "host": "206f435a9678",
   "command": "uv run --group tools tools/emit/fci_step_reference.py"
  },
  "cases": [
@@ -271,6 +271,89 @@
      ]
     }
    ]
+  },
+  {
+   "name": "h2o_sto3g_triplet",
+   "basis": "sto-3g",
+   "charge": 0,
+   "atoms": [
+    {
+     "symbol": "O",
+     "z": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.2216
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.0,
+      1.4309,
+      -0.8867
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.0,
+      -1.4309,
+      -0.8867
+     ]
+    }
+   ],
+   "electrons": 10,
+   "nmo": 7,
+   "determinants": 245,
+   "rhf_energy": -74.96302163614884,
+   "roots": [
+    {
+     "energy": -74.61460168827801,
+     "s2": 2.000000000000003,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9999989624303132,
+      1.9987780149602699,
+      1.9874699024595623,
+      1.9747912495191102,
+      1.0000000000000009,
+      0.9988252588074686,
+      0.04013661182329305
+     ]
+    },
+    {
+     "energy": -74.51098930100977,
+     "s2": 2.000000000000004,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9999976038935094,
+      1.9997302273171504,
+      1.99529179956375,
+      1.9349405690417076,
+      1.0418523004687439,
+      0.961525905347403,
+      0.06666159436775927
+     ]
+    },
+    {
+     "energy": -74.50874636355431,
+     "s2": 2.0000000000000027,
+     "degenerate": false,
+     "natural_occupations": [
+      1.9999986514985377,
+      1.996518988213692,
+      1.9781874458918967,
+      1.9740982295003007,
+      1.0000000000000013,
+      0.9947815169814822,
+      0.056415167914101394
+     ]
+    }
+   ],
+   "multiplicity": 3
   }
  ]
 }
