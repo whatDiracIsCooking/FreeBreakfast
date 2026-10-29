@@ -1,8 +1,9 @@
-// The Scf step against PySCF's RHF and ROHF (data/scf/rhf.json and rohf.json,
-// tools/emit/scf_reference.py), integral-direct: the energy and orbital
-// energies, and the invariants of the wavefunction, over the setup steps and
-// the guess run by hand; then through the real registry from a config naming
-// only [scf]. Runs the device chain, so needs a GPU.
+// The Scf step against PySCF's RHF and ROHF (data/scf/rhf.json, rohf.json and
+// rohf_localized_hole.json, tools/emit/scf_reference.py), integral-direct:
+// the energy and orbital energies, and the invariants of the wavefunction,
+// over the setup steps and the guess run by hand; then through the real
+// registry from a config naming only [scf]. Runs the device chain, so needs a
+// GPU.
 
 #include <gtest/gtest.h>
 
@@ -60,9 +61,18 @@ const fb::json &reference_case(std::string_view name) {
   return find_case(doc, "rhf.json", name);
 }
 
+// rohf.json's cases and rohf_localized_hole.json's, as one list: the second
+// file's are minima PySCF's own ROHF iteration does not converge to, with
+// their orbital energies by occupation class, as this step's columns are.
 const fb::json &rohf_case(std::string_view name) {
-  static const fb::json doc = read_reference("rohf.json");
-  return find_case(doc, "rohf.json", name);
+  static const fb::json doc = [] {
+    fb::json merged = read_reference("rohf.json");
+    for (const fb::json &entry : read_reference("rohf_localized_hole.json").at("cases")) {
+      merged.at("cases").push_back(entry);
+    }
+    return merged;
+  }();
+  return find_case(doc, "rohf.json or rohf_localized_hole.json", name);
 }
 
 std::vector<fb::Atom> atoms_of(const fb::json &entry) {
@@ -340,10 +350,16 @@ TEST_P(PipelineScfRohf, MatchesPyscf) {
 
 // Doublets OH (STO-3G and cc-pVDZ), NH2 and H2O+ (charged, so the guess is
 // rescaled before it is split) and triplet CH2 (off every axis) in cc-pVDZ,
-// and CH2 in cc-pVTZ: f shells.
+// and CH2 in cc-pVTZ: f shells. And glycylglycine+ in STO-3G, whose hole sits
+// on one carbonyl lone pair: on PySCF's Roothaan matrix its open orbital lies
+// below three doubly occupied ones, so the loop ran 150 iterations without
+// converging (issue #476) until it iterated on an open block of its own. Its
+// published open orbital energy, PySCF's, stays in its column below three
+// higher core ones.
 INSTANTIATE_TEST_SUITE_P(Rohf, PipelineScfRohf,
                          ::testing::Values("oh_sto3g", "oh_ccpvdz", "nh2_ccpvdz", "ch2_ccpvdz",
-                                           "h2o_cation_ccpvdz", "ch2_ccpvtz"),
+                                           "h2o_cation_ccpvdz", "ch2_ccpvtz",
+                                           "glygly_cation_sto3g"),
                          [](const auto &info) { return std::string(info.param); });
 
 // The open shell's incremental builds, J of D - D_built and each spin's K of

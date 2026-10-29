@@ -28,8 +28,9 @@ export namespace free_breakfast {
 /// @brief Iterates RHF to self-consistency from the @ref GuessOutput, with Pulay
 /// DIIS on the Fock matrix, its two-electron part the @ref EriOutput's: either
 /// integral-direct, with incremental Fock builds, or density-fitted. A molecule
-/// at a multiplicity above 1 is ROHF, over the Roothaan effective Fock matrix
-/// in PySCF's convention, under either ERI.
+/// at a multiplicity above 1 is ROHF, under either ERI, over a Roothaan
+/// effective Fock matrix that is PySCF's but for its open-open block; the
+/// orbitals it publishes are canonical in PySCF's convention.
 struct ScfStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "scf";

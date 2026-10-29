@@ -32,9 +32,13 @@ struct ScfOutput {
   /// occupied in beta, n_beta <= @ref n_alpha. A step that handles only a
   /// closed shell refuses n_alpha != n_beta as Unsupported.
   int32_t n_beta;
-  /// @brief The orbital energies, ascending, one per column of @ref c
-  /// (hartree), on the host. For ROHF, the eigenvalues of the Roothaan
-  /// effective Fock matrix in PySCF's convention (its @c get_roothaan_fock).
+  /// @brief The orbital energies, one per column of @ref c (hartree), on the
+  /// host: ascending for RHF. For ROHF, the eigenvalues of the Roothaan
+  /// effective Fock matrix in PySCF's convention (its @c get_roothaan_fock),
+  /// ascending within the n_beta doubly occupied columns, the singly occupied
+  /// ones and the virtual ones. An open orbital's can fall below a doubly
+  /// occupied one's (a localized hole: PySCF's own @c mo_energy is unsorted
+  /// there too).
   std::vector<double> mo_energies;
   /// @brief The MO coefficients C, AO by MO: F C = S C eps, F the effective
   /// Fock matrix for ROHF.

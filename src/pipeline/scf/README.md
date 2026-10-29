@@ -23,7 +23,7 @@ struct ScfOutput {
   int32_t iterations;               // Fock builds
   int32_t n_alpha;                  // occupied in alpha: the first n_alpha columns of c
   int32_t n_beta;                   // occupied in beta; == n_alpha for RHF
-  std::vector<double> mo_energies;  // ascending, host
+  std::vector<double> mo_energies;  // host; ascending (ROHF: within each occupation)
   SphericalMatrixAO c;              // AO x MO
   SphericalMatrixAO d;              // spin-summed, 2 C_occ C_occ^T; ROHF: Da + Db
 };
@@ -68,18 +68,68 @@ An open shell (ROHF, n_alpha > n_beta) changes steps 1, 2 and 6 only:
 
 1. The builder makes **Fa = H + J(D) − K(Da)** and **Fb = H + J(D) − K(Db)**,
    D = Da + Db, and the loop assembles the **Roothaan effective Fock matrix**
-   F from them (`roothaan_fock`) in PySCF's `get_roothaan_fock` convention:
-   Fc = (Fa + Fb)/2, the projectors Pc = Db S, Po = (Da − Db) S and
-   Pv = I − Da S, A = ½ (Pcᵀ Fc Pc + Poᵀ Fc Po + Pvᵀ Fc Pv) + Poᵀ Fb Pc +
-   Poᵀ Fa Pv + Pvᵀ Fc Pc, F = A + Aᵀ. It is made from the densities, so the
-   first build, whose Da = Db = D/2 are the guess split per spin, needs no C.
+   F from them (`roothaan_fock`): PySCF's `get_roothaan_fock` but for the
+   open-open block. With Fc = (Fa + Fb)/2, **Fo = (Fa + 3 Fb)/4**, the
+   projectors Pc = Db S, Po = (Da − Db) S and Pv = I − Da S,
+   A = ½ (Pcᵀ Fc Pc + Poᵀ Fo Po + Pvᵀ Fc Pv) + Poᵀ Fb Pc + Poᵀ Fa Pv +
+   Pvᵀ Fc Pc, F = A + Aᵀ; PySCF has Fc where this has Fo (below). It is made
+   from the densities, so the first build, whose Da = Db = D/2 are the guess
+   split per spin, needs no C.
 2. E = tr((Da + Db) H + Da Fa + Db Fb)/2 + E_nuc.
 6. Da = C[:, :n_alpha] C[:, :n_alpha]ᵀ, Db over n_beta, and D = Da + Db.
 
-DIIS and the residual are unchanged, on (F, Da + Db), and F's eigenvalues are
-the orbital energies: PySCF's ROHF `mo_energy`. A closed shell allocates none
-of the open-shell state and runs none of it, the second K included, so its
-path is the RHF loop's operation for operation.
+DIIS and the residual are unchanged, on (F, Da + Db). On convergence the
+published orbitals and energies are PySCF's (`publish_open`). F differs from
+PySCF's matrix in the open block alone, so F's canonical orbitals with the
+open ones, columns [n_beta, n_alpha), rotated among themselves to
+diagonalize Fc there (`canonicalize_open`) carry PySCF's ROHF `mo_energy`,
+every one, by occupation class. If those ascend, PySCF's matrix orders the
+classes as aufbau does, and the published orbitals are its own canonical
+ones, as before #476: its last Roothaan step, the closer one wherever Fc is
+a fair curvature (CH₂'s IBO functional moved 1.5e-8 against PySCF's with
+F's step, over `pipeline_localization_gpu`'s 1e-8). If they do not ascend,
+aufbau on PySCF's matrix would move a localized hole, so F's orbitals stand
+and the open energies keep their columns, below a core one. A closed shell
+allocates none of the open-shell state and runs none of it, the second K
+included, so its path is the RHF loop's operation for operation.
+
+**Why the open block is not PySCF's** (issue #476). The diagonal blocks of a
+Roothaan matrix are a canonicalization: they move no stationary point, and
+neither the energy nor the commutator reads them. What they set is where the
+open eigenvalues sit against the core and virtual ones, which is the Roothaan
+step's estimate of the energy's curvature along a core-open rotation (a beta
+electron moving, coupled through Fb) and an open-virtual one (an alpha
+electron, through Fa). On a cation whose hole localizes on one of several
+similar lone pairs, PySCF's Fc puts the open orbital *below* doubly occupied
+ones: glycylglycine⁺/STO-3G's minimum has it at −0.480 Eh under three at
+−0.458 to −0.444. That minimum is then no aufbau state of the matrix, every
+diagonalization moves the hole to another lone pair, and DIIS cannot settle:
+density-fitted gly5⁺/cc-pVDZ's |[F,D]| swung between 0.07 and 1.1 for 150
+iterations. PySCF's own ROHF fails the same way from either default guess
+(`minao`, `atom`); with a level shift of 0.1 to 1.0, ADIIS or EDIIS it
+stalls too, or settles on a stationary point 63 mEh higher (gly3⁺/STO-3G at
+0.1). Only its second-order solver (`.newton()`) reached the minimum, which
+is internally stable. The SAD guess's D/2 split is not the cause: PySCF's
+iteration, started from the converged minimum itself, leaves it at once. Fb in
+the open block fixes the core-open gap but inverts the open-virtual one on
+NO and CH₂/cc-pVTZ. A blend (1 − w) Fa + w Fb, run in PySCF over twenty
+open shells (OH, NH₂, CH₂, H₂O⁺, CH₂/cc-pVTZ, O₂, NO, CN, CH₃, allyl, HCO,
+NO₂, the N atom's quartet, C₆H₆⁺, glyoxal⁺, (H₂O)₂⁺, glycine⁺ in cc-pVDZ and
+gly2-3-5⁺ in STO-3G), reaches every minimum at w = 0.7 and 0.8; 0.6 misses
+two glycine cations and 0.9 misses NO. w = 3/4 is the middle
+(`kOpenBlockBetaWeight`). On an RTX 3080 (CUDA), from the SAD guess:
+
+| | before (Fc) | after (Fo) |
+|---|---|---|
+| gly5⁺/cc-pVDZ, density-fitted | not converged in 150 | 21 iterations, −1109.868083304 Eh (PySCF `.newton()`: −1109.868083304) |
+| gly5⁺/cc-pVDZ, integral-direct | not converged (31 seen in #476) | 25 iterations, −1109.870090498 Eh, 392 s |
+| gly2⁺/STO-3G, integral-direct | not converged in 150 | 22 iterations |
+| gly5⁺/STO-3G, integral-direct | not run | 28 iterations |
+
+The reference cases ("Tests") converge to the same energies, to 1e-12 Eh, in
+0 to 2 more iterations: OH 8 and 13, NH₂ 13 → 14, CH₂ 14 → 15, H₂O⁺
+13 → 14, CH₂/cc-pVTZ 14 → 16 integral-direct, and 0 to 2 more
+density-fitted.
 
 On convergence step 5 is skipped: the published orbitals are the canonical
 ones of the Fock matrix as built, not of an extrapolation, and D is theirs.
@@ -224,10 +274,11 @@ What it settled:
   step, so a failed write fails the step.
 - **ROHF takes either ERI.** n_alpha − n_beta = multiplicity − 1, so
   N and the multiplicity must agree in parity, or it is `InvalidConfig`.
-  PySCF's `get_occ` takes the open orbitals as the
-  lowest non-core ones by their alpha energy; here they are the next ones up
-  F's spectrum, aufbau. The two agree on every reference case, which PySCF
-  found internally stable.
+  PySCF's `get_occ` takes the core orbitals lowest in its matrix's spectrum
+  and the open ones as the lowest of the rest by their alpha energy; here
+  both are aufbau in the iterated F's spectrum, whose open block is Fo. They
+  agree on every reference case PySCF converges, which it found internally
+  stable; on glycylglycine⁺ PySCF's rule is what keeps it from the minimum.
 - **Host synchronizations**: the energy's two dots (three for an open shell)
   and the residual norm read host scalars, DIIS reads its singular flag, and
   `syevd`'s flag is fetched: five per iteration (six). Batching them into one read is a later optimization.
@@ -275,6 +326,17 @@ being its Roothaan effective Fock matrix's eigenvalues, integral-direct:
   energy to 1e-8 Eh, every orbital energy to 1e-6 Eh, n_alpha and n_beta,
   C^T S C = I, and for each spin density tr(Ds S) = n_s and Ds S Ds = Ds,
   with D = Da + Db.
+- Glycylglycine⁺ in STO-3G (`glygly_cation_sto3g`, 53 AOs, 2.5 s): the
+  localized hole of issue #476, which ran 150 iterations unconverged on
+  PySCF's open block and takes 22 now. PySCF's ROHF cannot converge it, so
+  its reference is `rohf_localized_hole.json`: the emitter iterates it on
+  the same Fo (`OpenBlockROHF`), checks the energy against PySCF's
+  `.newton()` to 1e-10 Eh and its stability, and records PySCF's canonical
+  orbital energies by occupation class. Its open one (−0.480 Eh) sits below
+  the top three core ones and is compared in its column; the file is its
+  own because `test/pytest/test_rohf_reference.py` holds `rohf.json`'s
+  orbital energies ascending. The energy is 6e-9 Eh off at the default `tau_j` (2e-12 at 0), J's
+  screening over a larger molecule than the others.
 - Incremental builds against `fock_rebuild_interval = 1` on OH/cc-pVDZ: the
   energy to 1e-9 Eh.
 
@@ -314,6 +376,6 @@ orbital energies being its Roothaan effective Fock matrix's eigenvalues:
 |------|------|
 | `scf.cppm` | Module interface: `ScfStep`; re-exports `:output` |
 | `scf_output.cppm` | Interface partition `:output`: `ScfOutput`, so that `:loop` can name it |
-| `scf_loop.cppm` | Internal partition `:loop`: `scf_loop`, the Roothaan effective Fock matrix, the energy, the residual, convergence, DIIS, the eigensolve and the Molden write, against a Fock builder |
+| `scf_loop.cppm` | Internal partition `:loop`: `scf_loop`, the Roothaan effective Fock matrix, the open shell's published PySCF orbitals, the energy, the residual, convergence, DIIS, the eigensolve and the Molden write, against a Fock builder |
 | `scf.cpp` | `ScfStep::run`: the checks; `DirectFockBuilder`, the integral-direct Fock build, closed or open shell, and its full/incremental policy; and `DfFockBuilder`, the density-fitted one, closed or open shell, with the first build's K from the guess's factor |
 | `CMakeLists.txt` | The module library |
