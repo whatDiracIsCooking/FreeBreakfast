@@ -32,8 +32,9 @@ atomic_cd/        Generate an auxiliary basis for any orbital basis: aCD /
                   atomic_cd/README.md has the method, measured accuracy
                   and references.
 emit/one_electron_kernels.py
-                  Regenerate src/integrals/one_electron/{overlap,kinetic,
-                  potential_en}/kernels/, and the mmd record bound
+                  Regenerate src/integrals/one_electron/{overlap,
+                  overlap_mixed,kinetic,potential_en,dipole}/kernels/
+                  (the dipole through d only), and the mmd record bound
                   src/integrals/mmd/kernels/pair_bound/, from the
                   FelizJueves submodule. Standard library only.
 emit/coulomb_kernels.py

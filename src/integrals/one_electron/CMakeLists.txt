@@ -3,6 +3,7 @@ add_subdirectory(overlap)
 add_subdirectory(overlap_mixed)
 add_subdirectory(kinetic)
 add_subdirectory(potential_en)
+add_subdirectory(dipole)
 # After kinetic and potential_en: H is built from both.
 add_subdirectory(core_hamiltonian)
 
@@ -19,5 +20,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::one_electron::overlap_mixed
   free_breakfast::integrals::one_electron::kinetic
   free_breakfast::integrals::one_electron::potential_en
+  free_breakfast::integrals::one_electron::dipole
   free_breakfast::integrals::one_electron::core_hamiltonian
 )
