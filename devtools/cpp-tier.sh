@@ -166,6 +166,8 @@ gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 # such as compute-sanitizer wraps them. The split reads ctest's own listing, so
 # the preset's filters and a `-- -R ...` pick the batch too. When the listing
 # cannot be read, ctest runs every entry, as before the batch existed.
+# ctest bounds each of its entries with the TIMEOUT property; the shards are
+# bounded by run_gpu_sharded's watchdog (GPU_SHARD_* in config.sh, issue #477).
 run_tier_tests() {
   local dir trc=0 n
   dir=$(mktemp -d)

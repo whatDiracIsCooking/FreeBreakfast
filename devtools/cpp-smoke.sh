@@ -30,6 +30,9 @@
 # concurrent cpp-tier.sh runs in other worktrees cannot overload it -- one run
 # per card (config.sh says why). Inside it the suite runs as GPU_TEST_JOBS
 # (config.sh) concurrent gtest shards. The host suite does not touch the GPU and runs unlocked.
+# A shard that hangs is killed and its case named (GPU_SHARD_STALL_SECONDS and
+# GPU_SHARD_BUDGET_SECONDS in config.sh; issue #477), so a wedged card fails
+# the push rather than hanging it.
 #
 # It SKIPS (exit 0, not a failure) when the toolchain or a GPU is absent: the
 # clang/CMake/nvcc stack lives in docker/Dockerfile.{cuda,hip,combined}, and
@@ -136,24 +139,20 @@ fi
 host_bin="$build_dir/test/gtest/free_breakfast_tests_host"
 gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 
-# Run one binary: append its full output to the log, echo its summary lines,
-# return its status. `lock` gates with_gpu_card (lib.sh) -- the host suite
-# doesn't touch the GPU, so it shouldn't queue behind another session's GPU
-# tests, but the gpu suite must serialize against them.
+# Run the host binary: append its full output to the log, echo its summary
+# lines, return its status. It doesn't touch the GPU, so it runs unlocked and
+# doesn't queue behind another session's GPU tests; the gpu suite below
+# serializes against them under with_gpu_card.
 run_suite() {
-  local label=$1 bin=$2 lock=$3
-  shift 3
+  local label=$1 bin=$2
+  shift 2
   [ -x "$bin" ] || {
     echo "cpp-smoke: missing binary $bin -- see $BUILD_LOG" >&2
     return 1
   }
   echo "--- $label: $bin ---" >>"$BUILD_LOG"
   local out rc2
-  if [ "$lock" -eq 1 ]; then
-    out=$(with_gpu_card "$backend" "$bin" "$@" 2>&1)
-  else
-    out=$("$bin" "$@" 2>&1)
-  fi
+  out=$("$bin" "$@" 2>&1)
   rc2=$?
   printf '%s\n' "$out" >>"$BUILD_LOG"
   printf '%s\n' "$out" | grep -E 'ran\.|PASSED|SKIPPED|FAILED' | sed "s/^/cpp-smoke:   /"
@@ -165,15 +164,13 @@ run_suite() {
 export FREE_BREAKFAST_FAST_TESTS=1
 
 echo "cpp-smoke: host tests ..."
-run_suite host "$host_bin" 0 || rc=$?
+run_suite host "$host_bin" || rc=$?
 
 echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
-if [ "$GPU_TEST_JOBS" -gt 1 ]; then
-  # GPU_TEST_JOBS shards, all inside the one card lock (run_gpu_sharded, lib.sh).
-  with_gpu_card "$backend" run_gpu_sharded cpp-smoke "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
-else
-  run_suite gpu "$gpu_bin" 1 || rc=$?
-fi
+# GPU_TEST_JOBS shards, all inside the one card lock (run_gpu_sharded, lib.sh),
+# even when that is 1: the launcher's watchdog is what turns a wedged card
+# (issue #477) into a named failure rather than a push that never returns.
+with_gpu_card "$backend" run_gpu_sharded cpp-smoke "$gpu_bin" "$GPU_TEST_JOBS" || rc=$?
 unset FREE_BREAKFAST_FAST_TESTS
 
 set -e
