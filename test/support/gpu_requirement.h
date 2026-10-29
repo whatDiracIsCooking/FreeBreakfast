@@ -1,6 +1,9 @@
 /// @file
 /// @brief Skip-if-no-device helper shared by the GPU-dependent test files.
 ///
+/// Lives in test/support/ (target free_breakfast::test::support), the one home
+/// of the helpers every gtest tree shares; consumers include it by bare name.
+///
 /// This defines a MACRO, so it is expanded at the point of use and needs the
 /// wwr* runtime names visible THERE, not here -- which is why this header
 /// imports nothing and why its own include position does not matter. What does

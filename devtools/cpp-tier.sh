@@ -8,12 +8,12 @@
 #
 # It is NOT on the push gate -- cpp-smoke.sh is -- but it is the gate before
 # opening a PR (milestone-run requires it), and like the smoke gate it is
-# budgeted at under five minutes on a busy card: test/gtest/slow_test.h keeps
+# budgeted at under five minutes on a busy card: test/support/slow_test.h keeps
 # the fast set inside it, and the GPU entries run batched (run_tier_tests).
 #
 # ALWAYS runs with FREE_BREAKFAST_FAST_TESTS=1 -- the same env var
 # cpp-smoke.sh sets -- so every case guarded by
-# FBF_SKIP_IF_FAST_TESTS() (test/gtest/slow_test.h) GTEST_SKIPs.
+# FBF_SKIP_IF_FAST_TESTS() (test/support/slow_test.h) GTEST_SKIPs.
 # That guard is for reference-grade and end-to-end validation: cases that check
 # a result against an external oracle to tight tolerance, or re-run a
 # production-scale solve to compare timing or convergence. In a mature tree

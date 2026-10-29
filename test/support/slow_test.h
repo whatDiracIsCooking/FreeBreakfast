@@ -1,6 +1,9 @@
 /// @file
 /// @brief Skip-in-fast-mode helper for the heavy end-to-end validation tests.
 ///
+/// Lives in test/support/ (target free_breakfast::test::support), the one home
+/// of the helpers every gtest tree shares; consumers include it by bare name.
+///
 /// The C++ analogue of the pytest `slow` marker: a full run executes these
 /// cases (ctest, CI, `devtools/cpp-slow-tier.sh`), while `devtools/cpp-tier.sh`
 /// and the pre-push smoke gate (`devtools/cpp-smoke.sh`) opt out by exporting

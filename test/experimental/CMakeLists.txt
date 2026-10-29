@@ -33,14 +33,9 @@ target_link_libraries(
           free_breakfast::io::base
           free_breakfast::io::npy
           wwr::fp16
+          free_breakfast::test::support
           GTest::gtest
           GTest::gtest_main
-)
-
-# gpu_requirement.h is shared with test/gtest rather than copied.
-target_include_directories(
-  free_breakfast_tests_experimental_gpu
-  PRIVATE ${PROJECT_SOURCE_DIR}/test/gtest
 )
 
 math(EXPR _fb_test_timeout "120 * ${FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER}")

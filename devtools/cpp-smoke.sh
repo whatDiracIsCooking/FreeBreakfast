@@ -11,7 +11,7 @@
 #   * runs free_breakfast_tests_host, then free_breakfast_tests_gpu, both
 #     with FREE_BREAKFAST_FAST_TESTS=1,
 #     which makes every reference-grade case GTEST_SKIP (see
-#     test/gtest/slow_test.h) -- not just end-to-end capstones, but any case
+#     test/support/slow_test.h) -- not just end-to-end capstones, but any case
 #     that checks a result against an external oracle to tight tolerance, or
 #     repeats a production-scale solve for a timing/convergence comparison.
 #     Those are correctness/perf regressions for cpp-tier.sh and CI to catch,

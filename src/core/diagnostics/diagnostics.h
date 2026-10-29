@@ -6,7 +6,7 @@
 /// `import free_breakfast.core;` (or at least
 /// `free_breakfast.core.error_handling` and `.log`, plus `.wwr` for
 /// FBF_GPU_MUST):
-/// like `test/gtest/gpu_requirement.h`, these macros are expanded at the
+/// like `test/support/gpu_requirement.h`, these macros are expanded at the
 /// point of use and need `free_breakfast::check_or_abort`,
 /// `free_breakfast::gpu_status` and `free_breakfast::log::should_log` visible
 /// there, not here. `std` facilities
