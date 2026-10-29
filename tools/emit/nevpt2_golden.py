@@ -100,16 +100,16 @@ CASES = {
     ),
 }
 
-# The golden arrays the SC-NEVPT2 energy reads, copied as they are. The demo
-# also stores block2's PC-NEVPT2 answer (pc_class_energies, e_pc_total),
-# which no SC class reads; it is not copied.
+# The golden arrays the NEVPT2 energies read, copied as they are, block2's
+# PC-NEVPT2 answer (pc_class_energies, e_pc_total) among them: PySCF has no
+# PC, so those two are the demo's block2 numbers, unchecked here.
 COPIED = (
     "ci", "dm1", "dm2", "h1e", "h2e", "e_core", "e_virt",
     "h1e_v_Sr", "h1e_v_Si", "h1e_v_Sir",
     "h2e_v_Sr", "h2e_v_Si", "cvcv", "h2e_v_Sijr", "h2e_v_Srsi", "h2e_v_Srs",
     "h2e_v_Sij", "h2e_v1_Sir", "h2e_v2_Sir",
     "B_aa", "B_ca", "B_va", "B_cv",
-    "class_norms", "class_energies",
+    "class_norms", "class_energies", "pc_class_energies", "e_pc_total",
 )  # fmt: skip
 
 # check-added-large-files' --maxkb in .pre-commit-config.yaml: a default run

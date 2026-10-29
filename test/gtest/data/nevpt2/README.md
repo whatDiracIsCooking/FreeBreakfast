@@ -64,9 +64,14 @@ active, `v` virtual, `L` auxiliary.
 | `B_aa`, `B_ca`, `B_va`, `B_cv` | (L, ·, ·) | MO three-index blocks, `(pq\|rs) = Σ_L B[L,p,q] B[L,r,s]` (metric already folded in) |
 | `class_norms`, `class_energies` | (8,) | PySCF's per-class answer, order Sr, Si, Sijrs, Sijr, Srsi, Srs, Sij, Sir |
 | `e_nevpt2_total` | () | the SC-NEVPT2 correlation energy, the sum of `class_energies` |
+| `pc_class_energies` | (8,) | block2's PC-NEVPT2 per-class answer (`icnevpt2_full.WickICNEVPT2`), the same order |
+| `e_pc_total` | (1,) | block2's PC-NEVPT2 correlation energy |
 
-The demo's block2 PC-NEVPT2 numbers (`pc_class_energies`, `e_pc_total`) are
-not copied.
+**The two PC arrays are block2's, copied unchecked**: PySCF has no PC-NEVPT2,
+so nothing here recomputes them. The demo's generator wrote them only after
+checking that block2's SC equals the golden's PySCF SC per class to 1e-7
+(measured ≤ 9.8e-10), so block2 saw this state, these integrals and these
+RDMs (the demo's `docs/reference-data.md`, "PC fields").
 
 ## The check before writing
 
