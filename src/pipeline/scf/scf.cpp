@@ -29,13 +29,23 @@ namespace free_breakfast {
 // d_built, which G's linearity makes the same matrix. J's and K's screens scale
 // with the density they read, and the difference shrinks as the SCF converges,
 // so they skip more of it. The J and K classes are the shared EriOutput's.
-// Closed-shell only: the step refuses an open shell before making one.
+//
+// An open shell's Fa = H + J(D) - K(Da) and Fb = H + J(D) - K(Db), D = Da + Db,
+// each spin's K at weight 1 where the closed shell's D = 2 C C^T takes a half:
+// one J and two K calls. An incremental build adds J(D - d_built) to both and
+// K(Ds - ds_built) to each, under the same policy, so the spins' builds are
+// full together. A closed shell allocates neither spin's built density.
 struct DirectFockBuilder {
   const IntegralDirect &eri;
   SphericalMatrixAO d_built; // the density f is the Fock matrix of
   MatrixAOPair dd;           // what J and K read: D on a full build, D - d_built otherwise
   MatrixAOPair g;            // J - K/2 of dd, built Cartesian and carried onto the spherical layout
-  CartesianMatrixAO k;       // K, before it is folded into g
+  CartesianMatrixAO k;       // K, before it is folded into g; an open shell's J, for both spins
+  // An open shell's Da and Db, that Fa and Fb are of. dd then also reads Ds or
+  // Ds - ds_built, and takes each spin's G = J - K once J and K have read it;
+  // g holds that K.
+  std::optional<SphericalMatrixAO> da_built{};
+  std::optional<SphericalMatrixAO> db_built{};
   double tau_j;
   int32_t fock_rebuild_interval;
   double commutator_tolerance;
@@ -51,11 +61,10 @@ struct DirectFockBuilder {
   // convergence needs a full build anyway.
   bool full_from_now = false;
 
-  // The orbitals are not read: J and K are both built from D. fb is always
-  // null, the shell being closed.
+  // The orbitals are not read: J and K are both built from the densities.
   [[nodiscard]] Result<bool> build(DeviceResources &res, const SphericalMatrixAO &d,
                                    const SphericalMatrixAO * /*c*/, const SphericalMatrixAO &h,
-                                   SphericalMatrixAO &f, SphericalMatrixAO * /*fb*/) {
+                                   SphericalMatrixAO &f, OpenShellState *open) {
     // Only a full build may converge: an incremental F carries the screening
     // error of every build since the last full one.
     full = !built || full_from_now || incremental_builds + 1 >= fock_rebuild_interval;
@@ -64,30 +73,56 @@ struct DirectFockBuilder {
     const wwr::wwrblasHandle_t blas = res.blas().get();
     const auto n = static_cast<int32_t>(d.n());
     const size_t bytes = d.num_elements() * sizeof(double);
-    if (full) {
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dd.spherical().data(), d.data(), bytes,
+    // dd to @p now on a full build, or to now - built_from, both layouts; and
+    // built_from to now.
+    const auto load = [&](const SphericalMatrixAO &now, SphericalMatrixAO &built_from) -> Status {
+      if (full) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dd.spherical().data(), now.data(), bytes,
+                                               wwr::wwrMemcpyDeviceToDevice, res.stream())));
+      } else {
+        FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, &kOne<double>, now.data(), n,
+            &kNegOne<double>, built_from.data(), n, dd.spherical().data(), n)));
+      }
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(built_from.data(), now.data(), bytes,
                                              wwr::wwrMemcpyDeviceToDevice, res.stream())));
-    } else {
-      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n,
-                                                    n, &kOne<double>, d.data(), n, &kNegOne<double>,
-                                                    d_built.data(), n, dd.spherical().data(), n)));
+      return dd.spherical_to_cartesian(res);
+    };
+    // fs = G, Cartesian in @p pair, carried onto the spherical layout, plus H
+    // on a full build; or fs += G.
+    const auto add_g = [&](MatrixAOPair &pair, SphericalMatrixAO &fs) -> Status {
+      FBF_TRY(pair.cartesian_to_spherical(res));
+      if (full) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(fs.data(), h.data(), bytes,
+                                               wwr::wwrMemcpyDeviceToDevice, res.stream())));
+      }
+      return gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(fs.num_elements()),
+                                                   &kOne<double>, pair.spherical().data(), 1,
+                                                   fs.data(), 1));
+    };
+    FBF_TRY(load(d, d_built));
+    if (open == nullptr) {
+      FBF_TRY(coulomb(res, eri.j_classes, dd.cartesian(), g.cartesian(), tau_j));
+      FBF_TRY(exchange(res, eri.k_classes, dd.cartesian(), k));
+      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(k.num_elements()),
+                                                    &kNegHalf<double>, k.data(), 1,
+                                                    g.cartesian().data(), 1)));
+      FBF_TRY(add_g(g, f));
+      return full;
     }
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_built.data(), d.data(), bytes,
-                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
-    FBF_TRY(dd.spherical_to_cartesian(res));
-    FBF_TRY(coulomb(res, eri.j_classes, dd.cartesian(), g.cartesian(), tau_j));
-    FBF_TRY(exchange(res, eri.k_classes, dd.cartesian(), k));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(k.num_elements()),
-                                                  &kNegHalf<double>, k.data(), 1,
-                                                  g.cartesian().data(), 1)));
-    FBF_TRY(g.cartesian_to_spherical(res));
-    if (full) {
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(f.data(), h.data(), bytes,
-                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    // J into k, kept there for both spins; then each spin's K(dd) into g, and
+    // G = J - K into dd, read by then.
+    FBF_TRY(coulomb(res, eri.j_classes, dd.cartesian(), k, tau_j));
+    const auto nc = static_cast<int32_t>(k.n());
+    for (const auto &[fs, ds, ds_built] :
+         {std::tuple{&f, &open->da, &*da_built}, std::tuple{&open->fb, &open->db, &*db_built}}) {
+      FBF_TRY(load(*ds, *ds_built));
+      FBF_TRY(exchange(res, eri.k_classes, dd.cartesian(), g.cartesian()));
+      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nc, nc, &kOne<double>, k.data(), nc,
+          &kNegOne<double>, g.cartesian().data(), nc, dd.cartesian().data(), nc)));
+      FBF_TRY(add_g(dd, *fs));
     }
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(f.num_elements()),
-                                                  &kOne<double>, g.spherical().data(), 1, f.data(),
-                                                  1)));
     return full;
   }
 
@@ -133,7 +168,8 @@ struct DfFockBuilder {
 
   [[nodiscard]] Result<bool> build(DeviceResources &res, const SphericalMatrixAO &d,
                                    const SphericalMatrixAO *c, const SphericalMatrixAO &h,
-                                   SphericalMatrixAO &f, SphericalMatrixAO *fb) {
+                                   SphericalMatrixAO &f, OpenShellState *open) {
+    SphericalMatrixAO *const fb = open != nullptr ? &open->fb : nullptr;
     const wwr::wwrblasHandle_t blas = res.blas().get();
     const auto n = static_cast<int32_t>(d.n());
     FBF_TRY(df_coulomb(res, n, fit.naux, fit.b.data(), d.data(), j.data()));
@@ -274,12 +310,6 @@ ScfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriO
     return scf_loop(res, builder, molecule, basis, s, x, h, guess, n_alpha, n_beta, max_iterations,
                     energy_tolerance, commutator_tolerance, diis_history, molden);
   }
-  if (n_open != 0) {
-    return err_unsupported("scf: the integral-direct Fock build is closed-shell only, and the "
-                           "molecule is at multiplicity {}; [eri] mode = \"density_fitting\" "
-                           "runs ROHF",
-                           molecule.multiplicity());
-  }
   const std::shared_ptr<const Buffers::device<double>> &u = in.get<SphericalTransformOutput>().u;
   DirectFockBuilder builder{
       .eri = std::get<IntegralDirect>(eri.eri),
@@ -291,6 +321,10 @@ ScfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriO
       .fock_rebuild_interval = fock_rebuild_interval,
       .commutator_tolerance = commutator_tolerance,
   };
+  if (n_open != 0) {
+    builder.da_built.emplace(res, basis);
+    builder.db_built.emplace(res, basis);
+  }
   return scf_loop(res, builder, molecule, basis, s, x, h, guess, n_alpha, n_beta, max_iterations,
                   energy_tolerance, commutator_tolerance, diis_history, molden);
 }

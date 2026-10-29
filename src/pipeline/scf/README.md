@@ -4,7 +4,7 @@ Iterate restricted Hartree-Fock to self-consistency, from the `GuessOutput`,
 with Pulay DIIS on the Fock matrix: closed-shell RHF, or ROHF at a
 multiplicity above 1. The two-electron part is the `EriOutput`'s
 (`pipeline/eri`): integral-direct, with incremental Fock builds, or
-density-fitted. ROHF is density-fitted only.
+density-fitted, closed or open shell.
 
 ## Module
 
@@ -91,8 +91,9 @@ What it settled:
   restricted iteration, written against a Fock builder with two members:
   `build`, which makes F = H + G(D) from the density and the orbitals it came
   from (null on the first build, whose D is the guess), or for an open shell
-  Fa and Fb, and says whether that F is exact for D, so may be taken as
-  converged; and `reset_diis`, told the
+  Fa and Fb from the spin densities as well (the loop's open-shell state,
+  null for a closed shell), and says whether that F is exact for D, so may be
+  taken as converged; and `reset_diis`, told the
   commutator norm, which says whether DIIS's history is to be dropped. The
   incremental builds, `fock_rebuild_interval`, the switch to full builds and
   the DIIS reset are the direct builder's policy (`DirectFockBuilder` in
@@ -121,6 +122,18 @@ What it settled:
   by then. Resetting any earlier restarts DIIS where it is still needed.
   `fock_rebuild_interval = 1` is the old loop, every build full, kept for an
   A/B.
+
+  **An open shell's direct build** makes Fa = H + J(D) − K(Da) and
+  Fb = H + J(D) − K(Db): one `coulomb` of D and one `exchange` per spin
+  density, each K at weight 1 (the closed shell's D = 2 C Cᵀ takes K/2). Its
+  incremental build adds J(D − D_built) to both and K(Ds − Ds_built) to each,
+  tracking D, Da and Db as built; which builds are full, the switch to full
+  builds and the DIIS reset are the closed shell's policy, unchanged, so both
+  spins' builds are full together. J is built into the Cartesian K buffer and
+  kept there for both spins; each spin's K goes to `g` and its G = J − K to
+  `dd`, which J and K have read by then. A closed shell allocates neither
+  spin's built density and takes the closed-shell build, operation for
+  operation. A second K pass over both densities at once is #451's.
 
   Measured on an RTX 3080, cc-pVDZ, from the first Fock build to converged,
   every run to the same energy within 1e-12 Eh:
@@ -207,10 +220,9 @@ What it settled:
   n_beta lowest at occupation 2 and the next n_alpha − n_beta at 1. It is not a TOML key: `pipeline/config` sets
   it to `scf.molden` in the run's output directory. Writing it is part of the
   step, so a failed write fails the step.
-- **ROHF is density-fitted only.** n_alpha − n_beta = multiplicity − 1, so
-  N and the multiplicity must agree in parity, or it is `InvalidConfig`. An
-  open shell under `IntegralDirect` is `Unsupported`, until the direct build
-  makes spin Fock matrices. PySCF's `get_occ` takes the open orbitals as the
+- **ROHF takes either ERI.** n_alpha − n_beta = multiplicity − 1, so
+  N and the multiplicity must agree in parity, or it is `InvalidConfig`.
+  PySCF's `get_occ` takes the open orbitals as the
   lowest non-core ones by their alpha energy; here they are the next ones up
   F's spectrum, aufbau. The two agree on every reference case, which PySCF
   found internally stable.
@@ -224,7 +236,7 @@ What it settled:
 
 Errors: an option out of range, an electron count of the wrong parity for the
 multiplicity, more alpha electrons than orbitals, or a guess of the wrong size
-is `InvalidConfig`; an open shell under integral-direct ERIs is `Unsupported`; a class above f is J's and K's
+is `InvalidConfig`; a class above f is J's and K's
 `InvalidConfig`; no convergence within `max_iterations` is
 `MaxIterationsExceeded`; a non-converged eigensolve is `Numerical`; a failed
 runtime, BLAS, solver or launch call is `GpuRuntime`; a `molden` file that
@@ -246,12 +258,23 @@ this tree's own `data/basis` files:
 - A config naming only `[scf]` plans the whole chain, for H2O/cc-pVDZ and
   CO/cc-pVTZ, and its energy and orbital energies match PySCF's to the same
   tolerances.
-- An integral-direct open shell is `Unsupported`, a multiplicity of the wrong
-  parity (or below 1, or above N + 1) `InvalidConfig`, too few iterations
+- A multiplicity of the wrong
+  parity (or below 1, or above N + 1) is `InvalidConfig`, too few iterations
   `MaxIterationsExceeded`, and an option out of range `InvalidConfig`.
 - `molden` set writes a file a Molden reader takes: the header, one `[MO]`
   entry per orbital, `nocc` of them at occupation 2.
 - The `[scf]` config cases are in `pipeline_config_host.cpp`.
+
+Against PySCF's ROHF in `test/gtest/data/scf/rohf.json`, the orbital energies
+being its Roothaan effective Fock matrix's eigenvalues, integral-direct:
+
+- Doublets OH (STO-3G and cc-pVDZ), NH2 and H2O+ (charged) and triplet CH2
+  in cc-pVDZ, and CH2 in cc-pVTZ (under `FBF_SKIP_IF_FAST_TESTS`): the
+  energy to 1e-8 Eh, every orbital energy to 1e-6 Eh, n_alpha and n_beta,
+  C^T S C = I, and for each spin density tr(Ds S) = n_s and Ds S Ds = Ds,
+  with D = Da + Db.
+- Incremental builds against `fock_rebuild_interval = 1` on OH/cc-pVDZ: the
+  energy to 1e-9 Eh.
 
 `test/gtest/pipeline_df_scf_gpu.cpp`, against PySCF's DF-RHF over the same
 orbital and fitting sets (`test/gtest/data/density_fitting/`,
@@ -290,5 +313,5 @@ orbital energies being its Roothaan effective Fock matrix's eigenvalues:
 | `scf.cppm` | Module interface: `ScfStep`; re-exports `:output` |
 | `scf_output.cppm` | Interface partition `:output`: `ScfOutput`, so that `:loop` can name it |
 | `scf_loop.cppm` | Internal partition `:loop`: `scf_loop`, the Roothaan effective Fock matrix, the energy, the residual, convergence, DIIS, the eigensolve and the Molden write, against a Fock builder |
-| `scf.cpp` | `ScfStep::run`: the checks; `DirectFockBuilder`, the integral-direct Fock build and its full/incremental policy; and `DfFockBuilder`, the density-fitted one, closed or open shell, with the first build's K from the guess's factor |
+| `scf.cpp` | `ScfStep::run`: the checks; `DirectFockBuilder`, the integral-direct Fock build, closed or open shell, and its full/incremental policy; and `DfFockBuilder`, the density-fitted one, closed or open shell, with the first build's K from the guess's factor |
 | `CMakeLists.txt` | The module library |
