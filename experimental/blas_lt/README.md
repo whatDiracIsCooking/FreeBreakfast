@@ -15,8 +15,10 @@ digest gives — the same FLOPs, three times the width, measurably faster — wh
 says the library's algorithm choice, not the card, is part of the limit.
 
 CUDA has a bigger lever than algorithm choice (CUDA 13's fp64 fixed-point
-emulation). **ROCm has no equivalent**, and a hand-written int8 Ozaki digest
-measured *slower* than plain `rocBLAS` fp64 on gfx1200. So on AMD the Lt
+emulation). hipBLASLt implements the same idea on INT8 matrix cores, but it is
+**MI350X/MI355X-only and absent from ROCm 7.2.4**, so it does not reach this
+tree's card; and a hand-written int8 Ozaki digest measured *slower* than plain
+`rocBLAS` fp64 on gfx1200. So on AMD the Lt
 heuristic is the cheapest remaining thing to rule in or out, and the first
 question is blunter than speed: **does hipBLASLt offer an fp64 algorithm for
 this shape at all?**
