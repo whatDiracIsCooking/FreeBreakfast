@@ -15,6 +15,7 @@ file names the tool that wrote it and the source it came from.
 | `scf/` | `rhf.json`: PySCF's closed-shell RHF (spherical, `conv_tol` 1e-12) for H₂O in STO-3G and cc-pVDZ and NH₄⁺ in cc-pVDZ, run over this tree's own `data/basis` files: total energy, nuclear repulsion, orbital energies, geometry in bohr; `rohf.json`: PySCF's ROHF (`conv_tol` 1e-12, `conv_tol_grad` 1e-9) for OH in STO-3G and cc-pVDZ, NH₂, triplet CH₂ and H₂O⁺ in cc-pVDZ and triplet CH₂ in cc-pVTZ (f shells), the same fields plus `spin`, `multiplicity`, `n_alpha` and `n_beta`, orbital energies those of PySCF's Roothaan effective Fock | `tools/emit/scf_reference.py`, which runs PySCF |
 | `density_fitting/` | libcint's spherical Coulomb metric `int2c2e` (P\|Q) and three-centre `int3c2e` (mn\|P) for H₂O in cc-pVDZ / cc-pVDZ-JKFIT (orbitals to d, aux to f) and cc-pVTZ / cc-pVTZ-JKFIT (O's f orbitals and g fitting functions, so (ff\|g)), PySCF's DF `vj` and `vk` of one RHF density in the cc-pVDZ case, that RHF's orbitals and PySCF's DF MO integrals over them (the ovov, oooo and vvvv blocks of (pq\|rs)), and PySCF's DF-RHF energies and orbital energies for H₂O and NH₄⁺ in cc-pVDZ / cc-pVDZ-JKFIT and H₂O in cc-pVTZ / cc-pVTZ-JKFIT, and in `df_rohf.json` PySCF's DF-ROHF for `scf/rohf.json`'s cases but the STO-3G one, over the matching JKFIT set, all over this tree's own `data/basis` and `data/aux_basis` files: `.npy` arrays and the manifest `density_fitting.json` | `tools/emit/df_reference.py`, which runs PySCF |
 | `df_high_aux/` | The top of the DF aux ladder, which no carried fitting set reaches: libcint's `int2c2e_sph` (P\|Q) and `int3c2e_sph` (mn\|P) over a **hand-built** basis — one single-primitive shell per l on two skew centres, orbitals to f and auxiliary to i — the smallest basis reaching every emitted class, all 28 metric (lP ≤ lQ ≤ 6) and all 70 eri3 (la ≤ lb ≤ 3, lP ≤ 6), each by a one-centre pair and a two-centre one. Coefficients are the primitives' own normalisers, so both sides are unit-normalised and the test needs no norm factor. `.npy` arrays, `int3c2e` split along the aux index, and the manifest `df_high_aux.json`, which carries both bases shell by shell so the test builds exactly these | `tools/emit/df_high_aux_reference.py`, which runs PySCF |
+| `cis/` | `cis.json`: PySCF's closed-shell RHF (`conv_tol` 1e-12) and `TDA` (CIS), over this tree's own `data/basis` and `data/aux_basis` files: the lowest five singlets and triplets and the singlets' oscillator strengths for H₂O in STO-3G, 6-31G and cc-pVDZ (exact integrals) and in cc-pVDZ / cc-pVDZ-JKFIT (density-fitted), the lowest three singlets of HF in cc-pVTZ (f shells, energies only), and the lowest five singlets and their oscillator strengths of benzene in cc-pVDZ, density-fitted and exact; every root checked against a dense diagonalization of the explicit A matrix; and `<case>_int1e_r.npy`, the spherical AO dipole for H₂O in STO-3G and cc-pVDZ | `tools/emit/cis_reference.py`, which runs PySCF |
 | `localization/` | `pipek_mezey.json`: PySCF's Mulliken Pipek-Mezey, p = 2 and 4, of the RHF orbitals of `scf/`'s three cases: the functional and every localized orbital's population on every atom; `ibo.json`: the same for PySCF's IBOs, plus the IAO partial charges; `rohf.json`: both, per occupied space, of the DF-ROHF orbitals of H₂O⁺ and triplet CH₂ in cc-pVDZ / cc-pVDZ-JKFIT (`density_fitting/df_rohf.json`'s cases) | `tools/emit/localization_reference.py`, which runs PySCF |
 | `active_space/` | `active_space.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and cc-pVDZ and N₂ in cc-pVDZ, over this tree's own `data/basis` files, and PySCF CASCI's active-space Hamiltonian over a chosen core and active set: E_core, h_eff_tt, (tt\|uu) and (tu\|tu) | `tools/emit/active_integrals_reference.py`, which runs PySCF |
 | `sad/` | `atomic_scf.json`: PySCF's spherically averaged atomic RHF (`AtomSphAverageRHF`) for H–Ar and Zn in STO-3G and H, He, C, O, Ne in cc-pVDZ, each with its basis in BSE form | `tools/emit/sad_reference.py`, which runs PySCF |
@@ -238,6 +239,55 @@ Regenerate with (one thread; the output is byte-identical run to run):
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
     tools/emit/df_high_aux_reference.py
+```
+
+## `cis/cis.json`
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF and numpy versions, threads, the TDA's Davidson `tda_conv_tol` (a residual norm) and `tda_lindep`, the command |
+| `cases` | One per (molecule, basis, integrals): `name`, `basis`, `aux_basis` (`null` for exact integrals, else the fitting set both the RHF and the TDA use), `atoms` (`symbol`, `z`, `coord` in bohr), `nao` (spherical), `occupied`, `electrons`, `rhf_energy`, `nuclear_repulsion`, `singlets`, `triplets` (where computed) and `int1e_r` (where written) |
+| `energies` | Excitation energies (hartree), ascending, PySCF's Davidson roots |
+| `groups` | The roots as indices into `energies`, split into degenerate groups (1e-6 hartree apart at most; the gap to the next group is checked over 1e-4) |
+| `oscillator_strengths` | Singlets only, and not HF's: one per **group**, the group's summed length-gauge f = ⅔ ω Σₓ \|⟨0\|x\|n⟩\|², ⟨0\|x\|n⟩ = √2 Σᵢₐ xᵢₐ Xᵢₐ with X unit-normalised (PySCF's convention). A triplet's is zero by spin and is not recorded |
+| `dense_max_error`, `dense_max_oscillator_error` | The largest difference between PySCF's roots and the dense A's lowest eigenvalues, and between PySCF's group f and the one from the dense eigenvectors |
+| `int1e_r` | The `.npy` beside it: libcint's `int1e_r_sph`, (3, nao, nao) in x, y, z order, origin at 0, '<f8' Fortran order, PySCF's spherical AO order (the order `density_fitting/` uses) |
+
+**What a test can check invariantly.** Benzene's E states and HF's Π come
+in degenerate pairs, whose individual eigenvectors, and so whose individual
+oscillator strengths, are any rotation within the pair: only the pair's sum
+is defined. So every root list is recorded in whole groups, and f per group;
+"the lowest five" of benzene is six roots (two dark singles, the bright E₁ᵤ
+pair, a dark pair), and HF's "lowest three" is the Π pair and a Σ. A test compares each
+energy by index and each group's summed f. The transition dipole is origin
+independent (occupied and virtual orbitals are S-orthogonal), so a test may
+use `int1e_r` at origin 0 whatever origin PySCF used internally. A dark
+state's recorded f is rounding (1e-25 or below), so compare it absolutely.
+
+**The cross-check.** The issue named a private tree's
+`h2o_{sto3g,631g}_cis_*.json` as an independent check; it is not reachable
+here, so the emitter checks itself instead: for every case and spin it
+builds A = δ(εₐ − εᵢ) + 2(ia\|jb) − (ij\|ab) (singlet; the triplet drops
+2(ia\|jb)) from PySCF's own MO integrals (exact `ao2mo`, or the DF
+object's `ao2mo` over the same fitting set), diagonalizes it densely, and
+refuses to write unless PySCF's roots equal its lowest eigenvalues to 1e-8
+(measured: 3e-14 or better everywhere) and the group f agree to 1e-6
+(measured: 7e-8 at benzene's bright E₁ᵤ pair, 2e-9 or better elsewhere). The
+Davidson run is sized from the dense spectrum, three roots past the wanted
+ones and then to a group boundary, because a run that cuts a degenerate pair
+stalls; the roots themselves are PySCF's.
+
+**Tolerance.** The Davidson residual is converged to 1e-7, so the energies
+are PySCF's to ~1e-14, and the oscillator strengths to ~1e-7 (they are
+quadratic in the vectors, which are good to the residual over the gap).
+DF moves the H₂O energies by up to ~1e-5 and benzene's by up to ~5e-5
+against the exact ones: a DF sigma is held to the DF case, never to the exact one.
+
+Regenerate with (one thread; byte-identical run to run, about two minutes,
+nearly all benzene):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/cis_reference.py
 ```
 
 ## `localization/pipek_mezey.json`
