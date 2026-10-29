@@ -64,6 +64,9 @@ repos:
         # Still low enough to catch an errant blob or dataset committed by
         # accident, which is what this hook is actually for.
         args: [--maxkb=3072]
+        # The 3-RDM experiment's dm3, f3ca and f3ac are n_act^6 doubles, 8 MB
+        # each at CAS(10,10), and the data is the point of that directory.
+        exclude: ^experimental/compress_rdm3/
 
   # cmake-lint on the staged cmake files. A linter, not a formatter -- the
   # rule above bans tools that rewrite whole files, and this one only reports.
