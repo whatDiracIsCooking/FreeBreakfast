@@ -33,6 +33,9 @@ add_subdirectory(mcscf)
 # After integrals, whose density-fitted MO transform it reads, and ci, whose
 # strings its RDMs read; before pipeline, which it must never import.
 add_subdirectory(nevpt2)
+# After recipes, whose Davidson it preconditions, and integrals, whose J and K
+# its sigma will contract; before pipeline, which it must never import.
+add_subdirectory(cis)
 # After the modules its steps wrap: the step contract itself is a leaf over
 # core, but the setup steps that follow it import integrals and recipes.
 add_subdirectory(pipeline)
