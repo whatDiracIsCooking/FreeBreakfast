@@ -33,6 +33,7 @@ Two things still apply:
 | [`output_ring/`](output_ring/README.md) | Device arrays streamed into `.npy` files through a fixed ring of pinned staging slots: copies on the device stream, writes on a taskflow executor, several files at once |
 | [`blas_lt/`](blas_lt/README.md) | fp64 GEMM through the cuBLASLt / hipBLASLt heuristic, on the shapes `nevpt2::rdms`' digest runs: does the Lt surface beat plain `Dgemm` there, and does hipBLASLt offer an fp64 algorithm at all |
 | [`compress_rdm3/`](compress_rdm3/README.md) | A complete SC-NEVPT2 case with no symmetry, C1 glycolaldehyde DF-CASSCF(10,10), dm3/f3ca/f3ac included: data and its generator for 3-RDM compression experiments; nothing built |
+| [`split_gemm/`](split_gemm/README.md) | fp64 GEMM composed from vendor `Sgemm` calls on a hi/lo fp32 split, on the same digest shapes: each card's own fp64 ceiling, and the speed-against-accuracy curve of spending fp32 throughput to buy fp64 accuracy |
 
 Promote something by moving it under `src/` (its tests into `test/gtest/`),
 wiring it into `src/CMakeLists.txt`, and deleting it from here.

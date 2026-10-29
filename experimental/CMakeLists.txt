@@ -42,3 +42,8 @@ add_subdirectory(output_ring)
 # nevpt2::rdms' digest runs. Benchmark only: there is nothing to assert about
 # which algorithm a vendor heuristic picks.
 add_subdirectory(blas_lt)
+
+# The card's own fp64 ceiling, and fp64 GEMM composed from vendor Sgemm calls
+# on a hi/lo fp32 split -- the speed-against-accuracy curve of spending fp32
+# throughput to buy fp64 accuracy. Benchmark only, like blas_lt.
+add_subdirectory(split_gemm)
