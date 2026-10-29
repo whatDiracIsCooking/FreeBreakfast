@@ -33,6 +33,13 @@ different bases, so nothing relates (la, lb) to (lb, la), its table is full,
 and its records (free_breakfast.integrals.mmd's mixed_primitive_pair_classes)
 are never swapped.
 
+The dipole `dipole<la, lb>` (FelizJueves's Target.DIPOLE, `kernel_mu`) is
+the one family emitted below f: FelizJueves validates it through (dd) only,
+and its own CLI refuses `--mu-l 3`, so it is written for la <= lb <= MU_MAX_L
+and its table is 3 x 3. One kernel per class writes all three components
+x, y, z into one [3, n_ao, n_ao] array, the origin C and the charge q runtime
+arguments.
+
 One more family is not a one-electron integral but rides along because it
 is per pair class, keyed and laid out the same way: `pair_bound<la, lb>`
 (FelizJueves's Target.PAIR_BOUND), each record's pair-factor-free Schwarz
@@ -62,6 +69,7 @@ sys.path.insert(0, str(ROOT / "deps/FelizJueves/src"))
 from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import Specialization  # noqa: E402
 from felizjueves.eri.kernel_pair_bound import build_pair_bound_kernel  # noqa: E402
+from felizjueves.one_electron.kernel_mu import build_mu_kernel  # noqa: E402
 from felizjueves.one_electron.kernel_s import build_s_kernel  # noqa: E402
 from felizjueves.one_electron.kernel_sx import build_sx_kernel  # noqa: E402
 from felizjueves.one_electron.kernel_t import build_t_kernel  # noqa: E402
@@ -75,6 +83,11 @@ from felizjueves.performance.device import by_name  # noqa: E402
 # the one-electron checks) and device::kPairBoundMaxMomentum
 # (src/integrals/mmd/mmd_bridge.h, static_asserted against the table).
 MAX_L = 3
+# The dipole's L limit: d, FelizJueves's own (its emit CLI's MU_L_MAX), the
+# highest class it validates kernel_mu against libcint. f is an FelizJueves
+# follow-up. kDipoleMaxL (src/integrals/one_electron/dipole/dipole.cppm) must
+# equal it.
+MU_MAX_L = 2
 # The gpu backend reads only the arch's wavefront, and these kernels have no
 # shuffle, so their text names neither: any wave32 arch writes the same files.
 ARCH = "sm_86"
@@ -90,6 +103,9 @@ FAMILIES = {
     "potential_en": build_v_kernel,
 }
 
+# The families emitted below MAX_L, each with its own limit (module docstring).
+LIMITED_FAMILIES = {"dipole": (build_mu_kernel, MU_MAX_L)}
+
 # The ordered families: every (la, lb), la > lb included (module docstring).
 ORDERED_FAMILIES = {"overlap_mixed": build_sx_kernel}
 
@@ -104,6 +120,9 @@ def main() -> int:
     for family, build in FAMILIES.items():
         out = ROOT / "src/integrals/one_electron" / family / "kernels"
         emit_family(arch, family, build, out)
+    for family, (build, max_l) in LIMITED_FAMILIES.items():
+        out = ROOT / "src/integrals/one_electron" / family / "kernels"
+        emit_family(arch, family, build, out, max_l=max_l)
     for family, build in ORDERED_FAMILIES.items():
         out = ROOT / "src/integrals/one_electron" / family / "kernels"
         emit_family(arch, family, build, out, ordered=True)
@@ -114,13 +133,15 @@ def main() -> int:
     return 0
 
 
-def emit_family(arch, family: str, build, out: Path, *, ordered: bool = False) -> None:
+def emit_family(
+    arch, family: str, build, out: Path, *, ordered: bool = False, max_l: int = MAX_L
+) -> None:
     out.mkdir(parents=True, exist_ok=True)
-    ls = range(MAX_L + 1)
+    ls = range(max_l + 1)
     if ordered:
         classes = [(la, lb) for la in ls for lb in ls]
     else:
-        classes = [(la, lb) for la in ls for lb in range(la, MAX_L + 1)]
+        classes = [(la, lb) for la in ls for lb in range(la, max_l + 1)]
     for cls in classes:
         kernel = build(cls)
         spec = Specialization(family, cls)

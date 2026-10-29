@@ -142,6 +142,7 @@ add_executable(
   launch_gpu.cpp
   overlap_gpu.cpp
   overlap_mixed_gpu.cpp
+  dipole_gpu.cpp
   core_hamiltonian_gpu.cpp
   coulomb_gpu.cpp
   sort_bounds_gpu.cpp

@@ -1,7 +1,8 @@
 /// @file
 /// @brief Convenience module that re-exports the one-electron integral
 /// matrices on the GPU: the overlap S (and S between two bases), the kinetic
-/// energy T, the nuclear attraction V, and the core Hamiltonian H = T + V.
+/// energy T, the nuclear attraction V, the core Hamiltonian H = T + V, and the
+/// dipole matrices mu_x, mu_y, mu_z.
 ///
 /// `import free_breakfast.integrals.one_electron;` gives every build and the
 /// device inputs they read. The sub-modules remain importable individually.
@@ -13,4 +14,5 @@ export import free_breakfast.integrals.one_electron.overlap;
 export import free_breakfast.integrals.one_electron.overlap_mixed;
 export import free_breakfast.integrals.one_electron.kinetic;
 export import free_breakfast.integrals.one_electron.potential_en;
+export import free_breakfast.integrals.one_electron.dipole;
 export import free_breakfast.integrals.one_electron.core_hamiltonian;
