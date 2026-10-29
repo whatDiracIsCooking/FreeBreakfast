@@ -103,6 +103,7 @@ add_executable(
   ci_rdm_gpu.cpp
   cis_precondition_gpu.cpp
   cis_sigma_gpu.cpp
+  cis_step_gpu.cpp
   matrix_ao_gpu.cpp
   gemm_gpu.cpp
   gemmwich_gpu.cpp
@@ -216,6 +217,7 @@ target_link_libraries(
   free_breakfast::pipeline::casscf
   free_breakfast::pipeline::fci
   free_breakfast::pipeline::nevpt2
+  free_breakfast::pipeline::cis
   free_breakfast::pipeline::config
   free_breakfast::test::support
   GTest::gtest

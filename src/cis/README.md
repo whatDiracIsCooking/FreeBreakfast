@@ -4,7 +4,8 @@ Configuration interaction singles (the Tamm–Dancoff approximation) over an RHF
 reference: the singlet and triplet excitations, as the lowest roots of the A
 matrix A_ia,jb = δ_ij δ_ab (ε_a − ε_i) + its two-electron part, solved by
 `davidson_solve` (`../recipes/davidson/`) over a sigma that applies A without
-forming it.
+forming it. The pipeline's `CisStep` (`../pipeline/cis/`) runs that solve
+over an SCF's products.
 
 Everything it exports is in **`namespace free_breakfast::cis`**, spelled bare
 inside it — `cis::Preconditioner`, `cis::guess`, `cis::Sigma` — and the `.cu`

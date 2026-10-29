@@ -118,6 +118,14 @@ void print_products(const fb::Calculation &calc) {
                    fci->spin_squares[r]);
     }
   }
+  if (const auto &out = calc.get<fb::CisOutput>()) {
+    std::println("CIS:               {} occupied, {} virtual, {} Davidson iterations", out->n_occ,
+                 out->n_virt, out->iterations);
+    for (std::size_t r = 0; r < out->states.size(); ++r) {
+      std::println("CIS state {}:       {:.10f} Ha above the reference", r,
+                   out->states[r].excitation_energy);
+    }
+  }
 }
 
 fb::Status run(std::span<char *const> args) {
