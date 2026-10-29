@@ -79,28 +79,54 @@ struct OpenShellState {
   return 0.5 * (dh + df + dbfb);
 }
 
-// The Roothaan effective Fock matrix of an open shell into st.f, in PySCF's
-// get_roothaan_fock convention, so that its eigenvalues are PySCF's ROHF
-// orbital energies: with Fc = (Fa + Fb)/2 and the core, open and virtual
-// projectors Pc = Db S, Po = (Da - Db) S and Pv = I - Da S,
+// The open-open block of the Roothaan effective Fock matrix the loop iterates
+// on is (1 - w) Fa + w Fb at this w, not PySCF's Fc = (Fa + Fb)/2 (w = 1/2).
+// Where the open block's eigenvalues sit against the core and virtual ones is
+// the Roothaan step's estimate of the energy's curvature along a core-open
+// rotation (a beta electron moving, coupled through Fb) and an open-virtual
+// one (an alpha electron, coupled through Fa). On a localized hole Fc puts the
+// open orbital below doubly occupied ones (glycylglycine+ in STO-3G: -0.480 Eh
+// against three at -0.458 to -0.444), so the minimum is no aufbau state of
+// PySCF's matrix and the iteration moves the hole from lone pair to lone pair
+// without converging, PySCF's own included (issue #476). w = 1 inverts the
+// open-virtual gap instead (NO, CH2/cc-pVTZ). Run in PySCF over twenty open
+// shells, w = 0.7 and 0.8 reach every minimum; 0.6 misses two glycine
+// cations and 0.9 misses NO. 3/4 is the middle. Only the iteration sees it:
+// the minimum, the energy and the commutator do not depend on the diagonal
+// blocks, and the published orbitals are PySCF's (publish_open).
+constexpr double kOpenBlockBetaWeight = 0.75;
+
+// The Roothaan effective Fock matrix of an open shell into @p f, as PySCF's
+// get_roothaan_fock but for the open-open block: with Fc = (Fa + Fb)/2,
+// Fo = (1 - w) Fa + w Fb at w = @p open_beta_weight (kOpenBlockBetaWeight
+// for the loop's; 1/2, Fo = Fc, is PySCF's own), and the core, open and
+// virtual projectors Pc = Db S, Po = (Da - Db) S and Pv = I - Da S,
 //
-//   A = Pc^T Fc Pc / 2 + Po^T Fc Po / 2 + Pv^T Fc Pv / 2
+//   A = Pc^T Fc Pc / 2 + Po^T Fo Po / 2 + Pv^T Fc Pv / 2
 //     + Po^T Fb Pc + Po^T Fa Pv + Pv^T Fc Pc,     F = A + A^T.
 //
-// Fc on every diagonal block, Fb between core and open, Fa between open and
-// virtual and Fc between core and virtual. It is made from the densities, not
-// the orbitals, so the first build, whose densities are the guess's, needs no
-// C. The projectors are this call's scratch; st.work is the products'.
+// Fc on the core and virtual diagonal blocks, Fo on the open one, Fb between
+// core and open, Fa between open and virtual and Fc between core and virtual.
+// It is made from the densities, not the orbitals, so the first build, whose
+// densities are the guess's, needs no C. The projectors are this call's
+// scratch; st.work is the products'.
 [[nodiscard]] Status roothaan_fock(DeviceResources &res, ScfState &st, const OpenShellState &open,
-                                   const SphericalMatrixAO &s) {
+                                   const SphericalMatrixAO &s, double open_beta_weight,
+                                   SphericalMatrixAO &f) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto n = static_cast<int32_t>(s.n());
   const size_t nn = s.num_elements();
-  const auto [fc, pc, po, pv, a] = res.device_regions<double>(nn, nn, nn, nn, nn);
+  const auto [fc, fo_half, pc, po, pv, a] = res.device_regions<double>(nn, nn, nn, nn, nn, nn);
   double *const work = st.work.data();
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n,
                                                 &kHalf<double>, open.fa.data(), n, &kHalf<double>,
                                                 open.fb.data(), n, fc, n)));
+  // Fo / 2, as A takes it.
+  const double fa_weight = 0.5 * (1.0 - open_beta_weight);
+  const double fb_weight = 0.5 * open_beta_weight;
+  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n,
+                                                &fa_weight, open.fa.data(), n, &fb_weight,
+                                                open.fb.data(), n, fo_half, n)));
   FBF_TRY(gpu_status(gemm(blas, n, &kOne<double>, open.db.data(), s.data(), &kZero<double>, pc)));
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n,
                                                 &kOne<double>, open.da.data(), n, &kNegOne<double>,
@@ -117,15 +143,15 @@ struct OpenShellState {
   // Fc Pv: A += Pv^T (Fc Pv) / 2.
   FBF_TRY(gpu_status(gemm(blas, n, &kOne<double>, fc, pv, &kZero<double>, work)));
   FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n, &kHalf<double>, pv, work, &kOne<double>, a)));
-  // Every term with Po on the left: A += Po^T (Fc Po / 2 + Fb Pc + Fa Pv).
-  FBF_TRY(gpu_status(gemm(blas, n, &kHalf<double>, fc, po, &kZero<double>, work)));
+  // Every term with Po on the left: A += Po^T (Fo Po / 2 + Fb Pc + Fa Pv).
+  FBF_TRY(gpu_status(gemm(blas, n, &kOne<double>, fo_half, po, &kZero<double>, work)));
   FBF_TRY(gpu_status(gemm(blas, n, &kOne<double>, open.fb.data(), pc, &kOne<double>, work)));
   FBF_TRY(gpu_status(gemm(blas, n, &kOne<double>, open.fa.data(), pv, &kOne<double>, work)));
   FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n, &kOne<double>, po, work, &kOne<double>, a)));
   // A + A^T is symmetric bit for bit, which the commutator's one product needs.
   return gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n,
-                                               &kOne<double>, a, n, &kOne<double>, a, n,
-                                               st.f.data(), n));
+                                               &kOne<double>, a, n, &kOne<double>, a, n, f.data(),
+                                               n));
 }
 
 // The DIIS residual X^T (F D S - S D F) X into st.tmp, and its Frobenius norm.
@@ -177,6 +203,75 @@ struct OpenShellState {
                                                open->db.data(), n, st.d.data(), n));
 }
 
+// The converged open orbitals, C's columns [n_beta, n_alpha), rotated among
+// themselves to diagonalize Fc = (Fa + Fb)/2 there, and their energies its
+// eigenvalues: PySCF's Roothaan matrix's open block, where the loop's has
+// Fo (kOpenBlockBetaWeight). The two matrices differ in that block alone, so
+// the core and virtual orbitals and energies are already PySCF's, and a
+// rotation among the open orbitals leaves Da and Db as they are. The open
+// energies keep their columns, so they need not sort among the core ones.
+// st.work, st.tmp and st.e are free once the loop has converged.
+[[nodiscard]] Status canonicalize_open(DeviceResources &res, ScfState &st,
+                                       const OpenShellState &open, int32_t n_alpha,
+                                       int32_t n_beta) {
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const auto n = static_cast<int32_t>(st.c.n());
+  const int32_t m = n_alpha - n_beta;
+  double *const fc = st.work.data();
+  double *const fc_co = st.tmp.data(); // Fc C_o, n x m; then C_o U
+  double *const block = st.e.data();   // C_o^T Fc C_o, m x m; then U
+  double *const co = st.c.data() + (static_cast<size_t>(n) * static_cast<size_t>(n_beta));
+  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n,
+                                                &kHalf<double>, open.fa.data(), n, &kHalf<double>,
+                                                open.fb.data(), n, fc, n)));
+  FBF_TRY(gpu_status(gemm(blas, n, m, n, &kOne<double>, fc, co, &kZero<double>, fc_co)));
+  FBF_TRY(gpu_status(
+      gemm<wwr::WWRBLAS_OP_T>(blas, m, m, n, &kOne<double>, co, fc_co, &kZero<double>, block)));
+  FBF_TRY(diagonalize<double>(res, m, block, st.eps.data() + n_beta));
+  FBF_TRY(gpu_status(gemm(blas, n, m, m, &kOne<double>, co, block, &kZero<double>, fc_co)));
+  return gpu_status(wwr::wwrMemcpyAsync(
+      co, fc_co, static_cast<size_t>(n) * static_cast<size_t>(m) * sizeof(double),
+      wwr::wwrMemcpyDeviceToDevice, res.stream()));
+}
+
+// The host copy of st.eps, one energy per column of st.c.
+[[nodiscard]] Result<std::vector<double>> download_eps(DeviceResources &res, const ScfState &st) {
+  std::vector<double> eps(st.c.n());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(eps.data(), st.eps.data(), eps.size() * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, res.stream())));
+  FBF_TRY(res.sync());
+  return eps;
+}
+
+// A converged open shell's published orbitals into st.c and st.d, Da and Db,
+// and their energies, every one PySCF's. @p pyscf_fock is PySCF's own Roothaan
+// matrix (open_beta_weight 1/2), made from the densities st.f was built from.
+//
+// First the canonical orbitals of st.f, the iterated matrix as built, with
+// the open ones made PySCF's (canonicalize_open): the converged state's
+// classes, core, open and virtual, with PySCF's energies. If those ascend,
+// PySCF's matrix orders the classes as aufbau does, and the published
+// orbitals are its own canonical ones instead, its last Roothaan step taken
+// as the loop took it before #476: a closer step than the iterated matrix's
+// wherever its Fc is a fair curvature, as it is away from a localized hole.
+// If they do not ascend, aufbau on PySCF's matrix would move a localized hole
+// to another orbital, and the first orbitals stand, their energies in their
+// columns.
+[[nodiscard]] Result<std::vector<double>> publish_open(DeviceResources &res, ScfState &st,
+                                                       OpenShellState &open,
+                                                       const SphericalMatrixAO &pyscf_fock,
+                                                       const SphericalMatrixAO &x, int32_t n_alpha,
+                                                       int32_t n_beta) {
+  FBF_TRY(solve_fock(res, st, &open, st.f, x, n_alpha, n_beta));
+  FBF_TRY(canonicalize_open(res, st, open, n_alpha, n_beta));
+  std::vector<double> eps = FBF_TRY(download_eps(res, st));
+  if (!std::ranges::is_sorted(eps)) {
+    return eps;
+  }
+  FBF_TRY(solve_fock(res, st, &open, pyscf_fock, x, n_alpha, n_beta));
+  return download_eps(res, st);
+}
+
 // The converged orbitals to @p path as Molden: C downloaded, every MO written,
 // the n_beta lowest doubly occupied and the next n_alpha - n_beta singly.
 [[nodiscard]] Status write_scf_molden(DeviceResources &res, const std::filesystem::path &path,
@@ -205,8 +300,10 @@ struct OpenShellState {
 // An open shell's iterate is Da and Db, and the Fock matrices Fa and Fb the
 // builder makes from them; the loop assembles the Roothaan effective F from
 // those (roothaan_fock), and from there runs as for a closed shell: DIIS and
-// the commutator on (F, Da + Db), F's eigenvectors the orbitals. The guess,
-// spin-summed, is split D/2 per spin. A closed shell allocates none of it and
+// the commutator on (F, Da + Db), F's eigenvectors the orbitals. Its open
+// block is not PySCF's (kOpenBlockBetaWeight), so on convergence the
+// published orbitals are made PySCF's (publish_open). The guess, spin-summed,
+// is split D/2 per spin. A closed shell allocates none of it and
 // skips every step of it, so its path is the RHF loop's, operation for
 // operation.
 //
@@ -289,7 +386,7 @@ scf_loop(DeviceResources &res, FockBuilder &builder, const Molecule &molecule,
     const bool full = FBF_TRY(builder.build(res, st.d, iteration == 1 ? nullptr : &st.c, h,
                                             open != nullptr ? open->fa : st.f, open));
     if (open != nullptr) {
-      FBF_TRY(roothaan_fock(res, st, *open, s));
+      FBF_TRY(roothaan_fock(res, st, *open, s, kOpenBlockBetaWeight, st.f));
     }
     const double energy = nuclear + FBF_TRY(electronic_energy(res, st, open, h));
     const double norm = FBF_TRY(commutator(res, st, s, x));
@@ -310,28 +407,33 @@ scf_loop(DeviceResources &res, FockBuilder &builder, const Molecule &molecule,
       if (reset) {
         diis.reset();
       }
+      FBF_TRY(solve_fock(res, st, open, st.f_diis, x, n_alpha, n_beta));
+      continue;
     }
     // Converged: the canonical orbitals of the Fock matrix as built, not of an
-    // extrapolation, and the density they give.
-    FBF_TRY(solve_fock(res, st, open, converged ? st.f : st.f_diis, x, n_alpha, n_beta));
-    if (converged) {
-      std::vector<double> mo_energies(n);
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(mo_energies.data(), st.eps.data(), n * sizeof(double),
-                                             wwr::wwrMemcpyDeviceToHost, res.stream())));
-      FBF_TRY(res.sync());
-      FBF_LOG_INFO("scf: converged in {} iterations, E = {:.12f}", iteration, energy);
-      if (!molden.empty()) {
-        FBF_TRY(write_scf_molden(res, molden, molecule, basis, st.c, mo_energies, n_alpha, n_beta));
-        FBF_LOG_INFO("scf: wrote {}", molden.string());
-      }
-      return ScfOutput{.energy = energy,
-                       .iterations = iteration,
-                       .n_alpha = n_alpha,
-                       .n_beta = n_beta,
-                       .mo_energies = std::move(mo_energies),
-                       .c = std::move(st.c),
-                       .d = std::move(st.d)};
+    // extrapolation, and the density they give. An open shell's are PySCF's
+    // matrix's (publish_open), made into st.f_diis, which DIIS no longer
+    // needs, before a solve replaces the densities it is made from.
+    std::vector<double> mo_energies;
+    if (open == nullptr) {
+      FBF_TRY(solve_fock(res, st, open, st.f, x, n_alpha, n_beta));
+      mo_energies = FBF_TRY(download_eps(res, st));
+    } else {
+      FBF_TRY(roothaan_fock(res, st, *open, s, kHalf<double>, st.f_diis));
+      mo_energies = FBF_TRY(publish_open(res, st, *open, st.f_diis, x, n_alpha, n_beta));
     }
+    FBF_LOG_INFO("scf: converged in {} iterations, E = {:.12f}", iteration, energy);
+    if (!molden.empty()) {
+      FBF_TRY(write_scf_molden(res, molden, molecule, basis, st.c, mo_energies, n_alpha, n_beta));
+      FBF_LOG_INFO("scf: wrote {}", molden.string());
+    }
+    return ScfOutput{.energy = energy,
+                     .iterations = iteration,
+                     .n_alpha = n_alpha,
+                     .n_beta = n_beta,
+                     .mo_energies = std::move(mo_energies),
+                     .c = std::move(st.c),
+                     .d = std::move(st.d)};
   }
   return err_max_iterations_exceeded(
       "scf: not converged in {} iterations (energy_tolerance {:g}, commutator_tolerance {:g})",

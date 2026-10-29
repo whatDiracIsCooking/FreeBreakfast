@@ -12,15 +12,17 @@ between the two codes. An ROHF case also records its spin (2S, PySCF's
 convention), its multiplicity and n_alpha / n_beta; its orbital energies are
 the eigenvalues of PySCF's default Roothaan effective Fock, one
 canonicalization of several, and it is checked internally stable before it
-is written.
+is written. A localized hole, whose minimum PySCF's ROHF cannot converge to,
+is iterated on the Scf step's own Roothaan matrix instead and checked against
+PySCF's second-order solver (localized_hole_rohf), in a file of its own.
 
 BLAS and OpenMP are pinned to one thread, and nothing run-dependent (date,
-host) is written, so a rerun regenerates both files byte for byte.
+host) is written, so a rerun regenerates every file byte for byte.
 
     uv run --group tools tools/emit/scf_reference.py
 
-writes test/gtest/data/scf/rhf.json and rohf.json. Re-run it to regenerate;
-the files are never hand-edited.
+writes test/gtest/data/scf/rhf.json, rohf.json and rohf_localized_hole.json.
+Re-run it to regenerate; the files are never hand-edited.
 """
 
 from __future__ import annotations
@@ -40,10 +42,12 @@ import pathlib  # noqa: E402
 import numpy  # noqa: E402
 import pyscf  # noqa: E402
 from pyscf import gto, lib, scf  # noqa: E402
+from pyscf.scf import rohf as pyscf_rohf  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 OUT = ROOT / "test" / "gtest" / "data" / "scf" / "rhf.json"
 ROHF_OUT = OUT.with_name("rohf.json")
+LOCALIZED_HOLE_OUT = OUT.with_name("rohf_localized_hole.json")
 
 # The builtin basis name the C++ side resolves, and its file under data/basis.
 BASES = {
@@ -95,6 +99,32 @@ METHYLENE = [
     ("H", (0.9901, -0.8926, -1.5457)),
 ]
 
+# Glycylglycine, H2N-CH2-CO-NH-CH2-COOH: the first two residues of a
+# pentaglycine chain, the third's N and amide H made the acid's O and H. Its
+# cation's hole sits on one carbonyl lone pair, where PySCF's Roothaan matrix
+# puts the open orbital below three doubly occupied ones: the ROHF minimum is
+# no aufbau state of that matrix, and PySCF's ROHF does not converge in 150
+# cycles from either default guess (localized_hole_rohf, below). Bohr.
+GLYCYLGLYCINE = [
+    ("N", (0.0, 0.0, 0.0)),
+    ("C", (2.7340, 0.0, 0.0)),
+    ("C", (3.7195, 0.0, 2.7089)),
+    ("O", (2.3405, 0.0, 4.5767)),
+    ("H", (3.3994, -1.6932, -0.9872)),
+    ("H", (3.4010, 1.6875, -0.9894)),
+    ("H", (-0.8924, -0.0048, 1.7001)),
+    ("H", (-0.9600, 0.1449, -1.6564)),
+    ("N", (6.2131, 0.0, 3.1490)),
+    ("C", (7.1478, 0.0004, 5.7183)),
+    ("C", (10.0304, 0.0003, 5.7183)),
+    ("O", (11.3142, 0.0, 3.7839)),
+    ("H", (6.4477, 1.6938, 6.6808)),
+    ("H", (6.4460, -1.6869, 6.6836)),
+    ("H", (7.5057, 0.0045, 1.7292)),
+    ("O", (11.2965, 0.0007, 7.9112)),
+    ("H", (10.4041, -0.0035, 9.6113)),
+]
+
 CASES = [
     {"name": "h2o_sto3g", "atoms": WATER, "basis": "sto-3g", "charge": 0},
     {"name": "h2o_ccpvdz", "atoms": WATER, "basis": "cc-pvdz", "charge": 0},
@@ -140,6 +170,19 @@ ROHF_CASES = [
         "basis": "cc-pvtz",
         "charge": 0,
         "spin": 2,
+    },
+]
+
+# ROHF minima PySCF's own iteration cannot reach (localized_hole_rohf), in a
+# file of their own: their orbital energies, by occupation class, are not
+# ascending.
+LOCALIZED_HOLE_CASES = [
+    {
+        "name": "glygly_cation_sto3g",
+        "atoms": GLYCYLGLYCINE,
+        "basis": "sto-3g",
+        "charge": 1,
+        "spin": 1,
     },
 ]
 
@@ -216,11 +259,102 @@ def rhf(case: dict) -> dict:
     }
 
 
-def rohf(case: dict) -> dict:
+class OpenBlockROHF(scf.rohf.ROHF):
+    """ROHF iterated on the Scf step's Roothaan matrix: PySCF's, but with
+    (Fa + 3 Fb)/4 on the open-open block in place of (Fa + Fb)/2, and the
+    occupations aufbau in its spectrum.
+
+    The diagonal blocks are a canonicalization: they move no stationary point,
+    only which one the iteration can reach. PySCF's puts a localized hole's
+    open orbital below doubly occupied ones, so it cannot reach that minimum.
+    """
+
+    def get_fock(
+        self,
+        h1e=None,
+        s1e=None,
+        vhf=None,
+        dm=None,
+        cycle=-1,
+        diis=None,
+        diis_start_cycle=None,
+        level_shift_factor=None,
+        damp_factor=None,
+        fock_last=None,
+    ):
+        if h1e is None:
+            h1e = self.get_hcore()
+        if s1e is None:
+            s1e = self.get_ovlp()
+        if dm is None:
+            dm = self.make_rdm1()
+        if vhf is None:
+            vhf = self.get_veff(self.mol, dm)
+        focka = h1e + vhf[0]
+        fockb = h1e + vhf[1]
+        fock = pyscf_rohf.get_roothaan_fock((focka, fockb), dm, s1e)
+        po = (dm[0] - dm[1]) @ s1e
+        fock = fock + po.T @ ((fockb - focka) * 0.25) @ po
+        if diis and cycle >= self.diis_start_cycle:
+            fock = diis.update(
+                s1e, dm[0] + dm[1], fock, self, h1e, vhf, f_prev=fock_last
+            )
+        return lib.tag_array(fock, focka=focka, fockb=fockb)
+
+    def get_occ(self, mo_energy=None, mo_coeff=None):
+        n_alpha, n_beta = self.nelec
+        order = numpy.argsort(mo_energy, kind="stable")
+        mo_occ = numpy.zeros_like(mo_energy)
+        mo_occ[order[:n_beta]] = 2
+        mo_occ[order[n_beta:n_alpha]] = 1
+        return mo_occ
+
+
+def localized_hole_rohf(mol: gto.Mole, name: str) -> scf.rohf.ROHF:
+    """The ROHF minimum of a localized hole, which PySCF's ROHF cannot reach.
+
+    Converged by OpenBlockROHF to this file's tolerances, then checked against
+    PySCF's own second-order solver from its default guess, which reaches the
+    same energy but stalls at |g| ~ 1e-7, short of conv_tol_grad. Returned as
+    a plain ROHF over those orbitals, canonicalized in PySCF's convention: each
+    class's block of its Roothaan matrix diagonalized.
+    """
+    mf = OpenBlockROHF(mol)
+    converge(mf, name)
+    newton = scf.ROHF(mol).newton()
+    newton.conv_tol = 1e-12
+    newton.kernel()
+    assert abs(newton.e_tot - mf.e_tot) < 1e-10, f"{name}: newton finds another state"
+    out = scf.ROHF(mol)
+    out.mo_occ = mf.mo_occ
+    out.mo_energy, out.mo_coeff = out.canonicalize(mf.mo_coeff, mf.mo_occ)
+    out.e_tot = mf.e_tot
+    out.converged = True
+    return out
+
+
+def class_order(mo_occ: numpy.ndarray, mo_energy: numpy.ndarray) -> list[int]:
+    """The orbitals doubly occupied, then singly, then empty, each ascending.
+
+    The Scf step's columns, so its orbital energies compare by index. For an
+    aufbau state that is PySCF's own order; a second-order solution's need not
+    be, its open orbitals' energies falling among the doubly occupied ones.
+    """
+    return [
+        int(i)
+        for occ in (2, 1, 0)
+        for i in sorted(numpy.flatnonzero(mo_occ == occ), key=lambda i: mo_energy[i])
+    ]
+
+
+def rohf(case: dict, localized_hole: bool = False) -> dict:
     """PySCF's converged, internally stable ROHF for one case."""
     mol = molecule(case)
-    mf = scf.ROHF(mol)
-    converge(mf, case["name"])
+    if localized_hole:
+        mf = localized_hole_rohf(mol, case["name"])
+    else:
+        mf = scf.ROHF(mol)
+        converge(mf, case["name"])
     # The default guess can land on a saddle; this file holds minima only.
     _, _, stable, _ = mf.stability(return_status=True)
     assert stable, f"{case['name']} is not internally stable"
@@ -242,7 +376,9 @@ def rohf(case: dict) -> dict:
         "n_beta": int(n_beta),
         "energy": float(mf.e_tot),
         "nuclear_repulsion": float(mol.energy_nuc()),
-        "mo_energies": [float(e) for e in mf.mo_energy],
+        "mo_energies": [
+            float(mf.mo_energy[i]) for i in class_order(mf.mo_occ, mf.mo_energy)
+        ],
     }
 
 
@@ -271,6 +407,18 @@ def main() -> None:
             "= n_alpha - n_beta; coordinates in bohr",
             "provenance": provenance,
             "cases": [rohf(case) for case in ROHF_CASES],
+        },
+        LOCALIZED_HOLE_OUT: {
+            "description": "ROHF minima of a localized hole, which PySCF's ROHF "
+            "does not converge to (spherical, conv_tol 1e-12, conv_tol_grad "
+            "1e-9, internally stable, the energy PySCF's second-order solver's "
+            "to 1e-10) over this tree's data/basis files: total energy, nuclear "
+            "repulsion and orbital energies, PySCF's Roothaan effective Fock's "
+            "eigenvalues in each occupation class, the doubly occupied, then the "
+            "singly, then the empty, each ascending (hartree); spin is 2S = "
+            "n_alpha - n_beta; coordinates in bohr",
+            "provenance": provenance,
+            "cases": [rohf(case, localized_hole=True) for case in LOCALIZED_HOLE_CASES],
         },
     }
     OUT.parent.mkdir(parents=True, exist_ok=True)
