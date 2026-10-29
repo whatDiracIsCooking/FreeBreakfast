@@ -29,6 +29,7 @@ imported and linked on its own, and `CMakeLists.txt` is a plain
 | Directory | Module | Role |
 |-----------|--------|------|
 | `precondition/` | `free_breakfast.cis.precondition` | The orbital-energy diagonal Δε_ia = ε_a − ε_i (`cis::diagonal`), the unit-vector Davidson start on its lowest entries (`cis::guess`), and the diagonal correction r / (θ − Δε) as a `DavidsonPreconditioner` (`cis::Preconditioner`), all on the device. |
+| `ris_basis/` | `free_breakfast.cis.ris_basis` | The RIS minimal auxiliary basis (`cis::ris_basis`): one uncontracted shell per l on each atom, of exponent θ / R_A² over the Ghosh radius, `s` on H and `s`, `Sp` or `Spd` (`cis::RisShells`) on a heavy atom, as a spherical `BasisSet` over a molecule's atoms. Host-only. |
 
 ## Tests
 
@@ -36,3 +37,5 @@ Device, in `test/gtest/cis_<name>_gpu.cpp`, linked into
 `free_breakfast_tests_gpu`. The golden data, PySCF's RHF + TDA over the A
 matrix it builds explicitly, is `test/gtest/data/cis/`, written by
 `tools/emit/cis_reference.py`.
+Host-only modules (`ris_basis/`) are tested in `test/gtest/cis_<name>_host.cpp`,
+linked into `free_breakfast_tests_host`.
