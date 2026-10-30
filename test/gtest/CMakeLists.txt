@@ -152,6 +152,7 @@ add_executable(
   df_high_aux_gpu.cpp
   df_gradient_gpu.cpp
   df_rhf_gradient_gpu.cpp
+  pipeline_gradient_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
@@ -223,6 +224,7 @@ target_link_libraries(
   free_breakfast::pipeline::fci
   free_breakfast::pipeline::nevpt2
   free_breakfast::pipeline::cis
+  free_breakfast::pipeline::gradient
   free_breakfast::pipeline::config
   free_breakfast::test::support
   GTest::gtest

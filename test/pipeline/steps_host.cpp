@@ -136,4 +136,11 @@ static_assert(
                           fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::CisStep>, fb::CisOutput>);
 
+static_assert(fb::PipelineStep<fb::GradientStep>);
+static_assert(fb::kRunShape<fb::GradientStep> == fb::RunShape::Device);
+static_assert(std::same_as<fb::StepInput<fb::GradientStep>,
+                           fb::View<fb::MoleculeOutput, fb::BasisSetOutput,
+                                    fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>>);
+static_assert(std::same_as<fb::StepOutput<fb::GradientStep>, fb::GradientOutput>);
+
 } // namespace

@@ -3,7 +3,7 @@
 The pipeline's two-electron integrals, chosen once by `[eri]` and built once
 for every reader: integral-direct (J's and K's pair classes) or
 density-fitted (the factor B = L⁻¹ (P|mn), M = L Lᵀ, of the orbital basis
-over an auxiliary one).
+over an auxiliary one, with that aux basis and L kept beside it).
 
 ## Module
 
@@ -27,6 +27,8 @@ struct IntegralDirect {
 struct DensityFitted {
   Buffers::device<double> b;  // naux x nao^2, [Q][n][m], Q fastest
   int32_t naux;
+  BasisSet aux;               // placed over the Molecule
+  Buffers::device<double> l;  // naux x naux, M = L L^T, lower triangle
 };
 
 struct EriOutput {
@@ -45,7 +47,7 @@ struct EriStep {
 };
 ```
 
-`ScfStep` and `CasscfStep` read `EriOutput` as an ordinary `View` entry and
+`ScfStep`, `CasscfStep` and the rest read `EriOutput` as an ordinary `View` entry and
 branch on the alternative, so one pipeline builds its integrals once and
 cannot mix a fitted SCF with a direct CASSCF: one aux basis per pipeline, and
 a mix is two runs.
@@ -70,15 +72,17 @@ On `res.stream()`:
 1. The aux basis: `aux_basis`, or, left empty, `<BasisSet::name()>-acCD-6-6`
    (below). Then `resolve_aux_basis`, and `place(stamp.primitive_normalized(),
    molecule)`, as the `BasisSet` step places the orbital basis.
-2. B's bytes, `naux · nao²` doubles, against the device's free memory:
+2. B's and L's bytes, `naux · (nao² + naux)` doubles, against the device's free memory:
    past it, `Unsupported` naming the bytes, since the allocation would
    otherwise abort (`CreatePolicy`).
 3. `metric` into a `MatrixAOPair` made for the aux basis, over its own
    `upload_spherical_transform_matrix`.
 4. `three_center` into B, `[m][n][P]` with P fastest.
-5. `density_fit` of B over the spherical metric, in place: B is then
-   `[Q][n][m]`, what `df_coulomb` and `df_exchange` read
-   (`src/integrals/eri/density_fitting/jk/README.md`).
+5. The spherical metric copied into `l`, its own `naux²` buffer, and
+   `density_fit` of B over it, in place: `l` is then L, and B `[Q][n][m]`,
+   what `df_coulomb` and `df_exchange` read
+   (`src/integrals/eri/density_fitting/jk/README.md`). The product keeps B,
+   L and the placed aux basis.
 
 Each failure is the call's own, passed through: an unreadable aux file is
 `IO`; an unknown name, a malformed set or a missing element is
@@ -95,17 +99,21 @@ its document claims a carried name. A basis with no carried `-acCD-6-6` set
 picked here rather than in `pipeline/config` so that config never loads a
 basis.
 
-- **The aux basis is the step's own, not a second product.** Products are
-  keyed by type, so a second `BasisSetOutput` cannot exist. A product of its
-  own would only add a type, because nothing but this step reads the aux basis.
-  It goes out of scope with the metric when `run` returns.
+- **The aux basis and L are held in `DensityFitted`, not a second product.**
+  The DF-RHF gradient (`pipeline/gradient`) needs both: its derivative
+  integrals are over the placed aux basis, and its fitted density and pairs
+  take L⁻ᵀ. Products are keyed by type, so a second `BasisSetOutput` cannot
+  exist, and a product of their own would only add a type: they mean
+  something only beside the B they were made with, so they ride in the same
+  alternative, and an integral-direct pipeline holds neither. L costs naux²
+  doubles beside B's naux nao²; the basis is host data.
 - **No `SphericalTransformOutput`.** The orbital U is not read: `three_center`
   builds its own U and U_aux, and the metric needs only the aux basis's U,
   which the step uploads itself. A `View` entry the step does not read would
   only order the pipeline for no reason.
 - **`Device`-shaped**, because B and the classes live on the device.
-- **The transients are freed stream-ordered.** The metric, which becomes L, is
-  released at return, after the trsm that reads it was queued on the same
+- **The transients are freed stream-ordered.** The metric pair is released at
+  return, after the copy into `l` that reads it was queued on the same
   stream. `three_center` and `density_fit` each synchronize the stream
   internally (their READMEs), so this step is not the device contract's
   no-wait ideal any more than they are.
@@ -166,5 +174,5 @@ over the other table (`pipeline/config`).
 | File | Role |
 |------|------|
 | `eri.cppm` | Module interface: `EriMode`, `IntegralDirect`, `DensityFitted`, `EriOutput`, `EriStep` |
-| `eri.cpp` | `EriStep::run`, the default aux basis, and B's build |
+| `eri.cpp` | `EriStep::run`, the default aux basis, and B's and L's build |
 | `CMakeLists.txt` | The module library |

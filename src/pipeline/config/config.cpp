@@ -416,6 +416,11 @@ template <class S>
     if (options.ris && options.cluster_gap > 0.0) {
       return err_config("[{}] ris and cluster_gap each pick the preconditioner; set one", kStep);
     }
+  } else if constexpr (std::same_as<S, GradientStep>) {
+    // No options: whether the ERIs and the SCF are ones it takes is
+    // GradientStep::run's to say, once they exist.
+    FBF_TRY(check_keys(table, kStep, {}));
+    step.json_path = output_dir / std::format("{}.json", kStep);
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.
