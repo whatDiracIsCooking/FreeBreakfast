@@ -24,6 +24,7 @@ file names the tool that wrote it and the source it came from.
 | `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit/fci_step_reference.py`, which runs PySCF |
 | `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ (and in `casscf_df.json` alone, NH₂'s doublet CAS(5,5) and CH₂'s triplet CAS(6,6) from PySCF's DF-ROHF orbitals): at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit/casscf_reference.py`, which runs PySCF |
 | `nevpt2/` | `nevpt2_df.json`: PySCF's strongly contracted NEVPT2 (`mrpt.NEVPT`, density-fitted throughout) per root, on the polished DF (SA-)CASSCF orbitals of each `casscf/casscf_df.json` case but N₂'s, from the same starts and over the same `data/aux_basis/cc-pVDZ-JKFIT.json`: each root's eight classes' norms and energies, their sum and the total, plus the CASSCF energies it sits on and the active-rotation invariance check; and `<case>/<array>.npy`: nevpt2-gpu-demo's five density-fitted N₂ goldens (the CI vector, dm1/dm2, the integral blocks, the fitted B blocks, the external four-index blocks and the class norms and energies), with PySCF's dm3, f3ca and f3ac added for the CAS(4,4) and CAS(8,8) cases, described in `nevpt2/README.md` | `tools/emit/nevpt2_reference.py`, which runs PySCF; `tools/emit/nevpt2_golden.py`, from the demo's goldens and PySCF |
+| `gradient/` | `gradient.json`: libcint's derivative integrals contracted with fixed recipe matrices into per-atom gradients (overlap, kinetic, nuclear attraction with its operator term, and `int2e_ip1` into dE_J and dE_K, for H₂O in cc-pVDZ and cc-pVTZ; `int2c2e_ip1` and `int3c2e_ip1`/`ip2` for H₂O in cc-pVDZ / cc-pVDZ-JKFIT, cc-pVTZ / cc-pVTZ-JKFIT and cc-pVTZ / cc-pVTZ-acCD-6-6, aux to i), PySCF's DF-RHF gradient (`df.grad.rhf`) term by term for H₂O, NH₄⁺ and a distorted H₂O in cc-pVDZ / cc-pVDZ-JKFIT, H₂O in cc-pVTZ / cc-pVTZ-JKFIT and in cc-pVDZ / cc-pVDZ-acCD, its integral-direct RHF gradient (`grad.rhf`) term by term for H₂O and the distorted H₂O in cc-pVDZ and H₂O in cc-pVTZ, and DF-RHF / cc-pVDZ / cc-pVDZ-JKFIT minima of H₂O and anti ethanol, all over this tree's own `data/basis` and `data/aux_basis` files; every analytic number checked against a finite difference | `tools/emit/gradient_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
 
@@ -246,6 +247,48 @@ Regenerate with (one thread; the output is byte-identical run to run):
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
     tools/emit/df_high_aux_reference.py
+```
+
+## `gradient/gradient.json`
+
+Nuclear-gradient references, all small enough to be plain JSON. Every
+gradient is a list of `[x, y, z]` rows, one per atom in `atoms` order,
+G[A][k] = dE/dR_Ak in hartree/bohr; coordinates are in bohr, energies in
+hartree. Spherical throughout, over this tree's own basis files.
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF, libcint (PySCF's `cint.h`) and numpy versions, `threads` (1), the command that wrote it. No date or host, so a rerun is byte-identical |
+| `recipe` | The fixed contraction matrices, as formulas over 0-based indices in PySCF's spherical AO order: M_mn = 1 / (m + n + 1) (nao × nao, the `coulomb/` Hilbert matrix), W_PQ = 1 / (P + Q + 1) (naux × naux), Γ_mnP = 1 / (m + n + P + 1). One IEEE division per element, so a test rebuilds them bit for bit |
+| `integrals` | H₂O (`density_fitting/`'s skew water) in cc-pVDZ and cc-pVTZ: `name`, `basis`, `atoms`, `nao`, `shells` (as `density_fitting/`'s), and Σ_mn M_mn dX_mn/dR for `overlap` (`int1e_ipovlp`), `kinetic` (`int1e_ipkin`) and `potential` — `functions` (`int1e_ipnuc`), `operator` (`int1e_iprinv` at each nucleus, × −Z) and their `total`; and with D = M, `coulomb` = dE_J, E_J = ½ Σ D_ab D_cd (ab\|cd), and `exchange` = dE_K, E_K = ½ Σ D_ab D_cd (ac\|bd), from `int2e_ip1`, unscreened |
+| `density_fitting` | The same water in cc-pVDZ / cc-pVDZ-JKFIT, cc-pVTZ / cc-pVTZ-JKFIT (aux to g) and cc-pVTZ / cc-pVTZ-acCD-6-6 (aux to i: (ff\|i), (i\|i)): `aux_basis`, `naux`, `aux_shells`, `metric` = Σ_PQ W_PQ d(P\|Q)/dR (`int2c2e_ip1`) and `three_center` = Σ_mnP Γ_mnP d(mn\|P)/dR — `orbital` (`int3c2e_ip1`, both orbital functions), `aux` (`int3c2e_ip2`) and their `total` |
+| `df_rhf` | PySCF's DF-RHF (`conv_tol` 1e-12, `conv_tol_grad` 1e-10) and its gradient (`df.grad.rhf`, auxbasis response on), over exactly `aux_basis`: `energy`, `total` (PySCF's), and `terms`, which add up to it: `kinetic` = Σ D dT, `potential` = Σ D dV (operator term included), `overlap` = −Σ W dS with W = 2 C_occ diag(ε_occ) C_occᵀ, `coulomb` = dE_J and `exchange` = −½ dE_K (E_J, E_K as in `integrals`, density-fitted, at the SCF density), `nuclear_repulsion` |
+| `rhf` | The same for the integral-direct RHF (`grad.rhf`); `aux_basis` is `null` |
+| `optimized` | DF-RHF / cc-pVDZ / cc-pVDZ-JKFIT minima: `start` and `atoms` (the minimum), `energy`, `max_force` (below 1e-7), `newton_steps` and `optimizer`, the method in words |
+
+**Normalisation.** Every function is PySCF's, unit-normalised. A test whose
+function i is N_i times PySCF's contracts with M_mn / (N_m N_n) (likewise W
+and Γ), which gives the same gradient: the normalisation does not move with
+the nuclei.
+
+**Geometries.** `integrals` and `density_fitting` use `density_fitting/`'s
+skew water, in no symmetry plane. `df_rhf` and `rhf` use `scf/rhf.json`'s
+H₂O and NH₄⁺, plus a distorted H₂O (bonds 2.25 and 1.67 bohr, 115°, no
+symmetry) whose every gradient component is above 1e-3. The ethanol start is
+anti, in the plane z = 0, which the optimizer keeps.
+
+**Checks.** The tool asserts every analytic contraction and every DF and
+direct term against a fourth-order central difference of the matching energy
+at fixed matrices (step 1e-3 bohr, to 1e-7 · max(1, max\|G\|)), each term set
+against PySCF's total to 1e-9, each DF energy against PySCF's `get_jk`, and
+every gradient's sum over atoms against 0. `test/pytest/test_gradient_reference.py`
+re-checks the invariants and reruns the cheapest case.
+
+Regenerate with (one thread; the output is byte-identical run to run):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/emit/gradient_reference.py
 ```
 
 ## `cis/cis.json`

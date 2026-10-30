@@ -29,7 +29,7 @@ Every shell in this tree means its `2l+1` real solid harmonics, but the integral
 
 The other two directions (`cartesian_to_spherical` on a density, `spherical_to_cartesian` on a Fock) compute something, but not the same quantity in the other layout: a d shell's `r²`-like Cartesian component has no spherical counterpart, and nothing recovers it. The types do not encode which kind a matrix is; this rule lives here and in the doc comments.
 
-**The two are not inverses.** Once a shell is above p, neither round trip returns the matrix it started from. Cartesian → spherical → Cartesian drops the `r²` components. Spherical → Cartesian → spherical gives `UᵀU M UᵀU`, and `UᵀU ≠ I`: U's columns are orthonormal under the Cartesian overlap (`Uᵀ S_cart U = I`), not under the plain dot product. A d shell's `xy` column, for one, is `√3` in the `xy` row, so `(UᵀU)` has a 3 there. What the pair preserves is the trace pairing above. `test/gtest/basis_host.cpp` pins `UᵀU ≠ I`.
+**The two are not inverses.** Once a shell is above p, neither round trip returns the matrix it started from. Cartesian → spherical → Cartesian drops the `r²` components. Spherical → Cartesian → spherical gives `UᵀU M UᵀU`, and `UᵀU ≠ I`: U's columns are orthonormal under the Cartesian overlap (`Uᵀ S_cart U = I`), not under the plain dot product. A d shell's `xy` column, for one, is `√3` in the `xy` row, so `(UᵀU)` has a 3 there. What the pair preserves is the trace pairing above. `test/basis/basis_set_host.cpp` pins `UᵀU ≠ I`.
 
 **Scratch and streams.** Each pair has its own scratch and U is read-only, so different pairs may run on different streams. Calls on one pair must be ordered on one stream.
 

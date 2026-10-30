@@ -195,7 +195,7 @@ multiplicity so its Scf step is the DF-ROHF the reference starts from; to the
 same bars, ⟨S²⟩ = S(S + 1).
 
 Also `max_cycle` running out failing the step. The `[casscf]` parsing and its
-refusals are in `pipeline_config_host.cpp`, and an end-to-end run with
+refusals are in `test/pipeline/config_host.cpp`, and an end-to-end run with
 `[casci]` beside it, against the step called by hand, in
 `pipeline_calculation_gpu.cpp`, which also runs an `[scf]` and a `[casscf]`
 over one `EriOutput` in each mode.

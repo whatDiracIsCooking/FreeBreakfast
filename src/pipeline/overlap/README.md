@@ -55,7 +55,7 @@ be written is `write_npy`'s.
 
 `test/gtest/pipeline_overlap_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - The step's S is checked, element by element, against a direct `overlap` then
   `cartesian_to_spherical` over the same basis.
 - S of a BSE basis read through the `BasisSet` step, with one primitive per

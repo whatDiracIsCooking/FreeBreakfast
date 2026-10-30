@@ -46,7 +46,7 @@ generator first runs from.
 
 ## Tests
 
-`test/gtest/io_sad_host.cpp`:
+`test/io/sad_host.cpp`:
 
 - Every element of every compiled-in set is baked, at the size its shells
   need.

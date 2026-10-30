@@ -1,5 +1,5 @@
 // Host-only cases for io/basis: the BSE JSON reader. Its placement onto a
-// molecule is io_basis_gpu.cpp's.
+// molecule is test/gtest/io_basis_gpu.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -277,7 +277,7 @@ TEST(IoBasisBuiltins, OnlyACompiledInSetIsNamed) {
 }
 
 // The compiled-in fitting sets (data/aux_basis/, their own table) and
-// resolve_aux_basis. Their placement over a molecule is io_basis_gpu.cpp's.
+// resolve_aux_basis. Their placement over a molecule is test/gtest/io_basis_gpu.cpp's.
 
 TEST(IoBasisAux, BothJkfitSetsResolveByAnySpelling) {
   // Both sets are tools/jkfit_from_pyscf.py's: PySCF's 19 elements, H, B-Ne,
@@ -365,7 +365,7 @@ TEST(IoBasisAux, TheDef2SetIsUniversalJkfitOverHToKr) {
 }
 
 TEST(IoBasisAux, TheFittingAndOrbitalTablesAreDisjoint) {
-  // A fitting set is no orbital set: tools/sad and io_sad_host see only the
+  // A fitting set is no orbital set: tools/sad and sad_host.cpp see only the
   // five that carry data/sad/ stamps.
   for (const std::string_view aux : {"cc-pVDZ-JKFIT", "cc-pvtz-jkfit"}) {
     EXPECT_FALSE(fb::is_builtin_basis(aux)) << aux;

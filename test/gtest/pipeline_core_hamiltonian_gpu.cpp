@@ -1,5 +1,5 @@
 // The CoreHamiltonian step against a direct core_hamiltonian +
-// cartesian_to_spherical. The step's contract is checked by static_assert; the
+// cartesian_to_spherical. The step's contract is test/pipeline/steps_host.cpp's; the
 // rest builds H on the device, so needs a GPU.
 
 #include <gtest/gtest.h>
@@ -24,11 +24,6 @@ using fb::Element;
 
 using CoreHamiltonianInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput,
                                       fb::SphericalTransformOutput, fb::PrimitivePairClassesOutput>;
-
-static_assert(fb::PipelineStep<fb::CoreHamiltonianStep>);
-static_assert(fb::kRunShape<fb::CoreHamiltonianStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::CoreHamiltonianStep>, CoreHamiltonianInput>);
-static_assert(std::same_as<fb::StepOutput<fb::CoreHamiltonianStep>, fb::CoreHamiltonianOutput>);
 
 std::vector<double> download(fb::DeviceResources &res, const fb::SphericalMatrixAO &m) {
   std::vector<double> host(m.num_elements());

@@ -9,8 +9,9 @@
 // reference's to 1e-6 (H2O cc-pVDZ exact too, singlets only), and each
 // triplet's f and transition dipole zero. HF in cc-pVTZ, past the dipole's d,
 // still gives its energies, with f and the dipoles zero: against the
-// reference integral-direct (slow, ~55 s, so skipped in fast mode), and
-// density-fitted over cc-pVTZ-JKFIT in the fast set. With the clustered
+// reference integral-direct (slow, ~74 s on gfx1200 and ~33 s on the 3080, so
+// skipped in fast mode), and density-fitted over cc-pVTZ-JKFIT in the fast
+// set. With the clustered
 // preconditioner on ([cis] cluster_gap), with RIS-J ([cis] ris), and with
 // RIS-JK ([cis] ris_exchange), H2O STO-3G integral-direct and cc-pVDZ fitted
 // still match the reference to 1e-6. TDA-ris ([cis] method = "ris") is held
@@ -19,9 +20,10 @@
 // 1e-6 and the singlets' f to 1e-5, and benzene cc-pVDZ over the
 // cc-pVDZ-JKFIT RHF, timed beside the full DF-CIS over the same products. Then the refusals: too few or too many states, a negative
 // cluster_gap, one beside ris, a TDA-ris θ that is not positive, a molecule
-// that is not a closed-shell singlet, and an open-shell ScfOutput; and [cis]
-// under a density-fitted [eri] planned when the config is read. Runs the
-// device chain, so needs a GPU, but for the config case.
+// that is not a closed-shell singlet, and an open-shell ScfOutput. Runs the
+// device chain, so needs a GPU. The step's contract, and [cis] under a
+// density-fitted [eri] planned when the config is read, are test/pipeline's
+// (steps_host.cpp, config_host.cpp).
 
 #include <gtest/gtest.h>
 
@@ -42,14 +44,6 @@ namespace {
 
 namespace fb = free_breakfast;
 namespace cis = free_breakfast::cis;
-
-static_assert(fb::PipelineStep<fb::CisStep>);
-static_assert(fb::kRunShape<fb::CisStep> == fb::RunShape::Device);
-static_assert(
-    std::same_as<fb::StepInput<fb::CisStep>,
-                 fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
-                          fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>>);
-static_assert(std::same_as<fb::StepOutput<fb::CisStep>, fb::CisOutput>);
 
 // The issue's bar against cis.json's PySCF roots, which are good to ~1e-14,
 // for the excitation energies and the reference energy.
@@ -207,12 +201,16 @@ class CisStepReference : public ::testing::TestWithParam<Case> {};
 
 // The config runs the chain and the step; then the step runs again by hand
 // over the same products, from a CisStep built in code. The h2o_ccpvdz_df
-// cases run the chain fitted, so the step takes cis::DfSigma.
+// cases run the chain fitted, so the step takes cis::DfSigma. hf_ccpvtz runs
+// the chain only: its by-hand rerun was a second exact-K-at-f Davidson,
+// ~54 s on gfx1200 and ~23 s on the 3080, holding nothing the other cases'
+// reruns do not.
 TEST_P(CisStepReference, MatchesPyscf) {
   FBF_REQUIRE_GPU();
-  // Exact K at f: ~55 s on the 3080. The fitted f-shell case below stands
-  // for it in the fast set.
-  if (GetParam().name == "hf_ccpvtz") {
+  // Exact K at f: ~74 s on gfx1200, ~33 s on the 3080. The fitted f-shell
+  // case below stands for it in the fast set.
+  const bool exact_f = GetParam().name == "hf_ccpvtz";
+  if (exact_f) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &entry = reference_case(GetParam().name);
@@ -232,6 +230,9 @@ TEST_P(CisStepReference, MatchesPyscf) {
   const auto &chain = calc->get<fb::CisOutput>();
   ASSERT_TRUE(chain.has_value());
   expect_matches(*chain, entry, roots, "config " + spin);
+  if (exact_f) {
+    return;
+  }
 
   fb::DeviceResources &res = node.device(0);
   const fb::CisStep step{
@@ -650,23 +651,6 @@ TEST(CisStep, Refusals) {
                            .d = fb::SphericalMatrixAO(res, basis)};
   expect_refused(fb::CisStep{}.run(step_input(*calc, nullptr, &open), res),
                  fb::ErrorKind::InvalidConfig, "the ScfOutput has 6 alpha and 4 beta");
-}
-
-// [cis] under a density-fitted [eri] is planned when the config is read: the
-// Cis step after an Eri step in fitting mode over the named aux basis, with
-// nothing refused. Nothing runs, so no GPU is needed.
-TEST(CisStep, DensityFittedEriIsPlanned) {
-  const fb::test::ScratchDir dir("cis_step");
-  const auto calc =
-      fb::parse_config("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
-                       "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n[cis]\n",
-                       dir.path(), dir / "out");
-  ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  ASSERT_TRUE(calc->step<fb::CisStep>().has_value());
-  const auto &eri = calc->step<fb::EriStep>();
-  ASSERT_TRUE(eri.has_value());
-  EXPECT_EQ(eri->mode, fb::EriMode::DensityFitting);
-  EXPECT_EQ(eri->aux_basis, "cc-pvdz-jkfit");
 }
 
 } // namespace

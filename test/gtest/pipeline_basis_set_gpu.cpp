@@ -1,5 +1,5 @@
 // The BasisSet step against a direct read_basis + primitive_normalized + place.
-// The step's contract is checked by static_assert; running it needs a
+// The step's contract is test/pipeline/steps_host.cpp's; running it needs a
 // Molecule, which owns its nuclei on the device, so the rest needs a GPU.
 
 #include <gtest/gtest.h>
@@ -24,11 +24,6 @@ namespace fb = free_breakfast;
 using fb::Atom;
 using fb::Element;
 using fb::test::kBasis;
-
-static_assert(fb::PipelineStep<fb::BasisSetStep>);
-static_assert(fb::kRunShape<fb::BasisSetStep> == fb::RunShape::Host);
-static_assert(std::same_as<fb::StepInput<fb::BasisSetStep>, fb::View<fb::MoleculeOutput>>);
-static_assert(std::same_as<fb::StepOutput<fb::BasisSetStep>, fb::BasisSetOutput>);
 
 fb::MoleculeOutput water(fb::DeviceResources &res) {
   return {fb::Molecule(res, {Atom{{0.0, 0.0, 0.2217}, Element::O},

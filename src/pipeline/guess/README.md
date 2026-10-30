@@ -83,17 +83,23 @@ the same atoms in another order, is accepted. A file that cannot be read is
 
 `test/gtest/pipeline_guess_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
 - The step's density, run on a subflow, is checked bitwise against a direct
   serial `sad_density`.
 - A compiled-in set (cc-pVDZ) is checked to arrive named, and the step's
   density is checked bitwise against `sad_density` with the baked stamps.
 - A basis placed over other atoms is checked to be `InvalidConfig`.
-- `load` is checked to read a saved density back bitwise. The wrong shape is
-  checked to be `InvalidConfig`, and a missing file `IO`.
+- `load` is checked to read a saved density back bitwise.
 
 The step itself never touches the device, but its input `Molecule` does, so the
 tests need a GPU.
+
+`test/pipeline/`, host-only:
+
+- `steps_host.cpp` checks the step's contract, and its `load`'s, by
+  `static_assert`.
+- `guess_host.cpp` runs `load` over a `BasisSet` built from its shells, which
+  needs no `Molecule`: a file is checked to read back bitwise, the wrong shape
+  to be `InvalidConfig`, and a missing file `IO`.
 
 `test/gtest/pipeline_calculation_gpu.cpp` runs the step through the real
 registry, beside the device chain:
@@ -104,7 +110,7 @@ registry, beside the device chain:
 - A failed root is checked to fail the guess with the root's error.
 - An SCF from a loaded guess is checked to match one from its own.
 
-`test/gtest/pipeline_config_host.cpp` has the `[guess]` table's cases.
+`test/pipeline/config_host.cpp` has the `[guess]` table's cases.
 
 ## Files
 

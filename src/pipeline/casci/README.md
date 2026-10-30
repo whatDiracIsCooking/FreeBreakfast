@@ -134,7 +134,7 @@ iterations, but no block of 2 to 5 roots within its 100. Compared as above, with
 nelecas equal to PySCF's; the orbital checks are the index path's, and the
 ROHF AVAS cases' below. The
 reference refuses a case with a weight within 1e-3 of the threshold. With
-`molden`, H₂O's natural orbitals read back as `io_molden_host.cpp` reads a
+`molden`, H₂O's natural orbitals read back as `test/io/molden_host.cpp` reads a
 file: every orbital written, at occupation 2, PySCF's natural occupations,
 then 0.
 
@@ -165,7 +165,7 @@ Also an active space past the orbitals, an AVAS label naming no MINAO AO, and
 a multiplicity that does not fit the active space (0, 2 and 7 for CAS(4,4)),
 refused when the step runs. The
 `[casci]` parsing (the `avas` keys too) and every `orbital_order` refusal are in
-`pipeline_config_host.cpp`, and an end-to-end run against the step called by
+`test/pipeline/config_host.cpp`, and an end-to-end run against the step called by
 hand in `pipeline_calculation_gpu.cpp`.
 
 ## Files

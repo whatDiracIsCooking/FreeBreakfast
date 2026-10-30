@@ -1,5 +1,5 @@
 // The Molecule step against a direct read_xyz call. The step's contract is
-// checked by static_assert; running it builds a Molecule, so the rest needs a
+// test/pipeline/steps_host.cpp's; running it builds a Molecule, so the rest needs a
 // GPU.
 
 #include <gtest/gtest.h>
@@ -20,11 +20,6 @@ import free_breakfast.core.nontransferrable;
 namespace {
 
 namespace fb = free_breakfast;
-
-static_assert(fb::PipelineStep<fb::MoleculeStep>);
-static_assert(fb::kRunShape<fb::MoleculeStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::MoleculeStep>, fb::View<>>);
-static_assert(std::same_as<fb::StepOutput<fb::MoleculeStep>, fb::MoleculeOutput>);
 
 constexpr std::string_view kWater = "3\n"
                                     "water, Angstrom\n"
