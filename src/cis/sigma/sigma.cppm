@@ -42,6 +42,11 @@ struct Options {
   /// residual of ~1e-6 hartree: an energy good to its square over the gap,
   /// ~1e-11, and a vector (so an oscillator strength) to ~1e-6 over the gap.
   DavidsonOptions davidson{.residual_tolerance = 1e-6};
+  /// @brief The clustered preconditioner's gap (hartree): among the guess's
+  /// lowest Δε, neighbours at most this far apart are corrected in their
+  /// cluster's exact block of A (cis::Preconditioner::cluster). Zero, the
+  /// default, clusters nothing: the diagonal correction alone.
+  double cluster_gap = 0.0;
 };
 
 /// @brief σ = A b on the device, integral-direct: a

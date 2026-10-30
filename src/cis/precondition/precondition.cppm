@@ -1,10 +1,11 @@
 /// @file
 /// @brief CIS's Davidson start and preconditioner over the orbital-energy
 /// diagonal Δε_ia = ε_a − ε_i: the diagonal itself, the unit-vector guess on
-/// its lowest entries, and the correction r / (θ − Δε).
+/// its lowest entries, and the correction r / (θ − Δε), optionally with an
+/// exact-block correction over clusters of near-degenerate Δε.
 ///
 /// An element ia of an n_ov vector is i · n_virt + a: row-major (i, a). The
-/// README has why Δε and not diag(A), and the clamp.
+/// README has why Δε and not diag(A), the clamp, and the clusters.
 
 export module free_breakfast.cis.precondition;
 
@@ -13,6 +14,7 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
+import free_breakfast.recipes.linear_operator; // LinearOperator
 
 export namespace free_breakfast::cis {
 
@@ -42,6 +44,10 @@ export namespace free_breakfast::cis {
 /// each column c of the residual block divided element-wise by θ_c − Δε, the
 /// denominator's magnitude held at or above 1e-3 with its sign kept.
 ///
+/// With @ref cluster, the entries covered by a cluster of near-degenerate Δε
+/// are corrected in that cluster's exact eigenbasis instead, with the same
+/// clamp; the others keep r / (θ − Δε).
+///
 /// The Ritz values are uploaded into a device buffer of @p max_columns
 /// allocated here, so a call allocates nothing. @p delta is borrowed, not
 /// copied: the caller keeps it alive and unchanged while this is in use.
@@ -62,13 +68,74 @@ public:
                                   const double *ritz_vectors, const double *residual,
                                   double *correction) const;
 
+  /// @brief Build the clustered exact-block correction, once, before the
+  /// solve, replacing any built before.
+  ///
+  /// The @p scope lowest Δε, ascending with ties to the lower index, are
+  /// grouped by single linkage: neighbours at most @p gap apart share a
+  /// cluster, and a cluster of one is dropped. Each cluster's exact k × k
+  /// block of A is read from @p sigma applied once to the unit vectors of
+  /// every covered entry, symmetrized, and diagonalized
+  /// (recipes.diagonalize). A call then projects a covered entry's residual
+  /// onto its cluster's eigenvectors, divides by θ − λ under the same clamp,
+  /// and projects back. @p gap = 0 builds nothing, and leaves every call
+  /// exactly the diagonal correction.
+  ///
+  /// Grows res.device_workspace() to a call's scratch, so a call still
+  /// allocates nothing. Synchronizes res.stream().
+  ///
+  /// @return InvalidConfig for another device, unless 1 <= scope <= n_ov, or
+  ///         for a @p gap that is negative or NaN; else @p sigma's error, or
+  ///         diagonalize's, or a runtime failure, any of which leaves no
+  ///         cluster built.
+  template <class Op>
+    requires LinearOperator<Op, double>
+  [[nodiscard]] Status cluster(DeviceResources &res, Op &sigma, int32_t scope, double gap) {
+    // The unit vectors of the covered entries, n_ov × covered; empty when
+    // nothing clusters.
+    Result<Buffers::device<double>> units = group(res, scope, gap);
+    if (!units) {
+      return std::unexpected(std::move(units).error());
+    }
+    if (units->num_elements() == 0) {
+      return {};
+    }
+    Buffers::device<double> applied(units->num_elements(), res.device());
+    if (Status applied_ok = sigma.apply(res, covered_, units->data(), applied.data());
+        !applied_ok) {
+      covered_ = 0;
+      return applied_ok;
+    }
+    return solve_blocks(res, applied.data());
+  }
+
 private:
+  // Validates, drops any clusters built before, and groups the scope lowest
+  // Δε: the covered entries' index_ and sizes_, and their unit vectors,
+  // returned. Leaves covered_ at zero, and the block empty, when none
+  // clusters.
+  [[nodiscard]] Result<Buffers::device<double>> group(DeviceResources &res, int32_t scope,
+                                                      double gap);
+  // Each cluster's block of A from @p applied, the sigma of the unit vectors,
+  // diagonalized into vectors_ and lambda_; covered_ set only on success.
+  [[nodiscard]] Status solve_blocks(DeviceResources &res, const double *applied);
+
   int32_t dev_idx_;
   int32_t n_ov_;
   const double *delta_;
   // The concept calls the preconditioner const; θ is per-call scratch it
   // overwrites, allocated once so no call allocates.
   mutable Buffers::device<double> theta_;
+  // The clusters, back to back: covered_ entries, cluster g the sizes_[g]
+  // after those before it; their indices into the n_ov vector, their
+  // eigenvalues, and their eigenvectors as the covered_ × covered_
+  // block-diagonal column-major matrix, the zeros between blocks included so
+  // a call is two gemms. covered_ is zero when there are none.
+  int32_t covered_ = 0;
+  std::vector<int32_t> sizes_;
+  Buffers::device<int32_t> index_;
+  Buffers::device<double> lambda_;
+  Buffers::device<double> vectors_;
 };
 
 } // namespace free_breakfast::cis

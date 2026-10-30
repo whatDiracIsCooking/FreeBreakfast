@@ -10,10 +10,13 @@
 // triplet's f and transition dipole zero. HF in cc-pVTZ, past the dipole's d,
 // still gives its energies, with f and the dipoles zero: against the
 // reference integral-direct (slow, ~55 s, so skipped in fast mode), and
-// density-fitted over cc-pVTZ-JKFIT in the fast set. Then the refusals: too few or too many states,
-// a molecule that is not a closed-shell singlet, and an open-shell
-// ScfOutput; and [cis] under a density-fitted [eri] planned when the config
-// is read. Runs the device chain, so needs a GPU, but for the config case.
+// density-fitted over cc-pVTZ-JKFIT in the fast set. With the clustered
+// preconditioner on ([cis] cluster_gap), H2O STO-3G integral-direct and
+// cc-pVDZ fitted still match the reference to 1e-6. Then the refusals: too
+// few or too many states, a negative cluster_gap, a molecule that is not a
+// closed-shell singlet, and an open-shell ScfOutput; and [cis] under a
+// density-fitted [eri] planned when the config is read. Runs the device
+// chain, so needs a GPU, but for the config case.
 
 #include <gtest/gtest.h>
 
@@ -303,6 +306,76 @@ TEST(CisStep, TheSubspaceIsClamped) {
   }
 }
 
+// The clustered preconditioner, [cis] cluster_gap = 0.1, through the config
+// and then by hand for both spins, over H2O STO-3G integral-direct
+// (cis::Sigma) and cc-pVDZ fitted (cis::DfSigma). Fewer states than the
+// reference's, so the guess, 2 n_states unit vectors, is not the whole
+// space and the preconditioner runs; the gap groups at least one pair of the
+// guess's Δε, checked from the ScfOutput's orbital energies. Each root against
+// the reference's to 1e-6, the bar unchanged.
+TEST(CisStep, ClusteredMatchesPyscf) {
+  FBF_REQUIRE_GPU();
+  constexpr double kGap = 0.1;
+  constexpr std::int32_t kStates = 3;
+  for (const std::string_view name : {"h2o_sto3g", "h2o_ccpvdz_df"}) {
+    const fb::json &entry = reference_case(name);
+    const fb::test::ScratchDir dir("cis_step");
+    auto calc = fb::read_config(
+        write_config(dir, entry,
+                     std::format("[cis]\nn_states = {}\ncluster_gap = {}\n", kStates, kGap)),
+        dir.path(), dir / "out");
+    ASSERT_TRUE(calc.has_value()) << calc.error().message;
+    ASSERT_EQ(calc->step<fb::CisStep>()->options.cluster_gap, kGap);
+    fb::NodeResources node;
+    const fb::Status ran = calc->run(node);
+    ASSERT_TRUE(ran.has_value()) << name << ": " << ran.error().message;
+
+    // The guess's 2 n_states lowest Δε, of which the gap must cluster some.
+    const auto &eps = calc->get<fb::ScfOutput>()->mo_energies;
+    const auto n_occ = entry.at("occupied").get<std::size_t>();
+    std::vector<double> delta;
+    for (std::size_t i = 0; i < n_occ; ++i) {
+      for (std::size_t a = n_occ; a < eps.size(); ++a) {
+        delta.push_back(eps[a] - eps[i]);
+      }
+    }
+    std::ranges::sort(delta);
+    std::int32_t pairs = 0;
+    for (std::size_t g = 1; g < 2 * kStates; ++g) {
+      pairs += delta[g] - delta[g - 1] <= kGap ? 1 : 0;
+    }
+    ASSERT_GT(pairs, 0) << name;
+    ASSERT_LT(2 * static_cast<std::size_t>(kStates), delta.size()) << name;
+
+    const auto check = [&](const fb::CisOutput &out, const fb::json &roots, std::string_view what) {
+      const auto want = roots.at("energies").get<std::vector<double>>();
+      ASSERT_EQ(out.states.size(), static_cast<std::size_t>(kStates)) << what;
+      for (std::size_t r = 0; r < out.states.size(); ++r) {
+        std::cout << name << " " << what << " state " << r << ": "
+                  << out.states[r].excitation_energy - want[r] << " hartree, " << out.iterations
+                  << " iterations\n";
+        EXPECT_NEAR(out.states[r].excitation_energy, want[r], kEnergyTolerance)
+            << name << " " << what << " state " << r;
+      }
+    };
+    const auto &chain = calc->get<fb::CisOutput>();
+    ASSERT_TRUE(chain.has_value());
+    check(*chain, entry.at("singlets"), "config singlet");
+
+    fb::DeviceResources &res = node.device(0);
+    for (const cis::Spin spin : {cis::Spin::Singlet, cis::Spin::Triplet}) {
+      const bool triplet = spin == cis::Spin::Triplet;
+      const fb::CisStep step{
+          .options = {.n_states = kStates, .spin = spin, .cluster_gap = kGap},
+      };
+      const auto by_hand = step.run(step_input(*calc), res);
+      ASSERT_TRUE(by_hand.has_value()) << name << ": " << by_hand.error().message;
+      check(*by_hand, entry.at(triplet ? "triplets" : "singlets"),
+            triplet ? "by hand triplet" : "by hand singlet");
+    }
+  }
+}
+
 void expect_refused(const fb::Result<fb::CisOutput> &refused, fb::ErrorKind kind,
                     std::string_view needle) {
   ASSERT_FALSE(refused.has_value()) << needle;
@@ -311,7 +384,8 @@ void expect_refused(const fb::Result<fb::CisOutput> &refused, fb::ErrorKind kind
 }
 
 // Each refused when the step runs, naming the step, before anything is
-// allocated: n_states below 1 or past H2O / STO-3G's n_ov = 10; a triplet
+// allocated: n_states below 1 or past H2O / STO-3G's n_ov = 10; a negative
+// cluster_gap; a triplet
 // molecule; an odd electron count; an ScfOutput whose electrons are not the
 // molecule's closed shell.
 TEST(CisStep, Refusals) {
@@ -331,6 +405,8 @@ TEST(CisStep, Refusals) {
   expect_refused(fb::CisStep{.options = {.n_states = 11}}.run(step_input(*calc), res),
                  fb::ErrorKind::InvalidConfig,
                  "cis: n_states is 11, past the 10 single excitations");
+  expect_refused(fb::CisStep{.options = {.cluster_gap = -0.5}}.run(step_input(*calc), res),
+                 fb::ErrorKind::InvalidConfig, "cis: cluster_gap is -0.5, not at least 0");
 
   const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
   const fb::MoleculeOutput triplet{fb::Molecule(res, singlet.atoms(), singlet.charge(), 3)};

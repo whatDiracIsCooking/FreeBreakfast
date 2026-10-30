@@ -708,7 +708,7 @@ TEST(PipelineConfig, AMalformedFciTableIsInvalidConfig) {
 TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
   auto calc = fb::parse_config(with_inputs("[cis]\nn_states = 3\nspin = \"triplet\"\n"
                                            "residual_tolerance = 1e-8\nmax_iterations = 50\n"
-                                           "max_subspace = 12\n"),
+                                           "max_subspace = 12\ncluster_gap = 0.05\n"),
                                "", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   const fb::CisStep &cis = *calc->step<fb::CisStep>();
@@ -717,6 +717,7 @@ TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_EQ(cis.options.davidson.residual_tolerance, 1e-8);
   EXPECT_EQ(cis.options.davidson.max_iterations, 50);
   EXPECT_EQ(cis.max_subspace, 12);
+  EXPECT_EQ(cis.options.cluster_gap, 0.05);
   EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
   EXPECT_TRUE(calc->step<fb::EriStep>().has_value());
   EXPECT_FALSE(calc->step<fb::CasciStep>().has_value());
@@ -731,6 +732,7 @@ TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_EQ(defaults.options.davidson.residual_tolerance, options.davidson.residual_tolerance);
   EXPECT_EQ(defaults.options.davidson.max_iterations, options.davidson.max_iterations);
   EXPECT_EQ(defaults.max_subspace, fb::CisStep{}.max_subspace);
+  EXPECT_EQ(defaults.options.cluster_gap, 0.0);
 }
 
 TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
@@ -743,6 +745,8 @@ TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
                       "[cis] residual_tolerance must be positive");
   expect_config_error(with_inputs("[cis]\nmax_iterations = 0\n"),
                       "[cis] max_iterations is 0, below 1");
+  expect_config_error(with_inputs("[cis]\ncluster_gap = -0.5\n"),
+                      "[cis] cluster_gap must not be negative");
 }
 
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {

@@ -68,6 +68,9 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   if (n_states < 1) {
     return err_config("cis: n_states is {}, not at least 1", n_states);
   }
+  if (!(options.cluster_gap >= 0.0)) {
+    return err_config("cis: cluster_gap is {}, not at least 0", options.cluster_gap);
+  }
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const ScfOutput &scf = in.get<ScfOutput>();
   const int32_t n_electrons = molecule.electron_count();
@@ -116,10 +119,13 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   const int32_t guess_count = std::min(n_ov, 2 * n_states);
   Buffers::device<double> start(n * static_cast<size_t>(guess_count), res.device());
   FBF_TRY(cis::guess(res, n_ov, delta.data(), guess_count, start.data()));
-  const cis::Preconditioner precondition{res, n_ov, delta.data(), n_states};
+  cis::Preconditioner precondition{res, n_ov, delta.data(), n_states};
   Buffers::device<double> values(roots, res.device());
   Buffers::device<double> vectors(n * roots, res.device());
-  const auto solve = [&](auto &sigma) {
+  // The clusters over the guess's entries, where the subspace starts; at the
+  // default gap of zero, none, and the diagonal correction alone.
+  const auto solve = [&](auto &sigma) -> Result<DavidsonInfo> {
+    FBF_TRY(precondition.cluster(res, sigma, guess_count, options.cluster_gap));
     return davidson_solve<double>(res, sigma, precondition, n_ov, n_states, subspace, start.data(),
                                   guess_count, values.data(), vectors.data(), options.davidson);
   };

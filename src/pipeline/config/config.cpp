@@ -308,9 +308,9 @@ template <class S>
     FBF_TRY(check_keys(table, kStep, {"nroots"}));
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
   } else if constexpr (std::same_as<S, CisStep>) {
-    FBF_TRY(
-        check_keys(table, kStep,
-                   {"n_states", "spin", "residual_tolerance", "max_iterations", "max_subspace"}));
+    FBF_TRY(check_keys(table, kStep,
+                       {"n_states", "spin", "residual_tolerance", "max_iterations", "max_subspace",
+                        "cluster_gap"}));
     cis::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "n_states", base_dir, options.n_states));
     std::string spin = "singlet";
@@ -323,6 +323,7 @@ template <class S>
                      options.davidson.residual_tolerance));
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, options.davidson.max_iterations));
     FBF_TRY(read_key(table, kStep, "max_subspace", base_dir, step.max_subspace));
+    FBF_TRY(read_key(table, kStep, "cluster_gap", base_dir, options.cluster_gap));
     // Whether n_states fits the single excitations needs the molecule and the
     // basis, so CisStep::run checks that; these need neither.
     if (options.n_states < 1) {
@@ -334,6 +335,9 @@ template <class S>
     if (options.davidson.max_iterations < 1) {
       return err_config("[{}] max_iterations is {}, below 1", kStep,
                         options.davidson.max_iterations);
+    }
+    if (!(options.cluster_gap >= 0.0)) {
+      return err_config("[{}] cluster_gap must not be negative", kStep);
     }
   } else {
     // A step with options needs its own branch above, or every key in its
