@@ -10,12 +10,13 @@ over an auxiliary `BasisSet` placed as the orbital one is,
 ## Module
 
 `free_breakfast.integrals.eri.density_fitting`, the aggregate, re-exports
-`metric`, `three_center`, `fit`, `jk` and `mo`; it is itself re-exported by `free_breakfast.integrals`.
+`metric`, `three_center`, `fit`, `jk`, `mo` and `gradient`; it is itself re-exported by `free_breakfast.integrals`.
 Link `free_breakfast::integrals::eri::density_fitting`. The sub-modules remain
 importable individually.
 
 ```
 metric/        free_breakfast.integrals.eri.density_fitting.metric: the Coulomb metric (P|Q) of an aux basis on the GPU, Cartesian and spherical, over the generated metric<lP, lQ>, 28 classes lP <= lQ through i
+gradient/      free_breakfast.integrals.eri.density_fitting.gradient: the nuclear gradients Σ W d(P|Q)/dR and Σ Γ d(mn|P)/dR for spherical W and Γ, n_atom x 3 on the host, over the generated gmetric<lP, lQ> (28 classes) and geri3<la, lb, lP> (70)
 fit/           free_breakfast.integrals.eri.density_fitting.fit: the fit B = L^-1 (mn|P), M = L L^T, one Cholesky factorization (recipes/cholesky) and one trsm in place
 jk/            free_breakfast.integrals.eri.density_fitting.jk: density-fitted J and K over B, spherical
 mo/            free_breakfast.integrals.eri.density_fitting.mo: B in the MO basis over arbitrary column ranges of C, the half transform b_half (one batched gemm) and b_mo (that and one gemm)
@@ -31,9 +32,12 @@ basis, mmd classes, aux --three_center--> (P|mn)   (one launch per class into th
 M.spherical(), (P|mn) --density_fit--> L, B        (Cholesky of M, trsm of (P|mn), in place)
 B, D --jk-->                 J, K                  (jk/'s README has the products)
 B, C, ranges --mo-->         B_P,pq                (b_half, then a gemm; mo/'s README has the layouts)
+aux, W --metric_gradient-->  Σ W d(P|Q)/dR         (W made Cartesian, one launch per class into G; gradient/'s README)
+basis, classes, aux, Γ --three_center_gradient--> Σ Γ d(mn|P)/dR   (likewise)
 ```
 
 **Generated kernels are committed, not built.** `tools/emit/df_kernels.py`
-writes `metric/kernels/` and `three_center/kernels/` from the FelizJueves
-submodule; rerun it after bumping that submodule, and never edit the emitted
-text by hand.
+writes `metric/kernels/` and `three_center/kernels/`, and
+`tools/emit/df_gradient_kernels.py` writes `gradient/kernels/`, from the
+FelizJueves submodule; rerun both after bumping that submodule, and never edit
+the emitted text by hand.

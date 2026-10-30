@@ -150,6 +150,7 @@ add_executable(
   df_metric_gpu.cpp
   df_three_center_gpu.cpp
   df_high_aux_gpu.cpp
+  df_gradient_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
