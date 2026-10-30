@@ -1,14 +1,16 @@
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# The C++ suite: two trees, each built into a pair of binaries split by device
-# requirement -- a host one (runs anywhere) and a GPU one (skips its device
-# cases without a GPU):
+# The C++ suite: three trees. core/ and gtest/ are each built into a pair of
+# binaries split by device requirement -- a host one (runs anywhere) and a GPU
+# one (skips its device cases without a GPU); io/ is a host binary alone:
 #
 #   * core/  -- the src/core tests: free_breakfast_core_tests_{host,gpu}.
+#   * io/    -- the src/io tests that need no device:
+#               free_breakfast_io_tests_host.
 #   * gtest/ -- everything else: free_breakfast_tests_{host,gpu}.
 #
-# All four are registered with ctest and run by `ctest --preset <name>`, or by
+# All five are registered with ctest and run by `ctest --preset <name>`, or by
 # devtools/cpp-tier.sh, which is configure + build + ctest in one command.
 #
 # The PYTHON suite is not built by CMake: it lives in test/pytest/ -- a sibling
@@ -52,4 +54,5 @@ math(EXPR _fb_test_timeout "120 * ${FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER}")
 add_subdirectory(support)
 add_subdirectory(ci_oracles)
 add_subdirectory(core)
+add_subdirectory(io)
 add_subdirectory(gtest)

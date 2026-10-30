@@ -74,7 +74,7 @@ def2-SVP or MINAO alone take seconds. The six sets added after that, run on
 their own, were dominated by aug-cc-pVTZ's Ga–Kr at about three minutes each.
 
 The files are binary, so `git diff` shows only that they changed. The review
-is `test/gtest/io_sad_host.cpp`: it recomputes H, C and O of every set in the
+is `test/io/sad_host.cpp`: it recomputes H, C and O of every set in the
 fast tier, and every element through argon (neon for cc-pVTZ) in the slow
 tier. It compares with `EXPECT_EQ`, so both must match **bitwise**, and on
 this toolchain they do. A build with different floating-point flags would

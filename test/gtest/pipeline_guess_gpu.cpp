@@ -87,7 +87,7 @@ TEST(PipelineGuess, SadMatchesSadDensityBitwise) {
 
 // A compiled-in set carries its name through place, and the step takes that
 // set's baked stamps: exactly the guess sad_density gives with them.
-// io_sad_host.cpp holds each stamp to the SCF it stands in for.
+// test/io/sad_host.cpp holds each stamp to the SCF it stands in for.
 TEST(PipelineGuess, ACompiledInBasisTakesTheBakedStamps) {
   FBF_REQUIRE_GPU();
   fb::DeviceResources res{0};
