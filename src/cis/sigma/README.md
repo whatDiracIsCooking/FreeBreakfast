@@ -80,18 +80,10 @@ with its own conversion scratch), one `CartesianMatrixAO` and the
 n_ao × n_occ `half`, about 3 n_cart² + 3 n_sph² + n_sph · n_occ doubles. `create`
 also grows the workspace to `nonsymmetric_jk`'s one n_cart² block, so no
 `apply`, not even the first, allocates anything of the sigma's or grows the
-workspace.
-
-What an `apply` still draws is `coulomb`'s and `exchange`'s own: each build
-takes a few small buffers from the device's stream-ordered pool (`exchange`'s
-decay fields, max bound, shell centres and offsets, `coulomb`'s row map; about
-2 KB on H₂O / cc-pVDZ) and returns them before it ends. Their sizes depend on
-the basis alone, so the pool serves them from memory it already holds, and a
-block of columns peaks no higher than one build. The issue's "apply allocates
-nothing" would need those two to take caller scratch, which is a change to
-`src/integrals/`, not to this module; the test holds the sigma to what it can
-own: a second `apply` of four columns peaks no higher in the pool than one bare
-`nonsymmetric_jk` call, and leaves the workspace where it was.
+workspace. `coulomb`'s and `exchange`'s own scratch is their classes',
+allocated once per basis, so an `apply` takes nothing from the device's pool:
+the test holds a second `apply` of four columns to exactly that, and to
+leaving the workspace where it was.
 
 **The screen.** `nonsymmetric_jk`'s defaults, `tau_j = 1e-10` and
 `tau_k = 1e-13`, and no knob. J's default is the coarse one: its README
@@ -204,8 +196,8 @@ whatever k is.
 - `CisSigmaSpin.BlockEqualsColumns/*`: a block of four against the same four
   columns applied one call each;
 - `CisSigma.SecondApplyAllocatesNothing`: a second apply of four columns
-  peaks no higher in the device pool than one bare `nonsymmetric_jk` (see
-  "The memory"), and leaves the workspace unchanged;
+  takes nothing from the device pool (see "The memory"), and leaves the
+  workspace unchanged;
 - `CisSigma.Refusals`;
 - `CisSigmaSpin.DfIsSymmetric/*` and `CisSigmaSpin.DfBlockEqualsColumns/*`:
   the same two over a cc-pVDZ-JKFIT fit, the block of five over a sigma

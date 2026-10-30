@@ -400,11 +400,9 @@ std::uint64_t pool_peak(fb::DeviceResources &res, const std::function<void()> &f
   return high > before ? high - before : 0;
 }
 
-// create allocates every buffer of the sigma's and grows the workspace, so a
-// second apply leaves the workspace where it was and takes from the device's
-// pool only what coulomb and exchange draw per build (a few KB of their own,
-// sized by the basis alone and returned before the build ends): no more over
-// a block of four columns than one bare nonsymmetric_jk call takes.
+// create allocates every buffer of the sigma's and grows the workspace, and
+// coulomb's and exchange's scratch is their classes', so a second apply takes
+// nothing from the device's pool and leaves the workspace where it was.
 TEST(CisSigma, SecondApplyAllocatesNothing) {
   FBF_REQUIRE_GPU();
   auto setup = make_setup(reference_case("h2o_ccpvdz"), false);
@@ -419,21 +417,12 @@ TEST(CisSigma, SecondApplyAllocatesNothing) {
   fb::Buffers::device<double> d_s(kColumns * n, res.device());
   ASSERT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value());
 
-  fb::CartesianMatrixAO density{res, *setup->basis};
-  fb::CartesianMatrixAO g{res, *setup->basis};
-  fb::CartesianMatrixAO k{res, *setup->basis};
-  upload(res, random_vector(density.num_elements(), 43, -1.0, 1.0), density.data());
-  const std::uint64_t one_build = pool_peak(res, [&] {
-    EXPECT_TRUE(
-        fb::nonsymmetric_jk(res, setup->j_classes, setup->k_classes, density, g, k).has_value());
-  });
-
   const std::byte *const workspace = res.device_workspace(0).data();
   const std::size_t workspace_bytes = res.device_workspace(0).num_elements();
   const std::uint64_t second = pool_peak(
       res, [&] { EXPECT_TRUE(sigma->apply(res, kColumns, d_b.data(), d_s.data()).has_value()); });
-  std::cout << "pool peak: second apply " << second << " B, one bare build " << one_build << " B\n";
-  EXPECT_LE(second, one_build);
+  std::cout << "pool peak: second apply " << second << " B\n";
+  EXPECT_EQ(second, 0U);
   EXPECT_EQ(res.device_workspace(0).data(), workspace);
   EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
 }

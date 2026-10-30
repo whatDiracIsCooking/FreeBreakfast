@@ -1,7 +1,7 @@
 // The device half of
 // free_breakfast.integrals.eri.integral_direct.coulomb.pair_class:
 // coulomb_pair_classes' prune (the bound maxima, the keep flag and its scan,
-// the scatter). One source for both backends -- nvcc under CUDA, clang -x hip
+// the scatter) and each kept class's row map. One source for both backends -- nvcc under CUDA, clang -x hip
 // under HIP.
 
 // Standard headers before anything that reaches the vendor runtime: under HIP a
@@ -130,6 +130,14 @@ __global__ void coulomb_prune_scatter_kernel(const int32_t n_rec, const int32_t 
   }
 }
 
+// rows[k] = k: see coulomb_rows.
+__global__ void coulomb_rows_kernel(const int32_t n_rec, int32_t *rows) {
+  const auto k = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (k < n_rec) {
+    rows[k] = k;
+  }
+}
+
 } // namespace
 
 namespace free_breakfast::device {
@@ -189,6 +197,14 @@ wwr::wwrError_t coulomb_prune_scatter(const wwr::wwrStream_t stream, const int32
 wwr::wwrError_t coulomb_prune_scatter(const wwr::wwrStream_t stream, const int32_t n_rec,
                                       const int32_t *dest, const int32_t *from, int32_t *to) {
   return prune_scatter(stream, n_rec, dest, from, to);
+}
+
+wwr::wwrError_t coulomb_rows(const wwr::wwrStream_t stream, const int32_t n_rec, int32_t *rows) {
+  if (n_rec < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  coulomb_rows_kernel<<<record_blocks(n_rec), kFourWarps, 0, stream>>>(n_rec, rows);
+  return wwr::wwrGetLastError();
 }
 
 } // namespace free_breakfast::device

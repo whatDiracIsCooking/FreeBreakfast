@@ -30,7 +30,7 @@ export namespace free_breakfast {
 /// nothing J runs reads them.
 ///
 /// **The scratch is the class's, not the build's.** Every @ref coulomb call
-/// rewrites it: the weights, D_q and Dmax in record order, the class as a ket
+/// reads @ref row and rewrites the rest: the weights, D_q and Dmax in record order, the class as a ket
 /// (the `ket_` fields: zeta, P, Iq, Dmax and D_q sorted descending by
 /// Iq * Dmax, the order e_hermite's screen breaks on, and the sort's own
 /// scratch), and J_p. It is allocated with the records, once per basis, so an
@@ -81,6 +81,10 @@ struct CoulombPairClass {
   StreamBuffers::device<int32_t> off_a;
   /// @brief The ket shell's first Cartesian AO.
   StreamBuffers::device<int32_t> off_b;
+  /// @brief The record-to-row map of @ref jp that the J build's jab reads:
+  /// rows[k] = k, the identity with one batch per class. Written once, with
+  /// the records.
+  StreamBuffers::device<int32_t> row;
 
   /// @brief Scratch: each record's density weight, 2 for two shells, 1 for a
   /// shell against itself.
@@ -224,9 +228,9 @@ struct CoulombPairClass {
 /// there is ordered after every read of them. One host synchronization, of
 /// res.stream(), reads the kept counts back to size J's classes; each is on a
 /// new @c DeviceStream of res.device(), its records and its build scratch
-/// (@ref CoulombPairClass) allocated there and its scatter queued there and
-/// joined back into res.stream(). The device res.dev_idx() names is made current for
-/// the call and the previous one restored.
+/// (@ref CoulombPairClass) allocated there, and its scatter and its row map
+/// queued there and joined back into res.stream(). The device res.dev_idx()
+/// names is made current for the call and the previous one restored.
 ///
 /// @return J's classes (none for no @p classes); InvalidConfig if @p tau is
 ///         negative or NaN, or a class is above f (kCoulombMaxMomentum: J has

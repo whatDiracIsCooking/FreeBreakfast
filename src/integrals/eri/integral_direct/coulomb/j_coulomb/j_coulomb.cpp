@@ -17,14 +17,10 @@ import free_breakfast.recipes.matrix_ao;
 
 namespace free_breakfast {
 
-wwr::wwrError_t j_coulomb_rows(const wwr::wwrStream_t stream, const std::span<int32_t> rows) {
-  return device::j_coulomb_rows(stream, static_cast<int32_t>(rows.size()), rows.data());
-}
-
-wwr::wwrError_t j_coulomb(const CoulombPairClass &bra, const std::span<const int32_t> rows,
-                          CartesianMatrixAO &j) {
+wwr::wwrError_t j_coulomb(const CoulombPairClass &bra, CartesianMatrixAO &j) {
   return device::j_coulomb_class(bra.device_stream()->stream(), bra.view(),
-                                 static_cast<int32_t>(j.n()), rows.data(), bra.jp.data(), j.data());
+                                 static_cast<int32_t>(j.n()), bra.row.data(), bra.jp.data(),
+                                 j.data());
 }
 
 } // namespace free_breakfast

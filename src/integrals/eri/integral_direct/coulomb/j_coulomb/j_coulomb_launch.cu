@@ -1,7 +1,6 @@
 // The device half of
 // free_breakfast.integrals.eri.integral_direct.coulomb.j_coulomb: the launcher
-// over the generated jab<la, lb> kernels, and the small kernel that makes the
-// row map they leave to their caller. One source for both backends -- nvcc
+// over the generated jab<la, lb> kernels. One source for both backends -- nvcc
 // under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/),
@@ -25,18 +24,6 @@
 
 #include "kernels/jab.h"
 
-namespace {
-
-// rows[k] = k: see j_coulomb_rows.
-__global__ void j_coulomb_rows_kernel(const int32_t n, int32_t *rows) {
-  const auto k = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (k < n) {
-    rows[k] = k;
-  }
-}
-
-} // namespace
-
 namespace free_breakfast::device {
 
 // The largest momentum the emitted table covers: J's limit.
@@ -59,14 +46,6 @@ uint32_t record_blocks(const int32_t n_rec) {
 }
 
 } // namespace
-
-wwr::wwrError_t j_coulomb_rows(const wwr::wwrStream_t stream, const int32_t n, int32_t *rows) {
-  if (n < 1) {
-    return wwr::wwrErrorInvalidValue;
-  }
-  j_coulomb_rows_kernel<<<record_blocks(n), kFourWarps, 0, stream>>>(n, rows);
-  return wwr::wwrGetLastError();
-}
 
 wwr::wwrError_t j_coulomb_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
                                 const int32_t n_ao, const int32_t *rows, const double *jp,

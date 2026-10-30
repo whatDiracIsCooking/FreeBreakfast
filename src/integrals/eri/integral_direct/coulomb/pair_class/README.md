@@ -36,8 +36,8 @@ of `mmd`'s class streams by event (never a host synchronization):
 3. One readback of the counts (the only host synchronization, of
    `res.stream()`), to size J's classes; an emptied class is left out.
 4. Per kept class, on its own new stream forked from `res.stream()`: its
-   records and scratch allocated there, and a scatter of each field into
-   place. The scan is stable, so the kept records keep
+   records and scratch allocated there, a scatter of each field into
+   place, and its `row`, the identity map `jab` reads (`coulomb_rows`). The scan is stable, so the kept records keep
    `mmd`'s descending ζ, and J's bras their load-balancing order, with no
    sort. The scatters are joined back into `res.stream()`, and each of
    `mmd`'s streams then waits on `res.stream()`, so a later free of `mmd`'s
