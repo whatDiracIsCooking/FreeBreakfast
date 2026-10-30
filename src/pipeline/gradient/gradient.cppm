@@ -1,7 +1,8 @@
 /// @file
 /// @brief The `Gradient` step: the closed-shell RHF nuclear gradient at the
-/// ScfOutput's orbitals, over the density-fitted EriOutput, every term of it
-/// (@c gradient::df_rhf), written as `gradient.json`.
+/// ScfOutput's orbitals, over either kind of EriOutput, every term of it
+/// (@c gradient::df_rhf density-fitted, @c gradient::rhf integral-direct),
+/// written as `gradient.json`.
 ///
 /// Device-shaped. The numerics are free_breakfast.gradient's; `run` only
 /// refuses what it cannot take and wires the pipeline's products into it. See
@@ -37,15 +38,16 @@ struct GradientStep {
   /// (pipeline/config sets it to gradient.json in the run's output directory).
   std::filesystem::path json_path{};
 
-  /// @brief @c gradient::df_rhf over the EriOutput's B, L and aux basis and
-  /// the ScfOutput's C, orbital energies and n_alpha occupied orbitals. The
-  /// gradient is the SCF energy's only as far as the SCF converged, so a
+  /// @brief @c gradient::df_rhf over a density-fitted EriOutput's B, L and
+  /// aux basis, or @c gradient::rhf over an integral-direct one's K classes,
+  /// and the ScfOutput's C, orbital energies and n_alpha occupied orbitals.
+  /// The gradient is the SCF energy's only as far as the SCF converged, so a
   /// config that wants it to 1e-8 tightens `[scf]`.
   ///
-  /// @return The gradient; Unsupported, before anything runs, for an
-  ///         integral-direct EriOutput or an ROHF ScfOutput (n_alpha !=
-  ///         n_beta), each naming the reason; otherwise @c df_rhf's error, or
-  ///         @c write_json's for a @ref json_path that cannot be written.
+  /// @return The gradient; Unsupported, before anything runs, for an ROHF
+  ///         ScfOutput (n_alpha != n_beta), naming the reason; otherwise
+  ///         @c df_rhf's or @c rhf's error, or @c write_json's for a
+  ///         @ref json_path that cannot be written.
   [[nodiscard]] Result<GradientOutput>
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput, ScfOutput> in,
       DeviceResources &res) const;
