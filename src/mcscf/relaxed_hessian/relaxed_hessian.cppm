@@ -118,7 +118,19 @@ public:
   [[nodiscard]] Status respond(DeviceResources &res, const double *x, std::span<double> gamma_t,
                                std::span<double> gamma2_t);
 
-  /// @brief The last @ref respond's delta, on the device.
+  /// @brief The response to a CI right-hand side @p ci_rhs (dim x nroots,
+  /// column-major, on the device): w_r = -(H_0 - E_r)^-1 P y_r into delta(),
+  /// each y_r projected off every root first, by @ref respond's conjugate
+  /// gradients (y must be in the roots' spin); and @p y = H_oc w over the packed pairs, overwritten: the
+  /// gradient in x of w's transition RDMs' h_eff'.gamma_T +
+  /// 1/2 (tu|vw)'.Gamma_T, as R x is of delta(x)'s. Synchronizes
+  /// res.stream() to read the transition RDMs back, and before returning.
+  ///
+  /// @return The first error of a sigma, an RDM, a BLAS call or a copy,
+  ///         which leaves delta() and @p y unspecified.
+  [[nodiscard]] Status couple(DeviceResources &res, const double *ci_rhs, double *y);
+
+  /// @brief The last @ref respond's (or @ref couple's) delta, on the device.
   [[nodiscard]] const double *delta() const noexcept { return ci_delta_.data(); }
 
   /// @brief The order of H~: the packed pairs' count, H's size().
@@ -128,6 +140,16 @@ private:
   RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm, const ci::Roots &roots,
                  std::vector<double> weights, ResponseIntegrals ints, ci::Sigma response_sigma,
                  size_t dim, DeviceResources &res);
+
+  // v <- v - C (C^T v): off every root.
+  [[nodiscard]] Status project(DeviceResources &res, double *v);
+  // delta_r = -(H_0 - E_r)^-1 (1 - c_r c_r^T) b_r for b = ci_b_, into
+  // ci_delta_, and its transition RDMs (respond's).
+  [[nodiscard]] Status solve_response(DeviceResources &res, std::span<double> gamma_t,
+                                      std::span<double> gamma2_t);
+  // y += the packed gradient in x of h_eff'.gamma_t + (tu|vw)'.gamma2_t.
+  [[nodiscard]] Status add_coupling(DeviceResources &res, std::span<const double> gamma_t,
+                                    std::span<const double> gamma2_t, double *y);
 
   response::Hessian *hessian_;
   ci::Sigma *sigma_;

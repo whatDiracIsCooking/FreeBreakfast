@@ -1,6 +1,7 @@
 /// @file
-/// @brief zvector: preconditioned conjugate gradients over H~ for z_o, and
-/// z_c from the CI response at the solution.
+/// @brief zvector: the CI right-hand side's response folded into the orbital
+/// one, preconditioned conjugate gradients over H~ for z_o, and z_c from the
+/// CI response at the solution plus the right-hand side's.
 
 module free_breakfast.mcscf.zvector;
 
@@ -24,8 +25,8 @@ constexpr double kZvectorDiagonalFloor = 1e-8;
 
 Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
                         const response::Hessian &hessian, const ci::Roots &roots,
-                        const double *const gradient, const double tolerance,
-                        const int32_t max_iterations) {
+                        const double *const gradient, const double *const ci_rhs,
+                        const double tolerance, const int32_t max_iterations) {
   const int32_t n_pairs = relaxed.size();
   const size_t roots_count = roots.energies.size();
   if (hessian.size() != n_pairs || roots_count == 0 ||
@@ -46,10 +47,11 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
 
   ZVector out{Buffers::device<double>(std::max<size_t>(pairs, 1), res.device()),
               Buffers::device<double>(dim * roots_count, res.device()), 0, 0.0};
-  // The residual r, the direction p, H~ p, the preconditioned residual and
-  // diag(H)^-1: held across H~'s products, which take the workspace, so its
-  // own (docs/style.md "Scratch memory"). And C^T delta_r's nroots overlaps.
-  Buffers::device<double> pcg(std::max<size_t>(5 * pairs, 1), res.device());
+  // The residual r, the direction p, H~ p, the preconditioned residual,
+  // diag(H)^-1 and the orbital right-hand side b = g_I + H_oc w: held across
+  // H~'s products, which take the workspace, so its own (docs/style.md
+  // "Scratch memory"). And C^T delta_r's nroots overlaps.
+  Buffers::device<double> pcg(std::max<size_t>(6 * pairs, 1), res.device());
   Buffers::device<double> overlaps(roots_count, res.device());
   double *const z = out.orbital.data();
   double *const r = pcg.data();
@@ -57,6 +59,22 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
   double *const hp = p + pairs;
   double *const s = hp + pairs;
   double *const inverse_diagonal = s + pairs;
+  double *const b = inverse_diagonal + pairs;
+
+  // b = g_I + H_oc w for w_r = -(H_0 - E_r)^-1 P y_r, which z_c keeps
+  // (out.ci) until z_o's response is added to it.
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(b, gradient, pairs * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  if (ci_rhs == nullptr) {
+    FBF_TRY(gpu_status(
+        wwr::wwrMemsetAsync(out.ci.data(), 0, dim * roots_count * sizeof(double), stream)));
+  } else {
+    FBF_TRY(relaxed.couple(res, ci_rhs, hp));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, hp, 1, b, 1)));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.ci.data(), relaxed.delta(),
+                                           dim * roots_count * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToDevice, stream)));
+  }
 
   // diag(H)^-1, floored, built on the host once.
   std::vector<double> scale(pairs);
@@ -80,10 +98,10 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
     return value;
   };
 
-  // z = 0, r = -g, p = s = M r.
+  // z = 0, r = -b, p = s = M r.
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(z, 0, pairs * sizeof(double), stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(r, gradient, pairs * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  FBF_TRY(gpu_status(
+      wwr::wwrMemcpyAsync(r, b, pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice, stream)));
   FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n_pairs, &kNegOne<double>, r, 1)));
   FBF_TRY(precondition());
   FBF_TRY(gpu_status(
@@ -118,17 +136,16 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
     rs = rs_new;
   }
 
-  // The true residual H~ z + g, from one more product: the recurrence's r
+  // The true residual H~ z + b, from one more product: the recurrence's r
   // drifts from it, H~'s products being good only to the CI response's
   // conjugate gradients. That product's respond leaves delta(z_o) in
-  // relaxed.delta(), which is z_c once off every root (the other roots' part
-  // respond adds is the state average's redundant rotations).
+  // relaxed.delta(), which with w is z_c once off every root (the other
+  // roots' part respond adds is the state average's redundant rotations).
   FBF_TRY(relaxed.apply(res, z, hp));
-  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, gradient, 1, hp, 1)));
+  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, b, 1, hp, 1)));
   FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, hp, 1, &out.residual)));
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.ci.data(), relaxed.delta(),
-                                         dim * roots_count * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32 * nroots, &kOne<double>,
+                                                relaxed.delta(), 1, out.ci.data(), 1)));
   const double *const c = roots.vectors.data();
   for (size_t root = 0; root < roots_count; ++root) {
     double *const v = out.ci.data() + (root * dim);

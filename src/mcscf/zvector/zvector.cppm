@@ -21,15 +21,18 @@ export namespace free_breakfast::mcscf {
 
 /// @brief One root's multipliers, on the device they were solved on.
 struct ZVector {
-  /// @brief z_o, H~ z_o = -g_I, over the packed pairs (H~'s size()).
+  /// @brief z_o, H~ z_o = -g_I + H_oc (H_0 - E)^-1 P y, over the packed pairs
+  /// (H~'s size()); y = 0 without a CI right-hand side.
   Buffers::device<double> orbital;
-  /// @brief z_c, dim x nroots column-major: root r's CI response to z_o,
-  /// -(H_0 - E_r)^-1 (1 - sum_s c_s c_s^T) H'(z_o) c_r, off every root.
+  /// @brief z_c, dim x nroots column-major: root r's CI response to z_o and
+  /// the right-hand side, -(H_0 - E_r)^-1 P (H'(z_o) c_r + y_r), with
+  /// P = 1 - sum_s c_s c_s^T; off every root.
   Buffers::device<double> ci;
   /// @brief H~ products the conjugate gradients took (the residual's not
   /// counted).
   int32_t iterations;
-  /// @brief ||H~ z_o + g_I||, from one more product at the solution.
+  /// @brief ||H~ z_o + g_I - H_oc (H_0 - E)^-1 P y||, from one more product
+  /// at the solution.
   double residual;
 };
 
@@ -42,9 +45,17 @@ struct ZVector {
 /// @p roots are the ones it was created over (H's diagonal is the
 /// preconditioner, a pair whose diagonal is below 1e-8 left unscaled).
 /// @p gradient is g_I on the device, @c response::fock's gradient at root
-/// I's own RDMs and the same orbitals, in the packed order. Its CI part is
-/// zero, every root being an eigenvector of the same H_0, so z_o alone is
-/// solved for and z_c follows from it.
+/// I's own RDMs and the same orbitals, in the packed order.
+///
+/// @p ci_rhs is the CI right-hand side y on the device (dim x nroots,
+/// column-major), or null for none: a CASSCF gradient's is zero, every root
+/// being an eigenvector of the same H_0. The equations solved are
+///   H z_o + H_oc z_c = -g_I,
+///   (H_0 - E_r) z_c,r + P H'(z_o) c_r = -P y_r   for every root r,
+/// the CI rows unweighted, in the coordinates of PySCF's gen_g_hop (README.md
+/// "The CI right-hand side"); y must be in the roots' spin, and is projected
+/// off every root here. z_c is eliminated, so z_o alone is solved for and z_c
+/// follows from it.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); every product
 /// synchronizes. The device res.dev_idx() names is made current for the call
@@ -59,7 +70,7 @@ struct ZVector {
 ///         a minimum); or the first error of a product, BLAS call or copy.
 [[nodiscard]] Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
                                       const response::Hessian &hessian, const ci::Roots &roots,
-                                      const double *gradient, double tolerance = 1e-10,
-                                      int32_t max_iterations = 200);
+                                      const double *gradient, const double *ci_rhs = nullptr,
+                                      double tolerance = 1e-10, int32_t max_iterations = 200);
 
 } // namespace free_breakfast::mcscf
