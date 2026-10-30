@@ -3,7 +3,7 @@
 # names the ScfOutput and the products it re-exports (the EriOutput among
 # them); primitive_pair_classes is named too, as run's View takes its classes.
 # core::resources and pipeline::step are in run's signature. What run calls --
-# the orbital-energy diagonal, the guess and the preconditioner,
+# the orbital-energy diagonal, the guess and the preconditioners,
 # davidson_solve, the dipole matrices and the gemms over them, core::wwr for
 # the copies and core::log for the f-shell warning -- is PRIVATE: run is
 # defined in the implementation unit.
@@ -32,4 +32,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::davidson
   free_breakfast::integrals::one_electron::dipole
   free_breakfast::cis::precondition
+  free_breakfast::cis::ris_precondition
 )

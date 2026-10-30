@@ -1,6 +1,6 @@
 /// @file
 /// @brief CisStep: the refusals, then Δε, the guess and the preconditioner
-/// over the ScfOutput, the sigma the EriOutput selects (integral-direct or
+/// (diagonal, clustered or RIS-J) over the ScfOutput, the sigma the EriOutput selects (integral-direct or
 /// fitted), davidson_solve, a singlet's transition dipoles over the ov block
 /// of the dipole matrices, and the roots copied off the device.
 
@@ -17,6 +17,7 @@ import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.davidson;
 import free_breakfast.integrals.one_electron.dipole;
 import free_breakfast.cis.precondition;
+import free_breakfast.cis.ris_precondition;
 import free_breakfast.cis.sigma;
 
 #include "diagnostics.h"
@@ -71,6 +72,10 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   if (!(options.cluster_gap >= 0.0)) {
     return err_config("cis: cluster_gap is {}, not at least 0", options.cluster_gap);
   }
+  if (options.ris && options.cluster_gap > 0.0) {
+    return err_config("cis: ris and a cluster_gap of {} each pick the preconditioner; set one",
+                      options.cluster_gap);
+  }
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const ScfOutput &scf = in.get<ScfOutput>();
   const int32_t n_electrons = molecule.electron_count();
@@ -120,14 +125,30 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   Buffers::device<double> start(n * static_cast<size_t>(guess_count), res.device());
   FBF_TRY(cis::guess(res, n_ov, delta.data(), guess_count, start.data()));
   cis::Preconditioner precondition{res, n_ov, delta.data(), n_states};
+  // RIS-J in the diagonal correction's place when options.ris asks, over its
+  // own fit of the RIS basis, whichever [eri] the sigma has.
+  const auto &classes = in.get<PrimitivePairClassesOutput>().classes;
+  std::optional<cis::RisPreconditioner> ris;
+  if (options.ris) {
+    ris = FBF_TRY(cis::RisPreconditioner::create(res, in.get<BasisSetOutput>().basis, classes,
+                                                 molecule.atoms(), scf.c, n_occ, delta.data(),
+                                                 n_states, *options.ris));
+  }
   Buffers::device<double> values(roots, res.device());
   Buffers::device<double> vectors(n * roots, res.device());
-  // The clusters over the guess's entries, where the subspace starts; at the
-  // default gap of zero, none, and the diagonal correction alone.
+  // Otherwise the clusters over the guess's entries, where the subspace
+  // starts; at the default gap of zero, none, and the diagonal correction
+  // alone.
   const auto solve = [&](auto &sigma) -> Result<DavidsonInfo> {
+    const auto davidson = [&](const auto &correct) {
+      return davidson_solve<double>(res, sigma, correct, n_ov, n_states, subspace, start.data(),
+                                    guess_count, values.data(), vectors.data(), options.davidson);
+    };
+    if (ris) {
+      return davidson(*ris);
+    }
     FBF_TRY(precondition.cluster(res, sigma, guess_count, options.cluster_gap));
-    return davidson_solve<double>(res, sigma, precondition, n_ov, n_states, subspace, start.data(),
-                                  guess_count, values.data(), vectors.data(), options.davidson);
+    return davidson(precondition);
   };
   // The sigma the EriOutput's alternative selects. The fitted one's block is
   // the widest davidson_solve applies: the guess's columns first, then at
@@ -151,7 +172,6 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   // orthogonality, as are a singlet's past the dipole kernels' d, where the
   // step still returns the energies rather than failing.
   std::vector<double> mu(3 * roots, 0.0);
-  const auto &classes = in.get<PrimitivePairClassesOutput>().classes;
   const bool past_dipole = std::ranges::any_of(
       classes, [](const PrimitivePairClass &cls) { return cls.lb > kDipoleMaxL; });
   if (options.spin == cis::Spin::Singlet && past_dipole) {

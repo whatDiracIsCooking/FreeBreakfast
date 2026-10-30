@@ -2,4 +2,5 @@
 # directory, each its own target: add a directory below to extend the layer.
 add_subdirectory(precondition)
 add_subdirectory(ris_basis)
+add_subdirectory(ris_precondition)
 add_subdirectory(sigma)

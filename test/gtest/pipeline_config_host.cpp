@@ -733,6 +733,28 @@ TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_EQ(defaults.options.davidson.max_iterations, options.davidson.max_iterations);
   EXPECT_EQ(defaults.max_subspace, fb::CisStep{}.max_subspace);
   EXPECT_EQ(defaults.options.cluster_gap, 0.0);
+  EXPECT_FALSE(defaults.options.ris.has_value());
+}
+
+TEST(PipelineConfig, TheCisRisOptionsAreRead) {
+  auto calc = fb::parse_config(
+      with_inputs("[cis]\nris = true\nris_theta = 0.35\nris_shells = \"spd\"\n"), "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const auto &ris = calc->step<fb::CisStep>()->options.ris;
+  ASSERT_TRUE(ris.has_value());
+  EXPECT_EQ(ris->theta, 0.35);
+  EXPECT_EQ(ris->shells, fb::cis::RisShells::Spd);
+
+  // ris alone is RisOptions' defaults; ris = false is none.
+  auto plain = fb::parse_config(with_inputs("[cis]\nris = true\n"), "", kOut);
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  const auto &defaults = plain->step<fb::CisStep>()->options.ris;
+  ASSERT_TRUE(defaults.has_value());
+  EXPECT_EQ(defaults->theta, fb::cis::RisOptions{}.theta);
+  EXPECT_EQ(defaults->shells, fb::cis::RisShells::Sp);
+  auto off = fb::parse_config(with_inputs("[cis]\nris = false\n"), "", kOut);
+  ASSERT_TRUE(off.has_value()) << off.error().message;
+  EXPECT_FALSE(off->step<fb::CisStep>()->options.ris.has_value());
 }
 
 TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
@@ -747,6 +769,16 @@ TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
                       "[cis] max_iterations is 0, below 1");
   expect_config_error(with_inputs("[cis]\ncluster_gap = -0.5\n"),
                       "[cis] cluster_gap must not be negative");
+  expect_config_error(with_inputs("[cis]\nris = 1\n"), "[cis] ris is not a boolean");
+  expect_config_error(with_inputs("[cis]\nris_theta = 0.3\n"), "[cis] ris_theta needs ris = true");
+  expect_config_error(with_inputs("[cis]\nris = false\nris_shells = \"s\"\n"),
+                      "[cis] ris_shells needs ris = true");
+  expect_config_error(with_inputs("[cis]\nris = true\nris_shells = \"spdf\"\n"),
+                      "[cis] has no ris_shells 'spdf'");
+  expect_config_error(with_inputs("[cis]\nris = true\nris_theta = 0\n"),
+                      "[cis] ris_theta must be finite and positive");
+  expect_config_error(with_inputs("[cis]\nris = true\ncluster_gap = 0.1\n"),
+                      "[cis] ris and cluster_gap each pick the preconditioner");
 }
 
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {

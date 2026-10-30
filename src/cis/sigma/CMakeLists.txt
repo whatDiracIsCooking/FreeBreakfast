@@ -2,10 +2,11 @@
 # the spherical bridge, nonsymmetric_jk and b_mo, so no device library. Its
 # interface takes DeviceResources, a BasisSet, J's and K's classes, a
 # SphericalMatrixAO and the fitted B's Buffers, holds MatrixAOPairs and
-# Buffers, returns Status and carries DavidsonOptions, hence everything named
-# there PUBLIC. The implementation units alone call the gemms,
-# nonsymmetric_jk and b_mo, round the workspace, copy the scalars and check
-# the LinearOperator concept, so those and the FBF_TRY header are PRIVATE.
+# Buffers, returns Status and carries DavidsonOptions and RisOptions (the
+# latter re-exported, so a caller can name it), hence everything named there
+# PUBLIC. The implementation units alone call the gemms, nonsymmetric_jk and
+# b_mo, round the workspace, copy the scalars and check the LinearOperator
+# concept, so those and the FBF_TRY header are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.cis.sigma
@@ -23,6 +24,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   free_breakfast::recipes::matrix_ao
   free_breakfast::recipes::davidson
+  free_breakfast::cis::ris_basis
   free_breakfast::integrals::eri::integral_direct::coulomb
   free_breakfast::integrals::eri::integral_direct::exchange
   LINK_PRIVATE

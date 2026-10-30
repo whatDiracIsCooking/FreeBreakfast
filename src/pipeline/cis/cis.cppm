@@ -78,7 +78,9 @@ struct CisStep {
   /// at a block of the guess's column count. The start is
   /// `cis::guess`'s min(n_ov, 2 · n_states) unit vectors, the preconditioner
   /// `cis::Preconditioner`, clustered over the guess's entries at
-  /// @ref options' cluster_gap (none at its default 0), and `davidson_solve`
+  /// @ref options' cluster_gap (none at its default 0), or, when
+  /// @ref options' ris is set, `cis::RisPreconditioner` over its own fit of
+  /// the RIS basis, whichever EriOutput the sigma has, and `davidson_solve`
   /// runs at @ref options' davidson. A singlet's transition dipoles are then √2 (μ^ov)ᵀ X over
   /// the ov block of the spherical dipole matrices, μ^ov_c = C_virtᵀ μ_c C_occ,
   /// formed once from `dipole` over the PrimitivePairClassesOutput's classes,
@@ -88,14 +90,16 @@ struct CisStep {
   /// back to the host, and so do the roots and their dipoles.
   ///
   /// @return The states; InvalidConfig, before anything is allocated, for
-  ///         n_states below 1, a negative or NaN cluster_gap, a molecule that is not a closed-shell singlet
+  ///         n_states below 1, a negative or NaN cluster_gap or a positive
+  ///         one beside ris, a molecule that is not a closed-shell singlet
   ///         (odd electrons or multiplicity other than 1) or whose electrons
   ///         the ScfOutput does not hold as n_alpha = n_beta, no virtual
   ///         orbital, an n_ov past int32_t, or more states than n_ov; or the
   ///         error of the first call that failed: `cis::diagonal`'s,
   ///         `cis::guess`'s, `cis::Sigma::create`'s or
   ///         `cis::DfSigma::create`'s (Unsupported for MO blocks past the
-  ///         device's free memory), `cis::Preconditioner::cluster`'s, or
+  ///         device's free memory), `cis::Preconditioner::cluster`'s,
+  ///         `cis::RisPreconditioner::create`'s or its correction's, or
   ///         `davidson_solve`'s
   ///         (MaxIterationsExceeded, Divergence), and GpuRuntime for a failed
   ///         copy, dipole launch or gemm.

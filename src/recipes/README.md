@@ -16,6 +16,7 @@ Dense linear algebra on the GPU, built over WarpWraps' BLAS and dense-solver dis
 | `einsum/` | `free_breakfast.recipes.einsum` | A NumPy-style einsum, accumulating `alpha` times the contraction into its output (`einsum`), and the transpose as its one-operand case (`transpose`): one generic kernel driven by the subscript string, up to 3 operands. |
 | `expm/` | `free_breakfast.recipes.expm` | The exponential of a skew-Hermitian H, exp(tH) = U diag(e^{-itw}) U^H, from one Hermitian eigendecomposition of iH (`skew_eig`) and evaluated at any t (`skew_expm`). |
 | `linear_operator/` | `free_breakfast.recipes.linear_operator` | The `LinearOperator` concept: a matrix known only by `op.apply(res, k, x, y)`, Y = A X. |
+| `lu/` | `free_breakfast.recipes.lu` | A general square system A X = B by the pivoted LU factorization P A = L U, one `getrf` and one `getrs` with their work and flag from `DeviceResources` (`lu_solve`), returning `getrf`'s flag for an exactly singular U. |
 | `matrix_ao/` | `free_breakfast.recipes.matrix_ao` | AO-basis matrices tagged Cartesian or spherical, and a pair holding both that converts through a shared transform. |
 | `norm/` | `free_breakfast.recipes.norm` | A chosen norm (`Norm::l1`, `l2`, `inf`) of a real device vector, in either pointer mode (`norm`). |
 | `orthogonalize/` | `free_breakfast.recipes.orthogonalize` | The symmetric (Löwdin) orthogonalizer X = S^{-1/2}, and `orthonormalize`, a block of vectors orthonormalized in place with dependent columns dropped, both over `diagonalize`. |
