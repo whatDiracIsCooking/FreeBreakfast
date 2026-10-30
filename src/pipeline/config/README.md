@@ -319,7 +319,7 @@ the order the tables were written in. Pipeline order comes from each step's
 
 ## Tests
 
-`test/gtest/pipeline_config_host.cpp`, host-only: every option read, the step
+`test/pipeline/config_host.cpp`, host-only: every option read, the step
 defaults kept, path resolution against the input directory, the output
 names, the inputs kept apart from the outputs, which steps are filled in and
 which are not, `from`, and each refusal above. Nothing is run.

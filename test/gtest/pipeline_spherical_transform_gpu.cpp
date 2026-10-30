@@ -1,5 +1,5 @@
 // The SphericalTransform step against a direct upload_spherical_transform_matrix.
-// The step's contract is checked by static_assert; running it uploads U, so the
+// The step's contract is test/pipeline/steps_host.cpp's; running it uploads U, so the
 // rest needs a GPU.
 
 #include <gtest/gtest.h>
@@ -16,13 +16,6 @@ import free_breakfast.pipeline.spherical_transform;
 namespace {
 
 namespace fb = free_breakfast;
-
-static_assert(fb::PipelineStep<fb::SphericalTransformStep>);
-static_assert(fb::kRunShape<fb::SphericalTransformStep> == fb::RunShape::Device);
-static_assert(
-    std::same_as<fb::StepInput<fb::SphericalTransformStep>, fb::View<fb::BasisSetOutput>>);
-static_assert(
-    std::same_as<fb::StepOutput<fb::SphericalTransformStep>, fb::SphericalTransformOutput>);
 
 const fb::Vec<double, 3> kOrigin{0.0, 0.0, 0.0};
 

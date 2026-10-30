@@ -140,7 +140,7 @@ over the other table (`pipeline/config`).
 
 `test/gtest/pipeline_eri_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - The step's B for water in cc-pVDZ / cc-pVDZ-JKFIT and in cc-pVTZ /
   cc-pVTZ-JKFIT (f orbitals, g fitting functions) is compared with the B that
   `density_fit` makes of PySCF's `int2c2e` and `int3c2e`

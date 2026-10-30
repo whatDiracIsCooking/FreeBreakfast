@@ -63,7 +63,7 @@ rather than a file, and not before.
 ## Tests
 
 `test/gtest/pipeline_molecule_gpu.cpp`. The step's contract is checked by
-`static_assert`. The step's `Molecule` is checked against a direct `read_xyz`
+`static_assert`, in `test/pipeline/steps_host.cpp`. The step's `Molecule` is checked against a direct `read_xyz`
 of the same file, and a missing file is checked to come back as `IO`.
 
 ## Files

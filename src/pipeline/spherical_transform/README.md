@@ -51,7 +51,7 @@ replace those waits, as for `Molecule`'s nuclei.
 
 `test/gtest/pipeline_spherical_transform_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - The step's U is checked, element by element, against a direct
   `upload_spherical_transform_matrix` of the same basis.
 - A basis with no shell above p is checked to give `nullptr`.

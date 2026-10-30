@@ -19,7 +19,7 @@ bridge to the Python tooling layer — a file written here loads with a plain
   differ (non-empty, two or more axes longer than one), `False` otherwise —
   a scalar, a vector, `(1, n)` or `(0, n)` is both. For every ordinary shape
   that is byte-for-byte `np.save(path, np.asfortranarray(a))` output —
-  `io_npy_host.cpp` pins the 128-byte header numpy 2.5.4 writes for `()`,
+  `test/io/npy_host.cpp` pins the 128-byte header numpy 2.5.4 writes for `()`,
   `(3,)`, `(2, 3)`, `(1, 3)`, `(0, 3)` and `(2, 1, 2)`. It is not identical
   *in general*: modern `np.save` also reserves up to 21 spaces so the first
   axis can grow in place, which this writer does not, so for a shape tuple

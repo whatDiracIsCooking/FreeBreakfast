@@ -8,8 +8,9 @@
 // N2 is not among the cases: SC-NEVPT2 depends on the arbitrary split of its
 // degenerate pi* virtual pairs by up to 5e-6 (data/README.md
 // "nevpt2/nevpt2_df.json"), so the reference leaves it out.
-// Then a state PC refuses, which keeps its SC; the refusal of an open-shell
-// ScfOutput; and the refusal of an integral-direct [eri], which needs no GPU.
+// Then a state PC refuses, which keeps its SC, and the refusal of an
+// open-shell ScfOutput. The refusal of an integral-direct [eri], made when the
+// config is read, is test/pipeline/config_host.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -29,13 +30,6 @@ import free_breakfast.pipeline.config;
 namespace {
 
 namespace fb = free_breakfast;
-
-static_assert(fb::PipelineStep<fb::Nevpt2Step>);
-static_assert(fb::kRunShape<fb::Nevpt2Step> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::Nevpt2Step>,
-                           fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::EriOutput,
-                                    fb::CoreHamiltonianOutput, fb::ScfOutput, fb::CasscfOutput>>);
-static_assert(std::same_as<fb::StepOutput<fb::Nevpt2Step>, fb::Nevpt2Output>);
 
 // The CASSCF's convergence, as pipeline_casscf_gpu.cpp runs it.
 constexpr double kConvTolGrad = 1e-9;
@@ -302,23 +296,6 @@ TEST(PipelineNevpt2, PcRefusalKeepsSc) {
       << nevpt2->pc_refusals[0];
   std::cout << std::format("[ nevpt2   ] HF CAS(10,7): SC E_corr {:.12f}; PC {}\n", sc.total,
                            nevpt2->pc_refusals[0]);
-}
-
-// [nevpt2] over integral-direct ERIs, [eri] written so or filled in, is
-// refused when the config is read, before the SCF and CASSCF it would follow.
-// Nothing runs, so no GPU is needed.
-TEST(PipelineNevpt2, IntegralDirectEriIsUnsupported) {
-  const fb::test::ScratchDir dir("pipeline_nevpt2");
-  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
-    const std::string toml =
-        std::format("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
-                    "[casscf]\nncas = 4\nnelecas = 4\n{}[nevpt2]\n",
-                    eri);
-    const auto calc = fb::parse_config(toml, dir.path(), dir / "out");
-    ASSERT_FALSE(calc.has_value()) << eri;
-    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
-    EXPECT_NE(calc.error().message.find("[eri]"), std::string::npos) << calc.error().message;
-  }
 }
 
 // An open-shell ScfOutput, n_alpha != n_beta, is refused when the step runs,

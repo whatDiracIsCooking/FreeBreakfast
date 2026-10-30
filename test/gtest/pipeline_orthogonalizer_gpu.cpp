@@ -1,6 +1,6 @@
 // The Orthogonalizer step against a direct orthogonalize, and X^T S X = I on
-// the overlap the steps before it build. The step's contract is checked by
-// static_assert; the rest runs on the device, so needs a GPU.
+// the overlap the steps before it build. The step's contract is
+// test/pipeline/steps_host.cpp's; the rest runs on the device, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -19,11 +19,6 @@ namespace {
 namespace fb = free_breakfast;
 
 using OrthogonalizerInput = fb::View<fb::BasisSetOutput, fb::OverlapOutput>;
-
-static_assert(fb::PipelineStep<fb::OrthogonalizerStep>);
-static_assert(fb::kRunShape<fb::OrthogonalizerStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::OrthogonalizerStep>, OrthogonalizerInput>);
-static_assert(std::same_as<fb::StepOutput<fb::OrthogonalizerStep>, fb::OrthogonalizerOutput>);
 
 std::vector<double> download(fb::DeviceResources &res, const fb::SphericalMatrixAO &m) {
   std::vector<double> host(m.num_elements());
