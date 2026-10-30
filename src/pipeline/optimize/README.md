@@ -65,9 +65,8 @@ optimization and is returned as it is.
   Hamiltonian, gradient) run at their defaults, without `overlap.npy` or
   `gradient.json`. Those files are the outer pipeline's.
 - **Any `[eri]`.** The chain holds the config's `EriStep` as it is, so the
-  ERIs are whatever `[eri]` asks for. `[gradient]` refuses integral-direct
-  ERIs today; once it takes them (#517) `[optimize]` runs over them with no
-  change here.
+  ERIs are whatever `[eri]` asks for, density-fitted or integral-direct
+  (`[gradient]` takes both, #517), with no branch here.
 - **`Node`-shaped**, because an evaluation runs a `Pipeline` on the node. The
   nested `run` happens on an executor worker, so it co-runs its flow there
   rather than blocking the worker (`../pipeline/README.md`). The step's
@@ -154,6 +153,11 @@ every geometry. `config/README.md` has the rules.
   at the optimum: the loaded molecule matches the optimized one, and the outer
   SCF's energy the optimizer's. Anti ethanol runs in about 7 s, inside the
   fast tier.
+- The same file, over integral-direct ERIs (#517's demonstration, with
+  `fock_rebuild_interval = 1` so every SCF build is full): H₂O from the same
+  start, held to convergence (its last evaluation's largest force under the
+  threshold) in fewer than 15 steps. Its minimum is the exact RHF's, so the
+  DF reference does not apply.
 
 ## Files
 

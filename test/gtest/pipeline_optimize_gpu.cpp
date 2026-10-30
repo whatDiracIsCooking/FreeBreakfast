@@ -4,7 +4,8 @@
 // planned and run by Calculation. The optimized geometry is held to PySCF's
 // minimum to 1e-4 Angstrom after alignment and its energy to 1e-8 Eh; the
 // reference optimizer was Newton's, so the path is not compared, only that it
-// is short. H2O also carries a [localization], which must run at the optimum.
+// is short. H2O also carries a [localization], which must run at the optimum,
+// and runs again over integral-direct ERIs, held to convergence.
 
 #include <gtest/gtest.h>
 
@@ -38,10 +39,10 @@ constexpr std::size_t kEthanolMaxSteps = 25;
 // converged as pipeline_gradient_gpu.cpp converges it; and the optimizer
 // past Gaussian's defaults, to Opt=Tight's thresholds: at the defaults
 // ethanol's geometry is 3.9e-3 Angstrom off, past the bar.
-constexpr std::string_view kScfAndOptimize =
-    "[scf]\nenergy_tolerance = 1e-12\ncommutator_tolerance = 1e-10\n"
-    "[optimize]\nmax_force = 1.5e-5\nrms_force = 1e-5\nmax_displacement = 6e-5\n"
-    "rms_displacement = 4e-5\n";
+constexpr std::string_view kScf = "[scf]\nenergy_tolerance = 1e-12\ncommutator_tolerance = 1e-10\n";
+constexpr double kMaxForce = 1.5e-5;
+constexpr std::string_view kOptimize = "[optimize]\nmax_force = 1.5e-5\nrms_force = 1e-5\n"
+                                       "max_displacement = 6e-5\nrms_displacement = 4e-5\n";
 
 const fb::json &reference_case(std::string_view name) {
   static const fb::json kDoc = [] {
@@ -61,10 +62,10 @@ const fb::json &reference_case(std::string_view name) {
 }
 
 // The reference's `start` as start.xyz in @p dir (bohr there, Angstrom here),
-// and run.toml optimizing it in the reference's basis and fit, with @p extra
-// after [optimize].
+// and run.toml optimizing it in the reference's basis, over the reference's
+// fit or, with @p integral_direct, exact ERIs, with @p extra after [optimize].
 std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::json &entry,
-                                   std::string_view extra) {
+                                   std::string_view extra, bool integral_direct = false) {
   std::string xyz =
       std::format("{}\n{}\n", entry.at("start").size(), entry.at("name").get<std::string>());
   for (const fb::json &atom : entry.at("start")) {
@@ -75,11 +76,16 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
   EXPECT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  // Integral-direct incremental Fock builds stall short of kScf's commutator
+  // (pipeline_gradient_gpu.cpp), so every build there is full.
+  const std::string eri =
+      integral_direct ? std::string("[eri]\nmode = \"integral_direct\"\n")
+                      : std::format("[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
+                                    entry.at("aux_basis").get<std::string>());
   const std::string toml =
-      std::format("[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
-                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}{}",
-                  entry.at("basis").get<std::string>(), entry.at("aux_basis").get<std::string>(),
-                  kScfAndOptimize, extra);
+      std::format("[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n{}{}{}{}{}",
+                  entry.at("basis").get<std::string>(), eri, kScf,
+                  integral_direct ? "fock_rebuild_interval = 1\n" : "", kOptimize, extra);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   return dir / "run.toml";
 }
@@ -261,6 +267,39 @@ TEST(PipelineOptimize, WaterReachesThePyscfMinimumAndLaterStepsRunThere) {
 TEST(PipelineOptimize, EthanolReachesThePyscfMinimum) {
   FBF_REQUIRE_GPU();
   expect_reference_minimum("ethanol_ccpvdz", "", kEthanolMaxSteps);
+}
+
+// #517's demonstration: the same step, unchanged, over integral-direct ERIs.
+// The reference minimum is DF-RHF's, so this one is held to convergence, its
+// last evaluation's largest force under the threshold, in as few steps.
+TEST(PipelineOptimize, WaterConvergesOverIntegralDirectEris) {
+  FBF_REQUIRE_GPU();
+  const fb::json &start = reference_case("h2o_ccpvdz");
+  const fb::test::ScratchDir dir("pipeline_optimize_h2o_direct");
+  const auto config = write_config(dir, start, "", /*integral_direct=*/true);
+  auto calc = fb::read_config(config, dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &eri = calc->get<fb::EriOutput>();
+  ASSERT_TRUE(eri.has_value());
+  EXPECT_FALSE(std::holds_alternative<fb::DensityFitted>(eri->eri));
+
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_GE(iterations.size(), 1U);
+  const double max_force = iterations.back().at("max_force").get<double>();
+  EXPECT_LE(max_force, kMaxForce);
+  EXPECT_LT(iterations.size() - 1, kMaxSteps);
+  std::cout << std::format("[ optimize ] h2o_ccpvdz integral-direct: {} steps, max force {:.2e}, "
+                           "E {:.10f}, {:.1f} s\n",
+                           iterations.size() - 1, max_force,
+                           calc->get<fb::OptimizeOutput>()->energy, seconds);
 }
 
 } // namespace
