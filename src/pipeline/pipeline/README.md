@@ -99,8 +99,14 @@ run, and its slot holds that input's error, unchanged. `run` returns the first
 error in plan order. That is always a step's own error, since everything
 upstream of it succeeded, so the error is the same whatever the schedule.
 
-**Once.** A second `run` is `Unsupported`: nothing yet re-runs a flow
-(geom-opt will).
+**Once.** A second `run` is `Unsupported`. A step that needs a flow rerun
+plans a fresh `Pipeline` per run instead (`OptimizeStep`, one per geometry).
+
+**Nesting.** That inner `run` is called from inside the outer one's task, on
+one of `node.executor()`'s workers. Blocking that worker on `wait()` could
+starve the inner flow (with one worker it would deadlock), so a `run` on a
+worker co-runs its flow there (`tf::Executor::corun`), and only a `run` from
+outside the executor waits.
 
 ## Products
 

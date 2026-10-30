@@ -160,6 +160,9 @@ export namespace free_breakfast {
 /// first failed input's error. `run` returns the first error in plan order,
 /// which is a step's own, whatever the schedule.
 ///
+/// **Nesting.** A step may run a Pipeline of its own on the same node
+/// (OptimizeStep): run from an executor worker, the flow is co-run on it.
+///
 /// **Free order.** The products are destroyed in reverse plan order with
 /// their device current, after the run has waited on every device step.
 ///
@@ -260,7 +263,14 @@ public:
         chain_tail = tasks[i];
       }
     }
-    node.executor().run(flow).wait();
+    // A pipeline run from inside a step of another (OptimizeStep's chain) is
+    // on one of the executor's workers, and blocking it on wait() would hold
+    // a worker the flow may need: corun runs the flow on it instead.
+    if (node.executor().this_worker_id() >= 0) {
+      node.executor().corun(flow);
+    } else {
+      node.executor().run(flow).wait();
+    }
 
     for (const size_t i : order_) {
       if (const Error *error = failure(i)) {

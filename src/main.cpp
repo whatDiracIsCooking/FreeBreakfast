@@ -26,6 +26,10 @@ namespace fb = free_breakfast;
 
 // One block per product type, each printed only if the pipeline built it.
 void print_products(const fb::Calculation &calc) {
+  // After an [optimize], the molecule below is the optimized one.
+  if (const auto &out = calc.get<fb::OptimizeOutput>()) {
+    std::println("optimized energy:  {:.10f} Ha", out->energy);
+  }
   if (const auto &out = calc.get<fb::MoleculeOutput>()) {
     const fb::Molecule &molecule = out->molecule;
     std::println("atoms:             {}", molecule.natoms());

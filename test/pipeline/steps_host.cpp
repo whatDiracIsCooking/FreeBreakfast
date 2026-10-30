@@ -20,6 +20,10 @@ static_assert(fb::PipelineStep<fb::MoleculeStep>);
 static_assert(fb::kRunShape<fb::MoleculeStep> == fb::RunShape::Device);
 static_assert(std::same_as<fb::StepInput<fb::MoleculeStep>, fb::View<>>);
 static_assert(std::same_as<fb::StepOutput<fb::MoleculeStep>, fb::MoleculeOutput>);
+// Loaded, after an [optimize], from the final.xyz it wrote.
+static_assert(fb::LoadableStep<fb::MoleculeStep>);
+static_assert(fb::kLoadShape<fb::MoleculeStep> == fb::RunShape::Device);
+static_assert(std::same_as<fb::LoadInput<fb::MoleculeStep>, fb::View<fb::OptimizeOutput>>);
 
 static_assert(fb::PipelineStep<fb::BasisSetStep>);
 static_assert(fb::kRunShape<fb::BasisSetStep> == fb::RunShape::Host);
@@ -142,5 +146,15 @@ static_assert(std::same_as<fb::StepInput<fb::GradientStep>,
                            fb::View<fb::MoleculeOutput, fb::BasisSetOutput,
                                     fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::GradientStep>, fb::GradientOutput>);
+
+// --- Geometry optimization --------------------------------------------------
+
+// A root holding the chain it reruns; Node-shaped, as each evaluation runs a
+// Pipeline of its own on the node.
+static_assert(fb::PipelineStep<fb::OptimizeStep>);
+static_assert(fb::kRunShape<fb::OptimizeStep> == fb::RunShape::Node);
+static_assert(std::same_as<fb::StepInput<fb::OptimizeStep>, fb::View<>>);
+static_assert(std::same_as<fb::StepOutput<fb::OptimizeStep>, fb::OptimizeOutput>);
+static_assert(!fb::LoadableStep<fb::OptimizeStep>);
 
 } // namespace
