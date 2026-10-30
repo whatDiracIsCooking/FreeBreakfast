@@ -24,7 +24,8 @@
 # and names neither). Keep the target names in step if you rename them.
 #
 # The src/core tests are not here: test/core builds them as their own pair,
-# free_breakfast_core_tests_{host,gpu}.
+# free_breakfast_core_tests_{host,gpu}. Nor are the src/atom ones: test/atom
+# builds them as free_breakfast_atom_tests_host.
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
@@ -33,7 +34,6 @@ include(GoogleTest)
 # Add new host-only (no device needed at run time) TUs to this list.
 add_executable(
   free_breakfast_tests_host
-  atom_host.cpp
   molecule_host.cpp
   basis_host.cpp
   sad_host.cpp
@@ -262,7 +262,7 @@ endforeach()
 # The trade is that ctest shells out once per binary before the run to
 # enumerate. That is milliseconds, and it buys per-case reporting and -R.
 # Each entry's TIMEOUT is _fb_test_timeout, set in test/CMakeLists.txt so this
-# tree and test/core share one value.
+# tree, test/core and test/atom share one value.
 
 gtest_discover_tests(
   free_breakfast_tests_host

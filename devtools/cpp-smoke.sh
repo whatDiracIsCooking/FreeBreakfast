@@ -8,8 +8,9 @@
 #     reusing devtools/build.sh's cpp_build -- the one copy of the cmake phases.
 #     Warm (you have been building), this is seconds; cold (a fresh worktree),
 #     ~1 min. It never passes --fresh.
-#   * runs the two host binaries, free_breakfast_core_tests_host (test/core)
-#     and free_breakfast_tests_host (test/gtest), then the two GPU ones,
+#   * runs the three host binaries, free_breakfast_core_tests_host (test/core)
+#     and free_breakfast_tests_host (test/gtest), and the atom one,
+#     free_breakfast_atom_tests_host (test/atom), then the two GPU ones,
 #     free_breakfast_core_tests_gpu and free_breakfast_tests_gpu, one after
 #     the other, all with FREE_BREAKFAST_FAST_TESTS=1,
 #     which makes every reference-grade case GTEST_SKIP (see
@@ -141,6 +142,7 @@ fi
 
 core_host_bin="$build_dir/test/core/free_breakfast_core_tests_host"
 core_gpu_bin="$build_dir/test/core/free_breakfast_core_tests_gpu"
+atom_host_bin="$build_dir/test/atom/free_breakfast_atom_tests_host"
 host_bin="$build_dir/test/gtest/free_breakfast_tests_host"
 gpu_bin="$build_dir/test/gtest/free_breakfast_tests_gpu"
 
@@ -171,6 +173,7 @@ export FREE_BREAKFAST_FAST_TESTS=1
 
 echo "cpp-smoke: host tests ..."
 run_suite core-host "$core_host_bin" || rc=$?
+run_suite atom-host "$atom_host_bin" || rc=$?
 run_suite host "$host_bin" || rc=$?
 
 echo "cpp-smoke: GPU smoke (heavy reference cases skipped via FREE_BREAKFAST_FAST_TESTS) ..."
