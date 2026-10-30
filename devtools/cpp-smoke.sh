@@ -4,14 +4,14 @@
 # hook in .pre-commit-config.yaml, not anything in here.
 #
 # What it does, and why it is shaped this way:
-#   * INCREMENTAL configure + build of the whole tree (all six test binaries),
+#   * INCREMENTAL configure + build of the whole tree (all seven test binaries),
 #     reusing devtools/build.sh's cpp_build -- the one copy of the cmake phases.
 #     Warm (you have been building), this is seconds; cold (a fresh worktree),
 #     ~1 min. It never passes --fresh.
-#   * runs the four host binaries, free_breakfast_core_tests_host (test/core),
-#     free_breakfast_io_tests_host (test/io), free_breakfast_pipeline_tests_host
-#     (test/pipeline) and free_breakfast_tests_host (test/gtest), then the two
-#     GPU ones,
+#   * runs the five host binaries, free_breakfast_core_tests_host (test/core),
+#     free_breakfast_basis_tests_host (test/basis), free_breakfast_io_tests_host
+#     (test/io), free_breakfast_pipeline_tests_host (test/pipeline) and
+#     free_breakfast_tests_host (test/gtest), then the two GPU ones,
 #     free_breakfast_core_tests_gpu and free_breakfast_tests_gpu, one after
 #     the other, all with FREE_BREAKFAST_FAST_TESTS=1,
 #     which makes every reference-grade case GTEST_SKIP (see
@@ -143,6 +143,7 @@ fi
 
 core_host_bin="$build_dir/test/core/free_breakfast_core_tests_host"
 core_gpu_bin="$build_dir/test/core/free_breakfast_core_tests_gpu"
+basis_host_bin="$build_dir/test/basis/free_breakfast_basis_tests_host"
 io_host_bin="$build_dir/test/io/free_breakfast_io_tests_host"
 pipeline_host_bin="$build_dir/test/pipeline/free_breakfast_pipeline_tests_host"
 host_bin="$build_dir/test/gtest/free_breakfast_tests_host"
@@ -176,6 +177,7 @@ export FREE_BREAKFAST_FAST_TESTS=1
 
 echo "cpp-smoke: host tests ..."
 run_suite core-host "$core_host_bin" || rc=$?
+run_suite basis-host "$basis_host_bin" || rc=$?
 run_suite io-host "$io_host_bin" || rc=$?
 run_suite pipeline-host "$pipeline_host_bin" || rc=$?
 run_suite host "$host_bin" || rc=$?

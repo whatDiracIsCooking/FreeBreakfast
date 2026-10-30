@@ -265,11 +265,14 @@ binaries by hand needs the same variable.
 
 Two suites, and neither covers the other.
 
-**C++ — `test/core/`, `test/io/`, `test/pipeline/` and `test/gtest/`, run by
-ctest.** Each tree is split by device requirement: a host binary (the
-`*_host.cpp` TUs, which need no device and all run everywhere) and a GPU one
-(the `*_gpu.cpp` TUs, which drive the device). `test/core/` holds the
-`src/core` tests, as `free_breakfast_core_tests_{host,gpu}`; `test/io/` the
+**C++ — `test/core/`, `test/basis/`, `test/io/`, `test/pipeline/` and
+`test/gtest/`, run by ctest.** Each tree is split by device requirement: a host
+binary (the `*_host.cpp` TUs, which need no device and all run everywhere) and
+a GPU one (the `*_gpu.cpp` TUs, which drive the device). `test/core/` holds the
+`src/core` tests, as `free_breakfast_core_tests_{host,gpu}`; `test/basis/` the
+`src/basis` tests that need no device, as `free_breakfast_basis_tests_host`
+alone (placing a stamp onto a `Molecule` needs one, and stays in
+`test/gtest/`); `test/io/` the
 `src/io` tests that need no device, as `free_breakfast_io_tests_host` alone
 (the io cases that build a `Molecule` need one, and stay in `test/gtest/`);
 `test/pipeline/` the `src/pipeline` tests that need no device, as

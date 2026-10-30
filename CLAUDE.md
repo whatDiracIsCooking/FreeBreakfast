@@ -212,7 +212,7 @@ check in `test/io/sad_host.cpp` fails until you do. The commands are in
 | | C++ | Python |
 |---|---|---|
 | Source | `src/`, `cmake/`, `deps/` (+ opt-in `bench/`, `experimental/`) | `test/pytest/`, `devtools/hooks/*.py`, `tools/` |
-| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/io/` (the host-only `src/io` tests) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, run by ctest | `test/pytest/`, run by pytest |
+| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/cpp-tier.sh`, `cpp-slow-tier.sh` | `pytest`, `devtools/slow-tier.sh` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
 | Gated by | `cmake-lint` + format check at commit, `cpp-smoke.sh` at push; on the server **format + cmake-lint only, no build or test** | pre-push hook + CI |

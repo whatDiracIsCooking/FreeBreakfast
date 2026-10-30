@@ -24,12 +24,14 @@
 # and names neither). Keep the target names in step if you rename them.
 #
 # The src/core tests are not here: test/core builds them as their own pair,
-# free_breakfast_core_tests_{host,gpu}. Nor are the host-only src/io tests:
-# test/io builds them as free_breakfast_io_tests_host. The io cases that need a
-# device (io_basis_gpu.cpp, io_xyz_gpu.cpp) are still here. Nor are the
-# src/pipeline cases that need no device: test/pipeline builds them as
-# free_breakfast_pipeline_tests_host. The ones that run a real step need a GPU,
-# and are here.
+# free_breakfast_core_tests_{host,gpu}. Nor are the host-only src/basis tests:
+# test/basis builds them as free_breakfast_basis_tests_host. basis_gpu.cpp,
+# which needs a device-resident Molecule, stays here. Nor are the host-only
+# src/io tests: test/io builds them as free_breakfast_io_tests_host. The io
+# cases that need a device (io_basis_gpu.cpp, io_xyz_gpu.cpp) are still here.
+# Nor are the src/pipeline cases that need no device: test/pipeline builds them
+# as free_breakfast_pipeline_tests_host. The ones that run a real step need a
+# GPU, and are here.
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
@@ -40,7 +42,6 @@ add_executable(
   free_breakfast_tests_host
   atom_host.cpp
   molecule_host.cpp
-  basis_host.cpp
   sad_host.cpp
   ci_strings_host.cpp
   ci_sigma_host.cpp
