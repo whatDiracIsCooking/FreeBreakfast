@@ -24,11 +24,13 @@ export namespace free_breakfast {
 struct CisState {
   /// @brief ω, the excitation energy above the reference (hartree).
   double excitation_energy;
-  /// @brief The length-gauge oscillator strength (2/3) ω |μ|². Zero: not yet
-  /// computed (#201).
+  /// @brief The length-gauge oscillator strength (2/3) ω |μ|². Zero for a
+  /// triplet (spin-forbidden), and for a singlet in a basis with a shell above
+  /// `kDipoleMaxL` (d), where the dipole integrals stop.
   double oscillator_strength;
-  /// @brief The transition dipole <0|μ|n> (x, y, z, atomic units). Zero: not
-  /// yet computed (#201).
+  /// @brief The transition dipole μ = <0|r|n> (x, y, z, atomic units, origin
+  /// 0), √2 Σ_ia X_ia <i|r|a> over the spin-adapted singlet. Its sign is the
+  /// amplitudes'. Zero exactly where @ref oscillator_strength is.
   std::array<double, 3> transition_dipole;
   /// @brief The unit-norm amplitudes X_ia, n_occ · n_virt of them, flat
   /// row-major (i, a): element i · n_virt + a, i over the occupied orbitals
@@ -76,9 +78,13 @@ struct CisStep {
   /// at a block of the guess's column count. The start is
   /// `cis::guess`'s min(n_ov, 2 · n_states) unit vectors, the preconditioner
   /// `cis::Preconditioner`, and `davidson_solve` runs at @ref options'
-  /// davidson. The transition dipoles and oscillator strengths are left zero.
-  /// Synchronizes res.stream(): every Davidson iteration reads back to the
-  /// host, and so do the roots.
+  /// davidson. A singlet's transition dipoles are then √2 (μ^ov)ᵀ X over
+  /// the ov block of the spherical dipole matrices, μ^ov_c = C_virtᵀ μ_c C_occ,
+  /// formed once from `dipole` over the PrimitivePairClassesOutput's classes,
+  /// and f = (2/3) ω |μ|². A triplet's are zero; so are a singlet's in a basis
+  /// with a shell above `kDipoleMaxL` (d), with a warning logged, the energies
+  /// still returned. Synchronizes res.stream(): every Davidson iteration reads
+  /// back to the host, and so do the roots and their dipoles.
   ///
   /// @return The states; InvalidConfig, before anything is allocated, for
   ///         n_states below 1, a molecule that is not a closed-shell singlet
@@ -90,10 +96,10 @@ struct CisStep {
   ///         `cis::DfSigma::create`'s (Unsupported for MO blocks past the
   ///         device's free memory), or `davidson_solve`'s
   ///         (MaxIterationsExceeded, Divergence), and GpuRuntime for a failed
-  ///         copy.
-  [[nodiscard]] Result<CisOutput>
-  run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput, ScfOutput> in,
-      DeviceResources &res) const;
+  ///         copy, dipole launch or gemm.
+  [[nodiscard]] Result<CisOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
+                                           PrimitivePairClassesOutput, EriOutput, ScfOutput> in,
+                                      DeviceResources &res) const;
 };
 
 } // namespace free_breakfast

@@ -2,10 +2,12 @@
 
 CIS (the Tamm–Dancoff approximation) over the SCF's closed-shell RHF: the
 lowest singlet or triplet excitations, as the lowest roots of the A matrix,
-found by `davidson_solve` over `cis::Sigma`. The numerics are all in
-`../../cis/` (the sigma, the Δε diagonal, the guess and the preconditioner);
-the step wires them over the pipeline's products, picks the Davidson's shape,
-and copies the roots off the device.
+found by `davidson_solve` over `cis::Sigma`, and a singlet's transition
+dipoles and oscillator strengths. The numerics are all in `../../cis/` (the
+sigma, the Δε diagonal, the guess and the preconditioner) and
+`../../integrals/one_electron/dipole/`; the step wires them over the
+pipeline's products, picks the Davidson's shape, contracts the roots with the
+dipole's ov block, and copies the roots off the device.
 
 ## Module
 
@@ -13,16 +15,17 @@ and copies the roots off the device.
 re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
 `run`'s signature, the `EriOutput` among them) and `free_breakfast.cis.sigma`
 (`cis::Options` and `cis::Spin`, which the step holds). `run` is defined in
-the implementation unit, so `cis.precondition`, `recipes.davidson` and
-`core.wwr` are PRIVATE links.
+the implementation unit, so `cis.precondition`, `recipes.davidson`,
+`recipes.blas`, `integrals.one_electron.dipole`, `core.log` and `core.wwr`
+are PRIVATE links.
 
 ## The step
 
 ```cpp
 struct CisState {
   double excitation_energy;                 // ω (hartree)
-  double oscillator_strength;               // zero until #201
-  std::array<double, 3> transition_dipole;  // zero until #201
+  double oscillator_strength;               // (2/3) ω |μ|²; zero for a triplet
+  std::array<double, 3> transition_dipole;  // <0|r|n>; zero for a triplet
   std::vector<double> amplitudes;           // unit norm, i * n_virt + a
 };
 
@@ -40,7 +43,7 @@ struct CisStep {
   int32_t max_subspace = 40;
 
   Result<CisOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
-                             EriOutput, ScfOutput> in,
+                             PrimitivePairClassesOutput, EriOutput, ScfOutput> in,
                         DeviceResources &res) const;
 };
 ```
@@ -59,7 +62,13 @@ struct CisStep {
    [2 · n_states, n_ov]. `davidson_solve`'s floor wins when the two cross
    (n_ov < 2 · n_states): it needs room for a full block, and the extra
    columns are never filled.
-5. **The roots**, values and Ritz vectors copied to the host, one
+5. **The transition dipoles**, a singlet's: `dipole`'s three Cartesian
+   matrices over the `PrimitivePairClassesOutput`'s classes, carried
+   spherical, and the ov block of each, μ^ov_c = C_virtᵀ μ_c C_occ, formed
+   once by two gemms (n_virt × n_occ, so in the amplitudes' order). The three
+   side by side are the n_ov × 3 matrix M, and one more gemm gives every
+   root's μⁿ = √2 Mᵀ Xₙ at once. f = (2/3) ω |μ|² on the host.
+6. **The roots**, values, Ritz vectors and dipoles copied to the host, one
    `CisState` each. The Ritz vectors are column-major n_ov × n_states, so a
    root's column is already its amplitudes in (i, a) row-major order.
 
@@ -81,8 +90,18 @@ What it settled:
   one that was reasoned for CIS (a relative 1e-6, an energy good to ~1e-11).
   `max_subspace` is the step's, as `davidson_solve` takes it beside the
   options rather than in them.
-- **The oscillator strengths and transition dipoles are zero** until #201
-  computes them.
+- **A triplet's oscillator strength and transition dipole are zero**, set
+  without forming anything: spin orthogonality, not a numerical zero.
+- **Past d, the dipoles are skipped, not the step.** `dipole` refuses an f
+  shell (`kDipoleMaxL`), so in such a basis a singlet's f and μ are left zero
+  with a warning logged, and the energies and amplitudes are still the
+  product. Dropping the check follows FelizJueves#627 reaching f.
+- **μ is the electronic position, origin 0**, √2 Σ_ia X_ia <i|r|a>, the
+  convention of `dipole` and of PySCF's `transition_dipole` up to the
+  electron's charge; its sign is the amplitudes', so only |μ| and f are
+  defined. Both are origin-independent: <i|a> = 0. Within a degenerate level
+  only the summed f is.
+- **The dipole needs no ERI**, so it is the same under either `EriOutput`.
 - **The `EriOutput`'s alternative picks the sigma**: `cis::Sigma` over the
   J and K classes, or `cis::DfSigma` over B. The fitted one is created for a
   block of the guess's min(n_ov, 2 · n_states) columns, the widest
@@ -98,7 +117,8 @@ molecule's N / 2 each; no virtual orbital, or an n_ov past `int32_t`; or more
 states than n_ov. Then the module calls' own: `cis::Sigma::create`'s,
 `cis::DfSigma::create`'s (Unsupported, naming the bytes, for MO blocks and
 scratch past the device's free memory), `davidson_solve`'s
-MaxIterationsExceeded or Divergence, and GpuRuntime for a failed copy.
+MaxIterationsExceeded or Divergence, and GpuRuntime for a failed copy,
+dipole launch or gemm.
 
 ## Tests
 
@@ -110,7 +130,17 @@ lowest of each, through the real
 registry from a config naming `[cis]` (its `[scf]` converged tightly), and
 the step again by hand over the same products. The excitation energies and
 the reference energy to 1e-6 hartree, the states ascending, and their
-amplitudes orthonormal. Then n_states = n_ov and `max_subspace = 1`, both
+amplitudes orthonormal; each singlet's (and H₂O cc-pVDZ exact's, singlets
+only) oscillator strengths, summed per degenerate group, against the
+reference's to 1e-6, and each triplet's f and μ exactly zero. HF in cc-pVTZ,
+with fluorine's f shell, gives its singlets' energies with f and μ zero:
+against the reference integral-direct (~55 s, skipped in fast mode), and
+fitted over cc-pVTZ-JKFIT, shape only, in the fast set. The f differences
+measured are up to 7e-7 (6-31G's and cc-pVDZ's brightest roots): f is first
+order in the vector, which the Davidson's relative 1e-6 residual leaves good
+to ~1e-6 over the gap (`../../cis/sigma/README.md`), while the energies are
+second order and land at ~1e-10.
+Then n_states = n_ov and `max_subspace = 1`, both
 clamped, still the reference's roots; the refusals above; and `[cis]` under a
 density-fitted `[eri]` planned when the config is read, with nothing refused.
 The `[cis]` parsing is in `pipeline_config_host.cpp`.
