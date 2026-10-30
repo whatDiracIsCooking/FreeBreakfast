@@ -1,6 +1,7 @@
 // The device half of cis.precondition: the orbital-energy diagonal Δε of the
 // CIS A matrix, and the diagonal correction r / (θ − Δε) over a whole block
-// of residuals in one launch. One source for both backends -- nvcc under CUDA,
+// of residuals in one launch, and the row gather and scatter of the clustered
+// correction. One source for both backends -- nvcc under CUDA,
 // clang -x hip under HIP.
 
 // Standard and FBF headers before anything that reaches the vendor runtime:
@@ -45,6 +46,28 @@ __global__ void cis_precondition_kernel(const int32_t n, const int32_t columns,
   correction[e] = residual[e] / denominator;
 }
 
+__global__ void cis_gather_rows_kernel(const int32_t n, const int32_t rows, const int32_t columns,
+                                       const int32_t *const index, const double *const src,
+                                       double *const dst) {
+  const int64_t e = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (e >= static_cast<int64_t>(rows) * columns) {
+    return;
+  }
+  const int64_t c = e / rows;
+  dst[e] = src[index[e - (c * rows)] + (c * n)];
+}
+
+__global__ void cis_scatter_rows_kernel(const int32_t n, const int32_t rows, const int32_t columns,
+                                        const int32_t *const index, const double *const src,
+                                        double *const dst) {
+  const int64_t e = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (e >= static_cast<int64_t>(rows) * columns) {
+    return;
+  }
+  const int64_t c = e / rows;
+  dst[index[e - (c * rows)] + (c * n)] = src[e];
+}
+
 } // namespace
 
 wwr::wwrError_t diagonal(const wwr::wwrStream_t stream, const int32_t n_occ, const int32_t n_virt,
@@ -68,6 +91,30 @@ wwr::wwrError_t precondition(const wwr::wwrStream_t stream, const int32_t n, con
   cis_precondition_kernel<<<static_cast<uint32_t>(math::idivup(items, int64_t{kFourWarps})),
                             kFourWarps, 0, stream>>>(n, columns, theta, delta, residual,
                                                      correction);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t gather_rows(const wwr::wwrStream_t stream, const int32_t n, const int32_t rows,
+                            const int32_t columns, const int32_t *const index,
+                            const double *const src, double *const dst) {
+  const int64_t items = static_cast<int64_t>(rows) * columns;
+  if (items <= 0) {
+    return wwr::wwrSuccess;
+  }
+  cis_gather_rows_kernel<<<static_cast<uint32_t>(math::idivup(items, int64_t{kFourWarps})),
+                           kFourWarps, 0, stream>>>(n, rows, columns, index, src, dst);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t scatter_rows(const wwr::wwrStream_t stream, const int32_t n, const int32_t rows,
+                             const int32_t columns, const int32_t *const index,
+                             const double *const src, double *const dst) {
+  const int64_t items = static_cast<int64_t>(rows) * columns;
+  if (items <= 0) {
+    return wwr::wwrSuccess;
+  }
+  cis_scatter_rows_kernel<<<static_cast<uint32_t>(math::idivup(items, int64_t{kFourWarps})),
+                            kFourWarps, 0, stream>>>(n, rows, columns, index, src, dst);
   return wwr::wwrGetLastError();
 }
 

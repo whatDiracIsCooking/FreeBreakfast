@@ -171,13 +171,15 @@ spin = "singlet"          # default "singlet"; or "triplet"
 residual_tolerance = 1e-6 # default 1e-6, relative (cis::Options)
 max_iterations = 100      # default 100
 max_subspace = 40         # default 40; clamped to [2 n_states, n_ov] when run
+cluster_gap = 0.0         # default 0 (off); hartree, the clustered preconditioner's
 ```
 
 `[cis]` is CIS over the RHF (`cis/README.md`). Its keys are `CisStep`'s
-`options` (`cis::Options`: `n_states`, `spin`, and two of its `davidson`'s),
+`options` (`cis::Options`: `n_states`, `spin`, two of its `davidson`'s, and
+`cluster_gap`),
 flattened into the table as `[localization]`'s are, and `max_subspace`.
-`n_states` below 1, a `residual_tolerance` not positive or `max_iterations`
-below 1 is `InvalidConfig` when the file is read; `n_states` past the single
+`n_states` below 1, a `residual_tolerance` not positive, `max_iterations`
+below 1 or a negative `cluster_gap` is `InvalidConfig` when the file is read; `n_states` past the single
 excitations needs the molecule and the basis, so the step refuses it when it
 runs. It runs over either `[eri]`: integral-direct, or density-fitted with
 the fitted sigma over B's MO blocks.

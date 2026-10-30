@@ -1,7 +1,8 @@
 /// @file
 /// @brief The CIS preconditioner's launchers, declared once for the module
 /// that calls them and the device TU that defines them: the orbital-energy
-/// diagonal Δε and the diagonal correction r / (θ − Δε).
+/// diagonal Δε, the diagonal correction r / (θ − Δε), and the row gather and
+/// scatter the clustered correction moves its covered rows with.
 ///
 /// Included by precondition.cpp in its GLOBAL MODULE FRAGMENT, and by
 /// cis_precondition.cu directly: a declaration in a module's purview gets
@@ -45,5 +46,21 @@ namespace free_breakfast::cis::device {
 [[nodiscard]] wwr::wwrError_t precondition(wwr::wwrStream_t stream, int32_t n, int32_t columns,
                                            const double *theta, const double *delta,
                                            const double *residual, double *correction);
+
+/// @brief dst[j + rows · c] = src[index[j] + n · c] for the @p rows × @p columns
+/// block @p dst (device, leading dimension rows): rows index[0..rows) of the
+/// n-row block @p src (device, leading dimension @p n). @p index is device,
+/// each entry in [0, n). One thread per element of @p dst.
+[[nodiscard]] wwr::wwrError_t gather_rows(wwr::wwrStream_t stream, int32_t n, int32_t rows,
+                                          int32_t columns, const int32_t *index, const double *src,
+                                          double *dst);
+
+/// @brief dst[index[j] + n · c] = src[j + rows · c]: @ref gather_rows'
+/// inverse, writing the @p rows × @p columns block @p src into rows
+/// index[0..rows) of the n-row block @p dst and leaving its other rows as they
+/// are. The entries of @p index are distinct. One thread per element of @p src.
+[[nodiscard]] wwr::wwrError_t scatter_rows(wwr::wwrStream_t stream, int32_t n, int32_t rows,
+                                           int32_t columns, const int32_t *index, const double *src,
+                                           double *dst);
 
 } // namespace free_breakfast::cis::device

@@ -2,7 +2,8 @@
 
 CIS's Davidson start and preconditioner, over the orbital-energy diagonal
 Δε_ia = ε_a − ε_i: the diagonal itself, the unit-vector guess on its lowest
-entries, and the correction r / (θ − Δε).
+entries, and the correction r / (θ − Δε), optionally with an exact-block
+correction over clusters of near-degenerate Δε.
 
 ## Module
 
@@ -16,6 +17,7 @@ The launchers are `free_breakfast::cis::device`'s, in
 | `cis::diagonal(res, n_occ, n_virt, orbital_energies, delta)` | Δε into the n_ov device vector `delta`, element i · n_virt + a, from the n_occ + n_virt device orbital energies, occupied first; `Status` |
 | `cis::guess(res, n_ov, delta, guess_count, vectors)` | The `guess_count` lowest Δε as unit vectors, ascending, ties to the lower index, into the n_ov × guess_count column-major device block `vectors`: orthonormal by construction; `Status` |
 | `cis::Preconditioner(res, n_ov, delta, max_columns)` | r / (θ − Δε) over the borrowed device `delta`, for calls of up to `max_columns` columns: a `DavidsonPreconditioner<…, double>` |
+| `Preconditioner::cluster(res, sigma, scope, gap)` | The clustered exact-block correction, built once before the solve from any `LinearOperator<…, double>` sigma: the `scope` lowest Δε grouped by single linkage at `gap`, each cluster's block of A diagonalized; `gap = 0` builds nothing; `Status` |
 
 ```cpp
 import free_breakfast.core.resources;
@@ -27,7 +29,8 @@ fb::Buffers::device<double> delta(n_ov, res.device());
 FBF_TRY(fb::cis::diagonal(res, n_occ, n_virt, eps.data(), delta.data()));
 fb::Buffers::device<double> start(n_ov * guess_count, res.device());
 FBF_TRY(fb::cis::guess(res, n_ov, delta.data(), guess_count, start.data()));
-const fb::cis::Preconditioner precondition{res, n_ov, delta.data(), n_roots};
+fb::cis::Preconditioner precondition{res, n_ov, delta.data(), n_roots};
+FBF_TRY(precondition.cluster(res, sigma, guess_count, cluster_gap)); // optional
 const auto info = FBF_TRY(fb::davidson_solve<double>(res, sigma, precondition, n_ov, n_roots,
                                                      max_subspace, start.data(), guess_count,
                                                      values.data(), vectors.data(), options));
@@ -76,8 +79,39 @@ needing no kernel and no sync: `kOne` is static storage.
 **No Olsen correction, no P-space.** CIS's A is diagonally dominant in the same
 way a CI matrix is, so the plain M⁻¹ r is nearly the Ritz vector too, but
 nothing here needs Olsen's yet; the X `davidson_solve` passes for it is
-accepted and not read. The clustered exact-block correction for
-near-degenerate Δε is #202, and lands in this module.
+accepted and not read.
+
+**The clusters (#202).** The diagonal correction treats every excitation on
+its own, so on a near-degenerate manifold, whose true eigenvectors are mixed
+by exactly the coupling Δε drops, it cannot tell the manifold's directions
+apart. `cluster` adds that coupling back where it matters:
+
+1. The `scope` lowest Δε, in the guess's order (Δε, then index), are grouped
+   by single linkage: a neighbour at most `gap` above the last joins its
+   cluster. A cluster of one is dropped, as the diagonal already solves it
+   exactly. `CisStep` passes the guess's column count as `scope`, the
+   region the subspace starts in.
+2. Each cluster's exact k × k block of A is read from one `sigma.apply` over
+   the unit vectors of every covered entry, all clusters' at once; the
+   blocks are symmetrized, since each column is its own apply, and each is
+   diagonalized by `recipes.diagonalize`.
+3. A call corrects a covered entry in its cluster's eigenbasis,
+   x = V clamp(θ − λ)⁻¹ Vᵀ r, the denominator under the same clamp as the
+   diagonal's; the rest keep r / (θ − Δε). With V the covered × covered
+   block-diagonal matrix of every cluster's eigenvectors, that is a row
+   gather, the diagonal kernel, a gemm, the diagonal kernel again over
+   λ, a gemm, and a row scatter: no per-cluster loop and no host round
+   trip. The gather comes first, so the correction may still be the
+   residual.
+
+It costs one sigma apply per covered entry, once, and two gemms on a
+covered-sized block per call, whose scratch is the workspace, grown by
+`cluster` so a call still allocates nothing. `gap = 0`, `cis::Options`'
+default, builds nothing and leaves every call byte for byte the diagonal
+correction; a second `cluster` replaces the first. A cluster that covers the
+whole of a root's support makes its correction (θ − A)⁻¹ r ≈ −x, which the
+Davidson's re-orthogonalization removes, so the gap is for near-degenerate
+manifolds, not the whole spectrum.
 
 ## Tests
 
@@ -92,14 +126,23 @@ near-degenerate Δε is #202, and lands in this module.
   (finite, +1e-3) and just above another (−1e-3, its sign kept), and in place;
   its refusal of more columns than it was built for;
 - `davidson_solve` on a synthetic diagonally dominant A = diag(Δε) + coupling,
-  through this preconditioner and guess, against `diagonalize`'s spectrum.
+  through this preconditioner and guess, against `diagonalize`'s spectrum;
+- the clusters: a 2 × 2 block {0, 3} at Δε = 2 coupled by 1/4 against its
+  hand solve, with θ clear of every pole and 1e-5 either side of 2 + 1/4
+  (clamped to ±1e-3 in the eigenbasis), the uncovered entries unchanged, and
+  in place; `gap = 0` the diagonal correction to the byte, alone and after a
+  wider gap's clusters; the refusal of a scope outside [1, n_ov] and of a
+  negative or NaN gap, and a failing sigma's error passed up with no cluster
+  left; and `davidson_solve` on an exactly degenerate block of eight split
+  by a 1e-3 coupling, with and without the clusters, against `diagonalize`'s
+  spectrum.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `precondition.cppm` | Module interface: `cis::diagonal`, `cis::guess`, `cis::Preconditioner` |
-| `precondition.cpp` | Implementation: argument checks, the launches, the guess's select |
+| `precondition.cppm` | Module interface: `cis::diagonal`, `cis::guess`, `cis::Preconditioner` and its `cluster` template |
+| `precondition.cpp` | Implementation: argument checks, the launches, the guess's select, the clusters' grouping and blocks |
 | `cis_precondition_bridge.h` | The launchers' declarations, shared by the `.cpp`'s GMF and the `.cu` |
-| `cis_precondition.cu` | The diagonal and correction kernels |
+| `cis_precondition.cu` | The diagonal and correction kernels, and the row gather and scatter |
 | `CMakeLists.txt` | The device library and the module |
