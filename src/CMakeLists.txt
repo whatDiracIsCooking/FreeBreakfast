@@ -39,6 +39,9 @@ add_subdirectory(cis)
 # Host-only, over core alone; before pipeline, whose optimize step will drive
 # it.
 add_subdirectory(geometry)
+# After integrals, whose derivative integrals it contracts; before pipeline,
+# which it must never import.
+add_subdirectory(gradient)
 # After the modules its steps wrap: the step contract itself is a leaf over
 # core, but the setup steps that follow it import integrals and recipes.
 add_subdirectory(pipeline)
