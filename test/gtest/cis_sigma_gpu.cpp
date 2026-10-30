@@ -564,6 +564,31 @@ TEST(CisSigma, DfRefusals) {
                                      syn.delta.data(), cis::Spin::Singlet, 2),
                 "naux");
 
+  // The second create, over blocks as built (naux_j = 3, naux_k = 2):
+  // accepted at the right counts, and refused for a block of the wrong count,
+  // a naux below 1, and a null delta.
+  const auto blocks = [&res](const std::size_t vo, const std::size_t oo, const std::size_t vv) {
+    return std::tuple{fb::Buffers::device<double>(vo, res.device()),
+                      fb::Buffers::device<double>(oo, res.device()),
+                      fb::Buffers::device<double>(vv, res.device())};
+  };
+  const std::int32_t n_virt = nao - 5;
+  const auto ov = static_cast<std::size_t>(5 * n_virt);
+  const auto from_blocks = [&](const std::size_t vo, const std::size_t oo, const std::size_t vv,
+                               const std::int32_t naux_j, const double *delta) {
+    auto [b_vo, b_oo, b_vv] = blocks(vo, oo, vv);
+    return cis::DfSigma::create(res, std::move(b_vo), naux_j, std::move(b_oo), std::move(b_vv), 2,
+                                5, n_virt, delta, cis::Spin::Singlet, 2);
+  };
+  const auto vv = static_cast<std::size_t>(2 * n_virt * n_virt);
+  const auto accepted = from_blocks(3 * ov, 2 * 25, vv, 3, syn.delta.data());
+  ASSERT_TRUE(accepted.has_value()) << accepted.error().message;
+  EXPECT_EQ(accepted->size(), 5 * n_virt);
+  expect_config(from_blocks(3 * ov + 1, 2 * 25, vv, 3, syn.delta.data()), "B_vo's count");
+  expect_config(from_blocks(3 * ov, 2 * 25, vv + 1, 3, syn.delta.data()), "B_vv's count");
+  expect_config(from_blocks(0, 2 * 25, vv, 0, syn.delta.data()), "naux_j");
+  expect_config(from_blocks(3 * ov, 2 * 25, vv, 3, nullptr), "delta, blocks");
+
   auto sigma = setup->df_sigma(syn.c, 5, syn.delta.data(), cis::Spin::Singlet, 2);
   ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
   const auto refused = sigma->apply(res, -1, nullptr, nullptr);

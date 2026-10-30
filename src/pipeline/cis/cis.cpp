@@ -1,8 +1,10 @@
 /// @file
 /// @brief CisStep: the refusals, then Δε, the guess and the preconditioner
-/// (diagonal, clustered or RIS-J) over the ScfOutput, the sigma the EriOutput selects (integral-direct or
-/// fitted), davidson_solve, a singlet's transition dipoles over the ov block
-/// of the dipole matrices, and the roots copied off the device.
+/// (diagonal, clustered or RIS-J) over the ScfOutput, the sigma the method
+/// and the EriOutput select (integral-direct, fitted, or TDA-ris's fitted one
+/// over its own two RIS fits), davidson_solve, a singlet's transition dipoles
+/// over the ov block of the dipole matrices, and the roots copied off the
+/// device.
 
 module free_breakfast.pipeline.cis;
 
@@ -11,10 +13,12 @@ import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kZero, kSqrt2
 import free_breakfast.core.error_handling;
 import free_breakfast.core.log;
-import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, gpu_status
+import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, gpu_status, wwrMemGetInfo
 import free_breakfast.core.resources;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.davidson;
+import free_breakfast.recipes.matrix_ao;             // MatrixAOPair, the RIS metric's
+import free_breakfast.integrals.eri.density_fitting; // metric, three_center, density_fit, b_mo
 import free_breakfast.integrals.one_electron.dipole;
 import free_breakfast.cis.precondition;
 import free_breakfast.cis.ris_precondition;
@@ -61,6 +65,74 @@ namespace free_breakfast {
                                             &kSqrt2<double>, ov.data(), x, &kZero<double>, d));
 }
 
+// TDA-ris's operator: the RIS bases over the molecule's atoms at options'
+// θs, the J fit's RisShells::Sp and the K fit's RisShells::S (gpu4pyscf's
+// J_fit and K_fit defaults), each fitted as pipeline.eri fits its own and
+// cis::RisPreconditioner fits its (the metric, three_center over the
+// classes, density_fit), then b_mo over C's columns into the blocks
+// cis::DfSigma takes: B_vo from J's B, B_oo and B_vv from K's. One B is held
+// at a time, freed (stream-ordered) once its blocks are built.
+[[nodiscard]] Result<cis::DfSigma>
+cis_ris_sigma(DeviceResources &res, const BasisSet &basis,
+              const std::span<const PrimitivePairClass> classes, const Molecule &molecule,
+              const SphericalMatrixAO &c, const int32_t n_occ, const double *const delta,
+              const cis::Options &options, const int32_t max_block) {
+  const BasisSet aux_j =
+      FBF_TRY(cis::ris_basis(molecule.atoms(), options.theta_j, cis::RisShells::Sp));
+  const BasisSet aux_k =
+      FBF_TRY(cis::ris_basis(molecule.atoms(), options.theta_k, cis::RisShells::S));
+  const auto naux_j = static_cast<int32_t>(aux_j.nao_sphe());
+  const auto naux_k = static_cast<int32_t>(aux_k.nao_sphe());
+  const auto nao = static_cast<int32_t>(c.n());
+  const int32_t n_virt = nao - n_occ;
+  const auto occ = static_cast<size_t>(n_occ);
+  const auto virt = static_cast<size_t>(n_virt);
+  const auto ao2 = static_cast<size_t>(nao) * static_cast<size_t>(nao);
+
+  // Past the device's memory an allocation aborts (CreatePolicy) rather than
+  // returns, so the larger B and the three blocks are refused here, before
+  // any. three_center and b_mo refuse their own scratch.
+  const size_t b_bytes = sizeof(double) * static_cast<size_t>(std::max(naux_j, naux_k)) * ao2;
+  const size_t blocks_bytes = sizeof(double) * ((static_cast<size_t>(naux_j) * occ * virt) +
+                                                (static_cast<size_t>(naux_k) * occ * occ) +
+                                                (static_cast<size_t>(naux_k) * virt * virt));
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
+  if (b_bytes + blocks_bytes > free_bytes) {
+    return err_unsupported("cis: TDA-ris's fits over {} and {} RIS functions need {} bytes of B "
+                           "and {} of MO blocks, and device {} has {} free",
+                           naux_j, naux_k, b_bytes, blocks_bytes, res.dev_idx(), free_bytes);
+  }
+
+  Buffers::device<double> b_vo(static_cast<size_t>(naux_j) * occ * virt, res.device());
+  Buffers::device<double> b_oo(static_cast<size_t>(naux_k) * occ * occ, res.device());
+  Buffers::device<double> b_vv(static_cast<size_t>(naux_k) * virt * virt, res.device());
+  const OrbitalRange occupied{.first = 0, .count = n_occ};
+  const OrbitalRange virtuals{.first = n_occ, .count = n_virt};
+  // B = L_M⁻¹ (mn|P) over aux, then each (rows, cols, out) of its MO blocks.
+  const auto fit =
+      [&](const BasisSet &aux,
+          std::initializer_list<std::tuple<OrbitalRange, OrbitalRange, double *>> blocks)
+      -> Status {
+    const auto naux = static_cast<int32_t>(aux.nao_sphe());
+    MatrixAOPair m(res, aux, FBF_TRY(upload_spherical_transform_matrix(res, aux)));
+    FBF_TRY(metric(res, aux, m));
+    Buffers::device<double> b(static_cast<size_t>(naux) * ao2, res.device());
+    FBF_TRY(three_center(res, basis, classes, aux, b.data()));
+    FBF_TRY(density_fit(res, nao, naux, m.spherical().data(), b.data()));
+    for (const auto &[rows, cols, out] : blocks) {
+      FBF_TRY(b_mo(res, naux, nao, nao, b.data(), c.data(), rows, cols, out));
+    }
+    return {};
+  };
+  // B_vo with the virtual index fast, as DfSigma's first create builds it.
+  FBF_TRY(fit(aux_j, {{virtuals, occupied, b_vo.data()}}));
+  FBF_TRY(fit(aux_k, {{occupied, occupied, b_oo.data()}, {virtuals, virtuals, b_vv.data()}}));
+  return cis::DfSigma::create(res, std::move(b_vo), naux_j, std::move(b_oo), std::move(b_vv),
+                              naux_k, n_occ, n_virt, delta, options.spin, max_block);
+}
+
 [[nodiscard]] Result<CisOutput>
 CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
                   PrimitivePairClassesOutput, EriOutput, ScfOutput> in,
@@ -75,6 +147,14 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   if (options.ris && options.cluster_gap > 0.0) {
     return err_config("cis: ris and a cluster_gap of {} each pick the preconditioner; set one",
                       options.cluster_gap);
+  }
+  if (options.method == cis::Method::Ris) {
+    for (const auto &[key, theta] :
+         {std::pair{"theta_j", options.theta_j}, std::pair{"theta_k", options.theta_k}}) {
+      if (!std::isfinite(theta) || theta <= 0.0) {
+        return err_config("cis: {} is {}, not finite and positive", key, theta);
+      }
+    }
   }
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const ScfOutput &scf = in.get<ScfOutput>();
@@ -151,13 +231,18 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
     FBF_TRY(precondition.cluster(res, sigma, guess_count, options.cluster_gap));
     return davidson(precondition);
   };
-  // The sigma the EriOutput's alternative selects. The fitted one's block is
-  // the widest davidson_solve applies: the guess's columns first, then at
-  // most n_states corrections, which the guess's min(n_ov, 2 n_states) is
-  // never below.
+  // TDA-ris's sigma, whatever the EriOutput, or else the one its alternative
+  // selects. A fitted one's block is the widest davidson_solve applies: the
+  // guess's columns first, then at most n_states corrections, which the
+  // guess's min(n_ov, 2 n_states) is never below.
   const EriOutput &eri = in.get<EriOutput>();
   DavidsonInfo info;
-  if (const auto *const fit = std::get_if<DensityFitted>(&eri.eri)) {
+  if (options.method == cis::Method::Ris) {
+    cis::DfSigma sigma =
+        FBF_TRY(cis_ris_sigma(res, in.get<BasisSetOutput>().basis, classes, molecule, scf.c, n_occ,
+                              delta.data(), options, guess_count));
+    info = FBF_TRY(solve(sigma));
+  } else if (const auto *const fit = std::get_if<DensityFitted>(&eri.eri)) {
     cis::DfSigma sigma = FBF_TRY(cis::DfSigma::create(res, fit->b, fit->naux, scf.c, n_occ,
                                                       delta.data(), options.spin, guess_count));
     info = FBF_TRY(solve(sigma));

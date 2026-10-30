@@ -168,6 +168,9 @@ it against the free memory when the step runs (`fci/README.md`).
 [cis]
 n_states = 5              # default 5: the lowest excitations
 spin = "singlet"          # default "singlet"; or "triplet"
+method = "full"           # default "full"; "ris": TDA-ris, the RIS approximation as the operator
+theta_j = 0.2             # default 0.2; TDA-ris's J (sp) fit exponent scale (needs method = "ris")
+theta_k = 0.2             # default 0.2; TDA-ris's K (s) fit exponent scale (needs method = "ris")
 residual_tolerance = 1e-6 # default 1e-6, relative (cis::Options)
 max_iterations = 100      # default 100
 max_subspace = 40         # default 40; clamped to [2 n_states, n_ov] when run
@@ -181,13 +184,16 @@ ris_k_inner_tol = 1e-2    # default 1e-2; RIS-JK's GMRES tolerance (needs ris_ex
 ```
 
 `[cis]` is CIS over the RHF (`cis/README.md`). Its keys are `CisStep`'s
-`options` (`cis::Options`: `n_states`, `spin`, two of its `davidson`'s,
+`options` (`cis::Options`: `n_states`, `spin`, `method` with `theta_j` and
+`theta_k`, two of its `davidson`'s,
 `cluster_gap`, and `ris`, set by `ris = true` with its `RisOptions` from
 `ris_theta`, `ris_shells`, `ris_exchange`, `ris_k_max_inner_iters` and
 `ris_k_inner_tol`),
 flattened into the table as `[localization]`'s are, and `max_subspace`.
 `n_states` below 1, a `residual_tolerance` not positive, `max_iterations`
-below 1, a negative `cluster_gap`, a `ris_*` key without `ris = true`,
+below 1, a negative `cluster_gap`, an unknown `method`, `theta_j` or `theta_k`
+without `method = "ris"` or not finite and positive, a `ris_*` key without
+`ris = true`,
 `ris_k_max_inner_iters` or `ris_k_inner_tol` without `ris_exchange = true`, a
 `ris_theta` not finite and positive, an unknown `ris_shells`, a negative
 `ris_k_max_inner_iters`, a `ris_k_inner_tol` not positive, or `ris` beside a
@@ -195,7 +201,10 @@ positive `cluster_gap` is `InvalidConfig` when the file is
 read; `n_states` past the single
 excitations needs the molecule and the basis, so the step refuses it when it
 runs. It runs over either `[eri]`: integral-direct, or density-fitted with
-the fitted sigma over B's MO blocks.
+the fitted sigma over B's MO blocks; `method = "ris"` reads neither, fitting
+its own two RIS bases. `method` picks the operator and `ris` the
+preconditioner, independently: `method = "ris"` beside `ris = true` is the
+RIS-J correction over the TDA-ris operator, and is not refused.
 
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the

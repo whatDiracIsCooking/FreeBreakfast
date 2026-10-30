@@ -4,7 +4,8 @@ Their shape is checked with the standard library alone, so it runs on the push
 gate: the issue's cases are all there, each root list ends at a whole
 degenerate group, energies ascend, singlet groups carry a summed oscillator
 strength, and the dipole files exist with the shape the manifest implies.
-Re-running the cheapest case through tools/emit/cis_reference.py needs PySCF,
+Re-running the cheapest case, and the cheapest TDA-ris case, through
+tools/emit/cis_reference.py needs PySCF,
 which lives in the opt-in ``tools`` dependency group, so that test skips (with
 a reason) wherever the group is not installed::
 
@@ -38,6 +39,16 @@ def test_the_issue_cases_are_covered():
     assert got["h2o_ccpvdz_df"]["aux_basis"] == "cc-pvdz-jkfit"
     assert "oscillator_strengths" not in got["hf_ccpvtz"]["singlets"]
     assert got["benzene_ccpvdz_df"]["aux_basis"] == "cc-pvdz-jkfit"
+    # TDA-ris: H2O over the exact RHF, both spins; benzene over the DF one.
+    ris = got["h2o_ccpvdz_ris"]
+    assert ris["method"] == "ris" and ris["aux_basis"] is None
+    assert (ris["ris_j_fit"], ris["ris_k_fit"], ris["ris_theta"]) == ("sp", "s", 0.2)
+    assert len(ris["singlets"]["energies"]) >= 5
+    assert len(ris["triplets"]["energies"]) >= 5
+    assert "oscillator_strengths" in ris["singlets"]
+    benzene = got["benzene_ccpvdz_df_ris"]
+    assert benzene["method"] == "ris" and benzene["aux_basis"] == "cc-pvdz-jkfit"
+    assert len(benzene["singlets"]["energies"]) >= 5
     for name in ("h2o_sto3g", "h2o_ccpvdz"):
         assert "int1e_r" in got[name]
 
@@ -57,7 +68,9 @@ def test_roots_are_whole_groups(name: str):
         assert flat == list(range(len(energies)))
         for group in roots["groups"]:
             assert energies[group[-1]] - energies[group[0]] < 1e-6
-        assert roots["dense_max_error"] < 1e-8
+        # A TDA-ris case's roots are the dense A's own: no Davidson to check.
+        if case.get("method") != "ris":
+            assert roots["dense_max_error"] < 1e-8
         if "oscillator_strengths" in roots:
             assert spin == "singlets"
             assert len(roots["oscillator_strengths"]) == len(roots["groups"])
@@ -66,7 +79,12 @@ def test_roots_are_whole_groups(name: str):
 
 def test_degenerate_groups_are_recorded():
     # benzene's E states and HF's Pi are the point of the grouping
-    for name in ("benzene_ccpvdz_df", "benzene_ccpvdz", "hf_ccpvtz"):
+    for name in (
+        "benzene_ccpvdz_df",
+        "benzene_ccpvdz",
+        "benzene_ccpvdz_df_ris",
+        "hf_ccpvtz",
+    ):
         groups = cases()[name]["singlets"]["groups"]
         assert any(len(group) == 2 for group in groups), name
 
@@ -96,6 +114,27 @@ def test_cheapest_case_reruns():
     got = cis_reference.cis_case(case, write=False)
     want = cases()["h2o_sto3g"]
     assert abs(got["rhf_energy"] - want["rhf_energy"]) < 1e-10
+    for spin in ("singlets", "triplets"):
+        assert got[spin]["groups"] == want[spin]["groups"]
+        for g, w in zip(got[spin]["energies"], want[spin]["energies"], strict=True):
+            assert abs(g - w) < 1e-9
+    for g, w in zip(
+        got["singlets"]["oscillator_strengths"],
+        want["singlets"]["oscillator_strengths"],
+        strict=True,
+    ):
+        assert abs(g - w) < 1e-8
+
+
+def test_cheapest_ris_case_reruns():
+    pytest.importorskip("pyscf", reason="needs the `tools` dependency group")
+    pytest.importorskip("numpy", reason="needs the `tools` dependency group")
+    sys.path.insert(0, str(ROOT / "tools" / "emit"))
+    import cis_reference
+
+    (case,) = [c for c in cis_reference.CASES if c["name"] == "h2o_ccpvdz_ris"]
+    got = cis_reference.cis_case(case, write=False)
+    want = cases()["h2o_ccpvdz_ris"]
     for spin in ("singlets", "triplets"):
         assert got[spin]["groups"] == want[spin]["groups"]
         for g, w in zip(got[spin]["energies"], want[spin]["energies"], strict=True):

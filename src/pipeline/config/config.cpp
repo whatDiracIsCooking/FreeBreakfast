@@ -309,9 +309,9 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "nroots", base_dir, step.nroots));
   } else if constexpr (std::same_as<S, CisStep>) {
     FBF_TRY(check_keys(table, kStep,
-                       {"n_states", "spin", "residual_tolerance", "max_iterations", "max_subspace",
-                        "cluster_gap", "ris", "ris_theta", "ris_shells", "ris_exchange",
-                        "ris_k_max_inner_iters", "ris_k_inner_tol"}));
+                       {"n_states", "spin", "method", "theta_j", "theta_k", "residual_tolerance",
+                        "max_iterations", "max_subspace", "cluster_gap", "ris", "ris_theta",
+                        "ris_shells", "ris_exchange", "ris_k_max_inner_iters", "ris_k_inner_tol"}));
     cis::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "n_states", base_dir, options.n_states));
     std::string spin = "singlet";
@@ -320,6 +320,31 @@ template <class S>
       return err_config("[{}] has no spin '{}' (known: 'singlet', 'triplet')", kStep, spin);
     }
     options.spin = spin == "triplet" ? cis::Spin::Triplet : cis::Spin::Singlet;
+    // The operator, independent of the preconditioner below: method = "ris"
+    // is TDA-ris, its two fits at cis::Options' θs unless theta_j or theta_k
+    // says, and either beside method = "full" is refused rather than ignored.
+    std::string method = "full";
+    FBF_TRY(read_key(table, kStep, "method", base_dir, method));
+    if (method != "full" && method != "ris") {
+      return err_config("[{}] has no method '{}' (known: 'full', 'ris')", kStep, method);
+    }
+    options.method = method == "ris" ? cis::Method::Ris : cis::Method::Full;
+    if (options.method == cis::Method::Ris) {
+      FBF_TRY(read_key(table, kStep, "theta_j", base_dir, options.theta_j));
+      FBF_TRY(read_key(table, kStep, "theta_k", base_dir, options.theta_k));
+      for (const auto &[key, theta] :
+           {std::pair{"theta_j", options.theta_j}, std::pair{"theta_k", options.theta_k}}) {
+        if (!std::isfinite(theta) || theta <= 0.0) {
+          return err_config("[{}] {} must be finite and positive", kStep, key);
+        }
+      }
+    } else {
+      for (std::string_view key : {"theta_j", "theta_k"}) {
+        if (table.contains(key)) {
+          return err_config("[{}] {} needs method = \"ris\"", kStep, key);
+        }
+      }
+    }
     FBF_TRY(read_key(table, kStep, "residual_tolerance", base_dir,
                      options.davidson.residual_tolerance));
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, options.davidson.max_iterations));

@@ -1,6 +1,7 @@
 /// @file
-/// @brief DfSigma's checks, its memory check and MO blocks, and the fitted
-/// operator's four products over a block.
+/// @brief DfSigma's two creates, from B (its checks, memory check and MO
+/// blocks) and from the blocks as built, and the fitted operator's four
+/// products over a block.
 
 module free_breakfast.cis.sigma;
 
@@ -86,32 +87,90 @@ Result<DfSigma> DfSigma::create(DeviceResources &res, const Buffers::device<doub
                            blocks_bytes + growth_bytes, res.dev_idx(), free_bytes);
   }
 
-  DfSigma sigma{res, naux, n_occ, static_cast<int32_t>(n_virt), delta, spin, max_block};
+  Buffers::device<double> b_vo(aux * occ * virt, res.device());
+  Buffers::device<double> b_oo(aux * occ * occ, res.device());
+  Buffers::device<double> b_vv(aux * virt * virt, res.device());
   const auto nmo = static_cast<int32_t>(nao);
   const OrbitalRange occupied{.first = 0, .count = n_occ};
   const OrbitalRange virtuals{.first = n_occ, .count = static_cast<int32_t>(n_virt)};
   // B_vo with the virtual index fast: element (Q, a, i) at Q + naux (a + n_virt
   // i), so column a + n_virt i of the naux x n_ov matrix is excitation ia.
-  FBF_TRY(b_mo(res, naux, nmo, nmo, b.data(), c.data(), virtuals, occupied, sigma.b_vo_.data()));
-  FBF_TRY(b_mo(res, naux, nmo, nmo, b.data(), c.data(), occupied, occupied, sigma.b_oo_.data()));
-  FBF_TRY(b_mo(res, naux, nmo, nmo, b.data(), c.data(), virtuals, virtuals, sigma.b_vv_.data()));
-  // apply's regions, grown to here so that no apply allocates them. The
-  // workspace only grows, so a later, larger user leaves it big enough.
-  static_cast<void>(res.device_regions<double>(aux * block, aux * occ * virt * block));
-  return sigma;
+  FBF_TRY(b_mo(res, naux, nmo, nmo, b.data(), c.data(), virtuals, occupied, b_vo.data()));
+  FBF_TRY(b_mo(res, naux, nmo, nmo, b.data(), c.data(), occupied, occupied, b_oo.data()));
+  FBF_TRY(b_mo(res, naux, nmo, nmo, b.data(), c.data(), virtuals, virtuals, b_vv.data()));
+  // One B for both terms; the second create grows apply's regions.
+  return create(res, std::move(b_vo), naux, std::move(b_oo), std::move(b_vv), naux, n_occ,
+                static_cast<int32_t>(n_virt), delta, spin, max_block);
 }
 
-DfSigma::DfSigma(DeviceResources &res, const int32_t naux, const int32_t n_occ,
-                 const int32_t n_virt, const double *const delta, const Spin spin,
-                 const int32_t max_block)
-    : dev_idx_{res.dev_idx()}, naux_{naux}, n_occ_{n_occ}, n_virt_{n_virt}, max_block_{max_block},
-      spin_{spin}, delta_{delta},
-      b_vo_(static_cast<size_t>(naux) * static_cast<size_t>(n_occ) * static_cast<size_t>(n_virt),
-            res.device()),
-      b_oo_(static_cast<size_t>(naux) * static_cast<size_t>(n_occ) * static_cast<size_t>(n_occ),
-            res.device()),
-      b_vv_(static_cast<size_t>(naux) * static_cast<size_t>(n_virt) * static_cast<size_t>(n_virt),
-            res.device()) {}
+Result<DfSigma> DfSigma::create(DeviceResources &res, Buffers::device<double> b_vo,
+                                const int32_t naux_j, Buffers::device<double> b_oo,
+                                Buffers::device<double> b_vv, const int32_t naux_k,
+                                const int32_t n_occ, const int32_t n_virt,
+                                const double *const delta, const Spin spin,
+                                const int32_t max_block) {
+  if (naux_j < 1 || naux_k < 1 || n_occ < 1 || n_virt < 1 || max_block < 1) {
+    return err_config("cis::DfSigma::create: needs naux_j, naux_k, n_occ, n_virt and max_block "
+                      "all at least 1 (naux_j = {}, naux_k = {}, n_occ = {}, n_virt = {}, "
+                      "max_block = {})",
+                      naux_j, naux_k, n_occ, n_virt, max_block);
+  }
+  constexpr int64_t kIntMax = std::numeric_limits<int32_t>::max();
+  // The int32_t dispatch, as for the first create, over the exchange's naux_k.
+  if (int64_t{n_occ} * n_virt > kIntMax || int64_t{naux_k} * n_virt > kIntMax ||
+      int64_t{naux_k} * n_occ * max_block > kIntMax) {
+    return err_config("cis::DfSigma::create: needs n_occ * n_virt, naux_k * n_virt and "
+                      "naux_k * n_occ * max_block to fit an int32_t (n_occ = {}, n_virt = {}, "
+                      "naux_k = {}, max_block = {})",
+                      n_occ, n_virt, naux_k, max_block);
+  }
+  const auto aux_j = static_cast<size_t>(naux_j);
+  const auto aux_k = static_cast<size_t>(naux_k);
+  const auto occ = static_cast<size_t>(n_occ);
+  const auto virt = static_cast<size_t>(n_virt);
+  if (b_vo.num_elements() != aux_j * occ * virt || b_oo.num_elements() != aux_k * occ * occ ||
+      b_vv.num_elements() != aux_k * virt * virt) {
+    return err_config("cis::DfSigma::create: the blocks hold {}, {} and {} elements, not "
+                      "naux_j * n_ov = {}, naux_k * n_occ^2 = {} and naux_k * n_virt^2 = {}",
+                      b_vo.num_elements(), b_oo.num_elements(), b_vv.num_elements(),
+                      aux_j * occ * virt, aux_k * occ * occ, aux_k * virt * virt);
+  }
+  if (delta == nullptr) {
+    return err_config("cis::DfSigma::create: delta is null");
+  }
+
+  const ScopedDeviceIndex on{res.dev_idx()};
+  // apply's two regions, T (naux_j per column) and W (naux_k n_ov per
+  // column), refused past the device's memory before the workspace grows.
+  const auto block = static_cast<size_t>(max_block);
+  const auto aligned = [](const size_t count) {
+    return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
+  };
+  const size_t scratch_bytes = aligned(aux_j * block) + aligned(aux_k * occ * virt * block);
+  const size_t growth_bytes =
+      scratch_bytes > res.device_workspace(0).num_elements() ? scratch_bytes : 0;
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
+  if (growth_bytes > free_bytes) {
+    return err_unsupported("cis::DfSigma::create: {} bytes of workspace growth for a block of {} "
+                           "over {} and {} fitting functions, and device {} has {} free",
+                           growth_bytes, max_block, naux_j, naux_k, res.dev_idx(), free_bytes);
+  }
+  // apply's regions, grown to here so that no apply allocates them. The
+  // workspace only grows, so a later, larger user leaves it big enough.
+  static_cast<void>(res.device_regions<double>(aux_j * block, aux_k * occ * virt * block));
+  return DfSigma{res,    std::move(b_vo), naux_j, std::move(b_oo), std::move(b_vv), naux_k, n_occ,
+                 n_virt, delta,           spin,   max_block};
+}
+
+DfSigma::DfSigma(DeviceResources &res, Buffers::device<double> b_vo, const int32_t naux_j,
+                 Buffers::device<double> b_oo, Buffers::device<double> b_vv, const int32_t naux_k,
+                 const int32_t n_occ, const int32_t n_virt, const double *const delta,
+                 const Spin spin, const int32_t max_block)
+    : dev_idx_{res.dev_idx()}, naux_j_{naux_j}, naux_k_{naux_k}, n_occ_{n_occ}, n_virt_{n_virt},
+      max_block_{max_block}, spin_{spin}, delta_{delta}, b_vo_{std::move(b_vo)},
+      b_oo_{std::move(b_oo)}, b_vv_{std::move(b_vv)} {}
 
 Status DfSigma::apply(DeviceResources &res, const int32_t k, const double *const x,
                       double *const y) {
@@ -126,12 +185,12 @@ Status DfSigma::apply(DeviceResources &res, const int32_t k, const double *const
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const int32_t n_ov = size();
-  const auto aux = static_cast<size_t>(naux_);
   const auto block = static_cast<size_t>(max_block_);
-  // T = B_vo X, naux x k, and the exchange's intermediate W, naux n_ov k: the
-  // sizes create grew the workspace to, so this allocates nothing.
+  // T = B_vo X, naux_j x k, and the exchange's intermediate W, naux_k n_ov k:
+  // the sizes create grew the workspace to, so this allocates nothing.
   const auto [t, w] =
-      res.device_regions<double>(aux * block, aux * static_cast<size_t>(n_ov) * block);
+      res.device_regions<double>(static_cast<size_t>(naux_j_) * block,
+                                 static_cast<size_t>(naux_k_) * static_cast<size_t>(n_ov) * block);
 
   // σ = Δε ∘ X, over the whole block; every term after accumulates into it.
   FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, n_ov, k, x, n_ov,
@@ -144,8 +203,8 @@ Status DfSigma::apply(DeviceResources &res, const int32_t k, const double *const
     // The Coulomb term, a singlet's alone: σ += 2 B_voᵀ (B_vo X).
     if (spin_ == Spin::Singlet) {
       FBF_TRY(gpu_status(
-          gemm(blas, naux_, cols, n_ov, &kOne<double>, b_vo_.data(), xs, &kZero<double>, t)));
-      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_ov, cols, naux_, &kTwo<double>,
+          gemm(blas, naux_j_, cols, n_ov, &kOne<double>, b_vo_.data(), xs, &kZero<double>, t)));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_ov, cols, naux_j_, &kTwo<double>,
                                                  b_vo_.data(), t, &kOne<double>, ys)));
     }
 
@@ -157,12 +216,12 @@ Status DfSigma::apply(DeviceResources &res, const int32_t k, const double *const
     //    naux x n_virt slice of B_vv at Q + naux a' (leading dimension naux
     //    n_virt). W's element (Q, i, c, a') lands at Q + naux (i + n_occ (c +
     //    cols a')), so at fixed c its (Q, i) rows are adjacent.
-    const int32_t w_rows = naux_ * n_occ_; // (Q, i)
+    const int32_t w_rows = naux_k_ * n_occ_; // (Q, i)
     const int32_t w_lead = w_rows * cols;
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux_, n_occ_ * cols, n_virt_, &kOne<double>,
-        b_vv_.data(), naux_ * n_virt_, naux_, xs, n_virt_, 0, &kZero<double>, w, naux_, w_lead,
-        n_virt_)));
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux_k_, n_occ_ * cols, n_virt_, &kOne<double>,
+        b_vv_.data(), naux_k_ * n_virt_, naux_k_, xs, n_virt_, 0, &kZero<double>, w, naux_k_,
+        w_lead, n_virt_)));
     // 2. Per column c, σ_c −= W_cᵀ B_oo: W_c is the (naux n_occ) x n_virt
     //    matrix at naux n_occ c (leading dimension naux n_occ cols), B_oo the
     //    (naux n_occ) x n_occ one whose row (Q, i) and column j hold B_Q,ij,

@@ -75,7 +75,11 @@ struct CisStep {
   /// orbital energies and the reference energy are the ScfOutput's; σ = A b is
   /// `cis::Sigma` over the EriOutput's J and K classes when it is
   /// IntegralDirect, and `cis::DfSigma` over its B when it is DensityFitted,
-  /// at a block of the guess's column count. The start is
+  /// at a block of the guess's column count; with @ref options' method
+  /// cis::Method::Ris, whatever the EriOutput, `cis::DfSigma` over TDA-ris's
+  /// two RIS fits of its own (the J fit's B_vo over RisShells::Sp at
+  /// theta_j, the K fit's B_oo and B_vv over RisShells::S at theta_k). The
+  /// start is
   /// `cis::guess`'s min(n_ov, 2 · n_states) unit vectors, the preconditioner
   /// `cis::Preconditioner`, clustered over the guess's entries at
   /// @ref options' cluster_gap (none at its default 0), or, when
@@ -91,14 +95,17 @@ struct CisStep {
   ///
   /// @return The states; InvalidConfig, before anything is allocated, for
   ///         n_states below 1, a negative or NaN cluster_gap or a positive
-  ///         one beside ris, a molecule that is not a closed-shell singlet
+  ///         one beside ris, with method Ris a theta_j or theta_k that is
+  ///         not finite and positive, a molecule that is not a closed-shell singlet
   ///         (odd electrons or multiplicity other than 1) or whose electrons
   ///         the ScfOutput does not hold as n_alpha = n_beta, no virtual
   ///         orbital, an n_ov past int32_t, or more states than n_ov; or the
   ///         error of the first call that failed: `cis::diagonal`'s,
   ///         `cis::guess`'s, `cis::Sigma::create`'s or
   ///         `cis::DfSigma::create`'s (Unsupported for MO blocks past the
-  ///         device's free memory), `cis::Preconditioner::cluster`'s,
+  ///         device's free memory), TDA-ris's fits' (Unsupported for a B
+  ///         past it; else ris_basis's, metric's, three_center's,
+  ///         density_fit's or b_mo's), `cis::Preconditioner::cluster`'s,
   ///         `cis::RisPreconditioner::create`'s or its correction's, or
   ///         `davidson_solve`'s
   ///         (MaxIterationsExceeded, Divergence), and GpuRuntime for a failed

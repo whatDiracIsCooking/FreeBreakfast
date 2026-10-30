@@ -31,12 +31,31 @@ enum class Spin : int32_t {
   Triplet, ///< The triplet excitations.
 };
 
+/// @brief Which operator a solve diagonalizes: CIS's own A, over the
+/// EriOutput's integrals, or TDA-ris's approximation of it (Zhou & Parker
+/// 2024; gpu4pyscf @c tdscf/ris.py), A's two-electron part over two minimal
+/// RIS fits of its own, whatever the EriOutput.
+enum class Method : int32_t {
+  Full, ///< A over the EriOutput's integrals, direct or fitted.
+  Ris,  ///< TDA-ris: (ia|jb) over the J fit, (ij|ab) over the K fit.
+};
+
 /// @brief The knobs of one CIS solve.
 struct Options {
   /// @brief The roots wanted, the lowest of A, at least 1.
   int32_t n_states = 5;
   /// @brief Singlets or triplets.
   Spin spin = Spin::Singlet;
+  /// @brief The operator: CIS's A, the default, or TDA-ris's.
+  Method method = Method::Full;
+  /// @brief With Method::Ris, the J fit's θ: ris_basis's exponent scale for
+  /// the RisShells::Sp basis the Coulomb term is fitted over (gpu4pyscf's
+  /// @c theta and @c J_fit defaults). Finite and positive.
+  double theta_j = 0.2;
+  /// @brief With Method::Ris, the K fit's θ, for the RisShells::S basis the
+  /// exchange term is fitted over (gpu4pyscf's @c K_fit default). Finite and
+  /// positive.
+  double theta_k = 0.2;
   /// @brief Passed to davidson_solve. Its residual_tolerance is relative,
   /// ||A x − θ x|| <= tol · max(|θ|, ||H||), and an excitation energy and the
   /// subspace's largest Ritz value are both of order one hartree, so 1e-6 is a
@@ -151,13 +170,15 @@ private:
 
 /// @brief σ = A b on the device, density-fitted in the MO basis: a
 /// `LinearOperator<DfSigma, double>` over the same n_ov excitation vectors as
-/// @ref Sigma, element ia at i · n_virt + a, with (pq|rs) ≈ Σ_Q B_Q,pq B_Q,rs
-/// over pipeline.eri's DensityFitted B.
+/// @ref Sigma, element ia at i · n_virt + a, with (pq|rs) ≈ Σ_Q B_Q,pq B_Q,rs.
 ///
-/// create transforms B once into the MO blocks B_vo, B_oo and B_vv
-/// (b_mo over C's occupied and virtual columns). Then, on a whole n_ov × k
-/// block X, with w = 2 for a singlet and the Coulomb term dropped for a
-/// triplet:
+/// It holds three MO blocks of fitted factors: B_vo over naux_j functions for
+/// the Coulomb term, and B_oo and B_vv over naux_k for the exchange term. The
+/// first create makes all three from one B, pipeline.eri's DensityFitted one
+/// (b_mo over C's occupied and virtual columns), so naux_j = naux_k; the
+/// second takes them as built, from two fits that may differ, as TDA-ris's
+/// do. Then, on a whole n_ov × k block X, with w = 2 for a singlet and the
+/// Coulomb term dropped for a triplet:
 ///
 ///   σ = Δε ∘ X + w · B_voᵀ (B_vo X) − Σ_Q B_oo^Q X B_vv^Q,
 ///
@@ -195,6 +216,26 @@ public:
                                               const SphericalMatrixAO &c, int32_t n_occ,
                                               const double *delta, Spin spin, int32_t max_block);
 
+  /// @brief A fitted sigma over the MO blocks as built, taken over: @p b_vo,
+  /// naux_j × n_ov with element (Q, a, i) at Q + naux_j (a + n_virt i), for
+  /// the Coulomb term, and @p b_oo, naux_k × n_occ², and @p b_vv,
+  /// naux_k × n_virt², with element (Q, p, q) at Q + naux_k (p + n q), for
+  /// the exchange term: b_mo's layouts over (virtual, occupied),
+  /// (occupied, occupied) and (virtual, virtual), on res's device. @p delta,
+  /// @p spin and @p max_block are as above.
+  ///
+  /// @return InvalidConfig when a block does not hold its count, when
+  ///         @p delta is null, when @p naux_j, @p naux_k, @p n_occ, @p n_virt
+  ///         or @p max_block is below 1, or when n_occ · n_virt,
+  ///         naux_k · n_virt or naux_k · n_occ · max_block does not fit an
+  ///         int32_t; Unsupported, naming the bytes, when the workspace's
+  ///         growth for a block exceeds the device's free memory.
+  [[nodiscard]] static Result<DfSigma> create(DeviceResources &res, Buffers::device<double> b_vo,
+                                              int32_t naux_j, Buffers::device<double> b_oo,
+                                              Buffers::device<double> b_vv, int32_t naux_k,
+                                              int32_t n_occ, int32_t n_virt, const double *delta,
+                                              Spin spin, int32_t max_block);
+
   DfSigma(DfSigma &&) noexcept = default;
   DfSigma &operator=(DfSigma &&) noexcept = default;
   DfSigma(const DfSigma &) = delete;
@@ -216,19 +257,21 @@ public:
   [[nodiscard]] int32_t size() const noexcept { return n_occ_ * n_virt_; }
 
 private:
-  DfSigma(DeviceResources &res, int32_t naux, int32_t n_occ, int32_t n_virt, const double *delta,
-          Spin spin, int32_t max_block);
+  DfSigma(DeviceResources &res, Buffers::device<double> b_vo, int32_t naux_j,
+          Buffers::device<double> b_oo, Buffers::device<double> b_vv, int32_t naux_k, int32_t n_occ,
+          int32_t n_virt, const double *delta, Spin spin, int32_t max_block);
 
   int32_t dev_idx_;
-  int32_t naux_;
+  int32_t naux_j_;
+  int32_t naux_k_;
   int32_t n_occ_;
   int32_t n_virt_;
   int32_t max_block_;
   Spin spin_;
   const double *delta_;
-  // State across applies, so the sigma's own: B_vo, the naux × n_ov matrix
+  // State across applies, so the sigma's own: B_vo, the naux_j × n_ov matrix
   // whose column is the excitation index a + n_virt i; B_oo, [Q][i][j]; and
-  // B_vv, [Q][a][b].
+  // B_vv, [Q][a][b], both over naux_k.
   Buffers::device<double> b_vo_;
   Buffers::device<double> b_oo_;
   Buffers::device<double> b_vv_;
