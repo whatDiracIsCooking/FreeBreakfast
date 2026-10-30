@@ -5,7 +5,10 @@
 // width needs, read back as that width; a budget below one determinant
 // refused as Unsupported with nothing written or allocated; the other
 // refusals; and, slow, a CAS(12,12) build, its tile count and its measured
-// peak device memory.
+// peak device memory. And nevpt2::rdms_adjoint against rdms itself: rdms is
+// quadratic in the CI vector and linear in (tu|vw), so a polarization
+// difference of two builds, contracted with the bars, is the adjoint's
+// directional derivative exactly; at one tile and at many, unequal ones.
 
 #include <gtest/gtest.h>
 
@@ -31,6 +34,10 @@ constexpr double kRelTol = 1e-12;
 constexpr double kTileRelTol = 1e-13;
 // Σ_pqr dm3[p, p, q, q, r, r] = ⟨N³⟩ = N³, of N³.
 constexpr double kTraceRelTol = 1e-12;
+// The adjoint's ⟨y, u⟩ (or ⟨h2ē, δ⟩) against the bars on the polarization
+// difference, of Σ_i |bar_i| |difference_i|: both are the same products
+// summed in different orders, so this is round-off.
+constexpr double kAdjointRelTol = 1e-12;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2";
 
@@ -292,6 +299,185 @@ TEST(NevptRdm, Refusals) {
   ASSERT_FALSE(mixed);
   EXPECT_EQ(mixed.error().kind, fb::ErrorKind::InvalidConfig) << mixed.error().message;
   const auto empty = fb::nevpt2::rdms(res, *none, *none, p, p, p, p, p);
+  ASSERT_FALSE(empty);
+  EXPECT_EQ(empty.error().kind, fb::ErrorKind::InvalidConfig) << empty.error().message;
+}
+
+double dot(std::span<const double> a, std::span<const double> b) {
+  EXPECT_EQ(a.size(), b.size());
+  return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
+}
+
+std::vector<double> random_vector(std::mt19937_64 &rng, std::size_t size) {
+  std::uniform_real_distribution<double> uniform{-1.0, 1.0};
+  std::vector<double> v(size);
+  for (double &x : v) {
+    x = uniform(rng);
+  }
+  return v;
+}
+
+// a + sign · b.
+std::vector<double> shifted(std::span<const double> a, std::span<const double> b, double sign) {
+  std::vector<double> out(a.size());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    out[i] = a[i] + (sign * b[i]);
+  }
+  return out;
+}
+
+// The bars on the three outputs, on the host and the device.
+struct Bars {
+  std::vector<double> dm3;
+  std::vector<double> f3ca;
+  std::vector<double> f3ac;
+};
+
+// The bars against half the difference of two builds, and the scale the
+// round-off is measured against: Σ_i |bar_i| |difference_i| / 2.
+std::pair<double, double> contract_difference(const Bars &bars, const Built &plus,
+                                              const Built &minus) {
+  double value = 0.0;
+  double scale = 0.0;
+  const auto add = [&](std::span<const double> bar, std::span<const double> p,
+                       std::span<const double> m) {
+    for (std::size_t i = 0; i < bar.size(); ++i) {
+      const double half = 0.5 * (p[i] - m[i]);
+      value += bar[i] * half;
+      scale += std::abs(bar[i] * half);
+    }
+  };
+  add(bars.dm3, plus.dm3, minus.dm3);
+  add(bars.f3ca, plus.f3ca, minus.f3ca);
+  add(bars.f3ac, plus.f3ac, minus.f3ac);
+  return {value, scale};
+}
+
+struct Adjoint {
+  std::int64_t tiles = 0;
+  std::vector<double> vector_bar;
+  std::vector<double> eri_bar;
+};
+
+std::optional<Adjoint> adjoint(fb::DeviceResources &res, Setup &s,
+                               const fb::Buffers::device<double> &dm3_bar,
+                               const fb::Buffers::device<double> &f3ca_bar,
+                               const fb::Buffers::device<double> &f3ac_bar,
+                               std::size_t max_bytes = std::numeric_limits<std::size_t>::max()) {
+  fb::Buffers::device<double> vector_bar(s.ci.num_elements(), res.device());
+  fb::Buffers::device<double> eri_bar(s.eri.num_elements(), res.device());
+  const auto tiles = fb::nevpt2::rdms_adjoint(res, s.strings, s.strings, s.ci.data(), s.eri.data(),
+                                              dm3_bar.data(), f3ca_bar.data(), f3ac_bar.data(),
+                                              vector_bar.data(), eri_bar.data(), max_bytes);
+  EXPECT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+  if (!tiles) {
+    return std::nullopt;
+  }
+  return Adjoint{*tiles, on_host(res, vector_bar), on_host(res, eri_bar)};
+}
+
+// The issue's acceptance: on CAS(4,4) and CAS(6,6), from a random vector, a
+// random (tu|vw) with no symmetry (the adjoint is by each stored element) and
+// random bars, ⟨y, u⟩ along a random u and ⟨h2ē, δ⟩ along a random δ each
+// match the bars on (rdms(+) − rdms(−)) / 2 to round-off; at one tile and at
+// a width below the determinant count, with an unequal last tile, which also
+// agree with each other.
+TEST(NevptRdm, AdjointMatchesPolarization) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  struct Space {
+    std::int32_t n;
+    std::int32_t per_spin;
+    std::size_t strings;
+    std::int64_t width; // below the determinant count, not dividing it
+  };
+  // 36 = 7 · 5 + 1; 400 = 23 · 17 + 9.
+  for (const Space sp : {Space{4, 2, 6, 7}, Space{6, 3, 20, 23}}) {
+    SCOPED_TRACE("CAS(" + std::to_string(sp.n) + "," + std::to_string(sp.n) + ")");
+    const auto n = static_cast<std::size_t>(sp.n);
+    const std::size_t ndet = sp.strings * sp.strings;
+    const std::size_t n6 = n * n * n * n * n * n;
+    std::mt19937_64 rng{static_cast<std::uint64_t>(557 + sp.n)};
+    const std::vector<double> ci = random_vector(rng, ndet);
+    const std::vector<double> eri = random_vector(rng, n * n * n * n);
+    const std::vector<double> u = random_vector(rng, ndet);
+    const std::vector<double> delta = random_vector(rng, n * n * n * n);
+    const Bars bars{random_vector(rng, n6), random_vector(rng, n6), random_vector(rng, n6)};
+    const auto dm3_bar = on_device(res, bars.dm3);
+    const auto f3ca_bar = on_device(res, bars.f3ca);
+    const auto f3ac_bar = on_device(res, bars.f3ac);
+
+    auto s = set_up(res, sp.n, sp.per_spin, ci, eri);
+    ASSERT_TRUE(s);
+    ASSERT_EQ(s->strings.size(), static_cast<std::int32_t>(sp.strings));
+    const auto one = adjoint(res, *s, dm3_bar, f3ca_bar, f3ac_bar);
+    ASSERT_TRUE(one);
+    EXPECT_EQ(one->tiles, 1);
+    const auto tiled = adjoint(res, *s, dm3_bar, f3ca_bar, f3ac_bar,
+                               fb::nevpt2::rdms_adjoint_workspace_bytes(sp.n, sp.width + 1) - 1);
+    ASSERT_TRUE(tiled);
+    EXPECT_EQ(tiled->tiles, fb::math::idivup(static_cast<std::int64_t>(ndet), sp.width));
+    EXPECT_LE(rel_diff(tiled->vector_bar, one->vector_bar), kTileRelTol) << "y";
+    EXPECT_LE(rel_diff(tiled->eri_bar, one->eri_bar), kTileRelTol) << "h2e bar";
+
+    // Along u: the builds at c ± u, at the case's (tu|vw).
+    auto plus_c = set_up(res, sp.n, sp.per_spin, shifted(ci, u, 1.0), eri);
+    auto minus_c = set_up(res, sp.n, sp.per_spin, shifted(ci, u, -1.0), eri);
+    ASSERT_TRUE(plus_c && minus_c);
+    const auto bp = build(res, *plus_c);
+    const auto bm = build(res, *minus_c);
+    ASSERT_TRUE(bp && bm);
+    const auto [along_u, scale_u] = contract_difference(bars, *bp, *bm);
+    // Along δ: the builds at (tu|vw) ± δ, at the case's c.
+    auto plus_e = set_up(res, sp.n, sp.per_spin, ci, shifted(eri, delta, 1.0));
+    auto minus_e = set_up(res, sp.n, sp.per_spin, ci, shifted(eri, delta, -1.0));
+    ASSERT_TRUE(plus_e && minus_e);
+    const auto ep = build(res, *plus_e);
+    const auto em = build(res, *minus_e);
+    ASSERT_TRUE(ep && em);
+    const auto [along_delta, scale_delta] = contract_difference(bars, *ep, *em);
+
+    for (const Adjoint *a : {&*one, &*tiled}) {
+      SCOPED_TRACE(a->tiles == 1 ? "one tile" : "tiled");
+      const double yu = dot(a->vector_bar, u);
+      const double hd = dot(a->eri_bar, delta);
+      EXPECT_LE(std::abs(yu - along_u), kAdjointRelTol * scale_u)
+          << "<y, u> " << yu << " against " << along_u << " (scale " << scale_u << ")";
+      EXPECT_LE(std::abs(hd - along_delta), kAdjointRelTol * scale_delta)
+          << "<h2e bar, delta> " << hd << " against " << along_delta << " (scale " << scale_delta
+          << ")";
+    }
+  }
+}
+
+// The adjoint's own refusals: a budget below one determinant's tile, before
+// anything is queued (the outputs keep what they held, the workspace is not
+// grown), and the sets rdms refuses.
+TEST(NevptRdm, AdjointRefusals) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr std::int32_t kN = 4;
+  auto four = fb::ci::DeviceStringSet::create(res, kN, 2);
+  auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
+  auto none = fb::ci::DeviceStringSet::create(res, 0, 0);
+  ASSERT_TRUE(four && five && none);
+  const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
+  auto scratch = on_device(res, sentinel);
+  double *const p = scratch.data();
+  const std::size_t held = res.device_workspace(0).num_elements();
+  for (const std::size_t budget :
+       {std::size_t{0}, fb::nevpt2::rdms_adjoint_workspace_bytes(kN, 1) - 1}) {
+    const auto got = fb::nevpt2::rdms_adjoint(res, *four, *four, p, p, p, p, p, p, p, budget);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::Unsupported) << got.error().message;
+    EXPECT_NE(got.error().message.find("nevpt2::rdms_adjoint:"), std::string::npos);
+  }
+  EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+  EXPECT_EQ(on_host(res, scratch), sentinel);
+  const auto mixed = fb::nevpt2::rdms_adjoint(res, *four, *five, p, p, p, p, p, p, p);
+  ASSERT_FALSE(mixed);
+  EXPECT_EQ(mixed.error().kind, fb::ErrorKind::InvalidConfig) << mixed.error().message;
+  const auto empty = fb::nevpt2::rdms_adjoint(res, *none, *none, p, p, p, p, p, p, p);
   ASSERT_FALSE(empty);
   EXPECT_EQ(empty.error().kind, fb::ErrorKind::InvalidConfig) << empty.error().message;
 }

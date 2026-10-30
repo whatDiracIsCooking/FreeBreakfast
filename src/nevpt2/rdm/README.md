@@ -3,7 +3,9 @@
 dm3, f3ca and f3ac of one CI vector, on the device: the three n_act⁶ tensors
 SC-NEVPT2's perturber classes read of the reference state. Ported from
 nevpt2-gpu-demo's `src/rdm` (commit `7c5a674`), narrowed to its BLAS digest
-and BLAS consume, over this tree's `ci` strings.
+and BLAS consume, over this tree's `ci` strings. Beside it, the build's
+adjoint, which the NEVPT2 nuclear gradient takes the three tensors' bars
+through, back onto the CI vector and (tu\|vw).
 
 ## Module
 
@@ -14,6 +16,8 @@ target `free_breakfast::nevpt2::rdm`.
 |---|---|
 | `nevpt2::rdms(res, alpha, beta, vector, eri, dm3, f3ca, f3ac, max_bytes)` | The three tensors of the device CI `vector` over the two `ci::DeviceStringSet`s, from the device (tu\|vw) `eri`, into the device `dm3`, `f3ca`, `f3ac`; `Result<int64_t>`, the number of tiles it took |
 | `nevpt2::rdms_workspace_bytes(n, width)` | The bytes of `res.device_workspace()` a build over `n` active orbitals carves at tile width `width` |
+| `nevpt2::rdms_adjoint(res, alpha, beta, vector, eri, dm3_bar, f3ca_bar, f3ac_bar, vector_bar, eri_bar, max_bytes)` | From device bars on the three tensors, `vector_bar` = ∂E/∂c and `eri_bar` = ∂E/∂(tu\|vw) of E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ + ⟨f3ac̄, f3ac⟩, both overwritten; `Result<int64_t>`, the number of tiles |
+| `nevpt2::rdms_adjoint_workspace_bytes(n, width)` | The same, for the adjoint |
 
 ## Layouts
 
@@ -85,6 +89,46 @@ is queued or allocated**: a failed workspace growth aborts in this tree
 
 Every launch and BLAS call is on `res.stream()`; it does not synchronize.
 
+## The adjoint
+
+`rdms_adjoint` runs the build backwards, in this tree's own transposes rather
+than the demo's sigma-like passes (`docs/gradients.md` §5.4, §6 there), over
+the same tiles and the same kind of budget. E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ +
+⟨f3ac̄, f3ac⟩, with each bar in the outputs' layout.
+
+- **Once, first: the wedge and fdm2.** They ran last, so they are transposed
+  first. Per order, the wedge's transpose gives the bar on f3 *before* the
+  wedge (zero where the first index is below the third, which the wedge
+  overwrote; the sum of the two places an element reached where it is above)
+  and the bar on that order's fdm2. The two fdm2 bars, through (tu\|vw), add
+  to dm3̄: the bar dm3 carries into the tiles.
+- **Per tile of determinants K**, R and L2 are rebuilt exactly as `rdms`
+  builds them. Each digest acc += L2 Bᵀ transposes to two gemms, L2̄ += acc̄ B
+  and B̄ = acc̄ᵀ L2 (B = R for dm3, W for each f3). Each consume W = (tu\|vw)
+  · L2 transposes to two loops of strided batched gemms: onto L2̄, batched
+  over the free index as the forward is, and onto the consume's own bar,
+  batched over the contracted one, since that product sums over the free
+  index and a batch cannot. The produce's transpose then gathers R̄ and L2̄
+  onto the CI bar: one thread per determinant J, over J's own replacement
+  lists (a link J → M by (p, q) is ⟨M\| E_pq \|J⟩ and ⟨J\| E_qp \|M⟩ both),
+  adding only the K in the tile. So every tile walks every J; nothing is
+  atomic, and the result does not depend on the run.
+- **dm3 is summed over the tiles** as `rdms` sums it, for the fdm2s' own
+  (tu\|vw) dependence, which after the last tile joins the consume's bar in
+  one kernel that writes `eri_bar` in `eri`'s layout.
+
+**`eri_bar` is by each stored element, with no symmetry imposed**: the build
+reads (tu\|vw) as it is given, so a caller whose integrals carry the
+eightfold symmetry folds the bar itself. The 4-RDM is never formed.
+
+**The plan is `rdms`' own**, the checks, the budget and the walk down to the
+widest width, against `rdms_adjoint_workspace_bytes`: fifteen regions, each
+rounded up to `kWorkspaceAlignment`: the two (tu\|vw) copies, the two fdm2
+bars and the consume's bar (n⁴ doubles each); the two pre-wedge f3 bars,
+dm3's total bar and dm3 (n⁶ each); and the tile's R, L2, W and their bars
+((4 n² + 2 n⁴) doubles per determinant). A budget below one determinant is
+`Unsupported` before anything is queued or allocated, as for `rdms`.
+
 ## Tests
 
 `test/gtest/nevpt2_rdm_gpu.cpp` (`NevptRdm.*`), against
@@ -104,6 +148,18 @@ would be 8 MB each, and the energy's chain test covers them. On those three:
   they held and the workspace is not grown;
 - `Refusals`: sets over different orbital counts, or none.
 
+And the adjoint, against `rdms` itself, since `rdms` is quadratic in c and
+linear in (tu\|vw):
+
+- `AdjointMatchesPolarization`: at CAS(4,4) and CAS(6,6), from a random vector,
+  a random (tu\|vw) with no symmetry and random bars, ⟨y, u⟩ along a random u
+  is the bars on (rdms(c + u) − rdms(c − u)) / 2, and ⟨h2ē, δ⟩ along a random
+  δ the bars on (rdms(eri + δ) − rdms(eri − δ)) / 2, each within 1e-12 of
+  Σ\|bar\| \|difference\|; at one tile and at widths 7 and 23 (6 and 18 tiles,
+  the last unequal), which agree with the one tile within 1e-13;
+- `AdjointRefusals`: the budget below one determinant, with nothing written
+  or grown, and the sets `rdms` refuses.
+
 `Cas1212TilesAtTheDefaultBudget` (slow, skipped under
 `FREE_BREAKFAST_FAST_TESTS`) builds CAS(12,12), 853 776 determinants, from a
 random unit vector at the default budget, prints the tile count and the
@@ -117,8 +173,8 @@ budget is nearly the whole card.
 
 | File | Role |
 |------|------|
-| `rdm.cppm` | Module interface: `nevpt2::rdms`, `nevpt2::rdms_workspace_bytes` |
-| `rdm.cpp` | The checks, the tile plan, the consume and digest gemms, and the launches |
+| `rdm.cppm` | Module interface: `nevpt2::rdms`, `nevpt2::rdms_adjoint` and their `_workspace_bytes` |
+| `rdm.cpp` | The checks, the tile plan, the consume and digest gemms and their transposes, and the launches |
 | `nevpt2_rdm_bridge.h` | The launchers, shared by the module (GMF) and the `.cu` |
-| `nevpt2_rdm.cu` | The eri's conversion, R and L2 per tile, fdm2 and the wedge |
+| `nevpt2_rdm.cu` | The eri's conversion, R and L2 per tile, fdm2 and the wedge, and the transposes of each |
 | `CMakeLists.txt` | The device library `free_breakfast.nevpt2.rdm.device` and the module `free_breakfast.nevpt2.rdm` |
