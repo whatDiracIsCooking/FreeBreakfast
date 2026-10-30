@@ -97,6 +97,13 @@ Building on a bare host additionally needs Clang 20 with libc++ (including
 Toolkit or ROCm, plus the `workstation` preset — `default` expects the prebuilt
 `/opt` trees only the image has.
 
+A GPU-less claude.ai cloud environment (Ubuntu 24.04, no Docker) gets all of
+that from `devtools/cloud-env-setup.sh`, pasted in as the environment's setup
+script: the image's toolchain and `/opt` trees, plus both backends' SDKs cut
+down to the libraries WarpWraps links, so it fits the session's disk. There
+the pinned presets build and run the host tests, every GPU case skipping:
+`devtools/cpp-tier.sh --preset ci-cuda` (or `ci-hip`).
+
 `devtools/doctor.sh` tells you which of these you have. Run it on the host and
 again inside the container — the difference between the two lists is the point.
 On a bare host, ~11 warnings (the C++ toolchain and the three `/opt` trees) is
