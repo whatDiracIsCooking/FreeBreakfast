@@ -5,7 +5,10 @@
 // partial. And mo_blocks over H2O/cc-pVDZ's fitted B and DF-RHF orbitals
 // (data/density_fitting/): h2e and the slabs that lie inside (pq|uv) and
 // (pu|qv) against casscf_integrals' density-fitted ppaa and papa over the
-// same B, and B_vc against B_cv. Then the refusals.
+// same B, and B_vc against B_cv. The adjoints of slab, h2e and mo_blocks by
+// duality: <Lambda, B-dot> against <bar, x-dot>, x-dot the forward builders'
+// tangent along B-dot, every block whole and in partial batches. Then the
+// refusals.
 
 #include <gtest/gtest.h>
 
@@ -453,6 +456,294 @@ TEST(Nevpt2DensityFitting, MoBlocksMatchCasscfIntegrals) {
 }
 
 // ---------------------------------------------------------------------------
+// The adjoints, by duality against the forward builders
+// ---------------------------------------------------------------------------
+
+// <Lambda, B-dot> against sum <bar, x-dot>, relative to the latter: the same
+// products summed in another order. The maps are linear in their bars, so
+// only round-off separates the two sides.
+constexpr double kDualityTol = 1e-12;
+
+// Shapes with every space a different size, so a swapped extent shows, and
+// both batch extents (core 3, virtual 5) odd, so batches of 2 end partial.
+constexpr std::int32_t kAdjNaux = 6;
+constexpr std::int32_t kAdjNcore = 3;
+constexpr std::int32_t kAdjNcas = 4;
+constexpr std::int32_t kAdjNvirt = 5;
+constexpr std::int32_t kAdjNmo = kAdjNcore + kAdjNcas + kAdjNvirt;
+
+std::vector<double> random_vector(const std::size_t n, const std::uint64_t seed) {
+  std::mt19937_64 rng(seed);
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  std::vector<double> v(n);
+  for (double &x : v) {
+    x = u(rng);
+  }
+  return v;
+}
+
+double dot(const std::vector<double> &a, const std::vector<double> &b) {
+  EXPECT_EQ(a.size(), b.size());
+  double s = 0.0;
+  for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+    s += a[i] * b[i];
+  }
+  return s;
+}
+
+// A random B and B-dot in the MO basis, not symmetric in their pair (so a
+// B_cv / B_vc mix-up shows), and the forward builders over B + B-dot and
+// B - B-dot: a slab is quadratic in B, so half their difference is its
+// tangent along B-dot exactly. mo_blocks with C the identity is the forward
+// map from Lambda's layout.
+class Nevpt2DensityFittingAdjoint : public ::testing::Test {
+protected:
+  void SetUp() override {
+    FBF_REQUIRE_GPU();
+    res_.emplace(0);
+    const std::size_t n = kAdjNaux * std::size_t{kAdjNmo} * kAdjNmo;
+    b_ = random_vector(n, 556);
+    b_dot_ = random_vector(n, 557);
+    std::vector<double> plus(n);
+    std::vector<double> minus(n);
+    for (std::size_t i = 0; i < n; ++i) {
+      plus[i] = b_[i] + b_dot_[i];
+      minus[i] = b_[i] - b_dot_[i];
+    }
+    std::vector<double> identity(std::size_t{kAdjNmo} * kAdjNmo, 0.0);
+    for (std::size_t p = 0; p < kAdjNmo; ++p) {
+      identity[p * (kAdjNmo + 1)] = 1.0;
+    }
+    c_.emplace(identity.size(), res_->device());
+    upload(*res_, identity, c_->data());
+    blocks_.emplace(blocks_of(b_));
+    plus_.emplace(blocks_of(plus));
+    minus_.emplace(blocks_of(minus));
+    dot_.emplace(blocks_of(b_dot_));
+    lambda_.emplace(n, res_->device());
+  }
+
+  nevpt2::MoBlocks blocks_of(const std::vector<double> &b) {
+    fb::Buffers::device<double> d(b.size(), res_->device());
+    upload(*res_, b, d.data());
+    auto m = nevpt2::mo_blocks(*res_, kAdjNaux, kAdjNmo, kAdjNmo, d.data(), c_->data(), kAdjNcore,
+                               kAdjNcas);
+    EXPECT_TRUE(m) << m.error().message;
+    // d goes away at return: the blocks must be built first.
+    EXPECT_TRUE(res_->sync().has_value());
+    return std::move(*m);
+  }
+
+  void zero_lambda() {
+    ASSERT_EQ(wwr::wwrMemsetAsync(lambda_->data(), 0, sizeof(double) * lambda_->num_elements(),
+                                  res_->stream()),
+              wwr::wwrSuccess);
+  }
+
+  // <Lambda, B-dot>.
+  double lambda_dot() {
+    return dot(download(*res_, lambda_->data(), lambda_->num_elements()), b_dot_);
+  }
+
+  std::vector<double> slab_of(const nevpt2::MoBlocks &blocks, const ExtBlock block) {
+    const std::array<std::int32_t, 4> shape = nevpt2::block_shape(blocks, block);
+    const std::size_t count = volume(shape);
+    fb::Buffers::device<double> out(count, res_->device());
+    const fb::Status built =
+        nevpt2::slab(*res_, blocks, block, 0,
+                     shape[static_cast<std::size_t>(nevpt2::batch_axis(block))], out.data());
+    EXPECT_TRUE(built) << built.error().message;
+    return download(*res_, out.data(), count);
+  }
+
+  std::vector<double> h2e_of(const nevpt2::MoBlocks &blocks) {
+    const std::size_t count = std::size_t{kAdjNcas} * kAdjNcas * kAdjNcas * kAdjNcas;
+    fb::Buffers::device<double> out(count, res_->device());
+    const fb::Status built = nevpt2::h2e(*res_, blocks, out.data());
+    EXPECT_TRUE(built) << built.error().message;
+    return download(*res_, out.data(), count);
+  }
+
+  // (f(B + B-dot) - f(B - B-dot)) / 2.
+  static std::vector<double> tangent(const std::vector<double> &plus,
+                                     const std::vector<double> &minus) {
+    std::vector<double> t(plus.size());
+    for (std::size_t i = 0; i < t.size(); ++i) {
+      t[i] = 0.5 * (plus[i] - minus[i]);
+    }
+    return t;
+  }
+
+  std::vector<double> b_;
+  std::vector<double> b_dot_;
+  std::optional<fb::DeviceResources> res_;
+  std::optional<fb::Buffers::device<double>> c_;
+  std::optional<nevpt2::MoBlocks> blocks_;
+  std::optional<nevpt2::MoBlocks> plus_;
+  std::optional<nevpt2::MoBlocks> minus_;
+  std::optional<nevpt2::MoBlocks> dot_;
+  std::optional<fb::Buffers::device<double>> lambda_;
+};
+
+// Every block, whole and walked slab by slab in batches of 1, 2 and 3, the
+// last batch partial wherever the extent (3 or 5) is not a multiple.
+TEST_F(Nevpt2DensityFittingAdjoint, SlabAdjointsAreDualToTheSlabs) {
+  for (const ExtBlock block : kAllBlocks) {
+    const auto id = static_cast<std::int32_t>(block);
+    const std::array<std::int32_t, 4> shape = nevpt2::block_shape(*blocks_, block);
+    const std::int32_t axis = nevpt2::batch_axis(block);
+    const std::int32_t extent = shape[static_cast<std::size_t>(axis)];
+    const std::vector<double> bar =
+        random_vector(volume(shape), 1000 + static_cast<std::uint64_t>(id));
+    const double want = dot(bar, tangent(slab_of(*plus_, block), slab_of(*minus_, block)));
+    ASSERT_GT(std::abs(want), 0.0) << id;
+    for (const std::int32_t batch : {extent, 1, 2, 3}) {
+      zero_lambda();
+      for (std::int32_t b0 = 0; b0 < extent; b0 += batch) {
+        const std::int32_t b1 = std::min(b0 + batch, extent);
+        const std::vector<double> piece = slice(bar, shape, axis, b0, b1);
+        fb::Buffers::device<double> d(piece.size(), res_->device());
+        upload(*res_, piece, d.data());
+        const fb::Status pulled =
+            nevpt2::slab_adjoint(*res_, *blocks_, block, b0, b1, d.data(), lambda_->data());
+        ASSERT_TRUE(pulled) << pulled.error().message;
+        // d goes away at the end of this iteration.
+        ASSERT_TRUE(res_->sync().has_value());
+      }
+      const double got = lambda_dot();
+      EXPECT_LE(std::abs(got - want), kDualityTol * std::abs(want))
+          << golden_name(block) << " (block " << id << ") batch " << batch << ": " << got << " vs "
+          << want;
+    }
+  }
+}
+
+TEST_F(Nevpt2DensityFittingAdjoint, H2eAdjointIsDualToH2e) {
+  const std::vector<double> bar =
+      random_vector(std::size_t{kAdjNcas} * kAdjNcas * kAdjNcas * kAdjNcas, 2000);
+  const double want = dot(bar, tangent(h2e_of(*plus_), h2e_of(*minus_)));
+  fb::Buffers::device<double> d(bar.size(), res_->device());
+  upload(*res_, bar, d.data());
+  zero_lambda();
+  const fb::Status pulled = nevpt2::h2e_adjoint(*res_, *blocks_, d.data(), lambda_->data());
+  ASSERT_TRUE(pulled) << pulled.error().message;
+  const double got = lambda_dot();
+  EXPECT_LE(std::abs(got - want), kDualityTol * std::abs(want)) << got << " vs " << want;
+}
+
+// The five blocks are linear in B, so mo_blocks over B-dot is their tangent;
+// the diagonals' is B-dot's own, read on the host. Each bar alone, then all
+// of them added together onto one Lambda.
+TEST_F(Nevpt2DensityFittingAdjoint, MoBlocksAdjointIsDualToMoBlocks) {
+  const auto &dev = res_->device();
+  const std::size_t naux = kAdjNaux;
+  const std::size_t nmo = kAdjNmo;
+  const auto sized = [&](const fb::Buffers::device<double> &like) {
+    return fb::Buffers::device<double>(like.num_elements(), dev);
+  };
+  nevpt2::MoBlocks bar{.naux = kAdjNaux,
+                       .ncore = kAdjNcore,
+                       .ncas = kAdjNcas,
+                       .nvirt = kAdjNvirt,
+                       .aa = sized(dot_->aa),
+                       .ca = sized(dot_->ca),
+                       .va = sized(dot_->va),
+                       .cv = sized(dot_->cv),
+                       .vc = sized(dot_->vc)};
+  const std::array<std::pair<const char *, fb::Buffers::device<double> nevpt2::MoBlocks::*>, 5>
+      fields{{{"aa", &nevpt2::MoBlocks::aa},
+              {"ca", &nevpt2::MoBlocks::ca},
+              {"va", &nevpt2::MoBlocks::va},
+              {"cv", &nevpt2::MoBlocks::cv},
+              {"vc", &nevpt2::MoBlocks::vc}}};
+  double want_all = 0.0;
+  std::uint64_t seed = 3000;
+  for (const auto &[name, field] : fields) {
+    const std::size_t n = (*dot_.*field).num_elements();
+    const std::vector<double> host = random_vector(n, seed++);
+    upload(*res_, host, (bar.*field).data());
+    const double want = dot(host, download(*res_, (*dot_.*field).data(), n));
+    want_all += want;
+
+    // This bar alone: the others empty.
+    const auto empty = [&] { return fb::Buffers::device<double>(0, dev); };
+    nevpt2::MoBlocks one{.naux = kAdjNaux,
+                         .ncore = kAdjNcore,
+                         .ncas = kAdjNcas,
+                         .nvirt = kAdjNvirt,
+                         .aa = empty(),
+                         .ca = empty(),
+                         .va = empty(),
+                         .cv = empty(),
+                         .vc = empty()};
+    one.*field = sized(*dot_.*field);
+    upload(*res_, host, (one.*field).data());
+    zero_lambda();
+    const fb::Status pulled =
+        nevpt2::mo_blocks_adjoint(*res_, one, nullptr, nullptr, lambda_->data());
+    ASSERT_TRUE(pulled) << name << ": " << pulled.error().message;
+    const double got = lambda_dot();
+    EXPECT_LE(std::abs(got - want), kDualityTol * std::abs(want))
+        << name << ": " << got << " vs " << want;
+  }
+
+  // The diagonals B_Q,ii and B_Q,aa, each naux x n.
+  const std::vector<double> core = random_vector(naux * kAdjNcore, seed++);
+  const std::vector<double> virt = random_vector(naux * kAdjNvirt, seed++);
+  for (std::size_t q = 0; q < naux; ++q) {
+    for (std::size_t i = 0; i < kAdjNcore; ++i) {
+      want_all += core[q + naux * i] * b_dot_[q + naux * (i * (nmo + 1))];
+    }
+    for (std::size_t a = 0; a < kAdjNvirt; ++a) {
+      const std::size_t p = kAdjNcore + kAdjNcas + a;
+      want_all += virt[q + naux * a] * b_dot_[q + naux * (p * (nmo + 1))];
+    }
+  }
+  fb::Buffers::device<double> core_d(core.size(), dev);
+  fb::Buffers::device<double> virt_d(virt.size(), dev);
+  upload(*res_, core, core_d.data());
+  upload(*res_, virt, virt_d.data());
+  zero_lambda();
+  const fb::Status pulled =
+      nevpt2::mo_blocks_adjoint(*res_, bar, core_d.data(), virt_d.data(), lambda_->data());
+  ASSERT_TRUE(pulled) << pulled.error().message;
+  const double got = lambda_dot();
+  EXPECT_LE(std::abs(got - want_all), kDualityTol * std::abs(want_all))
+      << got << " vs " << want_all;
+}
+
+// One Lambda through every adjoint at once, against the sum of every
+// pairing: the accumulation the reverse pass will run.
+TEST_F(Nevpt2DensityFittingAdjoint, AdjointsAccumulateOntoOneLambda) {
+  zero_lambda();
+  double want = 0.0;
+  for (const ExtBlock block : kAllBlocks) {
+    const std::array<std::int32_t, 4> shape = nevpt2::block_shape(*blocks_, block);
+    const std::int32_t axis = nevpt2::batch_axis(block);
+    const std::int32_t extent = shape[static_cast<std::size_t>(axis)];
+    const std::vector<double> bar =
+        random_vector(volume(shape), 4000 + static_cast<std::uint64_t>(block));
+    want += dot(bar, tangent(slab_of(*plus_, block), slab_of(*minus_, block)));
+    for (std::int32_t b0 = 0; b0 < extent; b0 += 2) {
+      const std::int32_t b1 = std::min(b0 + 2, extent);
+      const std::vector<double> piece = slice(bar, shape, axis, b0, b1);
+      fb::Buffers::device<double> d(piece.size(), res_->device());
+      upload(*res_, piece, d.data());
+      ASSERT_TRUE(nevpt2::slab_adjoint(*res_, *blocks_, block, b0, b1, d.data(), lambda_->data()));
+      ASSERT_TRUE(res_->sync().has_value());
+    }
+  }
+  const std::vector<double> h2e_bar =
+      random_vector(std::size_t{kAdjNcas} * kAdjNcas * kAdjNcas * kAdjNcas, 4100);
+  want += dot(h2e_bar, tangent(h2e_of(*plus_), h2e_of(*minus_)));
+  fb::Buffers::device<double> d(h2e_bar.size(), res_->device());
+  upload(*res_, h2e_bar, d.data());
+  ASSERT_TRUE(nevpt2::h2e_adjoint(*res_, *blocks_, d.data(), lambda_->data()));
+  const double got = lambda_dot();
+  EXPECT_LE(std::abs(got - want), kDualityTol * std::abs(want)) << got << " vs " << want;
+}
+
+// ---------------------------------------------------------------------------
 // The batch axes, and the refusals
 // ---------------------------------------------------------------------------
 
@@ -484,6 +775,30 @@ TEST(Nevpt2DensityFittingRefusals, BatchOutsideTheExtentAndTooManyOrbitalsAreInv
   EXPECT_EQ(core.error().kind, fb::ErrorKind::InvalidConfig);
   // An empty slab writes nothing, so may take no output.
   EXPECT_TRUE(nevpt2::slab(res, blocks, ExtBlock::Sr, 1, 1, nullptr));
+
+  // The adjoint refuses the same ranges, and a bar neither empty nor its
+  // block's size.
+  for (const auto &[b0, b1] : {std::pair{-1, 1}, std::pair{2, 1}, std::pair{0, kNvirt + 1}}) {
+    const fb::Status pulled =
+        nevpt2::slab_adjoint(res, blocks, ExtBlock::Sr, b0, b1, nullptr, nullptr);
+    ASSERT_FALSE(pulled) << b0 << ", " << b1;
+    EXPECT_EQ(pulled.error().kind, fb::ErrorKind::InvalidConfig) << pulled.error().message;
+  }
+  EXPECT_TRUE(nevpt2::slab_adjoint(res, blocks, ExtBlock::Sr, 1, 1, nullptr, nullptr));
+  const nevpt2::MoBlocks short_bar{.naux = kNaux,
+                                   .ncore = kNcore,
+                                   .ncas = kNcas,
+                                   .nvirt = kNvirt,
+                                   .aa = fb::Buffers::device<double>(0, dev),
+                                   .ca = fb::Buffers::device<double>(kNaux * kNcore, dev),
+                                   .va = fb::Buffers::device<double>(0, dev),
+                                   .cv = fb::Buffers::device<double>(0, dev),
+                                   .vc = fb::Buffers::device<double>(0, dev)};
+  const fb::Status short_pulled =
+      nevpt2::mo_blocks_adjoint(res, short_bar, nullptr, nullptr, nullptr);
+  ASSERT_FALSE(short_pulled);
+  EXPECT_EQ(short_pulled.error().kind, fb::ErrorKind::InvalidConfig)
+      << short_pulled.error().message;
 
   for (const auto &[ncore, ncas] : {std::pair{-1, 2}, std::pair{2, -1}, std::pair{4, 4}}) {
     const auto made = nevpt2::mo_blocks(res, kNaux, 7, 7, nullptr, nullptr, ncore, ncas);
