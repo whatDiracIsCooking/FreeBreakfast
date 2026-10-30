@@ -45,12 +45,14 @@ int64_t ordered_block_count(const std::vector<uint32_t> &a, const std::vector<ui
 
 // An ordered class of n records in n_groups groups, of a basis of n_ao
 // Cartesian AOs and n_shells shells per momentum, its tables n_blk blocks, its
-// E tables sized when rolled and the class within K's limit (else empty), on a
-// new stream of res's Device.
+// E tables sized when rolled and the class within K's limit (else empty), and
+// the set's own scratch when it is the set's first, on a new stream of res's
+// Device.
 OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, const int32_t lb,
                                     const int32_t n, const int32_t n_groups, const int32_t n_ao,
                                     const std::vector<int32_t> &n_shells,
-                                    std::vector<int32_t> n_blk, const bool rolled) {
+                                    std::vector<int32_t> n_blk, const bool rolled,
+                                    const bool first) {
   const auto ds = std::make_shared<DeviceStream>(res.device());
   const auto len = static_cast<size_t>(n);
   size_t n_blocks = 0;
@@ -67,6 +69,8 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
   // table.
   const bool tables = rolled && std::max(la, lb) <= device::kExchangeMaxMomentum;
   const size_t n_e = tables ? len * static_cast<size_t>(device::exchange_e_table_width(la, lb)) : 0;
+  const size_t n_rank = la == lb ? static_cast<size_t>(n_shells[static_cast<size_t>(la)]) : 0;
+  const size_t set_ao = first ? static_cast<size_t>(n_ao) : 0;
   return {
       .la = la,
       .lb = lb,
@@ -100,6 +104,12 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
       .geom = StreamBuffers::device<double>(
           static_cast<size_t>(device::kExchangeGroupFields) * groups, ds),
       .factor = StreamBuffers::device<double>(std::max(n_blocks, size_t{1}), ds),
+      .rank_offset = StreamBuffers::device<int32_t>(n_rank, ds),
+      .centre = StreamBuffers::device<double>(size_t{3} * set_ao, ds),
+      .shell_start = StreamBuffers::device<int32_t>(set_ao, ds),
+      .decay = StreamBuffers::device<double>(
+          first ? static_cast<size_t>(device::kExchangeDecayFields) : 0, ds),
+      .g_max = StreamBuffers::device<double>(first ? 1 : 0, ds),
   };
 }
 
@@ -294,7 +304,7 @@ ordered_pair_classes(DeviceResources &res, const BasisSet &basis,
     OrderedPairClass &cls = out.emplace_back(make_ordered_class(
         res, la, lb, static_cast<int32_t>(n),
         static_cast<int32_t>(of_l[static_cast<size_t>(la)].size()),
-        static_cast<int32_t>(basis.nao_cart()), n_shells, std::move(n_blk[c]), rolled));
+        static_cast<int32_t>(basis.nao_cart()), n_shells, std::move(n_blk[c]), rolled, c == 0));
     // Fork from mmd's stream, so the class reads mmd's final records, without
     // a host synchronization.
     FBF_TRY(gpu_status(cls.work_stream->fork_stream().fork_from(from->device_stream()->stream())));

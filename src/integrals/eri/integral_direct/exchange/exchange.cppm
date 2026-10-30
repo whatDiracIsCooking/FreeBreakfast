@@ -86,9 +86,7 @@ enum class DensitySymmetry { Symmetric, Antisymmetric };
 /// there later (a class's own frees, the next build's scratch) runs ahead of
 /// another class's stream still reading it. Writes the classes' scratch
 /// (@ref OrderedPairClass), so one call at a time per set of classes; it
-/// allocates only one rank table per momentum, 3 n_ao doubles of AO centres
-/// and n_ao int32s of shell starts, and four doubles of decay and bound
-/// maximum, from res.device()'s pool in res.stream()'s order. The device
+/// allocates nothing. The device
 /// res.dev_idx() names is made current for the call and the previous one
 /// restored.
 ///

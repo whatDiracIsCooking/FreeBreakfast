@@ -129,8 +129,10 @@ A basis through d gets none (empty buffers, null in the view), and neither
 does a class above f, which the build refuses.
 
 **The K build's scratch is the class's** (as J's is `CoulombPairClass`'s):
-`dcd`, `geom` and `factor` are allocated here and left unwritten, and every
-`exchange` call rewrites them (`../README.md`, "Scratch"). So an SCF loop
+`dcd`, `geom` and `factor`, a class `(l, l)`'s `rank_offset`, and the set's
+own `centre`, `shell_start`, `decay` and `g_max` on its first class only, are
+allocated here and left unwritten, and every `exchange` call rewrites them
+(`../README.md`, "Scratch"). So an SCF loop
 allocates none of them per build, and the K build allows one call at a time
 per set of classes.
 
@@ -154,7 +156,7 @@ error.
 
 | Symbol | Role |
 |---|---|
-| `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, `n_groups`, the basis's `n_ao` and `n_shells`, its tables' `n_blk` (one per class of the set), its `work_stream` (also `device_stream()`, as `mmd`'s classes name theirs), one device-only `StreamBuffers::device` per field (`record_bound` and `rank_b` among them), the groups' bounds `group_start`, the K build's `dc` rows and `blocks` tables (once per basis) and its scratch `dcd`, `geom` and `factor` (per build); `view()` gives an `OrderedPairClassView` |
+| `OrderedPairClass` | One ordered class `(la, lb)`: `n_rec`, `n_groups`, the basis's `n_ao` and `n_shells`, its tables' `n_blk` (one per class of the set), its `work_stream` (also `device_stream()`, as `mmd`'s classes name theirs), one device-only `StreamBuffers::device` per field (`record_bound` and `rank_b` among them), the groups' bounds `group_start`, the K build's `dc` rows and `blocks` tables (once per basis) and its scratch `dcd`, `geom`, `factor` and `rank_offset`, and on the set's first class the set's `centre`, `shell_start`, `decay` and `g_max` (per build); `view()` gives an `OrderedPairClassView` |
 | `OrderedPairClassView` | The class's device fields by pointer, for the launchers (`ordered_pair_class_view.h`, re-exported) |
 | `ordered_pair_classes(res, basis, classes)` | `Result<std::vector<OrderedPairClass>>` from `primitive_pair_classes(res, basis)`: every reached ordered class, ascending `(la, lb)`, none empty, each on a new `DeviceStream`, a set the K build takes whole |
 

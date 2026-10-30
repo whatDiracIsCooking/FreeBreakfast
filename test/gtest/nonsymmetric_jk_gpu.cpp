@@ -5,7 +5,8 @@
 // tools/emit/nonsymmetric_jk_golden.py), unscreened (every record, tau = 0)
 // and screened (K at its default, J at 3e-12: below), all to FelizJueves's
 // 1e-12 bar; K[D^T] = K[D]^T and
-// G[D^T] = G[D]^T on the device's own results; and the refusals.
+// G[D^T] = G[D]^T on the device's own results; that a second build, of each of
+// nonsymmetric_jk, coulomb and exchange, allocates nothing; and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -218,6 +219,63 @@ TEST_P(NonsymmetricJkGolden, MatchesLibcint) {
 }
 
 INSTANTIATE_TEST_SUITE_P(H2O, NonsymmetricJkGolden, ::testing::Values("h2o_sto3g", "h2o_ccpvdz"));
+
+// The pool's high-water mark over fn, above what was in use when it started
+// (zero if it never rose past that), with res synchronized on both sides:
+// cis_sigma_gpu.cpp's, which has why the clamp (HIP has read the mark below
+// the starting use).
+std::uint64_t pool_peak(fb::DeviceResources &res, const std::function<void()> &fn) {
+  wwr::wwrMemPool_t pool = res.device()->pool().get();
+  EXPECT_TRUE(res.sync().has_value());
+  std::uint64_t zero = 0;
+  EXPECT_EQ(wwr::wwrMemPoolSetAttribute(pool, wwr::wwrMemPoolAttrUsedMemHigh, &zero),
+            wwr::wwrSuccess);
+  std::uint64_t before = 0;
+  EXPECT_EQ(wwr::wwrMemPoolGetAttribute(pool, wwr::wwrMemPoolAttrUsedMemCurrent, &before),
+            wwr::wwrSuccess);
+  fn();
+  EXPECT_TRUE(res.sync().has_value());
+  std::uint64_t high = 0;
+  EXPECT_EQ(wwr::wwrMemPoolGetAttribute(pool, wwr::wwrMemPoolAttrUsedMemHigh, &high),
+            wwr::wwrSuccess);
+  return high > before ? high - before : 0;
+}
+
+// Every buffer a build writes is its classes' or, for nonsymmetric_jk's K[D],
+// the workspace, so once one call has grown the workspace, a second
+// nonsymmetric_jk, coulomb or exchange takes nothing from the device's pool
+// and leaves the workspace where it was.
+TEST(NonsymmetricJk, SecondBuildsAllocateNothing) {
+  FBF_REQUIRE_GPU();
+  const Golden golden = read_golden("h2o_ccpvdz");
+  ASSERT_FALSE(golden.density.empty());
+  fb::DeviceResources res{0};
+  Classes classes = classes_of(res, golden.basis, 1e-13);
+  ASSERT_FALSE(classes.j.empty());
+  ASSERT_FALSE(classes.k.empty());
+  fb::CartesianMatrixAO density(res, golden.basis);
+  upload_rows(res, golden.density, density);
+  fb::CartesianMatrixAO g(res, golden.basis);
+  fb::CartesianMatrixAO k(res, golden.basis);
+  ASSERT_TRUE(fb::nonsymmetric_jk(res, classes.j, classes.k, density, g, k).has_value());
+
+  const std::byte *const workspace = res.device_workspace(0).data();
+  const std::size_t workspace_bytes = res.device_workspace(0).num_elements();
+  const std::uint64_t jk_peak = pool_peak(res, [&] {
+    EXPECT_TRUE(fb::nonsymmetric_jk(res, classes.j, classes.k, density, g, k).has_value());
+  });
+  const std::uint64_t j_peak =
+      pool_peak(res, [&] { EXPECT_TRUE(fb::coulomb(res, classes.j, density, k).has_value()); });
+  const std::uint64_t k_peak =
+      pool_peak(res, [&] { EXPECT_TRUE(fb::exchange(res, classes.k, density, k).has_value()); });
+  std::cout << "pool peak: nonsymmetric_jk " << jk_peak << " B, coulomb " << j_peak
+            << " B, exchange " << k_peak << " B\n";
+  EXPECT_EQ(jk_peak, 0U);
+  EXPECT_EQ(j_peak, 0U);
+  EXPECT_EQ(k_peak, 0U);
+  EXPECT_EQ(res.device_workspace(0).data(), workspace);
+  EXPECT_EQ(res.device_workspace(0).num_elements(), workspace_bytes);
+}
 
 // Every refusal comes before anything is queued, so G and K keep what they
 // held: here a stale 42.

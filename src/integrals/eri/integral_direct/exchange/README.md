@@ -233,11 +233,12 @@ stream. At the end of a call every class's stream is forked from
 `res.stream()`, which has joined them all, so a class's frees and the next
 build's writes follow every other stream's reads of it.
 
-What the call still allocates (one rank table per momentum; `3 n_ao` doubles
-of AO centres and `n_ao` `int32`s of shell starts; the three doubles of the
-decay and one of `G_max`) is drawn from `res.device()`'s pool in
-`res.stream()`'s order and returned in its order once every phase is joined
-back, so there is no host synchronization. The shell counts by momentum and
+What the build shares across classes is the classes' too, so the call
+allocates nothing: each momentum's rank table is its class `(l, l)`'s `rank_offset`, and
+the set's own scratch (`3 n_ao` doubles of AO centres, `n_ao` `int32`s of shell
+starts, the three doubles of the decay and one of `G_max`) is its first
+class's `centre`, `shell_start`, `decay` and `g_max`. There is no host
+synchronization. The shell counts by momentum and
 the basis's Cartesian AO count are read on the host off the classes
 (`n_shells`, `n_ao`); `exchange` checks the density's order against the
 latter. The records themselves are device only.
@@ -299,11 +300,10 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
   `O(n_shells^2)`.
 - **Batching.** One `kb` launch per (bra class, ket class), every block at
   once, as FelizJueves ships it; no split class.
-- **The rest of the reuse across SCF iterations.** The classes' scratch and
-  tables are allocated once per basis, but the per-call buffers outside them
-  are not: the rank tables, the AO centres, the shell starts and `G_max`
-  depend only on the basis and are recomputed per call anyway, and the decay
-  (four doubles) is per density.
+- **The rest of the reuse across SCF iterations.** All the scratch is
+  allocated once per basis, but the rank tables, the AO centres, the shell
+  starts and `G_max` depend only on the basis and are still recomputed per
+  call; only the decay is per density.
 - **`kb` is not measured against `kernel_k`.** Only the pruning above timed
   K at all; FelizJueves has not timed `kb` against `kernel_k` either (its
   `measure.sh kblock` run was refused by the card gate).

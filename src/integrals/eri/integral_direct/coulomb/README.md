@@ -72,7 +72,7 @@ What the kernels leave to the launcher, and how it is supplied:
 | `w` | 2 for a shell pair of two shells, 1 for a shell against itself (`off_a == off_b`, as `mmd` records it) | `mmd` stores each unique shell pair once; the sum over all `(c, d)` counts the others twice. A one-thread kernel in `dq/dq_launch.cu` writes it per build |
 | `Ip`, `Iq` | the bra's `bound` field (`mmd`'s) in record order, the ket's sorted copy (`ket_bound`) | The screen is `Dmax · Ip · Iq < tau` |
 | `tau` | `coulomb`'s, default `1e-10` | The screen `break`s on a lane's first ket under `tau`, which is right only for kets sorted descending by `Iq · Dmax`: so they are |
-| `row` | the record index | `jab` reads record `k`'s row of `J_p`; with one batch per class that row is `k`. `j_coulomb_rows` fills it |
+| `row` | the record index | `jab` reads record `k`'s row of `J_p`; with one batch per class that row is `k`. The class's `row`, written once by `coulomb_pair_classes` |
 | `J`, `J_p` | zeroed | Both are only added to |
 | the block | `e_hermite_block_dim`, `{1, FJ_WAVEFRONT}` | `e_hermite`'s shared `J_p` accumulator is sized for exactly that block |
 
@@ -80,12 +80,12 @@ What the kernels leave to the launcher, and how it is supplied:
 doubles for `D_q`, as many for the sorted `D_q` and as many for `J_p`, plus
 `2 n_rec` for `w` and `Dmax` and `10 n_rec` for the sort (its keys, its
 permutation, each with an alternate, and the six sorted per-record arrays),
+and `n_rec` `int32`s for `jab`'s row map (`row`, the identity, written once),
 all `CoulombPairClass` fields, allocated with its records on its own stream
 by `coulomb_pair_classes` ([`pair_class/`](pair_class/README.md)), once per
 basis. That is O(records), the order of the
-records themselves, and an SCF loop allocates nothing per build but the
-`max(n_rec)`-long `row`, from `res.device()`'s pool in `res.stream()`'s order;
-there is no host synchronization. The price is that a build writes its
+records themselves, and an SCF loop allocates nothing per build; there is no
+host synchronization. The price is that a build writes its
 classes: **one `coulomb` at a time per set of classes.** Builds queued on one
 stream are ordered by their forks and joins, so an SCF loop is fine; two
 builds over the same classes on two streams would race on the scratch.

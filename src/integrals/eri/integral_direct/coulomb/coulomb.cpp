@@ -34,16 +34,6 @@ namespace free_breakfast {
 Status coulomb_build(DeviceResources &res, const std::span<CoulombPairClass> classes,
                      const CartesianMatrixAO &density, CartesianMatrixAO &j, const double tau) {
   const wwr::wwrStream_t stream = res.stream();
-  // Drawn from res.device()'s pool in stream's order, so every class's fork
-  // from stream sees it allocated, and returned in its order at the end,
-  // after both phases' joins.
-  int32_t max_rec = 0;
-  for (const CoulombPairClass &cls : classes) {
-    max_rec = std::max(max_rec, cls.n_rec);
-  }
-  Buffers::device<int32_t> rows(static_cast<size_t>(max_rec), res.device());
-  const std::span<int32_t> row_map{rows.data(), static_cast<size_t>(max_rec)};
-  FBF_TRY(gpu_status(j_coulomb_rows(stream, row_map)));
   // e_hermite adds every ket class into J_p, from every class's stream, so it
   // is zeroed on stream, before the fork; the last build's last touch of it
   // (its jab, on the class's stream) was joined into stream.
@@ -80,8 +70,8 @@ Status coulomb_build(DeviceResources &res, const std::span<CoulombPairClass> cla
 
   // Every class as a bra, its J_p complete once the ket phase's join closed:
   // its scatter into J, on its own stream, reading the class in record order.
-  return gpu_status(launch_each(
-      classes, stream, [&](const CoulombPairClass &bra) { return j_coulomb(bra, row_map, j); }));
+  return gpu_status(
+      launch_each(classes, stream, [&](const CoulombPairClass &bra) { return j_coulomb(bra, j); }));
 }
 
 Status coulomb(DeviceResources &res, const std::span<CoulombPairClass> classes,

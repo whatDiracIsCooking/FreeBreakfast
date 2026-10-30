@@ -100,8 +100,7 @@ Status exchange_check(const DeviceResources &res, const std::span<OrderedPairCla
 Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> classes,
                       const CartesianMatrixAO &density, CartesianMatrixAO *k, const double tau,
                       const double sign, std::vector<double> *factors) {
-  const uint32_t n = density.n();
-  const auto n_ao = static_cast<int32_t>(n);
+  const auto n_ao = static_cast<int32_t>(density.n());
   const wwr::wwrStream_t stream = res.stream();
   // The basis's shells by momentum, which every class of the set carries, and
   // the classes by momenta. Every shell of momentum l pairs with itself, so
@@ -112,19 +111,23 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
   for (const OrderedPairClass &cls : classes) {
     by_momenta[static_cast<size_t>(cls.la)][static_cast<size_t>(cls.lb)] = &cls;
   }
-
-  // Drawn from res.device()'s pool in stream's order, so every class's fork
-  // from stream sees them allocated, and returned in its order at the end,
-  // after every phase's join. The rest of the scratch is the classes'.
-  Buffers::device<double> decay(device::kExchangeDecayFields, res.device());
-  Buffers::device<double> g_max(1, res.device());
-  Buffers::device<double> centre(size_t{3} * n, res.device());
-  Buffers::device<int32_t> starts(k != nullptr ? n : 1, res.device());
-  std::vector<Buffers::device<int32_t>> offsets;
-  offsets.reserve(kExchangeMomenta);
-  for (size_t l = 0; l < kExchangeMomenta; ++l) {
-    offsets.emplace_back(static_cast<size_t>(std::max(n_shells[l], 1)), res.device());
+  // The rank table of every momentum l the basis reaches, the class (l, l)'s,
+  // which that class writes and the classes of l read.
+  std::array<int32_t *, kExchangeMomenta> offsets{};
+  for (OrderedPairClass &cls : classes) {
+    if (cls.la == cls.lb) {
+      offsets[static_cast<size_t>(cls.la)] = cls.rank_offset.data();
+    }
   }
+
+  // The set's own scratch, its first class's, allocated with the set: written
+  // on stream and every class's stream between the forks and the joins, as
+  // the classes' own is.
+  OrderedPairClass &set = classes.front();
+  double *const decay = set.decay.data();
+  double *const g_max = set.g_max.data();
+  double *const centre = set.centre.data();
+  int32_t *const starts = set.shell_start.data();
   // launch_each hands each class over const; the build writes its scratch.
   const auto index_of = [&](const OrderedPairClass &cls) {
     return static_cast<size_t>(&cls - classes.data());
@@ -134,8 +137,8 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
   };
   // The decay's max|D|, and the largest record bound's zero, which every class
   // folds into.
-  FBF_TRY(gpu_status(device::exchange_density_max(stream, n_ao, density.data(), decay.data())));
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(g_max.data(), 0, sizeof(double), stream)));
+  FBF_TRY(gpu_status(device::exchange_density_max(stream, n_ao, density.data(), decay)));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(g_max, 0, sizeof(double), stream)));
 
   // Every class's largest bound into g_max; and from every class (l, l), its
   // momentum's rank-to-AO table and its AOs' centres. The gathers of every
@@ -144,13 +147,12 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
   FBF_TRY(gpu_status(launch_each(classes, stream, [&](const OrderedPairClass &cls) {
     const wwr::wwrStream_t s = cls.device_stream()->stream();
     const OrderedPairClassView v = cls.view();
-    if (const wwr::wwrError_t code =
-            device::exchange_bound_max(s, v.n_rec, v.record_bound, g_max.data());
+    if (const wwr::wwrError_t code = device::exchange_bound_max(s, v.n_rec, v.record_bound, g_max);
         code != wwr::wwrSuccess || cls.la != cls.lb) {
       return code;
     }
     if (const wwr::wwrError_t code =
-            device::exchange_rank_offsets(s, v, offsets[static_cast<size_t>(cls.la)].data());
+            device::exchange_rank_offsets(s, v, offsets[static_cast<size_t>(cls.la)]);
         code != wwr::wwrSuccess) {
       return code;
     }
@@ -158,19 +160,18 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
     const std::array pa{v.pa_x, v.pa_y, v.pa_z};
     return device::exchange_ao_centres(s, v.n_groups, v.group_start,
                                        exchange_cartesian_count(cls.la), v.off_a, p.data(),
-                                       pa.data(), n_ao, centre.data());
+                                       pa.data(), n_ao, centre);
   })));
   // The density's decay with distance, from the centres: with max|D|, what
   // every block's factor is made from.
-  FBF_TRY(gpu_status(
-      device::exchange_density_decay(stream, n_ao, density.data(), centre.data(), decay.data())));
+  FBF_TRY(gpu_status(device::exchange_density_decay(stream, n_ao, density.data(), centre, decay)));
   // The first AO of each AO's shell, from the tables, for the mirror at the
   // end.
   if (k != nullptr) {
     for (size_t l = 0; l < kExchangeMomenta; ++l) {
       if (n_shells[l] > 0) {
-        FBF_TRY(gpu_status(device::exchange_shell_starts(
-            stream, static_cast<int32_t>(l), n_shells[l], offsets[l].data(), starts.data())));
+        FBF_TRY(gpu_status(device::exchange_shell_starts(stream, static_cast<int32_t>(l),
+                                                         n_shells[l], offsets[l], starts)));
       }
     }
   }
@@ -183,9 +184,9 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
     const wwr::wwrStream_t s = c.device_stream()->stream();
     const auto lc = static_cast<size_t>(c.la);
     const auto ld = static_cast<size_t>(c.lb);
-    if (const wwr::wwrError_t code = device::exchange_gather_dcd(
-            s, c.la, c.lb, n_ao, density.data(), n_shells[lc], offsets[lc].data(), n_shells[ld],
-            offsets[ld].data(), c.dcd.data());
+    if (const wwr::wwrError_t code =
+            device::exchange_gather_dcd(s, c.la, c.lb, n_ao, density.data(), n_shells[lc],
+                                        offsets[lc], n_shells[ld], offsets[ld], c.dcd.data());
         code != wwr::wwrSuccess) {
       return code;
     }
@@ -194,8 +195,7 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
     const std::array pa{v.pa_x, v.pa_y, v.pa_z};
     const std::array pb{v.pb_x, v.pb_y, v.pb_z};
     return device::exchange_group_geometry(s, v.n_groups, v.group_start, v.record_bound, p.data(),
-                                           pa.data(), pb.data(), tau, g_max.data(), decay.data(),
-                                           c.geom.data());
+                                           pa.data(), pb.data(), tau, g_max, decay, c.geom.data());
   })));
 
   // Every class as a bra (a, c): for every ket class (b, d), its table's
@@ -223,7 +223,7 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
       const OrderedPairClassView w = ket.view();
       if (const wwr::wwrError_t code = device::exchange_factors(
               s, v.n_groups, v.group_start, v.off_a, bra.geom.data(), w.n_groups, w.group_start,
-              w.off_a, ket.geom.data(), decay.data(), count, factor);
+              w.off_a, ket.geom.data(), decay, count, factor);
           code != wwr::wwrSuccess) {
         return code;
       }
@@ -244,7 +244,7 @@ Status exchange_build(DeviceResources &res, const std::span<OrderedPairClass> cl
   // The sweep computed the a <= b blocks: after the join, every launch is in,
   // and the a > b blocks are their transposes, times the sign.
   if (k != nullptr) {
-    FBF_TRY(gpu_status(device::exchange_mirror(stream, n_ao, starts.data(), sign, k->data())));
+    FBF_TRY(gpu_status(device::exchange_mirror(stream, n_ao, starts, sign, k->data())));
   }
   // Every bra class's factors, in class order, read back after the join.
   if (factors != nullptr) {

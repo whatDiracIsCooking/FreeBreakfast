@@ -55,9 +55,12 @@ using free_breakfast::OrderedPairClassView;
 /// **The K build's scratch is the class's, not the build's** (as J's is
 /// @c CoulombPairClass's). What depends only on the basis is written once, by
 /// @ref ordered_pair_classes: as a bra, its Dcd rows per ld (@ref dc) and its
-/// kb block tables (@ref blocks). What depends on the density, @ref dcd,
-/// @ref geom and @ref factor, every @c exchange call rewrites. So an SCF loop
-/// allocates none of it per build, and the K build allows one @c exchange or
+/// kb block tables (@ref blocks). Every @c exchange call rewrites the rest:
+/// what depends on the density, @ref dcd, @ref geom and @ref factor, and the
+/// tables the build reads across classes, a class (l, l)'s @ref rank_offset
+/// and the set's own scratch, which its first class holds (@ref centre,
+/// @ref shell_start, @ref decay and @ref g_max). So an SCF loop allocates
+/// none of it per build, and the K build allows one @c exchange or
 /// @c exchange_block_factors at a time per set of classes: two builds over
 /// the same classes must be queued on one stream, which orders them.
 ///
@@ -168,6 +171,25 @@ struct OrderedPairClass {
   /// (exchange_factors), beside @ref blocks: one per block, the tables'
   /// factors back to back in the same order.
   StreamBuffers::device<double> factor;
+  /// @brief Scratch of a class (l, l), which names every shell of momentum l:
+  /// the first Cartesian AO of each of those shells, by rank, n_shells[l]
+  /// entries (exchange_rank_offsets). Empty in a class with la != lb.
+  StreamBuffers::device<int32_t> rank_offset;
+  /// @brief Scratch of the set's first class, the set's own: every AO's
+  /// centre, 3 x n_ao, x then y then z (exchange_ao_centres). Empty in every
+  /// other class.
+  StreamBuffers::device<double> centre;
+  /// @brief Scratch of the set's first class: the first AO of each AO's
+  /// shell, n_ao entries (exchange_shell_starts), for the mirror. Empty in
+  /// every other class.
+  StreamBuffers::device<int32_t> shell_start;
+  /// @brief Scratch of the set's first class: the density's decay,
+  /// kExchangeDecayFields doubles (max|D|, Λ, H_off). Empty in every other
+  /// class.
+  StreamBuffers::device<double> decay;
+  /// @brief Scratch of the set's first class: G_max, the largest record bound
+  /// over the set, one double. Empty in every other class.
+  StreamBuffers::device<double> g_max;
 
   /// @brief The class's own work stream (@ref work_stream), as mmd's classes
   /// name theirs, for the builds' fork and join.
@@ -227,7 +249,7 @@ struct OrderedPairClass {
 /// (@ref OrderedPairClass::e_bra); then, once every class is gathered, each class's Dcd rows and its block tables against
 /// every class. **kb's screen `break`s depend on that order**: an unsorted
 /// group is a wrong K, not a slow one. The K build's per-build scratch is
-/// allocated here too, and left unwritten.
+/// allocated here too, and left unwritten, the set's own on its first class.
 ///
 /// No host synchronization: each class's stream waits on an event recorded on
 /// its mmd class's stream, so it reads mmd's final records. A bra's tables

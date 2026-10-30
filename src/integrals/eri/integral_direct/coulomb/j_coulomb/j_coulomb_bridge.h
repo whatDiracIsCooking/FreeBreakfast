@@ -26,17 +26,11 @@
 
 namespace free_breakfast::device {
 
-/// @brief Fill @p rows[k] = k for k < @p n, on @p stream: jab's record-to-row
-/// map of J_p, the identity with one batch per class.
-///
-/// @return The launch status (wwrErrorInvalidValue if @p n is not positive).
-[[nodiscard]] wwr::wwrError_t j_coulomb_rows(wwr::wwrStream_t stream, int32_t n, int32_t *rows);
-
 /// @brief Add one bra class's back-transform of @p jp into the n_ao x n_ao
 /// matrix @p j, on @p stream: the generated jab<la, lb>, one thread per record.
 ///
 /// @p jp is complete (every ket class added, e_hermite_class); @p rows holds
-/// at least cls.n_rec entries, rows[k] = k (@ref j_coulomb_rows). Each value
+/// at least cls.n_rec entries, rows[k] = k (the class's row, coulomb_rows). Each value
 /// is atomically added at (m, n) and (n, m), a shell against itself writing
 /// its block's lower triangle and mirror once, so @p j must be zeroed before
 /// the first class and is symmetric after the last. The kernels index @p j as

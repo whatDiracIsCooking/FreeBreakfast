@@ -50,8 +50,7 @@ export namespace free_breakfast {
 /// forked from it once more at the end, succeeded or not, so nothing queued
 /// there later (a class's own frees) runs ahead of another class's stream
 /// still reading it. Writes the classes' scratch (@ref CoulombPairClass), so
-/// one call at a time per set of classes; it allocates only a max(n_rec) row
-/// map, from res.device()'s pool in res.stream()'s order. The device
+/// one call at a time per set of classes; it allocates nothing. The device
 /// res.dev_idx() names is made current for the call and the previous one
 /// restored.
 ///

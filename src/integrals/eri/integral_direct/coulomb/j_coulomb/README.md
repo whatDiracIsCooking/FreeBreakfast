@@ -11,12 +11,13 @@ scattered into the Coulomb matrix J.
 
 ## Design
 
-`j_coulomb(bra, rows, j)` launches the generated kernel on the bra class's own
+`j_coulomb(bra, j)` launches the generated kernel on the bra class's own
 stream, one thread per record, each adding its values at `(m, n)` and `(n, m)`
 with fp64 atomics, so J must be zeroed first and is symmetric after the last
 class. The class's `J_p` must be complete: every ket class's `e_hermite` has
-added to it. `rows` is the kernels' record-to-row map of `J_p`, the identity
-with one batch per class; `j_coulomb_rows` fills it.
+added to it. The kernels' record-to-row map of `J_p` is the class's own
+`row`, the identity with one batch per class, written once by
+`coulomb_pair_classes`.
 [`../README.md`](../README.md) has the build.
 
 It checks nothing: `coulomb` has checked J and the classes first.
@@ -38,8 +39,7 @@ unrolled.
 
 | Symbol | Role |
 |---|---|
-| `j_coulomb_rows(stream, rows)` | `wwrError_t`: `rows[k] = k`, on `stream` |
-| `j_coulomb(bra, rows, j)` | `wwrError_t`: the bra class's `jp` added into `j`, on its stream |
+| `j_coulomb(bra, j)` | `wwrError_t`: the bra class's `jp` added into `j`, on its stream |
 
 ## Tests
 

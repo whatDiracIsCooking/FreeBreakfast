@@ -89,6 +89,7 @@ coulomb_prune(DeviceResources &res, const std::span<const PrimitivePairClass> cl
         .bound = StreamBuffers::device<double>(n, ds),
         .off_a = StreamBuffers::device<int32_t>(n, ds),
         .off_b = StreamBuffers::device<int32_t>(n, ds),
+        .row = StreamBuffers::device<int32_t>(n, ds),
         .w = StreamBuffers::device<double>(n, ds),
         .dq = StreamBuffers::device<double>(n * n_hermite, ds),
         .dmax = StreamBuffers::device<double>(n, ds),
@@ -142,7 +143,12 @@ coulomb_prune(DeviceResources &res, const std::span<const PrimitivePairClass> cl
         code != wwr::wwrSuccess) {
       return code;
     }
-    return device::coulomb_prune_scatter(s, v.n_rec, d, v.off_b, to.off_b.data());
+    if (const wwr::wwrError_t code =
+            device::coulomb_prune_scatter(s, v.n_rec, d, v.off_b, to.off_b.data());
+        code != wwr::wwrSuccess) {
+      return code;
+    }
+    return device::coulomb_rows(s, to.n_rec, to.row.data());
   })));
   return out;
 }

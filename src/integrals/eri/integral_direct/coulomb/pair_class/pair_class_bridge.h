@@ -83,4 +83,12 @@ coulomb_prune_maxima(wwr::wwrStream_t stream, const PrimitivePairClassView &cls,
                                                     const int32_t *dest, const int32_t *from,
                                                     int32_t *to);
 
+/// @brief Fill @p rows[k] = k for k < @p n_rec, on @p stream: a class's
+/// CoulombPairClass::row, jab's record-to-row map of J_p, the identity with
+/// one batch per class.
+///
+/// @return The launch status (wwrErrorInvalidValue if @p n_rec is not
+///         positive).
+[[nodiscard]] wwr::wwrError_t coulomb_rows(wwr::wwrStream_t stream, int32_t n_rec, int32_t *rows);
+
 } // namespace free_breakfast::device
