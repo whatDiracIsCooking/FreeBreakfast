@@ -46,6 +46,7 @@ add_executable(
   ci_strings_host.cpp
   ci_sigma_host.cpp
   cis_ris_basis_host.cpp
+  geometry_host.cpp
   recipes_einsum_host.cpp
 )
 
@@ -68,6 +69,7 @@ target_link_libraries(
           free_breakfast::ci
           free_breakfast::test::ci_oracles
           free_breakfast::cis::ris_basis
+          free_breakfast::geometry
           free_breakfast::io
           free_breakfast::core::resources
           free_breakfast::recipes::einsum
