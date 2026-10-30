@@ -37,7 +37,7 @@ written `Spin= Alpha`, `Sym= A`.
 
 ## Tests
 
-`test/gtest/io_molden_host.cpp`.
+`test/io/molden_host.cpp`.
 
 ## Files
 

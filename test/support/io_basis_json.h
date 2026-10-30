@@ -1,6 +1,7 @@
 /// @file
-/// @brief The BSE JSON both io/basis test files read, io_basis_host.cpp and
-/// io_basis_gpu.cpp. Include it after `import std;`.
+/// @brief The BSE JSON the io/basis tests read -- test/io/basis_host.cpp and
+/// test/gtest/io_basis_gpu.cpp -- and the pipeline steps over it. Include it
+/// after `import std;`.
 
 #pragma once
 
