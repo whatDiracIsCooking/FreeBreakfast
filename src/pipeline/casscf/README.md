@@ -39,6 +39,7 @@ struct CasscfOutput {
   double gradient_norm;                    // ||g|| at c
   std::vector<double> vectors;             // root r at [r dim, (r + 1) dim)
   std::vector<double> rdm1;                // root r at [r ncas^2, (r + 1) ncas^2)
+  std::vector<double> rdm2;                // sum_r w_r Gamma_r, ncas^4 (t, u, v, w)
   std::vector<mcscf::Iteration> iterations; // one per macro iteration
 };
 

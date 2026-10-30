@@ -24,6 +24,7 @@ fci/        free_breakfast.pipeline.fci: FciStep -- FCI over every SCF orbital, 
 nevpt2/     free_breakfast.pipeline.nevpt2: Nevpt2Step -- SC- and PC-NEVPT2 per root of the CASSCF, over the density-fitted EriOutput only: each root's core and virtuals canonicalized over its own Fock, its RDMs, dm3 and f3, and the eight classes of each
 cis/        free_breakfast.pipeline.cis: CisStep -- CIS (TDA) singlet or triplet excitations over the SCF's RHF: davidson_solve over cis::Sigma, or cis::DfSigma under a density-fitted EriOutput, from cis::guess with cis::Preconditioner; a singlet's transition dipoles and oscillator strengths
 gradient/   free_breakfast.pipeline.gradient: GradientStep -- the closed-shell RHF nuclear gradient at the SCF's orbitals, gradient::df_rhf over a density-fitted EriOutput's B, L and aux basis or gradient::rhf over an integral-direct one, every term of it, written as gradient.json
+casscf_gradient/  free_breakfast.pipeline.casscf_gradient: CasscfGradientStep -- the DF-CASSCF nuclear gradient of one root of the CASSCF, mcscf::df_gradient over the density-fitted EriOutput's B, L and aux basis only, every term of it, written as casscf_gradient.json
 optimize/   free_breakfast.pipeline.optimize: OptimizeStep -- an RHF geometry optimization over either ERI kind, geometry::optimize over the chain from the molecule to the gradient, rerun as a nested Pipeline at every geometry; the config then loads the molecule from its final.xyz, so every other step runs at the optimum
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 ```
@@ -42,14 +43,16 @@ aux_basis = "cc-pvdz-jkfit"   # optional: <basis>-acCD-6-6 when carried
 ```
 
 `EriStep` builds them once, B or the J and K pair classes, and `[scf]`,
-`[casscf]`, `[nevpt2]`, `[cis]` and `[gradient]` all read that one `EriOutput`
+`[casscf]`, `[nevpt2]`, `[cis]`, `[gradient]` and `[casscf_gradient]` all read
+that one `EriOutput`
 (`[optimize]` reruns its own copy of `[eri]` at every geometry): `[scf]`
 fits its Fock build, `[casscf]` runs `mcscf::DensityFitting::Full`, the
 DF-CASSCF, `[nevpt2]` its MO blocks and Fock over the same B, and `[cis]`
 its sigma over B's MO blocks (`cis::DfSigma`), and `[gradient]` the DF-RHF
 gradient over B, L and the aux basis the product keeps (under integral-direct
-ERIs, the exact RHF gradient). `[nevpt2]` runs over density fitting only, and
-is `Unsupported` under an integral-direct `[eri]`. A missing
+ERIs, the exact RHF gradient), and `[casscf_gradient]` the DF-CASSCF
+gradient over the same three. `[nevpt2]` and `[casscf_gradient]` run over
+density fitting only, and are `Unsupported` under an integral-direct `[eri]`. A missing
 `[eri]` is filled in, integral-direct. The rules and refusals are
 `config/README.md`'s; what the CASSCF's scratch costs past B, and the memory
 check before its loop, `casscf/README.md`'s.

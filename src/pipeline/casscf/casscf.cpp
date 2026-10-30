@@ -257,6 +257,7 @@ CasscfStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, E
       .gradient_norm = sol.gradient_norm,
       .vectors = std::move(vectors),
       .rdm1 = std::move(sol.root_gammas),
+      .rdm2 = std::move(sol.gamma2),
       .iterations = std::move(sol.iterations),
   };
 }

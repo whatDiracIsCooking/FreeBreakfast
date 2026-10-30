@@ -58,6 +58,10 @@ struct CasscfOutput {
   /// @brief The spin-summed 1-RDM per root over the active orbitals, root r
   /// at [r ncas^2, (r + 1) ncas^2), ncas x ncas (symmetric).
   std::vector<double> rdm1;
+  /// @brief The weighted spin-summed 2-RDM over the active orbitals, sum_r
+  /// w_r Gamma_r, ncas^4 row-major (t, u, v, w): @c ci::Rdm::rdm12's layout,
+  /// the Gamma the energy is, and the casscf_gradient step's.
+  std::vector<double> rdm2;
   /// @brief One entry per macro iteration run, rejected ones included.
   std::vector<mcscf::Iteration> iterations;
 };
