@@ -5,7 +5,10 @@
 // minimum to 1e-4 Angstrom after alignment and its energy to 1e-8 Eh; the
 // reference optimizer was Newton's, so the path is not compared, only that it
 // is short. H2O also carries a [localization], which must run at the optimum,
-// and runs again over integral-direct ERIs, held to convergence.
+// and runs again over integral-direct ERIs, held to convergence. Then the
+// CASSCF chain: H2O's state-specific DF-CASSCF(4,4) from an off-symmetry
+// start to PySCF's minimum (data/casscf_gradient/casscf_optimize.json) to
+// 1e-4 bohr, and its integral-direct refusal.
 
 #include <gtest/gtest.h>
 
@@ -300,6 +303,118 @@ TEST(PipelineOptimize, WaterConvergesOverIntegralDirectEris) {
                            "E {:.10f}, {:.1f} s\n",
                            iterations.size() - 1, max_force,
                            calc->get<fb::OptimizeOutput>()->energy, seconds);
+}
+
+// The CASSCF chain's reference: PySCF's DF-CASSCF minimum of H2O.
+const fb::json &casscf_reference() {
+  static const fb::json kDoc = [] {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_gradient" /
+                              "casscf_optimize.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  return kDoc.at("cases").at(0);
+}
+
+// #546's bar, in bohr.
+constexpr double kCasscfGeometryToleranceBohr = 1e-4;
+// The gradient is the CASSCF energy's only as far as the CASSCF converged
+// (pipeline_casscf_gradient_gpu.cpp's 1e-9).
+constexpr std::string_view kCasscf = "conv_tol_grad = 1e-9\n";
+// Evaluations after the first; PySCF's optimizer was Newton's, so only the
+// path's length is held.
+constexpr std::size_t kCasscfMaxSteps = 15;
+
+// H2O's DF-CASSCF(4,4) over its sigma O-H orbitals, from the reference's
+// off-symmetry start, optimized at Opt=Tight's thresholds. The CASSCF picks
+// its active space once, at the start, and carries its orbitals from each
+// geometry to the next; the optimum is PySCF's to 1e-4 bohr and its energy
+// to 1e-8 Eh, and the outer [casscf_gradient], run again at the optimum from
+// a fresh SCF and pick, finds the same root there. About 2 s, inside the fast
+// tier.
+TEST(PipelineOptimize, WaterCasscfReachesThePyscfMinimum) {
+  FBF_REQUIRE_GPU();
+  const fb::json &expected = casscf_reference();
+  const fb::test::ScratchDir dir("pipeline_optimize_casscf");
+  std::string xyz = std::format("{}\nstart\n", expected.at("start").size());
+  for (const fb::json &atom : expected.at("start")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  ASSERT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  std::string active;
+  for (const auto t : expected.at("active").get<std::vector<std::int32_t>>()) {
+    active += std::format("{}{}", active.empty() ? "" : ", ", t);
+  }
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
+                  "[casscf]\nncas = {}\nnelecas = {}\nactive = [{}]\n{}[casscf_gradient]\n{}",
+                  expected.at("basis").get<std::string>(),
+                  expected.at("aux_basis").at("name").get<std::string>(), kScf,
+                  expected.at("ncas").get<std::int32_t>(),
+                  expected.at("nelecas").get<std::int32_t>(), active, kCasscf, kOptimize);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->casscf_gradient.has_value());
+  fb::NodeResources node;
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+  const double energy_error = std::abs(out->energy - expected.at("energy").get<double>());
+  EXPECT_LE(energy_error, kEnergyTolerance);
+  const double geometry_error =
+      aligned_max_deviation(points(expected.at("atoms")), points(out->molecule));
+  EXPECT_LE(geometry_error, kCasscfGeometryToleranceBohr);
+
+  // The history and the trajectory report the CASSCF root's energy.
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_GE(iterations.size(), 1U);
+  EXPECT_LT(iterations.size() - 1, kCasscfMaxSteps);
+  EXPECT_EQ(history->at("energy").get<double>(), out->energy);
+  EXPECT_NEAR(iterations.front().at("energy").get<double>(),
+              expected.at("start_energy").get<double>(), kEnergyTolerance);
+  const auto trajectory = fb::read_file(dir / "out" / "optimize.xyz");
+  ASSERT_TRUE(trajectory.has_value());
+  EXPECT_EQ(static_cast<std::size_t>(std::ranges::count(*trajectory, '\n')),
+            iterations.size() * (2 + expected.at("atoms").size()));
+
+  // The outer CASSCF, from a fresh SCF at the optimum, is the same root.
+  const auto &cas = calc->get<fb::CasscfOutput>();
+  ASSERT_TRUE(cas.has_value()) << cas.error().message;
+  EXPECT_NEAR(cas->energies.at(0), out->energy, kEnergyTolerance);
+  EXPECT_TRUE(std::filesystem::exists(dir / "out" / "casscf_gradient.json"));
+
+  std::cout << std::format("[ optimize ] h2o_ccpvdz CASSCF(4,4): {} steps, |dE| {:.2e} Eh, "
+                           "geometry {:.2e} bohr, {:.1f} s\n",
+                           iterations.size() - 1, energy_error, geometry_error, seconds);
+}
+
+// A hand-built CASSCF chain over integral-direct ERIs is refused by the step
+// before any SCF or CASSCF runs, as pipeline/config refuses it.
+TEST(PipelineOptimize, ACasscfChainOverIntegralDirectErisIsUnsupported) {
+  FBF_REQUIRE_GPU();
+  fb::OptimizeStep step;
+  step.casscf_gradient.emplace();
+  step.eri.mode = fb::EriMode::IntegralDirect;
+  fb::NodeResources node;
+  const auto out = step.run(fb::View<>{}, node);
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().kind, fb::ErrorKind::Unsupported) << out.error().message;
+  EXPECT_NE(out.error().message.find("density fitting only"), std::string::npos)
+      << out.error().message;
 }
 
 } // namespace

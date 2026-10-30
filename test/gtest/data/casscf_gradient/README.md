@@ -119,3 +119,28 @@ About 3 minutes. BLAS and OpenMP run at one thread and no date or host is
 written, so a rerun on the same PySCF and numpy rewrites the file byte for
 byte. `test/pytest/test_casscf_gradient_reference.py` checks the invariants
 with the standard library alone.
+
+## `casscf_optimize.json`
+
+Written by `tools/emit/casscf_optimize_reference.py`, never hand-edited: the
+reference minimum of the `[optimize]` CASSCF chain's GPU case (#546). One
+case, `h2o_ccpvdz`: H₂O in cc-pVDZ over `cc-pVDZ-JKFIT`, the state-specific
+CAS(4,4) over `active` [2, 3, 5, 6], from `h2o_skew_ccpvdz`'s off-symmetry
+geometry (`start`, with `start_energy`) to PySCF's DF-CASSCF minimum (`atoms`,
+bohr, and `energy`).
+
+geomeTRIC is not in the tools environment, so the minimum is **Newton's
+method over `df.grad.casscf`**, its Hessian a central difference of that
+gradient (step 1e-3 bohr) recomputed every step, rigid translations and
+rotations projected out, converged to max |dE/dR| < 1e-7 hartree/bohr
+(`max_force`, `newton_steps`, `optimizer`). Each energy and gradient is the
+CASSCF built as above, polished to |g| < 1e-10 and differentiated at the
+polished orbitals; every geometry after the start carries the previous one's
+orbitals, Loewdin-orthonormalized in the new overlap. At the minimum the
+CASSCF is rerun from a fresh RHF and `sort_mo`, and must reach the same energy
+to 1e-9 (`fresh_start_energy`).
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/emit/casscf_optimize_reference.py
+```

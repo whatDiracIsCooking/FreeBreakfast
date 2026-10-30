@@ -807,6 +807,66 @@ TEST(PipelineConfig, AMalformedOptimizeTableIsInvalidConfig) {
   expect_config_error("[basis_set]\nbasis = \"b.json\"\n[optimize]\n", "[molecule] needs 'xyz'");
 }
 
+// With a [casscf_gradient], [optimize]'s chain ends in [casscf] and it, both
+// copied in from their tables as the RHF chain's are; without one it stays
+// the RHF's, and the CASSCF members are left at their defaults.
+TEST(PipelineConfig, TheOptimizeStepCopiesACasscfChain) {
+  auto calc = fb::parse_config(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n[scf]\nenergy_tolerance = 1e-12\n"
+                  "[casscf]\nncas = 4\nnelecas = 4\nactive = [2, 3, 5, 6]\nconv_tol_grad = 1e-9\n"
+                  "[casscf_gradient]\nroot = 0\n[optimize]\nmax_force = 1e-5\n"),
+      "/in", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::OptimizeStep &optimize = *calc->step<fb::OptimizeStep>();
+  EXPECT_EQ(optimize.options.max_force, 1e-5);
+  EXPECT_EQ(optimize.eri.mode, fb::EriMode::DensityFitting);
+  EXPECT_EQ(optimize.scf.energy_tolerance, 1e-12);
+  EXPECT_EQ(optimize.casscf.ncas, 4);
+  EXPECT_EQ(optimize.casscf.nelecas, 4);
+  EXPECT_EQ(optimize.casscf.active, (std::vector<std::int32_t>{2, 3, 5, 6}));
+  EXPECT_EQ(optimize.casscf.conv_tol_grad, 1e-9);
+  ASSERT_TRUE(optimize.casscf_gradient.has_value());
+  EXPECT_EQ(optimize.casscf_gradient->root, 0);
+  // The outer steps run once more at the optimum, the molecule loaded from
+  // final.xyz.
+  EXPECT_TRUE(calc->step<fb::CasscfGradientStep>().has_value());
+  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+
+  auto rhf =
+      fb::parse_config(with_inputs("[casscf]\nncas = 4\nnelecas = 4\n[optimize]\n"), "", kOut);
+  ASSERT_TRUE(rhf.has_value()) << rhf.error().message;
+  EXPECT_FALSE(rhf->step<fb::OptimizeStep>()->casscf_gradient.has_value());
+  EXPECT_EQ(rhf->step<fb::OptimizeStep>()->casscf.ncas, fb::CasscfStep{}.ncas);
+}
+
+TEST(PipelineConfig, AMalformedCasscfOptimizeChainIsRefused) {
+  constexpr std::string_view kFitted = "[eri]\nmode = \"density_fitting\"\n";
+  // The chain's [casscf] is read from an empty table when the config has
+  // none, which names no space.
+  expect_config_error(with_inputs(std::format("{}[casscf_gradient]\n[optimize]\n", kFitted)),
+                      "[casscf] needs 'ncas'");
+  // One energy is optimized, the SCF's or the CASSCF root's.
+  expect_config_error(
+      with_inputs(std::format("{}[casscf]\nncas = 4\nnelecas = 4\n[casscf_gradient]\n"
+                              "[gradient]\n[optimize]\n",
+                              kFitted)),
+      "[optimize] optimizes the energy of [gradient] or of [casscf_gradient]");
+  // An integral-direct [eri], written or filled in, is [casscf_gradient]'s
+  // refusal, made before anything runs.
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    const auto calc = fb::parse_config(
+        with_inputs(std::format("[casscf]\nncas = 4\nnelecas = 4\n{}[casscf_gradient]\n"
+                                "[optimize]\n",
+                                eri)),
+        "", kOut);
+    ASSERT_FALSE(calc.has_value()) << eri;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find("[casscf_gradient] runs over density fitting only"),
+              std::string::npos)
+        << calc.error().message;
+  }
+}
+
 TEST(PipelineConfig, TheMoleculeIsLoadedOnlyAfterAnOptimize) {
   expect_config_error("[molecule]\nfrom = \"final.xyz\"\n",
                       "[molecule] cannot be loaded 'from' a file");

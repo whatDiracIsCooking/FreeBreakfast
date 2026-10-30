@@ -519,7 +519,10 @@ template <class S>
 /// it (an empty one if the config has none), and plan the molecule as loaded
 /// from the final.xyz it writes, so every step reading the molecule runs at
 /// the optimum. A chain table that loads its product 'from' a file is
-/// refused: the chain is rerun at every geometry.
+/// refused: the chain is rerun at every geometry. With a `[casscf_gradient]`
+/// in @p doc the chain ends in `[casscf]` and it, both copied in too; beside
+/// a `[gradient]` that is refused, since the optimized energy is one or the
+/// other's.
 [[nodiscard]] Status plan_optimize(std::vector<Calculation::Step> &steps, const toml::table &doc,
                                    const std::filesystem::path &input_dir,
                                    const std::filesystem::path &output_dir) {
@@ -545,6 +548,15 @@ template <class S>
   FBF_TRY(chain(step.orthogonalizer));
   FBF_TRY(chain(step.guess));
   FBF_TRY(chain(step.scf));
+  if (doc.contains(CasscfGradientStep::kName)) {
+    if (doc.contains(GradientStep::kName)) {
+      return err_config("[{}] optimizes the energy of [{}] or of [{}], and the config names both: "
+                        "keep the one to optimize",
+                        OptimizeStep::kName, GradientStep::kName, CasscfGradientStep::kName);
+    }
+    FBF_TRY(chain(step.casscf));
+    FBF_TRY(chain(step.casscf_gradient.emplace()));
+  }
   Calculation::Step load{Load<MoleculeStep>{step.final_xyz}};
   const auto molecule = std::ranges::find_if(
       steps, [](const Calculation::Step &s) { return std::holds_alternative<MoleculeStep>(s); });

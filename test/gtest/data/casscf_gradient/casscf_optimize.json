@@ -1,0 +1,94 @@
+{
+ "description": "PySCF's state-specific DF-CASSCF minimum (df.grad.casscf by Newton's method) over this tree's data/basis and data/aux_basis files, from an off-symmetry start. Hartree, bohr",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "numpy": "2.5.4",
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casscf_optimize_reference.py",
+  "threads": 1
+ },
+ "cases": [
+  {
+   "name": "h2o_ccpvdz",
+   "basis": "cc-pvdz",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 116
+   },
+   "charge": 0,
+   "ncas": 4,
+   "nelecas": 4,
+   "active": [
+    2,
+    3,
+    5,
+    6
+   ],
+   "start": [
+    {
+     "symbol": "O",
+     "z": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      1.43,
+      0.21,
+      -1.07
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      -1.38,
+      0.35,
+      -1.12
+     ]
+    }
+   ],
+   "start_energy": -76.07782489318734,
+   "atoms": [
+    {
+     "symbol": "O",
+     "z": 8,
+     "coord": [
+      -0.005087090048584093,
+      -0.004019084697840853,
+      0.016550902392333904
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      1.4463223980258415,
+      0.21179487733979502,
+      -1.079868026663744
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      -1.3912353079772577,
+      0.35222420735804577,
+      -1.1266828757285898
+     ]
+    }
+   ],
+   "energy": -76.07822285478747,
+   "max_force": 4.2953196555117756e-11,
+   "fresh_start_energy": -76.07822285478727,
+   "newton_steps": 3,
+   "optimizer": "Newton's method over PySCF's analytic DF-CASSCF gradient (df.grad.casscf), the Hessian a central difference of it (step 0.001 bohr) recomputed every step, rigid translations and rotations projected out, steps capped at 0.3 bohr per coordinate; converged to max |dE/dR| < 1e-07. geomeTRIC is not in the tools environment"
+  }
+ ]
+}
