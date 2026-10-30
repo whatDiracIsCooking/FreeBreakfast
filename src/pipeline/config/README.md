@@ -15,7 +15,7 @@ using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, EriStep, OverlapStep,
                              OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
                              LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step,
-                             CisStep>;
+                             CisStep, GradientStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
                                  const std::filesystem::path &output_dir);
@@ -206,6 +206,19 @@ its own two RIS bases. `method` picks the operator and `ris` the
 preconditioner, independently: `method = "ris"` beside `ris = true` is the
 RIS-J correction over the TDA-ris operator, and is not refused.
 
+```toml
+[gradient]                # no options
+```
+
+`[gradient]` is the RHF nuclear gradient at the SCF's orbitals
+(`gradient/README.md`), written to `gradient.json`. It takes no keys. It is
+the SCF energy's gradient only as far as the SCF converged, so a config that
+wants it to 1e-8 tightens `[scf]` (`energy_tolerance = 1e-12`,
+`commutator_tolerance = 1e-10`). Whether the ERIs and the SCF are ones it
+takes is the step's to say when it runs: an integral-direct `[eri]` (the
+filled-in default) and an ROHF SCF are each `Unsupported` there, naming the
+reason.
+
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
@@ -257,13 +270,14 @@ step, so no two collide:
 | `[localization]` with `livvo = true` | `localization_livvo.molden`: the LIVVOs, at 0 |
 | `[casci]` | `casci.molden`: the lowest root's natural orbitals |
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
+| `[gradient]` | `gradient.json`: the SCF energy, the gradient `total` and each of its `terms` (hartree / bohr, one row of three per atom) |
 
-There is no `molden` key, nor a `livvo_molden` or `npy` one: a config names
+There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
 no output, so a later config can rely on what an earlier run wrote.
 `write_npy` is a switch, off by default, not a path. A file already there is
 overwritten; a directory per run is what `-o` is for. The steps keep their
 `molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
-`npy`), empty meaning not written, for a pipeline built by hand.
+`npy`, `GradientStep` its `json_path`), empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
 comparing the directories named rather than their spelling (`.`, `''` and the

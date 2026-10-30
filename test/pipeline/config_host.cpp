@@ -705,6 +705,19 @@ TEST(PipelineConfig, AMalformedFciTableIsInvalidConfig) {
   expect_config_error(with_inputs("[fci]\nnroots = 1.5\n"), "[fci] nroots");
 }
 
+// [gradient] has no options: it writes gradient.json into the output
+// directory, and fills in the ERIs and the SCF it reads. Whether those are
+// ones it takes is the step's to say when it runs.
+TEST(PipelineConfig, TheGradientStepWritesItsJsonAndFillsInTheScf) {
+  auto calc = fb::parse_config(with_inputs("[gradient]\n"), "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  EXPECT_EQ(calc->step<fb::GradientStep>()->json_path, kOut / "gradient.json");
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::EriStep>().has_value());
+  expect_config_error(with_inputs("[gradient]\nterms = true\n"),
+                      "[gradient] has no option 'terms'");
+}
+
 TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
   auto calc = fb::parse_config(with_inputs("[cis]\nn_states = 3\nspin = \"triplet\"\n"
                                            "residual_tolerance = 1e-8\nmax_iterations = 50\n"

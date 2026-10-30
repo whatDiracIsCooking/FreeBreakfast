@@ -143,7 +143,16 @@ std::optional<DfRhf> run_df_rhf(fb::DeviceResources &res, std::vector<fb::Atom> 
     ADD_FAILURE() << s.error().message;
     return std::nullopt;
   }
-  fb::EriOutput eri{fb::DensityFitted{.b = std::move(b), .naux = static_cast<std::int32_t>(naux)}};
+  // The product's own copy of L and the aux basis, as the Eri step keeps
+  // them; the gradient below reads the metric's.
+  fb::Buffers::device<double> l(naux * naux, res.device());
+  if (wwr::wwrMemcpyAsync(l.data(), metric.spherical().data(), sizeof(double) * naux * naux,
+                          wwr::wwrMemcpyDeviceToDevice, res.stream()) != wwr::wwrSuccess) {
+    ADD_FAILURE() << "copying L failed";
+    return std::nullopt;
+  }
+  fb::EriOutput eri{fb::DensityFitted{
+      .b = std::move(b), .naux = static_cast<std::int32_t>(naux), .aux = *aux, .l = std::move(l)}};
 
   auto overlap = fb::OverlapStep{}.run(
       fb::View<fb::BasisSetOutput, fb::SphericalTransformOutput, fb::PrimitivePairClassesOutput>{

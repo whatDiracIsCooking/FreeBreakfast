@@ -126,6 +126,13 @@ void print_products(const fb::Calculation &calc) {
                    out->states[r].excitation_energy);
     }
   }
+  if (const auto &out = calc.get<fb::GradientOutput>()) {
+    const std::vector<double> &g = out->gradient.total;
+    for (std::size_t a = 0; a + 2 < g.size(); a += 3) {
+      std::println("gradient atom {}:   {:16.10f} {:16.10f} {:16.10f} Ha/bohr", a / 3, g[a],
+                   g[a + 1], g[a + 2]);
+    }
+  }
 }
 
 fb::Status run(std::span<char *const> args) {

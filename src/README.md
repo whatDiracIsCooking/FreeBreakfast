@@ -22,7 +22,7 @@ nevpt2/    SC- and PC-NEVPT2 on the GPU: the density-fitted MO blocks and the ex
 cis/       CIS (TDA) excitations on the GPU: the sigma, integral-direct or density-fitted over B's MO blocks, the orbital-energy diagonal, the unit-vector Davidson guess on its lowest entries, and the r / (θ − Δε) preconditioner
 geometry/  A Cartesian quasi-Newton minimizer on the host: BFGS under a trust radius over a caller's energy and gradient, with the rigid-body motions projected out
 gradient/  Analytic nuclear gradients on the GPU: the closed-shell DF-RHF one, each of its terms separately (one-electron, energy-weighted density, DF-J, DF-K, nuclear repulsion)
-pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the ERIs (integral-direct or density-fitted, once per pipeline), the RHF SCF, Pipek-Mezey and IBO localization, CASCI, FCI, state-averaged CASSCF and SC- and PC-NEVPT2 over it, CIS excitations, and Pipeline<Steps...>, which plans and runs them
+pipeline/  The calculation pipeline: the step contract, the setup steps (molecule through H, and the SAD guess), the ERIs (integral-direct or density-fitted, once per pipeline), the RHF SCF, Pipek-Mezey and IBO localization, CASCI, FCI, state-averaged CASSCF and SC- and PC-NEVPT2 over it, CIS excitations, the DF-RHF nuclear gradient, and Pipeline<Steps...>, which plans and runs them
 main.cpp   The free-breakfast executable: a TOML config planned and run as a pipeline, and the one Error -> exit-code boundary
 ```
 

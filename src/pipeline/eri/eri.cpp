@@ -1,13 +1,14 @@
 /// @file
 /// @brief EriStep: J's and K's pair classes; or the aux basis placed, then
-/// metric, three_center and density_fit, in that order, on res.stream().
+/// metric, three_center and density_fit, in that order, on res.stream(),
+/// the aux basis and L kept with B.
 
 module free_breakfast.pipeline.eri;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // wwrMemGetInfo, gpu_status
+import free_breakfast.core.wwr; // wwrMemGetInfo, wwrMemcpyAsync, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.io.basis;
 import free_breakfast.recipes.matrix_ao;
@@ -43,21 +44,20 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
   // Placed as the orbital basis is: the fitting sets' coefficients are for
   // normalized primitives too.
   const BasisStamp stamp = FBF_TRY(resolve_aux_basis(spec));
-  const BasisSet aux =
-      FBF_TRY(place(stamp.primitive_normalized(), in.get<MoleculeOutput>().molecule));
+  BasisSet aux = FBF_TRY(place(stamp.primitive_normalized(), in.get<MoleculeOutput>().molecule));
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
 
   // B is the largest thing DF holds, and past the device's memory its
   // allocation would abort (CreatePolicy), not return; three_center then
-  // counts its own scratch against what B leaves.
-  const size_t b_bytes = sizeof(double) * naux * nao * nao;
+  // counts its own scratch against what B and L leave.
+  const size_t b_bytes = sizeof(double) * naux * (nao * nao + naux);
   size_t free_bytes = 0;
   size_t total_bytes = 0;
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
   if (b_bytes > free_bytes) {
-    return err_unsupported("eri: B over {} orbital and {} fitting functions needs {} bytes of "
-                           "device memory, and device {} has {} free",
+    return err_unsupported("eri: B and L over {} orbital and {} fitting functions need {} bytes "
+                           "of device memory, and device {} has {} free",
                            nao, naux, b_bytes, res.dev_idx(), free_bytes);
   }
 
@@ -65,11 +65,19 @@ density_fitted(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> 
   FBF_TRY(metric(res, aux, m));
   Buffers::device<double> b(naux * nao * nao, res.device());
   FBF_TRY(three_center(res, basis, in.get<PrimitivePairClassesOutput>().classes, aux, b.data()));
-  // L overwrites the metric, which is freed at return, stream-ordered after
-  // the trsm that reads it.
-  FBF_TRY(density_fit(res, static_cast<int32_t>(nao), static_cast<int32_t>(naux),
-                      m.spherical().data(), b.data()));
-  return DensityFitted{.b = std::move(b), .naux = static_cast<int32_t>(naux)};
+  // The spherical metric copied into L's own buffer, which density_fit
+  // factors in place and the product keeps; the pair is freed at return,
+  // stream-ordered after the copy.
+  Buffers::device<double> l(naux * naux, res.device());
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(l.data(), m.spherical().data(), sizeof(double) * naux * naux,
+                                     wwr::wwrMemcpyDeviceToDevice, res.stream())));
+  FBF_TRY(
+      density_fit(res, static_cast<int32_t>(nao), static_cast<int32_t>(naux), l.data(), b.data()));
+  return DensityFitted{.b = std::move(b),
+                       .naux = static_cast<int32_t>(naux),
+                       .aux = std::move(aux),
+                       .l = std::move(l)};
 }
 
 Result<EriOutput> EriStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput> in,
