@@ -24,8 +24,10 @@
 # and names neither). Keep the target names in step if you rename them.
 #
 # The src/core tests are not here: test/core builds them as their own pair,
-# free_breakfast_core_tests_{host,gpu}. Nor are the src/pipeline cases that
-# need no device: test/pipeline builds them as
+# free_breakfast_core_tests_{host,gpu}. Nor are the host-only src/io tests:
+# test/io builds them as free_breakfast_io_tests_host. The io cases that need a
+# device (io_basis_gpu.cpp, io_xyz_gpu.cpp) are still here. Nor are the
+# src/pipeline cases that need no device: test/pipeline builds them as
 # free_breakfast_pipeline_tests_host. The ones that run a real step need a GPU,
 # and are here.
 include(GoogleTest)
@@ -43,13 +45,6 @@ add_executable(
   ci_strings_host.cpp
   ci_sigma_host.cpp
   cis_ris_basis_host.cpp
-  io_base_host.cpp
-  io_basis_host.cpp
-  io_json_host.cpp
-  io_molden_host.cpp
-  io_npy_host.cpp
-  io_sad_host.cpp
-  io_toml_host.cpp
   recipes_einsum_host.cpp
 )
 
@@ -259,7 +254,7 @@ endforeach()
 # The trade is that ctest shells out once per binary before the run to
 # enumerate. That is milliseconds, and it buys per-case reporting and -R.
 # Each entry's TIMEOUT is _fb_test_timeout, set in test/CMakeLists.txt so this
-# tree, test/core and test/pipeline share one value.
+# tree, test/core, test/io and test/pipeline share one value.
 
 gtest_discover_tests(
   free_breakfast_tests_host

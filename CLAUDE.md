@@ -204,7 +204,7 @@ The Guess step takes a stamp only for a basis whose `BasisSet::name()` is set,
 and only `resolve_basis`'s compiled-in branch sets it. A path-read basis
 computes every element, even if its document claims a carried name. **Changing
 `data/basis/` or the atomic SCF means regenerating `data/sad/`**; the bitwise
-check in `test/gtest/io_sad_host.cpp` fails until you do. The commands are in
+check in `test/io/sad_host.cpp` fails until you do. The commands are in
 `data/sad/README.md`.
 
 ## The two languages, and what verifies which
@@ -212,7 +212,7 @@ check in `test/gtest/io_sad_host.cpp` fails until you do. The commands are in
 | | C++ | Python |
 |---|---|---|
 | Source | `src/`, `cmake/`, `deps/` (+ opt-in `bench/`, `experimental/`) | `test/pytest/`, `devtools/hooks/*.py`, `tools/` |
-| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/pipeline/` (the `src/pipeline` tests that need no device, a host binary), run by ctest | `test/pytest/`, run by pytest |
+| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/io/` (the host-only `src/io` tests) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/cpp-tier.sh`, `cpp-slow-tier.sh` | `pytest`, `devtools/slow-tier.sh` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
 | Gated by | `cmake-lint` + format check at commit, `cpp-smoke.sh` at push; on the server **format + cmake-lint only, no build or test** | pre-push hook + CI |
@@ -411,7 +411,7 @@ hook: a full ladder is minutes of compiler time, the slow tier's budget.
   `(n + b - 1) / b`. `src/core/README.md` lists each directory's names, and
   `docs/style.md` "Launch shape and integer rounding" has the rule.
 - **No anonymous namespaces, no `detail` namespaces** — except anonymous
-  namespaces in `.cu`, `test/gtest/*.cpp`, `test/core/*.cpp`, `test/pipeline/*.cpp` and the `main.cpp` of `src/` and
+  namespaces in `.cu`, `test/gtest/*.cpp`, `test/core/*.cpp`, `test/io/*.cpp`, `test/pipeline/*.cpp` and the `main.cpp` of `src/` and
   `tools/*/`, which are not module units. In a
   module, not exporting *is* the privacy; module-private code shared between
   units goes in a partition. `docs/style.md` "Module-private code" says which

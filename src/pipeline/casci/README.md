@@ -134,7 +134,7 @@ iterations, but no block of 2 to 5 roots within its 100. Compared as above, with
 nelecas equal to PySCF's; the orbital checks are the index path's, and the
 ROHF AVAS cases' below. The
 reference refuses a case with a weight within 1e-3 of the threshold. With
-`molden`, H₂O's natural orbitals read back as `io_molden_host.cpp` reads a
+`molden`, H₂O's natural orbitals read back as `test/io/molden_host.cpp` reads a
 file: every orbital written, at occupation 2, PySCF's natural occupations,
 then 0.
 

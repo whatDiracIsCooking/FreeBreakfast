@@ -2,7 +2,7 @@
 // AtomSphAverageRHF density (data/sad/atomic_scf.json, written by
 // tools/emit/sad_reference.py), the block-diagonal assembly, the task form
 // against the serial one, a SadStampLookup standing in for an SCF, and the
-// refusals. The compiled-in stamps themselves are io_sad_host.cpp's. The guess over a basis placed on a
+// refusals. The compiled-in stamps themselves are test/io/sad_host.cpp's. The guess over a basis placed on a
 // Molecule is sad_gpu.cpp's.
 
 #include <gtest/gtest.h>

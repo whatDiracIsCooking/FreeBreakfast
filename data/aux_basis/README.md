@@ -12,7 +12,7 @@ so a fitting set this build does not carry needs no rebuild.
 **They are kept apart from `data/basis/` on purpose.** They go into a table of
 their own, which only `resolve_aux_basis` looks in. Every set in `data/basis/`
 is one the SAD guess carries baked densities for (`tools/sad`, `data/sad/`,
-checked by `test/gtest/io_sad_host.cpp`), and a SAD density in a fitting basis
+checked by `test/io/sad_host.cpp`), and a SAD density in a fitting basis
 means nothing. `is_builtin_basis` and `resolve_basis` never see these names.
 
 ## What is here
@@ -169,4 +169,4 @@ Fitting sets BSE does carry (`cc-pvqz-jkfit`, ...)
 can come from `tools/basis/bse_download.py <name> -o data/aux_basis`. Check the
 harmonic types first, as `data/basis/README.md` describes: one
 `gto_cartesian` shell makes the whole file unreadable. Then extend the host
-tests in `test/gtest/io_basis_host.cpp`, and reconfigure.
+tests in `test/io/basis_host.cpp`, and reconfigure.

@@ -120,7 +120,7 @@ Adds the current source directory as the public include path, so a consumer
   the `$<INSTALL_INTERFACE:include>` in the include directories is there so
   adding them later does not mean editing every call site. (For comparison,
   `deps/WarpWraps` *is* installable and has a whole `wwr_install.cmake` for it.)
-- **No automatic test registration.** `test/core/`, `test/pipeline/` and `test/gtest/` call
+- **No automatic test registration.** `test/core/`, `test/io/`, `test/pipeline/` and `test/gtest/` call
   `gtest_discover_tests` themselves, because the discovery mode and the per-binary
   labels are decisions worth seeing at the call site.
 - **No GPU-architecture logic.** That is `CMakePresets.json`'s job, and the
