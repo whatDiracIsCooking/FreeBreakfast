@@ -130,6 +130,7 @@ data/sad/             Per-element SAD densities for each of them, likewise
 test/core/            C++ tests of src/core, a host/GPU binary pair
 test/io/              C++ tests of src/io that need no device, a host binary
   gpu_kernels/        `.cu` kernels its GPU tests launch, as their own device library
+test/atom/            C++ tests of src/atom, a host binary alone
 test/sad/             C++ tests of src/sad, a host binary (the module has no GPU link)
 test/pipeline/        C++ tests of src/pipeline that need no device, a host binary
 test/gtest/           The other C++ tests, two binaries split by device requirement
@@ -266,11 +267,14 @@ binaries by hand needs the same variable.
 
 Two suites, and neither covers the other.
 
-**C++ — `test/core/`, `test/basis/`, `test/io/`, `test/sad/`, `test/pipeline/`
-and `test/gtest/`, run by ctest.** Each tree is split by device requirement: a host
-binary (the `*_host.cpp` TUs, which need no device and all run everywhere) and
-a GPU one (the `*_gpu.cpp` TUs, which drive the device). `test/core/` holds the
-`src/core` tests, as `free_breakfast_core_tests_{host,gpu}`; `test/basis/` the
+**C++ — `test/core/`, `test/atom/`, `test/basis/`, `test/io/`, `test/sad/`,
+`test/pipeline/` and `test/gtest/`, run by ctest.** Each tree is split by
+device requirement: a host binary (the `*_host.cpp` TUs, which need no device
+and all run everywhere) and a GPU one (the `*_gpu.cpp` TUs, which drive the
+device). `test/core/` holds the `src/core` tests, as
+`free_breakfast_core_tests_{host,gpu}`; `test/atom/` the `src/atom` tests, which
+have no device code to test, as `free_breakfast_atom_tests_host` alone;
+`test/basis/` the
 `src/basis` tests that need no device, as `free_breakfast_basis_tests_host`
 alone (placing a stamp onto a `Molecule` needs one, and stays in
 `test/gtest/`); `test/io/` the

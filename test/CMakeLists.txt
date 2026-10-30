@@ -1,12 +1,14 @@
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# The C++ suite: six trees. core/ and gtest/ are each built into a pair of
+# The C++ suite: seven trees. core/ and gtest/ are each built into a pair of
 # binaries split by device requirement -- a host one (runs anywhere) and a GPU
-# one (skips its device cases without a GPU); basis/, io/, sad/ and pipeline/
-# are each a host binary alone:
+# one (skips its device cases without a GPU); atom/, basis/, io/, sad/ and
+# pipeline/ are each a host binary alone:
 #
 #   * core/  -- the src/core tests: free_breakfast_core_tests_{host,gpu}.
+#   * atom/  -- the src/atom tests, which have no device code to test:
+#               free_breakfast_atom_tests_host.
 #   * basis/ -- the src/basis tests that need no device:
 #               free_breakfast_basis_tests_host. Placing a stamp onto a
 #               Molecule needs a GPU, so those cases stay in gtest/.
@@ -20,7 +22,7 @@
 #               a GPU, so those cases stay in gtest/'s GPU binary.
 #   * gtest/ -- everything else: free_breakfast_tests_{host,gpu}.
 #
-# All eight are registered with ctest and run by `ctest --preset <name>`, or by
+# All nine are registered with ctest and run by `ctest --preset <name>`, or by
 # devtools/cpp-tier.sh, which is configure + build + ctest in one command.
 #
 # The PYTHON suite is not built by CMake: it lives in test/pytest/ -- a sibling
@@ -64,6 +66,7 @@ math(EXPR _fb_test_timeout "120 * ${FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER}")
 add_subdirectory(support)
 add_subdirectory(ci_oracles)
 add_subdirectory(core)
+add_subdirectory(atom)
 add_subdirectory(basis)
 add_subdirectory(io)
 add_subdirectory(sad)

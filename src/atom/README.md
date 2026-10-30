@@ -35,7 +35,7 @@ auto z = static_cast<std::uint8_t>(c.element);   // 6
 
 ## Tests
 
-`test/gtest/atom_host.cpp`, which also includes `atom.h` beside the import to pin that the two paths name one entity.
+`test/atom/atom_host.cpp`, built as the host-only `free_breakfast_atom_tests_host` (nothing here touches a device). It also includes `atom.h` beside the import to pin that the two paths name one entity.
 
 ## Files
 

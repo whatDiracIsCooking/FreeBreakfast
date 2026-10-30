@@ -8,7 +8,8 @@
 #     reusing devtools/build.sh's cpp_build -- the one copy of the cmake phases.
 #     Warm (you have been building), this is seconds; cold (a fresh worktree),
 #     ~1 min. It never passes --fresh.
-#   * runs the six host binaries, free_breakfast_core_tests_host (test/core),
+#   * runs the seven host binaries, free_breakfast_core_tests_host (test/core),
+#     free_breakfast_atom_tests_host (test/atom),
 #     free_breakfast_basis_tests_host (test/basis), free_breakfast_io_tests_host
 #     (test/io), free_breakfast_sad_tests_host (test/sad),
 #     free_breakfast_pipeline_tests_host (test/pipeline) and
@@ -144,6 +145,7 @@ fi
 
 core_host_bin="$build_dir/test/core/free_breakfast_core_tests_host"
 core_gpu_bin="$build_dir/test/core/free_breakfast_core_tests_gpu"
+atom_host_bin="$build_dir/test/atom/free_breakfast_atom_tests_host"
 basis_host_bin="$build_dir/test/basis/free_breakfast_basis_tests_host"
 io_host_bin="$build_dir/test/io/free_breakfast_io_tests_host"
 sad_host_bin="$build_dir/test/sad/free_breakfast_sad_tests_host"
@@ -179,6 +181,7 @@ export FREE_BREAKFAST_FAST_TESTS=1
 
 echo "cpp-smoke: host tests ..."
 run_suite core-host "$core_host_bin" || rc=$?
+run_suite atom-host "$atom_host_bin" || rc=$?
 run_suite basis-host "$basis_host_bin" || rc=$?
 run_suite io-host "$io_host_bin" || rc=$?
 run_suite sad-host "$sad_host_bin" || rc=$?
