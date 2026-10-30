@@ -27,6 +27,7 @@ needs a prefix" has the rule.
 | `relaxed_hessian/` | `free_breakfast.mcscf.relaxed_hessian` | **Internal**, not re-exported: the orbital Hessian with the CI relaxed, H̃ = H + R (`mcscf::RelaxedHessian`), and the orbital–CI coupling (`ResponseIntegrals`, `response_integrals`, `response_gradient`). `solve`'s augmented Hessian steps over it. See `relaxed_hessian/README.md`. |
 | `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop (`mcscf::solve`): per macro iteration the integrals, the CI, the weighted RDMs, `response::fock`'s energy and gradient, and an augmented-Hessian step over `response::Hessian` under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
 | `gradient/` | `free_breakfast.mcscf.gradient` | The analytic nuclear gradient of a converged state-specific DF-CASSCF (`mcscf::df_gradient`): the one-electron terms at its 1-RDM and generalized Fock, and one Γ and one W of the fitted two-electron energy against the three-center and metric derivatives, each term on its own. A state-averaged solution is `Unsupported`. Its derivation is in `gradient/README.md`. |
+| `zvector/` | `free_breakfast.mcscf.zvector` | **Internal**, not re-exported: the Lagrange multipliers of one root's state-averaged gradient (`mcscf::zvector`), z_o by preconditioned conjugate gradients over `RelaxedHessian` and z_c from its CI response. See `zvector/README.md`. |
 
 The orbital order, the packed pairs and the gradient and Hessian conventions
 the loop steps in are [`../response/README.md`](../response/README.md)'s.
