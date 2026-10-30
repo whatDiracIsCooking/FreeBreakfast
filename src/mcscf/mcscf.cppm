@@ -7,3 +7,4 @@
 export module free_breakfast.mcscf;
 
 export import free_breakfast.mcscf.solve;
+export import free_breakfast.mcscf.gradient;

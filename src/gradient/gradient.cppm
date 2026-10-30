@@ -123,15 +123,41 @@ rhf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
     std::span<const PrimitivePairClass> classes, std::span<OrderedPairClass> k_classes,
     const SphericalMatrixAO &c, std::span<const double> mo_energies, int32_t nocc);
 
+/// @brief The one-electron terms of any nuclear gradient at its AO density
+/// @p d and energy-weighted density W, given as @p minus_w = -W: the
+/// kinetic, potential, overlap and nuclear_repulsion members of @p g, from
+/// @c kinetic_gradient and @c potential_gradient at D, @c overlap_gradient at
+/// -W and @c nuclear_repulsion_gradient. The other members are left as they
+/// are.
+///
+/// What a wavefunction's gradient shares whatever its two-electron part: the
+/// RHF ones here pass D = 2 C_occ C_occ^T and W = 2 C_occ diag(eps_occ)
+/// C_occ^T, a CASSCF its 1-RDM in the AO basis and C sym(F) C^T, F its
+/// generalized Fock (@c mcscf::df_gradient). Both are nao x nao over
+/// @p basis, symmetric, on @p res's device; @p molecule and @p classes are as
+/// @ref df_rhf takes them.
+///
+/// Queued on res.stream(); each derivative call synchronizes it. The device
+/// res.dev_idx() names is made current for the call and the previous one
+/// restored.
+///
+/// @return Success; or the first error of the derivative calls, which refuse
+///         a matrix not of @p basis's spherical order.
+[[nodiscard]] Status one_electron_terms(DeviceResources &res, const Molecule &molecule,
+                                        const BasisSet &basis,
+                                        std::span<const PrimitivePairClass> classes,
+                                        const SphericalMatrixAO &d,
+                                        const SphericalMatrixAO &minus_w, RhfTerms &g);
+
 } // namespace free_breakfast::gradient
 
 namespace free_breakfast::gradient {
 
 // The terms every closed-shell RHF gradient shares, whatever its ERIs:
 // kinetic, potential, overlap and nuclear_repulsion of @p g, from D and W of
-// @p c's first @p nocc columns, through integrals.one_electron.gradient and
-// nuclear_repulsion_gradient. Checks @p c, @p mo_energies and @p nocc as
-// df_rhf documents, and returns D, which the two-electron terms take too.
+// @p c's first @p nocc columns, through the exported overload at D and -W.
+// Checks @p c, @p mo_energies and @p nocc as df_rhf documents, and returns D,
+// which the two-electron terms take too.
 // Unexported: the module's own entry points (df_rhf, and the integral-direct
 // one beside it) are its callers.
 [[nodiscard]] Result<SphericalMatrixAO>
