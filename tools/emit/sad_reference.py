@@ -18,7 +18,7 @@ comparison would test the configuration table rather than the SCF.
 
     uv run --group tools tools/emit/sad_reference.py
 
-writes test/gtest/data/sad/atomic_scf.json. Re-run it to regenerate; the file
+writes test/sad/data/atomic_scf.json. Re-run it to regenerate; the file
 is never hand-edited.
 """
 
@@ -43,9 +43,8 @@ CASES: dict[str, list[str]] = {
 OUT = (
     pathlib.Path(__file__).resolve().parents[2]
     / "test"
-    / "gtest"
-    / "data"
     / "sad"
+    / "data"
     / "atomic_scf.json"
 )
 
