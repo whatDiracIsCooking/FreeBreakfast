@@ -66,7 +66,7 @@ emit/record_bound_golden.py
                   exchange goldens' bases. Needs numpy (FelizJueves's
                   reference Boys).
 emit/sad_reference.py
-                  Write test/gtest/data/sad/atomic_scf.json: PySCF's
+                  Write test/sad/data/atomic_scf.json: PySCF's
                   spherically averaged atomic RHF densities, the reference
                   src/sad's guess is tested against. Needs PySCF.
 emit/scf_reference.py

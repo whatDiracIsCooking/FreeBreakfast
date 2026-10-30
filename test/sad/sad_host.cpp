@@ -1,9 +1,9 @@
 // Host-only cases for the SAD initial guess: each atom's block against PySCF's
-// AtomSphAverageRHF density (data/sad/atomic_scf.json, written by
+// AtomSphAverageRHF density (data/atomic_scf.json, written by
 // tools/emit/sad_reference.py), the block-diagonal assembly, the task form
 // against the serial one, a SadStampLookup standing in for an SCF, and the
-// refusals. The compiled-in stamps themselves are io_sad_host.cpp's. The guess over a basis placed on a
-// Molecule is sad_gpu.cpp's.
+// refusals. The compiled-in stamps themselves are test/gtest/io_sad_host.cpp's.
+// The guess over a basis placed on a Molecule is test/gtest/sad_gpu.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -25,7 +25,7 @@ const fb::Vec<double, 3> kOrigin{0.0, 0.0, 0.0};
 // Read once per binary: every case that wants a basis shares it.
 const fb::json &reference() {
   static const fb::json doc = [] {
-    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "sad" / "atomic_scf.json");
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "atomic_scf.json");
     if (!read) {
       ADD_FAILURE() << read.error().message;
       return fb::json{};

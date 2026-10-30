@@ -129,6 +129,7 @@ data/basis/           BSE JSON basis sets, compiled into the binary by the build
 data/sad/             Per-element SAD densities for each of them, likewise
 test/core/            C++ tests of src/core, a host/GPU binary pair
   gpu_kernels/        `.cu` kernels its GPU tests launch, as their own device library
+test/sad/             C++ host tests of src/sad, one binary (the module has no GPU link)
 test/gtest/           The other C++ tests, two binaries split by device requirement
 test/pytest/          Python tests over the built binaries
 bench/                Wall-clock benchmarks (opt-in, never a ctest entry)
@@ -263,12 +264,13 @@ binaries by hand needs the same variable.
 
 Two suites, and neither covers the other.
 
-**C++ — `test/core/` and `test/gtest/`, run by ctest.** Each tree is two
-binaries split by device requirement: a host one (the `*_host.cpp` TUs, which
-need no device and all run everywhere) and a GPU one (the `*_gpu.cpp` TUs,
-which drive the device). `test/core/` holds the `src/core` tests, as
-`free_breakfast_core_tests_{host,gpu}`; `test/gtest/` holds the rest, as
-`free_breakfast_tests_{host,gpu}`. The GPU cases call `FBF_REQUIRE_GPU()`
+**C++ — `test/core/`, `test/sad/` and `test/gtest/`, run by ctest.** Each tree
+is binaries split by device requirement: a host one (the `*_host.cpp` TUs,
+which need no device and all run everywhere) and a GPU one (the `*_gpu.cpp`
+TUs, which drive the device). `test/core/` holds the `src/core` tests, as
+`free_breakfast_core_tests_{host,gpu}`; `test/sad/` the host `src/sad` tests,
+as `free_breakfast_sad_tests_host` alone, because the module has no GPU link;
+`test/gtest/` the rest, as `free_breakfast_tests_{host,gpu}`. The GPU cases call `FBF_REQUIRE_GPU()`
 and **skip with a reason** rather than failing, so the suite stays usable on a
 device-less build host — read the skip list before calling a run green. A
 second switch skips from the other end: `FREE_BREAKFAST_FAST_TESTS` makes
