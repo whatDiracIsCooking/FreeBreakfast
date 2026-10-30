@@ -36,8 +36,7 @@ add_subdirectory(nevpt2)
 # After recipes, whose Davidson it preconditions, and integrals, whose J and K
 # its sigma will contract; before pipeline, which it must never import.
 add_subdirectory(cis)
-# Host-only, over core alone; before pipeline, whose optimize step will drive
-# it.
+# Host-only, over core alone; before pipeline, whose optimize step drives it.
 add_subdirectory(geometry)
 # After integrals, whose derivative integrals it contracts; before pipeline,
 # which it must never import.

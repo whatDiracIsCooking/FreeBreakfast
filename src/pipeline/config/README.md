@@ -15,7 +15,7 @@ using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, EriStep, OverlapStep,
                              OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
                              LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step,
-                             CisStep, GradientStep>;
+                             CisStep, GradientStep, OptimizeStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
                                  const std::filesystem::path &output_dir);
@@ -219,6 +219,29 @@ takes is the step's to say when it runs: an integral-direct `[eri]` (the
 filled-in default) and an ROHF SCF are each `Unsupported` there, naming the
 reason.
 
+```toml
+[optimize]                # Gaussian's thresholds by default
+max_force = 4.5e-4        # hartree / bohr
+rms_force = 3.0e-4
+max_displacement = 1.8e-3 # bohr
+rms_displacement = 1.2e-3
+max_steps = 100           # evaluations after the first
+```
+
+`[optimize]` is a geometry optimization (`optimize/README.md`). Each
+threshold must be positive, and `max_steps` at least 0. It reruns the chain
+from the molecule to the gradient at every geometry, and that chain is **the
+config's own tables**: `parse_config` copies `[molecule]` (its `xyz` the
+start), `[basis_set]`, `[eri]`, `[orthogonalizer]`, `[guess]` and `[scf]`
+into the step, each read as the pipeline reads it, from an empty table if the
+config has none. One loading `from` a file is refused: the chain is rerun at
+every geometry. **Then `[molecule]` is planned loaded from the `final.xyz`
+the step writes** (`MoleculeStep::load`, ordered after the optimization by
+the `OptimizeOutput` it reads), so every other step in the config -- the
+outer `[scf]`, a `[localization]` -- runs at the optimum. That is the only
+way the molecule is ever loaded: `[molecule] from` is refused like a step
+with no `load`.
+
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
@@ -271,9 +294,11 @@ step, so no two collide:
 | `[casci]` | `casci.molden`: the lowest root's natural orbitals |
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
 | `[gradient]` | `gradient.json`: the SCF energy, the gradient `total` and each of its `terms` (hartree / bohr, one row of three per atom) |
+| `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
-no output, so a later config can rely on what an earlier run wrote.
+no output, so a later config can rely on what an earlier run wrote
+(`final.xyz` is the one not named after its step).
 `write_npy` is a switch, off by default, not a path. A file already there is
 overwritten; a directory per run is what `-o` is for. The steps keep their
 `molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
@@ -290,7 +315,9 @@ nothing):
   overwrite. An absolute path, or one through `..`, reaches there however the
   two directories differ. A file in a directory *below* the output directory
   is apart, and so is an output directory below the input one, as the
-  defaults are.
+  defaults are. `[optimize]`'s start and its chain's basis files are inputs;
+  the `final.xyz` the molecule is then loaded from is this run's own output,
+  read after it is written, and is not.
 
 `read_config` then creates the output directory, before anything runs: a
 directory that cannot be made is `IO`, refused before a GPU is touched rather
@@ -306,7 +333,9 @@ than after the SCF has converged. `parse_config` touches no disk.
   only `"sad"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
   `[localization] exponent`, 2 or 4; and `[cis] spin`, which knows
   `"singlet"` and `"triplet"`);
-- `from` beside another key, or on a step with no `load`;
+- `from` beside another key, on a step with no `load`, or on `[molecule]`;
+  and under `[optimize]`, on a table of the chain it reruns;
+- an `[optimize]` threshold that is not positive, or a `max_steps` below 0;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;

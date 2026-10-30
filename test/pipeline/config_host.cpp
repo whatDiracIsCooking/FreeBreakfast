@@ -718,6 +718,62 @@ TEST(PipelineConfig, TheGradientStepWritesItsJsonAndFillsInTheScf) {
                       "[gradient] has no option 'terms'");
 }
 
+// [optimize] reads its own thresholds and copies in the chain it reruns,
+// each step as its own table configures it, and the molecule every other
+// step reads is loaded from the final.xyz it writes.
+TEST(PipelineConfig, TheOptimizeStepCopiesItsChainAndLoadsTheMolecule) {
+  auto calc = fb::parse_config(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n[scf]\nenergy_tolerance = 1e-12\n"
+                  "[optimize]\nmax_force = 1e-5\nrms_force = 2e-5\nmax_displacement = 3e-5\n"
+                  "rms_displacement = 4e-5\nmax_steps = 20\n[localization]\n"),
+      "/in", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::OptimizeStep &optimize = *calc->step<fb::OptimizeStep>();
+  EXPECT_EQ(optimize.options.max_force, 1e-5);
+  EXPECT_EQ(optimize.options.rms_force, 2e-5);
+  EXPECT_EQ(optimize.options.max_displacement, 3e-5);
+  EXPECT_EQ(optimize.options.rms_displacement, 4e-5);
+  EXPECT_EQ(optimize.options.max_steps, 20);
+  EXPECT_EQ(optimize.trajectory, kOut / "optimize.xyz");
+  EXPECT_EQ(optimize.final_xyz, kOut / "final.xyz");
+  EXPECT_EQ(optimize.history, kOut / "optimize.json");
+  // The chain, read from the tables; a step with no table at its defaults.
+  EXPECT_EQ(optimize.molecule.xyz, std::filesystem::path("/in/w.xyz"));
+  EXPECT_EQ(optimize.basis_set.basis, "/in/b.json");
+  EXPECT_EQ(optimize.eri.mode, fb::EriMode::DensityFitting);
+  EXPECT_EQ(optimize.scf.energy_tolerance, 1e-12);
+  EXPECT_EQ(optimize.orthogonalizer.eigenvalue_floor, fb::OrthogonalizerStep{}.eigenvalue_floor);
+  // Every other step reads the molecule [optimize] wrote.
+  EXPECT_FALSE(calc->step<fb::MoleculeStep>().has_value());
+  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  EXPECT_TRUE(calc->step<fb::LocalizationStep>().has_value());
+
+  // With the defaults, and no [molecule] needed beside it in the list.
+  auto defaults = fb::parse_config(with_inputs("[optimize]\n"), "", kOut);
+  ASSERT_TRUE(defaults.has_value()) << defaults.error().message;
+  EXPECT_EQ(defaults->step<fb::OptimizeStep>()->options.max_force,
+            fb::geometry::Options{}.max_force);
+  EXPECT_EQ(defaults->from<fb::MoleculeStep>(), kOut / "final.xyz");
+}
+
+TEST(PipelineConfig, AMalformedOptimizeTableIsInvalidConfig) {
+  expect_config_error(with_inputs("[optimize]\ntrust_radius = 0.1\n"),
+                      "[optimize] has no option 'trust_radius'");
+  expect_config_error(with_inputs("[optimize]\nmax_force = 0\n"), "must be positive");
+  expect_config_error(with_inputs("[optimize]\nmax_steps = -1\n"),
+                      "[optimize] max_steps is -1, below 0");
+  // The chain is rerun at every geometry, so none of it is loaded.
+  expect_config_error(with_inputs("[optimize]\n[guess]\nfrom = \"d.npy\"\n"),
+                      "[optimize] reruns [guess] at every geometry");
+  // Its start is the molecule's xyz.
+  expect_config_error("[basis_set]\nbasis = \"b.json\"\n[optimize]\n", "[molecule] needs 'xyz'");
+}
+
+TEST(PipelineConfig, TheMoleculeIsLoadedOnlyAfterAnOptimize) {
+  expect_config_error("[molecule]\nfrom = \"final.xyz\"\n",
+                      "[molecule] cannot be loaded 'from' a file");
+}
+
 TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
   auto calc = fb::parse_config(with_inputs("[cis]\nn_states = 3\nspin = \"triplet\"\n"
                                            "residual_tolerance = 1e-8\nmax_iterations = 50\n"

@@ -421,6 +421,30 @@ template <class S>
     // GradientStep::run's to say, once they exist.
     FBF_TRY(check_keys(table, kStep, {}));
     step.json_path = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, OptimizeStep>) {
+    // The chain it reruns is the other tables', copied in by parse_config,
+    // which can see them; a table here holds only the optimizer's own keys.
+    FBF_TRY(check_keys(
+        table, kStep,
+        {"max_force", "rms_force", "max_displacement", "rms_displacement", "max_steps"}));
+    geometry::Options &options = step.options;
+    FBF_TRY(read_key(table, kStep, "max_force", base_dir, options.max_force));
+    FBF_TRY(read_key(table, kStep, "rms_force", base_dir, options.rms_force));
+    FBF_TRY(read_key(table, kStep, "max_displacement", base_dir, options.max_displacement));
+    FBF_TRY(read_key(table, kStep, "rms_displacement", base_dir, options.rms_displacement));
+    FBF_TRY(read_key(table, kStep, "max_steps", base_dir, options.max_steps));
+    if (!(options.max_force > 0.0) || !(options.rms_force > 0.0) ||
+        !(options.max_displacement > 0.0) || !(options.rms_displacement > 0.0)) {
+      return err_config("[{}] max_force, rms_force, max_displacement and rms_displacement must "
+                        "be positive",
+                        kStep);
+    }
+    if (options.max_steps < 0) {
+      return err_config("[{}] max_steps is {}, below 0", kStep, options.max_steps);
+    }
+    step.trajectory = output_dir / std::format("{}.xyz", kStep);
+    step.final_xyz = output_dir / "final.xyz";
+    step.history = output_dir / std::format("{}.json", kStep);
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.
@@ -447,8 +471,10 @@ template <class S>
                                  FBF_TRY(read_step<S>(*table, base_dir, output_dir))};
       }
       // 'from' loads the product instead, and the step's options configure a
-      // run that never happens, so none may stand beside it.
-      if constexpr (LoadableStep<S>) {
+      // run that never happens, so none may stand beside it. The molecule is
+      // loaded only from the geometry [optimize] writes, which parse_config
+      // plans itself.
+      if constexpr (LoadableStep<S> && !std::same_as<S, MoleculeStep>) {
         for (const auto &[key, value] : *table) {
           if (key.str() != "from") {
             return err_config("[{}] loads 'from' a file, so takes no option '{}'", name, key.str());
@@ -476,6 +502,48 @@ template <class S>
     }
     return std::move(*out);
   }(std::make_index_sequence<std::variant_size_v<Calculation::Step>>{});
+}
+
+/// @brief With an `[optimize]` among @p steps: copy into it the chain it
+/// reruns, each step read from its own table in @p doc as the pipeline reads
+/// it (an empty one if the config has none), and plan the molecule as loaded
+/// from the final.xyz it writes, so every step reading the molecule runs at
+/// the optimum. A chain table that loads its product 'from' a file is
+/// refused: the chain is rerun at every geometry.
+[[nodiscard]] Status plan_optimize(std::vector<Calculation::Step> &steps, const toml::table &doc,
+                                   const std::filesystem::path &input_dir,
+                                   const std::filesystem::path &output_dir) {
+  const auto optimize = std::ranges::find_if(
+      steps, [](const Calculation::Step &s) { return std::holds_alternative<OptimizeStep>(s); });
+  if (optimize == steps.end()) {
+    return {};
+  }
+  OptimizeStep &step = std::get<OptimizeStep>(*optimize);
+  const toml::table empty;
+  const auto chain = [&]<class S>(S &out) -> Status {
+    const toml::table *table = doc[S::kName].as_table();
+    if (table != nullptr && table->contains("from")) {
+      return err_config("[{}] reruns [{}] at every geometry, so it cannot be loaded 'from' a file",
+                        OptimizeStep::kName, S::kName);
+    }
+    out = FBF_TRY(read_step<S>(table != nullptr ? *table : empty, input_dir, output_dir));
+    return {};
+  };
+  FBF_TRY(chain(step.molecule));
+  FBF_TRY(chain(step.basis_set));
+  FBF_TRY(chain(step.eri));
+  FBF_TRY(chain(step.orthogonalizer));
+  FBF_TRY(chain(step.guess));
+  FBF_TRY(chain(step.scf));
+  Calculation::Step load{Load<MoleculeStep>{step.final_xyz}};
+  const auto molecule = std::ranges::find_if(
+      steps, [](const Calculation::Step &s) { return std::holds_alternative<MoleculeStep>(s); });
+  if (molecule != steps.end()) {
+    *molecule = std::move(load);
+  } else {
+    steps.push_back(std::move(load));
+  }
+  return {};
 }
 
 /// @brief @p dir as the directory it names, so two spellings of one compare
@@ -543,9 +611,20 @@ template <class S>
       eri && !eri->aux_basis.empty() && !is_builtin_aux_basis(eri->aux_basis)) {
     inputs.emplace_back(eri->aux_basis);
   }
+  // A loaded molecule is [optimize]'s final.xyz, an output of this run, read
+  // after it is written; the start it optimizes from is an input.
+  if (const auto &optimize = calc.step<OptimizeStep>()) {
+    inputs.push_back(optimize->molecule.xyz);
+    if (!is_builtin_basis(optimize->basis_set.basis)) {
+      inputs.emplace_back(optimize->basis_set.basis);
+    }
+    if (!optimize->eri.aux_basis.empty() && !is_builtin_aux_basis(optimize->eri.aux_basis)) {
+      inputs.emplace_back(optimize->eri.aux_basis);
+    }
+  }
   [&]<class... Ss>(std::type_identity<Pipeline<Ss...>>) {
     const auto add_from = [&]<class S>() {
-      if constexpr (LoadableStep<S>) {
+      if constexpr (LoadableStep<S> && !std::same_as<S, MoleculeStep>) {
         if (const auto &from = calc.from<S>()) {
           inputs.push_back(*from);
         }
@@ -580,6 +659,7 @@ template <class S>
   if (steps.empty()) {
     return err_config("the config names no step");
   }
+  FBF_TRY(plan_optimize(steps, doc, input_dir, output_dir));
   const toml::table empty;
   Calculation calc = FBF_TRY(Calculation::create(
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
