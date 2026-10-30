@@ -26,7 +26,7 @@ needs a prefix" has the rule.
 |-----------|--------|------|
 | `relaxed_hessian/` | `free_breakfast.mcscf.relaxed_hessian` | **Internal**, not re-exported: the orbital Hessian with the CI relaxed, H̃ = H + R (`mcscf::RelaxedHessian`), and the orbital–CI coupling (`ResponseIntegrals`, `response_integrals`, `response_gradient`). `solve`'s augmented Hessian steps over it. See `relaxed_hessian/README.md`. |
 | `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop (`mcscf::solve`): per macro iteration the integrals, the CI, the weighted RDMs, `response::fock`'s energy and gradient, and an augmented-Hessian step over `response::Hessian` under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
-| `gradient/` | `free_breakfast.mcscf.gradient` | The analytic nuclear gradient of a converged state-specific DF-CASSCF (`mcscf::df_gradient`): the one-electron terms at its 1-RDM and generalized Fock, and one Γ and one W of the fitted two-electron energy against the three-center and metric derivatives, each term on its own. A state-averaged solution is `Unsupported`. Its derivation is in `gradient/README.md`. |
+| `gradient/` | `free_breakfast.mcscf.gradient` | The analytic nuclear gradient of a converged DF-CASSCF (`mcscf::df_gradient`), state-specific or any root of a state average: the one-electron terms at its 1-RDM and generalized Fock, and one Γ and one W of the fitted two-electron energy against the three-center and metric derivatives, each term on its own. For a state average, over `zvector`'s multipliers (linked PRIVATE). Its derivation is in `gradient/README.md`. |
 | `zvector/` | `free_breakfast.mcscf.zvector` | **Internal**, not re-exported: the Lagrange multipliers of one root's state-averaged gradient (`mcscf::zvector`), z_o by preconditioned conjugate gradients over `RelaxedHessian` and z_c from its CI response. See `zvector/README.md`. |
 
 The orbital order, the packed pairs and the gradient and Hessian conventions
@@ -41,11 +41,12 @@ against PySCF's converged CASSCF through `test/gtest/data/casscf/`
 layer's own targets link nothing of `pipeline`.
 
 `test/gtest/mcscf_gradient_gpu.cpp` holds `gradient/`'s against PySCF's
-`df.grad.casscf` (`test/gtest/data/casscf_gradient/`), from the same setup.
+`df.grad.casscf` and `df.grad.sacasscf` (`test/gtest/data/casscf_gradient/`),
+from the same setup.
 
 ## Files
 
 | File | Role |
 |------|------|
 | `mcscf.cppm` | Aggregate module interface; `export import`s `solve` |
-| `CMakeLists.txt` | Build configuration: `add_subdirectory(relaxed_hessian)` and `(solve)`, and the `free_breakfast.mcscf` module target |
+| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector` and `gradient`, in that order, and the `free_breakfast.mcscf` module target |

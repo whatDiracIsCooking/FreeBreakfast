@@ -1,7 +1,8 @@
 # Gradient
 
-The analytic nuclear gradient of a converged, state-specific DF-CASSCF on the
-GPU: `mcscf::df_gradient`, every term returned on its own,
+The analytic nuclear gradient of a converged DF-CASSCF on the GPU, of its one
+state or of any root of a state average: `mcscf::df_gradient`, every term
+returned on its own,
 
     dE/dR = Σ D dT + Σ D dV − Σ W dS + dE₂ + dV_nn
 
@@ -26,10 +27,15 @@ core Hamiltonian and `classes` `primitive_pair_classes` of the basis, as
 `gradient::df_rhf` takes them. The inputs are explicit, not pipeline types,
 so this layer stays below `pipeline`.
 
-**One root only.** A solution averaging more than one root is `Unsupported`:
-its gradient needs the orbital and CI multipliers (a Z-vector over the
-state-averaged Hessian), which this call does not solve for. `root` is in the
-signature already, so a caller is written against it; today it must be 0.
+**`root` picks the state.** For one root it is 0 and the terms below are
+taken at the solution's RDMs. For a state average they are taken at root I's
+**Lagrangian**, below: the same terms, at other densities, plus their
+response to the orbitals. The weights are not in a `Solution`, so the call
+recovers them from it, as the least-squares solution of
+Σ_r w_r γ_r = γ with Σ_r w_r = 1 over `root_gammas` and the weighted γ
+(`Unsupported` when the roots' 1-RDMs are linearly dependent, `InvalidConfig`
+when γ is not their average to 1e-10). The active electron count, for the CI
+strings, is trace(γ).
 
 **The formula is the DF-CASSCF energy's gradient, and only at convergence.**
 W stands in for the orbitals' response (stationarity in the orbitals), and the
@@ -87,6 +93,75 @@ solution's 1- and 2-RDM, E = Σ h_pq D_pq + ½ Σ Γ_pqrs (pq|rs) over MOs.
 - **Nuclear repulsion**: `nuclear_repulsion_gradient`, through the shared
   one-electron call.
 
+## The state-averaged Lagrangian
+
+Root I's energy is not stationary in the state-averaged orbitals, so its
+gradient is that of the Lagrangian
+
+    L = E_I + z_o · g_o + Σ_r z_c,r · g_c,r,
+
+g_o the SA orbital gradient over the packed pairs and g_c,r = 2 w_r (H₀ − E_r)
+c_r the CI's, with z = (z_o, z_c) the Z-vector of
+[`../zvector/`](../zvector/README.md): A z = −(g_I, 0), A the SA Hessian. Its
+derivative at fixed orbitals (up to the connection below) and CI is the
+gradient. The call builds what that needs at the solution's orbitals and
+roots: the CI strings, sigma (H₀) and `ci::Rdm`, `response::Hessian` over the
+SA Fock, `RelaxedHessian`, root I's RDMs (`rdm12` at weight 1 on root I), g_I
+(`response::fock` at them) and `zvector`. Then L's derivative is three pieces,
+each one of the terms above at some densities:
+
+- **E_I**: the state-specific formula at root I's γ_I and Γ_I.
+- **z_c**: Σ_r z_c,r · 2 w_r (∂H) c_r is the derivative of the energy
+  functional Σ_r w_r (⟨z_c,r|H|c_r⟩ + ⟨c_r|H|z_c,r⟩) at the transition RDMs
+  γ_T and Γ_T: half the difference of `rdm12` of c + z_c and of c − z_c at the
+  weights, the ± polarization `mcscf/solve` takes them by. Their overlap is
+  zero, so they carry no core energy, and the energy is affine in the active
+  RDMs with the core part constant: so this piece and E_I's are the terms
+  once, at **γ_I + γ_T and Γ_I + Γ_T**, with F their generalized Fock.
+- **z_o**: z_o · g_o(x) is the derivative of E_SA along C → C (1 + ε κ),
+  κ = κ(z_o) (`unpack_orbital_pairs`), so z_o · ∂g_o is that derivative of
+  the gradient formula itself, at the SA RDMs: every term with each of its
+  C's in turn replaced by C̃ = C κ, the product rule. Below.
+
+### The orbital response
+
+Every term is a polynomial in C, so its ε-derivative is the product rule.
+C̃ sits beside C in one nao × 2nmo matrix [C | C̃] so that `b_mo` transforms
+over either.
+
+- **One-electron.** D_L = D_cL + D_aL, D_cL = 2 (C̃_c C_cᵀ + C_c C̃_cᵀ) and
+  D_aL = C̃_a γ C_aᵀ + C_a γ C̃_aᵀ, added to D.
+- **Overlap.** W = C sym(F) Cᵀ with F = Cᵀ X(C), so W = sym(C Cᵀ X Cᵀ), and
+  C Cᵀ = S⁻¹ is stationary to first order (κ is antisymmetric). So only F's
+  inner orbitals move, and W's response is C sym(F_L) Cᵀ:
+
+      F_L = F κᵀ + [(Fᴵ + Fᴬ) κ + V_cL + V_aL] γ_c + [Fᴵ κ + V_cL] γ_a + Fᵃᵃ_L,
+
+  γ_c = 2 on the core and γ_a = γ on the active block (each placing its
+  bracket's columns), V_XL = Cᵀ (J − ½ K)[D_XL] C (one `df_coulomb` and one
+  two-factor `df_exchange` each, K[D_cL] = 2 (K[C_c C̃_cᵀ] + its transpose)),
+  and Fᵃᵃ_L the active 2-RDM term Σ_uvw (pu|vw) Γ_tuvw with u, v, w rotated:
+  Σ_svw (ps|vw) R1_svw,t + Σ_suw (pu|sw) R2_suw,t, R1 = κ_act G1 and
+  R2 = κ_act G2, G1[u, (v, w, t)] = Γ_tuvw and G2[v, (u, w, t)] =
+  Γ_tuvw + Γ_tuwv (permuted on the host), so that each R lies as ppaa's and
+  papa's columns do: four gemms. F + F_L replaces F.
+- **J.** Of ½ J[D]·D − ½ J[D_a]·D_a at the SA D and D_a: Γᴶ gains
+  D_L ⊗ d + D ⊗ d_L − D_aL ⊗ d_a − D_a ⊗ d_aL and Wᴶ gains
+  −½ (d_L dᵀ + d d_Lᵀ) + ½ (d_aL d_aᵀ + d_a d_aLᵀ), eight rank-one gemms.
+- **K.** With c′_P,ip = c_P,ĩp + c_P,ip̃ (ĩ C̃'s column i; two `b_mo`s over
+  [C | C̃], then the trsm) and V_a = c G_a at the SA G: V gains c′ G_a,
+  W gains V_a c′ᵀ, and Γᴷ gains −2 Σ_i (C_mi Σ_q V_a,iq C̃_nq +
+  C̃_mi Σ_q V_a,iq C_nq) (one more gemm into Y, and one more Y and
+  strided-batched gemm over C̃_core).
+- **Active–active.** The same with c′ of the active pairs and Z_a = c Γ_a:
+  Z gains c′ Γ_a, W gains −½ Z_a c′ᵀ, and Γᵃᵃ gains
+  Σ_tu (C_mt C̃_nu + C̃_mt C_nu) Z_a,P,tu.
+
+These are the non-symmetric pairs (D_L ≠ D_R) of the papers' response
+densities. They are not factored: they are only more terms in the same Γ_mnP
+and W_PQ, so the derivative integrals are still evaluated once,
+one `three_center_gradient` and one `metric_gradient` per call.
+
 ## Memory
 
 **Γ is held in full**: naux nao² doubles, the size of B, as in
@@ -94,8 +169,11 @@ solution's 1- and 2-RDM, E = Σ h_pq D_pq + ½ Σ Γ_pqrs (pq|rs) over MOs.
 `res.device_workspace()`. Beside it the call holds W (naux²), the two fitted
 densities, G (nocc²), the core pairs and V (naux ncore nocc each), one
 back-transform (naux max(ncore, ncas) nao), and the active pairs and Z
-(naux ncas² each), and refuses (`Unsupported`, naming the bytes) when those
-would not fit the device's free memory, before anything is allocated.
+(naux ncas² each); for a state average also four more fitted densities, a
+second G, and the response's pairs, their scratch and the SA V and Z (three
+more of each size). It refuses (`Unsupported`, naming the bytes) when those
+would not fit the device's free memory, before anything is allocated. A
+state average's CI objects, Hessian and nao²-sized matrices are not counted.
 `casscf_integrals` and `response::fock` hold their own nmo² ncas² integrals
 for the call. naux nao² must fit `int32_t`.
 
@@ -105,8 +183,11 @@ for the call. naux nao² must fit `int32_t`.
 `test/gtest/data/casscf_gradient/`'s state-specific cases (PySCF's
 `df.grad.casscf` over a DF-RHF `_scf` sharing the CASSCF's `with_df`, so its W
 is fitted as the energy is): H₂O and the skewed H₂O in cc-pVDZ /
-cc-pVDZ-JKFIT, CAS(4,4). Each runs this tree's own `DensityFitting::Full`
-solve from the exact RHF and the case's active orbitals to ‖g‖ < 1e-9, then
-every term and the total to 1e-8 absolute, the total's sum over atoms below
-1e-9, and the two refusals (a root past the solution's, and a solution of two
-roots).
+cc-pVDZ-JKFIT, CAS(4,4); and against `df.grad.sacasscf`, both roots of H₂CO
+SA-2 CAS(4,3) at [0.5, 0.5], whose parts include the multipliers' terms. Each
+runs this tree's own `DensityFitting::Full` solve from the exact RHF and the
+case's active orbitals to ‖g‖ < 1e-9, then for every root every term and the
+total to 1e-8 absolute, the total's sum over atoms below 1e-9, and two
+refusals (a root past the solution's, and a solution with a root more than its
+per-root RDMs). The gradient does not depend on the orbitals' or CI's signs or
+canonicalization, so the solution is compared as it converges.

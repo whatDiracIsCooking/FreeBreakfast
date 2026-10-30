@@ -74,10 +74,15 @@ writes the full κ that `recipes.expm` exponentiates.
 
 - **Active–active rotations.** The packed pairs hard-code CAS's three blocks;
   RAS and GAS need rotations between active subspaces too.
-- **The CI blocks of E⁽²⁾**: orbital–CI coupling over transition RDMs, and
-  CI–CI (H − E, projected). The SA-CASSCF Z-vector needs them, and they would
-  make this layer import `ci`.
-- **The Z-vector solve** itself, with CASSCF nuclear gradients.
+- **The CI blocks of E⁽²⁾** in this layer: orbital–CI coupling over
+  transition RDMs, and CI–CI (H − E, projected). They would make it import
+  `ci`, so the SA-CASSCF Z-vector has them one layer up instead
+  (`../mcscf/relaxed_hessian/`).
+- **The Z-vector and the CASSCF nuclear gradient are done, density-fitted
+  only**: `mcscf::zvector` (`../mcscf/zvector/`) and `mcscf::df_gradient`
+  (`../mcscf/gradient/`), state-specific or any root of a state average. An
+  integral-direct gradient (exact J and K and four-center derivative
+  integrals) is not.
 - **E⁽³⁾ contractions**, E⁽³⁾(a, b) as a vector over κ and c, for NEVPT2
   analytic Hessians.
 

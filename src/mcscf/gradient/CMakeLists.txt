@@ -1,6 +1,9 @@
 # The module: mcscf::df_gradient, host code over the fitted integrals, the
 # generalized Fock, the shared one-electron terms, the density-fitting
-# derivative contractions and wwr's BLAS, with no kernels of its own.
+# derivative contractions and wwr's BLAS, with no kernels of its own; for
+# one root of a state average, the CI strings, sigma and RDMs, the orbital
+# Hessian and the internal relaxed_hessian and zvector modules (PRIVATE: not
+# re-exported, and free_breakfast.mcscf does not re-export them either).
 # DeviceResources, Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO,
 # Buffers, Solution and Result are in its signature, so core::resources,
 # core::wwr, molecule, basis, mmd, recipes::matrix_ao, mcscf::solve and
@@ -29,7 +32,16 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::blas
   free_breakfast::integrals::active_space
   free_breakfast::integrals::eri::density_fitting::gradient
+  free_breakfast::integrals::eri::density_fitting::jk
   free_breakfast::integrals::eri::density_fitting::mo
+  free_breakfast::ci::strings
+  free_breakfast::ci::sigma
+  free_breakfast::ci::rdm
+  free_breakfast::ci::solver
   free_breakfast::response::fock
+  free_breakfast::response::hessian
+  free_breakfast::response::orbital_pairs
   free_breakfast::gradient
+  free_breakfast::mcscf::relaxed_hessian
+  free_breakfast::mcscf::zvector
 )
