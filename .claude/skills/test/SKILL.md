@@ -18,7 +18,7 @@ whole C++ toolchain lives in the CUDA image.
 
 ## Two suites, and neither covers the other
 
-| | `test/core/`, `test/gtest/` | `test/pytest/` |
+| | `test/core/`, `test/pipeline/`, `test/gtest/` | `test/pytest/` |
 |---|---|---|
 | Language | C++23, googletest | Python, pytest |
 | Runner | `ctest` via `devtools/cpp-tier.sh` | `pytest` |

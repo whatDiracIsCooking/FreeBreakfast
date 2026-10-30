@@ -49,7 +49,7 @@ or BLAS call is `GpuRuntime`.
 
 `test/gtest/pipeline_core_hamiltonian_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - The step's H is checked, element by element, against a direct
   `core_hamiltonian` then `cartesian_to_spherical` for water, with an s, p, d
   and f shell on oxygen.

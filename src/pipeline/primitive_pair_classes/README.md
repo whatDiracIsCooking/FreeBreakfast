@@ -60,7 +60,7 @@ longer.
 
 `test/gtest/pipeline_primitive_pair_classes_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - The step's classes are checked against a direct `primitive_pair_classes` of
   the same basis: the same (la, lb) and record count per class, and the same
   records, every field bit for bit.

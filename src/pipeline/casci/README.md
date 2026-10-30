@@ -165,7 +165,7 @@ Also an active space past the orbitals, an AVAS label naming no MINAO AO, and
 a multiplicity that does not fit the active space (0, 2 and 7 for CAS(4,4)),
 refused when the step runs. The
 `[casci]` parsing (the `avas` keys too) and every `orbital_order` refusal are in
-`pipeline_config_host.cpp`, and an end-to-end run against the step called by
+`test/pipeline/config_host.cpp`, and an end-to-end run against the step called by
 hand in `pipeline_calculation_gpu.cpp`.
 
 ## Files

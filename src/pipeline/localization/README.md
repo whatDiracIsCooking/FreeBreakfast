@@ -176,8 +176,9 @@ sweep, to read the functional for the convergence test.
 
 ## Tests
 
-`test/gtest/pipeline_localization_gpu.cpp`: the step's contract by
-`static_assert`, and water in STO-3G and cc-pVDZ and NH4+ in cc-pVDZ through
+The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
+
+`test/gtest/pipeline_localization_gpu.cpp`: water in STO-3G and cc-pVDZ and NH4+ in cc-pVDZ through
 the real registry from a config naming `[localization]`, for both Pipek-Mezey
 exponents, against PySCF (`test/gtest/data/localization/`): the functional to
 1e-8 and each orbital's atomic populations to 1e-5; and the localized orbitals

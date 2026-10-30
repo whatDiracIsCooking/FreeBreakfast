@@ -172,9 +172,10 @@ both asserted). N₂ is not a case: SC-NEVPT2 depends on the arbitrary split
 of its degenerate π* virtual pairs by up to 5e-6, PySCF's included, so the
 reference leaves it out (`test/gtest/data/README.md`). The step, like PySCF,
 does nothing about such a split: within a degenerate core or virtual set its
-answer is as arbitrary as the eigenvectors `diagonalize` returns. And
+answer is as arbitrary as the eigenvectors `diagonalize` returns.
 `[nevpt2]` with an integral-direct `[eri]`, written or filled in, refused
-`Unsupported` naming `[eri]` when the config is read.
+`Unsupported` naming `[eri]` when the config is read, is
+`test/pipeline/config_host.cpp`'s.
 
 PC against block2's, the same file's `pc_class_energies` and `e_pc_total`
 (`nevpt2_reference.py`, on the reference's state with the active orbitals

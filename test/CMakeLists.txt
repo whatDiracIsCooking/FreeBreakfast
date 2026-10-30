@@ -1,14 +1,20 @@
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# The C++ suite: two trees, each built into a pair of binaries split by device
-# requirement -- a host one (runs anywhere) and a GPU one (skips its device
-# cases without a GPU):
+# The C++ suite: three trees. Two are each built into a pair of binaries split
+# by device requirement -- a host one (runs anywhere) and a GPU one (skips its
+# device cases without a GPU):
 #
 #   * core/  -- the src/core tests: free_breakfast_core_tests_{host,gpu}.
 #   * gtest/ -- everything else: free_breakfast_tests_{host,gpu}.
 #
-# All four are registered with ctest and run by `ctest --preset <name>`, or by
+# The third has only the host half:
+#
+#   * pipeline/ -- the src/pipeline tests that need no device:
+#     free_breakfast_pipeline_tests_host. Running a real step needs a GPU, so
+#     those cases stay in gtest/'s GPU binary.
+#
+# All five are registered with ctest and run by `ctest --preset <name>`, or by
 # devtools/cpp-tier.sh, which is configure + build + ctest in one command.
 #
 # The PYTHON suite is not built by CMake: it lives in test/pytest/ -- a sibling
@@ -41,7 +47,7 @@
 # `gpu` label, which the ci-cuda and ci-hip test presets exclude (gtest/
 # CMakeLists.txt says why).
 #
-# The backstop timeout of every entry in both trees, scaled by
+# The backstop timeout of every entry in every tree, scaled by
 # FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER (root CMakeLists). A case that hangs
 # should fail its own entry rather than the whole run; the suite is
 # milliseconds today, so 120s is purely a backstop -- until compute-sanitizer
@@ -52,4 +58,5 @@ math(EXPR _fb_test_timeout "120 * ${FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER}")
 add_subdirectory(support)
 add_subdirectory(ci_oracles)
 add_subdirectory(core)
+add_subdirectory(pipeline)
 add_subdirectory(gtest)

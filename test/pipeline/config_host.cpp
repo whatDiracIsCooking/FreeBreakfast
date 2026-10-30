@@ -847,6 +847,38 @@ TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
                       "[cis] ris_k_inner_tol must be positive");
 }
 
+// [cis] under a density-fitted [eri] is planned: the Cis step after an Eri
+// step in fitting mode over the named aux basis, with nothing refused.
+TEST(PipelineConfig, TheCisUnderADensityFittedEriIsPlanned) {
+  const fb::test::ScratchDir dir("pipeline_config");
+  const auto calc =
+      fb::parse_config("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
+                       "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n[cis]\n",
+                       dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::CisStep>().has_value());
+  const auto &eri = calc->step<fb::EriStep>();
+  ASSERT_TRUE(eri.has_value());
+  EXPECT_EQ(eri->mode, fb::EriMode::DensityFitting);
+  EXPECT_EQ(eri->aux_basis, "cc-pvdz-jkfit");
+}
+
+// [nevpt2] over integral-direct ERIs, [eri] written so or filled in, is
+// refused when the config is read, before the SCF and CASSCF it would follow.
+TEST(PipelineConfig, TheNevpt2OverAnIntegralDirectEriIsUnsupported) {
+  const fb::test::ScratchDir dir("pipeline_config");
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    const std::string toml =
+        std::format("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
+                    "[casscf]\nncas = 4\nnelecas = 4\n{}[nevpt2]\n",
+                    eri);
+    const auto calc = fb::parse_config(toml, dir.path(), dir / "out");
+    ASSERT_FALSE(calc.has_value()) << eri;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find("[eri]"), std::string::npos) << calc.error().message;
+  }
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",
