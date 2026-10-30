@@ -123,7 +123,9 @@ coupled one over (x, δ), δ_r ⊥ c_r the change of root r:
 
 H′(x) the derivative of the active-space Hamiltonian along κ(x). So
 R x = H_oc δ with δ_r = −(H₀ − E_r)⁻¹ (1 − c_r c_rᵀ) H′(x) c_r (w_r cancels),
-and a product of H̃ is H's plus, per column:
+and a product of H̃ is H's plus, per column (`mcscf::RelaxedHessian::apply`, in
+the layer-internal [`../relaxed_hessian/`](../relaxed_hessian/README.md),
+created per macro iteration over its H, roots and integrals):
 
 - **H′(x)** on the host, from F^I, ppaa and papa, read back once per macro
   iteration. With C ← C(1 + κ) and T = ncore + t,
@@ -466,7 +468,7 @@ at 1e-8 two fitting sets would differ by far more than the bar.
 | File | Role |
 |------|------|
 | `solve.cppm` | Module interface: `mcscf::solve`, `mcscf::Options`, `mcscf::Iteration`, `mcscf::Solution` |
-| `solve.cpp` | The loop, the augmented Hessian's persistent subspace over H̃, the CI's response R |
+| `solve.cpp` | The loop, and the augmented Hessian's persistent subspace over H̃ (the product, H's and the CI's response R, is `../relaxed_hessian/`'s) |
 | `device::ah_precondition.cu` | The preconditioner's kernel, r / (μ − diag(H)) for one column |
 | `ah_precondition_bridge.h` | Its launcher, shared by the `.cu` and `solve.cpp`'s global module fragment |
 | `CMakeLists.txt` | The device library `free_breakfast.mcscf.solve.device` and the module `free_breakfast.mcscf.solve` |
