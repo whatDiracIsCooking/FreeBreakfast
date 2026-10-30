@@ -7,7 +7,9 @@ the CI together. It sits over `core`, `recipes`, `integrals`
 energy, gradient and orbital Hessian it steps over), and **never imports
 `pipeline`**: a step that runs a CASSCF wraps this layer, not the other way
 round. `mcscf.cppm` (`free_breakfast.mcscf`) re-exports `solve`; it does not
-re-export `response`, so a consumer that wants both imports both.
+re-export `response`, so a consumer that wants both imports both. Nor does it
+re-export `relaxed_hessian`, which is internal to the layer: the CI-relaxed
+Hessian product its sub-modules share, linked PRIVATE by each.
 
 Everything it exports is in **`namespace free_breakfast::mcscf`**, spelled bare
 inside it — `mcscf::Options`, `mcscf::solve` — and `ah_precondition`, the one
@@ -22,6 +24,7 @@ needs a prefix" has the rule.
 
 | Directory | Module | Role |
 |-----------|--------|------|
+| `relaxed_hessian/` | `free_breakfast.mcscf.relaxed_hessian` | **Internal**, not re-exported: the orbital Hessian with the CI relaxed, H̃ = H + R (`mcscf::RelaxedHessian`), and the orbital–CI coupling (`ResponseIntegrals`, `response_integrals`, `response_gradient`). `solve`'s augmented Hessian steps over it. See `relaxed_hessian/README.md`. |
 | `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop (`mcscf::solve`): per macro iteration the integrals, the CI, the weighted RDMs, `response::fock`'s energy and gradient, and an augmented-Hessian step over `response::Hessian` under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
 
 The orbital order, the packed pairs and the gradient and Hessian conventions
@@ -40,4 +43,4 @@ layer's own targets link nothing of `pipeline`.
 | File | Role |
 |------|------|
 | `mcscf.cppm` | Aggregate module interface; `export import`s `solve` |
-| `CMakeLists.txt` | Build configuration: `add_subdirectory(solve)`, and the `free_breakfast.mcscf` module target |
+| `CMakeLists.txt` | Build configuration: `add_subdirectory(relaxed_hessian)` and `(solve)`, and the `free_breakfast.mcscf` module target |

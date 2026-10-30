@@ -23,7 +23,8 @@ free_breakfast_add_gpu_device_library(
 # pieces are PRIVATE. Its one kernel is the preconditioner's, through the
 # device library, PRIVATE: the implementation unit alone GMF-includes the
 # bridge. The integrals, CI, RDMs, Fock, Hessian and expm are their modules',
-# the rest BLAS and copies.
+# the CI-relaxed Hessian product relaxed_hessian's (PRIVATE: internal to the
+# layer), the rest BLAS and copies.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.mcscf.solve
@@ -57,5 +58,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::fock
   free_breakfast::response::hessian
   free_breakfast::response::orbital_pairs
+  free_breakfast::mcscf::relaxed_hessian
   free_breakfast::mcscf::solve::device
 )
