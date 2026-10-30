@@ -15,7 +15,7 @@ the FelizJueves submodule, integral-direct and density-fitted), `localization`
 populations and partial charges), `ci` (determinant CI: strings, sigma, the
 solver and RDMs), `response` (the CASSCF energy, orbital gradient and
 orbital Hessian at fixed orbitals and RDMs), `mcscf` (the state-averaged
-CASSCF loop over them), `geometry` and `pipeline` (the calculation pipeline: the step
+CASSCF loop over them), `geometry`, `gradient` and `pipeline` (the calculation pipeline: the step
 contract, the setup steps, the ERI step (integral-direct or density-fitted,
 built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, and the
 planner that runs them from a TOML config). `src/README.md` has the one-line summary of each.
