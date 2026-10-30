@@ -91,6 +91,7 @@ add_executable(
   free_breakfast_tests_gpu
   diagonalize_gpu.cpp
   cholesky_gpu.cpp
+  lu_gpu.cpp
   recipes_einsum_gpu.cpp
   orthogonalize_gpu.cpp
   orthonormalize_gpu.cpp
@@ -102,6 +103,7 @@ add_executable(
   ci_solver_gpu.cpp
   ci_rdm_gpu.cpp
   cis_precondition_gpu.cpp
+  cis_ris_precondition_gpu.cpp
   cis_sigma_gpu.cpp
   cis_step_gpu.cpp
   matrix_ao_gpu.cpp
@@ -188,6 +190,7 @@ target_link_libraries(
   free_breakfast::ci
   free_breakfast::test::ci_oracles
   free_breakfast::cis::precondition
+  free_breakfast::cis::ris_precondition
   free_breakfast::cis::sigma
   free_breakfast::integrals
   free_breakfast::response

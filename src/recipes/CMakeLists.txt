@@ -8,6 +8,7 @@ add_subdirectory(diis)
 add_subdirectory(einsum)
 add_subdirectory(expm)
 add_subdirectory(linear_operator)
+add_subdirectory(lu)
 add_subdirectory(matrix_ao)
 add_subdirectory(norm)
 add_subdirectory(orthogonalize)
@@ -33,6 +34,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::einsum
   free_breakfast::recipes::expm
   free_breakfast::recipes::linear_operator
+  free_breakfast::recipes::lu
   free_breakfast::recipes::matrix_ao
   free_breakfast::recipes::norm
   free_breakfast::recipes::orthogonalize

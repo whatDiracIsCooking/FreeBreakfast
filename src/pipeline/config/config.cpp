@@ -310,7 +310,7 @@ template <class S>
   } else if constexpr (std::same_as<S, CisStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"n_states", "spin", "residual_tolerance", "max_iterations", "max_subspace",
-                        "cluster_gap"}));
+                        "cluster_gap", "ris", "ris_theta", "ris_shells"}));
     cis::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "n_states", base_dir, options.n_states));
     std::string spin = "singlet";
@@ -324,6 +324,32 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "max_iterations", base_dir, options.davidson.max_iterations));
     FBF_TRY(read_key(table, kStep, "max_subspace", base_dir, step.max_subspace));
     FBF_TRY(read_key(table, kStep, "cluster_gap", base_dir, options.cluster_gap));
+    // RIS-J is on with ris = true, at RisOptions' defaults unless ris_theta
+    // or ris_shells says; either of those without it is refused rather than
+    // ignored.
+    bool ris = false;
+    FBF_TRY(read_key(table, kStep, "ris", base_dir, ris));
+    if (ris) {
+      cis::RisOptions &ris_options = options.ris.emplace();
+      FBF_TRY(read_key(table, kStep, "ris_theta", base_dir, ris_options.theta));
+      std::string shells = "sp";
+      FBF_TRY(read_key(table, kStep, "ris_shells", base_dir, shells));
+      if (shells != "s" && shells != "sp" && shells != "spd") {
+        return err_config("[{}] has no ris_shells '{}' (known: 's', 'sp', 'spd')", kStep, shells);
+      }
+      ris_options.shells = shells == "s"    ? cis::RisShells::S
+                           : shells == "sp" ? cis::RisShells::Sp
+                                            : cis::RisShells::Spd;
+      if (!std::isfinite(ris_options.theta) || ris_options.theta <= 0.0) {
+        return err_config("[{}] ris_theta must be finite and positive", kStep);
+      }
+    } else {
+      for (std::string_view key : {"ris_theta", "ris_shells"}) {
+        if (table.contains(key)) {
+          return err_config("[{}] {} needs ris = true", kStep, key);
+        }
+      }
+    }
     // Whether n_states fits the single excitations needs the molecule and the
     // basis, so CisStep::run checks that; these need neither.
     if (options.n_states < 1) {
@@ -338,6 +364,9 @@ template <class S>
     }
     if (!(options.cluster_gap >= 0.0)) {
       return err_config("[{}] cluster_gap must not be negative", kStep);
+    }
+    if (options.ris && options.cluster_gap > 0.0) {
+      return err_config("[{}] ris and cluster_gap each pick the preconditioner; set one", kStep);
     }
   } else {
     // A step with options needs its own branch above, or every key in its

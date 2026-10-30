@@ -24,6 +24,16 @@ enum class RisShells : uint8_t {
   Spd,
 };
 
+/// @brief The RIS basis's two knobs, as the RIS-J preconditioner
+/// (cis.ris_precondition) and cis::Options::ris carry them: @ref ris_basis's
+/// @p theta and @p shells, at its defaults.
+struct RisOptions {
+  /// @brief The exponent scale θ, finite and positive.
+  double theta = 0.2;
+  /// @brief What a heavy atom gets.
+  RisShells shells = RisShells::Sp;
+};
+
 /// @brief The RIS auxiliary basis over @p atoms, in atom order: per atom one
 /// single-primitive shell per l that @p shells emits, all of exponent
 /// θ / R_A², R_A the Ghosh radius in bohr.

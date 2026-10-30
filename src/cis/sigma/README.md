@@ -17,7 +17,7 @@ device library.
 | Name | Role |
 |---|---|
 | `cis::Spin` | `Singlet` or `Triplet` (the Ms = 0 component) |
-| `cis::Options` | `n_states` (5), `spin` (`Singlet`), `davidson`, a `DavidsonOptions` at `residual_tolerance = 1e-6`, and `cluster_gap` (0: off), the preconditioner's (`../precondition/`) |
+| `cis::Options` | `n_states` (5), `spin` (`Singlet`), `davidson`, a `DavidsonOptions` at `residual_tolerance = 1e-6`, `cluster_gap` (0: off), the preconditioner's (`../precondition/`), and `ris`, a `std::optional<RisOptions>` (unset: off), the RIS-J preconditioner's basis (`../ris_precondition/`), exclusive with a nonzero `cluster_gap` |
 | `cis::Sigma::create(res, basis, u, j_classes, k_classes, c, n_occ, delta, spin)` | `Result<Sigma>` over the spherical RHF orbitals `c`, the first `n_occ` occupied, and `cis::diagonal`'s device `delta`; allocates every buffer `apply` writes |
 | `Sigma::apply(res, k, x, y)` | `Status`: Y = A X for the n_ov × k column-major device blocks, one column at a time |
 | `Sigma::size()` | n_ov = n_occ · n_virt |

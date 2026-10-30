@@ -16,6 +16,7 @@ export import free_breakfast.recipes.diis;
 export import free_breakfast.recipes.einsum;
 export import free_breakfast.recipes.expm;
 export import free_breakfast.recipes.linear_operator;
+export import free_breakfast.recipes.lu;
 export import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.recipes.norm;
 export import free_breakfast.recipes.orthogonalize;

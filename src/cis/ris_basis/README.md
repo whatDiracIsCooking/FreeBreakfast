@@ -14,6 +14,7 @@ Host-only: no device library, no `DeviceResources`.
 |---|---|
 | `cis::RisShells` | What a heavy atom (Z > 1) gets: `S`, `Sp` or `Spd`. Hydrogen gets `s` alone under all three. gpu4pyscf's `fitting_basis` `'s'`, `'sp'`, `'spd'` |
 | `cis::ris_basis(atoms, theta = 0.2, shells = RisShells::Sp)` | The aux `BasisSet` over `atoms` (pass `molecule.atoms()`), in atom order; `Result<BasisSet>`. `InvalidConfig` for a θ that is not finite and positive, or a Z outside 1..36 |
+| `cis::RisOptions` | `theta` (0.2) and `shells` (`Sp`) together: what `cis::Options::ris` and `cis::RisPreconditioner::create` carry |
 
 ```cpp
 import free_breakfast.cis.ris_basis;

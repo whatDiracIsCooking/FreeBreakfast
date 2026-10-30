@@ -16,7 +16,8 @@ import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
-import free_breakfast.recipes.davidson; // DavidsonOptions
+import free_breakfast.recipes.davidson;     // DavidsonOptions
+export import free_breakfast.cis.ris_basis; // RisOptions and RisShells, in Options
 import free_breakfast.integrals.eri.integral_direct.coulomb;
 import free_breakfast.integrals.eri.integral_direct.exchange;
 
@@ -47,6 +48,11 @@ struct Options {
   /// cluster's exact block of A (cis::Preconditioner::cluster). Zero, the
   /// default, clusters nothing: the diagonal correction alone.
   double cluster_gap = 0.0;
+  /// @brief The RIS-J preconditioner's basis (cis::RisPreconditioner): set,
+  /// the correction solves (θ − Δε − 2 L Lᵀ) z = r exactly over the RIS
+  /// basis it names, in place of the diagonal one; unset, the default, it is
+  /// not built. Exclusive with a nonzero @ref cluster_gap.
+  std::optional<RisOptions> ris;
 };
 
 /// @brief σ = A b on the device, integral-direct: a
