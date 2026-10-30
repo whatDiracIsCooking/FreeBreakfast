@@ -1,9 +1,9 @@
-// GPU cases for the Gradient step through the real registry: a TOML config
-// for H2O in cc-pVDZ / cc-pVDZ-JKFIT read, planned and run by Calculation,
-// its gradient.json against PySCF's df.grad.rhf (data/gradient/gradient.json's
-// df_rhf h2o_ccpvdz, test/gtest/data/README.md), the total and every term to
-// 1e-8; and the two refusals, an integral-direct [eri] and an ROHF SCF, each
-// naming its reason.
+// GPU cases for the Gradient step through the real registry: TOML configs
+// for H2O in cc-pVDZ read, planned and run by Calculation, their gradient.json
+// against PySCF's (data/gradient/gradient.json, test/gtest/data/README.md),
+// the total and every term to 1e-8: density-fitted over cc-pVDZ-JKFIT against
+// df.grad.rhf (df_rhf's h2o_ccpvdz), and integral-direct against
+// scf.grad.rhf (rhf's h2o_ccpvdz); and the ROHF refusal, naming its reason.
 
 #include <gtest/gtest.h>
 
@@ -33,19 +33,20 @@ constexpr double kEnergyTolerance = 1e-8;
 // converged well past its defaults, as df_rhf_gradient_gpu.cpp converges it.
 constexpr std::string_view kScf = "[scf]\nenergy_tolerance = 1e-12\ncommutator_tolerance = 1e-10\n";
 
-const fb::json &reference_case(std::string_view name) {
+// @p name in gradient.json's @p section: df_rhf or rhf.
+const fb::json &reference_case(std::string_view section, std::string_view name) {
   static const fb::json kDoc = [] {
     auto read =
         fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "gradient" / "gradient.json");
     EXPECT_TRUE(read.has_value()) << read.error().message;
     return read.has_value() ? std::move(*read) : fb::json{};
   }();
-  for (const fb::json &entry : kDoc.at("df_rhf")) {
+  for (const fb::json &entry : kDoc.at(section)) {
     if (entry.at("name").get<std::string>() == name) {
       return entry;
     }
   }
-  ADD_FAILURE() << "no df_rhf case " << name;
+  ADD_FAILURE() << "no " << section << " case " << name;
   static const fb::json kNone;
   return kNone;
 }
@@ -99,11 +100,11 @@ double compare(const std::string &what, const fb::json &ours, const fb::json &re
   return worst;
 }
 
-TEST(PipelineGradient, DfRhfGradientJsonMatchesPyscf) {
-  FBF_REQUIRE_GPU();
-  const fb::json &expected = reference_case("h2o_ccpvdz");
-  const fb::test::ScratchDir dir("pipeline_gradient");
-  const auto config = write_config(dir, expected, "", df_eri(expected), kScf);
+// @p config, run by Calculation in @p dir: its gradient.json against
+// @p expected, the energy and every row to 1e-8; the worst error printed
+// under @p tag, for the record a PR reports.
+void expect_gradient_json(const fb::test::ScratchDir &dir, const std::filesystem::path &config,
+                          const fb::json &expected, std::string_view tag) {
   auto calc = fb::read_config(config, dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   fb::NodeResources node;
@@ -114,7 +115,7 @@ TEST(PipelineGradient, DfRhfGradientJsonMatchesPyscf) {
   ASSERT_TRUE(written.has_value()) << written.error().message;
   EXPECT_NEAR(written->at("energy").get<double>(), expected.at("energy").get<double>(),
               kEnergyTolerance);
-  std::string report = "[ gradient ] h2o_ccpvdz gradient.json:";
+  std::string report = std::format("[ gradient ] {} gradient.json:", tag);
   double worst = compare("total", written->at("total"), expected.at("total"));
   report += std::format(" total {:.2e}", worst);
   for (const auto &item : expected.at("terms").items()) {
@@ -131,11 +132,29 @@ TEST(PipelineGradient, DfRhfGradientJsonMatchesPyscf) {
   EXPECT_EQ(out->gradient.total.size(), 3 * expected.at("atoms").size());
 }
 
-// A refusal needs no tight SCF, so [scf] is at its defaults: an
-// integral-direct SCF's incremental builds stall short of kScf's commutator.
+TEST(PipelineGradient, DfRhfGradientJsonMatchesPyscf) {
+  FBF_REQUIRE_GPU();
+  const fb::json &expected = reference_case("df_rhf", "h2o_ccpvdz");
+  const fb::test::ScratchDir dir("pipeline_gradient");
+  expect_gradient_json(dir, write_config(dir, expected, "", df_eri(expected), kScf), expected,
+                       "df_rhf h2o_ccpvdz");
+}
+
+TEST(PipelineGradient, RhfGradientJsonMatchesPyscf) {
+  FBF_REQUIRE_GPU();
+  const fb::json &expected = reference_case("rhf", "h2o_ccpvdz");
+  const fb::test::ScratchDir dir("pipeline_gradient_direct");
+  // A missing [eri] is filled in integral-direct. Every Fock build is full,
+  // so the SCF reaches kScf's commutator: the incremental builds stall short
+  // of it.
+  const std::string scf = std::format("{}fock_rebuild_interval = 1\n", kScf);
+  expect_gradient_json(dir, write_config(dir, expected, "", "", scf), expected, "rhf h2o_ccpvdz");
+}
+
+// A refusal needs no tight SCF, so [scf] is at its defaults.
 void expect_refused(std::string_view tag, std::string_view molecule_extra, std::string_view eri,
                     std::string_view needle) {
-  const fb::json &expected = reference_case("h2o_ccpvdz");
+  const fb::json &expected = reference_case("df_rhf", "h2o_ccpvdz");
   const fb::test::ScratchDir dir(tag);
   const auto config = write_config(dir, expected, molecule_extra, eri, "");
   auto calc = fb::read_config(config, dir.path(), dir / "out");
@@ -148,17 +167,11 @@ void expect_refused(std::string_view tag, std::string_view molecule_extra, std::
   EXPECT_FALSE(std::filesystem::exists(dir / "out" / "gradient.json"));
 }
 
-TEST(PipelineGradient, RefusesIntegralDirectEris) {
-  FBF_REQUIRE_GPU();
-  // A missing [eri] is filled in integral-direct.
-  expect_refused("pipeline_gradient_direct", "", "", "density fitting only");
-}
-
 TEST(PipelineGradient, RefusesRohf) {
   FBF_REQUIRE_GPU();
   // H2O+, a doublet: ROHF over the same fit.
   expect_refused("pipeline_gradient_rohf", "charge = 1\nmultiplicity = 2\n",
-                 df_eri(reference_case("h2o_ccpvdz")), "ROHF");
+                 df_eri(reference_case("df_rhf", "h2o_ccpvdz")), "ROHF");
 }
 
 } // namespace

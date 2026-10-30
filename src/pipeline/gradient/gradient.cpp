@@ -1,6 +1,6 @@
 /// @file
-/// @brief GradientStep: the refusals, gradient::df_rhf over the pipeline's
-/// products, and gradient.json.
+/// @brief GradientStep: the ROHF refusal, gradient::df_rhf or gradient::rhf
+/// over the pipeline's products, and gradient.json.
 
 module free_breakfast.pipeline.gradient;
 
@@ -34,16 +34,20 @@ Result<GradientOutput> GradientStep::run(
                            "alpha, {} beta electrons)",
                            kName, scf.n_alpha, scf.n_beta);
   }
-  const auto *fit = std::get_if<DensityFitted>(&in.get<EriOutput>().eri);
-  if (fit == nullptr) {
-    return err_unsupported("[{}] runs over density fitting only, and [eri] mode is "
-                           "'integral_direct': set [eri] mode = 'density_fitting'",
-                           kName);
+  const Molecule &molecule = in.get<MoleculeOutput>().molecule;
+  const BasisSet &basis = in.get<BasisSetOutput>().basis;
+  const auto &classes = in.get<PrimitivePairClassesOutput>().classes;
+  const auto &eri = in.get<EriOutput>().eri;
+  // gradient.json's layout is the same for both ERI kinds: RhfTerms is.
+  GradientOutput out;
+  if (const auto *const fit = std::get_if<DensityFitted>(&eri)) {
+    out.gradient = FBF_TRY(gradient::df_rhf(res, molecule, basis, classes, fit->aux, fit->b.data(),
+                                            fit->l.data(), scf.c, scf.mo_energies, scf.n_alpha));
+  } else {
+    out.gradient = FBF_TRY(gradient::rhf(res, molecule, basis, classes,
+                                         std::get<IntegralDirect>(eri).k_classes, scf.c,
+                                         scf.mo_energies, scf.n_alpha));
   }
-  GradientOutput out{FBF_TRY(
-      gradient::df_rhf(res, in.get<MoleculeOutput>().molecule, in.get<BasisSetOutput>().basis,
-                       in.get<PrimitivePairClassesOutput>().classes, fit->aux, fit->b.data(),
-                       fit->l.data(), scf.c, scf.mo_energies, scf.n_alpha))};
   if (!json_path.empty()) {
     const gradient::RhfTerms &g = out.gradient;
     FBF_TRY(
