@@ -1,7 +1,8 @@
 /// @file
 /// @brief The `Optimize` step: a geometry optimization, @c geometry::optimize
 /// over the energy and gradient of the chain from the molecule to
-/// `[gradient]`, rerun as a nested Pipeline at every geometry.
+/// `[gradient]` (RHF) or to `[casscf_gradient]` (a DF-CASSCF root), rerun as a
+/// nested Pipeline at every geometry.
 ///
 /// Node-shaped, because each evaluation runs a Pipeline of its own. Its
 /// product, `OptimizeOutput`, is declared in pipeline.molecule, whose
@@ -17,9 +18,10 @@ import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
 import free_breakfast.pipeline.step;
 export import free_breakfast.geometry; // geometry::Options, an option
-// Every step the chain reruns, MoleculeOutput and OptimizeOutput among the
-// products it re-exports.
+// Every step the two chains rerun, MoleculeOutput and OptimizeOutput among the
+// products they re-export.
 export import free_breakfast.pipeline.gradient;
+export import free_breakfast.pipeline.casscf_gradient;
 
 export namespace free_breakfast {
 
@@ -45,6 +47,15 @@ struct OptimizeStep {
   OrthogonalizerStep orthogonalizer{};
   GuessStep guess{};
   ScfStep scf{};
+  /// @brief The CASSCF the chain runs after the SCF, read only when
+  /// @ref casscf_gradient is set. Its active space is picked once, at the
+  /// first geometry; every later one starts from the previous evaluation's
+  /// converged orbitals, re-orthonormalized in the new overlap.
+  CasscfStep casscf{};
+  /// @brief Set: the chain ends in @ref casscf and this gradient of one of
+  /// its roots, over density fitting only, and the energy optimized is that
+  /// root's. Empty: it ends in `[gradient]`, the RHF's.
+  std::optional<CasscfGradientStep> casscf_gradient{};
 
   /// @brief Where every evaluated geometry is written, in order, as a
   /// multi-frame XYZ (Angstrom), if not empty; each frame's comment line holds
@@ -59,13 +70,16 @@ struct OptimizeStep {
   std::filesystem::path history{};
 
   /// @brief @c geometry::optimize from @ref molecule's geometry, each
-  /// evaluation one Pipeline run of the chain, its energy the ScfOutput's and
-  /// its gradient the GradientOutput's total. Every step the chain holds
-  /// keeps its own refusals: under an integral-direct @ref eri, or for an open
-  /// shell, `[gradient]`'s.
+  /// evaluation one Pipeline run of the chain, its energy and gradient the
+  /// ScfOutput's energy and the GradientOutput's total or, under
+  /// @ref casscf_gradient, the CasscfOutput's energy of its root and the
+  /// CasscfGradientOutput's total. Every step the chain holds keeps its own
+  /// refusals: for an open shell, `[gradient]`'s.
   ///
   /// @return The optimized Molecule, on device 0, and its energy; with no
-  ///         device, ErrorKind::GpuRuntime; otherwise the first error of an
+  ///         device, ErrorKind::GpuRuntime; under @ref casscf_gradient with an
+  ///         integral-direct @ref eri, Unsupported before anything runs;
+  ///         otherwise the first error of an
   ///         evaluation's Pipeline, @c geometry::optimize's own
   ///         (MaxIterationsExceeded past @c options.max_steps), or the error
   ///         writing an output file.
