@@ -26,15 +26,16 @@
 
 namespace free_breakfast::device {
 
-// One Hermite class per lp, lq <= 2 kMaxL: an f-shell pair's E reaches
-// |t| = 6. So the shell momentum the emitted table covers, J's limit, is half
-// its last index.
-constexpr auto kHermiteExtent = std::extent_v<decltype(e_hermite_kernels), 0>;
-constexpr int32_t kMaxL = static_cast<int32_t>(kHermiteExtent - 1) / 2;
+// One Hermite class per lp, lq <= 2 kMaxL, an f-shell pair's E reaching
+// |t| = 6, and the gradient's raised row lp = 2 kMaxL + 1, an (ff) bra one
+// order up. So the shell momentum the emitted table covers, J's limit, is half
+// its last ket index.
+constexpr auto kKetExtent = std::extent_v<decltype(e_hermite_kernels), 1>;
+constexpr int32_t kMaxL = static_cast<int32_t>(kKetExtent - 1) / 2;
 
-static_assert(kHermiteExtent % 2 == 1 &&
-                  std::extent_v<decltype(e_hermite_kernels), 1> == kHermiteExtent,
-              "kernels/'s [lp][lq] table is not square over lp <= 2 l: rerun "
+static_assert(kKetExtent % 2 == 1 &&
+                  std::extent_v<decltype(e_hermite_kernels), 0> == kKetExtent + 1,
+              "kernels/'s [lp][lq] table is not lq <= 2 l by lp <= 2 l + 1: rerun "
               "tools/emit/coulomb_kernels.py");
 
 static_assert(kMaxL == kCoulombMaxMomentum,
@@ -59,11 +60,11 @@ bool has_pair_kernel(const PrimitivePairClassView &cls) {
 wwr::wwrError_t e_hermite_class(const wwr::wwrStream_t stream, const PrimitivePairClassView &bra,
                                 const PrimitivePairClassView &ket, const double tau,
                                 const double *ip, const double *iq, const double *dq,
-                                const double *dmax, double *jp) {
-  if (!has_pair_kernel(bra) || !has_pair_kernel(ket)) {
+                                const double *dmax, double *jp, const int32_t raise) {
+  if (!has_pair_kernel(bra) || !has_pair_kernel(ket) || raise < 0 || raise > 1) {
     return wwr::wwrErrorInvalidValue;
   }
-  const auto kernel = e_hermite_kernels[bra.la + bra.lb][ket.la + ket.lb];
+  const auto kernel = e_hermite_kernels[bra.la + bra.lb + raise][ket.la + ket.lb];
   // One warp per bra record, the kets strip-mined across its lanes; no dynamic
   // shared memory, J_p's accumulator is sized for this block in the text.
   const dim3 block(e_hermite_block_dim[0], e_hermite_block_dim[1]);

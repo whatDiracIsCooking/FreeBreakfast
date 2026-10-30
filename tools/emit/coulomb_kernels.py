@@ -22,6 +22,20 @@ src/integrals/mmd/kernels/pair_bound/.
   ket class of a bra class adds into the same J_p;
 - `jab<la, lb>`, the bra back-transform and scatter of J_p into J_mu_nu.
 
+And the two its nuclear gradient adds (FelizJueves's docs/implementation/
+gradient.md, "The kernels"; the `gjab_` half of its `--grad-l 3` ladder, whose
+`gs_`, `gt_` and `gv_` are tools/emit/one_electron_gradient_kernels.py's):
+
+- the raised Hermite row, `e_hermite<2 MAX_L + 1, lq>` for every lq <= 2
+  MAX_L: the d0 [p|q] of `kernel_gjab.gjab_pq_spec`'s class, the bra raised
+  by one, whose J_p at order la + lb + 1 the gradient reads. The same
+  builder and passes as every other `e_hermite` class, so the same template
+  and table, one row longer;
+- `gjab<la, lb>`, the bra derivative of E_J contracted with the density into
+  a per-atom G (`kernel_gjab`), in FelizJueves's default form per class
+  (low-stack from la + lb = 5, `kernel_gjab.gjab_lowstack`), written to
+  coulomb/gradient/.
+
 Every [n, 3] record vector is split into three flat arrays (`ir.passes.
 split_axes`) named as free_breakfast.integrals.mmd names its fields: pa_*,
 pb_*, and p_* / q_* for the [p|q] bra and ket centres. D_q is stored q-major,
@@ -39,12 +53,14 @@ have no shuffle, so their text has no width at all. Nothing is added to the text
 
 As tools/emit/one_electron_kernels.py does, each class is one explicit
 specialization of its family's template, written to the `kernels/` of the
-family's module (coulomb/dq/, coulomb/e_hermite/, and coulomb/j_coulomb/ for
-jab), which also gets one header, `<family>.h`, every unit includes: the
-primary, each class's
-declaration and `<family>_kernels`, the table a launcher indexes. Pair
+family's module (coulomb/dq/, coulomb/e_hermite/, coulomb/j_coulomb/ for
+jab, and coulomb/gradient/ for gjab), which also gets one header,
+`<family>.h`, every unit includes: the primary, each class's declaration and
+`<family>_kernels`, the table a launcher indexes. Pair
 classes are written `la <= lb` only, for the reason that tool gives; the
-Hermite classes are every (lp, lq) with both at most 2 MAX_L.
+Hermite classes are every (lp, lq) with both at most 2 MAX_L, and the raised
+row lp = 2 MAX_L + 1 (the lower raised classes are energy classes already), so
+the table is [2 MAX_L + 2][2 MAX_L + 1].
 
 The device Boys routine the units with a fundamental include, `eval_boys.h`,
 and the per-order `eval_boys_{M}.h` it includes for M in 0..20 (all of
@@ -68,6 +84,7 @@ from felizjueves.emit import gpu  # noqa: E402
 from felizjueves.emit.gpu import WAVEFRONT, Specialization  # noqa: E402
 from felizjueves.eri.j_coulomb.kernel_dq import build_dq_kernel  # noqa: E402
 from felizjueves.eri.j_coulomb.kernel_jab import build_jab_kernel  # noqa: E402
+from felizjueves.gradient.kernel_gjab import build_gjab_kernel  # noqa: E402
 from felizjueves.ir.passes import atomize, split_axes, transpose  # noqa: E402
 from felizjueves.mmd.kernel import build_pq_kernel  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
@@ -98,8 +115,11 @@ def pair_classes() -> list[tuple[int, int]]:
 
 
 def hermite_classes() -> list[tuple[int, int]]:
+    # Every energy class, then the gradient's raised row: an (ff) bra raised
+    # by one is lp = 2 MAX_L + 1, against every ket.
     top = 2 * MAX_L
-    return [(lp, lq) for lp in range(top + 1) for lq in range(top + 1)]
+    energy = [(lp, lq) for lp in range(top + 1) for lq in range(top + 1)]
+    return energy + [(top + 1, lq) for lq in range(top + 1)]
 
 
 def dq(cls: tuple[int, int]):
@@ -111,6 +131,10 @@ def dq(cls: tuple[int, int]):
 def jab(cls: tuple[int, int]):
     la, lb = cls
     return split_axes(build_jab_kernel(cls, name=f"jab_{la}{lb}"), PAIR_AXES)
+
+
+def gjab(cls: tuple[int, int]):
+    return split_axes(build_gjab_kernel(cls), PAIR_AXES)
 
 
 def e_hermite(cls: tuple[int, int]):
@@ -135,6 +159,7 @@ FAMILIES = {
         {"block_dim": (1, WAVEFRONT), "any_wavefront": True},
     ),
     "jab": ("j_coulomb", pair_classes, jab, {}),
+    "gjab": ("gradient", pair_classes, gjab, {}),
 }
 
 

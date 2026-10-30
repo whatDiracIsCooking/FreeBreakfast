@@ -9,17 +9,21 @@ add_subdirectory(pair_class)
 add_subdirectory(dq)
 add_subdirectory(e_hermite)
 add_subdirectory(j_coulomb)
+# The nuclear gradient's own step, gjab; its raised [p|q] is e_hermite's.
+add_subdirectory(gradient)
 
-# The module: the build, which runs the three steps and the ket sort ket-major.
-# DeviceResources, CoulombPairClass (pair_class, re-exported) and
-# CartesianMatrixAO are in its signature, so core::resources, pair_class and
-# recipes::matrix_ao are PUBLIC. The per-class launch and the pre-launch checks
-# are the one-electron builds' own (one_electron::launch), the three steps are
-# modules of their own, and the ket sort's device library is PRIVATE: the
-# implementation unit includes its bridge header in its GMF and calls the
-# launcher, and a static library's private link dependencies still reach the
-# final link. So is pair_class's, for J's momentum limit, kCoulombMaxMomentum
-# (its bridge header).
+# The module: the build, which runs the three steps and the ket sort ket-major,
+# and its nuclear gradient, which runs the same ket phase with the bra raised by
+# one and then gjab. DeviceResources, CoulombPairClass (pair_class,
+# re-exported), BasisSet, PrimitivePairClass, CartesianMatrixAO and
+# SphericalMatrixAO are in its signatures, so core::resources, pair_class,
+# basis, mmd and recipes::matrix_ao are PUBLIC. The per-class launch and the
+# pre-launch checks are the one-electron builds' own (one_electron::launch), the
+# three steps are modules of their own, and the device libraries are PRIVATE:
+# the ket sort's, e_hermite's (the raised [p|q]) and gjab's, whose bridge
+# headers the implementation unit includes in its GMF; a static library's
+# private link dependencies still reach the final link. So is pair_class's, for
+# J's momentum limit, kCoulombMaxMomentum (its bridge header).
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.coulomb
@@ -31,17 +35,20 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::core::error_handling
   free_breakfast::core::resources
+  free_breakfast::basis
+  free_breakfast::integrals::mmd
   free_breakfast::integrals::eri::integral_direct::coulomb::pair_class
   free_breakfast::recipes::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
-  free_breakfast::integrals::mmd
   free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::eri::integral_direct::coulomb::pair_class::device
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::coulomb::dq
   free_breakfast::integrals::eri::integral_direct::coulomb::e_hermite
+  free_breakfast::integrals::eri::integral_direct::coulomb::e_hermite::device
   free_breakfast::integrals::eri::integral_direct::coulomb::j_coulomb
+  free_breakfast::integrals::eri::integral_direct::coulomb::gradient::device
 )

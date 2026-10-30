@@ -1,13 +1,14 @@
 # The [p|q] contraction's launcher. Device code in its own library, so its
 # language and -x hip never reach the module compiles. Its sources are the
 # launcher and the generated kernels (kernels/, written by
-# tools/emit/coulomb_kernels.py), one per Hermite class, each compiled on its
-# own: the launcher includes only kernels/e_hermite.h and launches through its
-# table. Under CUDA that wants relocatable device code, this library's
-# default, so it must never pass NO_DEVICE_LINKING (nvcc warns #20280 without
-# it). The bridge header it shares with the module names int32_t,
-# PrimitivePairClassView, wwrStream_t and wwrError_t, hence types_headers,
-# mmd::headers and wwr::device PUBLIC. The kernels include FelizJueves's
+# tools/emit/coulomb_kernels.py), one per Hermite class (the energy's lp, lq <=
+# 6 and the gradient's raised row lp = 7), each compiled on its own: the
+# launcher includes only kernels/e_hermite.h and launches through its table.
+# Under CUDA that wants relocatable device code, this library's default, so it
+# must never pass NO_DEVICE_LINKING (nvcc warns #20280 without it). The bridge
+# header it shares with the module names int32_t, PrimitivePairClassView,
+# wwrStream_t and wwrError_t, hence types_headers, mmd::headers and wwr::device
+# PUBLIC. The kernels include FelizJueves's
 # felizjueves/runtime.h (felizjueves::headers, which also carries FJ_WAVEFRONT
 # = WWR_WARP_SIZE) and the shared eval_boys.h (shared::headers), and the
 # launcher checks e_hermite's block against kWarpSize (block_params.h), hence
@@ -67,6 +68,13 @@ free_breakfast_add_gpu_device_library(
   kernels/e_hermite_64.cu
   kernels/e_hermite_65.cu
   kernels/e_hermite_66.cu
+  kernels/e_hermite_70.cu
+  kernels/e_hermite_71.cu
+  kernels/e_hermite_72.cu
+  kernels/e_hermite_73.cu
+  kernels/e_hermite_74.cu
+  kernels/e_hermite_75.cu
+  kernels/e_hermite_76.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::mmd::headers

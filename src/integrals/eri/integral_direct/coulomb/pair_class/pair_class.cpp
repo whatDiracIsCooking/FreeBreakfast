@@ -22,13 +22,6 @@ import free_breakfast.integrals.one_electron.launch;
 
 namespace free_breakfast {
 
-// The Hermite functions of total order up to l, |t| <= l: one row of a
-// record's D_q or J_p.
-size_t coulomb_hermite_count(const int32_t l) {
-  const auto n = static_cast<size_t>(l);
-  return (n + 1) * (n + 2) * (n + 3) / 6;
-}
-
 // J's classes from mmd's, once every class's stream has been joined into
 // res.stream(): the maxima over every class, each class's keep flags and
 // their scan, the kept counts read back, then each kept class's scatter on its

@@ -137,6 +137,7 @@ add_executable(
   one_electron_gradient_gpu.cpp
   core_hamiltonian_gpu.cpp
   coulomb_gpu.cpp
+  coulomb_gradient_gpu.cpp
   sort_bounds_gpu.cpp
   exchange_helpers_gpu.cpp
   exchange_e_table_gpu.cpp

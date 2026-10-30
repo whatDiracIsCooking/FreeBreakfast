@@ -956,11 +956,144 @@ __global__ void e_hermite<6, 6>(
     const double* D,
     double* J);
 
+template <>
+__global__ void e_hermite<7, 0>(
+    int32_t n_bra,
+    int32_t n_ket,
+    double tau,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* zeta,
+    const double* Ip,
+    const double* q_x,
+    const double* q_y,
+    const double* q_z,
+    const double* eta,
+    const double* Iq,
+    const double* Dmax,
+    const double* D,
+    double* J);
+
+template <>
+__global__ void e_hermite<7, 1>(
+    int32_t n_bra,
+    int32_t n_ket,
+    double tau,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* zeta,
+    const double* Ip,
+    const double* q_x,
+    const double* q_y,
+    const double* q_z,
+    const double* eta,
+    const double* Iq,
+    const double* Dmax,
+    const double* D,
+    double* J);
+
+template <>
+__global__ void e_hermite<7, 2>(
+    int32_t n_bra,
+    int32_t n_ket,
+    double tau,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* zeta,
+    const double* Ip,
+    const double* q_x,
+    const double* q_y,
+    const double* q_z,
+    const double* eta,
+    const double* Iq,
+    const double* Dmax,
+    const double* D,
+    double* J);
+
+template <>
+__global__ void e_hermite<7, 3>(
+    int32_t n_bra,
+    int32_t n_ket,
+    double tau,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* zeta,
+    const double* Ip,
+    const double* q_x,
+    const double* q_y,
+    const double* q_z,
+    const double* eta,
+    const double* Iq,
+    const double* Dmax,
+    const double* D,
+    double* J);
+
+template <>
+__global__ void e_hermite<7, 4>(
+    int32_t n_bra,
+    int32_t n_ket,
+    double tau,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* zeta,
+    const double* Ip,
+    const double* q_x,
+    const double* q_y,
+    const double* q_z,
+    const double* eta,
+    const double* Iq,
+    const double* Dmax,
+    const double* D,
+    double* J);
+
+template <>
+__global__ void e_hermite<7, 5>(
+    int32_t n_bra,
+    int32_t n_ket,
+    double tau,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* zeta,
+    const double* Ip,
+    const double* q_x,
+    const double* q_y,
+    const double* q_z,
+    const double* eta,
+    const double* Iq,
+    const double* Dmax,
+    const double* D,
+    double* J);
+
+template <>
+__global__ void e_hermite<7, 6>(
+    int32_t n_bra,
+    int32_t n_ket,
+    double tau,
+    const double* p_x,
+    const double* p_y,
+    const double* p_z,
+    const double* zeta,
+    const double* Ip,
+    const double* q_x,
+    const double* q_y,
+    const double* q_z,
+    const double* eta,
+    const double* Iq,
+    const double* Dmax,
+    const double* D,
+    double* J);
+
 // the block every unit's fixed shared memory was sized for: launch with it.
 inline constexpr uint32_t e_hermite_block_dim[2] = {1, FJ_WAVEFRONT};
 
 // indexed by the class's args; nullptr where no class was emitted.
-inline constexpr decltype(&e_hermite<0, 0>) e_hermite_kernels[7][7] = {
+inline constexpr decltype(&e_hermite<0, 0>) e_hermite_kernels[8][7] = {
     {&e_hermite<0, 0>, &e_hermite<0, 1>, &e_hermite<0, 2>, &e_hermite<0, 3>, &e_hermite<0, 4>, &e_hermite<0, 5>, &e_hermite<0, 6>},
     {&e_hermite<1, 0>, &e_hermite<1, 1>, &e_hermite<1, 2>, &e_hermite<1, 3>, &e_hermite<1, 4>, &e_hermite<1, 5>, &e_hermite<1, 6>},
     {&e_hermite<2, 0>, &e_hermite<2, 1>, &e_hermite<2, 2>, &e_hermite<2, 3>, &e_hermite<2, 4>, &e_hermite<2, 5>, &e_hermite<2, 6>},
@@ -968,4 +1101,5 @@ inline constexpr decltype(&e_hermite<0, 0>) e_hermite_kernels[7][7] = {
     {&e_hermite<4, 0>, &e_hermite<4, 1>, &e_hermite<4, 2>, &e_hermite<4, 3>, &e_hermite<4, 4>, &e_hermite<4, 5>, &e_hermite<4, 6>},
     {&e_hermite<5, 0>, &e_hermite<5, 1>, &e_hermite<5, 2>, &e_hermite<5, 3>, &e_hermite<5, 4>, &e_hermite<5, 5>, &e_hermite<5, 6>},
     {&e_hermite<6, 0>, &e_hermite<6, 1>, &e_hermite<6, 2>, &e_hermite<6, 3>, &e_hermite<6, 4>, &e_hermite<6, 5>, &e_hermite<6, 6>},
+    {&e_hermite<7, 0>, &e_hermite<7, 1>, &e_hermite<7, 2>, &e_hermite<7, 3>, &e_hermite<7, 4>, &e_hermite<7, 5>, &e_hermite<7, 6>},
 };
