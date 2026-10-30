@@ -31,15 +31,17 @@ export import free_breakfast.pipeline.fci;
 export import free_breakfast.pipeline.nevpt2;
 export import free_breakfast.pipeline.cis;
 export import free_breakfast.pipeline.gradient;
+export import free_breakfast.pipeline.casscf_gradient;
 export import free_breakfast.pipeline.optimize;
 
 export namespace free_breakfast {
 
 /// @brief The pipeline over every step a config file may name.
-using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
-                             PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
-                             CoreHamiltonianStep, GuessStep, ScfStep, LocalizationStep, CasciStep,
-                             CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep, OptimizeStep>;
+using Calculation =
+    Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep, EriStep,
+             OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
+             LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep,
+             CasscfGradientStep, OptimizeStep>;
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.
@@ -54,9 +56,9 @@ using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
 /// required key -- in a written table or in one a filled-in step was read
 /// from -- is ErrorKind::InvalidConfig naming it. So is an @p output_dir that
 /// is @p input_dir, or holds an input file, compared as the directories they
-/// name rather than as spelt. A `[nevpt2]` under an integral-direct `[eri]`,
-/// written or filled in, is ErrorKind::Unsupported naming `[eri]`, and so is a
-/// `[cis]` under a density-fitted one.
+/// name rather than as spelt. A `[nevpt2]` or a `[casscf_gradient]` under an
+/// integral-direct `[eri]`, written or filled in, is ErrorKind::Unsupported
+/// naming `[eri]`, and so is a `[cis]` under a density-fitted one.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &input_dir,
                                                const std::filesystem::path &output_dir);

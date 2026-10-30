@@ -421,6 +421,16 @@ template <class S>
     // GradientStep::run's to say, once they exist.
     FBF_TRY(check_keys(table, kStep, {}));
     step.json_path = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, CasscfGradientStep>) {
+    // Whether the root is one of the CASSCF's, and the ERIs ones it takes,
+    // is CasscfGradientStep::run's to say, once they exist; the ERI mode is
+    // refused here too, by check_density_fitted_only.
+    FBF_TRY(check_keys(table, kStep, {"root"}));
+    FBF_TRY(read_key(table, kStep, "root", base_dir, step.root));
+    if (step.root < 0) {
+      return err_config("[{}] root is {}, below 0", kStep, step.root);
+    }
+    step.json_path = output_dir / std::format("{}.json", kStep);
   } else if constexpr (std::same_as<S, OptimizeStep>) {
     // The chain it reruns is the other tables', copied in by parse_config,
     // which can see them; a table here holds only the optimizer's own keys.
@@ -580,15 +590,22 @@ template <class S>
   return {};
 }
 
-/// @brief Refuse a `[nevpt2]` over integral-direct ERIs, which its step
-/// does not run: here, before the SCF and the CASSCF it would follow have
-/// run. Across two tables, as check_scf_against_eri.
-[[nodiscard]] Status check_nevpt2_against_eri(const Calculation &calc) {
+/// @brief Refuse a `[nevpt2]` or a `[casscf_gradient]` over integral-direct
+/// ERIs, which neither step runs: here, before the SCF and the CASSCF it
+/// would follow have run. Across two tables, as check_scf_against_eri.
+[[nodiscard]] Status check_density_fitted_only(const Calculation &calc) {
   const auto &eri = calc.step<EriStep>();
-  if (calc.step<Nevpt2Step>() && eri && eri->mode != EriMode::DensityFitting) {
-    return err_unsupported("[{}] runs over density fitting only, and [{}] mode is "
-                           "'integral_direct': set [{}] mode = 'density_fitting'",
-                           Nevpt2Step::kName, EriStep::kName, EriStep::kName);
+  if (!eri || eri->mode == EriMode::DensityFitting) {
+    return {};
+  }
+  for (const auto &[planned, name] :
+       {std::pair{calc.step<Nevpt2Step>().has_value(), Nevpt2Step::kName},
+        std::pair{calc.step<CasscfGradientStep>().has_value(), CasscfGradientStep::kName}}) {
+    if (planned) {
+      return err_unsupported("[{}] runs over density fitting only, and [{}] mode is "
+                             "'integral_direct': set [{}] mode = 'density_fitting'",
+                             name, EriStep::kName, EriStep::kName);
+    }
   }
   return {};
 }
@@ -664,7 +681,7 @@ template <class S>
   Calculation calc = FBF_TRY(Calculation::create(
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
   FBF_TRY(check_scf_against_eri(calc, doc));
-  FBF_TRY(check_nevpt2_against_eri(calc));
+  FBF_TRY(check_density_fitted_only(calc));
   FBF_TRY(check_inputs_apart(calc, output_dir));
   return calc;
 }

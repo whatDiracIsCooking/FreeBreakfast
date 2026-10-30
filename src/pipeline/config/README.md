@@ -15,7 +15,7 @@ using Calculation = Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep,
                              PrimitivePairClassesStep, EriStep, OverlapStep,
                              OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
                              LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step,
-                             CisStep, GradientStep, OptimizeStep>;
+                             CisStep, GradientStep, CasscfGradientStep, OptimizeStep>;
 
 Result<Calculation> parse_config(std::string_view toml_text, const std::filesystem::path &input_dir,
                                  const std::filesystem::path &output_dir);
@@ -220,6 +220,26 @@ filled-in default) and an ROHF SCF are each `Unsupported` there, naming the
 reason.
 
 ```toml
+[eri]
+mode = "density_fitting"  # required by [casscf_gradient]
+[casscf]
+ncas = 4
+nelecas = 4
+conv_tol_grad = 1e-9      # the gradient is the energy's only at convergence
+[casscf_gradient]
+root = 0                  # the default
+```
+
+`[casscf_gradient]` is the DF-CASSCF nuclear gradient of one root of the
+`[casscf]` it reads (`casscf_gradient/README.md`), written to
+`casscf_gradient.json`. `root` must be at least 0; whether the CASSCF has it,
+and whether a state average is one the gradient takes (today: a single root
+only), is the step's to say when it runs. Like `[nevpt2]` it runs over
+density fitting only, and under an integral-direct `[eri]`, written or filled
+in, it is `Unsupported` when the file is read, naming `[eri]`; the step
+refuses it again, for a pipeline built by hand.
+
+```toml
 [optimize]                # Gaussian's thresholds by default
 max_force = 4.5e-4        # hartree / bohr
 rms_force = 3.0e-4
@@ -294,6 +314,7 @@ step, so no two collide:
 | `[casci]` | `casci.molden`: the lowest root's natural orbitals |
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
 | `[gradient]` | `gradient.json`: the SCF energy, the gradient `total` and each of its `terms` (hartree / bohr, one row of three per atom) |
+| `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
@@ -302,7 +323,7 @@ no output, so a later config can rely on what an earlier run wrote
 `write_npy` is a switch, off by default, not a path. A file already there is
 overwritten; a directory per run is what `-o` is for. The steps keep their
 `molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
-`npy`, `GradientStep` its `json_path`), empty meaning not written, for a pipeline built by hand.
+`npy`, `GradientStep` and `CasscfGradientStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
 comparing the directories named rather than their spelling (`.`, `''` and the
@@ -348,8 +369,9 @@ than after the SCF has converged. `parse_config` touches no disk.
 - what `Pipeline::create` refuses (a cycle).
 
 Two refusals are not `InvalidConfig` but `Unsupported`, since the request is
-well formed and the method is what is missing: `[nevpt2]` under an
-integral-direct `[eri]`, and `[cis]` under a density-fitted one (above).
+well formed and the method is what is missing: `[nevpt2]` or
+`[casscf_gradient]` under an integral-direct `[eri]`, and `[cis]` under a
+density-fitted one (above).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`

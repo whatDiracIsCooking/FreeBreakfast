@@ -718,6 +718,44 @@ TEST(PipelineConfig, TheGradientStepWritesItsJsonAndFillsInTheScf) {
                       "[gradient] has no option 'terms'");
 }
 
+// [casscf_gradient] reads its root, writes casscf_gradient.json into the
+// output directory, and fills in the CASSCF it reads, whose table must then
+// name its active space. Whether the CASSCF has the root is the step's to say
+// when it runs.
+TEST(PipelineConfig, TheCasscfGradientStepReadsItsRootAndWritesItsJson) {
+  constexpr std::string_view kFitted = "[eri]\nmode = \"density_fitting\"\n";
+  auto calc = fb::parse_config(
+      with_inputs(std::format("{}[casscf]\nncas = 4\nnelecas = 4\n[casscf_gradient]\n", kFitted)),
+      "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::CasscfGradientStep &step = *calc->step<fb::CasscfGradientStep>();
+  EXPECT_EQ(step.root, 0);
+  EXPECT_EQ(step.json_path, kOut / "casscf_gradient.json");
+  EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::CoreHamiltonianStep>().has_value());
+
+  auto second =
+      fb::parse_config(with_inputs(std::format("{}[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\n"
+                                               "[casscf_gradient]\nroot = 1\n",
+                                               kFitted)),
+                       "", kOut);
+  ASSERT_TRUE(second.has_value()) << second.error().message;
+  EXPECT_EQ(second->step<fb::CasscfGradientStep>()->root, 1);
+
+  const std::string casscf = std::format("{}[casscf]\nncas = 4\nnelecas = 4\n", kFitted);
+  expect_config_error(with_inputs(casscf + "[casscf_gradient]\nroot = -1\n"),
+                      "[casscf_gradient] root is -1, below 0");
+  expect_config_error(with_inputs(casscf + "[casscf_gradient]\nroot = 0.5\n"),
+                      "[casscf_gradient] root is not a 32-bit integer");
+  expect_config_error(with_inputs(casscf + "[casscf_gradient]\nterms = true\n"),
+                      "[casscf_gradient] has no option 'terms'");
+  expect_config_error(with_inputs(casscf + "[casscf_gradient]\njson_path = \"g.json\"\n"),
+                      "[casscf_gradient] has no option 'json_path'");
+  // A filled-in [casscf] is read from an empty table, which names no space.
+  expect_config_error(with_inputs(std::format("{}[casscf_gradient]\n", kFitted)),
+                      "[casscf] needs 'ncas'");
+}
+
 // [optimize] reads its own thresholds and copies in the chain it reruns,
 // each step as its own table configures it, and the molecule every other
 // step reads is loaded from the final.xyz it writes.
@@ -944,6 +982,22 @@ TEST(PipelineConfig, TheNevpt2OverAnIntegralDirectEriIsUnsupported) {
     const auto calc = fb::parse_config(toml, dir.path(), dir / "out");
     ASSERT_FALSE(calc.has_value()) << eri;
     EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find("[eri]"), std::string::npos) << calc.error().message;
+  }
+}
+
+// So is [casscf_gradient]: the DF-CASSCF's gradient only, refused before the
+// SCF and the CASSCF it would follow.
+TEST(PipelineConfig, TheCasscfGradientOverAnIntegralDirectEriIsUnsupported) {
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    const auto calc = fb::parse_config(
+        with_inputs(std::format("[casscf]\nncas = 4\nnelecas = 4\n{}[casscf_gradient]\n", eri)), "",
+        kOut);
+    ASSERT_FALSE(calc.has_value()) << eri;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find("[casscf_gradient] runs over density fitting only"),
+              std::string::npos)
+        << calc.error().message;
     EXPECT_NE(calc.error().message.find("[eri]"), std::string::npos) << calc.error().message;
   }
 }

@@ -147,6 +147,14 @@ static_assert(std::same_as<fb::StepInput<fb::GradientStep>,
                                     fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::GradientStep>, fb::GradientOutput>);
 
+static_assert(fb::PipelineStep<fb::CasscfGradientStep>);
+static_assert(fb::kRunShape<fb::CasscfGradientStep> == fb::RunShape::Device);
+static_assert(
+    std::same_as<fb::StepInput<fb::CasscfGradientStep>,
+                 fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput,
+                          fb::EriOutput, fb::CoreHamiltonianOutput, fb::CasscfOutput>>);
+static_assert(std::same_as<fb::StepOutput<fb::CasscfGradientStep>, fb::CasscfGradientOutput>);
+
 // --- Geometry optimization --------------------------------------------------
 
 // A root holding the chain it reruns; Node-shaped, as each evaluation runs a
