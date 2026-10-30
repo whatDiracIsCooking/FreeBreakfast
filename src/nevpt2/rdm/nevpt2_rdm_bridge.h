@@ -1,7 +1,8 @@
 /// @file
-/// @brief nevpt2::rdms' launchers, declared once for the module that calls
-/// them and the device TU that defines them: the eri's conversion, the
-/// per-tile R and L2, and fdm2 and the wedge after the tile loop.
+/// @brief nevpt2::rdms' and nevpt2::rdms_adjoint's launchers, declared once
+/// for the module that calls them and the device TU that defines them: the
+/// eri's conversion, the per-tile R and L2, fdm2 and the wedge after the tile
+/// loop, and the transposes of each.
 ///
 /// Included by rdm.cpp in its GLOBAL MODULE FRAGMENT, and by nevpt2_rdm.cu
 /// directly: a declaration in a module's purview gets module linkage and can
@@ -60,5 +61,42 @@ namespace free_breakfast::nevpt2::device {
 /// fdm2[i, b, d, e].
 [[nodiscard]] wwr::wwrError_t rdm_wedge(wwr::wwrStream_t stream, int32_t n, const double *fdm2,
                                         double *f3);
+
+/// @brief The wedge's transpose, for either order: from @p f3_bar, the bar
+/// on the wedged f3, write @p raw_bar, the bar on f3 before the wedge
+/// (zero where the first index is below the third, which the wedge
+/// overwrites; f3̄[i, c, j, b, d, e] + f3̄[j, b, i, c, d, e] where it is
+/// above), and @p fdm2_bar[i, b, d, e] = Σ_{j>i} f3̄[i, j, j, b, d, e] −
+/// Σ_{j<i} f3̄[j, b, i, j, d, e]. Overwrites both.
+[[nodiscard]] wwr::wwrError_t rdm_wedge_adjoint(wwr::wwrStream_t stream, int32_t n,
+                                                const double *f3_bar, double *raw_bar,
+                                                double *fdm2_bar);
+
+/// @brief The two fdm2s' transpose onto dm3: @p dm3_bar_out = @p dm3_bar_in
+/// plus Σ_l eri[l, C, B, A] fdm2̄_ca[i, j, k, l] at dm3[A, B, C, k, j, i] and
+/// Σ_k eri[k, C, E, F] fdm2̄_ac[i, j, k, l] at dm3[i, j, C, l, E, F].
+[[nodiscard]] wwr::wwrError_t rdm_fdm2_dm3_adjoint(wwr::wwrStream_t stream, int32_t n,
+                                                   const double *eri, const double *fdm2_ca_bar,
+                                                   const double *fdm2_ac_bar,
+                                                   const double *dm3_bar_in, double *dm3_bar_out);
+
+/// @brief The bar on @p in's layout, (tu|vw) at t + n (u + n (v + n w)), of
+/// the conversion and the two fdm2s: @p eri_bar = the bar on eri[t, u, v, w]
+/// (Σ_ijk fdm2̄_ca[i, j, k, t] dm3[w, v, u, k, j, i] + Σ_ijl fdm2̄_ac[i, j, t,
+/// l] dm3[i, j, u, l, v, w]) plus @p consume_bar[u, t, w, v]. Overwrites it.
+[[nodiscard]] wwr::wwrError_t rdm_eri_adjoint(wwr::wwrStream_t stream, int32_t n, const double *dm3,
+                                              const double *fdm2_ca_bar, const double *fdm2_ac_bar,
+                                              const double *consume_bar, double *eri_bar);
+
+/// @brief rdm_produce's transpose over the same tile: for every determinant J
+/// of the CI vector, @p y[J] += Σ_K Σ_tu R̄[tu, k] ⟨K| E_tu |J⟩ + Σ_K Σ_pqrs
+/// L2̄[pqrs, k] ⟨J| E_pq E_rs |K⟩ over K in [@p begin, @p begin + @p width),
+/// k = K − @p begin, gathered over J's own replacement lists. One thread per
+/// J, so nothing is atomic.
+[[nodiscard]] wwr::wwrError_t
+rdm_produce_adjoint(wwr::wwrStream_t stream, int32_t n, int32_t n_beta, int32_t ndet,
+                    const ci::Replacement *alpha_links, int32_t alpha_per,
+                    const ci::Replacement *beta_links, int32_t beta_per, int32_t begin,
+                    int32_t width, const double *r_bar, const double *l2_bar, double *y);
 
 } // namespace free_breakfast::nevpt2::device

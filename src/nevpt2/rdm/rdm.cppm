@@ -1,7 +1,8 @@
 /// @file
 /// @brief The three n_act⁶ tensors SC-NEVPT2 reads of its reference state,
 /// dm3, f3ca and f3ac, built on the device from one CI vector, its string
-/// sets and the active (tu|vw), tile by tile over the determinants.
+/// sets and the active (tu|vw), tile by tile over the determinants; and the
+/// build's adjoint, from bars on the three back onto the vector and (tu|vw).
 
 export module free_breakfast.nevpt2.rdm;
 
@@ -67,5 +68,53 @@ export namespace free_breakfast::nevpt2 {
                                    const ci::DeviceStringSet &beta, const double *vector,
                                    const double *eri, double *dm3, double *f3ca, double *f3ac,
                                    size_t max_bytes = std::numeric_limits<size_t>::max());
+
+/// @brief The bytes of res.device_workspace() a call to @ref rdms_adjoint
+/// over @p n_orbitals active orbitals carves at tile width @p width: the two
+/// copies of (tu|vw), the two fdm2 bars and the consume's bar, n⁴ doubles
+/// each; the two pre-wedge f3 bars, dm3's total bar and dm3 itself, n⁶ each;
+/// and the tile's R, L2, W and their bars, (4 n² + 2 n⁴) @p width doubles;
+/// each region rounded up to DeviceResources::kWorkspaceAlignment.
+[[nodiscard]] size_t rdms_adjoint_workspace_bytes(int32_t n_orbitals, int64_t width) noexcept;
+
+/// @brief The adjoint of @ref rdms: given bars @p dm3_bar, @p f3ca_bar and
+/// @p f3ac_bar on its three outputs (same layout), write @p vector_bar =
+/// ∂E/∂c and @p eri_bar = ∂E/∂(tu|vw) of E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ +
+/// ⟨f3ac̄, f3ac⟩, at @p vector and @p eri.
+///
+/// rdms is quadratic in c and linear in (tu|vw), so these are exact:
+/// ⟨vector_bar, u⟩ is the bars against (rdms(c + u) − rdms(c − u)) / 2, and
+/// ⟨eri_bar, δ⟩ the bars against (rdms(eri + δ) − rdms(eri − δ)) / 2. @p
+/// eri_bar is the derivative by each stored element, in @p eri's layout, with
+/// no symmetry imposed: rdms reads (tu|vw) as given, so the caller folds it.
+///
+/// The wedge and fdm2 are transposed once, before the tiles, onto the bars
+/// of f3 before the wedge and of dm3. Per tile of determinants K, R and L2
+/// are rebuilt as rdms builds them; each digest's transpose is two gemms (L2̄
+/// += f3̄ W, W̄ = f3̄ᵀ L2, and dm3's L2̄ += dm3̄ R, R̄ = dm3̄ᵀ L2), each
+/// consume's two strided batched gemm loops (onto L2̄ and onto the consume's
+/// bar, summed over the tiles), and the produce's transpose gathers R̄ and L2̄
+/// onto every determinant J over J's own replacement lists. dm3 is summed
+/// over the tiles as rdms sums it, for the fdm2s' (tu|vw) dependence after
+/// the last. The 4-RDM is never formed, and nothing is atomic.
+///
+/// The tile width is planned as rdms plans it, from
+/// rdms_adjoint_workspace_bytes against the same budget; the tiles are that
+/// wide but for the last.
+///
+/// @param alpha, beta, vector, eri As for @ref rdms.
+/// @param dm3_bar, f3ca_bar, f3ac_bar Device, n⁶ doubles each.
+/// @param vector_bar Device, alpha.size() · beta.size() doubles, overwritten.
+/// @param eri_bar Device, n⁴ doubles in @p eri's layout, overwritten.
+/// @param max_bytes The most of the device workspace the call may hold.
+/// @return The number of tiles; the refusals of @ref rdms, against
+///         rdms_adjoint_workspace_bytes(n, 1) for the budget; or the
+///         GpuRuntime error of a launch or a BLAS call.
+[[nodiscard]] Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                           const ci::DeviceStringSet &beta, const double *vector,
+                                           const double *eri, const double *dm3_bar,
+                                           const double *f3ca_bar, const double *f3ac_bar,
+                                           double *vector_bar, double *eri_bar,
+                                           size_t max_bytes = std::numeric_limits<size_t>::max());
 
 } // namespace free_breakfast::nevpt2
