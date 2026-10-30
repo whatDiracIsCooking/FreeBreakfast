@@ -17,7 +17,7 @@ Everything is in `namespace free_breakfast::mcscf`.
 | `ResponseIntegrals` | F^I, ppaa and papa on the host, column-major as the device's: what H′(x) contracts |
 | `response_integrals` | H′(x): h_eff′ and (tu\|vw)′ along κ(x), row-major as `ci::Sigma::set_integrals` takes them |
 | `response_gradient` | Its adjoint: the antisymmetric nmo × nmo whose packed pairs are the gradient in x of h_eff′·γ + (tu\|vw)′·Γ |
-| `RelaxedHessian` | H̃ at one set of orbitals and roots: `apply` (y = H̃ x, one column), `respond` (δ and its transition RDMs γ_T, Γ_T for one column), `delta`, `size` |
+| `RelaxedHessian` | H̃ at one set of orbitals and roots: `apply` (y = H̃ x, one column), `respond` (δ and its transition RDMs γ_T, Γ_T for one column), `couple` (w = −(H₀ − E)⁻¹ P y for a CI right-hand side y, and H_oc w), `delta`, `size` |
 
 `RelaxedHessian::create` takes the `response::Hessian`, the sigma whose
 integrals are H₀ at the same orbitals, the `ci::Rdm` and the strings both are
@@ -47,6 +47,10 @@ transition RDMs are read back, and H′ and its adjoint are host work.
 
 Steps 1 to 4 are `respond`, so a caller that needs δ itself (the CI part of a
 Z-vector's multipliers) or the transition RDMs takes them without H's product.
+`couple` is steps 3 to 5 with b = y, a CI block the caller gives (projected
+off every root first, so the other roots' part is nothing): w into `delta()`
+and H_oc w over the packed pairs, the orbital side of a Z-vector's CI
+right-hand side.
 The derivation, the costs and what H̃ bought the loop are in
 [`../solve/README.md`](../solve/README.md), "The CI response is computed, per
 product".
@@ -54,7 +58,8 @@ product".
 ## Tests
 
 None of its own: `test/gtest/mcscf_solve_gpu.cpp` drives every product
-through `mcscf::solve`.
+through `mcscf::solve`, and `test/gtest/mcscf_zvector_gpu.cpp` `couple`
+through `mcscf::zvector`'s CI right-hand side.
 
 ## Files
 

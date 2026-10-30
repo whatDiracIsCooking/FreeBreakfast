@@ -179,6 +179,19 @@ RelaxedHessian::RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci:
       response_gamma_(2 * ints_.ncas * ints_.ncas, res.device()),
       response_gamma2_(2 * ints_.ncas * ints_.ncas * ints_.ncas * ints_.ncas, res.device()) {}
 
+Status RelaxedHessian::project(DeviceResources &res, double *const v) {
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const auto dim32 = static_cast<int32_t>(dim_);
+  const auto nroots = static_cast<int32_t>(weights_.size());
+  const double *const ci_c = roots_->vectors.data();
+  FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, dim32, nroots,
+                                                &kOne<double>, ci_c, dim32, v, 1, &kZero<double>,
+                                                ci_overlaps_.data(), 1)));
+  return gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_N, dim32, nroots,
+                                               &kNegOne<double>, ci_c, dim32, ci_overlaps_.data(),
+                                               1, &kOne<double>, v, 1));
+}
+
 Status RelaxedHessian::respond(DeviceResources &res, const double *const x,
                                std::span<double> gamma_t, std::span<double> gamma2_t) {
   if (gamma_t.size() != ints_.ncas * ints_.ncas ||
@@ -188,13 +201,53 @@ Status RelaxedHessian::respond(DeviceResources &res, const double *const x,
                       ints_.ncas, gamma_t.size(), gamma2_t.size());
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  const wwr::wwrblasHandle_t blas = res.blas().get();
-  const wwr::wwrStream_t stream = res.stream();
   const size_t mo = ints_.nmo;
   const size_t n = ints_.ncas;
   const auto nmo = static_cast<int32_t>(mo);
   const auto ncore = static_cast<int32_t>(ints_.ncore);
   const auto ncas = static_cast<int32_t>(n);
+  const auto nroots = static_cast<int32_t>(weights_.size());
+
+  // H'(x) from kappa(x), and b_r = H' c_r for every root.
+  FBF_TRY(response::unpack_orbital_pairs(res, nmo, ncore, ncas, x, response_matrix_.data()));
+  std::vector<double> kappa_host(mo * mo);
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(kappa_host.data(), response_matrix_.data(),
+                                         mo * mo * sizeof(double), wwr::wwrMemcpyDeviceToHost,
+                                         res.stream())));
+  FBF_TRY(res.sync());
+  std::vector<double> h1(n * n);
+  std::vector<double> eri1(n * n * n * n);
+  response_integrals(ints_, kappa_host, h1, eri1);
+  FBF_TRY(response_sigma_.set_integrals(res, 0.0, h1, eri1));
+  FBF_TRY(response_sigma_.apply(res, nroots, roots_->vectors.data(), ci_b_.data()));
+  return solve_response(res, gamma_t, gamma2_t);
+}
+
+Status RelaxedHessian::couple(DeviceResources &res, const double *const ci_rhs, double *const y) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const size_t n = ints_.ncas;
+  const size_t dim = dim_;
+  const size_t roots_count = weights_.size();
+  // b = y off every root, so that the other roots' part solve_response adds
+  // is nothing.
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ci_b_.data(), ci_rhs, dim * roots_count * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, res.stream())));
+  for (size_t r = 0; r < roots_count; ++r) {
+    FBF_TRY(project(res, ci_b_.data() + (r * dim)));
+  }
+  std::vector<double> gamma_t(n * n);
+  std::vector<double> gamma2_t(n * n * n * n);
+  FBF_TRY(solve_response(res, gamma_t, gamma2_t));
+  FBF_TRY(gpu_status(
+      wwr::wwrMemsetAsync(y, 0, static_cast<size_t>(n_pairs_) * sizeof(double), res.stream())));
+  return add_coupling(res, gamma_t, gamma2_t, y);
+}
+
+Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> gamma_t,
+                                      std::span<double> gamma2_t) {
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const wwr::wwrStream_t stream = res.stream();
+  const size_t n = ints_.ncas;
   const size_t dim = dim_;
   const auto dim32 = static_cast<int32_t>(dim);
   const size_t roots_count = weights_.size();
@@ -202,28 +255,6 @@ Status RelaxedHessian::respond(DeviceResources &res, const double *const x,
   const size_t ci_block = dim * roots_count;
   const double *const ci_c = roots_->vectors.data();
   const auto ci_root = [dim](auto *base, const size_t r) { return base + (r * dim); };
-  // v <- v - C (C^T v): off every root.
-  const auto ci_project = [&](double *v) -> Status {
-    FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_T, dim32, nroots,
-                                                  &kOne<double>, ci_c, dim32, v, 1, &kZero<double>,
-                                                  ci_overlaps_.data(), 1)));
-    return gpu_status(wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_N, dim32, nroots,
-                                                 &kNegOne<double>, ci_c, dim32, ci_overlaps_.data(),
-                                                 1, &kOne<double>, v, 1));
-  };
-
-  // H'(x) from kappa(x), and b_r = H' c_r for every root.
-  FBF_TRY(response::unpack_orbital_pairs(res, nmo, ncore, ncas, x, response_matrix_.data()));
-  std::vector<double> kappa_host(mo * mo);
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(kappa_host.data(), response_matrix_.data(),
-                                         mo * mo * sizeof(double), wwr::wwrMemcpyDeviceToHost,
-                                         stream)));
-  FBF_TRY(res.sync());
-  std::vector<double> h1(n * n);
-  std::vector<double> eri1(n * n * n * n);
-  response_integrals(ints_, kappa_host, h1, eri1);
-  FBF_TRY(response_sigma_.set_integrals(res, 0.0, h1, eri1));
-  FBF_TRY(response_sigma_.apply(res, nroots, ci_c, ci_b_.data()));
 
   // delta_r: conjugate gradients on (H_0 - E_r) off every root, and the
   // other roots' part exactly, -(c_s . b_r) / (E_s - E_r) c_s.
@@ -237,7 +268,7 @@ Status RelaxedHessian::respond(DeviceResources &res, const double *const x,
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(cg_r, ci_root(ci_b_.data(), r), dim * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
     FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, dim32, &kNegOne<double>, cg_r, 1)));
-    FBF_TRY(ci_project(cg_r));
+    FBF_TRY(project(res, cg_r));
     double rhs_norm = 0.0;
     FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, dim32, cg_r, 1, &rhs_norm)));
     double rr = rhs_norm * rhs_norm;
@@ -247,7 +278,7 @@ Status RelaxedHessian::respond(DeviceResources &res, const double *const x,
       FBF_TRY(sigma_->apply(res, 1, cg_p, cg_ap));
       const double neg_e = -e_r;
       FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32, &neg_e, cg_p, 1, cg_ap, 1)));
-      FBF_TRY(ci_project(cg_ap));
+      FBF_TRY(project(res, cg_ap));
       double pap = 0.0;
       FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, dim32, cg_p, 1, cg_ap, 1, &pap)));
       // H_0 - E_r is positive off the roots in their spin; a direction it
@@ -315,28 +346,33 @@ Status RelaxedHessian::respond(DeviceResources &res, const double *const x,
   return {};
 }
 
-Status RelaxedHessian::apply(DeviceResources &res, const double *const x, double *const y) {
-  const ScopedDeviceIndex on{res.dev_idx()};
-  FBF_TRY(hessian_->apply(res, 1, x, y));
-
-  // R x = H_oc delta, the gradient in x of h_eff'.gamma_T +
-  // 1/2 (tu|vw)'.Gamma_T.
+Status RelaxedHessian::add_coupling(DeviceResources &res, std::span<const double> gamma_t,
+                                    std::span<const double> gamma2_t, double *const y) {
   const size_t mo = ints_.nmo;
-  const size_t n = ints_.ncas;
-  std::vector<double> gamma_t(n * n);
-  std::vector<double> gamma2_t(n * n * n * n);
-  FBF_TRY(respond(res, x, gamma_t, gamma2_t));
   std::vector<double> a(mo * mo);
   response_gradient(ints_, gamma_t, gamma2_t, a);
   FBF_TRY(
       gpu_status(wwr::wwrMemcpyAsync(response_matrix_.data(), a.data(), a.size() * sizeof(double),
                                      wwr::wwrMemcpyHostToDevice, res.stream())));
   FBF_TRY(res.sync());
-  FBF_TRY(response::pack_orbital_pairs(res, static_cast<int32_t>(mo),
-                                       static_cast<int32_t>(ints_.ncore), static_cast<int32_t>(n),
-                                       response_matrix_.data(), response_packed_.data()));
+  FBF_TRY(response::pack_orbital_pairs(
+      res, static_cast<int32_t>(mo), static_cast<int32_t>(ints_.ncore),
+      static_cast<int32_t>(ints_.ncas), response_matrix_.data(), response_packed_.data()));
   return gpu_status(wwr::axpy<double, int32_t>(res.blas().get(), n_pairs_, &kOne<double>,
                                                response_packed_.data(), 1, y, 1));
+}
+
+Status RelaxedHessian::apply(DeviceResources &res, const double *const x, double *const y) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  FBF_TRY(hessian_->apply(res, 1, x, y));
+
+  // R x = H_oc delta, the gradient in x of h_eff'.gamma_T +
+  // 1/2 (tu|vw)'.Gamma_T.
+  const size_t n = ints_.ncas;
+  std::vector<double> gamma_t(n * n);
+  std::vector<double> gamma2_t(n * n * n * n);
+  FBF_TRY(respond(res, x, gamma_t, gamma2_t));
+  return add_coupling(res, gamma_t, gamma2_t, y);
 }
 
 } // namespace free_breakfast::mcscf
