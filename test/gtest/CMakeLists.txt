@@ -168,6 +168,7 @@ add_executable(
   response_fock_gpu.cpp
   response_hessian_gpu.cpp
   mcscf_solve_gpu.cpp
+  mcscf_gradient_gpu.cpp
   nevpt2_density_fitting_gpu.cpp
   nevpt2_rdm_gpu.cpp
   nevpt2_energy_gpu.cpp

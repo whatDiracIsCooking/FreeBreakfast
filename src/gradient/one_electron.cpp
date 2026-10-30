@@ -1,7 +1,7 @@
 /// @file
 /// @brief one_electron_terms: D and -W from the occupied orbitals (a gemm and
-/// a gmmwich), then S, T and V's derivative contractions and the nuclear
-/// repulsion's.
+/// a gmmwich), then, in the exported overload at any D and -W, S, T and V's
+/// derivative contractions and the nuclear repulsion's.
 
 module free_breakfast.gradient;
 
@@ -62,11 +62,20 @@ one_electron_terms(DeviceResources &res, const Molecule &molecule, const BasisSe
     FBF_TRY(gpu_status(gmmwich<wwr::WWRBLAS_OP_T>(res.blas(), n, nocc, c.data(), d_diagonal.data(),
                                                   work.data(), minus_w.data())));
   }
+  FBF_TRY(one_electron_terms(res, molecule, basis, classes, d, minus_w, g));
+  return d;
+}
+
+Status one_electron_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                          const std::span<const PrimitivePairClass> classes,
+                          const SphericalMatrixAO &d, const SphericalMatrixAO &minus_w,
+                          RhfTerms &g) {
+  const ScopedDeviceIndex on{res.dev_idx()};
   g.overlap = FBF_TRY(overlap_gradient(res, basis, classes, minus_w));
   g.kinetic = FBF_TRY(kinetic_gradient(res, basis, classes, d));
   g.potential = FBF_TRY(potential_gradient(res, basis, classes, molecule, d));
   g.nuclear_repulsion = nuclear_repulsion_gradient(molecule);
-  return d;
+  return {};
 }
 
 } // namespace free_breakfast::gradient

@@ -28,7 +28,10 @@ gradient only at a converged SCF, where W carries the orbitals' response.
   `overlap_gradient` at −W (one `gmmwich`), and `molecule`'s
   `nuclear_repulsion_gradient`. These are `one_electron_terms`, unexported in
   the interface and shared with every RHF gradient in the module, whatever its
-  ERIs: it checks C, ε and n_occ and returns D for the two-electron part.
+  ERIs: it checks C, ε and n_occ and returns D for the two-electron part. It
+  builds D and −W and calls the **exported** `one_electron_terms` at any D and
+  −W, which fills those four members of an `RhfTerms`; `mcscf::df_gradient`
+  calls that one too, at a CASSCF's 1-RDM and C sym(F) Cᵀ.
 - **Coulomb (DF-J).** With M = L Lᵀ and T = (mn|P), E_J = ½ Dᵀ T M⁻¹ T D, so
   dE_J = Σ D_mn d_P T′ − ½ dᵀ M′ d, d = M⁻¹ T D = L⁻ᵀ (B vec D) (a gemv and a
   trsv). Γᴶ = D ⊗ d (a rank-one gemm) against `three_center_gradient`, and

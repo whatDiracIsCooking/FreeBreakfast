@@ -1,0 +1,35 @@
+# The module: mcscf::df_gradient, host code over the fitted integrals, the
+# generalized Fock, the shared one-electron terms, the density-fitting
+# derivative contractions and wwr's BLAS, with no kernels of its own.
+# DeviceResources, Molecule, BasisSet, PrimitivePairClass, SphericalMatrixAO,
+# Buffers, Solution and Result are in its signature, so core::resources,
+# core::wwr, molecule, basis, mmd, recipes::matrix_ao, mcscf::solve and
+# core::error_handling are PUBLIC. The calls it makes are PRIVATE.
+free_breakfast_add_cxx_module_library(
+  NAME
+  free_breakfast.mcscf.gradient
+  PRIMARY_INTERFACE
+  gradient.cppm
+  IMPLEMENTATION
+  gradient.cpp
+  IMPORT_STD
+  LINK_PUBLIC
+  free_breakfast::core::types
+  free_breakfast::core::error_handling
+  free_breakfast::core::wwr
+  free_breakfast::core::resources
+  free_breakfast::basis
+  free_breakfast::molecule
+  free_breakfast::integrals::mmd
+  free_breakfast::recipes::matrix_ao
+  free_breakfast::mcscf::solve
+  LINK_PRIVATE
+  free_breakfast::core::constants
+  free_breakfast::core::diagnostics_macros
+  free_breakfast::recipes::blas
+  free_breakfast::integrals::active_space
+  free_breakfast::integrals::eri::density_fitting::gradient
+  free_breakfast::integrals::eri::density_fitting::mo
+  free_breakfast::response::fock
+  free_breakfast::gradient
+)
