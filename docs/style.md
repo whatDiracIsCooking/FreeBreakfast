@@ -386,7 +386,7 @@ that type for the whole pipeline.
 
 ## Module-private code
 
-**There are no anonymous namespaces and no `detail` namespaces**, with six
+**There are no anonymous namespaces and no `detail` namespaces**, with eight
 exceptions where an anonymous namespace is allowed: `.cu` files,
 `test/gtest/*.cpp`, `test/core/*.cpp`, `test/atom/*.cpp`, `test/io/*.cpp`, `test/pipeline/*.cpp`, `src/main.cpp` and `tools/*/main.cpp`. None of those is a module unit, so the alternatives
 below are not available there.
