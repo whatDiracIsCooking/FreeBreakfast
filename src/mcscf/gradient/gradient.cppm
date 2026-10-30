@@ -1,11 +1,12 @@
 /// @file
-/// @brief The analytic nuclear gradient of a converged, state-specific
-/// DF-CASSCF on the GPU, term by term,
+/// @brief The analytic nuclear gradient of a converged DF-CASSCF on the GPU,
+/// state-specific or of one root of a state average, term by term,
 ///
 ///     dE/dR = Sum D dT + Sum D dV - Sum W dS + dE_2/dR + dV_nn,
 ///
 /// the two-electron part one Gam_mnP against d(mn|P) and one W_PQ against
-/// d(P|Q). See README.md for each term's derivation.
+/// d(P|Q). A state average's root is over its Z-vector's multipliers. See
+/// README.md for each term's derivation.
 
 export module free_breakfast.mcscf.gradient;
 
@@ -42,8 +43,9 @@ struct GradientTerms {
   std::vector<double> total;
 };
 
-/// @brief The nuclear gradient of the DF-CASSCF energy at @p solution, a
-/// converged state-specific (nroots = 1) solve, every term of it.
+/// @brief The nuclear gradient of the DF-CASSCF energy of root @p root at
+/// @p solution, a converged solve of one state or a state average, every term
+/// of it.
 ///
 /// D = 2 C_c C_c^T + C_a gamma C_a^T and W = C sym(F) C^T, F the generalized
 /// Fock of @c response::fock over @p b, against the one-electron derivatives
@@ -54,6 +56,14 @@ struct GradientTerms {
 /// @c three_center_gradient and one W_PQ against @c metric_gradient, every
 /// piece of both built by gemms over the fitted pairs c_P,pq = (L^-T B_pq)_P
 /// (@c b_mo, then a trsm). The README has each piece.
+///
+/// For a state average the terms are taken at root I's Lagrangian
+/// (README.md): the Z-vector (mcscf::zvector over the CI-relaxed Hessian at
+/// the solution), then the same terms at gamma_I + gamma_T and Gamma_I +
+/// Gamma_T (gamma_T z_c's transition RDMs) plus their derivative along
+/// C -> C (1 + kappa(z_o)) at the averaged RDMs, all still in one Gam and
+/// one W. The weights are recovered from @c Solution::root_gammas and the
+/// weighted gamma, and the active electrons are trace(gamma).
 ///
 /// The formula is the gradient of the energy @ref solve converges to under
 /// DensityFitting::Full over the same @p b, and only at its convergence: W
@@ -82,17 +92,20 @@ struct GradientTerms {
 /// @p l may point into it. The device res.dev_idx() names is made current for
 /// the call and the previous one restored.
 ///
-/// @return The gradient and its terms; Unsupported if @p solution averages
-///         more than one root (the state-averaged gradient needs the
-///         multipliers this call does not solve for), for memory past the
-///         device's free bytes, or for naux nao^2 past int32_t; InvalidConfig
-///         if solution.c is not basis.nao_sphe() square or not on @p res's
-///         device, if ncore is negative, ncas below 1 or ncore + ncas past
-///         nao, if @p root is not one of the solution's, if its RDMs are not
-///         ncas^2 and ncas^4 long, or if @p b is not naux nao^2 doubles over
-///         naux >= 1; the first error of @c casscf_integrals, @c fock or a
-///         derivative call; or the GpuRuntime error of the first copy or BLAS
-///         call that failed.
+/// @return The gradient and its terms; Unsupported for memory past the
+///         device's free bytes, for naux nao^2 past int32_t, or for a state
+///         average whose roots' 1-RDMs are linearly dependent (its weights
+///         cannot be recovered); InvalidConfig if solution.c is not
+///         basis.nao_sphe() square or not on @p res's device, if ncore is
+///         negative, ncas below 1 or ncore + ncas past nao, if @p root is not
+///         one of the solution's, if its RDMs are not ncas^2 and ncas^4 long,
+///         if @p b is not naux nao^2 doubles over naux >= 1, or, for a state
+///         average, if root_gammas is not ncas^2 per root, the weighted gamma
+///         is not their average, trace(gamma) is no electron count of the
+///         molecule's multiplicity, or the CI vectors are not the roots';
+///         the first error of @c casscf_integrals, @c fock, the CI objects,
+///         the Hessian, @c zvector or a derivative call; or the GpuRuntime
+///         error of the first copy or BLAS call that failed.
 [[nodiscard]] Result<GradientTerms>
 df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,

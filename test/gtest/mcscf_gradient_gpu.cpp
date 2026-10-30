@@ -5,8 +5,10 @@
 // df.grad.casscf in data/casscf_gradient/casscf_gradient.json
 // (tools/emit/casscf_gradient_reference.py) to 1e-8 absolute, and the
 // total's sum over atoms below 1e-9; for each state-specific case (H2O and the
-// skewed H2O, cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,4)). And the refusals: a root the
-// solution does not have, and a state-averaged solution.
+// skewed H2O, cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,4)) and, against
+// df.grad.sacasscf, every root of the state-averaged one (H2CO, SA-2 CAS(4,3)),
+// whose parts include the multipliers' terms. And the refusals: a root the
+// solution does not have, and a solution whose roots and RDMs disagree.
 //
 // The setup is mcscf_solve_gpu.cpp's: the setup steps through the real
 // registry, the SCF run by hand (kExactScf), and the start picked by the Casci
@@ -122,7 +124,8 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
   FBF_REQUIRE_GPU();
   const std::string name{GetParam()};
   const fb::json &entry = reference_case(name);
-  ASSERT_EQ(entry.at("weights").size(), 1U) << "a state-specific case";
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
   const auto start = std::chrono::steady_clock::now();
 
   fb::NodeResources node;
@@ -161,7 +164,10 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
   fb::CasciStep step;
   step.ncas = entry.at("ncas").get<std::int32_t>();
   step.nelecas = entry.at("nelecas").get<std::int32_t>();
-  step.active = entry.at("active").get<std::vector<std::int32_t>>();
+  if (!entry.at("active").is_null()) {
+    step.active = entry.at("active").get<std::vector<std::int32_t>>();
+  }
+  step.nroots = nroots;
   auto space = step.select(res, molecule->molecule, basis->basis, *scf);
   ASSERT_TRUE(space.has_value()) << space.error().message;
   ASSERT_EQ(space->ncore, entry.at("ncore").get<std::int32_t>());
@@ -183,60 +189,70 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
   options.conv_tol_grad = kConvTolGrad;
   options.density_fitting = fb::mcscf::DensityFitting::Full;
   auto sol = fb::mcscf::solve(res, basis->basis, molecule->molecule, h->h, transform->u, *j_classes,
-                              *k_classes, space->c, space->ncore, space->ncas, space->nelecas, 1,
-                              {}, options, &df.b, df.naux);
+                              *k_classes, space->c, space->ncore, space->ncas, space->nelecas,
+                              nroots, weights, options, &df.b, df.naux);
   ASSERT_TRUE(sol.has_value()) << sol.error().message;
   EXPECT_NEAR(sol->energy, entry.at("energy").get<double>(), kEnergyTolerance);
 
-  const auto g =
-      fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
-                             df.b, df.l.data(), *sol, space->ncore, space->ncas, 0);
-  ASSERT_TRUE(g.has_value()) << g.error().message;
-  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+  // Every root's gradient, each term against the reference's part (for a
+  // state average, the multipliers' terms included).
+  for (std::int32_t root = 0; root < nroots; ++root) {
+    const auto root_start = std::chrono::steady_clock::now();
+    const auto g =
+        fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
+                               df.b, df.l.data(), *sol, space->ncore, space->ncas, root);
+    ASSERT_TRUE(g.has_value()) << g.error().message;
+    const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+    const std::chrono::duration<double> root_seconds =
+        std::chrono::steady_clock::now() - root_start;
 
-  const fb::json &want = entry.at("roots").at(0);
-  const fb::json &parts = want.at("parts");
-  std::string report = std::format("[ casgrad  ] {} ({} macro iterations, {:.2f} s):", name,
-                                   sol->iterations.size(), seconds.count());
-  for (const auto &[key, ours] : {std::pair{"kinetic", &g->kinetic},
-                                  {"potential", &g->potential},
-                                  {"overlap", &g->overlap},
-                                  {"two_electron", &g->two_electron},
-                                  {"nuclear_repulsion", &g->nuclear_repulsion},
-                                  {"total", &g->total}}) {
-    const double worst =
-        compare(name + " " + key, *ours,
-                key == std::string_view{"total"} ? want.at("total") : parts.at(key));
-    report += std::format(" {} {:.2e}", key, worst);
+    const fb::json &want = entry.at("roots").at(static_cast<std::size_t>(root));
+    const fb::json &parts = want.at("parts");
+    const std::string label = std::format("{} root {}", name, root);
+    std::string report = std::format(
+        "[ casgrad  ] {} ({} macro iterations, gradient {:.2f} s, {:.2f} s in all):", label,
+        sol->iterations.size(), root_seconds.count(), seconds.count());
+    for (const auto &[key, ours] : {std::pair{"kinetic", &g->kinetic},
+                                    {"potential", &g->potential},
+                                    {"overlap", &g->overlap},
+                                    {"two_electron", &g->two_electron},
+                                    {"nuclear_repulsion", &g->nuclear_repulsion},
+                                    {"total", &g->total}}) {
+      const double worst =
+          compare(label + " " + key, *ours,
+                  key == std::string_view{"total"} ? want.at("total") : parts.at(key));
+      report += std::format(" {} {:.2e}", key, worst);
+    }
+    std::array<double, 3> sum{};
+    for (std::size_t i = 0; i < g->total.size(); ++i) {
+      sum[i % 3] += g->total[i];
+    }
+    const double worst_sum = std::ranges::max(sum, {}, [](double s) { return std::abs(s); });
+    EXPECT_LT(std::abs(worst_sum), kSumTolerance) << label << " translational sum";
+    std::cout << report << std::format(" sum {:.2e}\n", std::abs(worst_sum));
   }
-  std::array<double, 3> sum{};
-  for (std::size_t i = 0; i < g->total.size(); ++i) {
-    sum[i % 3] += g->total[i];
-  }
-  const double worst_sum = std::ranges::max(sum, {}, [](double s) { return std::abs(s); });
-  EXPECT_LT(std::abs(worst_sum), kSumTolerance) << name << " translational sum";
-  std::cout << report << std::format(" sum {:.2e}\n", std::abs(worst_sum));
 
-  // A root the solution does not have is InvalidConfig; a solution averaging
-  // two roots is Unsupported until the state-averaged gradient lifts it.
+  // A root the solution does not have is InvalidConfig.
   const auto past =
       fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
-                             df.b, df.l.data(), *sol, space->ncore, space->ncas, 1);
+                             df.b, df.l.data(), *sol, space->ncore, space->ncas, nroots);
   ASSERT_FALSE(past.has_value());
   EXPECT_EQ(past.error().kind, fb::ErrorKind::InvalidConfig) << past.error().message;
   EXPECT_NE(past.error().message.find("mcscf::df_gradient"), std::string::npos);
+  // So is a solution with one root more than its per-root RDMs.
   sol->roots.energies.push_back(sol->roots.energies.front());
-  const auto averaged =
+  const auto mismatched =
       fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
                              df.b, df.l.data(), *sol, space->ncore, space->ncas, 0);
-  ASSERT_FALSE(averaged.has_value());
-  EXPECT_EQ(averaged.error().kind, fb::ErrorKind::Unsupported) << averaged.error().message;
-  EXPECT_NE(averaged.error().message.find("multipliers"), std::string::npos);
+  ASSERT_FALSE(mismatched.has_value());
+  EXPECT_EQ(mismatched.error().kind, fb::ErrorKind::InvalidConfig) << mismatched.error().message;
+  EXPECT_NE(mismatched.error().message.find("root gamma"), std::string::npos);
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, McscfGradient,
                          ::testing::Values(std::string_view{"h2o_ccpvdz"},
-                                           std::string_view{"h2o_skew_ccpvdz"}),
+                                           std::string_view{"h2o_skew_ccpvdz"},
+                                           std::string_view{"h2co_ccpvdz_sa2"}),
                          [](const auto &info) { return std::string(info.param); });
 
 } // namespace
