@@ -9,8 +9,9 @@
 // reference's to 1e-6 (H2O cc-pVDZ exact too, singlets only), and each
 // triplet's f and transition dipole zero. HF in cc-pVTZ, past the dipole's d,
 // still gives its energies, with f and the dipoles zero: against the
-// reference integral-direct (slow, ~55 s, so skipped in fast mode), and
-// density-fitted over cc-pVTZ-JKFIT in the fast set. With the clustered
+// reference integral-direct (slow, ~74 s on gfx1200 and ~33 s on the 3080, so
+// skipped in fast mode), and density-fitted over cc-pVTZ-JKFIT in the fast
+// set. With the clustered
 // preconditioner on ([cis] cluster_gap), with RIS-J ([cis] ris), and with
 // RIS-JK ([cis] ris_exchange), H2O STO-3G integral-direct and cc-pVDZ fitted
 // still match the reference to 1e-6. TDA-ris ([cis] method = "ris") is held
@@ -200,12 +201,16 @@ class CisStepReference : public ::testing::TestWithParam<Case> {};
 
 // The config runs the chain and the step; then the step runs again by hand
 // over the same products, from a CisStep built in code. The h2o_ccpvdz_df
-// cases run the chain fitted, so the step takes cis::DfSigma.
+// cases run the chain fitted, so the step takes cis::DfSigma. hf_ccpvtz runs
+// the chain only: its by-hand rerun was a second exact-K-at-f Davidson,
+// ~54 s on gfx1200 and ~23 s on the 3080, holding nothing the other cases'
+// reruns do not.
 TEST_P(CisStepReference, MatchesPyscf) {
   FBF_REQUIRE_GPU();
-  // Exact K at f: ~55 s on the 3080. The fitted f-shell case below stands
-  // for it in the fast set.
-  if (GetParam().name == "hf_ccpvtz") {
+  // Exact K at f: ~74 s on gfx1200, ~33 s on the 3080. The fitted f-shell
+  // case below stands for it in the fast set.
+  const bool exact_f = GetParam().name == "hf_ccpvtz";
+  if (exact_f) {
     FBF_SKIP_IF_FAST_TESTS();
   }
   const fb::json &entry = reference_case(GetParam().name);
@@ -225,6 +230,9 @@ TEST_P(CisStepReference, MatchesPyscf) {
   const auto &chain = calc->get<fb::CisOutput>();
   ASSERT_TRUE(chain.has_value());
   expect_matches(*chain, entry, roots, "config " + spin);
+  if (exact_f) {
+    return;
+  }
 
   fb::DeviceResources &res = node.device(0);
   const fb::CisStep step{
