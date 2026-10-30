@@ -114,7 +114,7 @@ __global__ void group_start_kernel(const uint32_t n_slots, const int32_t n_group
 // The ordered class's fields, as the gather writes them (pairs_bridge.h's
 // order), passed by value.
 struct OrderedFields {
-  double *doubles[12];
+  double *doubles[14];
   int32_t *ints[3];
 };
 
@@ -143,6 +143,8 @@ __global__ void gather_kernel(const fb::PrimitivePairClassView from, const Orien
   to.doubles[9][k] = (sw ? from.pa_z : from.pb_z)[r];
   to.doubles[10][k] = from.s[r];
   to.doubles[11][k] = (sw ? from.bound_ba : from.bound_ab)[r];
+  to.doubles[12][k] = (sw ? from.eb : from.ea)[r];
+  to.doubles[13][k] = (sw ? from.ea : from.eb)[r];
   to.ints[0][k] = (sw ? from.off_b : from.off_a)[r];
   to.ints[1][k] = (sw ? from.off_a : from.off_b)[r];
   to.ints[2][k] = (sw ? from.rank_a : from.rank_b)[r];
@@ -199,13 +201,13 @@ wwr::wwrError_t ordered_pair_order(const wwr::wwrStream_t stream,
 wwr::wwrError_t ordered_pair_gather(const wwr::wwrStream_t stream,
                                     const PrimitivePairClassView &from, const int32_t la,
                                     const int32_t n_rec, const uint32_t *perm,
-                                    double *const doubles[12], int32_t *const ints[3]) {
+                                    double *const doubles[14], int32_t *const ints[3]) {
   Orientation o{};
   if (n_rec < 1 || !orientation_of(from, la, o)) {
     return wwr::wwrErrorInvalidValue;
   }
   OrderedFields to{};
-  for (size_t f = 0; f < 12; ++f) {
+  for (size_t f = 0; f < 14; ++f) {
     to.doubles[f] = doubles[f];
   }
   for (size_t f = 0; f < 3; ++f) {

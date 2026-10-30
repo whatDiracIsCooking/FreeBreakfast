@@ -5,23 +5,24 @@ add_subdirectory(helpers)
 # the device library below: its bridge header names their view.
 add_subdirectory(pairs)
 
-# The K launchers. Device code in its own library, so its language and -x hip
-# never reach a module compile. Its sources are the launcher and the generated
-# kernels (written by tools/emit/exchange_kernels.py), one per K class through
-# f, each compiled on its own: kb<la, lc, lb, ld> (kernels/kb/) for the 81
-# classes through d, and the rolled kbr<la, lc, lb, ld> (kernels/kbr/) for the
-# 175 with an f shell. The launcher includes kernels/kb/kb.h, kernels/kbr/kbr.h
-# and kbr's class tables, kernels/kbr/kbr_tables.h, and launches through the
-# two tables. Under CUDA that wants relocatable device code, this
+# The K and K-gradient launchers. Device code in its own library, so its
+# language and -x hip never reach a module compile. Its sources are the launcher
+# and the generated kernels (tools/emit/exchange_kernels.py), one per K class
+# through f, each compiled on its own: kb<la, lc, lb, ld> (kernels/kb/) for the
+# 81 classes through d, and the rolled kbr<la, lc, lb, ld> (kernels/kbr/) for
+# the 175 with an f shell; and the gradient's gk<la, lc, lb, ld> (kernels/gk/)
+# for all 256. The launcher includes kernels/kb/kb.h, kernels/kbr/kbr.h, kbr's
+# class tables, kernels/kbr/kbr_tables.h, and kernels/gk/gk.h, and launches
+# through the three tables. Under CUDA that wants relocatable device code, this
 # library's default, so it must never pass NO_DEVICE_LINKING (nvcc warns #20280
 # without it). The bridge header it shares with the module names int32_t,
 # OrderedPairClassView, wwrStream_t and wwrError_t, hence types_headers,
 # pairs::headers and wwr::device PUBLIC. The kernels include FelizJueves's
-# felizjueves/runtime.h (felizjueves::headers, which also carries FJ_WAVEFRONT
-# = WWR_WARP_SIZE) and the shared eval_boys.h (shared::headers), and the
-# launcher reads K's limits (the helpers' bridge header, by include path),
-# kWarpSize and math::idivup (block_params.h, primitives.h), hence
-# core::kernel_headers; all PRIVATE.
+# felizjueves/runtime.h (felizjueves::headers, which also carries FJ_WAVEFRONT =
+# WWR_WARP_SIZE) and the shared eval_boys.h (shared::headers), and the launcher
+# reads K's limits (the helpers' bridge header, by include path), kWarpSize and
+# math::idivup (block_params.h, primitives.h), hence core::kernel_headers; all
+# PRIVATE.
 free_breakfast_add_gpu_device_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.exchange.device
@@ -283,6 +284,262 @@ free_breakfast_add_gpu_device_library(
   kernels/kbr/kbr_33_31.cu
   kernels/kbr/kbr_33_32.cu
   kernels/kbr/kbr_33_33.cu
+  kernels/gk/gk_00_00.cu
+  kernels/gk/gk_00_01.cu
+  kernels/gk/gk_00_02.cu
+  kernels/gk/gk_00_03.cu
+  kernels/gk/gk_00_10.cu
+  kernels/gk/gk_00_11.cu
+  kernels/gk/gk_00_12.cu
+  kernels/gk/gk_00_13.cu
+  kernels/gk/gk_00_20.cu
+  kernels/gk/gk_00_21.cu
+  kernels/gk/gk_00_22.cu
+  kernels/gk/gk_00_23.cu
+  kernels/gk/gk_00_30.cu
+  kernels/gk/gk_00_31.cu
+  kernels/gk/gk_00_32.cu
+  kernels/gk/gk_00_33.cu
+  kernels/gk/gk_01_00.cu
+  kernels/gk/gk_01_01.cu
+  kernels/gk/gk_01_02.cu
+  kernels/gk/gk_01_03.cu
+  kernels/gk/gk_01_10.cu
+  kernels/gk/gk_01_11.cu
+  kernels/gk/gk_01_12.cu
+  kernels/gk/gk_01_13.cu
+  kernels/gk/gk_01_20.cu
+  kernels/gk/gk_01_21.cu
+  kernels/gk/gk_01_22.cu
+  kernels/gk/gk_01_23.cu
+  kernels/gk/gk_01_30.cu
+  kernels/gk/gk_01_31.cu
+  kernels/gk/gk_01_32.cu
+  kernels/gk/gk_01_33.cu
+  kernels/gk/gk_02_00.cu
+  kernels/gk/gk_02_01.cu
+  kernels/gk/gk_02_02.cu
+  kernels/gk/gk_02_03.cu
+  kernels/gk/gk_02_10.cu
+  kernels/gk/gk_02_11.cu
+  kernels/gk/gk_02_12.cu
+  kernels/gk/gk_02_13.cu
+  kernels/gk/gk_02_20.cu
+  kernels/gk/gk_02_21.cu
+  kernels/gk/gk_02_22.cu
+  kernels/gk/gk_02_23.cu
+  kernels/gk/gk_02_30.cu
+  kernels/gk/gk_02_31.cu
+  kernels/gk/gk_02_32.cu
+  kernels/gk/gk_02_33.cu
+  kernels/gk/gk_03_00.cu
+  kernels/gk/gk_03_01.cu
+  kernels/gk/gk_03_02.cu
+  kernels/gk/gk_03_03.cu
+  kernels/gk/gk_03_10.cu
+  kernels/gk/gk_03_11.cu
+  kernels/gk/gk_03_12.cu
+  kernels/gk/gk_03_13.cu
+  kernels/gk/gk_03_20.cu
+  kernels/gk/gk_03_21.cu
+  kernels/gk/gk_03_22.cu
+  kernels/gk/gk_03_23.cu
+  kernels/gk/gk_03_30.cu
+  kernels/gk/gk_03_31.cu
+  kernels/gk/gk_03_32.cu
+  kernels/gk/gk_03_33.cu
+  kernels/gk/gk_10_00.cu
+  kernels/gk/gk_10_01.cu
+  kernels/gk/gk_10_02.cu
+  kernels/gk/gk_10_03.cu
+  kernels/gk/gk_10_10.cu
+  kernels/gk/gk_10_11.cu
+  kernels/gk/gk_10_12.cu
+  kernels/gk/gk_10_13.cu
+  kernels/gk/gk_10_20.cu
+  kernels/gk/gk_10_21.cu
+  kernels/gk/gk_10_22.cu
+  kernels/gk/gk_10_23.cu
+  kernels/gk/gk_10_30.cu
+  kernels/gk/gk_10_31.cu
+  kernels/gk/gk_10_32.cu
+  kernels/gk/gk_10_33.cu
+  kernels/gk/gk_11_00.cu
+  kernels/gk/gk_11_01.cu
+  kernels/gk/gk_11_02.cu
+  kernels/gk/gk_11_03.cu
+  kernels/gk/gk_11_10.cu
+  kernels/gk/gk_11_11.cu
+  kernels/gk/gk_11_12.cu
+  kernels/gk/gk_11_13.cu
+  kernels/gk/gk_11_20.cu
+  kernels/gk/gk_11_21.cu
+  kernels/gk/gk_11_22.cu
+  kernels/gk/gk_11_23.cu
+  kernels/gk/gk_11_30.cu
+  kernels/gk/gk_11_31.cu
+  kernels/gk/gk_11_32.cu
+  kernels/gk/gk_11_33.cu
+  kernels/gk/gk_12_00.cu
+  kernels/gk/gk_12_01.cu
+  kernels/gk/gk_12_02.cu
+  kernels/gk/gk_12_03.cu
+  kernels/gk/gk_12_10.cu
+  kernels/gk/gk_12_11.cu
+  kernels/gk/gk_12_12.cu
+  kernels/gk/gk_12_13.cu
+  kernels/gk/gk_12_20.cu
+  kernels/gk/gk_12_21.cu
+  kernels/gk/gk_12_22.cu
+  kernels/gk/gk_12_23.cu
+  kernels/gk/gk_12_30.cu
+  kernels/gk/gk_12_31.cu
+  kernels/gk/gk_12_32.cu
+  kernels/gk/gk_12_33.cu
+  kernels/gk/gk_13_00.cu
+  kernels/gk/gk_13_01.cu
+  kernels/gk/gk_13_02.cu
+  kernels/gk/gk_13_03.cu
+  kernels/gk/gk_13_10.cu
+  kernels/gk/gk_13_11.cu
+  kernels/gk/gk_13_12.cu
+  kernels/gk/gk_13_13.cu
+  kernels/gk/gk_13_20.cu
+  kernels/gk/gk_13_21.cu
+  kernels/gk/gk_13_22.cu
+  kernels/gk/gk_13_23.cu
+  kernels/gk/gk_13_30.cu
+  kernels/gk/gk_13_31.cu
+  kernels/gk/gk_13_32.cu
+  kernels/gk/gk_13_33.cu
+  kernels/gk/gk_20_00.cu
+  kernels/gk/gk_20_01.cu
+  kernels/gk/gk_20_02.cu
+  kernels/gk/gk_20_03.cu
+  kernels/gk/gk_20_10.cu
+  kernels/gk/gk_20_11.cu
+  kernels/gk/gk_20_12.cu
+  kernels/gk/gk_20_13.cu
+  kernels/gk/gk_20_20.cu
+  kernels/gk/gk_20_21.cu
+  kernels/gk/gk_20_22.cu
+  kernels/gk/gk_20_23.cu
+  kernels/gk/gk_20_30.cu
+  kernels/gk/gk_20_31.cu
+  kernels/gk/gk_20_32.cu
+  kernels/gk/gk_20_33.cu
+  kernels/gk/gk_21_00.cu
+  kernels/gk/gk_21_01.cu
+  kernels/gk/gk_21_02.cu
+  kernels/gk/gk_21_03.cu
+  kernels/gk/gk_21_10.cu
+  kernels/gk/gk_21_11.cu
+  kernels/gk/gk_21_12.cu
+  kernels/gk/gk_21_13.cu
+  kernels/gk/gk_21_20.cu
+  kernels/gk/gk_21_21.cu
+  kernels/gk/gk_21_22.cu
+  kernels/gk/gk_21_23.cu
+  kernels/gk/gk_21_30.cu
+  kernels/gk/gk_21_31.cu
+  kernels/gk/gk_21_32.cu
+  kernels/gk/gk_21_33.cu
+  kernels/gk/gk_22_00.cu
+  kernels/gk/gk_22_01.cu
+  kernels/gk/gk_22_02.cu
+  kernels/gk/gk_22_03.cu
+  kernels/gk/gk_22_10.cu
+  kernels/gk/gk_22_11.cu
+  kernels/gk/gk_22_12.cu
+  kernels/gk/gk_22_13.cu
+  kernels/gk/gk_22_20.cu
+  kernels/gk/gk_22_21.cu
+  kernels/gk/gk_22_22.cu
+  kernels/gk/gk_22_23.cu
+  kernels/gk/gk_22_30.cu
+  kernels/gk/gk_22_31.cu
+  kernels/gk/gk_22_32.cu
+  kernels/gk/gk_22_33.cu
+  kernels/gk/gk_23_00.cu
+  kernels/gk/gk_23_01.cu
+  kernels/gk/gk_23_02.cu
+  kernels/gk/gk_23_03.cu
+  kernels/gk/gk_23_10.cu
+  kernels/gk/gk_23_11.cu
+  kernels/gk/gk_23_12.cu
+  kernels/gk/gk_23_13.cu
+  kernels/gk/gk_23_20.cu
+  kernels/gk/gk_23_21.cu
+  kernels/gk/gk_23_22.cu
+  kernels/gk/gk_23_23.cu
+  kernels/gk/gk_23_30.cu
+  kernels/gk/gk_23_31.cu
+  kernels/gk/gk_23_32.cu
+  kernels/gk/gk_23_33.cu
+  kernels/gk/gk_30_00.cu
+  kernels/gk/gk_30_01.cu
+  kernels/gk/gk_30_02.cu
+  kernels/gk/gk_30_03.cu
+  kernels/gk/gk_30_10.cu
+  kernels/gk/gk_30_11.cu
+  kernels/gk/gk_30_12.cu
+  kernels/gk/gk_30_13.cu
+  kernels/gk/gk_30_20.cu
+  kernels/gk/gk_30_21.cu
+  kernels/gk/gk_30_22.cu
+  kernels/gk/gk_30_23.cu
+  kernels/gk/gk_30_30.cu
+  kernels/gk/gk_30_31.cu
+  kernels/gk/gk_30_32.cu
+  kernels/gk/gk_30_33.cu
+  kernels/gk/gk_31_00.cu
+  kernels/gk/gk_31_01.cu
+  kernels/gk/gk_31_02.cu
+  kernels/gk/gk_31_03.cu
+  kernels/gk/gk_31_10.cu
+  kernels/gk/gk_31_11.cu
+  kernels/gk/gk_31_12.cu
+  kernels/gk/gk_31_13.cu
+  kernels/gk/gk_31_20.cu
+  kernels/gk/gk_31_21.cu
+  kernels/gk/gk_31_22.cu
+  kernels/gk/gk_31_23.cu
+  kernels/gk/gk_31_30.cu
+  kernels/gk/gk_31_31.cu
+  kernels/gk/gk_31_32.cu
+  kernels/gk/gk_31_33.cu
+  kernels/gk/gk_32_00.cu
+  kernels/gk/gk_32_01.cu
+  kernels/gk/gk_32_02.cu
+  kernels/gk/gk_32_03.cu
+  kernels/gk/gk_32_10.cu
+  kernels/gk/gk_32_11.cu
+  kernels/gk/gk_32_12.cu
+  kernels/gk/gk_32_13.cu
+  kernels/gk/gk_32_20.cu
+  kernels/gk/gk_32_21.cu
+  kernels/gk/gk_32_22.cu
+  kernels/gk/gk_32_23.cu
+  kernels/gk/gk_32_30.cu
+  kernels/gk/gk_32_31.cu
+  kernels/gk/gk_32_32.cu
+  kernels/gk/gk_32_33.cu
+  kernels/gk/gk_33_00.cu
+  kernels/gk/gk_33_01.cu
+  kernels/gk/gk_33_02.cu
+  kernels/gk/gk_33_03.cu
+  kernels/gk/gk_33_10.cu
+  kernels/gk/gk_33_11.cu
+  kernels/gk/gk_33_12.cu
+  kernels/gk/gk_33_13.cu
+  kernels/gk/gk_33_20.cu
+  kernels/gk/gk_33_21.cu
+  kernels/gk/gk_33_22.cu
+  kernels/gk/gk_33_23.cu
+  kernels/gk/gk_33_30.cu
+  kernels/gk/gk_33_31.cu
+  kernels/gk/gk_33_32.cu
+  kernels/gk/gk_33_33.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::eri::integral_direct::exchange::pairs::headers
@@ -294,13 +551,13 @@ free_breakfast_add_gpu_device_library(
   free_breakfast::core::kernel_headers
 )
 
-# The module. DeviceResources, OrderedPairClass and CartesianMatrixAO are in its
-# signature, so core::resources, exchange::pairs (re-exported) and
-# recipes::matrix_ao are PUBLIC. The per-class launch is the one-electron
-# builds' (one_electron::launch), and the two device libraries are PRIVATE: the
-# implementation unit includes their bridge headers in its GMF and calls the
-# launchers, and a static library's private link dependencies still reach the
-# final link.
+# The module. DeviceResources, OrderedPairClass, BasisSet, CartesianMatrixAO and
+# SphericalMatrixAO are in its signatures, so core::resources, exchange::pairs
+# (re-exported), basis and recipes::matrix_ao are PUBLIC. The per-class launch
+# is the one-electron builds' (one_electron::launch), and the two device
+# libraries are PRIVATE: the implementation unit includes their bridge headers
+# in its GMF and calls the launchers, and a static library's private link
+# dependencies still reach the final link.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.integral_direct.exchange
@@ -313,12 +570,12 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::error_handling
   free_breakfast::core::resources
   free_breakfast::integrals::eri::integral_direct::exchange::pairs
+  free_breakfast::basis
   free_breakfast::recipes::matrix_ao
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
-  free_breakfast::basis
   free_breakfast::integrals::one_electron::launch
   free_breakfast::integrals::eri::integral_direct::exchange::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers

@@ -64,6 +64,16 @@ where the other family has the class). The device Boys routine the units include
 src/integrals/shared/eval_boys.h, written by the other two tools; this one
 writes nothing there.
 
+The K gradient's family rides in the same directory: `gk<la, lc, lb, ld>`,
+FelizJueves's `build_gk_kernel(am)` (`gradient/kernel_gk.py`, #618 there), the
+bra derivative of E_K = 1/2 SUM D_ab D_cd (ac|bd) on `kernel_k`'s mapping (one
+warp per bra record, the kets over the lanes, no screen, no shared memory),
+for every one of the 256 classes, in FelizJueves's default form (unrolled
+below L = 5, rolled from L = 5 and at every f class; `gk_lowstack` chooses,
+nothing here does). Its record vectors are `kb`'s six, split as `kb`'s are,
+and it is emitted with `kb`'s options; its header `gk.h` holds `gk_kernels`
+and `gk_block_dim`, as `kb.h` does.
+
 One more family rides along because K's screen is its first reader:
 `record_bound<la, lb>`, FelizJueves's `Target.RECORD_BOUND`
 (`eri/k_exchange/kernel_record_bound.py`), K's DRESSED per-record Schwarz bound
@@ -103,6 +113,7 @@ from felizjueves.eri.k_exchange.kernel_kblock_rolled import (  # noqa: E402
 from felizjueves.eri.k_exchange.kernel_record_bound import (  # noqa: E402
     build_record_bound_kernel,
 )
+from felizjueves.gradient.kernel_gk import build_gk_kernel  # noqa: E402
 from felizjueves.ir.passes import split_axes  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 
@@ -121,6 +132,7 @@ ARCH = "sm_86"
 OUT = ROOT / "src/integrals/eri/integral_direct/exchange/kernels"
 FAMILY = "kb"
 ROLLED_FAMILY = "kbr"
+GRADIENT_FAMILY = "gk"
 # kbr's class tables, one header beside its units (module docstring).
 TABLES_HEADER = "kbr_tables.h"
 
@@ -170,6 +182,10 @@ def kbr(cls: tuple[int, int, int, int]):
     return split_axes(build_kblock_rolled_kernel(cls), ROLLED_AXES)
 
 
+def gk(cls: tuple[int, int, int, int]):
+    return split_axes(build_gk_kernel(cls), AXES)
+
+
 def record_bound(cls: tuple[int, int]):
     return split_axes(build_record_bound_kernel(cls), BOUND_AXES)
 
@@ -179,6 +195,7 @@ def main() -> int:
     emit_family(arch, OUT / FAMILY, FAMILY, kb_classes(), kb, OPTIONS)
     emit_family(arch, OUT / ROLLED_FAMILY, ROLLED_FAMILY, kbr_classes(), kbr, OPTIONS)
     write(OUT / ROLLED_FAMILY / TABLES_HEADER, kbr_tables(kbr_classes()))
+    emit_family(arch, OUT / GRADIENT_FAMILY, GRADIENT_FAMILY, classes(), gk, OPTIONS)
     emit_family(
         arch, PAIRS_OUT / BOUND_FAMILY, BOUND_FAMILY, bound_classes(), record_bound, {}
     )

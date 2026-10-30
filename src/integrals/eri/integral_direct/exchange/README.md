@@ -248,11 +248,53 @@ shuffles and its shared array read `FJ_WAVEFRONT`, which `deps/CMakeLists.txt`
 sets from `WWR_WARP_SIZE`.
 
 **Generated kernels are committed, not built.** `tools/emit/exchange_kernels.py`
-writes `kernels/kb/` and `kernels/kbr/` (with `kbr_tables.h`) from the
+writes `kernels/kb/`, `kernels/kbr/` (with `kbr_tables.h`) and `kernels/gk/` from the
 FelizJueves submodule; re-run it after bumping the
 submodule. `kernels/.clang-format` turns formatting off, and
 `devtools/check-int-types.py` skips a file by FelizJueves's banner, so the files
 stay byte-for-byte as emitted: a fix belongs in the generator.
+
+## The gradient
+
+`exchange_gradient(res, basis, classes, density)` is the exchange energy's
+nuclear gradient, `dE_K/dR` for `E_K = ½ Σ_abcd D_ab D_cd (ac|bd)`, `n_atom × 3`
+on the host, over FelizJueves's `gk<la, lc, lb, ld>` (`kernels/gk/`,
+`gradient/kernel_gk.py`, its `docs/implementation/gradient.md` "The kernels").
+RHF's `−½` is the caller's. `density` is spherical and carried onto the
+Cartesian layout inside (`MatrixAOPair::spherical_to_cartesian`), as
+`one_electron/gradient` does.
+
+- **`gk` is on `kernel_k`'s mapping, not `kb`'s**: one warp per bra record
+  `(a, c)`, every ket record `(b, d)` strip-mined over its lanes, no shared
+  memory, and lane 0 adding the record's two centres' derivative into
+  `G[atom_a]` and `G[atom_c]`. A launch is one (bra class, ket class) pair,
+  every ordered record of each, so the call is one `gk` launch per pair of the
+  set, each bra class on its own stream (`launch_each`). No block table and no
+  density factor: none of the K build's scratch is read or written, and the
+  classes are only read.
+- **Only the bra is differentiated.** For a symmetric `D` the ket's derivative
+  of `E_K` is the bra's, so the bra's over every ordered quartet is the whole
+  gradient. **`density` must be symmetric**: a contract, not checked, as
+  `exchange`'s symmetry is. Both of a bra record's centres are differentiated,
+  so `Σ_A G[A] = 0` is a check, not a construction.
+- **No screening, so O(N⁴).** `gk` visits every ordered primitive quartet:
+  FelizJueves derives no bound on the derivative (K's bound bounds the
+  integral), so there is no `tau`. Its cost grows as the fourth power of the
+  primitive pairs, against the screened `exchange`'s.
+- **What the records add.** `gk` reads the bra's two exponents, which the
+  ordered classes now carry as `ea` / `eb` ([`pairs/`](pairs/README.md)), and
+  its two atoms, which they do not: the call builds each Cartesian AO's atom
+  from the basis's per-atom shell map, uploads it, and gathers each bra
+  record's `atom_a` / `atom_c` from its AO offsets (`exchange_record_atoms`)
+  into the call's own scratch, as `one_electron/gradient` gathers its record
+  atoms. A basis with no per-atom map is `InvalidConfig`.
+- **The kernels.** All 256 ordered classes through `(ff|ff)`, in FelizJueves's
+  default form: unrolled below `L = 5`, rolled (`gk_lowstack`, compact per-axis
+  tables, no `E` block) from `L = 5` and at every f class. Emitted
+  `any_wavefront` with `block_dim = (1, WAVEFRONT)` and their six record
+  vectors split as `kb`'s are, by the same `tools/emit/exchange_kernels.py`.
+  `exchange_launch.cu` checks `gk_kernels` is `kbr_kernels`'s extent and
+  `gk_block_dim` `kb`'s.
 
 ## Not done
 
@@ -361,6 +403,7 @@ stay byte-for-byte as emitted: a fix belongs in the generator.
 | `exchange(res, classes, density, k, tau = 1e-13, symmetry = DensitySymmetry::Symmetric)` | `Status`: the Cartesian K of `density` into `k`, from the whole set of `ordered_pair_classes` of the same basis, in its order, screened at `tau` (`0` screens nothing), by the `a <= b` blocks, the rest mirrored as `symmetry` says (a contract on `density`, unchecked). Writes the classes' scratch. InvalidConfig for a negative or NaN `tau`, another device, a density of another order, a class above f, classes of a basis of another order, a subset or reordering of the classes, or `k.n()^2` past `INT32_MAX` |
 | `DensitySymmetry` | `Symmetric` or `Antisymmetric`: the density's, which `K` shares, and the mirror's sign. A general `D` is one call per part, which [`nonsymmetric_jk`](../nonsymmetric_jk/README.md) makes |
 | `exchange_block_factors(res, classes, density, tau = 1e-13)` | `Result<std::vector<double>>`: every block's density factor `F_ab` as `exchange` makes it for the same arguments (the same code path, with no `K`: no zeroing, no `kb`, no mirror), read back, bra class major, then ket class, then table order. A diagnostic: how many blocks the decay screens below `max\|D\|` decides whether it pays. Synchronizes `res.stream()` |
+| `exchange_gradient(res, basis, classes, density)` | `Result<std::vector<double>>`: `dE_K/dR` of `E_K = ½ Σ D_ab D_cd (ac\|bd)` for a symmetric spherical `density` (a contract, unchecked), `(natoms, 3)` row-major, over every ordered quartet, unscreened (O(N⁴)). Only reads the classes. Synchronizes `res.stream()`. InvalidConfig for a density of another order or device, a basis with no per-atom map, or what `exchange` refuses of the classes |
 | `OrderedPairClass`, `ordered_pair_classes`, ... | re-exported from [`pairs/`](pairs/README.md) |
 
 ## Tests
@@ -406,16 +449,25 @@ libcint counterpart. The classes,
 their `group_start`, `dc` rows and block tables among them, are
 `exchange_pairs_gpu.cpp`'s.
 
+`test/gtest/exchange_gradient_gpu.cpp`: `exchange_gradient` of the skew water
+in cc-pVDZ and cc-pVTZ (every class through `(ff|ff)`, about 5 s unscreened on
+the RX 9060 XT) against
+libcint's `int2e_ip1` contracted with `test/gtest/data/gradient/`'s recipe
+matrix as `D` by PySCF, at 1e-10 of max|G|, and its sum over atoms below
+1e-10; plus the refusals of a density of the wrong order, a basis with no
+per-atom map and classes of another basis.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `exchange.cppm` | Module interface: `exchange`, `DensitySymmetry`, `exchange_block_factors`, the pairs re-exported |
-| `exchange.cpp` | The build: the checks, the per-call buffers, the phases |
+| `exchange.cppm` | Module interface: `exchange`, `DensitySymmetry`, `exchange_block_factors`, `exchange_gradient`, the pairs re-exported |
+| `exchange.cpp` | The build: the checks, the per-call buffers, the phases; and the gradient's checks, Cartesian density, record atoms and launches |
 | `exchange_bridge.h` | The launchers, declared once for the module and the device TU |
-| `exchange_launch.cu` | The `kb` / `kbr` launcher; the rank-table kernel; the compile-time checks of the tables, their limits, the block and the shared-memory budget |
+| `exchange_launch.cu` | The `kb` / `kbr` launcher; the `gk` launcher and the record-atom kernel; the rank-table kernel; the compile-time checks of the tables, their limits, the block and the shared-memory budget |
 | `helpers/` | `max\|D\|`, the `Dcd` gather, the block table (which `pairs/` makes) and its factors, the shell starts and the signed mirror, the decay's bound maximum, AO centres, group geometry and fit, and the E tables of FelizJueves's rolled kernel `kbr` (`e_table.cu`, `exchange_e_table`: each record's undressed `E^{la lb}`, nonzero entries, record-major, the ket's odd-`\|t\|` entries negated, through f; `kbr`'s `Eac` and `Ebd`), a device library of their own |
 | `kernels/kb/` | The generated units through d and their template header `kb.h` |
 | `kernels/kbr/` | The generated rolled units with an f shell, their template header `kbr.h`, and the class tables `kbr_tables.h` |
+| `kernels/gk/` | The generated gradient units, all 256 classes, and their template header `gk.h` |
 | `pairs/` | The ordered pair classes: their own module and view header library |
 | `CMakeLists.txt` | The device library, its launcher among the kernels, and the module |
