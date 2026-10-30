@@ -8,12 +8,16 @@
 /// classes, re-exported here, so one import gives both the classes and the
 /// build: every ordered class is both a bra class (a, c) and a ket class
 /// (b, d).
+///
+/// Beside it, the exchange energy's nuclear gradient, over the gk kernels
+/// FelizJueves generates (exchange_gradient).
 
 export module free_breakfast.integrals.eri.integral_direct.exchange;
 
 import std;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.resources;
+import free_breakfast.basis;
 import free_breakfast.recipes.matrix_ao;
 export import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 
@@ -122,5 +126,44 @@ enum class DensitySymmetry { Symmetric, Antisymmetric };
 [[nodiscard]] Result<std::vector<double>>
 exchange_block_factors(DeviceResources &res, std::span<OrderedPairClass> classes,
                        const CartesianMatrixAO &density, double tau = 1e-13);
+
+/// @brief dE_K/dR, the nuclear gradient of `E_K = 1/2 SUM_abcd D_ab D_cd
+/// (ac|bd)` for the spherical AO density @p density, for every atom A of
+/// @p basis and axis k.
+///
+/// The RHF exchange energy is `-1/2 E_K` (closed shell, D the total density):
+/// that factor is the caller's. @p density is carried onto the Cartesian
+/// layout internally (U D U^T, as @c exchange's callers carry theirs).
+///
+/// **@p density must be symmetric, and that is a contract: it is not
+/// checked.** The kernels (FelizJueves's gk) differentiate the bra (a, c) of
+/// every ordered quartet only, and for a symmetric D the ket's derivative is
+/// the same sum, which is what makes the bra's the whole gradient. Both
+/// centres of each bra record are differentiated, so the sum over atoms
+/// vanishes to rounding rather than by construction.
+///
+/// **Unscreened**: every ordered primitive quartet is visited (FelizJueves
+/// derives no bound on the derivative), so the cost is O(N^4) in the
+/// primitive pairs, with no @p tau.
+///
+/// @p classes are @c ordered_pair_classes(res, basis, primitive_pair_classes)
+/// of @p basis, the whole set in its order, as @c exchange takes them; they
+/// are only read. @p basis must carry its per-atom shell map (made by
+/// @c place): the gradient's rows are its atoms. Queued on res.stream(), each
+/// class as a bra on its own stream forked from it and joined back; the call
+/// waits for the stream, to return the gradient on the host. The device
+/// res.dev_idx() names is made current for the call and the previous one
+/// restored.
+///
+/// @return The gradient, flat and row-major as @c (basis.natoms(), 3) (as
+///         @c nuclear_repulsion_gradient); or InvalidConfig if @p density is
+///         not basis.nao_sphe() square or on @p res's device, if @p basis has
+///         no per-atom map, or for any input @c exchange refuses that does not
+///         concern K or tau; or the GpuRuntime error of the first copy, launch
+///         or wait that failed.
+[[nodiscard]] Result<std::vector<double>> exchange_gradient(DeviceResources &res,
+                                                            const BasisSet &basis,
+                                                            std::span<OrderedPairClass> classes,
+                                                            const SphericalMatrixAO &density);
 
 } // namespace free_breakfast

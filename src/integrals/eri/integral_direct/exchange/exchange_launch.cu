@@ -2,11 +2,12 @@
 // launcher over the generated kb<la, lc, lb, ld> (every shell through d) and
 // kbr<la, lc, lb, ld> (any shell f), and the small kernel that makes the
 // rank-to-AO table it leaves to its caller (the bra's Dcd rows are the ordered
-// classes', pairs_launch.cu). One source for both backends -- nvcc under CUDA,
-// clang -x hip under HIP.
+// classes', pairs_launch.cu); and the K gradient's launcher over the generated
+// gk<la, lc, lb, ld>, with the small kernel that writes its record atoms. One
+// source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/kb/,
-// kernels/kbr/), each one explicit specialization of the template its family's
+// kernels/kbr/, kernels/gk/), each one explicit specialization of the template its family's
 // header declares with its table, so nothing here names a class: a class the
 // table names but no unit defines fails to link. Launching a specialization
 // another TU defines wants relocatable device code under nvcc (CMakeLists.txt).
@@ -25,6 +26,7 @@
 #include "exchange_bridge.h"
 #include "exchange_helpers_bridge.h"
 
+#include "kernels/gk/gk.h"
 #include "kernels/kb/kb.h"
 #include "kernels/kbr/kbr.h"
 #include "kernels/kbr/kbr_tables.h"
@@ -69,6 +71,23 @@ static_assert(kMaxL == fb::device::kExchangeMaxMomentum,
 static_assert(kKbMaxL == fb::device::kExchangeKbMaxMomentum,
               "kernels/kb's table and kExchangeKbMaxMomentum disagree");
 
+// gk covers every class kbr does: the gradient reaches as far as K.
+static_assert(std::extent_v<decltype(gk_kernels), 0> == kExtent &&
+                  std::extent_v<decltype(gk_kernels), 1> == kExtent &&
+                  std::extent_v<decltype(gk_kernels), 2> == kExtent &&
+                  std::extent_v<decltype(gk_kernels), 3> == kExtent,
+              "kernels/gk's [la][lc][lb][ld] table is not kbr's: rerun "
+              "tools/emit/exchange_kernels.py");
+
+// atom[r] = ao_atom[off[r]]: see exchange_record_atoms.
+__global__ void record_atoms_kernel(const int32_t n_rec, const int32_t *off, const int32_t *ao_atom,
+                                    int32_t *atom) {
+  const auto r = static_cast<int32_t>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (r < n_rec) {
+    atom[r] = ao_atom[off[r]];
+  }
+}
+
 // One warp per K_ab block: blockDim = (1, warp width), the block kb's and
 // kbr's Ksh was sized for. FJ_WAVEFRONT comes from WWR_WARP_SIZE
 // (deps/CMakeLists.txt), so this holds unless the two have been split.
@@ -76,6 +95,9 @@ static_assert(kb_block_dim[0] == 1 && kb_block_dim[1] == fb::kWarpSize,
               "kb's block is not (1, kWarpSize): FJ_WAVEFRONT and WWR_WARP_SIZE disagree");
 static_assert(kbr_block_dim[0] == kb_block_dim[0] && kbr_block_dim[1] == kb_block_dim[1],
               "kbr's block is not kb's");
+// gk is one warp per bra record, the same (1, warp width) block.
+static_assert(gk_block_dim[0] == kb_block_dim[0] && gk_block_dim[1] == kb_block_dim[1],
+              "gk's block is not kb's");
 
 // kb's and kbr's shared memory is static, `Ksh[(n_p + n_a n_b) * blockDim.y]`
 // doubles, n_p = (lp + 1)(lp + 2)(lp + 3) / 6 Hermite functions of lp = la + lc
@@ -188,6 +210,36 @@ wwr::wwrError_t exchange_k(const wwr::wwrStream_t stream, const OrderedPairClass
       e_ptr + kbr_e_ptr_at[bra.la][bra.lb], e_col + kbr_e_col_at[bra.la][bra.lb],
       e_ptr + kbr_e_ptr_at[ket.la][ket.lb], e_col + kbr_e_col_at[ket.la][ket.lb],
       hpq + kbr_hpq_at[bra.la + bra.lb][ket.la + ket.lb], dcd, k);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t exchange_record_atoms(const wwr::wwrStream_t stream, const int32_t n_rec,
+                                      const int32_t *off, const int32_t *ao_atom, int32_t *atom) {
+  if (n_rec < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  record_atoms_kernel<<<record_blocks(n_rec), kFourWarps, 0, stream>>>(n_rec, off, ao_atom, atom);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t exchange_gradient_class(const wwr::wwrStream_t stream,
+                                        const OrderedPairClassView &bra, const int32_t *atom_a,
+                                        const int32_t *atom_c, const OrderedPairClassView &ket,
+                                        const int32_t n_ao, const int32_t n_atom, const double *m,
+                                        double *g) {
+  if (!has_records(bra) || !has_records(ket) || n_ao < 1 || n_atom < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  // One warp per bra record, no shared memory. The bra's two shells are
+  // (a, c), the ket's (b, d), each record's first shell first.
+  const dim3 grid(static_cast<uint32_t>(bra.n_rec));
+  const dim3 lanes(gk_block_dim[0], gk_block_dim[1]);
+  const auto kernel = gk_kernels[bra.la][bra.lb][ket.la][ket.lb];
+  kernel<<<grid, lanes, 0, stream>>>(
+      bra.n_rec, ket.n_rec, n_ao, n_atom, bra.p_x, bra.p_y, bra.p_z, bra.zeta, bra.pa_x, bra.pa_y,
+      bra.pa_z, bra.pb_x, bra.pb_y, bra.pb_z, bra.s, bra.ea, bra.eb, bra.off_a, bra.off_b, atom_a,
+      atom_c, ket.p_x, ket.p_y, ket.p_z, ket.zeta, ket.pa_x, ket.pa_y, ket.pa_z, ket.pb_x, ket.pb_y,
+      ket.pb_z, ket.s, ket.off_a, ket.off_b, m, g);
   return wwr::wwrGetLastError();
 }
 

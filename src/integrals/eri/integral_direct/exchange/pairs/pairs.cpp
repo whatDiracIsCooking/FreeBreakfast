@@ -91,6 +91,8 @@ OrderedPairClass make_ordered_class(DeviceResources &res, const int32_t la, cons
       .pb_y = StreamBuffers::device<double>(len, ds),
       .pb_z = StreamBuffers::device<double>(len, ds),
       .s = StreamBuffers::device<double>(len, ds),
+      .ea = StreamBuffers::device<double>(len, ds),
+      .eb = StreamBuffers::device<double>(len, ds),
       .record_bound = StreamBuffers::device<double>(len, ds),
       .off_a = StreamBuffers::device<int32_t>(len, ds),
       .off_b = StreamBuffers::device<int32_t>(len, ds),
@@ -131,10 +133,10 @@ Status gather_ordered(OrderedPairClass &cls, const PrimitivePairClass &from) {
   FBF_TRY(gpu_status(device::ordered_pair_order(stream, v, cls.la, cls.n_groups, key.data(),
                                                 key_alt.data(), perm.data(), perm_alt.data(),
                                                 cls.group_start.data())));
-  double *const doubles[] = {cls.zeta.data(), cls.p_x.data(),  cls.p_y.data(),
-                             cls.p_z.data(),  cls.pa_x.data(), cls.pa_y.data(),
-                             cls.pa_z.data(), cls.pb_x.data(), cls.pb_y.data(),
-                             cls.pb_z.data(), cls.s.data(),    cls.record_bound.data()};
+  double *const doubles[] = {
+      cls.zeta.data(), cls.p_x.data(),          cls.p_y.data(),  cls.p_z.data(),  cls.pa_x.data(),
+      cls.pa_y.data(), cls.pa_z.data(),         cls.pb_x.data(), cls.pb_y.data(), cls.pb_z.data(),
+      cls.s.data(),    cls.record_bound.data(), cls.ea.data(),   cls.eb.data()};
   int32_t *const ints[] = {cls.off_a.data(), cls.off_b.data(), cls.rank_b.data()};
   return gpu_status(
       device::ordered_pair_gather(stream, v, cls.la, cls.n_rec, perm.data(), doubles, ints));

@@ -1,8 +1,9 @@
 /// @file
 /// @brief The K build's launcher over the generated kb<la, lc, lb, ld> and
-/// kbr<la, lc, lb, ld>, and the
-/// small kernel that makes its rank-to-AO table, declared once for the module
-/// that calls them and the device TU that defines them.
+/// kbr<la, lc, lb, ld>, the small kernel that makes its rank-to-AO table, and
+/// the K gradient's launcher over gk<la, lc, lb, ld> with its record-atom
+/// gather, declared once for the module that calls them and the device TU
+/// that defines them.
 ///
 /// Included by exchange.cpp in its GLOBAL MODULE FRAGMENT, and by
 /// exchange_launch.cu directly, for the reason overlap_bridge.h gives: a
@@ -82,5 +83,40 @@ namespace free_breakfast::device {
                                          int32_t n_dc, double tau, const double *dcd, int32_t n_blk,
                                          const int32_t *blocks, const double *factor, int32_t n_ao,
                                          double *k);
+
+/// @brief Write each record's atom from its AO offset, `atom[r] =
+/// ao_atom[off[r]]` for r below @p n_rec, on @p stream: gk's atom_a and
+/// atom_c, which the ordered classes do not carry.
+///
+/// @return The launch status (wwrErrorInvalidValue for a non-positive
+///         @p n_rec).
+[[nodiscard]] wwr::wwrError_t exchange_record_atoms(wwr::wwrStream_t stream, int32_t n_rec,
+                                                    const int32_t *off, const int32_t *ao_atom,
+                                                    int32_t *atom);
+
+/// @brief Add the K gradient class (bra.la, bra.lb | ket.la, ket.lb) of @p bra
+/// against @p ket into the n_atom x 3 @p g, on @p stream: gk<bra.la, bra.lb,
+/// ket.la, ket.lb>, one warp per bra record (a, c), every ket record (b, d)
+/// strip-mined across its lanes, unscreened, and lane 0 adding the record's
+/// derivative on its two centres into G[atom_a] and G[atom_c].
+///
+/// That is the bra derivative of `E_K = 1/2 SUM D_ab D_cd (ac|bd)` over the
+/// class pair's ordered quartets; for a symmetric @p m it equals the ket's, so
+/// the launches of every (bra class, ket class) of a set sum to the whole
+/// dE_K/dR. @p m is the n_ao x n_ao Cartesian density, read at the records' AO
+/// offsets. @p atom_a and @p atom_c are the bra's records' two atoms
+/// (exchange_record_atoms of its off_a and off_b).
+///
+/// The adds are atomic, so launches into one @p g need no ordering among
+/// them; zero @p g before the first.
+///
+/// @return The launch status (wwrErrorInvalidValue for a class pair with no
+///         kernel, either class with no records, or a non-positive @p n_ao or
+///         @p n_atom).
+[[nodiscard]] wwr::wwrError_t exchange_gradient_class(wwr::wwrStream_t stream,
+                                                      const OrderedPairClassView &bra,
+                                                      const int32_t *atom_a, const int32_t *atom_c,
+                                                      const OrderedPairClassView &ket, int32_t n_ao,
+                                                      int32_t n_atom, const double *m, double *g);
 
 } // namespace free_breakfast::device

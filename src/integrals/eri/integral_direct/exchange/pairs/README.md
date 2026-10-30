@@ -41,8 +41,9 @@ its second. As the generated `kb<la, lc, lb, ld>` (`../kernels/kb/`) names its
 parameters, a bra class passes `p_*`, `zeta`, `pa_*`, `pb_*`, `s` and
 `record_bound` as `p_*`, `zeta_ac`, `pa_*`, `pc_*`, `s_ac` and `Ip`; a ket class
 the same fields as `q_*`, `eta`, `qb_*`, `qd_*`, `s_bd` and `Iq`. `mmd`'s `ea`
-and `eb` are not carried (kb reads neither), and neither is its undressed
-`bound` (below). Two fields depend on the orientation:
+and `eb` are carried, swapped with the rest for a swapped record, for the
+gradient's `gk` alone (its `ea_bra` and `ec_bra` on a bra; kb and kbr read
+neither); its undressed `bound` is not (below). Two fields depend on the orientation:
 
 | Field | Value |
 |---|---|

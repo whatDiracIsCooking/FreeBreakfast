@@ -68,9 +68,10 @@ namespace free_breakfast::device {
 /// slot perm[k], for k below @p n_rec, one thread per record.
 ///
 /// As stored a record is mmd's with its bound_ab and rank_b; swapped, with
-/// P - A and P - B exchanged, off_a and off_b exchanged, bound_ba, and rank_a
-/// as its rank_b. @p doubles is the class's zeta, p_x, p_y, p_z, pa_x, pa_y,
-/// pa_z, pb_x, pb_y, pb_z, s and record_bound, @p ints its off_a, off_b and
+/// P - A and P - B exchanged, ea and eb exchanged, off_a and off_b exchanged,
+/// bound_ba, and rank_a as its rank_b. @p doubles is the class's zeta, p_x,
+/// p_y, p_z, pa_x, pa_y, pa_z, pb_x, pb_y, pb_z, s, record_bound, ea and eb,
+/// @p ints its off_a, off_b and
 /// rank_b, each @p n_rec long and written whole; none may overlap another, or
 /// @p from's fields.
 ///
@@ -79,7 +80,7 @@ namespace free_breakfast::device {
 [[nodiscard]] wwr::wwrError_t ordered_pair_gather(wwr::wwrStream_t stream,
                                                   const PrimitivePairClassView &from, int32_t la,
                                                   int32_t n_rec, const uint32_t *perm,
-                                                  double *const doubles[12],
+                                                  double *const doubles[14],
                                                   int32_t *const ints[3]);
 
 /// @brief One bra class's rows of the (lb, ld) Dcd, `dc[r] = rank_b[r] * n_d`,

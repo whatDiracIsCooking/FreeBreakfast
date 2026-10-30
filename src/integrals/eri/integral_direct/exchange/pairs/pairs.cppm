@@ -37,10 +37,10 @@ using free_breakfast::OrderedPairClassView;
 ///
 /// The fields are mmd's, named as there, with "a" the record's first shell and
 /// "b" its second: a record taken from mmd's (b, a) is stored with its P - A
-/// and P - B, and its two AO offsets, swapped; zeta, P and s are
-/// orientation-free and copied as they are. mmd's exponents `ea` and `eb` are
-/// not carried (kb reads neither), nor is mmd's undressed `bound`, which K
-/// does not read. @ref record_bound is mmd's dressed bound of the orientation
+/// and P - B, its two exponents and its two AO offsets swapped; zeta, P and s
+/// are orientation-free and copied as they are. The exponents @ref ea and
+/// @ref eb are read by the gradient's gk alone (kb and kbr read neither).
+/// mmd's undressed `bound` is not carried: K does not read it. @ref record_bound is mmd's dressed bound of the orientation
 /// (bound_ab as stored, bound_ba swapped), and @ref rank_b the second shell's
 /// rank (mmd's rank_b as stored, rank_a swapped).
 ///
@@ -115,6 +115,11 @@ struct OrderedPairClass {
   StreamBuffers::device<double> pb_z;
   /// @brief c_a c_b (pi / zeta)^{3/2}.
   StreamBuffers::device<double> s;
+  /// @brief alpha, the first shell's primitive exponent (mmd's ea as stored,
+  /// eb swapped).
+  StreamBuffers::device<double> ea;
+  /// @brief beta, the second shell's primitive exponent.
+  StreamBuffers::device<double> eb;
   /// @brief The record's DRESSED Schwarz bound, FelizJueves's
   /// ao.k.record_bounds: `max_{i in a} SUM_{k in b} SUM_p |s E^{a_i b_k}_p|
   /// I_p(zeta)`, the max over the first shell's Cartesians, so it depends on
@@ -213,6 +218,8 @@ struct OrderedPairClass {
         .pb_y = pb_y.data(),
         .pb_z = pb_z.data(),
         .s = s.data(),
+        .ea = ea.data(),
+        .eb = eb.data(),
         .record_bound = record_bound.data(),
         .off_a = off_a.data(),
         .off_b = off_b.data(),
