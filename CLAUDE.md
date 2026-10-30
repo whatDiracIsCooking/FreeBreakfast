@@ -70,8 +70,8 @@ Plus `nlohmann_json`, which is FetchContent because it is header-only and small.
 And `deps/FelizJueves`, a submodule that is **not built**: it is the Python
 generator `tools/emit/one_electron_kernels.py`,
 `tools/emit/one_electron_gradient_kernels.py`,
-`tools/emit/coulomb_kernels.py`, `tools/emit/exchange_kernels.py` and
-`tools/emit/df_kernels.py` run by
+`tools/emit/coulomb_kernels.py`, `tools/emit/exchange_kernels.py`,
+`tools/emit/df_kernels.py` and `tools/emit/df_gradient_kernels.py` run by
 hand, their kernels committed under `src/integrals/`; re-run them all after
 bumping it. The build takes only its `include/`, as the
 INTERFACE target `felizjueves::headers` (`deps/CMakeLists.txt`): the

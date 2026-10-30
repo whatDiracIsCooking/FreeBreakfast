@@ -1,8 +1,11 @@
 # Density fitting: the Coulomb metric (P|Q) (metric/, a module over its
 # generated kernels' device library), the three-center (mn|P) (three_center/,
 # the same), the fit B = L^-1 (mn|P) (fit/, host code over the solver and
-# BLAS), DF J and K over B (jk/), and B in the MO basis (mo/, BLAS alone).
+# BLAS), DF J and K over B (jk/), B in the MO basis (mo/, BLAS alone), and the
+# nuclear gradients of the metric and of (mn|P) (gradient/, a module over its
+# generated kernels' device library).
 add_subdirectory(fit)
+add_subdirectory(gradient)
 add_subdirectory(jk)
 add_subdirectory(metric)
 add_subdirectory(mo)
@@ -21,4 +24,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::eri::density_fitting::fit
   free_breakfast::integrals::eri::density_fitting::jk
   free_breakfast::integrals::eri::density_fitting::mo
+  free_breakfast::integrals::eri::density_fitting::gradient
 )
