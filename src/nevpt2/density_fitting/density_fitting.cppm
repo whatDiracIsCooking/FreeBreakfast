@@ -2,7 +2,8 @@
 /// @brief SC-NEVPT2's integrals over density fitting: the MO blocks of the
 /// fitted factor B that its classes read, the active h2e from them, and the
 /// external four-index blocks built slab by slab, so that no whole external
-/// block need ever exist on the device.
+/// block need ever exist on the device. And the adjoints of all three, onto
+/// Lambda = dE/dB in the MO basis.
 ///
 /// (pq|rs) = sum_Q B_Q,pq B_Q,rs with the metric already folded into B. No
 /// (Q|vv) block: no SC class has two virtuals in one charge distribution,
@@ -113,5 +114,75 @@ struct MoBlocks {
 ///         which leaves @p out unspecified.
 [[nodiscard]] Status slab(DeviceResources &res, const MoBlocks &blocks, ExtBlock block, int32_t b0,
                           int32_t b1, double *out);
+
+// ---------------------------------------------------------------------------
+// The adjoints: bars on the blocks, h2e and the slabs pulled back onto
+// Lambda = dE/dB in the MO basis.
+//
+// Lambda is naux x nmo^2, nmo = ncore + ncas + nvirt, in the layout of B
+// itself as b_mo reads it with C the identity: element (Q, p, q) at
+// Q + naux (p + nmo q), p and q absolute MO indices. Every adjoint ADDS onto
+// it, so a caller zeroes it once and walks the slabs one at a time, and no
+// slab's bar need outlive its call. Lambda is the adjoint of the maps as
+// written, which read B_cv's pair (and so B_vc's) from Lambda's (core,
+// virtual) corner only: its symmetric part, for a symmetric B, is the
+// caller's (Lambda + Lambda^T) / 2 per Q.
+// ---------------------------------------------------------------------------
+
+/// @brief The adjoint of @ref h2e at @p blocks' B: @p lambda +=
+/// d<h2e_bar, h2e(B)>/dB, onto Lambda's active-active corner.
+///
+/// @p h2e_bar is ncas^4 doubles in @ref h2e's layout. Queued on res.stream()
+/// with no host synchronization; the bar permuted back is scratch from
+/// res.device_workspace(), which neither @p h2e_bar nor @p lambda may point
+/// into.
+///
+/// @return Success; InvalidConfig past the int32_t BLAS dispatch; or the
+///         GpuRuntime error of the first call that failed, which leaves
+///         @p lambda unspecified.
+[[nodiscard]] Status h2e_adjoint(DeviceResources &res, const MoBlocks &blocks,
+                                 const double *h2e_bar, double *lambda);
+
+/// @brief The adjoint of @ref slab at @p blocks' B: @p lambda +=
+/// d<slab_bar, slab(B)>/dB, for @p block's slab over [@p b0, @p b1).
+///
+/// The transposed gemms of @ref slab's one, each strided-batched: with C-bar
+/// the bar permuted back, X-bar_y += Y C-bar_y^T over the batch's columns of
+/// X, and Y-bar_w += X_b C-bar_w, both added at X's and Y's places in Lambda.
+/// @p slab_bar is the slab's own layout and size. Queued on res.stream()
+/// with no host synchronization; C-bar (when a permute was taken) and the
+/// batch's columns of X (when the batch is not the whole extent) are scratch
+/// from res.device_workspace(), which neither @p slab_bar nor @p lambda may
+/// point into.
+///
+/// @return Success, adding nothing for an empty slab or naux = 0;
+///         InvalidConfig for a range outside [0, extent] or b1 < b0, or past
+///         the int32_t BLAS dispatch (Lambda's leading dimension naux nmo
+///         included); or the GpuRuntime error of the first call that failed,
+///         which leaves @p lambda unspecified.
+[[nodiscard]] Status slab_adjoint(DeviceResources &res, const MoBlocks &blocks, ExtBlock block,
+                                  int32_t b0, int32_t b1, const double *slab_bar, double *lambda);
+
+/// @brief The adjoint of @ref mo_blocks in the MO basis: each bar in @p bar
+/// added at its block's place in @p lambda (B_vc's swapped back onto B_cv's),
+/// and the bars on B_cc's and B_vv's diagonals, B_Q,ii and B_Q,aa, onto
+/// Lambda's.
+///
+/// Those diagonals are what the orbital energies and h1e_v_sr read beyond
+/// the five blocks ((ii|jj), (aa|tu), ...), which @ref mo_blocks never
+/// forms. @p bar's counts give the shapes; any of its five buffers may be
+/// empty, adding nothing, and so may either diagonal bar be null.
+/// @p core_diagonal_bar is naux x ncore, element (Q, i) at Q + naux i, and
+/// @p virt_diagonal_bar naux x nvirt the same. Queued on res.stream() with
+/// no host synchronization; B_vc's bar swapped is scratch from
+/// res.device_workspace(), which no argument may point into.
+///
+/// @return Success; InvalidConfig for a negative count, a buffer neither
+///         empty nor its block's size, or Lambda's diagonal stride
+///         naux (nmo + 1) past int32_t; or the GpuRuntime error of the first
+///         call that failed, which leaves @p lambda unspecified.
+[[nodiscard]] Status mo_blocks_adjoint(DeviceResources &res, const MoBlocks &bar,
+                                       const double *core_diagonal_bar,
+                                       const double *virt_diagonal_bar, double *lambda);
 
 } // namespace free_breakfast::nevpt2
