@@ -1,6 +1,6 @@
 // The Overlap step against a direct overlap + cartesian_to_spherical, and its
 // diagonal on a basis read through the BasisSet step. The step's contract is
-// checked by static_assert; the rest builds S on the device, so needs a GPU.
+// test/pipeline/steps_host.cpp's; the rest builds S on the device, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -28,11 +28,6 @@ using fb::Element;
 
 using OverlapInput =
     fb::View<fb::BasisSetOutput, fb::SphericalTransformOutput, fb::PrimitivePairClassesOutput>;
-
-static_assert(fb::PipelineStep<fb::OverlapStep>);
-static_assert(fb::kRunShape<fb::OverlapStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::OverlapStep>, OverlapInput>);
-static_assert(std::same_as<fb::StepOutput<fb::OverlapStep>, fb::OverlapOutput>);
 
 std::vector<double> download(fb::DeviceResources &res, const fb::SphericalMatrixAO &m) {
   std::vector<double> host(m.num_elements());

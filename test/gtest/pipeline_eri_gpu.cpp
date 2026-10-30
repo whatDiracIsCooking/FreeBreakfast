@@ -3,8 +3,8 @@
 // against the B density_fit makes of PySCF's int2c2e and int3c2e
 // (data/density_fitting/), the default aux basis, and the step's refusals of
 // an aux basis it cannot resolve, place or default. Integral-direct: J's and
-// K's classes, and an aux basis refused. The step's contract is checked by
-// static_assert; the rest builds on the device, so needs a GPU.
+// K's classes, and an aux basis refused. The step's contract is
+// test/pipeline/steps_host.cpp's; the rest builds on the device, so needs a GPU.
 
 #include <gtest/gtest.h>
 
@@ -28,13 +28,6 @@ namespace {
 namespace fb = free_breakfast;
 
 using EriInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput>;
-
-static_assert(fb::PipelineStep<fb::EriStep>);
-static_assert(fb::kRunShape<fb::EriStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::EriStep>, EriInput>);
-static_assert(std::same_as<fb::StepOutput<fb::EriStep>, fb::EriOutput>);
-static_assert(!fb::LoadableStep<fb::EriStep>);
-static_assert(fb::EriStep{}.mode == fb::EriMode::IntegralDirect);
 
 // The integrals each agree with PySCF to 1e-12 of their own maximum
 // (df_metric_gpu, df_three_center_gpu), and so does the fitted (mn|ls) = B^T B

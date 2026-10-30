@@ -151,7 +151,7 @@ ScfOutput's columns in `orbital_order`'s order, exactly, and the AVAS cases' nco
 ncas and nelecas against PySCF's `mcscf.avas` (`casci/README.md` has the
 cases), over ROHF orbitals too, a doublet and a triplet, whose active
 orbitals are compared up to sign as well; and the open shell's two refusals
-by index, over a hand-built ScfOutput. `pipeline_config_host.cpp` has the `[casci]` selection keys and every
+by index, over a hand-built ScfOutput. `test/pipeline/config_host.cpp` has the `[casci]` selection keys and every
 `orbital_order` refusal.
 
 ## Files

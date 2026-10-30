@@ -24,8 +24,16 @@
 # and names neither). Keep the target names in step if you rename them.
 #
 # The src/core tests are not here: test/core builds them as their own pair,
-# free_breakfast_core_tests_{host,gpu}. Nor are the host src/sad tests:
-# test/sad builds them as free_breakfast_sad_tests_host.
+# free_breakfast_core_tests_{host,gpu}. Nor are the host-only src/basis tests:
+# test/basis builds them as free_breakfast_basis_tests_host. basis_gpu.cpp,
+# which needs a device-resident Molecule, stays here. Nor are the host-only
+# src/io tests: test/io builds them as free_breakfast_io_tests_host. The io
+# cases that need a device (io_basis_gpu.cpp, io_xyz_gpu.cpp) are still here.
+# Nor are the src/pipeline cases that need no device: test/pipeline builds them
+# as free_breakfast_pipeline_tests_host. The ones that run a real step need a
+# GPU, and are here. Nor are the src/sad tests: test/sad builds them as
+# free_breakfast_sad_tests_host. sad_gpu.cpp, which places its basis on a
+# device-resident Molecule, stays here.
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
@@ -36,20 +44,10 @@ add_executable(
   free_breakfast_tests_host
   atom_host.cpp
   molecule_host.cpp
-  basis_host.cpp
   ci_strings_host.cpp
   ci_sigma_host.cpp
   cis_ris_basis_host.cpp
-  io_base_host.cpp
-  io_basis_host.cpp
-  io_json_host.cpp
-  io_molden_host.cpp
-  io_npy_host.cpp
-  io_sad_host.cpp
-  io_toml_host.cpp
-  pipeline_step_host.cpp
-  pipeline_pipeline_host.cpp
-  pipeline_config_host.cpp
+  geometry_host.cpp
   recipes_einsum_host.cpp
 )
 
@@ -68,15 +66,12 @@ target_link_libraries(
           free_breakfast::atom
           free_breakfast::molecule
           free_breakfast::basis
-          free_breakfast::sad
           free_breakfast::ci
           free_breakfast::test::ci_oracles
           free_breakfast::cis::ris_basis
+          free_breakfast::geometry
           free_breakfast::io
           free_breakfast::core::resources
-          free_breakfast::pipeline::step
-          free_breakfast::pipeline::pipeline
-          free_breakfast::pipeline::config
           free_breakfast::recipes::einsum
           free_breakfast::test::support
           GTest::gtest
@@ -138,6 +133,7 @@ add_executable(
   overlap_gpu.cpp
   overlap_mixed_gpu.cpp
   dipole_gpu.cpp
+  one_electron_gradient_gpu.cpp
   core_hamiltonian_gpu.cpp
   coulomb_gpu.cpp
   sort_bounds_gpu.cpp
@@ -262,7 +258,7 @@ endforeach()
 # The trade is that ctest shells out once per binary before the run to
 # enumerate. That is milliseconds, and it buys per-case reporting and -R.
 # Each entry's TIMEOUT is _fb_test_timeout, set in test/CMakeLists.txt so this
-# tree, test/core and test/sad share one value.
+# tree, test/core, test/io, test/sad and test/pipeline share one value.
 
 gtest_discover_tests(
   free_breakfast_tests_host

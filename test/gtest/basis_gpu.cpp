@@ -1,5 +1,6 @@
 // GPU cases for basis: placing a stamp onto a molecule. A Molecule owns its
-// nuclei on the device, so building one needs a GPU.
+// nuclei on the device, so building one needs a GPU. Everything else in
+// src/basis is host-only, in test/basis.
 
 #include <gtest/gtest.h>
 

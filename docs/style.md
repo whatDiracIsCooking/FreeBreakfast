@@ -388,7 +388,7 @@ that type for the whole pipeline.
 
 **There are no anonymous namespaces and no `detail` namespaces**, with six
 exceptions where an anonymous namespace is allowed: `.cu` files,
-`test/gtest/*.cpp`, `test/core/*.cpp`, `test/sad/*.cpp`, `src/main.cpp` and `tools/*/main.cpp`. None of those is a module unit, so the alternatives
+`test/gtest/*.cpp`, `test/core/*.cpp`, `test/io/*.cpp`, `test/sad/*.cpp`, `test/pipeline/*.cpp`, `src/main.cpp` and `tools/*/main.cpp`. None of those is a module unit, so the alternatives
 below are not available there.
 
 In a named module, `export` already decides what is visible. Anything not

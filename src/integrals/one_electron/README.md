@@ -2,13 +2,14 @@
 
 One-electron integral matrices on the GPU, over kernels FelizJueves generates:
 the overlap S, the kinetic energy T, the nuclear attraction V, and the core
-Hamiltonian H = T + V; the overlap between two bases, `overlap_mixed`; and the
-dipole matrices mu_x, mu_y, mu_z.
+Hamiltonian H = T + V; the overlap between two bases, `overlap_mixed`; the
+dipole matrices mu_x, mu_y, mu_z; and the nuclear-gradient contractions of S,
+T and V with an AO matrix, `gradient`.
 
 ## Module
 
 `free_breakfast.integrals.one_electron`, a convenience module that re-exports
-the seven below (and is itself re-exported by `free_breakfast.integrals`):
+the eight below (and is itself re-exported by `free_breakfast.integrals`):
 
 ```
 launch/            free_breakfast.integrals.one_electron.launch: the per-class launch and the shared pre-launch checks
@@ -17,6 +18,7 @@ overlap_mixed/     free_breakfast.integrals.one_electron.overlap_mixed: S betwee
 kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
 potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
 dipole/            free_breakfast.integrals.one_electron.dipole: the dipole matrices mu_x, mu_y, mu_z, through d
+gradient/          free_breakfast.integrals.one_electron.gradient: Σ M dX/dR per atom for X = S, T, V
 core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V, in place
 ```
 
@@ -44,7 +46,7 @@ T then V: each build joins before the next forks.
 
 **One layout per kernel family.** `overlap/`, `overlap_mixed/`, `kinetic/`,
 `potential_en/` and `dipole/` are each the same set of files, named after the
-directory:
+directory (`gradient/` too, its three families sharing one `kernels/`):
 
 | File | Role |
 |---|---|
@@ -122,7 +124,7 @@ with an f shell is `InvalidConfig` before anything is launched.
 
 ## Public API
 
-Everything the seven sub-modules export; each README has its own table.
+Everything the eight sub-modules export; each README has its own table.
 
 | Symbol | Module |
 |---|---|
@@ -133,6 +135,7 @@ Everything the seven sub-modules export; each README has its own table.
 | `nuclear_attraction(res, classes, molecule, v)`, `add_nuclear_attraction(…)` | `potential_en` |
 | `core_hamiltonian(res, classes, molecule, h)` | `core_hamiltonian` |
 | `dipole(res, classes, mu_x, mu_y, mu_z)`, `kDipoleMaxL` | `dipole` |
+| `overlap_gradient(res, basis, classes, m)`, `kinetic_gradient(…)`, `potential_gradient(res, basis, classes, molecule, m)` | `gradient` |
 
 Every build is queued on `res.stream()`, each class on its own stream forked
 from it and joined back into it, with no host synchronization.
@@ -164,6 +167,10 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
   spherical layout, against libcint's `int1e_r_sph` (`test/gtest/data/cis/`)
   at 1e-12 absolute over PySCF's unit-normalised functions, plus the zeroing and the refusal of an f shell and of
   matrices of different orders.
+- `test/gtest/one_electron_gradient_gpu.cpp`: the gradient contractions of
+  H₂O in cc-pVDZ and cc-pVTZ against libcint's derivative integrals, recorded
+  by PySCF (`test/gtest/data/gradient/`), at 1e-10 of max|G|, each one's sum
+  over atoms, and the refusals; `gradient/README.md` has the detail.
 - `test/gtest/launch_gpu.cpp`: `check_nuclei` accepting nuclei on the call's
   device. The nuclei themselves are `molecule`'s, tested in
   `test/gtest/molecule_gpu.cpp`.
@@ -172,6 +179,6 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
 
 | File | Role |
 |------|------|
-| `one_electron.cppm` | The convenience module: re-exports the seven sub-modules |
-| `launch/`, `overlap/`, `overlap_mixed/`, `kinetic/`, `potential_en/`, `dipole/`, `core_hamiltonian/` | The sub-modules; each has its own README |
+| `one_electron.cppm` | The convenience module: re-exports the eight sub-modules |
+| `launch/`, `overlap/`, `overlap_mixed/`, `kinetic/`, `potential_en/`, `dipole/`, `gradient/`, `core_hamiltonian/` | The sub-modules; each has its own README |
 | `CMakeLists.txt` | The sub-directories and the aggregate module |

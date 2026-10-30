@@ -1,16 +1,26 @@
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# The C++ suite: three trees, each built into binaries split by device
-# requirement -- a host one (runs anywhere) and, where the subject has device
-# code, a GPU one (skips its device cases without a GPU):
+# The C++ suite: six trees. core/ and gtest/ are each built into a pair of
+# binaries split by device requirement -- a host one (runs anywhere) and a GPU
+# one (skips its device cases without a GPU); basis/, io/, sad/ and pipeline/
+# are each a host binary alone:
 #
 #   * core/  -- the src/core tests: free_breakfast_core_tests_{host,gpu}.
-#   * sad/   -- the host src/sad tests: free_breakfast_sad_tests_host. The
-#     module has no GPU link, so the tree has no GPU binary.
+#   * basis/ -- the src/basis tests that need no device:
+#               free_breakfast_basis_tests_host. Placing a stamp onto a
+#               Molecule needs a GPU, so those cases stay in gtest/.
+#   * io/    -- the src/io tests that need no device:
+#               free_breakfast_io_tests_host.
+#   * sad/   -- the src/sad tests: free_breakfast_sad_tests_host. The module
+#               has no GPU link; the guess over a placed Molecule needs a
+#               GPU, so that case stays in gtest/.
+#   * pipeline/ -- the src/pipeline tests that need no device:
+#               free_breakfast_pipeline_tests_host. Running a real step needs
+#               a GPU, so those cases stay in gtest/'s GPU binary.
 #   * gtest/ -- everything else: free_breakfast_tests_{host,gpu}.
 #
-# All five are registered with ctest and run by `ctest --preset <name>`, or by
+# All eight are registered with ctest and run by `ctest --preset <name>`, or by
 # devtools/cpp-tier.sh, which is configure + build + ctest in one command.
 #
 # The PYTHON suite is not built by CMake: it lives in test/pytest/ -- a sibling
@@ -43,7 +53,7 @@
 # `gpu` label, which the ci-cuda and ci-hip test presets exclude (gtest/
 # CMakeLists.txt says why).
 #
-# The backstop timeout of every entry in both trees, scaled by
+# The backstop timeout of every entry in every tree, scaled by
 # FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER (root CMakeLists). A case that hangs
 # should fail its own entry rather than the whole run; the suite is
 # milliseconds today, so 120s is purely a backstop -- until compute-sanitizer
@@ -54,5 +64,8 @@ math(EXPR _fb_test_timeout "120 * ${FREE_BREAKFAST_TEST_TIMEOUT_MULTIPLIER}")
 add_subdirectory(support)
 add_subdirectory(ci_oracles)
 add_subdirectory(core)
+add_subdirectory(basis)
+add_subdirectory(io)
 add_subdirectory(sad)
+add_subdirectory(pipeline)
 add_subdirectory(gtest)

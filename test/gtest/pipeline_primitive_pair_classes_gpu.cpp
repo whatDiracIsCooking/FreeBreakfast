@@ -1,5 +1,5 @@
 // The PrimitivePairClasses step against a direct primitive_pair_classes. The
-// step's contract is checked by static_assert; running it builds the records
+// step's contract is test/pipeline/steps_host.cpp's; running it builds the records
 // on the device, so the rest needs a GPU.
 
 #include <gtest/gtest.h>
@@ -19,13 +19,6 @@ namespace {
 
 namespace fb = free_breakfast;
 using Class = fb::PrimitivePairClass;
-
-static_assert(fb::PipelineStep<fb::PrimitivePairClassesStep>);
-static_assert(fb::kRunShape<fb::PrimitivePairClassesStep> == fb::RunShape::Device);
-static_assert(
-    std::same_as<fb::StepInput<fb::PrimitivePairClassesStep>, fb::View<fb::BasisSetOutput>>);
-static_assert(
-    std::same_as<fb::StepOutput<fb::PrimitivePairClassesStep>, fb::PrimitivePairClassesOutput>);
 
 // s and p on two centres, d on a third: classes (0,0) .. (2,2), with a p bra
 // before an s ket, so the la <= lb swap is in play.

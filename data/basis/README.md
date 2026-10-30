@@ -147,7 +147,7 @@ After a PySCF bump, re-run the tool. If the diff is not empty, regenerate
    at l ≤ 1. A Cartesian set can be relabelled with
    `tools/basis/cartesian_to_spherical.py`, but that makes it a different
    basis (see 6-31G above): decide that, and say so here, rather than doing
-   it to get a file to parse. `test/gtest/io_basis_host.cpp`'s
+   it to get a file to parse. `test/io/basis_host.cpp`'s
    `IoBasisBuiltins.EveryCompiledInSetParsesAndCoversItsElements` catches it,
    which is the point of that case.
 3. Reconfigure. The glob is `CONFIGURE_DEPENDS`, so a new file is picked up on
@@ -155,4 +155,4 @@ After a PySCF bump, re-run the tool. If the diff is not empty, regenerate
 4. **Regenerate `data/sad/`** (its README has the commands), so the new set's
    SAD guess is baked rather than computed on every run. The same goes for
    re-downloading a set: the stamps were computed over the old shells, and
-   `test/gtest/io_sad_host.cpp` fails until they are regenerated.
+   `test/io/sad_host.cpp` fails until they are regenerated.

@@ -34,14 +34,6 @@ namespace {
 
 namespace fb = free_breakfast;
 
-static_assert(fb::PipelineStep<fb::CasciStep>);
-static_assert(fb::kRunShape<fb::CasciStep> == fb::RunShape::Device);
-static_assert(std::same_as<
-              fb::StepInput<fb::CasciStep>,
-              fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
-                       fb::PrimitivePairClassesOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>>);
-static_assert(std::same_as<fb::StepOutput<fb::CasciStep>, fb::CasciOutput>);
-
 // The issue's bar, for the energies and <S^2>. Measured: within 1e-9.
 constexpr double kEnergyTolerance = 1e-8;
 // The natural occupations move to first order in the CI vector and in the two

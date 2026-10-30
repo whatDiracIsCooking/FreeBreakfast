@@ -7,10 +7,10 @@
 #
 #   * free_breakfast_sad_tests_host -- the *_host.cpp TUs; need no device.
 #
-# Two SAD tests stay in test/gtest, because src/sad is not their subject alone:
-# sad_gpu.cpp places its basis on a Molecule, whose nuclei live on the device,
-# and io_sad_host.cpp holds src/io/sad's compiled-in stamps to this module's
-# SCF.
+# Two SAD tests live elsewhere, because src/sad is not their subject alone:
+# test/gtest/sad_gpu.cpp places its basis on a Molecule, whose nuclei live on
+# the device, and test/io/sad_host.cpp holds src/io/sad's compiled-in stamps to
+# this module's SCF.
 #
 # The module setup and the ctest registration are the same as test/gtest's,
 # which says why for each. None of these cases is RUN_SERIAL. Their suite name,
