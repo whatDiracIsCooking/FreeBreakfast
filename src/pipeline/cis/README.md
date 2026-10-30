@@ -61,7 +61,8 @@ struct CisStep {
    guess's entries at `options.cluster_gap` (`Preconditioner::cluster`, over
    the sigma; at the default 0, nothing) — or, when `options.ris` is set,
    `cis::RisPreconditioner`'s exact (θ − Δε − 2 L Lᵀ)⁻¹ r over its own fit
-   of the RIS basis, whichever `EriOutput` the sigma has
+   of the RIS basis, whichever `EriOutput` the sigma has, refined by GMRES
+   towards (θ − Δε − 2 L Lᵀ + K_RI)⁻¹ r when `options.ris->exchange` is set
    (`../../cis/ris_precondition/`) — and `davidson_solve`
    at `options.davidson` with `max_subspace` clamped to
    [2 · n_states, n_ov]. `davidson_solve`'s floor wins when the two cross
@@ -124,7 +125,8 @@ states than n_ov. Then the module calls' own: `cis::Sigma::create`'s,
 `cis::DfSigma::create`'s (Unsupported, naming the bytes, for MO blocks and
 scratch past the device's free memory), `Preconditioner::cluster`'s (the
 sigma's, or `diagonalize`'s), `cis::RisPreconditioner::create`'s (the RIS
-basis's, or its fit's), the RIS-J correction's (`lu_solve`'s), `davidson_solve`'s
+basis's, its fit's, or a RIS-JK GMRES budget it refuses), the RIS correction's
+(`lu_solve`'s, or the GMRES's BLAS), `davidson_solve`'s
 MaxIterationsExceeded or Divergence, and GpuRuntime for a failed copy,
 dipole launch or gemm.
 
@@ -152,8 +154,9 @@ Then n_states = n_ov and `max_subspace = 1`, both
 clamped, still the reference's roots; with `cluster_gap = 0.1`, three states of
 each spin over H₂O STO-3G integral-direct and cc-pVDZ fitted, the guess
 narrower than the space and the gap checked to group some of its Δε, against
-the reference to 1e-6; with `ris = true`, the same three states of each spin
-over the same two, against the reference to 1e-6; the refusals above; and `[cis]` under a
+the reference to 1e-6; with `ris = true`, and again with `ris_exchange = true`
+beside it, the same three states of each spin over the same two, against the
+reference to 1e-6; the refusals above; and `[cis]` under a
 density-fitted `[eri]` planned when the config is read, with nothing refused.
 The `[cis]` parsing is in `pipeline_config_host.cpp`.
 

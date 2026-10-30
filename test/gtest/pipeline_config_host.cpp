@@ -755,6 +755,20 @@ TEST(PipelineConfig, TheCisRisOptionsAreRead) {
   auto off = fb::parse_config(with_inputs("[cis]\nris = false\n"), "", kOut);
   ASSERT_TRUE(off.has_value()) << off.error().message;
   EXPECT_FALSE(off->step<fb::CisStep>()->options.ris.has_value());
+  EXPECT_FALSE(defaults->exchange);
+  EXPECT_EQ(defaults->k_max_inner_iters, fb::cis::RisOptions{}.k_max_inner_iters);
+  EXPECT_EQ(defaults->k_inner_tol, fb::cis::RisOptions{}.k_inner_tol);
+
+  // RIS-JK and its GMRES's budget.
+  auto jk = fb::parse_config(with_inputs("[cis]\nris = true\nris_exchange = true\n"
+                                         "ris_k_max_inner_iters = 25\nris_k_inner_tol = 1e-4\n"),
+                             "", kOut);
+  ASSERT_TRUE(jk.has_value()) << jk.error().message;
+  const auto &exchange = jk->step<fb::CisStep>()->options.ris;
+  ASSERT_TRUE(exchange.has_value());
+  EXPECT_TRUE(exchange->exchange);
+  EXPECT_EQ(exchange->k_max_inner_iters, 25);
+  EXPECT_EQ(exchange->k_inner_tol, 1e-4);
 }
 
 TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
@@ -779,6 +793,21 @@ TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
                       "[cis] ris_theta must be finite and positive");
   expect_config_error(with_inputs("[cis]\nris = true\ncluster_gap = 0.1\n"),
                       "[cis] ris and cluster_gap each pick the preconditioner");
+  expect_config_error(with_inputs("[cis]\nris_exchange = true\n"),
+                      "[cis] ris_exchange needs ris = true");
+  expect_config_error(with_inputs("[cis]\nris = true\nris_exchange = 1\n"),
+                      "[cis] ris_exchange is not a boolean");
+  expect_config_error(with_inputs("[cis]\nris = true\nris_k_max_inner_iters = 5\n"),
+                      "[cis] ris_k_max_inner_iters needs ris_exchange = true");
+  expect_config_error(with_inputs("[cis]\nris = true\nris_exchange = false\n"
+                                  "ris_k_inner_tol = 1e-3\n"),
+                      "[cis] ris_k_inner_tol needs ris_exchange = true");
+  expect_config_error(with_inputs("[cis]\nris = true\nris_exchange = true\n"
+                                  "ris_k_max_inner_iters = -1\n"),
+                      "[cis] ris_k_max_inner_iters is -1, below 0");
+  expect_config_error(with_inputs("[cis]\nris = true\nris_exchange = true\n"
+                                  "ris_k_inner_tol = 0\n"),
+                      "[cis] ris_k_inner_tol must be positive");
 }
 
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {

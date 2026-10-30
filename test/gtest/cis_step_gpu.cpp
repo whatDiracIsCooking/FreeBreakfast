@@ -11,9 +11,9 @@
 // still gives its energies, with f and the dipoles zero: against the
 // reference integral-direct (slow, ~55 s, so skipped in fast mode), and
 // density-fitted over cc-pVTZ-JKFIT in the fast set. With the clustered
-// preconditioner on ([cis] cluster_gap), and with RIS-J ([cis] ris), H2O
-// STO-3G integral-direct and cc-pVDZ fitted still match the reference to
-// 1e-6. Then the refusals: too few or too many states, a negative
+// preconditioner on ([cis] cluster_gap), with RIS-J ([cis] ris), and with
+// RIS-JK ([cis] ris_exchange), H2O STO-3G integral-direct and cc-pVDZ fitted
+// still match the reference to 1e-6. Then the refusals: too few or too many states, a negative
 // cluster_gap, one beside ris, a molecule that is not a
 // closed-shell singlet, and an open-shell ScfOutput; and [cis] under a
 // density-fitted [eri] planned when the config is read. Runs the device
@@ -419,6 +419,57 @@ TEST(CisStep, RisMatchesPyscf) {
       const bool triplet = spin == cis::Spin::Triplet;
       const fb::CisStep step{
           .options = {.n_states = kStates, .spin = spin, .ris = cis::RisOptions{}},
+      };
+      const auto by_hand = step.run(step_input(*calc), res);
+      ASSERT_TRUE(by_hand.has_value()) << name << ": " << by_hand.error().message;
+      check(*by_hand, entry.at(triplet ? "triplets" : "singlets"),
+            triplet ? "by hand triplet" : "by hand singlet");
+    }
+  }
+}
+
+// RIS-JK, [cis] ris_exchange = true beside ris, at its default GMRES budget,
+// the same way over the same two: the exchange changes the correction again,
+// and still not the operator.
+TEST(CisStep, RisExchangeMatchesPyscf) {
+  FBF_REQUIRE_GPU();
+  constexpr std::int32_t kStates = 3;
+  for (const std::string_view name : {"h2o_sto3g", "h2o_ccpvdz_df"}) {
+    const fb::json &entry = reference_case(name);
+    const fb::test::ScratchDir dir("cis_step");
+    auto calc = fb::read_config(
+        write_config(
+            dir, entry,
+            std::format("[cis]\nn_states = {}\nris = true\nris_exchange = true\n", kStates)),
+        dir.path(), dir / "out");
+    ASSERT_TRUE(calc.has_value()) << calc.error().message;
+    const auto &ris = calc->step<fb::CisStep>()->options.ris;
+    ASSERT_TRUE(ris.has_value());
+    ASSERT_TRUE(ris->exchange);
+    fb::NodeResources node;
+    const fb::Status ran = calc->run(node);
+    ASSERT_TRUE(ran.has_value()) << name << ": " << ran.error().message;
+
+    const auto check = [&](const fb::CisOutput &out, const fb::json &roots, std::string_view what) {
+      const auto want = roots.at("energies").get<std::vector<double>>();
+      ASSERT_EQ(out.states.size(), static_cast<std::size_t>(kStates)) << what;
+      for (std::size_t r = 0; r < out.states.size(); ++r) {
+        std::cout << name << " " << what << " state " << r << ": "
+                  << out.states[r].excitation_energy - want[r] << " hartree, " << out.iterations
+                  << " iterations\n";
+        EXPECT_NEAR(out.states[r].excitation_energy, want[r], kEnergyTolerance)
+            << name << " " << what << " state " << r;
+      }
+    };
+    const auto &chain = calc->get<fb::CisOutput>();
+    ASSERT_TRUE(chain.has_value());
+    check(*chain, entry.at("singlets"), "config singlet");
+
+    fb::DeviceResources &res = node.device(0);
+    for (const cis::Spin spin : {cis::Spin::Singlet, cis::Spin::Triplet}) {
+      const bool triplet = spin == cis::Spin::Triplet;
+      const fb::CisStep step{
+          .options = {.n_states = kStates, .spin = spin, .ris = cis::RisOptions{.exchange = true}},
       };
       const auto by_hand = step.run(step_input(*calc), res);
       ASSERT_TRUE(by_hand.has_value()) << name << ": " << by_hand.error().message;
