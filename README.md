@@ -263,12 +263,13 @@ binaries by hand needs the same variable.
 
 Two suites, and neither covers the other.
 
-**C++ — `test/core/` and `test/gtest/`, run by ctest.** Each tree is two
-binaries split by device requirement: a host one (the `*_host.cpp` TUs, which
+**C++ — `test/core/`, `test/basis/` and `test/gtest/`, run by ctest.** Each
+tree is split by device requirement: a host binary (the `*_host.cpp` TUs, which
 need no device and all run everywhere) and a GPU one (the `*_gpu.cpp` TUs,
 which drive the device). `test/core/` holds the `src/core` tests, as
-`free_breakfast_core_tests_{host,gpu}`; `test/gtest/` holds the rest, as
-`free_breakfast_tests_{host,gpu}`. The GPU cases call `FBF_REQUIRE_GPU()`
+`free_breakfast_core_tests_{host,gpu}`; `test/basis/` holds the host-only
+`src/basis` tests, as `free_breakfast_basis_tests_host` (it has no GPU half);
+`test/gtest/` holds the rest, as `free_breakfast_tests_{host,gpu}`. The GPU cases call `FBF_REQUIRE_GPU()`
 and **skip with a reason** rather than failing, so the suite stays usable on a
 device-less build host — read the skip list before calling a run green. A
 second switch skips from the other end: `FREE_BREAKFAST_FAST_TESTS` makes

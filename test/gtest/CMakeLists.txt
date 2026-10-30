@@ -24,7 +24,9 @@
 # and names neither). Keep the target names in step if you rename them.
 #
 # The src/core tests are not here: test/core builds them as their own pair,
-# free_breakfast_core_tests_{host,gpu}.
+# free_breakfast_core_tests_{host,gpu}. Nor are the host-only src/basis tests:
+# test/basis builds them as free_breakfast_basis_tests_host. basis_gpu.cpp,
+# which needs a device-resident Molecule, stays here.
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
@@ -35,7 +37,6 @@ add_executable(
   free_breakfast_tests_host
   atom_host.cpp
   molecule_host.cpp
-  basis_host.cpp
   sad_host.cpp
   ci_strings_host.cpp
   ci_sigma_host.cpp

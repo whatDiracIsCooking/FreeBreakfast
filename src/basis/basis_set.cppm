@@ -270,7 +270,7 @@ private:
 /// repo does not force to be unit-self-normalized -- coefficients are taken
 /// as given), it reproduces a uniform scalar times identity, with all
 /// off-diagonal (cross-m) entries exactly zero either way. Pinned
-/// numerically in @c test/gtest/basis_host.cpp.
+/// numerically in @c test/basis/basis_set_host.cpp.
 ///
 /// For l <= 1 a shell's block is an identity (the harmonic embedding of s/p
 /// IS the Cartesian set, and @c sqrt((2*0-1)!!) = @c sqrt((2*1-1)!!) = 1).
