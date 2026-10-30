@@ -18,6 +18,14 @@ import free_breakfast.integrals.mmd;
 
 export namespace free_breakfast {
 
+/// @brief The Hermite functions of total order up to @p l, |t| <= l: one row
+/// of a record's D_q or J_p at l = la + lb (@ref CoulombPairClass::n_hermite),
+/// and of the nuclear gradient's raised J_p at l = la + lb + 1.
+[[nodiscard]] constexpr size_t coulomb_hermite_count(const int32_t l) {
+  const auto n = static_cast<size_t>(l);
+  return (n + 1) * (n + 2) * (n + 3) / 6;
+}
+
 /// @brief One class of J's primitive-pair records: the records of one of
 /// mmd's classes (la, lb) that J can need (@ref coulomb_pair_classes), with
 /// the fields J reads, and the scratch a J build writes, on the device only,

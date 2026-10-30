@@ -28,11 +28,16 @@ namespace free_breakfast::device {
 
 /// @brief Add the [p|q] contraction of bra class @p bra against ket class
 /// @p ket into the bra's @p jp, on @p stream: the generated
-/// e_hermite<bra.la + bra.lb, ket.la + ket.lb>, one warp per bra record.
+/// e_hermite<bra.la + bra.lb + raise, ket.la + ket.lb>, one warp per bra record.
+///
+/// @p raise is 0 for the J build and 1 for its nuclear gradient, whose gjab
+/// reads the bra's J_p one Hermite order up (FelizJueves's gjab_pq_spec: the
+/// bra raised by one, over the same records). The bra's Hermite order is then
+/// bra.la + bra.lb + raise, and @p jp's width n_hermite of that.
 ///
 /// @p ip is @p bra's bound (bra.bound) and @p iq, @p dq and @p dmax are
 /// @p ket's, the last two from dq_class, @p dq q-major; @p jp is bra.n_rec x
-/// n_hermite(bra.la + bra.lb), record-major,
+/// n_hermite(bra.la + bra.lb + raise), record-major,
 /// added to atomically, so it must be zeroed before the first ket class and
 /// then holds the sum over all of them. Each lane stops at its first ket with
 /// `Dmax * Ip * Iq < tau`, so for any @p tau above 0 the kets (@p ket's zeta
@@ -41,11 +46,11 @@ namespace free_breakfast::device {
 /// is free.
 ///
 /// @return The launch status (wwrErrorInvalidValue for a class pair with no
-///         kernel). Launch errors only.
+///         kernel, or a @p raise other than 0 or 1). Launch errors only.
 [[nodiscard]] wwr::wwrError_t e_hermite_class(wwr::wwrStream_t stream,
                                               const PrimitivePairClassView &bra,
                                               const PrimitivePairClassView &ket, double tau,
                                               const double *ip, const double *iq, const double *dq,
-                                              const double *dmax, double *jp);
+                                              const double *dmax, double *jp, int32_t raise);
 
 } // namespace free_breakfast::device

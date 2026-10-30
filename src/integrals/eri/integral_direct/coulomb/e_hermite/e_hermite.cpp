@@ -22,8 +22,9 @@ wwr::wwrError_t e_hermite(const CoulombPairClass &ket, const std::span<CoulombPa
   const PrimitivePairClassView k = ket.ket_view();
   for (CoulombPairClass &bra : bras) {
     const PrimitivePairClassView b = bra.view();
-    if (const wwr::wwrError_t code = device::e_hermite_class(
-            s, b, k, tau, b.bound, k.bound, ket.ket_dq.data(), ket.ket_dmax.data(), bra.jp.data());
+    if (const wwr::wwrError_t code =
+            device::e_hermite_class(s, b, k, tau, b.bound, k.bound, ket.ket_dq.data(),
+                                    ket.ket_dmax.data(), bra.jp.data(), 0);
         code != wwr::wwrSuccess) {
       return code;
     }
