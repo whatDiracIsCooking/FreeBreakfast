@@ -106,6 +106,7 @@ add_executable(
   cis_ris_precondition_gpu.cpp
   cis_sigma_gpu.cpp
   cis_step_gpu.cpp
+  e2e_cis_gpu.cpp
   matrix_ao_gpu.cpp
   gemm_gpu.cpp
   gemmwich_gpu.cpp
@@ -287,7 +288,11 @@ gtest_discover_tests(
 # binary is now (dd|g)'s 13,856 B, about 1.4 GB
 # (src/integrals/eri/density_fitting/three_center/README.md, "The stack"). The
 # cc-pVTZ DF cases peak at about 1.5 GB a process.
-set(_fb_serial_cases "NevptRdm.Cas1212*")
+#
+# E2eCis's benzene case, the CIS milestone's production-scale run (an RHF and
+# three CIS solves in cc-pVDZ), has the card to itself, so the wall time its
+# log reports is its own.
+set(_fb_serial_cases "NevptRdm.Cas1212*:E2eCis.*")
 gtest_discover_tests(
   free_breakfast_tests_gpu
   DISCOVERY_MODE PRE_TEST

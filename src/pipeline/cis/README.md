@@ -160,6 +160,15 @@ reference to 1e-6; the refusals above; and `[cis]` under a
 density-fitted `[eri]` planned when the config is read, with nothing refused.
 The `[cis]` parsing is in `pipeline_config_host.cpp`.
 
+`test/gtest/e2e_cis_gpu.cpp` is the production-scale run, slow and
+`RUN_SERIAL`: benzene in cc-pVDZ from a TOML, fitted over cc-pVDZ-JKFIT
+(n_ov = 1953), the lowest five singlets (six roots) with RIS-J through the
+config and again by hand with the diagonal preconditioner and RIS-JK, each
+against the fitted reference's energies to 1e-6 and summed f to 1e-5, with
+every run's Davidson iteration count printed. The exact benzene reference is
+not run: the integral-direct sigma takes the three solves to 282 s on the
+RTX 3080, past an entry's 120 s.
+
 ## Files
 
 | File | Role |
