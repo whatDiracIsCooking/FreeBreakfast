@@ -1,7 +1,8 @@
 # `free_breakfast.gradient`
 
 Analytic nuclear gradients on the GPU, namespace `free_breakfast::gradient`.
-For now the closed-shell DF-RHF one, every term returned on its own:
+The closed-shell RHF one, density-fitted (`df_rhf`) or integral-direct (`rhf`),
+every term returned on its own:
 
     dE/dR = Σ D dT + Σ D dV − Σ W dS + dE_J + dE_x + dV_nn
 
@@ -39,6 +40,24 @@ gradient only at a converged SCF, where W carries the orbitals' response.
   strided-batched gemm over i straight into `three_center`'s (m, n, P) layout,
   with the −2 in its α; Wᴷ is one gemm.
 
+## The integral-direct RHF gradient
+
+`gradient::rhf` is the same gradient over the integrals themselves, returning
+the same `RhfTerms`:
+
+```cpp
+auto g = gradient::rhf(res, molecule, basis, classes, k_classes, scf.c, scf.mo_energies, nocc);
+```
+
+`k_classes` are `ordered_pair_classes` of the basis, which the integral-direct
+ERI step builds as its K classes. The one-electron terms are
+`one_electron_terms`, as above. The Coulomb term is `coulomb_gradient` on D,
+as is (it is dE_J for E_J = ½ Σ D D (ab|cd)); the exchange term is
+`exchange_gradient` on D times −½ (dE_K for E_K = ½ Σ D D (ac|bd)), so
+`exchange` means the same number in both entry points. Both derivative calls
+are unscreened, so the call is O(N⁴) in the primitive pairs, and they hold only
+their own scratch.
+
 PySCF's `df.grad.rhf` reports the exchange term as −½ dE_K with
 E_K = ½ Σ D_ml D_ns (mn|ls); that is the same number as `exchange` here.
 
@@ -63,3 +82,10 @@ H₂O, NH₄⁺ and the distorted H₂O in cc-pVDZ / cc-pVDZ-JKFIT and H₂O in
 cc-pVDZ / cc-pVDZ-acCD, and H₂O in cc-pVTZ / cc-pVTZ-JKFIT (f orbitals; about
 a second, so in the fast tier); a central difference (h = 1e-4 bohr) of the DF-RHF
 energy on one coordinate of H₂O / cc-pVDZ to 1e-6; and the refusals.
+
+`test/gtest/rhf_gradient_gpu.cpp` holds the integral-direct one to the same
+bars against the `rhf` section (PySCF's `scf.grad.rhf`): H₂O and the distorted
+H₂O in cc-pVDZ and H₂O in cc-pVTZ (about 30 s, so in the slow tier only),
+each term and the total to 1e-8, the sum over atoms below 1e-9, and a central
+difference (h = 1e-4 bohr) of the integral-direct RHF energy on one
+coordinate of H₂O / cc-pVDZ to 1e-6.

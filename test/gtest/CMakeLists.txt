@@ -154,6 +154,7 @@ add_executable(
   df_gradient_gpu.cpp
   df_rhf_gradient_gpu.cpp
   pipeline_gradient_gpu.cpp
+  rhf_gradient_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
