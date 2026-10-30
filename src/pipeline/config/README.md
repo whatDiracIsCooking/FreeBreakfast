@@ -175,17 +175,23 @@ cluster_gap = 0.0         # default 0 (off); hartree, the clustered precondition
 ris = false               # default false; true: the RIS-J preconditioner instead
 ris_theta = 0.2           # default 0.2; the RIS basis's exponent scale (needs ris)
 ris_shells = "sp"         # default "sp"; or "s", "spd": a heavy atom's (needs ris)
+ris_exchange = false      # default false; true: RIS-JK, the RI exchange added (needs ris)
+ris_k_max_inner_iters = 10 # default 10; RIS-JK's GMRES cap, 0 or more (needs ris_exchange)
+ris_k_inner_tol = 1e-2    # default 1e-2; RIS-JK's GMRES tolerance (needs ris_exchange)
 ```
 
 `[cis]` is CIS over the RHF (`cis/README.md`). Its keys are `CisStep`'s
 `options` (`cis::Options`: `n_states`, `spin`, two of its `davidson`'s,
 `cluster_gap`, and `ris`, set by `ris = true` with its `RisOptions` from
-`ris_theta` and `ris_shells`),
+`ris_theta`, `ris_shells`, `ris_exchange`, `ris_k_max_inner_iters` and
+`ris_k_inner_tol`),
 flattened into the table as `[localization]`'s are, and `max_subspace`.
 `n_states` below 1, a `residual_tolerance` not positive, `max_iterations`
-below 1, a negative `cluster_gap`, `ris_theta` or `ris_shells` without
-`ris = true`, a `ris_theta` not finite and positive, an unknown `ris_shells`,
-or `ris` beside a positive `cluster_gap` is `InvalidConfig` when the file is
+below 1, a negative `cluster_gap`, a `ris_*` key without `ris = true`,
+`ris_k_max_inner_iters` or `ris_k_inner_tol` without `ris_exchange = true`, a
+`ris_theta` not finite and positive, an unknown `ris_shells`, a negative
+`ris_k_max_inner_iters`, a `ris_k_inner_tol` not positive, or `ris` beside a
+positive `cluster_gap` is `InvalidConfig` when the file is
 read; `n_states` past the single
 excitations needs the molecule and the basis, so the step refuses it when it
 runs. It runs over either `[eri]`: integral-direct, or density-fitted with

@@ -24,14 +24,26 @@ enum class RisShells : uint8_t {
   Spd,
 };
 
-/// @brief The RIS basis's two knobs, as the RIS-J preconditioner
-/// (cis.ris_precondition) and cis::Options::ris carry them: @ref ris_basis's
-/// @p theta and @p shells, at its defaults.
+/// @brief The RIS preconditioner's knobs, as cis.ris_precondition and
+/// cis::Options::ris carry them: @ref ris_basis's @p theta and @p shells, at
+/// its defaults, and whether the exchange term is added (RIS-JK) with its
+/// inner GMRES's budget.
 struct RisOptions {
   /// @brief The exponent scale θ, finite and positive.
   double theta = 0.2;
   /// @brief What a heavy atom gets.
   RisShells shells = RisShells::Sp;
+  /// @brief RIS-JK: the RI exchange −K_RI added to RIS-J's approximation of
+  /// A, its shifted system refined by GMRES from the RIS-J answer. Off, the
+  /// default, is RIS-J alone.
+  bool exchange = false;
+  /// @brief The inner GMRES's Krylov cap with @ref exchange, at least 0;
+  /// 0 runs none, leaving the RIS-J answer.
+  int32_t k_max_inner_iters = 10;
+  /// @brief The inner GMRES's tolerance with @ref exchange, positive:
+  /// stop once the residual is at most this fraction of the RIS-J answer's
+  /// norm.
+  double k_inner_tol = 1e-2;
 };
 
 /// @brief The RIS auxiliary basis over @p atoms, in atom order: per atom one

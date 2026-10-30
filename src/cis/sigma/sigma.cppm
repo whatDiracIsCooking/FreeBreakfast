@@ -48,10 +48,12 @@ struct Options {
   /// cluster's exact block of A (cis::Preconditioner::cluster). Zero, the
   /// default, clusters nothing: the diagonal correction alone.
   double cluster_gap = 0.0;
-  /// @brief The RIS-J preconditioner's basis (cis::RisPreconditioner): set,
+  /// @brief The RIS preconditioner's options (cis::RisPreconditioner): set,
   /// the correction solves (θ − Δε − 2 L Lᵀ) z = r exactly over the RIS
-  /// basis it names, in place of the diagonal one; unset, the default, it is
-  /// not built. Exclusive with a nonzero @ref cluster_gap.
+  /// basis it names, in place of the diagonal one, and with
+  /// RisOptions::exchange refines z by GMRES towards
+  /// (θ − Δε − 2 L Lᵀ + K_RI) z = r; unset, the default, it is not built.
+  /// Exclusive with a nonzero @ref cluster_gap.
   std::optional<RisOptions> ris;
 };
 

@@ -125,8 +125,9 @@ CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
   Buffers::device<double> start(n * static_cast<size_t>(guess_count), res.device());
   FBF_TRY(cis::guess(res, n_ov, delta.data(), guess_count, start.data()));
   cis::Preconditioner precondition{res, n_ov, delta.data(), n_states};
-  // RIS-J in the diagonal correction's place when options.ris asks, over its
-  // own fit of the RIS basis, whichever [eri] the sigma has.
+  // RIS-J (or RIS-JK, with its exchange) in the diagonal correction's place
+  // when options.ris asks, over its own fit of the RIS basis, whichever [eri]
+  // the sigma has.
   const auto &classes = in.get<PrimitivePairClassesOutput>().classes;
   std::optional<cis::RisPreconditioner> ris;
   if (options.ris) {

@@ -5,8 +5,12 @@
 // Ritz values between, below and on the Δε; in place it is the same bytes; a
 // θ exactly on a Δε still gives a finite z; L Lᵀ is (ia|P) M⁻¹ (P|jb), so
 // symmetric positive semidefinite with L's RIS basis the Sp one's six
-// functions; and the refusals. CisStep's use of it, against the reference's
-// roots, is cis_step_gpu.cpp's.
+// functions; and the refusals. With the exchange (RIS-JK), against the
+// operator rebuilt from Δε, L, T_oo and T_vv: at a tight tolerance and a
+// Krylov cap above n_ov, z satisfies (θ − Δε − 2 L Lᵀ + K_RI) z = r to 1e-6;
+// zero inner iterations is the RIS-J answer to 1e-12; and θ on a Δε still
+// gives a finite z. CisStep's use of both, against the reference's roots, is
+// cis_step_gpu.cpp's.
 
 #include <gtest/gtest.h>
 
@@ -31,6 +35,14 @@ namespace cis = free_breakfast::cis;
 
 // The issue's bar on the system's residual, relative to r's largest entry.
 constexpr double kSystemTolerance = 1e-7;
+// RIS-JK's: the GMRES's system, solved to its own tolerance.
+constexpr double kExchangeTolerance = 1e-6;
+// Zero inner iterations against RIS-J.
+constexpr double kDegradeTolerance = 1e-12;
+// The GMRES at a tight tolerance and a Krylov cap above H2O / STO-3G's
+// n_ov = 10, so an unrestarted run spans the whole space.
+constexpr cis::RisOptions kTightExchange{
+    .exchange = true, .k_max_inner_iters = 20, .k_inner_tol = 1e-14};
 // Δε's clamp, the diagonal correction's (#195).
 constexpr double kClamp = 1e-3;
 
@@ -132,13 +144,38 @@ fb::Result<cis::RisPreconditioner> make_ris(fb::DeviceResources &res, const fb::
                                         max_columns, ris);
 }
 
-// max |M z − r| / max |r| per column, M = clamp(θ − Δε) − 2 L Lᵀ rebuilt on
-// the host from Δε and Lᵀ (naux × n_ov).
+// The exchange's blocks on the host, for worst_residual: empty for RIS-J.
+struct Exchange {
+  std::int32_t n_occ = 0;
+  std::vector<double> oo;
+  std::vector<double> vv;
+};
+
+// max |M z − r| / max |r| per column, M = clamp(θ − Δε) − 2 L Lᵀ + K_RI
+// rebuilt on the host from Δε, Lᵀ (naux × n_ov) and, unless they are empty,
+// T_oo and T_vv: (K_RI)_ia,jb = Σ_Q T_ij^Q T_ab^Q.
 double worst_residual(const std::vector<double> &delta, const std::vector<double> &factor,
                       const std::int32_t naux, const std::vector<double> &theta,
-                      const std::vector<double> &r, const std::vector<double> &z) {
+                      const std::vector<double> &r, const std::vector<double> &z,
+                      const Exchange &blocks = {}) {
   const std::size_t n = delta.size();
   const auto aux = static_cast<std::size_t>(naux);
+  const auto occ = static_cast<std::size_t>(blocks.n_occ);
+  const std::size_t virt = occ == 0 ? 0 : n / occ;
+  const auto exchange = [&](const std::size_t ia, const std::size_t jb) {
+    if (blocks.oo.empty()) {
+      return 0.0;
+    }
+    const std::size_t i = ia / virt;
+    const std::size_t a = ia % virt;
+    const std::size_t j = jb / virt;
+    const std::size_t b = jb % virt;
+    double sum = 0.0;
+    for (std::size_t q = 0; q < aux; ++q) {
+      sum += blocks.oo[q + (aux * (i + (occ * j)))] * blocks.vv[q + (aux * (a + (virt * b)))];
+    }
+    return sum;
+  };
   double worst = 0.0;
   for (std::size_t c = 0; c < theta.size(); ++c) {
     double r_max = 0.0;
@@ -154,7 +191,7 @@ double worst_residual(const std::vector<double> &delta, const std::vector<double
         for (std::size_t q = 0; q < aux; ++q) {
           llt += factor[q + (aux * j)] * factor[q + (aux * k)];
         }
-        mz -= 2.0 * llt * z[k + (c * n)];
+        mz += (exchange(j, k) - (2.0 * llt)) * z[k + (c * n)];
       }
       r_max = std::max(r_max, std::abs(r[j + (c * n)]));
       res_max = std::max(res_max, std::abs(mz - r[j + (c * n)]));
@@ -267,6 +304,139 @@ TEST(CisRisPrecondition, SpdCarriesElevenFunctions) {
   EXPECT_GT(largest, 1e-3);
 }
 
+// RIS-JK at a tight tolerance and a Krylov cap above n_ov: z solves
+// (θ − Δε − 2 L Lᵀ + K_RI) z = r to 1e-6 at Ritz values below, between and
+// above the Δε, the exchange's blocks are the symmetric ones they should be,
+// and z is not the RIS-J answer.
+TEST(CisRisPrecondition, ExchangeSolvesTheSystem) {
+  FBF_REQUIRE_GPU();
+  const auto setup = h2o_sto3g();
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->node.device(0);
+  const Problem p = problem(res, *setup->calc);
+  const auto delta = to_host(res, p.delta.data(), p.delta.num_elements());
+  std::vector<double> sorted = delta;
+  std::ranges::sort(sorted);
+  const std::vector<double> theta{sorted.front() - 0.1, 0.5 * (sorted[2] + sorted[3]),
+                                  sorted.back() + 0.7};
+  const auto columns = static_cast<std::int32_t>(theta.size());
+  auto jk = make_ris(res, *setup->calc, p, columns, kTightExchange);
+  ASSERT_TRUE(jk.has_value()) << jk.error().message;
+  auto j_only = make_ris(res, *setup->calc, p, columns);
+  ASSERT_TRUE(j_only.has_value()) << j_only.error().message;
+  const auto n = static_cast<std::size_t>(p.n_ov);
+  const auto aux = static_cast<std::size_t>(jk->naux());
+  const auto occ = static_cast<std::size_t>(p.n_occ);
+  const std::size_t virt = n / occ;
+  ASSERT_EQ(jk->factor_oo().num_elements(), aux * occ * occ);
+  ASSERT_EQ(jk->factor_vv().num_elements(), aux * virt * virt);
+  EXPECT_EQ(j_only->factor_oo().num_elements(), 0U);
+  const Exchange blocks{
+      .n_occ = p.n_occ,
+      .oo = to_host(res, jk->factor_oo().data(), jk->factor_oo().num_elements()),
+      .vv = to_host(res, jk->factor_vv().data(), jk->factor_vv().num_elements()),
+  };
+  // T_ij^Q = T_ji^Q, which the exchange's product leans on.
+  for (std::size_t q = 0; q < aux; ++q) {
+    for (std::size_t i = 0; i < occ; ++i) {
+      for (std::size_t j = 0; j < occ; ++j) {
+        EXPECT_NEAR(blocks.oo[q + (aux * (i + (occ * j)))], blocks.oo[q + (aux * (j + (occ * i)))],
+                    1e-12);
+      }
+    }
+  }
+
+  const auto r = random_block(n * theta.size(), 2026U);
+  const auto d_r = to_device(res, r);
+  fb::Buffers::device<double> d_z(r.size(), res.device());
+  const fb::Status ran = (*jk)(res, theta, nullptr, d_r.data(), d_z.data());
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto z = to_host(res, d_z.data(), r.size());
+  const auto factor = to_host(res, jk->factor().data(), jk->factor().num_elements());
+  const double worst = worst_residual(delta, factor, jk->naux(), theta, r, z, blocks);
+  std::cout << "max |(M + K) z - r| / max |r|: " << worst << "\n";
+  EXPECT_LE(worst, kExchangeTolerance);
+
+  // The exchange is not nothing: z is not RIS-J's.
+  fb::Buffers::device<double> d_j(r.size(), res.device());
+  const fb::Status ran_j = (*j_only)(res, theta, nullptr, d_r.data(), d_j.data());
+  ASSERT_TRUE(ran_j.has_value()) << ran_j.error().message;
+  const auto z_j = to_host(res, d_j.data(), r.size());
+  double change = 0.0;
+  for (std::size_t e = 0; e < z.size(); ++e) {
+    change = std::max(change, std::abs(z[e] - z_j[e]));
+  }
+  EXPECT_GT(change, 1e-6);
+
+  auto in_place = to_device(res, r);
+  const fb::Status again = (*jk)(res, theta, nullptr, in_place.data(), in_place.data());
+  ASSERT_TRUE(again.has_value()) << again.error().message;
+  EXPECT_EQ(to_host(res, in_place.data(), r.size()), z);
+}
+
+// With no inner iterations allowed, RIS-JK is the RIS-J answer: every column
+// left at its seed.
+TEST(CisRisPrecondition, ZeroInnerIterationsIsRisJ) {
+  FBF_REQUIRE_GPU();
+  const auto setup = h2o_sto3g();
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->node.device(0);
+  const Problem p = problem(res, *setup->calc);
+  const auto delta = to_host(res, p.delta.data(), p.delta.num_elements());
+  std::vector<double> sorted = delta;
+  std::ranges::sort(sorted);
+  const std::vector<double> theta{sorted.front() - 0.1, 0.5 * (sorted[2] + sorted[3])};
+  const auto columns = static_cast<std::int32_t>(theta.size());
+  auto none = make_ris(res, *setup->calc, p, columns,
+                       cis::RisOptions{.exchange = true, .k_max_inner_iters = 0});
+  ASSERT_TRUE(none.has_value()) << none.error().message;
+  auto j_only = make_ris(res, *setup->calc, p, columns);
+  ASSERT_TRUE(j_only.has_value()) << j_only.error().message;
+  const auto r = random_block(static_cast<std::size_t>(p.n_ov) * theta.size(), 99U);
+  const auto d_r = to_device(res, r);
+  fb::Buffers::device<double> d_z(r.size(), res.device());
+  fb::Buffers::device<double> d_j(r.size(), res.device());
+  const fb::Status ran = (*none)(res, theta, nullptr, d_r.data(), d_z.data());
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const fb::Status ran_j = (*j_only)(res, theta, nullptr, d_r.data(), d_j.data());
+  ASSERT_TRUE(ran_j.has_value()) << ran_j.error().message;
+  const auto z = to_host(res, d_z.data(), r.size());
+  const auto z_j = to_host(res, d_j.data(), r.size());
+  for (std::size_t e = 0; e < z.size(); ++e) {
+    EXPECT_NEAR(z[e], z_j[e], kDegradeTolerance * std::max(1.0, std::abs(z_j[e]))) << e;
+  }
+}
+
+// θ exactly on a Δε, with the exchange on: the clamp keeps z finite, and it
+// still solves the clamped system.
+TEST(CisRisPrecondition, ExchangeTheClampKeepsZFinite) {
+  FBF_REQUIRE_GPU();
+  const auto setup = h2o_sto3g();
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->node.device(0);
+  const Problem p = problem(res, *setup->calc);
+  const auto delta = to_host(res, p.delta.data(), p.delta.num_elements());
+  const std::vector<double> theta{delta.front(), delta.back()};
+  auto jk = make_ris(res, *setup->calc, p, 2, kTightExchange);
+  ASSERT_TRUE(jk.has_value()) << jk.error().message;
+  const auto n = static_cast<std::size_t>(p.n_ov);
+  const auto r = random_block(n * theta.size(), 7U);
+  auto d_z = to_device(res, r);
+  const fb::Status ran = (*jk)(res, theta, nullptr, d_z.data(), d_z.data());
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto z = to_host(res, d_z.data(), r.size());
+  for (std::size_t e = 0; e < z.size(); ++e) {
+    ASSERT_TRUE(std::isfinite(z[e])) << e;
+  }
+  const auto factor = to_host(res, jk->factor().data(), jk->factor().num_elements());
+  const Exchange blocks{
+      .n_occ = p.n_occ,
+      .oo = to_host(res, jk->factor_oo().data(), jk->factor_oo().num_elements()),
+      .vv = to_host(res, jk->factor_vv().data(), jk->factor_vv().num_elements()),
+  };
+  EXPECT_LE(worst_residual(delta, factor, jk->naux(), theta, r, z, blocks), kExchangeTolerance);
+}
+
 TEST(CisRisPrecondition, Refusals) {
   FBF_REQUIRE_GPU();
   const auto setup = h2o_sto3g();
@@ -288,6 +458,12 @@ TEST(CisRisPrecondition, Refusals) {
                                                calc.get<fb::ScfOutput>()->c, 0, p.delta.data(), 1,
                                                {}),
                 "cis::RisPreconditioner::create: needs 1 <= n_occ < nao");
+
+  expect_config(
+      make_ris(res, calc, p, 1, cis::RisOptions{.exchange = true, .k_max_inner_iters = -1}),
+      "cis::RisPreconditioner::create: the exchange needs k_max_inner_iters >= 0");
+  expect_config(make_ris(res, calc, p, 1, cis::RisOptions{.exchange = true, .k_inner_tol = 0.0}),
+                "cis::RisPreconditioner::create: the exchange needs k_max_inner_iters >= 0");
 
   auto ris = make_ris(res, calc, p, 1);
   ASSERT_TRUE(ris.has_value()) << ris.error().message;

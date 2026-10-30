@@ -310,7 +310,8 @@ template <class S>
   } else if constexpr (std::same_as<S, CisStep>) {
     FBF_TRY(check_keys(table, kStep,
                        {"n_states", "spin", "residual_tolerance", "max_iterations", "max_subspace",
-                        "cluster_gap", "ris", "ris_theta", "ris_shells"}));
+                        "cluster_gap", "ris", "ris_theta", "ris_shells", "ris_exchange",
+                        "ris_k_max_inner_iters", "ris_k_inner_tol"}));
     cis::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "n_states", base_dir, options.n_states));
     std::string spin = "singlet";
@@ -325,8 +326,10 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "max_subspace", base_dir, step.max_subspace));
     FBF_TRY(read_key(table, kStep, "cluster_gap", base_dir, options.cluster_gap));
     // RIS-J is on with ris = true, at RisOptions' defaults unless ris_theta
-    // or ris_shells says; either of those without it is refused rather than
-    // ignored.
+    // or ris_shells says, and RIS-JK with ris_exchange = true beside it, its
+    // GMRES at RisOptions' budget unless ris_k_max_inner_iters or
+    // ris_k_inner_tol says. Each key without the switch it tunes is refused
+    // rather than ignored.
     bool ris = false;
     FBF_TRY(read_key(table, kStep, "ris", base_dir, ris));
     if (ris) {
@@ -343,8 +346,28 @@ template <class S>
       if (!std::isfinite(ris_options.theta) || ris_options.theta <= 0.0) {
         return err_config("[{}] ris_theta must be finite and positive", kStep);
       }
+      FBF_TRY(read_key(table, kStep, "ris_exchange", base_dir, ris_options.exchange));
+      if (ris_options.exchange) {
+        FBF_TRY(read_key(table, kStep, "ris_k_max_inner_iters", base_dir,
+                         ris_options.k_max_inner_iters));
+        FBF_TRY(read_key(table, kStep, "ris_k_inner_tol", base_dir, ris_options.k_inner_tol));
+        if (ris_options.k_max_inner_iters < 0) {
+          return err_config("[{}] ris_k_max_inner_iters is {}, below 0", kStep,
+                            ris_options.k_max_inner_iters);
+        }
+        if (!(ris_options.k_inner_tol > 0.0)) {
+          return err_config("[{}] ris_k_inner_tol must be positive", kStep);
+        }
+      } else {
+        for (std::string_view key : {"ris_k_max_inner_iters", "ris_k_inner_tol"}) {
+          if (table.contains(key)) {
+            return err_config("[{}] {} needs ris_exchange = true", kStep, key);
+          }
+        }
+      }
     } else {
-      for (std::string_view key : {"ris_theta", "ris_shells"}) {
+      for (std::string_view key : {"ris_theta", "ris_shells", "ris_exchange",
+                                   "ris_k_max_inner_iters", "ris_k_inner_tol"}) {
         if (table.contains(key)) {
           return err_config("[{}] {} needs ris = true", kStep, key);
         }
