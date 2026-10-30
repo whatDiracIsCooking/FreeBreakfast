@@ -22,7 +22,7 @@ casci/      free_breakfast.pipeline.casci: CasciStep -- CASCI over the SCF's orb
 casscf/     free_breakfast.pipeline.casscf: CasscfStep -- state-averaged CASSCF from the SCF's orbitals, the start picked as Casci picks its space, mcscf::solve over the EriOutput (integral-direct, or fully density-fitted), the core and virtuals canonicalized, and the natural orbitals as Molden
 fci/        free_breakfast.pipeline.fci: FciStep -- FCI over every SCF orbital, CASCI's calls with no core, refused up front past the device's free memory
 nevpt2/     free_breakfast.pipeline.nevpt2: Nevpt2Step -- SC- and PC-NEVPT2 per root of the CASSCF, over the density-fitted EriOutput only: each root's core and virtuals canonicalized over its own Fock, its RDMs, dm3 and f3, and the eight classes of each
-cis/        free_breakfast.pipeline.cis: CisStep -- CIS (TDA) singlet or triplet excitations over the SCF's RHF: davidson_solve over cis::Sigma, or cis::DfSigma under a density-fitted EriOutput, from cis::guess with cis::Preconditioner
+cis/        free_breakfast.pipeline.cis: CisStep -- CIS (TDA) singlet or triplet excitations over the SCF's RHF: davidson_solve over cis::Sigma, or cis::DfSigma under a density-fitted EriOutput, from cis::guess with cis::Preconditioner; a singlet's transition dipoles and oscillator strengths
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
 ```
 

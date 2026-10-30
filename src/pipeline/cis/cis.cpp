@@ -1,16 +1,21 @@
 /// @file
 /// @brief CisStep: the refusals, then Δε, the guess and the preconditioner
 /// over the ScfOutput, the sigma the EriOutput selects (integral-direct or
-/// fitted), davidson_solve, and the roots copied off the device.
+/// fitted), davidson_solve, a singlet's transition dipoles over the ov block
+/// of the dipole matrices, and the roots copied off the device.
 
 module free_breakfast.pipeline.cis;
 
 import std;
 import free_breakfast.core.types;
+import free_breakfast.core.constants; // kOne, kZero, kSqrt2
 import free_breakfast.core.error_handling;
+import free_breakfast.core.log;
 import free_breakfast.core.wwr; // Buffers, ScopedDeviceIndex, gpu_status
 import free_breakfast.core.resources;
+import free_breakfast.recipes.blas; // gemm
 import free_breakfast.recipes.davidson;
+import free_breakfast.integrals.one_electron.dipole;
 import free_breakfast.cis.precondition;
 import free_breakfast.cis.sigma;
 
@@ -18,9 +23,47 @@ import free_breakfast.cis.sigma;
 
 namespace free_breakfast {
 
-[[nodiscard]] Result<CisOutput> CisStep::run(
-    View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput, EriOutput, ScfOutput> in,
-    DeviceResources &res) const {
+// The singlets' transition dipoles μⁿ_c = √2 Σ_ia X_ia μ^ov_c,ia, into d, 3 x
+// n_states column-major (root n's x, y, z at 3 n): the spherical dipole
+// matrices from the classes, their ov blocks μ^ov_c = C_virtᵀ μ_c C_occ (each
+// n_virt x n_occ, so element a + n_virt i, the amplitudes' order) side by side
+// as the n_ov x 3 matrix M, and d = √2 Mᵀ X over the n_ov x n_states Ritz
+// vectors x. Queued on res.stream(), whose pool also orders the scratch's
+// frees.
+[[nodiscard]] Status cis_transition_dipoles(DeviceResources &res, const BasisSet &basis,
+                                            const SphericalTransformOutput &transform,
+                                            std::span<const PrimitivePairClass> classes,
+                                            const SphericalMatrixAO &c, const int32_t n_occ,
+                                            const int32_t n_states, const double *const x,
+                                            double *const d) {
+  std::array<MatrixAOPair, 3> mu{MatrixAOPair(res, basis, transform.u),
+                                 MatrixAOPair(res, basis, transform.u),
+                                 MatrixAOPair(res, basis, transform.u)};
+  FBF_TRY(dipole(res, classes, mu[0].cartesian(), mu[1].cartesian(), mu[2].cartesian()));
+  const auto nao = static_cast<int32_t>(c.n());
+  const int32_t n_virt = nao - n_occ;
+  const auto n_ov = static_cast<size_t>(n_occ) * static_cast<size_t>(n_virt);
+  Buffers::device<double> half(static_cast<size_t>(nao) * static_cast<size_t>(n_occ), res.device());
+  Buffers::device<double> ov(3 * n_ov, res.device());
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  const double *const c_virt = c.data() + (static_cast<size_t>(n_occ) * static_cast<size_t>(nao));
+  for (size_t k = 0; k < mu.size(); ++k) {
+    FBF_TRY(mu[k].cartesian_to_spherical(res));
+    // μ_c C_occ, nao x n_occ, then C_virtᵀ of it.
+    FBF_TRY(gpu_status(gemm(blas, nao, n_occ, nao, &kOne<double>, mu[k].spherical().data(),
+                            c.data(), &kZero<double>, half.data())));
+    FBF_TRY(
+        gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_virt, n_occ, nao, &kOne<double>, c_virt,
+                                           half.data(), &kZero<double>, ov.data() + (k * n_ov))));
+  }
+  return gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, 3, n_states, static_cast<int32_t>(n_ov),
+                                            &kSqrt2<double>, ov.data(), x, &kZero<double>, d));
+}
+
+[[nodiscard]] Result<CisOutput>
+CisStep::run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
+                  PrimitivePairClassesOutput, EriOutput, ScfOutput> in,
+             DeviceResources &res) const {
   const int32_t n_states = options.n_states;
   if (n_states < 1) {
     return err_config("cis: n_states is {}, not at least 1", n_states);
@@ -98,6 +141,27 @@ namespace free_breakfast {
     info = FBF_TRY(solve(sigma));
   }
 
+  // A singlet's transition dipoles; a triplet's are zero by spin
+  // orthogonality, as are a singlet's past the dipole kernels' d, where the
+  // step still returns the energies rather than failing.
+  std::vector<double> mu(3 * roots, 0.0);
+  const auto &classes = in.get<PrimitivePairClassesOutput>().classes;
+  const bool past_dipole = std::ranges::any_of(
+      classes, [](const PrimitivePairClass &cls) { return cls.lb > kDipoleMaxL; });
+  if (options.spin == cis::Spin::Singlet && past_dipole) {
+    FBF_LOG_WARN("cis: the basis has a shell above l = {}, where the dipole integrals stop, so "
+                 "the transition dipoles and oscillator strengths are left zero",
+                 kDipoleMaxL);
+  }
+  Buffers::device<double> dipoles(mu.size(), res.device());
+  if (options.spin == cis::Spin::Singlet && !past_dipole) {
+    FBF_TRY(cis_transition_dipoles(res, in.get<BasisSetOutput>().basis,
+                                   in.get<SphericalTransformOutput>(), classes, scf.c, n_occ,
+                                   n_states, vectors.data(), dipoles.data()));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(mu.data(), dipoles.data(), mu.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, stream)));
+  }
+
   // The Ritz vectors are column-major n_ov x n_states, so each root's column
   // is already its amplitudes in (i, a) row-major order.
   std::vector<double> omega(roots);
@@ -118,10 +182,13 @@ namespace free_breakfast {
   out.states.reserve(roots);
   for (size_t r = 0; r < roots; ++r) {
     const auto first = x.begin() + static_cast<std::ptrdiff_t>(r * n);
+    const std::array<double, 3> dipole_r{mu[3 * r], mu[(3 * r) + 1], mu[(3 * r) + 2]};
+    const double norm2 =
+        (dipole_r[0] * dipole_r[0]) + (dipole_r[1] * dipole_r[1]) + (dipole_r[2] * dipole_r[2]);
     out.states.push_back(CisState{
         .excitation_energy = omega[r],
-        .oscillator_strength = 0.0,
-        .transition_dipole = {0.0, 0.0, 0.0},
+        .oscillator_strength = 2.0 / 3.0 * omega[r] * norm2,
+        .transition_dipole = dipole_r,
         .amplitudes = std::vector<double>(first, first + static_cast<std::ptrdiff_t>(n)),
     });
   }
