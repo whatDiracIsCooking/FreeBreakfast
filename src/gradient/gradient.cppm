@@ -17,6 +17,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
+import free_breakfast.integrals.eri.integral_direct.exchange.pairs;
 import free_breakfast.recipes.matrix_ao;
 
 export namespace free_breakfast::gradient {
@@ -91,6 +92,37 @@ struct RhfTerms {
                                       const SphericalMatrixAO &c,
                                       std::span<const double> mo_energies, int32_t nocc);
 
+/// @brief The closed-shell integral-direct RHF nuclear gradient at converged
+/// orbitals, every term of it, the two-electron ones over the integrals
+/// themselves.
+///
+/// The one-electron, overlap and nuclear-repulsion terms are @ref df_rhf's.
+/// The Coulomb term is @c coulomb_gradient on D = 2 C_occ C_occ^T, unscreened;
+/// the exchange term is -1/2 @c exchange_gradient on D, unscreened too, so
+/// the call is O(N^4) in the primitive pairs.
+///
+/// @p molecule is the molecule @p basis was placed on (by @c place), with its
+/// per-atom shell map; @p classes are @c primitive_pair_classes of @p basis,
+/// and @p k_classes @c ordered_pair_classes of it, the integral-direct ERI
+/// step's K classes (only read, but @c exchange_gradient takes them
+/// mutable). @p c, @p mo_energies and @p nocc are as @ref df_rhf takes them,
+/// and the formula is likewise the gradient only at a converged SCF.
+///
+/// Queued on res.stream(); each derivative call synchronizes it to return its
+/// rows, so the call returns with everything done. The device res.dev_idx()
+/// names is made current for the call and the previous one restored.
+///
+/// @return The gradient and its terms; InvalidConfig if @p c is not
+///         basis.nao_sphe() square or not on @p res's device, if
+///         @p mo_energies does not hold one energy per column, if @p nocc is
+///         outside [0, nao], or for any input the derivative calls refuse; or
+///         the GpuRuntime error of the first copy, BLAS call or launch that
+///         failed.
+[[nodiscard]] Result<RhfTerms>
+rhf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, std::span<OrderedPairClass> k_classes,
+    const SphericalMatrixAO &c, std::span<const double> mo_energies, int32_t nocc);
+
 } // namespace free_breakfast::gradient
 
 namespace free_breakfast::gradient {
@@ -106,5 +138,8 @@ namespace free_breakfast::gradient {
 one_electron_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                    std::span<const PrimitivePairClass> classes, const SphericalMatrixAO &c,
                    std::span<const double> mo_energies, int32_t nocc, RhfTerms &g);
+
+// a + b, element by element: defined in df_rhf.cpp, and rhf's too.
+std::vector<double> sum_of(std::vector<double> a, const std::vector<double> &b);
 
 } // namespace free_breakfast::gradient
