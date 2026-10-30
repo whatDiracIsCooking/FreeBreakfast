@@ -33,13 +33,6 @@ namespace {
 
 namespace fb = free_breakfast;
 
-static_assert(fb::PipelineStep<fb::LocalizationStep>);
-static_assert(fb::kRunShape<fb::LocalizationStep> == fb::RunShape::Device);
-static_assert(std::same_as<
-              fb::StepInput<fb::LocalizationStep>,
-              fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::OverlapOutput, fb::ScfOutput>>);
-static_assert(std::same_as<fb::StepOutput<fb::LocalizationStep>, fb::LocalizationOutput>);
-
 // Both sides converge L to ~1e-12 at a maximum, where L is quadratic in the
 // orbitals, so the populations agree only to about its square root. What is
 // left beyond that is the two SCFs' own tolerances.

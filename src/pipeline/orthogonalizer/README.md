@@ -57,7 +57,7 @@ freed when it returns, and syevd's work and the scaled U come from
 
 `test/gtest/pipeline_orthogonalizer_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - The step's X is checked, element by element, against a direct
   `orthogonalize` of the same S.
 - X^T S X is checked to be the identity on a well-conditioned S.

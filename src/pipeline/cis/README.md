@@ -190,10 +190,11 @@ PySCF's `df.DF` of each), the energies to 1e-6 and the singlets' f to 1e-5,
 never against full CIS; benzene cc-pVDZ over the cc-pVDZ-JKFIT RHF the same
 way, beside the full DF-CIS over the same products, its energies against
 `benzene_ccpvdz_df`'s to 1e-6, both timed (best of three) and the RIS error
-against the full one printed (under a second, so in the fast set); the
-refusals above; and `[cis]` under a
-density-fitted `[eri]` planned when the config is read, with nothing refused.
-The `[cis]` parsing is in `pipeline_config_host.cpp`.
+against the full one printed (under a second, so in the fast set); and the
+refusals above. The `[cis]` parsing, and `[cis]` under a density-fitted
+`[eri]` planned when the config is read with nothing refused, are in
+`test/pipeline/config_host.cpp`; the step's contract is in
+`test/pipeline/steps_host.cpp`.
 
 `test/gtest/e2e_cis_gpu.cpp` is the production-scale run, slow and
 `RUN_SERIAL`: benzene in cc-pVDZ from a TOML, fitted over cc-pVDZ-JKFIT

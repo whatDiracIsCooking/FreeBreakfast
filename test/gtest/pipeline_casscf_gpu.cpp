@@ -31,14 +31,6 @@ namespace {
 
 namespace fb = free_breakfast;
 
-static_assert(fb::PipelineStep<fb::CasscfStep>);
-static_assert(fb::kRunShape<fb::CasscfStep> == fb::RunShape::Device);
-static_assert(
-    std::same_as<fb::StepInput<fb::CasscfStep>,
-                 fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
-                          fb::EriOutput, fb::CoreHamiltonianOutput, fb::ScfOutput>>);
-static_assert(std::same_as<fb::StepOutput<fb::CasscfStep>, fb::CasscfOutput>);
-
 // The issue's bars.
 constexpr double kEnergyTolerance = 1e-8;
 constexpr double kOccupationTolerance = 1e-6;

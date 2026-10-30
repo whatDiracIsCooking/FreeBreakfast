@@ -301,7 +301,7 @@ cannot be written is `write_molden`'s error, after the SCF has converged.
 `test/gtest/data/scf/rhf.json` (`tools/emit/scf_reference.py`), which ran over
 this tree's own `data/basis` files:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - Incremental builds (the default) against `fock_rebuild_interval = 1` on
   H2O/cc-pVDZ: the energy to 1e-9 Eh and the orbital energies to 1e-7 Eh.
 - H2O in STO-3G and cc-pVDZ, NH4+ (charged, so the guess is rescaled) in
@@ -316,7 +316,7 @@ this tree's own `data/basis` files:
   `MaxIterationsExceeded`, and an option out of range `InvalidConfig`.
 - `molden` set writes a file a Molden reader takes: the header, one `[MO]`
   entry per orbital, `nocc` of them at occupation 2.
-- The `[scf]` config cases are in `pipeline_config_host.cpp`.
+- The `[scf]` config cases are in `test/pipeline/config_host.cpp`.
 
 Against PySCF's ROHF in `test/gtest/data/scf/rohf.json`, the orbital energies
 being its Roothaan effective Fock matrix's eigenvalues, integral-direct:

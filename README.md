@@ -130,6 +130,7 @@ data/sad/             Per-element SAD densities for each of them, likewise
 test/core/            C++ tests of src/core, a host/GPU binary pair
 test/io/              C++ tests of src/io that need no device, a host binary
   gpu_kernels/        `.cu` kernels its GPU tests launch, as their own device library
+test/pipeline/        C++ tests of src/pipeline that need no device, a host binary
 test/gtest/           The other C++ tests, two binaries split by device requirement
 test/pytest/          Python tests over the built binaries
 bench/                Wall-clock benchmarks (opt-in, never a ctest entry)
@@ -264,14 +265,17 @@ binaries by hand needs the same variable.
 
 Two suites, and neither covers the other.
 
-**C++ — `test/core/`, `test/io/` and `test/gtest/`, run by ctest.** Each tree
-is split by device requirement: a host binary (the `*_host.cpp` TUs, which
-need no device and all run everywhere) and a GPU one (the `*_gpu.cpp` TUs,
-which drive the device). `test/core/` holds the `src/core` tests, as
-`free_breakfast_core_tests_{host,gpu}`; `test/io/` the `src/io` tests that need
-no device, as `free_breakfast_io_tests_host` alone (the io cases that build a
-`Molecule` need one, and stay in `test/gtest/`); `test/gtest/` holds the rest,
-as `free_breakfast_tests_{host,gpu}`. The GPU cases call `FBF_REQUIRE_GPU()`
+**C++ — `test/core/`, `test/io/`, `test/pipeline/` and `test/gtest/`, run by
+ctest.** Each tree is split by device requirement: a host binary (the
+`*_host.cpp` TUs, which need no device and all run everywhere) and a GPU one
+(the `*_gpu.cpp` TUs, which drive the device). `test/core/` holds the
+`src/core` tests, as `free_breakfast_core_tests_{host,gpu}`; `test/io/` the
+`src/io` tests that need no device, as `free_breakfast_io_tests_host` alone
+(the io cases that build a `Molecule` need one, and stay in `test/gtest/`);
+`test/pipeline/` the `src/pipeline` tests that need no device, as
+`free_breakfast_pipeline_tests_host` alone (running a real step needs a GPU,
+so those cases are `test/gtest/`'s); `test/gtest/` holds the rest, as
+`free_breakfast_tests_{host,gpu}`. The GPU cases call `FBF_REQUIRE_GPU()`
 and **skip with a reason** rather than failing, so the suite stays usable on a
 device-less build host — read the skip list before calling a run green. A
 second switch skips from the other end: `FREE_BREAKFAST_FAST_TESTS` makes

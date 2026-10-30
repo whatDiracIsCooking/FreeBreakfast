@@ -29,11 +29,6 @@ using ScfInput = fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalT
                           fb::EriOutput, fb::OverlapOutput, fb::OrthogonalizerOutput,
                           fb::CoreHamiltonianOutput, fb::GuessOutput>;
 
-static_assert(fb::PipelineStep<fb::ScfStep>);
-static_assert(fb::kRunShape<fb::ScfStep> == fb::RunShape::Device);
-static_assert(std::same_as<fb::StepInput<fb::ScfStep>, ScfInput>);
-static_assert(std::same_as<fb::StepOutput<fb::ScfStep>, fb::ScfOutput>);
-
 // Against PySCF converged to conv_tol 1e-12. What is left is J's and K's
 // screening and the step's own tolerances.
 constexpr double kEnergyTolerance = 1e-8;

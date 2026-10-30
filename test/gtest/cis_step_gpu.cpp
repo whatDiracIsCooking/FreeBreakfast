@@ -19,9 +19,10 @@
 // 1e-6 and the singlets' f to 1e-5, and benzene cc-pVDZ over the
 // cc-pVDZ-JKFIT RHF, timed beside the full DF-CIS over the same products. Then the refusals: too few or too many states, a negative
 // cluster_gap, one beside ris, a TDA-ris θ that is not positive, a molecule
-// that is not a closed-shell singlet, and an open-shell ScfOutput; and [cis]
-// under a density-fitted [eri] planned when the config is read. Runs the
-// device chain, so needs a GPU, but for the config case.
+// that is not a closed-shell singlet, and an open-shell ScfOutput. Runs the
+// device chain, so needs a GPU. The step's contract, and [cis] under a
+// density-fitted [eri] planned when the config is read, are test/pipeline's
+// (steps_host.cpp, config_host.cpp).
 
 #include <gtest/gtest.h>
 
@@ -42,14 +43,6 @@ namespace {
 
 namespace fb = free_breakfast;
 namespace cis = free_breakfast::cis;
-
-static_assert(fb::PipelineStep<fb::CisStep>);
-static_assert(fb::kRunShape<fb::CisStep> == fb::RunShape::Device);
-static_assert(
-    std::same_as<fb::StepInput<fb::CisStep>,
-                 fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::SphericalTransformOutput,
-                          fb::PrimitivePairClassesOutput, fb::EriOutput, fb::ScfOutput>>);
-static_assert(std::same_as<fb::StepOutput<fb::CisStep>, fb::CisOutput>);
 
 // The issue's bar against cis.json's PySCF roots, which are good to ~1e-14,
 // for the excitation energies and the reference energy.
@@ -650,23 +643,6 @@ TEST(CisStep, Refusals) {
                            .d = fb::SphericalMatrixAO(res, basis)};
   expect_refused(fb::CisStep{}.run(step_input(*calc, nullptr, &open), res),
                  fb::ErrorKind::InvalidConfig, "the ScfOutput has 6 alpha and 4 beta");
-}
-
-// [cis] under a density-fitted [eri] is planned when the config is read: the
-// Cis step after an Eri step in fitting mode over the named aux basis, with
-// nothing refused. Nothing runs, so no GPU is needed.
-TEST(CisStep, DensityFittedEriIsPlanned) {
-  const fb::test::ScratchDir dir("cis_step");
-  const auto calc =
-      fb::parse_config("[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
-                       "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pvdz-jkfit\"\n[cis]\n",
-                       dir.path(), dir / "out");
-  ASSERT_TRUE(calc.has_value()) << calc.error().message;
-  ASSERT_TRUE(calc->step<fb::CisStep>().has_value());
-  const auto &eri = calc->step<fb::EriStep>();
-  ASSERT_TRUE(eri.has_value());
-  EXPECT_EQ(eri->mode, fb::EriMode::DensityFitting);
-  EXPECT_EQ(eri->aux_basis, "cc-pvdz-jkfit");
 }
 
 } // namespace

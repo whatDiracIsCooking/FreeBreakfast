@@ -67,7 +67,7 @@ when geom-opt arrives.
 
 `test/gtest/pipeline_basis_set_gpu.cpp`:
 
-- The step's contract is checked by `static_assert`.
+- The step's contract is checked by `static_assert`, in `test/pipeline/steps_host.cpp`.
 - The step's basis is checked, shell by shell, against a direct `read_basis`
   then `primitive_normalized` and `place` of the same file.
 - A missing file is checked to be `IO`, and an uncovered element to be

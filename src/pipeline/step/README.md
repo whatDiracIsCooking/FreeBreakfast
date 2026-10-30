@@ -174,5 +174,5 @@ first, in partitions of their own.
 | `pipeline_step.cppm` | `:pipeline_step`: `PipelineStep`, `StepInput`, `StepOutput`, `kRunShape`, their `load` counterparts and `Load`, and the signature reading behind them |
 | `CMakeLists.txt` | The module library |
 
-Tests are in `test/gtest/pipeline_step_host.cpp`: made-up steps, mostly
+Tests are in `test/pipeline/step_host.cpp`: made-up steps, mostly
 `static_assert`s, with no device.

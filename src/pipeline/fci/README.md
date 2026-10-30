@@ -135,7 +135,7 @@ An FCI energy and its natural occupations are invariant under any rotation of
 the orbitals, so the two SCFs' convergence does not enter. Also H₂O cc-pVDZ
 (1.8e9 determinants) refused as Allocation when the step runs, its ScfOutput built,
 and multiplicities 2, 11 and 13 for H₂O STO-3G refused as InvalidConfig.
-The `[fci]` parsing is in `pipeline_config_host.cpp`.
+The `[fci]` parsing is in `test/pipeline/config_host.cpp`.
 
 ## Files
 

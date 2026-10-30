@@ -123,7 +123,7 @@ copyable nor assignable.
 
 ## Tests
 
-- `test/gtest/pipeline_pipeline_host.cpp`, over made-up steps, host-only:
+- `test/pipeline/pipeline_host.cpp`, over made-up steps, host-only:
   - registries that do not form a `Pipeline`;
   - running in dependency order, whatever order the steps came in;
   - a subflow step, and a `Node` step on a node with no devices;
