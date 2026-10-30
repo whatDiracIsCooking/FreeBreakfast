@@ -8,6 +8,8 @@ add_subdirectory(relaxed_hessian)
 add_subdirectory(solve)
 # The state-specific DF-CASSCF nuclear gradient at a solve's solution.
 add_subdirectory(gradient)
+# zvector over relaxed_hessian, internal too: the SA gradient links it.
+add_subdirectory(zvector)
 
 # The aggregate: one import for the MCSCF layer.
 free_breakfast_add_cxx_module_library(

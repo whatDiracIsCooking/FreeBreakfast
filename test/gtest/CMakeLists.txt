@@ -169,6 +169,7 @@ add_executable(
   response_hessian_gpu.cpp
   mcscf_solve_gpu.cpp
   mcscf_gradient_gpu.cpp
+  mcscf_zvector_gpu.cpp
   nevpt2_density_fitting_gpu.cpp
   nevpt2_rdm_gpu.cpp
   nevpt2_energy_gpu.cpp
@@ -201,6 +202,8 @@ target_link_libraries(
   free_breakfast::integrals
   free_breakfast::response
   free_breakfast::mcscf
+  free_breakfast::mcscf::relaxed_hessian
+  free_breakfast::mcscf::zvector
   free_breakfast::nevpt2
   free_breakfast::gradient
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
