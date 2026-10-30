@@ -5,8 +5,9 @@
 # core::resources and pipeline::step are in run's signature. What run calls --
 # the orbital-energy diagonal, the guess and the preconditioners,
 # davidson_solve, the dipole matrices and the gemms over them, core::wwr for
-# the copies and core::log for the f-shell warning -- is PRIVATE: run is
-# defined in the implementation unit.
+# the copies and core::log for the f-shell warning, and TDA-ris's two RIS fits
+# (the density-fitting chain over matrix_ao's metric pair) -- is PRIVATE: run
+# is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.cis
@@ -30,6 +31,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
   free_breakfast::recipes::davidson
+  free_breakfast::recipes::matrix_ao
+  free_breakfast::integrals::eri::density_fitting
   free_breakfast::integrals::one_electron::dipole
   free_breakfast::cis::precondition
   free_breakfast::cis::ris_precondition

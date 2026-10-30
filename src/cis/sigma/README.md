@@ -17,11 +17,13 @@ device library.
 | Name | Role |
 |---|---|
 | `cis::Spin` | `Singlet` or `Triplet` (the Ms = 0 component) |
-| `cis::Options` | `n_states` (5), `spin` (`Singlet`), `davidson`, a `DavidsonOptions` at `residual_tolerance = 1e-6`, `cluster_gap` (0: off), the preconditioner's (`../precondition/`), and `ris`, a `std::optional<RisOptions>` (unset: off), the RIS-J preconditioner's basis (`../ris_precondition/`), exclusive with a nonzero `cluster_gap` |
+| `cis::Method` | `Full` (A over the `EriOutput`'s integrals) or `Ris` (TDA-ris: A's two-electron part over two RIS fits of its own; see "TDA-ris" below) |
+| `cis::Options` | `n_states` (5), `spin` (`Singlet`), `method` (`Full`), `theta_j` and `theta_k` (0.2 each: TDA-ris's J and K fits' θ), `davidson`, a `DavidsonOptions` at `residual_tolerance = 1e-6`, `cluster_gap` (0: off), the preconditioner's (`../precondition/`), and `ris`, a `std::optional<RisOptions>` (unset: off), the RIS-J preconditioner's basis (`../ris_precondition/`), exclusive with a nonzero `cluster_gap` |
 | `cis::Sigma::create(res, basis, u, j_classes, k_classes, c, n_occ, delta, spin)` | `Result<Sigma>` over the spherical RHF orbitals `c`, the first `n_occ` occupied, and `cis::diagonal`'s device `delta`; allocates every buffer `apply` writes |
 | `Sigma::apply(res, k, x, y)` | `Status`: Y = A X for the n_ov × k column-major device blocks, one column at a time |
 | `Sigma::size()` | n_ov = n_occ · n_virt |
-| `cis::DfSigma::create(res, b, naux, c, n_occ, delta, spin, max_block)` | `Result<DfSigma>` over the same orbitals and `delta`, and `pipeline.eri`'s `DensityFitted` B; builds the MO blocks and grows the workspace for blocks of `max_block` columns |
+| `cis::DfSigma::create(res, b, naux, c, n_occ, delta, spin, max_block)` | `Result<DfSigma>` over the same orbitals and `delta`, and `pipeline.eri`'s `DensityFitted` B; builds the MO blocks and passes them to the second `create` |
+| `cis::DfSigma::create(res, b_vo, naux_j, b_oo, b_vv, naux_k, n_occ, n_virt, delta, spin, max_block)` | `Result<DfSigma>` over the three MO blocks as built, taken by value (moved in): B_vo over naux_j functions for the Coulomb term, B_oo and B_vv over naux_k for the exchange term; grows the workspace for blocks of `max_block` columns |
 | `DfSigma::apply(res, k, x, y)` | `Status`: Y = A X for the whole block, `max_block` columns per pass |
 | `DfSigma::size()` | n_ov |
 
@@ -121,8 +123,13 @@ spin.
 
 `cis::DfSigma` is the same A over `pipeline.eri`'s `DensityFitted` B, with
 (pq|rs) ≈ Σ_Q B_Q,pq B_Q,rs, in the MO basis. B is fitted in the AOs, so
-`create` transforms it once per SCF with `b_mo` over C's occupied and
-virtual columns into three blocks, every one Q fastest:
+the first `create` transforms it once per SCF with `b_mo` over C's occupied and
+virtual columns into three blocks, every one Q fastest, and hands them to the
+second `create`, which is the one that holds them. The Coulomb block and the
+exchange pair need not come from the same fit: the second `create` takes
+B_vo over naux_j functions and B_oo, B_vv over naux_k, which is how TDA-ris
+reuses this operator over its two RIS fits (below) without a second copy of
+the products.
 
 | Block | `b_mo` rows, cols | Element (Q, p, q) at | Read as |
 |---|---|---|---|
@@ -166,6 +173,23 @@ past the free memory aborts under `CreatePolicy`. A wider block is run in
 slices of `max_block`. `CisStep` creates it at the guess's column count, the
 widest block `davidson_solve` applies. Chunking the exchange term over Q, so
 that B_vv need not be held whole, is the follow-up if a system needs it.
+
+**TDA-ris.** `Options::method = Method::Ris` is the RIS approximation as the
+operator (Zhou & Parker 2024; gpu4pyscf's `tdscf/ris.py`), not only as the
+preconditioner: `CisStep` fits two RIS bases (`../ris_basis/`) of its own,
+whatever the `EriOutput` is, by the chain `pipeline.eri` and
+`cis::RisPreconditioner` use (`metric`, `three_center`, `density_fit`), and
+creates this sigma over
+
+  σ = Δε ∘ X + w · B_ov^Jᵀ (B_ov^J X) − Σ_Q B_oo^K,Q X B_vv^K,Q
+
+with B_ov^J from the J fit (`RisShells::Sp`, θ = `theta_j`) and B_oo^K,
+B_vv^K from the K fit (`RisShells::S`, θ = `theta_k`): gpu4pyscf's
+`TDDFT_ris` defaults, `J_fit = 'sp'`, `K_fit = 's'`, one `theta = 0.2`. The
+minimal bases are a few functions per atom (benzene: 30 and 12), so the
+blocks are small and an apply is a handful of small GEMMs. Its roots are held
+to a dense TDA-ris A over the same two fits (`cis_step_gpu.cpp`), never to
+full CIS.
 
 **No screen.** Every product is dense, and the fit is the approximation. The
 roots are held to PySCF's DF TDA over the same aux set, never to the
@@ -221,7 +245,7 @@ whatever k is.
 
 | File | Role |
 |------|------|
-| `sigma.cppm` | Module interface: `cis::Spin`, `cis::Options`, `cis::Sigma` |
+| `sigma.cppm` | Module interface: `cis::Spin`, `cis::Method`, `cis::Options`, `cis::Sigma`, `cis::DfSigma` |
 | `sigma.cpp` | `Sigma`: the checks, the buffers, and the five steps of a column |
-| `df_sigma.cpp` | `DfSigma`: the checks, the memory check, the MO blocks, and the block's products |
+| `df_sigma.cpp` | `DfSigma`: the two creates (from B: the checks, the memory check and the MO blocks; from the blocks: their checks and the workspace), and the block's products |
 | `CMakeLists.txt` | The module library |

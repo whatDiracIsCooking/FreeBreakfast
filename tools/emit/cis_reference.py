@@ -15,6 +15,15 @@ spherical basis over this tree's own `data/basis/*.json` (and, density-fitted,
   of the sigma (the dipole stops at d).
 - Benzene in cc-pVDZ, density-fitted over cc-pVDZ-JKFIT and exact: the lowest
   five singlets and their oscillator strengths.
+- TDA-ris (Zhou & Parker 2024; gpu4pyscf's `tdscf/ris.py`), `method` "ris":
+  the same RHF, then A's two-electron part over two minimal RIS fits instead,
+  2 (ia|jb) over the J fit (`sp`: s and p on a heavy atom, s on H) and (ij|ab)
+  over the K fit (`s`), each one uncontracted shell per l of exponent
+  theta / R_A^2 (R_A the Ghosh radius in bohr, theta 0.2), handed to PySCF's
+  `df.DF` as explicit aux bases: H2O in cc-pVDZ over the exact RHF, singlets
+  and triplets, and benzene in cc-pVDZ over the cc-pVDZ-JKFIT RHF, singlets;
+  what `[cis] method = "ris"` is held to (RIS against RIS over the same aux
+  bases, never against full CIS).
 - The spherical AO dipole matrices `int1e_r` (origin at 0) for H2O in STO-3G
   and cc-pVDZ, as .npy.
 
@@ -23,7 +32,9 @@ integrals (exact `ao2mo`, or the DF object's own `ao2mo`) and diagonalized
 densely; PySCF's Davidson roots must equal its lowest eigenvalues to 1e-8, so
 no root is missed (measured: 3e-14 or better), and the oscillator strengths,
 recomputed from `int1e_r` and the dense eigenvectors, PySCF's to 1e-6
-(measured: 7e-8, benzene's bright pair). A disagreement is a refusal.
+(measured: 7e-8, benzene's bright pair). A disagreement is a refusal. PySCF
+has no TDA-ris, so a RIS case's roots and oscillator strengths are the dense
+A's own, from its eigenvalues and eigenvectors.
 
 Degenerate roots (benzene's E states, HF's Pi) have no defined individual
 oscillator strength or eigenvector, so roots are recorded in groups,
@@ -146,6 +157,36 @@ CASES = [
     },
 ]
 
+# TDA-ris's fits, gpu4pyscf's TDDFT_ris defaults: one theta for both, the J
+# fit `sp` and the K fit `s` (a heavy atom's shells; hydrogen gets s alone).
+RIS_THETA = 0.2
+RIS_J_MAX_L = 1
+RIS_K_MAX_L = 0
+# The Ghosh (GB) radii in Angstrom of the elements the RIS cases carry:
+# src/cis/ris_basis's kGhoshRadii (gpu4pyscf's parameter.py `radii`), and its
+# kBohrPerAngstrom (CODATA 2018).
+GHOSH_RADII = {"H": 0.5292, "C": 0.6513, "O": 0.4652}
+BOHR_PER_ANGSTROM = 1.0 / 0.529177210903
+
+CASES += [
+    {
+        "name": "h2o_ccpvdz_ris",
+        "atoms": WATER,
+        "basis": "cc-pvdz",
+        "method": "ris",
+        "roots": 5,
+    },
+    {
+        "name": "benzene_ccpvdz_df_ris",
+        "atoms": BENZENE,
+        "basis": "cc-pvdz",
+        "aux_basis": "cc-pvdz-jkfit",
+        "method": "ris",
+        "roots": 5,
+        "triplets": False,
+    },
+]
+
 # The cases whose int1e_r is written.
 DIPOLE_CASES = ("h2o_sto3g", "h2o_ccpvdz")
 
@@ -187,23 +228,57 @@ def rhf(case: dict, mol: gto.Mole) -> scf.hf.SCF:
     return mf
 
 
-def dense_a(mf: scf.hf.SCF, singlet: bool) -> numpy.ndarray:
+def ris_aux(symbols: set[str], max_l: int) -> dict[str, list]:
+    """The RIS minimal aux basis in PySCF's form: per element one
+    single-primitive shell per l up to max_l (s alone on H), all of exponent
+    theta / R^2, R the Ghosh radius in bohr."""
+    out = {}
+    for symbol in symbols:
+        radius = GHOSH_RADII[symbol] * BOHR_PER_ANGSTROM
+        exponent = RIS_THETA / (radius * radius)
+        top = 0 if symbol == "H" else max_l
+        out[symbol] = [[ang, [exponent, 1.0]] for ang in range(top + 1)]
+    return out
+
+
+def ris_fit(mol: gto.Mole, max_l: int) -> df.DF:
+    """PySCF's density fitting of mol over its RIS basis up to max_l, the aux
+    molecule checked to carry exactly those exponents."""
+    symbols = {mol.atom_symbol(k) for k in range(mol.natm)}
+    fit = df.DF(mol, auxbasis=ris_aux(symbols, max_l))
+    fit.build()
+    auxmol = fit.auxmol
+    for shell in range(auxmol.nbas):
+        symbol = auxmol.atom_symbol(auxmol.bas_atom(shell))
+        radius = GHOSH_RADII[symbol] * BOHR_PER_ANGSTROM
+        assert auxmol.bas_nprim(shell) == 1
+        assert auxmol.bas_exp(shell)[0] == RIS_THETA / (radius * radius)
+    return fit
+
+
+def dense_a(mf: scf.hf.SCF, singlet: bool, ris: bool = False) -> numpy.ndarray:
     """The TDA A matrix, (ia, jb), built from the MO integrals PySCF's own SCF
     object integrates with: A = delta (e_a - e_i) + 2 (ia|jb) - (ij|ab) for a
-    singlet, without the 2 (ia|jb) for a triplet."""
+    singlet, without the 2 (ia|jb) for a triplet. With ris, TDA-ris's: (ia|jb)
+    over the J fit and (ij|ab) over the K fit, whatever the SCF's integrals."""
     nocc = mf.mol.nelectron // 2
     mo = mf.mo_coeff
     occ, vir = mo[:, :nocc], mo[:, nocc:]
     nvir = vir.shape[1]
-    if getattr(mf, "with_df", None) is not None:
-        integrals = mf.with_df.ao2mo
+    if ris:
+        coulomb = ris_fit(mf.mol, RIS_J_MAX_L).ao2mo
+        exchange = ris_fit(mf.mol, RIS_K_MAX_L).ao2mo
+    elif getattr(mf, "with_df", None) is not None:
+        coulomb = exchange = mf.with_df.ao2mo
     else:
 
         def integrals(orbitals, compact=False):
             return ao2mo.general(mf.mol, orbitals, compact=compact)
 
-    ovov = integrals((occ, vir, occ, vir), compact=False)
-    oovv = integrals((occ, occ, vir, vir), compact=False)
+        coulomb = exchange = integrals
+
+    ovov = coulomb((occ, vir, occ, vir), compact=False)
+    oovv = exchange((occ, occ, vir, vir), compact=False)
     ovov = ovov.reshape(nocc, nvir, nocc, nvir)
     oovv = oovv.reshape(nocc, nocc, nvir, nvir)
     a = -oovv.transpose(0, 2, 1, 3).copy()
@@ -232,7 +307,8 @@ def groups(energies: numpy.ndarray) -> list[list[int]]:
 def tda(case: dict, mf: scf.hf.SCF, dipole: numpy.ndarray, singlet: bool) -> dict:
     """PySCF's TDA roots, checked against the dense A, in whole groups."""
     wanted = case["roots"]
-    a = dense_a(mf, singlet)
+    ris = case.get("method") == "ris"
+    a = dense_a(mf, singlet, ris)
     dense, vectors = numpy.linalg.eigh(a)
     # Three roots past the wanted ones, more until a group boundary: a
     # Davidson space that cuts a degenerate pair stalls (or diverges, on HF).
@@ -240,18 +316,23 @@ def tda(case: dict, mf: scf.hf.SCF, dipole: numpy.ndarray, singlet: bool) -> dic
     nstates = wanted + 3
     while dense[nstates] - dense[nstates - 1] < GROUP_GAP:
         nstates += 1
-    td = mf.TDA()
-    td.singlet = singlet
-    td.nstates = nstates
-    td.conv_tol = TDA_CONV_TOL
-    td.lindep = TDA_LINDEP
-    td.max_cycle = 300
-    td.kernel()
-    assert td.converged.all(), f"{case['name']}: TDA did not converge"
-    energies = numpy.asarray(td.e)
-    assert len(energies) == nstates
-    error = numpy.abs(energies - dense[:nstates]).max()
-    assert error < DENSE_TOL, f"{case['name']}: TDA misses dense A by {error:.2e}"
+    if ris:
+        # No PySCF TDA runs this operator: the dense A's roots are the
+        # reference, and its eigenvectors the oscillator strengths'.
+        energies = dense[:nstates]
+    else:
+        td = mf.TDA()
+        td.singlet = singlet
+        td.nstates = nstates
+        td.conv_tol = TDA_CONV_TOL
+        td.lindep = TDA_LINDEP
+        td.max_cycle = 300
+        td.kernel()
+        assert td.converged.all(), f"{case['name']}: TDA did not converge"
+        energies = numpy.asarray(td.e)
+        assert len(energies) == nstates
+        error = numpy.abs(energies - dense[:nstates]).max()
+        assert error < DENSE_TOL, f"{case['name']}: TDA misses dense A by {error:.2e}"
 
     # Whole groups, up to the first boundary at or past the wanted count.
     kept = []
@@ -264,8 +345,9 @@ def tda(case: dict, mf: scf.hf.SCF, dipole: numpy.ndarray, singlet: bool) -> dic
     out = {
         "energies": [float(energies[k]) for g in kept for k in g],
         "groups": [[int(k) for k in g] for g in kept],
-        "dense_max_error": float(error),
     }
+    if not ris:
+        out["dense_max_error"] = float(error)
     if not singlet or not case.get("oscillator_strengths", True):
         return out
 
@@ -274,7 +356,7 @@ def tda(case: dict, mf: scf.hf.SCF, dipole: numpy.ndarray, singlet: bool) -> dic
     # and the dense A's eigenvectors must agree to F_TOL. f is quadratic in
     # the vector, whose error is the residual over the gap, so this is looser
     # than the energies' check: ~1e-7 for benzene's bright E1u pair.
-    pyscf_f = numpy.asarray(td.oscillator_strength(gauge="length"))
+    pyscf_f = None if ris else numpy.asarray(td.oscillator_strength(gauge="length"))
     nocc = mf.mol.nelectron // 2
     mo = mf.mo_coeff
     r_ov = numpy.einsum("xmn,mi,na->xia", dipole, mo[:, :nocc], mo[:, nocc:])
@@ -286,12 +368,16 @@ def tda(case: dict, mf: scf.hf.SCF, dipole: numpy.ndarray, singlet: bool) -> dic
             2.0 / 3.0 * dense[k] * 2.0 * float(numpy.sum((r_ov @ vectors[:, k]) ** 2))
             for k in group
         )
+        if ris:
+            sums.append(mine)
+            continue
         theirs = float(sum(pyscf_f[k] for k in group))
         assert abs(mine - theirs) < F_TOL, f"{case['name']}: f {mine} vs {theirs}"
         f_error = max(f_error, abs(mine - theirs))
         sums.append(theirs)
     out["oscillator_strengths"] = sums
-    out["dense_max_oscillator_error"] = f_error
+    if not ris:
+        out["dense_max_oscillator_error"] = f_error
     return out
 
 
@@ -312,6 +398,16 @@ def cis_case(case: dict, write: bool = True) -> dict:
         "name": case["name"],
         "basis": case["basis"],
         "aux_basis": case.get("aux_basis"),
+        **(
+            {
+                "method": "ris",
+                "ris_theta": RIS_THETA,
+                "ris_j_fit": "sp",
+                "ris_k_fit": "s",
+            }
+            if case.get("method") == "ris"
+            else {}
+        ),
         "atoms": [
             {"symbol": symbol, "z": gto.charge(symbol), "coord": list(coord)}
             for symbol, coord in case["atoms"]

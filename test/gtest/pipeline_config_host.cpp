@@ -734,6 +734,34 @@ TEST(PipelineConfig, EveryCisOptionIsReadAndTheScfIsFilledIn) {
   EXPECT_EQ(defaults.max_subspace, fb::CisStep{}.max_subspace);
   EXPECT_EQ(defaults.options.cluster_gap, 0.0);
   EXPECT_FALSE(defaults.options.ris.has_value());
+  EXPECT_EQ(defaults.options.method, fb::cis::Method::Full);
+}
+
+// method = "ris" is TDA-ris, at cis::Options' θs unless theta_j or theta_k
+// says; it is independent of the RIS preconditioner, so ris = true may stand
+// beside it.
+TEST(PipelineConfig, TheCisMethodIsRead) {
+  auto calc = fb::parse_config(
+      with_inputs("[cis]\nmethod = \"ris\"\ntheta_j = 0.3\ntheta_k = 0.15\nris = true\n"), "",
+      kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::cis::Options &options = calc->step<fb::CisStep>()->options;
+  EXPECT_EQ(options.method, fb::cis::Method::Ris);
+  EXPECT_EQ(options.theta_j, 0.3);
+  EXPECT_EQ(options.theta_k, 0.15);
+  EXPECT_TRUE(options.ris.has_value());
+
+  auto plain = fb::parse_config(with_inputs("[cis]\nmethod = \"ris\"\n"), "", kOut);
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  const fb::cis::Options &defaults = plain->step<fb::CisStep>()->options;
+  EXPECT_EQ(defaults.method, fb::cis::Method::Ris);
+  EXPECT_EQ(defaults.theta_j, fb::cis::Options{}.theta_j);
+  EXPECT_EQ(defaults.theta_k, fb::cis::Options{}.theta_k);
+  EXPECT_FALSE(defaults.ris.has_value());
+
+  auto full = fb::parse_config(with_inputs("[cis]\nmethod = \"full\"\n"), "", kOut);
+  ASSERT_TRUE(full.has_value()) << full.error().message;
+  EXPECT_EQ(full->step<fb::CisStep>()->options.method, fb::cis::Method::Full);
 }
 
 TEST(PipelineConfig, TheCisRisOptionsAreRead) {
@@ -784,6 +812,15 @@ TEST(PipelineConfig, AMalformedCisTableIsInvalidConfig) {
   expect_config_error(with_inputs("[cis]\ncluster_gap = -0.5\n"),
                       "[cis] cluster_gap must not be negative");
   expect_config_error(with_inputs("[cis]\nris = 1\n"), "[cis] ris is not a boolean");
+  expect_config_error(with_inputs("[cis]\nmethod = \"rpa\"\n"), "[cis] has no method 'rpa'");
+  expect_config_error(with_inputs("[cis]\ntheta_j = 0.3\n"),
+                      "[cis] theta_j needs method = \"ris\"");
+  expect_config_error(with_inputs("[cis]\nmethod = \"full\"\ntheta_k = 0.3\n"),
+                      "[cis] theta_k needs method = \"ris\"");
+  expect_config_error(with_inputs("[cis]\nmethod = \"ris\"\ntheta_j = 0\n"),
+                      "[cis] theta_j must be finite and positive");
+  expect_config_error(with_inputs("[cis]\nmethod = \"ris\"\ntheta_k = -0.2\n"),
+                      "[cis] theta_k must be finite and positive");
   expect_config_error(with_inputs("[cis]\nris_theta = 0.3\n"), "[cis] ris_theta needs ris = true");
   expect_config_error(with_inputs("[cis]\nris = false\nris_shells = \"s\"\n"),
                       "[cis] ris_shells needs ris = true");

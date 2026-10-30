@@ -16,8 +16,9 @@ re-exports `free_breakfast.pipeline.scf` (which re-exports every product in
 `run`'s signature, the `EriOutput` among them) and `free_breakfast.cis.sigma`
 (`cis::Options` and `cis::Spin`, which the step holds). `run` is defined in
 the implementation unit, so `cis.precondition`, `recipes.davidson`,
-`recipes.blas`, `integrals.one_electron.dipole`, `core.log` and `core.wwr`
-are PRIVATE links.
+`recipes.blas`, `recipes.matrix_ao`, `integrals.eri.density_fitting` (TDA-ris's
+fits), `integrals.one_electron.dipole`, `core.log` and `core.wwr` are PRIVATE
+links.
 
 ## The step
 
@@ -39,7 +40,8 @@ struct CisOutput {
 struct CisStep {
   static constexpr std::string_view kName = "cis";
 
-  cis::Options options{};      // n_states, spin, davidson, cluster_gap, ris
+  cis::Options options{};      // n_states, spin, method, theta_j, theta_k,
+                               // davidson, cluster_gap, ris
   int32_t max_subspace = 40;
 
   Result<CisOutput> run(View<MoleculeOutput, BasisSetOutput, SphericalTransformOutput,
@@ -55,7 +57,16 @@ struct CisStep {
    uploaded, n_occ = N / 2 from the molecule.
 3. **The sigma**, over the ScfOutput's C: `cis::Sigma::create` with the
    `SphericalTransformOutput`'s U and an `IntegralDirect` `EriOutput`'s J and
-   K classes, or `cis::DfSigma::create` with a `DensityFitted` one's B.
+   K classes, or `cis::DfSigma::create` with a `DensityFitted` one's B. With
+   `options.method = Method::Ris`, TDA-ris's instead, whatever the
+   `EriOutput`: the RIS bases over the molecule's atoms, the J fit's
+   `RisShells::Sp` at `theta_j` and the K fit's `RisShells::S` at `theta_k`,
+   each fitted over the `PrimitivePairClassesOutput`'s classes as
+   `cis::RisPreconditioner` fits its own (`metric`, `three_center`,
+   `density_fit`), `b_mo` of the J fit's B over (virtual, occupied) and of the
+   K fit's over (occupied, occupied) and (virtual, virtual), and
+   `cis::DfSigma`'s second `create` over those three blocks. One B is held at
+   a time.
 4. **The Davidson.** `cis::guess`'s min(n_ov, 2 · n_states) unit vectors on
    the lowest Δε, `cis::Preconditioner`'s r / (θ − Δε), clustered over the
    guess's entries at `options.cluster_gap` (`Preconditioner::cluster`, over
@@ -107,7 +118,20 @@ What it settled:
   electron's charge; its sign is the amplitudes', so only |μ| and f are
   defined. Both are origin-independent: <i|a> = 0. Within a degenerate level
   only the summed f is.
-- **The dipole needs no ERI**, so it is the same under either `EriOutput`.
+- **The dipole needs no ERI**, so it is the same under either `EriOutput`,
+  and under TDA-ris: its oscillator strengths are #201's, over its own
+  amplitudes.
+- **`method` picks the operator, `ris` the preconditioner**, and the two are
+  independent. `method = Ris` changes what the Davidson converges on, and
+  `options.ris` only how it gets there, so either may be set without the
+  other, and both together run the RIS-J (or RIS-JK) correction over the
+  RIS operator (its own fit, at its own `RisOptions`). `cluster_gap`
+  likewise clusters over whichever sigma runs. TDA-ris's θs are their own
+  keys, `theta_j` and `theta_k`, rather than the preconditioner's
+  `ris_theta`, so that neither switch silently retunes the other.
+- **TDA-ris's shells are gpu4pyscf's** `TDDFT_ris` defaults, `J_fit = 'sp'`
+  and `K_fit = 's'`, and are not a knob; its θs are, both at gpu4pyscf's
+  0.2.
 - **The `EriOutput`'s alternative picks the sigma**: `cis::Sigma` over the
   J and K classes, or `cis::DfSigma` over B. The fitted one is created for a
   block of the guess's min(n_ov, 2 · n_states) columns, the widest
@@ -117,13 +141,16 @@ What it settled:
   rather than a variant or a wrapper type around the two.
 
 Errors: InvalidConfig, before anything is allocated, for `n_states` below 1;
-a `cluster_gap` negative or NaN, or positive beside `ris`;
+a `cluster_gap` negative or NaN, or positive beside `ris`; with
+`method = Ris`, a `theta_j` or `theta_k` that is not finite and positive;
 a molecule that is not a closed-shell singlet (odd electrons, or a
 multiplicity other than 1); an ScfOutput whose `n_alpha`, `n_beta` are not the
 molecule's N / 2 each; no virtual orbital, or an n_ov past `int32_t`; or more
 states than n_ov. Then the module calls' own: `cis::Sigma::create`'s,
 `cis::DfSigma::create`'s (Unsupported, naming the bytes, for MO blocks and
-scratch past the device's free memory), `Preconditioner::cluster`'s (the
+scratch past the device's free memory), TDA-ris's fits' (Unsupported, naming
+the bytes, for a B and the blocks past the device's free memory, or the
+`ris_basis`, `metric`, `three_center`, `density_fit` or `b_mo` error), `Preconditioner::cluster`'s (the
 sigma's, or `diagonalize`'s), `cis::RisPreconditioner::create`'s (the RIS
 basis's, its fit's, or a RIS-JK GMRES budget it refuses), the RIS correction's
 (`lu_solve`'s, or the GMRES's BLAS), `davidson_solve`'s
@@ -156,7 +183,15 @@ each spin over H₂O STO-3G integral-direct and cc-pVDZ fitted, the guess
 narrower than the space and the gap checked to group some of its Δε, against
 the reference to 1e-6; with `ris = true`, and again with `ris_exchange = true`
 beside it, the same three states of each spin over the same two, against the
-reference to 1e-6; the refusals above; and `[cis]` under a
+reference to 1e-6; with `method = "ris"`, H₂O cc-pVDZ over the exact RHF,
+the five lowest of each spin through the config and by hand, against the
+reference's TDA-ris over the same two RIS fits (a dense A in numpy over
+PySCF's `df.DF` of each), the energies to 1e-6 and the singlets' f to 1e-5,
+never against full CIS; benzene cc-pVDZ over the cc-pVDZ-JKFIT RHF the same
+way, beside the full DF-CIS over the same products, its energies against
+`benzene_ccpvdz_df`'s to 1e-6, both timed (best of three) and the RIS error
+against the full one printed (under a second, so in the fast set); the
+refusals above; and `[cis]` under a
 density-fitted `[eri]` planned when the config is read, with nothing refused.
 The `[cis]` parsing is in `pipeline_config_host.cpp`.
 

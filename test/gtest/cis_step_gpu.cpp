@@ -13,11 +13,15 @@
 // density-fitted over cc-pVTZ-JKFIT in the fast set. With the clustered
 // preconditioner on ([cis] cluster_gap), with RIS-J ([cis] ris), and with
 // RIS-JK ([cis] ris_exchange), H2O STO-3G integral-direct and cc-pVDZ fitted
-// still match the reference to 1e-6. Then the refusals: too few or too many states, a negative
-// cluster_gap, one beside ris, a molecule that is not a
-// closed-shell singlet, and an open-shell ScfOutput; and [cis] under a
-// density-fitted [eri] planned when the config is read. Runs the device
-// chain, so needs a GPU, but for the config case.
+// still match the reference to 1e-6. TDA-ris ([cis] method = "ris") is held
+// to the reference's own TDA-ris over the same two RIS fits, never to full
+// CIS: H2O cc-pVDZ over the exact RHF, singlets and triplets, the energies to
+// 1e-6 and the singlets' f to 1e-5, and benzene cc-pVDZ over the
+// cc-pVDZ-JKFIT RHF, timed beside the full DF-CIS over the same products. Then the refusals: too few or too many states, a negative
+// cluster_gap, one beside ris, a TDA-ris θ that is not positive, a molecule
+// that is not a closed-shell singlet, and an open-shell ScfOutput; and [cis]
+// under a density-fitted [eri] planned when the config is read. Runs the
+// device chain, so needs a GPU, but for the config case.
 
 #include <gtest/gtest.h>
 
@@ -55,6 +59,11 @@ constexpr double kOrthonormalTolerance = 1e-10;
 // The issue's bar against cis.json's oscillator strengths, which PySCF's own
 // and the dense A's eigenvectors agree on to 2e-11 or better here.
 constexpr double kOscillatorTolerance = 1e-6;
+// TDA-ris's bar for the oscillator strengths, against the dense RIS A's
+// eigenvectors: the issue's 1e-5.
+constexpr double kRisOscillatorTolerance = 1e-5;
+// CODATA 2018, for the benzene case's printed errors only.
+constexpr double kEvPerHartree = 27.211386245988;
 // f is (2/3) ω |μ|² of the state's own ω and μ, to rounding.
 constexpr double kRoundingTolerance = 1e-14;
 
@@ -124,10 +133,11 @@ fb::StepInput<fb::CisStep> step_input(const fb::Calculation &calc,
 
 // The reference's roots of one spin: the excitation energies to 1e-6, the
 // shape, and the amplitudes orthonormal. With the reference's oscillator
-// strengths, each group's summed f to 1e-6 and every |μ|² that f; without
-// them (triplets, and singlets past the dipole's d), f and μ exactly zero.
+// strengths, each group's summed f to f_tolerance and every |μ|² that f;
+// without them (triplets, and singlets past the dipole's d), f and μ exactly
+// zero.
 void expect_matches(const fb::CisOutput &out, const fb::json &entry, const fb::json &roots,
-                    std::string_view what) {
+                    std::string_view what, double f_tolerance = kOscillatorTolerance) {
   const auto want = roots.at("energies").get<std::vector<double>>();
   const auto n_occ = entry.at("occupied").get<std::int32_t>();
   const auto n_virt = entry.at("nao").get<std::int32_t>() - n_occ;
@@ -178,7 +188,7 @@ void expect_matches(const fb::CisOutput &out, const fb::json &entry, const fb::j
         sum += out.states[k.get<std::size_t>()].oscillator_strength;
       }
       std::cout << what << " group " << g << ": f " << sum - f[g] << "\n";
-      EXPECT_NEAR(sum, f[g], kOscillatorTolerance) << what << " group " << g;
+      EXPECT_NEAR(sum, f[g], f_tolerance) << what << " group " << g;
     }
   }
 }
@@ -479,6 +489,107 @@ TEST(CisStep, RisExchangeMatchesPyscf) {
   }
 }
 
+// TDA-ris, [cis] method = "ris", over H2O cc-pVDZ's exact RHF: the config
+// runs the chain with an integral-direct [eri] the operator does not read,
+// then the step runs again by hand for both spins. Against the reference's
+// TDA-ris over the same two RIS fits, the energies to 1e-6 and the singlets'
+// f to 1e-5; never against full CIS.
+TEST(CisStep, TdaRisMatchesReference) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz_ris");
+  const fb::json &singlets = entry.at("singlets");
+  const auto n_states = static_cast<std::int32_t>(singlets.at("energies").size());
+  const fb::test::ScratchDir dir("cis_step");
+  auto calc = fb::read_config(
+      write_config(dir, entry, std::format("[cis]\nn_states = {}\nmethod = \"ris\"\n", n_states)),
+      dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_EQ(calc->step<fb::CisStep>()->options.method, cis::Method::Ris);
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  ASSERT_TRUE(std::holds_alternative<fb::IntegralDirect>(calc->get<fb::EriOutput>()->eri));
+  const auto &chain = calc->get<fb::CisOutput>();
+  ASSERT_TRUE(chain.has_value());
+  expect_matches(*chain, entry, singlets, "config singlet", kRisOscillatorTolerance);
+
+  fb::DeviceResources &res = node.device(0);
+  for (const cis::Spin spin : {cis::Spin::Singlet, cis::Spin::Triplet}) {
+    const bool triplet = spin == cis::Spin::Triplet;
+    const fb::json &roots = entry.at(triplet ? "triplets" : "singlets");
+    const fb::CisStep step{
+        .options = {.n_states = static_cast<std::int32_t>(roots.at("energies").size()),
+                    .spin = spin,
+                    .method = cis::Method::Ris},
+    };
+    const auto by_hand = step.run(step_input(*calc), res);
+    ASSERT_TRUE(by_hand.has_value()) << by_hand.error().message;
+    expect_matches(*by_hand, entry, roots, triplet ? "by hand triplet" : "by hand singlet",
+                   kRisOscillatorTolerance);
+  }
+}
+
+// Benzene cc-pVDZ over the cc-pVDZ-JKFIT RHF: TDA-ris's singlets against the
+// reference's TDA-ris, the energies to 1e-6 and f to 1e-5, and the full
+// DF-CIS over the same products, its energies against benzene_ccpvdz_df's to
+// 1e-6 (its f is #511's), each step's best of three runs timed. Prints each
+// TDA-ris root's error against the full DF-CIS reference, which is RIS's
+// approximation error and is not held to anything. Under a second on the
+// RTX 3080, so in the fast set.
+TEST(CisStep, BenzeneTdaRisMatchesReference) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("benzene_ccpvdz_df_ris");
+  const fb::json &full = reference_case("benzene_ccpvdz_df");
+  const fb::json &roots = entry.at("singlets");
+  const auto n_states = static_cast<std::int32_t>(roots.at("energies").size());
+  const fb::test::ScratchDir dir("cis_step");
+  auto calc = fb::read_config(write_config(dir, entry, ""), dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  ASSERT_TRUE(std::holds_alternative<fb::DensityFitted>(calc->get<fb::EriOutput>()->eri));
+  fb::DeviceResources &res = node.device(0);
+
+  // Each run is the whole step: Δε, the sigma's create (TDA-ris's two fits,
+  // or the MO blocks of [eri]'s B), the Davidson and the dipoles.
+  const auto timed = [&](const cis::Method method, const std::int32_t states) {
+    const fb::CisStep step{.options = {.n_states = states, .method = method}};
+    fb::Result<fb::CisOutput> out = step.run(step_input(*calc), res);
+    double best = std::numeric_limits<double>::infinity();
+    for (std::int32_t rep = 0; rep < 3 && out.has_value(); ++rep) {
+      const auto start = std::chrono::steady_clock::now();
+      out = step.run(step_input(*calc), res);
+      const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
+      best = std::min(best, took.count());
+    }
+    return std::pair{std::move(out), best};
+  };
+  const auto [ris, ris_seconds] = timed(cis::Method::Ris, n_states);
+  ASSERT_TRUE(ris.has_value()) << ris.error().message;
+  expect_matches(*ris, entry, roots, "tda-ris singlet", kRisOscillatorTolerance);
+  const fb::json &full_roots = full.at("singlets");
+  const auto [cis_full, full_seconds] =
+      timed(cis::Method::Full, static_cast<std::int32_t>(full_roots.at("energies").size()));
+  ASSERT_TRUE(cis_full.has_value()) << cis_full.error().message;
+  const auto want = full_roots.at("energies").get<std::vector<double>>();
+  ASSERT_EQ(cis_full->states.size(), want.size());
+  for (std::size_t r = 0; r < want.size(); ++r) {
+    EXPECT_NEAR(cis_full->states[r].excitation_energy, want[r], kEnergyTolerance)
+        << "full df-cis state " << r;
+  }
+  for (std::size_t r = 0; r < std::min(ris->states.size(), want.size()); ++r) {
+    std::cout << std::format("benzene state {}: tda-ris {:.10f}, df-cis {:.10f}, error {:+.6f} "
+                             "hartree ({:+.4f} eV)\n",
+                             r, ris->states[r].excitation_energy, want[r],
+                             ris->states[r].excitation_energy - want[r],
+                             (ris->states[r].excitation_energy - want[r]) * kEvPerHartree);
+  }
+  std::cout << std::format("benzene wall clock: tda-ris {:.3f} s ({} iterations), full df-cis "
+                           "{:.3f} s ({} iterations)\n",
+                           ris_seconds, ris->iterations, full_seconds, cis_full->iterations);
+}
+
 void expect_refused(const fb::Result<fb::CisOutput> &refused, fb::ErrorKind kind,
                     std::string_view needle) {
   ASSERT_FALSE(refused.has_value()) << needle;
@@ -488,7 +599,7 @@ void expect_refused(const fb::Result<fb::CisOutput> &refused, fb::ErrorKind kind
 
 // Each refused when the step runs, naming the step, before anything is
 // allocated: n_states below 1 or past H2O / STO-3G's n_ov = 10; a negative
-// cluster_gap, and a positive one beside ris; a triplet
+// cluster_gap, and a positive one beside ris; a TDA-ris θ not positive; a triplet
 // molecule; an odd electron count; an ScfOutput whose electrons are not the
 // molecule's closed shell.
 TEST(CisStep, Refusals) {
@@ -513,6 +624,12 @@ TEST(CisStep, Refusals) {
   expect_refused(fb::CisStep{.options = {.cluster_gap = 0.1, .ris = cis::RisOptions{}}}.run(
                      step_input(*calc), res),
                  fb::ErrorKind::InvalidConfig, "cis: ris and a cluster_gap of 0.1 each pick");
+  expect_refused(fb::CisStep{.options = {.method = cis::Method::Ris, .theta_j = 0.0}}.run(
+                     step_input(*calc), res),
+                 fb::ErrorKind::InvalidConfig, "cis: theta_j is 0, not finite and positive");
+  expect_refused(fb::CisStep{.options = {.method = cis::Method::Ris, .theta_k = -1.0}}.run(
+                     step_input(*calc), res),
+                 fb::ErrorKind::InvalidConfig, "cis: theta_k is -1, not finite and positive");
 
   const fb::Molecule &singlet = calc->get<fb::MoleculeOutput>()->molecule;
   const fb::MoleculeOutput triplet{fb::Molecule(res, singlet.atoms(), singlet.charge(), 3)};
