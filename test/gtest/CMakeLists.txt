@@ -149,6 +149,7 @@ add_executable(
   nonsymmetric_jk_gpu.cpp
   df_fit_gpu.cpp
   df_jk_gpu.cpp
+  df_jk_batched_gpu.cpp
   df_mo_gpu.cpp
   df_metric_gpu.cpp
   df_three_center_gpu.cpp

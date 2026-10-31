@@ -1,7 +1,8 @@
 /// @file
 /// @brief Density-fitted J and K from the fitted factor B on the GPU: J from
 /// the density by two gemvs, K from a factor of it by one batched gemm and one
-/// syrk, or from two factors of it by two batched gemms and one gemm.
+/// syrk, or from two factors of it by two batched gemms and one gemm; and the
+/// same J and two-factor K for a block of densities at once.
 ///
 /// B is @ref density_fit's output, [Q][n][m] with Q fastest, so that
 /// (mn|ls) ~ sum_Q B_Q,mn B_Q,ls. The README has the layouts and the scratch.
@@ -117,5 +118,77 @@ export namespace free_breakfast {
 [[nodiscard]] Status df_exchange(DeviceResources &res, int32_t nao, int32_t naux, int32_t rank,
                                  const double *b, const double *left, const double *right,
                                  double *k);
+
+/// @brief J of @p count densities at once, J_d = df_coulomb of D_d: Gamma =
+/// B [vec(D_0) ... vec(D_count-1)], then [vec(J_0) ...] = B^T Gamma, two
+/// gemms where @ref df_coulomb has two gemvs.
+///
+/// @p density and @p j are @p count packed nao x nao matrices one after
+/// another, D_d at density + nao^2 d, J_d at j + nao^2 d, read and written as
+/// df_coulomb reads and writes one; @p j is overwritten. Gamma, naux count
+/// doubles, comes from res.device_workspace(), which grows if it is smaller;
+/// none of @p b, @p density and @p j may point into it, and @p j must not
+/// overlap @p b or @p density.
+///
+/// Queued on res.stream() with res.blas() in host pointer mode (its default),
+/// with no host synchronization. The device res.dev_idx() names is made
+/// current for the call and the previous one restored.
+///
+/// @param res      Supplies the stream, the BLAS handle and the scratch.
+/// @param nao      Orbital basis functions. nao = 0 succeeds and writes nothing.
+/// @param naux     Fitting functions: the rows of @p b. naux = 0 gives J = 0.
+/// @param count    Densities. count = 0 succeeds and writes nothing.
+/// @param b        B, [Q][n][m].
+/// @param density  D_0 ... D_count-1.
+/// @param j        Out: J_0 ... J_count-1.
+/// @return Success; InvalidConfig for a negative count, or nao^2 past int32_t;
+///         or the GpuRuntime error of the first runtime or BLAS call that
+///         failed, which leaves @p j unspecified.
+[[nodiscard]] Status df_coulomb(DeviceResources &res, int32_t nao, int32_t naux, int32_t count,
+                                const double *b, const double *density, double *j);
+
+/// @brief K of @p count two-factor densities at once, K_d = K[L_d R_d^T] as
+/// the two-factor @ref df_exchange builds it: X_m = B_m [L_0 ... L_count-1]
+/// and Y_m = B_m [R_0 ... R_count-1], two batched gemms over m whose width is
+/// every density's factor side by side, then K_d = X_d^T Y_d, one gemm batched
+/// over d.
+///
+/// For a block of response densities sharing one B: a symmetric non-definite
+/// D_U = 2 (T C_o^T + C_o T^T) is 2 L R^T with L = [T C_o] and R = [C_o T],
+/// rank 2 n_occ, so K[D_U] / 2 = K[L R^T]. Neither D_d nor K_d is symmetrized,
+/// exactly as in the one-density form.
+///
+/// @p left and @p right are nao x (count rank), column-major and packed:
+/// L_d and R_d are columns [d rank, (d + 1) rank), at left + nao rank d and
+/// right + nao rank d. X and Y are stored [Q][i][m] over all count rank
+/// columns, element (Q, i, m) at Q + naux (i + count rank m), so X_d is the
+/// (naux rank) x nao block of rows starting at naux rank d, leading dimension
+/// naux count rank. @p k is @p count packed nao x nao matrices, K_d at
+/// k + nao^2 d, overwritten.
+///
+/// The scratch is X and Y, naux count rank nao doubles each, from
+/// res.device_workspace(), which grows if it is smaller; none of @p b,
+/// @p left, @p right and @p k may point into it, and @p k must not overlap
+/// @p b, @p left or @p right.
+///
+/// Queued on res.stream() with res.blas() in host pointer mode (its default),
+/// with no host synchronization. The device res.dev_idx() names is made
+/// current for the call and the previous one restored.
+///
+/// @param res    Supplies the stream, the BLAS handle and the scratch.
+/// @param nao    Orbital basis functions. nao = 0 succeeds and writes nothing.
+/// @param naux   Fitting functions: the rows of @p b. naux = 0 gives K = 0.
+/// @param rank   Columns of each L_d and R_d. rank = 0 gives K = 0.
+/// @param count  Densities. count = 0 succeeds and writes nothing.
+/// @param b      B, [Q][n][m].
+/// @param left   L_0 ... L_count-1, with D_d = L_d R_d^T.
+/// @param right  R_0 ... R_count-1.
+/// @param k      Out: K_0 ... K_count-1.
+/// @return Success; InvalidConfig for a negative count, naux count rank or
+///         nao^2 past int32_t; or the GpuRuntime error of the first runtime
+///         or BLAS call that failed, which leaves @p k unspecified.
+[[nodiscard]] Status df_exchange(DeviceResources &res, int32_t nao, int32_t naux, int32_t rank,
+                                 int32_t count, const double *b, const double *left,
+                                 const double *right, double *k);
 
 } // namespace free_breakfast

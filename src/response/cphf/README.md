@@ -42,7 +42,10 @@ under real singlet rotations. It is never formed. A product is
 two gemms to D_U, one `df_coulomb` of it, one two-factor `df_exchange` of
 L Rᵀ with L = [C_v U, C_o] and R = [C_o, C_v U] (D_U = 2 L Rᵀ, so
 K[D_U]/2 = K[L Rᵀ]), and two gemms back to the ai block: one SCF iteration's
-work per column.
+work per column. The columns of a sweep go through it together, as the
+block forms of `df_coulomb` and `df_exchange` (`density_fitting/jk/`): every
+gemm above is one batched over the block, and J and K are one build of the
+whole block's densities.
 
 For a nuclear coordinate x, B^x_ai = −F^(x)_ai + ε_i S^x_ai + [C_vᵀ G(D_S^x) C_o]_ai
 with D_S^x = 2 C_o S^x_oo C_oᵀ, and U is PySCF's `solve_mo1` `mo1`'s
@@ -61,9 +64,32 @@ direction has p·Mp ≤ 0. That last is not the solver failing: M is not
 positive definite, so the RHF reference is unstable and a CPHF over it has no
 meaning.
 
-All columns share M, so every sweep's J and K builds could be one batched
-build over the active columns' densities. They are not yet: `df_coulomb` and
-`df_exchange` take one density per call, so a sweep is a loop of them.
+All columns share M, so a sweep's products are one batched build over the
+active columns' densities: their P gathered side by side, M P scattered back.
+A batch is as wide as half the device's free memory holds at the call, its
+own L, R, D_U, J, K and G C_o and the J/K scratch (X and Y,
+2 · naux · 2 n_occ · nao doubles a column) together, and the int32_t BLAS
+dispatch allows; a sweep wider than that runs in batches of it. The
+workspace is left grown to that scratch.
+
+### Batched against one column at a time
+
+The CPHF wall clock of 3 N_atom random right-hand sides, the per-column
+loop it replaced against the batched build (`bench/cphf_batched.cpp`,
+`free_breakfast_cphf_batched`), the second build solving over the first's
+orbitals: decane (C₁₀H₂₂, 32 atoms) in cc-pVDZ / cc-pVDZ-JKFIT, nao 250,
+n_occ 41, naux 1206, 96 columns, on the gfx1200 (HIP), the card held.
+
+| Product | Wall clock | Sweeps | max residual |
+| --- | --- | --- | --- |
+| one column at a time | 190.3 s | 18 | 9.96e-11 |
+| batched | 167.4 s | 18 | 9.96e-11 |
+
+1.14× faster; the two U agree to 1.3e-15 (max |U| 0.27). The flops are the
+same: the batch buys wider gemms and fewer launches (by the arithmetic about
+20 columns a build at half of 16 GB free, so X and Y's batched gemms are
+about 20 · 82 columns wide where one column's are 82). The RTX 3080 (CUDA)
+was not benchmarked.
 
 ## Tests
 
