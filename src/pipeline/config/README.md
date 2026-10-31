@@ -282,9 +282,13 @@ into the step, each read as the pipeline reads it, from an empty table if the
 config has none. **With a `[casscf_gradient]` in the config the chain ends in
 the CASSCF instead** (`optimize/README.md` "The CASSCF chain"), and
 `[casscf]` and `[casscf_gradient]` are copied in too; the optimized energy is
-then that root's. Beside a `[gradient]` that is refused, and under an
-integral-direct `[eri]` it is `[casscf_gradient]`'s `Unsupported`, as
-above. One loading `from` a file is refused: the chain is rerun at every
+then that root's. **With a `[nevpt2_gradient]` it ends in the SC-NEVPT2
+gradient** (`optimize/README.md` "The NEVPT2 chain"), `[casscf]` and
+`[nevpt2_gradient]` copied in, and the energy optimized is the NEVPT2 total
+energy. Any two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]`
+are refused, and under an integral-direct `[eri]` either CASSCF chain is its
+gradient's `Unsupported`, as above, as are `[nevpt2_gradient]`'s other
+refusals (its `"pc"`, a state average, the start's multiplicity). One loading `from` a file is refused: the chain is rerun at every
 geometry. **Then `[molecule]` is planned loaded from the `final.xyz`
 the step writes** (`MoleculeStep::load`, ordered after the optimization by
 the `OptimizeOutput` it reads), so every other step in the config -- the
@@ -388,7 +392,8 @@ than after the SCF has converged. `parse_config` touches no disk.
 - `from` beside another key, on a step with no `load`, or on `[molecule]`;
   and under `[optimize]`, on a table of the chain it reruns;
 - an `[optimize]` threshold that is not positive, or a `max_steps` below 0,
-  or an `[optimize]` beside both `[gradient]` and `[casscf_gradient]`;
+  or an `[optimize]` beside two of `[gradient]`, `[casscf_gradient]` and
+  `[nevpt2_gradient]`;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;

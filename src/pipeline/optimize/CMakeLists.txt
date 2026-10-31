@@ -1,7 +1,8 @@
-# The Optimize step. geometry, pipeline::gradient and pipeline::casscf_gradient
-# are PUBLIC and re-exported: geometry::Options is an option, and the two
-# gradient steps' modules re-export every step the two chains rerun, each a
-# member, and the products OptimizeOutput and MoleculeOutput. core::resources
+# The Optimize step. geometry, pipeline::gradient, pipeline::casscf_gradient
+# and pipeline::nevpt2_gradient are PUBLIC and re-exported: geometry::Options
+# is an option, and the three gradient steps' modules re-export every step the
+# three chains rerun, each a member, and the products OptimizeOutput and
+# MoleculeOutput. core::resources
 # and pipeline::step are in run's signature. run is defined in the
 # implementation unit, so the planner it nests (pipeline::pipeline), the files
 # it writes (io::base, io::json) and reads (io::xyz), atom (element_symbol),
@@ -24,6 +25,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::step
   free_breakfast::pipeline::gradient
   free_breakfast::pipeline::casscf_gradient
+  free_breakfast::pipeline::nevpt2_gradient
   LINK_PRIVATE
   free_breakfast::atom
   free_breakfast::core::constants

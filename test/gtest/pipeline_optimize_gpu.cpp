@@ -8,7 +8,12 @@
 // and runs again over integral-direct ERIs, held to convergence. Then the
 // CASSCF chain: H2O's state-specific DF-CASSCF(4,4) from an off-symmetry
 // start to PySCF's minimum (data/casscf_gradient/casscf_optimize.json) to
-// 1e-4 bohr, and its integral-direct refusal.
+// 1e-4 bohr, and its integral-direct refusal. Then the NEVPT2 chain: the
+// same water's SC-NEVPT2 over that DF-CASSCF(4,4), from the skew start
+// (data/nevpt2_gradient/nevpt2_gradient.json) to a stationary point whose
+// energy is PySCF's DF-NEVPT2 single point there
+// (data/nevpt2_gradient/nevpt2_optimize.json) to 1e-9, and a refusal of the
+// gradient step ending the optimization with its message.
 
 #include <gtest/gtest.h>
 
@@ -415,6 +420,196 @@ TEST(PipelineOptimize, ACasscfChainOverIntegralDirectErisIsUnsupported) {
   EXPECT_EQ(out.error().kind, fb::ErrorKind::Unsupported) << out.error().message;
   EXPECT_NE(out.error().message.find("density fitting only"), std::string::npos)
       << out.error().message;
+}
+
+// The NEVPT2 chain's start, data/nevpt2_gradient/nevpt2_gradient.json's
+// skew H2O, and its reference, PySCF's DF-NEVPT2 at this step's optimum.
+const fb::json &nevpt2_start() {
+  static const fb::json kDoc = [] {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2_gradient" /
+                              "nevpt2_gradient.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  for (const fb::json &entry : kDoc.at("cases")) {
+    if (entry.at("name").get<std::string>() == "h2o_skew_ccpvdz") {
+      return entry;
+    }
+  }
+  ADD_FAILURE() << "no case h2o_skew_ccpvdz in nevpt2_gradient.json";
+  static const fb::json kNone;
+  return kNone;
+}
+
+const fb::json &nevpt2_optimum() {
+  static const fb::json kDoc = [] {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2_gradient" /
+                              "nevpt2_optimize.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  return kDoc;
+}
+
+// The issue's bar: the optimum's energy against PySCF's at that geometry.
+constexpr double kNevpt2EnergyTolerance = 1e-9;
+// The optimum against the geometry PySCF's single point was taken at. At a
+// stationary point an offset d moves the energy by g . d + d^T H d / 2: the
+// reference's own gradient there is under kMaxForce per component (its
+// numerical gradient, in the file), so 1e-5 bohr on each of nine coordinates
+// is at most 3 * 1.5e-5 * 1e-5 = 4.5e-10 plus a quadratic term under 1e-10,
+// inside kNevpt2EnergyTolerance.
+constexpr double kNevpt2GeometryToleranceBohr = 1e-5;
+// As the CASSCF chain's.
+constexpr std::size_t kNevpt2MaxSteps = 15;
+
+// skew H2O's start as start.xyz in @p dir and run.toml optimizing its
+// SC-NEVPT2 over DF-CASSCF(4,4) [2, 3, 5, 6] at Opt=Tight's thresholds, with
+// @p casscf_extra in [casscf].
+std::filesystem::path write_nevpt2_config(const fb::test::ScratchDir &dir,
+                                          std::string_view casscf_extra) {
+  const fb::json &entry = nevpt2_start();
+  std::string xyz = std::format("{}\nstart\n", entry.at("atoms").size());
+  for (const fb::json &atom : entry.at("atoms")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  EXPECT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  std::string active;
+  for (const auto t : entry.at("active").get<std::vector<std::int32_t>>()) {
+    active += std::format("{}{}", active.empty() ? "" : ", ", t);
+  }
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
+      "[casscf]\nncas = {}\nnelecas = {}\nactive = [{}]\n{}{}[nevpt2_gradient]\n{}",
+      entry.at("basis").get<std::string>(), entry.at("aux_basis").at("name").get<std::string>(),
+      kScf, entry.at("ncas").get<std::int32_t>(), entry.at("nelecas").get<std::int32_t>(), active,
+      kCasscf, casscf_extra, kOptimize);
+  EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  return dir / "run.toml";
+}
+
+// skew H2O's SC-NEVPT2 over its DF-CASSCF(4,4), optimized from the skew
+// start with the CASSCF chain's carried orbitals: it converges, its last
+// evaluation's largest force under the threshold, to the geometry
+// nevpt2_optimize.json records, where PySCF's DF-NEVPT2 single point is the
+// optimized energy to 1e-9 and PySCF's numerical gradient is under the
+// threshold too. The first evaluation is the start's PySCF energy
+// (nevpt2_gradient.json) and the outer [nevpt2_gradient], rerun at the
+// optimum from a fresh SCF and pick, the optimized energy. 13 steps in about
+// 4 s on the 3080, inside the fast tier.
+TEST(PipelineOptimize, WaterNevpt2ReachesAStationaryPointAtPyscfsEnergy) {
+  FBF_REQUIRE_GPU();
+  const fb::json &start = nevpt2_start();
+  const fb::json &expected = nevpt2_optimum();
+  const fb::test::ScratchDir dir("pipeline_optimize_nevpt2");
+  auto calc = fb::read_config(write_nevpt2_config(dir, ""), dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value());
+  fb::NodeResources node;
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+  // The optimum, to round-trip, for the reference tool's input.
+  std::string optimum;
+  for (const fb::Atom &atom : out->molecule.atoms()) {
+    optimum += std::format(" [{:.17g}, {:.17g}, {:.17g}]", atom.position.x, atom.position.y,
+                           atom.position.z);
+  }
+
+  // Converged: the last evaluation's largest force under the threshold.
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_GE(iterations.size(), 1U);
+  const double max_force = iterations.back().at("max_force").get<double>();
+  EXPECT_LE(max_force, kMaxForce);
+  EXPECT_LT(iterations.size() - 1, kNevpt2MaxSteps);
+  EXPECT_EQ(history->at("energy").get<double>(), out->energy);
+  EXPECT_NEAR(iterations.front().at("energy").get<double>(),
+              start.at("energies").at("sc").get<double>(), kNevpt2EnergyTolerance);
+
+  // At PySCF's single point.
+  const double geometry_error =
+      aligned_max_deviation(points(expected.at("atoms")), points(out->molecule));
+  EXPECT_LE(geometry_error, kNevpt2GeometryToleranceBohr);
+  const double energy_error =
+      std::abs(out->energy - expected.at("energies").at("sc").get<double>());
+  EXPECT_LE(energy_error, kNevpt2EnergyTolerance);
+  EXPECT_LE(expected.at("max_gradient").get<double>(), kMaxForce);
+
+  // The outer [nevpt2_gradient], from a fresh SCF and pick at the optimum.
+  const auto written = fb::read_json(dir / "out" / "nevpt2_gradient.json");
+  ASSERT_TRUE(written.has_value()) << written.error().message;
+  EXPECT_NEAR(written->at("energy").get<double>(), out->energy, kNevpt2EnergyTolerance);
+
+  std::cout << std::format("[ optimize ] h2o_skew_ccpvdz SC-NEVPT2 CAS(4,4): {} steps, max force "
+                           "{:.2e}, |dE| {:.2e} Eh, geometry {:.2e} bohr, E {:.12f}, {:.1f} s\n"
+                           "[ optimize ] optimum (bohr):{}\n",
+                           iterations.size() - 1, max_force, energy_error, geometry_error,
+                           out->energy, seconds, optimum);
+}
+
+// A gradient the step refuses at run ends the optimization with that
+// refusal, not a step through it: the chain's CASSCF a state average, which
+// [nevpt2_gradient] refuses once the first SCF and CASSCF have run (the
+// config refuses it before; the step is copied out and edited by hand to
+// reach the step's own refusal). Nothing is written. A degenerate SC pair or
+// a PC rank change, met at any geometry, ends it the same way:
+// geometry::optimize returns its callback's first error.
+TEST(PipelineOptimize, ARefusedNevpt2GradientEndsTheOptimizationWithItsMessage) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_optimize_nevpt2_refused");
+  auto calc = fb::read_config(write_nevpt2_config(dir, ""), dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::OptimizeStep step = *calc->step<fb::OptimizeStep>();
+  ASSERT_TRUE(step.nevpt2_gradient.has_value());
+  step.casscf.nroots = 2;
+  fb::NodeResources node;
+  const auto out = step.run(fb::View<>{}, node);
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().kind, fb::ErrorKind::Unsupported) << out.error().message;
+  EXPECT_EQ(out.error().message, "[nevpt2_gradient] differentiates a single-state CASSCF, and "
+                                 "[casscf] has 2 roots: set [casscf] nroots = 1");
+  EXPECT_FALSE(std::filesystem::exists(dir / "out" / "final.xyz"));
+  EXPECT_FALSE(std::filesystem::exists(dir / "out" / "optimize.json"));
+}
+
+// Both CASSCF gradients set by hand is refused before anything runs, as
+// pipeline/config refuses a config naming both, and so is the NEVPT2 chain
+// over integral-direct ERIs.
+TEST(PipelineOptimize, AHandBuiltNevpt2ChainIsRefusedBeforeItRuns) {
+  FBF_REQUIRE_GPU();
+  fb::NodeResources node;
+  fb::OptimizeStep both;
+  both.casscf_gradient.emplace();
+  both.nevpt2_gradient.emplace();
+  both.eri.mode = fb::EriMode::DensityFitting;
+  const auto two = both.run(fb::View<>{}, node);
+  ASSERT_FALSE(two.has_value());
+  EXPECT_EQ(two.error().kind, fb::ErrorKind::InvalidConfig) << two.error().message;
+  EXPECT_NE(two.error().message.find("[casscf_gradient] or of [nevpt2_gradient]"),
+            std::string::npos)
+      << two.error().message;
+
+  fb::OptimizeStep direct;
+  direct.nevpt2_gradient.emplace();
+  direct.eri.mode = fb::EriMode::IntegralDirect;
+  const auto refused = direct.run(fb::View<>{}, node);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported) << refused.error().message;
+  EXPECT_NE(refused.error().message.find("reruns [nevpt2_gradient], which runs over density "
+                                         "fitting only"),
+            std::string::npos)
+      << refused.error().message;
 }
 
 } // namespace

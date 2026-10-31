@@ -172,5 +172,11 @@ static_assert(fb::kRunShape<fb::OptimizeStep> == fb::RunShape::Node);
 static_assert(std::same_as<fb::StepInput<fb::OptimizeStep>, fb::View<>>);
 static_assert(std::same_as<fb::StepOutput<fb::OptimizeStep>, fb::OptimizeOutput>);
 static_assert(!fb::LoadableStep<fb::OptimizeStep>);
+// Its CASSCF chains, each optional: at most one is set, and with neither the
+// chain is the RHF's.
+static_assert(std::same_as<decltype(fb::OptimizeStep::casscf_gradient),
+                           std::optional<fb::CasscfGradientStep>>);
+static_assert(std::same_as<decltype(fb::OptimizeStep::nevpt2_gradient),
+                           std::optional<fb::Nevpt2GradientStep>>);
 
 } // namespace
