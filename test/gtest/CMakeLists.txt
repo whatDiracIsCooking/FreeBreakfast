@@ -135,6 +135,7 @@ add_executable(
   overlap_mixed_gpu.cpp
   dipole_gpu.cpp
   one_electron_gradient_gpu.cpp
+  one_electron_derivative_gpu.cpp
   core_hamiltonian_gpu.cpp
   coulomb_gpu.cpp
   coulomb_gradient_gpu.cpp

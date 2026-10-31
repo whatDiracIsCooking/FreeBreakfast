@@ -4,7 +4,8 @@ One-electron integral matrices on the GPU, over kernels FelizJueves generates:
 the overlap S, the kinetic energy T, the nuclear attraction V, and the core
 Hamiltonian H = T + V; the overlap between two bases, `overlap_mixed`; the
 dipole matrices mu_x, mu_y, mu_z; and the nuclear-gradient contractions of S,
-T and V with an AO matrix, `gradient`.
+T and V with an AO matrix, and their derivative matrices S^x, T^x and V^x,
+`gradient`.
 
 ## Module
 
@@ -18,7 +19,7 @@ overlap_mixed/     free_breakfast.integrals.one_electron.overlap_mixed: S betwee
 kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
 potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
 dipole/            free_breakfast.integrals.one_electron.dipole: the dipole matrices mu_x, mu_y, mu_z, through d
-gradient/          free_breakfast.integrals.one_electron.gradient: Σ M dX/dR per atom for X = S, T, V
+gradient/          free_breakfast.integrals.one_electron.gradient: Σ M dX/dR per atom, and dX/dR as matrices, for X = S, T, V
 core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V, in place
 ```
 
@@ -136,6 +137,7 @@ Everything the eight sub-modules export; each README has its own table.
 | `core_hamiltonian(res, classes, molecule, h)` | `core_hamiltonian` |
 | `dipole(res, classes, mu_x, mu_y, mu_z)`, `kDipoleMaxL` | `dipole` |
 | `overlap_gradient(res, basis, classes, m)`, `kinetic_gradient(…)`, `potential_gradient(res, basis, classes, molecule, m)` | `gradient` |
+| `overlap_derivative(res, basis, classes)`, `kinetic_derivative(…)`, `potential_derivative(res, basis, classes, molecule)` | `gradient` |
 
 Every build is queued on `res.stream()`, each class on its own stream forked
 from it and joined back into it, with no host synchronization.
@@ -171,6 +173,10 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
   H₂O in cc-pVDZ and cc-pVTZ against libcint's derivative integrals, recorded
   by PySCF (`test/gtest/data/gradient/`), at 1e-10 of max|G|, each one's sum
   over atoms, and the refusals; `gradient/README.md` has the detail.
+- `test/gtest/one_electron_derivative_gpu.cpp`: the same waters' derivative
+  matrices S^x, T^x and V^x element by element against libcint
+  (`test/gtest/data/one_electron_derivative/`), and contracted against the
+  gradient contractions; `gradient/README.md` has the detail.
 - `test/gtest/launch_gpu.cpp`: `check_nuclei` accepting nuclei on the call's
   device. The nuclei themselves are `molecule`'s, tested in
   `test/gtest/molecule_gpu.cpp`.
