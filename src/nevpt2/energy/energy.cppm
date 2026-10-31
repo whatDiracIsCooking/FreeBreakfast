@@ -186,4 +186,46 @@ struct PcClassEnergies {
                                                         const MoBlocks &blocks,
                                                         const EnergyInputs &in, int32_t batch);
 
+/// @brief pc_class_energies_adjoint's result: the energies it walked, and each
+/// class's degree-one homogeneity assembled from its bars.
+struct PcClassEnergiesAdjoint {
+  /// @brief The energies and dropped counts, as pc_class_energies computes
+  /// them.
+  PcClassEnergies energies;
+  /// @brief Σ_G <M_G, G> per class over the blocks G its S, K and S₁ are
+  /// built from (a16, dm3, dm2 for Sr, ...): a class energy is homogeneous of
+  /// degree one in (S, S₁, K) at fixed slabs and orbital energies, so this
+  /// equals @ref energies' energies to round-off. Sijrs, which has no solve,
+  /// carries SC's ½ <g-bar, g>.
+  std::array<double, 8> homogeneity{};
+};
+
+/// @brief The PC reverse pass of pc_class_energies: @p bars += dE/dx for E the
+/// PC correlation energy and x each input @p bars names, as
+/// class_energies_adjoint does for SC.
+///
+/// Each class solves as pc_class_energies does and walks its slabs in batches
+/// of at most @p batch. A tuple's energy is -c bᵀ (K + Δ S)⁺ b, so its
+/// derivative is the solve's adjoint, -c (2 xᵀ db - xᵀ dA x) with
+/// x = (K + Δ S)⁺ b, the solve the energy ran: no eigenvalue or eigenvector
+/// derivative. Per slab, the eigenbasis rows y are evaluated, the multipliers
+/// taken on the host, and every slab einsum differentiated per operand onto
+/// the slab (and through nevpt2::slab_adjoint onto @p bars.lambda), h1e_v's
+/// rows, and T and t1; the orbital energies take dE/dΔ. After the walk the
+/// bars on S, K and S₁ go onto the class blocks SC's reverse pass has (a16,
+/// ..., and the RDMs Sr, Srsi and Sir read directly), and SC's sweep takes
+/// them onto h1e, h2e and the RDMs, skipped when none of those seven bars is
+/// wanted. Sijrs is SC's.
+///
+/// The derivative is exact where the energy is defined: S's kept rank locally
+/// constant (the gap at the cut) and, for the bars on the RDMs, K annihilating
+/// S's dropped modes, which holds at an eigenstate. A class the energy refuses
+/// is refused here with the energy's error, never given a zero.
+///
+/// @return The energies and the homogeneity sums; or pc_class_energies'
+///         errors, and the slab adjoint's. On an error @p bars is unspecified.
+[[nodiscard]] Result<PcClassEnergiesAdjoint>
+pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                          int32_t batch, const EnergyBars &bars);
+
 } // namespace free_breakfast::nevpt2

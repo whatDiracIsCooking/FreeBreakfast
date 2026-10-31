@@ -55,7 +55,6 @@ Result<Buffers::device<double>> upload(DeviceResources &res, const std::vector<d
   return out;
 }
 
-// (A + Aᵀ) / 2 of the row-major d x d @p a.
 Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *a,
                                             const int64_t d) {
   const wwr::wwrStream_t s = res.stream();
@@ -66,25 +65,13 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
   return out;
 }
 
-// One class's solve.
-struct ClassSolve {
-  // λ, ascending: the eigenvalues of K over S's kept range.
-  std::vector<double> lambda;
-  // T = S U, d x m column-major: element (I, k) at I + d k.
-  Buffers::device<double> t;
-  // t1 = S₁ᵀ U, n1 x m row-major, when an S₁ was given.
-  std::optional<Buffers::device<double>> t1;
-  // S's modes cut as null.
-  int64_t dropped = 0;
-};
-
 // Symmetrize S and K (K is symmetric only to the CI vector's convergence),
 // diagonalize S, cut it at kPcTau s_max and refuse a gap below kPcMinGap;
 // then K' = Xᵀ K X over X = V_kept s_kept^-1/2, K' = W λ Wᵀ, U = X W.
 // @p s1, n1 columns row-major d x n1, is optional.
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
-                               const double *k_rm, const int64_t d, const double *s1 = nullptr,
-                               const int64_t n1 = 0) {
+                               const double *k_rm, const int64_t d, const double *s1,
+                               const int64_t n1) {
   const wwr::wwrStream_t s = res.stream();
   const auto di = static_cast<int32_t>(d);
   const Buffers::device<double> s_sym = FBF_TRY(symmetrized(res, s_rm, d));
@@ -158,8 +145,11 @@ Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const dou
                    t1->data(), {n1, m}, 1.0));
   }
   std::vector<double> lambda = FBF_TRY(download(res, lambda_d.data(), m));
-  return ClassSolve{
-      .lambda = std::move(lambda), .t = std::move(t), .t1 = std::move(t1), .dropped = nd};
+  return ClassSolve{.lambda = std::move(lambda),
+                    .t = std::move(t),
+                    .t1 = std::move(t1),
+                    .dropped = nd,
+                    .u = std::move(u)};
 }
 
 // T as an einsum operand over @p rank active indices, each n, and k: the
@@ -190,18 +180,23 @@ struct Finish {
     }
   }
 
-  // The class's energy, refused when a denominator is not positive: K + Δ S
-  // must be positive on the kept range, and a sign change would divide
-  // through a pole.
+  // The class's energy, refused when a denominator is not positive.
   Result<double> done(const char *name) const {
-    if (!(min_denominator > 0.0)) {
-      return err_numerical("nevpt2::pc_class_energies: {} has a denominator λ + Δ = {:.3e} that "
-                           "is not positive",
-                           name, min_denominator);
-    }
+    FBF_TRY(pc_denominators_positive(name, min_denominator));
     return energy;
   }
 };
+
+// K + Δ S must be positive on the kept range, and a sign change would divide
+// through a pole.
+Status pc_denominators_positive(const char *name, const double min_denominator) {
+  if (!(min_denominator > 0.0)) {
+    return err_numerical("nevpt2::pc_class_energies: {} has a denominator λ + Δ = {:.3e} that "
+                         "is not positive",
+                         name, min_denominator);
+  }
+  return {};
+}
 
 // The output of one slab's einsums, zeroed, from the workspace.
 Result<double *> workspace_out(DeviceResources &res, const int64_t count) {
