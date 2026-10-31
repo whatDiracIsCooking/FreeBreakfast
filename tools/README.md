@@ -80,6 +80,12 @@ emit/df_reference.py
                   DF-RHF and DF-ROHF energies, over this tree's data/basis and
                   data/aux_basis files, the reference density fitting is
                   tested against. Needs PySCF.
+emit/cphf_reference.py
+                  Write test/gtest/data/cphf/: over df_reference's h2o_ccpvdz
+                  integrals, PySCF's DF-RHF orbitals, the nuclear CPHF
+                  right-hand sides and pyscf.df.hessian.rhf solve_mo1's mo1,
+                  and the dipole right-hand sides and polarizability, the
+                  reference response::cphf is tested against. Needs PySCF.
 emit/cis_reference.py
                   Write test/gtest/data/cis/: PySCF's RHF + TDA (CIS)
                   singlet and triplet roots and singlet oscillator

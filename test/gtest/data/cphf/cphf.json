@@ -1,0 +1,27 @@
+{
+ "description": "PySCF DF-RHF CPHF over this tree's data/basis and data/aux_basis files, spherical: the orbitals, orbital energies (hartree), the nuclear-displacement right-hand sides and pyscf.df.hessian.rhf solve_mo1's vo block, and the dipole right-hand sides and static polarizability (bohr^3). Each right-hand side and solution is (n_vir n_occ) x ncol, element a + n_vir i of column x. Arrays are '<f8' Fortran-order .npy files beside this one",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "libcint": "6.1.3",
+  "numpy": "2.5.4",
+  "threads": 1,
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/cphf_reference.py"
+ },
+ "integrals": "density_fitting/density_fitting.json: h2o_ccpvdz",
+ "basis": "cc-pvdz",
+ "aux_basis": "cc-pvdz-jkfit",
+ "nao": 24,
+ "naux": 116,
+ "occupied": 5,
+ "energy": -76.0267446953953,
+ "mo_coefficients": "h2o_ccpvdz_mo_coeff.npy",
+ "mo_energies": "h2o_ccpvdz_mo_energy.npy",
+ "nuclear": {
+  "rhs": "h2o_ccpvdz_nuclear_rhs.npy",
+  "solution": "h2o_ccpvdz_nuclear_mo1.npy"
+ },
+ "dipole": {
+  "rhs": "h2o_ccpvdz_dipole_rhs.npy",
+  "polarizability": "h2o_ccpvdz_polarizability.npy"
+ }
+}

@@ -2,10 +2,11 @@
 # fixed orbitals and RDMs, over integrals and core, never pipeline: the energy,
 # Fock matrices and orbital gradient, and the orbital Hessian over them, both
 # over the packed orbital pairs. What an optimizer steps over and what a
-# response solve inverts.
+# response solve inverts; and RHF's CPHF solve over the density-fitted J and K.
 add_subdirectory(orbital_pairs)
 add_subdirectory(fock)
 add_subdirectory(hessian)
+add_subdirectory(cphf)
 
 # The aggregate: one import for the response layer.
 free_breakfast_add_cxx_module_library(
@@ -18,4 +19,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::orbital_pairs
   free_breakfast::response::fock
   free_breakfast::response::hessian
+  free_breakfast::response::cphf
 )

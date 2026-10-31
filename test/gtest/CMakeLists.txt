@@ -169,6 +169,7 @@ add_executable(
   response_orbital_pairs_gpu.cpp
   response_fock_gpu.cpp
   response_hessian_gpu.cpp
+  response_cphf_gpu.cpp
   mcscf_solve_gpu.cpp
   mcscf_gradient_gpu.cpp
   mcscf_zvector_gpu.cpp
