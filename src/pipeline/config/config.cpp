@@ -472,15 +472,19 @@ template <class S>
     step.final_xyz = output_dir / "final.xyz";
     step.history = output_dir / std::format("{}.json", kStep);
   } else if constexpr (std::same_as<S, HessianStep>) {
-    // As [optimize]'s, the chain it reruns is copied in by parse_config. The
-    // method has no default: the analytic one is to come.
+    // As [optimize]'s, the chain it runs is copied in by parse_config, and
+    // whether its [eri] is one the method takes is plan_hessian's to say.
     FBF_TRY(check_keys(table, kStep, {"method", "displacement"}));
-    std::string method;
-    FBF_TRY(read_required_key(table, kStep, "method", base_dir, method));
-    if (method != "numerical") {
-      return err_config("[{}] has no method '{}' (known: 'numerical')", kStep, method);
+    std::string method = "analytic";
+    FBF_TRY(read_key(table, kStep, "method", base_dir, method));
+    if (method != "analytic" && method != "numerical") {
+      return err_config("[{}] has no method '{}' (known: 'analytic', 'numerical')", kStep, method);
     }
-    step.method = HessianMethod::Numerical;
+    step.method = method == "numerical" ? HessianMethod::Numerical : HessianMethod::Analytic;
+    if (step.method == HessianMethod::Analytic && table.contains("displacement")) {
+      return err_config("[{}] displacement is the numerical method's, and method is 'analytic'",
+                        kStep);
+    }
     FBF_TRY(read_key(table, kStep, "displacement", base_dir, step.displacement));
     if (!std::isfinite(step.displacement) || !(step.displacement > 0.0)) {
       return err_config("[{}] displacement must be finite and positive", kStep);
@@ -562,9 +566,10 @@ template <class S>
   return {};
 }
 
-/// @brief With a `[hessian]` among @p steps: copy into it the chain it
-/// reruns at every displaced geometry, each step by read_chain_step. The
-/// molecule is not among them: the step reads the pipeline's own.
+/// @brief With a `[hessian]` among @p steps: copy into it the chain it runs,
+/// each step by read_chain_step, and refuse the analytic method over an
+/// integral-direct `[eri]`, which it does not take. The molecule is not among
+/// them: the step reads the pipeline's own.
 [[nodiscard]] Status plan_hessian(std::vector<Calculation::Step> &steps, const toml::table &doc,
                                   const std::filesystem::path &input_dir,
                                   const std::filesystem::path &output_dir) {
@@ -579,7 +584,14 @@ template <class S>
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.eri));
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.orthogonalizer));
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.guess));
-  return read_chain_step(doc, kStep, input_dir, output_dir, step.scf);
+  FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.scf));
+  if (step.method == HessianMethod::Analytic && step.eri.mode != EriMode::DensityFitting) {
+    return err_unsupported("[{}] method 'analytic' is density-fitted only, and [{}] mode is "
+                           "'integral_direct': set [{}] mode = 'density_fitting', or [{}] method "
+                           "= 'numerical'",
+                           kStep, EriStep::kName, EriStep::kName, kStep);
+  }
+  return {};
 }
 
 /// @brief With an `[optimize]` among @p steps: copy into it the chain it

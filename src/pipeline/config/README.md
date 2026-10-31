@@ -297,15 +297,19 @@ with no `load`.
 
 ```toml
 [hessian]
-method = "numerical"      # required: the only method so far
-displacement = 1e-3       # bohr
+method = "analytic"       # the default; or "numerical"
+displacement = 1e-3       # bohr, the numerical method's only
 ```
 
-`[hessian]` is the RHF Cartesian Hessian by central differences of the
-analytic gradient (`hessian/README.md`). `method` is required and knows only
-`"numerical"`; `displacement` must be finite and positive. Like `[optimize]`
-it reruns the chain to the gradient, at each of the 6N displaced geometries,
-and `parse_config` copies the config's own `[basis_set]`, `[eri]`,
+`[hessian]` is the RHF Cartesian Hessian and its harmonic frequencies
+(`hessian/README.md`). `method` is `"analytic"` by default, `hessian::df_rhf`
+at the SCF of one run of the chain to `[scf]`, density-fitted only: over an
+integral-direct `[eri]` (the default) it is refused as Unsupported, naming
+`[eri] mode = "density_fitting"` and `method = "numerical"` as the ways out.
+`"numerical"` is central differences of the analytic gradient, over either
+ERI kind; its `displacement` must be finite and positive, and is refused
+beside the analytic method. Like `[optimize]` the step reruns the chain, and
+`parse_config` copies the config's own `[basis_set]`, `[eri]`,
 `[orthogonalizer]`, `[guess]` and `[scf]` into it the same way, refusing one
 that loads `from` a file. The molecule is not copied: the step reads the
 pipeline's `MoleculeOutput`, so beside an `[optimize]` it runs at the
@@ -366,7 +370,7 @@ step, so no two collide:
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
 | `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
-| `[hessian]` | `hessian.json`: the method, the displacement, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing and its translational sum |
+| `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
 no output, so a later config can rely on what an earlier run wrote
@@ -402,7 +406,7 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[nevpt2_gradient] variant`, which knows `"sc"` and `"pc"`; `[hessian] method`, which knows only `"numerical"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
+  only `"sad"`; `[nevpt2_gradient] variant`, which knows `"sc"` and `"pc"`; `[hessian] method`, which knows `"analytic"` and `"numerical"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
   `[localization] exponent`, 2 or 4; and `[cis] spin`, which knows
   `"singlet"` and `"triplet"`);
 - `from` beside another key, on a step with no `load`, or on `[molecule]`;
@@ -410,8 +414,8 @@ than after the SCF has converged. `parse_config` touches no disk.
 - an `[optimize]` threshold that is not positive, or a `max_steps` below 0,
   or an `[optimize]` beside two of `[gradient]`, `[casscf_gradient]` and
   `[nevpt2_gradient]`;
-- a `[hessian]` without `method`, or a `displacement` that is not finite and
-  positive;
+- a `[hessian]` `displacement` that is not finite and positive, or one
+  beside the analytic method;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;
@@ -425,8 +429,8 @@ than after the SCF has converged. `parse_config` touches no disk.
 
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
 is well formed and the method is what is missing: `[nevpt2]`,
-`[casscf_gradient]` or `[nevpt2_gradient]` under an integral-direct `[eri]`,
-`[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
+`[casscf_gradient]`, `[nevpt2_gradient]` or the analytic `[hessian]` under
+an integral-direct `[eri]`, `[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
 average and multiplicity other than 1 (above).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
