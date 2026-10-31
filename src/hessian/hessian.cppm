@@ -160,6 +160,85 @@ df_rhf_two_electron(DeviceResources &res, const BasisSet &basis,
                     const Buffers::device<double> &b, const double *l,
                     const Buffers::device<double> &c, int32_t nocc);
 
+/// @brief The two-electron explicit part of a DF-CASSCF nuclear Hessian
+/// (casscf_hessian.tex eq. df2) and its pieces, each 3 n_atom x 3 n_atom,
+/// x = 3 A + k the coordinate R_{A,k} (hartree / bohr^2), symmetric to
+/// rounding.
+struct CasscfTwoElectron {
+  /// @brief Sum_aP Gam~_aP T^xy_aP, Gam~ = Gamma c.
+  std::vector<double> three_center;
+  /// @brief -1/2 Sum_PQ W^_PQ M^xy_PQ, W^ = c^T Gamma c.
+  std::vector<double> metric;
+  /// @brief The cross term's J piece, Gamma = D (x) D - D_a (x) D_a:
+  /// g^x^T M^-1 g^y - g_a^x^T M^-1 g_a^y, g^x = u^x - M^x d.
+  std::vector<double> cross_coulomb;
+  /// @brief Its K piece, -2 Sum_i Sum_pq G_pq R^x_ip^T M^-1 R^y_iq, i core,
+  /// G = diag(1_core, gamma) over the occupied orbitals.
+  std::vector<double> cross_exchange;
+  /// @brief Its active piece, Sum Gamma_tuvw R^x_tu^T M^-1 R^y_vw.
+  std::vector<double> cross_active;
+  /// @brief The five summed: d^2 E_2 / dx dy at fixed orbitals and RDMs.
+  std::vector<double> total;
+};
+
+/// @brief The two-electron explicit part of the DF-CASSCF nuclear Hessian at
+/// fixed orbitals and RDMs (casscf_hessian.tex eq. df2): with
+/// T_a,P = (a|P) over AO pairs a, M = (P|Q) = L L^T, the fitted pairs
+/// c = T M^-1 and R^x = T^x - c M^x, for the pair-space density Gamma_ab of
+/// E_2 = 1/2 Sum Gamma_ab (T M^-1 T^T)_ab,
+///
+///     E_2^xy = Sum Gam~ T^xy - 1/2 Sum W^ M^xy + Sum_ab Gamma_ab [R^x M^-1 R^y^T]_ab
+///
+/// the first two by @c three_center_hessian and @c metric_hessian at
+/// @c mcscf::df_gradient's Gam and W (at these RDMs, no Lagrangian), the
+/// cross term split as the design's section 6 so no pair-space Gamma is
+/// formed: J (Gamma = D (x) D - D_a (x) D_a, two Gram matrices of L^-1 g^x),
+/// K (core with core and with active, -Sum_i Sum_pq G_pq (ip|iq)) and the
+/// active 2-RDM's (Sum Gamma_tuvw R^x_tu^T M^-1 R^y_vw).
+///
+/// **The cross term is never held whole.** As in @c df_rhf_two_electron,
+/// L^-1 R^x over the occupied pairs for the three coordinates of one atom
+/// (3 naux nocc^2 doubles, an atom block) is built by one walk over the aux
+/// atoms, and the Hessian contracted one pair of atom blocks at a time, so
+/// n_atom (n_atom + 1) / 2 blocks are built; J's vectors, K's core rows
+/// (3 naux ncore nocc after G) and the active pairs all come from each block.
+///
+/// @p basis and @p aux are made by @c place over one molecule, and @p classes
+/// are @c primitive_pair_classes of @p basis. @p b is B as @c density_fit
+/// leaves it, naux x nao^2 at Q + naux (n + nao m), and @p l is its L
+/// (column-major, the lower triangle read). @p c is the nao x nmo orbitals,
+/// column-major, core then active, of which only the first ncore + ncas are
+/// read. @p gamma and @p gamma2 are the active 1- and 2-RDM on the host,
+/// row-major as @c ci::Rdm::rdm12 writes them (E = Sum h D + 1/2 Sum (pq|rs)
+/// Gamma_pqrs, PySCF's make_rdm12): a state's own, or any other densities the
+/// caller wants the explicit part at.
+///
+/// The call holds the fitted occupied pairs (naux nocc^2) and Gamma
+/// (ncas^4); then the explicit part's Gam (naux nao^2, like
+/// @c mcscf::df_gradient's), or the cross term's M1 (3 naux^2), one aux
+/// atom's derivative block (3 nao^2 nblk), two atom blocks and K's
+/// half-transform. Past the device's free memory that is Unsupported, naming
+/// the bytes, before anything is allocated.
+///
+/// Queued on res.stream() and synchronized; the call returns with everything
+/// done. None of @p b, @p l and @p c may point into res.device_workspace().
+/// The device res.dev_idx() names is made current for the call and the
+/// previous one restored.
+///
+/// @return The pieces and their sum; InvalidConfig if the bases do not share
+///         their atoms, if ncore < 0, ncas < 1 or ncore + ncas > nao, if @p c
+///         is shorter than nao (ncore + ncas) or @p b not naux nao^2 long, if
+///         the RDMs are not ncas^2 and ncas^4 long, or for any input the
+///         integral calls refuse; Unsupported for memory past the device's
+///         free bytes or an index past int32_t; or the GpuRuntime error of the
+///         first copy, BLAS call or launch that failed.
+[[nodiscard]] Result<CasscfTwoElectron>
+df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
+                       std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                       const Buffers::device<double> &b, const double *l,
+                       const Buffers::device<double> &c, int32_t ncore, int32_t ncas,
+                       std::span<const double> gamma, std::span<const double> gamma2);
+
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
 /// (hartree / bohr^2), as @c gradient::RhfTerms holds the gradient's.
