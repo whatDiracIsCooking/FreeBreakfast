@@ -83,9 +83,24 @@ struct ClassEnergies {
 /// for @ref lambda, nevpt2::slab_adjoint's). Every bar is added onto, so the
 /// caller zeroes it; a null one is not wanted and is not formed.
 ///
-/// The bars on h1e, h2e and the RDMs are not here: they come from sweeping
-/// each class's block bars back through its builders, which is not done yet.
+/// Every EnergyInputs field has one. The bars on h1e, h2e and the RDMs are
+/// the dm1-, ..., f3ac-shaped raw derivatives of the energy as a function of
+/// each array's every element: no symmetry of an RDM is assumed or imposed.
 struct EnergyBars {
+  /// @brief On EnergyInputs::h1e, a x a column-major.
+  double *h1e = nullptr;
+  /// @brief On EnergyInputs::h2e, a⁴ column-major.
+  double *h2e = nullptr;
+  /// @brief On EnergyInputs::dm1, a² row-major.
+  double *dm1 = nullptr;
+  /// @brief On EnergyInputs::dm2, a⁴ row-major.
+  double *dm2 = nullptr;
+  /// @brief On EnergyInputs::dm3, a⁶ row-major.
+  double *dm3 = nullptr;
+  /// @brief On EnergyInputs::f3ca, a⁶ row-major.
+  double *f3ca = nullptr;
+  /// @brief On EnergyInputs::f3ac, a⁶ row-major.
+  double *f3ac = nullptr;
   /// @brief On EnergyInputs::h1e_v_sr, v x a.
   double *h1e_v_sr = nullptr;
   /// @brief On EnergyInputs::h1e_v_si, a x c.
@@ -114,9 +129,9 @@ struct ClassEnergiesAdjoint {
   std::array<double, 8> eq40{};
 };
 
-/// @brief The SC reverse pass of class_energies, from the energies back to
-/// the class-level inputs: @p bars += dE/dx for E the SC correlation energy
-/// and x each input @p bars names, at fixed h1e, h2e and RDMs.
+/// @brief The SC reverse pass of class_energies: @p bars += dE/dx for E the
+/// SC correlation energy and x each input @p bars names, every EnergyInputs
+/// field and B (through Λ).
 ///
 /// Each class's walk is class_energies', in batches of at most @p batch.
 /// Per slab, the norms and H are evaluated, the finish's multipliers P, Q
@@ -125,8 +140,10 @@ struct ClassEnergiesAdjoint {
 /// then pulled back onto @p bars.lambda through nevpt2::slab_adjoint before
 /// the next slab is built. R goes onto the orbital energies. Srsi walks its
 /// slabs twice, since its symmetrized pairs span them. The bars on the
-/// class blocks (a16, ...) are formed as well, for Eq. 40 and for the RDM
-/// sweep that will read them.
+/// class blocks (a16, ...) are formed as well, for Eq. 40, and then swept
+/// back through the blocks' builders, in reverse topological order, onto
+/// h1e, h2e and the RDMs; that sweep is skipped when none of those seven
+/// bars is wanted.
 ///
 /// @return The energies and Eq. 40; or class_energies' errors, and the
 ///         slab adjoint's.

@@ -9,8 +9,8 @@
 // invariance to a rotation of the active orbitals, which the pipeline step
 // relies on: it does not rotate to each root's natural orbitals. Last, SC's
 // reverse pass (class_energies_adjoint): Park Eq. 40 and Euler's identity
-// from its bars, its bars against a Richardson ladder of class_energies
-// itself, and the same bars whatever the batch.
+// from its bars, its bars on every input against a Richardson ladder of
+// class_energies itself, and the same bars whatever the batch.
 
 #include <gtest/gtest.h>
 
@@ -541,15 +541,17 @@ HostCase load_host_case(const std::filesystem::path &dir) {
   return h;
 }
 
-// @p x + @p t @p dx over the fields the reverse pass has bars on; the rest is
-// @p x's.
+// @p x + @p t @p dx over every field.
 HostCase displaced(const HostCase &x, const HostCase &dx, const double t) {
   HostCase out = x;
   for (auto [y, d] :
        {std::pair{&out.aa, &dx.aa}, std::pair{&out.ca, &dx.ca}, std::pair{&out.va, &dx.va},
         std::pair{&out.cv, &dx.cv}, std::pair{&out.e_core, &dx.e_core},
         std::pair{&out.e_virt, &dx.e_virt}, std::pair{&out.h1e_v_sr, &dx.h1e_v_sr},
-        std::pair{&out.h1e_v_si, &dx.h1e_v_si}, std::pair{&out.h1e_v_sir, &dx.h1e_v_sir}}) {
+        std::pair{&out.h1e_v_si, &dx.h1e_v_si}, std::pair{&out.h1e_v_sir, &dx.h1e_v_sir},
+        std::pair{&out.h1e, &dx.h1e}, std::pair{&out.h2e, &dx.h2e}, std::pair{&out.dm1, &dx.dm1},
+        std::pair{&out.dm2, &dx.dm2}, std::pair{&out.dm3, &dx.dm3}, std::pair{&out.f3ca, &dx.f3ca},
+        std::pair{&out.f3ac, &dx.f3ac}}) {
     for (std::size_t k = 0; k < y->size(); ++k) {
       (*y)[k] += t * (*d)[k];
     }
@@ -557,9 +559,42 @@ HostCase displaced(const HostCase &x, const HostCase &dx, const double t) {
   return out;
 }
 
-// A seeded random direction over the fields of @p group ("B", "h1e_v", "e"
-// or "all") among those the reverse pass has bars on, each entry a normal
-// deviate scaled by its array's largest magnitude; zero elsewhere.
+// @p a, an n^rank row-major tensor, averaged with its index-reversed self,
+// a[p, q, .., u] = a[u, .., q, p]: the one permutation symmetry PySCF's
+// dm1, dm2 and dm3 (make_dm123's, not reordered) carry, which is hermiticity.
+void reversal_symmetrize(std::vector<double> &a, const std::size_t n) {
+  std::vector<double> out(a.size());
+  for (std::size_t at = 0; at < a.size(); ++at) {
+    std::size_t rest = at;
+    std::size_t reversed = 0;
+    for (std::size_t m = a.size(); m > 1; m /= n) {
+      reversed = (reversed * n) + (rest % n);
+      rest /= n;
+    }
+    out[at] = 0.5 * (a[at] + a[reversed]);
+  }
+  a = std::move(out);
+}
+
+// The RDMs' share of a direction, against the other fields' 1: along raw
+// RDM directions at full scale, Sr's energy is singular a few ladder rungs
+// from the base point. Measured at CAS(8,8), seed 560, the five RDMs
+// together: Sr's ratios run 5.69 0.03 -0.75 -30.6 5.50 4.29 4.07 4.02 while
+// every other class's settle to 4.00 from the third, a t⁴ coefficient 7e5
+// times the t² one, so a singularity at |t| ≈ 1e-3 against the ladder's
+// t0 = 1e-2. Its Richardson extrapolant then misses Σ <bar, dx> by 3.9e-7;
+// the same direction a tenth as long agrees to 7e-10. The direction is
+// shortened, not the tolerance.
+constexpr double kRdmScale = 0.1;
+
+// A seeded random direction over the fields of @p group ("B", "h1e_v", "e",
+// "h" for h1e and h2e, "rdm" for dm1, dm2, dm3, f3ca and f3ac, or "all"),
+// each entry a normal deviate scaled by its array's largest magnitude (the
+// RDMs' by kRdmScale of it); zero elsewhere. The RDMs move as raw tensors,
+// not along a CI displacement, so no spin or norm constraint applies; dm1,
+// dm2 and dm3 are reversal-symmetrized, the one permutation symmetry the
+// RDMs the builders read carry. f3ca and f3ac carry none, and h1e and h2e
+// are moved as raw arrays.
 HostCase random_direction(const HostCase &x, const std::string &group, const std::uint64_t seed) {
   std::mt19937_64 engine(seed);
   std::normal_distribution<double> normal;
@@ -569,15 +604,24 @@ HostCase random_direction(const HostCase &x, const std::string &group, const std
         std::tuple{"B", &d.cv, &x.cv}, std::tuple{"e", &d.e_core, &x.e_core},
         std::tuple{"e", &d.e_virt, &x.e_virt}, std::tuple{"h1e_v", &d.h1e_v_sr, &x.h1e_v_sr},
         std::tuple{"h1e_v", &d.h1e_v_si, &x.h1e_v_si},
-        std::tuple{"h1e_v", &d.h1e_v_sir, &x.h1e_v_sir}}) {
+        std::tuple{"h1e_v", &d.h1e_v_sir, &x.h1e_v_sir}, std::tuple{"h", &d.h1e, &x.h1e},
+        std::tuple{"h", &d.h2e, &x.h2e}, std::tuple{"rdm", &d.dm1, &x.dm1},
+        std::tuple{"rdm", &d.dm2, &x.dm2}, std::tuple{"rdm", &d.dm3, &x.dm3},
+        std::tuple{"rdm", &d.f3ca, &x.f3ca}, std::tuple{"rdm", &d.f3ac, &x.f3ac}}) {
     double scale = 0.0;
     for (const double v : *from) {
       scale = std::max(scale, std::abs(v));
+    }
+    if (std::string_view{name} == "rdm") {
+      scale *= kRdmScale;
     }
     const bool on = group == "all" || group == name;
     for (double &v : *y) {
       v = on ? scale * normal(engine) : 0.0;
     }
+  }
+  for (std::vector<double> *rdm : {&d.dm1, &d.dm2, &d.dm3}) {
+    reversal_symmetrize(*rdm, x.na);
   }
   return d;
 }
@@ -639,6 +683,7 @@ std::vector<double> download_host(fb::DeviceResources &res, const fb::Buffers::d
 // The reverse pass's bars, on the host.
 struct HostBars {
   std::vector<double> h1e_v_sr, h1e_v_si, h1e_v_sir, e_core, e_virt, lambda;
+  std::vector<double> h1e, h2e, dm1, dm2, dm3, f3ca, f3ac;
 };
 
 // class_energies_adjoint over @p h, every bar wanted, each zeroed first.
@@ -655,7 +700,21 @@ run_adjoint(fb::DeviceResources &res, const HostCase &h, const std::int32_t batc
   fb::Buffers::device<double> ec = zeros(h.nc);
   fb::Buffers::device<double> ev = zeros(h.nv);
   fb::Buffers::device<double> lambda = zeros(h.naux * nmo * nmo);
-  const nevpt2::EnergyBars bars{.h1e_v_sr = sr.data(),
+  fb::Buffers::device<double> h1e = zeros(h.h1e.size());
+  fb::Buffers::device<double> h2e = zeros(h.h2e.size());
+  fb::Buffers::device<double> dm1 = zeros(h.dm1.size());
+  fb::Buffers::device<double> dm2 = zeros(h.dm2.size());
+  fb::Buffers::device<double> dm3 = zeros(h.dm3.size());
+  fb::Buffers::device<double> f3ca = zeros(h.f3ca.size());
+  fb::Buffers::device<double> f3ac = zeros(h.f3ac.size());
+  const nevpt2::EnergyBars bars{.h1e = h1e.data(),
+                                .h2e = h2e.data(),
+                                .dm1 = dm1.data(),
+                                .dm2 = dm2.data(),
+                                .dm3 = dm3.data(),
+                                .f3ca = f3ca.data(),
+                                .f3ac = f3ac.data(),
+                                .h1e_v_sr = sr.data(),
                                 .h1e_v_si = si.data(),
                                 .h1e_v_sir = sir.data(),
                                 .e_core = ec.data(),
@@ -671,7 +730,14 @@ run_adjoint(fb::DeviceResources &res, const HostCase &h, const std::int32_t batc
                                   .h1e_v_sir = download_host(res, sir),
                                   .e_core = download_host(res, ec),
                                   .e_virt = download_host(res, ev),
-                                  .lambda = download_host(res, lambda)}};
+                                  .lambda = download_host(res, lambda),
+                                  .h1e = download_host(res, h1e),
+                                  .h2e = download_host(res, h2e),
+                                  .dm1 = download_host(res, dm1),
+                                  .dm2 = download_host(res, dm2),
+                                  .dm3 = download_host(res, dm3),
+                                  .f3ca = download_host(res, f3ca),
+                                  .f3ac = download_host(res, f3ac)}};
 }
 
 double dot(const std::vector<double> &a, const std::vector<double> &b) {
@@ -700,11 +766,13 @@ double lambda_dot(const std::vector<double> &lambda, const HostCase &h, const Ho
          corner(db.va, h.nv, h.na, h.nc + h.na, h.nc) + corner(db.cv, h.nc, h.nv, 0, h.nc + h.na);
 }
 
-// Σ <bar, dx> over every field the reverse pass has a bar on.
+// Σ <bar, dx> over every field: B through Λ, and every EnergyInputs array.
 double bars_dot(const HostBars &bars, const HostCase &h, const HostCase &dx) {
   return lambda_dot(bars.lambda, h, dx) + dot(bars.h1e_v_sr, dx.h1e_v_sr) +
          dot(bars.h1e_v_si, dx.h1e_v_si) + dot(bars.h1e_v_sir, dx.h1e_v_sir) +
-         dot(bars.e_core, dx.e_core) + dot(bars.e_virt, dx.e_virt);
+         dot(bars.e_core, dx.e_core) + dot(bars.e_virt, dx.e_virt) + dot(bars.h1e, dx.h1e) +
+         dot(bars.h2e, dx.h2e) + dot(bars.dm1, dx.dm1) + dot(bars.dm2, dx.dm2) +
+         dot(bars.dm3, dx.dm3) + dot(bars.f3ca, dx.f3ca) + dot(bars.f3ac, dx.f3ac);
 }
 
 // CAS(8,8): at CAS(4,4) Si vanishes by symmetry (its slab (σπ|ππ) and h1e_v_Si
@@ -748,8 +816,8 @@ TEST(Nevpt2EnergyAdjoint, Eq40AndEulerFromTheBars) {
 }
 
 // The bars against class_energies itself, differenced along a seeded random
-// direction over (B, h1e_v_*, e_core, e_virt), all of them and each group
-// alone, with h1e, h2e and the RDMs fixed. Central differences D(t) at
+// direction over every input (B, h1e_v_*, the orbital energies, h1e and h2e,
+// the RDMs), all of them and each group alone. Central differences D(t) at
 // t = t0 / 2^k; their successive changes must fall by a factor in (3.2, 4.8)
 // over at least three consecutive halvings (the O(t²) regime), and the
 // Richardson extrapolant (4 D(t/2) - D(t)) / 3 at that run's finest pair must
@@ -759,6 +827,15 @@ class Nevpt2EnergyAdjointLadder : public ::testing::TestWithParam<std::string> {
 TEST_P(Nevpt2EnergyAdjointLadder, BarsMatchRichardsonLadder) {
   FBF_REQUIRE_GPU();
   const std::string group = GetParam();
+  // Under slow_test.h: "all", every input dense at once, is ~115 s on the
+  // gfx1200. The cost follows the data: each class_energies is ~0.2 s with
+  // only the orbital energies moved, ~0.7 s with B, ~5.7 s with everything
+  // (presumably einsum's atomic per term, cheap while N₂'s symmetry-sparse
+  // arrays make most terms exact zeros). Each group alone stands for it in
+  // the fast tier.
+  if (group == "all") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const std::filesystem::path dir = kDataDir / kAdjointCase;
   fb::DeviceResources res(0);
   const HostCase h = load_host_case(dir);
@@ -808,7 +885,8 @@ TEST_P(Nevpt2EnergyAdjointLadder, BarsMatchRichardsonLadder) {
 
 INSTANTIATE_TEST_SUITE_P(Groups, Nevpt2EnergyAdjointLadder,
                          ::testing::Values(std::string{"all"}, std::string{"B"},
-                                           std::string{"h1e_v"}, std::string{"e"}),
+                                           std::string{"h1e_v"}, std::string{"e"}, std::string{"h"},
+                                           std::string{"rdm"}),
                          [](const auto &info) { return info.param; });
 
 // The walk's batch only splits it: walked in threes (every virtual walk ends
@@ -829,7 +907,11 @@ TEST(Nevpt2EnergyAdjoint, BatchedBarsMatchWhole) {
         std::tuple{"h1e_v_sr", &a.h1e_v_sr, &b.h1e_v_sr},
         std::tuple{"h1e_v_si", &a.h1e_v_si, &b.h1e_v_si},
         std::tuple{"h1e_v_sir", &a.h1e_v_sir, &b.h1e_v_sir},
-        std::tuple{"e_core", &a.e_core, &b.e_core}, std::tuple{"e_virt", &a.e_virt, &b.e_virt}}) {
+        std::tuple{"e_core", &a.e_core, &b.e_core}, std::tuple{"e_virt", &a.e_virt, &b.e_virt},
+        std::tuple{"h1e", &a.h1e, &b.h1e}, std::tuple{"h2e", &a.h2e, &b.h2e},
+        std::tuple{"dm1", &a.dm1, &b.dm1}, std::tuple{"dm2", &a.dm2, &b.dm2},
+        std::tuple{"dm3", &a.dm3, &b.dm3}, std::tuple{"f3ca", &a.f3ca, &b.f3ca},
+        std::tuple{"f3ac", &a.f3ac, &b.f3ac}}) {
     ASSERT_EQ(x->size(), y->size()) << name;
     double scale = 0.0;
     double worst = 0.0;
