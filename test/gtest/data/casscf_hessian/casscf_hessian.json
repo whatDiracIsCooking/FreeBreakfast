@@ -1,0 +1,1220 @@
+{
+ "description": "The DF-CASSCF analytic nuclear Hessian's reference data (casscf_hessian.tex over a Coulomb-metric fit): per case the orbitals and roots, the state-averaged CP right-hand sides and responses lambda^x; per root E_xy and its pieces, F and F^[x], the response terms, at a state average the multipliers z and the z terms, the third-derivative action and the root-rotation term, the analytic Hessian and the relaxed-gradient difference it is checked against. Coordinates in bohr, energies in hartree; arrays are '<f8' Fortran-order .npy files beside this one, test/gtest/data/README.md has every layout",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "libcint": "6.1.3",
+  "numpy": "2.5.4",
+  "scipy": "1.18.1",
+  "threads": 1,
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casscf_hessian_reference.py"
+ },
+ "cases": [
+  {
+   "name": "h2o_631g",
+   "basis": "6-31g",
+   "aux_basis": "cc-pvdz-jkfit",
+   "atoms": [
+    {
+     "symbol": "O",
+     "charge": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.1889726124565062
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.0,
+      2.3621576557063273,
+      -1.4172945934237964
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.1889726124565062,
+      -2.1731850432498208,
+      -1.322808287195543
+     ]
+    }
+   ],
+   "nao": 13,
+   "naux": 116,
+   "nmo": 13,
+   "ncore": 3,
+   "ncas": 4,
+   "nelecas": [
+    2,
+    2
+   ],
+   "na": 6,
+   "nb": 6,
+   "weights": [
+    1.0
+   ],
+   "equal_weights": true,
+   "energies": [
+    -75.90248496926152
+   ],
+   "e_sa": -75.90248496926152,
+   "descent": {
+    "pyscf_least_eigenvalue": 0.07941953725630396,
+    "pyscf_e_sa": -75.90248496926019,
+    "e_sa_drop": 1.3358203432289883e-12,
+    "least_eigenvalue": 0.07941948304426699
+   },
+   "checks": {
+    "derivative_integrals_vs_fd": 4.558389043908518e-09,
+    "derivative_integrals_sum_rule": 2.34664618479265e-12,
+    "energy_vs_pyscf": 4.263256414560601e-14,
+    "polish_gradient": 3.853514729534879e-14,
+    "exy_generic_vs_fd": 9.343973317310628e-09,
+    "jk_split": 8.81239525796218e-16,
+    "e2_vs_brute_force": 3.0357660829594124e-18,
+    "df2_vs_fd": 9.398074818367519e-10,
+    "df2_without_cross_vs_fd": 0.03218900348003001,
+    "exy_vs_fd": 8.95767460207253e-09,
+    "rhs_vs_fd": 2.5274005110986764e-11
+   },
+   "roots": [
+    {
+     "root": 0,
+     "energy": -75.90248496926152,
+     "hessian_asymmetry": 3.087472985607853e-12,
+     "hessian_sum_rule": 5.836525707181295e-12,
+     "gradient": [
+      -0.004375670233364534,
+      0.005466359126688025,
+      0.06550597888567089,
+      -0.0009949433731581765,
+      0.06873248951280297,
+      -0.030998088705341154,
+      0.005370613606522925,
+      -0.07419884863948867,
+      -0.03450789018033329
+     ],
+     "gradient_vs_fd": 1.1713370551280633e-10,
+     "hessian_vs_relaxed_fd": 2.075549971475299e-09,
+     "hessian_vs_relaxed_energies": 1.9097269449153131e-07,
+     "arrays": {
+      "one_electron": "h2o_631g_root0_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_root0_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_root0_df2_three_center.npy",
+      "df2_metric": "h2o_631g_root0_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_root0_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_root0_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_root0_df2_cross_active.npy",
+      "two_electron": "h2o_631g_root0_two_electron.npy",
+      "connection_second": "h2o_631g_root0_connection_second.npy",
+      "connection_fock": "h2o_631g_root0_connection_fock.npy",
+      "connection_twice": "h2o_631g_root0_connection_twice.npy",
+      "exy": "h2o_631g_root0_exy.npy",
+      "fock": "h2o_631g_root0_fock.npy",
+      "fock_x": "h2o_631g_root0_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_root0_root_hessian_lambda.npy",
+      "lxl_lambda": "h2o_631g_root0_lxl_lambda.npy",
+      "response": "h2o_631g_root0_response.npy",
+      "hessian": "h2o_631g_root0_hessian.npy",
+      "relaxed_fd": "h2o_631g_root0_relaxed_fd.npy"
+     }
+    }
+   ],
+   "arrays": {
+    "c": "h2o_631g_c.npy",
+    "ci": "h2o_631g_ci.npy",
+    "rhs_orb": "h2o_631g_rhs_orb.npy",
+    "rhs_ci": "h2o_631g_rhs_ci.npy",
+    "lambda_orb": "h2o_631g_lambda_orb.npy",
+    "lambda_ci": "h2o_631g_lambda_ci.npy"
+   }
+  },
+  {
+   "name": "h2o_631g_sa2",
+   "basis": "6-31g",
+   "aux_basis": "cc-pvdz-jkfit",
+   "atoms": [
+    {
+     "symbol": "O",
+     "charge": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.1889726124565062
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.0,
+      2.3621576557063273,
+      -1.4172945934237964
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.1889726124565062,
+      -2.1731850432498208,
+      -1.322808287195543
+     ]
+    }
+   ],
+   "nao": 13,
+   "naux": 116,
+   "nmo": 13,
+   "ncore": 3,
+   "ncas": 4,
+   "nelecas": [
+    2,
+    2
+   ],
+   "na": 6,
+   "nb": 6,
+   "weights": [
+    0.5,
+    0.5
+   ],
+   "equal_weights": true,
+   "energies": [
+    -75.85561010563858,
+    -75.73474210468511
+   ],
+   "e_sa": -75.79517610516184,
+   "descent": {
+    "pyscf_least_eigenvalue": -0.003804469076338034,
+    "pyscf_e_sa": -75.7932825687262,
+    "e_sa_drop": 0.00189353643564516,
+    "least_eigenvalue": 0.0036181861520371197
+   },
+   "checks": {
+    "derivative_integrals_vs_fd": 4.558389043908518e-09,
+    "derivative_integrals_sum_rule": 2.34664618479265e-12,
+    "energy_vs_pyscf": 4.263256414560601e-14,
+    "polish_gradient": 7.58212775804607e-13,
+    "exy_generic_vs_fd": 6.97988022935192e-09,
+    "jk_split": 6.591949208711867e-16,
+    "e2_vs_brute_force": 2.4936649967166602e-18,
+    "df2_vs_fd": 8.058074763006573e-10,
+    "df2_without_cross_vs_fd": 0.03149469085064782,
+    "exy_vs_fd": 9.184822319374675e-09,
+    "rhs_vs_fd": 2.8959890041591052e-11,
+    "lxl_z_vs_fd": 5.123658311859125e-10,
+    "z_densities_vs_fd": 2.9337383217198365e-12,
+    "third_step_and_symmetry": 5.643149337576647e-11
+   },
+   "roots": [
+    {
+     "root": 0,
+     "energy": -75.85561010563858,
+     "third_random": -0.5244572886837883,
+     "hessian_asymmetry": 3.365546730194069e-11,
+     "hessian_sum_rule": 4.951505178096838e-11,
+     "gradient": [
+      -0.007723607994635116,
+      0.048207237314516586,
+      0.08940655710163291,
+      -0.0009862671162345713,
+      0.0642846654134981,
+      -0.028110826702483577,
+      0.008709875110869698,
+      -0.11249190272801246,
+      -0.061295730399154195
+     ],
+     "gradient_vs_fd": 8.077135349449094e-10,
+     "hessian_vs_relaxed_fd": 3.018823862763198e-09,
+     "hessian_vs_relaxed_energies": 1.8832891154549336e-07,
+     "without_rot_vs_relaxed_energies": 0.049367603076933275,
+     "one_copy_of_rot_vs_relaxed_energies": 0.024683850834085613,
+     "arrays": {
+      "one_electron": "h2o_631g_sa2_root0_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa2_root0_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa2_root0_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa2_root0_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa2_root0_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa2_root0_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa2_root0_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa2_root0_two_electron.npy",
+      "connection_second": "h2o_631g_sa2_root0_connection_second.npy",
+      "connection_fock": "h2o_631g_sa2_root0_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa2_root0_connection_twice.npy",
+      "exy": "h2o_631g_sa2_root0_exy.npy",
+      "fock": "h2o_631g_sa2_root0_fock.npy",
+      "fock_x": "h2o_631g_sa2_root0_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa2_root0_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa2_root0_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa2_root0_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa2_root0_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa2_root0_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa2_root0_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa2_root0_exy_z.npy",
+      "third": "h2o_631g_sa2_root0_third.npy",
+      "random_orb": "h2o_631g_sa2_root0_random_orb.npy",
+      "random_ci": "h2o_631g_sa2_root0_random_ci.npy",
+      "z_orb": "h2o_631g_sa2_root0_z_orb.npy",
+      "z_ci": "h2o_631g_sa2_root0_z_ci.npy",
+      "root_rhs_orb": "h2o_631g_sa2_root0_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa2_root0_root_rhs_ci.npy",
+      "lxl_z_orb": "h2o_631g_sa2_root0_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa2_root0_lxl_z_ci.npy",
+      "lxl_lambda": "h2o_631g_sa2_root0_lxl_lambda.npy",
+      "coupling": "h2o_631g_sa2_root0_coupling.npy",
+      "rot": "h2o_631g_sa2_root0_rot.npy",
+      "hessian": "h2o_631g_sa2_root0_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa2_root0_relaxed_fd.npy"
+     }
+    },
+    {
+     "root": 1,
+     "energy": -75.73474210468511,
+     "third_random": -0.15661142107693377,
+     "hessian_asymmetry": 3.30944716075976e-11,
+     "hessian_sum_rule": 3.861200942312237e-11,
+     "gradient": [
+      -0.008862119282016589,
+      0.15063855805459136,
+      0.03776450756409621,
+      0.000236890895842716,
+      -0.05440956781172247,
+      0.0332508921398161,
+      0.008625228386174178,
+      -0.09622899024286731,
+      -0.07101539970391477
+     ],
+     "gradient_vs_fd": 9.400008896265355e-10,
+     "hessian_vs_relaxed_fd": 3.0227243243141633e-09,
+     "hessian_vs_relaxed_energies": 2.4218739987785787e-07,
+     "without_rot_vs_relaxed_energies": 0.04936727269069788,
+     "one_copy_of_rot_vs_relaxed_energies": 0.02468352044785021,
+     "arrays": {
+      "one_electron": "h2o_631g_sa2_root1_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa2_root1_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa2_root1_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa2_root1_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa2_root1_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa2_root1_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa2_root1_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa2_root1_two_electron.npy",
+      "connection_second": "h2o_631g_sa2_root1_connection_second.npy",
+      "connection_fock": "h2o_631g_sa2_root1_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa2_root1_connection_twice.npy",
+      "exy": "h2o_631g_sa2_root1_exy.npy",
+      "fock": "h2o_631g_sa2_root1_fock.npy",
+      "fock_x": "h2o_631g_sa2_root1_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa2_root1_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa2_root1_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa2_root1_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa2_root1_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa2_root1_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa2_root1_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa2_root1_exy_z.npy",
+      "third": "h2o_631g_sa2_root1_third.npy",
+      "random_orb": "h2o_631g_sa2_root1_random_orb.npy",
+      "random_ci": "h2o_631g_sa2_root1_random_ci.npy",
+      "z_orb": "h2o_631g_sa2_root1_z_orb.npy",
+      "z_ci": "h2o_631g_sa2_root1_z_ci.npy",
+      "root_rhs_orb": "h2o_631g_sa2_root1_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa2_root1_root_rhs_ci.npy",
+      "lxl_z_orb": "h2o_631g_sa2_root1_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa2_root1_lxl_z_ci.npy",
+      "lxl_lambda": "h2o_631g_sa2_root1_lxl_lambda.npy",
+      "coupling": "h2o_631g_sa2_root1_coupling.npy",
+      "rot": "h2o_631g_sa2_root1_rot.npy",
+      "hessian": "h2o_631g_sa2_root1_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa2_root1_relaxed_fd.npy"
+     }
+    }
+   ],
+   "arrays": {
+    "c": "h2o_631g_sa2_c.npy",
+    "ci": "h2o_631g_sa2_ci.npy",
+    "rhs_orb": "h2o_631g_sa2_rhs_orb.npy",
+    "rhs_ci": "h2o_631g_sa2_rhs_ci.npy",
+    "lambda_orb": "h2o_631g_sa2_lambda_orb.npy",
+    "lambda_ci": "h2o_631g_sa2_lambda_ci.npy"
+   }
+  },
+  {
+   "name": "h2o_631g_sa2_unequal",
+   "basis": "6-31g",
+   "aux_basis": "cc-pvdz-jkfit",
+   "atoms": [
+    {
+     "symbol": "O",
+     "charge": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.1889726124565062
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.0,
+      2.3621576557063273,
+      -1.4172945934237964
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.1889726124565062,
+      -2.1731850432498208,
+      -1.322808287195543
+     ]
+    }
+   ],
+   "nao": 13,
+   "naux": 116,
+   "nmo": 13,
+   "ncore": 3,
+   "ncas": 4,
+   "nelecas": [
+    2,
+    2
+   ],
+   "na": 6,
+   "nb": 6,
+   "weights": [
+    0.7,
+    0.3
+   ],
+   "equal_weights": false,
+   "energies": [
+    -75.858139476415,
+    -75.7307682864099
+   ],
+   "e_sa": -75.81992811941346,
+   "descent": {
+    "pyscf_least_eigenvalue": -0.013765597043434776,
+    "pyscf_e_sa": -75.81319885595394,
+    "e_sa_drop": 0.006729263459519075,
+    "least_eigenvalue": 0.00910944327876435
+   },
+   "checks": {
+    "derivative_integrals_vs_fd": 4.558389043908518e-09,
+    "derivative_integrals_sum_rule": 2.34664618479265e-12,
+    "energy_vs_pyscf": 9.947598300641403e-14,
+    "polish_gradient": 1.5737411374061594e-14,
+    "exy_generic_vs_fd": 2.546604885300674e-08,
+    "jk_split": 9.298117831235686e-16,
+    "e2_vs_brute_force": 4.553649124439119e-18,
+    "df2_vs_fd": 6.99741597998127e-10,
+    "df2_without_cross_vs_fd": 0.030966487783161523,
+    "exy_vs_fd": 2.075480287633269e-08,
+    "rhs_vs_fd": 2.2784996112079625e-11,
+    "lxl_z_vs_fd": 1.391292493322857e-09,
+    "z_densities_vs_fd": 1.9211432846031468e-12,
+    "third_step_and_symmetry": 1.0244334070277916e-10
+   },
+   "roots": [
+    {
+     "root": 0,
+     "energy": -75.858139476415,
+     "third_random": 2.578274628776727,
+     "hessian_asymmetry": 4.136227471640552e-11,
+     "hessian_sum_rule": 6.405409536114348e-11,
+     "gradient": [
+      -0.0077048899323189195,
+      0.044094417906789425,
+      0.09190715455259603,
+      -0.0009543300249807839,
+      0.0674157369145394,
+      -0.030745200106573882,
+      0.00865921995729982,
+      -0.11151015482132745,
+      -0.06116195444602623
+     ],
+     "gradient_vs_fd": 2.763572773401002e-10,
+     "gradient_projected_vs_fd": 2.76368337936983e-10,
+     "hessian_vs_relaxed_fd": 7.485963723907751e-10,
+     "hessian_vs_relaxed_energies": 3.333954447584664e-07,
+     "arrays": {
+      "one_electron": "h2o_631g_sa2_unequal_root0_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa2_unequal_root0_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa2_unequal_root0_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa2_unequal_root0_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa2_unequal_root0_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa2_unequal_root0_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa2_unequal_root0_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa2_unequal_root0_two_electron.npy",
+      "connection_second": "h2o_631g_sa2_unequal_root0_connection_second.npy",
+      "connection_fock": "h2o_631g_sa2_unequal_root0_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa2_unequal_root0_connection_twice.npy",
+      "exy": "h2o_631g_sa2_unequal_root0_exy.npy",
+      "fock": "h2o_631g_sa2_unequal_root0_fock.npy",
+      "fock_x": "h2o_631g_sa2_unequal_root0_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa2_unequal_root0_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa2_unequal_root0_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa2_unequal_root0_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa2_unequal_root0_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa2_unequal_root0_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa2_unequal_root0_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa2_unequal_root0_exy_z.npy",
+      "third": "h2o_631g_sa2_unequal_root0_third.npy",
+      "random_orb": "h2o_631g_sa2_unequal_root0_random_orb.npy",
+      "random_ci": "h2o_631g_sa2_unequal_root0_random_ci.npy",
+      "random_theta": "h2o_631g_sa2_unequal_root0_random_theta.npy",
+      "z_orb": "h2o_631g_sa2_unequal_root0_z_orb.npy",
+      "z_ci": "h2o_631g_sa2_unequal_root0_z_ci.npy",
+      "z_theta": "h2o_631g_sa2_unequal_root0_z_theta.npy",
+      "root_rhs_orb": "h2o_631g_sa2_unequal_root0_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa2_unequal_root0_root_rhs_ci.npy",
+      "root_rhs_theta": "h2o_631g_sa2_unequal_root0_root_rhs_theta.npy",
+      "lxl_z_orb": "h2o_631g_sa2_unequal_root0_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa2_unequal_root0_lxl_z_ci.npy",
+      "lxl_z_theta": "h2o_631g_sa2_unequal_root0_lxl_z_theta.npy",
+      "lxl_lambda": "h2o_631g_sa2_unequal_root0_lxl_lambda.npy",
+      "hessian": "h2o_631g_sa2_unequal_root0_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa2_unequal_root0_relaxed_fd.npy"
+     }
+    },
+    {
+     "root": 1,
+     "energy": -75.7307682864099,
+     "third_random": -0.20406077316106583,
+     "hessian_asymmetry": 1.002969374219731e-10,
+     "hessian_sum_rule": 1.724243803291614e-10,
+     "gradient": [
+      -0.008889072889873156,
+      0.1570346968371648,
+      0.03384153926878661,
+      0.0001878208768825005,
+      -0.05931805964915049,
+      0.03736495428877433,
+      0.008701252012990707,
+      -0.09771663718801199,
+      -0.0712064935575625
+     ],
+     "gradient_vs_fd": 4.486101073952753e-10,
+     "gradient_projected_vs_fd": 4.4863594783617344e-10,
+     "hessian_vs_relaxed_fd": 1.7379127026373453e-09,
+     "hessian_vs_relaxed_energies": 2.5821813123827475e-07,
+     "arrays": {
+      "one_electron": "h2o_631g_sa2_unequal_root1_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa2_unequal_root1_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa2_unequal_root1_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa2_unequal_root1_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa2_unequal_root1_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa2_unequal_root1_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa2_unequal_root1_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa2_unequal_root1_two_electron.npy",
+      "connection_second": "h2o_631g_sa2_unequal_root1_connection_second.npy",
+      "connection_fock": "h2o_631g_sa2_unequal_root1_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa2_unequal_root1_connection_twice.npy",
+      "exy": "h2o_631g_sa2_unequal_root1_exy.npy",
+      "fock": "h2o_631g_sa2_unequal_root1_fock.npy",
+      "fock_x": "h2o_631g_sa2_unequal_root1_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa2_unequal_root1_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa2_unequal_root1_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa2_unequal_root1_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa2_unequal_root1_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa2_unequal_root1_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa2_unequal_root1_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa2_unequal_root1_exy_z.npy",
+      "third": "h2o_631g_sa2_unequal_root1_third.npy",
+      "random_orb": "h2o_631g_sa2_unequal_root1_random_orb.npy",
+      "random_ci": "h2o_631g_sa2_unequal_root1_random_ci.npy",
+      "random_theta": "h2o_631g_sa2_unequal_root1_random_theta.npy",
+      "z_orb": "h2o_631g_sa2_unequal_root1_z_orb.npy",
+      "z_ci": "h2o_631g_sa2_unequal_root1_z_ci.npy",
+      "z_theta": "h2o_631g_sa2_unequal_root1_z_theta.npy",
+      "root_rhs_orb": "h2o_631g_sa2_unequal_root1_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa2_unequal_root1_root_rhs_ci.npy",
+      "root_rhs_theta": "h2o_631g_sa2_unequal_root1_root_rhs_theta.npy",
+      "lxl_z_orb": "h2o_631g_sa2_unequal_root1_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa2_unequal_root1_lxl_z_ci.npy",
+      "lxl_z_theta": "h2o_631g_sa2_unequal_root1_lxl_z_theta.npy",
+      "lxl_lambda": "h2o_631g_sa2_unequal_root1_lxl_lambda.npy",
+      "hessian": "h2o_631g_sa2_unequal_root1_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa2_unequal_root1_relaxed_fd.npy"
+     }
+    }
+   ],
+   "arrays": {
+    "c": "h2o_631g_sa2_unequal_c.npy",
+    "ci": "h2o_631g_sa2_unequal_ci.npy",
+    "rhs_orb": "h2o_631g_sa2_unequal_rhs_orb.npy",
+    "rhs_ci": "h2o_631g_sa2_unequal_rhs_ci.npy",
+    "rhs_theta": "h2o_631g_sa2_unequal_rhs_theta.npy",
+    "lambda_orb": "h2o_631g_sa2_unequal_lambda_orb.npy",
+    "lambda_ci": "h2o_631g_sa2_unequal_lambda_ci.npy",
+    "lambda_theta": "h2o_631g_sa2_unequal_lambda_theta.npy"
+   }
+  },
+  {
+   "name": "h2o_631g_sa3",
+   "basis": "6-31g",
+   "aux_basis": "cc-pvdz-jkfit",
+   "atoms": [
+    {
+     "symbol": "O",
+     "charge": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.1889726124565062
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.0,
+      2.3621576557063273,
+      -1.4172945934237964
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.1889726124565062,
+      -2.1731850432498208,
+      -1.322808287195543
+     ]
+    }
+   ],
+   "nao": 13,
+   "naux": 116,
+   "nmo": 13,
+   "ncore": 3,
+   "ncas": 4,
+   "nelecas": [
+    2,
+    2
+   ],
+   "na": 6,
+   "nb": 6,
+   "weights": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+   ],
+   "equal_weights": true,
+   "energies": [
+    -75.83325807903968,
+    -75.73867819952206,
+    -75.67309818308864
+   ],
+   "e_sa": -75.74834482055012,
+   "descent": {
+    "pyscf_least_eigenvalue": 0.0493806111294855,
+    "pyscf_e_sa": -75.7483448205482,
+    "e_sa_drop": 1.9184653865522705e-12,
+    "least_eigenvalue": 0.049380129935823684
+   },
+   "checks": {
+    "derivative_integrals_vs_fd": 4.558389043908518e-09,
+    "derivative_integrals_sum_rule": 2.34664618479265e-12,
+    "energy_vs_pyscf": 1.8474111129762605e-13,
+    "polish_gradient": 2.4119595209981526e-14,
+    "exy_generic_vs_fd": 1.4826673055967632e-08,
+    "jk_split": 1.7208456881689926e-15,
+    "e2_vs_brute_force": 4.228388472693467e-18,
+    "df2_vs_fd": 6.8147287812792e-10,
+    "df2_without_cross_vs_fd": 0.03029953125678292,
+    "exy_vs_fd": 1.8709073262845877e-08,
+    "rhs_vs_fd": 2.7920554757088212e-11,
+    "lxl_z_vs_fd": 1.3369782551030107e-09,
+    "z_densities_vs_fd": 1.8874647215542475e-12,
+    "third_step_and_symmetry": 4.825654320583794e-10
+   },
+   "roots": [
+    {
+     "root": 0,
+     "energy": -75.83325807903968,
+     "third_random": 1.1328886773846019,
+     "hessian_asymmetry": 8.450951050065214e-11,
+     "hessian_sum_rule": 8.540863849493263e-11,
+     "gradient": [
+      -0.007865989011773484,
+      0.054584142645703125,
+      0.08732272916688676,
+      -0.0010233458168965694,
+      0.060435030595663054,
+      -0.024906489981352534,
+      0.00888933482867019,
+      -0.11501917324136543,
+      -0.062416239185538076
+     ],
+     "gradient_vs_fd": 2.1860010988861145e-09,
+     "hessian_vs_relaxed_fd": 8.31104561907492e-09,
+     "hessian_vs_relaxed_energies": 3.2083845875365e-07,
+     "without_rot_vs_relaxed_energies": 0.05152880509525504,
+     "one_copy_of_rot_vs_relaxed_energies": 0.025764462573634128,
+     "arrays": {
+      "one_electron": "h2o_631g_sa3_root0_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa3_root0_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa3_root0_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa3_root0_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa3_root0_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa3_root0_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa3_root0_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa3_root0_two_electron.npy",
+      "connection_second": "h2o_631g_sa3_root0_connection_second.npy",
+      "connection_fock": "h2o_631g_sa3_root0_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa3_root0_connection_twice.npy",
+      "exy": "h2o_631g_sa3_root0_exy.npy",
+      "fock": "h2o_631g_sa3_root0_fock.npy",
+      "fock_x": "h2o_631g_sa3_root0_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa3_root0_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa3_root0_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa3_root0_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa3_root0_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa3_root0_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa3_root0_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa3_root0_exy_z.npy",
+      "third": "h2o_631g_sa3_root0_third.npy",
+      "random_orb": "h2o_631g_sa3_root0_random_orb.npy",
+      "random_ci": "h2o_631g_sa3_root0_random_ci.npy",
+      "z_orb": "h2o_631g_sa3_root0_z_orb.npy",
+      "z_ci": "h2o_631g_sa3_root0_z_ci.npy",
+      "root_rhs_orb": "h2o_631g_sa3_root0_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa3_root0_root_rhs_ci.npy",
+      "lxl_z_orb": "h2o_631g_sa3_root0_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa3_root0_lxl_z_ci.npy",
+      "lxl_lambda": "h2o_631g_sa3_root0_lxl_lambda.npy",
+      "coupling": "h2o_631g_sa3_root0_coupling.npy",
+      "rot": "h2o_631g_sa3_root0_rot.npy",
+      "hessian": "h2o_631g_sa3_root0_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa3_root0_relaxed_fd.npy"
+     }
+    },
+    {
+     "root": 1,
+     "energy": -75.73867819952206,
+     "third_random": -0.5570252764294291,
+     "hessian_asymmetry": 1.2798935522528865e-10,
+     "hessian_sum_rule": 1.4795945024737023e-10,
+     "gradient": [
+      -0.0071572600458117835,
+      0.09039916047610791,
+      0.051756424802577576,
+      0.0007798441176101206,
+      -0.026806928772349085,
+      0.005891577623685484,
+      0.00637741592820179,
+      -0.0635922317037586,
+      -0.05764800242626408
+     ],
+     "gradient_vs_fd": 5.722832364246644e-09,
+     "hessian_vs_relaxed_fd": 2.3701660883945763e-08,
+     "hessian_vs_relaxed_energies": 6.832195332540092e-07,
+     "without_rot_vs_relaxed_energies": 0.4772846545524791,
+     "one_copy_of_rot_vs_relaxed_energies": 0.2386425627289107,
+     "arrays": {
+      "one_electron": "h2o_631g_sa3_root1_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa3_root1_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa3_root1_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa3_root1_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa3_root1_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa3_root1_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa3_root1_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa3_root1_two_electron.npy",
+      "connection_second": "h2o_631g_sa3_root1_connection_second.npy",
+      "connection_fock": "h2o_631g_sa3_root1_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa3_root1_connection_twice.npy",
+      "exy": "h2o_631g_sa3_root1_exy.npy",
+      "fock": "h2o_631g_sa3_root1_fock.npy",
+      "fock_x": "h2o_631g_sa3_root1_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa3_root1_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa3_root1_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa3_root1_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa3_root1_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa3_root1_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa3_root1_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa3_root1_exy_z.npy",
+      "third": "h2o_631g_sa3_root1_third.npy",
+      "random_orb": "h2o_631g_sa3_root1_random_orb.npy",
+      "random_ci": "h2o_631g_sa3_root1_random_ci.npy",
+      "z_orb": "h2o_631g_sa3_root1_z_orb.npy",
+      "z_ci": "h2o_631g_sa3_root1_z_ci.npy",
+      "root_rhs_orb": "h2o_631g_sa3_root1_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa3_root1_root_rhs_ci.npy",
+      "lxl_z_orb": "h2o_631g_sa3_root1_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa3_root1_lxl_z_ci.npy",
+      "lxl_lambda": "h2o_631g_sa3_root1_lxl_lambda.npy",
+      "coupling": "h2o_631g_sa3_root1_coupling.npy",
+      "rot": "h2o_631g_sa3_root1_rot.npy",
+      "hessian": "h2o_631g_sa3_root1_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa3_root1_relaxed_fd.npy"
+     }
+    },
+    {
+     "root": 2,
+     "energy": -75.67309818308864,
+     "third_random": 0.1844445887849836,
+     "hessian_asymmetry": 7.423395231853647e-11,
+     "hessian_sum_rule": 6.003575414581519e-11,
+     "gradient": [
+      0.0033207310265149534,
+      -0.03671555181368091,
+      -0.027567389607787485,
+      -0.0015312651695107188,
+      0.03527750907659453,
+      0.00023590880996432646,
+      -0.0017894658570041851,
+      0.0014380427370857922,
+      0.027331480797821477
+     ],
+     "gradient_vs_fd": 3.3414712680840397e-09,
+     "hessian_vs_relaxed_fd": 1.5256531121776717e-08,
+     "hessian_vs_relaxed_energies": 3.282456477182727e-07,
+     "without_rot_vs_relaxed_energies": 0.4773795959809119,
+     "one_copy_of_rot_vs_relaxed_energies": 0.23868990229640283,
+     "arrays": {
+      "one_electron": "h2o_631g_sa3_root2_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa3_root2_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa3_root2_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa3_root2_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa3_root2_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa3_root2_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa3_root2_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa3_root2_two_electron.npy",
+      "connection_second": "h2o_631g_sa3_root2_connection_second.npy",
+      "connection_fock": "h2o_631g_sa3_root2_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa3_root2_connection_twice.npy",
+      "exy": "h2o_631g_sa3_root2_exy.npy",
+      "fock": "h2o_631g_sa3_root2_fock.npy",
+      "fock_x": "h2o_631g_sa3_root2_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa3_root2_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa3_root2_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa3_root2_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa3_root2_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa3_root2_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa3_root2_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa3_root2_exy_z.npy",
+      "third": "h2o_631g_sa3_root2_third.npy",
+      "random_orb": "h2o_631g_sa3_root2_random_orb.npy",
+      "random_ci": "h2o_631g_sa3_root2_random_ci.npy",
+      "z_orb": "h2o_631g_sa3_root2_z_orb.npy",
+      "z_ci": "h2o_631g_sa3_root2_z_ci.npy",
+      "root_rhs_orb": "h2o_631g_sa3_root2_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa3_root2_root_rhs_ci.npy",
+      "lxl_z_orb": "h2o_631g_sa3_root2_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa3_root2_lxl_z_ci.npy",
+      "lxl_lambda": "h2o_631g_sa3_root2_lxl_lambda.npy",
+      "coupling": "h2o_631g_sa3_root2_coupling.npy",
+      "rot": "h2o_631g_sa3_root2_rot.npy",
+      "hessian": "h2o_631g_sa3_root2_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa3_root2_relaxed_fd.npy"
+     }
+    }
+   ],
+   "arrays": {
+    "c": "h2o_631g_sa3_c.npy",
+    "ci": "h2o_631g_sa3_ci.npy",
+    "rhs_orb": "h2o_631g_sa3_rhs_orb.npy",
+    "rhs_ci": "h2o_631g_sa3_rhs_ci.npy",
+    "lambda_orb": "h2o_631g_sa3_lambda_orb.npy",
+    "lambda_ci": "h2o_631g_sa3_lambda_ci.npy"
+   }
+  },
+  {
+   "name": "h2o_631g_sa3_unequal",
+   "basis": "6-31g",
+   "aux_basis": "cc-pvdz-jkfit",
+   "atoms": [
+    {
+     "symbol": "O",
+     "charge": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.1889726124565062
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.0,
+      2.3621576557063273,
+      -1.4172945934237964
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.1889726124565062,
+      -2.1731850432498208,
+      -1.322808287195543
+     ]
+    }
+   ],
+   "nao": 13,
+   "naux": 116,
+   "nmo": 13,
+   "ncore": 3,
+   "ncas": 4,
+   "nelecas": [
+    2,
+    2
+   ],
+   "na": 6,
+   "nb": 6,
+   "weights": [
+    0.5,
+    0.3,
+    0.2
+   ],
+   "equal_weights": false,
+   "energies": [
+    -75.83871843419072,
+    -75.73767321976801,
+    -75.66582638099743
+   ],
+   "e_sa": -75.77382645922526,
+   "descent": {
+    "pyscf_least_eigenvalue": 0.013018029996738846,
+    "pyscf_e_sa": -75.77382645922361,
+    "e_sa_drop": 1.6484591469634324e-12,
+    "least_eigenvalue": 0.013018048459322994
+   },
+   "checks": {
+    "derivative_integrals_vs_fd": 4.558389043908518e-09,
+    "derivative_integrals_sum_rule": 2.34664618479265e-12,
+    "energy_vs_pyscf": 7.105427357601002e-14,
+    "polish_gradient": 2.0761170560490427e-14,
+    "exy_generic_vs_fd": 1.7910610272675598e-08,
+    "jk_split": 2.525757381022231e-15,
+    "e2_vs_brute_force": 1.0842021724855044e-18,
+    "df2_vs_fd": 6.599998325640399e-10,
+    "df2_without_cross_vs_fd": 0.03036880365115574,
+    "exy_vs_fd": 1.7550906006302824e-08,
+    "rhs_vs_fd": 2.0284898760714043e-11,
+    "lxl_z_vs_fd": 1.2990236377893871e-09,
+    "z_densities_vs_fd": 1.4972038908135643e-12,
+    "third_step_and_symmetry": 3.795342052789752e-10
+   },
+   "roots": [
+    {
+     "root": 0,
+     "energy": -75.83871843419072,
+     "third_random": 3.3708457498759063,
+     "hessian_asymmetry": 4.141145759639642e-11,
+     "hessian_sum_rule": 4.211479776028426e-11,
+     "gradient": [
+      -0.007808956065666587,
+      0.05146804407874077,
+      0.08853941498543043,
+      -0.0009654247280577574,
+      0.06150514414975631,
+      -0.026550478824029673,
+      0.008774380793724548,
+      -0.11297318822849574,
+      -0.061988936161404565
+     ],
+     "gradient_vs_fd": 1.2526857467998198e-09,
+     "gradient_projected_vs_fd": 0.0023354221234365216,
+     "hessian_vs_relaxed_fd": 5.59397880794954e-09,
+     "hessian_vs_relaxed_energies": 2.9477780216780047e-07,
+     "arrays": {
+      "one_electron": "h2o_631g_sa3_unequal_root0_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa3_unequal_root0_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa3_unequal_root0_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa3_unequal_root0_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa3_unequal_root0_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa3_unequal_root0_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa3_unequal_root0_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa3_unequal_root0_two_electron.npy",
+      "connection_second": "h2o_631g_sa3_unequal_root0_connection_second.npy",
+      "connection_fock": "h2o_631g_sa3_unequal_root0_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa3_unequal_root0_connection_twice.npy",
+      "exy": "h2o_631g_sa3_unequal_root0_exy.npy",
+      "fock": "h2o_631g_sa3_unequal_root0_fock.npy",
+      "fock_x": "h2o_631g_sa3_unequal_root0_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa3_unequal_root0_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa3_unequal_root0_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa3_unequal_root0_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa3_unequal_root0_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa3_unequal_root0_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa3_unequal_root0_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa3_unequal_root0_exy_z.npy",
+      "third": "h2o_631g_sa3_unequal_root0_third.npy",
+      "random_orb": "h2o_631g_sa3_unequal_root0_random_orb.npy",
+      "random_ci": "h2o_631g_sa3_unequal_root0_random_ci.npy",
+      "random_theta": "h2o_631g_sa3_unequal_root0_random_theta.npy",
+      "z_orb": "h2o_631g_sa3_unequal_root0_z_orb.npy",
+      "z_ci": "h2o_631g_sa3_unequal_root0_z_ci.npy",
+      "z_theta": "h2o_631g_sa3_unequal_root0_z_theta.npy",
+      "root_rhs_orb": "h2o_631g_sa3_unequal_root0_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa3_unequal_root0_root_rhs_ci.npy",
+      "root_rhs_theta": "h2o_631g_sa3_unequal_root0_root_rhs_theta.npy",
+      "lxl_z_orb": "h2o_631g_sa3_unequal_root0_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa3_unequal_root0_lxl_z_ci.npy",
+      "lxl_z_theta": "h2o_631g_sa3_unequal_root0_lxl_z_theta.npy",
+      "lxl_lambda": "h2o_631g_sa3_unequal_root0_lxl_lambda.npy",
+      "hessian": "h2o_631g_sa3_unequal_root0_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa3_unequal_root0_relaxed_fd.npy"
+     }
+    },
+    {
+     "root": 1,
+     "energy": -75.73767321976801,
+     "third_random": -0.24513040501650166,
+     "hessian_asymmetry": 4.866901326394668e-11,
+     "hessian_sum_rule": 8.503417414651437e-11,
+     "gradient": [
+      -0.007515808181366163,
+      0.1065932037613093,
+      0.046416706871311525,
+      0.0005912300842707783,
+      -0.03435093169821156,
+      0.014005373621587916,
+      0.006924578097095535,
+      -0.07224227206309554,
+      -0.060422080492900355
+     ],
+     "gradient_vs_fd": 1.2649064209252492e-09,
+     "gradient_projected_vs_fd": 0.001686982099345452,
+     "hessian_vs_relaxed_fd": 2.2219467710193896e-08,
+     "hessian_vs_relaxed_energies": 1.803884435602754e-06,
+     "arrays": {
+      "one_electron": "h2o_631g_sa3_unequal_root1_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa3_unequal_root1_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa3_unequal_root1_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa3_unequal_root1_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa3_unequal_root1_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa3_unequal_root1_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa3_unequal_root1_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa3_unequal_root1_two_electron.npy",
+      "connection_second": "h2o_631g_sa3_unequal_root1_connection_second.npy",
+      "connection_fock": "h2o_631g_sa3_unequal_root1_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa3_unequal_root1_connection_twice.npy",
+      "exy": "h2o_631g_sa3_unequal_root1_exy.npy",
+      "fock": "h2o_631g_sa3_unequal_root1_fock.npy",
+      "fock_x": "h2o_631g_sa3_unequal_root1_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa3_unequal_root1_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa3_unequal_root1_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa3_unequal_root1_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa3_unequal_root1_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa3_unequal_root1_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa3_unequal_root1_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa3_unequal_root1_exy_z.npy",
+      "third": "h2o_631g_sa3_unequal_root1_third.npy",
+      "random_orb": "h2o_631g_sa3_unequal_root1_random_orb.npy",
+      "random_ci": "h2o_631g_sa3_unequal_root1_random_ci.npy",
+      "random_theta": "h2o_631g_sa3_unequal_root1_random_theta.npy",
+      "z_orb": "h2o_631g_sa3_unequal_root1_z_orb.npy",
+      "z_ci": "h2o_631g_sa3_unequal_root1_z_ci.npy",
+      "z_theta": "h2o_631g_sa3_unequal_root1_z_theta.npy",
+      "root_rhs_orb": "h2o_631g_sa3_unequal_root1_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa3_unequal_root1_root_rhs_ci.npy",
+      "root_rhs_theta": "h2o_631g_sa3_unequal_root1_root_rhs_theta.npy",
+      "lxl_z_orb": "h2o_631g_sa3_unequal_root1_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa3_unequal_root1_lxl_z_ci.npy",
+      "lxl_z_theta": "h2o_631g_sa3_unequal_root1_lxl_z_theta.npy",
+      "lxl_lambda": "h2o_631g_sa3_unequal_root1_lxl_lambda.npy",
+      "hessian": "h2o_631g_sa3_unequal_root1_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa3_unequal_root1_relaxed_fd.npy"
+     }
+    },
+    {
+     "root": 2,
+     "energy": -75.66582638099743,
+     "third_random": 0.14714123677862403,
+     "hessian_asymmetry": 6.802533536465205e-11,
+     "hessian_sum_rule": 7.359177156551766e-11,
+     "gradient": [
+      0.003627436477635481,
+      -0.05021766745669054,
+      -0.023238031205594728,
+      -0.001400215490980738,
+      0.04210731974766814,
+      -0.0064815683609655995,
+      -0.0022272209866545573,
+      0.008110347709022775,
+      0.029719599566556825
+     ],
+     "gradient_vs_fd": 3.2217663363531823e-09,
+     "gradient_projected_vs_fd": 0.003308082465172696,
+     "hessian_vs_relaxed_fd": 2.2806716792889148e-08,
+     "hessian_vs_relaxed_energies": 2.3005141848719823e-06,
+     "arrays": {
+      "one_electron": "h2o_631g_sa3_unequal_root2_one_electron.npy",
+      "nuclear_repulsion": "h2o_631g_sa3_unequal_root2_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_631g_sa3_unequal_root2_df2_three_center.npy",
+      "df2_metric": "h2o_631g_sa3_unequal_root2_df2_metric.npy",
+      "df2_cross_j": "h2o_631g_sa3_unequal_root2_df2_cross_j.npy",
+      "df2_cross_k": "h2o_631g_sa3_unequal_root2_df2_cross_k.npy",
+      "df2_cross_active": "h2o_631g_sa3_unequal_root2_df2_cross_active.npy",
+      "two_electron": "h2o_631g_sa3_unequal_root2_two_electron.npy",
+      "connection_second": "h2o_631g_sa3_unequal_root2_connection_second.npy",
+      "connection_fock": "h2o_631g_sa3_unequal_root2_connection_fock.npy",
+      "connection_twice": "h2o_631g_sa3_unequal_root2_connection_twice.npy",
+      "exy": "h2o_631g_sa3_unequal_root2_exy.npy",
+      "fock": "h2o_631g_sa3_unequal_root2_fock.npy",
+      "fock_x": "h2o_631g_sa3_unequal_root2_fock_x.npy",
+      "root_hessian_lambda": "h2o_631g_sa3_unequal_root2_root_hessian_lambda.npy",
+      "z_one_electron": "h2o_631g_sa3_unequal_root2_z_one_electron.npy",
+      "z_two_electron": "h2o_631g_sa3_unequal_root2_z_two_electron.npy",
+      "z_connection_second": "h2o_631g_sa3_unequal_root2_z_connection_second.npy",
+      "z_connection_fock": "h2o_631g_sa3_unequal_root2_z_connection_fock.npy",
+      "z_connection_twice": "h2o_631g_sa3_unequal_root2_z_connection_twice.npy",
+      "exy_z": "h2o_631g_sa3_unequal_root2_exy_z.npy",
+      "third": "h2o_631g_sa3_unequal_root2_third.npy",
+      "random_orb": "h2o_631g_sa3_unequal_root2_random_orb.npy",
+      "random_ci": "h2o_631g_sa3_unequal_root2_random_ci.npy",
+      "random_theta": "h2o_631g_sa3_unequal_root2_random_theta.npy",
+      "z_orb": "h2o_631g_sa3_unequal_root2_z_orb.npy",
+      "z_ci": "h2o_631g_sa3_unequal_root2_z_ci.npy",
+      "z_theta": "h2o_631g_sa3_unequal_root2_z_theta.npy",
+      "root_rhs_orb": "h2o_631g_sa3_unequal_root2_root_rhs_orb.npy",
+      "root_rhs_ci": "h2o_631g_sa3_unequal_root2_root_rhs_ci.npy",
+      "root_rhs_theta": "h2o_631g_sa3_unequal_root2_root_rhs_theta.npy",
+      "lxl_z_orb": "h2o_631g_sa3_unequal_root2_lxl_z_orb.npy",
+      "lxl_z_ci": "h2o_631g_sa3_unequal_root2_lxl_z_ci.npy",
+      "lxl_z_theta": "h2o_631g_sa3_unequal_root2_lxl_z_theta.npy",
+      "lxl_lambda": "h2o_631g_sa3_unequal_root2_lxl_lambda.npy",
+      "hessian": "h2o_631g_sa3_unequal_root2_hessian.npy",
+      "relaxed_fd": "h2o_631g_sa3_unequal_root2_relaxed_fd.npy"
+     }
+    }
+   ],
+   "arrays": {
+    "c": "h2o_631g_sa3_unequal_c.npy",
+    "ci": "h2o_631g_sa3_unequal_ci.npy",
+    "rhs_orb": "h2o_631g_sa3_unequal_rhs_orb.npy",
+    "rhs_ci": "h2o_631g_sa3_unequal_rhs_ci.npy",
+    "rhs_theta": "h2o_631g_sa3_unequal_rhs_theta.npy",
+    "lambda_orb": "h2o_631g_sa3_unequal_lambda_orb.npy",
+    "lambda_ci": "h2o_631g_sa3_unequal_lambda_ci.npy",
+    "lambda_theta": "h2o_631g_sa3_unequal_lambda_theta.npy"
+   }
+  },
+  {
+   "name": "h2o_ccpvdz",
+   "basis": "cc-pvdz",
+   "aux_basis": "cc-pvdz-jkfit",
+   "atoms": [
+    {
+     "symbol": "O",
+     "charge": 8,
+     "coord": [
+      0.0,
+      0.0,
+      0.1889726124565062
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.0,
+      2.3621576557063273,
+      -1.4172945934237964
+     ]
+    },
+    {
+     "symbol": "H",
+     "charge": 1,
+     "coord": [
+      0.1889726124565062,
+      -2.1731850432498208,
+      -1.322808287195543
+     ]
+    }
+   ],
+   "nao": 24,
+   "naux": 116,
+   "nmo": 24,
+   "ncore": 3,
+   "ncas": 4,
+   "nelecas": [
+    2,
+    2
+   ],
+   "na": 6,
+   "nb": 6,
+   "weights": [
+    1.0
+   ],
+   "equal_weights": true,
+   "energies": [
+    -75.92119419822667
+   ],
+   "e_sa": -75.92119419822667,
+   "descent": {
+    "pyscf_least_eigenvalue": -0.024009015976023774,
+    "pyscf_e_sa": -75.8691188415355,
+    "e_sa_drop": 0.052075356691176466,
+    "least_eigenvalue": 0.07577754124213106
+   },
+   "checks": {
+    "derivative_integrals_vs_fd": 7.0671889562874846e-09,
+    "derivative_integrals_sum_rule": 1.177537204288364e-12,
+    "energy_vs_pyscf": 7.389644451905042e-13,
+    "polish_gradient": 3.197442310920451e-14,
+    "exy_generic_vs_fd": 7.909810584294519e-09,
+    "jk_split": 1.790234627208065e-15,
+    "e2_vs_brute_force": 3.5561831257524545e-17,
+    "df2_vs_fd": 1.560633400288225e-09,
+    "df2_without_cross_vs_fd": 0.03028931650163147,
+    "exy_vs_fd": 1.2207789334972574e-08,
+    "rhs_vs_fd": 4.1630476843579345e-11
+   },
+   "roots": [
+    {
+     "root": 0,
+     "energy": -75.92119419822667,
+     "hessian_asymmetry": 3.3469060856106125e-12,
+     "hessian_sum_rule": 4.132399283873767e-12,
+     "gradient": [
+      -0.005074921539678798,
+      0.008155220974322391,
+      0.07473970849520684,
+      -0.0010258153052692207,
+      0.07482594405843979,
+      -0.034653243830389036,
+      0.00610073684494819,
+      -0.08298116503276054,
+      -0.040086464664818244
+     ],
+     "gradient_vs_fd": 1.7148726882965093e-10,
+     "hessian_vs_relaxed_fd": 6.69493974148061e-12,
+     "hessian_vs_relaxed_energies": 1.7951070091504207e-07,
+     "arrays": {
+      "one_electron": "h2o_ccpvdz_root0_one_electron.npy",
+      "nuclear_repulsion": "h2o_ccpvdz_root0_nuclear_repulsion.npy",
+      "df2_three_center": "h2o_ccpvdz_root0_df2_three_center.npy",
+      "df2_metric": "h2o_ccpvdz_root0_df2_metric.npy",
+      "df2_cross_j": "h2o_ccpvdz_root0_df2_cross_j.npy",
+      "df2_cross_k": "h2o_ccpvdz_root0_df2_cross_k.npy",
+      "df2_cross_active": "h2o_ccpvdz_root0_df2_cross_active.npy",
+      "two_electron": "h2o_ccpvdz_root0_two_electron.npy",
+      "connection_second": "h2o_ccpvdz_root0_connection_second.npy",
+      "connection_fock": "h2o_ccpvdz_root0_connection_fock.npy",
+      "connection_twice": "h2o_ccpvdz_root0_connection_twice.npy",
+      "exy": "h2o_ccpvdz_root0_exy.npy",
+      "fock": "h2o_ccpvdz_root0_fock.npy",
+      "fock_x": "h2o_ccpvdz_root0_fock_x.npy",
+      "root_hessian_lambda": "h2o_ccpvdz_root0_root_hessian_lambda.npy",
+      "lxl_lambda": "h2o_ccpvdz_root0_lxl_lambda.npy",
+      "response": "h2o_ccpvdz_root0_response.npy",
+      "hessian": "h2o_ccpvdz_root0_hessian.npy",
+      "relaxed_fd": "h2o_ccpvdz_root0_relaxed_fd.npy"
+     }
+    }
+   ],
+   "arrays": {
+    "c": "h2o_ccpvdz_c.npy",
+    "ci": "h2o_ccpvdz_ci.npy",
+    "rhs_orb": "h2o_ccpvdz_rhs_orb.npy",
+    "rhs_ci": "h2o_ccpvdz_rhs_ci.npy",
+    "lambda_orb": "h2o_ccpvdz_lambda_orb.npy",
+    "lambda_ci": "h2o_ccpvdz_lambda_ci.npy"
+   }
+  }
+ ]
+}
