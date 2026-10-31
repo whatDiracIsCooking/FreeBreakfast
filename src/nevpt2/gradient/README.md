@@ -6,8 +6,9 @@ nuclear gradient (`nuclear_gradient.tex` §5). Then the inactive-rotation
 multipliers z^c of its Lagrangian and the term Φ = ⟨z^c, f⟩ they add, with
 Φ's adjoints (Algorithm 1, steps 1–2). Then the gradient itself, of a
 single-state DF-CASSCF: the Z-vector, the Lagrangian's symmetry gate and
-the nuclear term (Algorithm 1 from step 6). Link
-`free_breakfast::nevpt2::gradient`.
+the nuclear term (Algorithm 1 from step 6). And all of it again for
+PC-NEVPT2 (`nuclear_gradients.tex` Path 4), the same code over the PC class
+energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
 
     sc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, batch)
         -> ClassEnergies
@@ -41,10 +42,17 @@ the nuclear term (Algorithm 1 from step 6). Link
         multipliers  (Z, z), mcscf::ZVector: zvector's coordinates, its
                      iterations and residual
         asymmetry    max |X^L − X^Lᵀ| per block
+    pc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, batch)
+        -> PcClassEnergies
+    pc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, batch)
+        -> PcAdjoint     energies (PcClassEnergies), then ScAdjoint's arrays
+    pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, batch)
+        -> PcGradient    ScGradient's fields, energies PcClassEnergies
 
-The last two take `mcscf::df_gradient`'s arguments (`solution` a
+`lagrangian_gradient`, `sc_gradient` and `pc_gradient` take
+`mcscf::df_gradient`'s arguments (`solution` a
 single-state DF-CASSCF, its orbitals core and virtuals canonical, as the
-Casscf step leaves them); the first four's are:
+Casscf step leaves them); the others':
 `b` is B as `density_fit` leaves it (the AO B, naux × nao², the metric
 folded in), `c` the root's orbitals (nao × nmo: core, active, virtual), `h`
 the AO core Hamiltonian, `vector` the unit CI vector over the two string
@@ -253,11 +261,43 @@ near-degeneracy hazard), the PCG iterations and residual (the CASSCF
 Hessian's conditioning), and the gate's six residues, to report with every
 gradient (`nuclear_gradient.tex`, "Hazards").
 
+## PC-NEVPT2
+
+`pc_energy`, `pc_adjoint` and `pc_gradient` are their SC namesakes with
+`pc_class_energies` and `pc_class_energies_adjoint` in place of
+`class_energies` and `class_energies_adjoint`, and nothing else: the
+builders, their reverse pass, `rdms_adjoint`, the density-fitted adjoints,
+the symmetrization and the source term are one function (`builders_adjoint`
+in `gradient.cpp`) that both class walks feed, since PC's reverse pass adds
+onto the same `EnergyBars` (its S, K and S₁ bars go onto SC's block bars,
+and SC's sweep takes them; `nevpt2.energy`'s README, "The PC reverse pass").
+`pc_gradient` then hands PC's arrays to `lagrangian_gradient` in an
+`ScAdjoint` and takes the result's fields into a `PcGradient` beside PC's
+class energies. The Z-vector, the gate and the nuclear term are unchanged.
+
+**z^c is the same division as SC's.** PC is invariant to a rotation of two
+inactive orbitals only when their orbital energies are equal: every class
+sums a quadratic form in its tuples' rows over every ordered core and
+virtual index, but each tuple at its own Δ, so a rotation that mixes two
+orbitals of different ε moves the energy. With the canonical orbitals'
+distinct ε, PC's A on the core–core and virtual–virtual blocks is not zero,
+and `zc_multipliers` takes it as it takes SC's (demo
+`docs/gradient-theory.md` §4.4: "the z^c divisions, which are the same on
+both branches"; #561 measured the class-level derivative at 1e-17 of its
+scale with ε forced equal, and not zero with ε distinct). What PC does have
+is that its A vanishes on a degenerate pair, where SC's does not: so a
+pair that the degenerate-pair rule refuses for SC takes z = 0 for PC
+(`Nevpt2PcZc` below).
+
+**Refusals.** A class PC refuses (no positive eigenvalue of the metric, no
+gap at the cut, a non-positive λ + Δ) is refused by `pc_class_energies_adjoint`
+with the energy's error, and `pc_gradient` returns it unchanged: never a
+gradient with that class summed in as zero.
+
 ## Not done
 
-- The PC adjoint (Eq. pcdot), and the per-root canonicalization's own
-  derivative: the caller passes canonical orbitals and z^c takes the
-  constraint.
+- The per-root canonicalization's own derivative: the caller passes
+  canonical orbitals and z^c takes the constraint.
 - Λ lives at naux nmo² whole; a virtual–virtual block that only its diagonal
   reaches is still stored whole, as `mcscf::df_gradient`'s extra adjoint
   takes it.
@@ -376,14 +416,43 @@ once per process.
     Stationarity over sixteen runs, worst: orbitals 5.7e-8, CI 3.8e-8 of
     the slope (round-off of E_cas ≈ −76 Eh at the finest rungs). Each case
     is under a second, the setup included, so none is a slow test.
+- PC-NEVPT2:
+  - `Nevpt2NuclearGradient.PcMatchesNumerical`: `pc_gradient`'s total
+    against `gradients.pc.richardson` (block2's `WickICNEVPT2` over PySCF's
+    fitted integrals) per component to 1e-6 Eh/a0, the sum over atoms below
+    1e-9, X^L's six residues below 1e-9, PC's E_corr against `e_corr.pc` to
+    1e-9, and a state average refused `Unsupported`. PC's z^c is not
+    asserted to vanish: it does not (above).
+  - `Nevpt2PcZc.DegeneratePairTakesTheZeroBranch` (`h2o_ccpvdz`): in each of
+    the core and the virtual space, the pair with |A^SC| > 1e-6 closest in ε,
+    the upper orbital moved to 1e-9 Eh above the lower through h alone (h +
+    δ v vᵀ, v = C^−T e_j, so only that orbital's diagonal of C^T h C moves
+    and f stays diagonal): PC's A_pq at most 1e-8 and 1e3 below SC's, its
+    z_pq exactly 0, and SC's pair refused `Numerical`, naming both orbitals.
+    The port of `nevpt2_energy_gpu.cpp`'s degenerate-ε check to the
+    gradient's inputs.
+  - `Nevpt2PcGradient.RefusesWhatTheEnergyRefuses` (skew H₂O): a zero CI
+    vector (Sr's metric zero, "no positive eigenvalue") and every virtual
+    lowered 1000 Eh through h (Sr's λ + ε_r negative, "not positive"):
+    `pc_gradient` fails with `pc_energy`'s error, kind and message.
+  - Measured on the gfx1200: every component within 3.5e-9 (skew H₂O) and
+    5.9e-9 (H₂CO) of the numerical gradient, each about its error bar;
+    translation 1.4e-14 and 5.0e-13; E_corr −3.2e-12 and −1.1e-12 from
+    block2's. max |z^c| 1.9e-3 and 4.5e-3, PCG 18 and 21 iterations. X^L
+    worst on the active–active block, 6.1e-10 and 4.2e-10, the mixed blocks
+    ≤ 7.7e-11, core–core and virtual–virtual ≤ 1.3e-14. At the real state PC's
+    A on the core pair (1, 0) is 7.4e-3 (SC's 7.3e-3), and on the virtual
+    pair (22, 21) −4.5e-5 (SC's −4.6e-5); forced to 1e-9 apart, PC's are
+    6.6e-14 and −1.5e-13, SC's −1.5e-7 and 7.4e-8. Each case is under three
+    seconds, the setup included.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies and the count check both units share |
-| `gradient.cpp` | The builders as einsum terms, forward and backwards, and the source term's half-transform |
+| `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
-| `lagrangian.cpp` | `lagrangian_gradient` and `sc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass |
+| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |

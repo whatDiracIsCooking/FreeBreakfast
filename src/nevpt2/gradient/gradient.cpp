@@ -1,9 +1,9 @@
 /// @file
-/// @brief sc_energy and sc_adjoint: the per-root input builders, each listed
-/// once as einsum terms and run forward for the energy and backwards for the
-/// adjoint, around class_energies(_adjoint), rdms(_adjoint) and the
-/// density-fitted adjoints; then the symmetrization and the AO half-transform
-/// of the orbital source term.
+/// @brief sc_energy, sc_adjoint, pc_energy and pc_adjoint: the per-root input
+/// builders, each listed once as einsum terms and run forward for the energy
+/// and backwards for the adjoint, around the SC or PC class energies (and
+/// their adjoints), rdms(_adjoint) and the density-fitted adjoints; then the
+/// symmetrization and the AO half-transform of the orbital source term.
 
 module free_breakfast.nevpt2.gradient;
 
@@ -330,14 +330,16 @@ Result<ScArrays> zeroed_arrays(DeviceResources &res, const int32_t naux, const i
                   .electrons = 0.0};
 }
 
-// Every input of class_energies, built from (h, B, c) and the vector: the MO
-// blocks, B_cc and B_vv's diagonal, C^T h C, then the builders and
-// nevpt2::rdms between the first of them and the rest.
-Result<ScArrays> sc_arrays(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                           const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
-                           const int32_t nmo, const double *b, const double *c, const double *h,
-                           const int32_t ncore, const int32_t ncas, const double *vector) {
-  FBF_TRY(check_counts("nevpt2::sc_energy", alpha, beta, naux, nao, nmo, ncore, ncas));
+// Every input of class_energies (and pc_class_energies), built from (h, B, c)
+// and the vector: the MO blocks, B_cc and B_vv's diagonal, C^T h C, then the
+// builders and nevpt2::rdms between the first of them and the rest. @p who
+// names the caller in its errors.
+Result<ScArrays> sc_arrays(DeviceResources &res, const std::string_view who,
+                           const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                           const int32_t naux, const int32_t nao, const int32_t nmo,
+                           const double *b, const double *c, const double *h, const int32_t ncore,
+                           const int32_t ncas, const double *vector) {
+  FBF_TRY(check_counts(who, alpha, beta, naux, nao, nmo, ncore, ncas));
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t nc = ncore;
   const int64_t n = ncas;
@@ -368,7 +370,7 @@ Result<ScArrays> sc_arrays(DeviceResources &res, const ci::DeviceStringSet &alph
   }
   x.electrons = static_cast<double>(alpha.n_electrons() + beta.n_electrons());
   if (x.electrons == 0.0) {
-    return err_config("nevpt2::sc_energy: no active electrons");
+    return err_config("{}: no active electrons", who);
   }
 
   FBF_TRY(h2e(res, x.blocks, x.h2e.data()));
@@ -391,17 +393,47 @@ Result<ClassEnergies> sc_energy(DeviceResources &res, const ci::DeviceStringSet 
                                 const int32_t nao, const int32_t nmo, const double *b,
                                 const double *c, const double *h, const int32_t ncore,
                                 const int32_t ncas, const double *vector, const int32_t batch) {
-  const ScArrays x =
-      FBF_TRY(sc_arrays(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector));
+  const ScArrays x = FBF_TRY(sc_arrays(res, "nevpt2::sc_energy", alpha, beta, naux, nao, nmo, b, c,
+                                       h, ncore, ncas, vector));
   return class_energies(res, x.blocks, x.inputs(), batch);
 }
 
-Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                             const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
-                             const int32_t nmo, const double *b, const double *c, const double *h,
-                             const int32_t ncore, const int32_t ncas, const double *vector,
-                             const int32_t batch) {
-  ScArrays x = FBF_TRY(sc_arrays(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector));
+Result<PcClassEnergies> pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                  const ci::DeviceStringSet &beta, const int32_t naux,
+                                  const int32_t nao, const int32_t nmo, const double *b,
+                                  const double *c, const double *h, const int32_t ncore,
+                                  const int32_t ncas, const double *vector, const int32_t batch) {
+  const ScArrays x = FBF_TRY(sc_arrays(res, "nevpt2::pc_energy", alpha, beta, naux, nao, nmo, b, c,
+                                       h, ncore, ncas, vector));
+  return pc_class_energies(res, x.blocks, x.inputs(), batch);
+}
+
+// Where a class walk adds its bars: @p bar's fields, and Λ at @p lambda.
+EnergyBars energy_bars(ScArrays &bar, double *lambda) {
+  return {.h1e = bar.h1e.data(),
+          .h2e = bar.h2e.data(),
+          .dm1 = bar.dm1.data(),
+          .dm2 = bar.dm2.data(),
+          .dm3 = bar.dm3.data(),
+          .f3ca = bar.f3ca.data(),
+          .f3ac = bar.f3ac.data(),
+          .h1e_v_sr = bar.h1e_v_sr.data(),
+          .h1e_v_si = bar.h1e_v_si.data(),
+          .h1e_v_sir = bar.h1e_v_sir.data(),
+          .e_core = bar.e_core.data(),
+          .e_virt = bar.e_virt.data(),
+          .lambda = lambda};
+}
+
+// The reverse pass after a class walk (SC's or PC's) has added its bars onto
+// @p bar and @p lambda_raw (energy_bars): the builders backwards, then h_bar,
+// Λ, X, A and ε. The energies are left to the caller.
+Result<ScAdjoint> builders_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                   const ci::DeviceStringSet &beta, const int32_t naux,
+                                   const int32_t nao, const int32_t nmo, const double *b,
+                                   const double *c, const int32_t ncore, const int32_t ncas,
+                                   const double *vector, ScArrays &x, ScArrays &bar,
+                                   Buffers::device<double> lambda_raw) {
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t nc = ncore;
   const int64_t n = ncas;
@@ -409,27 +441,6 @@ Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   const int64_t nv = nmo - nocc;
   const int64_t nmo2 = int64_t{nmo} * nmo;
   const int64_t ld_lambda = naux * int64_t{nmo};
-
-  // The bars, zeroed: every builder adds onto them.
-  ScArrays bar = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, static_cast<int32_t>(nv)));
-  // Λ as the maps are written, onto the corners they read; symmetrized last.
-  Buffers::device<double> lambda_raw = FBF_TRY(zeroed(res, naux * nmo2));
-
-  const ClassEnergiesAdjoint walked =
-      FBF_TRY(class_energies_adjoint(res, x.blocks, x.inputs(), batch,
-                                     {.h1e = bar.h1e.data(),
-                                      .h2e = bar.h2e.data(),
-                                      .dm1 = bar.dm1.data(),
-                                      .dm2 = bar.dm2.data(),
-                                      .dm3 = bar.dm3.data(),
-                                      .f3ca = bar.f3ca.data(),
-                                      .f3ac = bar.f3ac.data(),
-                                      .h1e_v_sr = bar.h1e_v_sr.data(),
-                                      .h1e_v_si = bar.h1e_v_si.data(),
-                                      .h1e_v_sir = bar.h1e_v_sir.data(),
-                                      .e_core = bar.e_core.data(),
-                                      .e_virt = bar.e_virt.data(),
-                                      .lambda = lambda_raw.data()}));
 
   // The builders backwards, the last first: the orbital energies and F^I's
   // blocks, g and d, then dm1 and dm2 into dm3's bar; rdms_adjoint; (tu|vw).
@@ -498,13 +509,59 @@ Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   Buffers::device<double> epsilon = FBF_TRY(zeroed(res, nmo));
   FBF_TRY(add_onto(res, 1, nc, x.e_core.data(), epsilon.data(), 1));
   FBF_TRY(add_onto(res, 1, nv, x.e_virt.data(), epsilon.data() + nocc, 1));
-  return ScAdjoint{.energies = walked.energies,
+  return ScAdjoint{.energies = {},
                    .h_bar = std::move(h_bar),
                    .lambda = std::move(lambda),
                    .y = std::move(y),
                    .x = std::move(x_source),
                    .a = std::move(a_source),
                    .epsilon = std::move(epsilon)};
+}
+
+Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                             const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
+                             const int32_t nmo, const double *b, const double *c, const double *h,
+                             const int32_t ncore, const int32_t ncas, const double *vector,
+                             const int32_t batch) {
+  ScArrays x = FBF_TRY(sc_arrays(res, "nevpt2::sc_energy", alpha, beta, naux, nao, nmo, b, c, h,
+                                 ncore, ncas, vector));
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const int32_t nvirt = nmo - ncore - ncas;
+  // The bars, zeroed: every builder adds onto them. Λ as the maps are
+  // written, onto the corners they read; symmetrized last.
+  ScArrays bar = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt));
+  Buffers::device<double> lambda_raw = FBF_TRY(zeroed(res, naux * int64_t{nmo} * nmo));
+  const ClassEnergiesAdjoint walked = FBF_TRY(class_energies_adjoint(
+      res, x.blocks, x.inputs(), batch, energy_bars(bar, lambda_raw.data())));
+  ScAdjoint out = FBF_TRY(builders_adjoint(res, alpha, beta, naux, nao, nmo, b, c, ncore, ncas,
+                                           vector, x, bar, std::move(lambda_raw)));
+  out.energies = walked.energies;
+  return out;
+}
+
+Result<PcAdjoint> pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                             const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
+                             const int32_t nmo, const double *b, const double *c, const double *h,
+                             const int32_t ncore, const int32_t ncas, const double *vector,
+                             const int32_t batch) {
+  ScArrays x = FBF_TRY(sc_arrays(res, "nevpt2::pc_energy", alpha, beta, naux, nao, nmo, b, c, h,
+                                 ncore, ncas, vector));
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const int32_t nvirt = nmo - ncore - ncas;
+  ScArrays bar = FBF_TRY(zeroed_arrays(res, naux, ncore, ncas, nvirt));
+  Buffers::device<double> lambda_raw = FBF_TRY(zeroed(res, naux * int64_t{nmo} * nmo));
+  // A refused class is the energy's error, returned before any bar is read.
+  const PcClassEnergiesAdjoint walked = FBF_TRY(pc_class_energies_adjoint(
+      res, x.blocks, x.inputs(), batch, energy_bars(bar, lambda_raw.data())));
+  ScAdjoint out = FBF_TRY(builders_adjoint(res, alpha, beta, naux, nao, nmo, b, c, ncore, ncas,
+                                           vector, x, bar, std::move(lambda_raw)));
+  return PcAdjoint{.energies = walked.energies,
+                   .h_bar = std::move(out.h_bar),
+                   .lambda = std::move(out.lambda),
+                   .y = std::move(out.y),
+                   .x = std::move(out.x),
+                   .a = std::move(out.a),
+                   .epsilon = std::move(out.epsilon)};
 }
 
 } // namespace free_breakfast::nevpt2

@@ -12,7 +12,9 @@
 /// such A, and the term Phi = <z^c, f> they add with its adjoints. Then the
 /// SC-NEVPT2 nuclear gradient of a single-state DF-CASSCF over them: the
 /// Z-vector, the Lagrangian's symmetry gate, and one mcscf::df_gradient pass.
-/// The README has the layouts and every term.
+/// The PC-NEVPT2 energy, adjoint and gradient are the same code with the PC
+/// class energies (and their reverse pass) in place of SC's. The README has
+/// the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
 
@@ -98,6 +100,56 @@ struct ScAdjoint {
 ///         class_energies_adjoint, rdms_adjoint and the density-fitted
 ///         adjoints.
 [[nodiscard]] Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                           const ci::DeviceStringSet &beta, int32_t naux,
+                                           int32_t nao, int32_t nmo, const double *b,
+                                           const double *c, const double *h, int32_t ncore,
+                                           int32_t ncas, const double *vector, int32_t batch);
+
+/// @brief The PC-NEVPT2 class energies of the root @p vector over the
+/// orbitals @p c: sc_energy's inputs, built the same way from the same
+/// arguments, through pc_class_energies instead of class_energies.
+///
+/// @return The class energies; sc_energy's InvalidConfig for counts that do
+///         not fit; pc_class_energies' Numerical error naming a refused
+///         class; or the error of a builder or nevpt2::rdms.
+[[nodiscard]] Result<PcClassEnergies>
+pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+          int32_t naux, int32_t nao, int32_t nmo, const double *b, const double *c, const double *h,
+          int32_t ncore, int32_t ncas, const double *vector, int32_t batch);
+
+/// @brief pc_adjoint's result: ScAdjoint's arrays, in its conventions, of
+/// the PC correlation energy.
+struct PcAdjoint {
+  /// @brief The class energies, as pc_energy computes them.
+  PcClassEnergies energies;
+  /// @brief dE/dh in the MO basis, as ScAdjoint::h_bar.
+  Buffers::device<double> h_bar;
+  /// @brief dE/dB^L in the MO basis, as ScAdjoint::lambda.
+  Buffers::device<double> lambda;
+  /// @brief dE/dc at fixed (h, B), raw, as ScAdjoint::y.
+  Buffers::device<double> y;
+  /// @brief The orbital source term X, as ScAdjoint::x.
+  Buffers::device<double> x;
+  /// @brief A = X - X^T, as ScAdjoint::a. PC is invariant to an inactive
+  /// rotation only between degenerate orbital energies, so its core-core and
+  /// virtual-virtual blocks are not zero in general: zc_multipliers takes
+  /// them as it takes SC's.
+  Buffers::device<double> a;
+  /// @brief The orbital energies pc_class_energies read, as
+  /// ScAdjoint::epsilon.
+  Buffers::device<double> epsilon;
+};
+
+/// @brief The adjoint of pc_energy at (@p h, @p b, @p c, @p vector): the
+/// arguments are pc_energy's. sc_adjoint's reverse pass with
+/// pc_class_energies_adjoint in place of class_energies_adjoint: the
+/// builders, rdms_adjoint, the density-fitted adjoints, the symmetrization
+/// and the source term are the same code.
+///
+/// @return The energies and the adjoints; a refused class's Numerical error,
+///         the energy's own (pc_class_energies_adjoint's guarantee), never a
+///         zero; or sc_adjoint's other errors.
+[[nodiscard]] Result<PcAdjoint> pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                            const ci::DeviceStringSet &beta, int32_t naux,
                                            int32_t nao, int32_t nmo, const double *b,
                                            const double *c, const double *h, int32_t ncore,
@@ -243,6 +295,37 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
 ///         error of the calls it makes.
 [[nodiscard]] Result<ScGradient>
 sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch);
+
+/// @brief pc_gradient's result: ScGradient's fields, with PC's class
+/// energies.
+struct PcGradient {
+  /// @brief dE/dR of E_cas + E_corr^PC, as ScGradient::terms.
+  mcscf::GradientTerms terms;
+  /// @brief The class energies of E_corr^PC, as pc_energy computes them.
+  PcClassEnergies energies;
+  /// @brief z^c of PC's A and epsilon, as ScGradient::zc.
+  ZcMultipliers zc;
+  /// @brief (Z, z), as ScGradient::multipliers.
+  mcscf::ZVector multipliers;
+  /// @brief The gate's residues per block, as ScGradient::asymmetry.
+  std::array<double, 6> asymmetry{};
+};
+
+/// @brief The PC-NEVPT2 nuclear gradient of the single-state DF-CASSCF
+/// @p solution: sc_gradient with pc_adjoint in place of sc_adjoint.
+/// zc_multipliers and zc_adjoint over PC's A and epsilon, under the same
+/// degenerate-pair rule, then lagrangian_gradient. The arguments are
+/// sc_gradient's.
+///
+/// @return The gradient; Unsupported for a state average; the energy's
+///         Numerical error when PC refuses a class (no gap at the cut, a
+///         non-positive denominator); or the first error of the calls it
+///         makes.
+[[nodiscard]] Result<PcGradient>
+pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch);
