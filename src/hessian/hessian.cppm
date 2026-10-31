@@ -92,4 +92,68 @@ df_rhf_response(DeviceResources &res, const Molecule &molecule, const BasisSet &
                 std::span<const double> mo_energies, int32_t nocc, double tolerance = 1e-10,
                 int32_t max_iterations = 100);
 
+/// @brief The two-electron explicit part of a closed-shell DF-RHF nuclear
+/// Hessian: the fitted Coulomb and exchange energies differentiated twice at
+/// fixed orbitals, each 3 n_atom x 3 n_atom, x = 3 A + k the coordinate
+/// R_{A,k} (hartree / bohr^2), symmetric to rounding.
+struct RhfTwoElectron {
+  /// @brief d^2 E_J / dx dy, E_J = 1/2 u^T M^-1 u, u = T^T vec D.
+  std::vector<double> coulomb;
+  /// @brief d^2 E_x / dx dy, E_x = -Sum_ij T_ij^T M^-1 T_ij over the
+  /// occupied pairs.
+  std::vector<double> exchange;
+};
+
+/// @brief The two-electron explicit part of the closed-shell DF-RHF nuclear
+/// Hessian at fixed orbitals: the second-derivative integrals contracted with
+/// the fitted densities, and the fit's cross terms (rhf_hessian.tex eqs. dfj,
+/// dfk). With T_mn,P = (mn|P), M = (P|Q) = L L^T, d = M^-1 T^T vec D,
+/// c_ij = M^-1 T_ij over occupied i, j, and R^x_ij = T^x_ij - M^x c_ij,
+///
+///     E_J^xy = u^xy^T d - 1/2 d^T M^xy d + g^x^T M^-1 g^y,  g^x = 2 Sum_i R^x_ii
+///     E_x^xy = -Sum_ij (2 T^xy_ij^T c_ij - c_ij^T M^xy c_ij
+///                       + 2 R^x_ij^T M^-1 R^y_ij)
+///
+/// the first two of each by @c three_center_hessian and @c metric_hessian
+/// (at D (x) d and -1/2 d d^T, and at @c gradient::df_rhf's Gam^K and W^K),
+/// the cross terms as Gram matrices of L^-1 R^x. These are PySCF's
+/// @c df.hessian.rhf partial_hess_elec's ej and -ek.
+///
+/// **The exchange cross term is never held whole** (3 n_atom nocc^2 naux
+/// doubles): R^x for the three coordinates of one atom, one atom block, is
+/// built by one walk over the aux atoms (@c three_center_derivative's blocks
+/// against @c metric_derivative's M1), and the Hessian is contracted one pair
+/// of atom blocks at a time, so n_atom (n_atom + 1) / 2 blocks are built. The
+/// Coulomb vectors L^-1 g^x come from the same blocks.
+///
+/// @p basis and @p aux are made by @c place over one molecule, and @p classes
+/// are @c primitive_pair_classes of @p basis. @p b is B as @c density_fit
+/// leaves it, naux x nao^2 at Q + naux (n + nao m), and @p l is its L
+/// (column-major, the lower triangle read). @p c is the nao x nmo orbitals,
+/// column-major, of which only the first @p nocc are read.
+///
+/// The call holds the fitted pairs c (naux nocc^2), M1 (3 naux^2), one aux
+/// atom's derivative block (3 nao^2 nblk) and two atom blocks
+/// (3 naux nocc^2 each); before that, the fitted densities of the explicit
+/// part (naux nao^2, like @c gradient::df_rhf's). Past the device's free
+/// memory that is Unsupported, naming the bytes, before anything is
+/// allocated.
+///
+/// Queued on res.stream() and synchronized; the call returns with everything
+/// done. None of @p b, @p l and @p c may point into res.device_workspace().
+/// The device res.dev_idx() names is made current for the call and the
+/// previous one restored.
+///
+/// @return The Coulomb and exchange parts; InvalidConfig if the bases do not
+///         share their atoms, if @p nocc is not in [1, nao], or if @p c is
+///         shorter than nao nocc or @p b not naux nao^2 long, or for any
+///         input the integral calls refuse; Unsupported for memory past the
+///         device's free bytes or an index past int32_t; or the GpuRuntime
+///         error of the first copy, BLAS call or launch that failed.
+[[nodiscard]] Result<RhfTwoElectron>
+df_rhf_two_electron(DeviceResources &res, const BasisSet &basis,
+                    std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                    const Buffers::device<double> &b, const double *l,
+                    const Buffers::device<double> &c, int32_t nocc);
+
 } // namespace free_breakfast::hessian

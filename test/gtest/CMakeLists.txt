@@ -158,6 +158,7 @@ add_executable(
   df_hessian_gpu.cpp
   df_rhf_gradient_gpu.cpp
   df_rhf_hessian_response_gpu.cpp
+  df_rhf_hessian_two_electron_gpu.cpp
   pipeline_gradient_gpu.cpp
   pipeline_casscf_gradient_gpu.cpp
   pipeline_nevpt2_gradient_gpu.cpp

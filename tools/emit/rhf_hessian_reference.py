@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Write the reference data the DF-RHF Hessian's response-part tests read.
+"""Write the reference data the DF-RHF Hessian's response-part and
+two-electron explicit-part tests read.
 
 The response part of the closed-shell DF-RHF nuclear Hessian is everything the
 orbitals' first-order response contributes: PySCF's `pyscf.df.hessian.rhf`
@@ -40,8 +41,12 @@ to PySCF), spherical throughout, at PySCF's converged DF-RHF orbitals
 Arrays are .npy, '<f8' in Fortran order (the layout `src/io/npy` reads, first
 axis fastest): `c` (nao x nao, the orbitals, columns ascending in energy),
 `response` (3 n_atom x 3 n_atom, element (x, y) the response part's
-d^2E/dx dy, x = 3 A + k) and `u` ((n_vir n_occ) x 3 n_atom, U^x_ai at
-a + n_vir i of column x, `response::cphf`'s layout). U is in the MO basis, so
+d^2E/dx dy, x = 3 A + k), `u` ((n_vir n_occ) x 3 n_atom, U^x_ai at
+a + n_vir i of column x, `response::cphf`'s layout), and `coulomb` and
+`exchange` (3 n_atom x 3 n_atom): the explicit part's two-electron terms,
+`_partial_hess_ejk`'s ej and -ek (partial_hess_elec is e1 + ej - ek), which
+`hessian::df_rhf_two_electron` returns, each checked against
+partial_hess_elec and for the translational sum rule. U is in the MO basis, so
 neither it nor the Hessian depends on the AOs' normalisation; C is PySCF's,
 over unit-normalised functions, and a test whose function i is N_i times
 PySCF's divides C's rows by N. BLAS and OpenMP are pinned to one thread, and
@@ -226,6 +231,17 @@ def hessian_case(case: dict) -> dict:
     h1ao = hobj.make_h1(c, occ)
     mo1, mo_e1 = column_mo1(mf, h1ao)
     explicit = hobj.partial_hess_elec(eps, c, occ)
+    # The explicit part's two-electron terms on their own: partial_hess_elec
+    # is e1 + ej - ek, the one-electron e1 beside the fitted Coulomb ej and
+    # exchange ek.
+    e1, ej, ek = df_hessian._partial_hess_ejk(hobj, eps, c, occ)
+    assert numpy.abs(e1 + ej - ek - explicit).max() < 1e-12, case["name"]
+    coulomb, exchange = flat(ej), flat(-ek)
+    for part, term in (("coulomb", coulomb), ("exchange", exchange)):
+        # The two-electron energy at fixed orbitals is translationally
+        # invariant: every row of each part sums to zero over the atoms.
+        drift = numpy.abs(term.reshape(-1, mol.natm, 3).sum(axis=1)).max()
+        assert drift < 1e-8 * numpy.abs(term).max(), (case["name"], part, drift)
     total = hobj.hess_elec(eps, c, occ, mo1=mo1, mo_e1=mo_e1, h1ao=h1ao)
     response = flat(total - explicit)
     scale = numpy.abs(response).max()
@@ -261,6 +277,8 @@ def hessian_case(case: dict) -> dict:
         "c": save(f"{name}_c", c),
         "response": save(f"{name}_response", response),
         "u": save(f"{name}_u", u),
+        "coulomb": save(f"{name}_coulomb", coulomb),
+        "exchange": save(f"{name}_exchange", exchange),
     }
 
 
@@ -274,7 +292,9 @@ def main() -> None:
         "description": "The response part of PySCF's DF-RHF nuclear Hessian "
         "(pyscf.df.hessian.rhf, auxbasis response 2): its total less "
         "partial_hess_elec and hess_nuc, over CPHF solutions to 1e-12, with "
-        "the orbitals, their energies and the CPHF solutions U^x, over this "
+        "the orbitals, their energies and the CPHF solutions U^x, and the "
+        "explicit part's two-electron terms (_partial_hess_ejk's ej and -ek), "
+        "over this "
         "tree's data/basis and data/aux_basis files, spherical, "
         "unit-normalised functions; coordinates in bohr, the Hessian in "
         "hartree / bohr^2. Arrays are '<f8' Fortran-order .npy files beside "
