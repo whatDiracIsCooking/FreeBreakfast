@@ -137,6 +137,18 @@ void print_products(const fb::Calculation &calc) {
                    g[a + 1], g[a + 2]);
     }
   }
+  if (const auto &out = calc.get<fb::Nevpt2GradientOutput>()) {
+    const fb::nevpt2::ScGradient &sc = out->gradient;
+    std::println("SC-NEVPT2 gradient: root {}, E_corr {:.10f} Ha, max |z^c| {:.3e}, smallest "
+                 "inactive gap {:.3e}, {} PCG iterations (residual {:.2e})",
+                 calc.step<fb::Nevpt2GradientStep>()->root, sc.energies.total, sc.zc.max_z,
+                 sc.zc.min_gap, sc.multipliers.iterations, sc.multipliers.residual);
+    const std::vector<double> &g = sc.terms.total;
+    for (std::size_t a = 0; a + 2 < g.size(); a += 3) {
+      std::println("NEVPT2 grad atom {}: {:16.10f} {:16.10f} {:16.10f} Ha/bohr", a / 3, g[a],
+                   g[a + 1], g[a + 2]);
+    }
+  }
 }
 
 fb::Status run(std::span<char *const> args) {

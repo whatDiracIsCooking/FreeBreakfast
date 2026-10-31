@@ -1062,6 +1062,85 @@ TEST(PipelineConfig, TheCasscfGradientOverAnIntegralDirectEriIsUnsupported) {
   }
 }
 
+// [nevpt2_gradient] reads its root and variant, writes nevpt2_gradient.json
+// into the output directory, and fills in the CASSCF it reads.
+TEST(PipelineConfig, TheNevpt2GradientStepReadsItsOptionsAndWritesItsJson) {
+  const std::string casscf = "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\n";
+  auto calc = fb::parse_config(with_inputs(casscf + "[nevpt2_gradient]\n"), "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::Nevpt2GradientStep &step = *calc->step<fb::Nevpt2GradientStep>();
+  EXPECT_EQ(step.root, 0);
+  EXPECT_EQ(step.variant, fb::Nevpt2Variant::Sc);
+  EXPECT_EQ(step.json_path, kOut / "nevpt2_gradient.json");
+  EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::ScfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::PrimitivePairClassesStep>().has_value());
+
+  auto written = fb::parse_config(
+      with_inputs(casscf + "[nevpt2_gradient]\nroot = 0\nvariant = \"sc\"\n"), "", kOut);
+  ASSERT_TRUE(written.has_value()) << written.error().message;
+  EXPECT_EQ(written->step<fb::Nevpt2GradientStep>()->variant, fb::Nevpt2Variant::Sc);
+
+  expect_config_error(with_inputs(casscf + "[nevpt2_gradient]\nroot = -1\n"),
+                      "[nevpt2_gradient] root is -1, below 0");
+  expect_config_error(with_inputs(casscf + "[nevpt2_gradient]\nroot = 1\n"),
+                      "[nevpt2_gradient] root is 1, and the single-state [casscf] has only root 0");
+  expect_config_error(with_inputs(casscf + "[nevpt2_gradient]\nvariant = \"qd\"\n"),
+                      "[nevpt2_gradient] has no variant 'qd'");
+  expect_config_error(with_inputs(casscf + "[nevpt2_gradient]\nvariant = 1\n"),
+                      "[nevpt2_gradient] variant is not a string");
+  expect_config_error(with_inputs(casscf + "[nevpt2_gradient]\njson_path = \"g.json\"\n"),
+                      "[nevpt2_gradient] has no option 'json_path'");
+  // A filled-in [casscf] is read from an empty table, which names no space.
+  expect_config_error(with_inputs("[eri]\nmode = \"density_fitting\"\n[nevpt2_gradient]\n"),
+                      "[casscf] needs 'ncas'");
+}
+
+// Each of [nevpt2_gradient]'s refusals when the config is read, before the
+// SCF and the CASSCF it would follow: PC, until its gradient lands; an
+// integral-direct [eri], written or filled in; a state average; and an open
+// shell, a multiplicity other than 1, written or [optimize]'s start.
+TEST(PipelineConfig, TheNevpt2GradientRefusalsAreUnsupported) {
+  const std::string fitted = "[eri]\nmode = \"density_fitting\"\n";
+  const std::string casscf = "[casscf]\nncas = 4\nnelecas = 4\n";
+  const auto expect_unsupported = [](const std::string &toml, std::string_view needle) {
+    const auto calc = fb::parse_config(toml, "", kOut);
+    ASSERT_FALSE(calc.has_value()) << needle;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find(needle), std::string::npos) << calc.error().message;
+  };
+  expect_unsupported(with_inputs(fitted + casscf + "[nevpt2_gradient]\nvariant = \"pc\"\n"),
+                     "[nevpt2_gradient] variant 'pc' is not implemented yet: the PC-NEVPT2 "
+                     "gradient lands with #564");
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    expect_unsupported(with_inputs(std::string(eri) + casscf + "[nevpt2_gradient]\n"),
+                       "[nevpt2_gradient] runs over density fitting only, and [eri] mode is "
+                       "'integral_direct'");
+  }
+  expect_unsupported(
+      with_inputs(fitted + "[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\n[nevpt2_gradient]\n"),
+      "[nevpt2_gradient] differentiates a single-state CASSCF, and [casscf] nroots is 2");
+  // The state average is refused before the root it would have.
+  expect_unsupported(
+      with_inputs(fitted +
+                  "[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\n[nevpt2_gradient]\nroot = 1\n"),
+      "[nevpt2_gradient] differentiates a single-state CASSCF");
+  for (const std::string_view spin : {"multiplicity = 3\n", "charge = 1\nmultiplicity = 2\n"}) {
+    expect_unsupported(std::format("[molecule]\nxyz = \"w.xyz\"\n{}[basis_set]\nbasis = "
+                                   "\"b.json\"\n{}{}[nevpt2_gradient]\n",
+                                   spin, fitted, casscf),
+                       "[nevpt2_gradient] is implemented for a closed-shell singlet only, and "
+                       "[molecule] multiplicity is");
+  }
+  // Under [optimize] the molecule is loaded, and the start's spin is the one
+  // refused.
+  expect_unsupported(
+      std::format("[molecule]\nxyz = \"w.xyz\"\nmultiplicity = 3\n[basis_set]\nbasis = "
+                  "\"b.json\"\n{}{}[nevpt2_gradient]\n[optimize]\n",
+                  fitted, casscf),
+      "[molecule] multiplicity is 3");
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",

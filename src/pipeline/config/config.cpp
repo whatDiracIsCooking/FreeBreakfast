@@ -431,6 +431,29 @@ template <class S>
       return err_config("[{}] root is {}, below 0", kStep, step.root);
     }
     step.json_path = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, Nevpt2GradientStep>) {
+    // The CASSCF's root count, the molecule's spin and the ERI mode are other
+    // tables', refused once they are planned, by check_nevpt2_gradient and
+    // check_density_fitted_only; Nevpt2GradientStep::run refuses them again.
+    FBF_TRY(check_keys(table, kStep, {"root", "variant"}));
+    FBF_TRY(read_key(table, kStep, "root", base_dir, step.root));
+    if (step.root < 0) {
+      return err_config("[{}] root is {}, below 0", kStep, step.root);
+    }
+    std::string variant = "sc";
+    FBF_TRY(read_key(table, kStep, "variant", base_dir, variant));
+    if (variant == "pc") {
+      // PC: map it to Nevpt2Variant::Pc here once #564 lands
+      // (nevpt2_gradient/README.md, "PC").
+      return err_unsupported("[{}] variant 'pc' is not implemented yet: the PC-NEVPT2 gradient "
+                             "lands with #564; set variant = 'sc'",
+                             kStep);
+    }
+    if (variant != "sc") {
+      return err_config("[{}] has no variant '{}' (known: 'sc', 'pc')", kStep, variant);
+    }
+    step.variant = Nevpt2Variant::Sc;
+    step.json_path = output_dir / std::format("{}.json", kStep);
   } else if constexpr (std::same_as<S, OptimizeStep>) {
     // The chain it reruns is the other tables', copied in by parse_config,
     // which can see them; a table here holds only the optimizer's own keys.
@@ -602,9 +625,10 @@ template <class S>
   return {};
 }
 
-/// @brief Refuse a `[nevpt2]` or a `[casscf_gradient]` over integral-direct
-/// ERIs, which neither step runs: here, before the SCF and the CASSCF it
-/// would follow have run. Across two tables, as check_scf_against_eri.
+/// @brief Refuse a `[nevpt2]`, a `[casscf_gradient]` or a `[nevpt2_gradient]`
+/// over integral-direct ERIs, which none of them runs: here, before the SCF
+/// and the CASSCF it would follow have run. Across two tables, as
+/// check_scf_against_eri.
 [[nodiscard]] Status check_density_fitted_only(const Calculation &calc) {
   const auto &eri = calc.step<EriStep>();
   if (!eri || eri->mode == EriMode::DensityFitting) {
@@ -612,12 +636,48 @@ template <class S>
   }
   for (const auto &[planned, name] :
        {std::pair{calc.step<Nevpt2Step>().has_value(), Nevpt2Step::kName},
-        std::pair{calc.step<CasscfGradientStep>().has_value(), CasscfGradientStep::kName}}) {
+        std::pair{calc.step<CasscfGradientStep>().has_value(), CasscfGradientStep::kName},
+        std::pair{calc.step<Nevpt2GradientStep>().has_value(), Nevpt2GradientStep::kName}}) {
     if (planned) {
       return err_unsupported("[{}] runs over density fitting only, and [{}] mode is "
                              "'integral_direct': set [{}] mode = 'density_fitting'",
                              name, EriStep::kName, EriStep::kName);
     }
+  }
+  return {};
+}
+
+/// @brief Refuse a `[nevpt2_gradient]` over a state-averaged `[casscf]`, or
+/// over a molecule of multiplicity other than 1 (an open shell: the SCF
+/// under the CASSCF is closed-shell exactly when it is 1), and a `root` the
+/// single-state CASSCF does not have: here, before the SCF and the CASSCF
+/// it would follow have run. Across tables, as check_scf_against_eri; under
+/// an `[optimize]` the molecule is its chain's, the one the start is read
+/// from.
+[[nodiscard]] Status check_nevpt2_gradient(const Calculation &calc) {
+  const auto &step = calc.step<Nevpt2GradientStep>();
+  if (!step) {
+    return {};
+  }
+  constexpr std::string_view kStep = Nevpt2GradientStep::kName;
+  // The CASSCF is filled in when not written, and is never loaded.
+  if (const auto &casscf = calc.step<CasscfStep>(); casscf && casscf->nroots != 1) {
+    return err_unsupported("[{}] differentiates a single-state CASSCF, and [{}] nroots is {}: set "
+                           "[{}] nroots = 1",
+                           kStep, CasscfStep::kName, casscf->nroots, CasscfStep::kName);
+  }
+  if (step->root != 0) {
+    return err_config("[{}] root is {}, and the single-state [{}] has only root 0", kStep,
+                      step->root, CasscfStep::kName);
+  }
+  const auto &molecule = calc.step<MoleculeStep>();
+  const auto &optimize = calc.step<OptimizeStep>();
+  const MoleculeStep *const start =
+      molecule ? &*molecule : (optimize ? &optimize->molecule : nullptr);
+  if (start != nullptr && start->multiplicity != 1) {
+    return err_unsupported("[{}] is implemented for a closed-shell singlet only, and [{}] "
+                           "multiplicity is {}",
+                           kStep, MoleculeStep::kName, start->multiplicity);
   }
   return {};
 }
@@ -694,6 +754,7 @@ template <class S>
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
   FBF_TRY(check_scf_against_eri(calc, doc));
   FBF_TRY(check_density_fitted_only(calc));
+  FBF_TRY(check_nevpt2_gradient(calc));
   FBF_TRY(check_inputs_apart(calc, output_dir));
   return calc;
 }
