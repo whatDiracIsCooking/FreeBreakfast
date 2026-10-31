@@ -11,6 +11,9 @@ add_subdirectory(zvector)
 # The DF-CASSCF nuclear gradient at a solve's solution, state-specific or one
 # root of a state average (over zvector's multipliers).
 add_subdirectory(gradient)
+# F^[x] and the CP-CASSCF right-hand sides, the DF-CASSCF Hessian's
+# per-coordinate derivatives at fixed parameters.
+add_subdirectory(derivative)
 
 # The aggregate: one import for the MCSCF layer.
 free_breakfast_add_cxx_module_library(
@@ -22,4 +25,5 @@ free_breakfast_add_cxx_module_library(
   LINK_PUBLIC
   free_breakfast::mcscf::solve
   free_breakfast::mcscf::gradient
+  free_breakfast::mcscf::derivative
 )
