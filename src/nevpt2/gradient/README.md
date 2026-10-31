@@ -4,7 +4,9 @@ The SC-NEVPT2 correlation energy of one root as a function of the integrals
 (h, B) and the CI vector c, and its adjoint: the first piece of the NEVPT2
 nuclear gradient (`nuclear_gradient.tex` §5). Then the inactive-rotation
 multipliers z^c of its Lagrangian and the term Φ = ⟨z^c, f⟩ they add, with
-Φ's adjoints (Algorithm 1, steps 1–2). Link
+Φ's adjoints (Algorithm 1, steps 1–2). Then the gradient itself, of a
+single-state DF-CASSCF: the Z-vector, the Lagrangian's symmetry gate and
+the nuclear term (Algorithm 1 from step 6). Link
 `free_breakfast::nevpt2::gradient`.
 
     sc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, batch)
@@ -29,7 +31,20 @@ multipliers z^c of its Lagrangian and the term Φ = ⟨z^c, f⟩ they add, with
         lambda     dΦ/dB^L, as ScAdjoint's
         y          y^c = dΦ/dc, as ScAdjoint's y
         x, a       X and A of (h̄, Λ) above, as ScAdjoint's
+    lagrangian_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                        corr, zc, phi) -> ScGradient
+    sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, batch)
+        -> ScGradient
+        terms        dE/dR of E_cas + E_corr, mcscf::GradientTerms (n_atom × 3)
+        energies     E_corr's class energies
+        zc           z^c, max |z^c|, the smallest inactive gap
+        multipliers  (Z, z), mcscf::ZVector: zvector's coordinates, its
+                     iterations and residual
+        asymmetry    max |X^L − X^Lᵀ| per block
 
+The last two take `mcscf::df_gradient`'s arguments (`solution` a
+single-state DF-CASSCF, its orbitals core and virtuals canonical, as the
+Casscf step leaves them); the first four's are:
 `b` is B as `density_fit` leaves it (the AO B, naux × nao², the metric
 folded in), `c` the root's orbitals (nao × nmo: core, active, virtual), `h`
 the AO core Hamiltonian, `vector` the unit CI vector over the two string
@@ -167,14 +182,76 @@ and y^c one `ci::Sigma::apply` over the one-body operator W + Wᵀ with no
 two-electron part: spin-free, so y^c is in c's spin and symmetry sector.
 
 **y^c is raw, as y is**: the derivative of Φ as a function of an
-unnormalized c, not projected (⟨c, y^c⟩ = 2⟨W, γ⟩). #563 passes
-½ P_c(y + y^c) to `mcscf::zvector`, which is where it is made ⊥ c and put
-in that solver's convention (`src/mcscf/zvector/README.md`). The (h̄, Λ, X,
-A) of Φ add to `sc_adjoint`'s field by field.
+unnormalized c, not projected (⟨c, y^c⟩ = 2⟨W, γ⟩). `lagrangian_gradient`
+passes ½ (y + y^c) to `mcscf::zvector`, which projects it off c; the ½ puts
+it in that solver's convention (below). The (h̄, Λ, X, A) of Φ add to
+`sc_adjoint`'s field by field.
 
 **One root.** Both entry points take one vector, so a state average cannot
-reach them; #563, which holds the CASSCF's roots, refuses one
-(`Unsupported`).
+reach them; `lagrangian_gradient` and `sc_gradient`, which hold the
+CASSCF's roots, refuse one (`Unsupported`).
+
+## The nuclear gradient
+
+On a converged single-state CASSCF the Lagrangian is (`nuclear_gradient.tex`
+Eq. L)
+
+    L = E_cas + E_corr + Z · g_orb + z · g_ci + ⟨z^c, f⟩,
+
+g_orb `response::fock`'s orbital gradient over the packed pairs and
+g_ci = 2 (H₀ − E) c, with (Z, z) the Z-vector and z^c above. Everything but
+(Z, z) comes in: `lagrangian_gradient` takes E_corr's adjoint (`corr`, an
+`ScAdjoint`), z^c and Φ's adjoint, so the same assembly takes any
+correlation energy's adjoint in `sc_adjoint`'s shape; `sc_gradient` is
+`sc_adjoint`, `zc_multipliers` and `zc_adjoint` at the solution's orbitals
+and root, then it.
+
+1. **corr + Φ**, field by field, in place: h̄, Λ, y, X and A. A and y are
+   now Eq. cp's sources A^corr + A^{z^c} and y + y^c.
+2. **The Z-vector.** The CI-relaxed Hessian at the solution, built once as
+   `mcscf::df_gradient` builds it for its own Z-vector: `casscf_integrals`,
+   H₀'s sigma, `response::fock` at the root's RDMs, `response::Hessian` over
+   it, `ResponseIntegrals` and `RelaxedHessian` at weight 1. Then
+   `mcscf::zvector` with the orbital right-hand side g + pack(A) (g the
+   Fock's own gradient, below the CASSCF's convergence) and the CI one
+   **½ (y + y^c)**. zvector's CI row is (H₀ − E) z + P H′(Z) c = −P y_r, the
+   coordinates of PySCF's `gen_g_hop`; the tex's J_cc = 2 P (H − E) P and
+   its J_cκ are each twice that row, so for the same (Z, z) its right-hand
+   side P(y + y^c) is halved (`src/mcscf/zvector/README.md`, "The CI
+   right-hand side"). zvector projects it off c. (Z, z) come out in
+   zvector's coordinates, which is what `df_gradient` takes, so nothing is
+   mapped back.
+3. **The gate**: X^L symmetric in every block. Its antisymmetric part is
+
+       A^L = 2 (F − Fᵀ)(γ + γ_T, Γ + Γ_T) + A^Z + A,
+
+   F the generalized Fock (`response::fock`) at the root's RDMs plus z's
+   transition RDMs (E_cas's and z · g_ci's terms, half the difference of
+   `rdm12` of c ± z as `df_gradient` takes them), A^Z = 2 (F′ − F′ᵀ) with
+   F′ the derivative of the root's F along C (1 + ε κ(Z)) (Z · g_orb's
+   term), and A step 1's. A^Z is the orbital Hessian's product with Z over
+   *every* pair, the redundant ones included, which `response::Hessian`
+   does not give: the Hessian is symmetric at the solution (the full
+   gradient, redundant blocks too, vanishes there), so the derivative of
+   the gradient along Z is that product. F is a polynomial of degree 4 in C
+   (C h C and the DF Coulomb and exchange of the core density, (pu|vw)), so
+   the five-point stencil of F at ε = ±s, ±2s, max |s κ| = 0.1, is its
+   derivative exactly, to the quotient's round-off: four more
+   `casscf_integrals` and Focks, no step to tune. A block past 1e-8 is
+   refused, `Numerical`, naming it: on the non-redundant pairs A^L is the
+   Z-vector's residual, on the core–core and virtual–virtual pairs z^c's
+   division (and F's symmetric core block), on the active–active pairs the
+   gauge identity, which only the CI equation's residual moves. So a wrong
+   factor in any of the terms names its block.
+4. **The nuclear term**: one `mcscf::df_gradient` at root 0 with (Z, z) as
+   its `multipliers` and (h̄, Λ, X) as its `extra` MO adjoint: E_cas's, Z's
+   and z's terms are the ones it builds at the multipliers, corr's and
+   z^c's the extra adjoint. One derivative-integral pass.
+
+`ScGradient` carries max |z^c| and the smallest inactive gap (SC's
+near-degeneracy hazard), the PCG iterations and residual (the CASSCF
+Hessian's conditioning), and the gate's six residues, to report with every
+gradient (`nuclear_gradient.tex`, "Hazards").
 
 ## Not done
 
@@ -184,6 +261,9 @@ reach them; #563, which holds the CASSCF's roots, refuses one
 - Λ lives at naux nmo² whole; a virtual–virtual block that only its diagonal
   reaches is still stored whole, as `mcscf::df_gradient`'s extra adjoint
   takes it.
+- A state average's root (the Lagrangian's SA weights in the Z-vector, and
+  each root's own canonicalization) is refused, not done.
+- The torque (the rotational sum) is not checked; the translational one is.
 
 ## Tests
 
@@ -258,13 +338,52 @@ once per process.
     Σ κ (A + A^{z^c}) at round-off; Φ's ladders ci 2.3e-11, the six blocks
     4.6e-11 to 3.8e-10, h 2.3e-11, B 4.5e-11 relative. Each z^c case is well
     under a second.
+- The nuclear gradient, on `data/nevpt2_gradient/nevpt2_gradient.json`'s
+  cases (`test/gtest/data/README.md`): skew H₂O CAS(4,4) and H₂CO CAS(6,6),
+  cc-pVDZ / cc-pVDZ-JKFIT, each this tree's own DF-CASSCF from the case's
+  start through the registry (the Casscf step's canonical core and
+  virtuals), put in one gauge and the `mcscf::Solution` rebuilt from it
+  (its RDMs from the gauge-fixed vector):
+  - `Nevpt2NuclearGradient.MatchesNumerical`: `sc_gradient`'s total against
+    the numerical gradient (`gradients.sc.richardson`) per component to
+    1e-6 Eh/a0, the sum over atoms below 1e-9, X^L's six residues below
+    1e-9, the CASSCF energy against the reference's to 1e-8 and E_corr to
+    1e-9; and a state average refused `Unsupported`. Each prints every
+    component, max |z^c|, the smallest inactive gap and the PCG iterations.
+  - `Nevpt2NuclearGradient.MultipliersVanishWithoutCorrelation`: the same
+    `lagrangian_gradient` with E_corr's adjoint and z^c zeroed. The
+    right-hand side is then the CASSCF's own orbital gradient g (< 1e-9), so
+    the multipliers are that small (below 1e-8), and the gradient is the
+    DF-CASSCF's: PySCF's analytic one (`casscf_gradient`) to 1e-8, and
+    `df_gradient`'s own single-root one to 1e-9, the bar first order in g
+    that `mcscf_gradient_gpu.cpp` takes, since the own formula drops Z.
+    That isolates the Lagrangian plumbing from the NEVPT2 adjoint.
+  - `Nevpt2NuclearGradient.LagrangianIsStationary` (skew H₂O): the full L
+    (E_cas and g_orb from `response::fock`, g_ci from H₀'s sigma, E_corr,
+    Φ), the multipliers fixed and every input rebuilt, along C exp(t κ), κ
+    random on the three non-redundant blocks at once, and along the CI
+    ladders' u ⊥ c: each ladder's extrapolant within 1e-7 of the slope of
+    E_corr + Φ it cancels.
+  - Measured on an RTX 3080: every component within 3.4e-9 (skew H₂O) and
+    5.4e-9 (H₂CO) of the numerical gradient, each about twice its error
+    bar; translation 1e-14 and 6e-13. max |z^c| 1.9e-3 and 4.4e-3, the
+    smallest inactive gaps 3.0e-3 and 1.6e-2, PCG 18 iterations each,
+    residual 1.6e-10 and 5.3e-11. X^L worst on the active–active block,
+    7.6e-10 and 1.8e-10 (the CI response's tolerance through the gauge
+    identity), the mixed blocks ≤ 9e-11, core–core and virtual–virtual
+    ≤ 1e-14. Zeroed: max |Z| 4.1e-10 (skew H₂O; H₂CO exactly 0), against
+    df_gradient 1.5e-10 and 6e-14, against PySCF 1.9e-11 and 8.3e-12.
+    Stationarity over sixteen runs, worst: orbitals 5.7e-8, CI 3.8e-8 of
+    the slope (round-off of E_cas ≈ −76 Eh at the finest rungs). Each case
+    is under a second, the setup included, so none is a slow test.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies and the count check both units share |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, and the source term's half-transform |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
+| `lagrangian.cpp` | `lagrangian_gradient` and `sc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |
