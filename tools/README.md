@@ -91,9 +91,12 @@ emit/rhf_hessian_reference.py
                   pyscf.df.hessian.rhf's DF-RHF Hessian (its total less
                   partial_hess_elec and hess_nuc, CPHF column by column to
                   1e-12, checked against a dense solve), the orbitals and
-                  the CPHF solutions U^x, for a skew water and formaldehyde
-                  in cc-pVDZ / cc-pVDZ-JKFIT, the reference
-                  hessian::df_rhf_response is tested against. Needs PySCF.
+                  the CPHF solutions U^x, and the explicit part's
+                  two-electron terms (_partial_hess_ejk's ej and -ek), for
+                  a skew water and formaldehyde in cc-pVDZ / cc-pVDZ-JKFIT,
+                  the reference hessian::df_rhf_response and
+                  hessian::df_rhf_two_electron are tested against. Needs
+                  PySCF.
 emit/hessian_numerical_reference.py
                   Write test/gtest/data/hessian_numerical/: PySCF's analytic
                   DF-RHF Hessian (pyscf.df.hessian.rhf, CPHF column by
