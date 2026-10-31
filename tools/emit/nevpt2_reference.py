@@ -103,7 +103,7 @@ from casscf_reference import (  # noqa: E402
     derivatives,
     molecule,
     optimize,
-    singlets,
+    spin_roots,
 )
 from scf_reference import pyscf_basis  # noqa: E402
 
@@ -410,7 +410,7 @@ def case_reference(case: dict, recorded: dict) -> tuple[dict, float, float]:
     casci.kernel(orbitals)
     check_aux(name, casci, mol, auxbasis)
     davidson = casci.ci if len(weights) > 1 else [casci.ci]
-    casci_energies, vectors, _ = singlets(casci, casci.mo_coeff, len(weights))
+    casci_energies, vectors, _ = spin_roots(casci, casci.mo_coeff, len(weights))
     for root, (old, new) in enumerate(zip(davidson, vectors, strict=True)):
         overlap = abs(numpy.vdot(old, new))
         assert overlap > 1 - SAME_STATE, f"{name} root {root}: overlap {overlap}"
