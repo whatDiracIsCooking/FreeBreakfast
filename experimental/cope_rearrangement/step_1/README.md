@@ -7,7 +7,7 @@ throughout, geomeTRIC as the optimiser. Nothing here is built; it is a
 generator and its output, like `compress_rdm3/`.
 
 Steps 2 on (NEVPT2 and the a_u curvature, the 2D surface, the PT2 TS,
-cross-checks) are not done here. `orbitals/` is what step 2 starts from.
+cross-checks) are not done here. `orbitals/` is what [step 2](../step_2/README.md) starts from.
 
 ## Method
 
