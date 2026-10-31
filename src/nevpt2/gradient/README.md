@@ -141,10 +141,17 @@ once per process.
     extrapolant missed by 3.0e-6; at a tenth they reach 4.000 and the miss
     is 3.6e-10, the prediction exactly a tenth of the full one's. The
     tolerance is unchanged.
-  - Measured on an RTX 3080: ci 3.3e-10; core–core 7.6e-9, active–active
-    5.1e-9, virtual–virtual 9.5e-10, active–core 6.6e-9, virtual–core
-    1.3e-9, virtual–active 2.1e-10; h 2.6e-10, B 3.6e-10 relative. Each
-    ladder is well under a second; the CASSCF setup dominates.
+  - **The state is put in one gauge first** (`fix_gauge`): each orbital's
+    leading coefficient positive, the CI vector carried along, then its
+    own. The CASSCF's eigensolvers leave run-dependent signs, so unfixed,
+    one seed's κ was a different rotation from run to run, and one such
+    active–core ladder had not reached the t² regime by its last rung. In
+    one gauge the directions are the same every run.
+  - Measured on an RTX 3080 over five runs, worst of each: ci 7.2e-10;
+    core–core 7.0e-9, active–active 1.6e-8, virtual–virtual 2.2e-9,
+    active–core 3.9e-9, virtual–core 4.5e-9, virtual–active 1.1e-9; h
+    6.5e-10, B 5.9e-10 relative. Each ladder is well under a second; the
+    CASSCF setup dominates.
 - `SourceTermShapes`: A is X − Xᵀ, h̄ and every Λ^L symmetric.
 
 ## Files

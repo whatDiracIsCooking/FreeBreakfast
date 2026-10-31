@@ -113,6 +113,73 @@ struct State {
   std::vector<double> vector;
 };
 
+// The state in one gauge, whatever signs the CASSCF's eigensolvers left:
+// each orbital's largest coefficient positive, the CI vector carried along
+// (a determinant's sign is the product of its occupied active orbitals'
+// flips, per spin), then its largest coefficient positive. A seeded direction
+// is then the same rotation or displacement from run to run: unfixed, one
+// seed's κ on the active-core block was a different rotation in another
+// run's signs, and that one's ladder had not reached the t^2 regime by its
+// last rung (ratios 2.98 3.91 5.00 6.49 6.17 4.87 4.25 4.08) while the
+// first run's had, at 6.6e-9.
+// The first element of @p v within 1e-8 of its largest magnitude. Not the
+// largest itself: by H2O's mirror symmetry an orbital's coefficients on the
+// two hydrogens (and a CI vector's mirrored determinants) tie in magnitude,
+// and which of a tied pair is larger is round-off's choice.
+double leading(std::span<const double> v) {
+  double largest = 0.0;
+  for (const double x : v) {
+    largest = std::max(largest, std::abs(x));
+  }
+  for (const double x : v) {
+    if (std::abs(x) >= largest - 1e-8) {
+      return x;
+    }
+  }
+  return 0.0;
+}
+
+void fix_gauge(State &s) {
+  const auto nao = static_cast<std::size_t>(s.nao);
+  std::vector<bool> flipped(nao, false);
+  for (std::size_t p = 0; p < nao; ++p) {
+    const auto column = std::span<double>(s.c).subspan(p * nao, nao);
+    if (leading(column) < 0.0) {
+      flipped[p] = true;
+      for (double &v : column) {
+        v = -v;
+      }
+    }
+  }
+  auto strings = fb::ci::StringSet::create(s.ncas, s.nelecas / 2);
+  EXPECT_TRUE(strings.has_value()) << strings.error().message;
+  if (!strings.has_value()) {
+    return;
+  }
+  std::vector<double> sign;
+  for (const std::uint64_t string : strings->strings()) {
+    double value = 1.0;
+    for (std::int32_t t = 0; t < s.ncas; ++t) {
+      if (((string >> t) & 1U) != 0U && flipped[static_cast<std::size_t>(s.ncore + t)]) {
+        value = -value;
+      }
+    }
+    sign.push_back(value);
+  }
+  const std::size_t m = sign.size();
+  EXPECT_EQ(s.vector.size(), m * m);
+  for (std::size_t i = 0; i < m && s.vector.size() == m * m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) {
+      s.vector[(i * m) + j] *= sign[i] * sign[j];
+    }
+  }
+  if (leading(s.vector) < 0.0) {
+    for (double &v : s.vector) {
+      v = -v;
+    }
+  }
+}
+
 // Our DF-CASSCF from the reference's start, run once per process.
 const State &state() {
   static const State kState = [] {
@@ -171,6 +238,7 @@ const State &state() {
     s.c = download(res, casscf->c.data(), nao * nao);
     s.h = download(res, h->h.data(), nao * nao);
     s.vector = casscf->vectors;
+    fix_gauge(s);
     return s;
   }();
   return kState;
