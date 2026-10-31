@@ -1,6 +1,6 @@
 /// @file
-/// @brief lagrangian_gradient and sc_gradient: the Z-vector of the
-/// SC-NEVPT2 Lagrangian on a single-state DF-CASSCF over the CI-relaxed
+/// @brief lagrangian_gradient, sc_gradient and pc_gradient: the Z-vector of
+/// the SC- or PC-NEVPT2 Lagrangian on a single-state DF-CASSCF over the CI-relaxed
 /// Hessian, the gate that its orbital source term is symmetric in every
 /// block, and the nuclear term as one mcscf::df_gradient pass over the
 /// multipliers and the correlation's MO adjoint.
@@ -181,7 +181,7 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
   const size_t nroots = solution.roots.energies.size();
   if (nroots != 1) {
     return err_unsupported("nevpt2::lagrangian_gradient: the solution averages {} roots, and the "
-                           "SC-NEVPT2 gradient is of a single-state CASSCF only",
+                           "NEVPT2 gradient is of a single-state CASSCF only",
                            nroots);
   }
   const SphericalMatrixAO &c = solution.c;
@@ -310,23 +310,21 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
                     .asymmetry = asymmetry};
 }
 
-Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
-                               const BasisSet &basis,
-                               const std::span<const PrimitivePairClass> classes,
-                               const BasisSet &aux, const SphericalMatrixAO &h,
-                               const Buffers::device<double> &b, const double *l,
-                               const mcscf::Solution &solution, const int32_t ncore,
-                               const int32_t ncas, const int32_t batch) {
+// The root's string sets, after the checks sc_gradient and pc_gradient
+// make of @p solution: one root (else Unsupported, naming @p method's
+// gradient), and gamma of ncas^2 elements. @p who names the caller.
+Result<std::pair<ci::DeviceStringSet, ci::DeviceStringSet>>
+root_strings(DeviceResources &res, const std::string_view who, const std::string_view method,
+             const Molecule &molecule, const mcscf::Solution &solution, const int32_t ncas) {
   const size_t nroots = solution.roots.energies.size();
   if (nroots != 1) {
-    return err_unsupported("nevpt2::sc_gradient: the solution averages {} roots, and the "
-                           "SC-NEVPT2 gradient is of a single-state CASSCF only",
-                           nroots);
+    return err_unsupported("{}: the solution averages {} roots, and the "
+                           "{}-NEVPT2 gradient is of a single-state CASSCF only",
+                           who, nroots, method);
   }
   const auto n = static_cast<size_t>(std::max(ncas, 0));
   if (solution.gamma.size() != n * n) {
-    return err_config("nevpt2::sc_gradient: gamma of {} elements for ncas {}",
-                      solution.gamma.size(), ncas);
+    return err_config("{}: gamma of {} elements for ncas {}", who, solution.gamma.size(), ncas);
   }
   double trace = 0.0;
   for (size_t t = 0; t < n; ++t) {
@@ -335,9 +333,21 @@ Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
   const auto nelecas = static_cast<int32_t>(std::lround(trace));
   const int32_t n_beta = (nelecas - (molecule.multiplicity() - 1)) / 2;
   const ScopedDeviceIndex on{res.dev_idx()};
-  const ci::DeviceStringSet alpha =
-      FBF_TRY(ci::DeviceStringSet::create(res, ncas, nelecas - n_beta));
-  const ci::DeviceStringSet beta = FBF_TRY(ci::DeviceStringSet::create(res, ncas, n_beta));
+  ci::DeviceStringSet alpha = FBF_TRY(ci::DeviceStringSet::create(res, ncas, nelecas - n_beta));
+  ci::DeviceStringSet beta = FBF_TRY(ci::DeviceStringSet::create(res, ncas, n_beta));
+  return std::pair{std::move(alpha), std::move(beta)};
+}
+
+Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
+                               const BasisSet &basis,
+                               const std::span<const PrimitivePairClass> classes,
+                               const BasisSet &aux, const SphericalMatrixAO &h,
+                               const Buffers::device<double> &b, const double *l,
+                               const mcscf::Solution &solution, const int32_t ncore,
+                               const int32_t ncas, const int32_t batch) {
+  const auto [alpha, beta] =
+      FBF_TRY(root_strings(res, "nevpt2::sc_gradient", "SC", molecule, solution, ncas));
+  const ScopedDeviceIndex on{res.dev_idx()};
   const auto naux = static_cast<int32_t>(aux.nao_sphe());
   const auto nmo = static_cast<int32_t>(solution.c.n());
   const double *const c = solution.c.data();
@@ -350,6 +360,46 @@ Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
                                            ncore, ncas, vector, zc.z.data()));
   return lagrangian_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
                              std::move(corr), std::move(zc), phi);
+}
+
+Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
+                               const BasisSet &basis,
+                               const std::span<const PrimitivePairClass> classes,
+                               const BasisSet &aux, const SphericalMatrixAO &h,
+                               const Buffers::device<double> &b, const double *l,
+                               const mcscf::Solution &solution, const int32_t ncore,
+                               const int32_t ncas, const int32_t batch) {
+  const auto [alpha, beta] =
+      FBF_TRY(root_strings(res, "nevpt2::pc_gradient", "PC", molecule, solution, ncas));
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto naux = static_cast<int32_t>(aux.nao_sphe());
+  const auto nmo = static_cast<int32_t>(solution.c.n());
+  const double *const c = solution.c.data();
+  const double *const vector = solution.roots.vectors.data();
+  // A refused class is the energy's error, here and so the gradient's.
+  PcAdjoint corr = FBF_TRY(pc_adjoint(res, alpha, beta, naux, nmo, nmo, b.data(), c, h.data(),
+                                      ncore, ncas, vector, batch));
+  // PC is invariant to an inactive rotation only between degenerate orbital
+  // energies, so its z^c is the same division as SC's, over its own A.
+  ZcMultipliers zc =
+      FBF_TRY(zc_multipliers(res, nmo, ncore, ncas, corr.a.data(), corr.epsilon.data()));
+  const ZcAdjoint phi = FBF_TRY(zc_adjoint(res, alpha, beta, naux, nmo, nmo, b.data(), c, h.data(),
+                                           ncore, ncas, vector, zc.z.data()));
+  ScGradient g = FBF_TRY(lagrangian_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
+                                             ncore, ncas,
+                                             ScAdjoint{.energies = {},
+                                                       .h_bar = std::move(corr.h_bar),
+                                                       .lambda = std::move(corr.lambda),
+                                                       .y = std::move(corr.y),
+                                                       .x = std::move(corr.x),
+                                                       .a = std::move(corr.a),
+                                                       .epsilon = std::move(corr.epsilon)},
+                                             std::move(zc), phi));
+  return PcGradient{.terms = std::move(g.terms),
+                    .energies = corr.energies,
+                    .zc = std::move(g.zc),
+                    .multipliers = std::move(g.multipliers),
+                    .asymmetry = g.asymmetry};
 }
 
 } // namespace free_breakfast::nevpt2

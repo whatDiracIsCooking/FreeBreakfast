@@ -15,7 +15,8 @@
 // rule. Then the nuclear gradient (sc_gradient, lagrangian_gradient) on
 // data/nevpt2_gradient/'s cases: against the numerical gradient, with
 // E_corr zeroed against the DF-CASSCF's, and the full Lagrangian's
-// stationarity.
+// stationarity. Then PC-NEVPT2's (pc_gradient) against the numerical one, its
+// z^c's zero branch on a forced near-degenerate pair, and its refusals.
 
 #include <gtest/gtest.h>
 
@@ -332,6 +333,33 @@ HostAdjoint adjoint(fb::DeviceResources &res, const State &s) {
           .epsilon = download(res, got->epsilon.data(), nmo)};
 }
 
+// pc_adjoint at @p s, on the host, as adjoint() takes sc_adjoint's; or its
+// error.
+fb::Result<HostAdjoint> pc_adjoint_of(fb::DeviceResources &res, const State &s) {
+  const DeviceState d = upload_state(res, s);
+  const auto got = nevpt2::pc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                                      d.c.data(), d.h.data(), s.ncore, s.ncas, d.vector.data(), 0);
+  if (!got.has_value()) {
+    return std::unexpected(got.error());
+  }
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  return HostAdjoint{
+      .total = got->energies.total,
+      .h_bar = download(res, got->h_bar.data(), nmo * nmo),
+      .lambda = download(res, got->lambda.data(), static_cast<std::size_t>(s.naux) * nmo * nmo),
+      .y = download(res, got->y.data(), s.vector.size()),
+      .x = download(res, got->x.data(), nmo * nmo),
+      .a = download(res, got->a.data(), nmo * nmo),
+      .epsilon = download(res, got->epsilon.data(), nmo)};
+}
+
+// pc_energy at @p s.
+fb::Result<nevpt2::PcClassEnergies> pc_energy_of(fb::DeviceResources &res, const State &s) {
+  const DeviceState d = upload_state(res, s);
+  return nevpt2::pc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                           d.c.data(), d.h.data(), s.ncore, s.ncas, d.vector.data(), 0);
+}
+
 // C = A B, column-major: A m x k, B k x n.
 std::vector<double> matmul(std::span<const double> a, std::span<const double> b, std::size_t m,
                            std::size_t k, std::size_t n) {
@@ -368,6 +396,58 @@ std::vector<double> expm(std::span<const double> k, std::size_t n) {
     }
   }
   return out;
+}
+
+// The AO core Hamiltonian whose MO view C^T h C is @p s's plus @p delta on
+// the diagonal of each of @p orbitals and nothing else: h + delta Σ_j v_j
+// v_jᵀ, v_j = C^-T e_j (C is square), so every orbital energy and F^I
+// element but those of the moved orbitals is the state's own, and theirs
+// move by delta. C^-1 by Gauss-Jordan with partial pivoting.
+std::vector<double> shifted_h(const State &s, std::span<const std::size_t> orbitals,
+                              const double delta) {
+  const auto n = static_cast<std::size_t>(s.nao);
+  // [C | I], row-major, reduced to [I | C^-1].
+  std::vector<double> m(n * 2 * n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j < n; ++j) {
+      m[(i * 2 * n) + j] = s.c[i + (n * j)];
+    }
+    m[(i * 2 * n) + n + i] = 1.0;
+  }
+  for (std::size_t k = 0; k < n; ++k) {
+    std::size_t pivot = k;
+    for (std::size_t i = k + 1; i < n; ++i) {
+      if (std::abs(m[(i * 2 * n) + k]) > std::abs(m[(pivot * 2 * n) + k])) {
+        pivot = i;
+      }
+    }
+    for (std::size_t j = 0; j < 2 * n; ++j) {
+      std::swap(m[(k * 2 * n) + j], m[(pivot * 2 * n) + j]);
+    }
+    const double inv = 1.0 / m[(k * 2 * n) + k];
+    for (std::size_t j = 0; j < 2 * n; ++j) {
+      m[(k * 2 * n) + j] *= inv;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      const double f = m[(i * 2 * n) + k];
+      if (i != k && f != 0.0) {
+        for (std::size_t j = 0; j < 2 * n; ++j) {
+          m[(i * 2 * n) + j] -= f * m[(k * 2 * n) + j];
+        }
+      }
+    }
+  }
+  std::vector<double> h = s.h;
+  for (const std::size_t j : orbitals) {
+    // v_mu = (C^-T)_{mu j} = (C^-1)_{j mu}.
+    const auto v = std::span<const double>(m).subspan((j * 2 * n) + n, n);
+    for (std::size_t nu = 0; nu < n; ++nu) {
+      for (std::size_t mu = 0; mu < n; ++mu) {
+        h[mu + (n * nu)] += delta * v[mu] * v[nu];
+      }
+    }
+  }
+  return h;
 }
 
 // C^T M C for an nao x nao M: the MO basis's view of an AO matrix.
@@ -992,6 +1072,88 @@ TEST(Nevpt2Zc, DegeneratePairRule) {
   EXPECT_GT(unforced->max_z, 0.0);
 }
 
+// PC's z^c on a forced near-degenerate inactive pair takes the zero branch,
+// where SC's is refused. PC is invariant to a rotation of two inactive
+// orbitals only when their orbital energies are equal (nevpt2_energy_gpu.cpp's
+// Nevpt2PcEnergyAdjoint.InactiveRotationsAreRoundOff, at the class level):
+// at the real state, with distinct ε, its A_pq is not zero and z^c is the
+// same division as SC's. So in each of the core and the virtual space, the
+// pair with |A^SC| > 1e-6 closest in ε is pushed together, the upper one
+// moved to 1e-9 Eh above the lower through h alone (shifted_h: C^T h C
+// moves on that orbital's diagonal, so f stays diagonal and nothing else
+// does): PC's A_pq there is round-off, under zc_multipliers' 1e-8, and its
+// z_pq exactly 0, while SC's A_pq stays past it and the pair is refused,
+// Numerical, naming both orbitals. SC's A_pq falls too as the pair closes
+// (on the gfx1200, 7.3e-3 to 1.5e-7 on the core pair, 4.6e-5 to 7.4e-8 on
+// the virtual one), but stops there, where PC's reaches 1e-13: so the
+// control is the rule's own 1e-8, and PC's at least 1e3 below SC's.
+TEST(Nevpt2PcZc, DegeneratePairTakesTheZeroBranch) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const HostAdjoint sc = adjoint(res, s);
+  const auto pc = pc_adjoint_of(res, s);
+  ASSERT_TRUE(pc.has_value()) << pc.error().message;
+  const std::array<std::size_t, 3> first{0, static_cast<std::size_t>(s.ncore),
+                                         static_cast<std::size_t>(s.ncore + s.ncas)};
+  for (const bool core : {true, false}) {
+    const char *const what = core ? "core-core" : "virtual-virtual";
+    const std::size_t lo = core ? first[0] : first[2];
+    const std::size_t hi = core ? first[1] : nmo;
+    std::optional<std::pair<std::size_t, std::size_t>> pair;
+    double gap = std::numeric_limits<double>::infinity();
+    for (std::size_t q = lo; q < hi; ++q) {
+      for (std::size_t p = q + 1; p < hi; ++p) {
+        const double g = std::abs(sc.epsilon[p] - sc.epsilon[q]);
+        if (std::abs(sc.a[p + (nmo * q)]) > 1e-6 && g < gap) {
+          gap = g;
+          pair = {p, q};
+        }
+      }
+    }
+    ASSERT_TRUE(pair.has_value()) << what << ": no pair with |A^SC| > 1e-6";
+    const auto [p, q] = *pair;
+    // The upper of the two onto the lower + 1e-9.
+    const std::size_t upper = sc.epsilon[p] > sc.epsilon[q] ? p : q;
+    const std::size_t lower = upper == p ? q : p;
+    const double pc_before = pc->a[p + (nmo * q)];
+    State forced = s;
+    const std::array<std::size_t, 1> moved{upper};
+    forced.h = shifted_h(s, moved, (sc.epsilon[lower] + 1e-9) - sc.epsilon[upper]);
+
+    const HostAdjoint sc_forced = adjoint(res, forced);
+    const auto pc_forced = pc_adjoint_of(res, forced);
+    ASSERT_TRUE(pc_forced.has_value()) << what << ": " << pc_forced.error().message;
+    const double forced_gap = std::abs(pc_forced->epsilon[p] - pc_forced->epsilon[q]);
+    EXPECT_LT(forced_gap, 1e-8) << what;
+    EXPECT_LT(std::abs(sc_forced.epsilon[p] - sc_forced.epsilon[q]), 1e-8) << what;
+    const double pc_a = pc_forced->a[p + (nmo * q)];
+    const double sc_a = sc_forced.a[p + (nmo * q)];
+    EXPECT_LE(std::abs(pc_a), 1e-8) << what << ": PC's A at the forced pair";
+    EXPECT_GT(std::abs(sc_a), 1e-8) << what << ": SC's A at the forced pair, the control";
+    EXPECT_LT(std::abs(pc_a), 1e-3 * std::abs(sc_a)) << what;
+
+    const auto pc_z = multipliers(res, forced, pc_forced->a, pc_forced->epsilon);
+    ASSERT_TRUE(pc_z.has_value()) << what << ": " << pc_z.error().message;
+    const std::vector<double> z = download(res, pc_z->z.data(), nmo * nmo);
+    EXPECT_EQ(z[p + (nmo * q)], 0.0) << what;
+    EXPECT_EQ(z[q + (nmo * p)], 0.0) << what;
+    EXPECT_LE(pc_z->min_gap, 1e-8) << what;
+
+    const auto sc_z = multipliers(res, forced, sc_forced.a, sc_forced.epsilon);
+    ASSERT_FALSE(sc_z.has_value()) << what;
+    EXPECT_EQ(sc_z.error().kind, fb::ErrorKind::Numerical) << what;
+    const std::string named = std::format("orbitals {} and {}", p, q);
+    EXPECT_NE(sc_z.error().message.find(named), std::string::npos) << sc_z.error().message;
+    std::cout << std::format("[ nevpt2   ] {} pair ({}, {}), gap {:.3e} -> {:.3e}: PC A {:+.3e} "
+                             "-> {:+.3e}, SC A {:+.3e} -> {:+.3e}\n",
+                             what, p, q, gap, forced_gap, pc_before, pc_a, sc.a[p + (nmo * q)],
+                             sc_a);
+  }
+}
+
 // z^c symmetric and zero off the core-core and virtual-virtual blocks and on
 // the diagonal; A^{z^c} = X - X^T, h_bar^{z^c} = z, every Λ^L symmetric; and
 // y^c swap-symmetric in its two strings, as the singlet c is, since
@@ -1175,6 +1337,13 @@ fb::Result<nevpt2::ScGradient> sc_gradient_of(NuclearRun &run) {
                              run.state.ncas, 0);
 }
 
+fb::Result<nevpt2::PcGradient> pc_gradient_of(NuclearRun &run, const fb::SphericalMatrixAO &h) {
+  const GradientInputs in = gradient_inputs(run);
+  return nevpt2::pc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux, h,
+                             in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                             run.state.ncas, 0);
+}
+
 double largest_abs(std::span<const double> v) {
   double largest = 0.0;
   for (const double x : v) {
@@ -1196,11 +1365,11 @@ constexpr std::array<std::string_view, 6> kAsymmetryBlocks{"core-core",       "a
                                                            "virtual-virtual", "active-core",
                                                            "virtual-core",    "virtual-active"};
 
-void expect_symmetric(const std::string &label, const nevpt2::ScGradient &g) {
+void expect_symmetric(const std::string &label, const std::array<double, 6> &asymmetry) {
   std::string report;
-  for (std::size_t k = 0; k < g.asymmetry.size(); ++k) {
-    EXPECT_LT(g.asymmetry[k], kAsymmetryTolerance) << label << " X^L " << kAsymmetryBlocks[k];
-    report += std::format(" {} {:.2e}", kAsymmetryBlocks[k], g.asymmetry[k]);
+  for (std::size_t k = 0; k < asymmetry.size(); ++k) {
+    EXPECT_LT(asymmetry[k], kAsymmetryTolerance) << label << " X^L " << kAsymmetryBlocks[k];
+    report += std::format(" {} {:.2e}", kAsymmetryBlocks[k], asymmetry[k]);
   }
   std::cout << std::format("[ nevpt2   ] {} X^L asymmetry:{}\n", label, report);
 }
@@ -1253,7 +1422,7 @@ TEST_P(Nevpt2NuclearGradient, MatchesNumerical) {
   EXPECT_LT(translation(total), kTranslationTolerance) << name;
   std::cout << std::format("[ nevpt2   ] {} worst component {:.2e}, translation {:.2e}\n", name,
                            worst, translation(total));
-  expect_symmetric(name, *g);
+  expect_symmetric(name, g->asymmetry);
 
   // A state average is refused.
   run.solution->roots.energies.push_back(run.solution->roots.energies.front());
@@ -1322,13 +1491,128 @@ TEST_P(Nevpt2NuclearGradient, MultipliersVanishWithoutCorrelation) {
                            "{} iterations; against df_gradient {:.2e}, against PySCF {:.2e}\n",
                            name, z_orbital, z_ci, g->multipliers.iterations, worst_own,
                            worst_analytic);
-  expect_symmetric(name + " E_corr zeroed", *g);
+  expect_symmetric(name + " E_corr zeroed", g->asymmetry);
+}
+
+// The PC-NEVPT2 gradient against the numerical one (gradients.pc, block2's
+// WickICNEVPT2 over PySCF's fitted integrals) per component to 1e-6, its
+// sum over atoms, X^L's symmetry, E_corr against block2's at the same
+// state, and a state average refused. PC's z^c is not round-off here: the
+// inactive orbital energies are distinct, and PC is invariant to an
+// inactive rotation only between equal ones (Nevpt2PcZc).
+TEST_P(Nevpt2NuclearGradient, PcMatchesNumerical) {
+  FBF_REQUIRE_GPU();
+  const std::string name{GetParam()};
+  const auto start = std::chrono::steady_clock::now();
+  const fb::json &entry = gradient_case(name);
+  NuclearRun run = nuclear_run(entry);
+  ASSERT_TRUE(run.solution.has_value());
+  const auto setup = std::chrono::steady_clock::now();
+  const GradientInputs in = gradient_inputs(run);
+  const auto g = pc_gradient_of(run, in.h);
+  ASSERT_TRUE(g.has_value()) << g.error().message;
+  const std::chrono::duration<double> setup_seconds = setup - start;
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - setup;
+
+  const double e_ref = entry.at("e_corr").at("pc").get<double>();
+  EXPECT_NEAR(g->energies.total, e_ref, kTolerance);
+  const fb::json &want = entry.at("gradients").at("pc");
+  const fb::json &rows = want.at("richardson");
+  const fb::json &bars = want.at("error_bar");
+  const std::vector<double> &total = g->terms.total;
+  ASSERT_EQ(total.size(), 3 * rows.size());
+  std::cout << std::format("[ nevpt2   ] {} PC gradient (setup {:.2f} s, gradient {:.2f} s): "
+                           "E_corr {:.12f} ({:+.2e}), max |z^c| {:.3e}, smallest inactive gap "
+                           "{:.3e}, PCG {} iterations, residual {:.2e}\n",
+                           name, setup_seconds.count(), seconds.count(), g->energies.total,
+                           g->energies.total - e_ref, g->zc.max_z, g->zc.min_gap,
+                           g->multipliers.iterations, g->multipliers.residual);
+  double worst = 0.0;
+  for (std::size_t a = 0; a < rows.size(); ++a) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      const double ours = total[(3 * a) + k];
+      const double ref = rows[a][k].get<double>();
+      EXPECT_NEAR(ours, ref, kNumericalTolerance) << name << " PC [" << a << "][" << k << "]";
+      worst = std::max(worst, std::abs(ours - ref));
+      std::cout << std::format(
+          "[ nevpt2   ] {} PC {} {}: analytic {:+.10f} numerical {:+.10f} "
+          "diff {:+.2e} (error bar {:.1e})\n",
+          name, entry.at("atoms")[a].at("symbol").get<std::string>() + std::to_string(a), "xyz"[k],
+          ours, ref, ours - ref, bars[a][k].get<double>());
+    }
+  }
+  EXPECT_LT(translation(total), kTranslationTolerance) << name;
+  std::cout << std::format("[ nevpt2   ] {} PC worst component {:.2e}, translation {:.2e}\n", name,
+                           worst, translation(total));
+  expect_symmetric(name + " PC", g->asymmetry);
+
+  run.solution->roots.energies.push_back(run.solution->roots.energies.front());
+  const auto averaged = pc_gradient_of(run, in.h);
+  ASSERT_FALSE(averaged.has_value());
+  EXPECT_EQ(averaged.error().kind, fb::ErrorKind::Unsupported) << averaged.error().message;
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2NuclearGradient,
                          ::testing::Values(std::string_view{"h2o_skew_ccpvdz"},
                                            std::string_view{"h2co_ccpvdz"}),
                          [](const auto &info) { return std::string(info.param); });
+
+// A state PC refuses is refused by pc_gradient with pc_energy's error, kind
+// and message, never a gradient with the class summed in as zero. Two
+// states, after nevpt2_energy_gpu.cpp's: a zero CI vector, whose RDMs and so
+// Sr's metric are zero ("no positive eigenvalue"); and every virtual orbital
+// energy lowered by 1000 Eh through h (shifted_h), so that Sr's denominator
+// λ + ε_r is negative ("not positive").
+TEST(Nevpt2PcGradient, RefusesWhatTheEnergyRefuses) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = nuclear_run(gradient_case("h2o_skew_ccpvdz"));
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  const GradientInputs in = gradient_inputs(run);
+  const State &s = run.state;
+  const auto nmo = static_cast<std::size_t>(s.nao);
+
+  std::vector<std::size_t> virtuals;
+  for (auto p = static_cast<std::size_t>(s.ncore + s.ncas); p < nmo; ++p) {
+    virtuals.push_back(p);
+  }
+  State low = s;
+  low.h = shifted_h(s, virtuals, -1000.0);
+  fb::SphericalMatrixAO h_low(res, in.basis);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(h_low.data(), low.h.data(), low.h.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  {
+    const auto energy = pc_energy_of(res, low);
+    ASSERT_FALSE(energy.has_value()) << "virtuals at -1000 Eh";
+    const auto g = pc_gradient_of(run, h_low);
+    ASSERT_FALSE(g.has_value()) << "virtuals at -1000 Eh";
+    EXPECT_EQ(g.error().kind, fb::ErrorKind::Numerical);
+    EXPECT_EQ(g.error().kind, energy.error().kind);
+    EXPECT_EQ(g.error().message, energy.error().message);
+    EXPECT_NE(g.error().message.find("Sr"), std::string::npos) << g.error().message;
+    EXPECT_NE(g.error().message.find("not positive"), std::string::npos) << g.error().message;
+  }
+
+  State zero = s;
+  std::ranges::fill(zero.vector, 0.0);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(run.solution->roots.vectors.data(), zero.vector.data(),
+                                zero.vector.size() * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  const auto energy = pc_energy_of(res, zero);
+  ASSERT_FALSE(energy.has_value()) << "zero vector";
+  const auto g = pc_gradient_of(run, in.h);
+  ASSERT_FALSE(g.has_value()) << "zero vector";
+  EXPECT_EQ(g.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_EQ(g.error().kind, energy.error().kind);
+  EXPECT_EQ(g.error().message, energy.error().message);
+  EXPECT_NE(g.error().message.find("Sr"), std::string::npos) << g.error().message;
+  EXPECT_NE(g.error().message.find("no positive eigenvalue"), std::string::npos)
+      << g.error().message;
+}
 
 // The full Lagrangian L = E_cas + E_corr + <z^c, f> + Z . g_orb + z . g_ci
 // at the moved state @p moved, the multipliers fixed: g_orb response::fock's
