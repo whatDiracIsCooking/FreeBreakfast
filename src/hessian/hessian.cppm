@@ -1,12 +1,15 @@
 /// @file
-/// @brief Analytic nuclear Hessians on the GPU: so far the response part of
-/// the closed-shell DF-RHF one, everything the orbitals' first-order response
-/// adds to the explicit second-derivative integrals, in the symmetric form
+/// @brief Analytic nuclear Hessians on the GPU: the closed-shell DF-RHF one,
+/// df_rhf, the sum of its explicit part (the one-electron, nuclear-repulsion
+/// and fitted two-electron second derivatives at fixed orbitals) and its
+/// response part, everything the orbitals' first-order response adds, in the
+/// symmetric form
 ///
 ///     -4 B^T U - 2 (Sigma + Sigma^T) + 2 Omega + Theta,
 ///
-/// over the CPHF right-hand sides B^x and solutions U^x. The README has each
-/// term's derivation and the memory it holds.
+/// over the CPHF right-hand sides B^x and solutions U^x. Each part is its own
+/// entry point too. The README has each term's derivation and the memory it
+/// holds.
 
 export module free_breakfast.hessian;
 
@@ -155,5 +158,69 @@ df_rhf_two_electron(DeviceResources &res, const BasisSet &basis,
                     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                     const Buffers::device<double> &b, const double *l,
                     const Buffers::device<double> &c, int32_t nocc);
+
+/// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
+/// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
+/// (hartree / bohr^2), as @c gradient::RhfTerms holds the gradient's.
+struct RhfTerms {
+  /// @brief d^2E/dx dy, the sum of the terms below symmetrized,
+  /// (H + H^T) / 2: exactly symmetric, so it reads the same row- or
+  /// column-major.
+  std::vector<double> hessian;
+  /// @brief max |H - H^T| of the terms' sum before it was symmetrized: each
+  /// term is symmetric to rounding, so this is their rounding. What the
+  /// response part's own symmetrization discards is the CPHF residual's,
+  /// which response.cphf.residuals reports.
+  double asymmetry{0.0};
+  /// @brief The one-electron explicit part: T's and V's second-derivative
+  /// integrals contracted with D, S's with -W, W = 2 Sum_i eps_i C_i C_i^T
+  /// (PySCF's partial_hess_elec e1).
+  std::vector<double> one_electron;
+  /// @brief d^2 V_nn / dx dy, @c nuclear_repulsion_hessian.
+  std::vector<double> nuclear_repulsion;
+  /// @brief The fitted Coulomb and exchange explicit parts,
+  /// @ref df_rhf_two_electron's.
+  RhfTwoElectron two_electron;
+  /// @brief The response part and the CPHF it was built from,
+  /// @ref df_rhf_response's.
+  RhfResponse response;
+};
+
+/// @brief The closed-shell DF-RHF analytic nuclear Hessian at converged
+/// orbitals: @c overlap_hessian at -W, @c kinetic_hessian and
+/// @c potential_hessian at D = 2 C_o C_o^T, @c nuclear_repulsion_hessian,
+/// @ref df_rhf_two_electron and @ref df_rhf_response, summed and symmetrized.
+/// PySCF's @c pyscf.df.hessian.rhf over the same fitting set (auxbasis
+/// response 2).
+///
+/// The inputs are @ref df_rhf_response's, and are checked as it checks them
+/// before anything runs: @p molecule the one both bases were placed on,
+/// @p classes @c primitive_pair_classes of @p basis, @p b and @p l
+/// @c density_fit's B and L, @p c the nao x nmo orbitals (nmo =
+/// mo_energies.size(), the first @p nocc occupied) and @p mo_energies their
+/// canonical energies; @p tolerance and @p max_iterations are the CPHF's.
+///
+/// The parts run one after another, each freeing what it held before the
+/// next, so the call's peak memory is the larger of the two two-electron
+/// calls' (each refuses its own, Unsupported, naming the bytes). D and -W
+/// (nao^2 each) are held only for the one-electron part.
+///
+/// Queued on res.stream(); every part synchronizes it, and the call returns
+/// with everything done. None of @p b, @p l and @p c may point into
+/// res.device_workspace(). The device res.dev_idx() names is made current for
+/// the call and the previous one restored.
+///
+/// @return The Hessian and its terms; InvalidConfig if @p molecule is not of
+///         basis.natoms() atoms, if @p nocc is not in [1, nmo), if @p c is not
+///         nao nmo or @p b not naux nao^2 long, or for any input a part
+///         refuses; or the first error of a part (Unsupported for memory, the
+///         CPHF's MaxIterationsExceeded or Divergence, a GpuRuntime error).
+[[nodiscard]] Result<RhfTerms> df_rhf(DeviceResources &res, const Molecule &molecule,
+                                      const BasisSet &basis,
+                                      std::span<const PrimitivePairClass> classes,
+                                      const BasisSet &aux, const Buffers::device<double> &b,
+                                      const double *l, const Buffers::device<double> &c,
+                                      std::span<const double> mo_energies, int32_t nocc,
+                                      double tolerance = 1e-10, int32_t max_iterations = 100);
 
 } // namespace free_breakfast::hessian

@@ -1,17 +1,27 @@
 # `free_breakfast.hessian`
 
-Analytic nuclear Hessians on the GPU, namespace `free_breakfast::hessian`.
-So far two parts of the closed-shell DF-RHF one: the **response part**,
-everything the orbitals' first-order response adds to the explicit part (the
-second-derivative integrals contracted with D, W and D ⊗ D, and V_nn's), in
-the symmetric form of the design (`rhf_hessian.tex` eq. hess-sym, Algorithm 1
-lines 2–9); and the explicit part's **two-electron terms**, the fitted
-Coulomb and exchange energies differentiated twice at fixed orbitals, the
-fit's cross terms included (eqs. dfj, dfk).
+Analytic nuclear Hessians on the GPU, namespace `free_breakfast::hessian`:
+the closed-shell DF-RHF one, **`df_rhf`**, every term of it returned beside
+the symmetrized total. Its parts are entry points of their own: the
+**response part**, everything the orbitals' first-order response adds to the
+explicit part (the second-derivative integrals contracted with D, W and
+D ⊗ D, and V_nn's), in the symmetric form of the design (`rhf_hessian.tex`
+eq. hess-sym, Algorithm 1 lines 2–9); and the explicit part's
+**two-electron terms**, the fitted Coulomb and exchange energies
+differentiated twice at fixed orbitals, the fit's cross terms included (eqs.
+dfj, dfk).
 
 ```cpp
 import free_breakfast.hessian;
 
+auto h = hessian::df_rhf(res, molecule, basis, classes, aux, b, l, c, mo_energies, nocc);
+// h->hessian: 3 n_atom x 3 n_atom, element x + 3 n_atom y, exactly symmetric;
+// h->one_electron, h->nuclear_repulsion, h->two_electron.{coulomb, exchange},
+// h->response.hessian: the terms; h->response.cphf: U^x and the residuals;
+// h->asymmetry: max |H - H^T| of the terms' sum, discarded by symmetrizing
+```
+
+```cpp
 auto r = hessian::df_rhf_response(res, molecule, basis, classes, aux, b, l, c, mo_energies, nocc);
 // r->hessian: 3 n_atom x 3 n_atom, element x + 3 n_atom y, symmetric
 // r->cphf.solution: U^x, (n_vir n_occ) x 3 n_atom, U^x_ai at a + n_vir i
@@ -27,6 +37,60 @@ orbital basis and its MMD classes, the placed aux basis, B (a device buffer,
 as `response::cphf` takes it) and L from `density_fit`, C (nao × nmo), ε and
 n_occ — not pipeline types, so this module stays below `pipeline`, as
 `gradient` does.
+
+## The whole Hessian
+
+`df_rhf` is the design's Algorithm 1 end to end:
+
+    H = H_1e + V_nn^xy + E_J^xy + E_x^xy + H_resp,
+    H_1e = Σ_mn D_mn (T + V)^xy_mn − W_mn S^xy_mn,   D = 2 C_o C_oᵀ, W = 2 C_o ε_o C_oᵀ
+
+`overlap_hessian` at −W, `kinetic_hessian` and `potential_hessian` at D
+(`integrals/one_electron/hessian`, the diagonal blocks by translational
+invariance), `nuclear_repulsion_hessian` (`molecule`), then
+`df_rhf_two_electron` and `df_rhf_response` below. D and −W are made as
+`gradient::df_rhf` makes them (a gemm and a gmmwich) and freed before the
+two-electron calls, which each free their own before the next runs, so the
+call's peak is the larger of theirs. The five terms are summed on the host
+and the sum symmetrized; `asymmetry` is what that discards, the terms'
+rounding (each is symmetric to rounding), while what the response part's
+own symmetrization of Bᵀ U discards is bounded by the CPHF residuals it
+reports. PySCF's `pyscf.df.hessian.rhf` total, over the same fitting set,
+with auxbasis response 2.
+
+Its inputs are checked as `df_rhf_response` checks them, before anything
+runs. The memory and the `int32_t` bounds are the parts'.
+
+### Tests
+
+`test/gtest/df_rhf_hessian_gpu.cpp` (suite `HessianDfRhf`), against
+`test/gtest/data/rhf_hessian/`'s `total`, `one_electron`,
+`nuclear_repulsion`, `coulomb`, `exchange` and `response`
+(`tools/emit/rhf_hessian_reference.py`), for the skew water and the skew
+formaldehyde in cc-pVDZ / cc-pVDZ-JKFIT and the skew water in cc-pVTZ /
+cc-pVTZ-JKFIT (f orbital shells, g fitting shells):
+
+- the total and each term to 1e-7 absolute (the cc-pVTZ case under
+  `FBF_SKIP_IF_FAST_TESTS()`); the sum's asymmetry to 1e-10
+  of max |H|; the translational sum rule Σ_A H[3A + k][y] to 1e-8; every
+  CPHF residual under 10 × its 1e-10 tolerance;
+- the water against the tree's own central differences of `gradient::df_rhf`
+  (the `[hessian]` step, h = 1e-3 bohr, each displacement a full DF-RHF SCF)
+  to 1e-5;
+- at PySCF's DF-RHF/cc-pVDZ minimum of water (largest gradient component
+  1.5e-12), six mass-weighted eigenvalues under 1e-6 (hartree / bohr² / amu,
+  against the bend's 0.1) and `geometry::harmonic_analysis`'s frequencies
+  against PySCF's `thermo.harmonic_analysis` of its own Hessian to 1e-3 cm⁻¹;
+- the refusals.
+
+Measured on the RTX 3080 (CUDA): |H − PySCF| 4.4e-11 (water), 9.4e-11
+(formaldehyde) and 1.3e-10 (cc-pVTZ water) of max |H| 0.72, 0.97 and 0.70,
+the Coulomb term the largest part of it each time; asymmetry before
+symmetrizing ≤ 1.4e-14, sum rule ≤ 8.7e-12; 1.4 s, 2.9 s and 10.9 s a call
+(so the cc-pVTZ case is slow-gated). The central differences are 3.6e-7
+from the analytic Hessian. At the minimum the largest rigid-body eigenvalue
+is 1.1e-11 against the bend's 0.12, and the frequencies (1776.03, 4113.30,
+4211.68 cm⁻¹) are 4.3e-6 cm⁻¹ from PySCF's.
 
 ## The terms
 
@@ -183,7 +247,8 @@ the JKFIT sets sit well inside the 1e-9 bar.
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::RhfTerms`, `hessian::df_rhf` |
+| `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
 | `CMakeLists.txt` | Build configuration |
