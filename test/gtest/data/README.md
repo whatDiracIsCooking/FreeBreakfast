@@ -23,7 +23,7 @@ file names the tool that wrote it and the source it came from.
 | `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit/fci_step_reference.py`, which runs PySCF |
 | `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ (and in `casscf_df.json` alone, NH₂'s doublet CAS(5,5) and CH₂'s triplet CAS(6,6) from PySCF's DF-ROHF orbitals): at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit/casscf_reference.py`, which runs PySCF |
 | `nevpt2/` | `nevpt2_df.json`: PySCF's strongly contracted NEVPT2 (`mrpt.NEVPT`, density-fitted throughout) per root, on the polished DF (SA-)CASSCF orbitals of each `casscf/casscf_df.json` case but N₂'s, from the same starts and over the same `data/aux_basis/cc-pVDZ-JKFIT.json`: each root's eight classes' norms and energies, their sum and the total, plus the CASSCF energies it sits on and the active-rotation invariance check; and `<case>/<array>.npy`: nevpt2-gpu-demo's five density-fitted N₂ goldens (the CI vector, dm1/dm2, the integral blocks, the fitted B blocks, the external four-index blocks and the class norms and energies), with PySCF's dm3, f3ca and f3ac added for the CAS(4,4) and CAS(8,8) cases, described in `nevpt2/README.md` | `tools/emit/nevpt2_reference.py`, which runs PySCF; `tools/emit/nevpt2_golden.py`, from the demo's goldens and PySCF |
-| `nevpt2_gradient/` | `nevpt2_gradient.json`: the numerical nuclear gradients of the single-state DF-CASSCF, SC-NEVPT2 (PySCF's `mrpt.NEVPT`, density-fitted throughout) and PC-NEVPT2 (block2's `WickICNEVPT2` over PySCF's fitted integrals) total energies of skew H₂O CAS(4,4) and H₂CO CAS(6,6) in cc-pVDZ / cc-pVDZ-JKFIT, each energy re-converged at every displaced geometry over this tree's `data/basis` and `data/aux_basis` files: central differences at three halving steps, one Richardson step and its error bar, every displaced energy, and the reference geometry, start, energies and PySCF's analytic DF-CASSCF gradient; every displacement through a continuity guard. The NEVPT2 gradient's oracle | `tools/emit/nevpt2_gradient_reference.py`, which runs PySCF and block2 |
+| `nevpt2_gradient/` | `nevpt2_gradient.json`: the numerical nuclear gradients of the single-state DF-CASSCF, SC-NEVPT2 (PySCF's `mrpt.NEVPT`, density-fitted throughout) and PC-NEVPT2 (block2's `WickICNEVPT2` over PySCF's fitted integrals) total energies of skew H₂O CAS(4,4) and H₂CO CAS(6,6) in cc-pVDZ / cc-pVDZ-JKFIT, each energy re-converged at every displaced geometry over this tree's `data/basis` and `data/aux_basis` files: central differences at three halving steps, one Richardson step and its error bar, every displaced energy, and the reference geometry, start, energies and PySCF's analytic DF-CASSCF gradient; every displacement through a continuity guard. The NEVPT2 gradient's oracle; and `nevpt2_optimize.json`: PySCF's DF SC-NEVPT2 single point at the stationary point `[optimize]` over `[nevpt2_gradient]` reaches from skew H₂O, and PySCF's numerical gradient there | `tools/emit/nevpt2_gradient_reference.py`, which runs PySCF and block2; `tools/emit/nevpt2_optimize_reference.py`, which runs PySCF |
 | `gradient/` | `gradient.json`: libcint's derivative integrals contracted with fixed recipe matrices into per-atom gradients (overlap, kinetic, nuclear attraction with its operator term, and `int2e_ip1` into dE_J and dE_K, for H₂O in cc-pVDZ and cc-pVTZ; `int2c2e_ip1` and `int3c2e_ip1`/`ip2` for H₂O in cc-pVDZ / cc-pVDZ-JKFIT, cc-pVTZ / cc-pVTZ-JKFIT and cc-pVTZ / cc-pVTZ-acCD-6-6, aux to i), PySCF's DF-RHF gradient (`df.grad.rhf`) term by term for H₂O, NH₄⁺ and a distorted H₂O in cc-pVDZ / cc-pVDZ-JKFIT, H₂O in cc-pVTZ / cc-pVTZ-JKFIT and in cc-pVDZ / cc-pVDZ-acCD, its integral-direct RHF gradient (`grad.rhf`) term by term for H₂O and the distorted H₂O in cc-pVDZ and H₂O in cc-pVTZ, and DF-RHF / cc-pVDZ / cc-pVDZ-JKFIT minima of H₂O and anti ethanol, all over this tree's own `data/basis` and `data/aux_basis` files; every analytic number checked against a finite difference | `tools/emit/gradient_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
@@ -756,4 +756,34 @@ seven minutes, six of them formaldehyde's 72 displaced points):
 
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/nevpt2_gradient_reference.py
+```
+
+## `nevpt2_gradient/nevpt2_optimize.json`
+
+The reference `test/gtest/pipeline_optimize_gpu.cpp`'s
+`WaterNevpt2ReachesAStationaryPointAtPyscfsEnergy` holds the SC-NEVPT2
+geometry optimization to: `nevpt2_gradient.json`'s `h2o_skew_ccpvdz` (its
+`atoms` this file's `start`), the single-state DF-CASSCF(4,4) over [2, 3, 5,
+6], cc-pVDZ / cc-pVDZ-JKFIT.
+
+No reference program has an SC-NEVPT2 nuclear gradient, so PySCF cannot find
+the minimum itself. **The geometry (`atoms`, bohr) is the tree's**: the
+optimum `[optimize]` over `[nevpt2_gradient]` reaches at Opt=Tight's
+thresholds on the RTX 3080 (CUDA), copied into the tool's `OPTIMUM` as the
+GPU case prints it (reruns reproduce it to about 1e-14 bohr). What PySCF
+supplies is independent of the tree:
+
+| Key | Contents |
+|-----|----------|
+| `energies` | At `atoms`: `casscf`, the polished DF-CASSCF from a fresh RHF and sort_mo over `active` (the start the outer `[casscf]` takes there); `e_corr`, PySCF's `mrpt.NEVPT` over a DFCASCI on those orbitals, built as `nevpt2_gradient.json`'s SC; `sc`, their sum, **the energy to test against** (1e-9) |
+| `steps`, `gradient`, `displaced` | The numerical gradient of `sc` there: every displaced energy (the CASSCF re-converged from the optimum's orbitals, Löwdin-carried), central differences at both `steps` and one Richardson step over them |
+| `max_gradient`, `force_threshold` | The Richardson gradient's largest component, which the tool refuses to emit unless under `force_threshold`, the test's `[optimize]` max_force: PySCF agrees the point is one the optimizer may stop at |
+| `guard` | The worst displaced active-subspace and CI-vector misses, under `nevpt2_gradient.json`'s `subspace_tol` and `ci_tol` |
+
+A change to the optimizer that moves the optimum past the test's 1e-5 bohr
+re-runs the tool with the new `OPTIMUM`. Regenerate with (one thread,
+byte-identical run to run, under a minute):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/nevpt2_optimize_reference.py
 ```

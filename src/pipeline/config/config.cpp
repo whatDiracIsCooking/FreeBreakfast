@@ -543,9 +543,9 @@ template <class S>
 /// from the final.xyz it writes, so every step reading the molecule runs at
 /// the optimum. A chain table that loads its product 'from' a file is
 /// refused: the chain is rerun at every geometry. With a `[casscf_gradient]`
-/// in @p doc the chain ends in `[casscf]` and it, both copied in too; beside
-/// a `[gradient]` that is refused, since the optimized energy is one or the
-/// other's.
+/// or a `[nevpt2_gradient]` in @p doc the chain ends in `[casscf]` and it,
+/// both copied in too; two of those and `[gradient]` are refused, since the
+/// optimized energy is one of theirs.
 [[nodiscard]] Status plan_optimize(std::vector<Calculation::Step> &steps, const toml::table &doc,
                                    const std::filesystem::path &input_dir,
                                    const std::filesystem::path &output_dir) {
@@ -571,14 +571,26 @@ template <class S>
   FBF_TRY(chain(step.orthogonalizer));
   FBF_TRY(chain(step.guess));
   FBF_TRY(chain(step.scf));
-  if (doc.contains(CasscfGradientStep::kName)) {
-    if (doc.contains(GradientStep::kName)) {
-      return err_config("[{}] optimizes the energy of [{}] or of [{}], and the config names both: "
-                        "keep the one to optimize",
-                        OptimizeStep::kName, GradientStep::kName, CasscfGradientStep::kName);
+  // One energy is optimized: the first two of the gradients the config
+  // names are the clash reported.
+  std::vector<std::string_view> named;
+  for (const std::string_view name :
+       {GradientStep::kName, CasscfGradientStep::kName, Nevpt2GradientStep::kName}) {
+    if (doc.contains(name)) {
+      named.push_back(name);
     }
+  }
+  if (named.size() > 1) {
+    return err_config("[{}] optimizes the energy of [{}] or of [{}], and the config names both: "
+                      "keep the one to optimize",
+                      OptimizeStep::kName, named[0], named[1]);
+  }
+  if (doc.contains(CasscfGradientStep::kName)) {
     FBF_TRY(chain(step.casscf));
     FBF_TRY(chain(step.casscf_gradient.emplace()));
+  } else if (doc.contains(Nevpt2GradientStep::kName)) {
+    FBF_TRY(chain(step.casscf));
+    FBF_TRY(chain(step.nevpt2_gradient.emplace()));
   }
   Calculation::Step load{Load<MoleculeStep>{step.final_xyz}};
   const auto molecule = std::ranges::find_if(

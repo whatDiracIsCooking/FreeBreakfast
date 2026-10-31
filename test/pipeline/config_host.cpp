@@ -867,6 +867,65 @@ TEST(PipelineConfig, AMalformedCasscfOptimizeChainIsRefused) {
   }
 }
 
+// With a [nevpt2_gradient], [optimize]'s chain ends in [casscf] and it, both
+// copied in from their tables, and [casscf_gradient] is left unset.
+TEST(PipelineConfig, TheOptimizeStepCopiesANevpt2Chain) {
+  auto calc = fb::parse_config(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n[scf]\nenergy_tolerance = 1e-12\n"
+                  "[casscf]\nncas = 4\nnelecas = 4\nactive = [2, 3, 5, 6]\nconv_tol_grad = 1e-9\n"
+                  "[nevpt2_gradient]\nvariant = \"sc\"\n[optimize]\nmax_force = 1e-5\n"),
+      "/in", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::OptimizeStep &optimize = *calc->step<fb::OptimizeStep>();
+  EXPECT_EQ(optimize.options.max_force, 1e-5);
+  EXPECT_EQ(optimize.eri.mode, fb::EriMode::DensityFitting);
+  EXPECT_EQ(optimize.casscf.ncas, 4);
+  EXPECT_EQ(optimize.casscf.active, (std::vector<std::int32_t>{2, 3, 5, 6}));
+  EXPECT_EQ(optimize.casscf.conv_tol_grad, 1e-9);
+  EXPECT_FALSE(optimize.casscf_gradient.has_value());
+  ASSERT_TRUE(optimize.nevpt2_gradient.has_value());
+  EXPECT_EQ(optimize.nevpt2_gradient->root, 0);
+  EXPECT_EQ(optimize.nevpt2_gradient->variant, fb::Nevpt2Variant::Sc);
+  // The outer steps run once more at the optimum.
+  EXPECT_TRUE(calc->step<fb::Nevpt2GradientStep>().has_value());
+  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+}
+
+TEST(PipelineConfig, AMalformedNevpt2OptimizeChainIsRefused) {
+  constexpr std::string_view kCasscf =
+      "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\n";
+  // One energy is optimized: the NEVPT2's beside the SCF's or the CASSCF
+  // root's is refused.
+  expect_config_error(
+      with_inputs(std::format("{}[nevpt2_gradient]\n[gradient]\n[optimize]\n", kCasscf)),
+      "[optimize] optimizes the energy of [gradient] or of [nevpt2_gradient]");
+  expect_config_error(
+      with_inputs(std::format("{}[nevpt2_gradient]\n[casscf_gradient]\n[optimize]\n", kCasscf)),
+      "[optimize] optimizes the energy of [casscf_gradient] or of [nevpt2_gradient]");
+  // The chain's [nevpt2_gradient] keeps its refusals: an integral-direct
+  // [eri], written or filled in, and PC, until its gradient lands.
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    const auto calc = fb::parse_config(
+        with_inputs(std::format("[casscf]\nncas = 4\nnelecas = 4\n{}[nevpt2_gradient]\n"
+                                "[optimize]\n",
+                                eri)),
+        "", kOut);
+    ASSERT_FALSE(calc.has_value()) << eri;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find("[nevpt2_gradient] runs over density fitting only"),
+              std::string::npos)
+        << calc.error().message;
+  }
+  const auto pc = fb::parse_config(
+      with_inputs(std::format("{}[nevpt2_gradient]\nvariant = \"pc\"\n[optimize]\n", kCasscf)), "",
+      kOut);
+  ASSERT_FALSE(pc.has_value());
+  EXPECT_EQ(pc.error().kind, fb::ErrorKind::Unsupported) << pc.error().message;
+  EXPECT_NE(pc.error().message.find("[nevpt2_gradient] variant 'pc' is not implemented yet"),
+            std::string::npos)
+      << pc.error().message;
+}
+
 TEST(PipelineConfig, TheMoleculeIsLoadedOnlyAfterAnOptimize) {
   expect_config_error("[molecule]\nfrom = \"final.xyz\"\n",
                       "[molecule] cannot be loaded 'from' a file");
