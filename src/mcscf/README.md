@@ -27,6 +27,7 @@ needs a prefix" has the rule.
 | `relaxed_hessian/` | `free_breakfast.mcscf.relaxed_hessian` | **Internal**, not re-exported: the orbital Hessian with the CI relaxed, H̃ = H + R (`mcscf::RelaxedHessian`), and the orbital–CI coupling (`ResponseIntegrals`, `response_integrals`, `response_gradient`). `solve`'s augmented Hessian steps over it. See `relaxed_hessian/README.md`. |
 | `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop (`mcscf::solve`): per macro iteration the integrals, the CI, the weighted RDMs, `response::fock`'s energy and gradient, and an augmented-Hessian step over `response::Hessian` under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
 | `gradient/` | `free_breakfast.mcscf.gradient` | The analytic nuclear gradient of a converged DF-CASSCF (`mcscf::df_gradient`), state-specific or any root of a state average: the one-electron terms at its 1-RDM and generalized Fock, and one Γ and one W of the fitted two-electron energy against the three-center and metric derivatives, each term on its own. For a state average, over `zvector`'s multipliers (linked PRIVATE). Its derivation is in `gradient/README.md`. |
+| `derivative/` | `free_breakfast.mcscf.derivative` | The DF-CASSCF Hessian's per-coordinate derivatives at fixed parameters (`mcscf::df_derivatives`): the derivative generalized Fock F^[x] and the CP-CASSCF right-hand sides (orbital, CI and the roots' rotations), every coordinate at once, at the RDMs of any weighting of any roots, so SS, a state average's averaged right-hand side and one root's own. Layouts and signs in `derivative/README.md`. |
 | `zvector/` | `free_breakfast.mcscf.zvector` | **Internal**, not re-exported: the Lagrange multipliers of one root's state-averaged gradient (`mcscf::zvector`), z_o by preconditioned conjugate gradients over `RelaxedHessian` and z_c from its CI response; and the same equations on many right-hand sides at once (`mcscf::zvectors`, the CP-CASSCF solve of a Hessian), by one of three `CpSolver`s. See `zvector/README.md`. |
 
 The orbital order, the packed pairs and the gradient and Hessian conventions
@@ -44,9 +45,13 @@ layer's own targets link nothing of `pipeline`.
 `df.grad.casscf` and `df.grad.sacasscf` (`test/gtest/data/casscf_gradient/`),
 from the same setup.
 
+`test/gtest/mcscf_derivative_gpu.cpp` holds `derivative/`'s against
+`test/gtest/data/casscf_hessian/`, its orbitals and roots loaded from the
+fixture.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `mcscf.cppm` | Aggregate module interface; `export import`s `solve` |
-| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector` and `gradient`, in that order, and the `free_breakfast.mcscf` module target |
+| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient` and `derivative` |
+| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient` and `derivative`, in that order, and the `free_breakfast.mcscf` module target |
