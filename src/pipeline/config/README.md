@@ -295,6 +295,22 @@ outer `[scf]`, a `[localization]` -- runs at the optimum. That is the only
 way the molecule is ever loaded: `[molecule] from` is refused like a step
 with no `load`.
 
+```toml
+[hessian]
+method = "numerical"      # required: the only method so far
+displacement = 1e-3       # bohr
+```
+
+`[hessian]` is the RHF Cartesian Hessian by central differences of the
+analytic gradient (`hessian/README.md`). `method` is required and knows only
+`"numerical"`; `displacement` must be finite and positive. Like `[optimize]`
+it reruns the chain to the gradient, at each of the 6N displaced geometries,
+and `parse_config` copies the config's own `[basis_set]`, `[eri]`,
+`[orthogonalizer]`, `[guess]` and `[scf]` into it the same way, refusing one
+that loads `from` a file. The molecule is not copied: the step reads the
+pipeline's `MoleculeOutput`, so beside an `[optimize]` it runs at the
+optimum.
+
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
 overlap, which reads the spherical transform and the pair classes. Each
@@ -350,6 +366,7 @@ step, so no two collide:
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
 | `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
+| `[hessian]` | `hessian.json`: the method, the displacement, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing and its translational sum |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
 no output, so a later config can rely on what an earlier run wrote
@@ -385,14 +402,16 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[nevpt2_gradient] variant`, which knows `"sc"` and `"pc"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
+  only `"sad"`; `[nevpt2_gradient] variant`, which knows `"sc"` and `"pc"`; `[hessian] method`, which knows only `"numerical"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
   `[localization] exponent`, 2 or 4; and `[cis] spin`, which knows
   `"singlet"` and `"triplet"`);
 - `from` beside another key, on a step with no `load`, or on `[molecule]`;
-  and under `[optimize]`, on a table of the chain it reruns;
+  and under `[optimize]` or `[hessian]`, on a table of the chain it reruns;
 - an `[optimize]` threshold that is not positive, or a `max_steps` below 0,
   or an `[optimize]` beside two of `[gradient]`, `[casscf_gradient]` and
   `[nevpt2_gradient]`;
+- a `[hessian]` without `method`, or a `displacement` that is not finite and
+  positive;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;

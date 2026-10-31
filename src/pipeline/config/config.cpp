@@ -471,6 +471,21 @@ template <class S>
     step.trajectory = output_dir / std::format("{}.xyz", kStep);
     step.final_xyz = output_dir / "final.xyz";
     step.history = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, HessianStep>) {
+    // As [optimize]'s, the chain it reruns is copied in by parse_config. The
+    // method has no default: the analytic one is to come.
+    FBF_TRY(check_keys(table, kStep, {"method", "displacement"}));
+    std::string method;
+    FBF_TRY(read_required_key(table, kStep, "method", base_dir, method));
+    if (method != "numerical") {
+      return err_config("[{}] has no method '{}' (known: 'numerical')", kStep, method);
+    }
+    step.method = HessianMethod::Numerical;
+    FBF_TRY(read_key(table, kStep, "displacement", base_dir, step.displacement));
+    if (!std::isfinite(step.displacement) || !(step.displacement > 0.0)) {
+      return err_config("[{}] displacement must be finite and positive", kStep);
+    }
+    step.json_path = output_dir / std::format("{}.json", kStep);
   } else {
     // A step with options needs its own branch above, or every key in its
     // table would be refused.
@@ -530,12 +545,47 @@ template <class S>
   }(std::make_index_sequence<std::variant_size_v<Calculation::Step>>{});
 }
 
+/// @brief Chain step `S` of the step named @p rerun_by, which reruns it at
+/// every geometry: read from its own table in @p doc as the pipeline reads
+/// it, or from an empty one if the config has none. A table loading its
+/// product 'from' a file is refused.
+template <class S>
+[[nodiscard]] Status read_chain_step(const toml::table &doc, std::string_view rerun_by,
+                                     const std::filesystem::path &input_dir,
+                                     const std::filesystem::path &output_dir, S &out) {
+  const toml::table *table = doc[S::kName].as_table();
+  if (table != nullptr && table->contains("from")) {
+    return err_config("[{}] reruns [{}] at every geometry, so it cannot be loaded 'from' a file",
+                      rerun_by, S::kName);
+  }
+  out = FBF_TRY(read_step<S>(table != nullptr ? *table : toml::table{}, input_dir, output_dir));
+  return {};
+}
+
+/// @brief With a `[hessian]` among @p steps: copy into it the chain it
+/// reruns at every displaced geometry, each step by read_chain_step. The
+/// molecule is not among them: the step reads the pipeline's own.
+[[nodiscard]] Status plan_hessian(std::vector<Calculation::Step> &steps, const toml::table &doc,
+                                  const std::filesystem::path &input_dir,
+                                  const std::filesystem::path &output_dir) {
+  const auto hessian = std::ranges::find_if(
+      steps, [](const Calculation::Step &s) { return std::holds_alternative<HessianStep>(s); });
+  if (hessian == steps.end()) {
+    return {};
+  }
+  HessianStep &step = std::get<HessianStep>(*hessian);
+  constexpr std::string_view kStep = HessianStep::kName;
+  FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.basis_set));
+  FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.eri));
+  FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.orthogonalizer));
+  FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.guess));
+  return read_chain_step(doc, kStep, input_dir, output_dir, step.scf);
+}
+
 /// @brief With an `[optimize]` among @p steps: copy into it the chain it
-/// reruns, each step read from its own table in @p doc as the pipeline reads
-/// it (an empty one if the config has none), and plan the molecule as loaded
+/// reruns, each step by read_chain_step, and plan the molecule as loaded
 /// from the final.xyz it writes, so every step reading the molecule runs at
-/// the optimum. A chain table that loads its product 'from' a file is
-/// refused: the chain is rerun at every geometry. With a `[casscf_gradient]`
+/// the optimum. With a `[casscf_gradient]`
 /// or a `[nevpt2_gradient]` in @p doc the chain ends in `[casscf]` and it,
 /// both copied in too; two of those and `[gradient]` are refused, since the
 /// optimized energy is one of theirs.
@@ -548,15 +598,8 @@ template <class S>
     return {};
   }
   OptimizeStep &step = std::get<OptimizeStep>(*optimize);
-  const toml::table empty;
-  const auto chain = [&]<class S>(S &out) -> Status {
-    const toml::table *table = doc[S::kName].as_table();
-    if (table != nullptr && table->contains("from")) {
-      return err_config("[{}] reruns [{}] at every geometry, so it cannot be loaded 'from' a file",
-                        OptimizeStep::kName, S::kName);
-    }
-    out = FBF_TRY(read_step<S>(table != nullptr ? *table : empty, input_dir, output_dir));
-    return {};
+  const auto chain = [&]<class S>(S &out) {
+    return read_chain_step(doc, OptimizeStep::kName, input_dir, output_dir, out);
   };
   FBF_TRY(chain(step.molecule));
   FBF_TRY(chain(step.basis_set));
@@ -754,6 +797,7 @@ template <class S>
     return err_config("the config names no step");
   }
   FBF_TRY(plan_optimize(steps, doc, input_dir, output_dir));
+  FBF_TRY(plan_hessian(steps, doc, input_dir, output_dir));
   const toml::table empty;
   Calculation calc = FBF_TRY(Calculation::create(
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));

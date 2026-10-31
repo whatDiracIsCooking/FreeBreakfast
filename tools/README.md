@@ -94,6 +94,13 @@ emit/rhf_hessian_reference.py
                   the CPHF solutions U^x, for a skew water and formaldehyde
                   in cc-pVDZ / cc-pVDZ-JKFIT, the reference
                   hessian::df_rhf_response is tested against. Needs PySCF.
+emit/hessian_numerical_reference.py
+                  Write test/gtest/data/hessian_numerical/: PySCF's analytic
+                  DF-RHF Hessian (pyscf.df.hessian.rhf, CPHF column by
+                  column to 1e-12) for a skew water in cc-pVDZ /
+                  cc-pVDZ-JKFIT, checked against a central difference of
+                  df.grad.rhf, the reference the [hessian] step's numerical
+                  Hessian is tested against. Needs PySCF.
 emit/cis_reference.py
                   Write test/gtest/data/cis/: PySCF's RHF + TDA (CIS)
                   singlet and triplet roots and singlet oscillator

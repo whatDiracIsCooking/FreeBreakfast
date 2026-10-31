@@ -34,6 +34,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::pipeline::casscf_gradient
   free_breakfast::pipeline::nevpt2_gradient
   free_breakfast::pipeline::optimize
+  free_breakfast::pipeline::hessian
   LINK_PRIVATE
   free_breakfast::core::types
   free_breakfast::io::base
