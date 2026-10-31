@@ -12,7 +12,10 @@
 // Lagrangian E_corr + <z^c, f> stationary along core-core and
 // virtual-virtual rotations, and each adjoint of Φ = <z^c, f> at fixed z^c
 // against a ladder of Φ along the same directions; and the degenerate-pair
-// rule.
+// rule. Then the nuclear gradient (sc_gradient, lagrangian_gradient) on
+// data/nevpt2_gradient/'s cases: against the numerical gradient, with
+// E_corr zeroed against the DF-CASSCF's, and the full Lagrangian's
+// stationarity.
 
 #include <gtest/gtest.h>
 
@@ -23,7 +26,10 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.base;
 import free_breakfast.io.json;
+import free_breakfast.integrals;
 import free_breakfast.ci;
+import free_breakfast.response;
+import free_breakfast.mcscf;
 import free_breakfast.nevpt2;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
@@ -184,66 +190,83 @@ void fix_gauge(State &s) {
   }
 }
 
-// Our DF-CASSCF from the reference's start, run once per process.
+// This tree's DF-CASSCF from a reference's start (@p start: the molecule,
+// basis, fitting set and active space of a casscf_df.json or
+// nevpt2_gradient.json case) through the real registry, in @p node; the
+// Calculation, which holds every product, or nothing on a failure (already
+// reported).
+std::optional<fb::Calculation> run_casscf(const fb::json &start, fb::NodeResources &node) {
+  EXPECT_EQ(start.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
+  const fb::test::ScratchDir dir("nevpt2_gradient");
+  std::string xyz =
+      std::format("{}\n{}\n", start.at("atoms").size(), start.at("name").get<std::string>());
+  for (const fb::json &atom : start.at("atoms")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
+  std::string active;
+  for (const std::int32_t a : start.at("active").get<std::vector<std::int32_t>>()) {
+    active += std::format("{}{}", active.empty() ? "" : ", ", a);
+  }
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
+                  "[casscf]\nconv_tol_grad = {:g}\nncas = {}\nnelecas = {}\nactive = [{}]\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
+                  start.at("charge").get<std::int32_t>(), start.at("basis").get<std::string>(),
+                  kConvTolGrad, start.at("ncas").get<std::int32_t>(),
+                  start.at("nelecas").get<std::int32_t>(), active, kDfAuxBasis);
+  EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  EXPECT_TRUE(calc.has_value()) << calc.error().message;
+  if (!calc.has_value()) {
+    return std::nullopt;
+  }
+  const fb::Status ran = calc->run(node);
+  EXPECT_TRUE(ran.has_value()) << ran.error().message;
+  if (!ran.has_value()) {
+    return std::nullopt;
+  }
+  return std::move(*calc);
+}
+
+// The converged state of @p calc, on the host, in one gauge (fix_gauge).
+State host_state(fb::Calculation &calc, fb::DeviceResources &res) {
+  State s;
+  const auto &casscf = calc.get<fb::CasscfOutput>();
+  const auto &eri = calc.get<fb::EriOutput>();
+  const auto &h = calc.get<fb::CoreHamiltonianOutput>();
+  EXPECT_TRUE(casscf.has_value() && eri.has_value() && h.has_value());
+  if (!casscf.has_value() || !eri.has_value() || !h.has_value()) {
+    return s;
+  }
+  EXPECT_LT(casscf->gradient_norm, kConvTolGrad);
+  EXPECT_EQ(casscf->energies.size(), 1U);
+  const auto &df = std::get<fb::DensityFitted>(eri->eri);
+  s.naux = df.naux;
+  s.nao = static_cast<std::int32_t>(casscf->c.n());
+  s.ncore = casscf->ncore;
+  s.ncas = casscf->ncas;
+  s.nelecas = casscf->nelecas;
+  const auto nao = static_cast<std::size_t>(s.nao);
+  s.b = download(res, df.b.data(), static_cast<std::size_t>(s.naux) * nao * nao);
+  s.c = download(res, casscf->c.data(), nao * nao);
+  s.h = download(res, h->h.data(), nao * nao);
+  s.vector = casscf->vectors;
+  fix_gauge(s);
+  return s;
+}
+
+// Our DF-CASSCF from casscf_df.json's start, run once per process.
 const State &state() {
   static const State kState = [] {
-    State s;
-    const fb::json &start = reference_case("casscf", "casscf_df.json", kCase);
-    EXPECT_EQ(start.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
-    const fb::test::ScratchDir dir("nevpt2_gradient");
-    std::string xyz =
-        std::format("{}\n{}\n", start.at("atoms").size(), start.at("name").get<std::string>());
-    for (const fb::json &atom : start.at("atoms")) {
-      const auto coord = atom.at("coord").get<std::vector<double>>();
-      xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
-                         coord[0] * fb::kAngstromPerBohr<double>,
-                         coord[1] * fb::kAngstromPerBohr<double>,
-                         coord[2] * fb::kAngstromPerBohr<double>);
-    }
-    EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
-    std::string active;
-    for (const std::int32_t a : start.at("active").get<std::vector<std::int32_t>>()) {
-      active += std::format("{}{}", active.empty() ? "" : ", ", a);
-    }
-    const std::string toml =
-        std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
-                    "[casscf]\nconv_tol_grad = {:g}\nncas = {}\nnelecas = {}\nactive = [{}]\n"
-                    "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n",
-                    start.at("charge").get<std::int32_t>(), start.at("basis").get<std::string>(),
-                    kConvTolGrad, start.at("ncas").get<std::int32_t>(),
-                    start.at("nelecas").get<std::int32_t>(), active, kDfAuxBasis);
-    EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
-    auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
-    EXPECT_TRUE(calc.has_value()) << calc.error().message;
-    if (!calc.has_value()) {
-      return s;
-    }
     fb::NodeResources node;
-    const fb::Status ran = calc->run(node);
-    EXPECT_TRUE(ran.has_value()) << ran.error().message;
-    const auto &casscf = calc->get<fb::CasscfOutput>();
-    const auto &eri = calc->get<fb::EriOutput>();
-    const auto &h = calc->get<fb::CoreHamiltonianOutput>();
-    EXPECT_TRUE(casscf.has_value() && eri.has_value() && h.has_value());
-    if (!ran.has_value() || !casscf.has_value() || !eri.has_value() || !h.has_value()) {
-      return s;
-    }
-    EXPECT_LT(casscf->gradient_norm, kConvTolGrad);
-    EXPECT_EQ(casscf->energies.size(), 1U);
-    const auto &df = std::get<fb::DensityFitted>(eri->eri);
-    fb::DeviceResources &res = node.device(0);
-    s.naux = df.naux;
-    s.nao = static_cast<std::int32_t>(casscf->c.n());
-    s.ncore = casscf->ncore;
-    s.ncas = casscf->ncas;
-    s.nelecas = casscf->nelecas;
-    const auto nao = static_cast<std::size_t>(s.nao);
-    s.b = download(res, df.b.data(), static_cast<std::size_t>(s.naux) * nao * nao);
-    s.c = download(res, casscf->c.data(), nao * nao);
-    s.h = download(res, h->h.data(), nao * nao);
-    s.vector = casscf->vectors;
-    fix_gauge(s);
-    return s;
+    std::optional<fb::Calculation> calc =
+        run_casscf(reference_case("casscf", "casscf_df.json", kCase), node);
+    return calc.has_value() ? host_state(*calc, node.device(0)) : State{};
   }();
   return kState;
 }
@@ -1019,6 +1042,394 @@ TEST(Nevpt2Zc, Shapes) {
   }
   EXPECT_GT(largest_y, 0.0);
   EXPECT_LT(worst_y, 1e-14 * largest_y);
+}
+
+// ---- The nuclear gradient: lagrangian_gradient and sc_gradient ----------
+//
+// On test/gtest/data/nevpt2_gradient/'s cases (skew H2O CAS(4,4) and H2CO
+// CAS(6,6), cc-pVDZ / cc-pVDZ-JKFIT), each this tree's own DF-CASSCF from
+// the case's start through the registry: the SC-NEVPT2 gradient against the
+// numerical one (Richardson over re-converged energies) per component; the
+// identical pipeline with E_corr's adjoint and z^c zeroed against the
+// DF-CASSCF's own gradient; and the full Lagrangian's stationarity along a
+// non-redundant rotation and a CI direction.
+
+// The issue's bars: each component within 1e-6 Eh/a0 of the numerical
+// gradient (itself a difference, so not the tree's usual 1e-7), the sum
+// over atoms below 1e-9, and X^L symmetric per block to ~1e-9.
+constexpr double kNumericalTolerance = 1e-6;
+constexpr double kTranslationTolerance = 1e-9;
+constexpr double kAsymmetryTolerance = 1e-9;
+// The CASSCF energy against the reference's, as mcscf_gradient_gpu.cpp
+// holds it, and with E_corr zeroed the gradient against PySCF's analytic
+// DF-CASSCF one to that file's 1e-8.
+constexpr double kCasscfEnergyTolerance = 1e-8;
+constexpr double kAnalyticTolerance = 1e-8;
+// With E_corr zeroed the right-hand side is the CASSCF's own orbital
+// gradient g, below kConvTolGrad: the multipliers are that small, not zero
+// (the skew H2O's max |Z| 4.1e-10 on an RTX 3080; H2CO's g is under
+// zvector's tolerance, and its Z is exactly 0). So the Lagrangian differs
+// from df_gradient's own single-root formula, which drops Z, by terms first
+// order in g: the skew H2O's 1.5e-10 on a component. That is
+// mcscf_gradient_gpu.cpp's reasoning for its kConvTolGrad, and the bar.
+constexpr double kVanishTolerance = 1e-8;
+constexpr double kZeroedTolerance = kConvTolGrad;
+
+const fb::json &gradient_case(std::string_view name) {
+  return reference_case("nevpt2_gradient", "nevpt2_gradient.json", name);
+}
+
+fb::Buffers::device<double> zeros(fb::DeviceResources &res, std::size_t count) {
+  return upload(res, std::vector<double>(count, 0.0));
+}
+
+// One case's run: the registry's products (the Calculation, kept alive in
+// its node), the state in one gauge on the host, and the mcscf::Solution of
+// that state, its RDMs taken from the gauge-fixed vector.
+struct NuclearRun {
+  std::unique_ptr<fb::NodeResources> node;
+  std::optional<fb::Calculation> calc;
+  State state;
+  std::optional<fb::mcscf::Solution> solution;
+};
+
+NuclearRun nuclear_run(const fb::json &entry) {
+  NuclearRun run{.node = std::make_unique<fb::NodeResources>(),
+                 .calc = std::nullopt,
+                 .state = {},
+                 .solution = std::nullopt};
+  // A Calculation moves but does not assign.
+  std::optional<fb::Calculation> calc = run_casscf(entry, *run.node);
+  if (!calc.has_value()) {
+    return run;
+  }
+  run.calc.emplace(std::move(*calc));
+  fb::DeviceResources &res = run.node->device(0);
+  run.state = host_state(*run.calc, res);
+  const State &s = run.state;
+  const auto &casscf = run.calc->get<fb::CasscfOutput>();
+  const auto &basis = run.calc->get<fb::BasisSetOutput>();
+  if (s.b.empty() || !casscf.has_value() || !basis.has_value()) {
+    return run;
+  }
+  EXPECT_NEAR(casscf->energy, entry.at("energies").at("casscf").get<double>(),
+              kCasscfEnergyTolerance);
+  EXPECT_EQ(s.ncore, entry.at("ncore").get<std::int32_t>());
+  const auto n = static_cast<std::size_t>(s.ncas);
+  auto strings = fb::ci::DeviceStringSet::create(res, s.ncas, s.nelecas / 2);
+  EXPECT_TRUE(strings.has_value()) << strings.error().message;
+  if (!strings.has_value()) {
+    return run;
+  }
+  auto rdm = fb::ci::Rdm::create(res, *strings, *strings);
+  EXPECT_TRUE(rdm.has_value()) << rdm.error().message;
+  if (!rdm.has_value()) {
+    return run;
+  }
+  fb::Buffers::device<double> vector = upload(res, s.vector);
+  fb::Buffers::device<double> gamma(n * n, res.device());
+  fb::Buffers::device<double> gamma2(n * n * n * n, res.device());
+  const std::array<double, 1> one{1.0};
+  EXPECT_TRUE(rdm->rdm12(res, one, vector.data(), gamma.data(), gamma2.data()).has_value());
+  std::vector<double> g1 = download(res, gamma.data(), n * n);
+  run.solution.emplace(fb::mcscf::Solution{.c = fb::SphericalMatrixAO(res, basis->basis),
+                                           .roots = {.energies = casscf->energies,
+                                                     .spin_squares = casscf->spin_squares,
+                                                     .vectors = std::move(vector),
+                                                     .davidson = {},
+                                                     .fp32_iterations = 0},
+                                           .energy = casscf->energy,
+                                           .gradient_norm = casscf->gradient_norm,
+                                           .gamma = g1,
+                                           .gamma2 = download(res, gamma2.data(), n * n * n * n),
+                                           .root_gammas = g1,
+                                           .iterations = casscf->iterations});
+  EXPECT_EQ(wwr::wwrMemcpyAsync(run.solution->c.data(), s.c.data(), s.c.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return run;
+}
+
+// The registry's products df_gradient takes, by reference into the run.
+struct GradientInputs {
+  const fb::Molecule &molecule;
+  const fb::BasisSet &basis;
+  std::span<const fb::PrimitivePairClass> classes;
+  const fb::DensityFitted &df;
+  const fb::SphericalMatrixAO &h;
+};
+
+GradientInputs gradient_inputs(NuclearRun &run) {
+  return {.molecule = run.calc->get<fb::MoleculeOutput>()->molecule,
+          .basis = run.calc->get<fb::BasisSetOutput>()->basis,
+          .classes = run.calc->get<fb::PrimitivePairClassesOutput>()->classes,
+          .df = std::get<fb::DensityFitted>(run.calc->get<fb::EriOutput>()->eri),
+          .h = run.calc->get<fb::CoreHamiltonianOutput>()->h};
+}
+
+fb::Result<nevpt2::ScGradient> sc_gradient_of(NuclearRun &run) {
+  const GradientInputs in = gradient_inputs(run);
+  return nevpt2::sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                             in.h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                             run.state.ncas, 0);
+}
+
+double largest_abs(std::span<const double> v) {
+  double largest = 0.0;
+  for (const double x : v) {
+    largest = std::max(largest, std::abs(x));
+  }
+  return largest;
+}
+
+// The worst |sum over atoms| of each Cartesian component.
+double translation(std::span<const double> g) {
+  std::array<double, 3> sum{};
+  for (std::size_t i = 0; i < g.size(); ++i) {
+    sum[i % 3] += g[i];
+  }
+  return std::abs(std::ranges::max(sum, {}, [](double v) { return std::abs(v); }));
+}
+
+constexpr std::array<std::string_view, 6> kAsymmetryBlocks{"core-core",       "active-active",
+                                                           "virtual-virtual", "active-core",
+                                                           "virtual-core",    "virtual-active"};
+
+void expect_symmetric(const std::string &label, const nevpt2::ScGradient &g) {
+  std::string report;
+  for (std::size_t k = 0; k < g.asymmetry.size(); ++k) {
+    EXPECT_LT(g.asymmetry[k], kAsymmetryTolerance) << label << " X^L " << kAsymmetryBlocks[k];
+    report += std::format(" {} {:.2e}", kAsymmetryBlocks[k], g.asymmetry[k]);
+  }
+  std::cout << std::format("[ nevpt2   ] {} X^L asymmetry:{}\n", label, report);
+}
+
+class Nevpt2NuclearGradient : public ::testing::TestWithParam<std::string_view> {};
+
+// The SC-NEVPT2 gradient against the numerical one per component, its sum
+// over atoms, X^L's symmetry, E_corr against PySCF's at the same state, and
+// a state average refused.
+TEST_P(Nevpt2NuclearGradient, MatchesNumerical) {
+  FBF_REQUIRE_GPU();
+  const std::string name{GetParam()};
+  const auto start = std::chrono::steady_clock::now();
+  const fb::json &entry = gradient_case(name);
+  NuclearRun run = nuclear_run(entry);
+  ASSERT_TRUE(run.solution.has_value());
+  const auto setup = std::chrono::steady_clock::now();
+  const auto g = sc_gradient_of(run);
+  ASSERT_TRUE(g.has_value()) << g.error().message;
+  const std::chrono::duration<double> setup_seconds = setup - start;
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - setup;
+
+  EXPECT_NEAR(g->energies.total, entry.at("e_corr").at("sc").get<double>(), kTolerance);
+  const fb::json &want = entry.at("gradients").at("sc");
+  const fb::json &rows = want.at("richardson");
+  const fb::json &bars = want.at("error_bar");
+  const std::vector<double> &total = g->terms.total;
+  ASSERT_EQ(total.size(), 3 * rows.size());
+  std::cout << std::format("[ nevpt2   ] {} SC gradient (setup {:.2f} s, gradient {:.2f} s): "
+                           "E_corr {:.12f} ({:+.2e}), max |z^c| {:.3e}, smallest inactive gap "
+                           "{:.3e}, PCG {} iterations, residual {:.2e}\n",
+                           name, setup_seconds.count(), seconds.count(), g->energies.total,
+                           g->energies.total - entry.at("e_corr").at("sc").get<double>(),
+                           g->zc.max_z, g->zc.min_gap, g->multipliers.iterations,
+                           g->multipliers.residual);
+  double worst = 0.0;
+  for (std::size_t a = 0; a < rows.size(); ++a) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      const double ours = total[(3 * a) + k];
+      const double ref = rows[a][k].get<double>();
+      EXPECT_NEAR(ours, ref, kNumericalTolerance) << name << " [" << a << "][" << k << "]";
+      worst = std::max(worst, std::abs(ours - ref));
+      std::cout << std::format(
+          "[ nevpt2   ] {} {} {}: analytic {:+.10f} numerical {:+.10f} "
+          "diff {:+.2e} (error bar {:.1e})\n",
+          name, entry.at("atoms")[a].at("symbol").get<std::string>() + std::to_string(a), "xyz"[k],
+          ours, ref, ours - ref, bars[a][k].get<double>());
+    }
+  }
+  EXPECT_LT(translation(total), kTranslationTolerance) << name;
+  std::cout << std::format("[ nevpt2   ] {} worst component {:.2e}, translation {:.2e}\n", name,
+                           worst, translation(total));
+  expect_symmetric(name, *g);
+
+  // A state average is refused.
+  run.solution->roots.energies.push_back(run.solution->roots.energies.front());
+  const auto averaged = sc_gradient_of(run);
+  ASSERT_FALSE(averaged.has_value());
+  EXPECT_EQ(averaged.error().kind, fb::ErrorKind::Unsupported) << averaged.error().message;
+}
+
+// The identical pipeline with E_corr's adjoint and z^c zeroed: the
+// multipliers vanish (to the CASSCF's own convergence) and the gradient is
+// the DF-CASSCF's, df_gradient's own and PySCF's analytic one.
+TEST_P(Nevpt2NuclearGradient, MultipliersVanishWithoutCorrelation) {
+  FBF_REQUIRE_GPU();
+  const std::string name{GetParam()};
+  const fb::json &entry = gradient_case(name);
+  NuclearRun run = nuclear_run(entry);
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  const GradientInputs in = gradient_inputs(run);
+  const State &s = run.state;
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const std::size_t nmo2 = nmo * nmo;
+  const std::size_t lambda = static_cast<std::size_t>(s.naux) * nmo2;
+  const std::size_t dim = s.vector.size();
+  nevpt2::ScAdjoint corr{.energies = {},
+                         .h_bar = zeros(res, nmo2),
+                         .lambda = zeros(res, lambda),
+                         .y = zeros(res, dim),
+                         .x = zeros(res, nmo2),
+                         .a = zeros(res, nmo2),
+                         .epsilon = zeros(res, nmo)};
+  nevpt2::ZcMultipliers zc{.z = zeros(res, nmo2)};
+  const nevpt2::ZcAdjoint phi{.phi = 0.0,
+                              .h_bar = zeros(res, nmo2),
+                              .lambda = zeros(res, lambda),
+                              .y = zeros(res, dim),
+                              .x = zeros(res, nmo2),
+                              .a = zeros(res, nmo2)};
+  const auto g = nevpt2::lagrangian_gradient(res, in.molecule, in.basis, in.classes, in.df.aux,
+                                             in.h, in.df.b, in.df.l.data(), *run.solution, s.ncore,
+                                             s.ncas, std::move(corr), std::move(zc), phi);
+  ASSERT_TRUE(g.has_value()) << g.error().message;
+  const double z_orbital = largest_abs(
+      download(res, g->multipliers.orbital.data(), g->multipliers.orbital.num_elements()));
+  const double z_ci =
+      largest_abs(download(res, g->multipliers.ci.data(), g->multipliers.ci.num_elements()));
+  EXPECT_LT(z_orbital, kVanishTolerance) << name;
+  EXPECT_LT(z_ci, kVanishTolerance) << name;
+
+  const auto own =
+      fb::mcscf::df_gradient(res, in.molecule, in.basis, in.classes, in.df.aux, in.h, in.df.b,
+                             in.df.l.data(), *run.solution, s.ncore, s.ncas, 0);
+  ASSERT_TRUE(own.has_value()) << own.error().message;
+  const fb::json &analytic = entry.at("casscf_gradient");
+  double worst_own = 0.0;
+  double worst_analytic = 0.0;
+  for (std::size_t i = 0; i < g->terms.total.size(); ++i) {
+    const double ours = g->terms.total[i];
+    const double pyscf = analytic[i / 3][i % 3].get<double>();
+    EXPECT_NEAR(ours, own->total[i], kZeroedTolerance) << name << " " << i;
+    EXPECT_NEAR(ours, pyscf, kAnalyticTolerance) << name << " " << i;
+    worst_own = std::max(worst_own, std::abs(ours - own->total[i]));
+    worst_analytic = std::max(worst_analytic, std::abs(ours - pyscf));
+  }
+  std::cout << std::format("[ nevpt2   ] {} E_corr zeroed: max |Z| {:.2e}, max |z| {:.2e}, PCG "
+                           "{} iterations; against df_gradient {:.2e}, against PySCF {:.2e}\n",
+                           name, z_orbital, z_ci, g->multipliers.iterations, worst_own,
+                           worst_analytic);
+  expect_symmetric(name + " E_corr zeroed", *g);
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2NuclearGradient,
+                         ::testing::Values(std::string_view{"h2o_skew_ccpvdz"},
+                                           std::string_view{"h2co_ccpvdz"}),
+                         [](const auto &info) { return std::string(info.param); });
+
+// The full Lagrangian L = E_cas + E_corr + <z^c, f> + Z . g_orb + z . g_ci
+// at the moved state @p moved, the multipliers fixed: g_orb response::fock's
+// gradient over the packed pairs, g_ci = 2 (H_0 - E) c in zvector's
+// coordinates, every input rebuilt from (C, c) and nothing re-canonicalized.
+double lagrangian(NuclearRun &run, const State &moved, std::span<const double> z_orbital,
+                  std::span<const double> z_ci, std::span<const double> zc) {
+  fb::DeviceResources &res = run.node->device(0);
+  const GradientInputs in = gradient_inputs(run);
+  const auto n = static_cast<std::size_t>(moved.ncas);
+  const DeviceState d = upload_state(res, moved);
+  fb::SphericalMatrixAO c(res, in.basis);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(c.data(), moved.c.data(), moved.c.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  auto ints = fb::casscf_integrals(res, in.basis, in.molecule, in.h, in.df.b, moved.naux, c,
+                                   moved.ncore, moved.ncas);
+  EXPECT_TRUE(ints.has_value()) << ints.error().message;
+  auto rdm = fb::ci::Rdm::create(res, *d.strings, *d.strings);
+  auto sigma = fb::ci::Sigma::create(res, *d.strings, *d.strings);
+  EXPECT_TRUE(rdm.has_value() && sigma.has_value());
+  if (!ints.has_value() || !rdm.has_value() || !sigma.has_value()) {
+    return std::nan("");
+  }
+  fb::Buffers::device<double> gamma(n * n, res.device());
+  fb::Buffers::device<double> gamma2(n * n * n * n, res.device());
+  const std::array<double, 1> one{1.0};
+  EXPECT_TRUE(rdm->rdm12(res, one, d.vector.data(), gamma.data(), gamma2.data()).has_value());
+  auto fock = fb::response::fock(
+      res, in.molecule, in.h, in.df.b, moved.naux, c, moved.ncore, moved.ncas, ints->ppaa,
+      ints->papa, download(res, gamma.data(), n * n), download(res, gamma2.data(), n * n * n * n));
+  EXPECT_TRUE(fock.has_value()) << fock.error().message;
+  if (!fock.has_value()) {
+    return std::nan("");
+  }
+  const std::vector<double> g_orb = download(res, fock->gradient.data(), z_orbital.size());
+  EXPECT_TRUE(sigma
+                  ->set_integrals(res, ints->hamiltonian.e_core,
+                                  download(res, ints->hamiltonian.h_eff.data(), n * n),
+                                  download(res, ints->hamiltonian.eri.data(), n * n * n * n))
+                  .has_value());
+  fb::Buffers::device<double> hc(moved.vector.size(), res.device());
+  EXPECT_TRUE(sigma->apply(res, 1, d.vector.data(), hc.data()).has_value());
+  const std::vector<double> h_c = download(res, hc.data(), moved.vector.size());
+  const double e = dot(moved.vector, h_c);
+  const double ci = 2.0 * (dot(z_ci, h_c) - (e * dot(z_ci, moved.vector)));
+  return fock->energy + energy(res, moved) + phi(res, moved, zc) + dot(z_orbital, g_orb) + ci;
+}
+
+// The full Lagrangian flat at first order along a random rotation of the
+// non-redundant pairs (core-active, core-virtual, active-virtual at once),
+// C exp(t kappa), and along ci_direction's u perpendicular to c: each
+// ladder's extrapolant within 1e-7 of the slope of E_corr + <z^c, f> it
+// cancels.
+TEST(Nevpt2NuclearGradient, LagrangianIsStationary) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = nuclear_run(gradient_case("h2o_skew_ccpvdz"));
+  ASSERT_TRUE(run.solution.has_value());
+  const auto g = sc_gradient_of(run);
+  ASSERT_TRUE(g.has_value()) << g.error().message;
+  fb::DeviceResources &res = run.node->device(0);
+  const State &s = run.state;
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const std::vector<double> z_orbital =
+      download(res, g->multipliers.orbital.data(), g->multipliers.orbital.num_elements());
+  const std::vector<double> z_ci =
+      download(res, g->multipliers.ci.data(), g->multipliers.ci.num_elements());
+  const std::vector<double> zc = download(res, g->zc.z.data(), nmo * nmo);
+  const HostAdjoint adj = adjoint(res, s);
+  const HostZcAdjoint zadj = zc_adjoint(res, s, zc);
+
+  std::vector<double> kappa(nmo * nmo, 0.0);
+  for (const Block &block : {kBlocks[3], kBlocks[4], kBlocks[5]}) {
+    const std::vector<double> part = block_kappa(s, block);
+    for (std::size_t i = 0; i < kappa.size(); ++i) {
+      kappa[i] += part[i];
+    }
+  }
+  const double orbital_slope = source_dot(kappa, adj.a, nmo) + source_dot(kappa, zadj.a, nmo);
+  ASSERT_GT(std::abs(orbital_slope), 0.0);
+  State moved = s;
+  expect_ladder(
+      "full lagrangian orbitals",
+      [&](const double t) {
+        rotate(s, kappa, t, moved);
+        return lagrangian(run, moved, z_orbital, z_ci, zc);
+      },
+      0.0, std::abs(orbital_slope));
+
+  const std::vector<double> u = ci_direction(res, s);
+  ASSERT_EQ(u.size(), s.vector.size());
+  const double ci_slope = dot(u, adj.y) + dot(u, zadj.y);
+  ASSERT_GT(std::abs(ci_slope), 0.0);
+  moved = s;
+  expect_ladder(
+      "full lagrangian ci",
+      [&](const double t) {
+        move_vector(s, u, t, moved);
+        return lagrangian(run, moved, z_orbital, z_ci, zc);
+      },
+      0.0, std::abs(ci_slope));
 }
 
 } // namespace

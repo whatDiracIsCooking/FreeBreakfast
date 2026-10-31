@@ -9,8 +9,10 @@
 /// the RDMs) run forward and then backwards through nevpt2.energy's,
 /// nevpt2.rdm's and nevpt2.density_fitting's adjoints. Then the
 /// inactive-rotation multipliers z^c of the Lagrangian E + <z^c, f> from any
-/// such A, and the term Phi = <z^c, f> they add with its adjoints. The README
-/// has the layouts and every term.
+/// such A, and the term Phi = <z^c, f> they add with its adjoints. Then the
+/// SC-NEVPT2 nuclear gradient of a single-state DF-CASSCF over them: the
+/// Z-vector, the Lagrangian's symmetry gate, and one mcscf::df_gradient pass.
+/// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
 
@@ -19,7 +21,14 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.basis;
+import free_breakfast.molecule;
+import free_breakfast.integrals.mmd;
+import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.strings;
+import free_breakfast.mcscf.solve;
+import free_breakfast.mcscf.zvector;
+import free_breakfast.mcscf.gradient;
 import free_breakfast.nevpt2.energy;
 
 export namespace free_breakfast::nevpt2 {
@@ -169,5 +178,73 @@ struct ZcAdjoint {
                                            int32_t nao, int32_t nmo, const double *b,
                                            const double *c, const double *h, int32_t ncore,
                                            int32_t ncas, const double *vector, const double *z);
+
+/// @brief lagrangian_gradient's and sc_gradient's result.
+struct ScGradient {
+  /// @brief dE/dR of E_cas + E_corr, every term as mcscf::df_gradient
+  /// returns them (n_atom x 3, row-major).
+  mcscf::GradientTerms terms;
+  /// @brief The class energies of E_corr, as sc_energy computes them.
+  ClassEnergies energies;
+  /// @brief z^c, with max |z^c| and the smallest inactive gap.
+  ZcMultipliers zc;
+  /// @brief (Z, z) in mcscf::zvector's coordinates: Z over the packed pairs,
+  /// z the CI part, off the root; its PCG iterations and residual.
+  mcscf::ZVector multipliers;
+  /// @brief max |X^L_pq - X^L_qp| over p > q per block of the Lagrangian's
+  /// orbital source term: core-core, active-active, virtual-virtual,
+  /// active-core, virtual-core, virtual-active.
+  std::array<double, 6> asymmetry{};
+};
+
+/// @brief The nuclear gradient of the Lagrangian of E_cas + E_corr at the
+/// single-state DF-CASSCF @p solution, for a correlation energy whose
+/// adjoint is @p corr, inactive multipliers @p zc and their term's adjoint
+/// @p phi (zc_adjoint's at zc.z): nuclear_gradient.tex Algorithm 1 from the
+/// Z-vector on.
+///
+/// @p corr is consumed: @p phi's h_bar, Lambda, y, X and A are added onto it
+/// in place. The Z-vector is mcscf::zvector over the CI-relaxed Hessian at
+/// the solution, its orbital right-hand side g + A (g the CASSCF's orbital
+/// gradient, A = A^corr + A^{z^c} over the packed pairs) and its CI one
+/// 1/2 (y + y^c), the tex's J_cc = 2 P (H - E) P put in zvector's
+/// convention (zvector projects it off the root). The Lagrangian's orbital
+/// source term must then be symmetric in every block: its antisymmetric part
+/// A^L = A^cas(gamma + gamma_T) + A^Z + A is formed from the generalized Fock
+/// at the root's RDMs plus z's transition RDMs, and from that Fock's
+/// derivative along Z, and a block past 1e-8 is refused. Then one
+/// mcscf::df_gradient with (Z, z) as its multipliers and (h_bar, Lambda, X)
+/// as its extra adjoint.
+///
+/// The arguments but these are mcscf::df_gradient's; the solution's
+/// orbitals are the ones @p corr and @p phi were taken at (columns core,
+/// active, virtual, the core and virtuals canonical), and its root is c.
+///
+/// @return The gradient, the multipliers and the gate's residues;
+///         Unsupported for a state average (more than one root);
+///         InvalidConfig for counts that do not fit or adjoints of the wrong
+///         length; Numerical, naming the block and its residue, when the
+///         gate fails; or the first error of casscf_integrals, the Fock, the
+///         CI objects, the Hessian, mcscf::zvector or mcscf::df_gradient.
+[[nodiscard]] Result<ScGradient>
+lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                    std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                    const mcscf::Solution &solution, int32_t ncore, int32_t ncas, ScAdjoint corr,
+                    ZcMultipliers zc, const ZcAdjoint &phi);
+
+/// @brief The SC-NEVPT2 nuclear gradient of the single-state DF-CASSCF
+/// @p solution: sc_adjoint at its orbitals and root, zc_multipliers and
+/// zc_adjoint over its A and epsilon, then lagrangian_gradient. The
+/// arguments are mcscf::df_gradient's and @p batch sc_energy's; @p b and
+/// @p h are the AO B and core Hamiltonian both calls read.
+///
+/// @return The gradient; Unsupported for a state average; or the first
+///         error of the calls it makes.
+[[nodiscard]] Result<ScGradient>
+sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch);
 
 } // namespace free_breakfast::nevpt2
