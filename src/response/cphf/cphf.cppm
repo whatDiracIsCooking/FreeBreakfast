@@ -39,8 +39,10 @@ struct Cphf {
 /// never formed: a product is
 ///   (M U)_ai = (eps_a - eps_i) U_ai + C_a^T G(D_U) C_i,
 ///   D_U = 2 (X + X^T), X = C_v U C_o^T, G = J - K / 2,
-/// one @c df_coulomb and one two-factor @c df_exchange of D_U per column, D_U
-/// never factored. The preconditioner is (eps_a - eps_i)^-1, a pair whose
+/// D_U = 2 L R^T with L = [C_v U, C_o] and R = [C_o, C_v U]: J and K of a
+/// block of columns' D_U by one batched @c df_coulomb and one batched
+/// two-factor @c df_exchange, as many columns at once as half the device's
+/// free memory holds. The preconditioner is (eps_a - eps_i)^-1, a pair whose
 /// difference is below 1e-8 left unscaled.
 ///
 /// @p b is B over @p naux fitting functions and C's nao AOs, as
@@ -52,7 +54,8 @@ struct Cphf {
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); each column's
 /// step synchronizes. Its scratch is its own, allocated per call:
-/// @c df_coulomb and @c df_exchange take res.device_workspace(). The device
+/// @c df_coulomb and @c df_exchange take res.device_workspace(), which grows
+/// to a batch's X and Y. The device
 /// res.dev_idx() names is made current for the call and the previous one
 /// restored.
 ///

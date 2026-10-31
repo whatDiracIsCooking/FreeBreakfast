@@ -57,3 +57,21 @@ target_link_libraries(
           free_breakfast::pipeline::scf
           free_breakfast::pipeline::config
 )
+
+# response::cphf on 3 n_atom random right-hand sides over decane's DF-RHF, its
+# solution written for a second build's run to compare against.
+add_executable(free_breakfast_cphf_batched cphf_batched.cpp)
+set_target_properties(
+  free_breakfast_cphf_batched PROPERTIES CXX_MODULE_STD 1
+                                         CXX_SCAN_FOR_MODULES ON
+)
+target_link_libraries(
+  free_breakfast_cphf_batched
+  PRIVATE free_breakfast::core
+          free_breakfast::core::resources
+          free_breakfast::response
+          free_breakfast::pipeline::step
+          free_breakfast::pipeline::eri
+          free_breakfast::pipeline::scf
+          free_breakfast::pipeline::config
+)

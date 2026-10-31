@@ -19,6 +19,15 @@ J and K over the fitted factor B of
         Y_m = B_m B                 (another)
         K = X^T Y                   (one gemm)
 
+    df_coulomb(res, nao, naux, count, b, density, j)              D_0 ... D_count-1
+        Gamma = B [vec(D_d)]        (gemm, naux x count)
+        [vec(J_d)] = B^T Gamma      (gemm)
+
+    df_exchange(res, nao, naux, rank, count, b, left, right, k)   D_d = A_d B_dᵀ
+        X_m = B_m [A_0 ... A_count-1]     (one gemmStridedBatched over m)
+        Y_m = B_m [B_0 ... B_count-1]     (another)
+        K_d = X_dᵀ Y_d                    (one gemmStridedBatched over d)
+
 Here A is `left` and B is `right`, nao x rank factors, not the fitted B.
 
 **K is built from a factor, never from D.** `C` is `C_occ` in an SCF, or any
@@ -45,6 +54,18 @@ symmetry is imposed or produced: `K[A Bᵀ]ᵀ = K[B Aᵀ]`. Hence
 It costs one more batched gemm than the one-factor form, and a gemm where that
 form has a syrk (twice the flops of K's product), with twice the scratch.
 
+**The block forms are the one-density forms over many densities.** For a
+solver whose every iteration builds J and K of several densities over one B
+(CPHF's columns, `response/cphf/`): `count` densities packed one after
+another, `count` J or K out the same way. J's two gemvs become two gemms of
+width `count`; the two-factor K's batched gemms over m take every density's
+factors side by side, width `count · rank`, and its product is one gemm
+batched over the densities, each X_d and Y_d a band of `naux · rank` rows of
+the `(naux · count · rank)` x nao X and Y. Each J_d and K_d is the
+one-density call's to rounding (`df_jk_batched_gpu`); the scratch is
+`count` times the one-density call's. There is no block form of the
+one-factor K: an SCF builds one K per iteration.
+
 ## Layout
 
 Every matrix is column-major and packed.
@@ -58,6 +79,10 @@ Every matrix is column-major and packed.
 | gamma (scratch, J) | `naux` | `Q` | `naux` doubles |
 | X (scratch, K) | `(naux · nocc)` x `nao` | `Q + naux (i + nocc m)`: `[Q][i][m]` | `naux · nocc · nao` doubles |
 | X, Y (scratch, two-factor K) | `(naux · rank)` x `nao` | `Q + naux (i + rank m)` | `naux · rank · nao` doubles each |
+| `density`, `j`, `k` (block forms) | `count` x (`nao` x `nao`) | `n + nao m + nao² d` | `count · nao²` doubles each |
+| `left`, `right` (block K) | `nao` x `count · rank` | `n + nao (i + rank d)` | `nao · count · rank` doubles each |
+| Gamma (scratch, block J) | `naux` x `count` | `Q + naux d` | `naux · count` doubles |
+| X, Y (scratch, block K) | `(naux · count · rank)` x `nao` | `Q + naux (i + rank d + count rank m)` | `naux · count · rank · nao` doubles each |
 
 B, at `naux · nao²` doubles, is still the largest thing DF holds; X is B's
 size times `nocc / nao`, so below it whenever the occupied space is smaller
@@ -68,10 +93,11 @@ than the basis (H₂O in cc-pVTZ / cc-pVTZ-JKFIT: B 139 x 58² is 3.7 MB, X
 ## Limits
 
 J's gemvs run over `nao²` columns, K's syrk over `naux · nocc` rows and the
-two-factor K's gemm over `naux · rank` in the `int32_t` BLAS dispatch both
+two-factor K's gemm over `naux · rank` (the block K's leading dimension
+`naux · count · rank`) in the `int32_t` BLAS dispatch both
 backends carry, so any of them past `INT32_MAX` is `InvalidConfig`, as is a
 negative count. An empty `naux` (or `nocc`, or `rank`) gives J (or K) = 0;
-`nao = 0` writes nothing.
+`nao = 0`, or `count = 0` in a block form, writes nothing.
 
 ## X is `mo`'s `b_half`, kept as its own copy
 

@@ -1,6 +1,7 @@
 /// @file
-/// @brief cphf: M's product over the density-fitted J and K, and
-/// preconditioned conjugate gradients over it, every column in lockstep.
+/// @brief cphf: M's product over the density-fitted J and K, batched over a
+/// block of columns, and preconditioned conjugate gradients over it, every
+/// column in lockstep.
 
 module free_breakfast.response.cphf;
 
@@ -8,7 +9,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kTwo, kZero, kNegOne
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // dgmm, axpy, dot, nrm2, scal, gpu_status
+import free_breakfast.core.wwr; // gemmStridedBatched, dgmm, axpy, dot, nrm2, scal, wwrMemGetInfo
 import free_breakfast.core.resources;
 import free_breakfast.recipes.blas; // gemm
 import free_breakfast.integrals.eri.density_fitting.jk;
@@ -51,16 +52,37 @@ Result<Cphf> cphf(DeviceResources &res, const Buffers::device<double> &b, const 
   const auto n_ao = static_cast<int32_t>(nao);
   const auto n_vir = static_cast<int32_t>(nvir);
   const size_t block = pairs * ncol;
+  const size_t nn = nao * nao;
+  const size_t occ_size = nao * static_cast<size_t>(nocc);
+  // Each product column's L = [T C_o] and R = [C_o T] (T = C_v U, so
+  // D_U = 2 L R^T), and its D_U, J, K and G C_o.
+  const size_t factor_size = 2 * occ_size;
+  const size_t per_column = (2 * factor_size) + (3 * nn) + occ_size + (2 * pairs);
+
+  // How many columns one batched build takes: as many as half the free
+  // memory holds, its own buffers and the J/K scratch (X and Y,
+  // 2 naux (2 n_occ) nao doubles, and Gamma, naux) together, and the
+  // int32_t BLAS dispatch allows; at least one.
+  size_t free_bytes = 0;
+  size_t total_bytes = 0;
+  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
+  const size_t scratch_per_column =
+      (2 * static_cast<size_t>(naux) * 2 * occ_size) + static_cast<size_t>(naux);
+  const size_t fixed = (4 * block) + (2 * pairs);
+  const size_t budget = free_bytes / (2 * sizeof(double));
+  const size_t int32_max = std::numeric_limits<int32_t>::max();
+  const size_t width = std::max<size_t>(
+      1, std::min({ncol, budget > fixed ? (budget - fixed) / (per_column + scratch_per_column) : 0,
+                   int32_max / nn,
+                   naux > 0 ? int32_max / (static_cast<size_t>(naux) * 2 * nocc) : ncol}));
 
   Cphf out{Buffers::device<double>(block, res.device()), std::vector<double>(ncol), 0};
   // The residuals R, the directions P, M P and the preconditioned residuals
   // S, every column side by side; eps_a - eps_i and the preconditioner; and
-  // a product's [T C_o T] (T = C_v U), D_U, J and K. Held across df_coulomb
-  // and df_exchange, which take the workspace, so its own (docs/style.md
-  // "Scratch memory").
-  const size_t nn = nao * nao;
-  const size_t factors_size = nao * 3 * static_cast<size_t>(nocc);
-  Buffers::device<double> held((4 * block) + (2 * pairs) + factors_size + (3 * nn), res.device());
+  // a batch of width columns' packed U and M U, L and R, D_U, J, K and G C_o.
+  // Held across df_coulomb and df_exchange, which take the workspace, so its
+  // own (docs/style.md "Scratch memory").
+  Buffers::device<double> held((4 * block) + (2 * pairs) + (width * per_column), res.device());
   double *const u = out.solution.data();
   double *const r = held.data();
   double *const p = r + block;
@@ -68,13 +90,16 @@ Result<Cphf> cphf(DeviceResources &res, const Buffers::device<double> &b, const 
   double *const s = mp + block;
   double *const delta = s + block;
   double *const inverse_delta = delta + pairs;
-  double *const factors = inverse_delta + pairs;
-  double *const density = factors + factors_size;
-  double *const j = density + nn;
-  double *const k = j + nn;
+  double *const xs = inverse_delta + pairs;
+  double *const ys = xs + (width * pairs);
+  double *const left = ys + (width * pairs);
+  double *const right = left + (width * factor_size);
+  double *const density = right + (width * factor_size);
+  double *const j = density + (width * nn);
+  double *const k = j + (width * nn);
+  double *const w = k + (width * nn);
   const double *const c_occ = c.data();
-  const double *const c_vir = c.data() + (nao * static_cast<size_t>(nocc));
-  const size_t occ_size = nao * static_cast<size_t>(nocc);
+  const double *const c_vir = c.data() + occ_size;
 
   // eps_a - eps_i at a + n_vir i, and its floored inverse, built on the host.
   std::vector<double> differences(pairs);
@@ -90,34 +115,49 @@ Result<Cphf> cphf(DeviceResources &res, const Buffers::device<double> &b, const 
                                          wwr::wwrMemcpyHostToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(inverse_delta, scale.data(), pairs * sizeof(double),
                                          wwr::wwrMemcpyHostToDevice, stream)));
-  // C_o, the middle of [T C_o T], once: D_U = 2 L R^T with L = [T C_o] and
-  // R = [C_o T], the factors' first and last two blocks.
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(factors + occ_size, c_occ, occ_size * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToDevice, stream)));
-
-  // y <- M x, one column.
-  const auto apply = [&](const double *x, double *y) -> Status {
-    // T = C_v U, then D_U = 2 (T C_o^T + C_o T^T).
-    FBF_TRY(gpu_status(
-        gemm(blas, n_ao, nocc, n_vir, &kOne<double>, c_vir, x, &kZero<double>, factors)));
+  // C_o in every column's L and R once: L_x = [T_x C_o] and R_x = [C_o T_x],
+  // the T blocks written by each product.
+  for (size_t x = 0; x < width; ++x) {
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(left + (x * factor_size) + occ_size, c_occ,
+                                           occ_size * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                           stream)));
     FBF_TRY(
-        gpu_status(wwr::wwrMemcpyAsync(factors + (2 * occ_size), factors, occ_size * sizeof(double),
+        gpu_status(wwr::wwrMemcpyAsync(right + (x * factor_size), c_occ, occ_size * sizeof(double),
                                        wwr::wwrMemcpyDeviceToDevice, stream)));
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-        blas, n_ao, n_ao, nocc, &kTwo<double>, factors, c_occ, &kZero<double>, density)));
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-        blas, n_ao, n_ao, nocc, &kTwo<double>, c_occ, factors, &kOne<double>, density)));
+  }
+
+  // Y <- M X for count <= width packed columns, one batched J and K build.
+  const auto apply = [&](const double *x, double *y, const size_t count) -> Status {
+    const auto cols = static_cast<int32_t>(count);
+    const auto factor_stride = static_cast<int64_t>(factor_size);
+    const auto pairs_stride = static_cast<int64_t>(pairs);
+    const auto nn_stride = static_cast<int64_t>(nn);
+    const auto occ_stride = static_cast<int64_t>(occ_size);
+    // T_x = C_v U_x into L_x's first block and R_x's second.
+    for (double *const t : {left, right + occ_size}) {
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_ao, nocc, n_vir, &kOne<double>, c_vir, n_ao,
+          0, x, n_vir, pairs_stride, &kZero<double>, t, n_ao, factor_stride, cols)));
+    }
+    // D_U = 2 L R^T = 2 (T C_o^T + C_o T^T).
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n_ao, n_ao, 2 * nocc, &kTwo<double>, left, n_ao,
+        factor_stride, right, n_ao, factor_stride, &kZero<double>, density, n_ao, nn_stride,
+        cols)));
     // G = J[D_U] - K[D_U] / 2 = J[D_U] - K[L R^T].
-    FBF_TRY(df_coulomb(res, n_ao, naux, b.data(), density, j));
-    FBF_TRY(df_exchange(res, n_ao, naux, 2 * nocc, b.data(), factors, factors + occ_size, k));
+    FBF_TRY(df_coulomb(res, n_ao, naux, cols, b.data(), density, j));
+    FBF_TRY(df_exchange(res, n_ao, naux, 2 * nocc, cols, b.data(), left, right, k));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(count * nn),
+                                                  &kNegOne<double>, k, 1, j, 1)));
+    // Y = (eps_a - eps_i) X + C_v^T (G C_o): G_x C_o side by side is the
+    // nao x (count n_occ) W, and C_v^T W is Y as stored.
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n_ao, nocc, n_ao, &kOne<double>, j, n_ao,
+        nn_stride, c_occ, n_ao, 0, &kZero<double>, w, n_ao, occ_stride, cols)));
     FBF_TRY(gpu_status(
-        wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(nn), &kNegOne<double>, k, 1, j, 1)));
-    // y = (eps_a - eps_i) x + C_v^T (G C_o), G C_o into K's space.
-    FBF_TRY(gpu_status(gemm(blas, n_ao, nocc, n_ao, &kOne<double>, j, c_occ, &kZero<double>, k)));
-    FBF_TRY(gpu_status(
-        wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, n, 1, x, n, delta, 1, y, n)));
-    return gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_vir, nocc, n_ao, &kOne<double>, c_vir, k,
-                                              &kOne<double>, y));
+        wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, n, cols, x, n, delta, 1, y, n)));
+    return gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_vir, cols * nocc, n_ao, &kOne<double>, c_vir,
+                                              w, &kOne<double>, y));
   };
   const auto dot = [&](const double *x, const double *y) -> Result<double> {
     double value = 0.0;
@@ -168,9 +208,24 @@ Result<Cphf> cphf(DeviceResources &res, const Buffers::device<double> &b, const 
           active.size(), ncol, tolerance, max_iterations, std::ranges::max(r_norm));
     }
     ++out.iterations;
+    // M P over the active columns, width at a time: gathered into the packed
+    // X, applied, and M P scattered back.
+    for (size_t first = 0; first < active.size(); first += width) {
+      const size_t count = std::min(width, active.size() - first);
+      for (size_t i = 0; i < count; ++i) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(xs + (i * pairs), p + (active[first + i] * pairs),
+                                               pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                               stream)));
+      }
+      FBF_TRY(apply(xs, ys, count));
+      for (size_t i = 0; i < count; ++i) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(mp + (active[first + i] * pairs), ys + (i * pairs),
+                                               pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                               stream)));
+      }
+    }
     for (const size_t x : active) {
       const size_t at = x * pairs;
-      FBF_TRY(apply(p + at, mp + at));
       const double pmp = FBF_TRY(dot(p + at, mp + at));
       if (!(pmp > 0.0)) {
         return err_divergence("response::cphf: p.Mp = {:.3e} in column {} after {} sweeps: M is "
@@ -196,9 +251,11 @@ Result<Cphf> cphf(DeviceResources &res, const Buffers::device<double> &b, const 
 
   // The true residuals M U - B, from one more product per column: the
   // recurrence's R drifts from them in rounding.
+  for (size_t first = 0; first < ncol; first += width) {
+    FBF_TRY(apply(u + (first * pairs), mp + (first * pairs), std::min(width, ncol - first)));
+  }
   for (size_t x = 0; x < ncol; ++x) {
     const size_t at = x * pairs;
-    FBF_TRY(apply(u + at, mp + at));
     FBF_TRY(gpu_status(
         wwr::axpy<double, int32_t>(blas, n, &kNegOne<double>, rhs.data() + at, 1, mp + at, 1)));
     out.residuals[x] = FBF_TRY(norm(mp + at));
