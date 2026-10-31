@@ -1,6 +1,6 @@
 # Geometry
 
-A Cartesian quasi-Newton minimizer: BFGS under a trust radius, with the rigid-body translations and rotations projected out, over a caller-supplied energy and gradient.
+A Cartesian quasi-Newton minimizer: BFGS under a trust radius, with the rigid-body translations and rotations projected out, over a caller-supplied energy and gradient; and the harmonic vibrational analysis of a Cartesian Hessian.
 
 ## Module
 
@@ -8,7 +8,7 @@ A Cartesian quasi-Newton minimizer: BFGS under a trust radius, with the rigid-bo
 
 ## Design
 
-**Host-side, and knows nothing of chemistry.** The state is a coordinate vector of 3N values and an n × n Hessian. Neither needs the device, so the module links no GPU target and builds and tests on a device-less box. It does not know about `Molecule`, the SCF or the pipeline: `optimize(x0, energy_and_gradient, options)` takes the starting coordinates as a `std::span<const double>` and a `std::function<Result<double>(x, gradient)>` that returns the energy at `x` and writes its gradient. An error from the callback (an SCF that did not converge) ends the optimization with that error, unchanged. The pipeline's optimize step (#497) supplies the callback: it reruns the chain from molecule to gradient at each `x`. Units are the callback's own; the defaults assume bohr and hartree.
+**`optimize` is host-side, and knows nothing of chemistry.** The state is a coordinate vector of 3N values and an n × n Hessian. Neither needs the device, so `optimize` touches none and its tests run on a device-less box (the module itself links `recipes` for `harmonic_analysis`). It does not know about `Molecule`, the SCF or the pipeline: `optimize(x0, energy_and_gradient, options)` takes the starting coordinates as a `std::span<const double>` and a `std::function<Result<double>(x, gradient)>` that returns the energy at `x` and writes its gradient. An error from the callback (an SCF that did not converge) ends the optimization with that error, unchanged. The pipeline's optimize step (#497) supplies the callback: it reruns the chain from molecule to gradient at each `x`. Units are the callback's own; the defaults assume bohr and hartree.
 
 **The method is BFGS, not RFO.** Each step:
 
@@ -38,6 +38,17 @@ The other defaults: an initial trust radius of 0.3 (Gaussian's MaxStep), a maxim
 
 **The result.** `Solution` holds the final coordinates `x`, its `energy` and `iterations`: one `Iteration` per evaluation, the first at `x0`, with the energy, the two force norms at that geometry, the two displacement norms of the step that reached it (0 for the first), the trust radius the next step is taken under, and whether it was `accepted`. A rejected entry's energy is the higher one that rejected it.
 
+## Harmonic analysis
+
+`harmonic_analysis(res, atoms, hessian)` turns a 3N × 3N Cartesian Hessian (hartree/bohr², element (3A + k, 3B + l) at `hessian[3N(3A + k) + 3B + l]`) into `Vibrations`: the harmonic `frequencies` in cm⁻¹, ascending, an imaginary one reported as minus its magnitude, and the Cartesian normal `modes`, one row of 3N per frequency. It does not care how the Hessian was computed. It is `pyscf.hessian.thermo.harmonic_analysis` with `imaginary_freq=False`, step for step:
+
+1. **Mass-weighting** by the isotope-averaged masses, PySCF's `elements.MASSES` (the standard atomic weights), copied into `frequencies.cpp` for Z = 1 to 118: H_mw = M^-½ H M^-½.
+2. **The rigid motions**: `optimize`'s own rigid-body basis (the `:rigid_body` partition), each atom's components scaled by √m, so it spans the translations and rotations in mass-weighted coordinates. Gram-Schmidt drops the rotation about a linear molecule's axis by itself, so a linear molecule loses five, a single atom three and everything else six; there is no separate rotor test.
+3. **Projection** by a change of basis, not a P H P: the projector P = I − QQᵀ is diagonalized, and its eigenvectors of eigenvalue 1 (the last 3N − k, ascending) are an orthonormal basis B of the internal motions, PySCF's `bvec`. Bᵀ H_mw B is diagonalized in that basis, so the rigid motions are not reported, rather than reported as near-zero frequencies a caller would have to filter.
+4. **Frequencies and modes**: an eigenvalue λ (hartree / bohr² / amu) is the wavenumber sign(λ) √(|λ| / 1822.888486209) × 219474.6313632 (CODATA 2018: the dalton in electron masses and the hartree in cm⁻¹; PySCF's own CODATA 2014 set agrees to 1e-9 relative). The mode is B v divided by √m per atom, PySCF's `norm_mode`: unit length mass-weighted, not in Cartesian. Its sign is arbitrary, and so is the basis of a degenerate set.
+
+Both eigensolves are `recipes::diagonalize` and the products `gemmwich` and `gemm`, on `res`'s stream; the 3N-square matrices are built on the host, where the problem is small. The two physical constants live in `frequencies.cpp` rather than `core/constants`, which no other unit reads them from yet (`docs/style.md`, "Numeric constants"). Bad input (no atoms, a Hessian of the wrong size, a non-finite value, an element outside 1 to 118) is `InvalidConfig`.
+
 ## Usage
 
 ```cpp
@@ -52,16 +63,26 @@ auto result = geo::optimize(
 if (result) {
   // result->x, result->energy, result->iterations
 }
+
+free_breakfast::DeviceResources res{0};
+auto vib = geo::harmonic_analysis(res, molecule.atoms(), hessian); // 3N x 3N, row-major
+if (vib) {
+  // vib->frequencies (cm^-1), vib->modes (frequencies.size() x 3N)
+}
 ```
 
 ## Tests
 
 `test/gtest/geometry_host.cpp`: a quadratic well reached exactly in one step when the starting Hessian is the well's, and to 1e-10 by the BFGS updates when it is anisotropic; the extended Rosenbrock function; a four-point Lennard-Jones cluster converging to the regular tetrahedron at E = −6, with its centroid fixed to 1e-12 and every step free of rotation, and again at the default thresholds; an uphill step rejected with the trust radius cut to a quarter and the retry taken from the accepted geometry; a start at a minimum converging in one evaluation; and the refusals, the step cap and a failing callback.
 
+`test/gtest/geometry_frequencies_gpu.cpp`: PySCF RHF/cc-pVDZ Hessians of bent water, CO₂ along z, HCN off every axis and linear water (a saddle point, its degenerate bend imaginary), against `pyscf.hessian.thermo.harmonic_analysis` of the same matrix (`test/gtest/data/frequencies/`, `tools/emit/frequencies_reference.py`): the mode count (3N − 6, or 3N − 5), the frequencies to 1e-3 cm⁻¹, and the modes up to sign as each degenerate set's mass-weighted projector to 1e-7; the negated water Hessian, every frequency imaginary; a spring between two hydrogens against √(k/μ) and its mode along the bond; a single atom with no modes; and the refusals.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `geometry.cppm` | Module interface: `Options`, `Iteration`, `Solution`, `optimize` |
-| `geometry.cpp` | The loop, the rigid-body projection and the Cholesky solve |
+| `geometry.cppm` | Module interface: `Options`, `Iteration`, `Solution`, `optimize`; `Vibrations`, `harmonic_analysis` |
+| `geometry.cpp` | The loop, the projection and the Cholesky solve |
+| `rigid_body.cppm` | Internal partition: the orthonormal rigid-body basis, optionally mass-weighted, both units project with |
+| `frequencies.cpp` | `harmonic_analysis`, the mass table and the two unit conversions |
 | `CMakeLists.txt` | The module library |

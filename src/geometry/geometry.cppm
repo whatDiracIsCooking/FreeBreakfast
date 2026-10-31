@@ -1,17 +1,21 @@
 /// @file
 /// @brief A Cartesian quasi-Newton minimizer: BFGS under a trust radius, with
 /// the rigid-body translations and rotations projected out, over a
-/// caller-supplied energy and gradient.
+/// caller-supplied energy and gradient; and the harmonic vibrational analysis
+/// of a Cartesian Hessian.
 ///
-/// Host-side by design: the state is a 3N vector and a 3N x 3N Hessian, and
-/// the module knows nothing about molecules, the SCF or the pipeline. See
-/// README.md for the method and its defaults.
+/// optimize is host-side: the state is a 3N vector and a 3N x 3N Hessian, and
+/// it knows nothing about molecules, the SCF or the pipeline.
+/// harmonic_analysis takes the atoms, for their masses, and diagonalizes on
+/// the GPU. See README.md for the methods and their defaults.
 
 export module free_breakfast.geometry;
 
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.resources;
+import free_breakfast.atom;
 
 export namespace free_breakfast::geometry {
 
@@ -106,5 +110,43 @@ optimize(std::span<const double> x0,
          const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
              &energy_and_gradient,
          const Options &options = {});
+
+/// @brief The harmonic vibrations of a molecule: the internal modes alone,
+/// the rigid-body translations and rotations removed.
+struct Vibrations {
+  /// @brief The harmonic frequencies (cm^-1), ascending; an imaginary one is
+  /// reported as minus its magnitude.
+  std::vector<double> frequencies;
+  /// @brief The Cartesian normal modes, frequencies.size() x 3N row-major:
+  /// mode j's displacement of atom A along axis k at modes[3N j + 3A + k].
+  /// Each is its unit mass-weighted eigenvector divided by sqrt(m_A) (amu),
+  /// PySCF's `norm_mode`; the sign is arbitrary.
+  std::vector<double> modes;
+};
+
+/// @brief The harmonic frequencies and normal modes of the Cartesian Hessian
+/// @p hessian (hartree / bohr^2) of the molecule @p atoms (bohr).
+///
+/// The Hessian is mass-weighted with the isotope-averaged masses (PySCF's
+/// `elements.MASSES`, the standard atomic weights), the rigid-body motions
+/// (three translations, and three rotations, two for a linear molecule, none
+/// for one atom) are projected out by diagonalizing in the orthonormal
+/// complement of their span, and each eigenvalue lambda becomes the frequency
+/// sign(lambda) sqrt(|lambda|) in cm^-1. 3N - 6 modes (3N - 5 linear) are
+/// returned. Both eigensolves are recipes' diagonalize on res's stream.
+///
+/// @param res      Supplies the stream, the BLAS and solver handles and the
+///                 scratch workspace.
+/// @param atoms    The molecule; only each atom's element and position are
+///                 read.
+/// @param hessian  3N x 3N, element (3A + k, 3B + l) at
+///                 hessian[3N (3A + k) + 3B + l]; symmetric.
+/// @return The vibrations; InvalidConfig if @p atoms is empty, an element is
+///         not 1 to 118, a position or Hessian element is not finite, or the
+///         Hessian is not 3N x 3N; Numerical if an eigensolve did not
+///         converge; or a GpuRuntime error.
+[[nodiscard]] Result<Vibrations> harmonic_analysis(DeviceResources &res,
+                                                   std::span<const Atom> atoms,
+                                                   std::span<const double> hessian);
 
 } // namespace free_breakfast::geometry

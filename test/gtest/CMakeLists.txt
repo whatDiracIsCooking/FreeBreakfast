@@ -162,6 +162,7 @@ add_executable(
   pipeline_nevpt2_gradient_gpu.cpp
   rhf_gradient_gpu.cpp
   pipeline_optimize_gpu.cpp
+  geometry_frequencies_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
@@ -215,6 +216,7 @@ target_link_libraries(
   free_breakfast::nevpt2
   free_breakfast::gradient
   free_breakfast::hessian
+  free_breakfast::geometry
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers
   free_breakfast::integrals::eri::integral_direct::exchange::pairs

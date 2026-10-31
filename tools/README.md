@@ -172,6 +172,12 @@ emit/nevpt2_golden.py
                   PySCF's dm3, f3ca and f3ac (CAS(4,4) and CAS(8,8) only),
                   each checked against the golden's Sr and Si before
                   writing. Needs PySCF and a clone of the demo.
+emit/frequencies_reference.py
+                  Write test/gtest/data/frequencies/frequencies.json: PySCF
+                  RHF/cc-pVDZ Hessians of water, CO2, HCN and linear water
+                  and pyscf.hessian.thermo.harmonic_analysis of each, the
+                  oracle geometry::harmonic_analysis is tested against.
+                  Needs PySCF.
 emit/ci_bench_integrals.py
                   Write the given JSON path (untracked): PySCF's CAS(10,10)
                   and CAS(12,12) integrals of N2 cc-pVDZ at 1.0977 and
