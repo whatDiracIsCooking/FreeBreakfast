@@ -155,6 +155,7 @@ add_executable(
   df_high_aux_gpu.cpp
   df_gradient_gpu.cpp
   df_jk_derivative_gpu.cpp
+  df_hessian_gpu.cpp
   df_rhf_gradient_gpu.cpp
   df_rhf_hessian_response_gpu.cpp
   pipeline_gradient_gpu.cpp

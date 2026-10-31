@@ -26,6 +26,7 @@ file names the tool that wrote it and the source it came from.
 | `nevpt2_gradient/` | `nevpt2_gradient.json`: the numerical nuclear gradients of the single-state DF-CASSCF, SC-NEVPT2 (PySCF's `mrpt.NEVPT`, density-fitted throughout) and PC-NEVPT2 (block2's `WickICNEVPT2` over PySCF's fitted integrals) total energies of skew H₂O CAS(4,4) and H₂CO CAS(6,6) in cc-pVDZ / cc-pVDZ-JKFIT, each energy re-converged at every displaced geometry over this tree's `data/basis` and `data/aux_basis` files: central differences at three halving steps, one Richardson step and its error bar, every displaced energy, and the reference geometry, start, energies and PySCF's analytic DF-CASSCF gradient; every displacement through a continuity guard. The NEVPT2 gradient's oracle; and `nevpt2_optimize.json`: PySCF's DF SC-NEVPT2 single point at the stationary point `[optimize]` over `[nevpt2_gradient]` reaches from skew H₂O, and PySCF's numerical gradient there | `tools/emit/nevpt2_gradient_reference.py`, which runs PySCF and block2; `tools/emit/nevpt2_optimize_reference.py`, which runs PySCF |
 | `gradient/` | `gradient.json`: libcint's derivative integrals contracted with fixed recipe matrices into per-atom gradients (overlap, kinetic, nuclear attraction with its operator term, and `int2e_ip1` into dE_J and dE_K, for H₂O in cc-pVDZ and cc-pVTZ; `int2c2e_ip1` and `int3c2e_ip1`/`ip2` for H₂O in cc-pVDZ / cc-pVDZ-JKFIT, cc-pVTZ / cc-pVTZ-JKFIT and cc-pVTZ / cc-pVTZ-acCD-6-6, aux to i), PySCF's DF-RHF gradient (`df.grad.rhf`) term by term for H₂O, NH₄⁺ and a distorted H₂O in cc-pVDZ / cc-pVDZ-JKFIT, H₂O in cc-pVTZ / cc-pVTZ-JKFIT and in cc-pVDZ / cc-pVDZ-acCD, its integral-direct RHF gradient (`grad.rhf`) term by term for H₂O and the distorted H₂O in cc-pVDZ and H₂O in cc-pVTZ, and DF-RHF / cc-pVDZ / cc-pVDZ-JKFIT minima of H₂O and anti ethanol, all over this tree's own `data/basis` and `data/aux_basis` files; every analytic number checked against a finite difference | `tools/emit/gradient_reference.py`, which runs PySCF |
 | `hessian/` | `one_electron.json`: libcint's second-derivative one-electron integrals (`int1e_ipipovlp`/`ipovlpip`, `int1e_ipipkin`/`ipkinip`, `int1e_ipipnuc`/`ipnucip` with the operator's `int1e_ipiprinv`/`iprinvip` at each nucleus), assembled as PySCF's `hessian.rhf.partial_hess_elec` assembles them and contracted with the recipe matrix `gradient/` uses into 3N x 3N Hessians (overlap, kinetic, nuclear attraction), and PySCF's `hess_nuc`, for the skew H₂O in cc-pVDZ and cc-pVTZ over this tree's own `data/basis` files; each Hessian checked against a fourth-order central difference of the libcint gradient, for symmetry and for the translational sum rule | `tools/emit/one_electron_hessian_reference.py`, which runs PySCF |
+| `hessian/` | `df_hessian.json`: libcint's second-derivative DF integrals, `int2c2e_ipip1` / `ip1ip2` and `int3c2e_ipip1` / `ipvip1` / `ip1ip2`, contracted with fixed recipe matrices of no symmetry into 3N × 3N Hessians, for `gradient/`'s three DF cases (aux to i), over this tree's own `data/basis` and `data/aux_basis` files; every Hessian checked against a finite difference of the matching analytic gradient | `tools/emit/df_hessian_reference.py`, which runs PySCF |
 | `cphf/` | `cphf.json` and its `.npy` arrays: over `density_fitting/`'s h2o_ccpvdz integrals (skew H₂O, cc-pVDZ / cc-pVDZ-JKFIT, which the tool refuses to write unless it recomputes exactly), PySCF's DF-RHF orbitals and orbital energies, the nine nuclear-displacement CPHF right-hand sides and `pyscf.df.hessian.rhf` `solve_mo1`'s `mo1` (vo block, to 1e-12, one column at a time), and the dipole right-hand sides and static polarizability, checked against a dense solve and a finite field. Each right-hand side and solution is (n_vir n_occ) × ncol, element a + n_vir i of column x | `tools/emit/cphf_reference.py`, which runs PySCF |
 | `df_jk_derivative/` | PySCF's DF-RHF skeleton Fock derivatives' two-electron half (`df.hessian.rhf`, auxbasis response 2): per nuclear coordinate, J^(x) and K^(x) at the converged density D = 2 C_occ C_occᵀ (`make_h1` = `hcore_deriv` + J^(x) − ½ K^(x), asserted), and u^x − M^x d from libcint's `int3c2e_ip1`/`ip2` and `int2c2e_ip1`, with the orbitals C and their energies, for the skew water in cc-pVDZ / cc-pVDZ-JKFIT, cc-pVTZ / cc-pVTZ-JKFIT and cc-pVTZ / cc-pVTZ-acCD-6-6 (aux to i), over this tree's own `data/basis` and `data/aux_basis` files; every J^(x) and K^(x) checked against a finite difference of PySCF's DF `get_jk` at fixed D. `.npy` arrays (Fortran order; `jx`, `kx` nao × nao × 3 n_atom; `g` naux × 3 n_atom) and the manifest `df_jk_derivative.json`. Functions are PySCF's, unit-normalised: a test whose function i is N_i times PySCF's divides C's rows by N and scales J^(x)_mn, K^(x)_mn by N_m N_n and g_P by N_P | `tools/emit/df_jk_derivative_reference.py`, which runs PySCF |
 | `rhf_hessian/` | The response part of PySCF's DF-RHF nuclear Hessian (`pyscf.df.hessian.rhf`, auxbasis response 2): its total less `partial_hess_elec` and `hess_nuc`, over CPHF solutions to 1e-12 (one column at a time, past the block Krylov's stall), checked against the design's symmetric form over a dense solve of M and against PySCF's unmodified kernel; the orbitals C, their energies and the CPHF solutions U^x, for the skew water and a skew formaldehyde in cc-pVDZ / cc-pVDZ-JKFIT, over this tree's own `data/basis` and `data/aux_basis` files. `.npy` arrays (Fortran order; `response` 3 n_atom × 3 n_atom; `u` (n_vir n_occ) × 3 n_atom, element a + n_vir i of column x) and the manifest `rhf_hessian.json`. C is over PySCF's unit-normalised functions (a test divides its rows by N); U and the Hessian do not depend on the normalisation | `tools/emit/rhf_hessian_reference.py`, which runs PySCF |
@@ -278,6 +279,31 @@ Regenerate with (one thread; the output is byte-identical run to run):
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
     tools/emit/gradient_reference.py
+```
+
+## `hessian/df_hessian.json`
+
+The contracted second derivatives of the two density-fitting integrals. Every
+Hessian is a list of 3N rows of 3N, H[3 A + k][3 B + l] = d²/dR_Ak dR_Bl in
+hartree/bohr², atoms in `atoms` order; coordinates in bohr. Spherical
+throughout, over this tree's own basis files.
+
+| Key | Meaning |
+|---|---|
+| `provenance` | As `gradient/gradient.json`'s; a rerun is byte-identical |
+| `recipe` | W_PQ = 1 / (P + 2 Q + 1) (naux × naux) and Γ_mnP = 1 / (m + 2 n + 3 P + 1), 0-based in PySCF's spherical AO order, one IEEE division per element. Neither is symmetric, so every ordering of the centres is exercised |
+| `density_fitting` | `gradient/`'s skew water in cc-pVDZ / cc-pVDZ-JKFIT, cc-pVTZ / cc-pVTZ-JKFIT and cc-pVTZ / cc-pVTZ-acCD-6-6: `name`, `basis`, `aux_basis`, `atoms`, `nao`, `naux`, `shells`, `aux_shells`, `metric` = Σ_PQ W_PQ d²(P\|Q)/dR dR (`int2c2e_ipip1` on one function, `int2c2e_ip1ip2` across) and `three_center` = Σ_mnP Γ_mnP d²(mn\|P)/dR dR (`int3c2e_ipip1` on m or n, `ipvip1` across them, `ip1ip2` from either to P, and both on P by translational invariance) |
+
+The normalisation is `gradient/`'s: a test's matrices are divided by its
+functions' norms. The tool asserts each Hessian against a fourth-order
+central difference (step 1e-3 bohr) of the matching analytic gradient
+(`int2c2e_ip1`, `int3c2e_ip1` / `ip2`, to 1e-7 · max(1, max\|H\|)), its
+symmetry and its sum over atoms (1e-10), and the invariance-built P–P block
+against `int3c2e_ipip2` (1e-10).
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/emit/df_hessian_reference.py
 ```
 
 ## `cis/cis.json`
