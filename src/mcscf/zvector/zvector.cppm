@@ -73,4 +73,67 @@ struct ZVector {
                                       const double *gradient, const double *ci_rhs = nullptr,
                                       double tolerance = 1e-10, int32_t max_iterations = 200);
 
+/// @brief How @ref zvectors solves its columns (README.md "Many right-hand
+/// sides").
+enum class CpSolver : uint8_t {
+  /// @brief @ref zvector on each column in turn.
+  PerColumn,
+  /// @brief The Schur complement in lockstep: conjugate gradients over H~ on
+  /// every column at once, one block product per sweep (H over the active
+  /// columns in one call, their CI responses' conjugate gradients in one).
+  Schur,
+  /// @brief The unreduced equations in (z_o, z_c): conjugate gradients on
+  /// the coupled operator, its CI rows scaled by 2 w_r to make it symmetric,
+  /// preconditioned by diag(H) and 2 w_r |diag(H_0) - E_r|. No CI response
+  /// is solved inside a product.
+  Coupled,
+};
+
+/// @brief The multipliers of @ref zvectors' columns, on the device they were
+/// solved on.
+struct ZVectors {
+  /// @brief z_o per column, size() x ncol column-major.
+  Buffers::device<double> orbital;
+  /// @brief z_c per column, one dim x nroots block (as ZVector::ci) each,
+  /// off every root.
+  Buffers::device<double> ci;
+  /// @brief Products each column took (the residual's not counted): H~'s,
+  /// or the coupled operator's.
+  std::vector<int32_t> iterations;
+  /// @brief Each column's true residual from one more product: PerColumn and
+  /// Schur ||H~ z_o + g - H_oc (H_0 - E)^-1 P y||, ZVector::residual's;
+  /// Coupled the norm of both blocks of the equations, the CI rows unscaled.
+  std::vector<double> residuals;
+};
+
+/// @brief @ref zvector on @p ncol right-hand sides at once: the CP-CASSCF
+/// equations E_ll l^x = -E_lx of a Hessian's nuclear coordinates, or any
+/// other set over the same H~.
+///
+/// @p gradients is size() x @p ncol on the device, one orbital right-hand
+/// side per column; @p ci_rhs is null, or ncol blocks of dim x nroots (each
+/// as zvector's @p ci_rhs). Each column is solved as @ref zvector solves it
+/// alone, to ||r|| <= @p tolerance per column, the CI rows in zvector's
+/// convention (unweighted, unscaled). @p solver picks the method, Schur by
+/// default (the fastest measured; Coupled is slower on a larger molecule, so
+/// it is not); the others reach the same solution to the CI response's
+/// precision (README.md "Which is the default" has the measurements).
+///
+/// Coupled needs every weight positive (its CI rows are scaled by 2 w_r),
+/// and H_0 - E_r positive off the roots along every direction its
+/// preconditioner reaches: the roots must be the lowest of their spin.
+///
+/// @return The multipliers; InvalidConfig as @ref zvector's, for @p ncol
+///         below 1, or for Coupled with a weight not positive;
+///         MaxIterationsExceeded when a column is still above @p tolerance
+///         after @p max_iterations products; Divergence as zvector's, for the
+///         operator a method iterates on; or the first error of a product,
+///         BLAS call or copy.
+[[nodiscard]] Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
+                                        const response::Hessian &hessian, const ci::Roots &roots,
+                                        int32_t ncol, const double *gradients,
+                                        const double *ci_rhs = nullptr,
+                                        CpSolver solver = CpSolver::Schur, double tolerance = 1e-10,
+                                        int32_t max_iterations = 200);
+
 } // namespace free_breakfast::mcscf

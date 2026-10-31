@@ -75,3 +75,27 @@ target_link_libraries(
           free_breakfast::pipeline::scf
           free_breakfast::pipeline::config
 )
+
+# mcscf::zvectors on 3 n_atom right-hand sides by each CpSolver over the same
+# H~, water or octatetraene in a DF-CASSCF(4,4), against PerColumn.
+add_executable(free_breakfast_mcscf_zvectors mcscf_zvectors.cpp)
+set_target_properties(
+  free_breakfast_mcscf_zvectors PROPERTIES CXX_MODULE_STD 1
+                                           CXX_SCAN_FOR_MODULES ON
+)
+target_link_libraries(
+  free_breakfast_mcscf_zvectors
+  PRIVATE free_breakfast::core
+          free_breakfast::core::resources
+          free_breakfast::integrals
+          free_breakfast::ci
+          free_breakfast::response
+          free_breakfast::mcscf
+          free_breakfast::mcscf::relaxed_hessian
+          free_breakfast::mcscf::zvector
+          free_breakfast::pipeline::step
+          free_breakfast::pipeline::eri
+          free_breakfast::pipeline::scf
+          free_breakfast::pipeline::casci
+          free_breakfast::pipeline::config
+)
