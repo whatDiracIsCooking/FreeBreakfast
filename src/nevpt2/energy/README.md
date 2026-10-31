@@ -238,9 +238,83 @@ workspace. The sweep adds at most two n⁶ at once (hdm3 and its bar, or rm3
 and its bar) and a few n⁴; every intermediate bar is a buffer of its own for
 the same reason.
 
+## The PC reverse pass
+
+    pc_class_energies_adjoint(res, blocks, in, batch, bars) -> PcClassEnergiesAdjoint
+        energies         pc_class_energies' energies, dropped counts and total
+        homogeneity[8]   Σ_G <M_G, G> per class, from the bars
+    bars: EnergyBars, as class_energies_adjoint's
+
+Also `reverse.cpp`, after SC's: the solve's adjoint (demo `docs/gradients.md`
+§4.3, §5.6 and §7; `nuclear_gradients.tex` Eqs. pcdot and pcadj). A tuple's
+energy is −c bᵀ A⁺ b, A = K + Δ S, b = S x + S₁ h1, and with x = A⁺ b, the
+solve the energy ran,
+
+    Ė = −c (2 xᵀ ḃ − xᵀ Ȧ x)
+
+so **no eigenvalue or eigenvector derivative appears**. In the eigenbasis,
+with g = y / (λ + Δ), each tuple gives the host its multipliers: ȳ = −2c g,
+a weight w = c g and dE/dΔ = c g·g onto the orbital energies; for Sijr's and
+Srsi's 2 direct − exchange, ȳ = −(4g − g_x) on the direct row and g on the
+exchange row, w = 2g − g_x and dE/dΔ = 2 g·g − g·g_x. Each class walks its slabs as `pc_class_energies` does,
+lists its slab einsums once as `ClassTerm`s (T's basis axes row-major after
+k, so T is packed and `einsum_adjoint` writes its bar), and takes every
+term's adjoint against ȳ: onto the slab and so Λ, h1e_v's rows, T̄ and t̄1.
+M = Σ g wᵀ and M_Δ = Σ Δ g wᵀ accumulate on the device. After the walk:
+
+    dE/dK = U M Uᵀ,   dE/dS = U T̄ᵀ + U M_Δ Uᵀ,   dE/dS₁ = U t̄1ᵀ
+
+S and K symmetrized, as the solve symmetrized them (two gemms each, U, T̄
+column-major d × m). Those bars go back through the einsums that built S, K
+and S₁ onto SC's block bars, and **SC's sweep takes them on unchanged**: PC's
+K is SC's Dyall blocks, its S and S₁ permutations of SC's metrics.
+
+| class | S onto | K onto | S₁ onto |
+|---|---|---|---|
+| Sr | sr_dm3 (`"rpqbac->pqrabc"`) | a16 | sr_dm2 (`"rpqa->pqra"`) |
+| Si | dm3_h (the same) | a22 | dm2_h (the same) |
+| Sijr | hdm1 | a3 | |
+| Srsi | srsi_dm1 | k27 | |
+| Srs | rm2 (`"pqba->pqab"`) | a7 | |
+| Sij | hdm2 | a9 | |
+| Sir | sir_dm1, sir_dm2 (its four block terms) | a12, a13 | sir_dm1 |
+
+a17, a19, a23, a25 and dm1_h stay zero. Sijr's exchange rows y[r, i, j] are
+a second einsum with i and j swapped, and Srsi's the SrsiT slab's, so their
+adjoints are terms like any other. Sir's two blocks of T are picked by a
+selector over T's leading block axis, which keeps T one packed operand.
+Sijrs is SC's `reverse_sijrs`.
+
+**Homogeneity, the PC Eq. 40.** At fixed slabs and orbital energies a class
+energy is homogeneous of degree one in (S, S₁, K) (the cut is relative to
+S's largest eigenvalue), so `homogeneity[k] = Σ_G <M_G, G>` over the class's
+blocks equals its energy: an exact identity from the bars, as Eq. 40 is
+SC's. Sijrs carries SC's ½ <ḡ, g>.
+
+**Where it is exact, and refusals.** The two-term derivative needs S's kept
+rank locally constant, which the energy's gap check enforces, and, for the
+bars on S, K annihilating S's dropped modes, which holds at an eigenstate. A
+class the energy refuses is refused here with the energy's error (the same
+`solve_class`, and one `pc_denominators_positive` for both), never given a
+zero; on an error the bars are unspecified.
+
+**Conditioning.** The bars through U carry the solve's conditioning:
+CAS(8,8)'s Sr and Si keep modes at 1.0e-10 and 3.1e-10 of their largest
+eigenvalue (Srs 5.6e-7, Sir 1.6e-7), where a kept mode's λ moves as 1/σ under
+a K that stops annihilating it. Two whole walks there put the bars on h1e,
+h2e and the RDMs 1.3e-8 of their largest element apart on the gfx1200
+(einsum's atomics reassociate S and K); the walk's own bars agree to 1e-13.
+CAS(4,4) keeps every mode above 1.6e-5 (Sir), and its two walks agree to
+1e-12.
+
+**Memory.** Per class, S, K, S₁ and their builders as `pc_class_energies`
+holds them, the blocks G kept for the homogeneity sum, U beside T, and m × m
+M, M_Δ and the d × m T̄; after the walk two d × m and four d × d matrices.
+Each slab's y, x, ȳ, x̄ and weights are buffers of their own.
+
 ## Not ported
 
-The forward tangents and the Hessians, SC's and PC's, and PC's reverse pass. The demo's
+The forward tangents and the Hessians, SC's and PC's. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -310,3 +384,34 @@ CAS(8,8) from PySCF's RDMs. At CAS(4,4), Si vanishes by N₂'s symmetry
     tier.
 - `BatchedBarsMatchWhole`: walked in threes, every bar (h1e, h2e and the
   RDMs' included) matches the whole walk's to 1e-12 of its largest element.
+
+The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
+
+- `HomogeneityAndEulerFromTheBars` (CAS(8,8)): each class's homogeneity sum
+  against its energy at 1e-12, Euler's 4E as SC's, and the energies against
+  block2's. Measured: 2.5e-15 and 2.2e-16.
+- `BarsMatchRichardsonLadder`: SC's seeded groups, ratio test and 1e-7, kept
+  inside the energy's domain. B, h1e_v and e at CAS(8,8); h, rdm and all at
+  CAS(4,4), since along h at CAS(8,8) Sr's smallest denominator is −2.3e6 at
+  t = 1e-2 and still −1.6e4 at 7.8e-5: a pole within about 1e-8 of the base
+  point. PC's rdm moves dm1–dm3 along an active rotation of all their axes
+  (which keeps every metric's spectrum; a raw direction lifts S's dropped
+  modes at first order, and the energy has no derivative along it) and
+  f3ca/f3ac along SC's raw direction. The ladder starts at 1e-3: at
+  CAS(4,4), 1e-2 and 5e-3 make a denominator negative. h1e_v has no ratios
+  (the energy is quadratic in it), so each difference is held to the bars.
+  Measured on the gfx1200: B 1.1e-9, h1e_v 1.4e-11, e 2.9e-10 (CAS(8,8)); h
+  5.8e-10, rdm 4.7e-9, all 3.2e-10 (CAS(4,4)), relative.
+- `InactiveRotationsAreRoundOff` (CAS(8,8)): with the core orbital energies
+  all equal, and the virtual ones, the PC energy is invariant to rotations
+  within the core and within the virtuals, so Σ <bar, dx> along each (B_ca,
+  B_cv, B_va and the h1e_v's inactive axes) is held under 1e-12 of its
+  terms' magnitude. Measured: 4.6e-18 of 5.4e-4 (core), 1.5e-17 of 6.4e-3
+  (virtual). SC is the control and is not invariant (Park): 5.5e-7 and
+  5.1e-6.
+- `BatchedBarsMatchWhole` (CAS(8,8)): the walk's bars and the homogeneity
+  sums at 1e-12; the sweep's bars only through those sums, for the
+  conditioning above.
+- `RefusesWhatTheEnergyRefuses`: zero RDMs (Sr's metric has no positive
+  eigenvalue) and the virtual orbital energies at −1000 Eh (Sr's
+  denominator): the adjoint fails with `pc_class_energies`' kind and message.

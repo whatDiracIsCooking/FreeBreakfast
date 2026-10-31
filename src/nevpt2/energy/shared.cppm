@@ -1,13 +1,15 @@
 /// @file
-/// @brief What the SC and PC class energies and the SC reverse pass share: the
+/// @brief What the SC and PC class energies and their reverse passes share: the
 /// slab walk's helpers, the class metrics and Dyall Hamiltonians (make_*),
-/// Sijrs, the active operands every class reads, and einsum's adjoint.
+/// Sijrs, the active operands every class reads, einsum's adjoint, and PC's
+/// solve.
 ///
 /// An internal partition (`module`, not `export module`): energy.cpp, pc.cpp
 /// and reverse.cpp import it, nothing reaches an importer of
 /// free_breakfast.nevpt2.energy. It only declares; every definition is
-/// energy.cpp's, except upload (pc.cpp's) and einsum_adjoint (reverse.cpp's),
-/// so no bridge header reaches a partition's global module fragment. See
+/// energy.cpp's, except upload and the PC solve's (pc.cpp's) and
+/// einsum_adjoint (reverse.cpp's), so no bridge header reaches a partition's
+/// global module fragment. See
 /// docs/style.md, "Module-private code".
 
 module free_breakfast.nevpt2.energy:shared;
@@ -151,5 +153,38 @@ Status einsum_adjoint(DeviceResources &res, std::string_view subscripts,
 /// @brief Sijrs: {norm, energy}. It reads no RDM, so it is PC's too.
 Result<std::pair<double, double>> energy_sijrs(DeviceResources &res, const MoBlocks &blocks,
                                                const EnergyInputs &in, int32_t batch);
+
+/// @brief One PC class's solve, pc.cpp's solve_class: K U = S U diag(λ),
+/// Uᵀ S U = 1 over S's kept range.
+struct ClassSolve {
+  /// @brief λ, ascending: the eigenvalues of K over S's kept range.
+  std::vector<double> lambda;
+  /// @brief T = S U, d x m column-major: element (I, k) at I + d k.
+  Buffers::device<double> t;
+  /// @brief t1 = S₁ᵀ U, n1 x m row-major, when an S₁ was given.
+  std::optional<Buffers::device<double>> t1;
+  /// @brief S's modes cut as null.
+  int64_t dropped = 0;
+  /// @brief U, d x m column-major, as T: what the reverse pass maps the
+  /// eigenbasis bars back through.
+  Buffers::device<double> u;
+};
+
+/// @brief (A + Aᵀ) / 2 of the row-major d x d @p a, into a buffer of its own.
+Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *a, int64_t d);
+
+/// @brief The solve of the class @p name over its row-major d x d metric
+/// @p s_rm and Dyall Hamiltonian @p k_rm, and its optional S₁ (@p s1, d x n1
+/// row-major): both symmetrized, S cut at 1e-13 of its largest eigenvalue, the
+/// pencil diagonalized. A Numerical error naming the class when S has no
+/// positive eigenvalue or no gap at the cut.
+Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
+                               const double *k_rm, int64_t d, const double *s1 = nullptr,
+                               int64_t n1 = 0);
+
+/// @brief A class's refusal when its smallest denominator λ_k + Δ_t is not
+/// positive, a Numerical error naming it; success otherwise. The energy's and
+/// the reverse pass's one check, so both refuse with the same error.
+Status pc_denominators_positive(const char *name, double min_denominator);
 
 } // namespace free_breakfast::nevpt2
