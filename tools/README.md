@@ -144,6 +144,14 @@ emit/nevpt2_reference.py
                   the total, and block2's PC-NEVPT2 per class on the same
                   state (active orbitals unrotated), with the cas_natorb
                   invariance of both checked. Needs PySCF and block2.
+emit/nevpt2_gradient_reference.py
+                  Write test/gtest/data/nevpt2_gradient/: the numerical
+                  nuclear gradients (central differences at three steps
+                  plus one Richardson step) of re-converged single-state
+                  DF-CASSCF, SC-NEVPT2 (PySCF) and PC-NEVPT2 (block2)
+                  energies, every displaced CASSCF through a continuity
+                  guard, the oracle the NEVPT2 gradient is tested against.
+                  Needs PySCF and block2.
 emit/nevpt2_golden.py
                   Write test/gtest/data/nevpt2/<case>/<array>.npy: the
                   nevpt2-gpu-demo's density-fitted goldens as .npy, plus
@@ -196,6 +204,7 @@ uv run --group tools tools/emit/casci_reference.py
 uv run --group tools tools/emit/fci_step_reference.py
 uv run --group tools tools/emit/casscf_reference.py
 uv run --group tools tools/emit/nevpt2_reference.py
+uv run --group tools tools/emit/nevpt2_gradient_reference.py
 uv run --group tools tools/emit/nevpt2_golden.py <demo clone>
 uv run --group tools tools/emit/record_bound_golden.py
 uv run --group tools tools/emit/nonsymmetric_jk_golden.py
