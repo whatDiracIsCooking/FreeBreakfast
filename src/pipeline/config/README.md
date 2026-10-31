@@ -249,13 +249,12 @@ nelecas = 4
 conv_tol_grad = 1e-9      # the gradient is the energy's only at convergence
 [nevpt2_gradient]
 root = 0                  # the default, and the only root it takes
-variant = "sc"            # the default; "pc" is refused until #564 lands
+variant = "sc"            # the default; or "pc"
 ```
 
-`[nevpt2_gradient]` is the SC-NEVPT2 nuclear gradient of the single-state
+`[nevpt2_gradient]` is the SC- or PC-NEVPT2 nuclear gradient of the single-state
 `[casscf]` it reads (`nevpt2_gradient/README.md`), written to
-`nevpt2_gradient.json`. `variant` knows `"sc"` and `"pc"`; `"pc"` is
-`Unsupported` until the PC gradient lands (#564), anything else
+`nevpt2_gradient.json`. `variant` knows `"sc"` and `"pc"`, anything else
 `InvalidConfig`. `root` must be 0, and `InvalidConfig` otherwise. Its
 other refusals are `[nevpt2]`'s and the gradient's, each `Unsupported` when
 the file is read, across the tables they name: an integral-direct `[eri]`,
@@ -282,13 +281,13 @@ into the step, each read as the pipeline reads it, from an empty table if the
 config has none. **With a `[casscf_gradient]` in the config the chain ends in
 the CASSCF instead** (`optimize/README.md` "The CASSCF chain"), and
 `[casscf]` and `[casscf_gradient]` are copied in too; the optimized energy is
-then that root's. **With a `[nevpt2_gradient]` it ends in the SC-NEVPT2
+then that root's. **With a `[nevpt2_gradient]` it ends in the SC- or PC-NEVPT2
 gradient** (`optimize/README.md` "The NEVPT2 chain"), `[casscf]` and
 `[nevpt2_gradient]` copied in, and the energy optimized is the NEVPT2 total
 energy. Any two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]`
 are refused, and under an integral-direct `[eri]` either CASSCF chain is its
 gradient's `Unsupported`, as above, as are `[nevpt2_gradient]`'s other
-refusals (its `"pc"`, a state average, the start's multiplicity). One loading `from` a file is refused: the chain is rerun at every
+refusals (a state average, the start's multiplicity). One loading `from` a file is refused: the chain is rerun at every
 geometry. **Then `[molecule]` is planned loaded from the `final.xyz`
 the step writes** (`MoleculeStep::load`, ordered after the optimization by
 the `OptimizeOutput` it reads), so every other step in the config -- the
@@ -349,7 +348,7 @@ step, so no two collide:
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
 | `[gradient]` | `gradient.json`: the SCF energy, the gradient `total` and each of its `terms` (hartree / bohr, one row of three per atom) |
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
-| `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the SC-NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block |
+| `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
@@ -408,7 +407,7 @@ than after the SCF has converged. `parse_config` touches no disk.
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
 is well formed and the method is what is missing: `[nevpt2]`,
 `[casscf_gradient]` or `[nevpt2_gradient]` under an integral-direct `[eri]`,
-`[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s PC, state
+`[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
 average and multiplicity other than 1 (above).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The

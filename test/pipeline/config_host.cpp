@@ -889,6 +889,14 @@ TEST(PipelineConfig, TheOptimizeStepCopiesANevpt2Chain) {
   // The outer steps run once more at the optimum.
   EXPECT_TRUE(calc->step<fb::Nevpt2GradientStep>().has_value());
   EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  // PC is copied into the chain as SC is.
+  const auto pc = fb::parse_config(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\n"
+                  "[nevpt2_gradient]\nvariant = \"pc\"\n[optimize]\n"),
+      "", kOut);
+  ASSERT_TRUE(pc.has_value()) << pc.error().message;
+  ASSERT_TRUE(pc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value());
+  EXPECT_EQ(pc->step<fb::OptimizeStep>()->nevpt2_gradient->variant, fb::Nevpt2Variant::Pc);
 }
 
 TEST(PipelineConfig, AMalformedNevpt2OptimizeChainIsRefused) {
@@ -903,7 +911,7 @@ TEST(PipelineConfig, AMalformedNevpt2OptimizeChainIsRefused) {
       with_inputs(std::format("{}[nevpt2_gradient]\n[casscf_gradient]\n[optimize]\n", kCasscf)),
       "[optimize] optimizes the energy of [casscf_gradient] or of [nevpt2_gradient]");
   // The chain's [nevpt2_gradient] keeps its refusals: an integral-direct
-  // [eri], written or filled in, and PC, until its gradient lands.
+  // [eri], written or filled in.
   for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
     const auto calc = fb::parse_config(
         with_inputs(std::format("[casscf]\nncas = 4\nnelecas = 4\n{}[nevpt2_gradient]\n"
@@ -916,14 +924,6 @@ TEST(PipelineConfig, AMalformedNevpt2OptimizeChainIsRefused) {
               std::string::npos)
         << calc.error().message;
   }
-  const auto pc = fb::parse_config(
-      with_inputs(std::format("{}[nevpt2_gradient]\nvariant = \"pc\"\n[optimize]\n", kCasscf)), "",
-      kOut);
-  ASSERT_FALSE(pc.has_value());
-  EXPECT_EQ(pc.error().kind, fb::ErrorKind::Unsupported) << pc.error().message;
-  EXPECT_NE(pc.error().message.find("[nevpt2_gradient] variant 'pc' is not implemented yet"),
-            std::string::npos)
-      << pc.error().message;
 }
 
 TEST(PipelineConfig, TheMoleculeIsLoadedOnlyAfterAnOptimize) {
@@ -1139,6 +1139,10 @@ TEST(PipelineConfig, TheNevpt2GradientStepReadsItsOptionsAndWritesItsJson) {
       with_inputs(casscf + "[nevpt2_gradient]\nroot = 0\nvariant = \"sc\"\n"), "", kOut);
   ASSERT_TRUE(written.has_value()) << written.error().message;
   EXPECT_EQ(written->step<fb::Nevpt2GradientStep>()->variant, fb::Nevpt2Variant::Sc);
+  auto pc =
+      fb::parse_config(with_inputs(casscf + "[nevpt2_gradient]\nvariant = \"pc\"\n"), "", kOut);
+  ASSERT_TRUE(pc.has_value()) << pc.error().message;
+  EXPECT_EQ(pc->step<fb::Nevpt2GradientStep>()->variant, fb::Nevpt2Variant::Pc);
 
   expect_config_error(with_inputs(casscf + "[nevpt2_gradient]\nroot = -1\n"),
                       "[nevpt2_gradient] root is -1, below 0");
@@ -1156,8 +1160,7 @@ TEST(PipelineConfig, TheNevpt2GradientStepReadsItsOptionsAndWritesItsJson) {
 }
 
 // Each of [nevpt2_gradient]'s refusals when the config is read, before the
-// SCF and the CASSCF it would follow: PC, until its gradient lands; an
-// integral-direct [eri], written or filled in; a state average; and an open
+// SCF and the CASSCF it would follow: an integral-direct [eri], written or filled in; a state average; and an open
 // shell, a multiplicity other than 1, written or [optimize]'s start.
 TEST(PipelineConfig, TheNevpt2GradientRefusalsAreUnsupported) {
   const std::string fitted = "[eri]\nmode = \"density_fitting\"\n";
@@ -1168,9 +1171,6 @@ TEST(PipelineConfig, TheNevpt2GradientRefusalsAreUnsupported) {
     EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
     EXPECT_NE(calc.error().message.find(needle), std::string::npos) << calc.error().message;
   };
-  expect_unsupported(with_inputs(fitted + casscf + "[nevpt2_gradient]\nvariant = \"pc\"\n"),
-                     "[nevpt2_gradient] variant 'pc' is not implemented yet: the PC-NEVPT2 "
-                     "gradient lands with #564");
   for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
     expect_unsupported(with_inputs(std::string(eri) + casscf + "[nevpt2_gradient]\n"),
                        "[nevpt2_gradient] runs over density fitting only, and [eri] mode is "
