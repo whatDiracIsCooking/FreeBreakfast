@@ -152,6 +152,7 @@ add_executable(
   df_three_center_gpu.cpp
   df_high_aux_gpu.cpp
   df_gradient_gpu.cpp
+  df_jk_derivative_gpu.cpp
   df_rhf_gradient_gpu.cpp
   pipeline_gradient_gpu.cpp
   pipeline_casscf_gradient_gpu.cpp

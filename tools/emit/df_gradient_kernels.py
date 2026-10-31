@@ -66,6 +66,10 @@ from felizjueves.gradient.kernel_geri3 import build_geri3_kernel  # noqa: E402
 from felizjueves.gradient.kernel_gmetric import (  # noqa: E402
     build_gmetric_kernel,
 )
+from felizjueves.gradient.kernel_ipmetric import (  # noqa: E402
+    build_ipmetric_kernel,
+)
+from felizjueves.gradient.kernel_xeri3 import build_xeri3_kernel  # noqa: E402
 from felizjueves.ir.passes import split_axes  # noqa: E402
 from felizjueves.performance.device import by_name  # noqa: E402
 
@@ -100,6 +104,14 @@ def geri3(cls: tuple[int, int, int]):
     return split_axes(build_geri3_kernel(cls), {**BRA_AXES, **AUX_AXES})
 
 
+def ipmetric(cls: tuple[int, int]):
+    return split_axes(build_ipmetric_kernel(cls), AUX_AXES)
+
+
+def xeri3(cls: tuple[int, int, int]):
+    return split_axes(build_xeri3_kernel(cls), {**BRA_AXES, **AUX_AXES})
+
+
 def main() -> int:
     check_limits()
     arch = by_name(ARCH)
@@ -108,6 +120,8 @@ def main() -> int:
     for family, classes, build in (
         ("gmetric", metric_classes, gmetric),
         ("geri3", eri3_classes, geri3),
+        ("ipmetric", metric_classes, ipmetric),
+        ("xeri3", eri3_classes, xeri3),
     ):
         for cls in classes:
             kernel = build(cls)
