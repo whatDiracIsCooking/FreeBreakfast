@@ -8,7 +8,11 @@
 // along a spin-pure, symmetric u perpendicular to c; Σ_{p>q} κ_pq A_pq along
 // a random rotation of each block (core-core and virtual-virtual included),
 // the orbitals not re-canonicalized; and <h_bar, C^T dh C> and
-// <Λ, C^T dB C> along seeded integral perturbations.
+// <Λ, C^T dB C> along seeded integral perturbations. Then z^c's: the
+// Lagrangian E_corr + <z^c, f> stationary along core-core and
+// virtual-virtual rotations, and each adjoint of Φ = <z^c, f> at fixed z^c
+// against a ladder of Φ along the same directions; and the degenerate-pair
+// rule.
 
 #include <gtest/gtest.h>
 
@@ -284,6 +288,7 @@ struct HostAdjoint {
   std::vector<double> y;
   std::vector<double> x;
   std::vector<double> a;
+  std::vector<double> epsilon;
 };
 
 HostAdjoint adjoint(fb::DeviceResources &res, const State &s) {
@@ -300,7 +305,8 @@ HostAdjoint adjoint(fb::DeviceResources &res, const State &s) {
           .lambda = download(res, got->lambda.data(), static_cast<std::size_t>(s.naux) * nmo * nmo),
           .y = download(res, got->y.data(), s.vector.size()),
           .x = download(res, got->x.data(), nmo * nmo),
-          .a = download(res, got->a.data(), nmo * nmo)};
+          .a = download(res, got->a.data(), nmo * nmo),
+          .epsilon = download(res, got->epsilon.data(), nmo)};
 }
 
 // C = A B, column-major: A m x k, B k x n.
@@ -357,9 +363,11 @@ double dot(std::span<const double> a, std::span<const double> b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
 }
 
-// Central differences of @p at over the ladder, against @p predicted.
+// Central differences of @p at over the ladder, against @p predicted, to
+// kLadderTolerance relative to @p scale: |predicted| unless given, which a
+// stationarity check, predicting 0, gives as the slope it cancels.
 void expect_ladder(const std::string &name, const std::function<double(double)> &at,
-                   const double predicted) {
+                   const double predicted, const std::optional<double> scale = std::nullopt) {
   std::vector<double> d;
   for (std::int32_t k = 0; k < kRungs; ++k) {
     const double t = std::ldexp(kLadderT0, -k);
@@ -384,12 +392,12 @@ void expect_ladder(const std::string &name, const std::function<double(double)> 
   // The run's finest pair is (D_{end+1}, D_{end+2}).
   const auto fine = static_cast<std::size_t>(best_end + 2);
   const double richardson = ((4.0 * d[fine]) - d[fine - 1]) / 3.0;
-  EXPECT_NEAR(richardson, predicted, kLadderTolerance * std::abs(predicted))
-      << name << " ratios:" << ladder;
+  const double against = scale.value_or(std::abs(predicted));
+  EXPECT_NEAR(richardson, predicted, kLadderTolerance * against) << name << " ratios:" << ladder;
   std::cout << std::format("[ nevpt2   ] gradient ladder {}: predicted {:.12e}, Richardson "
                            "{:.12e}, relative {:.2e}, ratios{}\n",
-                           name, predicted, richardson,
-                           std::abs(richardson - predicted) / std::abs(predicted), ladder);
+                           name, predicted, richardson, std::abs(richardson - predicted) / against,
+                           ladder);
 }
 
 TEST(Nevpt2Gradient, EnergyMatchesPyscf) {
@@ -407,18 +415,14 @@ TEST(Nevpt2Gradient, EnergyMatchesPyscf) {
                            got - e_corr);
 }
 
-// <u, y> along u = P H_r c, normalized, with c(t) = (c + t u) / |c + t u|.
-// H_r is spin-free, so u is in c's spin; and it is a random combination of
-// operators that commute with the molecule's point group (the active block
-// of C^T h C, its square and the active (tu|vw)), so u is in c's symmetry
-// sector too. A direction outside either takes the hole-side metrics where
-// they are not positive, and the SC finish has poles there.
-TEST(Nevpt2Gradient, CiAdjointMatchesLadder) {
-  FBF_REQUIRE_GPU();
-  const State &s = state();
-  ASSERT_FALSE(s.b.empty());
-  fb::DeviceResources res(0);
-  const HostAdjoint adj = adjoint(res, s);
+// u = P H_r c, normalized: the CI direction of every ladder along c(t) =
+// (c + t u) / |c + t u|. H_r is spin-free, so u is in c's spin; and it is a
+// random combination of operators that commute with the molecule's point
+// group (the active block of C^T h C, its square and the active (tu|vw)), so
+// u is in c's symmetry sector too. A direction outside either takes the
+// hole-side metrics where they are not positive, and the SC finish has
+// poles there.
+std::vector<double> ci_direction(fb::DeviceResources &res, const State &s) {
   const auto n = static_cast<std::size_t>(s.ncas);
   const auto nao = static_cast<std::size_t>(s.nao);
   const auto naux = static_cast<std::size_t>(s.naux);
@@ -468,32 +472,52 @@ TEST(Nevpt2Gradient, CiAdjointMatchesLadder) {
   }
   const DeviceState d = upload_state(res, s);
   auto sigma = fb::ci::Sigma::create(res, *d.strings, *d.strings);
-  ASSERT_TRUE(sigma.has_value()) << sigma.error().message;
-  ASSERT_TRUE(sigma->set_integrals(res, 0.0, h_r, eri_r).has_value());
+  EXPECT_TRUE(sigma.has_value()) << sigma.error().message;
+  if (!sigma.has_value()) {
+    return {};
+  }
+  EXPECT_TRUE(sigma->set_integrals(res, 0.0, h_r, eri_r).has_value());
   fb::Buffers::device<double> hc(s.vector.size(), res.device());
-  ASSERT_TRUE(sigma->apply(res, 1, d.vector.data(), hc.data()).has_value());
+  EXPECT_TRUE(sigma->apply(res, 1, d.vector.data(), hc.data()).has_value());
   std::vector<double> u = download(res, hc.data(), s.vector.size());
   const double overlap = dot(u, s.vector);
   for (std::size_t i = 0; i < u.size(); ++i) {
     u[i] -= overlap * s.vector[i];
   }
   const double norm = std::sqrt(dot(u, u));
-  ASSERT_GT(norm, 1e-6);
+  EXPECT_GT(norm, 1e-6);
   for (double &v : u) {
     v /= norm;
   }
+  return u;
+}
+
+// The state moved along c(t) = (c + t u) / |c + t u| into @p moved.
+void move_vector(const State &s, std::span<const double> u, const double t, State &moved) {
+  for (std::size_t i = 0; i < u.size(); ++i) {
+    moved.vector[i] = s.vector[i] + (t * u[i]);
+  }
+  const double length = std::sqrt(dot(moved.vector, moved.vector));
+  for (double &v : moved.vector) {
+    v /= length;
+  }
+}
+
+// <u, y> along u = ci_direction's.
+TEST(Nevpt2Gradient, CiAdjointMatchesLadder) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> u = ci_direction(res, s);
+  ASSERT_EQ(u.size(), s.vector.size());
 
   State moved = s;
   expect_ladder(
       "ci",
       [&](const double t) {
-        for (std::size_t i = 0; i < u.size(); ++i) {
-          moved.vector[i] = s.vector[i] + (t * u[i]);
-        }
-        const double length = std::sqrt(dot(moved.vector, moved.vector));
-        for (double &v : moved.vector) {
-          v /= length;
-        }
+        move_vector(s, u, t, moved);
         return energy(res, moved);
       },
       dot(u, adj.y));
@@ -512,6 +536,57 @@ void PrintTo(const Block &b, std::ostream *os) {
   *os << b.name;
 }
 
+// Each block alone: the three inside a space and the three between.
+constexpr std::array<Block, 6> kBlocks{{{.name = "core_core", .row = 0, .col = 0},
+                                        {.name = "active_active", .row = 1, .col = 1},
+                                        {.name = "virtual_virtual", .row = 2, .col = 2},
+                                        {.name = "active_core", .row = 1, .col = 0},
+                                        {.name = "virtual_core", .row = 2, .col = 0},
+                                        {.name = "virtual_active", .row = 2, .col = 1}}};
+
+// A random antisymmetric κ on @p block alone, seeded by the block, nmo x nmo
+// column-major.
+std::vector<double> block_kappa(const State &s, const Block &block) {
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const std::array<std::size_t, 4> first{0, static_cast<std::size_t>(s.ncore),
+                                         static_cast<std::size_t>(s.ncore + s.ncas), nmo};
+  std::mt19937_64 engine(562 + (3 * block.row) + block.col);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  std::vector<double> kappa(nmo * nmo, 0.0);
+  for (std::size_t p = first[block.row]; p < first[block.row + 1]; ++p) {
+    for (std::size_t q = first[block.col]; q < first[block.col + 1]; ++q) {
+      if (p <= q && block.row == block.col) {
+        continue;
+      }
+      const double k = uniform(engine);
+      kappa[p + (nmo * q)] = k;
+      kappa[q + (nmo * p)] = -k;
+    }
+  }
+  return kappa;
+}
+
+// Σ_{p>q} κ_pq A_pq: the first-order change along C exp(t κ).
+double source_dot(std::span<const double> kappa, std::span<const double> a, std::size_t nmo) {
+  double sum = 0.0;
+  for (std::size_t q = 0; q < nmo; ++q) {
+    for (std::size_t p = q + 1; p < nmo; ++p) {
+      sum += kappa[p + (nmo * q)] * a[p + (nmo * q)];
+    }
+  }
+  return sum;
+}
+
+// The state with C(t) = C exp(t κ) into @p moved.
+void rotate(const State &s, std::span<const double> kappa, const double t, State &moved) {
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  std::vector<double> tk(kappa.begin(), kappa.end());
+  for (double &v : tk) {
+    v *= t;
+  }
+  moved.c = matmul(s.c, expm(tk, nmo), nmo, nmo, nmo);
+}
+
 class Nevpt2GradientRotation : public ::testing::TestWithParam<Block> {};
 
 TEST_P(Nevpt2GradientRotation, OrbitalSourceMatchesLadder) {
@@ -521,49 +596,78 @@ TEST_P(Nevpt2GradientRotation, OrbitalSourceMatchesLadder) {
   ASSERT_FALSE(s.b.empty());
   fb::DeviceResources res(0);
   const HostAdjoint adj = adjoint(res, s);
-  const auto nmo = static_cast<std::size_t>(s.nao);
-  const std::array<std::size_t, 4> first{0, static_cast<std::size_t>(s.ncore),
-                                         static_cast<std::size_t>(s.ncore + s.ncas), nmo};
-
-  std::mt19937_64 engine(562 + (3 * block.row) + block.col);
-  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
-  std::vector<double> kappa(nmo * nmo, 0.0);
-  double predicted = 0.0;
-  for (std::size_t p = first[block.row]; p < first[block.row + 1]; ++p) {
-    for (std::size_t q = first[block.col]; q < first[block.col + 1]; ++q) {
-      if (p <= q && block.row == block.col) {
-        continue;
-      }
-      const double k = uniform(engine);
-      kappa[p + (nmo * q)] = k;
-      kappa[q + (nmo * p)] = -k;
-      // Σ_{p>q} κ_pq A_pq, over whichever of (p, q), (q, p) is below.
-      predicted += p > q ? k * adj.a[p + (nmo * q)] : -k * adj.a[q + (nmo * p)];
-    }
-  }
+  const std::vector<double> kappa = block_kappa(s, block);
 
   State moved = s;
   expect_ladder(
       std::string{block.name},
       [&](const double t) {
-        std::vector<double> tk(kappa);
-        for (double &v : tk) {
-          v *= t;
-        }
-        moved.c = matmul(s.c, expm(tk, nmo), nmo, nmo, nmo);
+        rotate(s, kappa, t, moved);
         return energy(res, moved);
       },
-      predicted);
+      source_dot(kappa, adj.a, static_cast<std::size_t>(s.nao)));
 }
 
-INSTANTIATE_TEST_SUITE_P(Blocks, Nevpt2GradientRotation,
-                         ::testing::Values(Block{.name = "core_core", .row = 0, .col = 0},
-                                           Block{.name = "active_active", .row = 1, .col = 1},
-                                           Block{.name = "virtual_virtual", .row = 2, .col = 2},
-                                           Block{.name = "active_core", .row = 1, .col = 0},
-                                           Block{.name = "virtual_core", .row = 2, .col = 0},
-                                           Block{.name = "virtual_active", .row = 2, .col = 1}),
+INSTANTIATE_TEST_SUITE_P(Blocks, Nevpt2GradientRotation, ::testing::ValuesIn(kBlocks),
                          [](const auto &info) { return std::string(info.param.name); });
+
+// A seeded symmetric AO dh ("h"), or a seeded dB symmetric in its AO pair
+// ("B"), the other zero.
+struct IntegralDirection {
+  std::vector<double> dh;
+  std::vector<double> db;
+};
+
+IntegralDirection integral_direction(const State &s, const std::string &which) {
+  const auto nao = static_cast<std::size_t>(s.nao);
+  const auto naux = static_cast<std::size_t>(s.naux);
+  std::mt19937_64 engine(which == "h" ? 5621 : 5622);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  IntegralDirection dir{.dh = std::vector<double>(nao * nao, 0.0),
+                        .db = std::vector<double>(naux * nao * nao, 0.0)};
+  for (std::size_t mu = 0; mu < nao; ++mu) {
+    for (std::size_t nu = 0; nu <= mu; ++nu) {
+      if (which == "h") {
+        dir.dh[mu + (nao * nu)] = dir.dh[nu + (nao * mu)] = uniform(engine);
+        continue;
+      }
+      for (std::size_t l = 0; l < naux; ++l) {
+        dir.db[l + (naux * (mu + (nao * nu)))] = dir.db[l + (naux * (nu + (nao * mu)))] =
+            kBScale * uniform(engine);
+      }
+    }
+  }
+  return dir;
+}
+
+// <h_bar, C^T dh C> + Σ_L <Λ^L, C^T dB^L C>.
+double integral_dot(const State &s, const IntegralDirection &dir, std::span<const double> h_bar,
+                    std::span<const double> lambda) {
+  const auto nao = static_cast<std::size_t>(s.nao);
+  const auto naux = static_cast<std::size_t>(s.naux);
+  double sum = dot(h_bar, to_mo(s, dir.dh));
+  std::vector<double> slice(nao * nao);
+  for (std::size_t l = 0; l < naux; ++l) {
+    for (std::size_t mn = 0; mn < nao * nao; ++mn) {
+      slice[mn] = dir.db[l + (naux * mn)];
+    }
+    const std::vector<double> mo = to_mo(s, slice);
+    for (std::size_t pq = 0; pq < nao * nao; ++pq) {
+      sum += lambda[l + (naux * pq)] * mo[pq];
+    }
+  }
+  return sum;
+}
+
+// The integrals moved by @p step along @p dir into @p moved.
+void perturb(const State &s, const IntegralDirection &dir, const double step, State &moved) {
+  for (std::size_t k = 0; k < dir.dh.size(); ++k) {
+    moved.h[k] = s.h[k] + (step * dir.dh[k]);
+  }
+  for (std::size_t k = 0; k < dir.db.size(); ++k) {
+    moved.b[k] = s.b[k] + (step * dir.db[k]);
+  }
+}
 
 // <h_bar, C^T dh C> along a seeded symmetric dh, and <Λ, C^T dB C> along a
 // seeded dB symmetric in its AO pair, each alone, at fixed C and c.
@@ -576,56 +680,16 @@ TEST_P(Nevpt2GradientIntegrals, IntegralAdjointMatchesLadder) {
   ASSERT_FALSE(s.b.empty());
   fb::DeviceResources res(0);
   const HostAdjoint adj = adjoint(res, s);
-  const auto nao = static_cast<std::size_t>(s.nao);
-  const auto naux = static_cast<std::size_t>(s.naux);
-
-  std::mt19937_64 engine(which == "h" ? 5621 : 5622);
-  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
-  std::vector<double> dh(nao * nao, 0.0);
-  std::vector<double> db(naux * nao * nao, 0.0);
-  double predicted = 0.0;
-  if (which == "h") {
-    for (std::size_t mu = 0; mu < nao; ++mu) {
-      for (std::size_t nu = 0; nu <= mu; ++nu) {
-        dh[mu + (nao * nu)] = dh[nu + (nao * mu)] = uniform(engine);
-      }
-    }
-    predicted = dot(adj.h_bar, to_mo(s, dh));
-  } else {
-    for (std::size_t mu = 0; mu < nao; ++mu) {
-      for (std::size_t nu = 0; nu <= mu; ++nu) {
-        for (std::size_t l = 0; l < naux; ++l) {
-          db[l + (naux * (mu + (nao * nu)))] = db[l + (naux * (nu + (nao * mu)))] =
-              kBScale * uniform(engine);
-        }
-      }
-    }
-    // C^T dB^L C per L, against Λ^L.
-    std::vector<double> slice(nao * nao);
-    for (std::size_t l = 0; l < naux; ++l) {
-      for (std::size_t mn = 0; mn < nao * nao; ++mn) {
-        slice[mn] = db[l + (naux * mn)];
-      }
-      const std::vector<double> mo = to_mo(s, slice);
-      for (std::size_t pq = 0; pq < nao * nao; ++pq) {
-        predicted += adj.lambda[l + (naux * pq)] * mo[pq];
-      }
-    }
-  }
+  const IntegralDirection dir = integral_direction(s, which);
 
   State moved = s;
   expect_ladder(
       which,
       [&](const double t) {
-        for (std::size_t k = 0; k < dh.size(); ++k) {
-          moved.h[k] = s.h[k] + (t * dh[k]);
-        }
-        for (std::size_t k = 0; k < db.size(); ++k) {
-          moved.b[k] = s.b[k] + (t * db[k]);
-        }
+        perturb(s, dir, t, moved);
         return energy(res, moved);
       },
-      predicted);
+      integral_dot(s, dir, adj.h_bar, adj.lambda));
 }
 
 INSTANTIATE_TEST_SUITE_P(Integrals, Nevpt2GradientIntegrals,
@@ -659,6 +723,302 @@ TEST(Nevpt2Gradient, SourceTermShapes) {
   EXPECT_LT(worst_a, 1e-14);
   EXPECT_EQ(worst_h, 0.0);
   EXPECT_LT(worst_lambda, 1e-15);
+}
+
+// zc_multipliers at the source term @p a and orbital energies @p epsilon, on
+// the host.
+fb::Result<nevpt2::ZcMultipliers> multipliers(fb::DeviceResources &res, const State &s,
+                                              std::span<const double> a,
+                                              std::span<const double> epsilon) {
+  const fb::Buffers::device<double> a_d = upload(res, a);
+  const fb::Buffers::device<double> e_d = upload(res, epsilon);
+  return nevpt2::zc_multipliers(res, s.nao, s.ncore, s.ncas, a_d.data(), e_d.data());
+}
+
+// z^c at the state, from sc_adjoint's A and ε, on the host.
+std::vector<double> zc_of(fb::DeviceResources &res, const State &s, const HostAdjoint &adj) {
+  const auto got = multipliers(res, s, adj.a, adj.epsilon);
+  EXPECT_TRUE(got.has_value()) << got.error().message;
+  if (!got.has_value()) {
+    return {};
+  }
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  std::cout << std::format("[ nevpt2   ] z^c: max |z| {:.3e}, smallest inactive gap {:.3e}\n",
+                           got->max_z, got->min_gap);
+  return download(res, got->z.data(), nmo * nmo);
+}
+
+// zc_adjoint at @p s for the fixed @p z, on the host.
+struct HostZcAdjoint {
+  double phi = 0.0;
+  std::vector<double> h_bar;
+  std::vector<double> lambda;
+  std::vector<double> y;
+  std::vector<double> x;
+  std::vector<double> a;
+};
+
+fb::Result<nevpt2::ZcAdjoint> zc_at(fb::DeviceResources &res, const State &s, const DeviceState &d,
+                                    const fb::Buffers::device<double> &z) {
+  return nevpt2::zc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                            d.c.data(), d.h.data(), s.ncore, s.ncas, d.vector.data(), z.data());
+}
+
+HostZcAdjoint zc_adjoint(fb::DeviceResources &res, const State &s, std::span<const double> z) {
+  const DeviceState d = upload_state(res, s);
+  const fb::Buffers::device<double> z_d = upload(res, z);
+  const auto got = zc_at(res, s, d, z_d);
+  EXPECT_TRUE(got.has_value()) << got.error().message;
+  if (!got.has_value()) {
+    return {};
+  }
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  return {.phi = got->phi,
+          .h_bar = download(res, got->h_bar.data(), nmo * nmo),
+          .lambda = download(res, got->lambda.data(), static_cast<std::size_t>(s.naux) * nmo * nmo),
+          .y = download(res, got->y.data(), s.vector.size()),
+          .x = download(res, got->x.data(), nmo * nmo),
+          .a = download(res, got->a.data(), nmo * nmo)};
+}
+
+// Φ = <z, f> at @p s for the fixed @p z.
+double phi(fb::DeviceResources &res, const State &s, std::span<const double> z) {
+  const DeviceState d = upload_state(res, s);
+  const fb::Buffers::device<double> z_d = upload(res, z);
+  const auto got = zc_at(res, s, d, z_d);
+  EXPECT_TRUE(got.has_value()) << got.error().message;
+  return got.has_value() ? got->phi : std::nan("");
+}
+
+// The Lagrangian E_corr + <z^c, f> along C exp(t κ) for κ on the core-core
+// or the virtual-virtual block, z^c fixed and ε rebuilt from C(t), not
+// re-canonicalized: flat at first order, to the ladder's 1e-7 of the slope
+// Σ κ A it cancels. And the same at the point, Σ κ (A + A^{z^c}).
+class Nevpt2ZcStationarity : public ::testing::TestWithParam<Block> {};
+
+TEST_P(Nevpt2ZcStationarity, LagrangianIsFlat) {
+  FBF_REQUIRE_GPU();
+  const Block &block = GetParam();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> z = zc_of(res, s, adj);
+  ASSERT_FALSE(z.empty());
+  const HostZcAdjoint zadj = zc_adjoint(res, s, z);
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const std::vector<double> kappa = block_kappa(s, block);
+  const double slope = source_dot(kappa, adj.a, nmo);
+  ASSERT_GT(std::abs(slope), 0.0);
+  const double at_point = slope + source_dot(kappa, zadj.a, nmo);
+  EXPECT_NEAR(at_point, 0.0, kLadderTolerance * std::abs(slope));
+  std::cout << std::format("[ nevpt2   ] z^c {}: slope {:.6e}, with A^zc {:.3e}\n", block.name,
+                           slope, at_point);
+
+  State moved = s;
+  expect_ladder(
+      std::format("lagrangian {}", block.name),
+      [&](const double t) {
+        rotate(s, kappa, t, moved);
+        return energy(res, moved) + phi(res, moved, z);
+      },
+      0.0, std::abs(slope));
+}
+
+INSTANTIATE_TEST_SUITE_P(InactiveBlocks, Nevpt2ZcStationarity,
+                         ::testing::Values(kBlocks[0], kBlocks[2]),
+                         [](const auto &info) { return std::string(info.param.name); });
+
+// Σ_{p>q} κ_pq A^{z^c}_pq against a ladder of Φ at fixed z^c along
+// C exp(t κ), κ on each block alone.
+class Nevpt2ZcRotation : public ::testing::TestWithParam<Block> {};
+
+TEST_P(Nevpt2ZcRotation, OrbitalSourceMatchesLadder) {
+  FBF_REQUIRE_GPU();
+  const Block &block = GetParam();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> z = zc_of(res, s, adj);
+  ASSERT_FALSE(z.empty());
+  const HostZcAdjoint zadj = zc_adjoint(res, s, z);
+  const std::vector<double> kappa = block_kappa(s, block);
+
+  State moved = s;
+  expect_ladder(
+      std::format("phi {}", block.name),
+      [&](const double t) {
+        rotate(s, kappa, t, moved);
+        return phi(res, moved, z);
+      },
+      source_dot(kappa, zadj.a, static_cast<std::size_t>(s.nao)));
+}
+
+INSTANTIATE_TEST_SUITE_P(Blocks, Nevpt2ZcRotation, ::testing::ValuesIn(kBlocks),
+                         [](const auto &info) { return std::string(info.param.name); });
+
+// <u, y^c> against a ladder of Φ at fixed z^c along ci_direction's u.
+TEST(Nevpt2Zc, CiSourceMatchesLadder) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> z = zc_of(res, s, adj);
+  ASSERT_FALSE(z.empty());
+  const HostZcAdjoint zadj = zc_adjoint(res, s, z);
+  const std::vector<double> u = ci_direction(res, s);
+  ASSERT_EQ(u.size(), s.vector.size());
+
+  State moved = s;
+  expect_ladder(
+      "phi ci",
+      [&](const double t) {
+        move_vector(s, u, t, moved);
+        return phi(res, moved, z);
+      },
+      dot(u, zadj.y));
+}
+
+// <h_bar^{z^c}, C^T dh C> and <Λ^{z^c}, C^T dB C> against a ladder of Φ at
+// fixed z^c, along the sc_adjoint ladders' directions. Φ is linear in h and
+// quadratic in B, so along a straight line its central difference is exact
+// at every t and the ladder's changes are round-off, with no t^2 regime for
+// the ratio rule to find. The path is bent instead, (t + t^3 / t0^2) along
+// the direction: the same tangent, so the same prediction, and a central
+// difference of exactly D(0) (1 + t^2 / t0^2), whose changes fall by 4.
+class Nevpt2ZcIntegrals : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2ZcIntegrals, IntegralAdjointMatchesLadder) {
+  FBF_REQUIRE_GPU();
+  const std::string &which = GetParam();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> z = zc_of(res, s, adj);
+  ASSERT_FALSE(z.empty());
+  const HostZcAdjoint zadj = zc_adjoint(res, s, z);
+  const IntegralDirection dir = integral_direction(s, which);
+
+  State moved = s;
+  expect_ladder(
+      std::format("phi {}", which),
+      [&](const double t) {
+        perturb(s, dir, t * (1.0 + ((t * t) / (kLadderT0 * kLadderT0))), moved);
+        return phi(res, moved, z);
+      },
+      integral_dot(s, dir, zadj.h_bar, zadj.lambda));
+}
+
+INSTANTIATE_TEST_SUITE_P(Integrals, Nevpt2ZcIntegrals,
+                         ::testing::Values(std::string{"h"}, std::string{"B"}),
+                         [](const auto &info) { return info.param; });
+
+// The degenerate-pair rule on a forced pair: the first virtual and a partner
+// put 1e-7 Eh apart, under the 1e-6 floor. With A as sc_adjoint gives it the
+// pair is refused, Numerical, naming it; with A_pq at round-off (1e-12) its
+// z is zero, and every pair without the moved orbital keeps its division.
+TEST(Nevpt2Zc, DegeneratePairRule) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const auto q = static_cast<std::size_t>(s.ncore + s.ncas);
+  const std::size_t p = q + 1;
+  ASSERT_LT(p, nmo);
+  // The two lowest virtuals of different symmetry have A at round-off, so
+  // the pair is the first above it: then the refusal is A's, not chance.
+  std::size_t partner = p;
+  while (partner < nmo && std::abs(adj.a[partner + (nmo * q)]) <= 1e-6) {
+    ++partner;
+  }
+  ASSERT_LT(partner, nmo) << "no virtual pair with q = " << q << " and |A| > 1e-6";
+  std::vector<double> epsilon = adj.epsilon;
+  epsilon[partner] = epsilon[q] + 1e-7;
+
+  const auto refused = multipliers(res, s, adj.a, epsilon);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Numerical);
+  const std::string named = std::format("orbitals {} and {}", partner, q);
+  EXPECT_NE(refused.error().message.find(named), std::string::npos) << refused.error().message;
+
+  std::vector<double> a = adj.a;
+  a[partner + (nmo * q)] = 1e-12;
+  a[q + (nmo * partner)] = -1e-12;
+  const auto kept = multipliers(res, s, a, epsilon);
+  ASSERT_TRUE(kept.has_value()) << kept.error().message;
+  EXPECT_LE(kept->min_gap, 1e-7 * (1.0 + 1e-6));
+  const std::vector<double> z = download(res, kept->z.data(), nmo * nmo);
+  EXPECT_EQ(z[partner + (nmo * q)], 0.0);
+  EXPECT_EQ(z[q + (nmo * partner)], 0.0);
+  // Every pair without the moved orbital keeps its division to the bit.
+  const auto unforced = multipliers(res, s, adj.a, adj.epsilon);
+  ASSERT_TRUE(unforced.has_value()) << unforced.error().message;
+  const std::vector<double> z0 = download(res, unforced->z.data(), nmo * nmo);
+  for (std::size_t i = 0; i < nmo; ++i) {
+    for (std::size_t j = 0; j < nmo; ++j) {
+      if (i != partner && j != partner) {
+        EXPECT_EQ(z[i + (nmo * j)], z0[i + (nmo * j)]) << i << ", " << j;
+      }
+    }
+  }
+  EXPECT_GT(unforced->max_z, 0.0);
+}
+
+// z^c symmetric and zero off the core-core and virtual-virtual blocks and on
+// the diagonal; A^{z^c} = X - X^T, h_bar^{z^c} = z, every Λ^L symmetric; and
+// y^c swap-symmetric in its two strings, as the singlet c is, since
+// Σ (W + W^T)_tu E_tu is spin-free.
+TEST(Nevpt2Zc, Shapes) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> z = zc_of(res, s, adj);
+  ASSERT_FALSE(z.empty());
+  const HostZcAdjoint zadj = zc_adjoint(res, s, z);
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const auto naux = static_cast<std::size_t>(s.naux);
+  const auto space = [&](const std::size_t p) {
+    return p < static_cast<std::size_t>(s.ncore)            ? 0
+           : p < static_cast<std::size_t>(s.ncore + s.ncas) ? 1
+                                                            : 2;
+  };
+  double worst_lambda = 0.0;
+  for (std::size_t p = 0; p < nmo; ++p) {
+    for (std::size_t q = 0; q < nmo; ++q) {
+      const double zpq = z[p + (nmo * q)];
+      EXPECT_EQ(zpq, z[q + (nmo * p)]);
+      if (p == q || space(p) != space(q) || space(p) == 1) {
+        EXPECT_EQ(zpq, 0.0) << p << ", " << q;
+      }
+      EXPECT_EQ(zadj.h_bar[p + (nmo * q)], zpq);
+      EXPECT_LT(std::abs(zadj.a[p + (nmo * q)] - (zadj.x[p + (nmo * q)] - zadj.x[q + (nmo * p)])),
+                1e-15);
+      for (std::size_t l = 0; l < naux; ++l) {
+        worst_lambda = std::max(worst_lambda, std::abs(zadj.lambda[l + (naux * (p + (nmo * q)))] -
+                                                       zadj.lambda[l + (naux * (q + (nmo * p)))]));
+      }
+    }
+  }
+  EXPECT_LT(worst_lambda, 1e-15);
+  const auto m = static_cast<std::size_t>(std::llround(std::sqrt(zadj.y.size())));
+  ASSERT_EQ(m * m, zadj.y.size());
+  double worst_y = 0.0;
+  double largest_y = 0.0;
+  for (std::size_t i = 0; i < m; ++i) {
+    for (std::size_t j = 0; j < m; ++j) {
+      worst_y = std::max(worst_y, std::abs(zadj.y[(i * m) + j] - zadj.y[(j * m) + i]));
+      largest_y = std::max(largest_y, std::abs(zadj.y[(i * m) + j]));
+    }
+  }
+  EXPECT_GT(largest_y, 0.0);
+  EXPECT_LT(worst_y, 1e-14 * largest_y);
 }
 
 } // namespace

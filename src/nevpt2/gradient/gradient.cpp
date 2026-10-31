@@ -21,67 +21,11 @@ import free_breakfast.ci.strings;
 import free_breakfast.nevpt2.density_fitting;
 import free_breakfast.nevpt2.rdm;
 import free_breakfast.nevpt2.energy;
+import :operands; // column_operand, contract, zeroed, add_onto, check_counts
 
 #include "diagnostics.h"
 
 namespace free_breakfast::nevpt2 {
-
-// A packed column-major einsum operand, its first index fastest: every array
-// here but the RDMs, which are row-major and so enter with their labels
-// reversed ("ut" is dm1[t][u]).
-EinsumOperand column_operand(const double *data, std::vector<int64_t> dims) {
-  std::vector<int64_t> strides(dims.size(), 1);
-  for (size_t k = 1; k < dims.size(); ++k) {
-    strides[k] = strides[k - 1] * dims[k - 1];
-  }
-  return {.data = data, .dims = std::move(dims), .strides = std::move(strides)};
-}
-
-// @p out, packed column-major over @p out_dims, += alpha einsum(@p subscripts).
-// einsum writes its output row-major, so the output's labels and extents go
-// to it reversed. Nothing is launched when an extent is zero: the sum, or the
-// output, is then empty.
-Status contract(DeviceResources &res, const std::string_view subscripts,
-                const std::vector<EinsumOperand> &operands, double *out,
-                std::vector<int64_t> out_dims, const double alpha) {
-  const auto empty = [](const std::vector<int64_t> &dims) {
-    return std::ranges::find(dims, 0) != dims.end();
-  };
-  if (empty(out_dims) ||
-      std::ranges::any_of(operands, [&](const EinsumOperand &op) { return empty(op.dims); })) {
-    return {};
-  }
-  const size_t arrow = subscripts.find("->");
-  std::string reversed{subscripts.substr(0, arrow + 2)};
-  const std::string_view rhs = subscripts.substr(arrow + 2);
-  reversed.append(rhs.rbegin(), rhs.rend());
-  std::ranges::reverse(out_dims);
-  return einsum(res.stream(), reversed, operands, out, out_dims, alpha);
-}
-
-// A zeroed device buffer of @p count doubles, which the accumulating einsums
-// and geams below add onto.
-Result<Buffers::device<double>> zeroed(DeviceResources &res, const int64_t count) {
-  Buffers::device<double> out(static_cast<size_t>(count), res.device());
-  if (count > 0) {
-    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(
-        out.data(), 0, sizeof(double) * static_cast<size_t>(count), res.stream())));
-  }
-  return out;
-}
-
-// The packed m x n @p from added onto the m x n block at @p to, leading
-// dimension @p ld: one in-place geam. A diagonal is m = 1 with ld + 1.
-Status add_onto(DeviceResources &res, const int64_t m, const int64_t n, const double *from,
-                double *to, const int64_t ld) {
-  if (m * n == 0) {
-    return {};
-  }
-  return gpu_status(wwr::geam<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, static_cast<int32_t>(m),
-      static_cast<int32_t>(n), &kOne<double>, from, static_cast<int32_t>(m), &kOne<double>, to,
-      static_cast<int32_t>(ld), to, static_cast<int32_t>(ld)));
-}
 
 // Half the device's free memory: nevpt2::rdms' budget, as the Nevpt2 step
 // gives it, so that class_energies' own buffers still find room after the
@@ -393,15 +337,7 @@ Result<ScArrays> sc_arrays(DeviceResources &res, const ci::DeviceStringSet &alph
                            const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
                            const int32_t nmo, const double *b, const double *c, const double *h,
                            const int32_t ncore, const int32_t ncas, const double *vector) {
-  if (naux < 0 || nao <= 0 || ncore < 0 || ncas <= 0 || nmo < ncore + ncas) {
-    return err_config("nevpt2::sc_energy: naux {}, nao {}, nmo {}, ncore {} and ncas {} do not "
-                      "fit: each positive (naux and ncore may be 0) and ncore + ncas <= nmo",
-                      naux, nao, nmo, ncore, ncas);
-  }
-  if (alpha.n_orbitals() != ncas || beta.n_orbitals() != ncas) {
-    return err_config("nevpt2::sc_energy: strings over {} and {} orbitals, and {} are active",
-                      alpha.n_orbitals(), beta.n_orbitals(), ncas);
-  }
+  FBF_TRY(check_counts("nevpt2::sc_energy", alpha, beta, naux, nao, nmo, ncore, ncas));
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t nc = ncore;
   const int64_t n = ncas;
@@ -557,12 +493,18 @@ Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
       res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nmo, nmo, &kOne<double>,
       x_source.data(), nmo, &kNegOne<double>, x_source.data(), nmo, a_source.data(), nmo)));
+  // ε as class_energies read it, at the orbitals' own indices: what
+  // zc_multipliers divides by.
+  Buffers::device<double> epsilon = FBF_TRY(zeroed(res, nmo));
+  FBF_TRY(add_onto(res, 1, nc, x.e_core.data(), epsilon.data(), 1));
+  FBF_TRY(add_onto(res, 1, nv, x.e_virt.data(), epsilon.data() + nocc, 1));
   return ScAdjoint{.energies = walked.energies,
                    .h_bar = std::move(h_bar),
                    .lambda = std::move(lambda),
                    .y = std::move(y),
                    .x = std::move(x_source),
-                   .a = std::move(a_source)};
+                   .a = std::move(a_source),
+                   .epsilon = std::move(epsilon)};
 }
 
 } // namespace free_breakfast::nevpt2
