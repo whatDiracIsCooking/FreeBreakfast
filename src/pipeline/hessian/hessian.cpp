@@ -3,7 +3,8 @@
 /// Pipeline run of the chain to ScfStep, or the 6N displaced gradients, each
 /// a nested Pipeline run of the chain to GradientStep, and their central
 /// differences; then the symmetrized Hessian, its two checks, the harmonic
-/// vibrations, and hessian.json.
+/// vibrations, the analytic method's dipole derivative and IR intensities,
+/// and hessian.json.
 
 module free_breakfast.pipeline.hessian;
 
@@ -14,7 +15,9 @@ import free_breakfast.core.log;
 import free_breakfast.core.resources;
 import free_breakfast.core.wwr;
 import free_breakfast.io.json;
+import free_breakfast.basis;
 import free_breakfast.hessian;
+import free_breakfast.integrals.one_electron.dipole; // kDipoleMaxL
 import free_breakfast.pipeline.pipeline;
 
 #include "diagnostics.h"
@@ -92,6 +95,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   // to rounding, so either order), and its asymmetry.
   std::vector<double> raw(n * n);
   double asymmetry = 0.0;
+  std::vector<double> dipole_derivative;
   if (method == HessianMethod::Analytic) {
     auto chain = FBF_TRY(chain_at(0, 0.0));
     FBF_TRY(chain.run(node));
@@ -108,7 +112,7 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     Buffers::device<double> c(nmo_elements, res.device());
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c.data(), rhf.c.data(), nmo_elements * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, res.stream())));
-    // Every term, and the CPHF's U^x, which a dipole derivative reuses.
+    // Every term, and the CPHF's U^x, which the dipole derivative reuses.
     const hessian::RhfTerms terms =
         FBF_TRY(hessian::df_rhf(res, chain.get<MoleculeOutput>()->molecule, basis,
                                 chain.get<PrimitivePairClassesOutput>()->classes, fit.aux, fit.b,
@@ -116,6 +120,21 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     FBF_LOG_INFO("hessian: analytic DF-RHF, CPHF in {} sweeps", terms.response.cphf.iterations);
     raw = terms.hessian;
     asymmetry = terms.asymmetry;
+    // The dipole derivative from the same U^x, where the dipole integrals reach.
+    int32_t max_l = 0;
+    for (const Shell &shell : basis.shells()) {
+      max_l = std::max(max_l, shell.angular_momentum());
+    }
+    if (max_l <= kDipoleMaxL) {
+      dipole_derivative =
+          FBF_TRY(hessian::rhf_dipole_derivative(res, chain.get<MoleculeOutput>()->molecule, basis,
+                                                 chain.get<PrimitivePairClassesOutput>()->classes,
+                                                 c, rhf.n_alpha, terms.response.cphf.solution));
+    } else {
+      FBF_LOG_WARN("hessian: no IR intensities: the basis has a shell of l = {}, and the dipole "
+                   "integrals stop at l = {}",
+                   max_l, kDipoleMaxL);
+    }
   } else {
     // dE/dR at the geometry with coordinate x moved by @p shift.
     const auto gradient_at = [&](size_t x, double shift) -> Result<std::vector<double>> {
@@ -139,7 +158,9 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     }
   }
 
-  HessianOutput out{.hessian = std::vector<double>(n * n), .asymmetry = asymmetry};
+  HessianOutput out{.hessian = std::vector<double>(n * n),
+                    .asymmetry = asymmetry,
+                    .dipole_derivative = std::move(dipole_derivative)};
   for (size_t x = 0; x < n; ++x) {
     for (size_t y = 0; y < n; ++y) {
       out.hessian[(x * n) + y] = 0.5 * (raw[(x * n) + y] + raw[(y * n) + x]);
@@ -158,9 +179,20 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
                out.translational_sum);
 
   out.vibrations = FBF_TRY(geometry::harmonic_analysis(res, atoms, out.hessian));
-  FBF_LOG_INFO("hessian: {} harmonic frequencies (cm^-1)", out.vibrations.frequencies.size());
-  for (size_t j = 0; j < out.vibrations.frequencies.size(); ++j) {
-    FBF_LOG_INFO("hessian: mode {:>3} {:12.2f}", j + 1, out.vibrations.frequencies[j]);
+  if (!out.dipole_derivative.empty()) {
+    out.intensities =
+        FBF_TRY(hessian::infrared_intensities(out.vibrations.modes, out.dipole_derivative));
+    FBF_LOG_INFO("hessian: {} harmonic frequencies (cm^-1) and IR intensities (km/mol)",
+                 out.vibrations.frequencies.size());
+    for (size_t j = 0; j < out.vibrations.frequencies.size(); ++j) {
+      FBF_LOG_INFO("hessian: mode {:>3} {:12.2f} {:12.4f}", j + 1, out.vibrations.frequencies[j],
+                   out.intensities[j]);
+    }
+  } else {
+    FBF_LOG_INFO("hessian: {} harmonic frequencies (cm^-1)", out.vibrations.frequencies.size());
+    for (size_t j = 0; j < out.vibrations.frequencies.size(); ++j) {
+      FBF_LOG_INFO("hessian: mode {:>3} {:12.2f}", j + 1, out.vibrations.frequencies[j]);
+    }
   }
 
   if (!json_path.empty()) {
@@ -174,6 +206,10 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
     };
     if (method == HessianMethod::Numerical) {
       doc["displacement"] = displacement;
+    }
+    if (!out.dipole_derivative.empty()) {
+      doc["dipole_derivative"] = hessian_rows(out.dipole_derivative, 3);
+      doc["intensities"] = out.intensities;
     }
     FBF_TRY(write_json(json_path, doc));
   }

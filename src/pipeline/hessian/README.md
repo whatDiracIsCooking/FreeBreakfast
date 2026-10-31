@@ -1,7 +1,8 @@
 # Pipeline: Hessian
 
-The closed-shell RHF Cartesian Hessian at the pipeline's molecule, and its
-harmonic frequencies and normal modes. Two methods:
+The closed-shell RHF Cartesian Hessian at the pipeline's molecule, its
+harmonic frequencies and normal modes, and (analytic) the IR intensities. Two
+methods:
 
 - **analytic**, the default: `hessian::df_rhf` (`../../hessian/`) at the SCF
   of one run of the chain from the molecule to `[scf]`, a nested `Pipeline`.
@@ -32,6 +33,8 @@ struct HessianOutput {
   double asymmetry;               // max |H - H^T| before symmetrizing
   double translational_sum;       // max over x, l of |sum_B H[x][3 B + l]|
   geometry::Vibrations vibrations;  // frequencies (cm^-1) and normal modes
+  std::vector<double> dipole_derivative;  // 3N x 3, (x, c) at 3 x + c; analytic only
+  std::vector<double> intensities;        // km/mol per frequency; analytic only
 };
 
 struct HessianStep {
@@ -68,9 +71,12 @@ the molecule a private step standing where `MoleculeStep` stood.
   the SCF's C (copied to a buffer of its nao × nmo columns), orbital energies
   and n_occ -- are `hessian::df_rhf`'s inputs, as `[gradient]`'s are
   `gradient::df_rhf`'s. The returned `hessian::RhfTerms` holds every term and
-  the CPHF's U^x, which a dipole derivative (IR intensities) reuses; only the
-  total leaves the step so far. `asymmetry` is `RhfTerms::asymmetry`, the
-  terms' rounding. An integral-direct `[eri]` is refused (Unsupported) before
+  the CPHF's U^x, which `hessian::rhf_dipole_derivative` then reuses for the
+  dipole derivative (no solve of its own); the total and the dipole
+  derivative leave the step. `asymmetry` is `RhfTerms::asymmetry`, the
+  terms' rounding. The dipole integrals stop at d, so for a basis with an f
+  shell the dipole derivative and intensities are left empty, with a warning,
+  rather than the step failing. An integral-direct `[eri]` is refused (Unsupported) before
   anything runs, and an ROHF SCF after it, as `[gradient]` refuses it.
 - **Numerical.** For each coordinate x = 3 A + k, one pipeline to
   `[gradient]` at R + h e_x and one at R - h e_x. Row x of the raw Hessian
@@ -80,7 +86,10 @@ The Hessian kept is (H + Hᵀ) / 2, and its translational sum, which a Hessian
 of an energy invariant under translation has zero, is recorded beside it.
 Then `geometry::harmonic_analysis` at the molecule's atoms: 3N − 6 (3N − 5
 linear) frequencies in cm⁻¹, ascending, an imaginary one negative, and the
-Cartesian normal modes, each logged as a table at info. Each pipeline is
+Cartesian normal modes, each logged as a table at info, beside its IR
+intensity (km/mol, `hessian::infrared_intensities`) when the dipole
+derivative was made. The numerical method makes none: its intensities are
+empty. Each pipeline is
 freed before the next, so the device holds one geometry's products at a
 time; its first error -- an SCF that does not converge, `[gradient]`'s
 refusal of an open shell -- is returned as it is.
@@ -116,12 +125,16 @@ refusal of an open shell -- is returned as it is.
    "hessian": [[0.71, ...], ...],
    "asymmetry": 1.4e-14, "translational_sum": 8.7e-12,
    "frequencies": [1776.03, 4113.30, 4211.68],
-   "modes": [[0.0, -0.07, ...], ...]}
+   "modes": [[0.0, -0.07, ...], ...],
+   "dipole_derivative": [[0.39, 0.0, ...], ...],
+   "intensities": [80.81, 21.17, 60.56]}
   ```
 
   the Hessian (hartree / bohr²) as 3N rows of 3N, the frequencies (cm⁻¹) and
   the normal modes, one row of 3N per frequency (`geometry::Vibrations`'s
-  layout). The numerical method adds its `"displacement"`.
+  layout); when made, the dipole derivative (e) as 3N rows of x, y, z and the
+  IR intensities (km/mol), one per frequency. The numerical method adds its
+  `"displacement"`.
 
 ## Config
 
@@ -170,10 +183,17 @@ the analytic one 4.2e-11 from PySCF and 3.6e-7 from the numerical one
 (1776.032, 4113.305, 4211.682 cm⁻¹) are 2.2e-4 cm⁻¹ from PySCF's, the
 optimization and the Hessian 2.0 s together.
 
+- `test/gtest/infrared_gpu.cpp`'s `PipelineInfrared`: the analytic
+  `[hessian]` at PySCF's DF-RHF minimum of water
+  (`data/dipole_derivative/dipole_derivative.json`'s `h2o_ccpvdz_opt`), its
+  dipole derivative against PySCF's to 1e-8, frequencies to 0.1 cm⁻¹ and IR
+  intensities to 0.1 km/mol (the issue's bar), and `hessian.json` holding the
+  same.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `hessian.cppm` | Module interface: `HessianMethod`, `HessianOutput`, `HessianStep` |
-| `hessian.cpp` | `HessianStep::run`: the analytic Hessian over one nested pipeline, or the 6N nested pipelines and their central differences; the two checks, the harmonic analysis and `hessian.json` |
+| `hessian.cpp` | `HessianStep::run`: the analytic Hessian and dipole derivative over one nested pipeline, or the 6N nested pipelines and their central differences; the two checks, the harmonic analysis, the IR intensities and `hessian.json` |
 | `CMakeLists.txt` | The module library |

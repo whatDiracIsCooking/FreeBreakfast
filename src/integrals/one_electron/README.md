@@ -5,12 +5,13 @@ the overlap S, the kinetic energy T, the nuclear attraction V, and the core
 Hamiltonian H = T + V; the overlap between two bases, `overlap_mixed`; the
 dipole matrices mu_x, mu_y, mu_z; and the nuclear-gradient and nuclear-Hessian
 contractions of S, T and V with an AO matrix, and the derivative matrices S^x,
-T^x and V^x, `gradient` and `hessian`.
+T^x and V^x, `gradient` and `hessian`; and the dipole's nuclear-gradient
+contraction, `dipole_gradient`.
 
 ## Module
 
 `free_breakfast.integrals.one_electron`, a convenience module that re-exports
-the nine below (and is itself re-exported by `free_breakfast.integrals`):
+the ten below (and is itself re-exported by `free_breakfast.integrals`):
 
 ```
 launch/            free_breakfast.integrals.one_electron.launch: the per-class launch and the shared pre-launch checks
@@ -19,6 +20,7 @@ overlap_mixed/     free_breakfast.integrals.one_electron.overlap_mixed: S betwee
 kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic energy T
 potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
 dipole/            free_breakfast.integrals.one_electron.dipole: the dipole matrices mu_x, mu_y, mu_z, through d
+dipole_gradient/   free_breakfast.integrals.one_electron.dipole_gradient: Σ M dμ^c/dR per component and atom, through f
 gradient/          free_breakfast.integrals.one_electron.gradient: Σ M dX/dR per atom, and dX/dR as matrices, for X = S, T, V
 hessian/           free_breakfast.integrals.one_electron.hessian: Σ M d²X/dR dR, 3N x 3N, for X = S, T, V
 core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V, in place
@@ -47,7 +49,7 @@ make that safe: classes adding into one matrix at once do not race. H is still
 T then V: each build joins before the next forks.
 
 **One layout per kernel family.** `overlap/`, `overlap_mixed/`, `kinetic/`,
-`potential_en/` and `dipole/` are each the same set of files, named after the
+`potential_en/`, `dipole/` and `dipole_gradient/` are each the same set of files, named after the
 directory (`gradient/` and `hessian/` too, each with its three families sharing one `kernels/`):
 
 | File | Role |
@@ -126,7 +128,7 @@ with an f shell is `InvalidConfig` before anything is launched.
 
 ## Public API
 
-Everything the nine sub-modules export; each README has its own table.
+Everything the ten sub-modules export; each README has its own table.
 
 | Symbol | Module |
 |---|---|
@@ -137,6 +139,7 @@ Everything the nine sub-modules export; each README has its own table.
 | `nuclear_attraction(res, classes, molecule, v)`, `add_nuclear_attraction(…)` | `potential_en` |
 | `core_hamiltonian(res, classes, molecule, h)` | `core_hamiltonian` |
 | `dipole(res, classes, mu_x, mu_y, mu_z)`, `kDipoleMaxL` | `dipole` |
+| `dipole_gradient(res, basis, classes, m)` | `dipole_gradient` |
 | `overlap_gradient(res, basis, classes, m)`, `kinetic_gradient(…)`, `potential_gradient(res, basis, classes, molecule, m)` | `gradient` |
 | `overlap_derivative(res, basis, classes)`, `kinetic_derivative(…)`, `potential_derivative(res, basis, classes, molecule)` | `gradient` |
 | `overlap_hessian(res, basis, classes, m)`, `kinetic_hessian(…)`, `potential_hessian(res, basis, classes, molecule, m)` | `hessian` |
@@ -171,6 +174,10 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
   spherical layout, against libcint's `int1e_r_sph` (`test/gtest/data/cis/`)
   at 1e-12 absolute over PySCF's unit-normalised functions, plus the zeroing and the refusal of an f shell and of
   matrices of different orders.
+- `test/gtest/dipole_gradient_gpu.cpp`: the dipole's gradient contraction of
+  the same two waters against libcint's `int1e_irp`, recorded by PySCF
+  (`test/gtest/data/dipole_derivative/`), at 1e-10 of max|G|, its sum rule,
+  and the refusals; `dipole_gradient/README.md` has the detail.
 - `test/gtest/one_electron_gradient_gpu.cpp`: the gradient contractions of
   H₂O in cc-pVDZ and cc-pVTZ against libcint's derivative integrals, recorded
   by PySCF (`test/gtest/data/gradient/`), at 1e-10 of max|G|, each one's sum
@@ -194,6 +201,6 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
 
 | File | Role |
 |------|------|
-| `one_electron.cppm` | The convenience module: re-exports the nine sub-modules |
-| `launch/`, `overlap/`, `overlap_mixed/`, `kinetic/`, `potential_en/`, `dipole/`, `gradient/`, `hessian/`, `core_hamiltonian/` | The sub-modules; each has its own README |
+| `one_electron.cppm` | The convenience module: re-exports the ten sub-modules |
+| `launch/`, `overlap/`, `overlap_mixed/`, `kinetic/`, `potential_en/`, `dipole/`, `dipole_gradient/`, `gradient/`, `hessian/`, `core_hamiltonian/` | The sub-modules; each has its own README |
 | `CMakeLists.txt` | The sub-directories and the aggregate module |
