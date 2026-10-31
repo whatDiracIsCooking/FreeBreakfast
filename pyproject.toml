@@ -48,6 +48,9 @@ dev = [
 tools = [
     "numpy>=2.0",
     "pyscf>=2.6",
+    # The geometry optimizer PySCF's pyscf.geomopt.geometric_solver drives:
+    # experimental/cope_rearrangement's constrained relaxed scans.
+    "geometric>=1.1",
     # block2's ic-MRPT module (pyblock2.icmr): the PC-NEVPT2 reference
     # tools/emit/nevpt2_reference.py records, which PySCF does not implement.
     "block2>=0.5",
