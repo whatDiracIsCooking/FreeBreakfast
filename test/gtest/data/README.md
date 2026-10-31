@@ -33,6 +33,7 @@ file names the tool that wrote it and the source it came from.
 | `hessian_numerical/` | `hessian_numerical.json`: PySCF's analytic DF-RHF nuclear Hessian (`pyscf.df.hessian.rhf`, auxbasis response 2: `hess_elec` over CPHF solutions to 1e-12, one column at a time, plus `hess_nuc`) for the skew water (C1) in cc-pVDZ / cc-pVDZ-JKFIT over this tree's own `data/basis` and `data/aux_basis` files, as 3 n_atom rows of 3 n_atom (hartree / bohr²); checked against PySCF's unmodified kernel, its own symmetry and translational sum rule, and a central difference (h = 1e-3 bohr) of `df.grad.rhf`, each in `checks`. The `[hessian]` step's oracle | `tools/emit/hessian_numerical_reference.py`, which runs PySCF |
 | `one_electron_derivative/` | `one_electron_derivative.json` and its `.npy` arrays: libcint's one-electron derivative matrices dS/dR, dT/dR and dV/dR (`int1e_ipovlp`, `int1e_ipkin`, `int1e_ipnuc` and `int1e_iprinv` at each nucleus, assembled as `pyscf.grad.rhf`'s hcore generator does, which the tool checks) for every atom and axis of `gradient/`'s skew H₂O in cc-pVDZ and cc-pVTZ, over this tree's own `data/basis` files, spherical, each array (nao, nao, 3 n_atom) with matrix x = 3 A + k; every matrix checked against a finite difference of its integral matrix and its sum over atoms against zero | `tools/emit/one_electron_derivative_reference.py`, which runs PySCF |
 | `frequencies/` | `frequencies.json`: PySCF's RHF/cc-pVDZ Hessian (PySCF's own basis library, `conv_tol` 1e-12, symmetrized), 3N x 3N row-major in hartree/bohr², of bent water, CO₂ along z, HCN off every axis and linear water (a saddle point), at fixed geometries in bohr that are not minima, and `pyscf.hessian.thermo.harmonic_analysis(imaginary_freq=False)` of each: the frequencies (cm⁻¹, an imaginary one negative), the normal modes (`norm_mode`, one row of 3N per mode) and the isotope-averaged masses; each mode count (3N − 6, or 3N − 5 linear) and the mass-weighted modes' orthonormality checked | `tools/emit/frequencies_reference.py`, which runs PySCF |
+| `casscf_hessian/` | The DF-CASSCF analytic nuclear Hessian's reference data (`casscf_hessian.tex` over a Coulomb-metric fit, the metric through its Cholesky factor): for the design's stretched water, CAS(4,4) / cc-pVDZ-JKFIT, state-specific in 6-31G and cc-pVDZ (d shells), and state-averaged over two singlet roots at (0.5, 0.5) and (0.7, 0.3) and three at equal weights and (0.5, 0.3, 0.2), in 6-31G: the orbitals and roots, the CP right-hand sides and responses λ^x, and per root E_xy and its pieces (explicit one-electron, (df2) with its J/K/active cross terms, the three connection terms), F and F^[x], the response terms, at a state average z, L_xy's z part, L_xλ, the third-derivative action and the root-rotation term, the analytic Hessian, and `relaxed_fd`, the relaxed gradient differenced, it is checked against (to ≤ 3e-8); every quantity analytic over libcint's derivative integrals and the exact parameter gradient, each checked against finite differences, the design's §10 tables reproduced. `.npy` arrays (Fortran order) and the manifest `casscf_hessian.json`; the section below has every layout | `tools/emit/casscf_hessian_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
 
@@ -820,3 +821,103 @@ byte-identical run to run, under a minute):
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/nevpt2_optimize_reference.py
 ```
+
+## `casscf_hessian/`
+
+`casscf_hessian.json` and its `.npy` arrays, written by
+`tools/emit/casscf_hessian_reference.py` (its docstring has the method and
+every check; one thread, byte-identical run to run, under four minutes; 2.6 MB):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/casscf_hessian_reference.py
+```
+
+**The model.** The design's water (O 0 0 0.1; H 0 1.25 −0.75; H 0.1 −1.15
+−0.7 Å, written in bohr), CAS(4,4) with 3 core orbitals, over this tree's
+`data/basis` and `data/aux_basis/cc-pVDZ-JKFIT.json`, spherical, PySCF's
+unit-normalised functions (a test whose function i is N_i times PySCF's
+divides C's rows by N). The energy is E(x, λ) along the Löwdin connection,
+orbitals C T(x) e^K (connection first, rotation second, the design's eq.
+(order)), the roots c_r rotated within the singlet CI space. PySCF's
+two-root solutions and its cc-pVDZ single state are saddle points of E_SA
+(along an active–virtual rotation; the cc-pVDZ one has an O lone pair and a
+d function active); every case is at the minimum, where the active space is
+the two σ/σ* pairs for both single states (`descent` records the step).
+Units: bohr, hartree.
+
+**Indices and layouts.** n = 3 n_atom coordinates, x = 3 A + k (atom A, axis
+k), always the **last** axis of a per-coordinate array. MO indices run over
+all nmo orbitals in `c`'s column order (core, active, virtual). A CI vector
+is n_det = na nb long, determinant (ia, ib) at ia nb + ib: PySCF's
+`cistring` order, alpha string slowest, as `casscf_gradient/` writes them.
+The parameters, and every vector or covector over them, are written in
+three parts:
+
+| Part | Vector (λ^x, z, `random_*`) | Covector (`rhs_*`, `root_rhs_*`, `lxl_z_*`) |
+|---|---|---|
+| `_orb` (nmo, nmo, …) | K, antisymmetric: C → C e^K, K_pq = κ_pq for p > q over the non-redundant pairs (active–core, virtual–core, virtual–active), 0 elsewhere | G_pq = ∂E/∂κ_pq for p > q, G_qp = −G_pq, 0 on redundant pairs. For a gradient-like covector G = 2(F − Fᵀ) at the non-redundant pairs |
+| `_ci` (n_det, nroots, …) | Column r: root r's first-order change, projected off every root | Column r: ∂E/∂c_r projected off every root (Q = 1 − Σ_s c_s c_sᵀ), so for one root the design's 2P(H̃ − ⟨H̃⟩)c |
+| `_theta` (nroots, nroots, …), **unequal weights only** | Θ antisymmetric: dc_r gains Σ_s Θ_sr c_s | γ antisymmetric, γ_sr = ∂E/∂Θ_sr |
+
+A covector pairs with a vector as ½ Σ G∘K + Σ_r ci_r · dc_r + ½ Σ γ∘Θ (the
+script asserts it). At equal weights the rotations among the roots are not
+parameters (E_SA is invariant to them) and there is no `_theta`. The CI parts
+lie in the singlet space; the solves were over it, so a test working in the
+full determinant space gets the same vectors (the triplet and quintet blocks
+decouple). Signs: λ^x solves A λ^x = −∂_x g_SA (for one root A = E_λλ), z
+solves A z = −∂E_I/∂λ; the CI rows are **not** the Z-vector's
+unweighted, unscaled convention (`src/mcscf/zvector/README.md`) but the
+derivatives of the energy as written.
+
+**Per case** (`cases[i]`): `name`, `basis`, `aux_basis`, `atoms` (`symbol`,
+`charge`, `coord`), `nao`, `naux`, `nmo`, `ncore`, `ncas`, `nelecas`, `na`,
+`nb`, `weights`, `equal_weights`, `energies` (each root's), `e_sa`,
+`descent` (PySCF's solution's E_SA and the SA Hessian's least eigenvalue
+there, the drop to the minimum and the least eigenvalue at it), `checks`
+(each self-check's measured residual), `roots`, and `arrays`, file names
+`<case>_<key>.npy`:
+
+| Key | Shape | Contents |
+|---|---|---|
+| `c` | (nao, nmo) | The orbitals |
+| `ci` | (n_det, nroots) | The roots, diagonal in their span, energies ascending |
+| `rhs_orb`, `rhs_ci`, [`rhs_theta`] | covector × n | ∂_x g_SA: the CP right-hand sides at the averaged densities, eqs. (rhs-orb), (rhs-ci), with the τ^x = −½S^x one-index transform. One root: E_λx |
+| `lambda_orb`, `lambda_ci`, [`lambda_theta`] | vector × n | λ^x, the parameters' response (shared by every root of an average) |
+
+**Per root** (`roots[I]`): `root`, `energy`, `gradient` (the relaxed
+energy's analytic nuclear gradient, n, the Lagrangian at a state average),
+`gradient_vs_fd` (against a fourth-order difference of relaxed energies),
+`hessian_vs_relaxed_fd`, `hessian_vs_relaxed_energies` (the design's second
+differences, h = 1e-3, diagonal and three random directions),
+`hessian_asymmetry`, `hessian_sum_rule`; at unequal weights with several
+roots `gradient_projected_vs_fd` (the rotations among the roots projected
+out of the Z-vector: wrong at three roots); at equal weights
+`without_rot_vs_relaxed_energies`, `one_copy_of_rot_vs_relaxed_energies`;
+at a state average `third_random`; and `arrays`, file names
+`<case>_root<I>_<key>.npy`, each n × n unless shown:
+
+| Key | Contents |
+|---|---|
+| `fock` (nmo, nmo), `fock_x` (nmo, nmo, n) | F, eq. (fock), F_pq = Σ_r h_pr D_rq + Σ (pr\|st) Γ_qrst at root I's densities; F^[x], the same at the derivative MO integrals (h^x, the fitted (pq\|rs)^x; no τ^x) |
+| `one_electron` | Σ D^AO h^xy |
+| `nuclear_repulsion` | V_nn^xy |
+| `df2_three_center`, `df2_metric` | Σ Γ̃ T^xy and −½ Σ Ŵ M^xy of eq. (df2) |
+| `df2_cross_j`, `df2_cross_k`, `df2_cross_active` | Its cross term Σ Γ_ab [R^x N R^yᵀ]_ab by section 6's J, K and active pieces |
+| `two_electron` | The five above summed: (df2) |
+| `connection_second` | 2 Σ F τ^xy, τ^xy = −½S^xy + ⅜(S^xS^y + S^yS^x) |
+| `connection_fock` | 2 Σ (F^[x] τ^y + F^[y] τ^x) |
+| `connection_twice` | E^(2)[τ^x, τ^y] |
+| `exy` | E_xy, eq. (exy): `one_electron` + `nuclear_repulsion` + `two_electron` + the three connection terms |
+| `lxl_lambda` | L_xλ λ^y, element (x, y) |
+| `root_hessian_lambda` | λ^xᵀ (∂²E_I/∂λ∂λ) λ^y |
+| `response` (one root) | `lxl_lambda` + its transpose + `root_hessian_lambda` = E_xλ λ^y, the response term of eq. (ss) |
+| `root_rhs_orb`, `root_rhs_ci`, [`root_rhs_theta`] (average) | covector × n: root I's own CP right-hand side ∂_x ∂_λ E_I |
+| `lxl_z_orb`, `lxl_z_ci`, [`lxl_z_theta`] (average) | covector × n: z · ∂_x ∂_λ g_SA, the SA Hessian at the derivative integrals and connection I^x applied to z. L_xλ = `root_rhs` + `lxl_z` |
+| `z_orb`, `z_ci`, [`z_theta`] (average) | vector: z |
+| `z_one_electron`, `z_two_electron`, `z_connection_second`, `z_connection_fock`, `z_connection_twice`, `exy_z` (average) | L_xy's z part, z · ∂_xy g_SA: eq. (exy) at z's densities (the orbital part K_z D − D K_z on D and on every index of Γ, the CI part the transition RDMs of the roots' change with the roots), by the same pieces (no J/K split, no V_nn) |
+| `third` (average) | λ^xᵀ (z · ∂²g_SA/∂λ∂λ) λ^y, the third-derivative action |
+| `random_orb`, `random_ci`, [`random_theta`] (average) | vector × 2: two random vectors u, v; `third_random` = uᵀ(z · ∂²g_SA)v |
+| `coupling` (nroots, n) (equal weights) | ℋ^x_Is = ⟨c_I\|H̃^x + H′(κ^x)\|c_s⟩, eq. (theta)'s numerator; row I is zero |
+| `rot` (equal weights) | eq. (rot): 2 Σ_{s≠I} ℋ^x_Is ℋ^y_Is / (E_I − E_s) |
+| `hessian` | The analytic Hessian: one root `exy` + `response`; an average `exy` + `exy_z` + `lxl_lambda` + its transpose + `root_hessian_lambda` + `third` (+ `rot` at equal weights), eq. (sa) |
+| `relaxed_fd` | The end-to-end reference: a fourth-order central difference (h = 1e-3 bohr) of the analytic relaxed gradient, re-solved at each displaced geometry, column x the difference along x |

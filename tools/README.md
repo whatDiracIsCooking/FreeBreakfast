@@ -97,6 +97,17 @@ emit/rhf_hessian_reference.py
                   the reference hessian::df_rhf_response and
                   hessian::df_rhf_two_electron are tested against. Needs
                   PySCF.
+emit/casscf_hessian_reference.py
+                  Write test/gtest/data/casscf_hessian/: the DF-CASSCF
+                  analytic Hessian's pieces (F^[x], the CP right-hand sides,
+                  lambda^x, E_xy by piece, at a state average z, L_xy's z
+                  part, L_x lambda, the third-derivative action and the
+                  root-rotation term) and the relaxed-gradient difference
+                  they are checked against, for the design's stretched water
+                  CAS(4,4), state-specific and state-averaged, over
+                  cc-pVDZ-JKFIT; analytic over libcint's derivative
+                  integrals, the design's check_df and check_sa tables
+                  reproduced. Needs PySCF.
 emit/hessian_numerical_reference.py
                   Write test/gtest/data/hessian_numerical/: PySCF's analytic
                   DF-RHF Hessian (pyscf.df.hessian.rhf, CPHF column by
