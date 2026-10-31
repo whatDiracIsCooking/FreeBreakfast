@@ -2,12 +2,14 @@
 // DF-RHF Hessian solves, over decane (C10H22, 32 atoms, an all-trans zigzag
 // built here) in a DF-RHF over the given basis and cc-pVDZ-JKFIT. The
 // right-hand sides are random, from a fixed seed, so two builds of the solver
-// see the same equations: run it once per build and pass the first run's
-// solution file to the second to read how far apart the two solutions are.
-// The second run solves over the first run's orbitals (u_out.orbitals), not
-// its own SCF's, which are not bitwise reproducible.
+// see the same equations: run it once per path (batched 0, the default
+// product one column at a time, and 1) and pass the first run's solution file
+// to the second to read how far apart the two solutions are. The second run
+// solves over the first run's orbitals (u_out.orbitals), not its own SCF's,
+// which are not bitwise reproducible.
 //
-//   free_breakfast_cphf_batched [basis = cc-pvdz] [reps = 3] [u_out] [u_reference]
+//   free_breakfast_cphf_batched [basis = cc-pvdz] [reps = 3] [batched = 1] [u_out]
+//                               [u_reference]
 //
 // On device 0, where the pipeline runs. Prints the system's sizes, the
 // seconds per solve (the best of reps, after one to warm up), the sweeps and
@@ -81,8 +83,9 @@ void read_doubles(std::ifstream &file, std::vector<double> &v) {
 int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   const std::string basis = argc > 1 ? argv[1] : "cc-pvdz";
   const std::int32_t reps = argc > 2 ? std::stoi(argv[2]) : 3;
-  const std::filesystem::path u_out = argc > 3 ? argv[3] : "";
-  const std::filesystem::path u_reference = argc > 4 ? argv[4] : "";
+  const bool batched = argc > 3 ? std::stoi(argv[3]) != 0 : true;
+  const std::filesystem::path u_out = argc > 4 ? argv[4] : "";
+  const std::filesystem::path u_reference = argc > 5 ? argv[5] : "";
   const std::filesystem::path dir = std::filesystem::temp_directory_path() / "fb_cphf_batched";
   std::filesystem::create_directories(dir / "out");
   write_alkane(dir / "decane.xyz");
@@ -153,7 +156,8 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
   std::optional<fb::response::Cphf> solved;
   for (std::int32_t rep = 0; rep <= reps; ++rep) {
     const auto start = Clock::now();
-    auto out = fb::response::cphf(res, fit.b, fit.naux, c, energies, nocc, rhs);
+    auto out =
+        fb::response::cphf(res, fit.b, fit.naux, c, energies, nocc, rhs, 1e-10, 100, batched);
     if (!out) {
       fail("cphf", out.error());
     }
@@ -164,8 +168,9 @@ int main(int argc, char **argv) { // int-type-ok: main's signature is fixed
     std::println("  solve {}: {:.3f} s{}", rep, seconds, rep == 0 ? " (warm-up)" : "");
     solved = std::move(*out);
   }
-  std::println("cphf: {:.3f} s (best of {}), {} sweeps, max residual {:.3e}", best, reps,
-               solved->iterations, std::ranges::max(solved->residuals));
+  std::println("cphf{}: {:.3f} s (best of {}), {} sweeps, max residual {:.3e}",
+               batched ? " (batched)" : "", best, reps, solved->iterations,
+               std::ranges::max(solved->residuals));
 
   std::vector<double> u(pairs * ncol);
   (void)wwr::wwrMemcpyAsync(u.data(), solved->solution.data(), u.size() * sizeof(double),

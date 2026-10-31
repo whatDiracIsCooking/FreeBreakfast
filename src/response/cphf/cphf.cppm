@@ -39,11 +39,12 @@ struct Cphf {
 /// never formed: a product is
 ///   (M U)_ai = (eps_a - eps_i) U_ai + C_a^T G(D_U) C_i,
 ///   D_U = 2 (X + X^T), X = C_v U C_o^T, G = J - K / 2,
-/// D_U = 2 L R^T with L = [C_v U, C_o] and R = [C_o, C_v U]: J and K of a
-/// block of columns' D_U by one batched @c df_coulomb and one batched
-/// two-factor @c df_exchange, as many columns at once as half the device's
-/// free memory holds. The preconditioner is (eps_a - eps_i)^-1, a pair whose
-/// difference is below 1e-8 left unscaled.
+/// D_U = 2 L R^T with L = [C_v U, C_o] and R = [C_o, C_v U]: one
+/// @c df_coulomb and one two-factor @c df_exchange of D_U per column, or with
+/// @p batched J and K of a block of columns' D_U by the block forms of both,
+/// as many columns at once as half the device's free memory holds. The two
+/// give the same U to rounding. The preconditioner is (eps_a - eps_i)^-1, a
+/// pair whose difference is below 1e-8 left unscaled.
 ///
 /// @p b is B over @p naux fitting functions and C's nao AOs, as
 /// @c df_coulomb reads it: naux nao^2 doubles. @p c is the nao x nmo
@@ -55,9 +56,12 @@ struct Cphf {
 /// Queued on res.stream() with res.blas() (host pointer mode); each column's
 /// step synchronizes. Its scratch is its own, allocated per call:
 /// @c df_coulomb and @c df_exchange take res.device_workspace(), which grows
-/// to a batch's X and Y. The device
-/// res.dev_idx() names is made current for the call and the previous one
-/// restored.
+/// to one column's X and Y, or with @p batched a batch's, and stays grown.
+/// The device res.dev_idx() names is made current for the call and the
+/// previous one restored.
+///
+/// @p batched is off by default: it is 1.14x faster on the gfx1200 and 0.9%
+/// slower on the RTX 3080 (README.md has the numbers).
 ///
 /// @return The solution; InvalidConfig if nocc is not in [1, nmo), @p c is
 ///         not a whole number of nmo-long columns, @p b is not naux nao^2
@@ -72,6 +76,6 @@ struct Cphf {
                                 int32_t naux, const Buffers::device<double> &c,
                                 std::span<const double> energies, int32_t nocc,
                                 const Buffers::device<double> &rhs, double tolerance = 1e-10,
-                                int32_t max_iterations = 100);
+                                int32_t max_iterations = 100, bool batched = false);
 
 } // namespace free_breakfast::response
