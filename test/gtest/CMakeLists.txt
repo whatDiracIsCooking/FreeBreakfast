@@ -155,6 +155,7 @@ add_executable(
   df_rhf_gradient_gpu.cpp
   pipeline_gradient_gpu.cpp
   pipeline_casscf_gradient_gpu.cpp
+  pipeline_nevpt2_gradient_gpu.cpp
   rhf_gradient_gpu.cpp
   pipeline_optimize_gpu.cpp
   active_space_gpu.cpp
@@ -235,6 +236,7 @@ target_link_libraries(
   free_breakfast::pipeline::cis
   free_breakfast::pipeline::gradient
   free_breakfast::pipeline::casscf_gradient
+  free_breakfast::pipeline::nevpt2_gradient
   free_breakfast::pipeline::optimize
   free_breakfast::pipeline::config
   free_breakfast::test::support
