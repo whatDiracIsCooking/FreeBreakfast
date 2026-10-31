@@ -29,6 +29,7 @@ free_breakfast_add_cxx_module_library(
   IMPLEMENTATION
   energy.cpp
   pc.cpp
+  reverse.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types

@@ -78,6 +78,62 @@ struct ClassEnergies {
 [[nodiscard]] Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &blocks,
                                                    const EnergyInputs &in, int32_t batch);
 
+/// @brief Where class_energies_adjoint adds the bars dE/dx of the class-level
+/// inputs, all on the device, each in its EnergyInputs field's layout (or,
+/// for @ref lambda, nevpt2::slab_adjoint's). Every bar is added onto, so the
+/// caller zeroes it; a null one is not wanted and is not formed.
+///
+/// The bars on h1e, h2e and the RDMs are not here: they come from sweeping
+/// each class's block bars back through its builders, which is not done yet.
+struct EnergyBars {
+  /// @brief On EnergyInputs::h1e_v_sr, v x a.
+  double *h1e_v_sr = nullptr;
+  /// @brief On EnergyInputs::h1e_v_si, a x c.
+  double *h1e_v_si = nullptr;
+  /// @brief On EnergyInputs::h1e_v_sir, v x c.
+  double *h1e_v_sir = nullptr;
+  /// @brief On the core orbital energies, c.
+  double *e_core = nullptr;
+  /// @brief On the virtual orbital energies, v.
+  double *e_virt = nullptr;
+  /// @brief Λ = dE/dB through every slab, naux x nmo² in B's MO layout, as
+  /// nevpt2::slab_adjoint adds onto it.
+  double *lambda = nullptr;
+};
+
+/// @brief class_energies_adjoint's result: the energies it walked, and each
+/// class's Park Eq. 40 assembled from its bars.
+struct ClassEnergiesAdjoint {
+  /// @brief The norms and energies, as class_energies computes them.
+  ClassEnergies energies;
+  /// @brief Σ_t (P_t N_t + Q_t H_t) per class, assembled from the bars: each
+  /// class's Σ_G <M_G, G> over the blocks G it contracts, plus its
+  /// block-free terms against their multipliers (Sir's one-electron norm
+  /// term), and for Sijrs, which reads no block, ½ <g-bar, g>. Equal to
+  /// @ref energies' energies to round-off.
+  std::array<double, 8> eq40{};
+};
+
+/// @brief The SC reverse pass of class_energies, from the energies back to
+/// the class-level inputs: @p bars += dE/dx for E the SC correlation energy
+/// and x each input @p bars names, at fixed h1e, h2e and RDMs.
+///
+/// Each class's walk is class_energies', in batches of at most @p batch.
+/// Per slab, the norms and H are evaluated, the finish's multipliers P, Q
+/// and R (Park Eqs. 36-38) taken on the host, and every norm and H einsum
+/// differentiated per operand by rewriting its subscripts; the slab's bar is
+/// then pulled back onto @p bars.lambda through nevpt2::slab_adjoint before
+/// the next slab is built. R goes onto the orbital energies. Srsi walks its
+/// slabs twice, since its symmetrized pairs span them. The bars on the
+/// class blocks (a16, ...) are formed as well, for Eq. 40 and for the RDM
+/// sweep that will read them.
+///
+/// @return The energies and Eq. 40; or class_energies' errors, and the
+///         slab adjoint's.
+[[nodiscard]] Result<ClassEnergiesAdjoint>
+class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                       int32_t batch, const EnergyBars &bars);
+
 /// @brief Each class's PC-NEVPT2 energy in PySCF's order -- Sr, Si, Sijrs,
 /// Sijr, Srsi, Srs, Sij, Sir -- and the correlation energy, their sum.
 struct PcClassEnergies {

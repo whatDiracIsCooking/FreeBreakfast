@@ -7,7 +7,10 @@
 // partial. Then the chain: nevpt2::rdms' dm3/f3ca/f3ac from the golden CI
 // vector in place of PySCF's, on every case, CAS(10,10)'s included. And PC's
 // invariance to a rotation of the active orbitals, which the pipeline step
-// relies on: it does not rotate to each root's natural orbitals.
+// relies on: it does not rotate to each root's natural orbitals. Last, SC's
+// reverse pass (class_energies_adjoint): Park Eq. 40 and Euler's identity
+// from its bars, its bars against a Richardson ladder of class_energies
+// itself, and the same bars whatever the batch.
 
 #include <gtest/gtest.h>
 
@@ -496,6 +499,352 @@ TEST(Nevpt2PcEnergy, ZeroMetricIsRefused) {
   ASSERT_FALSE(pc);
   EXPECT_EQ(pc.error().kind, fb::ErrorKind::Numerical);
   EXPECT_NE(pc.error().message.find("Sr"), std::string::npos) << pc.error().message;
+}
+
+// ---------------------------------------------------------------------------
+// The SC reverse pass
+// ---------------------------------------------------------------------------
+
+// Everything class_energies reads, on the host: the B blocks and the
+// integrals column-major as data/nevpt2/ stores them, the RDMs row-major.
+// The same type holds a direction: the fields the reverse pass has bars on.
+struct HostCase {
+  std::size_t naux = 0, nc = 0, na = 0, nv = 0;
+  std::vector<double> aa, ca, va, cv, h1e, h2e, e_core, e_virt, h1e_v_sr, h1e_v_si, h1e_v_sir;
+  std::vector<double> dm1, dm2, dm3, f3ca, f3ac;
+};
+
+HostCase load_host_case(const std::filesystem::path &dir) {
+  HostCase h;
+  const fb::NpyArray aa = read_array(dir / "B_aa.npy");
+  const fb::NpyArray cv = read_array(dir / "B_cv.npy");
+  h.naux = aa.shape.at(0);
+  h.na = aa.shape.at(1);
+  h.nc = cv.shape.at(1);
+  h.nv = cv.shape.at(2);
+  h.aa = aa.data;
+  h.cv = cv.data;
+  h.ca = read_array(dir / "B_ca.npy").data;
+  h.va = read_array(dir / "B_va.npy").data;
+  h.h1e = read_array(dir / "h1e.npy").data;
+  h.h2e = read_array(dir / "h2e.npy").data;
+  h.e_core = read_array(dir / "e_core.npy").data;
+  h.e_virt = read_array(dir / "e_virt.npy").data;
+  h.h1e_v_sr = read_array(dir / "h1e_v_Sr.npy").data;
+  h.h1e_v_si = read_array(dir / "h1e_v_Si.npy").data;
+  h.h1e_v_sir = read_array(dir / "h1e_v_Sir.npy").data;
+  h.dm1 = row_major(read_array(dir / "dm1.npy"));
+  h.dm2 = row_major(read_array(dir / "dm2.npy"));
+  h.dm3 = row_major(read_array(dir / "dm3.npy"));
+  h.f3ca = row_major(read_array(dir / "f3ca.npy"));
+  h.f3ac = row_major(read_array(dir / "f3ac.npy"));
+  return h;
+}
+
+// @p x + @p t @p dx over the fields the reverse pass has bars on; the rest is
+// @p x's.
+HostCase displaced(const HostCase &x, const HostCase &dx, const double t) {
+  HostCase out = x;
+  for (auto [y, d] :
+       {std::pair{&out.aa, &dx.aa}, std::pair{&out.ca, &dx.ca}, std::pair{&out.va, &dx.va},
+        std::pair{&out.cv, &dx.cv}, std::pair{&out.e_core, &dx.e_core},
+        std::pair{&out.e_virt, &dx.e_virt}, std::pair{&out.h1e_v_sr, &dx.h1e_v_sr},
+        std::pair{&out.h1e_v_si, &dx.h1e_v_si}, std::pair{&out.h1e_v_sir, &dx.h1e_v_sir}}) {
+    for (std::size_t k = 0; k < y->size(); ++k) {
+      (*y)[k] += t * (*d)[k];
+    }
+  }
+  return out;
+}
+
+// A seeded random direction over the fields of @p group ("B", "h1e_v", "e"
+// or "all") among those the reverse pass has bars on, each entry a normal
+// deviate scaled by its array's largest magnitude; zero elsewhere.
+HostCase random_direction(const HostCase &x, const std::string &group, const std::uint64_t seed) {
+  std::mt19937_64 engine(seed);
+  std::normal_distribution<double> normal;
+  HostCase d = x;
+  for (auto [name, y, from] :
+       {std::tuple{"B", &d.aa, &x.aa}, std::tuple{"B", &d.ca, &x.ca}, std::tuple{"B", &d.va, &x.va},
+        std::tuple{"B", &d.cv, &x.cv}, std::tuple{"e", &d.e_core, &x.e_core},
+        std::tuple{"e", &d.e_virt, &x.e_virt}, std::tuple{"h1e_v", &d.h1e_v_sr, &x.h1e_v_sr},
+        std::tuple{"h1e_v", &d.h1e_v_si, &x.h1e_v_si},
+        std::tuple{"h1e_v", &d.h1e_v_sir, &x.h1e_v_sir}}) {
+    double scale = 0.0;
+    for (const double v : *from) {
+      scale = std::max(scale, std::abs(v));
+    }
+    const bool on = group == "all" || group == name;
+    for (double &v : *y) {
+      v = on ? scale * normal(engine) : 0.0;
+    }
+  }
+  return d;
+}
+
+// @p h on the device: its MO blocks (B_vc from B_cv) and its EnergyInputs.
+struct DeviceCase {
+  std::optional<nevpt2::MoBlocks> blocks;
+  std::vector<fb::Buffers::device<double>> arrays;
+  nevpt2::EnergyInputs in;
+};
+
+DeviceCase upload_case(fb::DeviceResources &res, const HostCase &h) {
+  std::vector<double> vc(h.naux * h.nv * h.nc);
+  for (std::size_t i = 0; i < h.nc; ++i) {
+    for (std::size_t r = 0; r < h.nv; ++r) {
+      for (std::size_t q = 0; q < h.naux; ++q) {
+        vc[q + h.naux * (r + h.nv * i)] = h.cv[q + h.naux * (i + h.nc * r)];
+      }
+    }
+  }
+  DeviceCase g;
+  g.blocks.emplace(nevpt2::MoBlocks{.naux = static_cast<std::int32_t>(h.naux),
+                                    .ncore = static_cast<std::int32_t>(h.nc),
+                                    .ncas = static_cast<std::int32_t>(h.na),
+                                    .nvirt = static_cast<std::int32_t>(h.nv),
+                                    .aa = upload(res, h.aa),
+                                    .ca = upload(res, h.ca),
+                                    .va = upload(res, h.va),
+                                    .cv = upload(res, h.cv),
+                                    .vc = upload(res, vc)});
+  const auto put = [&](const std::vector<double> &a) {
+    g.arrays.push_back(upload(res, a));
+    return static_cast<const double *>(g.arrays.back().data());
+  };
+  g.in = {.h1e = put(h.h1e),
+          .h2e = put(h.h2e),
+          .e_core = put(h.e_core),
+          .e_virt = put(h.e_virt),
+          .h1e_v_sr = put(h.h1e_v_sr),
+          .h1e_v_si = put(h.h1e_v_si),
+          .h1e_v_sir = put(h.h1e_v_sir),
+          .dm1 = put(h.dm1),
+          .dm2 = put(h.dm2),
+          .dm3 = put(h.dm3),
+          .f3ca = put(h.f3ca),
+          .f3ac = put(h.f3ac)};
+  return g;
+}
+
+std::vector<double> download_host(fb::DeviceResources &res, const fb::Buffers::device<double> &d) {
+  std::vector<double> host(d.num_elements());
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), d.data(), sizeof(double) * host.size(),
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return host;
+}
+
+// The reverse pass's bars, on the host.
+struct HostBars {
+  std::vector<double> h1e_v_sr, h1e_v_si, h1e_v_sir, e_core, e_virt, lambda;
+};
+
+// class_energies_adjoint over @p h, every bar wanted, each zeroed first.
+std::optional<std::pair<nevpt2::ClassEnergiesAdjoint, HostBars>>
+run_adjoint(fb::DeviceResources &res, const HostCase &h, const std::int32_t batch) {
+  DeviceCase g = upload_case(res, h);
+  const std::size_t nmo = h.nc + h.na + h.nv;
+  const auto zeros = [&](const std::size_t count) {
+    return upload(res, std::vector<double>(count, 0.0));
+  };
+  fb::Buffers::device<double> sr = zeros(h.nv * h.na);
+  fb::Buffers::device<double> si = zeros(h.na * h.nc);
+  fb::Buffers::device<double> sir = zeros(h.nv * h.nc);
+  fb::Buffers::device<double> ec = zeros(h.nc);
+  fb::Buffers::device<double> ev = zeros(h.nv);
+  fb::Buffers::device<double> lambda = zeros(h.naux * nmo * nmo);
+  const nevpt2::EnergyBars bars{.h1e_v_sr = sr.data(),
+                                .h1e_v_si = si.data(),
+                                .h1e_v_sir = sir.data(),
+                                .e_core = ec.data(),
+                                .e_virt = ev.data(),
+                                .lambda = lambda.data()};
+  auto got = nevpt2::class_energies_adjoint(res, *g.blocks, g.in, batch, bars);
+  EXPECT_TRUE(got) << got.error().message;
+  if (!got) {
+    return std::nullopt;
+  }
+  return std::pair{*got, HostBars{.h1e_v_sr = download_host(res, sr),
+                                  .h1e_v_si = download_host(res, si),
+                                  .h1e_v_sir = download_host(res, sir),
+                                  .e_core = download_host(res, ec),
+                                  .e_virt = download_host(res, ev),
+                                  .lambda = download_host(res, lambda)}};
+}
+
+double dot(const std::vector<double> &a, const std::vector<double> &b) {
+  EXPECT_EQ(a.size(), b.size());
+  return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
+}
+
+// <Λ, dB> over the corners the blocks occupy in Λ, (Q, p, q) at
+// Q + naux (p + nmo q): aa at (c + t, c + u), ca at (i, c + t), va at
+// (c + a + r, c + t), cv at (i, c + a + r). B_vc is read from cv's corner.
+double lambda_dot(const std::vector<double> &lambda, const HostCase &h, const HostCase &db) {
+  const std::size_t nmo = h.nc + h.na + h.nv;
+  const auto corner = [&](const std::vector<double> &b, const std::size_t np, const std::size_t nq,
+                          const std::size_t p0, const std::size_t q0) {
+    double sum = 0.0;
+    for (std::size_t q = 0; q < nq; ++q) {
+      for (std::size_t p = 0; p < np; ++p) {
+        for (std::size_t x = 0; x < h.naux; ++x) {
+          sum += lambda[x + h.naux * ((p0 + p) + nmo * (q0 + q))] * b[x + h.naux * (p + np * q)];
+        }
+      }
+    }
+    return sum;
+  };
+  return corner(db.aa, h.na, h.na, h.nc, h.nc) + corner(db.ca, h.nc, h.na, 0, h.nc) +
+         corner(db.va, h.nv, h.na, h.nc + h.na, h.nc) + corner(db.cv, h.nc, h.nv, 0, h.nc + h.na);
+}
+
+// Σ <bar, dx> over every field the reverse pass has a bar on.
+double bars_dot(const HostBars &bars, const HostCase &h, const HostCase &dx) {
+  return lambda_dot(bars.lambda, h, dx) + dot(bars.h1e_v_sr, dx.h1e_v_sr) +
+         dot(bars.h1e_v_si, dx.h1e_v_si) + dot(bars.h1e_v_sir, dx.h1e_v_sir) +
+         dot(bars.e_core, dx.e_core) + dot(bars.e_virt, dx.e_virt);
+}
+
+// CAS(8,8): at CAS(4,4) Si vanishes by symmetry (its slab (σπ|ππ) and h1e_v_Si
+// are zero), and so would its bars.
+const std::string kAdjointCase = "n2_ccpvdz_cas88_df";
+
+// Park Eq. 40, P N + Q H = E per class, assembled from the bars: an exact
+// identity, so a mis-transcribed index in any term fails it. Euler's
+// identity checks the slab and h1e_v bars the same way, step-free: at fixed
+// orbital energies E is homogeneous of degree 4 in (B, h1e_v²), so
+// <Λ, B> + 2 Σ <h1e_v-bar, h1e_v> = 4 E. And the energies are
+// class_energies' golden ones.
+TEST(Nevpt2EnergyAdjoint, Eq40AndEulerFromTheBars) {
+  FBF_REQUIRE_GPU();
+  const std::filesystem::path dir = kDataDir / kAdjointCase;
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(dir);
+  const auto got = run_adjoint(res, h, 0);
+  ASSERT_TRUE(got.has_value());
+  const auto &[adj, bars] = *got;
+  expect_golden(dir, adj.energies, "class_energies_adjoint");
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(adj.eq40[k], adj.energies.energies[k],
+                1e-12 * std::max(1.0, std::abs(adj.energies.energies[k])))
+        << kClassNames[k];
+  }
+  const double euler = lambda_dot(bars.lambda, h, h) + 2.0 * dot(bars.h1e_v_sr, h.h1e_v_sr) +
+                       2.0 * dot(bars.h1e_v_si, h.h1e_v_si) +
+                       2.0 * dot(bars.h1e_v_sir, h.h1e_v_sir);
+  EXPECT_NEAR(euler, 4.0 * adj.energies.total, 1e-12 * std::abs(adj.energies.total));
+  std::cout << std::format(
+      "[ nevpt2   ] reverse: worst Eq. 40 miss {:.2e}, Euler {:+.2e}\n",
+      [&] {
+        double worst = 0.0;
+        for (std::size_t k = 0; k < 8; ++k) {
+          worst = std::max(worst, std::abs(adj.eq40[k] - adj.energies.energies[k]));
+        }
+        return worst;
+      }(),
+      euler - (4.0 * adj.energies.total));
+}
+
+// The bars against class_energies itself, differenced along a seeded random
+// direction over (B, h1e_v_*, e_core, e_virt), all of them and each group
+// alone, with h1e, h2e and the RDMs fixed. Central differences D(t) at
+// t = t0 / 2^k; their successive changes must fall by a factor in (3.2, 4.8)
+// over at least three consecutive halvings (the O(t²) regime), and the
+// Richardson extrapolant (4 D(t/2) - D(t)) / 3 at that run's finest pair must
+// equal Σ <bar, dx>.
+class Nevpt2EnergyAdjointLadder : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2EnergyAdjointLadder, BarsMatchRichardsonLadder) {
+  FBF_REQUIRE_GPU();
+  const std::string group = GetParam();
+  const std::filesystem::path dir = kDataDir / kAdjointCase;
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(dir);
+  const HostCase dx = random_direction(h, group, 560);
+  const auto got = run_adjoint(res, h, 0);
+  ASSERT_TRUE(got.has_value());
+  const double predicted = bars_dot(got->second, h, dx);
+
+  const auto energy = [&](const double t) {
+    DeviceCase g = upload_case(res, displaced(h, dx, t));
+    const auto e = nevpt2::class_energies(res, *g.blocks, g.in, 0);
+    EXPECT_TRUE(e) << e.error().message;
+    return e ? e->total : std::nan("");
+  };
+  constexpr double kT0 = 1e-2;
+  constexpr std::int32_t kRungs = 10;
+  std::vector<double> d;
+  for (std::int32_t k = 0; k < kRungs; ++k) {
+    const double t = std::ldexp(kT0, -k);
+    d.push_back((energy(t) - energy(-t)) / (2.0 * t));
+  }
+  // ratio[k] = (D_k - D_{k+1}) / (D_{k+1} - D_{k+2}); the longest run of
+  // ratios in (3.2, 4.8).
+  std::int32_t best_end = -1;
+  std::int32_t best_len = 0;
+  std::int32_t len = 0;
+  std::string ladder;
+  for (std::int32_t k = 0; k + 2 < kRungs; ++k) {
+    const double ratio = (d[k] - d[k + 1]) / (d[k + 1] - d[k + 2]);
+    ladder += std::format(" {:.3f}", ratio);
+    len = (ratio > 3.2 && ratio < 4.8) ? len + 1 : 0;
+    if (len > best_len) {
+      best_len = len;
+      best_end = k;
+    }
+  }
+  ASSERT_GE(best_len, 3) << "ratios:" << ladder;
+  // The run's finest pair is (D_{end+1}, D_{end+2}).
+  const auto fine = static_cast<std::size_t>(best_end + 2);
+  const double richardson = ((4.0 * d[fine]) - d[fine - 1]) / 3.0;
+  EXPECT_NEAR(richardson, predicted, 1e-7 * std::abs(predicted)) << "ratios:" << ladder;
+  std::cout << std::format("[ nevpt2   ] reverse ladder {}: Σ<bar, dx> {:.12e}, Richardson "
+                           "{:.12e}, relative {:.2e}, ratios{}\n",
+                           group, predicted, richardson,
+                           std::abs(richardson - predicted) / std::abs(predicted), ladder);
+}
+
+INSTANTIATE_TEST_SUITE_P(Groups, Nevpt2EnergyAdjointLadder,
+                         ::testing::Values(std::string{"all"}, std::string{"B"},
+                                           std::string{"h1e_v"}, std::string{"e"}),
+                         [](const auto &info) { return info.param; });
+
+// The walk's batch only splits it: walked in threes (every virtual walk ends
+// in a partial slab), every bar is the whole walk's to round-off.
+TEST(Nevpt2EnergyAdjoint, BatchedBarsMatchWhole) {
+  FBF_REQUIRE_GPU();
+  const std::filesystem::path dir = kDataDir / kAdjointCase;
+  fb::DeviceResources res(0);
+  const HostCase h = load_host_case(dir);
+  const auto whole = run_adjoint(res, h, 0);
+  const auto batched = run_adjoint(res, h, 3);
+  ASSERT_TRUE(whole.has_value());
+  ASSERT_TRUE(batched.has_value());
+  const HostBars &a = whole->second;
+  const HostBars &b = batched->second;
+  for (const auto &[name, x, y] :
+       {std::tuple{"lambda", &a.lambda, &b.lambda},
+        std::tuple{"h1e_v_sr", &a.h1e_v_sr, &b.h1e_v_sr},
+        std::tuple{"h1e_v_si", &a.h1e_v_si, &b.h1e_v_si},
+        std::tuple{"h1e_v_sir", &a.h1e_v_sir, &b.h1e_v_sir},
+        std::tuple{"e_core", &a.e_core, &b.e_core}, std::tuple{"e_virt", &a.e_virt, &b.e_virt}}) {
+    ASSERT_EQ(x->size(), y->size()) << name;
+    double scale = 0.0;
+    double worst = 0.0;
+    for (std::size_t k = 0; k < x->size(); ++k) {
+      scale = std::max(scale, std::abs((*x)[k]));
+      worst = std::max(worst, std::abs((*x)[k] - (*y)[k]));
+    }
+    EXPECT_GT(scale, 0.0) << name;
+    EXPECT_LE(worst, 1e-12 * scale) << name;
+  }
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(batched->first.energies.energies[k], whole->first.energies.energies[k], 1e-12)
+        << kClassNames[k];
+    EXPECT_NEAR(batched->first.eq40[k], whole->first.eq40[k], 1e-12) << kClassNames[k];
+  }
 }
 
 } // namespace
