@@ -2,7 +2,7 @@
 /// @brief The `Optimize` step: a geometry optimization, @c geometry::optimize
 /// over the energy and gradient of the chain from the molecule to
 /// `[gradient]` (RHF), to `[casscf_gradient]` (a DF-CASSCF root) or to
-/// `[nevpt2_gradient]` (its SC-NEVPT2 total energy), rerun as a nested
+/// `[nevpt2_gradient]` (its SC- or PC-NEVPT2 total energy), rerun as a nested
 /// Pipeline at every geometry.
 ///
 /// Node-shaped, because each evaluation runs a Pipeline of its own. Its
