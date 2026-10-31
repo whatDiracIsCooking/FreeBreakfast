@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Write the reference data the DF-RHF Hessian's response-part and
-two-electron explicit-part tests read.
+"""Write the reference data the DF-RHF Hessian's tests read: the full
+Hessian, and its response part and two-electron explicit part on their own.
 
 The response part of the closed-shell DF-RHF nuclear Hessian is everything the
 orbitals' first-order response contributes: PySCF's `pyscf.df.hessian.rhf`
@@ -36,7 +36,15 @@ to PySCF), spherical throughout, at PySCF's converged DF-RHF orbitals
 - `h2o_ccpvdz`: the skew water of `density_fitting/` in cc-pVDZ /
   cc-pVDZ-JKFIT;
 - `h2co_ccpvdz`: a skew formaldehyde, no symmetry plane, in the same sets, two
-  heavy atoms with d shells and twelve coordinates.
+  heavy atoms with d shells and twelve coordinates;
+- `h2o_ccpvtz`: the skew water in cc-pVTZ / cc-pVTZ-JKFIT, f shells on the
+  oxygen (and g in its fitting set);
+- `h2o_ccpvdz_opt`: water at PySCF's own DF-RHF minimum in cc-pVDZ /
+  cc-pVDZ-JKFIT, found here by Newton steps over PySCF's analytic Hessian
+  from the skew water until no gradient component is above OPT_GRADIENT, so
+  the Hessian has six near-zero mass-weighted eigenvalues; with its masses
+  (`atom_mass_list(isotope_avg=True)`, harmonic_analysis's) and
+  `thermo.harmonic_analysis`'s frequencies of the total.
 
 Arrays are .npy, '<f8' in Fortran order (the layout `src/io/npy` reads, first
 axis fastest): `c` (nao x nao, the orbitals, columns ascending in energy),
@@ -46,7 +54,11 @@ a + n_vir i of column x, `response::cphf`'s layout), and `coulomb` and
 `exchange` (3 n_atom x 3 n_atom): the explicit part's two-electron terms,
 `_partial_hess_ejk`'s ej and -ek (partial_hess_elec is e1 + ej - ek), which
 `hessian::df_rhf_two_electron` returns, each checked against
-partial_hess_elec and for the translational sum rule. U is in the MO basis, so
+partial_hess_elec and for the translational sum rule; and `one_electron`
+(e1), `nuclear_repulsion` (hess_nuc) and `total`, the whole Hessian, the sum
+of the five parts, checked against PySCF's unmodified kernel to what its
+stalled CPHF reaches and for the translational sum rule, as
+`hessian::df_rhf` returns them. U is in the MO basis, so
 neither it nor the Hessian depends on the AOs' normalisation; C is PySCF's,
 over unit-normalised functions, and a test whose function i is N_i times
 PySCF's divides C's rows by N. BLAS and OpenMP are pinned to one thread, and
@@ -81,6 +93,7 @@ from gradient_reference import atoms_out, df_rhf, molecules  # noqa: E402
 from pyscf import lib  # noqa: E402
 from pyscf.df.hessian import rhf as df_hessian  # noqa: E402
 from pyscf.hessian import rhf as rhf_hessian  # noqa: E402
+from pyscf.hessian import thermo  # noqa: E402
 from pyscf.scf import cphf  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -109,6 +122,19 @@ CASES = [
         "basis": "cc-pvdz",
         "aux_basis": "cc-pvdz-jkfit",
     },
+    {
+        "name": "h2o_ccpvtz",
+        "atoms": WATER_SKEW,
+        "basis": "cc-pvtz",
+        "aux_basis": "cc-pvtz-jkfit",
+    },
+    {
+        "name": "h2o_ccpvdz_opt",
+        "atoms": WATER_SKEW,
+        "basis": "cc-pvdz",
+        "aux_basis": "cc-pvdz-jkfit",
+        "optimize": True,
+    },
 ]
 
 CPHF_TOLERANCE = 1e-12
@@ -118,6 +144,11 @@ DENSE_TOLERANCE = 1e-9
 # PySCF's own kernel against it: its block Krylov stalls near 1e-7 in U,
 # which leaves 3e-8 of the largest element on the water.
 STALLED_TOLERANCE = 1e-6
+# The minimum: no gradient component above this (hartree / bohr), which the
+# SCF's 1e-10 gradient convergence leaves room for. A rotation's mass-weighted
+# eigenvalue there is of the gradient's size.
+OPT_GRADIENT = 1e-8
+OPT_MAX_STEPS = 20
 
 COMMAND = (
     "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools "
@@ -217,7 +248,35 @@ def symmetric_form(mf, h1ao) -> tuple[numpy.ndarray, numpy.ndarray]:
     return h, u_cols
 
 
+def optimized(case: dict) -> tuple[list, float]:
+    """The case's atoms moved to PySCF's DF-RHF minimum by Newton steps over
+    its analytic Hessian, the rigid-body directions (eigenvalues under 1e-6 of
+    the largest) left out of the inverse; and the largest gradient component
+    there."""
+    coords = numpy.array([coord for _, coord in case["atoms"]], dtype=float)
+    for _ in range(OPT_MAX_STEPS):
+        mol, auxmol = molecules(case, coords)
+        mf = df_rhf(mol, auxmol)
+        gradient = mf.nuc_grad_method().kernel().reshape(-1)
+        worst = float(numpy.abs(gradient).max())
+        if worst < OPT_GRADIENT:
+            atoms = [
+                (symbol, tuple(float(x) for x in r))
+                for (symbol, _), r in zip(case["atoms"], coords, strict=True)
+            ]
+            return atoms, worst
+        hessian = flat(mf.Hessian().kernel())
+        step = numpy.linalg.pinv(hessian, rcond=1e-6, hermitian=True) @ gradient
+        coords = coords - step.reshape(-1, 3)
+    raise RuntimeError(f"{case['name']}: no minimum in {OPT_MAX_STEPS} steps")
+
+
 def hessian_case(case: dict) -> dict:
+    extra = {}
+    if case.get("optimize"):
+        atoms, worst = optimized(case)
+        case = {**case, "atoms": atoms}
+        extra["max_gradient"] = worst
     mol, auxmol = molecules(case)
     mf = df_rhf(mol, auxmol)
     mf.conv_tol_cpscf = CPHF_TOLERANCE
@@ -249,9 +308,23 @@ def hessian_case(case: dict) -> dict:
     dense, u = symmetric_form(mf, h1ao)
     err = numpy.abs(dense - response).max()
     assert err < DENSE_TOLERANCE * scale, (case["name"], "dense", err, scale)
-    stalled = flat(hobj.kernel() - hobj.hess_nuc() - explicit)
+    kernel = hobj.kernel()
+    nuclear = hobj.hess_nuc()
+    stalled = flat(kernel - nuclear - explicit)
     err = numpy.abs(stalled - response).max()
     assert err < STALLED_TOLERANCE * scale, (case["name"], "kernel", err, scale)
+    # The whole Hessian, the five parts summed, against PySCF's own and for
+    # the translational sum rule.
+    whole = flat(total + nuclear)
+    whole_scale = numpy.abs(whole).max()
+    err = numpy.abs(flat(kernel) - whole).max()
+    assert err < STALLED_TOLERANCE * whole_scale, (case["name"], "total", err)
+    drift = numpy.abs(whole.reshape(-1, mol.natm, 3).sum(axis=1)).max()
+    assert drift < 1e-8 * whole_scale, (case["name"], "total sum rule", drift)
+    if case.get("optimize"):
+        modes = thermo.harmonic_analysis(mol, total + nuclear, imaginary_freq=False)
+        extra["masses"] = [float(m) for m in mol.atom_mass_list(isotope_avg=True)]
+        extra["frequencies"] = [float(f) for f in modes["freq_wavenumber"]]
     # U against the columns solved alone, through C^T S.
     overlap = mol.intor("int1e_ovlp")
     for x in range(3 * mol.natm):
@@ -279,6 +352,10 @@ def hessian_case(case: dict) -> dict:
         "u": save(f"{name}_u", u),
         "coulomb": save(f"{name}_coulomb", coulomb),
         "exchange": save(f"{name}_exchange", exchange),
+        "one_electron": save(f"{name}_one_electron", flat(e1)),
+        "nuclear_repulsion": save(f"{name}_nuclear_repulsion", flat(nuclear)),
+        "total": save(f"{name}_total", whole),
+        **extra,
     }
 
 
@@ -289,12 +366,13 @@ def main() -> None:
     for stale in OUT.glob("*.npy"):
         stale.unlink()
     doc = {
-        "description": "The response part of PySCF's DF-RHF nuclear Hessian "
-        "(pyscf.df.hessian.rhf, auxbasis response 2): its total less "
-        "partial_hess_elec and hess_nuc, over CPHF solutions to 1e-12, with "
-        "the orbitals, their energies and the CPHF solutions U^x, and the "
-        "explicit part's two-electron terms (_partial_hess_ejk's ej and -ek), "
-        "over this "
+        "description": "PySCF's DF-RHF nuclear Hessian (pyscf.df.hessian.rhf, "
+        "auxbasis response 2) over CPHF solutions to 1e-12, whole and by "
+        "part: the response part (the total less partial_hess_elec and "
+        "hess_nuc), with the orbitals, their energies and the CPHF solutions "
+        "U^x, the explicit part's one-electron (e1) and two-electron terms "
+        "(_partial_hess_ejk's ej and -ek), and hess_nuc; at the minimum, the "
+        "masses and harmonic frequencies; over this "
         "tree's data/basis and data/aux_basis files, spherical, "
         "unit-normalised functions; coordinates in bohr, the Hessian in "
         "hartree / bohr^2. Arrays are '<f8' Fortran-order .npy files beside "

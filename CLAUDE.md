@@ -16,7 +16,7 @@ populations and partial charges), `ci` (determinant CI: strings, sigma, the
 solver and RDMs), `response` (the CASSCF energy, orbital gradient and
 orbital Hessian at fixed orbitals and RDMs, and RHF's CPHF), `mcscf` (the
 state-averaged CASSCF loop over them), `nevpt2`, `cis`, `geometry`,
-`gradient`, `hessian` (the response part of the DF-RHF nuclear Hessian) and
+`gradient`, `hessian` (the full DF-RHF analytic nuclear Hessian) and
 `pipeline` (the calculation pipeline: the step
 contract, the setup steps, the ERI step (integral-direct or density-fitted,
 built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, the DF-RHF gradient step, the geometry-optimization step, the semi-numerical Hessian step, and the
