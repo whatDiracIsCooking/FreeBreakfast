@@ -224,4 +224,53 @@ private:
   return grad;
 }
 
+/// @brief Hessian of the nuclear repulsion energy, d2E_nn/dR dR, in
+/// hartree/bohr^2.
+///
+/// The classical second derivative of @ref nuclear_repulsion_energy with
+/// respect to every pair of nuclear coordinates. Each unordered pair A, B, at
+/// r = R_A - R_B, contributes
+///
+///     T_kl = Z_A Z_B (3 r_k r_l / |r|^5 - delta_kl / |r|^3)
+///
+/// to the (A, A) and (B, B) blocks and -T_kl to (A, B) and (B, A).
+///
+/// Returned flat and row-major as @c (3 natoms, 3 natoms): @c hess[(3*a + k) *
+/// 3 natoms + 3*b + l] is the derivative with respect to atom @c a's
+/// coordinate @c k and atom @c b's coordinate @c l (0=x, 1=y, 2=z). It is
+/// symmetric, and each block row's sum over atoms is zero by construction
+/// (translational invariance): every pair adds T and -T to it. With fewer than
+/// two atoms there are no pairs and the Hessian is all zeros.
+[[nodiscard]] std::vector<double> nuclear_repulsion_hessian(const Molecule &molecule) {
+  const std::vector<Atom> &atoms = molecule.atoms();
+  const size_t n = static_cast<size_t>(atoms.size()) * 3;
+  std::vector<double> hess(n * n, 0.0);
+  for (uint32_t a = 0; a < atoms.size(); ++a) {
+    for (uint32_t b = a + 1; b < atoms.size(); ++b) {
+      const Vec<double, 3> ra = atoms[a].position;
+      const Vec<double, 3> rb = atoms[b].position;
+      const std::array<double, 3> r{ra.x - rb.x, ra.y - rb.y, ra.z - rb.z};
+      const double d = distance(ra, rb);
+      const double zz = static_cast<double>(nuclear_charge(atoms[a])) *
+                        static_cast<double>(nuclear_charge(atoms[b]));
+      const double inv_r3 = zz / (d * d * d);
+      const double three_inv_r5 = 3.0 * inv_r3 / (d * d);
+      for (size_t k = 0; k < 3; ++k) {
+        for (size_t l = 0; l < 3; ++l) {
+          const double t = (three_inv_r5 * (r[k] * r[l])) - (k == l ? inv_r3 : 0.0);
+          const size_t ak = (3 * size_t{a}) + k;
+          const size_t bk = (3 * size_t{b}) + k;
+          const size_t al = (3 * size_t{a}) + l;
+          const size_t bl = (3 * size_t{b}) + l;
+          hess[(ak * n) + al] += t;
+          hess[(bk * n) + bl] += t;
+          hess[(ak * n) + bl] -= t;
+          hess[(bk * n) + al] -= t;
+        }
+      }
+    }
+  }
+  return hess;
+}
+
 } // namespace free_breakfast

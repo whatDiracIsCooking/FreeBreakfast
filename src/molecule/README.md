@@ -1,6 +1,6 @@
 # Molecule
 
-Molecular geometry (`Molecule`), its nuclei on the device, the nuclear repulsion energy and its gradient.
+Molecular geometry (`Molecule`), its nuclei on the device, the nuclear repulsion energy, its gradient and its Hessian.
 
 ## Module
 
@@ -15,6 +15,7 @@ Everything is in atomic units: positions in bohr, energies in hartree, and a nuc
 - An `Atom`'s `position` is already a `Vec<double, 3>`; the free function `nuclear_charge(atom)` reads Z out of it.
 - **`nuclear_repulsion_energy(molecule)`** — `Σ_{A<B} Z_A Z_B / R_AB`, each unordered pair counted once; zero for fewer than two atoms.
 - **`nuclear_repulsion_gradient(molecule)`** — `dE_nn/dR`, flat `(natoms, 3)` row-major. Each pair contributes equal and opposite pulls, so the per-axis sum is zero by construction.
+- **`nuclear_repulsion_hessian(molecule)`** — `d²E_nn/dR dR`, flat `(3 natoms, 3 natoms)` row-major, row `3A + k` and column `3B + l`. Each pair adds `T` to its two diagonal blocks and `−T` to its two off-diagonal ones, so it is symmetric and each block row sums to zero by construction.
 
 The module re-exports `free_breakfast.atom` and `free_breakfast.core.types` (`export import`), so importers get `Atom`, `Element` and `Vec` without separate imports.
 
@@ -46,12 +47,12 @@ auto nuclei = h2.view();                                       // for a launcher
 
 ## Tests
 
-`test/gtest/molecule_gpu.cpp`, including the gradient against a central finite difference of the energy and the nuclei read back from the device; `test/gtest/molecule_host.cpp` for `distance` and `nuclear_charge`, which need no `Molecule`.
+`test/gtest/molecule_gpu.cpp`, including the gradient against a central finite difference of the energy and the nuclei read back from the device; `test/gtest/molecule_host.cpp` for `distance` and `nuclear_charge`, which need no `Molecule`. `nuclear_repulsion_hessian` is tested against PySCF's `hess_nuc` in `test/gtest/one_electron_hessian_gpu.cpp`, beside the one-electron Hessians it is summed with.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `molecule.cppm` | Module interface: `distance`, `Molecule`, `nuclear_charge`, `nuclear_repulsion_energy`, `nuclear_repulsion_gradient`, and `NucleiView` re-exported |
+| `molecule.cppm` | Module interface: `distance`, `Molecule`, `nuclear_charge`, `nuclear_repulsion_energy`, `nuclear_repulsion_gradient`, `nuclear_repulsion_hessian`, and `NucleiView` re-exported |
 | `nuclei_view.h` | `NucleiView`'s single definition, for the module and the launchers |
 | `CMakeLists.txt` | The interface library `free_breakfast.molecule.headers` and the module |

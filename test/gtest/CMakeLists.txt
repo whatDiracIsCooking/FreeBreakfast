@@ -136,6 +136,7 @@ add_executable(
   dipole_gpu.cpp
   one_electron_gradient_gpu.cpp
   one_electron_derivative_gpu.cpp
+  one_electron_hessian_gpu.cpp
   core_hamiltonian_gpu.cpp
   coulomb_gpu.cpp
   coulomb_gradient_gpu.cpp
