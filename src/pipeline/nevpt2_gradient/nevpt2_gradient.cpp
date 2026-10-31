@@ -1,6 +1,7 @@
 /// @file
 /// @brief Nevpt2GradientStep: the refusals, the CasscfOutput back into the
-/// mcscf::Solution nevpt2::sc_gradient takes, and nevpt2_gradient.json.
+/// mcscf::Solution nevpt2::sc_gradient and nevpt2::pc_gradient take, and
+/// nevpt2_gradient.json.
 
 module free_breakfast.pipeline.nevpt2_gradient;
 
@@ -31,13 +32,6 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
                              CoreHamiltonianOutput, ScfOutput, CasscfOutput>
                             in,
                         DeviceResources &res) const {
-  // PC: replace this refusal with the PC gradient's call beside
-  // sc_gradient's below once #564 lands (README.md, "PC").
-  if (variant == Nevpt2Variant::Pc) {
-    return err_unsupported("[{}] variant 'pc' is not implemented yet: the PC-NEVPT2 gradient "
-                           "lands with #564; set variant = 'sc'",
-                           kName);
-  }
   // The Nevpt2 step's refusals, for the same reasons: the strings are
   // nelecas / 2 a spin, and only the density-fitted NEVPT2 is ported.
   if (const ScfOutput &scf = in.get<ScfOutput>(); scf.n_alpha != scf.n_beta) {
@@ -58,7 +52,7 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
                            kName);
   }
   const CasscfOutput &cas = in.get<CasscfOutput>();
-  // sc_gradient refuses a state average itself, but only after its
+  // sc_gradient and pc_gradient refuse a state average themselves, but only after its
   // Solution is built: this says so in the config's words.
   if (cas.energies.size() != 1) {
     return err_unsupported("[{}] differentiates a single-state CASSCF, and [casscf] has {} roots: "
@@ -81,7 +75,7 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
   const wwr::wwrStream_t stream = res.stream();
 
   // The CasscfGradient step's Solution: the product is the solve's with its
-  // core and virtuals canonicalized, which sc_gradient needs (its orbital
+  // core and virtuals canonicalized, which both gradients need (its orbital
   // energies are f's diagonal there), and one root's gamma is its rdm1.
   mcscf::Solution solution{
       .c = SphericalMatrixAO(res, basis),
@@ -108,46 +102,63 @@ Nevpt2GradientStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClasse
                                          wwr::wwrMemcpyDeviceToDevice, stream)));
 
   // Batch 0: each class's whole extent in one slab, as nevpt2_gradient_gpu.cpp
-  // runs it (src/pipeline/nevpt2_gradient/README.md, "Memory").
-  Nevpt2GradientOutput out{
-      .gradient = FBF_TRY(nevpt2::sc_gradient(res, molecule, basis, classes, fit->aux, h, fit->b,
-                                              fit->l.data(), solution, cas.ncore, cas.ncas, 0)),
-  };
+  // runs it (src/pipeline/nevpt2_gradient/README.md, "Memory"). A PC
+  // refusal (no gap at the cut, a non-positive denominator) is the energy's
+  // error, returned as it is.
+  Nevpt2GradientOutput out =
+      variant == Nevpt2Variant::Pc
+          ? Nevpt2GradientOutput{.gradient = FBF_TRY(nevpt2::pc_gradient(
+                                     res, molecule, basis, classes, fit->aux, h, fit->b,
+                                     fit->l.data(), solution, cas.ncore, cas.ncas, 0))}
+          : Nevpt2GradientOutput{.gradient = FBF_TRY(nevpt2::sc_gradient(
+                                     res, molecule, basis, classes, fit->aux, h, fit->b,
+                                     fit->l.data(), solution, cas.ncore, cas.ncas, 0))};
   if (!json_path.empty()) {
-    const nevpt2::ScGradient &g = out.gradient;
     const double e_cas = cas.energies[static_cast<size_t>(root)];
     FBF_TRY(write_json(
         json_path,
-        json{
-            {"root", root},
-            {"variant", "sc"},
-            {"energy", e_cas + g.energies.total},
-            {"e_casscf", e_cas},
-            {"e_corr", g.energies.total},
-            {"total", nevpt2_gradient_rows(g.terms.total)},
-            {"terms",
-             {
-                 {"kinetic", nevpt2_gradient_rows(g.terms.kinetic)},
-                 {"potential", nevpt2_gradient_rows(g.terms.potential)},
-                 {"overlap", nevpt2_gradient_rows(g.terms.overlap)},
-                 {"two_electron", nevpt2_gradient_rows(g.terms.two_electron)},
-                 {"nuclear_repulsion", nevpt2_gradient_rows(g.terms.nuclear_repulsion)},
-             }},
-            {"max_zc", g.zc.max_z},
-            // null when neither inactive space has two orbitals (infinity).
-            {"min_inactive_gap", std::isfinite(g.zc.min_gap) ? json(g.zc.min_gap) : json(nullptr)},
-            {"pcg_iterations", g.multipliers.iterations},
-            {"pcg_residual", g.multipliers.residual},
-            {"asymmetry",
-             {
-                 {"core_core", g.asymmetry[0]},
-                 {"active_active", g.asymmetry[1]},
-                 {"virtual_virtual", g.asymmetry[2]},
-                 {"active_core", g.asymmetry[3]},
-                 {"virtual_core", g.asymmetry[4]},
-                 {"virtual_active", g.asymmetry[5]},
-             }},
-        }));
+        std::visit(
+            [&]<class G>(const G &g) {
+              constexpr bool kPc = std::same_as<G, nevpt2::PcGradient>;
+              json doc{
+                  {"root", root},
+                  {"variant", kPc ? "pc" : "sc"},
+                  {"energy", e_cas + g.energies.total},
+                  {"e_casscf", e_cas},
+                  {"e_corr", g.energies.total},
+                  {"total", nevpt2_gradient_rows(g.terms.total)},
+                  {"terms",
+                   {
+                       {"kinetic", nevpt2_gradient_rows(g.terms.kinetic)},
+                       {"potential", nevpt2_gradient_rows(g.terms.potential)},
+                       {"overlap", nevpt2_gradient_rows(g.terms.overlap)},
+                       {"two_electron", nevpt2_gradient_rows(g.terms.two_electron)},
+                       {"nuclear_repulsion", nevpt2_gradient_rows(g.terms.nuclear_repulsion)},
+                   }},
+                  {"max_zc", g.zc.max_z},
+                  // null when neither inactive space has two orbitals (infinity).
+                  {"min_inactive_gap",
+                   std::isfinite(g.zc.min_gap) ? json(g.zc.min_gap) : json(nullptr)},
+                  {"pcg_iterations", g.multipliers.iterations},
+                  {"pcg_residual", g.multipliers.residual},
+                  {"asymmetry",
+                   {
+                       {"core_core", g.asymmetry[0]},
+                       {"active_active", g.asymmetry[1]},
+                       {"virtual_virtual", g.asymmetry[2]},
+                       {"active_core", g.asymmetry[3]},
+                       {"virtual_core", g.asymmetry[4]},
+                       {"virtual_active", g.asymmetry[5]},
+                   }},
+              };
+              // PC's one addition: the metric modes each class cut as null, in
+              // PySCF's class order.
+              if constexpr (kPc) {
+                doc["dropped"] = g.energies.dropped;
+              }
+              return doc;
+            },
+            out.gradient)));
   }
   return out;
 }

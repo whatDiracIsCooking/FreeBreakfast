@@ -4,7 +4,7 @@ A geometry optimization: `../../geometry/`'s `geometry::optimize` (BFGS under a
 trust radius, the rigid-body motions projected out, Gaussian's four criteria)
 over the energy and gradient of the chain from the molecule to `[gradient]`
 (RHF), to `[casscf_gradient]` (a DF-CASSCF root, below) or to
-`[nevpt2_gradient]` (that CASSCF's SC-NEVPT2, below), rerun as a nested
+`[nevpt2_gradient]` (that CASSCF's SC- or PC-NEVPT2, below), rerun as a nested
 `Pipeline` at every geometry. Every other step in the config then runs at the
 optimum.
 
@@ -138,7 +138,7 @@ and the `CasscfGradientOutput`'s total.
 ## The NEVPT2 chain
 
 With `nevpt2_gradient` set instead (pipeline/config sets it when the config
-has a `[nevpt2_gradient]`), the energy optimized is the SC-NEVPT2 total
+has a `[nevpt2_gradient]`), the energy optimized is the SC- or PC-NEVPT2 total
 energy E_cas + E_corr of the single-state DF-CASSCF, and the chain is the
 CASSCF chain's with `nevpt2_gradient` in place of `casscf_gradient`:
 
@@ -156,11 +156,11 @@ its copy). At most one of the two gradients is set: both, by hand, is
 `InvalidConfig` before anything runs, as pipeline/config refuses a config
 naming both.
 
-- **A refusal stops it.** Every refusal of the step -- its variant (PC,
-  until #564 lands; the step decides what it takes, and this one drives
-  whatever that is), a state average, an open shell, and the numerical ones
-  `nevpt2::sc_gradient` makes at run, a degenerate inactive pair whose
-  multipliers are not determined among them -- is the evaluation's error.
+- **A refusal stops it.** Every refusal of the step -- a state average, an
+  open shell, and the numerical ones `nevpt2::sc_gradient` or
+  `nevpt2::pc_gradient` makes at run, a degenerate inactive pair whose
+  multipliers are not determined and a class PC refuses (no gap at the cut,
+  a non-positive λ + Δ) among them -- is the evaluation's error.
   `geometry::optimize` returns its callback's first error, so the
   optimization ends there with the step's message as it is, at whichever
   geometry it is met; it is never stepped through or retried at a shorter

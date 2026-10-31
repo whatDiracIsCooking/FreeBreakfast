@@ -183,9 +183,14 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
                         gradient.begin());
       return cas.energies[static_cast<size_t>(chain_casscf_gradient.root)];
     } else {
-      const nevpt2::ScGradient &g = chain.template get<Nevpt2GradientOutput>()->gradient;
-      std::ranges::copy(g.terms.total, gradient.begin());
-      return cas.energies[static_cast<size_t>(chain_nevpt2_gradient.root)] + g.energies.total;
+      // SC's or PC's, as the chain's variant picked.
+      const double e_corr = std::visit(
+          [&](const auto &g) {
+            std::ranges::copy(g.terms.total, gradient.begin());
+            return g.energies.total;
+          },
+          chain.template get<Nevpt2GradientOutput>()->gradient);
+      return cas.energies[static_cast<size_t>(chain_nevpt2_gradient.root)] + e_corr;
     }
   };
   // The CASSCF chain ending in @p last at @p trial: at the first geometry the

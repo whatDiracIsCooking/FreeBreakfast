@@ -442,17 +442,10 @@ template <class S>
     }
     std::string variant = "sc";
     FBF_TRY(read_key(table, kStep, "variant", base_dir, variant));
-    if (variant == "pc") {
-      // PC: map it to Nevpt2Variant::Pc here once #564 lands
-      // (nevpt2_gradient/README.md, "PC").
-      return err_unsupported("[{}] variant 'pc' is not implemented yet: the PC-NEVPT2 gradient "
-                             "lands with #564; set variant = 'sc'",
-                             kStep);
-    }
-    if (variant != "sc") {
+    if (variant != "sc" && variant != "pc") {
       return err_config("[{}] has no variant '{}' (known: 'sc', 'pc')", kStep, variant);
     }
-    step.variant = Nevpt2Variant::Sc;
+    step.variant = variant == "pc" ? Nevpt2Variant::Pc : Nevpt2Variant::Sc;
     step.json_path = output_dir / std::format("{}.json", kStep);
   } else if constexpr (std::same_as<S, OptimizeStep>) {
     // The chain it reruns is the other tables', copied in by parse_config,
