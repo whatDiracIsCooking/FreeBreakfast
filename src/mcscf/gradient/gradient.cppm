@@ -5,8 +5,9 @@
 ///     dE/dR = Sum D dT + Sum D dV - Sum W dS + dE_2/dR + dV_nn,
 ///
 /// the two-electron part one Gam_mnP against d(mn|P) and one W_PQ against
-/// d(P|Q). A state average's root is over its Z-vector's multipliers. See
-/// README.md for each term's derivation.
+/// d(P|Q). A state average's root is over its Z-vector's multipliers, or the
+/// caller's, and a caller may add an MO adjoint of its own to the same
+/// densities. See README.md for each term's derivation.
 
 export module free_breakfast.mcscf.gradient;
 
@@ -20,6 +21,7 @@ import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.mcscf.solve;
+import free_breakfast.mcscf.zvector;
 
 export namespace free_breakfast::mcscf {
 
@@ -41,6 +43,24 @@ struct GradientTerms {
   std::vector<double> nuclear_repulsion;
   /// @brief The sum of the five.
   std::vector<double> total;
+};
+
+/// @brief The MO-basis adjoint of a term a caller adds to the Lagrangian
+/// (@c nuclear_gradient.tex Eqs. P-W): with Phi(h, B) that term, B^L_pq the
+/// fitted pairs (pq|rs) = Sum_L B^L_pq B^L_rs over the orbitals C,
+/// h_bar = dPhi/dh, Lambda^L = dPhi/dB^L, and X = 2 h h_bar +
+/// 2 Sum_L B^L Lambda^L, so that dPhi = Sum_xp theta_xp X_xp along
+/// C -> C (1 + theta). Every pointer is on the call's device, nmo = nao.
+/// h_bar and Lambda are symmetric in (p, q), as Phi's are; X is read only
+/// through sym(X).
+struct MoAdjoint {
+  /// @brief h_bar, nmo x nmo column-major.
+  const double *h_bar = nullptr;
+  /// @brief Lambda, naux x nmo^2: element (L, p + nmo q) at
+  /// L + naux (p + nmo q), as @c b_mo leaves B.
+  const double *lambda = nullptr;
+  /// @brief X, nmo x nmo column-major: X_xp at x + nmo p.
+  const double *x = nullptr;
 };
 
 /// @brief The nuclear gradient of the DF-CASSCF energy of root @p root at
@@ -65,6 +85,17 @@ struct GradientTerms {
 /// one W. The weights are recovered from @c Solution::root_gammas and the
 /// weighted gamma, and the active electrons are trace(gamma).
 ///
+/// @p multipliers, when given, are (z_o, z_c) in place of the Z-vector, for
+/// one root as for a state average: one root with them is taken at the same
+/// Lagrangian, at weight 1. They are in @c zvector's coordinates: z_o over
+/// the packed pairs, z_c dim x nroots, root r's CI row
+/// (H_0 - E_r) z_c,r + ... in PySCF's gen_g_hop convention, unweighted (the
+/// call weights the transition RDMs by w_r). @p extra, when given, adds
+/// P = C h_bar C^T to the one-electron D, Gam = L^-T C Lambda C^T,
+/// W_PQ += -1/2 (L^-T G^aux L^-1)_PQ with G^aux_LL' = Sum_pq Lambda^L_pq
+/// B^L'_pq, and 1/2 C sym(X) C^T to the overlap's W, so the derivative
+/// integrals are still evaluated once.
+///
 /// The formula is the gradient of the energy @ref solve converges to under
 /// DensityFitting::Full over the same @p b, and only at its convergence: W
 /// stands in for the orbitals' response, and the CI is variational. A
@@ -83,8 +114,9 @@ struct GradientTerms {
 /// @c gradient::df_rhf; with the fitted pairs and their back-transforms the
 /// call's own device memory is about 8 naux (nao^2 + naux +
 /// 2 ncore nocc + max(ncore, ncas) nao + 2 ncas^2) bytes, nocc =
-/// ncore + ncas. Past the device's free memory it is Unsupported, naming the
-/// bytes, before anything is allocated.
+/// ncore + ncas, and an extra adjoint's 8 naux (nao^2 + naux) more. Past the
+/// device's free memory it is Unsupported, naming the bytes, before anything
+/// is allocated.
 ///
 /// Queued on res.stream(); each derivative call synchronizes it, so the call
 /// returns with everything done. Scratch for @c b_mo, the Fock and the
@@ -99,10 +131,13 @@ struct GradientTerms {
 ///         basis.nao_sphe() square or not on @p res's device, if ncore is
 ///         negative, ncas below 1 or ncore + ncas past nao, if @p root is not
 ///         one of the solution's, if its RDMs are not ncas^2 and ncas^4 long,
-///         if @p b is not naux nao^2 doubles over naux >= 1, or, for a state
-///         average, if root_gammas is not ncas^2 per root, the weighted gamma
-///         is not their average, trace(gamma) is no electron count of the
-///         molecule's multiplicity, or the CI vectors are not the roots';
+///         if @p b is not naux nao^2 doubles over naux >= 1, if an @p extra
+///         pointer is null, for a state average if root_gammas is not
+///         ncas^2 per root or the weighted gamma is not their average, or,
+///         for a state average or @p multipliers, if trace(gamma) is no
+///         electron count of the molecule's multiplicity, the CI vectors are
+///         not the roots', or the multipliers are not the packed pairs' and
+///         dim x nroots long;
 ///         the first error of @c casscf_integrals, @c fock, the CI objects,
 ///         the Hessian, @c zvector or a derivative call; or the GpuRuntime
 ///         error of the first copy or BLAS call that failed.
@@ -110,6 +145,7 @@ struct GradientTerms {
 df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-            const Solution &solution, int32_t ncore, int32_t ncas, int32_t root);
+            const Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
+            const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
 } // namespace free_breakfast::mcscf

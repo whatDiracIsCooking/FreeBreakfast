@@ -16,7 +16,8 @@ Result<mcscf::GradientTerms> mcscf::df_gradient(
     DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-    const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t root);
+    const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
+    const mcscf::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
 // g->kinetic, g->potential, g->overlap, g->two_electron,
 // g->nuclear_repulsion, g->total: each n_atom x 3, row-major, element 3 A + k
 ```
@@ -162,20 +163,62 @@ densities. They are not factored: they are only more terms in the same Γ_mnP
 and W_PQ, so the derivative integrals are still evaluated once,
 one `three_center_gradient` and one `metric_gradient` per call.
 
+## A caller's Lagrangian
+
+The last two arguments open the call up to a Lagrangian that is not the
+CASSCF's own (NEVPT2's, `nuclear_gradient.tex` Eq. total). Both default to
+null, which is the call above unchanged.
+
+**`multipliers`** are (z_o, z_c) in place of the Z-vector the call would
+solve, as a `ZVector` (`mcscf::zvector`'s result, or one the caller built).
+With them one root is taken at the same Lagrangian as a state average's root,
+at weight 1, so a single root with nonzero multipliers gets the transition
+RDMs and the orbital response too. **They are in `zvector`'s coordinates**:
+z_o over the packed pairs (`response::pack_orbital_pairs`' order,
+ncore (nmo − ncore) + ncas (nmo − nocc) doubles), and z_c dim × nroots, root
+r's CI row (H₀ − E_r) z_c,r + P H′(z_o) c_r = −y_r, the PySCF `gen_g_hop`
+convention, **unweighted** — not the tex's J_cc = 2P(H − E)P. The call
+weights root r's transition RDMs by w_r itself, as it does for its own
+Z-vector; a caller whose CI multiplier is in another convention rescales it
+before the call. Wrong lengths are `InvalidConfig`.
+
+**`extra`** is an MO-basis adjoint (`MoAdjoint`, device pointers, nmo = nao)
+of a term Φ(h, B) added to the Lagrangian: h̄ = ∂Φ/∂h (nmo²), Λᴸ = ∂Φ/∂Bᴸ
+(naux × nmo², (L, p + nmo q) at L + naux (p + nmo q), as `b_mo` leaves B),
+both symmetric in (p, q), and X = 2 h h̄ + 2 Σ_L Bᴸ Λᴸ (nmo², X_xp at
+x + nmo p), read only through sym(X). Here Bᴸ is the fitted pair of
+(pq|rs) = Σ_L Bᴸ_pq Bᴸ_rs, `b_mo` of `pipeline.eri`'s B. Its pieces (the
+tex's Eqs. P–W) go into the same arrays as every term above:
+
+- P = C h̄ Cᵀ into the one-electron D (one `gemmwich`, an axpy);
+- ½ C sym(X) Cᵀ into the overlap's W, as ½ X added to F;
+- Γ = L⁻ᵀ C Λ Cᵀ: Λ_AO = C Λᴸ Cᵀ by a gemm over q and a strided-batched gemm
+  over n (df_rhf's exchange shape) straight into the zeroed Γ_mnP, then one
+  trsm in place before any other term is added;
+- W_PQ += −½ (L⁻ᵀ Gᵃᵘˣ L⁻¹)_PQ, Gᵃᵘˣ_LL′ = Σ_pq Λᴸ_pq Bᴸ′_pq, taken in
+  the AO basis as Λ_AO Bᵀ (a gemm) and two trsms.
+
+So the derivative integrals are still evaluated once: one
+`three_center_gradient`, one `metric_gradient`. E_cas's own adjoint
+(h̄ = D, Λᴸ = Σ_rs Γ_pqrs Bᴸ_rs over the full-range Γ, X = 2F) reproduces
+the terms above exactly, which the test uses.
+
 ## Memory
 
 **Γ is held in full**: naux nao² doubles, the size of B, as in
 `gradient::df_rhf`, plus the derivative call's Cartesian copy in
 `res.device_workspace()`. Beside it the call holds W (naux²), the two fitted
 densities, G (nocc²), the core pairs and V (naux ncore nocc each), one
-back-transform (naux max(ncore, ncas) nao), and the active pairs and Z
-(naux ncas² each); for a state average also four more fitted densities, a
-second G, and the response's pairs, their scratch and the SA V and Z (three
-more of each size). It refuses (`Unsupported`, naming the bytes) when those
-would not fit the device's free memory, before anything is allocated. A
-state average's CI objects, Hessian and nao²-sized matrices are not counted.
-`casscf_integrals` and `response::fock` hold their own nmo² ncas² integrals
-for the call. naux nao² must fit `int32_t`.
+back-transform (naux max(ncore, ncas) nao), and the active pairs and Z (naux
+ncas² each); for a state average (or given multipliers) also four more fitted
+densities, a second G, and the response's pairs, their scratch and the SA V
+and Z (three more of each size). It refuses (`Unsupported`, naming the bytes)
+when those would not fit the device's free memory, before anything is
+allocated. A state average's CI objects, Hessian and nao²-sized matrices are
+not counted. An extra adjoint adds Λ Cᵀ (naux nao², the size of Γ) and Gᵃᵘˣ
+(naux²), both counted; Λ itself is the caller's. `casscf_integrals` and
+`response::fock` hold their own nmo² ncas² integrals for the call. naux nao²
+must fit `int32_t`.
 
 ## Tests
 
@@ -189,5 +232,11 @@ runs this tree's own `DensityFitting::Full` solve from the exact RHF and the
 case's active orbitals to ‖g‖ < 1e-9, then for every root every term and the
 total to 1e-8 absolute, the total's sum over atoms below 1e-9, and two
 refusals (a root past the solution's, and a solution with a root more than its
-per-root RDMs). The gradient does not depend on the orbitals' or CI's signs or
+per-root RDMs). Then the caller's pieces on the same solution, to 1e-10: for
+each state-specific case E_cas's own MO adjoint, built on the host from B, C,
+h and the RDMs, fed as `extra` doubles every electronic term and leaves the
+nuclear repulsion, so the extra term alone is the state-specific gradient;
+for the state average each root's multipliers from `zvector` (over the
+CI-relaxed Hessian, as the call builds it) passed as `multipliers` reproduce
+the internal path; and multipliers of the wrong length are refused. The gradient does not depend on the orbitals' or CI's signs or
 canonicalization, so the solution is compared as it converges.
