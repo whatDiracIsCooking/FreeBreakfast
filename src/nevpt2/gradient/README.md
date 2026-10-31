@@ -2,7 +2,9 @@
 
 The SC-NEVPT2 correlation energy of one root as a function of the integrals
 (h, B) and the CI vector c, and its adjoint: the first piece of the NEVPT2
-nuclear gradient (`nuclear_gradient.tex` §5). Link
+nuclear gradient (`nuclear_gradient.tex` §5). Then the inactive-rotation
+multipliers z^c of its Lagrangian and the term Φ = ⟨z^c, f⟩ they add, with
+Φ's adjoints (Algorithm 1, steps 1–2). Link
 `free_breakfast::nevpt2::gradient`.
 
     sc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, batch)
@@ -15,6 +17,18 @@ nuclear gradient (`nuclear_gradient.tex` §5). Link
         y          dE/dc, at fixed (h, B)
         x          X = 2 h h̄ + 2 Σ_L B^L Λ^L, nmo²
         a          A = X − Xᵀ
+        epsilon    ε, nmo: f's core and virtual diagonals at their own indices, 0 on the active
+    zc_multipliers(res, nmo, ncore, ncas, a, epsilon) -> ZcMultipliers
+        z          z^c, nmo², symmetric, on the core–core and virtual–virtual blocks
+        max_z      max |z^c|
+        min_gap    the smallest |ε_p − ε_q| over those pairs
+    zc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, z)
+        -> ZcAdjoint
+        phi        Φ = ⟨z, f⟩ = Σ_pq z_pq f_pq
+        h_bar      dΦ/dh = z
+        lambda     dΦ/dB^L, as ScAdjoint's
+        y          y^c = dΦ/dc, as ScAdjoint's y
+        x, a       X and A of (h̄, Λ) above, as ScAdjoint's
 
 `b` is B as `density_fit` leaves it (the AO B, naux × nao², the metric
 folded in), `c` the root's orbitals (nao × nmo: core, active, virtual), `h`
@@ -101,11 +115,72 @@ each get half the device's free memory at their call, as the Nevpt2 step
 gives `rdms`, so that the energy's own buffers find room after the workspace
 has grown (it never shrinks).
 
+## The inactive multipliers z^c
+
+SC-NEVPT2 is not invariant under core–core and virtual–virtual rotations, so
+the Lagrangian carries the pseudocanonical conditions f_pq = 0 there:
+L = E + ⟨z^c, f⟩, f the generalized Fock
+
+    f_pq = h_pq + Σ_rs D_rs [(pq|rs) − ½ (pr|sq)],   D = 2 on the core's diagonal, γ on the active block
+
+whose core and virtual diagonals are ε above (F^I plus the active part).
+Along κ_pq = −κ_qp = t, p > q in one space, f_pq and f_qp each move by
+t (ε_p − ε_q) where f is diagonal, and nothing else z^c reads moves at first
+order (D is fixed in the MO indices, and the core and virtual densities are
+invariant). So stationarity, A_pq + 2 z_pq (ε_p − ε_q) = 0, is one division
+per pair, Park Eqs. 56–57 in this tree's conventions:
+
+    z_pq = z_qp = −A_pq / (2 (ε_p − ε_q))     p ≠ q, both core or both virtual
+
+with ⟨z, f⟩ the full Frobenius sum (each pair counted twice), A = X − Xᵀ
+along C exp(κ) as `sc_adjoint` gives it. The −½ against Park's +½ is the
+sign of A's κ and the doubled sum, and the stationarity ladder pins both.
+**`zc_multipliers` takes A and ε as inputs**, so nothing in it is SC's: the
+PC gradient (#564) calls it with PC's A, which vanishes on degenerate pairs
+alone.
+
+**Degenerate pairs.** |ε_p − ε_q| < 1e-6 Eh (`kZcGapFloor`) is a division
+the state does not determine. When |A_pq| ≤ 1e-8 (`kZcZeroSource`), z is 0:
+an abelian subgroup splits a degenerate set across irreps, the energy does
+not move along a rotation mixing them, and 0 is the right representative.
+Otherwise the pair is refused, `Numerical`, naming both orbitals, the gap
+and |A|. Both are the demo's (`PC_GAP_FLOOR`, `PC_ZERO_TOL`;
+`nuclear_gradients.tex`, "Degenerate (O2) pairs"). `min_gap` counts the
+degenerate pairs too.
+
+**Φ's adjoints** (`zc_adjoint`, at fixed z). B goes to the MO basis whole,
+naux nmo² (z spans the virtual–virtual block, which nothing else here reads
+off its diagonal), with g_L = Σ B_L,rs D_rs and w_L = Σ B_L,pq z_pq:
+
+    Φ   = ⟨z, h⟩ + Σ_L w_L g_L − ½ Σ_L tr(z B_L D B_L)
+    h̄   = z
+    Λ_L = z g_L + D w_L − ½ (z B_L D + D B_L z)
+    W   = dΦ/dγ = Σ_L w_L B_L,aa − ½ Σ_L (B_L z B_L)_aa
+    y^c = Σ_tu (W + Wᵀ)_tu (E_tu c)
+    X   = 2 h z + 2 Σ_L B_L Λ_L,   A = X − Xᵀ
+
+Each left product D B_L and z B_L is one strided-batched gemm over the slow
+index (B(·, ·, q) is a packed naux × nmo block), and every sum over (L, r)
+one gemm with B read as (naux nmo) × nmo by its symmetry in the pair, as
+the source term's half-transform does. γ is `ci::Sigma::rdm1` of the vector,
+and y^c one `ci::Sigma::apply` over the one-body operator W + Wᵀ with no
+two-electron part: spin-free, so y^c is in c's spin and symmetry sector.
+
+**y^c is raw, as y is**: the derivative of Φ as a function of an
+unnormalized c, not projected (⟨c, y^c⟩ = 2⟨W, γ⟩). #563 passes
+½ P_c(y + y^c) to `mcscf::zvector`, which is where it is made ⊥ c and put
+in that solver's convention (`src/mcscf/zvector/README.md`). The (h̄, Λ, X,
+A) of Φ add to `sc_adjoint`'s field by field.
+
+**One root.** Both entry points take one vector, so a state average cannot
+reach them; #563, which holds the CASSCF's roots, refuses one
+(`Unsupported`).
+
 ## Not done
 
 - The PC adjoint (Eq. pcdot), and the per-root canonicalization's own
-  derivative: the caller passes canonical orbitals and the z^c of #568 take
-  the constraint.
+  derivative: the caller passes canonical orbitals and z^c takes the
+  constraint.
 - Λ lives at naux nmo² whole; a virtual–virtual block that only its diagonal
   reaches is still stored whole, as `mcscf::df_gradient`'s extra adjoint
   takes it.
@@ -153,11 +228,43 @@ once per process.
     6.5e-10, B 5.9e-10 relative. Each ladder is well under a second; the
     CASSCF setup dominates.
 - `SourceTermShapes`: A is X − Xᵀ, h̄ and every Λ^L symmetric.
+- z^c, from `sc_adjoint`'s A and ε at the same state (max |z^c| and the
+  smallest inactive gap printed with each):
+  - `Nevpt2ZcStationarity`: E_corr + ⟨z^c, f⟩ along C exp(t κ), κ random on
+    the core–core and on the virtual–virtual block, z^c fixed and every
+    input rebuilt from C(t), ε included, not re-canonicalized: the ladder's
+    extrapolant within 1e-7 of the slope Σ κ A it cancels, and at the point
+    Σ κ (A + A^{z^c}) the same.
+  - `Nevpt2ZcRotation`, `Nevpt2Zc.CiSourceMatchesLadder`,
+    `Nevpt2ZcIntegrals`: each of Φ's adjoints against a ladder of Φ at fixed
+    z^c along the sc_adjoint ladders' directions (every block's κ, the same
+    u, the same ḣ and Ḃ), at the same rule and 1e-7. **Along h and B the
+    path is bent**, (t + t³/t0²) along the direction: Φ is linear in h and
+    quadratic in B, so along a straight line its central difference is exact
+    and the ladder's changes are round-off, with no t² regime for the ratio
+    rule to find. The bend keeps the tangent, so the prediction, and makes
+    D(t) = D(0) (1 + t²/t0²) exactly.
+  - `Nevpt2Zc.DegeneratePairRule`: the first virtual and a partner with
+    |A| > 1e-6 forced 1e-7 Eh apart: refused `Numerical`, the message naming
+    both; with A_pq set to 1e-12, z_pq = 0 and every pair without the moved
+    orbital the unforced division to the bit.
+  - `Nevpt2Zc.Shapes`: z^c symmetric, zero off its two blocks and on the
+    diagonal; h̄^{z^c} = z^c, A^{z^c} = X − Xᵀ, Λ^L symmetric; y^c symmetric
+    under the swap of its two strings, as the singlet c is.
+  - Measured on an RTX 3080, one run: max |z^c| 2.4e-3 and the smallest
+    inactive gap 1.43e-3 (the two lowest virtuals, of different C₂ᵥ
+    symmetry; `test/gtest/data/README.md`, "Not symmetric water");
+    stationarity core–core 8.4e-9, virtual–virtual 2.0e-9 of the slope, and
+    Σ κ (A + A^{z^c}) at round-off; Φ's ladders ci 2.3e-11, the six blocks
+    4.6e-11 to 3.8e-10, h 2.3e-11, B 4.5e-11 relative. Each z^c case is well
+    under a second.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint` |
+| `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies and the count check both units share |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, and the source term's half-transform |
+| `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |
