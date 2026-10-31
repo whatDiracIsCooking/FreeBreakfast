@@ -34,6 +34,7 @@ export import free_breakfast.pipeline.gradient;
 export import free_breakfast.pipeline.casscf_gradient;
 export import free_breakfast.pipeline.nevpt2_gradient;
 export import free_breakfast.pipeline.optimize;
+export import free_breakfast.pipeline.hessian;
 
 export namespace free_breakfast {
 
@@ -42,7 +43,7 @@ using Calculation =
     Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep, EriStep,
              OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
              LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep,
-             CasscfGradientStep, Nevpt2GradientStep, OptimizeStep>;
+             CasscfGradientStep, Nevpt2GradientStep, OptimizeStep, HessianStep>;
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.
