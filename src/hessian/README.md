@@ -11,7 +11,9 @@ eq. hess-sym, Algorithm 1 lines 2–9); and the explicit part's
 differentiated twice at fixed orbitals, the fit's cross terms included (eqs.
 dfj, dfk). Beside them, the **dipole derivative** the same CPHF solution
 gives, `rhf_dipole_derivative`, and the **IR intensities** it projects to,
-`infrared_intensities`.
+`infrared_intensities`. For DF-CASSCF, the first piece so far: the
+**CASSCF two-electron explicit part**, `df_casscf_two_electron`
+(`casscf_hessian.tex` eq. df2, below).
 
 ```cpp
 import free_breakfast.hessian;
@@ -319,13 +321,101 @@ Measured on the RTX 3080 (CUDA): |H − PySCF| 6.2e-11 (Coulomb) and 1.8e-11
 PySCF's integrals (Cholesky solves) reach ej and −ek to 5e-11 and 2e-10, so
 the JKFIT sets sit well inside the 1e-9 bar.
 
+## The CASSCF two-electron explicit part
+
+`df_casscf_two_electron` is `casscf_hessian.tex` eq. (df2) at fixed orbitals
+and RDMs, for the energy E₂ = ½ Σ Γ_ab (T M⁻¹ Tᵀ)_ab over AO pairs a, b:
+
+    E₂^xy = Σ Γ̃ T^xy − ½ Σ Ŵ M^xy + Σ_ab Γ_ab [R^x M⁻¹ R^yᵀ]_ab,
+    Γ̃ = Γ c, Ŵ = cᵀ Γ c, R^x = T^x − c M^x
+
+```cpp
+auto e2 = hessian::df_casscf_two_electron(res, basis, classes, aux, b, l, c, ncore, ncas,
+                                          gamma, gamma2);
+// e2->three_center, e2->metric, e2->cross_coulomb, e2->cross_exchange,
+// e2->cross_active and their sum e2->total: each 3 n_atom x 3 n_atom
+```
+
+γ and Γ are the active RDMs on the host, row-major as `ci::Rdm::rdm12`
+writes them: one root's own for its explicit part (the fixture's per-root
+`df2_*`), or whatever densities the caller wants the same expression at.
+
+1. **The second-derivative pieces** are `mcscf::df_gradient`'s Γ_mnP and W
+   at these RDMs (that README's "Two-electron": J's D ⊗ d − D_a ⊗ d_a and
+   −½ d dᵀ + ½ d_a d_aᵀ, K's −2 Σ_i C_mi Σ_q V_P,iq C_nq and V c_coreᵀ,
+   the active Σ_tu C_mt C_nu Z_P,tu and −½ Z c_actᵀ), handed to #593's
+   `three_center_hessian` and `metric_hessian`. Everything is read off one
+   set of fitted occupied pairs c_P,ab = (L⁻ᵀ B_ab)_P (`b_mo` and a trsm):
+   d = c · G_J, d_a = c · G_a by gemvs (G_J = diag(2_core, γ),
+   G_a = diag(0_core, γ) over the occupied orbitals), and the core rows and
+   active pairs packed out of it by geams.
+2. **The cross term** is split as the design's §6, so no pair-space Γ is
+   formed. With r^x = L⁻¹ R^x over the occupied pairs, one **atom block**
+   (the three coordinates of one atom, 3 naux n_occ² doubles) built exactly
+   as `df_rhf_two_electron` builds it (`occupied_atom_block`, the
+   `:atom_block` partition both share):
+   - **J**, Γ = D ⊗ D − D_a ⊗ D_a: t^x = r^x · G_J and t_a^x = r^x · G_a
+     (one gemm per coordinate against the two weights), and the 3 × 3 block
+     t_Aᵀ t_B − t_a,Aᵀ t_a,B from one 6 × 6 gemm;
+   - **K**, −Σ_i Σ_pq G_pq (ip|iq), G = G_K = diag(1_core, γ): the core rows
+     of r^y times G (3 gemms, s^y, 3 naux n_core n_occ, the issue's
+     half-transform), then −2 r_A,coreᵀ s_B, one (3 n_occ)² gemm whose
+     n_occ × n_occ blocks' traces are the 3 × 3;
+   - **active**, Σ Γ_tuvw r^x_tuᵀ r^y_vw: the active pairs packed out of the
+     block (one geam per coordinate), Z = act_B Γ (a strided-batched gemm),
+     and act_Aᵀ Z, one gemm.
+
+   The blocks are contracted one pair (A, B ≤ A) at a time, as in
+   `df_rhf_two_electron`: n_atom (n_atom + 1) / 2 blocks built.
+
+With n_core = n_occ (no active space) and γ = 0 the J and K pieces are
+`df_rhf_two_electron`'s Coulomb and exchange cross terms.
+
+### Memory
+
+Held for the call: the fitted occupied pairs (naux n_occ²), the three
+weights and Γ (n_cas⁴). Then, in turn, the explicit part's Γ_mnP (naux nao²)
+with W, Y (naux max(n_core, n_cas) nao), V and the packed core rows
+(naux n_core n_occ each), the active pairs and Z, d, d_a, D and D_a; and the
+cross term's M1 (3 naux²), one aux atom's X (3 nao² nblk), two atom blocks
+(3 naux n_occ² each), K's s (3 naux n_core n_occ), three active blocks
+(3 naux n_cas² each), the Coulomb vectors and the products. The call refuses
+(Unsupported, naming the bytes and the atom block's size) when the held part
+plus the larger phase would not fit the device's free memory; naux nao²,
+3 naux n_occ², naux max(n_core, n_cas) nao and n_cas⁴ must fit `int32_t`.
+
+### Tests
+
+`test/gtest/df_casscf_hessian_two_electron_gpu.cpp` (suite
+`HessianDfCasscfTwoElectron`), against `test/gtest/data/casscf_hessian/`'s
+per-root `df2_three_center`, `df2_metric`, `df2_cross_j`, `df2_cross_k`,
+`df2_cross_active` and `two_electron` (`tools/emit/casscf_hessian_reference.py`,
+over the same cc-pVDZ-JKFIT fit), with the fixture's orbitals and the RDMs of
+its CI vectors (`ci::Rdm`, never a re-converged CASSCF): the stretched water
+CAS(4,4) in 6-31G and in cc-pVDZ (d shells), and root 1 of the two-root
+average at (0.7, 0.3). Each piece and the total to 1e-9 absolute, each
+piece's asymmetry to 1e-12, the total's translational sum rule to 1e-9; and
+the refusals.
+
+Measured on the RTX 3080 (CUDA): |H − reference| ≤ 3.2e-11 per piece
+(the second-derivative contractions; the cross terms ≤ 1.4e-12) and
+≤ 1.4e-12 for the total, of max |H| 1.3 (6-31G), 1.7 (cc-pVDZ) and 0.79 (the
+average's root 1); asymmetry ≤ 4.4e-16, sum rule ≤ 1.6e-12; 0.21 s, 0.82 s
+and 0.21 s a call. Peak device memory, the call's own buffers (the cross
+term's phase, the larger) beside the workspace its integral calls grew to:
+1.19 MB + 0.72 MB (6-31G) and 2.01 MB + 2.27 MB (cc-pVDZ). The same
+refactor leaves `HessianDfRhfTwoElectron`'s figures above unchanged to the
+digits quoted.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
+| `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
+| `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |

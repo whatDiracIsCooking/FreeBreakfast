@@ -12,7 +12,10 @@ free_breakfast_add_cxx_module_library(
   free_breakfast.hessian
   PRIMARY_INTERFACE
   hessian.cppm
+  PARTITIONS
+  atom_block.cppm
   IMPLEMENTATION
+  df_casscf_two_electron.cpp
   df_rhf.cpp
   df_rhf_response.cpp
   df_rhf_two_electron.cpp
