@@ -23,6 +23,7 @@ file names the tool that wrote it and the source it came from.
 | `fci/` | `fci.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) for H₂O in STO-3G and 6-31G and N₂ in STO-3G, over this tree's own `data/basis` files, and PySCF `fci.FCI` over every orbital: the lowest three singlets' energies, ⟨S²⟩ and natural occupations | `tools/emit/fci_step_reference.py`, which runs PySCF |
 | `casscf/` | `casscf.json`: PySCF's closed-shell RHF (`conv_tol` 1e-14, `conv_tol_grad` 1e-11) over this tree's own `data/basis` files, and PySCF `mcscf.CASSCF` (`conv_tol` 1e-12, `conv_tol_grad` 1e-7, gated against `mc2step` from the same start, then polished to \|g\| < 1e-10) for H₂O CAS(4,4) from the RHF orbitals [2, 3, 5, 6], N₂ CAS(6,6) frontier, H₂CO CAS(4,3) frontier at two singlets weighted [0.5, 0.5] and [0.7, 0.3], and H₂O AVAS O 2p + H 1s, all cc-pVDZ (and in `casscf_df.json` alone, NH₂'s doublet CAS(5,5) and CH₂'s triplet CAS(6,6) from PySCF's DF-ROHF orbitals): at each case's start, the CASCI energies and the sign-invariant parts of `mc1step.gen_g_hop`'s gradient and orbital Hessian (doubled); converged, each root's energy, the weighted energy, each space's orbital energies and the natural occupations. **Every test starts at the case's recorded start (`active` or `avas`), not at a frontier selection** | `tools/emit/casscf_reference.py`, which runs PySCF |
 | `nevpt2/` | `nevpt2_df.json`: PySCF's strongly contracted NEVPT2 (`mrpt.NEVPT`, density-fitted throughout) per root, on the polished DF (SA-)CASSCF orbitals of each `casscf/casscf_df.json` case but N₂'s, from the same starts and over the same `data/aux_basis/cc-pVDZ-JKFIT.json`: each root's eight classes' norms and energies, their sum and the total, plus the CASSCF energies it sits on and the active-rotation invariance check; and `<case>/<array>.npy`: nevpt2-gpu-demo's five density-fitted N₂ goldens (the CI vector, dm1/dm2, the integral blocks, the fitted B blocks, the external four-index blocks and the class norms and energies), with PySCF's dm3, f3ca and f3ac added for the CAS(4,4) and CAS(8,8) cases, described in `nevpt2/README.md` | `tools/emit/nevpt2_reference.py`, which runs PySCF; `tools/emit/nevpt2_golden.py`, from the demo's goldens and PySCF |
+| `nevpt2_gradient/` | `nevpt2_gradient.json`: the numerical nuclear gradients of the single-state DF-CASSCF, SC-NEVPT2 (PySCF's `mrpt.NEVPT`, density-fitted throughout) and PC-NEVPT2 (block2's `WickICNEVPT2` over PySCF's fitted integrals) total energies of skew H₂O CAS(4,4) and H₂CO CAS(6,6) in cc-pVDZ / cc-pVDZ-JKFIT, each energy re-converged at every displaced geometry over this tree's `data/basis` and `data/aux_basis` files: central differences at three halving steps, one Richardson step and its error bar, every displaced energy, and the reference geometry, start, energies and PySCF's analytic DF-CASSCF gradient; every displacement through a continuity guard. The NEVPT2 gradient's oracle | `tools/emit/nevpt2_gradient_reference.py`, which runs PySCF and block2 |
 | `gradient/` | `gradient.json`: libcint's derivative integrals contracted with fixed recipe matrices into per-atom gradients (overlap, kinetic, nuclear attraction with its operator term, and `int2e_ip1` into dE_J and dE_K, for H₂O in cc-pVDZ and cc-pVTZ; `int2c2e_ip1` and `int3c2e_ip1`/`ip2` for H₂O in cc-pVDZ / cc-pVDZ-JKFIT, cc-pVTZ / cc-pVTZ-JKFIT and cc-pVTZ / cc-pVTZ-acCD-6-6, aux to i), PySCF's DF-RHF gradient (`df.grad.rhf`) term by term for H₂O, NH₄⁺ and a distorted H₂O in cc-pVDZ / cc-pVDZ-JKFIT, H₂O in cc-pVTZ / cc-pVTZ-JKFIT and in cc-pVDZ / cc-pVDZ-acCD, its integral-direct RHF gradient (`grad.rhf`) term by term for H₂O and the distorted H₂O in cc-pVDZ and H₂O in cc-pVTZ, and DF-RHF / cc-pVDZ / cc-pVDZ-JKFIT minima of H₂O and anti ethanol, all over this tree's own `data/basis` and `data/aux_basis` files; every analytic number checked against a finite difference | `tools/emit/gradient_reference.py`, which runs PySCF |
 
 ## `one_electron/*.json`, `coulomb/*.json` and `exchange/*.json`
@@ -645,4 +646,114 @@ Regenerate with (one thread; the output is byte-identical run to run):
 
 ```sh
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/nevpt2_reference.py
+```
+
+## `nevpt2_gradient/nevpt2_gradient.json`
+
+No reference program has a NEVPT2 nuclear gradient this tree can import, so
+this is the oracle: the numerical gradient of re-converged energies, at the
+same settings and over the same fitting set as the tree
+(`.temp/nevpt2/nuclear_gradient.tex`, "Checks", "The oracle"). The gate a
+consumer holds an analytic gradient to is ~1e-6 hartree/bohr, not 1e-7,
+because the oracle is itself a difference.
+
+| Key | Meaning |
+|---|---|
+| `provenance` | PySCF, block2 and numpy versions, `threads` (1), the command that wrote it. No date or host, so a rerun is byte-identical |
+| `guard` | The continuity guard's bounds (below): `prediction_bound` (hartree/bohr²), `subspace_tol`, `ci_tol`, `degenerate` (hartree, the closest two canonical core or virtual energies may be), `pc_tau` and `pc_min_gap` (PC's cut and gap, as in `nevpt2/nevpt2_df.json`) |
+| `tolerances` | The checks the tool makes before writing: `richardson` (Richardson against the finest central difference), `ladder` and `ladder_floor`, `translation`, `analytic` (all hartree/bohr) |
+| `cases` | One per molecule (below) |
+
+Per case:
+
+| Key | Meaning |
+|---|---|
+| `name`, `basis`, `aux_basis`, `charge`, `atoms`, `electrons`, `nao` | As in `casscf_gradient/casscf_gradient.json`: the reference geometry, `coord` in bohr |
+| `ncore`, `ncas`, `nelecas`, `active`, `weights` | The CASSCF: `active` is its start, 0-based RHF orbital indices as the `[casscf]` table takes them; one state, weight 1 |
+| `energies` | `casscf`, `sc`, `pc`: the three total energies at the reference geometry (hartree) |
+| `e_corr` | `sc`, `pc`: the two corrections, `energies[x] − energies.casscf` |
+| `classes` | Eight, PySCF's order: `name`, SC's `norm` and `energy`, block2's `pc_energy` |
+| `inactive_gaps` | `core`, `virtual`: the smallest gap between two canonical orbital energies of the root's own Fock, the quantity SC's z^c divides by |
+| `pc_kept_modes` | The modes PC's per-tuple solves keep (relative singular value above `pc_tau`), summed over every solve |
+| `casscf_gradient` | PySCF's analytic DF-CASSCF gradient (`df.grad.casscf`) at the reference, n_atom × 3 |
+| `steps` | The three central-difference steps h (bohr), halving |
+| `gradients` | Per quantity (`casscf`, `sc`, `pc`): `central`, one n_atom × 3 gradient per step, D(h) = (E(+h) − E(−h)) / 2h; `richardson`, (4 D(h/2) − D(h)) / 3 over the two finest, **the gradient to test against**; `error_bar`, its distance from the same Richardson step over the two coarser (nevpt2-gpu-demo's error bar) |
+| `displaced` | One per component, atom-major: `atom`, `axis`, and per quantity one `[E(−h), E(+h)]` pair per step, so every difference above can be redone |
+| `guard` | The worst guard values over every displacement: `prediction`, `subspace`, `ci` (each against its bound) and `inactive_gap` (the smallest seen) |
+| `checks` | Per quantity: `richardson_minus_finest`, `ladder_ratios` (min and max, or null where no component's change cleared `ladder_floor`), `ladder_components`, `translation`; for `casscf` also `analytic` (its Richardson gradient against `casscf_gradient`); and `reference_point`, `nevpt2_reference.py`'s checks at the reference: `sc_invariance` (cas_natorb), `block2_sc` (block2's SC against PySCF's), `pc_invariance` |
+
+**The energies.** At every geometry: the DF-CASSCF by `casscf_reference.py`'s
+`mc1step`, started from the reference's orbitals carried over (Löwdin in the
+displaced overlap), polished to \|g\| < 1e-10 against one orbital Hessian
+built at `mc1step`'s orbitals (the same fixed point as `nevpt2_reference.py`'s
+polish, which rebuilds the Hessian each step, at a fraction of the cost); then
+SC and PC exactly as `nevpt2_reference.py` computes them for one root, on the
+same state the C++ step reads (core and virtuals canonicalized over the root's
+Fock, active orbitals unrotated), every point refusing a non-DF NEVPT branch,
+a canonical core or virtual pair within 1e-6 and a PC solve with a gap under
+1e3 at 1e-13. At the reference geometry the full set of that tool's checks
+runs too.
+
+**The continuity guard.** A displaced optimisation that lands on another
+stationary point gives a number from another reference, so each displaced
+CASSCF must, before it is differenced, have converged and polished; sit within
+`prediction_bound` · h² of E₀ + g · ΔR, g the analytic gradient above (the
+worst seen is 0.52, formaldehyde's O along C=O, against 2.0); have an active
+space whose smallest singular value of overlap with the reference's, through
+the AO cross overlap of the two geometries, is within `subspace_tol` (1e-3)
+of 1 (worst 1.2e-5); and have a CI vector whose overlap with the reference's,
+through that orbital overlap, is within `ci_tol` (1e-3) of 1 in magnitude
+(worst 1.6e-5). Each displaced PC must keep exactly `pc_kept_modes`, so no
+displacement crosses a rank change of PC's metric. A miss refuses emission;
+none missed.
+
+**The checks, measured.** Per quantity and case: Richardson against the
+finest central difference within 2e-7 (1.4e-7 worst, formaldehyde's; it is
+the finest difference's truncation, not the Richardson estimate's, whose
+error is O(h⁴): the error bars are at most 3.5e-9); wherever a component's
+change between neighbouring rungs is above 1e-7, the ladder ratio in
+(3.2, 4.8) (3.97 to 4.02); the translational sum of each Richardson gradient
+below 1e-8 (8.3e-9 worst); and the CASSCF's Richardson gradient within 1e-8
+of PySCF's analytic one (2.0e-9, 4.4e-10), which checks the differencing
+itself.
+
+**The cases, and the steps.** Single-state closed-shell singlets with no
+symmetry a displacement could break:
+
+| Case | CAS | steps (bohr) | smallest inactive gap | why |
+|---|---|---|---|---|
+| `h2o_skew_ccpvdz` | (4,4) over RHF orbitals 2, 3, 5, 6 | 5e-4, 2.5e-4, 1.25e-4 | virtual 3.0e-3 | `casscf_gradient.json`'s skew water: no component vanishes |
+| `h2co_ccpvdz` | (6,6) over RHF orbitals 5–10 | 2e-3, 1e-3, 5e-4 | virtual 0.016, core 0.24 | the larger one, far from any inactive degeneracy |
+
+A step balances the finest difference's truncation (∝ h²) against the
+energies' noise (about 1e-11 hartree in SC and PC, ∝ 1/h). Skew water's SC has
+a third derivative near 25 hartree/bohr³ (its 3.0e-3 virtual gap), so its
+finest step must be small; formaldehyde's noise reaches 4e-8 in the
+translational sum at 1.25e-4, so its steps are larger. Formaldehyde's
+single-state frontier CAS(4,3) (`casscf_df.json`'s active space) polishes to a
+saddle (least Hessian eigenvalue −2.6e-3), as do CAS(4,4) over 6–9 and over
+6–8 + 10 and CAS(2,2), hence the CAS(6,6).
+
+**Not symmetric water.** `casscf_df.json`'s `h2o_ccpvdz` has two lowest
+canonical virtuals 1.4e-3 hartree apart and of different C₂ᵥ symmetry. A
+symmetry-breaking displacement mixes them, and SC, which is not invariant to
+that rotation, curves ever more sharply as the step shrinks: along an H's
+in-plane y, d²E/dy² is 1.09, 1.75, 2.19 and 2.34 at h = 2e-3, 1e-3, 5e-4 and
+2.5e-4, where PC's stays at 0.3866. No ladder converges, and the tool's ladder
+check refused it. That is the SC hazard `nuclear_gradient.tex` names
+(near-degenerate inactive orbitals): an analytic gradient is right there, but
+this oracle cannot resolve it. N₂ is not a case for the reason
+`nevpt2/nevpt2_df.json` gives.
+
+**Against the tree.** At each reference geometry the tree's own `[casscf]`
+(`conv_tol_grad` 1e-9, the case's `active`) + density-fitted `[eri]` over
+cc-pVDZ-JKFIT + `[nevpt2]`, run on an RX 9060 XT (HIP), prints SC within
+4.2e-11 of this file's `e_corr.sc` and total (PC within 5.1e-11), to the 10
+decimals `free-breakfast` prints.
+
+Regenerate with (one thread; the output is byte-identical run to run, about
+seven minutes, six of them formaldehyde's 72 displaced points):
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/nevpt2_gradient_reference.py
 ```
