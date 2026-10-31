@@ -8,7 +8,8 @@
 ///     -4 B^T U - 2 (Sigma + Sigma^T) + 2 Omega + Theta,
 ///
 /// over the CPHF right-hand sides B^x and solutions U^x. Each part is its own
-/// entry point too. The README has each term's derivation and the memory it
+/// entry point too. Beside it, the dipole derivative the same U^x gives, and
+/// the IR intensities. The README has each term's derivation and the memory it
 /// holds.
 
 export module free_breakfast.hessian;
@@ -222,5 +223,61 @@ struct RhfTerms {
                                       const double *l, const Buffers::device<double> &c,
                                       std::span<const double> mo_energies, int32_t nocc,
                                       double tolerance = 1e-10, int32_t max_iterations = 100);
+
+/// @brief The closed-shell RHF dipole derivative, dmu_c/dR_{A,k}, from the
+/// orbitals' first-order response: for every coordinate x = 3 A + k,
+///
+///     dmu/dx = -tr(D mu^x) - 4 Sum_ai U^x_ai mu_ai + 2 Sum_ij S^x_ij mu_ij
+///              + Z_A e_k,
+///
+/// mu_c = <m| r_c |n> about the origin (@c dipole), electrons of charge -1,
+/// D = 2 C_o C_o^T, mu^x the integrals' nuclear derivative at fixed D
+/// (@c dipole_gradient), S^x the overlap's (@c overlap_derivative) and mu_pq
+/// = C_p^T mu C_q (rhf_hessian.tex section 10, step 6). U^x is the CPHF
+/// solution a Hessian solves anyway, @c df_rhf's response.cphf.solution, so
+/// the derivative costs no response solve of its own. For a neutral molecule
+/// it does not depend on the origin, and its sum over the atoms vanishes to
+/// the CPHF's tolerance.
+///
+/// @p molecule is the molecule @p basis was placed on, and @p classes are
+/// @c primitive_pair_classes of @p basis. @p c is the nao x nmo orbitals,
+/// column-major (nmo = c.num_elements() / nao), the first @p nocc occupied, and
+/// @p u is U^x as @c response::cphf returns it, (n_vir n_occ) x 3 n_atom with
+/// U^x_ai at a + n_vir i of column x. The dipole integrals stop at d
+/// (@c kDipoleMaxL), so a basis with an f shell is refused.
+///
+/// Holds S^x (3 n_atom nao^2 doubles) and the three dipole matrices with their
+/// MO blocks; past the device's free memory that is Unsupported, naming the
+/// bytes, before anything is allocated. Queued on res.stream() and
+/// synchronized: the call returns with everything done. The device
+/// res.dev_idx() names is made current for the call and the previous one
+/// restored.
+///
+/// @return dmu_c/dx (e, the dipole in e bohr per bohr), 3 n_atom x 3 row-major:
+///         element (x, c) at 3 x + c; InvalidConfig if @p molecule is not of
+///         basis.natoms() atoms, if @p c is not a whole number of nao columns,
+///         if @p nocc is not in [1, nmo), if @p u is not (nmo - nocc) nocc
+///         3 n_atom long, or for any input the integral calls refuse (an f
+///         shell among them); Unsupported for memory past the device's free
+///         bytes or 3 n_atom nao^2 past int32_t; or the GpuRuntime error of the
+///         first copy, BLAS call or launch that failed.
+[[nodiscard]] Result<std::vector<double>>
+rhf_dipole_derivative(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                      std::span<const PrimitivePairClass> classes, const Buffers::device<double> &c,
+                      int32_t nocc, const Buffers::device<double> &u);
+
+/// @brief The harmonic IR intensities, I_q = K |Sum_x L_qx dmu/dx|^2 in km/mol,
+/// K = N_A / (12 eps_0 c^2) e^2 / u = 974.88 km/mol per e^2 / amu.
+///
+/// @p modes are the Cartesian normal modes as @c geometry::harmonic_analysis
+/// returns them, n_modes x 3 n_atom row-major, each its unit mass-weighted
+/// eigenvector over sqrt(m_A / amu); @p dipole_derivative is
+/// @ref rhf_dipole_derivative's 3 n_atom x 3. A mode's sign does not matter.
+///
+/// @return One intensity per mode, in the modes' order; InvalidConfig if
+///         @p dipole_derivative is not 3 n_atom x 3 or @p modes not a whole
+///         number of 3 n_atom rows.
+[[nodiscard]] Result<std::vector<double>>
+infrared_intensities(std::span<const double> modes, std::span<const double> dipole_derivative);
 
 } // namespace free_breakfast::hessian

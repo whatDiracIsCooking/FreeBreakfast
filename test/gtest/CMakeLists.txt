@@ -134,6 +134,7 @@ add_executable(
   overlap_gpu.cpp
   overlap_mixed_gpu.cpp
   dipole_gpu.cpp
+  dipole_gradient_gpu.cpp
   one_electron_gradient_gpu.cpp
   one_electron_derivative_gpu.cpp
   one_electron_hessian_gpu.cpp
@@ -161,6 +162,7 @@ add_executable(
   df_rhf_hessian_gpu.cpp
   df_rhf_hessian_response_gpu.cpp
   df_rhf_hessian_two_electron_gpu.cpp
+  infrared_gpu.cpp
   pipeline_gradient_gpu.cpp
   pipeline_casscf_gradient_gpu.cpp
   pipeline_nevpt2_gradient_gpu.cpp

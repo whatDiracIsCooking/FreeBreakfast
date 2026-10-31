@@ -9,7 +9,9 @@ D ⊗ D, and V_nn's), in the symmetric form of the design (`rhf_hessian.tex`
 eq. hess-sym, Algorithm 1 lines 2–9); and the explicit part's
 **two-electron terms**, the fitted Coulomb and exchange energies
 differentiated twice at fixed orbitals, the fit's cross terms included (eqs.
-dfj, dfk).
+dfj, dfk). Beside them, the **dipole derivative** the same CPHF solution
+gives, `rhf_dipole_derivative`, and the **IR intensities** it projects to,
+`infrared_intensities`.
 
 ```cpp
 import free_breakfast.hessian;
@@ -30,6 +32,13 @@ auto r = hessian::df_rhf_response(res, molecule, basis, classes, aux, b, l, c, m
 ```cpp
 auto e2 = hessian::df_rhf_two_electron(res, basis, classes, aux, b, l, c, nocc);
 // e2->coulomb, e2->exchange: each 3 n_atom x 3 n_atom, symmetric
+```
+
+```cpp
+auto d = hessian::rhf_dipole_derivative(res, molecule, basis, classes, c, nocc,
+                                        h->response.cphf.solution);
+// *d: dmu_c/dx, 3 n_atom x 3 row-major, (x, c) at 3 x + c
+auto ir = hessian::infrared_intensities(vibrations.modes, *d);   // km/mol per mode
 ```
 
 Link `free_breakfast::hessian`. The inputs are explicit — the molecule, the
@@ -92,6 +101,73 @@ from the analytic Hessian. At the minimum the largest rigid-body eigenvalue
 is 1.1e-11 against the bend's 0.12, and the frequencies (1776.03, 4113.30,
 4211.68 cm⁻¹) are 4.3e-6 cm⁻¹ from PySCF's.
 
+## The dipole derivative and IR intensities
+
+`rhf_dipole_derivative` is design §10 step 6: with μ_c = ⟨m| r_c |n⟩ about
+the origin (`dipole`), electrons of charge −1 and D^x = D_U^x − D_S^x
+(rhf_hessian.tex eq. dy),
+
+    dμ/dx = −tr(D μ^x) − tr(D^x μ) + Z_A e_k
+          = −tr(D μ^x) − 4 Σ_ai U^x_ai μ_ai + 2 Σ_ij S^x_ij μ_ij + Z_A e_k
+
+with U^x the CPHF solution `df_rhf` already holds (`response.cphf.solution`),
+so the derivative costs no solve of its own; the density fit enters only
+through U^x.
+
+1. **The explicit term**, −tr(D μ^x): `dipole_gradient`
+   (`integrals/one_electron/dipole_gradient`, FelizJueves's `gmu_` kernels)
+   at M = D = 2 C_o C_oᵀ, negated. The origin is fixed, so only the basis
+   functions move.
+2. **μ's MO blocks**: the three spherical dipole matrices (`dipole`, carried
+   by `MatrixAOPair`), each to C^T μ_c C_o by two gemms, the three nmo × nocc
+   slabs side by side.
+3. **The U term**: the slabs' vo blocks are one nvir × 3 nocc matrix of
+   leading dimension nmo, packed by one geam into three columns of U's
+   (n_vir n_occ) rows, then −4 Uᵀ μ_vo, one gemm, 3 n_atom × 3.
+4. **The S term**: P_c = C_o μ_c,oo C_oᵀ (two gemms each), so
+   Σ_ij S^x_ij μ_c,ij = ⟨S^x, P_c⟩, and S^x (`overlap_derivative`, the
+   n_atom × 3 nao² stack read as one nao² × 3 n_atom matrix) gives all of
+   them by one gemm, 2 S^xᵀ P, added.
+5. The 3 n_atom × 3 result comes back to the host, where the explicit term
+   and the nuclear charges are added.
+
+For a neutral molecule dμ/dx does not depend on the origin, and its sum over
+the atoms vanishes to the CPHF's tolerance (a translation does not change the
+dipole); for a charged one it is the origin-0 derivative. The dipole
+integrals stop at d (`kDipoleMaxL`), so a basis with an f shell is refused
+(`dipole`'s InvalidConfig). Memory: S^x (3 n_atom nao²) and
+`overlap_derivative`'s own scratch, beside three dipole pairs and the MO
+blocks; past the device's free memory that is Unsupported.
+
+`infrared_intensities` projects it onto the normal modes,
+I_q = K |Σ_x L_qx dμ/dx|², L as `geometry::harmonic_analysis` returns them
+(each unit mass-weighted eigenvector over √(m_A / amu), PySCF's `norm_mode`),
+so dμ/dQ is in e / amu^½ and K = N_A / (12 ε₀ c²) e² / u = 974.88 km/mol per
+e² / amu, from `core/constants`'s N_A, ε₀ and e with the speed of light and
+the dalton beside them in `infrared.cpp`.
+
+### Tests
+
+`test/gtest/infrared_gpu.cpp`, against `test/gtest/data/dipole_derivative/`
+(`tools/emit/dipole_derivative_reference.py`: PySCF's dipole derivative from
+its own CPHF, solved column by column to 1e-12, checked there against central
+differences of its DF-RHF dipole to 1e-5 and measured 1e-7 to 6e-7):
+
+- `HessianDipoleDerivativeGolden`: the skew water, the skew formaldehyde
+  and the water at PySCF's DF-RHF minimum in cc-pVDZ / cc-pVDZ-JKFIT, the
+  call fed PySCF's C and U (`data/rhf_hessian/`), to 1e-8 absolute, and the
+  sum over the atoms to 1e-8;
+- `HessianDipoleDerivative.Refusals`, including an f shell;
+- `HessianInfraredIntensities`: a hand-made mode's intensity, a mode's sign
+  not mattering, and the shape refusals;
+- `PipelineInfrared`: the `[hessian]` step end to end (`pipeline/hessian`).
+
+Measured on the RTX 3080 (CUDA): |dμ/dx − PySCF| 6.0e-12 (water), 3.4e-11
+(formaldehyde) and 8.0e-12 (the minimum) of max |dμ/dx| 0.71, 1.08 and 0.72,
+sums over the atoms ≤ 4.5e-14, under 10 ms a call. At the minimum the step's
+own SCF and CPHF give intensities 80.815, 21.171 and 60.556 km/mol for the
+bend and the two stretches, 5.9e-9 km/mol from PySCF's.
+
 ## The terms
 
 Per nuclear coordinate x = 3 A + k, with S^x and the skeleton Fock derivative
@@ -126,8 +202,8 @@ symmetric to rounding. (The design's −4 Bᵀ U is the unsymmetrized term.)
    n_vir × (n_occ 3 n_atom) matrix of leading dimension nmo, so B is one geam
    (−F + G), one dgmm (S diag(ε_i)) and one axpy over every coordinate.
 4. **The CPHF**, `response::cphf`, every column in lockstep. Its result is
-   returned as is: U^x, the residuals and the sweep count. U^x is what the
-   dipole derivative for IR intensities reuses (design §10, step 6).
+   returned as is: U^x, the residuals and the sweep count. U^x is what
+   `rhf_dipole_derivative` reuses for the IR intensities (design §10, step 6).
 5. **The terms**, over the oo blocks packed to n_occ² × 3 n_atom: P = Bᵀ U +
    S_ooᵀ F_oo (two gemms), H = −2 (P + Pᵀ) (one geam), then
    H += 2 S_ooᵀ (G_oo + S_oo ∘ E), E_ij = ε_i + ε_j (a dgmm, an axpy and a
@@ -247,8 +323,9 @@ the JKFIT sets sit well inside the 1e-9 bar.
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::RhfTerms`, `hessian::df_rhf` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
+| `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |

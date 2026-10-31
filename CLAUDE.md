@@ -16,11 +16,12 @@ populations and partial charges), `ci` (determinant CI: strings, sigma, the
 solver and RDMs), `response` (the CASSCF energy, orbital gradient and
 orbital Hessian at fixed orbitals and RDMs, and RHF's CPHF), `mcscf` (the
 state-averaged CASSCF loop over them), `nevpt2`, `cis`, `geometry`,
-`gradient`, `hessian` (the full DF-RHF analytic nuclear Hessian) and
+`gradient`, `hessian` (the full DF-RHF analytic nuclear Hessian, and the
+dipole derivative and IR intensities from its CPHF) and
 `pipeline` (the calculation pipeline: the step
 contract, the setup steps, the ERI step (integral-direct or density-fitted,
 built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, the DF-RHF gradient step, the geometry-optimization step, the Hessian step (analytic DF-RHF or
-semi-numerical, with harmonic frequencies), and the
+semi-numerical, with harmonic frequencies, and IR intensities when analytic), and the
 planner that runs them from a TOML config). `src/README.md` has the one-line summary of each.
 The build system, containers, tooling and CI around them are real and exercised.
 
@@ -73,8 +74,11 @@ Plus `nlohmann_json`, which is FetchContent because it is header-only and small.
 And `deps/FelizJueves`, a submodule that is **not built**: it is the Python
 generator `tools/emit/one_electron_kernels.py`,
 `tools/emit/one_electron_gradient_kernels.py`,
+`tools/emit/one_electron_hessian_kernels.py`,
+`tools/emit/dipole_gradient_kernels.py`,
 `tools/emit/coulomb_kernels.py`, `tools/emit/exchange_kernels.py`,
-`tools/emit/df_kernels.py` and `tools/emit/df_gradient_kernels.py` run by
+`tools/emit/df_kernels.py`, `tools/emit/df_gradient_kernels.py` and
+`tools/emit/df_hessian_kernels.py` run by
 hand, their kernels committed under `src/integrals/`; re-run them all after
 bumping it. The build takes only its `include/`, as the
 INTERFACE target `felizjueves::headers` (`deps/CMakeLists.txt`): the

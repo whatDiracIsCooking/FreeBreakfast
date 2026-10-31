@@ -5,8 +5,8 @@
 # are in its signatures, so core::resources, core::wwr, molecule, basis, mmd,
 # core::error_handling and response::cphf are PUBLIC. The derivative calls,
 # the J and K builds, the second-derivative integrals, the MO-basis fit, the
-# AO matrices D and -W, the gemms and the FBF_TRY header are the
-# implementation units' own, so PRIVATE.
+# dipole integrals and their derivative, the AO matrices D and -W, the gemms
+# and the FBF_TRY header are the implementation units' own, so PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.hessian
@@ -16,6 +16,7 @@ free_breakfast_add_cxx_module_library(
   df_rhf.cpp
   df_rhf_response.cpp
   df_rhf_two_electron.cpp
+  infrared.cpp
   IMPORT_STD
   LINK_PUBLIC
   free_breakfast::core::types
@@ -33,6 +34,8 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::recipes::matrix_ao
   free_breakfast::integrals::one_electron::hessian
   free_breakfast::integrals::one_electron::gradient
+  free_breakfast::integrals::one_electron::dipole
+  free_breakfast::integrals::one_electron::dipole_gradient
   free_breakfast::integrals::eri::density_fitting::gradient
   free_breakfast::integrals::eri::density_fitting::jk
   free_breakfast::integrals::eri::density_fitting::hessian

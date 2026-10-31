@@ -49,6 +49,15 @@ struct HessianOutput {
   /// MoleculeOutput's atoms: the frequencies (cm⁻¹, ascending, an imaginary
   /// one negative) and the Cartesian normal modes.
   geometry::Vibrations vibrations;
+  /// @brief dmu_c/dx (e), 3 n_atom x 3 row-major, element (x, c) at 3 x + c:
+  /// @c hessian::rhf_dipole_derivative over the analytic Hessian's CPHF U^x,
+  /// the origin at 0. Empty under HessianMethod::Numerical, and for a basis
+  /// with a shell above d (the dipole integrals' @c kDipoleMaxL).
+  std::vector<double> dipole_derivative;
+  /// @brief The IR intensities (km/mol), one per vibrations.frequencies:
+  /// @c hessian::infrared_intensities of @ref dipole_derivative over the
+  /// normal modes. Empty when @ref dipole_derivative is.
+  std::vector<double> intensities;
 };
 
 /// @brief The RHF Hessian of the MoleculeOutput's geometry and its harmonic
@@ -78,7 +87,8 @@ struct HessianStep {
 
   /// @brief Where the Hessian is written as JSON, if not empty: the method,
   /// the Hessian as 3 n_atom rows of 3 n_atom, the asymmetry, the
-  /// translational sum, the frequencies and the normal modes. Arrives
+  /// translational sum, the frequencies and the normal modes, and when the
+  /// product has them the dipole derivative and the IR intensities. Arrives
   /// resolved (pipeline/config sets it to hessian.json in the run's output
   /// directory).
   std::filesystem::path json_path{};
@@ -89,14 +99,17 @@ struct HessianStep {
   /// HessianMethod::Numerical the 6N gradients at the geometry displaced by
   /// ±@ref displacement along each coordinate, each one Pipeline run of the
   /// chain ending in GradientStep, and their central differences. Then
-  /// symmetrized, checked, and its harmonic vibrations.
+  /// symmetrized, checked, and its harmonic vibrations; under the analytic
+  /// method, the dipole derivative from the same CPHF and the IR intensities,
+  /// unless a shell is above d (logged as a warning).
   ///
   /// @return The Hessian; with no device, ErrorKind::GpuRuntime; under the
   ///         analytic method, Unsupported, before anything runs, for an
   ///         integral-direct @ref eri, and after the SCF for an ROHF one;
   ///         otherwise the first error of a Pipeline (`[gradient]`'s
-  ///         Unsupported for an ROHF SCF among them), of @c hessian::df_rhf
-  ///         or of @c geometry::harmonic_analysis, or the error writing
+  ///         Unsupported for an ROHF SCF among them), of @c hessian::df_rhf,
+  ///         @c hessian::rhf_dipole_derivative or
+  ///         @c geometry::harmonic_analysis, or the error writing
   ///         @ref json_path.
   [[nodiscard]] Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
 };
