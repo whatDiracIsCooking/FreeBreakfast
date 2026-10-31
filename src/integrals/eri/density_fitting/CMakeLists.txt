@@ -2,8 +2,9 @@
 # generated kernels' device library), the three-center (mn|P) (three_center/,
 # the same), the fit B = L^-1 (mn|P) (fit/, host code over the solver and
 # BLAS), DF J and K over B (jk/), B in the MO basis (mo/, BLAS alone), and the
-# nuclear gradients of the metric and of (mn|P) (gradient/, a module over its
-# generated kernels' device library).
+# nuclear derivatives of the metric and of (mn|P), contracted and not, with
+# the DF J and K derivatives over them (gradient/, a module over its generated
+# kernels' device library).
 add_subdirectory(fit)
 add_subdirectory(gradient)
 add_subdirectory(jk)

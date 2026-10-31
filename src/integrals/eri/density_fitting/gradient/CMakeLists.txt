@@ -1,7 +1,9 @@
 # The DF gradient's device library: the generated kernels gmetric<lP, lQ> and
-# geri3<la, lb, lP> (kernels/, written by tools/emit/df_gradient_kernels.py),
-# one per class, the metric's lP <= lQ through i and the three-center's
-# la <= lb through f against lP through i, each compiled on its own, and
+# geri3<la, lb, lP> (the contracted gradients) and ipmetric<lP, lQ> and
+# xeri3<la, lb, lP> (the derivative integrals themselves; kernels/, written by
+# tools/emit/df_gradient_kernels.py), one per class, the metric's lP <= lQ
+# through i and the three-center's la <= lb through f against lP through i,
+# each compiled on its own, and
 # gradient_launch.cu, the per-class launchers, which check their tables against
 # the energy kernels' limits at compile time. Device code in its own library,
 # so its language and -x hip never reach a module compile. Under CUDA the
@@ -117,6 +119,104 @@ free_breakfast_add_gpu_device_library(
   kernels/geri3_334.cu
   kernels/geri3_335.cu
   kernels/geri3_336.cu
+  kernels/ipmetric_00.cu
+  kernels/ipmetric_01.cu
+  kernels/ipmetric_02.cu
+  kernels/ipmetric_03.cu
+  kernels/ipmetric_04.cu
+  kernels/ipmetric_05.cu
+  kernels/ipmetric_06.cu
+  kernels/ipmetric_11.cu
+  kernels/ipmetric_12.cu
+  kernels/ipmetric_13.cu
+  kernels/ipmetric_14.cu
+  kernels/ipmetric_15.cu
+  kernels/ipmetric_16.cu
+  kernels/ipmetric_22.cu
+  kernels/ipmetric_23.cu
+  kernels/ipmetric_24.cu
+  kernels/ipmetric_25.cu
+  kernels/ipmetric_26.cu
+  kernels/ipmetric_33.cu
+  kernels/ipmetric_34.cu
+  kernels/ipmetric_35.cu
+  kernels/ipmetric_36.cu
+  kernels/ipmetric_44.cu
+  kernels/ipmetric_45.cu
+  kernels/ipmetric_46.cu
+  kernels/ipmetric_55.cu
+  kernels/ipmetric_56.cu
+  kernels/ipmetric_66.cu
+  kernels/xeri3_000.cu
+  kernels/xeri3_001.cu
+  kernels/xeri3_002.cu
+  kernels/xeri3_003.cu
+  kernels/xeri3_004.cu
+  kernels/xeri3_005.cu
+  kernels/xeri3_006.cu
+  kernels/xeri3_010.cu
+  kernels/xeri3_011.cu
+  kernels/xeri3_012.cu
+  kernels/xeri3_013.cu
+  kernels/xeri3_014.cu
+  kernels/xeri3_015.cu
+  kernels/xeri3_016.cu
+  kernels/xeri3_020.cu
+  kernels/xeri3_021.cu
+  kernels/xeri3_022.cu
+  kernels/xeri3_023.cu
+  kernels/xeri3_024.cu
+  kernels/xeri3_025.cu
+  kernels/xeri3_026.cu
+  kernels/xeri3_030.cu
+  kernels/xeri3_031.cu
+  kernels/xeri3_032.cu
+  kernels/xeri3_033.cu
+  kernels/xeri3_034.cu
+  kernels/xeri3_035.cu
+  kernels/xeri3_036.cu
+  kernels/xeri3_110.cu
+  kernels/xeri3_111.cu
+  kernels/xeri3_112.cu
+  kernels/xeri3_113.cu
+  kernels/xeri3_114.cu
+  kernels/xeri3_115.cu
+  kernels/xeri3_116.cu
+  kernels/xeri3_120.cu
+  kernels/xeri3_121.cu
+  kernels/xeri3_122.cu
+  kernels/xeri3_123.cu
+  kernels/xeri3_124.cu
+  kernels/xeri3_125.cu
+  kernels/xeri3_126.cu
+  kernels/xeri3_130.cu
+  kernels/xeri3_131.cu
+  kernels/xeri3_132.cu
+  kernels/xeri3_133.cu
+  kernels/xeri3_134.cu
+  kernels/xeri3_135.cu
+  kernels/xeri3_136.cu
+  kernels/xeri3_220.cu
+  kernels/xeri3_221.cu
+  kernels/xeri3_222.cu
+  kernels/xeri3_223.cu
+  kernels/xeri3_224.cu
+  kernels/xeri3_225.cu
+  kernels/xeri3_226.cu
+  kernels/xeri3_230.cu
+  kernels/xeri3_231.cu
+  kernels/xeri3_232.cu
+  kernels/xeri3_233.cu
+  kernels/xeri3_234.cu
+  kernels/xeri3_235.cu
+  kernels/xeri3_236.cu
+  kernels/xeri3_330.cu
+  kernels/xeri3_331.cu
+  kernels/xeri3_332.cu
+  kernels/xeri3_333.cu
+  kernels/xeri3_334.cu
+  kernels/xeri3_335.cu
+  kernels/xeri3_336.cu
   LINK_PUBLIC
   free_breakfast::core::types_headers
   free_breakfast::integrals::eri::density_fitting::metric::device
