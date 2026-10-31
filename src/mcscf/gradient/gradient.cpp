@@ -150,16 +150,16 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
 
 // Root @p root's RDMs plus z_c's transition RDMs (README "The state-averaged
 // Lagrangian"), row-major as ci::Rdm::rdm12's, and kappa(z_o) into the
-// nmo x nmo @p kappa: the Z-vector of root @p root over the CI-relaxed
-// Hessian at the solution's orbitals and roots. @p averaged is the Fock at the
-// solution's weighted RDMs, @p ints the fitted integrals at its orbitals.
-Result<std::pair<std::vector<double>, std::vector<double>>>
-sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
-                       const Buffers::device<double> &b, const int32_t naux,
-                       const Solution &solution, const int32_t ncore, const int32_t ncas,
-                       const int32_t nelecas, const CasscfIntegrals &ints,
-                       const response::Fock &averaged, const int32_t root,
-                       const std::span<const double> weights, double *const kappa) {
+// nmo x nmo @p kappa: the multipliers @p given, or when it is null the
+// Z-vector of root @p root over the CI-relaxed Hessian at the solution's
+// orbitals and roots. @p averaged is the Fock at the solution's weighted
+// RDMs, @p ints the fitted integrals at its orbitals.
+Result<std::pair<std::vector<double>, std::vector<double>>> sa_gradient_lagrangian(
+    DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const int32_t naux, const Solution &solution,
+    const int32_t ncore, const int32_t ncas, const int32_t nelecas, const CasscfIntegrals &ints,
+    const response::Fock &averaged, const int32_t root, const std::span<const double> weights,
+    const ZVector *const given, double *const kappa) {
   const SphericalMatrixAO &c = solution.c;
   const auto n = static_cast<size_t>(ncas);
   const auto mo = static_cast<size_t>(c.n());
@@ -168,34 +168,22 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
   const ci::DeviceStringSet alpha =
       FBF_TRY(ci::DeviceStringSet::create(res, ncas, nelecas - n_beta));
   const ci::DeviceStringSet beta = FBF_TRY(ci::DeviceStringSet::create(res, ncas, n_beta));
-  ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   ci::Rdm rdm = FBF_TRY(ci::Rdm::create(res, alpha, beta));
-  // H_0 at the solution's orbitals. The sigma takes host arrays row-major,
-  // which needs no reorder, as mcscf::solve sets them: h_eff is symmetric,
-  // and (tu|vw) column-major is (wv|ut) row-major.
-  FBF_TRY(sigma.set_integrals(
-      res, ints.hamiltonian.e_core,
-      FBF_TRY(gradient_download(res, ints.hamiltonian.h_eff.data(), n * n)),
-      FBF_TRY(gradient_download(res, ints.hamiltonian.eri.data(), n * n * n * n))));
-  const auto dim = static_cast<size_t>(sigma.size());
+  const auto dim = static_cast<size_t>(rdm.size());
   if (solution.roots.vectors.num_elements() != dim * nroots) {
     return err_config("mcscf::df_gradient: {} CI doubles for {} roots of {} determinants",
                       solution.roots.vectors.num_elements(), nroots, dim);
   }
+  const size_t n_core = static_cast<size_t>(ncore);
+  const size_t packed = (n_core * (mo - n_core)) + (n * (mo - n_core - n));
+  if (given != nullptr &&
+      (given->orbital.num_elements() != packed || given->ci.num_elements() != dim * nroots)) {
+    return err_config("mcscf::df_gradient: multipliers of {} orbital and {} CI doubles, but the "
+                      "solution has {} pairs and {} roots of {} determinants",
+                      given->orbital.num_elements(), given->ci.num_elements(), packed, nroots, dim);
+  }
 
-  response::Hessian hessian = FBF_TRY(
-      response::Hessian::create(res, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, averaged));
-  ResponseIntegrals response_ints{
-      mo,
-      static_cast<size_t>(ncore),
-      n,
-      FBF_TRY(gradient_download(res, averaged.fock_inactive.data(), mo * mo)),
-      FBF_TRY(gradient_download(res, ints.ppaa.data(), mo * mo * n * n)),
-      FBF_TRY(gradient_download(res, ints.papa.data(), mo * mo * n * n))};
-  RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
-      res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints)));
-
-  // Root I's RDMs, and g_I, its orbital gradient at the averaged orbitals.
+  // Root I's RDMs.
   Buffers::device<double> rdms((n * n) + (n * n * n * n), res.device());
   double *const gamma_device = rdms.data();
   double *const gamma2_device = gamma_device + (n * n);
@@ -204,13 +192,38 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
   FBF_TRY(rdm.rdm12(res, one_hot, solution.roots.vectors.data(), gamma_device, gamma2_device));
   std::vector<double> gamma = FBF_TRY(gradient_download(res, gamma_device, n * n));
   std::vector<double> gamma2 = FBF_TRY(gradient_download(res, gamma2_device, n * n * n * n));
-  const response::Fock own = FBF_TRY(response::fock(res, molecule, h, b, naux, c, ncore, ncas,
-                                                    ints.ppaa, ints.papa, gamma, gamma2));
-  const ZVector z = FBF_TRY(zvector(res, relaxed, hessian, solution.roots, own.gradient.data()));
+
+  // No multipliers given: the Z-vector over H_0 at the solution's orbitals
+  // and g_I, root I's orbital gradient there. The sigma takes host arrays
+  // row-major, which needs no reorder, as mcscf::solve sets them: h_eff is
+  // symmetric, and (tu|vw) column-major is (wv|ut) row-major.
+  std::optional<ZVector> solved;
+  if (given == nullptr) {
+    ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
+    FBF_TRY(sigma.set_integrals(
+        res, ints.hamiltonian.e_core,
+        FBF_TRY(gradient_download(res, ints.hamiltonian.h_eff.data(), n * n)),
+        FBF_TRY(gradient_download(res, ints.hamiltonian.eri.data(), n * n * n * n))));
+    response::Hessian hessian = FBF_TRY(
+        response::Hessian::create(res, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, averaged));
+    ResponseIntegrals response_ints{
+        mo,
+        n_core,
+        n,
+        FBF_TRY(gradient_download(res, averaged.fock_inactive.data(), mo * mo)),
+        FBF_TRY(gradient_download(res, ints.ppaa.data(), mo * mo * n * n)),
+        FBF_TRY(gradient_download(res, ints.papa.data(), mo * mo * n * n))};
+    RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
+        res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints)));
+    const response::Fock own = FBF_TRY(response::fock(res, molecule, h, b, naux, c, ncore, ncas,
+                                                      ints.ppaa, ints.papa, gamma, gamma2));
+    solved.emplace(FBF_TRY(zvector(res, relaxed, hessian, solution.roots, own.gradient.data())));
+  }
+  const ZVector &z = given != nullptr ? *given : *solved;
 
   // z_c's transition RDMs, sum_r w_r (<z_c,r|.|c_r> + <c_r|.|z_c,r>): half
   // the difference of the RDMs of c + z_c and c - z_c at the weights, the
-  // polarization mcscf::solve takes them by.
+  // polarization mcscf::solve takes them by. z_c is zvector's, unweighted.
   const size_t block = dim * nroots;
   const auto block32 = static_cast<int32_t>(block);
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -386,7 +399,8 @@ Result<GradientTerms>
 df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
             const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-            const Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t root) {
+            const Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t root,
+            const ZVector *const multipliers, const MoAdjoint *const extra) {
   const SphericalMatrixAO &c = solution.c;
   const auto nroots = static_cast<int32_t>(solution.roots.energies.size());
   if (root < 0 || root >= nroots) {
@@ -411,7 +425,15 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
     return err_config("mcscf::df_gradient: RDMs of {} and {} elements for ncas {}",
                       solution.gamma.size(), solution.gamma2.size(), ncas);
   }
+  // A state average, or caller-supplied multipliers, takes the terms at the
+  // Lagrangian and adds the orbital response; one root without them is the
+  // solution's own energy.
   const bool averaged = nroots > 1;
+  const bool responds = averaged || multipliers != nullptr;
+  if (extra != nullptr &&
+      (extra->h_bar == nullptr || extra->lambda == nullptr || extra->x == nullptr)) {
+    return err_config("mcscf::df_gradient: an extra adjoint with a null h_bar, lambda or x");
+  }
   if (averaged && solution.root_gammas.size() != static_cast<size_t>(nroots) * n_act * n_act) {
     return err_config("mcscf::df_gradient: {} root gamma elements for {} roots and ncas {}",
                       solution.root_gammas.size(), nroots, ncas);
@@ -431,7 +453,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   }
   const auto nelecas = static_cast<int32_t>(std::lround(trace));
   const int32_t two_s = molecule.multiplicity() - 1;
-  if (averaged && (std::abs(trace - nelecas) > kElectronCountTolerance || nelecas < two_s ||
+  if (responds && (std::abs(trace - nelecas) > kElectronCountTolerance || nelecas < two_s ||
                    (nelecas - two_s) % 2 != 0 || nelecas - ((nelecas - two_s) / 2) > ncas)) {
     return err_config("mcscf::df_gradient: trace(gamma) {} is no electron count of multiplicity "
                       "{} in {} orbitals",
@@ -444,9 +466,10 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // back-transform Y (core then active), and the active pairs and Z; for a
   // state average also the response's fitted densities, core pairs c'_P,ip,
   // their scratch and V at the averaged RDMs, and the same three of the
-  // active pairs. Each is held across a call that takes the workspace (b_mo,
-  // the derivative calls), so each is the call's own. Past the device's
-  // memory an allocation would abort (CreatePolicy), not return.
+  // active pairs; for an extra adjoint, Lambda C^T and G^aux. Each is held
+  // across a call that takes the workspace (b_mo, the derivative calls), so
+  // each is the call's own. Past the device's memory an allocation would
+  // abort (CreatePolicy), not return.
   const auto n_ao = static_cast<size_t>(nao);
   const auto n_aux = static_cast<size_t>(naux);
   const auto n_core = static_cast<size_t>(ncore);
@@ -458,11 +481,12 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   const size_t y_count = n_aux * std::max(n_core, n_act) * n_ao;
   const size_t active_count = n_aux * n_act * n_act;
   const size_t g_count = n_occ * n_occ;
-  const size_t fit_count = (averaged ? 6 : 2) * n_aux;
-  const size_t pieces = averaged ? 6 : 2;
+  const size_t fit_count = (responds ? 6 : 2) * n_aux;
+  const size_t pieces = responds ? 6 : 2;
   const size_t bytes =
-      sizeof(double) * (gamma_count + w_count + fit_count + (averaged ? 2 : 1) * g_count +
-                        (pieces * core_count) + y_count + (pieces * active_count));
+      sizeof(double) *
+      (gamma_count + w_count + fit_count + (responds ? 2 : 1) * g_count + (pieces * core_count) +
+       y_count + (pieces * active_count) + (extra != nullptr ? gamma_count + w_count : 0));
   size_t free_bytes = 0;
   size_t total_bytes = 0;
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
@@ -481,24 +505,28 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       FBF_TRY(response::fock(res, molecule, h, b, static_cast<int32_t>(naux), c, ncore, ncas,
                              ints.ppaa, ints.papa, solution.gamma, solution.gamma2));
 
-  // For a state average, the Z-vector: the RDMs the terms below take are
-  // root I's plus z_c's transition RDMs, F is their generalized Fock, and
-  // kappa(z_o) drives the orbital response. For one root they are the
-  // solution's own, and there is no response.
+  // For a state average or given multipliers, the Lagrangian: the RDMs the
+  // terms below take are root I's plus z_c's transition RDMs, F is their
+  // generalized Fock, and kappa(z_o) drives the orbital response; z is the
+  // caller's, or else the Z-vector. For one root without multipliers they are
+  // the solution's own, and there is no response.
   std::vector<double> gamma = solution.gamma;
   std::vector<double> gamma2 = solution.gamma2;
-  Buffers::device<double> kappa(averaged ? pairs : 1, res.device());
+  Buffers::device<double> kappa(responds ? pairs : 1, res.device());
   std::optional<response::Fock> lagrangian_fock;
-  if (averaged) {
-    const std::vector<double> weights = FBF_TRY(sa_gradient_weights(solution, n_act));
-    std::tie(gamma, gamma2) = FBF_TRY(
-        sa_gradient_lagrangian(res, molecule, h, b, static_cast<int32_t>(naux), solution, ncore,
-                               ncas, nelecas, ints, solution_fock, root, weights, kappa.data()));
+  if (responds) {
+    std::vector<double> weights{1.0};
+    if (averaged) {
+      weights = FBF_TRY(sa_gradient_weights(solution, n_act));
+    }
+    std::tie(gamma, gamma2) = FBF_TRY(sa_gradient_lagrangian(
+        res, molecule, h, b, static_cast<int32_t>(naux), solution, ncore, ncas, nelecas, ints,
+        solution_fock, root, weights, multipliers, kappa.data()));
     lagrangian_fock.emplace(
         FBF_TRY(response::fock(res, molecule, h, b, static_cast<int32_t>(naux), c, ncore, ncas,
                                ints.ppaa, ints.papa, gamma, gamma2)));
   }
-  const response::Fock &f = averaged ? *lagrangian_fock : solution_fock;
+  const response::Fock &f = responds ? *lagrangian_fock : solution_fock;
 
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto n = static_cast<int32_t>(nao);
@@ -509,14 +537,14 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // The orbital response's C~ = C kappa, beside C so that b_mo transforms
   // over either ([C | C~], 2 nmo columns); its D_cL and D_aL, their sum D_L;
   // the averaged D and D_a it is the derivative of; and F_L.
-  Buffers::device<double> c_both(averaged ? 2 * pairs : 1, res.device());
-  const double *const c_rot = averaged ? c_both.data() + pairs : nullptr;
+  Buffers::device<double> c_both(responds ? 2 * pairs : 1, res.device());
+  const double *const c_rot = responds ? c_both.data() + pairs : nullptr;
   SphericalMatrixAO d_core_l(res, basis);
   SphericalMatrixAO d_active_l(res, basis);
   SphericalMatrixAO d_averaged(res, basis);
   SphericalMatrixAO d_active_averaged(res, basis);
   SphericalMatrixAO f_l(res, basis);
-  if (averaged) {
+  if (responds) {
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(c_both.data(), c.data(), pairs * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, res.stream())));
     FBF_TRY(gpu_status(gemm(blas, n, &kOne<double>, c.data(), kappa.data(), &kZero<double>,
@@ -534,7 +562,9 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // (C F C^T)^T): F is symmetric only to the solve's convergence, and S' is
   // symmetric, so its symmetric part is what -Sum W S' reads. For a state
   // average F is F + F_L, the one-electron D is D + D_L, and the averaged D
-  // and D_a are built too, for J's response.
+  // and D_a are built too, for J's response. An extra adjoint adds
+  // P = C h_bar C^T to the one-electron D and 1/2 X to F, so W gains
+  // 1/2 C sym(X) C^T.
   SphericalMatrixAO d(res, basis);
   SphericalMatrixAO d_active(res, basis);
   SphericalMatrixAO d_one(res, basis);
@@ -543,7 +573,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
     const auto [work, cfc] = res.device_regions<double>(pairs, pairs);
     std::vector<std::pair<const double *, std::pair<double *, double *>>> densities{
         {f.gamma.data(), {d.data(), d_active.data()}}};
-    if (averaged) {
+    if (responds) {
       densities.push_back(
           {solution_fock.gamma.data(), {d_averaged.data(), d_active_averaged.data()}});
     }
@@ -560,12 +590,25 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_one.data(), d.data(), sizeof(double) * pairs,
                                            wwr::wwrMemcpyDeviceToDevice, res.stream())));
     const double *fock_total = f.fock.data();
-    if (averaged) {
+    if (responds) {
       FBF_TRY(
           gpu_status(wwr::axpy<double, int32_t>(blas, nn, &kOne<double>, d_l, 1, d_one.data(), 1)));
       // f_l <- F + F_L.
       FBF_TRY(gpu_status(
           wwr::axpy<double, int32_t>(blas, nn, &kOne<double>, f.fock.data(), 1, f_l.data(), 1)));
+      fock_total = f_l.data();
+    }
+    if (extra != nullptr) {
+      FBF_TRY(
+          gpu_status(gemmwich<wwr::WWRBLAS_OP_T>(blas, n, n, c.data(), extra->h_bar, work, cfc)));
+      FBF_TRY(
+          gpu_status(wwr::axpy<double, int32_t>(blas, nn, &kOne<double>, cfc, 1, d_one.data(), 1)));
+      if (!responds) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(f_l.data(), f.fock.data(), sizeof(double) * pairs,
+                                               wwr::wwrMemcpyDeviceToDevice, res.stream())));
+      }
+      FBF_TRY(gpu_status(
+          wwr::axpy<double, int32_t>(blas, nn, &kHalf<double>, extra->x, 1, f_l.data(), 1)));
       fock_total = f_l.data();
     }
     FBF_TRY(gpu_status(gemmwich<wwr::WWRBLAS_OP_T>(blas, n, n, c.data(), fock_total, work, cfc)));
@@ -595,7 +638,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   double *const d_lf = d_asa + n_aux;
   double *const d_alf = d_lf + n_aux;
   std::vector<std::pair<const double *, double *>> fits{{d.data(), d_t}, {d_active.data(), d_a}};
-  if (averaged) {
+  if (responds) {
     fits.insert(fits.end(), {{d_averaged.data(), d_sa},
                              {d_active_averaged.data(), d_asa},
                              {d_l, d_lf},
@@ -613,7 +656,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       {d_t, d.data(), &kOne<double>}, {d_a, d_active.data(), &kNegOne<double>}};
   std::vector<std::tuple<const double *, const double *, const double *>> w_terms{
       {d_t, d_t, &kNegHalf<double>}, {d_a, d_a, &kHalf<double>}};
-  if (averaged) {
+  if (responds) {
     gam_terms.insert(gam_terms.end(), {{d_sa, d_l, &kOne<double>},
                                        {d_lf, d_averaged.data(), &kOne<double>},
                                        {d_asa, d_active_l.data(), &kNegOne<double>},
@@ -626,6 +669,34 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   FBF_TRY(gpu_status(
       wwr::wwrMemsetAsync(gamma_mnp.data(), 0, gamma_count * sizeof(double), res.stream())));
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(w.data(), 0, w_count * sizeof(double), res.stream())));
+  // An extra adjoint first, into the zeroed Gam: Lambda_AO = C Lambda^L C^T
+  // (a gemm over q and a strided-batched gemm over n, df_rhf's exchange
+  // shape), G^aux = Lambda_AO B^T (Sum_pq Lambda^L_pq B^L'_pq, in the AO
+  // basis), W += -1/2 L^-T G^aux L^-1 (two trsms), and Gam = L^-T Lambda_AO
+  // (one trsm in place) before any other term is added to it.
+  Buffers::device<double> half(extra != nullptr ? gamma_count : 1, res.device());
+  Buffers::device<double> g_aux(extra != nullptr ? w_count : 1, res.device());
+  if (extra != nullptr) {
+    const int32_t rows = q * n;
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, rows, n, n, &kOne<double>, extra->lambda, c.data(), &kZero<double>, half.data())));
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, n, n, &kOne<double>, half.data(), q,
+        int64_t{rows}, c.data(), n, 0, &kZero<double>, gamma_mnp.data(), q * n, naux, n)));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        blas, q, q, nn, &kOne<double>, gamma_mnp.data(), b.data(), &kZero<double>, g_aux.data())));
+    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+        blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+        wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, g_aux.data(), q)));
+    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+        blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_N,
+        wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, g_aux.data(), q)));
+    FBF_TRY(gpu_status(
+        wwr::axpy<double, int32_t>(blas, q * q, &kNegHalf<double>, g_aux.data(), 1, w.data(), 1)));
+    FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+        blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+        wwr::WWRBLAS_DIAG_NON_UNIT, q, nn, &kOne<double>, l, q, gamma_mnp.data(), q)));
+  }
   for (const auto &[fit, density, scale] : gam_terms) {
     FBF_TRY(gpu_status(gemm(blas, q, nn, 1, scale, fit, density, &kOne<double>, gamma_mnp.data())));
   }
@@ -635,7 +706,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   }
 
   Buffers::device<double> y(y_count, res.device());
-  Buffers::device<double> g_occ((averaged ? 2 : 1) * g_count, res.device());
+  Buffers::device<double> g_occ((responds ? 2 : 1) * g_count, res.device());
   Buffers::device<double> fitted_core(pieces / 2 * core_count, res.device());
   Buffers::device<double> v(pieces / 2 * core_count, res.device());
   Buffers::device<double> fitted_active(pieces / 2 * active_count, res.device());
@@ -643,12 +714,12 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // For a state average, the second and third of each: the pairs' response
   // c'_P,pq = c_P,p~q + c_P,pq~ (p~ = C~'s column p) and its scratch, and V
   // (or Z) at the averaged RDMs.
-  double *const fitted_core_l = averaged ? fitted_core.data() + core_count : nullptr;
-  double *const core_scratch = averaged ? fitted_core_l + core_count : nullptr;
-  double *const v_averaged = averaged ? v.data() + core_count : nullptr;
-  double *const fitted_active_l = averaged ? fitted_active.data() + active_count : nullptr;
-  double *const active_scratch = averaged ? fitted_active_l + active_count : nullptr;
-  double *const z_averaged = averaged ? z.data() + active_count : nullptr;
+  double *const fitted_core_l = responds ? fitted_core.data() + core_count : nullptr;
+  double *const core_scratch = responds ? fitted_core_l + core_count : nullptr;
+  double *const v_averaged = responds ? v.data() + core_count : nullptr;
+  double *const fitted_active_l = responds ? fitted_active.data() + active_count : nullptr;
+  double *const active_scratch = responds ? fitted_active_l + active_count : nullptr;
+  double *const z_averaged = responds ? z.data() + active_count : nullptr;
   const auto mo2 = static_cast<int32_t>(2 * nao);
   // c'_P over [C | C~]: b_mo of the rotated rows plus b_mo of the rotated
   // columns, then L^-T.
@@ -674,7 +745,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // V += c' G_a, W += V_a c'^T, Gam += -2 Sum_i (C_mi Sum_q V_a,iq C~_nq +
   // C~_mi Sum_q V_a,iq C_nq). The host G is read by its copy before the first
   // derivative call waits on the stream, and it outlives that call.
-  std::vector<double> occupation((averaged ? 2 : 1) * g_count, 0.0);
+  std::vector<double> occupation((responds ? 2 : 1) * g_count, 0.0);
   if (ncore > 0) {
     // G of the terms' RDMs, then (for a state average) of the averaged ones.
     const auto fill = [&](const std::vector<double> &from, const size_t offset) {
@@ -688,13 +759,13 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       }
     };
     fill(gamma, 0);
-    if (averaged) {
+    if (responds) {
       fill(solution.gamma, g_count);
     }
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(g_occ.data(), occupation.data(),
                                            sizeof(double) * occupation.size(),
                                            wwr::wwrMemcpyHostToDevice, res.stream())));
-    const double *const g_averaged = averaged ? g_occ.data() + g_count : nullptr;
+    const double *const g_averaged = responds ? g_occ.data() + g_count : nullptr;
     const OrbitalRange core{.first = 0, .count = ncore};
     const OrbitalRange occupied{.first = 0, .count = nocc};
     FBF_TRY(b_mo(res, q, n, n, b.data(), c.data(), core, occupied, fitted_core.data()));
@@ -704,7 +775,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
     const int32_t rows = q * ncore;
     FBF_TRY(gpu_status(gemm(blas, rows, nocc, nocc, &kOne<double>, fitted_core.data(), g_occ.data(),
                             &kZero<double>, v.data())));
-    if (averaged) {
+    if (responds) {
       FBF_TRY(rotated_pairs(core, occupied, fitted_core_l, core_scratch));
       FBF_TRY(gpu_status(gemm(blas, rows, nocc, nocc, &kOne<double>, fitted_core_l, g_averaged,
                               &kOne<double>, v.data())));
@@ -722,14 +793,14 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
     // as gradient::df_rhf builds its exchange.
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
         blas, rows, n, nocc, &kOne<double>, v.data(), c.data(), &kZero<double>, y.data())));
-    if (averaged) {
+    if (responds) {
       FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
           blas, rows, n, nocc, &kOne<double>, v_averaged, c_rot, &kOne<double>, y.data())));
     }
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, n, ncore, &kNegTwo<double>, y.data(), q,
         int64_t{rows}, c.data(), n, 0, &kOne<double>, gamma_mnp.data(), q * n, naux, n)));
-    if (averaged) {
+    if (responds) {
       FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
           blas, rows, n, nocc, &kOne<double>, v_averaged, c.data(), &kZero<double>, y.data())));
       FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
@@ -753,7 +824,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
         wwr::WWRBLAS_DIAG_NON_UNIT, q, pairs_act, &kOne<double>, l, q, fitted_active.data(), q)));
     FBF_TRY(gpu_status(gemm(blas, q, pairs_act, pairs_act, &kOne<double>, fitted_active.data(),
                             f.gamma2.data(), &kZero<double>, z.data())));
-    if (averaged) {
+    if (responds) {
       FBF_TRY(rotated_pairs(active, active, fitted_active_l, active_scratch));
       FBF_TRY(gpu_status(gemm(blas, q, pairs_act, pairs_act, &kOne<double>, fitted_active_l,
                               solution_fock.gamma2.data(), &kOne<double>, z.data())));
@@ -767,17 +838,17 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
         blas, q, q, pairs_act, &kNegHalf<double>, z.data(), fitted_active.data(), &kOne<double>,
         w.data())));
     const int32_t rows = q * ncas;
-    const double *const c_rot_act = averaged ? c_rot + (n_ao * n_core) : nullptr;
+    const double *const c_rot_act = responds ? c_rot + (n_ao * n_core) : nullptr;
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
         blas, rows, n, ncas, &kOne<double>, z.data(), c_act, &kZero<double>, y.data())));
-    if (averaged) {
+    if (responds) {
       FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
           blas, rows, n, ncas, &kOne<double>, z_averaged, c_rot_act, &kOne<double>, y.data())));
     }
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, n, ncas, &kOne<double>, y.data(), q,
         int64_t{rows}, c_act, n, 0, &kOne<double>, gamma_mnp.data(), q * n, naux, n)));
-    if (averaged) {
+    if (responds) {
       FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
           blas, rows, n, ncas, &kOne<double>, z_averaged, c_act, &kZero<double>, y.data())));
       FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(

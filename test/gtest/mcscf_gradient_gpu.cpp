@@ -7,8 +7,14 @@
 // total's sum over atoms below 1e-9; for each state-specific case (H2O and the
 // skewed H2O, cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,4)) and, against
 // df.grad.sacasscf, every root of the state-averaged one (H2CO, SA-2 CAS(4,3)),
-// whose parts include the multipliers' terms. And the refusals: a root the
-// solution does not have, and a solution whose roots and RDMs disagree.
+// whose parts include the multipliers' terms. Then the caller's pieces: for
+// one root, E_cas's own MO adjoint (h_bar = D, Lambda^L = Sum Gamma B^L, X its
+// X, built on the host) fed as the extra adjoint doubles the electronic
+// gradient to 1e-10, so the extra term alone is the state-specific one; for a
+// state average, each root's multipliers from mcscf::zvector passed in
+// reproduce the internal path to 1e-10. And the refusals: a root the
+// solution does not have, multipliers of the wrong length, and a solution
+// whose roots and RDMs disagree.
 //
 // The setup is mcscf_solve_gpu.cpp's: the setup steps through the real
 // registry, the SCF run by hand (kExactScf), and the start picked by the Casci
@@ -25,7 +31,11 @@ import free_breakfast.core.resources;
 import free_breakfast.io.base;
 import free_breakfast.io.json;
 import free_breakfast.integrals;
+import free_breakfast.ci;
+import free_breakfast.response;
 import free_breakfast.mcscf;
+import free_breakfast.mcscf.relaxed_hessian;
+import free_breakfast.mcscf.zvector;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.pipeline.casci;
@@ -43,6 +53,9 @@ constexpr double kTermTolerance = 1e-8;
 constexpr double kSumTolerance = 1e-9;
 // The energy against PySCF's, as mcscf_solve_gpu.cpp holds the DF-CASSCF's.
 constexpr double kEnergyTolerance = 1e-8;
+// The caller's pieces against the call's own: the same formula over the same
+// inputs, to round-off.
+constexpr double kSelfTolerance = 1e-10;
 // The solve's convergence. The gradient formula takes W for the orbitals'
 // response, so its error is first order in the orbital gradient: ~||g|| times
 // the orbitals' change per bohr, ~1e-9 here at the bar's tenth.
@@ -95,6 +108,138 @@ std::optional<fb::Calculation> run_setup_steps(const fb::json &entry, fb::NodeRe
     return std::nullopt;
   }
   return std::move(*calc);
+}
+
+std::vector<double> download(fb::DeviceResources &res, const double *data, std::size_t count) {
+  std::vector<double> host(count);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), data, sizeof(double) * count,
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return host;
+}
+
+void upload(fb::DeviceResources &res, std::span<const double> host, double *data) {
+  EXPECT_EQ(wwr::wwrMemcpyAsync(data, host.data(), host.size_bytes(), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+}
+
+// Every term of @p got against @p want to kSelfTolerance, @p doubled: got's
+// electronic terms twice want's and its nuclear repulsion want's, so got's
+// total less want's is want's electronic gradient. The worst error.
+double compare_terms(const std::string &what, const fb::mcscf::GradientTerms &got,
+                     const fb::mcscf::GradientTerms &want, bool doubled) {
+  const double scale = doubled ? 2.0 : 1.0;
+  double worst = 0.0;
+  for (const auto &[key, ours, theirs, factor] :
+       {std::tuple{"kinetic", &got.kinetic, &want.kinetic, scale},
+        {"potential", &got.potential, &want.potential, scale},
+        {"overlap", &got.overlap, &want.overlap, scale},
+        {"two_electron", &got.two_electron, &want.two_electron, scale},
+        {"nuclear_repulsion", &got.nuclear_repulsion, &want.nuclear_repulsion, 1.0}}) {
+    EXPECT_EQ(ours->size(), theirs->size()) << what << " " << key;
+    for (std::size_t i = 0; i < std::min(ours->size(), theirs->size()); ++i) {
+      EXPECT_NEAR((*ours)[i], factor * (*theirs)[i], kSelfTolerance) << what << " " << key << i;
+      worst = std::max(worst, std::abs((*ours)[i] - (factor * (*theirs)[i])));
+    }
+  }
+  for (std::size_t i = 0; i < std::min(got.total.size(), want.total.size()); ++i) {
+    const double electronic = want.total[i] - want.nuclear_repulsion[i];
+    const double expected = doubled ? want.total[i] + electronic : want.total[i];
+    EXPECT_NEAR(got.total[i], expected, kSelfTolerance) << what << " total " << i;
+    worst = std::max(worst, std::abs(got.total[i] - expected));
+  }
+  return worst;
+}
+
+// E_cas's MO adjoint at the one-root @p sol, on the host (nuclear_gradient.tex
+// Eq. total, "CAS"): h_bar = D, Lambda^L_pq = Sum_rs Gamma_pqrs B^L_rs over
+// the full-range Gamma (its core parts D (x) D - 1/2 D (x) D exchanged, less
+// the active-active of either, plus the active Gamma), and X = 2 h h_bar +
+// 2 Sum_L B^L Lambda^L, in MoAdjoint's layouts.
+struct HostAdjoint {
+  std::vector<double> h_bar;
+  std::vector<double> lambda;
+  std::vector<double> x;
+};
+HostAdjoint cas_adjoint(fb::DeviceResources &res, const fb::mcscf::Solution &sol,
+                        const fb::SphericalMatrixAO &h, const fb::Buffers::device<double> &b,
+                        std::size_t naux, std::size_t ncore, std::size_t ncas) {
+  const auto n = static_cast<std::size_t>(sol.c.n());
+  const std::size_t nn = n * n;
+  const std::vector<double> c = download(res, sol.c.data(), nn);
+  const std::vector<double> b_ao = download(res, b.data(), naux * nn);
+  const std::vector<double> h_ao = download(res, h.data(), nn);
+  // Column-major n x n products: a b and a^T b.
+  const auto product = [n](const std::vector<double> &a, const std::vector<double> &m,
+                           const bool transpose) {
+    std::vector<double> out(n * n, 0.0);
+    for (std::size_t j = 0; j < n; ++j) {
+      for (std::size_t k = 0; k < n; ++k) {
+        const double mkj = m[k + (n * j)];
+        for (std::size_t i = 0; i < n; ++i) {
+          out[i + (n * j)] += (transpose ? a[k + (n * i)] : a[i + (n * k)]) * mkj;
+        }
+      }
+    }
+    return out;
+  };
+  const auto mo = [&](const std::vector<double> &ao) {
+    return product(c, product(ao, c, false), true);
+  };
+  const auto dot = [](const std::vector<double> &a, const std::vector<double> &m) {
+    return std::inner_product(a.begin(), a.end(), m.begin(), 0.0);
+  };
+  std::vector<double> d(nn, 0.0);
+  std::vector<double> d_a(nn, 0.0);
+  for (std::size_t i = 0; i < ncore; ++i) {
+    d[i * (n + 1)] = 2.0;
+  }
+  for (std::size_t t = 0; t < ncas; ++t) {
+    for (std::size_t u = 0; u < ncas; ++u) {
+      d_a[(ncore + t) + (n * (ncore + u))] = sol.gamma[(t * ncas) + u];
+      d[(ncore + t) + (n * (ncore + u))] = sol.gamma[(t * ncas) + u];
+    }
+  }
+  HostAdjoint out{d, std::vector<double>(naux * nn), product(mo(h_ao), d, false)};
+  std::vector<double> b_l(nn);
+  for (std::size_t l = 0; l < naux; ++l) {
+    for (std::size_t k = 0; k < nn; ++k) {
+      b_l[k] = b_ao[l + (naux * k)];
+    }
+    const std::vector<double> b_mo = mo(b_l);
+    const double j = dot(d, b_mo);
+    const double j_a = dot(d_a, b_mo);
+    const std::vector<double> k_full = product(d, product(b_mo, d, false), false);
+    const std::vector<double> k_act = product(d_a, product(b_mo, d_a, false), false);
+    std::vector<double> lambda(nn);
+    for (std::size_t k = 0; k < nn; ++k) {
+      lambda[k] = (d[k] * j) - (d_a[k] * j_a) - (0.5 * (k_full[k] - k_act[k]));
+    }
+    for (std::size_t t = 0; t < ncas; ++t) {
+      for (std::size_t u = 0; u < ncas; ++u) {
+        double sum = 0.0;
+        for (std::size_t v = 0; v < ncas; ++v) {
+          for (std::size_t w = 0; w < ncas; ++w) {
+            sum += sol.gamma2[(((((t * ncas) + u) * ncas) + v) * ncas) + w] *
+                   b_mo[(ncore + v) + (n * (ncore + w))];
+          }
+        }
+        lambda[(ncore + t) + (n * (ncore + u))] += sum;
+      }
+    }
+    const std::vector<double> bl = product(b_mo, lambda, false);
+    for (std::size_t k = 0; k < nn; ++k) {
+      out.lambda[l + (naux * k)] = lambda[k];
+      out.x[k] += bl[k];
+    }
+  }
+  for (double &v : out.x) {
+    v *= 2.0;
+  }
+  return out;
 }
 
 // @p ours against the reference rows @p ref to kTermTolerance absolute; the
@@ -231,6 +376,107 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
     EXPECT_LT(std::abs(worst_sum), kSumTolerance) << label << " translational sum";
     std::cout << report << std::format(" sum {:.2e}\n", std::abs(worst_sum));
   }
+
+  // The caller's pieces, against the call's own path.
+  const auto naux = static_cast<std::size_t>(df.naux);
+  const auto ncore = static_cast<std::size_t>(space->ncore);
+  const auto ncas = static_cast<std::size_t>(space->ncas);
+  if (nroots == 1) {
+    // E_cas's own adjoint as the extra term: the gradient doubles, less the
+    // nuclear repulsion.
+    const auto own =
+        fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
+                               df.b, df.l.data(), *sol, space->ncore, space->ncas, 0);
+    ASSERT_TRUE(own.has_value()) << own.error().message;
+    const HostAdjoint host = cas_adjoint(res, *sol, h->h, df.b, naux, ncore, ncas);
+    fb::Buffers::device<double> h_bar(host.h_bar.size(), res.device());
+    fb::Buffers::device<double> lambda(host.lambda.size(), res.device());
+    fb::Buffers::device<double> x_mo(host.x.size(), res.device());
+    upload(res, host.h_bar, h_bar.data());
+    upload(res, host.lambda, lambda.data());
+    upload(res, host.x, x_mo.data());
+    const fb::mcscf::MoAdjoint extra{
+        .h_bar = h_bar.data(), .lambda = lambda.data(), .x = x_mo.data()};
+    const auto doubled = fb::mcscf::df_gradient(
+        res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h, df.b, df.l.data(),
+        *sol, space->ncore, space->ncas, 0, nullptr, &extra);
+    ASSERT_TRUE(doubled.has_value()) << doubled.error().message;
+    std::cout << std::format("[ casgrad  ] {} extra E_cas adjoint: {:.2e}\n", name,
+                             compare_terms(name + " extra", *doubled, *own, true));
+  } else {
+    // Each root's multipliers from zvector, as the call solves them, passed
+    // in: the same gradient.
+    const fb::SphericalMatrixAO &c = sol->c;
+    const auto mo = static_cast<std::size_t>(c.n());
+    auto ints = fb::casscf_integrals(res, basis->basis, molecule->molecule, h->h, df.b, df.naux, c,
+                                     space->ncore, space->ncas);
+    ASSERT_TRUE(ints.has_value()) << ints.error().message;
+    const std::int32_t n_beta = (space->nelecas - (molecule->molecule.multiplicity() - 1)) / 2;
+    auto alpha = fb::ci::DeviceStringSet::create(res, space->ncas, space->nelecas - n_beta);
+    auto beta = fb::ci::DeviceStringSet::create(res, space->ncas, n_beta);
+    ASSERT_TRUE(alpha.has_value() && beta.has_value());
+    auto sigma = fb::ci::Sigma::create(res, *alpha, *beta);
+    auto rdm = fb::ci::Rdm::create(res, *alpha, *beta);
+    ASSERT_TRUE(sigma.has_value() && rdm.has_value());
+    // Row-major with no reorder, as mcscf::solve and the call set them.
+    ASSERT_TRUE(
+        sigma
+            ->set_integrals(res, ints->hamiltonian.e_core,
+                            download(res, ints->hamiltonian.h_eff.data(), ncas * ncas),
+                            download(res, ints->hamiltonian.eri.data(), ncas * ncas * ncas * ncas))
+            .has_value());
+    auto sa_fock = fb::response::fock(res, molecule->molecule, h->h, df.b, df.naux, c, space->ncore,
+                                      space->ncas, ints->ppaa, ints->papa, sol->gamma, sol->gamma2);
+    ASSERT_TRUE(sa_fock.has_value()) << sa_fock.error().message;
+    auto hessian = fb::response::Hessian::create(res, h->h, df.b, df.naux, c, space->ncore,
+                                                 space->ncas, ints->ppaa, ints->papa, *sa_fock);
+    ASSERT_TRUE(hessian.has_value()) << hessian.error().message;
+    fb::mcscf::ResponseIntegrals response_ints{
+        mo,
+        ncore,
+        ncas,
+        download(res, sa_fock->fock_inactive.data(), mo * mo),
+        download(res, ints->ppaa.data(), mo * mo * ncas * ncas),
+        download(res, ints->papa.data(), mo * mo * ncas * ncas)};
+    auto relaxed = fb::mcscf::RelaxedHessian::create(res, *hessian, *sigma, *rdm, *alpha, *beta,
+                                                     sol->roots, weights, std::move(response_ints));
+    ASSERT_TRUE(relaxed.has_value()) << relaxed.error().message;
+    fb::Buffers::device<double> gamma_device(ncas * ncas, res.device());
+    fb::Buffers::device<double> gamma2_device(ncas * ncas * ncas * ncas, res.device());
+    for (std::int32_t root = 0; root < nroots; ++root) {
+      std::vector<double> one_hot(weights.size(), 0.0);
+      one_hot[static_cast<std::size_t>(root)] = 1.0;
+      ASSERT_TRUE(rdm->rdm12(res, one_hot, sol->roots.vectors.data(), gamma_device.data(),
+                             gamma2_device.data())
+                      .has_value());
+      auto root_fock = fb::response::fock(
+          res, molecule->molecule, h->h, df.b, df.naux, c, space->ncore, space->ncas, ints->ppaa,
+          ints->papa, download(res, gamma_device.data(), ncas * ncas),
+          download(res, gamma2_device.data(), ncas * ncas * ncas * ncas));
+      ASSERT_TRUE(root_fock.has_value()) << root_fock.error().message;
+      auto z = fb::mcscf::zvector(res, *relaxed, *hessian, sol->roots, root_fock->gradient.data());
+      ASSERT_TRUE(z.has_value()) << z.error().message;
+      const auto internal =
+          fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux,
+                                 h->h, df.b, df.l.data(), *sol, space->ncore, space->ncas, root);
+      const auto given = fb::mcscf::df_gradient(res, molecule->molecule, basis->basis,
+                                                pairs->classes, df.aux, h->h, df.b, df.l.data(),
+                                                *sol, space->ncore, space->ncas, root, &*z);
+      ASSERT_TRUE(internal.has_value() && given.has_value());
+      std::cout << std::format(
+          "[ casgrad  ] {} root {} given multipliers: {:.2e}\n", name, root,
+          compare_terms(std::format("{} root {} given", name, root), *given, *internal, false));
+    }
+  }
+  // Multipliers of the wrong length are InvalidConfig.
+  const fb::mcscf::ZVector short_z{fb::Buffers::device<double>(1, res.device()),
+                                   fb::Buffers::device<double>(1, res.device()), 0, 0.0};
+  const auto wrong =
+      fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
+                             df.b, df.l.data(), *sol, space->ncore, space->ncas, 0, &short_z);
+  ASSERT_FALSE(wrong.has_value());
+  EXPECT_EQ(wrong.error().kind, fb::ErrorKind::InvalidConfig) << wrong.error().message;
+  EXPECT_NE(wrong.error().message.find("multipliers"), std::string::npos);
 
   // A root the solution does not have is InvalidConfig.
   const auto past =
