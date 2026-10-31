@@ -90,15 +90,6 @@ import pyscf  # noqa: E402
 # isort: split
 # casscf_reference pins its own thread count on import; numpy is loaded by
 # then, so this module's single thread stands (and main() pins PySCF's).
-import casscf_reference  # noqa: E402
-
-# nevpt2_reference imports casscf_reference's dense-singlet helper under the
-# name it had before casci, casscf: "over ROHF orbitals" renamed it
-# spin_roots (same signature and, for a closed shell, the same roots).
-if not hasattr(casscf_reference, "singlets"):
-    casscf_reference.singlets = casscf_reference.spin_roots
-
-# isort: split
 from casci_reference import aux_basis  # noqa: E402
 from casscf_gradient_reference import fitted_scf  # noqa: E402
 from casscf_reference import (  # noqa: E402
