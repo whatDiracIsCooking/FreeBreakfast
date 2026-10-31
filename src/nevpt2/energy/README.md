@@ -126,9 +126,92 @@ and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
 when the class returns; at n = 12, d = n³ is 24 MB per matrix, below the n⁶
 intermediates. The slab's y is a workspace region, taken after the slab.
 
+## The SC reverse pass
+
+    class_energies_adjoint(res, blocks, in, batch, bars) -> ClassEnergiesAdjoint
+        energies     class_energies' norms, energies and total
+        eq40[8]      Park Eq. 40, Σ_t (P_t N_t + Q_t H_t), from the bars
+    bars (EnergyBars, each added onto):
+        h1e_v_sr, h1e_v_si, h1e_v_sir, e_core, e_virt   in their inputs' layouts
+        lambda                                          Λ, nevpt2::slab_adjoint's
+
+`reverse.cpp`, part A of `nuclear_gradient.tex` §5.2 (demo `docs/gradients.md`
+§5.1–5.2): from the energy back to the class-level inputs, at fixed h1e, h2e
+and RDMs. Each class walks its slabs as `class_energies` does, and lists its
+norm and H terms **once**, as `ClassTerm`s with energy.cpp's subscripts,
+coefficients and operands, plus the bar each operand's adjoint goes into.
+Per slab the list is evaluated, the norms and H read back, and the finish's
+multipliers taken on the host (Park Eqs. 36–38):
+
+    T = −1 / (Δ + H/N),  P = ∂E/∂N = 2T + ΔT²,  Q = ∂E/∂H = T²,  R = ∂E/∂Δ = N T²
+
+zero for a perturber whose norm `_norm_to_energy` drops. P and Q go back
+up as the out-bars of the norm and H terms, and every term is differentiated
+by `einsum_adjoint`. Then `slab_adjoint` takes the slab's bar onto Λ, and the
+bar is dead before the next slab is built: no class holds more than its own
+slab's. R goes onto the orbital energies each perturber's Δ reads, summed on
+the host and added once at the end.
+
+**`einsum_adjoint`** (`:shared`) is the one derivative rule. It takes the
+forward call's subscripts, operands, out_dims and α **unchanged**, plus one
+bar per operand (null: none) in that operand's own layout, and writes operand
+k's bar as the same einsum with the output and operand k swapping roles. So
+no derivative is written by hand.
+
+- A row- or column-major operand's bar is written in place, the output labels
+  ordered so that einsum's packed row-major output is that layout.
+- An operand that repeats a label (Sir's `raai`; the builders' `jbij`,
+  `mjjn`, …) takes its bar over its distinct labels into workspace, then
+  scatters it onto the diagonal against `delta`.
+- A two-axis view of a larger column-major array (h1e_v_sr's and
+  h1e_v_sir's rows, strides {1, ld}) takes its bar packed, then one in-place
+  geam adds it at the view.
+
+**The hand-written pieces** are the finish above and the cases the demo
+names. Sijrs reads no block, so its slab bar and its orbital energies' are a
+kernel of their own (`device::sijrs_adjoint`): ḡ = 2θ/D, and gθ/D² taken off
+ε_i and ε_j and added to ε_a and ε_b. Sijr and Srsi symmetrize pairs of table
+entries, so a `Perturber` names both and its multipliers go back onto both,
+halved on the diagonal. Srsi's pairs span slabs, so it walks twice: the first
+walk fills its whole (v, v, c) tables, the finish runs once, and the second
+walk rebuilds each slab pair and takes its adjoint against the multiplier
+tables' rows.
+
+**Kept or recomputed.** Recomputed, all of it. The reverse pass is a walk of
+its own, so `class_energies` and its builders are untouched and the forward
+energy is unchanged. Each class rebuilds its blocks (a16, …) and every slab,
+and re-evaluates its norms and H. Srsi rebuilds every slab twice.
+
+**The block bars.** Every class also gets M_G = ∂E/∂G on each block G it
+contracts. These are `BlockBars` in `reverse.cpp`, row-major like G, and
+`class_bars` returns them. A metric a class reads straight from an RDM
+(Sr's dm1–dm3, Srsi's dm1, Sir's dm1 and dm2) is a block of that class there,
+so each class's Eq. 40 is assembled from its own bars:
+`eq40[k] = Σ_G ⟨M_G, G⟩`, plus ⟨P, term⟩ for Sir's one term that reads no
+block, and ½ ⟨ḡ, g⟩ for Sijrs. Nothing reads them past that yet;
+`class_energies_adjoint` drops them.
+
+**What #573 picks up.** The reverse-topological sweep of `BlockBars` back
+through the `make_*` builders onto dm1, dm2, dm3, f3ca, f3ac, h1e and h2e.
+Each builder's einsums and transposes go through `einsum_adjoint` as they
+are (a transpose is the one-operand einsum, its axes spelled as labels), with
+the bar on each intermediate (hdm2 under hdm3, rm2 under rm3, fdm2, a17's and
+a19's h1e − Σ(mjjn)) taken before its own producer's. The diagonal slices
+(`diag_a16`, `diag_a22a`, `diag_a22b`) need their gathers there. Then come
+the `h1e`, `h2e` and RDM fields of `EnergyBars`, where `class_energies_adjoint`
+now drops the bars. The workspace rule there is `einsum_adjoint`'s: hold no
+region of it across the call.
+
+**Memory.** On top of `class_energies`' own, the block bars are buffers of
+their own. They outlive their class, four of them n⁶ (Sr's a16 and dm3, Si's
+a22 and dm3_h). Each slab's bar is one more slab-sized buffer, and the norm,
+H and multiplier tables per slab are buffers too, since they are held across
+`einsum_adjoint`'s and `slab_adjoint`'s workspace.
+
 ## Not ported
 
-The forward tangents and the Hessians, SC's and PC's. The demo's
+The forward tangents and the Hessians, SC's and PC's. The SC reverse pass's
+sweep onto the RDMs, h1e and h2e (#573), and PC's reverse pass. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -157,3 +240,21 @@ must match the unrotated run's to 1e-10, with the same dropped counts.
 CAS(4,4) and CAS(8,8), both of which cut modes in Sr, Si and Sir. SC is the
 control: its invariance is PySCF's, so an SC miss would be the rotation's.
 Measured on an RTX 3080: PC within 4e-15.
+
+The reverse pass, `Nevpt2EnergyAdjoint` and `Nevpt2EnergyAdjointLadder`, on
+CAS(8,8) from PySCF's RDMs. At CAS(4,4), Si vanishes by N₂'s symmetry
+((σπ|ππ) and h1e_v_Si are zero), and so would its bars.
+
+- `Eq40AndEulerFromTheBars`: each class's Eq. 40 against its energy at 1e-12.
+  Euler's identity checks the slab and h1e_v bars step-free: at fixed orbital
+  energies E is homogeneous of degree 4 in (B, h1e_v²), so
+  ⟨Λ, B⟩ + 2 Σ ⟨h1e_v̄, h1e_v⟩ = 4E. The energies are checked against the
+  golden ones as well.
+- `BarsMatchRichardsonLadder`: Σ ⟨bar, ẋ⟩ over (B via Λ, h1e_v_*, e_core,
+  e_virt), along a seeded random direction (all four together, then each
+  group alone), against central differences of `class_energies` itself. Successive changes must fall by a factor in
+  (3.2, 4.8) over at least three halvings, and the Richardson extrapolant at
+  that run's finest pair must agree to 1e-7 relative. On an RTX 3080 it agrees
+  to between 2e-10 and 5e-9.
+- `BatchedBarsMatchWhole`: walked in threes, every bar matches the whole
+  walk's to 1e-12 of its largest element.

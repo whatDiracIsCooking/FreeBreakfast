@@ -1,9 +1,9 @@
 /// @file
-/// @brief The class energies' four launchers -- the three diagonal-slice
-/// accumulations and the Sijrs reduction -- declared once for the module that
+/// @brief The class energies' five launchers -- the three diagonal-slice
+/// accumulations, the Sijrs reduction and its adjoint -- declared once for the module that
 /// calls them and the device TU that defines them.
 ///
-/// Included by energy.cpp in its GLOBAL MODULE FRAGMENT, and by
+/// Included by energy.cpp and reverse.cpp in their GLOBAL MODULE FRAGMENTs, and by
 /// nevpt2_energy.cu directly: a declaration in a module's purview gets module
 /// linkage and can never bind to a definition compiled in a plain TU, which a
 /// .cu is (see src/integrals/one_electron/overlap/overlap_bridge.h).
@@ -51,5 +51,19 @@ namespace free_breakfast::nevpt2::device {
 [[nodiscard]] wwr::wwrError_t sijrs(wwr::wwrStream_t stream, const double *g, int32_t ni,
                                     int32_t i0, int32_t ncore, int32_t nvirt, const double *e_core,
                                     const double *e_virt, double *acc);
+
+/// @brief The adjoint of @ref sijrs over the same slab, by hand: with
+/// D = e_i + e_j - e_a - e_b and E = Σ g_iajb θ / D,
+/// g_bar[iajb] += 2 θ / D (g_iajb's own term and its partner g_ibja's), and
+/// w = g_iajb θ / D² taken off e_core_bar[i] and e_core_bar[j] and added to
+/// e_virt_bar[a] and e_virt_bar[b].
+///
+/// @p g_bar is the slab's layout. Either orbital-energy bar may be null, and
+/// is then not formed; they are whole vectors, added to with atomics. Launch
+/// status only; it does not synchronize.
+[[nodiscard]] wwr::wwrError_t sijrs_adjoint(wwr::wwrStream_t stream, const double *g, int32_t ni,
+                                            int32_t i0, int32_t ncore, int32_t nvirt,
+                                            const double *e_core, const double *e_virt,
+                                            double *g_bar, double *e_core_bar, double *e_virt_bar);
 
 } // namespace free_breakfast::nevpt2::device

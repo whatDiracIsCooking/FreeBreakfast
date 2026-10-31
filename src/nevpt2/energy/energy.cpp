@@ -37,10 +37,6 @@ namespace free_breakfast::nevpt2 {
 // they are buffers of their own (docs/style.md "Scratch memory"). fdm2, which
 // lives only between two einsums of one make_*, is the workspace's.
 
-// Norms at or below this are an empty perturber space and contribute no
-// energy: pyscf.mrpt.nevpt2's NUMERICAL_ZERO.
-constexpr double kNumericalZero = 1e-14;
-
 // The einsum operand of a column-major array: strides 1, n0, n0 n1, ...
 EinsumOperand column_major(const double *data, std::vector<int64_t> dims) {
   std::vector<int64_t> strides(dims.size(), 1);

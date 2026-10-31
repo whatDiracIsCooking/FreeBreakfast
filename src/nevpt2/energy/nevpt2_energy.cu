@@ -125,6 +125,41 @@ __global__ void __launch_bounds__(kFourWarps)
 }
 
 // n⁵, the tuples each slice covers.
+// One thread per slab element, decoded as sijrs_kernel does; each writes its
+// own g_bar element and adds its share to the four orbital energies.
+__global__ void sijrs_adjoint_kernel(const double *__restrict__ g, const int64_t ni,
+                                     const int64_t i0, const int64_t ncore, const int64_t nvirt,
+                                     const double *__restrict__ e_core,
+                                     const double *__restrict__ e_virt, double *__restrict__ g_bar,
+                                     double *__restrict__ e_core_bar,
+                                     double *__restrict__ e_virt_bar, const int64_t count) {
+  const int64_t t = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
+  if (t >= count) {
+    return;
+  }
+  int64_t rest = t;
+  const int64_t il = rest % ni;
+  rest /= ni;
+  const int64_t a = rest % nvirt;
+  rest /= nvirt;
+  const int64_t j = rest % ncore;
+  const int64_t b = rest / ncore;
+  const double g_iajb = g[t];
+  const double g_ibja = g[il + (ni * (b + (nvirt * (j + (ncore * a)))))];
+  const double theta = (2.0 * g_iajb) - g_ibja;
+  const double denominator = (e_core[j] - e_virt[a]) + (e_core[i0 + il] - e_virt[b]);
+  g_bar[t] += 2.0 * theta / denominator;
+  const double w = g_iajb * theta / (denominator * denominator);
+  if (e_core_bar != nullptr) {
+    atomicAdd(&e_core_bar[i0 + il], -w);
+    atomicAdd(&e_core_bar[j], -w);
+  }
+  if (e_virt_bar != nullptr) {
+    atomicAdd(&e_virt_bar[a], w);
+    atomicAdd(&e_virt_bar[b], w);
+  }
+}
+
 int64_t diag_count(const int64_t n) {
   return n * n * n * n * n;
 }
@@ -175,6 +210,21 @@ wwr::wwrError_t sijrs(const wwr::wwrStream_t stream, const double *const g, cons
   const auto blocks = static_cast<uint32_t>(
       std::min(math::idivup(count, int64_t{kFourWarps}), int64_t{kSijrsMaxBlocks}));
   sijrs_kernel<<<blocks, kFourWarps, 0, stream>>>(g, ni, i0, ncore, nvirt, e_core, e_virt, acc);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t sijrs_adjoint(const wwr::wwrStream_t stream, const double *const g,
+                              const int32_t ni, const int32_t i0, const int32_t ncore,
+                              const int32_t nvirt, const double *const e_core,
+                              const double *const e_virt, double *const g_bar,
+                              double *const e_core_bar, double *const e_virt_bar) {
+  const int64_t count = int64_t{ni} * nvirt * ncore * nvirt;
+  if (count == 0) {
+    return wwr::wwrSuccess;
+  }
+  sijrs_adjoint_kernel<<<static_cast<uint32_t>(math::idivup(count, int64_t{kFourWarps})),
+                         kFourWarps, 0, stream>>>(g, ni, i0, ncore, nvirt, e_core, e_virt, g_bar,
+                                                  e_core_bar, e_virt_bar, count);
   return wwr::wwrGetLastError();
 }
 
