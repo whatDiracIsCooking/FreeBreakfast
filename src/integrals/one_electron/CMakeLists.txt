@@ -5,6 +5,7 @@ add_subdirectory(kinetic)
 add_subdirectory(potential_en)
 add_subdirectory(dipole)
 add_subdirectory(gradient)
+add_subdirectory(hessian)
 # After kinetic and potential_en: H is built from both.
 add_subdirectory(core_hamiltonian)
 
@@ -23,5 +24,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::integrals::one_electron::potential_en
   free_breakfast::integrals::one_electron::dipole
   free_breakfast::integrals::one_electron::gradient
+  free_breakfast::integrals::one_electron::hessian
   free_breakfast::integrals::one_electron::core_hamiltonian
 )

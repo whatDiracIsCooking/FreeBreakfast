@@ -3,14 +3,14 @@
 One-electron integral matrices on the GPU, over kernels FelizJueves generates:
 the overlap S, the kinetic energy T, the nuclear attraction V, and the core
 Hamiltonian H = T + V; the overlap between two bases, `overlap_mixed`; the
-dipole matrices mu_x, mu_y, mu_z; and the nuclear-gradient contractions of S,
-T and V with an AO matrix, and their derivative matrices S^x, T^x and V^x,
-`gradient`.
+dipole matrices mu_x, mu_y, mu_z; and the nuclear-gradient and nuclear-Hessian
+contractions of S, T and V with an AO matrix, and the derivative matrices S^x,
+T^x and V^x, `gradient` and `hessian`.
 
 ## Module
 
 `free_breakfast.integrals.one_electron`, a convenience module that re-exports
-the eight below (and is itself re-exported by `free_breakfast.integrals`):
+the nine below (and is itself re-exported by `free_breakfast.integrals`):
 
 ```
 launch/            free_breakfast.integrals.one_electron.launch: the per-class launch and the shared pre-launch checks
@@ -20,6 +20,7 @@ kinetic/           free_breakfast.integrals.one_electron.kinetic: the kinetic en
 potential_en/      free_breakfast.integrals.one_electron.potential_en: the electron-nuclear potential V
 dipole/            free_breakfast.integrals.one_electron.dipole: the dipole matrices mu_x, mu_y, mu_z, through d
 gradient/          free_breakfast.integrals.one_electron.gradient: Σ M dX/dR per atom, and dX/dR as matrices, for X = S, T, V
+hessian/           free_breakfast.integrals.one_electron.hessian: Σ M d²X/dR dR, 3N x 3N, for X = S, T, V
 core_hamiltonian/  free_breakfast.integrals.one_electron.core_hamiltonian: H = T + V, in place
 ```
 
@@ -47,7 +48,7 @@ T then V: each build joins before the next forks.
 
 **One layout per kernel family.** `overlap/`, `overlap_mixed/`, `kinetic/`,
 `potential_en/` and `dipole/` are each the same set of files, named after the
-directory (`gradient/` too, its three families sharing one `kernels/`):
+directory (`gradient/` and `hessian/` too, each with its three families sharing one `kernels/`):
 
 | File | Role |
 |---|---|
@@ -125,7 +126,7 @@ with an f shell is `InvalidConfig` before anything is launched.
 
 ## Public API
 
-Everything the eight sub-modules export; each README has its own table.
+Everything the nine sub-modules export; each README has its own table.
 
 | Symbol | Module |
 |---|---|
@@ -138,6 +139,7 @@ Everything the eight sub-modules export; each README has its own table.
 | `dipole(res, classes, mu_x, mu_y, mu_z)`, `kDipoleMaxL` | `dipole` |
 | `overlap_gradient(res, basis, classes, m)`, `kinetic_gradient(…)`, `potential_gradient(res, basis, classes, molecule, m)` | `gradient` |
 | `overlap_derivative(res, basis, classes)`, `kinetic_derivative(…)`, `potential_derivative(res, basis, classes, molecule)` | `gradient` |
+| `overlap_hessian(res, basis, classes, m)`, `kinetic_hessian(…)`, `potential_hessian(res, basis, classes, molecule, m)` | `hessian` |
 
 Every build is queued on `res.stream()`, each class on its own stream forked
 from it and joined back into it, with no host synchronization.
@@ -177,6 +179,13 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
   matrices S^x, T^x and V^x element by element against libcint
   (`test/gtest/data/one_electron_derivative/`), and contracted against the
   gradient contractions; `gradient/README.md` has the detail.
+- `test/gtest/one_electron_hessian_gpu.cpp`: the Hessian contractions of the
+  same water against libcint's second-derivative integrals, assembled as
+  PySCF's `partial_hess_elec` does (`test/gtest/data/hessian/`), at 1e-11 of
+  max|H|, each one's translational sum rule (its diagonal blocks are formed by
+  it, from the off-diagonal ones), `molecule`'s
+  `nuclear_repulsion_hessian` against `hess_nuc`, and the refusals;
+  `hessian/README.md` has the detail.
 - `test/gtest/launch_gpu.cpp`: `check_nuclei` accepting nuclei on the call's
   device. The nuclei themselves are `molecule`'s, tested in
   `test/gtest/molecule_gpu.cpp`.
@@ -185,6 +194,6 @@ status = fb::core_hamiltonian(res, *classes, molecule, h);
 
 | File | Role |
 |------|------|
-| `one_electron.cppm` | The convenience module: re-exports the eight sub-modules |
-| `launch/`, `overlap/`, `overlap_mixed/`, `kinetic/`, `potential_en/`, `dipole/`, `gradient/`, `core_hamiltonian/` | The sub-modules; each has its own README |
+| `one_electron.cppm` | The convenience module: re-exports the nine sub-modules |
+| `launch/`, `overlap/`, `overlap_mixed/`, `kinetic/`, `potential_en/`, `dipole/`, `gradient/`, `hessian/`, `core_hamiltonian/` | The sub-modules; each has its own README |
 | `CMakeLists.txt` | The sub-directories and the aggregate module |
