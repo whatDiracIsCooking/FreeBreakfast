@@ -86,6 +86,14 @@ emit/cphf_reference.py
                   right-hand sides and pyscf.df.hessian.rhf solve_mo1's mo1,
                   and the dipole right-hand sides and polarizability, the
                   reference response::cphf is tested against. Needs PySCF.
+emit/rhf_hessian_reference.py
+                  Write test/gtest/data/rhf_hessian/: the response part of
+                  pyscf.df.hessian.rhf's DF-RHF Hessian (its total less
+                  partial_hess_elec and hess_nuc, CPHF column by column to
+                  1e-12, checked against a dense solve), the orbitals and
+                  the CPHF solutions U^x, for a skew water and formaldehyde
+                  in cc-pVDZ / cc-pVDZ-JKFIT, the reference
+                  hessian::df_rhf_response is tested against. Needs PySCF.
 emit/cis_reference.py
                   Write test/gtest/data/cis/: PySCF's RHF + TDA (CIS)
                   singlet and triplet roots and singlet oscillator

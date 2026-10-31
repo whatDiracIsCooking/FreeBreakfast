@@ -156,6 +156,7 @@ add_executable(
   df_gradient_gpu.cpp
   df_jk_derivative_gpu.cpp
   df_rhf_gradient_gpu.cpp
+  df_rhf_hessian_response_gpu.cpp
   pipeline_gradient_gpu.cpp
   pipeline_casscf_gradient_gpu.cpp
   pipeline_nevpt2_gradient_gpu.cpp
@@ -213,6 +214,7 @@ target_link_libraries(
   free_breakfast::mcscf::zvector
   free_breakfast::nevpt2
   free_breakfast::gradient
+  free_breakfast::hessian
   free_breakfast::integrals::eri::integral_direct::coulomb::sort_bounds::device
   free_breakfast::integrals::eri::integral_direct::exchange::helpers
   free_breakfast::integrals::eri::integral_direct::exchange::pairs

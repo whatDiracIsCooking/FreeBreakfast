@@ -41,6 +41,9 @@ add_subdirectory(geometry)
 # After integrals, whose derivative integrals it contracts; before pipeline,
 # which it must never import.
 add_subdirectory(gradient)
+# After integrals, whose derivative integrals and J and K it contracts, and
+# response, whose CPHF it solves; before pipeline, which it must never import.
+add_subdirectory(hessian)
 # After the modules its steps wrap: the step contract itself is a leaf over
 # core, but the setup steps that follow it import integrals and recipes.
 add_subdirectory(pipeline)
