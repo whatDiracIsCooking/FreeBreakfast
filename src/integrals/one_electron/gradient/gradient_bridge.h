@@ -1,6 +1,6 @@
 /// @file
-/// @brief The one-electron gradient launchers, declared once for the module
-/// that calls them and the device TU that defines them.
+/// @brief The one-electron gradient and derivative-matrix launchers, declared
+/// once for the module that calls them and the device TU that defines them.
 ///
 /// Included by gradient.cpp in its GLOBAL MODULE FRAGMENT, and by
 /// gradient_launch.cu directly. It has to be the GMF: a declaration in a
@@ -73,5 +73,54 @@ namespace free_breakfast::device {
                                                        const int32_t *ao_atom, int32_t *atoms,
                                                        const NucleiView &nuclei, int32_t n_ao,
                                                        const double *m, double *g);
+
+/// @brief Add one class's overlap derivative matrices into @p x1, on
+/// @p stream: x1[k, m, n] += dS_mn/dA_k, A the centre of m, the generated
+/// kernel ips_{la}{lb}, one thread per record.
+///
+/// @p x1 is [3, n_ao, n_ao] over Cartesian AOs, row-major, and is only added
+/// into. cls.n_rec must be positive, cls.la <= cls.lb <= the largest momentum
+/// kernels/overlap_ip1.h's table covers, and 3 n_ao^2 must fit an int32_t.
+///
+/// @return As @ref overlap_gradient_class.
+[[nodiscard]] wwr::wwrError_t overlap_ip1_class(wwr::wwrStream_t stream,
+                                                const PrimitivePairClassView &cls, int32_t n_ao,
+                                                double *x1);
+
+/// @brief As @ref overlap_ip1_class, for the kinetic energy T: ipt_{la}{lb},
+/// its table kernels/kinetic_ip1.h.
+[[nodiscard]] wwr::wwrError_t kinetic_ip1_class(wwr::wwrStream_t stream,
+                                                const PrimitivePairClassView &cls, int32_t n_ao,
+                                                double *x1);
+
+/// @brief As @ref overlap_ip1_class, for the nuclear attraction V with every
+/// nucleus of @p nuclei held fixed: ipv_{la}{lb}, its table
+/// kernels/potential_ip1.h. nuclei.n_nuc must be positive.
+[[nodiscard]] wwr::wwrError_t potential_ip1_class(wwr::wwrStream_t stream,
+                                                  const PrimitivePairClassView &cls,
+                                                  const NucleiView &nuclei, int32_t n_ao,
+                                                  double *x1);
+
+/// @brief Add one class's term of V's operator at nucleus @p nuc into @p xc,
+/// on @p stream: xc[k, m, n] += dV^C_mn/dC_k, V^C = -Z_C / |r - C|, the
+/// generated kernel iprv_{la}{lb}. @p nuc must be in [0, nuclei.n_nuc). As
+/// @ref potential_ip1_class in every other respect.
+[[nodiscard]] wwr::wwrError_t potential_rinv_class(wwr::wwrStream_t stream,
+                                                   const PrimitivePairClassView &cls,
+                                                   const NucleiView &nuclei, int32_t nuc,
+                                                   int32_t n_ao, double *xc);
+
+/// @brief The centres' terms of every atom's derivative matrices, on
+/// @p stream: for every atom A in [0, n_atom) and axis k,
+///   out[A, k, m, n] += [ao_atom[m] == A] y[k, m, n] + [ao_atom[n] == A] y[k, n, m]
+/// with @p y the [3, n, n] row-major first-index derivative (an ip1 matrix
+/// carried onto the layout @p ao_atom indexes) and @p out [n_atom, 3, n, n].
+///
+/// n_atom and n must be positive and 3 n_atom no more than a grid's y extent.
+///
+/// @return The launch status.
+[[nodiscard]] wwr::wwrError_t add_centre_derivatives(wwr::wwrStream_t stream, int32_t n_atom,
+                                                     int32_t n, const int32_t *ao_atom,
+                                                     const double *y, double *out);
 
 } // namespace free_breakfast::device
