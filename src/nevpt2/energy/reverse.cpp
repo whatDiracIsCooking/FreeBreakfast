@@ -1,9 +1,10 @@
 /// @file
-/// @brief The SC reverse pass, part A: from the class energies back to the
-/// slabs (and through them onto Λ), h1e_v's rows and the orbital energies,
-/// and onto every class block's bar M_G = dE/dG. einsum_adjoint is the one
-/// derivative rule; the finish's P, Q, R (Park Eqs. 36-38) and Sijrs are the
-/// only expressions differentiated by hand.
+/// @brief The SC reverse pass: from the class energies back to the slabs
+/// (and through them onto Λ), h1e_v's rows and the orbital energies, and onto
+/// every class block's bar M_G = dE/dG; then the sweep of those bars back
+/// through the blocks' builders onto h1e, h2e and the RDMs. einsum_adjoint is
+/// the one derivative rule; the finish's P, Q, R (Park Eqs. 36-38) and Sijrs
+/// are the only expressions differentiated by hand.
 
 module;
 
@@ -372,9 +373,9 @@ Status add_dot(DeviceResources &res, const Buffers::device<double> &m, const dou
 // The bars on every class block G, row-major as G is: M_G = dE/dG. A metric a
 // class reads straight from an RDM (Sr's dm1..dm3, Srsi's dm1, Sir's dm1 and
 // dm2) is a block of that class here, so that each class's Eq. 40 is
-// assembled from its own bars. The RDM sweep takes each back through its
-// builder (make_*) onto the RDMs, h1e and h2e. class_bars allocates them all
-// at once, zeroed, and each class adds onto its own.
+// assembled from its own bars. sweep_blocks takes each back through its
+// builder (make_*) onto the RDMs, h1e and h2e. class_energies_adjoint
+// allocates them all at once, zeroed, and each class adds onto its own.
 struct BlockBars {
   Buffers::device<double> a16, a17, a19, sr_dm3, sr_dm2, sr_dm1; // Sr
   Buffers::device<double> a22, a23, a25, dm3_h, dm2_h, dm1_h;    // Si
@@ -916,11 +917,274 @@ Result<ClassSums> reverse_sir(ReverseContext &c, BlockBars &m) {
   return sums;
 }
 
-// The whole walk: every class's sums, the orbital energies' bars added onto
-// @p bars, and the block bars, which the RDM sweep will take from here.
-Result<std::pair<ClassEnergiesAdjoint, BlockBars>>
-class_bars(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
-           const int32_t batch, const EnergyBars &bars) {
+// ---------------------------------------------------------------------------
+// The sweep: the block bars back through their builders
+// ---------------------------------------------------------------------------
+
+// Each block's bar M_G back through its make_* onto @p bars' h1e, h2e and
+// RDM fields. Every builder is listed term by term with energy.cpp's
+// subscripts, coefficients and operands (a transpose as its one-operand
+// einsum, NumPy's axes spelled as labels: axes {1, 4, 0, 2, 5, 3} of
+// "abcdef" is "->beacfd"), and einsum_adjoint differentiates each. A term
+// whose bars are all null (delta alone) is listed anyway, so a builder still
+// reads against its forward line by line.
+//
+// Reverse topological: an intermediate's bar is complete before it is swept
+// onto what built it. Sij's a9 reads hdm3, which reads hdm2 (a9, hdm3,
+// hdm2, its dm2b); Srs's a7 reads rm3, which reads rm2 (a7, rm3, rm2);
+// Sijr's a3 reads hdm1 (a3, hdm1); and a16's and a22's fdm2, and a17's and
+// a19's h1e - Σ (mj|jn), are swept within their builders. A block that is a
+// class metric too (hdm1, rm2, hdm2) is @p m's own bar, which the sweep adds
+// to before sweeping it, so @p m is spent afterwards.
+//
+// The intermediates a bar is taken against (hdm1, hdm2, hdm3, rm2, rm3, the
+// modified h1e) are rebuilt with the forward's own builders, not kept from
+// the walk. An operand whose own bar is the only one its term takes is never
+// read (einsum_adjoint reads every operand but k for k's bar), so fdm2 and
+// dm2b are not rebuilt: their operand is a shape. Every intermediate bar is
+// a buffer of its own, held across einsum_adjoint's workspace.
+Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
+                    const EnergyBars &bars) {
+  const wwr::wwrStream_t s = res.stream();
+  const int64_t n = o.dm1.dims[0];
+  const std::vector<int64_t> d2{n, n};
+  const std::vector<int64_t> d4(4, n);
+  const std::vector<int64_t> d6(6, n);
+  const auto &[h1e, h2e, dm1, dm2, dm3, f3ca, f3ac, delta, delta_buf, e_core, e_virt] = o;
+  double *const bh1 = bars.h1e;
+  double *const bh2 = bars.h2e;
+  double *const b1 = bars.dm1;
+  double *const b2 = bars.dm2;
+  double *const b3 = bars.dm3;
+  double *const bca = bars.f3ca;
+  double *const bac = bars.f3ac;
+  // Every term of @p terms against @p out_bar, the bar on what they build.
+  const auto sweep = [&](const std::vector<ClassTerm> &terms,
+                         const Buffers::device<double> &out_bar,
+                         const std::vector<int64_t> &out_dims) {
+    return adjoint_terms(res, terms, out_bar.data(), out_bar.data(), out_dims, delta, nullptr);
+  };
+  // A block that is an RDM itself, G = dm: the identity einsum.
+  const auto identity = [](const EinsumOperand &dm, double *const bar) {
+    const std::string_view subscripts = dm.dims.size() == 6   ? "abcdef->abcdef"
+                                        : dm.dims.size() == 4 ? "abcd->abcd"
+                                                              : "ab->ab";
+    return ClassTerm{.subscripts = subscripts, .ops = {dm}, .bars = {bar}};
+  };
+
+  // Sr: a16, its fdm2 (gathered off the diagonal diag_a16 wrote,
+  // a16[p, i, r, a, b, i] += fdm2[p, r, a, b]), a17, a19, dm1..dm3.
+  FBF_TRY(sweep({{"ib,rpqiac->pqrabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
+                 {"ia,rpqbic->pqrabc", {h1e, dm3}, {bh1, b3}, false, 1.0},
+                 {"ci,rpqbai->pqrabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
+                 {"abcdef->beacfd", {f3ca}, {bca}, false, -1.0},
+                 {"kbia,rpqcki->pqrabc", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"kbaj,rpqjkc->pqrabc", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"cbij,rpqjai->pqrabc", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                 {"abcdef->bcaedf", {f3ac}, {bac}, false, 1.0},
+                 {"abcdef->bcaedf", {f3ca}, {bca}, false, -1.0},
+                 {"jbij,rpqiac->pqrabc", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                 {"cjka,rpqbjk->pqrabc", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"jcij,rpqbai->pqrabc", {h2e, dm3}, {bh2, b3}, false, 1.0}},
+                m.a16, d6));
+  {
+    Buffers::device<double> fdm2 = FBF_TRY(device_zeros(res, n * n * n * n));
+    FBF_TRY(einsum(s, "pirabi->prab", {{.data = m.a16.data(), .dims = d6}}, fdm2.data(), d4, 1.0));
+    FBF_TRY(sweep({{"kbij,rpajki->prab", {h2e, dm3}, {bh2, b3}, false, 1.0}}, fdm2, d4));
+  }
+  {
+    // make_a17's and make_a19's h1e - Σ_j (mj|jn), row-major.
+    Buffers::device<double> h1e_buf = FBF_TRY(device_zeros(res, n * n));
+    FBF_TRY(einsum(s, "mn->mn", {h1e}, h1e_buf.data(), d2, 1.0));
+    FBF_TRY(einsum(s, "mjjn->mn", {h2e}, h1e_buf.data(), d2, -1.0));
+    const EinsumOperand h1e_mod{.data = h1e_buf.data(), .dims = d2};
+    Buffers::device<double> h1e_mod_bar = FBF_TRY(device_zeros(res, n * n));
+    double *const bm = h1e_mod_bar.data();
+    FBF_TRY(sweep({{"pi,cabi->abcp", {h1e_mod, dm2}, {bm, b2}, false, -1.0},
+                   {"kpij,cabjki->abcp", {h2e, dm3}, {bh2, b3}, false, -1.0}},
+                  m.a17, d4));
+    FBF_TRY(sweep({{"pi,ai->ap", {h1e_mod, dm1}, {bm, b1}, false, -1.0},
+                   {"kpij,ajki->ap", {h2e, dm2}, {bh2, b2}, false, -1.0}},
+                  m.a19, d2));
+    FBF_TRY(sweep({{"mn->mn", {h1e}, {bh1}, false, 1.0}, {"mjjn->mn", {h2e}, {bh2}, false, -1.0}},
+                  h1e_mod_bar, d2));
+  }
+  FBF_TRY(sweep({identity(dm3, b3)}, m.sr_dm3, d6));
+  FBF_TRY(sweep({identity(dm2, b2)}, m.sr_dm2, d4));
+  FBF_TRY(sweep({identity(dm1, b1)}, m.sr_dm1, d2));
+
+  // Si: a22, its fdm2a (diag_a22a: a22[x, i, k, i, b, c] -= fdm2a[x, k, b, c])
+  // and fdm2b (diag_a22b: a22[x, i, k, a, i, c] += 2 fdm2b[x, k, a, c]), a23,
+  // a25, dm3_h, dm2_h. dm1_h is make_hdm1, so its bar joins Sijr's hdm1's.
+  FBF_TRY(sweep({{"pb,kipjac->ijkabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
+                 {"pa,kibjpc->ijkabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
+                 {"cp,kibjap->ijkabc", {h1e, dm3}, {bh1, b3}, false, 1.0},
+                 {"cqra,kibjqr->ijkabc", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                 {"qcpq,kibjap->ijkabc", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"abcdef->bfaced", {f3ac}, {bac}, false, -1.0},
+                 {"pqab,kiqjpc->ijkabc", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"pcrb,kiajpr->ijkabc", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                 {"cqrb,kiqjar->ijkabc", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                 {"abcdef->bdaecf", {f3ac}, {bac}, false, -1.0},
+                 {"abcdef->bdaecf", {f3ca}, {bca}, false, 1.0},
+                 {"jb,kiac->ijkabc", {h1e, dm2}, {bh1, b2}, false, 2.0},
+                 {"pjrb,kiprac->ijkabc", {h2e, dm3}, {bh2, b3}, false, 2.0}},
+                m.a22, d6));
+  {
+    Buffers::device<double> fdm2a = FBF_TRY(device_zeros(res, n * n * n * n));
+    Buffers::device<double> fdm2b = FBF_TRY(device_zeros(res, n * n * n * n));
+    const EinsumOperand a22_bar{.data = m.a22.data(), .dims = d6};
+    FBF_TRY(einsum(s, "xikibc->xkbc", {a22_bar}, fdm2a.data(), d4, -1.0));
+    FBF_TRY(einsum(s, "xikaic->xkac", {a22_bar}, fdm2b.data(), d4, 2.0));
+    FBF_TRY(sweep({{"pqrb,kiqcpr->ikbc", {h2e, dm3}, {bh2, b3}, false, 1.0}}, fdm2a, d4));
+    FBF_TRY(sweep({{"pa,kipc->ikac", {h1e, dm2}, {bh1, b2}, false, 1.0},
+                   {"cp,kiap->ikac", {h1e, dm2}, {bh1, b2}, false, -1.0},
+                   {"cqra,kiqr->ikac", {h2e, dm2}, {bh2, b2}, false, -1.0},
+                   {"qcpq,kiap->ikac", {h2e, dm2}, {bh2, b2}, false, 1.0},
+                   {"pqra,kiqcpr->ikac", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                   {"rcpq,kiaqrp->ikac", {h2e, dm3}, {bh2, b3}, false, -1.0}},
+                  fdm2b, d4));
+  }
+  FBF_TRY(sweep({{"ip,caib->abcp", {h1e, dm2}, {bh1, b2}, false, -1.0},
+                 {"pijk,cajbik->abcp", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"bp,ca->abcp", {h1e, dm1}, {bh1, b1}, false, 2.0},
+                 {"pibk,caik->abcp", {h2e, dm2}, {bh2, b2}, false, 2.0}},
+                m.a23, d4));
+  FBF_TRY(sweep({{"pi,ai->ap", {h1e, dm1}, {bh1, b1}, false, -1.0},
+                 {"pijk,jaik->ap", {h2e, dm2}, {bh2, b2}, false, -1.0},
+                 {"ap->pa", {h1e}, {bh1}, false, 2.0},
+                 {"piaj,ij->ap", {h2e, dm1}, {bh2, b1}, false, 2.0}},
+                m.a25, d2));
+  FBF_TRY(sweep({{"abef,cd->abcdef", {dm2, delta}, {b2, nullptr}, false, 2.0},
+                 {"abcdef->abdcef", {dm3}, {b3}, false, -1.0}},
+                m.dm3_h, d6));
+  FBF_TRY(sweep({{"ab,cd->abcd", {dm1, delta}, {b1, nullptr}, false, 2.0},
+                 {"abcd->abdc", {dm2}, {b2}, false, -1.0}},
+                m.dm2_h, d4));
+  // dm1_h's value is not read: the identity's one operand is the one with a bar.
+  FBF_TRY(sweep({identity({.dims = d2}, m.hdm1.data())}, m.dm1_h, d2));
+
+  // Sijr: a3, then hdm1 (Si's dm1_h's bar already in it).
+  {
+    const Buffers::device<double> hdm1 = FBF_TRY(make_hdm1(res, dm1, delta));
+    const EinsumOperand hdm1_op{.data = hdm1.data(), .dims = d2};
+    FBF_TRY(sweep({{"ia,ip->pa", {h1e, hdm1_op}, {bh1, m.hdm1.data()}, false, 1.0},
+                   {"ijka,pj,ik->pa", {h2e, delta, dm1}, {bh2, nullptr, b1}, false, 2.0},
+                   {"ijka,jpik->pa", {h2e, dm2}, {bh2, b2}, false, -1.0}},
+                  m.a3, d2));
+  }
+  FBF_TRY(sweep({{"ij->ij", {delta}, {nullptr}, false, 2.0}, {"ab->ba", {dm1}, {b1}, false, -1.0}},
+                m.hdm1, d2));
+
+  // Srsi: k27, dm1.
+  FBF_TRY(sweep({{"ai,pi->pa", {h1e, dm1}, {bh1, b1}, false, -1.0},
+                 {"iajk,pkij->pa", {h2e, dm2}, {bh2, b2}, false, -1.0},
+                 {"iaji,pj->pa", {h2e, dm1}, {bh2, b1}, false, 1.0}},
+                m.k27, d2));
+  FBF_TRY(sweep({identity(dm1, b1)}, m.srsi_dm1, d2));
+
+  // Srs: a7, rm3, rm2. make_a7 is what builds rm2; its a7 is not read.
+  {
+    const Buffers::device<double> rm2 = FBF_TRY(make_a7(res, h1e, h2e, dm1, dm2, dm3, delta)).first;
+    const EinsumOperand rm2_op{.data = rm2.data(), .dims = d4};
+    const Buffers::device<double> rm3 = FBF_TRY(make_rm3(res, dm2, dm3, rm2_op, delta));
+    const EinsumOperand rm3_op{.data = rm3.data(), .dims = d6};
+    Buffers::device<double> rm3_bar = FBF_TRY(device_zeros(res, n * n * n * n * n * n));
+    double *const br2 = m.rm2.data();
+    double *const br3 = rm3_bar.data();
+    FBF_TRY(sweep({{"bi,pqia->pqab", {h1e, rm2_op}, {bh1, br2}, false, -1.0},
+                   {"ai,pqbi->pqab", {h1e, rm2_op}, {bh1, br2}, false, -1.0},
+                   {"kbij,pqkija->pqab", {h2e, rm3_op}, {bh2, br3}, false, -1.0},
+                   {"kaij,pqkibj->pqab", {h2e, rm3_op}, {bh2, br3}, false, -1.0},
+                   {"baij,pqij->pqab", {h2e, rm2_op}, {bh2, br2}, false, -1.0}},
+                  m.a7, d4));
+    FBF_TRY(sweep({{"injmkl->ijklmn", {dm3}, {b3}, false, 1.0},
+                   {"jn,imkl->ijklmn", {delta, dm2}, {nullptr, b2}, false, -1.0},
+                   {"km,ijln->ijklmn", {delta, rm2_op}, {nullptr, br2}, false, -1.0},
+                   {"kn,ijml->ijklmn", {delta, rm2_op}, {nullptr, br2}, false, -1.0}},
+                  rm3_bar, d6));
+  }
+  FBF_TRY(sweep({{"iljk->ijkl", {dm2}, {b2}, false, 1.0},
+                 {"ik,jl->ijkl", {dm1, delta}, {b1, nullptr}, false, -1.0}},
+                m.rm2, d4));
+
+  // Sij: a9, hdm3, hdm2, dm2b.
+  {
+    const Buffers::device<double> hdm2 = FBF_TRY(make_hdm2(res, dm1, dm2, delta));
+    const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
+    const Buffers::device<double> hdm3 = FBF_TRY(make_hdm3(res, dm1, dm2, dm3, hdm2_op, delta));
+    const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = d6};
+    Buffers::device<double> hdm3_bar = FBF_TRY(device_zeros(res, n * n * n * n * n * n));
+    double *const bd2 = m.hdm2.data();
+    double *const bd3 = hdm3_bar.data();
+    FBF_TRY(sweep({{"ib,pqai->pqab", {h1e, hdm2_op}, {bh1, bd2}, false, 1.0},
+                   {"ijib,pqaj->pqab", {h2e, hdm2_op}, {bh2, bd2}, false, 2.0},
+                   {"ijjb,pqai->pqab", {h2e, hdm2_op}, {bh2, bd2}, false, -1.0},
+                   {"ijkb,pkqaij->pqab", {h2e, hdm3_op}, {bh2, bd3}, false, -1.0},
+                   {"ia,pqib->pqab", {h1e, hdm2_op}, {bh1, bd2}, false, 1.0},
+                   {"ijja,pqib->pqab", {h2e, hdm2_op}, {bh2, bd2}, false, -1.0},
+                   {"ijba,pqji->pqab", {h2e, hdm2_op}, {bh2, bd2}, false, -1.0},
+                   {"ijia,pqjb->pqab", {h2e, hdm2_op}, {bh2, bd2}, false, 2.0},
+                   {"ijka,pqkjbi->pqab", {h2e, hdm3_op}, {bh2, bd3}, false, -1.0}},
+                  m.a9, d4));
+    FBF_TRY(sweep({{"pb,qrac->pqrabc", {delta, hdm2_op}, {nullptr, bd2}, false, -1.0},
+                   {"br,pqac->pqrabc", {delta, hdm2_op}, {nullptr, bd2}, false, -1.0},
+                   {"bq,prac->pqrabc", {delta, hdm2_op}, {nullptr, bd2}, false, 2.0},
+                   {"ap,bqcr->pqrabc", {delta, dm2}, {nullptr, b2}, false, 2.0},
+                   {"ap,cr,bq->pqrabc", {delta, delta, dm1}, {nullptr, nullptr, b1}, false, -4.0},
+                   {"cr,bqap->pqrabc", {delta, dm2}, {nullptr, b2}, false, 2.0},
+                   {"bqapcr->pqrabc", {dm3}, {b3}, false, -1.0},
+                   {"ar,pc,bq->pqrabc", {delta, delta, dm1}, {nullptr, nullptr, b1}, false, 2.0},
+                   {"ar,bqcp->pqrabc", {delta, dm2}, {nullptr, b2}, false, -1.0}},
+                  hdm3_bar, d6));
+  }
+  {
+    Buffers::device<double> dm2b_bar = FBF_TRY(device_zeros(res, n * n * n * n));
+    // dm2b's value is never read: its term's one operand is the one with a bar.
+    const EinsumOperand dm2b_op{.data = nullptr, .dims = d4};
+    FBF_TRY(sweep({{"klij->ijkl", {dm2b_op}, {dm2b_bar.data()}, false, 1.0},
+                   {"il,kj->ijkl", {delta, dm1}, {nullptr, b1}, false, 1.0},
+                   {"jk,li->ijkl", {delta, dm1}, {nullptr, b1}, false, 1.0},
+                   {"ik,lj->ijkl", {delta, dm1}, {nullptr, b1}, false, -2.0},
+                   {"jl,ki->ijkl", {delta, dm1}, {nullptr, b1}, false, -2.0},
+                   {"il,jk->ijkl", {delta, delta}, {nullptr, nullptr}, false, -2.0},
+                   {"ik,jl->ijkl", {delta, delta}, {nullptr, nullptr}, false, 4.0}},
+                  m.hdm2, d4));
+    FBF_TRY(sweep({{"ikjl->ijkl", {dm2}, {b2}, false, 1.0},
+                   {"jk,il->ijkl", {delta, dm1}, {nullptr, b1}, false, -1.0}},
+                  dm2b_bar, d4));
+  }
+
+  // Sir: a12, a13, dm2, dm1.
+  FBF_TRY(sweep({{"ia,qpib->pqab", {h1e, dm2}, {bh1, b2}, false, 1.0},
+                 {"bi,qpai->pqab", {h1e, dm2}, {bh1, b2}, false, -1.0},
+                 {"ijka,qpjbik->pqab", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                 {"kbij,qpajki->pqab", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"bjka,qpjk->pqab", {h2e, dm2}, {bh2, b2}, false, -1.0},
+                 {"jbij,qpai->pqab", {h2e, dm2}, {bh2, b2}, false, 1.0}},
+                m.a12, d4));
+  FBF_TRY(sweep({{"ia,qbip->pqab", {h1e, dm2}, {bh1, b2}, false, -1.0},
+                 {"pa,qb->pqab", {h1e, dm1}, {bh1, b1}, false, 2.0},
+                 {"bi,qiap->pqab", {h1e, dm2}, {bh1, b2}, false, 1.0},
+                 {"pa,bi,qi->pqab", {delta, h1e, dm1}, {nullptr, bh1, b1}, false, -2.0},
+                 {"ijka,qbjpik->pqab", {h2e, dm3}, {bh2, b3}, false, -1.0},
+                 {"kbij,qjapki->pqab", {h2e, dm3}, {bh2, b3}, false, 1.0},
+                 {"blma,qmlp->pqab", {h2e, dm2}, {bh2, b2}, false, 1.0},
+                 {"kpma,qbkm->pqab", {h2e, dm2}, {bh2, b2}, false, 2.0},
+                 {"bpma,qm->pqab", {h2e, dm1}, {bh2, b1}, false, -2.0},
+                 {"lbkl,qkap->pqab", {h2e, dm2}, {bh2, b2}, false, -1.0},
+                 {"ap,mbkl,qlmk->pqab", {delta, h2e, dm2}, {nullptr, bh2, b2}, false, -2.0},
+                 {"ap,lbkl,qk->pqab", {delta, h2e, dm1}, {nullptr, bh2, b1}, false, 2.0}},
+                m.a13, d4));
+  FBF_TRY(sweep({identity(dm2, b2)}, m.sir_dm2, d4));
+  FBF_TRY(sweep({identity(dm1, b1)}, m.sir_dm1, d2));
+  return {};
+}
+
+Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks,
+                                                    const EnergyInputs &in, const int32_t batch,
+                                                    const EnergyBars &bars) {
+  const ScopedDeviceIndex on{res.dev_idx()};
   const ActiveOperands ops = FBF_TRY(active_operands(res, blocks, in));
   std::vector<double> e_core_bar(ops.e_core.size(), 0.0);
   std::vector<double> e_virt_bar(ops.e_virt.size(), 0.0);
@@ -994,17 +1258,12 @@ class_bars(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
     out.eq40[k] = sums[k].eq40;
   }
   out.energies.total = std::ranges::fold_left(out.energies.energies, 0.0, std::plus{});
-  return std::pair{std::move(out), std::move(m)};
-}
 
-Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks,
-                                                    const EnergyInputs &in, const int32_t batch,
-                                                    const EnergyBars &bars) {
-  const ScopedDeviceIndex on{res.dev_idx()};
-  // The block bars are dropped here until the RDM sweep reads them.
-  std::pair<ClassEnergiesAdjoint, BlockBars> walked =
-      FBF_TRY(class_bars(res, blocks, in, batch, bars));
-  return std::move(walked.first);
+  const std::array wanted{bars.h1e, bars.h2e, bars.dm1, bars.dm2, bars.dm3, bars.f3ca, bars.f3ac};
+  if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
+    FBF_TRY(sweep_blocks(res, ops, m, bars));
+  }
+  return out;
 }
 
 } // namespace free_breakfast::nevpt2

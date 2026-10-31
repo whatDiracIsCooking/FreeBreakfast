@@ -77,6 +77,11 @@ Result<Buffers::device<double>> make_a3(DeviceResources &res, const EinsumOperan
 Result<Buffers::device<double>> make_k27(DeviceResources &res, const EinsumOperand &h1e,
                                          const EinsumOperand &h2e, const EinsumOperand &dm1,
                                          const EinsumOperand &dm2);
+// Srs's rm3, from its rm2; make_a7 builds it internally. Declared for the
+// reverse sweep, which re-reads it.
+Result<Buffers::device<double>> make_rm3(DeviceResources &res, const EinsumOperand &dm2,
+                                         const EinsumOperand &dm3, const EinsumOperand &rm2,
+                                         const EinsumOperand &delta);
 Result<std::pair<Buffers::device<double>, Buffers::device<double>>>
 make_a7(DeviceResources &res, const EinsumOperand &h1e, const EinsumOperand &h2e,
         const EinsumOperand &dm1, const EinsumOperand &dm2, const EinsumOperand &dm3,

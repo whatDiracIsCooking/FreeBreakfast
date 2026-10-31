@@ -131,13 +131,17 @@ intermediates. The slab's y is a workspace region, taken after the slab.
     class_energies_adjoint(res, blocks, in, batch, bars) -> ClassEnergiesAdjoint
         energies     class_energies' norms, energies and total
         eq40[8]      Park Eq. 40, Σ_t (P_t N_t + Q_t H_t), from the bars
-    bars (EnergyBars, each added onto):
+    bars (EnergyBars, each added onto, a null one not formed):
+        h1e, h2e, dm1, dm2, dm3, f3ca, f3ac             in their inputs' layouts
         h1e_v_sr, h1e_v_si, h1e_v_sir, e_core, e_virt   in their inputs' layouts
         lambda                                          Λ, nevpt2::slab_adjoint's
 
-`reverse.cpp`, part A of `nuclear_gradient.tex` §5.2 (demo `docs/gradients.md`
-§5.1–5.2): from the energy back to the class-level inputs, at fixed h1e, h2e
-and RDMs. Each class walks its slabs as `class_energies` does, and lists its
+`reverse.cpp`, `nuclear_gradient.tex` §5.2 (demo `docs/gradients.md`
+§5.1–5.3): from the energy back to every `EnergyInputs` field and, through
+Λ, to B. It runs in two parts. The walk takes the energy back to the
+class-level inputs and the block bars M_G at fixed h1e, h2e and RDMs; the
+[sweep](#the-sweep) then takes the M_G back through the builders onto h1e,
+h2e and the RDMs. Each class walks its slabs as `class_energies` does, and lists its
 norm and H terms **once**, as `ClassTerm`s with energy.cpp's subscripts,
 coefficients and operands, plus the bar each operand's adjoint goes into.
 Per slab the list is evaluated, the norms and H read back, and the finish's
@@ -188,30 +192,55 @@ contracts. These are `BlockBars` in `reverse.cpp`, row-major like G, and
 (Sr's dm1–dm3, Srsi's dm1, Sir's dm1 and dm2) is a block of that class there,
 so each class's Eq. 40 is assembled from its own bars:
 `eq40[k] = Σ_G ⟨M_G, G⟩`, plus ⟨P, term⟩ for Sir's one term that reads no
-block, and ½ ⟨ḡ, g⟩ for Sijrs. Nothing reads them past that yet;
-`class_energies_adjoint` drops them.
+block, and ½ ⟨ḡ, g⟩ for Sijrs.
 
-**What #573 picks up.** The reverse-topological sweep of `BlockBars` back
-through the `make_*` builders onto dm1, dm2, dm3, f3ca, f3ac, h1e and h2e.
-Each builder's einsums and transposes go through `einsum_adjoint` as they
-are (a transpose is the one-operand einsum, its axes spelled as labels), with
-the bar on each intermediate (hdm2 under hdm3, rm2 under rm3, fdm2, a17's and
-a19's h1e − Σ(mjjn)) taken before its own producer's. The diagonal slices
-(`diag_a16`, `diag_a22a`, `diag_a22b`) need their gathers there. Then come
-the `h1e`, `h2e` and RDM fields of `EnergyBars`, where `class_energies_adjoint`
-now drops the bars. The workspace rule there is `einsum_adjoint`'s: hold no
-region of it across the call.
+### The sweep
+
+`sweep_blocks` takes every M_G back through the `make_*` that built G, onto
+the `h1e`, `h2e` and RDM fields of `EnergyBars` (skipped when all seven are
+null). Each builder is listed term by term with energy.cpp's subscripts,
+coefficients and operands, so the two read side by side, and each term goes
+through `einsum_adjoint` unchanged: with h1e and h2e among the bars, every
+operand of a term but delta takes one. A transpose is its one-operand einsum,
+NumPy's axes spelled as labels (`transpose(f3ca, {1, 4, 0, 2, 5, 3})` is
+`"abcdef->beacfd"`). A block that is an RDM itself (Sr's dm1–dm3, Srsi's
+dm1, Sir's dm1 and dm2) is the identity einsum.
+
+**Reverse topological order.** An intermediate's bar is complete before it
+is swept onto what built it: a9, hdm3, hdm2, then hdm2's dm2b (Sij); a7,
+rm3, rm2 (Srs); a3, hdm1 (Sijr). Where a class reads the intermediate as its
+metric too (hdm1, rm2, hdm2), the walk's M_G is where the builders above it
+add, so `BlockBars` is spent by the sweep. Si's dm1_h is `make_hdm1`, so its
+bar joins Sijr's hdm1's and is swept once. a17's and a19's h1e − Σ_j (mj|jn)
+gets one bar from both and is swept onto h1e and h2e last.
+
+**The diagonal slices need no kernel.** `diag_a16` adds fdm2 onto a diagonal
+of a16, `a16[p, i, r, a, b, i] += fdm2[p, r, a, b]`, which no einsum can
+write, since an output label cannot repeat. Its adjoint is the gather, and an
+input label can: `fdm2_bar = einsum("pirabi->prab", a16_bar)`. `diag_a22a`'s
+is `−"xikibc->xkbc"` and `diag_a22b`'s `2 "xikaic->xkac"`, each with its
+kernel's sign and factor. fdm2's own term then takes the gathered bar.
+
+**Recomputed, not kept.** The intermediates a bar is taken against (hdm1,
+hdm2, hdm3, rm2, rm3, and a17/a19's modified h1e) are rebuilt by the
+forward's own builders (rm2 through `make_a7`, which is what builds it), so
+nothing is held from the walk. dm2b and the three fdm2s are not rebuilt at
+all: `einsum_adjoint` reads every operand of a term but the one whose bar it
+forms, and each is the only operand of the term that reads it, or the one
+with the bar.
 
 **Memory.** On top of `class_energies`' own, the block bars are buffers of
 their own. They outlive their class, four of them n⁶ (Sr's a16 and dm3, Si's
-a22 and dm3_h). Each slab's bar is one more slab-sized buffer, and the norm,
-H and multiplier tables per slab are buffers too, since they are held across
-`einsum_adjoint`'s and `slab_adjoint`'s workspace.
+a22 and dm3_h), and live through the sweep. Each slab's bar is one more
+slab-sized buffer, and the norm, H and multiplier tables per slab are buffers
+too, since they are held across `einsum_adjoint`'s and `slab_adjoint`'s
+workspace. The sweep adds at most two n⁶ at once (hdm3 and its bar, or rm3
+and its bar) and a few n⁴; every intermediate bar is a buffer of its own for
+the same reason.
 
 ## Not ported
 
-The forward tangents and the Hessians, SC's and PC's. The SC reverse pass's
-sweep onto the RDMs, h1e and h2e (#573), and PC's reverse pass. The demo's
+The forward tangents and the Hessians, SC's and PC's, and PC's reverse pass. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
@@ -250,11 +279,34 @@ CAS(8,8) from PySCF's RDMs. At CAS(4,4), Si vanishes by N₂'s symmetry
   energies E is homogeneous of degree 4 in (B, h1e_v²), so
   ⟨Λ, B⟩ + 2 Σ ⟨h1e_v̄, h1e_v⟩ = 4E. The energies are checked against the
   golden ones as well.
-- `BarsMatchRichardsonLadder`: Σ ⟨bar, ẋ⟩ over (B via Λ, h1e_v_*, e_core,
-  e_virt), along a seeded random direction (all four together, then each
-  group alone), against central differences of `class_energies` itself. Successive changes must fall by a factor in
-  (3.2, 4.8) over at least three halvings, and the Richardson extrapolant at
-  that run's finest pair must agree to 1e-7 relative. On an RTX 3080 it agrees
-  to between 2e-10 and 5e-9.
-- `BatchedBarsMatchWhole`: walked in threes, every bar matches the whole
-  walk's to 1e-12 of its largest element.
+- `BarsMatchRichardsonLadder`: Σ ⟨bar, ẋ⟩ over every input (B via Λ,
+  h1e_v_*, e_core and e_virt, h1e and h2e, dm1–dm3, f3ca and f3ac), along a
+  seeded random direction (all together, then each of five groups alone:
+  B, h1e_v, e, h, rdm), against central differences of `class_energies`
+  itself. Successive changes must fall by a factor in (3.2, 4.8) over at
+  least three halvings, and the Richardson extrapolant at that run's finest
+  pair must agree to 1e-7 relative. The RDMs move as raw tensors (a duality
+  check of linear maps, not a CI displacement), dm1–dm3's direction averaged
+  with its index-reversed self, the one permutation symmetry PySCF's carry;
+  f3ca and f3ac carry none, and h1e and h2e move as raw arrays.
+  - **The RDM direction is a tenth the length of the others.** At full
+    length, Sr's energy along it is singular about |t| ≈ 1e-3 from the base
+    point. Measured at seed 560, the five RDMs together: Sr's ratios ran
+    5.69, 0.03, −0.75, −30.6, 5.50, 4.29, 4.07, 4.02, while every other
+    class's were at 4.00 from the third rung on. That fits a t⁴ coefficient
+    7e5 times the t² one. The extrapolant then missed by 3.9e-7. Each RDM
+    alone, at full length, agreed to 2e-8, and so did all five once the
+    ladder started at 1e-3 (7e-10). So the bars were right and the direction
+    was too long. It is shortened (`kRdmScale`); the tolerance is unchanged.
+  - Measured on the gfx1200: all 4.9e-8, B 2.6e-9, h1e_v 4.0e-10,
+    e 6.5e-9, h 6.1e-10, rdm 1.1e-10 relative.
+  - **"all" is a slow-tier case** (`slow_test.h`): ~115 s on the gfx1200,
+    against 5–16 s for each group. The cost follows the data: one
+    `class_energies` is ~0.2 s with only the orbital energies moved, ~0.7 s
+    with B and ~5.7 s with everything. That is presumably einsum's atomicAdd
+    per term, cheap while most terms are exact zeros, as over N₂'s
+    symmetry-sparse arrays, until a dense random direction fills them in;
+    the mechanism is not measured. The groups stand for it in the fast
+    tier.
+- `BatchedBarsMatchWhole`: walked in threes, every bar (h1e, h2e and the
+  RDMs' included) matches the whole walk's to 1e-12 of its largest element.
