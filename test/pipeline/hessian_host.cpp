@@ -1,9 +1,10 @@
 // Host-only cases for the Hessian step: its contract (static_asserts, as
 // steps_host.cpp holds every step's), and its table read by the TOML front
-// end -- the method and the displacement, the chain copied in from the
-// config's own tables, every refusal, and beside an [optimize], the molecule
-// it reads loaded from the final.xyz that step writes, so it runs after it.
-// Nothing is run, so nothing touches a device.
+// end -- the method (analytic by default) and the displacement, the chain
+// copied in from the config's own tables, every refusal (the analytic method
+// over integral-direct ERIs among them), and beside an [optimize], the
+// molecule it reads loaded from the final.xyz that step writes, so it runs
+// after it. Nothing is run, so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -16,13 +17,15 @@ namespace {
 
 namespace fb = free_breakfast;
 
-// A Node step, as each displacement runs a Pipeline of its own on the node,
-// reading the pipeline's molecule: whichever step makes it, it runs after.
+// A Node step, as each method runs Pipelines of its own on the node, reading
+// the pipeline's molecule: whichever step makes it, it runs after. The
+// product carries the harmonic vibrations beside the Hessian.
 static_assert(fb::PipelineStep<fb::HessianStep>);
 static_assert(fb::kRunShape<fb::HessianStep> == fb::RunShape::Node);
 static_assert(std::same_as<fb::StepInput<fb::HessianStep>, fb::View<fb::MoleculeOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::HessianStep>, fb::HessianOutput>);
 static_assert(!fb::LoadableStep<fb::HessianStep>);
+static_assert(std::same_as<decltype(fb::HessianOutput::vibrations), fb::geometry::Vibrations>);
 
 constexpr std::string_view kInputs =
     "[molecule]\nxyz = \"w.xyz\"\n[basis_set]\nbasis = \"b.json\"\n";
@@ -77,13 +80,27 @@ TEST(PipelineHessian, TheStepReadsItsKeysAndCopiesItsChain) {
   // A table is a request: only the molecule it reads is filled in.
   EXPECT_FALSE(defaults->step<fb::ScfStep>().has_value());
   EXPECT_TRUE(defaults->step<fb::MoleculeStep>().has_value());
+
+  // With no method, the analytic one, over the density-fitted chain it needs.
+  auto analytic =
+      fb::parse_config(with_inputs("[eri]\nmode = \"density_fitting\"\n[hessian]\n"), "", kOut);
+  ASSERT_TRUE(analytic.has_value()) << analytic.error().message;
+  EXPECT_EQ(analytic->step<fb::HessianStep>()->method, fb::HessianMethod::Analytic);
+  EXPECT_EQ(analytic->step<fb::HessianStep>()->eri.mode, fb::EriMode::DensityFitting);
+  auto named = fb::parse_config(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n[hessian]\nmethod = \"analytic\"\n"), "",
+      kOut);
+  ASSERT_TRUE(named.has_value()) << named.error().message;
+  EXPECT_EQ(named->step<fb::HessianStep>()->method, fb::HessianMethod::Analytic);
 }
 
 TEST(PipelineHessian, AMalformedTableIsInvalidConfig) {
-  // No default method yet.
-  expect_config_error(with_inputs("[hessian]\n"), "[hessian] needs 'method'");
-  expect_config_error(with_inputs("[hessian]\nmethod = \"analytic\"\n"),
-                      "[hessian] has no method 'analytic' (known: 'numerical')");
+  expect_config_error(with_inputs("[hessian]\nmethod = \"finite\"\n"),
+                      "[hessian] has no method 'finite' (known: 'analytic', 'numerical')");
+  // The displacement is the numerical method's alone.
+  expect_config_error(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n[hessian]\ndisplacement = 1e-3\n"),
+      "[hessian] displacement is the numerical method's, and method is 'analytic'");
   expect_config_error(with_inputs("[hessian]\nmethod = \"numerical\"\nstep = 1e-3\n"),
                       "[hessian] has no option 'step'");
   for (const std::string_view h : {"0", "-1e-3", "nan", "inf"}) {
@@ -102,13 +119,28 @@ TEST(PipelineHessian, AMalformedTableIsInvalidConfig) {
                       "[molecule] needs 'xyz'");
 }
 
+// The analytic Hessian is density-fitted only: over integral-direct ERIs,
+// the default [eri] or one written so, it is refused as Unsupported, naming
+// both ways out, before anything runs.
+TEST(PipelineHessian, TheAnalyticMethodRefusesIntegralDirectEris) {
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    auto calc = fb::parse_config(with_inputs(std::format("{}[hessian]\n", eri)), "", kOut);
+    ASSERT_FALSE(calc.has_value());
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported);
+    EXPECT_EQ(calc.error().message,
+              "[hessian] method 'analytic' is density-fitted only, and [eri] mode is "
+              "'integral_direct': set [eri] mode = 'density_fitting', or [hessian] method = "
+              "'numerical'");
+  }
+}
+
 // Beside an [optimize], the molecule the Hessian reads is the one loaded
 // from final.xyz, which reads OptimizeOutput: the Hessian is ordered after
 // the optimization and runs at the optimum. Both steps hold the same chain.
 TEST(PipelineHessian, BesideAnOptimizeItReadsTheOptimum) {
   auto calc = fb::parse_config(
       with_inputs("[eri]\nmode = \"density_fitting\"\n[scf]\nenergy_tolerance = 1e-12\n"
-                  "[optimize]\n[hessian]\nmethod = \"numerical\"\n"),
+                  "[optimize]\n[hessian]\n"),
       "/in", kOut);
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
   EXPECT_FALSE(calc->step<fb::MoleculeStep>().has_value());
