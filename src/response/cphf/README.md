@@ -21,12 +21,13 @@ Result<response::Cphf> response::cphf(
     DeviceResources &res, const Buffers::device<double> &b, int32_t naux,
     const Buffers::device<double> &c, std::span<const double> energies, int32_t nocc,
     const Buffers::device<double> &rhs, double tolerance = 1e-10,
-    int32_t max_iterations = 100);
+    int32_t max_iterations = 100, bool batched = false);
 ```
 
 `b` is the fitted factor as `df_coulomb` reads it, `c` the nao × nmo orbitals
 (the first `nocc` occupied), `energies` their orbital energies on the host,
-`rhs` the right-hand sides in the solution's layout.
+`rhs` the right-hand sides in the solution's layout. `batched` builds a
+sweep's products as one block (below); it is off by default.
 
 ## The equations
 
@@ -42,10 +43,7 @@ under real singlet rotations. It is never formed. A product is
 two gemms to D_U, one `df_coulomb` of it, one two-factor `df_exchange` of
 L Rᵀ with L = [C_v U, C_o] and R = [C_o, C_v U] (D_U = 2 L Rᵀ, so
 K[D_U]/2 = K[L Rᵀ]), and two gemms back to the ai block: one SCF iteration's
-work per column. The columns of a sweep go through it together, as the
-block forms of `df_coulomb` and `df_exchange` (`density_fitting/jk/`): every
-gemm above is one batched over the block, and J and K are one build of the
-whole block's densities.
+work per column.
 
 For a nuclear coordinate x, B^x_ai = −F^(x)_ai + ε_i S^x_ai + [C_vᵀ G(D_S^x) C_o]_ai
 with D_S^x = 2 C_o S^x_oo C_oᵀ, and U is PySCF's `solve_mo1` `mo1`'s
@@ -64,32 +62,39 @@ direction has p·Mp ≤ 0. That last is not the solver failing: M is not
 positive definite, so the RHF reference is unstable and a CPHF over it has no
 meaning.
 
-All columns share M, so a sweep's products are one batched build over the
-active columns' densities: their P gathered side by side, M P scattered back.
-A batch is as wide as half the device's free memory holds at the call, its
-own L, R, D_U, J, K and G C_o and the J/K scratch (X and Y,
+### `batched`, off by default
+
+All columns share M, so with `batched` a sweep's products are one batched
+build over the active columns' densities: their P gathered side by side, the
+gemms above batched over the block, J and K by the block forms of
+`df_coulomb` and `df_exchange` (`density_fitting/jk/`), and M P scattered
+back. A batch is as wide as half the device's free memory holds at the call,
+its own L, R, D_U, J, K and G C_o and the J/K scratch (X and Y,
 2 · naux · 2 n_occ · nao doubles a column) together, and the int32_t BLAS
-dispatch allows; a sweep wider than that runs in batches of it. The
-workspace is left grown to that scratch.
+dispatch allows; a sweep wider than that runs in batches of it. **The batch
+takes half the free VRAM, and the workspace is left grown to its X and Y**
+after the call. Off, each column's product is its own `df_coulomb` and
+`df_exchange`, as before the option existed, bit for bit.
 
-### Batched against one column at a time
-
-The CPHF wall clock of 3 N_atom random right-hand sides, the per-column
-loop it replaced against the batched build (`bench/cphf_batched.cpp`,
-`free_breakfast_cphf_batched`), the second build solving over the first's
+It is off because it is not faster on both cards. The CPHF wall clock of 3
+N_atom random right-hand sides (`bench/cphf_batched.cpp`,
+`free_breakfast_cphf_batched`), the second run solving over the first's
 orbitals: decane (C₁₀H₂₂, 32 atoms) in cc-pVDZ / cc-pVDZ-JKFIT, nao 250,
-n_occ 41, naux 1206, 96 columns, on the gfx1200 (HIP), the card held.
+n_occ 41, naux 1206, 96 columns, 18 sweeps either way, the card held.
 
-| Product | Wall clock | Sweeps | max residual |
+| Card | One column at a time | `batched` | Ratio |
 | --- | --- | --- | --- |
-| one column at a time | 190.3 s | 18 | 9.96e-11 |
-| batched | 167.4 s | 18 | 9.96e-11 |
+| gfx1200 (HIP) | 190.3 s | 167.4 s (best of 2) | 1.14× faster |
+| RTX 3080 (CUDA) | 184.04 s | 185.66 s | 0.9% slower |
 
-1.14× faster; the two U agree to 1.3e-15 (max |U| 0.27). The flops are the
-same: the batch buys wider gemms and fewer launches (by the arithmetic about
-20 columns a build at half of 16 GB free, so X and Y's batched gemms are
-about 20 · 82 columns wide where one column's are 82). The RTX 3080 (CUDA)
-was not benchmarked.
+On the 3080 that is one timed solve each after a warm-up; the warm-ups were
+184.08 s and 171.83 s, so the batched path's run-to-run spread (about 14 s)
+is larger than the difference, and a process outside the card lock held
+922 MiB on it throughout. The two paths' U agree to 1.3e-15 (gfx1200) and
+1.8e-15 (3080), max |U| 0.27–0.28. The flops are the same: the batch buys
+wider gemms and fewer launches (by the arithmetic about 20 columns a build
+on the gfx1200's 16 GB, X and Y's batched gemms about 20 · 82 columns wide
+where one column's are 82).
 
 ## Tests
 
@@ -98,7 +103,8 @@ was not benchmarked.
 `density_fitting/` h2o_ccpvdz integrals: the nine nuclear columns against
 `pyscf.df.hessian.rhf`'s `mo1` over the same fitting set, the dipole columns'
 polarizability against PySCF's, one column alone against the lockstep block,
-an exhausted budget and the refusals.
+an exhausted budget and the refusals; and `batched` against the default path
+on the nuclear and dipole columns.
 
 ## Files
 

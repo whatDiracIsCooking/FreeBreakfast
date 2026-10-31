@@ -4,8 +4,9 @@
 // data/cphf/ (tools/emit/cphf_reference.py). The nine nuclear-displacement
 // columns against pyscf.df.hessian.rhf's solve_mo1 over the same fitting
 // set; the three dipole columns' static polarizability against PySCF's; one
-// column solved alone against the same column of the lockstep block; and the
-// refusals and an exhausted budget.
+// column solved alone against the same column of the lockstep block; the
+// batched product against one column at a time; and the refusals and an
+// exhausted budget.
 
 #include <gtest/gtest.h>
 
@@ -33,6 +34,10 @@ constexpr double kPolarizabilityRelTol = 1e-9;
 // the same order, so to rounding.
 constexpr double kLockstepTol = 1e-13;
 constexpr double kTolerance = 1e-10;
+// The batched product against one column at a time, absolute: the same
+// products in other gemm shapes, through the same sweeps (1.8e-15 measured
+// on decane's 96 columns).
+constexpr double kBatchedTol = 1e-12;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR};
 
@@ -176,9 +181,10 @@ protected:
   }
 
   fb::Result<fb::response::Cphf> solve(const fb::Buffers::device<double> &rhs,
-                                       const std::int32_t max_iterations = 100) {
+                                       const std::int32_t max_iterations = 100,
+                                       const bool batched = false) {
     return fb::response::cphf(*res_, *b_, g_.naux, *c_, g_.energies, g_.nocc, rhs, kTolerance,
-                              max_iterations);
+                              max_iterations, batched);
   }
 
   Golden g_;
@@ -245,6 +251,31 @@ TEST_F(ResponseCphf, OneColumnAloneMatchesTheLockstepBlock) {
                                          static_cast<std::ptrdiff_t>((column + 1) * pairs));
   EXPECT_LE(max_diff(u_alone, u_column), kLockstepTol * max_abs(u_column));
   EXPECT_LE(alone->iterations, all->iterations);
+}
+
+// batched builds each sweep's products as one block: the nuclear and the
+// dipole columns, each against the default path's solution, and the nuclear
+// ones against PySCF's mo1 too.
+TEST_F(ResponseCphf, BatchedMatchesOneColumnAtATime) {
+  for (const auto *host : {&g_.nuclear_rhs, &g_.dipole_rhs}) {
+    const auto rhs = device(*host);
+    auto one = solve(rhs);
+    auto batched = solve(rhs, 100, true);
+    ASSERT_TRUE(one) << one.error().message;
+    ASSERT_TRUE(batched) << batched.error().message;
+    EXPECT_EQ(batched->iterations, one->iterations);
+    for (std::size_t x = 0; x < batched->residuals.size(); ++x) {
+      EXPECT_LE(batched->residuals[x], 10 * kTolerance) << "column " << x;
+    }
+    const std::vector<double> u_batched = download(*res_, batched->solution);
+    const double worst = max_diff(u_batched, download(*res_, one->solution));
+    EXPECT_LE(worst, kBatchedTol) << "max |U_batched - U| " << worst;
+    std::cout << std::format("[ cphf     ] {} columns: max |U_batched - U| {:.3e}\n",
+                             batched->residuals.size(), worst);
+    if (host == &g_.nuclear_rhs) {
+      EXPECT_LE(max_diff(u_batched, g_.nuclear_solution), kSolutionTol);
+    }
+  }
 }
 
 TEST_F(ResponseCphf, ExhaustedBudgetIsReported) {
