@@ -24,6 +24,8 @@ import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.response.cphf;
+import free_breakfast.mcscf.solve;
+import free_breakfast.mcscf.zvector;
 
 export namespace free_breakfast::hessian {
 
@@ -330,6 +332,90 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const Buffers::device<double> &c, int32_t ncore, int32_t ncas,
               std::span<const double> gamma, std::span<const double> gamma2,
               const Buffers::device<double> &fock_x);
+
+/// @brief The state-specific DF-CASSCF nuclear Hessian and its terms, each
+/// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
+/// (hartree / bohr^2), column-major.
+struct CasscfTerms {
+  /// @brief d^2E/dx dy = E_xy + E_x lambda lambda^y, the two below summed and
+  /// symmetrized, (H + H^T) / 2: exactly symmetric.
+  std::vector<double> hessian;
+  /// @brief max |H - H^T| of the sum before it was symmetrized: E_xy's
+  /// rounding and what the CP solve's residual leaves in the response.
+  double asymmetry{0.0};
+  /// @brief E_xy and its pieces, @ref df_casscf_exy's at the root's RDMs.
+  CasscfExy exy;
+  /// @brief The response term of eq. ss, Lambda^T E_lambda.: element (x, y)
+  /// the right-hand side of x against the solution of y,
+  /// E_x lambda . lambda^y = -lambda^x^T E_lambda lambda lambda^y. Not
+  /// symmetrized.
+  std::vector<double> response;
+  /// @brief lambda^x, E_lambda lambda lambda^x = -E_lambda x, in
+  /// @c mcscf::zvectors' coordinates (z_o over the packed pairs, z_c off the
+  /// root), with the solver's own iterations and residuals.
+  mcscf::ZVectors cp;
+  /// @brief Per coordinate, the norm of both blocks of
+  /// E_lambda lambda lambda^x + E_lambda x, by one product of the unreduced
+  /// operator at the solution (the CI rows halved, as zvector's): what the
+  /// inner CI solves of the Schur complement cannot hide.
+  std::vector<double> residuals;
+};
+
+/// @brief The state-specific DF-CASSCF analytic nuclear Hessian at a
+/// converged solve (casscf_hessian.tex eq. ss, Algorithm 1):
+///
+///     d^2E/dx dy = E_xy + E_x lambda lambda^y,   E_lambda lambda lambda^y = -E_lambda y,
+///
+/// E_xy by @ref df_casscf_exy at the root's RDMs and F^[x];
+/// E_lambda x by @c mcscf::df_derivatives (weight 1); lambda^x by
+/// @c mcscf::zvectors (Schur) over the CI-relaxed Hessian at the solution,
+/// all 3 n_atom columns at once, the CI right-hand sides halved into its
+/// convention. The response is assembled as Lambda^T E_lambda. (the
+/// solutions against the right-hand sides, orbital and CI rows), not as
+/// -Lambda^T E_lambda lambda Lambda, so the operator's scaling cancels.
+///
+/// **A saddle is refused, not summed.** At a state-specific excited root
+/// (or any solution that is not a minimum in the parameters) E_lambda lambda
+/// is indefinite and the CP solve is not guaranteed to converge; the
+/// Schur complement's inner CI solves stop there without an error. So the
+/// solution is checked by one product of the unreduced operator
+/// (@c RelaxedHessian::apply_coupled): a column whose residual is above
+/// 1e-6 is a Divergence, as is a Divergence of the solve itself.
+///
+/// The inputs are @c mcscf::df_gradient's: @p molecule the one both bases
+/// were placed on, @p classes @c primitive_pair_classes of @p basis, @p h the
+/// core Hamiltonian, @p b and @p l @c density_fit's B (naux x nao^2) and L,
+/// and @p solution a converged @c mcscf::solve of **one** root over the same
+/// fit (DensityFitting::Full): its c (nao x nao, core, active, virtual), its
+/// root's vector and energy, and gamma and gamma2 (the active electrons are
+/// trace(gamma), of the molecule's multiplicity). Stationarity is assumed,
+/// not checked. @p tolerance and @p max_iterations are @c zvectors'.
+///
+/// The parts run one after another; the peak is the largest of
+/// @c df_derivatives' stacks, @ref df_casscf_exy's and the CP solve's
+/// (H~'s scratch over 3 n_atom columns), each refused on its own as
+/// Unsupported past the device's free memory.
+///
+/// Queued on res.stream() with res.blas() (host pointer mode); it
+/// synchronizes many times. None of @p b and @p l may point into
+/// res.device_workspace(). The device res.dev_idx() names is made current
+/// for the call and the previous one restored.
+///
+/// @return The Hessian and its terms; InvalidConfig if the solution has
+///         other than one root, its C is not nao square on @p res's device,
+///         ncore < 0, ncas < 1 or ncore + ncas > nao, its RDMs are not
+///         ncas^2 and ncas^4 long, trace(gamma) is no electron count of the
+///         multiplicity, its vector is not the strings' length, or @p b is not
+///         naux nao^2 long, or for any input a part refuses; Divergence when
+///         the CP solve meets negative curvature or leaves a residual above
+///         1e-6; or the first error of a part (Unsupported for memory, the
+///         solve's MaxIterationsExceeded, a GpuRuntime error).
+[[nodiscard]] Result<CasscfTerms>
+df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+          std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+          const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+          const mcscf::Solution &solution, int32_t ncore, int32_t ncas, double tolerance = 1e-10,
+          int32_t max_iterations = 200);
 
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}

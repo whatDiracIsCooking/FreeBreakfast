@@ -11,10 +11,11 @@ eq. hess-sym, Algorithm 1 lines 2–9); and the explicit part's
 differentiated twice at fixed orbitals, the fit's cross terms included (eqs.
 dfj, dfk). Beside them, the **dipole derivative** the same CPHF solution
 gives, `rhf_dipole_derivative`, and the **IR intensities** it projects to,
-`infrared_intensities`. For DF-CASSCF, so far: the **CASSCF two-electron
+`infrared_intensities`. For DF-CASSCF: the **CASSCF two-electron
 explicit part**, `df_casscf_two_electron` (`casscf_hessian.tex` eq. df2),
-and the **fixed-parameter second derivative** E_xy built on it,
-`df_casscf_exy` (eq. exy), both below.
+the **fixed-parameter second derivative** E_xy built on it,
+`df_casscf_exy` (eq. exy), and the **state-specific Hessian**, `df_casscf`
+(eq. ss), all below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -535,16 +536,114 @@ asymmetry ≤ 3.6e-15, sum rule ≤ 5.2e-13; 0.22 s (6-31G) and 0.82 s
 E_xy misses by 0.93 of max |E_xy| 0.44: the design's 0.93, twice E_xy's own
 size.
 
+## The state-specific CASSCF Hessian
+
+`df_casscf` is `casscf_hessian.tex` eq. (ss), Algorithm 1: at a converged
+state-specific DF-CASSCF,
+
+    d²E/dx dy = E_xy + E_xλ λ^y,   E_λλ λ^y = −E_λy,
+
+every piece from a merged part, no integrals of its own:
+
+```cpp
+auto h = hessian::df_casscf(res, molecule, basis, classes, aux, h_core, b, l, solution, ncore, ncas);
+// h->hessian: 3 n_atom x 3 n_atom, exactly symmetric; h->asymmetry: what symmetrizing discarded;
+// h->exy: df_casscf_exy's E_xy and its pieces; h->response: E_xλ λ^y, element (x, y);
+// h->cp: λ^x (zvectors' z_o and z_c) and the solver's own residuals;
+// h->residuals: each column's residual on the unreduced equations
+```
+
+The inputs are `mcscf::df_gradient`'s, a one-root `mcscf::Solution`
+included (a state average is refused: its Lagrangian is #621's). In order:
+
+1. **E_λx**: `mcscf::df_derivatives` at weight 1, every coordinate at once:
+   F^[x], `rhs_orbital` and `rhs_ci`.
+2. **E_xy**: `df_casscf_exy` at the solution's γ, Γ and that F^[x].
+3. **λ^x**: H̃ built at the solution as `mcscf::df_gradient` builds it for a
+   Z-vector (`casscf_integrals`, `response::fock`, the sigma over H₀,
+   `response::Hessian`, `RelaxedHessian`), then `mcscf::zvectors` (Schur, its
+   default) on all 3 n_atom columns: the orbital right-hand sides packed
+   (`pack_orbital_pairs`; `rhs_orbital` holds G_pq at p > q, the order it
+   reads), the CI ones **halved**, 2 Q H̃^x c → Q H̃^x c, into the Z-vector's
+   unweighted, unscaled CI rows. With them the solution is λ^x itself:
+   zvector's equations are E_λλ's with the CI rows divided by 2.
+4. **The check**: one block product of the unreduced operator,
+   `RelaxedHessian::apply_coupled`, at (z_o, z_c), plus the right-hand side:
+   per column the norm of both blocks is `residuals`.
+5. **The response**, Λᵀ E_λ· and not −Λᵀ E_λλ Λ: two gemms,
+   G_packedᵀ Z_o + rhs_ciᵀ Z_c, the CI rows the energy's own (with their 2)
+   against z_c. The CI rows' scaling enters the solve and its right-hand side
+   together and cancels; −Λᵀ E_λλ Λ would need E_λλ in the energy's
+   coordinates, which no product here applies.
+6. E_xy + response, symmetrized; `asymmetry` is the antisymmetric part
+   discarded, E_xy's rounding plus what the CP solve's residual leaves.
+
+**A saddle is refused.** A state-specific excited root is a saddle in λ: E_λλ's
+CI block 2 (H₀ − E) is negative along every lower root of the same spin. The
+outer conjugate gradients of `zvectors` meet that as negative curvature of H̃
+and return a Divergence, which is passed on (as is its
+MaxIterationsExceeded). They need not meet it: `RelaxedHessian`'s inner CI
+conjugate gradients stop without an error on a direction H₀ − E is not
+positive along (or after 200 sigmas), and an outer solve over the H̃ those
+truncated responses make can still reach its tolerance. So the solution is
+also checked on the unreduced equations, which nothing inner stands in for,
+and a column above 1e-6 there is a Divergence naming it. A converged solve
+sits near 1e-9 (the inner solves' 1e-8, relative), three orders below the
+ceiling. Stationarity is assumed, not checked, as in
+`mcscf::df_gradient`: at a geometry that is not a stationary point of the
+orbitals and CI the formula is not the Hessian.
+
+### Memory
+
+The parts run one after another, each freeing what it held:
+`df_derivatives`' stacks (about 20 of 3 n_atom nao² doubles), then
+`df_casscf_exy`'s, then the CP solve's, H̃'s scratch over 3 n_atom columns
+(six CI blocks per column) beside the right-hand sides (3 n_atom (pairs +
+n_det)) and λ. Each part refuses its own memory, Unsupported, before it
+allocates. `df_derivatives`' F^[x] and right-hand sides stay held across
+the whole call (3 n_atom (2 nmo² + n_det)).
+
+### Tests
+
+`test/gtest/df_casscf_hessian_gpu.cpp` (suite `HessianDfCasscf`), against
+`test/gtest/data/casscf_hessian/`'s state-specific cases (6-31G and cc-pVDZ,
+d shells), over the same cc-pVDZ-JKFIT fit, the orbitals and CI vector
+**loaded from the fixture** (PySCF's own cc-pVDZ solution is a saddle point),
+the root's energy ⟨c|H₀|c⟩ and RDMs by `ci::Rdm`: E_xy against `exy` to
+1e-8, the response against `response` and the total against `hessian` to
+1e-7, the total against `relaxed_fd` (the analytic relaxed gradient
+differenced at re-solved displaced geometries, fourth order, h = 1e-3 bohr) to
+the design's 1e-6, λ^x's orbital part against `lambda_orb` to 1e-7 of its
+largest element, every CP residual to 1e-8, the asymmetry before
+symmetrizing to 1e-8, the translational sum rule to 1e-7. **No harmonic
+analysis**: the fixture's stretched water is not a stationary point (its
+gradient reaches 0.074 hartree/bohr), so the six near-zero mass-weighted
+eigenvalues of a minimum do not apply to it, and no fixture here is at one.
+`ExcitedRootIsRefused` builds a saddle: the second CASCI root at the 6-31G
+fixture's orbitals, one root of a `Solution`, which must be a Divergence;
+and the refusals.
+
+Measured on the RTX 3080 (CUDA), of max |H| 0.065 (6-31G) and 0.064
+(cc-pVDZ): E_xy ≤ 6.0e-12 from the reference, the response ≤ 2.2e-10 (of
+max 0.48 and 1.61), the total ≤ 1.3e-10 from `hessian` and ≤ 2.1e-9 from
+`relaxed_fd` (the fixture's own analytic-vs-difference gap, 2.1e-9 and
+8e-11); λ^x's orbital part ≤ 3.4e-10 of 0.38; CP residuals ≤ 1.6e-9 after 19
+and 25 Schur iterations; asymmetry ≤ 1.9e-10, sum rule ≤ 9.7e-11; 0.69 s
+(6-31G) and 1.38 s (cc-pVDZ) a call. The excited root (−75.5923 over the
+ground state's −75.9025) is refused by `zvectors` itself: p·H̃p = −0.23 at
+its first product.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
 | `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms |
 | `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack |
+| `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |
