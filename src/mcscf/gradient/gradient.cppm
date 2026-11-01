@@ -90,7 +90,8 @@ struct MoAdjoint {
 /// Lagrangian, at weight 1. They are in @c zvector's coordinates: z_o over
 /// the packed pairs, z_c dim x nroots, root r's CI row
 /// (H_0 - E_r) z_c,r + ... in PySCF's gen_g_hop convention, unweighted (the
-/// call weights the transition RDMs by w_r). @p extra, when given, adds
+/// call weights the transition RDMs by w_r), and theta the rotations among
+/// the roots (ZVector::theta), or empty for none. @p extra, when given, adds
 /// P = C h_bar C^T to the one-electron D, Gam = L^-T C Lambda C^T,
 /// W_PQ += -1/2 (L^-T G^aux L^-1)_PQ with G^aux_LL' = Sum_pq Lambda^L_pq
 /// B^L'_pq, and 1/2 C sym(X) C^T to the overlap's W, so the derivative
@@ -127,9 +128,7 @@ struct MoAdjoint {
 /// @return The gradient and its terms; Unsupported for memory past the
 ///         device's free bytes, for naux nao^2 past int32_t, or for a state
 ///         average whose roots' 1-RDMs are linearly dependent (its weights
-///         cannot be recovered), or for three or more roots at unequal
-///         weights, partly equal included, naming them (README.md "Three or
-///         more roots at unequal weights"); InvalidConfig if solution.c is not
+///         cannot be recovered); InvalidConfig if solution.c is not
 ///         basis.nao_sphe() square or not on @p res's device, if ncore is
 ///         negative, ncas below 1 or ncore + ncas past nao, if @p root is not
 ///         one of the solution's, if its RDMs are not ncas^2 and ncas^4 long,
@@ -139,7 +138,7 @@ struct MoAdjoint {
 ///         for a state average or @p multipliers, if trace(gamma) is no
 ///         electron count of the molecule's multiplicity, the CI vectors are
 ///         not the roots', or the multipliers are not the packed pairs' and
-///         dim x nroots long;
+///         dim x nroots long with no rotations or one per pair of roots;
 ///         the first error of @c casscf_integrals, @c fock, the CI objects,
 ///         the Hessian, @c zvector or a derivative call; or the GpuRuntime
 ///         error of the first copy or BLAS call that failed.

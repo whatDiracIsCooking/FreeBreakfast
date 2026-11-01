@@ -148,37 +148,6 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
   return w;
 }
 
-// Recovered weights this close to the largest, relative to it, are equal:
-// they come out of a least-squares solve, not given exactly.
-constexpr double kEqualWeightTolerance = 1e-8;
-
-// Three or more roots at unequal weights are refused (#608; README "Three or
-// more roots at unequal weights"). The Z-vector projects out the rotations
-// among the averaged roots, which is exact at equal weights and for two roots
-// at any, but with three or more at unequal weights those rotations carry
-// multipliers of their own: at (0.5, 0.3, 0.2) the projected gradient is off
-// by up to 3.3e-3. Partly equal weights are refused too. Carrying the
-// rotations lifts this (#613), and this check goes with it.
-Status refuse_three_roots_unequal_weights(const std::span<const double> weights) {
-  if (weights.size() < 3) {
-    return {};
-  }
-  const double w_max = std::ranges::max(weights);
-  if (std::ranges::all_of(weights, [&](const double w) {
-        return std::abs(w - w_max) <= kEqualWeightTolerance * w_max;
-      })) {
-    return {};
-  }
-  std::string listed;
-  for (const double w : weights) {
-    listed += std::format("{}{:.6g}", listed.empty() ? "" : ", ", w);
-  }
-  return err_unsupported("mcscf::df_gradient: {} roots at unequal weights ({}): the Z-vector "
-                         "projects out the rotations among the roots, exact only at equal "
-                         "weights or for two roots",
-                         weights.size(), listed);
-}
-
 // Root @p root's RDMs plus z_c's transition RDMs (README "The state-averaged
 // Lagrangian"), row-major as ci::Rdm::rdm12's, and kappa(z_o) into the
 // nmo x nmo @p kappa: the multipliers @p given, or when it is null the
@@ -207,11 +176,14 @@ Result<std::pair<std::vector<double>, std::vector<double>>> sa_gradient_lagrangi
   }
   const size_t n_core = static_cast<size_t>(ncore);
   const size_t packed = (n_core * (mo - n_core)) + (n * (mo - n_core - n));
+  const size_t n_theta = nroots * (nroots - 1) / 2;
   if (given != nullptr &&
-      (given->orbital.num_elements() != packed || given->ci.num_elements() != dim * nroots)) {
-    return err_config("mcscf::df_gradient: multipliers of {} orbital and {} CI doubles, but the "
-                      "solution has {} pairs and {} roots of {} determinants",
-                      given->orbital.num_elements(), given->ci.num_elements(), packed, nroots, dim);
+      (given->orbital.num_elements() != packed || given->ci.num_elements() != dim * nroots ||
+       (!given->theta.empty() && given->theta.size() != n_theta))) {
+    return err_config("mcscf::df_gradient: multipliers of {} orbital, {} CI and {} rotation "
+                      "doubles, but the solution has {} pairs and {} roots of {} determinants",
+                      given->orbital.num_elements(), given->ci.num_elements(), given->theta.size(),
+                      packed, nroots, dim);
   }
 
   // Root I's RDMs.
@@ -254,17 +226,41 @@ Result<std::pair<std::vector<double>, std::vector<double>>> sa_gradient_lagrangi
 
   // z_c's transition RDMs, sum_r w_r (<z_c,r|.|c_r> + <c_r|.|z_c,r>): half
   // the difference of the RDMs of c + z_c and c - z_c at the weights, the
-  // polarization mcscf::solve takes them by. z_c is zvector's, unweighted.
+  // polarization mcscf::solve takes them by. z_c is zvector's, unweighted,
+  // with the rotations among the roots as its part along them, z_c,r +=
+  // sum_s Theta_sr c_s (README "The state-averaged Lagrangian"): at unequal
+  // weights they add (w_r - w_s) Theta_sr times the r-s transition RDMs.
   const size_t block = dim * nroots;
   const auto block32 = static_cast<int32_t>(block);
   const wwr::wwrblasHandle_t blas = res.blas().get();
+  Buffers::device<double> z_ci(block, res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(z_ci.data(), z.ci.data(), block * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToDevice, res.stream())));
+  if (std::ranges::any_of(z.theta, [](const double t) { return t != 0.0; })) {
+    std::vector<double> m(nroots * nroots, 0.0);
+    size_t at = 0;
+    for (size_t r = 0; r < nroots; ++r) {
+      for (size_t s = r + 1; s < nroots; ++s, ++at) {
+        m[s + (nroots * r)] = z.theta[at];
+        m[r + (nroots * s)] = -z.theta[at];
+      }
+    }
+    Buffers::device<double> m_device(m.size(), res.device());
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(m_device.data(), m.data(), m.size() * sizeof(double),
+                                           wwr::wwrMemcpyHostToDevice, res.stream())));
+    FBF_TRY(
+        gpu_status(gemm(blas, static_cast<int32_t>(dim), static_cast<int32_t>(nroots),
+                        static_cast<int32_t>(nroots), &kOne<double>, solution.roots.vectors.data(),
+                        m_device.data(), &kOne<double>, z_ci.data())));
+    FBF_TRY(res.sync());
+  }
   Buffers::device<double> shifted(2 * block, res.device());
   for (const auto &[to, sign] : {std::pair{shifted.data(), &kOne<double>},
                                  std::pair{shifted.data() + block, &kNegOne<double>}}) {
     FBF_TRY(
         gpu_status(wwr::wwrMemcpyAsync(to, solution.roots.vectors.data(), block * sizeof(double),
                                        wwr::wwrMemcpyDeviceToDevice, res.stream())));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, block32, sign, z.ci.data(), 1, to, 1)));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, block32, sign, z_ci.data(), 1, to, 1)));
   }
   for (const auto &[from, half] :
        {std::pair{shifted.data(), 0.5}, std::pair{shifted.data() + block, -0.5}}) {
@@ -490,12 +486,10 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                       "{} in {} orbitals",
                       trace, molecule.multiplicity(), ncas);
   }
-  // A state average's weights, recovered from its RDMs, and the refusal of
-  // three or more roots at unequal ones, before anything is allocated.
+  // A state average's weights, recovered from its RDMs.
   std::vector<double> weights{1.0};
   if (averaged) {
     weights = FBF_TRY(sa_gradient_weights(solution, n_act));
-    FBF_TRY(refuse_three_roots_unequal_weights(weights));
   }
   const int32_t nocc = ncore + ncas;
   const ScopedDeviceIndex on{res.dev_idx()};

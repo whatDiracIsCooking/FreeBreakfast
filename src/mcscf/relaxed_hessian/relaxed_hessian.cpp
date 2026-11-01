@@ -421,7 +421,9 @@ void RelaxedHessian::reserve(DeviceResources &res, const size_t k) {
   if (ci_delta_.num_elements() < k * ci_block) {
     ci_delta_ = Buffers::device<double>(k * ci_block, res.device());
   }
-  const size_t lockstep = (4 * dim_ * count) + (4 * count) + (weights_.size() * count);
+  // apply_coupled's rotation matrices (nroots x nroots per column) after the
+  // overlaps.
+  const size_t lockstep = (4 * dim_ * count) + (4 * count) + (2 * weights_.size() * count);
   if (block_.num_elements() < lockstep) {
     block_ = Buffers::device<double>(lockstep, res.device());
   }
@@ -642,23 +644,62 @@ Status RelaxedHessian::couple(DeviceResources &res, const int32_t k, const doubl
 }
 
 Status RelaxedHessian::apply_coupled(DeviceResources &res, const int32_t k, const double *const x,
-                                     const double *const x_c, double *const y, double *const y_c) {
-  if (k < 0) {
-    return err_config("mcscf::RelaxedHessian::apply_coupled: the block has {} columns", k);
+                                     const double *const x_c, double *const y, double *const y_c,
+                                     std::span<const double> theta, std::span<double> y_theta) {
+  const size_t roots_count = weights_.size();
+  const size_t n_theta = roots_count * (roots_count - 1) / 2;
+  if (k < 0 || (!theta.empty() && (theta.size() != static_cast<size_t>(k) * n_theta ||
+                                   y_theta.size() != theta.size()))) {
+    return err_config("mcscf::RelaxedHessian::apply_coupled: the block has {} columns, theta {} "
+                      "and y_theta {} doubles (none, or {} rotations a column)",
+                      k, theta.size(), y_theta.size(), n_theta);
   }
   if (k == 0) {
     return {};
   }
   const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto columns = static_cast<size_t>(k);
-  const size_t ci_block = dim_ * weights_.size();
-  const size_t count = columns * weights_.size();
+  const size_t ci_block = dim_ * roots_count;
+  const size_t count = columns * roots_count;
   const auto pairs = static_cast<size_t>(n_pairs_);
+  const auto dim32 = static_cast<int32_t>(dim_);
+  const auto nroots = static_cast<int32_t>(roots_count);
   reserve(res, columns);
+  // reserve's layout: the lockstep r is free here, and the rotation matrices
+  // sit after the overlaps.
+  double *const overlaps = block_.data() + (4 * dim_ * count) + (4 * count);
+  double *const rotations = overlaps + (count * roots_count);
+  // With rotations, x_c gains their part along the roots, x_c,r +=
+  // sum_s Theta_sr c_s: one gemm of C by the k antisymmetric matrices, into
+  // the lockstep r, which then stands in for x_c.
+  const double *vectors = x_c;
+  if (!theta.empty()) {
+    std::vector<double> m(count * roots_count, 0.0);
+    for (size_t j = 0; j < columns; ++j) {
+      size_t at = j * n_theta;
+      for (size_t r = 0; r < roots_count; ++r) {
+        for (size_t s = r + 1; s < roots_count; ++s, ++at) {
+          m[s + (roots_count * (r + (roots_count * j)))] = theta[at];
+          m[r + (roots_count * (s + (roots_count * j)))] = -theta[at];
+        }
+      }
+    }
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rotations, m.data(), m.size() * sizeof(double),
+                                           wwr::wwrMemcpyHostToDevice, res.stream())));
+    double *const shifted = block_.data();
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(shifted, x_c, columns * ci_block * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    FBF_TRY(gpu_status(gemm(blas, dim32, static_cast<int32_t>(count), nroots, &kOne<double>,
+                            roots_->vectors.data(), rotations, &kOne<double>, shifted)));
+    // The host matrices go out of scope: the copy must have left them.
+    FBF_TRY(res.sync());
+    vectors = shifted;
+  }
   FBF_TRY(hessian_->apply(res, k, x, y));
   // y_c = (H_0 - E_r) x_c, then H'(x_j) c added per column through ci_b_,
   // and the sum projected.
-  FBF_TRY(shifted_sigma(res, columns, x_c, y_c));
+  FBF_TRY(shifted_sigma(res, columns, vectors, y_c));
   for (size_t j = 0; j < columns; ++j) {
     FBF_TRY(prime_sigma(res, x + (j * pairs), ci_b_.data() + (j * ci_block)));
   }
@@ -666,6 +707,24 @@ Status RelaxedHessian::apply_coupled(DeviceResources &res, const int32_t k, cons
                                                 static_cast<int32_t>(columns * ci_block),
                                                 &kOne<double>, ci_b_.data(), 1, y_c, 1)));
   FBF_TRY(project_block(res, count, y_c));
+  // The rotations' rows: y_c's overlaps with the roots before the projection
+  // (project_block leaves them), Y_j[s, r] = c_s . (H'(x_j) c_r +
+  // (H_0 - E_r) x_c,r), both orders averaged.
+  if (!theta.empty()) {
+    std::vector<double> o(count * roots_count);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(o.data(), overlaps, o.size() * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToHost, res.stream())));
+    FBF_TRY(res.sync());
+    for (size_t j = 0; j < columns; ++j) {
+      size_t at = j * n_theta;
+      const double *const oj = o.data() + (j * roots_count * roots_count);
+      for (size_t r = 0; r < roots_count; ++r) {
+        for (size_t s = r + 1; s < roots_count; ++s, ++at) {
+          y_theta[at] = 0.5 * (oj[s + (roots_count * r)] + oj[r + (roots_count * s)]);
+        }
+      }
+    }
+  }
   // y_c into the roots' sector under the swap of the strings, (y_c + p y_c^T)
   // / 2 for their parity p: exactly, so that iterates built from it by axpy
   // and a swap-symmetric diagonal stay there too. The projection's roundoff
@@ -684,6 +743,21 @@ Status RelaxedHessian::apply_coupled(DeviceResources &res, const int32_t k, cons
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(y_c, product, count * dim_ * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, res.stream())));
   }
+  return add_couplings(res, columns, vectors, y);
+}
+
+Status RelaxedHessian::coupling(DeviceResources &res, const int32_t k, const double *const x_c,
+                                double *const y) {
+  if (k < 0) {
+    return err_config("mcscf::RelaxedHessian::coupling: the block has {} columns", k);
+  }
+  if (k == 0) {
+    return {};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto columns = static_cast<size_t>(k);
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(
+      y, 0, columns * static_cast<size_t>(n_pairs_) * sizeof(double), res.stream())));
   return add_couplings(res, columns, x_c, y);
 }
 

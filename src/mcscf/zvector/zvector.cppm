@@ -28,6 +28,11 @@ struct ZVector {
   /// the right-hand side, -(H_0 - E_r)^-1 P (H'(z_o) c_r + y_r), with
   /// P = 1 - sum_s c_s c_s^T; off every root.
   Buffers::device<double> ci;
+  /// @brief The rotations among the roots, on the host: Theta_sr for r < s
+  /// in (r, s) lexicographic order, nroots (nroots - 1) / 2 of them (none
+  /// for one root), c_r gaining Theta_sr c_s (README.md "The rotations among
+  /// the roots"). Zero for a pair of equal weights, where they are redundant.
+  std::vector<double> theta;
   /// @brief H~ products the conjugate gradients took (the residual's not
   /// counted).
   int32_t iterations;
@@ -57,6 +62,15 @@ struct ZVector {
 /// off every root here. z_c is eliminated, so z_o alone is solved for and z_c
 /// follows from it.
 ///
+/// For every pair of roots r < s at unequal weights the rotation Theta_sr
+/// is a parameter too, its row the CI row's component along c_s:
+///   (E_s - E_r) Theta_sr + c_s . H'(z_o) c_r = -t_sr,
+/// eliminated with z_c (README.md "The rotations among the roots").
+/// @p theta_rhs is t on the host, as ZVector::theta is laid out, or empty
+/// for none (a CASSCF gradient's is zero: E_I is stationary in them); t_sr is
+/// dL/dTheta_sr over 2 (w_r - w_s), so a derivative's 2 (w_r - w_s) H~_sr
+/// gives H~_sr. A pair of equal weights is projected, its t ignored.
+///
 /// Queued on res.stream() with res.blas() (host pointer mode); every product
 /// synchronizes. The device res.dev_idx() names is made current for the call
 /// and the previous one restored.
@@ -68,10 +82,13 @@ struct ZVector {
 ///         @p tolerance after @p max_iterations products; Divergence when the
 ///         conjugate gradients meet a direction H~ is not positive along (not
 ///         a minimum); or the first error of a product, BLAS call or copy.
+///         InvalidConfig too for a @p theta_rhs neither empty nor
+///         nroots (nroots - 1) / 2 long.
 [[nodiscard]] Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
                                       const response::Hessian &hessian, const ci::Roots &roots,
                                       const double *gradient, const double *ci_rhs = nullptr,
-                                      double tolerance = 1e-10, int32_t max_iterations = 200);
+                                      double tolerance = 1e-10, int32_t max_iterations = 200,
+                                      std::span<const double> theta_rhs = {});
 
 /// @brief How @ref zvectors solves its columns (README.md "Many right-hand
 /// sides").
@@ -97,12 +114,16 @@ struct ZVectors {
   /// @brief z_c per column, one dim x nroots block (as ZVector::ci) each,
   /// off every root.
   Buffers::device<double> ci;
+  /// @brief The rotations among the roots per column, on the host: one
+  /// ZVector::theta (nroots (nroots - 1) / 2) each.
+  std::vector<double> theta;
   /// @brief Products each column took (the residual's not counted): H~'s,
   /// or the coupled operator's.
   std::vector<int32_t> iterations;
   /// @brief Each column's true residual from one more product: PerColumn and
-  /// Schur ||H~ z_o + g - H_oc (H_0 - E)^-1 P y||, ZVector::residual's;
-  /// Coupled the norm of both blocks of the equations, the CI rows unscaled.
+  /// Schur ||H~ z_o + g - H_oc (H_0 - E)^-1 P y||, ZVector::residual's (the
+  /// rotations eliminated with z_c); Coupled the norm of every block of the
+  /// equations, the CI and rotation rows unscaled.
   std::vector<double> residuals;
 };
 
@@ -112,7 +133,9 @@ struct ZVectors {
 ///
 /// @p gradients is size() x @p ncol on the device, one orbital right-hand
 /// side per column; @p ci_rhs is null, or ncol blocks of dim x nroots (each
-/// as zvector's @p ci_rhs). Each column is solved as @ref zvector solves it
+/// as zvector's @p ci_rhs); @p theta_rhs empty, or ncol of zvector's
+/// @p theta_rhs on the host. Every method carries the rotations among the
+/// roots at unequal weights. Each column is solved as @ref zvector solves it
 /// alone, to ||r|| <= @p tolerance per column, the CI rows in zvector's
 /// convention (unweighted, unscaled). @p solver picks the method, Schur by
 /// default (the fastest measured; Coupled is slower on a larger molecule, so
@@ -121,10 +144,14 @@ struct ZVectors {
 ///
 /// Coupled needs every weight positive (its CI rows are scaled by 2 w_r),
 /// and H_0 - E_r positive off the roots along every direction its
-/// preconditioner reaches: the roots must be the lowest of their spin.
+/// preconditioner reaches: the roots must be the lowest of their spin. With
+/// rotations it needs (w_r - w_s)(E_s - E_r) > 0 for every pair of unequal
+/// weights (their rows are scaled by 2 (w_r - w_s)): the weights falling as
+/// the energies rise.
 ///
 /// @return The multipliers; InvalidConfig as @ref zvector's, for @p ncol
-///         below 1, or for Coupled with a weight not positive;
+///         below 1, or for Coupled with a weight not positive or a pair
+///         whose weights rise with its energies;
 ///         MaxIterationsExceeded when a column is still above @p tolerance
 ///         after @p max_iterations products; Divergence as zvector's, for the
 ///         operator a method iterates on; or the first error of a product,
@@ -134,6 +161,7 @@ struct ZVectors {
                                         int32_t ncol, const double *gradients,
                                         const double *ci_rhs = nullptr,
                                         CpSolver solver = CpSolver::Schur, double tolerance = 1e-10,
-                                        int32_t max_iterations = 200);
+                                        int32_t max_iterations = 200,
+                                        std::span<const double> theta_rhs = {});
 
 } // namespace free_breakfast::mcscf

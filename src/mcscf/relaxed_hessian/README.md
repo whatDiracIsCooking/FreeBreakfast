@@ -17,7 +17,7 @@ Everything is in `namespace free_breakfast::mcscf`.
 | `ResponseIntegrals` | F^I, ppaa and papa on the host, column-major as the device's: what H′(x) contracts |
 | `response_integrals` | H′(x): h_eff′ and (tu\|vw)′ along κ(x), row-major as `ci::Sigma::set_integrals` takes them |
 | `response_gradient` | Its adjoint: the antisymmetric nmo × nmo whose packed pairs are the gradient in x of h_eff′·γ + (tu\|vw)′·Γ |
-| `RelaxedHessian` | H̃ at one set of orbitals and roots: `apply` (y = H̃ x, one column or a block), `respond` (δ and its transition RDMs γ_T, Γ_T for one column), `couple` (w = −(H₀ − E)⁻¹ P y for a CI right-hand side y, and H_oc w; one column or a block), `apply_coupled` (the unreduced operator over (x, x_c), a block), `ci_diagonal` (diag H₀), `delta`, `size`, `weights` |
+| `RelaxedHessian` | H̃ at one set of orbitals and roots: `apply` (y = H̃ x, one column or a block), `respond` (δ and its transition RDMs γ_T, Γ_T for one column), `couple` (w = −(H₀ − E)⁻¹ P y for a CI right-hand side y, and H_oc w; one column or a block), `apply_coupled` (the unreduced operator over (x, x_c), and optionally the rotations among the roots, a block), `coupling` (H_oc x_c alone, a block), `ci_diagonal` (diag H₀), `delta`, `size`, `weights` |
 
 `RelaxedHessian::create` takes the `response::Hessian`, the sigma whose
 integrals are H₀ at the same orbitals, the `ci::Rdm` and the strings both are
@@ -89,9 +89,29 @@ each). What the block changes is the CI side:
   root, they make H₀ − E_r indefinite, and a conjugate gradients that
   reaches them diverges (water's SA-2 did, at p·Ap = −1.3e-13).
 
+### The rotations among the roots
+
+At unequal weights the Z-vector carries the rotations among the roots, Θ_sr
+for r < s, as parameters (`../zvector/README.md`, "The rotations among the
+roots"). Nothing in H̃ changes for them: step 3's other roots' part is their
+elimination already (both halves of a pair weighted, its transition RDMs
+carry (w_r − w_s) Θ_sr, zero at equal weights). Two calls take them
+explicitly:
+
+- **`coupling`**: H_oc x_c for a block of CI vectors and no solve, through
+  their transition RDMs as step 5. A part Σ_s Θ_sr c_s of x_c,r along the
+  roots is the rotations' coupling to the orbitals.
+- **`apply_coupled` with `theta`** (host, nroots (nroots − 1) / 2 a column):
+  Θ joins x_c as its part along the roots (one gemm of C by the
+  antisymmetric matrices, into the lockstep scratch), so y gains its H_oc,
+  and `y_theta` returns the rows c_s · H′(x) c_r + (E_s − E_r) Θ_sr, read off
+  y_c's overlaps with the roots before the projection drops them (both
+  orders averaged). With `theta` empty it is the call above, unchanged.
+
 Their scratch is a member, grown to the widest block seen: r, p, A p and one
 product (dim × k nroots each) and a few k nroots vectors, plus `delta()` and
-b at k blocks. Six CI blocks per column, so a block of 3N columns over a
+b at k blocks, and k nroots² doubles for `apply_coupled`'s rotation
+matrices. Six CI blocks per column, so a block of 3N columns over a
 large active space is that much device memory.
 
 The derivation, the costs and what H̃ bought the loop are in
@@ -104,7 +124,9 @@ None of its own: `test/gtest/mcscf_solve_gpu.cpp` drives every product
 through `mcscf::solve`, `test/gtest/mcscf_zvector_gpu.cpp` `couple`
 through `mcscf::zvector`'s CI right-hand side, and
 `test/gtest/mcscf_zvectors_gpu.cpp` the block calls through
-`mcscf::zvectors`.
+`mcscf::zvectors`, and `test/gtest/mcscf_zvector_rotations_gpu.cpp`
+`coupling` and `apply_coupled`'s rotations through its rotations at unequal
+weights.
 
 ## Files
 

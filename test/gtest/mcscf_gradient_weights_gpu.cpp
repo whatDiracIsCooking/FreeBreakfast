@@ -3,11 +3,11 @@
 // 6-31G / cc-pVDZ-JKFIT (test/gtest/data/casscf_hessian/): the orbitals and
 // roots loaded from the fixture, never re-converged (PySCF's own two-root
 // solution is a saddle point), into a Solution with the RDMs at the case's
-// weights. Two roots at (0.7, 0.3) and three at equal weights: every root's
-// gradient against the fixture's (the exact parameter gradient, checked there
-// against finite differences). Three at (0.5, 0.3, 0.2), where the Z-vector's
-// projection is off by up to 3.3e-3, and the same roots at the partly equal
-// (0.4, 0.4, 0.2): Unsupported, naming the weights, for every root.
+// weights. Two roots at (0.7, 0.3), three at equal weights and three at
+// (0.5, 0.3, 0.2): every root's gradient against the fixture's (the exact
+// parameter gradient, checked there against finite differences). At three
+// unequal weights the Z-vector carries the rotations among the roots (#613);
+// projected out, as before it, the gradient is off by up to 3.3e-3.
 
 #include <gtest/gtest.h>
 
@@ -32,10 +32,11 @@ namespace {
 
 namespace fb = free_breakfast;
 
-// mcscf_gradient_gpu.cpp's bar against PySCF, absolute. The fixture's
-// gradients are good to 6e-9 against finite differences, and its orbitals are
-// converged to 2e-14.
-constexpr double kGradientTol = 1e-8;
+// Absolute, against the fixture's exact parameter gradient over the same fit
+// (itself good to 6e-9 against finite differences, its orbitals converged to
+// 2e-14). Measured on the gfx1200: at most 7e-12 over every root of the
+// three cases.
+constexpr double kGradientTol = 1e-9;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_hessian";
 
@@ -245,18 +246,6 @@ protected:
     }
   }
 
-  // Every root at @p weights over the case's roots: Unsupported, naming them.
-  void expect_refused(const std::vector<double> &weights, std::string_view named) {
-    const fb::mcscf::Solution sol = solution(weights);
-    for (std::size_t root = 0; root < nroots_; ++root) {
-      const auto g = gradient(sol, static_cast<std::int32_t>(root));
-      ASSERT_FALSE(g) << "root " << root;
-      EXPECT_EQ(g.error().kind, fb::ErrorKind::Unsupported) << g.error().message;
-      EXPECT_NE(g.error().message.find(named), std::string::npos) << g.error().message;
-      EXPECT_NE(g.error().message.find("unequal weights"), std::string::npos) << g.error().message;
-    }
-  }
-
   fb::json case_;
   std::optional<fb::DeviceResources> res_;
   std::optional<fb::Molecule> molecule_;
@@ -289,13 +278,11 @@ TEST_F(McscfGradientWeights, ThreeRootsEqualMatchReference) {
   check("h2o_631g_sa3");
 }
 
-// The refusal is of the weights, before the Z-vector: the same roots at the
-// partly equal (0.4, 0.4, 0.2), not their solution, are refused too.
-TEST_F(McscfGradientWeights, ThreeRootsUnequalRefused) {
+// Three roots at (0.5, 0.3, 0.2): the rotation between roots 1 and 2 carries
+// a multiplier of 0.07 to 0.15, and the gradient is exact only with it.
+TEST_F(McscfGradientWeights, ThreeRootsUnequalMatchReference) {
   FBF_REQUIRE_GPU();
-  load("h2o_631g_sa3_unequal");
-  expect_refused(case_["weights"].get<std::vector<double>>(), "(0.5, 0.3, 0.2)");
-  expect_refused({0.4, 0.4, 0.2}, "(0.4, 0.4, 0.2)");
+  check("h2o_631g_sa3_unequal");
 }
 
 } // namespace
