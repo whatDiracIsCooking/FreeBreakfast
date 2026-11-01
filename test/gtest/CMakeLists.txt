@@ -163,6 +163,7 @@ add_executable(
   df_rhf_hessian_response_gpu.cpp
   df_rhf_hessian_two_electron_gpu.cpp
   df_casscf_hessian_two_electron_gpu.cpp
+  df_casscf_hessian_exy_gpu.cpp
   infrared_gpu.cpp
   pipeline_gradient_gpu.cpp
   pipeline_casscf_gradient_gpu.cpp

@@ -11,9 +11,10 @@ eq. hess-sym, Algorithm 1 lines 2–9); and the explicit part's
 differentiated twice at fixed orbitals, the fit's cross terms included (eqs.
 dfj, dfk). Beside them, the **dipole derivative** the same CPHF solution
 gives, `rhf_dipole_derivative`, and the **IR intensities** it projects to,
-`infrared_intensities`. For DF-CASSCF, the first piece so far: the
-**CASSCF two-electron explicit part**, `df_casscf_two_electron`
-(`casscf_hessian.tex` eq. df2, below).
+`infrared_intensities`. For DF-CASSCF, so far: the **CASSCF two-electron
+explicit part**, `df_casscf_two_electron` (`casscf_hessian.tex` eq. df2),
+and the **fixed-parameter second derivative** E_xy built on it,
+`df_casscf_exy` (eq. exy), both below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -407,15 +408,143 @@ term's phase, the larger) beside the workspace its integral calls grew to:
 refactor leaves `HessianDfRhfTwoElectron`'s figures above unchanged to the
 digits quoted.
 
+## The CASSCF fixed-parameter second derivative
+
+`df_casscf_exy` is `casscf_hessian.tex` eq. (exy): the second derivative of
+the energy at fixed orbital rotations and CI, the orbitals carried by the
+symmetric (Löwdin) connection C T(x), T = (Cᵀ S(x) C)^−½, to second order:
+
+    E_xy = Σ D^AO h^xy + V_nn^xy + E₂^xy                      (explicit)
+         + 2 Σ F τ^xy + 2 Σ (F^[x] τ^y + F^[y] τ^x) + E^(2)[τ^x, τ^y],
+    τ^x = −½ S^x,   τ^xy = −½ S^xy + ⅜ (S^x S^y + S^y S^x)
+
+(S^x, S^xy in the MO basis), each piece returned beside the sum:
+
+```cpp
+auto fx = mcscf::df_derivatives(res, molecule, basis, classes, aux, h, b, l, c_matrix, ncore,
+                                ncas, nalpha, nbeta, roots, one_hot_on_I);
+auto e = hessian::df_casscf_exy(res, molecule, basis, classes, aux, h, b, l, c, ncore, ncas,
+                                gamma, gamma2, fx->fock);
+// e->one_electron, e->nuclear_repulsion, e->two_electron (df_casscf_two_electron's),
+// e->connection_second, e->connection_fock, e->connection_twice and their sum e->exy:
+// each 3 n_atom x 3 n_atom
+```
+
+**The ⅜ terms are not optional.** The linearized connection 1 − ½ S^x δx
+is not orthonormal at second order; τ^xy's ⅜ (S^x S^y + S^y S^x) is what
+makes it so, and without it E_xy is wrong by about its own size (the design's
+§10: 0.93 against finite differences; `DroppingTheThreeEighthsTermsMisses`
+below measures it here).
+
+**Any densities.** γ and Γ are any active 1- and 2-RDMs over the closed-shell
+core, row-major as `ci::Rdm::rdm12` writes them, and F^[x] is the caller's at
+the same RDMs (`mcscf::Derivatives::fock`; `df_derivatives` at weights
+one-hot on root I gives root I's). E_xy is linear in (γ, Γ, F^[x]) at a fixed
+core, so a state average's Lagrangian takes it at root I's RDMs and at its
+z_c's transition RDMs added to them, the way `mcscf::df_gradient` does. What
+this form cannot hold is a density with a virtual index: the z_o-rotated
+densities K_z D − D K_z, which are E_xy's derivative along the orbital
+rotation C → C (1 + ε K_z) rather than E_xy at some (γ, Γ). The explicit
+two-electron part (`df_casscf_two_electron`) and F^[x] (`df_derivatives`)
+both take the closed-shell core and active RDMs only, so a general MO-basis
+(D, Γ) would have to be carried through them first.
+
+### How each piece is built
+
+D and Γ are formed over the occupied orbitals on the host: D = diag(2_core, γ)
+and Γ the closed-shell core's D ⊗ D − ½ exchange with itself and with γ,
+plus the active Γ, 8-fold symmetrized (nocc⁴ doubles).
+
+- **Explicit.** `kinetic_hessian` + `potential_hessian` at D^AO =
+  C_o D C_oᵀ (S^xy is the connection's, below), `nuclear_repulsion_hessian`,
+  and `df_casscf_two_electron` at the same RDMs.
+- **F**, eq. (fock), from B in the MO basis (`b_mo`, every pair) and
+  G_Q,ij = Σ_rs Γ_ijrs B_Q,rs (one gemm from the occupied pairs):
+  F[:, occ] = h_MO D + Σ_Q,r B_Q,rp G_Q,qr, one gemm over B's (Q, r < nocc)
+  rows.
+- **2 Σ F τ^xy.** The S^xy part is −Σ F S^xy_MO = `overlap_hessian` at
+  −C sym(F) Cᵀ. The ⅜ part, with τ^x = −½ S^x symmetric, is
+  6 ⟨sym(F) τ^x, τ^y⟩: one gemm makes sym(F) τ^x for every x, one more the
+  Gram matrix against the τ stack.
+- **2 Σ (F^[x] τ^y + F^[y] τ^x)**: the Gram matrix ⟨F^[x], τ^y⟩, and twice it
+  plus its transpose.
+- **E^(2)[τ^x, τ^y]**, the energy at the integrals one-index transformed by
+  τ^x on one index and τ^y on another, every ordered pair of positions. With
+  Γ 8-fold symmetric and nonzero only over the occupied orbitals, those
+  twelve placements are four on the same pair and eight across the pairs:
+
+      E^(2) = 2 ⟨D, τ^xᵀ h τ^y⟩ + 2 X₁ + 4 X₂,
+      X₁ = Σ Γ_pqrs τ^x_ap τ^y_bq (ab|rs) = ⟨τ^y_occ, W^x⟩,   W^x = Σ_Q B_Q τ^x_occ G_Q,
+      X₂ = Σ Γ_pqrs τ^x_ap τ^y_cr (aq|cs) = ⟨R^x, R^y Γ⟩,   R^x_Q,ip = (B_Q τ^x_occ)_pi, p occupied.
+
+  Per x, Y_Q = B_Q τ^x_occ is one strided-batched gemm over B's columns,
+  stored (Q, i, p) so that R^x is its first naux nocc² doubles and
+  W^x = Yᵀ G one gemm; V^x = 2 h τ^x_occ D + 2 W^x. Then
+  E^(2) = ⟨V^x, τ^y_occ⟩ + 4 ⟨R^x, R^y Γ⟩, two Gram matrices.
+
+**Why not `response::Hessian`.** E^(2)[A, B] is the machinery behind the
+orbital Hessian, which for an antisymmetric κ is
+xᵀ H y = E^(2)[κ_x, κ_y] + ⟨F, κ_x κ_y + κ_y κ_x⟩. But that operator is a
+product over the packed non-redundant pairs that leans on κ's antisymmetry
+throughout (κ's core rows stand for its core columns; the core–core,
+active–active and virtual–virtual blocks are zero; the −½ (F + Fᵀ) κ term is
+the exponential's κ²/2), and τ^x is symmetric and fills every block,
+virtual–virtual included. Here every pair (x, y) of 3 n_atom generators is
+wanted at once, which is a Gram matrix rather than 3 n_atom operator
+products. So E^(2) is its own contraction over the fitted B, and
+`response::Hessian` is untouched: its callers (`mcscf/solve`,
+`RelaxedHessian`, the Z-vectors, `mcscf::df_gradient` and the NEVPT2
+Lagrangian) are bitwise as before.
+
+### Memory
+
+The explicit parts run first and free what they hold
+(`df_casscf_two_electron` checks its own). Then, held for the connection
+terms: τ^x and sym(F) τ^x for every x (2 · 3 n_atom nmo²), B over every MO
+pair (naux nmo²) and the occupied ones, G (naux nocc² each), h_MO and two
+Fock matrices, R^x and R^x Γ for every x (2 · 3 n_atom naux nocc²), V^x
+(3 n_atom nmo nocc) and Γ (nocc⁴); beside the AO S^x stack while τ is made,
+or one coordinate's Y (naux nocc nmo) from the workspace. Past the device's
+free memory that is Unsupported before it is allocated. Nothing batches the
+coordinates yet; B over every MO pair is what `response::Hessian`'s
+density-fitted operator reads too.
+
+### Tests
+
+`test/gtest/df_casscf_hessian_exy_gpu.cpp` (suite `HessianDfCasscfExy`),
+against `test/gtest/data/casscf_hessian/`'s per-root `one_electron`,
+`nuclear_repulsion`, `two_electron`, `connection_second`, `connection_fock`,
+`connection_twice` and `exy` (`tools/emit/casscf_hessian_reference.py`, over
+the same cc-pVDZ-JKFIT fit), at the fixture's orbitals and the RDMs of its CI
+vectors (never a re-converged CASSCF), with F^[x] from `mcscf::df_derivatives`
+at weights one-hot on the root: the stretched water CAS(4,4) in 6-31G and in
+cc-pVDZ (d shells), root 1 of the two-root average at (0.7, 0.3) and root 2
+of the three-root one at (0.5, 0.3, 0.2). Each piece and E_xy to 1e-8
+absolute, each piece's asymmetry to 1e-11, E_xy's translational sum rule to
+1e-8. `DroppingTheThreeEighthsTermsMisses` takes 2 Σ F ⅜ (S^x S^y + S^y S^x),
+computed on the host from the fixture's F and this tree's S^x, out of E_xy
+and requires the rest to miss the reference by more than a tenth of
+max |E_xy|, by the size of the term; and the refusals.
+
+Measured on the RTX 3080 (CUDA), of max |E_xy| 0.44 (6-31G), 1.56
+(cc-pVDZ), 0.53 and 0.50 (the averages' roots): |H − reference| ≤ 5.6e-12
+for the one-electron part, ≤ 4.7e-13 for the two-electron part, ≤ 5.7e-13,
+7.4e-14 and 8.0e-14 for the three connection terms, and ≤ 6.1e-12 for E_xy;
+asymmetry ≤ 3.6e-15, sum rule ≤ 5.2e-13; 0.22 s (6-31G) and 0.82 s
+(cc-pVDZ) a call, `df_casscf_two_electron` included. Without the ⅜ terms
+E_xy misses by 0.93 of max |E_xy| 0.44: the design's 0.93, twice E_xy's own
+size.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
 | `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms |
+| `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |
