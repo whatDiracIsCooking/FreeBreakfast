@@ -13,7 +13,9 @@
 /// right-hand sides: overlap_derivative, kinetic_derivative and
 /// potential_derivative form dX_mn/dR_{A,k} for every atom and axis as
 /// spherical AO matrices on the device, over the ip1 kernels (ips_, ipt_,
-/// ipv_) and V's per-nucleus operator kernel (iprv_).
+/// ipv_) and V's per-nucleus operator kernel (iprv_). And overlap_half_gradient,
+/// the overlap's first-index derivative alone contracted per atom, which an
+/// antisymmetric matrix (a NAC's CSF term) does not cancel.
 
 export module free_breakfast.integrals.one_electron.gradient;
 
@@ -76,6 +78,41 @@ kinetic_gradient(DeviceResources &res, const BasisSet &basis,
 potential_gradient(DeviceResources &res, const BasisSet &basis,
                    std::span<const PrimitivePairClass> classes, const Molecule &molecule,
                    const SphericalMatrixAO &m);
+
+/// @brief G[A, k] = Sum_{m on A} Sum_n A_mn dS_mn/dA_k with only m's centre
+/// moved: the overlap's first-index (half) derivative contracted with @p a, for
+/// every atom A of @p basis and axis k.
+///
+/// The derivative is on the bra's centre alone, dS_mn/dA_k = -(d_k m | n) =
+/// (m | d_k n) with d_k the electron coordinate's: libcint's -int1e_ipovlp,
+/// PySCF's pyscf.grad.rhf.get_ovlp, so G is twice
+/// pyscf.nac.sacasscf._nac_csf's per-atom sum for the same @p a. Unlike
+/// @ref overlap_gradient it does not take both centres, so it does not vanish
+/// for an antisymmetric @p a (a NAC's CSF term); for a symmetric @p a, 2 G is
+/// @ref overlap_gradient's. @p a is a spherical AO matrix of @p basis,
+/// element (m, n) the row-m, column-n entry, and need not be symmetric.
+///
+/// Built from the first-index derivative X1 (the ip1 kernels, as
+/// @ref overlap_derivative builds it) carried onto the spherical layout, each
+/// AO row contracted with @p a's row on the device, and each row's sum added
+/// into its atom's on the host. Its scratch is its own: one Cartesian
+/// [3, n_cart, n_cart], one spherical [3, n, n], 3 n row sums and a
+/// @c MatrixAOPair. @p classes must be @c primitive_pair_classes of @p basis,
+/// which must carry its per-atom shell map (made by @c place). Queued on
+/// res.stream(), each class on its own stream forked from it and joined back
+/// into it; the call waits for the stream, to return the gradient on the
+/// host. The device res.dev_idx() names is made current for the call and the
+/// previous one restored.
+///
+/// @return The gradient, flat and row-major as @c (basis.natoms(), 3); or
+///         InvalidConfig if @p a is not basis.nao_sphe() square or on @p res's
+///         device, if @p basis has no per-atom map, if 3 n_cart^2 does not fit
+///         an int32_t, or for any input @c check_one_electron_build refuses; or
+///         the GpuRuntime error of the first copy, launch, transform or wait
+///         that failed. A failed allocation aborts (CreatePolicy).
+[[nodiscard]] Result<std::vector<double>>
+overlap_half_gradient(DeviceResources &res, const BasisSet &basis,
+                      std::span<const PrimitivePairClass> classes, const SphericalMatrixAO &a);
 
 /// @brief S^x: dS_mn/dR_{A,k} for every atom A of @p basis and axis k, as
 /// spherical AO matrices of @p basis on @p res's device.

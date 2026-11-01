@@ -18,6 +18,15 @@ as the `[n_atom, 3, n_ao, n_ao]` spherical tensor on the device
 (`overlap_derivative`, `kinetic_derivative`, `potential_derivative`), over
 FelizJueves's `ips_`, `ipt_`, `ipv_` and `iprv_{la}{lb}` kernels.
 
+And one half: `overlap_half_gradient`, the overlap's derivative on the first
+index's centre alone, contracted per atom,
+
+    G[A, k] = Σ_{m on A} Σ_n A_mn ∂S_mn/∂A_k   (only m's centre moved)
+
+which, unlike `overlap_gradient`, does not vanish for an antisymmetric A: the
+CSF term of a state-averaged CASSCF nonadiabatic coupling,
+½ Σ_mn A_mn ⟨∂m|n⟩ with A = C_a (γ^IJ − γ^IJᵀ) C_aᵀ.
+
 ## Module
 
 `free_breakfast.integrals.one_electron.gradient`, also re-exported by
@@ -83,6 +92,24 @@ The kernels index all three slabs as one 32-bit index, so `3 n_cart² ≤
 INT32_MAX`, and the assembly launches one grid row per matrix, so `3 n_atom ≤
 65535`.
 
+**The half gradient.** `overlap_half_gradient` builds the overlap's Y exactly
+as `overlap_derivative` does (the `ips_` launches into the Cartesian
+`[3, n_cart, n_cart]`, each slab carried onto the spherical `[3, n, n]`), but
+assembles no matrices: one hand-written kernel (`first_index_row_sums`, one
+`kFourWarps` block per AO row m and axis k, `block_reduce` over the columns)
+writes rows[k, m] = Σ_n A_mn Y[k, m, n], and the host adds each row into its
+atom's, in AO order, so the result is deterministic. *The index convention*:
+Y[k, m, n] = ∂S_mn/∂A_k with A the centre of m alone, which is −(∂_k m | n) =
+(m | ∂_k n) with ∂_k the electron coordinate's: libcint's `−int1e_ipovlp`,
+PySCF's `pyscf.grad.rhf.get_ovlp`, whose nabla is on the first (bra) index —
+the comment in `pyscf.nac.sacasscf._nac_csf` that it differentiates the
+second index means the electron derivative on the ket, the same number by
+parts. So G is twice `_nac_csf`'s per-atom sum for the same A (that function's
+½ is the caller's), and for a symmetric A, 2 G is `overlap_gradient`'s. A is
+read as row m, column n of the (column-major) spherical matrix; it need not be
+symmetric. Its limits are `overlap_derivative`'s but the atom count's, which
+nothing here grids over.
+
 **The family layout** is `overlap/`'s, three families to one directory; the
 parent README's "One layout per kernel family" has the table.
 
@@ -99,6 +126,7 @@ against it.
 | `overlap_gradient(res, basis, classes, m)` | `Result<std::vector<double>>`: Σ M dS/dR, `(natoms, 3)` row-major |
 | `kinetic_gradient(res, basis, classes, m)` | The same for T |
 | `potential_gradient(res, basis, classes, molecule, m)` | The same for V, its operator term on every nucleus included |
+| `overlap_half_gradient(res, basis, classes, a)` | `Result<std::vector<double>>`: Σ_{m on A} Σ_n a_mn ∂S_mn/∂A_k, the first index's centre only, `(natoms, 3)` row-major; any `a`, antisymmetric included |
 | `overlap_derivative(res, basis, classes)` | `Result<Buffers::device<double>>`: S^x, dS_mn/dR_{A,k}, `natoms × 3` spherical matrices, matrix 3A + k at `(3A + k) n²` |
 | `kinetic_derivative(res, basis, classes)` | The same for T |
 | `potential_derivative(res, basis, classes, molecule)` | The same for V, its operator term on every nucleus included |
@@ -136,13 +164,22 @@ set's sum over atoms below the same; each matrix contracted with the recipe M
 against `overlap_gradient` and its siblings at 1e-12 of max|G|; and the
 refusals of a basis with no per-atom map and a molecule of another atom count.
 
+`test/gtest/overlap_half_gradient_gpu.cpp`: `overlap_half_gradient` of the
+same two waters for a symmetric, an antisymmetric and a general recipe A
+against libcint's `−int1e_ipovlp` contracted per atom by PySCF, twice
+`_nac_csf` (`test/gtest/data/overlap_half_gradient/`,
+`tools/emit/overlap_half_gradient_reference.py`, which also checks a finite
+difference moving the bra's centre alone), at 1e-12 of max|G|; for the
+symmetric A, 2 G against `overlap_gradient` at 1e-12 of max|G|; and the
+refusals of a matrix of the wrong order and a basis with no per-atom map.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `overlap_gradient`, `kinetic_gradient`, `potential_gradient`, and the three `*_derivative` |
-| `gradient.cpp` | Implementation: the checks, the Cartesian M, the AO atoms, the launches, the spherical derivative matrices |
-| `gradient_launch.cu` | The launchers over the generated kernels' tables, the record-atom gather and the centre-term assembly |
+| `gradient.cppm` | Module interface: `overlap_gradient`, `kinetic_gradient`, `potential_gradient`, the three `*_derivative`, and `overlap_half_gradient` |
+| `gradient.cpp` | Implementation: the checks, the Cartesian M, the AO atoms, the launches, the spherical derivative matrices, the half gradient's row sums into atoms |
+| `gradient_launch.cu` | The launchers over the generated kernels' tables, the record-atom gather, the centre-term assembly and the half gradient's row contraction |
 | `gradient_bridge.h` | The launchers' declarations, shared by the `.cu` and the implementation unit's GMF |
 | `kernels/` | The generated kernels and their seven headers, and the `.clang-format` that leaves them unformatted |
 | `CMakeLists.txt` | The device library `free_breakfast.integrals.one_electron.gradient.device` and the module |

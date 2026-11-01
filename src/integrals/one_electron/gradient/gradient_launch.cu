@@ -3,7 +3,8 @@
 // kinetic_gradient<la, lb> and potential_gradient<la, lb> kernels, and the
 // gather of each record's two atoms they read; and over the derivative-matrix
 // kernels overlap_ip1<la, lb>, kinetic_ip1<la, lb>, potential_ip1<la, lb> and
-// potential_rinv<la, lb>, with the assembly of each atom's matrices from them.
+// potential_rinv<la, lb>, with the assembly of each atom's matrices from them
+// and the row contraction of the overlap's half gradient.
 // One source for both backends -- nvcc under CUDA, clang -x hip under HIP.
 //
 // The generated kernels are sources of this library of their own (kernels/),
@@ -21,6 +22,7 @@
 #include <type_traits>
 
 #include "block_params.h"
+#include "block_reduce.cuh"
 #include "primitives.h"
 
 #include "gradient_bridge.h"
@@ -36,6 +38,9 @@
 namespace {
 
 using free_breakfast::PrimitivePairClassView;
+using free_breakfast::device::block_reduce;
+
+namespace cg = cooperative_groups;
 
 // Record r's bra atom into atom_a[r] and its ket atom into atom_b[r], each the
 // atom of the shell's first Cartesian AO.
@@ -70,6 +75,29 @@ __global__ void centre_derivatives(const int32_t n, const int32_t *ao_atom, cons
     v += y[(k * nn) + (c * n) + m];
   }
   out[(blockIdx.y * nn) + e] += v;
+}
+
+struct RowAdd {
+  __device__ double operator()(const double a, const double b) const { return a + b; }
+};
+
+// rows[k, m] = Sum_c a[m + n c] y[k, m, c], one kFourWarps block per (m, k),
+// blockIdx.x being m and blockIdx.y k, its threads strided over c.
+__global__ void first_index_row_sums(const int32_t n, const double *a, const double *y,
+                                     double *rows) {
+  constexpr uint32_t kWarps = free_breakfast::kFourWarps / free_breakfast::kWarpSize;
+  __shared__ double partials[kWarps];
+  const int64_t m = blockIdx.x;
+  const int64_t k = blockIdx.y;
+  const double *y_row = y + (((k * n) + m) * n);
+  double v = 0.0;
+  for (int64_t c = threadIdx.x; c < n; c += blockDim.x) {
+    v += a[m + (c * n)] * y_row[c];
+  }
+  v = block_reduce<kWarps>(cg::this_thread_block(), partials, v, RowAdd{});
+  if (threadIdx.x == 0) {
+    rows[(k * n) + m] = v;
+  }
 }
 
 // The largest momentum each family's table covers, its own limit rather than
@@ -234,6 +262,16 @@ wwr::wwrError_t add_centre_derivatives(const wwr::wwrStream_t stream, const int3
   const dim3 grid(math::idivup(static_cast<uint32_t>(n) * static_cast<uint32_t>(n), kFourWarps),
                   static_cast<uint32_t>(3 * n_atom));
   centre_derivatives<<<grid, kFourWarps, 0, stream>>>(n, ao_atom, y, out);
+  return wwr::wwrGetLastError();
+}
+
+wwr::wwrError_t first_index_rows(const wwr::wwrStream_t stream, const int32_t n, const double *a,
+                                 const double *y, double *rows) {
+  if (n < 1) {
+    return wwr::wwrErrorInvalidValue;
+  }
+  const dim3 grid(static_cast<uint32_t>(n), 3);
+  first_index_row_sums<<<grid, kFourWarps, 0, stream>>>(n, a, y, rows);
   return wwr::wwrGetLastError();
 }
 

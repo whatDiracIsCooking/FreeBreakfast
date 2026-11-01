@@ -123,4 +123,16 @@ namespace free_breakfast::device {
                                                      int32_t n, const int32_t *ao_atom,
                                                      const double *y, double *out);
 
+/// @brief Each AO row of a first-index derivative contracted with a matrix's
+/// row, on @p stream: rows[k, m] = Sum_c a[m + n c] y[k, m, c], with @p a the
+/// n x n column-major matrix, @p y the [3, n, n] row-major first-index
+/// derivative and @p rows [3, n], written (not added into). One block per
+/// (m, k).
+///
+/// n must be positive.
+///
+/// @return The launch status.
+[[nodiscard]] wwr::wwrError_t first_index_rows(wwr::wwrStream_t stream, int32_t n, const double *a,
+                                               const double *y, double *rows);
+
 } // namespace free_breakfast::device

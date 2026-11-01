@@ -1,7 +1,9 @@
 /// @file
 /// @brief overlap_gradient, kinetic_gradient and potential_gradient: the
 /// checks, the spherical matrix carried onto the Cartesian layout, each
-/// Cartesian AO's atom, and the per-class launches into one device gradient.
+/// Cartesian AO's atom, and the per-class launches into one device gradient;
+/// the three derivative-matrix builds over the ip1 kernels; and
+/// overlap_half_gradient, the overlap's ip1 matrices contracted row by row.
 
 module;
 
@@ -144,6 +146,55 @@ Result<std::vector<double>> potential_gradient(DeviceResources &res, const Basis
                            });
 }
 
+// Each spherical AO's atom, from the basis's per-atom shell map.
+std::vector<int32_t> spherical_ao_atoms(const BasisSet &basis) {
+  std::vector<int32_t> ao_atom(basis.nao_sphe());
+  for (uint32_t atom = 0; atom < basis.natoms(); ++atom) {
+    const uint32_t first = basis.atom_shell_offset(atom);
+    for (uint32_t shell = first; shell < first + basis.atom_shell_count(atom); ++shell) {
+      std::fill_n(ao_atom.begin() + basis.ao_offset_sphe(shell),
+                  basis.shells()[shell].function_count_sphe(), static_cast<int32_t>(atom));
+    }
+  }
+  return ao_atom;
+}
+
+// Zero the Cartesian [3, n_cart, n_cart] x1, then launch_class(cls, x1) for
+// every class, each on its own stream between a fork from and a join into
+// res.stream().
+Status build_cartesian_slabs(DeviceResources &res,
+                             const std::span<const PrimitivePairClass> classes,
+                             Buffers::device<double> &x1, const auto &launch_class) {
+  const wwr::wwrStream_t stream = res.stream();
+  FBF_TRY(
+      gpu_status(wwr::wwrMemsetAsync(x1.data(), 0, sizeof(double) * x1.num_elements(), stream)));
+  FBF_TRY(gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
+    return launch_class(cls, x1.data());
+  })));
+  return {};
+}
+
+// x1's three Cartesian slabs, each carried onto the spherical layout at to, a
+// [3, n, n], through pair's two matrices, on res.stream(). Copied in
+// row-major, a slab is the transpose of the column-major matrix it fills, and
+// U^T X^T U = (U^T X U)^T: read row-major, to is U^T X U.
+Status carry_slabs_to_spherical(DeviceResources &res, MatrixAOPair &pair,
+                                const Buffers::device<double> &x1, double *to) {
+  const wwr::wwrStream_t stream = res.stream();
+  const size_t slab_cart = pair.cartesian().num_elements();
+  const size_t slab = pair.spherical().num_elements();
+  for (size_t k = 0; k < 3; ++k) {
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(pair.cartesian().data(), x1.data() + (k * slab_cart),
+                                           sizeof(double) * slab_cart, wwr::wwrMemcpyDeviceToDevice,
+                                           stream)));
+    FBF_TRY(pair.cartesian_to_spherical(res));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(to + (k * slab), pair.spherical().data(),
+                                           sizeof(double) * slab, wwr::wwrMemcpyDeviceToDevice,
+                                           stream)));
+  }
+  return {};
+}
+
 // The derivative matrices' common body: check, launch launch_ip1(cls, x1) for
 // every class into a zeroed Cartesian [3, n_cart, n_cart], carry each slab onto
 // the spherical layout, and add every atom's centre terms from it into a zeroed
@@ -182,15 +233,7 @@ derivative_matrices(DeviceResources &res, const BasisSet &basis,
   }
   const wwr::wwrStream_t stream = res.stream();
 
-  // Each spherical AO's atom, from the basis's per-atom shell map.
-  std::vector<int32_t> ao_atom(n);
-  for (uint32_t atom = 0; atom < n_atom; ++atom) {
-    const uint32_t first = basis.atom_shell_offset(atom);
-    for (uint32_t shell = first; shell < first + basis.atom_shell_count(atom); ++shell) {
-      std::fill_n(ao_atom.begin() + basis.ao_offset_sphe(shell),
-                  basis.shells()[shell].function_count_sphe(), static_cast<int32_t>(atom));
-    }
-  }
+  const std::vector<int32_t> ao_atom = spherical_ao_atoms(basis);
   Buffers::device<int32_t> ao_atom_d(ao_atom.size(), res.device());
   Buffers::device<double> x1(3 * slab_cart, res.device());
   Buffers::device<double> y(3 * slab, res.device());
@@ -200,39 +243,15 @@ derivative_matrices(DeviceResources &res, const BasisSet &basis,
   FBF_TRY(
       gpu_status(wwr::wwrMemsetAsync(out.data(), 0, sizeof(double) * out.num_elements(), stream)));
 
-  // x1's three Cartesian slabs, each carried onto the spherical layout at to.
-  // Copied in row-major, a slab is the transpose of the column-major matrix it
-  // fills, and U^T X^T U = (U^T X U)^T: read row-major, to is U^T X U.
-  const auto to_spherical = [&](double *to) -> Status {
-    for (size_t k = 0; k < 3; ++k) {
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(pair.cartesian().data(), x1.data() + (k * slab_cart),
-                                             sizeof(double) * slab_cart,
-                                             wwr::wwrMemcpyDeviceToDevice, stream)));
-      FBF_TRY(pair.cartesian_to_spherical(res));
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(to + (k * slab), pair.spherical().data(),
-                                             sizeof(double) * slab, wwr::wwrMemcpyDeviceToDevice,
-                                             stream)));
-    }
-    return {};
-  };
-  const auto build = [&](const auto &launch_class) -> Status {
-    FBF_TRY(
-        gpu_status(wwr::wwrMemsetAsync(x1.data(), 0, sizeof(double) * x1.num_elements(), stream)));
-    FBF_TRY(gpu_status(launch_each(classes, stream, [&](const PrimitivePairClass &cls) {
-      return launch_class(cls, x1.data());
-    })));
-    return {};
-  };
-
   // V's operator terms first: nucleus C's [3, n, n] is out's slabs 3C..3C+2.
   for (uint32_t c = 0; c < n_rinv; ++c) {
-    FBF_TRY(build([&](const PrimitivePairClass &cls, double *xc) {
+    FBF_TRY(build_cartesian_slabs(res, classes, x1, [&](const PrimitivePairClass &cls, double *xc) {
       return launch_rinv(cls, static_cast<int32_t>(c), xc);
     }));
-    FBF_TRY(to_spherical(out.data() + (3 * c * slab)));
+    FBF_TRY(carry_slabs_to_spherical(res, pair, x1, out.data() + (3 * c * slab)));
   }
-  FBF_TRY(build(launch_ip1));
-  FBF_TRY(to_spherical(y.data()));
+  FBF_TRY(build_cartesian_slabs(res, classes, x1, launch_ip1));
+  FBF_TRY(carry_slabs_to_spherical(res, pair, x1, y.data()));
   FBF_TRY(gpu_status(device::add_centre_derivatives(stream, static_cast<int32_t>(n_atom),
                                                     static_cast<int32_t>(n), ao_atom_d.data(),
                                                     y.data(), out.data())));
@@ -287,6 +306,63 @@ potential_derivative(DeviceResources &res, const BasisSet &basis,
         return device::potential_rinv_class(cls.device_stream()->stream(), cls.view(), nuclei, nuc,
                                             n_ao, xc);
       });
+}
+
+Result<std::vector<double>> overlap_half_gradient(DeviceResources &res, const BasisSet &basis,
+                                                  const std::span<const PrimitivePairClass> classes,
+                                                  const SphericalMatrixAO &a) {
+  constexpr std::string_view what = "overlap_half_gradient";
+  if (res.dev_idx() != a.dev_idx()) {
+    return err_config("{}: the matrix is on device {}, but the call passed device {}", what,
+                      a.dev_idx(), res.dev_idx());
+  }
+  if (a.n() != basis.nao_sphe()) {
+    return err_config("{}: the matrix is {} square, but the basis has {} spherical AOs", what,
+                      a.n(), basis.nao_sphe());
+  }
+  const uint32_t n_atom = basis.natoms();
+  if (n_atom == 0) {
+    return err_config("{}: the basis carries no per-atom shell map (make it with place)", what);
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  MatrixAOPair pair(res, basis, FBF_TRY(upload_spherical_transform_matrix(res, basis)));
+  FBF_TRY(check_one_electron_build(res, classes, pair.cartesian(), what));
+  const uint32_t n_cart = basis.nao_cart();
+  // The ip1 kernels index all three slabs as one 32-bit (k * n + m) * n + n'.
+  if (3 * static_cast<uint64_t>(n_cart) * n_cart >
+      static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
+    return err_config("{}: {} Cartesian AOs is too many for the kernels' 32-bit index", what,
+                      n_cart);
+  }
+  std::vector<double> g(static_cast<size_t>(n_atom) * 3);
+  const uint32_t n = basis.nao_sphe();
+  if (n == 0) {
+    return g;
+  }
+  const wwr::wwrStream_t stream = res.stream();
+  Buffers::device<double> x1(3 * static_cast<size_t>(n_cart) * n_cart, res.device());
+  Buffers::device<double> y(3 * static_cast<size_t>(n) * n, res.device());
+  Buffers::device<double> rows_d(3 * static_cast<size_t>(n), res.device());
+  const auto n_ao = static_cast<int32_t>(n_cart);
+  FBF_TRY(build_cartesian_slabs(res, classes, x1, [&](const PrimitivePairClass &cls, double *x) {
+    return device::overlap_ip1_class(cls.device_stream()->stream(), cls.view(), n_ao, x);
+  }));
+  FBF_TRY(carry_slabs_to_spherical(res, pair, x1, y.data()));
+  FBF_TRY(gpu_status(device::first_index_rows(stream, static_cast<int32_t>(n), a.data(), y.data(),
+                                              rows_d.data())));
+  std::vector<double> rows(rows_d.num_elements());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(rows.data(), rows_d.data(), sizeof(double) * rows.size(),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(res.sync());
+
+  // Each AO row's sum into its atom's, in AO order.
+  const std::vector<int32_t> ao_atom = spherical_ao_atoms(basis);
+  for (size_t k = 0; k < 3; ++k) {
+    for (size_t m = 0; m < n; ++m) {
+      g[(3 * static_cast<size_t>(ao_atom[m])) + k] += rows[(k * n) + m];
+    }
+  }
+  return g;
 }
 
 } // namespace free_breakfast
