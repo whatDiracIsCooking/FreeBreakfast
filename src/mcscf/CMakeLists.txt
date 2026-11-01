@@ -18,7 +18,8 @@ add_subdirectory(derivative)
 # theta^x, over derivative's H~^x and the orbital part of lambda^x.
 add_subdirectory(root_rotation)
 # The third derivative of the SA energy in its parameters along a fixed z: a
-# state-averaged (or NEVPT2) nuclear Hessian's z . d2 g_SA term.
+# state-averaged (or NEVPT2) nuclear Hessian's z . d2 g_SA term, and I^x z,
+# the Hessian along z at the derivative integrals (L_x lambda's z part).
 add_subdirectory(third_derivative)
 
 # The aggregate: one import for the MCSCF layer.
