@@ -176,6 +176,7 @@ add_executable(
   pipeline_optimize_gpu.cpp
   geometry_frequencies_gpu.cpp
   pipeline_hessian_gpu.cpp
+  pipeline_casscf_hessian_gpu.cpp
   active_space_gpu.cpp
   pipek_mezey_gpu.cpp
   pipeline_localization_gpu.cpp
