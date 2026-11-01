@@ -1,6 +1,7 @@
 /// @file
-/// @brief The state-averaged spin-summed 1- and 2-RDM of CI vectors, on the
-/// device. The 1-RDM of one vector is Sigma::rdm1.
+/// @brief The state-averaged spin-summed 1- and 2-RDM of CI vectors, and the
+/// transition RDMs of two, on the device. The 1-RDM of one vector is
+/// Sigma::rdm1.
 ///
 /// The host reference it is tested against is test/ci_oracles' host_rdm12.
 
@@ -81,6 +82,48 @@ public:
                              const double *vectors, double *gamma, double *gamma2,
                              Layout layout = Layout::full);
 
+  /// @brief The spin-summed transition 1-RDM γ^IJ_pq = ⟨bra| E_pq |ket⟩ =
+  /// Σ_σ ⟨bra| a†_pσ a_qσ |ket⟩: the first index is the creation. Not
+  /// symmetric (γ^JI = γ^IJᵀ), and the transpose of PySCF's
+  /// `trans_rdm1(bra, ket)`, whose [p, q] is ⟨bra| a†_q a_p |ket⟩; so it is
+  /// PySCF's `trans_rdm1(ket, bra)`. One chunk of D is
+  /// res.device_workspace(); the gather is rdm12's over @p bra, and
+  /// γ^IJ = D_braᵀ c_ket a gemm per chunk. Queued on res.stream() with
+  /// res.blas() (host pointer mode); it does not synchronize.
+  ///
+  /// @param bra, ket Device, size(@p layout) each: one vector apiece, which
+  ///        may be the same (γ^II is rdm12's γ at weight 1).
+  /// @param gamma Device, written with γ^IJ, n × n row-major.
+  /// @param layout The vectors' layout, both in it; Layout::symmetric needs
+  ///        one set for both spins.
+  /// @return InvalidConfig, with nothing queued, for another device or
+  ///         Layout::symmetric over two different sets; or the GpuRuntime
+  ///         error of a launch or the gemm.
+  [[nodiscard]] Status trans_rdm1(DeviceResources &res, const double *bra, const double *ket,
+                                  double *gamma, Layout layout = Layout::full);
+
+  /// @brief The symmetrized spin-summed transition 1- and 2-RDMs,
+  /// γ_pq = ½ (⟨bra| E_pq |ket⟩ + ⟨ket| E_pq |bra⟩) and
+  /// Γ_tuvw = ½ (⟨bra| E_tu E_vw − δ_uv E_tw |ket⟩ + (bra ↔ ket)), in
+  /// rdm12's (`make_rdm12`'s) convention: ½ (PySCF's
+  /// `trans_rdm12(bra, ket)` + `trans_rdm12(ket, bra)`). Unlike PySCF's
+  /// trans_rdm12 it is symmetric in bra and ket, γ is symmetric and
+  /// Γ_tuvw = Γ_vwtu, as rdm12's are; bra = ket is rdm12 at weight 1, to
+  /// rounding. The gather is rdm12's over both vectors, M =
+  /// ½ (D_braᵀ D_ket + D_ketᵀ D_bra) a syr2k in place of the syrk and
+  /// γ = ½ (D_braᵀ c_ket + D_ketᵀ c_bra) two gemms per chunk; M and two
+  /// chunks of D, 64 MiB together, are res.device_workspace(). Queued on
+  /// res.stream() with res.blas() (host pointer mode); it does not
+  /// synchronize.
+  ///
+  /// @param bra, ket Device, size(@p layout) each, which may be the same.
+  /// @param gamma Device, written with γ, n × n row-major.
+  /// @param gamma2 Device, written with Γ, n⁴ row-major (t, u, v, w).
+  /// @param layout As for trans_rdm1.
+  /// @return As trans_rdm1's, or the GpuRuntime error of the syr2k.
+  [[nodiscard]] Status trans_rdm12(DeviceResources &res, const double *bra, const double *ket,
+                                   double *gamma, double *gamma2, Layout layout = Layout::full);
+
   /// @brief The length of a vector: the number of determinants,
   /// alpha.size() · beta.size(), or for Layout::symmetric the triangle's,
   /// alpha.size() (alpha.size() + 1) / 2.
@@ -91,6 +134,13 @@ public:
 private:
   Rdm(DeviceResources &res, const DeviceStringSet &alpha, const DeviceStringSet &beta);
 
+  // What every call refuses: another device, or Layout::symmetric over two
+  // sets.
+  [[nodiscard]] Status check_call(const DeviceResources &res, Layout layout) const;
+  // D of @p c for the rows [@p begin, @p begin + @p count) into the zeroed
+  // @p d (count × n² column-major), zeroing it first, on res.stream().
+  [[nodiscard]] Status gather(DeviceResources &res, Layout layout, int32_t begin, int32_t count,
+                              const double *c, double *d) const;
   int32_t dev_idx_;
   int32_t n_orbitals_;
   int32_t n_alpha_; // alpha.size()

@@ -1,5 +1,6 @@
 /// @file
-/// @brief Rdm's launches: the state-averaged 1- and 2-RDM on the device.
+/// @brief Rdm's launches: the state-averaged 1- and 2-RDM, and the transition
+/// RDMs of two vectors, on the device.
 
 module;
 
@@ -11,7 +12,7 @@ module free_breakfast.ci.rdm;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kOne
+import free_breakfast.core.constants; // kOne, kHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
@@ -72,18 +73,32 @@ Rdm::Rdm(DeviceResources &res, const DeviceStringSet &alpha, const DeviceStringS
       one_set_{alpha.n_electrons() == beta.n_electrons()},
       alpha_links_{alpha.device_replacements()}, beta_links_{beta.device_replacements()} {}
 
-Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
-                  const double *const vectors, double *const gamma, double *const gamma2,
-                  const Layout layout) {
+Status Rdm::check_call(const DeviceResources &res, const Layout layout) const {
   if (res.dev_idx() != dev_idx_) {
     return err_config("ci::Rdm: tables are on device {}, but the call passed device {}", dev_idx_,
                       res.dev_idx());
   }
-  FBF_TRY(check_rdm12_weights(weights));
-  const bool symmetric = layout == Layout::symmetric;
-  if (symmetric && !one_set_) {
+  if (layout == Layout::symmetric && !one_set_) {
     return err_config("ci::Rdm: the symmetric layout needs one set of strings for both spins");
   }
+  return {};
+}
+
+Status Rdm::gather(DeviceResources &res, const Layout layout, const int32_t begin,
+                   const int32_t count, const double *const c, double *const d) const {
+  const auto nn = static_cast<size_t>(n_orbitals_) * static_cast<size_t>(n_orbitals_);
+  FBF_TRY(gpu_status(
+      wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * nn, res.stream())));
+  return gpu_status(device::rdm_gather_d(res.stream(), layout == Layout::symmetric, begin, count,
+                                         n_orbitals_, n_beta_, alpha_links_, alpha_per_,
+                                         beta_links_, beta_per_, c, d));
+}
+
+Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
+                  const double *const vectors, double *const gamma, double *const gamma2,
+                  const Layout layout) {
+  FBF_TRY(check_call(res, layout));
+  FBF_TRY(check_rdm12_weights(weights));
   const auto n = static_cast<size_t>(n_orbitals_);
   // A vector's rows: every determinant, or the triangle's.
   const int32_t rows = size(layout);
@@ -111,11 +126,7 @@ Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
     const double *const c = vectors + r * dim;
     for (int32_t begin = 0; begin < rows; begin += chunk) {
       const int32_t count = std::min(chunk, rows - begin);
-      FBF_TRY(gpu_status(
-          wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count) * nn, stream)));
-      FBF_TRY(
-          gpu_status(device::rdm_gather_d(stream, symmetric, begin, count, n_orbitals_, n_beta_,
-                                          alpha_links_, alpha_per_, beta_links_, beta_per_, c, d)));
+      FBF_TRY(gather(res, layout, begin, count, c, d));
       FBF_TRY(gpu_status(wwr::syrk<double, int32_t>(res.blas().get(), wwr::WWRBLAS_FILL_MODE_LOWER,
                                                     wwr::WWRBLAS_OP_T, nn32, count, &weights[r], d,
                                                     count, &kOne<double>, m, nn32)));
@@ -123,6 +134,71 @@ Status Rdm::rdm12(DeviceResources &res, const std::span<const double> weights,
           res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nn32, 1, count, &weights[r], d,
           count, c + begin, static_cast<int32_t>(dim), &kOne<double>, gamma, nn32)));
     }
+  }
+  return gpu_status(device::rdm_assemble(stream, n_orbitals_, m, gamma, gamma2));
+}
+
+Status Rdm::trans_rdm1(DeviceResources &res, const double *const bra, const double *const ket,
+                       double *const gamma, const Layout layout) {
+  FBF_TRY(check_call(res, layout));
+  const int32_t rows = size(layout);
+  const size_t nn = static_cast<size_t>(n_orbitals_) * static_cast<size_t>(n_orbitals_);
+  const auto nn32 = static_cast<int32_t>(nn);
+  const auto chunk = static_cast<int32_t>(
+      std::clamp<size_t>(kRdmChunkBytes / (sizeof(double) * nn), 1, static_cast<size_t>(rows)));
+
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto [d] = res.device_regions<double>(static_cast<size_t>(chunk) * nn);
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma, 0, sizeof(double) * nn, res.stream())));
+  // γ^IJ_tu = Σ_K ⟨bra| E_tu |K⟩ ket_K = (D_braᵀ ket)_tu, chunk by chunk; in
+  // the symmetric layout the √2 of each off-diagonal row of D meets the
+  // packed ket's.
+  for (int32_t begin = 0; begin < rows; begin += chunk) {
+    const int32_t count = std::min(chunk, rows - begin);
+    FBF_TRY(gather(res, layout, begin, count, bra, d));
+    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+        res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nn32, 1, count, &kOne<double>, d,
+        count, ket + begin, rows, &kOne<double>, gamma, nn32)));
+  }
+  return {};
+}
+
+Status Rdm::trans_rdm12(DeviceResources &res, const double *const bra, const double *const ket,
+                        double *const gamma, double *const gamma2, const Layout layout) {
+  FBF_TRY(check_call(res, layout));
+  const int32_t rows = size(layout);
+  const size_t nn = static_cast<size_t>(n_orbitals_) * static_cast<size_t>(n_orbitals_);
+  const auto nn32 = static_cast<int32_t>(nn);
+  // Two chunks of D, one per vector, in rdm12's one chunk's bytes.
+  const auto chunk = static_cast<int32_t>(
+      std::clamp<size_t>(kRdmChunkBytes / (2 * sizeof(double) * nn), 1, static_cast<size_t>(rows)));
+
+  // The workspace: M, then a chunk of D_bra and one of D_ket.
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  const auto [m, d_bra, d_ket] = res.device_regions<double>(
+      nn * nn, static_cast<size_t>(chunk) * nn, static_cast<size_t>(chunk) * nn);
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(m, 0, sizeof(double) * nn * nn, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(gamma, 0, sizeof(double) * nn, stream)));
+
+  // ⟨bra| E_tu E_vw |ket⟩ = Σ_K D^bra_{tu,K} D^ket_{wv,K}, so the symmetrized
+  // M_{tu,wv} = ½ (D_braᵀ D_ket + D_ketᵀ D_bra), symmetric (a syr2k, its
+  // lower triangle), and γ = ½ (D_braᵀ ket + D_ketᵀ bra); then rdm12's
+  // assembly, Γ_tuvw = M_{tu,wv} − δ_uv γ_tw, holds for each order and so for
+  // their average.
+  for (int32_t begin = 0; begin < rows; begin += chunk) {
+    const int32_t count = std::min(chunk, rows - begin);
+    FBF_TRY(gather(res, layout, begin, count, bra, d_bra));
+    FBF_TRY(gather(res, layout, begin, count, ket, d_ket));
+    FBF_TRY(gpu_status(wwr::syr2k<double, int32_t>(
+        res.blas().get(), wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T, nn32, count,
+        &kHalf<double>, d_bra, count, d_ket, count, &kOne<double>, m, nn32)));
+    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+        res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nn32, 1, count, &kHalf<double>,
+        d_bra, count, ket + begin, rows, &kOne<double>, gamma, nn32)));
+    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+        res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nn32, 1, count, &kHalf<double>,
+        d_ket, count, bra + begin, rows, &kOne<double>, gamma, nn32)));
   }
   return gpu_status(device::rdm_assemble(stream, n_orbitals_, m, gamma, gamma2));
 }
