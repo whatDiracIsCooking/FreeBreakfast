@@ -7,9 +7,9 @@
 # core::error_handling, response::cphf, mcscf::solve and mcscf::zvector are
 # PUBLIC. The derivative calls, the J and K builds, the second-derivative
 # integrals, the MO-basis fit, the dipole integrals and their derivative, the
-# CASSCF's integrals, CI, Fock, orbital and relaxed Hessians, derivatives and
-# third derivative, the gemms and the FBF_TRY header are the implementation
-# units' own, so PRIVATE.
+# CASSCF's integrals, CI, Fock, orbital and relaxed Hessians, derivatives,
+# root rotation and third derivative, the gemms and the FBF_TRY header are the
+# implementation units' own, so PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.hessian
@@ -22,6 +22,7 @@ free_breakfast_add_cxx_module_library(
   df_casscf_exy.cpp
   df_casscf_two_electron.cpp
   df_rhf.cpp
+  df_sacasscf.cpp
   df_sacasscf_z.cpp
   df_rhf_response.cpp
   df_rhf_two_electron.cpp
@@ -60,5 +61,6 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::orbital_pairs
   free_breakfast::mcscf::derivative
   free_breakfast::mcscf::relaxed_hessian
+  free_breakfast::mcscf::root_rotation
   free_breakfast::mcscf::third_derivative
 )

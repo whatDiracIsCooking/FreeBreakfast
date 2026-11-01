@@ -510,6 +510,106 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               int32_t nbeta, const Buffers::device<double> &roots, std::span<const double> weights,
               int32_t root, const Buffers::device<double> &z);
 
+/// @brief A state-averaged DF-CASSCF root's analytic nuclear Hessian and its
+/// terms (casscf_hessian.tex eq. sa), each 3 n_atom x 3 n_atom, x = 3 A + k
+/// the coordinate R_{A,k} (hartree / bohr^2), column-major.
+struct SaCasscfTerms {
+  /// @brief d^2E_I/dx dy, the sum of the terms below symmetrized,
+  /// (H + H^T) / 2: exactly symmetric.
+  std::vector<double> hessian;
+  /// @brief max |H - H^T| of the sum before it was symmetrized: rounding and
+  /// what the solves' residuals leave.
+  double asymmetry{0.0};
+  /// @brief E_I,xy and its pieces, @ref df_casscf_exy's at root I's RDMs.
+  CasscfExy exy;
+  /// @brief L_xy's z part and L_xlambda, @ref df_sacasscf_z's at the
+  /// gradient's own z.
+  SaCasscfZTerms z_terms;
+  /// @brief L_xlambda lambda^y, element (x, y); the sum takes it and its
+  /// transpose. Not symmetric.
+  std::vector<double> lxlambda_lambda;
+  /// @brief lambda^x^T (d^2 E_I / d lambda d lambda) lambda^y: root I's own
+  /// parameter Hessian between the responses.
+  std::vector<double> root_hessian;
+  /// @brief lambda^x^T (z . d^2 g_SA / d lambda d lambda) lambda^y: the
+  /// third-derivative action (@c mcscf::ThirdDerivative).
+  std::vector<double> third;
+  /// @brief Eq. rot, the rotations among the roots at equal weights
+  /// (@c mcscf::root_rotation's, root I); zero at unequal weights, where the
+  /// rotations are in lambda and the sum is complete without it.
+  std::vector<double> rotation;
+  /// @brief z, root I's gradient multipliers (@c mcscf::zvector over the SA
+  /// Hessian, g_I its right-hand side): z_o, z_c and, at unequal weights, the
+  /// rotations Theta. The same vector as the energy's (only the equations'
+  /// rows are scaled), so it is @ref df_sacasscf_z's z as it comes.
+  mcscf::ZVector z;
+  /// @brief lambda^x, A lambda^x = -d_x g_SA (@c mcscf::zvectors, Schur), with
+  /// the rotations at unequal weights in @c theta, and the solver's own
+  /// iterations and residuals.
+  mcscf::ZVectors cp;
+  /// @brief Per coordinate, the norm of every block of A lambda^x + d_x g_SA
+  /// (the CI rows over 2 w_r, the rotation rows over 2 (w_r - w_s), as
+  /// zvector's) by one product of the unreduced operator.
+  std::vector<double> residuals;
+};
+
+/// @brief Root @p root's state-averaged DF-CASSCF analytic nuclear Hessian
+/// at a converged average (casscf_hessian.tex eq. sa):
+///
+///     d^2E_I/dx dy = L_xy + L_xlambda lambda^y + lambda^x^T L_lambday
+///                    + lambda^x^T L_lambdalambda lambda^y  (+ eq. rot at equal weights),
+///
+/// L_xy = E_I,xy (@ref df_casscf_exy at root I's RDMs) + its z part and
+/// L_xlambda (@ref df_sacasscf_z, at z from @c mcscf::zvector);
+/// L_lambdalambda = root I's parameter Hessian (@c RelaxedHessian's
+/// unreduced product at weights one-hot on I, the CI rows scaled back to the
+/// energy's) + the third-derivative action (@c mcscf::ThirdDerivative at z);
+/// lambda^x by @c mcscf::zvectors (Schur) over the SA Hessian on
+/// @c mcscf::df_derivatives' SA right-hand sides, every coordinate at once.
+/// At equal weights the rotations among the roots are not parameters and
+/// @c mcscf::root_rotation's eq. rot (factor 2 included) is added; at
+/// unequal weights they are in z and lambda (Theta) and it is not.
+///
+/// **A degeneracy is refused.** Two roots under 1e-8 hartree apart are
+/// refused before anything runs; at equal weights @c mcscf::root_rotation
+/// refuses a mixing rate max |theta^x_sr| above 10 per bohr, and at unequal
+/// weights the same bound is put on lambda^x's rotations. **A saddle is
+/// refused** as in @ref df_casscf: a lambda^x column whose unreduced residual
+/// is above 1e-6 is a Divergence.
+///
+/// The inputs are @ref df_casscf's, @p solution a converged
+/// @c mcscf::solve of two roots or more over the same fit at @p weights
+/// (positive, all equal or all pairwise different, one per root; a Solution
+/// does not carry them), @p root the state. Stationarity is assumed, not
+/// checked. @p tolerance and @p max_iterations are the solves'.
+///
+/// The parts run one after another, each freeing what it held; the peak is
+/// @ref df_sacasscf_z's derivative integrals (3 n_atom nmo^2 (naux + 1)
+/// doubles) or the CP solve's scratch, each refused on its own as
+/// Unsupported past the device's free memory.
+///
+/// Queued on res.stream() with res.blas() (host pointer mode); it
+/// synchronizes many times. None of @p b and @p l may point into
+/// res.device_workspace(). The device res.dev_idx() names is made current
+/// for the call and the previous one restored.
+///
+/// @return The Hessian and its terms; InvalidConfig if the solution has
+///         fewer than two roots, @p weights are not one positive weight per
+///         root, @p root is not one of them, C is not nao square on @p res's
+///         device, ncore < 0, ncas < 1 or ncore + ncas > nao, the RDMs are
+///         not ncas^2 and ncas^4 long, trace(gamma) is no electron count of
+///         the multiplicity, the vectors are not the roots', @p b is not
+///         naux nao^2 long, or a part refuses (weights equal for some pairs
+///         only); Numerical at a degeneracy; Divergence when a solve meets
+///         negative curvature or leaves a residual above 1e-6; or the first
+///         error of a part.
+[[nodiscard]] Result<SaCasscfTerms>
+df_sacasscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const mcscf::Solution &solution, std::span<const double> weights, int32_t root,
+            int32_t ncore, int32_t ncas, double tolerance = 1e-10, int32_t max_iterations = 200);
+
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
 /// (hartree / bohr^2), as @c gradient::RhfTerms holds the gradient's.
