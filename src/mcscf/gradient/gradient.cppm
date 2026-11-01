@@ -7,7 +7,8 @@
 /// the two-electron part one Gam_mnP against d(mn|P) and one W_PQ against
 /// d(P|Q). A state average's root is over its Z-vector's multipliers, or the
 /// caller's, and a caller may add an MO adjoint of its own to the same
-/// densities. See README.md for each term's derivation.
+/// densities. At a transition density the core's own energy is switched off
+/// (@ref df_transition_gradient). See README.md for each term's derivation.
 
 export module free_breakfast.mcscf.gradient;
 
@@ -148,5 +149,45 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
             const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
+
+/// @brief The terms of @ref df_gradient at the caller's active-space RDMs
+/// @p gamma and @p gamma2 with the core's own energy switched off: the
+/// Hellmann-Feynman gradient of a coupling <I|H|J> between orthogonal roots
+/// (PySCF's @c grad_elec_active), whose core-core part multiplies <I|J> = 0.
+///
+/// The energy differentiated is E(gamma, Gamma) less E_nuc and the core's
+/// own E_cc = Sum_i 2 h_ii + Sum_ij [2 (ii|jj) - (ij|ij)]: Sum h D_a +
+/// J[D_c].D_a - 1/2 K[D_c].D_a + 1/2 Sum Gamma_tuvw (tu|vw), D_a =
+/// C_a gamma C_a^T, D_c = 2 C_c C_c^T. So the one-electron D is D_a, J is
+/// the core-active cross term alone, K's G has no core block, and F is the
+/// generalized Fock of @c response::fock at (gamma, Gamma) less 2 F^I in its
+/// core columns (2 F^A there); @c nuclear_repulsion is zero. The orbital
+/// gradient of the same energy, the right-hand side of a Z-vector, is
+/// @c response::fock's gradient at (gamma, Gamma) less its gradient at zero
+/// RDMs (README.md "A transition density").
+///
+/// @p gamma and @p gamma2 are row-major as @c ci::Rdm::rdm12's (ncas^2 and
+/// ncas^4), with its symmetries: gamma symmetric and Gamma_tuvw = Gamma_vwtu
+/// = Gamma_utwv, as @c ci::Rdm::trans_rdm12 leaves the symmetrized transition
+/// RDMs. They are not checked for it; the formula reads them as such.
+///
+/// @p multipliers, when given, add the Lagrangian's terms on top exactly as
+/// @ref df_gradient takes them for a root (the solution's weights, z_c's
+/// transition RDMs added to @p gamma and @p gamma2, the orbital response at
+/// the solution's weighted RDMs, core included, as the state-averaged
+/// gradient's derivative); without them nothing responds and no Z-vector is
+/// solved, at any number of roots. @p extra is @ref df_gradient's. Every other
+/// argument, the memory and the stream are @ref df_gradient's.
+///
+/// @return The terms, nuclear repulsion zero; InvalidConfig if @p gamma or
+///         @p gamma2 is not ncas^2 or ncas^4 long; otherwise @ref df_gradient's
+///         errors, whose messages name mcscf::df_gradient (they share its body).
+[[nodiscard]] Result<GradientTerms>
+df_transition_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                       std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                       const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                       const double *l, const Solution &solution, int32_t ncore, int32_t ncas,
+                       std::span<const double> gamma, std::span<const double> gamma2,
+                       const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
 } // namespace free_breakfast::mcscf
