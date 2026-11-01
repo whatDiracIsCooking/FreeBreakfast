@@ -383,7 +383,11 @@ CAS(8,8) from PySCF's RDMs. At CAS(4,4), Si vanishes by N₂'s symmetry
     the mechanism is not measured. The groups stand for it in the fast
     tier.
 - `BatchedBarsMatchWhole`: walked in threes, every bar (h1e, h2e and the
-  RDMs' included) matches the whole walk's to 1e-12 of its largest element.
+  RDMs' included) matches the whole walk's to 5e-12 of its largest element.
+  That is einsum's atomicAdd floor, not the batch's: two whole walks differ
+  as much (dm2's bar up to 6.6e-13 on the gfx1200 and 8.9e-13 on the 3080,
+  batched vs whole up to 1.06e-12), so the earlier 1e-12 failed one run in
+  20-50 on each card (#640); raised by the user's decision.
 
 The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
 
