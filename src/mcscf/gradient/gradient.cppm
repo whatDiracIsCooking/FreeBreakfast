@@ -127,7 +127,9 @@ struct MoAdjoint {
 /// @return The gradient and its terms; Unsupported for memory past the
 ///         device's free bytes, for naux nao^2 past int32_t, or for a state
 ///         average whose roots' 1-RDMs are linearly dependent (its weights
-///         cannot be recovered); InvalidConfig if solution.c is not
+///         cannot be recovered), or for three or more roots at unequal
+///         weights, partly equal included, naming them (README.md "Three or
+///         more roots at unequal weights"); InvalidConfig if solution.c is not
 ///         basis.nao_sphe() square or not on @p res's device, if ncore is
 ///         negative, ncas below 1 or ncore + ncas past nao, if @p root is not
 ///         one of the solution's, if its RDMs are not ncas^2 and ncas^4 long,

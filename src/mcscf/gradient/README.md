@@ -44,6 +44,24 @@ CI is variational. A solution from `Direct` or `ApproxHessian` converges to
 the exact CASSCF, whose gradient this is not; nothing in a `Solution` says
 which mode made it, so the call cannot refuse one.
 
+### Three or more roots at unequal weights are refused
+
+`Unsupported`, naming the weights, whichever root is asked for and whether or
+not `multipliers` are given; partly equal weights (0.4, 0.4, 0.2) too, since
+only all-equal ones are known exact. The Z-vector projects out the rotations
+among the averaged roots (`zvector`'s CI rows are orthogonal to every root).
+That is exact at equal weights, where the SA energy is invariant to them, and
+was observed exact for two roots at any weights; but with three or more at
+unequal weights the rotations are parameters of the energy and carry
+multipliers of their own. At (0.5, 0.3, 0.2) the projected gradient is off by
+up to 3.3e-3, 7% of a root's gradient, while carrying them makes it exact to
+2e-6 (`casscf_hessian.tex` §5.2, `check_sa.py 0.5 0.3 0.2`; the fixture
+`test/gtest/data/casscf_hessian/` records it as `gradient_projected_vs_fd`).
+PySCF's analytic SA gradient refuses unequal weights too. The check is one
+function, `refuse_three_roots_unequal_weights`, run on the recovered weights
+(equal to 1e-8 of the largest) before anything is allocated; the issue that
+carries the rotations (#613) deletes it.
+
 ## The terms
 
 C's columns are core (i, j), active (t, u, v, w), virtual; γ and Γ the
@@ -240,3 +258,10 @@ for the state average each root's multipliers from `zvector` (over the
 CI-relaxed Hessian, as the call builds it) passed as `multipliers` reproduce
 the internal path; and multipliers of the wrong length are refused. The gradient does not depend on the orbitals' or CI's signs or
 canonicalization, so the solution is compared as it converges.
+
+`test/gtest/mcscf_gradient_weights_gpu.cpp` holds the weights, over
+`test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /
+cc-pVDZ-JKFIT), its orbitals and roots loaded rather than re-converged: every
+root of two roots at (0.7, 0.3) and of three at equal weights against the
+fixture's exact gradient to 1e-8, and three at (0.5, 0.3, 0.2), and the same
+roots at (0.4, 0.4, 0.2), refused for every root, the message naming them.
