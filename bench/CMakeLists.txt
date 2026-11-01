@@ -99,3 +99,18 @@ target_link_libraries(
           free_breakfast::pipeline::casci
           free_breakfast::pipeline::config
 )
+
+# integrals.eri.density_fitting.jk's df_exchange_symmetrized against #595's
+# block two-factor df_exchange of the symmetrized density, over random B.
+add_executable(
+  free_breakfast_df_exchange_symmetrized df_exchange_symmetrized.cpp
+)
+set_target_properties(
+  free_breakfast_df_exchange_symmetrized PROPERTIES CXX_MODULE_STD 1
+                                                    CXX_SCAN_FOR_MODULES ON
+)
+target_link_libraries(
+  free_breakfast_df_exchange_symmetrized
+  PRIVATE free_breakfast::core free_breakfast::core::resources
+          free_breakfast::integrals::eri::density_fitting::jk
+)

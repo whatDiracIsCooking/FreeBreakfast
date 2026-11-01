@@ -2,7 +2,8 @@
 /// @brief df_coulomb (two gemvs) and df_exchange over the fitted B: of one
 /// factor, a batched gemm, a syrk and its mirror; of two, two batched gemms and
 /// a gemm; and both of a block of densities, J by two gemms and K by two
-/// batched gemms and a gemm batched over the densities.
+/// batched gemms and a gemm batched over the densities; and K of a block of
+/// symmetrized densities sharing one left factor, X built once.
 
 module free_breakfast.integrals.eri.density_fitting.jk;
 
@@ -208,6 +209,60 @@ Status df_exchange(DeviceResources &res, const int32_t nao, const int32_t naux, 
   return gpu_status(wwr::gemmStridedBatched<double, int32_t>(
       blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nao, nao, density_rows, &kOne<double>, x, rows32,
       density_rows, y, rows32, density_rows, &kZero<double>, k, nao, nn, count));
+}
+
+Status df_exchange_symmetrized(DeviceResources &res, const int32_t nao, const int32_t naux,
+                               const int32_t rank, const int32_t count, const double *b,
+                               const double *left, const double *right, double *k) {
+  if (nao < 0 || naux < 0 || rank < 0 || count < 0) {
+    return err_config("df_exchange_symmetrized: nao = {}, naux = {}, rank = {} and count = {} "
+                      "must be non-negative",
+                      nao, naux, rank, count);
+  }
+  // Y's rows (its leading dimension), and K's nao^2 stride, in the int32_t
+  // dispatch; X's rows divide Y's.
+  const int64_t rows = int64_t{naux} * rank * count;
+  const int64_t nn = int64_t{nao} * nao;
+  if (rows > std::numeric_limits<int32_t>::max() || nn > std::numeric_limits<int32_t>::max()) {
+    return err_config(
+        "df_exchange_symmetrized: naux * rank * count = {} or nao^2 = {} exceeds int32_t", rows,
+        nn);
+  }
+  if (nao == 0 || count == 0) {
+    return {};
+  }
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const wwr::wwrStream_t stream = res.stream();
+  if (rows == 0) {
+    return gpu_status(wwr::wwrMemsetAsync(
+        k, 0, sizeof(double) * static_cast<size_t>(nn) * static_cast<size_t>(count), stream));
+  }
+  const auto rows32 = static_cast<int32_t>(rows);
+  const int32_t density_rows = naux * rank; // X's rows and Y_d's
+  const int32_t width = rank * count;       // the right factors' columns, side by side
+  const auto block = int64_t{naux} * nao;   // B_m's stride
+  const auto [x, y] = res.device_regions<double>(static_cast<size_t>(density_rows) * nao,
+                                                 static_cast<size_t>(rows) * nao);
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+
+  // X_m = B_m L and Y_m = B_m [R_d] for every m, the factors shared by the
+  // batch.
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux, rank, nao, &kOne<double>, b, naux, block,
+      left, nao, 0, &kZero<double>, x, naux, density_rows, nao)));
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, naux, width, nao, &kOne<double>, b, naux, block,
+      right, nao, 0, &kZero<double>, y, naux, rows, nao)));
+
+  // K_d = X^T Y_d for every d, X shared: Y_d the (naux rank) x nao block of
+  // rows at naux rank d. Then each K_d <- (K_d + K_d^T) / 2.
+  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+      blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nao, nao, density_rows, &kOne<double>, x,
+      density_rows, 0, y, rows32, density_rows, &kZero<double>, k, nao, nn, count)));
+  for (int32_t d = 0; d < count; ++d) {
+    FBF_TRY(symmetrize(res, nao, k + (nn * d), nao));
+  }
+  return {};
 }
 
 } // namespace free_breakfast
