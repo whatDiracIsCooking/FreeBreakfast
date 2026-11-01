@@ -148,6 +148,37 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
   return w;
 }
 
+// Recovered weights this close to the largest, relative to it, are equal:
+// they come out of a least-squares solve, not given exactly.
+constexpr double kEqualWeightTolerance = 1e-8;
+
+// Three or more roots at unequal weights are refused (#608; README "Three or
+// more roots at unequal weights"). The Z-vector projects out the rotations
+// among the averaged roots, which is exact at equal weights and for two roots
+// at any, but with three or more at unequal weights those rotations carry
+// multipliers of their own: at (0.5, 0.3, 0.2) the projected gradient is off
+// by up to 3.3e-3. Partly equal weights are refused too. Carrying the
+// rotations lifts this (#613), and this check goes with it.
+Status refuse_three_roots_unequal_weights(const std::span<const double> weights) {
+  if (weights.size() < 3) {
+    return {};
+  }
+  const double w_max = std::ranges::max(weights);
+  if (std::ranges::all_of(weights, [&](const double w) {
+        return std::abs(w - w_max) <= kEqualWeightTolerance * w_max;
+      })) {
+    return {};
+  }
+  std::string listed;
+  for (const double w : weights) {
+    listed += std::format("{}{:.6g}", listed.empty() ? "" : ", ", w);
+  }
+  return err_unsupported("mcscf::df_gradient: {} roots at unequal weights ({}): the Z-vector "
+                         "projects out the rotations among the roots, exact only at equal "
+                         "weights or for two roots",
+                         weights.size(), listed);
+}
+
 // Root @p root's RDMs plus z_c's transition RDMs (README "The state-averaged
 // Lagrangian"), row-major as ci::Rdm::rdm12's, and kappa(z_o) into the
 // nmo x nmo @p kappa: the multipliers @p given, or when it is null the
@@ -459,6 +490,13 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                       "{} in {} orbitals",
                       trace, molecule.multiplicity(), ncas);
   }
+  // A state average's weights, recovered from its RDMs, and the refusal of
+  // three or more roots at unequal ones, before anything is allocated.
+  std::vector<double> weights{1.0};
+  if (averaged) {
+    weights = FBF_TRY(sa_gradient_weights(solution, n_act));
+    FBF_TRY(refuse_three_roots_unequal_weights(weights));
+  }
   const int32_t nocc = ncore + ncas;
   const ScopedDeviceIndex on{res.dev_idx()};
 
@@ -515,10 +553,6 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   Buffers::device<double> kappa(responds ? pairs : 1, res.device());
   std::optional<response::Fock> lagrangian_fock;
   if (responds) {
-    std::vector<double> weights{1.0};
-    if (averaged) {
-      weights = FBF_TRY(sa_gradient_weights(solution, n_act));
-    }
     std::tie(gamma, gamma2) = FBF_TRY(sa_gradient_lagrangian(
         res, molecule, h, b, static_cast<int32_t>(naux), solution, ncore, ncas, nelecas, ints,
         solution_fock, root, weights, multipliers, kappa.data()));
