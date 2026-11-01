@@ -16,7 +16,7 @@
 //   matched by (p, q) and in magnitude, since an orbital's sign flips every
 //   element it carries. gen_g_hop returns 2 pack(F - F^T), this tree's
 //   g = 2 (F - F^T) itself (measured: equal to 7e-9, and off by 0.04 at
-//   half), whatever casscf_nac/README.md says of the factor.
+//   half).
 //
 // Then the multipliers on top: with an arbitrary (z_o, z_c), each root's
 // df_gradient less its df_transition_gradient at the root's own RDMs is the

@@ -99,7 +99,7 @@ the derivative along R_Ak, bohr⁻¹ (or hartree/bohr for `h` and its halves):
 | `hellmann_feynman` | h_IJ's Hellmann–Feynman half: PySCF's `grad_elec_active` (the DF-CASSCF electronic gradient less its core part, no nuclear repulsion) at the symmetrized transition RDMs `sym_1`, `sym_2` |
 | `lagrange` | h_IJ's multiplier half, z's orbital and CI terms (`get_LdotJnuc`); `hellmann_feynman` + `lagrange` = `h` |
 | `rdm` | The active-space transition RDMs, PySCF's convention: `trans_1[p][q]` = ⟨I\|q†p\|J⟩, `trans_2` = ⟨I\|p†r†sq\|J⟩ flat row-major over (p, q, r, s), not symmetric (`direct_spin1.trans_rdm12(c_I, c_J)`); `sym_1` = ½(γ + γᵀ), `sym_2` = ½(Γ_pqrs + Γ_qpsr), the densities the Hellmann–Feynman half is taken at |
-| `b` | The transition gradient before the Z-vector: `orbital`, `gen_g_hop_active`'s orbital gradient at `sym_1`, `sym_2` (PySCF's convention, half this tree's g), over `pairs`; `ci_norm`, the norm of its CI part, zero at a converged state average |
+| `b` | The transition gradient before the Z-vector: `orbital`, `gen_g_hop_active`'s orbital gradient at `sym_1`, `sym_2` (PySCF's `2 pack(F − Fᵀ)`, equal to this tree's g = 2 (F − Fᵀ), not half it: `mcscf_transition_gradient_gpu.cpp` measures them equal to 7e-9), over `pairs`; `ci_norm`, the norm of its CI part, zero at a converged state average |
 | `z` | The multipliers, A z = −b, A the state-averaged Hessian projected off the state-averaged CI space (as in `../casscf_gradient/`): `orbital` over `pairs`, `ci` one matrix per root, shaped as `ci`, and `residual` ‖A z + b‖ |
 
 So `total` = `h` / `energy_gap` + `csf`, `total`(I, J) = −`total`(J, I) and
