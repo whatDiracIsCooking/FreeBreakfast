@@ -1,8 +1,9 @@
 /// @file
 /// @brief Density-fitted J and K from the fitted factor B on the GPU: J from
 /// the density by two gemvs, K from a factor of it by one batched gemm and one
-/// syrk, or from two factors of it by two batched gemms and one gemm; and the
-/// same J and two-factor K for a block of densities at once.
+/// syrk, or from two factors of it by two batched gemms and one gemm; the
+/// same J and two-factor K for a block of densities at once; and K of a block
+/// of symmetrized densities sharing one left factor.
 ///
 /// B is @ref density_fit's output, [Q][n][m] with Q fastest, so that
 /// (mn|ls) ~ sum_Q B_Q,mn B_Q,ls. The README has the layouts and the scratch.
@@ -190,5 +191,50 @@ export namespace free_breakfast {
 [[nodiscard]] Status df_exchange(DeviceResources &res, int32_t nao, int32_t naux, int32_t rank,
                                  int32_t count, const double *b, const double *left,
                                  const double *right, double *k);
+
+/// @brief K of the symmetric parts of @p count densities sharing one left
+/// factor, K_d = K[(L R_d^T + R_d L^T) / 2]: X_m = B_m L once and Y_m = B_m
+/// [R_0 ... R_count-1], two batched gemms over m, then K_d = X^T Y_d, one gemm
+/// batched over d with X shared, and K_d <- (K_d + K_d^T) / 2.
+///
+/// For the CP-CASSCF response and transition densities, whose nonzero rows
+/// are the occupied block's only: D_d = C_o (D_d,o. C^T) is L R_d^T with L =
+/// C_o and R_d = C D_d,o.^T, rank n_occ. Only the symmetric part of D_d reaches
+/// an energy, and K of it is the symmetrized K[L R_d^T]
+/// (K[A B^T]^T = K[B A^T]), so this is the block two-factor @ref df_exchange
+/// over L_d = [R_d L], R_d = [L R_d] at half the rank and with L's X built
+/// once: K_d here is half that call's K_d.
+///
+/// @p left is nao x @p rank and @p right nao x (count rank), column-major and
+/// packed, R_d the columns [d rank, (d + 1) rank), at right + nao rank d. X is
+/// stored [Q][i][m], element (Q, i, m) at Q + naux (i + rank m), and Y as the
+/// block form's Y, element (Q, i, m) at Q + naux (i + count rank m). @p k is
+/// @p count packed nao x nao matrices, K_d at k + nao^2 d, overwritten, each
+/// exactly symmetric.
+///
+/// The scratch is X, naux rank nao doubles, and Y, naux count rank nao, from
+/// res.device_workspace(), which grows if it is smaller; none of @p b,
+/// @p left, @p right and @p k may point into it, and @p k must not overlap
+/// @p b, @p left or @p right.
+///
+/// Queued on res.stream() with res.blas() in host pointer mode (its default),
+/// with no host synchronization. The device res.dev_idx() names is made
+/// current for the call and the previous one restored.
+///
+/// @param res    Supplies the stream, the BLAS handle and the scratch.
+/// @param nao    Orbital basis functions. nao = 0 succeeds and writes nothing.
+/// @param naux   Fitting functions: the rows of @p b. naux = 0 gives K = 0.
+/// @param rank   Columns of L and of each R_d. rank = 0 gives K = 0.
+/// @param count  Densities. count = 0 succeeds and writes nothing.
+/// @param b      B, [Q][n][m].
+/// @param left   L, shared by every density.
+/// @param right  R_0 ... R_count-1, with D_d = L R_d^T.
+/// @param k      Out: K_0 ... K_count-1, of the symmetric parts.
+/// @return Success; InvalidConfig for a negative count, naux count rank or
+///         nao^2 past int32_t; or the GpuRuntime error of the first runtime
+///         or BLAS call that failed, which leaves @p k unspecified.
+[[nodiscard]] Status df_exchange_symmetrized(DeviceResources &res, int32_t nao, int32_t naux,
+                                             int32_t rank, int32_t count, const double *b,
+                                             const double *left, const double *right, double *k);
 
 } // namespace free_breakfast
