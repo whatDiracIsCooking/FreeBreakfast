@@ -22,6 +22,7 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
+import free_breakfast.recipes.matrix_ao;
 import free_breakfast.response.cphf;
 
 export namespace free_breakfast::hessian {
@@ -238,6 +239,97 @@ df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
                        const Buffers::device<double> &b, const double *l,
                        const Buffers::device<double> &c, int32_t ncore, int32_t ncas,
                        std::span<const double> gamma, std::span<const double> gamma2);
+
+/// @brief E_xy, the fixed-parameter second derivative of a DF-CASSCF energy
+/// along the symmetric (Lowdin) connection (casscf_hessian.tex eq. exy), and
+/// its pieces, each 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
+/// (hartree / bohr^2), column-major and symmetric to rounding.
+struct CasscfExy {
+  /// @brief Sum D^AO h^xy: T's and V's second-derivative integrals against
+  /// the 1-RDM in the AO basis. S^xy is the connection's.
+  std::vector<double> one_electron;
+  /// @brief d^2 V_nn / dx dy, @c nuclear_repulsion_hessian.
+  std::vector<double> nuclear_repulsion;
+  /// @brief The fitted two-electron explicit part, eq. df2,
+  /// @ref df_casscf_two_electron's at the same RDMs.
+  CasscfTwoElectron two_electron;
+  /// @brief 2 Sum_pq F_pq tau^xy_pq, tau^xy = -1/2 S^xy + 3/8 (S^x S^y +
+  /// S^y S^x): the connection's second derivative against F, eq. fock.
+  std::vector<double> connection_second;
+  /// @brief 2 Sum_pq (F^[x]_pq tau^y_pq + F^[y]_pq tau^x_pq), tau^x =
+  /// -1/2 S^x: the derivative-integral Fock against the first-order
+  /// connection.
+  std::vector<double> connection_fock;
+  /// @brief E^(2)[tau^x, tau^y]: the energy at the integrals one-index
+  /// transformed by tau^x on one index and tau^y on another, every pair of
+  /// positions (the orbital Hessian's contraction, with symmetric generators).
+  std::vector<double> connection_twice;
+  /// @brief The six summed: E_xy.
+  std::vector<double> exy;
+};
+
+/// @brief E_xy of a DF-CASSCF at fixed orbitals and RDMs (casscf_hessian.tex
+/// eq. exy): the explicit part (Sum D^AO h^xy, V_nn^xy and the fitted
+/// eq. df2) plus the connection C T(x), T = (C^T S(x) C)^-1/2, to second
+/// order:
+///
+///     E_xy = explicit + 2 Sum F tau^xy + 2 Sum (F^[x] tau^y + F^[y] tau^x)
+///            + E^(2)[tau^x, tau^y],
+///     tau^x = -1/2 S^x,  tau^xy = -1/2 S^xy + 3/8 (S^x S^y + S^y S^x),
+///
+/// S^x and S^xy in the MO basis of @p c. The 3/8 terms are what make the
+/// connection orthonormal at second order; without them E_xy is wrong by
+/// about its own size (README.md).
+///
+/// **Any densities.** @p gamma and @p gamma2 are active 1- and 2-RDMs with
+/// the closed-shell core of @p ncore orbitals, on the host, row-major as
+/// @c ci::Rdm::rdm12 writes them (E = Sum h D + 1/2 Sum (pq|rs) Gamma_pqrs):
+/// a state's own, root I's of a state average, or any other, and E_xy is
+/// linear in them at a fixed core. So the transition RDMs of a state
+/// average's z_c enter added to root I's, as @c mcscf::df_gradient takes
+/// them. @p fock_x is F^[x] at the same RDMs, nmo x nmo per coordinate,
+/// (p, q, x) at p + nmo (q + nmo x): @c mcscf::Derivatives::fock, from
+/// @c mcscf::df_derivatives with weights one-hot on the root.
+///
+/// The connection terms are gemms over B in the MO basis (every pair, naux
+/// nmo^2 doubles) and the stack of tau^x: F from B and G = B_oo Gamma over the
+/// occupied orbitals; 2 Sum F tau^xy as @c overlap_hessian at -C sym(F) C^T
+/// and the Gram matrix of sym(F) tau^x and tau^y; the F^[x] term the Gram
+/// matrix of F^[x] and tau^y; and E^(2) from, per x, B_Q tau^x_occ (one
+/// batched gemm), as two more Gram matrices. README.md has the algebra.
+///
+/// @p molecule is the one both bases were placed on; @p classes are
+/// @c primitive_pair_classes of @p basis; @p h the spherical core Hamiltonian;
+/// @p b and @p l @c density_fit's B (naux x nao^2) and L. @p c is the nao x
+/// nmo orbitals, column-major, core, active, then the rest; every column is
+/// read (tau^x reaches the virtuals).
+///
+/// Memory: held for the connection terms, two stacks of 3 n_atom nmo^2
+/// doubles, B (naux nmo^2), two of 3 n_atom naux nocc^2 and one of 3 n_atom
+/// nmo nocc, beside nocc^4 and the calls' own; past the device's free memory
+/// that is Unsupported, before it is allocated. The explicit parts run first
+/// and free theirs (@ref df_casscf_two_electron refuses its own).
+///
+/// Queued on res.stream() and synchronized; the call returns with everything
+/// done. None of @p b, @p l, @p c, @p h and @p fock_x may point into
+/// res.device_workspace(). The device res.dev_idx() names is made current for
+/// the call and the previous one restored.
+///
+/// @return The pieces and their sum; InvalidConfig if the molecule and the
+///         bases do not share their atoms, if ncore < 0, ncas < 1, @p c is not
+///         nao nmo long or ncore + ncas > nmo, if @p h is not nao x nao or
+///         @p b not naux nao^2 long, if the RDMs are not ncas^2 and ncas^4
+///         long or @p fock_x not 3 n_atom nmo^2, or for any input the integral
+///         calls refuse; Unsupported for memory past the device's free bytes or
+///         an index past int32_t; or the GpuRuntime error of the first copy,
+///         BLAS call or launch that failed.
+[[nodiscard]] Result<CasscfExy>
+df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+              std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+              const Buffers::device<double> &c, int32_t ncore, int32_t ncas,
+              std::span<const double> gamma, std::span<const double> gamma2,
+              const Buffers::device<double> &fock_x);
 
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
