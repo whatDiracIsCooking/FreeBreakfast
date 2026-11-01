@@ -44,23 +44,19 @@ CI is variational. A solution from `Direct` or `ApproxHessian` converges to
 the exact CASSCF, whose gradient this is not; nothing in a `Solution` says
 which mode made it, so the call cannot refuse one.
 
-### Three or more roots at unequal weights are refused
+### Unequal weights: the rotations among the roots
 
-`Unsupported`, naming the weights, whichever root is asked for and whether or
-not `multipliers` are given; partly equal weights (0.4, 0.4, 0.2) too, since
-only all-equal ones are known exact. The Z-vector projects out the rotations
-among the averaged roots (`zvector`'s CI rows are orthogonal to every root).
-That is exact at equal weights, where the SA energy is invariant to them, and
-was observed exact for two roots at any weights; but with three or more at
-unequal weights the rotations are parameters of the energy and carry
-multipliers of their own. At (0.5, 0.3, 0.2) the projected gradient is off by
-up to 3.3e-3, 7% of a root's gradient, while carrying them makes it exact to
-2e-6 (`casscf_hessian.tex` §5.2, `check_sa.py 0.5 0.3 0.2`; the fixture
-`test/gtest/data/casscf_hessian/` records it as `gradient_projected_vs_fd`).
-PySCF's analytic SA gradient refuses unequal weights too. The check is one
-function, `refuse_three_roots_unequal_weights`, run on the recovered weights
-(equal to 1e-8 of the largest) before anything is allocated; the issue that
-carries the rotations (#613) deletes it.
+At unequal weights the rotations among the averaged roots are parameters of
+the SA energy and carry multipliers of their own, Θ (`zvector`'s
+`ZVector::theta`, [`../zvector/README.md`](../zvector/README.md) "The
+rotations among the roots"); pairs of equal weight stay projected. The call
+folds Θ into z_c as its part along the roots (below), so any number of roots
+at any weights, partly equal included, is one formula. Projected out, as
+before #613, the gradient was off by up to 3.3e-3 at three roots
+(0.5, 0.3, 0.2), 7% of a root's gradient (`casscf_hessian.tex` §5.2; the
+fixture `test/gtest/data/casscf_hessian/` records it as
+`gradient_projected_vs_fd`); for two roots Θ carries nothing (5e-13 there).
+PySCF's analytic SA gradient refuses unequal weights.
 
 ## The terms
 
@@ -133,7 +129,10 @@ each one of the terms above at some densities:
 - **z_c**: Σ_r z_c,r · 2 w_r (∂H) c_r is the derivative of the energy
   functional Σ_r w_r (⟨z_c,r|H|c_r⟩ + ⟨c_r|H|z_c,r⟩) at the transition RDMs
   γ_T and Γ_T: half the difference of `rdm12` of c + z_c and of c − z_c at the
-  weights, the ± polarization `mcscf/solve` takes them by. Their overlap is
+  weights, the ± polarization `mcscf/solve` takes them by. The rotations
+  are z_c's part along the roots, z_c,r + Σ_s Θ_sr c_s (one gemm of C by Θ's
+  antisymmetric matrix), whose transition RDMs weigh each pair by
+  w_r − w_s: the derivative along Θ. Their overlap is
   zero, so they carry no core energy, and the energy is affine in the active
   RDMs with the core part constant: so this piece and E_I's are the terms
   once, at **γ_I + γ_T and Γ_I + Γ_T**, with F their generalized Fock.
@@ -187,8 +186,8 @@ The last two arguments open the call up to a Lagrangian that is not the
 CASSCF's own (NEVPT2's, `nuclear_gradient.tex` Eq. total). Both default to
 null, which is the call above unchanged.
 
-**`multipliers`** are (z_o, z_c) in place of the Z-vector the call would
-solve, as a `ZVector` (`mcscf::zvector`'s result, or one the caller built).
+**`multipliers`** are (z_o, z_c, Θ) in place of the Z-vector the call would
+solve (Θ may be empty, for none), as a `ZVector` (`mcscf::zvector`'s result, or one the caller built).
 With them one root is taken at the same Lagrangian as a state average's root,
 at weight 1, so a single root with nonzero multipliers gets the transition
 RDMs and the orbital response too. **They are in `zvector`'s coordinates**:
@@ -262,6 +261,6 @@ canonicalization, so the solution is compared as it converges.
 `test/gtest/mcscf_gradient_weights_gpu.cpp` holds the weights, over
 `test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /
 cc-pVDZ-JKFIT), its orbitals and roots loaded rather than re-converged: every
-root of two roots at (0.7, 0.3) and of three at equal weights against the
-fixture's exact gradient to 1e-8, and three at (0.5, 0.3, 0.2), and the same
-roots at (0.4, 0.4, 0.2), refused for every root, the message naming them.
+root of two roots at (0.7, 0.3), of three at equal weights and of three at
+(0.5, 0.3, 0.2) against the fixture's exact gradient to 1e-9 (measured on the gfx1200: at
+most 7e-12, the three unequal weights included).

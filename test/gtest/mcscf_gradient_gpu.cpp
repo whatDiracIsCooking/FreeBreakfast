@@ -470,7 +470,10 @@ TEST_P(McscfGradient, DfCasscfMatchesPyscf) {
   }
   // Multipliers of the wrong length are InvalidConfig.
   const fb::mcscf::ZVector short_z{fb::Buffers::device<double>(1, res.device()),
-                                   fb::Buffers::device<double>(1, res.device()), 0, 0.0};
+                                   fb::Buffers::device<double>(1, res.device()),
+                                   {},
+                                   0,
+                                   0.0};
   const auto wrong =
       fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux, h->h,
                              df.b, df.l.data(), *sol, space->ncore, space->ncas, 0, &short_z);

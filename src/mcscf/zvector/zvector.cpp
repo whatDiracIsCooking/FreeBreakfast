@@ -47,19 +47,139 @@ Status inverse_orbital_diagonal(DeviceResources &res, const response::Hessian &h
   return res.sync();
 }
 
+// Two weights this close, relative to the larger, are equal: the rotation
+// between their roots is redundant and stays projected. Weights recovered by
+// a least-squares solve (mcscf::df_gradient's) are equal only to about this.
+constexpr double kRotationWeightTolerance = 1e-8;
+// Two roots closer than this (hartree) are not rotated by a right-hand side,
+// as RelaxedHessian leaves their mixing out of the CI response.
+constexpr double kRotationGapFloor = 1e-8;
+
+// Which of the nroots (nroots - 1) / 2 pairs r < s, in (r, s) lexicographic
+// order, rotate: those at unequal weights.
+std::vector<bool> rotating_pairs(const std::span<const double> weights) {
+  const size_t nroots = weights.size();
+  std::vector<bool> rotating;
+  rotating.reserve(nroots * (nroots - 1) / 2);
+  for (size_t r = 0; r < nroots; ++r) {
+    for (size_t s = r + 1; s < nroots; ++s) {
+      const double scale = std::max(std::abs(weights[r]), std::abs(weights[s]));
+      rotating.push_back(std::abs(weights[r] - weights[s]) > kRotationWeightTolerance * scale);
+    }
+  }
+  return rotating;
+}
+
+// The k columns' rotations @p theta (host, packed) added to their CI blocks
+// @p ci on the device along the roots: ci_j,r += sum_s Theta_sr c_s, one gemm
+// of C by the antisymmetric matrices.
+Status add_rotations(DeviceResources &res, const ci::Roots &roots, const size_t k,
+                     const std::span<const double> theta, double *const ci) {
+  const size_t nroots = roots.energies.size();
+  const size_t dim = roots.vectors.num_elements() / nroots;
+  std::vector<double> m(nroots * nroots * k, 0.0);
+  size_t at = 0;
+  for (size_t j = 0; j < k; ++j) {
+    for (size_t r = 0; r < nroots; ++r) {
+      for (size_t s = r + 1; s < nroots; ++s, ++at) {
+        m[s + (nroots * (r + (nroots * j)))] = theta[at];
+        m[r + (nroots * (s + (nroots * j)))] = -theta[at];
+      }
+    }
+  }
+  Buffers::device<double> device(m.size(), res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(device.data(), m.data(), m.size() * sizeof(double),
+                                         wwr::wwrMemcpyHostToDevice, res.stream())));
+  FBF_TRY(gpu_status(gemm(res.blas().get(), static_cast<int32_t>(dim),
+                          static_cast<int32_t>(nroots * k), static_cast<int32_t>(nroots),
+                          &kOne<double>, roots.vectors.data(), device.data(), &kOne<double>, ci)));
+  return res.sync();
+}
+
+// Theta_sr of the k CI blocks @p ci on the device, 1/2 (c_s . ci_r -
+// c_r . ci_s) for the rotating pairs and zero for the rest, packed.
+Result<std::vector<double>> read_rotations(DeviceResources &res, const ci::Roots &roots,
+                                           const std::vector<bool> &rotating, const size_t k,
+                                           const double *const ci) {
+  const size_t nroots = roots.energies.size();
+  const size_t dim = roots.vectors.num_elements() / nroots;
+  Buffers::device<double> overlaps(nroots * nroots * k, res.device());
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(
+      res.blas().get(), static_cast<int32_t>(nroots), static_cast<int32_t>(nroots * k),
+      static_cast<int32_t>(dim), &kOne<double>, roots.vectors.data(), ci, &kZero<double>,
+      overlaps.data())));
+  std::vector<double> o(nroots * nroots * k);
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(o.data(), overlaps.data(), o.size() * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, res.stream())));
+  FBF_TRY(res.sync());
+  std::vector<double> theta(rotating.size() * k, 0.0);
+  size_t at = 0;
+  for (size_t j = 0; j < k; ++j) {
+    const double *const oj = o.data() + (j * nroots * nroots);
+    size_t pair = 0;
+    for (size_t r = 0; r < nroots; ++r) {
+      for (size_t s = r + 1; s < nroots; ++s, ++at, ++pair) {
+        if (rotating[pair]) {
+          theta[at] = 0.5 * (oj[s + (nroots * r)] - oj[r + (nroots * s)]);
+        }
+      }
+    }
+  }
+  return theta;
+}
+
+// A rotation right-hand side t (k columns, packed) folded in as couple folds
+// y: Theta_w,sr = -t_sr / (E_s - E_r) for the rotating pairs, its part along
+// the roots added to the k CI blocks @p ci (z_c's start), and H_oc of it to
+// the size() x k orbital right-hand sides @p b, through @p scratch (as b).
+Status couple_rotations(DeviceResources &res, RelaxedHessian &relaxed, const ci::Roots &roots,
+                        const std::vector<bool> &rotating, const size_t k,
+                        const std::span<const double> theta_rhs, double *const b, double *const ci,
+                        double *const scratch) {
+  const size_t nroots = roots.energies.size();
+  std::vector<double> theta(theta_rhs.size(), 0.0);
+  size_t at = 0;
+  for (size_t j = 0; j < k; ++j) {
+    size_t pair = 0;
+    for (size_t r = 0; r < nroots; ++r) {
+      for (size_t s = r + 1; s < nroots; ++s, ++at, ++pair) {
+        const double gap = roots.energies[s] - roots.energies[r];
+        if (rotating[pair] && std::abs(gap) >= kRotationGapFloor) {
+          theta[at] = -theta_rhs[at] / gap;
+        }
+      }
+    }
+  }
+  const size_t ci_block = roots.vectors.num_elements();
+  Buffers::device<double> along(ci_block * k, res.device());
+  FBF_TRY(gpu_status(
+      wwr::wwrMemsetAsync(along.data(), 0, ci_block * k * sizeof(double), res.stream())));
+  FBF_TRY(add_rotations(res, roots, k, theta, along.data()));
+  FBF_TRY(relaxed.coupling(res, static_cast<int32_t>(k), along.data(), scratch));
+  const wwr::wwrblasHandle_t blas = res.blas().get();
+  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, relaxed.size() * static_cast<int32_t>(k),
+                                                &kOne<double>, scratch, 1, b, 1)));
+  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(ci_block * k),
+                                                &kOne<double>, along.data(), 1, ci, 1)));
+  return res.sync();
+}
+
 Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
                         const response::Hessian &hessian, const ci::Roots &roots,
                         const double *const gradient, const double *const ci_rhs,
-                        const double tolerance, const int32_t max_iterations) {
+                        const double tolerance, const int32_t max_iterations,
+                        const std::span<const double> theta_rhs) {
   const int32_t n_pairs = relaxed.size();
   const size_t roots_count = roots.energies.size();
   if (hessian.size() != n_pairs || roots_count == 0 ||
-      roots.vectors.num_elements() % roots_count != 0 || !(tolerance > 0.0) || max_iterations < 1) {
+      roots.vectors.num_elements() % roots_count != 0 || !(tolerance > 0.0) || max_iterations < 1 ||
+      (!theta_rhs.empty() && theta_rhs.size() != roots_count * (roots_count - 1) / 2)) {
     return err_config("mcscf::zvector: needs H of H~'s {} pairs, at least one root as a whole "
-                      "number of vectors, tolerance > 0 and max_iterations >= 1 (H {}, {} roots "
-                      "in {} doubles, tolerance {:g}, max_iterations {})",
+                      "number of vectors, tolerance > 0, max_iterations >= 1 and no rotation "
+                      "right-hand side or one per pair of roots (H {}, {} roots in {} doubles, "
+                      "tolerance {:g}, max_iterations {}, {} rotations)",
                       n_pairs, hessian.size(), roots_count, roots.vectors.num_elements(), tolerance,
-                      max_iterations);
+                      max_iterations, theta_rhs.size());
   }
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -70,7 +190,12 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
   const auto nroots = static_cast<int32_t>(roots_count);
 
   ZVector out{Buffers::device<double>(std::max<size_t>(pairs, 1), res.device()),
-              Buffers::device<double>(dim * roots_count, res.device()), 0, 0.0};
+              Buffers::device<double>(dim * roots_count, res.device()),
+              {},
+              0,
+              0.0};
+  const std::vector<bool> rotating = rotating_pairs(relaxed.weights());
+  const bool rotates = std::ranges::contains(rotating, true);
   // The residual r, the direction p, H~ p, the preconditioned residual,
   // diag(H)^-1 and the orbital right-hand side b = g_I + H_oc w: held across
   // H~'s products, which take the workspace, so its own (docs/style.md
@@ -98,6 +223,9 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.ci.data(), relaxed.delta(),
                                            dim * roots_count * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
+  }
+  if (rotates && !theta_rhs.empty()) {
+    FBF_TRY(couple_rotations(res, relaxed, roots, rotating, 1, theta_rhs, b, out.ci.data(), hp));
   }
 
   FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_diagonal));
@@ -160,6 +288,10 @@ Result<ZVector> zvector(DeviceResources &res, RelaxedHessian &relaxed,
   FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, n_pairs, hp, 1, &out.residual)));
   FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, dim32 * nroots, &kOne<double>,
                                                 relaxed.delta(), 1, out.ci.data(), 1)));
+  // The rotations are z_c's part along the other roots, for the pairs of
+  // unequal weights (the rest are redundant): read before it is projected.
+  out.theta = rotates ? FBF_TRY(read_rotations(res, roots, rotating, 1, out.ci.data()))
+                      : std::vector<double>(rotating.size(), 0.0);
   const double *const c = roots.vectors.data();
   for (size_t root = 0; root < roots_count; ++root) {
     double *const v = out.ci.data() + (root * dim);
@@ -213,13 +345,17 @@ Result<ZVectors> zvectors_per_column(DeviceResources &res, RelaxedHessian &relax
                                      const response::Hessian &hessian, const ci::Roots &roots,
                                      const size_t ncol, const double *const gradients,
                                      const double *const ci_rhs, const double tolerance,
-                                     const int32_t max_iterations, ZVectors &out) {
+                                     const int32_t max_iterations,
+                                     const std::span<const double> theta_rhs, ZVectors &out) {
   const auto pairs = static_cast<size_t>(relaxed.size());
   const size_t ci_block = roots.vectors.num_elements();
+  const size_t n_theta = out.theta.size() / ncol;
   for (size_t x = 0; x < ncol; ++x) {
-    const ZVector z = FBF_TRY(zvector(res, relaxed, hessian, roots, gradients + (x * pairs),
-                                      ci_rhs == nullptr ? nullptr : ci_rhs + (x * ci_block),
-                                      tolerance, max_iterations));
+    const ZVector z = FBF_TRY(
+        zvector(res, relaxed, hessian, roots, gradients + (x * pairs),
+                ci_rhs == nullptr ? nullptr : ci_rhs + (x * ci_block), tolerance, max_iterations,
+                theta_rhs.empty() ? theta_rhs : theta_rhs.subspan(x * n_theta, n_theta)));
+    std::ranges::copy(z.theta, out.theta.begin() + static_cast<std::ptrdiff_t>(x * n_theta));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.orbital.data() + (x * pairs), z.orbital.data(),
                                            pairs * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
                                            res.stream())));
@@ -240,7 +376,8 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
                                 const response::Hessian &hessian, const ci::Roots &roots,
                                 const size_t ncol, const double *const gradients,
                                 const double *const ci_rhs, const double tolerance,
-                                const int32_t max_iterations, ZVectors &out) {
+                                const int32_t max_iterations,
+                                const std::span<const double> theta_rhs, ZVectors &out) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
   const int32_t n_pairs = relaxed.size();
@@ -250,6 +387,8 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
   const size_t dim = ci_block / roots_count;
   const size_t block = pairs * ncol;
   const auto ncol32 = static_cast<int32_t>(ncol);
+  const std::vector<bool> rotating = rotating_pairs(relaxed.weights());
+  const bool rotates = std::ranges::contains(rotating, true);
 
   // R, P, H~ P (scattered), S, B = g + H_oc w, the gathered P and H~ P, and
   // diag(H)^-1: held across H~'s products, which take the workspace, so its
@@ -278,6 +417,9 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.ci.data(), relaxed.delta(),
                                            ci_block * ncol * sizeof(double),
                                            wwr::wwrMemcpyDeviceToDevice, stream)));
+  }
+  if (rotates && !theta_rhs.empty()) {
+    FBF_TRY(couple_rotations(res, relaxed, roots, rotating, ncol, theta_rhs, b, out.ci.data(), hp));
   }
   FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_diagonal));
   const auto precondition = [&]() -> Status {
@@ -364,6 +506,9 @@ Result<ZVectors> zvectors_schur(DeviceResources &res, RelaxedHessian &relaxed,
   FBF_TRY(
       gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(ci_block * ncol),
                                             &kOne<double>, relaxed.delta(), 1, out.ci.data(), 1)));
+  if (rotates) {
+    out.theta = FBF_TRY(read_rotations(res, roots, rotating, ncol, out.ci.data()));
+  }
   FBF_TRY(project_off_roots(res, roots, dim, roots_count * ncol, out.ci.data(), overlaps.data()));
   FBF_TRY(res.sync());
   return std::move(out);
@@ -378,7 +523,8 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
                                   const response::Hessian &hessian, const ci::Roots &roots,
                                   const size_t ncol, const double *const gradients,
                                   const double *const ci_rhs, const double tolerance,
-                                  const int32_t max_iterations, ZVectors &out) {
+                                  const int32_t max_iterations,
+                                  const std::span<const double> theta_rhs, ZVectors &out) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
   const int32_t n_pairs = relaxed.size();
@@ -446,6 +592,52 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
     FBF_TRY(res.sync());
   }
   FBF_TRY(inverse_orbital_diagonal(res, hessian, inverse_o));
+
+  // The rotations, on the host (a few doubles a column): per pair r < s of
+  // unequal weights D_rs = 2 (w_r - w_s) scales its row to the energy's,
+  // making the operator symmetric, and 1 / (D_rs (E_s - E_r)) is its exact
+  // diagonal's inverse; both zero for the other pairs, which stay at zero.
+  const std::vector<bool> rotating = rotating_pairs(weights);
+  const bool rotates = std::ranges::contains(rotating, true);
+  const size_t n_theta = rotating.size();
+  const size_t theta_all = n_theta * ncol;
+  std::vector<double> d_theta(n_theta, 0.0);
+  std::vector<double> inverse_theta(n_theta, 0.0);
+  {
+    size_t pair = 0;
+    for (size_t r = 0; r < roots_count; ++r) {
+      for (size_t s = r + 1; s < roots_count; ++s, ++pair) {
+        if (!rotating[pair]) {
+          continue;
+        }
+        d_theta[pair] = 2.0 * (weights[r] - weights[s]);
+        const double diagonal = d_theta[pair] * (roots.energies[s] - roots.energies[r]);
+        if (!(diagonal > 0.0)) {
+          return err_config("mcscf::zvectors (Coupled): roots {} and {} at weights {:g} and {:g}, "
+                            "energies {:.10f} and {:.10f}: the rotation between them is not "
+                            "positive, (w_r - w_s)(E_s - E_r) = {:.3e} (the weights must fall as "
+                            "the energies rise; Schur solves it)",
+                            r, s, weights[r], weights[s], roots.energies[r], roots.energies[s],
+                            0.5 * diagonal);
+        }
+        inverse_theta[pair] = 1.0 / diagonal;
+      }
+    }
+  }
+  std::vector<double> &z_t = out.theta;
+  std::vector<double> r_t(theta_all, 0.0);
+  std::vector<double> p_t(theta_all, 0.0);
+  std::vector<double> s_t(theta_all, 0.0);
+  std::vector<double> xs_t(theta_all, 0.0);
+  std::vector<double> ap_t(theta_all, 0.0);
+  const auto theta_dot = [&](const std::vector<double> &u, const std::vector<double> &v,
+                             const size_t x) {
+    double sum = 0.0;
+    for (size_t i = x * n_theta; i < (x + 1) * n_theta; ++i) {
+      sum += u[i] * v[i];
+    }
+    return sum;
+  };
   // dst <- the first n vectors of src, each scaled by its D_r.
   const auto scale_rows = [&](const double *src, double *dst, size_t n) -> Status {
     return gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_RIGHT, dim32,
@@ -457,6 +649,9 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
                                                   r_o, n_pairs, inverse_o, 1, s_o, n_pairs)));
     FBF_TRY(gpu_status(wwr::dgmm<double, int32_t>(blas, wwr::WWRBLAS_SIDE_LEFT, ci_block32, ncol32,
                                                   r_c, ci_block32, inverse_c, 1, s_c, ci_block32)));
+    for (size_t i = 0; i < theta_all; ++i) {
+      s_t[i] = inverse_theta[i % n_theta] * r_t[i];
+    }
     return project_off_roots(res, roots, dim, count, s_c, overlaps.data());
   };
   // A column's dot over both blocks.
@@ -486,7 +681,14 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
     FBF_TRY(gpu_status(
         wwr::scal<double, int32_t>(blas, static_cast<int32_t>(ci_all), &kNegOne<double>, r_c, 1)));
   }
+  // R_theta = -D t.
+  if (!theta_rhs.empty()) {
+    for (size_t i = 0; i < theta_all; ++i) {
+      r_t[i] = -d_theta[i % n_theta] * theta_rhs[i];
+    }
+  }
   FBF_TRY(precondition());
+  p_t = s_t;
   FBF_TRY(gpu_status(
       wwr::wwrMemcpyAsync(p_o, s_o, block * sizeof(double), wwr::wwrMemcpyDeviceToDevice, stream)));
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(p_c, s_c, ci_all * sizeof(double),
@@ -496,8 +698,9 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
   for (size_t x = 0; x < ncol; ++x) {
     const size_t at = x * pairs;
     const size_t at_c = x * ci_block;
-    rs[x] = FBF_TRY(dot(r_o + at, s_o + at, r_c + at_c, s_c + at_c));
-    r_norm[x] = std::sqrt(FBF_TRY(dot(r_o + at, r_o + at, r_c + at_c, r_c + at_c)));
+    rs[x] = FBF_TRY(dot(r_o + at, s_o + at, r_c + at_c, s_c + at_c)) + theta_dot(r_t, s_t, x);
+    r_norm[x] = std::sqrt(FBF_TRY(dot(r_o + at, r_o + at, r_c + at_c, r_c + at_c)) +
+                          theta_dot(r_t, r_t, x));
   }
 
   for (int32_t sweeps = 0;; ++sweeps) {
@@ -514,17 +717,34 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(xs_c + (i * ci_block), p_c + (active[i] * ci_block),
                                              ci_block * sizeof(double),
                                              wwr::wwrMemcpyDeviceToDevice, stream)));
+      std::copy_n(p_t.begin() + static_cast<std::ptrdiff_t>(active[i] * n_theta), n_theta,
+                  xs_t.begin() + static_cast<std::ptrdiff_t>(i * n_theta));
     }
-    FBF_TRY(relaxed.apply_coupled(res, static_cast<int32_t>(n_active), xs_o, xs_c, ap_o, ap_c));
+    const size_t active_theta = rotates ? n_active * n_theta : 0;
+    FBF_TRY(relaxed.apply_coupled(res, static_cast<int32_t>(n_active), xs_o, xs_c, ap_o, ap_c,
+                                  std::span<const double>(xs_t).first(active_theta),
+                                  std::span<double>(ap_t).first(active_theta)));
     FBF_TRY(scale_rows(ap_c, dap_c, n_active * roots_count));
+    // D A p's rotation rows, in place.
+    for (size_t i = 0; i < active_theta; ++i) {
+      ap_t[i] *= d_theta[i % n_theta];
+    }
     for (size_t i = 0; i < n_active; ++i) {
       const size_t x = active[i];
       const size_t at = x * pairs;
       const size_t at_c = x * ci_block;
       const double *const apx = ap_o + (i * pairs);
       const double *const apx_c = dap_c + (i * ci_block);
+      const size_t at_t = x * n_theta;
+      const size_t ap_at = i * n_theta;
       ++out.iterations[x];
-      const double pap = FBF_TRY(dot(p_o + at, apx, p_c + at_c, apx_c));
+      double pap_theta = 0.0;
+      if (rotates) {
+        for (size_t t = 0; t < n_theta; ++t) {
+          pap_theta += p_t[at_t + t] * ap_t[ap_at + t];
+        }
+      }
+      const double pap = FBF_TRY(dot(p_o + at, apx, p_c + at_c, apx_c)) + pap_theta;
       if (!(pap > 0.0)) {
         return err_divergence("mcscf::zvectors (Coupled): p.Ap = {:.3e} in column {} after {} "
                               "products: the coupled Hessian is not positive definite along "
@@ -541,14 +761,25 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
           gpu_status(wwr::axpy<double, int32_t>(blas, n_pairs, &neg_alpha, apx, 1, r_o + at, 1)));
       FBF_TRY(gpu_status(
           wwr::axpy<double, int32_t>(blas, ci_block32, &neg_alpha, apx_c, 1, r_c + at_c, 1)));
-      r_norm[x] = std::sqrt(FBF_TRY(dot(r_o + at, r_o + at, r_c + at_c, r_c + at_c)));
+      if (rotates) {
+        for (size_t t = 0; t < n_theta; ++t) {
+          z_t[at_t + t] += alpha * p_t[at_t + t];
+          r_t[at_t + t] -= alpha * ap_t[ap_at + t];
+        }
+      }
+      r_norm[x] = std::sqrt(FBF_TRY(dot(r_o + at, r_o + at, r_c + at_c, r_c + at_c)) +
+                            theta_dot(r_t, r_t, x));
     }
     FBF_TRY(precondition());
     for (const size_t x : active) {
       const size_t at = x * pairs;
       const size_t at_c = x * ci_block;
-      const double rs_new = FBF_TRY(dot(r_o + at, s_o + at, r_c + at_c, s_c + at_c));
+      const double rs_new =
+          FBF_TRY(dot(r_o + at, s_o + at, r_c + at_c, s_c + at_c)) + theta_dot(r_t, s_t, x);
       const double beta = rs_new / rs[x];
+      for (size_t t = x * n_theta; t < (x + 1) * n_theta; ++t) {
+        p_t[t] = s_t[t] + (beta * p_t[t]);
+      }
       FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, n_pairs, &beta, p_o + at, 1)));
       FBF_TRY(gpu_status(
           wwr::axpy<double, int32_t>(blas, n_pairs, &kOne<double>, s_o + at, 1, p_o + at, 1)));
@@ -560,16 +791,25 @@ Result<ZVectors> zvectors_coupled(DeviceResources &res, RelaxedHessian &relaxed,
   }
 
   // The true residuals of the unscaled equations, from one more product:
-  // (H z_o + H_oc z_c + g, P ((H_0 - E) z_c + H' c + y)).
+  // (H z_o + H_oc z_c + g, P ((H_0 - E) z_c + H' c + y), and the rotations'
+  // rows plus t).
   FBF_TRY(project_off_roots(res, roots, dim, count, z_c, overlaps.data()));
-  FBF_TRY(relaxed.apply_coupled(res, ncol32, z_o, z_c, ap_o, ap_c));
+  const size_t all_theta = rotates ? theta_all : 0;
+  FBF_TRY(relaxed.apply_coupled(res, ncol32, z_o, z_c, ap_o, ap_c,
+                                std::span<const double>(z_t).first(all_theta),
+                                std::span<double>(ap_t).first(all_theta)));
+  for (size_t i = 0; i < all_theta; ++i) {
+    ap_t[i] =
+        d_theta[i % n_theta] == 0.0 ? 0.0 : ap_t[i] + (theta_rhs.empty() ? 0.0 : theta_rhs[i]);
+  }
   FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(block), &kOne<double>,
                                                 gradients, 1, ap_o, 1)));
   FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(ci_all), &kOne<double>,
                                                 py, 1, ap_c, 1)));
   for (size_t x = 0; x < ncol; ++x) {
-    out.residuals[x] = std::sqrt(FBF_TRY(
-        dot(ap_o + (x * pairs), ap_o + (x * pairs), ap_c + (x * ci_block), ap_c + (x * ci_block))));
+    out.residuals[x] = std::sqrt(FBF_TRY(dot(ap_o + (x * pairs), ap_o + (x * pairs),
+                                             ap_c + (x * ci_block), ap_c + (x * ci_block))) +
+                                 (rotates ? theta_dot(ap_t, ap_t, x) : 0.0));
   }
   FBF_TRY(res.sync());
   return std::move(out);
@@ -579,17 +819,19 @@ Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
                           const response::Hessian &hessian, const ci::Roots &roots,
                           const int32_t ncol, const double *const gradients,
                           const double *const ci_rhs, const CpSolver solver, const double tolerance,
-                          const int32_t max_iterations) {
+                          const int32_t max_iterations, const std::span<const double> theta_rhs) {
   const int32_t n_pairs = relaxed.size();
   const size_t roots_count = roots.energies.size();
+  const size_t n_theta = roots_count * (roots_count - 1) / 2;
   if (hessian.size() != n_pairs || roots_count == 0 ||
       roots.vectors.num_elements() % roots_count != 0 || !(tolerance > 0.0) || max_iterations < 1 ||
-      ncol < 1) {
+      ncol < 1 || (!theta_rhs.empty() && theta_rhs.size() != n_theta * static_cast<size_t>(ncol))) {
     return err_config("mcscf::zvectors: needs H of H~'s {} pairs, at least one root as a whole "
-                      "number of vectors, tolerance > 0, max_iterations >= 1 and ncol >= 1 (H {}, "
-                      "{} roots in {} doubles, tolerance {:g}, max_iterations {}, ncol {})",
+                      "number of vectors, tolerance > 0, max_iterations >= 1, ncol >= 1 and no "
+                      "rotation right-hand side or one per pair of roots a column (H {}, {} roots "
+                      "in {} doubles, tolerance {:g}, max_iterations {}, ncol {}, {} rotations)",
                       n_pairs, hessian.size(), roots_count, roots.vectors.num_elements(), tolerance,
-                      max_iterations, ncol);
+                      max_iterations, ncol, theta_rhs.size());
   }
   if (solver == CpSolver::Coupled &&
       std::ranges::any_of(relaxed.weights(), [](double w) { return !(w > 0.0); })) {
@@ -601,17 +843,18 @@ Result<ZVectors> zvectors(DeviceResources &res, RelaxedHessian &relaxed,
   ZVectors out{Buffers::device<double>(std::max<size_t>(static_cast<size_t>(n_pairs), 1) * columns,
                                        res.device()),
                Buffers::device<double>(roots.vectors.num_elements() * columns, res.device()),
-               std::vector<int32_t>(columns, 0), std::vector<double>(columns, 0.0)};
+               std::vector<double>(n_theta * columns, 0.0), std::vector<int32_t>(columns, 0),
+               std::vector<double>(columns, 0.0)};
   switch (solver) {
   case CpSolver::PerColumn:
     return zvectors_per_column(res, relaxed, hessian, roots, columns, gradients, ci_rhs, tolerance,
-                               max_iterations, out);
+                               max_iterations, theta_rhs, out);
   case CpSolver::Schur:
     return zvectors_schur(res, relaxed, hessian, roots, columns, gradients, ci_rhs, tolerance,
-                          max_iterations, out);
+                          max_iterations, theta_rhs, out);
   case CpSolver::Coupled:
     return zvectors_coupled(res, relaxed, hessian, roots, columns, gradients, ci_rhs, tolerance,
-                            max_iterations, out);
+                            max_iterations, theta_rhs, out);
   }
   return err_config("mcscf::zvectors: unknown solver {}", static_cast<int32_t>(solver));
 }

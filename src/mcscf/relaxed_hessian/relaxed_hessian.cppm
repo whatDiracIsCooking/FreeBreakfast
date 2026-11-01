@@ -167,10 +167,35 @@ public:
   /// calls"); x_c should be in it too.
   /// None of the four blocks may overlap. Synchronizes res.stream() per column.
   ///
-  /// @return InvalidConfig for a negative @p k; or the first error of H's
-  ///         apply, a sigma, an RDM, a BLAS call or a copy.
+  /// @p theta, when not empty, adds the rotations among the roots (README.md
+  /// "The rotations among the roots"): per column the nroots (nroots - 1) / 2
+  /// Theta_sr for r < s in (r, s) lexicographic order, on the host, c_r
+  /// gaining Theta_sr c_s and c_s losing Theta_sr c_r. They join x_c as its
+  /// part along the roots, so y gains H_oc of it, and @p y_theta (as
+  /// @p theta) receives their rows, the CI rows' components along the other
+  /// roots before the projection:
+  ///   y_theta_sr = c_s . H'(x) c_r + (E_s - E_r) Theta_sr,
+  /// unscaled as the CI rows are.
+  ///
+  /// @return InvalidConfig for a negative @p k, or a @p theta or @p y_theta
+  ///         that is not empty and not k such columns; or the first error of
+  ///         H's apply, a sigma, an RDM, a BLAS call or a copy.
   [[nodiscard]] Status apply_coupled(DeviceResources &res, int32_t k, const double *x,
-                                     const double *x_c, double *y, double *y_c);
+                                     const double *x_c, double *y, double *y_c,
+                                     std::span<const double> theta = {},
+                                     std::span<double> y_theta = {});
+
+  /// @brief y = H_oc x_c for @p k CI blocks @p x_c (dim x nroots each, on the
+  /// device) into the size() x @p k @p y, overwritten: the gradient in x of
+  /// x_c's transition RDMs' h_eff'.gamma_T + 1/2 (tu|vw)'.Gamma_T, as R x is
+  /// of delta(x)'s, with no CI solve. x_c may lie along the roots: a part
+  /// sum_s Theta_sr c_s of x_c,r is the rotations' coupling to the orbitals,
+  /// (w_r - w_s) Theta_sr times the r-s transition orbital gradient.
+  /// Synchronizes res.stream() per column.
+  ///
+  /// @return InvalidConfig for a negative @p k; or the first error of an
+  ///         RDM, a BLAS call or a copy.
+  [[nodiscard]] Status coupling(DeviceResources &res, int32_t k, const double *x_c, double *y);
 
   /// @brief diag(H_0) into the dim device doubles @p diagonal: the sigma's
   /// @c ci::Sigma::diagonal, the roots' energies not subtracted.

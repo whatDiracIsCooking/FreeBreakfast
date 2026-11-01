@@ -40,6 +40,61 @@ a root is ignored; it must be in the roots' spin, as a Lagrangian's CI
 derivative is, since H₀ − E_r need not be positive along another spin's
 directions.
 
+## The rotations among the roots
+
+At unequal weights E_SA is not invariant to rotating its roots among
+themselves, c_r → c_r + Σ_s Θ_sr c_s (Θ antisymmetric), and every pair r < s
+of unequal weight is a parameter of A with a multiplier of its own
+(`.temp/hessian/casscf_hessian.tex` §5.2): ∂²E_SA/∂Θ_sr² =
+2 (w_r − w_s)(E_s − E_r), coupled to the orbitals through (w_r − w_s) times
+the r–s transition orbital gradient. Scaled by 2 (w_r − w_s), as the CI rows
+are by 2 w_r, its row is **the CI row of root r taken along c_s**, the
+component the projection P drops:
+
+    (E_s − E_r) Θ_sr + c_s · H′(z_o) c_r = −t_sr.
+
+So Θ_sr is z_c,r's part along c_s in `gen_g_hop`'s coordinates. A pair of
+equal weights (to 1e-8 of the larger) is redundant and stays projected, its
+Θ zero; the coupling to the CI complement vanishes at eigenvectors
+(c_s · (H₀ − E_r) z_c,r = 0 off the roots), and partly equal weights
+(0.4, 0.4, 0.2) rotate only their unequal pairs.
+
+`ZVector::theta` (`ZVectors::theta`, per column) reports Θ_sr for r < s in
+(r, s) lexicographic order on the host, nroots (nroots − 1) / 2 of them, zero
+for equal pairs. With z_o, z_c and Θ in that order a column is the vector
+layout of `mcscf::ThirdDerivative` (#616) and of
+`test/gtest/data/casscf_hessian/`'s `_orb`, `_ci`, `_theta` at unequal
+weights. `theta_rhs`, on the host and laid out the same, is t: the
+Lagrangian's ∂L/∂Θ_sr over 2 (w_r − w_s). A gradient's is zero (E_I is
+stationary in them, the roots being eigenvectors), and an empty span is
+that. For λ^x, `df_derivatives`' `rhs_theta` (s, r) is 2 (w_r − w_s) H̃^x_sr,
+so t_sr = H̃^x_sr, its `hamiltonian`'s off-diagonal.
+
+How each method carries them:
+
+- **Schur and PerColumn**: H̃ eliminates them already. `RelaxedHessian`'s CI
+  response has the other roots' part −(c_s · H′c_r)/(E_s − E_r) c_s, and
+  with both of a pair's halves weighted, its transition RDMs carry
+  (w_r − w_s) Θ_sr exactly (zero at equal weights), so H̃ is the Schur
+  complement over Θ too. Θ is read off z_c's part along the roots before
+  the projection, ½ (c_s · z_c,r − c_r · z_c,s). A t is folded in as `couple`
+  folds y: Θ_w,sr = −t_sr / (E_s − E_r), its part along the roots added to
+  z_c's start and `RelaxedHessian::coupling` of it (H_oc, no solve) to the
+  orbital right-hand side.
+- **Coupled**: Θ is a third block of unknowns, on the host (a few doubles a
+  column), its rows scaled by D_rs = 2 (w_r − w_s) to keep the operator
+  symmetric and preconditioned by their exact diagonal
+  1 / (D_rs (E_s − E_r)). `RelaxedHessian::apply_coupled` takes Θ as x_c's
+  part along the roots (one gemm of C by the antisymmetric matrices) and
+  returns the rows from the overlaps of y_c with the roots before it
+  projects them. It needs (w_r − w_s)(E_s − E_r) > 0 for every rotating
+  pair, the weights falling as the energies rise, or it is InvalidConfig
+  (the conjugate gradients cannot take a negative diagonal); Schur has no
+  such limit.
+
+With no pair of unequal weights (one root, or equal weights) nothing of
+this runs and each method is as it was, to the bit.
+
 ## Module
 
 `free_breakfast.mcscf.zvector`, target `free_breakfast::mcscf::zvector`.
@@ -49,11 +104,11 @@ it, and the SA gradient links it PRIVATE. Everything is in
 
 | Name | What it is |
 |------|------------|
-| `ZVector` | `orbital` (z_o over the packed pairs), `ci` (z_c, dim × nroots, each off every root), `iterations` (H̃ products) and `residual` (‖H̃ z_o + g_I + H_oc w‖) |
-| `zvector` | The solve, from a `RelaxedHessian`, the `response::Hessian` and `ci::Roots` it was created over, g_I on the device and an optional CI right-hand side y (dim × nroots) |
+| `ZVector` | `orbital` (z_o over the packed pairs), `ci` (z_c, dim × nroots, each off every root), `theta` (Θ_sr for r < s, host), `iterations` (H̃ products) and `residual` (‖H̃ z_o + g_I + H_oc w‖) |
+| `zvector` | The solve, from a `RelaxedHessian`, the `response::Hessian` and `ci::Roots` it was created over, g_I on the device, an optional CI right-hand side y (dim × nroots) and an optional rotation one t (host) |
 | `CpSolver` | How `zvectors` solves: `PerColumn`, `Schur` or `Coupled` (below) |
-| `ZVectors` | `zvectors`' result: `orbital` (size() × ncol), `ci` (ncol blocks of dim × nroots), and per column `iterations` and `residuals` |
-| `zvectors` | The same equations on ncol right-hand sides at once: g (size() × ncol) and an optional y (ncol blocks), by a `CpSolver` |
+| `ZVectors` | `zvectors`' result: `orbital` (size() × ncol), `ci` (ncol blocks of dim × nroots), `theta` (ncol of `ZVector::theta`), and per column `iterations` and `residuals` |
+| `zvectors` | The same equations on ncol right-hand sides at once: g (size() × ncol), an optional y (ncol blocks) and an optional t (ncol of them), by a `CpSolver` |
 
 ## The solve
 
@@ -68,9 +123,11 @@ it, and the SA gradient links it PRIVATE. Everything is in
    from it, H̃'s products being exact only to the CI response's conjugate
    gradients (1e-8 of their right-hand side).
 3. That product's `respond` leaves δ(z_o) in `RelaxedHessian::delta()`, and
-   z_c is δ + w with every root projected out: the other roots' part `respond`
-   adds is the state average's rotations among its roots, which PySCF's
-   Lagrange equations project away (and which, at equal weights, cancel in H̃).
+   z_c is δ + w with every root projected out. The other roots' part
+   `respond` adds is the state average's rotations among its roots: at
+   unequal weights Θ is read off it first ("The rotations among the roots");
+   at equal weights they are redundant and cancel in H̃, which is why PySCF's
+   Lagrange equations project them away.
 
 g_I is `response::fock`'s gradient at root I's own RDMs (`ci::Rdm::rdm12` at
 weight 1 on root I) and the SA orbitals. H, g and so H̃ are each twice PySCF's
@@ -122,10 +179,9 @@ near 1e-9 rather than the 1e-10 asked for, and z by that much. Coupled solves
 the exact equations, and agrees with `zvector` over an H̃ whose responses are
 solved to 1e-12 to 3e-11 relative.
 
-At unequal weights the rotations among the averaged roots belong in A
-(#613); none of the three carries them yet, and Schur and PerColumn keep the
-other-root part of H̃'s CI response that Coupled's projected CI space leaves
-out, so the methods agree at equal weights and for one root.
+All three carry the rotations among the roots at unequal weights ("The
+rotations among the roots"), Schur and PerColumn inside H̃ and Coupled as
+their own block, so they agree there too (1e-9 on the case below).
 
 ### Which is the default
 
@@ -184,6 +240,18 @@ sides, each with a random CI one y_r = P H_y c_r. Schur against `zvector` on
 each column alone over the same H̃, Coupled against `zvector` over an H̃ whose
 CI responses are solved to 1e-12, each to 1e-10 of the column's largest
 |z_o| and |z_c|, and z_c off every root; and no columns refused.
+
+`test/gtest/mcscf_zvector_rotations_gpu.cpp`, on
+`test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /
+cc-pVDZ-JKFIT), the orbitals and roots loaded from the fixture and H̃'s CI
+response solved to 1e-12: at three roots (0.5, 0.3, 0.2) each root's z (z_o,
+z_c and Θ) by `zvector` and by every `zvectors` method against the fixture's
+exact z, and λ^x from `df_derivatives`' SA right-hand sides (t = H̃^x_sr)
+against its λ^x, each block to 1e-9 of its largest element; without t, Θ
+misses by more than 1e-3. At two roots (0.7, 0.3) Θ is the fixture's (5e-13)
+and at three equal weights it is zero, z the fixture's either way. And the
+refusals: a t of the wrong length, and Coupled at weights rising with the
+energies.
 
 ## Files
 

@@ -195,6 +195,7 @@ add_executable(
   mcscf_gradient_weights_gpu.cpp
   mcscf_third_derivative_gpu.cpp
   mcscf_integral_derivative_gpu.cpp
+  mcscf_zvector_rotations_gpu.cpp
   nevpt2_density_fitting_gpu.cpp
   nevpt2_rdm_gpu.cpp
   nevpt2_energy_gpu.cpp
