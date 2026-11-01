@@ -443,6 +443,73 @@ df_casscf(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas, double tolerance = 1e-10,
           int32_t max_iterations = 200);
 
+/// @brief The z terms of a state-averaged DF-CASSCF Hessian at one root I's
+/// multipliers z (casscf_hessian.tex eq. sa, bullets 3 and 4).
+struct SaCasscfZTerms {
+  /// @brief L_xy's z part, z . d_xy g_SA: E_xy at z's densities (the
+  /// z_o-rotated averaged densities and the transition RDMs of z_c), piece by
+  /// piece as @ref df_casscf_exy returns them, 3 n_atom x 3 n_atom
+  /// column-major, symmetric to rounding; nuclear_repulsion is zero.
+  CasscfExy lxy;
+  /// @brief L_xlambda, root I's CP right-hand side d_x d_lambda E_I plus
+  /// I^x z, a covector per coordinate: size x 3 n_atom column-major on the
+  /// device, column x in @c mcscf::ThirdDerivative's packed layout (the
+  /// orbital pairs, d_r per root, Theta_sr for r < s at unequal weights), the
+  /// CI rows the energy's own. Its dot product with lambda^y in the same
+  /// layout is L_xlambda lambda^y, element (x, y).
+  Buffers::device<double> lxlambda;
+};
+
+/// @brief The z terms of a state-averaged DF-CASSCF analytic Hessian for
+/// root @p root, at its Lagrangian multipliers @p z, every piece from a
+/// merged part (README.md, "The state-averaged z terms"):
+///
+///     L_xy z part = df_casscf_exy along K(z_o) at the averaged RDMs
+///                   + df_casscf_exy at the transition RDMs of z_c
+///     L_xlambda   = root I's df_derivatives right-hand side (one-hot weights)
+///                   + I^x z (ThirdDerivative::apply_integrals over
+///                     df_integral_derivatives)
+///
+/// the transition RDMs, and their F^[x], as half the difference of those of
+/// the roots c_r + dc_r and c_r - dc_r, dc_r = d_r + Sum_s Theta_sr c_s.
+///
+/// The inputs are @c mcscf::df_derivatives': @p molecule the one both bases
+/// were placed on, @p classes @c primitive_pair_classes of @p basis, @p h the
+/// core Hamiltonian, @p b and @p l @c density_fit's B (naux x nao^2) and L,
+/// @p c the nao x nao orbitals (core, active, virtual), @p roots the
+/// weights.size() >= 2 unit roots of @p nalpha and @p nbeta electrons in the
+/// ncas orbitals (root r at r n_det), eigenvectors of the active-space H, at
+/// @p weights, all equal or all pairwise different. @p z is root I's
+/// multipliers in @c mcscf::ThirdDerivative's layout and the energy's
+/// convention (the fixture's z; not @c mcscf::zvector's unscaled CI rows):
+/// pairs + n_det nroots doubles, plus nroots (nroots - 1) / 2 at unequal
+/// weights.
+///
+/// The parts run one after another, each freeing what it held: four
+/// @c df_derivatives calls, three @c df_casscf_exy calls, then the derivative
+/// integrals (3 n_atom nmo^2 (naux + 1) doubles) and the operator. Each part
+/// refuses its own memory, Unsupported, before it allocates.
+///
+/// Queued on res.stream() with res.blas() (host pointer mode); it
+/// synchronizes many times. None of @p b and @p l may point into
+/// res.device_workspace(). The device res.dev_idx() names is made current
+/// for the call and the previous one restored.
+///
+/// @return The two terms; InvalidConfig if @p c is not nao square on @p res's
+///         device, the molecule and the bases do not share their atoms,
+///         ncore < 0, ncas < 1 or ncore + ncas > nao, fewer than two weights,
+///         @p root not among them, weights equal for some pairs and not
+///         others, @p roots or @p z not of their lengths, or for any input a
+///         part refuses; or the first error of a part (Unsupported for
+///         memory, a GpuRuntime error).
+[[nodiscard]] Result<SaCasscfZTerms>
+df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+              std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+              const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+              const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha,
+              int32_t nbeta, const Buffers::device<double> &roots, std::span<const double> weights,
+              int32_t root, const Buffers::device<double> &z);
+
 /// @brief The closed-shell DF-RHF nuclear Hessian and every term of it, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}
 /// (hartree / bohr^2), as @c gradient::RhfTerms holds the gradient's.
