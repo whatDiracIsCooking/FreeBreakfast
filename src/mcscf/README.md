@@ -29,6 +29,7 @@ needs a prefix" has the rule.
 | `gradient/` | `free_breakfast.mcscf.gradient` | The analytic nuclear gradient of a converged DF-CASSCF (`mcscf::df_gradient`), state-specific or any root of a state average: the one-electron terms at its 1-RDM and generalized Fock, and one Γ and one W of the fitted two-electron energy against the three-center and metric derivatives, each term on its own. For a state average, over `zvector`'s multipliers (linked PRIVATE). Its derivation is in `gradient/README.md`. |
 | `derivative/` | `free_breakfast.mcscf.derivative` | The DF-CASSCF Hessian's per-coordinate derivatives at fixed parameters (`mcscf::df_derivatives`): the derivative generalized Fock F^[x] and the CP-CASSCF right-hand sides (orbital, CI and the roots' rotations), every coordinate at once, at the RDMs of any weighting of any roots, so SS, a state average's averaged right-hand side and one root's own. Layouts and signs in `derivative/README.md`. |
 | `zvector/` | `free_breakfast.mcscf.zvector` | **Internal**, not re-exported: the Lagrange multipliers of one root's state-averaged gradient (`mcscf::zvector`), z_o by preconditioned conjugate gradients over `RelaxedHessian` and z_c from its CI response; and the same equations on many right-hand sides at once (`mcscf::zvectors`, the CP-CASSCF solve of a Hessian), by one of three `CpSolver`s. See `zvector/README.md`. |
+| `root_rotation/` | `free_breakfast.mcscf.root_rotation` | The equal-weight SA Hessian's root-rotation term, eq. (rot), 2 Σ_{s≠I} ℋ^x_Is ℋ^y_Is / (E_I − E_s), and the roots' rotations θ^x_sr = ℋ^x_rs / (E_r − E_s) (`mcscf::root_rotation`), ℋ^x the orbital-relaxed coupling from `derivative`'s H̃^x and λ^x's orbital part; a pair too near a degeneracy is refused with its gap named. Layouts in `root_rotation/README.md`. |
 
 The orbital order, the packed pairs and the gradient and Hessian conventions
 the loop steps in are [`../response/README.md`](../response/README.md)'s.
@@ -49,9 +50,12 @@ from the same setup.
 `test/gtest/data/casscf_hessian/`, its orbitals and roots loaded from the
 fixture.
 
+`test/gtest/mcscf_root_rotation_gpu.cpp` holds `root_rotation/`'s against the
+same fixture's equal-weight averages.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient` and `derivative` |
-| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient` and `derivative`, in that order, and the `free_breakfast.mcscf` module target |
+| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient`, `derivative` and `root_rotation` |
+| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient`, `derivative` and `root_rotation`, in that order, and the `free_breakfast.mcscf` module target |
