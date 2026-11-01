@@ -3,13 +3,15 @@
 /// energy (casscf_hessian.tex eq. exy) at any active RDMs: the explicit part
 /// (the one-electron second derivatives at D^AO, V_nn's and
 /// df_casscf_two_electron) and the Lowdin connection's three terms, each a
-/// handful of gemms over the MO-basis fit B and the stack of tau^x.
+/// handful of gemms over the MO-basis fit B and the stack of tau^x. With a
+/// rotation K, the same at the K-rotated densities (a state average's z_o
+/// part of L_xy) by the product rule over those MO-basis quantities.
 
 module free_breakfast.hessian;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kZero, kOne, kTwo, kNegHalf
+import free_breakfast.core.constants; // kZero, kOne, kNegOne, kTwo, kNegHalf
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr; // gemm, geam, gemmStridedBatched, wwrMemGetInfo, gpu_status
 import free_breakfast.core.resources;
@@ -32,7 +34,7 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
               const Buffers::device<double> &c, const int32_t ncore, const int32_t ncas,
               const std::span<const double> gamma, const std::span<const double> gamma2,
-              const Buffers::device<double> &fock_x) {
+              const Buffers::device<double> &fock_x, const double *const rotation) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const uint32_t n_atom = basis.natoms();
@@ -74,8 +76,13 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   }
   const ScopedDeviceIndex on{res.dev_idx()};
 
+  const bool rotated = rotation != nullptr;
   CasscfExy out;
   out.nuclear_repulsion = nuclear_repulsion_hessian(molecule);
+  if (rotated) {
+    // V_nn does not see the orbitals.
+    std::ranges::fill(out.nuclear_repulsion, 0.0);
+  }
 
   // D over the occupied orbitals, 2 on the core diagonal and gamma (as its
   // symmetric part) on the active block, and Gamma over them: the closed-
@@ -165,10 +172,23 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
     // The explicit one-electron part: h^xy (T's and V's) against
     // D^AO = C_o D C_o^T. S^xy is not here: it is the connection's.
     SphericalMatrixAO d_ao(res, basis);
-    {
+    if (!rotated) {
       const auto [work] = res.device_regions<double>(oo * nao);
       FBF_TRY(gpu_status(
           gemmwich<wwr::WWRBLAS_OP_T>(blas, n, nocc, c.data(), d_occ, work, d_ao.data())));
+    } else {
+      // Rotated: D^AO's derivative along C -> C (1 + e K), C~_o D C_o^T +
+      // C_o D C~_o^T with C~_o = C K's occupied columns.
+      const auto [c_rot, half, a_ao] = res.device_regions<double>(nao * occ, nao * occ, nao * nao);
+      FBF_TRY(gpu_status(
+          gemm(blas, n, nocc, n_mo, &kOne<double>, c.data(), rotation, &kZero<double>, c_rot)));
+      FBF_TRY(
+          gpu_status(gemm(blas, n, nocc, nocc, &kOne<double>, c_rot, d_occ, &kZero<double>, half)));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+          blas, n, n, nocc, &kOne<double>, half, c.data(), &kZero<double>, a_ao)));
+      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n,
+                                                    n, &kOne<double>, a_ao, n, &kOne<double>, a_ao,
+                                                    n, d_ao.data(), n)));
     }
     out.one_electron = FBF_TRY(kinetic_hessian(res, basis, classes, d_ao));
     const std::vector<double> potential =
@@ -177,8 +197,8 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
       out.one_electron[i] += potential[i];
     }
   }
-  out.two_electron = FBF_TRY(
-      df_casscf_two_electron(res, basis, classes, aux, b, l, c, ncore, ncas, gamma, gamma2));
+  out.two_electron = FBF_TRY(df_casscf_two_electron(res, basis, classes, aux, b, l, c, ncore, ncas,
+                                                    gamma, gamma2, rotation));
 
   // What the connection terms hold across calls that take the workspace
   // (overlap_derivative, b_mo, overlap_hessian), so their own: tau^x for
@@ -191,9 +211,16 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   // E^(2)'s per-coordinate workspace beside it.
   const size_t held_count = (2 * mm * n_x) + (naux * mm) + (2 * naux * oo) + (3 * mm) +
                             (2 * n_x * naux * oo) + (n_x * nmo * occ) + (4 * n_x * n_x);
+  // A rotation adds B's derivative over every pair and the occupied ones,
+  // G' and G~, h K and h', F_L, and tau'^x, V'^x and R'^x for every x; and
+  // per coordinate Y' and tau^x K.
+  const size_t rot_count = rotated ? (naux * mm) + (2 * naux * oo) + (naux * nmo * occ) + (3 * mm) +
+                                         (mm * n_x) + (n_x * nmo * occ) + (n_x * naux * oo)
+                                   : 0;
   const size_t transient = std::max(2 * n_x * nao * nao + nmo * nao * n_x,
-                                    (naux * occ * nmo) + (nmo * occ) + (nao * nmo));
-  const size_t bytes = sizeof(double) * (held_count + transient);
+                                    (naux * occ * nmo) + (nmo * occ) + (nao * nmo) +
+                                        (rotated ? (naux * occ * nmo) + mm : 0));
+  const size_t bytes = sizeof(double) * (held_count + rot_count + transient);
   {
     size_t free_bytes = 0;
     size_t total_bytes = 0;
@@ -224,6 +251,17 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   double *const p_fock = p_square + (n_x * n_x);
   double *const p_twice = p_fock + (n_x * n_x);
   double *const p_twice_r = p_twice + (n_x * n_x);
+  Buffers::device<double> rot_held(std::max<size_t>(rot_count, 1), res.device());
+  double *const b_dot = rot_held.data();
+  double *const b_dot_oo = b_dot + (naux * mm);
+  double *const g_dot = b_dot_oo + (naux * oo);
+  double *const g_tilde = g_dot + (naux * oo);
+  double *const h_k = g_tilde + (naux * nmo * occ);
+  double *const h_dot = h_k + mm;
+  double *const fock_rot = h_dot + mm;
+  double *const tau_dot = fock_rot + mm;
+  double *const v_dot = tau_dot + (mm * n_x);
+  double *const r_dot = v_dot + (n_x * nmo * occ);
 
   {
     // tau^x = -1/2 C^T S^x C for every x: C^T [S^0 S^1 ...] as one gemm,
@@ -263,6 +301,60 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n_mo,
                                                 nocc, q * nocc, &kOne<double>, b_all, q * n_mo,
                                                 g_fit, q * nocc, &kOne<double>, fock, n_mo)));
+  if (rotated) {
+    // Everything below at the rotated densities is the product rule over the
+    // MO-basis quantities, each X moving as [X, K] = X K - K X along
+    // C -> C (1 + e K) with the RDMs held (README.md):
+    //   B' = B K - K B (B K one gemm over B's (Q, p) rows; K B_Q = slab_q K^T
+    //   per column q), h' = h K + (h K)^T, tau^x' = tau^x K + (tau^x K)^T,
+    //   G' = B'_oo Gamma, and F's at the inner indices:
+    //   F_L = F K^T + h K D + Sum_Q,a B_Q,ap G~_Q,aq + Sum_Q,r B_Q,rp G'_Q,rq,
+    //   G~_Q,aq = Sum_r K_ar G_Q,rq,
+    // which replaces F (only F's outer index is held, as mcscf::df_gradient's
+    // W takes its z_o).
+    FBF_TRY(gpu_status(
+        gemm(blas, q * n_mo, n_mo, n_mo, &kOne<double>, b_all, rotation, &kZero<double>, b_dot)));
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, n_mo, n_mo, &kNegOne<double>, b_all, q,
+        static_cast<int64_t>(naux * nmo), rotation, n_mo, 0, &kOne<double>, b_dot, q,
+        static_cast<int64_t>(naux * nmo), n_mo)));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q * nocc, nocc, &kOne<double>, b_dot, q * n_mo,
+        &kZero<double>, b_dot, q * n_mo, b_dot_oo, q * nocc)));
+    FBF_TRY(gpu_status(
+        gemm(blas, q, n_oo, n_oo, &kOne<double>, b_dot_oo, rdm2_device, &kZero<double>, g_dot)));
+    FBF_TRY(gpu_status(
+        gemm(blas, n_mo, n_mo, n_mo, &kOne<double>, h_mo, rotation, &kZero<double>, h_k)));
+    FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n_mo,
+                                                  n_mo, &kOne<double>, h_k, n_mo, &kOne<double>,
+                                                  h_k, n_mo, h_dot, n_mo)));
+    // G~ per occupied column q: G_q (naux x nocc) times K[:, occ]^T.
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, q, n_mo, nocc, &kOne<double>, g_fit, q,
+        static_cast<int64_t>(naux * occ), rotation, n_mo, 0, &kZero<double>, g_tilde, q,
+        static_cast<int64_t>(naux * nmo), nocc)));
+    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n_mo,
+                                                  n_mo, nocc, &kOne<double>, fock, n_mo, rotation,
+                                                  n_mo, &kZero<double>, fock_rot, n_mo)));
+    FBF_TRY(gpu_status(
+        gemm(blas, n_mo, nocc, nocc, &kOne<double>, h_k, d_occ, &kOne<double>, fock_rot)));
+    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n_mo, nocc, q * n_mo, &kOne<double>, b_all,
+        q * n_mo, g_tilde, q * n_mo, &kOne<double>, fock_rot, n_mo)));
+    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n_mo,
+                                                  nocc, q * nocc, &kOne<double>, b_all, q * n_mo,
+                                                  g_dot, q * nocc, &kOne<double>, fock_rot, n_mo)));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(fock, fock_rot, sizeof(double) * mm,
+                                           wwr::wwrMemcpyDeviceToDevice, stream)));
+    const auto [tk] = res.device_regions<double>(mm);
+    for (size_t x = 0; x < n_x; ++x) {
+      FBF_TRY(gpu_status(gemm(blas, n_mo, n_mo, n_mo, &kOne<double>, tau + (x * mm), rotation,
+                              &kZero<double>, tk)));
+      FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n_mo, n_mo, &kOne<double>, tk, n_mo,
+          &kOne<double>, tk, n_mo, tau_dot + (x * mm), n_mo)));
+    }
+  }
   FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n_mo, n_mo, &kNegHalf<double>, fock, n_mo,
       &kNegHalf<double>, fock, n_mo, neg_fock_sym, n_mo)));
@@ -310,7 +402,8 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   // V^x = 2 h tau^x_occ D + 2 W^x. E^(2) is <V^x, tau^y_occ> + 4 <R^x, R^y
   // Gamma>, two Gram matrices.
   {
-    const auto [y_half, h_tau] = res.device_regions<double>(naux * occ * nmo, nmo * occ);
+    const auto [y_half, h_tau, y_dot] =
+        res.device_regions<double>(naux * occ * nmo, nmo * occ, rotated ? naux * occ * nmo : 1);
     for (size_t x = 0; x < n_x; ++x) {
       const double *const tau_x = tau + (x * mm);
       double *const v_x = v + (x * nmo * occ);
@@ -327,6 +420,35 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
           gemm(blas, n_mo, nocc, n_mo, &kOne<double>, h_mo, tau_x, &kZero<double>, h_tau)));
       FBF_TRY(gpu_status(
           gemm(blas, n_mo, nocc, nocc, &kTwo<double>, h_tau, d_occ, &kOne<double>, v_x)));
+      if (rotated) {
+        // V'^x = 2 Y'^T G + 2 Y^T G' + 2 h tau'^x D + 2 h' tau^x D, with
+        // Y' = B' tau^x_occ + B tau'^x_occ, whose first naux nocc^2 are R'^x.
+        const double *const tau_dot_x = tau_dot + (x * mm);
+        double *const v_dot_x = v_dot + (x * nmo * occ);
+        for (const auto &[b_from, t_from, beta] :
+             {std::tuple{static_cast<const double *>(b_dot), tau_x, &kZero<double>},
+              std::tuple{static_cast<const double *>(b_all), tau_dot_x, &kOne<double>}}) {
+          FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q, nocc, n_mo, &kOne<double>, b_from, q,
+              static_cast<int64_t>(naux * nmo), t_from, n_mo, 0, beta, y_dot, q,
+              static_cast<int64_t>(naux * occ), n_mo)));
+        }
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(r_dot + (x * naux * oo), y_dot,
+                                               sizeof(double) * naux * oo,
+                                               wwr::wwrMemcpyDeviceToDevice, stream)));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_mo, nocc, q * nocc, &kTwo<double>, y_dot,
+                                                   g_fit, &kZero<double>, v_dot_x)));
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n_mo, nocc, q * nocc, &kTwo<double>,
+                                                   y_half, g_dot, &kOne<double>, v_dot_x)));
+        for (const auto &[h_from, t_from] :
+             {std::pair{static_cast<const double *>(h_mo), tau_dot_x},
+              std::pair{static_cast<const double *>(h_dot), tau_x}}) {
+          FBF_TRY(gpu_status(
+              gemm(blas, n_mo, nocc, n_mo, &kOne<double>, h_from, t_from, &kZero<double>, h_tau)));
+          FBF_TRY(gpu_status(
+              gemm(blas, n_mo, nocc, nocc, &kTwo<double>, h_tau, d_occ, &kOne<double>, v_dot_x)));
+        }
+      }
     }
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q, n_oo, n_oo, &kOne<double>, r, q,
@@ -334,12 +456,28 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
         static_cast<int64_t>(naux * oo), nx)));
     // tau^y_occ is the first nmo nocc doubles of slab y: leading dimension
     // nmo^2.
-    FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nx,
-                                                  nx, n_mo * nocc, &kOne<double>, v, n_mo * nocc,
-                                                  tau, n_mm, &kZero<double>, p_twice, nx)));
     const double four = 4.0;
-    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, nx, nx, q * n_oo, &four, r, r_gamma,
-                                               &kZero<double>, p_twice_r)));
+    if (!rotated) {
+      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nx,
+                                                    nx, n_mo * nocc, &kOne<double>, v, n_mo * nocc,
+                                                    tau, n_mm, &kZero<double>, p_twice, nx)));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, nx, nx, q * n_oo, &four, r, r_gamma,
+                                                 &kZero<double>, p_twice_r)));
+    } else {
+      // E^(2)' = <V'^x, tau^y> + <V^x, tau'^y> + 4 (<R'^x, R^y Gamma> + its
+      // transpose), the transpose added on the host.
+      for (const auto &[v_from, t_from, beta] :
+           {std::tuple{static_cast<const double *>(v_dot), static_cast<const double *>(tau),
+                       &kZero<double>},
+            std::tuple{static_cast<const double *>(v), static_cast<const double *>(tau_dot),
+                       &kOne<double>}}) {
+        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, nx, nx, n_mo * nocc, &kOne<double>, v_from,
+            n_mo * nocc, t_from, n_mm, beta, p_twice, nx)));
+      }
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, nx, nx, q * n_oo, &four, r_dot, r_gamma,
+                                                 &kZero<double>, p_twice_r)));
+    }
   }
 
   std::vector<double> host(4 * n_x * n_x);
@@ -358,7 +496,8 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
       const size_t yx = y + (n_x * x);
       out.connection_second[xy] = overlap_part[xy] + host[xy];
       out.connection_fock[xy] = 2.0 * (host[nn_x + xy] + host[nn_x + yx]);
-      out.connection_twice[xy] = host[(2 * nn_x) + xy] + host[(3 * nn_x) + xy];
+      out.connection_twice[xy] =
+          host[(2 * nn_x) + xy] + host[(3 * nn_x) + xy] + (rotated ? host[(3 * nn_x) + yx] : 0.0);
     }
   }
   for (size_t i = 0; i < nn_x; ++i) {

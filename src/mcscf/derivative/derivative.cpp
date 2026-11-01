@@ -5,7 +5,9 @@
 /// H[tau^x] from the undifferentiated Fock matrices, ppaa and papa and the J
 /// and K of the two response densities, batched over the coordinates; then
 /// the orbital right-hand side by a geam per coordinate and the CI one by one
-/// sigma per coordinate.
+/// sigma per coordinate. With a rotation K, F^[x] at the K-rotated densities
+/// too: the product rule on its inner C's, four more df_jk_derivative calls
+/// and one more walk.
 
 module free_breakfast.mcscf.derivative;
 
@@ -13,7 +15,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kZero, kOne, kNegOne, kTwo, kNegTwo, kHalf, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // gemm, gemmStridedBatched, gemv, geam, axpy, scal, dgmm, trsm
+import free_breakfast.core.wwr; // gemm, gemmStridedBatched, gemv, geam, axpy, scal, dgmm, trsm, nrm2
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.molecule;
@@ -78,7 +80,7 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *const l,
                const SphericalMatrixAO &c, const int32_t ncore, const int32_t ncas,
                const int32_t nalpha, const int32_t nbeta, const double *const roots,
-               const std::span<const double> weights) {
+               const std::span<const double> weights, const double *const rotation) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const size_t n_atom = basis.natoms();
@@ -136,9 +138,16 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   // the active-pair intermediates), past which an allocation would abort
   // (CreatePolicy) rather than return. The CI right-hand side is counted
   // from the strings below, once their size is known.
+  // A rotation adds, at its own peak, six stacks (the rotated J and K, their
+  // sum, the two inner Fock stacks and the output) and C K, the extended
+  // coefficients, the rotated pairs and the second walk's products.
+  const size_t rotated = rotation == nullptr
+                             ? 0
+                             : (6 * stack) + (2 * nn) + (nao * n_act) + (naux * n_act * nao) +
+                                   (2 * naux * na2) + (naux * na2 * n_x) + (nao * n_act * n_x);
   const size_t held = (15 * stack) + (nao * na3 * n_x) + (3 * naux * na2 * n_x) +
                       (naux * n_act * nao) + (3 * naux * naux) + (3 * nn * max_blk) +
-                      (3 * nn * n_act) + (2 * nao * n_occ * n_x);
+                      (3 * nn * n_act) + (2 * nao * n_occ * n_x) + rotated;
   {
     size_t free_bytes = 0;
     size_t total_bytes = 0;
@@ -218,6 +227,18 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   Buffers::device<double> fix(stack, res.device());
   Buffers::device<double> fax(stack, res.device());
   const auto count = static_cast<int32_t>(stack);
+  // With a rotation: C~ = C K, D_a's factor F and its rotation F~ = C~_a U
+  // diag(sqrt(n / 2)) side by side, and the active 2-RDM term at the rotated
+  // densities (nao x ncas per x), each the product rule's inner C.
+  const auto rot_len = [&](const size_t len) { return rotation == nullptr ? size_t{1} : len; };
+  Buffers::device<double> c_rot(rot_len(nn), res.device());
+  Buffers::device<double> factor_rot(rot_len(2 * nao * n_act), res.device());
+  Buffers::device<double> a_rot(rot_len(nao * n_act * n_x), res.device());
+  const double *const c_act_rot = c_rot.data() + (nao * n_core);
+  if (rotation != nullptr) {
+    FBF_TRY(
+        gpu_status(gemm(blas, n, n, n, &kOne<double>, cm, rotation, &kZero<double>, c_rot.data())));
+  }
   {
     const Buffers::device<double> sx = FBF_TRY(overlap_derivative(res, basis, classes));
     FBF_TRY(to_mo(sx.data(), tau.data()));
@@ -272,6 +293,13 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
     Buffers::device<double> factor(nao * n_act, res.device());
     FBF_TRY(gpu_status(gemm(blas, n, na, na, &kOne<double>, c_act, natural.data(), &kZero<double>,
                             factor.data())));
+    if (rotation != nullptr) {
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(factor_rot.data(), factor.data(),
+                                             sizeof(double) * nao * n_act,
+                                             wwr::wwrMemcpyDeviceToDevice, stream)));
+      FBF_TRY(gpu_status(gemm(blas, n, na, na, &kOne<double>, c_act_rot, natural.data(),
+                              &kZero<double>, factor_rot.data() + (nao * n_act))));
+    }
     Buffers::device<double> jx(stack, res.device());
     Buffers::device<double> kx(stack, res.device());
     FBF_TRY(df_jk_derivative(res, basis, classes, aux, b.data(), l, factor.data(), ncas, jx.data(),
@@ -318,114 +346,142 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
     Buffers::device<double> osum(3 * nn * n_act, res.device());
     Buffers::device<double> ones(nao, res.device());
     Buffers::device<double> block(3 * nn * max_blk, res.device());
-    FBF_TRY(zero(vx.data(), vx.num_elements()));
-    FBF_TRY(zero(taa.data(), taa.num_elements()));
-    FBF_TRY(zero(q1sum.data(), q1sum.num_elements()));
-    FBF_TRY(zero(osum.data(), osum.num_elements()));
     const std::vector<double> ones_host(nao, 1.0);
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ones.data(), ones_host.data(), sizeof(double) * nao,
                                            wwr::wwrMemcpyHostToDevice, stream)));
     const auto na_n = static_cast<int32_t>(nao * n_act);
     const auto nn_a = static_cast<int32_t>(nn * n_act);
-    for (uint32_t atom = 0; atom < n_atom; ++atom) {
-      const auto [p0, p1] = derivative_atom_functions(aux, atom);
-      const auto nb = static_cast<int32_t>(p1 - p0);
-      if (nb == 0) {
-        continue;
-      }
-      // X[k][m][n][P'] = (nabla_k m n|P) for P on this atom.
-      FBF_TRY(three_center_derivative(res, basis, classes, aux, atom, block.data()));
-      const auto nbs = static_cast<size_t>(nb);
-      auto [yt, q1, o, hh, ex] = res.device_regions<double>(
-          nbs * nao * n_act, nao * n_act, nn * n_act, nbs * n_act * nao, nbs * na2);
-      // Yt_A[P' + nb (n + nao t)] = Sum_u C_nu Y[(p0 + P') + naux (t + ncas u)].
-      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nb, n, na, &kOne<double>, y.data() + p0,
-          q * na, int64_t{q}, c_act, n, 0, &kZero<double>, yt, nb, int64_t{nb} * n, na)));
-      for (size_t k = 0; k < 3; ++k) {
-        const double *const xk = block.data() + (k * nn * nbs);
-        const size_t on_a = (3 * atom) + k;
-        // Q1_mt = Sum_nP' X[k][m][n][P'] Yt[P', n, t]: X as (nb nao) x nao.
-        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n, na, nb * n, &kOne<double>, xk, yt,
-                                                   &kZero<double>, q1)));
-        FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, na_n, &kOne<double>, q1, 1,
-                                                      vx.data() + (nao * n_act * on_a), 1)));
-        FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, na_n, &kOne<double>, q1, 1,
-                                                      q1sum.data() + (nao * n_act * k), 1)));
-        // O[n][m][t] = Sum_P' X[k][n][m][P'] Yt[P', n, t], one n at a time.
-        FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-            blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n, na, nb, &kOne<double>, xk, nb,
-            int64_t{nb} * n, yt, nb * n, int64_t{nb}, &kZero<double>, o, n, int64_t{n} * na, n)));
-        FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
-            blas, wwr::WWRBLAS_OP_N, na_n, n, &kOne<double>, o, na_n, ones.data(), 1, &kOne<double>,
-            vx.data() + (nao * n_act * on_a), 1)));
-        FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, nn_a, &kOne<double>, o, 1,
-                                                      osum.data() + (nn * n_act * k), 1)));
-        // H[P' + nb (w + ncas m)] = Sum_n X[k][m][n][P'] C_nw, one m at a time.
-        FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nb, na, n, &kOne<double>, xk, nb,
-            int64_t{nb} * n, c_act, n, 0, &kZero<double>, hh, nb, int64_t{nb} * na, n)));
-        for (uint32_t other = 0; other < n_atom; ++other) {
-          const auto [m0, m1] = derivative_atom_functions(basis, other);
-          if (m1 == m0) {
-            continue;
+    // One walk over the aux atoms, into @p v_out and @p t_out: V^x at
+    // Yt_n,P,t = Sum over @p yt_terms (Y, C') of Sum_u C'_nu Y_P,tu, and T'^x
+    // summed over @p t_terms (C_h, C_e), -2 E_X + 2 [P on X] E with
+    // H = X C_h and E_X = Sum_{m on X} H[., m] C_e,m. A^x's own walk is one
+    // term of each, (Y, C_a) and (C_a, C_a); the rotated densities' is the
+    // product rule's two of each.
+    const auto walk = [&](std::span<const std::pair<const double *, const double *>> yt_terms,
+                          std::span<const std::pair<const double *, const double *>> t_terms,
+                          double *v_out, double *t_out) -> Status {
+      FBF_TRY(zero(v_out, nao * n_act * n_x));
+      FBF_TRY(zero(t_out, naux * na2 * n_x));
+      FBF_TRY(zero(q1sum.data(), q1sum.num_elements()));
+      FBF_TRY(zero(osum.data(), osum.num_elements()));
+      for (uint32_t atom = 0; atom < n_atom; ++atom) {
+        const auto [p0, p1] = derivative_atom_functions(aux, atom);
+        const auto nb = static_cast<int32_t>(p1 - p0);
+        if (nb == 0) {
+          continue;
+        }
+        // X[k][m][n][P'] = (nabla_k m n|P) for P on this atom.
+        FBF_TRY(three_center_derivative(res, basis, classes, aux, atom, block.data()));
+        const auto nbs = static_cast<size_t>(nb);
+        auto [yt, q1, o, hh, ex] = res.device_regions<double>(
+            nbs * nao * n_act, nao * n_act, nn * n_act, nbs * n_act * nao, nbs * na2);
+        // Yt_A[P' + nb (n + nao t)] = Sum_u C_nu Y[(p0 + P') + naux (t + ncas u)].
+        for (size_t term = 0; term < yt_terms.size(); ++term) {
+          const auto [y_term, c_term] = yt_terms[term];
+          FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, nb, n, na, &kOne<double>, y_term + p0,
+              q * na, int64_t{q}, c_term, n, 0, term == 0 ? &kZero<double> : &kOne<double>, yt, nb,
+              int64_t{nb} * n, na)));
+        }
+        for (size_t k = 0; k < 3; ++k) {
+          const double *const xk = block.data() + (k * nn * nbs);
+          const size_t on_a = (3 * atom) + k;
+          // Q1_mt = Sum_nP' X[k][m][n][P'] Yt[P', n, t]: X as (nb nao) x nao.
+          FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n, na, nb * n, &kOne<double>, xk, yt,
+                                                     &kZero<double>, q1)));
+          FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, na_n, &kOne<double>, q1, 1,
+                                                        v_out + (nao * n_act * on_a), 1)));
+          FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, na_n, &kOne<double>, q1, 1,
+                                                        q1sum.data() + (nao * n_act * k), 1)));
+          // O[n][m][t] = Sum_P' X[k][n][m][P'] Yt[P', n, t], one n at a time.
+          FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n, na, nb, &kOne<double>, xk, nb,
+              int64_t{nb} * n, yt, nb * n, int64_t{nb}, &kZero<double>, o, n, int64_t{n} * na, n)));
+          FBF_TRY(gpu_status(wwr::gemv<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, na_n, n, &kOne<double>, o, na_n, ones.data(), 1,
+              &kOne<double>, v_out + (nao * n_act * on_a), 1)));
+          FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, nn_a, &kOne<double>, o, 1,
+                                                        osum.data() + (nn * n_act * k), 1)));
+          for (const auto &[c_h, c_e] : t_terms) {
+            // H[P' + nb (w + ncas m)] = Sum_n X[k][m][n][P'] C_h,nw, one m at a
+            // time.
+            FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+                blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nb, na, n, &kOne<double>, xk, nb,
+                int64_t{nb} * n, c_h, n, 0, &kZero<double>, hh, nb, int64_t{nb} * na, n)));
+            for (uint32_t other = 0; other < n_atom; ++other) {
+              const auto [m0, m1] = derivative_atom_functions(basis, other);
+              if (m1 == m0) {
+                continue;
+              }
+              // E_X = Sum_{m on X} H[., m] C_e,m., (P', w, v) at P' + nb (w + ncas v).
+              FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+                  blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nb * na, na,
+                  static_cast<int32_t>(m1 - m0), &kOne<double>, hh + (nbs * n_act * m0), nb * na,
+                  c_e + m0, n, &kZero<double>, ex, nb * na)));
+              double *const on_x = t_out + (naux * na2 * ((3 * other) + k)) + p0;
+              double *const on_p = t_out + (naux * na2 * on_a) + p0;
+              FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+                  blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nb, a2, &kNegTwo<double>, ex, nb,
+                  &kOne<double>, on_x, q, on_x, q)));
+              FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+                  blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nb, a2, &kTwo<double>, ex, nb,
+                  &kOne<double>, on_p, q, on_p, q)));
+            }
           }
-          // E_X = Sum_{m on X} H[., m] C_m., (P', w, v) at P' + nb (w + ncas v).
-          FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-              blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, nb * na, na,
-              static_cast<int32_t>(m1 - m0), &kOne<double>, hh + (nbs * n_act * m0), nb * na,
-              c_act + m0, n, &kZero<double>, ex, nb * na)));
-          double *const on_x = taa.data() + (naux * na2 * ((3 * other) + k)) + p0;
-          double *const on_p = taa.data() + (naux * na2 * on_a) + p0;
-          FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N,
-                                                        nb, a2, &kNegTwo<double>, ex, nb,
-                                                        &kOne<double>, on_x, q, on_x, q)));
-          FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N,
-                                                        nb, a2, &kTwo<double>, ex, nb,
-                                                        &kOne<double>, on_p, q, on_p, q)));
         }
       }
-    }
-    // The orbital centres' terms: -[m on X] Q1 and -Sum_{n on X} O.
-    for (uint32_t atom = 0; atom < n_atom; ++atom) {
-      const auto [m0, m1] = derivative_atom_functions(basis, atom);
-      if (m1 == m0) {
-        continue;
+      // The orbital centres' terms: -[m on X] Q1 and -Sum_{n on X} O.
+      for (uint32_t atom = 0; atom < n_atom; ++atom) {
+        const auto [m0, m1] = derivative_atom_functions(basis, atom);
+        if (m1 == m0) {
+          continue;
+        }
+        const auto rows = static_cast<int32_t>(m1 - m0);
+        for (size_t k = 0; k < 3; ++k) {
+          double *const v_slab = v_out + (nao * n_act * ((3 * atom) + k));
+          FBF_TRY(gpu_status(
+              wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, rows, na,
+                                         &kNegOne<double>, q1sum.data() + (nao * n_act * k) + m0, n,
+                                         &kOne<double>, v_slab + m0, n, v_slab + m0, n)));
+          FBF_TRY(gpu_status(
+              wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_N, na_n, rows, &kNegOne<double>,
+                                         osum.data() + (nn * n_act * k) + (nao * n_act * m0), na_n,
+                                         ones.data(), 1, &kOne<double>, v_slab, 1)));
+        }
       }
-      const auto rows = static_cast<int32_t>(m1 - m0);
-      for (size_t k = 0; k < 3; ++k) {
-        double *const v_slab = vx.data() + (nao * n_act * ((3 * atom) + k));
-        FBF_TRY(gpu_status(
-            wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, rows, na,
-                                       &kNegOne<double>, q1sum.data() + (nao * n_act * k) + m0, n,
-                                       &kOne<double>, v_slab + m0, n, v_slab + m0, n)));
-        FBF_TRY(gpu_status(
-            wwr::gemv<double, int32_t>(blas, wwr::WWRBLAS_OP_N, na_n, rows, &kNegOne<double>,
-                                       osum.data() + (nn * n_act * k) + (nao * n_act * m0), na_n,
-                                       ones.data(), 1, &kOne<double>, v_slab, 1)));
+      return {};
+    };
+    // G^x = M^x c over the active pairs, into @p g_out: M^x_PQ = [P on X]
+    // M1[k][P][Q] + [Q on X] M1[k][Q][P], M1[k] read as the naux x naux Mk
+    // with Mk(Q, P) = M1[k][P][Q].
+    const auto metric_times = [&](const double *c_pairs, double *g_out) -> Status {
+      FBF_TRY(zero(g_out, naux * na2 * n_x));
+      for (uint32_t atom = 0; atom < n_atom; ++atom) {
+        const auto [p0, p1] = derivative_atom_functions(aux, atom);
+        if (p1 == p0) {
+          continue;
+        }
+        const auto nb = static_cast<int32_t>(p1 - p0);
+        for (size_t k = 0; k < 3; ++k) {
+          const double *const mk = m1.data() + (k * naux * naux) + (naux * p0);
+          double *const g_slab = g_out + (naux * na2 * ((3 * atom) + k));
+          FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N,
+                                                        nb, a2, q, &kOne<double>, mk, q, c_pairs, q,
+                                                        &kOne<double>, g_slab + p0, q)));
+          FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+              blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q, a2, nb, &kOne<double>, mk, q,
+              c_pairs + p0, q, &kOne<double>, g_slab, q)));
+        }
       }
+      return {};
+    };
+    {
+      const std::array<std::pair<const double *, const double *>, 1> yt_terms{{{y.data(), c_act}}};
+      const std::array<std::pair<const double *, const double *>, 1> t_terms{{{c_act, c_act}}};
+      FBF_TRY(walk(yt_terms, t_terms, vx.data(), taa.data()));
     }
-    // G^x = M^x c_aa: M^x_PQ = [P on X] M1[k][P][Q] + [Q on X] M1[k][Q][P],
-    // M1[k] read as the naux x naux Mk with Mk(Q, P) = M1[k][P][Q].
     Buffers::device<double> gx(naux * na2 * n_x, res.device());
-    FBF_TRY(zero(gx.data(), gx.num_elements()));
-    for (uint32_t atom = 0; atom < n_atom; ++atom) {
-      const auto [p0, p1] = derivative_atom_functions(aux, atom);
-      if (p1 == p0) {
-        continue;
-      }
-      const auto nb = static_cast<int32_t>(p1 - p0);
-      for (size_t k = 0; k < 3; ++k) {
-        const double *const mk = m1.data() + (k * naux * naux) + (naux * p0);
-        double *const g_slab = gx.data() + (naux * na2 * ((3 * atom) + k));
-        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N,
-                                                      nb, a2, q, &kOne<double>, mk, q, c_aa, q,
-                                                      &kOne<double>, g_slab + p0, q)));
-        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q,
-                                                      a2, nb, &kOne<double>, mk, q, c_aa + p0, q,
-                                                      &kOne<double>, g_slab, q)));
-      }
-    }
+    FBF_TRY(metric_times(c_aa, gx.data()));
     // (tu|vw)^x = T'^T c + c^T T' - c^T G, unsymmetrized (the host
     // symmetrizes it with the tau part, below).
     const auto s_qa2 = static_cast<int64_t>(qa2);
@@ -451,6 +507,64 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n, na, q * na, &kOne<double>, cpa.data(),
         q * na, 0, gx.data(), q * na, s_qa2, &kOne<double>, ax.data(), n, int64_t{n} * na, nx)));
+
+    if (rotation != nullptr) {
+      // The same term at the rotated densities: every inner C of A^x in turn
+      // C~ = C K, the product rule (the outer p is the caller's F K^T):
+      //   A_L = C^T V^x[Yt_L] + c_pa^T R_L + c_pa~^T R^x,
+      //   Yt_L = C~_a Y + C_a Y_L,  Y_L = c'_aa Gamma,  c'_aa = c_a~a + c_aa~,
+      //   R_L = (T'_L - M^x c'_aa) Gamma,
+      // T'_L the walk's T' over (C_a, C~_a) and (C~_a, C_a). [C | C~_a] lets
+      // b_mo transform over either.
+      const auto n_ext = static_cast<int32_t>(nao + n_act);
+      Buffers::device<double> ext(nao * (nao + n_act), res.device());
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ext.data(), cm, sizeof(double) * nn,
+                                             wwr::wwrMemcpyDeviceToDevice, stream)));
+      FBF_TRY(
+          gpu_status(wwr::wwrMemcpyAsync(ext.data() + nn, c_act_rot, sizeof(double) * nao * n_act,
+                                         wwr::wwrMemcpyDeviceToDevice, stream)));
+      // c_P,u~p at P + naux (u + ncas p), as cpa; its active columns are c_a~a.
+      Buffers::device<double> cpa_rot(naux * n_act * nao, res.device());
+      FBF_TRY(b_mo(res, q, n, n_ext, b.data(), ext.data(), OrbitalRange{n, na}, OrbitalRange{0, n},
+                   cpa_rot.data()));
+      FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+          blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+          wwr::WWRBLAS_DIAG_NON_UNIT, q, na * n, &kOne<double>, l, q, cpa_rot.data(), q)));
+      Buffers::device<double> c_dot(naux * na2, res.device());
+      FBF_TRY(b_mo(res, q, n, n_ext, b.data(), ext.data(), OrbitalRange{ncore, na},
+                   OrbitalRange{n, na}, c_dot.data()));
+      FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+          blas, wwr::WWRBLAS_SIDE_LEFT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+          wwr::WWRBLAS_DIAG_NON_UNIT, q, a2, &kOne<double>, l, q, c_dot.data(), q)));
+      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(
+          blas, qa2, &kOne<double>, cpa_rot.data() + (naux * n_act * n_core), 1, c_dot.data(), 1)));
+      Buffers::device<double> y_rot(naux * na2, res.device());
+      FBF_TRY(gpu_status(gemm(blas, q, a2, a2, &kOne<double>, c_dot.data(), gamma2_d,
+                              &kZero<double>, y_rot.data())));
+      Buffers::device<double> r_rot(naux * na2 * n_x, res.device());
+      FBF_TRY(metric_times(c_dot.data(), r_rot.data()));
+      {
+        const std::array<std::pair<const double *, const double *>, 2> yt_terms{
+            {{y.data(), c_act_rot}, {y_rot.data(), c_act}}};
+        const std::array<std::pair<const double *, const double *>, 2> t_terms{
+            {{c_act, c_act_rot}, {c_act_rot, c_act}}};
+        FBF_TRY(walk(yt_terms, t_terms, vx.data(), taa.data()));
+      }
+      // R_L = (T'_L - M^x c'_aa) Gamma, into r_rot; then A_L.
+      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, qa2 * nx, &kNegOne<double>, r_rot.data(),
+                                                    1, taa.data(), 1)));
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, q, a2, a2, &kOne<double>, taa.data(), q,
+          s_qa2, gamma2_d, a2, 0, &kZero<double>, r_rot.data(), q, s_qa2, nx)));
+      FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(blas, n, na * nx, n, &kOne<double>, cm, vx.data(),
+                                                 &kZero<double>, a_rot.data())));
+      for (const auto &[pairs, r_term] :
+           {std::pair{cpa.data(), r_rot.data()}, std::pair{cpa_rot.data(), gx.data()}}) {
+        FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, n, na, q * na, &kOne<double>, pairs, q * na,
+            0, r_term, q * na, s_qa2, &kOne<double>, a_rot.data(), n, int64_t{n} * na, nx)));
+      }
+    }
   }
 
   // F^[x]: columns core 2 (F^I^x + F^A^x), columns active F^I^x gamma + A^x.
@@ -464,7 +578,8 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   Buffers::device<double> fit(stack, res.device());
   FBF_TRY(zero(out.fock.data(), stack));
   FBF_TRY(zero(ft.data(), stack));
-  const auto assemble = [&](const double *fi, const double *fa, double *f) -> Status {
+  const auto assemble = [&](const double *fi, const double *fa, const double *a,
+                            double *f) -> Status {
     for (size_t x = 0; x < n_x; ++x) {
       if (ncore > 0) {
         FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
@@ -479,11 +594,75 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
       double *const act = f + (x * nn) + (nao * n_core);
       FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n,
                                                     na, &kOne<double>, act, n, &kOne<double>,
-                                                    ax.data() + (x * nao * n_act), n, act, n)));
+                                                    a + (x * nao * n_act), n, act, n)));
     }
     return {};
   };
-  FBF_TRY(assemble(fix.data(), fax.data(), out.fock.data()));
+  FBF_TRY(assemble(fix.data(), fax.data(), ax.data(), out.fock.data()));
+
+  if (rotation != nullptr) {
+    // F^[x] at the rotated densities, the product rule on its inner C's:
+    // F^I_L = F^I^x K + C^T G^x[dD_c] C and F^A_L = F^A^x K + C^T G^x[dD_a] C,
+    // dD_c = 2 (C~_c C_c^T + C_c C~_c^T) and dD_a = 2 (F~ F^T + F F~^T) over
+    // D_a = 2 F F^T, assembled as F^[x] is with A_L, plus F^[x] K^T. Each
+    // G^x[2 (X Y^T + Y X^T)] is the difference of df_jk_derivative's at the
+    // closed-shell factors X + s Y and X - s Y, over 2 s: their densities
+    // differ by exactly 4 s (X Y^T + Y X^T), and s = |X| / |Y| keeps both the
+    // size of the unperturbed one.
+    Buffers::device<double> fi_rot(stack, res.device());
+    Buffers::device<double> fa_rot(stack, res.device());
+    {
+      Buffers::device<double> g_ao(stack, res.device());
+      Buffers::device<double> jx(stack, res.device());
+      Buffers::device<double> kx(stack, res.device());
+      const auto rotated_g = [&](const double *x_factor, const double *y_factor, const int32_t rank,
+                                 double *f_out) -> Status {
+        const auto len = static_cast<int32_t>(nao * static_cast<size_t>(rank));
+        double norm_x = 0.0;
+        double norm_y = 0.0;
+        FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, len, x_factor, 1, &norm_x)));
+        FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, len, y_factor, 1, &norm_y)));
+        FBF_TRY(zero(g_ao.data(), stack));
+        if (norm_y > 0.0 && norm_x > 0.0) {
+          const double s = norm_x / norm_y;
+          Buffers::device<double> factor(static_cast<size_t>(len), res.device());
+          for (const double sign : {1.0, -1.0}) {
+            const double step = sign * s;
+            FBF_TRY(gpu_status(wwr::geam<double, int32_t>(
+                blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, rank, &kOne<double>, x_factor, n,
+                &step, y_factor, n, factor.data(), n)));
+            FBF_TRY(df_jk_derivative(res, basis, classes, aux, b.data(), l, factor.data(), rank,
+                                     jx.data(), kx.data(), nullptr));
+            const double scale = sign / (2.0 * s);
+            const double half_scale = -0.5 * scale;
+            FBF_TRY(gpu_status(
+                wwr::axpy<double, int32_t>(blas, count, &scale, jx.data(), 1, g_ao.data(), 1)));
+            FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, count, &half_scale, kx.data(), 1,
+                                                          g_ao.data(), 1)));
+          }
+        }
+        return to_mo(g_ao.data(), f_out);
+      };
+      FBF_TRY(zero(fi_rot.data(), stack));
+      if (ncore > 0) {
+        FBF_TRY(rotated_g(cm, c_rot.data(), nc, fi_rot.data()));
+      }
+      FBF_TRY(rotated_g(factor_rot.data(), factor_rot.data() + (nao * n_act), na, fa_rot.data()));
+    }
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, fix.data(), n, s_nn,
+        rotation, n, 0, &kOne<double>, fi_rot.data(), n, s_nn, nx)));
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, fax.data(), n, s_nn,
+        rotation, n, 0, &kOne<double>, fa_rot.data(), n, s_nn, nx)));
+    out.fock_rotated.emplace(stack, res.device());
+    double *const f_rot = out.fock_rotated->data();
+    FBF_TRY(zero(f_rot, stack));
+    FBF_TRY(assemble(fi_rot.data(), fa_rot.data(), a_rot.data(), f_rot));
+    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n, n, &kOne<double>, out.fock.data(), n,
+        s_nn, rotation, n, 0, &kOne<double>, f_rot, n, s_nn, nx)));
+  }
 
   {
     // The response densities' factors: L_c = C tau[:, core] beside R_c =
@@ -573,7 +752,7 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
     // ones, ppaa R1 + 2 papa R2 with R1[a, (v, w, t)] = Sum_u tau_au
     // Gamma_tuvw and R2[a, (u, w, t)] = Sum_v tau_av Gamma_tuvw (Gamma's
     // (v, w) symmetry folds the fourth index into the third's factor 2).
-    FBF_TRY(assemble(fit.data(), fax.data(), ft.data()));
+    FBF_TRY(assemble(fit.data(), fax.data(), ax.data(), ft.data()));
     std::vector<double> g12(2 * na4);
     for (size_t t = 0; t < n_act; ++t) {
       for (size_t w = 0; w < n_act; ++w) {

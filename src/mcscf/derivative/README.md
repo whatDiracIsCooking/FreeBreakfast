@@ -18,7 +18,7 @@ Result<mcscf::Derivatives> mcscf::df_derivatives(
     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
     const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha, int32_t nbeta,
-    const double *roots, std::span<const double> weights);
+    const double *roots, std::span<const double> weights, const double *rotation = nullptr);
 ```
 
 The inputs are explicit, not pipeline types, as `mcscf::df_gradient` takes
@@ -40,6 +40,13 @@ is its derivative:
 Nothing requires the parameters to be stationary; F^[x] at root I's RDMs is
 the third row's `fock`.
 
+**A rotation** K (an antisymmetric nao × nao on the device, MO indices C's
+columns) adds `fock_rotated`, F^[x] at the K-rotated densities: a state
+average's L_xy z_o part takes it at the SA weights and K = K(z_o) (the
+fixture's `z_orb`), and hands it to `hessian::df_casscf_exy`'s rotation.
+Without it (the default) nothing below "The rotated densities" runs, and
+every other output is the same computation as before.
+
 ## Conventions
 
 x = 3 A + k (atom A, axis k), always the **last** index. MO indices are C's
@@ -54,6 +61,7 @@ column-major.
 | `rhs_ci` | device | (n_det, nroots, n): (I, r, x) at I + n_det (r + nroots x) | column r: 2 w_r Q H̃^x c_r, Q = 1 − Σ_s c_s c_sᵀ over every root given, H̃^x = H^[x] + H[τ^x] |
 | `rhs_theta` | host | (nroots, nroots, n): (r, s, x) at r + nroots (s + nroots x) | γ^x_rs = ∂E_x/∂Θ_rs = 2 (w_s − w_r) H̃^x_rs, antisymmetric: the rotations among the roots' right-hand side, a parameter only at unequal weights |
 | `hamiltonian` | host | as `rhs_theta` | H̃^x_rs = ⟨c_r\|H̃^x\|c_s⟩, symmetrized, its core energy included, V_nn^x not. Its diagonal is root r's fixed-parameter gradient less V_nn^x |
+| `fock_rotated` | device, with a rotation only (`std::optional`) | as `fock` | F^[x] at the densities K D − D K and K on each index of Γ (one index virtual): d/dε F^[x] along C → C (1 + ε K) at fixed MO-basis RDMs, F's outer index held. **Every column** is filled |
 
 These are `test/gtest/data/casscf_hessian/`'s `rhs_*` / `root_rhs_*` and
 `fock_x` exactly (its README's "_orb / _ci / _theta" covector split): K
@@ -133,6 +141,53 @@ host. One `ci::Sigma::set_integrals` and `apply` per coordinate gives H̃ c;
 then Cᵀ (H̃ c) is `hamiltonian`, and H̃ c − C (Cᵀ H̃ c) scaled by 2 w_r is
 `rhs_ci`.
 
+## The rotated densities
+
+The z_o part of a state-averaged Lagrangian is E_SA's derivative along the
+orbital rotation C → C (1 + ε K) at fixed MO-basis RDMs
+(`casscf_hessian.tex` §5.1). In the fixed basis that is every quantity at
+the K-rotated densities K D − D K and K on each index of Γ, which have a
+virtual index and so are not the closed-shell-core form `df_derivatives`
+takes its RDMs in. In the rotating basis they are the unrotated densities,
+and F^[x] moves only through its C's: the outer index p, which a caller
+contracting with an MO-basis matrix X (τ^y here) sees as Σ F X along with
+X's own rotation, so that the two together leave F^[x] Kᵀ; and every inner
+C, by the product rule, as `mcscf::df_gradient` takes its z_o terms
+(`../gradient/README.md`, "The orbital response"):
+
+    F^[x]_rot = F^[x] Kᵀ + assemble(F^I_L, F^A_L, A_L),
+    F^I_L = F^I^x K + Cᵀ G^x[dD_c] C,   dD_c = 2 (C̃_c C_cᵀ + C_c C̃_cᵀ),
+    F^A_L = F^A^x K + Cᵀ G^x[dD_a] C,   dD_a = 2 (F̃ Fᵀ + F F̃ᵀ),
+
+C̃ = C K, G^x = J^x − ½ K^x, D_a = 2 F Fᵀ over γ's natural factor
+F = C_a U diag(√(n/2)) and F̃ = C̃_a U diag(√(n/2)), and `assemble` the
+columns as F^[x]'s (core 2 (F^I + F^A), active F^I γ + A).
+
+- **G^x of an indefinite density.** `df_jk_derivative` takes a closed-shell
+  2 P Pᵀ. With P± = X ± s Y the two densities differ by exactly
+  4 s (X Yᵀ + Y Xᵀ), so G^x[2 (X Yᵀ + Y Xᵀ)] = (G^x(P₊) − G^x(P₋)) / (2 s):
+  an identity of the bilinear form, not a difference quotient, and
+  s = |X| / |Y| (two `nrm2`s) keeps both densities the size of the
+  unperturbed one, so nothing cancels catastrophically. Two calls for the
+  core and two for the active density: four more walks of
+  `df_jk_derivative` in all.
+- **A_L**, the active 2-RDM term with its inner u, v, w rotated:
+
+      A_L = Cᵀ V^x[Ỹ_L] + c_paᵀ R_L + c_pãᵀ R^x,
+      Ỹ_L = C̃_a Y + C_a Y_L,   Y_L = c′_aa Γ,   c′_aa = c_ãa + c_aã,
+      R_L = (T′_L − M^x c′_aa) Γ,
+
+  c_pã the fitted pairs with ã = C̃'s active column (`b_mo` over [C | C̃_a],
+  then the trsm). The walk over the aux atoms that makes V^x and T′^x for
+  A^x is one lambda over a list of (Y, C′) terms for Ỹ and of (C_h, C_e)
+  terms for T′; A^x's own walk is one term of each, and A_L's a second walk
+  with two of each ((Y, C̃_a), (Y_L, C_a); (C_a, C̃_a), (C̃_a, C_a)). M^x c′_aa
+  is the same per-atom pair of gemms as M^x c_aa.
+
+`McscfDerivative`'s tests are those of the unrotated path; the rotated F^[x]
+is tested through `hessian::df_casscf_exy`'s connection term against the
+fixture's L_xy z part (`../../hessian/README.md`, "L_xy's z_o part").
+
 ## Memory
 
 Every coordinate at once: about 15 stacks of 3 n_atom nao² doubles at the
@@ -142,7 +197,10 @@ atom's derivative block (3 nao² nblk) and the derivative calls' own scratch.
 That estimate past the device's free memory is Unsupported before anything is
 allocated. Water in cc-pVDZ (24 functions, 9 coordinates) is under a
 megabyte; 500 functions and 20 atoms would be about 1 GB of stacks. Nothing
-splits the coordinates into batches yet.
+splits the coordinates into batches yet. A rotation adds six more stacks
+(the rotated J^x and K^x, their sum, F^I_L, F^A_L and `fock_rotated`), C K
+and [C | C̃_a], the rotated pairs (naux ncas nao) and the second walk's
+3 n_atom naux ncas², counted in the same estimate.
 
 ## Tests
 
