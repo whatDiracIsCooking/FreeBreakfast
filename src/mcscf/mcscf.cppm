@@ -9,3 +9,4 @@ export module free_breakfast.mcscf;
 export import free_breakfast.mcscf.solve;
 export import free_breakfast.mcscf.gradient;
 export import free_breakfast.mcscf.derivative;
+export import free_breakfast.mcscf.root_rotation;
