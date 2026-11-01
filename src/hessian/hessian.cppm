@@ -216,6 +216,18 @@ struct CasscfTwoElectron {
 /// Gamma_pqrs, PySCF's make_rdm12): a state's own, or any other densities the
 /// caller wants the explicit part at.
 ///
+/// **A rotation.** With @p rotation, an antisymmetric nmo x nmo K on the
+/// device (column-major, MO indices C's columns), the call returns instead the
+/// same terms at the K-rotated densities, K D - D K and K on each index of
+/// Gamma: their derivative along C -> C (1 + e K) at fixed MO-basis RDMs, a
+/// state average's z_o part. @p c must then hold every orbital (nao x nmo).
+/// It is the product rule on every occupied C: the explicit part's Gam and W
+/// gain each intermediate's derivative (mcscf::df_gradient's orbital
+/// response), and the cross term's atom blocks are built over [C_o | C K_o]
+/// (twice the occupied orbitals, four times the block) and cut into r and
+/// its derivative r', each pair of atoms contracted as r' with r and r with
+/// r'. Without it (the default) nothing of this runs.
+///
 /// The call holds the fitted occupied pairs (naux nocc^2) and Gamma
 /// (ncas^4); then the explicit part's Gam (naux nao^2, like
 /// @c mcscf::df_gradient's), or the cross term's M1 (3 naux^2), one aux
@@ -230,17 +242,17 @@ struct CasscfTwoElectron {
 ///
 /// @return The pieces and their sum; InvalidConfig if the bases do not share
 ///         their atoms, if ncore < 0, ncas < 1 or ncore + ncas > nao, if @p c
-///         is shorter than nao (ncore + ncas) or @p b not naux nao^2 long, if
+///         is shorter than nao (ncore + ncas) (with a rotation, not nao nmo
+///         with nmo >= ncore + ncas) or @p b not naux nao^2 long, if
 ///         the RDMs are not ncas^2 and ncas^4 long, or for any input the
 ///         integral calls refuse; Unsupported for memory past the device's
 ///         free bytes or an index past int32_t; or the GpuRuntime error of the
 ///         first copy, BLAS call or launch that failed.
-[[nodiscard]] Result<CasscfTwoElectron>
-df_casscf_two_electron(DeviceResources &res, const BasisSet &basis,
-                       std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-                       const Buffers::device<double> &b, const double *l,
-                       const Buffers::device<double> &c, int32_t ncore, int32_t ncas,
-                       std::span<const double> gamma, std::span<const double> gamma2);
+[[nodiscard]] Result<CasscfTwoElectron> df_casscf_two_electron(
+    DeviceResources &res, const BasisSet &basis, std::span<const PrimitivePairClass> classes,
+    const BasisSet &aux, const Buffers::device<double> &b, const double *l,
+    const Buffers::device<double> &c, int32_t ncore, int32_t ncas, std::span<const double> gamma,
+    std::span<const double> gamma2, const double *rotation = nullptr);
 
 /// @brief E_xy, the fixed-parameter second derivative of a DF-CASSCF energy
 /// along the symmetric (Lowdin) connection (casscf_hessian.tex eq. exy), and
@@ -306,6 +318,20 @@ struct CasscfExy {
 /// nmo orbitals, column-major, core, active, then the rest; every column is
 /// read (tau^x reaches the virtuals).
 ///
+/// **A rotation: L_xy's z_o part.** With @p rotation, an antisymmetric
+/// nmo x nmo K on the device (column-major, C's columns), the call returns E_xy
+/// and each piece at the K-rotated densities K D - D K and K on each index of
+/// Gamma, which have a virtual index: d/de of E_xy along C -> C (1 + e K) at
+/// fixed MO-basis RDMs, a state average's z_o part of L_xy at K = K(z_o) and
+/// the averaged RDMs. @p fock_x is then F^[x] at the same rotated densities
+/// (@c mcscf::Derivatives::fock_rotated at that K). The product rule gives each
+/// piece from the unrotated machinery: the explicit part at the derivative
+/// of D^AO and @ref df_casscf_two_electron's rotation; the two F terms at
+/// F_L = F K^T + F at the inner indices transformed by K (as
+/// @c mcscf::df_gradient's W takes its z_o) and at @p fock_x; and E^(2) with
+/// each of h, B, tau^x and tau^y in turn its commutator with K. V_nn's piece
+/// is zero. Without it (the default) nothing of this runs.
+///
 /// Memory: held for the connection terms, two stacks of 3 n_atom nmo^2
 /// doubles, B (naux nmo^2), two of 3 n_atom naux nocc^2 and one of 3 n_atom
 /// nmo nocc, beside nocc^4 and the calls' own; past the device's free memory
@@ -331,7 +357,7 @@ df_casscf_exy(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
               const Buffers::device<double> &c, int32_t ncore, int32_t ncas,
               std::span<const double> gamma, std::span<const double> gamma2,
-              const Buffers::device<double> &fock_x);
+              const Buffers::device<double> &fock_x, const double *rotation = nullptr);
 
 /// @brief The state-specific DF-CASSCF nuclear Hessian and its terms, each
 /// 3 n_atom x 3 n_atom, x = 3 A + k the coordinate R_{A,k}

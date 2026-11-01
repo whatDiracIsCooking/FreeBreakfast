@@ -14,8 +14,9 @@ gives, `rhf_dipole_derivative`, and the **IR intensities** it projects to,
 `infrared_intensities`. For DF-CASSCF: the **CASSCF two-electron
 explicit part**, `df_casscf_two_electron` (`casscf_hessian.tex` eq. df2),
 the **fixed-parameter second derivative** E_xy built on it,
-`df_casscf_exy` (eq. exy), and the **state-specific Hessian**, `df_casscf`
-(eq. ss), all below.
+`df_casscf_exy` (eq. exy) and, with a rotation, its derivative along
+C → C (1 + ε K) (a state average's **L_xy z_o part**), and the
+**state-specific Hessian**, `df_casscf` (eq. ss), all below.
 
 ```cpp
 import free_breakfast.hessian;
@@ -373,6 +374,11 @@ writes them: one root's own for its explicit part (the fixture's per-root
 With n_core = n_occ (no active space) and γ = 0 the J and K pieces are
 `df_rhf_two_electron`'s Coulomb and exchange cross terms.
 
+With a `rotation` K (its last argument, C then over every orbital) the call
+returns instead each piece's derivative along C → C (1 + ε K) at fixed
+MO-basis RDMs, the product rule over every occupied C, for L_xy's z_o part
+(below).
+
 ### Memory
 
 Held for the call: the fitted occupied pairs (naux n_occ²), the three
@@ -445,10 +451,8 @@ core, so a state average's Lagrangian takes it at root I's RDMs and at its
 z_c's transition RDMs added to them, the way `mcscf::df_gradient` does. What
 this form cannot hold is a density with a virtual index: the z_o-rotated
 densities K_z D − D K_z, which are E_xy's derivative along the orbital
-rotation C → C (1 + ε K_z) rather than E_xy at some (γ, Γ). The explicit
-two-electron part (`df_casscf_two_electron`) and F^[x] (`df_derivatives`)
-both take the closed-shell core and active RDMs only, so a general MO-basis
-(D, Γ) would have to be carried through them first.
+rotation C → C (1 + ε K_z) rather than E_xy at some (γ, Γ). The call's
+`rotation` argument takes those (below, "L_xy's z_o part").
 
 ### How each piece is built
 
@@ -535,6 +539,115 @@ asymmetry ≤ 3.6e-15, sum rule ≤ 5.2e-13; 0.22 s (6-31G) and 0.82 s
 (cc-pVDZ) a call, `df_casscf_two_electron` included. Without the ⅜ terms
 E_xy misses by 0.93 of max |E_xy| 0.44: the design's 0.93, twice E_xy's own
 size.
+
+## L_xy's z_o part
+
+A state-averaged root's L_xy = E_I,xy + z · ∂_xy g_SA (`casscf_hessian.tex`
+eq. sa) takes E_xy at z's densities: the transition RDMs of z_c, which fit
+the form above (E_xy at root I's RDMs plus them, as `mcscf::df_gradient`
+takes them), and the z_o-rotated densities K D − D K and K on each index of
+Γ, K = K(z_o) at the averaged RDMs, which do not: they have a virtual
+index. Those are E_xy's derivative along the orbital rotation
+C → C (1 + ε K) at fixed MO-basis RDMs, and `df_casscf_exy`'s last argument,
+`rotation`, returns exactly that, every piece of it, by the product rule
+(no difference in parameter space anywhere):
+
+```cpp
+auto sa = mcscf::df_derivatives(res, molecule, basis, classes, aux, h, b, l, c_matrix, ncore,
+                                ncas, nalpha, nbeta, roots, weights, k.data());   // K = K(z_o)
+auto z_o = hessian::df_casscf_exy(res, molecule, basis, classes, aux, h, b, l, c, ncore, ncas,
+                                  gamma_sa, gamma2_sa, *sa->fock_rotated, k.data());
+// z_o->one_electron, z_o->two_electron, z_o->connection_second, z_o->connection_fock,
+// z_o->connection_twice and their sum z_o->exy; z_o->nuclear_repulsion is zero
+```
+
+K is the antisymmetric nmo × nmo on the device (column-major, C's columns,
+C → C e^K: the fixture's `z_orb`), γ and Γ the averaged RDMs, and F^[x] the
+rotated one `mcscf::df_derivatives` returns at the same K and weights
+(`../mcscf/derivative/README.md`, "The rotated densities"). In the rotating
+basis the densities are the unrotated ones and every MO-basis quantity X
+moves as its commutator, X′ = X K − K X; in the AO basis the occupied
+coefficients move as C̃_o = C K[:, occ]. Piece by piece:
+
+- **One-electron**: h^xy against D^AO's derivative, C̃_o D C_oᵀ + C_o D C̃_oᵀ.
+- **Two-electron**: `df_casscf_two_electron`'s own `rotation`, the product
+  rule on every C_o. Its Γ_mnP and W gain each intermediate's derivative,
+  term for term as `mcscf::df_gradient`'s orbital response gains them (the
+  fitted densities d′ = c′ · G, D′, V′ = c′_core G_K, Z′ = c′_act Γ, each
+  back-transform once with C̃_o), with c′ = c_õo + c_oõ the fitted pairs'
+  derivative. The cross term's atom blocks are built over [C_o | C̃_o],
+  twice the occupied orbitals (`occupied_atom_block` unchanged, at four
+  times the block), and cut into r and r′ = r_õo + r_oõ; R^x is bilinear in
+  its two orbitals, so r′ is its derivative, and each pair of atoms is
+  contracted as (r′, r) and (r, r′) by the same J, K and active pieces, all
+  of them symmetric bilinear forms.
+- **The two F terms.** Σ F τ^xy and Σ F^[x] τ^y are contractions over the
+  whole MO basis, so their outer C's form C Cᵀ = S⁻¹, stationary to first
+  order (K antisymmetric): only F's inner indices move, and the outer
+  rotation of the last index leaves F Kᵀ. So both pieces are the unrotated
+  code at F_L and at `fock_rotated`, with
+  F_L = F Kᵀ + h K D + Σ_Q,a B_Q,ap G̃_Q,aq + Σ_Q,r B_Q,rp G′_Q,rq,
+  G̃_Q,aq = Σ_r K_ar G_Q,rq (a strided-batched gemm over G's columns) and
+  G′ = B′_oo Γ: F at the densities K D − D K and K·Γ, as
+  `mcscf::df_gradient`'s W takes its z_o.
+- **E^(2)[τ^x, τ^y]** is multilinear in (h, B, τ^x, τ^y) at the fixed
+  occupied (D, Γ), so its derivative is the same formula with each in turn
+  its commutator: B′ = B K − K B (one gemm over B's (Q, p) rows for B K,
+  and K B_Q = slab_q Kᵀ per column q), h′ = h K + (h K)ᵀ,
+  τ^x′ = τ^x K + (τ^x K)ᵀ;
+
+      V′^x = 2 Y′ᵀ G + 2 Yᵀ G′ + 2 h τ′^x D + 2 h′ τ^x D,   Y′ = B′ τ^x_occ + B τ′^x_occ,
+      E^(2)′ = ⟨V′^x, τ^y⟩ + ⟨V^x, τ′^y⟩ + 4 (⟨R′^x, R^y Γ⟩ + ⟨R^x, R′^y Γ⟩),
+
+  R′^x the first naux nocc² of Y′, the last term the transpose of the one
+  before (added on the host).
+
+A numpy prototype of the F_L and E^(2)′ formulas against the densities'
+direct contraction (random integrals and RDMs, a random K) agreed to 6e-13
+of 600 and 5e-11 of 1.7e5 before the port. V_nn^xy does not see the
+orbitals: that piece is zero.
+
+### Memory
+
+Beside the unrotated call's: in `df_casscf_two_electron`, [C_o | C̃_o], the
+fitted pairs over it (4 naux nocc²) and c′; the dotted explicit intermediates
+(a second Y, V′, c′_core, c′_act, Z′, d′, d′_a, D′, D′_a); and in the cross
+phase the extended atom block (4 × 3 naux nocc²) and r′, t′ and act′ for
+both atoms. In `df_casscf_exy`, B′ over every MO pair (naux nmo²) and the
+occupied ones, G′ and G̃ (naux nmo nocc), h K, h′, F_L, and τ′^x, V′^x and
+R′^x for every x; per coordinate Y′. Each is in its call's estimate, refused
+(Unsupported) past the device's free memory before anything is allocated.
+
+### Tests
+
+`test/gtest/df_casscf_hessian_rotation_gpu.cpp` (suite
+`HessianDfCasscfRotation`), against `test/gtest/data/casscf_hessian/`'s per
+root L_xy z part (`z_one_electron`, `z_two_electron`, `z_connection_second`,
+`z_connection_fock`, `z_connection_twice` and `exy_z`;
+`tools/emit/casscf_hessian_reference.py`, eq. exy at z's densities), with
+the orbitals, roots and z **loaded from the fixture** (PySCF's two-root
+solutions are saddle points): every root of the stretched water's
+SA-CAS(4,4)/6-31G at two roots (0.5, 0.5) and (0.7, 0.3) and three at equal
+weights and (0.5, 0.3, 0.2). The fixture's z part is orbital and CI
+together, so the test adds the CI part the merged entry points already give:
+the roots' change dc_r = z_ci,r + Σ_s Θ_sr c_s, the transition RDMs as half
+the difference of `rdm12` at c_r + dc_r and c_r − dc_r (and F^[x] the same
+of two `df_derivatives` calls; the core parts cancel), and `df_casscf_exy`
+at the averaged RDMs plus those less at the averaged RDMs alone. Each piece
+and the sum to 1e-8 absolute, each z_o piece's asymmetry to 1e-11, the z_o
+part's translational sum rule to 1e-8; and the refusal of a rotation with C
+short of every orbital.
+
+Measured on the RTX 3080 (CUDA), worst over the ten roots, of max |z| 0.20
+(one-electron), 0.17 (two-electron) and 0.021 (`exy_z`), the z_o part about
+as large as the whole: |z − reference| ≤ 5.9e-15 one-electron, 1.3e-12
+two-electron, ≤ 8.7e-15 for the three connection terms and 1.3e-12 for the
+sum; asymmetry ≤ 2.0e-16, sum rule ≤ 9.9e-15; 0.47 s for the z_o part
+(`df_derivatives` with its rotation and `df_casscf_exy` with its own).
+`HessianDfCasscfTwoElectron`, `HessianDfCasscfExy`, `HessianDfCasscf`,
+`McscfDerivative` and the `HessianDfRhf*` suites are unchanged and measure
+the same figures as above: without a rotation the calls run the same BLAS
+sequence as before.
 
 ## The state-specific CASSCF Hessian
 
@@ -642,8 +755,8 @@ its first product.
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build |
 | `df_rhf_two_electron.cpp` | The fitted densities' second-derivative contractions and the cross terms' atom blocks |
-| `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms |
-| `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack |
+| `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms; with a rotation their product-rule derivative, the atom blocks over [C_o \| C K_o] |
+| `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack; with a rotation the z_o part, F_L and E^(2)'s commutator terms |
 | `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |

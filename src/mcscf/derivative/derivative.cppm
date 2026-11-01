@@ -48,6 +48,13 @@ struct Derivatives {
   /// not: host, element (r, s, x) at r + nroots (s + nroots x). Its diagonal
   /// is root r's fixed-parameter gradient less V_nn^x.
   std::vector<double> hamiltonian;
+  /// @brief With a rotation K given, F^[x] at the K-rotated densities
+  /// K D - D K and K on each index of Gamma (the unperturbed D and Gamma, so a
+  /// virtual index appears): d/de of F^[x] along C -> C (1 + e K) at fixed
+  /// MO-basis RDMs, its outer index held, = F^[x] K^T + F^[x] at the
+  /// integrals' inner three indices one-index transformed by K. Layout as
+  /// fock, every column filled. Empty without a rotation.
+  std::optional<Buffers::device<double>> fock_rotated;
 };
 
 /// @brief F^[x] and the CP-CASSCF right-hand sides of a DF-CASSCF, for every
@@ -72,6 +79,15 @@ struct Derivatives {
 /// the coordinates (the block @c df_coulomb and @c df_exchange), and
 /// ppaa and papa (@c casscf_integrals). The CI part is one @c ci::Sigma
 /// product per coordinate over H~^x. README.md has every term.
+///
+/// With @p rotation, an antisymmetric nao x nao K on the device (column-major,
+/// MO indices C's columns), also F^[x] at the K-rotated densities
+/// (Derivatives::fock_rotated): the z_o part of a state-averaged Hessian's
+/// connection term, by the product rule on every inner C. Its J^x and K^x of
+/// the rotated core and active densities are four more @c df_jk_derivative
+/// calls, each indefinite density taken as the difference of two
+/// closed-shell ones, and its active 2-RDM term one more walk over the aux
+/// atoms. Without it (the default) nothing of this runs.
 ///
 /// @p molecule is the molecule both bases were placed on (by @c place);
 /// @p classes are @c primitive_pair_classes of @p basis; @p h the core
@@ -106,6 +122,7 @@ df_derivatives(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const SphericalMatrixAO &c, int32_t ncore, int32_t ncas, int32_t nalpha,
-               int32_t nbeta, const double *roots, std::span<const double> weights);
+               int32_t nbeta, const double *roots, std::span<const double> weights,
+               const double *rotation = nullptr);
 
 } // namespace free_breakfast::mcscf
