@@ -914,10 +914,11 @@ INSTANTIATE_TEST_SUITE_P(Groups, Nevpt2EnergyAdjointLadder,
                                            std::string{"rdm"}),
                          [](const auto &info) { return info.param; });
 
-// Every bar of @p b against @p a's to 1e-12 of its largest element, and
-// every one formed (not all zero): the walk's (Λ, h1e_v's, the orbital
+// Every bar of @p b against @p a's to @p relative of its largest element,
+// and every one formed (not all zero): the walk's (Λ, h1e_v's, the orbital
 // energies'), and with @p sweep the sweep's (h1e, h2e, the RDMs').
-void expect_same_bars(const HostBars &a, const HostBars &b, const bool sweep = true) {
+void expect_same_bars(const HostBars &a, const HostBars &b, const bool sweep = true,
+                      const double relative = 1e-12) {
   for (const auto &[name, x, y, swept] :
        {std::tuple{"lambda", &a.lambda, &b.lambda, false},
         std::tuple{"h1e_v_sr", &a.h1e_v_sr, &b.h1e_v_sr, false},
@@ -939,12 +940,26 @@ void expect_same_bars(const HostBars &a, const HostBars &b, const bool sweep = t
       worst = std::max(worst, std::abs((*x)[k] - (*y)[k]));
     }
     EXPECT_GT(scale, 0.0) << name;
-    EXPECT_LE(worst, 1e-12 * scale) << name;
+    EXPECT_LE(worst, relative * scale) << name;
   }
 }
 
 // The walk's batch only splits it: walked in threes (every virtual walk ends
 // in a partial slab), every bar is the whole walk's to round-off.
+//
+// Round-off here is recipes::einsum's floor, not the batch's: every term is
+// added with an atomicAdd (src/recipes/einsum/einsum.cu), so two whole walks
+// differ as much as a batched and a whole one do. dm2's bar, the worst, as a
+// fraction of its largest element (#640):
+//   batched vs whole, gfx1200, 50 runs: median 2.9e-13, max 1.06e-12
+//   whole vs whole,   gfx1200, 30 runs: median 3.0e-13, max 6.6e-13
+//   batched vs whole, RTX 3080, 20 runs: median 3.1e-13, max 1.02e-12
+//   whole vs whole,   RTX 3080, 20 runs: median 4.3e-13, max 8.9e-13
+// (dm3, h2e, dm1 and f3ca up to 7.6e-13-8.5e-13). The bar was 1e-12, on that
+// floor, and failed one run in 20-50 on each card; it is 5e-12, about five
+// times the worst of 120 runs, by the user's decision.
+constexpr double kBatchedBarsTolerance = 5e-12;
+
 TEST(Nevpt2EnergyAdjoint, BatchedBarsMatchWhole) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / kAdjointCase;
@@ -954,7 +969,7 @@ TEST(Nevpt2EnergyAdjoint, BatchedBarsMatchWhole) {
   const auto batched = run_adjoint(res, h, 3);
   ASSERT_TRUE(whole.has_value());
   ASSERT_TRUE(batched.has_value());
-  expect_same_bars(whole->second, batched->second);
+  expect_same_bars(whole->second, batched->second, true, kBatchedBarsTolerance);
   for (std::size_t k = 0; k < 8; ++k) {
     EXPECT_NEAR(batched->first.energies.energies[k], whole->first.energies.energies[k], 1e-12)
         << kClassNames[k];
