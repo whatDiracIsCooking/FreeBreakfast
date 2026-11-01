@@ -153,13 +153,17 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
 // nmo x nmo @p kappa: the multipliers @p given, or when it is null the
 // Z-vector of root @p root over the CI-relaxed Hessian at the solution's
 // orbitals and roots. @p averaged is the Fock at the solution's weighted
-// RDMs, @p ints the fitted integrals at its orbitals.
+// RDMs, @p ints the fitted integrals at its orbitals. Non-empty @p start and
+// @p start2 stand in for root @p root's RDMs (a transition density, README
+// "A transition density"), and then @p given must not be null: the Z-vector
+// solved here is root @p root's.
 Result<std::pair<std::vector<double>, std::vector<double>>> sa_gradient_lagrangian(
     DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
     const Buffers::device<double> &b, const int32_t naux, const Solution &solution,
     const int32_t ncore, const int32_t ncas, const int32_t nelecas, const CasscfIntegrals &ints,
     const response::Fock &averaged, const int32_t root, const std::span<const double> weights,
-    const ZVector *const given, double *const kappa) {
+    const ZVector *const given, const std::span<const double> start,
+    const std::span<const double> start2, double *const kappa) {
   const SphericalMatrixAO &c = solution.c;
   const auto n = static_cast<size_t>(ncas);
   const auto mo = static_cast<size_t>(c.n());
@@ -186,15 +190,19 @@ Result<std::pair<std::vector<double>, std::vector<double>>> sa_gradient_lagrangi
                       packed, nroots, dim);
   }
 
-  // Root I's RDMs.
+  // Root I's RDMs, or the caller's.
   Buffers::device<double> rdms((n * n) + (n * n * n * n), res.device());
   double *const gamma_device = rdms.data();
   double *const gamma2_device = gamma_device + (n * n);
-  std::vector<double> one_hot(nroots, 0.0);
-  one_hot[static_cast<size_t>(root)] = 1.0;
-  FBF_TRY(rdm.rdm12(res, one_hot, solution.roots.vectors.data(), gamma_device, gamma2_device));
-  std::vector<double> gamma = FBF_TRY(gradient_download(res, gamma_device, n * n));
-  std::vector<double> gamma2 = FBF_TRY(gradient_download(res, gamma2_device, n * n * n * n));
+  std::vector<double> gamma(start.begin(), start.end());
+  std::vector<double> gamma2(start2.begin(), start2.end());
+  if (start.empty()) {
+    std::vector<double> one_hot(nroots, 0.0);
+    one_hot[static_cast<size_t>(root)] = 1.0;
+    FBF_TRY(rdm.rdm12(res, one_hot, solution.roots.vectors.data(), gamma_device, gamma2_device));
+    gamma = FBF_TRY(gradient_download(res, gamma_device, n * n));
+    gamma2 = FBF_TRY(gradient_download(res, gamma2_device, n * n * n * n));
+  }
 
   // No multipliers given: the Z-vector over H_0 at the solution's orbitals
   // and g_I, root I's orbital gradient there. The sigma takes host arrays
@@ -422,12 +430,18 @@ Status sa_gradient_orbital_response(DeviceResources &res, const Buffers::device<
   return res.sync();
 }
 
+// df_gradient's and df_transition_gradient's shared body. @p transition says
+// which: for df_transition_gradient the terms are taken at @p gamma_t and
+// @p gamma2_t with the core's own energy (and the nuclear repulsion) left out,
+// and the response only with @p multipliers (README "A transition density").
 Result<GradientTerms>
-df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-            const Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t root,
-            const ZVector *const multipliers, const MoAdjoint *const extra) {
+df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                  const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                  const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+                  const Solution &solution, const int32_t ncore, const int32_t ncas,
+                  const int32_t root, const ZVector *const multipliers,
+                  const MoAdjoint *const extra, const bool transition,
+                  const std::span<const double> gamma_t, const std::span<const double> gamma2_t) {
   const SphericalMatrixAO &c = solution.c;
   const auto nroots = static_cast<int32_t>(solution.roots.energies.size());
   if (root < 0 || root >= nroots) {
@@ -454,9 +468,15 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   }
   // A state average, or caller-supplied multipliers, takes the terms at the
   // Lagrangian and adds the orbital response; one root without them is the
-  // solution's own energy.
+  // solution's own energy. A transition density responds only to multipliers.
   const bool averaged = nroots > 1;
-  const bool responds = averaged || multipliers != nullptr;
+  const bool responds = transition ? multipliers != nullptr : averaged || multipliers != nullptr;
+  if (transition &&
+      (gamma_t.size() != n_act * n_act || gamma2_t.size() != n_act * n_act * n_act * n_act)) {
+    return err_config("mcscf::df_transition_gradient: transition RDMs of {} and {} elements for "
+                      "ncas {}",
+                      gamma_t.size(), gamma2_t.size(), ncas);
+  }
   if (extra != nullptr &&
       (extra->h_bar == nullptr || extra->lambda == nullptr || extra->x == nullptr)) {
     return err_config("mcscf::df_gradient: an extra adjoint with a null h_bar, lambda or x");
@@ -488,7 +508,7 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   }
   // A state average's weights, recovered from its RDMs.
   std::vector<double> weights{1.0};
-  if (averaged) {
+  if (averaged && responds) {
     weights = FBF_TRY(sa_gradient_weights(solution, n_act));
   }
   const int32_t nocc = ncore + ncas;
@@ -538,23 +558,37 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
                              ints.ppaa, ints.papa, solution.gamma, solution.gamma2));
 
   // For a state average or given multipliers, the Lagrangian: the RDMs the
-  // terms below take are root I's plus z_c's transition RDMs, F is their
-  // generalized Fock, and kappa(z_o) drives the orbital response; z is the
-  // caller's, or else the Z-vector. For one root without multipliers they are
-  // the solution's own, and there is no response.
-  std::vector<double> gamma = solution.gamma;
-  std::vector<double> gamma2 = solution.gamma2;
+  // terms below take are root I's (or the transition RDMs) plus z_c's
+  // transition RDMs, F is their generalized Fock, and kappa(z_o) drives the
+  // orbital response; z is the caller's, or else the Z-vector. For one root
+  // without multipliers they are the solution's own (or the transition RDMs),
+  // and there is no response.
+  std::vector<double> gamma =
+      transition ? std::vector<double>(gamma_t.begin(), gamma_t.end()) : solution.gamma;
+  std::vector<double> gamma2 =
+      transition ? std::vector<double>(gamma2_t.begin(), gamma2_t.end()) : solution.gamma2;
   Buffers::device<double> kappa(responds ? pairs : 1, res.device());
   std::optional<response::Fock> lagrangian_fock;
   if (responds) {
     std::tie(gamma, gamma2) = FBF_TRY(sa_gradient_lagrangian(
         res, molecule, h, b, static_cast<int32_t>(naux), solution, ncore, ncas, nelecas, ints,
-        solution_fock, root, weights, multipliers, kappa.data()));
+        solution_fock, root, weights, multipliers, transition ? gamma_t : std::span<const double>{},
+        transition ? gamma2_t : std::span<const double>{}, kappa.data()));
+  }
+  if (responds || transition) {
     lagrangian_fock.emplace(
         FBF_TRY(response::fock(res, molecule, h, b, static_cast<int32_t>(naux), c, ncore, ncas,
                                ints.ppaa, ints.papa, gamma, gamma2)));
   }
-  const response::Fock &f = responds ? *lagrangian_fock : solution_fock;
+  // A transition density's generalized Fock has no core-core part: its core
+  // columns are 2 F^A, not 2 (F^I + F^A), so 2 F^I comes off them (README "A
+  // transition density"). Only F is patched; the Fock's gradient is not read.
+  if (transition && ncore > 0) {
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(
+        res.blas().get(), static_cast<int32_t>(n_ao * n_core), &kNegTwo<double>,
+        lagrangian_fock->fock_inactive.data(), 1, lagrangian_fock->fock.data(), 1)));
+  }
+  const response::Fock &f = (responds || transition) ? *lagrangian_fock : solution_fock;
 
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const auto n = static_cast<int32_t>(nao);
@@ -592,27 +626,37 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // average F is F + F_L, the one-electron D is D + D_L, and the averaged D
   // and D_a are built too, for J's response. An extra adjoint adds
   // P = C h_bar C^T to the one-electron D and 1/2 X to F, so W gains
-  // 1/2 C sym(X) C^T.
+  // 1/2 C sym(X) C^T. A transition density's D is D_a alone, and J's cross
+  // term takes D_c = 2 C_c C_c^T on its own.
   SphericalMatrixAO d(res, basis);
   SphericalMatrixAO d_active(res, basis);
   SphericalMatrixAO d_one(res, basis);
   SphericalMatrixAO minus_w(res, basis);
+  Buffers::device<double> d_core(transition ? pairs : 1, res.device());
   {
     const auto [work, cfc] = res.device_regions<double>(pairs, pairs);
-    std::vector<std::pair<const double *, std::pair<double *, double *>>> densities{
-        {f.gamma.data(), {d.data(), d_active.data()}}};
+    std::vector<std::tuple<const double *, std::pair<double *, double *>, bool>> densities{
+        {f.gamma.data(), {d.data(), d_active.data()}, !transition}};
     if (responds) {
-      densities.push_back(
-          {solution_fock.gamma.data(), {d_averaged.data(), d_active_averaged.data()}});
+      densities.emplace_back(solution_fock.gamma.data(),
+                             std::pair{d_averaged.data(), d_active_averaged.data()}, true);
     }
-    for (const auto &[gamma_device, out] : densities) {
+    for (const auto &[gamma_device, out, with_core] : densities) {
       FBF_TRY(gpu_status(
           gemmwich<wwr::WWRBLAS_OP_T>(blas, n, ncas, c_act, gamma_device, work, out.second)));
       FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(out.first, out.second, sizeof(double) * pairs,
                                              wwr::wwrMemcpyDeviceToDevice, res.stream())));
-      if (ncore > 0) {
+      if (ncore > 0 && with_core) {
         FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
             blas, n, n, ncore, &kTwo<double>, c.data(), c.data(), &kOne<double>, out.first)));
+      }
+    }
+    if (transition) {
+      FBF_TRY(
+          gpu_status(wwr::wwrMemsetAsync(d_core.data(), 0, pairs * sizeof(double), res.stream())));
+      if (ncore > 0) {
+        FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+            blas, n, n, ncore, &kTwo<double>, c.data(), c.data(), &kZero<double>, d_core.data())));
       }
     }
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_one.data(), d.data(), sizeof(double) * pairs,
@@ -657,7 +701,10 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // Coulomb, E_J = 1/2 J[D].D - 1/2 J[D_a].D_a: the core-core half and the
   // core-active whole of it, and no active-active J (Gamma's). Each density
   // X fits to d_X = L^-T (B vec X); then Gam = d_t vec(D)^T - d_a vec(D_a)^T
-  // at (P, n + nao m), and W = -1/2 d_t d_t^T + 1/2 d_a d_a^T. Its response
+  // at (P, n + nao m), and W = -1/2 d_t d_t^T + 1/2 d_a d_a^T. A transition
+  // density's is the core-active J[D_c].D_a alone, d_t then D_c's fit:
+  // Gam = d_a vec(D_c)^T + d_t vec(D_a)^T, W = -1/2 (d_t d_a^T + d_a d_t^T).
+  // Its response
   // to the orbitals at the averaged D and D_a, by the product rule, adds
   // d vec(D_L)^T + d_L vec(D)^T - d_a vec(D_aL)^T - d_aL vec(D_a)^T to Gam
   // and -1/2 (d_L d^T + d d_L^T) + 1/2 (d_aL d_a^T + d_a d_aL^T) to W.
@@ -665,7 +712,8 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   double *const d_asa = d_sa + n_aux;
   double *const d_lf = d_asa + n_aux;
   double *const d_alf = d_lf + n_aux;
-  std::vector<std::pair<const double *, double *>> fits{{d.data(), d_t}, {d_active.data(), d_a}};
+  std::vector<std::pair<const double *, double *>> fits{
+      {transition ? d_core.data() : d.data(), d_t}, {d_active.data(), d_a}};
   if (responds) {
     fits.insert(fits.end(), {{d_averaged.data(), d_sa},
                              {d_active_averaged.data(), d_asa},
@@ -684,6 +732,10 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
       {d_t, d.data(), &kOne<double>}, {d_a, d_active.data(), &kNegOne<double>}};
   std::vector<std::tuple<const double *, const double *, const double *>> w_terms{
       {d_t, d_t, &kNegHalf<double>}, {d_a, d_a, &kHalf<double>}};
+  if (transition) {
+    gam_terms = {{d_a, d_core.data(), &kOne<double>}, {d_t, d_active.data(), &kOne<double>}};
+    w_terms = {{d_t, d_a, &kNegHalf<double>}, {d_a, d_t, &kNegHalf<double>}};
+  }
   if (responds) {
     gam_terms.insert(gam_terms.end(), {{d_sa, d_l, &kOne<double>},
                                        {d_lf, d_averaged.data(), &kOne<double>},
@@ -769,16 +821,19 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   // Over the fitted pairs c_P,ip = (L^-T B_ip)_P, [P][i][p] at
   // P + naux (i + ncore p), and V_P,iq = Sum_p c_P,ip G_pq,
   // Gam += -2 Sum_i C_mi Sum_q V_P,iq C_nq and W += Sum_iq V_P,iq c_Q,iq.
-  // The orbital response, every C of those in turn C~ at the averaged G_a:
+  // A transition density's G has no core block: its core-core K is the
+  // core's own energy. The orbital response, every C of those in turn C~ at
+  // the averaged G_a:
   // V += c' G_a, W += V_a c'^T, Gam += -2 Sum_i (C_mi Sum_q V_a,iq C~_nq +
   // C~_mi Sum_q V_a,iq C_nq). The host G is read by its copy before the first
   // derivative call waits on the stream, and it outlives that call.
   std::vector<double> occupation((responds ? 2 : 1) * g_count, 0.0);
   if (ncore > 0) {
     // G of the terms' RDMs, then (for a state average) of the averaged ones.
-    const auto fill = [&](const std::vector<double> &from, const size_t offset) {
+    const auto fill = [&](const std::vector<double> &from, const size_t offset,
+                          const double core_occupation) {
       for (size_t i = 0; i < n_core; ++i) {
-        occupation[offset + (i * (n_occ + 1))] = 1.0;
+        occupation[offset + (i * (n_occ + 1))] = core_occupation;
       }
       for (size_t t = 0; t < n_act; ++t) {
         for (size_t u = 0; u < n_act; ++u) {
@@ -786,9 +841,9 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
         }
       }
     };
-    fill(gamma, 0);
+    fill(gamma, 0, transition ? 0.0 : 1.0);
     if (responds) {
-      fill(solution.gamma, g_count);
+      fill(solution.gamma, g_count, 1.0);
     }
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(g_occ.data(), occupation.data(),
                                            sizeof(double) * occupation.size(),
@@ -893,11 +948,36 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
   g.potential = std::move(one.potential);
   g.overlap = std::move(one.overlap);
   g.nuclear_repulsion = std::move(one.nuclear_repulsion);
+  if (transition) {
+    std::ranges::fill(g.nuclear_repulsion, 0.0);
+  }
   g.total = g.nuclear_repulsion;
   for (const std::vector<double> *term : {&g.kinetic, &g.potential, &g.overlap, &g.two_electron}) {
     std::ranges::transform(g.total, *term, g.total.begin(), std::plus{});
   }
   return g;
+}
+
+Result<GradientTerms>
+df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t root,
+            const ZVector *const multipliers, const MoAdjoint *const extra) {
+  return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, root,
+                           multipliers, extra, false, {}, {});
+}
+
+Result<GradientTerms>
+df_transition_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                       const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                       const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                       const double *l, const Solution &solution, const int32_t ncore,
+                       const int32_t ncas, const std::span<const double> gamma,
+                       const std::span<const double> gamma2, const ZVector *const multipliers,
+                       const MoAdjoint *const extra) {
+  return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, 0,
+                           multipliers, extra, true, gamma, gamma2);
 }
 
 } // namespace free_breakfast::mcscf

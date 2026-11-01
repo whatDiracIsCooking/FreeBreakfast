@@ -18,6 +18,10 @@ Result<mcscf::GradientTerms> mcscf::df_gradient(
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
     const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
     const mcscf::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
+Result<mcscf::GradientTerms> mcscf::df_transition_gradient(
+    /* df_gradient's arguments through ncas */, std::span<const double> gamma,
+    std::span<const double> gamma2, const mcscf::ZVector *multipliers = nullptr,
+    const mcscf::MoAdjoint *extra = nullptr);
 // g->kinetic, g->potential, g->overlap, g->two_electron,
 // g->nuclear_repulsion, g->total: each n_atom x 3, row-major, element 3 A + k
 ```
@@ -220,6 +224,63 @@ So the derivative integrals are still evaluated once: one
 (h̄ = D, Λᴸ = Σ_rs Γ_pqrs Bᴸ_rs over the full-range Γ, X = 2F) reproduces
 the terms above exactly, which the test uses.
 
+## A transition density
+
+`df_transition_gradient` takes the same terms at the caller's (γ, Γ), with
+the core's own energy switched off: the Hellmann–Feynman half of a coupling
+h_IJ = ⟨I|∂H|J⟩ between orthogonal roots (PySCF's `grad_elec_active`), which
+`df_nac` builds on. γ and Γ are `ci::Rdm::trans_rdm12`'s symmetrized
+transition RDMs (row-major, γ symmetric, Γ_tuvw = Γ_vwtu = Γ_utwv), or any
+pair with those symmetries.
+
+**Why the core-core term goes.** At fixed orbitals the CASSCF energy is
+affine in the active RDMs,
+
+    E(γ, Γ) = E_nuc + E_cc + Σ_tu h_tu γ_tu + Σ_tu (J − ½K)[D_c]_tu γ_tu + ½ Σ Γ_tuvw (tu|vw),
+
+E_cc = Σ_i 2 h_ii + Σ_ij [2 (ii|jj) − (ij|ij)] the core's own energy and D_c =
+2 C_c C_cᵀ. ⟨I|H|J⟩ is that functional at the transition RDMs, but E_nuc and
+E_cc multiply ⟨I|J⟩ = 0, so they drop: what is differentiated is
+
+    E_act(γ, Γ) = Σ h D_a + J[D_c]·D_a − ½ K[D_c]·D_a + ½ Σ Γ_tuvw (tu|vw),
+
+D_a = C_a γ C_aᵀ: E(γ, Γ) − E(0, 0). Each term above loses its core-core part
+and keeps the rest:
+
+- **One-electron.** D = D_a (no 2 C_c C_cᵀ).
+- **Overlap.** The generalized Fock of E_act is F(γ, Γ) − F(0, 0), and
+  `response::fock` at zero RDMs is 2 F^I in its core columns and zero
+  elsewhere (F^I = Cᵀ (h + 2J − K)[P_c] C includes h): so F loses 2 F^I in
+  its core columns, leaving 2 F^A there and the active columns as they were.
+  W = C sym(F) Cᵀ over that F. This is PySCF's `gen_g_hop_active` patch,
+  which sets h + vhf_c to zero in the core columns.
+- **J.** ½ J[D]·D − ½ J[D_a]·D_a less the core-core ½ J[D_c]·D_c is the
+  cross term J[D_c]·D_a alone, a bilinear form: with d_c and d_a the two
+  fits, Γᴶ = D_c ⊗ d_a + D_a ⊗ d_c and Wᴶ = −½ (d_c d_aᵀ + d_a d_cᵀ), four
+  rank-one gemms (no cancellation between large core terms).
+- **K.** G = diag(0_core, γ): the core block of G is the core-core exchange
+  −Σ_ij (ij|ij), so it is zero, and the core-active −Σ_i,tu γ_tu (it|iu)
+  stays.
+- **Active–active.** Unchanged, at Γ.
+- **Nuclear repulsion**: zero.
+
+**The orbital gradient** of E_act, the Z-vector's right-hand side, is by the
+same linearity `response::fock`'s gradient at (γ, Γ) less its gradient at
+zero RDMs (g = 2 (F − Fᵀ), linear in F): only the pairs (p, i), i core and
+p not, move, each by −4 F^I_pi. No entry point of its own is needed. It
+equals PySCF's `gen_g_hop_active` orbital vector element for element
+(`gen_g_hop` returns 2 pack(F − Fᵀ), this tree's g), as the test measures.
+
+**Multipliers on top.** Without `multipliers` nothing responds and no
+Z-vector is solved, at any number of roots: the call is the Hellmann–Feynman
+half alone. With them it is `df_gradient`'s Lagrangian at the transition
+density: z_c's transition RDMs (at the solution's weights, which it then
+recovers) are added to (γ, Γ), which carry no core energy either, and the
+z_o response is the SA gradient formula's derivative at the solution's
+weighted RDMs, core included, exactly as for a root. `extra` is unchanged.
+So `df_nac` passes its own z = (z_o, z_c) for h_IJ's Lagrange half and gets
+h_IJ whole from one call.
+
 ## Memory
 
 **Γ is held in full**: naux nao² doubles, the size of B, as in
@@ -257,6 +318,22 @@ for the state average each root's multipliers from `zvector` (over the
 CI-relaxed Hessian, as the call builds it) passed as `multipliers` reproduce
 the internal path; and multipliers of the wrong length are refused. The gradient does not depend on the orbitals' or CI's signs or
 canonicalization, so the solution is compared as it converges.
+
+`test/gtest/mcscf_transition_gradient_gpu.cpp` holds the transition
+density, over `test/gtest/data/casscf_nac/` (H₂CO SA-2 and the skewed H₂CO
+SA-3, CAS(4,3), cc-pVDZ / cc-pVDZ-JKFIT): this tree's DF-SA-CASSCF put in the
+reference's canonical orbitals with its CI re-solved (as
+`mcscf_zvector_gpu.cpp` does), then for every ordered pair, at
+`trans_rdm12`'s RDMs, the electronic terms' sum against PySCF's
+`grad_elec_active` to 1e-9 up to the sign s_I s_J of the two CI phases, and
+the orbital gradient (`fock` at the RDMs less at zero) against
+`gen_g_hop_active`'s, by (p, q) and in magnitude. With arbitrary
+multipliers, each root's `df_gradient` less its `df_transition_gradient` at
+its own RDMs is one gradient (the core's own and the nuclear repulsion) for
+every root and every z, to 1e-10.
+Measured on the RTX 3080: the Hellmann–Feynman terms within 8e-11, the
+orbital gradient within 7e-9 (1e-11 at two roots), the multipliers' core
+part to 2e-13.
 
 `test/gtest/mcscf_gradient_weights_gpu.cpp` holds the weights, over
 `test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /
