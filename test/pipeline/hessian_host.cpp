@@ -4,7 +4,8 @@
 // copied in from the config's own tables, every refusal (the analytic method
 // over integral-direct ERIs among them), and beside an [optimize], the
 // molecule it reads loaded from the final.xyz that step writes, so it runs
-// after it; the CASSCF chain copied in beside a [casscf_gradient], and its
+// after it; the CASSCF chain copied in beside a [casscf_gradient], the
+// analytic method there the root's (beside an [optimize] too), and its
 // refusals; and the guard on a displaced CASSCF, check_displaced_casscf, fed
 // an active orbital swapped out and roots swapped. Nothing is run, so
 // nothing touches a device.
@@ -185,24 +186,60 @@ TEST(PipelineHessian, BesideACasscfGradientItCopiesTheCasscfChain) {
   EXPECT_FALSE(rhf->step<fb::HessianStep>()->casscf_gradient.has_value());
 }
 
-// The CASSCF chain is the numerical method's alone, and one gradient is
-// differenced.
-TEST(PipelineHessian, TheCasscfChainRefusesTheAnalyticMethodAndASecondGradient) {
-  constexpr std::string_view kCasscf = "[eri]\nmode = \"density_fitting\"\n"
-                                       "[casscf]\nncas = 4\nnelecas = 4\n[casscf_gradient]\n";
+// Beside a [casscf_gradient] the analytic method -- the default -- is that
+// root's analytic Hessian, over the same chain; beside an [optimize] too,
+// which then holds the same CASSCF chain, and the Hessian reads the optimum.
+TEST(PipelineHessian, BesideACasscfGradientTheAnalyticMethodIsTheRootsHessian) {
+  constexpr std::string_view kCasscf =
+      "[eri]\nmode = \"density_fitting\"\n"
+      "[casscf]\nncas = 4\nnelecas = 4\nactive = [2, 3, 5, 6]\nnroots = 2\n"
+      "weights = [0.5, 0.5]\n[casscf_gradient]\nroot = 1\n";
+  for (const std::string_view method : {"", "method = \"analytic\"\n"}) {
+    auto calc =
+        fb::parse_config(with_inputs(std::format("{}[hessian]\n{}", kCasscf, method)), "", kOut);
+    ASSERT_TRUE(calc.has_value()) << calc.error().message;
+    const fb::HessianStep &hessian = *calc->step<fb::HessianStep>();
+    EXPECT_EQ(hessian.method, fb::HessianMethod::Analytic);
+    ASSERT_TRUE(hessian.casscf_gradient.has_value());
+    EXPECT_EQ(hessian.casscf_gradient->root, 1);
+    EXPECT_EQ(hessian.casscf.nroots, 2);
+    EXPECT_EQ(hessian.casscf.weights, (std::vector<double>{0.5, 0.5}));
+    EXPECT_EQ(hessian.eri.mode, fb::EriMode::DensityFitting);
+  }
+  auto optimized =
+      fb::parse_config(with_inputs(std::format("{}[optimize]\n[hessian]\n", kCasscf)), "/in", kOut);
+  ASSERT_TRUE(optimized.has_value()) << optimized.error().message;
+  EXPECT_EQ(optimized->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  const fb::HessianStep &hessian = *optimized->step<fb::HessianStep>();
+  const fb::OptimizeStep &optimize = *optimized->step<fb::OptimizeStep>();
+  EXPECT_EQ(hessian.method, fb::HessianMethod::Analytic);
+  ASSERT_TRUE(hessian.casscf_gradient.has_value());
+  ASSERT_TRUE(optimize.casscf_gradient.has_value());
+  EXPECT_EQ(hessian.casscf_gradient->root, optimize.casscf_gradient->root);
+  EXPECT_EQ(hessian.casscf.active, optimize.casscf.active);
+}
+
+// The CASSCF chain, by either method, is density-fitted only, and its
+// Hessian is one energy's: [gradient] beside it is refused.
+TEST(PipelineHessian, TheCasscfChainRefusesIntegralDirectErisAndASecondGradient) {
+  constexpr std::string_view kCasscf = "[casscf]\nncas = 4\nnelecas = 4\n[casscf_gradient]\n";
   auto analytic = fb::parse_config(with_inputs(std::format("{}[hessian]\n", kCasscf)), "", kOut);
   ASSERT_FALSE(analytic.has_value());
   EXPECT_EQ(analytic.error().kind, fb::ErrorKind::Unsupported);
   EXPECT_EQ(analytic.error().message,
-            "[hessian] method 'analytic' is the RHF's, and [casscf_gradient] asks for a CASSCF "
-            "root's: set [hessian] method = 'numerical'");
-  expect_config_error(
-      with_inputs(std::format("{}[gradient]\n[hessian]\nmethod = \"numerical\"\n", kCasscf)),
-      "[hessian] differences the gradient of [gradient] or of [casscf_gradient], and the config "
-      "names both");
+            "[hessian] method 'analytic' is density-fitted only, and [eri] mode is "
+            "'integral_direct': set [eri] mode = 'density_fitting', or [hessian] method = "
+            "'numerical'");
+  for (const std::string_view method : {"", "method = \"numerical\"\n"}) {
+    expect_config_error(
+        with_inputs(std::format("[eri]\nmode = \"density_fitting\"\n{}[gradient]\n[hessian]\n{}",
+                                kCasscf, method)),
+        "[hessian] is the Hessian of the energy of [gradient] or of [casscf_gradient], and the "
+        "config names both");
+  }
   // The chain's [casscf] is read as the pipeline reads it: no space, refused.
   expect_config_error(with_inputs("[eri]\nmode = \"density_fitting\"\n[casscf_gradient]\n"
-                                  "[hessian]\nmethod = \"numerical\"\n"),
+                                  "[hessian]\n"),
                       "[casscf] needs 'ncas'");
 }
 

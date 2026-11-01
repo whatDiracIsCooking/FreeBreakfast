@@ -1,12 +1,14 @@
 /// @file
-/// @brief The `Hessian` step: the closed-shell RHF Cartesian Hessian at the
-/// pipeline's molecule, and its harmonic frequencies and normal modes. By
-/// default analytic, @c hessian::df_rhf over one nested Pipeline run of the
-/// chain from the molecule to `[scf]`; or by central differences of the
-/// analytic gradient of the chain to `[gradient]`, rerun at each of the 6N
-/// displaced geometries -- the RHF's, or with a `[casscf_gradient]` that
-/// root's of a DF-CASSCF (state-specific or state-averaged), each displaced
-/// CASSCF started from the reference's orbitals and checked against it.
+/// @brief The `Hessian` step: the Cartesian Hessian at the pipeline's
+/// molecule -- the closed-shell RHF's, or with a `[casscf_gradient]` that
+/// root's of a DF-CASSCF (state-specific or state-averaged) -- and its
+/// harmonic frequencies and normal modes. By default analytic,
+/// @c hessian::df_rhf, @c hessian::df_casscf or @c hessian::df_sacasscf over
+/// one nested Pipeline run of the chain from the molecule to `[scf]` or
+/// `[casscf]`; or by central differences of the analytic gradient of the
+/// chain to `[gradient]` or `[casscf_gradient]`, rerun at each of the 6N
+/// displaced geometries, each displaced CASSCF started from the reference's
+/// orbitals and checked against it.
 ///
 /// Node-shaped, because each method runs Pipelines of its own, as
 /// `[optimize]`'s evaluations do. It reads the MoleculeOutput, so beside an
@@ -29,14 +31,16 @@ export namespace free_breakfast {
 
 /// @brief How `[hessian]` computes the Hessian.
 enum class HessianMethod : uint8_t {
-  /// @c hessian::df_rhf at the SCF of one chain run: density fitting only.
+  /// @c hessian::df_rhf at the SCF of one chain run, or the CASSCF root's
+  /// (@c hessian::df_casscf, @c hessian::df_sacasscf): density fitting only.
   Analytic,
   /// Central differences of the analytic gradient, the RHF's or a
   /// DF-CASSCF root's: 6N chain reruns.
   Numerical,
 };
 
-/// @brief The Cartesian Hessian of the SCF energy at the MoleculeOutput's
+/// @brief The Cartesian Hessian of the SCF energy, or of a CASSCF root's, at
+/// the MoleculeOutput's
 /// geometry, how far it is from the two identities it should keep, and the
 /// harmonic vibrations it gives.
 struct HessianOutput {
@@ -55,8 +59,8 @@ struct HessianOutput {
   geometry::Vibrations vibrations;
   /// @brief dmu_c/dx (e), 3 n_atom x 3 row-major, element (x, c) at 3 x + c:
   /// @c hessian::rhf_dipole_derivative over the analytic Hessian's CPHF U^x,
-  /// the origin at 0. Empty under HessianMethod::Numerical, and for a basis
-  /// with a shell above d (the dipole integrals' @c kDipoleMaxL).
+  /// the origin at 0. Empty under HessianMethod::Numerical or a CASSCF, and
+  /// for a basis with a shell above d (the dipole integrals' @c kDipoleMaxL).
   std::vector<double> dipole_derivative;
   /// @brief The IR intensities (km/mol), one per vibrations.frequencies:
   /// @c hessian::infrared_intensities of @ref dipole_derivative over the
@@ -64,8 +68,8 @@ struct HessianOutput {
   std::vector<double> intensities;
 };
 
-/// @brief The RHF Hessian of the MoleculeOutput's geometry and its harmonic
-/// vibrations, on @p node's device 0.
+/// @brief The RHF's or a DF-CASSCF root's Hessian at the MoleculeOutput's
+/// geometry and its harmonic vibrations, on @p node's device 0.
 struct HessianStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "hessian";
@@ -93,9 +97,11 @@ struct HessianStep {
   /// reference geometry; every displaced solve starts from the reference's
   /// orbitals, Loewdin-orthonormalized in the displaced overlap.
   CasscfStep casscf{};
-  /// @brief Set: HessianMethod::Numerical differences this gradient of one
-  /// root of @ref casscf, over density fitting only. Empty: the RHF's
-  /// `[gradient]`.
+  /// @brief Set: the Hessian is this root's of @ref casscf, over density
+  /// fitting only -- HessianMethod::Analytic's @c hessian::df_casscf (one
+  /// root) or @c hessian::df_sacasscf (a state average, at its weights), or
+  /// HessianMethod::Numerical's differences of this gradient. Empty: the
+  /// RHF's.
   std::optional<CasscfGradientStep> casscf_gradient{};
 
   /// @brief Where the Hessian is written as JSON, if not empty: the method,
@@ -108,18 +114,19 @@ struct HessianStep {
 
   /// @brief The Hessian at the MoleculeOutput's geometry: under
   /// HessianMethod::Analytic one Pipeline run of the chain ending in ScfStep
-  /// and @c hessian::df_rhf over its products; under
+  /// and @c hessian::df_rhf over its products (with @ref casscf_gradient,
+  /// the chain ending in @ref casscf and @c hessian::df_casscf or
+  /// @c hessian::df_sacasscf at its solution); under
   /// HessianMethod::Numerical the 6N gradients at the geometry displaced by
   /// ±@ref displacement along each coordinate, each one Pipeline run of the
   /// chain ending in GradientStep, and their central differences; under
-  /// @ref casscf_gradient, one chain to @ref casscf at the geometry, the
+  /// @ref casscf_gradient, numerically, one chain to @ref casscf at the geometry, the
   /// reference, then the chain ending in it at each displaced geometry,
   /// started from the reference's orbitals orthonormalized in the displaced
   /// overlap, C (Cᵀ S C)^-1/2, and held to it by @ref check_displaced_casscf.
-  /// Then
-  /// symmetrized, checked, and its harmonic vibrations; under the analytic
-  /// method, the dipole derivative from the same CPHF and the IR intensities,
-  /// unless a shell is above d (logged as a warning).
+  /// Then symmetrized, checked, and its harmonic vibrations; under the
+  /// analytic RHF, the dipole derivative from the same CPHF and the IR
+  /// intensities, unless a shell is above d (logged as a warning).
   ///
   /// @return The Hessian; with no device, ErrorKind::GpuRuntime; under the
   ///         analytic method, Unsupported, before anything runs, for an
@@ -129,11 +136,14 @@ struct HessianStep {
   ///         @c hessian::rhf_dipole_derivative or
   ///         @c geometry::harmonic_analysis, or the error writing
   ///         @ref json_path. Under @ref casscf_gradient: Unsupported, before
-  ///         anything runs, for the analytic method or an integral-direct
-  ///         @ref eri; a CASSCF's or the gradient's error (MaxIterationsExceeded
-  ///         for one that does not converge), naming the geometry; and
-  ///         @ref check_displaced_casscf's Numerical for a displaced solve
-  ///         whose active space or roots are not the reference's.
+  ///         anything runs, for an integral-direct @ref eri; analytic,
+  ///         InvalidConfig for a root the CASSCF does not have, and the
+  ///         CASSCF's or the analytic Hessian's error (Divergence at a saddle,
+  ///         Numerical at a degeneracy); numerical, a CASSCF's or the
+  ///         gradient's error (MaxIterationsExceeded for one that does not
+  ///         converge), naming the geometry, and @ref check_displaced_casscf's
+  ///         Numerical for a displaced solve whose active space or roots are
+  ///         not the reference's.
   [[nodiscard]] Result<HessianOutput> run(View<MoleculeOutput> in, NodeResources &node) const;
 };
 

@@ -1,11 +1,12 @@
 /// @file
 /// @brief HessianStep: the analytic Hessian, hessian::df_rhf over one nested
-/// Pipeline run of the chain to ScfStep, or the 6N displaced gradients, each
+/// Pipeline run of the chain to ScfStep, or hessian::df_casscf or
+/// df_sacasscf over one to CasscfStep; or the 6N displaced gradients, each
 /// a nested Pipeline run of the chain to GradientStep, and their central
 /// differences -- the RHF's, or over the CASSCF chain, each displaced solve
 /// started from the reference's orbitals and checked against it; then the
 /// symmetrized Hessian, its two checks, the harmonic vibrations, the analytic
-/// method's dipole derivative and IR intensities, and hessian.json.
+/// RHF's dipole derivative and IR intensities, and hessian.json.
 
 module free_breakfast.pipeline.hessian;
 
@@ -188,11 +189,6 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   if (node.device_count() == 0) {
     return err_gpu("[{}] needs a GPU device, and none is visible", kName);
   }
-  if (casscf_gradient && method == HessianMethod::Analytic) {
-    return err_unsupported("[{}] method 'analytic' is the RHF's, and [{}] asks for a CASSCF "
-                           "root's: set [{}] method = 'numerical'",
-                           kName, CasscfGradientStep::kName, kName);
-  }
   if (casscf_gradient && eri.mode != EriMode::DensityFitting) {
     return err_unsupported("[{}] reruns [{}], which runs over density fitting only, and [{}] mode "
                            "is 'integral_direct': set [{}] mode = 'density_fitting'",
@@ -249,7 +245,86 @@ Result<HessianOutput> HessianStep::run(View<MoleculeOutput> in, NodeResources &n
   std::vector<double> raw(n * n);
   double asymmetry = 0.0;
   std::vector<double> dipole_derivative;
-  if (method == HessianMethod::Analytic) {
+  if (method == HessianMethod::Analytic && casscf_gradient) {
+    // One chain to [casscf] at R, and the root's analytic Hessian at its
+    // solution: hessian::df_casscf for a single root, hessian::df_sacasscf
+    // for one root of a state average.
+    auto chain = FBF_TRY(chain_at(0, 0.0, chain_casscf));
+    FBF_TRY(chain.run(node));
+    const CasscfOutput &cas = *chain.get<CasscfOutput>();
+    const int32_t root = casscf_gradient->root;
+    if (root < 0 || std::cmp_greater_equal(root, cas.energies.size())) {
+      return err_config("[{}] root is {}, and the CASSCF has {} root(s)", CasscfGradientStep::kName,
+                        root, cas.energies.size());
+    }
+    const auto n2 = static_cast<size_t>(cas.ncas) * static_cast<size_t>(cas.ncas);
+    if (cas.rdm1.size() != cas.weights.size() * n2) {
+      return err_config("[{}] the CASSCF holds {} 1-RDM elements, not {} roots of {}", kName,
+                        cas.rdm1.size(), cas.weights.size(), n2);
+    }
+    const BasisSet &basis = chain.get<BasisSetOutput>()->basis;
+    const DensityFitted &fit = std::get<DensityFitted>(chain.get<EriOutput>()->eri);
+    // The product back into the mcscf::Solution the Hessians take, as
+    // [casscf_gradient] builds it for df_gradient: the orbitals and the CI
+    // vectors on the device, gamma the weighted average of the roots'.
+    std::vector<double> gamma(n2, 0.0);
+    for (size_t r = 0; r < cas.weights.size(); ++r) {
+      for (size_t i = 0; i < n2; ++i) {
+        gamma[i] += cas.weights[r] * cas.rdm1[(r * n2) + i];
+      }
+    }
+    mcscf::Solution solution{
+        .c = SphericalMatrixAO(res, basis),
+        .roots =
+            {
+                .energies = cas.energies,
+                .spin_squares = cas.spin_squares,
+                .vectors = Buffers::device<double>(cas.vectors.size(), res.device()),
+                .davidson = {},
+                .fp32_iterations = 0,
+            },
+        .energy = cas.energy,
+        .gradient_norm = cas.gradient_norm,
+        .gamma = std::move(gamma),
+        .gamma2 = cas.rdm2,
+        .root_gammas = cas.rdm1,
+        .iterations = cas.iterations,
+    };
+    {
+      const ScopedDeviceIndex on{res.dev_idx()};
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
+                                             cas.vectors.size() * sizeof(double),
+                                             wwr::wwrMemcpyHostToDevice, res.stream())));
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
+                                             cas.c.num_elements() * sizeof(double),
+                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
+      FBF_TRY(res.sync());
+    }
+    const Molecule &chain_molecule = chain.get<MoleculeOutput>()->molecule;
+    const auto &classes = chain.get<PrimitivePairClassesOutput>()->classes;
+    const SphericalMatrixAO &h = chain.get<CoreHamiltonianOutput>()->h;
+    std::vector<double> residuals;
+    if (cas.weights.size() == 1) {
+      hessian::CasscfTerms terms =
+          FBF_TRY(hessian::df_casscf(res, chain_molecule, basis, classes, fit.aux, h, fit.b,
+                                     fit.l.data(), solution, cas.ncore, cas.ncas));
+      raw = std::move(terms.hessian);
+      asymmetry = terms.asymmetry;
+      residuals = std::move(terms.residuals);
+    } else {
+      hessian::SaCasscfTerms terms = FBF_TRY(
+          hessian::df_sacasscf(res, chain_molecule, basis, classes, fit.aux, h, fit.b, fit.l.data(),
+                               solution, cas.weights, root, cas.ncore, cas.ncas));
+      raw = std::move(terms.hessian);
+      asymmetry = terms.asymmetry;
+      residuals = std::move(terms.residuals);
+    }
+    FBF_LOG_INFO("hessian: analytic DF-CASSCF({}, {}) root {} of {}, E = {:.10f}, CP residual "
+                 "{:.3e}",
+                 cas.nelecas, cas.ncas, root, cas.energies.size(),
+                 cas.energies[static_cast<size_t>(root)],
+                 residuals.empty() ? 0.0 : std::ranges::max(residuals));
+  } else if (method == HessianMethod::Analytic) {
     auto chain = FBF_TRY(chain_at(0, 0.0));
     FBF_TRY(chain.run(node));
     const ScfOutput &rhf = *chain.get<ScfOutput>();
