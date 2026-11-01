@@ -2,7 +2,10 @@
 /// @brief The third derivative of a state-averaged DF-CASSCF energy in its
 /// parameters, contracted once with a fixed vector z: T(., v, z) for a block
 /// of vectors v, analytic, on the device. The z . d2 g_SA / dlambda dlambda
-/// term of a state-averaged (or NEVPT2) nuclear Hessian. See README.md.
+/// term of a state-averaged (or NEVPT2) nuclear Hessian. Beside it, the same
+/// operator's Hessian action along z differentiated in the integrals (I^x z,
+/// L_xlambda's z part) and the MO derivative integrals it takes. See
+/// README.md.
 
 export module free_breakfast.mcscf.third_derivative;
 
@@ -11,6 +14,9 @@ import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
+import free_breakfast.basis;
+import free_breakfast.molecule;
+import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.matrix_ao;
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;
@@ -78,6 +84,29 @@ public:
   /// @return InvalidConfig for a negative @p k; or the first error of a
   ///         BLAS call, copy, sigma or RDM.
   [[nodiscard]] Status apply(DeviceResources &res, int32_t k, const double *v, double *y);
+
+  /// @brief Y = d/de E_SA''(., z) at the integrals h + e h1 and L + e W, for
+  /// the @p k integral directions in @p h1 and @p w1: column j of Y is the
+  /// covector a -> d/de E_lambda lambda(a, z), the Hessian of E_SA along z
+  /// differentiated along direction j, in apply's layout. With
+  /// @c df_integral_derivatives' directions, column x is I^x z, the
+  /// state-averaged Hessian at the derivative integrals applied to z.
+  ///
+  /// @p h1 is k nmo x nmo symmetric MO matrices (slab j at j nmo^2), the
+  /// core Hamiltonian's direction; @p w1 is k MO factors (slab j at
+  /// j nmo^2 naux, element (p, q, Q) at p + nmo (q + nmo Q), each Q
+  /// symmetric in p and q), the direction of L_Q = C^T B_Q C, so that the
+  /// integrals move along (pq|rs)' = sum_Q (W_Q,pq L_Q,rs + L_Q,pq W_Q,rs).
+  /// Both on the device, in the MO basis of create's @p c. Nothing requires
+  /// the integrals moved to keep the roots stationary: the Hessian is the
+  /// exact second derivative in the exponential parametrization, its
+  /// gradient term and the couplings among the roots included. One column
+  /// at a time, each synchronizing.
+  ///
+  /// @return InvalidConfig for a negative @p k or a null pointer with k > 0;
+  ///         or the first error of a BLAS call, copy or sigma.
+  [[nodiscard]] Status apply_integrals(DeviceResources &res, int32_t k, const double *h1,
+                                       const double *w1, double *y);
 
   /// @brief The parameter count: pairs + dim nroots (+ nroots (nroots - 1) / 2
   /// at unequal weights).
@@ -169,5 +198,49 @@ private:
   Buffers::device<double> small_; // nroots^2 blocks: 8
   Buffers::device<double> act_;   // gamma and Gamma at a + s b and a - s b
 };
+
+/// @brief I^x, the derivative along every nuclear coordinate x = 3 A + k of
+/// the MO integrals a DF-CASSCF energy sees at fixed parameters, as the
+/// directions @c ThirdDerivative::apply_integrals takes: the core
+/// Hamiltonian's h1^x and the MO factor's W^x, the connection
+/// tau^x = -1/2 C^T S^x C included (C -> C (1 + tau^x)).
+///
+///     h1^x = C^T h^x C + tau^x h_MO + h_MO tau^x
+///     W^x  = U^x + tau^x L + L tau^x,   U^x = (C^T T^x C) L_M^-T - 1/2 L L_M^-1 M^x L_M^-T
+///
+/// over the fitted index, h^x the kinetic and nuclear-attraction derivative
+/// (@c kinetic_derivative + @c potential_derivative), T^x the three-center
+/// integrals' derivative (mn|P)^x, M^x the metric's, L_M the metric's
+/// Cholesky factor and L the MO factor, so that the fitted (pq|rs)^x =
+/// U^x L^T + L U^x^T exactly, the metric through its factor (trsms, never an
+/// inverse). T^x is built one aux atom at a time (@c three_center_derivative)
+/// and M^x from @c metric_derivative.
+///
+/// @p molecule is the molecule both bases were placed on; @p classes
+/// @c primitive_pair_classes of @p basis; @p h the AO core Hamiltonian;
+/// @p b and @p l the fit as @c density_fit leaves it (B naux x nao^2, L the
+/// naux x naux lower triangle); @p c the orbitals, nmo = nao. @p h1 receives
+/// 3 n_atom slabs of nmo^2 (slab x at x nmo^2) and @p w1 3 n_atom slabs of
+/// nmo^2 naux (slab x at x nmo^2 naux, element (p, q, Q) at
+/// p + nmo (q + nmo Q)), both on the device: 3 n_atom (nmo^2 naux) doubles,
+/// every coordinate at once.
+///
+/// Its own memory beside the outputs is the MO factor (nmo^2 naux), one
+/// aux atom's derivative block (3 nao^2 nblk), the metric derivative
+/// (3 naux^2) and three 3 n_atom nao^2 stacks; past the device's free memory
+/// it is Unsupported before anything is allocated. Queued on res.stream()
+/// with res.blas(); the derivative calls synchronize it.
+///
+/// @return Success; InvalidConfig if the molecule and the bases are not one
+///         placement, @p c or @p h is not nao x nao, @p b not naux nao^2, or a
+///         pointer is null; Unsupported for memory past the device's free
+///         bytes or an index past int32_t; or the first error of a
+///         derivative call, copy or BLAS call.
+[[nodiscard]] Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
+                                             const BasisSet &basis,
+                                             std::span<const PrimitivePairClass> classes,
+                                             const BasisSet &aux, const SphericalMatrixAO &h,
+                                             const Buffers::device<double> &b, const double *l,
+                                             const SphericalMatrixAO &c, double *h1, double *w1);
 
 } // namespace free_breakfast::mcscf

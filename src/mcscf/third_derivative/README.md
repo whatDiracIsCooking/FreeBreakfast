@@ -22,8 +22,16 @@ public:
       const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const double *roots,
       std::span<const double> weights, const double *z);
   Status apply(DeviceResources &res, int32_t k, const double *v, double *y); // Y = T(., V, z)
+  Status apply_integrals(DeviceResources &res, int32_t k, const double *h1, const double *w1,
+                         double *y); // Y = d/de E''(., z) at the integrals moved along (h1, W)
   int32_t size() const noexcept;
 };
+
+Status mcscf::df_integral_derivatives(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+    const SphericalMatrixAO &c, double *h1, double *w1); // I^x, every coordinate
 ```
 
 `h` is the AO core Hamiltonian and `b` the fitted factor, naux × nao² as
@@ -139,6 +147,66 @@ An NEVPT2 Hessian creates it over the same reference with its own
 multipliers as z, and pairs with its own responses: nothing here is
 specific to E_SA's own multipliers.
 
+## I^x z: the Hessian along z at the derivative integrals
+
+L_xλ, the SA Hessian's mixed Lagrangian row, is root I's CP right-hand
+side plus I^x z: z · ∂_x ∂_λ g_SA, the exact SA Hessian of E_x(λ) (the
+energy at the derivative integrals, in this same exp(K)/exp(A)
+parametrization) applied to z (`casscf_hessian.tex` eq. (sa)). The
+integrals enter E_SA linearly, so I^x z is the derivative of the Hessian
+action along z, E''[φ_a, φ_z] + E'[φ_az], along the integrals moved by I^x:
+
+    I^x z (a) = d/de { G2[φ_z] · φ_a + G1 · φ_az },   φ_az = (½(K_aK_z + K_zK_a), ½(A_aA_z + A_zA_a) c)
+
+with G1 and G2[φ_z] the covectors of the table above at the integrals
+h + e h1, L + e W. Every quantity `create` built along z (L, P_0, P(K_z),
+Y_0, Y_b, the averaged and z densities, A_z c) is reused; nothing new is
+needed of the RDMs, because the densities do not depend on the integrals.
+
+**The integrals' direction.** `apply_integrals` takes the direction as the
+core Hamiltonian's h1 (nmo × nmo) and the MO factor's W (nmo² naux, one
+symmetric nmo × nmo per Q), the two-electron integrals moving along
+(pq|rs)' = Σ_Q (W_Q,pq L_Q,rs + L_Q,pq W_Q,rs). Not every two-electron
+direction is one factor, but the fitted derivative is:
+(pq|rs)^x = T^x N Tᵀ + T N T^xᵀ − T N M^x N Tᵀ = U^x Lᵀ + L U^xᵀ with
+U^x = T^x L_M⁻ᵀ − ½ L L_M⁻¹ M^x L_M⁻ᵀ over MO pairs (L_M the metric's
+Cholesky factor, N = M⁻¹). The connection τ^x = −½ S^x_MO moves L as
+τL + Lτ and h as τh + hτ, so `df_integral_derivatives` writes, per coordinate,
+
+    h1^x = Cᵀ h^x C + τ^x h_MO + h_MO τ^x,     W^x = U^x + τ^x L + L τ^x,
+
+the fixture's I^x exactly. T^x is walked one aux atom at a time
+(`three_center_derivative`; with E_A = Σ_{m on A, n} C_mp X_mn,P C_nq the MO
+derivative is S + Sᵀ over the pair, S^(A,k) = −E_A + [P on A] Σ_A′ E_A′),
+symmetrized by one batched gemm against the identity, then W = (S + Sᵀ) L_M⁻ᵀ
+by a trsm; M^x from `metric_derivative` through two trsms per coordinate.
+Its output is every coordinate at once, 3 n_atom nmo² naux doubles beside
+3 n_atom nmo² for h1: about 1.4 MB for the water in 6-31G (9 coordinates),
+but 3 GB per coordinate at 500 functions over 1500 fitting functions.
+
+**Per column** of `apply_integrals`, with W_o W's occupied columns, W_oo its
+occupied pairs and P_W(K_z) = K_zᵀ W + W K_z over the occupied pair:
+
+- orbital: G1^x = 2 [W_o Y_0 + L_o Γ_0 W_oo + h1 D_0] and
+  G2^x = 2 [W_o Y_b + L_o (Γ_0 P_W(K_z) + Γ_z W_oo) + (W K_z) Y_0 +
+  (L K_z) Γ_0 W_oo + (h1 K_z) D_0 + h1 D_z], then G2^x − ½(G1^x K_z + K_z G1^x)
+  antisymmetrized and packed;
+- CI: c_1^x = 2 w H^x c and c_z^x = 2 w (H^x[K_z] c + H^x A_z c), H^x the
+  active-space Hamiltonian over (h1, W_oo P_0ᵀ + P_0 W_ooᵀ) and H^x[K_z] its
+  one-index transform by K_z (two `set_integrals`, three sigmas), pulled
+  back as the pairs (c_z^x − ½ A_z c_1^x, c) and (½ c_1^x, A_z c).
+
+The first pair's −½ A_z c_1^x is where the roots stop
+being eigenvectors: at the derivative integrals c_1^x has components along
+the other roots (⟨c_s|H^x|c_r⟩ ≠ 0 for r ≠ s), so A_z c_1^x carries the
+inter-root term −Σ_s w H̃^x_rs z_s of the exact CI–CI block, and its Θ part
+the rotations among the roots at unequal weights. Nothing assumes
+stationarity: `response::Hessian` and `RelaxedHessian::apply_coupled` cannot
+build this (one B, ppaa/papa and the Fock at C; stationarity), which is why it
+lives here. Per column it is three Y gemms, ten Fock gemms, two Hamiltonians and three
+sigmas of the nroots roots; the water's nine columns take 0.02 s on the 3080,
+`df_integral_derivatives` 0.03 to 0.08 s.
+
 ## Not done
 
 - **The core's Γ is explicit.** The occupied 2-RDM is nocc⁴ doubles and each
@@ -146,7 +214,11 @@ specific to E_SA's own multipliers.
   Hessian is run on, and the first thing to replace (by the core's J/K
   structure, as `response::fock` does) when nocc grows past ~50.
 - **The columns are not batched.** A block's sigmas and RDMs run a column
-  at a time.
+  at a time, `apply_integrals`' too (its integral directions are built for
+  every coordinate at once).
+- **`df_integral_derivatives` holds every coordinate's W at once**,
+  3 n_atom nmo² naux doubles: batching the coordinates is the first thing to
+  do for a molecule past a few hundred functions.
 - **Integral-direct.** Density-fitted only, as the CASSCF gradient is.
 - **Partly equal weights**, where some rotations among the roots are
   parameters and some are not, are refused.
@@ -169,10 +241,21 @@ numpy prototype of these formulas, run against the same fixture before the
 port, lands on the same values. One root's operator and its 9 columns take
 under 0.1 s on the gfx1200.
 
+`test/gtest/mcscf_integral_derivative_gpu.cpp` (`McscfIntegralDerivative`)
+against the same fixture, the same four cases, every root's z: I^x z
+(`df_integral_derivatives`, then `apply_integrals`) part by part against
+`lxl_z` (the CI part's singlet component, the fixture's covectors being over
+the singlet space), L_xλ = root I's CP right-hand side (`df_derivatives` at
+one-hot weights) + I^x z, contracted with λ^y, against `lxl_lambda`, both to
+1e-10 absolute (3.2e-13 seen at worst, of max |lxl_z| 6e-3 to 0.14 and
+|lxl_lambda| 0.26 to 0.8); the translational sum rule over the atoms to 1e-9
+(1.8e-15 seen); and the refusals.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `third_derivative.cppm` | Module interface: `ThirdDerivative` |
 | `third_derivative.cpp` | The precomputation along z, the per-column covectors and their pullbacks, the occupied RDMs and the sigmas' integrals |
+| `integral_derivative.cpp` | `apply_integrals` (I^x z) and `df_integral_derivatives` (h1^x and W^x, the connection included) |
 | `CMakeLists.txt` | The module `free_breakfast.mcscf.third_derivative` |
