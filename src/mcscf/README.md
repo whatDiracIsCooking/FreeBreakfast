@@ -6,7 +6,7 @@ the CI together. It sits over `core`, `recipes`, `integrals`
 (J, K and `active_space`), `ci` (the loop's CI and RDMs) and `response` (the
 energy, gradient and orbital Hessian it steps over), and **never imports
 `pipeline`**: a step that runs a CASSCF wraps this layer, not the other way
-round. `mcscf.cppm` (`free_breakfast.mcscf`) re-exports `solve`; it does not
+round. `mcscf.cppm` (`free_breakfast.mcscf`) re-exports `solve`, `gradient` and `third_derivative`; it does not
 re-export `response`, so a consumer that wants both imports both. Nor does it
 re-export `relaxed_hessian`, which is internal to the layer: the CI-relaxed
 Hessian product its sub-modules share, linked PRIVATE by each.
@@ -30,6 +30,7 @@ needs a prefix" has the rule.
 | `derivative/` | `free_breakfast.mcscf.derivative` | The DF-CASSCF Hessian's per-coordinate derivatives at fixed parameters (`mcscf::df_derivatives`): the derivative generalized Fock F^[x] and the CP-CASSCF right-hand sides (orbital, CI and the roots' rotations), every coordinate at once, at the RDMs of any weighting of any roots, so SS, a state average's averaged right-hand side and one root's own. Layouts and signs in `derivative/README.md`. |
 | `zvector/` | `free_breakfast.mcscf.zvector` | **Internal**, not re-exported: the Lagrange multipliers of one root's state-averaged gradient (`mcscf::zvector`), z_o by preconditioned conjugate gradients over `RelaxedHessian` and z_c from its CI response; and the same equations on many right-hand sides at once (`mcscf::zvectors`, the CP-CASSCF solve of a Hessian), by one of three `CpSolver`s. See `zvector/README.md`. |
 | `root_rotation/` | `free_breakfast.mcscf.root_rotation` | The equal-weight SA Hessian's root-rotation term, eq. (rot), 2 Σ_{s≠I} ℋ^x_Is ℋ^y_Is / (E_I − E_s), and the roots' rotations θ^x_sr = ℋ^x_rs / (E_r − E_s) (`mcscf::root_rotation`), ℋ^x the orbital-relaxed coupling from `derivative`'s H̃^x and λ^x's orbital part; a pair too near a degeneracy is refused with its gap named. Layouts in `root_rotation/README.md`. |
+| `third_derivative/` | `free_breakfast.mcscf.third_derivative` | The third derivative of the SA energy in its parameters (the orbitals' and roots' exponentials), contracted with a fixed z: T(·, v, z) for a block of v, analytic over the MO DF factor and the occupied RDMs (`mcscf::ThirdDerivative`). The z · ∂²g_SA term of an SA (or NEVPT2) nuclear Hessian, as Λᵀ Y. See `third_derivative/README.md`. |
 
 The orbital order, the packed pairs and the gradient and Hessian conventions
 the loop steps in are [`../response/README.md`](../response/README.md)'s.
@@ -57,5 +58,5 @@ same fixture's equal-weight averages.
 
 | File | Role |
 |------|------|
-| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient`, `derivative` and `root_rotation` |
-| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient`, `derivative` and `root_rotation`, in that order, and the `free_breakfast.mcscf` module target |
+| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient`, `derivative`, `root_rotation` and `third_derivative` |
+| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient`, `derivative`, `root_rotation` and `third_derivative`, in that order, and the `free_breakfast.mcscf` module target |

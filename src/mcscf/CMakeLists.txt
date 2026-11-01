@@ -17,6 +17,9 @@ add_subdirectory(derivative)
 # The equal-weight SA Hessian's root-rotation term and the roots' rotations
 # theta^x, over derivative's H~^x and the orbital part of lambda^x.
 add_subdirectory(root_rotation)
+# The third derivative of the SA energy in its parameters along a fixed z: a
+# state-averaged (or NEVPT2) nuclear Hessian's z . d2 g_SA term.
+add_subdirectory(third_derivative)
 
 # The aggregate: one import for the MCSCF layer.
 free_breakfast_add_cxx_module_library(
@@ -30,4 +33,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::mcscf::gradient
   free_breakfast::mcscf::derivative
   free_breakfast::mcscf::root_rotation
+  free_breakfast::mcscf::third_derivative
 )
