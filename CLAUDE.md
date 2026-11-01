@@ -18,7 +18,7 @@ orbital Hessian at fixed orbitals and RDMs, and RHF's CPHF), `mcscf` (the
 state-averaged CASSCF loop over them), `nevpt2`, `cis`, `geometry`,
 `gradient`, `hessian` (the full DF-RHF analytic nuclear Hessian, and the
 dipole derivative and IR intensities from its CPHF; the state-specific
-DF-CASSCF one) and
+DF-CASSCF one, and a state-averaged DF-CASSCF root's) and
 `pipeline` (the calculation pipeline: the step
 contract, the setup steps, the ERI step (integral-direct or density-fitted,
 built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, the DF-RHF gradient step, the geometry-optimization step, the Hessian step (analytic DF-RHF or

@@ -827,11 +827,122 @@ Measured on the RTX 3080 (CUDA), worst over the ten roots: L_xy's z part
 L_xλ λ^y ≤ 1.2e-13 from `lxl_lambda` (of 0.26–0.80); sum rules ≤ 6.6e-13;
 1.2–1.4 s a call (the water in 6-31G, 9 coordinates).
 
+## The state-averaged CASSCF Hessian
+
+`df_sacasscf` is `casscf_hessian.tex` eq. (sa) for root I of a converged
+state average, every term from a merged part, no integrals of its own:
+
+    d²E_I/dx dy = L_xy + L_xλ λ^y + λ^xᵀ L_λy + λ^xᵀ L_λλ λ^y   (+ eq. rot at equal weights),
+    A λ^x = −∂_x g_SA,   A z = −∂E_I/∂λ
+
+```cpp
+auto t = hessian::df_sacasscf(res, molecule, basis, classes, aux, h_core, b, l, solution, weights,
+                              root, ncore, ncas);
+// t->hessian: exactly symmetric; t->asymmetry: what symmetrizing discarded;
+// t->exy (E_I,xy), t->z_terms (L_xy's z part, L_xλ), t->lxlambda_lambda (L_xλ λ^y, (x, y)),
+// t->root_hessian, t->third, t->rotation (zero at unequal weights);
+// t->z, t->cp (λ^x), t->residuals
+```
+
+The inputs are `df_casscf`'s with a `Solution` of two roots or more, plus
+the `weights` (a Solution does not carry them; the averaged γ at them must
+be the solution's to 1e-8, or it is InvalidConfig) and the `root`. In order:
+
+1. **A**: H̃ at the averaged RDMs and weights, built as `df_casscf` builds it.
+2. **z**: `mcscf::zvector` on g_I, root I's orbital gradient (`response::fock`
+   at its own RDMs). Only the equations' CI and Θ rows are scaled in
+   zvector's convention, not the unknowns, so its (z_o, z_c, Θ) **is** the
+   energy's z, `ThirdDerivative`'s and `df_sacasscf_z`'s as it comes
+   (`mcscf_zvector_rotations_gpu.cpp` compares it to the fixture's directly).
+   Θ is packed only where `ThirdDerivative::size()` has it: whether the
+   rotations are parameters is that operator's rule, not a second one here.
+3. **λ^x**: `mcscf::zvectors` (Schur) on `df_derivatives`' SA right-hand
+   sides, the orbital rows packed, the CI rows over 2 w_r and, at unequal
+   weights, the rotation rows t_sr = H̃^x_sr (`hamiltonian`'s off-diagonal),
+   as `../mcscf/zvector/README.md` has it. The same row scaling leaves λ^x
+   the energy's; it is packed (pairs, d_r per root, Θ) into
+   `ThirdDerivative`'s layout, Λ.
+4. **The check**: `apply_coupled` at λ^x (Θ included), plus the right-hand
+   sides, the rotation rows as y_θ + t; above 1e-6 in any column is a
+   Divergence, as in `df_casscf`.
+5. **λ^xᵀ (z · ∂²g_SA) λ^y**: `ThirdDerivative::create(z)`, `apply` over Λ,
+   Λᵀ Y.
+6. **λ^xᵀ ∂²E_I λ^y**, root I's own parameter Hessian in the same exp(K),
+   exp(A) parametrization: a second H̃ at weights **one-hot on I**
+   (`response::Hessian` at root I's Fock), its **unreduced** product
+   `apply_coupled`, which solves nothing. `response::Hessian` is the exact
+   Hessian of E(C exp(κ)) off a stationary point too (its README's finite
+   difference), which root I's orbitals are not; the CI block 2 w_r Q (H₀ −
+   E_r) and the coupling 2 w_r Q H′ c_r are exact at eigenvectors; the
+   rotations' rows 2 (w_r − w_s)(c_s · H′ c_r + (E_s − E_r) Θ_sr). So the
+   product's CI rows times 2 w_r (2 on root I, 0 elsewhere) and its Θ rows
+   times 2 (w_r − w_s) are ∂²E_I λ^y in the energy's coordinates; Λᵀ of it.
+   A root s ≠ I enters E_I only through Θ_sI: its d_s does not, to second
+   order (H c_I = E_I c_I is orthogonal to it).
+7. **L_xy's z part and L_xλ**: `df_sacasscf_z` at z; L_xλ λ^y = L_xλᵀ Λ, one
+   gemm, added with its transpose (λ^xᵀ L_λy).
+8. **E_I,xy**: `df_casscf_exy` at root I's RDMs and `df_derivatives`' F^[x]
+   at one-hot weights.
+9. **Eq. rot** at equal weights only: `mcscf::root_rotation` over the SA
+   `df_derivatives` (step 3's) and λ^x's orbital part, root I's slice; its
+   factor 2 is in it. At unequal weights the rotations are in z and λ^x and
+   the sum is complete without it.
+10. The sum, symmetrized; `asymmetry` is what that discarded.
+
+**Degeneracies are refused.** Two roots under 1e-8 hartree apart are
+Numerical before anything runs. At equal weights `root_rotation` refuses a
+mixing rate max_x |θ^x_sr| above 10 per bohr; at unequal weights that rate
+is λ^x's own Θ, and the same bound is put on it (Numerical, naming the
+coordinate). Neither threshold is new: both are `root_rotation`'s.
+
+### Memory
+
+The parts run one after another, each freeing what it held: the two H̃
+(each its own `response::Hessian` and CI scratch), `df_derivatives` at the
+SA weights (held to the end for eq. rot) and at one-hot weights, the CP
+solve's scratch over 3 n_atom columns, the third-derivative operator, then
+`df_sacasscf_z`'s parts (its derivative integrals, 3 n_atom nmo² (naux + 1)
+doubles, the largest) and `df_casscf_exy`'s. Held throughout: Λ, z and the
+right-hand sides (3 n_atom (size + pairs + n_det nroots) doubles). Each part
+refuses its own memory, Unsupported, before it allocates.
+
+### Tests
+
+`test/gtest/df_sacasscf_hessian_gpu.cpp` (suite `HessianDfSaCasscf`), every
+root of the four state-averaged cases of `test/gtest/data/casscf_hessian/`
+(two roots at (0.5, 0.5) and (0.7, 0.3), three at equal weights and at
+(0.5, 0.3, 0.2)), the orbitals and roots **loaded from the fixture**, z and
+λ^x solved here: E_I,xy against `exy` to 1e-8; L_xy's z part against
+`exy_z`, L_xλ λ^y against `lxl_lambda`, root I's term against
+`root_hessian_lambda`, the third-derivative action against `third`, eq. rot
+against `rot` (equal weights; zero at unequal) and the total against
+`hessian`, each to 1e-7; the total against `relaxed_fd` to the design's 1e-6
+(the issue's ~1e-5); z's and λ^x's orbital parts against `z_orb` and
+`lambda_orb` to 1e-7 of their largest element; every CP residual to 1e-8, the
+asymmetry to 1e-8, the sum rule to 1e-7. At equal weights the total less
+eq. rot must miss `relaxed_fd` by more than 1e-2. `Refusals`: a root out of
+range, one weight, a zero weight, the solution's weights swapped, one root,
+and a degenerate pair (Numerical).
+
+Measured on the RTX 3080 (CUDA), worst over the ten roots, of max |H| 0.05
+to 0.48: E_I,xy ≤ 6.1e-12 from `exy`, L_xy's z part ≤ 1.1e-11 from `exy_z`,
+L_xλ λ^y ≤ 1.5e-10, root I's term ≤ 2.0e-10, the third-derivative action
+≤ 5.1e-10, eq. rot ≤ 7.5e-11 and the total ≤ 5.1e-10 from `hessian`; the
+total ≤ 2.4e-8 from `relaxed_fd`, the fixture's own analytic-vs-difference
+gap (its `hessian_vs_relaxed_fd`, 2.4e-8 at worst). z_o ≤ 2.9e-10 and λ^x's
+orbital part ≤ 4.9e-9 of their largest elements; CP residuals ≤ 4.9e-9
+after 17 to 42 Schur iterations; asymmetry ≤ 3.8e-14, sum rule ≤ 9.0e-11.
+Without eq. rot the equal-weight totals miss `relaxed_fd` by 4.9e-2 (two
+roots) and 5.2e-2, 0.48 and 0.48 (three), #609's figures. 2.1 to 2.7 s a
+root (the water in 6-31G, 9 coordinates), 5 to 6.4 s a case. The gfx1200
+was not run. The comparison against the semi-numerical CASSCF `[hessian]`
+the issue also asks for waits on that step (#610).
+
 ## Files
 
 | File | Role |
 |------|------|
-| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
+| `hessian.cppm` | Module interface: `hessian::RhfResponse`, `hessian::df_rhf_response`, `hessian::RhfTwoElectron`, `hessian::df_rhf_two_electron`, `hessian::CasscfTwoElectron`, `hessian::df_casscf_two_electron`, `hessian::CasscfExy`, `hessian::df_casscf_exy`, `hessian::CasscfTerms`, `hessian::df_casscf`, `hessian::SaCasscfZTerms`, `hessian::df_sacasscf_z`, `hessian::SaCasscfTerms`, `hessian::df_sacasscf`, `hessian::RhfTerms`, `hessian::df_rhf`, `hessian::rhf_dipole_derivative`, `hessian::infrared_intensities` |
 | `df_rhf.cpp` | D and −W, the one-electron and nuclear-repulsion terms, the two parts, and the symmetrized sum |
 | `df_rhf_response.cpp` | The MO blocks, the G(D_S^x) builds, B, the CPHF and the terms |
 | `atom_block.cppm` | Internal partition: `atom_function_range` and `occupied_atom_block`, the cross term's atom block both two-electron parts build |
@@ -839,6 +950,7 @@ L_xλ λ^y ≤ 1.2e-13 from `lxl_lambda` (of 0.26–0.80); sum rules ≤ 6.6e-13
 | `df_casscf_two_electron.cpp` | The CASSCF Γ̃ and Ŵ contractions and the J, K and active cross terms; with a rotation their product-rule derivative, the atom blocks over [C_o \| C K_o] |
 | `df_casscf_exy.cpp` | E_xy: the one-electron and nuclear-repulsion explicit terms, F, and the connection's three terms over the MO-basis B and the τ^x stack; with a rotation the z_o part, F_L and E^(2)'s commutator terms |
 | `df_casscf.cpp` | The state-specific CASSCF Hessian: E_λx, E_xy, λ^x by `zvectors`, the unreduced residual check, Λᵀ E_λ· and the symmetrized sum |
+| `df_sacasscf.cpp` | A state-averaged root's Hessian: z and λ^x by the Z-vectors, the residual check, root I's parameter Hessian by the one-hot unreduced product, the third-derivative action, the z terms, E_I,xy, eq. rot at equal weights and the symmetrized sum |
 | `df_sacasscf_z.cpp` | A state average's z terms at root I's z: L_xy's z part (E_xy along K(z_o), and at z_c's transition RDMs by the ± polarization) and L_xλ (root I's right-hand side + I^x z) |
 | `infrared.cpp` | The dipole derivative from U^x, and the IR intensities |
 | `CMakeLists.txt` | Build configuration |
