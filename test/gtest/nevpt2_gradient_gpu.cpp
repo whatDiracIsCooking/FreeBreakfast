@@ -466,6 +466,51 @@ double dot(std::span<const double> a, std::span<const double> b) {
   return std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
 }
 
+// A ladder of central differences D_k at t = t0 / 2^k: the longest run of
+// ratios (D_k - D_{k+1}) / (D_{k+1} - D_{k+2}) in (3.2, 4.8) (the O(t²)
+// regime), and the Richardson extrapolant R_k = (4 D_{k+2} - D_{k+1}) / 3
+// at that run's finest pair. With @p steadiest, it is instead the finer of
+// the run's two neighbouring extrapolants that agree best: R_k's truncation
+// falls 16-fold a rung and its rounding grows 2-fold, so where a ladder
+// reaches its rounding inside the run, the finest pair reads the most of it.
+struct Ladder {
+  std::int32_t run = 0;
+  double richardson = 0.0;
+  std::string ratios;
+};
+
+Ladder richardson_ladder(std::span<const double> d, const bool steadiest = false) {
+  Ladder l;
+  std::int32_t best_end = -1;
+  std::int32_t len = 0;
+  for (std::size_t k = 0; k + 2 < d.size(); ++k) {
+    const double ratio = (d[k] - d[k + 1]) / (d[k + 1] - d[k + 2]);
+    l.ratios += std::format(" {:.3f}", ratio);
+    len = (ratio > 3.2 && ratio < 4.8) ? len + 1 : 0;
+    if (len > l.run) {
+      l.run = len;
+      best_end = static_cast<std::int32_t>(k);
+    }
+  }
+  if (l.run == 0) {
+    return l;
+  }
+  const auto r = [&](const std::size_t k) { return ((4.0 * d[k + 2]) - d[k + 1]) / 3.0; };
+  auto at = static_cast<std::size_t>(best_end);
+  if (steadiest && l.run > 1) {
+    double gap = std::numeric_limits<double>::infinity();
+    for (auto k = static_cast<std::size_t>(best_end - l.run + 1);
+         k < static_cast<std::size_t>(best_end); ++k) {
+      if (std::abs(r(k + 1) - r(k)) < gap) {
+        gap = std::abs(r(k + 1) - r(k));
+        at = k + 1;
+      }
+    }
+  }
+  l.richardson = r(at);
+  return l;
+}
+
 // Central differences of @p at over the ladder, against @p predicted, to
 // kLadderTolerance relative to @p scale: |predicted| unless given, which a
 // stationarity check, predicting 0, gives as the slope it cancels.
@@ -476,31 +521,15 @@ void expect_ladder(const std::string &name, const std::function<double(double)> 
     const double t = std::ldexp(kLadderT0, -k);
     d.push_back((at(t) - at(-t)) / (2.0 * t));
   }
-  // ratio[k] = (D_k - D_{k+1}) / (D_{k+1} - D_{k+2}); the longest run of
-  // ratios in (3.2, 4.8).
-  std::int32_t best_end = -1;
-  std::int32_t best_len = 0;
-  std::int32_t len = 0;
-  std::string ladder;
-  for (std::int32_t k = 0; k + 2 < kRungs; ++k) {
-    const double ratio = (d[k] - d[k + 1]) / (d[k + 1] - d[k + 2]);
-    ladder += std::format(" {:.3f}", ratio);
-    len = (ratio > 3.2 && ratio < 4.8) ? len + 1 : 0;
-    if (len > best_len) {
-      best_len = len;
-      best_end = k;
-    }
-  }
-  ASSERT_GE(best_len, 3) << name << " ratios:" << ladder;
-  // The run's finest pair is (D_{end+1}, D_{end+2}).
-  const auto fine = static_cast<std::size_t>(best_end + 2);
-  const double richardson = ((4.0 * d[fine]) - d[fine - 1]) / 3.0;
+  const Ladder l = richardson_ladder(d);
+  ASSERT_GE(l.run, 3) << name << " ratios:" << l.ratios;
   const double against = scale.value_or(std::abs(predicted));
-  EXPECT_NEAR(richardson, predicted, kLadderTolerance * against) << name << " ratios:" << ladder;
+  EXPECT_NEAR(l.richardson, predicted, kLadderTolerance * against)
+      << name << " ratios:" << l.ratios;
   std::cout << std::format("[ nevpt2   ] gradient ladder {}: predicted {:.12e}, Richardson "
                            "{:.12e}, relative {:.2e}, ratios{}\n",
-                           name, predicted, richardson, std::abs(richardson - predicted) / against,
-                           ladder);
+                           name, predicted, l.richardson,
+                           std::abs(l.richardson - predicted) / against, l.ratios);
 }
 
 TEST(Nevpt2Gradient, EnergyMatchesPyscf) {
@@ -1618,8 +1647,10 @@ TEST(Nevpt2PcGradient, RefusesWhatTheEnergyRefuses) {
 // at the moved state @p moved, the multipliers fixed: g_orb response::fock's
 // gradient over the packed pairs, g_ci = 2 (H_0 - E) c in zvector's
 // coordinates, every input rebuilt from (C, c) and nothing re-canonicalized.
-double lagrangian(NuclearRun &run, const State &moved, std::span<const double> z_orbital,
-                  std::span<const double> z_ci, std::span<const double> zc) {
+// As {E_corr, the rest}, each kept apart for a ladder of its own.
+std::array<double, 2> lagrangian(NuclearRun &run, const State &moved,
+                                 std::span<const double> z_orbital, std::span<const double> z_ci,
+                                 std::span<const double> zc) {
   fb::DeviceResources &res = run.node->device(0);
   const GradientInputs in = gradient_inputs(run);
   const auto n = static_cast<std::size_t>(moved.ncas);
@@ -1635,7 +1666,7 @@ double lagrangian(NuclearRun &run, const State &moved, std::span<const double> z
   auto sigma = fb::ci::Sigma::create(res, *d.strings, *d.strings);
   EXPECT_TRUE(rdm.has_value() && sigma.has_value());
   if (!ints.has_value() || !rdm.has_value() || !sigma.has_value()) {
-    return std::nan("");
+    return {std::nan(""), std::nan("")};
   }
   fb::Buffers::device<double> gamma(n * n, res.device());
   fb::Buffers::device<double> gamma2(n * n * n * n, res.device());
@@ -1646,7 +1677,7 @@ double lagrangian(NuclearRun &run, const State &moved, std::span<const double> z
       ints->papa, download(res, gamma.data(), n * n), download(res, gamma2.data(), n * n * n * n));
   EXPECT_TRUE(fock.has_value()) << fock.error().message;
   if (!fock.has_value()) {
-    return std::nan("");
+    return {std::nan(""), std::nan("")};
   }
   const std::vector<double> g_orb = download(res, fock->gradient.data(), z_orbital.size());
   EXPECT_TRUE(sigma
@@ -1659,14 +1690,55 @@ double lagrangian(NuclearRun &run, const State &moved, std::span<const double> z
   const std::vector<double> h_c = download(res, hc.data(), moved.vector.size());
   const double e = dot(moved.vector, h_c);
   const double ci = 2.0 * (dot(z_ci, h_c) - (e * dot(z_ci, moved.vector)));
-  return fock->energy + energy(res, moved) + phi(res, moved, zc) + dot(z_orbital, g_orb) + ci;
+  return {energy(res, moved), fock->energy + phi(res, moved, zc) + dot(z_orbital, g_orb) + ci};
+}
+
+// expect_ladder over L = E_corr + the rest (@p at's two parts), predicting 0
+// against @p slope, each part's derivative extrapolated by a ladder of its
+// own and the two extrapolants summed. One ladder over L rarely sees a run:
+// E_corr is still far from its O(t²) regime (orbitals: 9.9 5.6 4.9 4.8 4.4
+// 4.1) where the rest, at 4.000 from the first rung, has reached the
+// rounding of E_cas ≈ −76 Eh (an ulp over 2t is 3.6e-10 at the finest
+// rung), so L's ratios (12.4 6.8 5.8 6.0 5.2 4.40 4.06, then 4.3-4.9) held
+// three in (3.2, 4.8) by chance and fell short 4 runs in 50 on the gfx1200.
+// Apart, each part has a run of four or more, and the extrapolant is linear
+// in D, so the sum is L's. Each is taken where its extrapolants are
+// steadiest (richardson_ladder): at the finest pair the rest's reads
+// E_cas's rounding (up to 8.7e-8 of the slope over 50 runs, against 1e-7),
+// at its coarsest its t⁴ truncation (3.6e-7). Steadiest, the worst of 50
+// runs on the gfx1200 was 1.4e-8 (orbitals) and 2.5e-9 (CI), of 20 on the
+// RTX 3080 1.7e-8 and 1.2e-9.
+void expect_stationary(const std::string &name,
+                       const std::function<std::array<double, 2>(double)> &at, const double slope) {
+  constexpr std::array<std::string_view, 2> kParts{"E_corr", "rest"};
+  std::array<std::vector<double>, 2> d;
+  for (std::int32_t k = 0; k < kRungs; ++k) {
+    const double t = std::ldexp(kLadderT0, -k);
+    const std::array<double, 2> plus = at(t);
+    const std::array<double, 2> minus = at(-t);
+    for (std::size_t part = 0; part < d.size(); ++part) {
+      d[part].push_back((plus[part] - minus[part]) / (2.0 * t));
+    }
+  }
+  double richardson = 0.0;
+  std::string ladders;
+  for (std::size_t part = 0; part < d.size(); ++part) {
+    const Ladder l = richardson_ladder(d[part], true);
+    ASSERT_GE(l.run, 3) << name << " " << kParts[part] << " ratios:" << l.ratios;
+    richardson += l.richardson;
+    ladders += std::format(" {}:{}", kParts[part], l.ratios);
+  }
+  EXPECT_NEAR(richardson, 0.0, kLadderTolerance * slope) << name << ladders;
+  std::cout << std::format("[ nevpt2   ] stationarity {}: Σ Richardson {:.12e}, relative {:.2e},"
+                           "{}\n",
+                           name, richardson, std::abs(richardson) / slope, ladders);
 }
 
 // The full Lagrangian flat at first order along a random rotation of the
 // non-redundant pairs (core-active, core-virtual, active-virtual at once),
 // C exp(t kappa), and along ci_direction's u perpendicular to c: each
-// ladder's extrapolant within 1e-7 of the slope of E_corr + <z^c, f> it
-// cancels.
+// direction's summed extrapolant (expect_stationary) within 1e-7 of the
+// slope of E_corr + <z^c, f> it cancels.
 TEST(Nevpt2NuclearGradient, LagrangianIsStationary) {
   FBF_REQUIRE_GPU();
   NuclearRun run = nuclear_run(gradient_case("h2o_skew_ccpvdz"));
@@ -1694,26 +1766,26 @@ TEST(Nevpt2NuclearGradient, LagrangianIsStationary) {
   const double orbital_slope = source_dot(kappa, adj.a, nmo) + source_dot(kappa, zadj.a, nmo);
   ASSERT_GT(std::abs(orbital_slope), 0.0);
   State moved = s;
-  expect_ladder(
+  expect_stationary(
       "full lagrangian orbitals",
       [&](const double t) {
         rotate(s, kappa, t, moved);
         return lagrangian(run, moved, z_orbital, z_ci, zc);
       },
-      0.0, std::abs(orbital_slope));
+      std::abs(orbital_slope));
 
   const std::vector<double> u = ci_direction(res, s);
   ASSERT_EQ(u.size(), s.vector.size());
   const double ci_slope = dot(u, adj.y) + dot(u, zadj.y);
   ASSERT_GT(std::abs(ci_slope), 0.0);
   moved = s;
-  expect_ladder(
+  expect_stationary(
       "full lagrangian ci",
       [&](const double t) {
         move_vector(s, u, t, moved);
         return lagrangian(run, moved, z_orbital, z_ci, zc);
       },
-      0.0, std::abs(ci_slope));
+      std::abs(ci_slope));
 }
 
 } // namespace

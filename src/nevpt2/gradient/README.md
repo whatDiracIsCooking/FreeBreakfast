@@ -402,8 +402,12 @@ once per process.
     (E_cas and g_orb from `response::fock`, g_ci from H₀'s sigma, E_corr,
     Φ), the multipliers fixed and every input rebuilt, along C exp(t κ), κ
     random on the three non-redundant blocks at once, and along the CI
-    ladders' u ⊥ c: each ladder's extrapolant within 1e-7 of the slope of
-    E_corr + Φ it cancels.
+    ladders' u ⊥ c: the derivative within 1e-7 of the slope of E_corr + Φ
+    it cancels. E_corr and the rest are laddered apart and their
+    extrapolants summed, each where its extrapolants are steadiest: E_corr
+    reaches its O(t²) regime only at t ~ 3e-4, where the rest has reached
+    E_cas's rounding, so one ladder over L saw three ratios in (3.2, 4.8)
+    only by chance (#640).
   - Measured on an RTX 3080: every component within 3.4e-9 (skew H₂O) and
     5.4e-9 (H₂CO) of the numerical gradient, each about twice its error
     bar; translation 1e-14 and 6e-13. max |z^c| 1.9e-3 and 4.4e-3, the
@@ -413,8 +417,8 @@ once per process.
     identity), the mixed blocks ≤ 9e-11, core–core and virtual–virtual
     ≤ 1e-14. Zeroed: max |Z| 4.1e-10 (skew H₂O; H₂CO exactly 0), against
     df_gradient 1.5e-10 and 6e-14, against PySCF 1.9e-11 and 8.3e-12.
-    Stationarity over sixteen runs, worst: orbitals 5.7e-8, CI 3.8e-8 of
-    the slope (round-off of E_cas ≈ −76 Eh at the finest rungs). Each case
+    Stationarity, worst of 50 runs on the gfx1200: orbitals 1.4e-8, CI
+    2.5e-9 of the slope (20 on the 3080: 1.7e-8, 1.2e-9). Each case
     is under a second, the setup included, so none is a slow test.
 - PC-NEVPT2:
   - `Nevpt2NuclearGradient.PcMatchesNumerical`: `pc_gradient`'s total
