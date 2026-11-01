@@ -1,12 +1,15 @@
 # Pipeline: Hessian
 
-The closed-shell RHF Cartesian Hessian at the pipeline's molecule -- or,
-numerically, a DF-CASSCF root's (below, "The CASSCF chain") -- its harmonic
-frequencies and normal modes, and (analytic) the IR intensities. Two methods:
+The closed-shell RHF Cartesian Hessian at the pipeline's molecule -- or a
+DF-CASSCF root's, state-specific or one root of a state average (below,
+"The CASSCF chain") -- its harmonic frequencies and normal modes, and
+(analytic RHF) the IR intensities. Two methods:
 
 - **analytic**, the default: `hessian::df_rhf` (`../../hessian/`) at the SCF
-  of one run of the chain from the molecule to `[scf]`, a nested `Pipeline`.
-  Density-fitted only.
+  of one run of the chain from the molecule to `[scf]`, a nested `Pipeline`;
+  beside a `[casscf_gradient]`, `hessian::df_casscf` or
+  `hessian::df_sacasscf` at the CASSCF of one run of the chain to
+  `[casscf]`. Density-fitted only.
 - **numerical**: central differences of the analytic gradient of the chain
   from the molecule to `[gradient]`, rerun as a nested `Pipeline` at each of
   the 6N displaced geometries, as `[optimize]` reruns it at each evaluation
@@ -88,6 +91,8 @@ the molecule a private step standing where `MoleculeStep` stood.
   shell the dipole derivative and intensities are left empty, with a warning,
   rather than the step failing. An integral-direct `[eri]` is refused (Unsupported) before
   anything runs, and an ROHF SCF after it, as `[gradient]` refuses it.
+  Beside a `[casscf_gradient]`, the chain runs to `[casscf]` instead and
+  the Hessian is the root's (below, "The CASSCF chain").
 - **Numerical.** For each coordinate x = 3 A + k, one pipeline to
   `[gradient]` at R + h e_x and one at R - h e_x. Row x of the raw Hessian
   is (g(R + h e_x) - g(R - h e_x)) / 2h, and its asymmetry is recorded.
@@ -149,9 +154,45 @@ refusal of an open shell -- is returned as it is.
 ## The CASSCF chain
 
 With `casscf_gradient` set (pipeline/config sets it when the config has a
-`[casscf_gradient]`), the numerical method differences the analytic gradient
-of that root of the DF-CASSCF, `mcscf::df_gradient`, state-specific or one
-root of a state average, over 6N displaced CASSCF solves:
+`[casscf_gradient]`), the Hessian is that root's of the DF-CASSCF,
+state-specific or one root of a state average, by either method.
+
+### Analytic
+
+One pipeline to `[casscf]` at R:
+
+```
+molecule -> ... -> guess -> scf -> casscf
+```
+
+and its `CasscfOutput` back into the `mcscf::Solution` the Hessians take,
+as `[casscf_gradient]` builds it for `mcscf::df_gradient` (the orbitals and
+CI vectors on the device, gamma the weighted average of the roots' 1-RDMs):
+
+- **one root**: `hessian::df_casscf` (`../../hessian/README.md`), the
+  state-specific Hessian; `[casscf_gradient]` `root` must be 0.
+- **a state average**: `hessian::df_sacasscf` at the CASSCF's own weights,
+  root `[casscf_gradient]` `root` -- equal weights (with eq. rot) or all
+  pairwise different (the rotations in λ).
+
+Its `hessian` is the step's raw Hessian (already symmetrized) and its
+`asymmetry` the step's; the largest CP residual is logged beside the root's
+energy. Both refuse what they cannot take, and the step returns it as it
+is: a saddle (Divergence: the CP solve met negative curvature, as a
+state-specific excited root does), two roots within 1e-8 hartree
+(Numerical), weights equal for some pairs only (InvalidConfig). A root the
+CASSCF does not have is InvalidConfig before the Hessian runs. No dipole
+derivative is made, so no IR intensities: the product's and `hessian.json`'s
+are empty and absent, and the frequencies are logged alone.
+
+As with the RHF, the analytic Hessian is the CASSCF energy's only as far as
+the CASSCF converged: it assumes stationarity and does not check it. The
+GPU cases set `[casscf]` `conv_tol_grad = 1e-9`.
+
+### Numerical
+
+The numerical method differences the analytic gradient of the root,
+`mcscf::df_gradient`, over 6N displaced CASSCF solves:
 
 ```
 reference: molecule -> ... -> guess -> scf -> casscf
@@ -199,22 +240,30 @@ error. So:
   geometry -- `[hessian] at the reference geometry: ...` or `[hessian] at
   coordinate x displaced by +0.001 bohr: ...` -- as is every other error of
   a chain.
-- **Density fitting only, numerical only.** `[casscf_gradient]` takes
-  nothing else, so an integral-direct `eri` is refused before anything runs,
-  here and by pipeline/config; the analytic CASSCF Hessian is not wired into
-  the step, so `method = "analytic"` beside it is refused too
-  (Unsupported).
+- **Density fitting only.** `[casscf_gradient]` takes nothing else, so an
+  integral-direct `eri` is refused (Unsupported) before anything runs, by
+  either method, here and by pipeline/config.
 - **Converge the CASSCF.** The gradient is the CASSCF energy's only as far
   as the CASSCF converged, and its noise is divided by 2h: the GPU cases
   below set `[casscf]` `conv_tol_grad = 1e-9` and `conv_tol = 1e-12`.
+
+### Either method
+
 - **The outer `[casscf]` and `[casscf_gradient]` run too**, once, at the
   molecule: tables are requests. They are the same chain as the reference,
   so the outer CASSCF is the reference solution (the GPU cases check its
   energy).
 - **The reference is whichever solution the pick converges to.** A CASSCF
   can have several minima (and saddles) within reach of a pick; the step
-  differences around the one `[casscf]` finds, and holds every displaced
-  solve to it. Which one that is is the config's to check, by its energy.
+  works at the one `[casscf]` finds (and, numerically, holds every
+  displaced solve to it). Which one that is is the config's to check, by
+  its energy. The analytic method refuses a saddle; the numerical one
+  differences around it.
+- **Beside an `[optimize]`** over the same `[casscf_gradient]`, the step
+  reads the optimum's molecule, as the RHF's does, and picks the active
+  space afresh there from the configured selection: the optimizer's carried
+  orbitals do not reach it. The GPU case below checks the pick at the
+  optimum finds the optimized root.
 
 ## Config
 
@@ -225,9 +274,8 @@ displacement = 1e-3    # bohr, positive: the numerical method's only
 ```
 
 With a `[casscf_gradient]` in the config, `[casscf]` and it are copied in
-too, and the numerical method differences that root's gradient (the
-analytic one beside it is refused, Unsupported, and `[gradient]` beside it,
-InvalidConfig):
+too, and the Hessian is that root's, analytic (the default) or numerical
+(`[gradient]` beside it is refused, InvalidConfig):
 
 ```toml
 [eri]
@@ -244,7 +292,7 @@ conv_tol_grad = 1e-9
 [casscf_gradient]
 root = 0
 [hessian]
-method = "numerical"
+method = "analytic"    # or "numerical"
 ```
 
 The chain is the config's own `[basis_set]`, `[eri]`, `[orthogonalizer]`,
@@ -262,8 +310,10 @@ integral-direct `[eri]` -- the default one -- is refused there too
   integral-direct ERIs refused; the chain copied from the tables; `from`
   refused on a chain table; and beside `[optimize]`, the molecule it reads
   loaded from `final.xyz`); the CASSCF chain copied in beside a
-  `[casscf_gradient]`, and its refusals (the analytic method, `[gradient]`
-  beside it, no `[casscf]` space); and `check_displaced_casscf` over a
+  `[casscf_gradient]`, and its refusals (`[gradient]`
+  beside it, no `[casscf]` space, an integral-direct `[eri]`); the analytic
+  method beside a `[casscf_gradient]` (by default and by name, and beside an
+  `[optimize]` holding the same CASSCF chain); and `check_displaced_casscf` over a
   non-orthonormal basis, passing a solve that followed and refusing an active
   orbital swapped out and two roots exchanged -- the forced refusals.
 - `test/gtest/pipeline_hessian_gpu.cpp`, TOML configs in cc-pVDZ /
@@ -318,6 +368,36 @@ Measured on the gfx1200 (HIP), against `relaxed_fd`:
 | `h2o_631g_sa2` | 1.6e-7 | 6.5e-8 | 4.4e-8 | 17.9 s |
 | `h2o_631g_sa2_unequal` | 7.4e-8 | 1.9e-8 | 1.2e-8 | 13.9 s |
 | `h2o_ccpvdz` | 5.7e-8 | 1.9e-8 | 9.5e-9 | 5.5 s |
+
+  The analytic method, `hessian::df_casscf` / `df_sacasscf` through the
+  step, against `relaxed_fd` to 1e-7 (all in the fast tier):
+  `h2o_631g` and `h2o_ccpvdz` state-specific, and root 1 of both two-root
+  averages (equal weights, with eq. rot; and (0.7, 0.3), the rotations in
+  λ). `StateAveragedRootAnalyticMatchesNumerical` (slow-gated) runs the
+  analytic `[hessian]` for root 1 of `h2o_631g_sa2`, then the step again,
+  numerically, at the Calculation's molecule: the two to 1e-5, their
+  frequencies to 0.1 cm⁻¹. `OptimizedWaterAnalyticFrequenciesMatchNumerical`
+  (fast) optimizes the CASSCF water of `data/casscf_gradient/casscf_optimize.json`
+  from its start (as `pipeline_optimize_gpu.cpp` does), checks the optimum's
+  energy and that the outer CASSCF, picked afresh there, is the optimized
+  root, then the analytic `[hessian]` at the optimum -- three positive
+  frequencies, in the product and `hessian.json` -- and the numerical one
+  beside it, to 1e-5 and 0.1 cm⁻¹.
+
+Measured on the gfx1200 (HIP), analytic:
+
+| Case | max \|H − relaxed_fd\| | asymmetry | translational sum | time |
+|---|---|---|---|---|
+| `h2o_631g` | 1.8e-9 | 2.3e-10 | 8.1e-11 | 1.9 s |
+| `h2o_ccpvdz` | 9.0e-11 | 8.4e-11 | 1.0e-10 | 3.2 s |
+| `h2o_631g_sa2` root 1 | 1.6e-9 | 1.9e-15 | 3.0e-12 | 8.5 s |
+| `h2o_631g_sa2_unequal` root 1 | 9.7e-10 | 5.6e-13 | 1.0e-11 | 6.0 s |
+
+Analytic against numerical: `h2o_631g_sa2` root 1, 2.4e-7, frequencies
+7.1e-4 cm⁻¹ (24 s both); the optimized water, 3.0e-7, frequencies
+2.3e-3 cm⁻¹ (1717.748, 3741.433, 3852.114 cm⁻¹), optimization and analytic
+Hessian 4.8 s, the numerical one 4.2 s. The CUDA card was not run. No
+OpenMolcas comparison (the issue's optional one) was made.
 
 - `test/gtest/infrared_gpu.cpp`'s `PipelineInfrared`: the analytic
   `[hessian]` at PySCF's DF-RHF minimum of water

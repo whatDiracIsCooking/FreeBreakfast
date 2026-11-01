@@ -22,7 +22,8 @@ DF-CASSCF one, and a state-averaged DF-CASSCF root's) and
 `pipeline` (the calculation pipeline: the step
 contract, the setup steps, the ERI step (integral-direct or density-fitted,
 built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, the DF-RHF gradient step, the geometry-optimization step, the Hessian step (analytic DF-RHF or
-semi-numerical, with harmonic frequencies, and IR intensities when analytic), and the
+DF-CASSCF, state-specific or one root of a state average, or semi-numerical,
+with harmonic frequencies, and IR intensities when analytic RHF), and the
 planner that runs them from a TOML config). `src/README.md` has the one-line summary of each.
 The build system, containers, tooling and CI around them are real and exercised.
 

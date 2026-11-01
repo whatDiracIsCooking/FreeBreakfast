@@ -570,8 +570,8 @@ template <class S>
 /// each step by read_chain_step, and refuse the analytic method over an
 /// integral-direct `[eri]`, which it does not take. With a
 /// `[casscf_gradient]` in @p doc the chain ends in `[casscf]` and it, both
-/// copied in too, the numerical method's only; `[gradient]` beside it is
-/// refused, since one gradient is differenced. The molecule is not among
+/// copied in too, and the Hessian is that root's, analytic or numerical;
+/// `[gradient]` beside it is refused, since the Hessian is one energy's. The molecule is not among
 /// them: the step reads the pipeline's own.
 [[nodiscard]] Status plan_hessian(std::vector<Calculation::Step> &steps, const toml::table &doc,
                                   const std::filesystem::path &input_dir,
@@ -588,18 +588,13 @@ template <class S>
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.orthogonalizer));
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.guess));
   FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.scf));
-  // With a [casscf_gradient], the numerical method differences that root's
-  // gradient instead: one gradient, so [gradient] beside it is refused.
+  // With a [casscf_gradient], the Hessian is that root's instead, by either
+  // method: one energy's, so [gradient] beside it is refused.
   if (doc.contains(CasscfGradientStep::kName)) {
     if (doc.contains(GradientStep::kName)) {
-      return err_config("[{}] differences the gradient of [{}] or of [{}], and the config names "
-                        "both: keep the one to difference",
+      return err_config("[{}] is the Hessian of the energy of [{}] or of [{}], and the config "
+                        "names both: keep the one wanted",
                         kStep, GradientStep::kName, CasscfGradientStep::kName);
-    }
-    if (step.method == HessianMethod::Analytic) {
-      return err_unsupported("[{}] method 'analytic' is the RHF's, and [{}] asks for a CASSCF "
-                             "root's: set [{}] method = 'numerical'",
-                             kStep, CasscfGradientStep::kName, kStep);
     }
     FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.casscf));
     FBF_TRY(read_chain_step(doc, kStep, input_dir, output_dir, step.casscf_gradient.emplace()));
