@@ -98,6 +98,7 @@ add_executable(
   ci_sigma_gpu.cpp
   ci_solver_gpu.cpp
   ci_rdm_gpu.cpp
+  ci_trans_rdm_gpu.cpp
   cis_precondition_gpu.cpp
   cis_ris_precondition_gpu.cpp
   cis_sigma_gpu.cpp
