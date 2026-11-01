@@ -4,7 +4,10 @@
 // copied in from the config's own tables, every refusal (the analytic method
 // over integral-direct ERIs among them), and beside an [optimize], the
 // molecule it reads loaded from the final.xyz that step writes, so it runs
-// after it. Nothing is run, so nothing touches a device.
+// after it; the CASSCF chain copied in beside a [casscf_gradient], and its
+// refusals; and the guard on a displaced CASSCF, check_displaced_casscf, fed
+// an active orbital swapped out and roots swapped. Nothing is run, so
+// nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -151,6 +154,104 @@ TEST(PipelineHessian, BesideAnOptimizeItReadsTheOptimum) {
   EXPECT_EQ(hessian.basis_set.basis, optimize.basis_set.basis);
   EXPECT_EQ(hessian.eri.mode, optimize.eri.mode);
   EXPECT_EQ(hessian.scf.energy_tolerance, optimize.scf.energy_tolerance);
+}
+
+// Beside a [casscf_gradient] the numerical method differences that root's
+// gradient: [casscf] and it are copied in with the rest of the chain.
+TEST(PipelineHessian, BesideACasscfGradientItCopiesTheCasscfChain) {
+  auto calc = fb::parse_config(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n"
+                  "[casscf]\nncas = 4\nnelecas = 4\nactive = [2, 3, 5, 6]\nnroots = 2\n"
+                  "weights = [0.7, 0.3]\nconv_tol_grad = 1e-9\n"
+                  "[casscf_gradient]\nroot = 1\n[hessian]\nmethod = \"numerical\"\n"),
+      "/in", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::HessianStep &hessian = *calc->step<fb::HessianStep>();
+  ASSERT_TRUE(hessian.casscf_gradient.has_value());
+  EXPECT_EQ(hessian.casscf_gradient->root, 1);
+  EXPECT_EQ(hessian.casscf.ncas, 4);
+  EXPECT_EQ(hessian.casscf.nelecas, 4);
+  EXPECT_EQ(hessian.casscf.active, (std::vector<std::int32_t>{2, 3, 5, 6}));
+  EXPECT_EQ(hessian.casscf.nroots, 2);
+  EXPECT_EQ(hessian.casscf.weights, (std::vector<double>{0.7, 0.3}));
+  EXPECT_EQ(hessian.casscf.conv_tol_grad, 1e-9);
+  // The outer [casscf] and [casscf_gradient] still run, as tables are requests.
+  EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
+  EXPECT_TRUE(calc->step<fb::CasscfGradientStep>().has_value());
+
+  // Without one, the RHF chain: no CASSCF gradient set.
+  auto rhf = fb::parse_config(with_inputs("[hessian]\nmethod = \"numerical\"\n"), "", kOut);
+  ASSERT_TRUE(rhf.has_value()) << rhf.error().message;
+  EXPECT_FALSE(rhf->step<fb::HessianStep>()->casscf_gradient.has_value());
+}
+
+// The CASSCF chain is the numerical method's alone, and one gradient is
+// differenced.
+TEST(PipelineHessian, TheCasscfChainRefusesTheAnalyticMethodAndASecondGradient) {
+  constexpr std::string_view kCasscf = "[eri]\nmode = \"density_fitting\"\n"
+                                       "[casscf]\nncas = 4\nnelecas = 4\n[casscf_gradient]\n";
+  auto analytic = fb::parse_config(with_inputs(std::format("{}[hessian]\n", kCasscf)), "", kOut);
+  ASSERT_FALSE(analytic.has_value());
+  EXPECT_EQ(analytic.error().kind, fb::ErrorKind::Unsupported);
+  EXPECT_EQ(analytic.error().message,
+            "[hessian] method 'analytic' is the RHF's, and [casscf_gradient] asks for a CASSCF "
+            "root's: set [hessian] method = 'numerical'");
+  expect_config_error(
+      with_inputs(std::format("{}[gradient]\n[hessian]\nmethod = \"numerical\"\n", kCasscf)),
+      "[hessian] differences the gradient of [gradient] or of [casscf_gradient], and the config "
+      "names both");
+  // The chain's [casscf] is read as the pipeline reads it: no space, refused.
+  expect_config_error(with_inputs("[eri]\nmode = \"density_fitting\"\n[casscf_gradient]\n"
+                                  "[hessian]\nmethod = \"numerical\"\n"),
+                      "[casscf] needs 'ncas'");
+}
+
+// check_displaced_casscf over a non-orthonormal AO basis, S = diag(1, 4, 1,
+// 1), two active orbitals and two roots of three determinants: a solve that
+// followed the reference passes; an active orbital swapped for one outside
+// the space, or the roots exchanged, is Numerical, naming which.
+TEST(PipelineHessian, TheDisplacedCasscfGuardRefusesASwappedOrbitalOrRoot) {
+  constexpr std::size_t kNao = 4;
+  const std::vector<double> s{1, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  // e_0 and e_1 / 2: orthonormal in S.
+  const std::vector<double> start{1, 0, 0, 0, 0, 0.5, 0, 0};
+  // The same space, its orbitals exchanged and turned a little: each still in
+  // it. Without S, e_1 / 2's weight would be 1/16.
+  const double c = std::cos(0.01);
+  const double t = std::sin(0.01);
+  const std::vector<double> followed{t, 0.5 * c, 0, 0, c, -0.5 * t, 0, 0};
+  const std::vector<double> reference{1, 0, 0, 0, 1, 0};
+  const std::vector<double> roots{c, t, 0, -t, c, 0};
+  EXPECT_TRUE(fb::check_displaced_casscf(kNao, s, start, followed, reference, roots, 2));
+
+  // Orbital 1 swapped for e_2, outside the space.
+  const std::vector<double> swapped{t, 0.5 * c, 0, 0, 0, 0, 1, 0};
+  const fb::Status orbital =
+      fb::check_displaced_casscf(kNao, s, start, swapped, reference, roots, 2);
+  ASSERT_FALSE(orbital.has_value());
+  EXPECT_EQ(orbital.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(orbital.error().message.find("active orbital 1 of 2 left the reference's active "
+                                         "space: its weight there is 0.000e+00"),
+            std::string::npos)
+      << orbital.error().message;
+
+  // The two roots exchanged (a sign is no change).
+  const std::vector<double> exchanged{0, 1, 0, -1, 0, 0};
+  const fb::Status root =
+      fb::check_displaced_casscf(kNao, s, start, followed, reference, exchanged, 2);
+  ASSERT_FALSE(root.has_value());
+  EXPECT_EQ(root.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(root.error().message.find("root 0 of 2 is not the reference's root 0"),
+            std::string::npos)
+      << root.error().message;
+  const std::vector<double> flipped{-1, 0, 0, 0, -1, 0};
+  EXPECT_TRUE(fb::check_displaced_casscf(kNao, s, start, followed, reference, flipped, 2));
+
+  // Spans that do not fit each other.
+  const fb::Status sizes =
+      fb::check_displaced_casscf(kNao, s, start, followed, reference, {roots.data(), 5}, 2);
+  ASSERT_FALSE(sizes.has_value());
+  EXPECT_EQ(sizes.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 } // namespace

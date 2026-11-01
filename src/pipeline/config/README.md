@@ -313,7 +313,11 @@ beside the analytic method. Like `[optimize]` the step reruns the chain, and
 `[orthogonalizer]`, `[guess]` and `[scf]` into it the same way, refusing one
 that loads `from` a file. The molecule is not copied: the step reads the
 pipeline's `MoleculeOutput`, so beside an `[optimize]` it runs at the
-optimum.
+optimum. **With a `[casscf_gradient]` in the config the numerical method
+differences that root's DF-CASSCF gradient instead** (`hessian/README.md`
+"The CASSCF chain"), and `[casscf]` and `[casscf_gradient]` are copied in
+too; the analytic method beside it is refused as Unsupported, and
+`[gradient]` beside it as InvalidConfig, since one gradient is differenced.
 
 **A table is a request, and the steps producing what it reads are filled
 in.** The file above plans all twelve steps: `[orthogonalizer]` reads the
@@ -370,7 +374,7 @@ step, so no two collide:
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
 | `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
-| `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
+| `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
 no output, so a later config can rely on what an earlier run wrote
@@ -415,7 +419,8 @@ than after the SCF has converged. `parse_config` touches no disk.
   or an `[optimize]` beside two of `[gradient]`, `[casscf_gradient]` and
   `[nevpt2_gradient]`;
 - a `[hessian]` `displacement` that is not finite and positive, or one
-  beside the analytic method;
+  beside the analytic method; or a `[hessian]` beside both `[gradient]` and
+  `[casscf_gradient]`;
 - an option of the other ERI mode (above): `[eri] aux_basis` under
   `"integral_direct"`, or `[scf] fock_rebuild_interval` under
   `"density_fitting"`; or an empty `aux_basis`;
@@ -430,7 +435,8 @@ than after the SCF has converged. `parse_config` touches no disk.
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
 is well formed and the method is what is missing: `[nevpt2]`,
 `[casscf_gradient]`, `[nevpt2_gradient]` or the analytic `[hessian]` under
-an integral-direct `[eri]`, `[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
+an integral-direct `[eri]`, the analytic `[hessian]` beside a
+`[casscf_gradient]`, `[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
 average and multiplicity other than 1 (above).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
