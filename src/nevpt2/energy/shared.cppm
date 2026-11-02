@@ -21,7 +21,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
-import free_breakfast.nevpt2.energy; // EnergyInputs
+import free_breakfast.nevpt2.energy; // EnergyInputs, ClassEnergies
 
 namespace free_breakfast::nevpt2 {
 
@@ -65,10 +65,14 @@ Result<Buffers::device<double>> make_dm3_h(DeviceResources &res, const EinsumOpe
                                            const EinsumOperand &dm3, const EinsumOperand &delta);
 Result<Buffers::device<double>> make_dm2_h(DeviceResources &res, const EinsumOperand &dm1,
                                            const EinsumOperand &dm2, const EinsumOperand &delta);
+// hdm1 and hdm2 carry terms with no RDM (hdm1's 2δ, hdm2's δδ), which are
+// ⟨I|J⟩ times a number: @p overlap is that ⟨I|J⟩, 1 for a state's own RDMs and
+// 0 for a transition's, whose such terms are then not added.
 Result<Buffers::device<double>> make_hdm1(DeviceResources &res, const EinsumOperand &dm1,
-                                          const EinsumOperand &delta);
+                                          const EinsumOperand &delta, double overlap = 1.0);
 Result<Buffers::device<double>> make_hdm2(DeviceResources &res, const EinsumOperand &dm1,
-                                          const EinsumOperand &dm2, const EinsumOperand &delta);
+                                          const EinsumOperand &dm2, const EinsumOperand &delta,
+                                          double overlap = 1.0);
 Result<Buffers::device<double>> make_hdm3(DeviceResources &res, const EinsumOperand &dm1,
                                           const EinsumOperand &dm2, const EinsumOperand &dm3,
                                           const EinsumOperand &hdm2, const EinsumOperand &delta);
@@ -149,6 +153,15 @@ Status einsum_adjoint(DeviceResources &res, std::string_view subscripts,
                       const std::vector<EinsumOperand> &operands, const std::vector<double *> &bars,
                       const double *out_bar, const std::vector<int64_t> &out_dims,
                       const EinsumOperand &delta, double alpha);
+
+/// @brief The SC class walk of n states over @p pairs, n x n EnergyInputs
+/// row-major (bra I row, ket J column, I = J a state's own): per ordered pair
+/// each class's Σ_t T^t_IJ and -Σ_t T^t_IJ / (Δ_t + H^J_t / N^J_t), as
+/// sc_effective_hamiltonian documents, at [I n + J]. class_energies is n = 1.
+/// Nothing is validated: the caller has.
+Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBlocks &blocks,
+                                                std::span<const EnergyInputs> pairs, int64_t n,
+                                                int32_t batch);
 
 /// @brief Sijrs: {norm, energy}. It reads no RDM, so it is PC's too.
 Result<std::pair<double, double>> energy_sijrs(DeviceResources &res, const MoBlocks &blocks,

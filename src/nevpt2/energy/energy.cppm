@@ -78,6 +78,43 @@ struct ClassEnergies {
 [[nodiscard]] Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &blocks,
                                                    const EnergyInputs &in, int32_t batch);
 
+/// @brief The SC-QD-NEVPT2 second-order effective Hamiltonian of n states that
+/// share orbitals: element [I n + J] holds, per class, ⟨I|V|Ψ_J⁽¹⁾⟩, the
+/// unsymmetrized correction with I the bra (row) and J the ket (column).
+///
+/// @p pairs is n x n row-major, pairs[I n + J] the EnergyInputs of the ordered
+/// pair (I, J): every field but the RDMs is the states' shared one, the same
+/// pointer in every pair, and dm1, dm2 and dm3 are the transition RDMs
+/// between ⟨I| and |J⟩ in nevpt2::rdms' bra/ket convention (dm1[p, q] =
+/// ⟨I|E_pq|J⟩, dm2's order), so pairs[J n + J] is what class_energies takes
+/// for state J. f3ca and f3ac are read only on the diagonal and may be null
+/// off it: a coupling's denominator is the ket's own.
+///
+/// Per class and perturber t, with N^J_t, H^J_t and Δ_t state J's own, as
+/// class_energies forms them, the coupling is
+/// -Σ_t T^t_IJ / (Δ_t + H^J_t / N^J_t) over the t with |N^J_t| > 1e-14, and
+/// T^t_IJ = ⟨I|V P_t V|J⟩ is the class's norm einsum over the transition
+/// RDMs with two changes at I != J: its terms with no RDM, which carry
+/// ⟨I|J⟩ = 0, are dropped (hdm1's and dm1_h's 2δ, hdm2's δδ, Sir's
+/// h1e_v·h1e_v, all of Sijrs); and T is the mean of the einsum over (I, J)
+/// and (J, I), since PySCF folds Sr's, Si's and Sir's Hermitian-conjugate
+/// cross terms into one, which holds only at I = J. So T is symmetric in I
+/// and J; the matrix is not.
+///
+/// Each element is a ClassEnergies: norms[k] is Σ_t T^t_IJ, energies[k] the
+/// coupling and total their sum; the diagonal element is state J's
+/// class_energies. Each class walks its slabs once for every pair, in batches
+/// of at most @p batch as class_energies does, holding every state's Dyall
+/// blocks (a16, ...) and every pair's norm intermediates (dm3_h, ...) at
+/// once, and its per-slab tables grow as n² + n.
+///
+/// @return The n² elements; InvalidConfig when @p pairs is empty or not n²
+///         long, or when a pair's shared field is not the first pair's; or
+///         class_energies' errors.
+[[nodiscard]] Result<std::vector<ClassEnergies>>
+sc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
+                         std::span<const EnergyInputs> pairs, int32_t batch);
+
 /// @brief Where class_energies_adjoint adds the bars dE/dx of the class-level
 /// inputs, all on the device, each in its EnergyInputs field's layout (or,
 /// for @ref lambda, nevpt2::slab_adjoint's). Every bar is added onto, so the

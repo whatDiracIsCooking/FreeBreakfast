@@ -1,9 +1,10 @@
 # `free_breakfast.nevpt2.energy`
 
 The eight strongly contracted NEVPT2 class energies of one state on the GPU,
-and the eight partially contracted ones ([PC-NEVPT2](#pc-nevpt2)), each class
-walking its external index in batches over the density-fitted slabs. Link
-`free_breakfast::nevpt2::energy`.
+the SC-QD-NEVPT2 effective Hamiltonian of several
+([SC-QD-NEVPT2](#sc-qd-nevpt2)), and the eight partially contracted ones
+([PC-NEVPT2](#pc-nevpt2)), each class walking its external index in batches
+over the density-fitted slabs. Link `free_breakfast::nevpt2::energy`.
 
     class_energies(res, blocks, in, batch) -> ClassEnergies
         norms[8], energies[8]   Sr, Si, Sijrs, Sijr, Srsi, Srs, Sij, Sir
@@ -63,6 +64,51 @@ are `Buffers::device` of their own, freed when their class returns. The
 largest are the n_act⁶ ones (a16, a22, dm3_h, hdm3, rm3): at most two at once.
 `fdm2` and each slab's norm and H vectors are workspace regions, taken after
 the slab is built and dead before the next one is.
+
+## SC-QD-NEVPT2
+
+    sc_effective_hamiltonian(res, blocks, pairs, batch) -> vector<ClassEnergies>
+        pairs        n x n EnergyInputs, row-major, [I n + J] bra I, ket J
+        [I n + J]    norms[k] Σ_t T^t_IJ, energies[k] ⟨I|V|Ψ_J⁽¹⁾⟩ of class k,
+                     total Σ_k; the diagonal is each state's class_energies
+
+`qd.cpp` checks the inputs; the walk is `class_energies`' own
+(`sc_couplings`, `energy.cpp`), which runs it at n = 1. The states share
+their orbitals, so every pair carries the same integrals, orbital energies
+and h1e_v pointers (checked), and its own transition dm1, dm2, dm3 in
+`nevpt2::rdms`' bra/ket convention (dm1[p, q] = ⟨I|E_pq|J⟩). f3ca and f3ac
+are read on the diagonal only. The conventions, and what the brute force
+found, are `test/gtest/data/qd_nevpt2/README.md`'s:
+
+- **The coupling** of class k is −Σ_t T^t_IJ / (Δ_t + H^J_t / N^J_t), over
+  the perturbers with |N^J_t| > 1e-14: the denominator is the ket's, as
+  `class_energies` forms it, and the norm the transition one. At I = J it is
+  `_norm_to_energy` itself, so the diagonal is `class_energies`' arithmetic,
+  einsum for einsum.
+- **T^t_IJ** is the class's norm einsum over the transition RDMs' norm
+  intermediates (dm3_h, dm2_h, dm1_h, hdm1, rm2, hdm2, or the RDMs), with
+  the terms that read no RDM dropped: they are ⟨I|J⟩ = 0 times a number
+  (`make_hdm1`'s and `make_hdm2`'s `overlap`, Sir's h1e_v·h1e_v, all of
+  Sijrs). Then **the mean over (I, J) and (J, I)**: PySCF's `* 2.0` in Sr's,
+  Si's and Sir's cross terms folds two Hermitian conjugates into one, which
+  holds only for a state's own RDMs. The other five are symmetric already,
+  and the mean leaves them as they are.
+- **The intermediates.** The Dyall blocks (a16, a17, …) are read only for
+  H^J, so they are built from each state's own RDMs, as before. The norm
+  intermediates are the only builders that see a transition RDM, and each
+  is PySCF's einsum as written, assuming no symmetry of its RDM.
+
+Each class walks its slabs **once** for every pair. Per slab its einsums
+accumulate into n² + n tables (`pair_table_count`), one value per
+perturber: table I n + J is pair (I, J)'s norm einsum, so state J's own N^J
+on the diagonal, and table n² + J is H^J. The host finish
+(`add_pair_shares`) then forms every coupling from them. The memory is n
+sets of Dyall blocks and n² of norm intermediates, all held across the walk
+(dm3_h is n_act⁶ per pair), and the slab tables grow as n² + n; Srsi's whole
+(v, v, c) tables grow the same way.
+
+The matrix is returned unsymmetrized; its symmetrization and
+diagonalization are the caller's.
 
 ## PC-NEVPT2
 
@@ -318,6 +364,18 @@ The forward tangents and the Hessians, SC's and PC's. The demo's
 `energiesDevice` over whole blocks is `batch <= 0` here.
 
 ## Tests
+
+`test/gtest/nevpt2_qd_energy_gpu.cpp`, SC-QD, against
+`test/gtest/data/qd_nevpt2/` (all six cases). `Nevpt2QdEnergy`: from the
+golden transition RDMs, every element's per-class coupling and transition
+norm against `couplings` and `t_norms`, and its total against `heff2`, at
+1e-10; each diagonal element against `class_energies` on that state's
+inputs, and the walk in batches of two against the whole one, at 1e-13.
+`Nevpt2QdEnergyDeviceRdms`: the same against the goldens with the
+transition RDMs from `nevpt2::rdms` over the golden CI vectors (whose signs
+fix the off-diagonals' phases), on the three three-root cases.
+`Nevpt2QdEnergyRefusals`: pair inputs that are not n², or that do not share
+their integrals, are InvalidConfig.
 
 `test/gtest/nevpt2_energy_gpu.cpp`. SC: from PySCF's dm1/dm2/dm3/f3 and the
 slabs over the golden B blocks (`test/gtest/data/nevpt2/`), every class norm and
