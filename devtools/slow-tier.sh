@@ -77,20 +77,22 @@ fi
 
 mkdir -p "$report_dir"
 stamp=$(date +%Y%m%d-%H%M%S)
-rev=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+tree_rev "$REPO_ROOT"  # lib.sh: HEAD, +dirty when tracked changes (#694)
+rev=$TREE_REV
 log="$report_dir/slow-$stamp-$rev.log"
 
 echo "slow-tier: $REPO_ROOT @ $rev -> $log"
+tree_rev_header slow-tier "$log"
 echo "slow-tier: $PYTEST ${sel[*]} ${passthrough[*]:-}"
 
 set +e
-"$PYTEST" "${sel[@]}" "${passthrough[@]}" 2>&1 | tee "$log"
+"$PYTEST" "${sel[@]}" "${passthrough[@]}" 2>&1 | tee -a "$log"
 rc=${PIPESTATUS[0]}
 set -e
 
 # A one-line summary at the tail of the log, greppable by a scheduler.
 verdict=$([ "$rc" -eq 0 ] && echo PASS || echo "FAIL(rc=$rc)")
-summary="slow-tier $verdict  rev=$rev  stamp=$stamp  skip_huge=$skip_huge"
+summary="slow-tier $verdict  rev=$rev  stamp=$stamp  skip_huge=$skip_huge${TREE_DIFF_HASH:+  diff=$TREE_DIFF_HASH}"
 echo "$summary" | tee -a "$log"
 echo "$summary" >> "$report_dir/summary.log"
 exit "$rc"

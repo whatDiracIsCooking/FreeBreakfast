@@ -155,10 +155,13 @@ build_main() {
   mkdir -p "$report_dir"
   local stamp rev
   stamp=$(date +%Y%m%d-%H%M%S)
-  rev=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+  tree_rev "$REPO_ROOT"  # lib.sh: HEAD, +dirty when tracked changes (#694)
+  rev=$TREE_REV
   BUILD_LOG="$report_dir/build-$stamp-$rev-$preset.log"
 
   echo "build: $REPO_ROOT @ $rev  preset=$preset -> $BUILD_LOG"
+
+  tree_rev_header build "$BUILD_LOG"
 
   local rc=0
   set +e
@@ -167,7 +170,7 @@ build_main() {
 
   local verdict summary
   verdict=$([ "$rc" -eq 0 ] && echo PASS || echo "FAIL(rc=$rc)")
-  summary="build $verdict  rev=$rev  preset=$preset  stamp=$stamp"
+  summary="build $verdict  rev=$rev  preset=$preset  stamp=$stamp${TREE_DIFF_HASH:+  diff=$TREE_DIFF_HASH}"
   echo "$summary" | tee -a "$BUILD_LOG"
   echo "$summary" >> "$report_dir/summary.log"
   exit "$rc"
