@@ -1,8 +1,10 @@
 /// @file
 /// @brief The three n_act⁶ tensors SC-NEVPT2 reads of its reference state,
 /// dm3, f3ca and f3ac, built on the device from one CI vector, its string
-/// sets and the active (tu|vw), tile by tile over the determinants; and the
-/// build's adjoint, from bars on the three back onto the vector and (tu|vw).
+/// sets and the active (tu|vw), tile by tile over the determinants, or
+/// between a bra and a ket vector, with the transition dm1 and dm2 beside
+/// them, for QD-NEVPT2; and the one-vector build's adjoint, from bars on the
+/// three back onto the vector and (tu|vw).
 
 export module free_breakfast.nevpt2.rdm;
 
@@ -18,8 +20,10 @@ export namespace free_breakfast::nevpt2 {
 /// @p n_orbitals active orbitals carves at tile width @p width: the two
 /// copies of (tu|vw) and fdm2, n⁴ doubles each, and the tile's R, L2 and W,
 /// (2 n² + n⁴) @p width doubles, each region rounded up to
-/// DeviceResources::kWorkspaceAlignment.
-[[nodiscard]] size_t rdms_workspace_bytes(int32_t n_orbitals, int64_t width) noexcept;
+/// DeviceResources::kWorkspaceAlignment. A @p transition call (a bra other
+/// than its ket) carves the ket's own L2 too, n⁴ @p width doubles more.
+[[nodiscard]] size_t rdms_workspace_bytes(int32_t n_orbitals, int64_t width,
+                                          bool transition = false) noexcept;
 
 /// @brief dm3, f3ca and f3ac of the CI vector @p vector on the device, in
 /// PySCF's layout: each n⁶ row-major, (p, q, r, s, t, u) at
@@ -67,6 +71,44 @@ export namespace free_breakfast::nevpt2 {
 [[nodiscard]] Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                    const ci::DeviceStringSet &beta, const double *vector,
                                    const double *eri, double *dm3, double *f3ca, double *f3ac,
+                                   size_t max_bytes = std::numeric_limits<size_t>::max());
+
+/// @brief The same three tensors between the bra @p bra, ⟨I|, and the ket
+/// @p ket, |J⟩, with the transition dm1 and dm2 beside them; all five
+/// non-symmetric, row-major, in PySCF's layout:
+///
+/// - dm1[p, q] = ⟨I| E_pq |J⟩ (the transpose of `make_dm123(bra, ket)`'s
+///   dm1, which is ⟨I| E_qp |J⟩), dm2[p, q, r, s] = ⟨I| E_pq E_rs |J⟩ and
+///   dm3[p, q, r, s, t, u] = ⟨I| E_pq E_rs E_tu |J⟩, `make_dm123(bra, ket)`'s
+///   before `reorder_dm123`;
+/// - f3ca and f3ac the contractions of the transition 4-RDM ⟨I| E E E E |J⟩
+///   with (tu|vw) that 'NEVPTkern_cedf_aedf' and 'NEVPTkern_aedf_ecdf' are of
+///   one vector's: f3ca[p, q, r, s, t, u] = Σ_ijk (ki|uj) ⟨I| E_pq E_rs E_tj
+///   E_ki |J⟩ and f3ac[p, q, r, s, t, u] = Σ_ijk (ik|jt) ⟨I| E_pq E_rs E_ju
+///   E_ik |J⟩.
+///
+/// Per tile, L2 is gathered over the bra and R over the ket, and the ket's own
+/// L2, which the consume reads, by a second gather; dm1 += R c_I and dm2 +=
+/// L2 c_J are a gemv each. fdm2 and the wedge are those of the transition
+/// tensors. I ← J and J ← I are two calls.
+///
+/// **bra == ket (one pointer) is the one-vector build**: dm3, f3ca and f3ac
+/// are the other overload's bit for bit, planned against the same
+/// rdms_workspace_bytes(n, width), with one L2 per tile. A bra and a ket that
+/// are different pointers plan against rdms_workspace_bytes(n, width, true),
+/// even if they hold the same vector.
+///
+/// @param bra, ket Device, alpha.size() · beta.size() doubles each, laid out
+///        as @ref rdms' vector.
+/// @param dm1, dm2 Device, n² and n⁴ doubles, overwritten; either may be
+///        null, and is then not built.
+/// @param alpha, beta, eri, dm3, f3ca, f3ac, max_bytes As for @ref rdms.
+/// @return As for @ref rdms, against rdms_workspace_bytes(n, 1, bra != ket)
+///         for the budget.
+[[nodiscard]] Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                   const ci::DeviceStringSet &beta, const double *bra,
+                                   const double *ket, const double *eri, double *dm1, double *dm2,
+                                   double *dm3, double *f3ca, double *f3ac,
                                    size_t max_bytes = std::numeric_limits<size_t>::max());
 
 /// @brief The bytes of res.device_workspace() a call to @ref rdms_adjoint

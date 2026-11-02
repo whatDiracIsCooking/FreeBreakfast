@@ -1,6 +1,6 @@
 /// @file
-/// @brief rdms' and rdms_adjoint's checks, tile plan and BLAS calls, and
-/// their launches.
+/// @brief rdms' (of one vector and between two) and rdms_adjoint's checks,
+/// tile plan and BLAS calls, and their launches.
 
 module;
 
@@ -30,15 +30,18 @@ namespace free_breakfast::nevpt2 {
 // than return, so this is what keeps the build on the refusing side of it.
 constexpr size_t kRdmsHeadroomBytes = size_t{512} << 20;
 
-size_t rdms_workspace_bytes(const int32_t n_orbitals, const int64_t width) noexcept {
+size_t rdms_workspace_bytes(const int32_t n_orbitals, const int64_t width,
+                            const bool transition) noexcept {
   const auto n = static_cast<size_t>(n_orbitals);
   const size_t nn = n * n;
   const auto w = static_cast<size_t>(width);
   const auto region = [](const size_t count) {
     return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
   };
-  // rdms' device_regions, in its order: eri, consume and fdm2, then R, L2, W.
-  return (3 * region(nn * nn)) + region(nn * w) + region(nn * nn * w) + region(nn * w);
+  // rdms' device_regions, in its order: eri, consume and fdm2, then R, L2, W,
+  // and the ket's L2, which is empty for one vector.
+  return (3 * region(nn * nn)) + region(nn * w) + region(nn * nn * w) + region(nn * w) +
+         region(transition ? nn * nn * w : 0);
 }
 
 size_t rdms_adjoint_workspace_bytes(const int32_t n_orbitals, const int64_t width) noexcept {
@@ -103,7 +106,7 @@ Status rdms_digest(DeviceResources &res, const int64_t rows, const int64_t cols,
 Result<int64_t> rdms_tile_width(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                 const ci::DeviceStringSet &beta, const size_t max_bytes,
                                 const std::string_view name,
-                                size_t (*const bytes)(int32_t, int64_t) noexcept,
+                                const std::function<size_t(int32_t, int64_t)> &bytes,
                                 const size_t per_det) {
   if (alpha.dev_idx() != res.dev_idx() || beta.dev_idx() != res.dev_idx()) {
     return err_config("nevpt2::{}: strings are on devices {} and {}, but the call passed device {}",
@@ -197,13 +200,27 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                      const ci::DeviceStringSet &beta, const double *const vector,
                      const double *const eri, double *const dm3, double *const f3ca,
                      double *const f3ac, const size_t max_bytes) {
+  return rdms(res, alpha, beta, vector, vector, eri, nullptr, nullptr, dm3, f3ca, f3ac, max_bytes);
+}
+
+Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                     const ci::DeviceStringSet &beta, const double *const bra,
+                     const double *const ket, const double *const eri, double *const dm1,
+                     double *const dm2, double *const dm3, double *const f3ca, double *const f3ac,
+                     const size_t max_bytes) {
   const ScopedDeviceIndex on{res.dev_idx()};
+  // One vector is the build it always was, operation for operation: one L2
+  // per tile, the consume reading it as the ket's, and fdm2's own read.
+  const bool transition = bra != ket;
   const int64_t n = alpha.n_orbitals();
   const int64_t nn = n * n;
   const int64_t n4 = nn * nn;
+  const auto bytes = [transition](const int32_t m, const int64_t w) {
+    return rdms_workspace_bytes(m, w, transition);
+  };
   const int64_t width =
-      FBF_TRY(rdms_tile_width(res, alpha, beta, max_bytes, "rdms", &rdms_workspace_bytes,
-                              static_cast<size_t>((2 * nn) + n4)));
+      FBF_TRY(rdms_tile_width(res, alpha, beta, max_bytes, "rdms", bytes,
+                              static_cast<size_t>((2 * nn) + (transition ? 2 * n4 : n4))));
   const int32_t n32 = alpha.n_orbitals();
   const int64_t ndet = static_cast<int64_t>(alpha.size()) * beta.size();
   const int64_t tiles = math::idivup(ndet, width);
@@ -213,10 +230,21 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
   for (double *const out : {dm3, f3ca, f3ac}) {
     FBF_TRY(gpu_status(wwr::wwrMemsetAsync(out, 0, n6_bytes, stream)));
   }
-  const auto [eri_rm, consume, fdm2, r, l2, w] =
-      res.device_regions<double>(static_cast<size_t>(n4), static_cast<size_t>(n4),
-                                 static_cast<size_t>(n4), static_cast<size_t>(nn * width),
-                                 static_cast<size_t>(n4 * width), static_cast<size_t>(nn * width));
+  if (dm1 != nullptr) {
+    FBF_TRY(
+        gpu_status(wwr::wwrMemsetAsync(dm1, 0, sizeof(double) * static_cast<size_t>(nn), stream)));
+  }
+  if (dm2 != nullptr) {
+    FBF_TRY(
+        gpu_status(wwr::wwrMemsetAsync(dm2, 0, sizeof(double) * static_cast<size_t>(n4), stream)));
+  }
+  const auto [eri_rm, consume, fdm2, r, l2, w, l2_ket_region] = res.device_regions<double>(
+      static_cast<size_t>(n4), static_cast<size_t>(n4), static_cast<size_t>(n4),
+      static_cast<size_t>(nn * width), static_cast<size_t>(n4 * width),
+      static_cast<size_t>(nn * width), static_cast<size_t>(transition ? n4 * width : 0));
+  // L2 is the bra's; the consume reads the ket's, which is the same one for
+  // one vector.
+  double *const l2_ket = transition ? l2_ket_region : l2;
   FBF_TRY(gpu_status(device::rdm_convert_eri(stream, n32, eri, eri_rm, consume)));
 
   const int32_t n_beta = beta.size();
@@ -224,18 +252,38 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
     const int64_t count = std::min(width, ndet - begin);
     FBF_TRY(gpu_status(device::rdm_produce(
         stream, n32, n_beta, alpha.device_replacements(), alpha.replacements_per_string(),
-        beta.device_replacements(), beta.replacements_per_string(), vector,
+        beta.device_replacements(), beta.replacements_per_string(), bra, ket,
         static_cast<int32_t>(begin), static_cast<int32_t>(count), r, l2)));
+    if (transition) {
+      // The ket's own L2[pqrs, K] = ⟨J| E_pq E_rs |K⟩; this gather writes R
+      // again, the same numbers.
+      FBF_TRY(gpu_status(device::rdm_produce(
+          stream, n32, n_beta, alpha.device_replacements(), alpha.replacements_per_string(),
+          beta.device_replacements(), beta.replacements_per_string(), ket, ket,
+          static_cast<int32_t>(begin), static_cast<int32_t>(count), r, l2_ket)));
+    }
     // dm3[pqrs, tu] += Σ_K L2[pqrs, K] R[tu, K].
     FBF_TRY(rdms_digest(res, n4, nn, count, l2, r, dm3));
-    FBF_TRY(rdms_consume(res, n, count, consume, l2, w, true));
+    // dm1[tu] += Σ_K R[tu, K] c_I[K] and dm2[pqrs] += Σ_K L2[pqrs, K] c_J[K]:
+    // R and L2 are column-major count × n² and count × n⁴.
+    if (dm1 != nullptr) {
+      FBF_TRY(gpu_status(wwr::gemv<double, int64_t>(res.blas().get(), wwr::WWRBLAS_OP_T, count, nn,
+                                                    &kOne<double>, r, count, bra + begin, 1,
+                                                    &kOne<double>, dm1, 1)));
+    }
+    if (dm2 != nullptr) {
+      FBF_TRY(gpu_status(wwr::gemv<double, int64_t>(res.blas().get(), wwr::WWRBLAS_OP_T, count, n4,
+                                                    &kOne<double>, l2, count, ket + begin, 1,
+                                                    &kOne<double>, dm2, 1)));
+    }
+    FBF_TRY(rdms_consume(res, n, count, consume, l2_ket, w, true));
     FBF_TRY(rdms_digest(res, n4, nn, count, l2, w, f3ca));
-    FBF_TRY(rdms_consume(res, n, count, consume, l2, w, false));
+    FBF_TRY(rdms_consume(res, n, count, consume, l2_ket, w, false));
     FBF_TRY(rdms_digest(res, n4, nn, count, l2, w, f3ac));
   }
 
   // fdm2 and the wedge need the fully summed dm3 and f3.
-  FBF_TRY(gpu_status(device::rdm_fdm2_ca(stream, n32, eri_rm, dm3, fdm2)));
+  FBF_TRY(gpu_status(device::rdm_fdm2_ca(stream, n32, eri_rm, dm3, transition, fdm2)));
   FBF_TRY(gpu_status(device::rdm_wedge(stream, n32, fdm2, f3ca)));
   FBF_TRY(gpu_status(device::rdm_fdm2_ac(stream, n32, eri_rm, dm3, fdm2)));
   FBF_TRY(gpu_status(device::rdm_wedge(stream, n32, fdm2, f3ac)));
@@ -284,7 +332,7 @@ Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
     const int64_t count = std::min(width, ndet - begin);
     FBF_TRY(gpu_status(device::rdm_produce(
         stream, n32, n_beta, alpha.device_replacements(), alpha.replacements_per_string(),
-        beta.device_replacements(), beta.replacements_per_string(), vector,
+        beta.device_replacements(), beta.replacements_per_string(), vector, vector,
         static_cast<int32_t>(begin), static_cast<int32_t>(count), r, l2)));
     // dm3 as rdms sums it, for the fdm2s' (tu|vw) bar after the last tile.
     FBF_TRY(rdms_digest(res, n4, nn, count, l2, r, dm3));

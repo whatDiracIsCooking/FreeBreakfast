@@ -9,6 +9,10 @@
 // quadratic in the CI vector and linear in (tu|vw), so a polarization
 // difference of two builds, contracted with the bars, is the adjoint's
 // directional derivative exactly; at one tile and at many, unequal ones.
+// And the bra/ket overload: dm1, dm2, dm3, f3ca and f3ac between two
+// different vectors against PySCF's (data/nevpt2_transition/, written by
+// tools/emit/nevpt2_transition_golden.py), at one tile and many, its own
+// budget refusal, and bra == ket as the one-vector build bit for bit.
 
 #include <gtest/gtest.h>
 
@@ -40,6 +44,8 @@ constexpr double kTraceRelTol = 1e-12;
 constexpr double kAdjointRelTol = 1e-12;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2";
+const std::filesystem::path kTransitionDir =
+    std::filesystem::path{FBF_TEST_DATA_DIR} / "nevpt2_transition";
 
 // The cases README.md says carry dm3, f3ca and f3ac (CAS(10,10)'s do not, by
 // size; #418's chain test covers them). Every one has n_alpha = n_beta.
@@ -74,13 +80,34 @@ std::vector<double> row_major(const fb::NpyArray &a) {
   return out;
 }
 
-std::optional<fb::NpyArray> read(const Case &c, const std::string &array) {
-  auto a = fb::read_npy(kDataDir / c.name / (array + ".npy"));
-  EXPECT_TRUE(a) << c.name << "/" << array << ": " << (a ? "" : a.error().message);
+std::optional<fb::NpyArray> read(const std::filesystem::path &dir, const std::string &array) {
+  auto a = fb::read_npy(dir / (array + ".npy"));
+  EXPECT_TRUE(a) << dir << "/" << array << ": " << (a ? "" : a.error().message);
   if (!a) {
     return std::nullopt;
   }
   return std::move(*a);
+}
+
+std::optional<fb::NpyArray> read(const Case &c, const std::string &array) {
+  return read(kDataDir / c.name, array);
+}
+
+// (tu|vw) as ActiveSpaceHamiltonian::eri holds it, t + n (u + n (v + n w)),
+// from the physicist h2e[p, q, r, s] = (pr|qs) at p + n (q + n (r + n s)):
+// (tu|vw) = h2e[t, v, u, w].
+std::vector<double> eri_of(const fb::NpyArray &h2e, std::size_t n) {
+  std::vector<double> eri(n * n * n * n);
+  for (std::size_t t = 0; t < n; ++t) {
+    for (std::size_t u = 0; u < n; ++u) {
+      for (std::size_t v = 0; v < n; ++v) {
+        for (std::size_t w = 0; w < n; ++w) {
+          eri[t + n * (u + n * (v + n * w))] = h2e.data[t + n * (v + n * (u + n * w))];
+        }
+      }
+    }
+  }
+  return eri;
 }
 
 // One case's inputs and PySCF's answers, row-major: the CI vector alpha-major,
@@ -102,21 +129,8 @@ std::optional<Golden> read_golden(const Case &c) {
   if (!ci || !h2e || !dm3 || !f3ca || !f3ac) {
     return std::nullopt;
   }
-  const auto n = static_cast<std::size_t>(c.n);
-  const auto nn = n * n;
-  Golden g{row_major(*ci), std::vector<double>(nn * nn), row_major(*dm3), row_major(*f3ca),
-           row_major(*f3ac)};
-  // h2e[p, q, r, s] = (pr|qs) at p + n (q + n (r + n s)); (tu|vw) = h2e[t, v, u, w].
-  for (std::size_t t = 0; t < n; ++t) {
-    for (std::size_t u = 0; u < n; ++u) {
-      for (std::size_t v = 0; v < n; ++v) {
-        for (std::size_t w = 0; w < n; ++w) {
-          g.eri[t + n * (u + n * (v + n * w))] = h2e->data[t + n * (v + n * (u + n * w))];
-        }
-      }
-    }
-  }
-  return g;
+  return Golden{row_major(*ci), eri_of(*h2e, static_cast<std::size_t>(c.n)), row_major(*dm3),
+                row_major(*f3ca), row_major(*f3ac)};
 }
 
 fb::Buffers::device<double> on_device(fb::DeviceResources &res, std::span<const double> host) {
@@ -480,6 +494,234 @@ TEST(NevptRdm, AdjointRefusals) {
   const auto empty = fb::nevpt2::rdms_adjoint(res, *none, *none, p, p, p, p, p, p, p);
   ASSERT_FALSE(empty);
   EXPECT_EQ(empty.error().kind, fb::ErrorKind::InvalidConfig) << empty.error().message;
+}
+
+// The cases nevpt2_transition/README.md lists: a bra and a different ket over
+// n orbitals and (n_alpha, n_beta) electrons, the second with n_alpha ≠ n_beta.
+struct TransitionCase {
+  const char *name;
+  std::int32_t n;
+  std::int32_t n_alpha;
+  std::int32_t n_beta;
+};
+constexpr std::array kTransitionCases{TransitionCase{"n2_cas44", 4, 2, 2},
+                                      TransitionCase{"n2_cas6_3a2b", 6, 3, 2}};
+
+// One transition case's inputs and PySCF's five tensors, row-major.
+struct TransitionGolden {
+  std::vector<double> bra;
+  std::vector<double> ket;
+  std::vector<double> eri;
+  std::vector<double> dm1;
+  std::vector<double> dm2;
+  std::vector<double> dm3;
+  std::vector<double> f3ca;
+  std::vector<double> f3ac;
+};
+
+std::optional<TransitionGolden> read_transition(const TransitionCase &c) {
+  const std::filesystem::path dir = kTransitionDir / c.name;
+  const auto bra = read(dir, "bra");
+  const auto ket = read(dir, "ket");
+  const auto h2e = read(dir, "h2e");
+  const auto dm1 = read(dir, "dm1");
+  const auto dm2 = read(dir, "dm2");
+  const auto dm3 = read(dir, "dm3");
+  const auto f3ca = read(dir, "f3ca");
+  const auto f3ac = read(dir, "f3ac");
+  if (!bra || !ket || !h2e || !dm1 || !dm2 || !dm3 || !f3ca || !f3ac) {
+    return std::nullopt;
+  }
+  return TransitionGolden{row_major(*bra), row_major(*ket), eri_of(*h2e, c.n), row_major(*dm1),
+                          row_major(*dm2), row_major(*dm3), row_major(*f3ca),  row_major(*f3ac)};
+}
+
+// The two spins' sets, a transition case's inputs on the device, and the five
+// outputs.
+struct TransitionSetup {
+  fb::ci::DeviceStringSet alpha;
+  fb::ci::DeviceStringSet beta;
+  fb::Buffers::device<double> bra;
+  fb::Buffers::device<double> ket;
+  fb::Buffers::device<double> eri;
+  fb::Buffers::device<double> dm1;
+  fb::Buffers::device<double> dm2;
+  fb::Buffers::device<double> dm3;
+  fb::Buffers::device<double> f3ca;
+  fb::Buffers::device<double> f3ac;
+};
+
+std::optional<TransitionSetup> set_up_transition(fb::DeviceResources &res, const TransitionCase &c,
+                                                 const TransitionGolden &g) {
+  auto alpha = fb::ci::DeviceStringSet::create(res, c.n, c.n_alpha);
+  auto beta = fb::ci::DeviceStringSet::create(res, c.n, c.n_beta);
+  EXPECT_TRUE(alpha && beta);
+  if (!alpha || !beta) {
+    return std::nullopt;
+  }
+  const auto n = static_cast<std::size_t>(c.n);
+  const std::size_t n4 = n * n * n * n;
+  return TransitionSetup{std::move(*alpha),
+                         std::move(*beta),
+                         on_device(res, g.bra),
+                         on_device(res, g.ket),
+                         on_device(res, g.eri),
+                         fb::Buffers::device<double>(n * n, res.device()),
+                         fb::Buffers::device<double>(n4, res.device()),
+                         fb::Buffers::device<double>(n4 * n * n, res.device()),
+                         fb::Buffers::device<double>(n4 * n * n, res.device()),
+                         fb::Buffers::device<double>(n4 * n * n, res.device())};
+}
+
+struct TransitionBuilt {
+  std::int64_t tiles = 0;
+  std::vector<double> dm1;
+  std::vector<double> dm2;
+  std::vector<double> dm3;
+  std::vector<double> f3ca;
+  std::vector<double> f3ac;
+};
+
+// The bra/ket overload into @p s's outputs, between @p bra and @p ket.
+std::optional<TransitionBuilt>
+build_transition(fb::DeviceResources &res, TransitionSetup &s, const double *bra, const double *ket,
+                 std::size_t max_bytes = std::numeric_limits<std::size_t>::max()) {
+  const auto tiles =
+      fb::nevpt2::rdms(res, s.alpha, s.beta, bra, ket, s.eri.data(), s.dm1.data(), s.dm2.data(),
+                       s.dm3.data(), s.f3ca.data(), s.f3ac.data(), max_bytes);
+  EXPECT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+  if (!tiles) {
+    return std::nullopt;
+  }
+  return TransitionBuilt{*tiles,
+                         on_host(res, s.dm1),
+                         on_host(res, s.dm2),
+                         on_host(res, s.dm3),
+                         on_host(res, s.f3ca),
+                         on_host(res, s.f3ac)};
+}
+
+void expect_matches(const TransitionBuilt &got, const TransitionGolden &want, double tol) {
+  EXPECT_LE(rel_diff(got.dm1, want.dm1), tol) << "dm1";
+  EXPECT_LE(rel_diff(got.dm2, want.dm2), tol) << "dm2";
+  EXPECT_LE(rel_diff(got.dm3, want.dm3), tol) << "dm3";
+  EXPECT_LE(rel_diff(got.f3ca, want.f3ca), tol) << "f3ca";
+  EXPECT_LE(rel_diff(got.f3ac, want.f3ac), tol) << "f3ac";
+}
+
+TEST(NevptRdm, TransitionMatchesPyscf) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  for (const TransitionCase &c : kTransitionCases) {
+    SCOPED_TRACE(c.name);
+    const auto golden = read_transition(c);
+    ASSERT_TRUE(golden);
+    auto s = set_up_transition(res, c, *golden);
+    ASSERT_TRUE(s);
+    const auto got = build_transition(res, *s, s->bra.data(), s->ket.data());
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got->tiles, 1);
+    expect_matches(*got, *golden, kRelTol);
+  }
+}
+
+// As TinyBudgetsMatchOneTile, against the transition's own bytes: widths with
+// every tile one determinant, a one-determinant last tile and an unequal one
+// wider than one. And its budget for one determinant, less a byte, is refused,
+// though the one-vector build at that budget is not.
+TEST(NevptRdm, TransitionTinyBudgetsMatchOneTile) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  for (const TransitionCase &c : kTransitionCases) {
+    SCOPED_TRACE(c.name);
+    const auto golden = read_transition(c);
+    ASSERT_TRUE(golden);
+    auto s = set_up_transition(res, c, *golden);
+    ASSERT_TRUE(s);
+    const auto one = build_transition(res, *s, s->bra.data(), s->ket.data());
+    ASSERT_TRUE(one);
+    const auto ndet = static_cast<std::int64_t>(golden->bra.size());
+    // 36 = 7 · 5 + 1 = 10 · 3 + 6; 300 = 7 · 42 + 6 = 23 · 13 + 1.
+    const std::vector<std::int64_t> widths =
+        ndet == 36 ? std::vector<std::int64_t>{1, 7, 10} : std::vector<std::int64_t>{7, 23};
+    for (const std::int64_t w : widths) {
+      SCOPED_TRACE("width " + std::to_string(w));
+      const auto got = build_transition(res, *s, s->bra.data(), s->ket.data(),
+                                        fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true) - 1);
+      ASSERT_TRUE(got);
+      EXPECT_EQ(got->tiles, fb::math::idivup(ndet, w));
+      EXPECT_LE(rel_diff(got->dm1, one->dm1), kTileRelTol) << "dm1";
+      EXPECT_LE(rel_diff(got->dm2, one->dm2), kTileRelTol) << "dm2";
+      EXPECT_LE(rel_diff(got->dm3, one->dm3), kTileRelTol) << "dm3";
+      EXPECT_LE(rel_diff(got->f3ca, one->f3ca), kTileRelTol) << "f3ca";
+      EXPECT_LE(rel_diff(got->f3ac, one->f3ac), kTileRelTol) << "f3ac";
+      expect_matches(*got, *golden, kRelTol);
+    }
+
+    const std::size_t held = res.device_workspace(0).num_elements();
+    const std::size_t below = fb::nevpt2::rdms_workspace_bytes(c.n, 1, true) - 1;
+    const auto refused = fb::nevpt2::rdms(res, s->alpha, s->beta, s->bra.data(), s->ket.data(),
+                                          s->eri.data(), s->dm1.data(), s->dm2.data(),
+                                          s->dm3.data(), s->f3ca.data(), s->f3ac.data(), below);
+    ASSERT_FALSE(refused);
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported) << refused.error().message;
+    EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+    const auto single = fb::nevpt2::rdms(res, s->alpha, s->beta, s->bra.data(), s->eri.data(),
+                                         s->dm3.data(), s->f3ca.data(), s->f3ac.data(), below);
+    EXPECT_TRUE(single) << (single ? "" : single.error().message);
+  }
+}
+
+// bra == ket, one pointer, is the one-vector build: dm3, f3ca and f3ac bit for
+// bit, at one tile and at many, beside the state's own dm1 and dm2. Two
+// pointers holding the same vector take the transition's path, which agrees
+// to round-off.
+TEST(NevptRdm, BraEqualKetIsTheOneVectorBuild) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  for (const Case &c : kCases) {
+    SCOPED_TRACE(c.name);
+    const auto golden = read_golden(c);
+    const auto dm1_golden = read(c, "dm1");
+    const auto dm2_golden = read(c, "dm2");
+    ASSERT_TRUE(golden && dm1_golden && dm2_golden);
+    auto s = set_up(res, c.n, c.per_spin, golden->ci, golden->eri);
+    ASSERT_TRUE(s);
+    const auto copy = on_device(res, golden->ci);
+    const auto n = static_cast<std::size_t>(c.n);
+    fb::Buffers::device<double> dm1(n * n, res.device());
+    fb::Buffers::device<double> dm2(n * n * n * n, res.device());
+    const auto ndet = static_cast<std::int64_t>(golden->ci.size());
+    for (const std::int64_t w : {ndet, ndet == 36 ? std::int64_t{7} : std::int64_t{23}}) {
+      SCOPED_TRACE("width " + std::to_string(w));
+      const std::size_t budget = fb::nevpt2::rdms_workspace_bytes(c.n, w + 1) - 1;
+      const auto one = build(res, *s, budget);
+      ASSERT_TRUE(one);
+      EXPECT_EQ(one->tiles, fb::math::idivup(ndet, w));
+      for (const double *const ket : {static_cast<const double *>(s->ci.data()), copy.data()}) {
+        const bool same = ket == s->ci.data();
+        SCOPED_TRACE(same ? "one pointer" : "two pointers");
+        const auto tiles = fb::nevpt2::rdms(
+            res, s->strings, s->strings, s->ci.data(), ket, s->eri.data(), dm1.data(), dm2.data(),
+            s->dm3.data(), s->f3ca.data(), s->f3ac.data(),
+            same ? budget : fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true) - 1);
+        ASSERT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+        EXPECT_EQ(*tiles, one->tiles);
+        const Built got{*tiles, on_host(res, s->dm3), on_host(res, s->f3ca), on_host(res, s->f3ac)};
+        if (same) {
+          EXPECT_EQ(got.dm3, one->dm3) << "dm3";
+          EXPECT_EQ(got.f3ca, one->f3ca) << "f3ca";
+          EXPECT_EQ(got.f3ac, one->f3ac) << "f3ac";
+        } else {
+          EXPECT_LE(rel_diff(got.dm3, one->dm3), kTileRelTol) << "dm3";
+          EXPECT_LE(rel_diff(got.f3ca, one->f3ca), kTileRelTol) << "f3ca";
+          EXPECT_LE(rel_diff(got.f3ac, one->f3ac), kTileRelTol) << "f3ac";
+        }
+        EXPECT_LE(rel_diff(on_host(res, dm1), row_major(*dm1_golden)), kRelTol) << "dm1";
+        EXPECT_LE(rel_diff(on_host(res, dm2), row_major(*dm2_golden)), kRelTol) << "dm2";
+      }
+    }
+  }
 }
 
 // The acceptance's measurement: CAS(12,12), 853 776 determinants, at the
