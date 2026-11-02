@@ -37,6 +37,19 @@ namespace fb = free_breakfast;
 // 2e-14). Measured on the gfx1200: at most 7e-12 over every root of the
 // three cases.
 constexpr double kGradientTol = 1e-9;
+// Absolute, a mix of roots against the same mix of their gradients, both
+// this tree's. Not round-off: each right-hand side's Z-vector is solved
+// separately, to zvector's default ||r|| <= 1e-10, so the two agree to the
+// solve's convergence. Measured on the RTX 3080: 4.8e-11 (equal weights),
+// 3.7e-11 (unequal), the same on every run.
+constexpr double kMixTol = 1e-10;
+// Absolute, a one-hot mix against the root's call. Bitwise is impossible:
+// two identical root calls differ, by up to 1.8e-15 on the RTX 3080, as the
+// derivative kernels add into their output atomically (README
+// "Reproducibility"). One-hot takes the root call's code path by
+// construction (the root overload builds the one-hot mix and calls it), so
+// what is left is that run-to-run floor; measured up to 4.7e-15.
+constexpr double kOneHotTol = 1e-14;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_hessian";
 
@@ -246,6 +259,77 @@ protected:
     }
   }
 
+  // The gradient at a mix @p mix of the roots (#699), at the case's weights:
+  // Sum_I v_I times the per-root gradients, term by term, to the Z-vector's
+  // convergence; a one-hot mix the root's call to the run-to-run floor; and
+  // bad mixes refused.
+  void check_mix(const std::string &name, const std::vector<double> &mix) {
+    load(name);
+    const fb::mcscf::Solution sol = solution(case_["weights"].get<std::vector<double>>());
+    ASSERT_EQ(mix.size(), nroots_);
+    const auto terms = [](const fb::mcscf::GradientTerms &g) {
+      return std::array{&g.kinetic,      &g.potential,         &g.overlap,
+                        &g.two_electron, &g.nuclear_repulsion, &g.total};
+    };
+    const auto mixed =
+        fb::mcscf::df_gradient(*res_, *molecule_, *basis_, classes_, *aux_, h_->spherical(), *b_,
+                               metric_->spherical().data(), sol, ncore_, ncas_, mix);
+    ASSERT_TRUE(mixed) << mixed.error().message;
+    std::vector<fb::mcscf::GradientTerms> roots;
+    for (std::size_t root = 0; root < nroots_; ++root) {
+      auto g = gradient(sol, static_cast<std::int32_t>(root));
+      ASSERT_TRUE(g) << g.error().message;
+      roots.push_back(std::move(*g));
+    }
+    double worst = 0.0;
+    for (std::size_t t = 0; t < terms(*mixed).size(); ++t) {
+      const std::vector<double> &got = *terms(*mixed)[t];
+      for (std::size_t i = 0; i < got.size(); ++i) {
+        double want = 0.0;
+        for (std::size_t r = 0; r < nroots_; ++r) {
+          want += mix[r] * (*terms(roots[r])[t])[i];
+        }
+        worst = std::max(worst, std::abs(got[i] - want));
+      }
+    }
+    EXPECT_LT(worst, kMixTol) << name;
+    std::cout << std::format("[ saweight ] {} mix: {:.2e}\n", name, worst);
+
+    // One-hot: the root's own call, to the run-to-run floor.
+    for (std::size_t root = 0; root < nroots_; ++root) {
+      std::vector<double> one_hot(nroots_, 0.0);
+      one_hot[root] = 1.0;
+      const auto hot =
+          fb::mcscf::df_gradient(*res_, *molecule_, *basis_, classes_, *aux_, h_->spherical(), *b_,
+                                 metric_->spherical().data(), sol, ncore_, ncas_, one_hot);
+      ASSERT_TRUE(hot) << hot.error().message;
+      double differ = 0.0;
+      for (std::size_t t = 0; t < terms(*hot).size(); ++t) {
+        for (std::size_t i = 0; i < terms(*hot)[t]->size(); ++i) {
+          differ = std::max(differ, std::abs((*terms(*hot)[t])[i] - (*terms(roots[root])[t])[i]));
+        }
+      }
+      EXPECT_LT(differ, kOneHotTol) << name << " root " << root;
+      std::cout << std::format("[ saweight ] {} one-hot root {}: {:.2e}\n", name, root, differ);
+    }
+
+    // Wrong length, not summing to 1, negative.
+    std::vector<double> longer = mix;
+    longer.push_back(0.0);
+    std::vector<double> short_of_one = mix;
+    short_of_one[0] -= 1e-6;
+    std::vector<double> negative(nroots_, 0.0);
+    negative[0] = 1.5;
+    negative[1] = -0.5;
+    for (const std::vector<double> &bad : {longer, short_of_one, negative}) {
+      const auto refused =
+          fb::mcscf::df_gradient(*res_, *molecule_, *basis_, classes_, *aux_, h_->spherical(), *b_,
+                                 metric_->spherical().data(), sol, ncore_, ncas_, bad);
+      ASSERT_FALSE(refused);
+      EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+    }
+  }
+
   fb::json case_;
   std::optional<fb::DeviceResources> res_;
   std::optional<fb::Molecule> molecule_;
@@ -283,6 +367,18 @@ TEST_F(McscfGradientWeights, ThreeRootsEqualMatchReference) {
 TEST_F(McscfGradientWeights, ThreeRootsUnequalMatchReference) {
   FBF_REQUIRE_GPU();
   check("h2o_631g_sa3_unequal");
+}
+
+// A mix of the roots (#699) at equal SA weights, then at unequal ones with
+// the rotations among the roots in the Z-vector.
+TEST_F(McscfGradientWeights, MixAtEqualWeightsIsMixOfRoots) {
+  FBF_REQUIRE_GPU();
+  check_mix("h2o_631g_sa3", {0.6, 0.15, 0.25});
+}
+
+TEST_F(McscfGradientWeights, MixAtUnequalWeightsIsMixOfRoots) {
+  FBF_REQUIRE_GPU();
+  check_mix("h2o_631g_sa3_unequal", {0.1, 0.55, 0.35});
 }
 
 } // namespace

@@ -49,6 +49,8 @@ constexpr double kWeightsPivotFloor = 1e-10;
 constexpr double kWeightsResidual = 1e-10;
 // trace(gamma) is the active electron count to this.
 constexpr double kElectronCountTolerance = 1e-6;
+// A mix of roots sums to 1 to this, as ci::Rdm::rdm12 takes its weights.
+constexpr double kMixSumTolerance = 1e-12;
 
 // @p count doubles from the device into a host vector, waited for.
 Result<std::vector<double>> gradient_download(DeviceResources &res, const double *const from,
@@ -148,22 +150,25 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
   return w;
 }
 
-// Root @p root's RDMs plus z_c's transition RDMs (README "The state-averaged
-// Lagrangian"), row-major as ci::Rdm::rdm12's, and kappa(z_o) into the
-// nmo x nmo @p kappa: the multipliers @p given, or when it is null the
-// Z-vector of root @p root over the CI-relaxed Hessian at the solution's
-// orbitals and roots. @p averaged is the Fock at the solution's weighted
-// RDMs, @p ints the fitted integrals at its orbitals. Non-empty @p start and
-// @p start2 stand in for root @p root's RDMs (a transition density, README
-// "A transition density"), and then @p given must not be null: the Z-vector
-// solved here is root @p root's.
-Result<std::pair<std::vector<double>, std::vector<double>>> sa_gradient_lagrangian(
-    DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
-    const Buffers::device<double> &b, const int32_t naux, const Solution &solution,
-    const int32_t ncore, const int32_t ncas, const int32_t nelecas, const CasscfIntegrals &ints,
-    const response::Fock &averaged, const int32_t root, const std::span<const double> weights,
-    const ZVector *const given, const std::span<const double> start,
-    const std::span<const double> start2, double *const kappa) {
+// The RDMs of the roots mixed at @p mix (one-hot for one root) plus z_c's
+// transition RDMs (README "The state-averaged Lagrangian"), row-major as
+// ci::Rdm::rdm12's, and kappa(z_o) into the nmo x nmo @p kappa: the
+// multipliers @p given, or when it is null the Z-vector of the mix over the
+// CI-relaxed Hessian at the solution's orbitals and roots, its orbital
+// right-hand side the mix's gradient. @p averaged is the Fock at the
+// solution's weighted RDMs, @p ints the fitted integrals at its orbitals.
+// Non-empty @p start and @p start2 stand in for the mix's RDMs (a transition
+// density, README "A transition density"), and then @p given must not be
+// null: the Z-vector solved here is the mix's.
+Result<std::pair<std::vector<double>, std::vector<double>>>
+sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
+                       const Buffers::device<double> &b, const int32_t naux,
+                       const Solution &solution, const int32_t ncore, const int32_t ncas,
+                       const int32_t nelecas, const CasscfIntegrals &ints,
+                       const response::Fock &averaged, const std::span<const double> mix,
+                       const std::span<const double> weights, const ZVector *const given,
+                       const std::span<const double> start, const std::span<const double> start2,
+                       double *const kappa) {
   const SphericalMatrixAO &c = solution.c;
   const auto n = static_cast<size_t>(ncas);
   const auto mo = static_cast<size_t>(c.n());
@@ -190,22 +195,21 @@ Result<std::pair<std::vector<double>, std::vector<double>>> sa_gradient_lagrangi
                       packed, nroots, dim);
   }
 
-  // Root I's RDMs, or the caller's.
+  // The mix's RDMs, or the caller's.
   Buffers::device<double> rdms((n * n) + (n * n * n * n), res.device());
   double *const gamma_device = rdms.data();
   double *const gamma2_device = gamma_device + (n * n);
   std::vector<double> gamma(start.begin(), start.end());
   std::vector<double> gamma2(start2.begin(), start2.end());
   if (start.empty()) {
-    std::vector<double> one_hot(nroots, 0.0);
-    one_hot[static_cast<size_t>(root)] = 1.0;
-    FBF_TRY(rdm.rdm12(res, one_hot, solution.roots.vectors.data(), gamma_device, gamma2_device));
+    FBF_TRY(rdm.rdm12(res, mix, solution.roots.vectors.data(), gamma_device, gamma2_device));
     gamma = FBF_TRY(gradient_download(res, gamma_device, n * n));
     gamma2 = FBF_TRY(gradient_download(res, gamma2_device, n * n * n * n));
   }
 
   // No multipliers given: the Z-vector over H_0 at the solution's orbitals
-  // and g_I, root I's orbital gradient there. The sigma takes host arrays
+  // and g_v = Sum_I v_I g_I, the mix's orbital gradient there (the Fock's
+  // gradient is linear in the RDMs). The sigma takes host arrays
   // row-major, which needs no reorder, as mcscf::solve sets them: h_eff is
   // symmetric, and (tu|vw) column-major is (wv|ut) row-major.
   std::optional<ZVector> solved;
@@ -433,19 +437,32 @@ Status sa_gradient_orbital_response(DeviceResources &res, const Buffers::device<
 // df_gradient's and df_transition_gradient's shared body. @p transition says
 // which: for df_transition_gradient the terms are taken at @p gamma_t and
 // @p gamma2_t with the core's own energy (and the nuclear repulsion) left out,
-// and the response only with @p multipliers (README "A transition density").
+// and the response only with @p multipliers (README "A transition density"),
+// and @p mix is not read; for df_gradient they are taken at the roots mixed
+// at @p mix (README "A caller's Lagrangian").
 Result<GradientTerms>
 df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                   const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                   const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                   const Solution &solution, const int32_t ncore, const int32_t ncas,
-                  const int32_t root, const ZVector *const multipliers,
+                  const std::span<const double> mix, const ZVector *const multipliers,
                   const MoAdjoint *const extra, const bool transition,
                   const std::span<const double> gamma_t, const std::span<const double> gamma2_t) {
   const SphericalMatrixAO &c = solution.c;
   const auto nroots = static_cast<int32_t>(solution.roots.energies.size());
-  if (root < 0 || root >= nroots) {
-    return err_config("mcscf::df_gradient: root {} of a solution with {} roots", root, nroots);
+  if (!transition) {
+    if (mix.size() != static_cast<size_t>(nroots)) {
+      return err_config("mcscf::df_gradient: {} root weights for a solution with {} roots",
+                        mix.size(), nroots);
+    }
+    // Each v_I >= 0 (not NaN), and their sum 1.
+    if (!std::ranges::all_of(mix, [](const double v) { return v >= 0.0 && std::isfinite(v); })) {
+      return err_config("mcscf::df_gradient: a root weight is negative or not finite");
+    }
+    const double sum = std::accumulate(mix.begin(), mix.end(), 0.0);
+    if (std::abs(sum - 1.0) > kMixSumTolerance) {
+      return err_config("mcscf::df_gradient: the root weights sum to {}, not 1", sum);
+    }
   }
   if (c.dev_idx() != res.dev_idx()) {
     return err_config("mcscf::df_gradient: C is on device {}, but the call passed device {}",
@@ -558,9 +575,10 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
                              ints.ppaa, ints.papa, solution.gamma, solution.gamma2));
 
   // For a state average or given multipliers, the Lagrangian: the RDMs the
-  // terms below take are root I's (or the transition RDMs) plus z_c's
-  // transition RDMs, F is their generalized Fock, and kappa(z_o) drives the
-  // orbital response; z is the caller's, or else the Z-vector. For one root
+  // terms below take are the mix's, Sum_I v_I (gamma_I, Gamma_I) (or the
+  // transition RDMs), plus z_c's transition RDMs, F is their generalized
+  // Fock, and kappa(z_o) drives the orbital response; z is the caller's, or
+  // else the Z-vector of the mix. For one root
   // without multipliers they are the solution's own (or the transition RDMs),
   // and there is no response.
   std::vector<double> gamma =
@@ -572,7 +590,7 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
   if (responds) {
     std::tie(gamma, gamma2) = FBF_TRY(sa_gradient_lagrangian(
         res, molecule, h, b, static_cast<int32_t>(naux), solution, ncore, ncas, nelecas, ints,
-        solution_fock, root, weights, multipliers, transition ? gamma_t : std::span<const double>{},
+        solution_fock, mix, weights, multipliers, transition ? gamma_t : std::span<const double>{},
         transition ? gamma2_t : std::span<const double>{}, kappa.data()));
   }
   if (responds || transition) {
@@ -964,7 +982,25 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t root,
             const ZVector *const multipliers, const MoAdjoint *const extra) {
-  return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, root,
+  const auto nroots = static_cast<int32_t>(solution.roots.energies.size());
+  if (root < 0 || root >= nroots) {
+    return err_config("mcscf::df_gradient: root {} of a solution with {} roots", root, nroots);
+  }
+  std::vector<double> one_hot(static_cast<size_t>(nroots), 0.0);
+  one_hot[static_cast<size_t>(root)] = 1.0;
+  return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                           one_hot, multipliers, extra, false, {}, {});
+}
+
+Result<GradientTerms> df_gradient(DeviceResources &res, const Molecule &molecule,
+                                  const BasisSet &basis,
+                                  const std::span<const PrimitivePairClass> classes,
+                                  const BasisSet &aux, const SphericalMatrixAO &h,
+                                  const Buffers::device<double> &b, const double *l,
+                                  const Solution &solution, const int32_t ncore, const int32_t ncas,
+                                  const std::span<const double> mix,
+                                  const ZVector *const multipliers, const MoAdjoint *const extra) {
+  return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, mix,
                            multipliers, extra, false, {}, {});
 }
 
@@ -976,7 +1012,7 @@ df_transition_gradient(DeviceResources &res, const Molecule &molecule, const Bas
                        const int32_t ncas, const std::span<const double> gamma,
                        const std::span<const double> gamma2, const ZVector *const multipliers,
                        const MoAdjoint *const extra) {
-  return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, 0,
+  return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, {},
                            multipliers, extra, true, gamma, gamma2);
 }
 
