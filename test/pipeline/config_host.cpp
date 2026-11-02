@@ -1121,6 +1121,45 @@ TEST(PipelineConfig, TheCasscfGradientOverAnIntegralDirectEriIsUnsupported) {
   }
 }
 
+// [nevpt2] reads quasi_degenerate, false unless written, a boolean only; and
+// the step has no other option.
+TEST(PipelineConfig, TheNevpt2StepReadsQuasiDegenerate) {
+  const std::string casscf =
+      "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 4\nnelecas = 4\nnroots = 2\n";
+  auto plain = fb::parse_config(with_inputs(casscf + "[nevpt2]\n"), "", kOut);
+  ASSERT_TRUE(plain.has_value()) << plain.error().message;
+  EXPECT_FALSE(plain->step<fb::Nevpt2Step>()->quasi_degenerate);
+  auto qd = fb::parse_config(with_inputs(casscf + "[nevpt2]\nquasi_degenerate = true\n"), "", kOut);
+  ASSERT_TRUE(qd.has_value()) << qd.error().message;
+  EXPECT_TRUE(qd->step<fb::Nevpt2Step>()->quasi_degenerate);
+  auto off =
+      fb::parse_config(with_inputs(casscf + "[nevpt2]\nquasi_degenerate = false\n"), "", kOut);
+  ASSERT_TRUE(off.has_value()) << off.error().message;
+  EXPECT_FALSE(off->step<fb::Nevpt2Step>()->quasi_degenerate);
+
+  expect_config_error(with_inputs(casscf + "[nevpt2]\nquasi_degenerate = 1\n"),
+                      "[nevpt2] quasi_degenerate is not a boolean");
+  expect_config_error(with_inputs(casscf + "[nevpt2]\nquasi_degenerate = \"true\"\n"),
+                      "[nevpt2] quasi_degenerate is not a boolean");
+  expect_config_error(with_inputs(casscf + "[nevpt2]\nqd = true\n"), "[nevpt2] has no option 'qd'");
+}
+
+// quasi_degenerate = true over a single-root [casscf], nroots written or
+// left at its default, is refused when the config is read, before the SCF
+// and the CASSCF it would follow; plain [nevpt2] over it is not.
+TEST(PipelineConfig, TheQuasiDegenerateNevpt2OverOneRootIsRefused) {
+  const std::string fitted = "[eri]\nmode = \"density_fitting\"\n";
+  for (const std::string_view nroots : {"", "nroots = 1\n"}) {
+    const std::string casscf = std::format("[casscf]\nncas = 4\nnelecas = 4\n{}", nroots);
+    expect_config_error(with_inputs(fitted + casscf + "[nevpt2]\nquasi_degenerate = true\n"),
+                        "[nevpt2] quasi_degenerate couples the roots of a state average, and "
+                        "[casscf] nroots is 1: set [casscf] nroots to 2 or more, or use plain "
+                        "[nevpt2]");
+    auto plain = fb::parse_config(with_inputs(fitted + casscf + "[nevpt2]\n"), "", kOut);
+    EXPECT_TRUE(plain.has_value()) << plain.error().message;
+  }
+}
+
 // [nevpt2_gradient] reads its root and variant, writes nevpt2_gradient.json
 // into the output directory, and fills in the CASSCF it reads.
 TEST(PipelineConfig, TheNevpt2GradientStepReadsItsOptionsAndWritesItsJson) {

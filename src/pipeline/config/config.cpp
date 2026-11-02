@@ -453,6 +453,11 @@ template <class S>
       return err_config("[{}] root is {}, below 0", kStep, step.root);
     }
     step.json_path = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, Nevpt2Step>) {
+    // The CASSCF's root count QD needs is another table's, refused once they
+    // are planned, by check_nevpt2; Nevpt2Step::run refuses it again.
+    FBF_TRY(check_keys(table, kStep, {"quasi_degenerate"}));
+    FBF_TRY(read_key(table, kStep, "quasi_degenerate", base_dir, step.quasi_degenerate));
   } else if constexpr (std::same_as<S, Nevpt2GradientStep>) {
     // The CASSCF's root count, the molecule's spin and the ERI mode are other
     // tables', refused once they are planned, by check_nevpt2_gradient and
@@ -796,6 +801,23 @@ template <class S>
   return {};
 }
 
+/// @brief Refuse a `[nevpt2]` with `quasi_degenerate` over a `[casscf]` of
+/// fewer than two roots, where the state-averaged Fock is the one root's and
+/// QD would repeat the state-specific result: here, before the SCF and the
+/// CASSCF it would follow have run. Across tables, as check_scf_against_eri.
+[[nodiscard]] Status check_nevpt2(const Calculation &calc) {
+  const auto &step = calc.step<Nevpt2Step>();
+  // The CASSCF is filled in when not written, and is never loaded.
+  const auto &casscf = calc.step<CasscfStep>();
+  if (!step || !step->quasi_degenerate || !casscf || casscf->nroots >= 2) {
+    return {};
+  }
+  return err_config("[{}] quasi_degenerate couples the roots of a state average, and [{}] nroots "
+                    "is {}: set [{}] nroots to 2 or more, or use plain [{}]",
+                    Nevpt2Step::kName, CasscfStep::kName, casscf->nroots, CasscfStep::kName,
+                    Nevpt2Step::kName);
+}
+
 /// @brief Refuse a `[nac]` over a `[casscf]` of fewer than two roots, or one
 /// naming a pair past them: here, before the SCF and the CASSCF it would
 /// follow have run. Across tables, as check_scf_against_eri.
@@ -894,6 +916,7 @@ template <class S>
       std::move(steps), [&]<class S>() { return read_step<S>(empty, input_dir, output_dir); }));
   FBF_TRY(check_scf_against_eri(calc, doc));
   FBF_TRY(check_density_fitted_only(calc));
+  FBF_TRY(check_nevpt2(calc));
   FBF_TRY(check_nevpt2_gradient(calc));
   FBF_TRY(check_nac(calc));
   FBF_TRY(check_inputs_apart(calc, output_dir));

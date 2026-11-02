@@ -145,7 +145,9 @@ mode = "density_fitting"  # required by [nevpt2]
 [casscf]
 ncas = 6
 nelecas = 6
-[nevpt2]                  # no options: the table is the request
+nroots = 3                # quasi_degenerate needs 2 or more
+[nevpt2]
+quasi_degenerate = true   # default false: SC and PC per root only
 ```
 
 `[nevpt2]` runs SC- and PC-NEVPT2 on every root of the `[casscf]` it reads
@@ -155,6 +157,16 @@ naming `[eri]`: across two tables, so `parse_config` checks it once the
 pipeline is planned, before a GPU is touched rather than after the SCF and
 the CASSCF have converged. The step refuses it again, for a pipeline built
 by hand.
+
+`quasi_degenerate` (a boolean, default `false`) adds SC- and PC-QD-NEVPT2
+of the roots together beside the per-root results: the effective
+Hamiltonians over the CASSCF's state-averaged orbitals, and their
+eigenvalues and mixing vectors (`nevpt2/README.md` "QD-NEVPT2"). Over a
+`[casscf]` of fewer than two roots, `nroots` written as 1 or left at its
+default, it is `InvalidConfig` when the config is read, pointing at plain
+`[nevpt2]`: with one root the state-averaged Fock is the root's own, and QD
+would only repeat the state-specific result. The step refuses it again, for
+a pipeline built by hand.
 
 ```toml
 [fci]
@@ -460,6 +472,8 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a `[nac]` `pairs` that is empty or holds a pair of equal or negative
   roots, or one over a `[casscf]` of fewer than two roots or naming a root
   past them;
+- a `[nevpt2]` `quasi_degenerate = true` over a `[casscf]` of fewer than
+  two roots;
 - what `Pipeline::create` refuses (a cycle).
 
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request

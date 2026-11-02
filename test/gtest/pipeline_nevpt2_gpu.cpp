@@ -11,6 +11,12 @@
 // Then a state PC refuses, which keeps its SC, and the refusal of an
 // open-shell ScfOutput. The refusal of an integral-direct [eri], made when the
 // config is read, is test/pipeline/config_host.cpp's.
+//
+// Then [nevpt2] quasi_degenerate = true (PipelineQdNevpt2): the H2CO cases of
+// data/qd_nevpt2/ (tools/emit/qd_nevpt2_reference.py) through our own
+// DF-SA-CASSCF from the same start, the SC- and PC-QD-NEVPT2 eigenvalues
+// against theirs; PC-QD refused with SC-QD kept; and QD over one root
+// refused by the step itself.
 
 #include <gtest/gtest.h>
 
@@ -22,6 +28,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.base;
 import free_breakfast.io.json;
+import free_breakfast.io.npy;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 
@@ -187,6 +194,9 @@ TEST_P(PipelineNevpt2, MatchesPyscf) {
   const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
   ASSERT_TRUE(casscf.has_value() && nevpt2.has_value());
   EXPECT_LT(casscf->gradient_norm, kConvTolGrad);
+  // Without quasi_degenerate, no QD product.
+  EXPECT_TRUE(nevpt2->qd_couplings.empty() && nevpt2->qd_energies.empty() &&
+              nevpt2->pc_qd_energies.empty() && nevpt2->pc_qd_refusal.empty());
 
   const fb::json &roots = want.at("roots");
   const auto casscf_energies = want.at("casscf_energies").get<std::vector<double>>();
@@ -357,6 +367,238 @@ TEST(PipelineNevpt2, AnOpenShellOrANonSingletIsUnsupported) {
                                              "molecule's multiplicity is 3"),
             std::string::npos)
       << not_singlet.error().message;
+
+  // QD over this single-root CASSCF, the step driven without the config that
+  // would have refused it.
+  const auto one_root = fb::Nevpt2Step{.quasi_degenerate = true}.run(
+      fb::StepInput<fb::Nevpt2Step>{*calc->get<fb::MoleculeOutput>(),
+                                    *calc->get<fb::BasisSetOutput>(), *calc->get<fb::EriOutput>(),
+                                    *calc->get<fb::CoreHamiltonianOutput>(),
+                                    *calc->get<fb::ScfOutput>(), *calc->get<fb::CasscfOutput>()},
+      res);
+  ASSERT_FALSE(one_root.has_value());
+  EXPECT_EQ(one_root.error().kind, fb::ErrorKind::InvalidConfig);
+  EXPECT_NE(one_root.error().message.find("[nevpt2] quasi_degenerate couples the roots of a state "
+                                          "average, and the CASSCF has 1 root"),
+            std::string::npos)
+      << one_root.error().message;
+}
+
+// QD-NEVPT2's bar on every SC and PC eigenvalue, the issue's ~1e-8, derived
+// as kTolerance is. Each H_eff element is E_I δ_IJ + ½ (C_IJ + C_JI): E_I is
+// our CASSCF root energy, asserted to kCasscfEnergyTolerance and measured
+// within 1e-12 of the reference's, and each coupling is first order in the
+// orbitals and the CI vectors as a class energy is, so within kTolerance
+// (the goldens' orbitals are polished to |g| < 1e-10, ours converged to
+// kConvTolGrad). An eigenvalue of a symmetric n x n matrix moves by at most
+// ||δH||_2 <= n max |δH_IJ|, 3e-9 at n = 3; 1e-8 leaves a factor three.
+constexpr double kQdTolerance = 1e-8;
+// The eigenvectors' bar: a component moves by about ||δH|| / gap, and the
+// roots of these cases are >= 0.1 Eh apart, so ~3e-8; 1e-6 is loose on
+// purpose, since the vectors only check that the right states mix.
+constexpr double kQdVectorTolerance = 1e-6;
+
+// data/qd_nevpt2/qd_nevpt2.json's entry for @p name.
+const fb::json &qd_reference(std::string_view name) {
+  return reference_case("qd_nevpt2", "qd_nevpt2.json", name);
+}
+
+// data/qd_nevpt2/<name>/<array>.npy; column-major, as io.npy reads it.
+std::vector<double> qd_array(std::string_view name, std::string_view array) {
+  auto a = fb::read_npy(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2" / name /
+                        std::format("{}.npy", array));
+  EXPECT_TRUE(a.has_value()) << name << "/" << array << ": " << (a ? "" : a.error().message);
+  return a ? std::move(a->data) : std::vector<double>{};
+}
+
+// qd_nevpt2.json's entry as run.toml in @p dir: its molecule, basis and
+// fitting set, and its state average in [casscf] from the Casci step's start,
+// as the reference's starts from PySCF's default active space.
+std::filesystem::path write_qd_config(const fb::test::ScratchDir &dir, const fb::json &entry,
+                                      std::string_view nevpt2) {
+  std::string xyz =
+      std::format("{}\n{}\n", entry.at("atoms").size(), entry.at("name").get<std::string>());
+  for (const fb::json &atom : entry.at("atoms")) {
+    const auto coord = atom.at(1).get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at(0).get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  std::string weight_list;
+  for (std::size_t i = 0; i < weights.size(); ++i) {
+    weight_list += std::format("{}{:.17g}", i == 0 ? "" : ", ", weights[i]);
+  }
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nweights = [{}]\nconv_tol_grad = {:g}\n{}",
+      entry.at("basis").get<std::string>(), entry.at("aux_basis").at("name").get<std::string>(),
+      entry.at("ncas").get<std::int32_t>(), entry.at("nelecas").get<std::int32_t>(), weights.size(),
+      weight_list, kConvTolGrad, nevpt2);
+  EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  return dir / "run.toml";
+}
+
+// One QD variant against the goldens: each eigenvalue to kQdTolerance; the
+// symmetrized H_eff's diagonal to it too, and its off-diagonal in magnitude
+// (its sign is the two roots' CI phases'); each eigenvector's components in
+// magnitude, for the same reason.
+double expect_qd(std::string_view name, std::string_view prefix, std::span<const double> heff,
+                 std::span<const double> energies, std::span<const double> vectors) {
+  const std::vector<double> want_heff = qd_array(name, std::format("{}heff_sym", prefix));
+  const std::vector<double> want_energies = qd_array(name, std::format("{}eigenvalues", prefix));
+  const std::vector<double> want_vectors = qd_array(name, std::format("{}eigenvectors", prefix));
+  const std::size_t n = want_energies.size();
+  EXPECT_EQ(energies.size(), n) << prefix;
+  EXPECT_EQ(heff.size(), n * n) << prefix;
+  EXPECT_EQ(vectors.size(), n * n) << prefix;
+  if (energies.size() != n || heff.size() != n * n || vectors.size() != n * n ||
+      want_heff.size() != n * n || want_vectors.size() != n * n) {
+    return std::numeric_limits<double>::infinity();
+  }
+  double worst = 0.0;
+  for (std::size_t k = 0; k < n; ++k) {
+    EXPECT_NEAR(energies[k], want_energies[k], kQdTolerance) << prefix << "eigenvalue " << k;
+    worst = std::max(worst, std::abs(energies[k] - want_energies[k]));
+    for (std::size_t i = 0; i < n; ++i) {
+      // Symmetric, so its storage order is moot; the vectors are columns in
+      // both.
+      const double h = heff[(i * n) + k];
+      const double want = want_heff[(i * n) + k];
+      if (i == k) {
+        EXPECT_NEAR(h, want, kQdTolerance) << prefix << "heff " << i;
+      } else {
+        EXPECT_NEAR(std::abs(h), std::abs(want), kQdTolerance) << prefix << "heff " << i << k;
+      }
+      EXPECT_NEAR(std::abs(vectors[(k * n) + i]), std::abs(want_vectors[(k * n) + i]),
+                  kQdVectorTolerance)
+          << prefix << "vector " << k << " component " << i;
+    }
+  }
+  return worst;
+}
+
+// std::string, not std::string_view: ctest names a case by printing it.
+class PipelineQdNevpt2 : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(PipelineQdNevpt2, MatchesGoldens) {
+  FBF_REQUIRE_GPU();
+  // Each case is under a second on an RTX 3080, so all are in the fast tier.
+  const std::string &name = GetParam();
+  const fb::json &entry = qd_reference(name);
+  const fb::test::ScratchDir dir("pipeline_qd_nevpt2");
+  auto calc = fb::read_config(write_qd_config(dir, entry, "[nevpt2]\nquasi_degenerate = true\n"),
+                              dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::Nevpt2Step>()->quasi_degenerate);
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &casscf = calc->get<fb::CasscfOutput>();
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(casscf.has_value() && nevpt2.has_value());
+  EXPECT_LT(casscf->gradient_norm, kConvTolGrad);
+  const auto want_casscf = entry.at("casscf_energies").get<std::vector<double>>();
+  const std::size_t n = want_casscf.size();
+  ASSERT_EQ(casscf->energies.size(), n);
+  for (std::size_t r = 0; r < n; ++r) {
+    EXPECT_NEAR(casscf->energies[r], want_casscf[r], kCasscfEnergyTolerance) << "root " << r;
+  }
+
+  // The QD diagonal is each root's SC on the shared orbitals: every class
+  // against the goldens' class_energies, at the state-specific bar.
+  ASSERT_EQ(nevpt2->qd_couplings.size(), n * n);
+  const std::vector<double> class_energies = qd_array(name, "class_energies");
+  ASSERT_EQ(class_energies.size(), n * 8);
+  for (std::size_t r = 0; r < n; ++r) {
+    for (std::size_t k = 0; k < 8; ++k) {
+      EXPECT_NEAR(nevpt2->qd_couplings[(r * n) + r].energies[k], class_energies[r + (n * k)],
+                  kTolerance)
+          << "root " << r << " class " << k;
+    }
+  }
+  const double sc_worst =
+      expect_qd(name, "", nevpt2->qd_heff, nevpt2->qd_energies, nevpt2->qd_vectors);
+  EXPECT_TRUE(nevpt2->pc_qd_refusal.empty()) << nevpt2->pc_qd_refusal;
+  ASSERT_EQ(nevpt2->pc_qd_couplings.size(), n * n);
+  const double pc_worst =
+      expect_qd(name, "pc_", nevpt2->pc_qd_heff, nevpt2->pc_qd_energies, nevpt2->pc_qd_vectors);
+
+  // The state-specific results are what they are without the option: where
+  // nevpt2_df.json has the case, each root's SC E_corr against PySCF's.
+  ASSERT_EQ(nevpt2->roots.size(), n);
+  for (const fb::json &other : reference("nevpt2", "nevpt2_df.json").at("cases")) {
+    if (other.at("name").get<std::string>() == name) {
+      for (std::size_t r = 0; r < n; ++r) {
+        EXPECT_NEAR(nevpt2->roots[r].total, other.at("roots")[r].at("e_corr").get<double>(),
+                    kTolerance)
+            << "root " << r << " state-specific E_corr";
+      }
+    }
+  }
+  std::cout << std::format("[ qd       ] {}: |g| {:.2e}, SC-QD {::.10f} (worst {:.2e}), PC-QD "
+                           "{::.10f} (worst {:.2e}), tol {:.0e}\n",
+                           name, casscf->gradient_norm, nevpt2->qd_energies, sc_worst,
+                           nevpt2->pc_qd_energies, pc_worst, kQdTolerance);
+}
+
+// The skew case is C1, so no coupling vanishes; the two C2v ones couple
+// roots of different symmetry, every off-diagonal zero.
+INSTANTIATE_TEST_SUITE_P(Goldens, PipelineQdNevpt2,
+                         ::testing::Values("h2co_skew_ccpvdz_sa3", "h2co_ccpvdz_sa2",
+                                           "h2co_ccpvdz_sa2_weighted"),
+                         [](const auto &info) { return info.param; });
+
+// PC-QD refused, SC-QD kept, the run not failed: PcRefusalKeepsSc's HF
+// CAS(10,7) averaged over two roots, its F 1s active in both.
+TEST(PipelineQdNevpt2, PcRefusalKeepsScQd) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_qd_nevpt2");
+  ASSERT_TRUE(
+      fb::write_file(dir / "hf.xyz", "2\nhydrogen fluoride\nH 0 0 0\nF 0 0 0.917\n").has_value());
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"hf.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+                  "[casscf]\nncas = 7\nnelecas = 10\nnroots = 2\nconv_tol_grad = {:g}\n"
+                  "[nevpt2]\nquasi_degenerate = true\n",
+                  kDfAuxBasis, kConvTolGrad);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &casscf = calc->get<fb::CasscfOutput>();
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(casscf.has_value() && nevpt2.has_value());
+
+  // SC-QD stands: H_eff symmetric, its diagonal each root's CASSCF energy
+  // plus its own coupling, its eigenvalues summing to its trace.
+  ASSERT_EQ(nevpt2->qd_couplings.size(), 4U);
+  ASSERT_EQ(nevpt2->qd_heff.size(), 4U);
+  ASSERT_EQ(nevpt2->qd_energies.size(), 2U);
+  ASSERT_EQ(nevpt2->qd_vectors.size(), 4U);
+  EXPECT_EQ(nevpt2->qd_heff[1], nevpt2->qd_heff[2]);
+  for (std::size_t r = 0; r < 2; ++r) {
+    EXPECT_NEAR(nevpt2->qd_heff[(r * 2) + r],
+                casscf->energies[r] + nevpt2->qd_couplings[(r * 2) + r].total, kPcSlack);
+    EXPECT_LT(nevpt2->qd_couplings[(r * 2) + r].total, -0.05) << r;
+  }
+  EXPECT_LE(nevpt2->qd_energies[0], nevpt2->qd_energies[1]);
+  EXPECT_NEAR(nevpt2->qd_energies[0] + nevpt2->qd_energies[1],
+              nevpt2->qd_heff[0] + nevpt2->qd_heff[3], kPcSlack);
+
+  // PC-QD is absent, and says which class refused.
+  EXPECT_TRUE(nevpt2->pc_qd_couplings.empty());
+  EXPECT_TRUE(nevpt2->pc_qd_heff.empty() && nevpt2->pc_qd_energies.empty() &&
+              nevpt2->pc_qd_vectors.empty());
+  EXPECT_NE(nevpt2->pc_qd_refusal.find("metric has no gap"), std::string::npos)
+      << nevpt2->pc_qd_refusal;
+  std::cout << std::format("[ qd       ] HF CAS(10,7) SA-2: SC-QD {::.10f}; PC-QD {}\n",
+                           nevpt2->qd_energies, nevpt2->pc_qd_refusal);
 }
 
 } // namespace
