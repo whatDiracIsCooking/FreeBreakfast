@@ -1,0 +1,643 @@
+{
+ "description": "SC-QD-NEVPT2 (this tree's, over PySCF's mrpt.nevpt2 class arithmetic and dfnevpt2's fitted integrals) on the SA-canonical orbitals of density-fitted SA-CASSCFs over this tree's data/basis and data/aux_basis files: per case the transition RDMs, per-class transition norms and couplings, and H_eff. Arrays in <case>/*.npy; qd_nevpt2/README.md has the conventions. Hartree",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "numpy": "2.5.4",
+  "threads": 1,
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/qd_nevpt2_reference.py"
+ },
+ "classes": [
+  "Sr",
+  "Si",
+  "Sijrs",
+  "Sijr",
+  "Srsi",
+  "Srs",
+  "Sij",
+  "Sir"
+ ],
+ "validation": {
+  "diagonal": "each root's per-class norm and energy against PySCF's mrpt.NEVPT(casci, root=I) with canonicalized=True on the SA-canonical orbitals, density-fitted",
+  "diagonal_tolerance": 1e-10,
+  "diagonal_max_difference": 5.793976409762536e-16,
+  "brute_force": "every class's T and coupling and H_eff from the explicit perturbers in the full determinant space (all orbitals), brute-force cases only",
+  "brute_force_tolerance": 1e-09,
+  "brute_force_max_difference": 2.736526283353413e-16,
+  "transition_rdms": "dm1-dm4 against explicit products of the spin-summed excitation operators on the CI vectors",
+  "transition_rdm_tolerance": 1e-12,
+  "transition_rdm_max_difference": 8.059525269388246e-15,
+  "f3": "the einsum f3ca/f3ac at I = J against PySCF's _contract4pdm",
+  "f3_tolerance": 1e-12,
+  "f3_max_difference": 1.4210854715202004e-14
+ },
+ "cases": [
+  {
+   "name": "h2co_ccpvdz_sa2",
+   "source": "test/gtest/data/casscf/casscf_df.json",
+   "basis": "cc-pvdz",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "atoms": [
+    [
+     "C",
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     "O",
+     [
+      0.0,
+      0.0,
+      2.273
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      1.77,
+      -1.095
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      -1.77,
+      -1.095
+     ]
+    ]
+   ],
+   "ncore": 6,
+   "ncas": 3,
+   "nelecas": 4,
+   "nvirt": 29,
+   "naux": 186,
+   "nroots": 2,
+   "weights": [
+    0.5,
+    0.5
+   ],
+   "casscf_energies": [
+    -113.9049288584831,
+    -113.75507875380869
+   ],
+   "casscf_agreement": {
+    "root": 2.5721647034515627e-12,
+    "weighted": 1.9895196601282805e-13
+   },
+   "casci_energies": [
+    -113.9049288584831,
+    -113.75507875380869
+   ],
+   "next_root_gap": 0.3378730791212945,
+   "e_sc_nevpt2": [
+    -0.288537207184683,
+    -0.28026916395500423
+   ],
+   "heff": [
+    [
+     -114.19346606566779,
+     -4.955319599202064e-16
+    ],
+    [
+     -7.7333760727610155e-16,
+     -114.03534791776369
+    ]
+   ],
+   "eigenvalues": [
+    -114.19346606566779,
+    -114.03534791776369
+   ],
+   "max_off_diagonal": 7.7333760727610155e-16,
+   "max_off_diagonal_over_gap": 5.160741188378663e-15,
+   "checks": {
+    "diagonal_vs_pyscf": 2.7755575615628914e-16,
+    "brute_force": null,
+    "transition_rdms_vs_explicit": 4.440892098500626e-15,
+    "f3_vs_contract4pdm": 7.105427357601002e-15
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 8.366763714859734e-15,
+    "Si": 2.296040942365667e-16,
+    "Sijrs": 0.0,
+    "Sijr": 5.053640174072107e-31,
+    "Srsi": 9.860761315262648e-31,
+    "Srs": 2.9705543462228726e-30,
+    "Sij": 1.7749370367472766e-30,
+    "Sir": 1.2150071932514812e-15
+   }
+  },
+  {
+   "name": "h2co_ccpvdz_sa2_weighted",
+   "source": "test/gtest/data/casscf/casscf_df.json",
+   "basis": "cc-pvdz",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "atoms": [
+    [
+     "C",
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     "O",
+     [
+      0.0,
+      0.0,
+      2.273
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      1.77,
+      -1.095
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      -1.77,
+      -1.095
+     ]
+    ]
+   ],
+   "ncore": 6,
+   "ncas": 3,
+   "nelecas": 4,
+   "nvirt": 29,
+   "naux": 186,
+   "nroots": 2,
+   "weights": [
+    0.7,
+    0.3
+   ],
+   "casscf_energies": [
+    -113.90753588784527,
+    -113.75105384760654
+   ],
+   "casscf_agreement": {
+    "root": 4.263256414560601e-13,
+    "weighted": 1.2789769243681803e-13
+   },
+   "casci_energies": [
+    -113.90753588784527,
+    -113.75105384760654
+   ],
+   "next_root_gap": 0.3380141086234829,
+   "e_sc_nevpt2": [
+    -0.286329999453413,
+    -0.2838808037725445
+   ],
+   "heff": [
+    [
+     -114.19386588729868,
+     -5.10203857720574e-16
+    ],
+    [
+     -6.964671721301301e-16,
+     -114.03493465137909
+    ]
+   ],
+   "eigenvalues": [
+    -114.19386588729868,
+    -114.03493465137909
+   ],
+   "max_off_diagonal": 6.964671721301301e-16,
+   "max_off_diagonal_over_gap": 4.450780236937112e-15,
+   "checks": {
+    "diagonal_vs_pyscf": 1.7992335052396946e-16,
+    "brute_force": null,
+    "transition_rdms_vs_explicit": 1.7763568394002505e-15,
+    "f3_vs_contract4pdm": 7.105427357601002e-15
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 1.5885974165867435e-14,
+    "Si": 2.6467108592102727e-17,
+    "Sijrs": 0.0,
+    "Sijr": 1.9721522630525295e-31,
+    "Srsi": 3.944304526105059e-31,
+    "Srs": 1.5777218104420236e-30,
+    "Sij": 3.389636702121535e-32,
+    "Sir": 1.351505948392594e-15
+   }
+  },
+  {
+   "name": "h2co_skew_ccpvdz_sa3",
+   "source": "test/gtest/data/casscf_nac/casscf_nac.json",
+   "basis": "cc-pvdz",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "atoms": [
+    [
+     "C",
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     "O",
+     [
+      0.12,
+      -0.08,
+      2.29
+     ]
+    ],
+    [
+     "H",
+     [
+      0.45,
+      1.74,
+      -1.13
+     ]
+    ],
+    [
+     "H",
+     [
+      -0.31,
+      -1.81,
+      -1.02
+     ]
+    ]
+   ],
+   "ncore": 6,
+   "ncas": 3,
+   "nelecas": 4,
+   "nvirt": 29,
+   "naux": 186,
+   "nroots": 3,
+   "weights": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+   ],
+   "casscf_energies": [
+    -113.84869346436666,
+    -113.74065441761465,
+    -113.54684318381584
+   ],
+   "casscf_agreement": {
+    "root": 5.684341886080802e-14,
+    "weighted": 4.263256414560601e-14
+   },
+   "casci_energies": [
+    -113.84869346436666,
+    -113.74065441761465,
+    -113.54684318381584
+   ],
+   "next_root_gap": 0.17968958644252098,
+   "e_sc_nevpt2": [
+    -0.3595458567049716,
+    -0.3131654124627894,
+    -0.3084647726148405
+   ],
+   "heff": [
+    [
+     -114.20823932107163,
+     5.4299388206787784e-05,
+     -0.00394596415615729
+    ],
+    [
+     -9.485833764233268e-06,
+     -114.05381983007744,
+     -0.00032427074606797236
+    ],
+    [
+     -0.004408971915640939,
+     -0.00022278901635147815,
+     -113.85530795643068
+    ]
+   ],
+   "eigenvalues": [
+    -114.20828876307694,
+    -114.05382020517968,
+    -113.85525813932318
+   ],
+   "max_off_diagonal": 0.004408971915640939,
+   "max_off_diagonal_over_gap": 0.01460648606188255,
+   "checks": {
+    "diagonal_vs_pyscf": 5.793976409762536e-16,
+    "brute_force": null,
+    "transition_rdms_vs_explicit": 5.329070518200751e-15,
+    "f3_vs_contract4pdm": 1.4210854715202004e-14
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 0.007307718869836909,
+    "Si": 0.01248079506473991,
+    "Sijrs": 0.0,
+    "Sijr": 3.2526065174565133e-19,
+    "Srsi": 2.168404344971009e-19,
+    "Srs": 4.336808689942018e-19,
+    "Sij": 8.673617379884035e-19,
+    "Sir": 0.00861841997990155
+   }
+  },
+  {
+   "name": "h6_631g_sa2",
+   "source": null,
+   "basis": "6-31g",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 138
+   },
+   "atoms": [
+    [
+     "H",
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     "H",
+     [
+      0.1,
+      0.05,
+      1.55
+     ]
+    ],
+    [
+     "H",
+     [
+      2.7,
+      0.3,
+      0.4
+     ]
+    ],
+    [
+     "H",
+     [
+      2.95,
+      -0.2,
+      2.1
+     ]
+    ],
+    [
+     "H",
+     [
+      0.9,
+      2.6,
+      0.75
+     ]
+    ],
+    [
+     "H",
+     [
+      1.3,
+      3.05,
+      2.35
+     ]
+    ]
+   ],
+   "ncore": 2,
+   "ncas": 3,
+   "nelecas": 2,
+   "nvirt": 7,
+   "naux": 138,
+   "nroots": 2,
+   "weights": [
+    0.5,
+    0.5
+   ],
+   "casscf_energies": [
+    -3.220497842996318,
+    -2.937517559887306
+   ],
+   "casscf_agreement": {
+    "root": 0.0,
+    "weighted": 0.0
+   },
+   "casci_energies": [
+    -3.220497842996318,
+    -2.937517559887306
+   ],
+   "next_root_gap": 0.28001193949397507,
+   "e_sc_nevpt2": [
+    -0.056783639585576764,
+    -0.049184518487660575
+   ],
+   "heff": [
+    [
+     -3.277281482581895,
+     0.004855809168752991
+    ],
+    [
+     0.0041743385146344215,
+     -2.9867020783749667
+    ]
+   ],
+   "eigenvalues": [
+    -3.277351621662677,
+    -2.9866319392941847
+   ],
+   "max_off_diagonal": 0.004855809168752991,
+   "max_off_diagonal_over_gap": 0.017159531806964782,
+   "checks": {
+    "diagonal_vs_pyscf": 3.9898639947466563e-17,
+    "brute_force": 2.736526283353413e-16,
+    "transition_rdms_vs_explicit": 5.329070518200751e-15,
+    "f3_vs_contract4pdm": 6.217248937900877e-15
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 0.006351706436034405,
+    "Si": 0.0008755280180287265,
+    "Sijrs": 0.0,
+    "Sijr": 1.0842021724855044e-19,
+    "Srsi": 1.0842021724855044e-19,
+    "Srs": 2.168404344971009e-19,
+    "Sij": 6.098637220230962e-20,
+    "Sir": 0.0007343313194468764
+   },
+   "full_space": {
+    "ndet": 48400,
+    "nmo": 12,
+    "nelec": [
+     3,
+     3
+    ]
+   }
+  },
+  {
+   "name": "h8_sto3g_sa3",
+   "source": null,
+   "basis": "sto-3g",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 184
+   },
+   "atoms": [
+    [
+     "H",
+     [
+      0.0,
+      3.0,
+      -0.85
+     ]
+    ],
+    [
+     "H",
+     [
+      0.05,
+      3.0,
+      0.85
+     ]
+    ],
+    [
+     "H",
+     [
+      0.1,
+      -3.0,
+      -0.92
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      -3.0,
+      0.93
+     ]
+    ],
+    [
+     "H",
+     [
+      1.5,
+      4.5,
+      2.5
+     ]
+    ],
+    [
+     "H",
+     [
+      1.6,
+      4.5,
+      3.9
+     ]
+    ],
+    [
+     "H",
+     [
+      -3.4,
+      -0.4,
+      -4.1
+     ]
+    ],
+    [
+     "H",
+     [
+      -3.5,
+      -0.2,
+      -5.5
+     ]
+    ]
+   ],
+   "ncore": 2,
+   "ncas": 4,
+   "nelecas": 4,
+   "nvirt": 2,
+   "naux": 184,
+   "nroots": 3,
+   "weights": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+   ],
+   "casscf_energies": [
+    -4.427951923906701,
+    -3.683691753503851,
+    -3.664808045073145
+   ],
+   "casscf_agreement": {
+    "root": 0.0,
+    "weighted": 0.0
+   },
+   "casci_energies": [
+    -4.427951923906701,
+    -3.683691753503851,
+    -3.664808045073145
+   ],
+   "next_root_gap": 0.06513288927819616,
+   "e_sc_nevpt2": [
+    -0.03670860162325015,
+    -0.02802633224645703,
+    -0.03516391155467982
+   ],
+   "heff": [
+    [
+     -4.4646605255299505,
+     0.0005775818833125385,
+     0.00014776751182206656
+    ],
+    [
+     0.00037917851286471113,
+     -3.711718085750308,
+     0.004341161804991794
+    ],
+    [
+     0.00014666059536093905,
+     0.005344090704240374,
+     -3.699971956627825
+    ]
+   ],
+   "eigenvalues": [
+    -4.464660856637297,
+    -3.713456897838601,
+    -3.698232813432185
+   ],
+   "max_off_diagonal": 0.005344090704240374,
+   "max_off_diagonal_over_gap": 0.28300006451860976,
+   "checks": {
+    "diagonal_vs_pyscf": 2.5587171270657905e-17,
+    "brute_force": 1.8041124150158794e-16,
+    "transition_rdms_vs_explicit": 8.059525269388246e-15,
+    "f3_vs_contract4pdm": 1.4210854715202004e-14
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 0.004953784008394649,
+    "Si": 0.007108897502553514,
+    "Sijrs": 0.0,
+    "Sijr": 5.421010862427522e-20,
+    "Srsi": 2.168404344971009e-19,
+    "Srs": 3.2526065174565133e-18,
+    "Sij": 2.6020852139652106e-18,
+    "Sir": 0.005378999502142183
+   },
+   "full_space": {
+    "ndet": 4900,
+    "nmo": 8,
+    "nelec": [
+     4,
+     4
+    ]
+   }
+  }
+ ]
+}
