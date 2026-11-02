@@ -12,7 +12,9 @@
 // Lagrangian E_corr + <z^c, f> stationary along core-core and
 // virtual-virtual rotations, and each adjoint of Φ = <z^c, f> at fixed z^c
 // against a ladder of Φ along the same directions; and the degenerate-pair
-// rule. Then the nuclear gradient (sc_gradient, lagrangian_gradient) on
+// rule. Then Φ over a state average of two roots, γ_SA's Fock, each adjoint
+// against a ladder at equal and unequal weights, and the weights refused.
+// Then the nuclear gradient (sc_gradient, lagrangian_gradient) on
 // data/nevpt2_gradient/'s cases: against the numerical gradient, with
 // E_corr zeroed against the DF-CASSCF's, and the full Lagrangian's
 // stationarity. Then PC-NEVPT2's (pc_gradient) against the numerical one, its
@@ -890,16 +892,29 @@ struct HostZcAdjoint {
   std::vector<double> a;
 };
 
+// The state's own root alone, at weight 1: the single-state Φ.
+constexpr std::array<double, 1> kOneRoot{1.0};
+
+// zc_adjoint at @p s's integrals and orbitals for the fixed @p z, over the
+// roots @p roots (root-major, each s.vector's length; empty for s.vector
+// itself) at @p weights.
 fb::Result<nevpt2::ZcAdjoint> zc_at(fb::DeviceResources &res, const State &s, const DeviceState &d,
-                                    const fb::Buffers::device<double> &z) {
+                                    const fb::Buffers::device<double> &z,
+                                    std::span<const double> weights,
+                                    const fb::Buffers::device<double> &roots) {
   return nevpt2::zc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
-                            d.c.data(), d.h.data(), s.ncore, s.ncas, d.vector.data(), z.data());
+                            d.c.data(), d.h.data(), s.ncore, s.ncas, weights, roots.data(),
+                            z.data());
 }
 
-HostZcAdjoint zc_adjoint(fb::DeviceResources &res, const State &s, std::span<const double> z) {
+HostZcAdjoint zc_adjoint(fb::DeviceResources &res, const State &s, std::span<const double> z,
+                         std::span<const double> weights = kOneRoot,
+                         std::span<const double> roots = {}) {
   const DeviceState d = upload_state(res, s);
   const fb::Buffers::device<double> z_d = upload(res, z);
-  const auto got = zc_at(res, s, d, z_d);
+  const std::span<const double> vectors = roots.empty() ? std::span<const double>(s.vector) : roots;
+  const fb::Buffers::device<double> roots_d = upload(res, vectors);
+  const auto got = zc_at(res, s, d, z_d, weights, roots_d);
   EXPECT_TRUE(got.has_value()) << got.error().message;
   if (!got.has_value()) {
     return {};
@@ -908,16 +923,20 @@ HostZcAdjoint zc_adjoint(fb::DeviceResources &res, const State &s, std::span<con
   return {.phi = got->phi,
           .h_bar = download(res, got->h_bar.data(), nmo * nmo),
           .lambda = download(res, got->lambda.data(), static_cast<std::size_t>(s.naux) * nmo * nmo),
-          .y = download(res, got->y.data(), s.vector.size()),
+          .y = download(res, got->y.data(), vectors.size()),
           .x = download(res, got->x.data(), nmo * nmo),
           .a = download(res, got->a.data(), nmo * nmo)};
 }
 
-// Φ = <z, f> at @p s for the fixed @p z.
-double phi(fb::DeviceResources &res, const State &s, std::span<const double> z) {
+// Φ = <z, f> at @p s for the fixed @p z, over @p roots at @p weights as
+// zc_adjoint's.
+double phi(fb::DeviceResources &res, const State &s, std::span<const double> z,
+           std::span<const double> weights = kOneRoot, std::span<const double> roots = {}) {
   const DeviceState d = upload_state(res, s);
   const fb::Buffers::device<double> z_d = upload(res, z);
-  const auto got = zc_at(res, s, d, z_d);
+  const fb::Buffers::device<double> roots_d =
+      upload(res, roots.empty() ? std::span<const double>(s.vector) : roots);
+  const auto got = zc_at(res, s, d, z_d, weights, roots_d);
   EXPECT_TRUE(got.has_value()) << got.error().message;
   return got.has_value() ? got->phi : std::nan("");
 }
@@ -1233,6 +1252,200 @@ TEST(Nevpt2Zc, Shapes) {
   }
   EXPECT_GT(largest_y, 0.0);
   EXPECT_LT(worst_y, 1e-14 * largest_y);
+}
+
+// ---- Φ over a state average ----------------------------------------------
+//
+// Φ = <z^c, f(γ_SA)>, γ_SA = Σ_r w_r γ_r, over two roots: the state's c and
+// ci_direction's u, a unit vector in c's spin and symmetry sector
+// perpendicular to it. Φ is a function of γ_SA alone, so the roots need not
+// be eigenvectors. z^c is the single-state one, fixed.
+
+struct SaWeights {
+  std::string_view name;
+  std::array<double, 2> w;
+};
+
+void PrintTo(const SaWeights &w, std::ostream *os) {
+  *os << w.name;
+}
+
+constexpr std::array<SaWeights, 2> kSaWeights{
+    {{.name = "equal", .w = {0.5, 0.5}}, {.name = "unequal", .w = {0.7, 0.3}}}};
+
+// Each of Φ's adjoints against a ladder of Φ at fixed z^c and weights: along
+// h and B (the bent path of Nevpt2ZcIntegrals), along C exp(t κ) with κ every
+// block's at once, and along each root c_r(t) = (c_r + t d_r) / |c_r + t d_r|
+// alone, d_0 = u and d_1 = c (each perpendicular to its root), against
+// <d_r, y^c_r>.
+class Nevpt2ZcStateAverage : public ::testing::TestWithParam<SaWeights> {};
+
+TEST_P(Nevpt2ZcStateAverage, AdjointsMatchLadders) {
+  FBF_REQUIRE_GPU();
+  const SaWeights &weights = GetParam();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> z = zc_of(res, s, adj);
+  ASSERT_FALSE(z.empty());
+  const std::vector<double> u = ci_direction(res, s);
+  const std::size_t ndet = s.vector.size();
+  ASSERT_EQ(u.size(), ndet);
+  std::vector<double> roots = s.vector;
+  roots.insert(roots.end(), u.begin(), u.end());
+  const std::span<const double> w = weights.w;
+  const HostZcAdjoint zadj = zc_adjoint(res, s, z, w, roots);
+  ASSERT_EQ(zadj.y.size(), 2 * ndet);
+  const auto nmo = static_cast<std::size_t>(s.nao);
+
+  for (const std::string which : {"h", "B"}) {
+    const IntegralDirection dir = integral_direction(s, which);
+    State moved = s;
+    expect_ladder(
+        std::format("sa {} phi {}", weights.name, which),
+        [&](const double t) {
+          perturb(s, dir, t * (1.0 + ((t * t) / (kLadderT0 * kLadderT0))), moved);
+          return phi(res, moved, z, w, roots);
+        },
+        integral_dot(s, dir, zadj.h_bar, zadj.lambda));
+  }
+
+  std::vector<double> kappa(nmo * nmo, 0.0);
+  for (const Block &block : kBlocks) {
+    const std::vector<double> k = block_kappa(s, block);
+    for (std::size_t i = 0; i < kappa.size(); ++i) {
+      kappa[i] += k[i];
+    }
+  }
+  {
+    State moved = s;
+    expect_ladder(
+        std::format("sa {} phi C", weights.name),
+        [&](const double t) {
+          rotate(s, kappa, t, moved);
+          return phi(res, moved, z, w, roots);
+        },
+        source_dot(kappa, zadj.a, nmo));
+  }
+
+  for (std::size_t r = 0; r < 2; ++r) {
+    const std::span<const double> root = std::span<const double>(roots).subspan(r * ndet, ndet);
+    const std::span<const double> d = r == 0 ? std::span<const double>(u) : s.vector;
+    ASSERT_LT(std::abs(dot(root, d)), 1e-12);
+    std::vector<double> moved = roots;
+    expect_ladder(
+        std::format("sa {} phi c_{}", weights.name, r),
+        [&](const double t) {
+          const auto out = std::span<double>(moved).subspan(r * ndet, ndet);
+          for (std::size_t i = 0; i < ndet; ++i) {
+            out[i] = root[i] + (t * d[i]);
+          }
+          const double length = std::sqrt(dot(out, out));
+          for (double &v : out) {
+            v /= length;
+          }
+          return phi(res, s, z, w, moved);
+        },
+        dot(d, std::span<const double>(zadj.y).subspan(r * ndet, ndet)));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Weights, Nevpt2ZcStateAverage, ::testing::ValuesIn(kSaWeights),
+                         [](const auto &info) { return std::string(info.param.name); });
+
+// The one-root call at weight 1 is the single-state Φ: against a second
+// call of itself, and against a state average at weights (1, 0) over (c, u),
+// whose γ_SA is γ_c + 0 γ_u and whose root-1 y^c is scaled by 0. h̄ is z
+// itself, so it is equal to the bit; root 1's y^c is exactly 0. The rest
+// cannot be bitwise: the single-root zc_adjoint before the state average was
+// not bitwise against itself, its einsums' atomics reassociating each sum
+// (on the gfx1200, five calls against the first: Φ apart by up to 1.4e-18,
+// Λ 2.6e-18, y^c 3.5e-18, X and A 5.2e-18), and the one-root call against
+// it sat at the same spread (at most 6.9e-18). An absolute 1e-17 is under
+// that floor: 50 repeats of this case on the gfx1200 reached 1.39e-17 on A,
+// one ulp of its largest element. So each array is held to
+// kRunToRunEps of its largest element's machine epsilon (the 50 repeats
+// reached 10.7 on A, 4.0 on y^c, 2.5 on X, 2.4 on Λ), and Φ, which is
+// round-off itself (f is diagonal where z lives, so Φ ~ 1e-17), to
+// kRunToRunPhi absolute (the repeats reached 6.2e-18).
+constexpr double kRunToRunEps = 32.0;
+constexpr double kRunToRunPhi = 5e-17;
+
+TEST(Nevpt2Zc, OneRootIsTheSingleStatePhi) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const HostAdjoint adj = adjoint(res, s);
+  const std::vector<double> z = zc_of(res, s, adj);
+  ASSERT_FALSE(z.empty());
+  const std::vector<double> u = ci_direction(res, s);
+  const std::size_t ndet = s.vector.size();
+  ASSERT_EQ(u.size(), ndet);
+  std::vector<double> roots = s.vector;
+  roots.insert(roots.end(), u.begin(), u.end());
+  const std::array<double, 2> first_only{1.0, 0.0};
+
+  const HostZcAdjoint one = zc_adjoint(res, s, z);
+  const HostZcAdjoint again = zc_adjoint(res, s, z);
+  const HostZcAdjoint averaged = zc_adjoint(res, s, z, first_only, roots);
+  ASSERT_EQ(one.y.size(), ndet);
+  ASSERT_EQ(averaged.y.size(), 2 * ndet);
+  // max |a - b| in units of b's largest magnitude's machine epsilon.
+  const auto worst = [](std::span<const double> a, std::span<const double> b) {
+    double out = 0.0;
+    double largest = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      out = std::max(out, std::abs(a[i] - b[i]));
+      largest = std::max(largest, std::abs(b[i]));
+    }
+    return out / (std::numeric_limits<double>::epsilon() * largest);
+  };
+  for (const auto &[name, other] :
+       {std::pair{"again", &again}, std::pair{"weights (1, 0)", &averaged}}) {
+    EXPECT_EQ(other->h_bar, one.h_bar) << name;
+    const std::array<std::pair<const char *, double>, 5> apart{
+        {{"phi", std::abs(other->phi - one.phi)},
+         {"lambda", worst(other->lambda, one.lambda)},
+         {"y", worst(std::span<const double>(other->y).first(ndet), one.y)},
+         {"x", worst(other->x, one.x)},
+         {"a", worst(other->a, one.a)}}};
+    for (const auto &[field, difference] : apart) {
+      EXPECT_LE(difference, std::string_view{field} == "phi" ? kRunToRunPhi : kRunToRunEps)
+          << name << ": " << field;
+      std::cout << std::format("[ nevpt2   ] one root, {} {}: apart by {:.3e}{}\n", name, field,
+                               difference, std::string_view{field} == "phi" ? "" : " eps max");
+    }
+  }
+  for (std::size_t i = ndet; i < 2 * ndet; ++i) {
+    EXPECT_EQ(averaged.y[i], 0.0) << i;
+  }
+}
+
+// zc_adjoint refuses weights it cannot average over: none, a negative one,
+// and a sum off 1.
+TEST(Nevpt2Zc, RefusesBadWeights) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const std::vector<double> z(nmo * nmo, 0.0);
+  const DeviceState d = upload_state(res, s);
+  const fb::Buffers::device<double> z_d = upload(res, z);
+  std::vector<double> roots = s.vector;
+  roots.insert(roots.end(), s.vector.begin(), s.vector.end());
+  const fb::Buffers::device<double> roots_d = upload(res, roots);
+  const std::array<double, 2> negative{1.5, -0.5};
+  const std::array<double, 2> short_sum{0.5, 0.4};
+  for (const std::span<const double> weights :
+       {std::span<const double>{}, std::span<const double>(negative),
+        std::span<const double>(short_sum)}) {
+    const auto got = zc_at(res, s, d, z_d, weights, roots_d);
+    ASSERT_FALSE(got.has_value());
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
+  }
 }
 
 // ---- The nuclear gradient: lagrangian_gradient and sc_gradient ----------

@@ -1,7 +1,8 @@
 /// @file
 /// @brief zc_multipliers and zc_adjoint: the inactive-rotation multipliers
 /// z^c of a correlation energy's Lagrangian, one division per pair, and the
-/// term Phi = <z, f> they add with its adjoints, over B whole in the MO basis.
+/// term Phi = <z, f(gamma_SA)> they add with its adjoints, over B whole in the
+/// MO basis, for one root or a state average.
 
 module free_breakfast.nevpt2.gradient;
 
@@ -9,7 +10,7 @@ import std;
 import free_breakfast.core.types;
 import free_breakfast.core.constants; // kOne, kTwo, kZero, kNegHalf
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // Buffers, gemmStridedBatched, geam, gpu_status
+import free_breakfast.core.wwr; // Buffers, gemmStridedBatched, geam, scal, gpu_status
 import free_breakfast.core.resources;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.einsum;
@@ -32,6 +33,9 @@ constexpr double kZcGapFloor = 1e-6;
 // What a degenerate pair's |A_pq| must be under for that zero to stand; past
 // it the pair is refused. The demo's PC_ZERO_TOL.
 constexpr double kZcZeroSource = 1e-8;
+// How far zc_adjoint's weights may sum from 1: ci::Rdm::rdm12's and
+// mcscf::solve's bar.
+constexpr double kZcWeightSum = 1e-12;
 
 Result<ZcMultipliers> zc_multipliers(DeviceResources &res, const int32_t nmo, const int32_t ncore,
                                      const int32_t ncas, const double *a, const double *epsilon) {
@@ -81,10 +85,24 @@ Result<ZcMultipliers> zc_multipliers(DeviceResources &res, const int32_t nmo, co
 Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
                              const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
                              const int32_t nmo, const double *b, const double *c, const double *h,
-                             const int32_t ncore, const int32_t ncas, const double *vector,
+                             const int32_t ncore, const int32_t ncas,
+                             const std::span<const double> weights, const double *vectors,
                              const double *z) {
   FBF_TRY(check_counts("nevpt2::zc_adjoint", alpha, beta, naux, nao, nmo, ncore, ncas));
+  double weight_sum = 0.0;
+  for (const double w : weights) {
+    if (!(w >= 0.0)) {
+      return err_config("nevpt2::zc_adjoint: weight {} is negative or not a number", w);
+    }
+    weight_sum += w;
+  }
+  if (weights.empty() || std::abs(weight_sum - 1.0) > kZcWeightSum) {
+    return err_config("nevpt2::zc_adjoint: {} weights summing to {:.17g}: at least one, summing "
+                      "to 1 within {:g}",
+                      weights.size(), weight_sum, kZcWeightSum);
+  }
   const ScopedDeviceIndex on{res.dev_idx()};
+  const auto nroots = static_cast<int32_t>(weights.size());
   const int64_t nc = ncore;
   const int64_t n = ncas;
   const int64_t nmo2 = int64_t{nmo} * nmo;
@@ -92,14 +110,21 @@ Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   // (naux nmo) x nmo matrix of rows (L, p), leading dimension lb.
   const int64_t lb = int64_t{naux} * nmo;
 
-  // gamma first: rdm1's scratch is the workspace, which the regions below
-  // take after it.
+  // gamma_SA = sum_r w_r gamma_r first: rdm1's scratch is the workspace,
+  // which the regions below take after it.
   ci::Sigma sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
+  const int64_t ndet = sigma.size();
   Buffers::device<double> gamma_d(static_cast<size_t>(n * n), res.device());
-  FBF_TRY(sigma.rdm1(res, vector, gamma_d.data()));
-  const std::vector<double> gamma =
-      FBF_TRY(to_host(res, gamma_d.data(), static_cast<size_t>(n * n)));
-  // D: 2 on the core's diagonal, gamma on the active block.
+  std::vector<double> gamma(static_cast<size_t>(n * n), 0.0);
+  for (int32_t r = 0; r < nroots; ++r) {
+    FBF_TRY(sigma.rdm1(res, vectors + (ndet * r), gamma_d.data()));
+    const std::vector<double> gamma_r =
+        FBF_TRY(to_host(res, gamma_d.data(), static_cast<size_t>(n * n)));
+    for (size_t k = 0; k < gamma.size(); ++k) {
+      gamma[k] += weights[static_cast<size_t>(r)] * gamma_r[k];
+    }
+  }
+  // D: 2 on the core's diagonal, gamma_SA on the active block.
   std::vector<double> dens_host(static_cast<size_t>(nmo2), 0.0);
   for (int64_t i = 0; i < nc; ++i) {
     dens_host[static_cast<size_t>(i * (nmo + 1))] = 2.0;
@@ -205,9 +230,11 @@ Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   Buffers::device<double> h_bar = FBF_TRY(zeroed(res, nmo2));
   FBF_TRY(add_onto(res, nmo, nmo, z, h_bar.data(), nmo));
 
-  // y^c = sum_tu (W + W^T)_tu (E_tu c): dgamma_tu/dc = (E_tu + E_ut) c. One
-  // sigma over that one-body operator, no two-electron part; its scratch is
-  // the workspace, whose regions above are dead by now.
+  // y^c_r = w_r sum_tu (W + W^T)_tu (E_tu c_r): dgamma_SA,tu/dc_r =
+  // w_r (E_tu + E_ut) c_r. One sigma over that one-body operator, no
+  // two-electron part, batched over the roots, then each column scaled by its
+  // weight; the sigma's scratch is the workspace, whose regions above are
+  // dead by now.
   const std::vector<double> w_host =
       FBF_TRY(to_host(res, w_act.data(), static_cast<size_t>(n * n)));
   std::vector<double> one_body(static_cast<size_t>(n * n));
@@ -220,8 +247,13 @@ Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   }
   const std::vector<double> no_eri(static_cast<size_t>(n * n * n * n), 0.0);
   FBF_TRY(sigma.set_integrals(res, 0.0, one_body, no_eri));
-  Buffers::device<double> y(static_cast<size_t>(sigma.size()), res.device());
-  FBF_TRY(sigma.apply(res, 1, vector, y.data()));
+  Buffers::device<double> y(static_cast<size_t>(ndet * nroots), res.device());
+  FBF_TRY(sigma.apply(res, nroots, vectors, y.data()));
+  for (int32_t r = 0; r < nroots; ++r) {
+    FBF_TRY(gpu_status(wwr::scal<double, int32_t>(res.blas().get(), static_cast<int32_t>(ndet),
+                                                  &weights[static_cast<size_t>(r)],
+                                                  y.data() + (ndet * r), 1)));
+  }
   return ZcAdjoint{.phi = phi,
                    .h_bar = std::move(h_bar),
                    .lambda = std::move(lambda),

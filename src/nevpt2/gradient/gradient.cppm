@@ -194,15 +194,18 @@ struct ZcMultipliers {
 /// @brief zc_adjoint's result, every array on res's device. Each adjoint is
 /// in sc_adjoint's convention, so the caller adds them field by field.
 struct ZcAdjoint {
-  /// @brief Phi = <z, f> = sum_pq z_pq f_pq, f the generalized Fock.
+  /// @brief Phi = <z, f> = sum_pq z_pq f_pq, f the generalized Fock of the
+  /// weighted density.
   double phi = 0.0;
   /// @brief dPhi/dh in the MO basis, nmo x nmo: z itself.
   Buffers::device<double> h_bar;
   /// @brief dPhi/dB^L in the MO basis, naux x nmo^2 as ScAdjoint::lambda,
   /// symmetric in (p, q).
   Buffers::device<double> lambda;
-  /// @brief y^c = dPhi/dc at fixed (h, B), one per determinant: the raw
-  /// derivative of Phi as a function of an unnormalized c, as ScAdjoint::y.
+  /// @brief y^c_r = dPhi/dc_r at fixed (h, B) for every root r, one per
+  /// determinant each, root r's at [r ndet, (r + 1) ndet) as the vectors are
+  /// laid out: the raw derivative of Phi as a function of an unnormalized
+  /// c_r, as ScAdjoint::y, its root's weight included.
   Buffers::device<double> y;
   /// @brief X = 2 h h_bar + 2 sum_L B^L Lambda^L, nmo x nmo, as
   /// ScAdjoint::x.
@@ -212,24 +215,36 @@ struct ZcAdjoint {
   Buffers::device<double> a;
 };
 
-/// @brief Phi = <@p z, f> at (@p h, @p b, @p c, @p vector), and its adjoints
-/// at fixed @p z (nmo x nmo column-major on the device, symmetric): the
-/// arguments but z are sc_energy's.
+/// @brief Phi = <@p z, f(gamma_SA)> at (@p h, @p b, @p c) and the roots
+/// @p vectors at @p weights, and its adjoints at fixed @p z (nmo x nmo
+/// column-major on the device, symmetric): the arguments but z, the weights
+/// and the vectors are sc_energy's.
 ///
 /// f_pq = h_pq + sum_rs D_rs [(pq|rs) - 1/2 (pr|sq)], D the reference's MO
-/// density (2 on the core's diagonal, gamma on the active block), so its
-/// core and virtual diagonals are sc_adjoint's epsilon. B goes to the MO
-/// basis whole, naux nmo^2; gamma is ci::Sigma's rdm1 of @p vector, and y^c
-/// one sigma over the one-body (W + W^T)_tu, W_tu = dPhi/dgamma_tu.
+/// density (2 on the core's diagonal, gamma_SA = sum_r w_r gamma_r on the
+/// active block): the state-averaged Fock, over which a state average's core
+/// and virtuals are canonical, and at one root (weight 1) the root's own, so
+/// its core and virtual diagonals are sc_adjoint's epsilon. B goes to the MO
+/// basis whole, naux nmo^2; each gamma_r is ci::Sigma's rdm1 of its root, and
+/// y^c one batched sigma over the one-body (W + W^T)_tu, W_tu =
+/// dPhi/dgamma_SA,tu, each root's column scaled by its weight.
+///
+/// @p vectors holds weights.size() unit vectors over @p alpha and @p beta,
+/// root r's at [r ndet, (r + 1) ndet), ndet = alpha.size() beta.size(), as
+/// ci::Roots::vectors lays them out. One root at weight 1 is the
+/// single-state Phi, through the same operations.
 ///
 /// @return Phi and its adjoints; InvalidConfig for counts that do not fit
-///         (ncas not the strings' orbitals, ncore + ncas past nmo); or the
-///         error of b_mo, ci::Sigma, an einsum or a BLAS call.
+///         (ncas not the strings' orbitals, ncore + ncas past nmo), or for
+///         no weights, a negative (or NaN) weight, or weights not summing to
+///         1 within 1e-12; or the error of b_mo, ci::Sigma, an einsum or a
+///         BLAS call.
 [[nodiscard]] Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                            const ci::DeviceStringSet &beta, int32_t naux,
                                            int32_t nao, int32_t nmo, const double *b,
                                            const double *c, const double *h, int32_t ncore,
-                                           int32_t ncas, const double *vector, const double *z);
+                                           int32_t ncas, std::span<const double> weights,
+                                           const double *vectors, const double *z);
 
 /// @brief lagrangian_gradient's and sc_gradient's result.
 struct ScGradient {
