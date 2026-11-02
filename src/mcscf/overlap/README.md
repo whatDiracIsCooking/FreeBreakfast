@@ -118,4 +118,6 @@ out-of-plane x, 0.302 / bohr) |D(δ) − d| is 5.1e-8 to 6.8e-8, each within
 1e-8 of its Richardson estimate, and the extrapolated (4 D(δ) − D(2δ)) / 3
 is within 1e-9 of d: what is left is the step's own error. Every other
 component is below 2.2e-10. 1e-5 of max |d| is 3.0e-6. About 4 s for the
-fast case, 6.4 s for every coordinate.
+fast case, 6.4 s for every coordinate. The same check at unequal weights,
+where it is `df_nac`'s only reference, is described in
+[`../nac/README.md`](../nac/README.md) "Tests".

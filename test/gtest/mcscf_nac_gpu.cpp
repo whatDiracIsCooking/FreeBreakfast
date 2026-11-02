@@ -18,7 +18,9 @@
 //
 // Then on each case's first pair the options: use_etfs against `etf`,
 // mult_ediff against h + (E_J - E_I) csf, and both against `h`. And the
-// refusals: equal roots, a root past the solution's, and unequal weights.
+// refusals: equal roots and a root past the solution's. PySCF refuses
+// unequal weights, so df_nac is checked there against finite differences
+// of mcscf::state_overlaps, in mcscf_overlap_gpu.cpp.
 // Measured on the RTX 3080: h_IJ within 4e-10, d^CSF 2.2e-10, d_IJ 1.3e-9
 // (the skewed (0, 2)); 3.3 s and 4.6 s a case, so neither is a slow test.
 //
@@ -286,28 +288,11 @@ TEST_P(McscfNac, MatchesPyscf) {
     }
   }
 
-  // Refusals: a root against itself, a root past the solution's, and
-  // unequal weights (the weighted gamma moved off the roots' plain average).
+  // Refusals: a root against itself and a root past the solution's.
   for (const auto &[bra, ket] : {std::pair{0, 0}, std::pair{0, nroots}}) {
     const auto refused = nac(bra, ket, {});
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
-    EXPECT_NE(refused.error().message.find("mcscf::df_nac"), std::string::npos);
-  }
-  {
-    const std::vector<double> gamma = sol->gamma;
-    const std::size_t m = gamma.size();
-    for (std::size_t i = 0; i < m; ++i) {
-      sol->gamma[i] = (0.7 * sol->root_gammas[i]) + (0.3 * sol->root_gammas[m + i]);
-      if (nroots > 2) {
-        sol->gamma[i] = (0.5 * sol->root_gammas[i]) + (0.3 * sol->root_gammas[m + i]) +
-                        (0.2 * sol->root_gammas[(2 * m) + i]);
-      }
-    }
-    const auto refused = nac(0, 1, {});
-    sol->gamma = gamma;
-    ASSERT_FALSE(refused.has_value());
-    EXPECT_EQ(refused.error().kind, fb::ErrorKind::Unsupported) << refused.error().message;
     EXPECT_NE(refused.error().message.find("mcscf::df_nac"), std::string::npos);
   }
 

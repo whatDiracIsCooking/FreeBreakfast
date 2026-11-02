@@ -269,7 +269,7 @@ mode = "density_fitting"  # required by [nac]
 [casscf]
 ncas = 3
 nelecas = 4
-nroots = 2                # at least 2, at equal weights
+nroots = 2                # at least 2, at any weights
 conv_tol_grad = 1e-10     # the couplings are the CASSCF's only at convergence
 [nac]
 pairs = [[0, 1]]          # (bra, ket); left out, every I < J
@@ -283,11 +283,10 @@ the state-averaged `[casscf]` it reads (`nac/README.md`), written to
 roots, at least 0; an empty one is `InvalidConfig` (leave it out for every
 pair I < J). `mult_ediff` and `use_etfs` are `mcscf::NacOptions`'. Across
 tables, when the file is read: a `[casscf]` with `nroots` below 2, or a
-pair naming a root at or past it, is `InvalidConfig`; `[casscf]` `weights`
-not all equal is `Unsupported` (`mcscf::df_nac` takes equal weights only);
-and like `[nevpt2]` it runs over density fitting only, `Unsupported` under
-an integral-direct `[eri]`, written or filled in. The step refuses each
-again when it runs, for a pipeline built by hand.
+pair naming a root at or past it, is `InvalidConfig`; and like `[nevpt2]`
+it runs over density fitting only, `Unsupported` under an integral-direct
+`[eri]`, written or filled in. The step refuses each again when it runs,
+for a pipeline built by hand. Any `[casscf]` `weights` are taken.
 
 ```toml
 [optimize]                # Gaussian's thresholds by default
@@ -468,8 +467,7 @@ is well formed and the method is what is missing: `[nevpt2]`,
 `[casscf_gradient]`, `[nevpt2_gradient]`, `[nac]` or the analytic `[hessian]` under
 an integral-direct `[eri]`, the analytic `[hessian]` beside a
 `[casscf_gradient]`, `[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
-average and multiplicity other than 1, and `[nac]` over unequal `[casscf]`
-weights (above).
+average and multiplicity other than 1.
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`

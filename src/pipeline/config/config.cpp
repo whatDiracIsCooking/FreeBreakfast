@@ -470,9 +470,9 @@ template <class S>
     step.variant = variant == "pc" ? Nevpt2Variant::Pc : Nevpt2Variant::Sc;
     step.json_path = output_dir / std::format("{}.json", kStep);
   } else if constexpr (std::same_as<S, NacStep>) {
-    // Whether the CASSCF has the pairs' roots, at equal weights, and the ERI
-    // mode are other tables', refused once they are planned, by check_nac
-    // and check_density_fitted_only; NacStep::run refuses them again.
+    // Whether the CASSCF has the pairs' roots, and the ERI mode, are other
+    // tables', refused once they are planned, by check_nac and
+    // check_density_fitted_only; NacStep::run refuses them again.
     FBF_TRY(check_keys(table, kStep, {"pairs", "mult_ediff", "use_etfs"}));
     FBF_TRY(read_key(table, kStep, "pairs", base_dir, step.pairs));
     if (table.contains("pairs") && step.pairs.empty()) {
@@ -797,8 +797,7 @@ template <class S>
 }
 
 /// @brief Refuse a `[nac]` over a `[casscf]` of fewer than two roots, or one
-/// naming a pair past them, and over one at unequal weights, which
-/// mcscf::df_nac does not take: here, before the SCF and the CASSCF it would
+/// naming a pair past them: here, before the SCF and the CASSCF it would
 /// follow have run. Across tables, as check_scf_against_eri.
 [[nodiscard]] Status check_nac(const Calculation &calc) {
   const auto &step = calc.step<NacStep>();
@@ -818,14 +817,6 @@ template <class S>
       return err_config("[{}] pair [{}, {}] names a root past [{}] nroots {}", kStep, bra, ket,
                         CasscfStep::kName, casscf->nroots);
     }
-  }
-  // read_step has checked they sum to 1.
-  if (const std::vector<double> &w = casscf->weights;
-      !w.empty() && std::ranges::max(w) - std::ranges::min(w) > NacStep::kEqualWeights) {
-    return err_unsupported("[{}] takes a state average at equal weights only, and [{}] weights "
-                           "range from {} to {}: leave [{}] weights out",
-                           kStep, CasscfStep::kName, std::ranges::min(w), std::ranges::max(w),
-                           CasscfStep::kName);
   }
   return {};
 }

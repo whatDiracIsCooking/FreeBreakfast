@@ -65,9 +65,8 @@ using Calculation =
 /// under a density-fitted one. A `[nevpt2_gradient]` over a `[casscf]` of more than
 /// one root, a molecule of multiplicity other than 1, or `variant = "pc"` is
 /// ErrorKind::Unsupported too, and one whose `root` is not 0
-/// ErrorKind::InvalidConfig. A `[nac]` over a `[casscf]` at unequal weights
-/// is ErrorKind::Unsupported, and one over a `[casscf]` of fewer than two
-/// roots, or naming a pair past its roots, ErrorKind::InvalidConfig.
+/// ErrorKind::InvalidConfig. A `[nac]` over a `[casscf]` of fewer than two
+/// roots, or naming a pair past its roots, is ErrorKind::InvalidConfig.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &input_dir,
                                                const std::filesystem::path &output_dir);

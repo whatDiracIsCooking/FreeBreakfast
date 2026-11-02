@@ -1,8 +1,8 @@
 # Pipeline: Nac
 
 The nonadiabatic (derivative) couplings d_IJ = ⟨I|∂J/∂R⟩ between pairs of
-roots of the equal-weight DF-SA-CASSCF, each with its numerator h_IJ and its
-CSF term d^CSF_IJ. The numerics are all `../../mcscf/nac/`'s
+roots of the DF-SA-CASSCF, at any weights, each with its numerator h_IJ and
+its CSF term d^CSF_IJ. The numerics are all `../../mcscf/nac/`'s
 (`mcscf::df_nac`, whose README has the bra/ket order, the signs and the
 options); the step refuses what that cannot take, wires the pipeline's
 products into it once per pair, and writes `nac.json`.
@@ -26,7 +26,6 @@ struct NacOutput {
 
 struct NacStep {
   static constexpr std::string_view kName = "nac";
-  static constexpr double kEqualWeights = 1e-10;
 
   std::vector<std::array<int32_t, 2>> pairs{};  // empty: every I < J
   mcscf::NacOptions options{};                  // mult_ediff, use_etfs
@@ -42,13 +41,12 @@ struct NacStep {
 `run`:
 
 1. **The refusals**, before anything runs on the device: an integral-direct
-   `EriOutput` and a CASSCF whose weights span more than `kEqualWeights` are
-   `Unsupported`, naming the reason; a CASSCF of fewer than two roots, and a
-   pair whose roots are equal or not both the CASSCF's, `InvalidConfig`. The
-   Casscf step runs `mcscf::DensityFitting::Full` exactly when the
-   `EriOutput` is fitted, so the first check is also the check that the
-   CASSCF is the DF-CASSCF the couplings are of. Unequal weights wait on
-   `df_nac` (`../../mcscf/nac/README.md` "The numerator" says why).
+   `EriOutput` is `Unsupported`, naming the reason; a CASSCF of fewer than
+   two roots, and a pair whose roots are equal or not both the CASSCF's,
+   `InvalidConfig`. The Casscf step runs `mcscf::DensityFitting::Full`
+   exactly when the `EriOutput` is fitted, so the first check is also the
+   check that the CASSCF is the DF-CASSCF the couplings are of. Any weights
+   are taken: `df_nac` recovers them from the solution's RDMs.
    `pipeline/config` refuses the same config when it is read; the step
    refuses it again for a pipeline built by hand.
 2. **The solution, back**, as `../casscf_gradient/` builds it for
@@ -108,7 +106,7 @@ aux_basis = "cc-pvdz-jkfit"
 [casscf]
 ncas = 3
 nelecas = 4
-nroots = 2                 # at least 2, at equal weights (weights left out)
+nroots = 2                 # at least 2, at any weights
 conv_tol_grad = 1e-10      # the couplings are the CASSCF's only at convergence
 [nac]
 pairs = [[0, 1]]           # (bra, ket); left out, every I < J
@@ -136,7 +134,8 @@ H  0.0 -0.9366436633  -0.5794490459
 - The step's contract is checked by `static_assert`, and `[nac]`'s parsing,
   its output path and every refusal (a malformed table, an integral-direct
   `[eri]` written or filled in, a `[casscf]` of one root, a pair past its
-  roots, unequal weights) in `test/pipeline/nac_host.cpp`.
+  roots) in `test/pipeline/nac_host.cpp`, which also reads a `[casscf]` at
+  unequal weights.
 - `test/gtest/pipeline_nac_gpu.cpp`: a TOML config run by `Calculation`, its
   `nac.json` against PySCF's DF SA-CASSCF couplings
   (`test/gtest/data/casscf_nac/`, `h2co_ccpvdz_sa2`: H₂CO, SA-2 CAS(4,3),
@@ -146,6 +145,12 @@ H  0.0 -0.9366436633  -0.5794490459
   `pairs = [[1, 0]]` and `use_etfs`, against the reference's (1, 0) `etf`,
   `h` and `csf` under the same sign, and a pair of equal roots refused. Measured on the gfx1200: h_IJ within 8.3e-13, d^CSF 1.1e-12, d_IJ
   6.6e-12, the (1, 0) `etf` 6.9e-12; 1.6 s, so it is in the fast set.
+  Then the same config at `[casscf]` `weights = [0.6, 0.4]`, which PySCF
+  refuses (`df_nac` is checked there against finite differences, in
+  `../../mcscf/nac/README.md` "Tests"): it runs, h_10 = h_01 and
+  d_10 = −d_01 by hand over the same products and Σ_A h_01 = 0, to 1e-9,
+  and d_01 is more than 1e-6 off the equal-weight one, so the weights reach
+  `df_nac`. Measured on the RTX 3080: 4e-16, 1.4e-15 and 1.5e-3; 0.3 s.
 
 ## Files
 

@@ -36,7 +36,8 @@ import free_breakfast.mcscf.gradient;
 namespace free_breakfast::mcscf {
 
 // The weighted gamma is the roots' plain average to this, absolute, at equal
-// weights: df_gradient's own tolerance on the weighted sum.
+// weights (df_gradient's own tolerance on the weighted sum), and then the
+// weights are exactly 1 / nroots; otherwise they are recovered.
 constexpr double kNacEqualWeights = 1e-10;
 // Below this gap (hartree) the coupling is not divided by it: mult_ediff.
 constexpr double kNacDegenerateGap = 1e-10;
@@ -89,7 +90,9 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
                       solution.gamma.size(), solution.gamma2.size(), solution.root_gammas.size(),
                       nroots, ncas);
   }
-  // Equal weights: the weighted gamma is the roots' plain average.
+  // Equal weights, when the weighted gamma is the roots' plain average, are
+  // taken as exactly 1 / nroots, as they always were; unequal ones are
+  // recovered from the RDMs as df_gradient recovers them.
   double spread = 0.0;
   for (size_t i = 0; i < m; ++i) {
     double mean = 0.0;
@@ -98,10 +101,9 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
     }
     spread = std::max(spread, std::abs((mean / static_cast<double>(roots)) - solution.gamma[i]));
   }
+  std::vector<double> weights(roots, 1.0 / static_cast<double>(roots));
   if (spread > kNacEqualWeights) {
-    return err_unsupported("mcscf::df_nac: the solution's gamma is {:.3e} from its roots' plain "
-                           "average, so its weights are unequal, which is not supported",
-                           spread);
+    weights = FBF_TRY(sa_gradient_weights(solution, n));
   }
   const double gap = solution.roots.energies[static_cast<size_t>(ket)] -
                      solution.roots.energies[static_cast<size_t>(bra)];
@@ -166,7 +168,6 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
       FBF_TRY(nac_download(res, averaged.fock_inactive.data(), mo * mo)),
       FBF_TRY(nac_download(res, ints.ppaa.data(), mo * mo * m)),
       FBF_TRY(nac_download(res, ints.papa.data(), mo * mo * m))};
-  const std::vector<double> weights(roots, 1.0 / static_cast<double>(roots));
   RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
       res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints)));
 
@@ -185,8 +186,11 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
 
   // The transition orbital gradient, the Z-vector's right-hand side: fock's
   // gradient at the transition RDMs less its gradient at zero RDMs (the
-  // core's own energy multiplies <I|J> = 0). Its CI part is zero at equal
-  // weights (README.md), so the Z-vector has no CI right-hand side.
+  // core's own energy multiplies <I|J> = 0). Its CI part and its part along
+  // the rotations among the roots are zero (README.md "Unequal weights"), so
+  // the Z-vector has neither; at unequal weights it still returns Theta,
+  // from the rotations' coupling to the orbitals, which
+  // df_transition_gradient folds into z_c.
   response::Fock transition = FBF_TRY(
       response::fock(res, molecule, h, b, q, c, ncore, ncas, ints.ppaa, ints.papa, gamma, gamma2));
   const std::vector<double> zero_gamma(m, 0.0);

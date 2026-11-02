@@ -47,11 +47,6 @@ Result<NacOutput> NacStep::run(View<MoleculeOutput, BasisSetOutput, PrimitivePai
                       "{} weight(s): set [casscf] nroots to 2 or more",
                       kName, nroots, cas.weights.size());
   }
-  if (std::ranges::max(cas.weights) - std::ranges::min(cas.weights) > kEqualWeights) {
-    return err_unsupported("[{}] takes a state average at equal weights only, and [casscf] "
-                           "weights range from {} to {}: leave [casscf] weights out",
-                           kName, std::ranges::min(cas.weights), std::ranges::max(cas.weights));
-  }
   std::vector<std::array<int32_t, 2>> chosen = pairs;
   if (chosen.empty()) {
     for (int32_t i = 0; i < nroots; ++i) {

@@ -3,8 +3,8 @@
 // end -- the pairs (every pair by default) and the two options, nac.json in
 // the output directory, the CASSCF and the ERIs filled in, and every refusal:
 // a malformed table, an integral-direct [eri] written or filled in, a
-// [casscf] of one root, a pair past its roots, and unequal weights. Nothing
-// is run, so nothing touches a device.
+// [casscf] of one root, and a pair past its roots. A [casscf] at unequal
+// weights is read. Nothing is run, so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -75,12 +75,17 @@ TEST(PipelineNac, TheStepReadsItsPairsAndOptionsAndWritesItsJson) {
   EXPECT_TRUE(chosen.options.mult_ediff);
   EXPECT_TRUE(chosen.options.use_etfs);
 
-  // Equal weights written out are the default's.
-  auto equal =
-      fb::parse_config(with_inputs(std::format("{}{}weights = [0.5, 0.5]\nnroots = 2\n[nac]\n",
-                                               kFitted, "[casscf]\nncas = 3\nnelecas = 4\n")),
-                       "", kOut);
-  ASSERT_TRUE(equal.has_value()) << equal.error().message;
+  // Equal weights written out are the default's, and unequal ones, partly
+  // equal included, are read too: df_nac takes any weights.
+  for (const std::string_view weights :
+       {"weights = [0.5, 0.5]\nnroots = 2\n", "weights = [0.6, 0.4]\nnroots = 2\n",
+        "weights = [0.4, 0.4, 0.2]\nnroots = 3\n"}) {
+    auto weighted = fb::parse_config(
+        with_inputs(std::format("{}[casscf]\nncas = 3\nnelecas = 4\n{}[nac]\n", kFitted, weights)),
+        "", kOut);
+    ASSERT_TRUE(weighted.has_value()) << weights << weighted.error().message;
+    EXPECT_TRUE(weighted->step<fb::NacStep>().has_value()) << weights;
+  }
 }
 
 TEST(PipelineNac, AMalformedTableIsInvalidConfig) {
@@ -118,18 +123,12 @@ TEST(PipelineNac, ACasscfWithoutTheRootsIsInvalidConfig) {
 
 // Well formed, and not what df_nac takes: Unsupported, naming the table to
 // change.
-TEST(PipelineNac, IntegralDirectErisAndUnequalWeightsAreUnsupported) {
+TEST(PipelineNac, IntegralDirectErisAreUnsupported) {
   // An integral-direct [eri], written or filled in.
   for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
     expect_error(with_inputs(std::format("{}{}[nac]\n", eri, kSa3)), fb::ErrorKind::Unsupported,
                  "[nac] runs over density fitting only, and [eri] mode is 'integral_direct'");
   }
-  expect_error(with_inputs(std::format("{}[casscf]\nncas = 3\nnelecas = 4\nnroots = 2\n"
-                                       "weights = [0.6, 0.4]\n[nac]\n",
-                                       kFitted)),
-               fb::ErrorKind::Unsupported,
-               "[nac] takes a state average at equal weights only, and [casscf] weights range "
-               "from 0.4 to 0.6");
 }
 
 } // namespace

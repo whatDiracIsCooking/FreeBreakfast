@@ -190,4 +190,18 @@ df_transition_gradient(DeviceResources &res, const Molecule &molecule, const Bas
                        std::span<const double> gamma, std::span<const double> gamma2,
                        const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
+/// @brief The weights w_r a state-averaged @p solution is over, which a
+/// @c Solution does not carry: the least-squares solution of
+/// Sum_r w_r gamma_r = gamma with Sum_r w_r = 1 over @c Solution::root_gammas
+/// and the weighted gamma (ncas^2 each, @p ncas given), clamped at zero and
+/// renormalized. @ref df_gradient recovers its weights by it, and
+/// @c df_nac at unequal weights.
+///
+/// @return The weights, one per root; Unsupported when the roots' 1-RDMs are
+///         linearly dependent (they do not determine the weights);
+///         InvalidConfig when gamma is not their weighted sum to 1e-10 or a
+///         weight is below -1e-10. The messages name mcscf::df_gradient.
+[[nodiscard]] Result<std::vector<double>> sa_gradient_weights(const Solution &solution,
+                                                              size_t ncas);
+
 } // namespace free_breakfast::mcscf

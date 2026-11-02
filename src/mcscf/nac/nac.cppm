@@ -1,6 +1,6 @@
 /// @file
 /// @brief The nonadiabatic (derivative) coupling between two roots of a
-/// converged equal-weight DF-SA-CASSCF on the GPU,
+/// converged DF-SA-CASSCF at any weights on the GPU,
 ///
 ///     d_IJ = <I|dJ/dR> = h_IJ / (E_J - E_I) + d^CSF_IJ,
 ///
@@ -55,7 +55,7 @@ struct Nac {
 };
 
 /// @brief The nonadiabatic coupling d_IJ = <I|dJ/dR> between roots @p bra
-/// (I) and @p ket (J) of @p solution, a converged DF-SA-CASSCF at equal
+/// (I) and @p ket (J) of @p solution, a converged DF-SA-CASSCF at any
 /// weights, with its numerator and CSF term.
 ///
 /// h_IJ is the derivative of <I|H|J> at the symmetrized transition RDMs
@@ -63,8 +63,12 @@ struct Nac {
 /// Lagrangian's terms over (z_o, z_c), the Z-vector over the CI-relaxed
 /// Hessian at the solution whose right-hand side is the transition orbital
 /// gradient (@c response::fock's at the transition RDMs less its at zero
-/// RDMs; its CI part is zero at equal weights): one
-/// @c df_transition_gradient with those multipliers. d^CSF =
+/// RDMs; its CI and root-rotation parts are zero at any weights): one
+/// @c df_transition_gradient with those multipliers, the rotations among the
+/// roots of unequal weight among them. The weights are exactly 1 / nroots
+/// when the weighted gamma is the roots' plain average to 1e-10 (and then
+/// the call runs the same operations it did before unequal weights were
+/// taken), else recovered by @c sa_gradient_weights. d^CSF =
 /// 1/2 G[C_a (gamma^T - gamma) C_a^T], gamma = @c ci::Rdm::trans_rdm1(I, J)
 /// and G @c overlap_half_gradient. README.md has the derivation, the signs
 /// and the energies' order.
@@ -74,20 +78,18 @@ struct Nac {
 /// held beside them and not counted. The coupling changes sign with either
 /// root's CI phase, as the roots in @p solution carry it.
 ///
-/// @return The coupling; Unsupported for a solution at unequal weights (its
-///         weighted gamma not the plain average of root_gammas to 1e-10),
-///         for roots whose energies differ by less than 1e-10 without
-///         @c mult_ediff, or as @c df_transition_gradient's; InvalidConfig if
-///         the solution has fewer than two roots, @p bra or @p ket is not one
-///         of them or they are equal, solution.c is not basis.nao_sphe()
-///         square or not on @p res's device, ncore or ncas is out of range,
-///         the RDMs are not ncas^2, ncas^4 and nroots ncas^2 long, the CI
-///         vectors are not the roots', or trace(gamma) is no electron count
-///         of the molecule's multiplicity; otherwise the first error of
-///         @c casscf_integrals, @c response::fock, the CI objects, the
-///         Hessian, @c zvector, @c df_transition_gradient or
-///         @c overlap_half_gradient, or the GpuRuntime error of the first
-///         copy or BLAS call that failed.
+/// @return The coupling; Unsupported for roots whose energies differ by less
+///         than 1e-10 without @c mult_ediff, or as @c df_transition_gradient's;
+///         InvalidConfig if the solution has fewer than two roots, @p bra or
+///         @p ket is not one of them or they are equal, solution.c is not
+///         basis.nao_sphe() square or not on @p res's device, ncore or ncas is
+///         out of range, the RDMs are not ncas^2, ncas^4 and nroots ncas^2
+///         long, the CI vectors are not the roots', or trace(gamma) is no
+///         electron count of the molecule's multiplicity; otherwise the first
+///         error of @c sa_gradient_weights, @c casscf_integrals,
+///         @c response::fock, the CI objects, the Hessian, @c zvector,
+///         @c df_transition_gradient or @c overlap_half_gradient, or the
+///         GpuRuntime error of the first copy or BLAS call that failed.
 [[nodiscard]] Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule,
                                  const BasisSet &basis, std::span<const PrimitivePairClass> classes,
                                  const BasisSet &aux, const SphericalMatrixAO &h,
