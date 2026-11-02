@@ -23,12 +23,12 @@ n_alpha = n_beta.
 | `h2co_ccpvdz_sa2_weighted` | cc-pVDZ | 6 | (4, 3) | 29 | 186 | 2, [0.7, 0.3] | the same at unequal weights: the SA Fock, and so the orbitals and every number, move |
 | `h2co_skew_ccpvdz_sa3` | cc-pVDZ | 6 | (4, 3) | 29 | 186 | 3, equal | `casscf_nac/casscf_nac.json`'s; C1, no coupling vanishes (max \|H_IJ\| 4.4e-3, roots 0.11 and 0.19 Eh apart) |
 | `h6_631g_sa2` | 6-31G | 2 | (2, 3) | 7 | 138 | 2, [0.5, 0.5] | brute-force: H₆, C1, 48 400 determinants over all 12 orbitals |
-| `h8_sto3g_sa3` | STO-3G | 2 | (4, 4) | 2 | 184 | 3, equal | brute-force and **near-degenerate**: roots 1 and 2 are 19 mEh apart and coupled by 4–5 mEh (a quarter of their gap), which moves their SC-QD energies 1.7 mEh off the diagonal's; 4 900 determinants over all 8 orbitals. **Its PC is refused** (root 0, [below](#the-refused-case-h8_sto3g_sa3)) |
+| `h8_sto3g_sa3` | STO-3G | 2 | (4, 4) | 2 | 184 | 3, equal | brute-force and **near-degenerate**: roots 1 and 2 are 19 mEh apart and coupled by 4–5 mEh (a quarter of their gap), which moves their SC-QD energies 1.7 mEh off the diagonal's; 4 900 determinants over all 8 orbitals. Its root 0's PC passes only over round-off ([below](#h8_sto3g_sa3s-root-0-cuts-nothing)) |
 | `h8_ring_sto3g_sa3` | STO-3G | 1 | (6, 4) | 3 | 184 | 3, equal | brute-force and near-degenerate, added for PC (#671): H₈ on a slightly distorted ring (C1), roots 1 and 2 22 mEh apart, roots 0 and 2 coupled by ~0.03 Eh (a quarter of their gap), which moves their SC- and PC-QD energies ~6 mEh off the diagonal's; every root's every PC metric clears the gap rule (by ≥ 2e7); 4 900 determinants over all 8 orbitals |
 
 No existing DF SA-CASSCF case has a near-degeneracy, so `h8_sto3g_sa3` is
 new, and it is also small enough for the brute force. `h8_ring_sto3g_sa3`
-is there because `h8_sto3g_sa3`'s PC is refused: the search for it (two
+is there because `h8_sto3g_sa3`'s PC was refused until #687: the search for it (two
 stretched-H₂ chromophores at 3.5–7 bohr and bond lengths 1.4–1.85 bohr,
 and H₆ and H₈ rings at CAS(4,4) and (6,4)) found that root 0 of the
 two-chromophore cases has rm2 / hdm2 eigenvalues 1e-12–1e-11 of their
@@ -124,8 +124,8 @@ symmetrized, S's eigenvalues at or below **1e-13** of its largest dropped,
 K′ = Xᵀ K X over X = V_kept σ_kept^−½, K′ = W λ Wᵀ, U = X W, so
 ⟨I|V|Ψ_J⁽¹⁾⟩_t = −Σ_k y_{I,tk} y_{J,tk} / (λ_k + Δ_t) with y = Uᵀ b. The
 **gap rule** is the C++'s: smallest kept / largest dropped eigenvalue (over
-1e-13 when nothing is dropped) at least **1e3**, every denominator
-positive.
+ε √d of the largest when nothing is dropped, `src/nevpt2/energy/README.md`
+"The gap rule") at least **1e3**, every denominator positive.
 
 **The transition b**, which the brute force settled (every other choice
 misses it by 1e-4–5e-3):
@@ -151,21 +151,24 @@ So `pc_couplings` is not symmetric. `pc_heff` = diag(`casci_energies`) +
 modes cut (Sijrs 0); the per-class smallest gaps are in `qd_nevpt2.json`'s
 `pc` section.
 
-### The refused case, `h8_sto3g_sa3`
+### `h8_sto3g_sa3`'s root 0 cuts nothing
 
-Root 0's **Srs** and **Sij** metrics (rm2, hdm2) drop nothing and have
-smallest eigenvalues 2.32e-12 of their largest, so their gap is
-2.32e-12 / 1e-13 ≈ 23 < 1e3: `pc_class_energies` refuses that state
-(naming the class and state), and so must `pc_effective_hamiltonian`.
-These are real modes, not noise (the brute force's spans carry them; their
-null modes sit at ~1e-33). Roots 1 and 2 pass (Srs, Sij 1.1e4 and ≥ 4.7e3).
-So the case has **no `pc_*.npy` and no PC H_eff**; `qd_nevpt2.json`'s
-`pc.cases` entry has `"refused": true` and `refusals`, one per failing
-(root, class): `smallest_kept_over_largest`, `largest_dropped_over_largest`,
-`gap`, `min_gap`, `dropped`, `d`. Its `ungated_diagnostic` (every class
-solved past the rule: energies, H_eff, eigenvalues) is **not a test
-target**; both checks below are run on it ungated, so the formula is
-validated on this case too.
+Root 0's **Srs** and **Sij** metrics (rm2, hdm2, d = 16) drop nothing and
+have smallest eigenvalues 2.32e-12 of their largest. These are real modes,
+not noise (the brute force's spans carry them; their null modes sit at
+~1e-33). Measured against the cut, 1e-13, their gap was 23 and the state
+was refused; measured against round-off, ε √16 = 8.9e-16, it is 2.6e3, and
+the case has `pc_*.npy` like the rest (#687). Its PC energies and H_eff are
+bitwise what the refused case's `ungated_diagnostic` held, and both checks
+below now run on it gated.
+
+A case the gap rule refuses has **no `pc_*.npy` and no PC H_eff**; its
+`qd_nevpt2.json` `pc.cases` entry has `"refused": true` and `refusals`, one
+per failing (root, class): `smallest_kept_over_largest`,
+`largest_dropped_over_largest`, `gap`, `min_gap`, `dropped`, `d`. Its
+`ungated_diagnostic` (every class solved past the rule: energies, H_eff,
+eigenvalues) is **not a test target**; both checks below are run on it
+ungated, so the formula is validated on it too. No case here is refused.
 
 ## Files
 
@@ -194,7 +197,7 @@ names: `c` core, `a` active, `v` virtual, `L` auxiliary, `n` roots.
 | `pc_heff2`, `pc_heff`, `pc_heff_sym` | (n, n) | PC's, as SC's |
 | `pc_eigenvalues`, `pc_eigenvectors` | (n,), (n, n) | `pc_heff_sym`'s, signed as SC's |
 
-The `pc_*` arrays are absent where the case's PC is refused (`h8_sto3g_sa3`).
+The `pc_*` arrays are absent where a case's PC is refused (none is).
 
 The inputs `nevpt2::EnergyInputs` reads are the first five rows plus a
 pair's RDMs; the external four-index blocks are not written (the slabs come
@@ -230,7 +233,7 @@ PC, every case, or nothing is written:
 4. **PC diagonal vs block2.** Each root's per-class PC energy against
    block2's `WickICNEVPT2` (`nevpt2_reference.py`'s `block2`, its gap gate
    included) on the SA-canonical orbitals, the root's CI vector and PySCF's
-   fitted integrals, to 1e-10 (ungated on the refused case). Measured
+   fitted integrals, to 1e-10 (ungated on a refused case). Measured
    ≤ 3.2e-12 (skew H₂CO; ≤ 5.3e-15 on the rest).
 5. **PC brute force** (brute-force cases). Per ket J, class and external
    tuple t, the span of the class's spin-free E_pq E_rs on |J⟩ (Sr
@@ -240,7 +243,7 @@ PC, every case, or nothing is written:
    rule on its singular values squared, gives ⟨I|V|Ψ_J⁽¹⁾⟩_t =
    −(Qᵀ V|I⟩)ᵀ (Qᵀ (H_D − ⟨J|H_D|J⟩) Q)⁻¹ Qᵀ V|J⟩ in the full space: every
    element of every class's `pc_couplings`, and `pc_heff2`, to 1e-9
-   (measured ≤ 5.4e-14, `h8_sto3g_sa3` ungated; ≤ 4.5e-15 gated). On the
+   (measured ≤ 5.4e-14, `h8_sto3g_sa3`; ≤ 4.5e-15 on the rest). On the
    tuples with distinct external indices each span's null dimension must
    equal `pc_dropped`.
 

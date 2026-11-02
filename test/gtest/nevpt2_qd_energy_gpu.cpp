@@ -9,9 +9,8 @@
 // transition RDMs from nevpt2::rdms over the golden CI vectors, whose phases
 // the goldens fix, in place of the golden ones. PC the same way, against the
 // pc_* arrays: every class's coupling, heff2 and each ket's dropped counts on
-// the five cases whose PC passes, the diagonal against pc_class_energies, and
-// h8_sto3g_sa3's refusal, which names the class and the state. Last, the
-// malformed inputs.
+// all six cases, the diagonal against pc_class_energies, and a state's
+// refusal, which names the class and the state. Last, the malformed inputs.
 
 #include <gtest/gtest.h>
 
@@ -205,18 +204,6 @@ void expect_golden_pc(const std::filesystem::path &dir, const Case &c,
   }
 }
 
-// h8_sto3g_sa3's PC: root 0's Srs metric (and its Sij) has no gap at the cut,
-// so the effective Hamiltonian is refused, naming the first such class walked
-// and the state.
-void expect_pc_refused(const fb::Result<std::vector<nevpt2::PcClassEnergies>> &got,
-                       const std::string &what) {
-  ASSERT_FALSE(got) << what;
-  EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical) << what;
-  EXPECT_NE(got.error().message.find("state 0"), std::string::npos) << got.error().message;
-  EXPECT_NE(got.error().message.find("Srs's metric has no gap"), std::string::npos)
-      << got.error().message;
-}
-
 void expect_same(const nevpt2::ClassEnergies &a, const nevpt2::ClassEnergies &b,
                  const std::string &what) {
   for (std::size_t k = 0; k < 8; ++k) {
@@ -277,15 +264,12 @@ TEST_P(Nevpt2QdEnergy, MatchesGoldenDiagonalAndBatches) {
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergy, ::testing::ValuesIn(kCases),
                          [](const auto &info) { return info.param; });
 
-// The five cases whose PC passes (h8_sto3g_sa3's is refused, below).
-const std::array<std::string, 5> kPcCases{"h2co_ccpvdz_sa2", "h2co_ccpvdz_sa2_weighted",
-                                          "h2co_skew_ccpvdz_sa3", "h6_631g_sa2",
-                                          "h8_ring_sto3g_sa3"};
-
 class Nevpt2PcQdEnergy : public ::testing::TestWithParam<std::string> {};
 
 // PC from the golden RDMs: against the goldens, each diagonal element against
 // pc_class_energies on that state's inputs, and the walk in batches of two.
+// h8_sto3g_sa3's root 0 cuts nothing from Srs and Sij, whose smallest modes
+// are 2.3e-12 of their largest: a gap of 2.6e3 over round-off (#687).
 TEST_P(Nevpt2PcQdEnergy, MatchesGoldenDiagonalAndBatches) {
   FBF_REQUIRE_GPU();
   const std::string name = GetParam();
@@ -316,11 +300,12 @@ TEST_P(Nevpt2PcQdEnergy, MatchesGoldenDiagonalAndBatches) {
   }
 }
 
-INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcQdEnergy, ::testing::ValuesIn(kPcCases),
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcQdEnergy, ::testing::ValuesIn(kCases),
                          [](const auto &info) { return info.param; });
 
-// h8_sto3g_sa3: what pc_class_energies refuses for root 0 is refused here, the
-// error naming the class and the state; roots 1 and 2 pass alone.
+// What pc_class_energies refuses for one state is refused here, the error
+// naming the class and the state: h8_sto3g_sa3 with state 1's own RDMs zero,
+// so its Sr metric has no positive eigenvalue; states 0 and 2 pass alone.
 TEST(Nevpt2PcQdEnergyRefusals, RefusesWhatPcClassEnergiesRefuses) {
   FBF_REQUIRE_GPU();
   const std::filesystem::path dir = kDataDir / "h8_sto3g_sa3";
@@ -328,16 +313,25 @@ TEST(Nevpt2PcQdEnergyRefusals, RefusesWhatPcClassEnergiesRefuses) {
   Case c = load_case(res, dir);
   ASSERT_TRUE(c.blocks.has_value());
   golden_rdms(res, dir, c);
-  ASSERT_FALSE(std::filesystem::exists(dir / "pc_couplings.npy"));
-
-  expect_pc_refused(nevpt2::pc_effective_hamiltonian(res, *c.blocks, c.pairs, 0), "h8_sto3g_sa3");
   const std::size_t n = c.nroots;
-  const auto root0 = nevpt2::pc_class_energies(res, *c.blocks, c.pairs[0], 0);
-  ASSERT_FALSE(root0);
-  EXPECT_EQ(root0.error().kind, fb::ErrorKind::Numerical);
-  EXPECT_NE(root0.error().message.find("Srs's metric has no gap"), std::string::npos)
-      << root0.error().message;
-  for (std::size_t j = 1; j < n; ++j) {
+  ASSERT_EQ(n, 3U);
+  c.arrays.push_back(
+      upload(res, std::vector<double>(c.ncas * c.ncas * c.ncas * c.ncas * c.ncas * c.ncas, 0.0)));
+  const double *const zeros = c.arrays.back().data();
+  nevpt2::EnergyInputs &own1 = c.pairs[n + 1];
+  own1.dm1 = own1.dm2 = own1.dm3 = own1.f3ca = own1.f3ac = zeros;
+
+  const auto got = nevpt2::pc_effective_hamiltonian(res, *c.blocks, c.pairs, 0);
+  ASSERT_FALSE(got);
+  EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(got.error().message.find("state 1: Sr's metric"), std::string::npos)
+      << got.error().message;
+  const auto root1 = nevpt2::pc_class_energies(res, *c.blocks, own1, 0);
+  ASSERT_FALSE(root1);
+  EXPECT_EQ(root1.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(root1.error().message.find("nevpt2::pc_class_energies: Sr's metric"), std::string::npos)
+      << root1.error().message;
+  for (const std::size_t j : {std::size_t{0}, std::size_t{2}}) {
     const auto own = nevpt2::pc_class_energies(res, *c.blocks, c.pairs[(j * n) + j], 0);
     EXPECT_TRUE(own) << "root " << j << ": " << own.error().message;
   }
@@ -345,8 +339,8 @@ TEST(Nevpt2PcQdEnergyRefusals, RefusesWhatPcClassEnergiesRefuses) {
 
 // The chain: nevpt2::rdms' transition dm1, dm2, dm3, f3ca and f3ac between the
 // golden CI vectors, bra I and ket J, in place of the golden RDMs. The three
-// three-root cases, whose couplings do not vanish by symmetry: SC against its
-// goldens, and PC against its own, or for h8_sto3g_sa3 its refusal.
+// three-root cases, whose couplings do not vanish by symmetry: SC and PC
+// against their goldens.
 // The parameter is the case and its electrons per spin.
 class Nevpt2QdEnergyDeviceRdms
     : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
@@ -410,12 +404,8 @@ TEST_P(Nevpt2QdEnergyDeviceRdms, MatchesGolden) {
   expect_golden(dir, c, *got, name + " from nevpt2::rdms");
 
   const auto pc = nevpt2::pc_effective_hamiltonian(res, *c.blocks, c.pairs, 0);
-  if (std::filesystem::exists(dir / "pc_couplings.npy")) {
-    ASSERT_TRUE(pc) << pc.error().message;
-    expect_golden_pc(dir, c, *pc, name + " PC from nevpt2::rdms");
-  } else {
-    expect_pc_refused(pc, name + " PC from nevpt2::rdms");
-  }
+  ASSERT_TRUE(pc) << pc.error().message;
+  expect_golden_pc(dir, c, *pc, name + " PC from nevpt2::rdms");
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergyDeviceRdms,

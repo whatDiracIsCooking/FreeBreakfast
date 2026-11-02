@@ -43,7 +43,8 @@ constexpr double kPcTau = 1e-13;
 
 // The smallest acceptable smallest-kept / largest-dropped ratio: below it the
 // rank, and so the energy, depends on where the cut falls. The demo's
-// PC_MIN_GAP.
+// PC_MIN_GAP. When nothing is dropped, the smallest kept mode is measured
+// against S's round-off, ε √d of its largest, instead (README "PC-NEVPT2").
 constexpr double kPcMinGap = 1e3;
 
 // A device copy of @p host. Synchronizes, since @p host is pageable.
@@ -100,12 +101,16 @@ Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const dou
     ++nd;
   }
   const double smallest_kept = sigma[static_cast<size_t>(nd)] / s_max;
-  const double floor = nd > 0 ? largest_dropped : kPcTau;
+  // The noise the smallest kept mode must clear: the largest dropped mode's,
+  // or with none dropped S's round-off, ε √d.
+  const double floor =
+      nd > 0 ? largest_dropped
+             : std::numeric_limits<double>::epsilon() * std::sqrt(static_cast<double>(d));
   const double gap = floor > 0.0 ? smallest_kept / floor : std::numeric_limits<double>::infinity();
   if (gap < kPcMinGap) {
     return err_numerical("nevpt2::pc_class_energies: {}'s metric has no gap at its cut: smallest "
-                         "kept / largest dropped = {:.1e} < {:.0e} ({} of {} modes dropped)",
-                         name, gap, kPcMinGap, nd, d);
+                         "kept / {} = {:.1e} < {:.0e} ({} of {} modes dropped)",
+                         name, nd > 0 ? "largest dropped" : "round-off", gap, kPcMinGap, nd, d);
   }
   const int64_t m = d - nd;
   const auto mi = static_cast<int32_t>(m);
