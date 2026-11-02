@@ -11,6 +11,10 @@
 // <J| E_pq |K> = s, which is also the demo's reverse link of K (E_qp |J> =
 // s |K>), so R reads K's own lists and no reverse table is built.
 //
+// Between two vectors, R reads the ket and L2 the bra (the module builds the
+// ket's own L2 with a second launch, bra = ket); everything after the tile
+// loop is the same but for one read in the ca order's fdm2.
+//
 // One thread per determinant for R and L2 (adjacent threads, adjacent columns,
 // so the writes are coalesced), and one thread per output element for the
 // rest. A thread owns what it writes and nothing is atomic, so the result does
@@ -54,9 +58,9 @@ __global__ void nevpt2_rdm_produce_kernel(const int32_t n, const int32_t n_beta,
                                           const Replacement *const alpha_links,
                                           const int32_t alpha_per,
                                           const Replacement *const beta_links,
-                                          const int32_t beta_per, const double *const c,
-                                          const int32_t begin, const int32_t width, double *const r,
-                                          double *const l2) {
+                                          const int32_t beta_per, const double *const bra,
+                                          const double *const ket, const int32_t begin,
+                                          const int32_t width, double *const r, double *const l2) {
   const int64_t k = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (k >= width) {
     return;
@@ -64,8 +68,12 @@ __global__ void nevpt2_rdm_produce_kernel(const int32_t n, const int32_t n_beta,
   const int32_t det = begin + static_cast<int32_t>(k);
   const int32_t ka = det / n_beta;
   const int32_t kb = det % n_beta;
-  const auto at = [&](const int32_t a, const int32_t b) {
-    return c[(static_cast<int64_t>(a) * n_beta) + b];
+  // R reads the ket and L2 the bra: the same pointer for one vector.
+  const auto ket_at = [&](const int32_t a, const int32_t b) {
+    return ket[(static_cast<int64_t>(a) * n_beta) + b];
+  };
+  const auto bra_at = [&](const int32_t a, const int32_t b) {
+    return bra[(static_cast<int64_t>(a) * n_beta) + b];
   };
   const auto pair = [&](const Replacement l) {
     return (static_cast<int64_t>(l.p) * n) + static_cast<int64_t>(l.q);
@@ -78,7 +86,7 @@ __global__ void nevpt2_rdm_produce_kernel(const int32_t n, const int32_t n_beta,
   const Replacement *const a = links_of(alpha_links, alpha_per, ka);
   const Replacement *const b = links_of(beta_links, beta_per, kb);
 
-  // R[tu, K] = <K| E_tu |c>: each link (p, q, J, s) of K is <K| E_qp |J> = s.
+  // R[tu, K] = <K| E_tu |ket>: each link (p, q, J, s) of K is <K| E_qp |J> = s.
   double *const r_col = r + k;
   for (int64_t tu = 0; tu < nn; ++tu) {
     r_col[tu * ld] = 0.0;
@@ -86,16 +94,16 @@ __global__ void nevpt2_rdm_produce_kernel(const int32_t n, const int32_t n_beta,
   for (int32_t e = 0; e < alpha_per; ++e) {
     const Replacement l = a[e];
     r_col[((static_cast<int64_t>(l.q) * n) + l.p) * ld] +=
-        static_cast<double>(l.sign) * at(l.target, kb);
+        static_cast<double>(l.sign) * ket_at(l.target, kb);
   }
   for (int32_t e = 0; e < beta_per; ++e) {
     const Replacement l = b[e];
     r_col[((static_cast<int64_t>(l.q) * n) + l.p) * ld] +=
-        static_cast<double>(l.sign) * at(ka, l.target);
+        static_cast<double>(l.sign) * ket_at(ka, l.target);
   }
 
-  // L2[pqrs, K] = <c| E_pq E_rs |K>: E_rs over K's links to M, then E_pq over
-  // M's to J, each pair of links adding s s' c_J.
+  // L2[pqrs, K] = <bra| E_pq E_rs |K>: E_rs over K's links to M, then E_pq
+  // over M's to J, each pair of links adding s s' bra_J.
   double *const l2_col = l2 + k;
   for (int64_t pqrs = 0; pqrs < nn * nn; ++pqrs) {
     l2_col[pqrs * ld] = 0.0;
@@ -107,12 +115,12 @@ __global__ void nevpt2_rdm_produce_kernel(const int32_t n, const int32_t n_beta,
     const Replacement *const m = links_of(alpha_links, alpha_per, l.target);
     for (int32_t f = 0; f < alpha_per; ++f) {
       const Replacement o = m[f];
-      l2_col[((pair(o) * nn) + rs) * ld] += s * static_cast<double>(o.sign) * at(o.target, kb);
+      l2_col[((pair(o) * nn) + rs) * ld] += s * static_cast<double>(o.sign) * bra_at(o.target, kb);
     }
     for (int32_t f = 0; f < beta_per; ++f) {
       const Replacement o = b[f];
       l2_col[((pair(o) * nn) + rs) * ld] +=
-          s * static_cast<double>(o.sign) * at(l.target, o.target);
+          s * static_cast<double>(o.sign) * bra_at(l.target, o.target);
     }
   }
   for (int32_t e = 0; e < beta_per; ++e) {
@@ -122,18 +130,23 @@ __global__ void nevpt2_rdm_produce_kernel(const int32_t n, const int32_t n_beta,
     for (int32_t f = 0; f < alpha_per; ++f) {
       const Replacement o = a[f];
       l2_col[((pair(o) * nn) + rs) * ld] +=
-          s * static_cast<double>(o.sign) * at(o.target, l.target);
+          s * static_cast<double>(o.sign) * bra_at(o.target, l.target);
     }
     const Replacement *const m = links_of(beta_links, beta_per, l.target);
     for (int32_t f = 0; f < beta_per; ++f) {
       const Replacement o = m[f];
-      l2_col[((pair(o) * nn) + rs) * ld] += s * static_cast<double>(o.sign) * at(ka, o.target);
+      l2_col[((pair(o) * nn) + rs) * ld] += s * static_cast<double>(o.sign) * bra_at(ka, o.target);
     }
   }
 }
 
+// The ca order's contraction is of the transition dm3's own element
+// dm3[i, j, k, C, B, A]; of one vector, it reads dm3[A, B, C, k, j, i], the same
+// number by ⟨c| E_pq E_rs E_tu |c⟩ = ⟨c| E_ut E_sr E_qp |c⟩, which is the read
+// that build has always made, kept so its result does not change by a bit.
 __global__ void nevpt2_rdm_fdm2_ca_kernel(const int64_t n, const double *const eri,
-                                          const double *const dm3, double *const fdm2) {
+                                          const double *const dm3, const bool transition,
+                                          double *const fdm2) {
   const int64_t at = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   const int64_t nn = n * n;
   if (at >= nn * nn) {
@@ -148,7 +161,8 @@ __global__ void nevpt2_rdm_fdm2_ca_kernel(const int64_t n, const double *const e
     for (int64_t bb = 0; bb < n; ++bb) {
       for (int64_t aa = 0; aa < n; ++aa) {
         const double e = eri[(((l * n + cc) * n + bb) * n) + aa];
-        acc += e * dm3[(((((aa * n + bb) * n + cc) * n + k) * n + j) * n) + i];
+        acc += e * (transition ? dm3[(((((i * n + j) * n + k) * n + cc) * n + bb) * n) + aa]
+                               : dm3[(((((aa * n + bb) * n + cc) * n + k) * n + j) * n) + i]);
       }
     }
   }
@@ -459,18 +473,18 @@ wwr::wwrError_t rdm_convert_eri(const wwr::wwrStream_t stream, const int32_t n,
 wwr::wwrError_t rdm_produce(const wwr::wwrStream_t stream, const int32_t n, const int32_t n_beta,
                             const Replacement *const alpha_links, const int32_t alpha_per,
                             const Replacement *const beta_links, const int32_t beta_per,
-                            const double *const c, const int32_t begin, const int32_t width,
-                            double *const r, double *const l2) {
+                            const double *const bra, const double *const ket, const int32_t begin,
+                            const int32_t width, double *const r, double *const l2) {
   nevpt2_rdm_produce_kernel<<<nevpt2_rdm_blocks(width), kFourWarps, 0, stream>>>(
-      n, n_beta, alpha_links, alpha_per, beta_links, beta_per, c, begin, width, r, l2);
+      n, n_beta, alpha_links, alpha_per, beta_links, beta_per, bra, ket, begin, width, r, l2);
   return wwr::wwrGetLastError();
 }
 
 wwr::wwrError_t rdm_fdm2_ca(const wwr::wwrStream_t stream, const int32_t n, const double *const eri,
-                            const double *const dm3, double *const fdm2) {
+                            const double *const dm3, const bool transition, double *const fdm2) {
   const int64_t nn = static_cast<int64_t>(n) * n;
-  nevpt2_rdm_fdm2_ca_kernel<<<nevpt2_rdm_blocks(nn * nn), kFourWarps, 0, stream>>>(n, eri, dm3,
-                                                                                   fdm2);
+  nevpt2_rdm_fdm2_ca_kernel<<<nevpt2_rdm_blocks(nn * nn), kFourWarps, 0, stream>>>(
+      n, eri, dm3, transition, fdm2);
   return wwr::wwrGetLastError();
 }
 

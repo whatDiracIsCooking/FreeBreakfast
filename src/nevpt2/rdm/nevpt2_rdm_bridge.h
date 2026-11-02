@@ -38,18 +38,22 @@ namespace free_breakfast::nevpt2::device {
                                               double *eri, double *consume);
 
 /// @brief R and L2 for the @p width determinants K in [@p begin, @p begin +
-/// @p width) of the CI vector @p c: R[tu, k] = ⟨K| E_tu |c⟩ and
-/// L2[pqrs, k] = ⟨c| E_pq E_rs |K⟩, k = K − @p begin, each row-major with
-/// leading dimension @p width. Overwrites both.
+/// @p width) between the CI vectors @p bra and @p ket (one pointer for one
+/// vector): R[tu, k] = ⟨K| E_tu |ket⟩ and L2[pqrs, k] = ⟨bra| E_pq E_rs |K⟩,
+/// k = K − @p begin, each row-major with leading dimension @p width.
+/// Overwrites both.
 [[nodiscard]] wwr::wwrError_t rdm_produce(wwr::wwrStream_t stream, int32_t n, int32_t n_beta,
                                           const ci::Replacement *alpha_links, int32_t alpha_per,
                                           const ci::Replacement *beta_links, int32_t beta_per,
-                                          const double *c, int32_t begin, int32_t width, double *r,
-                                          double *l2);
+                                          const double *bra, const double *ket, int32_t begin,
+                                          int32_t width, double *r, double *l2);
 
-/// @brief The ca order's fdm2[i, j, k, l] = Σ_ABC eri[l, C, B, A] dm3[A, B, C, k, j, i].
+/// @brief The ca order's fdm2[i, j, k, l] = Σ_ABC eri[l, C, B, A] dm3[i, j, k, C, B, A]
+/// when @p transition (@p dm3 between two vectors); of one vector, the same
+/// sum over dm3[A, B, C, k, j, i], its equal by hermiticity and the element the
+/// one-vector build has always read.
 [[nodiscard]] wwr::wwrError_t rdm_fdm2_ca(wwr::wwrStream_t stream, int32_t n, const double *eri,
-                                          const double *dm3, double *fdm2);
+                                          const double *dm3, bool transition, double *fdm2);
 
 /// @brief The ac order's fdm2[i, j, k, l] = Σ_CEF eri[k, C, E, F] dm3[i, j, C, l, E, F].
 [[nodiscard]] wwr::wwrError_t rdm_fdm2_ac(wwr::wwrStream_t stream, int32_t n, const double *eri,
