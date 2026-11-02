@@ -264,6 +264,32 @@ the CASSCF being closed-shell exactly then), under `[optimize]` its start's.
 The step refuses each again when it runs, for a pipeline built by hand.
 
 ```toml
+[eri]
+mode = "density_fitting"  # required by [nac]
+[casscf]
+ncas = 3
+nelecas = 4
+nroots = 2                # at least 2, at equal weights
+conv_tol_grad = 1e-10     # the couplings are the CASSCF's only at convergence
+[nac]
+pairs = [[0, 1]]          # (bra, ket); left out, every I < J
+mult_ediff = false        # the default
+use_etfs = false          # the default
+```
+
+`[nac]` is the nonadiabatic couplings ⟨I|∂J/∂R⟩ between pairs of roots of
+the state-averaged `[casscf]` it reads (`nac/README.md`), written to
+`nac.json`. `pairs` is an array of two-integer arrays, each two distinct
+roots, at least 0; an empty one is `InvalidConfig` (leave it out for every
+pair I < J). `mult_ediff` and `use_etfs` are `mcscf::NacOptions`'. Across
+tables, when the file is read: a `[casscf]` with `nroots` below 2, or a
+pair naming a root at or past it, is `InvalidConfig`; `[casscf]` `weights`
+not all equal is `Unsupported` (`mcscf::df_nac` takes equal weights only);
+and like `[nevpt2]` it runs over density fitting only, `Unsupported` under
+an integral-direct `[eri]`, written or filled in. The step refuses each
+again when it runs, for a pipeline built by hand.
+
+```toml
 [optimize]                # Gaussian's thresholds by default
 max_force = 4.5e-4        # hartree / bohr
 rms_force = 3.0e-4
@@ -373,6 +399,7 @@ step, so no two collide:
 | `[gradient]` | `gradient.json`: the SCF energy, the gradient `total` and each of its `terms` (hartree / bohr, one row of three per atom) |
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
 | `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut |
+| `[nac]` | `nac.json`: the options, the CASSCF's root energies, and per pair the roots, the gap, h_IJ and d^CSF (unscaled) and `total`, each one row of three per atom, and the Z-vector's products and residual |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
 | `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
@@ -382,7 +409,7 @@ no output, so a later config can rely on what an earlier run wrote
 `write_npy` is a switch, off by default, not a path. A file already there is
 overwritten; a directory per run is what `-o` is for. The steps keep their
 `molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
-`npy`, `GradientStep`, `CasscfGradientStep` and `Nevpt2GradientStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
+`npy`, `GradientStep`, `CasscfGradientStep`, `Nevpt2GradientStep` and `NacStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
 comparing the directories named rather than their spelling (`.`, `''` and the
@@ -429,15 +456,20 @@ than after the SCF has converged. `parse_config` touches no disk.
   refused, not truncated, and so is a value outside `int32_t`. A `double`
   option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`. An
   integer-array option (`[casci] active`) holds integers only, each read the
-  same way, and a string-array option (`[casci] avas`) strings only;
+  same way, a string-array option (`[casci] avas`) strings only, and a
+  pair-array option (`[nac] pairs`) two-integer arrays only;
+- a `[nac]` `pairs` that is empty or holds a pair of equal or negative
+  roots, or one over a `[casscf]` of fewer than two roots or naming a root
+  past them;
 - what `Pipeline::create` refuses (a cycle).
 
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
 is well formed and the method is what is missing: `[nevpt2]`,
-`[casscf_gradient]`, `[nevpt2_gradient]` or the analytic `[hessian]` under
+`[casscf_gradient]`, `[nevpt2_gradient]`, `[nac]` or the analytic `[hessian]` under
 an integral-direct `[eri]`, the analytic `[hessian]` beside a
 `[casscf_gradient]`, `[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
-average and multiplicity other than 1 (above).
+average and multiplicity other than 1, and `[nac]` over unequal `[casscf]`
+weights (above).
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`
