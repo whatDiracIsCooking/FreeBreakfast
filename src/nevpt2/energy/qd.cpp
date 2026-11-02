@@ -1,8 +1,9 @@
 /// @file
-/// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians and SC's reverse
-/// pass: their checks over the n x n pair inputs, and the class walks each
+/// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians and their reverse
+/// passes: their checks over the n x n pair inputs, and the class walks each
 /// shares with its one-state energy (energy.cpp's sc_couplings, pc.cpp's
-/// pc_couplings, reverse.cpp's sc_couplings_adjoint).
+/// pc_couplings, reverse.cpp's sc_couplings_adjoint and
+/// pc_couplings_adjoint).
 
 module;
 
@@ -51,14 +52,14 @@ Result<std::vector<ClassEnergies>> sc_effective_hamiltonian(DeviceResources &res
   return sc_couplings(res, blocks, pairs, n, batch);
 }
 
-Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
-    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
-    std::span<const double> hbar, const int32_t batch, std::span<const EnergyBars> bars,
-    const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition) {
-  constexpr const char *kWho = "sc_effective_hamiltonian_adjoint";
-  const int64_t n = FBF_TRY(qd_states(kWho, pairs));
+// n, as qd_states, when besides @p hbar is n² and @p bars n long, every entry
+// sharing the first's bars on the shared fields; InvalidConfig, naming @p who,
+// otherwise. Both reverse passes' checks.
+Result<int64_t> qd_adjoint_states(const char *who, std::span<const EnergyInputs> pairs,
+                                  std::span<const double> hbar, std::span<const EnergyBars> bars) {
+  const int64_t n = FBF_TRY(qd_states(who, pairs));
   if (std::cmp_not_equal(hbar.size(), n * n) || std::cmp_not_equal(bars.size(), n)) {
-    return err_config("{}: {} states take {} H-bar elements and {} EnergyBars, not {} and {}", kWho,
+    return err_config("{}: {} states take {} H-bar elements and {} EnergyBars, not {} and {}", who,
                       n, n * n, n, hbar.size(), bars.size());
   }
   // The walk adds the shared bars once, onto the first entry's.
@@ -70,9 +71,18 @@ Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
     if (shared(bars[j]) != shared(bars.front())) {
       return err_config("{}: state {}'s bars do not share the first's integral, orbital-energy "
                         "and Λ bars",
-                        kWho, j);
+                        who, j);
     }
   }
+  return n;
+}
+
+Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    std::span<const double> hbar, const int32_t batch, std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition) {
+  const int64_t n =
+      FBF_TRY(qd_adjoint_states("sc_effective_hamiltonian_adjoint", pairs, hbar, bars));
   return sc_couplings_adjoint(res, blocks, pairs, n, hbar, batch, bars, transition);
 }
 
@@ -82,6 +92,15 @@ Result<std::vector<PcClassEnergies>> pc_effective_hamiltonian(DeviceResources &r
                                                               const int32_t batch) {
   const int64_t n = FBF_TRY(qd_states("pc_effective_hamiltonian", pairs));
   return pc_couplings(res, blocks, pairs, n, batch);
+}
+
+Result<PcEffectiveHamiltonianAdjoint> pc_effective_hamiltonian_adjoint(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    std::span<const double> hbar, const int32_t batch, std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition) {
+  const int64_t n =
+      FBF_TRY(qd_adjoint_states("pc_effective_hamiltonian_adjoint", pairs, hbar, bars));
+  return pc_couplings_adjoint(res, blocks, pairs, n, hbar, batch, bars, transition);
 }
 
 } // namespace free_breakfast::nevpt2

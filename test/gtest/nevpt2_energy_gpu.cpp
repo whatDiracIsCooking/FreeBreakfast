@@ -18,6 +18,10 @@
 // and Euler from its bars under a random H̄ on all six cases, one state as
 // class_energies_adjoint, the batch, and a Richardson ladder of
 // Σ H̄_IJ H_IJ along every input, every pair's transition RDMs included.
+// And PC-QD's (pc_effective_hamiltonian_adjoint), the same way: homogeneity
+// and Euler on all six cases, one state as pc_class_energies_adjoint, the
+// batch, its ladders (every group on three cases, the slabs and orbital
+// energies on the other three), and its refusals.
 
 #include <gtest/gtest.h>
 
@@ -1498,12 +1502,18 @@ std::vector<double> download_host(fb::DeviceResources &res, const double *const 
   return host;
 }
 
-// sc_effective_hamiltonian_adjoint over @p q with H̄ @p hbar, every bar
-// wanted, each zeroed first; the bars per pair, [0] with the shared ones, the
-// transitions' as handed over, each exactly once.
-std::optional<std::pair<nevpt2::ScEffectiveHamiltonianAdjoint, std::vector<HostBars>>>
-run_qd_adjoint(fb::DeviceResources &res, const QdHostCase &q, const std::vector<double> &hbar,
-               const std::int32_t batch) {
+// A QD reverse pass's transition callback.
+using Transition =
+    std::function<fb::Status(std::int64_t, std::int64_t, const nevpt2::EnergyBars &)>;
+
+// The bars of a QD reverse pass over @p q, every bar wanted, each zeroed
+// first: per pair, [0] with the shared ones, the transitions' as handed over,
+// each exactly once. @p pass runs it on the pairs, the n EnergyBars and the
+// callback, and says whether it succeeded.
+std::optional<std::vector<HostBars>>
+qd_bars(fb::DeviceResources &res, const QdHostCase &q,
+        const std::function<bool(const QdDeviceCase &, std::span<const nevpt2::EnergyBars>,
+                                 const Transition &)> &pass) {
   QdDeviceCase g = upload_qd(res, q);
   const std::size_t n = q.n;
   const DeviceBars first = zero_bars(res, merged(q, 0));
@@ -1529,8 +1539,8 @@ run_qd_adjoint(fb::DeviceResources &res, const QdHostCase &q, const std::vector<
   std::vector<HostBars> host(n * n);
   std::vector<std::int32_t> handed(n * n, 0);
   const std::size_t na = q.shared.na;
-  const auto transition = [&](const std::int64_t bra, const std::int64_t ket,
-                              const nevpt2::EnergyBars &t) -> fb::Status {
+  const Transition transition = [&](const std::int64_t bra, const std::int64_t ket,
+                                    const nevpt2::EnergyBars &t) -> fb::Status {
     const auto p = static_cast<std::size_t>((bra * static_cast<std::int64_t>(n)) + ket);
     ++handed[p];
     EXPECT_EQ(t.f3ca, nullptr);
@@ -1540,10 +1550,7 @@ run_qd_adjoint(fb::DeviceResources &res, const QdHostCase &q, const std::vector<
     host[p].dm3 = download_host(res, t.dm3, na * na * na * na * na * na);
     return {};
   };
-  auto got = nevpt2::sc_effective_hamiltonian_adjoint(res, *g.shared.blocks, g.pairs, hbar, batch,
-                                                      bars, transition);
-  EXPECT_TRUE(got) << got.error().message;
-  if (!got) {
+  if (!pass(g, bars, transition)) {
     return std::nullopt;
   }
   for (std::size_t p = 0; p < n * n; ++p) {
@@ -1559,7 +1566,29 @@ run_qd_adjoint(fb::DeviceResources &res, const QdHostCase &q, const std::vector<
     h.f3ca = download_host(res, b.arrays[3]);
     h.f3ac = download_host(res, b.arrays[4]);
   }
-  return std::pair{*got, host};
+  return host;
+}
+
+// sc_effective_hamiltonian_adjoint over @p q with H̄ @p hbar, as qd_bars.
+std::optional<std::pair<nevpt2::ScEffectiveHamiltonianAdjoint, std::vector<HostBars>>>
+run_qd_adjoint(fb::DeviceResources &res, const QdHostCase &q, const std::vector<double> &hbar,
+               const std::int32_t batch) {
+  std::optional<nevpt2::ScEffectiveHamiltonianAdjoint> adj;
+  auto host = qd_bars(res, q,
+                      [&](const QdDeviceCase &g, std::span<const nevpt2::EnergyBars> bars,
+                          const Transition &transition) {
+                        auto got = nevpt2::sc_effective_hamiltonian_adjoint(
+                            res, *g.shared.blocks, g.pairs, hbar, batch, bars, transition);
+                        EXPECT_TRUE(got) << got.error().message;
+                        if (got) {
+                          adj = std::move(*got);
+                        }
+                        return got.has_value();
+                      });
+  if (!host) {
+    return std::nullopt;
+  }
+  return std::pair{std::move(*adj), std::move(*host)};
 }
 
 // Σ <bar, dx> over every field of every pair: the shared bars through pair
@@ -1791,6 +1820,358 @@ TEST(Nevpt2QdEnergyAdjoint, MalformedInputsAreInvalidConfig) {
                            std::span<const nevpt2::EnergyBars> bars) {
     const auto got =
         nevpt2::sc_effective_hamiltonian_adjoint(res, *g.shared.blocks, pairs, h, 0, bars, {});
+    return !got && got.error().kind == fb::ErrorKind::InvalidConfig;
+  };
+  const std::span<const nevpt2::EnergyInputs> pairs{g.pairs};
+  EXPECT_TRUE(refused(pairs.first(3), hbar, two));
+  EXPECT_TRUE(refused(pairs, std::span{hbar}.first(3), two));
+  EXPECT_TRUE(refused(pairs, hbar, std::span{two}.first(1)));
+  std::vector<nevpt2::EnergyBars> unshared = two;
+  unshared[1].lambda = nullptr;
+  EXPECT_TRUE(refused(pairs, hbar, unshared));
+}
+
+// ---------------------------------------------------------------------------
+// The PC-QD reverse pass
+// ---------------------------------------------------------------------------
+
+// pc_effective_hamiltonian_adjoint over @p q with H̄ @p hbar, as qd_bars.
+std::optional<std::pair<nevpt2::PcEffectiveHamiltonianAdjoint, std::vector<HostBars>>>
+run_pc_qd_adjoint(fb::DeviceResources &res, const QdHostCase &q, const std::vector<double> &hbar,
+                  const std::int32_t batch) {
+  std::optional<nevpt2::PcEffectiveHamiltonianAdjoint> adj;
+  auto host = qd_bars(res, q,
+                      [&](const QdDeviceCase &g, std::span<const nevpt2::EnergyBars> bars,
+                          const Transition &transition) {
+                        auto got = nevpt2::pc_effective_hamiltonian_adjoint(
+                            res, *g.shared.blocks, g.pairs, hbar, batch, bars, transition);
+                        EXPECT_TRUE(got) << got.error().message;
+                        if (got) {
+                          adj = std::move(*got);
+                        }
+                        return got.has_value();
+                      });
+  if (!host) {
+    return std::nullopt;
+  }
+  return std::pair{std::move(*adj), std::move(*host)};
+}
+
+// pc_effective_hamiltonian at @p q.
+fb::Result<std::vector<nevpt2::PcClassEnergies>> pc_qd_energies(fb::DeviceResources &res,
+                                                                const QdHostCase &q) {
+  QdDeviceCase g = upload_qd(res, q);
+  return nevpt2::pc_effective_hamiltonian(res, *g.shared.blocks, g.pairs, 0);
+}
+
+// The homogeneity sums, Σ_IJ H̄_IJ E^k_IJ per class from the bars (each
+// coupling is homogeneous of degree one in its ket's S, K and S₁ and its
+// transition's S and S₁ together), and Euler's identity in (B, h1e_v²),
+// <Λ, B> + 2 Σ <h1e_v-bar, h1e_v> = 4 L: exact, so a mis-transcribed term,
+// a wrong multiplier on either row of a pair or a transition's bar on the
+// wrong side of U fails them. And the elements are pc_effective_hamiltonian's.
+class Nevpt2PcQdEnergyAdjointCases : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2PcQdEnergyAdjointCases, HomogeneityAndEulerFromTheBars) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const QdHostCase q = load_qd_case(kQdDataDir / GetParam());
+  const std::vector<double> hbar = random_hbar(q.n, 703);
+  const auto got = run_pc_qd_adjoint(res, q, hbar, 0);
+  ASSERT_TRUE(got.has_value());
+  const auto &[adj, bars] = *got;
+  const auto forward = pc_qd_energies(res, q);
+  ASSERT_TRUE(forward) << forward.error().message;
+  ASSERT_EQ(adj.elements.size(), q.n * q.n);
+  double objective = 0.0;
+  std::array<double, 8> weighted{};
+  for (std::size_t p = 0; p < q.n * q.n; ++p) {
+    for (std::size_t k = 0; k < 8; ++k) {
+      EXPECT_NEAR(adj.elements[p].energies[k], (*forward)[p].energies[k], 1e-12)
+          << "element " << p << " " << kClassNames[k];
+      EXPECT_EQ(adj.elements[p].dropped[k], (*forward)[p].dropped[k])
+          << "element " << p << " " << kClassNames[k];
+      weighted[k] += hbar[p] * adj.elements[p].energies[k];
+    }
+    EXPECT_NEAR(adj.elements[p].total, (*forward)[p].total, 1e-12) << "element " << p;
+    objective += hbar[p] * adj.elements[p].total;
+  }
+  double worst = 0.0;
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(adj.homogeneity[k], weighted[k], 1e-12 * std::max(1.0, std::abs(weighted[k])))
+        << kClassNames[k];
+    worst = std::max(worst, std::abs(adj.homogeneity[k] - weighted[k]));
+  }
+  const HostCase h = q.shared;
+  const double euler = lambda_dot(bars[0].lambda, h, h) + 2.0 * dot(bars[0].h1e_v_sr, h.h1e_v_sr) +
+                       2.0 * dot(bars[0].h1e_v_si, h.h1e_v_si) +
+                       2.0 * dot(bars[0].h1e_v_sir, h.h1e_v_sir);
+  EXPECT_NEAR(euler, 4.0 * objective, 1e-12 * std::abs(objective));
+  std::cout << std::format("[ nevpt2   ] PC-QD reverse {}: worst homogeneity miss {:.2e}, Euler "
+                           "{:+.2e} of L = {:+.6e}\n",
+                           GetParam(), worst, euler - (4.0 * objective), objective);
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcQdEnergyAdjointCases,
+                         ::testing::Values(std::string{"h2co_ccpvdz_sa2"},
+                                           std::string{"h2co_ccpvdz_sa2_weighted"},
+                                           std::string{"h2co_skew_ccpvdz_sa3"},
+                                           std::string{"h6_631g_sa2"}, std::string{"h8_sto3g_sa3"},
+                                           std::string{"h8_ring_sto3g_sa3"}),
+                         [](const auto &info) { return info.param; });
+
+// H₈ on a ring, three states, every pair coupled (roots 0 and 2 by ~0.03 Eh),
+// every root's every PC metric clearing the gap rule by >= 2e7: the checks
+// held to round-off run here. Its bars repeat run to run (RTX 3080, ten runs,
+// each bar against its own largest element) to 6.9e-13 for state 0 alone and
+// 7.3e-14 for state 2, and the walk's (Λ, h1e_v's, the orbital energies') to
+// 2.5e-13 at n = 3. State 1's do not: 2.2e-11 alone, its Sr keeping small
+// modes, and so the sweep's bars of every pair it is in at n = 3 neither, as
+// Nevpt2PcEnergyAdjoint.BatchedBarsMatchWhole has it at CAS(8,8). On
+// h8_sto3g_sa3, whose root 0's PC passes only over round-off, its bars
+// repeat to 1.4e-7 of their scale.
+const std::string kPcQdAdjointCase = "h8_ring_sto3g_sa3";
+
+// One state is pc_class_energies_adjoint itself (it is that call's n = 1, at
+// H̄ = 1): its energies, dropped counts, homogeneity sums and every bar, the
+// bars at kBatchedBarsTolerance, the atomics' floor, seven times the largest
+// run-to-run spread measured (6.9e-13). States 0 and 2; state 1's spread is
+// 2.2e-11 (above).
+TEST(Nevpt2PcQdEnergyAdjoint, OneStateIsPcClassEnergiesAdjoint) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const QdHostCase all = load_qd_case(kQdDataDir / kPcQdAdjointCase);
+  for (const std::size_t j : {std::size_t{0}, std::size_t{2}}) {
+    const QdHostCase one{.n = 1, .shared = all.shared, .rdms = {all.rdms[(j * all.n) + j]}};
+    const auto qd = run_pc_qd_adjoint(res, one, {1.0}, 0);
+    const auto pc = run_pc_adjoint(res, merged(one, 0), 0);
+    ASSERT_TRUE(qd.has_value());
+    ASSERT_TRUE(pc.has_value());
+    ASSERT_EQ(qd->first.elements.size(), 1U);
+    for (std::size_t k = 0; k < 8; ++k) {
+      EXPECT_NEAR(qd->first.elements[0].energies[k], pc->first.energies.energies[k], 1e-12)
+          << "state " << j << " " << kClassNames[k];
+      EXPECT_EQ(qd->first.elements[0].dropped[k], pc->first.energies.dropped[k])
+          << "state " << j << " " << kClassNames[k];
+      EXPECT_NEAR(qd->first.homogeneity[k], pc->first.homogeneity[k], 1e-12)
+          << "state " << j << " " << kClassNames[k];
+    }
+    expect_same_bars(pc->second, qd->second[0], true, kBatchedBarsTolerance);
+  }
+}
+
+// Walked one slab row at a time (one core and three virtual orbitals, so
+// every walk with an external index splits), the walk's bars match the whole
+// walk's at kBatchedBarsTolerance (twenty times the 2.5e-13 measured), every
+// element and the homogeneity sums at 1e-12, with the same dropped counts; each transition is handed over once. The sweep's bars, the
+// transitions' among them, are not compared element by element: they carry
+// state 1's spread (above), as PC's one-state BatchedBarsMatchWhole leaves
+// them to its homogeneity sums.
+TEST(Nevpt2PcQdEnergyAdjoint, BatchedBarsMatchWhole) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const QdHostCase q = load_qd_case(kQdDataDir / kPcQdAdjointCase);
+  const std::vector<double> hbar = random_hbar(q.n, 703);
+  const auto whole = run_pc_qd_adjoint(res, q, hbar, 0);
+  const auto batched = run_pc_qd_adjoint(res, q, hbar, 1);
+  ASSERT_TRUE(whole.has_value());
+  ASSERT_TRUE(batched.has_value());
+  expect_same_bars(whole->second[0], batched->second[0], false, kBatchedBarsTolerance);
+  for (std::size_t p = 0; p < q.n * q.n; ++p) {
+    for (std::size_t k = 0; k < 8; ++k) {
+      EXPECT_NEAR(batched->first.elements[p].energies[k], whole->first.elements[p].energies[k],
+                  1e-12)
+          << "element " << p << " " << kClassNames[k];
+      EXPECT_EQ(batched->first.elements[p].dropped[k], whole->first.elements[p].dropped[k])
+          << "element " << p << " " << kClassNames[k];
+    }
+  }
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(batched->first.homogeneity[k], whole->first.homogeneity[k], 1e-12)
+        << kClassNames[k];
+  }
+}
+
+// L = Σ_IJ H̄_IJ H_IJ over pc_effective_hamiltonian at @p q.
+double pc_qd_objective(fb::DeviceResources &res, const QdHostCase &q,
+                       const std::vector<double> &hbar) {
+  const auto h = pc_qd_energies(res, q);
+  EXPECT_TRUE(h) << h.error().message;
+  if (!h) {
+    return std::nan("");
+  }
+  double sum = 0.0;
+  for (std::size_t p = 0; p < h->size(); ++p) {
+    sum += hbar[p] * (*h)[p].total;
+  }
+  return sum;
+}
+
+// The bars against pc_effective_hamiltonian itself: L = Σ H̄_IJ H_IJ
+// differenced along each group of PC's ladder (Nevpt2PcEnergyAdjointLadder):
+// its ratio test, its t0 = 1e-3 and SC's 1e-7. The groups are SC-QD's random
+// directions, except that every state's own dm1-dm3 move along PC's active
+// rotation, which keeps each S_J's spectrum; the transitions' dm1-dm3 move
+// raw (they enter b_{I←J} alone, linearly, and no solve), and f3ca and f3ac
+// raw. "h1e_v" is quadratic, so every difference is held to the bars.
+//
+// Every group on h2co_ccpvdz_sa2, h2co_ccpvdz_sa2_weighted and h6_631g_sa2;
+// on the other three, B everywhere and e where it holds. Measured on the RTX
+// 3080, what keeps the rest out: along h, the RDMs or all of them, a ket's PC
+// is refused within the ladder's reach (K moved off annihilating S's
+// near-null functions sends a kept mode's λ through -Δ, or the gap rule
+// fails), and along h1e_v or e, L's run-to-run round-off reaches the finest
+// rungs.
+// - h2co_skew_ccpvdz_sa3: refused at t >= 2.5e-4 along h, 1e-3 along rdm
+//   and 1.25e-4 along all; below, ratios 5.09 4.21 4.05 4.01 4.00 (h,
+//   extrapolant 9.4e-9 off), 4.67 4.14 4.03 4.01 4.00 4.00 4.00 (rdm,
+//   1.7e-9) and 4.62 4.14 4.03 4.01 (all, 1.9e-7, the run still settling).
+//   Along h1e_v one run in six missed at its finest rung by 1.4e-7.
+// - h8_sto3g_sa3 (its root 0's PC passes only over round-off): refused at
+//   every rung along h and all, and at t >= 1.6e-5 along rdm. In five runs
+//   h1e_v's finest differences missed by up to 1.9e-7 (two past 1e-7), and
+//   e's ratio runs were three or four long, between 3.49 and 4.38.
+// - h8_ring_sto3g_sa3: refused at t >= 2.5e-4 along h (then 5.97 4.37 4.09
+//   4.02 4.01, 5.2e-9 off) and at t >= 6.3e-5 along rdm and all, state 1's
+//   Sr denominator λ + Δ at -33 at t = 1e-3; then 31.9 5.15 4.24 (rdm) and
+//   27.0 5.09 4.23 (all), a pole within ~1e-5 of the base point. Its h1e_v
+//   share of L is 5.7e-6 against L = 0.16, so two fine rungs' differences
+//   missed by 1.4e-7 and 5.7e-7.
+class Nevpt2PcQdEnergyAdjointLadder
+    : public ::testing::TestWithParam<std::tuple<std::string, std::string>> {};
+
+TEST_P(Nevpt2PcQdEnergyAdjointLadder, BarsMatchRichardsonLadder) {
+  FBF_REQUIRE_GPU();
+  const auto &[name, group] = GetParam();
+  fb::DeviceResources res(0);
+  const QdHostCase q = load_qd_case(kQdDataDir / name);
+  const std::size_t n = q.n;
+  const std::size_t na = q.shared.na;
+  const std::vector<double> hbar = random_hbar(n, 703);
+  QdHostCase straight = random_direction(q, group, 561);
+  const bool rotate_rdms = group == "rdm" || group == "all";
+  const std::vector<double> kappa = random_kappa(na, 562);
+  const auto shape = [&](const std::size_t rank) { return std::vector<std::size_t>(rank, na); };
+  const auto all_axes = [](const std::size_t rank) {
+    std::vector<std::size_t> axes(rank);
+    std::iota(axes.begin(), axes.end(), std::size_t{0});
+    return axes;
+  };
+  constexpr std::array kRotated{std::pair{&HostCase::dm1, std::size_t{2}},
+                                std::pair{&HostCase::dm2, std::size_t{4}},
+                                std::pair{&HostCase::dm3, std::size_t{6}}};
+  QdHostCase dx = straight;
+  for (std::size_t j = 0; j < n; ++j) {
+    const std::size_t jj = (j * n) + j;
+    for (const auto [field, rank] : kRotated) {
+      std::ranges::fill(straight.rdms[jj].*field, 0.0);
+      dx.rdms[jj].*field =
+          rotate_rdms ? rotation_tangent(q.rdms[jj].*field, shape(rank), all_axes(rank), kappa)
+                      : std::vector<double>((q.rdms[jj].*field).size(), 0.0);
+    }
+  }
+  const auto got = run_pc_qd_adjoint(res, q, hbar, 0);
+  ASSERT_TRUE(got.has_value());
+  const double predicted = bars_dot(got->second, q, dx);
+  const auto energy = [&](const double t) {
+    QdHostCase x = displaced(q, straight, t);
+    if (rotate_rdms) {
+      const std::vector<double> u = exp_kappa(kappa, na, t);
+      for (std::size_t j = 0; j < n; ++j) {
+        const std::size_t jj = (j * n) + j;
+        for (const auto [field, rank] : kRotated) {
+          x.rdms[jj].*field = rotated(q.rdms[jj].*field, shape(rank), all_axes(rank), u);
+        }
+      }
+    }
+    return pc_qd_objective(res, x, hbar);
+  };
+  const Ladder l = richardson_ladder(energy, 1e-3);
+  if (group == "h1e_v") {
+    for (const double d : l.d) {
+      EXPECT_NEAR(d, predicted, 1e-7 * std::abs(predicted));
+    }
+  } else {
+    ASSERT_GE(l.run, 3) << "ratios:" << l.ratios;
+    EXPECT_NEAR(l.richardson, predicted, 1e-7 * std::abs(predicted)) << "ratios:" << l.ratios;
+  }
+  const double got_d = group == "h1e_v" ? l.d.front() : l.richardson;
+  std::cout << std::format("[ nevpt2   ] PC-QD reverse ladder {} {}: Σ<bar, dx> {:.12e}, {} "
+                           "{:.12e}, relative {:.2e}, ratios{}\n",
+                           name, group, predicted, group == "h1e_v" ? "D(t0)" : "Richardson", got_d,
+                           std::abs(got_d - predicted) / std::abs(predicted), l.ratios);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    EveryGroup, Nevpt2PcQdEnergyAdjointLadder,
+    ::testing::Combine(::testing::Values(std::string{"h2co_ccpvdz_sa2"},
+                                         std::string{"h2co_ccpvdz_sa2_weighted"},
+                                         std::string{"h6_631g_sa2"}),
+                       ::testing::Values(std::string{"all"}, std::string{"B"}, std::string{"h1e_v"},
+                                         std::string{"e"}, std::string{"h"}, std::string{"rdm"})),
+    [](const auto &info) { return std::get<0>(info.param) + "_" + std::get<1>(info.param); });
+
+INSTANTIATE_TEST_SUITE_P(
+    SlabsAndOrbitalEnergies, Nevpt2PcQdEnergyAdjointLadder,
+    ::testing::Values(std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, std::string{"B"}},
+                      std::tuple{std::string{"h2co_skew_ccpvdz_sa3"}, std::string{"e"}},
+                      std::tuple{std::string{"h8_sto3g_sa3"}, std::string{"B"}},
+                      std::tuple{std::string{"h8_ring_sto3g_sa3"}, std::string{"B"}},
+                      std::tuple{std::string{"h8_ring_sto3g_sa3"}, std::string{"e"}}),
+    [](const auto &info) { return std::get<0>(info.param) + "_" + std::get<1>(info.param); });
+
+// A class the energy refuses is refused by the adjoint with the energy's
+// error, naming the class and the state, never summed in as zero. On
+// h8_sto3g_sa3: state 1's own RDMs zeroed (Sr's metric has no positive
+// eigenvalue, state 1), and every virtual orbital energy at -1000 Eh (Sr's
+// denominator, state 0).
+TEST(Nevpt2PcQdEnergyAdjoint, RefusesWhatTheEnergyRefuses) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const QdHostCase golden = load_qd_case(kQdDataDir / "h8_sto3g_sa3");
+  ASSERT_EQ(golden.n, 3U);
+  QdHostCase zero_own = golden;
+  HostCase &own1 = zero_own.rdms[golden.n + 1];
+  for (std::vector<double> *rdm : {&own1.dm1, &own1.dm2, &own1.dm3, &own1.f3ca, &own1.f3ac}) {
+    std::ranges::fill(*rdm, 0.0);
+  }
+  QdHostCase low_virtuals = golden;
+  std::ranges::fill(low_virtuals.shared.e_virt, -1000.0);
+  const std::vector<double> hbar = random_hbar(golden.n, 703);
+  for (const auto &[what, q, needle] :
+       {std::tuple{"state 1's RDMs zero", &zero_own, "state 1: Sr's metric has no positive"},
+        std::tuple{"virtuals at -1000 Eh", &low_virtuals, "state 0: Sr has a denominator"}}) {
+    const auto energy = pc_qd_energies(res, *q);
+    ASSERT_FALSE(energy) << what;
+    QdDeviceCase g = upload_qd(res, *q);
+    const DeviceBars b = zero_bars(res, merged(*q, 0));
+    const std::vector<nevpt2::EnergyBars> bars(q->n, b.bars);
+    const auto adj =
+        nevpt2::pc_effective_hamiltonian_adjoint(res, *g.shared.blocks, g.pairs, hbar, 0, bars, {});
+    ASSERT_FALSE(adj) << what;
+    EXPECT_EQ(adj.error().kind, fb::ErrorKind::Numerical) << what;
+    EXPECT_EQ(adj.error().message, energy.error().message) << what;
+    EXPECT_NE(adj.error().message.find(needle), std::string::npos)
+        << what << ": " << adj.error().message;
+  }
+}
+
+// The PC adjoint checks its inputs as SC's: an H̄ that is not n², a bars list
+// that is not n long, a state's bars that do not share the first's integral
+// bars, or malformed pairs are InvalidConfig before anything is launched.
+TEST(Nevpt2PcQdEnergyAdjoint, MalformedInputsAreInvalidConfig) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res(0);
+  const QdHostCase q = load_qd_case(kQdDataDir / "h6_631g_sa2");
+  ASSERT_EQ(q.n, 2U);
+  QdDeviceCase g = upload_qd(res, q);
+  const DeviceBars b = zero_bars(res, merged(q, 0));
+  const std::vector<nevpt2::EnergyBars> two{b.bars, b.bars};
+  const std::vector<double> hbar(4, 1.0);
+  const auto refused = [&](std::span<const nevpt2::EnergyInputs> pairs, std::span<const double> h,
+                           std::span<const nevpt2::EnergyBars> bars) {
+    const auto got =
+        nevpt2::pc_effective_hamiltonian_adjoint(res, *g.shared.blocks, pairs, h, 0, bars, {});
     return !got && got.error().kind == fb::ErrorKind::InvalidConfig;
   };
   const std::span<const nevpt2::EnergyInputs> pairs{g.pairs};
