@@ -12,7 +12,8 @@ over an auxiliary `BasisSet` placed as the orbital one is,
 `free_breakfast.integrals.eri.density_fitting`, the aggregate, re-exports
 `metric`, `three_center`, `fit`, `jk`, `mo`, `gradient` and `hessian`; it is itself re-exported by `free_breakfast.integrals`.
 Link `free_breakfast::integrals::eri::density_fitting`. The sub-modules remain
-importable individually.
+importable individually. It does not re-export `staging`, which is internal:
+the launch staging `gradient` and `hessian` share, linked PRIVATE by each.
 
 ```
 metric/        free_breakfast.integrals.eri.density_fitting.metric: the Coulomb metric (P|Q) of an aux basis on the GPU, Cartesian and spherical, over the generated metric<lP, lQ>, 28 classes lP <= lQ through i
@@ -20,6 +21,7 @@ gradient/      free_breakfast.integrals.eri.density_fitting.gradient: the nuclea
 hessian/       free_breakfast.integrals.eri.density_fitting.hessian: the contracted second derivatives Σ W d²(P|Q)/dR dR and Σ Γ d²(mn|P)/dR dR for spherical W and Γ, 3 n_atom x 3 n_atom on the host, over the generated d2metric<lP, lQ> (28 classes) and d2eri3<la, lb, lP> (70)
 fit/           free_breakfast.integrals.eri.density_fitting.fit: the fit B = L^-1 (mn|P), M = L L^T, one Cholesky factorization (recipes/cholesky) and one trsm in place
 jk/            free_breakfast.integrals.eri.density_fitting.jk: density-fitted J and K over B, spherical, of one density or a block of them, and K of a block of symmetrized densities sharing one left factor
+staging/       free_breakfast.integrals.eri.density_fitting.staging: internal, not re-exported: the launch staging the derivative kernels share (aux records, metric pairs and three-center cells with their atoms, bra records with their exponents, W and Γ made Cartesian), for gradient/ and hessian/
 mo/            free_breakfast.integrals.eri.density_fitting.mo: B in the MO basis over arbitrary column ranges of C, the half transform b_half (one batched gemm) and b_mo (that and one gemm)
 three_center/  free_breakfast.integrals.eri.density_fitting.three_center: the spherical three-center (mn|P) on the GPU, [m][n][P] with P fastest (what density_fit takes), over the generated eri3<la, lb, lP>, 70 classes la <= lb through f, lP through i
 ```
