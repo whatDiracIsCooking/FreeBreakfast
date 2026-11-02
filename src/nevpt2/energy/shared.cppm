@@ -21,7 +21,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
-import free_breakfast.nevpt2.energy; // EnergyInputs, ClassEnergies
+import free_breakfast.nevpt2.energy; // EnergyInputs, ClassEnergies, PcClassEnergies
 
 namespace free_breakfast::nevpt2 {
 
@@ -83,6 +83,9 @@ Result<Buffers::device<double>> make_a3(DeviceResources &res, const EinsumOperan
 Result<Buffers::device<double>> make_k27(DeviceResources &res, const EinsumOperand &h1e,
                                          const EinsumOperand &h2e, const EinsumOperand &dm1,
                                          const EinsumOperand &dm2);
+// Srs's metric, alone: what the QD walks read of a transition.
+Result<Buffers::device<double>> make_rm2(DeviceResources &res, const EinsumOperand &dm1,
+                                         const EinsumOperand &dm2, const EinsumOperand &delta);
 // Srs's rm3, from its rm2; make_a7 builds it internally. Declared for the
 // reverse sweep, which re-reads it.
 Result<Buffers::device<double>> make_rm3(DeviceResources &res, const EinsumOperand &dm2,
@@ -162,6 +165,14 @@ Status einsum_adjoint(DeviceResources &res, std::string_view subscripts,
 Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBlocks &blocks,
                                                 std::span<const EnergyInputs> pairs, int64_t n,
                                                 int32_t batch);
+
+/// @brief The PC class walk of n states over @p pairs, as sc_couplings is
+/// SC's: per ordered pair each class's ⟨I|V|Ψ_J⁽¹⁾⟩ and ket J's dropped
+/// count, as pc_effective_hamiltonian documents, at [I n + J].
+/// pc_class_energies is n = 1. Nothing is validated: the caller has.
+Result<std::vector<PcClassEnergies>> pc_couplings(DeviceResources &res, const MoBlocks &blocks,
+                                                  std::span<const EnergyInputs> pairs, int64_t n,
+                                                  int32_t batch);
 
 /// @brief Sijrs: {norm, energy}. It reads no RDM, so it is PC's too.
 Result<std::pair<double, double>> energy_sijrs(DeviceResources &res, const MoBlocks &blocks,

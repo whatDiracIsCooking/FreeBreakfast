@@ -1,12 +1,17 @@
-// GPU cases for nevpt2::sc_effective_hamiltonian, the SC-QD-NEVPT2 effective
-// Hamiltonian, against test/gtest/data/qd_nevpt2/ (its README has the
+// GPU cases for nevpt2::sc_effective_hamiltonian and
+// nevpt2::pc_effective_hamiltonian, the SC- and PC-QD-NEVPT2 effective
+// Hamiltonians, against test/gtest/data/qd_nevpt2/ (its README has the
 // conventions): from the golden transition RDMs and the slabs over the golden
 // B blocks, every class's coupling ⟨I|V|Ψ_J⁽¹⁾⟩ and transition norm Σ_t T^t_IJ
 // of the unsymmetrized matrix, and its total heff2, to 1e-10 on all six
 // cases; the diagonal against class_energies on the same inputs, and a walk in
 // batches of two against the whole one, to round-off. Then the chain: the
 // transition RDMs from nevpt2::rdms over the golden CI vectors, whose phases
-// the goldens fix, in place of the golden ones. Last, the refusals.
+// the goldens fix, in place of the golden ones. PC the same way, against the
+// pc_* arrays: every class's coupling, heff2 and each ket's dropped counts on
+// the five cases whose PC passes, the diagonal against pc_class_energies, and
+// h8_sto3g_sa3's refusal, which names the class and the state. Last, the
+// malformed inputs.
 
 #include <gtest/gtest.h>
 
@@ -177,11 +182,55 @@ void expect_golden(const std::filesystem::path &dir, const Case &c,
   }
 }
 
+// PC's: every element's per-class coupling against pc_couplings, its total
+// against pc_heff2, and its dropped counts against pc_dropped's ket row.
+void expect_golden_pc(const std::filesystem::path &dir, const Case &c,
+                      const std::vector<nevpt2::PcClassEnergies> &got, const std::string &what) {
+  const std::vector<double> couplings = row_major(read_array(dir / "pc_couplings.npy"));
+  const std::vector<double> heff2 = row_major(read_array(dir / "pc_heff2.npy"));
+  const std::vector<double> dropped = row_major(read_array(dir / "pc_dropped.npy"));
+  const std::size_t n = c.nroots;
+  ASSERT_EQ(got.size(), n * n) << what;
+  ASSERT_EQ(couplings.size(), n * n * 8) << what;
+  ASSERT_EQ(heff2.size(), n * n) << what;
+  ASSERT_EQ(dropped.size(), n * 8) << what;
+  for (std::size_t p = 0; p < n * n; ++p) {
+    const std::string at = what + " (" + std::to_string(p / n) + ", " + std::to_string(p % n) + ")";
+    for (std::size_t k = 0; k < 8; ++k) {
+      EXPECT_NEAR(got[p].energies[k], couplings[(p * 8) + k], kGoldenTol) << at << kClassNames[k];
+      EXPECT_EQ(static_cast<double>(got[p].dropped[k]), dropped[((p % n) * 8) + k])
+          << at << kClassNames[k];
+    }
+    EXPECT_NEAR(got[p].total, heff2[p], kGoldenTol) << at;
+  }
+}
+
+// h8_sto3g_sa3's PC: root 0's Srs metric (and its Sij) has no gap at the cut,
+// so the effective Hamiltonian is refused, naming the first such class walked
+// and the state.
+void expect_pc_refused(const fb::Result<std::vector<nevpt2::PcClassEnergies>> &got,
+                       const std::string &what) {
+  ASSERT_FALSE(got) << what;
+  EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical) << what;
+  EXPECT_NE(got.error().message.find("state 0"), std::string::npos) << got.error().message;
+  EXPECT_NE(got.error().message.find("Srs's metric has no gap"), std::string::npos)
+      << got.error().message;
+}
+
 void expect_same(const nevpt2::ClassEnergies &a, const nevpt2::ClassEnergies &b,
                  const std::string &what) {
   for (std::size_t k = 0; k < 8; ++k) {
     EXPECT_NEAR(a.energies[k], b.energies[k], kRoundOffTol) << what << " " << kClassNames[k];
     EXPECT_NEAR(a.norms[k], b.norms[k], kRoundOffTol) << what << " " << kClassNames[k];
+  }
+  EXPECT_NEAR(a.total, b.total, kRoundOffTol) << what;
+}
+
+void expect_same_pc(const nevpt2::PcClassEnergies &a, const nevpt2::PcClassEnergies &b,
+                    const std::string &what) {
+  for (std::size_t k = 0; k < 8; ++k) {
+    EXPECT_NEAR(a.energies[k], b.energies[k], kRoundOffTol) << what << " " << kClassNames[k];
+    EXPECT_EQ(a.dropped[k], b.dropped[k]) << what << " " << kClassNames[k];
   }
   EXPECT_NEAR(a.total, b.total, kRoundOffTol) << what;
 }
@@ -228,9 +277,76 @@ TEST_P(Nevpt2QdEnergy, MatchesGoldenDiagonalAndBatches) {
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergy, ::testing::ValuesIn(kCases),
                          [](const auto &info) { return info.param; });
 
+// The five cases whose PC passes (h8_sto3g_sa3's is refused, below).
+const std::array<std::string, 5> kPcCases{"h2co_ccpvdz_sa2", "h2co_ccpvdz_sa2_weighted",
+                                          "h2co_skew_ccpvdz_sa3", "h6_631g_sa2",
+                                          "h8_ring_sto3g_sa3"};
+
+class Nevpt2PcQdEnergy : public ::testing::TestWithParam<std::string> {};
+
+// PC from the golden RDMs: against the goldens, each diagonal element against
+// pc_class_energies on that state's inputs, and the walk in batches of two.
+TEST_P(Nevpt2PcQdEnergy, MatchesGoldenDiagonalAndBatches) {
+  FBF_REQUIRE_GPU();
+  const std::string name = GetParam();
+  const std::filesystem::path dir = kDataDir / name;
+  fb::DeviceResources res(0);
+  Case c = load_case(res, dir);
+  ASSERT_TRUE(c.blocks.has_value());
+  golden_rdms(res, dir, c);
+
+  const auto whole = nevpt2::pc_effective_hamiltonian(res, *c.blocks, c.pairs, 0);
+  ASSERT_TRUE(whole) << whole.error().message;
+  expect_golden_pc(dir, c, *whole, name);
+
+  const std::size_t n = c.nroots;
+  for (std::size_t j = 0; j < n; ++j) {
+    const auto own = nevpt2::pc_class_energies(res, *c.blocks, c.pairs[(j * n) + j], 0);
+    ASSERT_TRUE(own) << own.error().message;
+    expect_same_pc((*whole)[(j * n) + j], *own, name + " diagonal " + std::to_string(j));
+  }
+
+  const auto batched = nevpt2::pc_effective_hamiltonian(res, *c.blocks, c.pairs, 2);
+  ASSERT_TRUE(batched) << batched.error().message;
+  ASSERT_EQ(batched->size(), whole->size());
+  for (std::size_t p = 0; p < n * n; ++p) {
+    expect_same_pc((*batched)[p], (*whole)[p],
+                   name + " batch 2 (" + std::to_string(p / n) + ", " + std::to_string(p % n) +
+                       ")");
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2PcQdEnergy, ::testing::ValuesIn(kPcCases),
+                         [](const auto &info) { return info.param; });
+
+// h8_sto3g_sa3: what pc_class_energies refuses for root 0 is refused here, the
+// error naming the class and the state; roots 1 and 2 pass alone.
+TEST(Nevpt2PcQdEnergyRefusals, RefusesWhatPcClassEnergiesRefuses) {
+  FBF_REQUIRE_GPU();
+  const std::filesystem::path dir = kDataDir / "h8_sto3g_sa3";
+  fb::DeviceResources res(0);
+  Case c = load_case(res, dir);
+  ASSERT_TRUE(c.blocks.has_value());
+  golden_rdms(res, dir, c);
+  ASSERT_FALSE(std::filesystem::exists(dir / "pc_couplings.npy"));
+
+  expect_pc_refused(nevpt2::pc_effective_hamiltonian(res, *c.blocks, c.pairs, 0), "h8_sto3g_sa3");
+  const std::size_t n = c.nroots;
+  const auto root0 = nevpt2::pc_class_energies(res, *c.blocks, c.pairs[0], 0);
+  ASSERT_FALSE(root0);
+  EXPECT_EQ(root0.error().kind, fb::ErrorKind::Numerical);
+  EXPECT_NE(root0.error().message.find("Srs's metric has no gap"), std::string::npos)
+      << root0.error().message;
+  for (std::size_t j = 1; j < n; ++j) {
+    const auto own = nevpt2::pc_class_energies(res, *c.blocks, c.pairs[(j * n) + j], 0);
+    EXPECT_TRUE(own) << "root " << j << ": " << own.error().message;
+  }
+}
+
 // The chain: nevpt2::rdms' transition dm1, dm2, dm3, f3ca and f3ac between the
 // golden CI vectors, bra I and ket J, in place of the golden RDMs. The three
-// three-root cases, whose couplings do not vanish by symmetry.
+// three-root cases, whose couplings do not vanish by symmetry: SC against its
+// goldens, and PC against its own, or for h8_sto3g_sa3 its refusal.
 // The parameter is the case and its electrons per spin.
 class Nevpt2QdEnergyDeviceRdms
     : public ::testing::TestWithParam<std::tuple<std::string, std::int32_t>> {};
@@ -292,6 +408,14 @@ TEST_P(Nevpt2QdEnergyDeviceRdms, MatchesGolden) {
   const auto got = nevpt2::sc_effective_hamiltonian(res, *c.blocks, c.pairs, 0);
   ASSERT_TRUE(got) << got.error().message;
   expect_golden(dir, c, *got, name + " from nevpt2::rdms");
+
+  const auto pc = nevpt2::pc_effective_hamiltonian(res, *c.blocks, c.pairs, 0);
+  if (std::filesystem::exists(dir / "pc_couplings.npy")) {
+    ASSERT_TRUE(pc) << pc.error().message;
+    expect_golden_pc(dir, c, *pc, name + " PC from nevpt2::rdms");
+  } else {
+    expect_pc_refused(pc, name + " PC from nevpt2::rdms");
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdEnergyDeviceRdms,
@@ -324,6 +448,14 @@ TEST(Nevpt2QdEnergyRefusals, MalformedPairsAreInvalidConfig) {
   const auto unshared = nevpt2::sc_effective_hamiltonian(res, *c.blocks, mixed, 0);
   ASSERT_FALSE(unshared);
   EXPECT_EQ(unshared.error().kind, fb::ErrorKind::InvalidConfig);
+
+  // PC checks its pairs the same way.
+  const auto pc_three = nevpt2::pc_effective_hamiltonian(res, *c.blocks, all.first(3), 0);
+  ASSERT_FALSE(pc_three);
+  EXPECT_EQ(pc_three.error().kind, fb::ErrorKind::InvalidConfig);
+  const auto pc_unshared = nevpt2::pc_effective_hamiltonian(res, *c.blocks, mixed, 0);
+  ASSERT_FALSE(pc_unshared);
+  EXPECT_EQ(pc_unshared.error().kind, fb::ErrorKind::InvalidConfig);
 }
 
 } // namespace
