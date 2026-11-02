@@ -3,8 +3,8 @@
 /// dm3, f3ca and f3ac, built on the device from one CI vector, its string
 /// sets and the active (tu|vw), tile by tile over the determinants, or
 /// between a bra and a ket vector, with the transition dm1 and dm2 beside
-/// them, for QD-NEVPT2; and the one-vector build's adjoint, from bars on the
-/// three back onto the vector and (tu|vw).
+/// them, for QD-NEVPT2; and the adjoints of both, from bars on the three back
+/// onto the vector, or the bra and the ket, and (tu|vw).
 
 export module free_breakfast.nevpt2.rdm;
 
@@ -116,13 +116,25 @@ export namespace free_breakfast::nevpt2 {
 /// copies of (tu|vw), the two fdm2 bars and the consume's bar, n⁴ doubles
 /// each; the two pre-wedge f3 bars, dm3's total bar and dm3 itself, n⁶ each;
 /// and the tile's R, L2, W and their bars, (4 n² + 2 n⁴) @p width doubles;
-/// each region rounded up to DeviceResources::kWorkspaceAlignment.
-[[nodiscard]] size_t rdms_adjoint_workspace_bytes(int32_t n_orbitals, int64_t width) noexcept;
+/// each region rounded up to DeviceResources::kWorkspaceAlignment. A
+/// @p transition call (the bra/ket overload) carves the ket's own L2 and its
+/// bar too, 2 n⁴ @p width doubles more. Without @p f3 (null f3 bars) it is
+/// the tile's R, L2 and their bars alone, (2 n² + 2 n⁴) @p width doubles,
+/// transition or not.
+[[nodiscard]] size_t rdms_adjoint_workspace_bytes(int32_t n_orbitals, int64_t width,
+                                                  bool transition = false, bool f3 = true) noexcept;
 
 /// @brief The adjoint of @ref rdms: given bars @p dm3_bar, @p f3ca_bar and
 /// @p f3ac_bar on its three outputs (same layout), write @p vector_bar =
 /// ∂E/∂c and @p eri_bar = ∂E/∂(tu|vw) of E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ +
 /// ⟨f3ac̄, f3ac⟩, at @p vector and @p eri.
+///
+/// **The f3 bars may be null together**: E is then ⟨dm3̄, dm3⟩ alone, and
+/// everything that exists only for f3 is skipped (the wedge and fdm2
+/// transposes, the consume and its transpose, the f3 digests' transposes);
+/// @p eri is not read and @p eri_bar is written zero, since dm3 does not read
+/// (tu|vw). The plan is then rdms_adjoint_workspace_bytes(n, width, false,
+/// false). One null and one given is InvalidConfig.
 ///
 /// rdms is quadratic in c and linear in (tu|vw), so these are exact:
 /// ⟨vector_bar, u⟩ is the bars against (rdms(c + u) − rdms(c − u)) / 2, and
@@ -145,18 +157,60 @@ export namespace free_breakfast::nevpt2 {
 /// wide but for the last.
 ///
 /// @param alpha, beta, vector, eri As for @ref rdms.
-/// @param dm3_bar, f3ca_bar, f3ac_bar Device, n⁶ doubles each.
+/// @param dm3_bar, f3ca_bar, f3ac_bar Device, n⁶ doubles each; the f3 bars
+///        may be null together.
 /// @param vector_bar Device, alpha.size() · beta.size() doubles, overwritten.
 /// @param eri_bar Device, n⁴ doubles in @p eri's layout, overwritten.
 /// @param max_bytes The most of the device workspace the call may hold.
-/// @return The number of tiles; the refusals of @ref rdms, against
-///         rdms_adjoint_workspace_bytes(n, 1) for the budget; or the
-///         GpuRuntime error of a launch or a BLAS call.
+/// @return The number of tiles; InvalidConfig, with nothing queued, for one
+///         f3 bar null and the other not; the refusals of @ref rdms, against
+///         rdms_adjoint_workspace_bytes(n, 1, false, f3) for the budget; or
+///         the GpuRuntime error of a launch or a BLAS call.
 [[nodiscard]] Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                            const ci::DeviceStringSet &beta, const double *vector,
                                            const double *eri, const double *dm3_bar,
                                            const double *f3ca_bar, const double *f3ac_bar,
                                            double *vector_bar, double *eri_bar,
+                                           size_t max_bytes = std::numeric_limits<size_t>::max());
+
+/// @brief The adjoint of the bra/ket @ref rdms: given bars on its dm3, f3ca
+/// and f3ac, write @p bra_bar = ∂E/∂c_I, @p ket_bar = ∂E/∂c_J and @p eri_bar
+/// = ∂E/∂(tu|vw) of E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ + ⟨f3ac̄, f3ac⟩, at @p bra,
+/// @p ket and @p eri. The build is linear in each of the three, so these are
+/// exact as the one-vector adjoint's are.
+///
+/// **The f3 bars may be null together**, as for the one-vector adjoint, and
+/// this is QD-NEVPT2's off-diagonal call: it reads f3 on each root's
+/// diagonal only. What is left is dm3's digest transposed and the produce's
+/// transpose, with no ket's L2 and no (tu|vw) (not read; @p eri_bar written
+/// zero), planned against rdms_adjoint_workspace_bytes(n, width, true,
+/// false). With them given it is the full transition adjoint: the ket's L2,
+/// which the consume reads, is gathered as rdms gathers it, and its bar goes
+/// onto the ket.
+///
+/// There are no dm1 and dm2 bars: dm2[p, q, r, s] = Σ_t dm3[p, q, r, s, t, t]
+/// / N and dm1[p, q] = Σ_rt dm3[p, q, r, r, t, t] / N², since Σ_t E_tt is N
+/// on the ket, so a caller folds them into @p dm3_bar along those traces, as
+/// for one vector.
+///
+/// It is always the transition's path, two partials: one pointer for @p bra
+/// and @p ket still gives ∂E/∂c_I and ∂E/∂c_J apart, whose sum is the
+/// one-vector adjoint's vector_bar at that vector. @p bra_bar and @p ket_bar
+/// may be one pointer, which then gets that sum.
+///
+/// @param bra, ket, alpha, beta, eri As for the bra/ket @ref rdms.
+/// @param dm3_bar, f3ca_bar, f3ac_bar, eri_bar, max_bytes As for the
+///        one-vector @ref rdms_adjoint.
+/// @param bra_bar, ket_bar Device, alpha.size() · beta.size() doubles each,
+///        overwritten.
+/// @return As for the one-vector @ref rdms_adjoint, against
+///         rdms_adjoint_workspace_bytes(n, 1, true, f3) for the budget.
+[[nodiscard]] Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                           const ci::DeviceStringSet &beta, const double *bra,
+                                           const double *ket, const double *eri,
+                                           const double *dm3_bar, const double *f3ca_bar,
+                                           const double *f3ac_bar, double *bra_bar, double *ket_bar,
+                                           double *eri_bar,
                                            size_t max_bytes = std::numeric_limits<size_t>::max());
 
 } // namespace free_breakfast::nevpt2

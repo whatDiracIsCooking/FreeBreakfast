@@ -77,26 +77,32 @@ namespace free_breakfast::nevpt2::device {
                                                 double *fdm2_bar);
 
 /// @brief The two fdm2s' transpose onto dm3: @p dm3_bar_out = @p dm3_bar_in
-/// plus Σ_l eri[l, C, B, A] fdm2̄_ca[i, j, k, l] at dm3[A, B, C, k, j, i] and
+/// plus Σ_l eri[l, C, B, A] fdm2̄_ca[i, j, k, l] at dm3[A, B, C, k, j, i]
+/// (at dm3[i, j, k, C, B, A] when @p transition, rdm_fdm2_ca's read) and
 /// Σ_k eri[k, C, E, F] fdm2̄_ac[i, j, k, l] at dm3[i, j, C, l, E, F].
 [[nodiscard]] wwr::wwrError_t rdm_fdm2_dm3_adjoint(wwr::wwrStream_t stream, int32_t n,
                                                    const double *eri, const double *fdm2_ca_bar,
                                                    const double *fdm2_ac_bar,
-                                                   const double *dm3_bar_in, double *dm3_bar_out);
+                                                   const double *dm3_bar_in, bool transition,
+                                                   double *dm3_bar_out);
 
 /// @brief The bar on @p in's layout, (tu|vw) at t + n (u + n (v + n w)), of
 /// the conversion and the two fdm2s: @p eri_bar = the bar on eri[t, u, v, w]
-/// (Σ_ijk fdm2̄_ca[i, j, k, t] dm3[w, v, u, k, j, i] + Σ_ijl fdm2̄_ac[i, j, t,
-/// l] dm3[i, j, u, l, v, w]) plus @p consume_bar[u, t, w, v]. Overwrites it.
+/// (Σ_ijk fdm2̄_ca[i, j, k, t] dm3[w, v, u, k, j, i], or dm3[i, j, k, u, v,
+/// w] when @p transition, + Σ_ijl fdm2̄_ac[i, j, t, l] dm3[i, j, u, l, v, w])
+/// plus @p consume_bar[u, t, w, v]. Overwrites it.
 [[nodiscard]] wwr::wwrError_t rdm_eri_adjoint(wwr::wwrStream_t stream, int32_t n, const double *dm3,
                                               const double *fdm2_ca_bar, const double *fdm2_ac_bar,
-                                              const double *consume_bar, double *eri_bar);
+                                              const double *consume_bar, bool transition,
+                                              double *eri_bar);
 
 /// @brief rdm_produce's transpose over the same tile: for every determinant J
 /// of the CI vector, @p y[J] += Σ_K Σ_tu R̄[tu, k] ⟨K| E_tu |J⟩ + Σ_K Σ_pqrs
 /// L2̄[pqrs, k] ⟨J| E_pq E_rs |K⟩ over K in [@p begin, @p begin + @p width),
-/// k = K − @p begin, gathered over J's own replacement lists. One thread per
-/// J, so nothing is atomic.
+/// k = K − @p begin, gathered over J's own replacement lists. Either bar may
+/// be null, and its term is then skipped: between two vectors R̄ goes onto
+/// the ket and the bra's L2̄ onto the bra. One thread per J, so nothing is
+/// atomic.
 [[nodiscard]] wwr::wwrError_t
 rdm_produce_adjoint(wwr::wwrStream_t stream, int32_t n, int32_t n_beta, int32_t ndet,
                     const ci::Replacement *alpha_links, int32_t alpha_per,
