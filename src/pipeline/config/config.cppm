@@ -66,7 +66,8 @@ using Calculation =
 /// one root, a molecule of multiplicity other than 1, or `variant = "pc"` is
 /// ErrorKind::Unsupported too, and one whose `root` is not 0
 /// ErrorKind::InvalidConfig. A `[nac]` over a `[casscf]` of fewer than two
-/// roots, or naming a pair past its roots, is ErrorKind::InvalidConfig.
+/// roots, or naming a pair past its roots, is ErrorKind::InvalidConfig, and
+/// so is a `[nevpt2]` with `quasi_degenerate = true` over one root.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &input_dir,
                                                const std::filesystem::path &output_dir);

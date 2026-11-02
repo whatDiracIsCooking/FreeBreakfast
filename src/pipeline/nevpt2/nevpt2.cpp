@@ -1,7 +1,8 @@
 /// @file
 /// @brief Nevpt2Step::run: per root, the root's canonical orbitals, its RDMs
 /// and the inactive Fock's blocks, then the eight SC and the eight PC
-/// classes over the fitted B.
+/// classes over the fitted B; and with quasi_degenerate, the SC and PC
+/// effective Hamiltonians over the state-averaged orbitals, pair by pair.
 
 module free_breakfast.pipeline.nevpt2;
 
@@ -13,6 +14,7 @@ import free_breakfast.core.log;
 import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.recipes.blas; // gemm
+import free_breakfast.recipes.diagonalize;
 import free_breakfast.integrals.active_space;
 import free_breakfast.response.fock;
 import free_breakfast.ci.strings;
@@ -61,6 +63,87 @@ namespace free_breakfast {
   return static_cast<int32_t>(std::clamp<size_t>(batch, 1, std::numeric_limits<int32_t>::max()));
 }
 
+// What the energy layer reads of a set of orbitals but the RDMs and the
+// orbital energies, over the orbitals @p c (AO x MO, device) and F^I in them,
+// @p fi (nmo x nmo column-major, device): h1e, F^I's active block; the
+// h1e_v_* blocks against the core and the virtuals, Sr's less Σ_b (vb|ba);
+// the MO blocks of B, returned; and h2e from them.
+[[nodiscard]] Result<nevpt2::MoBlocks>
+nevpt2_orbital_inputs(DeviceResources &res, const DensityFitted &fit, const CasscfOutput &cas,
+                      const double *c, const double *fi, double *h1e, double *h1e_v_sr,
+                      double *h1e_v_si, double *h1e_v_sir, double *h2e) {
+  const auto nmo = static_cast<size_t>(cas.c.n());
+  const auto ncore = static_cast<size_t>(cas.ncore);
+  const auto n = static_cast<size_t>(cas.ncas);
+  const size_t nocc = ncore + n;
+  const size_t nvirt = nmo - nocc;
+  const auto order = static_cast<int32_t>(nmo);
+  FBF_TRY(nevpt2_copy_block(res, fi, nmo, ncore, ncore, n, n, h1e));
+  FBF_TRY(nevpt2_copy_block(res, fi, nmo, nocc, ncore, nvirt, n, h1e_v_sr));
+  FBF_TRY(nevpt2_copy_block(res, fi, nmo, ncore, 0, n, ncore, h1e_v_si));
+  FBF_TRY(nevpt2_copy_block(res, fi, nmo, nocc, 0, nvirt, ncore, h1e_v_sir));
+
+  // B over the orbitals, and h2e from it.
+  nevpt2::MoBlocks blocks =
+      FBF_TRY(nevpt2::mo_blocks(res, fit.naux, order, order, fit.b.data(), c, cas.ncore, cas.ncas));
+  FBF_TRY(nevpt2::h2e(res, blocks, h2e));
+
+  // Sr's one-electron part, h1eff[v, a] - Σ_b (vb|ba): per active b, one
+  // gemm of B_va's b-th column block (naux x nvirt) against B_aa's b-th row
+  // (naux x n, every naux n apart).
+  const auto naux = static_cast<size_t>(blocks.naux);
+  if (nvirt > 0 && naux > 0) {
+    for (size_t b = 0; b < n; ++b) {
+      FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
+          res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, static_cast<int32_t>(nvirt),
+          cas.ncas, blocks.naux, &kNegOne<double>, blocks.va.data() + (naux * nvirt * b),
+          blocks.naux, blocks.aa.data() + (naux * b), blocks.naux * cas.ncas, &kOne<double>,
+          h1e_v_sr, static_cast<int32_t>(nvirt))));
+    }
+  }
+  return blocks;
+}
+
+// The n x n symmetrized effective Hamiltonian E_I δ_IJ + ½ (C_IJ + C_JI) of
+// the couplings' totals @p totals (row-major, bra first) into @p heff, and
+// its eigenvalues, ascending, into @p energies and eigenvectors, column-major,
+// each signed so that its largest-magnitude component is positive, into
+// @p vectors: by diagonalize on res's device, into buffers of this call's own,
+// since diagonalize takes the workspace.
+[[nodiscard]] Status nevpt2_qd_eigh(DeviceResources &res, std::span<const double> casscf,
+                                    std::span<const double> totals, std::vector<double> &heff,
+                                    std::vector<double> &energies, std::vector<double> &vectors) {
+  const size_t n = casscf.size();
+  heff.assign(n * n, 0.0);
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t j = 0; j < n; ++j) {
+      heff[(i * n) + j] =
+          (i == j ? casscf[i] : 0.0) + (0.5 * (totals[(i * n) + j] + totals[(j * n) + i]));
+    }
+  }
+  vectors = heff;
+  energies.assign(n, 0.0);
+  const wwr::wwrStream_t stream = res.stream();
+  Buffers::device<double> a_device(n * n, res.device());
+  Buffers::device<double> w_device(n, res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(a_device.data(), vectors.data(), n * n * sizeof(double),
+                                         wwr::wwrMemcpyHostToDevice, stream)));
+  FBF_TRY(diagonalize<double>(res, static_cast<int32_t>(n), a_device.data(), w_device.data()));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(vectors.data(), a_device.data(), n * n * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(energies.data(), w_device.data(), n * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(res.sync());
+  for (size_t k = 0; k < n; ++k) {
+    const std::span<double> v{vectors.data() + (k * n), n};
+    const auto largest = std::ranges::max_element(v, {}, [](double x) { return std::abs(x); });
+    if (*largest < 0.0) {
+      std::ranges::transform(v, v.begin(), std::negate<>{});
+    }
+  }
+  return {};
+}
+
 [[nodiscard]] Result<Nevpt2Output>
 Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianOutput, ScfOutput,
                      CasscfOutput> in,
@@ -85,6 +168,13 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
     return err_unsupported("[{}] runs over density fitting only, and [eri] mode is "
                            "'integral_direct': set [eri] mode = 'density_fitting'",
                            kName);
+  }
+  // With one root the state-averaged Fock is the root's own: QD would repeat
+  // the state-specific result.
+  if (quasi_degenerate && in.get<CasscfOutput>().energies.size() < 2) {
+    return err_config("[{}] quasi_degenerate couples the roots of a state average, and the "
+                      "CASSCF has {} root: set [casscf] nroots to 2 or more, or use plain [{}]",
+                      kName, in.get<CasscfOutput>().energies.size(), kName);
   }
   const Molecule &molecule = in.get<MoleculeOutput>().molecule;
   const BasisSet &basis = in.get<BasisSetOutput>().basis;
@@ -129,7 +219,9 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
 
   // Every per-root array is the step's own, not the workspace's: each is
   // held across calls that take the workspace (ci::Rdm, response::fock,
-  // mo_blocks, rdms, class_energies).
+  // mo_blocks, rdms, class_energies). With quasi_degenerate each root's RDMs
+  // are kept, root r's at slot r, for the effective Hamiltonians' diagonal.
+  const size_t slots = quasi_degenerate ? nroots : 1;
   Buffers::device<double> vectors(cas.vectors.size(), res.device());
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(vectors.data(), cas.vectors.data(),
                                          cas.vectors.size() * sizeof(double),
@@ -137,12 +229,12 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   const size_t n2 = n * n;
   const size_t n4 = n2 * n2;
   const size_t n6 = n4 * n2;
-  Buffers::device<double> dm1(n2, res.device());
+  Buffers::device<double> dm1(slots * n2, res.device());
   Buffers::device<double> gamma2(n4, res.device());
-  Buffers::device<double> dm2(n4, res.device());
-  Buffers::device<double> dm3(n6, res.device());
-  Buffers::device<double> f3ca(n6, res.device());
-  Buffers::device<double> f3ac(n6, res.device());
+  Buffers::device<double> dm2(slots * n4, res.device());
+  Buffers::device<double> dm3(slots * n6, res.device());
+  Buffers::device<double> f3ca(slots * n6, res.device());
+  Buffers::device<double> f3ac(slots * n6, res.device());
   Buffers::device<double> h2e(n4, res.device());
   Buffers::device<double> h1e(n2, res.device());
   Buffers::device<double> h1e_v_sr(nvirt * n, res.device());
@@ -170,10 +262,16 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   const std::array<double, 1> one_root{1.0};
   for (size_t root = 0; root < nroots; ++root) {
     const double *const vector = vectors.data() + (root * dim);
+    const size_t slot = quasi_degenerate ? root : 0;
+    double *const dm1_r = dm1.data() + (slot * n2);
+    double *const dm2_r = dm2.data() + (slot * n4);
+    double *const dm3_r = dm3.data() + (slot * n6);
+    double *const f3ca_r = f3ca.data() + (slot * n6);
+    double *const f3ac_r = f3ac.data() + (slot * n6);
 
     // γ_r and Γ_r, the root alone; response::fock reads them on the host.
-    FBF_TRY(rdm.rdm12(res, one_root, vector, dm1.data(), gamma2.data()));
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma.data(), dm1.data(), n2 * sizeof(double),
+    FBF_TRY(rdm.rdm12(res, one_root, vector, dm1_r, gamma2.data()));
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma.data(), dm1_r, n2 * sizeof(double),
                                            wwr::wwrMemcpyDeviceToHost, stream)));
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma2_host.data(), gamma2.data(), n4 * sizeof(double),
                                            wwr::wwrMemcpyDeviceToHost, stream)));
@@ -203,35 +301,15 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
     FBF_TRY(gpu_status(gemm(res.blas(), order, &kOne<double>, cas.c.data(), r_device.data(),
                             &kZero<double>, c_r.data())));
 
-    // F^I in the root's orbitals, Rᵀ F^I R: h1e is its active block, and the
-    // h1e_v_* its blocks against the core and the virtuals.
+    // F^I in the root's orbitals, Rᵀ F^I R, and what is read of it and of B
+    // over C_r.
     FBF_TRY(gpu_status(gemm(res.blas(), order, &kOne<double>, fock.fock_inactive.data(),
                             r_device.data(), &kZero<double>, product.data())));
     FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(res.blas(), order, &kOne<double>, r_device.data(),
                                                product.data(), &kZero<double>, fi_r.data())));
-    FBF_TRY(nevpt2_copy_block(res, fi_r.data(), nmo, ncore, ncore, n, n, h1e.data()));
-    FBF_TRY(nevpt2_copy_block(res, fi_r.data(), nmo, nocc, ncore, nvirt, n, h1e_v_sr.data()));
-    FBF_TRY(nevpt2_copy_block(res, fi_r.data(), nmo, ncore, 0, n, ncore, h1e_v_si.data()));
-    FBF_TRY(nevpt2_copy_block(res, fi_r.data(), nmo, nocc, 0, nvirt, ncore, h1e_v_sir.data()));
-
-    // B over the root's orbitals, and h2e from it.
-    const nevpt2::MoBlocks blocks = FBF_TRY(nevpt2::mo_blocks(
-        res, fit->naux, order, order, fit->b.data(), c_r.data(), cas.ncore, cas.ncas));
-    FBF_TRY(nevpt2::h2e(res, blocks, h2e.data()));
-
-    // Sr's one-electron part, h1eff[v, a] - Σ_b (vb|ba): per active b, one
-    // gemm of B_va's b-th column block (naux x nvirt) against B_aa's b-th row
-    // (naux x n, every naux n apart).
-    const auto naux = static_cast<size_t>(blocks.naux);
-    if (nvirt > 0 && naux > 0) {
-      for (size_t b = 0; b < n; ++b) {
-        FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
-            res.blas().get(), wwr::WWRBLAS_OP_T, wwr::WWRBLAS_OP_N, static_cast<int32_t>(nvirt),
-            cas.ncas, blocks.naux, &kNegOne<double>, blocks.va.data() + (naux * nvirt * b),
-            blocks.naux, blocks.aa.data() + (naux * b), blocks.naux * cas.ncas, &kOne<double>,
-            h1e_v_sr.data(), static_cast<int32_t>(nvirt))));
-      }
-    }
+    const nevpt2::MoBlocks blocks = FBF_TRY(
+        nevpt2_orbital_inputs(res, *fit, cas, c_r.data(), fi_r.data(), h1e.data(), h1e_v_sr.data(),
+                              h1e_v_si.data(), h1e_v_sir.data(), h2e.data()));
 
     // dm2 in make_dm123's convention, ⟨E_pq E_rs⟩ = Γ_pqrs + δ_qr γ_ps,
     // row-major as Γ is.
@@ -243,11 +321,11 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
         }
       }
     }
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dm2.data(), dm2_host.data(), n4 * sizeof(double),
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(dm2_r, dm2_host.data(), n4 * sizeof(double),
                                            wwr::wwrMemcpyHostToDevice, stream)));
     const int64_t tiles =
-        FBF_TRY(nevpt2::rdms(res, strings, strings, vector, ints.hamiltonian.eri.data(), dm3.data(),
-                             f3ca.data(), f3ac.data(), rdm_budget));
+        FBF_TRY(nevpt2::rdms(res, strings, strings, vector, ints.hamiltonian.eri.data(), dm3_r,
+                             f3ca_r, f3ac_r, rdm_budget));
 
     FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
     const int32_t batch = nevpt2_batch(blocks, free_bytes / 8);
@@ -258,11 +336,11 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
                                       .h1e_v_sr = h1e_v_sr.data(),
                                       .h1e_v_si = h1e_v_si.data(),
                                       .h1e_v_sir = h1e_v_sir.data(),
-                                      .dm1 = dm1.data(),
-                                      .dm2 = dm2.data(),
-                                      .dm3 = dm3.data(),
-                                      .f3ca = f3ca.data(),
-                                      .f3ac = f3ac.data()};
+                                      .dm1 = dm1_r,
+                                      .dm2 = dm2_r,
+                                      .dm3 = dm3_r,
+                                      .f3ca = f3ca_r,
+                                      .f3ac = f3ac_r};
     out.roots.push_back(FBF_TRY(nevpt2::class_energies(res, blocks, inputs, batch)));
     // A PC class refused as Numerical costs that root its PC, not its SC.
     Result<nevpt2::PcClassEnergies> pc = nevpt2::pc_class_energies(res, blocks, inputs, batch);
@@ -280,6 +358,132 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
                           root, out.roots.back().total,
                           pc ? std::format("{:.12f}", pc->total) : std::string{"refused"}, tiles,
                           batch));
+  }
+  if (!quasi_degenerate) {
+    return out;
+  }
+
+  // QD-NEVPT2. The CASSCF's own orbitals, whose core and virtuals are
+  // canonical over the state-averaged Fock: one F^I (the Fock's, over the
+  // state average's RDMs, though F^I reads none), one set of MO blocks, and
+  // the orbital energies, shared by every root.
+  std::vector<double> gamma_sa(n2, 0.0);
+  for (size_t root = 0; root < nroots; ++root) {
+    for (size_t pq = 0; pq < n2; ++pq) {
+      gamma_sa[pq] += cas.weights[root] * cas.rdm1[(root * n2) + pq];
+    }
+  }
+  const response::Fock fock_sa =
+      FBF_TRY(response::fock(res, molecule, h, fit->b, fit->naux, cas.c, cas.ncore, cas.ncas,
+                             ints.ppaa, ints.papa, gamma_sa, cas.rdm2));
+  const nevpt2::MoBlocks blocks = FBF_TRY(
+      nevpt2_orbital_inputs(res, *fit, cas, cas.c.data(), fock_sa.fock_inactive.data(), h1e.data(),
+                            h1e_v_sr.data(), h1e_v_si.data(), h1e_v_sir.data(), h2e.data()));
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(e_core.data(), cas.mo_energies.data(), ncore * sizeof(double),
+                                     wwr::wwrMemcpyHostToDevice, stream)));
+  FBF_TRY(
+      gpu_status(wwr::wwrMemcpyAsync(e_virt.data(), cas.mo_energies.data() + nocc,
+                                     nvirt * sizeof(double), wwr::wwrMemcpyHostToDevice, stream)));
+
+  // Per unordered pair I < J, the transition RDMs of (I, J) at slot 0 and of
+  // (J, I) at slot 1, consumed by the pair's 2 x 2 block before the next pair
+  // is built: never the n² sets at once. f3ca and f3ac are read only on the
+  // diagonal, so the off-diagonal ones share one scratch the next build
+  // overwrites.
+  Buffers::device<double> tdm1(2 * n2, res.device());
+  Buffers::device<double> tdm2(2 * n4, res.device());
+  Buffers::device<double> tdm3(2 * n6, res.device());
+  Buffers::device<double> tf3ca(n6, res.device());
+  Buffers::device<double> tf3ac(n6, res.device());
+  FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
+  const int32_t batch = nevpt2_batch(blocks, free_bytes / 8);
+  const nevpt2::EnergyInputs shared{.h1e = h1e.data(),
+                                    .h2e = h2e.data(),
+                                    .e_core = e_core.data(),
+                                    .e_virt = e_virt.data(),
+                                    .h1e_v_sr = h1e_v_sr.data(),
+                                    .h1e_v_si = h1e_v_si.data(),
+                                    .h1e_v_sir = h1e_v_sir.data()};
+  const auto own = [&](size_t root) {
+    nevpt2::EnergyInputs in = shared;
+    in.dm1 = dm1.data() + (root * n2);
+    in.dm2 = dm2.data() + (root * n4);
+    in.dm3 = dm3.data() + (root * n6);
+    in.f3ca = f3ca.data() + (root * n6);
+    in.f3ac = f3ac.data() + (root * n6);
+    return in;
+  };
+  const auto transition = [&](size_t slot) {
+    nevpt2::EnergyInputs in = shared;
+    in.dm1 = tdm1.data() + (slot * n2);
+    in.dm2 = tdm2.data() + (slot * n4);
+    in.dm3 = tdm3.data() + (slot * n6);
+    return in;
+  };
+  out.qd_couplings.resize(nroots * nroots);
+  out.pc_qd_couplings.resize(nroots * nroots);
+  for (size_t i = 0; i < nroots; ++i) {
+    for (size_t j = i + 1; j < nroots; ++j) {
+      for (const auto &[slot, bra, ket] :
+           {std::tuple{size_t{0}, i, j}, std::tuple{size_t{1}, j, i}}) {
+        FBF_TRY(nevpt2::rdms(res, strings, strings, vectors.data() + (bra * dim),
+                             vectors.data() + (ket * dim), ints.hamiltonian.eri.data(),
+                             tdm1.data() + (slot * n2), tdm2.data() + (slot * n4),
+                             tdm3.data() + (slot * n6), tf3ca.data(), tf3ac.data(), rdm_budget));
+      }
+      const std::array<nevpt2::EnergyInputs, 4> pairs{own(i), transition(0), transition(1), own(j)};
+      // The block's [0] is root i's diagonal, [1] (i, j), [2] (j, i), [3]
+      // root j's: each diagonal is taken once, root 0's from (0, 1) and root
+      // j's from (0, j).
+      const std::vector<nevpt2::ClassEnergies> sc =
+          FBF_TRY(nevpt2::sc_effective_hamiltonian(res, blocks, pairs, batch));
+      out.qd_couplings[(i * nroots) + j] = sc[1];
+      out.qd_couplings[(j * nroots) + i] = sc[2];
+      if (i == 0) {
+        out.qd_couplings[(j * nroots) + j] = sc[3];
+        if (j == 1) {
+          out.qd_couplings[0] = sc[0];
+        }
+      }
+      if (!out.pc_qd_refusal.empty()) {
+        continue;
+      }
+      // A PC state refused as Numerical costs QD its PC, not its SC.
+      Result<std::vector<nevpt2::PcClassEnergies>> pc =
+          nevpt2::pc_effective_hamiltonian(res, blocks, pairs, batch);
+      if (!pc && pc.error().kind != ErrorKind::Numerical) {
+        return std::unexpected(std::move(pc).error());
+      }
+      if (!pc) {
+        out.pc_qd_refusal = std::format("roots {} and {} as states 0 and 1: {}", i, j,
+                                        std::move(pc.error().message));
+        out.pc_qd_couplings.clear();
+        log::warn(std::format("QD-NEVPT2: PC refused, SC kept: {}", out.pc_qd_refusal));
+        continue;
+      }
+      out.pc_qd_couplings[(i * nroots) + j] = (*pc)[1];
+      out.pc_qd_couplings[(j * nroots) + i] = (*pc)[2];
+      if (i == 0) {
+        out.pc_qd_couplings[(j * nroots) + j] = (*pc)[3];
+        if (j == 1) {
+          out.pc_qd_couplings[0] = (*pc)[0];
+        }
+      }
+    }
+  }
+
+  std::vector<double> totals(nroots * nroots);
+  std::ranges::transform(out.qd_couplings, totals.begin(),
+                         [](const nevpt2::ClassEnergies &c) { return c.total; });
+  FBF_TRY(nevpt2_qd_eigh(res, cas.energies, totals, out.qd_heff, out.qd_energies, out.qd_vectors));
+  log::info(std::format("SC-QD-NEVPT2 energies {::.12f}", out.qd_energies));
+  if (out.pc_qd_refusal.empty()) {
+    std::ranges::transform(out.pc_qd_couplings, totals.begin(),
+                           [](const nevpt2::PcClassEnergies &c) { return c.total; });
+    FBF_TRY(nevpt2_qd_eigh(res, cas.energies, totals, out.pc_qd_heff, out.pc_qd_energies,
+                           out.pc_qd_vectors));
+    log::info(std::format("PC-QD-NEVPT2 energies {::.12f}", out.pc_qd_energies));
   }
   return out;
 }

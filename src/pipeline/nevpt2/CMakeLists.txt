@@ -2,8 +2,8 @@
 # names the CasscfOutput and the products pipeline::casscf re-exports (the
 # EriOutput among them). nevpt2::energy is PUBLIC and re-exported for
 # nevpt2::ClassEnergies, in the product. Everything else run uses -- the
-# fitted integrals, the RDMs, the Fock, the MO blocks and dm3/f3 -- is
-# PRIVATE: run is defined in the implementation unit.
+# fitted integrals, the RDMs, the Fock, the MO blocks and dm3/f3, and QD's
+# diagonalize -- is PRIVATE: run is defined in the implementation unit.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.pipeline.nevpt2
@@ -25,6 +25,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
+  free_breakfast::recipes::diagonalize
   free_breakfast::integrals::active_space
   free_breakfast::response::fock
   free_breakfast::ci::strings

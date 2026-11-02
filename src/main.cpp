@@ -113,6 +113,19 @@ void print_products(const fb::Calculation &calc) {
         std::println("PC-NEVPT2 root {}:  refused ({})", r, nevpt2->pc_refusals[r]);
       }
     }
+    // QD's states over the CASSCF roots: the energy and the mixing vector.
+    const std::size_t n = nevpt2->qd_energies.size();
+    for (std::size_t k = 0; k < n; ++k) {
+      std::println("SC-QD-NEVPT2 state {}: {:.10f} Ha, over the roots {::+.6f}", k,
+                   nevpt2->qd_energies[k], std::span{nevpt2->qd_vectors}.subspan(k * n, n));
+    }
+    for (std::size_t k = 0; k < nevpt2->pc_qd_energies.size(); ++k) {
+      std::println("PC-QD-NEVPT2 state {}: {:.10f} Ha, over the roots {::+.6f}", k,
+                   nevpt2->pc_qd_energies[k], std::span{nevpt2->pc_qd_vectors}.subspan(k * n, n));
+    }
+    if (!nevpt2->pc_qd_refusal.empty()) {
+      std::println("PC-QD-NEVPT2:      refused ({})", nevpt2->pc_qd_refusal);
+    }
   }
   if (const auto &fci = calc.get<fb::FciOutput>()) {
     std::println("FCI:               {} electrons in {} orbitals, {} Davidson iterations",
