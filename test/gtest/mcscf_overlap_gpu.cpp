@@ -29,7 +29,23 @@
 // estimate (the step's error), and the extrapolated value within 1e-9 of d;
 // every other component below 2.2e-10; tolerance 3.0e-6. Four displaced
 // solves take 0.4 s, so 4 s for the fast case and 6.4 s for every
-// coordinate. This executable links
+// coordinate.
+//
+// The same check at unequal weights, which PySCF refuses, so these finite
+// differences are df_nac's only reference there: h2co_ccpvdz_sa2 at
+// [0.6, 0.4] (the coupled pair's rotation a parameter of the average) on
+// the same three coordinates, and the skewed h2co_skew_ccpvdz_sa3 at
+// [0.4, 0.4, 0.2] (partly equal: (0, 1) stays projected, (0, 2) and (1, 2)
+// rotate) on the coordinate where |d| is largest, C's z, at delta = 2e-4
+// (kSkewDelta says why); every coordinate of each under
+// FBF_SKIP_IF_FAST_TESTS(). Measured on the RTX 3080: at [0.6, 0.4]
+// |D(delta) - d| at most 6.5e-8 (Richardson 6.9e-8, extrapolated within
+// 3.9e-9 of d); on the skewed SA-3 at most 2.2e-7 (Richardson 2.2e-7,
+// extrapolated within 1.5e-8), tolerance 4.7e-6. Holding the weights at
+// 1 / nroots instead (the Hessian at the wrong weights, no rotations)
+// misses by 6.0e-3 and 2.2e-2, so the check sees them. About 3 s and 4 s
+// for the fast cases, 5.7 s and 7.5 s for every coordinate. This
+// executable links
 // pipeline for the setup; mcscf does not. Runs the device chain, so needs a
 // GPU.
 
@@ -66,9 +82,15 @@ constexpr double kFdRelativeTolerance = 1e-5;
 // the tolerance, so the comparison measures df_nac and not the step.
 constexpr double kFdErrorHeadroom = 0.1;
 // The step (bohr). Central differences at 1e-3 leave a truncation error near
-// 1e-7 of d here (printed), and a re-converged state's ~1e-10 error, over
-// 2 delta, stays under 1e-7 too.
+// 1e-7 of d on h2co_ccpvdz_sa2 (printed), and a re-converged state's ~1e-10
+// error, over 2 delta, stays under 1e-7 too.
 constexpr double kDelta = 1e-3;
+// The skewed SA-3's step. At 1e-3 its (0, 2) coupling along C's z has a
+// truncation error of 5.5e-6 by Richardson, above the 4.7e-6 bar itself;
+// the error goes as delta^2, so 2e-4 brings it to about 2e-7, under the
+// headroom, while the overlaps' round-off (below 1e-12) over 2 delta stays
+// near 1e-9.
+constexpr double kSkewDelta = 2e-4;
 // The CASSCF's convergence, as mcscf_nac_gpu.cpp's.
 constexpr double kConvTolGrad = 1e-10;
 constexpr double kEnergyTolerance = 1e-8;
@@ -135,6 +157,7 @@ struct Converged {
   std::int32_t ncas = 0;
   std::int32_t nelecas = 0;
   std::int32_t multiplicity = 1;
+  std::vector<double> weights;
 
   [[nodiscard]] const fb::BasisSet &basis() const { return calc->get<fb::BasisSetOutput>()->basis; }
   [[nodiscard]] const fb::DensityFitted &df() const {
@@ -175,10 +198,12 @@ bool set_up(const fb::json &entry, std::span<const double> coords, bool guess,
   return true;
 }
 
-// R0's solution, from the exact RHF and the Casci step's start.
+// R0's solution at @p weights, from the exact RHF and the Casci step's start.
 std::unique_ptr<Converged> converge_reference(const fb::json &entry, std::span<const double> coords,
+                                              std::span<const double> weights,
                                               fb::NodeResources &node) {
   auto out = std::make_unique<Converged>();
+  out->weights.assign(weights.begin(), weights.end());
   fb::DeviceResources &res = node.device(0);
   if (!set_up(entry, coords, true, node, *out)) {
     return nullptr;
@@ -208,7 +233,7 @@ std::unique_ptr<Converged> converge_reference(const fb::json &entry, std::span<c
   fb::CasciStep casci;
   casci.ncas = entry.at("ncas").get<std::int32_t>();
   casci.nelecas = entry.at("nelecas").get<std::int32_t>();
-  casci.nroots = static_cast<std::int32_t>(entry.at("weights").size());
+  casci.nroots = static_cast<std::int32_t>(weights.size());
   auto space = casci.select(res, molecule->molecule, basis_set->basis, *scf);
   EXPECT_TRUE(space.has_value()) << space.error().message;
   if (!space.has_value()) {
@@ -217,10 +242,9 @@ std::unique_ptr<Converged> converge_reference(const fb::json &entry, std::span<c
   out->ncore = space->ncore;
   out->ncas = space->ncas;
   out->nelecas = space->nelecas;
-  const auto weights = entry.at("weights").get<std::vector<double>>();
   auto sol = fb::mcscf::solve(res, basis_set->basis, molecule->molecule, h->h, transform->u, {}, {},
-                              space->c, out->ncore, out->ncas, out->nelecas, casci.nroots, weights,
-                              solve_options(), &out->df().b, out->df().naux);
+                              space->c, out->ncore, out->ncas, out->nelecas, casci.nroots,
+                              out->weights, solve_options(), &out->df().b, out->df().naux);
   EXPECT_TRUE(sol.has_value()) << sol.error().message;
   if (!sol.has_value()) {
     return nullptr;
@@ -262,7 +286,8 @@ std::unique_ptr<Converged> converge_displaced(const fb::json &entry, std::span<c
   EXPECT_TRUE(fb::gpu_status(fb::gemm(res.blas(), nao, &fb::kOne<double>, c0.data(), root.data(),
                                       &fb::kZero<double>, c.data()))
                   .has_value());
-  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const std::vector<double> &weights = reference.weights;
+  out->weights = weights;
   out->ncore = reference.ncore;
   out->ncas = reference.ncas;
   out->nelecas = reference.nelecas;
@@ -333,28 +358,51 @@ std::vector<double> displaced_overlaps(const fb::json &entry, const Converged &r
   return std::move(*s);
 }
 
-class McscfOverlap : public ::testing::TestWithParam<bool> {};
+// One finite-difference check: a reference case, the weights it is solved
+// at (empty for the case's own), the fast case's coordinates (empty for the
+// one where |d| is largest), whether every coordinate is taken instead, and
+// the step.
+struct FdCase {
+  std::string_view name;
+  std::vector<double> weights;
+  std::vector<std::size_t> coordinates;
+  bool every_coordinate;
+  double delta;
+  std::string_view label;
+};
+
+// The label, so gtest's listing (and with it each ctest entry's name) shows
+// it instead of the struct's bytes.
+void PrintTo(const FdCase &param, std::ostream *os) {
+  *os << param.label;
+}
+
+class McscfOverlap : public ::testing::TestWithParam<FdCase> {};
 
 TEST_P(McscfOverlap, FiniteDifferenceMatchesNac) {
   FBF_REQUIRE_GPU();
-  const bool every_coordinate = GetParam();
-  if (every_coordinate) {
+  const FdCase &param = GetParam();
+  if (param.every_coordinate) {
     FBF_SKIP_IF_FAST_TESTS();
   }
-  const fb::json &entry = reference_case("h2co_ccpvdz_sa2");
+  const fb::json &entry = reference_case(param.name);
   const auto energies = entry.at("energies").get<std::vector<double>>();
+  const bool own_weights = param.weights.empty();
+  const std::vector<double> weights =
+      own_weights ? entry.at("weights").get<std::vector<double>>() : param.weights;
   const auto start_time = std::chrono::steady_clock::now();
 
   fb::NodeResources node;
   fb::DeviceResources &res = node.device(0);
   const fb::ScopedDeviceIndex on{res.dev_idx()};
   const std::vector<double> coords = reference_coords(entry);
-  const std::unique_ptr<Converged> reference = converge_reference(entry, coords, node);
+  const std::unique_ptr<Converged> reference = converge_reference(entry, coords, weights, node);
   ASSERT_NE(reference, nullptr);
   const fb::mcscf::Solution &sol = *reference->solution;
   const std::size_t n = sol.roots.energies.size();
   ASSERT_EQ(n, energies.size());
-  for (std::size_t r = 0; r < n; ++r) {
+  // The reference's energies are at its own weights.
+  for (std::size_t r = 0; own_weights && r < n; ++r) {
     EXPECT_NEAR(sol.roots.energies[r], energies[r], kEnergyTolerance) << "root " << r;
   }
 
@@ -398,10 +446,22 @@ TEST_P(McscfOverlap, FiniteDifferenceMatchesNac) {
   }
   const double tolerance = kFdRelativeTolerance * scale;
 
-  // H1's out-of-plane x, where d is largest, and O's z and H1's y, where it
-  // vanishes by symmetry; or every coordinate.
-  std::vector<std::size_t> coordinates{6, 5, 7};
-  if (every_coordinate) {
+  // The case's coordinates, or the one where |d| is largest; or every one.
+  std::vector<std::size_t> coordinates = param.coordinates;
+  if (coordinates.empty()) {
+    std::size_t largest = 0;
+    double most = -1.0;
+    for (const std::vector<double> &d : nac) {
+      for (std::size_t x = 0; x < d.size(); ++x) {
+        if (std::abs(d[x]) > most) {
+          most = std::abs(d[x]);
+          largest = x;
+        }
+      }
+    }
+    coordinates.push_back(largest);
+  }
+  if (param.every_coordinate) {
     coordinates.resize(coords.size());
     std::iota(coordinates.begin(), coordinates.end(), std::size_t{0});
   }
@@ -411,11 +471,12 @@ TEST_P(McscfOverlap, FiniteDifferenceMatchesNac) {
   for (const std::size_t x : coordinates) {
     SCOPED_TRACE(std::format("coordinate {}", x));
     const auto coordinate_start = std::chrono::steady_clock::now();
+    const double delta = param.delta;
     const std::vector<double> plus = displaced_overlaps(
-        entry, *reference, x, kDelta, node, x == coordinates.front() ? &transpose_error : nullptr);
-    const std::vector<double> minus = displaced_overlaps(entry, *reference, x, -kDelta, node);
-    const std::vector<double> plus2 = displaced_overlaps(entry, *reference, x, 2 * kDelta, node);
-    const std::vector<double> minus2 = displaced_overlaps(entry, *reference, x, -2 * kDelta, node);
+        entry, *reference, x, delta, node, x == coordinates.front() ? &transpose_error : nullptr);
+    const std::vector<double> minus = displaced_overlaps(entry, *reference, x, -delta, node);
+    const std::vector<double> plus2 = displaced_overlaps(entry, *reference, x, 2 * delta, node);
+    const std::vector<double> minus2 = displaced_overlaps(entry, *reference, x, -2 * delta, node);
     ASSERT_EQ(plus.size(), n * n);
     ASSERT_EQ(minus.size(), n * n);
     ASSERT_EQ(plus2.size(), n * n);
@@ -426,8 +487,8 @@ TEST_P(McscfOverlap, FiniteDifferenceMatchesNac) {
           continue;
         }
         const std::size_t ij = (i * n) + j;
-        const double fd = (plus[ij] - minus[ij]) / (2 * kDelta);
-        const double fd2 = (plus2[ij] - minus2[ij]) / (4 * kDelta);
+        const double fd = (plus[ij] - minus[ij]) / (2 * delta);
+        const double fd2 = (plus2[ij] - minus2[ij]) / (4 * delta);
         const double richardson = std::abs(fd2 - fd) / 3;
         // The extrapolated (4 D(delta) - D(2 delta)) / 3, printed only: it
         // shows the difference left over is the step's.
@@ -457,9 +518,30 @@ TEST_P(McscfOverlap, FiniteDifferenceMatchesNac) {
                            seconds.count());
 }
 
-INSTANTIATE_TEST_SUITE_P(H2coSa2, McscfOverlap, ::testing::Values(false, true),
-                         [](const auto &info) {
-                           return std::string(info.param ? "EveryCoordinate" : "OneCoordinate");
-                         });
+// h2co_ccpvdz_sa2 at its own equal weights: H1's out-of-plane x, where d is
+// largest, and O's z and H1's y, where it vanishes by symmetry. At
+// [0.6, 0.4] the same three, the pair's rotation now a parameter of the
+// average. The skewed SA-3 at [0.4, 0.4, 0.2], partly equal: its (0, 1)
+// rotation stays projected and the other two rotate.
+INSTANTIATE_TEST_SUITE_P(
+    H2co, McscfOverlap,
+    ::testing::Values(
+        FdCase{"h2co_ccpvdz_sa2", {}, {6, 5, 7}, false, kDelta, "Sa2OneCoordinate"},
+        FdCase{"h2co_ccpvdz_sa2", {}, {}, true, kDelta, "Sa2EveryCoordinate"},
+        FdCase{"h2co_ccpvdz_sa2", {0.6, 0.4}, {6, 5, 7}, false, kDelta, "Sa2UnequalOneCoordinate"},
+        FdCase{"h2co_ccpvdz_sa2", {0.6, 0.4}, {}, true, kDelta, "Sa2UnequalEveryCoordinate"},
+        FdCase{"h2co_skew_ccpvdz_sa3",
+               {0.4, 0.4, 0.2},
+               {},
+               false,
+               kSkewDelta,
+               "Skew3PartlyEqualOneCoordinate"},
+        FdCase{"h2co_skew_ccpvdz_sa3",
+               {0.4, 0.4, 0.2},
+               {},
+               true,
+               kSkewDelta,
+               "Skew3PartlyEqualEveryCoordinate"}),
+    [](const auto &info) { return std::string(info.param.label); });
 
 } // namespace

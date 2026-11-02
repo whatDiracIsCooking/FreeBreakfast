@@ -10,6 +10,13 @@
 // the option, against the reference's (1, 0) under the same sign; and a pair
 // of equal roots, refused before anything runs.
 //
+// Then the same config with [casscf] weights = [0.6, 0.4], which PySCF
+// refuses (mcscf_overlap_gpu.cpp checks df_nac there against finite
+// differences): the step runs, and its coupling is this tree's own at
+// those weights -- h_10 = h_01 and d_10 = -d_01 by hand over the same
+// products, Sum_A h_01 = 0 -- and not the equal-weight one, so the weights
+// reached df_nac.
+//
 // One [eri] serves the whole pipeline, so the CASSCF starts from the DF-RHF's
 // orbitals where the reference's starts from the exact RHF's: the same
 // active orbitals, and the same converged DF-SA-CASSCF, as in
@@ -39,6 +46,12 @@ constexpr double kEnergyTolerance = 1e-8;
 // The CASSCF's convergence, as mcscf_nac_gpu.cpp's: the couplings are the
 // CASSCF's only at a stationary point.
 constexpr double kConvTolGrad = 1e-10;
+// This tree's results against each other (the reverse pair, the sum over
+// atoms): the same formula, to round-off, as mcscf_nac_gpu.cpp's.
+constexpr double kSelfTolerance = 1e-9;
+// At [0.6, 0.4] the coupling must move off the equal-weight one by more
+// than this: far above the 1e-8 the equal-weight one is good to.
+constexpr double kWeightsMoved = 1e-6;
 
 const fb::json &reference_case(std::string_view name) {
   static const fb::json kDoc = [] {
@@ -94,9 +107,10 @@ double compare(std::span<const double> ours, std::span<const double> want, doubl
 // The reference's molecule as molecule.xyz in @p dir (bohr there, Angstrom
 // here), and run.toml naming it in the reference's basis, over its fitting
 // set, with the reference's state average in [casscf] (its start the Casci
-// step's, as the reference's) and @p nac after it.
+// step's, as the reference's), @p weights under it if not empty, and @p nac
+// after it.
 std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::json &entry,
-                                   std::string_view nac) {
+                                   std::string_view nac, std::string_view weights = {}) {
   std::string xyz =
       std::format("{}\n{}\n", entry.at("atoms").size(), entry.at("name").get<std::string>());
   for (const fb::json &atom : entry.at("atoms")) {
@@ -107,13 +121,14 @@ std::filesystem::path write_config(const fb::test::ScratchDir &dir, const fb::js
                        coord[2] * fb::kAngstromPerBohr<double>);
   }
   EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
-  const std::string toml = std::format(
-      "[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
-      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
-      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nconv_tol_grad = {:g}\n{}",
-      entry.at("charge").get<std::int32_t>(), entry.at("basis").get<std::string>(),
-      entry.at("aux_basis").at("name").get<std::string>(), entry.at("ncas").get<std::int32_t>(),
-      entry.at("nelecas").get<std::int32_t>(), entry.at("weights").size(), kConvTolGrad, nac);
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"molecule.xyz\"\ncharge = {}\n[basis_set]\nbasis = \"{}\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+                  "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nconv_tol_grad = {:g}\n{}{}",
+                  entry.at("charge").get<std::int32_t>(), entry.at("basis").get<std::string>(),
+                  entry.at("aux_basis").at("name").get<std::string>(),
+                  entry.at("ncas").get<std::int32_t>(), entry.at("nelecas").get<std::int32_t>(),
+                  entry.at("weights").size(), kConvTolGrad, weights, nac);
   EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   return dir / "run.toml";
 }
@@ -194,6 +209,74 @@ TEST(PipelineNac, JsonMatchesPyscf) {
   std::cout << std::format("[ nac ] h2co_ccpvdz_sa2 (0, 1): h {:.2e}, csf {:.2e}, total {:.2e}; "
                            "(1, 0) etf {:.2e} ({:.2f} s)\n",
                            h_error, csf_error, total_error, etf_error, seconds.count());
+}
+
+TEST(PipelineNac, UnequalWeightsRun) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2co_ccpvdz_sa2");
+  const auto start_time = std::chrono::steady_clock::now();
+  const fb::test::ScratchDir dir("pipeline_nac_unequal");
+  auto calc = fb::read_config(write_config(dir, entry, "[nac]\n", "weights = [0.6, 0.4]\n"),
+                              dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  EXPECT_EQ(calc->get<fb::CasscfOutput>()->weights, (std::vector<double>{0.6, 0.4}));
+
+  const auto written = fb::read_json(dir / "out" / "nac.json");
+  ASSERT_TRUE(written.has_value()) << written.error().message;
+  ASSERT_EQ(written->at("couplings").size(), 1U);
+  const fb::json &ours = written->at("couplings").at(0);
+  EXPECT_GT(ours.at("zvector").at("iterations").get<std::int32_t>(), 0);
+  const std::vector<double> h = flat(ours.at("h"));
+  const std::vector<double> total = flat(ours.at("total"));
+
+  // The numerator is translation-invariant.
+  double translation = 0.0;
+  for (std::size_t k = 0; k < 3; ++k) {
+    double sum = 0.0;
+    for (std::size_t i = k; i < h.size(); i += 3) {
+      sum += h[i];
+    }
+    translation = std::max(translation, std::abs(sum));
+  }
+  EXPECT_LT(translation, kSelfTolerance);
+
+  // The reverse pair by hand: h symmetric, d antisymmetric.
+  const fb::StepInput<fb::NacStep> in{*calc->get<fb::MoleculeOutput>(),
+                                      *calc->get<fb::BasisSetOutput>(),
+                                      *calc->get<fb::PrimitivePairClassesOutput>(),
+                                      *calc->get<fb::EriOutput>(),
+                                      *calc->get<fb::CoreHamiltonianOutput>(),
+                                      *calc->get<fb::CasscfOutput>()};
+  const auto reverse = fb::NacStep{.pairs = {{1, 0}}}.run(in, node.device(0));
+  ASSERT_TRUE(reverse.has_value()) << reverse.error().message;
+  ASSERT_EQ(reverse->couplings.size(), 1U);
+  const fb::mcscf::Nac &d = reverse->couplings[0];
+  ASSERT_EQ(d.total.size(), total.size());
+  double antisymmetry = 0.0;
+  for (std::size_t i = 0; i < total.size(); ++i) {
+    EXPECT_NEAR(d.numerator[i], h[i], kSelfTolerance) << "h " << i;
+    EXPECT_NEAR(d.total[i], -total[i], kSelfTolerance) << "total " << i;
+    antisymmetry =
+        std::max({antisymmetry, std::abs(d.numerator[i] - h[i]), std::abs(d.total[i] + total[i])});
+  }
+
+  // Not the equal-weight coupling, up to the CI phases' sign.
+  const std::vector<double> equal = flat(reference_coupling(entry, 0, 1).at("total"));
+  const double sign =
+      std::inner_product(total.begin(), total.end(), equal.begin(), 0.0) < 0.0 ? -1.0 : 1.0;
+  double moved = 0.0;
+  for (std::size_t i = 0; i < total.size(); ++i) {
+    moved = std::max(moved, std::abs(total[i] - (sign * equal[i])));
+  }
+  EXPECT_GT(moved, kWeightsMoved);
+
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start_time;
+  std::cout << std::format("[ nac ] h2co_ccpvdz_sa2 at [0.6, 0.4]: sum_A h {:.2e}, antisymmetry "
+                           "{:.2e}, {:.2e} from the equal-weight d ({:.2f} s)\n",
+                           translation, antisymmetry, moved, seconds.count());
 }
 
 } // namespace

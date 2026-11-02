@@ -1,6 +1,6 @@
 /// @file
 /// @brief The `Nac` step: the nonadiabatic couplings between pairs of roots of
-/// the @ref CasscfOutput, a DF-SA-CASSCF at equal weights
+/// the @ref CasscfOutput, a DF-SA-CASSCF at any weights
 /// (@c mcscf::df_nac over the density-fitted EriOutput), each with its
 /// numerator and CSF term, written as `nac.json`.
 ///
@@ -35,10 +35,6 @@ struct NacOutput {
 struct NacStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "nac";
-  /// @brief The CASSCF's weights are equal when they span no more than this,
-  /// absolute: df_nac's own tolerance on the weighted gamma against the
-  /// roots' plain average. pipeline/config refuses a `[casscf]` past it too.
-  static constexpr double kEqualWeights = 1e-10;
 
   /// @brief The (bra, ket) pairs, roots in @ref CasscfOutput::energies'
   /// order, each coupling <bra|d ket/dR>. Empty: every pair I < J, ordered by
@@ -62,8 +58,8 @@ struct NacStep {
   ///
   /// @return The couplings; before anything runs on the device, Unsupported
   ///         for an integral-direct EriOutput (the CASSCF over it is not the
-  ///         DF-CASSCF these are the couplings of) or a CASSCF at unequal
-  ///         weights, each naming the reason, and InvalidConfig for a CASSCF
+  ///         DF-CASSCF these are the couplings of), naming the reason, and
+  ///         InvalidConfig for a CASSCF
   ///         of fewer than two roots, a pair whose roots are equal or not
   ///         both the CASSCF's, or a CasscfOutput whose 1-RDMs are not one
   ///         ncas^2 block per weight; otherwise @c df_nac's error

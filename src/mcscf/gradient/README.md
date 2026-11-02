@@ -39,7 +39,8 @@ response to the orbitals. The weights are not in a `Solution`, so the call
 recovers them from it, as the least-squares solution of
 Σ_r w_r γ_r = γ with Σ_r w_r = 1 over `root_gammas` and the weighted γ
 (`Unsupported` when the roots' 1-RDMs are linearly dependent, `InvalidConfig`
-when γ is not their average to 1e-10). The active electron count, for the CI
+when γ is not their average to 1e-10). That recovery is exported as
+`mcscf::sa_gradient_weights`, for `df_nac` at unequal weights. The active electron count, for the CI
 strings, is trace(γ).
 
 **The formula is the DF-CASSCF energy's gradient, and only at convergence.**
