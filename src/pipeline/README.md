@@ -33,7 +33,9 @@ config/     free_breakfast.pipeline.config: the TOML front end and the registry,
 ```
 
 `src/main.cpp` reads a config into a `Calculation`, runs it, and prints the
-products.
+products. [`examples/`](../../examples/README.md) holds a small config per
+step family (RHF, CASSCF, NEVPT2 and QD-NEVPT2, `[nac]`, `[hessian]`) to run
+through it; `test/examples/` runs two of them.
 
 ## Density fitting
 

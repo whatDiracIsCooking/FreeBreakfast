@@ -6,6 +6,9 @@ multiplicity above 1. The two-electron part is the `EriOutput`'s
 (`pipeline/eri`): integral-direct, with incremental Fock builds, or
 density-fitted, closed or open shell.
 
+[`examples/rhf.toml`](../../../examples/rhf.toml) is the smallest config
+that runs it: a molecule, a basis and `[scf]`, the rest filled in.
+
 ## Module
 
 `free_breakfast.pipeline.scf`, target `free_breakfast::pipeline::scf`. It

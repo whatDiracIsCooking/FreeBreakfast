@@ -27,6 +27,10 @@ SC- and PC-QD-NEVPT2 with `quasi_degenerate`), the DF-RHF gradient step, the DF-
 DF-CASSCF, state-specific or one root of a state average, or semi-numerical,
 with harmonic frequencies, and IR intensities when analytic RHF), and the
 planner that runs them from a TOML config). `src/README.md` has the one-line summary of each.
+`examples/` holds one small TOML config per step family (RHF, CASSCF, NEVPT2
+and QD-NEVPT2, `[nac]`, `[hessian]`) for the `free-breakfast` binary, and the
+step READMEs link to them rather than carry their own; `test/examples/` runs
+two through the binary, the only tests that go through `main.cpp`.
 The build system, containers, tooling and CI around them are real and exercised.
 
 ## Setup
@@ -224,7 +228,7 @@ check in `test/io/sad_host.cpp` fails until you do. The commands are in
 | | C++ | Python |
 |---|---|---|
 | Source | `src/`, `cmake/`, `deps/` (+ opt-in `bench/`, `experimental/`) | `test/pytest/`, `devtools/hooks/*.py`, `tools/` |
-| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/atom/` (the `src/atom` tests), `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests), `test/sad/` (the `src/sad` tests, a GPU-free module) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, run by ctest | `test/pytest/`, run by pytest |
+| Tests | `test/core/` (the `src/core` tests) and `test/gtest/` (the rest), each a host/GPU binary pair, and `test/atom/` (the `src/atom` tests), `test/basis/` (the host-only `src/basis` tests), `test/io/` (the host-only `src/io` tests), `test/sad/` (the `src/sad` tests, a GPU-free module) and `test/pipeline/` (the `src/pipeline` tests that need no device), each a host binary, and `test/examples/` (`examples/` configs through the `free-breakfast` binary), run by ctest | `test/pytest/`, run by pytest |
 | Driver | `devtools/cpp-tier.sh`, `cpp-slow-tier.sh` | `pytest`, `devtools/slow-tier.sh` |
 | Lint | `cmake-lint`, `clang-format --check` (commit hook + CI); `clang-tidy` via `--tidy` | `ruff check`, `ruff format --check` (commit hook + CI) |
 | Gated by | `cmake-lint` + format check at commit, `cpp-smoke.sh` at push; on the server **format + cmake-lint only, no build or test** | pre-push hook + CI |

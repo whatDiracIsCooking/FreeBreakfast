@@ -1,0 +1,7 @@
+# RHF water in STO-3G, over integral-direct ERIs (the default [eri]).
+# Every table the SCF reads is filled in; writes scf.molden.
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "sto-3g"       # a compiled-in name, or a path to BSE JSON
+[scf]                  # every option has a default

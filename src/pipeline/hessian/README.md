@@ -267,6 +267,9 @@ error. So:
 
 ## Config
 
+[`examples/hessian.toml`](../../../examples/hessian.toml) is a whole config:
+the analytic DF-RHF Hessian of water in cc-pVDZ, and its `hessian.json`.
+
 ```toml
 [hessian]
 method = "analytic"    # the default; or "numerical"

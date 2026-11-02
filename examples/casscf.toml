@@ -1,0 +1,12 @@
+# CASSCF(4,4) water in cc-pVDZ over density-fitted ERIs, the active space
+# the frontier orbitals of the RHF. Writes scf.molden and casscf.molden.
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"      # default "integral_direct"
+aux_basis = "cc-pvdz-jkfit"   # optional: <basis>-acCD-6-6 when carried
+[casscf]
+ncas = 4
+nelecas = 4

@@ -1,10 +1,10 @@
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
-# The C++ suite: seven trees. core/ and gtest/ are each built into a pair of
-# binaries split by device requirement -- a host one (runs anywhere) and a GPU
-# one (skips its device cases without a GPU); atom/, basis/, io/, sad/ and
-# pipeline/ are each a host binary alone:
+# The C++ suite: seven trees of gtest binaries, and examples/. core/ and
+# gtest/ are each built into a pair of binaries split by device requirement
+# -- a host one (runs anywhere) and a GPU one (skips its device cases without
+# a GPU); atom/, basis/, io/, sad/ and pipeline/ are each a host binary alone:
 #
 #   * core/  -- the src/core tests: free_breakfast_core_tests_{host,gpu}.
 #   * atom/  -- the src/atom tests, which have no device code to test:
@@ -21,9 +21,13 @@
 #               free_breakfast_pipeline_tests_host. Running a real step needs
 #               a GPU, so those cases stay in gtest/'s GPU binary.
 #   * gtest/ -- everything else: free_breakfast_tests_{host,gpu}.
+#   * examples/ -- no binary of its own: the free-breakfast executable run
+#               on two of the root's examples/ configs, by
+#               run_example.cmake, as the `gpu`-labelled example_* entries.
 #
-# All nine are registered with ctest and run by `ctest --preset <name>`, or by
-# devtools/cpp-tier.sh, which is configure + build + ctest in one command.
+# All nine binaries, and examples/'s entries, are registered with ctest and
+# run by `ctest --preset <name>`, or by devtools/cpp-tier.sh, which is
+# configure + build + ctest in one command.
 #
 # The PYTHON suite is not built by CMake: it lives in test/pytest/ -- a sibling
 # of gtest/ under this directory -- is collected by pytest via `testpaths` in
@@ -72,3 +76,4 @@ add_subdirectory(io)
 add_subdirectory(sad)
 add_subdirectory(pipeline)
 add_subdirectory(gtest)
+add_subdirectory(examples)

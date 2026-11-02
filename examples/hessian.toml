@@ -1,0 +1,12 @@
+# The analytic DF-RHF Hessian of water in cc-pVDZ: harmonic frequencies and,
+# from its CPHF, the dipole derivative and IR intensities. Writes
+# hessian.json alone: the SCF it differentiates is a nested run's.
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"   # the analytic method needs it
+aux_basis = "cc-pvdz-jkfit"
+[hessian]
+method = "analytic"        # the default; or "numerical"

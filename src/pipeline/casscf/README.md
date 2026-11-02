@@ -103,7 +103,8 @@ ncas = 4
 nelecas = 4
 ```
 
-With it the step runs `mcscf::DensityFitting::Full`: every build of the loop
+That is [`examples/casscf.toml`](../../../examples/casscf.toml) over its
+water. With it the step runs `mcscf::DensityFitting::Full`: every build of the loop
 is fitted, and so is the Fock it canonicalizes over, so the product is the
 DF-CASSCF (PySCF's `mcscf.CASSCF(mf, ...).density_fit()`), its orbital
 energies the fitted Fock's eigenvalues. Its J and K are never
