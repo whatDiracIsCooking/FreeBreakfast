@@ -553,18 +553,27 @@ INSTANTIATE_TEST_SUITE_P(Goldens, PipelineQdNevpt2,
                          [](const auto &info) { return info.param; });
 
 // PC-QD refused, SC-QD kept, the run not failed: PcRefusalKeepsSc's HF
-// CAS(10,7) averaged over two roots, its F 1s active in both.
+// CAS(10,7) averaged over three roots, its F 1s active in each. Three, not
+// two: HF's lowest excited singlet is a 1Pi, so a second root is one
+// component of a degenerate pair, and an average over it alone is not
+// smooth where the pair meets (see ../../src/mcscf/solve/README.md, "A
+// state average that splits a degenerate pair"): it took 23 to 44 macro
+// iterations, and sometimes not 50 (#716). Over both components it is
+// invariant under the rotation about the bond, and takes 6. Which basis the
+// pair's CI vectors take is arbitrary, and QD-NEVPT2's eigenvalues depend on
+// it (each state's own H_0), so nothing here compares them.
 TEST(PipelineQdNevpt2, PcRefusalKeepsScQd) {
   FBF_REQUIRE_GPU();
+  constexpr std::size_t n = 3;
   const fb::test::ScratchDir dir("pipeline_qd_nevpt2");
   ASSERT_TRUE(
       fb::write_file(dir / "hf.xyz", "2\nhydrogen fluoride\nH 0 0 0\nF 0 0 0.917\n").has_value());
   const std::string toml =
       std::format("[molecule]\nxyz = \"hf.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
                   "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
-                  "[casscf]\nncas = 7\nnelecas = 10\nnroots = 2\nconv_tol_grad = {:g}\n"
+                  "[casscf]\nncas = 7\nnelecas = 10\nnroots = {}\nconv_tol_grad = {:g}\n"
                   "[nevpt2]\nquasi_degenerate = true\n",
-                  kDfAuxBasis, kConvTolGrad);
+                  kDfAuxBasis, n, kConvTolGrad);
   ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
   auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
   ASSERT_TRUE(calc.has_value()) << calc.error().message;
@@ -574,22 +583,28 @@ TEST(PipelineQdNevpt2, PcRefusalKeepsScQd) {
   const auto &casscf = calc->get<fb::CasscfOutput>();
   const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
   ASSERT_TRUE(casscf.has_value() && nevpt2.has_value());
+  // 6 on the RTX 3080 in every run; mcscf_solve_gpu.cpp's bar.
+  EXPECT_LE(casscf->iterations.size(), 20U);
 
   // SC-QD stands: H_eff symmetric, its diagonal each root's CASSCF energy
   // plus its own coupling, its eigenvalues summing to its trace.
-  ASSERT_EQ(nevpt2->qd_couplings.size(), 4U);
-  ASSERT_EQ(nevpt2->qd_heff.size(), 4U);
-  ASSERT_EQ(nevpt2->qd_energies.size(), 2U);
-  ASSERT_EQ(nevpt2->qd_vectors.size(), 4U);
-  EXPECT_EQ(nevpt2->qd_heff[1], nevpt2->qd_heff[2]);
-  for (std::size_t r = 0; r < 2; ++r) {
-    EXPECT_NEAR(nevpt2->qd_heff[(r * 2) + r],
-                casscf->energies[r] + nevpt2->qd_couplings[(r * 2) + r].total, kPcSlack);
-    EXPECT_LT(nevpt2->qd_couplings[(r * 2) + r].total, -0.05) << r;
+  ASSERT_EQ(nevpt2->qd_couplings.size(), n * n);
+  ASSERT_EQ(nevpt2->qd_heff.size(), n * n);
+  ASSERT_EQ(nevpt2->qd_energies.size(), n);
+  ASSERT_EQ(nevpt2->qd_vectors.size(), n * n);
+  double trace = 0.0;
+  for (std::size_t r = 0; r < n; ++r) {
+    for (std::size_t s = 0; s < r; ++s) {
+      EXPECT_EQ(nevpt2->qd_heff[r + (s * n)], nevpt2->qd_heff[s + (r * n)]) << r << ", " << s;
+    }
+    EXPECT_NEAR(nevpt2->qd_heff[(r * n) + r],
+                casscf->energies[r] + nevpt2->qd_couplings[(r * n) + r].total, kPcSlack);
+    EXPECT_LT(nevpt2->qd_couplings[(r * n) + r].total, -0.05) << r;
+    trace += nevpt2->qd_heff[(r * n) + r];
   }
-  EXPECT_LE(nevpt2->qd_energies[0], nevpt2->qd_energies[1]);
-  EXPECT_NEAR(nevpt2->qd_energies[0] + nevpt2->qd_energies[1],
-              nevpt2->qd_heff[0] + nevpt2->qd_heff[3], kPcSlack);
+  EXPECT_TRUE(std::ranges::is_sorted(nevpt2->qd_energies));
+  EXPECT_NEAR(std::accumulate(nevpt2->qd_energies.begin(), nevpt2->qd_energies.end(), 0.0), trace,
+              kPcSlack);
 
   // PC-QD is absent, and says which class refused.
   EXPECT_TRUE(nevpt2->pc_qd_couplings.empty());
@@ -597,8 +612,10 @@ TEST(PipelineQdNevpt2, PcRefusalKeepsScQd) {
               nevpt2->pc_qd_vectors.empty());
   EXPECT_NE(nevpt2->pc_qd_refusal.find("metric has no gap"), std::string::npos)
       << nevpt2->pc_qd_refusal;
-  std::cout << std::format("[ qd       ] HF CAS(10,7) SA-2: SC-QD {::.10f}; PC-QD {}\n",
-                           nevpt2->qd_energies, nevpt2->pc_qd_refusal);
+  std::cout << std::format("[ qd       ] HF CAS(10,7) SA-3: {} macro iterations, |g| {:.2e}, SC-QD "
+                           "{::.10f}; PC-QD {}\n",
+                           casscf->iterations.size(), casscf->gradient_norm, nevpt2->qd_energies,
+                           nevpt2->pc_qd_refusal);
 }
 
 } // namespace
