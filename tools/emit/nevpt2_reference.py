@@ -135,13 +135,21 @@ INVARIANCE = 1e-10
 BLOCK2_SC = 1e-10
 # Every PC solve's matrix must have a gap of at least PC_MIN_GAP at PC_TAU:
 # its singular values at or below PC_TAU of its largest are null, and the
-# smallest kept over the largest cut (over PC_TAU where none is) must reach
-# PC_MIN_GAP. That is nevpt2::pc_class_energies' refusal rule. lstsq(rcond=None)
-# cuts lower, at eps * d, and the structural null modes' noise can straddle
-# that cut on natural orbitals; a mode in that noise carries no energy, so only
-# the gap above it matters.
+# smallest kept over the largest cut (over pc_null(d), the matrix's round-off,
+# where none is) must reach PC_MIN_GAP. That is nevpt2::pc_class_energies'
+# refusal rule. lstsq(rcond=None) cuts lower, at eps * d, and the structural
+# null modes' noise can straddle that cut on natural orbitals; a mode in that
+# noise carries no energy, so only the gap above it matters.
 PC_TAU = 1e-13
 PC_MIN_GAP = 1e3
+
+
+def pc_null(d: int) -> float:
+    """The gap's floor when nothing is cut: a d x d metric's round-off,
+    eps sqrt(d) of its largest eigenvalue, in place of the largest cut mode
+    (src/nevpt2/energy/README.md, "PC-NEVPT2")."""
+    return float(numpy.finfo(float).eps * numpy.sqrt(d))
+
 
 # block2's sub-space keys, as PySCF names the classes.
 B2_TO_CLASS = {
@@ -272,8 +280,8 @@ def canonical(casci, ci, natorb: bool):
 
 def pc_gap(a: numpy.ndarray) -> float:
     """The smallest gap at PC_TAU over one block of per-tuple matrices:
-    smallest kept / largest cut relative singular value, or / PC_TAU where a
-    tuple cuts nothing. All-zero tuples have nothing to solve and are
+    smallest kept / largest cut relative singular value, or / pc_null(d)
+    where a tuple cuts nothing. All-zero tuples have nothing to solve and are
     skipped."""
     if len(a) == 0:
         return numpy.inf
@@ -285,7 +293,7 @@ def pc_gap(a: numpy.ndarray) -> float:
     kept = rel > PC_TAU
     smallest_kept = numpy.where(kept, rel, numpy.inf).min(axis=1)
     largest_cut = numpy.where(kept, 0.0, rel).max(axis=1)
-    floor = numpy.where((~kept).any(axis=1), largest_cut, PC_TAU)
+    floor = numpy.where((~kept).any(axis=1), largest_cut, pc_null(a.shape[-1]))
     return float((smallest_kept / numpy.maximum(floor, numpy.finfo(float).tiny)).min())
 
 

@@ -161,12 +161,45 @@ of 64 modes at CAS(4,4), 10 of 1000 at CAS(10,10); Sir 1 or 2). Its modes at
 or below 1e-13 of its largest eigenvalue are dropped: two decades above the
 structural null modes' noise, two below the first real mode on cc-pVTZ. A
 class is a **Numerical error, naming it**, when S has no positive
-eigenvalue, when its smallest kept eigenvalue is under 1e3 times its largest
-dropped one (the rank, and so the energy, would depend on where the cut
-fell: the demo's N₂ CAS(12,12) is such a state), or when a denominator
+eigenvalue, when it has no gap at the cut (below), or when a denominator
 λ_k + Δ_t is not positive. The demo reported a refused class and carried on;
 here the call fails, since a total without that class is not PC-NEVPT2
 (the pipeline step then drops that root's PC and keeps its SC).
+
+**The gap rule.** The smallest kept eigenvalue must be at least 1e3 times
+the noise below it, or the rank, and so the energy, would depend on where
+the cut fell: the demo's N₂ CAS(12,12) is such a state. When modes are
+dropped, the noise is measured: it is the largest dropped eigenvalue. When
+**nothing** is dropped there is nothing to measure, and the floor is S's
+round-off instead, **ε √d** of its largest eigenvalue (ε = 2.2e-16, d the
+class's basis size); the ratio is still against 1e3, so in both cases a
+kept mode must sit three decades above noise.
+
+Why not the cut itself, the demo's choice for this case (smallest kept /
+1e-13): the rule exists to refuse an ambiguous cut, a mode so near the
+threshold that round-off decides whether it is dropped, and with nothing
+dropped that is the only question. A mode passing over ε √d is at least
+1e3 ε √d − 1e-13 > 500 ε √d above the cut (as ε √d ≥ ε), so no
+perturbation of S's size drops it; one within a decade of the cut is always
+refused (the threshold, 1e3 ε √d of the largest, is 2.2e-13 at d = 1 and
+8.9e-13 at d = 16). Against the cut,
+`test/gtest/data/qd_nevpt2/`'s `h8_sto3g_sa3` root 0 was refused: its Srs
+and Sij (d = 16) drop nothing and keep real modes at 2.3e-12 of their
+largest (the brute force's explicit spans carry them; their null modes sit
+near 1e-33), a "gap" of 23, though the ungated energy matched the brute
+force to 5.4e-14. Over ε √d its gap is 2.6e3, and it is accepted (#687).
+ε d, the worst-case bound, would put it at 654 and still refuse it.
+
+The estimate is S's own round-off, not the RDMs' error, which a dropped
+mode also carries: over the QD goldens' 61 solves that drop modes, the
+largest dropped is up to 7.4 ε √d (6.6e-15, `h8_ring_sto3g_sa3`'s Sij, 15
+of 16 dropped), and 1.2e-15 on the single-state goldens. A metric that cuts
+nothing has no such measurement, and the rule takes the round-off it
+cannot be below. Every state accepted before is accepted with the same
+numbers (the old floor, 1e-13, is above ε √d for any d under 2e5), and the
+generators' gates (`tools/emit/nevpt2_reference.py`'s `pc_gap`,
+`qd_nevpt2_reference.py`'s `pc_solve` and brute-force spans) follow the
+same rule.
 
 **Memory.** The solve's d × d matrices (S, K, their symmetrized copies, V,
 and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
@@ -422,18 +455,17 @@ fix the off-diagonals' phases), on the three three-root cases.
 `Nevpt2QdEnergyRefusals`: pair inputs that are not n², or that do not share
 their integrals, are InvalidConfig (SC and PC).
 
-PC-QD, in the same file. `Nevpt2PcQdEnergy`, on the five cases whose PC
-passes: from the golden transition RDMs, every element's per-class coupling
+PC-QD, in the same file. `Nevpt2PcQdEnergy`, on all six cases: from the
+golden transition RDMs, every element's per-class coupling
 against `pc_couplings` and its total against `pc_heff2` at 1e-10, every
 element's dropped counts against its ket's `pc_dropped` row; each diagonal
 element against `pc_class_energies` and the walk in batches of two against
 the whole one, at 1e-13 with equal dropped counts. `Nevpt2QdEnergyDeviceRdms`
-checks PC too, from `nevpt2::rdms`' transition RDMs: `h8_ring_sto3g_sa3`
-(the strongly coupled case) and the skew H₂CO against the goldens, and
-`h8_sto3g_sa3`'s refusal. `Nevpt2PcQdEnergyRefusals`: on `h8_sto3g_sa3`,
-whose root 0 `pc_class_energies` refuses (Srs and Sij, gap 23 < 1e3), the
-effective Hamiltonian is a Numerical error naming Srs and state 0; roots 1
-and 2 pass alone.
+checks PC too, from `nevpt2::rdms`' transition RDMs, on the three
+three-root cases against the goldens. `Nevpt2PcQdEnergyRefusals`: on
+`h8_sto3g_sa3` with state 1's own RDMs zeroed, which `pc_class_energies`
+refuses (Sr has no positive eigenvalue), the effective Hamiltonian is a
+Numerical error naming Sr and state 1; states 0 and 2 pass alone.
 
 `test/gtest/nevpt2_energy_gpu.cpp`. SC: from PySCF's dm1/dm2/dm3/f3 and the
 slabs over the golden B blocks (`test/gtest/data/nevpt2/`), every class norm and

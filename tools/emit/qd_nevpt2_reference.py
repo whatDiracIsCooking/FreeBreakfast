@@ -52,7 +52,8 @@ stationary point. The cases and why each is there are at CASES.
 RDMs: per class k and ket J, S_J, K_J and S1_J (metric, Dyall matrix,
 one-body metric) from J's own RDMs exactly as `nevpt2::pc_class_energies`
 lays them out, solved as its `solve_class` (symmetrized, S cut at PC_TAU of
-its largest, the gap rule PC_MIN_GAP), and
+its largest, the gap rule PC_MIN_GAP, over pc_null(d) when nothing is cut),
+and
 
     <I|V|Psi_J^(1)>_k = -sum_t b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}
 
@@ -152,6 +153,7 @@ from nevpt2_reference import (  # noqa: E402
     PC_TAU,
     Recorder,
     block2,
+    pc_null,
     polished,
 )
 from scf_reference import pyscf_basis  # noqa: E402
@@ -244,9 +246,10 @@ OCTAHYDROGEN = [
 # core of one, CAS(6,4), three virtuals, 4900 determinants in the full
 # space. Roots 1 and 2 are 22 mEh apart, and roots 0 and 2 are coupled by
 # about 0.03 Eh, a quarter of their gap, which moves both their SC- and
-# PC-QD energies about 6 mEh off the diagonal's. Unlike h8_sto3g_sa3, every
-# root's every PC metric clears the gap rule (by 2e7 or more), so PC's
-# couplings between nearly degenerate roots have a golden.
+# PC-QD energies about 6 mEh off the diagonal's. Every root's every PC metric
+# clears the gap rule by 2e7 or more, where h8_sto3g_sa3's root 0 clears it
+# only by measuring against round-off (#687), so PC's couplings between
+# nearly degenerate roots have a golden with a wide margin.
 OCTAHYDROGEN_RING = [
     ("H", (2.6131, 0.0, -0.0045)),
     ("H", (1.7931, 1.9041, 0.0)),
@@ -265,9 +268,9 @@ OCTAHYDROGEN_RING = [
 # 0.19 Eh apart), and three brute-force cases, the only ones whose full
 # determinant space is small enough: H6, generic, H8, whose roots 1 and 2
 # are near-degenerate, so the off-diagonals matter, and the H8 ring, added
-# for PC (#671): H8's PC is refused (its root 0's Srs and Sij metrics have
-# no gap at the cut), the ring's is not. No existing DF SA-CASSCF case has a
-# near-degeneracy.
+# for PC (#671), when H8's was refused (its root 0's Srs and Sij metrics,
+# nothing cut, were measured against the cut itself until #687). No existing
+# DF SA-CASSCF case has a near-degeneracy.
 CASES = [
     {"from": "casscf_df", "case": "h2co_ccpvdz_sa2"},
     {"from": "casscf_df", "case": "h2co_ccpvdz_sa2_weighted"},
@@ -1048,7 +1051,7 @@ def pc_solve(s: numpy.ndarray, k: numpy.ndarray) -> dict:
     K' = W lambda W^T, U = X W. Returns lambda, U, the symmetrized S, the
     dropped count, and the cut's numbers: the smallest kept and largest
     dropped eigenvalue over the largest, and the gap, smallest kept over the
-    largest dropped (over PC_TAU where none is). The C++ refuses the class
+    largest dropped (over pc_null(d) where none is). The C++ refuses the class
     below PC_MIN_GAP; the caller records that (`pc_qd`)."""
     s = 0.5 * (s + s.T)
     k = 0.5 * (k + k.T)
@@ -1060,7 +1063,7 @@ def pc_solve(s: numpy.ndarray, k: numpy.ndarray) -> dict:
         nd += 1
     largest_dropped = numpy.abs(sigma[:nd]).max(initial=0.0) / s_max
     smallest_kept = sigma[nd] / s_max
-    floor = largest_dropped if nd > 0 else PC_TAU
+    floor = largest_dropped if nd > 0 else pc_null(len(sigma))
     gap = smallest_kept / floor if floor > 0.0 else numpy.inf
     x = v[:, nd:] / numpy.sqrt(sigma[nd:])
     lam, w = numpy.linalg.eigh(x.T @ k @ x)
@@ -1382,7 +1385,8 @@ def pc_brute_couplings(state: State, space: dict, dropped, gated: bool) -> tuple
     space. Per ket J, class and tuple t, the span of the class's spin-free
     excitations E_pq E_rs (`pc_operators`) on |J>, orthonormalized (singular
     values squared at or below PC_TAU of the largest dropped, refused below
-    PC_MIN_GAP), with the Dyall Hamiltonian applied explicitly:
+    PC_MIN_GAP, over pc_null(d) when nothing is), with the Dyall Hamiltonian
+    applied explicitly:
     <I|V|Psi_J^(1)>_t = -(Q^T V|I>)^T (Q^T (H_D - <J|H_D|J>) Q)^-1 Q^T V|J>,
     V|I> being H|I> on t's pattern. On the generic tuples the span's null
     dimension must equal `dropped` (the reference's per root and class). On
@@ -1420,7 +1424,7 @@ def pc_brute_couplings(state: State, space: dict, dropped, gated: bool) -> tuple
                 rel = (sigma / sigma[0]) ** 2
                 kept = rel > PC_TAU
                 cut = rel[~kept].max(initial=0.0)
-                floor = cut if (~kept).any() else PC_TAU
+                floor = cut if (~kept).any() else pc_null(len(rel))
                 gap = rel[kept].min() / floor if floor > 0.0 else numpy.inf
                 assert gap >= PC_MIN_GAP or not gated, (
                     f"{state.name} root {j} {key}: brute-force span gap {gap:.1e}"
@@ -1669,6 +1673,8 @@ def main() -> None:
             "arrays and no PC H_eff; its ungated_diagnostic is NOT a test target",
             "pc_tau": PC_TAU,
             "pc_min_gap": PC_MIN_GAP,
+            "pc_null": "eps sqrt(d) of S's largest eigenvalue: the gap's floor "
+            "when nothing is cut",
             "validation": {
                 "diagonal": "each root's per-class PC energy against block2's "
                 "WickICNEVPT2 on the SA-canonical orbitals over PySCF's fitted "
