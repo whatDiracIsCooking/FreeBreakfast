@@ -38,7 +38,10 @@ Each function checks its inputs, carries M onto the Cartesian layout
 (`MatrixAOPair::spherical_to_cartesian`, U M Uᵀ, as the Fock build carries the
 density), and launches one generated kernel per `mmd` class, one thread per
 record, each class on its own stream (`launch_each`), into one zeroed
-`[n_atom, 3]` device gradient, which it downloads. It waits for `res.stream()`
+`[n_atom, 3]` device gradient, which it downloads. Every thread adds into it
+atomically, so a call is reproducible to round-off, not bitwise (a few 1e-14
+on a small molecule; `mcscf/nac/README.md` "Reproducibility" has the
+measurement). It waits for `res.stream()`
 to do so: the gradient is returned on the host, flat and row-major, as
 `molecule`'s `nuclear_repulsion_gradient` is.
 
@@ -98,7 +101,9 @@ as `overlap_derivative` does (the `ips_` launches into the Cartesian
 assembles no matrices: one hand-written kernel (`first_index_row_sums`, one
 `kFourWarps` block per AO row m and axis k, `block_reduce` over the columns)
 writes rows[k, m] = Σ_n A_mn Y[k, m, n], and the host adds each row into its
-atom's, in AO order, so the result is deterministic. *The index convention*:
+atom's, in AO order. Those two sums are in a fixed order, but Y is not: the
+`ips_` records of a shell pair add into the same elements atomically, so the
+result too is reproducible to round-off, not bitwise. *The index convention*:
 Y[k, m, n] = ∂S_mn/∂A_k with A the centre of m alone, which is −(∂_k m | n) =
 (m | ∂_k n) with ∂_k the electron coordinate's: libcint's `−int1e_ipovlp`,
 PySCF's `pyscf.grad.rhf.get_ovlp`, whose nabla is on the first (bra) index —

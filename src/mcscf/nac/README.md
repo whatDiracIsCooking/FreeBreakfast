@@ -127,10 +127,9 @@ or not the coupled pair is one of them.
 before, no pair rotates, so `RelaxedHessian`, `zvector` and
 `df_transition_gradient` run the same operations on the same numbers, the
 code path bit for bit the one before unequal weights were taken. The
-output is not bitwise reproducible from one call to the next even so (the
-derivative integrals accumulate in no fixed order): on the RTX 3080 two
-calls on one solution differ by up to 2.6e-14, and the old and new code on
-one solution by up to 2.7e-14, with the same Z-vector products.
+output is not bitwise reproducible from one call to the next even so
+("Reproducibility" below): the old and new code on one solution differ by up
+to 2.7e-14, within the run-to-run spread, with the same Z-vector products.
 
 ## The CSF term
 
@@ -154,6 +153,43 @@ derivative takes only the bra function's centre, so d^CSF (and with it
 d_IJ) is **not** translation-invariant; electron-translation factors
 (`use_etfs`) drop it.
 
+## Reproducibility
+
+Two calls on one solution are **bitwise the same up to the derivative
+integrals, and not after them**.
+
+- **Bitwise:** everything before them. The transition RDMs, the three Focks
+  and the Z-vector's right-hand side, the CI-relaxed Hessian's products, z_o,
+  z_c and Θ hash the same over six calls on each test case (RTX 3080), so the
+  Z-vector takes the same products to the same residual, which the test
+  checks to the bit.
+- **Round-off only:** every derivative contraction after it. Each is a
+  FelizJueves kernel that adds its threads' shares into one output with
+  `atomicAdd`, so the order of the sum is the scheduler's: `gs_`, `gt_` and
+  `gv_` (h_IJ's one-electron terms, `integrals/one_electron/gradient`),
+  `geri3` and `gmetric` (its two-electron term,
+  `integrals/eri/density_fitting/gradient`), and `ips_`, the overlap
+  derivative matrix under `overlap_half_gradient`, so d^CSF too: that call's
+  row sums and per-atom host sum are in a fixed order, but the matrix they
+  read is not.
+
+**The size**, over ten repeats of every ordered pair of both test cases on
+the RTX 3080: h_IJ within 1.4e-14, d^CSF within 5.6e-17 and d_IJ within
+4.6e-14 (the skewed SA-3's (0, 2) and (2, 0), after the division by its
+gap). `mcscf::df_gradient` shares every one of those kernels but `ips_` and
+varies the same way, up to 5.7e-14 between calls on the same solutions'
+root 0, and so do `gradient::df_rhf` and the Hessians, whose one-electron
+and DF Hessian kernels accumulate by the same atomics.
+
+**Why it is not fixed here.** A fixed order needs each thread's share in a
+slot of its own, summed afterwards in a fixed order, and that is a change
+to the emitted kernels, not to their staging: `gv_` adds every record into
+every nucleus's row, and an ip1 shell pair's records add into the same
+matrix elements, so no relabelling of the atoms a caller stages gives each
+thread its own slot. So a refactor upstream of the derivative integrals is
+shown unchanged by the Z-vector (its products and residual, bitwise) and
+the outputs within the spread above, not by the outputs' bits.
+
 ## Memory and stream
 
 `df_transition_gradient`'s, which checks its own memory, plus the CI
@@ -171,7 +207,10 @@ converges, then for every ordered pair h_IJ, d^CSF and d_IJ against `h`,
 `csf` and `total` to 1e-8 up to the sign s_I s_J of the two CI phases;
 d_IJ = −d_JI, d^CSF_IJ = −d^CSF_JI, h_IJ = h_JI to 1e-10 and Σ_A h_IJ below
 1e-9; on the first pair the other three option settings against `etf`,
-h + ΔE csf and `h`; and the refusals (I = J, a root past the solution's).
+h + ΔE csf and `h`; a repeated call on the first pair, its Z-vector's
+products and residual bitwise the first call's and its results within
+1e-10 ("Reproducibility"); and the refusals (I = J, a root past the
+solution's).
 Measured on the RTX 3080: h_IJ within 4e-10, d^CSF within 2.2e-10 and d_IJ
 within 1.3e-9 (the skewed case's (0, 2)), the Z-vector in 11 to 19
 products; about 4 s a case.
