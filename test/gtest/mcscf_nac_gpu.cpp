@@ -17,7 +17,10 @@
 //   centre), so neither is d_IJ, and neither is tested for it.
 //
 // Then on each case's first pair the options: use_etfs against `etf`,
-// mult_ediff against h + (E_J - E_I) csf, and both against `h`. And the
+// mult_ediff against h + (E_J - E_I) csf, and both against `h`; and a
+// repeated call, whose Z-vector is bitwise the first's (the same products,
+// the same residual) and whose results agree to 1e-10 (the derivative
+// kernels' atomics, nac/README.md "Reproducibility"). And the
 // refusals: equal roots and a root past the solution's. PySCF refuses
 // unequal weights, so df_nac is checked there against finite differences
 // of mcscf::state_overlaps, in mcscf_overlap_gpu.cpp.
@@ -286,6 +289,20 @@ TEST_P(McscfNac, MatchesPyscf) {
       compare(d->numerator, base.numerator, 1.0, kSelfTolerance, what);
       compare(d->csf, base.csf, 1.0, kSelfTolerance, what);
     }
+
+    // Repeatability: everything before the derivative integrals is bitwise
+    // (the Z-vector to its last product), and only their atomics' order is
+    // left to vary.
+    auto again = nac(bra, ket, {});
+    ASSERT_TRUE(again.has_value()) << again.error().message;
+    EXPECT_EQ(again->iterations, base.iterations);
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(again->residual),
+              std::bit_cast<std::uint64_t>(base.residual));
+    const double repeat =
+        std::max({compare(again->numerator, base.numerator, 1.0, kSelfTolerance, "repeat h"),
+                  compare(again->csf, base.csf, 1.0, kSelfTolerance, "repeat csf"),
+                  compare(again->total, base.total, 1.0, kSelfTolerance, "repeat total")});
+    std::cout << std::format("[ nac] {}: a repeated call within {:.2e}\n", name, repeat);
   }
 
   // Refusals: a root against itself and a root past the solution's.

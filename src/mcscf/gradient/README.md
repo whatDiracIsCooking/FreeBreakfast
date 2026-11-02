@@ -282,6 +282,15 @@ weighted RDMs, core included, exactly as for a root. `extra` is unchanged.
 So `df_nac` passes its own z = (z_o, z_c) for h_IJ's Lagrange half and gets
 h_IJ whole from one call.
 
+## Reproducibility
+
+Each term is reproducible to round-off, not bitwise: the one-electron and DF
+derivative kernels it ends in add into their output atomically. The
+operations before them are the ones `df_nac` measures bitwise, its Z-vector
+included. On the test solutions two calls differ by up to 5.7e-14 (the
+total, root 0 of `casscf_nac`'s two cases); [`../nac/README.md`](../nac/README.md) "Reproducibility" has
+the stages, the measurement and why it is not fixed here.
+
 ## Memory
 
 **Γ is held in full**: naux nao² doubles, the size of B, as in
