@@ -4,6 +4,7 @@
 /// record's exponents), one launch per class into a zeroed G, and G
 /// downloaded. The derivative integrals over the same staging, made
 /// spherical; and over those, the DF J and K differentiated per coordinate.
+/// The staging is density_fitting.staging's, which the Hessian shares.
 
 module;
 
@@ -25,62 +26,11 @@ import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.blas;
+import free_breakfast.integrals.eri.density_fitting.staging;
 
 #include "diagnostics.h"
 
 namespace free_breakfast {
-
-// One extent per momentum the kernels cover, as in metric.cpp and
-// three_center.cpp: a metric class (lP, lQ) is entry lP * kMetricMomenta + lQ,
-// a three-center class (la, lb, lP) entry (la * kThreeCenterMomenta + lb) *
-// kThreeCenterAuxMomenta + lP, of the per-class tables below.
-constexpr auto kMetricMomenta = static_cast<size_t>(device::kMetricMaxMomentum + 1);
-constexpr auto kThreeCenterMomenta = static_cast<size_t>(device::kThreeCenterMaxMomentum + 1);
-constexpr auto kThreeCenterAuxMomenta = static_cast<size_t>(device::kThreeCenterAuxMaxMomentum + 1);
-constexpr size_t kMetricClasses = kMetricMomenta * kMetricMomenta;
-constexpr size_t kThreeCenterClasses =
-    kThreeCenterMomenta * kThreeCenterMomenta * kThreeCenterAuxMomenta;
-
-// The atom each of a placed basis's shells sits on, by shell index.
-std::vector<int32_t> shell_atoms(const BasisSet &basis) {
-  std::vector<int32_t> atom_of(basis.nshells());
-  for (uint32_t a = 0; a < basis.natoms(); ++a) {
-    const uint32_t first = basis.atom_shell_offset(a);
-    std::fill_n(atom_of.begin() + first, basis.atom_shell_count(a), static_cast<int32_t>(a));
-  }
-  return atom_of;
-}
-
-// The aux records, one per primitive of every shell, field-major in
-// kMetricRecordFields segments, into @p out; shell i's are
-// [rec_begin[i], rec_begin[i + 1]).
-void stage_aux_records(const BasisSet &aux, const std::vector<int32_t> &rec_begin, double *out) {
-  const auto n_rec = static_cast<size_t>(rec_begin.back());
-  for (size_t i = 0, r = 0; i < aux.shells().size(); ++i) {
-    const Shell &shell = aux.shells()[i];
-    const Vec<double, 3> &centre = shell.center();
-    for (const Primitive &prim : shell.primitives()) {
-      // The metric's record (its README): c carries every normalisation.
-      const double weight = prim.coefficient * std::pow(std::numbers::pi / prim.exponent, 1.5);
-      const std::array<double, device::kMetricRecordFields> fields{centre.x, centre.y, centre.z,
-                                                                   prim.exponent, weight};
-      for (size_t f = 0; f < fields.size(); ++f) {
-        out[(f * n_rec) + r] = fields[f];
-      }
-      ++r;
-    }
-  }
-}
-
-// Each shell's first record, one record per primitive, and the total last.
-std::vector<int32_t> record_begins(const BasisSet &basis) {
-  std::vector<int32_t> rec_begin{0};
-  rec_begin.reserve(basis.shells().size() + 1);
-  for (const Shell &shell : basis.shells()) {
-    rec_begin.push_back(rec_begin.back() + static_cast<int32_t>(shell.nprimitives()));
-  }
-  return rec_begin;
-}
 
 // The AOs atom @p atom's shells own in a placed basis, [first, last), in the
 // spherical layout or the Cartesian one: an atom's shells are contiguous.
@@ -97,77 +47,6 @@ std::pair<size_t, size_t> atom_aos(const BasisSet &basis, const uint32_t atom,
     return {basis.ao_offset_sphe(first), basis.ao_offset_sphe(last) + shell.function_count_sphe()};
   }
   return {basis.ao_offset_cart(first), basis.ao_offset_cart(last) + shell.function_count_cart()};
-}
-
-// Refuses an aux basis the metric kernels cannot take, each message as @p who.
-Status check_metric_basis(const BasisSet &aux, const std::string_view who) {
-  if (aux.natoms() == 0) {
-    return err_config("{}: the aux basis has no atoms; make it with place()", who);
-  }
-  for (const Shell &shell : aux.shells()) {
-    if (shell.angular_momentum() > device::kMetricMaxMomentum) {
-      return err_config("{}: no kernel for an aux shell of momentum {}; the kernels cover l <= {}",
-                        who, shell.angular_momentum(), device::kMetricMaxMomentum);
-    }
-  }
-  return {};
-}
-
-// The metric's aux shell pairs, P <= Q by shell index with the lower-momentum
-// shell first, as metric.cpp stages them, each with its two atoms in the
-// staged order: one run per class c = lP kMetricMomenta + lQ, count[c] pairs
-// from pair begin[c], kMetricGradientPairFields segments of count[c] each.
-struct MetricPairs {
-  std::vector<int32_t> fields;
-  std::array<size_t, kMetricClasses> count{};
-  std::array<size_t, kMetricClasses> begin{};
-};
-
-MetricPairs stage_metric_pairs(const BasisSet &aux, const std::vector<int32_t> &rec_begin) {
-  constexpr auto kFields = static_cast<size_t>(device::kMetricGradientPairFields);
-  const std::vector<Shell> &shells = aux.shells();
-  const std::vector<int32_t> atom_of = shell_atoms(aux);
-  const auto class_of = [&](const size_t i, const size_t j) {
-    const auto li = static_cast<size_t>(shells[i].angular_momentum());
-    const auto lj = static_cast<size_t>(shells[j].angular_momentum());
-    return (std::min(li, lj) * kMetricMomenta) + std::max(li, lj);
-  };
-  MetricPairs out;
-  for (size_t i = 0; i < shells.size(); ++i) {
-    for (size_t j = i; j < shells.size(); ++j) {
-      ++out.count[class_of(i, j)];
-    }
-  }
-  size_t n_pairs = 0;
-  for (size_t c = 0; c < kMetricClasses; ++c) {
-    out.begin[c] = n_pairs;
-    n_pairs += out.count[c];
-  }
-  out.fields.resize(kFields * n_pairs);
-  std::array<size_t, kMetricClasses> filled{};
-  for (size_t i = 0; i < shells.size(); ++i) {
-    for (size_t j = i; j < shells.size(); ++j) {
-      const bool swapped = shells[i].angular_momentum() > shells[j].angular_momentum();
-      const size_t p = swapped ? j : i;
-      const size_t q = swapped ? i : j;
-      const size_t c = class_of(i, j);
-      int32_t *const run = out.fields.data() + (kFields * out.begin[c]);
-      const std::array<int32_t, device::kMetricGradientPairFields> fields{
-          rec_begin[p],
-          rec_begin[p + 1],
-          rec_begin[q],
-          rec_begin[q + 1],
-          static_cast<int32_t>(aux.ao_offset_cart(static_cast<uint32_t>(p))),
-          static_cast<int32_t>(aux.ao_offset_cart(static_cast<uint32_t>(q))),
-          atom_of[p],
-          atom_of[q]};
-      for (size_t f = 0; f < fields.size(); ++f) {
-        run[(f * out.count[c]) + filled[c]] = fields[f];
-      }
-      ++filled[c];
-    }
-  }
-  return out;
 }
 
 Result<std::vector<double>> metric_gradient(DeviceResources &res, const BasisSet &aux,
@@ -189,16 +68,10 @@ Result<std::vector<double>> metric_gradient(DeviceResources &res, const BasisSet
   const std::vector<int32_t> rec_begin = record_begins(aux);
   const auto n_rec = static_cast<size_t>(rec_begin.back());
   const MetricPairs pairs = stage_metric_pairs(aux, rec_begin);
-
-  // The staging: the aux records, then U_aux.
-  const size_t n_records = static_cast<size_t>(device::kMetricRecordFields) * n_rec;
-  std::vector<double> staging(n_records + (n * n_sph));
-  stage_aux_records(aux, rec_begin, staging.data());
-  std::ranges::copy(spherical_transform_matrix(aux), staging.data() + n_records);
+  const std::vector<double> staging = stage_metric_records(aux, rec_begin);
 
   const ScopedDeviceIndex on{res.dev_idx()};
   const wwr::wwrStream_t stream = res.stream();
-  // t = U_aux W, then the Cartesian W = t U_aux^T.
   const auto [d_staging, d_pairs, t, w_cart, d_g] =
       res.device_regions<double, int32_t, double, double, double>(
           staging.size(), pairs.fields.size(), n * n_sph, n * n, n_g);
@@ -207,13 +80,9 @@ Result<std::vector<double>> metric_gradient(DeviceResources &res, const BasisSet
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_pairs, pairs.fields.data(),
                                          sizeof(int32_t) * pairs.fields.size(),
                                          wwr::wwrMemcpyHostToDevice, stream)));
-  const double *const d_u = d_staging + n_records;
+  const size_t n_records = static_cast<size_t>(device::kMetricRecordFields) * n_rec;
+  FBF_TRY(metric_cartesian(res, n, n_sph, d_staging + n_records, w, t, w_cart));
   const auto n32 = static_cast<int32_t>(n);
-  const auto n_sph32 = static_cast<int32_t>(n_sph);
-  FBF_TRY(gpu_status(
-      gemm(res.blas(), n32, n_sph32, n_sph32, &kOne<double>, d_u, w, &kZero<double>, t)));
-  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-      res.blas(), n32, n32, n_sph32, &kOne<double>, t, d_u, &kZero<double>, w_cart)));
 
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(d_g, 0, sizeof(double) * n_g, stream)));
   for (size_t lp = 0; lp < kMetricMomenta; ++lp) {
@@ -312,9 +181,7 @@ Status metric_derivative(DeviceResources &res, const BasisSet &aux, double *m1) 
   }
 
   const MetricPairs pairs = stage_metric_pairs(aux, rec_begin);
-  std::vector<double> staging(n_staging);
-  stage_aux_records(aux, rec_begin, staging.data());
-  std::ranges::copy(spherical_transform_matrix(aux), staging.data() + n_records);
+  const std::vector<double> staging = stage_metric_records(aux, rec_begin);
   const auto [d_staging, d_pairs, m1c, t] = res.device_regions<double, int32_t, double, double>(
       n_staging, pairs.fields.size(), 3 * n * n, n * n_sph);
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(d_staging, staging.data(), sizeof(double) * staging.size(),
@@ -326,217 +193,6 @@ Status metric_derivative(DeviceResources &res, const BasisSet &aux, double *m1) 
                                    d_pairs, d_staging + n_records, m1c, t, m1));
   // Also what lets the host staging go (metric_gradient's comment).
   return res.sync();
-}
-
-// One AO shell pair, as mmd stores it (the lower momentum first): its two
-// shells' first Cartesian AOs, their atoms and its run of the regrouped bra
-// records.
-struct ThreeCenterGradientPair {
-  int32_t off_a;
-  int32_t off_b;
-  int32_t atom_a;
-  int32_t atom_b;
-  int32_t rec0;
-  int32_t rec1;
-};
-
-// mmd's bra records regrouped by shell pair: n_rec records,
-// kThreeCenterGradientBraFields segments of n_rec in fields, and each pair
-// class's (la, lb) shell pairs at la kThreeCenterMomenta + lb of pairs.
-struct ThreeCenterBra {
-  size_t n_rec = 0;
-  std::vector<double> fields;
-  std::array<std::vector<ThreeCenterGradientPair>, kThreeCenterMomenta * kThreeCenterMomenta> pairs;
-};
-
-// Refuses bases the three-center kernels cannot take, each message as @p who.
-Status check_three_center_bases(const BasisSet &basis, const BasisSet &aux,
-                                const std::string_view who) {
-  if (basis.natoms() == 0 || aux.natoms() != basis.natoms()) {
-    return err_config("{}: the bases have {} and {} atoms; make both with place() over one "
-                      "molecule",
-                      who, basis.natoms(), aux.natoms());
-  }
-  const std::vector<Shell> &shells = basis.shells();
-  const std::vector<Shell> &aux_shells = aux.shells();
-  for (size_t i = 0; i < shells.size(); ++i) {
-    if (const int32_t l = shells[i].angular_momentum(); l > device::kThreeCenterMaxMomentum) {
-      return err_unsupported("{}: orbital shell {} has momentum {}; the kernels cover orbital "
-                             "shells through l = {}",
-                             who, i, l, device::kThreeCenterMaxMomentum);
-    }
-  }
-  for (size_t i = 0; i < aux_shells.size(); ++i) {
-    if (const int32_t l = aux_shells[i].angular_momentum();
-        l > device::kThreeCenterAuxMaxMomentum) {
-      return err_unsupported("{}: aux shell {} has momentum {}; the kernels cover aux shells "
-                             "through l = {}",
-                             who, i, l, device::kThreeCenterAuxMaxMomentum);
-    }
-  }
-  return {};
-}
-
-// The bra records @p classes hold, from their sizes alone (so a refusal on
-// memory can come before anything is downloaded), refusing a class that is
-// not one of an orbital basis's, as @p who.
-Result<size_t> bra_record_count(const std::span<const PrimitivePairClass> classes,
-                                const std::string_view who) {
-  size_t n_bra_rec = 0;
-  for (const PrimitivePairClass &c : classes) {
-    if (c.la < 0 || c.lb < c.la || c.lb > device::kThreeCenterMaxMomentum) {
-      return err_config("{}: a primitive-pair class ({}, {}) is not one of the orbital basis's",
-                        who, c.la, c.lb);
-    }
-    n_bra_rec += static_cast<size_t>(c.n_rec);
-  }
-  return n_bra_rec;
-}
-
-// mmd's records, every class's in turn, copied back as they are (one
-// synchronization), then grouped by shell pair, (off_a, off_b) ascending,
-// mmd's order kept within a pair, as three_center.cpp groups them, each pair
-// with its two atoms; as @p who.
-Result<ThreeCenterBra> stage_three_center_bra(DeviceResources &res, const BasisSet &basis,
-                                              const std::span<const PrimitivePairClass> classes,
-                                              const size_t n_bra_rec, const std::string_view who) {
-  const wwr::wwrStream_t stream = res.stream();
-  const size_t n = basis.nao_cart();
-  const size_t n_bra = static_cast<size_t>(device::kThreeCenterGradientBraFields) * n_bra_rec;
-  std::vector<double> mmd_fields(n_bra);
-  std::vector<int32_t> mmd_off_a(n_bra_rec);
-  std::vector<int32_t> mmd_off_b(n_bra_rec);
-  size_t base = 0;
-  for (const PrimitivePairClass &c : classes) {
-    const PrimitivePairClassView v = c.view();
-    const auto n_rec = static_cast<size_t>(v.n_rec);
-    const std::array<const double *, device::kThreeCenterGradientBraFields> fields{
-        v.zeta, v.p_x,  v.p_y,  v.p_z, v.pa_x, v.pa_y, v.pa_z,
-        v.pb_x, v.pb_y, v.pb_z, v.s,   v.ea,   v.eb};
-    for (size_t f = 0; f < fields.size(); ++f) {
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(mmd_fields.data() + (f * n_bra_rec) + base, fields[f],
-                                             sizeof(double) * n_rec, wwr::wwrMemcpyDeviceToHost,
-                                             stream)));
-    }
-    FBF_TRY(
-        gpu_status(wwr::wwrMemcpyAsync(mmd_off_a.data() + base, v.off_a, sizeof(int32_t) * n_rec,
-                                       wwr::wwrMemcpyDeviceToHost, stream)));
-    FBF_TRY(
-        gpu_status(wwr::wwrMemcpyAsync(mmd_off_b.data() + base, v.off_b, sizeof(int32_t) * n_rec,
-                                       wwr::wwrMemcpyDeviceToHost, stream)));
-    base += n_rec;
-  }
-  FBF_TRY(res.sync());
-
-  // The atom of each Cartesian AO, from its shell's.
-  const std::vector<Shell> &shells = basis.shells();
-  const std::vector<int32_t> shell_atom = shell_atoms(basis);
-  std::vector<int32_t> ao_atom(n);
-  for (uint32_t s = 0; s < basis.nshells(); ++s) {
-    std::fill_n(ao_atom.begin() + basis.ao_offset_cart(s), shells[s].function_count_cart(),
-                shell_atom[s]);
-  }
-
-  std::vector<size_t> order(n_bra_rec);
-  std::iota(order.begin(), order.end(), size_t{0});
-  ThreeCenterBra out;
-  base = 0;
-  for (const PrimitivePairClass &c : classes) {
-    const auto first = order.begin() + static_cast<std::ptrdiff_t>(base);
-    const auto last = first + c.n_rec;
-    std::stable_sort(first, last, [&](const size_t x, const size_t y) {
-      return std::pair{mmd_off_a[x], mmd_off_b[x]} < std::pair{mmd_off_a[y], mmd_off_b[y]};
-    });
-    const size_t width_a = function_count_cart(c.la);
-    const size_t width_b = function_count_cart(c.lb);
-    std::vector<ThreeCenterGradientPair> &pairs =
-        out.pairs[(static_cast<size_t>(c.la) * kThreeCenterMomenta) + static_cast<size_t>(c.lb)];
-    for (auto run = first; run != last;) {
-      const int32_t oa = mmd_off_a[*run];
-      const int32_t ob = mmd_off_b[*run];
-      const auto end = std::find_if(
-          run, last, [&](const size_t r) { return mmd_off_a[r] != oa || mmd_off_b[r] != ob; });
-      if (oa < 0 || ob < 0 || static_cast<size_t>(oa) + width_a > n ||
-          static_cast<size_t>(ob) + width_b > n) {
-        return err_config("{}: a ({}, {}) record's AOs ({}, {}) are not the orbital basis's {} "
-                          "Cartesian functions",
-                          who, c.la, c.lb, oa, ob, n);
-      }
-      pairs.push_back({oa, ob, ao_atom[static_cast<size_t>(oa)], ao_atom[static_cast<size_t>(ob)],
-                       static_cast<int32_t>(run - order.begin()),
-                       static_cast<int32_t>(end - order.begin())});
-      run = end;
-    }
-    base += static_cast<size_t>(c.n_rec);
-  }
-  size_t found = 0;
-  for (const std::vector<ThreeCenterGradientPair> &p : out.pairs) {
-    found += p.size();
-  }
-  const size_t n_pairs = shells.size() * (shells.size() + 1) / 2;
-  if (found != n_pairs) {
-    return err_config("{}: the primitive-pair classes hold {} shell pairs, and the orbital "
-                      "basis's {} shells have {}",
-                      who, found, shells.size(), n_pairs);
-  }
-
-  out.n_rec = n_bra_rec;
-  out.fields.resize(n_bra);
-  for (size_t f = 0; f < static_cast<size_t>(device::kThreeCenterGradientBraFields); ++f) {
-    for (size_t k = 0; k < n_bra_rec; ++k) {
-      out.fields[(f * n_bra_rec) + k] = mmd_fields[(f * n_bra_rec) + order[k]];
-    }
-  }
-  return out;
-}
-
-// The cells of every shell pair of @p bra crossed with the aux shells
-// [first, first + count), one per (pair, aux shell), appended to @p cells
-// one run per class (la, lb, lP), the pair outer and the aux shell inner,
-// kThreeCenterGradientCellFields segments of each run's count; class c's run
-// holds n_cell[c] cells from cell cell_begin[c] of the whole of @p cells.
-void stage_three_center_cells(const ThreeCenterBra &bra, const BasisSet &aux,
-                              const std::vector<int32_t> &aux_rec_begin, const uint32_t first,
-                              const uint32_t count, std::vector<int32_t> &cells,
-                              std::array<size_t, kThreeCenterClasses> &n_cell,
-                              std::array<size_t, kThreeCenterClasses> &cell_begin) {
-  constexpr auto kFields = static_cast<size_t>(device::kThreeCenterGradientCellFields);
-  const std::vector<int32_t> aux_atom = shell_atoms(aux);
-  std::array<std::vector<size_t>, kThreeCenterAuxMomenta> aux_of_l;
-  for (size_t i = first; i < static_cast<size_t>(first) + count; ++i) {
-    aux_of_l[static_cast<size_t>(aux.shells()[i].angular_momentum())].push_back(i);
-  }
-  size_t cell_end = cells.size() / kFields;
-  for (size_t ab = 0; ab < bra.pairs.size(); ++ab) {
-    for (size_t lp = 0; lp < kThreeCenterAuxMomenta; ++lp) {
-      const size_t c = (ab * kThreeCenterAuxMomenta) + lp;
-      n_cell[c] = bra.pairs[ab].size() * aux_of_l[lp].size();
-      cell_begin[c] = cell_end;
-      cells.resize(kFields * (cell_end + n_cell[c]));
-      int32_t *const run = cells.data() + (kFields * cell_begin[c]);
-      size_t k = 0;
-      for (const ThreeCenterGradientPair &pair : bra.pairs[ab]) {
-        for (const size_t s : aux_of_l[lp]) {
-          const std::array<int32_t, device::kThreeCenterGradientCellFields> fields{
-              pair.rec0,
-              pair.rec1,
-              aux_rec_begin[s],
-              aux_rec_begin[s + 1],
-              pair.off_a,
-              pair.off_b,
-              static_cast<int32_t>(aux.ao_offset_cart(static_cast<uint32_t>(s))),
-              pair.atom_a,
-              pair.atom_b,
-              aux_atom[s]};
-          for (size_t f = 0; f < fields.size(); ++f) {
-            run[(f * n_cell[c]) + k] = fields[f];
-          }
-          ++k;
-        }
-      }
-      cell_end += n_cell[c];
-    }
-  }
 }
 
 Result<std::vector<double>> three_center_gradient(DeviceResources &res, const BasisSet &basis,
@@ -602,15 +258,8 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
 
-  // The staging: the bra records in that order, the aux records, then U and
-  // U_aux.
-  std::vector<double> staging = std::move(bra.fields);
-  staging.resize(n_staging);
-  stage_aux_records(aux, aux_rec_begin, staging.data() + n_bra);
-  double *const u = staging.data() + n_bra + n_aux_fields;
-  std::ranges::copy(spherical_transform_matrix(basis), u);
-  std::ranges::copy(spherical_transform_matrix(aux), u + (n * n_sph));
-
+  const std::vector<double> staging =
+      stage_three_center_records(std::move(bra.fields), basis, aux, aux_rec_begin);
   std::array<size_t, kThreeCenterClasses> n_cell{};
   std::array<size_t, kThreeCenterClasses> cell_begin{};
   std::vector<int32_t> cells;
@@ -627,24 +276,10 @@ Result<std::vector<double>> three_center_gradient(DeviceResources &res, const Ba
 
   const double *const d_aux = d_staging + n_bra;
   const double *const d_u = d_aux + n_aux_fields;
-  const double *const d_u_aux = d_u + (n * n_sph);
+  FBF_TRY(three_center_cartesian(res, n, n_sph, n_aux, n_aux_sph, d_u, d_u + (n * n_sph), gamma,
+                                 cart, work));
   const auto n32 = static_cast<int32_t>(n);
-  const auto n_sph32 = static_cast<int32_t>(n_sph);
   const auto n_aux32 = static_cast<int32_t>(n_aux);
-  // The aux index: cart = U_aux Gam, n_aux x n_sph^2, from the n_aux_sph x
-  // n_sph^2 view of Gam, P fastest.
-  FBF_TRY(gpu_status(gemm(res.blas(), n_aux32, n_sph32 * n_sph32, static_cast<int32_t>(n_aux_sph),
-                          &kOne<double>, d_u_aux, gamma, &kZero<double>, cart)));
-  // The n index: for each spherical m, its n_aux x n_sph block of cart times
-  // U^T, into work as n_aux x n blocks, U shared by the batch.
-  FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-      res.blas().get(), wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n_aux32, n32, n_sph32, &kOne<double>,
-      cart, n_aux32, int64_t{n_aux32} * n_sph32, d_u, n32, 0, &kZero<double>, work, n_aux32,
-      int64_t{n_aux32} * n32, n_sph32)));
-  // The m index: the (n_aux n) x n_sph view of work times U^T, into cart,
-  // element (m, n, P) at (m n + n) n_aux + P, the kernels' layout.
-  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-      res.blas(), n_aux32 * n32, n32, n_sph32, &kOne<double>, work, d_u, &kZero<double>, cart)));
 
   FBF_TRY(gpu_status(wwr::wwrMemsetAsync(d_g, 0, sizeof(double) * n_g, stream)));
   for (size_t la = 0; la < kThreeCenterMomenta; ++la) {
@@ -797,12 +432,8 @@ Status three_center_derivative(DeviceResources &res, const BasisSet &basis,
   }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
-  std::vector<double> staging = std::move(bra.fields);
-  staging.resize(n_staging);
-  stage_aux_records(aux, aux_rec_begin, staging.data() + n_bra);
-  double *const u = staging.data() + n_bra + n_aux_fields;
-  std::ranges::copy(spherical_transform_matrix(basis), u);
-  std::ranges::copy(spherical_transform_matrix(aux), u + (n_cart * nao));
+  const std::vector<double> staging =
+      stage_three_center_records(std::move(bra.fields), basis, aux, aux_rec_begin);
   std::array<size_t, kThreeCenterClasses> n_cell{};
   std::array<size_t, kThreeCenterClasses> cell_begin{};
   std::vector<int32_t> cells;
@@ -936,12 +567,8 @@ Status df_jk_derivative(DeviceResources &res, const BasisSet &basis,
   }
 
   ThreeCenterBra bra = FBF_TRY(stage_three_center_bra(res, basis, classes, n_bra_rec, kWho));
-  std::vector<double> staging = std::move(bra.fields);
-  staging.resize(n_staging);
-  stage_aux_records(aux, aux_rec_begin, staging.data() + n_bra);
-  double *const u = staging.data() + n_bra + n_aux_fields;
-  std::ranges::copy(spherical_transform_matrix(basis), u);
-  std::ranges::copy(spherical_transform_matrix(aux), u + (n_cart * nao));
+  const std::vector<double> staging =
+      stage_three_center_records(std::move(bra.fields), basis, aux, aux_rec_begin);
   const MetricPairs metric_pairs = stage_metric_pairs(aux, aux_rec_begin);
   // Every aux atom's cells, one atom after another in one array.
   std::vector<std::array<size_t, kThreeCenterClasses>> n_cell(n_atom);

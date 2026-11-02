@@ -51,7 +51,8 @@ W = −½ d dᵀ (FelizJueves's gradient.md has the DF-K weights too).
    read a little more: each pair's or cell's **atoms** (from the bases'
    `atom_shell_offset`, hence `place`), and each bra record's two exponents
    (mmd's `ea`, `eb`), for the Cartesian rule on A and B.
-   `gradient_bridge.h` has the layouts.
+   `gradient_bridge.h` has the layouts. Steps 1 and 2 are
+   [`staging/`](../staging/README.md)'s, which the Hessian shares.
 3. **One launch per class** that has a pair or a cell, one thread each,
    `kFourWarps` to a block, every one atomically adding into one zeroed
    device G[n_atom][3], which is downloaded. The atomics make a run

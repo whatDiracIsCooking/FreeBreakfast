@@ -132,7 +132,9 @@ free_breakfast_add_gpu_device_library(
 # its signature, so core::resources, core::error_handling, basis and mmd are
 # PUBLIC. The device library is PRIVATE: the implementation unit includes the
 # bridge header in its GMF and calls the launchers, and a static library's
-# private link dependencies still reach the final link.
+# private link dependencies still reach the final link. So is staging (the
+# launch staging the gradient and the Hessian share), which only the
+# implementation unit imports.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.integrals.eri.density_fitting.hessian
@@ -148,10 +150,9 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::basis
   free_breakfast::integrals::mmd
   LINK_PRIVATE
-  free_breakfast::core::constants
   free_breakfast::core::primitives
   free_breakfast::core::wwr
   free_breakfast::core::diagnostics_macros
-  free_breakfast::recipes::blas
+  free_breakfast::integrals::eri::density_fitting::staging
   free_breakfast::integrals::eri::density_fitting::hessian::device
 )

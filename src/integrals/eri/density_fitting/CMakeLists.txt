@@ -5,13 +5,15 @@
 # nuclear derivatives of the metric and of (mn|P), contracted and not, with
 # the DF J and K derivatives over them (gradient/, a module over its generated
 # kernels' device library), and the contracted second derivatives of the
-# metric and of (mn|P) (hessian/, the same).
+# metric and of (mn|P) (hessian/, the same), both staging their launches
+# through staging/, internal and not re-exported below.
 add_subdirectory(fit)
 add_subdirectory(gradient)
 add_subdirectory(hessian)
 add_subdirectory(jk)
 add_subdirectory(metric)
 add_subdirectory(mo)
+add_subdirectory(staging)
 add_subdirectory(three_center)
 
 # The aggregate: one import for density fitting.

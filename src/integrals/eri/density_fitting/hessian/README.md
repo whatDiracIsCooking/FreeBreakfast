@@ -34,8 +34,8 @@ made Cartesian, the same staging with each pair's or cell's atoms and each
 bra record's exponents, and one launch per class that has a pair or a cell,
 one thread each, `kFourWarps` to a block, every one atomically adding into
 one zeroed device H[n_atom][3][n_atom][3], which is downloaded. The kernels
-read the gradient kernels' parameter block, with H in place of G, so
-`hessian.cpp` stages exactly as `gradient.cpp` does.
+read the gradient kernels' parameter block, with H in place of G, so both
+stage through the same code, [`staging/`](../staging/README.md).
 
 **The aux centre is differentiated by the Hermite shift.** Aux shells reach
 i, and the Cartesian rule twice on the aux centre would raise its E table to
