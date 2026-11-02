@@ -21,8 +21,10 @@ pytestmark = pytest.mark.skipif(
     reason="needs git and sha256sum",
 )
 
+# Without the caller's GIT_* -- a git hook (pre-push runs this suite) exports
+# GIT_DIR and friends, which would point every command here at the outer repo.
 _ENV = dict(
-    os.environ,
+    {k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
     GIT_AUTHOR_NAME="t",
     GIT_AUTHOR_EMAIL="t@example.invalid",
     GIT_COMMITTER_NAME="t",
