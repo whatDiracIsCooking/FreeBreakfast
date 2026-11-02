@@ -21,7 +21,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
-import free_breakfast.nevpt2.energy; // EnergyInputs, ClassEnergies, PcClassEnergies
+import free_breakfast.nevpt2.energy; // EnergyInputs, EnergyBars, the result types
 
 namespace free_breakfast::nevpt2 {
 
@@ -165,6 +165,15 @@ Status einsum_adjoint(DeviceResources &res, std::string_view subscripts,
 Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBlocks &blocks,
                                                 std::span<const EnergyInputs> pairs, int64_t n,
                                                 int32_t batch);
+
+/// @brief The SC reverse pass of n states over @p pairs, as
+/// sc_effective_hamiltonian_adjoint documents (reverse.cpp's).
+/// class_energies_adjoint is n = 1. Nothing is validated: the caller has.
+Result<ScEffectiveHamiltonianAdjoint>
+sc_couplings_adjoint(DeviceResources &res, const MoBlocks &blocks,
+                     std::span<const EnergyInputs> pairs, int64_t n, std::span<const double> hbar,
+                     int32_t batch, std::span<const EnergyBars> bars,
+                     const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition);
 
 /// @brief The PC class walk of n states over @p pairs, as sc_couplings is
 /// SC's: per ordered pair each class's ⟨I|V|Ψ_J⁽¹⁾⟩ and ket J's dropped

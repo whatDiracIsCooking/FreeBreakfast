@@ -233,63 +233,52 @@ struct OrbitalEnergies {
   std::vector<double> &virt_bar;
 };
 
-// PySCF's _norm_to_energy over @p perturbers, and its derivatives: Park Eqs.
-// 36-38, T = -1 / (Δ + H/N), P = dE/dN = 2T + Δ T², Q = dE/dH = T² and
-// R = dE/dΔ = N T², each put back onto the tables (@p p_t, @p q_t) and the
-// orbital energies the perturber reads. A vanishing norm contributes no
-// energy and so no multipliers. Returns {Σ N, Σ E}.
-std::pair<double, double> finish_adjoint(const std::vector<Perturber> &perturbers,
-                                         const std::vector<double> &norm_t,
-                                         const std::vector<double> &h_t, const OrbitalEnergies &e,
-                                         std::vector<double> &p_t, std::vector<double> &q_t) {
-  double norm_total = 0.0;
-  double energy_total = 0.0;
-  for (const Perturber &x : perturbers) {
-    const auto t1 = static_cast<size_t>(x.t1);
-    const auto t2 = static_cast<size_t>(x.t2);
-    const double norm = x.s * (norm_t[t1] + (x.t2 < 0 ? 0.0 : norm_t[t2]));
-    const double h = x.s * (h_t[t1] + (x.t2 < 0 ? 0.0 : h_t[t2]));
-    double diff = 0.0;
-    for (const int32_t v : {x.v1, x.v2}) {
-      diff += v < 0 ? 0.0 : e.virt[static_cast<size_t>(v)];
-    }
-    for (const int32_t c : {x.c1, x.c2}) {
-      diff -= c < 0 ? 0.0 : e.core[static_cast<size_t>(c)];
-    }
-    norm_total += norm;
-    if (std::abs(norm) <= kNumericalZero) {
-      continue;
-    }
-    energy_total -= norm / (diff + (h / norm));
-    const double t = -1.0 / (diff + (h / norm));
-    const double p = (2.0 * t) + (diff * t * t);
-    const double q = t * t;
-    const double r = norm * t * t;
-    p_t[t1] += x.s * p;
-    q_t[t1] += x.s * q;
-    if (x.t2 >= 0) {
-      p_t[t2] += x.s * p;
-      q_t[t2] += x.s * q;
-    }
-    for (const int32_t v : {x.v1, x.v2}) {
-      if (v >= 0) {
-        e.virt_bar[static_cast<size_t>(v)] += r;
-      }
-    }
-    for (const int32_t c : {x.c1, x.c2}) {
-      if (c >= 0) {
-        e.core_bar[static_cast<size_t>(c)] -= r;
-      }
+// @p x's Δ over @p e.
+double perturber_delta(const Perturber &x, const OrbitalEnergies &e) {
+  double diff = 0.0;
+  for (const int32_t v : {x.v1, x.v2}) {
+    diff += v < 0 ? 0.0 : e.virt[static_cast<size_t>(v)];
+  }
+  for (const int32_t c : {x.c1, x.c2}) {
+    diff -= c < 0 ? 0.0 : e.core[static_cast<size_t>(c)];
+  }
+  return diff;
+}
+
+// @p x's value in the table @p a: s (a[t1] + a[t2]), or s a[t1].
+double combined(const Perturber &x, const std::vector<double> &a) {
+  return x.s * (a[static_cast<size_t>(x.t1)] + (x.t2 < 0 ? 0.0 : a[static_cast<size_t>(x.t2)]));
+}
+
+// The bar @p m on @p x's value, back onto its entries of @p bar.
+void spread(const Perturber &x, const double m, std::vector<double> &bar) {
+  bar[static_cast<size_t>(x.t1)] += x.s * m;
+  if (x.t2 >= 0) {
+    bar[static_cast<size_t>(x.t2)] += x.s * m;
+  }
+}
+
+// R = dE/dΔ of @p x onto the orbital energies its Δ reads.
+void add_delta_bar(const Perturber &x, const double r, const OrbitalEnergies &e) {
+  for (const int32_t v : {x.v1, x.v2}) {
+    if (v >= 0) {
+      e.virt_bar[static_cast<size_t>(v)] += r;
     }
   }
-  return {norm_total, energy_total};
+  for (const int32_t c : {x.c1, x.c2}) {
+    if (c >= 0) {
+      e.core_bar[static_cast<size_t>(c)] -= r;
+    }
+  }
 }
 
 // One norm (h = false) or H (h = true) term of a class: the forward einsum
 // `subscripts` over `ops`, scaled by alpha, and the bar each operand's
-// adjoint goes into (null: none). block_free marks the one term that reads
-// no class block (Sir's h1e_v-only norm term), whose share of Eq. 40 is
-// taken against its multipliers directly.
+// adjoint goes into (null: none). h picks the second of a walk's two tables,
+// which is H in a state's own walk, the norm einsum of (N, M) in a pair's
+// walk (ScWalk), and in PC's the exchange rows. block_free marks the one
+// term that reads no class block (Sir's h1e_v-only norm term), whose share
+// of Eq. 40 is taken against its multipliers directly.
 struct ClassTerm {
   std::string_view subscripts;
   std::vector<EinsumOperand> ops;
@@ -341,29 +330,6 @@ Status zero(DeviceResources &res, double *const d, const int64_t count) {
       wwr::wwrMemsetAsync(d, 0, sizeof(double) * static_cast<size_t>(count), res.stream()));
 }
 
-// One slab's whole reverse step for a class whose perturbers lie in one slab:
-// the terms evaluated, read back and finished, the multipliers uploaded, and
-// every term's adjoint taken. The norm, H and multiplier arrays are buffers
-// of their own, held across einsum_adjoint's workspace. Returns {Σ N, Σ E}.
-Result<std::pair<double, double>>
-slab_reverse(DeviceResources &res, const std::vector<ClassTerm> &terms,
-             const std::vector<int64_t> &out_dims, const std::vector<Perturber> &perturbers,
-             const OrbitalEnergies &e, const EinsumOperand &delta, double *const eq40) {
-  const int64_t count = std::ranges::fold_left(out_dims, int64_t{1}, std::multiplies{});
-  Buffers::device<double> norm_d = FBF_TRY(device_zeros(res, count));
-  Buffers::device<double> h_d = FBF_TRY(device_zeros(res, count));
-  FBF_TRY(eval_terms(res, terms, norm_d.data(), h_d.data(), out_dims));
-  const std::vector<double> norm_t = FBF_TRY(download(res, norm_d.data(), count));
-  const std::vector<double> h_t = FBF_TRY(download(res, h_d.data(), count));
-  std::vector<double> p_t(static_cast<size_t>(count), 0.0);
-  std::vector<double> q_t(static_cast<size_t>(count), 0.0);
-  const auto sums = finish_adjoint(perturbers, norm_t, h_t, e, p_t, q_t);
-  const Buffers::device<double> p = FBF_TRY(upload(res, p_t));
-  const Buffers::device<double> q = FBF_TRY(upload(res, q_t));
-  FBF_TRY(adjoint_terms(res, terms, p.data(), q.data(), out_dims, delta, eq40));
-  return sums;
-}
-
 // <m, g> over @p m's elements, added to the device scalar @p acc.
 Status add_dot(DeviceResources &res, const Buffers::device<double> &m, const double *const g,
                double *const acc) {
@@ -376,8 +342,12 @@ Status add_dot(DeviceResources &res, const Buffers::device<double> &m, const dou
 // class reads straight from an RDM (Sr's dm1..dm3, Srsi's dm1, Sir's dm1 and
 // dm2) is a block of that class here, so that each class's Eq. 40 is
 // assembled from its own bars. sweep_blocks takes each back through its
-// builder (make_*) onto the RDMs, h1e and h2e. class_energies_adjoint
-// allocates them all at once, zeroed, and each class adds onto its own.
+// builder (make_*) onto the RDMs, h1e and h2e. block_bars allocates them all
+// at once, zeroed, and each class adds onto its own.
+//
+// The Dyall blocks (a16, a17, a19, a22, a23, a25, a3, k27, a7, a9, a12, a13)
+// are read for H alone, so only a state's own walk has them; the metrics
+// (the rest) are what a pair's norm terms read too.
 struct BlockBars {
   Buffers::device<double> a16, a17, a19, sr_dm3, sr_dm2, sr_dm1; // Sr
   Buffers::device<double> a22, a23, a25, dm3_h, dm2_h, dm1_h;    // Si
@@ -388,6 +358,44 @@ struct BlockBars {
   Buffers::device<double> sir_dm2, sir_dm1, a12, a13;            // Sir
 };
 
+// The block bars over @p n active orbitals, zeroed: the Dyall blocks' when
+// @p dyall, the metrics' when @p metrics, and every other one empty.
+Result<BlockBars> block_bars(DeviceResources &res, const int64_t n, const bool dyall,
+                             const bool metrics) {
+  // A zeroed n^rank block bar, or an empty one when it is not @p wanted.
+  const auto zeros = [&](const int32_t rank, const bool wanted) {
+    int64_t count = wanted ? 1 : 0;
+    for (int32_t k = 0; k < rank; ++k) {
+      count *= n;
+    }
+    return device_zeros(res, count);
+  };
+  return BlockBars{.a16 = FBF_TRY(zeros(6, dyall)),
+                   .a17 = FBF_TRY(zeros(4, dyall)),
+                   .a19 = FBF_TRY(zeros(2, dyall)),
+                   .sr_dm3 = FBF_TRY(zeros(6, metrics)),
+                   .sr_dm2 = FBF_TRY(zeros(4, metrics)),
+                   .sr_dm1 = FBF_TRY(zeros(2, metrics)),
+                   .a22 = FBF_TRY(zeros(6, dyall)),
+                   .a23 = FBF_TRY(zeros(4, dyall)),
+                   .a25 = FBF_TRY(zeros(2, dyall)),
+                   .dm3_h = FBF_TRY(zeros(6, metrics)),
+                   .dm2_h = FBF_TRY(zeros(4, metrics)),
+                   .dm1_h = FBF_TRY(zeros(2, metrics)),
+                   .hdm1 = FBF_TRY(zeros(2, metrics)),
+                   .a3 = FBF_TRY(zeros(2, dyall)),
+                   .srsi_dm1 = FBF_TRY(zeros(2, metrics)),
+                   .k27 = FBF_TRY(zeros(2, dyall)),
+                   .rm2 = FBF_TRY(zeros(4, metrics)),
+                   .a7 = FBF_TRY(zeros(4, dyall)),
+                   .hdm2 = FBF_TRY(zeros(4, metrics)),
+                   .a9 = FBF_TRY(zeros(4, dyall)),
+                   .sir_dm2 = FBF_TRY(zeros(4, metrics)),
+                   .sir_dm1 = FBF_TRY(zeros(2, metrics)),
+                   .a12 = FBF_TRY(zeros(4, dyall)),
+                   .a13 = FBF_TRY(zeros(4, dyall))};
+}
+
 // One class's sums: Σ N, Σ E and Eq. 40.
 struct ClassSums {
   double norm = 0.0;
@@ -395,7 +403,10 @@ struct ClassSums {
   double eq40 = 0.0;
 };
 
-// What every class's reverse walk reads besides its own blocks.
+// What every class's reverse walk reads besides its own blocks: the fields
+// every pair shares (@p in's h1e_v_* and the orbital energies) and the bars
+// on them (@p bars' h1e_v_* and Λ). @p ops is PC's one state's operands; SC's
+// walks read theirs from their ScWalk.
 struct ReverseContext {
   DeviceResources &res;
   const MoBlocks &blocks;
@@ -404,6 +415,28 @@ struct ReverseContext {
   int32_t batch;
   const ActiveOperands &ops;
   OrbitalEnergies e;
+};
+
+// One walk of an SC class over its slabs. A state's own walk reads @p a, the
+// state's operands: its norm terms into the first table, its H terms into
+// the second, and their bars into @p m_a, Dyall blocks and metrics. A pair's
+// walk reads the norm terms alone, of the transition operands (M, N) as @p a
+// into the first table and (N, M) as @p b into the second, each with its
+// metric bars. @p finish takes each slab's two tables, read back and packed
+// over the class's table entries, and adds the multipliers onto their bars
+// (@p a_bar, @p b_bar, zeroed); @p first is the walk-order index of the
+// slab's first perturber (Srsi finishes once, at 0). With @p adjoint false
+// the walk only evaluates and finishes.
+struct ScWalk {
+  const ActiveOperands *a = nullptr;
+  BlockBars *m_a = nullptr;
+  const ActiveOperands *b = nullptr;
+  BlockBars *m_b = nullptr;
+  bool adjoint = true;
+  std::function<void(int64_t first, const std::vector<Perturber> &perturbers,
+                     const std::vector<double> &a, const std::vector<double> &b,
+                     std::vector<double> &a_bar, std::vector<double> &b_bar)>
+      finish;
 };
 
 // A slab bar's buffer, as slab_buffer's, and the slab's element count.
@@ -421,6 +454,37 @@ Status slab_bar_onto_lambda(const ReverseContext &c, const ExtBlock block, const
   return slab_adjoint(c.res, c.blocks, block, b0, b1, slab_bar, c.bars.lambda);
 }
 
+// One slab's whole step of @p w, for a class whose perturbers lie in one
+// slab: the terms evaluated, read back and finished, and when the walk takes
+// its adjoint the multipliers uploaded and every term's adjoint taken. The
+// tables and multipliers are buffers of their own, held across
+// einsum_adjoint's workspace.
+Status slab_reverse(DeviceResources &res, const std::vector<ClassTerm> &terms,
+                    const std::vector<int64_t> &out_dims, const std::vector<Perturber> &perturbers,
+                    const ScWalk &w, const int64_t first, double *const eq40) {
+  const int64_t count = std::ranges::fold_left(out_dims, int64_t{1}, std::multiplies{});
+  Buffers::device<double> norm_d = FBF_TRY(device_zeros(res, count));
+  Buffers::device<double> h_d = FBF_TRY(device_zeros(res, count));
+  FBF_TRY(eval_terms(res, terms, norm_d.data(), h_d.data(), out_dims));
+  const std::vector<double> norm_t = FBF_TRY(download(res, norm_d.data(), count));
+  const std::vector<double> h_t = FBF_TRY(download(res, h_d.data(), count));
+  std::vector<double> p_t(static_cast<size_t>(count), 0.0);
+  std::vector<double> q_t(static_cast<size_t>(count), 0.0);
+  w.finish(first, perturbers, norm_t, h_t, p_t, q_t);
+  if (!w.adjoint) {
+    return {};
+  }
+  const Buffers::device<double> p = FBF_TRY(upload(res, p_t));
+  const Buffers::device<double> q = FBF_TRY(upload(res, q_t));
+  return adjoint_terms(res, terms, p.data(), q.data(), out_dims, w.a->delta, eq40);
+}
+
+// The device scalar @p acc, read back.
+Result<double> scalar(DeviceResources &res, const Buffers::device<double> &acc) {
+  const std::vector<double> host = FBF_TRY(download(res, acc.data(), 1));
+  return host[0];
+}
+
 // Σ_G <M_G, G> over @p pairs, added to the class's device scalar and read
 // back: Eq. 40's block part.
 Result<double>
@@ -435,31 +499,37 @@ eq40_sum(DeviceResources &res,
 }
 
 // ---------------------------------------------------------------------------
-// The eight classes, each energy.cpp's walk with its terms listed once and
-// both evaluated and differentiated from the list.
+// The SC classes, each energy.cpp's walk with its terms listed once and both
+// evaluated and differentiated from the list. Each takes one ScWalk, a
+// state's own or a pair's, and returns its Eq. 40 share: its sums are the
+// walk's finish's.
 // ---------------------------------------------------------------------------
 
-Result<ClassSums> reverse_sr(ReverseContext &c, BlockBars &m) {
+Result<double> reverse_sr(ReverseContext &c, const ScWalk &w) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const ActiveOperands &o = *w.a;
+  const bool own = w.b == nullptr;
   const int64_t n = c.blocks.ncas;
   const int64_t nv = c.blocks.nvirt;
   const std::vector<int64_t> d2{n, n};
   const std::vector<int64_t> d4(4, n);
   const std::vector<int64_t> d6(6, n);
-  const Buffers::device<double> a16 = FBF_TRY(make_a16(res, o.h1e, o.h2e, o.dm3, o.f3ac, o.f3ca));
-  const Buffers::device<double> a17 = FBF_TRY(make_a17(res, o.h1e, o.h2e, o.dm2, o.dm3));
-  const Buffers::device<double> a19 = FBF_TRY(make_a19(res, o.h1e, o.h2e, o.dm1, o.dm2));
-  const EinsumOperand a16_op{.data = a16.data(), .dims = d6};
-  const EinsumOperand a17_op{.data = a17.data(), .dims = d4};
-  const EinsumOperand a19_op{.data = a19.data(), .dims = d2};
+  // The Dyall blocks, an own walk's alone.
+  std::optional<Buffers::device<double>> a16;
+  std::optional<Buffers::device<double>> a17;
+  std::optional<Buffers::device<double>> a19;
+  if (own) {
+    a16 = FBF_TRY(make_a16(res, o.h1e, o.h2e, o.dm3, o.f3ac, o.f3ca));
+    a17 = FBF_TRY(make_a17(res, o.h1e, o.h2e, o.dm2, o.dm3));
+    a19 = FBF_TRY(make_a19(res, o.h1e, o.h2e, o.dm1, o.dm2));
+  }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
-  ClassSums sums;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sr);
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Sr, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Sr, step);
+  int64_t first = 0;
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -470,61 +540,93 @@ Result<ClassSums> reverse_sr(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h1e_v{.data = c.in.h1e_v_sr + b0, .dims = {nb, n}, .strides = {1, nv}};
     double *const sb = slab_bar.data();
     double *const hb = c.bars.h1e_v_sr == nullptr ? nullptr : c.bars.h1e_v_sr + b0;
-    const std::vector<ClassTerm> terms{
-        {"ipqr,pqrabc,iabc->i", {h2e_v, a16_op, h2e_v}, {sb, m.a16.data(), sb}, true, 1.0},
-        {"ipqr,pqra,ia->i", {h2e_v, a17_op, h1e_v}, {sb, m.a17.data(), hb}, true, 2.0},
-        {"ip,pa,ia->i", {h1e_v, a19_op, h1e_v}, {hb, m.a19.data(), hb}, true, 1.0},
-        {"ipqr,rpqbac,iabc->i", {h2e_v, o.dm3, h2e_v}, {sb, m.sr_dm3.data(), sb}, false, 1.0},
-        {"ipqr,rpqa,ia->i", {h2e_v, o.dm2, h1e_v}, {sb, m.sr_dm2.data(), hb}, false, 2.0},
-        {"ip,pa,ia->i", {h1e_v, o.dm1, h1e_v}, {hb, m.sr_dm1.data(), hb}, false, 1.0}};
+    std::vector<ClassTerm> terms;
+    // One side's norm terms, into the second table when @p second.
+    const auto norm_terms = [&](const ActiveOperands &x, BlockBars &m, const bool second) {
+      terms.push_back(
+          {"ipqr,rpqbac,iabc->i", {h2e_v, x.dm3, h2e_v}, {sb, m.sr_dm3.data(), sb}, second, 1.0});
+      terms.push_back(
+          {"ipqr,rpqa,ia->i", {h2e_v, x.dm2, h1e_v}, {sb, m.sr_dm2.data(), hb}, second, 2.0});
+      terms.push_back(
+          {"ip,pa,ia->i", {h1e_v, x.dm1, h1e_v}, {hb, m.sr_dm1.data(), hb}, second, 1.0});
+    };
+    if (own) {
+      const EinsumOperand a16_op{.data = a16->data(), .dims = d6};
+      const EinsumOperand a17_op{.data = a17->data(), .dims = d4};
+      const EinsumOperand a19_op{.data = a19->data(), .dims = d2};
+      BlockBars &m = *w.m_a;
+      terms = {{"ipqr,pqrabc,iabc->i", {h2e_v, a16_op, h2e_v}, {sb, m.a16.data(), sb}, true, 1.0},
+               {"ipqr,pqra,ia->i", {h2e_v, a17_op, h1e_v}, {sb, m.a17.data(), hb}, true, 2.0},
+               {"ip,pa,ia->i", {h1e_v, a19_op, h1e_v}, {hb, m.a19.data(), hb}, true, 1.0}};
+      norm_terms(o, m, false);
+    } else {
+      norm_terms(*w.a, *w.m_a, false);
+      norm_terms(*w.b, *w.m_b, true);
+    }
     std::vector<Perturber> perturbers;
     for (int64_t r = 0; r < nb; ++r) {
       perturbers.push_back({.t1 = r, .v1 = static_cast<int32_t>(b0 + r)});
     }
-    const auto [n_part, e_part] =
-        FBF_TRY(slab_reverse(res, terms, {nb}, perturbers, c.e, o.delta, eq40.data()));
-    sums.norm += n_part;
-    sums.energy += e_part;
-    FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sr, b0, b1, sb));
+    FBF_TRY(slab_reverse(res, terms, {nb}, perturbers, w, first, eq40.data()));
+    first += std::ssize(perturbers);
+    if (w.adjoint) {
+      FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sr, b0, b1, sb));
+    }
   }
-  sums.eq40 = FBF_TRY(eq40_sum(res,
-                               {{&m.a16, a16.data()},
-                                {&m.a17, a17.data()},
-                                {&m.a19, a19.data()},
-                                {&m.sr_dm3, o.dm3.data},
-                                {&m.sr_dm2, o.dm2.data},
-                                {&m.sr_dm1, o.dm1.data}},
-                               eq40));
-  return sums;
+  if (w.adjoint) {
+    // One side's metrics against their bars.
+    const auto metrics = [&](const ActiveOperands &x, const BlockBars &m) -> Status {
+      FBF_TRY(add_dot(res, m.sr_dm3, x.dm3.data, eq40.data()));
+      FBF_TRY(add_dot(res, m.sr_dm2, x.dm2.data, eq40.data()));
+      return add_dot(res, m.sr_dm1, x.dm1.data, eq40.data());
+    };
+    if (own) {
+      FBF_TRY(add_dot(res, w.m_a->a16, a16->data(), eq40.data()));
+      FBF_TRY(add_dot(res, w.m_a->a17, a17->data(), eq40.data()));
+      FBF_TRY(add_dot(res, w.m_a->a19, a19->data(), eq40.data()));
+    } else {
+      FBF_TRY(metrics(*w.b, *w.m_b));
+    }
+    FBF_TRY(metrics(*w.a, *w.m_a));
+  }
+  return scalar(res, eq40);
 }
 
-Result<ClassSums> reverse_si(ReverseContext &c, BlockBars &m) {
+// Si: its norm intermediates are built from each side's RDMs, dm1_h's 2δ
+// only from a state's own (⟨I|J⟩ = 0 off it).
+Result<double> reverse_si(ReverseContext &c, const ScWalk &w) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const ActiveOperands &o = *w.a;
+  const bool own = w.b == nullptr;
+  const double overlap = own ? 1.0 : 0.0;
   const int64_t n = c.blocks.ncas;
   const std::vector<int64_t> d2{n, n};
   const std::vector<int64_t> d4(4, n);
   const std::vector<int64_t> d6(6, n);
-  const Buffers::device<double> a22 =
-      FBF_TRY(make_a22(res, o.h1e, o.h2e, o.dm2, o.dm3, o.f3ac, o.f3ca));
-  const Buffers::device<double> a23 = FBF_TRY(make_a23(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3));
-  const Buffers::device<double> a25 = FBF_TRY(make_a25(res, o.h1e, o.h2e, o.dm1, o.dm2));
-  const Buffers::device<double> dm3_h = FBF_TRY(make_dm3_h(res, o.dm2, o.dm3, o.delta));
-  const Buffers::device<double> dm2_h = FBF_TRY(make_dm2_h(res, o.dm1, o.dm2, o.delta));
-  const Buffers::device<double> dm1_h = FBF_TRY(make_hdm1(res, o.dm1, o.delta));
-  const EinsumOperand a22_op{.data = a22.data(), .dims = d6};
-  const EinsumOperand a23_op{.data = a23.data(), .dims = d4};
-  const EinsumOperand a25_op{.data = a25.data(), .dims = d2};
-  const EinsumOperand dm3_h_op{.data = dm3_h.data(), .dims = d6};
-  const EinsumOperand dm2_h_op{.data = dm2_h.data(), .dims = d4};
-  const EinsumOperand dm1_h_op{.data = dm1_h.data(), .dims = d2};
+  std::optional<Buffers::device<double>> a22;
+  std::optional<Buffers::device<double>> a23;
+  std::optional<Buffers::device<double>> a25;
+  if (own) {
+    a22 = FBF_TRY(make_a22(res, o.h1e, o.h2e, o.dm2, o.dm3, o.f3ac, o.f3ca));
+    a23 = FBF_TRY(make_a23(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3));
+    a25 = FBF_TRY(make_a25(res, o.h1e, o.h2e, o.dm1, o.dm2));
+  }
+  // {dm3_h, dm2_h, dm1_h} of each side, a then b.
+  std::vector<Buffers::device<double>> metric;
+  for (const ActiveOperands *x : {w.a, w.b}) {
+    if (x != nullptr) {
+      metric.push_back(FBF_TRY(make_dm3_h(res, x->dm2, x->dm3, x->delta)));
+      metric.push_back(FBF_TRY(make_dm2_h(res, x->dm1, x->dm2, x->delta)));
+      metric.push_back(FBF_TRY(make_hdm1(res, x->dm1, x->delta, overlap)));
+    }
+  }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
-  ClassSums sums;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Si);
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Si, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Si, step);
+  int64_t first = 0;
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -535,38 +637,64 @@ Result<ClassSums> reverse_si(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h1e_v{.data = c.in.h1e_v_si + (n * b0), .dims = {n, nb}, .strides = {1, n}};
     double *const sb = slab_bar.data();
     double *const hb = c.bars.h1e_v_si == nullptr ? nullptr : c.bars.h1e_v_si + (n * b0);
-    const std::vector<ClassTerm> terms{
-        {"qpir,pqrabc,baic->i", {h2e_v, a22_op, h2e_v}, {sb, m.a22.data(), sb}, true, 1.0},
-        {"qpir,pqra,ai->i", {h2e_v, a23_op, h1e_v}, {sb, m.a23.data(), hb}, true, 2.0},
-        {"pi,pa,ai->i", {h1e_v, a25_op, h1e_v}, {hb, m.a25.data(), hb}, true, 1.0},
-        {"qpir,rpqbac,baic->i", {h2e_v, dm3_h_op, h2e_v}, {sb, m.dm3_h.data(), sb}, false, 1.0},
-        {"qpir,rpqa,ai->i", {h2e_v, dm2_h_op, h1e_v}, {sb, m.dm2_h.data(), hb}, false, 2.0},
-        {"pi,pa,ai->i", {h1e_v, dm1_h_op, h1e_v}, {hb, m.dm1_h.data(), hb}, false, 1.0}};
+    std::vector<ClassTerm> terms;
+    if (own) {
+      const EinsumOperand a22_op{.data = a22->data(), .dims = d6};
+      const EinsumOperand a23_op{.data = a23->data(), .dims = d4};
+      const EinsumOperand a25_op{.data = a25->data(), .dims = d2};
+      BlockBars &m = *w.m_a;
+      terms = {{"qpir,pqrabc,baic->i", {h2e_v, a22_op, h2e_v}, {sb, m.a22.data(), sb}, true, 1.0},
+               {"qpir,pqra,ai->i", {h2e_v, a23_op, h1e_v}, {sb, m.a23.data(), hb}, true, 2.0},
+               {"pi,pa,ai->i", {h1e_v, a25_op, h1e_v}, {hb, m.a25.data(), hb}, true, 1.0}};
+    }
+    // Side @p side's norm terms (0 a, 1 b), into the second table for b.
+    for (const int32_t side : {0, 1}) {
+      if (side == 1 && own) {
+        break;
+      }
+      BlockBars &m = side == 0 ? *w.m_a : *w.m_b;
+      const auto at = static_cast<size_t>(3 * side);
+      const EinsumOperand dm3_h_op{.data = metric[at].data(), .dims = d6};
+      const EinsumOperand dm2_h_op{.data = metric[at + 1].data(), .dims = d4};
+      const EinsumOperand dm1_h_op{.data = metric[at + 2].data(), .dims = d2};
+      const bool second = side == 1;
+      terms.push_back(
+          {"qpir,rpqbac,baic->i", {h2e_v, dm3_h_op, h2e_v}, {sb, m.dm3_h.data(), sb}, second, 1.0});
+      terms.push_back(
+          {"qpir,rpqa,ai->i", {h2e_v, dm2_h_op, h1e_v}, {sb, m.dm2_h.data(), hb}, second, 2.0});
+      terms.push_back(
+          {"pi,pa,ai->i", {h1e_v, dm1_h_op, h1e_v}, {hb, m.dm1_h.data(), hb}, second, 1.0});
+    }
     std::vector<Perturber> perturbers;
     for (int64_t i = 0; i < nb; ++i) {
       perturbers.push_back({.t1 = i, .c1 = static_cast<int32_t>(b0 + i)});
     }
-    const auto [n_part, e_part] =
-        FBF_TRY(slab_reverse(res, terms, {nb}, perturbers, c.e, o.delta, eq40.data()));
-    sums.norm += n_part;
-    sums.energy += e_part;
-    FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Si, b0, b1, sb));
+    FBF_TRY(slab_reverse(res, terms, {nb}, perturbers, w, first, eq40.data()));
+    first += std::ssize(perturbers);
+    if (w.adjoint) {
+      FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Si, b0, b1, sb));
+    }
   }
-  sums.eq40 = FBF_TRY(eq40_sum(res,
-                               {{&m.a22, a22.data()},
-                                {&m.a23, a23.data()},
-                                {&m.a25, a25.data()},
-                                {&m.dm3_h, dm3_h.data()},
-                                {&m.dm2_h, dm2_h.data()},
-                                {&m.dm1_h, dm1_h.data()}},
-                               eq40));
-  return sums;
+  if (w.adjoint) {
+    if (own) {
+      FBF_TRY(add_dot(res, w.m_a->a22, a22->data(), eq40.data()));
+      FBF_TRY(add_dot(res, w.m_a->a23, a23->data(), eq40.data()));
+      FBF_TRY(add_dot(res, w.m_a->a25, a25->data(), eq40.data()));
+    }
+    for (size_t side = 0; side < metric.size() / 3; ++side) {
+      const BlockBars &m = side == 0 ? *w.m_a : *w.m_b;
+      FBF_TRY(add_dot(res, m.dm3_h, metric[3 * side].data(), eq40.data()));
+      FBF_TRY(add_dot(res, m.dm2_h, metric[(3 * side) + 1].data(), eq40.data()));
+      FBF_TRY(add_dot(res, m.dm1_h, metric[(3 * side) + 2].data(), eq40.data()));
+    }
+  }
+  return scalar(res, eq40);
 }
 
 // Sijrs by hand: it reads no block, so its slab's bar and its orbital
-// energies' are sijrs_adjoint's, and Eq. 40 is ½ <g-bar, g> (E is quadratic
-// in g at fixed orbital energies).
-Result<ClassSums> reverse_sijrs(ReverseContext &c) {
+// energies' are sijrs_adjoint's, of @p weight E, and Eq. 40 is ½ <g-bar, g>
+// (E is quadratic in g at fixed orbital energies), weight E.
+Result<ClassSums> reverse_sijrs(ReverseContext &c, const double weight) {
   DeviceResources &res = c.res;
   if (c.blocks.ncore == 0 || c.blocks.nvirt == 0) {
     return ClassSums{};
@@ -585,7 +713,7 @@ Result<ClassSums> reverse_sijrs(ReverseContext &c) {
                                      c.blocks.nvirt, c.in.e_core, c.in.e_virt, acc.data())));
     FBF_TRY(gpu_status(device::sijrs_adjoint(
         res.stream(), slab_buf.data(), b1 - b0, b0, c.blocks.ncore, c.blocks.nvirt, c.in.e_core,
-        c.in.e_virt, slab_bar.data(), c.bars.e_core, c.bars.e_virt)));
+        c.in.e_virt, slab_bar.data(), c.bars.e_core, c.bars.e_virt, weight)));
     FBF_TRY(einsum(
         res.stream(), "a,a->",
         {{.data = slab_bar.data(), .dims = {count}}, {.data = slab_buf.data(), .dims = {count}}},
@@ -598,25 +726,33 @@ Result<ClassSums> reverse_sijrs(ReverseContext &c) {
 
 // Sijr: the (r, j, i) tables are symmetrized in (i, j), so each perturber
 // over j <= i reads, and its multipliers go back onto, both (r, j, i) and
-// (r, i, j).
-Result<ClassSums> reverse_sijr(ReverseContext &c, BlockBars &m) {
+// (r, i, j). hdm1's 2δ is a state's own alone.
+Result<double> reverse_sijr(ReverseContext &c, const ScWalk &w) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const ActiveOperands &o = *w.a;
+  const bool own = w.b == nullptr;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   const std::vector<int64_t> d2{n, n};
-  const Buffers::device<double> hdm1 = FBF_TRY(make_hdm1(res, o.dm1, o.delta));
-  const EinsumOperand hdm1_op{.data = hdm1.data(), .dims = d2};
-  const Buffers::device<double> a3 =
-      FBF_TRY(make_a3(res, o.h1e, o.h2e, o.dm1, o.dm2, hdm1_op, o.delta));
-  const EinsumOperand a3_op{.data = a3.data(), .dims = d2};
+  // hdm1 of each side, a then b.
+  std::vector<Buffers::device<double>> hdm1;
+  for (const ActiveOperands *x : {w.a, w.b}) {
+    if (x != nullptr) {
+      hdm1.push_back(FBF_TRY(make_hdm1(res, x->dm1, x->delta, own ? 1.0 : 0.0)));
+    }
+  }
+  std::optional<Buffers::device<double>> a3;
+  if (own) {
+    const EinsumOperand hdm1_op{.data = hdm1.front().data(), .dims = d2};
+    a3 = FBF_TRY(make_a3(res, o.h1e, o.h2e, o.dm1, o.dm2, hdm1_op, o.delta));
+  }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
-  ClassSums sums;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sijr);
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Sijr, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Sijr, step);
+  int64_t first = 0;
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nr = b1 - b0;
@@ -625,11 +761,20 @@ Result<ClassSums> reverse_sijr(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(c.blocks, ExtBlock::Sijr, b0, b1));
     double *const sb = slab_bar.data();
-    const std::vector<ClassTerm> terms{
-        {"rpji,raji,pa->rji", {h2e_v, h2e_v, hdm1_op}, {sb, sb, m.hdm1.data()}, false, 2.0},
-        {"rpji,raij,pa->rji", {h2e_v, h2e_v, hdm1_op}, {sb, sb, m.hdm1.data()}, false, -1.0},
-        {"rpji,raji,pa->rji", {h2e_v, h2e_v, a3_op}, {sb, sb, m.a3.data()}, true, 2.0},
-        {"rpji,raij,pa->rji", {h2e_v, h2e_v, a3_op}, {sb, sb, m.a3.data()}, true, -1.0}};
+    std::vector<ClassTerm> terms;
+    for (size_t side = 0; side < hdm1.size(); ++side) {
+      const EinsumOperand hdm1_op{.data = hdm1[side].data(), .dims = d2};
+      double *const mb = (side == 0 ? *w.m_a : *w.m_b).hdm1.data();
+      terms.push_back({"rpji,raji,pa->rji", {h2e_v, h2e_v, hdm1_op}, {sb, sb, mb}, side == 1, 2.0});
+      terms.push_back(
+          {"rpji,raij,pa->rji", {h2e_v, h2e_v, hdm1_op}, {sb, sb, mb}, side == 1, -1.0});
+    }
+    if (own) {
+      const EinsumOperand a3_op{.data = a3->data(), .dims = d2};
+      double *const mb = w.m_a->a3.data();
+      terms.push_back({"rpji,raji,pa->rji", {h2e_v, h2e_v, a3_op}, {sb, sb, mb}, true, 2.0});
+      terms.push_back({"rpji,raij,pa->rji", {h2e_v, h2e_v, a3_op}, {sb, sb, mb}, true, -1.0});
+    }
     const auto at = [&](const int64_t r, const int64_t j, const int64_t i) {
       return (((r * nc) + j) * nc) + i;
     };
@@ -646,29 +791,39 @@ Result<ClassSums> reverse_sijr(ReverseContext &c, BlockBars &m) {
         }
       }
     }
-    const auto [n_part, e_part] =
-        FBF_TRY(slab_reverse(res, terms, {nr, nc, nc}, perturbers, c.e, o.delta, eq40.data()));
-    sums.norm += n_part;
-    sums.energy += e_part;
-    FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sijr, b0, b1, sb));
+    FBF_TRY(slab_reverse(res, terms, {nr, nc, nc}, perturbers, w, first, eq40.data()));
+    first += std::ssize(perturbers);
+    if (w.adjoint) {
+      FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sijr, b0, b1, sb));
+    }
   }
-  sums.eq40 = FBF_TRY(eq40_sum(res, {{&m.hdm1, hdm1.data()}, {&m.a3, a3.data()}}, eq40));
-  return sums;
+  if (w.adjoint) {
+    for (size_t side = 0; side < hdm1.size(); ++side) {
+      FBF_TRY(add_dot(res, (side == 0 ? *w.m_a : *w.m_b).hdm1, hdm1[side].data(), eq40.data()));
+    }
+    if (own) {
+      FBF_TRY(add_dot(res, w.m_a->a3, a3->data(), eq40.data()));
+    }
+  }
+  return scalar(res, eq40);
 }
 
 // Srsi: its (r, s) symmetrization pairs rows of different slabs, so the walk
 // runs twice. The first fills the whole (v, v, c) tables, as energy.cpp's
-// does; the finish then puts the multipliers onto both (r, s, i) and
-// (s, r, i); the second rebuilds each slab pair and takes its adjoint
-// against the multiplier tables' rows.
-Result<ClassSums> reverse_srsi(ReverseContext &c, BlockBars &m) {
+// does, and the finish runs once over them; the second, when the walk takes
+// its adjoint, rebuilds each slab pair and takes its adjoint against the
+// multiplier tables' rows.
+Result<double> reverse_srsi(ReverseContext &c, const ScWalk &w) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const ActiveOperands &o = *w.a;
+  const bool own = w.b == nullptr;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   const int64_t nv = c.blocks.nvirt;
-  const Buffers::device<double> k27 = FBF_TRY(make_k27(res, o.h1e, o.h2e, o.dm1, o.dm2));
-  const EinsumOperand k27_op{.data = k27.data(), .dims = {n, n}};
+  std::optional<Buffers::device<double>> k27;
+  if (own) {
+    k27 = FBF_TRY(make_k27(res, o.h1e, o.h2e, o.dm1, o.dm2));
+  }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Srsi);
@@ -683,13 +838,22 @@ Result<ClassSums> reverse_srsi(ReverseContext &c, BlockBars &m) {
         column_major(slab_a.data(), slab_dims(c.blocks, ExtBlock::Srsi, b0, b1));
     const EinsumOperand h_b =
         column_major(slab_b.data(), slab_dims(c.blocks, ExtBlock::SrsiT, b0, b1));
-    double *const md = m.srsi_dm1.data();
-    double *const mk = m.k27.data();
-    return std::vector<ClassTerm>{
-        {"rsip,rsia,pa->rsi", {h_a, h_a, o.dm1}, {ba, ba, md}, false, 2.0},
-        {"rsip,sria,pa->rsi", {h_a, h_b, o.dm1}, {ba, bb, md}, false, -1.0},
-        {"rsip,rsia,pa->rsi", {h_a, h_a, k27_op}, {ba, ba, mk}, true, 2.0},
-        {"rsip,sria,pa->rsi", {h_a, h_b, k27_op}, {ba, bb, mk}, true, -1.0}};
+    std::vector<ClassTerm> out;
+    const auto norm_terms = [&](const ActiveOperands &x, BlockBars &m, const bool second) {
+      double *const md = m.srsi_dm1.data();
+      out.push_back({"rsip,rsia,pa->rsi", {h_a, h_a, x.dm1}, {ba, ba, md}, second, 2.0});
+      out.push_back({"rsip,sria,pa->rsi", {h_a, h_b, x.dm1}, {ba, bb, md}, second, -1.0});
+    };
+    norm_terms(o, *w.m_a, false);
+    if (own) {
+      const EinsumOperand k27_op{.data = k27->data(), .dims = {n, n}};
+      double *const mk = w.m_a->k27.data();
+      out.push_back({"rsip,rsia,pa->rsi", {h_a, h_a, k27_op}, {ba, ba, mk}, true, 2.0});
+      out.push_back({"rsip,sria,pa->rsi", {h_a, h_b, k27_op}, {ba, bb, mk}, true, -1.0});
+    } else {
+      norm_terms(*w.b, *w.m_b, true);
+    }
+    return out;
   };
 
   Buffers::device<double> norm_d = FBF_TRY(device_zeros(res, nv * nv * nc));
@@ -721,7 +885,10 @@ Result<ClassSums> reverse_srsi(ReverseContext &c, BlockBars &m) {
   }
   std::vector<double> p_t(norm_t.size(), 0.0);
   std::vector<double> q_t(norm_t.size(), 0.0);
-  const auto [norm_sum, energy_sum] = finish_adjoint(perturbers, norm_t, h_t, c.e, p_t, q_t);
+  w.finish(0, perturbers, norm_t, h_t, p_t, q_t);
+  if (!w.adjoint) {
+    return 0.0;
+  }
   const Buffers::device<double> p = FBF_TRY(upload(res, p_t));
   const Buffers::device<double> q = FBF_TRY(upload(res, q_t));
 
@@ -736,30 +903,45 @@ Result<ClassSums> reverse_srsi(ReverseContext &c, BlockBars &m) {
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Srsi, b0, b1, bar_a.data()));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::SrsiT, b0, b1, bar_b.data()));
   }
-  const double eq40_value =
-      FBF_TRY(eq40_sum(res, {{&m.srsi_dm1, o.dm1.data}, {&m.k27, k27.data()}}, eq40));
-  return ClassSums{.norm = norm_sum, .energy = energy_sum, .eq40 = eq40_value};
+  FBF_TRY(add_dot(res, w.m_a->srsi_dm1, o.dm1.data, eq40.data()));
+  if (own) {
+    FBF_TRY(add_dot(res, w.m_a->k27, k27->data(), eq40.data()));
+  } else {
+    FBF_TRY(add_dot(res, w.m_b->srsi_dm1, w.b->dm1.data, eq40.data()));
+  }
+  return scalar(res, eq40);
 }
 
-Result<ClassSums> reverse_srs(ReverseContext &c, BlockBars &m) {
+// Srs: rm2 of each side; an own walk builds it with its a7, as energy.cpp's.
+Result<double> reverse_srs(ReverseContext &c, const ScWalk &w) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const ActiveOperands &o = *w.a;
+  const bool own = w.b == nullptr;
   const int64_t n = c.blocks.ncas;
   const int64_t nv = c.blocks.nvirt;
   if (nv == 0) {
-    return ClassSums{};
+    return 0.0;
   }
   const std::vector<int64_t> d4(4, n);
-  const auto [rm2, a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
-  const EinsumOperand rm2_op{.data = rm2.data(), .dims = d4};
-  const EinsumOperand a7_op{.data = a7.data(), .dims = d4};
+  // rm2 of each side, a then b.
+  std::vector<Buffers::device<double>> rm2;
+  std::optional<Buffers::device<double>> a7;
+  if (own) {
+    auto [own_rm2, own_a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
+    rm2.push_back(std::move(own_rm2));
+    a7 = std::move(own_a7);
+  } else {
+    for (const ActiveOperands *x : {w.a, w.b}) {
+      rm2.push_back(FBF_TRY(make_rm2(res, x->dm1, x->dm2, x->delta)));
+    }
+  }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
-  ClassSums sums;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Srs);
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Srs, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Srs, step);
+  int64_t first = 0;
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -768,9 +950,17 @@ Result<ClassSums> reverse_srs(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(c.blocks, ExtBlock::Srs, b0, b1));
     double *const sb = slab_bar.data();
-    const std::vector<ClassTerm> terms{
-        {"rsqp,rsba,pqba->rs", {h2e_v, h2e_v, rm2_op}, {sb, sb, m.rm2.data()}, false, 0.5},
-        {"rsqp,rsba,pqab->rs", {h2e_v, h2e_v, a7_op}, {sb, sb, m.a7.data()}, true, 0.5}};
+    std::vector<ClassTerm> terms;
+    for (size_t side = 0; side < rm2.size(); ++side) {
+      const EinsumOperand rm2_op{.data = rm2[side].data(), .dims = d4};
+      double *const mb = (side == 0 ? *w.m_a : *w.m_b).rm2.data();
+      terms.push_back({"rsqp,rsba,pqba->rs", {h2e_v, h2e_v, rm2_op}, {sb, sb, mb}, side == 1, 0.5});
+    }
+    if (own) {
+      const EinsumOperand a7_op{.data = a7->data(), .dims = d4};
+      terms.push_back(
+          {"rsqp,rsba,pqab->rs", {h2e_v, h2e_v, a7_op}, {sb, sb, w.m_a->a7.data()}, true, 0.5});
+    }
     std::vector<Perturber> perturbers;
     for (int64_t r = 0; r < nb; ++r) {
       for (int64_t ss = 0; ss < nv; ++ss) {
@@ -779,39 +969,56 @@ Result<ClassSums> reverse_srs(ReverseContext &c, BlockBars &m) {
                               .v2 = static_cast<int32_t>(ss)});
       }
     }
-    const auto [n_part, e_part] =
-        FBF_TRY(slab_reverse(res, terms, {nb, nv}, perturbers, c.e, o.delta, eq40.data()));
-    sums.norm += n_part;
-    sums.energy += e_part;
-    FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Srs, b0, b1, sb));
+    FBF_TRY(slab_reverse(res, terms, {nb, nv}, perturbers, w, first, eq40.data()));
+    first += std::ssize(perturbers);
+    if (w.adjoint) {
+      FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Srs, b0, b1, sb));
+    }
   }
-  sums.eq40 = FBF_TRY(eq40_sum(res, {{&m.rm2, rm2.data()}, {&m.a7, a7.data()}}, eq40));
-  return sums;
+  if (w.adjoint) {
+    for (size_t side = 0; side < rm2.size(); ++side) {
+      FBF_TRY(add_dot(res, (side == 0 ? *w.m_a : *w.m_b).rm2, rm2[side].data(), eq40.data()));
+    }
+    if (own) {
+      FBF_TRY(add_dot(res, w.m_a->a7, a7->data(), eq40.data()));
+    }
+  }
+  return scalar(res, eq40);
 }
 
-Result<ClassSums> reverse_sij(ReverseContext &c, BlockBars &m) {
+// Sij: hdm2 of each side, its δδ terms a state's own alone.
+Result<double> reverse_sij(ReverseContext &c, const ScWalk &w) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const ActiveOperands &o = *w.a;
+  const bool own = w.b == nullptr;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   if (nc == 0) {
-    return ClassSums{};
+    return 0.0;
   }
   const std::vector<int64_t> d4(4, n);
-  const Buffers::device<double> hdm2 = FBF_TRY(make_hdm2(res, o.dm1, o.dm2, o.delta));
-  const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
-  const Buffers::device<double> hdm3 =
-      FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
-  const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
-  const Buffers::device<double> a9 = FBF_TRY(make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op));
-  const EinsumOperand a9_op{.data = a9.data(), .dims = d4};
+  // hdm2 of each side, a then b.
+  std::vector<Buffers::device<double>> hdm2;
+  for (const ActiveOperands *x : {w.a, w.b}) {
+    if (x != nullptr) {
+      hdm2.push_back(FBF_TRY(make_hdm2(res, x->dm1, x->dm2, x->delta, own ? 1.0 : 0.0)));
+    }
+  }
+  std::optional<Buffers::device<double>> a9;
+  if (own) {
+    const EinsumOperand hdm2_op{.data = hdm2.front().data(), .dims = d4};
+    const Buffers::device<double> hdm3 =
+        FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
+    const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
+    a9 = FBF_TRY(make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op));
+  }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
-  ClassSums sums;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sij);
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Sij, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Sij, step);
+  int64_t first = 0;
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -820,9 +1027,18 @@ Result<ClassSums> reverse_sij(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(c.blocks, ExtBlock::Sij, b0, b1));
     double *const sb = slab_bar.data();
-    const std::vector<ClassTerm> terms{
-        {"qpij,baij,pqab->ij", {h2e_v, h2e_v, hdm2_op}, {sb, sb, m.hdm2.data()}, false, 0.5},
-        {"qpij,baij,pqab->ij", {h2e_v, h2e_v, a9_op}, {sb, sb, m.a9.data()}, true, 0.5}};
+    std::vector<ClassTerm> terms;
+    for (size_t side = 0; side < hdm2.size(); ++side) {
+      const EinsumOperand hdm2_op{.data = hdm2[side].data(), .dims = d4};
+      double *const mb = (side == 0 ? *w.m_a : *w.m_b).hdm2.data();
+      terms.push_back(
+          {"qpij,baij,pqab->ij", {h2e_v, h2e_v, hdm2_op}, {sb, sb, mb}, side == 1, 0.5});
+    }
+    if (own) {
+      const EinsumOperand a9_op{.data = a9->data(), .dims = d4};
+      terms.push_back(
+          {"qpij,baij,pqab->ij", {h2e_v, h2e_v, a9_op}, {sb, sb, w.m_a->a9.data()}, true, 0.5});
+    }
     std::vector<Perturber> perturbers;
     for (int64_t i = 0; i < nb; ++i) {
       for (int64_t j = 0; j < nc; ++j) {
@@ -831,39 +1047,49 @@ Result<ClassSums> reverse_sij(ReverseContext &c, BlockBars &m) {
                               .c2 = static_cast<int32_t>(j)});
       }
     }
-    const auto [n_part, e_part] =
-        FBF_TRY(slab_reverse(res, terms, {nb, nc}, perturbers, c.e, o.delta, eq40.data()));
-    sums.norm += n_part;
-    sums.energy += e_part;
-    FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sij, b0, b1, sb));
+    FBF_TRY(slab_reverse(res, terms, {nb, nc}, perturbers, w, first, eq40.data()));
+    first += std::ssize(perturbers);
+    if (w.adjoint) {
+      FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sij, b0, b1, sb));
+    }
   }
-  sums.eq40 = FBF_TRY(eq40_sum(res, {{&m.hdm2, hdm2.data()}, {&m.a9, a9.data()}}, eq40));
-  return sums;
+  if (w.adjoint) {
+    for (size_t side = 0; side < hdm2.size(); ++side) {
+      FBF_TRY(add_dot(res, (side == 0 ? *w.m_a : *w.m_b).hdm2, hdm2[side].data(), eq40.data()));
+    }
+    if (own) {
+      FBF_TRY(add_dot(res, w.m_a->a9, a9->data(), eq40.data()));
+    }
+  }
+  return scalar(res, eq40);
 }
 
 // Sir: two slabs per step and h1e_v_Sir's rows; "raai" reads h2e_v2 on its
-// diagonal, whose bar einsum_adjoint scatters against delta.
-Result<ClassSums> reverse_sir(ReverseContext &c, BlockBars &m) {
+// diagonal, whose bar einsum_adjoint scatters against delta. Its
+// h1e_v·h1e_v norm term is ⟨I|J⟩'s, so a pair's walk has none.
+Result<double> reverse_sir(ReverseContext &c, const ScWalk &w) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const ActiveOperands &o = *w.a;
+  const bool own = w.b == nullptr;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   const int64_t nv = c.blocks.nvirt;
   const std::vector<int64_t> d4(4, n);
-  const Buffers::device<double> a12 = FBF_TRY(make_a12(res, o.h1e, o.h2e, o.dm2, o.dm3));
-  const Buffers::device<double> a13 =
-      FBF_TRY(make_a13(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
-  const EinsumOperand a12_op{.data = a12.data(), .dims = d4};
-  const EinsumOperand a13_op{.data = a13.data(), .dims = d4};
+  std::optional<Buffers::device<double>> a12;
+  std::optional<Buffers::device<double>> a13;
+  if (own) {
+    a12 = FBF_TRY(make_a12(res, o.h1e, o.h2e, o.dm2, o.dm3));
+    a13 = FBF_TRY(make_a13(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
+  }
   Buffers::device<double> eq40 = FBF_TRY(device_zeros(res, 1));
 
-  ClassSums sums;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sir1);
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_1 = slab_buffer(res, c.blocks, ExtBlock::Sir1, step);
   Buffers::device<double> slab_2 = slab_buffer(res, c.blocks, ExtBlock::Sir2, step);
   Buffers::device<double> bar_1 = slab_buffer(res, c.blocks, ExtBlock::Sir1, step);
   Buffers::device<double> bar_2 = slab_buffer(res, c.blocks, ExtBlock::Sir2, step);
+  int64_t first = 0;
   for (int32_t b0 = 0; b0 < extent; b0 += step) {
     const int32_t b1 = std::min(extent, b0 + step);
     const int64_t nb = b1 - b0;
@@ -879,22 +1105,32 @@ Result<ClassSums> reverse_sir(ReverseContext &c, BlockBars &m) {
     double *const s1 = bar_1.data();
     double *const s2 = bar_2.data();
     double *const hb = c.bars.h1e_v_sir == nullptr ? nullptr : c.bars.h1e_v_sir + b0;
-    double *const md2 = m.sir_dm2.data();
-    double *const md1 = m.sir_dm1.data();
-    const std::vector<ClassTerm> terms{
-        {"rpiq,raib,qpab->ir", {v1, v1, o.dm2}, {s1, s1, md2}, false, 2.0},
-        {"rpiq,rabi,qpab->ir", {v1, v2, o.dm2}, {s1, s2, md2}, false, -1.0},
-        {"rpqi,raib,qpab->ir", {v2, v1, o.dm2}, {s2, s1, md2}, false, -1.0},
-        {"raqi,rabi,qb->ir", {v2, v2, o.dm1}, {s2, s2, md1}, false, 2.0},
-        {"rpqi,rabi,qbap->ir", {v2, v2, o.dm2}, {s2, s2, md2}, false, -1.0},
-        {"rpqi,raai,qp->ir", {v2, v2, o.dm1}, {s2, s2, md1}, false, 1.0},
-        {"rpiq,ri,qp->ir", {v1, h1e_v, o.dm1}, {s1, hb, md1}, false, 4.0},
-        {"rpqi,ri,qp->ir", {v2, h1e_v, o.dm1}, {s2, hb, md1}, false, -2.0},
-        {"ri,ri->ir", {h1e_v, h1e_v}, {hb, hb}, false, 2.0, true},
-        {"rpiq,raib,pqab->ir", {v1, v1, a12_op}, {s1, s1, m.a12.data()}, true, 2.0},
-        {"rpiq,rabi,pqab->ir", {v1, v2, a12_op}, {s1, s2, m.a12.data()}, true, -1.0},
-        {"rpqi,raib,pqab->ir", {v2, v1, a12_op}, {s2, s1, m.a12.data()}, true, -1.0},
-        {"rpqi,rabi,pqab->ir", {v2, v2, a13_op}, {s2, s2, m.a13.data()}, true, 1.0}};
+    std::vector<ClassTerm> terms;
+    const auto norm_terms = [&](const ActiveOperands &x, BlockBars &m, const bool second) {
+      double *const md2 = m.sir_dm2.data();
+      double *const md1 = m.sir_dm1.data();
+      terms.push_back({"rpiq,raib,qpab->ir", {v1, v1, x.dm2}, {s1, s1, md2}, second, 2.0});
+      terms.push_back({"rpiq,rabi,qpab->ir", {v1, v2, x.dm2}, {s1, s2, md2}, second, -1.0});
+      terms.push_back({"rpqi,raib,qpab->ir", {v2, v1, x.dm2}, {s2, s1, md2}, second, -1.0});
+      terms.push_back({"raqi,rabi,qb->ir", {v2, v2, x.dm1}, {s2, s2, md1}, second, 2.0});
+      terms.push_back({"rpqi,rabi,qbap->ir", {v2, v2, x.dm2}, {s2, s2, md2}, second, -1.0});
+      terms.push_back({"rpqi,raai,qp->ir", {v2, v2, x.dm1}, {s2, s2, md1}, second, 1.0});
+      terms.push_back({"rpiq,ri,qp->ir", {v1, h1e_v, x.dm1}, {s1, hb, md1}, second, 4.0});
+      terms.push_back({"rpqi,ri,qp->ir", {v2, h1e_v, x.dm1}, {s2, hb, md1}, second, -2.0});
+    };
+    norm_terms(o, *w.m_a, false);
+    if (own) {
+      BlockBars &m = *w.m_a;
+      const EinsumOperand a12_op{.data = a12->data(), .dims = d4};
+      const EinsumOperand a13_op{.data = a13->data(), .dims = d4};
+      terms.push_back({"ri,ri->ir", {h1e_v, h1e_v}, {hb, hb}, false, 2.0, true});
+      terms.push_back({"rpiq,raib,pqab->ir", {v1, v1, a12_op}, {s1, s1, m.a12.data()}, true, 2.0});
+      terms.push_back({"rpiq,rabi,pqab->ir", {v1, v2, a12_op}, {s1, s2, m.a12.data()}, true, -1.0});
+      terms.push_back({"rpqi,raib,pqab->ir", {v2, v1, a12_op}, {s2, s1, m.a12.data()}, true, -1.0});
+      terms.push_back({"rpqi,rabi,pqab->ir", {v2, v2, a13_op}, {s2, s2, m.a13.data()}, true, 1.0});
+    } else {
+      norm_terms(*w.b, *w.m_b, true);
+    }
     std::vector<Perturber> perturbers;
     for (int64_t i = 0; i < nc; ++i) {
       for (int64_t r = 0; r < nb; ++r) {
@@ -903,50 +1139,57 @@ Result<ClassSums> reverse_sir(ReverseContext &c, BlockBars &m) {
                               .c1 = static_cast<int32_t>(i)});
       }
     }
-    const auto [n_part, e_part] =
-        FBF_TRY(slab_reverse(res, terms, {nc, nb}, perturbers, c.e, o.delta, eq40.data()));
-    sums.norm += n_part;
-    sums.energy += e_part;
-    FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sir1, b0, b1, s1));
-    FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sir2, b0, b1, s2));
+    FBF_TRY(slab_reverse(res, terms, {nc, nb}, perturbers, w, first, eq40.data()));
+    first += std::ssize(perturbers);
+    if (w.adjoint) {
+      FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sir1, b0, b1, s1));
+      FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sir2, b0, b1, s2));
+    }
   }
-  sums.eq40 = FBF_TRY(eq40_sum(res,
-                               {{&m.sir_dm2, o.dm2.data},
-                                {&m.sir_dm1, o.dm1.data},
-                                {&m.a12, a12.data()},
-                                {&m.a13, a13.data()}},
-                               eq40));
-  return sums;
+  if (w.adjoint) {
+    FBF_TRY(add_dot(res, w.m_a->sir_dm2, o.dm2.data, eq40.data()));
+    FBF_TRY(add_dot(res, w.m_a->sir_dm1, o.dm1.data, eq40.data()));
+    if (own) {
+      FBF_TRY(add_dot(res, w.m_a->a12, a12->data(), eq40.data()));
+      FBF_TRY(add_dot(res, w.m_a->a13, a13->data(), eq40.data()));
+    } else {
+      FBF_TRY(add_dot(res, w.m_b->sir_dm2, w.b->dm2.data, eq40.data()));
+      FBF_TRY(add_dot(res, w.m_b->sir_dm1, w.b->dm1.data, eq40.data()));
+    }
+  }
+  return scalar(res, eq40);
 }
 
 // ---------------------------------------------------------------------------
 // The sweep: the block bars back through their builders
 // ---------------------------------------------------------------------------
 
-// Each block's bar M_G back through its make_* onto @p bars' h1e, h2e and
-// RDM fields. Every builder is listed term by term with energy.cpp's
-// subscripts, coefficients and operands (a transpose as its one-operand
-// einsum, NumPy's axes spelled as labels: axes {1, 4, 0, 2, 5, 3} of
-// "abcdef" is "->beacfd"), and einsum_adjoint differentiates each. A term
-// whose bars are all null (delta alone) is listed anyway, so a builder still
-// reads against its forward line by line.
+// The Dyall blocks' bars (a16, a17, a19, a22, a23, a25, a3, k27, a7, a9,
+// a12, a13) back through their make_* onto @p bars' h1e, h2e and RDM fields.
+// Every builder is listed term by term with energy.cpp's subscripts,
+// coefficients and operands (a transpose as its one-operand einsum, NumPy's
+// axes spelled as labels: axes {1, 4, 0, 2, 5, 3} of "abcdef" is
+// "->beacfd"), and einsum_adjoint differentiates each. A term whose bars are
+// all null (delta alone) is listed anyway, so a builder still reads against
+// its forward line by line.
 //
 // Reverse topological: an intermediate's bar is complete before it is swept
-// onto what built it. Sij's a9 reads hdm3, which reads hdm2 (a9, hdm3,
-// hdm2, its dm2b); Srs's a7 reads rm3, which reads rm2 (a7, rm3, rm2);
-// Sijr's a3 reads hdm1 (a3, hdm1); and a16's and a22's fdm2, and a17's and
-// a19's h1e - Σ (mj|jn), are swept within their builders. A block that is a
-// class metric too (hdm1, rm2, hdm2) is @p m's own bar, which the sweep adds
-// to before sweeping it, so @p m is spent afterwards.
+// onto what built it. Sij's a9 reads hdm3, which reads hdm2 (a9, hdm3, then
+// sweep_metrics' hdm2 and its dm2b); Srs's a7 reads rm3, which reads rm2
+// (a7, rm3, then rm2); Sijr's a3 reads hdm1 (a3, then hdm1); and a16's and
+// a22's fdm2, and a17's and a19's h1e - Σ (mj|jn), are swept within their
+// builders. A block that is a class metric too (hdm1, rm2, hdm2) is @p m's
+// own bar, which this sweep adds to, so sweep_metrics runs after it.
 //
 // The intermediates a bar is taken against (hdm1, hdm2, hdm3, rm2, rm3, the
 // modified h1e) are rebuilt with the forward's own builders, not kept from
-// the walk. An operand whose own bar is the only one its term takes is never
-// read (einsum_adjoint reads every operand but k for k's bar), so fdm2 and
-// dm2b are not rebuilt: their operand is a shape. Every intermediate bar is
-// a buffer of its own, held across einsum_adjoint's workspace.
-Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
-                    const EnergyBars &bars) {
+// the walk, from a state's own RDMs: only a state's own walk has Dyall
+// blocks. An operand whose own bar is the only one its term takes is never
+// read (einsum_adjoint reads every operand but k for k's bar), so fdm2 is
+// not rebuilt: its operand is a shape. Every intermediate bar is a buffer of
+// its own, held across einsum_adjoint's workspace.
+Status sweep_dyall(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
+                   const EnergyBars &bars) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = o.dm1.dims[0];
   const std::vector<int64_t> d2{n, n};
@@ -966,16 +1209,8 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
                          const std::vector<int64_t> &out_dims) {
     return adjoint_terms(res, terms, out_bar.data(), out_bar.data(), out_dims, delta, nullptr);
   };
-  // A block that is an RDM itself, G = dm: the identity einsum.
-  const auto identity = [](const EinsumOperand &dm, double *const bar) {
-    const std::string_view subscripts = dm.dims.size() == 6   ? "abcdef->abcdef"
-                                        : dm.dims.size() == 4 ? "abcd->abcd"
-                                                              : "ab->ab";
-    return ClassTerm{.subscripts = subscripts, .ops = {dm}, .bars = {bar}};
-  };
-
   // Sr: a16, its fdm2 (gathered off the diagonal diag_a16 wrote,
-  // a16[p, i, r, a, b, i] += fdm2[p, r, a, b]), a17, a19, dm1..dm3.
+  // a16[p, i, r, a, b, i] += fdm2[p, r, a, b]), a17, a19.
   FBF_TRY(sweep({{"ib,rpqiac->pqrabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
                  {"ia,rpqbic->pqrabc", {h1e, dm3}, {bh1, b3}, false, 1.0},
                  {"ci,rpqbai->pqrabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
@@ -1011,13 +1246,10 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
     FBF_TRY(sweep({{"mn->mn", {h1e}, {bh1}, false, 1.0}, {"mjjn->mn", {h2e}, {bh2}, false, -1.0}},
                   h1e_mod_bar, d2));
   }
-  FBF_TRY(sweep({identity(dm3, b3)}, m.sr_dm3, d6));
-  FBF_TRY(sweep({identity(dm2, b2)}, m.sr_dm2, d4));
-  FBF_TRY(sweep({identity(dm1, b1)}, m.sr_dm1, d2));
 
   // Si: a22, its fdm2a (diag_a22a: a22[x, i, k, i, b, c] -= fdm2a[x, k, b, c])
   // and fdm2b (diag_a22b: a22[x, i, k, a, i, c] += 2 fdm2b[x, k, a, c]), a23,
-  // a25, dm3_h, dm2_h. dm1_h is make_hdm1, so its bar joins Sijr's hdm1's.
+  // a25.
   FBF_TRY(sweep({{"pb,kipjac->ijkabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
                  {"pa,kibjpc->ijkabc", {h1e, dm3}, {bh1, b3}, false, -1.0},
                  {"cp,kibjap->ijkabc", {h1e, dm3}, {bh1, b3}, false, 1.0},
@@ -1057,16 +1289,8 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
                  {"ap->pa", {h1e}, {bh1}, false, 2.0},
                  {"piaj,ij->ap", {h2e, dm1}, {bh2, b1}, false, 2.0}},
                 m.a25, d2));
-  FBF_TRY(sweep({{"abef,cd->abcdef", {dm2, delta}, {b2, nullptr}, false, 2.0},
-                 {"abcdef->abdcef", {dm3}, {b3}, false, -1.0}},
-                m.dm3_h, d6));
-  FBF_TRY(sweep({{"ab,cd->abcd", {dm1, delta}, {b1, nullptr}, false, 2.0},
-                 {"abcd->abdc", {dm2}, {b2}, false, -1.0}},
-                m.dm2_h, d4));
-  // dm1_h's value is not read: the identity's one operand is the one with a bar.
-  FBF_TRY(sweep({identity({.dims = d2}, m.hdm1.data())}, m.dm1_h, d2));
 
-  // Sijr: a3, then hdm1 (Si's dm1_h's bar already in it).
+  // Sijr: a3, onto hdm1's bar among others.
   {
     const Buffers::device<double> hdm1 = FBF_TRY(make_hdm1(res, dm1, delta));
     const EinsumOperand hdm1_op{.data = hdm1.data(), .dims = d2};
@@ -1075,17 +1299,14 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
                    {"ijka,jpik->pa", {h2e, dm2}, {bh2, b2}, false, -1.0}},
                   m.a3, d2));
   }
-  FBF_TRY(sweep({{"ij->ij", {delta}, {nullptr}, false, 2.0}, {"ab->ba", {dm1}, {b1}, false, -1.0}},
-                m.hdm1, d2));
 
-  // Srsi: k27, dm1.
+  // Srsi: k27.
   FBF_TRY(sweep({{"ai,pi->pa", {h1e, dm1}, {bh1, b1}, false, -1.0},
                  {"iajk,pkij->pa", {h2e, dm2}, {bh2, b2}, false, -1.0},
                  {"iaji,pj->pa", {h2e, dm1}, {bh2, b1}, false, 1.0}},
                 m.k27, d2));
-  FBF_TRY(sweep({identity(dm1, b1)}, m.srsi_dm1, d2));
 
-  // Srs: a7, rm3, rm2. make_a7 is what builds rm2; its a7 is not read.
+  // Srs: a7, rm3. make_a7 is what builds rm2; its a7 is not read.
   {
     const Buffers::device<double> rm2 = FBF_TRY(make_a7(res, h1e, h2e, dm1, dm2, dm3, delta)).first;
     const EinsumOperand rm2_op{.data = rm2.data(), .dims = d4};
@@ -1106,11 +1327,8 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
                    {"kn,ijml->ijklmn", {delta, rm2_op}, {nullptr, br2}, false, -1.0}},
                   rm3_bar, d6));
   }
-  FBF_TRY(sweep({{"iljk->ijkl", {dm2}, {b2}, false, 1.0},
-                 {"ik,jl->ijkl", {dm1, delta}, {b1, nullptr}, false, -1.0}},
-                m.rm2, d4));
 
-  // Sij: a9, hdm3, hdm2, dm2b.
+  // Sij: a9, hdm3.
   {
     const Buffers::device<double> hdm2 = FBF_TRY(make_hdm2(res, dm1, dm2, delta));
     const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
@@ -1140,24 +1358,8 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
                    {"ar,bqcp->pqrabc", {delta, dm2}, {nullptr, b2}, false, -1.0}},
                   hdm3_bar, d6));
   }
-  {
-    Buffers::device<double> dm2b_bar = FBF_TRY(device_zeros(res, n * n * n * n));
-    // dm2b's value is never read: its term's one operand is the one with a bar.
-    const EinsumOperand dm2b_op{.data = nullptr, .dims = d4};
-    FBF_TRY(sweep({{"klij->ijkl", {dm2b_op}, {dm2b_bar.data()}, false, 1.0},
-                   {"il,kj->ijkl", {delta, dm1}, {nullptr, b1}, false, 1.0},
-                   {"jk,li->ijkl", {delta, dm1}, {nullptr, b1}, false, 1.0},
-                   {"ik,lj->ijkl", {delta, dm1}, {nullptr, b1}, false, -2.0},
-                   {"jl,ki->ijkl", {delta, dm1}, {nullptr, b1}, false, -2.0},
-                   {"il,jk->ijkl", {delta, delta}, {nullptr, nullptr}, false, -2.0},
-                   {"ik,jl->ijkl", {delta, delta}, {nullptr, nullptr}, false, 4.0}},
-                  m.hdm2, d4));
-    FBF_TRY(sweep({{"ikjl->ijkl", {dm2}, {b2}, false, 1.0},
-                   {"jk,il->ijkl", {delta, dm1}, {nullptr, b1}, false, -1.0}},
-                  dm2b_bar, d4));
-  }
 
-  // Sir: a12, a13, dm2, dm1.
+  // Sir: a12, a13.
   FBF_TRY(sweep({{"ia,qpib->pqab", {h1e, dm2}, {bh1, b2}, false, 1.0},
                  {"bi,qpai->pqab", {h1e, dm2}, {bh1, b2}, false, -1.0},
                  {"ijka,qpjbik->pqab", {h2e, dm3}, {bh2, b3}, false, 1.0},
@@ -1178,73 +1380,299 @@ Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
                  {"ap,mbkl,qlmk->pqab", {delta, h2e, dm2}, {nullptr, bh2, b2}, false, -2.0},
                  {"ap,lbkl,qk->pqab", {delta, h2e, dm1}, {nullptr, bh2, b1}, false, 2.0}},
                 m.a13, d4));
+  return {};
+}
+
+// The metrics' bars (Sr's dm1..dm3, dm3_h, dm2_h, dm1_h, hdm1, Srsi's dm1,
+// rm2, hdm2, Sir's dm1 and dm2) back through their make_* onto @p bars' RDM
+// fields, as sweep_dyall does the Dyall blocks', and after it: its hdm1,
+// rm2 and hdm2 bars are complete only then. They read no integral, so a
+// pair's transition RDMs take theirs here alone, @p o then the pair's
+// operands. dm2b is not rebuilt: its term's one operand is the one with a
+// bar. @p m is spent afterwards.
+Status sweep_metrics(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
+                     const EnergyBars &bars) {
+  const int64_t n = o.dm1.dims[0];
+  const std::vector<int64_t> d2{n, n};
+  const std::vector<int64_t> d4(4, n);
+  const std::vector<int64_t> d6(6, n);
+  const EinsumOperand &dm1 = o.dm1;
+  const EinsumOperand &dm2 = o.dm2;
+  const EinsumOperand &dm3 = o.dm3;
+  const EinsumOperand &delta = o.delta;
+  double *const b1 = bars.dm1;
+  double *const b2 = bars.dm2;
+  double *const b3 = bars.dm3;
+  // Every term of @p terms against @p out_bar, the bar on what they build.
+  const auto sweep = [&](const std::vector<ClassTerm> &terms,
+                         const Buffers::device<double> &out_bar,
+                         const std::vector<int64_t> &out_dims) {
+    return adjoint_terms(res, terms, out_bar.data(), out_bar.data(), out_dims, delta, nullptr);
+  };
+  // A block that is an RDM itself, G = dm: the identity einsum.
+  const auto identity = [](const EinsumOperand &dm, double *const bar) {
+    const std::string_view subscripts = dm.dims.size() == 6   ? "abcdef->abcdef"
+                                        : dm.dims.size() == 4 ? "abcd->abcd"
+                                                              : "ab->ab";
+    return ClassTerm{.subscripts = subscripts, .ops = {dm}, .bars = {bar}};
+  };
+
+  // Sr: dm1..dm3.
+  FBF_TRY(sweep({identity(dm3, b3)}, m.sr_dm3, d6));
+  FBF_TRY(sweep({identity(dm2, b2)}, m.sr_dm2, d4));
+  FBF_TRY(sweep({identity(dm1, b1)}, m.sr_dm1, d2));
+
+  // Si: dm3_h, dm2_h. dm1_h is make_hdm1, so its bar joins Sijr's hdm1's.
+  FBF_TRY(sweep({{"abef,cd->abcdef", {dm2, delta}, {b2, nullptr}, false, 2.0},
+                 {"abcdef->abdcef", {dm3}, {b3}, false, -1.0}},
+                m.dm3_h, d6));
+  FBF_TRY(sweep({{"ab,cd->abcd", {dm1, delta}, {b1, nullptr}, false, 2.0},
+                 {"abcd->abdc", {dm2}, {b2}, false, -1.0}},
+                m.dm2_h, d4));
+  // dm1_h's value is not read: the identity's one operand is the one with a bar.
+  FBF_TRY(sweep({identity({.dims = d2}, m.hdm1.data())}, m.dm1_h, d2));
+
+  // Sijr: hdm1 (Si's dm1_h's bar, and sweep_dyall's a3's, already in it).
+  FBF_TRY(sweep({{"ij->ij", {delta}, {nullptr}, false, 2.0}, {"ab->ba", {dm1}, {b1}, false, -1.0}},
+                m.hdm1, d2));
+
+  // Srsi: dm1.
+  FBF_TRY(sweep({identity(dm1, b1)}, m.srsi_dm1, d2));
+
+  // Srs: rm2 (sweep_dyall's a7's and rm3's bars already in it).
+  FBF_TRY(sweep({{"iljk->ijkl", {dm2}, {b2}, false, 1.0},
+                 {"ik,jl->ijkl", {dm1, delta}, {b1, nullptr}, false, -1.0}},
+                m.rm2, d4));
+
+  // Sij: hdm2 (sweep_dyall's a9's and hdm3's bars already in it), dm2b.
+  {
+    Buffers::device<double> dm2b_bar = FBF_TRY(device_zeros(res, n * n * n * n));
+    // dm2b's value is never read: its term's one operand is the one with a bar.
+    const EinsumOperand dm2b_op{.data = nullptr, .dims = d4};
+    FBF_TRY(sweep({{"klij->ijkl", {dm2b_op}, {dm2b_bar.data()}, false, 1.0},
+                   {"il,kj->ijkl", {delta, dm1}, {nullptr, b1}, false, 1.0},
+                   {"jk,li->ijkl", {delta, dm1}, {nullptr, b1}, false, 1.0},
+                   {"ik,lj->ijkl", {delta, dm1}, {nullptr, b1}, false, -2.0},
+                   {"jl,ki->ijkl", {delta, dm1}, {nullptr, b1}, false, -2.0},
+                   {"il,jk->ijkl", {delta, delta}, {nullptr, nullptr}, false, -2.0},
+                   {"ik,jl->ijkl", {delta, delta}, {nullptr, nullptr}, false, 4.0}},
+                  m.hdm2, d4));
+    FBF_TRY(sweep({{"ikjl->ijkl", {dm2}, {b2}, false, 1.0},
+                   {"jk,il->ijkl", {delta, dm1}, {nullptr, b1}, false, -1.0}},
+                  dm2b_bar, d4));
+  }
+
+  // Sir: dm2, dm1.
   FBF_TRY(sweep({identity(dm2, b2)}, m.sir_dm2, d4));
   FBF_TRY(sweep({identity(dm1, b1)}, m.sir_dm1, d2));
   return {};
 }
 
-Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks,
-                                                    const EnergyInputs &in, const int32_t batch,
-                                                    const EnergyBars &bars) {
+// Every block's bar M_G back through its builder: sweep_dyall, then
+// sweep_metrics. @p m is spent afterwards.
+Status sweep_blocks(DeviceResources &res, const ActiveOperands &o, BlockBars &m,
+                    const EnergyBars &bars) {
+  FBF_TRY(sweep_dyall(res, o, m, bars));
+  return sweep_metrics(res, o, m, bars);
+}
+
+// ---------------------------------------------------------------------------
+// The SC-QD reverse pass, and SC's at n = 1
+// ---------------------------------------------------------------------------
+
+// One state's own tables over one class's walk, perturber by perturber in
+// walk order: its norm N^J and H^J, and A^J = Σ_{I != J} H̄_IJ T_IJ / D_J²,
+// the bar on its denominator D_J = Δ + H^J / N^J that the pairs with ket J
+// put there.
+struct KetTables {
+  std::vector<double> norm, h, a;
+};
+
+Result<ScEffectiveHamiltonianAdjoint> sc_couplings_adjoint(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    const int64_t ns, std::span<const double> hbar, const int32_t batch,
+    std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition) {
   const ScopedDeviceIndex on{res.dev_idx()};
-  const ActiveOperands ops = FBF_TRY(active_operands(res, blocks, in));
-  std::vector<double> e_core_bar(ops.e_core.size(), 0.0);
-  std::vector<double> e_virt_bar(ops.e_virt.size(), 0.0);
-  ReverseContext c{
-      .res = res,
-      .blocks = blocks,
-      .in = in,
-      .bars = bars,
-      .batch = batch,
-      .ops = ops,
-      .e = {
-          .core = ops.e_core, .virt = ops.e_virt, .core_bar = e_core_bar, .virt_bar = e_virt_bar}};
-  const int64_t n = blocks.ncas;
-  // A zeroed n^rank block bar.
-  const auto zeros = [&](const int32_t rank) {
-    int64_t count = 1;
-    for (int32_t k = 0; k < rank; ++k) {
-      count *= n;
-    }
-    return device_zeros(res, count);
+  std::vector<ActiveOperands> ops;
+  for (const EnergyInputs &pair : pairs) {
+    ops.push_back(FBF_TRY(active_operands(res, blocks, pair)));
+  }
+  const auto at = [ns](const int64_t i, const int64_t j) {
+    return static_cast<size_t>((i * ns) + j);
   };
-  BlockBars m{.a16 = FBF_TRY(zeros(6)),
-              .a17 = FBF_TRY(zeros(4)),
-              .a19 = FBF_TRY(zeros(2)),
-              .sr_dm3 = FBF_TRY(zeros(6)),
-              .sr_dm2 = FBF_TRY(zeros(4)),
-              .sr_dm1 = FBF_TRY(zeros(2)),
-              .a22 = FBF_TRY(zeros(6)),
-              .a23 = FBF_TRY(zeros(4)),
-              .a25 = FBF_TRY(zeros(2)),
-              .dm3_h = FBF_TRY(zeros(6)),
-              .dm2_h = FBF_TRY(zeros(4)),
-              .dm1_h = FBF_TRY(zeros(2)),
-              .hdm1 = FBF_TRY(zeros(2)),
-              .a3 = FBF_TRY(zeros(2)),
-              .srsi_dm1 = FBF_TRY(zeros(2)),
-              .k27 = FBF_TRY(zeros(2)),
-              .rm2 = FBF_TRY(zeros(4)),
-              .a7 = FBF_TRY(zeros(4)),
-              .hdm2 = FBF_TRY(zeros(4)),
-              .a9 = FBF_TRY(zeros(4)),
-              .sir_dm2 = FBF_TRY(zeros(4)),
-              .sir_dm1 = FBF_TRY(zeros(2)),
-              .a12 = FBF_TRY(zeros(4)),
-              .a13 = FBF_TRY(zeros(4))};
-  std::array<ClassSums, 8> sums;
-  sums[0] = FBF_TRY(reverse_sr(c, m));
-  sums[1] = FBF_TRY(reverse_si(c, m));
-  sums[2] = FBF_TRY(reverse_sijrs(c));
-  sums[3] = FBF_TRY(reverse_sijr(c, m));
-  sums[4] = FBF_TRY(reverse_srsi(c, m));
-  sums[5] = FBF_TRY(reverse_srs(c, m));
-  sums[6] = FBF_TRY(reverse_sij(c, m));
-  sums[7] = FBF_TRY(reverse_sir(c, m));
+  std::vector<double> e_core_bar(ops.front().e_core.size(), 0.0);
+  std::vector<double> e_virt_bar(ops.front().e_virt.size(), 0.0);
+  // The fields every pair shares, and their bars, are the first's.
+  ReverseContext c{.res = res,
+                   .blocks = blocks,
+                   .in = pairs.front(),
+                   .bars = bars.front(),
+                   .batch = batch,
+                   .ops = ops.front(),
+                   .e = {.core = ops.front().e_core,
+                         .virt = ops.front().e_virt,
+                         .core_bar = e_core_bar,
+                         .virt_bar = e_virt_bar}};
+  // Every class but Sijrs, in PySCF's order.
+  const std::array<std::pair<size_t, Result<double> (*)(ReverseContext &, const ScWalk &)>, 7>
+      walks{{{0, reverse_sr},
+             {1, reverse_si},
+             {3, reverse_sijr},
+             {4, reverse_srsi},
+             {5, reverse_srs},
+             {6, reverse_sij},
+             {7, reverse_sir}}};
+  ScEffectiveHamiltonianAdjoint out;
+  out.elements.resize(static_cast<size_t>(ns * ns));
+  std::array<std::vector<KetTables>, 8> kets;
+  for (std::vector<KetTables> &k : kets) {
+    k.resize(static_cast<size_t>(ns));
+  }
+
+  // 1. Each state's own N and H, perturber by perturber: the denominators
+  //    every pair with that ket reads. One state has no pair, so none.
+  if (ns > 1) {
+    BlockBars none = FBF_TRY(block_bars(res, blocks.ncas, false, false));
+    for (int64_t j = 0; j < ns; ++j) {
+      for (const auto &[k, walk] : walks) {
+        KetTables &kt = kets[k][static_cast<size_t>(j)];
+        const ScWalk w{.a = &ops[at(j, j)],
+                       .m_a = &none,
+                       .adjoint = false,
+                       .finish = [&](int64_t, const std::vector<Perturber> &perturbers,
+                                     const std::vector<double> &a, const std::vector<double> &b,
+                                     std::vector<double> &, std::vector<double> &) {
+                         for (const Perturber &x : perturbers) {
+                           kt.norm.push_back(combined(x, a));
+                           kt.h.push_back(combined(x, b));
+                         }
+                       }};
+        FBF_TRY(walk(c, w));
+        kt.a.assign(kt.norm.size(), 0.0);
+      }
+    }
+  }
+
+  // 2. Each unordered pair M < N: the 2 x 2 block's couplings (M, N) and
+  //    (N, M), the bars on their shared T (onto the slabs, h1e_v's rows and
+  //    the pair's metrics), and A on both kets. Its metrics' bars are then
+  //    swept onto its transition RDMs, handed over, and freed.
+  for (int64_t mi = 0; mi < ns; ++mi) {
+    for (int64_t ni = mi + 1; ni < ns; ++ni) {
+      BlockBars m_mn = FBF_TRY(block_bars(res, blocks.ncas, false, true));
+      BlockBars m_nm = FBF_TRY(block_bars(res, blocks.ncas, false, true));
+      for (const auto &[k, walk] : walks) {
+        const ScWalk w{.a = &ops[at(mi, ni)],
+                       .m_a = &m_mn,
+                       .b = &ops[at(ni, mi)],
+                       .m_b = &m_nm,
+                       .finish = [&](const int64_t first, const std::vector<Perturber> &perturbers,
+                                     const std::vector<double> &a, const std::vector<double> &b,
+                                     std::vector<double> &a_bar, std::vector<double> &b_bar) {
+                         for (size_t x = 0; x < perturbers.size(); ++x) {
+                           const Perturber &p = perturbers[x];
+                           const auto g = static_cast<size_t>(first) + x;
+                           // T, the mean of the two norm einsums.
+                           const double t = 0.5 * (combined(p, a) + combined(p, b));
+                           double coefficient = 0.0;
+                           for (const auto &[bra, ket] : {std::pair{mi, ni}, std::pair{ni, mi}}) {
+                             ClassEnergies &element = out.elements[at(bra, ket)];
+                             element.norms[k] += t;
+                             KetTables &kt = kets[k][static_cast<size_t>(ket)];
+                             if (std::abs(kt.norm[g]) <= kNumericalZero) {
+                               continue;
+                             }
+                             const double d = perturber_delta(p, c.e) + (kt.h[g] / kt.norm[g]);
+                             element.energies[k] -= t / d;
+                             const double weight = hbar[at(bra, ket)];
+                             kt.a[g] += weight * t / (d * d);
+                             coefficient -= weight / d;
+                           }
+                           spread(p, 0.5 * coefficient, a_bar);
+                           spread(p, 0.5 * coefficient, b_bar);
+                         }
+                       }};
+        out.eq40[k] += FBF_TRY(walk(c, w));
+      }
+      if (transition) {
+        const int64_t n = blocks.ncas;
+        for (const auto &[bra, ket, m] : {std::tuple{mi, ni, &m_mn}, std::tuple{ni, mi, &m_nm}}) {
+          Buffers::device<double> dm1 = FBF_TRY(device_zeros(res, n * n));
+          Buffers::device<double> dm2 = FBF_TRY(device_zeros(res, n * n * n * n));
+          Buffers::device<double> dm3 = FBF_TRY(device_zeros(res, n * n * n * n * n * n));
+          const EnergyBars t{.dm1 = dm1.data(), .dm2 = dm2.data(), .dm3 = dm3.data()};
+          FBF_TRY(sweep_metrics(res, ops[at(bra, ket)], *m, t));
+          FBF_TRY(transition(bra, ket, t));
+        }
+      }
+    }
+  }
+
+  // 3. Each state's own walk: its norm and H, the finish's multipliers with
+  //    the pairs' A^J added, every term's adjoint, and its block bars swept
+  //    onto its own RDMs' bars and the shared h1e and h2e.
+  for (int64_t j = 0; j < ns; ++j) {
+    BlockBars m = FBF_TRY(block_bars(res, blocks.ncas, true, true));
+    const double weight = hbar[at(j, j)];
+    ClassEnergies &element = out.elements[at(j, j)];
+    for (const auto &[k, walk] : walks) {
+      const KetTables &kt = kets[k][static_cast<size_t>(j)];
+      // PySCF's _norm_to_energy over the walk's own tables, and its
+      // derivatives, Park Eqs. 36-38 for H̄_JJ E_J: T = -1 / (Δ + H/N),
+      // P = dE/dN = 2T + Δ T², Q = dE/dH = T² and R = dE/dΔ = N T², each put
+      // back onto the tables and the orbital energies the perturber reads.
+      // A^J adds the pairs' share through D_J: -A H / N² on N, A / N on H,
+      // A on Δ. A vanishing norm contributes no energy and no multipliers.
+      const ScWalk w{
+          .a = &ops[at(j, j)],
+          .m_a = &m,
+          .finish = [&](const int64_t first, const std::vector<Perturber> &perturbers,
+                        const std::vector<double> &a, const std::vector<double> &b,
+                        std::vector<double> &a_bar, std::vector<double> &b_bar) {
+            for (size_t x = 0; x < perturbers.size(); ++x) {
+              const Perturber &p = perturbers[x];
+              const double norm = combined(p, a);
+              const double h = combined(p, b);
+              element.norms[k] += norm;
+              if (std::abs(norm) <= kNumericalZero) {
+                continue;
+              }
+              const double diff = perturber_delta(p, c.e);
+              element.energies[k] -= norm / (diff + (h / norm));
+              const double t = -1.0 / (diff + (h / norm));
+              const double ap = kt.a.empty() ? 0.0 : kt.a[static_cast<size_t>(first) + x];
+              spread(p, (weight * ((2.0 * t) + (diff * t * t))) + (ap * (-h / (norm * norm))),
+                     a_bar);
+              spread(p, (weight * (t * t)) + (ap / norm), b_bar);
+              add_delta_bar(p, (weight * (norm * t * t)) + ap, c.e);
+            }
+          }};
+      out.eq40[k] += FBF_TRY(walk(c, w));
+    }
+    const EnergyBars &own = bars[static_cast<size_t>(j)];
+    const std::array wanted{own.h1e, own.h2e, own.dm1, own.dm2, own.dm3, own.f3ca, own.f3ac};
+    if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
+      FBF_TRY(sweep_blocks(res, ops[at(j, j)], m, own));
+    }
+  }
+
+  // Sijrs reads no RDM: every state's own is the one E, and every
+  // transition's ⟨I|J⟩ = 0 times it, so its bars are Σ_J H̄_JJ times E's.
+  double trace = 0.0;
+  for (int64_t j = 0; j < ns; ++j) {
+    trace += hbar[at(j, j)];
+  }
+  const ClassSums sijrs = FBF_TRY(reverse_sijrs(c, trace));
+  for (int64_t j = 0; j < ns; ++j) {
+    out.elements[at(j, j)].norms[2] = sijrs.norm;
+    out.elements[at(j, j)].energies[2] = sijrs.energy;
+  }
+  out.eq40[2] = sijrs.eq40;
 
   // R's host sums onto the orbital energies' bars (Sijrs's are already there).
   for (const auto &[host, bar] :
-       {std::pair{&e_core_bar, bars.e_core}, std::pair{&e_virt_bar, bars.e_virt}}) {
+       {std::pair{&e_core_bar, c.bars.e_core}, std::pair{&e_virt_bar, c.bars.e_virt}}) {
     if (bar != nullptr && !host->empty()) {
       const Buffers::device<double> d = FBF_TRY(upload(res, *host));
       FBF_TRY(einsum(res.stream(), "i->i", {{.data = d.data(), .dims = {std::ssize(*host)}}}, bar,
@@ -1252,20 +1680,19 @@ Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const 
       FBF_TRY(res.sync());
     }
   }
-
-  ClassEnergiesAdjoint out;
-  for (size_t k = 0; k < 8; ++k) {
-    out.energies.norms[k] = sums[k].norm;
-    out.energies.energies[k] = sums[k].energy;
-    out.eq40[k] = sums[k].eq40;
-  }
-  out.energies.total = std::ranges::fold_left(out.energies.energies, 0.0, std::plus{});
-
-  const std::array wanted{bars.h1e, bars.h2e, bars.dm1, bars.dm2, bars.dm3, bars.f3ca, bars.f3ac};
-  if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
-    FBF_TRY(sweep_blocks(res, ops, m, bars));
+  for (ClassEnergies &element : out.elements) {
+    element.total = std::ranges::fold_left(element.energies, 0.0, std::plus{});
   }
   return out;
+}
+
+Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks,
+                                                    const EnergyInputs &in, const int32_t batch,
+                                                    const EnergyBars &bars) {
+  const double one = 1.0;
+  ScEffectiveHamiltonianAdjoint got =
+      FBF_TRY(sc_couplings_adjoint(res, blocks, {&in, 1}, 1, {&one, 1}, batch, {&bars, 1}, {}));
+  return ClassEnergiesAdjoint{.energies = got.elements.front(), .eq40 = got.eq40};
 }
 
 // ---------------------------------------------------------------------------
@@ -1303,13 +1730,13 @@ Result<PcWalkBars> pc_walk_bars(DeviceResources &res, const int64_t m, const int
 // One slab's PC finish and its adjoint, row t of y (m wide) a tuple, its
 // Perturber read as: t2 < 0 a single coupling with factor s, t2 >= 0 the
 // pair 2 direct - exchange with its exchange row t2 of x (Sijr, Srsi); Δ from
-// the orbital energies as finish_adjoint's. With g = y / (λ + Δ) and
+// the orbital energies as SC's finish takes it. With g = y / (λ + Δ) and
 // g_x = x / (λ + Δ):
 //   single: E -= s g.y,          ybar = -2 s g,           w = s g,
 //           R = s g.g;
 //   pair:   E -= 2 g.y - g.x,    ybar = -(4 g - g_x), xbar = g,
 //           w = 2 g - g_x,       R = 2 g.g - g.g_x;
-// R = dE/dΔ onto the orbital energies, as finish_adjoint puts it.
+// R = dE/dΔ onto the orbital energies, as SC's finish puts it.
 struct PcRows {
   std::vector<double> ybar, xbar, g, w, delta;
   double energy = 0.0;
@@ -2026,38 +2453,7 @@ pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const En
   // SC's block bars, every one zeroed: PC adds onto those its S, K and S₁ are
   // built from, and the sweep reads them all (a17, a19, a23, a25 and dm1_h
   // stay zero).
-  const int64_t n = blocks.ncas;
-  const auto zeros = [&](const int32_t rank) {
-    int64_t count = 1;
-    for (int32_t k = 0; k < rank; ++k) {
-      count *= n;
-    }
-    return device_zeros(res, count);
-  };
-  BlockBars m{.a16 = FBF_TRY(zeros(6)),
-              .a17 = FBF_TRY(zeros(4)),
-              .a19 = FBF_TRY(zeros(2)),
-              .sr_dm3 = FBF_TRY(zeros(6)),
-              .sr_dm2 = FBF_TRY(zeros(4)),
-              .sr_dm1 = FBF_TRY(zeros(2)),
-              .a22 = FBF_TRY(zeros(6)),
-              .a23 = FBF_TRY(zeros(4)),
-              .a25 = FBF_TRY(zeros(2)),
-              .dm3_h = FBF_TRY(zeros(6)),
-              .dm2_h = FBF_TRY(zeros(4)),
-              .dm1_h = FBF_TRY(zeros(2)),
-              .hdm1 = FBF_TRY(zeros(2)),
-              .a3 = FBF_TRY(zeros(2)),
-              .srsi_dm1 = FBF_TRY(zeros(2)),
-              .k27 = FBF_TRY(zeros(2)),
-              .rm2 = FBF_TRY(zeros(4)),
-              .a7 = FBF_TRY(zeros(4)),
-              .hdm2 = FBF_TRY(zeros(4)),
-              .a9 = FBF_TRY(zeros(4)),
-              .sir_dm2 = FBF_TRY(zeros(4)),
-              .sir_dm1 = FBF_TRY(zeros(2)),
-              .a12 = FBF_TRY(zeros(4)),
-              .a13 = FBF_TRY(zeros(4))};
+  BlockBars m = FBF_TRY(block_bars(res, blocks.ncas, true, true));
 
   PcClassEnergiesAdjoint out;
   const auto put = [&out](const size_t k, const PcClassSums &x) {
@@ -2068,7 +2464,7 @@ pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const En
   put(0, FBF_TRY(pc_reverse_sr(c, m)));
   put(1, FBF_TRY(pc_reverse_si(c, m)));
   // Sijrs has no active index, so its PC energy, and its reverse pass, are SC's.
-  const ClassSums sijrs = FBF_TRY(reverse_sijrs(c));
+  const ClassSums sijrs = FBF_TRY(reverse_sijrs(c, 1.0));
   put(2, PcClassSums{.energy = sijrs.energy, .homogeneity = sijrs.eq40});
   put(3, FBF_TRY(pc_reverse_sijr(c, m)));
   put(4, FBF_TRY(pc_reverse_srsi(c, m)));

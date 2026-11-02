@@ -2,7 +2,8 @@
 
 The eight strongly contracted NEVPT2 class energies of one state on the GPU,
 the SC-QD-NEVPT2 effective Hamiltonian of several
-([SC-QD-NEVPT2](#sc-qd-nevpt2)), and the eight partially contracted ones
+([SC-QD-NEVPT2](#sc-qd-nevpt2)) and its reverse pass
+([The SC-QD reverse pass](#the-sc-qd-reverse-pass)), and the eight partially contracted ones
 and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
 [PC-QD-NEVPT2](#pc-qd-nevpt2)), each class walking its external index in batches
 over the density-fitted slabs. Link `free_breakfast::nevpt2::energy`.
@@ -312,7 +313,7 @@ and re-evaluates its norms and H. Srsi rebuilds every slab twice.
 
 **The block bars.** Every class also gets M_G = ∂E/∂G on each block G it
 contracts. These are `BlockBars` in `reverse.cpp`, row-major like G, and
-`class_bars` returns them. A metric a class reads straight from an RDM
+`block_bars` allocates them. A metric a class reads straight from an RDM
 (Sr's dm1–dm3, Srsi's dm1, Sir's dm1 and dm2) is a block of that class there,
 so each class's Eq. 40 is assembled from its own bars:
 `eq40[k] = Σ_G ⟨M_G, G⟩`, plus ⟨P, term⟩ for Sir's one term that reads no
@@ -322,7 +323,11 @@ block, and ½ ⟨ḡ, g⟩ for Sijrs.
 
 `sweep_blocks` takes every M_G back through the `make_*` that built G, onto
 the `h1e`, `h2e` and RDM fields of `EnergyBars` (skipped when all seven are
-null). Each builder is listed term by term with energy.cpp's subscripts,
+null). It is two halves, in this order: `sweep_dyall`, the Dyall blocks
+(a16, a17, a19, a22, a23, a25, a3, k27, a7, a9, a12, a13), which read h1e and
+h2e and only a state's own walk has; and `sweep_metrics`, the metrics (Sr's
+dm1–dm3, dm3_h, dm2_h, dm1_h, hdm1, Srsi's dm1, rm2, hdm2, Sir's dm1 and dm2),
+which read only RDMs and are all a QD pair's transition RDMs take. Each builder is listed term by term with energy.cpp's subscripts,
 coefficients and operands, so the two read side by side, and each term goes
 through `einsum_adjoint` unchanged: with h1e and h2e among the bars, every
 operand of a term but delta takes one. A transpose is its one-operand einsum,
@@ -334,7 +339,7 @@ dm1, Sir's dm1 and dm2) is the identity einsum.
 is swept onto what built it: a9, hdm3, hdm2, then hdm2's dm2b (Sij); a7,
 rm3, rm2 (Srs); a3, hdm1 (Sijr). Where a class reads the intermediate as its
 metric too (hdm1, rm2, hdm2), the walk's M_G is where the builders above it
-add, so `BlockBars` is spent by the sweep. Si's dm1_h is `make_hdm1`, so its
+add (so `sweep_dyall` runs first), and `BlockBars` is spent by the sweep. Si's dm1_h is `make_hdm1`, so its
 bar joins Sijr's hdm1's and is swept once. a17's and a19's h1e − Σ_j (mj|jn)
 gets one bar from both and is swept onto h1e and h2e last.
 
@@ -361,6 +366,79 @@ too, since they are held across `einsum_adjoint`'s and `slab_adjoint`'s
 workspace. The sweep adds at most two n⁶ at once (hdm3 and its bar, or rm3
 and its bar) and a few n⁴; every intermediate bar is a buffer of its own for
 the same reason.
+
+## The SC-QD reverse pass
+
+    sc_effective_hamiltonian_adjoint(res, blocks, pairs, hbar, batch, bars, transition)
+        -> ScEffectiveHamiltonianAdjoint
+        elements     sc_effective_hamiltonian's n² ClassEnergies
+        eq40[8]      Σ_IJ H̄_IJ H^k_IJ per class, from the bars
+    hbar        H̄, n x n row-major: L = Σ_IJ H̄_IJ H_IJ is what is differentiated
+    bars        n EnergyBars: bars[J]'s dm1..f3ac state J's own RDMs' bars; the
+                shared fields' (h1e, h2e, h1e_v_*, e_*, Λ) bars[0]'s, the same
+                pointer in every entry (checked), summed over the pairs
+    transition  called once per ordered pair (I, J), I != J, with an
+                EnergyBars whose dm1, dm2, dm3 alone are set; null: not formed
+
+`reverse.cpp`, after SC's, whose walk it is: **`class_energies_adjoint` is
+its n = 1, H̄ = 1**, einsum for einsum (`sc_couplings_adjoint`; `qd.cpp`
+checks the inputs). The coupling −T_IJ / D_J, D_J = Δ + H^J / N^J, has
+three kinds of bar:
+
+    on T_IJ:          −H̄_IJ / D_J, half onto each of the norm einsums of (I, J) and (J, I)
+    on D_J:           A_J = Σ_I H̄_IJ T_IJ / D_J²   (I = J included, T_JJ = N^J)
+    through D_J:      −A_J H^J / (N^J)² on N^J,  A_J / N^J on H^J,  A_J on Δ
+
+At I = J these are Park Eqs. 36–38 times H̄_JJ, and the own walk's finish is
+written so: `H̄_JJ (2T + ΔT²) + A′ (−H/N²)`, A′ the pairs' share, so at
+n = 1 every multiplier is SC's to the bit. A vanishing ket norm gives its
+column no energy and no bars, as in the forward. Sijrs reads no RDM, so its
+bars are `sijrs_adjoint`'s with weight Σ_J H̄_JJ.
+
+**Pair at a time.** The walk runs in three parts, every class's slabs
+rebuilt in each:
+
+1. Each state's own walk, evaluated only: its N^J and H^J per perturber, in
+   walk order, kept on the host (`KetTables`). Skipped at n = 1, which has no
+   pair.
+2. Each unordered pair M < N: per class, the slabs walked once, the norm
+   einsums of (M, N) and (N, M) evaluated (the 2 × 2 block's couplings and
+   T), and differentiated at once (onto the slabs and so Λ, h1e_v's rows and
+   the pair's metric bars): the multiplier on T needs only the kets' D,
+   which part 1 has. A_M and A_N accumulate on the host. Then the pair's
+   metric bars are swept onto its transition dm1–dm3 (`sweep_metrics`),
+   handed to `transition`, (M, N) then (N, M), and freed.
+3. Each state's own walk, as `class_energies_adjoint`'s with A_J added, and
+   its sweep onto bars[J] and the shared h1e and h2e.
+
+The hand-off is a callback so that the next consumer (the SC-QD adjoint,
+#702) can take each pair's bars through the transition `rdms_adjoint` at
+once. The bars are device buffers queued on `res.stream()`, freed when the
+walk moves on: the callee works on that stream or synchronizes.
+
+**Eq. 40.** Each coupling is homogeneous of degree one in (T_IJ, N^J, H^J),
+so Σ_tables ⟨P, table⟩ + ⟨Q, H⟩ over every walk is Σ_IJ H̄_IJ H_IJ per class:
+the pairs' T share gives the off-diagonal elements, and A's share through
+N and H cancels. `eq40` is assembled from the block bars as SC's is, and
+Euler's degree-4 identity in (B, h1e_v²) holds for L.
+
+**Memory.** Peak, besides the caller's n own-RDM bar sets: one pair's
+transition set (one ordered pair's dm1–dm3 bars at a time, each freed after
+its call), the pair's two metric `BlockBars`
+(Sr's dm3 and dm3_h, n_act⁶ each per side) and its norm intermediates while
+a class walks; or, in part 3, one state's full `BlockBars` and blocks, as
+`class_energies_adjoint`'s. Never n² sets: at n_act = 12 an n_act⁶ array is
+24 MB. The host tables are three doubles per perturber per class per state.
+
+**Conditioning.** The bars inherit the coupling's: a perturber whose own
+norm N^J is small (1e-12 on the H₂CO and H₈-ring cases) has a Rayleigh
+quotient H^J / N^J that round-off moves, and the transition numerator T_IJ
+does not shrink with N^J. `h2co_skew_ccpvdz_sa3`'s bars repeat run to run to
+9e-10 of their largest element, `h8_ring_sto3g_sa3`'s to 3e-8, 2e-8 already
+at n = 1 (`class_energies_adjoint`'s own arithmetic); `h8_sto3g_sa3`'s to
+3e-13 (RTX 3080). Along raw B, h or RDM directions the energy is not smooth
+at a finite-difference ladder's scale on five of the six cases, one state
+alone included; the orbital energies move Δ alone and are.
 
 ## The PC reverse pass
 
@@ -536,6 +614,24 @@ CAS(8,8) from PySCF's RDMs. At CAS(4,4), Si vanishes by N₂'s symmetry
   as much (dm2's bar up to 6.6e-13 on the gfx1200 and 8.9e-13 on the 3080,
   batched vs whole up to 1.06e-12), so the earlier 1e-12 failed one run in
   20-50 on each card (#640); raised by the user's decision.
+
+The SC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
+with a seeded random, unsymmetric H̄:
+
+- `Nevpt2QdEnergyAdjointCases.Eq40AndEulerFromTheBars`, all six cases: every
+  element against `sc_effective_hamiltonian` at 1e-12, each class's Eq. 40
+  against Σ H̄_IJ H^k_IJ and Euler's 4L at 1e-12. Measured: ≤ 2.3e-15 and
+  ≤ 2.6e-15.
+- `Nevpt2QdEnergyAdjoint.OneStateIsClassEnergiesAdjoint` (`h8_sto3g_sa3`,
+  state 0, H̄ = 1): energies, Eq. 40 and every bar against
+  `class_energies_adjoint`'s, the bars at `kBatchedBarsTolerance`.
+- `Nevpt2QdEnergyAdjoint.BatchedBarsMatchWhole` (`h8_sto3g_sa3`, batch 1):
+  every bar, the transitions' as handed over included, at
+  `kBatchedBarsTolerance`; each ordered off-diagonal pair handed over once.
+- `Nevpt2QdEnergyAdjointLadder.BarsMatchRichardsonLadder`: SC's ratio test
+  and 1e-7, along every group (B, h1e_v, e, h, rdm over every pair's RDMs,
+  all) on `h8_sto3g_sa3`, and along e on the other five (see Conditioning
+  above). Measured on the RTX 3080: 3e-12 to 1.5e-10 relative.
 
 The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
 
