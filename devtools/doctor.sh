@@ -304,7 +304,13 @@ if [ -n "${DOCTOR_GPU_VENDORS// /}" ]; then
           while IFS=, read -r nv_name nv_cap; do
             nv_name=${nv_name# }; nv_cap=${nv_cap# }
             [ -n "$nv_name" ] || continue
-            ok "nvidia: $nv_name (compute ${nv_cap} -> CMAKE_CUDA_ARCHITECTURES=${nv_cap//./})"
+            # sm_80 is WarpWraps' floor (bf16 WMMA), not the toolkit's: a V100
+            # or a Turing card is listed here and then fails at CONFIGURE.
+            if version_ge "$nv_cap" 8.0; then
+              ok "nvidia: $nv_name (compute ${nv_cap} -> CMAKE_CUDA_ARCHITECTURES=${nv_cap//./})"
+            else
+              warn "nvidia: $nv_name is compute ${nv_cap}, below the sm_80 floor -- nothing here can target it"
+            fi
             nv_listed=$((nv_listed+1))
           done < <(nvidia-smi --query-gpu=name,compute_cap \
                      --format=csv,noheader 2>/dev/null)
@@ -323,6 +329,19 @@ if [ -n "${DOCTOR_GPU_VENDORS// /}" ]; then
         fi
         if [ "$nv_listed" -gt 0 ]; then
           gpus_found=$((gpus_found+nv_listed))
+          # The driver's CUDA ceiling against the image's CUDA. Below it the
+          # `cuda` container does not start at all, which on a fresh cloud VM
+          # (an older vendor driver) is the first thing to go wrong.
+          nv_ceiling=$(cuda_driver_ceiling)
+          nv_image=$(cuda_image_version)
+          if [ -n "$nv_ceiling" ] && [ -n "$nv_image" ]; then
+            if version_ge "$nv_ceiling" "$nv_image"; then
+              ok "nvidia driver runs CUDA <= $nv_ceiling (image: $nv_image)"
+            else
+              warn "nvidia driver runs CUDA <= $nv_ceiling, but the cuda image is $nv_image"
+              note "the container will refuse to start: upgrade the host driver, then reboot"
+            fi
+          fi
           find_tool nvcc >/dev/null 2>&1 ||
             note "card present but nvcc is not -- the CUDA toolchain is in the \`cuda\` image"
         else

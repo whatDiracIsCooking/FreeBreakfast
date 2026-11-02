@@ -104,6 +104,11 @@ down to the libraries WarpWraps links, so it fits the session's disk. There
 the pinned presets build and run the host tests, every GPU case skipping:
 `devtools/cpp-tier.sh --preset ci-cuda` (or `ci-hip`).
 
+A rented single-GPU cloud VM (a Lambda 1× A100, H100 or A10) runs the CUDA
+devcontainer like the workstation. `devtools/gpu-vm-setup.sh` covers what a
+fresh one is missing and starts the container; `docs/gpu-vm.md` has the
+walkthrough, which instances qualify, and what does not carry over.
+
 `devtools/doctor.sh` tells you which of these you have. Run it on the host and
 again inside the container — the difference between the two lists is the point.
 On a bare host, ~11 warnings (the C++ toolchain and the three `/opt` trees) is
