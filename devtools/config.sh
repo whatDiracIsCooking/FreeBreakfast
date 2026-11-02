@@ -484,6 +484,8 @@ clang-tidy:the advisory lint pass (cpp-tier.sh --tidy, and CI's cuda leg)
 clang-format:the C++ formatting pass (see CLAUDE.md -- it is not a git hook)
 cmake-format:the CMake formatting pass; run by hand, not by any hook
 cmake-lint:the CMake lint pass CI runs on every PR
+pdflatex:building the LaTeX design notes into PDFs (docker/README.md \"Documents\")
+pdftotext:reading a PDF back as text (poppler-utils; mutool from mupdf-tools does the same)
 agy:the Antigravity CLI the GPU images ship (docker/install-agy.sh); absent on a bare host unless you installed it there yourself"}
 
 # Which GPU vendors doctor.sh probes for a LIVE DEVICE, space-separated:
