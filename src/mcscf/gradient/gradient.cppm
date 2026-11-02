@@ -1,6 +1,7 @@
 /// @file
 /// @brief The analytic nuclear gradient of a converged DF-CASSCF on the GPU,
-/// state-specific or of one root of a state average, term by term,
+/// state-specific, of one root of a state average or of a weighted mix of its
+/// roots, term by term,
 ///
 ///     dE/dR = Sum D dT + Sum D dV - Sum W dS + dE_2/dR + dV_nn,
 ///
@@ -148,6 +149,28 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
+            const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
+
+/// @brief @ref df_gradient at a weighted mix of the solution's roots,
+/// Sum_I v_I dE_I/dR, in place of one root: @p mix holds v_I, one per root,
+/// each >= 0 and summing to 1 (not the solution's own weights).
+///
+/// The terms are taken at the v-weighted RDMs Sum_I v_I (gamma_I, Gamma_I),
+/// and the Z-vector's orbital right-hand side is the v-weighted root
+/// gradient, so by linearity the result is Sum_I v_I times the per-root
+/// gradients (to the Z-vector solves' convergence, as the mix's and each
+/// root's are separate solves), still over one derivative-integral pass. @p multipliers and
+/// @p extra compose with it as with a root. A one-hot @p mix is the root
+/// call: the same operations, in the same order.
+///
+/// @return @ref df_gradient's, with InvalidConfig in place of the root's
+///         check if @p mix is not one weight per root, a weight is negative
+///         or not finite, or they do not sum to 1 within 1e-12.
+[[nodiscard]] Result<GradientTerms>
+df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+            std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+            const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+            const Solution &solution, int32_t ncore, int32_t ncas, std::span<const double> mix,
             const ZVector *multipliers = nullptr, const MoAdjoint *extra = nullptr);
 
 /// @brief The terms of @ref df_gradient at the caller's active-space RDMs

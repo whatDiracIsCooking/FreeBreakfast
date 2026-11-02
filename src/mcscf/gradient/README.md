@@ -18,6 +18,9 @@ Result<mcscf::GradientTerms> mcscf::df_gradient(
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
     const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t root,
     const mcscf::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
+Result<mcscf::GradientTerms> mcscf::df_gradient(
+    /* df_gradient's arguments through ncas */, std::span<const double> mix,
+    const mcscf::ZVector *multipliers = nullptr, const mcscf::MoAdjoint *extra = nullptr);
 Result<mcscf::GradientTerms> mcscf::df_transition_gradient(
     /* df_gradient's arguments through ncas */, std::span<const double> gamma,
     std::span<const double> gamma2, const mcscf::ZVector *multipliers = nullptr,
@@ -187,9 +190,28 @@ one `three_center_gradient` and one `metric_gradient` per call.
 
 ## A caller's Lagrangian
 
-The last two arguments open the call up to a Lagrangian that is not the
-CASSCF's own (NEVPT2's, `nuclear_gradient.tex` Eq. total). Both default to
-null, which is the call above unchanged.
+Three arguments open the call up to a Lagrangian that is not the CASSCF's own
+(NEVPT2's, `nuclear_gradient.tex` Eq. total). `multipliers` and `extra`
+default to null, which is the call above unchanged.
+
+**`mix`**, in place of `root`, is per-root weights v_I (one per root, each
+≥ 0, Σ v_I = 1 within 1e-12; else `InvalidConfig`), not the state average's
+own w_I. QD-NEVPT2's state K needs Σ_I u_IK² dE_I/dR at the SA solution, and
+every piece of a root's Lagrangian is linear in that root's RDMs: the terms
+are taken at Σ_I v_I (γ_I, Γ_I) (one `rdm12` at weights v), and the
+Z-vector's orbital right-hand side is the Fock's gradient there, which is
+Σ_I v_I g_I. So the result is Σ_I v_I dE_I/dR, over one derivative-integral
+pass, and `multipliers` and `extra` compose with it as with a root (given
+multipliers replace the mix's Z-vector, as they replace a root's). The `root`
+overload is this one at a one-hot v, built inside it: the same operations in
+the same order, so a one-hot `mix` is that root's call. It is not bitwise
+equal to it from call to call, as no two calls are ("Reproducibility"
+below): on the RTX 3080 two identical root calls differ by up to 1.8e-15,
+and a one-hot mix differs from its root's call by the same, up to 4.7e-15.
+Σ_I v_I dE_I/dR holds to the Z-vector's convergence, not to round-off: the
+mix's Z-vector and each root's are separate solves, each to `zvector`'s
+default ‖r‖ ≤ 1e-10, and the two sides agree to 4.8e-11 (equal weights) and
+3.7e-11 (unequal) on the stretched water.
 
 **`multipliers`** are (z_o, z_c, Θ) in place of the Z-vector the call would
 solve (Θ may be empty, for none), as a `ZVector` (`mcscf::zvector`'s result, or one the caller built).
@@ -350,4 +372,9 @@ part to 2e-13.
 cc-pVDZ-JKFIT), its orbitals and roots loaded rather than re-converged: every
 root of two roots at (0.7, 0.3), of three at equal weights and of three at
 (0.5, 0.3, 0.2) against the fixture's exact gradient to 1e-9 (measured on the gfx1200: at
-most 7e-12, the three unequal weights included).
+most 7e-12, the three unequal weights included). Then a mix of the three
+roots at equal SA weights and at unequal ones: against Σ_I v_I times the
+per-root gradients, every term, to 1e-10 (the Z-vector's convergence); each
+one-hot mix against its root's call to 1e-14 (the run-to-run floor); and a
+mix of the wrong length, off 1, or with a negative weight refused as
+`InvalidConfig`.
