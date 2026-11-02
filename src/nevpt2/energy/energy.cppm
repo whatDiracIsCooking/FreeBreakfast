@@ -188,6 +188,60 @@ struct ClassEnergiesAdjoint {
 class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                        int32_t batch, const EnergyBars &bars);
 
+/// @brief sc_effective_hamiltonian_adjoint's result: the matrix it walked,
+/// and each class's Eq. 40 assembled from its bars.
+struct ScEffectiveHamiltonianAdjoint {
+  /// @brief The n² elements, as sc_effective_hamiltonian computes them.
+  std::vector<ClassEnergies> elements;
+  /// @brief Σ_IJ H̄_IJ times class k's element (I, J), assembled from the
+  /// bars as class_energies_adjoint's Eq. 40 is: each coupling is
+  /// homogeneous of degree one in its transition norm and its ket's N and H.
+  std::array<double, 8> eq40{};
+};
+
+/// @brief The reverse pass of sc_effective_hamiltonian: the bars dL/dx of
+/// L = Σ_IJ H̄_IJ H_IJ, H_IJ element (I, J)'s total, on every input of every
+/// pair. class_energies_adjoint is n = 1 with H̄ = 1, einsum for einsum.
+///
+/// @p pairs is sc_effective_hamiltonian's. @p hbar is H̄, n x n row-major,
+/// [I n + J] on the unsymmetrized element (I, J). @p bars holds n
+/// EnergyBars, one per state, each added onto as class_energies_adjoint's:
+/// bars[J]'s dm1, dm2, dm3, f3ca and f3ac take state J's own RDMs' bars; the
+/// rest (h1e, h2e, h1e_v_*, the orbital energies, Λ) are the bars on what
+/// every pair shares, summed over the pairs, read from bars[0] and the same
+/// pointer in every entry. The transition RDMs' bars are not held: each
+/// ordered pair (I, J), I != J, is handed to @p transition as an EnergyBars
+/// whose dm1, dm2 and dm3 alone are set, device buffers queued on
+/// res.stream() and freed when the walk moves on, so the callee works on that
+/// stream or synchronizes. A null @p transition forms none of them.
+///
+/// The walk is sc_effective_hamiltonian's per class, with its finish
+/// differentiated: a coupling -T_IJ / D_J, D_J = Δ + H^J / N^J, puts
+/// -H̄_IJ / D_J on T_IJ, and so half on each of the norm einsums of (I, J)
+/// and (J, I), and A_J = Σ_I H̄_IJ T_IJ / D_J² on D_J, which state J's own
+/// tables then take as -A_J H^J / (N^J)² on N^J, A_J / N^J on H^J and A_J on
+/// Δ. It runs in three parts. Each state's own norm and H tables, perturber
+/// by perturber, on the host (n > 1 only). Then one unordered pair M < N at a
+/// time: every class's slabs walked once, the norm einsums of (M, N) and
+/// (N, M) evaluated and differentiated onto the slabs (and so Λ), h1e_v's
+/// rows and the pair's metrics, A added to both kets' tables, and the
+/// metrics' bars swept onto the pair's transition RDMs and handed to
+/// @p transition, (M, N) then (N, M), before the next pair. Last, each
+/// state's own walk, as class_energies_adjoint's with A_J's share added,
+/// and its sweep onto bars[J]. Sijrs reads no RDM: its bars are Σ_J H̄_JJ
+/// times class_energies_adjoint's. Every slab is rebuilt in each part.
+///
+/// @return The elements and Eq. 40; InvalidConfig when @p pairs is not n²
+///         (sc_effective_hamiltonian's checks), @p hbar not n² or @p bars not
+///         n long, or an entry of @p bars does not share the first's
+///         h1e, h2e, h1e_v_*, orbital-energy and Λ bars; or
+///         class_energies_adjoint's errors, and @p transition's.
+[[nodiscard]] Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    std::span<const double> hbar, int32_t batch, std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t bra, int64_t ket, const EnergyBars &transition)>
+        &transition);
+
 /// @brief Each class's PC-NEVPT2 energy in PySCF's order -- Sr, Si, Sijrs,
 /// Sijr, Srsi, Srs, Sij, Sir -- and the correlation energy, their sum.
 struct PcClassEnergies {

@@ -132,7 +132,8 @@ __global__ void sijrs_adjoint_kernel(const double *__restrict__ g, const int64_t
                                      const double *__restrict__ e_core,
                                      const double *__restrict__ e_virt, double *__restrict__ g_bar,
                                      double *__restrict__ e_core_bar,
-                                     double *__restrict__ e_virt_bar, const int64_t count) {
+                                     double *__restrict__ e_virt_bar, const double weight,
+                                     const int64_t count) {
   const int64_t t = (static_cast<int64_t>(blockIdx.x) * blockDim.x) + threadIdx.x;
   if (t >= count) {
     return;
@@ -148,8 +149,8 @@ __global__ void sijrs_adjoint_kernel(const double *__restrict__ g, const int64_t
   const double g_ibja = g[il + (ni * (b + (nvirt * (j + (ncore * a)))))];
   const double theta = (2.0 * g_iajb) - g_ibja;
   const double denominator = (e_core[j] - e_virt[a]) + (e_core[i0 + il] - e_virt[b]);
-  g_bar[t] += 2.0 * theta / denominator;
-  const double w = g_iajb * theta / (denominator * denominator);
+  g_bar[t] += weight * (2.0 * theta / denominator);
+  const double w = weight * (g_iajb * theta / (denominator * denominator));
   if (e_core_bar != nullptr) {
     atomicAdd(&e_core_bar[i0 + il], -w);
     atomicAdd(&e_core_bar[j], -w);
@@ -217,14 +218,15 @@ wwr::wwrError_t sijrs_adjoint(const wwr::wwrStream_t stream, const double *const
                               const int32_t ni, const int32_t i0, const int32_t ncore,
                               const int32_t nvirt, const double *const e_core,
                               const double *const e_virt, double *const g_bar,
-                              double *const e_core_bar, double *const e_virt_bar) {
+                              double *const e_core_bar, double *const e_virt_bar,
+                              const double weight) {
   const int64_t count = int64_t{ni} * nvirt * ncore * nvirt;
   if (count == 0) {
     return wwr::wwrSuccess;
   }
   sijrs_adjoint_kernel<<<static_cast<uint32_t>(math::idivup(count, int64_t{kFourWarps})),
                          kFourWarps, 0, stream>>>(g, ni, i0, ncore, nvirt, e_core, e_virt, g_bar,
-                                                  e_core_bar, e_virt_bar, count);
+                                                  e_core_bar, e_virt_bar, weight, count);
   return wwr::wwrGetLastError();
 }
 

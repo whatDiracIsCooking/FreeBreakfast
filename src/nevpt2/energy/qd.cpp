@@ -1,7 +1,8 @@
 /// @file
-/// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians: their checks over
-/// the n x n pair inputs, and the class walks each shares with its one-state
-/// energy (energy.cpp's sc_couplings, pc.cpp's pc_couplings).
+/// @brief The SC- and PC-QD-NEVPT2 effective Hamiltonians and SC's reverse
+/// pass: their checks over the n x n pair inputs, and the class walks each
+/// shares with its one-state energy (energy.cpp's sc_couplings, pc.cpp's
+/// pc_couplings, reverse.cpp's sc_couplings_adjoint).
 
 module;
 
@@ -48,6 +49,31 @@ Result<std::vector<ClassEnergies>> sc_effective_hamiltonian(DeviceResources &res
                                                             const int32_t batch) {
   const int64_t n = FBF_TRY(qd_states("sc_effective_hamiltonian", pairs));
   return sc_couplings(res, blocks, pairs, n, batch);
+}
+
+Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    std::span<const double> hbar, const int32_t batch, std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition) {
+  constexpr const char *kWho = "sc_effective_hamiltonian_adjoint";
+  const int64_t n = FBF_TRY(qd_states(kWho, pairs));
+  if (std::cmp_not_equal(hbar.size(), n * n) || std::cmp_not_equal(bars.size(), n)) {
+    return err_config("{}: {} states take {} H-bar elements and {} EnergyBars, not {} and {}", kWho,
+                      n, n * n, n, hbar.size(), bars.size());
+  }
+  // The walk adds the shared bars once, onto the first entry's.
+  const auto shared = [](const EnergyBars &b) {
+    return std::array{b.h1e,       b.h2e,    b.h1e_v_sr, b.h1e_v_si,
+                      b.h1e_v_sir, b.e_core, b.e_virt,   b.lambda};
+  };
+  for (size_t j = 0; j < bars.size(); ++j) {
+    if (shared(bars[j]) != shared(bars.front())) {
+      return err_config("{}: state {}'s bars do not share the first's integral, orbital-energy "
+                        "and Λ bars",
+                        kWho, j);
+    }
+  }
+  return sc_couplings_adjoint(res, blocks, pairs, n, hbar, batch, bars, transition);
 }
 
 Result<std::vector<PcClassEnergies>> pc_effective_hamiltonian(DeviceResources &res,

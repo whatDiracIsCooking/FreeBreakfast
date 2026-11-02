@@ -52,11 +52,13 @@ namespace free_breakfast::nevpt2::device {
                                     int32_t i0, int32_t ncore, int32_t nvirt, const double *e_core,
                                     const double *e_virt, double *acc);
 
-/// @brief The adjoint of @ref sijrs over the same slab, by hand: with
-/// D = e_i + e_j - e_a - e_b and E = Σ g_iajb θ / D,
-/// g_bar[iajb] += 2 θ / D (g_iajb's own term and its partner g_ibja's), and
-/// w = g_iajb θ / D² taken off e_core_bar[i] and e_core_bar[j] and added to
-/// e_virt_bar[a] and e_virt_bar[b].
+/// @brief The adjoint of @ref sijrs over the same slab, by hand, of
+/// @p weight E: with D = e_i + e_j - e_a - e_b and E = Σ g_iajb θ / D,
+/// g_bar[iajb] += weight 2 θ / D (g_iajb's own term and its partner
+/// g_ibja's), and weight g_iajb θ / D² taken off e_core_bar[i] and
+/// e_core_bar[j] and added to e_virt_bar[a] and e_virt_bar[b]. The SC reverse
+/// pass's weight is 1; the SC-QD one's is Σ_J H̄_JJ, since every state's own
+/// Sijrs is the one E.
 ///
 /// @p g_bar is the slab's layout. Either orbital-energy bar may be null, and
 /// is then not formed; they are whole vectors, added to with atomics. Launch
@@ -64,6 +66,7 @@ namespace free_breakfast::nevpt2::device {
 [[nodiscard]] wwr::wwrError_t sijrs_adjoint(wwr::wwrStream_t stream, const double *g, int32_t ni,
                                             int32_t i0, int32_t ncore, int32_t nvirt,
                                             const double *e_core, const double *e_virt,
-                                            double *g_bar, double *e_core_bar, double *e_virt_bar);
+                                            double *g_bar, double *e_core_bar, double *e_virt_bar,
+                                            double weight);
 
 } // namespace free_breakfast::nevpt2::device
