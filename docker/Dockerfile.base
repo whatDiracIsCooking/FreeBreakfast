@@ -87,6 +87,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
+# The texlive-*/lmodern line is pdflatex and the packages the LaTeX design
+# notes load (texlive-science carries algorithm/algpseudocode); apt's package
+# scripts build the format files and font maps that a hand unpack does not.
+# The last line turns a PDF back into text or images: poppler-utils
+# (pdftotext, pdftoppm, pdfinfo) and mupdf-tools (mutool). ~305 MB unpacked,
+# most of it texlive-latex-extra. See docker/README.md "Documents".
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     rm -f /etc/apt/apt.conf.d/docker-clean && \
@@ -95,7 +101,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       bash build-essential ca-certificates curl git gnupg jq less \
       lcov patch pkg-config shellcheck software-properties-common ssh tree \
       unzip valgrind vim-tiny wget zlib1g-dev \
-    && git --version && wget --version | head -1
+      texlive-latex-base texlive-latex-recommended texlive-latex-extra \
+      texlive-fonts-recommended texlive-science lmodern \
+      poppler-utils mupdf-tools \
+    && git --version && wget --version | head -1 \
+    && pdflatex --version | head -1 && pdftotext -v 2>&1 | head -1
 
 # ============================================================================
 # Stage 2: downloads -- CMake and Ninja tarballs (independent of base-system,

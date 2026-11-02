@@ -380,6 +380,28 @@ All output is logged to `.log/` with timestamps:
 .log/pytest.{ts}.out.txt    / .log/pytest.{ts}.err.txt
 ```
 
+## Documents
+
+`Dockerfile.base` installs a TeX engine and PDF-to-text tools, so every image
+(`cuda`, `hip`, `combined`) has them. The design notes are LaTeX, and before
+these were installed a corrected `.tex` could not be rebuilt in the container:
+there is no sudo, and a hand-unpacked TeX Live lived in the writable layer,
+which a `devcontainer.sh rebuild` wipes.
+
+| Package | Why |
+|---|---|
+| `texlive-latex-base` | `pdflatex` itself |
+| `texlive-latex-recommended` | microtype, booktabs, hyperref |
+| `texlive-latex-extra` | the rest of what the notes load; most of the ~305 MB |
+| `texlive-fonts-recommended`, `lmodern` | the fonts the notes use |
+| `texlive-science` | `algorithm` and `algpseudocode`, used by the Hessian notes |
+| `poppler-utils` | `pdftotext`, `pdftoppm`, `pdfinfo`: check a built PDF, or read a paper, as text or images |
+| `mupdf-tools` | `mutool draw -F txt`, which also gets text out of PDFs `pdftotext` handles poorly |
+
+Run `pdflatex` twice so the cross-references resolve. `devtools/doctor.sh`
+lists `pdflatex` and `pdftotext` as optional tools: they are missing on a bare
+host, and that is not an error.
+
 ## Requirements
 
 - Docker with BuildKit support
