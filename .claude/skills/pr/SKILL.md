@@ -69,10 +69,13 @@ PR-body footer rules apply.
 ## 5. Merge — GitHub's native auto-merge
 
 ```bash
-gh pr merge <number> --auto --squash
+gh pr merge <number> --auto --rebase
 ```
 
-`--auto` hands the merge to GitHub: it squash-merges server-side the moment the
+`--rebase`, not `--squash`, is the repo's convention: it replays the
+branch's commits onto `main` with their author kept (the GitHub noreply
+address), where a squash re-authors the commit. `--auto` hands the merge to
+GitHub: it rebase-merges server-side the moment the
 checks the `main` ruleset requires (`lint`, `test (3.11)`, `test (3.13)` from
 `ci.yml`) pass, and the repo's "delete branch on merge" setting removes the
 remote branch. If they have already passed, it merges immediately. Do it for
@@ -127,11 +130,12 @@ down depends on how this skill was invoked:
 - **`/pr full`** — reclaim it now, per the `worktree` skill's "`/pr full` —
   ship, then tear the worktree down" section: exit with
   `ExitWorktree {"action": "keep"}` if the session is inside it, then
-  `git worktree remove` + `git branch -d <name>` (`-D` after a squash merge).
+  `git worktree remove` + `git branch -D <name>` (the rebase merge gave `main`
+  new SHAs, so `-d` refuses).
 
 Otherwise — a plain topic branch on an ordinary checkout — the local branch can
-go with `git branch -d <branch>` (or `-D` after a squash merge, since the SHAs
-differ; the merge already confirmed the patches landed).
+go with `git branch -D <branch>` (`-d` refuses, since the rebase merge gave
+`main` new SHAs; the merge already confirmed the patches landed).
 
 ## When NOT to merge
 
