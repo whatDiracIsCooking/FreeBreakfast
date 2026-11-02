@@ -1,0 +1,583 @@
+{
+ "molssi_bse_schema": {
+  "schema_type": "complete",
+  "schema_version": "0.1"
+ },
+ "revision_description": "Converted from PySCF 2.14.0 pyscf/gto/basis/cc-pvdz-jkfit.dat by tools/jkfit_from_pyscf.py",
+ "elements": {
+  "1": {
+   "electron_shells": [
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "9.53024933"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "1.91745062"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "0.68424049"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "0.28413256"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "2.9133232"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "1.26212054"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "0.50199776"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "2.31353291"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "0.71290724"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    }
+   ],
+   "references": [
+    {
+     "reference_description": "Weigend JK fitting set (F. Weigend, Phys. Chem. Chem. Phys. 4, 4285 (2002), doi:10.1039/b204199p), from Molpro's weigend_jkfit.libmol as pyscf/gto/basis/cc-pvdz-jkfit.dat carries it",
+     "reference_keys": []
+    }
+   ]
+  },
+  "8": {
+   "electron_shells": [
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "1517.8667506"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "489.67952008"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "176.72118665"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "63.79223314"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "25.36649913"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "9.91354912"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "4.46453066"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "1.80177437"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "0.80789711"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "0.33864327"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "120.16030921"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "34.40962247"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "12.58114861"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "5.06638242"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "2.03469271"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "0.86092967"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "0.36681357"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "19.04306281"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "5.80603811"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "2.18918416"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "0.87794614"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "0.35623647"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      3
+     ],
+     "exponents": [
+      "2.49391479"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      3
+     ],
+     "exponents": [
+      "0.82491479"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      0
+     ],
+     "exponents": [
+      "1517.8667506"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto",
+     "region": "",
+     "angular_momentum": [
+      1
+     ],
+     "exponents": [
+      "120.16030921"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    },
+    {
+     "function_type": "gto_spherical",
+     "region": "",
+     "angular_momentum": [
+      2
+     ],
+     "exponents": [
+      "19.04306281"
+     ],
+     "coefficients": [
+      [
+       "1.0"
+      ]
+     ]
+    }
+   ],
+   "references": [
+    {
+     "reference_description": "Weigend JK fitting set (F. Weigend, Phys. Chem. Chem. Phys. 4, 4285 (2002), doi:10.1039/b204199p), from Molpro's weigend_jkfit.libmol as pyscf/gto/basis/cc-pvdz-jkfit.dat carries it",
+     "reference_keys": []
+    }
+   ]
+  }
+ },
+ "version": "1",
+ "function_types": [
+  "gto",
+  "gto_spherical"
+ ],
+ "names": [
+  "cc-pVDZ-JKFIT"
+ ],
+ "tags": [],
+ "family": "dunning",
+ "description": "Test fixture, not a fitting set: cc-pVDZ-JKFIT over H and O with O's shells [0, 10, 17] appended again, so its metric is singular. Written by UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/df_lindep_reference.py",
+ "role": "jkfit",
+ "auxiliaries": {},
+ "name": "cc-pVDZ-JKFIT, three O shells duplicated"
+}

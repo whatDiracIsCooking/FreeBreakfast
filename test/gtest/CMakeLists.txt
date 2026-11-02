@@ -151,6 +151,7 @@ add_executable(
   exchange_gradient_gpu.cpp
   nonsymmetric_jk_gpu.cpp
   df_fit_gpu.cpp
+  df_fit_lindep_gpu.cpp
   df_jk_gpu.cpp
   df_jk_batched_gpu.cpp
   df_jk_symmetrized_gpu.cpp

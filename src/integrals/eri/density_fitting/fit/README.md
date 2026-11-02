@@ -29,9 +29,58 @@ largest thing a DF calculation holds (H₂O in cc-pVTZ / cc-pVTZ-JKFIT, 139 x
 ## Failure
 
 A metric that is not positive definite is `Numerical`, naming the pivot
-(the 1-based leading minor the factorization stopped at). There is no eigen-decomposition
-fallback: no basis in the tree needs one yet, and a regularized metric would
-change what B means for every caller.
+(the 1-based leading minor the factorization stopped at). The default fit
+never regularizes it; `lindep`, below, is the opt-in alternative.
+
+## A near-singular metric: `lindep`
+
+`density_fit(res, nao, naux, metric, b, lindep)` with `lindep > 0` fits over
+M's eigenmodes above `lindep` instead (#630), PySCF's DF `lindep` route
+(`df.incore._eig_decompose`, which keeps `w > lindep`):
+
+    M = U Λ Uᵀ                         (recipes/orthogonalize, a syevd)
+    X = U Λ⁻¹ᐟ² Uᵀ, a mode with λ <= lindep contributing 0
+    B = X (P|mn)                       (one gemm per m slab)
+
+So BᵀB = (mn|P) M⁺ (P|ls) over the kept modes. PySCF's B is Λ⁻¹ᐟ² Uᵀ (P|mn)
+over the kept modes alone, the same up to the rotation U: J, K and the
+energy cannot tell them apart. Here B keeps its `naux` x `nao²` shape (a
+dropped mode is a direction of zero weight, not a missing row), so a consumer
+that reads only B and `naux` takes it unchanged. On a metric that drops
+nothing it is a rotation of the Cholesky path's B, and BᵀB agrees to
+rounding. `metric` comes out as X, the whole matrix, not L.
+
+`lindep = 0`, the default, is the Cholesky path, bit for bit: the branch is
+taken before anything else is queued. A negative or NaN `lindep` is
+`InvalidConfig`. Its cost is a syevd of M, an `naux²` pool copy of M, and an
+`naux` x `nao` product in the workspace for the slab gemms.
+
+No basis the tree carries needs it: cond(M) is about 2e6 for
+cc-pVDZ/TZ-JKFIT and 3e7 for cc-pVTZ-acCD-6-6, well inside Cholesky's reach.
+It is not a pipeline option: the Eri step always takes the default, so every
+product the pipeline hands on carries a Cholesky L.
+
+### Which consumers take a `lindep` fit
+
+| Consumer | Reads | `lindep` fit |
+| --- | --- | --- |
+| `jk/` (`df_coulomb`, `df_exchange`), the Scf step | B | accepts |
+| `mo/`, NEVPT2's fitted integrals, CASCI/CASSCF energies | B | accepts |
+| CIS-RIS (`cis/ris_precondition`) | its own fit | not offered: it calls `density_fit` with the default |
+| `gradient::df_rhf`, `density_fitting/gradient`, `hessian::*` DF, `mcscf` gradients, NACs and derivatives, `nevpt2/gradient` | B **and L** | refuses: L is what they solve against, and X is not L |
+
+"Refuses" is by contract, not by a check: those take L as a bare pointer,
+which cannot say how it was made. The fit that would feed them a lindep
+fit's X does not exist in the tree (the Eri step never sets it), and
+extending them, to apply X with a gemm where they trsm with L and to
+differentiate the eigendecomposition, is the work a basis that needs this
+would bring with it.
+
+`df_fit_lindep_gpu.cpp` has the cases: `lindep = 0` against the default bit
+for bit; on H₂O cc-pVDZ / cc-pVDZ-JKFIT, BᵀB to 1e-12 and the DF-RHF energy
+to 1e-11 of the Cholesky path's; and over the same set with three O shells
+duplicated (`test/gtest/data/df_lindep/`), the default refused and the lindep
+energy PySCF's eigen-route DF-RHF at the same threshold.
 
 ## Why not potrf
 
