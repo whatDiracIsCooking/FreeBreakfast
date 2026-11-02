@@ -15,13 +15,13 @@ the FelizJueves submodule, integral-direct and density-fitted), `localization`
 populations and partial charges), `ci` (determinant CI: strings, sigma, the
 solver and RDMs), `response` (the CASSCF energy, orbital gradient and
 orbital Hessian at fixed orbitals and RDMs, and RHF's CPHF), `mcscf` (the
-state-averaged CASSCF loop over them), `nevpt2`, `cis`, `geometry`,
+state-averaged CASSCF loop over them, and its roots' nonadiabatic couplings), `nevpt2`, `cis`, `geometry`,
 `gradient`, `hessian` (the full DF-RHF analytic nuclear Hessian, and the
 dipole derivative and IR intensities from its CPHF; the state-specific
 DF-CASSCF one, and a state-averaged DF-CASSCF root's) and
 `pipeline` (the calculation pipeline: the step
 contract, the setup steps, the ERI step (integral-direct or density-fitted,
-built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, the DF-RHF gradient step, the geometry-optimization step, the Hessian step (analytic DF-RHF or
+built once for every reader), the RHF SCF, the localization step, the active-space, CASCI, FCI and CASSCF steps, the DF-RHF gradient step, the DF-SA-CASSCF nonadiabatic-coupling step, the geometry-optimization step, the Hessian step (analytic DF-RHF or
 DF-CASSCF, state-specific or one root of a state average, or semi-numerical,
 with harmonic frequencies, and IR intensities when analytic RHF), and the
 planner that runs them from a TOML config). `src/README.md` has the one-line summary of each.

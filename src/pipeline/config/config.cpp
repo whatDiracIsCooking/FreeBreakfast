@@ -91,6 +91,28 @@ template <class T>
       values.push_back(*value);
     }
     out = std::move(values);
+  } else if constexpr (std::same_as<T, std::vector<std::array<int32_t, 2>>>) {
+    const toml::array *array = node.as_array();
+    if (array == nullptr) {
+      return err_config("[{}] {} is not an array of integer pairs", step, key);
+    }
+    std::vector<std::array<int32_t, 2>> values;
+    for (const toml::node &element : *array) {
+      const toml::array *pair = element.as_array();
+      if (pair == nullptr || pair->size() != 2) {
+        return err_config("[{}] {} is not an array of integer pairs", step, key);
+      }
+      std::array<int32_t, 2> value{};
+      for (size_t i = 0; i < 2; ++i) {
+        const auto entry = (*pair)[i].value_exact<int64_t>();
+        if (!entry || !std::in_range<int32_t>(*entry)) {
+          return err_config("[{}] {} is not an array of 32-bit integer pairs", step, key);
+        }
+        value[i] = static_cast<int32_t>(*entry);
+      }
+      values.push_back(value);
+    }
+    out = std::move(values);
   } else if constexpr (std::same_as<T, std::vector<std::string>>) {
     const toml::array *array = node.as_array();
     if (array == nullptr) {
@@ -447,6 +469,23 @@ template <class S>
     }
     step.variant = variant == "pc" ? Nevpt2Variant::Pc : Nevpt2Variant::Sc;
     step.json_path = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, NacStep>) {
+    // Whether the CASSCF has the pairs' roots, at equal weights, and the ERI
+    // mode are other tables', refused once they are planned, by check_nac
+    // and check_density_fitted_only; NacStep::run refuses them again.
+    FBF_TRY(check_keys(table, kStep, {"pairs", "mult_ediff", "use_etfs"}));
+    FBF_TRY(read_key(table, kStep, "pairs", base_dir, step.pairs));
+    if (table.contains("pairs") && step.pairs.empty()) {
+      return err_config("[{}] pairs is empty: leave it out for every pair", kStep);
+    }
+    for (const auto &[bra, ket] : step.pairs) {
+      if (bra < 0 || ket < 0 || bra == ket) {
+        return err_config("[{}] pair [{}, {}] is not two distinct roots", kStep, bra, ket);
+      }
+    }
+    FBF_TRY(read_key(table, kStep, "mult_ediff", base_dir, step.options.mult_ediff));
+    FBF_TRY(read_key(table, kStep, "use_etfs", base_dir, step.options.use_etfs));
+    step.json_path = output_dir / std::format("{}.json", kStep);
   } else if constexpr (std::same_as<S, OptimizeStep>) {
     // The chain it reruns is the other tables', copied in by parse_config,
     // which can see them; a table here holds only the optimizer's own keys.
@@ -699,10 +738,10 @@ template <class S>
   return {};
 }
 
-/// @brief Refuse a `[nevpt2]`, a `[casscf_gradient]` or a `[nevpt2_gradient]`
-/// over integral-direct ERIs, which none of them runs: here, before the SCF
-/// and the CASSCF it would follow have run. Across two tables, as
-/// check_scf_against_eri.
+/// @brief Refuse a `[nevpt2]`, a `[casscf_gradient]`, a `[nevpt2_gradient]`
+/// or a `[nac]` over integral-direct ERIs, which none of them runs: here,
+/// before the SCF and the CASSCF it would follow have run. Across two tables,
+/// as check_scf_against_eri.
 [[nodiscard]] Status check_density_fitted_only(const Calculation &calc) {
   const auto &eri = calc.step<EriStep>();
   if (!eri || eri->mode == EriMode::DensityFitting) {
@@ -711,7 +750,8 @@ template <class S>
   for (const auto &[planned, name] :
        {std::pair{calc.step<Nevpt2Step>().has_value(), Nevpt2Step::kName},
         std::pair{calc.step<CasscfGradientStep>().has_value(), CasscfGradientStep::kName},
-        std::pair{calc.step<Nevpt2GradientStep>().has_value(), Nevpt2GradientStep::kName}}) {
+        std::pair{calc.step<Nevpt2GradientStep>().has_value(), Nevpt2GradientStep::kName},
+        std::pair{calc.step<NacStep>().has_value(), NacStep::kName}}) {
     if (planned) {
       return err_unsupported("[{}] runs over density fitting only, and [{}] mode is "
                              "'integral_direct': set [{}] mode = 'density_fitting'",
@@ -752,6 +792,40 @@ template <class S>
     return err_unsupported("[{}] is implemented for a closed-shell singlet only, and [{}] "
                            "multiplicity is {}",
                            kStep, MoleculeStep::kName, start->multiplicity);
+  }
+  return {};
+}
+
+/// @brief Refuse a `[nac]` over a `[casscf]` of fewer than two roots, or one
+/// naming a pair past them, and over one at unequal weights, which
+/// mcscf::df_nac does not take: here, before the SCF and the CASSCF it would
+/// follow have run. Across tables, as check_scf_against_eri.
+[[nodiscard]] Status check_nac(const Calculation &calc) {
+  const auto &step = calc.step<NacStep>();
+  // The CASSCF is filled in when not written, and is never loaded.
+  const auto &casscf = calc.step<CasscfStep>();
+  if (!step || !casscf) {
+    return {};
+  }
+  constexpr std::string_view kStep = NacStep::kName;
+  if (casscf->nroots < 2) {
+    return err_config("[{}] couples roots of a state average, and [{}] nroots is {}: set [{}] "
+                      "nroots to 2 or more",
+                      kStep, CasscfStep::kName, casscf->nroots, CasscfStep::kName);
+  }
+  for (const auto &[bra, ket] : step->pairs) {
+    if (std::max(bra, ket) >= casscf->nroots) {
+      return err_config("[{}] pair [{}, {}] names a root past [{}] nroots {}", kStep, bra, ket,
+                        CasscfStep::kName, casscf->nroots);
+    }
+  }
+  // read_step has checked they sum to 1.
+  if (const std::vector<double> &w = casscf->weights;
+      !w.empty() && std::ranges::max(w) - std::ranges::min(w) > NacStep::kEqualWeights) {
+    return err_unsupported("[{}] takes a state average at equal weights only, and [{}] weights "
+                           "range from {} to {}: leave [{}] weights out",
+                           kStep, CasscfStep::kName, std::ranges::min(w), std::ranges::max(w),
+                           CasscfStep::kName);
   }
   return {};
 }
@@ -830,6 +904,7 @@ template <class S>
   FBF_TRY(check_scf_against_eri(calc, doc));
   FBF_TRY(check_density_fitted_only(calc));
   FBF_TRY(check_nevpt2_gradient(calc));
+  FBF_TRY(check_nac(calc));
   FBF_TRY(check_inputs_apart(calc, output_dir));
   return calc;
 }

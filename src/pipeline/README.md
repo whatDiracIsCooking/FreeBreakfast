@@ -26,6 +26,7 @@ cis/        free_breakfast.pipeline.cis: CisStep -- CIS (TDA) singlet or triplet
 gradient/   free_breakfast.pipeline.gradient: GradientStep -- the closed-shell RHF nuclear gradient at the SCF's orbitals, gradient::df_rhf over a density-fitted EriOutput's B, L and aux basis or gradient::rhf over an integral-direct one, every term of it, written as gradient.json
 casscf_gradient/  free_breakfast.pipeline.casscf_gradient: CasscfGradientStep -- the DF-CASSCF nuclear gradient of one root of the CASSCF, mcscf::df_gradient over the density-fitted EriOutput's B, L and aux basis only, every term of it, written as casscf_gradient.json
 nevpt2_gradient/  free_breakfast.pipeline.nevpt2_gradient: Nevpt2GradientStep -- the SC- or PC-NEVPT2 nuclear gradient of the single-state DF-CASSCF, nevpt2::sc_gradient or nevpt2::pc_gradient over the density-fitted EriOutput only, every term of it with max |z^c|, the smallest inactive gap and the PCG iterations, written as nevpt2_gradient.json
+nac/        free_breakfast.pipeline.nac: NacStep -- the nonadiabatic couplings between pairs of roots of the equal-weight DF-SA-CASSCF (every pair by default), mcscf::df_nac over the density-fitted EriOutput only, each with its numerator h_IJ and CSF term, written as nac.json
 optimize/   free_breakfast.pipeline.optimize: OptimizeStep -- an RHF geometry optimization over either ERI kind, or a DF-CASSCF root's or its SC- or PC-NEVPT2's with its orbitals carried from geometry to geometry, geometry::optimize over the chain from the molecule to the gradient, rerun as a nested Pipeline at every geometry; the config then loads the molecule from its final.xyz, so every other step runs at the optimum
 hessian/    free_breakfast.pipeline.hessian: HessianStep -- the RHF's or, beside a [casscf_gradient], that DF-CASSCF root's Cartesian Hessian at the pipeline's molecule, analytic by default (hessian::df_rhf at the SCF of one nested Pipeline run of the chain to [scf], or hessian::df_casscf / df_sacasscf at the CASSCF of one to [casscf]; density-fitted only) or by central differences of the analytic gradient, the chain to the gradient rerun at each of the 6N displaced geometries; symmetrized, its asymmetry and translational sum reported, its harmonic frequencies and normal modes logged, written as hessian.json
 config/     free_breakfast.pipeline.config: the TOML front end and the registry, Calculation -- a config file read into the pipeline it asks for
@@ -45,8 +46,8 @@ aux_basis = "cc-pvdz-jkfit"   # optional: <basis>-acCD-6-6 when carried
 ```
 
 `EriStep` builds them once, B or the J and K pair classes, and `[scf]`,
-`[casscf]`, `[nevpt2]`, `[cis]`, `[gradient]`, `[casscf_gradient]` and
-`[nevpt2_gradient]` all read
+`[casscf]`, `[nevpt2]`, `[cis]`, `[gradient]`, `[casscf_gradient]`,
+`[nevpt2_gradient]` and `[nac]` all read
 that one `EriOutput`
 (`[optimize]` reruns its own copy of `[eri]` at every geometry): `[scf]`
 fits its Fock build, `[casscf]` runs `mcscf::DensityFitting::Full`, the
@@ -55,8 +56,9 @@ its sigma over B's MO blocks (`cis::DfSigma`), and `[gradient]` the DF-RHF
 gradient over B, L and the aux basis the product keeps (under integral-direct
 ERIs, the exact RHF gradient), and `[casscf_gradient]` the DF-CASSCF
 gradient over the same three, and `[nevpt2_gradient]` the SC- or PC-NEVPT2
-gradient over B, L and the aux basis too. `[nevpt2]`, `[casscf_gradient]`
-and `[nevpt2_gradient]` run over density fitting only, and are `Unsupported` under an integral-direct `[eri]`. A missing
+gradient over B, L and the aux basis too, and `[nac]` the SA-CASSCF couplings
+over the same three. `[nevpt2]`, `[casscf_gradient]`, `[nevpt2_gradient]`
+and `[nac]` run over density fitting only, and are `Unsupported` under an integral-direct `[eri]`. A missing
 `[eri]` is filled in, integral-direct. The rules and refusals are
 `config/README.md`'s; what the CASSCF's scratch costs past B, and the memory
 check before its loop, `casscf/README.md`'s.
