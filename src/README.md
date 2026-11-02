@@ -17,7 +17,7 @@ localization/  Orbital localization of the occupied space on the GPU: Pipek-Meze
 analysis/  Wavefunction analysis: atomic populations and partial charges over the intrinsic atomic orbitals, and the bond-orbital reading of the IBOs
 ci/        Determinant CI over plain arrays: alpha/beta occupation strings, their lexical addresses and single-replacement lists
 response/  The energy's orbital-rotation derivatives at fixed orbitals and RDMs on the GPU: the energy, the inactive, active and generalized Fock matrices, the orbital gradient and its packed pair order, and the orbital Hessian
-mcscf/     CASSCF on the GPU: the two-step state-averaged loop over response's gradient and Hessian, the DF-CASSCF nuclear gradient at its solution (state-specific or one root of a state average), and the SA-CASSCF nonadiabatic couplings between its roots
+mcscf/     CASSCF on the GPU: the two-step state-averaged loop over response's gradient and Hessian, the DF-CASSCF nuclear gradient at its solution (state-specific or one root of a state average), the SA-CASSCF nonadiabatic couplings between its roots, and the overlaps of its states across two geometries
 nevpt2/    SC- and PC-NEVPT2 on the GPU: the density-fitted MO blocks and the external-integral slabs, and dm3 and the integral-contracted 4-RDMs f3ca and f3ac of the reference state
 cis/       CIS (TDA) excitations on the GPU: the sigma, integral-direct or density-fitted over B's MO blocks, the orbital-energy diagonal, the unit-vector Davidson guess on its lowest entries, and the r / (θ − Δε) preconditioner
 geometry/  A Cartesian quasi-Newton minimizer on the host: BFGS under a trust radius over a caller's energy and gradient, with the rigid-body motions projected out
