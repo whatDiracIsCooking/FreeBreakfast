@@ -1,8 +1,8 @@
 /// @file
-/// @brief The SC and PC reverse passes: from the class energies back to the
-/// slabs (and through them onto Λ), h1e_v's rows and the orbital energies,
-/// and onto every class block's bar M_G = dE/dG; then the sweep of those bars
-/// back through the blocks' builders onto h1e, h2e and the RDMs.
+/// @brief The SC and PC reverse passes, of one state and of n: from the class
+/// energies back to the slabs (and through them onto Λ), h1e_v's rows and
+/// the orbital energies, and onto every class block's bar M_G = dE/dG; then
+/// the sweep of those bars back through the blocks' builders onto h1e, h2e and the RDMs.
 /// einsum_adjoint is the one derivative rule; SC's finish (P, Q, R: Park Eqs.
 /// 36-38), PC's (the solve's adjoint) and Sijrs are the only expressions
 /// differentiated by hand.
@@ -1696,7 +1696,7 @@ Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const 
 }
 
 // ---------------------------------------------------------------------------
-// The PC reverse pass: the solve's adjoint
+// The PC reverse pass: the solve's adjoint, over n states
 // ---------------------------------------------------------------------------
 //
 // A PC tuple's energy is -c bᵀ A⁺ b, A = K + Δ S, b = S x + S₁ h1, in the
@@ -1710,162 +1710,250 @@ Result<ClassEnergiesAdjoint> class_energies_adjoint(DeviceResources &res, const 
 // each symmetrized where the solve symmetrized its matrix, and dE/dΔ onto the
 // orbital energies. The bars on S, K and S₁ then go back through the einsums
 // that built them onto SC's block bars, which sweep_blocks takes to the RDMs.
+//
+// Over n states (pc_effective_hamiltonian's couplings) the coupling of pair
+// (I, J) is -c b_{I←J}ᵀ A_J⁺ b_J, bilinear in the two rows, with
+// b_{I←J} = S^{(J,I)} x + S₁^{(J,I)} h1 and y_{I←J} = U_Jᵀ b_{I←J}. It puts
+// -c H̄_IJ g_J on y_{I←J}, -c H̄_IJ g_{I←J} on y_J and c H̄_IJ g_{I←J} g_Jᵀ on
+// U_Jᵀ dA_J U_J: the same rule, still no eigen-derivative, b_{I←J} lying in
+// S_J's kept range (a mode that annihilates |J⟩ annihilates ⟨J| S^{(J,I)}).
+// T_{I←J} = S^{(J,I)ᵀ} U_J, so its bar goes onto S^{(J,I)} unsymmetrized,
+// U_J held, and so onto pair (J, I)'s metric blocks.
 
-// One PC class's walk-long accumulators: the tuples' weights in the
-// eigenbasis, M = Σ_t g_t w_tᵀ and M_Δ = Σ_t Δ_t g_t w_tᵀ (m x m, row-major),
-// and the bars on T (d x m, T's layout) and on t1 (n1 x m; empty when the
-// class has no S₁).
+// One PC class's walk-long accumulators for one pair (I, J): the bars on
+// T_{I←J} (d x m_J, T's layout) and on t1_{I←J} (n1 x m_J; empty when the
+// class has no S₁), and on the diagonal ket J's weights in its eigenbasis,
+// M = Σ_t g_t w_tᵀ and M_Δ = Σ_t Δ_t g_t w_tᵀ (m x m, row-major).
 struct PcWalkBars {
   Buffers::device<double> mgg, mgg_delta, t, t1;
 };
 
 Result<PcWalkBars> pc_walk_bars(DeviceResources &res, const int64_t m, const int64_t d,
-                                const int64_t n1) {
-  return PcWalkBars{.mgg = FBF_TRY(device_zeros(res, m * m)),
-                    .mgg_delta = FBF_TRY(device_zeros(res, m * m)),
+                                const int64_t n1, const bool own) {
+  return PcWalkBars{.mgg = FBF_TRY(device_zeros(res, own ? m * m : 0)),
+                    .mgg_delta = FBF_TRY(device_zeros(res, own ? m * m : 0)),
                     .t = FBF_TRY(device_zeros(res, d * m)),
                     .t1 = FBF_TRY(device_zeros(res, n1 * m))};
 }
 
-// One slab's PC finish and its adjoint, row t of y (m wide) a tuple, its
-// Perturber read as: t2 < 0 a single coupling with factor s, t2 >= 0 the
-// pair 2 direct - exchange with its exchange row t2 of x (Sijr, Srsi); Δ from
-// the orbital energies as SC's finish takes it. With g = y / (λ + Δ) and
-// g_x = x / (λ + Δ):
-//   single: E -= s g.y,          ybar = -2 s g,           w = s g,
-//           R = s g.g;
-//   pair:   E -= 2 g.y - g.x,    ybar = -(4 g - g_x), xbar = g,
-//           w = 2 g - g_x,       R = 2 g.g - g.g_x;
-// R = dE/dΔ onto the orbital energies, as SC's finish puts it.
-struct PcRows {
-  std::vector<double> ybar, xbar, g, w, delta;
-  double energy = 0.0;
-  double min_denominator = std::numeric_limits<double>::infinity();
+// What every PC class's reverse walk reads of the n states besides
+// ReverseContext: their operands and H̄, n x n row-major as the pairs, and the
+// block bars each pair's matrices are built from, [I ns + J]: a state's own
+// (every block) on the diagonal, pair (I, J)'s metrics off it.
+struct PcStates {
+  int64_t ns = 1;
+  std::span<const ActiveOperands> ops;
+  std::span<const double> hbar;
+  std::span<BlockBars> m;
 };
 
-PcRows pc_finish_adjoint(const std::vector<Perturber> &rows, const std::vector<double> &y,
-                         const std::vector<double> &x, const std::vector<double> &lambda,
-                         const OrbitalEnergies &e) {
-  const size_t m = lambda.size();
-  PcRows out;
-  out.ybar.assign(y.size(), 0.0);
-  out.xbar.assign(x.size(), 0.0);
-  out.g.assign(y.size(), 0.0);
-  out.w.assign(y.size(), 0.0);
-  out.delta.assign(rows.size(), 0.0);
-  for (size_t t = 0; t < rows.size(); ++t) {
-    const Perturber &p = rows[t];
-    double diff = 0.0;
-    for (const int32_t v : {p.v1, p.v2}) {
-      diff += v < 0 ? 0.0 : e.virt[static_cast<size_t>(v)];
-    }
-    for (const int32_t c : {p.c1, p.c2}) {
-      diff -= c < 0 ? 0.0 : e.core[static_cast<size_t>(c)];
-    }
-    out.delta[t] = diff;
-    const auto row = static_cast<size_t>(p.t1) * m;
-    const auto xrow = static_cast<size_t>(p.t2) * m;
-    double r = 0.0;
-    for (size_t k = 0; k < m; ++k) {
-      const double den = lambda[k] + diff;
-      out.min_denominator = std::min(out.min_denominator, den);
-      const double g = y[row + k] / den;
-      out.g[row + k] = g;
-      if (p.t2 < 0) {
-        out.energy -= p.s * g * y[row + k];
-        out.ybar[row + k] += -2.0 * p.s * g;
-        out.w[row + k] = p.s * g;
-        r += p.s * g * g;
-      } else {
-        const double gx = x[xrow + k] / den;
-        out.energy -= (2.0 * g * y[row + k]) - (g * x[xrow + k]);
-        out.ybar[row + k] += -((4.0 * g) - gx);
-        out.xbar[xrow + k] += g;
-        out.w[row + k] = (2.0 * g) - gx;
-        r += (2.0 * g * g) - (g * gx);
-      }
-    }
-    for (const int32_t v : {p.v1, p.v2}) {
-      if (v >= 0) {
-        e.virt_bar[static_cast<size_t>(v)] += r;
-      }
-    }
-    for (const int32_t c : {p.c1, p.c2}) {
-      if (c >= 0) {
-        e.core_bar[static_cast<size_t>(c)] -= r;
-      }
-    }
+// One class's reverse walk under way: its solves and transition rows, the
+// walk bars of every pair (I, J) at [I ns + J], the couplings there, and each
+// ket's smallest denominator.
+struct PcReverse {
+  const char *name;
+  PcKets kets;
+  std::vector<PcWalkBars> w;
+  std::vector<double> energy;
+  std::vector<double> min_denominator;
+};
+
+Result<PcReverse> pc_reverse_kets(ReverseContext &c, const PcStates &q, const char *name,
+                                  const int64_t d, const int64_t n1, const PcBuild build) {
+  const int64_t ns = q.ns;
+  PcReverse r{.name = name,
+              .kets = FBF_TRY(pc_kets(c.res, name, q.ops, ns, d, n1, build)),
+              .w = {},
+              .energy = std::vector<double>(static_cast<size_t>(ns * ns), 0.0),
+              .min_denominator = std::vector<double>(static_cast<size_t>(ns),
+                                                     std::numeric_limits<double>::infinity())};
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    r.w.push_back(FBF_TRY(pc_walk_bars(c.res, r.kets.m(p % ns), d, n1, p / ns == p % ns)));
   }
-  return out;
+  return r;
 }
 
-// One slab of a PC class: @p terms evaluated over @p out_dims (the tuple
-// axes, then m), into y, or into the exchange rows x for a term with h set
-// (Sijr's swapped core pair, Srsi's SrsiT slab); read back and finished; the
-// weights added to @p w; and every term's adjoint taken against ybar, or
-// xbar. Returns {Σ E, the smallest denominator}.
-Result<std::pair<double, double>>
-pc_slab_reverse(DeviceResources &res, const std::vector<ClassTerm> &terms,
-                const std::vector<int64_t> &out_dims, const std::vector<Perturber> &rows,
-                const std::vector<double> &lambda, const OrbitalEnergies &e,
-                const EinsumOperand &delta, PcWalkBars &w) {
+// One slab of a PC class over every pair: @p terms (I, J) evaluated over the
+// tuple axes @p tuple_dims and m_J into pair (I, J)'s block of y, packed at
+// PcKets::offsets, or for a term with h set into the same block of the
+// exchange rows x (Sijr's swapped core pair, Srsi's SrsiT slab: a state's own
+// pair alone); read back and finished on the host; the weights added to each
+// ket's M and M_Δ; and every term's adjoint taken against ybar, or xbar.
+//
+// Per ket J and tuple t (row t1 of @p rows, Perturber read as: t2 < 0 a
+// single coupling with factor s, t2 >= 0 the pair 2 direct - exchange with its
+// exchange row t2 of x; Δ as SC's finish takes it), with g = y_J / (λ + Δ),
+// g_x = x_J / (λ + Δ) and, for each bra I, g_I = y_{I←J} / (λ + Δ):
+//   single: E_IJ -= s g_I.y_J,  ybar_{I←J} += -s H̄ g,  ybar_J += -s H̄ g_I,
+//           R += s H̄ g_I.g,     w_J = s g;
+//   pair:   E_IJ -= 2 g_I.y_J - g_I.x_J,  ybar_{I←J} += -H̄ (2 g - g_x),
+//           ybar_J += -2 H̄ g_I,  xbar_J += H̄ g_I,
+//           R += H̄ (2 g_I.g - g_I.g_x),   w_J = 2 g - g_x;
+// H̄ = H̄_IJ, M_J += Σ_t (Σ_I H̄_IJ g_I) w_Jᵀ and M_Δ the same with Δ_t, and
+// R = dL/dΔ onto the orbital energies, as SC's finish puts it. The own pair
+// I = J is taken first, its two ybar terms as one (-2 s g, -(4 g - g_x)), so
+// that at n = 1, H̄ = 1, every multiplier is the one-state pass's to the bit.
+Status pc_slab_reverse(ReverseContext &c, const PcStates &q, PcReverse &r,
+                       const std::function<std::vector<ClassTerm>(int64_t, int64_t)> &terms,
+                       const std::vector<int64_t> &tuple_dims, const std::vector<Perturber> &rows) {
+  DeviceResources &res = c.res;
   const wwr::wwrStream_t s = res.stream();
-  const int64_t count = std::ranges::fold_left(out_dims, int64_t{1}, std::multiplies{});
-  const auto m = std::ssize(lambda);
-  const int64_t nt = count / m;
-  const bool exchange = std::ranges::any_of(terms, [](const ClassTerm &t) { return t.h; });
+  const int64_t ns = q.ns;
+  const int64_t nt = std::ranges::fold_left(tuple_dims, int64_t{1}, std::multiplies{});
+  const std::vector<int64_t> at = r.kets.offsets(nt);
+  const int64_t count = at.back();
+  const auto dims = [&](const int64_t j) {
+    std::vector<int64_t> out = tuple_dims;
+    out.push_back(r.kets.m(j));
+    return out;
+  };
+  std::vector<std::vector<ClassTerm>> pair_terms;
+  bool exchange = false;
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    pair_terms.push_back(terms(p / ns, p % ns));
+    exchange = exchange || std::ranges::any_of(pair_terms.back(), &ClassTerm::h);
+  }
   Buffers::device<double> y_d = FBF_TRY(device_zeros(res, count));
   Buffers::device<double> x_d = FBF_TRY(device_zeros(res, exchange ? count : 0));
-  FBF_TRY(eval_terms(res, terms, y_d.data(), x_d.data(), out_dims));
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    const auto pp = static_cast<size_t>(p);
+    FBF_TRY(eval_terms(res, pair_terms[pp], y_d.data() + at[pp],
+                       exchange ? x_d.data() + at[pp] : nullptr, dims(p % ns)));
+  }
   const std::vector<double> y = FBF_TRY(download(res, y_d.data(), count));
   const std::vector<double> x = FBF_TRY(download(res, x_d.data(), exchange ? count : 0));
-  const PcRows f = pc_finish_adjoint(rows, y, x, lambda, e);
 
-  const Buffers::device<double> g = FBF_TRY(upload(res, f.g));
-  const Buffers::device<double> wt = FBF_TRY(upload(res, f.w));
-  const Buffers::device<double> dt = FBF_TRY(upload(res, f.delta));
-  const EinsumOperand g_op{.data = g.data(), .dims = {nt, m}};
-  const EinsumOperand w_op{.data = wt.data(), .dims = {nt, m}};
-  FBF_TRY(einsum(s, "tk,tl->kl", {g_op, w_op}, w.mgg.data(), {m, m}, 1.0));
-  FBF_TRY(einsum(s, "t,tk,tl->kl", {{.data = dt.data(), .dims = {nt}}, g_op, w_op},
-                 w.mgg_delta.data(), {m, m}, 1.0));
-  const Buffers::device<double> ybar = FBF_TRY(upload(res, f.ybar));
-  const Buffers::device<double> xbar = FBF_TRY(upload(res, f.xbar));
-  FBF_TRY(adjoint_terms(res, terms, ybar.data(), xbar.data(), out_dims, delta, nullptr));
-  return std::pair{f.energy, f.min_denominator};
+  std::vector<double> ybar(y.size(), 0.0);
+  std::vector<double> xbar(x.size(), 0.0);
+  std::vector<double> gsum(y.size(), 0.0);
+  std::vector<double> w(y.size(), 0.0);
+  std::vector<double> delta(rows.size(), 0.0);
+  for (int64_t j = 0; j < ns; ++j) {
+    const auto jj = static_cast<size_t>((j * ns) + j);
+    const std::vector<double> &lambda = r.kets.solves[static_cast<size_t>(j)].lambda;
+    const size_t m = lambda.size();
+    const double hj = q.hbar[jj];
+    double &floor = r.min_denominator[static_cast<size_t>(j)];
+    for (size_t t = 0; t < rows.size(); ++t) {
+      const Perturber &p = rows[t];
+      const double diff = perturber_delta(p, c.e);
+      delta[t] = diff;
+      const size_t row = static_cast<size_t>(at[jj]) + (static_cast<size_t>(p.t1) * m);
+      const size_t xrow =
+          p.t2 < 0 ? row : static_cast<size_t>(at[jj]) + (static_cast<size_t>(p.t2) * m);
+      double rbar = 0.0;
+      for (size_t k = 0; k < m; ++k) {
+        const double den = lambda[k] + diff;
+        floor = std::min(floor, den);
+        const double g = y[row + k] / den;
+        const double gx = p.t2 < 0 ? 0.0 : x[xrow + k] / den;
+        gsum[row + k] = hj * g;
+        if (p.t2 < 0) {
+          r.energy[jj] -= p.s * g * y[row + k];
+          ybar[row + k] += hj * (-2.0 * p.s * g);
+          w[row + k] = p.s * g;
+          rbar += hj * (p.s * g * g);
+        } else {
+          r.energy[jj] -= (2.0 * g * y[row + k]) - (g * x[xrow + k]);
+          ybar[row + k] += hj * (-((4.0 * g) - gx));
+          xbar[xrow + k] += hj * g;
+          w[row + k] = (2.0 * g) - gx;
+          rbar += hj * ((2.0 * g * g) - (g * gx));
+        }
+        for (int64_t i = 0; i < ns; ++i) {
+          if (i == j) {
+            continue;
+          }
+          const auto ij = static_cast<size_t>((i * ns) + j);
+          const size_t irow = static_cast<size_t>(at[ij]) + (static_cast<size_t>(p.t1) * m);
+          const double hij = q.hbar[ij];
+          const double gi = y[irow + k] / den;
+          gsum[row + k] += hij * gi;
+          if (p.t2 < 0) {
+            r.energy[ij] -= p.s * gi * y[row + k];
+            ybar[irow + k] += -p.s * hij * g;
+            ybar[row + k] += -p.s * hij * gi;
+            rbar += hij * p.s * gi * g;
+          } else {
+            r.energy[ij] -= (2.0 * gi * y[row + k]) - (gi * x[xrow + k]);
+            ybar[irow + k] += -hij * ((2.0 * g) - gx);
+            ybar[row + k] += -2.0 * hij * gi;
+            xbar[xrow + k] += hij * gi;
+            rbar += hij * ((2.0 * gi * g) - (gi * gx));
+          }
+        }
+      }
+      add_delta_bar(p, rbar, c.e);
+    }
+  }
+
+  const Buffers::device<double> gsum_d = FBF_TRY(upload(res, gsum));
+  const Buffers::device<double> w_d = FBF_TRY(upload(res, w));
+  const Buffers::device<double> dt = FBF_TRY(upload(res, delta));
+  for (int64_t j = 0; j < ns; ++j) {
+    const auto jj = static_cast<size_t>((j * ns) + j);
+    const int64_t m = r.kets.m(j);
+    const EinsumOperand g_op{.data = gsum_d.data() + at[jj], .dims = {nt, m}};
+    const EinsumOperand w_op{.data = w_d.data() + at[jj], .dims = {nt, m}};
+    FBF_TRY(einsum(s, "tk,tl->kl", {g_op, w_op}, r.w[jj].mgg.data(), {m, m}, 1.0));
+    FBF_TRY(einsum(s, "t,tk,tl->kl", {{.data = dt.data(), .dims = {nt}}, g_op, w_op},
+                   r.w[jj].mgg_delta.data(), {m, m}, 1.0));
+  }
+  const Buffers::device<double> ybar_d = FBF_TRY(upload(res, ybar));
+  const Buffers::device<double> xbar_d = FBF_TRY(upload(res, xbar));
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    const auto pp = static_cast<size_t>(p);
+    FBF_TRY(adjoint_terms(res, pair_terms[pp], ybar_d.data() + at[pp],
+                          exchange ? xbar_d.data() + at[pp] : nullptr, dims(p % ns), c.ops.delta,
+                          nullptr));
+  }
+  return {};
 }
 
-// The bars on a class's raw S (d x d), K (d x d) and S₁ (d x n1), each
-// row-major as the class built it, from the walk's accumulators; @p w.t is
-// spent. Column-major throughout, as the solve: M and M_Δ, row-major, read
-// column-major as their transposes, which U Mᵀ's place in U (U Mᵀ)ᵀ =
-// U M Uᵀ undoes.
+// The bars on the raw S (d x d), K (d x d) and S₁ (d x n1) pair (I, J)'s rows
+// read, each row-major as the class built it, from the walk's accumulators.
+// Column-major throughout, as the solve. @p own (I = J): ket J's own, @p w.t
+// spent; M and M_Δ, row-major, read column-major as their transposes, which
+// U Mᵀ's place in U (U Mᵀ)ᵀ = U M Uᵀ undoes, and S and K symmetrized as the
+// solve symmetrized them. Else pair (J, I)'s transition S and S₁, which
+// T_{I←J} = A U_J reads unsymmetrized (A the row-major S read column-major):
+// A's bar, the buffer's own, is T̄ Uᵀ; K is not formed.
 struct PcMatrixBars {
   Buffers::device<double> s, k, s1;
 };
 
 Result<PcMatrixBars> pc_matrix_bars(DeviceResources &res, const ClassSolve &cs, PcWalkBars &w,
-                                    const int64_t d, const int64_t n1) {
+                                    const int64_t d, const int64_t n1, const bool own) {
   const int64_t m = std::ssize(cs.lambda);
   const auto di = static_cast<int32_t>(d);
   const auto mi = static_cast<int32_t>(m);
-  // dE/dS_sym = U (T̄ + U M_Δᵀ)ᵀ, dE/dK_sym = U (U Mᵀ)ᵀ.
-  FBF_TRY(gpu_status(gemm(res.blas(), di, mi, mi, &kOne<double>, cs.u.data(), w.mgg_delta.data(),
-                          &kOne<double>, w.t.data())));
-  Buffers::device<double> z(static_cast<size_t>(d * m), res.device());
-  FBF_TRY(gpu_status(gemm(res.blas(), di, mi, mi, &kOne<double>, cs.u.data(), w.mgg.data(),
-                          &kZero<double>, z.data())));
-  Buffers::device<double> s_sym(static_cast<size_t>(d * d), res.device());
-  Buffers::device<double> k_sym(static_cast<size_t>(d * d), res.device());
-  FBF_TRY(gpu_status(
-      gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(res.blas(), di, di, mi, &kOne<double>, cs.u.data(),
-                                                 w.t.data(), &kZero<double>, s_sym.data())));
-  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
-      res.blas(), di, di, mi, &kOne<double>, cs.u.data(), z.data(), &kZero<double>, k_sym.data())));
-  // The solve symmetrized S and K, and the symmetrization is its own adjoint.
-  PcMatrixBars out{.s = FBF_TRY(symmetrized(res, s_sym.data(), d)),
-                   .k = FBF_TRY(symmetrized(res, k_sym.data(), d)),
+  PcMatrixBars out{.s = FBF_TRY(device_zeros(res, 0)),
+                   .k = FBF_TRY(device_zeros(res, 0)),
                    .s1 = FBF_TRY(device_zeros(res, d * n1))};
+  if (own) {
+    // dE/dS_sym = U (T̄ + U M_Δᵀ)ᵀ, dE/dK_sym = U (U Mᵀ)ᵀ.
+    FBF_TRY(gpu_status(gemm(res.blas(), di, mi, mi, &kOne<double>, cs.u.data(), w.mgg_delta.data(),
+                            &kOne<double>, w.t.data())));
+    Buffers::device<double> z(static_cast<size_t>(d * m), res.device());
+    FBF_TRY(gpu_status(gemm(res.blas(), di, mi, mi, &kOne<double>, cs.u.data(), w.mgg.data(),
+                            &kZero<double>, z.data())));
+    Buffers::device<double> s_sym(static_cast<size_t>(d * d), res.device());
+    Buffers::device<double> k_sym(static_cast<size_t>(d * d), res.device());
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        res.blas(), di, di, mi, &kOne<double>, cs.u.data(), w.t.data(), &kZero<double>,
+        s_sym.data())));
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        res.blas(), di, di, mi, &kOne<double>, cs.u.data(), z.data(), &kZero<double>,
+        k_sym.data())));
+    // The solve symmetrized S and K, and the symmetrization is its own adjoint.
+    out.s = FBF_TRY(symmetrized(res, s_sym.data(), d));
+    out.k = FBF_TRY(symmetrized(res, k_sym.data(), d));
+  } else {
+    out.s = Buffers::device<double>(static_cast<size_t>(d * d), res.device());
+    FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T>(
+        res.blas(), di, di, mi, &kOne<double>, w.t.data(), cs.u.data(), &kZero<double>,
+        out.s.data())));
+  }
   if (n1 > 0) {
     // U column-major d x m reads row-major as the m x d "ki", as in solve_class.
     FBF_TRY(einsum(res.stream(), "ki,ak->ia",
@@ -1882,45 +1970,98 @@ Status add_onto(DeviceResources &res, const Buffers::device<double> &kbar, doubl
                 1.0);
 }
 
-// One PC class's energy, dropped count and homogeneity sum.
+// One class's bars on one pair's raw matrices @p b back onto the blocks they
+// were built from over @p o (@p own: a state's own S, K and S₁; else a
+// transition's S and S₁), and Σ_G <M_G, G> over those blocks added to the
+// device scalar @p acc. Each rebuilds the block values its sum reads.
+using PcBack = Status (*)(DeviceResources &, const ActiveOperands &o, bool own,
+                          const PcMatrixBars &b, BlockBars &m, double *acc);
+
+// One PC class over the n states: its couplings [I ns + J], each ket's
+// dropped count, and its homogeneity sum.
 struct PcClassSums {
-  double energy = 0.0;
-  int64_t dropped = 0;
+  std::vector<double> energy;
+  std::vector<int64_t> dropped;
   double homogeneity = 0.0;
 };
 
-// Sr: pc_sr's solve and walk, its bars onto a16, dm3 and dm2 (SC's sr_dm3 and
-// sr_dm2: Sr's S and S₁ are permutations of them).
-Result<PcClassSums> pc_reverse_sr(ReverseContext &c, BlockBars &m) {
+// A class with no tuple: nothing coupled, nothing dropped.
+PcClassSums pc_no_tuples(const int64_t ns) {
+  return {.energy = std::vector<double>(static_cast<size_t>(ns * ns), 0.0),
+          .dropped = std::vector<int64_t>(static_cast<size_t>(ns), 0),
+          .homogeneity = 0.0};
+}
+
+// After a class's walk: each ket's denominators checked as the energy's, then
+// every pair's matrix bars back through @p back, pair (I, J)'s onto ket J's
+// own blocks at I = J and onto pair (J, I)'s, whose matrices its rows read,
+// off it.
+Result<PcClassSums> pc_reverse_finish(ReverseContext &c, const PcStates &q, PcReverse &r,
+                                      const int64_t d, const int64_t n1, const PcBack back) {
   DeviceResources &res = c.res;
-  const wwr::wwrStream_t s = res.stream();
-  const ActiveOperands &o = c.ops;
+  const int64_t ns = q.ns;
+  for (int64_t j = 0; j < ns; ++j) {
+    const Status ok = pc_denominators_positive(r.name, r.min_denominator[static_cast<size_t>(j)]);
+    if (!ok) {
+      return state_error(ok.error(), j, ns);
+    }
+  }
+  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
+  for (int64_t i = 0; i < ns; ++i) {
+    for (int64_t j = 0; j < ns; ++j) {
+      const auto built = static_cast<size_t>((j * ns) + i);
+      const PcMatrixBars b =
+          FBF_TRY(pc_matrix_bars(res, r.kets.solves[static_cast<size_t>(j)],
+                                 r.w[static_cast<size_t>((i * ns) + j)], d, n1, i == j));
+      FBF_TRY(back(res, q.ops[built], i == j, b, q.m[built], acc.data()));
+    }
+  }
+  PcClassSums out{
+      .energy = std::move(r.energy), .dropped = {}, .homogeneity = FBF_TRY(scalar(res, acc))};
+  for (const ClassSolve &cs : r.kets.solves) {
+    out.dropped.push_back(cs.dropped);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The classes: each pc.cpp's walk, its slab einsums listed once as ClassTerms
+// per pair (T's basis axes row-major after k, so T is packed and
+// einsum_adjoint writes its bar), and its blocks' way back.
+// ---------------------------------------------------------------------------
+
+// Sr's bars onto sr_dm3 and sr_dm2 (its S and S₁ are permutations of them)
+// and a16.
+Status pc_back_sr(DeviceResources &res, const ActiveOperands &o, const bool own,
+                  const PcMatrixBars &b, BlockBars &m, double *const acc) {
+  const int64_t n = o.dm1.dims[0];
+  const std::vector<int64_t> d4(4, n);
+  const std::vector<int64_t> d6(6, n);
+  FBF_TRY(adjoint_terms(res, {{"rpqbac->pqrabc", {o.dm3}, {m.sr_dm3.data()}}}, b.s.data(),
+                        b.s.data(), d6, o.delta, nullptr));
+  FBF_TRY(adjoint_terms(res, {{"rpqa->pqra", {o.dm2}, {m.sr_dm2.data()}}}, b.s1.data(), b.s1.data(),
+                        d4, o.delta, nullptr));
+  FBF_TRY(add_dot(res, m.sr_dm3, o.dm3.data, acc));
+  FBF_TRY(add_dot(res, m.sr_dm2, o.dm2.data, acc));
+  if (own) {
+    FBF_TRY(add_onto(res, b.k, m.a16.data(), n * n * n));
+    const Buffers::device<double> a16 = FBF_TRY(make_a16(res, o.h1e, o.h2e, o.dm3, o.f3ac, o.f3ca));
+    FBF_TRY(add_dot(res, m.a16, a16.data(), acc));
+  }
+  return {};
+}
+
+Result<PcClassSums> pc_reverse_sr(ReverseContext &c, const PcStates &q) {
+  DeviceResources &res = c.res;
+  const int64_t ns = q.ns;
   const int64_t n = c.blocks.ncas;
   const int64_t nv = c.blocks.nvirt;
   const int64_t d = n * n * n;
-  const std::vector<int64_t> d4(4, n);
-  const std::vector<int64_t> d6(6, n);
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sr);
   if (extent == 0) {
-    return PcClassSums{};
+    return pc_no_tuples(ns);
   }
-  const Buffers::device<double> a16 = FBF_TRY(make_a16(res, o.h1e, o.h2e, o.dm3, o.f3ac, o.f3ca));
-  // S, S₁ and their builders are freed once solved.
-  const auto solve = [&]() -> Result<ClassSolve> {
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    FBF_TRY(einsum(s, "rpqbac->pqrabc", {o.dm3}, sm.data(), d6, 1.0));
-    Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d * n));
-    FBF_TRY(einsum(s, "rpqa->pqra", {o.dm2}, s1.data(), d4, 1.0));
-    return solve_class(res, "Sr", sm.data(), a16.data(), d, s1.data(), n);
-  };
-  const ClassSolve cs = FBF_TRY(solve());
-  const int64_t mm = std::ssize(cs.lambda);
-  PcWalkBars w = FBF_TRY(pc_walk_bars(res, mm, d, n));
-  const EinsumOperand t{.data = cs.t.data(), .dims = {mm, n, n, n}};
-  const EinsumOperand t1{.data = cs.t1->data(), .dims = {n, mm}};
-
-  double energy = 0.0;
-  double min_den = std::numeric_limits<double>::infinity();
+  PcReverse r = FBF_TRY(pc_reverse_kets(c, q, "Sr", d, n, pc_sr_matrices));
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Sr, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Sr, step);
@@ -1934,67 +2075,59 @@ Result<PcClassSums> pc_reverse_sr(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h1e_v{.data = c.in.h1e_v_sr + b0, .dims = {nb, n}, .strides = {1, nv}};
     double *const sb = slab_bar.data();
     double *const hb = c.bars.h1e_v_sr == nullptr ? nullptr : c.bars.h1e_v_sr + b0;
-    const std::vector<ClassTerm> terms{{"ipqr,kpqr->ik", {h2e_v, t}, {sb, w.t.data()}},
-                                       {"ia,ak->ik", {h1e_v, t1}, {hb, w.t1.data()}}};
+    const auto terms = [&](const int64_t i, const int64_t j) -> std::vector<ClassTerm> {
+      const int64_t m = r.kets.m(j);
+      PcWalkBars &w = r.w[static_cast<size_t>((i * ns) + j)];
+      const EinsumOperand t{.data = r.kets.t_of(i, j), .dims = {m, n, n, n}};
+      const EinsumOperand t1{.data = r.kets.t1_of(i, j), .dims = {n, m}};
+      return {{"ipqr,kpqr->ik", {h2e_v, t}, {sb, w.t.data()}},
+              {"ia,ak->ik", {h1e_v, t1}, {hb, w.t1.data()}}};
+    };
     std::vector<Perturber> rows;
     for (int64_t i = 0; i < nb; ++i) {
       rows.push_back({.t1 = i, .v1 = static_cast<int32_t>(b0 + i)});
     }
-    const auto [e_part, den] =
-        FBF_TRY(pc_slab_reverse(res, terms, {nb, mm}, rows, cs.lambda, c.e, o.delta, w));
-    energy += e_part;
-    min_den = std::min(min_den, den);
+    FBF_TRY(pc_slab_reverse(c, q, r, terms, {nb}, rows));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sr, b0, b1, sb));
   }
-  FBF_TRY(pc_denominators_positive("Sr", min_den));
-
-  const PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, cs, w, d, n));
-  FBF_TRY(adjoint_terms(res, {{"rpqbac->pqrabc", {o.dm3}, {m.sr_dm3.data()}}}, b.s.data(),
-                        b.s.data(), d6, o.delta, nullptr));
-  FBF_TRY(adjoint_terms(res, {{"rpqa->pqra", {o.dm2}, {m.sr_dm2.data()}}}, b.s1.data(), b.s1.data(),
-                        d4, o.delta, nullptr));
-  FBF_TRY(add_onto(res, b.k, m.a16.data(), d));
-  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  const double homogeneity = FBF_TRY(
-      eq40_sum(res, {{&m.sr_dm3, o.dm3.data}, {&m.sr_dm2, o.dm2.data}, {&m.a16, a16.data()}}, acc));
-  return PcClassSums{.energy = energy, .dropped = cs.dropped, .homogeneity = homogeneity};
+  return pc_reverse_finish(c, q, r, d, n, pc_back_sr);
 }
 
-// Si: pc_si's solve and walk, its bars onto a22, dm3_h and dm2_h.
-Result<PcClassSums> pc_reverse_si(ReverseContext &c, BlockBars &m) {
-  DeviceResources &res = c.res;
-  const wwr::wwrStream_t s = res.stream();
-  const ActiveOperands &o = c.ops;
-  const int64_t n = c.blocks.ncas;
-  const int64_t d = n * n * n;
+// Si's bars onto dm3_h, dm2_h and a22.
+Status pc_back_si(DeviceResources &res, const ActiveOperands &o, const bool own,
+                  const PcMatrixBars &b, BlockBars &m, double *const acc) {
+  const int64_t n = o.dm1.dims[0];
   const std::vector<int64_t> d4(4, n);
   const std::vector<int64_t> d6(6, n);
-  const int32_t extent = walk_extent(c.blocks, ExtBlock::Si);
-  if (extent == 0) {
-    return PcClassSums{};
-  }
-  const Buffers::device<double> a22 =
-      FBF_TRY(make_a22(res, o.h1e, o.h2e, o.dm2, o.dm3, o.f3ac, o.f3ca));
   const Buffers::device<double> dm3_h = FBF_TRY(make_dm3_h(res, o.dm2, o.dm3, o.delta));
   const Buffers::device<double> dm2_h = FBF_TRY(make_dm2_h(res, o.dm1, o.dm2, o.delta));
   const EinsumOperand dm3_h_op{.data = dm3_h.data(), .dims = d6};
   const EinsumOperand dm2_h_op{.data = dm2_h.data(), .dims = d4};
-  // S, S₁ and their builders are freed once solved.
-  const auto solve = [&]() -> Result<ClassSolve> {
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    FBF_TRY(einsum(s, "rpqbac->pqrabc", {dm3_h_op}, sm.data(), d6, 1.0));
-    Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d * n));
-    FBF_TRY(einsum(s, "rpqa->pqra", {dm2_h_op}, s1.data(), d4, 1.0));
-    return solve_class(res, "Si", sm.data(), a22.data(), d, s1.data(), n);
-  };
-  const ClassSolve cs = FBF_TRY(solve());
-  const int64_t mm = std::ssize(cs.lambda);
-  PcWalkBars w = FBF_TRY(pc_walk_bars(res, mm, d, n));
-  const EinsumOperand t{.data = cs.t.data(), .dims = {mm, n, n, n}};
-  const EinsumOperand t1{.data = cs.t1->data(), .dims = {n, mm}};
+  FBF_TRY(adjoint_terms(res, {{"rpqbac->pqrabc", {dm3_h_op}, {m.dm3_h.data()}}}, b.s.data(),
+                        b.s.data(), d6, o.delta, nullptr));
+  FBF_TRY(adjoint_terms(res, {{"rpqa->pqra", {dm2_h_op}, {m.dm2_h.data()}}}, b.s1.data(),
+                        b.s1.data(), d4, o.delta, nullptr));
+  FBF_TRY(add_dot(res, m.dm3_h, dm3_h.data(), acc));
+  FBF_TRY(add_dot(res, m.dm2_h, dm2_h.data(), acc));
+  if (own) {
+    FBF_TRY(add_onto(res, b.k, m.a22.data(), n * n * n));
+    const Buffers::device<double> a22 =
+        FBF_TRY(make_a22(res, o.h1e, o.h2e, o.dm2, o.dm3, o.f3ac, o.f3ca));
+    FBF_TRY(add_dot(res, m.a22, a22.data(), acc));
+  }
+  return {};
+}
 
-  double energy = 0.0;
-  double min_den = std::numeric_limits<double>::infinity();
+Result<PcClassSums> pc_reverse_si(ReverseContext &c, const PcStates &q) {
+  DeviceResources &res = c.res;
+  const int64_t ns = q.ns;
+  const int64_t n = c.blocks.ncas;
+  const int64_t d = n * n * n;
+  const int32_t extent = walk_extent(c.blocks, ExtBlock::Si);
+  if (extent == 0) {
+    return pc_no_tuples(ns);
+  }
+  PcReverse r = FBF_TRY(pc_reverse_kets(c, q, "Si", d, n, pc_si_matrices));
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Si, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Si, step);
@@ -2008,54 +2141,53 @@ Result<PcClassSums> pc_reverse_si(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h1e_v{.data = c.in.h1e_v_si + (n * b0), .dims = {n, nb}, .strides = {1, n}};
     double *const sb = slab_bar.data();
     double *const hb = c.bars.h1e_v_si == nullptr ? nullptr : c.bars.h1e_v_si + (n * b0);
-    const std::vector<ClassTerm> terms{{"qpir,kpqr->ik", {h2e_v, t}, {sb, w.t.data()}},
-                                       {"ai,ak->ik", {h1e_v, t1}, {hb, w.t1.data()}}};
+    const auto terms = [&](const int64_t i, const int64_t j) -> std::vector<ClassTerm> {
+      const int64_t m = r.kets.m(j);
+      PcWalkBars &w = r.w[static_cast<size_t>((i * ns) + j)];
+      const EinsumOperand t{.data = r.kets.t_of(i, j), .dims = {m, n, n, n}};
+      const EinsumOperand t1{.data = r.kets.t1_of(i, j), .dims = {n, m}};
+      return {{"qpir,kpqr->ik", {h2e_v, t}, {sb, w.t.data()}},
+              {"ai,ak->ik", {h1e_v, t1}, {hb, w.t1.data()}}};
+    };
     std::vector<Perturber> rows;
     for (int64_t i = 0; i < nb; ++i) {
       rows.push_back({.t1 = i, .c1 = static_cast<int32_t>(b0 + i)});
     }
-    const auto [e_part, den] =
-        FBF_TRY(pc_slab_reverse(res, terms, {nb, mm}, rows, cs.lambda, c.e, o.delta, w));
-    energy += e_part;
-    min_den = std::min(min_den, den);
+    FBF_TRY(pc_slab_reverse(c, q, r, terms, {nb}, rows));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Si, b0, b1, sb));
   }
-  FBF_TRY(pc_denominators_positive("Si", min_den));
-
-  const PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, cs, w, d, n));
-  FBF_TRY(adjoint_terms(res, {{"rpqbac->pqrabc", {dm3_h_op}, {m.dm3_h.data()}}}, b.s.data(),
-                        b.s.data(), d6, o.delta, nullptr));
-  FBF_TRY(adjoint_terms(res, {{"rpqa->pqra", {dm2_h_op}, {m.dm2_h.data()}}}, b.s1.data(),
-                        b.s1.data(), d4, o.delta, nullptr));
-  FBF_TRY(add_onto(res, b.k, m.a22.data(), d));
-  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  const double homogeneity = FBF_TRY(eq40_sum(
-      res, {{&m.dm3_h, dm3_h.data()}, {&m.dm2_h, dm2_h.data()}, {&m.a22, a22.data()}}, acc));
-  return PcClassSums{.energy = energy, .dropped = cs.dropped, .homogeneity = homogeneity};
+  return pc_reverse_finish(c, q, r, d, n, pc_back_si);
 }
 
-// Sijr: pc_sijr's solve and walk, the exchange rows y[r, i, j] as x by the
-// swapped einsum, its bars onto hdm1 and a3.
-Result<PcClassSums> pc_reverse_sijr(ReverseContext &c, BlockBars &m) {
+// Sijr's bars onto hdm1 (its S) and a3.
+Status pc_back_sijr(DeviceResources &res, const ActiveOperands &o, const bool own,
+                    const PcMatrixBars &b, BlockBars &m, double *const acc) {
+  const int64_t n = o.dm1.dims[0];
+  const Buffers::device<double> hdm1 = FBF_TRY(make_hdm1(res, o.dm1, o.delta, own ? 1.0 : 0.0));
+  FBF_TRY(add_onto(res, b.s, m.hdm1.data(), n));
+  FBF_TRY(add_dot(res, m.hdm1, hdm1.data(), acc));
+  if (own) {
+    FBF_TRY(add_onto(res, b.k, m.a3.data(), n));
+    const EinsumOperand hdm1_op{.data = hdm1.data(), .dims = {n, n}};
+    const Buffers::device<double> a3 =
+        FBF_TRY(make_a3(res, o.h1e, o.h2e, o.dm1, o.dm2, hdm1_op, o.delta));
+    FBF_TRY(add_dot(res, m.a3, a3.data(), acc));
+  }
+  return {};
+}
+
+// Sijr: the exchange rows y[r, i, j] of a state's own pair as x, by the
+// swapped einsum.
+Result<PcClassSums> pc_reverse_sijr(ReverseContext &c, const PcStates &q) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const int64_t ns = q.ns;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sijr);
   if (extent == 0 || nc == 0) {
-    return PcClassSums{};
+    return pc_no_tuples(ns);
   }
-  const Buffers::device<double> hdm1 = FBF_TRY(make_hdm1(res, o.dm1, o.delta));
-  const EinsumOperand hdm1_op{.data = hdm1.data(), .dims = {n, n}};
-  const Buffers::device<double> a3 =
-      FBF_TRY(make_a3(res, o.h1e, o.h2e, o.dm1, o.dm2, hdm1_op, o.delta));
-  const ClassSolve cs = FBF_TRY(solve_class(res, "Sijr", hdm1.data(), a3.data(), n));
-  const int64_t mm = std::ssize(cs.lambda);
-  PcWalkBars w = FBF_TRY(pc_walk_bars(res, mm, n, 0));
-  const EinsumOperand t{.data = cs.t.data(), .dims = {mm, n}};
-
-  double energy = 0.0;
-  double min_den = std::numeric_limits<double>::infinity();
+  PcReverse r = FBF_TRY(pc_reverse_kets(c, q, "Sijr", n, 0, pc_sijr_matrices));
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Sijr, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Sijr, step);
@@ -2067,58 +2199,60 @@ Result<PcClassSums> pc_reverse_sijr(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(c.blocks, ExtBlock::Sijr, b0, b1));
     double *const sb = slab_bar.data();
-    const std::vector<ClassTerm> terms{{"rpji,kp->rjik", {h2e_v, t}, {sb, w.t.data()}, false},
-                                       {"rpij,kp->rjik", {h2e_v, t}, {sb, w.t.data()}, true}};
+    const auto terms = [&](const int64_t i, const int64_t j) -> std::vector<ClassTerm> {
+      PcWalkBars &w = r.w[static_cast<size_t>((i * ns) + j)];
+      const EinsumOperand t{.data = r.kets.t_of(i, j), .dims = {r.kets.m(j), n}};
+      std::vector<ClassTerm> out{{"rpji,kp->rjik", {h2e_v, t}, {sb, w.t.data()}, false}};
+      if (i == j) {
+        out.push_back({"rpij,kp->rjik", {h2e_v, t}, {sb, w.t.data()}, true});
+      }
+      return out;
+    };
     std::vector<Perturber> rows;
-    for (int64_t r = 0; r < nr; ++r) {
+    for (int64_t rr = 0; rr < nr; ++rr) {
       for (int64_t j = 0; j < nc; ++j) {
         for (int64_t i = 0; i < nc; ++i) {
-          const int64_t row = (((r * nc) + j) * nc) + i;
+          const int64_t row = (((rr * nc) + j) * nc) + i;
           rows.push_back({.t1 = row,
                           .t2 = row,
-                          .v1 = static_cast<int32_t>(b0 + r),
+                          .v1 = static_cast<int32_t>(b0 + rr),
                           .c1 = static_cast<int32_t>(j),
                           .c2 = static_cast<int32_t>(i)});
         }
       }
     }
-    const auto [e_part, den] =
-        FBF_TRY(pc_slab_reverse(res, terms, {nr, nc, nc, mm}, rows, cs.lambda, c.e, o.delta, w));
-    energy += e_part;
-    min_den = std::min(min_den, den);
+    FBF_TRY(pc_slab_reverse(c, q, r, terms, {nr, nc, nc}, rows));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sijr, b0, b1, sb));
   }
-  FBF_TRY(pc_denominators_positive("Sijr", min_den));
-
-  const PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, cs, w, n, 0));
-  FBF_TRY(add_onto(res, b.s, m.hdm1.data(), n));
-  FBF_TRY(add_onto(res, b.k, m.a3.data(), n));
-  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  const double homogeneity =
-      FBF_TRY(eq40_sum(res, {{&m.hdm1, hdm1.data()}, {&m.a3, a3.data()}}, acc));
-  return PcClassSums{.energy = energy, .dropped = cs.dropped, .homogeneity = homogeneity};
+  return pc_reverse_finish(c, q, r, n, 0, pc_back_sijr);
 }
 
-// Srsi: pc_srsi's solve and walk, the exchange rows from the SrsiT slab as x,
-// its bars onto dm1 (SC's srsi_dm1) and k27.
-Result<PcClassSums> pc_reverse_srsi(ReverseContext &c, BlockBars &m) {
+// Srsi's bars onto dm1 (SC's srsi_dm1, its S) and k27.
+Status pc_back_srsi(DeviceResources &res, const ActiveOperands &o, const bool own,
+                    const PcMatrixBars &b, BlockBars &m, double *const acc) {
+  const int64_t n = o.dm1.dims[0];
+  FBF_TRY(add_onto(res, b.s, m.srsi_dm1.data(), n));
+  FBF_TRY(add_dot(res, m.srsi_dm1, o.dm1.data, acc));
+  if (own) {
+    FBF_TRY(add_onto(res, b.k, m.k27.data(), n));
+    const Buffers::device<double> k27 = FBF_TRY(make_k27(res, o.h1e, o.h2e, o.dm1, o.dm2));
+    FBF_TRY(add_dot(res, m.k27, k27.data(), acc));
+  }
+  return {};
+}
+
+// Srsi: the exchange rows of a state's own pair from the SrsiT slab as x.
+Result<PcClassSums> pc_reverse_srsi(ReverseContext &c, const PcStates &q) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const int64_t ns = q.ns;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   const int64_t nv = c.blocks.nvirt;
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Srsi);
   if (extent == 0 || nc == 0) {
-    return PcClassSums{};
+    return pc_no_tuples(ns);
   }
-  const Buffers::device<double> k27 = FBF_TRY(make_k27(res, o.h1e, o.h2e, o.dm1, o.dm2));
-  const ClassSolve cs = FBF_TRY(solve_class(res, "Srsi", o.dm1.data, k27.data(), n));
-  const int64_t mm = std::ssize(cs.lambda);
-  PcWalkBars w = FBF_TRY(pc_walk_bars(res, mm, n, 0));
-  const EinsumOperand t{.data = cs.t.data(), .dims = {mm, n}};
-
-  double energy = 0.0;
-  double min_den = std::numeric_limits<double>::infinity();
+  PcReverse r = FBF_TRY(pc_reverse_kets(c, q, "Srsi", n, 0, pc_srsi_matrices));
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_a = slab_buffer(res, c.blocks, ExtBlock::Srsi, step);
   Buffers::device<double> slab_b = slab_buffer(res, c.blocks, ExtBlock::SrsiT, step);
@@ -2136,67 +2270,65 @@ Result<PcClassSums> pc_reverse_srsi(ReverseContext &c, BlockBars &m) {
         column_major(slab_a.data(), slab_dims(c.blocks, ExtBlock::Srsi, b0, b1));
     const EinsumOperand h_b =
         column_major(slab_b.data(), slab_dims(c.blocks, ExtBlock::SrsiT, b0, b1));
-    const std::vector<ClassTerm> terms{
-        {"rsip,kp->rsik", {h_a, t}, {bar_a.data(), w.t.data()}, false},
-        {"srip,kp->rsik", {h_b, t}, {bar_b.data(), w.t.data()}, true}};
+    const auto terms = [&](const int64_t i, const int64_t j) -> std::vector<ClassTerm> {
+      PcWalkBars &w = r.w[static_cast<size_t>((i * ns) + j)];
+      const EinsumOperand t{.data = r.kets.t_of(i, j), .dims = {r.kets.m(j), n}};
+      std::vector<ClassTerm> out{{"rsip,kp->rsik", {h_a, t}, {bar_a.data(), w.t.data()}, false}};
+      if (i == j) {
+        out.push_back({"srip,kp->rsik", {h_b, t}, {bar_b.data(), w.t.data()}, true});
+      }
+      return out;
+    };
     std::vector<Perturber> rows;
-    for (int64_t r = 0; r < nb; ++r) {
+    for (int64_t rr = 0; rr < nb; ++rr) {
       for (int64_t ss = 0; ss < nv; ++ss) {
         for (int64_t i = 0; i < nc; ++i) {
-          const int64_t row = (((r * nv) + ss) * nc) + i;
+          const int64_t row = (((rr * nv) + ss) * nc) + i;
           rows.push_back({.t1 = row,
                           .t2 = row,
-                          .v1 = static_cast<int32_t>(b0 + r),
+                          .v1 = static_cast<int32_t>(b0 + rr),
                           .v2 = static_cast<int32_t>(ss),
                           .c1 = static_cast<int32_t>(i)});
         }
       }
     }
-    const auto [e_part, den] =
-        FBF_TRY(pc_slab_reverse(res, terms, {nb, nv, nc, mm}, rows, cs.lambda, c.e, o.delta, w));
-    energy += e_part;
-    min_den = std::min(min_den, den);
+    FBF_TRY(pc_slab_reverse(c, q, r, terms, {nb, nv, nc}, rows));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Srsi, b0, b1, bar_a.data()));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::SrsiT, b0, b1, bar_b.data()));
   }
-  FBF_TRY(pc_denominators_positive("Srsi", min_den));
-
-  const PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, cs, w, n, 0));
-  FBF_TRY(add_onto(res, b.s, m.srsi_dm1.data(), n));
-  FBF_TRY(add_onto(res, b.k, m.k27.data(), n));
-  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  const double homogeneity =
-      FBF_TRY(eq40_sum(res, {{&m.srsi_dm1, o.dm1.data}, {&m.k27, k27.data()}}, acc));
-  return PcClassSums{.energy = energy, .dropped = cs.dropped, .homogeneity = homogeneity};
+  return pc_reverse_finish(c, q, r, n, 0, pc_back_srsi);
 }
 
-// Srs: pc_srs's solve and walk, its bars onto rm2 and a7.
-Result<PcClassSums> pc_reverse_srs(ReverseContext &c, BlockBars &m) {
+// Srs's bars onto rm2 and a7; a state's own rm2 is make_a7's, as the walk's.
+Status pc_back_srs(DeviceResources &res, const ActiveOperands &o, const bool own,
+                   const PcMatrixBars &b, BlockBars &m, double *const acc) {
+  const int64_t n = o.dm1.dims[0];
+  const std::vector<int64_t> d4(4, n);
+  const auto onto_rm2 = [&](const Buffers::device<double> &rm2) -> Status {
+    FBF_TRY(adjoint_terms(res, {{"pqba->pqab", {{.data = rm2.data(), .dims = d4}}, {m.rm2.data()}}},
+                          b.s.data(), b.s.data(), d4, o.delta, nullptr));
+    return add_dot(res, m.rm2, rm2.data(), acc);
+  };
+  if (!own) {
+    return onto_rm2(FBF_TRY(make_rm2(res, o.dm1, o.dm2, o.delta)));
+  }
+  const auto [rm2, a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
+  FBF_TRY(onto_rm2(rm2));
+  FBF_TRY(add_onto(res, b.k, m.a7.data(), n * n));
+  return add_dot(res, m.a7, a7.data(), acc);
+}
+
+Result<PcClassSums> pc_reverse_srs(ReverseContext &c, const PcStates &q) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const int64_t ns = q.ns;
   const int64_t n = c.blocks.ncas;
   const int64_t nv = c.blocks.nvirt;
   const int64_t d = n * n;
-  const std::vector<int64_t> d4(4, n);
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Srs);
   if (extent == 0) {
-    return PcClassSums{};
+    return pc_no_tuples(ns);
   }
-  const auto [rm2, a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
-  const EinsumOperand rm2_op{.data = rm2.data(), .dims = d4};
-  // S, S₁ and their builders are freed once solved.
-  const auto solve = [&]() -> Result<ClassSolve> {
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    FBF_TRY(einsum(res.stream(), "pqba->pqab", {rm2_op}, sm.data(), d4, 1.0));
-    return solve_class(res, "Srs", sm.data(), a7.data(), d);
-  };
-  const ClassSolve cs = FBF_TRY(solve());
-  const int64_t mm = std::ssize(cs.lambda);
-  PcWalkBars w = FBF_TRY(pc_walk_bars(res, mm, d, 0));
-  const EinsumOperand t{.data = cs.t.data(), .dims = {mm, n, n}};
-
-  double energy = 0.0;
-  double min_den = std::numeric_limits<double>::infinity();
+  PcReverse r = FBF_TRY(pc_reverse_kets(c, q, "Srs", d, 0, pc_srs_matrices));
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Srs, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Srs, step);
@@ -2208,63 +2340,62 @@ Result<PcClassSums> pc_reverse_srs(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(c.blocks, ExtBlock::Srs, b0, b1));
     double *const sb = slab_bar.data();
-    const std::vector<ClassTerm> terms{{"rsqp,kpq->rsk", {h2e_v, t}, {sb, w.t.data()}}};
+    const auto terms = [&](const int64_t i, const int64_t j) -> std::vector<ClassTerm> {
+      PcWalkBars &w = r.w[static_cast<size_t>((i * ns) + j)];
+      const EinsumOperand t{.data = r.kets.t_of(i, j), .dims = {r.kets.m(j), n, n}};
+      return {{"rsqp,kpq->rsk", {h2e_v, t}, {sb, w.t.data()}}};
+    };
     std::vector<Perturber> rows;
-    for (int64_t r = 0; r < nb; ++r) {
+    for (int64_t rr = 0; rr < nb; ++rr) {
       for (int64_t ss = 0; ss < nv; ++ss) {
-        rows.push_back({.t1 = (r * nv) + ss,
+        rows.push_back({.t1 = (rr * nv) + ss,
                         .s = 0.5,
-                        .v1 = static_cast<int32_t>(b0 + r),
+                        .v1 = static_cast<int32_t>(b0 + rr),
                         .v2 = static_cast<int32_t>(ss)});
       }
     }
-    const auto [e_part, den] =
-        FBF_TRY(pc_slab_reverse(res, terms, {nb, nv, mm}, rows, cs.lambda, c.e, o.delta, w));
-    energy += e_part;
-    min_den = std::min(min_den, den);
+    FBF_TRY(pc_slab_reverse(c, q, r, terms, {nb, nv}, rows));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Srs, b0, b1, sb));
   }
-  FBF_TRY(pc_denominators_positive("Srs", min_den));
-
-  const PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, cs, w, d, 0));
-  FBF_TRY(adjoint_terms(res, {{"pqba->pqab", {rm2_op}, {m.rm2.data()}}}, b.s.data(), b.s.data(), d4,
-                        o.delta, nullptr));
-  FBF_TRY(add_onto(res, b.k, m.a7.data(), d));
-  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  const double homogeneity =
-      FBF_TRY(eq40_sum(res, {{&m.rm2, rm2.data()}, {&m.a7, a7.data()}}, acc));
-  return PcClassSums{.energy = energy, .dropped = cs.dropped, .homogeneity = homogeneity};
+  return pc_reverse_finish(c, q, r, d, 0, pc_back_srs);
 }
 
-// Sij: pc_sij's solve and walk, its bars onto hdm2 and a9.
-Result<PcClassSums> pc_reverse_sij(ReverseContext &c, BlockBars &m) {
+// Sij's bars onto hdm2 (its S) and a9.
+Status pc_back_sij(DeviceResources &res, const ActiveOperands &o, const bool own,
+                   const PcMatrixBars &b, BlockBars &m, double *const acc) {
+  const int64_t n = o.dm1.dims[0];
+  const std::vector<int64_t> d4(4, n);
+  const Buffers::device<double> hdm2 =
+      FBF_TRY(make_hdm2(res, o.dm1, o.dm2, o.delta, own ? 1.0 : 0.0));
+  FBF_TRY(add_onto(res, b.s, m.hdm2.data(), n * n));
+  FBF_TRY(add_dot(res, m.hdm2, hdm2.data(), acc));
+  if (own) {
+    FBF_TRY(add_onto(res, b.k, m.a9.data(), n * n));
+    const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
+    // hdm3 is freed once a9 is built.
+    const auto build_a9 = [&]() -> Result<Buffers::device<double>> {
+      const Buffers::device<double> hdm3 =
+          FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
+      const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
+      return make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op);
+    };
+    const Buffers::device<double> a9 = FBF_TRY(build_a9());
+    FBF_TRY(add_dot(res, m.a9, a9.data(), acc));
+  }
+  return {};
+}
+
+Result<PcClassSums> pc_reverse_sij(ReverseContext &c, const PcStates &q) {
   DeviceResources &res = c.res;
-  const ActiveOperands &o = c.ops;
+  const int64_t ns = q.ns;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   const int64_t d = n * n;
-  const std::vector<int64_t> d4(4, n);
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sij);
   if (extent == 0) {
-    return PcClassSums{};
+    return pc_no_tuples(ns);
   }
-  const Buffers::device<double> hdm2 = FBF_TRY(make_hdm2(res, o.dm1, o.dm2, o.delta));
-  const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
-  // hdm3 is freed once a9 is built.
-  const auto build_a9 = [&]() -> Result<Buffers::device<double>> {
-    const Buffers::device<double> hdm3 =
-        FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
-    const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
-    return make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op);
-  };
-  const Buffers::device<double> a9 = FBF_TRY(build_a9());
-  const ClassSolve cs = FBF_TRY(solve_class(res, "Sij", hdm2.data(), a9.data(), d));
-  const int64_t mm = std::ssize(cs.lambda);
-  PcWalkBars w = FBF_TRY(pc_walk_bars(res, mm, d, 0));
-  const EinsumOperand t{.data = cs.t.data(), .dims = {mm, n, n}};
-
-  double energy = 0.0;
-  double min_den = std::numeric_limits<double>::infinity();
+  PcReverse r = FBF_TRY(pc_reverse_kets(c, q, "Sij", d, 0, pc_sij_matrices));
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_buf = slab_buffer(res, c.blocks, ExtBlock::Sij, step);
   Buffers::device<double> slab_bar = slab_buffer(res, c.blocks, ExtBlock::Sij, step);
@@ -2276,7 +2407,11 @@ Result<PcClassSums> pc_reverse_sij(ReverseContext &c, BlockBars &m) {
     const EinsumOperand h2e_v =
         column_major(slab_buf.data(), slab_dims(c.blocks, ExtBlock::Sij, b0, b1));
     double *const sb = slab_bar.data();
-    const std::vector<ClassTerm> terms{{"qpij,kpq->ijk", {h2e_v, t}, {sb, w.t.data()}}};
+    const auto terms = [&](const int64_t i, const int64_t j) -> std::vector<ClassTerm> {
+      PcWalkBars &w = r.w[static_cast<size_t>((i * ns) + j)];
+      const EinsumOperand t{.data = r.kets.t_of(i, j), .dims = {r.kets.m(j), n, n}};
+      return {{"qpij,kpq->ijk", {h2e_v, t}, {sb, w.t.data()}}};
+    };
     std::vector<Perturber> rows;
     for (int64_t i = 0; i < nb; ++i) {
       for (int64_t j = 0; j < nc; ++j) {
@@ -2286,86 +2421,78 @@ Result<PcClassSums> pc_reverse_sij(ReverseContext &c, BlockBars &m) {
                         .c2 = static_cast<int32_t>(j)});
       }
     }
-    const auto [e_part, den] =
-        FBF_TRY(pc_slab_reverse(res, terms, {nb, nc, mm}, rows, cs.lambda, c.e, o.delta, w));
-    energy += e_part;
-    min_den = std::min(min_den, den);
+    FBF_TRY(pc_slab_reverse(c, q, r, terms, {nb, nc}, rows));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sij, b0, b1, sb));
   }
-  FBF_TRY(pc_denominators_positive("Sij", min_den));
-
-  const PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, cs, w, d, 0));
-  FBF_TRY(add_onto(res, b.s, m.hdm2.data(), d));
-  FBF_TRY(add_onto(res, b.k, m.a9.data(), d));
-  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  const double homogeneity =
-      FBF_TRY(eq40_sum(res, {{&m.hdm2, hdm2.data()}, {&m.a9, a9.data()}}, acc));
-  return PcClassSums{.energy = energy, .dropped = cs.dropped, .homogeneity = homogeneity};
+  return pc_reverse_finish(c, q, r, d, 0, pc_back_sij);
 }
 
-// Sir: pc_sir's blocked solve and walk. T's two blocks are picked by a
-// selector over T's leading block axis, so T stays one packed operand whose
-// bar einsum_adjoint can write. Its bars onto dm1 and dm2 (SC's sir_dm1 and
-// sir_dm2), a12 and a13.
-Result<PcClassSums> pc_reverse_sir(ReverseContext &c, BlockBars &m) {
+// Sir's bars onto dm1 and dm2 (SC's sir_dm1 and sir_dm2: its S and S₁ are
+// built from them, through pc_sir_matrices' blocks), a12 and a13.
+Status pc_back_sir(DeviceResources &res, const ActiveOperands &o, const bool own,
+                   const PcMatrixBars &b, BlockBars &m, double *const acc) {
+  const int64_t n = o.dm1.dims[0];
+  const std::vector<int64_t> d4(4, n);
+  const std::vector<int64_t> blocked{2, n, n, 2, n, n};
+  // pc_sir_matrices' coefficient blocks.
+  const Buffers::device<double> off_diag = FBF_TRY(upload(res, {2.0, -1.0, -1.0, 0.0}));
+  const Buffers::device<double> block22 = FBF_TRY(upload(res, {0.0, 0.0, 0.0, 1.0}));
+  const Buffers::device<double> one_body = FBF_TRY(upload(res, {2.0, -1.0}));
+  const EinsumOperand off_diag_op{.data = off_diag.data(), .dims = {2, 2}};
+  const EinsumOperand block22_op{.data = block22.data(), .dims = {2, 2}};
+  const EinsumOperand one_body_op{.data = one_body.data(), .dims = {2}};
+  // s22's value is never read: its bar's term reads only block22.
+  const EinsumOperand s22_op{.dims = d4};
+  Buffers::device<double> s22_bar = FBF_TRY(device_zeros(res, n * n * n * n));
+  double *const md1 = m.sir_dm1.data();
+  double *const md2 = m.sir_dm2.data();
+  FBF_TRY(adjoint_terms(res,
+                        {{"xy,qpab->xpqyab", {off_diag_op, o.dm2}, {nullptr, md2}},
+                         {"xy,pqab->xpqyab", {block22_op, s22_op}, {nullptr, s22_bar.data()}}},
+                        b.s.data(), b.s.data(), blocked, o.delta, nullptr));
+  FBF_TRY(adjoint_terms(res,
+                        {{"pa,qb->pqab", {o.delta, o.dm1}, {nullptr, md1}, false, 2.0},
+                         {"qbap->pqab", {o.dm2}, {md2}, false, -1.0},
+                         {"ab,qp->pqab", {o.delta, o.dm1}, {nullptr, md1}, false, 1.0}},
+                        s22_bar.data(), s22_bar.data(), d4, o.delta, nullptr));
+  FBF_TRY(adjoint_terms(res, {{"x,qp->xpq", {one_body_op, o.dm1}, {nullptr, md1}}}, b.s1.data(),
+                        b.s1.data(), {2, n, n}, o.delta, nullptr));
+  FBF_TRY(add_dot(res, m.sir_dm2, o.dm2.data, acc));
+  FBF_TRY(add_dot(res, m.sir_dm1, o.dm1.data, acc));
+  if (own) {
+    const Buffers::device<double> a12 = FBF_TRY(make_a12(res, o.h1e, o.h2e, o.dm2, o.dm3));
+    const Buffers::device<double> a13 =
+        FBF_TRY(make_a13(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
+    const EinsumOperand a12_op{.data = a12.data(), .dims = d4};
+    const EinsumOperand a13_op{.data = a13.data(), .dims = d4};
+    FBF_TRY(adjoint_terms(res,
+                          {{"xy,pqab->xpqyab", {off_diag_op, a12_op}, {nullptr, m.a12.data()}},
+                           {"xy,pqab->xpqyab", {block22_op, a13_op}, {nullptr, m.a13.data()}}},
+                          b.k.data(), b.k.data(), blocked, o.delta, nullptr));
+    FBF_TRY(add_dot(res, m.a12, a12.data(), acc));
+    FBF_TRY(add_dot(res, m.a13, a13.data(), acc));
+  }
+  return {};
+}
+
+// Sir: T's two blocks are picked by a selector over T's leading block axis,
+// so T stays one packed operand whose bar einsum_adjoint can write.
+Result<PcClassSums> pc_reverse_sir(ReverseContext &c, const PcStates &q) {
   DeviceResources &res = c.res;
-  const wwr::wwrStream_t s = res.stream();
-  const ActiveOperands &o = c.ops;
+  const int64_t ns = q.ns;
   const int64_t n = c.blocks.ncas;
   const int64_t nc = c.blocks.ncore;
   const int64_t nv = c.blocks.nvirt;
   const int64_t d = 2 * n * n;
-  const std::vector<int64_t> d4(4, n);
-  const std::vector<int64_t> blocked{2, n, n, 2, n, n};
   const int32_t extent = walk_extent(c.blocks, ExtBlock::Sir1);
   if (extent == 0 || nc == 0) {
-    return PcClassSums{};
+    return pc_no_tuples(ns);
   }
-  // pc_sir's coefficient blocks, and the two selectors.
-  const Buffers::device<double> off_diag = FBF_TRY(upload(res, {2.0, -1.0, -1.0, 0.0}));
-  const Buffers::device<double> block22 = FBF_TRY(upload(res, {0.0, 0.0, 0.0, 1.0}));
-  const Buffers::device<double> one_body = FBF_TRY(upload(res, {2.0, -1.0}));
+  PcReverse r = FBF_TRY(pc_reverse_kets(c, q, "Sir", d, 1, pc_sir_matrices));
   const Buffers::device<double> first = FBF_TRY(upload(res, {1.0, 0.0}));
   const Buffers::device<double> second = FBF_TRY(upload(res, {0.0, 1.0}));
-  const EinsumOperand off_diag_op{.data = off_diag.data(), .dims = {2, 2}};
-  const EinsumOperand block22_op{.data = block22.data(), .dims = {2, 2}};
-  const EinsumOperand one_body_op{.data = one_body.data(), .dims = {2}};
-  const Buffers::device<double> a12 = FBF_TRY(make_a12(res, o.h1e, o.h2e, o.dm2, o.dm3));
-  const Buffers::device<double> a13 =
-      FBF_TRY(make_a13(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
-  const EinsumOperand a12_op{.data = a12.data(), .dims = d4};
-  const EinsumOperand a13_op{.data = a13.data(), .dims = d4};
-  // s22's value is never read: its bar's term reads only block22.
-  const EinsumOperand s22_op{.dims = d4};
-  // S, S₁ and their builders are freed once solved.
-  const auto solve = [&]() -> Result<ClassSolve> {
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    {
-      Buffers::device<double> s22 = FBF_TRY(device_zeros(res, n * n * n * n));
-      FBF_TRY(einsum(s, "pa,qb->pqab", {o.delta, o.dm1}, s22.data(), d4, 2.0));
-      FBF_TRY(einsum(s, "qbap->pqab", {o.dm2}, s22.data(), d4, -1.0));
-      FBF_TRY(einsum(s, "ab,qp->pqab", {o.delta, o.dm1}, s22.data(), d4, 1.0));
-      FBF_TRY(einsum(s, "xy,qpab->xpqyab", {off_diag_op, o.dm2}, sm.data(), blocked, 1.0));
-      FBF_TRY(einsum(s, "xy,pqab->xpqyab", {block22_op, {.data = s22.data(), .dims = d4}},
-                     sm.data(), blocked, 1.0));
-    }
-    Buffers::device<double> km = FBF_TRY(device_zeros(res, d * d));
-    FBF_TRY(einsum(s, "xy,pqab->xpqyab", {off_diag_op, a12_op}, km.data(), blocked, 1.0));
-    FBF_TRY(einsum(s, "xy,pqab->xpqyab", {block22_op, a13_op}, km.data(), blocked, 1.0));
-    Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d));
-    FBF_TRY(einsum(s, "x,qp->xpq", {one_body_op, o.dm1}, s1.data(), {2, n, n}, 1.0));
-    return solve_class(res, "Sir", sm.data(), km.data(), d, s1.data(), 1);
-  };
-  const ClassSolve cs = FBF_TRY(solve());
-  const int64_t mm = std::ssize(cs.lambda);
-  PcWalkBars w = FBF_TRY(pc_walk_bars(res, mm, d, 1));
-  const EinsumOperand t{.data = cs.t.data(), .dims = {mm, 2, n, n}};
-  const EinsumOperand t1{.data = cs.t1->data(), .dims = {mm}};
   const EinsumOperand first_op{.data = first.data(), .dims = {2}};
   const EinsumOperand second_op{.data = second.data(), .dims = {2}};
-
-  double energy = 0.0;
-  double min_den = std::numeric_limits<double>::infinity();
   const int32_t step = batch_step(extent, c.batch);
   Buffers::device<double> slab_1 = slab_buffer(res, c.blocks, ExtBlock::Sir1, step);
   Buffers::device<double> slab_2 = slab_buffer(res, c.blocks, ExtBlock::Sir2, step);
@@ -2384,99 +2511,103 @@ Result<PcClassSums> pc_reverse_sir(ReverseContext &c, BlockBars &m) {
         column_major(slab_2.data(), slab_dims(c.blocks, ExtBlock::Sir2, b0, b1));
     const EinsumOperand h1e_v{.data = c.in.h1e_v_sir + b0, .dims = {nb, nc}, .strides = {1, nv}};
     double *const hb = c.bars.h1e_v_sir == nullptr ? nullptr : c.bars.h1e_v_sir + b0;
-    const std::vector<ClassTerm> terms{
-        {"rpiq,x,kxpq->rik", {v1, first_op, t}, {bar_1.data(), nullptr, w.t.data()}},
-        {"rpqi,x,kxpq->rik", {v2, second_op, t}, {bar_2.data(), nullptr, w.t.data()}},
-        {"ri,k->rik", {h1e_v, t1}, {hb, w.t1.data()}}};
+    const auto terms = [&](const int64_t i, const int64_t j) -> std::vector<ClassTerm> {
+      const int64_t m = r.kets.m(j);
+      PcWalkBars &w = r.w[static_cast<size_t>((i * ns) + j)];
+      const EinsumOperand t{.data = r.kets.t_of(i, j), .dims = {m, 2, n, n}};
+      const EinsumOperand t1{.data = r.kets.t1_of(i, j), .dims = {m}};
+      return {{"rpiq,x,kxpq->rik", {v1, first_op, t}, {bar_1.data(), nullptr, w.t.data()}},
+              {"rpqi,x,kxpq->rik", {v2, second_op, t}, {bar_2.data(), nullptr, w.t.data()}},
+              {"ri,k->rik", {h1e_v, t1}, {hb, w.t1.data()}}};
+    };
     std::vector<Perturber> rows;
-    for (int64_t r = 0; r < nb; ++r) {
+    for (int64_t rr = 0; rr < nb; ++rr) {
       for (int64_t i = 0; i < nc; ++i) {
-        rows.push_back({.t1 = (r * nc) + i,
-                        .v1 = static_cast<int32_t>(b0 + r),
+        rows.push_back({.t1 = (rr * nc) + i,
+                        .v1 = static_cast<int32_t>(b0 + rr),
                         .c1 = static_cast<int32_t>(i)});
       }
     }
-    const auto [e_part, den] =
-        FBF_TRY(pc_slab_reverse(res, terms, {nb, nc, mm}, rows, cs.lambda, c.e, o.delta, w));
-    energy += e_part;
-    min_den = std::min(min_den, den);
+    FBF_TRY(pc_slab_reverse(c, q, r, terms, {nb, nc}, rows));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sir1, b0, b1, bar_1.data()));
     FBF_TRY(slab_bar_onto_lambda(c, ExtBlock::Sir2, b0, b1, bar_2.data()));
   }
-  FBF_TRY(pc_denominators_positive("Sir", min_den));
-
-  const PcMatrixBars b = FBF_TRY(pc_matrix_bars(res, cs, w, d, 1));
-  Buffers::device<double> s22_bar = FBF_TRY(device_zeros(res, n * n * n * n));
-  double *const md1 = m.sir_dm1.data();
-  double *const md2 = m.sir_dm2.data();
-  FBF_TRY(adjoint_terms(res,
-                        {{"xy,qpab->xpqyab", {off_diag_op, o.dm2}, {nullptr, md2}},
-                         {"xy,pqab->xpqyab", {block22_op, s22_op}, {nullptr, s22_bar.data()}}},
-                        b.s.data(), b.s.data(), blocked, o.delta, nullptr));
-  FBF_TRY(adjoint_terms(res,
-                        {{"pa,qb->pqab", {o.delta, o.dm1}, {nullptr, md1}, false, 2.0},
-                         {"qbap->pqab", {o.dm2}, {md2}, false, -1.0},
-                         {"ab,qp->pqab", {o.delta, o.dm1}, {nullptr, md1}, false, 1.0}},
-                        s22_bar.data(), s22_bar.data(), d4, o.delta, nullptr));
-  FBF_TRY(adjoint_terms(res,
-                        {{"xy,pqab->xpqyab", {off_diag_op, a12_op}, {nullptr, m.a12.data()}},
-                         {"xy,pqab->xpqyab", {block22_op, a13_op}, {nullptr, m.a13.data()}}},
-                        b.k.data(), b.k.data(), blocked, o.delta, nullptr));
-  FBF_TRY(adjoint_terms(res, {{"x,qp->xpq", {one_body_op, o.dm1}, {nullptr, md1}}}, b.s1.data(),
-                        b.s1.data(), {2, n, n}, o.delta, nullptr));
-  Buffers::device<double> acc = FBF_TRY(device_zeros(res, 1));
-  const double homogeneity = FBF_TRY(eq40_sum(res,
-                                              {{&m.sir_dm2, o.dm2.data},
-                                               {&m.sir_dm1, o.dm1.data},
-                                               {&m.a12, a12.data()},
-                                               {&m.a13, a13.data()}},
-                                              acc));
-  return PcClassSums{.energy = energy, .dropped = cs.dropped, .homogeneity = homogeneity};
+  return pc_reverse_finish(c, q, r, d, 1, pc_back_sir);
 }
 
-Result<PcClassEnergiesAdjoint>
-pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
-                          const int32_t batch, const EnergyBars &bars) {
-  const ScopedDeviceIndex on{res.dev_idx()};
-  const ActiveOperands ops = FBF_TRY(active_operands(res, blocks, in));
-  std::vector<double> e_core_bar(ops.e_core.size(), 0.0);
-  std::vector<double> e_virt_bar(ops.e_virt.size(), 0.0);
-  ReverseContext c{
-      .res = res,
-      .blocks = blocks,
-      .in = in,
-      .bars = bars,
-      .batch = batch,
-      .ops = ops,
-      .e = {
-          .core = ops.e_core, .virt = ops.e_virt, .core_bar = e_core_bar, .virt_bar = e_virt_bar}};
-  // SC's block bars, every one zeroed: PC adds onto those its S, K and S₁ are
-  // built from, and the sweep reads them all (a17, a19, a23, a25 and dm1_h
-  // stay zero).
-  BlockBars m = FBF_TRY(block_bars(res, blocks.ncas, true, true));
+// ---------------------------------------------------------------------------
+// The PC-QD reverse pass, and PC's at n = 1
+// ---------------------------------------------------------------------------
 
-  PcClassEnergiesAdjoint out;
-  const auto put = [&out](const size_t k, const PcClassSums &x) {
-    out.energies.energies[k] = x.energy;
-    out.energies.dropped[k] = x.dropped;
+Result<PcEffectiveHamiltonianAdjoint> pc_couplings_adjoint(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    const int64_t ns, std::span<const double> hbar, const int32_t batch,
+    std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition) {
+  const ScopedDeviceIndex on{res.dev_idx()};
+  std::vector<ActiveOperands> ops;
+  for (const EnergyInputs &pair : pairs) {
+    ops.push_back(FBF_TRY(active_operands(res, blocks, pair)));
+  }
+  std::vector<double> e_core_bar(ops.front().e_core.size(), 0.0);
+  std::vector<double> e_virt_bar(ops.front().e_virt.size(), 0.0);
+  // The fields every pair shares, and their bars, are the first's.
+  ReverseContext c{.res = res,
+                   .blocks = blocks,
+                   .in = pairs.front(),
+                   .bars = bars.front(),
+                   .batch = batch,
+                   .ops = ops.front(),
+                   .e = {.core = ops.front().e_core,
+                         .virt = ops.front().e_virt,
+                         .core_bar = e_core_bar,
+                         .virt_bar = e_virt_bar}};
+  // SC's block bars, zeroed: every state's own whole set, and each
+  // transition's metrics, held until every class has walked. PC adds onto
+  // those its S, K and S₁ are built from, and the sweeps read them all (a17,
+  // a19, a23, a25 and dm1_h stay zero).
+  std::vector<BlockBars> m;
+  for (int64_t p = 0; p < ns * ns; ++p) {
+    m.push_back(FBF_TRY(block_bars(res, blocks.ncas, p / ns == p % ns, true)));
+  }
+  const PcStates q{.ns = ns, .ops = ops, .hbar = hbar, .m = m};
+
+  PcEffectiveHamiltonianAdjoint out;
+  out.elements.resize(static_cast<size_t>(ns * ns));
+  const auto put = [&](const size_t k, const PcClassSums &x) {
+    for (size_t p = 0; p < out.elements.size(); ++p) {
+      out.elements[p].energies[k] = x.energy[p];
+      out.elements[p].dropped[k] = x.dropped[p % static_cast<size_t>(ns)];
+    }
     out.homogeneity[k] = x.homogeneity;
   };
-  put(0, FBF_TRY(pc_reverse_sr(c, m)));
-  put(1, FBF_TRY(pc_reverse_si(c, m)));
-  // Sijrs has no active index, so its PC energy, and its reverse pass, are SC's.
-  const ClassSums sijrs = FBF_TRY(reverse_sijrs(c, 1.0));
-  put(2, PcClassSums{.energy = sijrs.energy, .homogeneity = sijrs.eq40});
-  put(3, FBF_TRY(pc_reverse_sijr(c, m)));
-  put(4, FBF_TRY(pc_reverse_srsi(c, m)));
-  put(5, FBF_TRY(pc_reverse_srs(c, m)));
-  put(6, FBF_TRY(pc_reverse_sij(c, m)));
-  put(7, FBF_TRY(pc_reverse_sir(c, m)));
-  out.energies.total = std::ranges::fold_left(out.energies.energies, 0.0, std::plus{});
+  put(0, FBF_TRY(pc_reverse_sr(c, q)));
+  put(1, FBF_TRY(pc_reverse_si(c, q)));
+  // Sijrs has no active index, so its PC energy and its reverse pass are SC's:
+  // every state's own is the one E, every transition's ⟨I|J⟩ = 0 times it,
+  // so its bars are Σ_J H̄_JJ times E's.
+  double trace = 0.0;
+  for (int64_t j = 0; j < ns; ++j) {
+    trace += hbar[static_cast<size_t>((j * ns) + j)];
+  }
+  const ClassSums sijrs = FBF_TRY(reverse_sijrs(c, trace));
+  for (int64_t j = 0; j < ns; ++j) {
+    out.elements[static_cast<size_t>((j * ns) + j)].energies[2] = sijrs.energy;
+  }
+  out.homogeneity[2] = sijrs.eq40;
+  put(3, FBF_TRY(pc_reverse_sijr(c, q)));
+  put(4, FBF_TRY(pc_reverse_srsi(c, q)));
+  put(5, FBF_TRY(pc_reverse_srs(c, q)));
+  put(6, FBF_TRY(pc_reverse_sij(c, q)));
+  put(7, FBF_TRY(pc_reverse_sir(c, q)));
+  for (PcClassEnergies &element : out.elements) {
+    element.total = std::ranges::fold_left(element.energies, 0.0, std::plus{});
+  }
 
-  // dE/dΔ's host sums onto the orbital energies' bars (Sijrs's are already
+  // dL/dΔ's host sums onto the orbital energies' bars (Sijrs's are already
   // there).
   for (const auto &[host, bar] :
-       {std::pair{&e_core_bar, bars.e_core}, std::pair{&e_virt_bar, bars.e_virt}}) {
+       {std::pair{&e_core_bar, c.bars.e_core}, std::pair{&e_virt_bar, c.bars.e_virt}}) {
     if (bar != nullptr && !host->empty()) {
       const Buffers::device<double> d = FBF_TRY(upload(res, *host));
       FBF_TRY(einsum(res.stream(), "i->i", {{.data = d.data(), .dims = {std::ssize(*host)}}}, bar,
@@ -2485,11 +2616,40 @@ pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const En
     }
   }
 
-  const std::array wanted{bars.h1e, bars.h2e, bars.dm1, bars.dm2, bars.dm3, bars.f3ca, bars.f3ac};
-  if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
-    FBF_TRY(sweep_blocks(res, ops, m, bars));
+  // Each state's own block bars onto bars[J] and the shared h1e and h2e; then
+  // each transition's metrics onto its RDMs, handed over and freed.
+  for (int64_t j = 0; j < ns; ++j) {
+    const auto jj = static_cast<size_t>((j * ns) + j);
+    const EnergyBars &own = bars[static_cast<size_t>(j)];
+    const std::array wanted{own.h1e, own.h2e, own.dm1, own.dm2, own.dm3, own.f3ca, own.f3ac};
+    if (std::ranges::any_of(wanted, [](const double *b) { return b != nullptr; })) {
+      FBF_TRY(sweep_blocks(res, ops[jj], m[jj], own));
+    }
+  }
+  if (transition) {
+    const int64_t n = blocks.ncas;
+    for (int64_t p = 0; p < ns * ns; ++p) {
+      if (p / ns == p % ns) {
+        continue;
+      }
+      Buffers::device<double> dm1 = FBF_TRY(device_zeros(res, n * n));
+      Buffers::device<double> dm2 = FBF_TRY(device_zeros(res, n * n * n * n));
+      Buffers::device<double> dm3 = FBF_TRY(device_zeros(res, n * n * n * n * n * n));
+      const EnergyBars t{.dm1 = dm1.data(), .dm2 = dm2.data(), .dm3 = dm3.data()};
+      FBF_TRY(sweep_metrics(res, ops[static_cast<size_t>(p)], m[static_cast<size_t>(p)], t));
+      FBF_TRY(transition(p / ns, p % ns, t));
+    }
   }
   return out;
+}
+
+Result<PcClassEnergiesAdjoint>
+pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
+                          const int32_t batch, const EnergyBars &bars) {
+  const double one = 1.0;
+  PcEffectiveHamiltonianAdjoint got =
+      FBF_TRY(pc_couplings_adjoint(res, blocks, {&in, 1}, 1, {&one, 1}, batch, {&bars, 1}, {}));
+  return PcClassEnergiesAdjoint{.energies = got.elements.front(), .homogeneity = got.homogeneity};
 }
 
 } // namespace free_breakfast::nevpt2

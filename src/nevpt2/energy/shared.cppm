@@ -9,7 +9,7 @@
 /// free_breakfast.nevpt2.energy. It only declares; every definition is
 /// energy.cpp's, except upload and the PC solve's (pc.cpp's) and
 /// einsum_adjoint (reverse.cpp's), so no bridge header reaches a partition's
-/// global module fragment. See
+/// global module fragment. PcKets' accessors are its one inline code. See
 /// docs/style.md, "Module-private code".
 
 module free_breakfast.nevpt2.energy:shared;
@@ -214,6 +214,79 @@ Result<Buffers::device<double>> symmetrized(DeviceResources &res, const double *
 Result<ClassSolve> solve_class(DeviceResources &res, const char *name, const double *s_rm,
                                const double *k_rm, int64_t d, const double *s1 = nullptr,
                                int64_t n1 = 0);
+
+/// @brief One pair's class matrices, row-major: S, K for a state's own RDMs
+/// alone, and S₁ where the class has one.
+struct PcMatrices {
+  Buffers::device<double> s;
+  std::optional<Buffers::device<double>> k;
+  std::optional<Buffers::device<double>> s1;
+};
+
+/// @brief A class's matrices over one pair's operands; own is a state's own
+/// RDMs (K built, the terms with no RDM kept), else a transition's. One per
+/// class, pc.cpp's pc_*_matrices, which the walk and its reverse pass share.
+using PcBuild = Result<PcMatrices> (*)(DeviceResources &, const ActiveOperands &, bool own);
+
+Result<PcMatrices> pc_sr_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
+Result<PcMatrices> pc_si_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
+Result<PcMatrices> pc_sijr_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
+Result<PcMatrices> pc_srsi_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
+Result<PcMatrices> pc_srs_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
+Result<PcMatrices> pc_sij_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
+Result<PcMatrices> pc_sir_matrices(DeviceResources &res, const ActiveOperands &o, bool own);
+
+/// @brief One class's solves and transition rows over ns states: per ket J
+/// its solve, and per ordered pair (I, J), I != J, T_{I←J} = S^{(J,I)ᵀ} U_J
+/// and t1_{I←J} = S₁^{(J,I)ᵀ} U_J, d x m_J column-major and n1 x m_J
+/// row-major as the solve's own T and t1.
+struct PcKets {
+  int64_t ns = 1;
+  std::vector<ClassSolve> solves;
+  std::vector<std::optional<Buffers::device<double>>> t, t1;
+
+  [[nodiscard]] int64_t m(const int64_t j) const {
+    return std::ssize(solves[static_cast<size_t>(j)].lambda);
+  }
+  [[nodiscard]] const double *t_of(const int64_t i, const int64_t j) const {
+    return i == j ? solves[static_cast<size_t>(j)].t.data()
+                  : t[static_cast<size_t>((i * ns) + j)]->data();
+  }
+  [[nodiscard]] const double *t1_of(const int64_t i, const int64_t j) const {
+    return i == j ? solves[static_cast<size_t>(j)].t1->data()
+                  : t1[static_cast<size_t>((i * ns) + j)]->data();
+  }
+  /// @brief Where pair (I, J)'s block of @p rows tuples starts in one slab's
+  /// packed rows, at [I ns + J], and the total at [ns²].
+  [[nodiscard]] std::vector<int64_t> offsets(const int64_t rows) const {
+    std::vector<int64_t> at{0};
+    for (int64_t p = 0; p < ns * ns; ++p) {
+      at.push_back(at.back() + (rows * m(p % ns)));
+    }
+    return at;
+  }
+};
+
+/// @brief Every state's solve over @p ops (ns x ns, [I ns + J]), from its own
+/// matrices, then every transition's T and t1 over pair (J, I)'s, each pair's
+/// matrices freed before the next is built. A refusal is state_error's.
+Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
+                       int64_t ns, int64_t d, int64_t n1, const PcBuild &build);
+
+/// @brief A failure of state @p j's class: at @p ns > 1 named by its state,
+/// pc_class_energies' prefix replaced by pc_effective_hamiltonian's; at ns = 1
+/// unchanged. The forward walks' and the reverse passes' one rule, so both
+/// refuse with the same message.
+std::unexpected<Error> state_error(const Error &e, int64_t j, int64_t ns);
+
+/// @brief The PC reverse pass of n states over @p pairs, as
+/// pc_effective_hamiltonian_adjoint documents (reverse.cpp's).
+/// pc_class_energies_adjoint is n = 1. Nothing is validated: the caller has.
+Result<PcEffectiveHamiltonianAdjoint>
+pc_couplings_adjoint(DeviceResources &res, const MoBlocks &blocks,
+                     std::span<const EnergyInputs> pairs, int64_t n, std::span<const double> hbar,
+                     int32_t batch, std::span<const EnergyBars> bars,
+                     const std::function<Status(int64_t, int64_t, const EnergyBars &)> &transition);
 
 /// @brief A class's refusal when its smallest denominator λ_k + Δ_t is not
 /// positive, a Numerical error naming it; success otherwise. The energy's and

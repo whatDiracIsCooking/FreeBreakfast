@@ -357,4 +357,55 @@ struct PcClassEnergiesAdjoint {
 pc_class_energies_adjoint(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
                           int32_t batch, const EnergyBars &bars);
 
+/// @brief pc_effective_hamiltonian_adjoint's result: the matrix it walked, and
+/// each class's homogeneity sum assembled from its bars.
+struct PcEffectiveHamiltonianAdjoint {
+  /// @brief The n² elements, as pc_effective_hamiltonian computes them.
+  std::vector<PcClassEnergies> elements;
+  /// @brief Σ_G <M_G, G> per class over the blocks of every state's own S,
+  /// K and S₁ and of every transition's S and S₁: each coupling is
+  /// homogeneous of degree one in its ket's (S_J, K_J, S₁_J) and pair
+  /// (J, I)'s (S, S₁) together, so this equals Σ_IJ H̄_IJ times class k's
+  /// element (I, J) to round-off. Sijrs carries SC's ½ <g-bar, g>.
+  std::array<double, 8> homogeneity{};
+};
+
+/// @brief The reverse pass of pc_effective_hamiltonian: the bars dL/dx of
+/// L = Σ_IJ H̄_IJ H_IJ, H_IJ element (I, J)'s total, on every input of every
+/// pair. pc_class_energies_adjoint is n = 1 with H̄ = 1, einsum for einsum.
+///
+/// @p pairs, @p hbar, @p bars and @p transition are
+/// sc_effective_hamiltonian_adjoint's, read the same way: bars[J]'s dm1, dm2,
+/// dm3, f3ca and f3ac take state J's own RDMs' bars, bars[0]'s other fields
+/// the shared ones' (the same pointer in every entry), and each ordered pair
+/// (I, J), I != J, is handed to @p transition once, an EnergyBars whose dm1,
+/// dm2 and dm3 alone are set, device buffers queued on res.stream() and freed
+/// when the call returns. A null @p transition forms none of them.
+///
+/// Per class, every ket J's solve of (K_J, S_J, S₁_J) runs backwards as
+/// pc_class_energies_adjoint's does: with g = y / (λ + Δ), E_IJ is
+/// -c b_{I←J}ᵀ (K_J + Δ S_J)⁺ b_J, bilinear in the two rows, so pair (I, J)
+/// puts -c H̄_IJ g_J on y_{I←J}, -c H̄_IJ g_{I←J} on y_J, and
+/// c H̄_IJ g_{I←J} g_Jᵀ on J's M (and Δ times it on M_Δ): still no
+/// eigenvalue or eigenvector derivative. The bars on T_{I←J} =
+/// S^{(J,I)ᵀ} U_J and t1_{I←J} go back through that product, U_J held, onto
+/// S^{(J,I)} and S₁^{(J,I)} unsymmetrized, and so onto pair (J, I)'s metric
+/// blocks and its transition RDMs. There is no (I, J) / (J, I) mean, unlike
+/// SC's. Each class walks its slabs once, every pair at once, as the forward
+/// does; every transition's metric bars are held until all eight classes
+/// have walked, then swept onto its transition RDMs and handed over in
+/// row-major pair order. Sijrs is SC's, weight Σ_J H̄_JJ.
+///
+/// @return The elements and the homogeneity sums; InvalidConfig as
+///         sc_effective_hamiltonian_adjoint's; or a refused class (no gap at
+///         S_J's cut, a denominator not positive), refused with
+///         pc_effective_hamiltonian's error naming the class and the state,
+///         never given a zero; or the slab adjoint's errors, and
+///         @p transition's. On an error the bars are unspecified.
+[[nodiscard]] Result<PcEffectiveHamiltonianAdjoint> pc_effective_hamiltonian_adjoint(
+    DeviceResources &res, const MoBlocks &blocks, std::span<const EnergyInputs> pairs,
+    std::span<const double> hbar, int32_t batch, std::span<const EnergyBars> bars,
+    const std::function<Status(int64_t bra, int64_t ket, const EnergyBars &transition)>
+        &transition);
+
 } // namespace free_breakfast::nevpt2

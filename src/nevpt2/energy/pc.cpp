@@ -204,48 +204,6 @@ std::unexpected<Error> state_error(const Error &e, const int64_t j, const int64_
       e.kind, std::format("nevpt2::pc_effective_hamiltonian: state {}: {}", j, what), e.origin});
 }
 
-// One pair's class matrices, row-major: S, K for a state's own RDMs only, and
-// S₁ where the class has one.
-struct PcMatrices {
-  Buffers::device<double> s;
-  std::optional<Buffers::device<double>> k;
-  std::optional<Buffers::device<double>> s1;
-};
-
-// A class's matrices over one pair's operands; @p own is a state's own RDMs
-// (K built, the terms with no RDM kept), else a transition's.
-using PcBuild = std::function<Result<PcMatrices>(const ActiveOperands &, bool)>;
-
-// One class's solves and transition rows: per ket J its solve, and per ordered
-// pair (I, J), I != J, T_{I←J} and t1_{I←J}, d x m_J column-major and
-// n1 x m_J row-major as the solve's own.
-struct PcKets {
-  int64_t ns = 1;
-  std::vector<ClassSolve> solves;
-  std::vector<std::optional<Buffers::device<double>>> t, t1;
-
-  [[nodiscard]] int64_t m(const int64_t j) const {
-    return std::ssize(solves[static_cast<size_t>(j)].lambda);
-  }
-  [[nodiscard]] const double *t_of(const int64_t i, const int64_t j) const {
-    return i == j ? solves[static_cast<size_t>(j)].t.data()
-                  : t[static_cast<size_t>((i * ns) + j)]->data();
-  }
-  [[nodiscard]] const double *t1_of(const int64_t i, const int64_t j) const {
-    return i == j ? solves[static_cast<size_t>(j)].t1->data()
-                  : t1[static_cast<size_t>((i * ns) + j)]->data();
-  }
-  // Where pair (I, J)'s block of @p rows tuples starts in one slab's packed y,
-  // at [I ns + J], and the total at [ns²].
-  [[nodiscard]] std::vector<int64_t> offsets(const int64_t rows) const {
-    std::vector<int64_t> at{0};
-    for (int64_t p = 0; p < ns * ns; ++p) {
-      at.push_back(at.back() + (rows * m(p % ns)));
-    }
-    return at;
-  }
-};
-
 // Every state's solve, from its own matrices, then every transition's T and
 // t1 over pair (J, I)'s, each pair's matrices freed before the next is built.
 Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const ActiveOperands> ops,
@@ -254,7 +212,7 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
   PcKets kets{.ns = ns};
   for (int64_t j = 0; j < ns; ++j) {
     Result<ClassSolve> cs = [&]() -> Result<ClassSolve> {
-      const PcMatrices mats = FBF_TRY(build(ops[static_cast<size_t>((j * ns) + j)], true));
+      const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + j)], true));
       return solve_class(res, name, mats.s.data(), mats.k->data(), d,
                          mats.s1 ? mats.s1->data() : nullptr, n1);
     }();
@@ -270,7 +228,7 @@ Result<PcKets> pc_kets(DeviceResources &res, const char *name, std::span<const A
       if (i == j) {
         continue;
       }
-      const PcMatrices mats = FBF_TRY(build(ops[static_cast<size_t>((j * ns) + i)], false));
+      const PcMatrices mats = FBF_TRY(build(res, ops[static_cast<size_t>((j * ns) + i)], false));
       const ClassSolve &cs = kets.solves[static_cast<size_t>(j)];
       const int64_t m = kets.m(j);
       // S^{(J,I)} row-major is S^{(J,I)ᵀ} column-major.
@@ -397,6 +355,152 @@ Result<PcClass> pc_finished(const Finish &f, const char *name, const PcKets &ket
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Each class's matrices over one pair's operands @p o, row-major: S, S₁ where
+// the class has one, and K when @p own (a state's own RDMs, whose terms with
+// no RDM are then kept: hdm1's 2δ, hdm2's δδ, ⟨J|I⟩'s off it). The walks
+// below and the reverse pass (reverse.cpp) both build from these.
+// ---------------------------------------------------------------------------
+
+// Sr: S[pqr, abc] = dm3[r,p,q,b,a,c], K = a16, S₁[pqr, a] = dm2[r,p,q,a].
+Result<PcMatrices> pc_sr_matrices(DeviceResources &res, const ActiveOperands &o, const bool own) {
+  const wwr::wwrStream_t s = res.stream();
+  const int64_t n = o.dm1.dims[0];
+  const int64_t d = n * n * n;
+  std::optional<Buffers::device<double>> a16;
+  if (own) {
+    a16 = FBF_TRY(make_a16(res, o.h1e, o.h2e, o.dm3, o.f3ac, o.f3ca));
+  }
+  Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
+  FBF_TRY(einsum(s, "rpqbac->pqrabc", {o.dm3}, sm.data(), std::vector<int64_t>(6, n), 1.0));
+  Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d * n));
+  FBF_TRY(einsum(s, "rpqa->pqra", {o.dm2}, s1.data(), std::vector<int64_t>(4, n), 1.0));
+  return PcMatrices{.s = std::move(sm), .k = std::move(a16), .s1 = std::move(s1)};
+}
+
+// Si: S[pqr, abc] = dm3_h[r,p,q,b,a,c], K = a22, S₁[pqr, a] = dm2_h[r,p,q,a].
+Result<PcMatrices> pc_si_matrices(DeviceResources &res, const ActiveOperands &o, const bool own) {
+  const wwr::wwrStream_t s = res.stream();
+  const int64_t n = o.dm1.dims[0];
+  const int64_t d = n * n * n;
+  std::optional<Buffers::device<double>> a22;
+  if (own) {
+    a22 = FBF_TRY(make_a22(res, o.h1e, o.h2e, o.dm2, o.dm3, o.f3ac, o.f3ca));
+  }
+  Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
+  {
+    const Buffers::device<double> dm3_h = FBF_TRY(make_dm3_h(res, o.dm2, o.dm3, o.delta));
+    const EinsumOperand dm3_h_op{.data = dm3_h.data(), .dims = std::vector<int64_t>(6, n)};
+    FBF_TRY(einsum(s, "rpqbac->pqrabc", {dm3_h_op}, sm.data(), std::vector<int64_t>(6, n), 1.0));
+  }
+  Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d * n));
+  {
+    const Buffers::device<double> dm2_h = FBF_TRY(make_dm2_h(res, o.dm1, o.dm2, o.delta));
+    const EinsumOperand dm2_h_op{.data = dm2_h.data(), .dims = std::vector<int64_t>(4, n)};
+    FBF_TRY(einsum(s, "rpqa->pqra", {dm2_h_op}, s1.data(), std::vector<int64_t>(4, n), 1.0));
+  }
+  return PcMatrices{.s = std::move(sm), .k = std::move(a22), .s1 = std::move(s1)};
+}
+
+// Sijr: S = hdm1, K = a3.
+Result<PcMatrices> pc_sijr_matrices(DeviceResources &res, const ActiveOperands &o, const bool own) {
+  const int64_t n = o.dm1.dims[0];
+  Buffers::device<double> hdm1 = FBF_TRY(make_hdm1(res, o.dm1, o.delta, own ? 1.0 : 0.0));
+  std::optional<Buffers::device<double>> a3;
+  if (own) {
+    const EinsumOperand hdm1_op{.data = hdm1.data(), .dims = {n, n}};
+    a3 = FBF_TRY(make_a3(res, o.h1e, o.h2e, o.dm1, o.dm2, hdm1_op, o.delta));
+  }
+  return PcMatrices{.s = std::move(hdm1), .k = std::move(a3), .s1 = std::nullopt};
+}
+
+// Srsi: S = dm1, K = k27.
+Result<PcMatrices> pc_srsi_matrices(DeviceResources &res, const ActiveOperands &o, const bool own) {
+  const int64_t n = o.dm1.dims[0];
+  std::optional<Buffers::device<double>> k27;
+  if (own) {
+    k27 = FBF_TRY(make_k27(res, o.h1e, o.h2e, o.dm1, o.dm2));
+  }
+  Buffers::device<double> sm = FBF_TRY(device_zeros(res, n * n));
+  FBF_TRY(einsum(res.stream(), "ij->ij", {o.dm1}, sm.data(), {n, n}, 1.0));
+  return PcMatrices{.s = std::move(sm), .k = std::move(k27), .s1 = std::nullopt};
+}
+
+// Srs: S[pq, ab] = rm2[p,q,b,a], K = a7; a state's own rm2 is make_a7's.
+Result<PcMatrices> pc_srs_matrices(DeviceResources &res, const ActiveOperands &o, const bool own) {
+  const int64_t n = o.dm1.dims[0];
+  const int64_t d = n * n;
+  std::optional<Buffers::device<double>> rm2;
+  std::optional<Buffers::device<double>> a7;
+  if (own) {
+    auto [own_rm2, own_a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
+    rm2 = std::move(own_rm2);
+    a7 = std::move(own_a7);
+  } else {
+    rm2 = FBF_TRY(make_rm2(res, o.dm1, o.dm2, o.delta));
+  }
+  const EinsumOperand rm2_op{.data = rm2->data(), .dims = std::vector<int64_t>(4, n)};
+  Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
+  FBF_TRY(einsum(res.stream(), "pqba->pqab", {rm2_op}, sm.data(), std::vector<int64_t>(4, n), 1.0));
+  return PcMatrices{.s = std::move(sm), .k = std::move(a7), .s1 = std::nullopt};
+}
+
+// Sij: S = hdm2, K = a9.
+Result<PcMatrices> pc_sij_matrices(DeviceResources &res, const ActiveOperands &o, const bool own) {
+  const int64_t n = o.dm1.dims[0];
+  const std::vector<int64_t> d4(4, n);
+  Buffers::device<double> hdm2 = FBF_TRY(make_hdm2(res, o.dm1, o.dm2, o.delta, own ? 1.0 : 0.0));
+  std::optional<Buffers::device<double>> a9;
+  if (own) {
+    const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
+    const Buffers::device<double> hdm3 =
+        FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
+    const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
+    a9 = FBF_TRY(make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op));
+  }
+  return PcMatrices{.s = std::move(hdm2), .k = std::move(a9), .s1 = std::nullopt};
+}
+
+// Sir: held (x, p, q, y, a, b) with x, y the block, as pc_sir lays it out.
+Result<PcMatrices> pc_sir_matrices(DeviceResources &res, const ActiveOperands &o, const bool own) {
+  const wwr::wwrStream_t s = res.stream();
+  const int64_t n = o.dm1.dims[0];
+  const int64_t d = 2 * n * n;
+  const std::vector<int64_t> d4(4, n);
+  const std::vector<int64_t> blocked{2, n, n, 2, n, n};
+  // The blocks' coefficients: [[2, -1], [-1, 0]], [[0, 0], [0, 1]], and S₁'s [2, -1].
+  const Buffers::device<double> off_diag = FBF_TRY(upload(res, {2.0, -1.0, -1.0, 0.0}));
+  const Buffers::device<double> block22 = FBF_TRY(upload(res, {0.0, 0.0, 0.0, 1.0}));
+  const Buffers::device<double> one_body = FBF_TRY(upload(res, {2.0, -1.0}));
+  const EinsumOperand off_diag_op{.data = off_diag.data(), .dims = {2, 2}};
+  const EinsumOperand block22_op{.data = block22.data(), .dims = {2, 2}};
+  const EinsumOperand one_body_op{.data = one_body.data(), .dims = {2}};
+  Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
+  {
+    Buffers::device<double> s22 = FBF_TRY(device_zeros(res, n * n * n * n));
+    FBF_TRY(einsum(s, "pa,qb->pqab", {o.delta, o.dm1}, s22.data(), d4, 2.0));
+    FBF_TRY(einsum(s, "qbap->pqab", {o.dm2}, s22.data(), d4, -1.0));
+    FBF_TRY(einsum(s, "ab,qp->pqab", {o.delta, o.dm1}, s22.data(), d4, 1.0));
+    const EinsumOperand s22_op{.data = s22.data(), .dims = d4};
+    FBF_TRY(einsum(s, "xy,qpab->xpqyab", {off_diag_op, o.dm2}, sm.data(), blocked, 1.0));
+    FBF_TRY(einsum(s, "xy,pqab->xpqyab", {block22_op, s22_op}, sm.data(), blocked, 1.0));
+  }
+  std::optional<Buffers::device<double>> km;
+  if (own) {
+    km = FBF_TRY(device_zeros(res, d * d));
+    const Buffers::device<double> a12 = FBF_TRY(make_a12(res, o.h1e, o.h2e, o.dm2, o.dm3));
+    const Buffers::device<double> a13 =
+        FBF_TRY(make_a13(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
+    const EinsumOperand a12_op{.data = a12.data(), .dims = d4};
+    const EinsumOperand a13_op{.data = a13.data(), .dims = d4};
+    FBF_TRY(einsum(s, "xy,pqab->xpqyab", {off_diag_op, a12_op}, km->data(), blocked, 1.0));
+    FBF_TRY(einsum(s, "xy,pqab->xpqyab", {block22_op, a13_op}, km->data(), blocked, 1.0));
+  }
+  Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d));
+  FBF_TRY(einsum(s, "x,qp->xpq", {one_body_op, o.dm1}, s1.data(), {2, n, n}, 1.0));
+  return PcMatrices{.s = std::move(sm), .k = std::move(km), .s1 = std::move(s1)};
+}
+
 // Sr: basis (p, q, r), d = n³, S[pqr, abc] = dm3[r,p,q,b,a,c], K = a16,
 // S₁[pqr, a] = dm2[r,p,q,a] against h1e_v_Sr, Δ = ε_r.
 Result<PcClass> pc_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
@@ -409,18 +513,7 @@ Result<PcClass> pc_sr(DeviceResources &res, const MoBlocks &blocks, const Energy
   if (extent == 0) {
     return pc_empty(ns);
   }
-  const PcBuild build = [&](const ActiveOperands &o, const bool own) -> Result<PcMatrices> {
-    std::optional<Buffers::device<double>> a16;
-    if (own) {
-      a16 = FBF_TRY(make_a16(res, o.h1e, o.h2e, o.dm3, o.f3ac, o.f3ca));
-    }
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    FBF_TRY(einsum(s, "rpqbac->pqrabc", {o.dm3}, sm.data(), std::vector<int64_t>(6, n), 1.0));
-    Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d * n));
-    FBF_TRY(einsum(s, "rpqa->pqra", {o.dm2}, s1.data(), std::vector<int64_t>(4, n), 1.0));
-    return PcMatrices{.s = std::move(sm), .k = std::move(a16), .s1 = std::move(s1)};
-  };
-  const PcKets kets = FBF_TRY(pc_kets(res, "Sr", ops, ns, d, n, build));
+  const PcKets kets = FBF_TRY(pc_kets(res, "Sr", ops, ns, d, n, pc_sr_matrices));
   const std::vector<double> &e_virt = ops.front().e_virt;
 
   const int32_t step = batch_step(extent, batch);
@@ -462,26 +555,7 @@ Result<PcClass> pc_si(DeviceResources &res, const MoBlocks &blocks, const Energy
   if (extent == 0) {
     return pc_empty(ns);
   }
-  const PcBuild build = [&](const ActiveOperands &o, const bool own) -> Result<PcMatrices> {
-    std::optional<Buffers::device<double>> a22;
-    if (own) {
-      a22 = FBF_TRY(make_a22(res, o.h1e, o.h2e, o.dm2, o.dm3, o.f3ac, o.f3ca));
-    }
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    {
-      const Buffers::device<double> dm3_h = FBF_TRY(make_dm3_h(res, o.dm2, o.dm3, o.delta));
-      const EinsumOperand dm3_h_op{.data = dm3_h.data(), .dims = std::vector<int64_t>(6, n)};
-      FBF_TRY(einsum(s, "rpqbac->pqrabc", {dm3_h_op}, sm.data(), std::vector<int64_t>(6, n), 1.0));
-    }
-    Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d * n));
-    {
-      const Buffers::device<double> dm2_h = FBF_TRY(make_dm2_h(res, o.dm1, o.dm2, o.delta));
-      const EinsumOperand dm2_h_op{.data = dm2_h.data(), .dims = std::vector<int64_t>(4, n)};
-      FBF_TRY(einsum(s, "rpqa->pqra", {dm2_h_op}, s1.data(), std::vector<int64_t>(4, n), 1.0));
-    }
-    return PcMatrices{.s = std::move(sm), .k = std::move(a22), .s1 = std::move(s1)};
-  };
-  const PcKets kets = FBF_TRY(pc_kets(res, "Si", ops, ns, d, n, build));
+  const PcKets kets = FBF_TRY(pc_kets(res, "Si", ops, ns, d, n, pc_si_matrices));
   const std::vector<double> &e_core = ops.front().e_core;
 
   const int32_t step = batch_step(extent, batch);
@@ -527,17 +601,7 @@ Result<PcClass> pc_sijr(DeviceResources &res, const MoBlocks &blocks, const int3
   if (extent == 0 || nc == 0) {
     return pc_empty(ns);
   }
-  // hdm1's 2δ is ⟨J|I⟩'s.
-  const PcBuild build = [&](const ActiveOperands &o, const bool own) -> Result<PcMatrices> {
-    Buffers::device<double> hdm1 = FBF_TRY(make_hdm1(res, o.dm1, o.delta, own ? 1.0 : 0.0));
-    std::optional<Buffers::device<double>> a3;
-    if (own) {
-      const EinsumOperand hdm1_op{.data = hdm1.data(), .dims = {n, n}};
-      a3 = FBF_TRY(make_a3(res, o.h1e, o.h2e, o.dm1, o.dm2, hdm1_op, o.delta));
-    }
-    return PcMatrices{.s = std::move(hdm1), .k = std::move(a3), .s1 = std::nullopt};
-  };
-  const PcKets kets = FBF_TRY(pc_kets(res, "Sijr", ops, ns, n, 0, build));
+  const PcKets kets = FBF_TRY(pc_kets(res, "Sijr", ops, ns, n, 0, pc_sijr_matrices));
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
@@ -598,16 +662,7 @@ Result<PcClass> pc_srsi(DeviceResources &res, const MoBlocks &blocks, const int3
   if (extent == 0 || nc == 0) {
     return pc_empty(ns);
   }
-  const PcBuild build = [&](const ActiveOperands &o, const bool own) -> Result<PcMatrices> {
-    std::optional<Buffers::device<double>> k27;
-    if (own) {
-      k27 = FBF_TRY(make_k27(res, o.h1e, o.h2e, o.dm1, o.dm2));
-    }
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, n * n));
-    FBF_TRY(einsum(s, "ij->ij", {o.dm1}, sm.data(), {n, n}, 1.0));
-    return PcMatrices{.s = std::move(sm), .k = std::move(k27), .s1 = std::nullopt};
-  };
-  const PcKets kets = FBF_TRY(pc_kets(res, "Srsi", ops, ns, n, 0, build));
+  const PcKets kets = FBF_TRY(pc_kets(res, "Srsi", ops, ns, n, 0, pc_srsi_matrices));
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 
@@ -676,22 +731,7 @@ Result<PcClass> pc_srs(DeviceResources &res, const MoBlocks &blocks, const int32
   if (extent == 0) {
     return pc_empty(ns);
   }
-  const PcBuild build = [&](const ActiveOperands &o, const bool own) -> Result<PcMatrices> {
-    std::optional<Buffers::device<double>> rm2;
-    std::optional<Buffers::device<double>> a7;
-    if (own) {
-      auto [own_rm2, own_a7] = FBF_TRY(make_a7(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
-      rm2 = std::move(own_rm2);
-      a7 = std::move(own_a7);
-    } else {
-      rm2 = FBF_TRY(make_rm2(res, o.dm1, o.dm2, o.delta));
-    }
-    const EinsumOperand rm2_op{.data = rm2->data(), .dims = std::vector<int64_t>(4, n)};
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    FBF_TRY(einsum(s, "pqba->pqab", {rm2_op}, sm.data(), std::vector<int64_t>(4, n), 1.0));
-    return PcMatrices{.s = std::move(sm), .k = std::move(a7), .s1 = std::nullopt};
-  };
-  const PcKets kets = FBF_TRY(pc_kets(res, "Srs", ops, ns, d, 0, build));
+  const PcKets kets = FBF_TRY(pc_kets(res, "Srs", ops, ns, d, 0, pc_srs_matrices));
   const std::vector<double> &e_virt = ops.front().e_virt;
 
   const int32_t step = batch_step(extent, batch);
@@ -737,21 +777,7 @@ Result<PcClass> pc_sij(DeviceResources &res, const MoBlocks &blocks, const int32
   if (extent == 0) {
     return pc_empty(ns);
   }
-  // hdm2's δδ terms are ⟨J|I⟩'s.
-  const PcBuild build = [&](const ActiveOperands &o, const bool own) -> Result<PcMatrices> {
-    const std::vector<int64_t> d4(4, n);
-    Buffers::device<double> hdm2 = FBF_TRY(make_hdm2(res, o.dm1, o.dm2, o.delta, own ? 1.0 : 0.0));
-    std::optional<Buffers::device<double>> a9;
-    if (own) {
-      const EinsumOperand hdm2_op{.data = hdm2.data(), .dims = d4};
-      const Buffers::device<double> hdm3 =
-          FBF_TRY(make_hdm3(res, o.dm1, o.dm2, o.dm3, hdm2_op, o.delta));
-      const EinsumOperand hdm3_op{.data = hdm3.data(), .dims = std::vector<int64_t>(6, n)};
-      a9 = FBF_TRY(make_a9(res, o.h1e, o.h2e, hdm2_op, hdm3_op));
-    }
-    return PcMatrices{.s = std::move(hdm2), .k = std::move(a9), .s1 = std::nullopt};
-  };
-  const PcKets kets = FBF_TRY(pc_kets(res, "Sij", ops, ns, d, 0, build));
+  const PcKets kets = FBF_TRY(pc_kets(res, "Sij", ops, ns, d, 0, pc_sij_matrices));
   const std::vector<double> &e_core = ops.front().e_core;
 
   const int32_t step = batch_step(extent, batch);
@@ -802,41 +828,7 @@ Result<PcClass> pc_sir(DeviceResources &res, const MoBlocks &blocks, const Energ
   if (extent == 0 || nc == 0) {
     return pc_empty(ns);
   }
-  const std::vector<int64_t> d4(4, n);
-  const std::vector<int64_t> blocked{2, n, n, 2, n, n};
-  const Buffers::device<double> off_diag = FBF_TRY(upload(res, {2.0, -1.0, -1.0, 0.0}));
-  const Buffers::device<double> block22 = FBF_TRY(upload(res, {0.0, 0.0, 0.0, 1.0}));
-  const Buffers::device<double> one_body = FBF_TRY(upload(res, {2.0, -1.0}));
-  const EinsumOperand off_diag_op{.data = off_diag.data(), .dims = {2, 2}};
-  const EinsumOperand block22_op{.data = block22.data(), .dims = {2, 2}};
-  const EinsumOperand one_body_op{.data = one_body.data(), .dims = {2}};
-  const PcBuild build = [&](const ActiveOperands &o, const bool own) -> Result<PcMatrices> {
-    Buffers::device<double> sm = FBF_TRY(device_zeros(res, d * d));
-    {
-      Buffers::device<double> s22 = FBF_TRY(device_zeros(res, n * n * n * n));
-      FBF_TRY(einsum(s, "pa,qb->pqab", {o.delta, o.dm1}, s22.data(), d4, 2.0));
-      FBF_TRY(einsum(s, "qbap->pqab", {o.dm2}, s22.data(), d4, -1.0));
-      FBF_TRY(einsum(s, "ab,qp->pqab", {o.delta, o.dm1}, s22.data(), d4, 1.0));
-      const EinsumOperand s22_op{.data = s22.data(), .dims = d4};
-      FBF_TRY(einsum(s, "xy,qpab->xpqyab", {off_diag_op, o.dm2}, sm.data(), blocked, 1.0));
-      FBF_TRY(einsum(s, "xy,pqab->xpqyab", {block22_op, s22_op}, sm.data(), blocked, 1.0));
-    }
-    std::optional<Buffers::device<double>> km;
-    if (own) {
-      km = FBF_TRY(device_zeros(res, d * d));
-      const Buffers::device<double> a12 = FBF_TRY(make_a12(res, o.h1e, o.h2e, o.dm2, o.dm3));
-      const Buffers::device<double> a13 =
-          FBF_TRY(make_a13(res, o.h1e, o.h2e, o.dm1, o.dm2, o.dm3, o.delta));
-      const EinsumOperand a12_op{.data = a12.data(), .dims = d4};
-      const EinsumOperand a13_op{.data = a13.data(), .dims = d4};
-      FBF_TRY(einsum(s, "xy,pqab->xpqyab", {off_diag_op, a12_op}, km->data(), blocked, 1.0));
-      FBF_TRY(einsum(s, "xy,pqab->xpqyab", {block22_op, a13_op}, km->data(), blocked, 1.0));
-    }
-    Buffers::device<double> s1 = FBF_TRY(device_zeros(res, d));
-    FBF_TRY(einsum(s, "x,qp->xpq", {one_body_op, o.dm1}, s1.data(), {2, n, n}, 1.0));
-    return PcMatrices{.s = std::move(sm), .k = std::move(km), .s1 = std::move(s1)};
-  };
-  const PcKets kets = FBF_TRY(pc_kets(res, "Sir", ops, ns, d, 1, build));
+  const PcKets kets = FBF_TRY(pc_kets(res, "Sir", ops, ns, d, 1, pc_sir_matrices));
   const std::vector<double> &e_core = ops.front().e_core;
   const std::vector<double> &e_virt = ops.front().e_virt;
 

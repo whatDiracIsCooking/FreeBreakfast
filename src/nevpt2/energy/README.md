@@ -5,8 +5,9 @@ the SC-QD-NEVPT2 effective Hamiltonian of several
 ([SC-QD-NEVPT2](#sc-qd-nevpt2)) and its reverse pass
 ([The SC-QD reverse pass](#the-sc-qd-reverse-pass)), and the eight partially contracted ones
 and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
-[PC-QD-NEVPT2](#pc-qd-nevpt2)), each class walking its external index in batches
-over the density-fitted slabs. Link `free_breakfast::nevpt2::energy`.
+[PC-QD-NEVPT2](#pc-qd-nevpt2)) and its reverse pass
+([The PC reverse pass](#the-pc-reverse-pass)), each class walking its
+external index in batches over the density-fitted slabs. Link `free_breakfast::nevpt2::energy`.
 
     class_energies(res, blocks, in, batch) -> ClassEnergies
         norms[8], energies[8]   Sr, Si, Sijrs, Sijr, Srsi, Srs, Sij, Sir
@@ -237,7 +238,9 @@ Then, the conventions being `test/gtest/data/qd_nevpt2/README.md`'s,
   T_{I←J} = S^{(J,I)ᵀ} U_J (one `gemm`, the row-major S^{(J,I)} read
   column-major) and t1_{I←J} = S₁^{(J,I)ᵀ} U_J, built once per pair before
   the walk (`pc_kets`); at I = J they are the solve's own T and t1, so the
-  diagonal is `pc_class_energies`' arithmetic, einsum for einsum.
+  diagonal is `pc_class_energies`' arithmetic, einsum for einsum. Each
+  class's S, K and S₁ come from one builder (`pc_sr_matrices`, …), over a
+  state's own RDMs or a transition's, which the reverse pass reads too.
 - **Sijr and Srsi**: "2 direct − exchange" becomes the bilinear
   Σ_t (2 y_{I←J,t} y_{J,t} − y_{I←J,t} y_{J,t′}) / (λ + Δ_t), t′ the
   exchange partner, whose Δ is the same. Srs and Sij keep ½, the rest 1.
@@ -510,9 +513,82 @@ CAS(4,4) keeps every mode above 1.6e-5 (Sir), and its two walks agree to
 1e-12.
 
 **Memory.** Per class, S, K, S₁ and their builders as `pc_class_energies`
-holds them, the blocks G kept for the homogeneity sum, U beside T, and m × m
-M, M_Δ and the d × m T̄; after the walk two d × m and four d × d matrices.
-Each slab's y, x, ȳ, x̄ and weights are buffers of their own.
+holds them (freed once solved), U beside T, and m × m M, M_Δ and the d × m
+T̄; after the walk, per pair, two d × m and four d × d matrices, and the
+blocks G rebuilt for the homogeneity sum. Each slab's y, x, ȳ, x̄ and
+weights are buffers of their own.
+
+### PC-QD
+
+    pc_effective_hamiltonian_adjoint(res, blocks, pairs, hbar, batch, bars, transition)
+        -> PcEffectiveHamiltonianAdjoint
+        elements         pc_effective_hamiltonian's n² PcClassEnergies
+        homogeneity[8]   Σ_G <M_G, G> per class, from the bars: Σ_IJ H̄_IJ E^k_IJ
+    hbar, bars, transition: sc_effective_hamiltonian_adjoint's, read the same way
+
+The reverse pass of [PC-QD-NEVPT2](#pc-qd-nevpt2), the bars of
+L = Σ_IJ H̄_IJ H_IJ. **`pc_class_energies_adjoint` is its n = 1, H̄ = 1**
+(`pc_couplings_adjoint`; `qd.cpp` checks the inputs, as for SC), so
+everything above is that case of what follows.
+
+Per class, each ket J's solve of (K_J, S_J, S₁_J) runs backwards as at
+n = 1. The coupling of pair (I, J) is −c b_{I←J}ᵀ A_J⁺ b_J, bilinear in
+the two rows, so with g_I = y_{I←J} / (λ_J + Δ) and g = y_J / (λ_J + Δ):
+
+    on y_{I←J}:   −c H̄_IJ g             (2 direct − exchange: −H̄_IJ (2g − g_x))
+    on y_J:       −c H̄_IJ g_I           (−2 H̄_IJ g_I, and H̄_IJ g_I on J's exchange row)
+    on M_J:       c H̄_IJ g_I gᵀ         (H̄_IJ g_I (2g − g_x)ᵀ), and Δ times it on M_Δ
+    dL/dΔ:        c H̄_IJ g_I·g          (H̄_IJ (2 g_I·g − g_I·g_x))
+
+At I = J these are the n = 1 multipliers times H̄_JJ, and the own pair is
+taken first in the n = 1 arithmetic (its two ȳ terms as one), so at n = 1
+every multiplier is the one-state pass's to the bit. Still no eigenvalue or
+eigenvector derivative: b_{I←J} lies in S_J's kept range, since a mode
+that annihilates |J⟩ annihilates ⟨J| S^{(J,I)}. ȳ_{I←J} goes through the
+slab einsums onto the slabs (and Λ), h1e_v's rows and T̄_{I←J}, t̄1_{I←J};
+then, U_J held,
+
+    dL/dS^{(J,I)} = T̄_{I←J} U_Jᵀ   (column-major: the row-major buffer's own bar)
+    dL/dS₁^{(J,I)} = U_J t̄1_{I←J}ᵀ
+
+**unsymmetrized**, since T_{I←J} reads the raw S^{(J,I)}, onto pair (J, I)'s
+metric blocks through the class's builder (the table above, S and S₁
+columns), and so onto its transition RDMs. **No (I, J) / (J, I) mean**,
+unlike SC: the bar on S^{(J,I)} is pair (I, J)'s alone. Each ket's own M,
+M_Δ and T̄ collect every bra's share and go onto its own blocks as at
+n = 1. A ket the energy refuses (no gap at S_J's cut, or a denominator not
+positive) is refused with `pc_effective_hamiltonian`'s error, naming the
+class and the state (`state_error`, the forward's), never given a zero.
+Sijrs is SC's, weight Σ_J H̄_JJ.
+
+**Homogeneity.** E_IJ is homogeneous of degree one in ket J's (S_J, K_J,
+S₁_J) and pair (J, I)'s (S, S₁) together, so `homogeneity[k]`, Σ_G <M_G, G>
+over every state's own blocks and every transition's metric blocks, is
+Σ_IJ H̄_IJ E^k_IJ; and Euler's degree 4 in (B, h1e_v²) holds for L.
+
+**All pairs at once.** Unlike SC's pair-at-a-time walk, each class walks
+its slabs once with every pair, as the forward does (n² einsums per slab,
+and their adjoints), since every coupling with ket J reads J's one solve.
+Every transition's metric `BlockBars` are held until all eight classes have
+walked; then each state's own bars are swept onto bars[J] (and the shared
+h1e, h2e), and each transition's onto its dm1–dm3 (`sweep_metrics`),
+handed to `transition` in row-major pair order and freed.
+
+**Memory.** Besides the caller's n own-RDM bar sets: n² − n metric
+`BlockBars` (Sr's dm3 and Si's dm3_h, n_act⁶ each, the largest), the same
+order as the forward's n² − n transition T (d × m_J, n_act⁶ for Sr and
+Si) held across a class; per class the walk bars T̄ beside them; and one
+transition's dm1–dm3 bars at a time.
+
+**Conditioning.** As at n = 1, the bars through U_J carry each ket's
+solve's conditioning. On `h8_ring_sto3g_sa3` they repeat run to run to
+6.9e-13 of each bar's largest element for state 0 alone, 7.3e-14 for state
+2, but 2.2e-11 for state 1, whose Sr keeps small modes; on `h8_sto3g_sa3`,
+whose root 0's PC passes only over round-off, to 1.4e-7 (RTX 3080). Along
+raw h, or the own RDMs rotated with f3ca/f3ac raw, a ket's PC is refused
+within 1e-3 to 1e-5 of the base point on `h2co_skew_ccpvdz_sa3`,
+`h8_sto3g_sa3` and `h8_ring_sto3g_sa3` (state 1's Sr denominator λ + Δ is
+−33 at t = 1e-3 along the RDMs there).
 
 ## Not ported
 
@@ -663,3 +739,34 @@ The PC reverse pass, `Nevpt2PcEnergyAdjoint` and `Nevpt2PcEnergyAdjointLadder`:
 - `RefusesWhatTheEnergyRefuses`: zero RDMs (Sr's metric has no positive
   eigenvalue) and the virtual orbital energies at −1000 Eh (Sr's
   denominator): the adjoint fails with `pc_class_energies`' kind and message.
+
+The PC-QD reverse pass, in the same file, over `test/gtest/data/qd_nevpt2/`
+with a seeded random, unsymmetric H̄:
+
+- `Nevpt2PcQdEnergyAdjointCases.HomogeneityAndEulerFromTheBars`, all six
+  cases: every element and dropped count against `pc_effective_hamiltonian`
+  at 1e-12, each class's homogeneity sum against Σ H̄_IJ E^k_IJ and Euler's
+  4L at 1e-12. Measured: ≤ 2.3e-14 and ≤ 5.6e-15.
+- `Nevpt2PcQdEnergyAdjoint.OneStateIsPcClassEnergiesAdjoint`
+  (`h8_ring_sto3g_sa3`, states 0 and 2, H̄ = 1): energies, dropped counts,
+  homogeneity and every bar against `pc_class_energies_adjoint`'s, the bars
+  at `kBatchedBarsTolerance` (measured run to run: 6.9e-13).
+- `Nevpt2PcQdEnergyAdjoint.BatchedBarsMatchWhole` (`h8_ring_sto3g_sa3`,
+  batch 1): the walk's bars at `kBatchedBarsTolerance` (measured 2.5e-13),
+  every element and the homogeneity sums at 1e-12; each ordered off-diagonal
+  pair handed over once. The sweep's bars carry state 1's spread, as at
+  n = 1.
+- `Nevpt2PcQdEnergyAdjointLadder.BarsMatchRichardsonLadder`: PC's ratio
+  test, t0 = 1e-3 and 1e-7, along SC-QD's random directions with every
+  state's own dm1–dm3 on PC's active rotation (transitions' raw: they enter
+  no solve). Every group (B, h1e_v, e, h, rdm, all) on `h2co_ccpvdz_sa2`,
+  `h2co_ccpvdz_sa2_weighted` and `h6_631g_sa2`; B on the other three, and e
+  on `h2co_skew_ccpvdz_sa3` and `h8_ring_sto3g_sa3`. The rest fall outside
+  PC's domain within the ladder's reach (h, rdm, all on those three) or
+  meet L's run-to-run round-off at the finest rungs (h1e_v there, e on
+  `h8_sto3g_sa3`); the test's comment has each measurement. Measured on the
+  RTX 3080, six runs: 1e-13 to 1.6e-8 relative.
+- `Nevpt2PcQdEnergyAdjoint.RefusesWhatTheEnergyRefuses` (`h8_sto3g_sa3`):
+  state 1's own RDMs zeroed, and the virtual orbital energies at −1000 Eh:
+  the adjoint fails with `pc_effective_hamiltonian`'s kind and message,
+  naming Sr and the state. `MalformedInputsAreInvalidConfig`: SC's checks.
