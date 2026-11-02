@@ -357,7 +357,7 @@ Result<ScGradient> sc_gradient(DeviceResources &res, const Molecule &molecule,
   ZcMultipliers zc =
       FBF_TRY(zc_multipliers(res, nmo, ncore, ncas, corr.a.data(), corr.epsilon.data()));
   const ZcAdjoint phi = FBF_TRY(zc_adjoint(res, alpha, beta, naux, nmo, nmo, b.data(), c, h.data(),
-                                           ncore, ncas, vector, zc.z.data()));
+                                           ncore, ncas, std::array{1.0}, vector, zc.z.data()));
   return lagrangian_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
                              std::move(corr), std::move(zc), phi);
 }
@@ -384,7 +384,7 @@ Result<PcGradient> pc_gradient(DeviceResources &res, const Molecule &molecule,
   ZcMultipliers zc =
       FBF_TRY(zc_multipliers(res, nmo, ncore, ncas, corr.a.data(), corr.epsilon.data()));
   const ZcAdjoint phi = FBF_TRY(zc_adjoint(res, alpha, beta, naux, nmo, nmo, b.data(), c, h.data(),
-                                           ncore, ncas, vector, zc.z.data()));
+                                           ncore, ncas, std::array{1.0}, vector, zc.z.data()));
   ScGradient g = FBF_TRY(lagrangian_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
                                              ncore, ncas,
                                              ScAdjoint{.energies = {},

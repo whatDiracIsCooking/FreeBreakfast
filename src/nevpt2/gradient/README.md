@@ -25,12 +25,12 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         z          z^c, nmo², symmetric, on the core–core and virtual–virtual blocks
         max_z      max |z^c|
         min_gap    the smallest |ε_p − ε_q| over those pairs
-    zc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, vector, z)
+    zc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, z)
         -> ZcAdjoint
-        phi        Φ = ⟨z, f⟩ = Σ_pq z_pq f_pq
+        phi        Φ = ⟨z, f(γ_SA)⟩ = Σ_pq z_pq f_pq, γ_SA = Σ_r w_r γ_r
         h_bar      dΦ/dh = z
         lambda     dΦ/dB^L, as ScAdjoint's
-        y          y^c = dΦ/dc, as ScAdjoint's y
+        y          y^c_r = dΦ/dc_r per root, as ScAdjoint's y, root r's at r ndet
         x, a       X and A of (h̄, Λ) above, as ScAdjoint's
     lagrangian_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
                         corr, zc, phi) -> ScGradient
@@ -147,6 +147,9 @@ L = E + ⟨z^c, f⟩, f the generalized Fock
     f_pq = h_pq + Σ_rs D_rs [(pq|rs) − ½ (pr|sq)],   D = 2 on the core's diagonal, γ on the active block
 
 whose core and virtual diagonals are ε above (F^I plus the active part).
+In a state average (QD-NEVPT2) the core and virtuals are canonical over the
+state-averaged Fock instead, γ_SA = Σ_r w_r γ_r on the active block, and
+that is the f the conditions hold (below, "One root or a state average").
 Along κ_pq = −κ_qp = t, p > q in one space, f_pq and f_qp each move by
 t (ε_p − ε_q) where f is diagonal, and nothing else z^c reads moves at first
 order (D is fixed in the MO indices, and the core and virtual densities are
@@ -173,21 +176,24 @@ degenerate pairs too.
 
 **Φ's adjoints** (`zc_adjoint`, at fixed z). B goes to the MO basis whole,
 naux nmo² (z spans the virtual–virtual block, which nothing else here reads
-off its diagonal), with g_L = Σ B_L,rs D_rs and w_L = Σ B_L,pq z_pq:
+off its diagonal), with g_L = Σ B_L,rs D_rs and w_L = Σ B_L,pq z_pq, D over
+γ_SA:
 
     Φ   = ⟨z, h⟩ + Σ_L w_L g_L − ½ Σ_L tr(z B_L D B_L)
     h̄   = z
     Λ_L = z g_L + D w_L − ½ (z B_L D + D B_L z)
     W   = dΦ/dγ = Σ_L w_L B_L,aa − ½ Σ_L (B_L z B_L)_aa
-    y^c = Σ_tu (W + Wᵀ)_tu (E_tu c)
+    y^c_r = w_r Σ_tu (W + Wᵀ)_tu (E_tu c_r)
     X   = 2 h z + 2 Σ_L B_L Λ_L,   A = X − Xᵀ
 
 Each left product D B_L and z B_L is one strided-batched gemm over the slow
 index (B(·, ·, q) is a packed naux × nmo block), and every sum over (L, r)
 one gemm with B read as (naux nmo) × nmo by its symmetry in the pair, as
-the source term's half-transform does. γ is `ci::Sigma::rdm1` of the vector,
-and y^c one `ci::Sigma::apply` over the one-body operator W + Wᵀ with no
-two-electron part: spin-free, so y^c is in c's spin and symmetry sector.
+the source term's half-transform does. Each γ_r is `ci::Sigma::rdm1` of its
+root, summed on the host at its weight, and y^c one `ci::Sigma::apply` over
+the one-body operator W + Wᵀ with no two-electron part, batched over the
+roots, each root's column then scaled by w_r: spin-free, so each y^c_r is in
+c_r's spin and symmetry sector.
 
 **y^c is raw, as y is**: the derivative of Φ as a function of an
 unnormalized c, not projected (⟨c, y^c⟩ = 2⟨W, γ⟩). `lagrangian_gradient`
@@ -195,9 +201,20 @@ passes ½ (y + y^c) to `mcscf::zvector`, which projects it off c; the ½ puts
 it in that solver's convention (below). The (h̄, Λ, X, A) of Φ add to
 `sc_adjoint`'s field by field.
 
-**One root.** Both entry points take one vector, so a state average cannot
-reach them; `lagrangian_gradient` and `sc_gradient`, which hold the
-CASSCF's roots, refuse one (`Unsupported`).
+**One root or a state average.** `zc_multipliers` takes A and ε and nothing
+else, so it is state-agnostic: a state average passes its A and the SA
+Fock's ε. `zc_adjoint` takes the roots and their weights (at least one,
+non-negative, summing to 1 within 1e-12, else `InvalidConfig`), with the
+vectors laid out as `ci::Roots::vectors`. One root at weight 1 is the
+single-state Φ through the same operations: γ_SA is 0 + 1·γ and y^c's scale
+is 1, both exact. It is not bitwise against the single-root `zc_adjoint` it
+replaced, and cannot be: that one was not bitwise against itself, its
+einsums' atomics reassociating each sum (over five calls on the gfx1200, Φ
+apart by up to 1.4e-18, Λ 2.6e-18, y^c 3.5e-18, X and A 5.2e-18), and the
+one-root call sits at the same spread (at most 6.9e-18; over 50 repeats,
+1.39e-17 on A, one ulp of its largest element). h̄ = z alone is bitwise. `lagrangian_gradient` and
+`sc_gradient`, which hold the CASSCF's roots, still refuse a state average
+(`Unsupported`), and call `zc_adjoint` at one root, weight 1.
 
 ## The nuclear gradient
 
@@ -371,6 +388,22 @@ once per process.
   - `Nevpt2Zc.Shapes`: z^c symmetric, zero off its two blocks and on the
     diagonal; h̄^{z^c} = z^c, A^{z^c} = X − Xᵀ, Λ^L symmetric; y^c symmetric
     under the swap of its two strings, as the singlet c is.
+  - `Nevpt2ZcStateAverage`: Φ = ⟨z^c, f(γ_SA)⟩ over two roots, the state's
+    c and the u above (in c's sector, perpendicular to it; Φ reads γ_SA
+    alone, so the roots need not be eigenvectors), at weights equal (½, ½)
+    and unequal (0.7, 0.3), z^c fixed: each adjoint against a ladder of Φ
+    at the same rule and 1e-7, along h and B (the bent path), along
+    C exp(t κ) with every block's κ at once, and along each root alone,
+    c_r(t) = (c_r + t d_r)/|·|, d_0 = u and d_1 = c, against ⟨d_r, y^c_r⟩.
+  - `Nevpt2Zc.OneRootIsTheSingleStatePhi`: the one-root call at weight 1
+    against a second call and against weights (1, 0) over (c, u): h̄ to the
+    bit, root 1's y^c exactly 0, Λ, y^c, X and A within 32 ε of each one's
+    largest element, and Φ (itself round-off, ~1e-17) within 5e-17
+    absolute: the run-to-run floor above, where 50 repeats reached 10.7 ε
+    (A) and 6.2e-18 (Φ). Not 1e-17 absolute: two calls of the same
+    function have come out 1.39e-17 apart on A.
+  - `Nevpt2Zc.RefusesBadWeights`: no weights, a negative one, and a sum of
+    0.9 each `InvalidConfig`.
   - Measured on an RTX 3080, one run: max |z^c| 2.4e-3 and the smallest
     inactive gap 1.43e-3 (the two lowest virtuals, of different C₂ᵥ
     symmetry; `test/gtest/data/README.md`, "Not symmetric water");
