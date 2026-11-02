@@ -144,7 +144,8 @@ While any issue is ready or in flight:
    `isolation: "worktree"`: it lives elsewhere and tears itself down, which
    removes the checkout you need for a rebase. Also hand each agent:
 
-   - **no backend** (unless `both`): agents run the default `auto` preset,
+   - **no backend** (unless `both`, or the user assigns one card per agent):
+     agents run the default `auto` preset,
      which picks the least-loaded live card at the start of each run
      (`gpu_auto_preset` in `devtools/lib.sh`) and prints the choice. A
      run's test phase holds its whole card (`with_gpu_card`, lock files
@@ -153,7 +154,8 @@ While any issue is ready or in flight:
      since sharing the 3080 ran it out of memory. A gate holds a card for
      about two minutes. Compiles hold no lock. Both compilers seeing the milestone is
      then a matter of load, not schedule — `both`, or the `.cu` rule below,
-     is what guarantees it.
+     is what guarantees it. When the user assigns **one card per agent**
+     instead, give each its own `--preset default` or `--preset hip`.
    - **the files it owns.** Two agents editing the same module, or both
      touching the generated kernels under `src/integrals/`, conflict on every
      merge — and an emitted kernel file is a whole-file diff with no clean
@@ -164,7 +166,9 @@ While any issue is ready or in flight:
    - **a job count** `J = BUILD_JOBS / max` (default 12, `max=3` → `-j 4`).
      Not `nproc / max`: `BUILD_JOBS` is already capped below the core count
      because module builds OOM, and an OOM-killed compiler surfaces as a bare
-     `ninja: build stopped`.
+     `ninja: build stopped`. When the user gives each agent its own thread
+     count instead (say 8), pass it whole: `BUILD_JOBS=8 CTEST_JOBS=8` and
+     `-j 8`.
 
    Then spawn a background `general-purpose` subagent with the prompt in
    "Subagent prompt" below. Record `issue → {wt, agent id, files}`, and the backend once the agent reports it.
@@ -213,8 +217,8 @@ gh pr checks <M> --required --watch          # lint, test (3.11), test (3.13)
 
 **Rebuild on the fresh main before merging any PR that touches C++.** Text
 mergeability is not enough: a symbol another PR moved or renamed does not show
-up as a conflict, and with the `cpp` CI job off GitHub will squash-merge a PR
-that no longer builds. So if `origin/main` has moved past the PR's base (it
+up as a conflict, and with the `cpp` CI job off GitHub will merge a PR that no
+longer builds. So if `origin/main` has moved past the PR's base (it
 will have, after any earlier merge in this run):
 
 ```bash
@@ -223,11 +227,26 @@ devtools/cpp-tier.sh --preset <the preset its run used> -j <J>   # inside <wt>; 
 git -C <wt> push --force-with-lease
 ```
 
-A Python- or docs-only PR skips the rebuild; the required checks cover it.
+The push runs the pre-push hook, so a C++ PR's force-push also runs
+`cpp-smoke.sh` (about ten minutes): budget for it. A Python- or docs-only PR
+skips the rebuild; the required checks cover it.
 
-Then `gh pr merge <M> --squash` — **never `--delete-branch`**: it tries a
-local `git checkout main`, which fails because `main` is held by the primary
-checkout. The server deletes the remote branch on merge.
+**The other card, for cross-call or bitwise assertions.** A PR run on one
+backend only that adds an assertion of repeatability (bitwise, or across two
+calls) gets an orchestrator-side run of just those cases on the other card
+before merging: `devtools/cpp-tier.sh --preset hip -- -R '<cases>'` (or
+`--preset default`). An agent once assumed rocBLAS was bitwise-repeatable
+without checking.
+
+Right after a push the required checks are not registered yet, and
+`gh pr checks --watch` exits at once with "no checks reported": wait a few
+seconds and re-run it before reading that as green.
+
+Then `gh pr merge <M> --rebase` — the repo's convention, because it keeps the
+noreply author on `main`'s commit, which `--squash` re-authors. **Never
+`--delete-branch`**: it tries a local `git checkout main`, which fails because
+`main` is held by the primary checkout. The server deletes the remote branch
+on merge.
 
 **Conflicts.** Each merge moves `main`, so a later sibling can still conflict
 despite the partition. Two cases:
@@ -255,7 +274,7 @@ despite the partition. Two cases:
   git worktree remove --force .claude/worktrees/<wt> && git branch -D <wt>
   ```
 
-  `-D`, because the squash merge gave `main` a different SHA;
+  `-D`, because the rebase merge gave `main` a different SHA;
 - `devtools/worktree.sh sync` so local `main` follows;
 - print the status line, recompute **ready**, and go back to step 4.1.
 
@@ -275,9 +294,12 @@ Leave the worktrees of stuck issues standing, and say where they are.
 ## Subagent prompt
 
 Fill in `<…>`. Keep it self-contained — the agent has none of your context.
-`<preset>` is `auto` — the least-loaded live card; the run prints which. Under
-`both`, give the two runs `--preset default` (CUDA) and `--preset hip` (HIP)
-and drop the fallback line.
+`<preset>` is `auto` — the least-loaded live card; the run prints which — or
+the agent's own card when the user assigns one per agent. Under `both`, give
+the two runs `--preset default` (CUDA) and `--preset hip` (HIP) and drop the
+fallback line. `<J>` is the job count from step 4.1 (with a per-agent thread
+count, prefix the tier with `BUILD_JOBS=<J> CTEST_JOBS=<J>`). `<email>` is
+`git log -1 --format=%ae origin/main`, the GitHub noreply address.
 
 ```
 Resolve GitHub issue #<n> (<title>) in this repo. Read it first:
@@ -317,12 +339,17 @@ Rules:
   devtools/cross-backend-check.sh (exit 2 means it could not run — not a
   pass).
 - Python changes: pytest -m "not slow" -n auto -rs, and read the skip reasons.
+  Siblings are building: run any Python/PySCF generator with
+  OMP_NUM_THREADS=<J> unless it pins its own threads.
+- Name every scratch or log file you write in the shared scratchpad
+  issue<n>-… : sibling agents share it, and a bare tier.log gets overwritten.
 - Before committing: devtools/format.sh --check (devtools/format.sh fixes) and
   devtools/cmake-lint.sh if you touched CMake.
 - If a suite fails, or passing would mean loosening a tolerance or moving a
   ratchet, stop and reply "STUCK: <reason>" — no PR needed.
-- Commit and push with `git -C <abs worktree path> …`. Never --no-verify,
-  never CLAUDE_ALLOW_MAIN_EDITS. End the commit message with the
+- Commit and push with `git -C <abs worktree path> …`, authored as the noreply
+  address (`git -c user.email=<email> commit`), never a personal one. Never
+  --no-verify, never CLAUDE_ALLOW_MAIN_EDITS. End the commit message with the
   Co-Authored-By line from your system reminder.
 - Open the PR with `gh pr create --body-file <file in your scratchpad>`, with
   `Closes #<n>`, and under "What was run" the preset(s), card, and ctest
@@ -330,8 +357,10 @@ Rules:
 - You own these files and ONLY these: <the agent's partition>. Siblings are
   working in parallel, and a generated kernel has no clean 3-way merge — if
   you need to change a file outside your partition, reply "STUCK: <what>"
-  instead. If asked to rebase, REGENERATE emitted kernels (the FelizJueves
-  tools/emit/*_kernels.py scripts) rather than hand-merging their text.
+  instead. A golden-data row in test/gtest/data/README.md belongs to the agent
+  that adds the data. If asked to rebase, REGENERATE emitted kernels (the
+  FelizJueves tools/emit/*_kernels.py scripts) rather than hand-merging their
+  text.
 - If the issue is ambiguous in a way the code can't answer, reply
   "STUCK: <question>" rather than guessing.
 ```
