@@ -3,7 +3,8 @@
 The eight strongly contracted NEVPT2 class energies of one state on the GPU,
 the SC-QD-NEVPT2 effective Hamiltonian of several
 ([SC-QD-NEVPT2](#sc-qd-nevpt2)), and the eight partially contracted ones
-([PC-NEVPT2](#pc-nevpt2)), each class walking its external index in batches
+and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
+[PC-QD-NEVPT2](#pc-qd-nevpt2)), each class walking its external index in batches
 over the density-fitted slabs. Link `free_breakfast::nevpt2::energy`.
 
     class_energies(res, blocks, in, batch) -> ClassEnergies
@@ -171,6 +172,50 @@ here the call fails, since a total without that class is not PC-NEVPT2
 and the d × m X, U, T and gemmwich's work) are buffers of their own, freed
 when the class returns; at n = 12, d = n³ is 24 MB per matrix, below the n⁶
 intermediates. The slab's y is a workspace region, taken after the slab.
+
+## PC-QD-NEVPT2
+
+    pc_effective_hamiltonian(res, blocks, pairs, batch) -> vector<PcClassEnergies>
+        pairs        sc_effective_hamiltonian's: n x n, [I n + J] bra I, ket J
+        [I n + J]    energies[k] ⟨I|V|Ψ_J⁽¹⁾⟩ of class k, dropped[k] ket J's
+                     cut count, total Σ_k; the diagonal is each state's
+                     pc_class_energies
+
+`qd.cpp` checks the inputs as for SC; the walk is `pc_class_energies`' own
+(`pc_couplings`, `pc.cpp`), which runs it at n = 1. Per class and ket J,
+S_J, K_J and S₁_J are J's own and are cut and solved once (`solve_class`,
+its gap rule and refusals unchanged), n solves per class; a refusal names
+the class **and the state**
+(`nevpt2::pc_effective_hamiltonian: state 0: Srs's metric has no gap …`).
+Then, the conventions being `test/gtest/data/qd_nevpt2/README.md`'s,
+
+    ⟨I|V|Ψ_J⁽¹⁾⟩_t = −c b_{I←J,t}ᵀ (K_J + Δ_t S_J)⁺ b_{J,t}
+                   = −c Σ_k y_{I←J,tk} y_{J,tk} / (λ_{J,k} + Δ_t)
+    b_{I←J,t} = S^{(J,I)} x_t + S₁^{(J,I)} h1_t
+
+- **S^{(J,I)} and S₁^{(J,I)}** are the class's S and S₁ formulas (the table
+  above) over the transition RDMs of **pair (J, I)**, bra J and ket I,
+  unsymmetrized. For S either orientation would do (S^{(J,I)} = S^{(I,J)}ᵀ),
+  but S₁ must be (J, I)'s. Their terms that read no RDM carry ⟨J|I⟩ = 0 and
+  are dropped: hdm1's 2δ (Sijr) and hdm2's δδ (Sij), `make_hdm1` and
+  `make_hdm2`'s `overlap`, as in SC. A transition builds no K.
+- **One einsum per pair.** y_{I←J,t} = T_{I←J}ᵀ x_t + t1_{I←J}ᵀ h1_t, with
+  T_{I←J} = S^{(J,I)ᵀ} U_J (one `gemm`, the row-major S^{(J,I)} read
+  column-major) and t1_{I←J} = S₁^{(J,I)ᵀ} U_J, built once per pair before
+  the walk (`pc_kets`); at I = J they are the solve's own T and t1, so the
+  diagonal is `pc_class_energies`' arithmetic, einsum for einsum.
+- **Sijr and Srsi**: "2 direct − exchange" becomes the bilinear
+  Σ_t (2 y_{I←J,t} y_{J,t} − y_{I←J,t} y_{J,t′}) / (λ + Δ_t), t′ the
+  exchange partner, whose Δ is the same. Srs and Sij keep ½, the rest 1.
+- **No (I, J) / (J, I) mean**, unlike SC's norms, so the matrix is not
+  symmetric. **Sijrs is SC's**: the diagonal `energy_sijrs`, zero off it.
+
+Each class walks its slabs **once** for every pair: per slab, n² einsums into
+one workspace region, pair (I, J)'s y block (tuples × m_J) at
+`PcKets::offsets`, read back and finished on the host, each ket's smallest
+denominator checked as `pc_class_energies` does. The memory over one class
+is n solves (λ, T, U, and t1) and n² − n transition T and t1, d × m_J each,
+held across the walk; the slab's y grows as n².
 
 ## The SC reverse pass
 
@@ -375,7 +420,20 @@ inputs, and the walk in batches of two against the whole one, at 1e-13.
 transition RDMs from `nevpt2::rdms` over the golden CI vectors (whose signs
 fix the off-diagonals' phases), on the three three-root cases.
 `Nevpt2QdEnergyRefusals`: pair inputs that are not n², or that do not share
-their integrals, are InvalidConfig.
+their integrals, are InvalidConfig (SC and PC).
+
+PC-QD, in the same file. `Nevpt2PcQdEnergy`, on the five cases whose PC
+passes: from the golden transition RDMs, every element's per-class coupling
+against `pc_couplings` and its total against `pc_heff2` at 1e-10, every
+element's dropped counts against its ket's `pc_dropped` row; each diagonal
+element against `pc_class_energies` and the walk in batches of two against
+the whole one, at 1e-13 with equal dropped counts. `Nevpt2QdEnergyDeviceRdms`
+checks PC too, from `nevpt2::rdms`' transition RDMs: `h8_ring_sto3g_sa3`
+(the strongly coupled case) and the skew H₂CO against the goldens, and
+`h8_sto3g_sa3`'s refusal. `Nevpt2PcQdEnergyRefusals`: on `h8_sto3g_sa3`,
+whose root 0 `pc_class_energies` refuses (Srs and Sij, gap 23 < 1e3), the
+effective Hamiltonian is a Numerical error naming Srs and state 0; roots 1
+and 2 pass alone.
 
 `test/gtest/nevpt2_energy_gpu.cpp`. SC: from PySCF's dm1/dm2/dm3/f3 and the
 slabs over the golden B blocks (`test/gtest/data/nevpt2/`), every class norm and

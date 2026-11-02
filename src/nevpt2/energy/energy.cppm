@@ -223,6 +223,44 @@ struct PcClassEnergies {
                                                         const MoBlocks &blocks,
                                                         const EnergyInputs &in, int32_t batch);
 
+/// @brief The PC-QD-NEVPT2 second-order effective Hamiltonian of n states that
+/// share orbitals: element [I n + J] holds, per class, ⟨I|V|Ψ_J⁽¹⁾⟩, the
+/// unsymmetrized correction with I the bra (row) and J the ket (column).
+///
+/// @p pairs is sc_effective_hamiltonian's, read the same way, f3ca and f3ac
+/// on the diagonal only.
+///
+/// Per class, state J's metric S_J and Dyall Hamiltonian K_J are its own, as
+/// pc_class_energies builds them, and are cut and solved once per state
+/// (K_J U_J = S_J U_J diag(λ_J)), n solves per class. Per pair and tuple t,
+/// with b_{J,t} = S_J x_t + S₁_J h1_t,
+///
+///     ⟨I|V|Ψ_J⁽¹⁾⟩_t = -c b_{I←J,t}ᵀ (K_J + Δ_t S_J)⁺ b_{J,t},
+///     b_{I←J,t} = S^{(J,I)} x_t + S₁^{(J,I)} h1_t,
+///
+/// S^{(J,I)} and S₁^{(J,I)} the class's S and S₁ over the transition RDMs of
+/// pair (J, I) (bra J, ket I), unsymmetrized and without their terms that
+/// read no RDM, which carry ⟨J|I⟩ = 0 (hdm1's 2δ, hdm2's δδ). Sijr's and
+/// Srsi's "2 direct - exchange" becomes the bilinear 2 y_I y_J - y_I y_J′
+/// over the tuple's exchange partner; Sijrs, with no active index, is SC's,
+/// zero off the diagonal. No (I, J) / (J, I) mean is taken, so the matrix is
+/// not symmetric.
+///
+/// Each element is a PcClassEnergies: energies[k] the coupling, dropped[k]
+/// ket J's cut count, total their sum; the diagonal element is state J's
+/// pc_class_energies. Each class walks its slabs once for every pair, in
+/// batches of at most @p batch, one einsum per pair per slab into J's
+/// eigenbasis, holding every state's solve and every pair's transition rows
+/// (d x m each) across the walk.
+///
+/// @return The n² elements; sc_effective_hamiltonian's InvalidConfig for
+///         malformed @p pairs; or pc_class_energies' errors, a refused class
+///         (no gap at S_J's cut, or a denominator λ + Δ not positive) naming
+///         the class and the state J.
+[[nodiscard]] Result<std::vector<PcClassEnergies>>
+pc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
+                         std::span<const EnergyInputs> pairs, int32_t batch);
+
 /// @brief pc_class_energies_adjoint's result: the energies it walked, and each
 /// class's degree-one homogeneity assembled from its bars.
 struct PcClassEnergiesAdjoint {
