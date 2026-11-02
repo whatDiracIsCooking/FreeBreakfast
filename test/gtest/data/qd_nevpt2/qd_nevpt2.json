@@ -22,13 +22,13 @@
   "diagonal_max_difference": 5.793976409762536e-16,
   "brute_force": "every class's T and coupling and H_eff from the explicit perturbers in the full determinant space (all orbitals), brute-force cases only",
   "brute_force_tolerance": 1e-09,
-  "brute_force_max_difference": 2.736526283353413e-16,
+  "brute_force_max_difference": 6.307329197775477e-15,
   "transition_rdms": "dm1-dm4 against explicit products of the spin-summed excitation operators on the CI vectors",
   "transition_rdm_tolerance": 1e-12,
   "transition_rdm_max_difference": 8.059525269388246e-15,
   "f3": "the einsum f3ca/f3ac at I = J against PySCF's _contract4pdm",
   "f3_tolerance": 1e-12,
-  "f3_max_difference": 1.4210854715202004e-14
+  "f3_max_difference": 2.1316282072803006e-14
  },
  "cases": [
   {
@@ -638,6 +638,646 @@
      4
     ]
    }
+  },
+  {
+   "name": "h8_ring_sto3g_sa3",
+   "source": null,
+   "basis": "sto-3g",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 184
+   },
+   "atoms": [
+    [
+     "H",
+     [
+      2.6131,
+      0.0,
+      -0.0045
+     ]
+    ],
+    [
+     "H",
+     [
+      1.7931,
+      1.9041,
+      0.0
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      2.6178,
+      0.0045
+     ]
+    ],
+    [
+     "H",
+     [
+      -1.9075,
+      1.7963,
+      -0.0045
+     ]
+    ],
+    [
+     "H",
+     [
+      -2.6225,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     "H",
+     [
+      -1.7996,
+      -1.9109,
+      0.0045
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      -2.6272,
+      -0.0045
+     ]
+    ],
+    [
+     "H",
+     [
+      1.9143,
+      -1.8028,
+      0.0
+     ]
+    ]
+   ],
+   "ncore": 1,
+   "ncas": 4,
+   "nelecas": 6,
+   "nvirt": 3,
+   "naux": 184,
+   "nroots": 3,
+   "weights": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+   ],
+   "casscf_energies": [
+    -4.066371315053827,
+    -3.9632490110128313,
+    -3.9415086199777627
+   ],
+   "casscf_agreement": {
+    "root": 0.0,
+    "weighted": 0.0
+   },
+   "casci_energies": [
+    -4.066371315053827,
+    -3.9632490110128313,
+    -3.9415086199777627
+   ],
+   "next_root_gap": 0.36245224929368547,
+   "e_sc_nevpt2": [
+    -0.09341976253139943,
+    -0.05652472385477386,
+    -0.08911827683294479
+   ],
+   "heff": [
+    [
+     -4.1597910775852265,
+     0.0005918649469299675,
+     0.03045768812463481
+    ],
+    [
+     0.000539876240655632,
+     -4.019773734867605,
+     -0.0005642461564319206
+    ],
+    [
+     0.027605377497985445,
+     -0.0005274666879551932,
+     -4.030626896810707
+    ]
+   ],
+   "eigenvalues": [
+    -4.166019354138541,
+    -4.024438578438916,
+    -4.019733776686081
+   ],
+   "max_off_diagonal": 0.03045768812463481,
+   "max_off_diagonal_over_gap": 0.24392944671008857,
+   "checks": {
+    "diagonal_vs_pyscf": 2.0165943025165404e-16,
+    "brute_force": 6.307329197775477e-15,
+    "transition_rdms_vs_explicit": 5.329070518200751e-15,
+    "f3_vs_contract4pdm": 2.1316282072803006e-14
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 0.00015095087527287193,
+    "Si": 2.0351608327661633e-07,
+    "Sijrs": 0.0,
+    "Sijr": 1.3234889800848443e-23,
+    "Srsi": 1.0842021724855044e-19,
+    "Srs": 4.336808689942018e-18,
+    "Sij": 1.0842021724855044e-18,
+    "Sir": 4.431305444135424e-06
+   },
+   "full_space": {
+    "ndet": 4900,
+    "nmo": 8,
+    "nelec": [
+     4,
+     4
+    ]
+   }
   }
- ]
+ ],
+ "pc": {
+  "description": "PC-QD-NEVPT2 on the same cases, orbitals and transition RDMs: per class <I|V|Psi_J^(1)> = -sum_t b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}, nevpt2::pc_class_energies' S, K, S1, cut and gap rule; the arrays are <case>/pc_*.npy, qd_nevpt2/README.md has the conventions. A refused case (a class of a root under the gap rule) has no pc_ arrays and no PC H_eff; its ungated_diagnostic is NOT a test target",
+  "pc_tau": 1e-13,
+  "pc_min_gap": 1000.0,
+  "validation": {
+   "diagonal": "each root's per-class PC energy against block2's WickICNEVPT2 on the SA-canonical orbitals over PySCF's fitted integrals (ungated on a refused case)",
+   "diagonal_tolerance": 1e-10,
+   "diagonal_max_difference": 3.237903001274134e-12,
+   "brute_force": "every class's coupling and H_eff from the explicit PC first-order spaces (the span of the class's spin-free E_pq E_rs on |J> per external tuple, Dyall H applied) in the full determinant space, brute-force cases only (ungated on a refused case)",
+   "brute_force_tolerance": 1e-09,
+   "brute_force_max_difference": 5.431663148772192e-14
+  },
+  "cases": [
+   {
+    "name": "h2co_ccpvdz_sa2",
+    "refused": false,
+    "dropped": [
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ],
+     [
+      19,
+      24,
+      0,
+      1,
+      0,
+      3,
+      8,
+      10
+     ]
+    ],
+    "min_gap": {
+     "Sr": 19538023947699.406,
+     "Si": 623869008358600.6,
+     "Sijrs": null,
+     "Sijr": 4077906938.7254014,
+     "Srsi": 466650401882.04663,
+     "Srs": 239815626.54088303,
+     "Sij": 1257477676361163.2,
+     "Sir": 2885687813052.158
+    },
+    "checks": {
+     "diagonal_vs_block2": 5.551115123125783e-17,
+     "brute_force": null,
+     "brute_force_tuples": null
+    },
+    "e_pc_nevpt2": [
+     -0.2893620236511517,
+     -0.2809845183678281
+    ],
+    "block2_e_pc_nevpt2": [
+     -0.28936202365115166,
+     -0.2809845183678281
+    ],
+    "heff": [
+     [
+      -114.19429088213425,
+      -1.0000596276239947e-15
+     ],
+     [
+      -8.290189284403042e-16,
+      -114.03606327217652
+     ]
+    ],
+    "eigenvalues": [
+     -114.19429088213425,
+     -114.03606327217652
+    ],
+    "max_off_diagonal": 1.0000596276239947e-15
+   },
+   {
+    "name": "h2co_ccpvdz_sa2_weighted",
+    "refused": false,
+    "dropped": [
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ],
+     [
+      19,
+      24,
+      0,
+      1,
+      0,
+      3,
+      8,
+      10
+     ]
+    ],
+    "min_gap": {
+     "Sr": 19873192008054.453,
+     "Si": 850017860638682.6,
+     "Sijrs": null,
+     "Sijr": 3929158477.054901,
+     "Srsi": 458589495288.26996,
+     "Srs": 227305582.03173366,
+     "Sij": 253720154177836.47,
+     "Sir": 3871001692331.254
+    },
+    "checks": {
+     "diagonal_vs_block2": 2.5673907444456745e-16,
+     "brute_force": null,
+     "brute_force_tuples": null
+    },
+    "e_pc_nevpt2": [
+     -0.28704078129720256,
+     -0.2848235303657424
+    ],
+    "block2_e_pc_nevpt2": [
+     -0.2870407812972026,
+     -0.28482353036574226
+    ],
+    "heff": [
+     [
+      -114.19457666914248,
+      -9.863966661009816e-16
+     ],
+     [
+      -7.748338163209075e-16,
+      -114.03587737797228
+     ]
+    ],
+    "eigenvalues": [
+     -114.19457666914248,
+     -114.03587737797228
+    ],
+    "max_off_diagonal": 9.863966661009816e-16
+   },
+   {
+    "name": "h2co_skew_ccpvdz_sa3",
+    "refused": false,
+    "dropped": [
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ],
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ],
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ]
+    ],
+    "min_gap": {
+     "Sr": 1739174903372.526,
+     "Si": 355795602964115.2,
+     "Sijrs": null,
+     "Sijr": 1918034.6643724043,
+     "Srsi": 10852682701.390944,
+     "Srs": 639340.9371562031,
+     "Sij": 448842074756370.0,
+     "Sir": 744009219.9944868
+    },
+    "checks": {
+     "diagonal_vs_block2": 3.237903001274134e-12,
+     "brute_force": null,
+     "brute_force_tuples": null
+    },
+    "e_pc_nevpt2": [
+     -0.35977872033621994,
+     -0.31332420683764683,
+     -0.3088272172413975
+    ],
+    "block2_e_pc_nevpt2": [
+     -0.3597787203362199,
+     -0.31332420683764656,
+     -0.30882721723815965
+    ],
+    "heff": [
+     [
+      -114.20847218470288,
+      -4.3293872549321973e-05,
+      -0.00809499150045669
+     ],
+     [
+      -3.7539568159771035e-05,
+      -114.0539786244523,
+      -0.0002615120621207083
+     ],
+     [
+      -0.006120903677314049,
+      -0.0002912087574025498,
+      -113.85567040105724
+     ]
+    ],
+    "eigenvalues": [
+     -114.2086153451183,
+     -114.05397899322054,
+     -113.85552687187358
+    ],
+    "max_off_diagonal": 0.00809499150045669
+   },
+   {
+    "name": "h6_631g_sa2",
+    "refused": false,
+    "dropped": [
+     [
+      24,
+      19,
+      0,
+      0,
+      0,
+      8,
+      0,
+      9
+     ],
+     [
+      24,
+      19,
+      0,
+      0,
+      0,
+      8,
+      0,
+      9
+     ]
+    ],
+    "min_gap": {
+     "Sr": 709272620536791.5,
+     "Si": 12113943093296.57,
+     "Sijrs": null,
+     "Sijr": 148620304305.43536,
+     "Srsi": 5486356686.563137,
+     "Srs": 6862567362603630.0,
+     "Sij": 103156368.93789074,
+     "Sir": 4214954302290.015
+    },
+    "checks": {
+     "diagonal_vs_block2": 1.9081958235744878e-17,
+     "brute_force": 1.3010426069826053e-16,
+     "brute_force_tuples": 430
+    },
+    "e_pc_nevpt2": [
+     -0.05728596520449687,
+     -0.05058832046251967
+    ],
+    "block2_e_pc_nevpt2": [
+     -0.05728596520449685,
+     -0.05058832046251967
+    ],
+    "heff": [
+     [
+      -3.277783808200815,
+      0.0052562115514773
+     ],
+     [
+      0.004363303111597955,
+      -2.9881058803498255
+     ]
+    ],
+    "eigenvalues": [
+     -3.2778636464943527,
+     -2.9880260420562874
+    ],
+    "max_off_diagonal": 0.0052562115514773
+   },
+   {
+    "name": "h8_sto3g_sa3",
+    "refused": true,
+    "dropped": [
+     [
+      44,
+      44,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+     ],
+     [
+      44,
+      44,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+     ],
+     [
+      44,
+      44,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    ],
+    "min_gap": {
+     "Sr": 918122451773.6255,
+     "Si": 1055669540664.9845,
+     "Sijrs": null,
+     "Sijr": 140760325237.42755,
+     "Srsi": 140824423917.40408,
+     "Srs": 23.226018756790427,
+     "Sij": 23.22667601383634,
+     "Sir": 551626.8388051174
+    },
+    "checks": {
+     "diagonal_vs_block2": 4.0127406605861005e-15,
+     "brute_force": 5.431663148772192e-14,
+     "brute_force_tuples": 105
+    },
+    "refusals": [
+     {
+      "root": 0,
+      "class": "Srs",
+      "dropped": 0,
+      "d": 16,
+      "smallest_kept_over_largest": 2.3226018756790427e-12,
+      "largest_dropped_over_largest": 0.0,
+      "gap": 23.226018756790427,
+      "min_gap": 1000.0
+     },
+     {
+      "root": 0,
+      "class": "Sij",
+      "dropped": 0,
+      "d": 16,
+      "smallest_kept_over_largest": 2.322667601383634e-12,
+      "largest_dropped_over_largest": 0.0,
+      "gap": 23.22667601383634,
+      "min_gap": 1000.0
+     }
+    ],
+    "ungated_diagnostic": {
+     "e_pc_nevpt2": [
+      -0.03673057157660775,
+      -0.02946250300966114,
+      -0.03567564679740429
+     ],
+     "block2_e_pc_nevpt2": [
+      -0.036730571576607945,
+      -0.029462503009661353,
+      -0.03567564679739967
+     ],
+     "heff": [
+      [
+       -4.464682495483308,
+       0.0005638510923990479,
+       0.00020115232375755572
+      ],
+      [
+       0.00035232887953673945,
+       -3.713154256513512,
+       0.0028737983821011124
+      ],
+      [
+       0.00013403290167189098,
+       0.0029179267394361845,
+       -3.7004836918705495
+      ]
+     ],
+     "eigenvalues": [
+      -4.464682810693741,
+      -3.713784508886911,
+      -3.699853124286718
+     ],
+     "max_off_diagonal": 0.0029179267394361845,
+     "note": "every class solved past the gap rule; NOT a test target: pc_class_energies refuses this case's state(s) named in refusals"
+    }
+   },
+   {
+    "name": "h8_ring_sto3g_sa3",
+    "refused": false,
+    "dropped": [
+     [
+      44,
+      60,
+      0,
+      0,
+      0,
+      0,
+      15,
+      16
+     ],
+     [
+      44,
+      60,
+      0,
+      0,
+      0,
+      0,
+      15,
+      16
+     ],
+     [
+      44,
+      60,
+      0,
+      0,
+      0,
+      0,
+      15,
+      16
+     ]
+    ],
+    "min_gap": {
+     "Sr": 6930006621.439093,
+     "Si": 158731441098538.03,
+     "Sijrs": null,
+     "Sijr": 46338143.35605016,
+     "Srsi": 293322554865.1919,
+     "Srs": 19824553.93150672,
+     "Sij": 152664274247834.5,
+     "Sir": 13596941202.718252
+    },
+    "checks": {
+     "diagonal_vs_block2": 5.252742685257772e-15,
+     "brute_force": 4.4651782271643015e-15,
+     "brute_force_tuples": 87
+    },
+    "e_pc_nevpt2": [
+     -0.09396908349050442,
+     -0.05670112705698966,
+     -0.0899179608459433
+    ],
+    "block2_e_pc_nevpt2": [
+     -0.09396908349050438,
+     -0.05670112705698438,
+     -0.0899179608459432
+    ],
+    "heff": [
+     [
+      -4.1603403985443315,
+      0.000562458846953966,
+      0.028857548491862398
+     ],
+     [
+      0.0005181223898924282,
+      -4.019950138069821,
+      -0.0005900867657409631
+     ],
+     [
+      0.02594981656549545,
+      -0.0005815043629064,
+      -4.031426580823706
+     ]
+    ],
+    "eigenvalues": [
+     -4.1659267323496,
+     -4.02587973423455,
+     -4.01991065085371
+    ],
+    "max_off_diagonal": 0.028857548491862398
+   }
+  ]
+ }
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the reference data the QD-NEVPT2 tests read: SC-QD-NEVPT2.
+"""Write the reference data the QD-NEVPT2 tests read: SC- and PC-QD-NEVPT2.
 
 Neither PySCF (2.14) nor block2 (0.5.4) implements quasi-degenerate NEVPT2,
 so this is this tree's own, built over PySCF's `mrpt.nevpt2` class
@@ -48,6 +48,23 @@ stationary point. The cases and why each is there are at CASES.
   column carries its ket's denominators) and 1/2 (H + H^T), whose eigenvalues
   and eigenvectors are the SC-QD-NEVPT2 energies and states.
 
+**PC-QD-NEVPT2** (#671), over the same states, orbitals and transition
+RDMs: per class k and ket J, S_J, K_J and S1_J (metric, Dyall matrix,
+one-body metric) from J's own RDMs exactly as `nevpt2::pc_class_energies`
+lays them out, solved as its `solve_class` (symmetrized, S cut at PC_TAU of
+its largest, the gap rule PC_MIN_GAP), and
+
+    <I|V|Psi_J^(1)>_k = -sum_t b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}
+
+with b_{J,t} = S_J x_t + S1_J h1_t and b_{I<-J,t} = <J|O_t^dag V|I> = the
+same formulas over the RDMs of the pair (J, I), bra J (the brute force
+settled it: S may come from either orientation, S1 only from (J, I)).
+Sijr's and Srsi's 2 direct - exchange is its bilinear form; nothing is
+averaged; Sijrs is SC's. A case where any root's class fails the gap rule
+(the C++ refuses that state) is refused whole: no pc_ arrays, its
+refusals and an ungated diagnostic (not a test target) in the json. Then
+PC's H_eff, symmetrized, and its spectrum.
+
 **Validation**, in this script, every case:
 
 1. Each diagonal element, per class (norm and energy), equals PySCF's
@@ -63,6 +80,14 @@ overlaps <I|V P_t V|J> and their Dyall energies (H_D applied in the full
 space) give every element of every class's T and coupling, and of H_eff,
 to BRUTE_FORCE.
 
+And for PC: each root's per-class PC energy equals block2's WickICNEVPT2 on
+the SA-canonical orbitals, to PC_DIAGONAL; and on the brute-force cases,
+per ket, class and external tuple, the span of the class's spin-free
+E_pq E_rs on |J> in the full space, with H_D applied explicitly, gives
+every element of every class's PC coupling, and of PC H_eff, to
+BRUTE_FORCE. Both run ungated on a refused case, so its formula is
+checked too.
+
 Every array is written as a '<f8' Fortran-order .npy (the layout
 `src/io/npy` reads), test/gtest/data/qd_nevpt2/<case>/<array>.npy, and the
 scalars, provenance and achieved validation errors to qd_nevpt2.json.
@@ -76,7 +101,7 @@ byte-identical:
 writes test/gtest/data/qd_nevpt2/. Never hand-edited.
 
 The case setup (`State`), the transition RDMs and the integral blocks are
-method-independent: a PC-QD-NEVPT2 part reads them as the SC part does.
+method-independent: the PC part reads them as the SC part does.
 """
 
 from __future__ import annotations
@@ -103,6 +128,8 @@ from pyscf.mcscf.df import _DFCAS  # noqa: E402
 from pyscf.mrpt import dfnevpt2, nevpt2  # noqa: E402
 
 # isort: split
+import nevpt2_reference  # noqa: E402
+
 # The sibling tools pin their own thread counts on import; numpy is loaded
 # by then, and main() pins PySCF's OpenMP.
 from casci_reference import aux_basis  # noqa: E402
@@ -118,7 +145,15 @@ from casscf_reference import (  # noqa: E402
     optimize,
     spin_roots,
 )
-from nevpt2_reference import CLASSES, DEGENERATE, Recorder, polished  # noqa: E402
+from nevpt2_reference import (  # noqa: E402
+    CLASSES,
+    DEGENERATE,
+    PC_MIN_GAP,
+    PC_TAU,
+    Recorder,
+    block2,
+    polished,
+)
 from scf_reference import pyscf_basis  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -142,6 +177,9 @@ DIAGONAL = 1e-10
 # Validation 2: the brute-force full-space H_eff, every element of every
 # class's T and coupling and of H_eff (hartree).
 BRUTE_FORCE = 1e-9
+# PC validation 1: each root's per-class PC energy against block2's
+# WickICNEVPT2 on the same orbitals, CI vector and fitted integrals (hartree).
+PC_DIAGONAL = 1e-10
 # The transition RDMs against the explicit operator products; the einsum
 # f3ca/f3ac against PySCF's `_contract4pdm` at I = J; the fitted B blocks
 # against dfnevpt2's integrals.
@@ -200,14 +238,36 @@ OCTAHYDROGEN = [
     ("H", (-3.50, -0.20, -5.50)),
 ]
 
+# Eight hydrogens on a ring of 2.0-bohr bonds, every other one turned by
+# 0.03 rad, the radii stretched by up to 0.6% and the atoms lifted off the
+# plane by up to 0.0045 bohr, so no symmetry (bohr). STO-3G, 8 orbitals: a
+# core of one, CAS(6,4), three virtuals, 4900 determinants in the full
+# space. Roots 1 and 2 are 22 mEh apart, and roots 0 and 2 are coupled by
+# about 0.03 Eh, a quarter of their gap, which moves both their SC- and
+# PC-QD energies about 6 mEh off the diagonal's. Unlike h8_sto3g_sa3, every
+# root's every PC metric clears the gap rule (by 2e7 or more), so PC's
+# couplings between nearly degenerate roots have a golden.
+OCTAHYDROGEN_RING = [
+    ("H", (2.6131, 0.0, -0.0045)),
+    ("H", (1.7931, 1.9041, 0.0)),
+    ("H", (0.0, 2.6178, 0.0045)),
+    ("H", (-1.9075, 1.7963, -0.0045)),
+    ("H", (-2.6225, 0.0, 0.0)),
+    ("H", (-1.7996, -1.9109, 0.0045)),
+    ("H", (0.0, -2.6272, -0.0045)),
+    ("H", (1.9143, -1.8028, 0.0)),
+]
+
 # The cases: two of casscf_df.json's (C2v formaldehyde, equal and unequal
 # weights: its two roots are 1A1 and 1A2, so their couplings vanish by
 # symmetry, a zero the C++ must reproduce), casscf_nac.json's skewed
 # three-root formaldehyde (C1: no coupling vanishes; the roots are 0.11 and
-# 0.19 Eh apart), and two brute-force cases, the only ones whose full
-# determinant space is small enough: H6, generic, and H8, whose roots 1 and
-# 2 are near-degenerate, so the off-diagonals matter. No existing DF
-# SA-CASSCF case has a near-degeneracy.
+# 0.19 Eh apart), and three brute-force cases, the only ones whose full
+# determinant space is small enough: H6, generic, H8, whose roots 1 and 2
+# are near-degenerate, so the off-diagonals matter, and the H8 ring, added
+# for PC (#671): H8's PC is refused (its root 0's Srs and Sij metrics have
+# no gap at the cut), the ring's is not. No existing DF SA-CASSCF case has a
+# near-degeneracy.
 CASES = [
     {"from": "casscf_df", "case": "h2co_ccpvdz_sa2"},
     {"from": "casscf_df", "case": "h2co_ccpvdz_sa2_weighted"},
@@ -234,9 +294,22 @@ CASES = [
         },
         "brute_force": True,
     },
+    {
+        "from": None,
+        "case": {
+            "name": "h8_ring_sto3g_sa3",
+            "atoms": OCTAHYDROGEN_RING,
+            "basis": "sto-3g",
+            "cas": (6, 4),
+            "weights": [1 / 3, 1 / 3, 1 / 3],
+        },
+        "brute_force": True,
+    },
 ]
 
 NCLASS = len(CLASSES)
+CLASSES_LIST = list(CLASSES)
+CLASSES_INDEX = {key: k for k, key in enumerate(CLASSES)}
 
 
 @dataclasses.dataclass
@@ -841,17 +914,290 @@ def pyscf_diagonal(state: State) -> tuple[numpy.ndarray, numpy.ndarray]:
     return norms, energies
 
 
+# ------------------------------------------------------------- PC-QD-NEVPT2
+
+
+def pc_metrics(blk: dict, d: dict, s: float) -> dict:
+    """Each class's metric S and one-body metric S1 over the RDMs d of one
+    pair and their overlap s, exactly as `nevpt2::pc_class_energies` lays
+    them out (row-major d x d and d x n1, S1 None where the class has none):
+    at bra = ket, state J's own. Sijrs has no active index (PC = SC)."""
+    dm1, dm2, dm3 = d["dm1"], d["dm2"], d["dm3"]
+    n = dm1.shape[0]
+    delta = numpy.eye(n)
+    out = {}
+    out["Sr"] = (
+        numpy.einsum("rpqbac->pqrabc", dm3).reshape(n**3, n**3),
+        numpy.einsum("rpqa->pqra", dm2).reshape(n**3, n),
+    )
+    dm3_h = 2.0 * numpy.einsum("abef,cd->abcdef", dm2, delta) - dm3.transpose(
+        0, 1, 3, 2, 4, 5
+    )
+    dm2_h = 2.0 * numpy.einsum("ab,cd->abcd", dm1, delta) - dm2.transpose(0, 1, 3, 2)
+    out["Si"] = (
+        numpy.einsum("rpqbac->pqrabc", dm3_h).reshape(n**3, n**3),
+        numpy.einsum("rpqa->pqra", dm2_h).reshape(n**3, n),
+    )
+    out["Sijr"] = (hdm1(dm1, s), None)
+    out["Srsi"] = (dm1.copy(), None)
+    rm2 = numpy.einsum("iljk->ijkl", dm2) - numpy.einsum("ik,jl->ijkl", dm1, delta)
+    out["Srs"] = (numpy.einsum("pqba->pqab", rm2).reshape(n * n, n * n), None)
+    out["Sij"] = (hdm2(dm1, dm2, s).reshape(n * n, n * n), None)
+    # Sir: the two spin couplings as blocks x, y, held (x, p, q, y, a, b).
+    s22 = (
+        2.0 * numpy.einsum("pa,qb->pqab", delta, dm1)
+        - numpy.einsum("qbap->pqab", dm2)
+        + numpy.einsum("ab,qp->pqab", delta, dm1)
+    )
+    blocks = numpy.zeros((2, n, n, 2, n, n))
+    s11 = numpy.einsum("qpab->pqab", dm2)
+    blocks[0, :, :, 0] = 2.0 * s11
+    blocks[0, :, :, 1] = -s11
+    blocks[1, :, :, 0] = -s11
+    blocks[1, :, :, 1] = s22
+    s1 = numpy.stack([2.0 * dm1.T, -dm1.T]).reshape(2 * n * n, 1)
+    out["Sir"] = (blocks.reshape(2 * n * n, 2 * n * n), s1)
+    return out
+
+
+def pc_dyall(blk: dict, d: dict) -> dict[str, numpy.ndarray]:
+    """Each class's Dyall matrix K over one state's own RDMs d, in
+    `pc_metrics`' layout: PySCF's make_* intermediates, as SC's H_t reads
+    them (`class_hams`)."""
+    h1e, h2e = blk["h1e"], blk["h2e"]
+    dm1, dm2, dm3 = d["dm1"], d["dm2"], d["dm3"]
+    n = dm1.shape[0]
+    dms = {
+        "1": dm1,
+        "2": dm2,
+        "3": dm3,
+        "4": None,
+        "f3ca": d["f3ca"],
+        "f3ac": d["f3ac"],
+    }
+    out = {}
+    out["Sr"] = nevpt2.make_a16(h1e, h2e, dms, None, n, None).reshape(n**3, n**3)
+    out["Si"] = nevpt2.make_a22(h1e, h2e, dms, None, n, None).reshape(n**3, n**3)
+    h1 = nevpt2.make_hdm1(dm1)
+    out["Sijr"] = nevpt2.make_a3(h1e, h2e, dm1, dm2, h1)
+    out["Srsi"] = nevpt2.make_k27(h1e, h2e, dm1, dm2)
+    out["Srs"] = nevpt2.make_a7(h1e, h2e, dm1, dm2, dm3)[1].reshape(n * n, n * n)
+    h2 = nevpt2.make_hdm2(dm1, dm2)
+    h3 = nevpt2.make_hdm3(dm1, dm2, dm3, h1, h2)
+    out["Sij"] = nevpt2.make_a9(h1e, h2e, h1, h2, h3).reshape(n * n, n * n)
+    a12 = nevpt2.make_a12(h1e, h2e, dm1, dm2, dm3)
+    a13 = nevpt2.make_a13(h1e, h2e, dm1, dm2, dm3)
+    blocks = numpy.zeros((2, n, n, 2, n, n))
+    blocks[0, :, :, 0] = 2.0 * a12
+    blocks[0, :, :, 1] = -a12
+    blocks[1, :, :, 0] = -a12
+    blocks[1, :, :, 1] = a13
+    out["Sir"] = blocks.reshape(2 * n * n, 2 * n * n)
+    return out
+
+
+def pc_tuples(blk: dict) -> dict:
+    """Each class's slab rows: per external tuple t (PySCF's ordered walk) the
+    two-electron row x_t, the one-electron row h1_t (or None), the gap
+    Delta_t, and how y pairs: a factor, or the exchange partner of each t
+    (Sijr, Srsi: 2 direct - exchange over ordered pairs)."""
+    e_core, e_virt = blk["e_core"], blk["e_virt"]
+    nc, nv = len(e_core), len(e_virt)
+    n = blk["h1e"].shape[0]
+    out = {}
+    v, hv = blk["_h2e_v_Sr"], blk["h1e_v_Sr"]
+    out["Sr"] = (v.reshape(nv, n**3), hv, e_virt.copy(), 1.0)
+    v, hv = blk["_h2e_v_Si"], blk["h1e_v_Si"]
+    out["Si"] = (
+        numpy.einsum("qpir->ipqr", v).reshape(nc, n**3),
+        hv.T,
+        -e_core,
+        1.0,
+    )
+    v = blk["_h2e_v_Sijr"]  # [r, p, j, i]
+    x = numpy.einsum("rpji->rjip", v).reshape(nv * nc * nc, n)
+    gap = e_virt[:, None, None] - e_core[None, :, None] - e_core[None, None, :]
+    partner = numpy.arange(nv * nc * nc).reshape(nv, nc, nc).transpose(0, 2, 1)
+    out["Sijr"] = (x, None, gap.ravel(), partner.ravel())
+    v = blk["_h2e_v_Srsi"]  # [r, s, i, p]
+    x = v.reshape(nv * nv * nc, n)
+    gap = e_virt[:, None, None] + e_virt[None, :, None] - e_core[None, None, :]
+    partner = numpy.arange(nv * nv * nc).reshape(nv, nv, nc).transpose(1, 0, 2)
+    out["Srsi"] = (x, None, gap.ravel(), partner.ravel())
+    v = blk["_h2e_v_Srs"]  # [r, s, q, p]
+    x = numpy.einsum("rsqp->rspq", v).reshape(nv * nv, n * n)
+    out["Srs"] = (x, None, (e_virt[:, None] + e_virt[None, :]).ravel(), 0.5)
+    v = blk["_h2e_v_Sij"]  # [q, p, i, j]
+    x = numpy.einsum("qpij->ijpq", v).reshape(nc * nc, n * n)
+    out["Sij"] = (x, None, -(e_core[:, None] + e_core[None, :]).ravel(), 0.5)
+    v1, v2, hv = blk["_h2e_v1_Sir"], blk["_h2e_v2_Sir"], blk["h1e_v_Sir"]
+    x1 = numpy.einsum("rpiq->ripq", v1).reshape(nv * nc, n * n)
+    x2 = numpy.einsum("rpqi->ripq", v2).reshape(nv * nc, n * n)
+    out["Sir"] = (
+        numpy.hstack([x1, x2]),
+        hv.reshape(nv * nc, 1),
+        (e_virt[:, None] - e_core[None, :]).ravel(),
+        1.0,
+    )
+    return out
+
+
+def pc_solve(s: numpy.ndarray, k: numpy.ndarray) -> dict:
+    """`solve_class`: S and K symmetrized, S's modes at or below PC_TAU of its
+    largest dropped, K' = X^T K X over X = V_kept s_kept^-1/2,
+    K' = W lambda W^T, U = X W. Returns lambda, U, the symmetrized S, the
+    dropped count, and the cut's numbers: the smallest kept and largest
+    dropped eigenvalue over the largest, and the gap, smallest kept over the
+    largest dropped (over PC_TAU where none is). The C++ refuses the class
+    below PC_MIN_GAP; the caller records that (`pc_qd`)."""
+    s = 0.5 * (s + s.T)
+    k = 0.5 * (k + k.T)
+    sigma, v = numpy.linalg.eigh(s)
+    s_max = sigma[-1]
+    assert s_max > 0.0, "the metric has no positive eigenvalue"
+    nd = 0
+    while nd < len(sigma) and sigma[nd] <= PC_TAU * s_max:
+        nd += 1
+    largest_dropped = numpy.abs(sigma[:nd]).max(initial=0.0) / s_max
+    smallest_kept = sigma[nd] / s_max
+    floor = largest_dropped if nd > 0 else PC_TAU
+    gap = smallest_kept / floor if floor > 0.0 else numpy.inf
+    x = v[:, nd:] / numpy.sqrt(sigma[nd:])
+    lam, w = numpy.linalg.eigh(x.T @ k @ x)
+    return {
+        "lambda": lam,
+        "u": x @ w,
+        "s": s,
+        "dropped": nd,
+        "smallest_kept": float(smallest_kept),
+        "largest_dropped": float(largest_dropped),
+        "gap": float(gap),
+    }
+
+
+def pc_y(x, h1, s, s1, u) -> numpy.ndarray:
+    """y_t = U^T b_t, b_t = S x_t + S1 h1_t, for every tuple t: (nt, m)."""
+    y = x @ (s.T @ u)
+    if s1 is not None:
+        y += h1 @ (s1.T @ u)
+    return y
+
+
+def pc_pair(y_bra, y_ket, lam, gap, pairing) -> tuple[float, float]:
+    """-sum_t y_bra,t^T diag(1 / (lambda + Delta_t)) y_ket,t, Sijr and Srsi's
+    exchange (2 direct - exchange) as a bilinear form; and the smallest
+    denominator."""
+    den = lam[None, :] + gap[:, None]
+    if isinstance(pairing, float):
+        value = pairing * (y_bra * y_ket / den).sum()
+    else:
+        value = ((2.0 * y_bra * y_ket - y_bra * y_ket[pairing]) / den).sum()
+    return float(-value), float(den.min(initial=numpy.inf))
+
+
+def pc_qd(state: State, rdms: dict, sc: dict) -> tuple[dict, dict]:
+    """PC-QD-NEVPT2 over the case: per class and ket J, S_J, K_J and S1_J
+    from J's own RDMs, solved once (`pc_solve`); per bra I the transition
+    b_{I<-J,t} from the RDMs of the pair (J, I), so
+    <I|V|Psi_J^(1)>_k = -sum_t b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}.
+    Sijrs is SC's. Every class is solved whatever its gap; a class whose
+    metric's gap at PC_TAU is under PC_MIN_GAP (the C++ refuses it, naming
+    class and root) is listed in `refusals`, and a case with any is refused
+    whole (`main`). Returns the arrays, the per-class smallest gaps and the
+    refusals."""
+    n = len(state.ci)
+    tuples = pc_tuples(state.blocks)
+    couplings = numpy.zeros((n, n, NCLASS))
+    dropped = numpy.zeros((n, NCLASS))
+    gaps = numpy.full(NCLASS, numpy.inf)
+    refusals = []
+    metrics = {
+        (i, j): pc_metrics(state.blocks, rdms[i, j], 1.0 if i == j else 0.0)
+        for i, j in itertools.product(range(n), repeat=2)
+    }
+    sijrs = CLASSES_INDEX["Sijrs"]
+    couplings[:, :, sijrs] = sc["couplings"][:, :, sijrs]
+    for j in range(n):
+        own = metrics[j, j]
+        dyall = pc_dyall(state.blocks, rdms[j, j])
+        for key in tuples:
+            k = CLASSES_INDEX[key]
+            x, h1, gap, pairing = tuples[key]
+            s, s1 = own[key]
+            solve = pc_solve(s, dyall[key])
+            dropped[j, k] = solve["dropped"]
+            gaps[k] = min(gaps[k], solve["gap"])
+            if solve["gap"] < PC_MIN_GAP:
+                refusals.append(
+                    {
+                        "root": j,
+                        "class": key,
+                        "dropped": solve["dropped"],
+                        "d": int(s.shape[0]),
+                        "smallest_kept_over_largest": solve["smallest_kept"],
+                        "largest_dropped_over_largest": solve["largest_dropped"],
+                        "gap": solve["gap"],
+                        "min_gap": PC_MIN_GAP,
+                    }
+                )
+            lam, u = solve["lambda"], solve["u"]
+            y_ket = pc_y(x, h1, solve["s"], s1, u)
+            for i in range(n):
+                sb, s1b = metrics[j, i][key]
+                y_bra = pc_y(x, h1, sb, s1b, u)
+                value, den = pc_pair(y_bra, y_ket, lam, gap, pairing)
+                assert den > 0.0, f"{state.name} {key} ({i}, {j}): denominator {den}"
+                couplings[i, j, k] = value
+    heff2 = couplings.sum(axis=2)
+    heff = numpy.diag(state.energies) + heff2
+    heff_sym = 0.5 * (heff + heff.T)
+    values, vectors = numpy.linalg.eigh(heff_sym)
+    for col in range(n):
+        if vectors[numpy.argmax(numpy.abs(vectors[:, col])), col] < 0:
+            vectors[:, col] *= -1
+    return {
+        "pc_couplings": couplings,
+        "pc_class_energies": couplings[range(n), range(n)],
+        "pc_dropped": dropped,
+        "pc_heff2": heff2,
+        "pc_heff": heff,
+        "pc_heff_sym": heff_sym,
+        "pc_eigenvalues": values,
+        "pc_eigenvectors": vectors,
+    }, {"gaps": gaps, "refusals": refusals}
+
+
+def block2_diagonal(state: State, gated: bool) -> numpy.ndarray:
+    """block2's WickICNEVPT2 per root and class on the SA-canonical orbitals
+    and the root's CI vector, over PySCF's fitted integrals for them
+    (nevpt2_reference.py's `block2`, which refuses a solve without a gap at
+    PC_TAU; on a refused case, `gated=False`, that refusal is lifted so the
+    ungated diagnostic is still checked): (n, 8)."""
+    n = len(state.ci)
+    out = numpy.zeros((n, NCLASS))
+    saved = nevpt2_reference.PC_MIN_GAP
+    if not gated:
+        nevpt2_reference.PC_MIN_GAP = 0.0
+    try:
+        for root in range(n):
+            mo = (state.mo, state.ci[root], state.mo_energy)
+            pc = block2(state.casci, mo, "pc")
+            out[root] = [pc[key] for key in CLASSES]
+    finally:
+        nevpt2_reference.PC_MIN_GAP = saved
+    state.casci.ci = list(state.ci)
+    return out
+
+
 # ------------------------------------------------------------- brute force
 
 
-def brute_force(state: State, sc: dict) -> float:
-    """Validation 2: every element of every class's T and coupling, and of
-    H_eff, from the explicit perturbers in the full determinant space.
-
-    V|J> restricted to an external occupation pattern t is H|J> restricted to
-    it (H_D keeps every pattern, and |J> is the internal one). The Dyall
-    Hamiltonian is sum_c e_c n_c + sum_r e_r n_r + H_cas, H_cas over h1eff's
-    active block and (aa|aa), in the full space. Returns the largest miss."""
+def full_space(state: State) -> dict:
+    """The brute-force cases' full determinant space over all orbitals: H from
+    the same h1 and the fitted (pq|rs) = sum B B, the Dyall Hamiltonian
+    sum_c e_c n_c + sum_r e_r n_r + H_cas (h1eff's active block and (aa|aa)),
+    each root embedded, H|J>, H_D H|J> and <J|H_D|J>, and every determinant's
+    external occupation key and hole and particle counts."""
     casci, mo = state.casci, state.mo
     ncore, ncas = casci.ncore, casci.ncas
     nocc = ncore + ncas
@@ -891,21 +1237,10 @@ def brute_force(state: State, sc: dict) -> float:
     key = (occ[0][:, ext] @ digits)[:, None] + (occ[1][:, ext] @ digits)[None, :]
     holes = 2 * ncore - (occ[0][:, :ncore].sum(1)[:, None] + occ[1][:, :ncore].sum(1))
     parts = occ[0][:, nocc:].sum(1)[:, None] + occ[1][:, nocc:].sum(1)
-    kinds = {
-        "Sr": (0, 1),
-        "Si": (1, 0),
-        "Sijrs": (2, 2),
-        "Sijr": (2, 1),
-        "Srsi": (1, 2),
-        "Srs": (0, 2),
-        "Sij": (2, 0),
-        "Sir": (1, 1),
-    }
-    assert list(kinds) == list(CLASSES)
 
     n = len(state.ci)
     na, nb = len(strings[0]), len(strings[1])
-    hv, hdv, e0 = [], [], []
+    roots, hv, hdv, e0 = [], [], [], []
     for j in range(n):
         full = numpy.zeros((na, nb))
         full[numpy.ix_(embed[0], embed[1])] = state.ci[j]
@@ -920,9 +1255,50 @@ def brute_force(state: State, sc: dict) -> float:
         x = fci.direct_spin1.contract_2e(h_full, full, nmo, nelec)
         outside = (holes > 2) | (parts > 2)
         assert numpy.abs(x[outside]).max(initial=0.0) < 1e-12, state.name
+        roots.append(full)
         hv.append(x)
         hdv.append(fci.direct_spin1.contract_2e(h_dyall, x, nmo, nelec))
+    return {
+        "nmo": nmo,
+        "nelec": nelec,
+        "na": na,
+        "nb": nb,
+        "h_dyall": h_dyall,
+        "key": key,
+        "holes": holes,
+        "parts": parts,
+        "roots": roots,
+        "hv": hv,
+        "hdv": hdv,
+        "e0": e0,
+    }
 
+
+def brute_force(state: State, sc: dict, space: dict) -> float:
+    """Validation 2: every element of every class's T and coupling, and of
+    H_eff, from the explicit perturbers in the full determinant space.
+
+    V|J> restricted to an external occupation pattern t is H|J> restricted to
+    it (H_D keeps every pattern, and |J> is the internal one). The Dyall
+    Hamiltonian is sum_c e_c n_c + sum_r e_r n_r + H_cas, H_cas over h1eff's
+    active block and (aa|aa), in the full space (`full_space`). Returns the
+    largest miss."""
+    key, holes, parts = space["key"], space["holes"], space["parts"]
+    hv, hdv, e0 = space["hv"], space["hdv"], space["e0"]
+    kinds = {
+        "Sr": (0, 1),
+        "Si": (1, 0),
+        "Sijrs": (2, 2),
+        "Sijr": (2, 1),
+        "Srsi": (1, 2),
+        "Srs": (0, 2),
+        "Sij": (2, 0),
+        "Sir": (1, 1),
+    }
+    assert list(kinds) == list(CLASSES)
+
+    n = len(state.ci)
+    na, nb = space["na"], space["nb"]
     worst = 0.0
     total = numpy.zeros((n, n))
     for k, (cls, (nh, npart)) in enumerate(kinds.items()):
@@ -952,8 +1328,144 @@ def brute_force(state: State, sc: dict) -> float:
             )
     worst = max(worst, numpy.abs(total - sc["heff2"]).max())
     assert worst < BRUTE_FORCE, f"{state.name}: H_eff off the brute force by {worst}"
-    state.full = {"ndet": int(na * nb), "nmo": nmo, "nelec": list(nelec)}
+    state.full = {
+        "ndet": int(na * nb),
+        "nmo": space["nmo"],
+        "nelec": list(space["nelec"]),
+    }
     return float(worst)
+
+
+def pc_operators(ncore: int, ncas: int, nmo: int) -> dict:
+    """Each class's spin-free excitation operators per external tuple t, as
+    (outer, inner) pairs of E_pq indices, E_outer E_inner: the PC space of
+    tuple t on |J> is their span. The generic tuples (distinct external
+    indices) have exactly `pc_metrics`' d operators."""
+    core = range(ncore)
+    act = range(ncore, ncore + ncas)
+    virt = range(ncore + ncas, nmo)
+    pairs = list(itertools.product(act, act))
+    out = {key: [] for key in CLASSES}
+    for x in virt:
+        ops = [((x, p), (q, r)) for p in act for q, r in pairs]
+        out["Sr"].append(((x,), ops, True))
+    for i in core:
+        ops = [((p, i), (q, r)) for p in act for q, r in pairs]
+        out["Si"].append(((i,), ops, True))
+    for i, j in itertools.combinations_with_replacement(core, 2):
+        for x, y in itertools.combinations_with_replacement(virt, 2):
+            ops = {((x, i), (y, j)), ((x, j), (y, i))}
+            out["Sijrs"].append(((i, j, x, y), sorted(ops), False))
+        for x in virt:
+            ops = {((x, i), (p, j)) for p in act} | {((x, j), (p, i)) for p in act}
+            out["Sijr"].append(((i, j, x), sorted(ops), False))
+    for x, y in itertools.combinations_with_replacement(virt, 2):
+        for i in core:
+            ops = {((x, i), (y, p)) for p in act} | {((y, i), (x, p)) for p in act}
+            out["Srsi"].append(((x, y, i), sorted(ops), False))
+        ops = [((x, p), (y, q)) for p, q in pairs]
+        out["Srs"].append(((x, y), ops, x != y))
+    for i, j in itertools.combinations_with_replacement(core, 2):
+        ops = [((p, i), (q, j)) for p, q in pairs]
+        out["Sij"].append(((i, j), ops, i != j))
+    for i in core:
+        for x in virt:
+            ops = [((x, i), (p, q)) for p, q in pairs]
+            ops += [((x, p), (q, i)) for p, q in pairs]
+            out["Sir"].append(((i, x), ops, True))
+    return out
+
+
+def pc_brute_couplings(state: State, space: dict, dropped, gated: bool) -> tuple:
+    """Validation 2 for PC: every element of every class's coupling, and of
+    H_eff, from the explicit PC first-order spaces in the full determinant
+    space. Per ket J, class and tuple t, the span of the class's spin-free
+    excitations E_pq E_rs (`pc_operators`) on |J>, orthonormalized (singular
+    values squared at or below PC_TAU of the largest dropped, refused below
+    PC_MIN_GAP), with the Dyall Hamiltonian applied explicitly:
+    <I|V|Psi_J^(1)>_t = -(Q^T V|I>)^T (Q^T (H_D - <J|H_D|J>) Q)^-1 Q^T V|J>,
+    V|I> being H|I> on t's pattern. On the generic tuples the span's null
+    dimension must equal `dropped` (the reference's per root and class). On
+    a refused case (`gated=False`) the span's gap is not enforced, so the
+    ungated diagnostic is still checked. Returns every coupling, (n, n, 8),
+    and the number of tuples solved."""
+    casci = state.casci
+    ncore, ncas = casci.ncore, casci.ncas
+    nmo, nelec = space["nmo"], space["nelec"]
+    na, nb = space["na"], space["nb"]
+    h_dyall, hv, e0 = space["h_dyall"], space["hv"], space["e0"]
+    ea, eb = excitation_operators(nmo, nelec)
+
+    def apply(pq, vec):
+        p, q = pq
+        return ea[p, q] @ vec + vec @ eb[p, q].T
+
+    operators = pc_operators(ncore, ncas, nmo)
+    n = len(state.ci)
+    total = numpy.zeros((n, n, NCLASS))
+    solved = 0
+    for j in range(n):
+        inner = {}
+        for k, key in enumerate(CLASSES):
+            for _, ops, generic in operators[key]:
+                for _, pq in ops:
+                    if pq not in inner:
+                        inner[pq] = apply(pq, space["roots"][j])
+                phi = numpy.stack(
+                    [apply(outer, inner[pq]).ravel() for outer, pq in ops], axis=1
+                )
+                u, sigma, _ = numpy.linalg.svd(phi, full_matrices=False)
+                if sigma[0] == 0.0:
+                    continue
+                rel = (sigma / sigma[0]) ** 2
+                kept = rel > PC_TAU
+                cut = rel[~kept].max(initial=0.0)
+                floor = cut if (~kept).any() else PC_TAU
+                gap = rel[kept].min() / floor if floor > 0.0 else numpy.inf
+                assert gap >= PC_MIN_GAP or not gated, (
+                    f"{state.name} root {j} {key}: brute-force span gap {gap:.1e}"
+                )
+                if generic and dropped is not None:
+                    null = len(ops) - int(kept.sum())
+                    assert null == dropped[j, k], (
+                        f"{state.name} root {j} {key}: brute-force null "
+                        f"dimension {null} vs dropped {dropped[j, k]}"
+                    )
+                q = u[:, kept]
+                hq = numpy.stack(
+                    [
+                        fci.direct_spin1.contract_2e(
+                            h_dyall, col.reshape(na, nb), nmo, nelec
+                        ).ravel()
+                        for col in q.T
+                    ],
+                    axis=1,
+                )
+                m = q.T @ hq - e0[j] * numpy.eye(q.shape[1])
+                ket = numpy.linalg.solve(m, q.T @ hv[j].ravel())
+                for i in range(n):
+                    total[i, j, k] -= (q.T @ hv[i].ravel()) @ ket
+                solved += 1
+    return total, solved
+
+
+def pc_brute_force(
+    state: State, pc: dict, space: dict, gated: bool
+) -> tuple[float, int]:
+    """`pc_brute_couplings` against every element of every class's PC
+    coupling and of PC H_eff. Returns the largest miss and the number of
+    tuples solved."""
+    total, solved = pc_brute_couplings(state, space, pc["pc_dropped"], gated)
+    worst = numpy.abs(total - pc["pc_couplings"]).max()
+    for i, j, k in numpy.ndindex(total.shape):
+        miss = abs(total[i, j, k] - pc["pc_couplings"][i, j, k])
+        assert miss < BRUTE_FORCE, (
+            f"{state.name} PC {CLASSES_LIST[k]} ({i}, {j}): {total[i, j, k]!r} vs "
+            f"{pc['pc_couplings'][i, j, k]!r}"
+        )
+    worst = max(worst, numpy.abs(total.sum(axis=2) - pc["pc_heff2"]).max())
+    assert worst < BRUTE_FORCE, f"{state.name}: PC H_eff off the brute force by {worst}"
+    return float(worst), solved
 
 
 # ------------------------------------------------------------------ output
@@ -965,9 +1477,10 @@ def save(path: pathlib.Path, array) -> int:
     return path.stat().st_size
 
 
-def write_case(state: State, rdms: dict, sc: dict) -> int:
+def write_case(state: State, rdms: dict, sc: dict, pc: dict | None) -> int:
     """The case's directory: the shared inputs, the CI vectors, the per-pair
-    transition RDMs and the SC answers. Returns the bytes written."""
+    transition RDMs, the SC answers and, unless the case's PC is refused
+    (None), the PC ones. Returns the bytes written."""
     out = OUT / state.name
     if out.exists():
         shutil.rmtree(out)
@@ -981,6 +1494,8 @@ def write_case(state: State, rdms: dict, sc: dict) -> int:
     written += save(out / "weights.npy", numpy.asarray(state.weights))
     for key, value in sc.items():
         written += save(out / f"{key}.npy", value)
+    for key, value in (pc or {}).items():
+        written += save(out / f"{key}.npy", value)
     for (i, j), d in rdms.items():
         pair = out / f"pair_{i}_{j}"
         pair.mkdir()
@@ -989,12 +1504,50 @@ def write_case(state: State, rdms: dict, sc: dict) -> int:
     return written
 
 
+def pc_record(state, pc, info, b2, diag, brute, tuples) -> dict:
+    """One case's entry in qd_nevpt2.json's "pc": the cut, the checks and,
+    unless refused, the PC H_eff and its spectrum; refused, the refusals and
+    the ungated diagnostic (not a test target)."""
+    n = len(state.ci)
+    gaps = [None if not numpy.isfinite(g) else float(g) for g in info["gaps"]]
+    rec = {
+        "name": state.name,
+        "refused": bool(info["refusals"]),
+        "dropped": pc["pc_dropped"].astype(int).tolist(),
+        "min_gap": dict(zip(CLASSES, gaps, strict=True)),
+        "checks": {
+            "diagonal_vs_block2": diag,
+            "brute_force": brute,
+            "brute_force_tuples": tuples,
+        },
+    }
+    off = numpy.abs(pc["pc_heff2"] - numpy.diag(numpy.diag(pc["pc_heff2"])))
+    answers = {
+        "e_pc_nevpt2": [float(x) for x in pc["pc_class_energies"].sum(axis=1)],
+        "block2_e_pc_nevpt2": [float(x) for x in b2.sum(axis=1)],
+        "heff": pc["pc_heff"].tolist(),
+        "eigenvalues": pc["pc_eigenvalues"].tolist(),
+        "max_off_diagonal": float(off.max()) if n > 1 else 0.0,
+    }
+    if rec["refused"]:
+        rec["refusals"] = info["refusals"]
+        rec["ungated_diagnostic"] = answers | {
+            "note": "every class solved past the gap rule; NOT a test target: "
+            "pc_class_energies refuses this case's state(s) named in refusals"
+        }
+    else:
+        rec |= answers
+    return rec
+
+
 def main() -> None:
     lib.num_threads(1)
     assert lib.num_threads() == 1
     OUT.mkdir(parents=True, exist_ok=True)
     records, total = [], 0
     worst = {"diagonal": 0.0, "brute_force": 0.0, "rdm": 0.0, "f3": 0.0}
+    pc_records = []
+    pc_worst = {"diagonal": 0.0, "brute_force": 0.0}
     for entry in CASES:
         state = build_state(entry)
         rdms, rdm_miss, f3_miss = transition_rdms(state)
@@ -1006,7 +1559,19 @@ def main() -> None:
             numpy.abs(energies - sc["class_energies"]).max(),
         )
         assert diag_miss < DIAGONAL, f"{state.name}: diagonal off PySCF by {diag_miss}"
-        brute = brute_force(state, sc) if entry.get("brute_force") else None
+        space = full_space(state) if entry.get("brute_force") else None
+        brute = brute_force(state, sc, space) if space is not None else None
+
+        pc, pc_info = pc_qd(state, rdms, sc)
+        refused = bool(pc_info["refusals"])
+        b2 = block2_diagonal(state, gated=not refused)
+        pc_diag = float(numpy.abs(b2 - pc["pc_class_energies"]).max())
+        assert pc_diag < PC_DIAGONAL, (
+            f"{state.name}: PC diagonal off block2 by {pc_diag}"
+        )
+        pc_brute, tuples = None, None
+        if space is not None:
+            pc_brute, tuples = pc_brute_force(state, pc, space, gated=not refused)
 
         n = len(state.ci)
         off = numpy.abs(sc["heff2"] - numpy.diag(numpy.diag(sc["heff2"])))
@@ -1031,7 +1596,11 @@ def main() -> None:
         if state.full is not None:
             record["full_space"] = state.full
         records.append(record)
-        total += write_case(state, rdms, sc)
+        pc_records.append(pc_record(state, pc, pc_info, b2, pc_diag, pc_brute, tuples))
+        total += write_case(state, rdms, sc, None if refused else pc)
+        pc_worst["diagonal"] = max(pc_worst["diagonal"], pc_diag)
+        if pc_brute is not None:
+            pc_worst["brute_force"] = max(pc_worst["brute_force"], pc_brute)
         worst["diagonal"] = max(worst["diagonal"], diag_miss)
         worst["rdm"] = max(worst["rdm"], rdm_miss)
         worst["f3"] = max(worst["f3"], f3_miss)
@@ -1043,6 +1612,16 @@ def main() -> None:
             + f"transition RDMs {rdm_miss:.1e}, f3 {f3_miss:.1e}, "
             + f"max |H_IJ| {off.max():.2e} "
             + f"(/gap {record['max_off_diagonal_over_gap']:.2e})"
+        )
+        print(
+            f"{state.name} PC: diagonal vs block2 {pc_diag:.1e}, "
+            + (
+                f"brute-force H_eff {pc_brute:.1e} ({tuples} tuples), "
+                if tuples
+                else ""
+            )
+            + f"dropped {pc['pc_dropped'].astype(int).tolist()}"
+            + (f", REFUSED: {pc_info['refusals']}" if refused else "")
         )
 
     doc = {
@@ -1080,6 +1659,32 @@ def main() -> None:
             "f3_max_difference": worst["f3"],
         },
         "cases": records,
+        "pc": {
+            "description": "PC-QD-NEVPT2 on the same cases, orbitals and "
+            "transition RDMs: per class <I|V|Psi_J^(1)> = -sum_t "
+            "b_{I<-J,t}^T (K_J + Delta_t S_J)^+ b_{J,t}, nevpt2::"
+            "pc_class_energies' S, K, S1, cut and gap rule; the arrays are "
+            "<case>/pc_*.npy, qd_nevpt2/README.md has the conventions. A "
+            "refused case (a class of a root under the gap rule) has no pc_ "
+            "arrays and no PC H_eff; its ungated_diagnostic is NOT a test target",
+            "pc_tau": PC_TAU,
+            "pc_min_gap": PC_MIN_GAP,
+            "validation": {
+                "diagonal": "each root's per-class PC energy against block2's "
+                "WickICNEVPT2 on the SA-canonical orbitals over PySCF's fitted "
+                "integrals (ungated on a refused case)",
+                "diagonal_tolerance": PC_DIAGONAL,
+                "diagonal_max_difference": pc_worst["diagonal"],
+                "brute_force": "every class's coupling and H_eff from the "
+                "explicit PC first-order spaces (the span of the class's "
+                "spin-free E_pq E_rs on |J> per external tuple, Dyall H "
+                "applied) in the full determinant space, brute-force cases "
+                "only (ungated on a refused case)",
+                "brute_force_tolerance": BRUTE_FORCE,
+                "brute_force_max_difference": pc_worst["brute_force"],
+            },
+            "cases": pc_records,
+        },
     }
     (OUT / "qd_nevpt2.json").write_text(json.dumps(doc, indent=1) + "\n")
     over = [p for p in OUT.rglob("*") if p.is_file() and p.stat().st_size > LIMIT]
@@ -1087,7 +1692,9 @@ def main() -> None:
     print(
         f"wrote {OUT} ({total} bytes of arrays): diagonal vs PySCF "
         f"{worst['diagonal']:.1e} (tol {DIAGONAL:.0e}), brute-force H_eff "
-        f"{worst['brute_force']:.1e} (tol {BRUTE_FORCE:.0e})"
+        f"{worst['brute_force']:.1e} (tol {BRUTE_FORCE:.0e}); PC diagonal vs "
+        f"block2 {pc_worst['diagonal']:.1e} (tol {PC_DIAGONAL:.0e}), PC "
+        f"brute-force H_eff {pc_worst['brute_force']:.1e} (tol {BRUTE_FORCE:.0e})"
     )
 
 
