@@ -212,6 +212,30 @@ gpu_card_util_mem() {
   echo "${util},${mem}"
 }
 
+# The CUDA the `cuda` image installs, as `13.0`: CUDA_VERSION when set (what
+# docker/build.sh forwards), else docker/Dockerfile.cuda's ARG default -- read
+# from the file, so this holds no version number of its own.
+cuda_image_version() {
+  local v=${CUDA_VERSION:-}
+  [ -n "$v" ] ||
+    v=$(sed -n 's/^ARG CUDA_VERSION=//p' "$REPO_ROOT/docker/Dockerfile.cuda" | head -1)
+  echo "${v//-/.}"
+}
+
+# The newest CUDA the NVIDIA driver can run, as `13.0`, from nvidia-smi's
+# banner; empty without a working nvidia-smi. The same on the host and in a
+# container, since the driver is the host's either way. An image newer than
+# this will not start under --gpus (see docker/Dockerfile.cuda's header).
+cuda_driver_ceiling() {
+  nvidia-smi 2>/dev/null |
+    sed -n 's/.*CUDA Version: *\([0-9][0-9.]*\).*/\1/p' | head -1
+}
+
+# Whether dotted version $1 is at least $2.
+version_ge() {
+  [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$2" ]
+}
+
 # Whether another run holds the card: any of its lock files is locked. Probes
 # each with a non-blocking flock that is released at once.
 gpu_card_held() {

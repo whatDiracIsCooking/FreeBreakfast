@@ -584,6 +584,27 @@ warn_if_gpu_revoked() {
   echo "devcontainer:   (a plain 'up' reuses this container and will NOT restore the GPU.)" >&2
 }
 
+# Create /dev/nvidia-uvm and /dev/nvidia-uvm-tools before `up`, when this
+# variant's config passes them as --device= and they are missing. The driver
+# makes those two nodes lazily, on the first CUDA call, so on a headless host
+# (a cloud GPU VM, or any box after a reboot) they are often absent -- and a
+# --device= naming a missing node makes `docker run` fail outright, before the
+# container exists. nvidia-modprobe is setuid root and ships with the driver,
+# which is the same thing the CUDA runtime calls to make them; -c=0 also makes
+# /dev/nvidia0 if it is missing.
+ensure_nvidia_uvm_nodes() {
+  [ -n "${dc_config_path:-}" ] || return 0
+  grep -q -- '--device=/dev/nvidia-uvm' "$dc_config_path" || return 0
+  [ -e /dev/nvidia-uvm ] && [ -e /dev/nvidia-uvm-tools ] && return 0
+  if ! command -v nvidia-modprobe >/dev/null 2>&1; then
+    echo "devcontainer: WARNING -- /dev/nvidia-uvm is missing and nvidia-modprobe is not" \
+      "on PATH; \`docker run\` will fail on the --device= line" >&2
+    return 0
+  fi
+  nvidia-modprobe -u -c=0 ||
+    echo "devcontainer: WARNING -- nvidia-modprobe could not create /dev/nvidia-uvm" >&2
+}
+
 require_running() {
   command -v docker >/dev/null 2>&1 || return 0
   [ -n "$(container_ids || true)" ] && return 0
@@ -726,6 +747,7 @@ case "${1:-}" in
     shift
     require_git_dir
     require_cache_dirs
+    ensure_nvidia_uvm_nodes
     export_host_gids
     host_mount_args
     remote_env_args
@@ -749,6 +771,7 @@ case "${1:-}" in
     shift
     require_git_dir
     require_cache_dirs
+    ensure_nvidia_uvm_nodes
     export_host_gids
     host_mount_args
     remote_env_args

@@ -42,6 +42,10 @@ pre-commit install                        # commit-time lint + pre-push gate
 devtools/devcontainer.sh rebuild          # the C++ toolchain lives in here
 ```
 
+A fresh single-GPU cloud VM (1× A100/H100/A10) is set up by
+`devtools/gpu-vm-setup.sh` instead; `docs/gpu-vm.md` has the walkthrough. CUDA
+only, one card, sm_80 and up.
+
 `uv` is the only assumed host tool. **`uv.lock` is tracked, and it is the only
 place Python dependency versions are written down:** `pyproject.toml` says what
 is wanted, the lock says which exact versions satisfy it, and
