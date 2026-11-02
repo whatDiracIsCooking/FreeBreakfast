@@ -12,7 +12,11 @@
 // And the bra/ket overload: dm1, dm2, dm3, f3ca and f3ac between two
 // different vectors against PySCF's (data/nevpt2_transition/, written by
 // tools/emit/nevpt2_transition_golden.py), at one tile and many, its own
-// budget refusal, and bra == ket as the one-vector build bit for bit.
+// budget refusal, and bra == ket as the one-vector build bit for bit. And the
+// bra/ket adjoint against the bra/ket build the same way, perturbing the bra
+// and the ket apart, with the f3 bars and without (its null-f3 switch and that
+// plan's bytes); at bra = ket its two bars summing to the one-vector
+// adjoint's; and its refusals.
 
 #include <gtest/gtest.h>
 
@@ -722,6 +726,320 @@ TEST(NevptRdm, BraEqualKetIsTheOneVectorBuild) {
       }
     }
   }
+}
+
+// The bra/ket adjoint's outputs, on the host.
+struct TransitionAdjoint {
+  std::int64_t tiles = 0;
+  std::vector<double> bra_bar;
+  std::vector<double> ket_bar;
+  std::vector<double> eri_bar;
+};
+
+// The bra/ket adjoint between @p bra and @p ket; @p f3ca_bar and @p f3ac_bar
+// may be null together.
+std::optional<TransitionAdjoint>
+transition_adjoint(fb::DeviceResources &res, const fb::ci::DeviceStringSet &alpha,
+                   const fb::ci::DeviceStringSet &beta, const double *bra, const double *ket,
+                   const double *eri, const double *dm3_bar, const double *f3ca_bar,
+                   const double *f3ac_bar,
+                   std::size_t max_bytes = std::numeric_limits<std::size_t>::max()) {
+  const auto ndet = static_cast<std::size_t>(alpha.size()) * beta.size();
+  const auto n = static_cast<std::size_t>(alpha.n_orbitals());
+  fb::Buffers::device<double> bra_bar(ndet, res.device());
+  fb::Buffers::device<double> ket_bar(ndet, res.device());
+  fb::Buffers::device<double> eri_bar(n * n * n * n, res.device());
+  const auto tiles =
+      fb::nevpt2::rdms_adjoint(res, alpha, beta, bra, ket, eri, dm3_bar, f3ca_bar, f3ac_bar,
+                               bra_bar.data(), ket_bar.data(), eri_bar.data(), max_bytes);
+  EXPECT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+  if (!tiles) {
+    return std::nullopt;
+  }
+  return TransitionAdjoint{*tiles, on_host(res, bra_bar), on_host(res, ket_bar),
+                           on_host(res, eri_bar)};
+}
+
+// The bra/ket build's dm3, f3ca and f3ac between the host @p bra and @p ket at
+// the host @p eri, with no dm1 or dm2.
+std::optional<Built> build_pair(fb::DeviceResources &res, const fb::ci::DeviceStringSet &alpha,
+                                const fb::ci::DeviceStringSet &beta, std::span<const double> bra,
+                                std::span<const double> ket, std::span<const double> eri) {
+  const auto n = static_cast<std::size_t>(alpha.n_orbitals());
+  const std::size_t n6 = n * n * n * n * n * n;
+  const auto bra_d = on_device(res, bra);
+  const auto ket_d = on_device(res, ket);
+  const auto eri_d = on_device(res, eri);
+  fb::Buffers::device<double> dm3(n6, res.device());
+  fb::Buffers::device<double> f3ca(n6, res.device());
+  fb::Buffers::device<double> f3ac(n6, res.device());
+  const auto tiles = fb::nevpt2::rdms(res, alpha, beta, bra_d.data(), ket_d.data(), eri_d.data(),
+                                      nullptr, nullptr, dm3.data(), f3ca.data(), f3ac.data());
+  EXPECT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+  if (!tiles) {
+    return std::nullopt;
+  }
+  return Built{*tiles, on_host(res, dm3), on_host(res, f3ca), on_host(res, f3ac)};
+}
+
+// #697's acceptance: on CAS(4,4) at (2, 2) and a CAS(6) at (3, 2) electrons,
+// so the two spins' sets differ, from a random bra, ket and (tu|vw) with no
+// symmetry and random bars, ⟨bra_bar, u⟩ along a random u on the bra alone,
+// ⟨ket_bar, v⟩ along v on the ket alone and ⟨h2ē, δ⟩ along δ on (tu|vw) each
+// match the bars on the central difference of two bra/ket builds. The build
+// is linear in each of the three, so the difference is the directional
+// derivative exactly at every step: the ladder's rungs, h = 1 and 1/8 (a
+// power of two, so each step scales its inputs exactly), agree with it to
+// round-off. With the f3 bars and with them null (the bars on dm3 alone,
+// eri_bar zero); at one tile and at widths 7 and 23 (6 and 14 tiles, the last
+// one determinant), which agree with the one tile.
+TEST(NevptRdm, TransitionAdjointMatchesPolarization) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  struct Space {
+    std::int32_t n;
+    std::int32_t n_alpha;
+    std::int32_t n_beta;
+    std::int64_t width; // below the determinant count, not dividing it
+  };
+  // 36 = 7 · 5 + 1; 300 = 23 · 13 + 1.
+  for (const Space sp : {Space{4, 2, 2, 7}, Space{6, 3, 2, 23}}) {
+    SCOPED_TRACE("CAS(" + std::to_string(sp.n) + ") at (" + std::to_string(sp.n_alpha) + ", " +
+                 std::to_string(sp.n_beta) + ")");
+    auto alpha = fb::ci::DeviceStringSet::create(res, sp.n, sp.n_alpha);
+    auto beta = fb::ci::DeviceStringSet::create(res, sp.n, sp.n_beta);
+    ASSERT_TRUE(alpha && beta);
+    const auto n = static_cast<std::size_t>(sp.n);
+    const std::size_t ndet = static_cast<std::size_t>(alpha->size()) * beta->size();
+    const std::size_t n4 = n * n * n * n;
+    std::mt19937_64 rng{static_cast<std::uint64_t>(697 + sp.n)};
+    const std::vector<double> bra = random_vector(rng, ndet);
+    const std::vector<double> ket = random_vector(rng, ndet);
+    const std::vector<double> eri = random_vector(rng, n4);
+    const std::vector<double> u = random_vector(rng, ndet);
+    const std::vector<double> v = random_vector(rng, ndet);
+    const std::vector<double> delta = random_vector(rng, n4);
+    const Bars bars{random_vector(rng, n4 * n * n), random_vector(rng, n4 * n * n),
+                    random_vector(rng, n4 * n * n)};
+    const Bars dm3_only{bars.dm3, {}, {}};
+    const auto bra_d = on_device(res, bra);
+    const auto ket_d = on_device(res, ket);
+    const auto eri_d = on_device(res, eri);
+    const auto dm3_bar = on_device(res, bars.dm3);
+    const auto f3ca_bar = on_device(res, bars.f3ca);
+    const auto f3ac_bar = on_device(res, bars.f3ac);
+
+    for (const bool f3 : {true, false}) {
+      SCOPED_TRACE(f3 ? "with f3 bars" : "null f3 bars");
+      const double *const ca = f3 ? f3ca_bar.data() : nullptr;
+      const double *const ac = f3 ? f3ac_bar.data() : nullptr;
+      const auto one = transition_adjoint(res, *alpha, *beta, bra_d.data(), ket_d.data(),
+                                          eri_d.data(), dm3_bar.data(), ca, ac);
+      ASSERT_TRUE(one);
+      EXPECT_EQ(one->tiles, 1);
+      const auto tiled = transition_adjoint(
+          res, *alpha, *beta, bra_d.data(), ket_d.data(), eri_d.data(), dm3_bar.data(), ca, ac,
+          fb::nevpt2::rdms_adjoint_workspace_bytes(sp.n, sp.width + 1, true, f3) - 1);
+      ASSERT_TRUE(tiled);
+      EXPECT_EQ(tiled->tiles, fb::math::idivup(static_cast<std::int64_t>(ndet), sp.width));
+      EXPECT_LE(rel_diff(tiled->bra_bar, one->bra_bar), kTileRelTol) << "bra bar";
+      EXPECT_LE(rel_diff(tiled->ket_bar, one->ket_bar), kTileRelTol) << "ket bar";
+      if (f3) {
+        EXPECT_LE(rel_diff(tiled->eri_bar, one->eri_bar), kTileRelTol) << "h2e bar";
+      } else {
+        const std::vector<double> zero(n4, 0.0);
+        EXPECT_EQ(one->eri_bar, zero) << "h2e bar";
+        EXPECT_EQ(tiled->eri_bar, zero) << "h2e bar";
+      }
+      const Bars &on = f3 ? bars : dm3_only;
+
+      for (const double h : {1.0, 0.125}) {
+        SCOPED_TRACE("h = " + std::to_string(h));
+        // (along, scale) of the bars on (build(+h) − build(−h)) / 2, per unit h.
+        const auto rung = [&](std::span<const double> bra_p, std::span<const double> ket_p,
+                              std::span<const double> eri_p, std::span<const double> bra_m,
+                              std::span<const double> ket_m, std::span<const double> eri_m) {
+          const auto p = build_pair(res, *alpha, *beta, bra_p, ket_p, eri_p);
+          const auto m = build_pair(res, *alpha, *beta, bra_m, ket_m, eri_m);
+          EXPECT_TRUE(p && m);
+          if (!p || !m) {
+            return std::pair{0.0, 0.0};
+          }
+          const auto [along, scale] = contract_difference(on, *p, *m);
+          return std::pair{along / h, scale / h};
+        };
+        const auto [along_u, scale_u] =
+            rung(shifted(bra, u, h), ket, eri, shifted(bra, u, -h), ket, eri);
+        const auto [along_v, scale_v] =
+            rung(bra, shifted(ket, v, h), eri, bra, shifted(ket, v, -h), eri);
+        const auto [along_d, scale_d] =
+            rung(bra, ket, shifted(eri, delta, h), bra, ket, shifted(eri, delta, -h));
+        if (!f3) {
+          // dm3 does not read (tu|vw): the difference is zero, as eri_bar is.
+          EXPECT_EQ(along_d, 0.0);
+        }
+        for (const TransitionAdjoint *a : {&*one, &*tiled}) {
+          SCOPED_TRACE(a->tiles == 1 ? "one tile" : "tiled");
+          const double bu = dot(a->bra_bar, u);
+          const double kv = dot(a->ket_bar, v);
+          const double hd = dot(a->eri_bar, delta);
+          EXPECT_LE(std::abs(bu - along_u), kAdjointRelTol * scale_u)
+              << "<bra bar, u> " << bu << " against " << along_u << " (scale " << scale_u << ")";
+          EXPECT_LE(std::abs(kv - along_v), kAdjointRelTol * scale_v)
+              << "<ket bar, v> " << kv << " against " << along_v << " (scale " << scale_v << ")";
+          EXPECT_LE(std::abs(hd - along_d), kAdjointRelTol * scale_d)
+              << "<h2e bar, delta> " << hd << " against " << along_d << " (scale " << scale_d
+              << ")";
+        }
+      }
+    }
+  }
+}
+
+// At bra = ket the bra/ket adjoint's two partials sum to the one-vector
+// adjoint's vector_bar (the build at bra = ket is the one-vector build at
+// every vector), and its eri_bar is the one-vector one's: to round-off, since
+// the ca order's fdm2 reads a different, equal, element. With two pointers to
+// the same vector, with one pointer, and with one pointer for the two bars,
+// which then gets their sum; with the f3 bars and without, where eri_bar is
+// zero. On CAS(4,4) and CAS(6,6), at one tile.
+TEST(NevptRdm, TransitionAdjointAtBraEqualKetSumsToTheOneVector) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  for (const auto [n32, per_spin] : {std::pair{4, 2}, std::pair{6, 3}}) {
+    SCOPED_TRACE("CAS(" + std::to_string(n32) + "," + std::to_string(n32) + ")");
+    auto probe = fb::ci::DeviceStringSet::create(res, n32, per_spin);
+    ASSERT_TRUE(probe);
+    const auto n = static_cast<std::size_t>(n32);
+    const std::size_t ndet = static_cast<std::size_t>(probe->size()) * probe->size();
+    const std::size_t n4 = n * n * n * n;
+    std::mt19937_64 rng{static_cast<std::uint64_t>(719 + n32)};
+    const std::vector<double> ci = random_vector(rng, ndet);
+    const std::vector<double> eri = random_vector(rng, n4);
+    const auto dm3_bar = on_device(res, random_vector(rng, n4 * n * n));
+    const auto f3ca_bar = on_device(res, random_vector(rng, n4 * n * n));
+    const auto f3ac_bar = on_device(res, random_vector(rng, n4 * n * n));
+    auto s = set_up(res, n32, per_spin, ci, eri);
+    ASSERT_TRUE(s);
+    const auto copy = on_device(res, ci);
+
+    for (const bool f3 : {true, false}) {
+      SCOPED_TRACE(f3 ? "with f3 bars" : "null f3 bars");
+      const double *const ca = f3 ? f3ca_bar.data() : nullptr;
+      const double *const ac = f3 ? f3ac_bar.data() : nullptr;
+      fb::Buffers::device<double> y(ndet, res.device());
+      fb::Buffers::device<double> eri_bar(n4, res.device());
+      const auto tiles =
+          fb::nevpt2::rdms_adjoint(res, s->strings, s->strings, s->ci.data(), s->eri.data(),
+                                   dm3_bar.data(), ca, ac, y.data(), eri_bar.data());
+      ASSERT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+      EXPECT_EQ(*tiles, 1);
+      const std::vector<double> want_y = on_host(res, y);
+      const std::vector<double> want_eri = on_host(res, eri_bar);
+      if (!f3) {
+        EXPECT_EQ(want_eri, std::vector<double>(n4, 0.0));
+      }
+
+      for (const double *const ket : {copy.data(), static_cast<const double *>(s->ci.data())}) {
+        SCOPED_TRACE(ket == s->ci.data() ? "one pointer" : "two pointers");
+        const auto got = transition_adjoint(res, s->strings, s->strings, s->ci.data(), ket,
+                                            s->eri.data(), dm3_bar.data(), ca, ac);
+        ASSERT_TRUE(got);
+        EXPECT_EQ(got->tiles, 1);
+        EXPECT_LE(rel_diff(shifted(got->bra_bar, got->ket_bar, 1.0), want_y), kTileRelTol)
+            << "bra bar + ket bar";
+        if (f3) {
+          EXPECT_LE(rel_diff(got->eri_bar, want_eri), kTileRelTol) << "h2e bar";
+        } else {
+          EXPECT_EQ(got->eri_bar, want_eri) << "h2e bar";
+        }
+      }
+      // One pointer for the two bars: their sum.
+      const auto summed = fb::nevpt2::rdms_adjoint(res, s->strings, s->strings, s->ci.data(),
+                                                   copy.data(), s->eri.data(), dm3_bar.data(), ca,
+                                                   ac, y.data(), y.data(), eri_bar.data());
+      ASSERT_TRUE(summed) << (summed ? "" : summed.error().message);
+      EXPECT_LE(rel_diff(on_host(res, y), want_y), kTileRelTol) << "one bar pointer";
+    }
+  }
+}
+
+// The bra/ket adjoint's plan and refusals. Null f3 bars plan without W, the
+// ket's L2, the f3-only n⁴ and n⁶ regions and their bars: the bytes are the
+// tile's R, L2 and their bars alone, the same with or without a transition,
+// and a call carves exactly those. A budget below one determinant's tile is
+// Unsupported, with or without the f3 bars, before anything is queued (the
+// outputs keep what they held, the workspace is not grown); one f3 bar null
+// and the other not is InvalidConfig, in both overloads; and the sets rdms
+// refuses.
+TEST(NevptRdm, TransitionAdjointPlanAndRefusals) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr std::int32_t kN = 4;
+  const auto align = [](std::size_t bytes) {
+    return fb::math::align_up(bytes, fb::DeviceResources::kWorkspaceAlignment);
+  };
+  for (const std::int64_t w : {std::int64_t{1}, std::int64_t{36}}) {
+    const auto t = static_cast<std::size_t>(w) * sizeof(double);
+    const std::size_t lean = (2 * align(16 * t)) + (2 * align(256 * t));
+    EXPECT_EQ(fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w, true, false), lean);
+    EXPECT_EQ(fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w, false, false), lean);
+    EXPECT_EQ(fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w, true, true),
+              fb::nevpt2::rdms_adjoint_workspace_bytes(kN, w) + (2 * align(256 * t)));
+  }
+
+  auto four = fb::ci::DeviceStringSet::create(res, kN, 2);
+  auto five = fb::ci::DeviceStringSet::create(res, 5, 2);
+  auto none = fb::ci::DeviceStringSet::create(res, 0, 0);
+  ASSERT_TRUE(four && five && none);
+  {
+    // A fresh workspace, so what one null-f3 tile carves is all it holds.
+    fb::DeviceResources fresh{0};
+    std::mt19937_64 rng{697};
+    const auto bra = on_device(fresh, random_vector(rng, 36));
+    const auto ket = on_device(fresh, random_vector(rng, 36));
+    const auto dm3_bar = on_device(fresh, random_vector(rng, 4096));
+    const auto got = transition_adjoint(fresh, *four, *four, bra.data(), ket.data(), nullptr,
+                                        dm3_bar.data(), nullptr, nullptr);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got->tiles, 1);
+    EXPECT_EQ(fresh.device_workspace(0).num_elements(),
+              fb::nevpt2::rdms_adjoint_workspace_bytes(kN, 36, true, false));
+  }
+
+  const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
+  auto scratch = on_device(res, sentinel);
+  double *const p = scratch.data();
+  const std::size_t held = res.device_workspace(0).num_elements();
+  for (const bool f3 : {true, false}) {
+    SCOPED_TRACE(f3 ? "with f3 bars" : "null f3 bars");
+    double *const f3_bar = f3 ? p : nullptr;
+    for (const std::size_t budget :
+         {std::size_t{0}, fb::nevpt2::rdms_adjoint_workspace_bytes(kN, 1, true, f3) - 1}) {
+      const auto got =
+          fb::nevpt2::rdms_adjoint(res, *four, *four, p, p, p, p, f3_bar, f3_bar, p, p, p, budget);
+      ASSERT_FALSE(got);
+      EXPECT_EQ(got.error().kind, fb::ErrorKind::Unsupported) << got.error().message;
+      EXPECT_NE(got.error().message.find("nevpt2::rdms_adjoint:"), std::string::npos);
+    }
+  }
+  for (const auto &[ca, ac] :
+       {std::pair<double *, double *>{p, nullptr}, std::pair<double *, double *>{nullptr, p}}) {
+    const auto pair = fb::nevpt2::rdms_adjoint(res, *four, *four, p, p, p, p, ca, ac, p, p, p);
+    ASSERT_FALSE(pair);
+    EXPECT_EQ(pair.error().kind, fb::ErrorKind::InvalidConfig) << pair.error().message;
+    const auto single = fb::nevpt2::rdms_adjoint(res, *four, *four, p, p, p, ca, ac, p, p);
+    ASSERT_FALSE(single);
+    EXPECT_EQ(single.error().kind, fb::ErrorKind::InvalidConfig) << single.error().message;
+  }
+  EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+  EXPECT_EQ(on_host(res, scratch), sentinel);
+  const auto mixed = fb::nevpt2::rdms_adjoint(res, *four, *five, p, p, p, p, p, p, p, p, p);
+  ASSERT_FALSE(mixed);
+  EXPECT_EQ(mixed.error().kind, fb::ErrorKind::InvalidConfig) << mixed.error().message;
+  const auto empty = fb::nevpt2::rdms_adjoint(res, *none, *none, p, p, p, p, p, p, p, p, p);
+  ASSERT_FALSE(empty);
+  EXPECT_EQ(empty.error().kind, fb::ErrorKind::InvalidConfig) << empty.error().message;
 }
 
 // The acceptance's measurement: CAS(12,12), 853 776 determinants, at the

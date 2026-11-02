@@ -6,8 +6,9 @@ three between a bra and a different ket, with the transition dm1 and dm2,
 which QD-NEVPT2 reads of each ordered pair of states. Ported from
 nevpt2-gpu-demo's `src/rdm` (commit `7c5a674`), narrowed to its BLAS digest
 and BLAS consume, over this tree's `ci` strings. Beside it, the build's
-adjoint, which the NEVPT2 nuclear gradient takes the three tensors' bars
-through, back onto the CI vector and (tu\|vw).
+adjoints, of one vector and between two, which the NEVPT2 nuclear gradient
+takes the three tensors' bars through, back onto the CI vector (or the bra
+and the ket) and (tu\|vw).
 
 ## Module
 
@@ -20,7 +21,8 @@ target `free_breakfast::nevpt2::rdm`.
 | `nevpt2::rdms(res, alpha, beta, bra, ket, eri, dm1, dm2, dm3, f3ca, f3ac, max_bytes)` | The same between the device `bra` ⟨I\| and `ket` \|J⟩, with the transition `dm1` (n²) and `dm2` (n⁴), either of which may be null; `bra == ket` (one pointer) is the one-vector build, bit for bit |
 | `nevpt2::rdms_workspace_bytes(n, width, transition = false)` | The bytes of `res.device_workspace()` a build over `n` active orbitals carves at tile width `width`; a `transition` (bra ≠ ket) build's |
 | `nevpt2::rdms_adjoint(res, alpha, beta, vector, eri, dm3_bar, f3ca_bar, f3ac_bar, vector_bar, eri_bar, max_bytes)` | From device bars on the three tensors, `vector_bar` = ∂E/∂c and `eri_bar` = ∂E/∂(tu\|vw) of E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ + ⟨f3ac̄, f3ac⟩, both overwritten; `Result<int64_t>`, the number of tiles |
-| `nevpt2::rdms_adjoint_workspace_bytes(n, width)` | The same, for the adjoint |
+| `nevpt2::rdms_adjoint(res, alpha, beta, bra, ket, eri, dm3_bar, f3ca_bar, f3ac_bar, bra_bar, ket_bar, eri_bar, max_bytes)` | The bra/ket build's adjoint: `bra_bar` = ∂E/∂c_I and `ket_bar` = ∂E/∂c_J apart; in both overloads the f3 bars may be null together, and only dm3's transpose runs |
+| `nevpt2::rdms_adjoint_workspace_bytes(n, width, transition = false, f3 = true)` | The same, for the adjoint; a `transition` call's, and one with null f3 bars (`f3 = false`) |
 
 ## Layouts
 
@@ -145,7 +147,7 @@ Every launch and BLAS call is on `res.stream()`; it does not synchronize.
 
 ## The adjoint
 
-`rdms_adjoint` is of the one-vector build only; it runs the build backwards, in this tree's own transposes rather
+`rdms_adjoint` runs the build backwards, in this tree's own transposes rather
 than the demo's sigma-like passes (`docs/gradients.md` §5.4, §6 there), over
 the same tiles and the same kind of budget. E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ +
 ⟨f3ac̄, f3ac⟩, with each bar in the outputs' layout.
@@ -181,6 +183,48 @@ rounded up to `kWorkspaceAlignment`: the two (tu\|vw) copies, the two fdm2
 bars and the consume's bar (n⁴ doubles each); the two pre-wedge f3 bars,
 dm3's total bar and dm3 (n⁶ each); and the tile's R, L2, W and their bars
 ((4 n² + 2 n⁴) doubles per determinant). A budget below one determinant is
+`Unsupported` before anything is queued or allocated, as for `rdms`.
+
+### Between two vectors
+
+The bra/ket overload is the transposes of the bra/ket build, from the same
+body as the one-vector one. Per tile, R and the bra's L2 are gathered as
+`rdms` gathers them; dm3's digest transposes to L2̄ (the bra's) and R̄ (the
+ket's); and the produce's transpose runs twice, R̄ onto the ket and the
+bra's L2̄ onto the bra (its kernel skips a null bar). With the f3 bars the
+ket's own L2 is gathered too, the consume reads it and its transpose writes
+that L2's bar, which goes onto the ket with R̄; the fdm2 transposes and the
+eri bar read the ca order's transition element, as `rdms`' fdm2 does. It is
+always this path: one pointer for `bra` and `ket` still gives the two
+partials, whose sum is the one-vector `vector_bar` at that vector (the
+build at bra = ket is the one-vector build), and one pointer for `bra_bar`
+and `ket_bar` gets that sum.
+
+**Null f3 bars are QD-NEVPT2's off-diagonal call.** QD reads f3ca and f3ac
+on each root's diagonal only (the Dyall element H^J/N^J is the ket's own,
+which the one-vector adjoint takes with its f3 bars), so off the diagonal
+their bars are zero. Passed null together, in either overload, everything
+that exists only for f3 is skipped: the eri conversion, the wedge and fdm2
+transposes, the consume and its transpose, the f3 digests' transposes, dm3's
+running sum and, between two vectors, the ket's L2 and its bar. What is left
+is dm3's digest transposed and the produce's transpose, about a third of the
+full transition adjoint's work; (tu\|vw) is not read and `eri_bar` is
+written zero, since dm3 does not read it. The plan is then
+`rdms_adjoint_workspace_bytes(n, width, transition, false)`: four regions,
+R, L2 and their bars, ((2 n² + 2 n⁴) doubles per determinant), the same with
+or without a transition. One null and one given is `InvalidConfig`, before
+anything is queued. This is the switch `rdms`' own null-f3 build (#719) is
+to take: the two pointers null together, and a trailing `f3` flag on the
+workspace bytes.
+
+**There are no dm1 and dm2 bars.** dm2[p, q, r, s] = Σ_t dm3[p, q, r, s, t, t]
+/ N and dm1[p, q] = Σ_rt dm3[p, q, r, r, t, t] / N², since Σ_t E_tt is N on
+the ket, between two states as of one; so a caller folds their bars into
+dm3̄ along those traces, as `nevpt2::sc_adjoint` does for one vector.
+
+With the f3 bars the transition plan is the one-vector one's fifteen regions
+and the ket's L2 and its bar, `rdms_adjoint_workspace_bytes(n, width, true)`
+(2 n⁴ more doubles per determinant). A budget below one determinant is
 `Unsupported` before anything is queued or allocated, as for `rdms`.
 
 ## Tests
@@ -231,7 +275,26 @@ linear in (tu\|vw):
   Σ\|bar\| \|difference\|; at one tile and at widths 7 and 23 (6 and 18 tiles,
   the last unequal), which agree with the one tile within 1e-13;
 - `AdjointRefusals`: the budget below one determinant, with nothing written
-  or grown, and the sets `rdms` refuses.
+  or grown, and the sets `rdms` refuses;
+- `TransitionAdjointMatchesPolarization`: on CAS(4,4) at (2, 2) and a CAS(6)
+  at (3, 2), from a random bra, ket and (tu\|vw) and random bars, with the
+  f3 bars and with them null, ⟨bra_bar, u⟩ along u on the bra alone,
+  ⟨ket_bar, v⟩ along v on the ket alone and ⟨h2ē, δ⟩ along δ each match the
+  bars on the central difference of two bra/ket builds at steps 1 and 1/8
+  (exact at any step: the build is linear in each), within 1e-12 of
+  Σ\|bar\| \|difference\|; at one tile and at widths 7 and 23 (6 and 14
+  tiles, the last one determinant), which agree within 1e-13; null f3 bars
+  give `eri_bar` zero exactly;
+- `TransitionAdjointAtBraEqualKetSumsToTheOneVector`: on CAS(4,4) and
+  CAS(6,6), with and without the f3 bars, bra_bar + ket_bar at bra = ket
+  (two pointers, one pointer, and one pointer for the two bars) is the
+  one-vector adjoint's vector_bar, and eri_bar its eri_bar, within 1e-13;
+- `TransitionAdjointPlanAndRefusals`: the null-f3 bytes are R, L2 and their
+  bars alone, transition or not, and a null-f3 call on a fresh workspace
+  carves exactly that; the f3 transition bytes are the one-vector ones plus
+  the ket's L2 and its bar; a budget below one determinant is `Unsupported`
+  with and without f3, one null f3 bar is `InvalidConfig` in both overloads,
+  each with nothing written or grown; and the sets `rdms` refuses.
 
 `Cas1212TilesAtTheDefaultBudget` (slow, skipped under
 `FREE_BREAKFAST_FAST_TESTS`) builds CAS(12,12), 853 776 determinants, from a
@@ -246,7 +309,7 @@ budget is nearly the whole card.
 
 | File | Role |
 |------|------|
-| `rdm.cppm` | Module interface: `nevpt2::rdms`, `nevpt2::rdms_adjoint` and their `_workspace_bytes` |
+| `rdm.cppm` | Module interface: `nevpt2::rdms` and `nevpt2::rdms_adjoint` (each of one vector and between two) and their `_workspace_bytes` |
 | `rdm.cpp` | The checks, the tile plan, the consume and digest gemms and their transposes, and the launches |
 | `nevpt2_rdm_bridge.h` | The launchers, shared by the module (GMF) and the `.cu` |
 | `nevpt2_rdm.cu` | The eri's conversion, R and L2 per tile, fdm2 and the wedge, and the transposes of each |

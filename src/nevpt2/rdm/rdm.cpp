@@ -1,6 +1,6 @@
 /// @file
-/// @brief rdms' (of one vector and between two) and rdms_adjoint's checks,
-/// tile plan and BLAS calls, and their launches.
+/// @brief rdms' and rdms_adjoint's (each of one vector and between two)
+/// checks, tile plan and BLAS calls, and their launches.
 
 module;
 
@@ -44,7 +44,8 @@ size_t rdms_workspace_bytes(const int32_t n_orbitals, const int64_t width,
          region(transition ? nn * nn * w : 0);
 }
 
-size_t rdms_adjoint_workspace_bytes(const int32_t n_orbitals, const int64_t width) noexcept {
+size_t rdms_adjoint_workspace_bytes(const int32_t n_orbitals, const int64_t width,
+                                    const bool transition, const bool f3) noexcept {
   const auto n = static_cast<size_t>(n_orbitals);
   const size_t nn = n * n;
   const size_t n4 = nn * nn;
@@ -54,8 +55,13 @@ size_t rdms_adjoint_workspace_bytes(const int32_t n_orbitals, const int64_t widt
   };
   // rdms_adjoint's device_regions, in its order: eri, consume, the two fdm2
   // bars and the consume's; the two raw f3 bars, dm3's bar and dm3; then R,
-  // L2, W, R̄, L2̄, W̄.
-  return (5 * region(n4)) + (4 * region(n4 * nn)) + (4 * region(nn * w)) + (2 * region(n4 * w));
+  // L2, W, R̄, L2̄, W̄; then the ket's L2 and its bar. Without f3 only R, L2
+  // and their bars are not empty.
+  if (!f3) {
+    return (2 * region(nn * w)) + (2 * region(n4 * w));
+  }
+  return (5 * region(n4)) + (4 * region(n4 * nn)) + (4 * region(nn * w)) + (2 * region(n4 * w)) +
+         (2 * region(transition ? n4 * w : 0));
 }
 
 // W = (tu|vw) · L2 for one order over a tile of @p width, as n strided
@@ -290,70 +296,158 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
   return tiles;
 }
 
-Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                             const ci::DeviceStringSet &beta, const double *const vector,
-                             const double *const eri, const double *const dm3_bar,
-                             const double *const f3ca_bar, const double *const f3ac_bar,
-                             double *const vector_bar, double *const eri_bar,
-                             const size_t max_bytes) {
+// Both adjoints' one body. Between two vectors (@p transition) R̄ goes onto
+// the ket and the bra's L2̄ onto the bra, and with the f3 bars the ket's own
+// L2 is gathered for the consume, its bar onto the ket. Of one vector
+// (@p bra == @p ket, @p bra_bar == @p ket_bar) it is the one-vector adjoint,
+// operation for operation: one L2, its bar taking the consume's transpose, and
+// one gather of both bars. Null f3 bars skip everything that exists only for
+// f3, and leave (tu|vw) unread.
+Result<int64_t> rdms_adjoint_of(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                const ci::DeviceStringSet &beta, const double *const bra,
+                                const double *const ket, const double *const eri,
+                                const double *const dm3_bar, const double *const f3ca_bar,
+                                const double *const f3ac_bar, double *const bra_bar,
+                                double *const ket_bar, double *const eri_bar,
+                                const size_t max_bytes, const bool transition) {
+  if ((f3ca_bar == nullptr) != (f3ac_bar == nullptr)) {
+    return err_config("nevpt2::rdms_adjoint: f3ca_bar is {} and f3ac_bar {}: the f3 bars are "
+                      "given together or not at all",
+                      f3ca_bar == nullptr ? "null" : "given",
+                      f3ac_bar == nullptr ? "null" : "given");
+  }
+  const bool f3 = f3ca_bar != nullptr;
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t n = alpha.n_orbitals();
   const int64_t nn = n * n;
   const int64_t n4 = nn * nn;
-  const int64_t width = FBF_TRY(rdms_tile_width(res, alpha, beta, max_bytes, "rdms_adjoint",
-                                                &rdms_adjoint_workspace_bytes,
-                                                static_cast<size_t>((4 * nn) + (2 * n4))));
+  const auto bytes = [transition, f3](const int32_t m, const int64_t w) {
+    return rdms_adjoint_workspace_bytes(m, w, transition, f3);
+  };
+  const int64_t per_det = f3 ? (4 * nn) + (transition ? 4 * n4 : 2 * n4) : (2 * nn) + (2 * n4);
+  const int64_t width = FBF_TRY(rdms_tile_width(res, alpha, beta, max_bytes, "rdms_adjoint", bytes,
+                                                static_cast<size_t>(per_det)));
   const int32_t n32 = alpha.n_orbitals();
   const int64_t ndet = static_cast<int64_t>(alpha.size()) * beta.size();
   const int64_t tiles = math::idivup(ndet, width);
 
   const wwr::wwrStream_t stream = res.stream();
-  const auto f4 = static_cast<size_t>(n4);
-  const auto f6 = static_cast<size_t>(n4 * nn);
+  // Every f3-only region is empty without f3, and the ket's L2 and its bar
+  // without a transition.
+  const auto f4 = static_cast<size_t>(f3 ? n4 : 0);
+  const auto f6 = static_cast<size_t>(f3 ? n4 * nn : 0);
   const auto t2 = static_cast<size_t>(nn * width);
   const auto t4 = static_cast<size_t>(n4 * width);
+  const size_t tw = f3 ? t2 : 0;
+  const size_t tk = f3 && transition ? t4 : 0;
   const auto [eri_rm, consume, fdm2_ca_bar, fdm2_ac_bar, consume_bar, raw_ca_bar, raw_ac_bar,
-              dm3_total_bar, dm3, r, l2, w, r_bar, l2_bar, w_bar] =
-      res.device_regions<double>(f4, f4, f4, f4, f4, f6, f6, f6, f6, t2, t4, t2, t2, t4, t2);
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(consume_bar, 0, sizeof(double) * f4, stream)));
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(dm3, 0, sizeof(double) * f6, stream)));
-  FBF_TRY(gpu_status(
-      wwr::wwrMemsetAsync(vector_bar, 0, sizeof(double) * static_cast<size_t>(ndet), stream)));
-  FBF_TRY(gpu_status(device::rdm_convert_eri(stream, n32, eri, eri_rm, consume)));
+              dm3_total_region, dm3, r, l2, w, r_bar, l2_bar, w_bar, l2_ket_region,
+              l2_ket_bar_region] = res.device_regions<double>(f4, f4, f4, f4, f4, f6, f6, f6, f6,
+                                                              t2, t4, tw, t2, t4, tw, tk, tk);
+  // The consume reads the ket's L2, the bra's for one vector, and its
+  // transpose writes that L2's bar.
+  double *const l2_ket = transition ? l2_ket_region : l2;
+  double *const l2_ket_bar = transition ? l2_ket_bar_region : l2_bar;
+  // Without f3 the bar dm3 carries into the tiles is the caller's.
+  const double *const dm3_total_bar = f3 ? dm3_total_region : dm3_bar;
+  const auto det_bytes = sizeof(double) * static_cast<size_t>(ndet);
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(bra_bar, 0, det_bytes, stream)));
+  if (transition) {
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(ket_bar, 0, det_bytes, stream)));
+  }
+  if (f3) {
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(consume_bar, 0, sizeof(double) * f4, stream)));
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(dm3, 0, sizeof(double) * f6, stream)));
+    FBF_TRY(gpu_status(device::rdm_convert_eri(stream, n32, eri, eri_rm, consume)));
 
-  // The wedge and fdm2, transposed first: they ran last.
-  FBF_TRY(gpu_status(device::rdm_wedge_adjoint(stream, n32, f3ca_bar, raw_ca_bar, fdm2_ca_bar)));
-  FBF_TRY(gpu_status(device::rdm_wedge_adjoint(stream, n32, f3ac_bar, raw_ac_bar, fdm2_ac_bar)));
-  FBF_TRY(gpu_status(device::rdm_fdm2_dm3_adjoint(stream, n32, eri_rm, fdm2_ca_bar, fdm2_ac_bar,
-                                                  dm3_bar, dm3_total_bar)));
+    // The wedge and fdm2, transposed first: they ran last.
+    FBF_TRY(gpu_status(device::rdm_wedge_adjoint(stream, n32, f3ca_bar, raw_ca_bar, fdm2_ca_bar)));
+    FBF_TRY(gpu_status(device::rdm_wedge_adjoint(stream, n32, f3ac_bar, raw_ac_bar, fdm2_ac_bar)));
+    FBF_TRY(gpu_status(device::rdm_fdm2_dm3_adjoint(stream, n32, eri_rm, fdm2_ca_bar, fdm2_ac_bar,
+                                                    dm3_bar, transition, dm3_total_region)));
+  } else {
+    // dm3 does not read (tu|vw).
+    FBF_TRY(gpu_status(
+        wwr::wwrMemsetAsync(eri_bar, 0, sizeof(double) * static_cast<size_t>(n4), stream)));
+  }
 
   const int32_t n_beta = beta.size();
   for (int64_t begin = 0; begin < ndet; begin += width) {
     const int64_t count = std::min(width, ndet - begin);
     FBF_TRY(gpu_status(device::rdm_produce(
         stream, n32, n_beta, alpha.device_replacements(), alpha.replacements_per_string(),
-        beta.device_replacements(), beta.replacements_per_string(), vector, vector,
+        beta.device_replacements(), beta.replacements_per_string(), bra, ket,
         static_cast<int32_t>(begin), static_cast<int32_t>(count), r, l2)));
-    // dm3 as rdms sums it, for the fdm2s' (tu|vw) bar after the last tile.
-    FBF_TRY(rdms_digest(res, n4, nn, count, l2, r, dm3));
-    FBF_TRY(gpu_status(
-        wwr::wwrMemsetAsync(l2_bar, 0, sizeof(double) * static_cast<size_t>(n4 * count), stream)));
-    FBF_TRY(rdms_digest_adjoint(res, n4, nn, count, dm3_total_bar, l2, r, l2_bar, r_bar));
-    for (const bool ca : {true, false}) {
-      FBF_TRY(rdms_consume(res, n, count, consume, l2, w, ca));
-      FBF_TRY(rdms_digest_adjoint(res, n4, nn, count, ca ? raw_ca_bar : raw_ac_bar, l2, w, l2_bar,
-                                  w_bar));
-      FBF_TRY(rdms_consume_adjoint(res, n, count, consume, l2, w_bar, l2_bar, consume_bar, ca));
+    if (f3 && transition) {
+      // The ket's own L2, as rdms gathers it; this writes R again, the same
+      // numbers.
+      FBF_TRY(gpu_status(device::rdm_produce(
+          stream, n32, n_beta, alpha.device_replacements(), alpha.replacements_per_string(),
+          beta.device_replacements(), beta.replacements_per_string(), ket, ket,
+          static_cast<int32_t>(begin), static_cast<int32_t>(count), r, l2_ket)));
     }
-    FBF_TRY(gpu_status(device::rdm_produce_adjoint(
-        stream, n32, n_beta, static_cast<int32_t>(ndet), alpha.device_replacements(),
-        alpha.replacements_per_string(), beta.device_replacements(), beta.replacements_per_string(),
-        static_cast<int32_t>(begin), static_cast<int32_t>(count), r_bar, l2_bar, vector_bar)));
+    if (f3) {
+      // dm3 as rdms sums it, for the fdm2s' (tu|vw) bar after the last tile.
+      FBF_TRY(rdms_digest(res, n4, nn, count, l2, r, dm3));
+    }
+    const auto l2_bytes = sizeof(double) * static_cast<size_t>(n4 * count);
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(l2_bar, 0, l2_bytes, stream)));
+    if (f3 && transition) {
+      FBF_TRY(gpu_status(wwr::wwrMemsetAsync(l2_ket_bar, 0, l2_bytes, stream)));
+    }
+    FBF_TRY(rdms_digest_adjoint(res, n4, nn, count, dm3_total_bar, l2, r, l2_bar, r_bar));
+    if (f3) {
+      for (const bool ca : {true, false}) {
+        FBF_TRY(rdms_consume(res, n, count, consume, l2_ket, w, ca));
+        FBF_TRY(rdms_digest_adjoint(res, n4, nn, count, ca ? raw_ca_bar : raw_ac_bar, l2, w, l2_bar,
+                                    w_bar));
+        FBF_TRY(rdms_consume_adjoint(res, n, count, consume, l2_ket, w_bar, l2_ket_bar, consume_bar,
+                                     ca));
+      }
+    }
+    // R̄ (and the ket's L2̄) onto the ket, the bra's L2̄ onto the bra: of one
+    // vector, one gather of both.
+    const auto gather = [&](const double *const from_r, const double *const from_l2,
+                            double *const y) {
+      return gpu_status(device::rdm_produce_adjoint(
+          stream, n32, n_beta, static_cast<int32_t>(ndet), alpha.device_replacements(),
+          alpha.replacements_per_string(), beta.device_replacements(),
+          beta.replacements_per_string(), static_cast<int32_t>(begin), static_cast<int32_t>(count),
+          from_r, from_l2, y));
+    };
+    if (transition) {
+      FBF_TRY(gather(r_bar, f3 ? l2_ket_bar : nullptr, ket_bar));
+      FBF_TRY(gather(nullptr, l2_bar, bra_bar));
+    } else {
+      FBF_TRY(gather(r_bar, l2_bar, bra_bar));
+    }
   }
 
-  FBF_TRY(gpu_status(
-      device::rdm_eri_adjoint(stream, n32, dm3, fdm2_ca_bar, fdm2_ac_bar, consume_bar, eri_bar)));
+  if (f3) {
+    FBF_TRY(gpu_status(device::rdm_eri_adjoint(stream, n32, dm3, fdm2_ca_bar, fdm2_ac_bar,
+                                               consume_bar, transition, eri_bar)));
+  }
   return tiles;
+}
+
+Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                             const ci::DeviceStringSet &beta, const double *const vector,
+                             const double *const eri, const double *const dm3_bar,
+                             const double *const f3ca_bar, const double *const f3ac_bar,
+                             double *const vector_bar, double *const eri_bar,
+                             const size_t max_bytes) {
+  return rdms_adjoint_of(res, alpha, beta, vector, vector, eri, dm3_bar, f3ca_bar, f3ac_bar,
+                         vector_bar, vector_bar, eri_bar, max_bytes, false);
+}
+
+Result<int64_t> rdms_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                             const ci::DeviceStringSet &beta, const double *const bra,
+                             const double *const ket, const double *const eri,
+                             const double *const dm3_bar, const double *const f3ca_bar,
+                             const double *const f3ac_bar, double *const bra_bar,
+                             double *const ket_bar, double *const eri_bar, const size_t max_bytes) {
+  return rdms_adjoint_of(res, alpha, beta, bra, ket, eri, dm3_bar, f3ca_bar, f3ac_bar, bra_bar,
+                         ket_bar, eri_bar, max_bytes, true);
 }
 
 } // namespace free_breakfast::nevpt2
