@@ -121,10 +121,12 @@ report_dir=$SLOW_TIER_REPORTS
 case "$report_dir" in /*) ;; *) report_dir="$REPO_ROOT/$report_dir";; esac
 mkdir -p "$report_dir"
 stamp=$(date +%Y%m%d-%H%M%S)
-rev=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+tree_rev "$REPO_ROOT"  # lib.sh: HEAD, +dirty when tracked changes (#694)
+rev=$TREE_REV
 BUILD_LOG="$report_dir/smoke-$stamp-$rev-$preset.log"
 
 echo "cpp-smoke: $REPO_ROOT @ $rev  preset=$preset  (incremental build + host + GPU smoke)"
+tree_rev_header cpp-smoke "$BUILD_LOG"
 echo "cpp-smoke: full log -> $BUILD_LOG"
 
 build_dir=$(cpp_build_dir "$preset")

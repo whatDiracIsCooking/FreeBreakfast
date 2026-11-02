@@ -59,6 +59,11 @@
 #                   failing cleanly.
 #   --report DIR    timestamped log + one-line summary (default:
 #                   SLOW_TIER_REPORTS from config.sh).
+#                   Both carry rev=<HEAD short sha>, the log's name too;
+#                   on a tree with uncommitted tracked changes (a submodule's
+#                   included) it reads rev=<sha>+dirty, the summary adds
+#                   diff=<hash of git diff HEAD>, and the log opens with what
+#                   changed. Untracked files do not count (lib.sh tree_rev).
 #   -- <args>       everything after `--` is passed to ctest verbatim
 #                   (e.g. `-- -R Constants` to scope the run). ctest has
 #                   one entry per gtest case, so -R matches suite names, and
@@ -131,13 +136,16 @@ cpp_require_build_tools || exit 1
 case "$report_dir" in /*) ;; *) report_dir="$REPO_ROOT/$report_dir";; esac
 mkdir -p "$report_dir"
 stamp=$(date +%Y%m%d-%H%M%S)
-rev=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+tree_rev "$REPO_ROOT"  # lib.sh: HEAD, +dirty when tracked changes (#694)
+rev=$TREE_REV
 log="$report_dir/cpp-$stamp-$rev-$preset.log"
 # run_phase (from build.sh) tees here, so configure, build, ctest and tidy all
 # land in this one file.
 BUILD_LOG=$log
 
 echo "cpp-tier: $REPO_ROOT @ $rev  preset=$preset -> $log"
+
+tree_rev_header cpp-tier "$log"
 
 # Where this preset puts compile_commands.json, for --tidy below. build.sh's
 # cpp_build_dir asks CMake rather than guessing, because `default` uses build/
@@ -258,7 +266,7 @@ fi
 set -e
 
 verdict=$([ "$rc" -eq 0 ] && echo PASS || echo "FAIL(rc=$rc)")
-summary="cpp-tier $verdict  rev=$rev  preset=$preset  stamp=$stamp"
+summary="cpp-tier $verdict  rev=$rev  preset=$preset  stamp=$stamp${TREE_DIFF_HASH:+  diff=$TREE_DIFF_HASH}"
 echo "$summary" | tee -a "$log"
 echo "$summary" >> "$report_dir/summary.log"
 exit "$rc"

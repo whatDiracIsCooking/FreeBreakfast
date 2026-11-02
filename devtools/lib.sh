@@ -588,3 +588,62 @@ init_submodules() {
   echo "initialising submodules: ${paths[*]}"
   git -C "$root" submodule update --init --recursive -- "${paths[@]}"
 }
+
+# The revision a run tested, for its log name, header and PASS line.
+#
+#   tree_rev "$REPO_ROOT"   # sets TREE_REV, TREE_DIFF_HASH (and TREE_ROOT)
+#   tree_rev_header cpp-tier "$log"
+#
+# TREE_REV is HEAD's short sha -- on a clean tree exactly the `rev=` every
+# tier always printed -- with `+dirty` appended when the tested tree differs
+# from HEAD (#694): a tier run before the commit would otherwise name the base
+# commit for code that is not in it. TREE_DIFF_HASH is then the first 12 hex
+# of the sha256 of `git diff HEAD`, so two dirty runs on one base can be told
+# apart, and is empty on a clean tree.
+#
+# Dirty means a TRACKED change, staged or not, in the tree or in a submodule:
+# a moved submodule pointer, or edited content inside one (deps/FelizJueves
+# is often both in the main checkout), counts, and --submodule=diff puts the
+# submodule's own content diff into the hash rather than only the pointer.
+# UNTRACKED files do not count, in the tree or in a submodule: build trees,
+# logs and scratch are untracked, and a stamp that read +dirty on every
+# checkout would say nothing. A new source file only reaches the build through
+# a tracked CMakeLists.txt edit, which does mark the tree; tree_rev_header
+# still lists the untracked files, so a reader can see them. "unknown" (no
+# git) is never marked.
+tree_rev() {
+  local root=$1
+  TREE_ROOT=$root
+  TREE_DIFF_HASH=""
+  TREE_REV=$(git -C "$root" rev-parse --short HEAD 2>/dev/null) || {
+    TREE_REV=unknown
+    return 0
+  }
+  [ -n "$(git -C "$root" status --porcelain --untracked-files=no \
+    --ignore-submodules=untracked 2>/dev/null)" ] || return 0
+  TREE_REV="$TREE_REV+dirty"
+  TREE_DIFF_HASH=$(git -C "$root" diff HEAD --binary --no-color --no-ext-diff \
+    --submodule=diff --ignore-submodules=untracked | sha256sum | cut -c1-12)
+}
+
+# What made a tree dirty, into the head of its log (and to stdout) -- nothing
+# at all on a clean tree, so a clean run's log is unchanged. Call it after
+# tree_rev and before the first phase writes to the log.
+tree_rev_header() {
+  local tag=$1 log=$2 untracked
+  [ -n "$TREE_DIFF_HASH" ] || return 0
+  untracked=$(git -C "$TREE_ROOT" ls-files --others --exclude-standard | wc -l)
+  {
+    echo "$tag: tree is dirty -- rev=$TREE_REV  diff=$TREE_DIFF_HASH" \
+      "(sha256 of git diff HEAD --submodule=diff)"
+    git -C "$TREE_ROOT" status --short --untracked-files=no \
+      --ignore-submodules=untracked | sed "s/^/$tag:   /"
+    git -C "$TREE_ROOT" diff HEAD --stat --ignore-submodules=untracked |
+      sed "s/^/$tag:   /"
+    # sed -n, not head: head exiting early would fail the pipe under pipefail.
+    [ "$untracked" -eq 0 ] ||
+      echo "$tag:   $untracked untracked file(s), not in the hash:"
+    git -C "$TREE_ROOT" ls-files --others --exclude-standard |
+      sed -n "1,10s/^/$tag:     /p"
+  } | tee -a "$log"
+}
