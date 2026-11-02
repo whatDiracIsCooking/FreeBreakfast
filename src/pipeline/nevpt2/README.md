@@ -306,7 +306,10 @@ cases).
 option.
 
 `PipelineQdNevpt2.PcRefusalKeepsScQd`: `PcRefusalKeepsSc`'s HF CAS(10,7)
-averaged over two roots with `quasi_degenerate`. The run succeeds, SC-QD is
+averaged over three roots (the ground state and both components of the
+lowest ¹Π: over two, the average splits the pair, and its CASSCF converged
+erratically, #716; see `../../mcscf/solve/README.md`) with
+`quasi_degenerate`, in at most 20 macro iterations. The run succeeds, SC-QD is
 there (H_eff symmetric, its diagonal each root's CASSCF energy plus its own
 coupling, its eigenvalues summing to its trace), and PC-QD is empty with a
 refusal naming a metric with no gap. QD over a single-root CASSCF, the step

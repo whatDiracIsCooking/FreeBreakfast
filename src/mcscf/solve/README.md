@@ -270,6 +270,30 @@ already ~λ or less. `mcscf_solve_gpu.cpp`'s five cases take the macro
 iterations and Hessian products of the tables above with the shift (the RX
 9060 XT, the slow tier).
 
+## A state average that splits a degenerate pair
+
+**Average over every component of a degenerate state, or none.** HF's lowest
+excited singlet is a ¹Π, so the second root of HF CAS(10,7) is one of two
+degenerate components, and an average over two roots takes one of them. At
+the RHF start E₂ = E₃ exactly, and the CI response's δ₂ (above) divides by
+H₀ − E₂ along the other component, which no root projects off: the first
+macro iteration's H̃ had a curvature of −1e10, and four rejections followed.
+The loop then converges to orbitals that break the axial symmetry, E₃ − E₂ =
+6.7e-4 at the solution, where the relaxed Hessian's −|b|²/(E₃ − E₂) term along
+the mixing of the two components nearly cancels H. With ‖g‖ at ~2e-9 the
+subspace solve found that direction at a Ritz value of −1e-12, the shift
+bounded the step to ‖g‖ / σ ≈ 0.1, and the energy rose 8e-3: past the seam the
+model knows nothing of, so the loop cycled as #463's did. From the RHF start
+the CASSCF took 23 to 44 macro iterations at `conv_tol_grad` 1e-9 (10 runs,
+the RTX 3080), and failed to converge in 50 on 2 of 5 others (#716). PySCF's
+`mc1step` reaches the same energy, to 1e-11, but stops at its 1e-6
+(‖g‖ 6e-7, falling linearly).
+
+Over both components (three roots, equal weights) the average is invariant
+under the rotation about the bond and smooth: 6 macro iterations in each of
+the same 10 runs, the same energy to the last printed digit. Nothing here
+detects the split: `ci::solve` finds only `nroots` roots.
+
 ## Defaults, and what each settles
 
 | Option | Default | Settles |
