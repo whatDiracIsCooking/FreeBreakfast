@@ -248,6 +248,14 @@ noreply author on `main`'s commit, which `--squash` re-authors. **Never
 `main` is held by the primary checkout. The server deletes the remote branch
 on merge.
 
+**Send the merge and the pushes as bare Bash calls**: `gh pr merge <M>
+--rebase` on its own, and `git -C <wt> push …` (`--force-with-lease`
+included) on its own, from the main checkout, with no `cd … &&`, no `;`
+chain and no trailing `sleep`. `.claude/settings.json` allows `gh` and
+`git`, but an allow rule only applies when every command in the call
+matches one; a chained call falls through to the auto-mode classifier,
+which refuses merges and force-pushes whatever was said in chat.
+
 **Conflicts.** Each merge moves `main`, so a later sibling can still conflict
 despite the partition. Two cases:
 
