@@ -166,9 +166,10 @@ paths under `.claude/worktrees/` only):
    alone and report it.
 2. **Classify the branch tip** (`git -C "$wt" rev-parse HEAD`):
    - *Merged:* `git merge-base --is-ancestor <tip> origin/main` succeeds.
-   - *Squash-merged:* not an ancestor, but every commit is patch-equivalent
+   - *Rebase-merged:* not an ancestor, but every commit is patch-equivalent
      to something upstream — `git cherry origin/main <branch>` prints only
-     `-` lines. (PRs here are often squash-merged, so this case is common;
+     `-` lines. (PRs here are rebase-merged, which replays them under new
+     SHAs, so this is the usual case; an older squash merge reads the same;
      `gh pr list --state merged --head <branch>` is a second confirmation.)
    - *Unmerged:* anything else — leave it alone and report it.
 3. **Remove merged ones:**
@@ -176,7 +177,7 @@ paths under `.claude/worktrees/` only):
 ```bash
 git worktree remove .claude/worktrees/<name>
 git branch -d <name>              # merged: -d succeeds
-git branch -D <name>              # squash-merged only: -d refuses because the
+git branch -D <name>              # rebase-merged: -d refuses because the
                                   # SHAs differ; -D is safe *after* step 2
                                   # confirmed the patches are upstream
 ```
@@ -187,7 +188,7 @@ submodule included (see "A worktree with an initialised submodule needs
 `--force`" above).
 
 Finish with a one-line-per-worktree report: removed (merged), removed
-(squash-merged), kept (dirty), kept (unmerged). Never remove a dirty or
+(rebase-merged), kept (dirty), kept (unmerged). Never remove a dirty or
 unmerged worktree during a sweep, even with `--force` — that is a user
 decision, not a cleanup. The submodule refusal is the only case where a
 sweep uses `--force`, and only on a worktree that step 1 showed is clean.
@@ -208,8 +209,8 @@ After the merge (the `pr` skill's steps 1–6), if the session ran inside a
    without deleting anything (worktrees entered via `path` are never removed by
    `ExitWorktree`, so this is only a move-out, not the teardown).
 2. **Remove it** from the main checkout, exactly as "Sweep … merged into main"
-   above: the branch is merged or squash-merged, so `git worktree remove` then
-   `git branch -d <name>` (`-D` after a squash merge, since the SHAs differ).
+   above: the branch is merged or rebase-merged, so `git worktree remove` then
+   `git branch -d <name>` (`-D` after a rebase merge, since the SHAs differ).
    If the session initialised the submodule to build, `remove` needs `--force`.
    Run the `--ignore-submodules=none` status check from "Clean up" first.
 

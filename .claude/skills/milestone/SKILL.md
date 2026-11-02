@@ -45,7 +45,7 @@ Each issue must be addressable by **one coherent, reviewable PR**. Calibrate:
   up.
 - **Just right**: one bounded change, an independently statable acceptance
   check, a named set of files/modules it will touch. That usually means one
-  module and its test, landing via the `pr` skill as a single squash-merge.
+  module and its test, landing via the `pr` skill as one rebase-merged PR.
 
 Write each issue with a consistent body so a future implementer (or subagent)
 needs nothing else:
