@@ -95,39 +95,21 @@ struct NacStep {
 
 ## Config
 
+[`examples/nac.toml`](../../../examples/nac.toml) is a whole config, over
+[`examples/h2co.xyz`](../../../examples/h2co.xyz), the reference's H₂CO in
+cc-pVDZ / cc-pVDZ-JKFIT, with `[eri] mode = "density_fitting"` (required) and a
+`[casscf]` of two roots at `conv_tol_grad = 1e-10`. The table's own keys:
+
 ```toml
-[molecule]
-xyz = "h2co.xyz"
-[basis_set]
-basis = "cc-pvdz"
-[eri]
-mode = "density_fitting"   # required
-aux_basis = "cc-pvdz-jkfit"
-[casscf]
-ncas = 3
-nelecas = 4
-nroots = 2                 # at least 2, at any weights
-conv_tol_grad = 1e-10      # the couplings are the CASSCF's only at convergence
 [nac]
 pairs = [[0, 1]]           # (bra, ket); left out, every I < J
 mult_ediff = false         # the default
 use_etfs = false           # the default
 ```
 
-`free-breakfast -i <dir> -o <out> nac.toml` runs it from the command line,
-with `h2co.xyz` in `<dir>`: the reference's H₂CO,
-
-```
-4
-h2co_ccpvdz_sa2
-C  0.0  0.0            0.0
-O  0.0  0.0            1.2028198004
-H  0.0  0.9366436633  -0.5794490459
-H  0.0 -0.9366436633  -0.5794490459
-```
-
-(Angstrom), and writes `<out>/nac.json` beside `casscf.molden` and
-`scf.molden` (the `nac.json` above is that run's, on the gfx1200).
+`free-breakfast -i examples -o <out> examples/nac.toml` runs it, and writes
+`<out>/nac.json` beside `casscf.molden` and `scf.molden` (the `nac.json`
+above is that run's, on the gfx1200).
 
 ## Tests
 

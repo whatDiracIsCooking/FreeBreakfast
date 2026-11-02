@@ -1,0 +1,15 @@
+# SC- and PC-QD-NEVPT2 over a state-averaged CASSCF(4,4) of two roots in
+# water: each root's NEVPT2, then the effective Hamiltonian over the roots.
+[molecule]
+xyz = "water.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"      # required by [nevpt2]
+aux_basis = "cc-pvdz-jkfit"
+[casscf]
+ncas = 4
+nelecas = 4
+nroots = 2                    # quasi_degenerate needs 2 or more
+[nevpt2]
+quasi_degenerate = true       # default false: SC and PC per root only

@@ -114,6 +114,10 @@ a root whose PC was refused (Errors).
 
 ## QD-NEVPT2
 
+[`examples/nevpt2.toml`](../../../examples/nevpt2.toml) runs the per-root
+results alone, and [`examples/qd_nevpt2.toml`](../../../examples/qd_nevpt2.toml)
+adds `quasi_degenerate = true` over a CASSCF of two roots.
+
 With `quasi_degenerate`, after the per-root results, `run` forms the second-
 order effective Hamiltonian of the n roots together, SC's and PC's, over the
 layer's `nevpt2::sc_effective_hamiltonian` and `pc_effective_hamiltonian`

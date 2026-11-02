@@ -498,7 +498,10 @@ the order the tables were written in. Pipeline order comes from each step's
 defaults kept, path resolution against the input directory, the output
 names, the inputs kept apart from the outputs, which steps are filled in and
 which are not, `from`, and each refusal above. Nothing is run.
-`test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end.
+`test/gtest/pipeline_calculation_gpu.cpp` runs a config end to end, through
+the API. `test/examples/` runs `examples/rhf.toml` and `examples/hessian.toml`
+through the `free-breakfast` binary (`examples/README.md`): exit status,
+the files written, and `hessian.json`'s keys.
 
 ## Files
 
