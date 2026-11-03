@@ -73,7 +73,9 @@ using Calculation =
 /// so is a `[nevpt2]` with `quasi_degenerate = true` over one root. So is a
 /// `[nevpt2_nac]` over a `[casscf]` of fewer than two roots or naming a pair
 /// past its roots, and one over a molecule of multiplicity other than 1 is
-/// ErrorKind::Unsupported.
+/// ErrorKind::Unsupported. An `[optimize]` `meci` is refused as
+/// OptimizeStep::check_meci refuses it, and beside a `[nevpt2_gradient]`
+/// is ErrorKind::InvalidConfig.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &input_dir,
                                                const std::filesystem::path &output_dir);

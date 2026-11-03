@@ -926,6 +926,94 @@ TEST(PipelineConfig, AMalformedNevpt2OptimizeChainIsRefused) {
   }
 }
 
+// With meci, [optimize]'s chain ends in [casscf] alone, copied in, the pair
+// and max_gap read; a [casscf_gradient] beside it is a later step, not the
+// chain's.
+TEST(PipelineConfig, TheOptimizeStepCopiesAnMeciChain) {
+  constexpr std::string_view kSa = "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 2\n"
+                                   "nelecas = 2\nnroots = 3\nconv_tol_grad = 1e-9\n";
+  auto calc =
+      fb::parse_config(with_inputs(std::format(
+                           "{}[optimize]\nmeci = [1, 0]\nmax_gap = 1e-7\nmax_force = 1e-5\n", kSa)),
+                       "/in", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::OptimizeStep &optimize = *calc->step<fb::OptimizeStep>();
+  ASSERT_TRUE(optimize.meci.has_value());
+  EXPECT_EQ(*optimize.meci, (std::array<std::int32_t, 2>{1, 0}));
+  EXPECT_EQ(optimize.options.max_gap, 1e-7);
+  EXPECT_EQ(optimize.options.max_force, 1e-5);
+  EXPECT_EQ(optimize.casscf.nroots, 3);
+  EXPECT_EQ(optimize.casscf.ncas, 2);
+  EXPECT_EQ(optimize.casscf.conv_tol_grad, 1e-9);
+  EXPECT_FALSE(optimize.casscf_gradient.has_value());
+  EXPECT_FALSE(optimize.nevpt2_gradient.has_value());
+  EXPECT_EQ(calc->from<fb::MoleculeStep>(), kOut / "final.xyz");
+  EXPECT_TRUE(calc->step<fb::CasscfStep>().has_value());
+
+  // Equal weights on the pair, whatever the third root's.
+  auto weighted = fb::parse_config(
+      with_inputs(std::format("{}weights = [0.4, 0.4, 0.2]\n[optimize]\nmeci = [0, 1]\n", kSa)), "",
+      kOut);
+  ASSERT_TRUE(weighted.has_value()) << weighted.error().message;
+  EXPECT_EQ(weighted->step<fb::OptimizeStep>()->options.max_gap, fb::geometry::Options{}.max_gap);
+
+  // A [casscf_gradient] beside it runs at the MECI, outside the chain.
+  auto later = fb::parse_config(
+      with_inputs(std::format("{}[casscf_gradient]\nroot = 1\n[optimize]\nmeci = [0, 1]\n", kSa)),
+      "", kOut);
+  ASSERT_TRUE(later.has_value()) << later.error().message;
+  EXPECT_FALSE(later->step<fb::OptimizeStep>()->casscf_gradient.has_value());
+  EXPECT_EQ(later->step<fb::CasscfGradientStep>()->root, 1);
+}
+
+// Every refusal of meci: the pair itself and max_gap, in the table; then,
+// once [casscf] is copied in, check_meci's, each of its kind.
+TEST(PipelineConfig, AMalformedMeciOptimizeIsRefused) {
+  constexpr std::string_view kSa = "[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 2\n"
+                                   "nelecas = 2\nnroots = 2\n";
+  const auto with_sa = [&](std::string_view optimize) {
+    return with_inputs(std::format("{}[optimize]\n{}", kSa, optimize));
+  };
+  for (const std::string_view pair : {"[0]", "[0, 1, 2]", "[1, 1]", "[-1, 0]"}) {
+    expect_config_error(with_sa(std::format("meci = {}\n", pair)),
+                        "[optimize] meci is not two distinct roots [I, J]");
+  }
+  expect_config_error(with_sa("meci = [0.5, 1]\n"),
+                      "[optimize] meci is not an array of 32-bit integers");
+  expect_config_error(with_sa("max_gap = 1e-7\n"),
+                      "[optimize] max_gap is the MECI search's, and needs meci");
+  expect_config_error(with_sa("meci = [0, 1]\nmax_gap = 0\n"),
+                      "[optimize] max_gap must be positive");
+  // check_meci: one root, and a root past the average.
+  expect_config_error(
+      with_inputs("[eri]\nmode = \"density_fitting\"\n[casscf]\nncas = 2\nnelecas = 2\n"
+                  "[optimize]\nmeci = [0, 1]\n"),
+      "[optimize] meci crosses two roots of a state average, and [casscf] nroots is 1");
+  expect_config_error(with_sa("meci = [0, 2]\n"),
+                      "[optimize] meci = [0, 2] is not two distinct roots of [casscf]'s 2");
+  // Beside a [nevpt2_gradient], whose chain it would replace.
+  expect_config_error(
+      with_inputs(std::format("{}[nevpt2_gradient]\n[optimize]\nmeci = [0, 1]\n", kSa)),
+      "[optimize] meci optimizes the crossing of two CASSCF roots, and [nevpt2_gradient]");
+  // Unequal weights on the pair, and an integral-direct [eri], written or
+  // filled in: Unsupported.
+  const auto expect_unsupported = [](const std::string &toml, std::string_view needle) {
+    const auto calc = fb::parse_config(toml, "", kOut);
+    ASSERT_FALSE(calc.has_value()) << toml;
+    EXPECT_EQ(calc.error().kind, fb::ErrorKind::Unsupported) << calc.error().message;
+    EXPECT_NE(calc.error().message.find(needle), std::string::npos) << calc.error().message;
+  };
+  expect_unsupported(
+      with_inputs(std::format("{}weights = [0.6, 0.4]\n[optimize]\nmeci = [0, 1]\n", kSa)),
+      "[optimize] meci = [0, 1] needs the two roots at equal weights");
+  for (const std::string_view eri : {"", "[eri]\nmode = \"integral_direct\"\n"}) {
+    expect_unsupported(with_inputs(std::format("{}[casscf]\nncas = 2\nnelecas = 2\nnroots = 2\n"
+                                               "[optimize]\nmeci = [0, 1]\n",
+                                               eri)),
+                       "[optimize] meci runs over density fitting only");
+  }
+}
+
 TEST(PipelineConfig, TheMoleculeIsLoadedOnlyAfterAnOptimize) {
   expect_config_error("[molecule]\nfrom = \"final.xyz\"\n",
                       "[molecule] cannot be loaded 'from' a file");

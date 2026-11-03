@@ -534,9 +534,9 @@ template <class S>
   } else if constexpr (std::same_as<S, OptimizeStep>) {
     // The chain it reruns is the other tables', copied in by parse_config,
     // which can see them; a table here holds only the optimizer's own keys.
-    FBF_TRY(check_keys(
-        table, kStep,
-        {"max_force", "rms_force", "max_displacement", "rms_displacement", "max_steps"}));
+    FBF_TRY(check_keys(table, kStep,
+                       {"max_force", "rms_force", "max_displacement", "rms_displacement",
+                        "max_steps", "meci", "max_gap"}));
     geometry::Options &options = step.options;
     FBF_TRY(read_key(table, kStep, "max_force", base_dir, options.max_force));
     FBF_TRY(read_key(table, kStep, "rms_force", base_dir, options.rms_force));
@@ -551,6 +551,23 @@ template <class S>
     }
     if (options.max_steps < 0) {
       return err_config("[{}] max_steps is {}, below 0", kStep, options.max_steps);
+    }
+    // Whether the two are roots of the CASSCF's average, at equal weights,
+    // is OptimizeStep::check_meci's to say, once plan_optimize copied the
+    // [casscf] in; these need no other table.
+    if (table.contains("meci")) {
+      std::vector<int32_t> pair;
+      FBF_TRY(read_key(table, kStep, "meci", base_dir, pair));
+      if (pair.size() != 2 || pair[0] < 0 || pair[1] < 0 || pair[0] == pair[1]) {
+        return err_config("[{}] meci is not two distinct roots [I, J]", kStep);
+      }
+      step.meci = {pair[0], pair[1]};
+    } else if (table.contains("max_gap")) {
+      return err_config("[{}] max_gap is the MECI search's, and needs meci", kStep);
+    }
+    FBF_TRY(read_key(table, kStep, "max_gap", base_dir, options.max_gap));
+    if (!(options.max_gap > 0.0)) {
+      return err_config("[{}] max_gap must be positive", kStep);
     }
     step.trajectory = output_dir / std::format("{}.xyz", kStep);
     step.final_xyz = output_dir / "final.xyz";
@@ -698,7 +715,10 @@ template <class S>
 /// the optimum. With a `[casscf_gradient]`
 /// or a `[nevpt2_gradient]` in @p doc the chain ends in `[casscf]` and it,
 /// both copied in too; two of those and `[gradient]` are refused, since the
-/// optimized energy is one of theirs.
+/// optimized energy is one of theirs. With `meci` the chain ends in
+/// `[casscf]` alone, and OptimizeStep::check_meci's refusals are made here;
+/// a `[nevpt2_gradient]` beside it is refused, while a `[gradient]` or
+/// `[casscf_gradient]` is only a later step, run at the MECI.
 [[nodiscard]] Status plan_optimize(std::vector<Calculation::Step> &steps, const toml::table &doc,
                                    const std::filesystem::path &input_dir,
                                    const std::filesystem::path &output_dir) {
@@ -717,6 +737,15 @@ template <class S>
   FBF_TRY(chain(step.orthogonalizer));
   FBF_TRY(chain(step.guess));
   FBF_TRY(chain(step.scf));
+  if (step.meci) {
+    if (doc.contains(Nevpt2GradientStep::kName)) {
+      return err_config("[{}] meci optimizes the crossing of two CASSCF roots, and [{}] is "
+                        "rerun only to optimize its own energy: keep one of them",
+                        OptimizeStep::kName, Nevpt2GradientStep::kName);
+    }
+    FBF_TRY(chain(step.casscf));
+    FBF_TRY(step.check_meci());
+  }
   // One energy is optimized: the first two of the gradients the config
   // names are the clash reported.
   std::vector<std::string_view> named;
@@ -731,10 +760,11 @@ template <class S>
                       "keep the one to optimize",
                       OptimizeStep::kName, named[0], named[1]);
   }
-  if (doc.contains(CasscfGradientStep::kName)) {
+  // Under meci the chain is complete: a gradient table is a later step's.
+  if (!step.meci && doc.contains(CasscfGradientStep::kName)) {
     FBF_TRY(chain(step.casscf));
     FBF_TRY(chain(step.casscf_gradient.emplace()));
-  } else if (doc.contains(Nevpt2GradientStep::kName)) {
+  } else if (!step.meci && doc.contains(Nevpt2GradientStep::kName)) {
     FBF_TRY(chain(step.casscf));
     FBF_TRY(chain(step.nevpt2_gradient.emplace()));
   }

@@ -3,8 +3,9 @@
 /// evaluation, the RHF chain or a CASSCF chain (to its gradient or its
 /// NEVPT2's, a state-averaged root followed by match_roots and a QD state by
 /// qd_state_overlap) with its orbitals
-/// carried from one evaluation to the next, and the trajectory, final.xyz
-/// and history it writes.
+/// carried from one evaluation to the next, or geometry::optimize_meci over
+/// that CASSCF chain's df_intersection (a pair followed by pair_overlap), and
+/// the trajectory, final.xyz and history it writes.
 
 module free_breakfast.pipeline.optimize;
 
@@ -19,7 +20,8 @@ import free_breakfast.atom; // element_symbol
 import free_breakfast.io.base;
 import free_breakfast.io.json;
 import free_breakfast.io.xyz;
-import free_breakfast.mcscf.overlap; // state_overlaps
+import free_breakfast.mcscf.intersection; // df_intersection
+import free_breakfast.mcscf.overlap;      // state_overlaps
 import free_breakfast.pipeline.pipeline;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.orthogonalize;
@@ -163,6 +165,70 @@ Result<std::vector<RootMatch>> match_roots(std::span<const double> root_overlaps
   return match;
 }
 
+Result<double> pair_overlap(std::span<const double> root_overlaps, int32_t i, int32_t j) {
+  const std::vector<double> s = FBF_TRY(normalized_overlaps(root_overlaps));
+  const auto n = static_cast<int32_t>(std::lround(std::sqrt(static_cast<double>(s.size()))));
+  if (i < 0 || j < 0 || i >= n || j >= n || i == j) {
+    return err_config("pair_overlap: roots {} and {} are not two distinct roots of {}", i, j, n);
+  }
+  const auto at = [&](int32_t r, int32_t c) {
+    return s[(static_cast<size_t>(r) * static_cast<size_t>(n)) + static_cast<size_t>(c)];
+  };
+  const double a = at(i, i);
+  const double b = at(i, j);
+  const double c = at(j, i);
+  const double d = at(j, j);
+  // A 2 x 2's singular values in closed form, (p + q) / 2 and |p - q| / 2:
+  // the square root of the invariants' discriminant would turn a rounding
+  // error of 1e-16 into 1e-8 where the two are equal, as at a clean swap.
+  const double p = std::hypot(a + d, b - c);
+  const double q = std::hypot(a - d, b + c);
+  const double smaller = 0.5 * std::abs(p - q);
+  if (smaller < kStateOverlapFloor) {
+    return err_numerical("pair_overlap: the last geometry's CASSCF roots {} and {} keep {:.6f} of "
+                         "their space in this one's, below {}: the pair is lost to another root, "
+                         "and is not followed onto it",
+                         i, j, smaller, kStateOverlapFloor);
+  }
+  return smaller;
+}
+
+Status OptimizeStep::check_meci() const {
+  if (!meci) {
+    return {};
+  }
+  const auto [i, j] = *meci;
+  if (casscf_gradient || nevpt2_gradient) {
+    return err_config("[{}] meci optimizes the crossing of two roots, and [{}] the energy of one: "
+                      "keep one of them",
+                      kName,
+                      casscf_gradient ? CasscfGradientStep::kName : Nevpt2GradientStep::kName);
+  }
+  if (casscf.nroots < 2) {
+    return err_config("[{}] meci crosses two roots of a state average, and [{}] nroots is {}: set "
+                      "[{}] nroots to 2 or more",
+                      kName, CasscfStep::kName, casscf.nroots, CasscfStep::kName);
+  }
+  if (i < 0 || j < 0 || i == j || std::max(i, j) >= casscf.nroots) {
+    return err_config("[{}] meci = [{}, {}] is not two distinct roots of [{}]'s {}", kName, i, j,
+                      CasscfStep::kName, casscf.nroots);
+  }
+  if (!casscf.weights.empty() &&
+      casscf.weights[static_cast<size_t>(i)] != casscf.weights[static_cast<size_t>(j)]) {
+    return err_unsupported("[{}] meci = [{}, {}] needs the two roots at equal weights, and [{}] "
+                           "weights them {} and {}: the rotation between two roots of unequal "
+                           "weight divides by their gap, singular at the crossing",
+                           kName, i, j, CasscfStep::kName, casscf.weights[static_cast<size_t>(i)],
+                           casscf.weights[static_cast<size_t>(j)]);
+  }
+  if (eri.mode != EriMode::DensityFitting) {
+    return err_unsupported("[{}] meci runs over density fitting only, and [{}] mode is "
+                           "'integral_direct': set [{}] mode = 'density_fitting'",
+                           kName, EriStep::kName, EriStep::kName);
+  }
+  return {};
+}
+
 Result<double> qd_state_overlap(std::span<const double> root_overlaps,
                                 std::span<const double> previous, std::span<const double> current) {
   const size_t n = previous.size();
@@ -187,12 +253,24 @@ Result<double> qd_state_overlap(std::span<const double> root_overlaps,
   return overlap;
 }
 
-// The CASSCF in @p cas over @p basis as the mcscf::Solution
-// mcscf::state_overlaps reads, its orbitals and CI vectors on the device and
-// its energies; it reads nothing else, so nothing else is filled in.
-[[nodiscard]] Result<mcscf::Solution> overlap_solution(DeviceResources &res, const BasisSet &basis,
-                                                       const CasscfOutput &cas) {
+// The CASSCF in @p cas over @p basis as the mcscf::Solution that
+// mcscf::state_overlaps and mcscf::df_intersection read, as
+// CasscfGradientStep rebuilds it: the orbitals and CI vectors on the device,
+// the energies, and the weighted gamma beside the per-root RDMs.
+[[nodiscard]] Result<mcscf::Solution> casscf_solution(DeviceResources &res, const BasisSet &basis,
+                                                      const CasscfOutput &cas) {
   const ScopedDeviceIndex on{res.dev_idx()};
+  const auto n2 = static_cast<size_t>(cas.ncas) * static_cast<size_t>(cas.ncas);
+  if (cas.rdm1.size() != cas.weights.size() * n2) {
+    return err_config("[{}] the CASSCF holds {} 1-RDM elements, not {} roots of {}",
+                      OptimizeStep::kName, cas.rdm1.size(), cas.weights.size(), n2);
+  }
+  std::vector<double> gamma(n2, 0.0);
+  for (size_t r = 0; r < cas.weights.size(); ++r) {
+    for (size_t e = 0; e < n2; ++e) {
+      gamma[e] += cas.weights[r] * cas.rdm1[(r * n2) + e];
+    }
+  }
   mcscf::Solution solution{
       .c = SphericalMatrixAO(res, basis),
       .roots =
@@ -205,10 +283,10 @@ Result<double> qd_state_overlap(std::span<const double> root_overlaps,
           },
       .energy = cas.energy,
       .gradient_norm = cas.gradient_norm,
-      .gamma = {},
-      .gamma2 = {},
-      .root_gammas = {},
-      .iterations = {},
+      .gamma = std::move(gamma),
+      .gamma2 = cas.rdm2,
+      .root_gammas = cas.rdm1,
+      .iterations = cas.iterations,
   };
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
                                          cas.vectors.size() * sizeof(double),
@@ -287,6 +365,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
                       "one to optimize",
                       kName, CasscfGradientStep::kName, Nevpt2GradientStep::kName);
   }
+  FBF_TRY(check_meci());
   // The two CASSCF gradients' own refusal, made before the first SCF and
   // CASSCF.
   if ((casscf_gradient || nevpt2_gradient) && eri.mode != EriMode::DensityFitting) {
@@ -345,7 +424,7 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   const auto overlaps_with_last =
       [&](const BasisSet &basis,
           const CasscfOutput &cas) -> Result<std::pair<mcscf::Solution, std::vector<double>>> {
-    mcscf::Solution solution = FBF_TRY(overlap_solution(res, basis, cas));
+    mcscf::Solution solution = FBF_TRY(casscf_solution(res, basis, cas));
     std::vector<double> s;
     if (followed) {
       s = FBF_TRY(mcscf::state_overlaps(res, followed->basis, followed->solution, basis, solution,
@@ -528,26 +607,109 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
                  std::ranges::max(gradient, {}, [](double v) { return std::abs(v); }));
     return energy;
   };
-  const geometry::Solution solution = FBF_TRY(geometry::optimize(x0, energy_and_gradient, options));
+  // Under meci: one df_intersection of roots I and J at the end of the
+  // CASSCF chain, the pair first checked against the last evaluation's by
+  // pair_overlap. g_I goes out through the chain's gradient span, g_J and
+  // h_IJ through their own, and the two energies through the return; the
+  // chain's own energy is their mean.
+  const auto meci_evaluation = [&](std::span<const double> x, std::span<double> g_i,
+                                   std::span<double> g_j,
+                                   std::span<double> h_ij) -> Result<std::array<double, 2>> {
+    frames.push_back(placed(start.atoms(), x));
+    const TrialGeometryStep trial{frames.back(), start.charge(), start.multiplicity()};
+    const int32_t i = (*meci)[0];
+    const int32_t j = (*meci)[1];
+    std::array<double, 2> pair{};
+    const auto intersection = [&](const auto &chain, std::span<double> gradient) -> Result<double> {
+      const CasscfOutput &cas = *chain.template get<CasscfOutput>();
+      const BasisSet &basis = chain.template get<BasisSetOutput>()->basis;
+      auto [solution, s] = FBF_TRY(overlaps_with_last(basis, cas));
+      double overlap = std::numeric_limits<double>::quiet_NaN();
+      if (followed) {
+        overlap = FBF_TRY(pair_overlap(s, i, j));
+      }
+      const auto *const fit = std::get_if<DensityFitted>(&chain.template get<EriOutput>()->eri);
+      if (fit == nullptr) {
+        return err_unsupported("[{}] meci runs over density fitting only, and the chain's ERIs "
+                               "are integral-direct",
+                               kName);
+      }
+      const mcscf::Intersection out = FBF_TRY(
+          mcscf::df_intersection(res, chain.template get<MoleculeOutput>()->molecule, basis,
+                                 chain.template get<PrimitivePairClassesOutput>()->classes,
+                                 fit->aux, chain.template get<CoreHamiltonianOutput>()->h, fit->b,
+                                 fit->l.data(), solution, cas.ncore, cas.ncas, i, j));
+      std::ranges::copy(out.g_i, gradient.begin());
+      std::ranges::copy(out.g_j, g_j.begin());
+      std::ranges::copy(out.h_ij, h_ij.begin());
+      pair = {cas.energies[static_cast<size_t>(i)], cas.energies[static_cast<size_t>(j)]};
+      FBF_LOG_INFO(
+          "optimize: MECI roots {} and {}, pair overlap {}, Z-vector {} products, "
+          "residual {:.2e}",
+          i, j, std::isnan(overlap) ? std::string("- (the start)") : std::format("{:.8f}", overlap),
+          out.iterations, out.residual);
+      follow_record.push_back({.overlap = overlap, .root = std::nullopt, .heff_gap = std::nullopt});
+      followed = FollowedState{.basis = basis, .solution = std::move(solution)};
+      return 0.5 * (pair[0] + pair[1]);
+    };
+    const double mean = FBF_TRY(casscf_chain(trial, intersection, g_i));
+    FBF_LOG_INFO("optimize: evaluation {:>3} E_{} {:.10f} E_{} {:.10f} mean {:.10f} gap {:.3e}",
+                 frames.size() - 1, i, pair[0], j, pair[1], mean, std::abs(pair[1] - pair[0]));
+    return pair;
+  };
 
-  const std::vector<Atom> optimum = placed(start.atoms(), solution.x);
-  if (!trajectory.empty()) {
-    std::string text;
-    for (size_t i = 0; i < frames.size() && i < solution.iterations.size(); ++i) {
-      const geometry::Iteration &it = solution.iterations[i];
-      text += xyz_frame(frames[i], std::format("evaluation {} E = {:.12f}{}", i, it.energy,
-                                               it.accepted ? "" : " (rejected)"));
+  // What either optimizer leaves for the three files: the optimum and its
+  // energy, one trajectory comment and one history entry per evaluation, and
+  // the history's head.
+  std::vector<double> optimum_x;
+  double optimum_energy = 0.0;
+  std::string final_comment;
+  std::vector<std::string> comments;
+  json iterations = json::array();
+  json head;
+  if (meci) {
+    const geometry::MECISolution solution =
+        FBF_TRY(geometry::optimize_meci(x0, meci_evaluation, options));
+    optimum_x = solution.x;
+    optimum_energy = 0.5 * (solution.lower + solution.upper);
+    final_comment = std::format("MECI E = {:.12f} gap = {:.3e}", optimum_energy,
+                                solution.upper - solution.lower);
+    head = {{"energy", optimum_energy},
+            {"lower", solution.lower},
+            {"upper", solution.upper},
+            {"gap", solution.upper - solution.lower}};
+    for (size_t k = 0; k < solution.iterations.size(); ++k) {
+      const geometry::MECISolution::Iteration &it = solution.iterations[k];
+      const double mean = 0.5 * (it.lower + it.upper);
+      comments.push_back(std::format("evaluation {} E = {:.12f} gap = {:.3e}", k, mean, it.gap));
+      json entry = {
+          {"energy", mean},
+          {"lower", it.lower},
+          {"upper", it.upper},
+          {"gap", it.gap},
+          {"max_force", it.max_force},
+          {"rms_force", it.rms_force},
+          {"max_displacement", it.max_displacement},
+          {"rms_displacement", it.rms_displacement},
+          {"trust_radius", it.trust_radius},
+          {"branching_dimension", it.branching_dimension},
+      };
+      // The pair's overlap with the last evaluation's, null at the first.
+      const bool has_overlap = k < follow_record.size() && !std::isnan(follow_record[k].overlap);
+      entry["pair_overlap"] = has_overlap ? json(follow_record[k].overlap) : json(nullptr);
+      iterations.push_back(std::move(entry));
     }
-    FBF_TRY(write_file(trajectory, text));
-  }
-  if (!final_xyz.empty()) {
-    FBF_TRY(write_file(final_xyz,
-                       xyz_frame(optimum, std::format("optimized E = {:.12f}", solution.energy))));
-  }
-  if (!history.empty()) {
-    json iterations = json::array();
-    for (size_t i = 0; i < solution.iterations.size(); ++i) {
-      const geometry::Iteration &it = solution.iterations[i];
+  } else {
+    const geometry::Solution solution =
+        FBF_TRY(geometry::optimize(x0, energy_and_gradient, options));
+    optimum_x = solution.x;
+    optimum_energy = solution.energy;
+    final_comment = std::format("optimized E = {:.12f}", solution.energy);
+    head = {{"energy", solution.energy}};
+    for (size_t k = 0; k < solution.iterations.size(); ++k) {
+      const geometry::Iteration &it = solution.iterations[k];
+      comments.push_back(std::format("evaluation {} E = {:.12f}{}", k, it.energy,
+                                     it.accepted ? "" : " (rejected)"));
       json entry = {
           {"energy", it.energy},
           {"max_force", it.max_force},
@@ -559,8 +721,8 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       };
       // Over a followed state: its matched overlap, null at the first
       // evaluation, and the root followed or H_eff's smallest gap.
-      if (i < follow_record.size()) {
-        const FollowRecord &f = follow_record[i];
+      if (k < follow_record.size()) {
+        const FollowRecord &f = follow_record[k];
         entry["state_overlap"] = std::isnan(f.overlap) ? json(nullptr) : json(f.overlap);
         if (f.root) {
           entry["root"] = *f.root;
@@ -571,10 +733,25 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
       }
       iterations.push_back(std::move(entry));
     }
-    FBF_TRY(write_json(history, json{{"energy", solution.energy}, {"iterations", iterations}}));
+  }
+
+  const std::vector<Atom> optimum = placed(start.atoms(), optimum_x);
+  if (!trajectory.empty()) {
+    std::string text;
+    for (size_t k = 0; k < frames.size() && k < comments.size(); ++k) {
+      text += xyz_frame(frames[k], comments[k]);
+    }
+    FBF_TRY(write_file(trajectory, text));
+  }
+  if (!final_xyz.empty()) {
+    FBF_TRY(write_file(final_xyz, xyz_frame(optimum, final_comment)));
+  }
+  if (!history.empty()) {
+    head["iterations"] = std::move(iterations);
+    FBF_TRY(write_json(history, head));
   }
   return OptimizeOutput{.molecule = Molecule(res, optimum, start.charge(), start.multiplicity()),
-                        .energy = solution.energy};
+                        .energy = optimum_energy};
 }
 
 } // namespace free_breakfast

@@ -8,7 +8,8 @@
 # it writes (io::base, io::json) and reads (io::xyz), atom (element_symbol),
 # the carried orbitals' orthonormalization (recipes::blas,
 # recipes::orthogonalize, core::wwr), a QD state's root matching
-# (mcscf::overlap), core::constants, core::log and
+# (mcscf::overlap), the MECI's g_I, g_J and h_IJ (mcscf::intersection),
+# core::constants, core::log and
 # diagnostics_macros (FBF_TRY, FBF_LOG_INFO) are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -36,6 +37,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::io::base
   free_breakfast::io::json
   free_breakfast::io::xyz
+  free_breakfast::mcscf::intersection
   free_breakfast::mcscf::overlap
   free_breakfast::pipeline::pipeline
   free_breakfast::recipes::blas

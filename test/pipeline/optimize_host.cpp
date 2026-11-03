@@ -6,8 +6,10 @@
 // kStateOverlapFloor; and qd_state_overlap, which carries u_K across in that
 // matched basis, follows the QD state through a root swap and a sign flip,
 // and refuses when its overlap drops below the floor (the state lost at a
-// crossing) or the roots do not match one to one. Nothing is run, so
-// nothing touches a device.
+// crossing) or the roots do not match one to one; and pair_overlap, which
+// keeps an MECI pair through a swap of I and J (and any turn within the
+// pair) and refuses, Numerical, a pair whose 2 x 2 block's smaller singular
+// value falls below the floor. Nothing is run, so nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -194,6 +196,84 @@ TEST(PipelineOptimize, MatchRootsSizesAndRootsOutOfRangeAreInvalidConfig) {
   const auto refused = fb::match_roots(kSameRoots, past);
   ASSERT_FALSE(refused.has_value());
   EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+}
+
+// --- An MECI pair -------------------------------------------------------------
+
+// The pair's roots swap order, each with either phase, under the overlaps'
+// common decay: the 2 x 2 block, row-normalized, is [[0, +-1], [+-1, 0]],
+// both singular values 1, and the pair is kept. So is the pair turned
+// within itself by 45 degrees, where match_roots would find no root to
+// follow: I and J may mix freely, as the MECI re-takes the lower and upper
+// by energy at every geometry.
+TEST(PipelineOptimize, AnMeciPairIsKeptThroughASwapOfItsRoots) {
+  constexpr double kDecay = 0.6;
+  for (const double first : {1.0, -1.0}) {
+    for (const double second : {1.0, -1.0}) {
+      const std::array<double, 4> swapped = {0.0, kDecay * first, kDecay * second, 0.0};
+      const auto overlap = fb::pair_overlap(swapped, 0, 1);
+      ASSERT_TRUE(overlap.has_value()) << overlap.error().message;
+      EXPECT_NEAR(*overlap, 1.0, 1e-15) << first << " " << second;
+      // The pair named in either order.
+      const auto reversed = fb::pair_overlap(swapped, 1, 0);
+      ASSERT_TRUE(reversed.has_value()) << reversed.error().message;
+      EXPECT_NEAR(*reversed, 1.0, 1e-15);
+    }
+  }
+  // Three roots, the pair (0, 2) swapped and root 1 kept.
+  const std::array<double, 9> three = {0.0, 0.0, -1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0};
+  const auto pair = fb::pair_overlap(three, 0, 2);
+  ASSERT_TRUE(pair.has_value()) << pair.error().message;
+  EXPECT_NEAR(*pair, 1.0, 1e-15);
+  const double c = std::cos(std::numbers::pi / 4.0);
+  const std::array<double, 4> mixed = {c, c, -c, c};
+  ASSERT_FALSE(fb::match_roots(mixed).has_value());
+  const auto within = fb::pair_overlap(mixed, 0, 1);
+  ASSERT_TRUE(within.has_value()) << within.error().message;
+  EXPECT_NEAR(*within, 1.0, 1e-15);
+}
+
+// Three roots, root 1 of the pair (0, 1) turning into root 2, which is
+// outside it: the block is [[1, 0], [0, cos a]], its smaller singular value
+// cos a. At 20 degrees (0.940) the pair is kept, at that value; at 30
+// (0.866, below the floor) it is Numerical, naming the roots and the value.
+TEST(PipelineOptimize, AnMeciPairBelowTheOverlapFloorIsRefusedAsNumerical) {
+  const auto turned_out = [](double degrees) {
+    const double a = degrees * std::numbers::pi / 180.0;
+    return std::array<double, 9>{1.0,         0.0, 0.0,          0.0,        std::cos(a),
+                                 std::sin(a), 0.0, -std::sin(a), std::cos(a)};
+  };
+  const auto kept = fb::pair_overlap(turned_out(20.0), 0, 1);
+  ASSERT_TRUE(kept.has_value()) << kept.error().message;
+  EXPECT_NEAR(*kept, std::cos(20.0 * std::numbers::pi / 180.0), 1e-15);
+  EXPECT_GE(*kept, fb::kStateOverlapFloor);
+
+  const auto lost = fb::pair_overlap(turned_out(30.0), 0, 1);
+  ASSERT_FALSE(lost.has_value());
+  EXPECT_EQ(lost.error().kind, fb::ErrorKind::Numerical) << lost.error().message;
+  EXPECT_NE(lost.error().message.find("pair_overlap: the last geometry's CASSCF roots 0 and 1 "
+                                      "keep 0.866025 of their space in this one's, below 0.9"),
+            std::string::npos)
+      << lost.error().message;
+  // The pair (0, 2) is not the one turned out of: root 1 is outside it, and
+  // root 2's row keeps cos 30 inside the block, so it is refused the same.
+  const auto other = fb::pair_overlap(turned_out(30.0), 0, 2);
+  ASSERT_FALSE(other.has_value());
+  EXPECT_EQ(other.error().kind, fb::ErrorKind::Numerical);
+}
+
+// Sizes that are no n x n, and roots that are not two distinct ones of the
+// n, are InvalidConfig.
+TEST(PipelineOptimize, PairOverlapSizesAndRootsOutOfRangeAreInvalidConfig) {
+  const std::array<double, 3> three = {1.0, 0.0, 0.0};
+  for (const auto &[overlaps, i, j] : {std::tuple{std::span<const double>(three), 0, 1},
+                                       std::tuple{std::span<const double>(kSameRoots), 0, 0},
+                                       std::tuple{std::span<const double>(kSameRoots), 0, 2},
+                                       std::tuple{std::span<const double>(kSameRoots), -1, 1}}) {
+    const auto refused = fb::pair_overlap(overlaps, i, j);
+    ASSERT_FALSE(refused.has_value()) << i << " " << j;
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+  }
 }
 
 } // namespace
