@@ -23,7 +23,11 @@
 // stationary point that a fresh [nevpt2_gradient] confirms, and skew
 // formaldehyde's state 2 over its DF-SA3-CASSCF(4,3)
 // (data/qd_nevpt2_gradient/h2co_skew_ccpvdz_sa3.json), where the followed
-// state's overlap falls below 1 along the path.
+// state's overlap falls below 1 along the path. Last the MECI: ethylene's
+// S0/S1 crossing over its DF-SA2-CASSCF(2,2) from the twisted,
+// pyramidalized start of data/casscf_meci/, a fresh single point at the
+// result holding it to the thresholds, and the geometry and mean energy held
+// to the fixture's within bars derived from it.
 
 #include <gtest/gtest.h>
 
@@ -35,6 +39,7 @@ import free_breakfast.core;
 import free_breakfast.core.resources;
 import free_breakfast.io.base;
 import free_breakfast.io.json;
+import free_breakfast.mcscf;
 import free_breakfast.pipeline.step;
 import free_breakfast.pipeline.config;
 import free_breakfast.core.nontransferrable;
@@ -947,6 +952,373 @@ TEST(PipelineOptimize, SkewFormaldehydeQdStateTwoIsFollowedThroughTurningOverlap
   constexpr std::size_t kSkewMaxSteps = 30;
   const QdPath path = optimize_qd_state("h2co_skew_ccpvdz_sa3", 2, kStretchedScf, kSkewMaxSteps);
   EXPECT_LT(path.worst_overlap, kTurnedOverlap);
+}
+
+// --- The MECI ----------------------------------------------------------------
+
+// data/casscf_meci/casscf_meci.json: the S0/S1 MECI of ethylene's
+// DF-SA2-CASSCF(2,2), cc-pVDZ / cc-pVDZ-JKFIT, its start, and the
+// quantities #774's bars are derived from (that directory's README.md).
+const fb::json &meci_reference() {
+  static const fb::json kDoc = [] {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_meci" /
+                              "casscf_meci.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  return kDoc;
+}
+
+// The issue's gap threshold (hartree); the four others are kOptimize's,
+// Opt=Tight's.
+constexpr double kMeciGap = 1e-7;
+
+// An n_atom x 3 array of rows, flat.
+std::vector<double> flat_rows(const fb::json &rows) {
+  std::vector<double> out;
+  for (const auto &row : rows.get<std::vector<std::vector<double>>>()) {
+    out.insert(out.end(), row.begin(), row.end());
+  }
+  return out;
+}
+
+// The two roots' energies, gradients and coupling at one geometry.
+struct PairPoint {
+  std::array<double, 2> energies{};
+  std::vector<double> g0;
+  std::vector<double> g1;
+  std::vector<double> h;
+};
+
+// One mcscf::df_intersection of roots 0 and 1 over @p calc's own products,
+// after it ran: its [casscf], from its own RHF orbitals and active-space
+// pick, never an optimization's carried ones. The Solution is built as
+// pipeline/casscf_gradient builds it.
+PairPoint fresh_intersection(const fb::Calculation &calc, fb::DeviceResources &res) {
+  PairPoint point;
+  const auto &cas = *calc.get<fb::CasscfOutput>();
+  const fb::BasisSet &basis = calc.get<fb::BasisSetOutput>()->basis;
+  const auto n2 = static_cast<std::size_t>(cas.ncas) * static_cast<std::size_t>(cas.ncas);
+  std::vector<double> gamma(n2, 0.0);
+  for (std::size_t r = 0; r < cas.weights.size(); ++r) {
+    for (std::size_t e = 0; e < n2; ++e) {
+      gamma[e] += cas.weights[r] * cas.rdm1[(r * n2) + e];
+    }
+  }
+  fb::mcscf::Solution solution{
+      .c = fb::SphericalMatrixAO(res, basis),
+      .roots = {.energies = cas.energies,
+                .spin_squares = cas.spin_squares,
+                .vectors = fb::Buffers::device<double>(cas.vectors.size(), res.device()),
+                .davidson = {},
+                .fp32_iterations = 0},
+      .energy = cas.energy,
+      .gradient_norm = cas.gradient_norm,
+      .gamma = std::move(gamma),
+      .gamma2 = cas.rdm2,
+      .root_gammas = cas.rdm1,
+      .iterations = cas.iterations};
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
+                                cas.vectors.size() * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
+                                cas.c.num_elements() * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  const auto *const fit = std::get_if<fb::DensityFitted>(&calc.get<fb::EriOutput>()->eri);
+  if (fit == nullptr) {
+    ADD_FAILURE() << "the ERIs are not density-fitted";
+    return point;
+  }
+  auto out = fb::mcscf::df_intersection(res, calc.get<fb::MoleculeOutput>()->molecule, basis,
+                                        calc.get<fb::PrimitivePairClassesOutput>()->classes,
+                                        fit->aux, calc.get<fb::CoreHamiltonianOutput>()->h, fit->b,
+                                        fit->l.data(), solution, cas.ncore, cas.ncas, 0, 1);
+  if (!out.has_value()) {
+    ADD_FAILURE() << out.error().message;
+    return point;
+  }
+  point.energies = {cas.energies.at(0), cas.energies.at(1)};
+  point.g0 = std::move(out->g_i);
+  point.g1 = std::move(out->g_j);
+  point.h = std::move(out->h_ij);
+  return point;
+}
+
+// The largest |component| of P (g0 + g1) / 2 at @p atoms (bohr), P the
+// projector off the three translations and three rotations about the
+// centroid and then the branching plane {x = g1 - g0, y = h}, each
+// orthonormalized in that order after them: #771's projector, written here
+// apart from it, the fixture's definition of the projected force.
+double max_projected_force(const Points &atoms, const PairPoint &point) {
+  const std::size_t n = 3 * atoms.size();
+  std::array<double, 3> centroid{};
+  for (const auto &r : atoms) {
+    for (std::size_t k = 0; k < 3; ++k) {
+      centroid[k] += r[k] / static_cast<double>(atoms.size());
+    }
+  }
+  std::vector<std::vector<double>> directions;
+  for (std::size_t k = 0; k < 3; ++k) {
+    std::vector<double> t(n, 0.0);
+    for (std::size_t a = 0; a < atoms.size(); ++a) {
+      t[(3 * a) + k] = 1.0;
+    }
+    directions.push_back(std::move(t));
+  }
+  for (std::size_t k = 0; k < 3; ++k) {
+    // e_k x (r - centroid).
+    std::vector<double> rot(n, 0.0);
+    for (std::size_t a = 0; a < atoms.size(); ++a) {
+      std::array<double, 3> d{};
+      for (std::size_t m = 0; m < 3; ++m) {
+        d[m] = atoms[a][m] - centroid[m];
+      }
+      const std::size_t k1 = (k + 1) % 3;
+      const std::size_t k2 = (k + 2) % 3;
+      rot[(3 * a) + k2] = d[k1];
+      rot[(3 * a) + k1] = -d[k2];
+    }
+    directions.push_back(std::move(rot));
+  }
+  std::vector<double> x(n);
+  for (std::size_t c = 0; c < n; ++c) {
+    x[c] = point.g1[c] - point.g0[c];
+  }
+  directions.push_back(std::move(x));
+  directions.push_back(point.h);
+  std::vector<std::vector<double>> basis;
+  for (std::vector<double> v : directions) {
+    const double before = std::sqrt(std::ranges::fold_left(
+        v, 0.0, [](double acc, double value) { return acc + (value * value); }));
+    for (int32_t pass = 0; pass < 2; ++pass) {
+      for (const auto &u : basis) {
+        double dot = 0.0;
+        for (std::size_t c = 0; c < n; ++c) {
+          dot += u[c] * v[c];
+        }
+        for (std::size_t c = 0; c < n; ++c) {
+          v[c] -= dot * u[c];
+        }
+      }
+    }
+    const double norm = std::sqrt(std::ranges::fold_left(
+        v, 0.0, [](double acc, double value) { return acc + (value * value); }));
+    if (norm > 1e-8 * before) {
+      for (double &value : v) {
+        value /= norm;
+      }
+      basis.push_back(std::move(v));
+    }
+  }
+  std::vector<double> g(n);
+  for (std::size_t c = 0; c < n; ++c) {
+    g[c] = 0.5 * (point.g0[c] + point.g1[c]);
+  }
+  for (const auto &u : basis) {
+    double dot = 0.0;
+    for (std::size_t c = 0; c < n; ++c) {
+      dot += u[c] * g[c];
+    }
+    for (std::size_t c = 0; c < n; ++c) {
+      g[c] -= dot * u[c];
+    }
+  }
+  double largest = 0.0;
+  for (const double value : g) {
+    largest = std::max(largest, std::abs(value));
+  }
+  return largest;
+}
+
+// The gap's smaller slope in the branching plane (hartree / bohr): twice the
+// smaller singular value of the 2 x 3N matrix [x / 2; h], x = g1 - g0 and h
+// the coupling, from the 2 x 2 Gram matrix. The fixture's invariant (its
+// README's 0.1413), where x_norm and h_norm alone are not reproducible.
+double smaller_gap_slope(std::span<const double> g0, std::span<const double> g1,
+                         std::span<const double> h) {
+  double a = 0.0;
+  double b = 0.0;
+  double c = 0.0;
+  for (std::size_t k = 0; k < g0.size(); ++k) {
+    const double half_x = 0.5 * (g1[k] - g0[k]);
+    a += half_x * half_x;
+    b += half_x * h[k];
+    c += h[k] * h[k];
+  }
+  const double smaller = (0.5 * (a + c)) - std::hypot(0.5 * (a - c), b);
+  return 2.0 * std::sqrt(std::max(0.0, smaller));
+}
+
+// The fixture's atoms as an XYZ (Angstrom) at @p path.
+void write_xyz(const std::filesystem::path &path, const fb::json &atoms) {
+  std::string xyz = std::format("{}\nstart\n", atoms.size());
+  for (const fb::json &atom : atoms) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  EXPECT_TRUE(fb::write_file(path, xyz).has_value());
+}
+
+// Ethylene's S0/S1 MECI, roots 0 and 1 of its DF-SA2-CASSCF(2,2), cc-pVDZ /
+// cc-pVDZ-JKFIT, from the fixture's start (the second CH2 twisted 80 degrees
+// and pyramidalized, no symmetry: from the Cs start the search reaches a
+// saddle on the seam), at Opt=Tight's four thresholds and a gap of 1e-7. The
+// claims, each run once against a bar derived from the fixture, with F this
+// test's max_force plus the reference's 1e-6 and Delta this test's gap plus
+// the reference's 1e-8, and s_min the gap's smaller slope in the branching
+// plane (smaller_gap_slope of the fixture's MECI vectors, 0.1413), not
+// min(x_norm, 2 h_norm), which is not reproducible and never smaller:
+// - it is an MECI: a fresh single point at final.xyz (the outer [casscf],
+//   from a fresh RHF and pick, then one df_intersection) has a gap within
+//   kMeciGap and a largest projected force within max_force;
+// - it is the reference's MECI: the geometry, after alignment (a reflection
+//   allowed), within delta = F / k_min + Delta / s_min, and the mean energy
+//   within gbar_plane Delta / s_min + F^2 / k_min of the fixture's;
+// - every optimize.json pair overlap after the first at or above the floor.
+// Logged, not gating: the first evaluation's energies, and a fresh single
+// point's g_0, g_1 and h_01 at the start (h up to its sign) against the
+// fixture's, and the step count. 42 steps in about 15 s on the 3080: past
+// ten seconds, but the family's cheapest, so in the fast tier.
+TEST(PipelineOptimize, EthyleneMeciReachesTheReferenceMeci) {
+  FBF_REQUIRE_GPU();
+  const fb::json &reference = meci_reference();
+  const fb::json &meci = reference.at("meci");
+  const double f_bar = kMaxForce + reference.at("optimizer").at("force_tolerance").get<double>();
+  const double gap_bar = kMeciGap + reference.at("optimizer").at("gap_tolerance").get<double>();
+  const double k_min = meci.at("k_min").get<double>();
+  const double gbar_plane = meci.at("gbar_plane").get<double>();
+  const std::vector<double> ref_g0 = flat_rows(meci.at("gradients").at(0));
+  const std::vector<double> ref_g1 = flat_rows(meci.at("gradients").at(1));
+  const std::vector<double> ref_h = flat_rows(meci.at("h"));
+  const double s_min = smaller_gap_slope(ref_g0, ref_g1, ref_h);
+  // The derivation against the README's recorded value, not a claim.
+  ASSERT_NEAR(s_min, 0.1413, 5e-5);
+  const double delta = (f_bar / k_min) + (gap_bar / s_min);
+  // The issue's rule: over 1e-3 bohr, the thresholds are tightened, never
+  // the bar.
+  ASSERT_LE(delta, 1e-3) << "tighten max_force or kMeciGap";
+  const double energy_bar = (gbar_plane * gap_bar / s_min) + (f_bar * f_bar / k_min);
+
+  const fb::test::ScratchDir dir("pipeline_optimize_meci");
+  write_xyz(dir / "start.xyz", reference.at("start").at("atoms"));
+  const std::string chain = std::format(
+      "[basis_set]\nbasis = \"{}\"\n[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+      "[scf]\nmax_iterations = 400\n"
+      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\n{}",
+      reference.at("basis").get<std::string>(),
+      reference.at("aux_basis").at("name").get<std::string>(),
+      reference.at("ncas").get<std::int32_t>(), reference.at("nelecas").get<std::int32_t>(),
+      reference.at("weights").size(), kCasscf);
+  fb::NodeResources node;
+
+  // The start's diagnostics: a single point of its own.
+  ASSERT_TRUE(
+      fb::write_file(dir / "start.toml", std::format("[molecule]\nxyz = \"start.xyz\"\n{}", chain))
+          .has_value());
+  auto start_calc = fb::read_config(dir / "start.toml", dir.path(), dir / "start");
+  ASSERT_TRUE(start_calc.has_value()) << start_calc.error().message;
+  const fb::Status start_ran = start_calc->run(node);
+  ASSERT_TRUE(start_ran.has_value()) << start_ran.error().message;
+  const PairPoint start = fresh_intersection(*start_calc, node.device(0));
+  const fb::json &ref_start = reference.at("start");
+  const auto max_diff = [](std::span<const double> a, std::span<const double> b, double sign) {
+    double m = 0.0;
+    for (std::size_t k = 0; k < std::min(a.size(), b.size()); ++k) {
+      m = std::max(m, std::abs(a[k] - (sign * b[k])));
+    }
+    return m;
+  };
+  const std::vector<double> start_h = flat_rows(ref_start.at("h"));
+  const double start_g0 = max_diff(start.g0, flat_rows(ref_start.at("gradients").at(0)), 1.0);
+  const double start_g1 = max_diff(start.g1, flat_rows(ref_start.at("gradients").at(1)), 1.0);
+  const double start_h_err =
+      std::min(max_diff(start.h, start_h, 1.0), max_diff(start.h, start_h, -1.0));
+
+  // The optimization.
+  ASSERT_TRUE(fb::write_file(dir / "run.toml",
+                             std::format("[molecule]\nxyz = \"start.xyz\"\n{}{}meci = [0, 1]\n"
+                                         "max_gap = {}\n",
+                                         chain, kOptimize, kMeciGap))
+                  .has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->meci.has_value());
+  ASSERT_EQ(calc->step<fb::OptimizeStep>()->options.max_gap, kMeciGap);
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+
+  // It is an MECI: the fresh single point at final.xyz, the outer [casscf].
+  const Points got = points(out->molecule);
+  const PairPoint fresh = fresh_intersection(*calc, node.device(0));
+  ASSERT_EQ(fresh.g0.size(), 3 * got.size());
+  const double fresh_gap = std::abs(fresh.energies[1] - fresh.energies[0]);
+  const double fresh_force = max_projected_force(got, fresh);
+  EXPECT_LE(fresh_gap, kMeciGap);
+  EXPECT_LE(fresh_force, kMaxForce);
+
+  // It is the reference's MECI.
+  const Points want = points(meci.at("atoms"));
+  const double direct = aligned_max_deviation(want, got);
+  const double reflected = aligned_max_deviation(want, mirrored(got));
+  const double geometry_error = std::min(direct, reflected);
+  EXPECT_LE(geometry_error, delta);
+  const double energy_error = std::abs(out->energy - meci.at("mean_energy").get<double>());
+  EXPECT_LE(energy_error, energy_bar);
+
+  // The path: the pair kept at every evaluation.
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_GE(iterations.size(), 1U);
+  EXPECT_EQ(history->at("energy").get<double>(), out->energy);
+  EXPECT_TRUE(iterations.front().at("pair_overlap").is_null());
+  double worst_overlap = 1.0;
+  for (std::size_t i = 0; i < iterations.size(); ++i) {
+    const fb::json &it = iterations[i];
+    if (i > 0) {
+      const double overlap = it.at("pair_overlap").get<double>();
+      EXPECT_GE(overlap, fb::kStateOverlapFloor) << i;
+      worst_overlap = std::min(worst_overlap, overlap);
+    }
+    std::cout << std::format(
+        "[ optimize ] MECI evaluation {:>2}: E {:.10f} {:.10f} gap {:.3e}, max force {:.2e}, "
+        "plane {}, pair overlap {}\n",
+        i, it.at("lower").get<double>(), it.at("upper").get<double>(), it.at("gap").get<double>(),
+        it.at("max_force").get<double>(), it.at("branching_dimension").get<std::int32_t>(),
+        i == 0 ? std::string("-") : std::format("{:.10f}", it.at("pair_overlap").get<double>()));
+  }
+  const auto ref_start_energies = ref_start.at("energies").get<std::vector<double>>();
+  std::cout << std::format(
+      "[ optimize ] ethylene SA2-CASSCF(2,2) MECI: {} steps, {:.1f} s\n"
+      "[ optimize ]   fresh single point: gap {:.2e} (bar {:.1e}), max projected force {:.2e} "
+      "(bar {:.1e})\n"
+      "[ optimize ]   geometry {:.2e} bohr ({}; direct {:.2e}, reflected {:.2e}), delta {:.2e} = "
+      "F/k_min {:.2e} + Delta/s_min {:.2e}\n"
+      "[ optimize ]   mean energy {:.2e} Eh, bar {:.2e} = gbar Delta/s_min {:.2e} + F^2/k_min "
+      "{:.2e}\n"
+      "[ optimize ]   F {:.2e}, Delta {:.2e}, k_min {:.6f}, s_min {:.6f}, gbar_plane {:.6f}; "
+      "worst pair overlap {:.10f}\n"
+      "[ optimize ]   start (diagnostic): |dE_0| {:.2e} |dE_1| {:.2e}, max |dg_0| {:.2e} "
+      "max |dg_1| {:.2e} max |dh| {:.2e} (up to sign), max |h| {:.2e}\n",
+      iterations.size() - 1, seconds, fresh_gap, kMeciGap, fresh_force, kMaxForce, geometry_error,
+      direct <= reflected ? "direct" : "reflected", direct, reflected, delta, f_bar / k_min,
+      gap_bar / s_min, energy_error, energy_bar, gbar_plane * gap_bar / s_min,
+      f_bar * f_bar / k_min, f_bar, gap_bar, k_min, s_min, gbar_plane, worst_overlap,
+      std::abs(iterations.front().at("lower").get<double>() - ref_start_energies.at(0)),
+      std::abs(iterations.front().at("upper").get<double>() - ref_start_energies.at(1)), start_g0,
+      start_g1, start_h_err,
+      std::abs(std::ranges::max(start_h, {}, [](double v) { return std::abs(v); })));
 }
 
 } // namespace

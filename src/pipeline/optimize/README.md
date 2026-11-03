@@ -7,8 +7,10 @@ over the energy and gradient of the chain from the molecule to `[gradient]`
 geometry over a state average, below) or to
 `[nevpt2_gradient]` (that CASSCF's SC- or PC-NEVPT2, or one SC- or
 PC-QD-NEVPT2 state of its state average, below), rerun as a nested
-`Pipeline` at every geometry. Every other step in the config then runs at the
-optimum.
+`Pipeline` at every geometry; or, with `meci = [I, J]`, the minimum-energy
+conical intersection of two roots of a DF-SA-CASSCF, `geometry::optimize_meci`
+over one `mcscf::df_intersection` per geometry (below). Every other step in the
+config then runs at the optimum.
 
 ## Module
 
@@ -24,7 +26,8 @@ three chains rerun, each a member. Its product, `OptimizeOutput`, is declared in
 ```cpp
 struct OptimizeOutput {   // in pipeline.molecule
   Molecule molecule;      // the optimized geometry
-  double energy;          // the SCF's energy there, the CASSCF root's, or its NEVPT2's
+  double energy;          // the SCF's energy there, the CASSCF root's, or its NEVPT2's;
+                          // under meci the pair's mean (E_I + E_J) / 2
 };
 
 inline constexpr double kStateOverlapFloor = 0.9;
@@ -38,6 +41,9 @@ Result<std::vector<double>> normalized_overlaps(std::span<const double> root_ove
 // root in `followed` (below)
 Result<std::vector<RootMatch>> match_roots(std::span<const double> root_overlaps,
                                            std::span<const int32_t> followed = {});
+// The smaller singular value of rows and columns {i, j} of the normalized
+// S, or Numerical below the floor (below, "The MECI")
+Result<double> pair_overlap(std::span<const double> root_overlaps, int32_t i, int32_t j);
 // |sum_I u_I s_I u'_pi(I)|, or Numerical below the floor (below)
 Result<double> qd_state_overlap(std::span<const double> root_overlaps,
                                 std::span<const double> previous,
@@ -55,15 +61,17 @@ struct OptimizeStep {
   OrthogonalizerStep orthogonalizer{};
   GuessStep guess{};
   ScfStep scf{};
-  CasscfStep casscf{};                                  // read only under either below
+  CasscfStep casscf{};                                  // read only under one below
   std::optional<CasscfGradientStep> casscf_gradient{};  // set: the CASSCF chain
   std::optional<Nevpt2GradientStep> nevpt2_gradient{};  // set: the NEVPT2 chain
+  std::optional<std::array<int32_t, 2>> meci{};         // set: the MECI of roots I, J
 
   std::filesystem::path trajectory{};  // optimize.xyz
   std::filesystem::path final_xyz{};   // final.xyz
   std::filesystem::path history{};     // optimize.json
 
   Result<OptimizeOutput> run(View<> in, NodeResources &node) const;
+  Status check_meci() const;  // meci's refusals, here and in pipeline/config
 };
 ```
 
@@ -189,6 +197,55 @@ its block from it rather than normalizing again. `match_roots` takes the
 roots to hold to the floor as a list. A state-specific CASSCF has one root
 and nothing to match: its entries carry neither key.
 
+## The MECI
+
+With `meci = [I, J]` the step finds the minimum-energy conical intersection
+(MECI) of roots I and J of the `[casscf]`, a state average, by
+`../../geometry/`'s `geometry::optimize_meci` (Bearpark–Robb–Schlegel
+gradient projection: a Newton step on the gap along x = g_J − g_I, BFGS on
+the mean energy in the intersection space, converged on the gap
+`options.max_gap` beside the four usual criteria). The chain is the CASSCF
+chain's, ending at `[casscf]`, with the orbitals carried and the active space
+picked once, as above. At every geometry one `mcscf::df_intersection` gives
+g_I, g_J and h_IJ together (one CI-relaxed Hessian, one block Z-vector solve);
+`optimize_meci` reads only h_IJ's direction, and re-takes the lower and upper
+of the pair by energy at every evaluation, so I and J may come in either
+order.
+
+**The pair is followed by its space, not by its roots.** At every evaluation
+after the first, the CASSCF's roots are overlapped with the last
+evaluation's (`mcscf::state_overlaps`), each row normalized
+(`normalized_overlaps`, as for a single root), and `pair_overlap` takes the
+2 × 2 block of rows and columns {I, J}: its smaller singular value is how
+much of the last pair's two-root space this geometry's pair keeps. Near a
+crossing the two roots mix and swap freely, which `match_roots` would refuse
+and which is no loss here; the block's singular values fall only when the
+pair's space turns into a third root's. Below `kStateOverlapFloor` the
+evaluation fails, `Numerical`, naming the two roots and the overlap. It is
+written to `optimize.json` as `pair_overlap` (null at the first) and logged.
+
+**Refusals**, by `check_meci`, in `run` before anything runs and in
+pipeline/config once `[casscf]` is copied in: a gradient member set beside
+`meci`, a `[casscf]` of one root, I = J, or a root past `nroots`
+(`InvalidConfig`); unequal weights on I and J (`Unsupported`: the rotation
+between two roots of unequal weight divides by their gap, singular at the
+crossing, `df_intersection`'s own refusal); an integral-direct `[eri]`
+(`Unsupported`). pipeline/config also refuses a `[nevpt2_gradient]` beside
+`meci`; a `[gradient]` or `[casscf_gradient]` beside it is a later step, run
+at the MECI.
+
+**Outputs.** `OptimizeOutput::energy` is the pair's mean at the MECI.
+`optimize.json` has the mean as `energy`, with `lower`, `upper` and `gap`,
+at the head and per evaluation, where each entry also has the four norms,
+the trust radius, `branching_dimension` (2, or 1 where h_IJ had nothing left
+after x) and `pair_overlap`, and no `accepted` (`optimize_meci` rejects no
+step). Each `optimize.xyz` comment holds the mean and the gap, and
+`final.xyz`'s too. `examples/meci.toml` is ethylene's.
+
+The CASCI's roots outside the average are not followed: a third root
+crossing into S1 on the way is caught by `pair_overlap`, not avoided. The
+test's case keeps it 0.30 Eh clear (the fixture's `s2_margin`).
+
 ## The NEVPT2 chain
 
 With `nevpt2_gradient` set instead (pipeline/config sets it when the config
@@ -309,6 +366,8 @@ rms_force = 3.0e-4
 max_displacement = 1.8e-3 # bohr
 rms_displacement = 1.2e-3
 max_steps = 100           # evaluations after the first
+# meci = [0, 1]           # the MECI of these two [casscf] roots instead
+# max_gap = 1e-5          # hartree, the MECI's fifth criterion (meci only)
 ```
 
 The chain is the config's own `[molecule]`, `[basis_set]`, `[eri]`,
@@ -316,7 +375,8 @@ The chain is the config's own `[molecule]`, `[basis_set]`, `[eri]`,
 absent, and with a `[casscf_gradient]` or a `[nevpt2_gradient]` in the
 config, `[casscf]` and it too; one loading `from` a file is refused, since
 the chain is rerun at every geometry, and so are any two of `[gradient]`,
-`[casscf_gradient]` and `[nevpt2_gradient]`.
+`[casscf_gradient]` and `[nevpt2_gradient]`. With `meci`, `[casscf]` is
+copied in and no gradient table; `check_meci`'s refusals are made there.
 `config/README.md` has the rules.
 
 ## Tests
@@ -416,11 +476,43 @@ the chain is rerun at every geometry, and so are any two of `[gradient]`,
   projected curvature, and the energy within (F_test + F_ref)·δ; every entry's `state_overlap` at or above the floor, and its
   `root` 1. The evaluations after the first are held under 25 (18 today),
   a regression guard until a model starting Hessian (#536).
+- `test/pipeline/optimize_host.cpp`, the MECI pair: `pair_overlap` keeps a
+  pair whose roots swap order, with either phase, under a common decay
+  ([[0, ±1], [±1, 0]]), and a pair turned 45° within itself, where
+  `match_roots` refuses; keeps a pair one of whose roots turned 20° into a
+  third root, at cos 20°, and refuses, `Numerical`, one turned 30° (0.866,
+  below the floor); and refuses sizes that are no n × n, I = J and roots
+  past n, `InvalidConfig`. `config_host.cpp`: `meci` and `max_gap` parsed,
+  `[casscf]` copied in and a `[casscf_gradient]` beside it left a later
+  step; and every refusal (`meci` not two distinct roots or not integers,
+  `max_gap` without `meci` or not positive, one root, a root past `nroots`,
+  `[nevpt2_gradient]` beside it, unequal weights, an integral-direct `[eri]`
+  written or filled in).
+- `test/gtest/pipeline_optimize_gpu.cpp`, the MECI: ethylene's S0/S1 over
+  its DF-SA2-CASSCF(2,2), cc-pVDZ / cc-pVDZ-JKFIT, from
+  `test/gtest/data/casscf_meci/`'s start (the second CH₂ twisted 80° and
+  pyramidalized; from the Cs start the search finds a seam saddle), at
+  Opt=Tight's four thresholds and `max_gap` 1e-7. The bars are derived from
+  the fixture, with F the test's `max_force` plus the reference's 1e-6, Δ the
+  test's gap plus the reference's 1e-8, and s_min the gap's smaller slope in
+  the branching plane (twice the smaller singular value of [x/2; h_01] at the
+  fixture's MECI, 0.1413), not min(x_norm, 2·h_norm), which is not
+  reproducible and never smaller. A fresh single point at `final.xyz` (the
+  outer `[casscf]` from a fresh RHF and pick, then one `df_intersection`)
+  has a gap within 1e-7 and a largest projected force (#771's projector,
+  written again in the test) within `max_force`; the geometry, after
+  alignment, is within δ = F/k_min + Δ/s_min (4.7e-4 bohr) of the fixture's
+  MECI, and the mean energy within gbar_plane·Δ/s_min + F²/k_min (5.9e-8 Eh)
+  of its; every `pair_overlap` after the first is at or above the floor.
+  The first evaluation's energies and a fresh start's g_0, g_1 and h_01 (up
+  to sign) against the fixture's, and the step count, are printed, not held.
+  42 steps in about 15 s on the 3080, the family's cheapest, so in the fast
+  tier.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `optimize.cppm` | Module interface: `OptimizeStep` |
-| `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, and the three files |
+| `optimize.cppm` | Module interface: `OptimizeStep`, `kStateOverlapFloor` and the four following functions |
+| `optimize.cpp` | `run`: the chain per evaluation, its private root and carried-orbitals steps, the MECI's `df_intersection` and `pair_overlap`, `check_meci`, and the three files |
 | `CMakeLists.txt` | The module library |

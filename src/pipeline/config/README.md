@@ -353,6 +353,8 @@ rms_force = 3.0e-4
 max_displacement = 1.8e-3 # bohr
 rms_displacement = 1.2e-3
 max_steps = 100           # evaluations after the first
+# meci = [0, 1]           # the MECI of these two [casscf] roots instead
+# max_gap = 1e-5          # hartree, the MECI's fifth criterion (meci only)
 ```
 
 `[optimize]` is a geometry optimization (`optimize/README.md`). Each
@@ -378,6 +380,17 @@ the `OptimizeOutput` it reads), so every other step in the config -- the
 outer `[scf]`, a `[localization]` -- runs at the optimum. That is the only
 way the molecule is ever loaded: `[molecule] from` is refused like a step
 with no `load`.
+
+**With `meci = [I, J]` it finds the minimum-energy conical intersection of
+roots I and J of the `[casscf]`** (`optimize/README.md` "The MECI"): the
+chain ends in `[casscf]`, copied in, and no gradient table is read into it.
+`meci` must be two distinct non-negative roots, and `max_gap` is refused
+without it. Once `[casscf]` is copied in, `OptimizeStep::check_meci` refuses
+a `[casscf]` of one root or a pair past its `nroots` (`InvalidConfig`), and
+unequal `weights` on I and J or an integral-direct `[eri]`, written or
+filled in (`Unsupported`). A `[nevpt2_gradient]` beside `meci` is refused;
+a `[gradient]` or `[casscf_gradient]` beside it is a later step, run at the
+MECI.
 
 ```toml
 [hessian]
@@ -459,7 +472,7 @@ step, so no two collide:
 | `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut; with `quasi_degenerate`, the state, the variant, E_K and H_eff's eigenvalues, the CASSCF energies, ρ, the gradient `total`, the `df_gradient` pass's `terms`, the `transition` pass's total, the diagnostics and the gaps |
 | `[nac]` | `nac.json`: the options, the CASSCF's root energies, and per pair the roots, the gap, h_IJ and d^CSF (unscaled) and `total`, each one row of three per atom, and the Z-vector's products and residual |
 | `[nevpt2_nac]` | `nevpt2_nac.json`: the variant and the options, the CASSCF's root energies, H_eff's eigenvalues and R, and per pair the QD states, E_Q − E_P, h_PQ, d^CAS, d^PT2 and the CSF part (unscaled) and `total`, each one row of three per atom, and the diagnostics |
-| `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
+| `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted (under `meci`: the mean energy, the lower and upper energies and the gap, and per evaluation those, the branching plane's dimension and the pair overlap) |
 | `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
 There is no `molden` key, nor a `livvo_molden`, `npy` or `json_path` one: a config names
@@ -503,7 +516,9 @@ than after the SCF has converged. `parse_config` touches no disk.
   and under `[optimize]` or `[hessian]`, on a table of the chain it reruns;
 - an `[optimize]` threshold that is not positive, or a `max_steps` below 0,
   or an `[optimize]` beside two of `[gradient]`, `[casscf_gradient]` and
-  `[nevpt2_gradient]`;
+  `[nevpt2_gradient]`; a `meci` that is not two distinct roots, a `max_gap`
+  without it, or `meci` beside `[nevpt2_gradient]`, over a `[casscf]` of one
+  root, or naming a root past its `nroots`;
 - a `[hessian]` `displacement` that is not finite and positive, or one
   beside the analytic method; or a `[hessian]` beside both `[gradient]` and
   `[casscf_gradient]`;

@@ -39,7 +39,9 @@ struct OptimizeOutput {
   /// @brief The optimized geometry, on the device the step ran on.
   Molecule molecule;
   /// @brief The energy there (hartree): the SCF's at the last accepted
-  /// evaluation, or under a CASSCF chain its CASSCF root's.
+  /// evaluation, under a CASSCF chain its CASSCF root's, under a NEVPT2
+  /// chain its NEVPT2 (or QD state's) energy, and under `meci` the mean
+  /// (E_I + E_J) / 2 of the two crossing roots.
   double energy;
 };
 
