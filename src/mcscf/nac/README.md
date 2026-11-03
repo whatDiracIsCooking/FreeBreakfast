@@ -132,6 +132,18 @@ output is not bitwise reproducible from one call to the next even so
 ("Reproducibility" below): the old and new code on one solution differ by up
 to 2.7e-14, within the run-to-run spread, with the same Z-vector products.
 
+### The Z-vector's tolerance
+
+`zvector` stops at ||H̃ z_o + g|| ≤ its tolerance, an absolute one, and the
+pair divides h_IJ by E_J − E_I after the solve, so a solve to 1e-10 leaves
+d_IJ an error up to 1e-10 / |E_J − E_I| in the solve's units. The pair's
+solve is therefore held to 1e-10 × |E_J − E_I|, the gap taken in
+[1e-2, 1] hartree (1e-12 at the floor, still reachable in doubles), and the
+combination's, whose right-hand side is already over its gaps, to 1e-10.
+Both then carry d to the same precision: at the skewed SA-3's (0, 1), a gap
+of 0.108 hartree, a pair solved to a flat 1e-10 differed from the
+combination by 1.8e-10 of max |d|, the pair's own solve error.
+
 ## The CSF term
 
 The orbitals move with the nuclei, and with them the determinants, so
@@ -153,6 +165,74 @@ tm1 = C_a (γᵀ − γ) C_aᵀ. The AO matrix is one `gemmwich`. The half
 derivative takes only the bra function's centre, so d^CSF (and with it
 d_IJ) is **not** translation-invariant; electron-translation factors
 (`use_etfs`) drop it.
+
+## A combination of couplings
+
+QD-NEVPT2's coupling (#749) needs not one d_IJ but a combination over every
+pair of reference roots, and a term from an orbital density of its own:
+
+    d^T = Σ_MN T_MN d_MN + d[D^X],   d[D^X] = Σ_xy D^X_xy ⟨φ_x|∂φ_y⟩,
+
+T an antisymmetric nroots × nroots matrix and D^X an MO density, both
+d_MN and d[D^X] with the SA orbitals (and, for d_MN, the CI) relaxed. Its
+overload of `df_nac` takes T and D^X in place of the bra and the ket, and
+solves one Z-vector where the pairwise sum would solve n(n − 1)/2:
+
+```cpp
+Result<mcscf::NacCombination> mcscf::df_nac(
+    /* res ... ncas as above */, std::span<const double> t,
+    std::span<const double> d_x = {});
+// d->response, d->csf, d->basis_motion, d->total: each n_atom x 3;
+// d->rhs (the Z-vector's packed right-hand side), d->gap, d->iterations,
+// d->residual
+```
+
+**The layouts.** T is row-major, T_MN at M nroots + N, and exactly
+antisymmetric (T_MN == −T_NM, the diagonal zero), as ½(R_P R_Qᵀ − R_Q R_Pᵀ)
+is in floating point. D^X is nmo × nmo row-major, D^X_xy at x nmo + y, in
+the solution's orbitals, or empty. **Its index order is the transition
+density's**: D^X takes γ^MN_xy = ⟨M|E_xy|N⟩'s place, so the bra's orbital
+comes first, and d[D^X] at D^X = γ^MN would be d^CSF_MN plus γ^MN's own
+orbital response. D^X must be zero within the core, the active and the
+virtual blocks, where the orbital rotations are redundant and no Z-vector
+fixes them (`InvalidConfig` otherwise); QD-NEVPT2's PT2 density lives on
+(t, i), (a, t) and (a, i) only.
+
+**By linearity**, every piece of the pair's derivation carries over:
+
+- **The CI part.** Σ_MN T_MN h_MN / (E_N − E_M) is the Lagrangian of
+  "The numerator" at the combined RDMs Σ_{M<N} 2 T_MN / (E_N − E_M)
+  (γ^MN, Γ^MN), the symmetrized `trans_rdm12` (T_NM / (E_M − E_N) is
+  T_MN / (E_N − E_M), and the symmetrized RDMs are symmetric in M and N):
+  one `transition_orbital_gradient`, one `zvector` and one
+  `df_transition_gradient` there, as for a pair.
+- **The CSF part.** ½ G[Dᵀ − D] at D = C_a γ^T C_aᵀ,
+  γ^T = Σ_MN T_MN γ^MN = Σ_{M<N} T_MN (γ^MN − γ^MNᵀ), as the pair's d^CSF.
+- **D^X.** With C(R) = C₀ (C₀ᵀ S(R) C₀)^−½ exp(κ) (the connection the
+  Lagrangian's overlap term is written in), ⟨φ_x(R₀)|φ_y(R)⟩ moves by
+  ½ (X − Xᵀ) + κ, X_xy = ⟨φ_x|∂φ_y⟩ with the derivative on the ket's centre
+  only. The first part is the **basis motion**, ½ G[C (D^Xᵀ − D^X) Cᵀ] over
+  every orbital, the CSF term's formula at D^X in γ's place
+  (`basis_motion`). The second is the **orbital response**: along the packed
+  x_pq (p > q, κ_pq = x_pq, `../../response/README.md`), Σ D^X_xy κ_xy has the
+  gradient D^X_pq − D^X_qp, added to the Z-vector's orbital right-hand side;
+  the multipliers then carry it through the same `df_transition_gradient`.
+  D^X has no CI part: f holds no CI vector.
+
+So `response` is the CI part and D^X's orbital response together (one
+Z-vector cannot part them), `csf` the CSF part and `basis_motion` D^X's
+basis motion, each on its own, and `total` their sum. With T = ½(E_IJ − E_JI)
+and no D^X, `total` is d_IJ, `csf` d^CSF_IJ, and `rhs` the pair's right-hand
+side over E_J − E_I. There are no options: `use_etfs` drops `csf` and
+`basis_motion`, which a caller can do from the parts, and `mult_ediff` has
+no one gap to multiply by.
+
+**Gaps.** A pair with T_MN ≠ 0 whose roots are closer than `kRootGapFloor`
+(1e-8 hartree, `../root_rotation/`, the QD gradient's ζ rule) is refused as
+`Numerical`, naming the pair, before anything is built; `gap` is the
+smallest |E_N − E_M| over the pairs with T_MN ≠ 0 (infinity for T = 0). The
+memory, the stream and the reproducibility are the pair's: one Z-vector, one
+`df_transition_gradient`, and one `overlap_half_gradient` more with D^X.
 
 ## Reproducibility
 
@@ -212,9 +292,9 @@ h + ΔE csf and `h`; a repeated call on the first pair, its Z-vector's
 products and residual bitwise the first call's and its results within
 1e-10 ("Reproducibility"); and the refusals (I = J, a root past the
 solution's).
-Measured on the RTX 3080: h_IJ within 4e-10, d^CSF within 2.2e-10 and d_IJ
-within 1.3e-9 (the skewed case's (0, 2)), the Z-vector in 11 to 19
-products; about 4 s a case. The same file, at the same solutions, holds
+Measured on the RTX 3080: h_IJ within 3.3e-10, d^CSF within 2.2e-10 and
+d_IJ within 1.0e-9 (the skewed case's (0, 2)), the Z-vector in 11 to 20
+products (its tolerance scaled by the gap, "The Z-vector's tolerance"); about 4 s a case. The same file, at the same solutions, holds
 `transition_orbital_gradient`'s ([`../transition/`](../transition/README.md)
 "Tests").
 
@@ -229,3 +309,27 @@ largest coupling is above the bar), measured on the RTX 3080: |D(δ) − d| at
 most 6.5e-8 and 2.2e-7, each its Richardson estimate, and the extrapolated
 difference within 3.9e-9 and 1.5e-8 of d. With the weights held at
 1 / nroots the same check misses by 6.0e-3 and 2.2e-2.
+
+**The combination** (`McscfNacCombination` in `mcscf_nac_gpu.cpp`, on both
+cases): every ordered pair as T = ½(E_IJ − E_JI) against `df_nac(I, J)`'s
+d_IJ and d^CSF, and its right-hand side times E_J − E_I against
+`transition_orbital_gradient` at `trans_rdm12(I, J)`; a random
+antisymmetric T on the skewed SA-3 against Σ_{M<N} 2 T_MN d_MN; each to
+1e-10 of the largest element compared, once. And the refusals: two roots
+1e-9 hartree apart that T couples (Numerical), a T not antisymmetric and a
+D^X inside the active block (InvalidConfig). **D^X**, by finite differences
+(`McscfOverlapDensity` in `mcscf_overlap_gpu.cpp`, a slow test): at T = 0
+and a fixed random D^X on (t, i), (a, t) and (a, i) of `h2co_ccpvdz_sa2`,
+every coordinate's ladder of Σ_xy D^X_xy ⟨φ_x(R₀)|φ_y(R)⟩ over the
+re-converged solutions, columns phase-aligned, its steadiest Richardson
+extrapolant against d[D^X] to 1e-7 of max |d[D^X]|; the basis motion and the
+orbital response each over 10× that bar.
+Measured on the RTX 3080: the pairs' total within 6.6e-12 of max |d| (the
+skewed (2, 0)), d^CSF within 6.8e-16, the right-hand side within 4.2e-15,
+each Z-vector in the pair's own number of products; the random T within
+7.8e-12; about 2.4 s and 4.3 s a case. The ladder: every one of the 12
+coordinates settled (a run of at least three ratios in (3.2, 4.8)), the
+worst steadiest extrapolant 1.9e-8 from d[D^X] (1.3e-8 of
+max |d[D^X]| = 1.50, the bar 1.5e-7); the basis motion's max 1.0e7 and the
+response's 8.5e6 times the bar (min |O_yy| 0.9975, so no column swapped);
+15 s.

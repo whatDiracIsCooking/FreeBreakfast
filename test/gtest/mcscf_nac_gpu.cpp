@@ -24,11 +24,12 @@
 // refusals: equal roots and a root past the solution's. PySCF refuses
 // unequal weights, so df_nac is checked there against finite differences
 // of mcscf::state_overlaps, in mcscf_overlap_gpu.cpp.
-// Measured on the RTX 3080: h_IJ within 4e-10, d^CSF 2.2e-10, d_IJ 1.3e-9
-// (the skewed (0, 2)); 3.3 s and 4.6 s a case, so neither is a slow test.
+// Measured on the RTX 3080: h_IJ within 3.3e-10, d^CSF 2.2e-10, d_IJ 1.0e-9
+// (the skewed (0, 2)); 3.1 s and 4.0 s a case, so neither is a slow test.
 //
 // Then mcscf::transition_orbital_gradient, the Z-vector's right-hand side
-// df_nac takes from it, on the same solutions (its own comment, below).
+// df_nac takes from it, on the same solutions (its own comment, below); and
+// df_nac's combination overload against the pair's (its own comment, below).
 //
 // The setup is mcscf_transition_gradient_gpu.cpp's, so this executable links
 // pipeline; mcscf does not. Runs the device chain, so needs a GPU.
@@ -624,6 +625,222 @@ TEST_P(McscfTransitionOrbitalGradient, IsDfNacsAndTheLadders) {
 }
 
 INSTANTIATE_TEST_SUITE_P(Pyscf, McscfTransitionOrbitalGradient,
+                         ::testing::Values(std::string_view{"h2co_ccpvdz_sa2"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3"}),
+                         [](const auto &info) { return std::string(info.param); });
+
+// -------------------------------------------------------------------------
+// df_nac over a combination, Sum_MN T_MN d_MN + d[D^X] in one Z-vector,
+// against the pair overload at the same converged solutions (#742). Every
+// check is a path agreement, so each runs once at 1e-10 of the largest
+// element of the quantity compared:
+//
+// - for every ordered pair (I, J), T = 1/2 (E_IJ - E_JI) gives the pair's
+//   d_IJ (total) and d^CSF, no basis-motion term, the pair's gap; and its
+//   right-hand side times E_J - E_I is the pair's, the transition orbital
+//   gradient at trans_rdm12(I, J) (the combination's is at the RDMs over the
+//   gap);
+// - on the skewed SA-3, a random antisymmetric T gives
+//   Sum_{M<N} 2 T_MN d_MN, and Sum_{M<N} 2 T_MN d^CSF_MN, from the pairs;
+// - the refusals: two roots under kRootGapFloor that T couples (Numerical,
+//   naming them), a T that is not antisymmetric, and a D^X inside a diagonal
+//   block (InvalidConfig).
+// D^X's own term is checked by finite differences in mcscf_overlap_gpu.cpp.
+// Measured on the RTX 3080: the pairs within 6.6e-12 (total, the skewed
+// (2, 0)), 6.8e-16 (csf) and 4.2e-15 (rhs), the random T within 7.8e-12;
+// 2.3 s and 4.3 s a case.
+// The Z-vector's residual is printed, not asserted: zvector stops on its
+// recursive residual, and the one it returns is recomputed from one more
+// product, which can sit just above the 1e-10 it stopped at (1.5e-10 once on
+// h2co_ccpvdz_sa2, whose right-hand side here is the pair's over its gap).
+
+constexpr double kCombinationTolerance = 1e-10;
+
+// max |a - b| over max |b|, each element EXPECTed within kCombinationTolerance
+// of that.
+double expect_relative(std::span<const double> a, std::span<const double> b,
+                       std::string_view what) {
+  EXPECT_EQ(a.size(), b.size()) << what;
+  double scale = 0.0;
+  for (const double v : b) {
+    scale = std::max(scale, std::abs(v));
+  }
+  double error = 0.0;
+  for (std::size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+    EXPECT_NEAR(a[i], b[i], kCombinationTolerance * scale) << what << " " << i;
+    error = std::max(error, std::abs(a[i] - b[i]));
+  }
+  return scale > 0.0 ? error / scale : error;
+}
+
+class McscfNacCombination : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(McscfNacCombination, IsTheSumOfThePairs) {
+  FBF_REQUIRE_GPU();
+  const std::string name{GetParam()};
+  const fb::json &entry = reference_case(name);
+  const auto start_time = std::chrono::steady_clock::now();
+  const auto run = converge(entry);
+  ASSERT_NE(run, nullptr);
+  fb::DeviceResources &res = run->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::Molecule &molecule = run->calc->get<fb::MoleculeOutput>()->molecule;
+  const fb::BasisSet &basis = run->calc->get<fb::BasisSetOutput>()->basis;
+  const auto &classes = run->calc->get<fb::PrimitivePairClassesOutput>()->classes;
+  const fb::SphericalMatrixAO &h = run->calc->get<fb::CoreHamiltonianOutput>()->h;
+  const auto &df = std::get<fb::DensityFitted>(run->fitted->eri);
+  fb::mcscf::Solution &sol = *run->sol;
+  const std::int32_t ncore = run->space->ncore;
+  const std::int32_t ncas = run->space->ncas;
+  const std::int32_t nelecas = run->space->nelecas;
+  const auto nroots = static_cast<std::size_t>(sol.roots.energies.size());
+  const auto n = static_cast<std::size_t>(ncas);
+  const std::size_t m = n * n;
+
+  const auto pair = [&](std::size_t bra, std::size_t ket) {
+    return fb::mcscf::df_nac(res, molecule, basis, classes, df.aux, h, df.b, df.l.data(), sol,
+                             ncore, ncas, static_cast<std::int32_t>(bra),
+                             static_cast<std::int32_t>(ket));
+  };
+  const auto combination = [&](std::span<const double> t, std::span<const double> d_x = {}) {
+    return fb::mcscf::df_nac(res, molecule, basis, classes, df.aux, h, df.b, df.l.data(), sol,
+                             ncore, ncas, t, d_x);
+  };
+
+  // The pair's right-hand side, as df_nac forms it.
+  const std::int32_t two_s = molecule.multiplicity() - 1;
+  const std::int32_t n_beta = (nelecas - two_s) / 2;
+  auto alpha = fb::ci::DeviceStringSet::create(res, ncas, nelecas - n_beta);
+  auto beta = fb::ci::DeviceStringSet::create(res, ncas, n_beta);
+  ASSERT_TRUE(alpha.has_value() && beta.has_value());
+  auto rdm = fb::ci::Rdm::create(res, *alpha, *beta);
+  ASSERT_TRUE(rdm.has_value()) << rdm.error().message;
+  const auto dim = static_cast<std::size_t>(rdm->size());
+  auto ints = fb::casscf_integrals(res, basis, molecule, h, df.b, df.naux, sol.c, ncore, ncas);
+  ASSERT_TRUE(ints.has_value()) << ints.error().message;
+  fb::Buffers::device<double> rdms(m + (m * m), res.device());
+  const auto pair_rhs = [&](std::size_t bra, std::size_t ket) {
+    EXPECT_TRUE(rdm->trans_rdm12(res, sol.roots.vectors.data() + (bra * dim),
+                                 sol.roots.vectors.data() + (ket * dim), rdms.data(),
+                                 rdms.data() + m)
+                    .has_value());
+    const std::vector<double> gamma = download(res, rdms.data(), m);
+    const std::vector<double> gamma2 = download(res, rdms.data() + m, m * m);
+    auto g = fb::mcscf::transition_orbital_gradient(res, molecule, h, df.b, df.naux, sol.c, ncore,
+                                                    ncas, ints->ppaa, ints->papa, gamma, gamma2);
+    EXPECT_TRUE(g.has_value()) << g.error().message;
+    return g.has_value() ? download(res, g->data(), g->num_elements()) : std::vector<double>{};
+  };
+
+  // Every ordered pair as T = 1/2 (E_IJ - E_JI).
+  std::map<std::pair<std::size_t, std::size_t>, fb::mcscf::Nac> pairs;
+  double worst_total = 0.0;
+  double worst_csf = 0.0;
+  double worst_rhs = 0.0;
+  for (std::size_t bra = 0; bra < nroots; ++bra) {
+    for (std::size_t ket = 0; ket < nroots; ++ket) {
+      if (bra == ket) {
+        continue;
+      }
+      const std::string label = std::format("{} ({}, {})", name, bra, ket);
+      SCOPED_TRACE(label);
+      auto want = pair(bra, ket);
+      ASSERT_TRUE(want.has_value()) << want.error().message;
+      std::vector<double> t(nroots * nroots, 0.0);
+      t[(bra * nroots) + ket] = 0.5;
+      t[(ket * nroots) + bra] = -0.5;
+      auto got = combination(t);
+      ASSERT_TRUE(got.has_value()) << got.error().message;
+      const double gap = sol.roots.energies[ket] - sol.roots.energies[bra];
+      EXPECT_EQ(got->gap, std::abs(gap));
+      EXPECT_TRUE(std::ranges::all_of(got->basis_motion, [](double v) { return v == 0.0; }));
+      const double total = expect_relative(got->total, want->total, "total");
+      const double csf = expect_relative(got->csf, want->csf, "csf");
+      std::vector<double> rhs = got->rhs;
+      for (double &v : rhs) {
+        v *= gap;
+      }
+      const double rhs_error = expect_relative(rhs, pair_rhs(bra, ket), "rhs");
+      worst_total = std::max(worst_total, total);
+      worst_csf = std::max(worst_csf, csf);
+      worst_rhs = std::max(worst_rhs, rhs_error);
+      std::cout << std::format("[ nac T] {}: total {:.2e}, csf {:.2e}, rhs {:.2e} (relative), "
+                               "z-vector {} products to {:.2e} against the pair's {}\n",
+                               label, total, csf, rhs_error, got->iterations, got->residual,
+                               want->iterations);
+      pairs.emplace(std::pair{bra, ket}, std::move(*want));
+    }
+  }
+
+  // A random antisymmetric T against the pairs' sum.
+  if (nroots > 2) {
+    std::mt19937_64 engine{742};
+    std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+    std::vector<double> t(nroots * nroots, 0.0);
+    std::vector<double> want_total(pairs.begin()->second.total.size(), 0.0);
+    std::vector<double> want_csf(want_total.size(), 0.0);
+    for (std::size_t i = 0; i < nroots; ++i) {
+      for (std::size_t j = i + 1; j < nroots; ++j) {
+        const double tij = uniform(engine);
+        t[(i * nroots) + j] = tij;
+        t[(j * nroots) + i] = -tij;
+        const fb::mcscf::Nac &d = pairs.at(std::pair{i, j});
+        for (std::size_t x = 0; x < want_total.size(); ++x) {
+          want_total[x] += 2.0 * tij * d.total[x];
+          want_csf[x] += 2.0 * tij * d.csf[x];
+        }
+      }
+    }
+    auto got = combination(t);
+    ASSERT_TRUE(got.has_value()) << got.error().message;
+    const double total = expect_relative(got->total, want_total, "random T total");
+    const double csf = expect_relative(got->csf, want_csf, "random T csf");
+    std::cout << std::format("[ nac T] {} random T: total {:.2e}, csf {:.2e} (relative), "
+                             "smallest gap {:.6f}, z-vector {} products to {:.2e}\n",
+                             name, total, csf, got->gap, got->iterations, got->residual);
+  }
+
+  // The refusals. Two roots 1e-9 apart that T couples: Numerical, naming
+  // them, before anything is built.
+  {
+    std::vector<double> t(nroots * nroots, 0.0);
+    t[1] = 0.5;
+    t[nroots] = -0.5;
+    const double saved = sol.roots.energies[1];
+    sol.roots.energies[1] = sol.roots.energies[0] + 1e-9;
+    const auto refused = combination(t);
+    sol.roots.energies[1] = saved;
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::Numerical) << refused.error().message;
+    EXPECT_NE(refused.error().message.find("mcscf::df_nac"), std::string::npos);
+    EXPECT_NE(refused.error().message.find("roots 0 and 1"), std::string::npos)
+        << refused.error().message;
+    std::cout << std::format("[ nac T] {} refuses: {}\n", name, refused.error().message);
+
+    // T not antisymmetric.
+    t[nroots] = 0.25;
+    const auto skewless = combination(t);
+    ASSERT_FALSE(skewless.has_value());
+    EXPECT_EQ(skewless.error().kind, fb::ErrorKind::InvalidConfig) << skewless.error().message;
+
+    // D^X inside the active-active block.
+    t[nroots] = -0.5;
+    const std::size_t nmo = sol.c.n();
+    std::vector<double> d_x(nmo * nmo, 0.0);
+    const auto t0 = static_cast<std::size_t>(ncore);
+    d_x[(t0 * nmo) + t0 + 1] = 1.0;
+    const auto in_block = combination(t, d_x);
+    ASSERT_FALSE(in_block.has_value());
+    EXPECT_EQ(in_block.error().kind, fb::ErrorKind::InvalidConfig) << in_block.error().message;
+  }
+
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start_time;
+  std::cout << std::format("[ nac T] {}: worst total {:.2e}, csf {:.2e}, rhs {:.2e} (relative), "
+                           "{:.2f} s in all\n",
+                           name, worst_total, worst_csf, worst_rhs, seconds.count());
+}
+
+INSTANTIATE_TEST_SUITE_P(Pyscf, McscfNacCombination,
                          ::testing::Values(std::string_view{"h2co_ccpvdz_sa2"},
                                            std::string_view{"h2co_skew_ccpvdz_sa3"}),
                          [](const auto &info) { return std::string(info.param); });
