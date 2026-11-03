@@ -71,6 +71,9 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         zeta         ζ · g and (γ^ζ, Γ^ζ) (mcscf::ZetaTerms)
         multipliers  (Z, z, Θ), mcscf::ZVector
         asymmetry    the gate's residues per block
+    qd_sc_lagrangian(res, molecule, basis, aux, h, b, solution, ncore, ncas, w, batch)
+        -> QdScLagrangian   the W form: any symmetric W (n², row-major), ρ = diag W,
+                            eigenvalues empty
     qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, state,
                    batch)
         -> QdScGradient
@@ -81,6 +84,8 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         max_zeta     max |ζ|
         root_gap     the smallest |E_r − E_s| over the CASSCF roots
         heff_gap     the smallest |λ_K − λ_L| of H_eff, L ≠ K
+    qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, w, batch)
+        -> QdScGradient  G(W), linear in W, the state's at u_K u_Kᵀ; heff_gap infinite
     qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, state,
                    batch)
         -> QdPcGradient  QdScGradient's fields, lagrangian PC's (its corr's elements
@@ -518,6 +523,40 @@ between CASSCF roots (ζ and t divide by it) and H_eff's gap at K (u_K's
 derivative divides by it). `qd_sc_lagrangian`'s refusals come back
 unchanged.
 
+### At any symmetric W
+
+`qd_sc_lagrangian(…, w, batch)` and `qd_sc_gradient(…, w, batch)` (#745),
+the **W form**, take any symmetric W (n² row-major over the solution's n
+roots) in place of `state`: the Lagrangian of E[W] and its gradient G(W).
+The state form is a thin wrapper over it: step 1 above (`qd_sc_energy`,
+H_eff, its eigenvectors and the degenerate-pair refusal, the one
+state-specific part) builds W = u_K u_Kᵀ and hands it on, so steps 2–5 and
+the passes are one code path. `eigenvalues` is H_eff's from the state form
+and empty from the W form, whose `heff_gap` is infinite.
+
+Everything in L is linear in W (`nuclear_gradient.tex`, "The QD-NEVPT2
+energy functional") but the core's energy, which E[W] = Σ_r ρ_r E_r + … carries
+at tr W. So nothing from H_eff is read, ρ = diag W, and:
+
+- the RDMs at ρ, Σ_r ρ_r (γ_r, Γ_r), are taken root by root (`rdm12` takes
+  only weights ≥ 0 summing to 1);
+- g^ρ is the Fock's gradient at those RDMs, which is affine in them and
+  carries its zero-RDM (core) part once, plus (tr W − 1) more of that part;
+  the gate's Fock the same. Within 1e-12 of 1, tr W is taken as 1;
+- the first pass is one `mcscf::df_gradient` at the mix ρ when ρ sums to 0
+  (its core-off path, #741) or to 1 with no negative entry (a state's ρ =
+  u_rK², always). Any other ρ is tr W p + d: p ≥ 0, ρ's positive part
+  normalized to 1 (uniform when it has none), one `df_gradient` with zero
+  multipliers and no extra (no response) scaled by tr W; and d = ρ − tr W p,
+  summing to 0, one `df_gradient` with the multipliers and the extra, so
+  that each is counted once.
+
+So G(W₁ + W₂) = G(W₁) + G(W₂), and Σ_K dE_K/dR = G(1). A W not n² long,
+or not symmetric to 1e-12 (|W_MN − W_NM|), or not finite, is refused,
+`InvalidConfig`. The consumers are the QD couplings' h_PQ at W^PQ, trace 0
+(#747, and PC's #748: the file-local assembly takes PC's adjoint at any W
+already).
+
 `qd_pc_gradient(…)`, same arguments, is the **PC-QD-NEVPT2** gradient
 (#705): the same Lagrangian and the same two passes, one file-local
 assembly behind both entry points, with `qd_pc_energy` in step 1 and
@@ -839,6 +878,15 @@ once per process.
     `qd_sc_lagrangian`'s two refusals, kind and message unchanged.
   - `Nevpt2QdGradient.OneRootAgainstScGradient` (`h2o_skew_ccpvdz`): the
     one-root call against `sc_gradient`, printed.
+  - `Nevpt2QdGradient.WFormIsLinear` (`h8_sto3g_sa3` at weights
+    (0.4, 0.4, 0.2), ζ and t both): G(W₁ + W₂) against G(W₁) + G(W₂) to
+    1e-10 relative to the largest element compared, W₁ random symmetric of
+    trace 1 and W₂ of trace 0, every off-diagonal non-zero. The sum rule
+    Σ_K dE_K/dR against G(1) is printed. The state form's check is
+    `MatchesNumerical`: it is the W form at u_K u_Kᵀ.
+  - `Nevpt2QdGradient.WFormRefusesBadW`: a W one short, one of (n + 1)²,
+    one off-diagonal moved 1e-6 and one NaN, each `InvalidConfig` from both
+    W forms.
 - The PC-QD-NEVPT2 nuclear gradient (`qd_pc_gradient`), the same way, on
   every case with PC numbers (all but `h8_sto3g_sa3`):
   - `Nevpt2QdPcGradient.MatchesNumerical/<case>`: SC's checks against the
@@ -865,5 +913,5 @@ once per process.
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
-| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, and `qd_sc_gradient`'s two passes over it; `qd_pc_gradient`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint` |
+| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, at any symmetric W (the state form a wrapper at u_K u_Kᵀ), and `qd_sc_gradient`'s two passes over it; `qd_pc_gradient`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint` |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |
