@@ -172,5 +172,9 @@ say "building and starting the cuda devcontainer (the first build takes a while)
 "$REPO_ROOT/devtools/devcontainer.sh" --cuda rebuild
 
 say "done. Next:"
+# Said again HERE, at the end, because the rerun's own note scrolls away under
+# the image build: the shell this was started from still lacks the group.
+[ -z "${GPU_VM_SETUP_REEXEC:-}" ] ||
+  say "  log out and back in first -- this login is not in the docker group yet"
 say "  devtools/devcontainer.sh shell"
 say "  devtools/doctor.sh && devtools/cpp-tier.sh --preset default   # inside"
