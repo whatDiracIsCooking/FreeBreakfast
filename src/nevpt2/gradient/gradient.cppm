@@ -21,8 +21,8 @@
 /// roots' rotation multipliers and the SA Z-vector, gated, at a state's
 /// W = u_K u_K^T or at any symmetric W; the SC-QD
 /// nuclear gradient over it (qd_sc_gradient), two derivative passes, and its
-/// interstate coupling h_PQ (qd_sc_coupling); and the PC-QD one
-/// (qd_pc_gradient), the same over qd_pc_adjoint.
+/// interstate coupling h_PQ (qd_sc_coupling); and the PC-QD ones
+/// (qd_pc_gradient, qd_pc_coupling), the same over qd_pc_adjoint.
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -715,7 +715,8 @@ struct QdPcGradient {
   double max_zeta = 0.0;
   /// @brief The smallest |E_r - E_s| over the CASSCF roots.
   double root_gap = std::numeric_limits<double>::infinity();
-  /// @brief The smallest |lambda_K - lambda_L| of PC's H_eff, L != K.
+  /// @brief The smallest |lambda_K - lambda_L| of PC's H_eff, L != K;
+  /// qd_pc_coupling's |E_Q - E_P|; infinite from the W form.
   double heff_gap = std::numeric_limits<double>::infinity();
 };
 
@@ -739,5 +740,42 @@ struct QdPcGradient {
                                                   const Buffers::device<double> &b, const double *l,
                                                   const mcscf::Solution &solution, int32_t ncore,
                                                   int32_t ncas, int32_t state, int32_t batch);
+
+/// @brief The PC-QD-NEVPT2 nuclear gradient G(W) of E[W] at any symmetric
+/// weight matrix @p w: qd_sc_gradient's W form with qd_pc_adjoint in place
+/// of qd_sc_adjoint. G is linear in W; the state form, dE_K/dR, is
+/// G(u_K u_K^T), u_K PC's H_eff's eigenvector, one code path.
+///
+/// The arguments are qd_pc_gradient's with @p w for @p state.
+///
+/// @return The gradient, heff_gap infinite, elements qd_pc_adjoint's; a
+///         refused class's Numerical error, never a gradient with the class
+///         zeroed; qd_sc_gradient's W form's other errors, named for
+///         nevpt2::qd_pc_gradient.
+[[nodiscard]] Result<QdPcGradient>
+qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+               std::span<const double> w, int32_t batch);
+
+/// @brief The PC-QD-NEVPT2 interstate coupling between QD states @p p and
+/// @p q (PC's H_eff eigenvalues ascending), h_PQ = R_P^T (dH_eff/dR) R_Q:
+/// qd_sc_coupling with qd_pc_energy and qd_pc_adjoint in place of
+/// qd_sc_energy and qd_sc_adjoint, the PC W form at W^PQ, R PC's H_eff's
+/// eigenvectors signed as qd_sc_coupling's.
+///
+/// The arguments are qd_sc_coupling's.
+///
+/// @return h_PQ in QdPcGradient's fields (heff_gap |E_Q - E_P|); a refused
+///         class's Numerical error, qd_pc_energy's unchanged, never a
+///         coupling with the class zeroed; qd_sc_coupling's other errors,
+///         named for nevpt2::qd_pc_coupling.
+[[nodiscard]] Result<QdPcGradient>
+qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
+               int32_t batch);
 
 } // namespace free_breakfast::nevpt2

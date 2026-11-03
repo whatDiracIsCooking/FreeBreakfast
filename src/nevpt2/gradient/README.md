@@ -94,6 +94,11 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
                    batch)
         -> QdPcGradient  QdScGradient's fields, lagrangian PC's (its corr's elements
                          empty), plus elements (PcClassEnergies, qd_pc_energy's)
+    qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, w, batch)
+        -> QdPcGradient  PC's G(W), linear in W, the state's at u_K u_Kᵀ; heff_gap infinite
+    qd_pc_coupling(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q,
+                   batch)
+        -> QdPcGradient  PC's h_PQ = R_Pᵀ (∇H_eff) R_Q, G(W^PQ); heff_gap |E_Q − E_P|
 
 `lagrangian_gradient`, `sc_gradient` and `pc_gradient` take
 `mcscf::df_gradient`'s arguments (`solution` a
@@ -558,8 +563,7 @@ at tr W. So nothing from H_eff is read, ρ = diag W, and:
 So G(W₁ + W₂) = G(W₁) + G(W₂), and Σ_K dE_K/dR = G(1). A W not n² long,
 or not symmetric to 1e-12 (|W_MN − W_NM|), or not finite, is refused,
 `InvalidConfig`. The consumers are the QD couplings' h_PQ at W^PQ, trace 0
-(#747, and PC's #748: the file-local assembly takes PC's adjoint at any W
-already).
+(#747, and PC's #748, whose W form is below).
 
 ### The interstate coupling h_PQ
 
@@ -595,9 +599,8 @@ no nuclear repulsion. d^NEV_PQ = h_PQ / (E_Q − E_P) follows (#749).
   (n_atom × 3), `lagrangian` the Lagrangian at W^PQ with H_eff's eigenvalues
   and R, `heff_gap` |E_Q − E_P|, `root_gap` the CASSCF roots' smallest gap
   (ζ and t divide by it), `max_zeta`, and the Z-vector's iterations and
-  residual in `lagrangian.multipliers`. PC's (#748) is the same assembly
-  with `qd_pc_energy` and `qd_pc_adjoint`, which the file-local function
-  already takes.
+  residual in `lagrangian.multipliers`. PC's (#748, `qd_pc_coupling`) is
+  the same assembly with `qd_pc_energy` and `qd_pc_adjoint` (below).
 - **Cost.** One QD gradient: the n² pairs' RDMs and E^corr[W]'s adjoint, one
   Z-vector, and the two derivative passes. The states' gradients and the
   couplings share nothing between calls.
@@ -618,6 +621,32 @@ Lagrangian's own refusals (a root of zero weight, a degenerate pair of
 PC's H_eff, the gate) are SC's, named `nevpt2::qd_pc_gradient`. The
 restricted inverse's dropped rank-projector terms are #713's, checked
 there by the c_r ladders.
+
+### PC at any symmetric W, and PC's interstate coupling
+
+`qd_pc_gradient(…, w, batch)` (#748) is PC's **W form**, G(W) of PC's
+E[W]: SC's W form with `qd_pc_adjoint` at W in step 2, the rest the same
+file-local code (ρ = diag W, the core at tr W, the one or two
+`df_gradient` passes). There is no `qd_pc_lagrangian`; the Lagrangian is
+the result's `lagrangian`, and `elements` are `qd_pc_adjoint`'s. The state
+form is a thin wrapper over it, as SC's is: step 1 (`qd_pc_energy`, PC's
+H_eff, its eigenvectors and the degenerate-pair refusal) builds
+W = u_K u_Kᵀ and hands it to the same assembly. So G(W₁ + W₂) = G(W₁) +
+G(W₂), and Σ_K dE_K/dR = G(1) over PC's states. A refused class is
+`qd_pc_adjoint`'s error at any W; the other refusals (W's size, symmetry,
+finiteness) are SC's W form's, named `nevpt2::qd_pc_gradient`.
+
+`qd_pc_coupling(res, molecule, basis, classes, aux, h, b, l, solution,
+ncore, ncas, p, q, batch)` (#748) is the **PC-QD-NEVPT2 interstate
+coupling**, h_PQ = R_Pᵀ (∇H_eff) R_Q = G(W^PQ) with H_eff, R and G PC's:
+`qd_sc_coupling` with the file-local pair function given PC's energy and
+adjoint, R signed the same way (largest-magnitude component positive), the
+same core-off pass at tr W^PQ = 0. The result is `QdPcGradient`: `total`
+h_PQ, `lagrangian` at W^PQ with PC's eigenvalues and R, `heff_gap`
+|E_Q − E_P|, and PC's elements. A class PC refuses refuses the coupling
+with `qd_pc_energy`'s error, before any adjoint is built, as it refuses the
+gradient; P = Q, a state not one of the roots', and a pair within
+`mcscf::kRootGapFloor` are SC's refusals, named `nevpt2::qd_pc_coupling`.
 
 ## Not done
 
@@ -939,8 +968,11 @@ once per process.
     writes, h_PQ · u along each stored direction and every committed full-3N
     component (skew H₂CO), within 2× that number's committed `sc_h` error
     bar; h_QP from the swapped call against h_PQ to 1e-10 relative to the
-    largest element; the translational and rotational sums, absolute,
-    within 2× the case's largest committed `sc_h` bar. The data is in its
+    largest summand of the two derivative passes' terms (their W is
+    bitwise identical, so the check sees only atomic-sum noise, which
+    follows the largest summand, not the cancelled h: #748's ruling); the
+    translational and rotational sums, absolute, within 2× the case's
+    largest committed `sc_h` bar. The data is in its
     own run's root phases, so each pair's sign s_m(P) s_m(Q) is read off
     H_eff's element (m(P), m(Q)), ours against the data's `sc_heff`
     (m(P) R_P's largest component), never off h itself. Printed, not held:
@@ -950,9 +982,9 @@ once per process.
     the worst |h − reference| was 0.019 bars (`h8_ring_sto3g_sa3`), 0.73
     (`h2co_skew_ccpvdz_sa3`, a full-3N component of pair (0, 2)) and 0.036
     (`h2co_skew_ccpvdz_sa3_weighted`); h_QP within 3.5e-11 relative; the
-    rigid sums at most 1.8e-11 against bars of 7e-8 and up; each part at
-    least 342 bars on every pair, and each within 0.73 bars of its own
-    family. About 2 s a case.
+    rigid sums at most 1.8e-11 against bars of 7e-8 and up (#747's run,
+    h_QP then against max |h|); each part at least 342 bars on every pair,
+    and each within 0.73 bars of its own family. About 2 s a case.
   - `Nevpt2QdCoupling.Refuses` (`h2co_ccpvdz_sa2`): E_0 = E_1 forced as in
     `Nevpt2QdLagrangian.Refuses` is `Numerical` naming both states, in either
     order; P = Q and a state out of range are `InvalidConfig`.
@@ -971,16 +1003,42 @@ once per process.
     H_eff, named `nevpt2::qd_pc_gradient`.
   - `Nevpt2QdPcGradient.OneRootAgainstPcGradient` (`h2o_skew_ccpvdz`): the
     one-root call against `pc_gradient`, printed.
+  - `Nevpt2QdPcGradient.WFormIsLinear` (`h2co_skew_ccpvdz_sa3_weighted` at
+    its own (0.4, 0.4, 0.2), ζ and t both): `Nevpt2QdGradient.WFormIsLinear`'s
+    body through PC's W form, the same seeds and the same 1e-10; the sum
+    rule over PC's states printed. `h8_sto3g_sa3` is not used: its root 0
+    passes PC's cuts only over round-off. On the RTX 3080: 2.9e-11
+    relative, the sum rule 3.3e-11; about 2 s.
+- The PC-QD-NEVPT2 interstate coupling (`qd_pc_coupling`), on every case
+  of `data/qd_nevpt2_nac/coupling/` (PC accepts all three):
+  - `Nevpt2QdPcCoupling.MatchesNumerical/<case>`:
+    `Nevpt2QdCoupling.MatchesNumerical`'s body against the data's PC
+    numbers (`pc_h`, its sign from `pc_heff` and `pc_heff_vectors`,
+    `pc_h_reference`, `pc_h_pt2`): every pair's directional and full-3N
+    components within 2× each `pc_h` bar, h_QP to 1e-10 of the largest
+    summand, the rigid sums within 2× the case's largest `pc_h` bar. On
+    the RTX 3080 the worst |h − reference| was 0.006 bars
+    (`h8_ring_sto3g_sa3`), 0.31 (`h2co_skew_ccpvdz_sa3`, a full-3N
+    component of pair (1, 2)) and 0.73 (`h2co_skew_ccpvdz_sa3_weighted`);
+    h_QP within 2.4e-11 of the largest summand (9.2e-10 of max |h| on a
+    small-coupling pair, the reason for the summand scale); the
+    rigid sums at most 2.9e-10 against bars of 6.7e-8 and up. About 2 s a
+    case.
+  - `Nevpt2QdPcCoupling.RefusesWhatTheEnergyRefuses` (`h8_ring_sto3g_sa3`):
+    `Nevpt2QdPcGradient.RefusesWhatTheEnergyRefuses`' two refused classes
+    refuse the pair (0, 1) and (1, 0) with `qd_pc_energy`'s error, kind and
+    message unchanged; P = Q and a state out of range are `InvalidConfig`,
+    named `nevpt2::qd_pc_coupling`.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `QdPcGradient`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
 | `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
-| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, at any symmetric W (the state form a wrapper at u_K u_Kᵀ), and `qd_sc_gradient`'s two passes over it; `qd_sc_coupling`, the same at an interstate pair's W^PQ; `qd_pc_gradient`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint` |
+| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, at any symmetric W (the state form a wrapper at u_K u_Kᵀ), and `qd_sc_gradient`'s two passes over it; `qd_sc_coupling`, the same at an interstate pair's W^PQ; `qd_pc_gradient` (state and W forms) and `qd_pc_coupling`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint` |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |
