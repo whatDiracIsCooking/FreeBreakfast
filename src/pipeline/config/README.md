@@ -275,6 +275,29 @@ and a `[molecule]` `multiplicity` other than 1 (an open shell, the RHF under
 the CASSCF being closed-shell exactly then), under `[optimize]` its start's.
 The step refuses each again when it runs, for a pipeline built by hand.
 
+**`quasi_degenerate = true`** differentiates one SC- or PC-QD-NEVPT2 state
+of the state-averaged `[casscf]` instead, `state` (default 0) indexing
+H_eff's eigenvalues ascending:
+
+```toml
+[casscf]
+ncas = 3
+nelecas = 2
+nroots = 2
+conv_tol_grad = 1e-10
+[nevpt2_gradient]
+quasi_degenerate = true
+state = 1                 # the default 0, the lowest
+variant = "pc"            # the default "sc"
+```
+
+Each of these is `InvalidConfig` when the file is read: `quasi_degenerate`
+over a `[casscf]` of fewer than two roots, written or filled in; a `state`
+below 0 or not below `[casscf]` `nroots`; a `state` without
+`quasi_degenerate = true`; a `root` beside it (`state` names what is
+differentiated); and an `[optimize]` over it, not supported yet. The state
+average is then not refused; the spin and the ERI mode are, as above.
+
 ```toml
 [eri]
 mode = "density_fitting"  # required by [nac]
@@ -324,7 +347,8 @@ gradient** (`optimize/README.md` "The NEVPT2 chain"), `[casscf]` and
 energy. Any two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]`
 are refused, and under an integral-direct `[eri]` either CASSCF chain is its
 gradient's `Unsupported`, as above, as are `[nevpt2_gradient]`'s other
-refusals (a state average, the start's multiplicity). One loading `from` a file is refused: the chain is rerun at every
+refusals (a state average, the start's multiplicity); a quasi-degenerate
+`[nevpt2_gradient]` is refused, `InvalidConfig`, not supported yet. One loading `from` a file is refused: the chain is rerun at every
 geometry. **Then `[molecule]` is planned loaded from the `final.xyz`
 the step writes** (`MoleculeStep::load`, ordered after the optimization by
 the `OptimizeOutput` it reads), so every other step in the config -- the
@@ -409,7 +433,7 @@ step, so no two collide:
 | `[casscf]` | `casscf.molden`: the state-averaged natural orbitals |
 | `[gradient]` | `gradient.json`: the SCF energy, the gradient `total` and each of its `terms` (hartree / bohr, one row of three per atom) |
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
-| `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut |
+| `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut; with `quasi_degenerate`, the state, the variant, E_K and H_eff's eigenvalues, the CASSCF energies, ρ, the gradient `total`, the `df_gradient` pass's `terms`, the `transition` pass's total, the diagnostics and the gaps |
 | `[nac]` | `nac.json`: the options, the CASSCF's root energies, and per pair the roots, the gap, h_IJ and d^CSF (unscaled) and `total`, each one row of three per atom, and the Z-vector's products and residual |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
 | `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
@@ -474,6 +498,9 @@ than after the SCF has converged. `parse_config` touches no disk.
   past them;
 - a `[nevpt2]` `quasi_degenerate = true` over a `[casscf]` of fewer than
   two roots;
+- a `[nevpt2_gradient]` `quasi_degenerate = true` over a `[casscf]` of
+  fewer than two roots, or under an `[optimize]`; a `state` below 0, not
+  below `nroots`, or without `quasi_degenerate`; or a `root` beside it;
 - what `Pipeline::create` refuses (a cycle).
 
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
@@ -481,7 +508,7 @@ is well formed and the method is what is missing: `[nevpt2]`,
 `[casscf_gradient]`, `[nevpt2_gradient]`, `[nac]` or the analytic `[hessian]` under
 an integral-direct `[eri]`, the analytic `[hessian]` beside a
 `[casscf_gradient]`, `[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
-average and multiplicity other than 1.
+average (without `quasi_degenerate`) and multiplicity other than 1.
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`

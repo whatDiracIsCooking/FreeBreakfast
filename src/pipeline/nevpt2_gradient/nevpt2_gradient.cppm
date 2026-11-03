@@ -2,7 +2,10 @@
 /// @brief The `Nevpt2Gradient` step: the analytic nuclear gradient of the
 /// SC- or PC-NEVPT2 total energy of the single-state DF-CASSCF in the
 /// @ref CasscfOutput (@c nevpt2::sc_gradient or @c nevpt2::pc_gradient over
-/// the density-fitted EriOutput), every term of it and the Lagrangian's diagnostics, written as
+/// the density-fitted EriOutput), or with @ref
+/// Nevpt2GradientStep::quasi_degenerate of one SC- or PC-QD-NEVPT2 state of
+/// the DF-SA-CASSCF (@c nevpt2::qd_sc_gradient or @c nevpt2::qd_pc_gradient),
+/// every term of it and the Lagrangian's diagnostics, written as
 /// `nevpt2_gradient.json`.
 ///
 /// Device-shaped. The numerics are free_breakfast.nevpt2.gradient's; `run`
@@ -23,33 +26,49 @@ export namespace free_breakfast {
 
 /// @brief Which NEVPT2 a @ref Nevpt2GradientStep differentiates.
 enum class Nevpt2Variant : uint8_t {
-  Sc, ///< Strongly contracted, @c nevpt2::sc_gradient.
-  Pc, ///< Partially contracted, @c nevpt2::pc_gradient.
+  Sc, ///< Strongly contracted, @c nevpt2::sc_gradient (@c qd_sc_gradient).
+  Pc, ///< Partially contracted, @c nevpt2::pc_gradient (@c qd_pc_gradient).
 };
 
-/// @brief The nuclear gradient of one root's NEVPT2 total energy, and its
-/// terms.
+/// @brief The nuclear gradient of one root's NEVPT2 total energy, or of one
+/// QD-NEVPT2 state's, and its terms.
 struct Nevpt2GradientOutput {
-  /// @brief dE/dR (hartree / bohr) of E_cas + E_corr in
-  /// @c gradient.terms.total, n_atom x 3 row-major, element 3 A + k, atoms in
-  /// the Molecule's order; the five terms it sums beside it, the class
-  /// energies of E_corr, z^c with max |z^c| and the smallest inactive gap,
-  /// the Z-vector with its PCG iterations and residual, and X^L's residues.
-  /// The alternative is the step's @ref Nevpt2GradientStep::variant.
-  std::variant<nevpt2::ScGradient, nevpt2::PcGradient> gradient;
+  /// @brief State-specific (ScGradient, PcGradient): dE/dR (hartree / bohr)
+  /// of E_cas + E_corr in @c gradient.terms.total, n_atom x 3 row-major,
+  /// element 3 A + k, atoms in the Molecule's order; the five terms it sums
+  /// beside it, the class energies of E_corr, z^c with max |z^c| and the
+  /// smallest inactive gap, the Z-vector with its PCG iterations and
+  /// residual, and X^L's residues. Quasi-degenerate (QdScGradient,
+  /// QdPcGradient): dE_K/dR in @c gradient.total, the same layout, E_K
+  /// H_eff's eigenvalue @ref Nevpt2GradientStep::state, with its two
+  /// derivative passes and its Lagrangian. The alternative is the step's
+  /// @ref Nevpt2GradientStep::variant and @ref
+  /// Nevpt2GradientStep::quasi_degenerate.
+  std::variant<nevpt2::ScGradient, nevpt2::PcGradient, nevpt2::QdScGradient, nevpt2::QdPcGradient>
+      gradient;
 };
 
-/// @brief The SC- or PC-NEVPT2 nuclear gradient on @p res's device.
+/// @brief The SC- or PC-NEVPT2 nuclear gradient, state-specific or of one
+/// QD-NEVPT2 state, on @p res's device.
 struct Nevpt2GradientStep {
   /// @brief The step's TOML table name.
   static constexpr std::string_view kName = "nevpt2_gradient";
 
   /// @brief The root whose energy is differentiated, in
   /// @ref CasscfOutput::energies' order: 0, since the CASSCF must have one.
+  /// Unread with @ref quasi_degenerate, where @ref state names what is
+  /// differentiated.
   int32_t root = 0;
   /// @brief SC or PC: which of @c nevpt2::sc_gradient and
   /// @c nevpt2::pc_gradient `run` calls.
   Nevpt2Variant variant = Nevpt2Variant::Sc;
+  /// @brief Differentiate one QD-NEVPT2 state of the state-averaged CASSCF,
+  /// @c nevpt2::qd_sc_gradient or @c nevpt2::qd_pc_gradient, rather than
+  /// one root's NEVPT2. Needs two roots or more.
+  bool quasi_degenerate = false;
+  /// @brief With @ref quasi_degenerate, the QD state K: an index into the
+  /// effective Hamiltonian's eigenvalues, ascending. 0 otherwise.
+  int32_t state = 0;
   /// @brief Where the gradient is written as JSON, if not empty: the root,
   /// the energies, the total and each term as n_atom rows of three, and the
   /// diagnostics. Arrives resolved (pipeline/config sets it to
@@ -64,15 +83,24 @@ struct Nevpt2GradientStep {
   /// only as far as the CASSCF converged, so a config that wants it to 1e-6
   /// tightens `[casscf]` conv_tol_grad.
   ///
+  /// With @ref quasi_degenerate, @c nevpt2::qd_sc_gradient or
+  /// @c nevpt2::qd_pc_gradient of @ref state over the same products, γ the
+  /// weighted average of the roots' 1-RDMs. H_eff and u_K are the
+  /// gradient's own, from the same CASSCF: the step does not read a
+  /// `[nevpt2]` step's.
+  ///
   /// @return The gradient; Unsupported, before anything runs, for an
   ///         open-shell ScfOutput (n_alpha != n_beta), a molecule of
   ///         multiplicity other than 1, an integral-direct EriOutput (naming
-  ///         `[eri]`) or a state average (a CasscfOutput of more than one
-  ///         root), each naming the reason; InvalidConfig for a @ref root
-  ///         the CASSCF does not have or a CasscfOutput whose 1-RDMs are not
-  ///         one ncas^2 block per root; otherwise the gradient's error (PC's
-  ///         refusals, no gap at the cut or a non-positive denominator,
-  ///         among them), or @c write_json's for a
+  ///         `[eri]`) or, without @ref quasi_degenerate, a state average (a
+  ///         CasscfOutput of more than one root), each naming the reason;
+  ///         InvalidConfig for a @ref root the CASSCF does not have, for
+  ///         @ref quasi_degenerate over fewer than two roots, a @ref state
+  ///         past the roots, or a @ref state without @ref quasi_degenerate,
+  ///         or a CasscfOutput whose 1-RDMs are not one ncas^2 block per
+  ///         root; otherwise the gradient's error (PC's refusals, no gap at
+  ///         the cut or a non-positive denominator, among them, the
+  ///         energy's Numerical error unchanged), or @c write_json's for a
   ///         @ref json_path that cannot be written.
   [[nodiscard]] Result<Nevpt2GradientOutput>
   run(View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput,

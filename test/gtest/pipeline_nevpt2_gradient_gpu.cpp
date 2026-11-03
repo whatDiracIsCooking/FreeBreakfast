@@ -8,6 +8,11 @@
 // round-off), and against the reference's numerical gradient of that variant
 // (Richardson over re-converged energies) per component to 1e-6, as
 // nevpt2_gradient_gpu.cpp holds sc_gradient and pc_gradient.
+//
+// With quasi_degenerate: data/qd_nevpt2_gradient/'s h6_631g_sa2 (6-31G /
+// cc-pVDZ-JKFIT, CAS(2,3) averaged over two roots) at QD state 1, SC and PC,
+// against #696's numerical g . u of that state within twice each number's
+// error bar; and a PC-QD refusal reported as the [nevpt2] step reports it.
 
 #include <gtest/gtest.h>
 
@@ -316,6 +321,206 @@ TEST(PipelineNevpt2Gradient, PcJsonMatchesPcGradientAndTheNumericalGradient) {
       "{:.2e}, E_corr {:+.2e}, max |z^c| {:.3e}, PCG {} iterations\n",
       kCase, seconds.count(), numerical, same, e_corr - entry.at("e_corr").at("pc").get<double>(),
       written->at("max_zc").get<double>(), written->at("pcg_iterations").get<std::int32_t>());
+}
+
+// --- Quasi-degenerate -------------------------------------------------------
+
+// nevpt2_gradient_gpu.cpp's bar against #696's numbers: twice the committed
+// error bar of each one; and the generator's DF-SA-CASSCF convergence
+// (data/qd_nevpt2_gradient/README.md, "What each point is").
+constexpr double kQdBarFactor = 2.0;
+constexpr double kQdConvTolGrad = 1e-10;
+constexpr double kQdConvTol = 1e-13;
+constexpr std::int32_t kQdMaxCycle = 200;
+
+const fb::json &qd_gradient_data(std::string_view name) {
+  static std::map<std::string, fb::json, std::less<>> docs;
+  if (const auto it = docs.find(name); it != docs.end()) {
+    return it->second;
+  }
+  auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2_gradient" /
+                            std::format("{}.json", name));
+  EXPECT_TRUE(read.has_value()) << read.error().message;
+  return docs.emplace(std::string(name), read.has_value() ? std::move(*read) : fb::json{})
+      .first->second;
+}
+
+// The case @p data's own molecule, basis, fitting set, active space, roots
+// and weights as run.toml in @p dir, its DF-SA-CASSCF at the generator's
+// bars, and [nevpt2_gradient] quasi_degenerate at @p state of @p variant.
+std::filesystem::path write_qd_config(const fb::test::ScratchDir &dir, const fb::json &data,
+                                      std::int32_t state, std::string_view variant) {
+  std::string xyz =
+      std::format("{}\n{}\n", data.at("atoms").size(), data.at("name").get<std::string>());
+  for (const fb::json &atom : data.at("atoms")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  EXPECT_TRUE(fb::write_file(dir / "molecule.xyz", xyz).has_value());
+  std::string weights;
+  for (const double w : data.at("weights").get<std::vector<double>>()) {
+    weights += std::format("{}{:.17g}", weights.empty() ? "" : ", ", w);
+  }
+  // A case with no active list takes the frontier orbitals, as the
+  // generator does.
+  std::string active;
+  if (data.contains("active") && !data.at("active").is_null()) {
+    for (const auto t : data.at("active").get<std::vector<std::int32_t>>()) {
+      active += std::format("{}{}", active.empty() ? "" : ", ", t);
+    }
+    active = std::format("active = [{}]\n", active);
+  }
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"molecule.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n"
+      "[casscf]\nncas = {}\nnelecas = {}\n{}nroots = {}\nweights = [{}]\nconv_tol_grad = {:g}\n"
+      "conv_tol = {:g}\nmax_cycle = {}\n"
+      "[nevpt2_gradient]\nquasi_degenerate = true\nstate = {}\nvariant = \"{}\"\n",
+      data.at("basis").get<std::string>(), data.at("aux_basis").get<std::string>(),
+      data.at("ncas").get<std::int32_t>(), data.at("nelecas").get<std::int32_t>(), active,
+      data.at("weights").size(), weights, kQdConvTolGrad, kQdConvTol, kQdMaxCycle, state, variant);
+  EXPECT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  return dir / "run.toml";
+}
+
+// Run the case @p name at QD state @p state of @p variant through
+// Calculation, and hold its nevpt2_gradient.json's total along each of #696's
+// directions to twice that number's error bar.
+void expect_qd_state(std::string_view name, std::int32_t state, std::string_view variant) {
+  const auto start = std::chrono::steady_clock::now();
+  const fb::json &data = qd_gradient_data(name);
+  ASSERT_EQ(data.at("name").get<std::string>(), name);
+  const auto k = static_cast<std::size_t>(state);
+  ASSERT_LT(k, data.at("weights").size());
+  const fb::test::ScratchDir dir(std::format("pipeline_nevpt2_gradient_qd_{}", variant));
+  auto calc = fb::read_config(write_qd_config(dir, data, state, variant), dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+
+  const auto written = fb::read_json(dir / "out" / "nevpt2_gradient.json");
+  ASSERT_TRUE(written.has_value()) << written.error().message;
+  EXPECT_TRUE(written->at("quasi_degenerate").get<bool>());
+  EXPECT_EQ(written->at("state").get<std::int32_t>(), state);
+  EXPECT_EQ(written->at("variant").get<std::string>(), variant);
+  const auto qd_energies = written->at("qd_energies").get<std::vector<double>>();
+  ASSERT_EQ(qd_energies.size(), data.at("weights").size());
+  EXPECT_EQ(written->at("energy").get<double>(), qd_energies[k]);
+
+  // The product is what the file holds, the variant's QD alternative.
+  const auto &out = calc->get<fb::Nevpt2GradientOutput>();
+  ASSERT_TRUE(out.has_value());
+  const std::vector<double> &g = variant == "pc"
+                                     ? std::get<nevpt2::QdPcGradient>(out->gradient).total
+                                     : std::get<nevpt2::QdScGradient>(out->gradient).total;
+  ASSERT_EQ(g.size(), 3 * data.at("atoms").size());
+  const auto rows = written->at("total").get<std::vector<std::vector<double>>>();
+  ASSERT_EQ(3 * rows.size(), g.size());
+  for (std::size_t a = 0; a < rows.size(); ++a) {
+    for (std::size_t c = 0; c < 3; ++c) {
+      EXPECT_EQ(rows[a].at(c), g[(3 * a) + c]) << a << ", " << c;
+    }
+  }
+
+  // Against #696's numbers of state K along each stored direction.
+  const fb::json &directional = data.at("directional").at(variant).at(k);
+  const fb::json &directions = data.at("directions");
+  double worst = 0.0;
+  for (std::size_t d = 0; d < directions.size(); ++d) {
+    const auto u = directions.at(d).get<std::vector<double>>();
+    ASSERT_EQ(u.size(), g.size());
+    double ours = 0.0;
+    for (std::size_t i = 0; i < u.size(); ++i) {
+      ours += g[i] * u[i];
+    }
+    const double ref = directional.at("richardson").at(d).get<double>();
+    const double bar = directional.at("error_bar").at(d).get<double>();
+    EXPECT_LE(std::abs(ours - ref), kQdBarFactor * bar) << variant << " state " << k << " u" << d;
+    worst = std::max(worst, std::abs(ours - ref) / bar);
+    std::cout << std::format("[ nevpt2_gradient ] {} QD {} state {} u{}: analytic {:+.10f} "
+                             "numerical {:+.10f} diff {:+.2e} ({:.3f} bars of {:.1e})\n",
+                             name, variant, k, d, ours, ref, ours - ref, std::abs(ours - ref) / bar,
+                             bar);
+  }
+  std::cout << std::format(
+      "[ nevpt2_gradient ] {} QD {} state {} (run {:.2f} s): worst {:.3f} bars, E_K {:.10f} "
+      "({:+.2e} against #696's)\n",
+      name, variant, k, seconds.count(), worst, qd_energies[k],
+      qd_energies[k] -
+          data.at("reference").at(std::format("{}_energies", variant)).at(k).get<double>());
+}
+
+// State 1, not 0, so an index or ordering error between H_eff's eigenvalues
+// and the state wired through shows.
+TEST(PipelineNevpt2Gradient, QdScStateOneMatchesTheNumericalGradient) {
+  FBF_REQUIRE_GPU();
+  expect_qd_state("h6_631g_sa2", 1, "sc");
+}
+
+TEST(PipelineNevpt2Gradient, QdPcStateOneMatchesTheNumericalGradient) {
+  FBF_REQUIRE_GPU();
+  expect_qd_state("h6_631g_sa2", 1, "pc");
+}
+
+// The class named before "'s metric" in @p message, or empty.
+std::string refused_class(const std::string &message) {
+  const std::size_t at = message.find("'s metric");
+  if (at == std::string::npos) {
+    return {};
+  }
+  const std::size_t from = message.rfind(' ', at);
+  return message.substr(from == std::string::npos ? 0 : from + 1,
+                        at - (from == std::string::npos ? 0 : from + 1));
+}
+
+// A PC-QD refusal is reported as the [nevpt2] step reports it: the
+// pipeline_nevpt2_gpu.cpp PcRefusalKeepsScQd case (HF CAS(10,7) averaged over
+// three roots, the F 1s active), with [nevpt2] quasi_degenerate beside
+// [nevpt2_gradient] quasi_degenerate, variant = "pc". The energy step keeps
+// SC and records PC's refusal; the gradient, which has no SC to keep, fails
+// with the energy's Numerical error naming the same class, and writes
+// nothing.
+TEST(PipelineNevpt2Gradient, QdPcRefusalIsTheEnergyStepsRefusal) {
+  FBF_REQUIRE_GPU();
+  const fb::test::ScratchDir dir("pipeline_nevpt2_gradient_qd_refused");
+  ASSERT_TRUE(
+      fb::write_file(dir / "hf.xyz", "2\nhydrogen fluoride\nH 0 0 0\nF 0 0 0.917\n").has_value());
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"hf.xyz\"\n[basis_set]\nbasis = \"cc-pvdz\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"cc-pVDZ-JKFIT\"\n"
+                  "[casscf]\nncas = 7\nnelecas = 10\nnroots = 3\nconv_tol_grad = {:g}\n"
+                  "[nevpt2]\nquasi_degenerate = true\n"
+                  "[nevpt2_gradient]\nquasi_degenerate = true\nvariant = \"pc\"\n",
+                  kConvTolGrad);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  fb::NodeResources node;
+  const fb::Status ran = calc->run(node);
+  ASSERT_FALSE(ran.has_value());
+  EXPECT_EQ(ran.error().kind, fb::ErrorKind::Numerical) << ran.error().message;
+  EXPECT_FALSE(std::filesystem::exists(dir / "out" / "nevpt2_gradient.json"));
+
+  // The energy step ran beside it: SC-QD kept, PC-QD refused.
+  const auto &nevpt2 = calc->get<fb::Nevpt2Output>();
+  ASSERT_TRUE(nevpt2.has_value());
+  EXPECT_EQ(nevpt2->qd_energies.size(), 3U);
+  ASSERT_FALSE(nevpt2->pc_qd_refusal.empty());
+  EXPECT_NE(nevpt2->pc_qd_refusal.find("metric has no gap"), std::string::npos)
+      << nevpt2->pc_qd_refusal;
+  EXPECT_NE(ran.error().message.find("metric has no gap"), std::string::npos)
+      << ran.error().message;
+  const std::string energy_class = refused_class(nevpt2->pc_qd_refusal);
+  EXPECT_FALSE(energy_class.empty()) << nevpt2->pc_qd_refusal;
+  EXPECT_EQ(refused_class(ran.error().message), energy_class) << ran.error().message;
+  std::cout << std::format("[ nevpt2_gradient ] HF CAS(10,7) SA-3 PC-QD: gradient '{}'; [nevpt2] "
+                           "'{}'\n",
+                           ran.error().message, nevpt2->pc_qd_refusal);
 }
 
 } // namespace
