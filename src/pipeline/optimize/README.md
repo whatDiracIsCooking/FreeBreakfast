@@ -4,7 +4,8 @@ A geometry optimization: `../../geometry/`'s `geometry::optimize` (BFGS under a
 trust radius, the rigid-body motions projected out, Gaussian's four criteria)
 over the energy and gradient of the chain from the molecule to `[gradient]`
 (RHF), to `[casscf_gradient]` (a DF-CASSCF root, below) or to
-`[nevpt2_gradient]` (that CASSCF's SC- or PC-NEVPT2, below), rerun as a nested
+`[nevpt2_gradient]` (that CASSCF's SC- or PC-NEVPT2, or one SC- or
+PC-QD-NEVPT2 state of its state average, below), rerun as a nested
 `Pipeline` at every geometry. Every other step in the config then runs at the
 optimum.
 
@@ -24,6 +25,12 @@ struct OptimizeOutput {   // in pipeline.molecule
   Molecule molecule;      // the optimized geometry
   double energy;          // the SCF's energy there, the CASSCF root's, or its NEVPT2's
 };
+
+inline constexpr double kQdStateOverlapFloor = 0.9;
+// |sum_I u_I s_I u'_pi(I)|, or Numerical below the floor (below)
+Result<double> qd_state_overlap(std::span<const double> root_overlaps,
+                                std::span<const double> previous,
+                                std::span<const double> current);
 
 struct OptimizeStep {
   static constexpr std::string_view kName = "optimize";
@@ -91,7 +98,8 @@ optimization and is returned as it is.
   ```
 
   one entry per evaluation, the first at the start; `geometry::Iteration`'s
-  fields, `../../geometry/README.md`.
+  fields, `../../geometry/README.md`. Over a QD state each entry also has
+  `state_overlap` (null at the first) and `heff_gap` (below).
 
 ## The CASSCF chain
 
@@ -175,6 +183,42 @@ naming both.
   §Hazards; `test/gtest/data/README.md`'s note on symmetric H₂O). The
   optimizer steps through that under its trust radius; only a pair the
   gradient cannot determine is refused.
+
+## The QD-NEVPT2 state
+
+With `nevpt2_gradient.quasi_degenerate` set, the `[casscf]` is a state
+average and the energy optimized is E_K, the effective Hamiltonian's
+eigenvalue `nevpt2_gradient.state` (ascending), over the `QdScGradient`'s or
+`QdPcGradient`'s `total`. The chain is the NEVPT2 chain's, the state-averaged
+CASSCF's orbitals carried on.
+
+**The state is followed, not its index alone.** At every evaluation after
+the first:
+
+1. this CASSCF's roots are matched to the last evaluation's by
+   `mcscf::state_overlaps` (through the AO cross overlap of the two
+   geometries): each last root I to the root of largest |S_IJ|, which must
+   be one to one, with that overlap's sign;
+2. u_K, H_eff's eigenvector K over the roots (recovered from the
+   Lagrangian's W = u_K u_Kᵀ), is carried into that matched basis and
+   overlapped with the last u_K: `qd_state_overlap`, |Σ_I u_I s_I u'_π(I)|;
+3. the overlap is logged (`optimize: QD state K matched overlap ...`, with
+   H_eff's smallest gap and the CASSCF's root gap) and kept for
+   `optimize.json`; below `kQdStateOverlapFloor` (0.9, a turn of about 26°
+   in one step) the evaluation fails, `Numerical`, and so does the
+   optimization.
+
+The index K differentiated is never changed. H_eff's eigenvalues are
+continuous and kept ascending, so the state at K keeps its identity until
+two of them nearly cross; that is exactly where its u turns quickly and the
+overlap falls. The CASSCF roots, by contrast, may swap order freely: the
+matching carries u across a swap. So the optimization stays on the target
+state's surface, or refuses, and never steps onto another one. "Last" is the
+last evaluated geometry, a rejected one included, as for the carried
+orbitals.
+
+Every refusal of `[nevpt2_gradient]` stops it as in the NEVPT2 chain, H_eff
+eigenvalue K within `mcscf::kRootGapFloor` of another among them.
 
 ## Why a nested Pipeline, not a looping planner
 
@@ -285,6 +329,24 @@ the chain is rerun at every geometry, and so are any two of `[gradient]`,
   SCF and CASSCF, ending the run with that exact message and no file
   written; and both gradients set, or an integral-direct `eri`, refused
   before anything runs.
+- `test/pipeline/optimize_host.cpp`: `qd_state_overlap` follows a state
+  turned a little, through a sign flip and through a swap of the CASSCF
+  roots (where an overlap by index would be 0); refuses, `Numerical`, an
+  overlap just below `kQdStateOverlapFloor` (the floor itself is kept) and a
+  30° turn, and roots that do not match one to one; and sizes that do not
+  agree, `InvalidConfig`. `config_host.cpp`: an `[optimize]` over a
+  quasi-degenerate `[nevpt2_gradient]` is copied in.
+- `test/gtest/pipeline_optimize_gpu.cpp`, the QD state: formaldehyde's
+  SC-QD-NEVPT2 state 1 (n → π*) over its DF-SA2-CASSCF(4,3)
+  (`test/gtest/data/qd_nevpt2_gradient/h2co_ccpvdz_sa2.json`'s start),
+  cc-pVDZ / cc-pVDZ-JKFIT, at Opt=Tight's thresholds: converged in fewer
+  than 15 steps (10 today), every overlap after the first in
+  `optimize.json` at or above the floor, H_eff's gap printed per step
+  (0.095 at the least, no crossing), and the outer `[nevpt2_gradient]`, a
+  fresh single point at the optimum, with its largest component under
+  `max_force` and its rms under `rms_force`. The geometry stays planar, so
+  the two roots are of different irreps and each overlap is 1 to rounding;
+  the turning state is the host test's. About 4 s, inside the fast tier.
 
 ## Files
 

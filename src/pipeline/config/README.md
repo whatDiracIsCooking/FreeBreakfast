@@ -295,8 +295,9 @@ Each of these is `InvalidConfig` when the file is read: `quasi_degenerate`
 over a `[casscf]` of fewer than two roots, written or filled in; a `state`
 below 0 or not below `[casscf]` `nroots`; a `state` without
 `quasi_degenerate = true`; a `root` beside it (`state` names what is
-differentiated); and an `[optimize]` over it, not supported yet. The state
-average is then not refused; the spin and the ERI mode are, as above.
+differentiated). The state average is then not refused; the spin and the
+ERI mode are, as above. An `[optimize]` over it is taken, and follows the
+state K from geometry to geometry (`optimize/README.md`).
 
 ```toml
 [eri]
@@ -344,11 +345,11 @@ the CASSCF instead** (`optimize/README.md` "The CASSCF chain"), and
 then that root's. **With a `[nevpt2_gradient]` it ends in the SC- or PC-NEVPT2
 gradient** (`optimize/README.md` "The NEVPT2 chain"), `[casscf]` and
 `[nevpt2_gradient]` copied in, and the energy optimized is the NEVPT2 total
-energy. Any two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]`
+energy, or with `quasi_degenerate` the QD state's E_K. Any two of `[gradient]`, `[casscf_gradient]` and `[nevpt2_gradient]`
 are refused, and under an integral-direct `[eri]` either CASSCF chain is its
 gradient's `Unsupported`, as above, as are `[nevpt2_gradient]`'s other
-refusals (a state average, the start's multiplicity); a quasi-degenerate
-`[nevpt2_gradient]` is refused, `InvalidConfig`, not supported yet. One loading `from` a file is refused: the chain is rerun at every
+refusals (a state average without `quasi_degenerate`, the start's
+multiplicity). One loading `from` a file is refused: the chain is rerun at every
 geometry. **Then `[molecule]` is planned loaded from the `final.xyz`
 the step writes** (`MoleculeStep::load`, ordered after the optimization by
 the `OptimizeOutput` it reads), so every other step in the config -- the
@@ -499,7 +500,7 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a `[nevpt2]` `quasi_degenerate = true` over a `[casscf]` of fewer than
   two roots;
 - a `[nevpt2_gradient]` `quasi_degenerate = true` over a `[casscf]` of
-  fewer than two roots, or under an `[optimize]`; a `state` below 0, not
+  fewer than two roots; a `state` below 0, not
   below `nroots`, or without `quasi_degenerate`; or a `root` beside it;
 - what `Pipeline::create` refuses (a cycle).
 

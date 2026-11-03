@@ -13,7 +13,10 @@
 // (data/nevpt2_gradient/nevpt2_gradient.json) to a stationary point whose
 // energy is PySCF's DF-NEVPT2 single point there
 // (data/nevpt2_gradient/nevpt2_optimize.json) to 1e-9, and a refusal of the
-// gradient step ending the optimization with its message.
+// gradient step ending the optimization with its message. Last the QD
+// chain: formaldehyde's SC-QD-NEVPT2 state 1 over its DF-SA2-CASSCF(4,3)
+// (data/qd_nevpt2_gradient/h2co_ccpvdz_sa2.json), followed by overlap to a
+// stationary point that a fresh [nevpt2_gradient] confirms.
 
 #include <gtest/gtest.h>
 
@@ -610,6 +613,135 @@ TEST(PipelineOptimize, AHandBuiltNevpt2ChainIsRefusedBeforeItRuns) {
                                          "fitting only"),
             std::string::npos)
       << refused.error().message;
+}
+
+// --- The QD-NEVPT2 state ----------------------------------------------------
+
+// The QD chain's start: data/qd_nevpt2_gradient/h2co_ccpvdz_sa2.json's
+// planar formaldehyde, cc-pVDZ / cc-pVDZ-JKFIT, CAS(4,3) over the frontier
+// orbitals averaged over two roots, and its DF-SA-CASSCF at the generator's
+// convergence (that directory's README.md).
+const fb::json &qd_start() {
+  static const fb::json kDoc = [] {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2_gradient" /
+                              "h2co_ccpvdz_sa2.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  return kDoc;
+}
+
+// kOptimize's rms_force, beside kMaxForce: the optimizer's two force
+// criteria, which a fresh gradient at the optimum is held to (#707).
+constexpr double kRmsForce = 1e-5;
+// As the NEVPT2 chain's.
+constexpr std::size_t kQdMaxSteps = 15;
+
+// QD state K = 1 (the n -> pi* state, not the lowest, so the state is
+// followed by its identity rather than taken by index) of formaldehyde's
+// SC-QD-NEVPT2, optimized at Opt=Tight's thresholds from the case's start.
+// Every evaluation after the first logs its matched overlap, kept in
+// optimize.json, each at or above kQdStateOverlapFloor, and H_eff's smallest
+// gap, printed: no crossing along the path. It converges, its last
+// evaluation's largest force under max_force, and the outer
+// [nevpt2_gradient], a fresh single point from a fresh SCF and pick at the
+// optimum, has its largest component under max_force and its rms under
+// rms_force: the optimizer's own criteria. The point is planar (C2v), so its
+// two roots are of different irreps and every overlap is 1 to rounding; a
+// state turning into another is test/pipeline/optimize_host.cpp's. 10 steps in about 3 s
+// on the 3080, inside the fast tier.
+TEST(PipelineOptimize, FormaldehydeQdStateOneReachesAStationaryPoint) {
+  FBF_REQUIRE_GPU();
+  const fb::json &start = qd_start();
+  const fb::test::ScratchDir dir("pipeline_optimize_qd");
+  std::string xyz = std::format("{}\nstart\n", start.at("atoms").size());
+  for (const fb::json &atom : start.at("atoms")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  ASSERT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  const std::string toml =
+      std::format("[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+                  "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
+                  "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\nconv_tol_grad = 1e-10\n"
+                  "conv_tol = 1e-13\nmax_cycle = 200\n"
+                  "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 1\n{}",
+                  start.at("basis").get<std::string>(), start.at("aux_basis").get<std::string>(),
+                  kScf, start.at("ncas").get<std::int32_t>(),
+                  start.at("nelecas").get<std::int32_t>(), start.at("weights").size(), kOptimize);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient.has_value());
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->nevpt2_gradient->quasi_degenerate);
+  fb::NodeResources node;
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+
+  // Converged, and every step's matched overlap kept: null at the start,
+  // which has no last state, at or above the floor after it.
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_GE(iterations.size(), 2U);
+  const double max_force = iterations.back().at("max_force").get<double>();
+  EXPECT_LE(max_force, kMaxForce);
+  EXPECT_LT(iterations.size() - 1, kQdMaxSteps);
+  EXPECT_TRUE(iterations.front().at("state_overlap").is_null());
+  double worst_overlap = 1.0;
+  double smallest_gap = std::numeric_limits<double>::infinity();
+  for (std::size_t i = 0; i < iterations.size(); ++i) {
+    const fb::json &it = iterations[i];
+    ASSERT_TRUE(it.contains("state_overlap") && it.contains("heff_gap")) << i;
+    smallest_gap = std::min(smallest_gap, it.at("heff_gap").get<double>());
+    if (i > 0) {
+      const double overlap = it.at("state_overlap").get<double>();
+      EXPECT_GE(overlap, fb::kQdStateOverlapFloor) << i;
+      worst_overlap = std::min(worst_overlap, overlap);
+    }
+    std::cout << std::format("[ optimize ] h2co QD state 1 evaluation {:>2}: E {:.10f}, max "
+                             "force {:.2e}, matched overlap {}, H_eff gap {:.6f}\n",
+                             i, it.at("energy").get<double>(), it.at("max_force").get<double>(),
+                             i == 0 ? std::string("-")
+                                    : std::format("{:.10f}", it.at("state_overlap").get<double>()),
+                             it.at("heff_gap").get<double>());
+  }
+
+  // The fresh single point at the optimum: the outer [nevpt2_gradient].
+  const auto written = fb::read_json(dir / "out" / "nevpt2_gradient.json");
+  ASSERT_TRUE(written.has_value()) << written.error().message;
+  EXPECT_TRUE(written->at("quasi_degenerate").get<bool>());
+  EXPECT_EQ(written->at("state").get<std::int32_t>(), 1);
+  double fresh_max = 0.0;
+  double fresh_sq = 0.0;
+  std::size_t components = 0;
+  for (const auto &row : written->at("total").get<std::vector<std::vector<double>>>()) {
+    for (const double g : row) {
+      fresh_max = std::max(fresh_max, std::abs(g));
+      fresh_sq += g * g;
+      ++components;
+    }
+  }
+  ASSERT_EQ(components, 3 * start.at("atoms").size());
+  const double fresh_rms = std::sqrt(fresh_sq / static_cast<double>(components));
+  EXPECT_LE(fresh_max, kMaxForce);
+  EXPECT_LE(fresh_rms, kRmsForce);
+
+  std::cout << std::format("[ optimize ] h2co_ccpvdz_sa2 SC-QD-NEVPT2 state 1: {} steps, max "
+                           "force {:.2e}, E {:.12f}, worst matched overlap {:.10f}, smallest "
+                           "H_eff gap {:.6f}; fresh gradient max {:.2e} rms {:.2e} 2-norm {:.2e} "
+                           "(max_force {:.1e}, rms_force {:.1e}), E_K {:.12f}; {:.1f} s\n",
+                           iterations.size() - 1, max_force, out->energy, worst_overlap,
+                           smallest_gap, fresh_max, fresh_rms, std::sqrt(fresh_sq), kMaxForce,
+                           kRmsForce, written->at("energy").get<double>(), seconds);
 }
 
 } // namespace
