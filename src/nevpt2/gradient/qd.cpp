@@ -1,10 +1,10 @@
 /// @file
-/// @brief qd_sc_energy and qd_sc_adjoint: the SC-QD-NEVPT2 effective
-/// Hamiltonian's correlation elements over (h, B, C) and the roots, one set
-/// of shared inputs over the state-averaged Fock and every ordered pair's
-/// transition RDMs, and the reverse pass of E[W] = Σ_MN W_MN H_MN through
-/// sc_effective_hamiltonian_adjoint, the RDMs' adjoints and the shared
-/// builders'.
+/// @brief qd_sc_energy, qd_pc_energy, qd_sc_adjoint and qd_pc_adjoint: the
+/// SC- and PC-QD-NEVPT2 effective Hamiltonians' correlation elements over
+/// (h, B, C) and the roots, one set of shared inputs over the state-averaged
+/// Fock and every ordered pair's transition RDMs, and the reverse pass of
+/// E[W] = Σ_MN W_MN H_MN through sc_ or pc_effective_hamiltonian_adjoint,
+/// the RDMs' adjoints and the shared builders'.
 
 module free_breakfast.nevpt2.gradient;
 
@@ -15,6 +15,7 @@ import free_breakfast.core.wwr; // Buffers
 import free_breakfast.core.resources;
 import free_breakfast.ci.strings;
 import free_breakfast.nevpt2.rdm;
+import free_breakfast.nevpt2.density_fitting; // MoBlocks
 import free_breakfast.nevpt2.energy;
 import :operands; // column_operand, contract, zeroed, add_onto, check_weights
 import :builders; // ScArrays, the builders, their runs and builders_adjoint
@@ -130,21 +131,38 @@ qd_sc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
   return sc_effective_hamiltonian(res, q.x.blocks, qd_inputs(q, weights.size()), batch);
 }
 
-Result<QdScAdjoint> qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                                  const ci::DeviceStringSet &beta, const int32_t naux,
-                                  const int32_t nao, const int32_t nmo, const double *b,
-                                  const double *c, const double *h, const int32_t ncore,
-                                  const int32_t ncas, const std::span<const double> weights,
-                                  const double *vectors, const std::span<const double> w,
-                                  const int32_t batch) {
-  constexpr std::string_view kWho = "nevpt2::qd_sc_adjoint";
-  FBF_TRY(check_weights(kWho, weights));
+Result<std::vector<PcClassEnergies>>
+qd_pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
+             const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
+             const int32_t nmo, const double *b, const double *c, const double *h,
+             const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
+             const double *vectors, const int32_t batch) {
+  const QdArrays q = FBF_TRY(qd_arrays(res, "nevpt2::qd_pc_energy", alpha, beta, naux, nao, nmo, b,
+                                       c, h, ncore, ncas, weights, vectors));
+  return pc_effective_hamiltonian(res, q.x.blocks, qd_inputs(q, weights.size()), batch);
+}
+
+// The reverse pass of E[W] around @p walk, the effective Hamiltonian's
+// adjoint at H̄ = W (SC's or PC's), which adds onto the bars it is handed and
+// hands each transition pair to the callback it is given: the RDMs' bars
+// onto every root's y, then builders_adjoint. The energies are @p walk's to
+// keep.
+Result<ScAdjoint>
+qd_adjoint(DeviceResources &res, const std::string_view who, const ci::DeviceStringSet &alpha,
+           const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
+           const int32_t nmo, const double *b, const double *c, const double *h,
+           const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
+           const double *vectors, const std::span<const double> w,
+           const std::function<
+               Status(const MoBlocks &, std::span<const EnergyInputs>, std::span<const EnergyBars>,
+                      const std::function<Status(int64_t, int64_t, const EnergyBars &)> &)> &walk) {
+  FBF_TRY(check_weights(who, weights));
   const size_t nroots = weights.size();
   if (w.size() != nroots * nroots) {
-    return err_config("{}: W holds {} elements for {} roots: n^2", kWho, w.size(), nroots);
+    return err_config("{}: W holds {} elements for {} roots: n^2", who, w.size(), nroots);
   }
   QdArrays q = FBF_TRY(
-      qd_arrays(res, kWho, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors));
+      qd_arrays(res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors));
   ScArrays &x = q.x;
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t n = ncas;
@@ -188,8 +206,8 @@ Result<QdScAdjoint> qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSe
     FBF_TRY(add_onto(res, ndet, 1, ket_bar.data(), y.data() + (ket * ndet), ndet));
     return {};
   };
-  const ScEffectiveHamiltonianAdjoint walked = FBF_TRY(sc_effective_hamiltonian_adjoint(
-      res, x.blocks, qd_inputs(q, nroots), w, batch, bars, transition));
+  // A refused class is the walk's error, returned before any bar is read.
+  FBF_TRY(walk(x.blocks, qd_inputs(q, nroots), bars, transition));
 
   // Each root's own: gamma_SA's bar at its weight onto dm1's, the traces'
   // adjoint, then the one-vector rdms_adjoint onto its y and (tu|vw)'s bar.
@@ -210,9 +228,56 @@ Result<QdScAdjoint> qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSe
     }
     return std::move(y);
   };
-  ScAdjoint adj = FBF_TRY(builders_adjoint(res, naux, nao, nmo, b, c, ncore, ncas, x, bar,
-                                           std::move(lambda_raw), own_rdms_adjoint));
-  return QdScAdjoint{.elements = walked.elements,
+  return builders_adjoint(res, naux, nao, nmo, b, c, ncore, ncas, x, bar, std::move(lambda_raw),
+                          own_rdms_adjoint);
+}
+
+Result<QdScAdjoint> qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                  const ci::DeviceStringSet &beta, const int32_t naux,
+                                  const int32_t nao, const int32_t nmo, const double *b,
+                                  const double *c, const double *h, const int32_t ncore,
+                                  const int32_t ncas, const std::span<const double> weights,
+                                  const double *vectors, const std::span<const double> w,
+                                  const int32_t batch) {
+  std::vector<ClassEnergies> elements;
+  ScAdjoint adj = FBF_TRY(
+      qd_adjoint(res, "nevpt2::qd_sc_adjoint", alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas,
+                 weights, vectors, w,
+                 [&](const MoBlocks &blocks, const std::span<const EnergyInputs> pairs,
+                     const std::span<const EnergyBars> bars, const auto &transition) -> Status {
+                   auto walked = FBF_TRY(sc_effective_hamiltonian_adjoint(res, blocks, pairs, w,
+                                                                          batch, bars, transition));
+                   elements = std::move(walked.elements);
+                   return {};
+                 }));
+  return QdScAdjoint{.elements = std::move(elements),
+                     .h_bar = std::move(adj.h_bar),
+                     .lambda = std::move(adj.lambda),
+                     .y = std::move(adj.y),
+                     .x = std::move(adj.x),
+                     .a = std::move(adj.a),
+                     .epsilon = std::move(adj.epsilon)};
+}
+
+Result<QdPcAdjoint> qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+                                  const ci::DeviceStringSet &beta, const int32_t naux,
+                                  const int32_t nao, const int32_t nmo, const double *b,
+                                  const double *c, const double *h, const int32_t ncore,
+                                  const int32_t ncas, const std::span<const double> weights,
+                                  const double *vectors, const std::span<const double> w,
+                                  const int32_t batch) {
+  std::vector<PcClassEnergies> elements;
+  ScAdjoint adj = FBF_TRY(
+      qd_adjoint(res, "nevpt2::qd_pc_adjoint", alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas,
+                 weights, vectors, w,
+                 [&](const MoBlocks &blocks, const std::span<const EnergyInputs> pairs,
+                     const std::span<const EnergyBars> bars, const auto &transition) -> Status {
+                   auto walked = FBF_TRY(pc_effective_hamiltonian_adjoint(res, blocks, pairs, w,
+                                                                          batch, bars, transition));
+                   elements = std::move(walked.elements);
+                   return {};
+                 }));
+  return QdPcAdjoint{.elements = std::move(elements),
                      .h_bar = std::move(adj.h_bar),
                      .lambda = std::move(adj.lambda),
                      .y = std::move(adj.y),

@@ -15,7 +15,8 @@
 /// The PC-NEVPT2 energy, adjoint and gradient are the same code with the PC
 /// class energies (and their reverse pass) in place of SC's. The SC-QD-NEVPT2
 /// effective Hamiltonian of several roots over shared orbitals is the same
-/// builders around sc_effective_hamiltonian, and its adjoint along any W.
+/// builders around sc_effective_hamiltonian, and its adjoint along any W;
+/// the PC-QD one the same around pc_effective_hamiltonian.
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -233,6 +234,68 @@ struct QdScAdjoint {
 ///         density-fitted adjoints.
 [[nodiscard]] Result<QdScAdjoint>
 qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+              const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+              const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+              std::span<const double> weights, const double *vectors, std::span<const double> w,
+              int32_t batch);
+
+/// @brief The PC-QD-NEVPT2 effective Hamiltonian's correlation elements of
+/// the roots @p vectors over the shared orbitals @p c: qd_sc_energy's inputs,
+/// built the same way from the same arguments, through
+/// pc_effective_hamiltonian instead of sc_effective_hamiltonian. Element
+/// [M n + N] is ⟨M|V|Ψ_N⁽¹⁾⟩ per class, ket N's own solve; at one root,
+/// weight 1, it is pc_energy's.
+///
+/// @return The n^2 elements; qd_sc_energy's InvalidConfig; a refused class's
+///         Numerical error naming the class and the state, as
+///         pc_effective_hamiltonian refuses it; or the error of a builder or
+///         nevpt2::rdms.
+[[nodiscard]] Result<std::vector<PcClassEnergies>>
+qd_pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
+             const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+             const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+             std::span<const double> weights, const double *vectors, int32_t batch);
+
+/// @brief qd_pc_adjoint's result: QdScAdjoint's arrays, in its conventions,
+/// of the PC-QD functional.
+struct QdPcAdjoint {
+  /// @brief The n^2 elements, as qd_pc_energy computes them.
+  std::vector<PcClassEnergies> elements;
+  /// @brief dE/dh in the MO basis, as QdScAdjoint::h_bar.
+  Buffers::device<double> h_bar;
+  /// @brief dE/dB^L in the MO basis, as QdScAdjoint::lambda.
+  Buffers::device<double> lambda;
+  /// @brief y_r = dE/dc_r per root, raw, as QdScAdjoint::y.
+  Buffers::device<double> y;
+  /// @brief The orbital source term X, as QdScAdjoint::x.
+  Buffers::device<double> x;
+  /// @brief A = X - X^T, as QdScAdjoint::a; on the inactive blocks it is
+  /// PcAdjoint::a's kind, zero on a degenerate pair only.
+  Buffers::device<double> a;
+  /// @brief The state-averaged Fock's core and virtual diagonals, as
+  /// QdScAdjoint::epsilon.
+  Buffers::device<double> epsilon;
+};
+
+/// @brief The adjoint of E[W] = sum_MN W_MN H_MN, H_MN qd_pc_energy's
+/// element (M, N) total, at fixed @p w: qd_sc_adjoint's arguments and
+/// reverse pass with pc_effective_hamiltonian_adjoint at H̄ = W in place of
+/// sc_effective_hamiltonian_adjoint, as pc_adjoint is sc_adjoint's. The
+/// transition pairs' bars, handed over after the walk in row-major pair
+/// order, go through the bra/ket rdms_adjoint as SC-QD's do; the shared
+/// builders, gamma_SA's bar onto every root and h_bar, Lambda, X, A and ε are
+/// the same code. At one root, weight 1 and W = 1, the result is
+/// pc_adjoint's to round-off.
+///
+/// PC's finish drops the restricted inverse's rank-projector terms, exact
+/// when each b_{M←N} lies in S_N's kept span, which holds at eigenstates
+/// (S_N's dropped modes annihilate |N⟩); the ladders along each c_r check it.
+///
+/// @return The elements and the adjoints; InvalidConfig as qd_sc_adjoint's;
+///         a refused class's Numerical error, qd_pc_energy's, never a zero;
+///         or the errors of rdms_adjoint and the density-fitted adjoints.
+[[nodiscard]] Result<QdPcAdjoint>
+qd_pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
               const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
               const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
               std::span<const double> weights, const double *vectors, std::span<const double> w,
