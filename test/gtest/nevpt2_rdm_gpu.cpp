@@ -13,6 +13,8 @@
 // different vectors against PySCF's (data/nevpt2_transition/, written by
 // tools/emit/nevpt2_transition_golden.py), at one tile and many, its own
 // budget refusal, and bra == ket as the one-vector build bit for bit. And the
+// null-f3 build (QD's off-diagonal call): dm1, dm2 and dm3 the f3 build's bit
+// for bit, its plan's bytes and its refusals. And the
 // bra/ket adjoint against the bra/ket build the same way, perturbing the bra
 // and the ket apart, with the f3 bars and without (its null-f3 switch and that
 // plan's bytes); at bra = ket its two bars summing to the one-vector
@@ -726,6 +728,139 @@ TEST(NevptRdm, BraEqualKetIsTheOneVectorBuild) {
       }
     }
   }
+}
+
+// Null f3ca and f3ac build dm3 (and between two vectors dm1 and dm2) alone,
+// and they are the f3 build's bit for bit, of one vector and between two, at
+// one tile and at many, each build planned to the same width from its own
+// bytes. The floor is measured first, per width: two f3 builds are bitwise
+// one another (nothing in the build is atomic and every sum has a fixed
+// order), so the comparison is bitwise too. Between two vectors (tu|vw) is
+// passed null, since it is not read.
+TEST(NevptRdm, NullF3IsTheF3BuildsDms) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  for (const Case &c : kCases) {
+    SCOPED_TRACE(c.name);
+    const auto golden = read_golden(c);
+    ASSERT_TRUE(golden);
+    auto s = set_up(res, c.n, c.per_spin, golden->ci, golden->eri);
+    ASSERT_TRUE(s);
+    const auto ndet = static_cast<std::int64_t>(golden->ci.size());
+    for (const std::int64_t w : {ndet, ndet == 36 ? std::int64_t{7} : std::int64_t{23}}) {
+      SCOPED_TRACE("width " + std::to_string(w));
+      const std::size_t budget = fb::nevpt2::rdms_workspace_bytes(c.n, w + 1) - 1;
+      const auto on = build(res, *s, budget);
+      const auto again = build(res, *s, budget);
+      ASSERT_TRUE(on && again);
+      EXPECT_EQ(on->tiles, fb::math::idivup(ndet, w));
+      EXPECT_EQ(again->dm3, on->dm3) << "two f3 builds";
+      const auto tiles = fb::nevpt2::rdms(
+          res, s->strings, s->strings, s->ci.data(), s->eri.data(), s->dm3.data(), nullptr, nullptr,
+          fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, false, false) - 1);
+      ASSERT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+      EXPECT_EQ(*tiles, on->tiles);
+      EXPECT_EQ(on_host(res, s->dm3), on->dm3) << "dm3";
+    }
+  }
+  for (const TransitionCase &c : kTransitionCases) {
+    SCOPED_TRACE(c.name);
+    const auto golden = read_transition(c);
+    ASSERT_TRUE(golden);
+    auto s = set_up_transition(res, c, *golden);
+    ASSERT_TRUE(s);
+    const auto ndet = static_cast<std::int64_t>(golden->bra.size());
+    for (const std::int64_t w : {ndet, ndet == 36 ? std::int64_t{7} : std::int64_t{23}}) {
+      SCOPED_TRACE("width " + std::to_string(w));
+      const std::size_t budget = fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true) - 1;
+      const auto on = build_transition(res, *s, s->bra.data(), s->ket.data(), budget);
+      const auto again = build_transition(res, *s, s->bra.data(), s->ket.data(), budget);
+      ASSERT_TRUE(on && again);
+      EXPECT_EQ(on->tiles, fb::math::idivup(ndet, w));
+      EXPECT_EQ(again->dm1, on->dm1) << "two f3 builds";
+      EXPECT_EQ(again->dm2, on->dm2) << "two f3 builds";
+      EXPECT_EQ(again->dm3, on->dm3) << "two f3 builds";
+      const auto tiles =
+          fb::nevpt2::rdms(res, s->alpha, s->beta, s->bra.data(), s->ket.data(), nullptr,
+                           s->dm1.data(), s->dm2.data(), s->dm3.data(), nullptr, nullptr,
+                           fb::nevpt2::rdms_workspace_bytes(c.n, w + 1, true, false) - 1);
+      ASSERT_TRUE(tiles) << (tiles ? "" : tiles.error().message);
+      EXPECT_EQ(*tiles, on->tiles);
+      EXPECT_EQ(on_host(res, s->dm1), on->dm1) << "dm1";
+      EXPECT_EQ(on_host(res, s->dm2), on->dm2) << "dm2";
+      EXPECT_EQ(on_host(res, s->dm3), on->dm3) << "dm3";
+    }
+  }
+}
+
+// The null-f3 build's plan and refusals. It plans without (tu|vw)'s two
+// copies, fdm2, W and the ket's L2: the bytes are the tile's R and L2 alone,
+// the same with or without a transition, and a call carves exactly those. A
+// budget below one determinant's tile is Unsupported, and one f3 null and the
+// other not is InvalidConfig, in both overloads, each before anything is
+// queued (the outputs keep what they held, the workspace is not grown).
+TEST(NevptRdm, NullF3PlanAndRefusals) {
+  FBF_REQUIRE_GPU();
+  fb::DeviceResources res{0};
+  constexpr std::int32_t kN = 4;
+  const auto align = [](std::size_t bytes) {
+    return fb::math::align_up(bytes, fb::DeviceResources::kWorkspaceAlignment);
+  };
+  for (const std::int64_t w : {std::int64_t{1}, std::int64_t{36}}) {
+    const auto t = static_cast<std::size_t>(w) * sizeof(double);
+    const std::size_t lean = align(16 * t) + align(256 * t);
+    EXPECT_EQ(fb::nevpt2::rdms_workspace_bytes(kN, w, true, false), lean);
+    EXPECT_EQ(fb::nevpt2::rdms_workspace_bytes(kN, w, false, false), lean);
+    EXPECT_EQ(fb::nevpt2::rdms_workspace_bytes(kN, w, true, true),
+              fb::nevpt2::rdms_workspace_bytes(kN, w, true));
+  }
+
+  auto four = fb::ci::DeviceStringSet::create(res, kN, 2);
+  ASSERT_TRUE(four);
+  {
+    // A fresh workspace, so what one null-f3 tile carves is all it holds.
+    fb::DeviceResources fresh{0};
+    std::mt19937_64 rng{719};
+    const auto bra = on_device(fresh, random_vector(rng, 36));
+    const auto ket = on_device(fresh, random_vector(rng, 36));
+    fb::Buffers::device<double> dm1(16, fresh.device());
+    fb::Buffers::device<double> dm2(256, fresh.device());
+    fb::Buffers::device<double> dm3(4096, fresh.device());
+    const auto got = fb::nevpt2::rdms(fresh, *four, *four, bra.data(), ket.data(), nullptr,
+                                      dm1.data(), dm2.data(), dm3.data(), nullptr, nullptr);
+    ASSERT_TRUE(got) << (got ? "" : got.error().message);
+    EXPECT_EQ(*got, 1);
+    EXPECT_EQ(fresh.device_workspace(0).num_elements(),
+              fb::nevpt2::rdms_workspace_bytes(kN, 36, true, false));
+  }
+
+  const std::vector<double> sentinel(std::size_t{1} << 12, 0.25);
+  auto scratch = on_device(res, sentinel);
+  double *const p = scratch.data();
+  const std::size_t held = res.device_workspace(0).num_elements();
+  for (const std::size_t budget :
+       {std::size_t{0}, fb::nevpt2::rdms_workspace_bytes(kN, 1, true, false) - 1}) {
+    const auto got =
+        fb::nevpt2::rdms(res, *four, *four, p, p + 1, p, p, p, p, nullptr, nullptr, budget);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::Unsupported) << got.error().message;
+    EXPECT_NE(got.error().message.find("nevpt2::rdms:"), std::string::npos);
+  }
+  const auto single = fb::nevpt2::rdms(res, *four, *four, p, p, p, nullptr, nullptr,
+                                       fb::nevpt2::rdms_workspace_bytes(kN, 1, false, false) - 1);
+  ASSERT_FALSE(single);
+  EXPECT_EQ(single.error().kind, fb::ErrorKind::Unsupported) << single.error().message;
+  for (const auto &[ca, ac] :
+       {std::pair<double *, double *>{p, nullptr}, std::pair<double *, double *>{nullptr, p}}) {
+    const auto pair = fb::nevpt2::rdms(res, *four, *four, p, p + 1, p, p, p, p, ca, ac);
+    ASSERT_FALSE(pair);
+    EXPECT_EQ(pair.error().kind, fb::ErrorKind::InvalidConfig) << pair.error().message;
+    const auto one = fb::nevpt2::rdms(res, *four, *four, p, p, p, ca, ac);
+    ASSERT_FALSE(one);
+    EXPECT_EQ(one.error().kind, fb::ErrorKind::InvalidConfig) << one.error().message;
+  }
+  EXPECT_EQ(res.device_workspace(0).num_elements(), held);
+  EXPECT_EQ(on_host(res, scratch), sentinel);
 }
 
 // The bra/ket adjoint's outputs, on the host.

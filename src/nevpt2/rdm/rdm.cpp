@@ -30,8 +30,8 @@ namespace free_breakfast::nevpt2 {
 // than return, so this is what keeps the build on the refusing side of it.
 constexpr size_t kRdmsHeadroomBytes = size_t{512} << 20;
 
-size_t rdms_workspace_bytes(const int32_t n_orbitals, const int64_t width,
-                            const bool transition) noexcept {
+size_t rdms_workspace_bytes(const int32_t n_orbitals, const int64_t width, const bool transition,
+                            const bool f3) noexcept {
   const auto n = static_cast<size_t>(n_orbitals);
   const size_t nn = n * n;
   const auto w = static_cast<size_t>(width);
@@ -39,7 +39,11 @@ size_t rdms_workspace_bytes(const int32_t n_orbitals, const int64_t width,
     return math::align_up(sizeof(double) * count, DeviceResources::kWorkspaceAlignment);
   };
   // rdms' device_regions, in its order: eri, consume and fdm2, then R, L2, W,
-  // and the ket's L2, which is empty for one vector.
+  // and the ket's L2, which is empty for one vector. Without f3 only R and L2
+  // are not empty.
+  if (!f3) {
+    return region(nn * w) + region(nn * nn * w);
+  }
   return (3 * region(nn * nn)) + region(nn * w) + region(nn * nn * w) + region(nn * w) +
          region(transition ? nn * nn * w : 0);
 }
@@ -214,6 +218,12 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                      const double *const ket, const double *const eri, double *const dm1,
                      double *const dm2, double *const dm3, double *const f3ca, double *const f3ac,
                      const size_t max_bytes) {
+  if ((f3ca == nullptr) != (f3ac == nullptr)) {
+    return err_config("nevpt2::rdms: f3ca is {} and f3ac {}: the f3s are built together or not at "
+                      "all",
+                      f3ca == nullptr ? "null" : "given", f3ac == nullptr ? "null" : "given");
+  }
+  const bool f3 = f3ca != nullptr;
   const ScopedDeviceIndex on{res.dev_idx()};
   // One vector is the build it always was, operation for operation: one L2
   // per tile, the consume reading it as the ket's, and fdm2's own read.
@@ -221,20 +231,22 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
   const int64_t n = alpha.n_orbitals();
   const int64_t nn = n * n;
   const int64_t n4 = nn * nn;
-  const auto bytes = [transition](const int32_t m, const int64_t w) {
-    return rdms_workspace_bytes(m, w, transition);
+  const auto bytes = [transition, f3](const int32_t m, const int64_t w) {
+    return rdms_workspace_bytes(m, w, transition, f3);
   };
-  const int64_t width =
-      FBF_TRY(rdms_tile_width(res, alpha, beta, max_bytes, "rdms", bytes,
-                              static_cast<size_t>((2 * nn) + (transition ? 2 * n4 : n4))));
+  const int64_t per_det = f3 ? (2 * nn) + (transition ? 2 * n4 : n4) : nn + n4;
+  const int64_t width = FBF_TRY(
+      rdms_tile_width(res, alpha, beta, max_bytes, "rdms", bytes, static_cast<size_t>(per_det)));
   const int32_t n32 = alpha.n_orbitals();
   const int64_t ndet = static_cast<int64_t>(alpha.size()) * beta.size();
   const int64_t tiles = math::idivup(ndet, width);
 
   const wwr::wwrStream_t stream = res.stream();
   const size_t n6_bytes = sizeof(double) * static_cast<size_t>(n4 * nn);
-  for (double *const out : {dm3, f3ca, f3ac}) {
-    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(out, 0, n6_bytes, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(dm3, 0, n6_bytes, stream)));
+  if (f3) {
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(f3ca, 0, n6_bytes, stream)));
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(f3ac, 0, n6_bytes, stream)));
   }
   if (dm1 != nullptr) {
     FBF_TRY(
@@ -244,14 +256,19 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
     FBF_TRY(
         gpu_status(wwr::wwrMemsetAsync(dm2, 0, sizeof(double) * static_cast<size_t>(n4), stream)));
   }
+  // Every f3-only region is empty without f3: (tu|vw)'s two copies, fdm2, W
+  // and the ket's L2, which is also empty for one vector.
+  const auto f4 = static_cast<size_t>(f3 ? n4 : 0);
   const auto [eri_rm, consume, fdm2, r, l2, w, l2_ket_region] = res.device_regions<double>(
-      static_cast<size_t>(n4), static_cast<size_t>(n4), static_cast<size_t>(n4),
-      static_cast<size_t>(nn * width), static_cast<size_t>(n4 * width),
-      static_cast<size_t>(nn * width), static_cast<size_t>(transition ? n4 * width : 0));
+      f4, f4, f4, static_cast<size_t>(nn * width), static_cast<size_t>(n4 * width),
+      static_cast<size_t>(f3 ? nn * width : 0),
+      static_cast<size_t>(f3 && transition ? n4 * width : 0));
   // L2 is the bra's; the consume reads the ket's, which is the same one for
   // one vector.
   double *const l2_ket = transition ? l2_ket_region : l2;
-  FBF_TRY(gpu_status(device::rdm_convert_eri(stream, n32, eri, eri_rm, consume)));
+  if (f3) {
+    FBF_TRY(gpu_status(device::rdm_convert_eri(stream, n32, eri, eri_rm, consume)));
+  }
 
   const int32_t n_beta = beta.size();
   for (int64_t begin = 0; begin < ndet; begin += width) {
@@ -260,9 +277,9 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
         stream, n32, n_beta, alpha.device_replacements(), alpha.replacements_per_string(),
         beta.device_replacements(), beta.replacements_per_string(), bra, ket,
         static_cast<int32_t>(begin), static_cast<int32_t>(count), r, l2)));
-    if (transition) {
-      // The ket's own L2[pqrs, K] = ⟨J| E_pq E_rs |K⟩; this gather writes R
-      // again, the same numbers.
+    if (f3 && transition) {
+      // The ket's own L2[pqrs, K] = ⟨J| E_pq E_rs |K⟩, which only the consume
+      // reads; this gather writes R again, the same numbers.
       FBF_TRY(gpu_status(device::rdm_produce(
           stream, n32, n_beta, alpha.device_replacements(), alpha.replacements_per_string(),
           beta.device_replacements(), beta.replacements_per_string(), ket, ket,
@@ -282,12 +299,17 @@ Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                                     &kOne<double>, l2, count, ket + begin, 1,
                                                     &kOne<double>, dm2, 1)));
     }
-    FBF_TRY(rdms_consume(res, n, count, consume, l2_ket, w, true));
-    FBF_TRY(rdms_digest(res, n4, nn, count, l2, w, f3ca));
-    FBF_TRY(rdms_consume(res, n, count, consume, l2_ket, w, false));
-    FBF_TRY(rdms_digest(res, n4, nn, count, l2, w, f3ac));
+    if (f3) {
+      FBF_TRY(rdms_consume(res, n, count, consume, l2_ket, w, true));
+      FBF_TRY(rdms_digest(res, n4, nn, count, l2, w, f3ca));
+      FBF_TRY(rdms_consume(res, n, count, consume, l2_ket, w, false));
+      FBF_TRY(rdms_digest(res, n4, nn, count, l2, w, f3ac));
+    }
   }
 
+  if (!f3) {
+    return tiles;
+  }
   // fdm2 and the wedge need the fully summed dm3 and f3.
   FBF_TRY(gpu_status(device::rdm_fdm2_ca(stream, n32, eri_rm, dm3, transition, fdm2)));
   FBF_TRY(gpu_status(device::rdm_wedge(stream, n32, fdm2, f3ca)));

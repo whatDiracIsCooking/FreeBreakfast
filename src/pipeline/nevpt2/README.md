@@ -137,7 +137,8 @@ layer's `nevpt2::sc_effective_hamiltonian` and `pc_effective_hamiltonian`
    f3ca, f3ac do not depend on the core and virtual rotation, which leaves
    the active orbitals and (tu|vw) alone), for the diagonal.
 3. **Per unordered pair I < J**, the transition dm1, dm2 and dm3 of (I, J)
-   and of (J, I) by `nevpt2::rdms` with a bra and a ket, then both effective
+   and of (J, I) by `nevpt2::rdms` with a bra and a ket, and null f3ca and
+   f3ac (read on the diagonal only), then both effective
    Hamiltonians over the pair's 2 × 2 block: root I's own inputs, (I, J),
    (J, I), root J's own. A coupling ⟨I|V|Ψ_J⁽¹⁾⟩ reads only the pair's
    transition RDMs and ket J's own (its N, H, or its PC solve), so the 2 × 2
@@ -166,8 +167,8 @@ root's own, so QD would only repeat the state-specific result.
 roots, SC's then PC's, or `PC-QD-NEVPT2: refused (<message>)`.
 
 **The cost** over the per-root pass: one Fock and one set of MO blocks, n(n
-− 1) transition builds of `nevpt2::rdms` (each about one per-root build:
-the transition one gathers the ket's L2 too), and n(n − 1)/2 calls of each
+− 1) transition builds of `nevpt2::rdms` (each dm3 and the dm1 and dm2
+gemvs alone, about a third of a per-root build's gemm work), and n(n − 1)/2 calls of each
 effective Hamiltonian over four pairs, so every root's diagonal class walk
 and PC solves are repeated n − 1 times. That buys memory independent of n
 (below); at the sizes QD is for (a few roots) the repeat is small beside the
@@ -200,9 +201,9 @@ are the step's own buffers, not the workspace's: each is held across calls
 that use it. The largest are dm3, f3ca and f3ac, n_act⁶ doubles each.
 
 **QD** keeps every root's dm3, f3ca and f3ac (3n of them), and per pair two
-transition dm3 and one f3ca and f3ac scratch (`nevpt2::rdms` writes them;
-the effective Hamiltonians read f3 only on the diagonal): 3n + 4 n_act⁶
-tensors, not the 3n² of every pair's transition set at once. Each pair's are
+transition dm3 (the transition builds skip f3, which the effective
+Hamiltonians read only on the diagonal): 3n + 2 n_act⁶ tensors, not the 3n²
+of every pair's transition set at once. Each pair's are
 consumed by its 2 × 2 block before the next pair is built, and the layer's
 own per-pair intermediates (dm3_h, ...; the PC transition rows) are four
 pairs' rather than n²'s. The slab batch is sized as per root.
