@@ -1,0 +1,20 @@
+# The SC-QD-NEVPT2 derivative coupling between the two QD states over a
+# state-averaged CASSCF(4,3) of formaldehyde in cc-pVDZ. Writes
+# nevpt2_nac.json beside casscf.molden and scf.molden.
+[molecule]
+xyz = "h2co.xyz"
+[basis_set]
+basis = "cc-pvdz"
+[eri]
+mode = "density_fitting"   # required
+aux_basis = "cc-pvdz-jkfit"
+[casscf]
+ncas = 3
+nelecas = 4
+nroots = 2                 # at least 2: H_eff has one QD state per root
+conv_tol_grad = 1e-10      # the couplings are the CASSCF's only at convergence
+[nevpt2_nac]
+pairs = [[0, 1]]           # (bra, ket) QD states; left out, every P < Q
+variant = "sc"             # the default; "pc" the other
+mult_ediff = false         # the default
+use_etfs = false           # the default

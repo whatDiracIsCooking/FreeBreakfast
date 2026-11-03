@@ -182,6 +182,31 @@ void print_products(const fb::Calculation &calc) {
         },
         out->gradient);
   }
+  if (const auto &out = calc.get<fb::Nevpt2NacOutput>()) {
+    const fb::Nevpt2NacStep &step = *calc.step<fb::Nevpt2NacStep>();
+    const std::string_view scheme = step.variant == fb::Nevpt2Variant::Pc ? "PC" : "SC";
+    // total as the options ask: h_PQ + (E_Q - E_P) d under mult_ediff.
+    const std::string_view unit = step.options.mult_ediff ? "Ha/bohr" : "1/bohr";
+    const std::size_t n = out->energies.size();
+    for (std::size_t k = 0; k < n; ++k) {
+      std::println("{}-QD-NEVPT2 state {}: {:.10f} Ha, R over the roots {::+.6f}", scheme, k,
+                   out->energies[k], std::span{out->vectors}.subspan(k * n, n));
+    }
+    for (std::size_t i = 0; i < out->pairs.size(); ++i) {
+      const auto [bra, ket] = out->pairs[i];
+      const fb::nevpt2::QdNac &d = out->couplings[i];
+      std::println("{}-QD-NEVPT2 NAC <{}|d{}>: E_Q - E_P {:.10f} Ha, max |zeta| {:.3e}, Z-vectors "
+                   "in {} products (residuals {::.2e})",
+                   scheme, bra, ket,
+                   out->energies[static_cast<std::size_t>(ket)] -
+                       out->energies[static_cast<std::size_t>(bra)],
+                   d.max_zeta, d.iterations, d.residual);
+      for (std::size_t a = 0; a + 2 < d.total.size(); a += 3) {
+        std::println("NEVPT2 NAC atom {}: {:16.10f} {:16.10f} {:16.10f} {}", a / 3, d.total[a],
+                     d.total[a + 1], d.total[a + 2], unit);
+      }
+    }
+  }
 }
 
 fb::Status run(std::span<char *const> args) {

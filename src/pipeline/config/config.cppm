@@ -34,6 +34,7 @@ export import free_breakfast.pipeline.gradient;
 export import free_breakfast.pipeline.casscf_gradient;
 export import free_breakfast.pipeline.nevpt2_gradient;
 export import free_breakfast.pipeline.nac;
+export import free_breakfast.pipeline.nevpt2_nac;
 export import free_breakfast.pipeline.optimize;
 export import free_breakfast.pipeline.hessian;
 
@@ -44,7 +45,8 @@ using Calculation =
     Pipeline<MoleculeStep, BasisSetStep, SphericalTransformStep, PrimitivePairClassesStep, EriStep,
              OverlapStep, OrthogonalizerStep, CoreHamiltonianStep, GuessStep, ScfStep,
              LocalizationStep, CasciStep, CasscfStep, FciStep, Nevpt2Step, CisStep, GradientStep,
-             CasscfGradientStep, Nevpt2GradientStep, NacStep, OptimizeStep, HessianStep>;
+             CasscfGradientStep, Nevpt2GradientStep, NacStep, Nevpt2NacStep, OptimizeStep,
+             HessianStep>;
 
 /// @brief Parse a config from an in-memory TOML document and plan the
 /// pipeline it asks for.
@@ -60,14 +62,18 @@ using Calculation =
 /// from -- is ErrorKind::InvalidConfig naming it. So is an @p output_dir that
 /// is @p input_dir, or holds an input file, compared as the directories they
 /// name rather than as spelt. A `[nevpt2]`, a `[casscf_gradient]`, a
-/// `[nevpt2_gradient]` or a `[nac]` under an integral-direct `[eri]`, written
+/// `[nevpt2_gradient]`, a `[nac]` or a `[nevpt2_nac]` under an
+/// integral-direct `[eri]`, written
 /// or filled in, is ErrorKind::Unsupported naming `[eri]`, and so is a `[cis]`
 /// under a density-fitted one. A `[nevpt2_gradient]` over a `[casscf]` of more than
 /// one root, a molecule of multiplicity other than 1, or `variant = "pc"` is
 /// ErrorKind::Unsupported too, and one whose `root` is not 0
 /// ErrorKind::InvalidConfig. A `[nac]` over a `[casscf]` of fewer than two
 /// roots, or naming a pair past its roots, is ErrorKind::InvalidConfig, and
-/// so is a `[nevpt2]` with `quasi_degenerate = true` over one root.
+/// so is a `[nevpt2]` with `quasi_degenerate = true` over one root. So is a
+/// `[nevpt2_nac]` over a `[casscf]` of fewer than two roots or naming a pair
+/// past its roots, and one over a molecule of multiplicity other than 1 is
+/// ErrorKind::Unsupported.
 [[nodiscard]] Result<Calculation> parse_config(std::string_view toml_text,
                                                const std::filesystem::path &input_dir,
                                                const std::filesystem::path &output_dir);

@@ -177,6 +177,7 @@ add_executable(
   pipeline_casscf_gradient_gpu.cpp
   pipeline_nac_gpu.cpp
   pipeline_nevpt2_gradient_gpu.cpp
+  pipeline_nevpt2_nac_gpu.cpp
   rhf_gradient_gpu.cpp
   pipeline_optimize_gpu.cpp
   geometry_frequencies_gpu.cpp
