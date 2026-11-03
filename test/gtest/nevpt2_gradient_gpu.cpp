@@ -27,9 +27,10 @@
 // rotations at equal, unequal and mixed weights, and its refusals. Then the
 // SC-QD-NEVPT2 nuclear gradient (qd_sc_gradient) against
 // data/qd_nevpt2_gradient/'s numerical gradients, every state, its rigid
-// motions, each separately coded term's visibility, and its refusals; and
-// the PC-QD-NEVPT2 one (qd_pc_gradient), the same checks against the data's
-// PC numbers, with PC's refusals.
+// motions, each separately coded term's visibility, and its refusals; its
+// form at any symmetric W, linear in W, and that form's refusals; and the
+// PC-QD-NEVPT2 one (qd_pc_gradient), the same checks against the data's PC
+// numbers, with PC's refusals.
 
 #include <gtest/gtest.h>
 
@@ -3574,6 +3575,178 @@ TEST(Nevpt2QdGradient, OneRootAgainstScGradient) {
                            "{:.2e}, relative {:.2e}; E_K {:.12f}, max |zeta| {:.1e}\n",
                            diff, diff / largest_abs(sc->terms.total), qd->lagrangian.eigenvalues[0],
                            qd->max_zeta);
+}
+
+// ---- SC-QD-NEVPT2: the gradient at any symmetric W (#745) ----------------
+//
+// qd_sc_gradient's W form, G(W), on h8_sto3g_sa3 at the mixed weighting
+// (0.4, 0.4, 0.2: ζ on (0, 1), t on the rest). The state form is a wrapper
+// over it at u_K u_K^T, one code path, so Nevpt2QdGradient.MatchesNumerical
+// is its check at a state. Here: linearity, G(W1 + W2) = G(W1) + G(W2), W1
+// random symmetric of trace 1 and W2 random symmetric of trace 0, both with
+// non-zero off-diagonals, to 1e-10 relative to the largest element of the
+// gradient compared; it catches anything left depending on the eigenpair
+// rather than on W. And, printed and not held, the sum rule
+// Σ_K dE_K/dR = G(1).
+
+// The path-agreement bar: the milestone's, atomic sums' reordering only.
+constexpr double kQdLinearTolerance = 1e-10;
+
+// The W form of qd_sc_gradient at @p w.
+fb::Result<nevpt2::QdScGradient> qd_w_gradient_of(NuclearRun &run, std::span<const double> w) {
+  const GradientInputs in = gradient_inputs(run);
+  return nevpt2::qd_sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                                in.h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                                run.state.ncas, w, 0);
+}
+
+// A seeded random symmetric n x n W, uniform in [-1, 1), its diagonal
+// shifted evenly to trace @p trace.
+std::vector<double> random_w(const std::size_t n, const double trace, const std::uint64_t seed) {
+  std::mt19937_64 engine(seed);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  std::vector<double> w(n * n);
+  for (std::size_t i = 0; i < n; ++i) {
+    for (std::size_t j = 0; j <= i; ++j) {
+      w[(i * n) + j] = w[(j * n) + i] = uniform(engine);
+    }
+  }
+  double have = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    have += w[i * (n + 1)];
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    w[i * (n + 1)] += (trace - have) / static_cast<double>(n);
+  }
+  return w;
+}
+
+TEST(Nevpt2QdGradient, WFormIsLinear) {
+  FBF_REQUIRE_GPU();
+  const auto start = std::chrono::steady_clock::now();
+  NuclearRun run = qd_run("h8_sto3g_sa3", std::array{0.4, 0.4, 0.2});
+  ASSERT_TRUE(run.solution.has_value());
+  const std::size_t nroots = run.solution->roots.energies.size();
+  ASSERT_EQ(nroots, 3U);
+  const std::vector<double> w1 = random_w(nroots, 1.0, 745);
+  const std::vector<double> w2 = random_w(nroots, 0.0, 7451);
+  std::vector<double> w12(w1.size());
+  for (std::size_t i = 0; i < w1.size(); ++i) {
+    w12[i] = w1[i] + w2[i];
+  }
+  for (const auto &[label, w] : {std::pair{"W1", &w1}, std::pair{"W2", &w2}}) {
+    for (std::size_t i = 0; i < nroots; ++i) {
+      for (std::size_t j = i + 1; j < nroots; ++j) {
+        ASSERT_NE((*w)[(i * nroots) + j], 0.0) << label << " off-diagonal " << i << j;
+      }
+    }
+  }
+
+  const auto gradient = [&](const std::string_view label, std::span<const double> w) {
+    const auto begin = std::chrono::steady_clock::now();
+    auto g = qd_w_gradient_of(run, w);
+    const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - begin;
+    EXPECT_TRUE(g.has_value()) << label << ": " << g.error().message;
+    if (!g.has_value()) {
+      return std::vector<double>{};
+    }
+    const nevpt2::QdScLagrangian &l = g->lagrangian;
+    EXPECT_TRUE(l.eigenvalues.empty()) << label;
+    EXPECT_EQ(l.w, std::vector<double>(w.begin(), w.end())) << label;
+    std::cout << std::format(
+        "[ nevpt2   ] qd W form {} ({:.2f} s): rho {::+.6f}, max |z^c| {:.3e}, "
+        "max |zeta| {:.3e}, Theta {::.3e}, PCG {} iterations, residual "
+        "{:.2e}, asymmetry {::.1e}\n",
+        label, seconds.count(), l.rho, l.zc.max_z, g->max_zeta, l.multipliers.theta,
+        l.multipliers.iterations, l.multipliers.residual, l.asymmetry);
+    return g->total;
+  };
+  const std::vector<double> g1 = gradient("W1 (trace 1)", w1);
+  const std::vector<double> g2 = gradient("W2 (trace 0)", w2);
+  const std::vector<double> g12 = gradient("W1 + W2", w12);
+  ASSERT_FALSE(g1.empty() || g2.empty() || g12.empty());
+  ASSERT_EQ(g1.size(), g12.size());
+  ASSERT_EQ(g2.size(), g12.size());
+
+  // Linearity, against the largest element of either side.
+  std::vector<double> sum(g12.size());
+  double diff = 0.0;
+  for (std::size_t i = 0; i < g12.size(); ++i) {
+    sum[i] = g1[i] + g2[i];
+    diff = std::max(diff, std::abs(g12[i] - sum[i]));
+  }
+  const double scale = std::max(largest_abs(g12), largest_abs(sum));
+  EXPECT_LE(diff, kQdLinearTolerance * scale)
+      << "G(W1 + W2) against G(W1) + G(W2): max |diff| " << diff << ", largest " << scale;
+  std::cout << std::format("[ nevpt2   ] qd W form linearity: max |G(W1 + W2) - G(W1) - G(W2)| "
+                           "{:.3e}, largest element {:.3e}, relative {:.3e} (bar {:g}); |G(W1)| "
+                           "{:.3e}, |G(W2)| {:.3e}\n",
+                           diff, scale, diff / scale, kQdLinearTolerance, largest_abs(g1),
+                           largest_abs(g2));
+
+  // Diagnostic: the sum rule, Σ_K G(u_K u_K^T) against G(1).
+  std::vector<double> states(g12.size(), 0.0);
+  for (std::size_t k = 0; k < nroots; ++k) {
+    const auto g = qd_gradient_of(run, static_cast<std::int32_t>(k));
+    ASSERT_TRUE(g.has_value()) << g.error().message;
+    for (std::size_t i = 0; i < states.size(); ++i) {
+      states[i] += g->total[i];
+    }
+  }
+  std::vector<double> identity(nroots * nroots, 0.0);
+  for (std::size_t r = 0; r < nroots; ++r) {
+    identity[r * (nroots + 1)] = 1.0;
+  }
+  const std::vector<double> g_one = gradient("1", identity);
+  ASSERT_EQ(g_one.size(), states.size());
+  double rule = 0.0;
+  for (std::size_t i = 0; i < states.size(); ++i) {
+    rule = std::max(rule, std::abs(states[i] - g_one[i]));
+  }
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+  std::cout << std::format("[ nevpt2   ] qd W form sum rule: max |Σ_K dE_K/dR - G(1)| {:.3e}, "
+                           "relative {:.3e} ({:.2f} s)\n",
+                           rule, rule / std::max(largest_abs(states), largest_abs(g_one)),
+                           seconds.count());
+}
+
+// The W form refuses a W of the wrong size or not symmetric (or not
+// finite), InvalidConfig, from qd_sc_lagrangian and qd_sc_gradient alike.
+TEST(Nevpt2QdGradient, WFormRefusesBadW) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = qd_run("h8_sto3g_sa3", std::array{0.4, 0.4, 0.2});
+  ASSERT_TRUE(run.solution.has_value());
+  const std::size_t nroots = run.solution->roots.energies.size();
+  const GradientInputs in = gradient_inputs(run);
+  const std::vector<double> good = random_w(nroots, 1.0, 745);
+  const std::vector<double> asymmetric = [&] {
+    std::vector<double> w = good;
+    w[1] += 1e-6;
+    return w;
+  }();
+  const std::vector<double> not_finite = [&] {
+    std::vector<double> w = good;
+    w[nroots + 2] = std::nan("");
+    return w;
+  }();
+  const std::vector<double> short_w(good.begin(), good.end() - 1);
+  const std::vector<double> long_w((nroots + 1) * (nroots + 1), 0.25);
+  for (const auto &[label, w, phrase] :
+       {std::tuple{"short", &short_w, "elements"}, std::tuple{"long", &long_w, "elements"},
+        std::tuple{"asymmetric", &asymmetric, "not symmetric"},
+        std::tuple{"not finite", &not_finite, "not symmetric"}}) {
+    const auto l =
+        nevpt2::qd_sc_lagrangian(run.node->device(0), in.molecule, in.basis, in.df.aux, in.h,
+                                 in.df.b, *run.solution, run.state.ncore, run.state.ncas, *w, 0);
+    const auto g = qd_w_gradient_of(run, *w);
+    ASSERT_FALSE(l.has_value()) << label;
+    ASSERT_FALSE(g.has_value()) << label;
+    for (const fb::Error *e : {&l.error(), &g.error()}) {
+      EXPECT_EQ(e->kind, fb::ErrorKind::InvalidConfig) << label << ": " << e->message;
+      EXPECT_NE(e->message.find(phrase), std::string::npos) << label << ": " << e->message;
+    }
+    std::cout << std::format("[ nevpt2   ] qd W form refuses {}: {}\n", label, g.error().message);
+  }
 }
 
 // ---- PC-QD-NEVPT2: the nuclear gradient (qd_pc_gradient) ------------------

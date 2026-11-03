@@ -18,7 +18,8 @@
 /// builders around sc_effective_hamiltonian, and its adjoint along any W;
 /// the PC-QD one the same around pc_effective_hamiltonian. And the SC-QD
 /// Lagrangian's multipliers on a DF-SA-CASSCF (qd_sc_lagrangian): z^c, the
-/// roots' rotation multipliers and the SA Z-vector, gated; the SC-QD
+/// roots' rotation multipliers and the SA Z-vector, gated, at a state's
+/// W = u_K u_K^T or at any symmetric W; the SC-QD
 /// nuclear gradient over it (qd_sc_gradient), two derivative passes; and the
 /// PC-QD one (qd_pc_gradient), the same over qd_pc_adjoint.
 /// The README has the layouts and every term.
@@ -500,13 +501,14 @@ pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
 /// res's device.
 struct QdScLagrangian {
   /// @brief H_eff's eigenvalues, ascending: E_r delta_rs + 1/2 (C_rs + C_sr),
-  /// E_r the solution's root energies, C the correlation elements.
+  /// E_r the solution's root energies, C the correlation elements. Empty
+  /// from the W form, which builds no H_eff.
   std::vector<double> eigenvalues;
-  /// @brief The seed W = u_K u_K^T, n x n row-major, u_K state K's
-  /// eigenvector of H_eff.
+  /// @brief The seed W, n x n row-major: u_K u_K^T, u_K state K's
+  /// eigenvector of H_eff, or the W form's own.
   std::vector<double> w;
-  /// @brief rho_r = W_rr = u_rK^2, summing to 1: the weighting of the root
-  /// energies, mcscf::df_gradient's mix.
+  /// @brief rho_r = W_rr (u_rK^2 for a state), summing to tr W: the
+  /// weighting of the root energies, mcscf::df_gradient's mix.
   std::vector<double> rho;
   /// @brief The state average's weights w_r, mcscf::sa_gradient_weights',
   /// every one positive.
@@ -541,13 +543,14 @@ struct QdScLagrangian {
 ///         + <z^c, f^SA>,
 ///
 /// E[W] = sum_r rho_r E_r + sum_MN W_MN C_MN at W = u_K u_K^T. In order:
-/// qd_sc_energy and H_eff's eigenvectors (diagonalize); qd_sc_adjoint at W;
+/// qd_sc_energy and H_eff's eigenvectors (diagonalize), then the W form
+/// below at W = u_K u_K^T, one code path: qd_sc_adjoint at W;
 /// zc_multipliers over its A and epsilon and zc_adjoint at the weights,
 /// added onto it; mcscf::root_pair_multipliers on the summed y_bar, and
 /// mcscf::zeta_terms on its zeta; then mcscf::zvector over the CI-relaxed
 /// Hessian at the solution and its weights, the orbital right-hand side
 /// g^rho + zeta . g + A over the packed pairs (g^rho response::fock's
-/// gradient at the rho-weighted RDMs), the CI one y_bar_r / (2 w_r) (zvector
+/// gradient at the rho-weighted RDMs, its core part at tr W), the CI one y_bar_r / (2 w_r) (zvector
 /// projects it off the roots) and the rotation one t. Last the gate: X^L
 /// symmetric in every block, its CAS part at the rho-weighted RDMs plus z's
 /// (with Theta) and zeta's transition RDMs, a block past 1e-8 refused.
@@ -571,6 +574,28 @@ qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet 
                  const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
                  int32_t batch);
 
+/// @brief The SC-QD-NEVPT2 Lagrangian of E[W] at any symmetric weight
+/// matrix @p w (n x n row-major, n the solution's roots), and its
+/// multipliers: the state form's every step from qd_sc_adjoint at W on,
+/// with rho = diag W, and no H_eff. The state form is this at W = u_K u_K^T.
+/// Everything in L is linear in W but the core's energy, which E[W] carries
+/// at tr W: g^rho's zero-RDM part and the gate's are taken at that weight,
+/// so tr W need not be 1 (0 for an interstate coupling's W^PQ).
+///
+/// The other arguments are the state form's. The result's eigenvalues is
+/// empty.
+///
+/// @return The Lagrangian's pieces; InvalidConfig for a W not n^2 long, or
+///         one not symmetric to 1e-12 or not finite (naming the pair), and
+///         the state form's other refusals (counts, a root of zero weight,
+///         the gate, root_pair_multipliers'); never H_eff's degenerate-pair
+///         refusal, which is the state's alone.
+[[nodiscard]] Result<QdScLagrangian>
+qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                 const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                 const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+                 std::span<const double> w, int32_t batch);
+
 /// @brief qd_sc_gradient's result: the gradient, its two derivative passes,
 /// the Lagrangian they were taken at, and the gaps it divides by.
 struct QdScGradient {
@@ -590,7 +615,8 @@ struct QdScGradient {
   double max_zeta = 0.0;
   /// @brief The smallest |E_r - E_s| over the CASSCF roots.
   double root_gap = std::numeric_limits<double>::infinity();
-  /// @brief The smallest |lambda_K - lambda_L| of H_eff, L != K.
+  /// @brief The smallest |lambda_K - lambda_L| of H_eff, L != K; infinite
+  /// from the W form.
   double heff_gap = std::numeric_limits<double>::infinity();
 };
 
@@ -615,6 +641,27 @@ struct QdScGradient {
                                                   const Buffers::device<double> &b, const double *l,
                                                   const mcscf::Solution &solution, int32_t ncore,
                                                   int32_t ncas, int32_t state, int32_t batch);
+
+/// @brief The nuclear gradient G(W) of E[W] at any symmetric weight matrix
+/// @p w: the W form of qd_sc_lagrangian, then the state form's two
+/// derivative passes. The first is one mcscf::df_gradient at the mix rho
+/// when rho sums to 0, or to 1 with no negative entry; otherwise two, at
+/// rho = tr W p + d: p >= 0 rho's positive part summing to 1 (uniform when
+/// it has none), with zero multipliers, scaled by tr W, and d = rho - tr W p
+/// summing to 0 (the core off) with the multipliers and the arrays. G is
+/// linear in W; the state form, dE_K/dR, is G(u_K u_K^T).
+///
+/// The arguments are qd_sc_gradient's with @p w for @p state.
+///
+/// @return The gradient, heff_gap infinite; the W form of
+///         qd_sc_lagrangian's errors unchanged, or the first error of a
+///         derivative pass.
+[[nodiscard]] Result<QdScGradient>
+qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+               std::span<const double> w, int32_t batch);
 
 /// @brief qd_pc_gradient's result: QdScGradient's fields, with PC's
 /// elements.
