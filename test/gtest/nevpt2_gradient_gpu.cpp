@@ -22,7 +22,9 @@
 // the SC-QD-NEVPT2 functional E[W] (qd_sc_energy, qd_sc_adjoint) on
 // data/qd_nevpt2/'s cases through this tree's own DF-SA-CASSCF: each adjoint
 // against a ladder at the eigenvector seed and a random W, the one-root call
-// against sc_adjoint, and its refusals.
+// against sc_adjoint, and its refusals. Then the SC-QD-NEVPT2 Lagrangian
+// (qd_sc_lagrangian): its stationarity along orbitals, CI and the roots'
+// rotations at equal, unequal and mixed weights, and its refusals.
 
 #include <gtest/gtest.h>
 
@@ -2705,6 +2707,391 @@ TEST(Nevpt2QdPc, RefusesWhatTheEnergyRefuses) {
   const std::size_t ndet = s.vector.size() / n;
   std::fill_n(zero.vector.begin() + static_cast<std::ptrdiff_t>(ndet), ndet, 0.0);
   refused(zero, "root 1 zero", "no positive eigenvalue");
+}
+
+// ---- SC-QD-NEVPT2: the Lagrangian and its multipliers (qd_sc_lagrangian) --
+//
+// On data/qd_nevpt2/'s cases, each this tree's own DF-SA-CASSCF through the
+// registry (run_qd_casscf), its state in one gauge and an mcscf::Solution of
+// it (qd_run). The Lagrangian of state K (the highest, the QD ladders'
+// eigenvector seed)
+//
+//   L = E[W] + Z . g_SA + Σ_r 2 w_r z_r . (H - E_r) c_r
+//       + Σ_{r<s} (2 (w_r - w_s) Θ_sr + ζ_sr) <c_s|H|c_r> + <z^c, f^SA>,
+//
+// E[W] = Σ_r ρ_r E_r + Σ_MN W_MN C_MN, its multipliers fixed at
+// qd_sc_lagrangian's, is stationary along every wavefunction parameter: a
+// random orbital rotation over every block but the active-active one (the
+// core-core and virtual-virtual ones, where z^c enters, with κ_nr), a random
+// CI direction off every root on every root at once, and a random rotation
+// among the roots. A wrong ζ, t, z^c or 1/(2 w_r) breaks it along one of
+// them. Then its refusals.
+//
+// The three weightings are all on h8_sto3g_sa3's geometry, whose E[W] is
+// smooth along every path at the ladder's scale (kQdSmooth). The
+// data/qd_nevpt2/ fixtures at unequal weights are not usable here, measured
+// on the RTX 3080: h2co_ccpvdz_sa2_weighted is C2v, its roots 1A1 and 1A2,
+// so τ = 0 (|τ| 9.7e-12) and E[W] is even in the roots' rotation: its
+// central differences along Θ are round-off alone, and the E_corr ladder
+// never finds a ratio run (1.056 -0.643 -0.065 -27.000 0.014 0.600 -0.405
+// 0.420). h2co_skew_ccpvdz_sa3_weighted's E^corr[W] is not smooth along the
+// orbitals at the ladder's scale (#724's mechanism, as kQdSmooth found for
+// h2co_skew_ccpvdz_sa3 along C): at state 2 its E_corr ratios run 4.257
+// 4.243 4.032 3.818 4.050 3.771 4.900 -20.672, their extrapolants wandering
+// by 1e-6 relative (Σ 9.4e-7), while the same direction a tenth as long
+// settles at its finest rungs to 1.2097733016e-1 against the rest's
+// -1.2097733030e-1, and the gate holds there to 8e-11. Its CI ladder
+// passes (7.7e-10); along Θ its E_corr finds no ratio run either (-8.466
+// 5.557 -2.292 -0.128 -2.464 5.887 0.158 -0.225). States 0 and 1, and the
+// same geometry at (0.5, 0.3, 0.2), are no smoother along the orbitals
+// (misses 2.6e-7 to 5.9e-5).
+
+// A case's DF-SA-CASSCF, as nuclear_run's for one root: the Calculation in
+// its node, the state in one gauge (every root's vector, root-major), and
+// the mcscf::Solution of that state: its weighted RDMs at the case's
+// weights and each root's gamma, from the gauge-fixed vectors.
+// @p weights, when given, stand in for the case's.
+NuclearRun qd_run(const std::string &name, std::span<const double> weights_in = {}) {
+  NuclearRun run{.node = std::make_unique<fb::NodeResources>(),
+                 .calc = std::nullopt,
+                 .state = {},
+                 .solution = std::nullopt};
+  fb::json entry = reference_case("qd_nevpt2", "qd_nevpt2.json", name);
+  if (!weights_in.empty()) {
+    entry["weights"] = std::vector<double>(weights_in.begin(), weights_in.end());
+  }
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  std::optional<fb::Calculation> calc = run_qd_casscf(entry, *run.node);
+  if (!calc.has_value()) {
+    return run;
+  }
+  run.calc.emplace(std::move(*calc));
+  fb::DeviceResources &res = run.node->device(0);
+  run.state = host_state(*run.calc, res, weights.size());
+  const State &s = run.state;
+  const auto &casscf = run.calc->get<fb::CasscfOutput>();
+  const auto &basis = run.calc->get<fb::BasisSetOutput>();
+  if (s.b.empty() || !casscf.has_value() || !basis.has_value()) {
+    return run;
+  }
+  const auto n = static_cast<std::size_t>(s.ncas);
+  const std::size_t ndet = s.vector.size() / weights.size();
+  auto strings = fb::ci::DeviceStringSet::create(res, s.ncas, s.nelecas / 2);
+  EXPECT_TRUE(strings.has_value()) << strings.error().message;
+  if (!strings.has_value()) {
+    return run;
+  }
+  auto rdm = fb::ci::Rdm::create(res, *strings, *strings);
+  EXPECT_TRUE(rdm.has_value()) << rdm.error().message;
+  if (!rdm.has_value()) {
+    return run;
+  }
+  fb::Buffers::device<double> vectors = upload(res, s.vector);
+  fb::Buffers::device<double> gamma(n * n, res.device());
+  fb::Buffers::device<double> gamma2(n * n * n * n, res.device());
+  std::vector<double> root_gammas;
+  for (std::size_t r = 0; r < weights.size(); ++r) {
+    std::vector<double> one_hot(weights.size(), 0.0);
+    one_hot[r] = 1.0;
+    EXPECT_TRUE(rdm->rdm12(res, one_hot, vectors.data(), gamma.data(), gamma2.data()).has_value());
+    const std::vector<double> g = download(res, gamma.data(), n * n);
+    root_gammas.insert(root_gammas.end(), g.begin(), g.end());
+  }
+  EXPECT_TRUE(rdm->rdm12(res, weights, vectors.data(), gamma.data(), gamma2.data()).has_value());
+  EXPECT_EQ(ndet * weights.size(), s.vector.size());
+  run.solution.emplace(fb::mcscf::Solution{.c = fb::SphericalMatrixAO(res, basis->basis),
+                                           .roots = {.energies = casscf->energies,
+                                                     .spin_squares = casscf->spin_squares,
+                                                     .vectors = std::move(vectors),
+                                                     .davidson = {},
+                                                     .fp32_iterations = 0},
+                                           .energy = casscf->energy,
+                                           .gradient_norm = casscf->gradient_norm,
+                                           .gamma = download(res, gamma.data(), n * n),
+                                           .gamma2 = download(res, gamma2.data(), n * n * n * n),
+                                           .root_gammas = std::move(root_gammas),
+                                           .iterations = casscf->iterations});
+  EXPECT_EQ(wwr::wwrMemcpyAsync(run.solution->c.data(), s.c.data(), s.c.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return run;
+}
+
+fb::Result<nevpt2::QdScLagrangian> qd_lagrangian_of(NuclearRun &run, const std::int32_t state) {
+  const GradientInputs in = gradient_inputs(run);
+  return nevpt2::qd_sc_lagrangian(run.node->device(0), in.molecule, in.basis, in.df.aux, in.h,
+                                  in.df.b, *run.solution, run.state.ncore, run.state.ncas, state,
+                                  0);
+}
+
+// qd_sc_lagrangian's multipliers and seed, on the host.
+struct QdMultipliers {
+  std::vector<double> weights;
+  std::vector<double> w;
+  std::vector<double> rho;
+  std::vector<double> z_orbital;
+  std::vector<double> z_ci;
+  std::vector<double> theta;
+  std::vector<double> zeta;
+  std::vector<double> zc;
+};
+
+// The Lagrangian above at the moved state @p moved (every root's vector,
+// root-major), the multipliers @p m fixed, every input rebuilt from (C, c)
+// and nothing re-canonicalized: g_SA response::fock's gradient at the
+// weighted RDMs over the packed pairs, H the CASSCF's active Hamiltonian
+// (ci::Sigma over casscf_integrals), E_r = c_r . H c_r. As {Σ W_MN C_MN, the
+// rest}, each kept apart for a ladder of its own (expect_stationary).
+std::array<double, 2> qd_lagrangian(NuclearRun &run, const State &moved, const QdMultipliers &m) {
+  fb::DeviceResources &res = run.node->device(0);
+  const GradientInputs in = gradient_inputs(run);
+  const auto n = static_cast<std::size_t>(moved.ncas);
+  const std::size_t nroots = m.weights.size();
+  const std::size_t ndet = moved.vector.size() / nroots;
+  const DeviceState d = upload_state(res, moved);
+  fb::SphericalMatrixAO c(res, in.basis);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(c.data(), moved.c.data(), moved.c.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  auto ints = fb::casscf_integrals(res, in.basis, in.molecule, in.h, in.df.b, moved.naux, c,
+                                   moved.ncore, moved.ncas);
+  EXPECT_TRUE(ints.has_value()) << ints.error().message;
+  auto rdm = fb::ci::Rdm::create(res, *d.strings, *d.strings);
+  auto sigma = fb::ci::Sigma::create(res, *d.strings, *d.strings);
+  EXPECT_TRUE(rdm.has_value() && sigma.has_value());
+  if (!ints.has_value() || !rdm.has_value() || !sigma.has_value()) {
+    return {std::nan(""), std::nan("")};
+  }
+  fb::Buffers::device<double> gamma(n * n, res.device());
+  fb::Buffers::device<double> gamma2(n * n * n * n, res.device());
+  EXPECT_TRUE(rdm->rdm12(res, m.weights, d.vector.data(), gamma.data(), gamma2.data()).has_value());
+  auto fock = fb::response::fock(
+      res, in.molecule, in.h, in.df.b, moved.naux, c, moved.ncore, moved.ncas, ints->ppaa,
+      ints->papa, download(res, gamma.data(), n * n), download(res, gamma2.data(), n * n * n * n));
+  EXPECT_TRUE(fock.has_value()) << fock.error().message;
+  if (!fock.has_value()) {
+    return {std::nan(""), std::nan("")};
+  }
+  const std::vector<double> g_sa = download(res, fock->gradient.data(), m.z_orbital.size());
+  EXPECT_TRUE(sigma
+                  ->set_integrals(res, ints->hamiltonian.e_core,
+                                  download(res, ints->hamiltonian.h_eff.data(), n * n),
+                                  download(res, ints->hamiltonian.eri.data(), n * n * n * n))
+                  .has_value());
+  fb::Buffers::device<double> hc(moved.vector.size(), res.device());
+  EXPECT_TRUE(
+      sigma->apply(res, static_cast<std::int32_t>(nroots), d.vector.data(), hc.data()).has_value());
+  const std::vector<double> h_c = download(res, hc.data(), moved.vector.size());
+  const auto root = [&](std::span<const double> v, const std::size_t r) {
+    return v.subspan(r * ndet, ndet);
+  };
+  double rest = dot(m.z_orbital, g_sa) + phi(res, moved, m.zc, m.weights, moved.vector);
+  std::size_t pair = 0;
+  for (std::size_t r = 0; r < nroots; ++r) {
+    const double e_r = dot(root(moved.vector, r), root(h_c, r));
+    rest += m.rho[r] * e_r;
+    rest +=
+        2.0 * m.weights[r] *
+        (dot(root(m.z_ci, r), root(h_c, r)) - (e_r * dot(root(m.z_ci, r), root(moved.vector, r))));
+    for (std::size_t s = r + 1; s < nroots; ++s, ++pair) {
+      const double mu = (2.0 * (m.weights[r] - m.weights[s]) * m.theta[pair]) + m.zeta[pair];
+      rest += mu * dot(root(moved.vector, s), root(h_c, r));
+    }
+  }
+  return {weighted(m.w, qd_totals(res, moved, m.weights)), rest};
+}
+
+// One weighting of h8_sto3g_sa3's three roots.
+struct QdWeighting {
+  std::string_view name;
+  std::array<double, 3> weights;
+};
+
+void PrintTo(const QdWeighting &w, std::ostream *os) {
+  *os << w.name;
+}
+
+class Nevpt2QdLagrangian : public ::testing::TestWithParam<QdWeighting> {};
+
+// The stationarity ladders at one weighting: equal (⅓ each, every pair a
+// ζ), unequal (0.5, 0.3, 0.2, every pair a t) and mixed (0.4, 0.4, 0.2: ζ
+// on (0, 1), t on the rest, in one solve). Each direction's summed
+// extrapolant (expect_stationary, steadiest) within 1e-7 of the slope of
+// E^corr[W] + Φ^SA it cancels.
+TEST_P(Nevpt2QdLagrangian, IsStationary) {
+  FBF_REQUIRE_GPU();
+  const std::string name = std::format("h8_sto3g_sa3 {}", GetParam().name);
+  const auto start = std::chrono::steady_clock::now();
+  NuclearRun run = qd_run("h8_sto3g_sa3", GetParam().weights);
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  const State &s = run.state;
+  const std::size_t nroots = run.solution->roots.energies.size();
+  const std::size_t ndet = s.vector.size() / nroots;
+  const auto nmo = static_cast<std::size_t>(s.nao);
+  const auto state = static_cast<std::int32_t>(nroots - 1);
+  const auto l = qd_lagrangian_of(run, state);
+  ASSERT_TRUE(l.has_value()) << l.error().message;
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+  const QdMultipliers m{
+      .weights = l->weights,
+      .w = l->w,
+      .rho = l->rho,
+      .z_orbital =
+          download(res, l->multipliers.orbital.data(), l->multipliers.orbital.num_elements()),
+      .z_ci = download(res, l->multipliers.ci.data(), l->multipliers.ci.num_elements()),
+      .theta = l->multipliers.theta.empty() ? std::vector<double>(nroots * (nroots - 1) / 2, 0.0)
+                                            : l->multipliers.theta,
+      .zeta = l->pairs.zeta,
+      .zc = download(res, l->zc.z.data(), nmo * nmo)};
+  const std::vector<double> y_bar = download(res, l->corr.y.data(), s.vector.size());
+  const std::vector<double> a = download(res, l->corr.a.data(), nmo * nmo);
+  std::cout << std::format(
+      "[ nevpt2   ] qd lagrangian {} state {} ({:.2f} s): weights {::.12f}, rho {::.6f}, H_eff "
+      "{::.10f}, tau {::.3e}, zeta {::.3e}, t {::.3e}, Theta {::.3e}, max |z^c| {:.3e}, PCG {} "
+      "iterations, residual {:.2e}\n",
+      name, state, seconds.count(), m.weights, m.rho, l->eigenvalues, l->pairs.tau, m.zeta,
+      l->pairs.theta_rhs, m.theta, l->zc.max_z, l->multipliers.iterations, l->multipliers.residual);
+  expect_symmetric("qd " + name, l->asymmetry);
+
+  // Every block but the active-active one at once.
+  std::vector<double> kappa(nmo * nmo, 0.0);
+  for (const Block &block : {kBlocks[0], kBlocks[2], kBlocks[3], kBlocks[4], kBlocks[5]}) {
+    const std::vector<double> part = block_kappa(s, block);
+    for (std::size_t i = 0; i < kappa.size(); ++i) {
+      kappa[i] += part[i];
+    }
+  }
+  const double orbital_slope = source_dot(kappa, a, nmo);
+  ASSERT_GT(std::abs(orbital_slope), 0.0);
+  State moved = s;
+  expect_stationary(
+      std::format("qd {} orbitals", name),
+      [&](const double t) {
+        rotate(s, kappa, t, moved);
+        return qd_lagrangian(run, moved, m);
+      },
+      std::abs(orbital_slope));
+
+  // d_r = ci_direction's at c_r, projected off every root: in c_r's spin and
+  // symmetry sector, ⊥ every root.
+  std::vector<double> d(s.vector.size());
+  double ci_slope = 0.0;
+  for (std::size_t r = 0; r < nroots; ++r) {
+    State alone = s;
+    alone.vector.assign(s.vector.begin() + static_cast<std::ptrdiff_t>(r * ndet),
+                        s.vector.begin() + static_cast<std::ptrdiff_t>((r + 1) * ndet));
+    std::vector<double> u = ci_direction(res, alone);
+    ASSERT_EQ(u.size(), ndet);
+    for (std::size_t q = 0; q < nroots; ++q) {
+      const auto other = std::span<const double>(s.vector).subspan(q * ndet, ndet);
+      const double overlap = dot(u, other);
+      for (std::size_t i = 0; i < ndet; ++i) {
+        u[i] -= overlap * other[i];
+      }
+    }
+    const double norm = std::sqrt(dot(u, u));
+    ASSERT_GT(norm, 1e-6);
+    for (std::size_t i = 0; i < ndet; ++i) {
+      d[(r * ndet) + i] = u[i] / norm;
+    }
+    ci_slope += dot(std::span<const double>(d).subspan(r * ndet, ndet),
+                    std::span<const double>(y_bar).subspan(r * ndet, ndet));
+  }
+  ASSERT_GT(std::abs(ci_slope), 0.0);
+  moved = s;
+  expect_stationary(
+      std::format("qd {} ci", name),
+      [&](const double t) {
+        for (std::size_t r = 0; r < nroots; ++r) {
+          const auto out = std::span<double>(moved.vector).subspan(r * ndet, ndet);
+          for (std::size_t i = 0; i < ndet; ++i) {
+            out[i] = s.vector[(r * ndet) + i] + (t * d[(r * ndet) + i]);
+          }
+          const double length = std::sqrt(dot(out, out));
+          for (double &v : out) {
+            v /= length;
+          }
+        }
+        return qd_lagrangian(run, moved, m);
+      },
+      std::abs(ci_slope));
+
+  // The roots rotated among themselves, V exp(t K): c_r gains t K_sr c_s.
+  std::mt19937_64 engine(704);
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  std::vector<double> k(nroots * nroots, 0.0);
+  double theta_slope = 0.0;
+  std::size_t pair = 0;
+  for (std::size_t r = 0; r < nroots; ++r) {
+    for (std::size_t q = r + 1; q < nroots; ++q, ++pair) {
+      k[q + (nroots * r)] = uniform(engine);
+      k[r + (nroots * q)] = -k[q + (nroots * r)];
+      theta_slope += k[q + (nroots * r)] * l->pairs.tau[pair];
+    }
+  }
+  ASSERT_GT(std::abs(theta_slope), 0.0);
+  moved = s;
+  expect_stationary(
+      std::format("qd {} roots", name),
+      [&](const double t) {
+        std::vector<double> tk = k;
+        for (double &v : tk) {
+          v *= t;
+        }
+        moved.vector = matmul(s.vector, expm(tk, nroots), ndet, nroots, nroots);
+        return qd_lagrangian(run, moved, m);
+      },
+      std::abs(theta_slope));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Weights, Nevpt2QdLagrangian,
+    ::testing::Values(QdWeighting{.name = "equal", .weights = {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0}},
+                      QdWeighting{.name = "unequal", .weights = {0.5, 0.3, 0.2}},
+                      QdWeighting{.name = "mixed", .weights = {0.4, 0.4, 0.2}}),
+    [](const auto &info) { return std::string(info.param.name); });
+
+// What qd_sc_lagrangian refuses, on h2co_ccpvdz_sa2 (C2v, its roots 1A1 and
+// 1A2, so H_eff's off-diagonal vanishes by symmetry): a root of zero weight
+// (the weighted gamma set to root 0's, so that the recovered weights are
+// (1, 0)), InvalidConfig naming the root; and a degenerate H_eff pair (root
+// 1's CASSCF energy moved so that H_eff's diagonal is equal), Numerical
+// naming both states.
+TEST(Nevpt2QdLagrangian, Refuses) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = qd_run("h2co_ccpvdz_sa2");
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  fb::mcscf::Solution &solution = *run.solution;
+  const auto n = static_cast<std::size_t>(run.state.ncas);
+
+  const std::vector<double> gamma = solution.gamma;
+  std::copy_n(solution.root_gammas.begin(), n * n, solution.gamma.begin());
+  {
+    const auto got = qd_lagrangian_of(run, 1);
+    ASSERT_FALSE(got.has_value()) << "a root of weight 0";
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
+    EXPECT_NE(got.error().message.find("root 1"), std::string::npos) << got.error().message;
+    std::cout << std::format("[ nevpt2   ] qd lagrangian refuses: {}\n", got.error().message);
+  }
+  solution.gamma = gamma;
+
+  const auto weights = reference_case("qd_nevpt2", "qd_nevpt2.json", "h2co_ccpvdz_sa2")
+                           .at("weights")
+                           .get<std::vector<double>>();
+  const std::vector<double> c = qd_totals(res, run.state, weights);
+  ASSERT_EQ(c.size(), 4U);
+  std::cout << std::format("[ nevpt2   ] h2co_ccpvdz_sa2 C_01 {:.3e}, C_10 {:.3e}\n", c[1], c[2]);
+  solution.roots.energies[1] = solution.roots.energies[0] + c[0] - c[3];
+  for (const std::int32_t state : {0, 1}) {
+    const auto got = qd_lagrangian_of(run, state);
+    ASSERT_FALSE(got.has_value()) << "a degenerate pair";
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical) << got.error().message;
+    EXPECT_NE(got.error().message.find("states 0 and 1"), std::string::npos) << got.error().message;
+    std::cout << std::format("[ nevpt2   ] qd lagrangian refuses: {}\n", got.error().message);
+  }
 }
 
 } // namespace

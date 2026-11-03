@@ -60,6 +60,18 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
                   batch)
         -> QdPcAdjoint   elements (PcClassEnergies), then QdScAdjoint's arrays
 
+    qd_sc_lagrangian(res, molecule, basis, aux, h, b, solution, ncore, ncas, state, batch)
+        -> QdScLagrangian
+        eigenvalues  H_eff's, ascending
+        w, rho       W = u_K u_Kᵀ (n², row-major) and ρ_r = W_rr
+        weights      the SA weights, mcscf::sa_gradient_weights'
+        corr         qd_sc_adjoint at W plus Φ^SA's adjoint: y = ȳ, a = A^corr + A^{z^c}
+        zc           z^c
+        pairs        τ, ζ and t (mcscf::RootPairMultipliers)
+        zeta         ζ · g and (γ^ζ, Γ^ζ) (mcscf::ZetaTerms)
+        multipliers  (Z, z, Θ), mcscf::ZVector
+        asymmetry    the gate's residues per block
+
 `lagrangian_gradient`, `sc_gradient` and `pc_gradient` take
 `mcscf::df_gradient`'s arguments (`solution` a
 single-state DF-CASSCF, its orbitals core and virtuals canonical, as the
@@ -417,6 +429,60 @@ gap at the cut, a non-positive λ + Δ) is refused by `pc_class_energies_adjoint
 with the energy's error, and `pc_gradient` returns it unchanged: never a
 gradient with that class summed in as zero.
 
+## The QD-NEVPT2 gradient
+
+`qd_sc_lagrangian(res, molecule, basis, aux, h, b, solution, ncore, ncas,
+state, batch)` is the SC-QD-NEVPT2 **Lagrangian and Z-vector** of QD state
+K = `state` (H_eff's eigenvalues ascending) on a DF-SA-CASSCF whose core
+and virtuals are canonical over the SA Fock, as the Casscf step leaves them
+(`nuclear_gradient.tex` Algorithm qdgrad, steps 1–8). The derivative passes
+are #728's; `QdScLagrangian` hands them everything they read. With
+W = u_K u_Kᵀ and ρ_r = W_rr = u_rK², the Lagrangian is
+
+    L = E[W] + Z · g_SA + Σ_r 2 w_r z_r · (H − E_r) c_r
+        + Σ_{r<s} (2 (w_r − w_s) Θ_sr + ζ_sr) ⟨c_s|H|c_r⟩ + ⟨z^c, f^SA⟩,
+    E[W] = Σ_r ρ_r E_r + Σ_MN W_MN C_MN,
+
+(Z, z, Θ) in `mcscf::zvector`'s coordinates: its CI rows are the SA
+Hessian's over 2 w_r, its rotation rows over 2 (w_r − w_s), so the
+condition ⟨c_s|H|c_r⟩ = 0 of an unequal pair carries 2 (w_r − w_s) Θ_sr,
+and an equal pair, which E_SA is blind to, carries ζ_sr of its own.
+
+1. `qd_sc_energy`, then H_eff = diag(E_r) + ½ (C + Cᵀ) (E_r the solution's
+   root energies) by `diagonalize`, and W. A QD state within
+   `mcscf::kRootGapFloor` of another is refused, `Numerical`, naming both:
+   u_K has no derivative there.
+2. `qd_sc_adjoint` at W; `zc_multipliers` over its A and the SA Fock's ε;
+   `zc_adjoint` at the solution's weights, every root's vector; the two
+   added field by field. So ȳ_r = ȳ^corr_r + y^c_r, and A, h̄, Λ, X are
+   E^corr[W] + Φ^SA's (`corr`, the `extra` of #728's `df_gradient`).
+3. `mcscf::root_pair_multipliers` on the summed ȳ: τ_sr, ζ on the equal
+   pairs, t on the unequal ones; `mcscf::zeta_terms` on ζ: ζ · g and the
+   folded (γ^ζ, Γ^ζ) of #728's `df_transition_gradient`.
+4. The Z-vector, over the CI-relaxed Hessian at the solution and its
+   weights (built as `lagrangian_gradient` builds it, the Fock at the
+   weighted RDMs): orbital right-hand side g^ρ + ζ · g + pack(A), g^ρ
+   `response::fock`'s gradient at the ρ-weighted RDMs; CI right-hand side
+   **ȳ_r / (2 w_r)** for every root (zvector projects it off every root,
+   P ȳ_r / (2 w_r)); rotation right-hand side t. At n = 1 this is
+   `lagrangian_gradient`'s ½ (y + y^c).
+5. The gate (`lagrangian_gradient`'s, step 3 above), its CAS part at the
+   ρ-weighted RDMs plus ζ's, z's transition RDMs at the weights with Θ
+   folded into z as its part along the roots (z_r += Θ_sr c_s, as
+   `df_gradient` takes them), and A^Z at the weighted RDMs. A block past
+   1e-8 is refused.
+
+The weights are the solution's, `mcscf::sa_gradient_weights`', everywhere:
+ε and Φ (step 2), τ's split, the Z-vector and the gate. A root of weight
+below `mcscf::kRotationWeightTolerance` is refused, `InvalidConfig`: it has
+no SA CI row, and step 4 divides by w_r.
+
+**The 1/(2 w_r)** was read off zvector's README (its CI rows are the SA
+Hessian's divided by 2 w_r) and not derived against a test before; the
+stationarity ladders below are what pin it: along a CI direction off the
+roots, ∂L/∂c_r = P ȳ_r + 2 w_r [P H′(Z) c_r + (H − E_r) z_r], zero exactly
+when zvector's row holds with ȳ_r / (2 w_r) on its right.
+
 ## Not done
 
 - The per-root canonicalization's own derivative: the caller passes
@@ -424,8 +490,10 @@ gradient with that class summed in as zero.
 - Λ lives at naux nmo² whole; a virtual–virtual block that only its diagonal
   reaches is still stored whole, as `mcscf::df_gradient`'s extra adjoint
   takes it.
-- A state average's root (the Lagrangian's SA weights in the Z-vector, and
-  each root's own canonicalization) is refused, not done.
+- A state average's root of the single-state NEVPT2 (`lagrangian_gradient`,
+  `sc_gradient`, `pc_gradient`) is refused; the SA reference is
+  `qd_sc_lagrangian`'s, and its derivative passes are #728's.
+- PC-QD's Lagrangian.
 - The torque (the rotational sum) is not checked; the translational one is.
 
 ## Tests
@@ -676,16 +744,41 @@ once per process.
     virtuals lowered 1000 Eh through h ("state 0: Sr has a denominator …
     not positive"): `qd_pc_adjoint` returns `qd_pc_energy`'s error, kind and
     message.
+- The SC-QD-NEVPT2 Lagrangian (`qd_sc_lagrangian`), on `h8_sto3g_sa3`'s
+  geometry (its E[W] smooth along every path), its DF-SA-CASSCF at three
+  weightings, state K = 2 (the highest):
+  - `Nevpt2QdLagrangian.IsStationary/{equal,unequal,mixed}`: weights
+    (⅓, ⅓, ⅓) (every pair a ζ), (0.5, 0.3, 0.2) (every pair a t) and
+    (0.4, 0.4, 0.2) (ζ and t in one solve). L, its multipliers fixed and
+    every input rebuilt from (C, c), is laddered along a random orbital
+    rotation over every block but the active–active one (core–core and
+    virtual–virtual with κ_nr), a random CI direction off every root on
+    every root at once, and a random rotation among the roots; E^corr[W]
+    and the rest each have a ladder, and the summed steadiest extrapolant
+    is held to 1e-7 of the slope it cancels. On the RTX 3080 the worst
+    was 3.9e-8 (equal, orbitals); the CI ladders, which pin the
+    1/(2 w_r), within 3.8e-8. The gate's residues are printed and held to
+    1e-9. The unequal-weight fixtures of `data/qd_nevpt2/` are not used:
+    `h2co_ccpvdz_sa2_weighted` is C₂ᵥ, τ = 0 and E[W] even in Θ, so its Θ
+    ladder is round-off alone; `h2co_skew_ccpvdz_sa3_weighted`'s E^corr[W]
+    is not smooth along the orbitals at the ladder's scale (#724's
+    mechanism; the test's comment has the numbers), though its gate holds
+    to 8e-11.
+  - `Nevpt2QdLagrangian.Refuses` (`h2co_ccpvdz_sa2`): the weighted γ set to
+    root 0's, so that the recovered weights are (1, 0), is `InvalidConfig`
+    naming root 1; root 1's CASSCF energy moved to make H_eff's diagonal
+    equal (its off-diagonal vanishes by C₂ᵥ symmetry) is `Numerical`
+    naming states 0 and 1, for either state.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
 | `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
-| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass |
+| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |

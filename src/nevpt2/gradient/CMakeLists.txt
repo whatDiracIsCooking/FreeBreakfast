@@ -1,6 +1,7 @@
 # The module: nevpt2::sc_energy and nevpt2::sc_adjoint, the SC-QD
 # qd_sc_energy and qd_sc_adjoint, z^c's zc_multipliers and zc_adjoint, and
-# the nuclear gradient's lagrangian_gradient and sc_gradient; the internal
+# the nuclear gradient's lagrangian_gradient and sc_gradient, and the
+# SC-QD-NEVPT2 Lagrangian's qd_sc_lagrangian; the internal
 # partitions :operands and :builders hold the array plumbing and the
 # builders the implementation units share. ci::strings,
 # nevpt2::energy (ClassEnergies), core::wwr (Buffers), and the molecule,
@@ -10,8 +11,9 @@
 # too, internal to the MCSCF layer but in ScGradient as it is in
 # df_gradient's signature. The builders' einsums, the BLAS calls, b_mo,
 # rdms, the density-fitted adjoints, ci::Sigma and ci::Rdm, the CASSCF's
-# integrals, Fock and Hessian, and the MCSCF layer's internal
-# relaxed_hessian are the implementation units' alone. No device code of
+# integrals, Fock and Hessian, H_eff's diagonalize, and the MCSCF layer's
+# internal relaxed_hessian and root_rotation (kRootGapFloor) are the
+# implementation units' alone. No device code of
 # its own.
 free_breakfast_add_cxx_module_library(
   NAME
@@ -45,6 +47,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::core::constants
   free_breakfast::core::diagnostics_macros
   free_breakfast::recipes::blas
+  free_breakfast::recipes::diagonalize
   free_breakfast::recipes::einsum
   free_breakfast::recipes::symmetrize
   free_breakfast::integrals::active_space
@@ -57,4 +60,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::response::hessian
   free_breakfast::response::orbital_pairs
   free_breakfast::mcscf::relaxed_hessian
+  free_breakfast::mcscf::root_rotation
 )
