@@ -1239,6 +1239,65 @@ TEST(PipelineConfig, TheNevpt2GradientRefusalsAreUnsupported) {
       "[molecule] multiplicity is 3");
 }
 
+// [nevpt2_gradient] quasi_degenerate and state: read beside the variant, a
+// state average taken, and its three refusals at config read, before the
+// SCF and the CASSCF: fewer than two roots, a state past H_eff's, and a
+// state without quasi_degenerate. A root beside quasi_degenerate, and an
+// [optimize] over it, are refused too.
+TEST(PipelineConfig, TheNevpt2GradientStepReadsQuasiDegenerateAndState) {
+  const std::string fitted = "[eri]\nmode = \"density_fitting\"\n";
+  const auto sa = [&](std::int32_t nroots) {
+    return std::format("{}[casscf]\nncas = 4\nnelecas = 4\nnroots = {}\n", fitted, nroots);
+  };
+  auto calc =
+      fb::parse_config(with_inputs(sa(3) + "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 2\n"
+                                           "variant = \"pc\"\n"),
+                       "", kOut);
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  const fb::Nevpt2GradientStep &step = *calc->step<fb::Nevpt2GradientStep>();
+  EXPECT_TRUE(step.quasi_degenerate);
+  EXPECT_EQ(step.state, 2);
+  EXPECT_EQ(step.variant, fb::Nevpt2Variant::Pc);
+  EXPECT_EQ(step.json_path, kOut / "nevpt2_gradient.json");
+  // state defaults to the lowest.
+  auto lowest = fb::parse_config(
+      with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = true\n"), "", kOut);
+  ASSERT_TRUE(lowest.has_value()) << lowest.error().message;
+  EXPECT_TRUE(lowest->step<fb::Nevpt2GradientStep>()->quasi_degenerate);
+  EXPECT_EQ(lowest->step<fb::Nevpt2GradientStep>()->state, 0);
+  EXPECT_EQ(lowest->step<fb::Nevpt2GradientStep>()->variant, fb::Nevpt2Variant::Sc);
+
+  // Fewer than two roots, written or filled in.
+  for (const std::string_view nroots : {"", "nroots = 1\n"}) {
+    expect_config_error(
+        with_inputs(std::format("{}[casscf]\nncas = 4\nnelecas = 4\n{}[nevpt2_gradient]\n"
+                                "quasi_degenerate = true\n",
+                                fitted, nroots)),
+        "[nevpt2_gradient] quasi_degenerate couples the roots of a state average, and [casscf] "
+        "nroots is 1: set [casscf] nroots to 2 or more");
+  }
+  // A state past H_eff's, and below 0.
+  expect_config_error(
+      with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 2\n"),
+      "[nevpt2_gradient] state is 2, and H_eff over [casscf]'s 2 roots has states 0 to 1");
+  expect_config_error(
+      with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = true\nstate = -1\n"),
+      "[nevpt2_gradient] state is -1, below 0");
+  // A state without quasi_degenerate, left out or false.
+  for (const std::string_view qd : {"", "quasi_degenerate = false\n"}) {
+    expect_config_error(
+        with_inputs(sa(2) + std::format("[nevpt2_gradient]\n{}state = 1\n", qd)),
+        "[nevpt2_gradient] state names a QD-NEVPT2 state, and needs quasi_degenerate = true");
+  }
+  expect_config_error(with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = true\nroot = 0\n"),
+                      "[nevpt2_gradient] root names the single-state CASSCF's root");
+  expect_config_error(with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = 1\n"),
+                      "[nevpt2_gradient] quasi_degenerate is not a boolean");
+  expect_config_error(
+      with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = true\n[optimize]\n"),
+      "[optimize] over a quasi-degenerate [nevpt2_gradient] is not supported yet");
+}
+
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {
   expect_config_error(
       "[molecule]\nxyz = \"w.xyz\"\ncharge = 1.5\n[basis_set]\nbasis = \"b.json\"\n",

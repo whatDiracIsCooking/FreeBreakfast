@@ -127,6 +127,12 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
                       "one to optimize",
                       kName, CasscfGradientStep::kName, Nevpt2GradientStep::kName);
   }
+  // A QD state is followed by its identity between geometries, not its
+  // index, and that is not done yet; pipeline/config refuses it too.
+  if (nevpt2_gradient && nevpt2_gradient->quasi_degenerate) {
+    return err_config("[{}] over a quasi-degenerate [{}] is not supported yet", kName,
+                      Nevpt2GradientStep::kName);
+  }
   // The two CASSCF gradients' own refusal, made before the first SCF and
   // CASSCF.
   if ((casscf_gradient || nevpt2_gradient) && eri.mode != EriMode::DensityFitting) {
@@ -183,11 +189,16 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
                         gradient.begin());
       return cas.energies[static_cast<size_t>(chain_casscf_gradient.root)];
     } else {
-      // SC's or PC's, as the chain's variant picked.
+      // SC's or PC's, as the chain's variant picked; a QD gradient is
+      // refused above.
       const double e_corr = std::visit(
-          [&](const auto &g) {
-            std::ranges::copy(g.terms.total, gradient.begin());
-            return g.energies.total;
+          [&]<class N>(const N &g) {
+            if constexpr (requires { g.energies.total; }) {
+              std::ranges::copy(g.terms.total, gradient.begin());
+              return g.energies.total;
+            } else {
+              return std::numeric_limits<double>::quiet_NaN();
+            }
           },
           chain.template get<Nevpt2GradientOutput>()->gradient);
       return cas.energies[static_cast<size_t>(chain_nevpt2_gradient.root)] + e_corr;

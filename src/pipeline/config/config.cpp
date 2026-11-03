@@ -462,10 +462,25 @@ template <class S>
     // The CASSCF's root count, the molecule's spin and the ERI mode are other
     // tables', refused once they are planned, by check_nevpt2_gradient and
     // check_density_fitted_only; Nevpt2GradientStep::run refuses them again.
-    FBF_TRY(check_keys(table, kStep, {"root", "variant"}));
+    // So is whether a QD state is one of H_eff's, by check_nevpt2_gradient.
+    FBF_TRY(check_keys(table, kStep, {"root", "variant", "quasi_degenerate", "state"}));
     FBF_TRY(read_key(table, kStep, "root", base_dir, step.root));
     if (step.root < 0) {
       return err_config("[{}] root is {}, below 0", kStep, step.root);
+    }
+    FBF_TRY(read_key(table, kStep, "quasi_degenerate", base_dir, step.quasi_degenerate));
+    FBF_TRY(read_key(table, kStep, "state", base_dir, step.state));
+    if (table.contains("state") && !step.quasi_degenerate) {
+      return err_config("[{}] state names a QD-NEVPT2 state, and needs quasi_degenerate = true",
+                        kStep);
+    }
+    if (step.state < 0) {
+      return err_config("[{}] state is {}, below 0", kStep, step.state);
+    }
+    if (step.quasi_degenerate && table.contains("root")) {
+      return err_config("[{}] root names the single-state CASSCF's root, and quasi_degenerate "
+                        "differentiates a QD state: name it with state",
+                        kStep);
     }
     std::string variant = "sc";
     FBF_TRY(read_key(table, kStep, "variant", base_dir, variant));
@@ -769,28 +784,46 @@ template <class S>
 /// @brief Refuse a `[nevpt2_gradient]` over a state-averaged `[casscf]`, or
 /// over a molecule of multiplicity other than 1 (an open shell: the SCF
 /// under the CASSCF is closed-shell exactly when it is 1), and a `root` the
-/// single-state CASSCF does not have: here, before the SCF and the CASSCF
-/// it would follow have run. Across tables, as check_scf_against_eri; under
-/// an `[optimize]` the molecule is its chain's, the one the start is read
-/// from.
+/// single-state CASSCF does not have; with `quasi_degenerate`, over a
+/// `[casscf]` of fewer than two roots, a `state` past them, or under an
+/// `[optimize]`: here, before the SCF and the CASSCF it would follow have
+/// run. Across tables, as check_scf_against_eri; under an `[optimize]` the
+/// molecule is its chain's, the one the start is read from.
 [[nodiscard]] Status check_nevpt2_gradient(const Calculation &calc) {
   const auto &step = calc.step<Nevpt2GradientStep>();
   if (!step) {
     return {};
   }
   constexpr std::string_view kStep = Nevpt2GradientStep::kName;
+  const auto &optimize = calc.step<OptimizeStep>();
   // The CASSCF is filled in when not written, and is never loaded.
-  if (const auto &casscf = calc.step<CasscfStep>(); casscf && casscf->nroots != 1) {
-    return err_unsupported("[{}] differentiates a single-state CASSCF, and [{}] nroots is {}: set "
-                           "[{}] nroots = 1",
-                           kStep, CasscfStep::kName, casscf->nroots, CasscfStep::kName);
-  }
-  if (step->root != 0) {
-    return err_config("[{}] root is {}, and the single-state [{}] has only root 0", kStep,
-                      step->root, CasscfStep::kName);
+  const auto &casscf = calc.step<CasscfStep>();
+  if (step->quasi_degenerate) {
+    if (casscf && casscf->nroots < 2) {
+      return err_config("[{}] quasi_degenerate couples the roots of a state average, and [{}] "
+                        "nroots is {}: set [{}] nroots to 2 or more",
+                        kStep, CasscfStep::kName, casscf->nroots, CasscfStep::kName);
+    }
+    if (casscf && step->state >= casscf->nroots) {
+      return err_config("[{}] state is {}, and H_eff over [{}]'s {} roots has states 0 to {}",
+                        kStep, step->state, CasscfStep::kName, casscf->nroots, casscf->nroots - 1);
+    }
+    if (optimize) {
+      return err_config("[{}] over a quasi-degenerate [{}] is not supported yet",
+                        OptimizeStep::kName, kStep);
+    }
+  } else {
+    if (casscf && casscf->nroots != 1) {
+      return err_unsupported("[{}] differentiates a single-state CASSCF, and [{}] nroots is {}: "
+                             "set [{}] nroots = 1, or [{}] quasi_degenerate = true",
+                             kStep, CasscfStep::kName, casscf->nroots, CasscfStep::kName, kStep);
+    }
+    if (step->root != 0) {
+      return err_config("[{}] root is {}, and the single-state [{}] has only root 0", kStep,
+                        step->root, CasscfStep::kName);
+    }
   }
   const auto &molecule = calc.step<MoleculeStep>();
-  const auto &optimize = calc.step<OptimizeStep>();
   const MoleculeStep *const start =
       molecule ? &*molecule : (optimize ? &optimize->molecule : nullptr);
   if (start != nullptr && start->multiplicity != 1) {

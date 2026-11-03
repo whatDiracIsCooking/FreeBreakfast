@@ -162,6 +162,13 @@ static_assert(std::same_as<
               fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput,
                        fb::EriOutput, fb::CoreHamiltonianOutput, fb::ScfOutput, fb::CasscfOutput>>);
 static_assert(std::same_as<fb::StepOutput<fb::Nevpt2GradientStep>, fb::Nevpt2GradientOutput>);
+// One root's SC or PC gradient, or with quasi_degenerate one QD state's, by
+// state, an index into H_eff's ascending eigenvalues.
+static_assert(std::same_as<decltype(fb::Nevpt2GradientOutput::gradient),
+                           std::variant<fb::nevpt2::ScGradient, fb::nevpt2::PcGradient,
+                                        fb::nevpt2::QdScGradient, fb::nevpt2::QdPcGradient>>);
+static_assert(std::same_as<decltype(fb::Nevpt2GradientStep::quasi_degenerate), bool>);
+static_assert(std::same_as<decltype(fb::Nevpt2GradientStep::state), std::int32_t>);
 
 // --- Geometry optimization --------------------------------------------------
 

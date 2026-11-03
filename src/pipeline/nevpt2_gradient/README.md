@@ -1,9 +1,11 @@
 # Pipeline: Nevpt2Gradient
 
 The analytic nuclear gradient of the SC- or PC-NEVPT2 total energy
-E_cas + E_corr of the single-state DF-CASSCF: dE/dR for every atom, each
-term it sums, and the Lagrangian's diagnostics. The numerics are all
-`../../nevpt2/gradient/`'s (`nevpt2::sc_gradient`, `nevpt2::pc_gradient`);
+E_cas + E_corr of the single-state DF-CASSCF, or with `quasi_degenerate` of
+one SC- or PC-QD-NEVPT2 state E_K of the DF-SA-CASSCF: dE/dR for every atom,
+each term it sums, and the Lagrangian's diagnostics. The numerics are all
+`../../nevpt2/gradient/`'s (`nevpt2::sc_gradient`, `nevpt2::pc_gradient`,
+`nevpt2::qd_sc_gradient`, `nevpt2::qd_pc_gradient`);
 the step refuses what they cannot take, wires the pipeline's products into
 them, and writes `nevpt2_gradient.json`. Its shape is `../casscf_gradient/`'s.
 
@@ -12,7 +14,7 @@ them, and writes `nevpt2_gradient.json`. Its shape is `../casscf_gradient/`'s.
 `free_breakfast.pipeline.nevpt2_gradient`, target
 `free_breakfast::pipeline::nevpt2_gradient`. It re-exports
 `free_breakfast.nevpt2.gradient` (the product holds `nevpt2::ScGradient` or
-`nevpt2::PcGradient`)
+`nevpt2::PcGradient`, or `nevpt2::QdScGradient` or `nevpt2::QdPcGradient`)
 and `free_breakfast.pipeline.casscf` (which re-exports every product in
 `run`'s signature, the `EriOutput`, the `ScfOutput` and the `CasscfOutput`
 among them). `run` is defined in the implementation unit, so `io.json` is a
@@ -24,9 +26,12 @@ PRIVATE link.
 enum class Nevpt2Variant : uint8_t { Sc, Pc };
 
 struct Nevpt2GradientOutput {
-  // The variant's: terms (total and five terms, each n_atom x 3), energies
-  // (E_corr's classes), zc, multipliers, asymmetry.
-  std::variant<nevpt2::ScGradient, nevpt2::PcGradient> gradient;
+  // State-specific: terms (total and five terms, each n_atom x 3), energies
+  // (E_corr's classes), zc, multipliers, asymmetry. QD: total, the two
+  // derivative passes' terms and transition, the Lagrangian, the gaps.
+  std::variant<nevpt2::ScGradient, nevpt2::PcGradient, nevpt2::QdScGradient,
+               nevpt2::QdPcGradient>
+      gradient;
 };
 
 struct Nevpt2GradientStep {
@@ -34,6 +39,8 @@ struct Nevpt2GradientStep {
 
   int32_t root = 0;                         // the single-state CASSCF's only root
   Nevpt2Variant variant = Nevpt2Variant::Sc;  // sc_gradient, or pc_gradient
+  bool quasi_degenerate = false;            // qd_sc_gradient or qd_pc_gradient
+  int32_t state = 0;                        // the QD state K, H_eff ascending
   std::filesystem::path json_path{};        // nevpt2_gradient.json, set by pipeline/config
 
   Result<Nevpt2GradientOutput>
@@ -97,6 +104,79 @@ struct Nevpt2GradientStep {
    has no such key. `main` prints the variant, the energy, the diagnostics
    and the total per atom.
 
+## Quasi-degenerate
+
+`quasi_degenerate = true` differentiates QD state K = `state` (an index into
+H_eff's eigenvalues, ascending) of the state-averaged CASSCF:
+`nevpt2::qd_sc_gradient`, or `nevpt2::qd_pc_gradient` for `variant = "pc"`,
+over the same products and the same `Solution` as above, γ the weighted
+average of the roots' 1-RDMs and Γ the product's (already weighted)
+`rdm2`. The `CasscfOutput`'s core and virtuals are canonical over the
+state-averaged Fock, which is what both QD gradients take
+(`../../nevpt2/gradient/README.md`, "The QD-NEVPT2 gradient").
+
+- **H_eff and u_K are the gradient's own.** The issue's scope speaks of the
+  step reading the `[nevpt2]` step's QD output (H_eff, u); it does not.
+  Both QD gradients build H_eff and u_K themselves, from the same
+  `CasscfOutput` the `[nevpt2]` step reads, and a step's `View` is fixed: naming
+  `Nevpt2Output` would make every `[nevpt2_gradient]`, the state-specific
+  one too, plan and run a `[nevpt2]`, filled in without `quasi_degenerate`
+  where none is written.
+- **Refusals in `run`**, beside the three above (now with the state average
+  allowed): `InvalidConfig` for fewer than two roots, a `state` past them, or
+  a `state` other than 0 without `quasi_degenerate`. `pipeline/config`
+  refuses each when the config is read, and also a `root` beside
+  `quasi_degenerate` and an `[optimize]` over it (not supported yet;
+  `OptimizeStep::run` refuses a hand-built one, `InvalidConfig`).
+- **A PC refusal** is the one the `[nevpt2]` step reports for PC-QD: a class
+  whose metric has no gap at the cut, or a non-positive λ + Δ,
+  `qd_pc_energy`'s `Numerical` error, which `qd_pc_gradient` returns
+  unchanged and the step returns as it is. The energy step keeps SC-QD and
+  records the refusal in `pc_qd_refusal`; the gradient has no SC to keep,
+  so the run fails with it, and no `nevpt2_gradient.json` is written.
+  The gradient's other refusals (a root of zero weight, a QD state within
+  `mcscf::kRootGapFloor` of another, the gate) are returned the same way.
+- **`nevpt2_gradient.json`** holds, in place of the state-specific keys:
+
+  ```json
+  {
+    "quasi_degenerate": true, "state": 1, "variant": "sc",
+    "energy": -2.986631888, "qd_energies": [-3.277351632, -2.986631888],
+    "e_casscf": [...], "rho": [...],
+    "total": [[...], ...], "terms": {"kinetic": [...], ...},
+    "transition": [[...], ...],
+    "max_zc": ..., "min_inactive_gap": ..., "max_zeta": ...,
+    "root_gap": ..., "heff_gap": ...,
+    "pcg_iterations": ..., "pcg_residual": ..., "asymmetry": {...}
+  }
+  ```
+
+  E_K and every eigenvalue of H_eff (PC's for `"pc"`), the CASSCF root
+  energies, ρ_r = u_rK²; the gradient, the `df_gradient` pass's five terms
+  and the `df_transition_gradient` (ζ) pass's total, one row of three per
+  atom; max |z^c|, the smallest inactive gap, max |ζ|, the smallest CASSCF
+  root gap and H_eff's gap at K; the Z-vector's PCG iterations and residual;
+  and X^L's residue per block. `main` prints the variant, the state, E_K,
+  the diagnostics and the total per atom.
+
+```toml
+[eri]
+mode = "density_fitting"
+[casscf]
+ncas = 3
+nelecas = 2
+nroots = 2
+weights = [0.5, 0.5]
+conv_tol_grad = 1e-10
+conv_tol = 1e-13
+[nevpt2_gradient]
+quasi_degenerate = true
+state = 1
+variant = "sc"      # or "pc"
+```
+
+## Notes
+
 - **`root` must be 0.** The option is there, as `[casscf_gradient]`'s, for
   when a state average is taken; until then the CASSCF has one root.
 - **The CASSCF's convergence is the gradient's.** The Lagrangian is
@@ -153,10 +233,28 @@ conv_tol_grad = 1e-9
   About half a second on an RTX 3080 too (numerical 3.5e-9, direct 4.5e-14),
   so it is in the fast set.
 
+- QD, `QdScStateOneMatchesTheNumericalGradient` and
+  `QdPcStateOneMatchesTheNumericalGradient`: a TOML config run by
+  `Calculation` from `test/gtest/data/qd_nevpt2_gradient/h6_631g_sa2.json`'s
+  own geometry, basis (6-31G), fitting set (cc-pVDZ-JKFIT), CAS(2,3),
+  two equal-weight roots and the generator's CASSCF bars (‖g‖ < 1e-10,
+  |ΔE| < 1e-13), at **state 1**, so an index or ordering error between
+  H_eff's eigenvalues and the state wired through shows. Its
+  `nevpt2_gradient.json` total, the product's, along each of #696's three
+  stored directions within 2× that number's committed error bar.
+- `QdPcRefusalIsTheEnergyStepsRefusal`: `[nevpt2] quasi_degenerate` and
+  `[nevpt2_gradient] quasi_degenerate, variant = "pc"` on
+  `../nevpt2/`'s HF CAS(10,7) SA-3 PC refusal case: the run fails
+  `Numerical` naming the same class as the energy step's `pc_qd_refusal`,
+  the energy step's SC-QD kept, no `nevpt2_gradient.json`.
+- The new keys and their refusals at config read in
+  `test/pipeline/config_host.cpp`; the product's variant and the two fields
+  in `test/pipeline/steps_host.cpp`.
+
 ## Files
 
 | File | Role |
 |------|------|
 | `nevpt2_gradient.cppm` | Module interface: `Nevpt2Variant`, `Nevpt2GradientOutput`, `Nevpt2GradientStep` |
-| `nevpt2_gradient.cpp` | `Nevpt2GradientStep::run`: the refusals, the `Solution`, `sc_gradient` or `pc_gradient`, and `nevpt2_gradient.json` |
+| `nevpt2_gradient.cpp` | `Nevpt2GradientStep::run`: the refusals, the `Solution`, `sc_gradient`, `pc_gradient`, `qd_sc_gradient` or `qd_pc_gradient`, and `nevpt2_gradient.json` |
 | `CMakeLists.txt` | The module library |

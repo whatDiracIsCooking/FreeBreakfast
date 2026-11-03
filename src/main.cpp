@@ -151,18 +151,33 @@ void print_products(const fb::Calculation &calc) {
     }
   }
   if (const auto &out = calc.get<fb::Nevpt2GradientOutput>()) {
+    const auto print_rows = [](const std::vector<double> &g) {
+      for (std::size_t a = 0; a + 2 < g.size(); a += 3) {
+        std::println("NEVPT2 grad atom {}: {:16.10f} {:16.10f} {:16.10f} Ha/bohr", a / 3, g[a],
+                     g[a + 1], g[a + 2]);
+      }
+    };
     std::visit(
         [&]<class G>(const G &grad) {
-          std::println("{}-NEVPT2 gradient: root {}, E_corr {:.10f} Ha, max |z^c| {:.3e}, "
-                       "smallest inactive gap {:.3e}, {} PCG iterations (residual {:.2e})",
-                       std::same_as<G, fb::nevpt2::PcGradient> ? "PC" : "SC",
-                       calc.step<fb::Nevpt2GradientStep>()->root, grad.energies.total,
-                       grad.zc.max_z, grad.zc.min_gap, grad.multipliers.iterations,
-                       grad.multipliers.residual);
-          const std::vector<double> &g = grad.terms.total;
-          for (std::size_t a = 0; a + 2 < g.size(); a += 3) {
-            std::println("NEVPT2 grad atom {}: {:16.10f} {:16.10f} {:16.10f} Ha/bohr", a / 3, g[a],
-                         g[a + 1], g[a + 2]);
+          if constexpr (std::same_as<G, fb::nevpt2::QdScGradient> ||
+                        std::same_as<G, fb::nevpt2::QdPcGradient>) {
+            const fb::nevpt2::QdScLagrangian &l = grad.lagrangian;
+            const auto k = static_cast<std::size_t>(calc.step<fb::Nevpt2GradientStep>()->state);
+            std::println("{}-QD-NEVPT2 gradient: state {}, E {:.10f} Ha, max |z^c| {:.3e}, "
+                         "smallest inactive gap {:.3e}, H_eff gap {:.3e}, {} PCG iterations "
+                         "(residual {:.2e})",
+                         std::same_as<G, fb::nevpt2::QdPcGradient> ? "PC" : "SC", k,
+                         l.eigenvalues[k], l.zc.max_z, l.zc.min_gap, grad.heff_gap,
+                         l.multipliers.iterations, l.multipliers.residual);
+            print_rows(grad.total);
+          } else {
+            std::println("{}-NEVPT2 gradient: root {}, E_corr {:.10f} Ha, max |z^c| {:.3e}, "
+                         "smallest inactive gap {:.3e}, {} PCG iterations (residual {:.2e})",
+                         std::same_as<G, fb::nevpt2::PcGradient> ? "PC" : "SC",
+                         calc.step<fb::Nevpt2GradientStep>()->root, grad.energies.total,
+                         grad.zc.max_z, grad.zc.min_gap, grad.multipliers.iterations,
+                         grad.multipliers.residual);
+            print_rows(grad.terms.total);
           }
         },
         out->gradient);
