@@ -3,9 +3,10 @@
 # ---------------------------------------------------------------------------
 # The TUs whose subject is src/pipeline and that run anywhere: the step
 # contract and the planner over made-up steps, the contract of every real
-# step, the TOML front end, the Guess step's load, and the Hessian and Nac
-# steps' contracts and configs. None constructs a DeviceResources, so a green
-# run here is meaningful on a device-less box.
+# step, the TOML front end, the Guess step's load, the Hessian and Nac
+# steps' contracts and configs, and the Optimize step's QD state following.
+# None constructs a DeviceResources, so a green run here is meaningful on a
+# device-less box.
 #
 #   * free_breakfast_pipeline_tests_host -- the *_host.cpp TUs.
 #
@@ -31,6 +32,7 @@ add_executable(
   guess_host.cpp
   hessian_host.cpp
   nac_host.cpp
+  optimize_host.cpp
 )
 
 set_target_properties(

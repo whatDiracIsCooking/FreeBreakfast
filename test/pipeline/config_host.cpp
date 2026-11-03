@@ -1242,8 +1242,8 @@ TEST(PipelineConfig, TheNevpt2GradientRefusalsAreUnsupported) {
 // [nevpt2_gradient] quasi_degenerate and state: read beside the variant, a
 // state average taken, and its three refusals at config read, before the
 // SCF and the CASSCF: fewer than two roots, a state past H_eff's, and a
-// state without quasi_degenerate. A root beside quasi_degenerate, and an
-// [optimize] over it, are refused too.
+// state without quasi_degenerate. A root beside quasi_degenerate is refused
+// too; an [optimize] over it is taken, the step copied into its chain.
 TEST(PipelineConfig, TheNevpt2GradientStepReadsQuasiDegenerateAndState) {
   const std::string fitted = "[eri]\nmode = \"density_fitting\"\n";
   const auto sa = [&](std::int32_t nroots) {
@@ -1293,9 +1293,15 @@ TEST(PipelineConfig, TheNevpt2GradientStepReadsQuasiDegenerateAndState) {
                       "[nevpt2_gradient] root names the single-state CASSCF's root");
   expect_config_error(with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = 1\n"),
                       "[nevpt2_gradient] quasi_degenerate is not a boolean");
-  expect_config_error(
-      with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = true\n[optimize]\n"),
-      "[optimize] over a quasi-degenerate [nevpt2_gradient] is not supported yet");
+  const auto optimized = fb::parse_config(
+      with_inputs(sa(2) + "[nevpt2_gradient]\nquasi_degenerate = true\nstate = 1\n[optimize]\n"),
+      "", kOut);
+  ASSERT_TRUE(optimized.has_value()) << optimized.error().message;
+  const fb::OptimizeStep &optimize = *optimized->step<fb::OptimizeStep>();
+  ASSERT_TRUE(optimize.nevpt2_gradient.has_value());
+  EXPECT_TRUE(optimize.nevpt2_gradient->quasi_degenerate);
+  EXPECT_EQ(optimize.nevpt2_gradient->state, 1);
+  EXPECT_EQ(optimize.casscf.nroots, 2);
 }
 
 TEST(PipelineConfig, WrongTypedOptionIsInvalidConfigNamingIt) {

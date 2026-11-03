@@ -126,8 +126,8 @@ state-averaged Fock, which is what both QD gradients take
   allowed): `InvalidConfig` for fewer than two roots, a `state` past them, or
   a `state` other than 0 without `quasi_degenerate`. `pipeline/config`
   refuses each when the config is read, and also a `root` beside
-  `quasi_degenerate` and an `[optimize]` over it (not supported yet;
-  `OptimizeStep::run` refuses a hand-built one, `InvalidConfig`).
+  `quasi_degenerate`. An `[optimize]` over it follows the state from
+  geometry to geometry (`../optimize/README.md`, "The QD-NEVPT2 state").
 - **A PC refusal** is the one the `[nevpt2]` step reports for PC-QD: a class
   whose metric has no gap at the cut, or a non-positive λ + Δ,
   `qd_pc_energy`'s `Numerical` error, which `qd_pc_gradient` returns

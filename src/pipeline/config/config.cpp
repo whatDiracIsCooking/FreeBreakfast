@@ -785,10 +785,10 @@ template <class S>
 /// over a molecule of multiplicity other than 1 (an open shell: the SCF
 /// under the CASSCF is closed-shell exactly when it is 1), and a `root` the
 /// single-state CASSCF does not have; with `quasi_degenerate`, over a
-/// `[casscf]` of fewer than two roots, a `state` past them, or under an
-/// `[optimize]`: here, before the SCF and the CASSCF it would follow have
-/// run. Across tables, as check_scf_against_eri; under an `[optimize]` the
-/// molecule is its chain's, the one the start is read from.
+/// `[casscf]` of fewer than two roots, or a `state` past them: here, before
+/// the SCF and the CASSCF it would follow have run. Across tables, as
+/// check_scf_against_eri; under an `[optimize]` the molecule is its chain's,
+/// the one the start is read from.
 [[nodiscard]] Status check_nevpt2_gradient(const Calculation &calc) {
   const auto &step = calc.step<Nevpt2GradientStep>();
   if (!step) {
@@ -807,10 +807,6 @@ template <class S>
     if (casscf && step->state >= casscf->nroots) {
       return err_config("[{}] state is {}, and H_eff over [{}]'s {} roots has states 0 to {}",
                         kStep, step->state, CasscfStep::kName, casscf->nroots, casscf->nroots - 1);
-    }
-    if (optimize) {
-      return err_config("[{}] over a quasi-degenerate [{}] is not supported yet",
-                        OptimizeStep::kName, kStep);
     }
   } else {
     if (casscf && casscf->nroots != 1) {
