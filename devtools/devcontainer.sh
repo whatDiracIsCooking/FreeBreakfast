@@ -605,6 +605,26 @@ ensure_nvidia_uvm_nodes() {
     echo "devcontainer: WARNING -- nvidia-modprobe could not create /dev/nvidia-uvm" >&2
 }
 
+# End the `docker run --sig-proxy=false -a STDOUT -a STDERR ...` client the
+# CLI leaves behind after `up`. It is orphaned (PPID 1) once the CLI exits, but
+# it inherited the CLI's stdout -- through run_cli's sed, OUR stdout -- and
+# holds it open for the container's whole life. So anything reading this
+# script's output, `| tee log` or `| tail`, never sees EOF and hangs after the
+# work is done. Killing the client leaves the container running: it is only an
+# attach, and --sig-proxy=false keeps the signal from reaching the container.
+#
+# Matched on its fixed prefix and this workspace's bind mount, so another
+# worktree's container is never touched.
+release_attach_client() {
+  local pid args
+  while read -r pid args; do
+    case "$args" in
+      "docker run --sig-proxy=false -a STDOUT -a STDERR "*"--mount source=$WORKSPACE,target=$WORKSPACE,"*)
+        kill "$pid" 2>/dev/null || true ;;
+    esac
+  done < <(ps -ww -o pid=,args= -C docker 2>/dev/null)
+}
+
 require_running() {
   command -v docker >/dev/null 2>&1 || return 0
   [ -n "$(container_ids || true)" ] && return 0
@@ -753,6 +773,7 @@ case "${1:-}" in
     remote_env_args
     run_cli up --workspace-folder "$WORKSPACE" "${DC_CONFIG[@]}" \
       "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
+    release_attach_client
     name_host_gids
     tag_variant_image
     apply_cpu_limits
@@ -778,6 +799,7 @@ case "${1:-}" in
     run_cli up --workspace-folder "$WORKSPACE" \
       --remove-existing-container "${DC_CONFIG[@]}" \
       "${HOST_MOUNT_ARGS[@]}" "${REMOTE_ENV_ARGS[@]}" "$@"
+    release_attach_client
     # Again on `rebuild`, not only `up`: a fresh container means a fresh
     # /etc/group, so the entry has to be re-added rather than inherited.
     name_host_gids
