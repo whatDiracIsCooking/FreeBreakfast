@@ -8,7 +8,8 @@
 /// An internal partition (`module`, not `export module`): gradient.cpp and
 /// qd.cpp import it, nothing reaches an importer of
 /// free_breakfast.nevpt2.gradient. It only declares; every definition is
-/// gradient.cpp's. See docs/style.md, "Module-private code".
+/// gradient.cpp's but with_qd_inputs, qd.cpp's. See docs/style.md,
+/// "Module-private code".
 
 module free_breakfast.nevpt2.gradient:builders;
 
@@ -143,6 +144,17 @@ Result<ScArrays> shared_arrays(DeviceResources &res, std::string_view who,
                                const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
                                int32_t naux, int32_t nao, int32_t nmo, const double *b,
                                const double *c, const double *h, int32_t ncore, int32_t ncas);
+
+/// @brief The QD functionals' inputs, built as qd_sc_energy builds them from
+/// (h, B, c), the roots @p vectors and their @p weights, handed to @p use:
+/// the MO blocks and the n x n pairs [M n + N]. qd.cpp's (the exception to
+/// the rule above: QdArrays is its own), for qd_inputs in lagrangian.cpp.
+Status
+with_qd_inputs(DeviceResources &res, std::string_view who, const ci::DeviceStringSet &alpha,
+               const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+               const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+               std::span<const double> weights, const double *vectors,
+               const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use);
 
 /// @brief Where a class walk adds its bars: @p bar's fields, and Λ at
 /// @p lambda.

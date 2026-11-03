@@ -40,6 +40,7 @@ import free_breakfast.ci.strings;
 import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.zvector;
 import free_breakfast.mcscf.gradient;
+import free_breakfast.nevpt2.density_fitting; // MoBlocks
 import free_breakfast.nevpt2.energy;
 
 export namespace free_breakfast::nevpt2 {
@@ -777,5 +778,25 @@ qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
                int32_t batch);
+
+/// @brief qd_sc_energy's inputs on the DF-SA-CASSCF @p solution, handed to
+/// @p use: the MO blocks, and the n x n pairs [M n + N] (bra M, ket N) of
+/// shared integrals and orbital energies over the state-averaged Fock at
+/// the weights mcscf::sa_gradient_weights recovers, with each ordered pair's
+/// RDMs (f3ca and f3ac on the diagonal alone), exactly what
+/// sc_effective_hamiltonian and pc_effective_hamiltonian take there, and so
+/// what the PT2 transition density (free_breakfast.nevpt2.nac) takes. The
+/// buffers live for the call alone; every launch is on res.stream().
+///
+/// The arguments but @p use are qd_sc_lagrangian's, without @p batch.
+///
+/// @return @p use's status; InvalidConfig as qd_sc_lagrangian's for counts,
+///         RDMs or CI vectors that do not fit or a root of zero weight; or
+///         the first error of a builder or nevpt2::rdms.
+[[nodiscard]] Status
+qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+          const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
+          const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+          const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use);
 
 } // namespace free_breakfast::nevpt2

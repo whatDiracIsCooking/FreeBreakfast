@@ -39,6 +39,7 @@ import free_breakfast.mcscf.zvector;
 import free_breakfast.mcscf.root_rotation; // kRootGapFloor
 import free_breakfast.mcscf.gradient;
 import :operands; // to_host, to_device
+import :builders; // with_qd_inputs
 
 #include "diagnostics.h"
 
@@ -447,6 +448,21 @@ Result<QdSetup> qd_setup(DeviceResources &res, const std::string_view who, const
                       solution.roots.vectors.num_elements(), nroots, dim);
   }
   return QdSetup{.weights = std::move(weights), .alpha = std::move(alpha), .beta = std::move(beta)};
+}
+
+Status
+qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+          const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
+          const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+          const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use) {
+  constexpr std::string_view kWho = "nevpt2::qd_inputs";
+  const QdSetup setup = FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas));
+  const SphericalMatrixAO &c = solution.c;
+  const auto nmo = static_cast<int32_t>(c.n());
+  const ScopedDeviceIndex on{res.dev_idx()};
+  return with_qd_inputs(res, kWho, setup.alpha, setup.beta, static_cast<int32_t>(aux.nao_sphe()),
+                        nmo, nmo, b.data(), c.data(), h.data(), ncore, ncas, setup.weights,
+                        solution.roots.vectors.data(), use);
 }
 
 // The SC-QD Lagrangian at the symmetric weight matrix @p w (@p pc null) or
