@@ -16,7 +16,9 @@
 /// class energies (and their reverse pass) in place of SC's. The SC-QD-NEVPT2
 /// effective Hamiltonian of several roots over shared orbitals is the same
 /// builders around sc_effective_hamiltonian, and its adjoint along any W;
-/// the PC-QD one the same around pc_effective_hamiltonian.
+/// the PC-QD one the same around pc_effective_hamiltonian. And the SC-QD
+/// Lagrangian's multipliers on a DF-SA-CASSCF (qd_sc_lagrangian): z^c, the
+/// roots' rotation multipliers and the SA Z-vector, gated.
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -490,5 +492,80 @@ pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
             const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
             const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t batch);
+
+/// @brief qd_sc_lagrangian's result: what the SC-QD-NEVPT2 gradient's
+/// derivative passes take, and what it reports. Every device array is on
+/// res's device.
+struct QdScLagrangian {
+  /// @brief H_eff's eigenvalues, ascending: E_r delta_rs + 1/2 (C_rs + C_sr),
+  /// E_r the solution's root energies, C the correlation elements.
+  std::vector<double> eigenvalues;
+  /// @brief The seed W = u_K u_K^T, n x n row-major, u_K state K's
+  /// eigenvector of H_eff.
+  std::vector<double> w;
+  /// @brief rho_r = W_rr = u_rK^2, summing to 1: the weighting of the root
+  /// energies, mcscf::df_gradient's mix.
+  std::vector<double> rho;
+  /// @brief The state average's weights w_r, mcscf::sa_gradient_weights',
+  /// every one positive.
+  std::vector<double> weights;
+  /// @brief qd_sc_adjoint at W with Phi^SA's adjoint (zc_adjoint at zc.z)
+  /// added field by field: h_bar, lambda and x are df_gradient's extra, y is
+  /// y_bar_r = y_bar^corr_r + y^c_r per root, raw, and a is A^corr + A^{z^c}.
+  /// elements and epsilon are qd_sc_adjoint's.
+  QdScAdjoint corr;
+  /// @brief z^c over qd_sc_adjoint's A and the SA Fock's epsilon.
+  ZcMultipliers zc;
+  /// @brief tau from corr.y, split into zeta (equal-weight pairs) and t
+  /// (unequal pairs, zvector's theta_rhs).
+  mcscf::RootPairMultipliers pairs;
+  /// @brief zeta . g, and the folded (gamma^zeta, Gamma^zeta) that one
+  /// mcscf::df_transition_gradient takes for zeta's nuclear term.
+  mcscf::ZetaTerms zeta;
+  /// @brief (Z, z, Theta) in mcscf::zvector's coordinates, its PCG
+  /// iterations and residual: df_gradient's multipliers.
+  mcscf::ZVector multipliers;
+  /// @brief max |X^L_pq - X^L_qp| per block, as ScGradient::asymmetry.
+  std::array<double, 6> asymmetry{};
+};
+
+/// @brief The SC-QD-NEVPT2 Lagrangian of state @p state (H_eff's eigenvalues
+/// ascending) on the DF-SA-CASSCF @p solution, and its multipliers:
+/// nuclear_gradient.tex Algorithm qdgrad up to the derivative passes.
+///
+///     L = E[W] + Z . g_SA + sum_r 2 w_r z_r . (H - E_r) c_r
+///         + sum_{r<s} (2 (w_r - w_s) Theta_sr + zeta_sr) <c_s|H|c_r>
+///         + <z^c, f^SA>,
+///
+/// E[W] = sum_r rho_r E_r + sum_MN W_MN C_MN at W = u_K u_K^T. In order:
+/// qd_sc_energy and H_eff's eigenvectors (diagonalize); qd_sc_adjoint at W;
+/// zc_multipliers over its A and epsilon and zc_adjoint at the weights,
+/// added onto it; mcscf::root_pair_multipliers on the summed y_bar, and
+/// mcscf::zeta_terms on its zeta; then mcscf::zvector over the CI-relaxed
+/// Hessian at the solution and its weights, the orbital right-hand side
+/// g^rho + zeta . g + A over the packed pairs (g^rho response::fock's
+/// gradient at the rho-weighted RDMs), the CI one y_bar_r / (2 w_r) (zvector
+/// projects it off the roots) and the rotation one t. Last the gate: X^L
+/// symmetric in every block, its CAS part at the rho-weighted RDMs plus z's
+/// (with Theta) and zeta's transition RDMs, a block past 1e-8 refused.
+///
+/// The arguments are mcscf::df_gradient's but the derivative integrals' and
+/// @p batch, sc_energy's. The solution's core and virtuals are canonical
+/// over the state-averaged Fock, as the Casscf step leaves them; the
+/// weights are recovered by mcscf::sa_gradient_weights and used everywhere.
+///
+/// @return The Lagrangian's pieces; InvalidConfig for counts that do not
+///         fit, @p state not one of the roots', or a root of zero weight (it
+///         has no SA CI row: below kRotationWeightTolerance); Numerical,
+///         naming both states, when H_eff's eigenvalue @p state is within
+///         mcscf::kRootGapFloor of another (u_K's derivative is not defined
+///         there); Numerical, naming the block, when the gate fails; or the
+///         first error of the calls it makes (root_pair_multipliers' refusal
+///         of a near-degenerate pair of roots among them).
+[[nodiscard]] Result<QdScLagrangian>
+qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                 const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                 const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
+                 int32_t batch);
 
 } // namespace free_breakfast::nevpt2
