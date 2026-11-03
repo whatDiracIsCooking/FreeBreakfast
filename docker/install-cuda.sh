@@ -185,8 +185,15 @@ for header in nccl.h cutensor.h nvcomp.h; do
   [ -n "$found" ] || { echo "install-cuda.sh: $header not found after install" >&2; exit 1; }
   echo "install-cuda.sh: $header -> $found"
 done
+# The cache is read ONCE into a variable, never piped into `grep -q`: grep
+# quits at its first match, ldconfig then dies of SIGPIPE if more than a pipe
+# buffer (64KB) of its output is still unwritten, and pipefail reports that as
+# the library being missing. Whether it fires depends only on how big the cache
+# has grown and where the match sits in it -- it passed on a 50KB cache and
+# failed on a fresh cloud-VM build whose cache was larger.
+loader_cache="$(ldconfig -p)"
 for soname in libnccl.so libcutensor.so libnvcomp.so; do
-  ldconfig -p | grep -q "${soname}" \
+  grep -q "${soname}" <<<"$loader_cache" \
     || { echo "install-cuda.sh: ${soname} not on the loader path" >&2; exit 1; }
 done
 echo "install-cuda.sh: cuTENSOR + nvCOMP published under /opt/nvidia"
