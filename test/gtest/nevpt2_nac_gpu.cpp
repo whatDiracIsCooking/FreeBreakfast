@@ -6,7 +6,7 @@
 // - against #743's zeroth-order references (data/qd_nevpt2_nac/coupling/):
 //   d^NEV + d^CAS = h_PQ / (E_Q - E_P) + d^CAS against `{sc,pc}_zeroth`,
 //   within 2x each component's error bar; then h_QP = h_PQ and
-//   d_QP = -d_PQ to 1e-10 of the largest element among the parts summed
+//   d_QP = -d_PQ (independent solves) to 1e-9 of the largest part summed
 //   (#748's ruling), total against its formula, and the CSF split against
 //   one mcscf::df_nac combination at (T^PQ, D^PT2) built here from the
 //   coupling's own R and nevpt2::qd_inputs;
@@ -49,6 +49,11 @@ constexpr std::string_view kDfAuxBasis = "cc-pVDZ-JKFIT";
 constexpr double kConvTolGrad = 1e-10;
 constexpr double kConvTol = 1e-13;
 constexpr std::int32_t kMaxCycle = 200;
+// Two independently converged Z-vector solves of one quantity (the swapped
+// pair, cas + pt2 against the combination) agree to the solver, not
+// round-off: 1e-9 of the same scale (#775,
+// https://github.com/whatDiracIsCooking/FreeBreakfast/issues/767#issuecomment-6608119792).
+constexpr double kSolveTolerance = 1e-9;
 // Against committed numerical data: 2x the component's error bar.
 constexpr double kBarFactor = 2.0;
 // Path agreement and the symmetry checks (#749's "How results are
@@ -491,7 +496,7 @@ void expect_zeroth(const std::string &name) {
       ASSERT_TRUE(swapped.has_value()) << swapped.error().message;
       const double h_diff = max_diff(swapped->numerator, d->numerator);
       const double h_scale = c->summand;
-      EXPECT_LE(h_diff, kPathTolerance * h_scale) << label << " h_QP";
+      EXPECT_LE(h_diff, kSolveTolerance * h_scale) << label << " h_QP";
       std::vector<double> minus(swapped->total.size());
       std::ranges::transform(swapped->total, minus.begin(), std::negate<>{});
       const double d_diff = max_diff(minus, d->total);
@@ -515,7 +520,7 @@ void expect_zeroth(const std::string &name) {
       EXPECT_LE(split_diff, kPathTolerance * split_scale) << label << " CSF split";
       const double path_diff = max_diff(sum, combined->total);
       const double path_scale = std::max(largest_abs(sum), largest_abs(combined->total));
-      EXPECT_LE(path_diff, kPathTolerance * path_scale) << label << " cas + pt2";
+      EXPECT_LE(path_diff, kSolveTolerance * path_scale) << label << " cas + pt2";
       const double part_scale =
           std::max({largest_abs(combined->response), largest_abs(combined->csf),
                     largest_abs(combined->basis_motion)});
@@ -525,7 +530,7 @@ void expect_zeroth(const std::string &name) {
       const double d_scale =
           std::max({h_scale / std::abs(ediff), part_scale, largest_abs(d->cas), largest_abs(d->pt2),
                     largest_abs(d->numerator) / std::abs(ediff)});
-      EXPECT_LE(d_diff, kPathTolerance * d_scale) << label << " d_QP";
+      EXPECT_LE(d_diff, kSolveTolerance * d_scale) << label << " d_QP";
       std::cout << std::format(
           "[ nevpt2   ] qd nac {}: |h_QP - h_PQ| {:.2e}, largest summand {:.3e}, relative {:.2e} "
           "(of max |h| {:.3e}: {:.2e}); |d_QP + d_PQ| {:.2e}, largest part {:.3e}, relative "

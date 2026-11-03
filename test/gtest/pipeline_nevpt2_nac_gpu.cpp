@@ -7,11 +7,13 @@
 // H_eff's states and the pair wired through shows; once SC and once PC.
 //
 // Its nevpt2_nac.json and product against nevpt2::qd_sc_nac or qd_pc_nac
-// called directly over the same Calculation's products: h, cas, pt2, csf and
-// total each to 1e-10 of its own largest element (the milestone's path
-// agreement: the same calls on the same inputs, apart only by the atomics'
-// reassociation), and H_eff's gap at the pair against the call's own, to
-// 1e-10 of the largest eigenvalue. The step's refusals of a malformed pair
+// called directly over the same Calculation's products: csf to 1e-10 of its
+// own largest element (the milestone's path agreement: the same calls on the
+// same inputs, apart only by the atomics' reassociation); h, cas, pt2 and
+// total, which each pass through a Z-vector solve the two runs converge
+// independently, to 1e-9 of the largest part summed into d (#775); and
+// H_eff's gap at the pair against the call's own, to 1e-10 of the largest
+// eigenvalue. The step's refusals of a malformed pair
 // in run, over the same products, before anything runs.
 
 #include <gtest/gtest.h>
@@ -44,6 +46,10 @@ constexpr std::int32_t kMaxCycle = 200;
 // The step against the direct call (#750's "How results are compared": path
 // agreement, relative to the largest element of the quantity compared).
 constexpr double kPathTolerance = 1e-10;
+// Fields through a Z-vector solve: the step and the call converge theirs
+// independently, so they agree to the solver, not round-off (#775,
+// https://github.com/whatDiracIsCooking/FreeBreakfast/issues/767#issuecomment-6608119792).
+constexpr double kSolveTolerance = 1e-9;
 constexpr std::int32_t kBra = 1;
 constexpr std::int32_t kKet = 2;
 
@@ -140,17 +146,19 @@ double largest_abs(std::span<const double> v) {
   return m;
 }
 
-// max |ours - want| / max |want|, EXPECTed within kPathTolerance.
-double relative(std::span<const double> ours, std::span<const double> want, std::string_view what) {
+// max |ours - want| / scale (max |want| unless given), EXPECTed within
+// @p tolerance.
+double relative(std::span<const double> ours, std::span<const double> want, std::string_view what,
+                const double tolerance = kPathTolerance, double scale = 0.0) {
   EXPECT_EQ(ours.size(), want.size()) << what;
-  const double scale = largest_abs(want);
+  scale = scale > 0.0 ? scale : largest_abs(want);
   EXPECT_GT(scale, 0.0) << what;
   double m = 0.0;
   for (std::size_t i = 0; i < std::min(ours.size(), want.size()); ++i) {
     m = std::max(m, std::abs(ours[i] - want[i]));
   }
   const double rel = scale > 0.0 ? m / scale : m;
-  EXPECT_LE(rel, kPathTolerance) << what << ": " << m << " of " << scale;
+  EXPECT_LE(rel, tolerance) << what << ": " << m << " of " << scale;
   return rel;
 }
 
@@ -242,11 +250,18 @@ void expect_step_matches_direct(std::string_view variant) {
   ASSERT_TRUE(direct.has_value()) << direct.error().message;
   const std::chrono::duration<double> direct_seconds =
       std::chrono::steady_clock::now() - direct_start;
-  const double h = relative(ours.numerator, direct->numerator, "h");
-  const double d_cas = relative(ours.cas, direct->cas, "cas");
-  const double d_pt2 = relative(ours.pt2, direct->pt2, "pt2");
+  // The largest part summed into d: h over the gap, cas, pt2, csf; h is
+  // compared on the scale times the gap.
+  const double gap_pq = direct->heff_gap;
+  const double d_scale =
+      std::max({largest_abs(direct->numerator) / gap_pq, largest_abs(direct->cas),
+                largest_abs(direct->pt2), largest_abs(direct->csf)});
+  const double h =
+      relative(ours.numerator, direct->numerator, "h", kSolveTolerance, d_scale * gap_pq);
+  const double d_cas = relative(ours.cas, direct->cas, "cas", kSolveTolerance, d_scale);
+  const double d_pt2 = relative(ours.pt2, direct->pt2, "pt2", kSolveTolerance, d_scale);
   const double csf = relative(ours.csf, direct->csf, "csf");
-  const double total = relative(ours.total, direct->total, "total");
+  const double total = relative(ours.total, direct->total, "total", kSolveTolerance, d_scale);
   // H_eff's gap at the pair, the step's own H_eff against the call's.
   const double gap = std::abs((out->energies[kKet] - out->energies[kBra]) - direct->heff_gap) /
                      largest_abs(out->energies);
