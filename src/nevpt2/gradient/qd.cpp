@@ -104,7 +104,7 @@ Result<QdArrays> qd_arrays(DeviceResources &res, const std::string_view who,
 
 // sc_effective_hamiltonian's pairs: the shared inputs, each pair's RDMs, and
 // f3ca and f3ac on the diagonal alone.
-std::vector<EnergyInputs> qd_inputs(const QdArrays &q, const size_t nroots) {
+std::vector<EnergyInputs> pair_inputs(const QdArrays &q, const size_t nroots) {
   std::vector<EnergyInputs> out;
   for (size_t k = 0; k < q.pairs.size(); ++k) {
     const QdRdms &p = q.pairs[k];
@@ -120,6 +120,18 @@ std::vector<EnergyInputs> qd_inputs(const QdArrays &q, const size_t nroots) {
   return out;
 }
 
+Status
+with_qd_inputs(DeviceResources &res, const std::string_view who, const ci::DeviceStringSet &alpha,
+               const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
+               const int32_t nmo, const double *b, const double *c, const double *h,
+               const int32_t ncore, const int32_t ncas, const std::span<const double> weights,
+               const double *vectors,
+               const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use) {
+  const QdArrays q = FBF_TRY(
+      qd_arrays(res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors));
+  return use(q.x.blocks, pair_inputs(q, weights.size()));
+}
+
 Result<std::vector<ClassEnergies>>
 qd_sc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
              const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
@@ -128,7 +140,7 @@ qd_sc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
              const double *vectors, const int32_t batch) {
   const QdArrays q = FBF_TRY(qd_arrays(res, "nevpt2::qd_sc_energy", alpha, beta, naux, nao, nmo, b,
                                        c, h, ncore, ncas, weights, vectors));
-  return sc_effective_hamiltonian(res, q.x.blocks, qd_inputs(q, weights.size()), batch);
+  return sc_effective_hamiltonian(res, q.x.blocks, pair_inputs(q, weights.size()), batch);
 }
 
 Result<std::vector<PcClassEnergies>>
@@ -139,7 +151,7 @@ qd_pc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
              const double *vectors, const int32_t batch) {
   const QdArrays q = FBF_TRY(qd_arrays(res, "nevpt2::qd_pc_energy", alpha, beta, naux, nao, nmo, b,
                                        c, h, ncore, ncas, weights, vectors));
-  return pc_effective_hamiltonian(res, q.x.blocks, qd_inputs(q, weights.size()), batch);
+  return pc_effective_hamiltonian(res, q.x.blocks, pair_inputs(q, weights.size()), batch);
 }
 
 // The reverse pass of E[W] around @p walk, the effective Hamiltonian's
@@ -207,7 +219,7 @@ qd_adjoint(DeviceResources &res, const std::string_view who, const ci::DeviceStr
     return {};
   };
   // A refused class is the walk's error, returned before any bar is read.
-  FBF_TRY(walk(x.blocks, qd_inputs(q, nroots), bars, transition));
+  FBF_TRY(walk(x.blocks, pair_inputs(q, nroots), bars, transition));
 
   // Each root's own: gamma_SA's bar at its weight onto dm1's, the traces'
   // adjoint, then the one-vector rdms_adjoint onto its y and (tu|vw)'s bar.
