@@ -936,8 +936,8 @@ INSTANTIATE_TEST_SUITE_P(Groups, Nevpt2EnergyAdjointLadder,
 // Every bar of @p b against @p a's to @p relative of its largest element,
 // and every one formed (not all zero): the walk's (Λ, h1e_v's, the orbital
 // energies'), and with @p sweep the sweep's (h1e, h2e, the RDMs').
-void expect_same_bars(const HostBars &a, const HostBars &b, const bool sweep = true,
-                      const double relative = 1e-12) {
+void expect_same_bars(const HostBars &a, const HostBars &b, const bool sweep,
+                      const double relative) {
   for (const auto &[name, x, y, swept] :
        {std::tuple{"lambda", &a.lambda, &b.lambda, false},
         std::tuple{"h1e_v_sr", &a.h1e_v_sr, &b.h1e_v_sr, false},
@@ -975,9 +975,10 @@ void expect_same_bars(const HostBars &a, const HostBars &b, const bool sweep = t
 //   batched vs whole, RTX 3080, 20 runs: median 3.1e-13, max 1.02e-12
 //   whole vs whole,   RTX 3080, 20 runs: median 4.3e-13, max 8.9e-13
 // (dm3, h2e, dm1 and f3ca up to 7.6e-13-8.5e-13). The bar was 1e-12, on that
-// floor, and failed one run in 20-50 on each card; it is 5e-12, about five
-// times the worst of 120 runs, by the user's decision.
-constexpr double kBatchedBarsTolerance = 5e-12;
+// floor, and failed one run in 20-50 on each card; 5e-12 after it was still
+// a measured floor, so it is the standing rule, 1e-10 of the largest element
+// (#775: https://github.com/whatDiracIsCooking/FreeBreakfast/issues/775#issuecomment-6608877300).
+constexpr double kBatchedBarsTolerance = 1e-10;
 
 TEST(Nevpt2EnergyAdjoint, BatchedBarsMatchWhole) {
   FBF_REQUIRE_GPU();
@@ -1317,7 +1318,7 @@ TEST(Nevpt2PcEnergyAdjoint, BatchedBarsMatchWhole) {
   const auto batched = run_pc_adjoint(res, h, 3);
   ASSERT_TRUE(whole.has_value());
   ASSERT_TRUE(batched.has_value());
-  expect_same_bars(whole->second, batched->second, false);
+  expect_same_bars(whole->second, batched->second, false, kBatchedBarsTolerance);
   for (std::size_t k = 0; k < 8; ++k) {
     EXPECT_NEAR(batched->first.energies.energies[k], whole->first.energies.energies[k], 1e-12)
         << kClassNames[k];
@@ -1934,8 +1935,8 @@ const std::string kPcQdAdjointCase = "h8_ring_sto3g_sa3";
 
 // One state is pc_class_energies_adjoint itself (it is that call's n = 1, at
 // H̄ = 1): its energies, dropped counts, homogeneity sums and every bar, the
-// bars at kBatchedBarsTolerance, the atomics' floor, seven times the largest
-// run-to-run spread measured (6.9e-13). States 0 and 2; state 1's spread is
+// bars at kBatchedBarsTolerance, the standing rule (the largest run-to-run
+// spread measured was 6.9e-13). States 0 and 2; state 1's spread is
 // 2.2e-11 (above).
 TEST(Nevpt2PcQdEnergyAdjoint, OneStateIsPcClassEnergiesAdjoint) {
   FBF_REQUIRE_GPU();
@@ -1962,7 +1963,7 @@ TEST(Nevpt2PcQdEnergyAdjoint, OneStateIsPcClassEnergiesAdjoint) {
 
 // Walked one slab row at a time (one core and three virtual orbitals, so
 // every walk with an external index splits), the walk's bars match the whole
-// walk's at kBatchedBarsTolerance (twenty times the 2.5e-13 measured), every
+// walk's at kBatchedBarsTolerance (the standing rule; 2.5e-13 measured), every
 // element and the homogeneity sums at 1e-12, with the same dropped counts; each transition is handed over once. The sweep's bars, the
 // transitions' among them, are not compared element by element: they carry
 // state 1's spread (above), as PC's one-state BatchedBarsMatchWhole leaves
