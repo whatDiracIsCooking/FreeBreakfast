@@ -63,6 +63,10 @@ constexpr std::array<double, 4> kStencilWeights{1.0, -8.0, 8.0, -1.0};
 // The stencil's step: max |e kappa| this, so C (1 + 2 e kappa) stays within
 // a factor of order one of C and the round-off of the quotient is ~1e-15.
 constexpr double kStencilReach = 0.1;
+// Every Lagrangian's Z-vector is solved to this, in at most this many H~
+// products.
+constexpr double kZvectorTolerance = 1e-10;
+constexpr int32_t kZvectorProducts = 200;
 
 // The six blocks the gate reports, each (row space, column space): 0 core,
 // 1 active, 2 virtual, as ScGradient::asymmetry orders them.
@@ -256,15 +260,19 @@ active_strings(DeviceResources &res, const std::string_view who, const Molecule 
 // row-major; the orbital Hessian over @p averaged, the Fock at the
 // solution's weighted RDMs; the response integrals), for the right-hand
 // sides @p orbital_rhs (the packed pairs), @p ci_rhs (dim x nroots) and
-// @p theta_rhs (zvector's).
-Result<mcscf::ZVector>
-lagrangian_zvector(DeviceResources &res, const SphericalMatrixAO &h,
-                   const Buffers::device<double> &b, const int32_t naux,
-                   const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-                   const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, ci::Rdm &rdm,
-                   const CasscfIntegrals &ints, const response::Fock &averaged,
-                   const std::span<const double> weights, const double *orbital_rhs,
-                   const double *ci_rhs, const std::span<const double> theta_rhs) {
+// @p theta_rhs (zvector's), @p ncol columns of each stacked. One column is
+// mcscf::zvector's solve; more are one mcscf::zvectors (Schur) over the one
+// Hessian, split into a ZVector per column, each column's true residual
+// (one more product) held to the solve's own tolerance (Numerical naming
+// @p who and the column): the block conjugate gradients stop on their
+// recurrence (#786).
+Result<std::vector<mcscf::ZVector>> lagrangian_zvector(
+    DeviceResources &res, const std::string_view who, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const int32_t naux, const mcscf::Solution &solution,
+    const int32_t ncore, const int32_t ncas, const ci::DeviceStringSet &alpha,
+    const ci::DeviceStringSet &beta, ci::Rdm &rdm, const CasscfIntegrals &ints,
+    const response::Fock &averaged, const std::span<const double> weights, const int32_t ncol,
+    const double *orbital_rhs, const double *ci_rhs, const std::span<const double> theta_rhs) {
   const SphericalMatrixAO &c = solution.c;
   const auto nmo = static_cast<size_t>(c.n());
   const auto n = static_cast<size_t>(ncas);
@@ -283,8 +291,43 @@ lagrangian_zvector(DeviceResources &res, const SphericalMatrixAO &h,
                                          FBF_TRY(to_host(res, ints.papa.data(), mo2 * n * n))};
   mcscf::RelaxedHessian relaxed = FBF_TRY(mcscf::RelaxedHessian::create(
       res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints)));
-  return mcscf::zvector(res, relaxed, hessian, solution.roots, orbital_rhs, ci_rhs, 1e-10, 200,
-                        theta_rhs);
+  std::vector<mcscf::ZVector> out;
+  if (ncol == 1) {
+    out.push_back(FBF_TRY(mcscf::zvector(res, relaxed, hessian, solution.roots, orbital_rhs, ci_rhs,
+                                         kZvectorTolerance, kZvectorProducts, theta_rhs)));
+    return out;
+  }
+  const mcscf::ZVectors z = FBF_TRY(
+      mcscf::zvectors(res, relaxed, hessian, solution.roots, ncol, orbital_rhs, ci_rhs,
+                      mcscf::CpSolver::Schur, kZvectorTolerance, kZvectorProducts, theta_rhs));
+  const auto cols = static_cast<size_t>(ncol);
+  const size_t orbital = z.orbital.num_elements() / cols;
+  const size_t ci = z.ci.num_elements() / cols;
+  const size_t theta = z.theta.size() / cols;
+  for (size_t col = 0; col < cols; ++col) {
+    if (!(z.residuals[col] <= kZvectorTolerance)) {
+      return err_numerical("{}: Z-vector column {} of {} has true residual {:.3e} after {} "
+                           "products, above {:g}",
+                           who, col, cols, z.residuals[col], z.iterations[col], kZvectorTolerance);
+    }
+    mcscf::ZVector one{.orbital = Buffers::device<double>(orbital, res.device()),
+                       .ci = Buffers::device<double>(ci, res.device()),
+                       .theta = std::vector<double>(
+                           z.theta.begin() + static_cast<std::ptrdiff_t>(col * theta),
+                           z.theta.begin() + static_cast<std::ptrdiff_t>((col + 1) * theta)),
+                       .iterations = z.iterations[col],
+                       .residual = z.residuals[col]};
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(one.orbital.data(), z.orbital.data() + (col * orbital),
+                                           orbital * sizeof(double), wwr::wwrMemcpyDeviceToDevice,
+                                           res.stream())));
+    FBF_TRY(
+        gpu_status(wwr::wwrMemcpyAsync(one.ci.data(), z.ci.data() + (col * ci), ci * sizeof(double),
+                                       wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    out.push_back(std::move(one));
+  }
+  // z is freed on return, while the copies read it.
+  FBF_TRY(res.sync());
+  return out;
 }
 
 // Refuse an asymmetric block of the gate, naming @p who.
@@ -378,8 +421,10 @@ lagrangian_gradient(DeviceResources &res, const Molecule &molecule, const BasisS
                                                 ci_rhs.data(), 1)));
   const std::array<double, 1> weights{1.0};
   mcscf::ZVector multipliers =
-      FBF_TRY(lagrangian_zvector(res, h, b, naux32, solution, ncore, ncas, alpha, beta, rdm, ints,
-                                 fock, weights, orbital_rhs.data(), ci_rhs.data(), {}));
+      std::move(FBF_TRY(lagrangian_zvector(res, "nevpt2::lagrangian_gradient", h, b, naux32,
+                                           solution, ncore, ncas, alpha, beta, rdm, ints, fock,
+                                           weights, 1, orbital_rhs.data(), ci_rhs.data(), {}))
+                    .front());
 
   // The gate: X^L symmetric in every block.
   const std::array<double, 6> asymmetry = FBF_TRY(
@@ -465,49 +510,67 @@ qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                         solution.roots.vectors.data(), use);
 }
 
-// The SC-QD Lagrangian at the symmetric weight matrix @p w (@p pc null) or
-// the PC-QD one (@p pc set), every piece from W and nothing from H_eff: the
-// same assembly over qd_sc_adjoint, or over qd_pc_adjoint, whose elements
-// go to *@p pc and whose arrays become corr's (corr.elements empty). A
-// refused PC class is the adjoint's error. @p who names the caller, and
-// @p setup is qd_setup's. eigenvalues is left empty.
 // qd_sc_coupling's fold callback, spelled once in this unit.
 using Folder = std::function<Result<QdFold>(std::span<const double>, std::span<const double>)>;
 
-Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_view who,
-                                     const QdSetup &setup, const Molecule &molecule,
-                                     const BasisSet &basis, const BasisSet &aux,
-                                     const SphericalMatrixAO &h, const Buffers::device<double> &b,
-                                     const mcscf::Solution &solution, const int32_t ncore,
-                                     const int32_t ncas, std::vector<double> w, const int32_t batch,
-                                     std::vector<PcClassEnergies> *pc,
-                                     const QdFold *fold = nullptr) {
+// One W's share of the stacked QD Lagrangian, from its adjoint to its
+// right-hand sides, kept until the solve's columns come back for the gate.
+struct QdColumn {
+  std::vector<double> w;
+  std::vector<double> rho;
+  double core_shift = 0.0;
+  QdScAdjoint corr;
+  ZcMultipliers zc;
+  mcscf::RootPairMultipliers pairs;
+  mcscf::ZetaTerms zeta;
+  std::vector<double> gamma_rho;
+  std::vector<double> gamma2_rho;
+};
+
+// The SC-QD Lagrangians (@p pc null) or the PC-QD ones (@p pc set) at the
+// symmetric weight matrices @p ws (k of them), every piece from W and
+// nothing from H_eff: one result per W, in order. What does not depend on W
+// is built once: the adjoints' forward arrays and RDMs (qd_adjoints), the
+// CASSCF integrals, the state-averaged Fock, the CI-relaxed Hessian and its
+// one Z-vector solve over the k columns (lagrangian_zvector). Per W: z^c and
+// Phi^SA, tau split into zeta and t, the right-hand sides, then after the
+// solve the gate on its own column. A refused PC class is the adjoint's
+// error, and PC's elements (the same at every W) go to *@p pc. @p who names
+// the caller, and @p setup is qd_setup's. A @p fold is added to every W's
+// Lagrangian (its callers pass one W). eigenvalues is left empty.
+Result<std::vector<QdScLagrangian>>
+qd_lagrangians(DeviceResources &res, const std::string_view who, const QdSetup &setup,
+               const Molecule &molecule, const BasisSet &basis, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b,
+               const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+               const std::span<const std::vector<double>> ws, const int32_t batch,
+               std::vector<PcClassEnergies> *pc, const QdFold *fold = nullptr) {
   const SphericalMatrixAO &c = solution.c;
   const auto naux = static_cast<int32_t>(aux.nao_sphe());
   const auto nmo32 = static_cast<int32_t>(c.n());
   const auto n = static_cast<size_t>(ncas);
   const size_t nroots = solution.roots.energies.size();
-  if (w.size() != nroots * nroots) {
-    return err_config("{}: W holds {} elements for {} roots: n^2", who, w.size(), nroots);
+  if (ws.empty()) {
+    return err_config("{}: no W", who);
   }
-  for (size_t i = 0; i < nroots; ++i) {
-    for (size_t j = i; j < nroots; ++j) {
-      const double wij = w[(i * nroots) + j];
-      const double wji = w[(j * nroots) + i];
-      if (!std::isfinite(wij) || !std::isfinite(wji) ||
-          !(std::abs(wij - wji) <= kWeightSymmetryTolerance)) {
-        return err_config("{}: W is not symmetric: W_{}{} = {} and W_{}{} = {} (to {:g})", who, i,
-                          j, wij, j, i, wji, kWeightSymmetryTolerance);
+  std::vector<double> stacked;
+  for (const std::vector<double> &w : ws) {
+    if (w.size() != nroots * nroots) {
+      return err_config("{}: W holds {} elements for {} roots: n^2", who, w.size(), nroots);
+    }
+    for (size_t i = 0; i < nroots; ++i) {
+      for (size_t j = i; j < nroots; ++j) {
+        const double wij = w[(i * nroots) + j];
+        const double wji = w[(j * nroots) + i];
+        if (!std::isfinite(wij) || !std::isfinite(wji) ||
+            !(std::abs(wij - wji) <= kWeightSymmetryTolerance)) {
+          return err_config("{}: W is not symmetric: W_{}{} = {} and W_{}{} = {} (to {:g})", who, i,
+                            j, wij, j, i, wji, kWeightSymmetryTolerance);
+        }
       }
     }
+    stacked.insert(stacked.end(), w.begin(), w.end());
   }
-  // rho = diag W, the root energies' weighting, and tr W, the core's.
-  std::vector<double> rho(nroots);
-  for (size_t r = 0; r < nroots; ++r) {
-    rho[r] = w[r * (nroots + 1)];
-  }
-  const double trace = std::accumulate(rho.begin(), rho.end(), 0.0);
-  const double core_shift = std::abs(trace - 1.0) <= kTraceTolerance ? 0.0 : trace - 1.0;
   if (fold != nullptr) {
     const size_t nmo = static_cast<size_t>(c.n());
     if (fold->gamma.size() != n * n || fold->gamma2.size() != n * n * n * n ||
@@ -525,182 +588,221 @@ Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_vie
   const auto dim = static_cast<size_t>(rdm.size());
   const double *const vectors = solution.roots.vectors.data();
 
-  // y_bar, h_bar, Lambda, X and A of E^corr[W] + Phi^SA.
-  const auto adjoint = [&]() -> Result<QdScAdjoint> {
-    if (pc == nullptr) {
-      return qd_sc_adjoint(res, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(), h.data(),
-                           ncore, ncas, weights, vectors, w, batch);
-    }
-    QdPcAdjoint adj =
-        FBF_TRY(qd_pc_adjoint(res, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(), h.data(),
-                              ncore, ncas, weights, vectors, w, batch));
-    *pc = std::move(adj.elements);
-    return QdScAdjoint{.elements = {},
-                       .h_bar = std::move(adj.h_bar),
-                       .lambda = std::move(adj.lambda),
-                       .y = std::move(adj.y),
-                       .x = std::move(adj.x),
-                       .a = std::move(adj.a),
-                       .epsilon = std::move(adj.epsilon)};
-  };
-  QdScAdjoint corr = FBF_TRY(adjoint());
-  ZcMultipliers zc =
-      FBF_TRY(zc_multipliers(res, nmo32, ncore, ncas, corr.a.data(), corr.epsilon.data()));
-  const ZcAdjoint phi = FBF_TRY(zc_adjoint(res, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(),
-                                           h.data(), ncore, ncas, weights, vectors, zc.z.data()));
-  FBF_TRY(add_adjoint(res, corr.h_bar, corr.lambda, corr.y, corr.x, corr.a, phi));
-  // A fold's orbital source, onto A: the right-hand side's and the gate's.
-  if (fold != nullptr && !fold->a.empty()) {
-    const Buffers::device<double> fold_a = FBF_TRY(to_device(res, fold->a));
-    FBF_TRY(gpu_status(
-        wwr::axpy<double, int32_t>(res.blas().get(), static_cast<int32_t>(fold->a.size()),
-                                   &kOne<double>, fold_a.data(), 1, corr.a.data(), 1)));
-    // fold_a is freed on scope exit, while the axpy reads it.
-    FBF_TRY(res.sync());
-  }
-
-  // tau, split into zeta and t; zeta's two consumers.
-  mcscf::RootPairMultipliers pairs =
-      FBF_TRY(mcscf::root_pair_multipliers(res, solution.roots, weights, corr.y.data()));
+  // y_bar, h_bar, Lambda, X and A of E^corr[W], every W over one set of
+  // forward arrays.
+  std::vector<QdScAdjoint> adjoints =
+      FBF_TRY(qd_adjoints(res, who, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(), h.data(),
+                          ncore, ncas, weights, vectors, stacked, batch, pc));
   const CasscfIntegrals ints =
       FBF_TRY(casscf_integrals(res, basis, molecule, h, b, naux, c, ncore, ncas));
-  mcscf::ZetaTerms zeta = FBF_TRY(mcscf::zeta_terms(res, molecule, h, b, naux, solution, ncore,
-                                                    ncas, ints.ppaa, ints.papa, rdm, pairs.zeta));
-
-  // The RDMs at rho, sum_r rho_r (gamma_r, Gamma_r), root by root: rdm12
-  // takes weights >= 0 summing to 1 alone, and rho may be neither.
-  std::vector<double> gamma_rho(n * n, 0.0);
-  std::vector<double> gamma2_rho(n * n * n * n, 0.0);
-  {
-    Buffers::device<double> rdms_d((n * n) + (n * n * n * n), res.device());
-    std::vector<double> one(nroots, 0.0);
-    for (size_t r = 0; r < nroots; ++r) {
-      if (rho[r] == 0.0) {
-        continue;
-      }
-      std::ranges::fill(one, 0.0);
-      one[r] = 1.0;
-      FBF_TRY(rdm.rdm12(res, one, vectors, rdms_d.data(), rdms_d.data() + (n * n)));
-      const std::vector<double> g1 = FBF_TRY(to_host(res, rdms_d.data(), n * n));
-      const std::vector<double> g2 = FBF_TRY(to_host(res, rdms_d.data() + (n * n), n * n * n * n));
-      for (size_t i = 0; i < g1.size(); ++i) {
-        gamma_rho[i] += rho[r] * g1[i];
-      }
-      for (size_t i = 0; i < g2.size(); ++i) {
-        gamma2_rho[i] += rho[r] * g2[i];
-      }
-    }
-  }
-
-  // A fold's RDMs, with rho's: g^rho is affine in them, so they add their
-  // transition orbital gradient, the core off, and the gate sees them too.
-  if (fold != nullptr) {
-    for (size_t i = 0; i < gamma_rho.size(); ++i) {
-      gamma_rho[i] += fold->gamma[i];
-    }
-    for (size_t i = 0; i < gamma2_rho.size(); ++i) {
-      gamma2_rho[i] += fold->gamma2[i];
-    }
-  }
-
-  // The right-hand sides: g^rho + zeta . g + A over the packed pairs, y_bar_r
-  // / (2 w_r) (zvector's CI rows are the SA Hessian's over 2 w_r), and t.
-  // g^rho = sum_r rho_r g_r: the Fock's gradient at rho's RDMs, which is
-  // affine in them, carries its zero-RDM (core) part once, and tr W times
-  // is wanted, so core_shift more of it.
-  const response::Fock fock_rho = FBF_TRY(response::fock(
-      res, molecule, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, gamma_rho, gamma2_rho));
   const response::Fock averaged =
       FBF_TRY(response::fock(res, molecule, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa,
                              solution.gamma, solution.gamma2));
   const wwr::wwrblasHandle_t blas = res.blas().get();
-  const auto packed = static_cast<int32_t>(fock_rho.gradient.num_elements());
-  Buffers::device<double> orbital_rhs(static_cast<size_t>(packed), res.device());
-  FBF_TRY(response::pack_orbital_pairs(res, nmo32, ncore, ncas, corr.a.data(), orbital_rhs.data()));
-  for (const double *const add :
-       std::array<const double *, 2>{fock_rho.gradient.data(), zeta.orbital.data()}) {
-    FBF_TRY(gpu_status(
-        wwr::axpy<double, int32_t>(blas, packed, &kOne<double>, add, 1, orbital_rhs.data(), 1)));
-  }
-  if (core_shift != 0.0) {
-    const response::Fock fock_zero = FBF_TRY(
-        response::fock(res, molecule, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa,
-                       std::vector<double>(n * n, 0.0), std::vector<double>(n * n * n * n, 0.0)));
-    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(
-        blas, packed, &core_shift, fock_zero.gradient.data(), 1, orbital_rhs.data(), 1)));
-    // fock_zero is freed on return, while the axpy reads it.
-    FBF_TRY(res.sync());
-  }
-  Buffers::device<double> ci_rhs(dim * nroots, res.device());
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(ci_rhs.data(), corr.y.data(), dim * nroots * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToDevice, res.stream())));
-  for (size_t r = 0; r < nroots; ++r) {
-    const double scale = 1.0 / (2.0 * weights[r]);
-    FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, static_cast<int32_t>(dim), &scale,
-                                                  ci_rhs.data() + (r * dim), 1)));
-  }
-  mcscf::ZVector multipliers = FBF_TRY(
-      lagrangian_zvector(res, h, b, naux, solution, ncore, ncas, alpha, beta, rdm, ints, averaged,
-                         weights, orbital_rhs.data(), ci_rhs.data(), pairs.theta_rhs));
+  const auto packed = static_cast<int32_t>(averaged.gradient.num_elements());
+  const size_t k = ws.size();
+  Buffers::device<double> orbital_rhs(static_cast<size_t>(packed) * k, res.device());
+  Buffers::device<double> ci_rhs(dim * nroots * k, res.device());
+  std::vector<double> theta_rhs;
+  std::optional<response::Fock> fock_zero;
 
-  // The gate, its CAS part at the rho-weighted RDMs plus zeta's, the core at
-  // tr W.
-  for (size_t i = 0; i < gamma_rho.size(); ++i) {
-    gamma_rho[i] += zeta.gamma[i];
-  }
-  for (size_t i = 0; i < gamma2_rho.size(); ++i) {
-    gamma2_rho[i] += zeta.gamma2[i];
-  }
-  // A fold's RDMs are no state's: their own active-active asymmetry,
-  // 2 (F - F^T) at them with the core off, is the CSF term's (the fold's
-  // caller adds it outside the Z-vector), and no multiplier removes it. So
-  // the gate's source takes it out of that block alone; the packed pairs,
-  // which the Z-vector solved for, keep everything.
-  std::optional<Buffers::device<double>> gate_a;
-  if (fold != nullptr) {
-    const auto nmo = static_cast<size_t>(c.n());
-    const std::vector<double> f_fold = FBF_TRY(lagrangian_fock(
-        res, molecule, basis, h, b, naux, c, ncore, ncas, fold->gamma, fold->gamma2));
-    const std::vector<double> f_zero = FBF_TRY(
-        lagrangian_fock(res, molecule, basis, h, b, naux, c, ncore, ncas,
-                        std::vector<double>(n * n, 0.0), std::vector<double>(n * n * n * n, 0.0)));
-    std::vector<double> a_host = FBF_TRY(to_host(res, corr.a.data(), nmo * nmo));
-    const auto first = static_cast<size_t>(ncore);
-    for (size_t q = first; q < first + n; ++q) {
-      for (size_t p = first; p < first + n; ++p) {
-        const size_t pq = p + (nmo * q);
-        const size_t qp = q + (nmo * p);
-        a_host[pq] -= 2.0 * ((f_fold[pq] - f_zero[pq]) - (f_fold[qp] - f_zero[qp]));
+  std::vector<QdColumn> columns;
+  for (size_t col = 0; col < k; ++col) {
+    // rho = diag W, the root energies' weighting, and tr W, the core's.
+    std::vector<double> rho(nroots);
+    for (size_t r = 0; r < nroots; ++r) {
+      rho[r] = ws[col][r * (nroots + 1)];
+    }
+    const double trace = std::accumulate(rho.begin(), rho.end(), 0.0);
+    const double core_shift = std::abs(trace - 1.0) <= kTraceTolerance ? 0.0 : trace - 1.0;
+
+    // Phi^SA onto the adjoint.
+    QdScAdjoint corr = std::move(adjoints[col]);
+    ZcMultipliers zc =
+        FBF_TRY(zc_multipliers(res, nmo32, ncore, ncas, corr.a.data(), corr.epsilon.data()));
+    const ZcAdjoint phi =
+        FBF_TRY(zc_adjoint(res, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(), h.data(),
+                           ncore, ncas, weights, vectors, zc.z.data()));
+    FBF_TRY(add_adjoint(res, corr.h_bar, corr.lambda, corr.y, corr.x, corr.a, phi));
+    // A fold's orbital source, onto A: the right-hand side's and the gate's.
+    if (fold != nullptr && !fold->a.empty()) {
+      const Buffers::device<double> fold_a = FBF_TRY(to_device(res, fold->a));
+      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(fold->a.size()),
+                                                    &kOne<double>, fold_a.data(), 1, corr.a.data(),
+                                                    1)));
+      // fold_a is freed on scope exit, while the axpy reads it.
+      FBF_TRY(res.sync());
+    }
+
+    // tau, split into zeta and t; zeta's two consumers.
+    mcscf::RootPairMultipliers pairs =
+        FBF_TRY(mcscf::root_pair_multipliers(res, solution.roots, weights, corr.y.data()));
+    mcscf::ZetaTerms zeta = FBF_TRY(mcscf::zeta_terms(res, molecule, h, b, naux, solution, ncore,
+                                                      ncas, ints.ppaa, ints.papa, rdm, pairs.zeta));
+
+    // The RDMs at rho, sum_r rho_r (gamma_r, Gamma_r), root by root: rdm12
+    // takes weights >= 0 summing to 1 alone, and rho may be neither.
+    std::vector<double> gamma_rho(n * n, 0.0);
+    std::vector<double> gamma2_rho(n * n * n * n, 0.0);
+    {
+      Buffers::device<double> rdms_d((n * n) + (n * n * n * n), res.device());
+      std::vector<double> one(nroots, 0.0);
+      for (size_t r = 0; r < nroots; ++r) {
+        if (rho[r] == 0.0) {
+          continue;
+        }
+        std::ranges::fill(one, 0.0);
+        one[r] = 1.0;
+        FBF_TRY(rdm.rdm12(res, one, vectors, rdms_d.data(), rdms_d.data() + (n * n)));
+        const std::vector<double> g1 = FBF_TRY(to_host(res, rdms_d.data(), n * n));
+        const std::vector<double> g2 =
+            FBF_TRY(to_host(res, rdms_d.data() + (n * n), n * n * n * n));
+        for (size_t i = 0; i < g1.size(); ++i) {
+          gamma_rho[i] += rho[r] * g1[i];
+        }
+        for (size_t i = 0; i < g2.size(); ++i) {
+          gamma2_rho[i] += rho[r] * g2[i];
+        }
       }
     }
-    gate_a.emplace(FBF_TRY(to_device(res, a_host)));
-  }
-  const std::array<double, 6> asymmetry = FBF_TRY(lagrangian_asymmetry(
-      res, molecule, basis, h, b, naux, solution, ncore, ncas, rdm, weights, std::move(gamma_rho),
-      std::move(gamma2_rho), multipliers, gate_a ? gate_a->data() : corr.a.data(), core_shift));
-  FBF_TRY(check_asymmetry(who, asymmetry, multipliers));
-  // A fold's Hellmann-Feynman term rides zeta's transition pass, after the
-  // gate (which had it through gamma_rho).
-  if (fold != nullptr) {
-    for (size_t i = 0; i < fold->gamma.size(); ++i) {
-      zeta.gamma[i] += fold->gamma[i];
+
+    // A fold's RDMs, with rho's: g^rho is affine in them, so they add their
+    // transition orbital gradient, the core off, and the gate sees them too.
+    if (fold != nullptr) {
+      for (size_t i = 0; i < gamma_rho.size(); ++i) {
+        gamma_rho[i] += fold->gamma[i];
+      }
+      for (size_t i = 0; i < gamma2_rho.size(); ++i) {
+        gamma2_rho[i] += fold->gamma2[i];
+      }
     }
-    for (size_t i = 0; i < fold->gamma2.size(); ++i) {
-      zeta.gamma2[i] += fold->gamma2[i];
+
+    // The right-hand sides, this W's column: g^rho + zeta . g + A over the
+    // packed pairs, y_bar_r / (2 w_r) (zvector's CI rows are the SA
+    // Hessian's over 2 w_r), and t. g^rho = sum_r rho_r g_r: the Fock's
+    // gradient at rho's RDMs, which is affine in them, carries its zero-RDM
+    // (core) part once, and tr W times is wanted, so core_shift more of it.
+    const response::Fock fock_rho = FBF_TRY(response::fock(
+        res, molecule, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, gamma_rho, gamma2_rho));
+    double *const orbital_col = orbital_rhs.data() + (col * static_cast<size_t>(packed));
+    FBF_TRY(response::pack_orbital_pairs(res, nmo32, ncore, ncas, corr.a.data(), orbital_col));
+    for (const double *const add :
+         std::array<const double *, 2>{fock_rho.gradient.data(), zeta.orbital.data()}) {
+      FBF_TRY(gpu_status(
+          wwr::axpy<double, int32_t>(blas, packed, &kOne<double>, add, 1, orbital_col, 1)));
     }
+    if (core_shift != 0.0) {
+      if (!fock_zero) {
+        fock_zero.emplace(FBF_TRY(response::fock(
+            res, molecule, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa,
+            std::vector<double>(n * n, 0.0), std::vector<double>(n * n * n * n, 0.0))));
+      }
+      FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(
+          blas, packed, &core_shift, fock_zero->gradient.data(), 1, orbital_col, 1)));
+    }
+    double *const ci_col = ci_rhs.data() + (col * dim * nroots);
+    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ci_col, corr.y.data(), dim * nroots * sizeof(double),
+                                           wwr::wwrMemcpyDeviceToDevice, res.stream())));
+    for (size_t r = 0; r < nroots; ++r) {
+      const double scale = 1.0 / (2.0 * weights[r]);
+      FBF_TRY(gpu_status(wwr::scal<double, int32_t>(blas, static_cast<int32_t>(dim), &scale,
+                                                    ci_col + (r * dim), 1)));
+    }
+    theta_rhs.insert(theta_rhs.end(), pairs.theta_rhs.begin(), pairs.theta_rhs.end());
+    // fock_rho is freed at the end of the iteration, while the axpy reads it.
+    FBF_TRY(res.sync());
+    columns.push_back(QdColumn{.w = ws[col],
+                               .rho = std::move(rho),
+                               .core_shift = core_shift,
+                               .corr = std::move(corr),
+                               .zc = std::move(zc),
+                               .pairs = std::move(pairs),
+                               .zeta = std::move(zeta),
+                               .gamma_rho = std::move(gamma_rho),
+                               .gamma2_rho = std::move(gamma2_rho)});
   }
 
-  return QdScLagrangian{.eigenvalues = {},
-                        .w = std::move(w),
-                        .rho = std::move(rho),
-                        .weights = weights,
-                        .corr = std::move(corr),
-                        .zc = std::move(zc),
-                        .pairs = std::move(pairs),
-                        .zeta = std::move(zeta),
-                        .multipliers = std::move(multipliers),
-                        .asymmetry = asymmetry};
+  std::vector<mcscf::ZVector> multipliers = FBF_TRY(lagrangian_zvector(
+      res, who, h, b, naux, solution, ncore, ncas, alpha, beta, rdm, ints, averaged, weights,
+      static_cast<int32_t>(k), orbital_rhs.data(), ci_rhs.data(), theta_rhs));
+
+  std::vector<QdScLagrangian> out;
+  for (size_t col = 0; col < k; ++col) {
+    QdColumn &x = columns[col];
+    // The gate, its CAS part at the rho-weighted RDMs plus zeta's, the core
+    // at tr W.
+    for (size_t i = 0; i < x.gamma_rho.size(); ++i) {
+      x.gamma_rho[i] += x.zeta.gamma[i];
+    }
+    for (size_t i = 0; i < x.gamma2_rho.size(); ++i) {
+      x.gamma2_rho[i] += x.zeta.gamma2[i];
+    }
+    // A fold's RDMs are no state's: their own active-active asymmetry,
+    // 2 (F - F^T) at them with the core off, is the CSF term's (the fold's
+    // caller adds it outside the Z-vector), and no multiplier removes it. So
+    // the gate's source takes it out of that block alone; the packed pairs,
+    // which the Z-vector solved for, keep everything.
+    std::optional<Buffers::device<double>> gate_a;
+    if (fold != nullptr) {
+      const auto nmo = static_cast<size_t>(c.n());
+      const std::vector<double> f_fold = FBF_TRY(lagrangian_fock(
+          res, molecule, basis, h, b, naux, c, ncore, ncas, fold->gamma, fold->gamma2));
+      const std::vector<double> f_zero = FBF_TRY(lagrangian_fock(
+          res, molecule, basis, h, b, naux, c, ncore, ncas, std::vector<double>(n * n, 0.0),
+          std::vector<double>(n * n * n * n, 0.0)));
+      std::vector<double> a_host = FBF_TRY(to_host(res, x.corr.a.data(), nmo * nmo));
+      const auto first = static_cast<size_t>(ncore);
+      for (size_t q = first; q < first + n; ++q) {
+        for (size_t p = first; p < first + n; ++p) {
+          const size_t pq = p + (nmo * q);
+          const size_t qp = q + (nmo * p);
+          a_host[pq] -= 2.0 * ((f_fold[pq] - f_zero[pq]) - (f_fold[qp] - f_zero[qp]));
+        }
+      }
+      gate_a.emplace(FBF_TRY(to_device(res, a_host)));
+    }
+    const std::array<double, 6> asymmetry = FBF_TRY(
+        lagrangian_asymmetry(res, molecule, basis, h, b, naux, solution, ncore, ncas, rdm, weights,
+                             std::move(x.gamma_rho), std::move(x.gamma2_rho), multipliers[col],
+                             gate_a ? gate_a->data() : x.corr.a.data(), x.core_shift));
+    FBF_TRY(check_asymmetry(who, asymmetry, multipliers[col]));
+    // A fold's Hellmann-Feynman term rides zeta's transition pass, after the
+    // gate (which had it through gamma_rho).
+    if (fold != nullptr) {
+      for (size_t i = 0; i < fold->gamma.size(); ++i) {
+        x.zeta.gamma[i] += fold->gamma[i];
+      }
+      for (size_t i = 0; i < fold->gamma2.size(); ++i) {
+        x.zeta.gamma2[i] += fold->gamma2[i];
+      }
+    }
+    out.push_back(QdScLagrangian{.eigenvalues = {},
+                                 .w = std::move(x.w),
+                                 .rho = std::move(x.rho),
+                                 .weights = weights,
+                                 .corr = std::move(x.corr),
+                                 .zc = std::move(x.zc),
+                                 .pairs = std::move(x.pairs),
+                                 .zeta = std::move(x.zeta),
+                                 .multipliers = std::move(multipliers[col]),
+                                 .asymmetry = asymmetry});
+  }
+  return out;
+}
+
+// qd_lagrangians at the one W @p w.
+Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_view who,
+                                     const QdSetup &setup, const Molecule &molecule,
+                                     const BasisSet &basis, const BasisSet &aux,
+                                     const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                                     const mcscf::Solution &solution, const int32_t ncore,
+                                     const int32_t ncas, std::vector<double> w, const int32_t batch,
+                                     std::vector<PcClassEnergies> *pc,
+                                     const QdFold *fold = nullptr) {
+  const std::array<std::vector<double>, 1> ws{std::move(w)};
+  std::vector<QdScLagrangian> one = FBF_TRY(qd_lagrangians(
+      res, who, setup, molecule, basis, aux, h, b, solution, ncore, ncas, ws, batch, pc, fold));
+  return std::move(one.front());
 }
 
 // The QD Lagrangian between states @p p and @p q (H_eff's eigenvalues
@@ -971,6 +1073,24 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                    std::move(lagrangian));
 }
 
+Result<std::vector<QdScGradient>>
+qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+               const std::span<const std::vector<double>> ws, const int32_t batch) {
+  constexpr std::string_view kWho = "nevpt2::qd_sc_gradient";
+  const QdSetup setup = FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas));
+  std::vector<QdScLagrangian> lagrangians = FBF_TRY(qd_lagrangians(
+      res, kWho, setup, molecule, basis, aux, h, b, solution, ncore, ncas, ws, batch, nullptr));
+  std::vector<QdScGradient> out;
+  for (QdScLagrangian &lagrangian : lagrangians) {
+    out.push_back(FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                    ncas, std::move(lagrangian))));
+  }
+  return out;
+}
+
 Result<QdScGradient>
 qd_sc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
@@ -1039,6 +1159,27 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
                                      ncas, std::move(lagrangian)));
   return pc_result(std::move(g), std::move(elements), std::numeric_limits<double>::infinity());
+}
+
+Result<std::vector<QdPcGradient>>
+qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+               const std::span<const std::vector<double>> ws, const int32_t batch) {
+  constexpr std::string_view kWho = "nevpt2::qd_pc_gradient";
+  const QdSetup setup = FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas));
+  // A refused class is qd_adjoints' error, the same as qd_pc_energy's.
+  std::vector<PcClassEnergies> elements;
+  std::vector<QdScLagrangian> lagrangians = FBF_TRY(qd_lagrangians(
+      res, kWho, setup, molecule, basis, aux, h, b, solution, ncore, ncas, ws, batch, &elements));
+  std::vector<QdPcGradient> out;
+  for (QdScLagrangian &lagrangian : lagrangians) {
+    QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                       ncas, std::move(lagrangian)));
+    out.push_back(pc_result(std::move(g), elements, std::numeric_limits<double>::infinity()));
+  }
+  return out;
 }
 
 Result<QdPcGradient>

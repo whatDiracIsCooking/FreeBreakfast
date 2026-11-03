@@ -9,7 +9,8 @@ pair's gap moves when the SA-CASSCF is not fully converged. Link
 it.
 
     qd_sc_intersection(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
-                       p, q, batch) -> QdIntersection
+                       p, q, batch, options = {}) -> QdIntersection
+        options.shared  one several-W gradient call (default) or three W-form calls
     qd_pc_intersection(...the same...) -> QdIntersection
         g_p, g_q       dE_P/dR = G(u_P u_Pᵀ), dE_Q/dR = G(u_Q u_Qᵀ), n_atom × 3 (hartree / bohr)
         h_pq           h_PQ = u_Pᵀ (∇H_eff) u_Q = G(W^PQ), W^PQ = ½ (u_P u_Qᵀ + u_Q u_Pᵀ)
@@ -30,15 +31,18 @@ bar.
 1. H_eff = diag(E_r) + ½ (C + Cᵀ) over `nevpt2::qd_inputs` and
    `sc_effective_hamiltonian` (or `pc_effective_hamiltonian`), diagonalized
    once on the device. R is signed as `QdScLagrangian::eigenvectors`.
-2. Three W-form calls of `qd_sc_gradient` (or `qd_pc_gradient`), at
-   u_P u_Pᵀ, u_Q u_Qᵀ and W^PQ, all built from that one R. Each is its own
-   Lagrangian and Z-vector solve.
+2. G(W) at u_P u_Pᵀ, u_Q u_Qᵀ and W^PQ, all built from that one R: by
+   default one several-W call of `qd_sc_gradient` (or `qd_pc_gradient`),
+   which shares the adjoint's forward arrays, the CI-relaxed Hessian and one
+   `mcscf::zvectors` solve of the three columns (`../gradient/README.md`,
+   "Several W's at once"); with `options.shared = false`, three W-form
+   calls, each its own Lagrangian and Z-vector solve (#784's path).
 3. Each solve's true residual (`ZVector::residual`, one more product at the
    solution, not the conjugate gradients' recurrence) must be at or below the
-   solve's own 1e-10, or the call returns `Numerical` naming the W. Near a
-   degeneracy the recurrence can report convergence while the true residual
-   has not (#786).
-4. s_o and s_c from the three calls' multipliers, below.
+   solve's own 1e-10, or the call returns `Numerical` naming the W (the
+   several-W call checks each column too). Near a degeneracy the recurrence
+   can report convergence while the true residual has not (#786).
+4. s_o and s_c from the three solves' multipliers, below.
 
 **No refusal of a degenerate pair.** `qd_*_coupling` and the state form of
 `qd_*_gradient` refuse when E_P and E_Q are within `mcscf::kRootGapFloor`,
@@ -54,9 +58,37 @@ gap below the floor, so this is the case that matters.
 refusal. (`mcscf::df_intersection` refuses unequal weights because there the
 roots themselves are the crossing pair; here the QD states are.)
 
-Sharing the work across the three calls (one H_eff walk, one relaxed
-Hessian, one batched Z-vector, one stacked derivative pass) is #787, a
-performance change measured against this path.
+## Sharing the three calls
+
+`QdIntersectionOptions::shared` (#787) picks the path. Both give the same
+result to the Z-vector solves' convergence (the tests hold them to 1e-9 of
+the largest summand at the same R; PC's s_c to 1e-7, #784's ruling). The
+shared path builds the adjoint's forward arrays and RDMs once instead of
+three times, and the Hessian and the CI objects once, and solves the three
+right-hand sides in one block conjugate-gradient run. H_eff's own walk
+(step 1) is still separate: R must exist before any W does.
+
+The derivative passes stay three (four when a W's ρ needs the split pass):
+stacking them would need a multi-density derivative kernel, since one
+`geri3` kernel is ~50 ms of each ~57 ms `df_gradient` call (#773, PR #776).
+That is out of scope here, and it is why the gain is modest.
+
+Measured on the RTX 3080 (CUDA), pair (0, 1), `Nevpt2QdIntersection.Timing`
+(one warm-up of each path, then three of each, alternating; min / mean):
+
+| case | scheme | three calls | shared |
+|---|---|---:|---:|
+| `h2co_skew_ccpvdz_sa3` | SC | 0.636 / 0.637 s | 0.568 / 0.568 s |
+| `h2co_skew_ccpvdz_sa3` | PC | 0.653 / 0.654 s | 0.585 / 0.585 s |
+| ethylene SA2-CAS(2,2)/cc-pVDZ | SC | 0.566 / 0.567 s | 0.538 / 0.539 s |
+| ethylene SA2-CAS(2,2)/cc-pVDZ | PC | 0.558 / 0.559 s | 0.530 / 0.531 s |
+
+The shared path is faster on every case, so it is the default. The
+ethylene case is `data/casscf_meci/`'s start geometry with its SA2 weights:
+#787 asked for #785's SA3, which this tree's CASSCF did not converge from
+RHF orbitals at the MECI, the start or planar ethylene (the test's comment
+has the numbers). The timing case is skipped unless
+`FBF_QD_INTERSECTION_TIMING` is set.
 
 ## The gap sensitivities
 
@@ -120,6 +152,11 @@ DF-SA-CASSCF of `test/gtest/data/qd_nevpt2/`'s cases at #696's bars:
   solved from it: two runs' s_c measured up to 4.8e-9 apart, relative. The
   check is for a wrong pairing factor (2 or 2 w_r), which is O(1)
   ([#784's ruling](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/784#issuecomment-6616656181)).
+- In both of the above, the shared path (#787): one several-W call at the
+  same u's against the three W-form calls, g_P, g_Q and h_PQ to 1e-9 of
+  the larger side's largest summand, s_o and s_c to 1e-9 of the largest
+  norm summed (PC's s_c 1e-7). `MatchesWForms` also runs the intersection's
+  non-default path once per case, pair (0, 1), against the same calls.
 - `Nevpt2QdIntersection.DegeneratePair`: `h2co_ccpvdz_sa2` (C2v, roots 1A1
   and 1A2) made exactly degenerate at a consistent solution: h + λ v vᵀ,
   v = S C e_k on the active orbital the roots' occupations differ most in,
@@ -139,11 +176,13 @@ DF-SA-CASSCF of `test/gtest/data/qd_nevpt2/`'s cases at #696's bars:
   and ρ, s_o and s_c the converged point's.
 - `Nevpt2QdIntersection.Refuses`: P = Q, a state outside the average, and a
   class PC refuses (PC's error, as `qd_pc_coupling`'s).
+- `Nevpt2QdIntersection.Timing`: the table above; a measurement, skipped
+  unless `FBF_QD_INTERSECTION_TIMING` is set.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `intersection.cppm` | Module interface: `QdIntersection`, `qd_sc_intersection`, `qd_pc_intersection` |
-| `intersection.cpp` | H_eff and R, the three W-form calls, the residual check, s_o and s_c |
+| `intersection.cppm` | Module interface: `QdIntersectionOptions`, `QdIntersection`, `qd_sc_intersection`, `qd_pc_intersection` |
+| `intersection.cpp` | H_eff and R, the shared or three W-form calls, the residual check, s_o and s_c |
 | `CMakeLists.txt` | Build configuration |

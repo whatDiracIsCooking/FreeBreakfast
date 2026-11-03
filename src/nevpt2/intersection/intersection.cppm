@@ -7,9 +7,11 @@
 /// unconverged SA-CASSCF.
 ///
 /// Built on nevpt2::qd_sc_gradient's and qd_pc_gradient's W forms: H_eff and
-/// R once, then three W-form calls, at u_P u_P^T, u_Q u_Q^T and
-/// W^PQ = 1/2 (u_P u_Q^T + u_Q u_P^T). The README has the derivation of the
-/// sensitivities and their pairing with the CASSCF's residuals.
+/// R once, then G(W) at u_P u_P^T, u_Q u_Q^T and
+/// W^PQ = 1/2 (u_P u_Q^T + u_Q u_P^T), by one several-W call (the default)
+/// or three W-form calls. The README has the derivation of the
+/// sensitivities, their pairing with the CASSCF's residuals, and the timing
+/// that sets the default.
 
 export module free_breakfast.nevpt2.intersection;
 
@@ -25,6 +27,17 @@ import free_breakfast.recipes.matrix_ao;
 import free_breakfast.mcscf.solve;
 
 export namespace free_breakfast::nevpt2 {
+
+/// @brief How qd_sc_intersection and qd_pc_intersection reach their result.
+struct QdIntersectionOptions {
+  /// @brief One several-W qd_*_gradient call over the pair's three W's (one
+  /// set of the adjoint's forward arrays, one CI-relaxed Hessian, one
+  /// mcscf::zvectors solve of the three columns), rather than three W-form
+  /// calls. The derivative passes stay three. README.md "Sharing the three
+  /// calls" has the measurement that sets the default: shared was faster on
+  /// every case measured.
+  bool shared = true;
+};
 
 /// @brief qd_sc_intersection's (or qd_pc_intersection's) result: the three
 /// vectors of a QD pair's branching space at one R, and its gap's
@@ -65,16 +78,17 @@ struct QdIntersection {
 /// pair's gap sensitivities.
 ///
 /// H_eff = diag(E_r) + 1/2 (C + C^T) over nevpt2::qd_inputs and
-/// sc_effective_hamiltonian, diagonalized once; then three
-/// nevpt2::qd_sc_gradient W-form calls, at u_P u_P^T, u_Q u_Q^T and W^PQ,
-/// each Z-vector's true residual (ZVector::residual, one more product at
-/// the solution) held to the solve's own 1e-10, and s_o and s_c from their
-/// multipliers. Unlike qd_sc_coupling there is no refusal of a degenerate
-/// QD pair: nothing here divides by E_Q - E_P. Unequal SA weights are
+/// sc_effective_hamiltonian, diagonalized once; then nevpt2::qd_sc_gradient
+/// at u_P u_P^T, u_Q u_Q^T and W^PQ, one several-W call or (with
+/// @p options.shared false) three W-form calls, each Z-vector's true
+/// residual (ZVector::residual, one more product at the solution) held to
+/// the solve's own 1e-10, and s_o and s_c from their multipliers. Unlike
+/// qd_sc_coupling there is no refusal of a degenerate QD pair: nothing here
+/// divides by E_Q - E_P. Unequal SA weights are
 /// allowed; the only division by a gap is root_pair_multipliers' by the
 /// CASSCF roots', which keeps its refusal.
 ///
-/// The arguments are qd_sc_coupling's, without its fold.
+/// The arguments are qd_sc_coupling's, without its fold, and @p options.
 ///
 /// @return The branching space and sensitivities; InvalidConfig for p = q
 ///         or a state not one of the roots'; Numerical, naming the W, when a
@@ -87,7 +101,7 @@ qd_sc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSe
                    std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                    const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p,
-                   int32_t q, int32_t batch);
+                   int32_t q, int32_t batch, const QdIntersectionOptions &options = {});
 
 /// @brief The PC-QD-NEVPT2 branching space and gap sensitivities:
 /// qd_sc_intersection over pc_effective_hamiltonian and qd_pc_gradient's W
@@ -101,6 +115,6 @@ qd_pc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSe
                    std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                    const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p,
-                   int32_t q, int32_t batch);
+                   int32_t q, int32_t batch, const QdIntersectionOptions &options = {});
 
 } // namespace free_breakfast::nevpt2
