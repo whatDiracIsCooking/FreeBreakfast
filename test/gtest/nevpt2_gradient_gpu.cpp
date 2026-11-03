@@ -1818,6 +1818,15 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2NuclearGradient,
                                            std::string_view{"h2co_ccpvdz"}),
                          [](const auto &info) { return std::string(info.param); });
 
+// A refusal message with each computed number ({:.3e}, a gap or a
+// denominator) masked: two entry points that refuse the same state agree on
+// the words, the states named and the floor, but the number is round-off and
+// need not (#755).
+std::string stable_part(const std::string &message) {
+  static const std::regex computed(R"(-?\d\.\d+e[+-]\d+)");
+  return std::regex_replace(message, computed, "#");
+}
+
 // A state PC refuses is refused by pc_gradient with pc_energy's error, kind
 // and message, never a gradient with the class summed in as zero. Two
 // states, after nevpt2_energy_gpu.cpp's: a zero CI vector, whose RDMs and so
@@ -1851,7 +1860,7 @@ TEST(Nevpt2PcGradient, RefusesWhatTheEnergyRefuses) {
     ASSERT_FALSE(g.has_value()) << "virtuals at -1000 Eh";
     EXPECT_EQ(g.error().kind, fb::ErrorKind::Numerical);
     EXPECT_EQ(g.error().kind, energy.error().kind);
-    EXPECT_EQ(g.error().message, energy.error().message);
+    EXPECT_EQ(stable_part(g.error().message), stable_part(energy.error().message));
     EXPECT_NE(g.error().message.find("Sr"), std::string::npos) << g.error().message;
     EXPECT_NE(g.error().message.find("not positive"), std::string::npos) << g.error().message;
   }
@@ -2706,7 +2715,7 @@ TEST(Nevpt2QdPc, RefusesWhatTheEnergyRefuses) {
     ASSERT_FALSE(adj.has_value()) << what;
     EXPECT_EQ(adj.error().kind, fb::ErrorKind::Numerical) << what;
     EXPECT_EQ(adj.error().kind, energy.error().kind) << what;
-    EXPECT_EQ(adj.error().message, energy.error().message) << what;
+    EXPECT_EQ(stable_part(adj.error().message), stable_part(energy.error().message)) << what;
     EXPECT_NE(adj.error().message.find("Sr"), std::string::npos) << adj.error().message;
     EXPECT_NE(adj.error().message.find(says), std::string::npos) << adj.error().message;
     std::cout << std::format("[ nevpt2   ] qd pc refuses {}: {}\n", what, adj.error().message);
@@ -3522,7 +3531,7 @@ TEST(Nevpt2QdGradient, RefusesWhatTheLagrangianRefuses) {
     ASSERT_FALSE(got.has_value());
     EXPECT_EQ(got.error().kind, kind) << got.error().message;
     EXPECT_EQ(got.error().kind, want.error().kind);
-    EXPECT_EQ(got.error().message, want.error().message);
+    EXPECT_EQ(stable_part(got.error().message), stable_part(want.error().message));
     std::cout << std::format("[ nevpt2   ] qd gradient refuses: {}\n", got.error().message);
   };
 
@@ -3612,7 +3621,7 @@ TEST(Nevpt2QdPcGradient, RefusesWhatTheEnergyRefuses) {
     ASSERT_FALSE(got.has_value()) << what;
     EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical) << what;
     EXPECT_EQ(got.error().kind, energy.error().kind) << what;
-    EXPECT_EQ(got.error().message, energy.error().message) << what;
+    EXPECT_EQ(stable_part(got.error().message), stable_part(energy.error().message)) << what;
     EXPECT_NE(got.error().message.find("Sr"), std::string::npos) << got.error().message;
     EXPECT_NE(got.error().message.find(says), std::string::npos) << got.error().message;
     std::cout << std::format("[ nevpt2   ] qd pc gradient refuses {}: {}\n", what,
