@@ -20,9 +20,10 @@ step's own options its README under [`src/pipeline/`](../src/pipeline/README.md)
 | [`nevpt2.toml`](nevpt2.toml) | `[nevpt2]`: SC- and PC-NEVPT2 over that CASSCF | `scf.molden`, `casscf.molden` (the energies are printed) |
 | [`qd_nevpt2.toml`](qd_nevpt2.toml) | `[nevpt2] quasi_degenerate = true`: SC- and PC-QD-NEVPT2 over a CASSCF of two roots | `scf.molden`, `casscf.molden` (the states are printed) |
 | [`nac.toml`](nac.toml) | `[nac]`: the coupling between the two roots of a DF-SA-CASSCF(4,3) of formaldehyde, `src/pipeline/nac/README.md`'s | `scf.molden`, `casscf.molden`, `nac.json` |
+| [`qd_nevpt2_nac.toml`](qd_nevpt2_nac.toml) | `[nevpt2_nac]`: the SC-QD-NEVPT2 derivative coupling between the two QD states of `nac.toml`'s formaldehyde | `scf.molden`, `casscf.molden`, `nevpt2_nac.json` |
 | [`hessian.toml`](hessian.toml) | `[hessian]`: the analytic DF-RHF Hessian of water, its harmonic frequencies and IR intensities (logged) | `hessian.json` alone: its SCF is a nested run's |
 | [`water.xyz`](water.xyz) | The water every water config reads (Angstrom) | |
-| [`h2co.xyz`](h2co.xyz) | `nac.toml`'s formaldehyde (Angstrom) | |
+| [`h2co.xyz`](h2co.xyz) | `nac.toml`'s and `qd_nevpt2_nac.toml`'s formaldehyde (Angstrom) | |
 
 ## Tested
 
@@ -32,5 +33,5 @@ fast tier: each checks the exit status, the closing `completed: 0 errors`
 line, the files in the table above, and `hessian.json`'s keys. A config
 that stops parsing fails its entry on any machine, since `main` plans the
 config before it looks for a device; with no device the entry skips. The
-other four are run by hand. A config added here goes in the table above,
+other five are run by hand. A config added here goes in the table above,
 and in `test/examples/CMakeLists.txt` only if it is as cheap as those two.
