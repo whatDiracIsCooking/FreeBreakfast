@@ -467,6 +467,14 @@ at n = 1 (`class_energies_adjoint`'s own arithmetic); `h8_sto3g_sa3`'s to
 at a finite-difference ladder's scale on five of the six cases, one state
 alone included; the orbital energies move Δ alone and are.
 
+**A known limitation of SC, not a defect.** Park (JCTC 2019,
+doi:10.1021/acs.jctc.9b00919; arXiv:1907.10180) finds SC-NEVPT2's analytic
+gradients numerically unstable, especially over degenerate inactive orbitals
+(refused here, #564), and recommends PC. The small-norm pole above is a
+second route to the same fragility; PC divides by no norm and is unaffected.
+So the tests ladder SC only where it is smooth, and gate one SC density at
+its conditioning bound (#746, #766).
+
 ## The PC reverse pass
 
     pc_class_energies_adjoint(res, blocks, in, batch, bars) -> PcClassEnergiesAdjoint
