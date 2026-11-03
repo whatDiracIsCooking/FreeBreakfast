@@ -25,6 +25,12 @@ n_alpha = n_beta.
 | `h6_631g_sa2` | 6-31G | 2 | (2, 3) | 7 | 138 | 2, [0.5, 0.5] | brute-force: H₆, C1, 48 400 determinants over all 12 orbitals |
 | `h8_sto3g_sa3` | STO-3G | 2 | (4, 4) | 2 | 184 | 3, equal | brute-force and **near-degenerate**: roots 1 and 2 are 19 mEh apart and coupled by 4–5 mEh (a quarter of their gap), which moves their SC-QD energies 1.7 mEh off the diagonal's; 4 900 determinants over all 8 orbitals. Its root 0's PC passes only over round-off ([below](#h8_sto3g_sa3s-root-0-cuts-nothing)) |
 | `h8_ring_sto3g_sa3` | STO-3G | 1 | (6, 4) | 3 | 184 | 3, equal | brute-force and near-degenerate, added for PC (#671): H₈ on a slightly distorted ring (C1), roots 1 and 2 22 mEh apart, roots 0 and 2 coupled by ~0.03 Eh (a quarter of their gap), which moves their SC- and PC-QD energies ~6 mEh off the diagonal's; every root's every PC metric clears the gap rule (by ≥ 2e7); 4 900 determinants over all 8 orbitals |
+| `h2co_skew_ccpvdz_sa3_weighted` | cc-pVDZ | 6 | (4, 3) | 29 | 186 | 3, [0.4, 0.4, 0.2] | for the QD-NEVPT2 gradient oracle (#696, `../qd_nevpt2_gradient/`): the skew case at unequal weights, so equal and unequal pairs meet in one state average; max \|H_IJ\| 2.6e-2, 0.059 of its roots' gap |
+| `h8_ring12_ccpvdz_cas66_sa2` | cc-pVDZ | 1 | (6, 6) | 33 | 184 | 2, [0.5, 0.5] | for the same oracle: the one case over **six active orbitals**, where the index ranges of the 3-RDM and 4-RDM-digest contractions come apart. `h8_ring_sto3g_sa3`'s geometry scaled by 1.2; max \|H_IJ\| 2.6e-3 (0.029 of the gap); PC's smallest gap 7.6e4 (Si). Two of its canonical virtuals are 2.2e-3 apart. Skewed H₂CO at CAS(6,6) and (8,6), two or three roots, was tried first: every variant's Sr or Si metric meets the cut with a gap of 1.3–264, under the rule's 1e3 |
+
+The last two start from the RHF's frontier orbitals and are polished as
+the formaldehyde cases are (|g| < 1e-10, the Hessian's least eigenvalue
+gated), with no source file to agree with.
 
 No existing DF SA-CASSCF case has a near-degeneracy, so `h8_sto3g_sa3` is
 new, and it is also small enough for the brute force. `h8_ring_sto3g_sa3`
@@ -255,4 +261,4 @@ UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
 ```
 
 BLAS and OpenMP are pinned to one thread and nothing run-dependent is
-written, so a rerun is byte-identical. It takes about 130 s.
+written, so a rerun is byte-identical. It takes about 4 minutes.
