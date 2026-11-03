@@ -785,9 +785,10 @@ caller converts first (`../mcscf/root_rotation/README.md`). In order:
    c_r − dc_r. E_xy is affine in (γ, Γ, F^[x]) at a fixed core, so the core's
    constant part cancels, and the polarization is exact (bilinear), not a
    difference quotient. Added piece by piece to step 2's.
-4. **I^x z**: `mcscf::df_integral_derivatives` (h1^x and W^x, the
-   connection included) and `ThirdDerivative::create(z)` then
-   `apply_integrals`, added to step 1's columns.
+4. **I^x z**: `ThirdDerivative::create(z)`, then
+   `mcscf::df_integral_derivatives` (h1^x and W^x, the connection included,
+   W^x a chunk of coordinates at a time, each applied by `apply_integrals`),
+   added to step 1's columns.
 
 The test (`test/gtest/df_casscf_hessian_rotation_gpu.cpp`) that first
 assembled steps 2–3, and `test/gtest/mcscf_integral_derivative_gpu.cpp`
@@ -797,9 +798,10 @@ steps 1 and 4, are the same formulas; this is their one entry point.
 
 The parts run one after another, each freeing what it held: four
 `df_derivatives` calls (one-hot, rotated, c + dc, c − dc), three
-`df_casscf_exy` calls, then h1^x and W^x (3 n_atom nmo² (naux + 1) doubles,
-the largest: 3 GB per coordinate at 500 functions over 1500 fitting
-functions) beside the operator's own. Held throughout: L_xλ (size × 3 n_atom)
+`df_casscf_exy` calls, then the operator, then h1^x and W^x (W^x the
+largest, 3 GB per coordinate at 500 functions over 1500 fitting functions,
+so built for as many coordinates at once as the device's free memory holds
+and applied a chunk at a time). Held throughout: L_xλ (size × 3 n_atom)
 and a copy of C. Each part refuses its own memory, Unsupported, before it
 allocates.
 
@@ -901,8 +903,9 @@ The parts run one after another, each freeing what it held: the two H̃
 (each its own `response::Hessian` and CI scratch), `df_derivatives` at the
 SA weights (held to the end for eq. rot) and at one-hot weights, the CP
 solve's scratch over 3 n_atom columns, the third-derivative operator, then
-`df_sacasscf_z`'s parts (its derivative integrals, 3 n_atom nmo² (naux + 1)
-doubles, the largest) and `df_casscf_exy`'s. Held throughout: Λ, z and the
+`df_sacasscf_z`'s parts (its derivative integrals, nmo² naux doubles per
+coordinate in as many coordinates as fit, and 3 n_atom nmo² for h1 and τ)
+and `df_casscf_exy`'s. Held throughout: Λ, z and the
 right-hand sides (3 n_atom (size + pairs + n_det nroots) doubles). Each part
 refuses its own memory, Unsupported, before it allocates.
 

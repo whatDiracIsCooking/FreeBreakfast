@@ -41,7 +41,8 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
                                const std::span<const PrimitivePairClass> classes,
                                const BasisSet &aux, const SphericalMatrixAO &h,
                                const Buffers::device<double> &b, const double *const l,
-                               const SphericalMatrixAO &c, double *const h1, double *const w1) {
+                               const SphericalMatrixAO &c, ThirdDerivative &op, double *const y,
+                               const size_t max_bytes) {
   const size_t nao = basis.nao_sphe();
   const size_t naux = aux.nao_sphe();
   const size_t n_atom = basis.natoms();
@@ -61,8 +62,8 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
         "mcscf::df_integral_derivatives: B holds {} doubles, but naux nao^2 is {} x {}^2",
         b.num_elements(), naux, nao);
   }
-  if (l == nullptr || h1 == nullptr || w1 == nullptr) {
-    return err_config("mcscf::df_integral_derivatives: l, h1 and w1 must be given");
+  if (l == nullptr || y == nullptr) {
+    return err_config("mcscf::df_integral_derivatives: l and y must be given");
   }
   const size_t nn = nao * nao;
   const size_t stack = n_x * nn;
@@ -78,22 +79,28 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
                            "over {} coordinates pass the BLAS calls' 32-bit indices",
                            nao, naux, n_x);
   }
-  // The call's own buffers at their peak (the MO factor, tau, the metric
-  // derivative, one aux atom's block, and the one-electron derivative stacks
-  // at their two), past which an allocation would abort (CreatePolicy)
-  // rather than return.
-  const size_t held = factor + nn + (3 * stack) + (3 * naux * naux) + (3 * nn * max_blk);
+  // The call's own buffers at their peak (the MO factor, h_MO, tau, h1, the
+  // metric derivative, one aux atom's block, and the one-electron derivative
+  // stacks at their two), past which an allocation would abort
+  // (CreatePolicy) rather than return; then W^x, nmo^2 naux doubles per
+  // coordinate, for as many coordinates at once as the rest of the budget
+  // holds.
+  const size_t held = factor + nn + (4 * stack) + (3 * naux * naux) + (3 * nn * max_blk);
   const ScopedDeviceIndex on{res.dev_idx()};
+  size_t chunk = 0;
   {
     size_t free_bytes = 0;
     size_t total_bytes = 0;
     FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
-    if (sizeof(double) * held > free_bytes) {
-      return err_unsupported("mcscf::df_integral_derivatives: {} coordinates over {} orbital and "
-                             "{} fitting functions need {} bytes of device memory, and device {} "
-                             "has {} free",
-                             n_x, nao, naux, sizeof(double) * held, res.dev_idx(), free_bytes);
+    const size_t budget = max_bytes == 0 ? free_bytes : std::min(free_bytes, max_bytes);
+    const size_t one = sizeof(double) * (held + factor);
+    if (one > budget) {
+      return err_unsupported("mcscf::df_integral_derivatives: one coordinate over {} orbital and "
+                             "{} fitting functions needs {} bytes of device memory, and device {} "
+                             "has {} to give",
+                             nao, naux, one, res.dev_idx(), budget);
     }
+    chunk = std::min(n_x, ((budget / sizeof(double)) - held) / factor);
   }
 
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -104,11 +111,12 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
   const auto s_nn = static_cast<int64_t>(nn);
   const double *const cm = c.data();
 
-  // Held across the derivative calls, which take the workspace: the MO
-  // factor L[p, q, Q], h_MO and tau^x.
+  // Held across the chunks: the MO factor L[p, q, Q], h_MO, and tau^x and
+  // h1^x for every coordinate (nmo^2 each).
   Buffers::device<double> l_mo(factor, res.device());
   Buffers::device<double> h_mo(nn, res.device());
   Buffers::device<double> tau(stack, res.device());
+  Buffers::device<double> h1(stack, res.device());
   {
     // As ThirdDerivative::create: B C over m, then C over n per q, then Q
     // slowest; and C^T h C.
@@ -129,12 +137,12 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
   // out_x = C^T X_x C for every slab of a stack: X_x C, one batched gemm into
   // the workspace, then C^T over all of them side by side.
   const auto to_mo = [&](const double *x, double *out) -> Status {
-    auto [y] = res.device_regions<double>(stack);
+    auto [xc] = res.device_regions<double>(stack);
     FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
         blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, x, n, s_nn, cm, n, 0,
-        &kZero<double>, y, n, s_nn, nx)));
+        &kZero<double>, xc, n, s_nn, nx)));
     return gpu_status(
-        gemm<wwr::WWRBLAS_OP_T>(blas, n, n * nx, n, &kOne<double>, cm, y, &kZero<double>, out));
+        gemm<wwr::WWRBLAS_OP_T>(blas, n, n * nx, n, &kOne<double>, cm, xc, &kZero<double>, out));
   };
   {
     const Buffers::device<double> sx = FBF_TRY(overlap_derivative(res, basis, classes));
@@ -150,27 +158,37 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
       FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(stack),
                                                     &kOne<double>, vx.data(), 1, hx.data(), 1)));
     }
-    FBF_TRY(to_mo(hx.data(), h1));
+    FBF_TRY(to_mo(hx.data(), h1.data()));
     FBF_TRY(res.sync());
   }
   // h1^x += tau^x h_MO + h_MO tau^x.
   FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, tau.data(), n, s_nn,
-      h_mo.data(), n, 0, &kOne<double>, h1, n, s_nn, nx)));
+      h_mo.data(), n, 0, &kOne<double>, h1.data(), n, s_nn, nx)));
   FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
       blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, h_mo.data(), n, 0,
-      tau.data(), n, s_nn, &kOne<double>, h1, n, s_nn, nx)));
+      tau.data(), n, s_nn, &kOne<double>, h1.data(), n, s_nn, nx)));
+  Buffers::device<double> m1(3 * naux * naux, res.device());
+  FBF_TRY(metric_derivative(res, aux, m1.data()));
 
-  // The three-center derivative over the MO pairs, one aux atom's block at a
-  // time. With X the derivative on m's centre, d(mn|P)/dR_{A,k} = -[m on A]
-  // X_mn - [n on A] X_nm + [P on A] (X_mn + X_nm), so with E_A[p][q] =
-  // Sum_{m on A, n} C_mp X_mn,P C_nq the MO derivative is S + S^T over the
-  // pair, S^{(A, k)} = -E_A + [P on A] Sum_A' E_A'. S goes into w1 as it
-  // stands (any order of the pair: only S + S^T is kept).
-  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(w1, 0, sizeof(double) * factor * n_x, stream)));
-  const auto slab = [&](const size_t x) { return w1 + (x * factor); };
-  {
-    Buffers::device<double> block(3 * nn * max_blk, res.device());
+  // W^x for the coordinates [x0, x0 + count), then their columns of Y. Each
+  // slab is built by the same operations in the same order whatever the
+  // chunk, so chunking changes Y only by rounding; what a chunk repeats is
+  // the three-center walk over the aux atoms.
+  Buffers::device<double> w1(chunk * factor, res.device());
+  Buffers::device<double> block(3 * nn * max_blk, res.device());
+  for (size_t x0 = 0; x0 < n_x; x0 += chunk) {
+    const size_t count = std::min(chunk, n_x - x0);
+    const auto slab = [&](const size_t x) { return w1.data() + ((x - x0) * factor); };
+    const auto in_chunk = [&](const size_t x) { return x >= x0 && x < x0 + count; };
+
+    // The three-center derivative over the MO pairs, one aux atom's block at
+    // a time. With X the derivative on m's centre, d(mn|P)/dR_{A,k} =
+    // -[m on A] X_mn - [n on A] X_nm + [P on A] (X_mn + X_nm), so with
+    // E_A[p][q] = Sum_{m on A, n} C_mp X_mn,P C_nq the MO derivative is
+    // S + S^T over the pair, S^{(A, k)} = -E_A + [P on A] Sum_A' E_A'. S goes
+    // into W^x as it stands (any order of the pair: only S + S^T is kept).
+    FBF_TRY(gpu_status(wwr::wwrMemsetAsync(w1.data(), 0, sizeof(double) * factor * count, stream)));
     for (uint32_t aux_atom = 0; aux_atom < n_atom; ++aux_atom) {
       const auto [p0, p1] = integral_atom_functions(aux, aux_atom);
       const size_t nblk = p1 - p0;
@@ -187,7 +205,9 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
         const double *const xk = block.data() + (k * nn * nblk);
         for (uint32_t atom = 0; atom < n_atom; ++atom) {
           const auto [a0, a1] = integral_atom_functions(basis, atom);
-          if (a1 == a0) {
+          const size_t on_atom = (3 * atom) + k;
+          const size_t on_aux = (3 * aux_atom) + k;
+          if (a1 == a0 || (!in_chunk(on_atom) && !in_chunk(on_aux))) {
             continue;
           }
           FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(
@@ -199,8 +219,11 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
               static_cast<int64_t>(nblk * nao), n)));
           // G is nblk x nmo^2: its transpose is the slab's columns P on the
           // aux atom.
-          for (const auto &[x, alpha] : {std::pair{(3 * atom) + k, &kNegOne<double>},
-                                         std::pair{(3 * aux_atom) + k, &kOne<double>}}) {
+          for (const auto &[x, alpha] :
+               {std::pair{on_atom, &kNegOne<double>}, std::pair{on_aux, &kOne<double>}}) {
+            if (!in_chunk(x)) {
+              continue;
+            }
             double *const dst = slab(x) + (p0 * nn);
             FBF_TRY(gpu_status(
                 wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n * n, blk,
@@ -209,39 +232,36 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
         }
       }
     }
-  }
-  // S + S^T over each pair (I S_Q^T added to S_Q, a batched gemm against a
-  // copy), then the fit: U^x = (S + S^T) L_M^-T.
-  {
-    const auto [copy, ident] = res.device_regions<double>(factor, nn);
-    std::vector<double> ident_host(nn, 0.0);
-    for (size_t i = 0; i < nao; ++i) {
-      ident_host[i * (nao + 1)] = 1.0;
+    // S + S^T over each pair (I S_Q^T added to S_Q, a batched gemm against a
+    // copy), then the fit: U^x = (S + S^T) L_M^-T.
+    {
+      const auto [copy, ident] = res.device_regions<double>(factor, nn);
+      std::vector<double> ident_host(nn, 0.0);
+      for (size_t i = 0; i < nao; ++i) {
+        ident_host[i * (nao + 1)] = 1.0;
+      }
+      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ident, ident_host.data(), sizeof(double) * nn,
+                                             wwr::wwrMemcpyHostToDevice, stream)));
+      for (size_t x = x0; x < x0 + count; ++x) {
+        FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(copy, slab(x), sizeof(double) * factor,
+                                               wwr::wwrMemcpyDeviceToDevice, stream)));
+        FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+            blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n, n, &kOne<double>, ident, n, 0, copy,
+            n, s_nn, &kOne<double>, slab(x), n, s_nn, q)));
+        FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
+            blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
+            wwr::WWRBLAS_DIAG_NON_UNIT, n * n, q, &kOne<double>, l, q, slab(x), n * n)));
+      }
+      FBF_TRY(res.sync());
     }
-    FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ident, ident_host.data(), sizeof(double) * nn,
-                                           wwr::wwrMemcpyHostToDevice, stream)));
-    for (size_t x = 0; x < n_x; ++x) {
-      FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(copy, slab(x), sizeof(double) * factor,
-                                             wwr::wwrMemcpyDeviceToDevice, stream)));
-      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_T, n, n, n, &kOne<double>, ident, n, 0, copy, n,
-          s_nn, &kOne<double>, slab(x), n, s_nn, q)));
-      FBF_TRY(gpu_status(wwr::trsm<double, int32_t>(
-          blas, wwr::WWRBLAS_SIDE_RIGHT, wwr::WWRBLAS_FILL_MODE_LOWER, wwr::WWRBLAS_OP_T,
-          wwr::WWRBLAS_DIAG_NON_UNIT, n * n, q, &kOne<double>, l, q, slab(x), n * n)));
-    }
-    FBF_TRY(res.sync());
-  }
-  // The metric: U^x -= 1/2 L (L_M^-1 M^x L_M^-T), M^x = E + E^T with E
-  // metric_derivative's M1[k] (column P = M1[k][P][.]) on A's columns only.
-  {
-    Buffers::device<double> m1(3 * naux * naux, res.device());
-    FBF_TRY(metric_derivative(res, aux, m1.data()));
-    const auto [e, g] = res.device_regions<double>(naux * naux, naux * naux);
-    for (uint32_t atom = 0; atom < n_atom; ++atom) {
-      const auto [q0, q1] = integral_atom_functions(aux, atom);
-      for (size_t k = 0; k < 3; ++k) {
-        double *const out = slab((3 * atom) + k);
+    // The metric: U^x -= 1/2 L (L_M^-1 M^x L_M^-T), M^x = E + E^T with E
+    // metric_derivative's M1[k] (column P = M1[k][P][.]) on A's columns only,
+    // x = 3 A + k.
+    {
+      const auto [e, g] = res.device_regions<double>(naux * naux, naux * naux);
+      for (size_t x = x0; x < x0 + count; ++x) {
+        const auto [q0, q1] = integral_atom_functions(aux, static_cast<uint32_t>(x / 3));
+        const size_t k = x % 3;
         FBF_TRY(gpu_status(wwr::wwrMemsetAsync(e, 0, sizeof(double) * naux * naux, stream)));
         if (q1 > q0) {
           FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(
@@ -259,20 +279,22 @@ Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
             wwr::WWRBLAS_DIAG_NON_UNIT, q, q, &kOne<double>, l, q, g, q)));
         FBF_TRY(gpu_status(wwr::gemm<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N,
                                                       n * n, q, q, &kNegHalf<double>, l_mo.data(),
-                                                      n * n, g, q, &kOne<double>, out, n * n)));
+                                                      n * n, g, q, &kOne<double>, slab(x), n * n)));
       }
+      FBF_TRY(res.sync());
     }
-    FBF_TRY(res.sync());
-  }
-  // The connection: W^x_Q = U^x_Q + tau^x L_Q + L_Q tau^x.
-  for (size_t x = 0; x < n_x; ++x) {
-    const double *const t = tau.data() + (x * nn);
-    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, t, n, 0, l_mo.data(), n,
-        s_nn, &kOne<double>, slab(x), n, s_nn, q)));
-    FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
-        blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, l_mo.data(), n, s_nn, t,
-        n, 0, &kOne<double>, slab(x), n, s_nn, q)));
+    // The connection: W^x_Q = U^x_Q + tau^x L_Q + L_Q tau^x.
+    for (size_t x = x0; x < x0 + count; ++x) {
+      const double *const t = tau.data() + (x * nn);
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, t, n, 0, l_mo.data(),
+          n, s_nn, &kOne<double>, slab(x), n, s_nn, q)));
+      FBF_TRY(gpu_status(wwr::gemmStridedBatched<double, int32_t>(
+          blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, n, n, n, &kOne<double>, l_mo.data(), n, s_nn,
+          t, n, 0, &kOne<double>, slab(x), n, s_nn, q)));
+    }
+    FBF_TRY(op.apply_integrals(res, static_cast<int32_t>(count), h1.data() + (x0 * nn), w1.data(),
+                               y + (x0 * static_cast<size_t>(op.size()))));
   }
   return res.sync();
 }

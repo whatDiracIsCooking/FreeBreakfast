@@ -31,7 +31,8 @@ Status mcscf::df_integral_derivatives(
     DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
     std::span<const PrimitivePairClass> classes, const BasisSet &aux,
     const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-    const SphericalMatrixAO &c, double *h1, double *w1); // I^x, every coordinate
+    const SphericalMatrixAO &c, ThirdDerivative &op, double *y,
+    std::size_t max_bytes = 0); // Y = I^x z, every coordinate, W^x in chunks
 ```
 
 `h` is the AO core Hamiltonian and `b` the fitted factor, naux × nao² as
@@ -181,9 +182,19 @@ the fixture's I^x exactly. T^x is walked one aux atom at a time
 derivative is S + Sᵀ over the pair, S^(A,k) = −E_A + [P on A] Σ_A′ E_A′),
 symmetrized by one batched gemm against the identity, then W = (S + Sᵀ) L_M⁻ᵀ
 by a trsm; M^x from `metric_derivative` through two trsms per coordinate.
-Its output is every coordinate at once, 3 n_atom nmo² naux doubles beside
-3 n_atom nmo² for h1: about 1.4 MB for the water in 6-31G (9 coordinates),
-but 3 GB per coordinate at 500 functions over 1500 fitting functions.
+W^x is nmo² naux doubles per coordinate: about 0.15 MB for the water in
+6-31G, but 3 GB at 500 functions over 1500 fitting functions. So
+`df_integral_derivatives` holds W^x for a chunk of coordinates, as many as
+its budget takes (the device's free memory beside its own buffers, or
+`max_bytes`), applies `op.apply_integrals` to the chunk and moves on, and
+returns Y = I^x z, not I^x. h1^x and τ^x (nmo² each) are built for every
+coordinate once. A slab is built by the same operations in the same order
+whatever the chunk, so the chunks change Y only by rounding (at most 5e-16
+against max |Y| of 4e-2 to 6e-2 for the water, one coordinate per chunk
+against one chunk, on the A10: the slabs sit at other offsets, and the BLAS
+calls over them need not round the same way); what each repeats is the
+three-center walk over the aux atoms. When even one coordinate does not fit,
+the call is Unsupported, naming the bytes, before it allocates.
 
 **Per column** of `apply_integrals`, with W_o W's occupied columns, W_oo its
 occupied pairs and P_W(K_z) = K_zᵀ W + W K_z over the occupied pair:
@@ -215,11 +226,10 @@ sigmas of the nroots roots; the water's nine columns take 0.02 s on the 3080,
   Hessian is run on, and the first thing to replace (by the core's J/K
   structure, as `response::fock` does) when nocc grows past ~50.
 - **The columns are not batched.** A block's sigmas and RDMs run a column
-  at a time, `apply_integrals`' too (its integral directions are built for
-  every coordinate at once).
-- **`df_integral_derivatives` holds every coordinate's W at once**,
-  3 n_atom nmo² naux doubles: batching the coordinates is the first thing to
-  do for a molecule past a few hundred functions.
+  at a time, `apply_integrals`' too.
+- **A chunk repeats the three-center walk.** Below one chunk (the device
+  holds every coordinate's W) the walk runs once; past it, once per chunk.
+  Restricting a walk to the chunk's atoms is #631's remedy.
 - **Integral-direct.** Density-fitted only, as the CASSCF gradient is.
 - **Partly equal weights**, where some rotations among the roots are
   parameters and some are not, are refused.
@@ -258,5 +268,5 @@ one-hot weights) + I^x z, contracted with λ^y, against `lxl_lambda`, both to
 |------|------|
 | `third_derivative.cppm` | Module interface: `ThirdDerivative` |
 | `third_derivative.cpp` | The precomputation along z, the per-column covectors and their pullbacks, the occupied RDMs and the sigmas' integrals |
-| `integral_derivative.cpp` | `apply_integrals` (I^x z) and `df_integral_derivatives` (h1^x and W^x, the connection included) |
+| `integral_derivative.cpp` | `apply_integrals` (I^x z) and `df_integral_derivatives` (h1^x and W^x, the connection included, chunked over the coordinates, applied) |
 | `CMakeLists.txt` | The module `free_breakfast.mcscf.third_derivative` |
