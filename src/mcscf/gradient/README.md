@@ -209,8 +209,9 @@ Three arguments open the call up to a Lagrangian that is not the CASSCF's own
 default to null, which is the call above unchanged.
 
 **`mix`**, in place of `root`, is per-root weights v_I (one per root, each
-≥ 0, Σ v_I = 1 within 1e-12; else `InvalidConfig`), not the state average's
-own w_I. QD-NEVPT2's state K needs Σ_I u_IK² dE_I/dR at the SA solution, and
+≥ 0, Σ v_I = 1 within 1e-12, or of any sign with Σ v_I = 0 within 1e-12,
+"Weights that sum to 0" below; else `InvalidConfig`), not the state
+average's own w_I. QD-NEVPT2's state K needs Σ_I u_IK² dE_I/dR at the SA solution, and
 every piece of a root's Lagrangian is linear in that root's RDMs: the terms
 are taken at Σ_I v_I (γ_I, Γ_I) (one `rdm12` at weights v), and the
 Z-vector's orbital right-hand side is the Fock's gradient there, which is
@@ -318,6 +319,33 @@ z_o response is the SA gradient formula's derivative at the solution's
 weighted RDMs, core included, exactly as for a root. `extra` is unchanged.
 So `df_nac` passes its own z = (z_o, z_c) for h_IJ's Lagrange half and gets
 h_IJ whole from one call.
+
+## Weights that sum to 0
+
+A `mix` whose weights sum to 0 (within 1e-12, `kMixSumTolerance`), of
+either sign, is Σ_I v_I dE_I/dR with the core's own energy and the nuclear
+repulsion weighted by Σ_I v_I = 0. QD-NEVPT2's interstate coupling needs it:
+the reference part of its functional at W^PQ = ½ (R_P R_Qᵀ + R_Q R_Pᵀ),
+whose diagonal ρ_r = W^PQ_rr has trace 0 (`nuclear_gradient.tex`,
+"The interstate coupling and the derivative coupling").
+
+Every root's E(γ_r, Γ_r) is E_nuc + E_cc + E_act(γ_r, Γ_r), E_act linear
+("A transition density" above), so Σ_I v_I E_I = E_act(Σ_I v_I γ_I,
+Σ_I v_I Γ_I) when Σ_I v_I = 0: the transition density's terms at the mix's
+RDMs, core off, and with a Z-vector solved over the mix's orbital gradient
+Σ_I v_I g_I = g(γ_v, Γ_v) − g(0, 0), `transition_orbital_gradient` at the
+mix's RDMs. The z_c transition RDMs added to them carry no core energy
+either, and the z_o response is the state average's, core included, as for
+a root. So the call is `df_transition_gradient`'s body at the mix's RDMs,
+with the mix's Z-vector (or the caller's `multipliers`) in place of none,
+and `extra` as ever. `ci::Rdm::rdm12` takes only weights ≥ 0 summing to 1,
+so the mix's RDMs are two calls: v = s (v⁺/s − v⁻/s), s = Σ_I max(v_I, 0),
+each part scaled to sum 1 (a part that is all zero is skipped). One root at
+v = 0 with no multipliers is its RDMs times v, nothing responding.
+
+A mix summing to 1 runs the operations it ran before, and still refuses a
+negative weight; a mix summing to neither, or with a weight not finite, is
+`InvalidConfig`.
 
 ## Holding the roots apart
 
@@ -434,6 +462,14 @@ for the state average each root's multipliers from `zvector` (over the
 CI-relaxed Hessian, as the call builds it) passed as `multipliers` reproduce
 the internal path; and multipliers of the wrong length are refused. The gradient does not depend on the orbitals' or CI's signs or
 canonicalization, so the solution is compared as it converges.
+`McscfGradientMix.SumZeroIsMixOfRoots` converges the skewed H₂CO SA-3 of
+`test/gtest/data/qd_nevpt2/` at its unequal weights [0.4, 0.4, 0.2]
+(`h2co_skew_ccpvdz_sa3_weighted`) the same way, then takes a random mix
+summing to 0 (three draws less their mean, of mixed signs, none ±1) against
+Σ_r c_r times each root's call, every term, to 1e-10 of the largest element
+compared (the two sides' Z-vectors are separate solves): on the RTX 3080,
+1.6e-10 of a largest element 3.36, 4.7e-11 relative. A sum of
+neither 0 nor 1 and a weight not finite are refused as `InvalidConfig`.
 
 `test/gtest/mcscf_transition_gradient_gpu.cpp` holds the transition
 density, over `test/gtest/data/casscf_nac/` (H₂CO SA-2 and the skewed H₂CO

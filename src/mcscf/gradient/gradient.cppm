@@ -158,7 +158,8 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
 
 /// @brief @ref df_gradient at a weighted mix of the solution's roots,
 /// Sum_I v_I dE_I/dR, in place of one root: @p mix holds v_I, one per root,
-/// each >= 0 and summing to 1 (not the solution's own weights).
+/// each >= 0 and summing to 1, or of any sign and summing to 0 (not the
+/// solution's own weights).
 ///
 /// The terms are taken at the v-weighted RDMs Sum_I v_I (gamma_I, Gamma_I),
 /// and the Z-vector's orbital right-hand side is the v-weighted root
@@ -168,9 +169,16 @@ df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basi
 /// @p extra compose with it as with a root. A one-hot @p mix is the root
 /// call: the same operations, in the same order.
 ///
+/// A mix summing to 0 weights the core's own energy and the nuclear
+/// repulsion by 0: it is @ref df_transition_gradient at the mix's RDMs, its
+/// Z-vector (when not given) solved over the transition orbital gradient
+/// there. The mix's RDMs are two @c ci::Rdm::rdm12 calls, at its positive
+/// and its negative part each scaled to sum 1.
+///
 /// @return @ref df_gradient's, with InvalidConfig in place of the root's
-///         check if @p mix is not one weight per root, a weight is negative
-///         or not finite, or they do not sum to 1 within 1e-12.
+///         check if @p mix is not one weight per root, a weight is not
+///         finite, they sum to neither 1 nor 0 within 1e-12, or one is
+///         negative in a mix summing to 1.
 [[nodiscard]] Result<GradientTerms>
 df_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
             std::span<const PrimitivePairClass> classes, const BasisSet &aux,
