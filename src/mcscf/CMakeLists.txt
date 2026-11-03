@@ -17,6 +17,9 @@ add_subdirectory(transition)
 # The SA-CASSCF nonadiabatic couplings between two roots, over gradient's
 # transition-density terms and zvector's multipliers.
 add_subdirectory(nac)
+# g_I, g_J and h_IJ of two equal-weight roots from one call, an MECI search's
+# step: one CI-relaxed Hessian and one block Z-vector solve for the three.
+add_subdirectory(intersection)
 # The overlaps <I(R)|J(R')> between the CAS states of two solutions, each over
 # its own basis: MECI root tracking, surface hopping, a coupling's finite
 # difference.
@@ -43,6 +46,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::mcscf::solve
   free_breakfast::mcscf::gradient
   free_breakfast::mcscf::nac
+  free_breakfast::mcscf::intersection
   free_breakfast::mcscf::transition
   free_breakfast::mcscf::overlap
   free_breakfast::mcscf::derivative

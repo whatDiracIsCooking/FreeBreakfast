@@ -6,7 +6,7 @@ the CI together. It sits over `core`, `recipes`, `integrals`
 (J, K and `active_space`), `ci` (the loop's CI and RDMs) and `response` (the
 energy, gradient and orbital Hessian it steps over), and **never imports
 `pipeline`**: a step that runs a CASSCF wraps this layer, not the other way
-round. `mcscf.cppm` (`free_breakfast.mcscf`) re-exports `solve`, `gradient`, `nac`, `transition`, `overlap`, `derivative`, `root_rotation` and `third_derivative`; it does not
+round. `mcscf.cppm` (`free_breakfast.mcscf`) re-exports `solve`, `gradient`, `nac`, `intersection`, `transition`, `overlap`, `derivative`, `root_rotation` and `third_derivative`; it does not
 re-export `response`, so a consumer that wants both imports both. Nor does it
 re-export `relaxed_hessian`, which is internal to the layer: the CI-relaxed
 Hessian product its sub-modules share, linked PRIVATE by each.
@@ -28,6 +28,7 @@ needs a prefix" has the rule.
 | `solve/` | `free_breakfast.mcscf.solve` | The two-step state-averaged loop (`mcscf::solve`): per macro iteration the integrals, the CI, the weighted RDMs, `response::fock`'s energy and gradient, and an augmented-Hessian step over `response::Hessian` under a trust radius. Its defaults and what each settles are in `solve/README.md`. |
 | `gradient/` | `free_breakfast.mcscf.gradient` | The analytic nuclear gradient of a converged DF-CASSCF (`mcscf::df_gradient`), state-specific or any root of a state average: the one-electron terms at its 1-RDM and generalized Fock, and one Γ and one W of the fitted two-electron energy against the three-center and metric derivatives, each term on its own. For a state average, over `zvector`'s multipliers (linked PRIVATE). Its derivation is in `gradient/README.md`. |
 | `nac/` | `free_breakfast.mcscf.nac` | The nonadiabatic coupling between two roots of a DF-SA-CASSCF at any weights (`mcscf::df_nac`), d_IJ = h_IJ / (E_J − E_I) + d^CSF: the numerator from `gradient`'s transition-density terms over `zvector`'s multipliers (linked PRIVATE) for the transition orbital gradient, the CSF term from the overlap's half derivative; PySCF's `mult_ediff` and `use_etfs`. At unequal weights the rotations among the roots enter through the multipliers. Derivation and conventions (which state is the bra) in `nac/README.md`. |
+| `intersection/` | `free_breakfast.mcscf.intersection` | What an MECI search takes at one geometry, from one call (`mcscf::df_intersection`): g_I, g_J and h_IJ (`df_nac`'s numerator) of two roots of equal weight, over one CI-relaxed Hessian and one `zvectors` block solve of the three right-hand sides, each column then to its own derivative call. Unequal weights on the pair are refused. See `intersection/README.md`. |
 | `transition/` | `free_breakfast.mcscf.transition` | The orbital gradient g^(sr) of a transition element ⟨c_s\|H\|c_r⟩ with the CI vectors held (`mcscf::transition_orbital_gradient`): `response::fock`'s gradient at the symmetrized transition RDMs less its gradient at zero RDMs. `nac`'s Z-vector right-hand side; it imports no other mcscf module, so `gradient` can take it too. See `transition/README.md`. |
 | `overlap/` | `free_breakfast.mcscf.overlap` | The overlaps S_IJ = ⟨I(R)\|J(R′)⟩ between the CAS states of two solutions, each over its own basis (`mcscf::state_overlaps`): the mixed AO overlap, the MO overlap, the core block once and the string determinants of its Schur complement, contracted with the CI vectors. No phase fixed. For MECI root tracking, surface hopping and a coupling's finite difference; conventions in `overlap/README.md`. |
 | `derivative/` | `free_breakfast.mcscf.derivative` | The DF-CASSCF Hessian's per-coordinate derivatives at fixed parameters (`mcscf::df_derivatives`): the derivative generalized Fock F^[x] and the CP-CASSCF right-hand sides (orbital, CI and the roots' rotations), every coordinate at once, at the RDMs of any weighting of any roots, so SS, a state average's averaged right-hand side and one root's own; with a rotation K, also F^[x] at the K-rotated densities (a state average's z_o part, which `hessian::df_casscf_exy` takes). Layouts and signs in `derivative/README.md`. |
@@ -53,6 +54,9 @@ from the same setup.
 `test/gtest/mcscf_nac_gpu.cpp` holds `nac/`'s against PySCF's DF SA-CASSCF
 couplings (`test/gtest/data/casscf_nac/`), from the same setup.
 
+`test/gtest/mcscf_intersection_gpu.cpp` holds `intersection/`'s: each of the
+three against its own call, on the same fixtures and setup.
+
 `test/gtest/mcscf_overlap_gpu.cpp` holds `overlap/`'s: the identity at one
 geometry, and a central difference of the overlaps against `nac/`'s d_IJ,
 from the same setup.
@@ -69,5 +73,5 @@ same fixture's equal-weight averages.
 
 | File | Role |
 |------|------|
-| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient`, `nac`, `transition`, `overlap`, `derivative`, `root_rotation` and `third_derivative` |
-| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient`, `transition`, `nac`, `overlap`, `derivative`, `root_rotation` and `third_derivative`, in that order, and the `free_breakfast.mcscf` module target |
+| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient`, `nac`, `intersection`, `transition`, `overlap`, `derivative`, `root_rotation` and `third_derivative` |
+| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient`, `transition`, `nac`, `intersection`, `overlap`, `derivative`, `root_rotation` and `third_derivative`, in that order, and the `free_breakfast.mcscf` module target |
