@@ -344,6 +344,23 @@ if(FREE_BREAKFAST_ENABLE_ASAN)
 endif()
 
 # ========================================================================
+# Floating-point contraction on aarch64 (host code only)
+# ========================================================================
+# clang's default -ffp-contract=on fuses `a * b + c` into an fma wherever the
+# target has one. Baseline x86-64 has none, so host results there are the
+# unfused ones; aarch64 always has it, and the same source would round
+# differently -- enough to break test/io/sad_host.cpp, which compares a fresh
+# atomic SCF bitwise against stamps generated on x86-64. Turning contraction off
+# keeps a Grace host's arithmetic the x86-64 one. Gated on the processor, not
+# just CXX: under HIP a `.cu` is compiled as CXX (`-x hip`), and its device
+# code must keep its own contraction; ROCm has no aarch64 build anyway. CUDA
+# `.cu`s are LANGUAGE CUDA and never see this.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  message(STATUS "aarch64 host: -ffp-contract=off for host (CXX) code")
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+endif()
+
+# ========================================================================
 # Coverage (host code only)
 # ========================================================================
 # clang source-based coverage, driven by devtools/coverage.sh and turned on by

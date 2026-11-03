@@ -51,6 +51,15 @@ set -euo pipefail
 : "${AGY_RELEASE:?set by the ARG of the same name in the Dockerfile}"
 : "${AGY_SHA512:?set by the ARG of the same name in the Dockerfile}"
 
+# An arm64 image (a GH200) goes without agy rather than carrying a second pin:
+# upstream's arm64 tarballs have their own build ids and their own path
+# (`linux-arm/cli_linux_arm64`), so AGY_RELEASE cannot name both. agy is an
+# optional second agent; doctor.sh reports its absence there as a note.
+if [ -z "${AGY_PLATFORM:-}" ] && [ "$(uname -m)" = aarch64 ]; then
+  echo "=== install-agy: skipped on aarch64 (the pin is the linux-x64 tarball) ==="
+  exit 0
+fi
+
 # The tarball's platform directory, and the base it hangs off. Overridable only
 # so that an arm64 image is a build arg rather than a patch; the sha512 pin is
 # per tarball, so changing either means changing AGY_SHA512 too.

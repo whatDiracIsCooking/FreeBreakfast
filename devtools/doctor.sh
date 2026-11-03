@@ -670,7 +670,9 @@ if [ -n "${AGY_PIN_FILES:-}" ] && [ -x "$AV" ]; then
   #    is what tells container from host -- and it is also the only place the
   #    build id survives, since `agy --version` reports the version alone.
   if [ -n "${AGY_RELEASE:-}" ]; then
-    if [ "$av_installed" != "${AGY_RELEASE%%-*}" ]; then
+    if [ -z "$av_installed" ] && [ "$(uname -m)" = aarch64 ]; then
+      note "no agy in an aarch64 image: install-agy.sh skips it (x64-only pin)"
+    elif [ "$av_installed" != "${AGY_RELEASE%%-*}" ]; then
       warn "agy on PATH is ${av_installed:-none}, this image pinned ${AGY_RELEASE%%-*}"
       note "something installed over the image's copy (\`agy update\`?); rebuild the container"
     elif [ -n "$av_pinned" ] && [ "$AGY_RELEASE" != "$av_pinned" ]; then

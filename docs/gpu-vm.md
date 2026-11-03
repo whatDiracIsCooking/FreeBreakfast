@@ -1,7 +1,7 @@
 # Developing on a cloud GPU VM
 
-A rented single-GPU VM (a Lambda on-demand 1× A100, 1× H100 or 1× A10, or
-anything like it) runs the same CUDA devcontainer as the workstation. Nothing
+A rented single-GPU VM (a Lambda on-demand 1× A100, 1× H100, 1× A10 or
+1× GH200, or anything like it) runs the same CUDA devcontainer as the workstation. Nothing
 about the build or the tiers changes; `devtools/gpu-vm-setup.sh` does the
 host-side setup a fresh VM is missing, then builds and starts the container.
 
@@ -16,12 +16,12 @@ works on the VM, because it only compiles.
 | H100 (SXM or PCIe) | 90 | fp64-heavy work: the slow tier, CASSCF/NEVPT2/Hessian validation |
 | A100 (40 or 80 GB) | 80 | the same at a lower price; exactly WarpWraps' floor |
 | A10 | 86 | another 3080-class card: more parallel capacity, no fp64 gain |
+| GH200 | 90 | an H100 behind a 72-core ARM (Grace) CPU; see "On a GH200" below |
 
 Do not use these:
 
 - **V100 and RTX 6000 (Turing).** They are below the sm_80 floor, so the tree
   does not configure. `gpu-vm-setup.sh` and `doctor.sh` both refuse them.
-- **GH200.** Its CPU is ARM, and the images and toolchain are x86-64 only.
 - **Multi-GPU instances.** The devcontainer passes `/dev/nvidia0` alone, and
   the GPU lock in `devtools/lib.sh` assumes one card per backend. A 2×/4×/8×
   box would run as a 1× box.
@@ -128,6 +128,18 @@ neither, and the devcontainer's `--device=` lines then make `docker run` fail.
   because a cached module records the path it was built under. Keep build
   directories, Docker's data and the checkout on the local disk: a module
   build on NFS is slow.
+- **On a GH200** the host and the images are aarch64. `Dockerfile.base` and
+  `Dockerfile.cuda` build natively there (BuildKit's `TARGETARCH` picks the
+  arm64 CMake, Ninja and sccache and NVIDIA's `sbsa` repo), with two
+  differences. The image has no `agy`: its pin is the linux-x64 tarball, and
+  `doctor.sh` notes the absence rather than warning. And host C++ is built
+  with `-ffp-contract=off` (root `CMakeLists.txt`), because Grace always has
+  an fma and clang would otherwise fuse where x86-64 does not, which
+  `test/io/sad_host.cpp`'s bitwise check against the x86-built stamps would
+  catch. That keeps the arithmetic the same; glibc's libm on aarch64 is not
+  guaranteed to round `exp` and `sqrt` identically, so if that check still
+  fails there, the cause is libm, not the build. Grace's 72 cores and large
+  memory take a much higher `BUILD_JOBS` than the H100 VMs.
 - **Credentials live on rented hardware.** Give the VM a fine-grained
   `GH_TOKEN` scoped to this repository, not your general-purpose one.
 
