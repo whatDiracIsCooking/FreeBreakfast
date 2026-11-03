@@ -21,7 +21,7 @@ import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.recipes.einsum;
 import free_breakfast.nevpt2.density_fitting;
-import free_breakfast.nevpt2.energy; // EnergyInputs, EnergyBars, the result types
+import free_breakfast.nevpt2.energy; // EnergyInputs, EnergyBars, the result and amplitude types
 
 namespace free_breakfast::nevpt2 {
 
@@ -160,11 +160,11 @@ Status einsum_adjoint(DeviceResources &res, std::string_view subscripts,
 /// @brief The SC class walk of n states over @p pairs, n x n EnergyInputs
 /// row-major (bra I row, ket J column, I = J a state's own): per ordered pair
 /// each class's Σ_t T^t_IJ and -Σ_t T^t_IJ / (Δ_t + H^J_t / N^J_t), as
-/// sc_effective_hamiltonian documents, at [I n + J]. class_energies is n = 1.
-/// Nothing is validated: the caller has.
+/// sc_effective_hamiltonian documents, at [I n + J], and @p amplitudes when
+/// not null. class_energies is n = 1. Nothing is validated: the caller has.
 Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBlocks &blocks,
                                                 std::span<const EnergyInputs> pairs, int64_t n,
-                                                int32_t batch);
+                                                int32_t batch, ScAmplitudes *amplitudes = nullptr);
 
 /// @brief The SC reverse pass of n states over @p pairs, as
 /// sc_effective_hamiltonian_adjoint documents (reverse.cpp's).
@@ -177,11 +177,13 @@ sc_couplings_adjoint(DeviceResources &res, const MoBlocks &blocks,
 
 /// @brief The PC class walk of n states over @p pairs, as sc_couplings is
 /// SC's: per ordered pair each class's ⟨I|V|Ψ_J⁽¹⁾⟩ and ket J's dropped
-/// count, as pc_effective_hamiltonian documents, at [I n + J].
-/// pc_class_energies is n = 1. Nothing is validated: the caller has.
+/// count, as pc_effective_hamiltonian documents, at [I n + J], and
+/// @p amplitudes when not null. pc_class_energies is n = 1. Nothing is
+/// validated: the caller has.
 Result<std::vector<PcClassEnergies>> pc_couplings(DeviceResources &res, const MoBlocks &blocks,
                                                   std::span<const EnergyInputs> pairs, int64_t n,
-                                                  int32_t batch);
+                                                  int32_t batch,
+                                                  PcAmplitudes *amplitudes = nullptr);
 
 /// @brief Sijrs: {norm, energy}. It reads no RDM, so it is PC's too.
 Result<std::pair<double, double>> energy_sijrs(DeviceResources &res, const MoBlocks &blocks,
