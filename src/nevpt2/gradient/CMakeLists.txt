@@ -1,7 +1,8 @@
-# The module: nevpt2::sc_energy and nevpt2::sc_adjoint, z^c's
-# zc_multipliers and zc_adjoint, and the nuclear gradient's
-# lagrangian_gradient and sc_gradient; the internal partition :operands holds
-# the array plumbing the implementation units share. ci::strings,
+# The module: nevpt2::sc_energy and nevpt2::sc_adjoint, the SC-QD
+# qd_sc_energy and qd_sc_adjoint, z^c's zc_multipliers and zc_adjoint, and
+# the nuclear gradient's lagrangian_gradient and sc_gradient; the internal
+# partitions :operands and :builders hold the array plumbing and the
+# builders the implementation units share. ci::strings,
 # nevpt2::energy (ClassEnergies), core::wwr (Buffers), and the molecule,
 # bases, pair classes, SphericalMatrixAO, mcscf::Solution, ZVector and
 # GradientTerms of mcscf::df_gradient's signature are in its signatures, so
@@ -19,8 +20,10 @@ free_breakfast_add_cxx_module_library(
   gradient.cppm
   PARTITIONS
   operands.cppm
+  builders.cppm
   IMPLEMENTATION
   gradient.cpp
+  qd.cpp
   zc.cpp
   lagrangian.cpp
   IMPORT_STD

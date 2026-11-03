@@ -13,8 +13,10 @@
 /// SC-NEVPT2 nuclear gradient of a single-state DF-CASSCF over them: the
 /// Z-vector, the Lagrangian's symmetry gate, and one mcscf::df_gradient pass.
 /// The PC-NEVPT2 energy, adjoint and gradient are the same code with the PC
-/// class energies (and their reverse pass) in place of SC's. The README has
-/// the layouts and every term.
+/// class energies (and their reverse pass) in place of SC's. The SC-QD-NEVPT2
+/// effective Hamiltonian of several roots over shared orbitals is the same
+/// builders around sc_effective_hamiltonian, and its adjoint along any W.
+/// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
 
@@ -154,6 +156,87 @@ struct PcAdjoint {
                                            int32_t nao, int32_t nmo, const double *b,
                                            const double *c, const double *h, int32_t ncore,
                                            int32_t ncas, const double *vector, int32_t batch);
+
+/// @brief The SC-QD-NEVPT2 effective Hamiltonian's correlation elements of
+/// the roots @p vectors over the shared orbitals @p c, every input built
+/// from (h, B, c) and the roots: element [M n + N] is
+/// sc_effective_hamiltonian's (M the bra, N the ket), its total
+/// <M|V|Psi_N^(1)>.
+///
+/// The arguments but the roots are sc_energy's. @p vectors holds
+/// weights.size() unit vectors laid out as ci::Roots::vectors (root r's at
+/// [r ndet, (r + 1) ndet), ndet = alpha.size() beta.size()). One set of MO
+/// blocks, F^I and h2e serves every pair; the orbital energies are the
+/// diagonal of the state-averaged Fock, F^I + F^A(gamma_SA), gamma_SA =
+/// sum_r w_r gamma_r, rebuilt from the roots (nothing canonicalized); each
+/// ordered pair's dm3 is nevpt2::rdms' (the bra/ket overload off the
+/// diagonal, the one-vector one with f3ca and f3ac on it), and its dm2 and
+/// dm1 dm3's traces, as sc_energy's are. At one root, weight 1, the element
+/// is sc_energy's.
+///
+/// @return The n^2 elements; sc_energy's InvalidConfig for counts that do
+///         not fit, or zc_adjoint's for weights it refuses; or the error of
+///         a builder, nevpt2::rdms or sc_effective_hamiltonian.
+[[nodiscard]] Result<std::vector<ClassEnergies>>
+qd_sc_energy(DeviceResources &res, const ci::DeviceStringSet &alpha,
+             const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+             const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+             std::span<const double> weights, const double *vectors, int32_t batch);
+
+/// @brief qd_sc_adjoint's result, every array on res's device, each in
+/// ScAdjoint's convention.
+struct QdScAdjoint {
+  /// @brief The n^2 elements, as qd_sc_energy computes them.
+  std::vector<ClassEnergies> elements;
+  /// @brief dE/dh in the MO basis, nmo x nmo, symmetric, as ScAdjoint::h_bar.
+  Buffers::device<double> h_bar;
+  /// @brief dE/dB^L in the MO basis, naux x nmo^2, as ScAdjoint::lambda.
+  Buffers::device<double> lambda;
+  /// @brief y_r = dE/dc_r at fixed (h, B) for every root r, root r's at
+  /// [r ndet, (r + 1) ndet) as the vectors are laid out: raw, the derivative
+  /// of E as a function of unnormalized c_r, not projected.
+  Buffers::device<double> y;
+  /// @brief The orbital source term X, as ScAdjoint::x.
+  Buffers::device<double> x;
+  /// @brief A = X - X^T, as ScAdjoint::a.
+  Buffers::device<double> a;
+  /// @brief The state-averaged Fock's core and virtual diagonals at their own
+  /// indices, nmo long, the active entries 0: what the elements read, and
+  /// what zc_multipliers divides by.
+  Buffers::device<double> epsilon;
+};
+
+/// @brief The adjoint of E[W] = sum_MN W_MN H_MN, H_MN qd_sc_energy's
+/// element (M, N) total, at (@p h, @p b, @p c), the roots @p vectors at
+/// @p weights, and fixed @p w (W, n x n row-major, [M n + N] on element
+/// (M, N)): the arguments but w are qd_sc_energy's.
+///
+/// W is any n x n matrix. The QD-NEVPT2 gradient's is u_K u_K^T, u_K state
+/// K's eigenvector of the symmetrized H_eff, so that W's symmetric part on
+/// the unsymmetrized elements is the eigenvalue's derivative.
+///
+/// One reverse pass. sc_effective_hamiltonian_adjoint takes E to every
+/// shared input, to each root's own RDMs and, pair at a time, to each
+/// transition's dm1, dm2 and dm3, whose bars fold into dm3's by the traces'
+/// adjoint and go through the bra/ket nevpt2::rdms_adjoint (its f3 bars
+/// null) onto y of the bra and the ket before the next pair. Then
+/// sc_adjoint's builders backwards; gamma_SA's bar goes onto each root's own
+/// dm1 bar at its weight, so every root, its W_rr 0 or not, takes the
+/// orbital energies' share; each root's own bars then fold and go through
+/// the one-vector rdms_adjoint onto its y and (tu|vw)'s bar; and h_bar,
+/// Lambda, X and A are formed as sc_adjoint forms them. At one root, weight
+/// 1 and W = 1, the result is sc_adjoint's to round-off.
+///
+/// @return The elements and the adjoints; InvalidConfig for @p w not
+///         weights.size()^2 long, or qd_sc_energy's errors; or those of
+///         sc_effective_hamiltonian_adjoint, rdms_adjoint and the
+///         density-fitted adjoints.
+[[nodiscard]] Result<QdScAdjoint>
+qd_sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
+              const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+              const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+              std::span<const double> weights, const double *vectors, std::span<const double> w,
+              int32_t batch);
 
 /// @brief zc_multipliers' result.
 struct ZcMultipliers {

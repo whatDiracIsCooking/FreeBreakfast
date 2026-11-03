@@ -48,6 +48,12 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         -> PcAdjoint     energies (PcClassEnergies), then ScAdjoint's arrays
     pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, batch)
         -> PcGradient    ScGradient's fields, energies PcClassEnergies
+    qd_sc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, batch)
+        -> std::vector<ClassEnergies>   the SC-QD H_eff's n² correlation elements, [M n + N]
+    qd_sc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, w,
+                  batch)
+        -> QdScAdjoint   elements, then ScAdjoint's arrays of E[W] = Σ_MN W_MN H_MN,
+                         y every root's (root r's at r ndet), epsilon the SA Fock's
 
 `lagrangian_gradient`, `sc_gradient` and `pc_gradient` take
 `mcscf::df_gradient`'s arguments (`solution` a
@@ -215,6 +221,64 @@ one-root call sits at the same spread (at most 6.9e-18; over 50 repeats,
 1.39e-17 on A, one ulp of its largest element). h̄ = z alone is bitwise. `lagrangian_gradient` and
 `sc_gradient`, which hold the CASSCF's roots, still refuse a state average
 (`Unsupported`), and call `zc_adjoint` at one root, weight 1.
+
+## SC-QD-NEVPT2: the functional E[W] and its adjoint
+
+`qd_sc_energy` is the SC-QD-NEVPT2 effective Hamiltonian's correlation
+part (`nevpt2::sc_effective_hamiltonian`) as a function of (h, B, C) and
+the roots c_1 … c_n at their SA weights; `qd_sc_adjoint` is the adjoint of
+E[W] = Σ_MN W_MN H_MN along a fixed W, the first piece of the QD-NEVPT2
+gradient (#702). The QD gradient's seed is W = u_K u_Kᵀ, u_K state K's
+eigenvector of the symmetrized H_eff, so ½ (W + Wᵀ) = W on the
+unsymmetrized couplings; the call takes any n × n W.
+
+**The functional mirrors `sc_energy`'s over the shared orbitals.** One set
+of MO blocks, B_cc, B_vv's diagonal, C^T h C, h2e, (tu|vw) and F^I serves
+every pair (`shared_arrays`). The orbital energies are the **state-averaged**
+Fock's diagonal, F^I + F^A(γ_SA), γ_SA = Σ_r w_r γ_r rebuilt from the roots
+at every point (the Casscf step's `mo_energies` at its own orbitals, the
+canonical ones a state average's NEVPT2 reads), so g and ε read γ_SA, which
+sits in the shared arrays' dm1. Each ordered pair (M, N) has its own dm3:
+`nevpt2::rdms`' one-vector build with f3ca and f3ac on the diagonal, the
+bra/ket one off it (whose f3s are built into scratch and dropped, since QD
+reads f3 on the diagonal only and the forward cannot skip them yet, #719);
+its dm2 and dm1 are dm3's traces, as one root's are (Σ_t E_tt is N on the
+ket). The n² pairs' RDMs are held at once, as
+`sc_effective_hamiltonian` reads them. At one root, weight 1, every input
+is `sc_energy`'s through the same operations (γ_SA is 1·γ, a copy).
+
+**The reverse pass** is `sc_effective_hamiltonian_adjoint` (#698) at H̄ = W,
+then `builders_adjoint` with a QD RDM step in place of one root's:
+
+1. The walk adds the shared inputs' bars onto one set (the one-root pass's
+   `EnergyBars`), each root's own RDMs' bars onto that root's set, and
+   hands each transition pair's dm1, dm2 and dm3 bars over, pair at a time.
+   For each, dm1̄ and dm2̄ fold into dm3̄ by the traces' adjoint, and the
+   bra/ket `rdms_adjoint` (#697) with **null f3 bars** takes dm3̄ onto
+   ȳ_bra and ȳ_ket before the pair's bars are freed. A transition dm3 does
+   not read (tu|vw), so nothing goes onto it.
+2. The shared builders run backwards (F^I's blocks, the orbital energies,
+   g, d), so γ̄_SA collects in the shared dm1 bar.
+3. Each root r's own dm1 bar takes w_r γ̄_SA, then the traces' adjoint and
+   the one-vector `rdms_adjoint` take its own dm3̄, f3cā and f3ac̄ onto ȳ_r
+   and (tu|vw)'s bar. So **every root takes ε's share through γ_SA**, its
+   W_rr zero or not: ȳ_r ∋ w_r σ₁(γ̄_SA + γ̄_SAᵀ) c_r, by the trace and
+   `rdms_adjoint` rather than a sigma vector, as the one-root pass does.
+4. (tu|vw)'s builder backwards, then h̄, Λ, X, A and ε exactly as
+   `sc_adjoint`'s.
+
+ȳ_r is **raw**, at fixed (h, B): not projected, and not yet the
+model-space source τ_sr = c_s·ȳ_r − c_r·ȳ_s, which reads ȳ after Φ^SA's
+y^c (#701) is added; #704 forms it. `rdms_adjoint` overwrites its outputs,
+so each call writes scratch that is added onto ȳ and (tu|vw)'s bar.
+
+**Memory.** Beside one root's (above): the n² pairs' dm1, dm2 and dm3 and
+the n diagonal pairs' f3s, as the forward holds them; n own-RDM bar sets
+(dm1 … f3ac each); one pair's transition bars at a time, which the walk
+allocates; two scratch f3s (n⁶ each) in the forward; and ȳ over every root
+plus three scratch vectors. The shared arrays' own dm2, dm3, f3ca and f3ac
+(and their bars) are allocated, unused, as `zeroed_arrays` gives every
+caller.
 
 ## The nuclear gradient
 
@@ -483,13 +547,63 @@ once per process.
     6.6e-14 and −1.5e-13, SC's −1.5e-7 and 7.4e-8. Each case is under three
     seconds, the setup included.
 
+- SC-QD-NEVPT2 (`qd_sc_energy`, `qd_sc_adjoint`), on `data/qd_nevpt2/`'s
+  six cases (#670), each this tree's own DF-SA-CASSCF from the case's start
+  through the registry (as `pipeline_nevpt2_gpu.cpp`'s `PipelineQdNevpt2`
+  runs it, without the Nevpt2 step), every root's vector carried through
+  `fix_gauge`:
+  - `Nevpt2QdAdjoint.AdjointsMatchLadders`: E[W] at two W, u_K u_Kᵀ (K the
+    highest state of our own symmetrized H_eff, by Jacobi on the host) and a
+    seeded random symmetric W, each adjoint against a ladder of E[W] at the
+    gradient ladders' rule and 1e-7, every input rebuilt at each point, the
+    SA ε included: along h and B, along C exp(t κ) with every block's κ at
+    once, and along each root alone, c_r(t) = (c_r + t d_r)/‖·‖, d_r
+    `ci_direction`'s at c_r, against ⟨d_r, ȳ_r⟩. Both seeds read the same
+    forwards. Also ε against the CASSCF's `mo_energies` (core and virtual)
+    to 1e-10, measured ≤ 1.4e-13; H_eff's eigenvalues are printed beside the
+    goldens' (the h2co cases and `h8_ring_sto3g_sa3` agree to 4e-10; the
+    other hydrogen ones, whose SA-CASSCFs the goldens did not polish, to
+    at most 5.1e-8).
+  - **Not every ladder is smooth at the ladder's scale, so not every one
+    runs** (`kQdSmooth`, as #724 found along raw directions). Measured over
+    five runs on the RTX 3080, ratios repeating to three decimals: every
+    path at both seeds on `h8_sto3g_sa3`; h, B, C, c_0, c_1 (eigen) and c_0,
+    c_1 (random) on `h2co_ccpvdz_sa2`; h, B, c_0, c_1 and c_0, c_1 on
+    `h2co_ccpvdz_sa2_weighted`; B, c_0 and c_0 on `h2co_skew_ccpvdz_sa3`;
+    B, C, c_0 at both on `h6_631g_sa2`; h, c_0, c_1, c_2 at both on
+    `h8_ring_sto3g_sa3`. Worst relative miss per case, 2.1e-9 to 7.9e-8
+    (`h6_631g_sa2` along B at the eigen seed, the same 7.89e-8 each run).
+    The rest end in a kink or never settle. On the two C₂ᵥ h2co cases it is
+    symmetry: the roots are 1A₁ and 1A₂, so every coupling and every
+    perturber whose own norm is zero by symmetry (dropped at
+    |N| ≤ 1e-14) vanish at the point; along h, B or C, which break C₂ᵥ, such
+    a perturber's N and H grow as t² with their ratio finite, so its
+    coupling T/(Δ + H/N) grows as t, a first-order change no derivative at
+    the point sees. The random W reads those couplings (its ladders along h
+    and B find a ratio run, then break, and miss by 2.6e-4 and 8.0e-4); the
+    eigenvector seed, diagonal there, does not. Elsewhere it is #724's
+    small own norm moved toward the pole Δ + H/N = 0 (`h6_631g_sa2` along h:
+    ratios … 0.000 −1.000 −13037, a step); a random diagonal W was not
+    smooth along those paths either. Every case's c_0 ladders at both seeds.
+  - `Nevpt2Qd.OneRootIsScAdjoint` (`h2o_ccpvdz`): one root, weight 1,
+    W = 1 against `sc_adjoint`: the energy to 1e-12, and h̄, Λ, ȳ, X, A
+    and ε within 4096 ε of each one's largest element. Not bitwise:
+    `sc_adjoint` is not bitwise against itself (its walk's and the einsums'
+    atomics), and over 35 runs two of its calls came 2476 ε apart (A), the
+    one-root QD call 2532 ε from it; the bound is that floor with room.
+  - `Nevpt2Qd.RefusesBadInputs`: no weights, a negative one, a sum of 0.9
+    (both entry points), and a W not n² long, each `InvalidConfig`.
+  - Each case is about a second, its SA-CASSCF included.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
-| `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies and the count check both units share |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
+| `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
+| `qd.cpp` | `qd_sc_energy` and `qd_sc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
 | `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |
