@@ -71,6 +71,16 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         zeta         ζ · g and (γ^ζ, Γ^ζ) (mcscf::ZetaTerms)
         multipliers  (Z, z, Θ), mcscf::ZVector
         asymmetry    the gate's residues per block
+    qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, state,
+                   batch)
+        -> QdScGradient
+        total        dE_K/dR, n_atom × 3: terms.total + transition.total
+        terms        the df_gradient pass (mcscf::GradientTerms)
+        transition   the df_transition_gradient pass at ζ's folded RDMs (zero when ζ is)
+        lagrangian   qd_sc_lagrangian's QdScLagrangian
+        max_zeta     max |ζ|
+        root_gap     the smallest |E_r − E_s| over the CASSCF roots
+        heff_gap     the smallest |λ_K − λ_L| of H_eff, L ≠ K
 
 `lagrangian_gradient`, `sc_gradient` and `pc_gradient` take
 `mcscf::df_gradient`'s arguments (`solution` a
@@ -436,8 +446,8 @@ state, batch)` is the SC-QD-NEVPT2 **Lagrangian and Z-vector** of QD state
 K = `state` (H_eff's eigenvalues ascending) on a DF-SA-CASSCF whose core
 and virtuals are canonical over the SA Fock, as the Casscf step leaves them
 (`nuclear_gradient.tex` Algorithm qdgrad, steps 1–8). The derivative passes
-are #728's; `QdScLagrangian` hands them everything they read. With
-W = u_K u_Kᵀ and ρ_r = W_rr = u_rK², the Lagrangian is
+are `qd_sc_gradient`'s (below); `QdScLagrangian` hands them everything they
+read. With W = u_K u_Kᵀ and ρ_r = W_rr = u_rK², the Lagrangian is
 
     L = E[W] + Z · g_SA + Σ_r 2 w_r z_r · (H − E_r) c_r
         + Σ_{r<s} (2 (w_r − w_s) Θ_sr + ζ_sr) ⟨c_s|H|c_r⟩ + ⟨z^c, f^SA⟩,
@@ -455,10 +465,10 @@ and an equal pair, which E_SA is blind to, carries ζ_sr of its own.
 2. `qd_sc_adjoint` at W; `zc_multipliers` over its A and the SA Fock's ε;
    `zc_adjoint` at the solution's weights, every root's vector; the two
    added field by field. So ȳ_r = ȳ^corr_r + y^c_r, and A, h̄, Λ, X are
-   E^corr[W] + Φ^SA's (`corr`, the `extra` of #728's `df_gradient`).
+   E^corr[W] + Φ^SA's (`corr`, the `extra` of `qd_sc_gradient`'s `df_gradient`).
 3. `mcscf::root_pair_multipliers` on the summed ȳ: τ_sr, ζ on the equal
    pairs, t on the unequal ones; `mcscf::zeta_terms` on ζ: ζ · g and the
-   folded (γ^ζ, Γ^ζ) of #728's `df_transition_gradient`.
+   folded (γ^ζ, Γ^ζ) of its `df_transition_gradient`.
 4. The Z-vector, over the CI-relaxed Hessian at the solution and its
    weights (built as `lagrangian_gradient` builds it, the Fock at the
    weighted RDMs): orbital right-hand side g^ρ + ζ · g + pack(A), g^ρ
@@ -483,6 +493,27 @@ stationarity ladders below are what pin it: along a CI direction off the
 roots, ∂L/∂c_r = P ȳ_r + 2 w_r [P H′(Z) c_r + (H − E_r) z_r], zero exactly
 when zvector's row holds with ȳ_r / (2 w_r) on its right.
 
+`qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
+ncore, ncas, state, batch)` is the **nuclear gradient** dE_K/dR (Algorithm
+qdgrad's derivative passes): `qd_sc_lagrangian`, then two passes, each over
+one evaluation of the derivative integrals.
+
+1. `mcscf::df_gradient` at the mix ρ (Σ_r ρ_r dE_r/dR), with (Z, z, Θ) as
+   its multipliers (Θ folded into z along the roots, z's transition RDMs at
+   the weights, the orbital response along Z at the weighted RDMs) and
+   `corr`'s h̄, Λ and X, E^corr[W] + Φ^SA's, as its extra.
+2. `mcscf::df_transition_gradient` at (γ^ζ, Γ^ζ), no multipliers and no
+   extra: the Hellmann–Feynman gradient of Σ_{r<s} ζ_sr ⟨c_s|H|c_r⟩, whose
+   core part multiplies ⟨c_s|c_r⟩ = 0. Skipped when every ζ is zero (every
+   pair of unequal weights); `transition` is then zero.
+
+`total` is their sum. The report is `ScGradient`'s, through `lagrangian`
+(max |z^c| and the smallest inactive gap, the PCG iterations and residual,
+the gate's residues, H_eff's eigenvalues), plus max |ζ|, the smallest gap
+between CASSCF roots (ζ and t divide by it) and H_eff's gap at K (u_K's
+derivative divides by it). `qd_sc_lagrangian`'s refusals come back
+unchanged.
+
 ## Not done
 
 - The per-root canonicalization's own derivative: the caller passes
@@ -492,9 +523,10 @@ when zvector's row holds with ȳ_r / (2 w_r) on its right.
   takes it.
 - A state average's root of the single-state NEVPT2 (`lagrangian_gradient`,
   `sc_gradient`, `pc_gradient`) is refused; the SA reference is
-  `qd_sc_lagrangian`'s, and its derivative passes are #728's.
-- PC-QD's Lagrangian.
-- The torque (the rotational sum) is not checked; the translational one is.
+  `qd_sc_gradient`'s.
+- PC-QD's Lagrangian and gradient.
+- The single-state gradient's torque (the rotational sum) is not checked;
+  its translational one is. The QD gradient's both are.
 
 ## Tests
 
@@ -769,16 +801,34 @@ once per process.
     naming root 1; root 1's CASSCF energy moved to make H_eff's diagonal
     equal (its off-diagonal vanishes by C₂ᵥ symmetry) is `Numerical`
     naming states 0 and 1, for either state.
+- The SC-QD-NEVPT2 nuclear gradient (`qd_sc_gradient`), on every case of
+  `data/qd_nevpt2_gradient/` (#696), each this tree's DF-SA-CASSCF at the
+  generator's bars (‖g‖ < 1e-10, |ΔE| < 1e-13):
+  - `Nevpt2QdGradient.MatchesNumerical/<case>`: every state K, g_K · u
+    along each stored direction and every committed full-3N component,
+    within 2× that number's committed error bar; the translational and
+    rotational sums, absolute, within 2× the case's largest committed bar
+    (rotational invariance holds only to screening and convergence:
+    `mcscf::df_gradient`'s own root gradients carry a torque of up to
+    ~1e-8 relative on skew formaldehyde). Each separately coded term's own
+    nuclear contribution (ζ's pass; Θ, z^c and the correlation arrays alone
+    through `df_transition_gradient` at zero RDMs) is printed against the
+    checked numbers' bars and held above 10 bars on one case each. The sum
+    rule Σ_K g_K is printed.
+  - `Nevpt2QdGradient.RefusesWhatTheLagrangianRefuses` (`h2co_ccpvdz_sa2`):
+    `qd_sc_lagrangian`'s two refusals, kind and message unchanged.
+  - `Nevpt2QdGradient.OneRootAgainstScGradient` (`h2o_skew_ccpvdz`): the
+    one-root call against `sc_gradient`, printed.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `QdScGradient`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
 | `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
-| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights |
+| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, and `qd_sc_gradient`'s two passes over it |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |
