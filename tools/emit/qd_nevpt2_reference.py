@@ -462,49 +462,12 @@ def build_state(entry: dict) -> State:
         casscf_energies, _, _ = spin_roots(mc, orbitals, nroots)
         miss, miss_w = 0.0, 0.0
 
-    # A DFCASCI over the exact RHF wrapped as a DF-RHF over the same set,
-    # so NEVPT's core Fock is fitted too (nevpt2_reference.py's).
-    casci = mcscf.CASCI(mf.density_fit(auxbasis=auxbasis), ncas, nelecas)
-    assert isinstance(casci, _DFCAS), f"{name}: the CASCI is not fitted"
-    casci.fcisolver.nroots = nroots
-    casci.fcisolver.conv_tol = 1e-14
-    casci.fix_spin_(ss=0)
-    casci.verbose = 0
-    casci.kernel(orbitals)
-    check_aux(name, casci, mol, auxbasis)
-    energies, vectors, following = spin_roots(casci, orbitals, nroots)
-    for root, (old, new) in enumerate(zip(casci.ci, vectors, strict=True)):
-        overlap = abs(numpy.vdot(old, new))
-        assert overlap > 1 - SAME_STATE, f"{name} root {root}: overlap {overlap}"
-    error = numpy.abs(numpy.subtract(energies, casci.e_tot)).max()
-    assert error < CASCI_AGREEMENT, f"{name}: Davidson off the dense CI by {error}"
-    error = numpy.abs(numpy.subtract(energies, casscf_energies)).max()
-    assert error < CASCI_AGREEMENT, f"{name}: CASCI off the CASSCF by {error}"
-    vectors = signed(name, vectors)
-
-    # Core and virtuals canonicalized over the state-averaged Fock; the
-    # active orbitals, and so the CI vectors, unchanged.
+    casci, energies, following = sa_canonical(
+        name, mf, auxbasis, orbitals, casscf_energies, weights, case["cas"]
+    )
+    mo, mo_energy, vectors = casci.mo_coeff, casci.mo_energy, casci.ci
     ncore = casci.ncore
     nocc = ncore + ncas
-    sa_dm1 = sum(
-        w * casci.fcisolver.make_rdm1(v, ncas, casci.nelecas)
-        for w, v in zip(weights, vectors, strict=True)
-    )
-    mo, _, mo_energy = casci.canonicalize(
-        orbitals, ci=vectors[0], casdm1=sa_dm1, cas_natorb=False, verbose=0
-    )
-    assert numpy.array_equal(mo[:, ncore:nocc], orbitals[:, ncore:nocc]), name
-    for space, values in (("core", mo_energy[:ncore]), ("virtual", mo_energy[nocc:])):
-        gaps = numpy.diff(values)
-        assert gaps.size == 0 or gaps.min() >= DEGENERATE, (
-            f"{name}: two canonical {space} energies {gaps.min():.1e} apart"
-        )
-    again, _, _ = spin_roots(casci, mo, nroots)
-    error = numpy.abs(numpy.subtract(again, energies)).max()
-    assert error < CASCI_AGREEMENT, f"{name}: canonicalizing moved the roots by {error}"
-    casci.mo_coeff = mo
-    casci.mo_energy = mo_energy
-    casci.ci = list(vectors)
 
     eris = dfnevpt2._ERIS(casci, mo, casci.with_df)
     blocks = integral_blocks(name, casci, mo, eris)
@@ -538,6 +501,64 @@ def build_state(entry: dict) -> State:
         eris=eris,
         blocks=blocks,
     )
+
+
+def sa_canonical(
+    name, mf, auxbasis, orbitals, casscf_energies, weights, cas, sign=True
+):
+    """The DFCASCI over the CASSCF's orbitals, its roots the dense singlets
+    (signed by `signed` unless sign is False), and its core and virtuals
+    canonicalized over the state-averaged Fock: casci.mo_coeff, mo_energy
+    and ci hold them. Returns the CASCI, the roots' energies and the next
+    root's. qd_nevpt2_nac_reference.py runs it at displaced geometries,
+    where each root's sign is set by overlap instead."""
+    nelecas, ncas = cas
+    nroots = len(weights)
+    # A DFCASCI over the exact RHF wrapped as a DF-RHF over the same set,
+    # so NEVPT's core Fock is fitted too (nevpt2_reference.py's).
+    casci = mcscf.CASCI(mf.density_fit(auxbasis=auxbasis), ncas, nelecas)
+    assert isinstance(casci, _DFCAS), f"{name}: the CASCI is not fitted"
+    casci.fcisolver.nroots = nroots
+    casci.fcisolver.conv_tol = 1e-14
+    casci.fix_spin_(ss=0)
+    casci.verbose = 0
+    casci.kernel(orbitals)
+    check_aux(name, casci, mf.mol, auxbasis)
+    energies, vectors, following = spin_roots(casci, orbitals, nroots)
+    for root, (old, new) in enumerate(zip(casci.ci, vectors, strict=True)):
+        overlap = abs(numpy.vdot(old, new))
+        assert overlap > 1 - SAME_STATE, f"{name} root {root}: overlap {overlap}"
+    error = numpy.abs(numpy.subtract(energies, casci.e_tot)).max()
+    assert error < CASCI_AGREEMENT, f"{name}: Davidson off the dense CI by {error}"
+    error = numpy.abs(numpy.subtract(energies, casscf_energies)).max()
+    assert error < CASCI_AGREEMENT, f"{name}: CASCI off the CASSCF by {error}"
+    if sign:
+        vectors = signed(name, vectors)
+
+    # Core and virtuals canonicalized over the state-averaged Fock; the
+    # active orbitals, and so the CI vectors, unchanged.
+    ncore = casci.ncore
+    nocc = ncore + ncas
+    sa_dm1 = sum(
+        w * casci.fcisolver.make_rdm1(v, ncas, casci.nelecas)
+        for w, v in zip(weights, vectors, strict=True)
+    )
+    mo, _, mo_energy = casci.canonicalize(
+        orbitals, ci=vectors[0], casdm1=sa_dm1, cas_natorb=False, verbose=0
+    )
+    assert numpy.array_equal(mo[:, ncore:nocc], orbitals[:, ncore:nocc]), name
+    for space, values in (("core", mo_energy[:ncore]), ("virtual", mo_energy[nocc:])):
+        gaps = numpy.diff(values)
+        assert gaps.size == 0 or gaps.min() >= DEGENERATE, (
+            f"{name}: two canonical {space} energies {gaps.min():.1e} apart"
+        )
+    again, _, _ = spin_roots(casci, mo, nroots)
+    error = numpy.abs(numpy.subtract(again, energies)).max()
+    assert error < CASCI_AGREEMENT, f"{name}: canonicalizing moved the roots by {error}"
+    casci.mo_coeff = mo
+    casci.mo_energy = mo_energy
+    casci.ci = list(vectors)
+    return casci, energies, following
 
 
 def integral_blocks(name: str, casci, mo: numpy.ndarray, eris: dict) -> dict:
@@ -1421,7 +1442,9 @@ def pc_operators(ncore: int, ncas: int, nmo: int) -> dict:
     return out
 
 
-def pc_brute_couplings(state: State, space: dict, dropped, gated: bool) -> tuple:
+def pc_brute_couplings(
+    state: State, space: dict, dropped, gated: bool, psi1: numpy.ndarray | None = None
+) -> tuple:
     """Validation 2 for PC: every element of every class's coupling, and of
     H_eff, from the explicit PC first-order spaces in the full determinant
     space. Per ket J, class and tuple t, the span of the class's spin-free
@@ -1434,7 +1457,10 @@ def pc_brute_couplings(state: State, space: dict, dropped, gated: bool) -> tuple
     dimension must equal `dropped` (the reference's per root and class). On
     a refused case (`gated=False`) the span's gap is not enforced, so the
     ungated diagnostic is still checked. Returns every coupling, (n, n, 8),
-    and the number of tuples solved."""
+    and the number of tuples solved. Given psi1, zeros (n, 8, na, nb), adds
+    each ket J's first-order function in class k, the sum over its tuples of
+    -Q (Q^T (H_D - <J|H_D|J>) Q)^-1 Q^T V|J>, into psi1[J, k]
+    (qd_nevpt2_nac_reference.py)."""
     casci = state.casci
     ncore, ncas = casci.ncore, casci.ncas
     nmo, nelec = space["nmo"], space["nelec"]
@@ -1489,6 +1515,8 @@ def pc_brute_couplings(state: State, space: dict, dropped, gated: bool) -> tuple
                 )
                 m = q.T @ hq - e0[j] * numpy.eye(q.shape[1])
                 ket = numpy.linalg.solve(m, q.T @ hv[j].ravel())
+                if psi1 is not None:
+                    psi1[j, k] -= (q @ ket).reshape(na, nb)
                 for i in range(n):
                     total[i, j, k] -= (q.T @ hv[i].ravel()) @ ket
                 solved += 1
