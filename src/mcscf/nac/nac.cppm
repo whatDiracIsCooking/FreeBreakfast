@@ -99,6 +99,41 @@ struct Nac {
                                  const Solution &solution, int32_t ncore, int32_t ncas, int32_t bra,
                                  int32_t ket, const NacOptions &options = {});
 
+/// @brief What @ref nac_combination_terms returns: the combination's pieces
+/// that need no Z-vector.
+struct NacCombinationTerms {
+  /// @brief The combined RDMs Sum_MN T_MN / (E_N - E_M) (gamma^MN, Gamma^MN)
+  /// symmetrized, ncas^2 and ncas^4 as @c response::fock takes them: the
+  /// Hellmann-Feynman terms' RDMs, and the transition orbital gradient's.
+  std::vector<double> gamma;
+  /// @brief See @ref gamma.
+  std::vector<double> gamma2;
+  /// @brief NacCombination::csf.
+  std::vector<double> csf;
+  /// @brief NacCombination::basis_motion.
+  std::vector<double> basis_motion;
+  /// @brief NacCombination::gap.
+  double gap;
+};
+
+/// @brief The combination @ref df_nac's pieces outside its Z-vector, so a
+/// caller can fold its right-hand side into a Z-vector of its own (the
+/// QD-NEVPT2 coupling, Park 2020 Eqs. 51-52): the combined RDMs, the CSF
+/// term and D^X's basis motion, with every check and refusal of the
+/// combination's. The combination overload is this, then its Z-vector over
+/// the transition orbital gradient at (gamma, gamma2) plus D^X_pq - D^X_qp,
+/// then one @c df_transition_gradient at (gamma, gamma2) over it.
+///
+/// The arguments are the combination overload's that these pieces read.
+///
+/// @return The pieces; the combination overload's errors but its Hessian's,
+///         zvector's and df_transition_gradient's.
+[[nodiscard]] Result<NacCombinationTerms>
+nac_combination_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                      std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                      const Buffers::device<double> &b, const Solution &solution, int32_t ncore,
+                      int32_t ncas, std::span<const double> t, std::span<const double> d_x = {});
+
 /// @brief A combination of couplings and its pieces, each flat and row-major
 /// as @c (n_atom, 3), as @ref Nac's.
 struct NacCombination {

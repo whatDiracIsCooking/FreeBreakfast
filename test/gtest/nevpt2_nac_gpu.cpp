@@ -13,6 +13,9 @@
 // - against #744's brute force (data/qd_nevpt2_nac/brute_force/): the whole
 //   d_PQ (`total`) and d^PT2 alone (`pt2`), within 2x each component's
 //   error bar (its `zeroth`, #743's family, printed);
+// - the fold (one Z-vector, #767): its total against the three-solve path's
+//   on every pair of both families' cases, to 1e-9 of the largest part
+//   summed (two converged solves: kFoldTolerance);
 // - total against its formula at every NacOptions setting;
 // - the refusals: a degenerate QD pair, and a coupled pair of CASSCF roots
 //   under kRootGapFloor.
@@ -59,6 +62,11 @@ constexpr double kBarFactor = 2.0;
 // Path agreement and the symmetry checks (#749's "How results are
 // compared", #748's ruling on the scale).
 constexpr double kPathTolerance = 1e-10;
+// The fold's total against the three-solve path's (#767) compares two
+// independently converged Z-vector solves (each to an absolute residual of
+// 1e-10), so it is solver-limited, not round-off: 1e-9 of the same scale
+// (https://github.com/whatDiracIsCooking/FreeBreakfast/issues/767#issuecomment-6608119792).
+constexpr double kFoldTolerance = 1e-9;
 // H_eff's element that signs a pair must stand clear of round-off, and ours
 // must be the data's in magnitude (#747's test's bars).
 constexpr double kPhaseElementFloor = 1e-6;
@@ -222,11 +230,12 @@ Inputs inputs(QdRun &run) {
 }
 
 fb::Result<nevpt2::QdNac> nac_of(QdRun &run, const std::int32_t p, const std::int32_t q,
-                                 const bool pc, const fb::mcscf::NacOptions &options = {}) {
+                                 const bool pc, const fb::mcscf::NacOptions &options = {},
+                                 const bool fold = false) {
   const Inputs in = inputs(run);
   const auto call = pc ? &nevpt2::qd_pc_nac : &nevpt2::qd_sc_nac;
   return call(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux, in.h, in.df.b,
-              in.df.l.data(), *run.solution, run.ncore, run.ncas, p, q, 0, options);
+              in.df.l.data(), *run.solution, run.ncore, run.ncas, p, q, 0, options, fold);
 }
 
 // What the test reads off the interstate coupling: h_PQ, H_eff's
@@ -688,6 +697,90 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdNacBruteForce,
                          ::testing::Values(std::string_view{"h6_631g_sa2"},
                                            std::string_view{"h8_sto3g_sa3"},
                                            std::string_view{"h8_ring_sto3g_sa3"}),
+                         [](const auto &info) { return std::string(info.param); });
+
+// ---- The fold (#767) ---------------------------------------------------------
+
+// Every pair of case @p name in #743's and #744's data, SC and PC: the
+// fold's total (one Z-vector, Park Eqs. 51-52) against the three-solve
+// path's, to 1e-9 (kFoldTolerance) of the largest part that path sums (h's summands and h
+// over the gap, cas, pt2, csf: the d_QP scale); its csf against the path's
+// to 1e-10 of the larger; and the fields the fold leaves empty.
+void expect_fold(const std::string &name) {
+  const auto start = std::chrono::steady_clock::now();
+  std::vector<std::pair<std::int32_t, std::int32_t>> pairs;
+  for (const std::string_view dir : {"qd_nevpt2_nac/coupling", "qd_nevpt2_nac/brute_force"}) {
+    const std::string file = std::format("{}.json", name);
+    if (!std::filesystem::exists(std::filesystem::path{FBF_TEST_DATA_DIR} / dir / file)) {
+      continue;
+    }
+    for (const fb::json &pair : reference(dir, file).at("pairs")) {
+      const std::pair pq{pair.at(0).get<std::int32_t>(), pair.at(1).get<std::int32_t>()};
+      if (std::ranges::find(pairs, pq) == pairs.end()) {
+        pairs.push_back(pq);
+      }
+    }
+  }
+  ASSERT_FALSE(pairs.empty()) << name;
+  QdRun run = qd_run(name);
+  ASSERT_TRUE(run.solution.has_value());
+  for (const bool pc : {false, true}) {
+    const std::string_view tag = pc ? "PC" : "SC";
+    double worst_total = 0.0;
+    double worst_csf = 0.0;
+    for (const auto &[p, q] : pairs) {
+      const std::string label = std::format("{} {} ({}, {})", tag, name, p, q);
+      const auto d = nac_of(run, p, q, pc);
+      ASSERT_TRUE(d.has_value()) << d.error().message;
+      const auto f = nac_of(run, p, q, pc, {}, true);
+      ASSERT_TRUE(f.has_value()) << f.error().message;
+      const std::optional<Coupling> c = coupling_of(run, p, q, pc);
+      ASSERT_TRUE(c.has_value());
+      const double gap = d->heff_gap;
+      const double scale =
+          std::max({c->summand / gap, largest_abs(d->numerator) / gap, largest_abs(d->cas),
+                    largest_abs(d->pt2), largest_abs(d->csf)});
+      const double total_diff = max_diff(f->total, d->total);
+      EXPECT_LE(total_diff, kFoldTolerance * scale) << label << " total";
+      const double csf_scale = std::max(largest_abs(f->csf), largest_abs(d->csf));
+      const double csf_diff = max_diff(f->csf, d->csf);
+      EXPECT_LE(csf_diff, kPathTolerance * csf_scale) << label << " csf";
+      EXPECT_TRUE(f->numerator.empty() && f->cas.empty() && f->pt2.empty()) << label;
+      EXPECT_EQ(f->iterations[1], 0) << label;
+      EXPECT_EQ(f->iterations[2], 0) << label;
+      EXPECT_GT(f->iterations[0], 0) << label;
+      EXPECT_NEAR(f->heff_gap, gap, kPathTolerance * gap) << label;
+      EXPECT_EQ(f->root_gap, d->root_gap) << label;
+      std::cout << std::format("[ nevpt2   ] qd nac fold {}: |total - three solves'| {:.2e}, "
+                               "largest part {:.3e}, relative {:.2e}; csf {:.2e} relative "
+                               "{:.2e}; Z-vector {} iterations, residual {:.2e} (three solves: "
+                               "{} iterations)\n",
+                               label, total_diff, scale, total_diff / scale, csf_diff,
+                               csf_diff / csf_scale, f->iterations[0], f->residual[0],
+                               d->iterations);
+      worst_total = std::max(worst_total, total_diff / scale);
+      worst_csf = std::max(worst_csf, csf_diff / csf_scale);
+    }
+    const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+    std::cout << std::format("[ nevpt2   ] qd nac fold {} {}: total worst {:.2e}, csf worst "
+                             "{:.2e}; {:.2f} s\n",
+                             tag, name, worst_total, worst_csf, seconds.count());
+  }
+}
+
+class Nevpt2QdNacFold : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(Nevpt2QdNacFold, MatchesThreeSolves) {
+  FBF_REQUIRE_GPU();
+  expect_fold(std::string{GetParam()});
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdNacFold,
+                         ::testing::Values(std::string_view{"h8_ring_sto3g_sa3"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3_weighted"},
+                                           std::string_view{"h6_631g_sa2"},
+                                           std::string_view{"h8_sto3g_sa3"}),
                          [](const auto &info) { return std::string(info.param); });
 
 // ---- The options, and the refusals -----------------------------------------

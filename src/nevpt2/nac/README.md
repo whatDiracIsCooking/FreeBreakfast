@@ -6,7 +6,7 @@ coupling does not have: the PT2 transition density. Link
 `free_breakfast::nevpt2::nac`; `free_breakfast.nevpt2` re-exports it.
 
     qd_sc_nac(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q, batch,
-              options = {}) -> QdNac
+              options = {}, fold = false) -> QdNac
     qd_pc_nac(...the same...) -> QdNac
         numerator   h_PQ = R_Pᵀ (∇H_eff) R_Q, n_atom × 3 (hartree / bohr)
         cas         d^CAS = Σ_MN T^PQ_MN d_MN, the roots' total couplings
@@ -17,6 +17,10 @@ coupling does not have: the PT2 transition density. Link
         root_gap    the smallest CASSCF |E_N − E_M| over the pairs with T^PQ_MN ≠ 0
         max_zeta    h_PQ's max |ζ|
         iterations, residual   the three Z-vectors': h_PQ's, d^CAS's, d^PT2's
+
+    Under fold = true (one Z-vector, "The fold"), only total, csf, heff_gap,
+    root_gap and max_zeta are valid: numerator, cas and pt2 are empty, and
+    iterations and residual are the one solve's in slot 0, slots 1 and 2 zero.
 
     sc_pt2_transition_density(res, blocks, pairs, t, batch) -> Buffers::device<double>
     pc_pt2_transition_density(res, blocks, pairs, t, batch) -> Buffers::device<double>
@@ -75,7 +79,66 @@ is tested alone, against #744), and one Z-vector cannot split its response
 between its two right-hand sides. So the combination runs twice, at
 (T^PQ, no D^X) and at (T = 0, D^PT2). The test checks their sum against the
 single combination to 1e-10. Folding them, and h_PQ's solve with them
-(Park's Eqs. 51–52), into one is the later performance option.
+(Park's Eqs. 51–52), into one is `fold` below.
+
+### The fold
+
+`fold = true` solves **one** Z-vector per pair instead of three (Park
+2020, Eqs. 51–52; #767). Every right-hand side is linear in its source,
+and h_PQ's, d^CAS's and d^PT2's Z-vectors are over the same CI-relaxed SA
+Hessian, so with ΔE = E_Q − E_P
+
+    h_PQ + ΔE (d^CAS + d^PT2 − csf)
+
+is h_PQ's Lagrangian with ΔE times the combination's at (T^PQ, D^PT2)
+added: `qd_sc_coupling` / `qd_pc_coupling` take it through their `fold`
+callback (`../gradient/README.md`, "The interstate coupling h_PQ"), which
+runs once R is known and hands back
+
+- ΔE (γ, Γ), `mcscf::nac_combination_terms`' combined RDMs at (T^PQ,
+  D^PT2): added to ρ's RDMs they give the transition orbital gradient in
+  the orbital right-hand side and the gate, and added to ζ's they give the
+  Hellmann-Feynman term in the transition pass;
+- ΔE (D^PT2 − D^PT2ᵀ), added to A: D^PT2's orbital response.
+
+The CSF term and D^PT2's basis motion need no Z-vector, and come from the
+same `nac_combination_terms` call. So the folded coupling's `total` is
+h_PQ's pass over ΔE plus `csf`, as `NacOptions` asks (`mult_ediff`
+multiplies it back, `use_etfs` drops `csf`).
+
+**What it reports.** One Z-vector cannot part its response between h_PQ,
+d^CAS and d^PT2, so under the fold `numerator`, `cas` and `pt2` are
+**empty**. `total`, `csf`, `heff_gap`, `root_gap` (from the combination's
+T^PQ, as before) and `max_zeta` are valid; `iterations` and `residual`
+hold the one solve's in slot 0, and 0 in slots 1 and 2. The CASSCF
+roots' gap refusal is the combination's (`mcscf::df_nac (combination)`,
+naming the pair), reached before the Lagrangian's.
+
+**Cost.** Measured on the RTX 3080 (CUDA), pair (0, 1), the median of five timed
+calls of each path after one warm-up call of each, under the card lock:
+
+| case | scheme | three solves | fold | fold / three |
+|---|---|---|---|---|
+| `h2co_skew_ccpvdz_sa3` | SC | 0.441 s | 0.232 s | 0.53 |
+| `h2co_skew_ccpvdz_sa3` | PC | 0.467 s | 0.259 s | 0.55 |
+| `h8_ring_sto3g_sa3` | SC | 0.185 s | 0.103 s | 0.56 |
+| `h8_ring_sto3g_sa3` | PC | 0.237 s | 0.160 s | 0.68 |
+
+The fold saves two Z-vectors, two `df_nac` setups (the CI-relaxed Hessian
+each) and one derivative pass, and pays for two Fock builds in the gate
+(below). **It is still off by default**, though it is faster: it is not a
+pure performance change, since it drops `numerator`, `cas` and `pt2`, and
+the one consumer, the `[nevpt2_nac]` step (`../../pipeline/nevpt2_nac/`),
+writes all three. A caller that needs only `total` (a surface-hopping or
+MECI driver) passes `fold = true`.
+
+**The gate.** The interstate coupling's gate (X^L symmetric in every block,
+1e-8) holds the folded Lagrangian too, but for one term: the fold's RDMs
+are no state's, and their own active-active asymmetry 2 (F − Fᵀ) (the core
+off) is the CSF term's, which is added outside the Z-vector and which no
+multiplier removes. So under a fold the gate's source takes exactly that
+term out of the active-active block (two Fock builds); the packed pairs,
+which the Z-vector solved for, keep everything.
 
 ### Conventions
 
@@ -209,6 +272,17 @@ against the data's phases is s_m(P) s_m(Q), read off H_eff's element
   to the same one): the whole d_PQ (`total`) and d^PT2 alone (`pt2`)
   within 2× each component's error bar, the three directions and, on the
   ring, all 24 Cartesian components. #744's `zeroth` is printed.
+- `Nevpt2QdNacFold.MatchesThreeSolves` (#767), on every pair of #743's and
+  #744's five distinct cases, SC and PC: the fold's `total` against the
+  three-solve path's to **1e-9** of the largest part that path sums (h's
+  summands and |h| over |ΔE|, `cas`, `pt2`, `csf`; the d_QP scale), its
+  `csf` against the path's to 1e-10, and the fields it leaves empty. The
+  `total` bar is 1e-9, not 1e-10, because it compares two independently
+  converged Z-vector solves (each to an absolute residual of 1e-10): solver
+  noise, not round-off ([#767's ruling](https://github.com/whatDiracIsCooking/FreeBreakfast/issues/767#issuecomment-6608119792)).
+  Measured on the RTX 3080: `total` at most 1.05e-10 relative (SC
+  `h2co_skew_ccpvdz_sa3_weighted` (0, 1); every other pair ≤ 9.9e-11),
+  `csf` at most 7.7e-12.
 - `Nevpt2QdNac.TotalFollowsTheOptions`: `total` against its formula at all
   four `NacOptions` settings, SC and PC, (0, 1) and (1, 0) of
   `h6_631g_sa2`, to 1e-10 of the largest part summed.

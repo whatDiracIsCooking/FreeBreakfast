@@ -227,6 +227,18 @@ side over E_J − E_I. There are no options: `use_etfs` drops `csf` and
 `basis_motion`, which a caller can do from the parts, and `mult_ediff` has
 no one gap to multiply by.
 
+**The pieces outside the Z-vector.** `mcscf::nac_combination_terms`
+takes the combination's arguments that they read (no `h`, no `l`) and
+returns them without solving: the combined RDMs `gamma` and `gamma2`
+(Σ_{M<N} 2 T_MN / (E_N − E_M) (γ^MN, Γ^MN), as `response::fock` takes
+them), `csf`, `basis_motion` and `gap`, after every check and refusal of
+the combination's. The combination is that call, then its Z-vector and
+its `df_transition_gradient`. It exists so that a caller can fold the
+combination's right-hand side into a Z-vector of its own (QD-NEVPT2's d_PQ
+with h_PQ's, `../../nevpt2/nac/README.md` "The fold"): (γ, Γ) give the
+transition orbital gradient and the Hellmann-Feynman term, and
+D^X_pq − D^X_qp the rest of the right-hand side.
+
 **Gaps.** A pair with T_MN ≠ 0 whose roots are closer than `kRootGapFloor`
 (1e-8 hartree, `../root_rotation/`, the QD gradient's ζ rule) is refused as
 `Numerical`, naming the pair, before anything is built; `gap` is the

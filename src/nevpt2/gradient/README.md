@@ -88,7 +88,7 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
     qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, w, batch)
         -> QdScGradient  G(W), linear in W, the state's at u_K u_Kᵀ; heff_gap infinite
     qd_sc_coupling(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q,
-                   batch)
+                   batch, fold = {})
         -> QdScGradient  h_PQ = R_Pᵀ (∇H_eff) R_Q, G(W^PQ); heff_gap |E_Q − E_P|
     qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, state,
                    batch)
@@ -97,7 +97,7 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
     qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, w, batch)
         -> QdPcGradient  PC's G(W), linear in W, the state's at u_K u_Kᵀ; heff_gap infinite
     qd_pc_coupling(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q,
-                   batch)
+                   batch, fold = {})
         -> QdPcGradient  PC's h_PQ = R_Pᵀ (∇H_eff) R_Q, G(W^PQ); heff_gap |E_Q − E_P|
     qd_inputs(res, molecule, basis, aux, h, b, solution, ncore, ncas, use)
         -> Status        hands use(blocks, pairs) qd_sc_energy's inputs on the solution
@@ -592,6 +592,23 @@ no core, and the first pass is one `mcscf::df_gradient` on its core-off
 path (#741): h_PQ's reference part Σ_r R_rP R_rQ ∇E_r has no core energy and
 no nuclear repulsion. d^NEV_PQ = h_PQ / (E_Q − E_P) follows (#749).
 
+- **The fold.** `fold`, empty by default, is called once with H_eff's
+  eigenvalues and R after the diagonalization, and returns a `QdFold`:
+  active-space RDMs (`gamma`, `gamma2`, ncas² and ncas⁴) and an orbital
+  source `a` (nmo² column-major, or empty). They join the Lagrangian as
+  they are: the RDMs to ρ's in g^ρ (which is affine in them, so they add
+  their transition orbital gradient, the core off) and in the gate, and to
+  ζ's folded RDMs of the transition pass (which then runs even at ζ = 0);
+  `a` to A = X − Xᵀ, the right-hand side's packed pairs and the gate. One
+  Z-vector then solves for h_PQ's right-hand side and theirs together, and
+  `total` is h_PQ plus their Hellmann-Feynman and response terms. That is
+  Park (2020) Eqs. 51–52's fold of the derivative coupling, which
+  `../nac/`'s `qd_sc_nac(…, fold = true)` builds from
+  `mcscf::nac_combination_terms`. The fold's RDMs are no state's, so
+  their own active-active asymmetry 2 (F − Fᵀ) (the core off), which no
+  multiplier removes (it is the CSF term's), is taken out of the gate's
+  source in that block alone, by two Fock builds. An empty `fold` runs the
+  same operations as before it existed.
 - **Signs.** Each column of R is signed so that its largest-magnitude
   component is positive, the Nevpt2 step's convention (`pipeline/nevpt2`),
   in the solution's roots' phases, and `lagrangian.eigenvectors` returns it.
@@ -1043,7 +1060,7 @@ once per process.
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`; `qd_inputs`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `qd_sc_coupling`, `QdScGradient`; `qd_pc_gradient`, `qd_pc_coupling`, `QdPcGradient`, `QdFold`; `qd_inputs`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
 | `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp`; and `with_qd_inputs`, `qd.cpp`'s, for `lagrangian.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
