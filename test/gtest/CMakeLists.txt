@@ -218,6 +218,7 @@ add_executable(
   nevpt2_nac_gpu.cpp
   nevpt2_gradient_gpu.cpp
   nevpt2_qd_intersection_gpu.cpp
+  nevpt2_numerical_heff_gpu.cpp
 )
 
 set_target_properties(
@@ -283,6 +284,7 @@ target_link_libraries(
   free_breakfast::pipeline::nevpt2_gradient
   free_breakfast::pipeline::optimize
   free_breakfast::pipeline::config
+  free_breakfast::tools::qd_nevpt2_gradient
   free_breakfast::test::support
   GTest::gtest
   GTest::gtest_main
