@@ -242,15 +242,12 @@ df_sacasscf_z(DeviceResources &res, const Molecule &molecule, const BasisSet &ba
   // L_xlambda's second part, I^x z: the SA Hessian at the derivative
   // integrals and connection, applied to z, added to the right-hand side.
   {
-    Buffers::device<double> h1(n_x * mm, res.device());
-    Buffers::device<double> w1(n_x * mm * naux, res.device());
-    FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c,
-                                           h1.data(), w1.data()));
     mcscf::ThirdDerivative op =
         FBF_TRY(mcscf::ThirdDerivative::create(res, h, b, static_cast<int32_t>(naux), c, ncore,
                                                ncas, alpha, beta, roots.data(), weights, z.data()));
     Buffers::device<double> y(size * n_x, res.device());
-    FBF_TRY(op.apply_integrals(res, n_x32, h1.data(), w1.data(), y.data()));
+    FBF_TRY(mcscf::df_integral_derivatives(res, molecule, basis, classes, aux, h, b, l, c, op,
+                                           y.data()));
     FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(size) * n_x32,
                                                   &kOne<double>, y.data(), 1, lxlambda.data(), 1)));
     FBF_TRY(res.sync());

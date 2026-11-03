@@ -10,7 +10,8 @@
 // part's singlet component, as the fixture's covectors are over the singlet
 // space), L_xlambda = root I's CP right-hand side (mcscf::df_derivatives at
 // one-hot weights) + I^x z against `lxl_lambda`, the translational sum rule,
-// and the refusals.
+// the refusals, and (root 0) a budget of one coordinate per chunk against
+// the unchunked call.
 
 #include <gtest/gtest.h>
 
@@ -43,6 +44,9 @@ constexpr double kFixtureTol = 1e-10;
 // Sum over the atoms of each axis of every element, absolute: translational
 // invariance, which none of the terms is built on.
 constexpr double kSumRuleTol = 1e-9;
+// Two paths to the same Y (chunked and not), relative to max |Y|: the
+// repo's path-agreement bar.
+constexpr double kPathTol = 1e-10;
 
 const std::filesystem::path kDataDir = std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_hessian";
 
@@ -272,29 +276,8 @@ TEST_P(McscfIntegralDerivative, MatchesTheFixture) {
   const auto beta = fb::ci::StringSet::create(ncas, nelecas[1]);
   ASSERT_TRUE(alpha && beta);
 
-  // I^x, every coordinate.
   const std::size_t n_atom = molecule.natoms();
   const std::size_t n = 3 * n_atom;
-  const auto begin = std::chrono::steady_clock::now();
-  fb::Buffers::device<double> h1(n * nmo * nmo, res.device());
-  fb::Buffers::device<double> w1(n * nmo * nmo * naux, res.device());
-  ASSERT_TRUE(fb::mcscf::df_integral_derivatives(
-      res, molecule, *basis, *classes, *aux, h_pair.spherical(), b, l, c, h1.data(), w1.data()));
-  const std::chrono::duration<double> integral_seconds = std::chrono::steady_clock::now() - begin;
-  {
-    const auto refused = [&](const fb::Status &made, std::string_view what) {
-      ASSERT_FALSE(made.has_value()) << what;
-      EXPECT_EQ(made.error().kind, fb::ErrorKind::InvalidConfig) << what;
-      EXPECT_TRUE(made.error().message.starts_with("mcscf::")) << what;
-    };
-    refused(fb::mcscf::df_integral_derivatives(res, molecule, *basis, *classes, *aux,
-                                               h_pair.spherical(), b, l, c, nullptr, w1.data()),
-            "no h1");
-    refused(fb::mcscf::df_integral_derivatives(res, molecule, *basis, *classes, *aux,
-                                               h_pair.spherical(), b, nullptr, c, h1.data(),
-                                               w1.data()),
-            "no metric factor");
-  }
 
   // lambda^x, as the operator lays a vector out.
   const std::vector<double> lam_orb =
@@ -331,14 +314,54 @@ TEST_P(McscfIntegralDerivative, MatchesTheFixture) {
     ASSERT_TRUE(op.has_value()) << op.error().message;
     ASSERT_EQ(static_cast<std::size_t>(op->size()), size);
     fb::Buffers::device<double> y(size * n, res.device());
-    ASSERT_TRUE(
-        op->apply_integrals(res, static_cast<std::int32_t>(n), h1.data(), w1.data(), y.data()));
+    const auto integrals = [&](double *out, const std::size_t max_bytes) {
+      return fb::mcscf::df_integral_derivatives(res, molecule, *basis, *classes, *aux,
+                                                h_pair.spherical(), b, l, c, *op, out, max_bytes);
+    };
+    const fb::Status made = integrals(y.data(), 0);
+    ASSERT_TRUE(made) << made.error().message;
     const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
     std::vector<double> y_host = download(res, y.data(), size * n);
     {
-      const fb::Status made = op->apply_integrals(res, -1, h1.data(), w1.data(), y.data());
-      ASSERT_FALSE(made.has_value());
-      EXPECT_EQ(made.error().kind, fb::ErrorKind::InvalidConfig);
+      const fb::Status refused = op->apply_integrals(res, -1, nullptr, nullptr, y.data());
+      ASSERT_FALSE(refused.has_value());
+      EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig);
+    }
+    if (root == 0) {
+      const auto config = [&](const fb::Status &st, std::string_view what) {
+        ASSERT_FALSE(st.has_value()) << what;
+        EXPECT_EQ(st.error().kind, fb::ErrorKind::InvalidConfig) << what;
+        EXPECT_TRUE(st.error().message.starts_with("mcscf::")) << what;
+      };
+      config(integrals(nullptr, 0), "no y");
+      config(fb::mcscf::df_integral_derivatives(res, molecule, *basis, *classes, *aux,
+                                                h_pair.spherical(), b, nullptr, c, *op, y.data()),
+             "no metric factor");
+
+      // A budget below one coordinate is refused, naming the bytes it needs;
+      // that many bytes is a chunk of exactly one coordinate, the same
+      // operations per slab, so Y to rounding (a path agreement).
+      fb::Buffers::device<double> one(size * n, res.device());
+      const fb::Status tiny = integrals(one.data(), 1);
+      ASSERT_FALSE(tiny.has_value());
+      EXPECT_EQ(tiny.error().kind, fb::ErrorKind::Unsupported);
+      const std::string &message = tiny.error().message;
+      const std::size_t at = message.find(" needs ");
+      ASSERT_NE(at, std::string::npos) << message;
+      const std::size_t need = std::stoull(message.substr(at + 7));
+      EXPECT_TRUE(message.contains(std::format("needs {} bytes", need))) << message;
+      ASSERT_TRUE(integrals(one.data(), need));
+      const std::vector<double> chunked = download(res, one.data(), size * n);
+      double diff = 0.0;
+      double y_max = 0.0;
+      for (std::size_t i = 0; i < chunked.size(); ++i) {
+        diff = std::max(diff, std::abs(chunked[i] - y_host[i]));
+        y_max = std::max(y_max, std::abs(y_host[i]));
+      }
+      EXPECT_LT(diff, kPathTol * y_max) << "one coordinate per chunk, of max " << y_max;
+      std::cout << std::format("[ chunks   ] {}: one coordinate per chunk ({} bytes) against "
+                               "one chunk, max |diff| {:.1e} of max |Y| {:.2e}\n",
+                               entry.at("name").get<std::string>(), need, diff, y_max);
     }
 
     // Translational invariance: the integrals' derivatives sum to zero over
@@ -416,13 +439,13 @@ TEST_P(McscfIntegralDerivative, MatchesTheFixture) {
     }
     EXPECT_LT(lxl_worst, kFixtureTol) << "L_xlambda, of max " << lxl_scale;
 
-    std::cout << std::format("[ I^x z    ] {} root {}: integrals {:.2f} s, operator and {} "
-                             "columns {:.2f} s; |I^x z - fixture| orb {:.1e} ci {:.1e} theta "
+    std::cout << std::format("[ I^x z    ] {} root {}: operator, integrals and {} columns "
+                             "{:.2f} s; |I^x z - fixture| orb {:.1e} ci {:.1e} theta "
                              "{:.1e} (of {:.2e} {:.2e} {:.2e}); |L_xlambda - fixture| {:.1e} "
                              "(of {:.2e}); sum rule {:.1e}\n",
-                             entry.at("name").get<std::string>(), root, integral_seconds.count(), n,
-                             seconds.count(), worst[0], worst[1], worst[2], scale[0], scale[1],
-                             scale[2], lxl_worst, lxl_scale, sum_rule);
+                             entry.at("name").get<std::string>(), root, n, seconds.count(),
+                             worst[0], worst[1], worst[2], scale[0], scale[1], scale[2], lxl_worst,
+                             lxl_scale, sum_rule);
   }
 }
 

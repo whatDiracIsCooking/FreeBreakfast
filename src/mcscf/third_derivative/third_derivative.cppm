@@ -199,9 +199,9 @@ private:
   Buffers::device<double> act_;   // transition gamma and Gamma: summed, one root's
 };
 
-/// @brief I^x, the derivative along every nuclear coordinate x = 3 A + k of
-/// the MO integrals a DF-CASSCF energy sees at fixed parameters, as the
-/// directions @c ThirdDerivative::apply_integrals takes: the core
+/// @brief I^x z for every nuclear coordinate x = 3 A + k: @p op's
+/// @c ThirdDerivative::apply_integrals along I^x, the derivative of the MO
+/// integrals a DF-CASSCF energy sees at fixed parameters, as the core
 /// Hamiltonian's h1^x and the MO factor's W^x, the connection
 /// tau^x = -1/2 C^T S^x C included (C -> C (1 + tau^x)).
 ///
@@ -219,28 +219,32 @@ private:
 /// @p molecule is the molecule both bases were placed on; @p classes
 /// @c primitive_pair_classes of @p basis; @p h the AO core Hamiltonian;
 /// @p b and @p l the fit as @c density_fit leaves it (B naux x nao^2, L the
-/// naux x naux lower triangle); @p c the orbitals, nmo = nao. @p h1 receives
-/// 3 n_atom slabs of nmo^2 (slab x at x nmo^2) and @p w1 3 n_atom slabs of
-/// nmo^2 naux (slab x at x nmo^2 naux, element (p, q, Q) at
-/// p + nmo (q + nmo Q)), both on the device: 3 n_atom (nmo^2 naux) doubles,
-/// every coordinate at once.
+/// naux x naux lower triangle); @p c the orbitals, nmo = nao, and @p op's
+/// MO basis. @p y receives op.size() x 3 n_atom on the device, column x
+/// I^x z.
 ///
-/// Its own memory beside the outputs is the MO factor (nmo^2 naux), one
-/// aux atom's derivative block (3 nao^2 nblk), the metric derivative
-/// (3 naux^2) and three 3 n_atom nao^2 stacks; past the device's free memory
-/// it is Unsupported before anything is allocated. Queued on res.stream()
-/// with res.blas(); the derivative calls synchronize it.
+/// W^x is nmo^2 naux doubles per coordinate, so it is built for a chunk of
+/// coordinates at a time, as many as the budget holds (the device's free
+/// memory, or @p max_bytes when that is less), and applied before the next;
+/// chunking changes @p y only by rounding, and a chunk repeats the
+/// three-center walk. The call's own memory beside the chunk is the MO factor
+/// (nmo^2 naux), one aux atom's derivative block (3 nao^2 nblk), the metric
+/// derivative (3 naux^2) and four 3 n_atom nao^2 stacks; when that and one
+/// coordinate's W^x pass the budget it is Unsupported, naming the bytes,
+/// before anything is allocated. Queued on res.stream() with res.blas(); the
+/// derivative calls synchronize it.
 ///
 /// @return Success; InvalidConfig if the molecule and the bases are not one
 ///         placement, @p c or @p h is not nao x nao, @p b not naux nao^2, or a
-///         pointer is null; Unsupported for memory past the device's free
-///         bytes or an index past int32_t; or the first error of a
-///         derivative call, copy or BLAS call.
+///         pointer is null; Unsupported for one coordinate's memory past the
+///         budget or an index past int32_t; or the first error of a
+///         derivative call, copy, BLAS call or @p op.
 [[nodiscard]] Status df_integral_derivatives(DeviceResources &res, const Molecule &molecule,
                                              const BasisSet &basis,
                                              std::span<const PrimitivePairClass> classes,
                                              const BasisSet &aux, const SphericalMatrixAO &h,
                                              const Buffers::device<double> &b, const double *l,
-                                             const SphericalMatrixAO &c, double *h1, double *w1);
+                                             const SphericalMatrixAO &c, ThirdDerivative &op,
+                                             double *y, std::size_t max_bytes = 0);
 
 } // namespace free_breakfast::mcscf

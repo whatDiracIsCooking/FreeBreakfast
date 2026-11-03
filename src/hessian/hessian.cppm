@@ -467,8 +467,8 @@ struct SaCasscfZTerms {
 ///     L_xy z part = df_casscf_exy along K(z_o) at the averaged RDMs
 ///                   + df_casscf_exy at the transition RDMs of z_c
 ///     L_xlambda   = root I's df_derivatives right-hand side (one-hot weights)
-///                   + I^x z (ThirdDerivative::apply_integrals over
-///                     df_integral_derivatives)
+///                   + I^x z (mcscf::df_integral_derivatives, through
+///                     ThirdDerivative::apply_integrals)
 ///
 /// the transition RDMs, and their F^[x], as half the difference of those of
 /// the roots c_r + dc_r and c_r - dc_r, dc_r = d_r + Sum_s Theta_sr c_s.
@@ -487,7 +487,8 @@ struct SaCasscfZTerms {
 ///
 /// The parts run one after another, each freeing what it held: four
 /// @c df_derivatives calls, three @c df_casscf_exy calls, then the derivative
-/// integrals (3 n_atom nmo^2 (naux + 1) doubles) and the operator. Each part
+/// integrals (nmo^2 naux doubles per coordinate, for as many coordinates at
+/// once as the device's free memory holds) and the operator. Each part
 /// refuses its own memory, Unsupported, before it allocates.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
@@ -584,8 +585,8 @@ struct SaCasscfTerms {
 /// checked. @p tolerance and @p max_iterations are the solves'.
 ///
 /// The parts run one after another, each freeing what it held; the peak is
-/// @ref df_sacasscf_z's derivative integrals (3 n_atom nmo^2 (naux + 1)
-/// doubles) or the CP solve's scratch, each refused on its own as
+/// @ref df_sacasscf_z's derivative integrals (as many coordinates' nmo^2 naux
+/// at once as fit) or the CP solve's scratch, each refused on its own as
 /// Unsupported past the device's free memory.
 ///
 /// Queued on res.stream() with res.blas() (host pointer mode); it
