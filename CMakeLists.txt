@@ -305,7 +305,20 @@ if(FREE_BREAKFAST_SCCACHE)
       "${CMAKE_CURRENT_SOURCE_DIR}/devtools/gpu-object-cache.sh"
   )
   if(FREE_BREAKFAST_GPU_BACKEND STREQUAL "CUDA")
-    set(CMAKE_CUDA_COMPILER_LAUNCHER "${_fbf_gpu_object_cache}")
+    # The salt is what makes the store safe to copy to another machine
+    # (devtools/vm-cache-push.sh). A `.cu` object carries host code, so the
+    # processor goes in; and `native` reaches nvcc as a literal `-arch=native`,
+    # identical for a 3080 and an H100, so the arch CMake resolved goes in too.
+    set(_fbf_cuda_salt "cuda-${CMAKE_SYSTEM_PROCESSOR}")
+    if("native" IN_LIST CMAKE_CUDA_ARCHITECTURES)
+      string(REPLACE ";" "," _fbf_native "${CMAKE_CUDA_ARCHITECTURES_NATIVE}")
+      string(APPEND _fbf_cuda_salt "-${_fbf_native}")
+      unset(_fbf_native)
+    endif()
+    set(CMAKE_CUDA_COMPILER_LAUNCHER
+        "${_fbf_gpu_object_cache};--salt=${_fbf_cuda_salt}"
+    )
+    unset(_fbf_cuda_salt)
   else()
     set(FREE_BREAKFAST_GPU_OBJECT_CACHE
         "${_fbf_gpu_object_cache};--salt=hip-${hip_VERSION}"
