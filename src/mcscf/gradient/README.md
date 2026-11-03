@@ -378,11 +378,15 @@ weight, and ζ and t are its quotients exactly. `zeta_terms` is bitwise too
 (g^(sr) is, and the folds are fixed-order axpys and host sums), so two calls
 and the per-pair sums agree to the bit. `df_transition_gradient` is not
 ("Reproducibility" below), so the nuclear term at the folded RDMs is held
-against Σ ζ_sr times the per-pair calls at a measured floor, 64 ulps of a
-term's largest element (for the total, of the largest of its terms, which
-cancel to a tenth of them): on the RTX 3080, over three runs of both cases
-below, two identical calls differed by up to 13.5 ulps and the fold from the
-per-pair sum by up to 26.6.
+against Σ ζ_sr times the per-pair calls at the milestone's round-off bar:
+the larger of 1e3 ε of the largest element of the whole gradient compared
+(its total row) and four times the worst spread over repeats on the CUDA
+card. On the RTX 3080, over 120 repeats of each case below under the card
+lock, the worst of any term (two calls or the fold) was 2.36e-15 on H₂CO
+SA-2 (total row 1.83e-2, so the bar is 9.6e-15) and 1.76e-14 on the skewed
+SA-3 (total row 0.128 to 0.143, the bar 7.2e-14): about 5e-13 relative in
+both. τ against the host's dot products is held to the same rule; its worst
+was 8.9e-16 over 180 checks, under 1e3 ε of its largest element.
 
 ## Reproducibility
 
@@ -453,12 +457,11 @@ cc-pVDZ / cc-pVDZ-JKFIT). `McscfZetaTerms`, on both, at a fixed ζ with one
 of SA-3's pairs at zero: two calls bitwise; ζ·g bitwise the axpy sum of the
 per-pair `transition_orbital_gradient`s and (γ^ζ, Γ^ζ) bitwise the host sum
 of `trans_rdm12`'s; and `df_transition_gradient` at the fold against
-Σ ζ_sr times the per-pair calls, every term, at the floor above.
+Σ ζ_sr times the per-pair calls, every term, at the round-off bar above.
 `McscfRootPairMultipliers`, on SA-3 at a random ȳ and the weights (⅓, ⅓, ⅓),
 (0.4, 0.4, 0.2) and (0.5, 0.3, 0.2) (three, one and no equal pairs): τ
-against the host's dot products within their rigorous rounding bound
-2 dim ε Σ|c_i ȳ_i| a dot (measured 0 to 2.2e-16), and the same at every
-weight; ζ and t bitwise their quotients, each zero where the other is set;
+against the host's dot products at the round-off bar above, and the same
+at every weight; ζ and t bitwise their quotients, each zero where the other is set;
 and the refusals, a pair under `kRootGapFloor` (Numerical, naming it) and
 weights of the wrong length, as a ζ of the wrong length is from
 `zeta_terms`. About 2.2 s and 3.1 s a case, the solve included.

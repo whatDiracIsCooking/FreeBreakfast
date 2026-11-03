@@ -19,17 +19,17 @@
 //   the per-pair calls, every term. df_transition_gradient is not bitwise
 //   from call to call (its derivative kernels add atomically,
 //   gradient/README.md "Reproducibility"), so this is held at its measured
-//   floor: kFloorUlps ulps of the largest element of the term (of any term,
-//   for the total), per the issue's cross-call rule, the two calls' spread
-//   measured and printed beside it.
+//   floor, round_off_bar: the larger of 1e3 eps of the total row's largest
+//   element and four times the worst spread measured over 60 repeats, per
+//   the milestone's cross-call rule, every spread printed beside it.
 //
 // McscfRootPairMultipliers, on SA-3 (three pairs), at a random CI adjoint
 // y_bar from a fixed seed and three sets of weights (equal; 0.4, 0.4, 0.2,
 // one equal pair and two unequal; 0.5, 0.3, 0.2, none equal):
 //
-// - tau against c_s . y_r - c_r . y_s on the host, within the dot
-//   products' rigorous rounding bound 2 dim eps Sum |c_i y_i| per dot (the
-//   device gemm's and the host's own), and bitwise the same at every weight;
+// - tau against c_s . y_r - c_r . y_s on the host at round_off_bar (1e3 eps
+//   of the largest |tau|, or four times the worst measured), and bitwise
+//   the same at every weight;
 // - each equal pair's zeta bitwise -tau / (E_s - E_r) and t zero, each
 //   unequal pair's t bitwise tau / (2 (w_r - w_s)) and zeta zero;
 // - refusals: two roots under kRootGapFloor apart as Numerical naming both,
@@ -66,13 +66,33 @@ namespace fb = free_breakfast;
 
 // The CASSCF's convergence, as mcscf_nac_gpu.cpp's.
 constexpr double kConvTolGrad = 1e-10;
-// df_transition_gradient's floor, in ulps of a term's largest element (the
-// total's: of the largest of its terms). Measured on the RTX 3080 over three
-// runs of both cases: two identical calls up to 13.5 ulps, the fold against
-// the per-pair sum up to 26.6 (it rounds each pair's derivative pass apart
-// and then sums them), so this is under two and a half times the largest
-// measured (gradient/README.md "Holding the roots apart").
-constexpr double kFloorUlps = 64.0;
+// The round-off bar of a comparison between two calls (the milestone's
+// rule): the larger of kRelativeUlps eps of the largest element of the whole
+// quantity compared (the nuclear gradient's total row; tau's every element)
+// and kSpreadMargin times the worst spread measured over 60 repeats of each
+// case in one process on the RTX 3080, under the card lock.
+constexpr double kRelativeUlps = 1e3;
+constexpr double kSpreadMargin = 4.0;
+// The worst spread of any term, two calls or the fold against the per-pair
+// sum, per case, over two sessions of 60 repeats (120 per case), rounded up:
+// SA-2 2.36e-15 (two calls 6.7e-16, the fold 2.36e-15) against a total row
+// peaking at 1.83e-2, so its bar is 4 x 2.4e-15 = 9.6e-15 over 1e3 eps's
+// 4.1e-15; SA-3 1.76e-14 (two calls 1.13e-14, the fold 1.76e-14) against a
+// total row peaking at 0.128 to 0.143 (the CI phases differ between solves),
+// so 7.2e-14 over 1e3 eps's 2.8e-14 to 3.2e-14. Both about 5e-13 relative.
+// The spread rose from 30 repeats to 60 only within the same order (its
+// 99th percentile is two thirds of its worst).
+constexpr double kWorstSpreadSa2 = 2.4e-15;
+constexpr double kWorstSpreadSa3 = 1.8e-14;
+// The worst |tau - (c_s . y_r - c_r . y_s)| against the host's dots, 8.88e-16
+// over 180 checks; 1e3 eps of the largest |tau| (about 2.2) is the bar.
+constexpr double kWorstTauSpread = 8.9e-16;
+
+// The bar at the largest element @p scale of the quantity, over @p worst.
+double round_off_bar(double scale, double worst) {
+  return std::max(kRelativeUlps * std::numeric_limits<double>::epsilon() * scale,
+                  kSpreadMargin * worst);
+}
 // The zeta of McscfZetaTerms, one per pair: its second pair (SA-3's (0, 2))
 // at zero, which zeta_terms skips.
 constexpr std::array<double, 3> kZeta{0.7, 0.0, -1.3};
@@ -405,24 +425,20 @@ TEST_P(McscfZetaTerms, AreThePairSums) {
   }
   constexpr std::array<std::string_view, 5> kNames{"kinetic", "potential", "overlap",
                                                    "two_electron", "total"};
-  // Each term at its own largest element; the total, a sum of terms that
-  // cancel to a tenth of them, at the largest of any term, whose rounding it
-  // carries.
-  double terms_scale = 0.0;
-  for (const auto field : fields) {
-    terms_scale = std::max(terms_scale, largest((*folded).*field));
-  }
+  // Every term at the total row's largest element.
+  const double scale = largest(folded->total);
+  const double bar =
+      round_off_bar(scale, name == "h2co_ccpvdz_sa2" ? kWorstSpreadSa2 : kWorstSpreadSa3);
   for (std::size_t f = 0; f < fields.size(); ++f) {
     const std::vector<double> &ours = (*folded).*fields[f];
-    const double scale = f + 1 == fields.size() ? terms_scale : largest(ours);
-    const double bar = kFloorUlps * std::numeric_limits<double>::epsilon() * scale;
     const double self = spread(ours, (*folded_again).*fields[f]);
     const double against = spread(ours, summed[f]);
     EXPECT_LE(self, bar) << kNames[f] << ": two calls";
     EXPECT_LE(against, bar) << kNames[f] << ": against the per-pair sum";
-    std::cout << std::format("[ zeta] {} {}: max {:.3e}, two calls {:.2e} ({:.1f} ulps), fold "
-                             "against the pairs {:.2e} ({:.1f} ulps), bar {:.2e}\n",
-                             name, kNames[f], scale, self,
+    std::cout << std::format("[ zeta] {} {}: max {:.3e} (scale {:.3e}), two calls {:.2e} "
+                             "({:.1f} ulps), fold against the pairs {:.2e} ({:.1f} ulps), bar "
+                             "{:.2e}\n",
+                             name, kNames[f], largest(ours), scale, self,
                              self / (std::numeric_limits<double>::epsilon() * scale), against,
                              against / (std::numeric_limits<double>::epsilon() * scale), bar);
   }
@@ -470,17 +486,13 @@ TEST(McscfRootPairMultipliers, SplitsTauByWeight) {
             wwr::wwrSuccess);
   ASSERT_TRUE(res.sync().has_value());
 
-  // c_a . y_b on the host, and the rigorous bound on its rounding and the
-  // gemm's: 2 dim eps Sum_i |c_a,i y_b,i|.
+  // c_a . y_b on the host.
   const auto dot = [&](std::size_t a, std::size_t b) {
     double value = 0.0;
-    double magnitude = 0.0;
     for (std::size_t i = 0; i < dim; ++i) {
       value += c[(a * dim) + i] * y[(b * dim) + i];
-      magnitude += std::abs(c[(a * dim) + i] * y[(b * dim) + i]);
     }
-    return std::pair{value, 2.0 * static_cast<double>(dim) *
-                                std::numeric_limits<double>::epsilon() * magnitude};
+    return value;
   };
 
   std::optional<std::vector<double>> first_tau;
@@ -500,13 +512,13 @@ TEST(McscfRootPairMultipliers, SplitsTauByWeight) {
     std::size_t pair = 0;
     std::size_t equal = 0;
     double tau_error = 0.0;
+    const double tau_bar = round_off_bar(largest(split->tau), kWorstTauSpread);
     for (std::size_t r = 0; r < nroots; ++r) {
       for (std::size_t s = r + 1; s < nroots; ++s, ++pair) {
-        const auto [sr, sr_bound] = dot(s, r);
-        const auto [rs, rs_bound] = dot(r, s);
+        const double host = dot(s, r) - dot(r, s);
         const double tau = split->tau[pair];
-        EXPECT_NEAR(tau, sr - rs, sr_bound + rs_bound) << "tau " << s << r;
-        tau_error = std::max(tau_error, std::abs(tau - (sr - rs)));
+        EXPECT_NEAR(tau, host, tau_bar) << "tau " << s << r;
+        tau_error = std::max(tau_error, std::abs(tau - host));
         if (rotating[pair]) {
           EXPECT_EQ(bits(split->theta_rhs[pair]), bits(tau / (2.0 * (weights[r] - weights[s]))));
           EXPECT_EQ(split->zeta[pair], 0.0);
@@ -524,8 +536,9 @@ TEST(McscfRootPairMultipliers, SplitsTauByWeight) {
       first_tau = split->tau;
     }
     std::cout << std::format("[ zeta] {}: {} equal pairs, tau ({:.6e}, {:.6e}, {:.6e}) within "
-                             "{:.2e} of the host's\n",
-                             label, equal, split->tau[0], split->tau[1], split->tau[2], tau_error);
+                             "{:.2e} of the host's, bar {:.2e}\n",
+                             label, equal, split->tau[0], split->tau[1], split->tau[2], tau_error,
+                             tau_bar);
   }
   // Refusals: roots 0 and 1 under the floor apart (checked before the CI is
   // read, so a placeholder vector of one determinant per root stands in),
