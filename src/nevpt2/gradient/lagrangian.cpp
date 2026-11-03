@@ -5,7 +5,9 @@
 /// block, and the nuclear term as one mcscf::df_gradient pass over the
 /// multipliers and the correlation's MO adjoint. And qd_sc_lagrangian: the
 /// SC-QD-NEVPT2 Lagrangian's multipliers on a DF-SA-CASSCF, through the same
-/// Z-vector and gate at the average's weights.
+/// Z-vector and gate at the average's weights; qd_sc_gradient, its two
+/// derivative passes (df_gradient at the mix rho, df_transition_gradient at
+/// zeta's folded RDMs).
 
 module free_breakfast.nevpt2.gradient;
 
@@ -539,6 +541,70 @@ qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet 
                         .zeta = std::move(zeta),
                         .multipliers = std::move(multipliers),
                         .asymmetry = asymmetry};
+}
+
+Result<QdScGradient> qd_sc_gradient(DeviceResources &res, const Molecule &molecule,
+                                    const BasisSet &basis,
+                                    const std::span<const PrimitivePairClass> classes,
+                                    const BasisSet &aux, const SphericalMatrixAO &h,
+                                    const Buffers::device<double> &b, const double *l,
+                                    const mcscf::Solution &solution, const int32_t ncore,
+                                    const int32_t ncas, const int32_t state, const int32_t batch) {
+  QdScLagrangian lagrangian = FBF_TRY(
+      qd_sc_lagrangian(res, molecule, basis, aux, h, b, solution, ncore, ncas, state, batch));
+
+  // E_cas at rho, (Z, z, Theta), and E^corr[W] + Phi^SA's arrays.
+  const mcscf::MoAdjoint extra{.h_bar = lagrangian.corr.h_bar.data(),
+                               .lambda = lagrangian.corr.lambda.data(),
+                               .x = lagrangian.corr.x.data()};
+  mcscf::GradientTerms terms =
+      FBF_TRY(mcscf::df_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas,
+                                 lagrangian.rho, &lagrangian.multipliers, &extra));
+
+  // zeta's sum_{r<s} zeta_sr <c_s|H|c_r>, Hellmann-Feynman at the folded RDMs.
+  double max_zeta = 0.0;
+  for (const double z : lagrangian.pairs.zeta) {
+    max_zeta = std::max(max_zeta, std::abs(z));
+  }
+  const size_t count = terms.total.size();
+  mcscf::GradientTerms transition{.kinetic = std::vector<double>(count, 0.0),
+                                  .potential = std::vector<double>(count, 0.0),
+                                  .overlap = std::vector<double>(count, 0.0),
+                                  .two_electron = std::vector<double>(count, 0.0),
+                                  .nuclear_repulsion = std::vector<double>(count, 0.0),
+                                  .total = std::vector<double>(count, 0.0)};
+  if (max_zeta > 0.0) {
+    transition = FBF_TRY(mcscf::df_transition_gradient(res, molecule, basis, classes, aux, h, b, l,
+                                                       solution, ncore, ncas, lagrangian.zeta.gamma,
+                                                       lagrangian.zeta.gamma2));
+  }
+  std::vector<double> total = terms.total;
+  for (size_t i = 0; i < count; ++i) {
+    total[i] += transition.total[i];
+  }
+
+  const std::vector<double> &energies = solution.roots.energies;
+  double root_gap = std::numeric_limits<double>::infinity();
+  for (size_t r = 0; r < energies.size(); ++r) {
+    for (size_t s = r + 1; s < energies.size(); ++s) {
+      root_gap = std::min(root_gap, std::abs(energies[r] - energies[s]));
+    }
+  }
+  const auto k = static_cast<size_t>(state);
+  double heff_gap = std::numeric_limits<double>::infinity();
+  for (size_t m = 0; m < lagrangian.eigenvalues.size(); ++m) {
+    if (m != k) {
+      heff_gap =
+          std::min(heff_gap, std::abs(lagrangian.eigenvalues[k] - lagrangian.eigenvalues[m]));
+    }
+  }
+  return QdScGradient{.total = std::move(total),
+                      .terms = std::move(terms),
+                      .transition = std::move(transition),
+                      .lagrangian = std::move(lagrangian),
+                      .max_zeta = max_zeta,
+                      .root_gap = root_gap,
+                      .heff_gap = heff_gap};
 }
 
 // The root's string sets, after the checks sc_gradient and pc_gradient

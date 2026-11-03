@@ -18,7 +18,8 @@
 /// builders around sc_effective_hamiltonian, and its adjoint along any W;
 /// the PC-QD one the same around pc_effective_hamiltonian. And the SC-QD
 /// Lagrangian's multipliers on a DF-SA-CASSCF (qd_sc_lagrangian): z^c, the
-/// roots' rotation multipliers and the SA Z-vector, gated.
+/// roots' rotation multipliers and the SA Z-vector, gated; and the SC-QD
+/// nuclear gradient over it (qd_sc_gradient), two derivative passes.
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -567,5 +568,50 @@ qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet 
                  const BasisSet &aux, const SphericalMatrixAO &h, const Buffers::device<double> &b,
                  const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t state,
                  int32_t batch);
+
+/// @brief qd_sc_gradient's result: the gradient, its two derivative passes,
+/// the Lagrangian they were taken at, and the gaps it divides by.
+struct QdScGradient {
+  /// @brief dE_K/dR, n_atom x 3 row-major: terms.total + transition.total.
+  std::vector<double> total;
+  /// @brief The mcscf::df_gradient pass: E_cas at the mix rho, the
+  /// multipliers (Z, z, Theta) and the correlation + Phi arrays as its extra.
+  mcscf::GradientTerms terms;
+  /// @brief The mcscf::df_transition_gradient pass at zeta's folded RDMs,
+  /// zeta's nuclear term; every term zero (n_atom x 3) when every zeta is 0.
+  mcscf::GradientTerms transition;
+  /// @brief The Lagrangian: eigenvalues, rho, z^c (max |z^c|, the smallest
+  /// inactive gap), tau/zeta/t, (Z, z, Theta) with the PCG iterations and
+  /// residual, and the gate's residues.
+  QdScLagrangian lagrangian;
+  /// @brief max |zeta_sr|.
+  double max_zeta = 0.0;
+  /// @brief The smallest |E_r - E_s| over the CASSCF roots.
+  double root_gap = std::numeric_limits<double>::infinity();
+  /// @brief The smallest |lambda_K - lambda_L| of H_eff, L != K.
+  double heff_gap = std::numeric_limits<double>::infinity();
+};
+
+/// @brief The SC-QD-NEVPT2 nuclear gradient of QD state @p state (H_eff's
+/// eigenvalues ascending) on the DF-SA-CASSCF @p solution: qd_sc_lagrangian,
+/// then its two derivative passes (nuclear_gradient.tex Algorithm qdgrad,
+/// step 5): one mcscf::df_gradient at the mix rho with (Z, z, Theta) as its
+/// multipliers and the correlation + Phi arrays (h_bar, Lambda, X) as its
+/// extra, and one mcscf::df_transition_gradient at zeta's folded
+/// (gamma^zeta, Gamma^zeta) with neither, skipped when every zeta is zero.
+///
+/// The arguments are qd_sc_lagrangian's with mcscf::df_gradient's @p classes
+/// and @p l.
+///
+/// @return The gradient; qd_sc_lagrangian's errors unchanged (a root of zero
+///         weight, a degenerate H_eff pair, the gate), or the first error of
+///         a derivative pass.
+[[nodiscard]] Result<QdScGradient> qd_sc_gradient(DeviceResources &res, const Molecule &molecule,
+                                                  const BasisSet &basis,
+                                                  std::span<const PrimitivePairClass> classes,
+                                                  const BasisSet &aux, const SphericalMatrixAO &h,
+                                                  const Buffers::device<double> &b, const double *l,
+                                                  const mcscf::Solution &solution, int32_t ncore,
+                                                  int32_t ncas, int32_t state, int32_t batch);
 
 } // namespace free_breakfast::nevpt2
