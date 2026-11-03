@@ -325,6 +325,28 @@ it runs over density fitting only, `Unsupported` under an integral-direct
 for a pipeline built by hand. Any `[casscf]` `weights` are taken.
 
 ```toml
+[nevpt2_nac]
+pairs = [[1, 2]]          # (bra, ket) QD states; left out, every P < Q
+variant = "pc"            # the default "sc"
+mult_ediff = false        # the default
+use_etfs = false          # the default
+```
+
+`[nevpt2_nac]` is the SC- or PC-QD-NEVPT2 derivative couplings ⟨Ψ_P|∂Ψ_Q/∂R⟩
+between pairs of QD states, indices into H_eff's eigenvalues ascending, over
+the state-averaged `[casscf]` it reads (`nevpt2_nac/README.md`), written to
+`nevpt2_nac.json`. `pairs`, `mult_ediff` and `use_etfs` are `[nac]`'s, a
+pair naming two distinct QD states; `variant` is `[nevpt2_gradient]`'s.
+Across tables, when the file is read: a `[casscf]` with `nroots` below 2,
+or a pair naming a state at or past it (H_eff has one per root), is
+`InvalidConfig`; an integral-direct `[eri]`, written or filled in, and a
+`[molecule]` `multiplicity` other than 1 are `Unsupported`. The step refuses
+each again when it runs, for a pipeline built by hand; a PC refusal (a
+class's metric with no gap at its cut, a non-positive denominator) can only
+be seen there, once H_eff is built, and is the effective Hamiltonian's
+`Numerical` error. No `[nevpt2]` is planned for it.
+
+```toml
 [optimize]                # Gaussian's thresholds by default
 max_force = 4.5e-4        # hartree / bohr
 rms_force = 3.0e-4
@@ -436,6 +458,7 @@ step, so no two collide:
 | `[casscf_gradient]` | `casscf_gradient.json`: the root, its energy, the gradient `total` and each of its `terms`, as `gradient.json` |
 | `[nevpt2_gradient]` | `nevpt2_gradient.json`: the root, the variant, the NEVPT2, CASSCF and correlation energies, the gradient `total` and each of its `terms`, max \|z^c\|, the smallest inactive gap, the PCG iterations and residual, and X^L's residue per block; for PC, the modes each class cut; with `quasi_degenerate`, the state, the variant, E_K and H_eff's eigenvalues, the CASSCF energies, ρ, the gradient `total`, the `df_gradient` pass's `terms`, the `transition` pass's total, the diagnostics and the gaps |
 | `[nac]` | `nac.json`: the options, the CASSCF's root energies, and per pair the roots, the gap, h_IJ and d^CSF (unscaled) and `total`, each one row of three per atom, and the Z-vector's products and residual |
+| `[nevpt2_nac]` | `nevpt2_nac.json`: the variant and the options, the CASSCF's root energies, H_eff's eigenvalues and R, and per pair the QD states, E_Q − E_P, h_PQ, d^CAS, d^PT2 and the CSF part (unscaled) and `total`, each one row of three per atom, and the diagnostics |
 | `[optimize]` | `optimize.xyz`: every evaluated geometry (Angstrom); `final.xyz`: the optimum, which `[molecule]` then loads; `optimize.json`: the energy, and per evaluation the energy, the four norms, the trust radius and whether it was accepted |
 | `[hessian]` | `hessian.json`: the method, the numerical method's displacement, the CASSCF chain's root, the symmetrized Hessian (hartree / bohr², 3N rows of 3N), its asymmetry before symmetrizing, its translational sum, the harmonic frequencies (cm⁻¹, ascending, an imaginary one negative) and the normal modes (one row of 3N per frequency) |
 
@@ -445,7 +468,7 @@ no output, so a later config can rely on what an earlier run wrote
 `write_npy` is a switch, off by default, not a path. A file already there is
 overwritten; a directory per run is what `-o` is for. The steps keep their
 `molden` member (and `LocalizationStep` its `livvo_molden`, `OverlapStep` its
-`npy`, `GradientStep`, `CasscfGradientStep`, `Nevpt2GradientStep` and `NacStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
+`npy`, `GradientStep`, `CasscfGradientStep`, `Nevpt2GradientStep`, `NacStep` and `Nevpt2NacStep` their `json_path`), empty meaning not written, for a pipeline built by hand.
 
 **The outputs are kept apart from the inputs.** Both are `InvalidConfig`,
 comparing the directories named rather than their spelling (`.`, `''` and the
@@ -473,7 +496,7 @@ than after the SCF has converged. `parse_config` touches no disk.
 - a missing required key, in a written table or in a filled-in step's empty one;
 - a key the step has no option for (a step with no options has no keys);
 - an enumerated option naming no value it has (`[guess] type`, which knows
-  only `"sad"`; `[nevpt2_gradient] variant`, which knows `"sc"` and `"pc"`; `[hessian] method`, which knows `"analytic"` and `"numerical"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
+  only `"sad"`; `[nevpt2_gradient] variant` and `[nevpt2_nac] variant`, which know `"sc"` and `"pc"`; `[hessian] method`, which knows `"analytic"` and `"numerical"`; `[eri] mode`, which knows `"integral_direct"` and `"density_fitting"`; `[localization] mode`, which knows `"pipek_mezey"` and `"ibo"`;
   `[localization] exponent`, 2 or 4; and `[cis] spin`, which knows
   `"singlet"` and `"triplet"`);
 - `from` beside another key, on a step with no `load`, or on `[molecule]`;
@@ -493,10 +516,13 @@ than after the SCF has converged. `parse_config` touches no disk.
   option accepts an integer, so `eigenvalue_floor = 0` reads as `0.0`. An
   integer-array option (`[casci] active`) holds integers only, each read the
   same way, a string-array option (`[casci] avas`) strings only, and a
-  pair-array option (`[nac] pairs`) two-integer arrays only;
+  pair-array option (`[nac] pairs`, `[nevpt2_nac] pairs`) two-integer arrays only;
 - a `[nac]` `pairs` that is empty or holds a pair of equal or negative
   roots, or one over a `[casscf]` of fewer than two roots or naming a root
   past them;
+- a `[nevpt2_nac]` `pairs` that is empty or holds a pair of equal or
+  negative states, or one over a `[casscf]` of fewer than two roots or
+  naming a state past them;
 - a `[nevpt2]` `quasi_degenerate = true` over a `[casscf]` of fewer than
   two roots;
 - a `[nevpt2_gradient]` `quasi_degenerate = true` over a `[casscf]` of
@@ -506,10 +532,11 @@ than after the SCF has converged. `parse_config` touches no disk.
 
 Some refusals are not `InvalidConfig` but `Unsupported`, since the request
 is well formed and the method is what is missing: `[nevpt2]`,
-`[casscf_gradient]`, `[nevpt2_gradient]`, `[nac]` or the analytic `[hessian]` under
+`[casscf_gradient]`, `[nevpt2_gradient]`, `[nac]`, `[nevpt2_nac]` or the analytic `[hessian]` under
 an integral-direct `[eri]`, the analytic `[hessian]` beside a
-`[casscf_gradient]`, `[cis]` under a density-fitted one, and `[nevpt2_gradient]`'s state
-average (without `quasi_degenerate`) and multiplicity other than 1.
+`[casscf_gradient]`, `[cis]` under a density-fitted one, `[nevpt2_gradient]`'s state
+average (without `quasi_degenerate`) and multiplicity other than 1, and
+`[nevpt2_nac]`'s multiplicity other than 1.
 
 A misspelt `multiplicty` would otherwise run silently as a singlet. (The
 `io.config` this replaced ignored unknown keys, and read a flat `Config`

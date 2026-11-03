@@ -3,8 +3,9 @@
 # ---------------------------------------------------------------------------
 # The TUs whose subject is src/pipeline and that run anywhere: the step
 # contract and the planner over made-up steps, the contract of every real
-# step, the TOML front end, the Guess step's load, the Hessian and Nac
-# steps' contracts and configs, and the Optimize step's QD state following.
+# step, the TOML front end, the Guess step's load, the Hessian, Nac and
+# Nevpt2Nac steps' contracts and configs, and the Optimize step's QD state
+# following.
 # None constructs a DeviceResources, so a green run here is meaningful on a
 # device-less box.
 #
@@ -32,6 +33,7 @@ add_executable(
   guess_host.cpp
   hessian_host.cpp
   nac_host.cpp
+  nevpt2_nac_host.cpp
   optimize_host.cpp
 )
 

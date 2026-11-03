@@ -506,6 +506,31 @@ template <class S>
     FBF_TRY(read_key(table, kStep, "mult_ediff", base_dir, step.options.mult_ediff));
     FBF_TRY(read_key(table, kStep, "use_etfs", base_dir, step.options.use_etfs));
     step.json_path = output_dir / std::format("{}.json", kStep);
+  } else if constexpr (std::same_as<S, Nevpt2NacStep>) {
+    // [nac]'s keys, and [nevpt2_gradient]'s variant. Whether H_eff has the
+    // pairs' states (one per CASSCF root), the molecule's spin and the ERI
+    // mode are other tables', refused once they are planned, by
+    // check_nevpt2_nac and check_density_fitted_only; Nevpt2NacStep::run
+    // refuses them again.
+    FBF_TRY(check_keys(table, kStep, {"pairs", "variant", "mult_ediff", "use_etfs"}));
+    FBF_TRY(read_key(table, kStep, "pairs", base_dir, step.pairs));
+    if (table.contains("pairs") && step.pairs.empty()) {
+      return err_config("[{}] pairs is empty: leave it out for every pair", kStep);
+    }
+    for (const auto &[bra, ket] : step.pairs) {
+      if (bra < 0 || ket < 0 || bra == ket) {
+        return err_config("[{}] pair [{}, {}] is not two distinct QD states", kStep, bra, ket);
+      }
+    }
+    std::string variant = "sc";
+    FBF_TRY(read_key(table, kStep, "variant", base_dir, variant));
+    if (variant != "sc" && variant != "pc") {
+      return err_config("[{}] has no variant '{}' (known: 'sc', 'pc')", kStep, variant);
+    }
+    step.variant = variant == "pc" ? Nevpt2Variant::Pc : Nevpt2Variant::Sc;
+    FBF_TRY(read_key(table, kStep, "mult_ediff", base_dir, step.options.mult_ediff));
+    FBF_TRY(read_key(table, kStep, "use_etfs", base_dir, step.options.use_etfs));
+    step.json_path = output_dir / std::format("{}.json", kStep);
   } else if constexpr (std::same_as<S, OptimizeStep>) {
     // The chain it reruns is the other tables', copied in by parse_config,
     // which can see them; a table here holds only the optimizer's own keys.
@@ -758,8 +783,9 @@ template <class S>
   return {};
 }
 
-/// @brief Refuse a `[nevpt2]`, a `[casscf_gradient]`, a `[nevpt2_gradient]`
-/// or a `[nac]` over integral-direct ERIs, which none of them runs: here,
+/// @brief Refuse a `[nevpt2]`, a `[casscf_gradient]`, a `[nevpt2_gradient]`,
+/// a `[nac]` or a `[nevpt2_nac]` over integral-direct ERIs, which none of
+/// them runs: here,
 /// before the SCF and the CASSCF it would follow have run. Across two tables,
 /// as check_scf_against_eri.
 [[nodiscard]] Status check_density_fitted_only(const Calculation &calc) {
@@ -771,7 +797,8 @@ template <class S>
        {std::pair{calc.step<Nevpt2Step>().has_value(), Nevpt2Step::kName},
         std::pair{calc.step<CasscfGradientStep>().has_value(), CasscfGradientStep::kName},
         std::pair{calc.step<Nevpt2GradientStep>().has_value(), Nevpt2GradientStep::kName},
-        std::pair{calc.step<NacStep>().has_value(), NacStep::kName}}) {
+        std::pair{calc.step<NacStep>().has_value(), NacStep::kName},
+        std::pair{calc.step<Nevpt2NacStep>().has_value(), Nevpt2NacStep::kName}}) {
     if (planned) {
       return err_unsupported("[{}] runs over density fitting only, and [{}] mode is "
                              "'integral_direct': set [{}] mode = 'density_fitting'",
@@ -872,6 +899,38 @@ template <class S>
   return {};
 }
 
+/// @brief Refuse a `[nevpt2_nac]` over a `[casscf]` of fewer than two roots,
+/// one naming a pair past its roots (H_eff has one QD state per root), or
+/// over a molecule of multiplicity other than 1: here, before the SCF and the
+/// CASSCF it would follow have run. Across tables, as check_scf_against_eri.
+[[nodiscard]] Status check_nevpt2_nac(const Calculation &calc) {
+  const auto &step = calc.step<Nevpt2NacStep>();
+  if (!step) {
+    return {};
+  }
+  constexpr std::string_view kStep = Nevpt2NacStep::kName;
+  // The CASSCF is filled in when not written, and is never loaded.
+  if (const auto &casscf = calc.step<CasscfStep>()) {
+    if (casscf->nroots < 2) {
+      return err_config("[{}] couples QD states of a state average, and [{}] nroots is {}: set "
+                        "[{}] nroots to 2 or more",
+                        kStep, CasscfStep::kName, casscf->nroots, CasscfStep::kName);
+    }
+    for (const auto &[bra, ket] : step->pairs) {
+      if (std::max(bra, ket) >= casscf->nroots) {
+        return err_config("[{}] pair [{}, {}] names a QD state past H_eff's {}, one per [{}] root",
+                          kStep, bra, ket, casscf->nroots, CasscfStep::kName);
+      }
+    }
+  }
+  if (const auto &molecule = calc.step<MoleculeStep>(); molecule && molecule->multiplicity != 1) {
+    return err_unsupported("[{}] is implemented for a closed-shell singlet only, and [{}] "
+                           "multiplicity is {}",
+                           kStep, MoleculeStep::kName, molecule->multiplicity);
+  }
+  return {};
+}
+
 /// @brief Refuse an input file directly in @p output_dir, where a step's
 /// output could overwrite it before or after it is read. An absolute path, or
 /// one through '..', reaches there however the two directories differ.
@@ -948,6 +1007,7 @@ template <class S>
   FBF_TRY(check_nevpt2(calc));
   FBF_TRY(check_nevpt2_gradient(calc));
   FBF_TRY(check_nac(calc));
+  FBF_TRY(check_nevpt2_nac(calc));
   FBF_TRY(check_inputs_apart(calc, output_dir));
   return calc;
 }
