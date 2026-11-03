@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Turn a fresh single-GPU cloud VM (Ubuntu, NVIDIA, x86-64 -- e.g. a Lambda
-# 1x A100, 1x H100 or 1x A10) into a host for this repo's CUDA devcontainer,
+# Turn a fresh single-GPU cloud VM (Ubuntu, NVIDIA, x86-64 or arm64 -- e.g. a
+# Lambda 1x A100, 1x H100, 1x A10 or 1x GH200) into a host for this repo's CUDA devcontainer,
 # then build and start it. Run it ON THE VM, from a clone at <root>/main:
 #
 #   git clone https://github.com/whatDiracIsCooking/FreeBreakfast.git ~/fb/main
@@ -58,8 +58,12 @@ warn() { echo "gpu-vm-setup: WARNING -- $*" >&2; }
 # --- where we are ----------------------------------------------------------
 [ ! -e /.dockerenv ] ||
   die "this is a container; run it on the VM itself (it drives docker)"
-[ "$(uname -m)" = x86_64 ] ||
-  die "$(uname -m) host: the images and toolchain are x86-64 only (no GH200)"
+# The images build natively for either: BuildKit's TARGETARCH picks the
+# CMake/Ninja/sccache assets and the CUDA repo (sbsa on arm64).
+case "$(uname -m)" in
+  x86_64|aarch64) ;;
+  *) die "$(uname -m) host: the images build for x86_64 and aarch64 only" ;;
+esac
 # The images' `ubuntu` user is uid 1000 and the devcontainer does not remap it
 # (updateRemoteUserUID: false), so a different uid owns bind mounts the
 # container cannot write.
