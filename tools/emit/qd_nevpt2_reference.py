@@ -135,8 +135,11 @@ import nevpt2_reference  # noqa: E402
 # by then, and main() pins PySCF's OpenMP.
 from casci_reference import aux_basis  # noqa: E402
 from casscf_nac_reference import CASES as NAC_CASES  # noqa: E402
+from casscf_nac_reference import (  # noqa: E402
+    FORMALDEHYDE_SKEW,
+    signed,
+)
 from casscf_nac_reference import OUT as NAC_OUT  # noqa: E402
-from casscf_nac_reference import signed  # noqa: E402
 from casscf_reference import CASES as CASSCF_CASES  # noqa: E402
 from casscf_reference import (  # noqa: E402
     OUT_DF,
@@ -308,6 +311,39 @@ CASES = [
         },
         "brute_force": True,
     },
+    # Two cases for the QD-NEVPT2 numerical gradients (#696), polished as
+    # the formaldehyde cases are but with no source file to agree with.
+    # casscf_nac.json's skewed formaldehyde (C1) with its three roots at
+    # weights (0.4, 0.4, 0.2), so equal and unequal pairs meet in one state
+    # average; and the one case with more than four active orbitals, where
+    # the 3-RDM and 4-RDM-digest contractions' index ranges come apart:
+    # OCTAHYDROGEN_RING scaled by 1.2 in cc-pVDZ, CAS(6,6) over the RHF's
+    # frontier orbitals, two roots. Skewed formaldehyde at CAS(6,6) and
+    # (8,6), two or three roots, has PC refused in every variant (Sr's and
+    # Si's metrics meet the cut with gaps 1.3-264, under PC_MIN_GAP); the
+    # stretched ring's smallest PC gap is 8e4.
+    {
+        "from": None,
+        "case": {
+            "name": "h2co_skew_ccpvdz_sa3_weighted",
+            "atoms": FORMALDEHYDE_SKEW,
+            "basis": "cc-pvdz",
+            "cas": (4, 3),
+            "weights": [0.4, 0.4, 0.2],
+        },
+        "polish": True,
+    },
+    {
+        "from": None,
+        "case": {
+            "name": "h8_ring12_ccpvdz_cas66_sa2",
+            "atoms": [(s, tuple(1.2 * x for x in c)) for s, c in OCTAHYDROGEN_RING],
+            "basis": "cc-pvdz",
+            "cas": (6, 6),
+            "weights": [0.5, 0.5],
+        },
+        "polish": True,
+    },
 ]
 
 NCLASS = len(CLASSES)
@@ -390,7 +426,7 @@ def build_state(entry: dict) -> State:
     weights = case["weights"]
     nroots = len(weights)
     nelecas, ncas = case["cas"]
-    if entry["from"] is None:
+    if entry["from"] is None and case["basis"] in TINY_BASES:
         mol, auxbasis, provenance = tiny_molecule(case)
     else:
         mol = molecule(case)
@@ -403,7 +439,13 @@ def build_state(entry: dict) -> State:
     assert mf.converged, f"{name}: RHF did not converge"
     assert "active" not in case and "avas" not in case, name
 
-    if source is not None:
+    if source is None and entry.get("polish"):
+        # Polished as below, with no source file to agree with.
+        orbitals, casscf_energies = polished(
+            name, mf, mf.mo_coeff, ncas, nelecas, weights, auxbasis
+        )
+        miss, miss_w = 0.0, 0.0
+    elif source is not None:
         orbitals, casscf_energies = polished(
             name, mf, mf.mo_coeff, ncas, nelecas, weights, auxbasis
         )

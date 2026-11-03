@@ -1,7 +1,7 @@
 # `tools/`
 
-Standalone utilities around the C++ tree: Python scripts, and one C++
-generator. Not tests, not a package, not on the push gate.
+Standalone utilities around the C++ tree: Python scripts, and two C++
+generators. Not tests, not a package, not on the push gate.
 
 ```
 basis/bse_download.py
@@ -208,6 +208,14 @@ sad/              C++: free-breakfast-sad-stamps, built with the tree. Write
                   data/sad/<basis>/<Z>.npy, the SAD atomic density of every
                   element of the compiled-in sets named (or --all), by src/sad
                   itself. data/sad/README.md has when and how.
+qd_nevpt2_gradient/
+                  C++: free-breakfast-qd-nevpt2-gradient, built with the
+                  tree. Write test/gtest/data/qd_nevpt2_gradient/: central-
+                  difference nuclear gradients of this tree's SC- and
+                  PC-QD-NEVPT2 energies (and each DF-SA-CASSCF root's),
+                  re-converged at every displaced geometry through the
+                  pipeline itself, behind #555's continuity guard. Needs a
+                  GPU. That directory's README has when and how.
 ```
 
 Re-run the four `emit/*_kernels.py`, `extract_integral_golden.py` and then

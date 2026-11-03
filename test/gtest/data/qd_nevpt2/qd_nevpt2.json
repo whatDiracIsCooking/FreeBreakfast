@@ -19,13 +19,13 @@
  "validation": {
   "diagonal": "each root's per-class norm and energy against PySCF's mrpt.NEVPT(casci, root=I) with canonicalized=True on the SA-canonical orbitals, density-fitted",
   "diagonal_tolerance": 1e-10,
-  "diagonal_max_difference": 5.793976409762536e-16,
+  "diagonal_max_difference": 8.195484221817928e-16,
   "brute_force": "every class's T and coupling and H_eff from the explicit perturbers in the full determinant space (all orbitals), brute-force cases only",
   "brute_force_tolerance": 1e-09,
   "brute_force_max_difference": 6.307329197775477e-15,
   "transition_rdms": "dm1-dm4 against explicit products of the spin-summed excitation operators on the CI vectors",
   "transition_rdm_tolerance": 1e-12,
-  "transition_rdm_max_difference": 8.059525269388246e-15,
+  "transition_rdm_max_difference": 1.7763568394002505e-14,
   "f3": "the einsum f3ca/f3ac at I = J against PySCF's _contract4pdm",
   "f3_tolerance": 1e-12,
   "f3_max_difference": 2.1316282072803006e-14
@@ -794,6 +794,258 @@
      4
     ]
    }
+  },
+  {
+   "name": "h2co_skew_ccpvdz_sa3_weighted",
+   "source": null,
+   "basis": "cc-pvdz",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "atoms": [
+    [
+     "C",
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     "O",
+     [
+      0.12,
+      -0.08,
+      2.29
+     ]
+    ],
+    [
+     "H",
+     [
+      0.45,
+      1.74,
+      -1.13
+     ]
+    ],
+    [
+     "H",
+     [
+      -0.31,
+      -1.81,
+      -1.02
+     ]
+    ]
+   ],
+   "ncore": 6,
+   "ncas": 3,
+   "nelecas": 4,
+   "nvirt": 29,
+   "naux": 186,
+   "nroots": 3,
+   "weights": [
+    0.4,
+    0.4,
+    0.2
+   ],
+   "casscf_energies": [
+    -113.90055484228304,
+    -113.75404655425001,
+    -113.44924127928418
+   ],
+   "casscf_agreement": {
+    "root": 0.0,
+    "weighted": 0.0
+   },
+   "casci_energies": [
+    -113.90055484228304,
+    -113.75404655425001,
+    -113.44924127928418
+   ],
+   "next_root_gap": 0.12735388249767254,
+   "e_sc_nevpt2": [
+    -0.2938496529703034,
+    -0.2863914771426358,
+    -0.3898139431690041
+   ],
+   "heff": [
+    [
+     -114.19440449525335,
+     4.792949934553306e-05,
+     -0.026493647404560637
+    ],
+    [
+     3.15554503091756e-05,
+     -114.04043803139264,
+     -0.00017151567167546222
+    ],
+    [
+     -0.020525593257917737,
+     -0.00014553592378661363,
+     -113.83905522245318
+    ]
+   ],
+   "eigenvalues": [
+    -114.19595312921237,
+    -114.04043815330415,
+    -113.8375064665826
+   ],
+   "max_off_diagonal": 0.026493647404560637,
+   "max_off_diagonal_over_gap": 0.05870341504588776,
+   "checks": {
+    "diagonal_vs_pyscf": 8.195484221817928e-16,
+    "brute_force": null,
+    "transition_rdms_vs_explicit": 6.661338147750939e-15,
+    "f3_vs_contract4pdm": 7.105427357601002e-15
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 0.03668987524909051,
+    "Si": 0.003031401551849962,
+    "Sijrs": 0.0,
+    "Sijr": 5.421010862427522e-19,
+    "Srsi": 1.734723475976807e-18,
+    "Srs": 5.204170427930421e-18,
+    "Sij": 2.0057740190981832e-18,
+    "Sir": 0.009664640233631446
+   }
+  },
+  {
+   "name": "h8_ring12_ccpvdz_cas66_sa2",
+   "source": null,
+   "basis": "cc-pvdz",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 184
+   },
+   "atoms": [
+    [
+     "H",
+     [
+      3.13572,
+      0.0,
+      -0.005399999999999999
+     ]
+    ],
+    [
+     "H",
+     [
+      2.1517199999999996,
+      2.2849199999999996,
+      0.0
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      3.1413599999999997,
+      0.005399999999999999
+     ]
+    ],
+    [
+     "H",
+     [
+      -2.2889999999999997,
+      2.15556,
+      -0.005399999999999999
+     ]
+    ],
+    [
+     "H",
+     [
+      -3.147,
+      0.0,
+      0.0
+     ]
+    ],
+    [
+     "H",
+     [
+      -2.15952,
+      -2.29308,
+      0.005399999999999999
+     ]
+    ],
+    [
+     "H",
+     [
+      0.0,
+      -3.1526400000000003,
+      -0.005399999999999999
+     ]
+    ],
+    [
+     "H",
+     [
+      2.29716,
+      -2.16336,
+      0.0
+     ]
+    ]
+   ],
+   "ncore": 1,
+   "ncas": 6,
+   "nelecas": 6,
+   "nvirt": 33,
+   "naux": 184,
+   "nroots": 2,
+   "weights": [
+    0.5,
+    0.5
+   ],
+   "casscf_energies": [
+    -4.247579124521323,
+    -4.156181032061373
+   ],
+   "casscf_agreement": {
+    "root": 0.0,
+    "weighted": 0.0
+   },
+   "casci_energies": [
+    -4.247579124521323,
+    -4.156181032061373
+   ],
+   "next_root_gap": 0.03574587767766957,
+   "e_sc_nevpt2": [
+    -0.08805883300944325,
+    -0.0928486602343565
+   ],
+   "heff": [
+    [
+     -4.335637957530766,
+     -0.002618751665636734
+    ],
+    [
+     -0.00230125267469816,
+     -4.249029692295729
+    ]
+   ],
+   "eigenvalues": [
+    -4.335707774611573,
+    -4.248959875214922
+   ],
+   "max_off_diagonal": 0.002618751665636734,
+   "max_off_diagonal_over_gap": 0.028652147929501468,
+   "checks": {
+    "diagonal_vs_pyscf": 2.498001805406602e-16,
+    "brute_force": null,
+    "transition_rdms_vs_explicit": 1.7763568394002505e-14,
+    "f3_vs_contract4pdm": 2.1316282072803006e-14
+   },
+   "norm_einsum_asymmetry": {
+    "Sr": 0.014417088247391838,
+    "Si": 0.0027679129549998387,
+    "Sijrs": 0.0,
+    "Sijr": 5.421010862427522e-20,
+    "Srsi": 1.8973538018496328e-19,
+    "Srs": 1.463672932855431e-18,
+    "Sij": 2.6020852139652106e-18,
+    "Sir": 0.00010407838618275338
+   }
   }
  ],
  "pc": {
@@ -1253,6 +1505,154 @@
      -4.01991065085371
     ],
     "max_off_diagonal": 0.028857548491862398
+   },
+   {
+    "name": "h2co_skew_ccpvdz_sa3_weighted",
+    "refused": false,
+    "dropped": [
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ],
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ],
+     [
+      19,
+      24,
+      0,
+      0,
+      0,
+      0,
+      8,
+      9
+     ]
+    ],
+    "min_gap": {
+     "Sr": 29974875030603.695,
+     "Si": 451758605095350.44,
+     "Sijrs": null,
+     "Sijr": 116732604.11989534,
+     "Srsi": 110285901322692.31,
+     "Srs": 22465110.983076427,
+     "Sij": 600479898350664.5,
+     "Sir": 97849342.77756351
+    },
+    "checks": {
+     "diagonal_vs_block2": 8.355469094389889e-14,
+     "brute_force": null,
+     "brute_force_tuples": null
+    },
+    "e_pc_nevpt2": [
+     -0.29448745173247054,
+     -0.28726661267214826,
+     -0.40427303006201665
+    ],
+    "block2_e_pc_nevpt2": [
+     -0.2944874517324707,
+     -0.2872666126721622,
+     -0.40427303006201665
+    ],
+    "heff": [
+     [
+      -114.19504229401551,
+      2.3352740023710573e-05,
+      -0.0360832654508671
+     ],
+     [
+      2.3873403521580238e-05,
+      -114.04131316692215,
+      -0.00023406620974489076
+     ],
+     [
+      -0.02713739949482849,
+      -0.00017312393049810526,
+      -113.8535143093462
+     ]
+    ],
+    "eigenvalues": [
+     -114.19794336509463,
+     -114.04131338692783,
+     -113.85061301826124
+    ],
+    "max_off_diagonal": 0.0360832654508671
+   },
+   {
+    "name": "h8_ring12_ccpvdz_cas66_sa2",
+    "refused": false,
+    "dropped": [
+     [
+      6,
+      6,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+     ],
+     [
+      6,
+      6,
+      0,
+      0,
+      0,
+      0,
+      0,
+      1
+     ]
+    ],
+    "min_gap": {
+     "Sr": 263986.1745857521,
+     "Si": 76162.71051118235,
+     "Sijrs": null,
+     "Sijr": 69640549790130.1,
+     "Srsi": 64255392974309.586,
+     "Srs": 3310315366.9164834,
+     "Sij": 5489863167.139287,
+     "Sir": 977899884296.7118
+    },
+    "checks": {
+     "diagonal_vs_block2": 5.459174778899012e-15,
+     "brute_force": null,
+     "brute_force_tuples": null
+    },
+    "e_pc_nevpt2": [
+     -0.08890896826519401,
+     -0.0943676624110833
+    ],
+    "block2_e_pc_nevpt2": [
+     -0.08890896826518807,
+     -0.09436766241108473
+    ],
+    "heff": [
+     [
+      -4.336488092786517,
+      -0.0026121630333487207
+     ],
+     [
+      -0.0030076860881622447,
+      -4.250548694472457
+     ]
+    ],
+    "eigenvalues": [
+     -4.336579869703616,
+     -4.250456917555358
+    ],
+    "max_off_diagonal": 0.0030076860881622447
    }
   ]
  }

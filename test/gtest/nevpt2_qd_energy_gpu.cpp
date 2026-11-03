@@ -3,18 +3,19 @@
 // Hamiltonians, against test/gtest/data/qd_nevpt2/ (its README has the
 // conventions): from the golden transition RDMs and the slabs over the golden
 // B blocks, every class's coupling ⟨I|V|Ψ_J⁽¹⁾⟩ and transition norm Σ_t T^t_IJ
-// of the unsymmetrized matrix, and its total heff2, to 1e-10 on all six
+// of the unsymmetrized matrix, and its total heff2, to 1e-10 on all eight
 // cases; the diagonal against class_energies on the same inputs, and a walk in
 // batches of two against the whole one, to round-off. Then the chain: the
 // transition RDMs from nevpt2::rdms over the golden CI vectors, whose phases
 // the goldens fix, in place of the golden ones. PC the same way, against the
 // pc_* arrays: every class's coupling, heff2 and each ket's dropped counts on
-// all six cases, the diagonal against pc_class_energies, and a state's
+// all eight cases, the diagonal against pc_class_energies, and a state's
 // refusal, which names the class and the state. Last, the malformed inputs.
 
 #include <gtest/gtest.h>
 
 #include "gpu_requirement.h"
+#include "slow_test.h"
 
 import std;
 import free_breakfast.core;
@@ -224,9 +225,16 @@ void expect_same_pc(const nevpt2::PcClassEnergies &a, const nevpt2::PcClassEnerg
 
 // std::string, not const char *: ctest names each case by printing its
 // parameter, and a pointer prints as its address.
-const std::array<std::string, 6> kCases{"h2co_ccpvdz_sa2",      "h2co_ccpvdz_sa2_weighted",
-                                        "h2co_skew_ccpvdz_sa3", "h6_631g_sa2",
-                                        "h8_sto3g_sa3",         "h8_ring_sto3g_sa3"};
+// The last two are the QD-NEVPT2 gradient oracle's (#696): three roots at
+// unequal weights, and the one case over six active orbitals.
+const std::array<std::string, 8> kCases{"h2co_ccpvdz_sa2",
+                                        "h2co_ccpvdz_sa2_weighted",
+                                        "h2co_skew_ccpvdz_sa3",
+                                        "h6_631g_sa2",
+                                        "h8_sto3g_sa3",
+                                        "h8_ring_sto3g_sa3",
+                                        "h2co_skew_ccpvdz_sa3_weighted",
+                                        "h8_ring12_ccpvdz_cas66_sa2"};
 
 class Nevpt2QdEnergy : public ::testing::TestWithParam<std::string> {};
 
@@ -235,6 +243,11 @@ class Nevpt2QdEnergy : public ::testing::TestWithParam<std::string> {};
 TEST_P(Nevpt2QdEnergy, MatchesGoldenDiagonalAndBatches) {
   FBF_REQUIRE_GPU();
   const std::string name = GetParam();
+  // 16 s on the RX 9060 XT, its batch-2 walk over 33 virtuals at six active
+  // orbitals the bulk of it; its PC case below stays in the fast tier.
+  if (name == "h8_ring12_ccpvdz_cas66_sa2") {
+    FBF_SKIP_IF_FAST_TESTS();
+  }
   const std::filesystem::path dir = kDataDir / name;
   fb::DeviceResources res(0);
   Case c = load_case(res, dir);
