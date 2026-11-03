@@ -38,7 +38,10 @@
 # whole toolkit, but not under HIP: the compiler is apt's clang while the
 # headers and device libraries are ROCm's, so a ROCm upgrade under the same
 # clang would hit stale objects. --salt=<text> is how CMake puts that version
-# (hip_VERSION) into the key.
+# (hip_VERSION) into the key. Under CUDA the salt is the host processor, plus
+# the card's resolved arch when the preset says `native`: nvcc sees a literal
+# `-arch=native` there, the same on every card, and a store copied to another
+# machine (devtools/vm-cache-push.sh) must not hand an H100 a 3080's objects.
 #
 # Usage (as a compiler launcher):
 #   this script [--salt=<text>] <compiler> <the real compiler args...>

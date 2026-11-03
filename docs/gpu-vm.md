@@ -81,6 +81,46 @@ container exists, `devtools/devcontainer.sh up` is enough.
 Claude Code is in the image. Run `claude` inside the container and log in
 once; the login lives in the VM's `~/.claude`, which is bind-mounted.
 
+## Seeding the compiler caches
+
+A fresh VM builds cold. To warm it from the workstation's caches, run this on
+the workstation host (it needs `rsync`, which the image does not carry):
+
+```bash
+devtools/vm-cache-push.sh <vm> [<vm checkout>]   # default ~/fb/main
+```
+
+Run it after `gpu-vm-setup.sh --no-container` and before the container
+starts. Once sccache's server is running, stop it inside the container with
+`sccache --stop-server` so the next server picks up the pushed entries.
+It sends the two stores separately, and they hit under different conditions:
+
+- **`.build-object-cache`** holds the device `.cu` objects: the slow half of a
+  cold build, and a few hundred MB. It is keyed on content, the nvcc version,
+  the host processor and, under the `native` preset, the card's resolved arch
+  (the salt in the root `CMakeLists.txt`). So it is always sent, and it hits
+  when the VM's card has the workstation's arch. A 3080 store serves an A10
+  (both sm_86); an A100 or H100 misses every entry and compiles its own.
+- **`.sccache`** holds the rest: host C++ and the module units. It is tens
+  of GB, and sccache keys on the absolute paths CMake passes. **It hits only
+  when the VM's checkout is at the workstation's absolute path**, so the
+  script skips it otherwise and says why. Host code does not depend on the
+  card, so with a matching path it hits on any x86-64 VM, an H100 included:
+  clone there instead of `~/fb/main`, and use that path for the memory copy
+  above as well:
+
+  ```bash
+  sudo install -d -o "$USER" -g "$USER" "$(dirname <workstation checkout>)"
+  git clone https://github.com/whatDiracIsCooking/FreeBreakfast.git <workstation checkout>
+  ```
+
+  sccache also keys on the compiler binary, so a hit needs the VM's image to
+  carry the same clang as the workstation's. An image built on a later day
+  can pull a newer apt point release and miss every entry. `--no-sccache`
+  sends only the object cache.
+
+A GH200 is refused: the stores are x86-64 and nothing in them can hit there.
+
 ## What the script handles
 
 Each of these is a way a fresh VM fails, and each one is checked in this order:
@@ -124,8 +164,9 @@ neither, and the devcontainer's `--device=` lines then make `docker run` fail.
   filesystem only when the instance is created, and only in its own region.
   On it, keep the compiler cache (point `FREE_BREAKFAST_SCCACHE_DIR` there
   before `devcontainer.sh up`) and `~/.claude` (a symlink keeps the login and
-  memory). Cache hits need the same clone path on every VM (`~/fb/main`),
-  because a cached module records the path it was built under. Keep build
+  memory). Cache hits need the same clone path on every VM (`~/fb/main`, or
+  the workstation's path; see "Seeding the compiler caches"), because a
+  cached module records the path it was built under. Keep build
   directories, Docker's data and the checkout on the local disk: a module
   build on NFS is slow.
 - **On a GH200** the host and the images are aarch64. `Dockerfile.base` and
