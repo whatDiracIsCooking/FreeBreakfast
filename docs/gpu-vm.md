@@ -33,18 +33,35 @@ older driver means the container refuses to start.
 
 ## Bring-up
 
+Make the VM its own SSH key and its own GitHub token. Give the token
+fine-grained access to this repository only: contents, pull requests and
+issues read/write; actions and commit statuses read. A short expiry is fine,
+and you can revoke it without touching your workstation's token.
+
 On the VM:
 
 ```bash
-export GH_TOKEN=...          # reaches the container: gh, git push
+git config --global user.name "<name>"
+git config --global user.email "<id>+<user>@users.noreply.github.com"
+read -rs GH_TOKEN && export GH_TOKEN   # paste; reaches the container at create
 git clone https://github.com/whatDiracIsCooking/FreeBreakfast.git ~/fb/main
 cd ~/fb/main
 devtools/gpu-vm-setup.sh     # host checks, node + uv, submodules, then the container
 devtools/devcontainer.sh shell
 ```
 
-Clone to `<root>/main`, not straight into `<root>`: `devtools/worktree.sh`
-creates sibling worktrees next to `main/`.
+`devcontainer.sh` passes the host's git identity into the container, so set
+it on the VM. Clone to `<root>/main`, not straight into `<root>`:
+`devtools/worktree.sh` creates sibling worktrees next to `main/`.
+
+Claude Code's memory is stored per project path, so copy it from the
+workstation to the VM's path before the container is created:
+
+```bash
+ssh <vm> mkdir -p '~/.claude/projects/-home-ubuntu-fb-main'
+scp -r ~/.claude/projects/<workstation-path-key>/memory \
+    <vm>:'~/.claude/projects/-home-ubuntu-fb-main/'
+```
 
 Inside the container, everything works as it does on the workstation:
 
@@ -102,10 +119,15 @@ neither, and the devcontainer's `--device=` lines then make `docker run` fail.
 - **Nothing survives termination.** These VMs are terminated, not stopped,
   and the root volume goes with them: the images, the build directories,
   `.sccache` and the `~/.claude` login. Push branches before you terminate.
-  To keep the compiler cache, attach a persistent filesystem and point
-  `FREE_BREAKFAST_SCCACHE_DIR` at a directory on it before
-  `devcontainer.sh up`. Keep build directories on the local disk, since a
-  module build on NFS is slow.
+  A first try needs no persistent filesystem. If you keep coming back, one
+  saves a rebuild per VM, but **decide at launch**: Lambda attaches a
+  filesystem only when the instance is created, and only in its own region.
+  On it, keep the compiler cache (point `FREE_BREAKFAST_SCCACHE_DIR` there
+  before `devcontainer.sh up`) and `~/.claude` (a symlink keeps the login and
+  memory). Cache hits need the same clone path on every VM (`~/fb/main`),
+  because a cached module records the path it was built under. Keep build
+  directories, Docker's data and the checkout on the local disk: a module
+  build on NFS is slow.
 - **Credentials live on rented hardware.** Give the VM a fine-grained
   `GH_TOKEN` scoped to this repository, not your general-purpose one.
 
