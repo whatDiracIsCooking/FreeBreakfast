@@ -128,9 +128,10 @@ G = Σ P₁ P₂ᵀ over the occupied orbitals, read back and folded into E_core
 h_eff and (tu|vw) on the host.
 
 **Per column**: two right transforms and three pair transforms of L, six Y
-gemms, six Fock gemms, six transition RDM12s (three symmetric transition
-densities by polarization), two sigma integral builds and six sigmas of the
-nroots roots, and O(nmo³) and O(dim nroots²) of products for the pullbacks.
+gemms, six Fock gemms, three symmetric transition densities
+(`ci::Rdm::trans_rdm12` per root), two sigma integral builds and six sigmas of
+the nroots roots, and O(nmo³) and O(dim nroots²) of products for the
+pullbacks.
 The work is one column at a time, each synchronizing: the RDMs and the
 sigmas' integrals pass through the host.
 

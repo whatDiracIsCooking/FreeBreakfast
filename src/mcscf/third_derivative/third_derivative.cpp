@@ -28,7 +28,7 @@ constexpr size_t kThirdMoBlocks = 2;
 constexpr size_t kThirdPairBlocks = 4;
 constexpr size_t kThirdOcc4 = 3;
 constexpr size_t kThirdOcc2 = 2;
-constexpr size_t kThirdCiBlocks = 12;
+constexpr size_t kThirdCiBlocks = 10;
 constexpr size_t kThirdSmall = 8;
 // Weights within this of each other are equal; their sum is 1 within it.
 constexpr double kThirdWeightTolerance = 1e-12;
@@ -437,59 +437,41 @@ Status ThirdDerivative::transition(DeviceResources &res, const double *const a,
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
   const auto nroots = static_cast<size_t>(nroots_);
-  const size_t block = static_cast<size_t>(dim_) * nroots;
-  const auto len = static_cast<int32_t>(block);
-  double a_norm = 0.0;
-  double b_norm = 0.0;
-  FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, len, a, 1, &a_norm)));
-  FBF_TRY(gpu_status(wwr::nrm2<double, int32_t>(blas, len, b, 1, &b_norm)));
-  if (b_norm == 0.0 || a_norm == 0.0) {
-    return {};
-  }
-  // sum_r w_r (T(a_r, b_r) + T(b_r, a_r)) = [rdm(a + s b) - rdm(a - s b)] / 2s,
-  // s putting s b on a's scale so neither term is lost in the difference.
-  const double s = a_norm / b_norm;
-  const double neg_s = -s;
-  // ci_'s last two blocks.
-  double *const plus = ci_.data() + ((kThirdCiBlocks - 2) * block);
-  double *const minus = plus + block;
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, len, 1,
-                                                &kOne<double>, a, len, &s, b, len, plus, len)));
-  FBF_TRY(
-      gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, len, 1,
-                                            &kOne<double>, a, len, &neg_s, b, len, minus, len)));
+  const auto dim = static_cast<size_t>(dim_);
   const auto n = static_cast<size_t>(ncas_);
-  double *const g1p = act_.data();
-  double *const g1m = g1p + (n * n);
-  double *const g2p = g1m + (n * n);
-  double *const g2m = g2p + (n * n * n * n);
-  FBF_TRY(rdm_.rdm12(res, weights_, plus, g1p, g2p));
-  FBF_TRY(rdm_.rdm12(res, weights_, minus, g1m, g2m));
-  std::vector<double> host(act_.num_elements());
-  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(host.data(), act_.data(), host.size() * sizeof(double),
-                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  const size_t nn = n * n;
+  const size_t n4 = nn * nn;
+  // sum_r w_r (T(a_r, b_r) + T(b_r, a_r)) = sum_r 2 w_r trans_rdm12(a_r, b_r):
+  // each root's into act_'s second halves, summed into its first.
+  double *const g1_sum = act_.data();
+  double *const g1_root = g1_sum + nn;
+  double *const g2_sum = g1_root + nn;
+  double *const g2_root = g2_sum + n4;
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(g1_sum, 0, sizeof(double) * nn, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(g2_sum, 0, sizeof(double) * n4, stream)));
   double n0 = 0.0;
   for (size_t r = 0; r < nroots; ++r) {
-    double dot = 0.0;
-    FBF_TRY(gpu_status(wwr::dot<double, int32_t>(blas, dim_, a + (r * static_cast<size_t>(dim_)), 1,
-                                                 b + (r * static_cast<size_t>(dim_)), 1, &dot)));
-    n0 += 2.0 * weights_[r] * dot;
-  }
-  FBF_TRY(res.sync());
-  const double scale = 0.5 / s;
-  std::vector<double> g1(n * n);
-  std::vector<double> g2(n * n * n * n);
-  for (size_t t = 0; t < n; ++t) {
-    for (size_t u = 0; u < n; ++u) {
-      g1[(t * n) + u] = 0.5 * scale *
-                        ((host[(t * n) + u] - host[(n * n) + (t * n) + u]) +
-                         (host[(u * n) + t] - host[(n * n) + (u * n) + t]));
+    if (weights_[r] == 0.0) {
+      continue;
     }
+    FBF_TRY(rdm_.trans_rdm12(res, a + (r * dim), b + (r * dim), g1_root, g2_root));
+    const double two_w = 2.0 * weights_[r];
+    FBF_TRY(gpu_status(
+        wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(nn), &two_w, g1_root, 1, g1_sum, 1)));
+    FBF_TRY(gpu_status(
+        wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(n4), &two_w, g2_root, 1, g2_sum, 1)));
+    double dot = 0.0;
+    FBF_TRY(gpu_status(
+        wwr::dot<double, int32_t>(blas, dim_, a + (r * dim), 1, b + (r * dim), 1, &dot)));
+    n0 += two_w * dot;
   }
-  const size_t n4 = n * n * n * n;
-  for (size_t i = 0; i < n4; ++i) {
-    g2[i] = scale * (host[(2 * n * n) + i] - host[(2 * n * n) + n4 + i]);
-  }
+  std::vector<double> g1(nn);
+  std::vector<double> g2(n4);
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(g1.data(), g1_sum, nn * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(g2.data(), g2_sum, n4 * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(res.sync());
   add_occupied_rdms(static_cast<size_t>(ncore_), n, g1, g2, n0, gamma, d);
   return {};
 }

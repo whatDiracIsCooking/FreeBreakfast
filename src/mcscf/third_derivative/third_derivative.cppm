@@ -194,9 +194,9 @@ private:
   Buffers::device<double> pair_;  // nocc^2 naux: 4
   Buffers::device<double> occ4_;  // nocc^4: 3
   Buffers::device<double> occ2_;  // nocc^2: 2
-  Buffers::device<double> ci_;    // dim nroots blocks: 12
+  Buffers::device<double> ci_;    // dim nroots blocks: 10
   Buffers::device<double> small_; // nroots^2 blocks: 8
-  Buffers::device<double> act_;   // gamma and Gamma at a + s b and a - s b
+  Buffers::device<double> act_;   // transition gamma and Gamma: summed, one root's
 };
 
 /// @brief I^x, the derivative along every nuclear coordinate x = 3 A + k of

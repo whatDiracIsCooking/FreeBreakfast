@@ -120,12 +120,13 @@ diverged in the CI-relaxed Hessian's product: the CI response δ_r =
 that, over the transition RDMs, to H̃ x. That is zero at equal weights, but
 the weights are recovered from the solution's averaged RDMs by least
 squares (`sa_gradient_weights`), equal only to about 1e-8 relative, and the
-term is an O(1/gap) number cancelling through two RDMs of c ± δ. Measured in
-#774 near ethylene's seam, the true residual of every column grew as
-5e-12 / gap from a gap of 1e-5 Eh down to the RelaxedHessian's floor of
-1e-8 (where the mixing is dropped outright), reaching 1e-3, while the
-conjugate gradients' recurrence still met 1e-10 and the multipliers came back
-with no error. Here H̃ is created with `RelaxedHessian::create`'s `mixing`
+term is an O(1/gap) number cancelling through the transition RDMs (at #774
+the difference of two RDMs of c ± δ, since #691 `ci::Rdm::trans_rdm12`
+summed over the roots). Measured in #774 near ethylene's seam, the true
+residual of every column grew as 5e-12 / gap from a gap of 1e-5 Eh down to
+the RelaxedHessian's floor of 1e-8 (where the mixing is dropped outright),
+reaching 1e-3, while the conjugate gradients' recurrence still met 1e-10 and
+the multipliers came back with no error. Here H̃ is created with `RelaxedHessian::create`'s `mixing`
 mask from `rotating_pairs(weights)`: a pair of equal weights, I and J among
 them, carries no mixing, which is the state average's response exactly, and
 a pair of unequal weights (another root's against I or J) keeps its own, as

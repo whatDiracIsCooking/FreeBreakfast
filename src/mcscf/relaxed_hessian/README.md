@@ -43,9 +43,9 @@ through H̃ tightens it.
    H₀'s sigma, to 1e-8 of the right-hand side (at most 200 sigmas per root),
    and the other roots' part exactly, −(c_s · b_r) / (E_s − E_r) c_s (left
    out for a gap under 1e-8 hartree).
-4. γ_T and Γ_T: half the difference of `ci::Rdm::rdm12` of c + δ and of
-   c − δ at the weights (Γ_T's halved again, for the ½ of the two-body
-   energy).
+4. γ_T and Γ_T: Σ_r w_r 2 `ci::Rdm::trans_rdm12(c_r, δ_r)`, the
+   symmetrized transition RDMs root by root (Γ_T's halved, for the ½ of the
+   two-body energy).
 5. R x = H_oc δ: `response_gradient` of γ_T and Γ_T, uploaded, packed
    (`pack_orbital_pairs`) and added to y.
 
@@ -122,7 +122,7 @@ above), is one flag per pair of roots r < s in (r, s) lexicographic order,
 in the one-column product and the block one alike. At equal weights that
 part adds (w_r − w_s)(c_s · H′ c_r)/(E_s − E_r) times the pair's transition
 RDMs to H̃ x, which is zero, so nothing H̃ means changes; what it removes is
-an O(1/gap) term cancelling through the RDMs of c ± δ, against weights
+an O(1/gap) term cancelling through the transition RDMs, against weights
 recovered only to about 1e-8 relative. Near a degeneracy that term is
 the product's error: `mcscf::df_intersection`, which passes
 `rotating_pairs(weights)` (only the pairs of unequal weight mix), measured
