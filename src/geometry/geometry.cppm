@@ -1,11 +1,13 @@
 /// @file
 /// @brief A Cartesian quasi-Newton minimizer: BFGS under a trust radius, with
 /// the rigid-body translations and rotations projected out, over a
-/// caller-supplied energy and gradient; and the harmonic vibrational analysis
-/// of a Cartesian Hessian.
+/// caller-supplied energy and gradient; its counterpart for the minimum-energy
+/// crossing of two states; and the harmonic vibrational analysis of a
+/// Cartesian Hessian.
 ///
-/// optimize is host-side: the state is a 3N vector and a 3N x 3N Hessian, and
-/// it knows nothing about molecules, the SCF or the pipeline.
+/// optimize and optimize_meci are host-side: the state is a 3N vector and a
+/// 3N x 3N Hessian, and they know nothing about molecules, the SCF or the
+/// pipeline.
 /// harmonic_analysis takes the atoms, for their masses, and diagonalizes on
 /// the GPU. See README.md for the methods and their defaults.
 
@@ -47,6 +49,10 @@ struct Options {
   /// count divisible by 3. Off for a function of coordinates that are not
   /// points in space.
   bool project_rigid_body = true;
+  /// @brief optimize_meci's fifth criterion: converged only when the gap
+  /// between the two energies is also at or below this (hartree). optimize
+  /// ignores it.
+  double max_gap = 1e-5;
 };
 
 /// @brief One energy-and-gradient evaluation, for the log.
@@ -110,6 +116,80 @@ optimize(std::span<const double> x0,
          const std::function<Result<double>(std::span<const double> x, std::span<double> gradient)>
              &energy_and_gradient,
          const Options &options = {});
+
+/// @brief A converged minimum-energy crossing of two states.
+struct MECISolution {
+  /// @brief One evaluation of the two states, for the log.
+  struct Iteration {
+    /// @brief The lower and the upper energy at this geometry, and their
+    /// difference.
+    double lower;
+    double upper;
+    double gap;
+    /// @brief The largest |component| and the root mean square of the
+    /// projected mean gradient P (g_I + g_J) / 2 at this geometry.
+    double max_force;
+    double rms_force;
+    /// @brief The same two of the step that reached this geometry; 0 for the
+    /// first.
+    double max_displacement;
+    double rms_displacement;
+    /// @brief The trust radius the next step is taken under.
+    double trust_radius;
+    /// @brief 2 when the branching plane at this geometry is {x, y}; 1 when y,
+    /// the coupling, had nothing left after x and was dropped.
+    int32_t branching_dimension;
+  };
+  /// @brief The coordinates of the crossing, in the order @p x0 gave them.
+  std::vector<double> x;
+  /// @brief The lower and the upper energy at @ref x.
+  double lower;
+  double upper;
+  /// @brief One entry per evaluation, the first at @p x0.
+  std::vector<Iteration> iterations;
+};
+
+/// @brief The minimum-energy crossing of two states the callback computes,
+/// from @p x0, by gradient projection (Bearpark, Robb and Schlegel; Sicilia,
+/// Bearpark, Blancafort and Robb, JCTC 4, 257 (2008)).
+///
+/// @p energies_and_gradients(x, g_i, g_j, h_ij) returns the two energies at
+/// @p x, and writes the gradient of each into @p g_i and @p g_j and their
+/// coupling vector into @p h_ij, x.size() values each; an error it returns
+/// ends the optimization with that error. The energies may come in either
+/// order: the lower one, with its gradient, is taken as I. Only the direction
+/// of h_ij is read, so its scale and sign are free.
+///
+/// Each step: the rigid-body motions (when options.project_rigid_body) are
+/// projected off x = g_J - g_I and y = h_IJ, which are orthonormalized into
+/// the branching plane; a y with nothing left after x (under 1e-8 of the
+/// larger of |x| and |y|) is dropped, which leaves a seam of one more
+/// dimension. The step is the Newton step on the gap along x,
+/// -(E_J - E_I) / |x| x^, plus the BFGS step on the mean energy in the
+/// intersection space, -(P B P)^+ P g, with g = (g_I + g_J) / 2 and P the
+/// projector off the rigid motions and the plane; the sum is scaled back to
+/// the trust radius when longer. No step is rejected: the composite step is
+/// not the descent of any one function. Instead the trust radius follows the
+/// ratio of the actual to the modelled change in the mean energy plus the gap:
+/// outside [1/4, 7/4] it becomes |p| / 4, within [3/4, 5/4] with the step at
+/// the radius it doubles, up to max_trust_radius. B gets the BFGS update over
+/// the step and the change in P g, both in the old intersection space, when
+/// their product is positive. Converged at a geometry whose gap is at or below
+/// options.max_gap and whose four norms, of -P g and of the step, are all at
+/// or below their options; the first evaluation converges on the gap and the
+/// forces alone.
+///
+/// @return The solution; InvalidConfig as optimize, or max_gap not above 0;
+///         Numerical if an energy or vector is not finite, or the gradient
+///         difference vanishes after the projection; MaxIterationsExceeded
+///         once max_steps runs out; or the first error of
+///         @p energies_and_gradients.
+[[nodiscard]] Result<MECISolution>
+optimize_meci(std::span<const double> x0,
+              const std::function<Result<std::array<double, 2>>(
+                  std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                  std::span<double> h_ij)> &energies_and_gradients,
+              const Options &options = {});
 
 /// @brief The harmonic vibrations of a molecule: the internal modes alone,
 /// the rigid-body translations and rotations removed.
