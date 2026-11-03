@@ -471,13 +471,17 @@ qd_inputs(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
 // go to *@p pc and whose arrays become corr's (corr.elements empty). A
 // refused PC class is the adjoint's error. @p who names the caller, and
 // @p setup is qd_setup's. eigenvalues is left empty.
+// qd_sc_coupling's fold callback, spelled once in this unit.
+using Folder = std::function<Result<QdFold>(std::span<const double>, std::span<const double>)>;
+
 Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_view who,
                                      const QdSetup &setup, const Molecule &molecule,
                                      const BasisSet &basis, const BasisSet &aux,
                                      const SphericalMatrixAO &h, const Buffers::device<double> &b,
                                      const mcscf::Solution &solution, const int32_t ncore,
                                      const int32_t ncas, std::vector<double> w, const int32_t batch,
-                                     std::vector<PcClassEnergies> *pc) {
+                                     std::vector<PcClassEnergies> *pc,
+                                     const QdFold *fold = nullptr) {
   const SphericalMatrixAO &c = solution.c;
   const auto naux = static_cast<int32_t>(aux.nao_sphe());
   const auto nmo32 = static_cast<int32_t>(c.n());
@@ -504,6 +508,15 @@ Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_vie
   }
   const double trace = std::accumulate(rho.begin(), rho.end(), 0.0);
   const double core_shift = std::abs(trace - 1.0) <= kTraceTolerance ? 0.0 : trace - 1.0;
+  if (fold != nullptr) {
+    const size_t nmo = static_cast<size_t>(c.n());
+    if (fold->gamma.size() != n * n || fold->gamma2.size() != n * n * n * n ||
+        (!fold->a.empty() && fold->a.size() != nmo * nmo)) {
+      return err_config("{}: the fold's gamma, gamma2 and a hold {}, {} and {} elements: ncas^2, "
+                        "ncas^4 and nmo^2 (or none) for ncas {} and nmo {}",
+                        who, fold->gamma.size(), fold->gamma2.size(), fold->a.size(), n, nmo);
+    }
+  }
   const std::vector<double> &weights = setup.weights;
   const ci::DeviceStringSet &alpha = setup.alpha;
   const ci::DeviceStringSet &beta = setup.beta;
@@ -536,6 +549,15 @@ Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_vie
   const ZcAdjoint phi = FBF_TRY(zc_adjoint(res, alpha, beta, naux, nmo32, nmo32, b.data(), c.data(),
                                            h.data(), ncore, ncas, weights, vectors, zc.z.data()));
   FBF_TRY(add_adjoint(res, corr.h_bar, corr.lambda, corr.y, corr.x, corr.a, phi));
+  // A fold's orbital source, onto A: the right-hand side's and the gate's.
+  if (fold != nullptr && !fold->a.empty()) {
+    const Buffers::device<double> fold_a = FBF_TRY(to_device(res, fold->a));
+    FBF_TRY(gpu_status(
+        wwr::axpy<double, int32_t>(res.blas().get(), static_cast<int32_t>(fold->a.size()),
+                                   &kOne<double>, fold_a.data(), 1, corr.a.data(), 1)));
+    // fold_a is freed on scope exit, while the axpy reads it.
+    FBF_TRY(res.sync());
+  }
 
   // tau, split into zeta and t; zeta's two consumers.
   mcscf::RootPairMultipliers pairs =
@@ -567,6 +589,17 @@ Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_vie
       for (size_t i = 0; i < g2.size(); ++i) {
         gamma2_rho[i] += rho[r] * g2[i];
       }
+    }
+  }
+
+  // A fold's RDMs, with rho's: g^rho is affine in them, so they add their
+  // transition orbital gradient, the core off, and the gate sees them too.
+  if (fold != nullptr) {
+    for (size_t i = 0; i < gamma_rho.size(); ++i) {
+      gamma_rho[i] += fold->gamma[i];
+    }
+    for (size_t i = 0; i < gamma2_rho.size(); ++i) {
+      gamma2_rho[i] += fold->gamma2[i];
     }
   }
 
@@ -619,10 +652,44 @@ Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_vie
   for (size_t i = 0; i < gamma2_rho.size(); ++i) {
     gamma2_rho[i] += zeta.gamma2[i];
   }
+  // A fold's RDMs are no state's: their own active-active asymmetry,
+  // 2 (F - F^T) at them with the core off, is the CSF term's (the fold's
+  // caller adds it outside the Z-vector), and no multiplier removes it. So
+  // the gate's source takes it out of that block alone; the packed pairs,
+  // which the Z-vector solved for, keep everything.
+  std::optional<Buffers::device<double>> gate_a;
+  if (fold != nullptr) {
+    const auto nmo = static_cast<size_t>(c.n());
+    const std::vector<double> f_fold = FBF_TRY(lagrangian_fock(
+        res, molecule, basis, h, b, naux, c, ncore, ncas, fold->gamma, fold->gamma2));
+    const std::vector<double> f_zero = FBF_TRY(
+        lagrangian_fock(res, molecule, basis, h, b, naux, c, ncore, ncas,
+                        std::vector<double>(n * n, 0.0), std::vector<double>(n * n * n * n, 0.0)));
+    std::vector<double> a_host = FBF_TRY(to_host(res, corr.a.data(), nmo * nmo));
+    const auto first = static_cast<size_t>(ncore);
+    for (size_t q = first; q < first + n; ++q) {
+      for (size_t p = first; p < first + n; ++p) {
+        const size_t pq = p + (nmo * q);
+        const size_t qp = q + (nmo * p);
+        a_host[pq] -= 2.0 * ((f_fold[pq] - f_zero[pq]) - (f_fold[qp] - f_zero[qp]));
+      }
+    }
+    gate_a.emplace(FBF_TRY(to_device(res, a_host)));
+  }
   const std::array<double, 6> asymmetry = FBF_TRY(lagrangian_asymmetry(
       res, molecule, basis, h, b, naux, solution, ncore, ncas, rdm, weights, std::move(gamma_rho),
-      std::move(gamma2_rho), multipliers, corr.a.data(), core_shift));
+      std::move(gamma2_rho), multipliers, gate_a ? gate_a->data() : corr.a.data(), core_shift));
   FBF_TRY(check_asymmetry(who, asymmetry, multipliers));
+  // A fold's Hellmann-Feynman term rides zeta's transition pass, after the
+  // gate (which had it through gamma_rho).
+  if (fold != nullptr) {
+    for (size_t i = 0; i < fold->gamma.size(); ++i) {
+      zeta.gamma[i] += fold->gamma[i];
+    }
+    for (size_t i = 0; i < fold->gamma2.size(); ++i) {
+      zeta.gamma2[i] += fold->gamma2[i];
+    }
+  }
 
   return QdScLagrangian{.eigenvalues = {},
                         .w = std::move(w),
@@ -652,7 +719,8 @@ Result<QdScLagrangian> qd_state_lagrangian(DeviceResources &res, const std::stri
                                            const Buffers::device<double> &b,
                                            const mcscf::Solution &solution, const int32_t ncore,
                                            const int32_t ncas, const int32_t p, const int32_t q,
-                                           const int32_t batch, std::vector<PcClassEnergies> *pc) {
+                                           const int32_t batch, std::vector<PcClassEnergies> *pc,
+                                           const Folder &fold = {}) {
   const QdSetup setup = FBF_TRY(qd_setup(res, who, molecule, basis, solution, ncore, ncas));
   const size_t nroots = solution.roots.energies.size();
   for (const int32_t state : {p, q}) {
@@ -726,8 +794,13 @@ Result<QdScLagrangian> qd_state_lagrangian(DeviceResources &res, const std::stri
       w[(i * nroots) + j] = 0.5 * ((u_p[i] * u_q[j]) + (u_q[i] * u_p[j]));
     }
   }
-  QdScLagrangian lagrangian = FBF_TRY(qd_lagrangian(
-      res, who, setup, molecule, basis, aux, h, b, solution, ncore, ncas, std::move(w), batch, pc));
+  std::optional<QdFold> folded;
+  if (fold) {
+    folded.emplace(FBF_TRY(fold(eigenvalues, heff)));
+  }
+  QdScLagrangian lagrangian =
+      FBF_TRY(qd_lagrangian(res, who, setup, molecule, basis, aux, h, b, solution, ncore, ncas,
+                            std::move(w), batch, pc, folded ? &*folded : nullptr));
   lagrangian.eigenvalues = std::move(eigenvalues);
   lagrangian.eigenvectors = std::move(heff);
   return lagrangian;
@@ -830,7 +903,11 @@ Result<QdScGradient> qd_passes(DeviceResources &res, const Molecule &molecule,
                                   .two_electron = std::vector<double>(count, 0.0),
                                   .nuclear_repulsion = std::vector<double>(count, 0.0),
                                   .total = std::vector<double>(count, 0.0)};
-  if (max_zeta > 0.0) {
+  // A fold's RDMs ride zeta's (qd_lagrangian), so the pass runs for them too.
+  const bool folded =
+      std::ranges::any_of(lagrangian.zeta.gamma, [](const double v) { return v != 0.0; }) ||
+      std::ranges::any_of(lagrangian.zeta.gamma2, [](const double v) { return v != 0.0; });
+  if (max_zeta > 0.0 || folded) {
     transition = FBF_TRY(mcscf::df_transition_gradient(res, molecule, basis, classes, aux, h, b, l,
                                                        solution, ncore, ncas, lagrangian.zeta.gamma,
                                                        lagrangian.zeta.gamma2));
@@ -899,7 +976,7 @@ qd_sc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-               const int32_t p, const int32_t q, const int32_t batch) {
+               const int32_t p, const int32_t q, const int32_t batch, const Folder &fold) {
   constexpr std::string_view kWho = "nevpt2::qd_sc_coupling";
   if (p == q) {
     return err_config("{}: states {} and {}: a coupling is between two states, and one state's "
@@ -907,7 +984,7 @@ qd_sc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                       kWho, p, q);
   }
   QdScLagrangian lagrangian = FBF_TRY(qd_state_lagrangian(
-      res, kWho, molecule, basis, aux, h, b, solution, ncore, ncas, p, q, batch, nullptr));
+      res, kWho, molecule, basis, aux, h, b, solution, ncore, ncas, p, q, batch, nullptr, fold));
   QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
                                      ncas, std::move(lagrangian)));
   g.heff_gap = std::abs(g.lagrangian.eigenvalues[static_cast<size_t>(q)] -
@@ -969,7 +1046,7 @@ qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-               const int32_t p, const int32_t q, const int32_t batch) {
+               const int32_t p, const int32_t q, const int32_t batch, const Folder &fold) {
   constexpr std::string_view kWho = "nevpt2::qd_pc_coupling";
   if (p == q) {
     return err_config("{}: states {} and {}: a coupling is between two states, and one state's "
@@ -979,7 +1056,7 @@ qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   // A refused class is qd_pc_energy's error, here and so the coupling's.
   std::vector<PcClassEnergies> elements;
   QdScLagrangian lagrangian = FBF_TRY(qd_state_lagrangian(
-      res, kWho, molecule, basis, aux, h, b, solution, ncore, ncas, p, q, batch, &elements));
+      res, kWho, molecule, basis, aux, h, b, solution, ncore, ncas, p, q, batch, &elements, fold));
   QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
                                      ncas, std::move(lagrangian)));
   const double gap = std::abs(g.lagrangian.eigenvalues[static_cast<size_t>(q)] -

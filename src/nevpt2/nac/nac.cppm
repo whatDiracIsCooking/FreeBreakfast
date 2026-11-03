@@ -83,7 +83,8 @@ pc_pt2_transition_density(DeviceResources &res, const MoBlocks &blocks,
 /// the derivative along R_{A,k}, atoms in the molecule's order.
 struct QdNac {
   /// @brief h_PQ = R_P^T (dH_eff/dR) R_Q (hartree / bohr), unscaled:
-  /// symmetric in P and Q, and translation-invariant.
+  /// symmetric in P and Q, and translation-invariant. Empty under the fold,
+  /// as are cas and pt2.
   std::vector<double> numerator;
   /// @brief d^CAS = Σ_MN T^PQ_MN d_MN (1 / bohr), d_MN the roots' total
   /// couplings (their CSF terms in it), unscaled whatever the options.
@@ -108,7 +109,8 @@ struct QdNac {
   /// @brief h_PQ's max |zeta_sr|.
   double max_zeta = 0.0;
   /// @brief The three Z-vectors' conjugate-gradient products: h_PQ's, then
-  /// d^CAS's and d^PT2's (mcscf::df_nac's).
+  /// d^CAS's and d^PT2's (mcscf::df_nac's). Under the fold, the one solve's
+  /// in slot 0, and 0 in the others.
   std::array<int32_t, 3> iterations{};
   /// @brief The three Z-vectors' residuals, in @ref iterations' order.
   std::array<double, 3> residual{};
@@ -132,6 +134,14 @@ struct QdNac {
 /// d_PQ = -d_QP. Its sign follows R's and the solution's CI phases; the
 /// call fixes none.
 ///
+/// @p fold solves one Z-vector instead of three (Park 2020 Eqs. 51-52):
+/// qd_sc_coupling with ΔE times mcscf::nac_combination_terms' RDMs at
+/// (T^PQ, D^PT2) and D^PT2's source folded into its Lagrangian. Then only
+/// total, csf, heff_gap, root_gap and max_zeta are valid: numerator, cas
+/// and pt2 are empty, and iterations and residual are the one solve's, in
+/// slot 0 (slots 1 and 2 zero). It is off by default: README.md "The fold"
+/// has the measurement.
+///
 /// @return The coupling; qd_sc_coupling's errors (Numerical, naming both,
 ///         for QD states within mcscf::kRootGapFloor; InvalidConfig for
 ///         p = q or a state not one of the roots'); Numerical, naming the
@@ -143,7 +153,7 @@ qd_sc_nac(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           std::span<const PrimitivePairClass> classes, const BasisSet &aux,
           const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
-          int32_t batch, const mcscf::NacOptions &options = {});
+          int32_t batch, const mcscf::NacOptions &options = {}, bool fold = false);
 
 /// @brief The PC-QD-NEVPT2 derivative coupling: qd_sc_nac with
 /// qd_pc_coupling and pc_pt2_transition_density, R PC's H_eff's
@@ -157,6 +167,6 @@ qd_pc_nac(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
           std::span<const PrimitivePairClass> classes, const BasisSet &aux,
           const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
           const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
-          int32_t batch, const mcscf::NacOptions &options = {});
+          int32_t batch, const mcscf::NacOptions &options = {}, bool fold = false);
 
 } // namespace free_breakfast::nevpt2

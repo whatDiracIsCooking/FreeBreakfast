@@ -671,6 +671,25 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const double> w, int32_t batch);
 
+/// @brief Terms folded into an interstate coupling's Lagrangian (Park 2020
+/// Eqs. 51-52): what lets qd_sc_coupling / qd_pc_coupling solve one Z-vector
+/// for h_PQ and another quantity's response together. Each is added as it
+/// is, so a caller scales it first.
+struct QdFold {
+  /// @brief Active-space RDMs, ncas^2 and ncas^4 as response::fock takes
+  /// them, added to the Lagrangian's: to the rho-weighted RDMs of the
+  /// orbital right-hand side and of the gate, and to zeta's folded RDMs of
+  /// the transition pass, so they enter with the core off.
+  std::vector<double> gamma;
+  /// @brief See @ref gamma.
+  std::vector<double> gamma2;
+  /// @brief An orbital source, nmo x nmo column-major, added to A = X - X^T
+  /// (the right-hand side's packed pairs and the gate), or empty for none.
+  /// The gate's active-active block also drops 2 (F - F^T) at gamma, gamma2
+  /// (the core off): their own asymmetry, which no multiplier removes.
+  std::vector<double> a;
+};
+
 /// @brief The SC-QD-NEVPT2 interstate coupling between QD states @p p and
 /// @p q (H_eff's eigenvalues ascending), h_PQ = R_P^T (dH_eff/dR) R_Q, on the
 /// DF-SA-CASSCF @p solution (Park 2020 Eq. 47's dL_PQ/dX): the W form of
@@ -680,7 +699,13 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 /// solution's roots' phases: h_PQ's sign is R_P's times R_Q's, and h_PQ =
 /// h_QP. d^NEV_PQ = h_PQ / (E_Q - E_P).
 ///
-/// The arguments are qd_sc_gradient's with the pair for @p state.
+/// The arguments are qd_sc_gradient's with the pair for @p state. A
+/// non-empty @p fold is called once, after H_eff's diagonalization, with
+/// its eigenvalues (ascending) and R (state K's column at [K n, (K + 1) n),
+/// signed as QdScLagrangian::eigenvectors), and its
+/// QdFold is added to the Lagrangian before the Z-vector: total is then
+/// h_PQ plus the folded terms' Hellmann-Feynman and response parts, and
+/// lagrangian.corr.a and lagrangian.zeta carry them.
 ///
 /// @return h_PQ in QdScGradient's fields: total h_PQ (n_atom x 3), the
 ///         lagrangian at W^PQ with H_eff's eigenvalues and R, heff_gap
@@ -688,13 +713,16 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 ///         InvalidConfig for @p p or @p q not one of the roots', or p = q
 ///         (a state's is qd_sc_gradient); Numerical, naming both, when E_P
 ///         and E_Q are within mcscf::kRootGapFloor; or qd_sc_gradient's
-///         other errors (a root of zero weight, the gate, a derivative pass).
-[[nodiscard]] Result<QdScGradient>
-qd_sc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-               const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
-               int32_t batch);
+///         other errors (a root of zero weight, the gate, a derivative pass);
+///         @p fold's error; or InvalidConfig, naming the field, for a QdFold
+///         of the wrong size.
+[[nodiscard]] Result<QdScGradient> qd_sc_coupling(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, int32_t p, int32_t q, int32_t batch,
+    const std::function<Result<QdFold>(std::span<const double>, std::span<const double>)> &fold =
+        {});
 
 /// @brief qd_pc_gradient's result: QdScGradient's fields, with PC's
 /// elements.
@@ -766,18 +794,19 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
 /// qd_sc_energy and qd_sc_adjoint, the PC W form at W^PQ, R PC's H_eff's
 /// eigenvectors signed as qd_sc_coupling's.
 ///
-/// The arguments are qd_sc_coupling's.
+/// The arguments are qd_sc_coupling's, @p fold as its.
 ///
 /// @return h_PQ in QdPcGradient's fields (heff_gap |E_Q - E_P|); a refused
 ///         class's Numerical error, qd_pc_energy's unchanged, never a
 ///         coupling with the class zeroed; qd_sc_coupling's other errors,
 ///         named for nevpt2::qd_pc_coupling.
-[[nodiscard]] Result<QdPcGradient>
-qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-               const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
-               int32_t batch);
+[[nodiscard]] Result<QdPcGradient> qd_pc_coupling(
+    DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+    std::span<const PrimitivePairClass> classes, const BasisSet &aux, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, const double *l, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, int32_t p, int32_t q, int32_t batch,
+    const std::function<Result<QdFold>(std::span<const double>, std::span<const double>)> &fold =
+        {});
 
 /// @brief qd_sc_energy's inputs on the DF-SA-CASSCF @p solution, handed to
 /// @p use: the MO blocks, and the n x n pairs [M n + N] (bra M, ket N) of

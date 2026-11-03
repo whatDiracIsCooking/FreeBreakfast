@@ -124,6 +124,26 @@ struct NacSetup {
   std::optional<RelaxedHessian> relaxed;
 };
 
+// The CI strings and RDMs over the roots' determinants (@ref NacSetup's
+// first four fields), the CI vectors checked against them under @p who.
+Result<std::unique_ptr<NacSetup>> nac_ci(DeviceResources &res, const Molecule &molecule,
+                                         const Solution &solution, const int32_t ncas,
+                                         const int32_t nelecas, const std::string_view who) {
+  const size_t roots = solution.roots.energies.size();
+  auto s = std::make_unique<NacSetup>();
+  const int32_t two_s = molecule.multiplicity() - 1;
+  const int32_t n_beta = (nelecas - two_s) / 2;
+  s->alpha.emplace(FBF_TRY(ci::DeviceStringSet::create(res, ncas, nelecas - n_beta)));
+  s->beta.emplace(FBF_TRY(ci::DeviceStringSet::create(res, ncas, n_beta)));
+  s->rdm.emplace(FBF_TRY(ci::Rdm::create(res, *s->alpha, *s->beta)));
+  s->dim = static_cast<size_t>(s->rdm->size());
+  if (solution.roots.vectors.num_elements() != s->dim * roots) {
+    return err_config("{}: {} CI doubles for {} roots of {} determinants", who,
+                      solution.roots.vectors.num_elements(), roots, s->dim);
+  }
+  return s;
+}
+
 Result<std::unique_ptr<NacSetup>> nac_setup(DeviceResources &res, const Molecule &molecule,
                                             const BasisSet &basis, const SphericalMatrixAO &h,
                                             const Buffers::device<double> &b, const int32_t q,
@@ -151,18 +171,7 @@ Result<std::unique_ptr<NacSetup>> nac_setup(DeviceResources &res, const Molecule
     weights = FBF_TRY(sa_gradient_weights(solution, n));
   }
 
-  auto s = std::make_unique<NacSetup>();
-  // The CI strings, sigma (H_0) and RDMs over the roots' determinants.
-  const int32_t two_s = molecule.multiplicity() - 1;
-  const int32_t n_beta = (nelecas - two_s) / 2;
-  s->alpha.emplace(FBF_TRY(ci::DeviceStringSet::create(res, ncas, nelecas - n_beta)));
-  s->beta.emplace(FBF_TRY(ci::DeviceStringSet::create(res, ncas, n_beta)));
-  s->rdm.emplace(FBF_TRY(ci::Rdm::create(res, *s->alpha, *s->beta)));
-  s->dim = static_cast<size_t>(s->rdm->size());
-  if (solution.roots.vectors.num_elements() != s->dim * roots) {
-    return err_config("{}: {} CI doubles for {} roots of {} determinants", who,
-                      solution.roots.vectors.num_elements(), roots, s->dim);
-  }
+  std::unique_ptr<NacSetup> s = FBF_TRY(nac_ci(res, molecule, solution, ncas, nelecas, who));
 
   // The CI-relaxed Hessian at the solution's orbitals and roots, as
   // df_gradient builds it for a root: the sigma takes the host arrays
@@ -303,12 +312,12 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
              .residual = z.residual};
 }
 
-Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
-                              const std::span<const PrimitivePairClass> classes,
-                              const BasisSet &aux, const SphericalMatrixAO &h,
-                              const Buffers::device<double> &b, const double *l,
-                              const Solution &solution, const int32_t ncore, const int32_t ncas,
-                              const std::span<const double> t, const std::span<const double> d_x) {
+Result<NacCombinationTerms>
+nac_combination_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                      const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+                      const Buffers::device<double> &b, const Solution &solution,
+                      const int32_t ncore, const int32_t ncas, const std::span<const double> t,
+                      const std::span<const double> d_x) {
   constexpr std::string_view kWho = "mcscf::df_nac (combination)";
   const SphericalMatrixAO &c = solution.c;
   const size_t roots = solution.roots.energies.size();
@@ -371,10 +380,8 @@ Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, co
     }
   }
   const ScopedDeviceIndex on{res.dev_idx()};
-  const auto q = static_cast<int32_t>(aux.nao_sphe());
   const size_t m = n * n;
-  const std::unique_ptr<NacSetup> s =
-      FBF_TRY(nac_setup(res, molecule, basis, h, b, q, solution, ncore, ncas, nelecas, kWho));
+  const std::unique_ptr<NacSetup> s = FBF_TRY(nac_ci(res, molecule, solution, ncas, nelecas, kWho));
 
   // The combined RDMs: Sum_MN T_MN / (E_N - E_M) (gamma^MN, Gamma^MN)
   // symmetrized, 2 T_MN / (E_N - E_M) over M < N, for the CI part; and
@@ -410,12 +417,63 @@ Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, co
     }
   }
 
+  // The CSF part, 1/2 G[C_a (gamma^T^T - gamma^T) C_a^T], as the pair's.
+  std::vector<double> antisymmetric(m);
+  for (size_t u = 0; u < n; ++u) {
+    for (size_t a = 0; a < n; ++a) {
+      antisymmetric[a + (n * u)] = gamma_t[(u * n) + a] - gamma_t[(a * n) + u];
+    }
+  }
+  std::vector<double> csf =
+      FBF_TRY(nac_half_gradient(res, basis, classes, c, n_core, n, antisymmetric));
+
+  // D^X's basis motion, 1/2 G[C (D^X^T - D^X) C^T] over every orbital.
+  std::vector<double> basis_motion(csf.size(), 0.0);
+  if (!d_x.empty()) {
+    std::vector<double> antisymmetric_x(mo * mo);
+    for (size_t r = 0; r < mo; ++r) {
+      for (size_t p = 0; p < mo; ++p) {
+        antisymmetric_x[p + (mo * r)] = d_x[(r * mo) + p] - d_x[(p * mo) + r];
+      }
+    }
+    basis_motion = FBF_TRY(nac_half_gradient(res, basis, classes, c, 0, mo, antisymmetric_x));
+  }
+  return NacCombinationTerms{.gamma = std::move(gamma),
+                             .gamma2 = std::move(gamma2),
+                             .csf = std::move(csf),
+                             .basis_motion = std::move(basis_motion),
+                             .gap = smallest};
+}
+
+Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+                              const std::span<const PrimitivePairClass> classes,
+                              const BasisSet &aux, const SphericalMatrixAO &h,
+                              const Buffers::device<double> &b, const double *l,
+                              const Solution &solution, const int32_t ncore, const int32_t ncas,
+                              const std::span<const double> t, const std::span<const double> d_x) {
+  constexpr std::string_view kWho = "mcscf::df_nac (combination)";
+  const SphericalMatrixAO &c = solution.c;
+  // Every check and refusal, the combined RDMs and the two terms outside the
+  // Z-vector.
+  NacCombinationTerms terms = FBF_TRY(
+      nac_combination_terms(res, molecule, basis, classes, aux, b, solution, ncore, ncas, t, d_x));
+  const int32_t nelecas =
+      FBF_TRY(nac_check(res, molecule, basis, aux, b, solution, ncore, ncas, kWho));
+  const auto mo = static_cast<size_t>(basis.nao_sphe());
+  const auto n_core = static_cast<size_t>(ncore);
+  const size_t nocc = n_core + static_cast<size_t>(ncas);
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const auto q = static_cast<int32_t>(aux.nao_sphe());
+  const std::unique_ptr<NacSetup> s =
+      FBF_TRY(nac_setup(res, molecule, basis, h, b, q, solution, ncore, ncas, nelecas, kWho));
+
   // The right-hand side: the transition orbital gradient at the combined
   // RDMs, plus D^X's own orbital gradient, D^X_pq - D^X_qp over the packed
   // pairs p > q (response::pack_orbital_pairs' order): q core and p active or
   // virtual, then q active and p virtual.
-  const Buffers::device<double> transition = FBF_TRY(transition_orbital_gradient(
-      res, molecule, h, b, q, c, ncore, ncas, s->ints->ppaa, s->ints->papa, gamma, gamma2));
+  const Buffers::device<double> transition =
+      FBF_TRY(transition_orbital_gradient(res, molecule, h, b, q, c, ncore, ncas, s->ints->ppaa,
+                                          s->ints->papa, terms.gamma, terms.gamma2));
   std::vector<double> rhs =
       FBF_TRY(nac_download(res, transition.data(), transition.num_elements()));
   if (!d_x.empty()) {
@@ -439,41 +497,20 @@ Result<NacCombination> df_nac(DeviceResources &res, const Molecule &molecule, co
 
   // The CI part and both responses: the Hellmann-Feynman terms at the
   // combined RDMs and the multipliers' on top, in one call.
-  const GradientTerms terms = FBF_TRY(df_transition_gradient(
-      res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, gamma, gamma2, &z));
+  const GradientTerms response =
+      FBF_TRY(df_transition_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                     ncas, terms.gamma, terms.gamma2, &z));
 
-  // The CSF part, 1/2 G[C_a (gamma^T^T - gamma^T) C_a^T], as the pair's.
-  std::vector<double> antisymmetric(m);
-  for (size_t u = 0; u < n; ++u) {
-    for (size_t a = 0; a < n; ++a) {
-      antisymmetric[a + (n * u)] = gamma_t[(u * n) + a] - gamma_t[(a * n) + u];
-    }
-  }
-  std::vector<double> csf =
-      FBF_TRY(nac_half_gradient(res, basis, classes, c, n_core, n, antisymmetric));
-
-  // D^X's basis motion, 1/2 G[C (D^X^T - D^X) C^T] over every orbital.
-  std::vector<double> basis_motion(csf.size(), 0.0);
-  if (!d_x.empty()) {
-    std::vector<double> antisymmetric_x(mo * mo);
-    for (size_t r = 0; r < mo; ++r) {
-      for (size_t p = 0; p < mo; ++p) {
-        antisymmetric_x[p + (mo * r)] = d_x[(r * mo) + p] - d_x[(p * mo) + r];
-      }
-    }
-    basis_motion = FBF_TRY(nac_half_gradient(res, basis, classes, c, 0, mo, antisymmetric_x));
-  }
-
-  std::vector<double> total(terms.total.size());
+  std::vector<double> total(response.total.size());
   for (size_t i = 0; i < total.size(); ++i) {
-    total[i] = terms.total[i] + csf[i] + basis_motion[i];
+    total[i] = response.total[i] + terms.csf[i] + terms.basis_motion[i];
   }
-  return NacCombination{.response = terms.total,
-                        .csf = std::move(csf),
-                        .basis_motion = std::move(basis_motion),
+  return NacCombination{.response = response.total,
+                        .csf = std::move(terms.csf),
+                        .basis_motion = std::move(terms.basis_motion),
                         .total = std::move(total),
                         .rhs = std::move(rhs),
-                        .gap = smallest,
+                        .gap = terms.gap,
                         .iterations = z.iterations,
                         .residual = z.residual};
 }
