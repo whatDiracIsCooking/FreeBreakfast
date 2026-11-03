@@ -28,9 +28,11 @@
 // SC-QD-NEVPT2 nuclear gradient (qd_sc_gradient) against
 // data/qd_nevpt2_gradient/'s numerical gradients, every state, its rigid
 // motions, each separately coded term's visibility, and its refusals; its
-// form at any symmetric W, linear in W, and that form's refusals; and the
-// PC-QD-NEVPT2 one (qd_pc_gradient), the same checks against the data's PC
-// numbers, with PC's refusals.
+// form at any symmetric W, linear in W, and that form's refusals; its
+// interstate coupling h_PQ (qd_sc_coupling) against
+// data/qd_nevpt2_nac/coupling/'s numerical ones, every pair, h_QP, its rigid
+// motions and its refusals; and the PC-QD-NEVPT2 one (qd_pc_gradient), the
+// same checks against the data's PC numbers, with PC's refusals.
 
 #include <gtest/gtest.h>
 
@@ -3747,6 +3749,320 @@ TEST(Nevpt2QdGradient, WFormRefusesBadW) {
     }
     std::cout << std::format("[ nevpt2   ] qd W form refuses {}: {}\n", label, g.error().message);
   }
+}
+
+// ---- SC-QD-NEVPT2: the interstate coupling h_PQ (qd_sc_coupling) --------
+//
+// On every case of data/qd_nevpt2_nac/coupling/ (#743), its DF-SA-CASSCF this
+// tree's own at #696's bars (qd_run, tight), every pair P < Q the data
+// writes (`pairs`): h_PQ . u along each stored direction and, on the case
+// committed in full (skew H2CO), every Cartesian component, within twice
+// that number's committed error bar (`sc_h`); h_QP, the call with the
+// states swapped, against h_PQ to 1e-10 relative to the largest element;
+// and the translational and rotational sums of h_PQ, absolute, within twice
+// the case's largest committed `sc_h` bar (h is invariant to both rigid
+// motions: H_eff's elements are, in the roots' carried basis). Each check
+// runs once, against its fixed bar.
+//
+// Phases. The data's h_PQ is in its own run's CASSCF roots' phases, ours in
+// fix_gauge's. R is signed the same way on both sides (largest-magnitude
+// component positive), so with s_M root M's relative phase our R_P is
+// s_m(P) S R_P^data, m(P) R_P's largest component, and our h_PQ is
+// s_m(P) s_m(Q) times the data's. That sign is read off H_eff's element
+// (m(P), m(Q)), ours (R diag(E) R^T) against the data's `sc_heff`, which
+// carries the same s_M s_N; it is never fitted to the h being checked.
+//
+// Visibility (#728's practice, printed and not held; #743's README shows
+// every term above 10 bars): the reference part Σ_r ρ_r dE_r/dR, ρ = diag
+// W^PQ (summing to 0), by mcscf::df_gradient at the mix ρ with its own
+// Z-vector, against the data's `sc_h_reference`; the PT2 part, h_PQ less
+// it, against `sc_h_pt2`; each part's largest contribution in its bars.
+
+// The path-agreement bar of the milestone, as kQdLinearTolerance.
+constexpr double kQdCouplingSymmetryTolerance = 1e-10;
+// H_eff's element that signs a pair must stand clear of round-off, and
+// ours must be the data's in magnitude (the same geometry, both converged
+// tight): a relative miss past this means the matching is wrong.
+constexpr double kQdPhaseElementFloor = 1e-6;
+constexpr double kQdPhaseMagnitudeTolerance = 1e-4;
+
+const fb::json &coupling_data(std::string_view name) {
+  return reference("qd_nevpt2_nac/coupling", std::format("{}.json", name));
+}
+
+// qd_sc_coupling between states @p p and @p q.
+fb::Result<nevpt2::QdScGradient> qd_coupling_of(NuclearRun &run, const std::int32_t p,
+                                                const std::int32_t q) {
+  const GradientInputs in = gradient_inputs(run);
+  return nevpt2::qd_sc_coupling(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                                in.h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                                run.state.ncas, p, q, 0);
+}
+
+// The checked numbers of pair index @p pq of @p family: v . u_d per
+// direction, then (full cases) every component, each with its committed
+// Richardson value and bar; @p f maps each (value, reference, bar, label).
+template <typename F>
+void for_each_coupling_checked(const fb::json &data, const std::string_view family,
+                               std::span<const double> v, const std::size_t pq, F &&f) {
+  const fb::json &directional = data.at("directional").at(family).at(pq);
+  const fb::json &directions = data.at("directions");
+  for (std::size_t d = 0; d < directions.size(); ++d) {
+    f(dot(v, directions.at(d).get<std::vector<double>>()),
+      directional.at("richardson").at(d).get<double>(),
+      directional.at("error_bar").at(d).get<double>(), std::format("u{}", d));
+  }
+  if (!data.contains("full") || data.at("full").is_null()) {
+    return;
+  }
+  const fb::json &full = data.at("full").at(family).at(pq);
+  for (std::size_t a = 0; a < full.at("richardson").size(); ++a) {
+    for (std::size_t c = 0; c < 3; ++c) {
+      f(v[(3 * a) + c], full.at("richardson").at(a).at(c).get<double>(),
+        full.at("error_bar").at(a).at(c).get<double>(),
+        std::format("{}{} {}", data.at("atoms").at(a).at("symbol").get<std::string>(), a,
+                    "xyz"[c]));
+    }
+  }
+}
+
+// The index of @p v's largest-magnitude component, the first of a tie, as
+// the sign rule reads it.
+std::size_t largest_component(std::span<const double> v) {
+  return static_cast<std::size_t>(std::ranges::distance(
+      v.begin(), std::ranges::max_element(v, {}, [](const double x) { return std::abs(x); })));
+}
+
+// Every pair of case @p name against #743's SC numbers, h_QP, the rigid sums
+// and each part's visibility.
+void expect_qd_coupling(const std::string &name) {
+  constexpr std::string_view kScheme = "sc";
+  const auto start = std::chrono::steady_clock::now();
+  const fb::json &data = coupling_data(name);
+  ASSERT_EQ(data.at("name").get<std::string>(), name);
+  const fb::json &entry = reference_case("qd_nevpt2", "qd_nevpt2.json", name);
+  ASSERT_EQ(data.at("atoms").size(), entry.at("atoms").size());
+  for (std::size_t a = 0; a < data.at("atoms").size(); ++a) {
+    ASSERT_EQ(data.at("atoms").at(a).at("coord").get<std::vector<double>>(),
+              entry.at("atoms").at(a).at(1).get<std::vector<double>>())
+        << name << " atom " << a;
+  }
+  ASSERT_EQ(data.at("weights").get<std::vector<double>>(),
+            entry.at("weights").get<std::vector<double>>());
+  NuclearRun run = qd_run(name, {}, true);
+  ASSERT_TRUE(run.solution.has_value());
+  const GradientInputs in = gradient_inputs(run);
+  const std::size_t n = run.solution->roots.energies.size();
+  const std::size_t natom = data.at("atoms").size();
+  const std::chrono::duration<double> setup = std::chrono::steady_clock::now() - start;
+  std::cout << std::format("[ nevpt2   ] qd SC coupling {}: setup {:.2f} s, CASSCF ||g|| {:.2e}\n",
+                           name, setup.count(), run.solution->gradient_norm);
+
+  const fb::json &pairs = data.at("pairs");
+  const std::string family = std::format("{}_h", kScheme);
+  double largest_bar = 0.0;
+  for (std::size_t pq = 0; pq < pairs.size(); ++pq) {
+    for_each_coupling_checked(data, family, std::vector<double>(3 * natom, 0.0), pq,
+                              [&](double, double, const double bar, const std::string &) {
+                                largest_bar = std::max(largest_bar, bar);
+                              });
+  }
+  const double rigid_bar = kQdBarFactor * largest_bar;
+  const auto heff_data =
+      data.at("reference").at(std::format("{}_heff", kScheme)).get<std::vector<double>>();
+  const auto r_data =
+      data.at("reference").at(std::format("{}_heff_vectors", kScheme)).get<std::vector<double>>();
+  ASSERT_EQ(heff_data.size(), n * n);
+  ASSERT_EQ(r_data.size(), n * n);
+
+  double worst_ratio = 0.0;
+  std::string worst_where;
+  for (std::size_t pq = 0; pq < pairs.size(); ++pq) {
+    const auto p = pairs.at(pq).at(0).get<std::int32_t>();
+    const auto q = pairs.at(pq).at(1).get<std::int32_t>();
+    const auto begin = std::chrono::steady_clock::now();
+    const auto g = qd_coupling_of(run, p, q);
+    ASSERT_TRUE(g.has_value()) << g.error().message;
+    const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - begin;
+    const nevpt2::QdScLagrangian &l = g->lagrangian;
+    ASSERT_EQ(l.eigenvalues.size(), n);
+    ASSERT_EQ(l.eigenvectors.size(), n * n);
+    const auto up = static_cast<std::size_t>(p);
+    const auto uq = static_cast<std::size_t>(q);
+    EXPECT_DOUBLE_EQ(g->heff_gap, std::abs(l.eigenvalues[uq] - l.eigenvalues[up]));
+    double trace = 0.0;
+    for (const double r : l.rho) {
+      trace += r;
+    }
+    std::cout << std::format(
+        "[ nevpt2   ] qd SC coupling {} ({}, {}) ({:.2f} s): E_P {:.10f} E_Q {:.10f} ({:+.2e}, "
+        "{:+.2e} against #743's), rho {::+.6f} (sum {:+.1e}), max |z^c| {:.3e}, max |zeta| "
+        "{:.3e}, Theta {::.3e}, model-space gap {:.3e}, H_eff gap {:.3e}, PCG {} iterations, "
+        "residual {:.2e}\n",
+        name, p, q, seconds.count(), l.eigenvalues[up], l.eigenvalues[uq],
+        l.eigenvalues[up] -
+            data.at("reference").at(std::format("{}_energies", kScheme)).at(up).get<double>(),
+        l.eigenvalues[uq] -
+            data.at("reference").at(std::format("{}_energies", kScheme)).at(uq).get<double>(),
+        l.rho, trace, l.zc.max_z, g->max_zeta, l.multipliers.theta, g->root_gap, g->heff_gap,
+        l.multipliers.iterations, l.multipliers.residual);
+    expect_symmetric(std::format("qd SC coupling {} ({}, {})", name, p, q), l.asymmetry);
+
+    // The pair's sign, from H_eff's element (m(P), m(Q)).
+    const std::span<const double> r_p{l.eigenvectors.data() + (up * n), n};
+    const std::span<const double> r_q{l.eigenvectors.data() + (uq * n), n};
+    const std::size_t mp = largest_component(r_p);
+    const std::size_t mq = largest_component(r_q);
+    EXPECT_EQ(mp, largest_component(std::span(r_data).subspan(up * n, n))) << name << " R_P";
+    EXPECT_EQ(mq, largest_component(std::span(r_data).subspan(uq * n, n))) << name << " R_Q";
+    double sign = 1.0;
+    if (mp != mq) {
+      double ours = 0.0;
+      for (std::size_t k = 0; k < n; ++k) {
+        ours += l.eigenvectors[(k * n) + mp] * l.eigenvalues[k] * l.eigenvectors[(k * n) + mq];
+      }
+      const double theirs = heff_data[(mp * n) + mq];
+      ASSERT_GT(std::abs(theirs), kQdPhaseElementFloor) << name << " H_eff " << mp << mq;
+      EXPECT_NEAR(std::abs(ours), std::abs(theirs), kQdPhaseMagnitudeTolerance * std::abs(theirs))
+          << name << " H_eff " << mp << mq;
+      sign = ours * theirs < 0.0 ? -1.0 : 1.0;
+      std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}): pair sign {:+.0f} from "
+                               "H_eff[{}, {}] ours {:+.6e}, #743's {:+.6e}\n",
+                               name, p, q, sign, mp, mq, ours, theirs);
+    }
+    std::vector<double> h = g->total;
+    for (double &v : h) {
+      v *= sign;
+    }
+
+    // Against #743's numbers.
+    for_each_coupling_checked(
+        data, family, h, pq,
+        [&](const double ours, const double ref, const double bar, const std::string &label) {
+          const double ratio = std::abs(ours - ref) / bar;
+          EXPECT_LE(std::abs(ours - ref), kQdBarFactor * bar)
+              << name << " (" << p << ", " << q << ") " << label;
+          const std::string where = std::format("({}, {}) {}", p, q, label);
+          if (ratio > worst_ratio) {
+            worst_ratio = ratio;
+            worst_where = where;
+          }
+          std::cout << std::format("[ nevpt2   ] qd SC coupling {} {}: analytic {:+.10f} "
+                                   "numerical {:+.10f} diff {:+.2e} ({:.2f} bars of {:.1e})\n",
+                                   name, where, ours, ref, ours - ref, ratio, bar);
+        });
+
+    // h_QP, the states swapped.
+    const auto swapped = qd_coupling_of(run, q, p);
+    ASSERT_TRUE(swapped.has_value()) << swapped.error().message;
+    ASSERT_EQ(swapped->total.size(), g->total.size());
+    double diff = 0.0;
+    for (std::size_t i = 0; i < g->total.size(); ++i) {
+      diff = std::max(diff, std::abs(swapped->total[i] - g->total[i]));
+    }
+    const double scale = std::max(largest_abs(g->total), largest_abs(swapped->total));
+    EXPECT_LE(diff, kQdCouplingSymmetryTolerance * scale)
+        << name << " h_QP against h_PQ (" << p << ", " << q << ")";
+    std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}): max |h_QP - h_PQ| {:.3e}, "
+                             "largest element {:.3e}, relative {:.3e} (bar {:g})\n",
+                             name, p, q, diff, scale, diff / scale, kQdCouplingSymmetryTolerance);
+
+    // The rigid sums.
+    const auto [translation_sum, torque_sum] = rigid_sums(g->total, data.at("atoms"));
+    EXPECT_LE(translation_sum, rigid_bar) << name << " (" << p << ", " << q << ") translation";
+    EXPECT_LE(torque_sum, rigid_bar) << name << " (" << p << ", " << q << ") torque";
+    std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}): translation {:.2e}, torque "
+                             "{:.2e} (bar {:.2e} = 2 x {:.2e})\n",
+                             name, p, q, translation_sum, torque_sum, rigid_bar, largest_bar);
+
+    // Visibility: the reference part by df_gradient at the mix rho, and the
+    // PT2 part, h less it, each against its own family.
+    auto reference_part = fb::mcscf::df_gradient(
+        run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux, in.h, in.df.b,
+        in.df.l.data(), *run.solution, run.state.ncore, run.state.ncas, l.rho);
+    ASSERT_TRUE(reference_part.has_value()) << reference_part.error().message;
+    std::vector<double> ref = reference_part->total;
+    ASSERT_EQ(ref.size(), h.size());
+    std::vector<double> pt2(h.size());
+    for (std::size_t i = 0; i < h.size(); ++i) {
+      ref[i] *= sign;
+      pt2[i] = h[i] - ref[i];
+    }
+    for (const auto &[part, v] : {std::pair{"reference", &ref}, std::pair{"pt2", &pt2}}) {
+      Visibility largest;
+      double miss = 0.0;
+      std::string miss_where;
+      for_each_coupling_checked(
+          data, std::format("{}_h_{}", kScheme, part), *v, pq,
+          [&](const double ours, const double theirs, const double bar, const std::string &label) {
+            if (std::abs(ours) / bar > largest.ratio) {
+              largest = {
+                  .ratio = std::abs(ours) / bar, .contribution = ours, .bar = bar, .where = label};
+            }
+            if (std::abs(ours - theirs) / bar > miss) {
+              miss = std::abs(ours - theirs) / bar;
+              miss_where = label;
+            }
+          });
+      std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}) visibility {} part: "
+                               "{:.3e} at {} ({:.1f} bars of {:.1e}); against #743's, worst "
+                               "{:.2f} bars at {}\n",
+                               name, p, q, part, largest.contribution, largest.where, largest.ratio,
+                               largest.bar, miss, miss_where);
+    }
+  }
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+  std::cout << std::format("[ nevpt2   ] qd SC coupling {}: worst {:.3f} bars ({}), {:.2f} s\n",
+                           name, worst_ratio, worst_where, seconds.count());
+}
+
+class Nevpt2QdCoupling : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(Nevpt2QdCoupling, MatchesNumerical) {
+  FBF_REQUIRE_GPU();
+  expect_qd_coupling(std::string{GetParam()});
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdCoupling,
+                         ::testing::Values(std::string_view{"h8_ring_sto3g_sa3"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3_weighted"}),
+                         [](const auto &info) { return std::string(info.param); });
+
+// qd_sc_coupling's refusals, on h2co_ccpvdz_sa2: root 1's CASSCF energy
+// moved to make H_eff's diagonal equal (its off-diagonal vanishes by C2v
+// symmetry), so that E_0 = E_1, is Numerical naming both states, either
+// order; and a pair that is one state, or a state not one of the roots', is
+// InvalidConfig.
+TEST(Nevpt2QdCoupling, Refuses) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = qd_run("h2co_ccpvdz_sa2");
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  fb::mcscf::Solution &solution = *run.solution;
+  const auto refused = [&](const std::int32_t p, const std::int32_t q, const fb::ErrorKind kind,
+                           const std::string_view phrase) {
+    const auto got = qd_coupling_of(run, p, q);
+    ASSERT_FALSE(got.has_value()) << p << ", " << q;
+    EXPECT_EQ(got.error().kind, kind) << got.error().message;
+    EXPECT_NE(got.error().message.find("nevpt2::qd_sc_coupling"), std::string::npos)
+        << got.error().message;
+    EXPECT_NE(got.error().message.find(phrase), std::string::npos) << got.error().message;
+    std::cout << std::format("[ nevpt2   ] qd coupling refuses ({}, {}): {}\n", p, q,
+                             got.error().message);
+  };
+  refused(1, 1, fb::ErrorKind::InvalidConfig, "states 1 and 1");
+  refused(0, 2, fb::ErrorKind::InvalidConfig, "state 2 of 2 roots");
+  refused(-1, 0, fb::ErrorKind::InvalidConfig, "state -1 of 2 roots");
+
+  const auto weights = reference_case("qd_nevpt2", "qd_nevpt2.json", "h2co_ccpvdz_sa2")
+                           .at("weights")
+                           .get<std::vector<double>>();
+  const std::vector<double> c = qd_totals(res, run.state, weights);
+  ASSERT_EQ(c.size(), 4U);
+  solution.roots.energies[1] = solution.roots.energies[0] + c[0] - c[3];
+  refused(0, 1, fb::ErrorKind::Numerical, "QD states 0 and 1");
+  refused(1, 0, fb::ErrorKind::Numerical, "QD states 0 and 1");
 }
 
 // ---- PC-QD-NEVPT2: the nuclear gradient (qd_pc_gradient) ------------------
