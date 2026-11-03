@@ -81,6 +81,10 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         max_zeta     max |ζ|
         root_gap     the smallest |E_r − E_s| over the CASSCF roots
         heff_gap     the smallest |λ_K − λ_L| of H_eff, L ≠ K
+    qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, state,
+                   batch)
+        -> QdPcGradient  QdScGradient's fields, lagrangian PC's (its corr's elements
+                         empty), plus elements (PcClassEnergies, qd_pc_energy's)
 
 `lagrangian_gradient`, `sc_gradient` and `pc_gradient` take
 `mcscf::df_gradient`'s arguments (`solution` a
@@ -514,6 +518,23 @@ between CASSCF roots (ζ and t divide by it) and H_eff's gap at K (u_K's
 derivative divides by it). `qd_sc_lagrangian`'s refusals come back
 unchanged.
 
+`qd_pc_gradient(…)`, same arguments, is the **PC-QD-NEVPT2** gradient
+(#705): the same Lagrangian and the same two passes, one file-local
+assembly behind both entry points, with `qd_pc_energy` in step 1 and
+`qd_pc_adjoint` (#713) in step 2. Nothing else in it is SC's: z^c is the
+same division over PC's A, which vanishes on a degenerate inactive pair
+as the single-state PC's does (`Nevpt2PcZc`); τ, ζ, t, the 1/(2 w_r) CI
+right-hand side, the gate and the passes read only the arrays. H_eff,
+W and u_K are PC's. The result is `QdPcGradient`: `QdScGradient`'s fields,
+its `lagrangian` in `QdScLagrangian`'s fields (`corr` qd_pc_adjoint's
+arrays plus Φ^SA's, its `elements` empty), and PC's own elements beside
+it. A class PC refuses is `qd_pc_energy`'s error, returned unchanged before
+any adjoint is built: never a gradient with the class zeroed. The
+Lagrangian's own refusals (a root of zero weight, a degenerate pair of
+PC's H_eff, the gate) are SC's, named `nevpt2::qd_pc_gradient`. The
+restricted inverse's dropped rank-projector terms are #713's, checked
+there by the c_r ladders.
+
 ## Not done
 
 - The per-root canonicalization's own derivative: the caller passes
@@ -523,8 +544,7 @@ unchanged.
   takes it.
 - A state average's root of the single-state NEVPT2 (`lagrangian_gradient`,
   `sc_gradient`, `pc_gradient`) is refused; the SA reference is
-  `qd_sc_gradient`'s.
-- PC-QD's Lagrangian and gradient.
+  `qd_sc_gradient`'s and `qd_pc_gradient`'s.
 - The single-state gradient's torque (the rotational sum) is not checked;
   its translational one is. The QD gradient's both are.
 
@@ -819,16 +839,31 @@ once per process.
     `qd_sc_lagrangian`'s two refusals, kind and message unchanged.
   - `Nevpt2QdGradient.OneRootAgainstScGradient` (`h2o_skew_ccpvdz`): the
     one-root call against `sc_gradient`, printed.
+- The PC-QD-NEVPT2 nuclear gradient (`qd_pc_gradient`), the same way, on
+  every case with PC numbers (all but `h8_sto3g_sa3`):
+  - `Nevpt2QdPcGradient.MatchesNumerical/<case>`: SC's checks against the
+    data's `pc` numbers and `pc_energies`, one shared test body. Visibility
+    adds PC's own term: its correlation arrays less SC's at the same W
+    (`qd_sc_adjoint` at PC's u_K u_Kᵀ), through `df_transition_gradient`
+    at zero RDMs. Each term is held above 10 bars on one case.
+  - `Nevpt2QdPcGradient.RefusesWhatTheEnergyRefuses` (`h8_ring_sto3g_sa3`):
+    every virtual lowered by 1000 Eh, and root 1's vector zero; each is
+    `qd_pc_energy`'s error, kind and message unchanged.
+  - `Nevpt2QdPcGradient.RefusesWhatTheLagrangianRefuses`
+    (`h2co_ccpvdz_sa2`): a root of weight 0 and a degenerate pair of PC's
+    H_eff, named `nevpt2::qd_pc_gradient`.
+  - `Nevpt2QdPcGradient.OneRootAgainstPcGradient` (`h2o_skew_ccpvdz`): the
+    one-root call against `pc_gradient`, printed.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `QdScGradient`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `qd_sc_lagrangian`, `QdScLagrangian`; `qd_sc_gradient`, `QdScGradient`; `qd_pc_gradient`, `QdPcGradient`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
 | `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
 | `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
-| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, and `qd_sc_gradient`'s two passes over it |
+| `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass; `qd_sc_lagrangian` over the same Z-vector and gate at the average's weights, and `qd_sc_gradient`'s two passes over it; `qd_pc_gradient`, the same Lagrangian and passes over `qd_pc_energy` and `qd_pc_adjoint` |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |

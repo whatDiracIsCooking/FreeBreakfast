@@ -27,7 +27,9 @@
 // rotations at equal, unequal and mixed weights, and its refusals. Then the
 // SC-QD-NEVPT2 nuclear gradient (qd_sc_gradient) against
 // data/qd_nevpt2_gradient/'s numerical gradients, every state, its rigid
-// motions, each separately coded term's visibility, and its refusals.
+// motions, each separately coded term's visibility, and its refusals; and
+// the PC-QD-NEVPT2 one (qd_pc_gradient), the same checks against the data's
+// PC numbers, with PC's refusals.
 
 #include <gtest/gtest.h>
 
@@ -3112,7 +3114,8 @@ TEST(Nevpt2QdLagrangian, Refuses) {
   }
 }
 
-// ---- SC-QD-NEVPT2: the nuclear gradient (qd_sc_gradient) ------------------
+// ---- SC- and PC-QD-NEVPT2: the nuclear gradient (qd_sc_gradient,
+// qd_pc_gradient) ---------------------------------------------------------
 //
 // On every case of data/qd_nevpt2_gradient/ (#696), its DF-SA-CASSCF this
 // tree's own through the registry at the generator's bars (qd_run, tight),
@@ -3124,32 +3127,37 @@ TEST(Nevpt2QdLagrangian, Refuses) {
 // integral screening and the CASSCF's convergence, which leave a torque of
 // up to ~1e-9 relative in mcscf::df_gradient's own DF-SA-CASSCF root
 // gradients on skew formaldehyde, #696's committed ones included). Each run
-// is once, against its fixed bar.
+// is once, against its fixed bar. PC's (#705) is the same check of
+// qd_pc_gradient against the data's pc numbers, on every case that has
+// them (h8_sto3g_sa3 is SC's alone).
 //
 // Visibility: each separately coded term's own nuclear contribution to the
-// checked numbers, at the multipliers qd_sc_gradient solved. zeta's is its
+// checked numbers, at the multipliers the gradient solved. zeta's is its
 // df_transition_gradient pass. Theta's, z^c's and the correlation arrays'
 // are df_transition_gradient at zero RDMs (no energy of its own: no core,
 // no active density) with that term alone, Theta's as multipliers (Z = 0,
 // z = 0), z^c's Phi^SA adjoint (zc_adjoint at its z) and E^corr[W]'s
-// (corr less Phi's) as the extra. Each term's largest ratio to the checked
-// number's bar is printed per case, and the cases in kQdVisible hold the
-// term above 10 bars.
+// (corr less Phi's) as the extra. PC's own term is its correlation arrays
+// less SC's at the same W (qd_sc_adjoint at PC's u_K u_K^T): what
+// pc_effective_hamiltonian_adjoint's classes put into the extra that SC's
+// do not. Each term's largest ratio to the checked number's bar is printed
+// per case, and the cases in qd_visible hold the term above 10 bars.
 //
 // Diagnostics, printed and not held: the sum rule (Σ_K g_K against Σ_K of
 // the numerical numbers, over the summed bars: blind to u_K's derivative,
 // so a pass there and a failure per state points at ζ and Θ) and, on
 // nevpt2_gradient.json's h2o_skew_ccpvdz, the one-root call against
-// sc_gradient.
+// sc_gradient (pc_gradient).
 
 // #728's acceptance: twice the committed bar (each checked number's, and
 // for the rigid sums the case's largest), a term visible at 10 bars.
 constexpr double kQdBarFactor = 2.0;
 constexpr double kVisibleBars = 10.0;
 
-enum class QdTerm : std::uint8_t { Zeta, Theta, Zc, Correlation };
-constexpr std::array<std::string_view, 4> kQdTermNames{
-    "zeta (df_transition_gradient)", "Theta/t multipliers", "z^c", "correlation extra"};
+enum class QdTerm : std::uint8_t { Zeta, Theta, Zc, Correlation, PcLessSc };
+constexpr std::array<std::string_view, 5> kQdTermNames{
+    "zeta (df_transition_gradient)", "Theta/t multipliers", "z^c", "correlation extra",
+    "PC's correlation extra less SC's"};
 
 // The case that holds each term above kVisibleBars: each term's largest
 // ratio over the cases, measured on the RTX 3080 (zeta 1.4e6 bars, Theta
@@ -3160,23 +3168,51 @@ struct QdVisible {
   std::vector<QdTerm> terms;
 };
 
-const std::vector<QdVisible> &qd_visible() {
+const std::vector<QdVisible> &qd_visible(const bool pc) {
   static const std::vector<QdVisible> kVisible{
       {.name = "h8_sto3g_sa3", .terms = {QdTerm::Zeta}},
       {.name = "h2co_skew_ccpvdz_sa3_weighted", .terms = {QdTerm::Theta}},
       {.name = "h2co_skew_ccpvdz_sa3", .terms = {QdTerm::Zc, QdTerm::Correlation}}};
-  return kVisible;
+  // PC's, measured on the RTX 3080: zeta 7.1e5 bars, Theta 4.5e5, z^c
+  // 1.8e6, the correlation arrays 1.0e7, PC's arrays less SC's 2.1e6.
+  static const std::vector<QdVisible> kPcVisible{
+      {.name = "h6_631g_sa2", .terms = {QdTerm::Zeta, QdTerm::PcLessSc}},
+      {.name = "h2co_skew_ccpvdz_sa3_weighted", .terms = {QdTerm::Theta}},
+      {.name = "h2co_skew_ccpvdz_sa3", .terms = {QdTerm::Zc, QdTerm::Correlation}}};
+  return pc ? kPcVisible : kVisible;
 }
 
 const fb::json &qd_gradient_data(std::string_view name) {
   return reference("qd_nevpt2_gradient", std::format("{}.json", name));
 }
 
-fb::Result<nevpt2::QdScGradient> qd_gradient_of(NuclearRun &run, const std::int32_t state) {
+// qd_sc_gradient, or with @p pc qd_pc_gradient in QdScGradient's fields
+// (its elements dropped), at h @p h_in when given.
+fb::Result<nevpt2::QdScGradient> qd_gradient_of(NuclearRun &run, const std::int32_t state,
+                                                const bool pc = false,
+                                                const fb::SphericalMatrixAO *h_in = nullptr) {
   const GradientInputs in = gradient_inputs(run);
-  return nevpt2::qd_sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
-                                in.h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
-                                run.state.ncas, state, 0);
+  const fb::SphericalMatrixAO &h = h_in != nullptr ? *h_in : in.h;
+  if (!pc) {
+    return nevpt2::qd_sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                                  h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                                  run.state.ncas, state, 0);
+  }
+  auto g = nevpt2::qd_pc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                                  h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                                  run.state.ncas, state, 0);
+  if (!g.has_value()) {
+    return std::unexpected(g.error());
+  }
+  EXPECT_EQ(g->elements.size(),
+            g->lagrangian.eigenvalues.size() * g->lagrangian.eigenvalues.size());
+  return nevpt2::QdScGradient{.total = std::move(g->total),
+                              .terms = std::move(g->terms),
+                              .transition = std::move(g->transition),
+                              .lagrangian = std::move(g->lagrangian),
+                              .max_zeta = g->max_zeta,
+                              .root_gap = g->root_gap,
+                              .heff_gap = g->heff_gap};
 }
 
 // df_transition_gradient at zero RDMs with @p multipliers and @p extra
@@ -3204,12 +3240,13 @@ struct Visibility {
   std::string where;
 };
 
-// The checked numbers of state @p k: g . u_d per direction, then (full
-// cases) every component, each with its bar; @p f maps each (the number's
-// value of @p g, its bar, its label).
+// The checked numbers of state @p k of @p scheme ("sc" or "pc"): g . u_d
+// per direction, then (full cases) every component, each with its bar; @p f
+// maps each (the number's value of @p g, its reference, its bar, its label).
 template <typename F>
-void for_each_checked(const fb::json &data, std::span<const double> g, const std::size_t k, F &&f) {
-  const fb::json &directional = data.at("directional").at("sc").at(k);
+void for_each_checked(const fb::json &data, const std::string_view scheme,
+                      std::span<const double> g, const std::size_t k, F &&f) {
+  const fb::json &directional = data.at("directional").at(scheme).at(k);
   const fb::json &directions = data.at("directions");
   for (std::size_t d = 0; d < directions.size(); ++d) {
     const auto u = directions.at(d).get<std::vector<double>>();
@@ -3219,7 +3256,7 @@ void for_each_checked(const fb::json &data, std::span<const double> g, const std
   if (!data.contains("full") || data.at("full").is_null()) {
     return;
   }
-  const fb::json &full = data.at("full").at("sc").at(k);
+  const fb::json &full = data.at("full").at(scheme).at(k);
   for (std::size_t a = 0; a < full.at("richardson").size(); ++a) {
     for (std::size_t c = 0; c < 3; ++c) {
       f(g[(3 * a) + c], full.at("richardson").at(a).at(c).get<double>(),
@@ -3230,13 +3267,13 @@ void for_each_checked(const fb::json &data, std::span<const double> g, const std
   }
 }
 
-void see(Visibility &v, const fb::json &data, std::span<const double> contribution,
-         const std::size_t k) {
+void see(Visibility &v, const fb::json &data, const std::string_view scheme,
+         std::span<const double> contribution, const std::size_t k) {
   if (contribution.empty()) {
     return;
   }
   for_each_checked(
-      data, contribution, k,
+      data, scheme, contribution, k,
       [&](const double value, double, const double bar, const std::string &label) {
         if (std::abs(value) / bar > v.ratio) {
           v = {.ratio = std::abs(value) / bar, .contribution = value, .bar = bar, .where = label};
@@ -3271,13 +3308,11 @@ std::array<double, 2> rigid_sums(std::span<const double> g, const fb::json &atom
   return {largest_abs(force), largest_abs(torque)};
 }
 
-class Nevpt2QdGradient : public ::testing::TestWithParam<std::string_view> {};
-
-// Every state K of the case against #696's numbers, its rigid sums, and
-// each term's visibility.
-TEST_P(Nevpt2QdGradient, MatchesNumerical) {
-  FBF_REQUIRE_GPU();
-  const std::string name{GetParam()};
+// Every state K of case @p name against #696's numbers of SC (PC, with
+// @p pc), its rigid sums, and each term's visibility.
+void expect_qd_gradient(const std::string &name, const bool pc) {
+  const std::string_view scheme = pc ? "pc" : "sc";
+  const std::string_view method = pc ? "PC" : "SC";
   const auto start = std::chrono::steady_clock::now();
   const fb::json &data = qd_gradient_data(name);
   ASSERT_EQ(data.at("name").get<std::string>(), name);
@@ -3299,65 +3334,68 @@ TEST_P(Nevpt2QdGradient, MatchesNumerical) {
   const DeviceState d = upload_state(res, s);
   ASSERT_TRUE(d.strings.has_value());
   const std::chrono::duration<double> setup = std::chrono::steady_clock::now() - start;
-  std::cout << std::format("[ nevpt2   ] qd gradient {}: setup {:.2f} s, CASSCF ||g|| {:.2e}\n",
-                           name, setup.count(), run.solution->gradient_norm);
+  std::cout << std::format("[ nevpt2   ] qd {} gradient {}: setup {:.2f} s, CASSCF ||g|| {:.2e}\n",
+                           method, name, setup.count(), run.solution->gradient_norm);
 
   // Gate 2's bar: twice the case's largest committed bar over its checked
   // numbers, every state's.
   double largest_bar = 0.0;
   for (std::size_t k = 0; k < nroots; ++k) {
-    for_each_checked(data, std::vector<double>(3 * data.at("atoms").size(), 0.0), k,
+    for_each_checked(data, scheme, std::vector<double>(3 * data.at("atoms").size(), 0.0), k,
                      [&](double, double, const double bar, const std::string &) {
                        largest_bar = std::max(largest_bar, bar);
                      });
   }
   const double rigid_bar = kQdBarFactor * largest_bar;
 
-  std::array<Visibility, 4> visible{};
+  std::array<Visibility, kQdTermNames.size()> visible{};
   std::vector<double> sum(3 * data.at("atoms").size(), 0.0);
   double worst_ratio = 0.0;
   std::string worst_where;
   for (std::size_t k = 0; k < nroots; ++k) {
     const auto begin = std::chrono::steady_clock::now();
-    const auto g = qd_gradient_of(run, static_cast<std::int32_t>(k));
+    const auto g = qd_gradient_of(run, static_cast<std::int32_t>(k), pc);
     ASSERT_TRUE(g.has_value()) << g.error().message;
     const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - begin;
     const nevpt2::QdScLagrangian &l = g->lagrangian;
     std::cout << std::format(
-        "[ nevpt2   ] qd gradient {} state {} ({:.2f} s): E_K {:.10f} ({:+.2e} against #696's), "
+        "[ nevpt2   ] qd {} gradient {} state {} ({:.2f} s): E_K {:.10f} ({:+.2e} against #696's), "
         "rho {::.6f}, max |z^c| {:.3e}, max |zeta| {:.3e}, Theta {::.3e}, smallest inactive gap "
         "{:.3e}, model-space gap {:.3e}, H_eff gap {:.3e}, PCG {} iterations, residual {:.2e}\n",
-        name, k, seconds.count(), l.eigenvalues[k],
-        l.eigenvalues[k] - data.at("reference").at("sc_energies").at(k).get<double>(), l.rho,
-        l.zc.max_z, g->max_zeta, l.multipliers.theta, l.zc.min_gap, g->root_gap, g->heff_gap,
+        method, name, k, seconds.count(), l.eigenvalues[k],
+        l.eigenvalues[k] -
+            data.at("reference").at(std::format("{}_energies", scheme)).at(k).get<double>(),
+        l.rho, l.zc.max_z, g->max_zeta, l.multipliers.theta, l.zc.min_gap, g->root_gap, g->heff_gap,
         l.multipliers.iterations, l.multipliers.residual);
-    expect_symmetric(std::format("qd gradient {} state {}", name, k), l.asymmetry);
+    expect_symmetric(std::format("qd {} gradient {} state {}", method, name, k), l.asymmetry);
 
     // Gate 1: every checked number within twice its bar.
     for_each_checked(
-        data, g->total, k,
+        data, scheme, g->total, k,
         [&](const double ours, const double ref, const double bar, const std::string &label) {
           const double ratio = std::abs(ours - ref) / bar;
-          EXPECT_LE(std::abs(ours - ref), kQdBarFactor * bar) << name << " " << label;
+          EXPECT_LE(std::abs(ours - ref), kQdBarFactor * bar)
+              << method << " " << name << " " << label;
           if (ratio > worst_ratio) {
             worst_ratio = ratio;
             worst_where = label;
           }
-          std::cout << std::format("[ nevpt2   ] qd gradient {} {}: analytic {:+.10f} numerical "
-                                   "{:+.10f} diff {:+.2e} ({:.2f} bars of {:.1e})\n",
-                                   name, label, ours, ref, ours - ref, ratio, bar);
+          std::cout << std::format("[ nevpt2   ] qd {} gradient {} {}: analytic {:+.10f} "
+                                   "numerical {:+.10f} diff {:+.2e} ({:.2f} bars of {:.1e})\n",
+                                   method, name, label, ours, ref, ours - ref, ratio, bar);
         });
 
     // Gate 2: the rigid sums.
     const auto [translation_sum, torque_sum] = rigid_sums(g->total, data.at("atoms"));
-    EXPECT_LE(translation_sum, rigid_bar) << name << " state " << k << " translation";
-    EXPECT_LE(torque_sum, rigid_bar) << name << " state " << k << " torque";
-    std::cout << std::format("[ nevpt2   ] qd gradient {} state {}: translation {:.2e}, torque "
+    EXPECT_LE(translation_sum, rigid_bar)
+        << method << " " << name << " state " << k << " translation";
+    EXPECT_LE(torque_sum, rigid_bar) << method << " " << name << " state " << k << " torque";
+    std::cout << std::format("[ nevpt2   ] qd {} gradient {} state {}: translation {:.2e}, torque "
                              "{:.2e} (bar {:.2e} = 2 x {:.2e})\n",
-                             name, k, translation_sum, torque_sum, rigid_bar, largest_bar);
+                             method, name, k, translation_sum, torque_sum, rigid_bar, largest_bar);
 
     // Visibility: each term's own nuclear contribution.
-    see(visible[static_cast<std::size_t>(QdTerm::Zeta)], data, g->transition.total, k);
+    see(visible[static_cast<std::size_t>(QdTerm::Zeta)], data, scheme, g->transition.total, k);
     if (largest_abs(l.multipliers.theta) > 0.0) {
       const fb::mcscf::ZVector theta_only{.orbital =
                                               zeros(res, l.multipliers.orbital.num_elements()),
@@ -3365,7 +3403,7 @@ TEST_P(Nevpt2QdGradient, MatchesNumerical) {
                                           .theta = l.multipliers.theta,
                                           .iterations = 0,
                                           .residual = 0.0};
-      see(visible[static_cast<std::size_t>(QdTerm::Theta)], data,
+      see(visible[static_cast<std::size_t>(QdTerm::Theta)], data, scheme,
           isolated(run, &theta_only, nullptr), k);
     }
     auto phi = nevpt2::zc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, in.df.b.data(),
@@ -3375,7 +3413,7 @@ TEST_P(Nevpt2QdGradient, MatchesNumerical) {
     const fb::mcscf::MoAdjoint phi_extra{
         .h_bar = phi->h_bar.data(), .lambda = phi->lambda.data(), .x = phi->x.data()};
     const std::vector<double> zc_term = isolated(run, nullptr, &phi_extra);
-    see(visible[static_cast<std::size_t>(QdTerm::Zc)], data, zc_term, k);
+    see(visible[static_cast<std::size_t>(QdTerm::Zc)], data, scheme, zc_term, k);
     const fb::mcscf::MoAdjoint corr_extra{
         .h_bar = l.corr.h_bar.data(), .lambda = l.corr.lambda.data(), .x = l.corr.x.data()};
     std::vector<double> corr_term = isolated(run, nullptr, &corr_extra);
@@ -3383,33 +3421,52 @@ TEST_P(Nevpt2QdGradient, MatchesNumerical) {
     for (std::size_t i = 0; i < corr_term.size(); ++i) {
       corr_term[i] -= zc_term[i];
     }
-    see(visible[static_cast<std::size_t>(QdTerm::Correlation)], data, corr_term, k);
+    see(visible[static_cast<std::size_t>(QdTerm::Correlation)], data, scheme, corr_term, k);
     EXPECT_EQ(phi->lambda.num_elements(), lambda_size);
+    if (pc) {
+      // PC's arrays less SC's at the same W.
+      auto sc = nevpt2::qd_sc_adjoint(
+          res, *d.strings, *d.strings, s.naux, s.nao, s.nao, in.df.b.data(), run.solution->c.data(),
+          in.h.data(), s.ncore, s.ncas, l.weights, run.solution->roots.vectors.data(), l.w, 0);
+      ASSERT_TRUE(sc.has_value()) << sc.error().message;
+      const fb::mcscf::MoAdjoint sc_extra{
+          .h_bar = sc->h_bar.data(), .lambda = sc->lambda.data(), .x = sc->x.data()};
+      const std::vector<double> sc_term = isolated(run, nullptr, &sc_extra);
+      ASSERT_EQ(sc_term.size(), corr_term.size());
+      for (std::size_t i = 0; i < corr_term.size(); ++i) {
+        corr_term[i] -= sc_term[i];
+      }
+      see(visible[static_cast<std::size_t>(QdTerm::PcLessSc)], data, scheme, corr_term, k);
+    }
 
     for (std::size_t i = 0; i < sum.size(); ++i) {
       sum[i] += g->total[i];
     }
   }
   const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
-  std::cout << std::format("[ nevpt2   ] qd gradient {}: worst {:.3f} bars ({}), {:.2f} s\n", name,
-                           worst_ratio, worst_where, seconds.count());
+  std::cout << std::format("[ nevpt2   ] qd {} gradient {}: worst {:.3f} bars ({}), {:.2f} s\n",
+                           method, name, worst_ratio, worst_where, seconds.count());
 
-  // Visibility, per term; the cases kQdVisible names hold it.
+  // Visibility, per term; the cases qd_visible names hold it.
   for (std::size_t t = 0; t < visible.size(); ++t) {
+    if (!pc && static_cast<QdTerm>(t) == QdTerm::PcLessSc) {
+      continue;
+    }
     const Visibility &v = visible[t];
-    std::cout << std::format("[ nevpt2   ] qd gradient {} visibility {}: {:.3e} at {} ({:.1f} "
+    std::cout << std::format("[ nevpt2   ] qd {} gradient {} visibility {}: {:.3e} at {} ({:.1f} "
                              "bars of {:.1e})\n",
-                             name, kQdTermNames[t], v.contribution, v.where, v.ratio, v.bar);
+                             method, name, kQdTermNames[t], v.contribution, v.where, v.ratio,
+                             v.bar);
   }
-  for (const QdVisible &want : qd_visible()) {
+  for (const QdVisible &want : qd_visible(pc)) {
     if (want.name != name) {
       continue;
     }
     for (const QdTerm term : want.terms) {
       const Visibility &v = visible[static_cast<std::size_t>(term)];
       EXPECT_GT(v.ratio, kVisibleBars)
-          << name << " " << kQdTermNames[static_cast<std::size_t>(term)] << ": max contribution "
-          << v.contribution << " vs bar " << v.bar;
+          << method << " " << name << " " << kQdTermNames[static_cast<std::size_t>(term)]
+          << ": max contribution " << v.contribution << " vs bar " << v.bar;
     }
   }
 
@@ -3419,16 +3476,23 @@ TEST_P(Nevpt2QdGradient, MatchesNumerical) {
     double numerical = 0.0;
     double bars = 0.0;
     for (std::size_t k = 0; k < nroots; ++k) {
-      const fb::json &one = data.at("directional").at("sc").at(k);
+      const fb::json &one = data.at("directional").at(scheme).at(k);
       numerical += one.at("richardson").at(dd).get<double>();
       bars += one.at("error_bar").at(dd).get<double>();
     }
     const double ours = dot(sum, directions.at(dd).get<std::vector<double>>());
-    std::cout << std::format("[ nevpt2   ] qd gradient {} sum rule u{}: Σ_K analytic {:+.10f} "
+    std::cout << std::format("[ nevpt2   ] qd {} gradient {} sum rule u{}: Σ_K analytic {:+.10f} "
                              "numerical {:+.10f} diff {:+.2e} ({:.2f} summed bars)\n",
-                             name, dd, ours, numerical, ours - numerical,
+                             method, name, dd, ours, numerical, ours - numerical,
                              std::abs(ours - numerical) / bars);
   }
+}
+
+class Nevpt2QdGradient : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(Nevpt2QdGradient, MatchesNumerical) {
+  FBF_REQUIRE_GPU();
+  expect_qd_gradient(std::string{GetParam()}, false);
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdGradient,
@@ -3500,6 +3564,147 @@ TEST(Nevpt2QdGradient, OneRootAgainstScGradient) {
   std::cout << std::format("[ nevpt2   ] qd gradient one root against sc_gradient: max |diff| "
                            "{:.2e}, relative {:.2e}; E_K {:.12f}, max |zeta| {:.1e}\n",
                            diff, diff / largest_abs(sc->terms.total), qd->lagrangian.eigenvalues[0],
+                           qd->max_zeta);
+}
+
+// ---- PC-QD-NEVPT2: the nuclear gradient (qd_pc_gradient) ------------------
+
+class Nevpt2QdPcGradient : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(Nevpt2QdPcGradient, MatchesNumerical) {
+  FBF_REQUIRE_GPU();
+  expect_qd_gradient(std::string{GetParam()}, true);
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdPcGradient,
+                         ::testing::Values(std::string_view{"h6_631g_sa2"},
+                                           std::string_view{"h8_ring_sto3g_sa3"},
+                                           std::string_view{"h2co_ccpvdz_sa2"},
+                                           std::string_view{"h2co_ccpvdz_sa2_weighted"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3_weighted"},
+                                           std::string_view{"h8_ring12_ccpvdz_cas66_sa2"}),
+                         [](const auto &info) { return std::string(info.param); });
+
+// A class PC refuses is refused by qd_pc_gradient with qd_pc_energy's error,
+// kind and message, never a gradient with the class summed in as zero:
+// Nevpt2QdPc.RefusesWhatTheEnergyRefuses' two states on h8_ring_sto3g_sa3
+// (every virtual lowered by 1000 Eh through h, "not positive"; root 1's
+// vector zero, "no positive eigenvalue").
+TEST(Nevpt2QdPcGradient, RefusesWhatTheEnergyRefuses) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = qd_run("h8_ring_sto3g_sa3");
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  const GradientInputs in = gradient_inputs(run);
+  const State &s = run.state;
+  const auto weights = reference_case("qd_nevpt2", "qd_nevpt2.json", "h8_ring_sto3g_sa3")
+                           .at("weights")
+                           .get<std::vector<double>>();
+  const auto same = [&](const State &at, const fb::SphericalMatrixAO &h,
+                        const std::string_view what, const std::string_view says) {
+    const DeviceState d = upload_state(res, at);
+    const auto energy = nevpt2::qd_pc_energy(res, *d.strings, *d.strings, at.naux, at.nao, at.nao,
+                                             d.b.data(), d.c.data(), d.h.data(), at.ncore, at.ncas,
+                                             weights, d.vector.data(), 0);
+    ASSERT_FALSE(energy.has_value()) << what;
+    const auto got = qd_gradient_of(run, 0, true, &h);
+    ASSERT_FALSE(got.has_value()) << what;
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical) << what;
+    EXPECT_EQ(got.error().kind, energy.error().kind) << what;
+    EXPECT_EQ(got.error().message, energy.error().message) << what;
+    EXPECT_NE(got.error().message.find("Sr"), std::string::npos) << got.error().message;
+    EXPECT_NE(got.error().message.find(says), std::string::npos) << got.error().message;
+    std::cout << std::format("[ nevpt2   ] qd pc gradient refuses {}: {}\n", what,
+                             got.error().message);
+  };
+
+  std::vector<std::size_t> virtuals;
+  for (auto p = static_cast<std::size_t>(s.ncore + s.ncas); p < static_cast<std::size_t>(s.nao);
+       ++p) {
+    virtuals.push_back(p);
+  }
+  State low = s;
+  low.h = shifted_h(s, virtuals, -1000.0);
+  fb::SphericalMatrixAO h_low(res, in.basis);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(h_low.data(), low.h.data(), low.h.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  same(low, h_low, "virtuals at -1000 Eh", "not positive");
+
+  State zero = s;
+  const std::size_t ndet = s.vector.size() / weights.size();
+  std::fill_n(zero.vector.begin() + static_cast<std::ptrdiff_t>(ndet), ndet, 0.0);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(run.solution->roots.vectors.data(), zero.vector.data(),
+                                zero.vector.size() * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  same(zero, in.h, "root 1 zero", "no positive eigenvalue");
+}
+
+// The Lagrangian's two refusals, a root of weight 0 and a degenerate pair
+// of PC's H_eff, come back from qd_pc_gradient as qd_sc_gradient's do
+// (Nevpt2QdGradient.RefusesWhatTheLagrangianRefuses), named for it.
+TEST(Nevpt2QdPcGradient, RefusesWhatTheLagrangianRefuses) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = qd_run("h2co_ccpvdz_sa2");
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  fb::mcscf::Solution &solution = *run.solution;
+  const auto n = static_cast<std::size_t>(run.state.ncas);
+  const auto refused = [&](const std::int32_t state, const fb::ErrorKind kind,
+                           const std::string_view says) {
+    const auto got = qd_gradient_of(run, state, true);
+    ASSERT_FALSE(got.has_value());
+    EXPECT_EQ(got.error().kind, kind) << got.error().message;
+    EXPECT_NE(got.error().message.find("nevpt2::qd_pc_gradient"), std::string::npos)
+        << got.error().message;
+    EXPECT_NE(got.error().message.find(says), std::string::npos) << got.error().message;
+    std::cout << std::format("[ nevpt2   ] qd pc gradient refuses: {}\n", got.error().message);
+  };
+
+  const std::vector<double> gamma = solution.gamma;
+  std::copy_n(solution.root_gammas.begin(), n * n, solution.gamma.begin());
+  refused(1, fb::ErrorKind::InvalidConfig, "root 1");
+  solution.gamma = gamma;
+
+  const auto weights = reference_case("qd_nevpt2", "qd_nevpt2.json", "h2co_ccpvdz_sa2")
+                           .at("weights")
+                           .get<std::vector<double>>();
+  const std::vector<double> c = qd_totals(res, run.state, weights, true);
+  ASSERT_EQ(c.size(), 4U);
+  std::cout << std::format("[ nevpt2   ] h2co_ccpvdz_sa2 PC C_01 {:.3e}, C_10 {:.3e}\n", c[1],
+                           c[2]);
+  solution.roots.energies[1] = solution.roots.energies[0] + c[0] - c[3];
+  for (const std::int32_t state : {0, 1}) {
+    refused(state, fb::ErrorKind::Numerical, "states 0 and 1");
+  }
+}
+
+// Diagnostic, printed and not held: at one root the PC-QD gradient is
+// pc_gradient's, on nevpt2_gradient.json's h2o_skew_ccpvdz.
+TEST(Nevpt2QdPcGradient, OneRootAgainstPcGradient) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = nuclear_run(gradient_case("h2o_skew_ccpvdz"));
+  ASSERT_TRUE(run.solution.has_value());
+  const GradientInputs in = gradient_inputs(run);
+  const auto pc = pc_gradient_of(run, in.h);
+  ASSERT_TRUE(pc.has_value()) << pc.error().message;
+  const auto qd = qd_gradient_of(run, 0, true);
+  if (!qd.has_value()) {
+    std::cout << std::format("[ nevpt2   ] qd pc gradient one root: refused: {}\n",
+                             qd.error().message);
+    return;
+  }
+  double diff = 0.0;
+  for (std::size_t i = 0; i < qd->total.size(); ++i) {
+    diff = std::max(diff, std::abs(qd->total[i] - pc->terms.total[i]));
+  }
+  std::cout << std::format("[ nevpt2   ] qd pc gradient one root against pc_gradient: max |diff| "
+                           "{:.2e}, relative {:.2e}; E_K {:.12f}, max |zeta| {:.1e}\n",
+                           diff, diff / largest_abs(pc->terms.total), qd->lagrangian.eigenvalues[0],
                            qd->max_zeta);
 }
 
