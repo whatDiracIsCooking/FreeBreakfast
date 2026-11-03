@@ -55,8 +55,40 @@
 /// (kCrossCheckNoise). Its CASSCF is checked against the analytic gradient,
 /// as every case's is.
 ///
-/// `free-breakfast-qd-nevpt2-gradient <repo>/test/gtest/data [case ...]`: the
-/// cases named, or all of them. Nothing run-dependent is written and every
+/// **The coupling mode** (`--coupling`, `kCouplingCases`, #743) writes
+/// `test/gtest/data/qd_nevpt2_nac/coupling/<case>.json` instead: through the
+/// same points, matching and guard, for every pair P < Q of H_eff's
+/// eigenstates, SC and PC, central differences of
+///
+/// - **h_PQ** = d/dR R_P(R0)^T H_eff(R) R_Q(R0), H_eff(R) carried into the
+///   reference's root basis (each displaced root matched by
+///   `mcscf::state_overlaps` and signed so that overlap is positive), as its
+///   reference part sum_r R_rP R_rQ E_r(R) (`h_reference`), its PT2 part
+///   R_P^T (H_eff - diag E) R_Q (`h_pt2`) and their sum (`h`);
+/// - **the zeroth-order overlap** sum_MN R_MP(R0) R_NQ(R) S_MN(R0, R)
+///   (`zeroth`, d^NEV + d^CAS, Park 2020 Eqs. 47 + 48), R(R) matched to
+///   R(R0) in that basis and signed so that its overlap is positive;
+/// - and, R = 1 (QD off), the roots' own S_IJ(R0, R) (`casscf_zeroth`),
+///   checked against `mcscf::df_nac`'s analytic total d_IJ
+///   (`use_etfs = false`) within its error bar.
+///
+/// An overlap and an off-diagonal of H_eff feel a residual ||g|| to first
+/// order, so in this mode every point, the reference's too, is polished
+/// (`converge`): rerun from its own orbitals until ||g|| < kPolishTarget.
+/// Each family's noise is measured: the reference geometry is re-converged
+/// from the orbitals of the three coarsest +h points, and the noise is
+/// three times the largest distance of any of the family's values from the
+/// reference's own (a point error e moves a Richardson value by up to
+/// 1.5 e / h), at least the case's energy noise for the h families and
+/// kOverlapNoiseFloor, or the case's `overlap_noise`, for the overlaps. From the
+/// Richardson values come d^NEV = h_PQ / (E_Q - E_P) and d^CAS = 2
+/// sum_{M<N} T^PQ_MN d_MN (T^PQ = 1/2 (R_P R_Q^T - R_Q R_P^T)), whose sum
+/// must match `zeroth`, the visibility of every term, and, where #744's
+/// brute-force file has the case, the cross-check of `zeroth` against it.
+///
+/// `free-breakfast-qd-nevpt2-gradient <repo>/test/gtest/data [--coupling]
+/// [case ...]`: the cases named, or all of the mode's. Nothing run-dependent
+/// is written and every
 /// point runs in one order, but the tree's GPU sums reassociate run to run,
 /// so a rerun reproduces the energies to ~1e-12 hartree and the gradients to
 /// ~1e-9 hartree/bohr, not byte for byte. A refused case writes nothing and
@@ -76,6 +108,7 @@ import free_breakfast.io.base; // write_file
 import free_breakfast.io.json;
 import free_breakfast.integrals.one_electron.overlap_mixed;
 import free_breakfast.mcscf.gradient;
+import free_breakfast.mcscf.nac;
 import free_breakfast.mcscf.overlap;
 import free_breakfast.recipes.blas; // gemm, gemmwich
 import free_breakfast.recipes.diagonalize;
@@ -129,6 +162,11 @@ constexpr double kReferenceAgreement = 1e-6;
 constexpr std::uint64_t kSeed = 696;
 constexpr std::size_t kDirections = 3;
 
+// The least noise an overlap family carries in the coupling mode: two full
+// runs' Richardson values of skew H2CO's `casscf_zeroth` differ by up to
+// 5.3e-9 at 2h = 5e-4, a point error of 2.6e-12 the restarts (1.4e-13) miss.
+constexpr double kOverlapNoiseFloor = 3e-12;
+
 // One QD case of qd_nevpt2.json.
 struct Spec {
   std::string_view name;
@@ -147,6 +185,10 @@ struct Spec {
   // the per-point error the CASSCF difference shows against its analytic
   // gradient (qd_nevpt2_gradient/README.md has both, per case).
   double noise;
+  // The coupling mode's least noise of SC's and PC's `zeroth`, above the
+  // measured one where the data shows a point error the restarts do not
+  // (`kCouplingCases`).
+  std::array<double, 2> overlap_noise{kOverlapNoiseFloor, kOverlapNoiseFloor};
 };
 
 constexpr std::array kCases{
@@ -159,6 +201,46 @@ constexpr std::array kCases{
     Spec{"h2co_skew_ccpvdz_sa3_weighted", {1e-3, 5e-4, 2.5e-4}, true, false, 1e-11},
     Spec{"h8_ring12_ccpvdz_cas66_sa2", {4e-4, 2e-4, 1e-4}, true, true, 8e-12},
 };
+
+// The coupling mode's cases (#743), `noise` the h families' least energy
+// noise (`kCases`' for the same case). Not h2co_ccpvdz_sa2: its A1 and A2
+// roots couple only along an A2 displacement, which H2CO has none of.
+constexpr std::array kCouplingCases{
+    // SC's and PC's overlaps carry a point error of up to ~1e-10 at a few
+    // points, the same on every run (README.md): along Cartesian components
+    // that 1e-3 resolves, and smaller steps magnify.
+    Spec{"h2co_skew_ccpvdz_sa3", {1e-3, 5e-4, 2.5e-4}, true, true, 1e-11, {2e-10, 2e-10}},
+    // Its SC overlaps curve on a length of ~1e-3 bohr along the second
+    // direction (its two closest core orbitals are 2.6e-3 hartree apart), so
+    // a quarter of the others' steps. PC's overlap carries a point error of
+    // ~2e-10 at a few points the restarts do not show (README.md).
+    Spec{"h2co_skew_ccpvdz_sa3_weighted",
+         {2.5e-4, 1.25e-4, 6.25e-5},
+         true,
+         false,
+         1e-11,
+         {kOverlapNoiseFloor, 3e-10}},
+    // #744's steps: the SC pair (1, 2), 4.7 mEh apart, needs them.
+    Spec{"h8_ring_sto3g_sa3", {6e-5, 3e-5, 1.5e-5}, true, false, 1e-12},
+};
+
+// The coupling mode's bound on any error bar. Not #744's 2e-7: the weighted
+// case's PC overlap reaches 3.9e-6 (its point error over its small steps),
+// and skew H2CO's overlaps 5.6e-7 (README.md has every family's). A bound,
+// not a target: a consumer's bar is twice each component's own error bar.
+constexpr double kCouplingErrorBarTol = 5e-6;
+// The measured noise's margin: a point error e moves a Richardson value by
+// up to 1.5 e / h, the noise term is noise / 2h.
+constexpr double kNoiseMargin = 3.0;
+// The coupling mode's polish (`converge`): the ||g|| a point is rerun from
+// its own orbitals to fall under, and the most reruns. The solver's ||g||
+// falls to ~1e-12 on most reruns once it is under 1e-10, but not every one.
+constexpr double kPolishTarget = 3e-12;
+constexpr std::size_t kPolishPasses = 10;
+constexpr std::int32_t kPolishCycles = 8;
+// A term is visible where some component's |Richardson| clears this many
+// times its consumer's bar, twice its error bar.
+constexpr double kVisibility = 10.0;
 
 // The cross-check's noise: H2O's spread over reruns is 1.4e-12.
 constexpr double kCrossCheckOwnNoise = 2e-12;
@@ -259,6 +341,20 @@ struct Point {
   // The smallest gap between two canonical core, or virtual, energies.
   double core_gap = std::numeric_limits<double>::infinity();
   double virtual_gap = std::numeric_limits<double>::infinity();
+  // In the reference's root basis (each displaced root matched and signed so
+  // that its overlap with the reference's is positive), n x n: s[M n + N] =
+  // <M(R0)|N(R)>; SC's and PC's H_eff (QD only); and their eigenvectors,
+  // state K at [K n, (K + 1) n), matched to the reference's and signed so
+  // that that overlap is positive.
+  std::vector<double> s;
+  std::vector<double> sc_heff;
+  std::vector<double> pc_heff;
+  std::vector<double> sc_vectors_matched;
+  std::vector<double> pc_vectors_matched;
+  // The converged orbitals (AO by MO, column-major) and energies, for a
+  // restart from them.
+  std::vector<double> c;
+  std::vector<double> mo_energies;
 };
 
 // nlohmann's .at() throws on a missing key: the one place it is called, the
@@ -410,18 +506,21 @@ double smallest_gap(std::span<const double> sorted) {
 // (state k at [k n, (k + 1) n), over the displaced roots) carried into the
 // reference's root basis by @p pi and @p signs, each reference state K matched
 // to the displaced k of largest |<u_K|u_k>|, which must be a permutation.
-// Returns the matched energies; @p miss takes the worst 1 - |overlap|.
-fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
-                                               std::span<const double> vectors,
-                                               std::span<const double> reference,
-                                               std::span<const std::size_t> pi,
-                                               std::span<const double> signs, double &miss) {
+// Returns the matched energies; @p miss takes the worst 1 - |overlap|, and
+// @p matched u_k in the reference's root basis, state K at [K n, (K + 1) n),
+// signed so that its overlap with u_K is positive.
+fb::Result<std::vector<double>>
+matched_states(std::span<const double> energies, std::span<const double> vectors,
+               std::span<const double> reference, std::span<const std::size_t> pi,
+               std::span<const double> signs, double &miss, std::vector<double> &matched) {
   const std::size_t n = energies.size();
   std::vector<double> out(n);
   std::vector<bool> taken(n, false);
+  matched.assign(n * n, 0.0);
   for (std::size_t big_k = 0; big_k < n; ++big_k) {
     std::size_t best = n;
     double best_overlap = 0.0;
+    double best_sign = 1.0;
     for (std::size_t k = 0; k < n; ++k) {
       double overlap = 0.0;
       for (std::size_t i = 0; i < n; ++i) {
@@ -429,6 +528,7 @@ fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
       }
       if (std::abs(overlap) > best_overlap) {
         best_overlap = std::abs(overlap);
+        best_sign = overlap < 0.0 ? -1.0 : 1.0;
         best = k;
       }
     }
@@ -437,6 +537,9 @@ fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
     }
     taken[best] = true;
     out[big_k] = energies[best];
+    for (std::size_t i = 0; i < n; ++i) {
+      matched[(big_k * n) + i] = best_sign * signs[i] * vectors[(best * n) + pi[i]];
+    }
     miss = std::max(miss, 1.0 - best_overlap);
   }
   return out;
@@ -559,19 +662,36 @@ fb::json rows(std::span<const double> g) {
   return out;
 }
 
-// One family of differenced energies ("casscf", "sc" or "pc"): per index
-// (root or state) and per component, central differences per step, Richardson,
-// its error bar, and the checks. @p values[i][c][s] = {E(-h), E(+h)}.
-// @p analytic, when not empty, is per index the analytic derivative per
-// component. @p full lays components out as n_atom x 3 rows.
+// What a full (every Cartesian component) family's translational sum is held
+// to: the sum of its components' error bars (#696's energies), twice its
+// largest error bar (#743's h_PQ), or nothing (an overlap, which the basis
+// functions moving with the atoms make translation-variant).
+enum class Translation : std::uint8_t { SumOfBars, TwiceLargestBar, None };
+
+// One family of differenced quantities ("casscf", "sc" or "pc"; the coupling
+// mode's per scheme and term): per index (root, state or pair) and per
+// component, central differences per step, Richardson, its error bar, and
+// the checks. @p values[i][c][s] = {F(-h), F(+h)}. @p gradients, when not
+// empty, is per index an analytic 3N derivative, and @p analytic its
+// projection per component. @p noise is the quantity's per-point noise.
 struct Family {
   std::string name;
+  double noise = 0.0;
+  Translation translation = Translation::SumOfBars;
+  std::vector<std::vector<double>> gradients;
   std::vector<std::vector<std::vector<std::array<double, 2>>>> values;
   std::vector<std::vector<double>> analytic;
 };
 
-fb::Result<fb::json> differences(const Family &family, std::span<const double> steps, double noise,
-                                 bool full, std::string_view where, fb::json &checks) {
+// @p full lays components out as n_atom x 3 rows.
+// @p richardson_tol bounds Richardson's distance from the finest difference
+// (the finest step's truncation), @p error_bar_tol the error bar.
+fb::Result<fb::json> differences(const Family &family, std::span<const double> steps, bool full,
+                                 double richardson_tol, double error_bar_tol,
+                                 std::string_view where, fb::json &checks) {
+  const double noise = family.noise;
+  // Per full index and axis: the translational sum and its components' bars.
+  std::vector<std::pair<double, double>> translation_sums;
   fb::json out = fb::json::array();
   double worst_richardson = 0.0;
   double worst_bar = 0.0;
@@ -618,7 +738,7 @@ fb::Result<fb::json> differences(const Family &family, std::span<const double> s
         worst_analytic_ratio = std::max(worst_analytic_ratio, miss / bar[c]);
       }
     }
-    if (full) {
+    if (full && family.translation != Translation::None) {
       for (std::size_t k = 0; k < 3; ++k) {
         double sum = 0.0;
         double bars = 0.0;
@@ -626,8 +746,7 @@ fb::Result<fb::json> differences(const Family &family, std::span<const double> s
           sum += richardson[a];
           bars += bar[a];
         }
-        worst_translation = std::max(worst_translation, std::abs(sum));
-        worst_translation_ratio = std::max(worst_translation_ratio, std::abs(sum) / bars);
+        translation_sums.emplace_back(sum, bars);
       }
     }
     fb::json entry;
@@ -643,21 +762,30 @@ fb::Result<fb::json> differences(const Family &family, std::span<const double> s
     }
     out.push_back(entry);
   }
+  // The translational sums against their bars, once the family's largest
+  // error bar is known.
+  for (const auto &[sum, bars] : translation_sums) {
+    const double against =
+        family.translation == Translation::TwiceLargestBar ? 2.0 * worst_bar : bars;
+    worst_translation = std::max(worst_translation, std::abs(sum));
+    worst_translation_ratio = std::max(worst_translation_ratio, std::abs(sum) / against);
+  }
+  const bool translation = full && family.translation != Translation::None;
   const auto [low, high] = std::ranges::minmax(ratios.empty() ? std::vector<double>{0.0} : ratios);
   std::println("{} {}: Richardson - finest {:.1e}, error bar {:.1e}, ladder {:.3f}..{:.3f} over "
                "{}{}{}",
                where, family.name, worst_richardson, worst_bar, low, high, ratios.size(),
-               full ? std::format(", translation {:.1e} ({:.2f} of the error bars)",
-                                  worst_translation, worst_translation_ratio)
-                    : "",
+               translation ? std::format(", translation {:.1e} ({:.2f} of its bar)",
+                                         worst_translation, worst_translation_ratio)
+                           : "",
                family.analytic.empty() ? ""
                                        : std::format(", analytic {:.1e} ({:.2f} of the error bar)",
                                                      worst_analytic, worst_analytic_ratio));
-  if (worst_richardson >= kRichardsonTol) {
+  if (worst_richardson >= richardson_tol) {
     return fb::err_numerical("{} {}: Richardson off the finest difference by {:.2e}", where,
                              family.name, worst_richardson);
   }
-  if (worst_bar >= kErrorBarTol) {
+  if (worst_bar >= error_bar_tol) {
     return fb::err_numerical("{} {}: error bar {:.2e}", where, family.name, worst_bar);
   }
   for (const double ratio : ratios) {
@@ -665,10 +793,9 @@ fb::Result<fb::json> differences(const Family &family, std::span<const double> s
       return fb::err_numerical("{} {}: ladder ratio {:.3f}", where, family.name, ratio);
     }
   }
-  if (full && worst_translation_ratio > 1.0) {
-    return fb::err_numerical("{} {}: translational sum {:.2e}, {:.2f} times its components' "
-                             "error bars",
-                             where, family.name, worst_translation, worst_translation_ratio);
+  if (translation && worst_translation_ratio > 1.0) {
+    return fb::err_numerical("{} {}: translational sum {:.2e}, {:.2f} times its bar", where,
+                             family.name, worst_translation, worst_translation_ratio);
   }
   if (!family.analytic.empty() && worst_analytic_ratio > 1.0) {
     return fb::err_numerical("{} {}: Richardson off the analytic gradient by {:.2e}, {:.2f} times "
@@ -682,9 +809,11 @@ fb::Result<fb::json> differences(const Family &family, std::span<const double> s
        ratios.empty() ? fb::json(nullptr) : fb::json(std::vector<double>{low, high})},
       {"ladder_components", ratios.size()},
   };
-  if (full) {
+  if (translation) {
     check["translation"] = worst_translation;
-    check["translation_over_error_bars"] = worst_translation_ratio;
+    check[family.translation == Translation::TwiceLargestBar ? "translation_over_twice_error_bar"
+                                                             : "translation_over_error_bars"] =
+        worst_translation_ratio;
   }
   if (!family.analytic.empty()) {
     check["analytic"] = worst_analytic;
@@ -694,13 +823,213 @@ fb::Result<fb::json> differences(const Family &family, std::span<const double> s
   return out;
 }
 
+// A Richardson or error-bar entry as a flat list: a direction list as it is,
+// n_atom x 3 rows atom-major.
+std::vector<double> flat(const fb::json &values) {
+  std::vector<double> out;
+  for (const fb::json &v : values) {
+    if (v.is_array()) {
+      for (const fb::json &x : v) {
+        out.push_back(x.get<double>());
+      }
+    } else {
+      out.push_back(v.get<double>());
+    }
+  }
+  return out;
+}
+
+// The coupling mode's derived terms in one block (`directional` or `full`),
+// per scheme and pair, from its Richardson values and error bars:
+// d^NEV = h_PQ / (E_Q - E_P), its bar h's over |E_Q - E_P|, and d^CAS =
+// sum_{M<N} (R_MP R_NQ - R_MQ R_NP) d_MN over the roots' `casscf_zeroth`,
+// its bar the same sum of |coefficient| bar_MN; and the check that
+// d^NEV + d^CAS is `zeroth` within the three bars summed.
+fb::Status coupling_parts(fb::json &block,
+                          std::span<const std::pair<std::size_t, std::size_t>> pairs,
+                          std::span<const std::string> schemes, const Point &at0,
+                          const fb::Nevpt2Output &nev0, std::size_t n, std::string_view where) {
+  try {
+    const fb::json &roots = block.at("casscf_zeroth");
+    for (const std::string &scheme : schemes) {
+      const std::vector<double> &e = scheme == "sc" ? at0.sc : at0.pc;
+      const std::vector<double> &r = scheme == "sc" ? nev0.qd_vectors : nev0.pc_qd_vectors;
+      fb::json d_nev = fb::json::array();
+      fb::json d_cas = fb::json::array();
+      double worst = 0.0;
+      double worst_ratio = 0.0;
+      for (std::size_t pq = 0; pq < pairs.size(); ++pq) {
+        const auto [big_p, big_q] = pairs[pq];
+        const fb::json &h = block.at(std::format("{}_h", scheme)).at(pq);
+        const fb::json &zeroth = block.at(std::format("{}_zeroth", scheme)).at(pq);
+        const std::vector<double> h_value = flat(h.at("richardson"));
+        const std::vector<double> h_bar = flat(h.at("error_bar"));
+        const std::vector<double> z_value = flat(zeroth.at("richardson"));
+        const std::vector<double> z_bar = flat(zeroth.at("error_bar"));
+        const std::size_t ncomp = h_value.size();
+        const double gap = e[big_q] - e[big_p];
+        std::vector<double> nev_value(ncomp);
+        std::vector<double> nev_bar(ncomp);
+        std::vector<double> cas_value(ncomp, 0.0);
+        std::vector<double> cas_bar(ncomp, 0.0);
+        for (std::size_t c = 0; c < ncomp; ++c) {
+          nev_value[c] = h_value[c] / gap;
+          nev_bar[c] = h_bar[c] / std::abs(gap);
+        }
+        for (std::size_t mn = 0; mn < pairs.size(); ++mn) {
+          const auto [m, nn] = pairs[mn];
+          const double coefficient = (r[(big_p * n) + m] * r[(big_q * n) + nn]) -
+                                     (r[(big_q * n) + m] * r[(big_p * n) + nn]);
+          const std::vector<double> d_value = flat(roots.at(mn).at("richardson"));
+          const std::vector<double> d_bar = flat(roots.at(mn).at("error_bar"));
+          for (std::size_t c = 0; c < ncomp; ++c) {
+            cas_value[c] += coefficient * d_value[c];
+            cas_bar[c] += std::abs(coefficient) * d_bar[c];
+          }
+        }
+        for (std::size_t c = 0; c < ncomp; ++c) {
+          const double miss = std::abs(z_value[c] - nev_value[c] - cas_value[c]);
+          worst = std::max(worst, miss);
+          worst_ratio = std::max(worst_ratio, miss / (z_bar[c] + nev_bar[c] + cas_bar[c]));
+        }
+        d_nev.push_back({{"richardson", nev_value}, {"error_bar", nev_bar}});
+        d_cas.push_back({{"richardson", cas_value}, {"error_bar", cas_bar}});
+      }
+      block[std::format("{}_d_nev", scheme)] = d_nev;
+      block[std::format("{}_d_cas", scheme)] = d_cas;
+      block.at("checks")[std::format("{}_zeroth_vs_parts", scheme)] = {
+          {"max_difference", worst}, {"max_over_error_bars", worst_ratio}};
+      std::println("{} {}: zeroth - (d_nev + d_cas) {:.1e}, {:.2f} of the bars", where, scheme,
+                   worst, worst_ratio);
+      if (worst_ratio > 1.0) {
+        return fb::err_numerical("{} {}: zeroth off d_nev + d_cas by {:.2e}, {:.2f} times the "
+                                 "bars",
+                                 where, scheme, worst, worst_ratio);
+      }
+    }
+  } catch (const std::exception &e) {
+    return fb::err_io("{}: {}", where, e.what());
+  }
+  return {};
+}
+
+// Per scheme and pair, each separately coded term's largest |Richardson| over
+// every component of every block, against its consumer's bar (twice the
+// error bar): `max`, the largest such bar `bar`, and `best`, the largest
+// per-component |Richardson| / (2 error bar); `visible` where `best` clears
+// kVisibility. The roots' own coupling (`casscf_zeroth`) per pair beside.
+fb::json visibility(const fb::json &doc, std::span<const std::pair<std::size_t, std::size_t>> pairs,
+                    std::span<const std::string> schemes) {
+  const auto measure = [&](const std::string &family, std::size_t pq) {
+    double largest = 0.0;
+    double bar = 0.0;
+    double best = 0.0;
+    for (const std::string_view block : {"directional", "full"}) {
+      if (!doc.contains(block)) {
+        continue;
+      }
+      const fb::json &entry = doc.at(block).at(family).at(pq);
+      const std::vector<double> value = flat(entry.at("richardson"));
+      const std::vector<double> error = flat(entry.at("error_bar"));
+      for (std::size_t c = 0; c < value.size(); ++c) {
+        largest = std::max(largest, std::abs(value[c]));
+        bar = std::max(bar, 2.0 * error[c]);
+        best = std::max(best, std::abs(value[c]) / (2.0 * error[c]));
+      }
+    }
+    return fb::json{
+        {"max", largest}, {"bar", bar}, {"best", best}, {"visible", best >= kVisibility}};
+  };
+  fb::json out = fb::json::array();
+  for (std::size_t pq = 0; pq < pairs.size(); ++pq) {
+    fb::json entry{{"pair", {pairs[pq].first, pairs[pq].second}},
+                   {"casscf_zeroth", measure("casscf_zeroth", pq)}};
+    for (const std::string &scheme : schemes) {
+      for (const std::string_view term :
+           {"h_reference", "h_pt2", "h", "d_nev", "d_cas", "zeroth"}) {
+        entry[scheme][term] = measure(std::format("{}_{}", scheme, term), pq);
+      }
+    }
+    out.push_back(entry);
+  }
+  return out;
+}
+
+// `zeroth` along the directions against #744's brute-force file's (PySCF,
+// full-space overlaps), per scheme, pair and direction, within the two
+// error bars combined. The phases differ by the states' signs, s_P s_Q per
+// pair, which is read off the data: the sign of sum_c ours_c theirs_c, and
+// over three states their product must be +1.
+fb::Result<fb::json> brute_force_check(const fb::json &doc, const fb::json &file,
+                                       std::span<const std::string> schemes) {
+  fb::json result;
+  try {
+    const auto ours_dirs = doc.at("directions").get<std::vector<std::vector<double>>>();
+    const auto their_dirs = file.at("directions").get<std::vector<std::vector<double>>>();
+    double direction_miss = 0.0;
+    for (std::size_t c = 0; c < ours_dirs.size(); ++c) {
+      for (std::size_t x = 0; x < ours_dirs[c].size(); ++x) {
+        direction_miss = std::max(direction_miss, std::abs(ours_dirs[c][x] - their_dirs[c][x]));
+      }
+    }
+    if (direction_miss > 1e-12 || doc.at("pairs") != file.at("pairs")) {
+      return fb::err_config("brute-force cross-check: other directions ({:.1e}) or pairs",
+                            direction_miss);
+    }
+    result["direction_miss"] = direction_miss;
+    for (const std::string &scheme : schemes) {
+      const fb::json &ours = doc.at("directional").at(std::format("{}_zeroth", scheme));
+      const fb::json &theirs = file.at("directional").at(scheme).at("zeroth");
+      std::vector<double> signs;
+      double worst = 0.0;
+      double worst_ratio = 0.0;
+      for (std::size_t pq = 0; pq < ours.size(); ++pq) {
+        const std::vector<double> value = flat(ours.at(pq).at("richardson"));
+        const std::vector<double> bar = flat(ours.at(pq).at("error_bar"));
+        double dot = 0.0;
+        for (std::size_t c = 0; c < value.size(); ++c) {
+          dot += value[c] * theirs.at(c).at("richardson").at(pq).get<double>();
+        }
+        const double sign = dot < 0.0 ? -1.0 : 1.0;
+        signs.push_back(sign);
+        for (std::size_t c = 0; c < value.size(); ++c) {
+          const double miss =
+              std::abs(value[c] - (sign * theirs.at(c).at("richardson").at(pq).get<double>()));
+          const double bars = bar[c] + theirs.at(c).at("error_bar").at(pq).get<double>();
+          worst = std::max(worst, miss);
+          worst_ratio = std::max(worst_ratio, miss / bars);
+        }
+      }
+      // Pairs (0, 1), (0, 2), (1, 2): s0 s1 . s0 s2 . s1 s2 = 1.
+      const bool consistent = signs.size() != 3 || signs[0] * signs[1] * signs[2] > 0.0;
+      std::println("brute-force cross-check {}: |ours - #744's| {:.1e}, at most {:.2f} of the two "
+                   "error bars, pair signs {}",
+                   scheme, worst, worst_ratio, signs);
+      if (!consistent || worst_ratio > 1.0) {
+        return fb::err_numerical("brute-force cross-check {}: off by {:.2e}, {:.2f} times the "
+                                 "two error bars (pair signs {})",
+                                 scheme, worst, worst_ratio, signs);
+      }
+      result[scheme] = {
+          {"max_difference", worst}, {"max_over_error_bars", worst_ratio}, {"pair_signs", signs}};
+    }
+  } catch (const std::exception &e) {
+    return fb::err_io("brute-force cross-check: {}", e.what());
+  }
+  return result;
+}
+
 // One case: the reference, every displaced point, the differences and their
 // checks. One root (the single-state cross-check) differences its SC- and
 // PC-NEVPT2 over every Cartesian component; two or more, H_eff's eigenstates
-// along the directions, and along every component when @p full.
+// along the directions, and along every component when @p full. With
+// @p coupling, the coupling mode's families instead (main.cpp's header), and
+// the cross-check against @p brute_force, #744's file for the case (null
+// when it has none).
 fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
                               std::span<const double> steps, double noise, bool pc, bool full,
-                              const fb::json &qd_doc) {
+                              const fb::json &qd_doc, bool coupling, const fb::json &brute_force,
+                              std::array<double, 2> overlap_noise = {}) {
   fb::DeviceResources &res = node.device(0);
   const std::size_t n = sys.weights.size();
   const bool qd = n > 1;
@@ -723,6 +1052,68 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   casscf.max_cycle = kMaxCycle;
   fb::Nevpt2Step nevpt2;
   nevpt2.quasi_degenerate = qd;
+  // Every point after the reference starts from carried orbitals.
+  fb::CasscfStep carried_casscf = casscf;
+  carried_casscf.active.clear();
+
+  // The chain at a point: the geometry's integrals, the carried orbitals, the
+  // CASSCF and QD-NEVPT2. In the coupling mode it is polished: rerun from its
+  // own converged orbitals until ||g|| falls under kPolishTarget, at most
+  // kPolishPasses times, the lowest ||g|| kept. An overlap and an off-diagonal
+  // of H_eff feel a residual ||g|| to first order, where an eigenvalue of
+  // H_eff feels it only through the roots' energies: at ||g|| ~3e-11, PC's
+  // H_eff off the diagonal moves by ~4e-10 hartree on skew H2CO.
+  using Chain =
+      fb::Pipeline<TrialGeometryStep, fb::BasisSetStep, fb::SphericalTransformStep,
+                   fb::PrimitivePairClassesStep, fb::EriStep, fb::OverlapStep,
+                   fb::CoreHamiltonianStep, CarriedOrbitalsStep, fb::CasscfStep, fb::Nevpt2Step>;
+  std::size_t polish_passes = 0;
+  // A polishing pass asks for kPolishTarget itself within a few macro
+  // iterations: at conv_tol_grad it would stop at once.
+  fb::CasscfStep polish_casscf = carried_casscf;
+  polish_casscf.conv_tol_grad = kPolishTarget;
+  polish_casscf.max_cycle = kPolishCycles;
+  const auto converge = [&](const std::vector<fb::Atom> &atoms, const CarriedOrbitalsStep &start,
+                            std::optional<Chain> &chain) -> fb::Status {
+    const auto once = [&](const CarriedOrbitalsStep &from,
+                          const fb::CasscfStep &solve) -> fb::Result<Chain> {
+      auto run = FBF_TRY(Chain::create({
+          TrialGeometryStep{atoms},
+          basis_set,
+          fb::SphericalTransformStep{},
+          fb::PrimitivePairClassesStep{},
+          eri,
+          fb::OverlapStep{},
+          fb::CoreHamiltonianStep{},
+          from,
+          solve,
+          nevpt2,
+      }));
+      FBF_TRY(run.run(node));
+      return run;
+    };
+    chain.emplace(FBF_TRY(once(start, carried_casscf)));
+    for (std::size_t pass = 0; coupling && pass < kPolishPasses &&
+                               chain->get<fb::CasscfOutput>()->gradient_norm >= kPolishTarget;
+         ++pass) {
+      const fb::CasscfOutput &now = *chain->get<fb::CasscfOutput>();
+      const CarriedOrbitalsStep from{
+          .c = FBF_TRY(download(res, now.c.data(), now.c.num_elements())),
+          .mo_energies = now.mo_energies,
+          .n_alpha = start.n_alpha,
+          .n_beta = start.n_beta,
+      };
+      ++polish_passes;
+      // A pass that does not converge (it can stall above conv_tol_grad)
+      // keeps the point it started from.
+      fb::Result<Chain> next = once(from, polish_casscf);
+      if (next && next->get<fb::CasscfOutput>()->gradient_norm < now.gradient_norm) {
+        chain.reset();
+        chain.emplace(std::move(*next));
+      }
+    }
+    return {};
+  };
 
   const auto started = std::chrono::steady_clock::now();
   auto ref = FBF_TRY((fb::Pipeline<TrialGeometryStep, fb::BasisSetStep, fb::SphericalTransformStep,
@@ -743,11 +1134,33 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
       nevpt2,
   })));
   FBF_TRY(ref.run(node));
-  const fb::CasscfOutput &cas0 = *ref.get<fb::CasscfOutput>();
-  const fb::Nevpt2Output &nev0 = *ref.get<fb::Nevpt2Output>();
   const fb::ScfOutput &rhf = *ref.get<fb::ScfOutput>();
-  const fb::BasisSet &basis0 = ref.get<fb::BasisSetOutput>()->basis;
-  const auto *const fit = std::get_if<fb::DensityFitted>(&ref.get<fb::EriOutput>()->eri);
+  // The coupling mode's reference is the CASSCF polished as every point is.
+  std::optional<Chain> polished;
+  if (coupling) {
+    const fb::CasscfOutput &first = *ref.get<fb::CasscfOutput>();
+    const CarriedOrbitalsStep from{
+        .c = FBF_TRY(download(res, first.c.data(), first.c.num_elements())),
+        .mo_energies = first.mo_energies,
+        .n_alpha = rhf.n_alpha,
+        .n_beta = rhf.n_beta,
+    };
+    FBF_TRY(converge(sys.atoms, from, polished));
+  }
+  const fb::CasscfOutput &cas0 =
+      polished ? *polished->get<fb::CasscfOutput>() : *ref.get<fb::CasscfOutput>();
+  const fb::Nevpt2Output &nev0 =
+      polished ? *polished->get<fb::Nevpt2Output>() : *ref.get<fb::Nevpt2Output>();
+  const fb::BasisSet &basis0 =
+      polished ? polished->get<fb::BasisSetOutput>()->basis : ref.get<fb::BasisSetOutput>()->basis;
+  const auto *const fit = std::get_if<fb::DensityFitted>(
+      polished ? &polished->get<fb::EriOutput>()->eri : &ref.get<fb::EriOutput>()->eri);
+  const fb::Molecule &molecule0 = polished ? polished->get<fb::MoleculeOutput>()->molecule
+                                           : ref.get<fb::MoleculeOutput>()->molecule;
+  const auto &classes0 = polished ? polished->get<fb::PrimitivePairClassesOutput>()->classes
+                                  : ref.get<fb::PrimitivePairClassesOutput>()->classes;
+  const fb::SphericalMatrixAO &h0 = polished ? polished->get<fb::CoreHamiltonianOutput>()->h
+                                             : ref.get<fb::CoreHamiltonianOutput>()->h;
   if (fit == nullptr) {
     return fb::err_config("{}: the ERIs are not density-fitted", sys.name);
   }
@@ -765,12 +1178,30 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   // Each root's analytic DF-SA-CASSCF gradient.
   std::vector<std::vector<double>> casscf_gradient;
   for (std::size_t r = 0; r < n; ++r) {
-    const fb::mcscf::GradientTerms g = FBF_TRY(
-        fb::mcscf::df_gradient(res, ref.get<fb::MoleculeOutput>()->molecule, basis0,
-                               ref.get<fb::PrimitivePairClassesOutput>()->classes, fit->aux,
-                               ref.get<fb::CoreHamiltonianOutput>()->h, fit->b, fit->l.data(),
-                               solution0, cas0.ncore, cas0.ncas, static_cast<std::int32_t>(r)));
+    const fb::mcscf::GradientTerms g = FBF_TRY(fb::mcscf::df_gradient(
+        res, molecule0, basis0, classes0, fit->aux, h0, fit->b, fit->l.data(), solution0,
+        cas0.ncore, cas0.ncas, static_cast<std::int32_t>(r)));
     casscf_gradient.push_back(g.total);
+  }
+  if (coupling && !qd) {
+    return fb::err_config("{}: the coupling mode needs two roots or more", sys.name);
+  }
+  // The pairs P < Q, and in the coupling mode each pair of roots' analytic
+  // total d_IJ = <I|dJ/dR> (use_etfs = false), over the reference's own CI
+  // phases, which every displaced root is signed to.
+  std::vector<std::pair<std::size_t, std::size_t>> pairs;
+  for (std::size_t p = 0; p < n; ++p) {
+    for (std::size_t q = p + 1; q < n; ++q) {
+      pairs.emplace_back(p, q);
+    }
+  }
+  std::vector<fb::mcscf::Nac> nacs;
+  if (coupling) {
+    for (const auto &[bra, ket] : pairs) {
+      nacs.push_back(FBF_TRY(fb::mcscf::df_nac(
+          res, molecule0, basis0, classes0, fit->aux, h0, fit->b, fit->l.data(), solution0,
+          cas0.ncore, cas0.ncas, static_cast<std::int32_t>(bra), static_cast<std::int32_t>(ket))));
+    }
   }
   const auto ncore = static_cast<std::size_t>(cas0.ncore);
   const auto ncas = static_cast<std::size_t>(cas0.ncas);
@@ -862,43 +1293,26 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
       .n_alpha = rhf.n_alpha,
       .n_beta = rhf.n_beta,
   };
-  fb::CasscfStep carried_casscf = casscf;
-  carried_casscf.active.clear();
-
   Point worst; // the worst guard values over every point
   worst.core_gap = at0.core_gap;
   worst.virtual_gap = at0.virtual_gap;
   std::size_t points = 0;
-  const auto point = [&](std::span<const double> displacement) -> fb::Result<Point> {
+  const auto point = [&](std::span<const double> displacement,
+                         const CarriedOrbitalsStep &start) -> fb::Result<Point> {
     std::vector<fb::Atom> atoms = sys.atoms;
     for (std::size_t a = 0; a < natom; ++a) {
       atoms[a].position = {atoms[a].position.x + displacement[3 * a],
                            atoms[a].position.y + displacement[(3 * a) + 1],
                            atoms[a].position.z + displacement[(3 * a) + 2]};
     }
-    auto chain =
-        FBF_TRY((fb::Pipeline<TrialGeometryStep, fb::BasisSetStep, fb::SphericalTransformStep,
-                              fb::PrimitivePairClassesStep, fb::EriStep, fb::OverlapStep,
-                              fb::CoreHamiltonianStep, CarriedOrbitalsStep, fb::CasscfStep,
-                              fb::Nevpt2Step>::create({
-            TrialGeometryStep{std::move(atoms)},
-            basis_set,
-            fb::SphericalTransformStep{},
-            fb::PrimitivePairClassesStep{},
-            eri,
-            fb::OverlapStep{},
-            fb::CoreHamiltonianStep{},
-            carried,
-            carried_casscf,
-            nevpt2,
-        })));
-    FBF_TRY(chain.run(node));
-    const fb::CasscfOutput &cas = *chain.get<fb::CasscfOutput>();
-    const fb::Nevpt2Output &nev = *chain.get<fb::Nevpt2Output>();
-    const fb::BasisSet &basis = chain.get<fb::BasisSetOutput>()->basis;
+    std::optional<Chain> chain;
+    FBF_TRY(converge(atoms, start, chain));
+    const fb::CasscfOutput &cas = *chain->get<fb::CasscfOutput>();
+    const fb::Nevpt2Output &nev = *chain->get<fb::Nevpt2Output>();
+    const fb::BasisSet &basis = chain->get<fb::BasisSetOutput>()->basis;
     Point p;
     p.gradient_norm = cas.gradient_norm;
-    if (cas.gradient_norm >= kConvTolGrad) {
+    if (cas.gradient_norm >= casscf.conv_tol_grad) {
       return fb::err_numerical("{}: a displaced CASSCF stopped at ||g|| {:.2e}", sys.name,
                                cas.gradient_norm);
     }
@@ -926,6 +1340,30 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
       p.ci = std::max(p.ci, 1.0 - std::abs(s[(i * n) + best]));
       p.casscf.push_back(cas.energies[best]);
     }
+    // The overlaps and H_eff in the reference's root basis.
+    p.s.assign(n * n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      for (std::size_t j = 0; j < n; ++j) {
+        p.s[(i * n) + j] = signs[j] * s[(i * n) + pi[j]];
+      }
+    }
+    const auto carried_into = [&](std::span<const double> heff) {
+      std::vector<double> out(n * n);
+      for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t j = 0; j < n; ++j) {
+          out[(i * n) + j] = signs[i] * signs[j] * heff[(pi[i] * n) + pi[j]];
+        }
+      }
+      return out;
+    };
+    if (qd) {
+      p.sc_heff = carried_into(nev.qd_heff);
+      if (pc && nev.pc_qd_heff.size() == n * n) {
+        p.pc_heff = carried_into(nev.pc_qd_heff);
+      }
+    }
+    p.c = FBF_TRY(download(res, cas.c.data(), cas.c.num_elements()));
+    p.mo_energies = cas.mo_energies;
     p.subspace = FBF_TRY(subspace_miss(res, basis0, cas0.c, basis, cas.c, ncore, ncas));
     if (p.ci >= kCiTol || p.subspace >= kSubspaceTol) {
       return fb::err_numerical("{}: a displaced CASSCF's CI overlap off 1 by {:.2e}, its active "
@@ -937,14 +1375,14 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
         return fb::err_numerical("{}: no SC-QD-NEVPT2 at a displaced point", sys.name);
       }
       p.sc = FBF_TRY(matched_states(nev.qd_energies, nev.qd_vectors, nev0.qd_vectors, pi, signs,
-                                    p.sc_vectors));
+                                    p.sc_vectors, p.sc_vectors_matched));
       if (pc) {
         if (nev.pc_qd_energies.size() != n) {
           return fb::err_numerical("{}: PC-QD-NEVPT2 refused at a displaced point: {}", sys.name,
                                    nev.pc_qd_refusal);
         }
         p.pc = FBF_TRY(matched_states(nev.pc_qd_energies, nev.pc_qd_vectors, nev0.pc_qd_vectors, pi,
-                                      signs, p.pc_vectors));
+                                      signs, p.pc_vectors, p.pc_vectors_matched));
       }
     } else {
       if (!nev.pc_roots[0]) {
@@ -976,18 +1414,154 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
     return p;
   };
 
+  // What every point gives each family, per index (root, state or pair).
+  // The gradient mode's families are energies: each root's CASSCF, and SC's
+  // and PC's per H_eff eigenstate. The coupling mode's are per pair P < Q:
+  // the roots' overlap, then per scheme h's reference and PT2 parts, h, and
+  // the zeroth-order overlap, all in the reference's root basis with R held
+  // at the reference's eigenvectors @p r0 (state K at [K n, (K + 1) n)) but
+  // in the overlap, whose ket takes the point's own.
+  const auto coupling_terms = [&](const Point &p, std::span<const double> r0,
+                                  std::span<const double> heff, std::span<const double> r,
+                                  std::vector<std::vector<double>> &out) {
+    std::vector<double> h_reference;
+    std::vector<double> h_pt2;
+    std::vector<double> h;
+    std::vector<double> zeroth;
+    for (const auto &[big_p, big_q] : pairs) {
+      double ref_part = 0.0;
+      double pt2_part = 0.0;
+      double whole = 0.0;
+      double overlap = 0.0;
+      for (std::size_t i = 0; i < n; ++i) {
+        const double rp = r0[(big_p * n) + i];
+        ref_part += rp * r0[(big_q * n) + i] * p.casscf[i];
+        for (std::size_t j = 0; j < n; ++j) {
+          const double rq = r0[(big_q * n) + j];
+          const double off = heff[(i * n) + j] - (i == j ? p.casscf[i] : 0.0);
+          pt2_part += rp * off * rq;
+          whole += rp * heff[(i * n) + j] * rq;
+          overlap += rp * r[(big_q * n) + j] * p.s[(i * n) + j];
+        }
+      }
+      h_reference.push_back(ref_part);
+      h_pt2.push_back(pt2_part);
+      h.push_back(whole);
+      zeroth.push_back(overlap);
+    }
+    out.push_back(std::move(h_reference));
+    out.push_back(std::move(h_pt2));
+    out.push_back(std::move(h));
+    out.push_back(std::move(zeroth));
+  };
+  const auto observe = [&](const Point &p) {
+    std::vector<std::vector<double>> out;
+    if (!coupling) {
+      out.push_back(p.casscf);
+      out.push_back(p.sc);
+      if (pc) {
+        out.push_back(p.pc);
+      }
+      return out;
+    }
+    std::vector<double> roots;
+    for (const auto &[i, j] : pairs) {
+      roots.push_back(p.s[(i * n) + j]);
+    }
+    out.push_back(std::move(roots));
+    coupling_terms(p, nev0.qd_vectors, p.sc_heff, p.sc_vectors_matched, out);
+    if (pc) {
+      coupling_terms(p, nev0.pc_qd_vectors, p.pc_heff, p.pc_vectors_matched, out);
+    }
+    return out;
+  };
+  std::vector<std::string> schemes{"sc"};
+  if (pc) {
+    schemes.emplace_back("pc");
+  }
+  std::vector<Family> families;
+  if (coupling) {
+    families.push_back({.name = "casscf_zeroth",
+                        .translation = Translation::None,
+                        .gradients = {},
+                        .values = {},
+                        .analytic = {}});
+    for (const fb::mcscf::Nac &d : nacs) {
+      families.back().gradients.push_back(d.total);
+    }
+    for (const std::string &scheme : schemes) {
+      for (const std::string_view term : {"h_reference", "h_pt2", "h"}) {
+        families.push_back({.name = std::format("{}_{}", scheme, term),
+                            .translation = Translation::TwiceLargestBar});
+      }
+      families.push_back(
+          {.name = std::format("{}_zeroth", scheme), .translation = Translation::None});
+    }
+  } else {
+    families.push_back({.name = "casscf", .noise = noise, .gradients = casscf_gradient});
+    for (const std::string &scheme : schemes) {
+      families.push_back({.name = scheme, .noise = noise});
+    }
+  }
+
+  // The coupling mode's noise: the reference geometry re-converged from the
+  // orbitals of the three coarsest +h points along the directions, each
+  // family's largest distance from the reference's own values.
+  const std::vector<std::vector<double>> dirs = directions(sys.atoms);
+  fb::json noise_json;
+  if (coupling) {
+    Point at_ref;
+    at_ref.casscf = cas0.energies;
+    at_ref.s.assign(n * n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+      at_ref.s[(i * n) + i] = 1.0;
+    }
+    at_ref.sc_heff = nev0.qd_heff;
+    at_ref.sc_vectors_matched = nev0.qd_vectors;
+    at_ref.pc_heff = nev0.pc_qd_heff;
+    at_ref.pc_vectors_matched = nev0.pc_qd_vectors;
+    const std::vector<std::vector<double>> baseline = observe(at_ref);
+    std::vector<double> measured(families.size(), 0.0);
+    const std::vector<double> origin(dim, 0.0);
+    for (const std::vector<double> &u : dirs) {
+      std::vector<double> dr(dim);
+      for (std::size_t x = 0; x < dim; ++x) {
+        dr[x] = steps[0] * u[x];
+      }
+      const Point away = FBF_TRY(point(dr, carried));
+      const CarriedOrbitalsStep restart{
+          .c = away.c,
+          .mo_energies = away.mo_energies,
+          .n_alpha = rhf.n_alpha,
+          .n_beta = rhf.n_beta,
+      };
+      const Point again = FBF_TRY(point(origin, restart));
+      const std::vector<std::vector<double>> values = observe(again);
+      for (std::size_t f = 0; f < families.size(); ++f) {
+        for (std::size_t i = 0; i < values[f].size(); ++i) {
+          measured[f] = std::max(measured[f], std::abs(values[f][i] - baseline[f][i]));
+        }
+      }
+    }
+    for (std::size_t f = 0; f < families.size(); ++f) {
+      const bool energy = families[f].translation == Translation::TwiceLargestBar;
+      const double floor = energy                                ? noise
+                           : families[f].name.starts_with("sc_") ? overlap_noise[0]
+                           : families[f].name.starts_with("pc_") ? overlap_noise[1]
+                                                                 : kOverlapNoiseFloor;
+      families[f].noise = std::max(floor, kNoiseMargin * measured[f]);
+      noise_json[families[f].name] = families[f].noise;
+      noise_json["measured"][families[f].name] = measured[f];
+      std::println("{}: {} noise measured {:.1e}, carried {:.1e}", sys.name, families[f].name,
+                   measured[f], families[f].noise);
+    }
+  }
+
   // The components: three directions, or every Cartesian one.
   const auto run_components = [&](const std::vector<std::vector<double>> &components,
                                   bool cartesian) -> fb::Result<fb::json> {
     const std::size_t ncomp = components.size();
-    std::vector<Family> families{{"casscf", {}, {}}, {"sc", {}, {}}};
-    if (pc) {
-      families.push_back({"pc", {}, {}});
-    }
-    for (Family &f : families) {
-      f.values.assign(n, std::vector<std::vector<std::array<double, 2>>>(
-                             ncomp, std::vector<std::array<double, 2>>(steps.size())));
-    }
+    std::vector<Family> run = families;
     fb::json displaced = fb::json::array();
     for (std::size_t c = 0; c < ncomp; ++c) {
       fb::json entry;
@@ -1005,7 +1579,11 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
           for (std::size_t x = 0; x < dim; ++x) {
             dr[x] = sign * steps[si] * components[c][x];
           }
-          Point p = FBF_TRY(point(dr));
+          Point p = FBF_TRY(point(dr, carried));
+          if (coupling && p.gradient_norm >= kPolishTarget) {
+            std::println("{}: component {} step {} side {}: polished to ||g|| {:.1e} only",
+                         sys.name, c, si, sign, p.gradient_norm);
+          }
           const double h2 = steps[si] * steps[si];
           for (std::size_t r = 0; r < n; ++r) {
             const double predicted =
@@ -1027,16 +1605,18 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
           worst.core_gap = std::min(worst.core_gap, p.core_gap);
           worst.virtual_gap = std::min(worst.virtual_gap, p.virtual_gap);
           const std::size_t side = sign < 0.0 ? 0 : 1;
-          for (std::size_t r = 0; r < n; ++r) {
-            families[0].values[r][c][si][side] = p.casscf[r];
-            families[1].values[r][c][si][side] = p.sc[r];
-            if (pc) {
-              families[2].values[r][c][si][side] = p.pc[r];
+          const std::vector<std::vector<double>> values = observe(p);
+          fb::json energies{{"gradient_norm", p.gradient_norm}};
+          for (std::size_t f = 0; f < run.size(); ++f) {
+            if (run[f].values.empty()) {
+              run[f].values.assign(values[f].size(),
+                                   std::vector<std::vector<std::array<double, 2>>>(
+                                       ncomp, std::vector<std::array<double, 2>>(steps.size())));
             }
-          }
-          fb::json energies{{"casscf", p.casscf}, {"sc", p.sc}, {"gradient_norm", p.gradient_norm}};
-          if (pc) {
-            energies["pc"] = p.pc;
+            for (std::size_t i = 0; i < values[f].size(); ++i) {
+              run[f].values[i][c][si][side] = values[f][i];
+            }
+            energies[run[f].name] = values[f];
           }
           pair.push_back(energies);
         }
@@ -1049,28 +1629,29 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
           c, points,
           std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
     }
-    // Each root's analytic CASSCF derivative along each component.
-    for (std::size_t r = 0; r < n; ++r) {
-      std::vector<double> along(ncomp);
-      for (std::size_t c = 0; c < ncomp; ++c) {
-        along[c] = std::inner_product(casscf_gradient[r].begin(), casscf_gradient[r].end(),
-                                      components[c].begin(), 0.0);
+    // The analytic derivatives along each component.
+    for (Family &f : run) {
+      for (const std::vector<double> &g : f.gradients) {
+        std::vector<double> along(ncomp);
+        for (std::size_t c = 0; c < ncomp; ++c) {
+          along[c] = std::inner_product(g.begin(), g.end(), components[c].begin(), 0.0);
+        }
+        f.analytic.push_back(std::move(along));
       }
-      families[0].analytic.push_back(std::move(along));
     }
     fb::json out;
     fb::json checks;
-    for (const Family &f : families) {
-      out[f.name] = FBF_TRY(
-          differences(f, steps, noise, cartesian,
-                      std::format("{} {}", sys.name, cartesian ? "full" : "directional"), checks));
+    for (const Family &f : run) {
+      out[f.name] = FBF_TRY(differences(
+          f, steps, cartesian, coupling ? std::numeric_limits<double>::infinity() : kRichardsonTol,
+          coupling ? kCouplingErrorBarTol : kErrorBarTol,
+          std::format("{} {}", sys.name, cartesian ? "full" : "directional"), checks));
     }
     out["checks"] = checks;
     out["displaced"] = displaced;
     return out;
   };
 
-  const std::vector<std::vector<double>> dirs = directions(sys.atoms);
   fb::json doc;
   doc["name"] = sys.name;
   doc["basis"] = sys.basis;
@@ -1125,6 +1706,27 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
       reference["pc_heff_vectors"] = nev0.pc_qd_vectors;
     }
   }
+  if (coupling) {
+    std::vector<double> root_gaps;
+    for (std::size_t k = 1; k < n; ++k) {
+      root_gaps.push_back(at0.casscf[k] - at0.casscf[k - 1]);
+    }
+    reference["casscf_gaps"] = root_gaps;
+    reference["sc_heff"] = nev0.qd_heff;
+    if (pc) {
+      reference["pc_heff"] = nev0.pc_qd_heff;
+    }
+    reference["nac"] = fb::json::array();
+    for (const fb::mcscf::Nac &d : nacs) {
+      reference["nac"].push_back({{"total", rows(d.total)},
+                                  {"numerator", rows(d.numerator)},
+                                  {"csf", rows(d.csf)},
+                                  {"iterations", d.iterations},
+                                  {"residual", d.residual}});
+    }
+    doc["pairs"] = pairs;
+    doc["noise"] = noise_json;
+  }
   doc["reference"] = reference;
   if (qd) {
     doc["seed"] = kSeed;
@@ -1138,6 +1740,18 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
     }
     doc["full"] = FBF_TRY(run_components(cartesian, true));
   }
+  if (coupling) {
+    for (const std::string_view block : {"directional", "full"}) {
+      if (doc.contains(block)) {
+        FBF_TRY(coupling_parts(doc[block], pairs, schemes, at0, nev0, n,
+                               std::format("{} {}", sys.name, block)));
+      }
+    }
+    doc["visibility"] = visibility(doc, pairs, schemes);
+    if (!brute_force.is_null()) {
+      doc["brute_force_cross_check"] = FBF_TRY(brute_force_check(doc, brute_force, schemes));
+    }
+  }
   fb::json guard{
       {"prediction", worst.prediction},
       {"subspace", worst.subspace},
@@ -1149,6 +1763,9 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   };
   if (pc) {
     guard["pc_vectors"] = worst.pc_vectors;
+  }
+  if (coupling) {
+    guard["polish_passes"] = polish_passes;
   }
   doc["guard"] = guard;
   std::println("{}: {} points, worst prediction {:.3f}, subspace {:.1e}, CI {:.1e}, u_K {:.1e} / "
@@ -1201,26 +1818,29 @@ fb::Status cross_check(fb::json &doc, const fb::json &file_case) {
 
 fb::Status run(std::span<char *const> args) {
   if (args.size() < 2) {
-    return fb::err_config("usage: {} <repo>/test/gtest/data [case ...]",
+    return fb::err_config("usage: {} <repo>/test/gtest/data [--coupling] [case ...]",
                           args.empty() ? "free-breakfast-qd-nevpt2-gradient" : args[0]);
   }
   const std::filesystem::path data{args[1]};
+  const bool coupling = args.size() > 2 && std::string_view{args[2]} == "--coupling";
   std::vector<std::string_view> only;
-  for (const char *arg : args.subspan(2)) {
+  for (const char *arg : args.subspan(coupling ? 3 : 2)) {
     only.emplace_back(arg);
   }
   const auto wanted = [&](std::string_view name) {
     return only.empty() || std::ranges::contains(only, name);
   };
   for (const std::string_view name : only) {
-    if (name != kCrossCheck && !std::ranges::contains(kCases, name, &Spec::name)) {
+    if (coupling ? !std::ranges::contains(kCouplingCases, name, &Spec::name)
+                 : name != kCrossCheck && !std::ranges::contains(kCases, name, &Spec::name)) {
       return fb::err_config("no case {}", name);
     }
   }
   const fb::json qd_doc = FBF_TRY(fb::read_json(data / "qd_nevpt2" / "qd_nevpt2.json"));
   const fb::json single_doc =
       FBF_TRY(fb::read_json(data / "nevpt2_gradient" / "nevpt2_gradient.json"));
-  const std::filesystem::path out_dir = data / "qd_nevpt2_gradient";
+  const std::filesystem::path out_dir =
+      coupling ? data / "qd_nevpt2_nac" / "coupling" : data / "qd_nevpt2_gradient";
   std::error_code ec;
   std::filesystem::create_directories(out_dir, ec);
   if (ec) {
@@ -1234,6 +1854,24 @@ fb::Status run(std::span<char *const> args) {
     return fb::err_gpu("no GPU device is visible");
   }
 
+  if (coupling) {
+    for (const Spec &spec : kCouplingCases) {
+      if (!wanted(spec.name)) {
+        continue;
+      }
+      const System sys = FBF_TRY(read_system(qd_doc, spec.name, true));
+      const std::filesystem::path brute =
+          data / "qd_nevpt2_nac" / "brute_force" / std::format("{}.json", spec.name);
+      const fb::json brute_force =
+          std::filesystem::exists(brute) ? FBF_TRY(fb::read_json(brute)) : fb::json(nullptr);
+      const fb::json doc = FBF_TRY(run_case(node, sys, spec.steps, spec.noise, spec.pc, spec.full,
+                                            qd_doc, true, brute_force, spec.overlap_noise));
+      const std::filesystem::path out = out_dir / std::format("{}.json", spec.name);
+      FBF_TRY(fb::write_file(out, fb::json_to_string(doc, 1) + '\n'));
+      std::println("wrote {}", out.string());
+    }
+    return {};
+  }
   if (wanted(kCrossCheck)) {
     const System sys = FBF_TRY(read_system(single_doc, kCrossCheck, false));
     fb::json file_case;
@@ -1252,7 +1890,8 @@ fb::Status run(std::span<char *const> args) {
     } catch (const std::exception &e) {
       return fb::err_io("{}: {}", kCrossCheck, e.what());
     }
-    fb::json doc = FBF_TRY(run_case(node, sys, steps, kCrossCheckOwnNoise, true, true, single_doc));
+    fb::json doc = FBF_TRY(
+        run_case(node, sys, steps, kCrossCheckOwnNoise, true, true, single_doc, false, nullptr));
     FBF_TRY(cross_check(doc, file_case));
     FBF_TRY(fb::write_file(out_dir / std::format("single_state_{}.json", kCrossCheck),
                            fb::json_to_string(doc, 1) + '\n'));
@@ -1262,8 +1901,8 @@ fb::Status run(std::span<char *const> args) {
       continue;
     }
     const System sys = FBF_TRY(read_system(qd_doc, spec.name, true));
-    const fb::json doc =
-        FBF_TRY(run_case(node, sys, spec.steps, spec.noise, spec.pc, spec.full, qd_doc));
+    const fb::json doc = FBF_TRY(
+        run_case(node, sys, spec.steps, spec.noise, spec.pc, spec.full, qd_doc, false, nullptr));
     FBF_TRY(fb::write_file(out_dir / std::format("{}.json", spec.name),
                            fb::json_to_string(doc, 1) + '\n'));
     std::println("wrote {}", (out_dir / std::format("{}.json", spec.name)).string());

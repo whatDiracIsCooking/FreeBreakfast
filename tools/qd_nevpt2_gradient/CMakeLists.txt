@@ -28,6 +28,7 @@ target_link_libraries(
           free_breakfast::io::json
           free_breakfast::integrals::one_electron::overlap_mixed
           free_breakfast::mcscf::gradient
+          free_breakfast::mcscf::nac
           free_breakfast::mcscf::overlap
           free_breakfast::recipes::blas
           free_breakfast::recipes::diagonalize

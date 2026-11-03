@@ -7,8 +7,11 @@ References for the QD-NEVPT2 derivative coupling d_PQ = ⟨Ψ_P|∇Ψ_Q⟩ (Park
   explicitly in the full determinant space, the PT2 transition density
   ⟨Ψ⁽¹⁾_M|E_xy|N⟩, and finite differences of the **whole** coupling and of
   d^PT2 alone. Written by `tools/emit/qd_nevpt2_nac_reference.py` (PySCF).
-- The zeroth-order coupling references, h_PQ and d^NEV + d^CAS, are #743's
-  (`tools/qd_nevpt2_gradient/`), written beside these.
+- `coupling/` (#743, below): central differences of the interstate coupling
+  h_PQ (its reference and PT2 parts apart) and of the zeroth-order coupling
+  d^NEV + d^CAS, through the tree's own DF-SA-CASSCF and QD-NEVPT2. Written
+  by `free-breakfast-qd-nevpt2-gradient --coupling`
+  (`tools/qd_nevpt2_gradient/`).
 
 ## `brute_force/` — the brute-force first-order wave functions (#744)
 
@@ -198,10 +201,12 @@ coupling, so a test against the total alone would miss it; that is why
 
 The zeroth-order part `zeroth` is #743's d^NEV + d^CAS, and
 `h8_ring_sto3g_sa3` is a case of both, along the same three directions.
-**Pending**: #743's data is not yet written. When it is, `zeroth` must agree
-with it per component within the two error bars combined. The two differ in
-the program (PySCF here, the tree's own pipeline there), not in the
-quantity: the same fitting set, weights and SA-canonical orbitals.
+The two differ in the program (PySCF here, the tree's own pipeline there),
+not in the quantity: the same fitting set, weights and SA-canonical
+orbitals. **Done** (#743, `coupling/h8_ring_sto3g_sa3.json`'s
+`brute_force_cross_check`): every direction and pair agrees within the two
+error bars combined, SC within 1.5e-7 (0.39 of the bars) and PC within
+2.9e-8 (0.17), below.
 
 ### Files
 
@@ -237,3 +242,276 @@ a second each). Two full runs wrote
 identical files. `test/pytest/test_qd_nevpt2_nac_reference.py` checks the
 files' invariants on the push gate, and reruns `h8_sto3g_sa3`'s density and
 one point in its slow tier.
+
+## `coupling/` — h_PQ and the zeroth-order coupling, through the tree (#743)
+
+These are the two parts of the QD-NEVPT2 coupling a zeroth-order overlap can
+see, SC and PC, for every pair P < Q of H_eff's eigenstates. Each is a
+central difference through this tree's own chain: `[casscf]` + DF `[eri]`
+(cc-pVDZ-JKFIT) + `[nevpt2] quasi_degenerate`, rerun as one nested
+`Pipeline` at every point. That is the chain and the guard of
+`../qd_nevpt2_gradient/` (its README has the matching and the continuity
+guard), with two changes: every point is **polished** (below), and the
+quantities differenced are not energies. d^PT2 needs Ψ⁽¹⁾ and is
+`brute_force/`'s.
+
+### Cases
+
+The geometry, basis, active space and weights of each are
+`../qd_nevpt2/qd_nevpt2.json`'s. Gaps are in hartree. The inactive gaps are
+the smallest between two canonical core, or virtual, energies at the
+reference (`guard.inactive_gap` has the smallest at any point).
+
+| case | roots, weights | steps (bohr) | components | points | root gaps | H_eff gaps SC (PC) | inactive gaps (core, virtual) | ‖g‖ reference, worst |
+|---|---|---|---|---:|---|---|---|---|
+| `h2co_skew_ccpvdz_sa3` | 3, equal | 1e-3, 5e-4, 2.5e-4 | 3 directions and all 12 Cartesian | 96 | 0.1080, 0.1938 | 0.1545, 0.1986 (0.1546, 0.1985) | 0.072, 7.6e-3 | 1.0e-12, 2.8e-12 |
+| `h2co_skew_ccpvdz_sa3_weighted` | 3, 0.4/0.4/0.2 | 2.5e-4, 1.25e-4, 6.25e-5 | 3 directions | 24 | 0.1465, 0.3048 | 0.1555, 0.2029 (0.1566, 0.1907) | 2.6e-3, 3.6e-3 | 7.7e-13, 2.9e-12 |
+| `h8_ring_sto3g_sa3` | 3, equal | 6e-5, 3e-5, 1.5e-5 | 3 directions | 24 | 0.1031, 0.0217 | 0.1416, 4.7e-3 (0.1400, 6.0e-3) | —, 1.8e-3 | 7.3e-13, 2.9e-12 |
+
+The points include six for the noise (below). The directions are
+`../qd_nevpt2_gradient/`'s three per case (seed 696, translation and rotation
+projected out), and `brute_force/`'s.
+
+- **Steps.** Skew H₂CO's are `../qd_nevpt2_gradient/`'s. The ring's are
+  #744's: its SC pair (1, 2) needs them. The weighted case's are a quarter of
+  skew H₂CO's. Its SC overlaps along the second direction curve on a length
+  of ~1e-3 bohr (its two closest core orbitals are 2.6e-3 apart), so at
+  1e-3 one ladder ratio of `sc_zeroth` falls to 0.7.
+- **`h2co_ccpvdz_sa2` is not a case.** Its 1A1 and 1A2 roots couple only
+  along an A2 displacement, and H₂CO has none, so its data would be zeros.
+
+### The quantities
+
+The reference's eigenvectors R (column P, `reference.sc_heff_vectors`,
+`pc_heff_vectors`) are held fixed. Each displaced root is matched to the
+reference's by `mcscf::state_overlaps` and signed so that its overlap is
+positive. H_eff(R) is carried into that matched, signed basis, and so is
+each displaced eigenvector R(R), which is matched to R(R₀) and signed the
+same way. Per pair, the families differenced are:
+
+| family | quantity at R | its derivative |
+|---|---|---|
+| `{sc,pc}_h_reference` | Σ_r R_rP R_rQ E_r(R) | h_PQ's reference part, Σ_r ρ_r ∇E_r |
+| `{sc,pc}_h_pt2` | R_Pᵀ (H_eff(R) − diag E(R)) R_Q | h_PQ's PT2 part |
+| `{sc,pc}_h` | R_Pᵀ H_eff(R) R_Q | h_PQ |
+| `{sc,pc}_zeroth` | Σ_MN R_MP(R₀) R_NQ(R) S_MN(R₀, R) | d^NEV + d^CAS (Park 2020 Eqs. 47 + 48) |
+| `casscf_zeroth` | S_IJ(R₀, R), I < J roots | the roots' total d_IJ, QD off |
+
+S comes from the full AO cross overlap, so the overlaps are **total**
+couplings, CSF term included (`use_etfs = false`). They are not
+translation-invariant; h is. The derived terms are formed from the
+Richardson values and the error bars:
+
+- `d_nev` = h / (E_Q − E_P), with bar h's / |E_Q − E_P|;
+- `d_cas` = Σ_{M<N} (R_MP R_NQ − R_MQ R_NP) d_MN over `casscf_zeroth`, with
+  bar Σ |coefficient| bar_MN.
+
+The phases follow the reference's roots as the solver left them (the file
+does not store them), and P is the bra, as in `mcscf::df_nac`. A consumer
+whose phases differ multiplies by s_P s_Q. Only P < Q is written, and
+`pairs` gives the order.
+
+### Each point, and the polish
+
+The reference is the RHF and DF-SA-CASSCF of `../qd_nevpt2_gradient/`, and
+every displaced point starts from the reference's orbitals, Löwdin-carried.
+**The polish.** An overlap, or an off-diagonal element of H_eff, feels a
+residual ‖g‖ to first order. An eigenvalue feels it only through the roots'
+energies. At the gradient oracle's ‖g‖ < 1e-10 the noise was far too large:
+on skew H₂CO a point at ‖g‖ ~3e-11 moved PC's H_eff off the diagonal by
+4e-10 hartree and `pc_zeroth` by 2e-9, which is a bar of 1e-5. So in this
+mode each point (the reference too) is rerun from its own converged
+orbitals, asking for ‖g‖ < 3e-12 within 8 macro iterations, at most 10
+times, and the lowest ‖g‖ is kept. A rerun that does not converge keeps the
+point it started from. Measured: every point reached 2.9e-12 or less, over
+94, 22 and 19 reruns (`guard.polish_passes`).
+
+### The error bar
+
+As `../qd_nevpt2_gradient/`'s, per component, family and pair: `central`,
+`richardson` (**the number to test against**), and `error_bar` =
+|R(fine) − R(coarse)| + `noise` / 2h_finest.
+
+**The noise.** It is measured per family. The reference geometry is
+re-converged (and polished) from the orbitals of the three coarsest +h
+points. `noise.measured` is the family's largest distance from the
+reference's own value. `noise` is three times that, as in #744, but never
+below a floor:
+
+- **h families:** the case's energy noise from `../qd_nevpt2_gradient/`
+  (1e-11 for H₂CO, 1e-12 for the ring).
+- **Overlaps:** 3e-12. Two full runs differed by up to 5.3e-9 in skew H₂CO's
+  `casscf_zeroth` at 2h = 5e-4, a point error of 2.6e-12 that the restarts
+  (1.4e-13) did not show.
+- **Above the floor, set per case where the data shows a larger point
+  error.** These errors repeat from run to run, so they are not round-off,
+  and the restarts do not see them:
+  - **skew H₂CO, SC and PC `zeroth`: 2e-10.** The Cartesian ladders of
+    `sc_zeroth`, pair (0, 2), along components 8 and 11 (D = −0.0142168,
+    −0.0142168, −0.0142167) are flat to the noise at every step tried, and
+    at a quarter of the steps the same happens along component 1. These are
+    point errors of ~1e-10.
+  - **weighted, PC `zeroth`: 3e-10.** One point along direction 2 at
+    h = 1.25e-4 sits 2.2e-10 off its neighbours.
+
+| case | h: noise (measured) | `sc_zeroth` | `pc_zeroth` | `casscf_zeroth` |
+|---|---|---|---|---|
+| `h2co_skew_ccpvdz_sa3` | 1e-11 (≤ 5.2e-13) | 2e-10 (2.1e-13) | 2e-10 (2.9e-12) | 3e-12 (4.0e-13) |
+| `h2co_skew_ccpvdz_sa3_weighted` | 1e-11 (≤ 1.5e-13) | 3.6e-12 (1.2e-12) | 3e-10 (5.9e-13) | 3e-12 (2.6e-13) |
+| `h8_ring_sto3g_sa3` | 1e-12 (≤ 3.2e-15) | 3e-12 (5.8e-13) | 3e-12 (2.1e-13) | 3e-12 (3.5e-14) |
+
+**Checks before writing.** Every case, family and component must pass, or
+nothing is written:
+
+- every error bar under 5e-6, a bound and not a target (the measured bars
+  are below);
+- the ladder ratio in (3.2, 4.8) wherever |D(2h) − D(h)| clears both 1e-7
+  and 5 noise / h;
+- `casscf_zeroth` within its error bar of `mcscf::df_nac`'s analytic total
+  d_IJ (`use_etfs = false`) on every case;
+- `zeroth` within the three bars summed of `d_nev + d_cas`;
+- in full mode, each h family's translational sum within twice its largest
+  error bar;
+- the guard of `../qd_nevpt2_gradient/`;
+- and, where `brute_force/` has the case, the cross-check below.
+
+Richardson against the finest D is recorded (`richardson_minus_finest`) but
+not bounded. The ring's `sc_zeroth` reaches 2.6e-5 there (#744's too), and
+the error bar, not the finest step, is the claim.
+
+**Measured** (largest error bar per family, directional / full; h families
+`h_reference` / `h_pt2` / `h`):
+
+| case | `casscf_zeroth` | SC h | SC `zeroth` | PC h | PC `zeroth` |
+|---|---|---|---|---|---|
+| `h2co_skew_ccpvdz_sa3` | 8.9e-9 / 7.3e-9 | 2.0e-8, 2.2e-8, 2.2e-8 / 2.0e-8, 7.5e-8, 7.5e-8 | 4.1e-7 / 5.6e-7 | 2.0e-8, 3.3e-8, 3.3e-8 / 2.0e-8, 3.6e-8, 3.6e-8 | 4.6e-7 / 4.8e-7 |
+| `h2co_skew_ccpvdz_sa3_weighted` | 3.5e-8 | 8.0e-8, 8.4e-8, 8.3e-8 | 5.2e-8 | 8.1e-8, 3.6e-7, 3.6e-7 | 3.9e-6 |
+| `h8_ring_sto3g_sa3` | 1.1e-7 | 3.3e-8, 3.6e-8, 3.6e-8 | 2.7e-7 | 3.3e-8, 3.4e-8, 3.4e-8 | 1.4e-7 |
+
+- **The Richardson part of each bar**, |R(fine) − R(coarse)|, is at most
+  1.6e-7 (skew H₂CO), 1.5e-6 (weighted, PC `zeroth`) and 1.7e-7 (ring). Per
+  component it is never more than 0.39 of the consumer's bar, twice the
+  error bar (#743's "How results are compared").
+- **Above #744's data gate of 2e-7:**
+  - skew H₂CO's SC and PC `zeroth` (up to 5.6e-7), from their 2e-10 noise;
+  - the weighted case's PC `zeroth` (3.9e-6) and PC h (3.6e-7). The
+    weighted case's PC point error, over the small steps its SC needs, is
+    the cause.
+  - the ring's `sc_zeroth` (2.7e-7).
+
+  So a consumer's bar there is up to 7.8e-6 (weighted PC `zeroth`) and
+  1.1e-6 elsewhere. Everything else is under 2e-7.
+- **Ladder ratios** where the floor allows: 3.93–4.02 on 8 directional and
+  12 Cartesian components of skew H₂CO, 3.96–4.09 on 7 of the ring. The
+  weighted case's rungs all sit under its floor, so its error bar is the
+  evidence.
+
+### Checks against independent code
+
+- **QD off, against `mcscf::df_nac`** (`checks.casscf_zeroth.analytic`).
+  `casscf_zeroth` is the finite difference of the roots' own overlaps, and
+  the analytic total d_IJ comes from `df_nac` at the reference, every pair
+  (Z-vector residuals ≤ 9.6e-11). Agreement:
+  - skew H₂CO directions within 7.7e-10 (0.11 of the error bar), Cartesian
+    within 9.5e-10 (0.13);
+  - weighted within 1.1e-8 (0.32);
+  - ring within 4.3e-9 (0.04).
+
+  This checks the differencing, the matching and the phase alignment
+  against code that is already gated. The h difference is not compared: with
+  QD off, this oracle's h is the derivative of a diagonal matrix in the
+  matched basis, not `df_nac`'s h_IJ.
+- **Against `brute_force/`** (`brute_force_cross_check`, the ring). `zeroth`
+  along the same three directions matches #744's PySCF full-space overlap
+  differences within the two error bars combined: SC within 1.5e-7 (0.39 of
+  the bars), PC within 2.9e-8 (0.17). The directions are identical (miss
+  0.0). The pair signs, s_P s_Q read off the data (sum over components of
+  ours × theirs), are [1, 1, 1] on the committed run and consistent
+  (product +1) on every run. They differ from run to run because the
+  solver's CI phases do.
+- **Internal:** `zeroth` against `d_nev + d_cas` within 3.6e-9 everywhere (at
+  most 0.008 of the bars summed), which checks Eqs. 47 + 48's split.
+- **Full 3N translational sum of h** (skew H₂CO): SC within 2.9e-8 (0.20 of
+  twice its family's largest error bar), PC within 3.9e-9 (0.05). The
+  reference parts are within 2.4e-11. Against twice the case's largest
+  committed error bar (5.6e-7) the worst is 0.03.
+- **Guard** (as `../qd_nevpt2_gradient/`): the worst prediction is 0.94 h²
+  (skew H₂CO), the active subspace 1.2e-6, CI 2.3e-5 and u_K 2.1e-8, all
+  against 1e-3. Every PC cut is unchanged.
+
+### Reproducibility
+
+Not byte for byte: the tree's GPU sums reassociate. Three full runs on the
+RX 9060 XT (HIP) were compared, the committed one and two earlier ones of
+the same code, one of them before the overlap floor was raised. The largest
+difference of any Richardson value from the committed one (phases aligned
+per pair) was:
+
+| case | difference | of its error bar |
+|---|---:|---:|
+| `h2co_skew_ccpvdz_sa3` | 5.0e-8 (`pc_d_nev`) | 0.86 |
+| `h2co_skew_ccpvdz_sa3_weighted` | 2.6e-7 (`pc_d_nev`) | 0.42 |
+| `h8_ring_sto3g_sa3` | 8.9e-8 (`sc_zeroth`) | 0.69 |
+
+### Visibility
+
+Each separately coded term's largest |·| over the case's components, then
+the consumer's bar (twice the largest error bar), and in brackets the
+largest per-component |Richardson| / (2 × error bar). The terms are h_PQ's
+reference part Σ_r ρ_r ∇E_r, its PT2 part, d^NEV = h_PQ / (E_Q − E_P) and
+d^CAS. Every pair, both schemes:
+
+| case | pair | scheme | h reference part | h PT2 part | d^NEV | d^CAS |
+|---|---|---|---|---|---|---|
+| `h2co_skew_ccpvdz_sa3` | (0, 1) | SC | 2.8e-5 / 4e-8 (6.9e2) | 1.7e-3 / 4.6e-8 (3.9e4) | 1.1e-2 / 3e-7 (3.9e4) | 0.27 / 1.4e-8 (2.1e7) |
+| `h2co_skew_ccpvdz_sa3` | (0, 1) | PC | 9.7e-5 / 4e-8 (2.4e3) | 6.2e-4 / 4.1e-8 (1.6e4) | 4.1e-3 / 2.7e-7 (1.6e4) | 0.27 / 1.5e-8 (2.1e7) |
+| `h2co_skew_ccpvdz_sa3` | (0, 2) | SC | 5.5e-3 / 4e-8 (1.4e5) | 4.3e-2 / 1.5e-7 (8.9e5) | 0.12 / 4.3e-7 (8.8e5) | 0.72 / 1.8e-8 (5.6e7) |
+| `h2co_skew_ccpvdz_sa3` | (0, 2) | PC | 9.3e-3 / 4e-8 (2.3e5) | 7.1e-2 / 4.1e-8 (1.8e6) | 0.2 / 1.2e-7 (1.8e6) | 0.72 / 1.8e-8 (5.6e7) |
+| `h2co_skew_ccpvdz_sa3` | (1, 2) | SC | 2.5e-4 / 4e-8 (6.2e3) | 9.0e-3 / 5.7e-8 (1.9e5) | 4.5e-2 / 2.9e-7 (1.9e5) | 0.65 / 1.5e-8 (5.3e7) |
+| `h2co_skew_ccpvdz_sa3` | (1, 2) | PC | 2.5e-4 / 4e-8 (6.2e3) | 8.9e-3 / 7.2e-8 (2.2e5) | 4.5e-2 / 3.6e-7 (2.2e5) | 0.65 / 1.5e-8 (5.3e7) |
+| `h2co_skew_ccpvdz_sa3_weighted` | (0, 1) | SC | 2.7e-5 / 1.6e-7 (1.7e2) | 1.3e-3 / 1.7e-7 (7.7e3) | 8.0e-3 / 1.1e-6 (7.5e3) | 2.5e-2 / 5.6e-8 (4.5e5) |
+| `h2co_skew_ccpvdz_sa3_weighted` | (0, 1) | PC | 2.4e-5 / 1.6e-7 (1.5e2) | 2.2e-4 / 3.3e-7 (1.1e3) | 1.4e-3 / 2.1e-6 (1.3e3) | 2.4e-2 / 5.7e-8 (4.2e5) |
+| `h2co_skew_ccpvdz_sa3_weighted` | (0, 2) | SC | 2.1e-2 / 1.6e-7 (1.3e5) | 4.6e-2 / 1.7e-7 (2.8e5) | 0.19 / 4.7e-7 (4.1e5) | 0.25 / 7.1e-8 (5.2e6) |
+| `h2co_skew_ccpvdz_sa3_weighted` | (0, 2) | PC | 2.9e-2 / 1.6e-7 (1.8e5) | 3.7e-2 / 1.7e-7 (2.3e5) | 0.19 / 4.9e-7 (4.0e5) | 0.25 / 7.1e-8 (5.2e6) |
+| `h2co_skew_ccpvdz_sa3_weighted` | (1, 2) | SC | 7.0e-5 / 1.6e-7 (4.4e2) | 2.4e-3 / 1.7e-7 (1.5e4) | 1.2e-2 / 8.1e-7 (1.5e4) | 4.7e-2 / 5.9e-8 (8.7e5) |
+| `h2co_skew_ccpvdz_sa3_weighted` | (1, 2) | PC | 8.9e-5 / 1.6e-7 (5.5e2) | 2.7e-3 / 7.3e-7 (9.7e3) | 1.4e-2 / 3.8e-6 (9.2e3) | 4.7e-2 / 6.0e-8 (8.5e5) |
+| `h8_ring_sto3g_sa3` | (0, 1) | SC | 7.5e-2 / 6.7e-8 (1.1e6) | 1.9e-2 / 6.9e-8 (2.8e5) | 0.39 / 4.9e-7 (8.4e5) | 0.36 / 2.2e-7 (1.6e6) |
+| `h8_ring_sto3g_sa3` | (0, 1) | PC | 7.2e-2 / 6.7e-8 (1.1e6) | 1.8e-2 / 6.7e-8 (2.7e5) | 0.38 / 4.8e-7 (8.0e5) | 0.36 / 2.2e-7 (1.6e6) |
+| `h8_ring_sto3g_sa3` | (0, 2) | SC | 5.9e-3 / 6.7e-8 (8.8e4) | 8.2e-2 / 7.2e-8 (1.2e6) | 0.55 / 4.9e-7 (1.2e6) | 0.74 / 2.6e-7 (2.9e6) |
+| `h8_ring_sto3g_sa3` | (0, 2) | PC | 4.9e-3 / 6.7e-8 (7.3e4) | 8.1e-2 / 6.7e-8 (1.2e6) | 0.55 / 4.6e-7 (1.2e6) | 0.72 / 2.5e-7 (2.9e6) |
+| `h8_ring_sto3g_sa3` | (1, 2) | SC | 1.5e-2 / 6.7e-8 (2.2e5) | 5.0e-2 / 6.8e-8 (7.4e5) | 10 / 1.4e-5 (7.1e5) | 1.9 / 2.5e-7 (7.7e6) |
+| `h8_ring_sto3g_sa3` | (1, 2) | PC | 1.3e-2 / 6.7e-8 (2.0e5) | 5.8e-2 / 6.7e-8 (8.7e5) | 9.5 / 1.1e-5 (8.5e5) | 1.9 / 2.5e-7 (7.8e6) |
+
+**Every term of every pair clears 10× its bar on every case**, by at least
+1.5e2. The weakest is the reference part of the weighted case's pair
+(0, 1). The QD-off `casscf_zeroth` clears it by at least 5e5
+(`visibility[].casscf_zeroth`). No new-case issue is needed.
+
+### Files
+
+`coupling/<case>.json`:
+
+| Key | Meaning |
+|---|---|
+| `name`, `basis`, `aux_basis`, `atoms` (bohr), `ncore`, `ncas`, `nelecas`, `active`, `weights`, `schemes` | the case |
+| `steps`, `energy_noise`, `noise` (per family; `noise.measured` the restarts') | above |
+| `pairs` | P < Q, the order of every per-pair list |
+| `reference` | the polished R₀: `casscf_energies`, `casscf_gaps`, `sc_energies`, `pc_energies`, `sc_heff`, `pc_heff` (n × n, the roots' basis), `sc_heff_vectors`, `pc_heff_vectors` (R, column P at [P n, (P + 1) n)), `sc_heff_gaps`, `pc_heff_gaps`, `gradient_norm`, `casscf_gradient`, `inactive_gaps`, `pc_dropped`, `agreement` (with `../qd_nevpt2/`), and `nac`: per pair `mcscf::df_nac`'s `total`, `numerator`, `csf` (n_atom × 3), `iterations`, `residual` |
+| `seed`, `directions` | 3 × 3N, atom-major |
+| `directional`, `full` (skew H₂CO only) | per family a list over pairs of `central` (per step), `richardson`, `error_bar` (one entry per direction, or n_atom × 3 rows), and `analytic` for `casscf_zeroth`; the derived `{sc,pc}_d_nev`, `{sc,pc}_d_cas` (`richardson`, `error_bar`); `checks`; `displaced`, per component and step the [−h, +h] pair of every family's values and ‖g‖, so every difference can be redone |
+| `guard` | `../qd_nevpt2_gradient/`'s, with `polish_passes` |
+| `visibility` | per pair, `casscf_zeroth` and per scheme each term's `max`, `bar`, `best`, `visible` |
+| `brute_force_cross_check` | the ring only, above |
+
+### Regenerating
+
+From a HIP or CUDA build, on a GPU, under the card's lock
+(`with_gpu_card`, `devtools/lib.sh`):
+
+```sh
+build-hip/tools/qd_nevpt2_gradient/free-breakfast-qd-nevpt2-gradient \
+    test/gtest/data --coupling [case ...]
+```
+
+writes the cases named, or all three, in under two minutes on the RX 9060 XT.
+A refused case writes nothing and fails the run, naming the check.
