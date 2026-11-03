@@ -66,10 +66,11 @@ Lagrangian") with E_I replaced by the transition functional:
 
 1. **The transition RDMs** γ, Γ (`trans_rdm12`).
 2. **The right-hand side**, the transition functional's gradient in the SA
-   parameters. Its orbital part is `response::fock`'s gradient at (γ, Γ)
-   less its gradient at zero RDMs (`../gradient/README.md` "A transition
-   density"), this tree's g = 2 (F − Fᵀ), equal to PySCF's
-   `gen_g_hop_active` vector. **Its CI part y and its part t along the
+   parameters. Its orbital part is `mcscf::transition_orbital_gradient`
+   ([`../transition/`](../transition/README.md)), `response::fock`'s
+   gradient at (γ, Γ) less its gradient at zero RDMs
+   (`../gradient/README.md` "A transition density"), this tree's
+   g = 2 (F − Fᵀ), equal to PySCF's `gen_g_hop_active` vector. **Its CI part y and its part t along the
    rotations among the roots are zero**, at any weights ("Unequal
    weights" below).
 3. **The Z-vector**, `mcscf::zvector` (internal, linked PRIVATE) over the
@@ -194,8 +195,8 @@ the outputs within the spread above, not by the outputs' bits.
 
 `df_transition_gradient`'s, which checks its own memory, plus the CI
 objects, `response::Hessian` and `RelaxedHessian` at the solution (as
-`df_gradient` holds them for a root of a state average), three Focks and the
-Z-vector, none counted. Queued on res.stream(); the call returns with
+`df_gradient` holds them for a root of a state average), the averaged Fock,
+the transition orbital gradient and the Z-vector, none counted. Queued on res.stream(); the call returns with
 everything done.
 
 ## Tests
@@ -213,7 +214,9 @@ products and residual bitwise the first call's and its results within
 solution's).
 Measured on the RTX 3080: h_IJ within 4e-10, d^CSF within 2.2e-10 and d_IJ
 within 1.3e-9 (the skewed case's (0, 2)), the Z-vector in 11 to 19
-products; about 4 s a case.
+products; about 4 s a case. The same file, at the same solutions, holds
+`transition_orbital_gradient`'s ([`../transition/`](../transition/README.md)
+"Tests").
 
 PySCF refuses unequal weights, so there the reference is a finite
 difference of `mcscf::state_overlaps` ([`../overlap/`](../overlap/README.md)),

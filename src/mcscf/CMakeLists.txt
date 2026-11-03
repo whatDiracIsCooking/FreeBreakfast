@@ -11,6 +11,9 @@ add_subdirectory(zvector)
 # The DF-CASSCF nuclear gradient at a solve's solution, state-specific or one
 # root of a state average (over zvector's multipliers).
 add_subdirectory(gradient)
+# The orbital gradient of a transition element <c_s|H|c_r>, over
+# response::fock alone: nac's Z-vector right-hand side.
+add_subdirectory(transition)
 # The SA-CASSCF nonadiabatic couplings between two roots, over gradient's
 # transition-density terms and zvector's multipliers.
 add_subdirectory(nac)
@@ -40,6 +43,7 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::mcscf::solve
   free_breakfast::mcscf::gradient
   free_breakfast::mcscf::nac
+  free_breakfast::mcscf::transition
   free_breakfast::mcscf::overlap
   free_breakfast::mcscf::derivative
   free_breakfast::mcscf::root_rotation
