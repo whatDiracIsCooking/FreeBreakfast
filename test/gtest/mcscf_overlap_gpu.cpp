@@ -44,7 +44,11 @@
 // extrapolated within 1.5e-8), tolerance 4.7e-6. Holding the weights at
 // 1 / nroots instead (the Hessian at the wrong weights, no rotations)
 // misses by 6.0e-3 and 2.2e-2, so the check sees them. About 3 s and 4 s
-// for the fast cases, 5.7 s and 7.5 s for every coordinate. This
+// for the fast cases, 5.7 s and 7.5 s for every coordinate.
+//
+// And df_nac's D^X term (#742), d[D^X] = Sum_xy D^X_xy <phi_x|d phi_y>
+// with the orbitals relaxed, by a ladder over the same re-converged
+// solutions (McscfOverlapDensity, below, which says what it measured). This
 // executable links
 // pipeline for the setup; mcscf does not. Runs the device chain, so needs a
 // GPU.
@@ -543,5 +547,236 @@ INSTANTIATE_TEST_SUITE_P(
                kSkewDelta,
                "Skew3PartlyEqualEveryCoordinate"}),
     [](const auto &info) { return std::string(info.param.label); });
+
+// -------------------------------------------------------------------------
+// df_nac's combination overload at T = 0 and a fixed random D^X on the
+// (t, i), (a, t) and (a, i) blocks, d[D^X] = Sum_xy D^X_xy <phi_x|d phi_y>,
+// against the derivative of
+//
+//   f(R) = Sum_xy D^X_xy O_xy(R),   O(R) = C(R0)^T S(R0, R) C(R),
+//
+// the MO cross overlap <phi_x(R0)|phi_y(R)>, which holds the basis
+// functions' motion and the orbitals' response together. The index order is
+// pinned to the transition density's (D^X_xy in gamma^MN_xy = <M|E_xy|N>'s
+// place, the bra's orbital first), and the sign is the coupling's: the
+// derivative in the ket's geometry. C(R) is the solution re-converged at R
+// from R0's orbitals carried over, as the couplings' check above, its
+// columns phase-aligned to C(R0) (O_yy > 0) before the contraction; a
+// rotation within the core, the active or the virtual block moves f only at
+// second order, D^X being off those blocks.
+//
+// Every coordinate of h2co_ccpvdz_sa2, each a ladder of central differences
+// at t = kDensityT0 / 2^k, k < kDensityRungs (nevpt2_gradient_gpu.cpp's
+// richardson_ladder, its steadiest extrapolant), within 1e-7 of
+// max |d[D^X]|, the standing rule's relative bar; a coordinate whose ratios
+// never settle at 4 is logged with them and not asserted. Visibility: the
+// basis-motion part (NacCombination::basis_motion) and the orbital-response
+// part (response, T being zero) each have a max over 10x the bar, so the
+// ladder sees both. Under FBF_SKIP_IF_FAST_TESTS(). Measured on the RTX
+// 3080: all 12 coordinates settled, the worst extrapolant 1.3e-8 of
+// max |d[D^X]| = 1.50 (bar 1.5e-7); motion 1.0e7 and response 8.5e6 times
+// the bar; min |O_yy| 0.9975; 15 s.
+
+constexpr double kDensityT0 = 1.6e-2;
+constexpr std::int32_t kDensityRungs = 7;
+constexpr double kDensityTolerance = 1e-7;
+constexpr double kDensityVisibility = 10.0;
+
+// The longest run of ratios (D_k - D_{k+1}) / (D_{k+1} - D_{k+2}) in
+// (3.2, 4.8), and over it the finer of the two neighbouring Richardson
+// extrapolants (4 D_{k+2} - D_{k+1}) / 3 that agree best (the steadiest);
+// at a run of one, its only one. nevpt2_gradient_gpu.cpp's.
+struct Ladder {
+  std::int32_t run = 0;
+  double richardson = 0.0;
+  std::string ratios;
+};
+
+Ladder richardson_ladder(std::span<const double> d) {
+  Ladder l;
+  std::int32_t best_end = -1;
+  std::int32_t len = 0;
+  for (std::size_t k = 0; k + 2 < d.size(); ++k) {
+    const double ratio = (d[k] - d[k + 1]) / (d[k + 1] - d[k + 2]);
+    l.ratios += std::format(" {:.3f}", ratio);
+    len = (ratio > 3.2 && ratio < 4.8) ? len + 1 : 0;
+    if (len > l.run) {
+      l.run = len;
+      best_end = static_cast<std::int32_t>(k);
+    }
+  }
+  if (l.run == 0) {
+    return l;
+  }
+  const auto r = [&](const std::size_t k) { return ((4.0 * d[k + 2]) - d[k + 1]) / 3.0; };
+  auto at = static_cast<std::size_t>(best_end);
+  if (l.run > 1) {
+    double gap = std::numeric_limits<double>::infinity();
+    for (auto k = static_cast<std::size_t>(best_end - l.run + 1);
+         k < static_cast<std::size_t>(best_end); ++k) {
+      if (std::abs(r(k + 1) - r(k)) < gap) {
+        gap = std::abs(r(k + 1) - r(k));
+        at = k + 1;
+      }
+    }
+  }
+  l.richardson = r(at);
+  return l;
+}
+
+std::vector<double> download(fb::DeviceResources &res, const double *data, std::size_t count) {
+  std::vector<double> host(count);
+  EXPECT_EQ(wwr::wwrMemcpyAsync(host.data(), data, sizeof(double) * count,
+                                wwr::wwrMemcpyDeviceToHost, res.stream()),
+            wwr::wwrSuccess);
+  EXPECT_TRUE(res.sync().has_value());
+  return host;
+}
+
+// f at R0 displaced by @p step along @p coordinate: Sum_xy D_xy O_xy, O's
+// columns phase-aligned. The smallest |O_yy| is kept in @p diagonal.
+double density_overlap(const fb::json &entry, const Converged &reference, std::size_t coordinate,
+                       double step, std::span<const double> d_x, fb::NodeResources &node,
+                       double &diagonal) {
+  std::vector<double> coords = reference_coords(entry);
+  coords[coordinate] += step;
+  const std::unique_ptr<Converged> displaced = converge_displaced(entry, coords, reference, node);
+  if (displaced == nullptr) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  fb::DeviceResources &res = node.device(0);
+  const std::size_t nao = reference.basis().nao_sphe();
+  fb::Buffers::device<double> s(nao * nao, res.device());
+  const fb::Status mixed =
+      fb::overlap_mixed_spherical(res, reference.basis(), displaced->basis(), s);
+  EXPECT_TRUE(mixed.has_value()) << mixed.error().message;
+  // Column-major: S_mn at m + nao n, C_mp at m + nao p.
+  const std::vector<double> s_host = download(res, s.data(), nao * nao);
+  const std::vector<double> c0 = download(res, reference.solution->c.data(), nao * nao);
+  const std::vector<double> c = download(res, displaced->solution->c.data(), nao * nao);
+  std::vector<double> sc(nao * nao, 0.0);
+  for (std::size_t y = 0; y < nao; ++y) {
+    for (std::size_t nu = 0; nu < nao; ++nu) {
+      const double cy = c[nu + (nao * y)];
+      for (std::size_t mu = 0; mu < nao; ++mu) {
+        sc[mu + (nao * y)] += s_host[mu + (nao * nu)] * cy;
+      }
+    }
+  }
+  const auto o = [&](std::size_t x, std::size_t y) {
+    double v = 0.0;
+    for (std::size_t mu = 0; mu < nao; ++mu) {
+      v += c0[mu + (nao * x)] * sc[mu + (nao * y)];
+    }
+    return v;
+  };
+  double f = 0.0;
+  for (std::size_t y = 0; y < nao; ++y) {
+    const double oyy = o(y, y);
+    diagonal = std::min(diagonal, std::abs(oyy));
+    const double sign = oyy < 0.0 ? -1.0 : 1.0;
+    for (std::size_t x = 0; x < nao; ++x) {
+      const double dxy = d_x[(x * nao) + y];
+      if (dxy != 0.0) {
+        f += dxy * sign * o(x, y);
+      }
+    }
+  }
+  return f;
+}
+
+TEST(McscfOverlapDensity, LadderMatchesNac) {
+  FBF_REQUIRE_GPU();
+  FBF_SKIP_IF_FAST_TESTS();
+  const fb::json &entry = reference_case("h2co_ccpvdz_sa2");
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto start_time = std::chrono::steady_clock::now();
+
+  fb::NodeResources node;
+  fb::DeviceResources &res = node.device(0);
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const std::vector<double> coords = reference_coords(entry);
+  const std::unique_ptr<Converged> reference = converge_reference(entry, coords, weights, node);
+  ASSERT_NE(reference, nullptr);
+  const fb::mcscf::Solution &sol = *reference->solution;
+  const std::size_t nroots = sol.roots.energies.size();
+  const std::size_t nmo = reference->basis().nao_sphe();
+  const auto ncore = static_cast<std::size_t>(reference->ncore);
+  const std::size_t nocc = ncore + static_cast<std::size_t>(reference->ncas);
+
+  // D^X on (t, i), (a, t) and (a, i): row in a later space than its column.
+  const auto space = [&](std::size_t p) { return p < ncore ? 0 : (p < nocc ? 1 : 2); };
+  std::mt19937_64 engine{742};
+  std::uniform_real_distribution<double> uniform(-1.0, 1.0);
+  std::vector<double> d_x(nmo * nmo, 0.0);
+  for (std::size_t x = 0; x < nmo; ++x) {
+    for (std::size_t y = 0; y < nmo; ++y) {
+      if (space(x) > space(y)) {
+        d_x[(x * nmo) + y] = uniform(engine);
+      }
+    }
+  }
+
+  const fb::DensityFitted &df = reference->df();
+  const auto &molecule = reference->calc->get<fb::MoleculeOutput>();
+  const auto &pairs = reference->calc->get<fb::PrimitivePairClassesOutput>();
+  const auto &h = reference->calc->get<fb::CoreHamiltonianOutput>();
+  const std::vector<double> t(nroots * nroots, 0.0);
+  auto d =
+      fb::mcscf::df_nac(res, molecule->molecule, reference->basis(), pairs->classes, df.aux, h->h,
+                        df.b, df.l.data(), sol, reference->ncore, reference->ncas, t, d_x);
+  ASSERT_TRUE(d.has_value()) << d.error().message;
+  double scale = 0.0;
+  double motion = 0.0;
+  double response = 0.0;
+  for (std::size_t i = 0; i < d->total.size(); ++i) {
+    scale = std::max(scale, std::abs(d->total[i]));
+    motion = std::max(motion, std::abs(d->basis_motion[i]));
+    response = std::max(response, std::abs(d->response[i]));
+    EXPECT_EQ(d->csf[i], 0.0);
+  }
+  const double bar = kDensityTolerance * scale;
+  EXPECT_GT(motion, kDensityVisibility * bar);
+  EXPECT_GT(response, kDensityVisibility * bar);
+
+  double worst = 0.0;
+  double diagonal = std::numeric_limits<double>::infinity();
+  std::int32_t unsettled = 0;
+  for (std::size_t x = 0; x < coords.size(); ++x) {
+    SCOPED_TRACE(std::format("coordinate {}", x));
+    std::vector<double> ladder;
+    for (std::int32_t k = 0; k < kDensityRungs; ++k) {
+      const double step = std::ldexp(kDensityT0, -k);
+      const double plus = density_overlap(entry, *reference, x, step, d_x, node, diagonal);
+      const double minus = density_overlap(entry, *reference, x, -step, d_x, node, diagonal);
+      ladder.push_back((plus - minus) / (2.0 * step));
+    }
+    const Ladder l = richardson_ladder(ladder);
+    const double want = d->total[x];
+    if (l.run < 3) {
+      ++unsettled;
+      std::cout << std::format("[ overlap] D^X x {}: not smooth, run {}, ratios{}; analytic "
+                               "{:.12e}, finest {:.12e}\n",
+                               x, l.run, l.ratios, want, ladder.back());
+      continue;
+    }
+    EXPECT_NEAR(l.richardson, want, bar) << "ratios:" << l.ratios;
+    worst = std::max(worst, std::abs(l.richardson - want));
+    std::cout << std::format("[ overlap] D^X x {}: analytic {:.12e} (motion {:+.6e}, response "
+                             "{:+.6e}), Richardson {:.12e}, relative {:.2e}, ratios{}\n",
+                             x, want, d->basis_motion[x], d->response[x], l.richardson,
+                             std::abs(l.richardson - want) / scale, l.ratios);
+  }
+  EXPECT_LT(unsettled, static_cast<std::int32_t>(coords.size()));
+
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start_time;
+  std::cout << std::format(
+      "[ overlap] D^X: max |d| {:.6e}, bar {:.2e}, worst {:.2e} ({:.2e} "
+      "relative), {} unsettled, visibility motion {:.3e} and response "
+      "{:.3e} times the bar, min |O_yy| {:.6f}, z-vector {} products to {:.2e}, "
+      "{:.2f} s in all\n",
+      scale, bar, worst, worst / scale, unsettled, motion / bar, response / bar, diagonal,
+      d->iterations, d->residual, seconds.count());
+}
 
 } // namespace

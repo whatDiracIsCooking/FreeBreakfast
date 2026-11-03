@@ -6,7 +6,7 @@
 # SphericalMatrixAO, Buffers, Solution and Result are in its signature, so
 # core::resources, core::wwr, molecule, basis, mmd, recipes::matrix_ao,
 # mcscf::solve and core::error_handling are PUBLIC.
-# The calls it makes are PRIVATE.
+# The calls it makes, and root_rotation's kRootGapFloor, are PRIVATE.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.mcscf.nac
@@ -39,4 +39,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::mcscf::zvector
   free_breakfast::mcscf::gradient
   free_breakfast::mcscf::transition
+  free_breakfast::mcscf::root_rotation
 )
