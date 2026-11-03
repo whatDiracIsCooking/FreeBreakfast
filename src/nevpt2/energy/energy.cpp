@@ -147,6 +147,23 @@ void add_pair_shares(const std::vector<std::vector<double>> &tables, const int64
   }
 }
 
+// The strongly contracted amplitudes of one slab's perturbers, in its tables'
+// order, appended to @p out[J] for each state J: c_t = -1 / (Δ_t + H^J_t /
+// N^J_t), the coefficient of P_t V|J⟩ in Ψ_J⁽¹⁾, and 0 for a perturber
+// norm_to_energy drops (ScAmplitudes). Reads the tables add_pair_shares does.
+void append_sc_amplitudes(const std::vector<std::vector<double>> &tables, const int64_t ns,
+                          const std::vector<double> &diff, std::vector<std::vector<double>> &out) {
+  out.resize(static_cast<size_t>(ns));
+  for (int64_t j = 0; j < ns; ++j) {
+    const std::vector<double> &norm = tables[static_cast<size_t>((j * ns) + j)];
+    const std::vector<double> &h = tables[static_cast<size_t>((ns * ns) + j)];
+    for (size_t k = 0; k < norm.size(); ++k) {
+      out[static_cast<size_t>(j)].push_back(
+          std::abs(norm[k]) > kNumericalZero ? -1.0 / (diff[k] + (h[k] / norm[k])) : 0.0);
+    }
+  }
+}
+
 // The walk's step: @p batch, or the whole extent in one piece.
 int32_t batch_step(const int32_t extent, const int32_t batch) {
   return batch > 0 ? batch : std::max(extent, 1);
@@ -555,7 +572,8 @@ Result<Buffers::device<double>> make_a25(DeviceResources &res, const EinsumOpera
 // Sr: over a slab of h2e_v_Sr, (nr, a, a, a), and h1e_v_Sr's rows.
 Result<std::vector<std::pair<double, double>>>
 energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, const int32_t batch,
-          std::span<const ActiveOperands> ops, const int64_t ns) {
+          std::span<const ActiveOperands> ops, const int64_t ns,
+          std::vector<std::vector<double>> *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nv = blocks.nvirt;
@@ -606,7 +624,12 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
     }
 
     const std::vector<double> diff(e_virt.begin() + b0, e_virt.begin() + b1);
-    add_pair_shares(FBF_TRY(download_pair_tables(res, tables, ns, nb)), ns, diff, out);
+    const std::vector<std::vector<double>> read =
+        FBF_TRY(download_pair_tables(res, tables, ns, nb));
+    add_pair_shares(read, ns, diff, out);
+    if (amplitudes != nullptr) {
+      append_sc_amplitudes(read, ns, diff, *amplitudes);
+    }
   }
   return out;
 }
@@ -614,7 +637,8 @@ energy_sr(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
 // Si: over a slab of h2e_v_Si, (a, a, ni, a), and h1e_v_Si's columns.
 Result<std::vector<std::pair<double, double>>>
 energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, const int32_t batch,
-          std::span<const ActiveOperands> ops, const int64_t ns) {
+          std::span<const ActiveOperands> ops, const int64_t ns,
+          std::vector<std::vector<double>> *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const std::vector<int64_t> d2{n, n};
@@ -681,7 +705,12 @@ energy_si(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in, 
     for (double &x : diff) {
       x = -x;
     }
-    add_pair_shares(FBF_TRY(download_pair_tables(res, tables, ns, nb)), ns, diff, out);
+    const std::vector<std::vector<double>> read =
+        FBF_TRY(download_pair_tables(res, tables, ns, nb));
+    add_pair_shares(read, ns, diff, out);
+    if (amplitudes != nullptr) {
+      append_sc_amplitudes(read, ns, diff, *amplitudes);
+    }
   }
   return out;
 }
@@ -1016,7 +1045,8 @@ energy_sij(DeviceResources &res, const MoBlocks &blocks, const int32_t batch,
 // ⟨I|J⟩'s, so a transition has none.
 Result<std::vector<std::pair<double, double>>>
 energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
-           const int32_t batch, std::span<const ActiveOperands> ops, const int64_t ns) {
+           const int32_t batch, std::span<const ActiveOperands> ops, const int64_t ns,
+           std::vector<std::vector<double>> *amplitudes) {
   const wwr::wwrStream_t s = res.stream();
   const int64_t n = blocks.ncas;
   const int64_t nc = blocks.ncore;
@@ -1082,7 +1112,24 @@ energy_sir(DeviceResources &res, const MoBlocks &blocks, const EnergyInputs &in,
         diff.push_back(e_virt[static_cast<size_t>(r)] - e_core[static_cast<size_t>(i)]);
       }
     }
-    add_pair_shares(FBF_TRY(download_pair_tables(res, tables, ns, count)), ns, diff, out);
+    const std::vector<std::vector<double>> read =
+        FBF_TRY(download_pair_tables(res, tables, ns, count));
+    add_pair_shares(read, ns, diff, out);
+    if (amplitudes != nullptr) {
+      // The tables run (i, r); ScAmplitudes' Sir is [r ncore + i] over every r.
+      std::vector<std::vector<double>> slab_c;
+      append_sc_amplitudes(read, ns, diff, slab_c);
+      amplitudes->resize(static_cast<size_t>(ns),
+                         std::vector<double>(static_cast<size_t>(nv * nc), 0.0));
+      for (int64_t j = 0; j < ns; ++j) {
+        for (int64_t i = 0; i < nc; ++i) {
+          for (int64_t r = 0; r < nb; ++r) {
+            (*amplitudes)[static_cast<size_t>(j)][static_cast<size_t>(((b0 + r) * nc) + i)] =
+                slab_c[static_cast<size_t>(j)][static_cast<size_t>((i * nb) + r)];
+          }
+        }
+      }
+    }
   }
   return out;
 }
@@ -1126,7 +1173,8 @@ Result<ActiveOperands> active_operands(DeviceResources &res, const MoBlocks &blo
 
 Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBlocks &blocks,
                                                 std::span<const EnergyInputs> pairs,
-                                                const int64_t n, const int32_t batch) {
+                                                const int64_t n, const int32_t batch,
+                                                ScAmplitudes *amplitudes) {
   const ScopedDeviceIndex on{res.dev_idx()};
   std::vector<ActiveOperands> ops;
   for (const EnergyInputs &pair : pairs) {
@@ -1137,8 +1185,13 @@ Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBl
   const EnergyInputs &in = pairs.front();
 
   std::array<std::vector<std::pair<double, double>>, 8> classes;
-  classes[0] = FBF_TRY(energy_sr(res, blocks, in, batch, ops, n));
-  classes[1] = FBF_TRY(energy_si(res, blocks, in, batch, ops, n));
+  if (amplitudes != nullptr) {
+    *amplitudes = ScAmplitudes{};
+  }
+  classes[0] =
+      FBF_TRY(energy_sr(res, blocks, in, batch, ops, n, amplitudes ? &amplitudes->sr : nullptr));
+  classes[1] =
+      FBF_TRY(energy_si(res, blocks, in, batch, ops, n, amplitudes ? &amplitudes->si : nullptr));
   // Sijrs reads no RDM: every state's is the one number, and every
   // transition's is ⟨I|J⟩ = 0 times it.
   const std::pair<double, double> sijrs = FBF_TRY(energy_sijrs(res, blocks, in, batch));
@@ -1150,7 +1203,8 @@ Result<std::vector<ClassEnergies>> sc_couplings(DeviceResources &res, const MoBl
   classes[4] = FBF_TRY(energy_srsi(res, blocks, batch, ops, n));
   classes[5] = FBF_TRY(energy_srs(res, blocks, batch, ops, n));
   classes[6] = FBF_TRY(energy_sij(res, blocks, batch, ops, n));
-  classes[7] = FBF_TRY(energy_sir(res, blocks, in, batch, ops, n));
+  classes[7] =
+      FBF_TRY(energy_sir(res, blocks, in, batch, ops, n, amplitudes ? &amplitudes->sir : nullptr));
 
   std::vector<ClassEnergies> out(static_cast<size_t>(n * n));
   for (size_t p = 0; p < out.size(); ++p) {

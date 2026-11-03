@@ -7,7 +7,9 @@ the SC-QD-NEVPT2 effective Hamiltonian of several
 and their QD effective Hamiltonian ([PC-NEVPT2](#pc-nevpt2),
 [PC-QD-NEVPT2](#pc-qd-nevpt2)) and its reverse pass
 ([The PC reverse pass](#the-pc-reverse-pass)), each class walking its
-external index in batches over the density-fitted slabs. Link `free_breakfast::nevpt2::energy`.
+external index in batches over the density-fitted slabs; the two effective
+Hamiltonians also hand over their amplitudes
+([The amplitude hand-over](#the-amplitude-hand-over)). Link `free_breakfast::nevpt2::energy`.
 
     class_energies(res, blocks, in, batch) -> ClassEnergies
         norms[8], energies[8]   Sr, Si, Sijrs, Sijr, Srsi, Srs, Sij, Sir
@@ -253,6 +255,28 @@ one workspace region, pair (I, J)'s y block (tuples × m_J) at
 denominator checked as `pc_class_energies` does. The memory over one class
 is n solves (λ, T, U, and t1) and n² − n transition T and t1, d × m_J each,
 held across the walk; the slab's y grows as n².
+
+## The amplitude hand-over
+
+    sc_effective_hamiltonian(res, blocks, pairs, batch, &sc_amplitudes)
+    pc_effective_hamiltonian(res, blocks, pairs, batch, &pc_amplitudes)
+
+Both take an optional last argument that receives each state's first-order
+wave function in the three classes with one external orbital, Sr, Si and
+Sir, which is what the QD-NEVPT2 PT2 transition density
+([`../nac/`](../nac/README.md)) contracts. Nothing is re-solved: the walks
+already form these and only keep them. The elements are the same with and
+without it (`Nevpt2Pt2Density.AmplitudeOutputLeavesHeffUnchanged`).
+
+- **`ScAmplitudes`**: per state J and perturber t, c_t = −1 / (Δ_t +
+  H^J_t / N^J_t), J's own denominator from its N and H tables, and 0 where
+  `_norm_to_energy`'s guard drops the perturber. Ψ_J⁽¹⁾ holds c_t P_t V|J⟩.
+  Sr over r, Si over i, Sir over (r, i) at r ncore + i (its tables run
+  (i, r), and are reordered).
+- **`PcAmplitudes`**: per class and state J, the solve's U_J (moved out once
+  the class is finished and checked) and g_tk = y_{J,tk} / (λ_k + Δ_t) from
+  J's own rows of each slab, tuples × m_J on the host. Ψ_J⁽¹⁾ holds
+  −Σ_k g_tk Σ_μ U_J[μ,k] φ^J_μ. A refusal leaves it unspecified.
 
 ## The SC reverse pass
 

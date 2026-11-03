@@ -47,9 +47,10 @@ Result<int64_t> qd_states(const char *who, std::span<const EnergyInputs> pairs) 
 Result<std::vector<ClassEnergies>> sc_effective_hamiltonian(DeviceResources &res,
                                                             const MoBlocks &blocks,
                                                             std::span<const EnergyInputs> pairs,
-                                                            const int32_t batch) {
+                                                            const int32_t batch,
+                                                            ScAmplitudes *amplitudes) {
   const int64_t n = FBF_TRY(qd_states("sc_effective_hamiltonian", pairs));
-  return sc_couplings(res, blocks, pairs, n, batch);
+  return sc_couplings(res, blocks, pairs, n, batch, amplitudes);
 }
 
 // n, as qd_states, when besides @p hbar is n² and @p bars n long, every entry
@@ -89,9 +90,10 @@ Result<ScEffectiveHamiltonianAdjoint> sc_effective_hamiltonian_adjoint(
 Result<std::vector<PcClassEnergies>> pc_effective_hamiltonian(DeviceResources &res,
                                                               const MoBlocks &blocks,
                                                               std::span<const EnergyInputs> pairs,
-                                                              const int32_t batch) {
+                                                              const int32_t batch,
+                                                              PcAmplitudes *amplitudes) {
   const int64_t n = FBF_TRY(qd_states("pc_effective_hamiltonian", pairs));
-  return pc_couplings(res, blocks, pairs, n, batch);
+  return pc_couplings(res, blocks, pairs, n, batch, amplitudes);
 }
 
 Result<PcEffectiveHamiltonianAdjoint> pc_effective_hamiltonian_adjoint(

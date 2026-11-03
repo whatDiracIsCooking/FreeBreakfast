@@ -10,3 +10,4 @@ export import free_breakfast.nevpt2.density_fitting;
 export import free_breakfast.nevpt2.rdm;
 export import free_breakfast.nevpt2.energy;
 export import free_breakfast.nevpt2.gradient;
+export import free_breakfast.nevpt2.nac;

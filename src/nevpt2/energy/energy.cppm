@@ -12,6 +12,7 @@ export module free_breakfast.nevpt2.energy;
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
+import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.nevpt2.density_fitting;
 
@@ -78,6 +79,51 @@ struct ClassEnergies {
 [[nodiscard]] Result<ClassEnergies> class_energies(DeviceResources &res, const MoBlocks &blocks,
                                                    const EnergyInputs &in, int32_t batch);
 
+/// @brief Each state's SC first-order wave function in the classes with one
+/// external orbital and the rest active, Sr, Si and Sir: per perturber t,
+/// Ψ_J⁽¹⁾ holds c_t P_t V|J⟩ with
+///
+///     c_t = -1 / (Δ_t + H^J_t / N^J_t),
+///
+/// state J's own denominator, and c_t = 0 where its norm N^J_t vanishes
+/// (|N^J_t| <= 1e-14, the energy's guard). sc_effective_hamiltonian hands it
+/// over, for the PT2 transition density ⟨Ψ_J⁽¹⁾|E_xy|K⟩.
+struct ScAmplitudes {
+  /// @brief [J]: Sr's c over the virtual r, nvirt.
+  std::vector<std::vector<double>> sr;
+  /// @brief [J]: Si's c over the core i, ncore.
+  std::vector<std::vector<double>> si;
+  /// @brief [J]: Sir's c over (r, i), nvirt x ncore row-major, [r ncore + i].
+  std::vector<std::vector<double>> sir;
+};
+
+/// @brief Each state's PC first-order wave function in Sr, Si and Sir, in its
+/// own solve's eigenbasis: per tuple t, Ψ_J⁽¹⁾ holds -Σ_k g_tk Σ_μ U_J[μ, k]
+/// |φ^J_μ⟩, φ^J_μ the class's internal functions on |J⟩ (the basis S_J is
+/// the metric of), with
+///
+///     g_tk = y_{J,tk} / (λ_{J,k} + Δ_t),   y_{J,t} = U_Jᵀ b_{J,t},
+///
+/// the amplitudes pc_effective_hamiltonian's energy is -Σ_k y_tk g_tk of.
+/// S_J's cut modes are not in U_J, as the solve cut them.
+struct PcAmplitudes {
+  /// @brief One class's amplitudes, one entry per state J; empty when the
+  /// class has no tuple (no core orbital, say).
+  struct Class {
+    /// @brief U_J, d x m_J column-major, as the solve leaves it.
+    std::vector<Buffers::device<double>> u;
+    /// @brief g, tuples x m_J row-major: Sr's over r, Si's over i, Sir's over
+    /// (r, i) at r ncore + i.
+    std::vector<std::vector<double>> g;
+  };
+  /// @brief d = n³, basis (p, q, r) row-major.
+  Class sr;
+  /// @brief d = n³, basis (p, q, r) row-major.
+  Class si;
+  /// @brief d = 2 n², basis (x, p, q) row-major, x the spin coupling.
+  Class sir;
+};
+
 /// @brief The SC-QD-NEVPT2 second-order effective Hamiltonian of n states that
 /// share orbitals: element [I n + J] holds, per class, ⟨I|V|Ψ_J⁽¹⁾⟩, the
 /// unsymmetrized correction with I the bra (row) and J the ket (column).
@@ -108,12 +154,17 @@ struct ClassEnergies {
 /// blocks (a16, ...) and every pair's norm intermediates (dm3_h, ...) at
 /// once, and its per-slab tables grow as n² + n.
 ///
+/// When @p amplitudes is not null it is filled with each state's first-order
+/// wave function in the three classes with one external orbital and the rest
+/// active (ScAmplitudes); the elements are the same either way.
+///
 /// @return The n² elements; InvalidConfig when @p pairs is empty or not n²
 ///         long, or when a pair's shared field is not the first pair's; or
 ///         class_energies' errors.
 [[nodiscard]] Result<std::vector<ClassEnergies>>
 sc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
-                         std::span<const EnergyInputs> pairs, int32_t batch);
+                         std::span<const EnergyInputs> pairs, int32_t batch,
+                         ScAmplitudes *amplitudes = nullptr);
 
 /// @brief Where class_energies_adjoint adds the bars dE/dx of the class-level
 /// inputs, all on the device, each in its EnergyInputs field's layout (or,
@@ -307,13 +358,19 @@ struct PcClassEnergies {
 /// eigenbasis, holding every state's solve and every pair's transition rows
 /// (d x m each) across the walk.
 ///
+/// When @p amplitudes is not null it is filled with each state's first-order
+/// wave function in Sr, Si and Sir, in its own solve's eigenbasis
+/// (PcAmplitudes); the elements are the same either way, and a refusal
+/// leaves it unspecified.
+///
 /// @return The n² elements; sc_effective_hamiltonian's InvalidConfig for
 ///         malformed @p pairs; or pc_class_energies' errors, a refused class
 ///         (no gap at S_J's cut, or a denominator λ + Δ not positive) naming
 ///         the class and the state J.
 [[nodiscard]] Result<std::vector<PcClassEnergies>>
 pc_effective_hamiltonian(DeviceResources &res, const MoBlocks &blocks,
-                         std::span<const EnergyInputs> pairs, int32_t batch);
+                         std::span<const EnergyInputs> pairs, int32_t batch,
+                         PcAmplitudes *amplitudes = nullptr);
 
 /// @brief pc_class_energies_adjoint's result: the energies it walked, and each
 /// class's degree-one homogeneity assembled from its bars.
