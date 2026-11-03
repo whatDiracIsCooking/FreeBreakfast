@@ -109,6 +109,8 @@ it, and the SA gradient links it PRIVATE. Everything is in
 | `CpSolver` | How `zvectors` solves: `PerColumn`, `Schur` or `Coupled` (below) |
 | `ZVectors` | `zvectors`' result: `orbital` (size() × ncol), `ci` (ncol blocks of dim × nroots), `theta` (ncol of `ZVector::theta`), and per column `iterations` and `residuals` |
 | `zvectors` | The same equations on ncol right-hand sides at once: g (size() × ncol), an optional y (ncol blocks) and an optional t (ncol of them), by a `CpSolver` |
+| `kRotationWeightTolerance` | 1e-8: two weights this close, relative to the larger, are equal, and their pair stays projected |
+| `rotating_pairs` | Which pairs r < s (`ZVector::theta`'s order) rotate: those whose weights differ past `kRotationWeightTolerance`. `mcscf::root_pair_multipliers` splits a τ by it (`../gradient/README.md` "Holding the roots apart") |
 
 ## The solve
 

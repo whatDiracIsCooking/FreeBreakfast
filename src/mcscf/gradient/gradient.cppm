@@ -9,7 +9,10 @@
 /// d(P|Q). A state average's root is over its Z-vector's multipliers, or the
 /// caller's, and a caller may add an MO adjoint of its own to the same
 /// densities. At a transition density the core's own energy is switched off
-/// (@ref df_transition_gradient). See README.md for each term's derivation.
+/// (@ref df_transition_gradient). And the multipliers that hold the roots
+/// apart for a Lagrangian not invariant to their rotation
+/// (@ref root_pair_multipliers, @ref zeta_terms). See README.md for each
+/// term's derivation.
 
 export module free_breakfast.mcscf.gradient;
 
@@ -22,6 +25,8 @@ import free_breakfast.basis;
 import free_breakfast.molecule;
 import free_breakfast.integrals.mmd;
 import free_breakfast.recipes.matrix_ao;
+import free_breakfast.ci.solver;
+import free_breakfast.ci.rdm;
 import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.zvector;
 
@@ -226,5 +231,91 @@ df_transition_gradient(DeviceResources &res, const Molecule &molecule, const Bas
 ///         weight is below -1e-10. The messages name mcscf::df_gradient.
 [[nodiscard]] Result<std::vector<double>> sa_gradient_weights(const Solution &solution,
                                                               size_t ncas);
+
+/// @brief The multipliers on the conditions <c_s|H|c_r> = 0, r < s, that a
+/// Lagrangian not invariant to rotating the roots among themselves carries
+/// (README.md "Holding the roots apart"), each pair r < s in (r, s)
+/// lexicographic order (ZVector::theta's), nroots (nroots - 1) / 2 of them.
+struct RootPairMultipliers {
+  /// @brief tau_sr = c_s . y_r - c_r . y_s, the Lagrangian's derivative
+  /// along the rotation c_r gaining Theta_sr c_s, for every pair.
+  std::vector<double> tau;
+  /// @brief zeta_sr = -tau_sr / (E_s - E_r) for a pair of equal weights,
+  /// zero for the rest: the closed-form multiplier zvector does not solve
+  /// for.
+  std::vector<double> zeta;
+  /// @brief t_sr = tau_sr / (2 (w_r - w_s)) for a pair of unequal weights,
+  /// zero for the rest: zvector's @p theta_rhs.
+  std::vector<double> theta_rhs;
+};
+
+/// @brief tau from a caller's raw CI adjoint, split by @c rotating_pairs
+/// (zvector's own weight test) into the equal-weight pairs' closed-form
+/// zeta and the unequal pairs' rotation right-hand side t.
+///
+/// @p y_bar is dE/dc_r for every root, the CI adjoint before any projection
+/// or weighting, on the device as dim x nroots column-major (zvector's
+/// @p ci_rhs layout), dim the roots' vector length. @p weights are the
+/// average's w_r, one per root (@ref sa_gradient_weights'). tau is one gemm
+/// C^T y_bar, read back to the host. Queued on res.stream() with res.blas()
+/// (host pointer mode), and waited for. One root has no pairs: three empty
+/// vectors.
+///
+/// @return The multipliers; InvalidConfig if @p roots holds no root or not
+///         a whole number of vectors, @p weights is not one per root, or
+///         @p y_bar is null; Numerical, naming the pair and its gap, when two
+///         roots are closer than @c kRootGapFloor hartree (zeta divides by
+///         the gap, and zvector divides t by it); or the GpuRuntime error of
+///         the gemm or the copy.
+[[nodiscard]] Result<RootPairMultipliers> root_pair_multipliers(DeviceResources &res,
+                                                                const ci::Roots &roots,
+                                                                std::span<const double> weights,
+                                                                const double *y_bar);
+
+/// @brief A zeta's two consumers, over its pairs' transition RDMs.
+struct ZetaTerms {
+  /// @brief zeta . g = Sum_{r<s} zeta_sr g^(sr), g^(sr)
+  /// @c transition_orbital_gradient's, on the device over the packed pairs
+  /// of @c response::pack_orbital_pairs: a Z-vector's orbital right-hand
+  /// side.
+  Buffers::device<double> orbital;
+  /// @brief gamma^zeta = Sum_{r<s} zeta_sr gamma^(sr), ncas^2 row-major on
+  /// the host.
+  std::vector<double> gamma;
+  /// @brief Gamma^zeta = Sum_{r<s} zeta_sr Gamma^(sr), ncas^4 row-major on
+  /// the host. With @ref gamma, what one @ref df_transition_gradient takes
+  /// for zeta's nuclear term.
+  std::vector<double> gamma2;
+};
+
+/// @brief zeta . g and the folded transition RDMs (gamma^zeta, Gamma^zeta)
+/// of @p zeta, one value per pair r < s in @ref RootPairMultipliers' order
+/// (its zeta, or any other).
+///
+/// For each pair with zeta_sr nonzero, in that order: @p rdm's
+/// @c trans_rdm12(c_s, c_r) of the solution's roots, read back; g^(sr) from
+/// @c transition_orbital_gradient over @p ppaa and @p papa
+/// (@c casscf_integrals' over solution.c, shared by every pair); then
+/// zeta_sr g^(sr) added into the orbital part by an axpy, and zeta_sr times
+/// the RDMs into the folded ones on the host, each from zero. A pair at
+/// zero costs nothing, so the unequal pairs of a split are free. Bitwise
+/// from call to call, as g^(sr) is.
+///
+/// @p rdm is over the roots' strings; @p molecule, @p h, @p b, @p naux,
+/// @p ncore and @p ncas are @c transition_orbital_gradient's, solution.c its
+/// orbitals. Queued on res.stream() with res.blas() (host pointer mode),
+/// synchronized per pair. Beyond each call's own, ncas^2 + ncas^4 device
+/// doubles for the RDMs.
+///
+/// @return The terms; InvalidConfig if @p zeta is not one per pair of the
+///         solution's roots, ncore and ncas do not fit solution.c, or the
+///         CI vectors are not nroots of @p rdm's size; or the first error of
+///         @c trans_rdm12, @c transition_orbital_gradient, the axpy or a
+///         copy.
+[[nodiscard]] Result<ZetaTerms>
+zeta_terms(DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
+           const Buffers::device<double> &b, int32_t naux, const Solution &solution, int32_t ncore,
+           int32_t ncas, const Buffers::device<double> &ppaa, const Buffers::device<double> &papa,
+           ci::Rdm &rdm, std::span<const double> zeta);
 
 } // namespace free_breakfast::mcscf

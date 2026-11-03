@@ -207,6 +207,7 @@ add_executable(
   mcscf_transition_gradient_gpu.cpp
   mcscf_nac_gpu.cpp
   mcscf_overlap_gpu.cpp
+  mcscf_zeta_gpu.cpp
   nevpt2_density_fitting_gpu.cpp
   nevpt2_rdm_gpu.cpp
   nevpt2_energy_gpu.cpp

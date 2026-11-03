@@ -7,6 +7,8 @@
 /// three_center_gradient and one metric_gradient. For one root of a state
 /// average, the Z-vector first: its CI part enters as transition RDMs, its
 /// orbital part as the same terms differentiated along C -> C (1 + kappa).
+/// And root_pair_multipliers and zeta_terms, the multipliers that hold the
+/// roots apart and zeta's two terms (README.md "Holding the roots apart").
 
 module free_breakfast.mcscf.gradient;
 
@@ -35,7 +37,9 @@ import free_breakfast.response.orbital_pairs;
 import free_breakfast.gradient;
 import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.relaxed_hessian;
-import free_breakfast.mcscf.zvector;
+import free_breakfast.mcscf.zvector; // zvector, rotating_pairs
+import free_breakfast.mcscf.transition;
+import free_breakfast.mcscf.root_rotation; // kRootGapFloor
 
 #include "diagnostics.h"
 
@@ -1014,6 +1018,127 @@ df_transition_gradient(DeviceResources &res, const Molecule &molecule, const Bas
                        const MoAdjoint *const extra) {
   return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, {},
                            multipliers, extra, true, gamma, gamma2);
+}
+
+Result<RootPairMultipliers> root_pair_multipliers(DeviceResources &res, const ci::Roots &roots,
+                                                  const std::span<const double> weights,
+                                                  const double *const y_bar) {
+  const size_t nroots = roots.energies.size();
+  if (nroots == 0 || roots.vectors.num_elements() % nroots != 0) {
+    return err_config("mcscf::root_pair_multipliers: {} CI doubles for {} roots",
+                      roots.vectors.num_elements(), nroots);
+  }
+  if (weights.size() != nroots) {
+    return err_config("mcscf::root_pair_multipliers: {} weights for {} roots", weights.size(),
+                      nroots);
+  }
+  if (y_bar == nullptr) {
+    return err_config("mcscf::root_pair_multipliers: the CI adjoint is null");
+  }
+  for (size_t r = 0; r < nroots; ++r) {
+    for (size_t s = r + 1; s < nroots; ++s) {
+      const double gap = roots.energies[s] - roots.energies[r];
+      if (std::abs(gap) < kRootGapFloor) {
+        return err_numerical("mcscf::root_pair_multipliers: roots {} and {} are {:.3e} hartree "
+                             "apart, under {:.0e}: the pair's multiplier divides by the gap",
+                             r, s, std::abs(gap), kRootGapFloor);
+      }
+    }
+  }
+  const size_t n_pairs = nroots * (nroots - 1) / 2;
+  RootPairMultipliers out{std::vector<double>(n_pairs, 0.0), std::vector<double>(n_pairs, 0.0),
+                          std::vector<double>(n_pairs, 0.0)};
+  if (n_pairs == 0) {
+    return out;
+  }
+
+  // O = C^T y_bar, O_sr = c_s . y_r at s + nroots r.
+  const ScopedDeviceIndex on{res.dev_idx()};
+  const size_t dim = roots.vectors.num_elements() / nroots;
+  Buffers::device<double> overlaps(nroots * nroots, res.device());
+  FBF_TRY(gpu_status(gemm<wwr::WWRBLAS_OP_T>(
+      res.blas().get(), static_cast<int32_t>(nroots), static_cast<int32_t>(nroots),
+      static_cast<int32_t>(dim), &kOne<double>, roots.vectors.data(), y_bar, &kZero<double>,
+      overlaps.data())));
+  const std::vector<double> o = FBF_TRY(gradient_download(res, overlaps.data(), nroots * nroots));
+  const std::vector<bool> rotating = rotating_pairs(weights);
+  size_t pair = 0;
+  for (size_t r = 0; r < nroots; ++r) {
+    for (size_t s = r + 1; s < nroots; ++s, ++pair) {
+      const double tau = o[s + (nroots * r)] - o[r + (nroots * s)];
+      out.tau[pair] = tau;
+      if (rotating[pair]) {
+        out.theta_rhs[pair] = tau / (2.0 * (weights[r] - weights[s]));
+      } else {
+        out.zeta[pair] = -tau / (roots.energies[s] - roots.energies[r]);
+      }
+    }
+  }
+  return out;
+}
+
+Result<ZetaTerms> zeta_terms(DeviceResources &res, const Molecule &molecule,
+                             const SphericalMatrixAO &h, const Buffers::device<double> &b,
+                             const int32_t naux, const Solution &solution, const int32_t ncore,
+                             const int32_t ncas, const Buffers::device<double> &ppaa,
+                             const Buffers::device<double> &papa, ci::Rdm &rdm,
+                             const std::span<const double> zeta) {
+  const size_t nroots = solution.roots.energies.size();
+  const size_t n_pairs = nroots * (nroots - 1) / 2;
+  if (zeta.size() != n_pairs) {
+    return err_config("mcscf::zeta_terms: {} multipliers for the {} pairs of {} roots", zeta.size(),
+                      n_pairs, nroots);
+  }
+  const int64_t nao = solution.c.n();
+  if (ncore < 0 || ncas < 1 || ncore + ncas > nao) {
+    return err_config("mcscf::zeta_terms: ncore {} and ncas {} over {} orbitals", ncore, ncas, nao);
+  }
+  const auto dim = static_cast<size_t>(rdm.size());
+  if (solution.roots.vectors.num_elements() != dim * nroots) {
+    return err_config("mcscf::zeta_terms: {} CI doubles for {} roots of {} determinants",
+                      solution.roots.vectors.num_elements(), nroots, dim);
+  }
+  const auto n_core = static_cast<size_t>(ncore);
+  const auto n_act = static_cast<size_t>(ncas);
+  const auto mo = static_cast<size_t>(nao);
+  const size_t n_orbital = (n_core * (mo - n_core)) + (n_act * (mo - n_core - n_act));
+  const size_t m = n_act * n_act;
+
+  const ScopedDeviceIndex on{res.dev_idx()};
+  ZetaTerms out{Buffers::device<double>(n_orbital, res.device()), std::vector<double>(m, 0.0),
+                std::vector<double>(m * m, 0.0)};
+  FBF_TRY(gpu_status(
+      wwr::wwrMemsetAsync(out.orbital.data(), 0, n_orbital * sizeof(double), res.stream())));
+  Buffers::device<double> rdms(m + (m * m), res.device());
+  size_t pair = 0;
+  for (size_t r = 0; r < nroots; ++r) {
+    for (size_t s = r + 1; s < nroots; ++s, ++pair) {
+      const double z = zeta[pair];
+      if (z == 0.0) {
+        continue;
+      }
+      const double *const ci_s = solution.roots.vectors.data() + (s * dim);
+      const double *const ci_r = solution.roots.vectors.data() + (r * dim);
+      FBF_TRY(rdm.trans_rdm12(res, ci_s, ci_r, rdms.data(), rdms.data() + m));
+      const std::vector<double> gamma = FBF_TRY(gradient_download(res, rdms.data(), m));
+      const std::vector<double> gamma2 = FBF_TRY(gradient_download(res, rdms.data() + m, m * m));
+      const Buffers::device<double> g = FBF_TRY(transition_orbital_gradient(
+          res, molecule, h, b, naux, solution.c, ncore, ncas, ppaa, papa, gamma, gamma2));
+      FBF_TRY(
+          gpu_status(wwr::axpy<double, int32_t>(res.blas().get(), static_cast<int32_t>(n_orbital),
+                                                &z, g.data(), 1, out.orbital.data(), 1)));
+      // g is freed at the end of the iteration, while the axpy reads it.
+      FBF_TRY(res.sync());
+      for (size_t i = 0; i < m; ++i) {
+        out.gamma[i] += z * gamma[i];
+      }
+      for (size_t i = 0; i < m * m; ++i) {
+        out.gamma2[i] += z * gamma2[i];
+      }
+    }
+  }
+  FBF_TRY(res.sync());
+  return out;
 }
 
 } // namespace free_breakfast::mcscf

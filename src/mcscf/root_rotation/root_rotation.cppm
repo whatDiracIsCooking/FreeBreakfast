@@ -19,6 +19,11 @@ import free_breakfast.mcscf.derivative;
 
 export namespace free_breakfast::mcscf {
 
+/// @brief Two roots closer than this (hartree) are refused whatever their
+/// coupling: RelaxedHessian's floor for dropping their mixing, where the
+/// quotient of eq. theta is no longer a number.
+constexpr double kRootGapFloor = 1e-8;
+
 /// @brief The rotations among the roots of an equal-weight state average,
 /// along every nuclear coordinate x = 3 A + k (x last), on the host.
 /// README.md has each layout and sign.

@@ -88,9 +88,10 @@ The term diverges as E_s → E_I: at an intersection the adiabatic energy is
 not differentiable and has no Hessian. A pair is refused (Numerical, the
 message naming both roots and the gap in hartree) when
 
-- |E_r − E_s| < 1e-8 hartree, whatever the coupling (`RelaxedHessian`'s
-  floor for dropping the other roots' mixing, where the quotient is no
-  longer a number), or
+- |E_r − E_s| < 1e-8 hartree (`kRootGapFloor`, exported: `gradient`'s
+  `root_pair_multipliers` refuses a pair at the same floor), whatever the
+  coupling (`RelaxedHessian`'s floor for dropping the other roots' mixing,
+  where the quotient is no longer a number), or
 - max_x |ℋ^x_rs| / |E_r − E_s| = max_x |θ^x_sr| > `max_rotation`, 10 per
   bohr by default.
 
