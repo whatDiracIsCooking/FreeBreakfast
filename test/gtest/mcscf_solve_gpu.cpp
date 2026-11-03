@@ -595,6 +595,166 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfSolve,
                                            Case{.name = "n2_ccpvdz_triplet", .slow = true}),
                          [](const auto &info) { return std::string(info.param.name); });
 
+// The final CI (#788). The schedule sets each macro iteration's CI tolerance
+// from the previous one's ||g||, so a solve whose last ||g|| fell under
+// conv_tol_grad from above 1e-4 in one step would hand back CI vectors
+// looser than options.ci's (up to 1e-8 relative). A solve ends on
+// a CI at options.ci's own tolerance instead, and its gradient_norm, gamma
+// and gamma2 describe that CI. On data/casscf_nac's skewed H2CO SA-3
+// (CAS(4,3), cc-pVDZ / cc-pVDZ-JKFIT), DF-CASSCF to ||g|| < 1e-10, then
+// mcscf::solve again from its own orbitals; and from the Casci start to
+// ||g|| < 1e-3, which stops on macro iteration 2 with the CI's tolerance set
+// by the first ||g|| (above 1e-4, so looser than options.ci's: the case the
+// final CI exists for, asserted so the check cannot go vacuous). On each:
+//
+// - roots.davidson.max_residual_norm within the Davidson criterion,
+//   residual_tolerance max(|theta|, ||H||_2), with max_r |E_r| for the scale:
+//   at most ||H||_2, so the bar is at most the criterion's;
+// - gradient_norm is ||g|| rebuilt by response::fock from the returned C,
+//   gamma and gamma2 (over the same B), to 1e-10 of the largest |g_i|: one
+//   path against another (the issue's "How results are compared").
+constexpr double kFinalCiConvTolGrad = 1e-10;
+constexpr double kSelfConsistencyTolerance = 1e-10;
+// The second solve's: the gradient alone decides (conv_tol out of the way),
+// and loose enough to stop on macro iteration 2. Its first ||g|| must be above
+// kCiFloorGradient, where the schedule's 1e-4 ||g||^2 passes options.ci's
+// 1e-12, or the case would not end on a loose CI.
+constexpr double kLooseConvTol = 1.0;
+constexpr double kLooseConvTolGrad = 1e-3;
+constexpr double kCiFloorGradient = 1e-4;
+constexpr double kCiPerGradient = 1e-4;
+
+const fb::json &nac_case(std::string_view name) {
+  static const fb::json kDoc = [] {
+    auto read =
+        fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_nac" / "casscf_nac.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  for (const fb::json &entry : kDoc.at("cases")) {
+    if (entry.at("name").get<std::string>() == name) {
+      return entry;
+    }
+  }
+  ADD_FAILURE() << "no case " << name << " in casscf_nac/casscf_nac.json";
+  static const fb::json kNone;
+  return kNone;
+}
+
+// Every check of the final CI on one solution: the Davidson criterion and
+// gradient_norm against ||g|| rebuilt over df's B.
+void expect_final_ci(Setup &setup, const fb::mcscf::Solution &sol,
+                     const fb::mcscf::Options &options, const fb::DensityFitted &df,
+                     double conv_tol_grad) {
+  fb::DeviceResources &res = setup.res();
+  for (std::size_t i = 0; i < sol.iterations.size(); ++i) {
+    const fb::mcscf::Iteration &it = sol.iterations[i];
+    std::cout << std::format("[ final ci ]   {:2} E {:.12f} dE {:+.3e} |g| {:.3e} ci {:2} + {:2}\n",
+                             i + 1, it.energy, it.energy_change, it.gradient_norm,
+                             it.ci_fp32_iterations, it.ci_iterations);
+  }
+
+  // The Davidson criterion at the run's own theta.
+  double theta = 0.0;
+  for (const double e : sol.roots.energies) {
+    theta = std::max(theta, std::abs(e));
+  }
+  const double bar = options.ci.davidson.residual_tolerance * theta;
+  std::cout << std::format("[ final ci ] {} macro iterations; max residual {:.3e} (bar {:.3e}), "
+                           "{:.3e} relative; |g| {:.3e}\n",
+                           sol.iterations.size(), sol.roots.davidson.max_residual_norm, bar,
+                           sol.roots.davidson.max_residual_norm / theta, sol.gradient_norm);
+  EXPECT_LE(sol.roots.davidson.max_residual_norm, bar);
+  EXPECT_LT(sol.gradient_norm, conv_tol_grad);
+
+  // ||g|| rebuilt from the returned C, gamma and gamma2.
+  const std::int32_t ncore = setup.start->ncore;
+  const std::int32_t ncas = setup.start->ncas;
+  auto ints = fb::casscf_integrals(res, *setup.basis, *setup.molecule, setup.h->h, df.b, df.naux,
+                                   sol.c, ncore, ncas);
+  ASSERT_TRUE(ints.has_value()) << ints.error().message;
+  auto fock = fb::response::fock(res, *setup.molecule, setup.h->h, df.b, df.naux, sol.c, ncore,
+                                 ncas, ints->ppaa, ints->papa, sol.gamma, sol.gamma2);
+  ASSERT_TRUE(fock.has_value()) << fock.error().message;
+  const std::vector<double> g = download(res, fock->gradient.data(), fock->gradient.num_elements());
+  double largest = 0.0;
+  for (const double x : g) {
+    largest = std::max(largest, std::abs(x));
+  }
+  const double rebuilt = std::sqrt(std::inner_product(g.begin(), g.end(), g.begin(), 0.0));
+  std::cout << std::format("[ final ci ] gradient_norm {:.6e}, rebuilt {:.6e}, max |g_i| {:.3e}, "
+                           "difference {:.3e}\n",
+                           sol.gradient_norm, rebuilt, largest,
+                           std::abs(sol.gradient_norm - rebuilt));
+  EXPECT_LE(std::abs(sol.gradient_norm - rebuilt), kSelfConsistencyTolerance * largest);
+}
+
+TEST(McscfSolveFinalCi, ResolvedFromItsOwnOrbitalsEndsOnTheTightCi) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = nac_case("h2co_skew_ccpvdz_sa3");
+  auto setup = make_setup(entry, false);
+  ASSERT_NE(setup, nullptr);
+  fb::DeviceResources &res = setup->res();
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
+  fb::CasciStep casci;
+  casci.ncas = entry.at("ncas").get<std::int32_t>();
+  casci.nelecas = entry.at("nelecas").get<std::int32_t>();
+  casci.nroots = nroots;
+  auto space = casci.select(res, *setup->molecule, *setup->basis, *setup->scf);
+  ASSERT_TRUE(space.has_value()) << space.error().message;
+  setup->start.emplace(std::move(*space));
+  ASSERT_EQ(setup->start->ncore, entry.at("ncore").get<std::int32_t>());
+  const fb::json &aux = entry.at("aux_basis");
+  const auto df = setup->fit(aux.at("name").get<std::string>());
+  ASSERT_TRUE(df.has_value());
+  ASSERT_EQ(df->naux, aux.at("naux").get<std::int32_t>());
+
+  fb::mcscf::Options options;
+  options.conv_tol_grad = kFinalCiConvTolGrad;
+  options.density_fitting = fb::mcscf::DensityFitting::Full;
+  const auto first = setup->solve(setup->start->c, nroots, weights, options, &df->b, df->naux);
+  ASSERT_TRUE(first.has_value()) << first.error().message;
+  const auto start = std::chrono::steady_clock::now();
+  const auto again = setup->solve(first->c, nroots, weights, options, &df->b, df->naux);
+  const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
+  ASSERT_TRUE(again.has_value()) << again.error().message;
+  std::cout << std::format("[ final ci ] re-solve from its own orbitals: {:.2f} s\n",
+                           seconds.count());
+  expect_final_ci(*setup, *again, options, *df, kFinalCiConvTolGrad);
+}
+
+// From the start to a loose ||g||, on a CI space the Davidson does not span
+// at once (H2O CAS(4,4), 36 determinants, one root), so it stops near the
+// tolerance it is given.
+TEST(McscfSolveFinalCi, LooseSolveEndsOnTheTightCi) {
+  FBF_REQUIRE_GPU();
+  const fb::json &entry = reference_case("h2o_ccpvdz", "casscf_df.json");
+  auto setup = make_setup(entry, true);
+  ASSERT_NE(setup, nullptr);
+  const fb::ScopedDeviceIndex on{setup->res().dev_idx()};
+  const auto weights = entry.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
+  const auto df = setup->fit(kDfAuxBasis);
+  ASSERT_TRUE(df.has_value());
+
+  fb::mcscf::Options loose;
+  loose.conv_tol = kLooseConvTol;
+  loose.conv_tol_grad = kLooseConvTolGrad;
+  loose.density_fitting = fb::mcscf::DensityFitting::Full;
+  const auto early = setup->solve(setup->start->c, nroots, weights, loose, &df->b, df->naux);
+  ASSERT_TRUE(early.has_value()) << early.error().message;
+  ASSERT_GE(early->iterations.size(), 2U);
+  const double g_before_last = early->iterations[early->iterations.size() - 2].gradient_norm;
+  std::cout << std::format("[ final ci ] loose, from the start: the last CI's schedule from "
+                           "|g| {:.3e}, {:.1e} relative\n",
+                           g_before_last, kCiPerGradient * g_before_last * g_before_last);
+  expect_final_ci(*setup, *early, loose, *df, kLooseConvTolGrad);
+  ASSERT_GT(g_before_last, kCiFloorGradient)
+      << "the case no longer ends on a loose CI, so it checks nothing of the final one";
+}
+
 // max_cycle running out is MaxIterationsExceeded.
 TEST(McscfSolveLimits, OutOfMacroIterationsIsMaxIterationsExceeded) {
   FBF_REQUIRE_GPU();

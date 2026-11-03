@@ -73,10 +73,12 @@ struct Iteration {
   /// @brief The trust radius the next step was taken under.
   double trust_radius;
   /// @brief Davidson iterations of this iteration's CI: its final,
-  /// double-precision stage (ci::Roots::davidson).
+  /// double-precision stage (ci::Roots::davidson), the final CI's added
+  /// when it took one.
   int32_t ci_iterations;
   /// @brief Iterations of the single-precision stage before it
-  /// (ci::Roots::fp32_iterations), 0 when there was none.
+  /// (ci::Roots::fp32_iterations), 0 when there was none; the final CI's
+  /// added likewise.
   int32_t ci_fp32_iterations;
   /// @brief Augmented-Hessian solves of the step taken from here (0 when
   /// converged or rejected).
@@ -94,8 +96,9 @@ struct Iteration {
 struct Solution {
   /// @brief The optimized orbitals, AO by MO: core, active, virtual, as given.
   SphericalMatrixAO c;
-  /// @brief The CI at @ref c: each root's energy (hartree) and <S^2>, and the
-  /// unit CI vectors on the device, root r at [r dim, (r + 1) dim).
+  /// @brief The CI at @ref c, to options.ci's residual tolerance: each
+  /// root's energy (hartree) and <S^2>, and the unit CI vectors on the
+  /// device, root r at [r dim, (r + 1) dim).
   ci::Roots roots;
   /// @brief sum_r w_r E_r (hartree).
   double energy;
@@ -131,7 +134,11 @@ struct Solution {
 /// from its own guesses), its residual
 /// tolerance min(1e-8, 1e-4 ||g||^2) of the last iteration, held at or above
 /// options.ci's; @c ci::Rdm::rdm12 at @p weights and @c fock. Converged
-/// when |Delta E| < conv_tol and ||g|| < conv_tol_grad. A rise of the energy
+/// when |Delta E| < conv_tol and ||g|| < conv_tol_grad; converged on a CI
+/// looser than options.ci's, the CI is solved again at those orbitals to
+/// options.ci's tolerance, warm, and the RDMs, energy and gradient rebuilt
+/// over it, so the solution describes one (C, c), and the loop goes on if
+/// they are no longer converged. A rise of the energy
 /// over the last accepted iteration past 1e-11 hartree rejects the orbitals:
 /// the step from the accepted ones is retried at half its length and the
 /// trust radius halved. Otherwise up to max_micro augmented-Hessian solves of
