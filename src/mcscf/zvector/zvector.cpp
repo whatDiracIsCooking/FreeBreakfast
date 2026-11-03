@@ -47,16 +47,10 @@ Status inverse_orbital_diagonal(DeviceResources &res, const response::Hessian &h
   return res.sync();
 }
 
-// Two weights this close, relative to the larger, are equal: the rotation
-// between their roots is redundant and stays projected. Weights recovered by
-// a least-squares solve (mcscf::df_gradient's) are equal only to about this.
-constexpr double kRotationWeightTolerance = 1e-8;
 // Two roots closer than this (hartree) are not rotated by a right-hand side,
 // as RelaxedHessian leaves their mixing out of the CI response.
 constexpr double kRotationGapFloor = 1e-8;
 
-// Which of the nroots (nroots - 1) / 2 pairs r < s, in (r, s) lexicographic
-// order, rotate: those at unequal weights.
 std::vector<bool> rotating_pairs(const std::span<const double> weights) {
   const size_t nroots = weights.size();
   std::vector<bool> rotating;

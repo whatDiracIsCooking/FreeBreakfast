@@ -27,10 +27,6 @@ import free_breakfast.mcscf.relaxed_hessian;
 
 namespace free_breakfast::mcscf {
 
-// Two roots closer than this (hartree) are refused whatever their coupling:
-// RelaxedHessian's floor for dropping their mixing, where the quotient of
-// eq. theta is no longer a number.
-constexpr double kRootGapFloor = 1e-8;
 // Weights this close (relative to the largest) are equal: they are recovered
 // from a solution by a normalization, not given exactly.
 constexpr double kEqualWeightTolerance = 1e-10;

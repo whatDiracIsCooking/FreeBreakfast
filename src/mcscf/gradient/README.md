@@ -27,7 +27,21 @@ Result<mcscf::GradientTerms> mcscf::df_transition_gradient(
     const mcscf::MoAdjoint *extra = nullptr);
 // g->kinetic, g->potential, g->overlap, g->two_electron,
 // g->nuclear_repulsion, g->total: each n_atom x 3, row-major, element 3 A + k
+Result<mcscf::RootPairMultipliers> mcscf::root_pair_multipliers(
+    DeviceResources &res, const ci::Roots &roots, std::span<const double> weights,
+    const double *y_bar);
+// m->tau, m->zeta, m->theta_rhs: one per pair r < s, ZVector::theta's order
+Result<mcscf::ZetaTerms> mcscf::zeta_terms(
+    DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
+    const Buffers::device<double> &b, int32_t naux, const mcscf::Solution &solution,
+    int32_t ncore, int32_t ncas, const Buffers::device<double> &ppaa,
+    const Buffers::device<double> &papa, ci::Rdm &rdm, std::span<const double> zeta);
+// t->orbital (device, packed pairs), t->gamma, t->gamma2 (host, row-major)
 ```
+
+The last two are the multipliers that hold a state average's roots apart,
+for a Lagrangian that is not invariant to rotating them ("Holding the roots
+apart", below).
 
 `solution` is `mcscf::solve`'s under `DensityFitting::Full` over the same B;
 `aux`, B and L are `pipeline.eri`'s `DensityFitted` (`aux`, `b`, `l`), `h` the
@@ -305,6 +319,71 @@ weighted RDMs, core included, exactly as for a root. `extra` is unchanged.
 So `df_nac` passes its own z = (z_o, z_c) for h_IJ's Lagrange half and gets
 h_IJ whole from one call.
 
+## Holding the roots apart
+
+A Lagrangian built on a state average's roots one by one (QD-NEVPT2's E_K:
+each state's own RDMs and Dyall denominators enter) is not invariant to
+rotating the roots among themselves, so it carries the conditions
+⟨c_s|H|c_r⟩ = 0, r < s, that fix them. Along the rotation of `zvector`'s Θ,
+c_r gaining Θ_sr c_s and c_s losing Θ_sr c_r, a caller's raw CI adjoint
+ȳ_r = ∂L/∂c_r (before any projection or weighting) gives
+
+    τ_sr = ∂L/∂Θ_sr = c_s·ȳ_r − c_r·ȳ_s,
+
+and ⟨c_s|H|c_r⟩ moves by Θ_sr (E_s − E_r). What a pair's τ becomes depends
+on its weights, which `root_pair_multipliers` splits by `zvector`'s own test
+(`rotating_pairs`, `kRotationWeightTolerance`, exported from it):
+
+- **Unequal weights.** The rotation is a parameter of E_SA, with curvature
+  2 (w_r − w_s)(E_s − E_r), and `zvector` already carries its row. τ goes
+  in as its right-hand side, t_sr = τ_sr / 2(w_r − w_s) (`theta_rhs`, the
+  layout of `ZVector::theta`), and the condition is that row.
+- **Equal weights.** E_SA is blind to the rotation: `zvector` projects the
+  pair and ignores its t, so the condition needs a multiplier of its own,
+  ζ_sr on ζ_sr ⟨c_s|H|c_r⟩. Stationarity along Θ_sr, τ_sr + ζ_sr (E_s − E_r)
+  = 0, gives it in closed form before any solve, as z^c is:
+
+      ζ_sr = −τ_sr / (E_s − E_r).
+
+  So the equal pairs sit outside `zvector`, which is not changed: ζ enters
+  the Z-vector only through its orbital right-hand side. ζ's CI derivative,
+  ζ_sr P H c_r, is zero at eigenvectors and adds nothing.
+
+`tau` comes back for every pair, `zeta` nonzero only at the equal ones and
+`theta_rhs` only at the unequal ones. A pair under `root_rotation`'s
+`kRootGapFloor` (1e-8 hartree, exported from it) is refused as `Numerical`,
+naming the pair, whatever its weights: ζ divides by the gap, and `zvector`
+divides t by it (and drops a pair below the same floor without a word).
+
+`zeta_terms` turns a ζ into its two consumers, each pair's transition RDMs
+from `ci::Rdm::trans_rdm12(c_s, c_r)`:
+
+1. **ζ·g = Σ ζ_sr g^(sr)**, the Z-vector's orbital right-hand side, over
+   [`../transition/`](../transition/README.md)'s
+   `transition_orbital_gradient` per pair, summed by axpys in pair order.
+2. **(γ^ζ, Γ^ζ) = Σ ζ_sr (γ^(sr), Γ^(sr))**, folded on the host. The
+   nuclear term of ζ is one `df_transition_gradient` at them, with no
+   multipliers and no `extra`: every term is linear in the RDMs, so one
+   derivative-integral pass stands for every pair's.
+
+A pair at ζ = 0 is skipped, so passing a split's `zeta` whole costs only its
+equal pairs. g is linear in the RDMs too, so ζ·g is also one
+`transition_orbital_gradient` at (γ^ζ, Γ^ζ); it is summed per pair instead so
+that it is exactly the issue's Σ ζ_sr g^(sr), bitwise from call to call, for
+two cheap Focks a pair.
+
+**What is bitwise and what is not.** `root_pair_multipliers` is one gemm
+and host arithmetic: τ is bitwise from call to call and the same at every
+weight, and ζ and t are its quotients exactly. `zeta_terms` is bitwise too
+(g^(sr) is, and the folds are fixed-order axpys and host sums), so two calls
+and the per-pair sums agree to the bit. `df_transition_gradient` is not
+("Reproducibility" below), so the nuclear term at the folded RDMs is held
+against Σ ζ_sr times the per-pair calls at a measured floor, 64 ulps of a
+term's largest element (for the total, of the largest of its terms, which
+cancel to a tenth of them): on the RTX 3080, over three runs of both cases
+below, two identical calls differed by up to 13.5 ulps and the fold from the
+per-pair sum by up to 26.6.
+
 ## Reproducibility
 
 Each term is reproducible to round-off, not bitwise: the one-electron and DF
@@ -367,6 +446,22 @@ every root and every z, to 1e-10.
 Measured on the RTX 3080: the Hellmann–Feynman terms within 8e-11, the
 orbital gradient within 7e-9 (1e-11 at two roots), the multipliers' core
 part to 2e-13.
+
+`test/gtest/mcscf_zeta_gpu.cpp` holds "Holding the roots apart", at
+`mcscf_nac_gpu.cpp`'s converged H₂CO SA-2 and skewed SA-3 (CAS(4,3),
+cc-pVDZ / cc-pVDZ-JKFIT). `McscfZetaTerms`, on both, at a fixed ζ with one
+of SA-3's pairs at zero: two calls bitwise; ζ·g bitwise the axpy sum of the
+per-pair `transition_orbital_gradient`s and (γ^ζ, Γ^ζ) bitwise the host sum
+of `trans_rdm12`'s; and `df_transition_gradient` at the fold against
+Σ ζ_sr times the per-pair calls, every term, at the floor above.
+`McscfRootPairMultipliers`, on SA-3 at a random ȳ and the weights (⅓, ⅓, ⅓),
+(0.4, 0.4, 0.2) and (0.5, 0.3, 0.2) (three, one and no equal pairs): τ
+against the host's dot products within their rigorous rounding bound
+2 dim ε Σ|c_i ȳ_i| a dot (measured 0 to 2.2e-16), and the same at every
+weight; ζ and t bitwise their quotients, each zero where the other is set;
+and the refusals, a pair under `kRootGapFloor` (Numerical, naming it) and
+weights of the wrong length, as a ζ of the wrong length is from
+`zeta_terms`. About 2.2 s and 3.1 s a case, the solve included.
 
 `test/gtest/mcscf_gradient_weights_gpu.cpp` holds the weights, over
 `test/gtest/data/casscf_hessian/`'s stretched water (CAS(4,4) / 6-31G /

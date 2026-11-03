@@ -19,6 +19,17 @@ import free_breakfast.mcscf.relaxed_hessian;
 
 export namespace free_breakfast::mcscf {
 
+/// @brief Two weights this close, relative to the larger, are equal: the
+/// rotation between their roots is redundant and stays projected. Weights
+/// recovered by a least-squares solve (mcscf::df_gradient's) are equal only
+/// to about this.
+constexpr double kRotationWeightTolerance = 1e-8;
+
+/// @brief Which of the nroots (nroots - 1) / 2 pairs r < s, in (r, s)
+/// lexicographic order (ZVector::theta's), rotate: those whose @p weights
+/// differ by more than @ref kRotationWeightTolerance of the larger.
+[[nodiscard]] std::vector<bool> rotating_pairs(std::span<const double> weights);
+
 /// @brief One root's multipliers, on the device they were solved on.
 struct ZVector {
   /// @brief z_o, H~ z_o = -g_I + H_oc (H_0 - E)^-1 P y, over the packed pairs
