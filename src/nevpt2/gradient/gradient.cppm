@@ -20,8 +20,9 @@
 /// Lagrangian's multipliers on a DF-SA-CASSCF (qd_sc_lagrangian): z^c, the
 /// roots' rotation multipliers and the SA Z-vector, gated, at a state's
 /// W = u_K u_K^T or at any symmetric W; the SC-QD
-/// nuclear gradient over it (qd_sc_gradient), two derivative passes; and the
-/// PC-QD one (qd_pc_gradient), the same over qd_pc_adjoint.
+/// nuclear gradient over it (qd_sc_gradient), two derivative passes, and its
+/// interstate coupling h_PQ (qd_sc_coupling); and the PC-QD one
+/// (qd_pc_gradient), the same over qd_pc_adjoint.
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -504,8 +505,14 @@ struct QdScLagrangian {
   /// E_r the solution's root energies, C the correlation elements. Empty
   /// from the W form, which builds no H_eff.
   std::vector<double> eigenvalues;
+  /// @brief H_eff's eigenvectors R, n x n, state K's column at [K n, (K + 1) n),
+  /// each signed so that its largest-magnitude component is positive (the
+  /// Nevpt2 step's convention), in the solution's roots' phases. Empty from
+  /// the W form.
+  std::vector<double> eigenvectors;
   /// @brief The seed W, n x n row-major: u_K u_K^T, u_K state K's
-  /// eigenvector of H_eff, or the W form's own.
+  /// eigenvector of H_eff; qd_sc_coupling's 1/2 (R_P R_Q^T + R_Q R_P^T); or
+  /// the W form's own.
   std::vector<double> w;
   /// @brief rho_r = W_rr (u_rK^2 for a state), summing to tr W: the
   /// weighting of the root energies, mcscf::df_gradient's mix.
@@ -615,8 +622,8 @@ struct QdScGradient {
   double max_zeta = 0.0;
   /// @brief The smallest |E_r - E_s| over the CASSCF roots.
   double root_gap = std::numeric_limits<double>::infinity();
-  /// @brief The smallest |lambda_K - lambda_L| of H_eff, L != K; infinite
-  /// from the W form.
+  /// @brief The smallest |lambda_K - lambda_L| of H_eff, L != K;
+  /// qd_sc_coupling's |E_Q - E_P|; infinite from the W form.
   double heff_gap = std::numeric_limits<double>::infinity();
 };
 
@@ -662,6 +669,31 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const double> w, int32_t batch);
+
+/// @brief The SC-QD-NEVPT2 interstate coupling between QD states @p p and
+/// @p q (H_eff's eigenvalues ascending), h_PQ = R_P^T (dH_eff/dR) R_Q, on the
+/// DF-SA-CASSCF @p solution (Park 2020 Eq. 47's dL_PQ/dX): the W form of
+/// qd_sc_gradient at W^PQ = 1/2 (R_P R_Q^T + R_Q R_P^T), trace 0, so that
+/// its df_gradient pass is the core-off one. R is H_eff's eigenvectors, each
+/// signed so that its largest-magnitude component is positive, in the
+/// solution's roots' phases: h_PQ's sign is R_P's times R_Q's, and h_PQ =
+/// h_QP. d^NEV_PQ = h_PQ / (E_Q - E_P).
+///
+/// The arguments are qd_sc_gradient's with the pair for @p state.
+///
+/// @return h_PQ in QdScGradient's fields: total h_PQ (n_atom x 3), the
+///         lagrangian at W^PQ with H_eff's eigenvalues and R, heff_gap
+///         |E_Q - E_P|, root_gap, max_zeta and the Z-vector's diagnostics;
+///         InvalidConfig for @p p or @p q not one of the roots', or p = q
+///         (a state's is qd_sc_gradient); Numerical, naming both, when E_P
+///         and E_Q are within mcscf::kRootGapFloor; or qd_sc_gradient's
+///         other errors (a root of zero weight, the gate, a derivative pass).
+[[nodiscard]] Result<QdScGradient>
+qd_sc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas, int32_t p, int32_t q,
+               int32_t batch);
 
 /// @brief qd_pc_gradient's result: QdScGradient's fields, with PC's
 /// elements.

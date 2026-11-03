@@ -8,8 +8,9 @@
 /// Z-vector and gate at the average's weights, at any symmetric W (the
 /// state form a wrapper at u_K u_K^T); qd_sc_gradient, its two
 /// derivative passes (df_gradient at the mix rho, df_transition_gradient at
-/// zeta's folded RDMs); and qd_pc_gradient, the same Lagrangian and passes
-/// over the PC-QD adjoint.
+/// zeta's folded RDMs); qd_sc_coupling, the same at an interstate pair's
+/// W^PQ; and qd_pc_gradient, the same Lagrangian and passes over the PC-QD
+/// adjoint.
 
 module free_breakfast.nevpt2.gradient;
 
@@ -619,22 +620,29 @@ Result<QdScLagrangian> qd_lagrangian(DeviceResources &res, const std::string_vie
                         .asymmetry = asymmetry};
 }
 
-// The QD Lagrangian of state @p state: H_eff = diag(E_r) + 1/2 (C + C^T)
-// over qd_sc_energy's elements (@p pc null) or qd_pc_energy's (@p pc set; a
-// refused class is its error, returned before any adjoint is built), its
-// eigenvectors, the refusal of a degenerate eigenvalue, and qd_lagrangian at
-// W = u_K u_K^T, with H_eff's eigenvalues.
+// The QD Lagrangian between states @p p and @p q (H_eff's eigenvalues
+// ascending): H_eff = diag(E_r) + 1/2 (C + C^T) over qd_sc_energy's elements
+// (@p pc null) or qd_pc_energy's (@p pc set; a refused class is its error,
+// returned before any adjoint is built), its eigenvectors R (each signed so
+// that its largest-magnitude component is positive, pipeline/nevpt2's
+// convention), and qd_lagrangian at W = 1/2 (R_P R_Q^T + R_Q R_P^T), with
+// H_eff's eigenvalues and R. At p = q that is state K's u_K u_K^T, bit for
+// bit (1/2 (x + x) = x), refused within kRootGapFloor of any other state;
+// at p != q it is the interstate coupling's W^PQ, trace 0, refused when E_P
+// and E_Q are that close (h_PQ / (E_Q - E_P) is the consumer's).
 Result<QdScLagrangian> qd_state_lagrangian(DeviceResources &res, const std::string_view who,
                                            const Molecule &molecule, const BasisSet &basis,
                                            const BasisSet &aux, const SphericalMatrixAO &h,
                                            const Buffers::device<double> &b,
                                            const mcscf::Solution &solution, const int32_t ncore,
-                                           const int32_t ncas, const int32_t state,
+                                           const int32_t ncas, const int32_t p, const int32_t q,
                                            const int32_t batch, std::vector<PcClassEnergies> *pc) {
   const QdSetup setup = FBF_TRY(qd_setup(res, who, molecule, basis, solution, ncore, ncas));
   const size_t nroots = solution.roots.energies.size();
-  if (state < 0 || static_cast<size_t>(state) >= nroots) {
-    return err_config("{}: state {} of {} roots", who, state, nroots);
+  for (const int32_t state : {p, q}) {
+    if (state < 0 || static_cast<size_t>(state) >= nroots) {
+      return err_config("{}: state {} of {} roots", who, state, nroots);
+    }
   }
   const SphericalMatrixAO &c = solution.c;
   const auto naux = static_cast<int32_t>(aux.nao_sphe());
@@ -671,25 +679,41 @@ Result<QdScLagrangian> qd_state_lagrangian(DeviceResources &res, const std::stri
     heff = FBF_TRY(to_host(res, heff_d.data(), nroots * nroots));
     eigenvalues = FBF_TRY(to_host(res, values_d.data(), nroots));
   }
-  const auto k = static_cast<size_t>(state);
-  for (size_t l = 0; l < nroots; ++l) {
-    if (l != k && std::abs(eigenvalues[k] - eigenvalues[l]) < mcscf::kRootGapFloor) {
-      return err_numerical("{}: QD states {} and {} are {:.3e} Eh apart, under {:g}: the state's "
-                           "eigenvector has no derivative at a degeneracy",
-                           who, std::min(k, l), std::max(k, l),
-                           std::abs(eigenvalues[k] - eigenvalues[l]), mcscf::kRootGapFloor);
+  const auto k = static_cast<size_t>(p);
+  const auto m = static_cast<size_t>(q);
+  if (k == m) {
+    for (size_t l = 0; l < nroots; ++l) {
+      if (l != k && std::abs(eigenvalues[k] - eigenvalues[l]) < mcscf::kRootGapFloor) {
+        return err_numerical("{}: QD states {} and {} are {:.3e} Eh apart, under {:g}: the "
+                             "state's eigenvector has no derivative at a degeneracy",
+                             who, std::min(k, l), std::max(k, l),
+                             std::abs(eigenvalues[k] - eigenvalues[l]), mcscf::kRootGapFloor);
+      }
+    }
+  } else if (std::abs(eigenvalues[k] - eigenvalues[m]) < mcscf::kRootGapFloor) {
+    return err_numerical("{}: QD states {} and {} are {:.3e} Eh apart, under {:g}: their "
+                         "coupling h_PQ / (E_Q - E_P) is not defined at a degeneracy",
+                         who, std::min(k, m), std::max(k, m),
+                         std::abs(eigenvalues[k] - eigenvalues[m]), mcscf::kRootGapFloor);
+  }
+  for (size_t col = 0; col < nroots; ++col) {
+    const std::span<double> v{heff.data() + (col * nroots), nroots};
+    if (*std::ranges::max_element(v, {}, [](const double x) { return std::abs(x); }) < 0.0) {
+      std::ranges::transform(v, v.begin(), std::negate<>{});
     }
   }
-  const std::span<const double> u{heff.data() + (k * nroots), nroots};
+  const std::span<const double> u_p{heff.data() + (k * nroots), nroots};
+  const std::span<const double> u_q{heff.data() + (m * nroots), nroots};
   std::vector<double> w(nroots * nroots);
   for (size_t i = 0; i < nroots; ++i) {
     for (size_t j = 0; j < nroots; ++j) {
-      w[(i * nroots) + j] = u[i] * u[j];
+      w[(i * nroots) + j] = 0.5 * ((u_p[i] * u_q[j]) + (u_q[i] * u_p[j]));
     }
   }
   QdScLagrangian lagrangian = FBF_TRY(qd_lagrangian(
       res, who, setup, molecule, basis, aux, h, b, solution, ncore, ncas, std::move(w), batch, pc));
   lagrangian.eigenvalues = std::move(eigenvalues);
+  lagrangian.eigenvectors = std::move(heff);
   return lagrangian;
 }
 
@@ -699,7 +723,7 @@ qd_sc_lagrangian(DeviceResources &res, const Molecule &molecule, const BasisSet 
                  const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
                  const int32_t state, const int32_t batch) {
   return qd_state_lagrangian(res, "nevpt2::qd_sc_lagrangian", molecule, basis, aux, h, b, solution,
-                             ncore, ncas, state, batch, nullptr);
+                             ncore, ncas, state, state, batch, nullptr);
 }
 
 Result<QdScLagrangian>
@@ -854,6 +878,27 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                    std::move(lagrangian));
 }
 
+Result<QdScGradient>
+qd_sc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+               const int32_t p, const int32_t q, const int32_t batch) {
+  constexpr std::string_view kWho = "nevpt2::qd_sc_coupling";
+  if (p == q) {
+    return err_config("{}: states {} and {}: a coupling is between two states, and one state's "
+                      "is its gradient (qd_sc_gradient)",
+                      kWho, p, q);
+  }
+  QdScLagrangian lagrangian = FBF_TRY(qd_state_lagrangian(
+      res, kWho, molecule, basis, aux, h, b, solution, ncore, ncas, p, q, batch, nullptr));
+  QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                     ncas, std::move(lagrangian)));
+  g.heff_gap = std::abs(g.lagrangian.eigenvalues[static_cast<size_t>(q)] -
+                        g.lagrangian.eigenvalues[static_cast<size_t>(p)]);
+  return g;
+}
+
 Result<QdPcGradient> qd_pc_gradient(DeviceResources &res, const Molecule &molecule,
                                     const BasisSet &basis,
                                     const std::span<const PrimitivePairClass> classes,
@@ -865,7 +910,7 @@ Result<QdPcGradient> qd_pc_gradient(DeviceResources &res, const Molecule &molecu
   std::vector<PcClassEnergies> elements;
   QdScLagrangian lagrangian =
       FBF_TRY(qd_state_lagrangian(res, "nevpt2::qd_pc_gradient", molecule, basis, aux, h, b,
-                                  solution, ncore, ncas, state, batch, &elements));
+                                  solution, ncore, ncas, state, state, batch, &elements));
   QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
                                      ncas, std::move(lagrangian)));
   const double gap = smallest_gap(g.lagrangian.eigenvalues, static_cast<size_t>(state));
