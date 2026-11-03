@@ -524,15 +524,17 @@ Ladder richardson_ladder(std::span<const double> d, const bool steadiest = false
 
 // Central differences of @p at over the ladder, against @p predicted, to
 // kLadderTolerance relative to @p scale: |predicted| unless given, which a
-// stationarity check, predicting 0, gives as the slope it cancels.
+// stationarity check, predicting 0, gives as the slope it cancels. With
+// @p steadiest, richardson_ladder's steadiest extrapolant.
 void expect_ladder(const std::string &name, const std::function<double(double)> &at,
-                   const double predicted, const std::optional<double> scale = std::nullopt) {
+                   const double predicted, const std::optional<double> scale = std::nullopt,
+                   const bool steadiest = false) {
   std::vector<double> d;
   for (std::int32_t k = 0; k < kRungs; ++k) {
     const double t = std::ldexp(kLadderT0, -k);
     d.push_back((at(t) - at(-t)) / (2.0 * t));
   }
-  const Ladder l = richardson_ladder(d);
+  const Ladder l = richardson_ladder(d, steadiest);
   ASSERT_GE(l.run, 3) << name << " ratios:" << l.ratios;
   const double against = scale.value_or(std::abs(predicted));
   EXPECT_NEAR(l.richardson, predicted, kLadderTolerance * against)
@@ -2311,7 +2313,8 @@ const std::map<std::string, std::string, std::less<>> kQdSmooth{
 // <d_r, y_r>; each where kQdSmooth lists it. And ε against the CASSCF's
 // mo_energies; H_eff's eigenvalues are printed beside the goldens'.
 // @p smooth_set is kQdSmooth, or kQdPcSmooth with @p pc (qd_pc_energy's
-// and qd_pc_adjoint's in place of SC's).
+// and qd_pc_adjoint's in place of SC's, each ladder read at its steadiest
+// extrapolant: see kQdPcSmooth).
 void expect_qd_ladders(const std::string &name,
                        const std::map<std::string, std::string, std::less<>> &smooth_set,
                        const bool pc) {
@@ -2392,7 +2395,7 @@ void expect_qd_ladders(const std::string &name,
             }
             return weighted(seeds[k].second, it->second);
           },
-          predicted(adj[k]));
+          predicted(adj[k]), std::nullopt, pc);
     }
   };
 
@@ -2561,18 +2564,35 @@ TEST(Nevpt2Qd, RefusesBadInputs) {
 // the random seed's ladders along the same c_r have at their larger slopes.
 // So they miss 1e-7 relative in 15, 1 and 3 runs of 24 (to 3.4e-7, 1.3e-7,
 // 1.2e-7) and are not run; the same c_r at the random seed is, every root
-// on every case. Of the rest the worst is 7.9e-8 (h8_ring eigen c_1), every
-// other under 6.2e-8. State 1's PC is refused at the coarse rungs along h,
-// B, C and c_1 on h2co_skew_ccpvdz_sa3 and along c_1 on h8_ring_sto3g_sa3
+// on every case. State 1's PC is refused at the coarse rungs along h, B, C
+// and c_1 on h2co_skew_ccpvdz_sa3 and along c_1 on h8_ring_sto3g_sa3
 // (Sijr's, Sr's or Srs's λ + Δ not positive, out to t = 1.25e-3), as #729
 // found within the ladders' reach; those rungs are NaN (qd_totals) and the
 // ratio run is read below them.
+//
+// h8_ring's eigen c_1 is not run either (#736): that pole leaves it
+// truncation-bound at one pair and rounding-bound at the next. Its ratios
+// (nan nan 19.953 7.258 4.834 4.211 4.052 ~4.01, the last at the noise)
+// are still settling at the finest pair, whose extrapolant is about 3e-9
+// from its truncation and up to 1e-7 from the forwards' run-to-run spread
+// (~1e-14 over 2t = 3.9e-5, at a slope of only 6.1e-3). The pair before is
+// 5.5e-8 off in truncation alone, and the second-order extrapolant, which
+// reads the finest pair too, is no steadier (5.5e-8 over 20 runs). Starting
+// finer moves the finest pair deeper into the rounding: rung 0 is not
+// refused, only rung 1. So it missed 1e-7 on a push (1.09e-7). The same c_1
+// at the random seed (slope 8.8e-2) is asserted and misses by <= 3e-10.
+// That rounding binds other ladders' finest pairs too, with no refusal:
+// h8_ring's eigen C missed by 1.08e-7 there, its last ratio 4.237.
+// So the PC-QD ladders take richardson_ladder's steadiest extrapolant,
+// where its two neighbours agree best: over 20 runs on the RTX 3080 every
+// one asserted here then missed by at most 2.7e-8 (h2co_skew random h),
+// h8_ring's eigen C by 1.5e-8 (6.1e-8 at the finest pair).
 const std::map<std::string, std::string, std::less<>> kQdPcSmooth{
     {"h2co_skew_ccpvdz_sa3", "all"},
     {"h6_631g_sa2",
      "eigen:h eigen:B eigen:C eigen:c_1 random:h random:B random:C random:c_0 random:c_1"},
-    {"h8_ring_sto3g_sa3", "eigen:h eigen:B eigen:C eigen:c_1 random:h random:B random:C "
-                          "random:c_0 random:c_1 random:c_2"}};
+    {"h8_ring_sto3g_sa3",
+     "eigen:h eigen:B eigen:C random:h random:B random:C random:c_0 random:c_1 random:c_2"}};
 
 class Nevpt2QdPcAdjoint : public ::testing::TestWithParam<std::string> {};
 

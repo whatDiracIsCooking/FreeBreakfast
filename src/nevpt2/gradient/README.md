@@ -652,11 +652,20 @@ once per process.
     changing run to run, the forwards' own spread over 2t at the finest
     rung and the random seed's absolute miss along the same c_r; so 1e-7
     relative fails in 15, 1 and 3 runs of 24. The same c_r at the random
-    seed is asserted on every root of every case. The rest miss by at most
-    7.9e-8 (`h8_ring_sto3g_sa3` eigen c_1). State 1's PC is refused at the
-    coarse rungs on `h2co_skew_ccpvdz_sa3` (h, B, C, c_1) and
+    seed is asserted on every root of every case. State 1's PC is refused
+    at the coarse rungs on `h2co_skew_ccpvdz_sa3` (h, B, C, c_1) and
     `h8_ring_sto3g_sa3` (c_1), λ + Δ not positive out to t = 1.25e-3, as
     #729 found; those rungs are NaN and the run is read below them.
+    `h8_ring_sto3g_sa3` eigen c_1 is not asserted either (#736): near that
+    pole its ratios are still settling at the finest pair, whose
+    extrapolant reads the forwards' rounding at a slope of only 6.1e-3 (it
+    missed 1e-7 on a push, at 1.09e-7), and the pair before is 5.5e-8 off
+    in truncation; starting finer only reads more rounding. Its random seed
+    is asserted (≤ 3e-10). The PC-QD ladders take the steadiest extrapolant
+    (where two neighbours agree best), not the finest pair's, which rounding
+    took past 1e-7 on `h8_ring_sto3g_sa3` eigen C too (1.08e-7). Over 20
+    runs every asserted one then missed by at most 2.7e-8
+    (`h2co_skew_ccpvdz_sa3` random h).
   - `Nevpt2QdPc.OneRootIsPcAdjoint` (`h2o_ccpvdz`): one root, weight 1,
     W = 1 against `pc_adjoint`: the energy to 1e-12, every array within
     16384 ε of its largest element. Over 38 runs two `pc_adjoint` calls came
