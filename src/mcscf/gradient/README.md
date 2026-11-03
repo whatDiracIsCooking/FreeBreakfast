@@ -290,7 +290,8 @@ and keeps the rest:
 **The orbital gradient** of E_act, the Z-vector's right-hand side, is by the
 same linearity `response::fock`'s gradient at (γ, Γ) less its gradient at
 zero RDMs (g = 2 (F − Fᵀ), linear in F): only the pairs (p, i), i core and
-p not, move, each by −4 F^I_pi. No entry point of its own is needed. It
+p not, move, each by −4 F^I_pi. That difference is exported as
+`mcscf::transition_orbital_gradient` (`transition/`). It
 equals PySCF's `gen_g_hop_active` orbital vector element for element
 (`gen_g_hop` returns 2 pack(F − Fᵀ), this tree's g), as the test measures.
 

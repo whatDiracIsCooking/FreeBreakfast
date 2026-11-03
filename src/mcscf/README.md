@@ -6,7 +6,7 @@ the CI together. It sits over `core`, `recipes`, `integrals`
 (J, K and `active_space`), `ci` (the loop's CI and RDMs) and `response` (the
 energy, gradient and orbital Hessian it steps over), and **never imports
 `pipeline`**: a step that runs a CASSCF wraps this layer, not the other way
-round. `mcscf.cppm` (`free_breakfast.mcscf`) re-exports `solve`, `gradient`, `nac`, `overlap`, `derivative`, `root_rotation` and `third_derivative`; it does not
+round. `mcscf.cppm` (`free_breakfast.mcscf`) re-exports `solve`, `gradient`, `nac`, `transition`, `overlap`, `derivative`, `root_rotation` and `third_derivative`; it does not
 re-export `response`, so a consumer that wants both imports both. Nor does it
 re-export `relaxed_hessian`, which is internal to the layer: the CI-relaxed
 Hessian product its sub-modules share, linked PRIVATE by each.
@@ -69,5 +69,5 @@ same fixture's equal-weight averages.
 
 | File | Role |
 |------|------|
-| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient`, `nac`, `overlap`, `derivative`, `root_rotation` and `third_derivative` |
-| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient`, `nac`, `overlap`, `derivative`, `root_rotation` and `third_derivative`, in that order, and the `free_breakfast.mcscf` module target |
+| `mcscf.cppm` | Aggregate module interface; `export import`s `solve`, `gradient`, `nac`, `transition`, `overlap`, `derivative`, `root_rotation` and `third_derivative` |
+| `CMakeLists.txt` | Build configuration: `add_subdirectory` of `relaxed_hessian`, `solve`, `zvector`, `gradient`, `transition`, `nac`, `overlap`, `derivative`, `root_rotation` and `third_derivative`, in that order, and the `free_breakfast.mcscf` module target |
