@@ -53,7 +53,8 @@ constexpr double kWeightsPivotFloor = 1e-10;
 constexpr double kWeightsResidual = 1e-10;
 // trace(gamma) is the active electron count to this.
 constexpr double kElectronCountTolerance = 1e-6;
-// A mix of roots sums to 1 to this, as ci::Rdm::rdm12 takes its weights.
+// A mix of roots sums to 1 to this, as ci::Rdm::rdm12 takes its weights, or
+// to 0 (the core off).
 constexpr double kMixSumTolerance = 1e-12;
 
 // @p count doubles from the device into a host vector, waited for.
@@ -163,7 +164,9 @@ Result<std::vector<double>> sa_gradient_weights(const Solution &solution, const 
 // solution's weighted RDMs, @p ints the fitted integrals at its orbitals.
 // Non-empty @p start and @p start2 stand in for the mix's RDMs (a transition
 // density, README "A transition density"), and then @p given must not be
-// null: the Z-vector solved here is the mix's.
+// null: the Z-vector solved here is the mix's. @p core_off says the mix sums
+// to 0 (README "Weights that sum to 0"): its RDMs are then taken as two mixes
+// summing to 1, and its Z-vector's right-hand side has no core part.
 Result<std::pair<std::vector<double>, std::vector<double>>>
 sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const SphericalMatrixAO &h,
                        const Buffers::device<double> &b, const int32_t naux,
@@ -172,7 +175,7 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
                        const response::Fock &averaged, const std::span<const double> mix,
                        const std::span<const double> weights, const ZVector *const given,
                        const std::span<const double> start, const std::span<const double> start2,
-                       double *const kappa) {
+                       const bool core_off, double *const kappa) {
   const SphericalMatrixAO &c = solution.c;
   const auto n = static_cast<size_t>(ncas);
   const auto mo = static_cast<size_t>(c.n());
@@ -205,15 +208,43 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
   double *const gamma2_device = gamma_device + (n * n);
   std::vector<double> gamma(start.begin(), start.end());
   std::vector<double> gamma2(start2.begin(), start2.end());
-  if (start.empty()) {
+  if (start.empty() && !core_off) {
     FBF_TRY(rdm.rdm12(res, mix, solution.roots.vectors.data(), gamma_device, gamma2_device));
     gamma = FBF_TRY(gradient_download(res, gamma_device, n * n));
     gamma2 = FBF_TRY(gradient_download(res, gamma2_device, n * n * n * n));
   }
+  // A mix summing to 0, which rdm12 does not take: v = s (v+ / s - v- / s),
+  // s = Sum_I max(v_I, 0) = Sum_I max(-v_I, 0), each part summing to 1.
+  if (start.empty() && core_off) {
+    gamma.assign(n * n, 0.0);
+    gamma2.assign(n * n * n * n, 0.0);
+    for (const double sign : {1.0, -1.0}) {
+      std::vector<double> part(mix.size());
+      std::ranges::transform(mix, part.begin(),
+                             [sign](const double v) { return std::max(sign * v, 0.0); });
+      const double s = std::accumulate(part.begin(), part.end(), 0.0);
+      if (s == 0.0) {
+        continue;
+      }
+      for (double &v : part) {
+        v /= s;
+      }
+      FBF_TRY(rdm.rdm12(res, part, solution.roots.vectors.data(), gamma_device, gamma2_device));
+      const std::vector<double> g1 = FBF_TRY(gradient_download(res, gamma_device, n * n));
+      const std::vector<double> g2 = FBF_TRY(gradient_download(res, gamma2_device, n * n * n * n));
+      for (size_t i = 0; i < g1.size(); ++i) {
+        gamma[i] += sign * s * g1[i];
+      }
+      for (size_t i = 0; i < g2.size(); ++i) {
+        gamma2[i] += sign * s * g2[i];
+      }
+    }
+  }
 
   // No multipliers given: the Z-vector over H_0 at the solution's orbitals
   // and g_v = Sum_I v_I g_I, the mix's orbital gradient there (the Fock's
-  // gradient is linear in the RDMs). The sigma takes host arrays
+  // gradient is affine in the RDMs, so at a mix summing to 0 it is the
+  // transition orbital gradient, the zero-RDM part off). The sigma takes host arrays
   // row-major, which needs no reorder, as mcscf::solve sets them: h_eff is
   // symmetric, and (tu|vw) column-major is (wv|ut) row-major.
   std::optional<ZVector> solved;
@@ -234,9 +265,15 @@ sa_gradient_lagrangian(DeviceResources &res, const Molecule &molecule, const Sph
         FBF_TRY(gradient_download(res, ints.papa.data(), mo * mo * n * n))};
     RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(
         res, hessian, sigma, rdm, alpha, beta, solution.roots, weights, std::move(response_ints)));
-    const response::Fock own = FBF_TRY(response::fock(res, molecule, h, b, naux, c, ncore, ncas,
-                                                      ints.ppaa, ints.papa, gamma, gamma2));
-    solved.emplace(FBF_TRY(zvector(res, relaxed, hessian, solution.roots, own.gradient.data())));
+    if (core_off) {
+      const Buffers::device<double> own = FBF_TRY(transition_orbital_gradient(
+          res, molecule, h, b, naux, c, ncore, ncas, ints.ppaa, ints.papa, gamma, gamma2));
+      solved.emplace(FBF_TRY(zvector(res, relaxed, hessian, solution.roots, own.data())));
+    } else {
+      const response::Fock own = FBF_TRY(response::fock(res, molecule, h, b, naux, c, ncore, ncas,
+                                                        ints.ppaa, ints.papa, gamma, gamma2));
+      solved.emplace(FBF_TRY(zvector(res, relaxed, hessian, solution.roots, own.gradient.data())));
+    }
   }
   const ZVector &z = given != nullptr ? *given : *solved;
 
@@ -439,11 +476,12 @@ Status sa_gradient_orbital_response(DeviceResources &res, const Buffers::device<
 }
 
 // df_gradient's and df_transition_gradient's shared body. @p transition says
-// which: for df_transition_gradient the terms are taken at @p gamma_t and
-// @p gamma2_t with the core's own energy (and the nuclear repulsion) left out,
-// and the response only with @p multipliers (README "A transition density"),
-// and @p mix is not read; for df_gradient they are taken at the roots mixed
-// at @p mix (README "A caller's Lagrangian").
+// the core's own energy (and the nuclear repulsion) is left out: for
+// df_transition_gradient (@p mix empty) the terms are taken at @p gamma_t and
+// @p gamma2_t, and the response only with @p multipliers (README "A
+// transition density"); for df_gradient they are taken at the roots mixed at
+// @p mix (README "A caller's Lagrangian"), which sum to 1, or with
+// @p transition to 0 (README "Weights that sum to 0").
 Result<GradientTerms>
 df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
                   const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
@@ -454,18 +492,26 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
                   const std::span<const double> gamma_t, const std::span<const double> gamma2_t) {
   const SphericalMatrixAO &c = solution.c;
   const auto nroots = static_cast<int32_t>(solution.roots.energies.size());
-  if (!transition) {
+  // A mix of the roots, df_gradient's, or the caller's RDMs.
+  const bool mixed = !transition || !mix.empty();
+  if (mixed) {
     if (mix.size() != static_cast<size_t>(nroots)) {
       return err_config("mcscf::df_gradient: {} root weights for a solution with {} roots",
                         mix.size(), nroots);
     }
-    // Each v_I >= 0 (not NaN), and their sum 1.
+    // Every v_I finite; a mix summing to 0 comes with transition set.
+    if (!std::ranges::all_of(mix, [](const double v) { return std::isfinite(v); })) {
+      return err_config("mcscf::df_gradient: a root weight is not finite");
+    }
+  }
+  if (!transition) {
+    // Summing to 1: each v_I >= 0, and their sum 1.
     if (!std::ranges::all_of(mix, [](const double v) { return v >= 0.0 && std::isfinite(v); })) {
       return err_config("mcscf::df_gradient: a root weight is negative or not finite");
     }
     const double sum = std::accumulate(mix.begin(), mix.end(), 0.0);
     if (std::abs(sum - 1.0) > kMixSumTolerance) {
-      return err_config("mcscf::df_gradient: the root weights sum to {}, not 1", sum);
+      return err_config("mcscf::df_gradient: the root weights sum to {}, neither 1 nor 0", sum);
     }
   }
   if (c.dev_idx() != res.dev_idx()) {
@@ -491,8 +537,8 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
   // Lagrangian and adds the orbital response; one root without them is the
   // solution's own energy. A transition density responds only to multipliers.
   const bool averaged = nroots > 1;
-  const bool responds = transition ? multipliers != nullptr : averaged || multipliers != nullptr;
-  if (transition &&
+  const bool responds = mixed ? averaged || multipliers != nullptr : multipliers != nullptr;
+  if (!mixed &&
       (gamma_t.size() != n_act * n_act || gamma2_t.size() != n_act * n_act * n_act * n_act)) {
     return err_config("mcscf::df_transition_gradient: transition RDMs of {} and {} elements for "
                       "ncas {}",
@@ -589,13 +635,22 @@ df_gradient_terms(DeviceResources &res, const Molecule &molecule, const BasisSet
       transition ? std::vector<double>(gamma_t.begin(), gamma_t.end()) : solution.gamma;
   std::vector<double> gamma2 =
       transition ? std::vector<double>(gamma2_t.begin(), gamma2_t.end()) : solution.gamma2;
+  // One root mixed at a weight of 0 (to kMixSumTolerance), with nothing to
+  // respond: its RDMs at that weight.
+  if (transition && mixed && !responds) {
+    gamma = solution.gamma;
+    gamma2 = solution.gamma2;
+    for (std::vector<double> *rdm : {&gamma, &gamma2}) {
+      std::ranges::transform(*rdm, rdm->begin(), [&](const double v) { return mix[0] * v; });
+    }
+  }
   Buffers::device<double> kappa(responds ? pairs : 1, res.device());
   std::optional<response::Fock> lagrangian_fock;
   if (responds) {
     std::tie(gamma, gamma2) = FBF_TRY(sa_gradient_lagrangian(
         res, molecule, h, b, static_cast<int32_t>(naux), solution, ncore, ncas, nelecas, ints,
         solution_fock, mix, weights, multipliers, transition ? gamma_t : std::span<const double>{},
-        transition ? gamma2_t : std::span<const double>{}, kappa.data()));
+        transition ? gamma2_t : std::span<const double>{}, transition, kappa.data()));
   }
   if (responds || transition) {
     lagrangian_fock.emplace(
@@ -1004,8 +1059,12 @@ Result<GradientTerms> df_gradient(DeviceResources &res, const Molecule &molecule
                                   const Solution &solution, const int32_t ncore, const int32_t ncas,
                                   const std::span<const double> mix,
                                   const ZVector *const multipliers, const MoAdjoint *const extra) {
+  // A mix summing to 0 has no core energy (README "Weights that sum to 0"):
+  // the transition terms at its RDMs.
+  const double sum = std::accumulate(mix.begin(), mix.end(), 0.0);
+  const bool zero = !mix.empty() && std::abs(sum) <= kMixSumTolerance;
   return df_gradient_terms(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, mix,
-                           multipliers, extra, false, {}, {});
+                           multipliers, extra, zero, {}, {});
 }
 
 Result<GradientTerms>

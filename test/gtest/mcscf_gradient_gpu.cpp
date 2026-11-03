@@ -14,7 +14,9 @@
 // state average, each root's multipliers from mcscf::zvector passed in
 // reproduce the internal path to 1e-10. And the refusals: a root the
 // solution does not have, multipliers of the wrong length, and a solution
-// whose roots and RDMs disagree.
+// whose roots and RDMs disagree. Last, a mix of the roots summing to 0 (the
+// core off) against the same mix of their gradients, on the skewed H2CO
+// SA-3 at unequal weights, and the mixes refused.
 //
 // The setup is mcscf_solve_gpu.cpp's: the setup steps through the real
 // registry, the SCF run by hand (kExactScf), and the start picked by the Casci
@@ -503,5 +505,157 @@ INSTANTIATE_TEST_SUITE_P(Pyscf, McscfGradient,
                                            std::string_view{"h2o_skew_ccpvdz"},
                                            std::string_view{"h2co_ccpvdz_sa2"}),
                          [](const auto &info) { return std::string(info.param); });
+
+// A mix of the roots whose weights sum to 0 (#741), the core's own energy
+// off: against Sum_r c_r df_gradient(e_r), every term, to 1e-10 of the
+// largest element of the terms compared (the issue's path-agreement bar: the
+// mix's Z-vector and each root's are separate solves). On
+// data/qd_nevpt2/qd_nevpt2.json's h2co_skew_ccpvdz_sa3_weighted, this
+// tree's DF-SA-CASSCF at its unequal weights [0.4, 0.4, 0.2], so the
+// Z-vector carries the rotations among the roots. Then the refusals: a sum
+// of neither 0 nor 1, and a weight not finite.
+TEST(McscfGradientMix, SumZeroIsMixOfRoots) {
+  FBF_REQUIRE_GPU();
+  constexpr double kPathAgreement = 1e-10;
+  const fb::json doc = [] {
+    auto read =
+        fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "qd_nevpt2" / "qd_nevpt2.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  fb::json qd;
+  for (const fb::json &c : doc.at("cases")) {
+    if (c.at("name").get<std::string>() == "h2co_skew_ccpvdz_sa3_weighted") {
+      qd = c;
+    }
+  }
+  ASSERT_FALSE(qd.is_null());
+  // run_setup_steps' layout: each atom {symbol, coord}.
+  fb::json entry{{"name", qd.at("name")}, {"charge", 0}, {"basis", qd.at("basis")}};
+  entry["atoms"] = fb::json::array();
+  for (const fb::json &atom : qd.at("atoms")) {
+    entry["atoms"].push_back(fb::json{{"symbol", atom.at(0)}, {"coord", atom.at(1)}});
+  }
+  const auto weights = qd.at("weights").get<std::vector<double>>();
+  const auto nroots = static_cast<std::int32_t>(weights.size());
+
+  fb::NodeResources node;
+  auto calc = run_setup_steps(entry, node);
+  ASSERT_TRUE(calc.has_value());
+  fb::DeviceResources &res = node.device(0);
+  const auto &molecule = calc->get<fb::MoleculeOutput>();
+  const auto &basis = calc->get<fb::BasisSetOutput>();
+  const auto &transform = calc->get<fb::SphericalTransformOutput>();
+  const auto &pairs = calc->get<fb::PrimitivePairClassesOutput>();
+  const auto &overlap = calc->get<fb::OverlapOutput>();
+  const auto &x = calc->get<fb::OrthogonalizerOutput>();
+  const auto &h = calc->get<fb::CoreHamiltonianOutput>();
+  const auto &guess = calc->get<fb::GuessOutput>();
+  ASSERT_TRUE(molecule.has_value() && basis.has_value() && transform.has_value() &&
+              pairs.has_value() && overlap.has_value() && x.has_value() && h.has_value() &&
+              guess.has_value())
+      << "a product of the setup steps is missing";
+  const fb::ScopedDeviceIndex on{res.dev_idx()};
+  const fb::View<fb::MoleculeOutput, fb::BasisSetOutput, fb::PrimitivePairClassesOutput> view{
+      *molecule, *basis, *pairs};
+  auto direct = fb::EriStep{}.run(view, res);
+  ASSERT_TRUE(direct.has_value()) << direct.error().message;
+  auto scf = fb::test::kExactScf.run(
+      fb::StepInput<fb::ScfStep>{*molecule, *basis, *transform, *direct, *overlap, *x, *h, *guess},
+      res);
+  ASSERT_TRUE(scf.has_value()) << scf.error().message;
+  fb::CasciStep step;
+  step.ncas = qd.at("ncas").get<std::int32_t>();
+  step.nelecas = qd.at("nelecas").get<std::int32_t>();
+  step.nroots = nroots;
+  auto space = step.select(res, molecule->molecule, basis->basis, *scf);
+  ASSERT_TRUE(space.has_value()) << space.error().message;
+  ASSERT_EQ(space->ncore, qd.at("ncore").get<std::int32_t>());
+  auto fitted = fb::EriStep{.mode = fb::EriMode::DensityFitting,
+                            .aux_basis = qd.at("aux_basis").at("name").get<std::string>()}
+                    .run(view, res);
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().message;
+  const auto &df = std::get<fb::DensityFitted>(fitted->eri);
+  fb::mcscf::Options options;
+  options.conv_tol_grad = kConvTolGrad;
+  options.density_fitting = fb::mcscf::DensityFitting::Full;
+  auto sol = fb::mcscf::solve(res, basis->basis, molecule->molecule, h->h, transform->u, {}, {},
+                              space->c, space->ncore, space->ncas, space->nelecas, nroots, weights,
+                              options, &df.b, df.naux);
+  ASSERT_TRUE(sol.has_value()) << sol.error().message;
+  const auto mix_call = [&](std::span<const double> mix) {
+    return fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux,
+                                  h->h, df.b, df.l.data(), *sol, space->ncore, space->ncas, mix);
+  };
+
+  // A random mix summing to 0: three draws less their mean, so of mixed
+  // signs, and none +-1 (not a difference of two roots).
+  std::mt19937_64 rng(741);
+  std::uniform_real_distribution<double> draw(-1.0, 1.0);
+  std::vector<double> mix(weights.size());
+  std::ranges::generate(mix, [&] { return draw(rng); });
+  const double mean = std::accumulate(mix.begin(), mix.end(), 0.0) / static_cast<double>(nroots);
+  for (double &v : mix) {
+    v -= mean;
+    ASSERT_GT(std::abs(std::abs(v) - 1.0), 1e-3);
+  }
+  ASSERT_TRUE(std::ranges::any_of(mix, [](double v) { return v < 0.0; }) &&
+              std::ranges::any_of(mix, [](double v) { return v > 0.0; }));
+  const auto got = mix_call(mix);
+  ASSERT_TRUE(got.has_value()) << got.error().message;
+  std::vector<fb::mcscf::GradientTerms> roots;
+  for (std::int32_t root = 0; root < nroots; ++root) {
+    auto g = fb::mcscf::df_gradient(res, molecule->molecule, basis->basis, pairs->classes, df.aux,
+                                    h->h, df.b, df.l.data(), *sol, space->ncore, space->ncas, root);
+    ASSERT_TRUE(g.has_value()) << g.error().message;
+    roots.push_back(std::move(*g));
+  }
+  const auto terms = [](const fb::mcscf::GradientTerms &g) {
+    return std::array{&g.kinetic,      &g.potential,         &g.overlap,
+                      &g.two_electron, &g.nuclear_repulsion, &g.total};
+  };
+  std::vector<std::vector<double>> want;
+  double scale = 0.0;
+  for (std::size_t t = 0; t < terms(*got).size(); ++t) {
+    std::vector<double> sum(terms(*got)[t]->size(), 0.0);
+    for (std::size_t r = 0; r < roots.size(); ++r) {
+      EXPECT_EQ(terms(roots[r])[t]->size(), sum.size());
+      for (std::size_t i = 0; i < sum.size(); ++i) {
+        sum[i] += mix[r] * (*terms(roots[r])[t])[i];
+      }
+    }
+    for (const double v : sum) {
+      scale = std::max(scale, std::abs(v));
+    }
+    want.push_back(std::move(sum));
+  }
+  double worst = 0.0;
+  for (std::size_t t = 0; t < want.size(); ++t) {
+    for (std::size_t i = 0; i < want[t].size(); ++i) {
+      worst = std::max(worst, std::abs((*terms(*got)[t])[i] - want[t][i]));
+    }
+  }
+  EXPECT_LE(worst, kPathAgreement * scale);
+  std::cout << std::format("[ casgrad  ] {} sum-0 mix [{:.6f}, {:.6f}, {:.6f}]: {:.2e} of a "
+                           "largest {:.3e}, {:.2e} relative\n",
+                           qd.at("name").get<std::string>(), mix[0], mix[1], mix[2], worst, scale,
+                           worst / scale);
+
+  // A sum of neither 0 nor 1 (above both, and off 0 by 1e-6), and a weight
+  // that is not finite.
+  std::vector<double> off_zero = mix;
+  off_zero[0] += 1e-6;
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (const auto &[bad, says] : {std::pair{std::vector<double>{0.2, 0.2, 0.1}, "neither 1 nor 0"},
+                                  std::pair{off_zero, "mcscf::df_gradient"},
+                                  std::pair{std::vector<double>{nan, 0.5, -0.5}, "not finite"},
+                                  std::pair{std::vector<double>{inf, -0.5, 0.5}, "not finite"}}) {
+    const auto refused = mix_call(bad);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
+    EXPECT_NE(refused.error().message.find(says), std::string::npos) << refused.error().message;
+  }
+}
 
 } // namespace
