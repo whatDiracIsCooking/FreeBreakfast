@@ -1387,12 +1387,12 @@ INSTANTIATE_TEST_SUITE_P(Weights, Nevpt2ZcStateAverage, ::testing::ValuesIn(kSaW
 // Λ 2.6e-18, y^c 3.5e-18, X and A 5.2e-18), and the one-root call against
 // it sat at the same spread (at most 6.9e-18). An absolute 1e-17 is under
 // that floor: 50 repeats of this case on the gfx1200 reached 1.39e-17 on A,
-// one ulp of its largest element. So each array is held to
-// kRunToRunEps of its largest element's machine epsilon (the 50 repeats
-// reached 10.7 on A, 4.0 on y^c, 2.5 on X, 2.4 on Λ), and Φ, which is
-// round-off itself (f is diagonal where z lives, so Φ ~ 1e-17), to
-// kRunToRunPhi absolute (the repeats reached 6.2e-18).
-constexpr double kRunToRunEps = 32.0;
+// one ulp of its largest element. So each array is held to the standing
+// rule, kRunToRun of its largest element (#775:
+// https://github.com/whatDiracIsCooking/FreeBreakfast/issues/775#issuecomment-6608877300),
+// and Φ, which is round-off itself (f is diagonal where z lives, so
+// Φ ~ 1e-17), to kRunToRunPhi absolute (the repeats reached 6.2e-18).
+constexpr double kRunToRun = 1e-10;
 constexpr double kRunToRunPhi = 5e-17;
 
 TEST(Nevpt2Zc, OneRootIsTheSingleStatePhi) {
@@ -1415,15 +1415,15 @@ TEST(Nevpt2Zc, OneRootIsTheSingleStatePhi) {
   const HostZcAdjoint averaged = zc_adjoint(res, s, z, first_only, roots);
   ASSERT_EQ(one.y.size(), ndet);
   ASSERT_EQ(averaged.y.size(), 2 * ndet);
-  // max |a - b| in units of b's largest magnitude's machine epsilon.
+  // max |a - b| over the largest element of a and b.
   const auto worst = [](std::span<const double> a, std::span<const double> b) {
     double out = 0.0;
     double largest = 0.0;
     for (std::size_t i = 0; i < a.size(); ++i) {
       out = std::max(out, std::abs(a[i] - b[i]));
-      largest = std::max(largest, std::abs(b[i]));
+      largest = std::max({largest, std::abs(a[i]), std::abs(b[i])});
     }
-    return out / (std::numeric_limits<double>::epsilon() * largest);
+    return out / largest;
   };
   for (const auto &[name, other] :
        {std::pair{"again", &again}, std::pair{"weights (1, 0)", &averaged}}) {
@@ -1435,10 +1435,10 @@ TEST(Nevpt2Zc, OneRootIsTheSingleStatePhi) {
          {"x", worst(other->x, one.x)},
          {"a", worst(other->a, one.a)}}};
     for (const auto &[field, difference] : apart) {
-      EXPECT_LE(difference, std::string_view{field} == "phi" ? kRunToRunPhi : kRunToRunEps)
+      EXPECT_LE(difference, std::string_view{field} == "phi" ? kRunToRunPhi : kRunToRun)
           << name << ": " << field;
       std::cout << std::format("[ nevpt2   ] one root, {} {}: apart by {:.3e}{}\n", name, field,
-                               difference, std::string_view{field} == "phi" ? "" : " eps max");
+                               difference, std::string_view{field} == "phi" ? "" : " relative");
     }
   }
   for (std::size_t i = ndet; i < 2 * ndet; ++i) {
@@ -2488,16 +2488,18 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdAdjoint,
                          [](const auto &info) { return info.param; });
 
 // The one-root call at weight 1 and W = 1 is sc_adjoint at the state, to
-// sc_adjoint's own run-to-run spread: each array within kQdOneRootEps of
-// its largest element's machine epsilon, and the energy within
+// round-off: each array within kQdOneRoot of its largest element, and the
+// energy within
 // kSameEnergyTolerance. Not bitwise: sc_adjoint is not bitwise against
 // itself (class_energies_adjoint's and the einsums' atomics reassociate each
 // sum), and over 35 runs on the RTX 3080 two of its calls came out up to
 // 2476 ε apart (A; y 2324, Λ and h̄ 1326, X 574, ε 4.7), and the one-root
 // call against it up to 2532 (A; y 1950, Λ and h̄ 1315, X 656, ε 3.9): the
 // same spread, the QD path adding the walk's γ̄ and the builders' in another
-// order. The bound is that floor with room, about 1.6 times it.
-constexpr double kQdOneRootEps = 4096.0;
+// order. That floor, under-sampled, flaked at 4327 ε against a 4096 ε bar;
+// the standing rule replaces it (#775:
+// https://github.com/whatDiracIsCooking/FreeBreakfast/issues/775#issuecomment-6608877300).
+constexpr double kQdOneRoot = 1e-10;
 
 TEST(Nevpt2Qd, OneRootIsScAdjoint) {
   FBF_REQUIRE_GPU();
@@ -2509,15 +2511,15 @@ TEST(Nevpt2Qd, OneRootIsScAdjoint) {
   const std::array<double, 1> w{1.0};
   const HostAdjoint qd = qd_adjoint(res, s, kOneRoot, w);
   ASSERT_EQ(qd.y.size(), sc.y.size());
-  // max |a - b| in units of b's largest magnitude's machine epsilon.
+  // max |a - b| over the largest element of a and b.
   const auto worst = [](std::span<const double> a, std::span<const double> b) {
     double out = 0.0;
     double largest = 0.0;
     for (std::size_t i = 0; i < a.size(); ++i) {
       out = std::max(out, std::abs(a[i] - b[i]));
-      largest = std::max(largest, std::abs(b[i]));
+      largest = std::max({largest, std::abs(a[i]), std::abs(b[i])});
     }
-    return out / (std::numeric_limits<double>::epsilon() * largest);
+    return out / largest;
   };
   for (const auto &[name, other] : {std::pair{"sc_adjoint again", &again}, std::pair{"qd", &qd}}) {
     const std::array<std::pair<const char *, double>, 6> apart{
@@ -2528,8 +2530,8 @@ TEST(Nevpt2Qd, OneRootIsScAdjoint) {
          {"a", worst(other->a, sc.a)},
          {"epsilon", worst(other->epsilon, sc.epsilon)}}};
     for (const auto &[field, difference] : apart) {
-      EXPECT_LE(difference, kQdOneRootEps) << name << ": " << field;
-      std::cout << std::format("[ nevpt2   ] one root, {} {}: apart by {:.3e} eps max\n", name,
+      EXPECT_LE(difference, kQdOneRoot) << name << ": " << field;
+      std::cout << std::format("[ nevpt2   ] one root, {} {}: apart by {:.3e} relative\n", name,
                                field, difference);
     }
     EXPECT_NEAR(other->total, sc.total, kSameEnergyTolerance) << name;
@@ -2640,15 +2642,16 @@ INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdPcAdjoint,
                          [](const auto &info) { return info.param; });
 
 // The one-root call at weight 1 and W = 1 is pc_adjoint at the state, to
-// pc_adjoint's own run-to-run spread: each array within kQdPcOneRootEps of
-// its largest element's machine epsilon, the energy within
+// round-off: each array within kQdPcOneRoot of its largest element, the
+// energy within
 // kSameEnergyTolerance. Not bitwise: pc_adjoint is not bitwise against
 // itself (its walk's and the einsums' atomics), and over 38 runs on the
 // RTX 3080 two of its calls came out up to 6841 ε apart (y; A 5106, Λ and
 // h̄ 4369, X 972, ε 7.0), and the one-root call against it up to 5772 (y; A
-// 4507, Λ and h̄ 3868, X 839, ε 4.7). The bound is that floor with room,
-// about 2.4 times it: the floor grew from 5659 at 13 runs to 6841 at 38.
-constexpr double kQdPcOneRootEps = 16384.0;
+// 4507, Λ and h̄ 3868, X 839, ε 4.7); the floor grew from 5659 at 13 runs to
+// 6841 at 38, so the standing rule replaces it (#775:
+// https://github.com/whatDiracIsCooking/FreeBreakfast/issues/775#issuecomment-6608877300).
+constexpr double kQdPcOneRoot = 1e-10;
 
 TEST(Nevpt2QdPc, OneRootIsPcAdjoint) {
   FBF_REQUIRE_GPU();
@@ -2663,15 +2666,15 @@ TEST(Nevpt2QdPc, OneRootIsPcAdjoint) {
   const auto qd = qd_adjoint_of(res, s, kOneRoot, w, true);
   ASSERT_TRUE(qd.has_value()) << qd.error().message;
   ASSERT_EQ(qd->y.size(), pc->y.size());
-  // max |a - b| in units of b's largest magnitude's machine epsilon.
+  // max |a - b| over the largest element of a and b.
   const auto worst = [](std::span<const double> a, std::span<const double> b) {
     double out = 0.0;
     double largest = 0.0;
     for (std::size_t i = 0; i < a.size(); ++i) {
       out = std::max(out, std::abs(a[i] - b[i]));
-      largest = std::max(largest, std::abs(b[i]));
+      largest = std::max({largest, std::abs(a[i]), std::abs(b[i])});
     }
-    return out / (std::numeric_limits<double>::epsilon() * largest);
+    return out / largest;
   };
   for (const auto &[name, other] :
        {std::pair{"pc_adjoint again", &*again}, std::pair{"qd pc", &*qd}}) {
@@ -2683,8 +2686,8 @@ TEST(Nevpt2QdPc, OneRootIsPcAdjoint) {
          {"a", worst(other->a, pc->a)},
          {"epsilon", worst(other->epsilon, pc->epsilon)}}};
     for (const auto &[field, difference] : apart) {
-      EXPECT_LE(difference, kQdPcOneRootEps) << name << ": " << field;
-      std::cout << std::format("[ nevpt2   ] pc one root, {} {}: apart by {:.3e} eps max\n", name,
+      EXPECT_LE(difference, kQdPcOneRoot) << name << ": " << field;
+      std::cout << std::format("[ nevpt2   ] pc one root, {} {}: apart by {:.3e} relative\n", name,
                                field, difference);
     }
     EXPECT_NEAR(other->total, pc->total, kSameEnergyTolerance) << name;

@@ -18,17 +18,16 @@
 // - df_transition_gradient at the folded RDMs against Sum_sr zeta_sr times
 //   the per-pair calls, every term. df_transition_gradient is not bitwise
 //   from call to call (its derivative kernels add atomically,
-//   gradient/README.md "Reproducibility"), so this is held at its measured
-//   floor, round_off_bar: the larger of 1e3 eps of the total row's largest
-//   element and four times the worst spread measured over 60 repeats, per
-//   the milestone's cross-call rule, every spread printed beside it.
+//   gradient/README.md "Reproducibility"), so this is held at round_off_bar,
+//   the standing cross-call rule: 1e-10 of the total row's largest element,
+//   every spread printed beside it.
 //
 // McscfRootPairMultipliers, on SA-3 (three pairs), at a random CI adjoint
 // y_bar from a fixed seed and three sets of weights (equal; 0.4, 0.4, 0.2,
 // one equal pair and two unequal; 0.5, 0.3, 0.2, none equal):
 //
-// - tau against c_s . y_r - c_r . y_s on the host at round_off_bar (1e3 eps
-//   of the largest |tau|, or four times the worst measured), and bitwise
+// - tau against c_s . y_r - c_r . y_s on the host at round_off_bar (1e-10
+//   of the largest |tau|), and bitwise
 //   the same at every weight;
 // - each equal pair's zeta bitwise -tau / (E_s - E_r) and t zero, each
 //   unequal pair's t bitwise tau / (2 (w_r - w_s)) and zeta zero;
@@ -66,32 +65,16 @@ namespace fb = free_breakfast;
 
 // The CASSCF's convergence, as mcscf_nac_gpu.cpp's.
 constexpr double kConvTolGrad = 1e-10;
-// The round-off bar of a comparison between two calls (the milestone's
-// rule): the larger of kRelativeUlps eps of the largest element of the whole
-// quantity compared (the nuclear gradient's total row; tau's every element)
-// and kSpreadMargin times the worst spread measured over 60 repeats of each
-// case in one process on the RTX 3080, under the card lock.
-constexpr double kRelativeUlps = 1e3;
-constexpr double kSpreadMargin = 4.0;
-// The worst spread of any term, two calls or the fold against the per-pair
-// sum, per case, over two sessions of 60 repeats (120 per case), rounded up:
-// SA-2 2.36e-15 (two calls 6.7e-16, the fold 2.36e-15) against a total row
-// peaking at 1.83e-2, so its bar is 4 x 2.4e-15 = 9.6e-15 over 1e3 eps's
-// 4.1e-15; SA-3 1.76e-14 (two calls 1.13e-14, the fold 1.76e-14) against a
-// total row peaking at 0.128 to 0.143 (the CI phases differ between solves),
-// so 7.2e-14 over 1e3 eps's 2.8e-14 to 3.2e-14. Both about 5e-13 relative.
-// The spread rose from 30 repeats to 60 only within the same order (its
-// 99th percentile is two thirds of its worst).
-constexpr double kWorstSpreadSa2 = 2.4e-15;
-constexpr double kWorstSpreadSa3 = 1.8e-14;
-// The worst |tau - (c_s . y_r - c_r . y_s)| against the host's dots, 8.88e-16
-// over 180 checks; 1e3 eps of the largest |tau| (about 2.2) is the bar.
-constexpr double kWorstTauSpread = 8.9e-16;
+// The round-off bar of a comparison between two calls, or a fold against
+// its parts: the standing rule, 1e-10 of the largest element of the whole
+// quantity compared (the nuclear gradient's total row; tau's every element),
+// replacing ulp counts over measured spreads (#775:
+// https://github.com/whatDiracIsCooking/FreeBreakfast/issues/775#issuecomment-6608877300).
+constexpr double kRoundOff = 1e-10;
 
-// The bar at the largest element @p scale of the quantity, over @p worst.
-double round_off_bar(double scale, double worst) {
-  return std::max(kRelativeUlps * std::numeric_limits<double>::epsilon() * scale,
-                  kSpreadMargin * worst);
+// The bar at the largest element @p scale of the quantity.
+double round_off_bar(double scale) {
+  return kRoundOff * scale;
 }
 // The zeta of McscfZetaTerms, one per pair: its second pair (SA-3's (0, 2))
 // at zero, which zeta_terms skips.
@@ -427,8 +410,7 @@ TEST_P(McscfZetaTerms, AreThePairSums) {
                                                    "two_electron", "total"};
   // Every term at the total row's largest element.
   const double scale = largest(folded->total);
-  const double bar =
-      round_off_bar(scale, name == "h2co_ccpvdz_sa2" ? kWorstSpreadSa2 : kWorstSpreadSa3);
+  const double bar = round_off_bar(scale);
   for (std::size_t f = 0; f < fields.size(); ++f) {
     const std::vector<double> &ours = (*folded).*fields[f];
     const double self = spread(ours, (*folded_again).*fields[f]);
@@ -436,11 +418,10 @@ TEST_P(McscfZetaTerms, AreThePairSums) {
     EXPECT_LE(self, bar) << kNames[f] << ": two calls";
     EXPECT_LE(against, bar) << kNames[f] << ": against the per-pair sum";
     std::cout << std::format("[ zeta] {} {}: max {:.3e} (scale {:.3e}), two calls {:.2e} "
-                             "({:.1f} ulps), fold against the pairs {:.2e} ({:.1f} ulps), bar "
-                             "{:.2e}\n",
-                             name, kNames[f], largest(ours), scale, self,
-                             self / (std::numeric_limits<double>::epsilon() * scale), against,
-                             against / (std::numeric_limits<double>::epsilon() * scale), bar);
+                             "(relative {:.2e}), fold against the pairs {:.2e} (relative "
+                             "{:.2e}), bar {:.2e}\n",
+                             name, kNames[f], largest(ours), scale, self, self / scale, against,
+                             against / scale, bar);
   }
 
   // A zeta of the wrong length.
@@ -512,7 +493,7 @@ TEST(McscfRootPairMultipliers, SplitsTauByWeight) {
     std::size_t pair = 0;
     std::size_t equal = 0;
     double tau_error = 0.0;
-    const double tau_bar = round_off_bar(largest(split->tau), kWorstTauSpread);
+    const double tau_bar = round_off_bar(largest(split->tau));
     for (std::size_t r = 0; r < nroots; ++r) {
       for (std::size_t s = r + 1; s < nroots; ++s, ++pair) {
         const double host = dot(s, r) - dot(r, s);
