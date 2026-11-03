@@ -1,7 +1,7 @@
 /// @file
 /// @brief mcscf::df_nac: the CI-relaxed Hessian at the solution, the
-/// transition RDMs of the pair, the transition orbital gradient (two Focks'
-/// gradients' difference) and its Z-vector; then h_IJ from one
+/// transition RDMs of the pair, the transition orbital gradient
+/// (transition_orbital_gradient) and its Z-vector; then h_IJ from one
 /// df_transition_gradient over those multipliers, and d^CSF from
 /// overlap_half_gradient at the antisymmetrized AO transition density (a
 /// gemmwich).
@@ -10,9 +10,8 @@ module free_breakfast.mcscf.nac;
 
 import std;
 import free_breakfast.core.types;
-import free_breakfast.core.constants; // kNegOne
 import free_breakfast.core.error_handling;
-import free_breakfast.core.wwr; // axpy, wwrMemcpyAsync
+import free_breakfast.core.wwr; // wwrMemcpyAsync, gemmwich's BLAS handle
 import free_breakfast.core.resources;
 import free_breakfast.basis;
 import free_breakfast.molecule;
@@ -30,6 +29,7 @@ import free_breakfast.mcscf.solve;
 import free_breakfast.mcscf.relaxed_hessian;
 import free_breakfast.mcscf.zvector;
 import free_breakfast.mcscf.gradient;
+import free_breakfast.mcscf.transition;
 
 #include "diagnostics.h"
 
@@ -184,25 +184,15 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
   const std::vector<double> gamma2 = FBF_TRY(nac_download(res, gamma2_device, m * m));
   const std::vector<double> gamma_ij = FBF_TRY(nac_download(res, gamma_ij_device, m));
 
-  // The transition orbital gradient, the Z-vector's right-hand side: fock's
-  // gradient at the transition RDMs less its gradient at zero RDMs (the
-  // core's own energy multiplies <I|J> = 0). Its CI part and its part along
-  // the rotations among the roots are zero (README.md "Unequal weights"), so
-  // the Z-vector has neither; at unequal weights it still returns Theta,
-  // from the rotations' coupling to the orbitals, which
-  // df_transition_gradient folds into z_c.
-  response::Fock transition = FBF_TRY(
-      response::fock(res, molecule, h, b, q, c, ncore, ncas, ints.ppaa, ints.papa, gamma, gamma2));
-  const std::vector<double> zero_gamma(m, 0.0);
-  const std::vector<double> zero_gamma2(m * m, 0.0);
-  const response::Fock core = FBF_TRY(response::fock(
-      res, molecule, h, b, q, c, ncore, ncas, ints.ppaa, ints.papa, zero_gamma, zero_gamma2));
-  const wwr::wwrblasHandle_t blas = res.blas().get();
-  FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(
-      blas, static_cast<int32_t>(transition.gradient.num_elements()), &kNegOne<double>,
-      core.gradient.data(), 1, transition.gradient.data(), 1)));
-  const ZVector z =
-      FBF_TRY(zvector(res, relaxed, hessian, solution.roots, transition.gradient.data()));
+  // The transition orbital gradient, the Z-vector's right-hand side
+  // (transition_orbital_gradient). Its CI part and its part along the
+  // rotations among the roots are zero (README.md "Unequal weights"), so the
+  // Z-vector has neither; at unequal weights it still returns Theta, from
+  // the rotations' coupling to the orbitals, which df_transition_gradient
+  // folds into z_c.
+  const Buffers::device<double> transition = FBF_TRY(transition_orbital_gradient(
+      res, molecule, h, b, q, c, ncore, ncas, ints.ppaa, ints.papa, gamma, gamma2));
+  const ZVector z = FBF_TRY(zvector(res, relaxed, hessian, solution.roots, transition.data()));
 
   // h_IJ: the Hellmann-Feynman terms at the transition RDMs and the
   // multipliers' on top, in one call.
@@ -221,6 +211,7 @@ Result<Nac> df_nac(DeviceResources &res, const Molecule &molecule, const BasisSe
   Buffers::device<double> antisymmetric_device(m, res.device());
   Buffers::device<double> work(n * mo, res.device());
   SphericalMatrixAO a(res, basis);
+  const wwr::wwrblasHandle_t blas = res.blas().get();
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(antisymmetric_device.data(), antisymmetric.data(),
                                          m * sizeof(double), wwr::wwrMemcpyHostToDevice,
                                          res.stream())));
