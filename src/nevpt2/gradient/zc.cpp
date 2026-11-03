@@ -17,7 +17,8 @@ import free_breakfast.recipes.einsum;
 import free_breakfast.integrals.eri.density_fitting.mo; // b_mo
 import free_breakfast.ci.strings;
 import free_breakfast.ci.sigma;
-import :operands; // column_operand, contract, zeroed, add_onto, to_host, to_device, check_counts
+import :operands; // column_operand, contract, zeroed, add_onto, to_host, to_device,
+                  // check_counts, check_weights
 
 #include "diagnostics.h"
 
@@ -33,10 +34,6 @@ constexpr double kZcGapFloor = 1e-6;
 // What a degenerate pair's |A_pq| must be under for that zero to stand; past
 // it the pair is refused. The demo's PC_ZERO_TOL.
 constexpr double kZcZeroSource = 1e-8;
-// How far zc_adjoint's weights may sum from 1: ci::Rdm::rdm12's and
-// mcscf::solve's bar.
-constexpr double kZcWeightSum = 1e-12;
-
 Result<ZcMultipliers> zc_multipliers(DeviceResources &res, const int32_t nmo, const int32_t ncore,
                                      const int32_t ncas, const double *a, const double *epsilon) {
   if (nmo <= 0 || ncore < 0 || ncas < 0 || ncore + ncas > nmo) {
@@ -89,18 +86,7 @@ Result<ZcAdjoint> zc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
                              const std::span<const double> weights, const double *vectors,
                              const double *z) {
   FBF_TRY(check_counts("nevpt2::zc_adjoint", alpha, beta, naux, nao, nmo, ncore, ncas));
-  double weight_sum = 0.0;
-  for (const double w : weights) {
-    if (!(w >= 0.0)) {
-      return err_config("nevpt2::zc_adjoint: weight {} is negative or not a number", w);
-    }
-    weight_sum += w;
-  }
-  if (weights.empty() || std::abs(weight_sum - 1.0) > kZcWeightSum) {
-    return err_config("nevpt2::zc_adjoint: {} weights summing to {:.17g}: at least one, summing "
-                      "to 1 within {:g}",
-                      weights.size(), weight_sum, kZcWeightSum);
-  }
+  FBF_TRY(check_weights("nevpt2::zc_adjoint", weights));
   const ScopedDeviceIndex on{res.dev_idx()};
   const auto nroots = static_cast<int32_t>(weights.size());
   const int64_t nc = ncore;

@@ -22,94 +22,18 @@ import free_breakfast.nevpt2.density_fitting;
 import free_breakfast.nevpt2.rdm;
 import free_breakfast.nevpt2.energy;
 import :operands; // column_operand, contract, zeroed, add_onto, check_counts
+import :builders; // ScArrays, FockBuild, the builders and their reverse pass
 
 #include "diagnostics.h"
 
 namespace free_breakfast::nevpt2 {
 
-// Half the device's free memory: nevpt2::rdms' budget, as the Nevpt2 step
-// gives it, so that class_energies' own buffers still find room after the
-// workspace has grown to it (the workspace never shrinks).
 Result<size_t> rdm_budget() {
   size_t free_bytes = 0;
   size_t total_bytes = 0;
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
   return free_bytes / 2;
 }
-
-// Every array the builders write or read beyond (h, B, c): class_energies'
-// EnergyInputs and the intermediates, each packed column-major (the RDMs
-// row-major). The adjoint holds a second one for the bars, the same field
-// by field, of which only what takes a bar is allocated.
-struct ScArrays {
-  MoBlocks blocks;
-  // C^T h C, nmo x nmo.
-  Buffers::device<double> h_mo;
-  // B_cc, naux x ncore x ncore, as b_mo leaves it; and B_Q,aa over the
-  // virtuals a, naux x nvirt: what the core and virtual orbital energies and
-  // the core blocks of F^I read beyond the MoBlocks.
-  Buffers::device<double> cc;
-  Buffers::device<double> vvd;
-  // d_Q = Σ_j B_Q,jj and g_Q = Σ_tu γ_tu B_Q,tu: the Coulomb densities of the
-  // core and of the active space, naux each.
-  Buffers::device<double> d;
-  Buffers::device<double> g;
-  // The ncore and ncas identities, the δ operands of the traces.
-  Buffers::device<double> delta_core;
-  Buffers::device<double> delta_act;
-  // (tu|vw) at t + n (u + n (v + n w)), nevpt2::rdms' eri.
-  Buffers::device<double> eri;
-  Buffers::device<double> h2e;
-  Buffers::device<double> h1e;
-  Buffers::device<double> h1e_v_sr;
-  Buffers::device<double> h1e_v_si;
-  Buffers::device<double> h1e_v_sir;
-  Buffers::device<double> e_core;
-  Buffers::device<double> e_virt;
-  Buffers::device<double> dm1;
-  Buffers::device<double> dm2;
-  Buffers::device<double> dm3;
-  Buffers::device<double> f3ca;
-  Buffers::device<double> f3ac;
-  // The active electrons, N: dm2 = Σ_t dm3[.., t, t] / N.
-  double electrons = 0.0;
-
-  [[nodiscard]] EnergyInputs inputs() const {
-    return {.h1e = h1e.data(),
-            .h2e = h2e.data(),
-            .e_core = e_core.data(),
-            .e_virt = e_virt.data(),
-            .h1e_v_sr = h1e_v_sr.data(),
-            .h1e_v_si = h1e_v_si.data(),
-            .h1e_v_sir = h1e_v_sir.data(),
-            .dm1 = dm1.data(),
-            .dm2 = dm2.data(),
-            .dm3 = dm3.data(),
-            .f3ca = f3ca.data(),
-            .f3ac = f3ac.data()};
-  }
-};
-
-// One term of a builder, out += alpha einsum(subscripts, operands) with the
-// output column-major, and the bar each operand's adjoint adds onto: packed
-// column-major in that operand's extents, or null (a constant, an h view, or
-// the forward). No operand that takes a bar repeats a label: the traces go
-// through the δ operands, which take none.
-struct FockTerm {
-  std::string_view subscripts;
-  std::vector<EinsumOperand> operands;
-  std::vector<double *> bars;
-  double alpha = 1.0;
-};
-
-// A builder: its output, the output's bar (null in the forward), the
-// output's extents, and its terms.
-struct FockBuild {
-  double *out = nullptr;
-  const double *out_bar = nullptr;
-  std::vector<int64_t> dims;
-  std::vector<FockTerm> terms;
-};
 
 // The adjoint of one term: each operand that takes a bar gets the forward
 // contraction with it and the output swapping roles.
@@ -146,12 +70,7 @@ Status contract_adjoint(DeviceResources &res, const FockTerm &term, const double
   return {};
 }
 
-// The builders of every per-root input, in the order the forward runs them:
-// (tu|vw) first, which nevpt2::rdms reads; then, after rdms, dm2 and dm1 as
-// traces of dm3, the Coulomb densities d and g, the four F^I blocks and the
-// two orbital energies. With @p bar, each term carries its operands' bars and
-// each build its output's bar; without, the forward's.
-//
+// fock_builds' (declared in :builders) labels:
 // Labels: L fitting, i j core, t u active, a virtual. Each MO block is
 // [L][p][q] ("Lat" is B_va), h a view of C^T h C (strides 1, nmo), and the
 // RDMs row-major, labels reversed.
@@ -177,8 +96,6 @@ std::vector<FockBuild> fock_builds(ScArrays &x, ScArrays *bar) {
   double *const d_bar = bar_of(&ScArrays::d);
   double *const g_bar = bar_of(&ScArrays::g);
   double *const dm1_bar = bar_of(&ScArrays::dm1);
-  double *const dm2_bar = bar_of(&ScArrays::dm2);
-  double *const dm3_bar = bar_of(&ScArrays::dm3);
 
   const EinsumOperand aa = column_operand(x.blocks.aa.data(), {naux, n, n});
   const EinsumOperand ca = column_operand(x.blocks.ca.data(), {naux, nc, n});
@@ -189,17 +106,13 @@ std::vector<FockBuild> fock_builds(ScArrays &x, ScArrays *bar) {
   const EinsumOperand d = column_operand(x.d.data(), {naux});
   const EinsumOperand g = column_operand(x.g.data(), {naux});
   const EinsumOperand dm1 = column_operand(x.dm1.data(), {n, n});
-  const EinsumOperand dm2 = column_operand(x.dm2.data(), {n, n, n, n});
-  const EinsumOperand dm3 = column_operand(x.dm3.data(), {n, n, n, n, n, n});
   const EinsumOperand delta_c = column_operand(x.delta_core.data(), {nc, nc});
-  const EinsumOperand delta_a = column_operand(x.delta_act.data(), {n, n});
   // The rows x cols block of C^T h C at (r0, c0).
   const auto h_view = [&](const int64_t r0, const int64_t rows, const int64_t c0,
                           const int64_t cols) {
     return EinsumOperand{
         .data = x.h_mo.data() + r0 + (nmo * c0), .dims = {rows, cols}, .strides = {1, nmo}};
   };
-  const double inv_n = 1.0 / x.electrons;
   const auto out_bar = [&](Buffers::device<double> ScArrays::*field) -> const double * {
     return bar_of(field);
   };
@@ -208,16 +121,6 @@ std::vector<FockBuild> fock_builds(ScArrays &x, ScArrays *bar) {
        .out_bar = out_bar(&ScArrays::eri),
        .dims = {n, n, n, n},
        .terms = {{"Ltu,Lvw->tuvw", {aa, aa}, {aa_bar, aa_bar}, 1.0}}},
-      // dm2[p,q,r,s] = Σ_t dm3[p,q,r,s,t,t] / N, and dm1 the same of dm2:
-      // E_tt summed is the number operator, exact on an N-electron vector.
-      {.out = x.dm2.data(),
-       .out_bar = dm2_bar,
-       .dims = {n, n, n, n},
-       .terms = {{"utsrqp,ut->srqp", {dm3, delta_a}, {dm3_bar, nullptr}, inv_n}}},
-      {.out = x.dm1.data(),
-       .out_bar = dm1_bar,
-       .dims = {n, n},
-       .terms = {{"srqp,sr->qp", {dm2, delta_a}, {dm2_bar, nullptr}, inv_n}}},
       {.out = x.d.data(),
        .out_bar = d_bar,
        .dims = {naux},
@@ -269,6 +172,48 @@ std::vector<FockBuild> fock_builds(ScArrays &x, ScArrays *bar) {
                  {"La,L->a", {vvd, g}, {vvd_bar, g_bar}, 1.0},
                  {"ut,Lat,Lau->a", {dm1, va, va}, {dm1_bar, va_bar, va_bar}, -0.5}}},
   };
+}
+
+// dm2[p,q,r,s] = Σ_t dm3[p,q,r,s,t,t] / N, and dm1 the same of dm2: E_tt
+// summed is the number operator, exact on an N-electron vector, and on the
+// ket of a transition.
+std::vector<FockBuild> trace_builds(const ScArrays &x, double *dm1, double *dm2, const double *dm3,
+                                    double *dm1_bar, double *dm2_bar, double *dm3_bar) {
+  const int64_t n = x.blocks.ncas;
+  const EinsumOperand delta_a = column_operand(x.delta_act.data(), {n, n});
+  const double inv_n = 1.0 / x.electrons;
+  return {{.out = dm2,
+           .out_bar = dm2_bar,
+           .dims = {n, n, n, n},
+           .terms = {{"utsrqp,ut->srqp",
+                      {column_operand(dm3, {n, n, n, n, n, n}), delta_a},
+                      {dm3_bar, nullptr},
+                      inv_n}}},
+          {.out = dm1,
+           .out_bar = dm1_bar,
+           .dims = {n, n},
+           .terms = {{"srqp,sr->qp",
+                      {column_operand(dm2, {n, n, n, n}), delta_a},
+                      {dm2_bar, nullptr},
+                      inv_n}}}};
+}
+
+Status run_builds(DeviceResources &res, const std::span<const FockBuild> builds) {
+  for (const FockBuild &build : builds) {
+    for (const FockTerm &term : build.terms) {
+      FBF_TRY(contract(res, term.subscripts, term.operands, build.out, build.dims, term.alpha));
+    }
+  }
+  return {};
+}
+
+Status run_builds_adjoint(DeviceResources &res, const std::span<const FockBuild> builds) {
+  for (size_t k = builds.size(); k-- > 0;) {
+    for (const FockTerm &term : builds[k].terms) {
+      FBF_TRY(contract_adjoint(res, term, builds[k].out_bar, builds[k].dims));
+    }
+  }
+  return {};
 }
 
 // The n x n identity, packed.
@@ -330,15 +275,11 @@ Result<ScArrays> zeroed_arrays(DeviceResources &res, const int32_t naux, const i
                   .electrons = 0.0};
 }
 
-// Every input of class_energies (and pc_class_energies), built from (h, B, c)
-// and the vector: the MO blocks, B_cc and B_vv's diagonal, C^T h C, then the
-// builders and nevpt2::rdms between the first of them and the rest. @p who
-// names the caller in its errors.
-Result<ScArrays> sc_arrays(DeviceResources &res, const std::string_view who,
-                           const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
-                           const int32_t naux, const int32_t nao, const int32_t nmo,
-                           const double *b, const double *c, const double *h, const int32_t ncore,
-                           const int32_t ncas, const double *vector) {
+Result<ScArrays> shared_arrays(DeviceResources &res, const std::string_view who,
+                               const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                               const int32_t naux, const int32_t nao, const int32_t nmo,
+                               const double *b, const double *c, const double *h,
+                               const int32_t ncore, const int32_t ncas) {
   FBF_TRY(check_counts(who, alpha, beta, naux, nao, nmo, ncore, ncas));
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t nc = ncore;
@@ -375,16 +316,27 @@ Result<ScArrays> sc_arrays(DeviceResources &res, const std::string_view who,
 
   FBF_TRY(h2e(res, x.blocks, x.h2e.data()));
   const std::vector<FockBuild> builds = fock_builds(x, nullptr);
-  for (size_t k = 0; k < builds.size(); ++k) {
-    if (k == 1) {
-      FBF_TRY(rdms(res, alpha, beta, vector, x.eri.data(), x.dm3.data(), x.f3ca.data(),
-                   x.f3ac.data(), FBF_TRY(rdm_budget())));
-    }
-    for (const FockTerm &term : builds[k].terms) {
-      FBF_TRY(
-          contract(res, term.subscripts, term.operands, builds[k].out, builds[k].dims, term.alpha));
-    }
-  }
+  FBF_TRY(run_builds(res, std::span(builds).first(1)));
+  return x;
+}
+
+// Every input of class_energies (and pc_class_energies), built from (h, B, c)
+// and the vector: shared_arrays, then nevpt2::rdms, dm2 and dm1 as its
+// traces, and the builders that read dm1. @p who names the caller in its
+// errors.
+Result<ScArrays> sc_arrays(DeviceResources &res, const std::string_view who,
+                           const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta,
+                           const int32_t naux, const int32_t nao, const int32_t nmo,
+                           const double *b, const double *c, const double *h, const int32_t ncore,
+                           const int32_t ncas, const double *vector) {
+  ScArrays x = FBF_TRY(shared_arrays(res, who, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas));
+  const ScopedDeviceIndex on{res.dev_idx()};
+  FBF_TRY(rdms(res, alpha, beta, vector, x.eri.data(), x.dm3.data(), x.f3ca.data(), x.f3ac.data(),
+               FBF_TRY(rdm_budget())));
+  FBF_TRY(run_builds(
+      res, trace_builds(x, x.dm1.data(), x.dm2.data(), x.dm3.data(), nullptr, nullptr, nullptr)));
+  const std::vector<FockBuild> builds = fock_builds(x, nullptr);
+  FBF_TRY(run_builds(res, std::span(builds).subspan(1)));
   return x;
 }
 
@@ -408,7 +360,6 @@ Result<PcClassEnergies> pc_energy(DeviceResources &res, const ci::DeviceStringSe
   return pc_class_energies(res, x.blocks, x.inputs(), batch);
 }
 
-// Where a class walk adds its bars: @p bar's fields, and Λ at @p lambda.
 EnergyBars energy_bars(ScArrays &bar, double *lambda) {
   return {.h1e = bar.h1e.data(),
           .h2e = bar.h2e.data(),
@@ -425,15 +376,11 @@ EnergyBars energy_bars(ScArrays &bar, double *lambda) {
           .lambda = lambda};
 }
 
-// The reverse pass after a class walk (SC's or PC's) has added its bars onto
-// @p bar and @p lambda_raw (energy_bars): the builders backwards, then h_bar,
-// Λ, X, A and ε. The energies are left to the caller.
-Result<ScAdjoint> builders_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
-                                   const ci::DeviceStringSet &beta, const int32_t naux,
-                                   const int32_t nao, const int32_t nmo, const double *b,
-                                   const double *c, const int32_t ncore, const int32_t ncas,
-                                   const double *vector, ScArrays &x, ScArrays &bar,
-                                   Buffers::device<double> lambda_raw) {
+Result<ScAdjoint>
+builders_adjoint(DeviceResources &res, const int32_t naux, const int32_t nao, const int32_t nmo,
+                 const double *b, const double *c, const int32_t ncore, const int32_t ncas,
+                 ScArrays &x, ScArrays &bar, Buffers::device<double> lambda_raw,
+                 const std::function<Result<Buffers::device<double>>()> &rdm_adjoint) {
   const ScopedDeviceIndex on{res.dev_idx()};
   const int64_t nc = ncore;
   const int64_t n = ncas;
@@ -443,18 +390,11 @@ Result<ScAdjoint> builders_adjoint(DeviceResources &res, const ci::DeviceStringS
   const int64_t ld_lambda = naux * int64_t{nmo};
 
   // The builders backwards, the last first: the orbital energies and F^I's
-  // blocks, g and d, then dm1 and dm2 into dm3's bar; rdms_adjoint; (tu|vw).
+  // blocks, g and d; the RDMs' step; (tu|vw).
   const std::vector<FockBuild> builds = fock_builds(x, &bar);
-  Buffers::device<double> y(static_cast<size_t>(alpha.size()) * beta.size(), res.device());
-  for (size_t k = builds.size(); k-- > 0;) {
-    if (k == 0) {
-      FBF_TRY(rdms_adjoint(res, alpha, beta, vector, x.eri.data(), bar.dm3.data(), bar.f3ca.data(),
-                           bar.f3ac.data(), y.data(), bar.eri.data(), FBF_TRY(rdm_budget())));
-    }
-    for (const FockTerm &term : builds[k].terms) {
-      FBF_TRY(contract_adjoint(res, term, builds[k].out_bar, builds[k].dims));
-    }
-  }
+  FBF_TRY(run_builds_adjoint(res, std::span(builds).subspan(1)));
+  Buffers::device<double> y = FBF_TRY(rdm_adjoint());
+  FBF_TRY(run_builds_adjoint(res, std::span(builds).first(1)));
 
   // Onto Λ: h2e's bar, the MO blocks' and B_vv's diagonal's, and B_cc's at
   // its corner, every element of it (off the diagonal for (ij|ji)).
@@ -518,6 +458,21 @@ Result<ScAdjoint> builders_adjoint(DeviceResources &res, const ci::DeviceStringS
                    .epsilon = std::move(epsilon)};
 }
 
+// The one-root RDM step of the reverse pass: γ̄ and dm2̄ folded into dm3̄
+// by the traces' adjoint, then nevpt2::rdms_adjoint onto y and (tu|vw)'s bar.
+Result<Buffers::device<double>> root_rdms_adjoint(DeviceResources &res,
+                                                  const ci::DeviceStringSet &alpha,
+                                                  const ci::DeviceStringSet &beta,
+                                                  const double *vector, ScArrays &x,
+                                                  ScArrays &bar) {
+  FBF_TRY(run_builds_adjoint(res, trace_builds(x, x.dm1.data(), x.dm2.data(), x.dm3.data(),
+                                               bar.dm1.data(), bar.dm2.data(), bar.dm3.data())));
+  Buffers::device<double> y(static_cast<size_t>(alpha.size()) * beta.size(), res.device());
+  FBF_TRY(rdms_adjoint(res, alpha, beta, vector, x.eri.data(), bar.dm3.data(), bar.f3ca.data(),
+                       bar.f3ac.data(), y.data(), bar.eri.data(), FBF_TRY(rdm_budget())));
+  return y;
+}
+
 Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &alpha,
                              const ci::DeviceStringSet &beta, const int32_t naux, const int32_t nao,
                              const int32_t nmo, const double *b, const double *c, const double *h,
@@ -533,8 +488,9 @@ Result<ScAdjoint> sc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   Buffers::device<double> lambda_raw = FBF_TRY(zeroed(res, naux * int64_t{nmo} * nmo));
   const ClassEnergiesAdjoint walked = FBF_TRY(class_energies_adjoint(
       res, x.blocks, x.inputs(), batch, energy_bars(bar, lambda_raw.data())));
-  ScAdjoint out = FBF_TRY(builders_adjoint(res, alpha, beta, naux, nao, nmo, b, c, ncore, ncas,
-                                           vector, x, bar, std::move(lambda_raw)));
+  ScAdjoint out = FBF_TRY(
+      builders_adjoint(res, naux, nao, nmo, b, c, ncore, ncas, x, bar, std::move(lambda_raw),
+                       [&] { return root_rdms_adjoint(res, alpha, beta, vector, x, bar); }));
   out.energies = walked.energies;
   return out;
 }
@@ -553,8 +509,9 @@ Result<PcAdjoint> pc_adjoint(DeviceResources &res, const ci::DeviceStringSet &al
   // A refused class is the energy's error, returned before any bar is read.
   const PcClassEnergiesAdjoint walked = FBF_TRY(pc_class_energies_adjoint(
       res, x.blocks, x.inputs(), batch, energy_bars(bar, lambda_raw.data())));
-  ScAdjoint out = FBF_TRY(builders_adjoint(res, alpha, beta, naux, nao, nmo, b, c, ncore, ncas,
-                                           vector, x, bar, std::move(lambda_raw)));
+  ScAdjoint out = FBF_TRY(
+      builders_adjoint(res, naux, nao, nmo, b, c, ncore, ncas, x, bar, std::move(lambda_raw),
+                       [&] { return root_rdms_adjoint(res, alpha, beta, vector, x, bar); }));
   return PcAdjoint{.energies = walked.energies,
                    .h_bar = std::move(out.h_bar),
                    .lambda = std::move(out.lambda),

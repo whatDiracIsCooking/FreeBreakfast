@@ -1,8 +1,8 @@
 /// @file
-/// @brief The array plumbing both implementation units of
+/// @brief The array plumbing the implementation units of
 /// free_breakfast.nevpt2.gradient share: column-major einsum operands and
 /// contractions, zeroed buffers, an in-place block add, the host copies, and
-/// the entry points' count check.
+/// the entry points' count and weight checks.
 ///
 /// An internal partition (`module`, not `export module`): only this module's
 /// implementation units import it, so nothing here reaches an importer. See
@@ -117,6 +117,27 @@ Status check_counts(const std::string_view caller, const ci::DeviceStringSet &al
   if (alpha.n_orbitals() != ncas || beta.n_orbitals() != ncas) {
     return err_config("{}: strings over {} and {} orbitals, and {} are active", caller,
                       alpha.n_orbitals(), beta.n_orbitals(), ncas);
+  }
+  return {};
+}
+
+// How far a state average's weights may sum from 1: ci::Rdm::rdm12's and
+// mcscf::solve's bar.
+constexpr double kWeightSumTolerance = 1e-12;
+
+// A state average's weights: InvalidConfig, naming @p caller, for none, a
+// negative (or NaN) one, or a sum off 1 by more than kWeightSumTolerance.
+Status check_weights(const std::string_view caller, const std::span<const double> weights) {
+  double weight_sum = 0.0;
+  for (const double w : weights) {
+    if (!(w >= 0.0)) {
+      return err_config("{}: weight {} is negative or not a number", caller, w);
+    }
+    weight_sum += w;
+  }
+  if (weights.empty() || std::abs(weight_sum - 1.0) > kWeightSumTolerance) {
+    return err_config("{}: {} weights summing to {:.17g}: at least one, summing to 1 within {:g}",
+                      caller, weights.size(), weight_sum, kWeightSumTolerance);
   }
   return {};
 }
