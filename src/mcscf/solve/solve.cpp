@@ -47,7 +47,8 @@ constexpr double kEnergyRiseTolerance = 1e-11;
 // The CI's residual tolerance follows ||g|| of the last iteration as
 // min(kCiLoosest, kCiPerGradient ||g||^2), held at or above options.ci's: the
 // steps converge quadratically, so the CI must keep ahead of the next ||g||,
-// not the last.
+// not the last. A solve that converges on a looser CI than options.ci's takes
+// a final one to it (the README's "The final CI").
 constexpr double kCiLoosest = 1e-8;
 constexpr double kCiPerGradient = 1e-4;
 // The augmented Hessian's subspace solve: an absolute residual of
@@ -284,40 +285,72 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
       FBF_TRY(sigma.set_integrals(res, ints.hamiltonian.e_core, h_eff, eri));
     }
     FBF_TRY(sigma.diagonal(res, diagonal.data()));
-    ci::SolverOptions ci = options.ci;
-    ci.davidson.residual_tolerance =
-        std::max(options.ci.davidson.residual_tolerance,
-                 std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
-    // Warm from the last iteration's roots, rejected or not: the nearest H's
-    // (see the README). The first is cold, from ci::solve's own guesses.
-    const std::span<const double> start =
-        roots ? std::span<const double>{roots->vectors.data(), ci_block}
-              : std::span<const double>{};
-    ci::Roots solved =
-        FBF_TRY(ci::solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci, start));
-    roots = std::move(solved);
 
-    // 3. The weighted RDMs, the energy and the gradient.
-    FBF_TRY(ci_rdm.rdm12(res, w, roots->vectors.data(), gamma_device.data(), gamma2_device.data()));
-    std::vector<double> gamma = FBF_TRY(casscf_download(res, gamma_device.data(), n * n));
-    std::vector<double> gamma2 = FBF_TRY(casscf_download(res, gamma2_device.data(), n * n * n * n));
-    response::Fock fock = FBF_TRY(
-        full ? response::fock(res, molecule, h, *b, naux, c_now, ncore, ncas, ints.ppaa, ints.papa,
-                              gamma, gamma2)
-             : response::fock(res, basis, molecule, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                              ints.ppaa, ints.papa, gamma, gamma2, options.tau_j, options.tau_k));
-    const std::vector<double> g = FBF_TRY(casscf_download(res, fock.gradient.data(), pairs));
-    const double g_norm = std::sqrt(casscf_dot(g, g));
-    last_gradient = g_norm;
-    const double energy = fock.energy;
-    const double change = have_accepted ? energy - e_accepted : 0.0;
-    Iteration record{
-        energy, change, g_norm, radius, roots->davidson.iterations, roots->fp32_iterations,
-        0,      0,      true};
+    // The CI to a residual tolerance and, over its roots, 3. the weighted
+    // RDMs, the energy and the gradient. Warm from the last roots, rejected
+    // or not: the nearest H's (see the README). The first is cold, from
+    // ci::solve's own guesses.
+    std::vector<double> gamma;
+    std::vector<double> gamma2;
+    std::optional<response::Fock> fock;
+    std::vector<double> g;
+    int32_t ci_iterations = 0;
+    int32_t ci_fp32_iterations = 0;
+    const auto evaluate = [&](const double tolerance) -> Status {
+      ci::SolverOptions ci = options.ci;
+      ci.davidson.residual_tolerance = tolerance;
+      const std::span<const double> start =
+          roots ? std::span<const double>{roots->vectors.data(), ci_block}
+                : std::span<const double>{};
+      ci::Roots solved =
+          FBF_TRY(ci::solve(res, sigma, alpha, beta, diagonal.data(), nroots, ci, start));
+      roots = std::move(solved);
+      ci_iterations += roots->davidson.iterations;
+      ci_fp32_iterations += roots->fp32_iterations;
+      FBF_TRY(
+          ci_rdm.rdm12(res, w, roots->vectors.data(), gamma_device.data(), gamma2_device.data()));
+      gamma = FBF_TRY(casscf_download(res, gamma_device.data(), n * n));
+      gamma2 = FBF_TRY(casscf_download(res, gamma2_device.data(), n * n * n * n));
+      fock.reset();
+      fock.emplace(FBF_TRY(full ? response::fock(res, molecule, h, *b, naux, c_now, ncore, ncas,
+                                                 ints.ppaa, ints.papa, gamma, gamma2)
+                                : response::fock(res, basis, molecule, h, u, j_classes, k_classes,
+                                                 c_now, ncore, ncas, ints.ppaa, ints.papa, gamma,
+                                                 gamma2, options.tau_j, options.tau_k)));
+      g = FBF_TRY(casscf_download(res, fock->gradient.data(), pairs));
+      return {};
+    };
+    const double ci_floor = options.ci.davidson.residual_tolerance;
+    const double ci_tolerance =
+        std::max(ci_floor, std::min(kCiLoosest, kCiPerGradient * last_gradient * last_gradient));
+    FBF_TRY(evaluate(ci_tolerance));
+    double g_norm = std::sqrt(casscf_dot(g, g));
+    double energy = fock->energy;
+    double change = have_accepted ? energy - e_accepted : 0.0;
 
     // 4. Convergence, then the rejection of a rise.
-    const bool converged = n_pairs == 0 || (have_accepted && std::abs(change) < options.conv_tol &&
-                                            g_norm < options.conv_tol_grad);
+    const auto is_converged = [&] {
+      return n_pairs == 0 || (have_accepted && std::abs(change) < options.conv_tol &&
+                              g_norm < options.conv_tol_grad);
+    };
+    bool converged = is_converged();
+    // The final CI: converged on a CI the schedule left looser than
+    // options.ci's (the last ||g|| above ~1e-4), the CI again at
+    // these orbitals to options.ci's tolerance, warm from these roots, and
+    // the RDMs, energy and gradient over it, so the solution describes one
+    // (C, c). Converged still, it is returned; if not, the loop goes on from
+    // here, the schedule at its floor.
+    if (converged && ci_tolerance > ci_floor) {
+      FBF_TRY(evaluate(ci_floor));
+      g_norm = std::sqrt(casscf_dot(g, g));
+      energy = fock->energy;
+      change = have_accepted ? energy - e_accepted : 0.0;
+      converged = is_converged();
+      FBF_LOG_DEBUG("mcscf::solve: macro {} final CI from {:.1e} to {:.1e}: E {:.12f} |g| {:.3e}",
+                    cycle, ci_tolerance, ci_floor, energy, g_norm);
+    }
+    last_gradient = g_norm;
+    Iteration record{energy, change, g_norm, radius, ci_iterations, ci_fp32_iterations, 0, 0, true};
     if (!converged && have_accepted && change > kEnergyRiseTolerance) {
       step_t *= 0.5;
       model_agreed = false;
@@ -370,9 +403,9 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
     response::Hessian hessian = FBF_TRY(
         options.density_fitting != DensityFitting::Direct
             ? response::Hessian::create(res, h, *b, naux, c_now, ncore, ncas, ints.ppaa, ints.papa,
-                                        fock)
+                                        *fock)
             : response::Hessian::create(res, basis, h, u, j_classes, k_classes, c_now, ncore, ncas,
-                                        ints.ppaa, ints.papa, fock, options.tau_j, options.tau_k));
+                                        ints.ppaa, ints.papa, *fock, options.tau_j, options.tau_k));
     // diag(H) for the preconditioner, copied once for the macro iteration, and
     // read back for its scale.
     FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(ah_diagonal.data(), hessian.diagonal().data(),
@@ -392,7 +425,7 @@ solve(DeviceResources &res, const BasisSet &basis, const Molecule &molecule,
         mo,
         static_cast<size_t>(ncore),
         n,
-        FBF_TRY(casscf_download(res, fock.fock_inactive.data(), mo * mo)),
+        FBF_TRY(casscf_download(res, fock->fock_inactive.data(), mo * mo)),
         FBF_TRY(casscf_download(res, ints.ppaa.data(), mo * mo * n * n)),
         FBF_TRY(casscf_download(res, ints.papa.data(), mo * mo * n * n))};
     RelaxedHessian relaxed = FBF_TRY(RelaxedHessian::create(

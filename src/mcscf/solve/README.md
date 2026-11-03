@@ -70,7 +70,8 @@ Each macro iteration, at the current C:
    and `response::fock`: the weighted energy and the gradient g.
 4. **Convergence**: |ΔE| < `conv_tol` over the last accepted iteration and
    ‖g‖ < `conv_tol_grad`. The first iteration has no ΔE, so the loop takes at
-   least two.
+   least two. Converged on a CI looser than `options.ci`'s, the iteration
+   takes **the final CI** (below) before it returns.
 5. **Rejection**: a rise past 1e-11 hartree over the last accepted iteration
    drops these orbitals, halves the step from the accepted ones and sets the
    trust radius to its new length. The step is not re-solved: its κ's
@@ -232,6 +233,31 @@ iterations at most ceilings but 12 at 1e-5, and H₂O CAS(4,4) went from 7 to 8.
 A line search on rejection (a cubic through E and g·x at both ends of the
 step) was not tried: it still spends the rejected macro iteration, and AVAS's
 bar is 8.
+
+## The final CI
+
+The schedule sets an iteration's CI tolerance from the *previous* ‖g‖, so the
+CI an iteration converges on is looser than `options.ci`'s whenever that ‖g‖
+was above ~1e-4 (1e-4 ‖g‖² over the 1e-12 floor): a solve that falls under
+`conv_tol_grad` from there in one step, or a CASCI (no orbital pairs, so
+converged on the first iteration, whose ‖g‖ before is ∞). Its energies are
+fine, Rayleigh quotients second order in the residual; but the CI vectors,
+the RDMs and the returned ‖g‖ are first order in it, and so is every
+non-variational consumer: state-specific gradients, NACs, QD-NEVPT2's H_eff
+(Helgaker & Jørgensen, *Theor. Chim. Acta* 75, 111 (1989)). PySCF's CASCI
+leaves this to the user, who tightens `fcisolver.conv_tol` by hand for
+gradients.
+
+So a converged iteration whose CI was looser re-solves it at the same
+orbitals to `options.ci`'s tolerance, warm from its own roots, and rebuilds
+the RDMs, the energy and the gradient over it: `gradient_norm`, `gamma`,
+`gamma2`, `root_gammas`, `energy` and `roots` then describe one (C, c), and
+the iteration's log entry carries both CIs' Davidson iterations. If ‖g‖ is
+then no longer under `conv_tol_grad` (or ΔE no longer under `conv_tol`), the
+loop goes on from these orbitals, the schedule now at its floor. A solve
+whose last CI was already at the floor — most of two or more iterations —
+takes none, and is bitwise what it was. The cost is one warm Davidson and
+one Fock build, on the solves that skipped them.
 
 ## The level shift
 
@@ -470,6 +496,12 @@ singlet, `molecule` at multiplicity 3; ⟨S²⟩ = 2), at `conv_tol_grad` 1e-9:
 - no accepted iteration's ΔE above 1e-11;
 - each case's macro iterations printed, with the CI's iterations per stage,
   and at most 20;
+- the final CI, on `data/casscf_nac`'s skewed H₂CO SA-3 in `Full` over
+  cc-pVDZ-JKFIT: converged to ‖g‖ < 1e-10 and re-solved from its own
+  orbitals, and from the start to ‖g‖ < 1e-3 (which ends on a loose CI,
+  asserted): the returned roots' Davidson residual within `options.ci`'s
+  criterion, and `gradient_norm` against ‖g‖ rebuilt by `response::fock`
+  from the returned C, γ and Γ, to 1e-10 of the largest |gᵢ|;
 - `MaxIterationsExceeded`, and the refusals (a density-fitted mode without B,
   and a B of the wrong size among them).
 
