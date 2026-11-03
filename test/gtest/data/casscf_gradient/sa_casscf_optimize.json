@@ -1,0 +1,122 @@
+{
+ "description": "PySCF's DF-SA-CASSCF minimum of one root (df.grad.sacasscf by Newton's method) over this tree's data/basis and data/aux_basis files, from a non-planar start. Hartree, bohr",
+ "provenance": {
+  "pyscf": "2.14.0",
+  "numpy": "2.5.4",
+  "command": "UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools tools/emit/sa_casscf_optimize_reference.py",
+  "threads": 8
+ },
+ "cases": [
+  {
+   "name": "h2co_skew_ccpvdz_sa2",
+   "from": "casscf_nac/casscf_nac.json h2co_skew_ccpvdz_sa3's atoms",
+   "basis": "cc-pvdz",
+   "aux_basis": {
+    "name": "cc-pVDZ-JKFIT",
+    "file": "data/aux_basis/cc-pVDZ-JKFIT.json",
+    "sha256": "9bd0ad8ffdcadc0c08bacbee8f288e4765bb2426c0ea81465238806e2a18457c",
+    "naux": 186
+   },
+   "charge": 0,
+   "ncas": 3,
+   "nelecas": 4,
+   "weights": [
+    0.5,
+    0.5
+   ],
+   "state": 1,
+   "start": [
+    {
+     "symbol": "C",
+     "z": 6,
+     "coord": [
+      0.0,
+      0.0,
+      0.0
+     ]
+    },
+    {
+     "symbol": "O",
+     "z": 8,
+     "coord": [
+      0.12,
+      -0.08,
+      2.29
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.45,
+      1.74,
+      -1.13
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      -0.31,
+      -1.81,
+      -1.02
+     ]
+    }
+   ],
+   "start_energies": [
+    -113.90291538399306,
+    -113.75833825286126
+   ],
+   "atoms": [
+    {
+     "symbol": "C",
+     "z": 6,
+     "coord": [
+      -0.3092656962694017,
+      0.04109953174527905,
+      -0.12831375696510522
+     ]
+    },
+    {
+     "symbol": "O",
+     "z": 8,
+     "coord": [
+      0.21874710013079032,
+      -0.048544226181464686,
+      2.3794429009381752
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      0.543993919469713,
+      1.651133202001777,
+      -1.0716320068940683
+     ]
+    },
+    {
+     "symbol": "H",
+     "z": 1,
+     "coord": [
+      -0.19347532333109896,
+      -1.7936885075655937,
+      -1.0394971370790018
+     ]
+    }
+   ],
+   "energies": [
+    -113.86600712260883,
+    -113.7848772191974
+   ],
+   "energy": -113.7848772191974,
+   "max_force": 2.1582059810115852e-09,
+   "k_min": 0.10732765503478606,
+   "out_of_plane_degrees": 40.24918330592182,
+   "min_root_overlap": 0.9999949304261222,
+   "fresh_start_energy": -113.78487721919767,
+   "newton_steps": 6,
+   "optimizer": "Newton's method over PySCF's analytic DF-SA-CASSCF gradient of root 1 (df.grad.sacasscf), the Hessian a central difference of it (step 0.001 bohr) recomputed every step, rigid translations and rotations projected out, each internal direction stepped by 1/|curvature|, steps capped at 0.2 bohr per coordinate; converged to max |P dE/dR| < 1e-06, P the rigid projector"
+  }
+ ]
+}

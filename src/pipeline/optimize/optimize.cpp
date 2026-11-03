@@ -1,7 +1,8 @@
 /// @file
 /// @brief OptimizeStep: geometry::optimize over a nested Pipeline per
 /// evaluation, the RHF chain or a CASSCF chain (to its gradient or its
-/// NEVPT2's, a QD state followed by qd_state_overlap) with its orbitals
+/// NEVPT2's, a state-averaged root followed by match_roots and a QD state by
+/// qd_state_overlap) with its orbitals
 /// carried from one evaluation to the next, and the trajectory, final.xyz
 /// and history it writes.
 
@@ -100,6 +101,68 @@ struct CarriedOrbitalsStep {
   }
 };
 
+Result<std::vector<double>> normalized_overlaps(std::span<const double> root_overlaps) {
+  const auto n =
+      static_cast<size_t>(std::lround(std::sqrt(static_cast<double>(root_overlaps.size()))));
+  if (n == 0 || root_overlaps.size() != n * n) {
+    return err_config("normalized_overlaps: {} root overlaps; it takes n^2, n at least 1",
+                      root_overlaps.size());
+  }
+  std::vector<double> out(root_overlaps.begin(), root_overlaps.end());
+  for (size_t i = 0; i < n; ++i) {
+    double norm = 0.0;
+    for (size_t j = 0; j < n; ++j) {
+      norm += out[(i * n) + j] * out[(i * n) + j];
+    }
+    norm = std::sqrt(norm);
+    if (!(norm > 0.0)) {
+      return err_numerical("normalized_overlaps: the last geometry's CASSCF root {} overlaps no "
+                           "root of this one",
+                           i);
+    }
+    for (size_t j = 0; j < n; ++j) {
+      out[(i * n) + j] /= norm;
+    }
+  }
+  return out;
+}
+
+Result<std::vector<RootMatch>> match_roots(std::span<const double> root_overlaps,
+                                           std::span<const int32_t> followed) {
+  const std::vector<double> s = FBF_TRY(normalized_overlaps(root_overlaps));
+  const size_t n = static_cast<size_t>(std::lround(std::sqrt(static_cast<double>(s.size()))));
+  std::vector<RootMatch> match(n);
+  std::vector<bool> taken(n, false);
+  for (size_t i = 0; i < n; ++i) {
+    size_t best = 0;
+    for (size_t j = 1; j < n; ++j) {
+      if (std::abs(s[(i * n) + j]) > std::abs(s[(i * n) + best])) {
+        best = j;
+      }
+    }
+    if (taken[best]) {
+      return err_numerical("match_roots: the last geometry's CASSCF root {} matches no root of "
+                           "this one alone: the roots are not followed",
+                           i);
+    }
+    taken[best] = true;
+    match[i] = {.root = static_cast<int32_t>(best), .overlap = s[(i * n) + best]};
+  }
+  for (const int32_t root : followed) {
+    if (root < 0 || static_cast<size_t>(root) >= n) {
+      return err_config("match_roots: root {} is followed, and there are {}", root, n);
+    }
+    const RootMatch &m = match[static_cast<size_t>(root)];
+    if (std::abs(m.overlap) < kStateOverlapFloor) {
+      return err_numerical("match_roots: the last geometry's CASSCF root {} has overlap {:.6f} "
+                           "with its match, root {}, below {}: it is lost (a crossing), and is "
+                           "not followed onto another surface",
+                           root, std::abs(m.overlap), m.root, kStateOverlapFloor);
+    }
+  }
+  return match;
+}
+
 Result<double> qd_state_overlap(std::span<const double> root_overlaps,
                                 std::span<const double> previous, std::span<const double> current) {
   const size_t n = previous.size();
@@ -108,30 +171,18 @@ Result<double> qd_state_overlap(std::span<const double> root_overlaps,
                       "it takes n, n and n^2, n at least 1",
                       previous.size(), current.size(), root_overlaps.size());
   }
-  std::vector<bool> taken(n, false);
+  const std::vector<RootMatch> match = FBF_TRY(match_roots(root_overlaps));
   double overlap = 0.0;
   for (size_t i = 0; i < n; ++i) {
-    size_t best = 0;
-    for (size_t j = 1; j < n; ++j) {
-      if (std::abs(root_overlaps[(i * n) + j]) > std::abs(root_overlaps[(i * n) + best])) {
-        best = j;
-      }
-    }
-    if (taken[best]) {
-      return err_numerical("qd_state_overlap: the last geometry's CASSCF root {} matches no root "
-                           "of this one alone: the roots are not followed",
-                           i);
-    }
-    taken[best] = true;
-    const double sign = root_overlaps[(i * n) + best] < 0.0 ? -1.0 : 1.0;
-    overlap += previous[i] * sign * current[best];
+    const double sign = match[i].overlap < 0.0 ? -1.0 : 1.0;
+    overlap += previous[i] * sign * current[static_cast<size_t>(match[i].root)];
   }
   overlap = std::abs(overlap);
-  if (overlap < kQdStateOverlapFloor) {
+  if (overlap < kStateOverlapFloor) {
     return err_numerical("qd_state_overlap: the QD state's overlap with the last geometry's is "
                          "{:.6f}, below {}: it is lost (a crossing), and is not followed onto "
                          "another surface",
-                         overlap, kQdStateOverlapFloor);
+                         overlap, kStateOverlapFloor);
   }
   return overlap;
 }
@@ -188,12 +239,23 @@ Result<double> qd_state_overlap(std::span<const double> root_overlaps,
   return u;
 }
 
-// The QD state as an OptimizeStep last saw it: the CASSCF's basis and
-// solution, and u_K over its roots.
-struct FollowedQdState {
+// The state an OptimizeStep follows, as the last evaluation left it: the
+// CASSCF's basis and solution, and the root followed (a state-averaged root)
+// or u_K over its roots (a QD state).
+struct FollowedState {
   BasisSet basis;
   mcscf::Solution solution;
+  int32_t root{0};
   std::vector<double> u;
+};
+
+// One evaluation's following, for the history: the matched overlap (NaN at
+// the first, which has no last), and the root followed or H_eff's smallest
+// gap.
+struct FollowRecord {
+  double overlap;
+  std::optional<int32_t> root;
+  std::optional<double> heff_gap;
 };
 
 // @p atoms with their positions replaced by @p x (bohr, 3 per atom).
@@ -256,17 +318,13 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
   // virtual.
   std::optional<CarriedOrbitalsStep> carried;
   CasscfStep carried_casscf = chain_casscf;
-  // Over a QD state: the state as the last evaluation left it, and per
-  // evaluation its matched overlap (NaN at the first, which has no last) and
-  // H_eff's smallest gap, for the history.
-  std::optional<FollowedQdState> followed;
-  std::vector<std::pair<double, double>> qd_record;
-  // A CASSCF chain's energy and gradient, by @p last, the chain's gradient
-  // step, and the orbitals it carries on.
-  const auto casscf_result = [&]<class G>(const auto &chain, const G & /*last*/, int32_t n_alpha,
-                                          int32_t n_beta,
-                                          std::span<double> gradient) -> Result<double> {
-    const CasscfOutput &cas = *chain.template get<CasscfOutput>();
+  // Over a state-averaged root or a QD state: the state as the last
+  // evaluation left it, and per evaluation how it was followed.
+  std::optional<FollowedState> followed;
+  std::vector<FollowRecord> follow_record;
+  // The orbitals the next evaluation starts from: @p cas's, and the
+  // CasscfStep that takes them.
+  const auto carry = [&](const CasscfOutput &cas, int32_t n_alpha, int32_t n_beta) -> Status {
     CarriedOrbitalsStep next{.c = std::vector<double>(cas.c.num_elements()),
                              .mo_energies = cas.mo_energies,
                              .n_alpha = n_alpha,
@@ -280,72 +338,123 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
     carried_casscf.avas.clear();
     carried_casscf.ncas = cas.ncas;
     carried_casscf.nelecas = cas.nelecas;
-    // The gradient ran, so the root is one of the CASSCF's.
-    if constexpr (std::same_as<G, CasscfGradientStep>) {
-      std::ranges::copy(chain.template get<CasscfGradientOutput>()->gradient.total,
-                        gradient.begin());
-      return cas.energies[static_cast<size_t>(chain_casscf_gradient.root)];
-    } else {
-      // SC's or PC's, as the chain's variant picked, of the root: E_cas +
-      // E_corr; or QD's, of state K: H_eff's eigenvalue E_K, and u_K, H_eff's
-      // eigenvector, recovered from the Lagrangian's W = u_K u_K^T. H_eff's
-      // smallest gap is the state's, the root gap the CASSCF's.
-      double energy = 0.0;
-      std::vector<double> u;
-      double heff_gap = 0.0;
-      double root_gap = 0.0;
-      std::visit(
-          [&]<class N>(const N &g) {
-            if constexpr (requires { g.energies.total; }) {
-              std::ranges::copy(g.terms.total, gradient.begin());
-              energy =
-                  cas.energies[static_cast<size_t>(chain_nevpt2_gradient.root)] + g.energies.total;
-            } else {
-              std::ranges::copy(g.total, gradient.begin());
-              energy = g.lagrangian.eigenvalues[static_cast<size_t>(chain_nevpt2_gradient.state)];
-              u = qd_eigenvector(g.lagrangian.w);
-              heff_gap = g.heff_gap;
-              root_gap = g.root_gap;
-            }
-          },
-          chain.template get<Nevpt2GradientOutput>()->gradient);
-      if (!chain_nevpt2_gradient.quasi_degenerate) {
-        return energy;
-      }
-      // The state followed: this CASSCF's roots matched to the last's, and
-      // u_K to the last u_K in the matched basis.
+    return {};
+  };
+  // @p cas's roots over @p basis as the Solution state_overlaps reads, and
+  // their overlaps with the last evaluation's (empty at the first).
+  const auto overlaps_with_last =
+      [&](const BasisSet &basis,
+          const CasscfOutput &cas) -> Result<std::pair<mcscf::Solution, std::vector<double>>> {
+    mcscf::Solution solution = FBF_TRY(overlap_solution(res, basis, cas));
+    std::vector<double> s;
+    if (followed) {
+      s = FBF_TRY(mcscf::state_overlaps(res, followed->basis, followed->solution, basis, solution,
+                                        cas.ncore, cas.ncas, cas.nelecas, start.multiplicity()));
+    }
+    return std::pair{std::move(solution), std::move(s)};
+  };
+  // The CASSCF chain's root, at the end of @p chain (which stops at the
+  // CasscfStep): over a state average, the root the last evaluation's
+  // matched, its gradient then taken; one state's, the configured root's.
+  const auto root_result = [&](const auto &chain, std::span<double> gradient) -> Result<double> {
+    const CasscfOutput &cas = *chain.template get<CasscfOutput>();
+    CasscfGradientStep step = chain_casscf_gradient;
+    if (cas.energies.size() > 1) {
       const BasisSet &basis = chain.template get<BasisSetOutput>()->basis;
-      mcscf::Solution solution = FBF_TRY(overlap_solution(res, basis, cas));
+      auto [solution, s] = FBF_TRY(overlaps_with_last(basis, cas));
       double overlap = std::numeric_limits<double>::quiet_NaN();
       if (followed) {
-        const std::vector<double> s =
-            FBF_TRY(mcscf::state_overlaps(res, followed->basis, followed->solution, basis, solution,
-                                          cas.ncore, cas.ncas, cas.nelecas, start.multiplicity()));
-        overlap = FBF_TRY(qd_state_overlap(s, followed->u, u));
-        FBF_LOG_INFO("optimize: QD state {} matched overlap {:.8f}, H_eff gap {:.6f}, CASSCF "
-                     "root gap {:.6f}",
-                     chain_nevpt2_gradient.state, overlap, heff_gap, root_gap);
+        const std::array last{followed->root};
+        const std::vector<RootMatch> match = FBF_TRY(match_roots(s, last));
+        const RootMatch &m = match[static_cast<size_t>(followed->root)];
+        overlap = std::abs(m.overlap);
+        step.root = m.root;
+        FBF_LOG_INFO("optimize: CASSCF root {} followed to root {}, matched overlap {:.8f} "
+                     "({:.8f} before its row is normalized)",
+                     followed->root, m.root, overlap,
+                     std::abs(s[(static_cast<size_t>(followed->root) * cas.energies.size()) +
+                                static_cast<size_t>(m.root)]));
       } else {
-        FBF_LOG_INFO("optimize: QD state {} at the start, H_eff gap {:.6f}, CASSCF root gap "
-                     "{:.6f}",
-                     chain_nevpt2_gradient.state, heff_gap, root_gap);
+        FBF_LOG_INFO("optimize: CASSCF root {} at the start", step.root);
       }
-      qd_record.emplace_back(overlap, heff_gap);
-      followed =
-          FollowedQdState{.basis = basis, .solution = std::move(solution), .u = std::move(u)};
+      follow_record.push_back({.overlap = overlap, .root = step.root, .heff_gap = std::nullopt});
+      followed = FollowedState{.basis = basis, .solution = std::move(solution), .root = step.root};
+    }
+    const CasscfGradientOutput out = FBF_TRY(step.run(
+        View<MoleculeOutput, BasisSetOutput, PrimitivePairClassesOutput, EriOutput,
+             CoreHamiltonianOutput, CasscfOutput>{
+            *chain.template get<MoleculeOutput>(),
+            *chain.template get<BasisSetOutput>(),
+            *chain.template get<PrimitivePairClassesOutput>(),
+            *chain.template get<EriOutput>(),
+            *chain.template get<CoreHamiltonianOutput>(),
+            cas,
+        },
+        res));
+    std::ranges::copy(out.gradient.total, gradient.begin());
+    return cas.energies[static_cast<size_t>(step.root)];
+  };
+  // The NEVPT2 chain's energy, at the end of @p chain: SC's or PC's, as the
+  // chain's variant picked, of the root: E_cas + E_corr; or QD's, of state
+  // K: H_eff's eigenvalue E_K, and u_K, H_eff's eigenvector, recovered from
+  // the Lagrangian's W = u_K u_K^T. H_eff's smallest gap is the state's, the
+  // root gap the CASSCF's.
+  const auto nevpt2_result = [&](const auto &chain, std::span<double> gradient) -> Result<double> {
+    const CasscfOutput &cas = *chain.template get<CasscfOutput>();
+    double energy = 0.0;
+    std::vector<double> u;
+    double heff_gap = 0.0;
+    double root_gap = 0.0;
+    std::visit(
+        [&]<class N>(const N &g) {
+          if constexpr (requires { g.energies.total; }) {
+            std::ranges::copy(g.terms.total, gradient.begin());
+            energy =
+                cas.energies[static_cast<size_t>(chain_nevpt2_gradient.root)] + g.energies.total;
+          } else {
+            std::ranges::copy(g.total, gradient.begin());
+            energy = g.lagrangian.eigenvalues[static_cast<size_t>(chain_nevpt2_gradient.state)];
+            u = qd_eigenvector(g.lagrangian.w);
+            heff_gap = g.heff_gap;
+            root_gap = g.root_gap;
+          }
+        },
+        chain.template get<Nevpt2GradientOutput>()->gradient);
+    if (!chain_nevpt2_gradient.quasi_degenerate) {
       return energy;
     }
+    // The state followed: this CASSCF's roots matched to the last's, and
+    // u_K to the last u_K in the matched basis.
+    const BasisSet &basis = chain.template get<BasisSetOutput>()->basis;
+    auto [solution, s] = FBF_TRY(overlaps_with_last(basis, cas));
+    double overlap = std::numeric_limits<double>::quiet_NaN();
+    if (followed) {
+      overlap = FBF_TRY(qd_state_overlap(s, followed->u, u));
+      FBF_LOG_INFO("optimize: QD state {} matched overlap {:.8f}, H_eff gap {:.6f}, CASSCF "
+                   "root gap {:.6f}",
+                   chain_nevpt2_gradient.state, overlap, heff_gap, root_gap);
+    } else {
+      FBF_LOG_INFO("optimize: QD state {} at the start, H_eff gap {:.6f}, CASSCF root gap "
+                   "{:.6f}",
+                   chain_nevpt2_gradient.state, heff_gap, root_gap);
+    }
+    follow_record.push_back({.overlap = overlap, .root = std::nullopt, .heff_gap = heff_gap});
+    followed = FollowedState{.basis = basis, .solution = std::move(solution), .u = std::move(u)};
+    return energy;
   };
-  // The CASSCF chain ending in @p last at @p trial: at the first geometry the
-  // SCF, and the active space picked from it; at every later one no SCF, the
-  // last orbitals carried over.
-  const auto casscf_chain = [&]<class G>(const TrialGeometryStep &trial, const G &last,
-                                         std::span<double> gradient) -> Result<double> {
+  // The CASSCF chain at @p trial, through the CasscfStep and then @p last
+  // (none for the CASSCF root, whose gradient @p finish takes once the root
+  // is matched), @p finish's energy and gradient: at the first geometry the
+  // SCF, and the active space picked from it; at every later one no SCF,
+  // the last orbitals carried over.
+  const auto casscf_chain = [&]<class... G>(const TrialGeometryStep &trial, const auto &finish,
+                                            std::span<double> gradient,
+                                            const G &...last) -> Result<double> {
     if (!carried) {
       auto chain =
           FBF_TRY((Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep,
                             PrimitivePairClassesStep, EriStep, OverlapStep, OrthogonalizerStep,
-                            CoreHamiltonianStep, GuessStep, ScfStep, CasscfStep, G>::create({
+                            CoreHamiltonianStep, GuessStep, ScfStep, CasscfStep, G...>::create({
               trial,
               basis_set,
               SphericalTransformStep{},
@@ -357,16 +466,17 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
               guess,
               chain_scf,
               chain_casscf,
-              last,
+              last...,
           })));
       FBF_TRY(chain.run(node));
       const ScfOutput &rhf = *chain.template get<ScfOutput>();
-      return casscf_result(chain, last, rhf.n_alpha, rhf.n_beta, gradient);
+      FBF_TRY(carry(*chain.template get<CasscfOutput>(), rhf.n_alpha, rhf.n_beta));
+      return finish(chain, gradient);
     }
     auto chain =
         FBF_TRY((Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep,
                           PrimitivePairClassesStep, EriStep, OverlapStep, CoreHamiltonianStep,
-                          CarriedOrbitalsStep, CasscfStep, G>::create({
+                          CarriedOrbitalsStep, CasscfStep, G...>::create({
             trial,
             basis_set,
             SphericalTransformStep{},
@@ -376,10 +486,11 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
             CoreHamiltonianStep{},
             *carried,
             carried_casscf,
-            last,
+            last...,
         })));
     FBF_TRY(chain.run(node));
-    return casscf_result(chain, last, carried->n_alpha, carried->n_beta, gradient);
+    FBF_TRY(carry(*chain.template get<CasscfOutput>(), carried->n_alpha, carried->n_beta));
+    return finish(chain, gradient);
   };
   // Every evaluated geometry, in order, for the trajectory.
   std::vector<std::vector<Atom>> frames;
@@ -389,9 +500,9 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
     const TrialGeometryStep trial{frames.back(), start.charge(), start.multiplicity()};
     double energy = 0.0;
     if (casscf_gradient) {
-      energy = FBF_TRY(casscf_chain(trial, chain_casscf_gradient, gradient));
+      energy = FBF_TRY(casscf_chain(trial, root_result, gradient));
     } else if (nevpt2_gradient) {
-      energy = FBF_TRY(casscf_chain(trial, chain_nevpt2_gradient, gradient));
+      energy = FBF_TRY(casscf_chain(trial, nevpt2_result, gradient, chain_nevpt2_gradient));
     } else {
       auto chain =
           FBF_TRY((Pipeline<TrialGeometryStep, BasisSetStep, SphericalTransformStep,
@@ -446,12 +557,17 @@ Result<OptimizeOutput> OptimizeStep::run(View<> /*in*/, NodeResources &node) con
           {"trust_radius", it.trust_radius},
           {"accepted", it.accepted},
       };
-      // Over a QD state: its matched overlap, null at the first evaluation,
-      // and H_eff's smallest gap.
-      if (i < qd_record.size()) {
-        const auto [overlap, gap] = qd_record[i];
-        entry["state_overlap"] = std::isnan(overlap) ? json(nullptr) : json(overlap);
-        entry["heff_gap"] = gap;
+      // Over a followed state: its matched overlap, null at the first
+      // evaluation, and the root followed or H_eff's smallest gap.
+      if (i < follow_record.size()) {
+        const FollowRecord &f = follow_record[i];
+        entry["state_overlap"] = std::isnan(f.overlap) ? json(nullptr) : json(f.overlap);
+        if (f.root) {
+          entry["root"] = *f.root;
+        }
+        if (f.heff_gap) {
+          entry["heff_gap"] = *f.heff_gap;
+        }
       }
       iterations.push_back(std::move(entry));
     }

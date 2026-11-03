@@ -13,7 +13,11 @@
 // (data/nevpt2_gradient/nevpt2_gradient.json) to a stationary point whose
 // energy is PySCF's DF-NEVPT2 single point there
 // (data/nevpt2_gradient/nevpt2_optimize.json) to 1e-9, and a refusal of the
-// gradient step ending the optimization with its message. Last the QD
+// gradient step ending the optimization with its message. Then a
+// state-averaged root: skew formaldehyde's S1 over its DF-SA2-CASSCF(4,3),
+// followed to PySCF's pyramidal minimum
+// (data/casscf_gradient/sa_casscf_optimize.json) within bars derived from
+// that file's force and least curvature. Last the QD
 // chain: formaldehyde's SC-QD-NEVPT2 state 1 over its DF-SA2-CASSCF(4,3)
 // (data/qd_nevpt2_gradient/h2co_ccpvdz_sa2.json), followed by overlap to a
 // stationary point that a fresh [nevpt2_gradient] confirms, and skew
@@ -429,6 +433,148 @@ TEST(PipelineOptimize, ACasscfChainOverIntegralDirectErisIsUnsupported) {
       << out.error().message;
 }
 
+// --- A state-averaged CASSCF root -------------------------------------------
+
+// The SA root chain's reference: PySCF's DF-SA2-CASSCF(4,3) minimum of
+// formaldehyde's root 1 from the skew start, with the reference's own last
+// force (max_force) and the least curvature of its projected Hessian (k_min).
+const fb::json &sa_casscf_reference() {
+  static const fb::json kDoc = [] {
+    auto read = fb::read_json(std::filesystem::path{FBF_TEST_DATA_DIR} / "casscf_gradient" /
+                              "sa_casscf_optimize.json");
+    EXPECT_TRUE(read.has_value()) << read.error().message;
+    return read.has_value() ? std::move(*read) : fb::json{};
+  }();
+  return kDoc.at("cases").at(0);
+}
+
+// @p b's points mirrored through the yz plane.
+Points mirrored(Points b) {
+  for (auto &r : b) {
+    r[0] = -r[0];
+  }
+  return b;
+}
+
+// Formaldehyde's S1 (n -> pi*), root 1 of its DF-SA2-CASSCF(4,3), cc-pVDZ /
+// cc-pVDZ-JKFIT, optimized from the pyramidalized, twisted start of
+// data/casscf_nac/'s h2co_skew_ccpvdz_sa3 at Opt=Tight's thresholds, the
+// root followed from each geometry to the next (#772). S1's minimum is
+// pyramidal; a planar start would keep C2v and stop at the planar saddle,
+// where PySCF would agree with it, so the start is not planar, and the
+// minimum comes as two mirror images, so the alignment allows a reflection.
+// The bars are derived from the fixture: the geometry within
+// delta = (F_test + F_ref) / k_min, F_test this test's max_force and F_ref the
+// reference's last force, and the energy within (F_test + F_ref) delta, the
+// first-order bound for that displacement. Every evaluation after the first
+// logs a matched overlap at or above the floor, and the root followed is 1
+// at every one. Fewer than 15 steps, a regression guard.
+TEST(PipelineOptimize, SkewFormaldehydeSaRootOneReachesThePyscfMinimum) {
+  FBF_REQUIRE_GPU();
+  const fb::json &expected = sa_casscf_reference();
+  const auto state = expected.at("state").get<std::int32_t>();
+  constexpr std::int32_t kFollowedRoot = 1;
+  ASSERT_EQ(state, kFollowedRoot);
+  const double f_ref = expected.at("max_force").get<double>();
+  const double k_min = expected.at("k_min").get<double>();
+  const double delta = (kMaxForce + f_ref) / k_min;
+  // The issue's rule: over 1e-3 bohr, the force threshold is tightened, never
+  // the bar.
+  ASSERT_LE(delta, 1e-3) << "tighten kMaxForce";
+  const double energy_bar = (kMaxForce + f_ref) * delta;
+
+  // At the pyramidal optimum the outer RHF, run afresh after the
+  // optimization, converges slowly (|[F,D]| 3.3e-10 at its 100th
+  // iteration): kScf's bars, with more iterations.
+  constexpr std::string_view kPyramidalScf = "[scf]\nenergy_tolerance = 1e-12\n"
+                                             "commutator_tolerance = 1e-10\n"
+                                             "max_iterations = 400\n";
+  const fb::test::ScratchDir dir("pipeline_optimize_sa_casscf");
+  std::string xyz = std::format("{}\nstart\n", expected.at("start").size());
+  for (const fb::json &atom : expected.at("start")) {
+    const auto coord = atom.at("coord").get<std::vector<double>>();
+    xyz += std::format("{} {:.17g} {:.17g} {:.17g}\n", atom.at("symbol").get<std::string>(),
+                       coord[0] * fb::kAngstromPerBohr<double>,
+                       coord[1] * fb::kAngstromPerBohr<double>,
+                       coord[2] * fb::kAngstromPerBohr<double>);
+  }
+  ASSERT_TRUE(fb::write_file(dir / "start.xyz", xyz).has_value());
+  const std::string toml = std::format(
+      "[molecule]\nxyz = \"start.xyz\"\n[basis_set]\nbasis = \"{}\"\n"
+      "[eri]\nmode = \"density_fitting\"\naux_basis = \"{}\"\n{}"
+      "[casscf]\nncas = {}\nnelecas = {}\nnroots = {}\n{}[casscf_gradient]\nroot = {}\n{}",
+      expected.at("basis").get<std::string>(),
+      expected.at("aux_basis").at("name").get<std::string>(), kPyramidalScf,
+      expected.at("ncas").get<std::int32_t>(), expected.at("nelecas").get<std::int32_t>(),
+      expected.at("weights").size(), kCasscf, state, kOptimize);
+  ASSERT_TRUE(fb::write_file(dir / "run.toml", toml).has_value());
+
+  auto calc = fb::read_config(dir / "run.toml", dir.path(), dir / "out");
+  ASSERT_TRUE(calc.has_value()) << calc.error().message;
+  ASSERT_TRUE(calc->step<fb::OptimizeStep>()->casscf_gradient.has_value());
+  fb::NodeResources node;
+  const auto t0 = std::chrono::steady_clock::now();
+  const fb::Status ran = calc->run(node);
+  const double seconds =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  ASSERT_TRUE(ran.has_value()) << ran.error().message;
+
+  const auto &out = calc->get<fb::OptimizeOutput>();
+  ASSERT_TRUE(out.has_value());
+  const Points want = points(expected.at("atoms"));
+  const Points got = points(out->molecule);
+  const double geometry_error =
+      std::min(aligned_max_deviation(want, got), aligned_max_deviation(want, mirrored(got)));
+  EXPECT_LE(geometry_error, delta);
+  const double energy_error = std::abs(out->energy - expected.at("energy").get<double>());
+  EXPECT_LE(energy_error, energy_bar);
+
+  const auto history = fb::read_json(dir / "out" / "optimize.json");
+  ASSERT_TRUE(history.has_value()) << history.error().message;
+  const fb::json &iterations = history->at("iterations");
+  ASSERT_GE(iterations.size(), 2U);
+  // A regression guard, not a correctness check: 18 steps when it was set
+  // (#772), the BFGS started from the identity Hessian (one step rejected on
+  // the way down the 40-degree pyramidalization), which a model starting
+  // Hessian (#536) should shorten.
+  constexpr std::size_t kSaRootMaxSteps = 25;
+  EXPECT_LT(iterations.size() - 1, kSaRootMaxSteps);
+  EXPECT_EQ(history->at("energy").get<double>(), out->energy);
+  EXPECT_TRUE(iterations.front().at("state_overlap").is_null());
+  double worst_overlap = 1.0;
+  for (std::size_t i = 0; i < iterations.size(); ++i) {
+    const fb::json &it = iterations[i];
+    ASSERT_TRUE(it.contains("root") && it.contains("state_overlap")) << i;
+    EXPECT_EQ(it.at("root").get<std::int32_t>(), kFollowedRoot) << i;
+    if (i > 0) {
+      const double overlap = it.at("state_overlap").get<double>();
+      EXPECT_GE(overlap, fb::kStateOverlapFloor) << i;
+      worst_overlap = std::min(worst_overlap, overlap);
+    }
+    std::cout << std::format(
+        "[ optimize ] SA root evaluation {:>2}: E {:.10f}, max force {:.2e}, root {}, matched "
+        "overlap {}\n",
+        i, it.at("energy").get<double>(), it.at("max_force").get<double>(),
+        it.at("root").get<std::int32_t>(),
+        i == 0 ? std::string("-") : std::format("{:.10f}", it.at("state_overlap").get<double>()));
+  }
+  // Diagnostics, not bars: the start against PySCF's, and the outer CASSCF
+  // at the optimum, from a fresh SCF and pick.
+  const double start_error =
+      std::abs(iterations.front().at("energy").get<double>() -
+               expected.at("start_energies").at(static_cast<std::size_t>(state)).get<double>());
+  const auto &cas = calc->get<fb::CasscfOutput>();
+  ASSERT_TRUE(cas.has_value()) << cas.error().message;
+  std::cout << std::format(
+      "[ optimize ] h2co_skew SA2-CASSCF(4,3) root {}: {} steps, geometry {:.2e} bohr (delta "
+      "{:.2e}), |dE| {:.2e} Eh (bar {:.2e}), worst matched overlap {:.10f}; start |dE| {:.2e}, "
+      "fresh outer root {} E - optimized {:.2e}; F_test {:.1e}, F_ref {:.2e}, k_min {:.6f}; "
+      "{:.1f} s\n",
+      state, iterations.size() - 1, geometry_error, delta, energy_error, energy_bar, worst_overlap,
+      start_error, state, cas->energies.at(static_cast<std::size_t>(state)) - out->energy,
+      kMaxForce, f_ref, k_min, seconds);
+}
+
 // The NEVPT2 chain's start, data/nevpt2_gradient/nevpt2_gradient.json's
 // skew H2O, and its reference, PySCF's DF-NEVPT2 at this step's optimum.
 const fb::json &nevpt2_start() {
@@ -654,7 +800,7 @@ struct QdPath {
 // a fresh single point from a fresh SCF and pick at the optimum. Holds it to
 // converging in fewer than @p max_steps, its last evaluation's largest force
 // under max_force; every step's matched overlap, kept in optimize.json (null
-// at the start, which has no last state), at or above kQdStateOverlapFloor;
+// at the start, which has no last state), at or above kStateOverlapFloor;
 // and the fresh gradient's largest component under max_force and its rms
 // under rms_force, the optimizer's own criteria. Prints every evaluation's
 // matched overlap and H_eff gap, and the summary.
@@ -719,7 +865,7 @@ QdPath optimize_qd_state(std::string_view name, std::int32_t state, std::string_
     path.smallest_gap = std::min(path.smallest_gap, it.at("heff_gap").get<double>());
     if (i > 0) {
       const double overlap = it.at("state_overlap").get<double>();
-      EXPECT_GE(overlap, fb::kQdStateOverlapFloor) << i;
+      EXPECT_GE(overlap, fb::kStateOverlapFloor) << i;
       path.worst_overlap = std::min(path.worst_overlap, overlap);
     }
     std::cout << std::format(

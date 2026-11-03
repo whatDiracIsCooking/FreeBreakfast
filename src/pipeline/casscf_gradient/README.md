@@ -53,10 +53,10 @@ struct CasscfGradientStep {
 3. **The gradient**: `mcscf::df_gradient` at `root`, over the Molecule, the
    orbital basis and its primitive-pair classes, the core Hamiltonian, and
    the `DensityFitted` product's aux basis, B and L. Its memory, its refusals
-   and its terms are `../../mcscf/gradient/README.md`'s: a state average of
-   more than one root is `Unsupported` there today, and a `root` past the
-   CASSCF's `InvalidConfig`. When it takes a state average, this step does
-   too, with no change: the `Solution` it builds carries every root.
+   and its terms are `../../mcscf/gradient/README.md`'s: any root of a state
+   average is taken, over its Z-vector's multipliers (the `Solution` this
+   step builds carries every root), and a `root` past the CASSCF's is
+   `InvalidConfig`.
 4. **`casscf_gradient.json`**, when `json_path` is set:
 
    ```json
@@ -104,8 +104,10 @@ nelecas = 4
   (`h2o_ccpvdz`), and the skewed H₂O (`h2o_skew_ccpvdz`, every component
   nonzero). A root the CASSCF does not have is `InvalidConfig`, with no
   `casscf_gradient.json` written. Each case is a fraction of a second, so
-  both are in the fast set. No state-averaged root is tested until
-  `df_gradient` takes one.
+  both are in the fast set. A state-averaged root is tested through
+  `[optimize]` (`test/gtest/pipeline_optimize_gpu.cpp`'s skew formaldehyde
+  S1, `../optimize/README.md`), and `df_gradient`'s own SA roots against
+  `casscf_gradient.json` in `test/gtest/mcscf_gradient_gpu.cpp`.
 
 ## Files
 

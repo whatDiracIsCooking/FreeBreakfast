@@ -1,7 +1,8 @@
 /// @file
 /// @brief The `Optimize` step: a geometry optimization, @c geometry::optimize
 /// over the energy and gradient of the chain from the molecule to
-/// `[gradient]` (RHF), to `[casscf_gradient]` (a DF-CASSCF root) or to
+/// `[gradient]` (RHF), to `[casscf_gradient]` (a DF-CASSCF root, followed
+/// from geometry to geometry over a state average) or to
 /// `[nevpt2_gradient]` (its SC- or PC-NEVPT2 total energy, or one SC- or
 /// PC-QD-NEVPT2 state's, followed from geometry to geometry), rerun as a
 /// nested Pipeline at every geometry.
@@ -57,8 +58,9 @@ struct OptimizeStep {
   CasscfStep casscf{};
   /// @brief Set: the chain ends in @ref casscf and this gradient of one of
   /// its roots, over density fitting only, and the energy optimized is that
-  /// root's. Empty, with @ref nevpt2_gradient empty too: it ends in
-  /// `[gradient]`, the RHF's.
+  /// root's; over a state average, its root is the start's, followed from
+  /// each geometry to the next by @ref match_roots. Empty, with
+  /// @ref nevpt2_gradient empty too: it ends in `[gradient]`, the RHF's.
   std::optional<CasscfGradientStep> casscf_gradient{};
   /// @brief Set: the chain ends in @ref casscf and this NEVPT2 gradient of
   /// its root, and the energy optimized is that root's NEVPT2 total energy,
@@ -76,7 +78,8 @@ struct OptimizeStep {
   std::filesystem::path final_xyz{};
   /// @brief Where the history is written as JSON, if not empty: the final
   /// energy, then per evaluation the energy, the four norms, the trust radius
-  /// and whether it was accepted, and over a QD state its matched overlap
+  /// and whether it was accepted; over a state-averaged root, the root
+  /// followed and its matched overlap; over a QD state, its matched overlap
   /// and H_eff's smallest gap.
   std::filesystem::path history{};
 
@@ -93,6 +96,12 @@ struct OptimizeStep {
   /// degenerate inactive pair, a degenerate H_eff pair among them) at
   /// whichever geometry it is met.
   ///
+  /// A state-averaged root is followed by identity: at every evaluation
+  /// after the first, the CASSCF's roots are matched to the last
+  /// evaluation's by @c mcscf::state_overlaps and @ref match_roots, and the
+  /// gradient is taken of the root the last one matched, not of the index,
+  /// its overlap logged.
+  ///
   /// A QD state K is followed by identity: at every evaluation after the
   /// first, the CASSCF roots are matched to the last evaluation's by
   /// @c mcscf::state_overlaps and u_K, H_eff's eigenvector K, to the last
@@ -107,8 +116,9 @@ struct OptimizeStep {
   ///         device, ErrorKind::GpuRuntime; with both @ref casscf_gradient
   ///         and @ref nevpt2_gradient set, InvalidConfig, and under either
   ///         with an integral-direct @ref eri, Unsupported, before anything
-  ///         runs; over a QD state, @ref qd_state_overlap's Numerical error
-  ///         at the evaluation where the state is lost, or
+  ///         runs; over a state-averaged root, @ref match_roots'
+  ///         Numerical error at the evaluation where the root is lost; over
+  ///         a QD state, @ref qd_state_overlap's; or
   ///         @c mcscf::state_overlaps' error;
   ///         otherwise the first error of an
   ///         evaluation's Pipeline, @c geometry::optimize's own
@@ -117,26 +127,69 @@ struct OptimizeStep {
   [[nodiscard]] Result<OptimizeOutput> run(View<> in, NodeResources &node) const;
 };
 
-/// @brief The overlap below which @ref qd_state_overlap refuses: a QD state
-/// whose u has turned by more than about 26 degrees in one step is losing
-/// its identity to another, well before the two mix equally (1/sqrt 2), and
-/// an optimizer step away from a near crossing turns it by far less.
-inline constexpr double kQdStateOverlapFloor = 0.9;
+/// @brief The overlap below which @ref match_roots and @ref qd_state_overlap
+/// refuse: a followed root, or QD state, whose state has turned by more than
+/// about 26 degrees in one step is losing its identity to another, well
+/// before the two mix equally (1/sqrt 2), and an optimizer step away from a
+/// near crossing turns it by far less.
+inline constexpr double kStateOverlapFloor = 0.9;
+
+/// @brief One last root's match in this geometry's CASSCF, as
+/// @ref match_roots makes it.
+struct RootMatch {
+  /// @brief This geometry's root J the last root I is matched to.
+  int32_t root;
+  /// @brief S_IJ over the 2-norm of row I of S, signed: the cosine between
+  /// J and I's part in this geometry's roots, and its sign the phase that
+  /// carries I's CI into J's.
+  double overlap;
+};
+
+/// @brief @p root_overlaps, @c mcscf::state_overlaps' n x n row-major
+/// S_IJ = <I(last)|J(this)>, with each row I divided by its 2-norm: element
+/// I n + J the cosine between J and root I's part in this geometry's roots.
+///
+/// The whole determinant's overlap, the core's among it, falls with the
+/// step's length for every root alike (to about 0.76 at 0.1 bohr on
+/// formaldehyde's C-O), which is not a root turning; this is what
+/// @ref match_roots holds to the floor, and a block of it (a pair's 2 x 2)
+/// what a check of several roots at once reads.
+///
+/// @return The normalized n x n; InvalidConfig if @p root_overlaps is not
+///         n^2 for an n at least 1; Numerical for a row of zeros, naming it.
+[[nodiscard]] Result<std::vector<double>>
+normalized_overlaps(std::span<const double> root_overlaps);
+
+/// @brief The CASSCF roots of the last geometry matched to this one's: each
+/// last root I to the root J of largest |S_IJ|, which must be a different J
+/// for every I, with that S_IJ over row I's norm.
+///
+/// @p root_overlaps is @c mcscf::state_overlaps' n x n row-major, element
+/// I n + J = <I(last)|J(this)>, matched over @ref normalized_overlaps. Each
+/// last root in @p followed must keep its normalized overlap at least
+/// @ref kStateOverlapFloor: below, the root is lost (a crossing), not
+/// followed onto another surface.
+///
+/// @return One match per last root, in order; InvalidConfig if
+///         @p root_overlaps is not n^2 for an n at least 1, or a
+///         @p followed root is not one of the n; Numerical if the roots do
+///         not match one to one (or @ref normalized_overlaps' row of
+///         zeros), or a followed
+///         root's normalized overlap is below the floor, naming it.
+[[nodiscard]] Result<std::vector<RootMatch>> match_roots(std::span<const double> root_overlaps,
+                                                         std::span<const int32_t> followed = {});
 
 /// @brief The QD state an @ref OptimizeStep follows, matched across one
 /// step: |sum_I u_I s_I u'_pi(I)|, @p previous's u (one entry per root of
 /// the last CASSCF) carried into @p current's (one per root of this one) by
-/// the root matching pi and the signs s that @p root_overlaps gives.
-///
-/// @p root_overlaps is @c mcscf::state_overlaps' n x n row-major, element
-/// I n + J = <I(last)|J(this)>. Each last root I is matched to the root J
-/// of largest |S_IJ|, which must be a different J for every I, and s_I is
-/// that S_IJ's sign. u's own sign is arbitrary, hence the magnitude.
+/// the root matching pi and the signs s that @ref match_roots makes of
+/// @p root_overlaps. u's own sign is arbitrary, hence the magnitude.
 ///
 /// @return The overlap; InvalidConfig if the three sizes do not agree (n,
-///         n and n^2, n at least 1); Numerical if the roots do not match one
-///         to one, or the overlap is below @ref kQdStateOverlapFloor (the
-///         state is lost, a crossing), naming it.
+///         n and n^2, n at least 1); @ref match_roots' Numerical if the roots
+///         do not match one to one; Numerical if the overlap is below
+///         @ref kStateOverlapFloor (the state is lost, a crossing), naming
+///         it.
 [[nodiscard]] Result<double> qd_state_overlap(std::span<const double> root_overlaps,
                                               std::span<const double> previous,
                                               std::span<const double> current);

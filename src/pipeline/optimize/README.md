@@ -3,7 +3,8 @@
 A geometry optimization: `../../geometry/`'s `geometry::optimize` (BFGS under a
 trust radius, the rigid-body motions projected out, Gaussian's four criteria)
 over the energy and gradient of the chain from the molecule to `[gradient]`
-(RHF), to `[casscf_gradient]` (a DF-CASSCF root, below) or to
+(RHF), to `[casscf_gradient]` (a DF-CASSCF root, followed from geometry to
+geometry over a state average, below) or to
 `[nevpt2_gradient]` (that CASSCF's SC- or PC-NEVPT2, or one SC- or
 PC-QD-NEVPT2 state of its state average, below), rerun as a nested
 `Pipeline` at every geometry. Every other step in the config then runs at the
@@ -26,7 +27,17 @@ struct OptimizeOutput {   // in pipeline.molecule
   double energy;          // the SCF's energy there, the CASSCF root's, or its NEVPT2's
 };
 
-inline constexpr double kQdStateOverlapFloor = 0.9;
+inline constexpr double kStateOverlapFloor = 0.9;
+struct RootMatch {
+  int32_t root;    // this geometry's root J matched to the last root I
+  double overlap;  // S_IJ over row I's 2-norm, signed
+};
+// Each row of S over its 2-norm (below)
+Result<std::vector<double>> normalized_overlaps(std::span<const double> root_overlaps);
+// One match per last root, one to one; Numerical below the floor for a
+// root in `followed` (below)
+Result<std::vector<RootMatch>> match_roots(std::span<const double> root_overlaps,
+                                           std::span<const int32_t> followed = {});
 // |sum_I u_I s_I u'_pi(I)|, or Numerical below the floor (below)
 Result<double> qd_state_overlap(std::span<const double> root_overlaps,
                                 std::span<const double> previous,
@@ -98,14 +109,16 @@ optimization and is returned as it is.
   ```
 
   one entry per evaluation, the first at the start; `geometry::Iteration`'s
-  fields, `../../geometry/README.md`. Over a QD state each entry also has
-  `state_overlap` (null at the first) and `heff_gap` (below).
+  fields, `../../geometry/README.md`. Over a state-averaged root each entry
+  also has `state_overlap` (null at the first) and `root`, the root
+  differentiated there; over a QD state, `state_overlap` and `heff_gap`
+  (below).
 
 ## The CASSCF chain
 
 With `casscf_gradient` set (pipeline/config sets it when the config has a
-`[casscf_gradient]`), the energy optimized is that step's root of a
-state-specific DF-CASSCF, and the chain is
+`[casscf_gradient]`), the energy optimized is that step's root of the
+DF-CASSCF, state-specific or a state average's (below), and the chain is
 
 ```
 first:  molecule -> ... -> guess -> scf -> casscf -> casscf_gradient
@@ -113,8 +126,9 @@ later:  molecule -> ... -> eri -> overlap -> core_hamiltonian
           -> carried orbitals -> casscf -> casscf_gradient
 ```
 
-each evaluation returning the `CasscfOutput`'s energy of `casscf_gradient.root`
-and the `CasscfGradientOutput`'s total.
+each evaluation returning the `CasscfOutput`'s energy of the root and the
+`CasscfGradientOutput`'s total. The pipeline stops at the CasscfStep, and the
+`CasscfGradientStep` is run on its products once the root is known.
 
 - **The active space is picked once.** At the first geometry the CASSCF
   starts from the SCF's orbitals and `[casscf]`'s selection (by index or
@@ -134,14 +148,46 @@ and the `CasscfGradientOutput`'s total.
 - **Density fitting only.** `[casscf_gradient]` takes nothing else, so an
   integral-direct `eri` is refused before anything runs, here and by
   pipeline/config.
-- **State-specific in practice.** The chain takes `[casscf]` as configured,
-  but `mcscf::df_gradient` refuses a state average of more than one root
-  today, and that error stops the optimization at its first evaluation.
+- **A state-averaged root is followed** (below).
 - **The outer CASSCF starts afresh.** After the optimization the outer
   `[casscf]` runs once more at the optimum from the outer SCF and its own
   pick. For a space that pick finds again it is the same root (the GPU case
   below checks it); one that a fresh pick would not find is not carried out
   of the optimization.
+
+## The state-averaged root
+
+Over a `[casscf]` of more than one root, `casscf_gradient.root` names the
+root at the start. At every evaluation after the first:
+
+1. this CASSCF's roots are matched to the last evaluation's by
+   `mcscf::state_overlaps` (through the AO cross overlap of the two
+   geometries) and `match_roots`: each last root I to the root J of largest
+   |S_IJ|, which must be one to one;
+2. the root followed is the one the last root matched, and the gradient is
+   taken of it, not of the index: the CASSCF's roots are ordered by energy,
+   so after two cross the configured index would be the other surface;
+3. its overlap, S_IJ over the 2-norm of row I, is logged
+   (`optimize: CASSCF root I followed to root J, matched overlap ...`, the
+   raw |S_IJ| beside it) and written to `optimize.json` with the root; below
+   `kStateOverlapFloor` (0.9, a turn of about 26° in one step) the
+   evaluation fails, `Numerical`, and so does the optimization.
+
+**Why the row is normalized.** S_IJ is the overlap of whole determinants,
+the core's among them, at two geometries: it falls with the step's length for
+every root alike, to about 0.93 at a 0.05 bohr step and 0.76 at 0.1 bohr on
+formaldehyde's C-O (PySCF, `tools/emit/sa_casscf_optimize_reference.py`'s
+start), which is not a root turning and would refuse an ordinary step under
+the trust radius. Over row I's norm it is the cosine between J and root I's
+part in this geometry's roots: the share of the followed root that stayed
+in J. The matching itself, by largest |S_IJ| per row, is the same either way,
+and so is the QD chain's, which takes only its sign.
+
+`normalized_overlaps` is that normalized S, which `match_roots` matches
+over; a check of several roots at once (a pair's 2 × 2 block, #774) reads
+its block from it rather than normalizing again. `match_roots` takes the
+roots to hold to the floor as a list. A state-specific CASSCF has one root
+and nothing to match: its entries carry neither key.
 
 ## The NEVPT2 chain
 
@@ -201,10 +247,11 @@ the first:
    be one to one, with that overlap's sign;
 2. u_K, H_eff's eigenvector K over the roots (recovered from the
    Lagrangian's W = u_K u_Kᵀ), is carried into that matched basis and
-   overlapped with the last u_K: `qd_state_overlap`, |Σ_I u_I s_I u'_π(I)|;
+   overlapped with the last u_K: `qd_state_overlap`, |Σ_I u_I s_I u'_π(I)|,
+   s_I the sign of `match_roots`' overlap;
 3. the overlap is logged (`optimize: QD state K matched overlap ...`, with
    H_eff's smallest gap and the CASSCF's root gap) and kept for
-   `optimize.json`; below `kQdStateOverlapFloor` (0.9, a turn of about 26°
+   `optimize.json`; below `kStateOverlapFloor` (0.9, a turn of about 26°
    in one step) the evaluation fails, `Numerical`, and so does the
    optimization.
 
@@ -332,7 +379,7 @@ the chain is rerun at every geometry, and so are any two of `[gradient]`,
 - `test/pipeline/optimize_host.cpp`: `qd_state_overlap` follows a state
   turned a little, through a sign flip and through a swap of the CASSCF
   roots (where an overlap by index would be 0); refuses, `Numerical`, an
-  overlap just below `kQdStateOverlapFloor` (the floor itself is kept) and a
+  overlap just below `kStateOverlapFloor` (the floor itself is kept) and a
   30° turn, and roots that do not match one to one; and sizes that do not
   agree, `InvalidConfig`. `config_host.cpp`: an `[optimize]` over a
   quasi-degenerate `[nevpt2_gradient]` is copied in.
@@ -347,6 +394,28 @@ the chain is rerun at every geometry, and so are any two of `[gradient]`,
   `max_force` and its rms under `rms_force`. The geometry stays planar, so
   the two roots are of different irreps and each overlap is 1 to rounding;
   the turning state is the host test's. About 4 s, inside the fast tier.
+
+- `test/pipeline/optimize_host.cpp`: `normalized_overlaps` divides each row
+  by its norm and refuses a row of zeros; `match_roots` follows a root through a
+  swap of the CASSCF roots under a common decay of every overlap, its
+  overlap normalized by its row and its phase signed; keeps a root turned
+  20° and refuses, `Numerical`, one turned 30° (0.866, below the floor) while
+  the unfollowed matching still succeeds; and refuses sizes that are no
+  n × n, or a followed root past n, `InvalidConfig`.
+- `test/gtest/pipeline_optimize_gpu.cpp`, the state-averaged root:
+  formaldehyde's S1 (n → π*), root 1 of its DF-SA2-CASSCF(4,3), cc-pVDZ /
+  cc-pVDZ-JKFIT, from `test/gtest/data/casscf_nac/`'s pyramidalized,
+  twisted `h2co_skew_ccpvdz_sa3` start, at Opt=Tight's thresholds and
+  `conv_tol_grad` 1e-9, to PySCF's pyramidal minimum
+  (`test/gtest/data/casscf_gradient/sa_casscf_optimize.json`). A planar start
+  would keep C₂ᵥ and reach the planar saddle, where the reference would
+  agree, so the start is not planar, and the alignment allows a reflection
+  (the minimum's two mirror images). The bars are derived from the fixture:
+  the geometry within δ = (F_test + F_ref)/k_min, F_test the test's
+  `max_force` and F_ref and k_min the reference's last force and least
+  projected curvature, and the energy within (F_test + F_ref)·δ; every entry's `state_overlap` at or above the floor, and its
+  `root` 1. The evaluations after the first are held under 25 (18 today),
+  a regression guard until a model starting Hessian (#536).
 
 ## Files
 

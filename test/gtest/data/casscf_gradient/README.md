@@ -144,3 +144,48 @@ to 1e-9 (`fresh_start_energy`).
 UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
     tools/emit/casscf_optimize_reference.py
 ```
+
+## `sa_casscf_optimize.json`
+
+Written by `tools/emit/sa_casscf_optimize_reference.py`, never hand-edited:
+the reference minimum of the `[optimize]` state-averaged root's GPU case
+(#772). One case, `h2co_skew_ccpvdz_sa2`: H₂CO in cc-pVDZ over
+`cc-pVDZ-JKFIT`, the DF-SA2-CASSCF(4,3) over the frontier orbitals, equal
+weights, root 1 (`state`, the n → π* S1), from `../casscf_nac/`'s
+`h2co_skew_ccpvdz_sa3` geometry (pyramidalized and twisted, `start`, with
+both roots' `start_energies`) to PySCF's minimum of that root (`atoms`,
+bohr, `energies`, and `energy`, root 1's).
+
+S1's minimum is pyramidal, and a C₂ᵥ start keeps C₂ᵥ and reaches the planar
+saddle, which is why the start is not planar. The tool checks it found a
+minimum: `k_min`, the least eigenvalue of the final Hessian with rigid
+translations and rotations projected out (hartree/bohr²), is positive, and
+`out_of_plane_degrees`, the angle between C=O and the H-C-H plane, is over
+1°. The minimum's mirror image is as good a minimum; the test aligns allowing
+a reflection.
+
+The minimum is **Newton's method over `df.grad.sacasscf`** at root 1 (its
+Lagrange solve at `conv_rtol` 1e-12), the Hessian a central difference of
+that gradient (step 1e-3 bohr) recomputed every step, each internal
+direction stepped by 1/|curvature| (the start has a negative one), converged
+to max |P dE/dR| < 1e-6 (`max_force`, the reference's own last force; P the
+rigid projector), with `newton_steps` and `optimizer`. Each energy and
+gradient is the SA-CASSCF built as above, polished to |g| < 1e-10; each
+geometry after the start carries the previous one's orbitals,
+Loewdin-orthonormalized. Root 1 is followed across every Newton step by the
+roots' overlaps, normalized by row as `src/pipeline/optimize` normalizes them,
+at least 0.9 (`min_root_overlap`). At the minimum the SA-CASSCF is rerun
+from a fresh RHF and must reach root 1's energy to 1e-9
+(`fresh_start_energy`).
+
+The test's bars come from this file: the geometry within
+δ = (F_test + F_ref)/k_min, F_ref = `max_force`, and the energy within
+(F_test + F_ref)·δ.
+
+```sh
+UV_PROJECT_ENVIRONMENT=$PWD/.venv uv run --group tools \
+    tools/emit/sa_casscf_optimize_reference.py
+```
+
+OpenMP and MKL at 8 threads, OpenBLAS at one, so a rerun agrees to threaded
+rounding rather than byte for byte.
