@@ -1,7 +1,10 @@
 // Host-only cases for geometry::optimize: a quadratic well whose minimum it
 // reaches exactly, Rosenbrock, a four-point Lennard-Jones cluster whose
 // centroid and orientation the projection must hold, the rejection of an
-// uphill step, and the refusals.
+// uphill step, and the refusals. And for geometry::optimize_meci: two-state
+// model surfaces over four points' distances, a peaked and a tilted cone and
+// an uncoupled crossing, each with a known minimum-energy crossing, the trust
+// radius's shrink, and the refusals.
 
 #include <gtest/gtest.h>
 
@@ -331,6 +334,427 @@ TEST(GeometryOptimize, MaxStepsAndCallbackErrors) {
   const auto nan = geo::optimize(std::vector<double>{0.0, 0.0, 0.0}, not_finite, options);
   ASSERT_FALSE(nan.has_value());
   EXPECT_EQ(nan.error().kind, fb::ErrorKind::Numerical);
+}
+
+// ---------------------------------------------------------------------------
+// optimize_meci
+// ---------------------------------------------------------------------------
+
+// The model surfaces' points: a non-planar four-point arrangement (bohr),
+// whose six distances are the crossing's.
+const std::vector<double> kMeciPoints{0.0, 0.0, 0.0, 2.4, 0.0, 0.0, 0.6, 2.2, 0.0, 0.9, 0.8, 2.0};
+constexpr std::array<std::array<std::size_t, 2>, 6> kPairs{
+    {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}}};
+
+std::array<double, 6> distances(std::span<const double> x) {
+  std::array<double, 6> r{};
+  for (std::size_t k = 0; k < 6; ++k) {
+    double r2 = 0.0;
+    for (std::size_t c = 0; c < 3; ++c) {
+      const double d = x[3 * kPairs[k][0] + c] - x[3 * kPairs[k][1] + c];
+      r2 += d * d;
+    }
+    r[k] = std::sqrt(r2);
+  }
+  return r;
+}
+
+// A 2 x 2 diabatic Hamiltonian over u_k = r_k - r_k(kMeciPoints), the six
+// distances' displacements, so every rigid motion is an exact zero mode:
+// H_11 = S + d, H_22 = S - d, H_12 = v, with
+//   S = sum_k K_k u_k^2 / 2 + t_0 u_0 + t_1 u_1,
+//   d = a_0 u_0 + a_1 u_1 + u_0 (p_d . u) + u_1 (q_d . u),
+//   v = b_0 u_0 + b_1 u_1 + u_0 (p_v . u) + u_1 (q_v . u).
+// Every quadratic coupling carries a factor u_0 or u_1, so d = v = 0 on
+// u_0 = u_1 = 0 (or on u_0 = 0 alone when v = 0 and a_1 = 0), and S has its
+// least value there at u = 0 when the tilt t is along u_0 and u_1: the known
+// crossing is kMeciPoints, up to a rigid motion. There the seam's Lagrangian
+// is K over the seam's distances, with no constraint-curvature term (the
+// gradient of the Lagrangian in u vanishes and d, v are linear in u_0, u_1
+// along the seam), while the quadratic couplings still turn the branching
+// plane along it and the distances curve it in Cartesians.
+struct Model {
+  std::array<double, 6> curvature;
+  std::array<double, 2> tilt;
+  std::array<double, 2> a;
+  std::array<double, 6> p_d;
+  std::array<double, 6> q_d;
+  std::array<double, 2> b;
+  std::array<double, 6> p_v;
+  std::array<double, 6> q_v;
+};
+
+// The peaked cone. At the crossing the seam's least curvature (its Cartesian
+// Lagrangian Hessian on the four seam directions) is 0.394 Eh/bohr^2; the
+// plane's pair x = 2 grad d, 2h = 2 grad v has |x| = 0.240 and |2h| = 0.176,
+// and the plane's smallest singular value is 0.138 Eh/bohr.
+constexpr Model kPeaked{{0.6, 0.5, 0.4, 0.45, 0.35, 0.5},
+                        {0.0, 0.0},
+                        {0.08, 0.02},
+                        {0.04, 0.0, 0.0, 0.05, 0.0, 0.0},
+                        {0.0, 0.0, 0.03, 0.0, 0.0, 0.0},
+                        {0.01, 0.06},
+                        {0.0, 0.0, 0.0, 0.0, 0.0, -0.03},
+                        {0.0, 0.02, 0.0, 0.0, 0.04, 0.0}};
+
+// The same cone tilted in its branching plane: the mean energy's gradient at
+// the crossing is 0.05 along u_0 and -0.04 along u_1. The tilt leaves the
+// seam's curvature and the plane as kPeaked's.
+constexpr Model kTilted{kPeaked.curvature, {0.05, -0.04}, kPeaked.a,   kPeaked.p_d,
+                        kPeaked.q_d,       kPeaked.b,     kPeaked.p_v, kPeaked.q_v};
+
+// An uncoupled crossing, v = 0: h = 0 everywhere, the seam is d = 0, u_0 = 0,
+// of dimension 3N - 7 = 5, and tilted along u_0 by 0.03. Its least seam
+// curvature is 0.370 Eh/bohr^2 and |x| = 0.226 Eh/bohr.
+constexpr Model kUncoupled{
+    kPeaked.curvature, {0.03, 0.0}, {0.08, 0.0}, kPeaked.p_d, {}, {}, {}, {}};
+
+// The value and the u-gradient of l_0 u_0 + l_1 u_1 + u_0 (p . u) + u_1 (q . u).
+double coupling(const std::array<double, 2> &l, const std::array<double, 6> &p,
+                const std::array<double, 6> &q, const std::array<double, 6> &u,
+                std::array<double, 6> &du) {
+  double pu = 0.0;
+  double qu = 0.0;
+  for (std::size_t k = 0; k < 6; ++k) {
+    pu += p[k] * u[k];
+    qu += q[k] * u[k];
+  }
+  for (std::size_t k = 0; k < 6; ++k) {
+    du[k] = u[0] * p[k] + u[1] * q[k];
+  }
+  du[0] += l[0] + pu;
+  du[1] += l[1] + qu;
+  return l[0] * u[0] + l[1] * u[1] + u[0] * pu + u[1] * qu;
+}
+
+// The adiabatic pair of the model at x, lower first: E = S -+ rho,
+// rho = sqrt(d^2 + v^2), their gradients, and h = (v grad d - d grad v) / rho,
+// the coupling <1| grad H |2> of the two eigenvectors (on the seam, rho = 0,
+// the pair at mixing angle 0).
+fb::Result<std::array<double, 2>> model_pair(const Model &m, std::span<const double> x,
+                                             std::span<double> g_i, std::span<double> g_j,
+                                             std::span<double> h) {
+  const std::array<double, 6> r = distances(x);
+  const std::array<double, 6> r0 = distances(kMeciPoints);
+  std::array<double, 6> u{};
+  std::array<double, 6> ds{};
+  double s = 0.0;
+  for (std::size_t k = 0; k < 6; ++k) {
+    u[k] = r[k] - r0[k];
+    s += 0.5 * m.curvature[k] * u[k] * u[k];
+    ds[k] = m.curvature[k] * u[k];
+  }
+  s += m.tilt[0] * u[0] + m.tilt[1] * u[1];
+  ds[0] += m.tilt[0];
+  ds[1] += m.tilt[1];
+  std::array<double, 6> dd{};
+  std::array<double, 6> dv{};
+  const double d = coupling(m.a, m.p_d, m.q_d, u, dd);
+  const double v = coupling(m.b, m.p_v, m.q_v, u, dv);
+  const double rho = std::sqrt(d * d + v * v);
+  const double cd = rho > 0.0 ? d / rho : 1.0;
+  const double cv = rho > 0.0 ? v / rho : 0.0;
+
+  std::ranges::fill(g_i, 0.0);
+  std::ranges::fill(g_j, 0.0);
+  std::ranges::fill(h, 0.0);
+  for (std::size_t k = 0; k < 6; ++k) {
+    const double gap_k = cd * dd[k] + cv * dv[k];
+    const double h_k = cv * dd[k] - cd * dv[k];
+    const std::size_t a = kPairs[k][0];
+    const std::size_t b = kPairs[k][1];
+    for (std::size_t c = 0; c < 3; ++c) {
+      const double e = (x[3 * a + c] - x[3 * b + c]) / r[k];
+      g_i[3 * a + c] += (ds[k] - gap_k) * e;
+      g_i[3 * b + c] -= (ds[k] - gap_k) * e;
+      g_j[3 * a + c] += (ds[k] + gap_k) * e;
+      g_j[3 * b + c] -= (ds[k] + gap_k) * e;
+      h[3 * a + c] += h_k * e;
+      h[3 * b + c] -= h_k * e;
+    }
+  }
+  return std::array<double, 2>{s - rho, s + rho};
+}
+
+// The largest distance of a point of x from its place in ref after the best
+// proper superposition: centroids matched, then the rotation that is the
+// polar factor of the 3 x 3 cross-covariance, by Newton's iteration
+// R <- (R + R^-T) / 2 (Higham), which converges to it quadratically.
+double aligned_error(std::span<const double> x, std::span<const double> ref) {
+  const auto cx = centroid(x);
+  const auto cr = centroid(ref);
+  const std::size_t points = x.size() / 3;
+  std::array<std::array<double, 3>, 3> rot{};
+  for (std::size_t i = 0; i < points; ++i) {
+    for (std::size_t a = 0; a < 3; ++a) {
+      for (std::size_t b = 0; b < 3; ++b) {
+        rot[a][b] += (ref[3 * i + a] - cr[a]) * (x[3 * i + b] - cx[b]);
+      }
+    }
+  }
+  for (std::int32_t it = 0; it < 60; ++it) {
+    // R^-T is the cofactor matrix over the determinant.
+    std::array<std::array<double, 3>, 3> cof{};
+    for (std::size_t a = 0; a < 3; ++a) {
+      for (std::size_t b = 0; b < 3; ++b) {
+        const std::size_t a1 = (a + 1) % 3;
+        const std::size_t a2 = (a + 2) % 3;
+        const std::size_t b1 = (b + 1) % 3;
+        const std::size_t b2 = (b + 2) % 3;
+        cof[a][b] = rot[a1][b1] * rot[a2][b2] - rot[a1][b2] * rot[a2][b1];
+      }
+    }
+    const double det = rot[0][0] * cof[0][0] + rot[0][1] * cof[0][1] + rot[0][2] * cof[0][2];
+    for (std::size_t a = 0; a < 3; ++a) {
+      for (std::size_t b = 0; b < 3; ++b) {
+        rot[a][b] = 0.5 * (rot[a][b] + cof[a][b] / det);
+      }
+    }
+  }
+  double worst = 0.0;
+  for (std::size_t i = 0; i < points; ++i) {
+    double e2 = 0.0;
+    for (std::size_t a = 0; a < 3; ++a) {
+      double placed = cr[a];
+      for (std::size_t b = 0; b < 3; ++b) {
+        placed += rot[a][b] * (x[3 * i + b] - cx[b]);
+      }
+      e2 += (placed - ref[3 * i + a]) * (placed - ref[3 * i + a]);
+    }
+    worst = std::max(worst, std::sqrt(e2));
+  }
+  return worst;
+}
+
+// The thresholds the bar is derived from: gap 1e-12 Eh, forces 1e-10 Eh/bohr,
+// displacements 1e-9 bohr. A converged point is then within
+// force / curvature + gap / (the plane's least slope) of the crossing, under
+// 1e-10 / 0.37 + 1e-12 / 0.138 = 2.8e-10 bohr for every model here, inside
+// the 1e-8 bohr bar.
+geo::Options meci_options() {
+  geo::Options options;
+  options.max_gap = 1e-12;
+  options.max_force = 1e-10;
+  options.rms_force = 1e-10;
+  options.max_displacement = 1e-9;
+  options.rms_displacement = 1e-9;
+  return options;
+}
+
+constexpr double kMeciBar = 1e-8;
+
+// Off the seam: every point moved by about 0.1 bohr.
+std::vector<double> off_seam_start() {
+  constexpr std::array<double, 12> kShift{0.1,  -0.05, 0.08, -0.12, 0.07, 0.03,
+                                          0.05, -0.09, 0.11, -0.06, 0.1,  -0.08};
+  std::vector<double> x = kMeciPoints;
+  for (std::size_t i = 0; i < x.size(); ++i) {
+    x[i] += kShift[i];
+  }
+  return x;
+}
+
+// On the seam away from its minimum: only the fourth point moves, so the
+// first two distances, u_0 and u_1, stay exactly 0 and the gap is 0.
+std::vector<double> on_seam_start() {
+  std::vector<double> x = kMeciPoints;
+  x[9] += 0.3;
+  x[10] -= 0.2;
+  x[11] += 0.25;
+  return x;
+}
+
+// optimize_meci over the model from x0, held to the bar: converged within the
+// thresholds, at the known crossing to kMeciBar after alignment, its
+// centroid fixed and every step free of rotation, and the plane's dimension
+// the model's at every evaluation.
+fb::Result<geo::MECISolution> expect_meci(const std::string &name, const Model &model,
+                                          const std::vector<double> &x0,
+                                          const geo::Options &options, std::int32_t dimension) {
+  std::vector<std::vector<double>> visited;
+  auto result = geo::optimize_meci(
+      x0,
+      [&](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+          std::span<double> h) {
+        visited.emplace_back(x.begin(), x.end());
+        return model_pair(model, x, g_i, g_j, h);
+      },
+      options);
+  EXPECT_TRUE(result.has_value()) << name << ": " << result.error().message;
+  if (!result.has_value()) {
+    return result;
+  }
+  EXPECT_EQ(visited.size(), result->iterations.size()) << name;
+
+  const double error = aligned_error(result->x, kMeciPoints);
+  ::testing::Test::RecordProperty(name + "_position_error", std::format("{:.3e}", error));
+  ::testing::Test::RecordProperty(name + "_evaluations", std::to_string(visited.size()));
+  EXPECT_LE(error, kMeciBar) << name;
+
+  const geo::MECISolution::Iteration &last = result->iterations.back();
+  EXPECT_LE(last.gap, options.max_gap) << name;
+  EXPECT_LE(last.max_force, options.max_force) << name;
+  EXPECT_LE(last.rms_force, options.rms_force) << name;
+  EXPECT_LE(last.max_displacement, options.max_displacement) << name;
+  EXPECT_LE(last.rms_displacement, options.rms_displacement) << name;
+  EXPECT_EQ(result->lower, last.lower) << name;
+  EXPECT_EQ(result->upper, last.upper) << name;
+  for (const geo::MECISolution::Iteration &it : result->iterations) {
+    EXPECT_EQ(it.branching_dimension, dimension) << name;
+  }
+
+  const auto c0 = centroid(x0);
+  const auto c = centroid(result->x);
+  for (std::size_t k = 0; k < 3; ++k) {
+    EXPECT_NEAR(c[k], c0[k], 1e-12) << name;
+  }
+  // No step is rejected, so each is taken from the evaluation before it.
+  for (std::size_t e = 1; e < visited.size(); ++e) {
+    const std::vector<double> &from = visited[e - 1];
+    const auto cf = centroid(from);
+    std::array<double, 3> torque{};
+    for (std::size_t i = 0; i < 4; ++i) {
+      std::array<double, 3> d{};
+      std::array<double, 3> s{};
+      for (std::size_t k = 0; k < 3; ++k) {
+        d[k] = from[3 * i + k] - cf[k];
+        s[k] = visited[e][3 * i + k] - from[3 * i + k];
+      }
+      torque[0] += d[1] * s[2] - d[2] * s[1];
+      torque[1] += d[2] * s[0] - d[0] * s[2];
+      torque[2] += d[0] * s[1] - d[1] * s[0];
+    }
+    for (std::size_t k = 0; k < 3; ++k) {
+      EXPECT_NEAR(torque[k], 0.0, 1e-12) << name << ", evaluation " << e << ", axis " << k;
+    }
+  }
+  return result;
+}
+
+TEST(GeometryOptimizeMeci, PeakedConeFromOffAndOnTheSeam) {
+  expect_meci("peaked_off_seam", kPeaked, off_seam_start(), meci_options(), 2);
+  expect_meci("peaked_on_seam", kPeaked, on_seam_start(), meci_options(), 2);
+}
+
+TEST(GeometryOptimizeMeci, TiltedConeFromOffAndOnTheSeam) {
+  expect_meci("tilted_off_seam", kTilted, off_seam_start(), meci_options(), 2);
+  expect_meci("tilted_on_seam", kTilted, on_seam_start(), meci_options(), 2);
+}
+
+TEST(GeometryOptimizeMeci, UncoupledCrossingDropsTheCoupling) {
+  // h = 0 at every geometry, so y is dropped at every step (dimension 1) and
+  // the seam is 3N - 7.
+  expect_meci("uncoupled_off_seam", kUncoupled, off_seam_start(), meci_options(), 1);
+  expect_meci("uncoupled_on_seam", kUncoupled, on_seam_start(), meci_options(), 1);
+}
+
+TEST(GeometryOptimizeMeci, OvershootShrinksTheTrustRadius) {
+  // On the peaked seam, the fourth point 0.44 bohr from its place, with a
+  // starting Hessian about 20 times softer than the seam: the first step is
+  // cut to the trust radius of 0.5, and the model predicts the mean energy
+  // plus the gap to fall by 0.164 Eh where it falls by 0.021 (ratio 0.13,
+  // when this was written), so the radius drops to a quarter of the step.
+  // The run still converges to the bar.
+  geo::Options options = meci_options();
+  options.initial_hessian = 0.02;
+  options.trust_radius = 0.5;
+  options.max_trust_radius = 0.5;
+  const auto result = expect_meci("overshoot", kPeaked, on_seam_start(), options, 2);
+  ASSERT_TRUE(result.has_value());
+  ASSERT_GE(result->iterations.size(), 2U);
+  EXPECT_DOUBLE_EQ(result->iterations[0].trust_radius, 0.5);
+  // The first step's length, from its rms over the 12 coordinates.
+  EXPECT_NEAR(result->iterations[1].rms_displacement * std::sqrt(12.0), 0.5, 1e-12);
+  EXPECT_NEAR(result->iterations[1].trust_radius, 0.125, 1e-12);
+}
+
+TEST(GeometryOptimizeMeci, Refusals) {
+  const auto unused = [](std::span<const double>, std::span<double> g_i, std::span<double> g_j,
+                         std::span<double> h) -> fb::Result<std::array<double, 2>> {
+    std::ranges::fill(g_i, 0.0);
+    std::ranges::fill(g_j, 1.0);
+    std::ranges::fill(h, 0.0);
+    return std::array<double, 2>{0.0, 1.0};
+  };
+  const std::vector<double> x0{0.0, 0.0, 0.0};
+  const auto refused = [&](std::span<const double> x, const geo::Options &options) {
+    const auto result = geo::optimize_meci(x, unused, options);
+    return !result.has_value() && result.error().kind == fb::ErrorKind::InvalidConfig;
+  };
+  EXPECT_TRUE(refused({}, {}));
+  EXPECT_TRUE(refused(std::vector<double>{0.0, 0.0, std::nan("")}, {}));
+  EXPECT_TRUE(refused(std::vector<double>{0.0, 1.0}, {}));
+  geo::Options options;
+  options.max_gap = 0.0;
+  EXPECT_TRUE(refused(x0, options));
+  options = {};
+  options.rms_force = std::nan("");
+  EXPECT_TRUE(refused(x0, options));
+  options = {};
+  options.trust_radius = 2.0;
+  EXPECT_TRUE(refused(x0, options));
+  options = {};
+  options.max_steps = -1;
+  EXPECT_TRUE(refused(x0, options));
+}
+
+TEST(GeometryOptimizeMeci, MaxStepsAndCallbackErrors) {
+  geo::Options options = meci_options();
+  options.max_steps = 2;
+  const auto peaked = [](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                         std::span<double> h) { return model_pair(kPeaked, x, g_i, g_j, h); };
+  const auto capped = geo::optimize_meci(off_seam_start(), peaked, options);
+  ASSERT_FALSE(capped.has_value());
+  EXPECT_EQ(capped.error().kind, fb::ErrorKind::MaxIterationsExceeded);
+
+  std::int32_t calls = 0;
+  const auto failing = [&](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                           std::span<double> h) -> fb::Result<std::array<double, 2>> {
+    if (++calls == 2) {
+      return fb::err_divergence("scf did not converge");
+    }
+    return model_pair(kPeaked, x, g_i, g_j, h);
+  };
+  const auto failed = geo::optimize_meci(off_seam_start(), failing, options);
+  ASSERT_FALSE(failed.has_value());
+  EXPECT_EQ(failed.error().kind, fb::ErrorKind::Divergence);
+
+  const auto not_finite = [](std::span<const double>, std::span<double> g_i, std::span<double> g_j,
+                             std::span<double> h) -> fb::Result<std::array<double, 2>> {
+    std::ranges::fill(g_i, 0.0);
+    std::ranges::fill(g_j, 1.0);
+    std::ranges::fill(h, std::numeric_limits<double>::quiet_NaN());
+    return std::array<double, 2>{0.0, 1.0};
+  };
+  const auto nan = geo::optimize_meci(off_seam_start(), not_finite, options);
+  ASSERT_FALSE(nan.has_value());
+  EXPECT_EQ(nan.error().kind, fb::ErrorKind::Numerical);
+
+  // Equal gradients: no x to step the gap along.
+  const auto parallel = [](std::span<const double>, std::span<double> g_i, std::span<double> g_j,
+                           std::span<double> h) -> fb::Result<std::array<double, 2>> {
+    std::ranges::fill(g_i, 0.0);
+    std::ranges::fill(g_j, 0.0);
+    std::ranges::fill(h, 0.0);
+    return std::array<double, 2>{0.0, 1.0};
+  };
+  const auto flat = geo::optimize_meci(off_seam_start(), parallel, options);
+  ASSERT_FALSE(flat.has_value());
+  EXPECT_EQ(flat.error().kind, fb::ErrorKind::Numerical);
+}
+
+TEST(GeometryOptimizeMeci, EnergiesInEitherOrder) {
+  // The callback hands the upper state first: the result is the same
+  // crossing, the lower energy reported as lower.
+  const auto swapped = [](std::span<const double> x, std::span<double> g_i, std::span<double> g_j,
+                          std::span<double> h) -> fb::Result<std::array<double, 2>> {
+    const auto e = model_pair(kTilted, x, g_j, g_i, h);
+    return std::array<double, 2>{(*e)[1], (*e)[0]};
+  };
+  const auto result = geo::optimize_meci(off_seam_start(), swapped, meci_options());
+  ASSERT_TRUE(result.has_value()) << result.error().message;
+  EXPECT_LE(aligned_error(result->x, kMeciPoints), kMeciBar);
+  EXPECT_LE(result->lower, result->upper);
 }
 
 } // namespace

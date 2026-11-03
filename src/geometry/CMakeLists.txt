@@ -1,9 +1,11 @@
-# The Cartesian minimizer, host-only over a caller's energy and gradient, and
-# the harmonic analysis of a Cartesian Hessian, whose two eigensolves are
-# recipes' on the GPU. Result, the error kinds, DeviceResources and Atom are in
-# the signatures, so their modules are PUBLIC; FBF_TRY, the BLAS and the
-# eigensolver are the implementation units' own business. :rigid_body is an
-# internal partition: the rigid-body basis both units project with.
+# The Cartesian minimizer and the MECI optimizer, host-only over a caller's
+# energies and gradients, and the harmonic analysis of a Cartesian Hessian,
+# whose two eigensolves are recipes' on the GPU. Result, the error kinds,
+# DeviceResources and Atom are in the signatures, so their modules are PUBLIC;
+# FBF_TRY, the BLAS and the eigensolver are the implementation units' own
+# business. :rigid_body and :quasi_newton are internal partitions: the
+# rigid-body basis every unit projects with, and the projection, norms and
+# Cholesky step both optimizers share.
 free_breakfast_add_cxx_module_library(
   NAME
   free_breakfast.geometry
@@ -11,8 +13,10 @@ free_breakfast_add_cxx_module_library(
   geometry.cppm
   PARTITIONS
   rigid_body.cppm
+  quasi_newton.cppm
   IMPLEMENTATION
   geometry.cpp
+  meci.cpp
   frequencies.cpp
   IMPORT_STD
   LINK_PUBLIC
