@@ -9,8 +9,8 @@
 /// state form a wrapper at u_K u_K^T); qd_sc_gradient, its two
 /// derivative passes (df_gradient at the mix rho, df_transition_gradient at
 /// zeta's folded RDMs); qd_sc_coupling, the same at an interstate pair's
-/// W^PQ; and qd_pc_gradient, the same Lagrangian and passes over the PC-QD
-/// adjoint.
+/// W^PQ; and qd_pc_gradient and qd_pc_coupling, the same Lagrangian and
+/// passes over the PC-QD adjoint, at a state's W, any symmetric W or W^PQ.
 
 module free_breakfast.nevpt2.gradient;
 
@@ -899,6 +899,19 @@ qd_sc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &b
   return g;
 }
 
+// @p g's fields as QdPcGradient, PC's @p elements beside them, heff_gap
+// @p gap.
+QdPcGradient pc_result(QdScGradient g, std::vector<PcClassEnergies> elements, const double gap) {
+  return QdPcGradient{.total = std::move(g.total),
+                      .terms = std::move(g.terms),
+                      .transition = std::move(g.transition),
+                      .lagrangian = std::move(g.lagrangian),
+                      .elements = std::move(elements),
+                      .max_zeta = g.max_zeta,
+                      .root_gap = g.root_gap,
+                      .heff_gap = gap};
+}
+
 Result<QdPcGradient> qd_pc_gradient(DeviceResources &res, const Molecule &molecule,
                                     const BasisSet &basis,
                                     const std::span<const PrimitivePairClass> classes,
@@ -914,14 +927,48 @@ Result<QdPcGradient> qd_pc_gradient(DeviceResources &res, const Molecule &molecu
   QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
                                      ncas, std::move(lagrangian)));
   const double gap = smallest_gap(g.lagrangian.eigenvalues, static_cast<size_t>(state));
-  return QdPcGradient{.total = std::move(g.total),
-                      .terms = std::move(g.terms),
-                      .transition = std::move(g.transition),
-                      .lagrangian = std::move(g.lagrangian),
-                      .elements = std::move(elements),
-                      .max_zeta = g.max_zeta,
-                      .root_gap = g.root_gap,
-                      .heff_gap = gap};
+  return pc_result(std::move(g), std::move(elements), gap);
+}
+
+Result<QdPcGradient>
+qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+               const std::span<const double> w, const int32_t batch) {
+  constexpr std::string_view kWho = "nevpt2::qd_pc_gradient";
+  const QdSetup setup = FBF_TRY(qd_setup(res, kWho, molecule, basis, solution, ncore, ncas));
+  // A refused class is qd_pc_adjoint's error, the same as qd_pc_energy's.
+  std::vector<PcClassEnergies> elements;
+  QdScLagrangian lagrangian =
+      FBF_TRY(qd_lagrangian(res, kWho, setup, molecule, basis, aux, h, b, solution, ncore, ncas,
+                            std::vector<double>(w.begin(), w.end()), batch, &elements));
+  QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                     ncas, std::move(lagrangian)));
+  return pc_result(std::move(g), std::move(elements), std::numeric_limits<double>::infinity());
+}
+
+Result<QdPcGradient>
+qd_pc_coupling(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
+               const int32_t p, const int32_t q, const int32_t batch) {
+  constexpr std::string_view kWho = "nevpt2::qd_pc_coupling";
+  if (p == q) {
+    return err_config("{}: states {} and {}: a coupling is between two states, and one state's "
+                      "is its gradient (qd_pc_gradient)",
+                      kWho, p, q);
+  }
+  // A refused class is qd_pc_energy's error, here and so the coupling's.
+  std::vector<PcClassEnergies> elements;
+  QdScLagrangian lagrangian = FBF_TRY(qd_state_lagrangian(
+      res, kWho, molecule, basis, aux, h, b, solution, ncore, ncas, p, q, batch, &elements));
+  QdScGradient g = FBF_TRY(qd_passes(res, molecule, basis, classes, aux, h, b, l, solution, ncore,
+                                     ncas, std::move(lagrangian)));
+  const double gap = std::abs(g.lagrangian.eigenvalues[static_cast<size_t>(q)] -
+                              g.lagrangian.eigenvalues[static_cast<size_t>(p)]);
+  return pc_result(std::move(g), std::move(elements), gap);
 }
 
 // The root's string sets, after the checks sc_gradient and pc_gradient

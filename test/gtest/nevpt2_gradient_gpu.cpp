@@ -31,8 +31,9 @@
 // form at any symmetric W, linear in W, and that form's refusals; its
 // interstate coupling h_PQ (qd_sc_coupling) against
 // data/qd_nevpt2_nac/coupling/'s numerical ones, every pair, h_QP, its rigid
-// motions and its refusals; and the PC-QD-NEVPT2 one (qd_pc_gradient), the
-// same checks against the data's PC numbers, with PC's refusals.
+// motions and its refusals; and the PC-QD-NEVPT2 ones (qd_pc_gradient, its W
+// form and qd_pc_coupling), the same checks against the data's PC numbers,
+// with PC's refusals.
 
 #include <gtest/gtest.h>
 
@@ -3198,6 +3199,23 @@ const fb::json &qd_gradient_data(std::string_view name) {
   return reference("qd_nevpt2_gradient", std::format("{}.json", name));
 }
 
+// A PC-QD result in QdScGradient's fields, its elements checked n^2 long
+// and dropped.
+fb::Result<nevpt2::QdScGradient> sc_fields(fb::Result<nevpt2::QdPcGradient> g) {
+  if (!g.has_value()) {
+    return std::unexpected(g.error());
+  }
+  const std::size_t n = g->lagrangian.rho.size();
+  EXPECT_EQ(g->elements.size(), n * n);
+  return nevpt2::QdScGradient{.total = std::move(g->total),
+                              .terms = std::move(g->terms),
+                              .transition = std::move(g->transition),
+                              .lagrangian = std::move(g->lagrangian),
+                              .max_zeta = g->max_zeta,
+                              .root_gap = g->root_gap,
+                              .heff_gap = g->heff_gap};
+}
+
 // qd_sc_gradient, or with @p pc qd_pc_gradient in QdScGradient's fields
 // (its elements dropped), at h @p h_in when given.
 fb::Result<nevpt2::QdScGradient> qd_gradient_of(NuclearRun &run, const std::int32_t state,
@@ -3210,21 +3228,9 @@ fb::Result<nevpt2::QdScGradient> qd_gradient_of(NuclearRun &run, const std::int3
                                   h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
                                   run.state.ncas, state, 0);
   }
-  auto g = nevpt2::qd_pc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
-                                  h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
-                                  run.state.ncas, state, 0);
-  if (!g.has_value()) {
-    return std::unexpected(g.error());
-  }
-  EXPECT_EQ(g->elements.size(),
-            g->lagrangian.eigenvalues.size() * g->lagrangian.eigenvalues.size());
-  return nevpt2::QdScGradient{.total = std::move(g->total),
-                              .terms = std::move(g->terms),
-                              .transition = std::move(g->transition),
-                              .lagrangian = std::move(g->lagrangian),
-                              .max_zeta = g->max_zeta,
-                              .root_gap = g->root_gap,
-                              .heff_gap = g->heff_gap};
+  return sc_fields(nevpt2::qd_pc_gradient(run.node->device(0), in.molecule, in.basis, in.classes,
+                                          in.df.aux, h, in.df.b, in.df.l.data(), *run.solution,
+                                          run.state.ncore, run.state.ncas, state, 0));
 }
 
 // df_transition_gradient at zero RDMs with @p multipliers and @p extra
@@ -3589,17 +3595,28 @@ TEST(Nevpt2QdGradient, OneRootAgainstScGradient) {
 // non-zero off-diagonals, to 1e-10 relative to the largest element of the
 // gradient compared; it catches anything left depending on the eigenpair
 // rather than on W. And, printed and not held, the sum rule
-// Σ_K dE_K/dR = G(1).
+// Σ_K dE_K/dR = G(1). PC's W form (#748), qd_pc_gradient's, the same body
+// as Nevpt2QdPcGradient.WFormIsLinear on h2co_skew_ccpvdz_sa3_weighted, at
+// its own (0.4, 0.4, 0.2): h8_sto3g_sa3's root 0 passes PC's cuts only over
+// round-off (data/qd_nevpt2/README.md), and the weighted skew case is one
+// Nevpt2QdPcGradient.MatchesNumerical already takes.
 
 // The path-agreement bar: the milestone's, atomic sums' reordering only.
 constexpr double kQdLinearTolerance = 1e-10;
 
-// The W form of qd_sc_gradient at @p w.
-fb::Result<nevpt2::QdScGradient> qd_w_gradient_of(NuclearRun &run, std::span<const double> w) {
+// The W form of qd_sc_gradient at @p w, or with @p pc qd_pc_gradient's in
+// QdScGradient's fields.
+fb::Result<nevpt2::QdScGradient> qd_w_gradient_of(NuclearRun &run, std::span<const double> w,
+                                                  const bool pc = false) {
   const GradientInputs in = gradient_inputs(run);
-  return nevpt2::qd_sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
-                                in.h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
-                                run.state.ncas, w, 0);
+  if (!pc) {
+    return nevpt2::qd_sc_gradient(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                                  in.h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                                  run.state.ncas, w, 0);
+  }
+  return sc_fields(nevpt2::qd_pc_gradient(run.node->device(0), in.molecule, in.basis, in.classes,
+                                          in.df.aux, in.h, in.df.b, in.df.l.data(), *run.solution,
+                                          run.state.ncore, run.state.ncas, w, 0));
 }
 
 // A seeded random symmetric n x n W, uniform in [-1, 1), its diagonal
@@ -3623,10 +3640,11 @@ std::vector<double> random_w(const std::size_t n, const double trace, const std:
   return w;
 }
 
-TEST(Nevpt2QdGradient, WFormIsLinear) {
-  FBF_REQUIRE_GPU();
-  const auto start = std::chrono::steady_clock::now();
-  NuclearRun run = qd_run("h8_sto3g_sa3", std::array{0.4, 0.4, 0.2});
+// Linearity and the printed sum rule on @p run, SC's W form or (@p pc)
+// PC's; @p start when the run began.
+void expect_qd_w_linear(NuclearRun &run, const bool pc,
+                        const std::chrono::steady_clock::time_point start) {
+  const std::string_view scheme = pc ? "PC" : "SC";
   ASSERT_TRUE(run.solution.has_value());
   const std::size_t nroots = run.solution->roots.energies.size();
   ASSERT_EQ(nroots, 3U);
@@ -3646,7 +3664,7 @@ TEST(Nevpt2QdGradient, WFormIsLinear) {
 
   const auto gradient = [&](const std::string_view label, std::span<const double> w) {
     const auto begin = std::chrono::steady_clock::now();
-    auto g = qd_w_gradient_of(run, w);
+    auto g = qd_w_gradient_of(run, w, pc);
     const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - begin;
     EXPECT_TRUE(g.has_value()) << label << ": " << g.error().message;
     if (!g.has_value()) {
@@ -3656,10 +3674,10 @@ TEST(Nevpt2QdGradient, WFormIsLinear) {
     EXPECT_TRUE(l.eigenvalues.empty()) << label;
     EXPECT_EQ(l.w, std::vector<double>(w.begin(), w.end())) << label;
     std::cout << std::format(
-        "[ nevpt2   ] qd W form {} ({:.2f} s): rho {::+.6f}, max |z^c| {:.3e}, "
+        "[ nevpt2   ] qd {} W form {} ({:.2f} s): rho {::+.6f}, max |z^c| {:.3e}, "
         "max |zeta| {:.3e}, Theta {::.3e}, PCG {} iterations, residual "
         "{:.2e}, asymmetry {::.1e}\n",
-        label, seconds.count(), l.rho, l.zc.max_z, g->max_zeta, l.multipliers.theta,
+        scheme, label, seconds.count(), l.rho, l.zc.max_z, g->max_zeta, l.multipliers.theta,
         l.multipliers.iterations, l.multipliers.residual, l.asymmetry);
     return g->total;
   };
@@ -3680,16 +3698,16 @@ TEST(Nevpt2QdGradient, WFormIsLinear) {
   const double scale = std::max(largest_abs(g12), largest_abs(sum));
   EXPECT_LE(diff, kQdLinearTolerance * scale)
       << "G(W1 + W2) against G(W1) + G(W2): max |diff| " << diff << ", largest " << scale;
-  std::cout << std::format("[ nevpt2   ] qd W form linearity: max |G(W1 + W2) - G(W1) - G(W2)| "
-                           "{:.3e}, largest element {:.3e}, relative {:.3e} (bar {:g}); |G(W1)| "
-                           "{:.3e}, |G(W2)| {:.3e}\n",
-                           diff, scale, diff / scale, kQdLinearTolerance, largest_abs(g1),
+  std::cout << std::format("[ nevpt2   ] qd {} W form linearity: max |G(W1 + W2) - G(W1) - "
+                           "G(W2)| {:.3e}, largest element {:.3e}, relative {:.3e} (bar {:g}); "
+                           "|G(W1)| {:.3e}, |G(W2)| {:.3e}\n",
+                           scheme, diff, scale, diff / scale, kQdLinearTolerance, largest_abs(g1),
                            largest_abs(g2));
 
   // Diagnostic: the sum rule, Σ_K G(u_K u_K^T) against G(1).
   std::vector<double> states(g12.size(), 0.0);
   for (std::size_t k = 0; k < nroots; ++k) {
-    const auto g = qd_gradient_of(run, static_cast<std::int32_t>(k));
+    const auto g = qd_gradient_of(run, static_cast<std::int32_t>(k), pc);
     ASSERT_TRUE(g.has_value()) << g.error().message;
     for (std::size_t i = 0; i < states.size(); ++i) {
       states[i] += g->total[i];
@@ -3706,10 +3724,17 @@ TEST(Nevpt2QdGradient, WFormIsLinear) {
     rule = std::max(rule, std::abs(states[i] - g_one[i]));
   }
   const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
-  std::cout << std::format("[ nevpt2   ] qd W form sum rule: max |Σ_K dE_K/dR - G(1)| {:.3e}, "
-                           "relative {:.3e} ({:.2f} s)\n",
-                           rule, rule / std::max(largest_abs(states), largest_abs(g_one)),
+  std::cout << std::format("[ nevpt2   ] qd {} W form sum rule: max |Σ_K dE_K/dR - G(1)| "
+                           "{:.3e}, relative {:.3e} ({:.2f} s)\n",
+                           scheme, rule, rule / std::max(largest_abs(states), largest_abs(g_one)),
                            seconds.count());
+}
+
+TEST(Nevpt2QdGradient, WFormIsLinear) {
+  FBF_REQUIRE_GPU();
+  const auto start = std::chrono::steady_clock::now();
+  NuclearRun run = qd_run("h8_sto3g_sa3", std::array{0.4, 0.4, 0.2});
+  expect_qd_w_linear(run, false, start);
 }
 
 // The W form refuses a W of the wrong size or not symmetric (or not
@@ -3758,7 +3783,8 @@ TEST(Nevpt2QdGradient, WFormRefusesBadW) {
 // writes (`pairs`): h_PQ . u along each stored direction and, on the case
 // committed in full (skew H2CO), every Cartesian component, within twice
 // that number's committed error bar (`sc_h`); h_QP, the call with the
-// states swapped, against h_PQ to 1e-10 relative to the largest element;
+// states swapped, against h_PQ to 1e-10 relative to the largest summand of
+// the two derivative passes (#748's ruling: round-off follows it);
 // and the translational and rotational sums of h_PQ, absolute, within twice
 // the case's largest committed `sc_h` bar (h is invariant to both rigid
 // motions: H_eff's elements are, in the roots' carried basis). Each check
@@ -3790,13 +3816,21 @@ const fb::json &coupling_data(std::string_view name) {
   return reference("qd_nevpt2_nac/coupling", std::format("{}.json", name));
 }
 
-// qd_sc_coupling between states @p p and @p q.
+// qd_sc_coupling between states @p p and @p q, or with @p pc
+// qd_pc_coupling's in QdScGradient's fields, at h @p h_in when given.
 fb::Result<nevpt2::QdScGradient> qd_coupling_of(NuclearRun &run, const std::int32_t p,
-                                                const std::int32_t q) {
+                                                const std::int32_t q, const bool pc = false,
+                                                const fb::SphericalMatrixAO *h_in = nullptr) {
   const GradientInputs in = gradient_inputs(run);
-  return nevpt2::qd_sc_coupling(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
-                                in.h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
-                                run.state.ncas, p, q, 0);
+  const fb::SphericalMatrixAO &h = h_in != nullptr ? *h_in : in.h;
+  if (!pc) {
+    return nevpt2::qd_sc_coupling(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux,
+                                  h, in.df.b, in.df.l.data(), *run.solution, run.state.ncore,
+                                  run.state.ncas, p, q, 0);
+  }
+  return sc_fields(nevpt2::qd_pc_coupling(run.node->device(0), in.molecule, in.basis, in.classes,
+                                          in.df.aux, h, in.df.b, in.df.l.data(), *run.solution,
+                                          run.state.ncore, run.state.ncas, p, q, 0));
 }
 
 // The checked numbers of pair index @p pq of @p family: v . u_d per
@@ -3833,10 +3867,12 @@ std::size_t largest_component(std::span<const double> v) {
       v.begin(), std::ranges::max_element(v, {}, [](const double x) { return std::abs(x); })));
 }
 
-// Every pair of case @p name against #743's SC numbers, h_QP, the rigid sums
-// and each part's visibility.
-void expect_qd_coupling(const std::string &name) {
-  constexpr std::string_view kScheme = "sc";
+// Every pair of case @p name against #743's SC numbers (or with @p pc PC's
+// coupling against its PC numbers), h_QP, the rigid sums and each part's
+// visibility.
+void expect_qd_coupling(const std::string &name, const bool pc = false) {
+  const std::string_view scheme = pc ? "pc" : "sc";
+  const std::string_view tag = pc ? "PC" : "SC";
   const auto start = std::chrono::steady_clock::now();
   const fb::json &data = coupling_data(name);
   ASSERT_EQ(data.at("name").get<std::string>(), name);
@@ -3855,11 +3891,11 @@ void expect_qd_coupling(const std::string &name) {
   const std::size_t n = run.solution->roots.energies.size();
   const std::size_t natom = data.at("atoms").size();
   const std::chrono::duration<double> setup = std::chrono::steady_clock::now() - start;
-  std::cout << std::format("[ nevpt2   ] qd SC coupling {}: setup {:.2f} s, CASSCF ||g|| {:.2e}\n",
-                           name, setup.count(), run.solution->gradient_norm);
+  std::cout << std::format("[ nevpt2   ] qd {} coupling {}: setup {:.2f} s, CASSCF ||g|| {:.2e}\n",
+                           tag, name, setup.count(), run.solution->gradient_norm);
 
   const fb::json &pairs = data.at("pairs");
-  const std::string family = std::format("{}_h", kScheme);
+  const std::string family = std::format("{}_h", scheme);
   double largest_bar = 0.0;
   for (std::size_t pq = 0; pq < pairs.size(); ++pq) {
     for_each_coupling_checked(data, family, std::vector<double>(3 * natom, 0.0), pq,
@@ -3869,9 +3905,9 @@ void expect_qd_coupling(const std::string &name) {
   }
   const double rigid_bar = kQdBarFactor * largest_bar;
   const auto heff_data =
-      data.at("reference").at(std::format("{}_heff", kScheme)).get<std::vector<double>>();
+      data.at("reference").at(std::format("{}_heff", scheme)).get<std::vector<double>>();
   const auto r_data =
-      data.at("reference").at(std::format("{}_heff_vectors", kScheme)).get<std::vector<double>>();
+      data.at("reference").at(std::format("{}_heff_vectors", scheme)).get<std::vector<double>>();
   ASSERT_EQ(heff_data.size(), n * n);
   ASSERT_EQ(r_data.size(), n * n);
 
@@ -3881,7 +3917,7 @@ void expect_qd_coupling(const std::string &name) {
     const auto p = pairs.at(pq).at(0).get<std::int32_t>();
     const auto q = pairs.at(pq).at(1).get<std::int32_t>();
     const auto begin = std::chrono::steady_clock::now();
-    const auto g = qd_coupling_of(run, p, q);
+    const auto g = qd_coupling_of(run, p, q, pc);
     ASSERT_TRUE(g.has_value()) << g.error().message;
     const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - begin;
     const nevpt2::QdScLagrangian &l = g->lagrangian;
@@ -3895,18 +3931,18 @@ void expect_qd_coupling(const std::string &name) {
       trace += r;
     }
     std::cout << std::format(
-        "[ nevpt2   ] qd SC coupling {} ({}, {}) ({:.2f} s): E_P {:.10f} E_Q {:.10f} ({:+.2e}, "
+        "[ nevpt2   ] qd {} coupling {} ({}, {}) ({:.2f} s): E_P {:.10f} E_Q {:.10f} ({:+.2e}, "
         "{:+.2e} against #743's), rho {::+.6f} (sum {:+.1e}), max |z^c| {:.3e}, max |zeta| "
         "{:.3e}, Theta {::.3e}, model-space gap {:.3e}, H_eff gap {:.3e}, PCG {} iterations, "
         "residual {:.2e}\n",
-        name, p, q, seconds.count(), l.eigenvalues[up], l.eigenvalues[uq],
+        tag, name, p, q, seconds.count(), l.eigenvalues[up], l.eigenvalues[uq],
         l.eigenvalues[up] -
-            data.at("reference").at(std::format("{}_energies", kScheme)).at(up).get<double>(),
+            data.at("reference").at(std::format("{}_energies", scheme)).at(up).get<double>(),
         l.eigenvalues[uq] -
-            data.at("reference").at(std::format("{}_energies", kScheme)).at(uq).get<double>(),
+            data.at("reference").at(std::format("{}_energies", scheme)).at(uq).get<double>(),
         l.rho, trace, l.zc.max_z, g->max_zeta, l.multipliers.theta, g->root_gap, g->heff_gap,
         l.multipliers.iterations, l.multipliers.residual);
-    expect_symmetric(std::format("qd SC coupling {} ({}, {})", name, p, q), l.asymmetry);
+    expect_symmetric(std::format("qd {} coupling {} ({}, {})", tag, name, p, q), l.asymmetry);
 
     // The pair's sign, from H_eff's element (m(P), m(Q)).
     const std::span<const double> r_p{l.eigenvectors.data() + (up * n), n};
@@ -3926,9 +3962,9 @@ void expect_qd_coupling(const std::string &name) {
       EXPECT_NEAR(std::abs(ours), std::abs(theirs), kQdPhaseMagnitudeTolerance * std::abs(theirs))
           << name << " H_eff " << mp << mq;
       sign = ours * theirs < 0.0 ? -1.0 : 1.0;
-      std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}): pair sign {:+.0f} from "
+      std::cout << std::format("[ nevpt2   ] qd {} coupling {} ({}, {}): pair sign {:+.0f} from "
                                "H_eff[{}, {}] ours {:+.6e}, #743's {:+.6e}\n",
-                               name, p, q, sign, mp, mq, ours, theirs);
+                               tag, name, p, q, sign, mp, mq, ours, theirs);
     }
     std::vector<double> h = g->total;
     for (double &v : h) {
@@ -3947,33 +3983,48 @@ void expect_qd_coupling(const std::string &name) {
             worst_ratio = ratio;
             worst_where = where;
           }
-          std::cout << std::format("[ nevpt2   ] qd SC coupling {} {}: analytic {:+.10f} "
+          std::cout << std::format("[ nevpt2   ] qd {} coupling {} {}: analytic {:+.10f} "
                                    "numerical {:+.10f} diff {:+.2e} ({:.2f} bars of {:.1e})\n",
-                                   name, where, ours, ref, ours - ref, ratio, bar);
+                                   tag, name, where, ours, ref, ours - ref, ratio, bar);
         });
 
     // h_QP, the states swapped.
-    const auto swapped = qd_coupling_of(run, q, p);
+    const auto swapped = qd_coupling_of(run, q, p, pc);
     ASSERT_TRUE(swapped.has_value()) << swapped.error().message;
     ASSERT_EQ(swapped->total.size(), g->total.size());
     double diff = 0.0;
     for (std::size_t i = 0; i < g->total.size(); ++i) {
       diff = std::max(diff, std::abs(swapped->total[i] - g->total[i]));
     }
-    const double scale = std::max(largest_abs(g->total), largest_abs(swapped->total));
+    // The swapped call's W is bitwise identical, so this measures only atomic-sum
+    // noise, and rounding follows the largest summand, not the cancelled sum
+    // (https://github.com/whatDiracIsCooking/FreeBreakfast/issues/748#issuecomment-6603277530):
+    // the scale is the largest element of the two passes' terms that sum to h.
+    const double h_scale = std::max(largest_abs(g->total), largest_abs(swapped->total));
+    double scale = 0.0;
+    for (const nevpt2::QdScGradient *x : {&*g, &*swapped}) {
+      for (const fb::mcscf::GradientTerms *t : {&x->terms, &x->transition}) {
+        for (const auto *part :
+             {&t->kinetic, &t->potential, &t->overlap, &t->two_electron, &t->nuclear_repulsion}) {
+          scale = std::max(scale, largest_abs(*part));
+        }
+      }
+    }
     EXPECT_LE(diff, kQdCouplingSymmetryTolerance * scale)
         << name << " h_QP against h_PQ (" << p << ", " << q << ")";
-    std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}): max |h_QP - h_PQ| {:.3e}, "
-                             "largest element {:.3e}, relative {:.3e} (bar {:g})\n",
-                             name, p, q, diff, scale, diff / scale, kQdCouplingSymmetryTolerance);
+    std::cout << std::format("[ nevpt2   ] qd {} coupling {} ({}, {}): max |h_QP - h_PQ| {:.3e}, "
+                             "largest summand {:.3e}, relative {:.3e} (bar {:g}); largest element "
+                             "of h {:.3e}, relative {:.3e}\n",
+                             tag, name, p, q, diff, scale, diff / scale,
+                             kQdCouplingSymmetryTolerance, h_scale, diff / h_scale);
 
     // The rigid sums.
     const auto [translation_sum, torque_sum] = rigid_sums(g->total, data.at("atoms"));
     EXPECT_LE(translation_sum, rigid_bar) << name << " (" << p << ", " << q << ") translation";
     EXPECT_LE(torque_sum, rigid_bar) << name << " (" << p << ", " << q << ") torque";
-    std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}): translation {:.2e}, torque "
+    std::cout << std::format("[ nevpt2   ] qd {} coupling {} ({}, {}): translation {:.2e}, torque "
                              "{:.2e} (bar {:.2e} = 2 x {:.2e})\n",
-                             name, p, q, translation_sum, torque_sum, rigid_bar, largest_bar);
+                             tag, name, p, q, translation_sum, torque_sum, rigid_bar, largest_bar);
 
     // Visibility: the reference part by df_gradient at the mix rho, and the
     // PT2 part, h less it, each against its own family.
@@ -3993,7 +4044,7 @@ void expect_qd_coupling(const std::string &name) {
       double miss = 0.0;
       std::string miss_where;
       for_each_coupling_checked(
-          data, std::format("{}_h_{}", kScheme, part), *v, pq,
+          data, std::format("{}_h_{}", scheme, part), *v, pq,
           [&](const double ours, const double theirs, const double bar, const std::string &label) {
             if (std::abs(ours) / bar > largest.ratio) {
               largest = {
@@ -4004,16 +4055,16 @@ void expect_qd_coupling(const std::string &name) {
               miss_where = label;
             }
           });
-      std::cout << std::format("[ nevpt2   ] qd SC coupling {} ({}, {}) visibility {} part: "
+      std::cout << std::format("[ nevpt2   ] qd {} coupling {} ({}, {}) visibility {} part: "
                                "{:.3e} at {} ({:.1f} bars of {:.1e}); against #743's, worst "
                                "{:.2f} bars at {}\n",
-                               name, p, q, part, largest.contribution, largest.where, largest.ratio,
-                               largest.bar, miss, miss_where);
+                               tag, name, p, q, part, largest.contribution, largest.where,
+                               largest.ratio, largest.bar, miss, miss_where);
     }
   }
   const std::chrono::duration<double> seconds = std::chrono::steady_clock::now() - start;
-  std::cout << std::format("[ nevpt2   ] qd SC coupling {}: worst {:.3f} bars ({}), {:.2f} s\n",
-                           name, worst_ratio, worst_where, seconds.count());
+  std::cout << std::format("[ nevpt2   ] qd {} coupling {}: worst {:.3f} bars ({}), {:.2f} s\n",
+                           tag, name, worst_ratio, worst_where, seconds.count());
 }
 
 class Nevpt2QdCoupling : public ::testing::TestWithParam<std::string_view> {};
@@ -4204,6 +4255,113 @@ TEST(Nevpt2QdPcGradient, OneRootAgainstPcGradient) {
                            "{:.2e}, relative {:.2e}; E_K {:.12f}, max |zeta| {:.1e}\n",
                            diff, diff / largest_abs(pc->terms.total), qd->lagrangian.eigenvalues[0],
                            qd->max_zeta);
+}
+
+// PC's W form (#748): Nevpt2QdGradient.WFormIsLinear's checks through
+// qd_pc_gradient's, on h2co_skew_ccpvdz_sa3_weighted at its own weights
+// (0.4, 0.4, 0.2: ζ on (0, 1), t on the rest). The state form is the W form
+// at PC's u_K u_K^T, one code path, so MatchesNumerical is its check there.
+TEST(Nevpt2QdPcGradient, WFormIsLinear) {
+  FBF_REQUIRE_GPU();
+  const auto start = std::chrono::steady_clock::now();
+  NuclearRun run = qd_run("h2co_skew_ccpvdz_sa3_weighted");
+  expect_qd_w_linear(run, true, start);
+}
+
+// ---- PC-QD-NEVPT2: the interstate coupling h_PQ (qd_pc_coupling) --------
+//
+// Nevpt2QdCoupling's checks of qd_pc_coupling against the data's PC numbers
+// (`pc_h`, `pc_heff`, `pc_heff_vectors`, `pc_energies`, `pc_h_reference`,
+// `pc_h_pt2`), on every case of data/qd_nevpt2_nac/coupling/: PC accepts
+// all three (Nevpt2QdPcGradient.MatchesNumerical takes each). One shared
+// body, expect_qd_coupling.
+
+class Nevpt2QdPcCoupling : public ::testing::TestWithParam<std::string_view> {};
+
+TEST_P(Nevpt2QdPcCoupling, MatchesNumerical) {
+  FBF_REQUIRE_GPU();
+  expect_qd_coupling(std::string{GetParam()}, true);
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdPcCoupling,
+                         ::testing::Values(std::string_view{"h8_ring_sto3g_sa3"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3"},
+                                           std::string_view{"h2co_skew_ccpvdz_sa3_weighted"}),
+                         [](const auto &info) { return std::string(info.param); });
+
+// A class PC refuses refuses the coupling, with qd_pc_energy's error, kind
+// and message, as it refuses the gradient
+// (Nevpt2QdPcGradient.RefusesWhatTheEnergyRefuses' two states on
+// h8_ring_sto3g_sa3: every virtual lowered by 1000 Eh, "not positive"; root
+// 1's vector zero, "no positive eigenvalue"), for the pair (0, 1) and its
+// swap; and a pair that is one state, or a state not one of the roots', is
+// InvalidConfig, named nevpt2::qd_pc_coupling.
+TEST(Nevpt2QdPcCoupling, RefusesWhatTheEnergyRefuses) {
+  FBF_REQUIRE_GPU();
+  NuclearRun run = qd_run("h8_ring_sto3g_sa3");
+  ASSERT_TRUE(run.solution.has_value());
+  fb::DeviceResources &res = run.node->device(0);
+  const GradientInputs in = gradient_inputs(run);
+  const State &s = run.state;
+  const auto weights = reference_case("qd_nevpt2", "qd_nevpt2.json", "h8_ring_sto3g_sa3")
+                           .at("weights")
+                           .get<std::vector<double>>();
+  for (const auto &[p, q, phrase] :
+       {std::tuple{1, 1, "states 1 and 1"}, std::tuple{0, 3, "state 3 of 3 roots"},
+        std::tuple{-1, 0, "state -1 of 3 roots"}}) {
+    const auto got = qd_coupling_of(run, p, q, true);
+    ASSERT_FALSE(got.has_value()) << p << ", " << q;
+    EXPECT_EQ(got.error().kind, fb::ErrorKind::InvalidConfig) << got.error().message;
+    EXPECT_NE(got.error().message.find("nevpt2::qd_pc_coupling"), std::string::npos)
+        << got.error().message;
+    EXPECT_NE(got.error().message.find(phrase), std::string::npos) << got.error().message;
+    std::cout << std::format("[ nevpt2   ] qd pc coupling refuses ({}, {}): {}\n", p, q,
+                             got.error().message);
+  }
+
+  const auto same = [&](const State &at, const fb::SphericalMatrixAO &h,
+                        const std::string_view what, const std::string_view says) {
+    const DeviceState d = upload_state(res, at);
+    const auto energy = nevpt2::qd_pc_energy(res, *d.strings, *d.strings, at.naux, at.nao, at.nao,
+                                             d.b.data(), d.c.data(), d.h.data(), at.ncore, at.ncas,
+                                             weights, d.vector.data(), 0);
+    ASSERT_FALSE(energy.has_value()) << what;
+    for (const auto &[p, q] : {std::pair{0, 1}, std::pair{1, 0}}) {
+      const auto got = qd_coupling_of(run, p, q, true, &h);
+      ASSERT_FALSE(got.has_value()) << what << " (" << p << ", " << q << ")";
+      EXPECT_EQ(got.error().kind, fb::ErrorKind::Numerical) << what;
+      EXPECT_EQ(got.error().kind, energy.error().kind) << what;
+      EXPECT_EQ(stable_part(got.error().message), stable_part(energy.error().message)) << what;
+      EXPECT_NE(got.error().message.find("Sr"), std::string::npos) << got.error().message;
+      EXPECT_NE(got.error().message.find(says), std::string::npos) << got.error().message;
+      std::cout << std::format("[ nevpt2   ] qd pc coupling refuses {} ({}, {}): {}\n", what, p, q,
+                               got.error().message);
+    }
+  };
+
+  std::vector<std::size_t> virtuals;
+  for (auto v = static_cast<std::size_t>(s.ncore + s.ncas); v < static_cast<std::size_t>(s.nao);
+       ++v) {
+    virtuals.push_back(v);
+  }
+  State low = s;
+  low.h = shifted_h(s, virtuals, -1000.0);
+  fb::SphericalMatrixAO h_low(res, in.basis);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(h_low.data(), low.h.data(), low.h.size() * sizeof(double),
+                                wwr::wwrMemcpyHostToDevice, res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  same(low, h_low, "virtuals at -1000 Eh", "not positive");
+
+  State zero = s;
+  const std::size_t ndet = s.vector.size() / weights.size();
+  std::fill_n(zero.vector.begin() + static_cast<std::ptrdiff_t>(ndet), ndet, 0.0);
+  ASSERT_EQ(wwr::wwrMemcpyAsync(run.solution->roots.vectors.data(), zero.vector.data(),
+                                zero.vector.size() * sizeof(double), wwr::wwrMemcpyHostToDevice,
+                                res.stream()),
+            wwr::wwrSuccess);
+  ASSERT_TRUE(res.sync().has_value());
+  same(zero, in.h, "root 1 zero", "no positive eigenvalue");
 }
 
 } // namespace
