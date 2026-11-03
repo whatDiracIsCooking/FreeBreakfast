@@ -214,8 +214,13 @@ qd_nevpt2_gradient/
                   difference nuclear gradients of this tree's SC- and
                   PC-QD-NEVPT2 energies (and each DF-SA-CASSCF root's),
                   re-converged at every displaced geometry through the
-                  pipeline itself, behind #555's continuity guard. Needs a
-                  GPU. That directory's README has when and how.
+                  pipeline itself, behind #555's continuity guard. With
+                  --coupling, test/gtest/data/qd_nevpt2_nac/coupling/
+                  instead: the QD-NEVPT2 coupling references through the
+                  same points (h_PQ in its reference and PT2 parts, the
+                  zeroth-order overlap d^NEV + d^CAS, and the roots' own
+                  overlap against mcscf::df_nac). Needs a GPU. Each
+                  directory's README has when and how.
 ```
 
 Re-run the four `emit/*_kernels.py`, `extract_integral_golden.py` and then
