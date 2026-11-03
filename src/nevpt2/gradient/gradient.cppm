@@ -18,8 +18,9 @@
 /// builders around sc_effective_hamiltonian, and its adjoint along any W;
 /// the PC-QD one the same around pc_effective_hamiltonian. And the SC-QD
 /// Lagrangian's multipliers on a DF-SA-CASSCF (qd_sc_lagrangian): z^c, the
-/// roots' rotation multipliers and the SA Z-vector, gated; and the SC-QD
-/// nuclear gradient over it (qd_sc_gradient), two derivative passes.
+/// roots' rotation multipliers and the SA Z-vector, gated; the SC-QD
+/// nuclear gradient over it (qd_sc_gradient), two derivative passes; and the
+/// PC-QD one (qd_pc_gradient), the same over qd_pc_adjoint.
 /// The README has the layouts and every term.
 
 export module free_breakfast.nevpt2.gradient;
@@ -513,7 +514,8 @@ struct QdScLagrangian {
   /// @brief qd_sc_adjoint at W with Phi^SA's adjoint (zc_adjoint at zc.z)
   /// added field by field: h_bar, lambda and x are df_gradient's extra, y is
   /// y_bar_r = y_bar^corr_r + y^c_r per root, raw, and a is A^corr + A^{z^c}.
-  /// elements and epsilon are qd_sc_adjoint's.
+  /// elements and epsilon are qd_sc_adjoint's. In qd_pc_gradient's, the same
+  /// of qd_pc_adjoint, and elements is empty (QdPcGradient::elements).
   QdScAdjoint corr;
   /// @brief z^c over qd_sc_adjoint's A and the SA Fock's epsilon.
   ZcMultipliers zc;
@@ -607,6 +609,51 @@ struct QdScGradient {
 ///         weight, a degenerate H_eff pair, the gate), or the first error of
 ///         a derivative pass.
 [[nodiscard]] Result<QdScGradient> qd_sc_gradient(DeviceResources &res, const Molecule &molecule,
+                                                  const BasisSet &basis,
+                                                  std::span<const PrimitivePairClass> classes,
+                                                  const BasisSet &aux, const SphericalMatrixAO &h,
+                                                  const Buffers::device<double> &b, const double *l,
+                                                  const mcscf::Solution &solution, int32_t ncore,
+                                                  int32_t ncas, int32_t state, int32_t batch);
+
+/// @brief qd_pc_gradient's result: QdScGradient's fields, with PC's
+/// elements.
+struct QdPcGradient {
+  /// @brief dE_K/dR, as QdScGradient::total.
+  std::vector<double> total;
+  /// @brief The mcscf::df_gradient pass, as QdScGradient::terms.
+  mcscf::GradientTerms terms;
+  /// @brief zeta's mcscf::df_transition_gradient pass, as
+  /// QdScGradient::transition.
+  mcscf::GradientTerms transition;
+  /// @brief The PC-QD Lagrangian in QdScLagrangian's fields: H_eff's
+  /// eigenvalues are PC's, and corr is qd_pc_adjoint's arrays plus Phi^SA's,
+  /// its elements empty.
+  QdScLagrangian lagrangian;
+  /// @brief The n^2 elements, as qd_pc_energy computes them.
+  std::vector<PcClassEnergies> elements;
+  /// @brief max |zeta_sr|.
+  double max_zeta = 0.0;
+  /// @brief The smallest |E_r - E_s| over the CASSCF roots.
+  double root_gap = std::numeric_limits<double>::infinity();
+  /// @brief The smallest |lambda_K - lambda_L| of PC's H_eff, L != K.
+  double heff_gap = std::numeric_limits<double>::infinity();
+};
+
+/// @brief The PC-QD-NEVPT2 nuclear gradient of QD state @p state (PC's H_eff
+/// eigenvalues ascending) on the DF-SA-CASSCF @p solution: qd_sc_gradient
+/// with qd_pc_energy and qd_pc_adjoint in place of qd_sc_energy and
+/// qd_sc_adjoint. The Lagrangian's assembly (z^c the same division over
+/// PC's A, under the same degenerate-pair rule; tau split into zeta and t;
+/// the CI right-hand side y_bar_r / (2 w_r); the gate) and the two
+/// derivative passes are the same code. The arguments are qd_sc_gradient's.
+///
+/// @return The gradient; a refused class's Numerical error, qd_pc_energy's
+///         unchanged, never a gradient with the class zeroed;
+///         qd_sc_gradient's other errors (a root of zero weight, a
+///         degenerate pair of PC's H_eff, the gate), named for
+///         nevpt2::qd_pc_gradient; or the first error of the calls it makes.
+[[nodiscard]] Result<QdPcGradient> qd_pc_gradient(DeviceResources &res, const Molecule &molecule,
                                                   const BasisSet &basis,
                                                   std::span<const PrimitivePairClass> classes,
                                                   const BasisSet &aux, const SphericalMatrixAO &h,
