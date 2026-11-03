@@ -85,15 +85,28 @@ public:
   /// stop at @p response_tolerance of their right-hand side's norm (or after
   /// 200 sigmas per root): every product is good to about that, relative.
   ///
+  ///
+  /// @p mixing, when not empty, says per pair of roots r < s, in (r, s)
+  /// lexicographic order (ZVector::theta's), whether delta carries the
+  /// pair's other-roots part, -(c_s . b_r) / (E_s - E_r) c_s and its mirror;
+  /// empty is every pair (the gap floor aside). A pair of equal weights adds
+  /// (w_r - w_s) times that part to R x, nothing, so leaving it out changes
+  /// no product; but its 1/(E_s - E_r) amplifies the weights' recovery
+  /// error and the roundoff near a degeneracy (README.md "Leaving a pair's
+  /// mixing out"). mcscf::rotating_pairs gives the mask that keeps only the
+  /// pairs of unequal weights.
+  ///
   /// @return InvalidConfig when @p ints' sizes do not match their nmo, ncore
   ///         and ncas, @p hessian is not over their pairs, the weights'
   ///         count is not the roots', the roots are not that many vectors of
-  ///         the sigma's length, or @p response_tolerance is not positive; or
+  ///         the sigma's length, @p response_tolerance is not positive, or
+  ///         @p mixing is neither empty nor nroots (nroots - 1) / 2 long; or
   ///         the error of the sigma's create.
   [[nodiscard]] static Result<RelaxedHessian>
   create(DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
          const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
-         std::span<const double> weights, ResponseIntegrals ints, double response_tolerance = 1e-8);
+         std::span<const double> weights, ResponseIntegrals ints, double response_tolerance = 1e-8,
+         std::vector<bool> mixing = {});
 
   RelaxedHessian(RelaxedHessian &&) noexcept = default;
   RelaxedHessian &operator=(RelaxedHessian &&) noexcept = default;
@@ -214,7 +227,12 @@ public:
 private:
   RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm, const ci::Roots &roots,
                  std::vector<double> weights, ResponseIntegrals ints, ci::Sigma response_sigma,
-                 size_t dim, double response_tolerance, int32_t swap_parity, DeviceResources &res);
+                 size_t dim, double response_tolerance, int32_t swap_parity,
+                 std::vector<bool> mixing, DeviceResources &res);
+
+  // Whether delta carries the other-roots part of the pair of roots @p r and
+  // @p s (in either order): create's mixing, or every pair when it is empty.
+  [[nodiscard]] bool mixes(size_t r, size_t s) const;
 
   // v <- v - C (C^T v): off every root.
   [[nodiscard]] Status project(DeviceResources &res, double *v);
@@ -257,6 +275,8 @@ private:
   // The roots' parity under the swap of the alpha and beta strings (one set
   // for both spins): +1 even S, -1 odd, 0 for two sets or no definite one.
   int32_t swap_parity_;
+  // create's mixing: per pair r < s, lexicographic; empty for every pair.
+  std::vector<bool> mixing_;
   // H'(x)'s sigma; the CI blocks b = H' c, delta and c +- delta (dim x nroots
   // each); conjugate gradients' three vectors; the roots' overlaps; kappa,
   // then the gradient's antisymmetric matrix; the packed gradient; and the
