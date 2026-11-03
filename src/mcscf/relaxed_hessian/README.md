@@ -114,6 +114,23 @@ b at k blocks, and k nroots² doubles for `apply_coupled`'s rotation
 matrices. Six CI blocks per column, so a block of 3N columns over a
 large active space is that much device memory.
 
+### Leaving a pair's mixing out
+
+`create`'s last argument, `mixing` (empty by default: every pair mixes, as
+above), is one flag per pair of roots r < s in (r, s) lexicographic order,
+`ZVector::theta`'s. A pair flagged false gets no other-roots part in step 3,
+in the one-column product and the block one alike. At equal weights that
+part adds (w_r − w_s)(c_s · H′ c_r)/(E_s − E_r) times the pair's transition
+RDMs to H̃ x, which is zero, so nothing H̃ means changes; what it removes is
+an O(1/gap) term cancelling through the RDMs of c ± δ, against weights
+recovered only to about 1e-8 relative. Near a degeneracy that term is
+the product's error: `mcscf::df_intersection`, which passes
+`rotating_pairs(weights)` (only the pairs of unequal weight mix), measured
+true residuals of 1.6e-5 at a gap of 2e-8 Eh with every pair mixing
+([`../intersection/README.md`](../intersection/README.md), "The
+derivation"). `delta()` then has no part along the flagged pairs' roots,
+which a Z-vector projects off in any case.
+
 The derivation, the costs and what H̃ bought the loop are in
 [`../solve/README.md`](../solve/README.md), "The CI response is computed, per
 product".

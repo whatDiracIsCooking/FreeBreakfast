@@ -125,10 +125,12 @@ void response_gradient(const ResponseIntegrals &ints, std::span<const double> ga
   }
 }
 
-Result<RelaxedHessian> RelaxedHessian::create(
-    DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma, ci::Rdm &rdm,
-    const ci::DeviceStringSet &alpha, const ci::DeviceStringSet &beta, const ci::Roots &roots,
-    std::span<const double> weights, ResponseIntegrals ints, const double response_tolerance) {
+Result<RelaxedHessian>
+RelaxedHessian::create(DeviceResources &res, response::Hessian &hessian, ci::Sigma &sigma,
+                       ci::Rdm &rdm, const ci::DeviceStringSet &alpha,
+                       const ci::DeviceStringSet &beta, const ci::Roots &roots,
+                       std::span<const double> weights, ResponseIntegrals ints,
+                       const double response_tolerance, std::vector<bool> mixing) {
   const size_t mo = ints.nmo;
   const size_t core = ints.ncore;
   const size_t n = ints.ncas;
@@ -154,6 +156,10 @@ Result<RelaxedHessian> RelaxedHessian::create(
   if (!(response_tolerance > 0.0)) {
     return err_config("mcscf::RelaxedHessian: response_tolerance must be positive (got {:g})",
                       response_tolerance);
+  }
+  if (!mixing.empty() && mixing.size() != roots_count * (roots_count - 1) / 2) {
+    return err_config("mcscf::RelaxedHessian: {} mixing flags for {} roots, which have {} pairs",
+                      mixing.size(), roots_count, roots_count * (roots_count - 1) / 2);
   }
   ci::Sigma response_sigma = FBF_TRY(ci::Sigma::create(res, alpha, beta));
   // The roots' parity under the swap of the alpha and beta strings, from
@@ -181,6 +187,7 @@ Result<RelaxedHessian> RelaxedHessian::create(
                         dim,
                         response_tolerance,
                         swap_parity,
+                        std::move(mixing),
                         res};
 }
 
@@ -188,12 +195,12 @@ RelaxedHessian::RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci:
                                const ci::Roots &roots, std::vector<double> weights,
                                ResponseIntegrals ints, ci::Sigma response_sigma, const size_t dim,
                                const double response_tolerance, const int32_t swap_parity,
-                               DeviceResources &res)
+                               std::vector<bool> mixing, DeviceResources &res)
     : hessian_(&hessian), sigma_(&sigma), rdm_(&rdm), roots_(&roots), weights_(std::move(weights)),
       ints_(std::move(ints)), n_pairs_(hessian.size()), dim_(dim),
       response_tolerance_(response_tolerance), swap_parity_(swap_parity),
-      response_sigma_(std::move(response_sigma)), ci_b_(dim * weights_.size(), res.device()),
-      ci_delta_(dim * weights_.size(), res.device()),
+      mixing_(std::move(mixing)), response_sigma_(std::move(response_sigma)),
+      ci_b_(dim * weights_.size(), res.device()), ci_delta_(dim * weights_.size(), res.device()),
       ci_pm_(2 * dim * weights_.size(), res.device()), cg_vectors_(3 * dim, res.device()),
       ci_overlaps_(weights_.size(), res.device()),
       response_matrix_(ints_.nmo * ints_.nmo, res.device()),
@@ -201,6 +208,18 @@ RelaxedHessian::RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci:
       response_gamma_(2 * ints_.ncas * ints_.ncas, res.device()),
       response_gamma2_(2 * ints_.ncas * ints_.ncas * ints_.ncas * ints_.ncas, res.device()),
       block_(1, res.device()) {}
+
+bool RelaxedHessian::mixes(const size_t r, const size_t s) const {
+  if (mixing_.empty()) {
+    return true;
+  }
+  const size_t lo = std::min(r, s);
+  const size_t hi = std::max(r, s);
+  const size_t nroots = weights_.size();
+  // Pairs (lo, hi) before this one: every pair of a smaller first root, then
+  // (lo, lo + 1) up to (lo, hi - 1).
+  return mixing_[(lo * nroots) - (lo * (lo + 1) / 2) + (hi - lo - 1)];
+}
 
 Status RelaxedHessian::project(DeviceResources &res, double *const v) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
@@ -327,7 +346,7 @@ Status RelaxedHessian::solve_response(DeviceResources &res, std::span<double> ga
     }
     for (size_t s = 0; s < roots_count; ++s) {
       const double gap = roots_->energies[s] - e_r;
-      if (s == r || std::abs(gap) < kResponseGapFloor) {
+      if (s == r || std::abs(gap) < kResponseGapFloor || !mixes(r, s)) {
         continue;
       }
       double overlap = 0.0;
@@ -573,9 +592,10 @@ Status RelaxedHessian::solve_responses(DeviceResources &res, const size_t k) {
   for (size_t v = 0; v < count; ++v) {
     const double e_r = roots_->energies[v % roots_count];
     for (size_t s = 0; s < roots_count; ++s) {
+      const size_t r = v % roots_count;
       const double gap = roots_->energies[s] - e_r;
       double &value = coefficients[s + (roots_count * v)];
-      value = (s == v % roots_count || std::abs(gap) < kResponseGapFloor) ? 0.0 : -value / gap;
+      value = (s == r || std::abs(gap) < kResponseGapFloor || !mixes(r, s)) ? 0.0 : -value / gap;
     }
   }
   FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(overlaps, coefficients.data(),
