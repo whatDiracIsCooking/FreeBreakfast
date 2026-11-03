@@ -18,8 +18,8 @@ target `free_breakfast::nevpt2::rdm`.
 | Name | Role |
 |---|---|
 | `nevpt2::rdms(res, alpha, beta, vector, eri, dm3, f3ca, f3ac, max_bytes)` | The three tensors of the device CI `vector` over the two `ci::DeviceStringSet`s, from the device (tu\|vw) `eri`, into the device `dm3`, `f3ca`, `f3ac`; `Result<int64_t>`, the number of tiles it took |
-| `nevpt2::rdms(res, alpha, beta, bra, ket, eri, dm1, dm2, dm3, f3ca, f3ac, max_bytes)` | The same between the device `bra` ⟨I\| and `ket` \|J⟩, with the transition `dm1` (n²) and `dm2` (n⁴), either of which may be null; `bra == ket` (one pointer) is the one-vector build, bit for bit |
-| `nevpt2::rdms_workspace_bytes(n, width, transition = false)` | The bytes of `res.device_workspace()` a build over `n` active orbitals carves at tile width `width`; a `transition` (bra ≠ ket) build's |
+| `nevpt2::rdms(res, alpha, beta, bra, ket, eri, dm1, dm2, dm3, f3ca, f3ac, max_bytes)` | The same between the device `bra` ⟨I\| and `ket` \|J⟩, with the transition `dm1` (n²) and `dm2` (n⁴), either of which may be null; `bra == ket` (one pointer) is the one-vector build, bit for bit; in both overloads `f3ca` and `f3ac` may be null together, and only dm3 (and dm1, dm2) is built |
+| `nevpt2::rdms_workspace_bytes(n, width, transition = false, f3 = true)` | The bytes of `res.device_workspace()` a build over `n` active orbitals carves at tile width `width`; a `transition` (bra ≠ ket) build's, and one with null f3s (`f3 = false`) |
 | `nevpt2::rdms_adjoint(res, alpha, beta, vector, eri, dm3_bar, f3ca_bar, f3ac_bar, vector_bar, eri_bar, max_bytes)` | From device bars on the three tensors, `vector_bar` = ∂E/∂c and `eri_bar` = ∂E/∂(tu\|vw) of E = ⟨dm3̄, dm3⟩ + ⟨f3cā, f3ca⟩ + ⟨f3ac̄, f3ac⟩, both overwritten; `Result<int64_t>`, the number of tiles |
 | `nevpt2::rdms_adjoint(res, alpha, beta, bra, ket, eri, dm3_bar, f3ca_bar, f3ac_bar, bra_bar, ket_bar, eri_bar, max_bytes)` | The bra/ket build's adjoint: `bra_bar` = ∂E/∂c_I and `ket_bar` = ∂E/∂c_J apart; in both overloads the f3 bars may be null together, and only dm3's transpose runs |
 | `nevpt2::rdms_adjoint_workspace_bytes(n, width, transition = false, f3 = true)` | The same, for the adjoint; a `transition` call's, and one with null f3 bars (`f3 = false`) |
@@ -139,6 +139,21 @@ corrupt memory instead of failing; here every buffer's extent is the one the
 width was planned from, and `TinyBudgetsMatchOneTile` runs unequal and
 one-determinant tiles under compute-sanitizer.
 
+**Null f3ca and f3ac are QD-NEVPT2's off-diagonal call.** QD reads f3 on
+each root's diagonal only (the Dyall element H^J/N^J is the ket's own), so
+`pipeline/nevpt2`'s pair loop has no use for the transition f3s. Passed null
+together, in either overload, everything that exists only for f3 is
+skipped: the eri's conversion, the consumes and the f3 digests, fdm2 and the
+wedge and, between two vectors, the ket's L2 and its gather. What is left is
+dm3 += L2 Rᵀ and the dm1 and dm2 gemvs, about a third of the gemm work;
+(tu\|vw) is not read. The plan is then `rdms_workspace_bytes(n, width,
+transition, false)`: two regions, R and L2 ((n² + n⁴) doubles per
+determinant), the same with or without a transition, so the tiles are
+wider under one budget. dm1, dm2 and dm3 are the f3 build's bit for bit at
+the same tile width: the same gathers, gemm and gemvs in the same order.
+One null and one given is `InvalidConfig`, before anything is queued, as
+for the adjoint's f3 bars.
+
 **A budget below one determinant is `Unsupported`, refused before anything
 is queued or allocated**: a failed workspace growth aborts in this tree
 (`CreatePolicy`), so the check has to come first.
@@ -213,9 +228,9 @@ written zero, since dm3 does not read it. The plan is then
 `rdms_adjoint_workspace_bytes(n, width, transition, false)`: four regions,
 R, L2 and their bars, ((2 n² + 2 n⁴) doubles per determinant), the same with
 or without a transition. One null and one given is `InvalidConfig`, before
-anything is queued. This is the switch `rdms`' own null-f3 build (#719) is
-to take: the two pointers null together, and a trailing `f3` flag on the
-workspace bytes.
+anything is queued. It is the switch `rdms`' own null-f3 build takes: the
+two pointers null together, and a trailing `f3` flag on the workspace
+bytes.
 
 **There are no dm1 and dm2 bars.** dm2[p, q, r, s] = Σ_t dm3[p, q, r, s, t, t]
 / N and dm1[p, q] = Σ_rt dm3[p, q, r, r, t, t] / N², since Σ_t E_tt is N on
@@ -264,6 +279,16 @@ beta sets differ, between two random vectors:
   one-vector build's dm3, f3ca and f3ac bit for bit, and the state's dm1 and
   dm2 within 1e-12 of the golden's; with two pointers to the same vector,
   within 1e-13 of the one-vector build.
+- `NullF3IsTheF3BuildsDms`: on the three one-vector cases and the two
+  transition ones, at one tile and at width 7 or 23, the null-f3 build
+  (planned from its own bytes to the same width; between two vectors with
+  (tu\|vw) null) gives dm3, and dm1 and dm2, bit for bit the f3 build's.
+  The floor is measured in the same case first: two f3 builds are bitwise
+  one another, since nothing is atomic;
+- `NullF3PlanAndRefusals`: the null-f3 bytes are R and L2 alone, transition
+  or not, and a call on a fresh workspace carves exactly that; a budget
+  below one determinant is `Unsupported` and one null f3 is `InvalidConfig`,
+  in both overloads, each with nothing written or grown.
 
 And the adjoint, against `rdms` itself, since `rdms` is quadratic in c and
 linear in (tu\|vw):

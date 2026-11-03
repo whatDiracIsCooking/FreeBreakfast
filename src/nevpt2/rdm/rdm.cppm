@@ -22,8 +22,10 @@ export namespace free_breakfast::nevpt2 {
 /// (2 n² + n⁴) @p width doubles, each region rounded up to
 /// DeviceResources::kWorkspaceAlignment. A @p transition call (a bra other
 /// than its ket) carves the ket's own L2 too, n⁴ @p width doubles more.
+/// Without @p f3 (null f3ca and f3ac) it is the tile's R and L2 alone,
+/// (n² + n⁴) @p width doubles, transition or not.
 [[nodiscard]] size_t rdms_workspace_bytes(int32_t n_orbitals, int64_t width,
-                                          bool transition = false) noexcept;
+                                          bool transition = false, bool f3 = true) noexcept;
 
 /// @brief dm3, f3ca and f3ac of the CI vector @p vector on the device, in
 /// PySCF's layout: each n⁶ row-major, (p, q, r, s, t, u) at
@@ -43,6 +45,13 @@ export namespace free_breakfast::nevpt2 {
 /// from @p eri's layout to the two row-major copies the kernels and the
 /// consume read.
 ///
+/// **f3ca and f3ac may be null together**, and dm3 alone is built: everything
+/// that exists only for f3 is skipped (the eri's conversion, the consumes,
+/// the f3 digests, fdm2 and the wedge), and @p eri is not read. dm3 is then
+/// the f3 build's bit for bit at the same tile width; the plan is
+/// rdms_workspace_bytes(n, width, false, false). One null and one given is
+/// InvalidConfig.
+///
 /// **The tile width is the widest whose rdms_workspace_bytes fits the
 /// budget**, at most every determinant: the budget is @p max_bytes, or less
 /// if the device has less: the larger of the workspace already held and the
@@ -60,14 +69,15 @@ export namespace free_breakfast::nevpt2 {
 /// @param vector Device, alpha.size() · beta.size() doubles.
 /// @param eri Device, (tu|vw) at t + n (u + n (v + n w)), as
 ///        ActiveSpaceHamiltonian::eri holds it.
-/// @param dm3, f3ca, f3ac Device, n⁶ doubles each, overwritten.
+/// @param dm3, f3ca, f3ac Device, n⁶ doubles each, overwritten; f3ca and
+///        f3ac may be null together.
 /// @param max_bytes The most of the device workspace the build may hold.
-/// @return The number of tiles; InvalidConfig, with nothing queued, for a set
-///         on another device than @p res, sets over different orbital counts
-///         or none, or more determinants than an int32_t counts; Unsupported,
-///         with nothing queued or allocated, for a budget below
-///         rdms_workspace_bytes(n, 1); or the GpuRuntime error of a launch or
-///         a BLAS call.
+/// @return The number of tiles; InvalidConfig, with nothing queued, for one
+///         f3 null and the other not, a set on another device than @p res,
+///         sets over different orbital counts or none, or more determinants
+///         than an int32_t counts; Unsupported, with nothing queued or
+///         allocated, for a budget below rdms_workspace_bytes(n, 1, false,
+///         f3); or the GpuRuntime error of a launch or a BLAS call.
 [[nodiscard]] Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                    const ci::DeviceStringSet &beta, const double *vector,
                                    const double *eri, double *dm3, double *f3ca, double *f3ac,
@@ -92,6 +102,12 @@ export namespace free_breakfast::nevpt2 {
 /// L2 c_J are a gemv each. fdm2 and the wedge are those of the transition
 /// tensors. I ← J and J ← I are two calls.
 ///
+/// **Null f3ca and f3ac are QD-NEVPT2's off-diagonal call**: it reads f3 on
+/// each root's diagonal only. What is left is dm3 += L2 Rᵀ and the dm1 and
+/// dm2 gemvs, with no ket's L2 and no (tu|vw) (not read), planned against
+/// rdms_workspace_bytes(n, width, true, false); dm1, dm2 and dm3 are the f3
+/// build's bit for bit at the same tile width.
+///
 /// **bra == ket (one pointer) is the one-vector build**: dm3, f3ca and f3ac
 /// are the other overload's bit for bit, planned against the same
 /// rdms_workspace_bytes(n, width), with one L2 per tile. A bra and a ket that
@@ -103,8 +119,8 @@ export namespace free_breakfast::nevpt2 {
 /// @param dm1, dm2 Device, n² and n⁴ doubles, overwritten; either may be
 ///        null, and is then not built.
 /// @param alpha, beta, eri, dm3, f3ca, f3ac, max_bytes As for @ref rdms.
-/// @return As for @ref rdms, against rdms_workspace_bytes(n, 1, bra != ket)
-///         for the budget.
+/// @return As for @ref rdms, against rdms_workspace_bytes(n, 1, bra != ket,
+///         f3) for the budget.
 [[nodiscard]] Result<int64_t> rdms(DeviceResources &res, const ci::DeviceStringSet &alpha,
                                    const ci::DeviceStringSet &beta, const double *bra,
                                    const double *ket, const double *eri, double *dm1, double *dm2,

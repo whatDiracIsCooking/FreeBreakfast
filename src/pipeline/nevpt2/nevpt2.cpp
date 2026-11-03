@@ -389,13 +389,10 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
   // Per unordered pair I < J, the transition RDMs of (I, J) at slot 0 and of
   // (J, I) at slot 1, consumed by the pair's 2 x 2 block before the next pair
   // is built: never the n² sets at once. f3ca and f3ac are read only on the
-  // diagonal, so the off-diagonal ones share one scratch the next build
-  // overwrites.
+  // diagonal, so the transition builds skip them (null).
   Buffers::device<double> tdm1(2 * n2, res.device());
   Buffers::device<double> tdm2(2 * n4, res.device());
   Buffers::device<double> tdm3(2 * n6, res.device());
-  Buffers::device<double> tf3ca(n6, res.device());
-  Buffers::device<double> tf3ac(n6, res.device());
   FBF_TRY(gpu_status(wwr::wwrMemGetInfo(&free_bytes, &total_bytes)));
   const int32_t batch = nevpt2_batch(blocks, free_bytes / 8);
   const nevpt2::EnergyInputs shared{.h1e = h1e.data(),
@@ -430,7 +427,7 @@ Nevpt2Step::run(View<MoleculeOutput, BasisSetOutput, EriOutput, CoreHamiltonianO
         FBF_TRY(nevpt2::rdms(res, strings, strings, vectors.data() + (bra * dim),
                              vectors.data() + (ket * dim), ints.hamiltonian.eri.data(),
                              tdm1.data() + (slot * n2), tdm2.data() + (slot * n4),
-                             tdm3.data() + (slot * n6), tf3ca.data(), tf3ac.data(), rdm_budget));
+                             tdm3.data() + (slot * n6), nullptr, nullptr, rdm_budget));
       }
       const std::array<nevpt2::EnergyInputs, 4> pairs{own(i), transition(0), transition(1), own(j)};
       // The block's [0] is root i's diagonal, [1] (i, j), [2] (j, i), [3]
