@@ -74,7 +74,7 @@
 ///
 /// An overlap and an off-diagonal of H_eff feel a residual ||g|| to first
 /// order, so in this mode every point, the reference's too, is polished
-/// (`converge`): rerun from its own orbitals until ||g|| < kPolishTarget.
+/// (`ChainSampler`): rerun from its own orbitals until ||g|| < kPolishTarget.
 /// Each family's noise is measured: the reference geometry is re-converged
 /// from the orbitals of the three coarsest +h points, and the noise is
 /// three times the largest distance of any of the family's values from the
@@ -85,6 +85,12 @@
 /// sum_{M<N} T^PQ_MN d_MN (T^PQ = 1/2 (R_P R_Q^T - R_Q R_P^T)), whose sum
 /// must match `zeroth`, the visibility of every term, and, where #744's
 /// brute-force file has the case, the cross-check of `zeroth` against it.
+///
+/// The chain at every point, its CASSCF-root guard, the polish and
+/// Richardson are the module library beside this file
+/// (`free_breakfast.tools.qd_nevpt2_gradient`), which also gives a GPU test
+/// the numerical dH_eff/dR in process (#783); the H_eff-eigenstate matching,
+/// the energy prediction, the checks and the files are this tool's.
 ///
 /// `free-breakfast-qd-nevpt2-gradient <repo>/test/gtest/data [--coupling]
 /// [case ...]`: the cases named, or all of the mode's. Nothing run-dependent
@@ -99,46 +105,30 @@
 import std;
 import free_breakfast.core.types;
 import free_breakfast.core.error_handling;
-import free_breakfast.core.constants; // kOne, kZero
 import free_breakfast.core.log;
-import free_breakfast.core.wwr;
 import free_breakfast.core.resources;
 import free_breakfast.atom;    // element_from_symbol
 import free_breakfast.io.base; // write_file
 import free_breakfast.io.json;
-import free_breakfast.integrals.one_electron.overlap_mixed;
 import free_breakfast.mcscf.gradient;
 import free_breakfast.mcscf.nac;
-import free_breakfast.mcscf.overlap;
-import free_breakfast.recipes.blas; // gemm, gemmwich
-import free_breakfast.recipes.diagonalize;
-import free_breakfast.recipes.orthogonalize;
-import free_breakfast.pipeline.pipeline;
-import free_breakfast.pipeline.step;
-import free_breakfast.pipeline.overlap;
 import free_breakfast.pipeline.nevpt2;
+// The chain at every point, its CASSCF guard and Richardson (#783).
+import free_breakfast.tools.qd_nevpt2_gradient;
 
 namespace {
 
 namespace fb = free_breakfast;
 
-// The CASSCF's bars at every point. NEVPT2 is not variational in the
-// orbitals, so a residual gradient puts an error linear in ||g|| into E_corr;
-// over a step of 1e-3 bohr that is the size of the 1e-6 gate unless ||g|| is
-// held near the formaldehyde fixtures' polish (< 1e-10).
-constexpr double kConvTolGrad = 1e-10;
-constexpr double kConvTol = 1e-13;
-constexpr std::int32_t kMaxCycle = 200;
-
 // The fitting set every case was made over, compiled in.
 constexpr std::string_view kAuxBasis = "cc-pVDZ-JKFIT";
 
-// The continuity guard (nevpt2_gradient_reference.py's bounds): hartree/bohr^2
-// for the prediction, 1 - overlap for the rest. Another stationary point or
-// another state misses each by orders of magnitude.
-constexpr double kPredictionBound = 2.0;
-constexpr double kSubspaceTol = 1e-3;
-constexpr double kCiTol = 1e-3;
+// The chain's guard bounds and the coupling mode's polish and error-bar
+// bound are the library's (qd_nevpt2_gradient.cppm).
+using fb::nevpt2::kCiTol;
+using fb::nevpt2::kCouplingErrorBarTol;
+using fb::nevpt2::kPolishTarget;
+using fb::nevpt2::kPredictionBound;
 
 // The checks before writing (hartree/bohr). The gradient tests' gate is
 // ~1e-6, not the tree's usual 1e-7, because the oracle is itself a
@@ -224,20 +214,9 @@ constexpr std::array kCouplingCases{
     Spec{"h8_ring_sto3g_sa3", {6e-5, 3e-5, 1.5e-5}, true, false, 1e-12},
 };
 
-// The coupling mode's bound on any error bar. Not #744's 2e-7: the weighted
-// case's PC overlap reaches 3.9e-6 (its point error over its small steps),
-// and skew H2CO's overlaps 5.6e-7 (README.md has every family's). A bound,
-// not a target: a consumer's bar is twice each component's own error bar.
-constexpr double kCouplingErrorBarTol = 5e-6;
 // The measured noise's margin: a point error e moves a Richardson value by
 // up to 1.5 e / h, the noise term is noise / 2h.
 constexpr double kNoiseMargin = 3.0;
-// The coupling mode's polish (`converge`): the ||g|| a point is rerun from
-// its own orbitals to fall under, and the most reruns. The solver's ||g||
-// falls to ~1e-12 on most reruns once it is under 1e-10, but not every one.
-constexpr double kPolishTarget = 3e-12;
-constexpr std::size_t kPolishPasses = 10;
-constexpr std::int32_t kPolishCycles = 8;
 // A term is visible where some component's |Richardson| clears this many
 // times its consumer's bar, twice its error bar.
 constexpr double kVisibility = 10.0;
@@ -260,101 +239,24 @@ struct System {
   std::vector<double> weights;
 };
 
-// The chain's root at one geometry: the molecule from atoms in memory
-// (pipeline/optimize's TrialGeometryStep).
-struct TrialGeometryStep {
-  static constexpr std::string_view kName = "molecule";
-
-  std::vector<fb::Atom> atoms;
-
-  [[nodiscard]] fb::Result<fb::MoleculeOutput> run(fb::View<> /*in*/,
-                                                   fb::DeviceResources &res) const {
-    return fb::MoleculeOutput{fb::Molecule(res, atoms, 0, 1)};
-  }
-};
-
-// Every displaced point's ScfOutput: the reference CASSCF's orbitals,
-// Loewdin-orthonormalized in this geometry's overlap, C (C^T S C)^-1/2
-// (pipeline/optimize's CarriedOrbitalsStep), so the CasscfStep starts from the
-// active space the reference converged. Only the CasscfStep reads it, by index.
-struct CarriedOrbitalsStep {
-  static constexpr std::string_view kName = "scf";
-
-  std::vector<double> c; // AO by MO, column-major
-  std::vector<double> mo_energies;
-  std::int32_t n_alpha = 0;
-  std::int32_t n_beta = 0;
-
-  [[nodiscard]] fb::Result<fb::ScfOutput> run(fb::View<fb::BasisSetOutput, fb::OverlapOutput> in,
-                                              fb::DeviceResources &res) const {
-    const fb::BasisSet &basis = in.get<fb::BasisSetOutput>().basis;
-    const fb::SphericalMatrixAO &s = in.get<fb::OverlapOutput>().s;
-    if (c.size() != s.num_elements() || mo_energies.size() != s.n()) {
-      return fb::err_config("carried {} orbital coefficients and {} energies into a basis of {}",
-                            c.size(), mo_energies.size(), s.n());
-    }
-    const fb::ScopedDeviceIndex on{res.dev_idx()};
-    const auto n = static_cast<std::int32_t>(s.n());
-    const std::size_t n2 = s.num_elements();
-    fb::SphericalMatrixAO previous(res, basis);
-    fb::Buffers::device<double> m(n2, res.device());
-    fb::Buffers::device<double> m_inv_sqrt(n2, res.device());
-    FBF_TRY(fb::gpu_status(wwr::wwrMemcpyAsync(previous.data(), c.data(), n2 * sizeof(double),
-                                               wwr::wwrMemcpyHostToDevice, res.stream())));
-    {
-      const auto [work] = res.device_regions<double>(n2);
-      FBF_TRY(
-          fb::gpu_status(fb::gemmwich(res.blas(), n, previous.data(), s.data(), work, m.data())));
-    }
-    FBF_TRY(fb::orthogonalize<double>(res, n, m.data(), m_inv_sqrt.data()));
-    fb::ScfOutput out{
-        .energy = std::numeric_limits<double>::quiet_NaN(),
-        .iterations = 0,
-        .n_alpha = n_alpha,
-        .n_beta = n_beta,
-        .mo_energies = mo_energies,
-        .c = fb::SphericalMatrixAO(res, basis),
-        .d = fb::SphericalMatrixAO(res, basis),
-    };
-    FBF_TRY(fb::gpu_status(fb::gemm(res.blas(), n, &fb::kOne<double>, previous.data(),
-                                    m_inv_sqrt.data(), &fb::kZero<double>, out.c.data())));
-    FBF_TRY(res.sync());
-    return out;
-  }
-};
-
-// The energies at one geometry, in the reference's order: each CASSCF root,
-// and each SC and PC state (QD: H_eff's eigenstates; one root: its SC- and
-// PC-NEVPT2 total), with what the guard measured there.
+// The scheme energies at one geometry, in the reference's order: the
+// chain's point (each CASSCF root matched), and each SC and PC state (QD:
+// H_eff's eigenstates, matched here; one root: its SC- and PC-NEVPT2 total),
+// with what the guard measured there.
 struct Point {
-  std::vector<double> casscf;
+  fb::nevpt2::ChainPoint at;
   std::vector<double> sc;
   std::vector<double> pc;
-  double gradient_norm = 0.0;
-  // 1 - overlap: the active space, the roots' CI, the SC and PC u_K.
-  double subspace = 0.0;
-  double ci = 0.0;
+  // 1 - overlap: the SC and PC u_K.
   double sc_vectors = 0.0;
   double pc_vectors = 0.0;
   // max_r |E_r - (E_r0 + g_r . dR)| / |dR|^2, set by the caller.
   double prediction = 0.0;
-  // The smallest gap between two canonical core, or virtual, energies.
-  double core_gap = std::numeric_limits<double>::infinity();
-  double virtual_gap = std::numeric_limits<double>::infinity();
-  // In the reference's root basis (each displaced root matched and signed so
-  // that its overlap with the reference's is positive), n x n: s[M n + N] =
-  // <M(R0)|N(R)>; SC's and PC's H_eff (QD only); and their eigenvectors,
-  // state K at [K n, (K + 1) n), matched to the reference's and signed so
-  // that that overlap is positive.
-  std::vector<double> s;
-  std::vector<double> sc_heff;
-  std::vector<double> pc_heff;
+  // SC's and PC's eigenvectors in the reference's root basis, state K at
+  // [K n, (K + 1) n), matched to the reference's and signed so that that
+  // overlap is positive.
   std::vector<double> sc_vectors_matched;
   std::vector<double> pc_vectors_matched;
-  // The converged orbitals (AO by MO, column-major) and energies, for a
-  // restart from them.
-  std::vector<double> c;
-  std::vector<double> mo_energies;
 };
 
 // nlohmann's .at() throws on a missing key: the one place it is called, the
@@ -393,126 +295,16 @@ fb::Result<System> read_system(const fb::json &doc, std::string_view name, bool 
   return fb::err_config("no case {} in the reference file", name);
 }
 
-// The mcscf::Solution a CasscfOutput is (pipeline/casscf_gradient's): its
-// orbitals and CI vectors back on the device, the weighted gamma from the
-// per-root ones.
-fb::Result<fb::mcscf::Solution> solution_of(fb::DeviceResources &res, const fb::BasisSet &basis,
-                                            const fb::CasscfOutput &cas) {
-  const auto n2 = static_cast<std::size_t>(cas.ncas) * static_cast<std::size_t>(cas.ncas);
-  std::vector<double> gamma(n2, 0.0);
-  for (std::size_t r = 0; r < cas.weights.size(); ++r) {
-    for (std::size_t i = 0; i < n2; ++i) {
-      gamma[i] += cas.weights[r] * cas.rdm1[(r * n2) + i];
-    }
-  }
-  fb::mcscf::Solution solution{
-      .c = fb::SphericalMatrixAO(res, basis),
-      .roots =
-          {
-              .energies = cas.energies,
-              .spin_squares = cas.spin_squares,
-              .vectors = fb::Buffers::device<double>(cas.vectors.size(), res.device()),
-              .davidson = {},
-              .fp32_iterations = 0,
-          },
-      .energy = cas.energy,
-      .gradient_norm = cas.gradient_norm,
-      .gamma = std::move(gamma),
-      .gamma2 = cas.rdm2,
-      .root_gammas = cas.rdm1,
-      .iterations = cas.iterations,
-  };
-  const fb::ScopedDeviceIndex on{res.dev_idx()};
-  FBF_TRY(fb::gpu_status(wwr::wwrMemcpyAsync(solution.roots.vectors.data(), cas.vectors.data(),
-                                             cas.vectors.size() * sizeof(double),
-                                             wwr::wwrMemcpyHostToDevice, res.stream())));
-  FBF_TRY(fb::gpu_status(wwr::wwrMemcpyAsync(solution.c.data(), cas.c.data(),
-                                             cas.c.num_elements() * sizeof(double),
-                                             wwr::wwrMemcpyDeviceToDevice, res.stream())));
-  FBF_TRY(res.sync());
-  return solution;
-}
-
-// @p n device doubles on the host.
-fb::Result<std::vector<double>> download(fb::DeviceResources &res, const double *device,
-                                         std::size_t n) {
-  std::vector<double> host(n);
-  FBF_TRY(fb::gpu_status(wwr::wwrMemcpyAsync(host.data(), device, n * sizeof(double),
-                                             wwr::wwrMemcpyDeviceToHost, res.stream())));
-  FBF_TRY(res.sync());
-  return host;
-}
-
-// 1 - the smallest singular value of C_a^T S_x C'_a, the two active spaces'
-// overlap through the AO cross overlap of the two geometries.
-fb::Result<double> subspace_miss(fb::DeviceResources &res, const fb::BasisSet &bra_basis,
-                                 const fb::SphericalMatrixAO &bra, const fb::BasisSet &ket_basis,
-                                 const fb::SphericalMatrixAO &ket, std::size_t ncore,
-                                 std::size_t ncas) {
-  const std::size_t nb = bra.n();
-  const std::size_t nk = ket.n();
-  fb::Buffers::device<double> s_dev(nb * nk, res.device());
-  FBF_TRY(fb::overlap_mixed_spherical(res, bra_basis, ket_basis, s_dev));
-  const std::vector<double> s = FBF_TRY(download(res, s_dev.data(), nb * nk));
-  const std::vector<double> cb = FBF_TRY(download(res, bra.data(), bra.num_elements()));
-  const std::vector<double> ck = FBF_TRY(download(res, ket.data(), ket.num_elements()));
-  // sc = S C'_a (nb x ncas), then M = C_a^T sc.
-  std::vector<double> sc(nb * ncas, 0.0);
-  for (std::size_t j = 0; j < ncas; ++j) {
-    for (std::size_t n = 0; n < nk; ++n) {
-      const double x = ck[n + (nk * (ncore + j))];
-      for (std::size_t m = 0; m < nb; ++m) {
-        sc[m + (nb * j)] += s[m + (nb * n)] * x;
-      }
-    }
-  }
-  std::vector<double> mat(ncas * ncas, 0.0);
-  for (std::size_t j = 0; j < ncas; ++j) {
-    for (std::size_t i = 0; i < ncas; ++i) {
-      for (std::size_t m = 0; m < nb; ++m) {
-        mat[i + (ncas * j)] += cb[m + (nb * (ncore + i))] * sc[m + (nb * j)];
-      }
-    }
-  }
-  // M^T M's least eigenvalue is the least singular value squared.
-  std::vector<double> mtm(ncas * ncas, 0.0);
-  for (std::size_t j = 0; j < ncas; ++j) {
-    for (std::size_t i = 0; i < ncas; ++i) {
-      for (std::size_t k = 0; k < ncas; ++k) {
-        mtm[i + (ncas * j)] += mat[k + (ncas * i)] * mat[k + (ncas * j)];
-      }
-    }
-  }
-  fb::Buffers::device<double> a(mtm.size(), res.device());
-  fb::Buffers::device<double> w(ncas, res.device());
-  FBF_TRY(fb::gpu_status(wwr::wwrMemcpyAsync(a.data(), mtm.data(), mtm.size() * sizeof(double),
-                                             wwr::wwrMemcpyHostToDevice, res.stream())));
-  FBF_TRY(fb::diagonalize(res, static_cast<std::int32_t>(ncas), a.data(), w.data()));
-  const std::vector<double> values = FBF_TRY(download(res, w.data(), ncas));
-  return 1.0 - std::sqrt(std::max(values.front(), 0.0));
-}
-
-// The smallest gap between neighbouring values of @p sorted (infinity for
-// fewer than two).
-double smallest_gap(std::span<const double> sorted) {
-  double gap = std::numeric_limits<double>::infinity();
-  for (std::size_t i = 1; i < sorted.size(); ++i) {
-    gap = std::min(gap, sorted[i] - sorted[i - 1]);
-  }
-  return gap;
-}
-
 // The eigenstates of a displaced H_eff in the reference's order: @p vectors
-// (state k at [k n, (k + 1) n), over the displaced roots) carried into the
-// reference's root basis by @p pi and @p signs, each reference state K matched
-// to the displaced k of largest |<u_K|u_k>|, which must be a permutation.
-// Returns the matched energies; @p miss takes the worst 1 - |overlap|, and
-// @p matched u_k in the reference's root basis, state K at [K n, (K + 1) n),
-// signed so that its overlap with u_K is positive.
-fb::Result<std::vector<double>>
-matched_states(std::span<const double> energies, std::span<const double> vectors,
-               std::span<const double> reference, std::span<const std::size_t> pi,
-               std::span<const double> signs, double &miss, std::vector<double> &matched) {
+// (state k at [k n, (k + 1) n), in the reference's root basis, as
+// ChainPoint's), each reference state K matched to the displaced k of largest
+// |<u_K|u_k>|, which must be a permutation. Returns the matched energies;
+// @p miss takes the worst 1 - |overlap|, and @p matched u_k, state K at
+// [K n, (K + 1) n), signed so that its overlap with u_K is positive.
+fb::Result<std::vector<double>> matched_states(std::span<const double> energies,
+                                               std::span<const double> vectors,
+                                               std::span<const double> reference, double &miss,
+                                               std::vector<double> &matched) {
   const std::size_t n = energies.size();
   std::vector<double> out(n);
   std::vector<bool> taken(n, false);
@@ -524,7 +316,7 @@ matched_states(std::span<const double> energies, std::span<const double> vectors
     for (std::size_t k = 0; k < n; ++k) {
       double overlap = 0.0;
       for (std::size_t i = 0; i < n; ++i) {
-        overlap += reference[(big_k * n) + i] * signs[i] * vectors[(k * n) + pi[i]];
+        overlap += reference[(big_k * n) + i] * vectors[(k * n) + i];
       }
       if (std::abs(overlap) > best_overlap) {
         best_overlap = std::abs(overlap);
@@ -538,7 +330,7 @@ matched_states(std::span<const double> energies, std::span<const double> vectors
     taken[best] = true;
     out[big_k] = energies[best];
     for (std::size_t i = 0; i < n; ++i) {
-      matched[(big_k * n) + i] = best_sign * signs[i] * vectors[(best * n) + pi[i]];
+      matched[(big_k * n) + i] = best_sign * vectors[(best * n) + i];
     }
     miss = std::max(miss, 1.0 - best_overlap);
   }
@@ -720,9 +512,10 @@ fb::Result<fb::json> differences(const Family &family, std::span<const double> s
       const double fine = central[nsteps - 1][c];
       const double middle = central[nsteps - 2][c];
       const double coarse = central[nsteps - 3][c];
-      richardson[c] = ((4.0 * fine) - middle) / 3.0;
-      bar[c] = std::abs(richardson[c] - (((4.0 * middle) - coarse) / 3.0)) +
-               (noise / (2.0 * steps[nsteps - 1]));
+      const fb::nevpt2::Richardson r =
+          fb::nevpt2::richardson(coarse, middle, fine, noise, steps[nsteps - 1]);
+      richardson[c] = r.value;
+      bar[c] = r.error_bar;
       worst_richardson = std::max(worst_richardson, std::abs(richardson[c] - fine));
       worst_bar = std::max(worst_bar, bar[c]);
       if (std::abs(middle - fine) > ladder_floor) {
@@ -1030,161 +823,45 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
                               std::span<const double> steps, double noise, bool pc, bool full,
                               const fb::json &qd_doc, bool coupling, const fb::json &brute_force,
                               std::array<double, 2> overlap_noise = {}) {
-  fb::DeviceResources &res = node.device(0);
   const std::size_t n = sys.weights.size();
   const bool qd = n > 1;
   const std::size_t natom = sys.atoms.size();
   const std::size_t dim = 3 * natom;
+  if (coupling && !qd) {
+    return fb::err_config("{}: the coupling mode needs two roots or more", sys.name);
+  }
 
-  fb::BasisSetStep basis_set;
-  basis_set.basis = sys.basis;
-  fb::EriStep eri;
-  eri.mode = fb::EriMode::DensityFitting;
-  eri.aux_basis = std::string(kAuxBasis);
-  fb::CasscfStep casscf;
-  casscf.ncas = sys.ncas;
-  casscf.nelecas = sys.nelecas;
-  casscf.active = sys.active;
-  casscf.nroots = static_cast<std::int32_t>(n);
-  casscf.weights = sys.weights;
-  casscf.conv_tol = kConvTol;
-  casscf.conv_tol_grad = kConvTolGrad;
-  casscf.max_cycle = kMaxCycle;
-  fb::Nevpt2Step nevpt2;
-  nevpt2.quasi_degenerate = qd;
-  // Every point after the reference starts from carried orbitals.
-  fb::CasscfStep carried_casscf = casscf;
-  carried_casscf.active.clear();
-
-  // The chain at a point: the geometry's integrals, the carried orbitals, the
-  // CASSCF and QD-NEVPT2. In the coupling mode it is polished: rerun from its
-  // own converged orbitals until ||g|| falls under kPolishTarget, at most
-  // kPolishPasses times, the lowest ||g|| kept. An overlap and an off-diagonal
-  // of H_eff feel a residual ||g|| to first order, where an eigenvalue of
-  // H_eff feels it only through the roots' energies: at ||g|| ~3e-11, PC's
-  // H_eff off the diagonal moves by ~4e-10 hartree on skew H2CO.
-  using Chain =
-      fb::Pipeline<TrialGeometryStep, fb::BasisSetStep, fb::SphericalTransformStep,
-                   fb::PrimitivePairClassesStep, fb::EriStep, fb::OverlapStep,
-                   fb::CoreHamiltonianStep, CarriedOrbitalsStep, fb::CasscfStep, fb::Nevpt2Step>;
-  std::size_t polish_passes = 0;
-  // A polishing pass asks for kPolishTarget itself within a few macro
-  // iterations: at conv_tol_grad it would stop at once.
-  fb::CasscfStep polish_casscf = carried_casscf;
-  polish_casscf.conv_tol_grad = kPolishTarget;
-  polish_casscf.max_cycle = kPolishCycles;
-  const auto converge = [&](const std::vector<fb::Atom> &atoms, const CarriedOrbitalsStep &start,
-                            std::optional<Chain> &chain) -> fb::Status {
-    const auto once = [&](const CarriedOrbitalsStep &from,
-                          const fb::CasscfStep &solve) -> fb::Result<Chain> {
-      auto run = FBF_TRY(Chain::create({
-          TrialGeometryStep{atoms},
-          basis_set,
-          fb::SphericalTransformStep{},
-          fb::PrimitivePairClassesStep{},
-          eri,
-          fb::OverlapStep{},
-          fb::CoreHamiltonianStep{},
-          from,
-          solve,
-          nevpt2,
-      }));
-      FBF_TRY(run.run(node));
-      return run;
-    };
-    chain.emplace(FBF_TRY(once(start, carried_casscf)));
-    for (std::size_t pass = 0; coupling && pass < kPolishPasses &&
-                               chain->get<fb::CasscfOutput>()->gradient_norm >= kPolishTarget;
-         ++pass) {
-      const fb::CasscfOutput &now = *chain->get<fb::CasscfOutput>();
-      const CarriedOrbitalsStep from{
-          .c = FBF_TRY(download(res, now.c.data(), now.c.num_elements())),
-          .mo_energies = now.mo_energies,
-          .n_alpha = start.n_alpha,
-          .n_beta = start.n_beta,
-      };
-      ++polish_passes;
-      // A pass that does not converge (it can stall above conv_tol_grad)
-      // keeps the point it started from.
-      fb::Result<Chain> next = once(from, polish_casscf);
-      if (next && next->get<fb::CasscfOutput>()->gradient_norm < now.gradient_norm) {
-        chain.reset();
-        chain.emplace(std::move(*next));
-      }
-    }
-    return {};
-  };
-
+  // The reference, and the chain at every point. In the coupling mode it is
+  // polished, the reference too: an overlap and an off-diagonal of H_eff feel
+  // a residual ||g|| to first order, where an eigenvalue of H_eff feels it
+  // only through the roots' energies.
   const auto started = std::chrono::steady_clock::now();
-  auto ref = FBF_TRY((fb::Pipeline<TrialGeometryStep, fb::BasisSetStep, fb::SphericalTransformStep,
-                                   fb::PrimitivePairClassesStep, fb::EriStep, fb::OverlapStep,
-                                   fb::OrthogonalizerStep, fb::CoreHamiltonianStep, fb::GuessStep,
-                                   fb::ScfStep, fb::CasscfStep, fb::Nevpt2Step>::create({
-      TrialGeometryStep{sys.atoms},
-      basis_set,
-      fb::SphericalTransformStep{},
-      fb::PrimitivePairClassesStep{},
-      eri,
-      fb::OverlapStep{},
-      fb::OrthogonalizerStep{},
-      fb::CoreHamiltonianStep{},
-      fb::GuessStep{},
-      fb::ScfStep{},
-      casscf,
-      nevpt2,
-  })));
-  FBF_TRY(ref.run(node));
-  const fb::ScfOutput &rhf = *ref.get<fb::ScfOutput>();
-  // The coupling mode's reference is the CASSCF polished as every point is.
-  std::optional<Chain> polished;
-  if (coupling) {
-    const fb::CasscfOutput &first = *ref.get<fb::CasscfOutput>();
-    const CarriedOrbitalsStep from{
-        .c = FBF_TRY(download(res, first.c.data(), first.c.num_elements())),
-        .mo_energies = first.mo_energies,
-        .n_alpha = rhf.n_alpha,
-        .n_beta = rhf.n_beta,
-    };
-    FBF_TRY(converge(sys.atoms, from, polished));
-  }
-  const fb::CasscfOutput &cas0 =
-      polished ? *polished->get<fb::CasscfOutput>() : *ref.get<fb::CasscfOutput>();
-  const fb::Nevpt2Output &nev0 =
-      polished ? *polished->get<fb::Nevpt2Output>() : *ref.get<fb::Nevpt2Output>();
-  const fb::BasisSet &basis0 =
-      polished ? polished->get<fb::BasisSetOutput>()->basis : ref.get<fb::BasisSetOutput>()->basis;
-  const auto *const fit = std::get_if<fb::DensityFitted>(
-      polished ? &polished->get<fb::EriOutput>()->eri : &ref.get<fb::EriOutput>()->eri);
-  const fb::Molecule &molecule0 = polished ? polished->get<fb::MoleculeOutput>()->molecule
-                                           : ref.get<fb::MoleculeOutput>()->molecule;
-  const auto &classes0 = polished ? polished->get<fb::PrimitivePairClassesOutput>()->classes
-                                  : ref.get<fb::PrimitivePairClassesOutput>()->classes;
-  const fb::SphericalMatrixAO &h0 = polished ? polished->get<fb::CoreHamiltonianOutput>()->h
-                                             : ref.get<fb::CoreHamiltonianOutput>()->h;
-  if (fit == nullptr) {
-    return fb::err_config("{}: the ERIs are not density-fitted", sys.name);
-  }
-  if (cas0.gradient_norm >= kConvTolGrad) {
-    return fb::err_numerical("{}: the reference CASSCF stopped at ||g|| {:.2e}", sys.name,
-                             cas0.gradient_norm);
-  }
-  if (qd && (nev0.qd_energies.size() != n || (pc && nev0.pc_qd_energies.size() != n))) {
-    return fb::err_numerical("{}: no QD-NEVPT2 at the reference: {}", sys.name, nev0.pc_qd_refusal);
-  }
-  if (!qd && !nev0.pc_roots[0]) {
-    return fb::err_numerical("{}: PC refused at the reference: {}", sys.name, nev0.pc_refusals[0]);
-  }
-  const fb::mcscf::Solution solution0 = FBF_TRY(solution_of(res, basis0, cas0));
+  fb::nevpt2::ChainSampler sampler =
+      FBF_TRY(fb::nevpt2::ChainSampler::create(node,
+                                               fb::nevpt2::NumericalChain{
+                                                   .atoms = sys.atoms,
+                                                   .basis = sys.basis,
+                                                   .aux_basis = std::string(kAuxBasis),
+                                                   .ncas = sys.ncas,
+                                                   .nelecas = sys.nelecas,
+                                                   .active = sys.active,
+                                                   .weights = sys.weights,
+                                                   .pc = pc,
+                                               },
+                                               coupling));
+  fb::DeviceResources &res = node.device(0);
+  const fb::CasscfOutput &cas0 = sampler.casscf();
+  const fb::Nevpt2Output &nev0 = sampler.nevpt2();
+  const fb::mcscf::Solution &solution0 = sampler.solution();
+  const fb::DensityFitted &fit = sampler.fit();
   // Each root's analytic DF-SA-CASSCF gradient.
   std::vector<std::vector<double>> casscf_gradient;
   for (std::size_t r = 0; r < n; ++r) {
-    const fb::mcscf::GradientTerms g = FBF_TRY(fb::mcscf::df_gradient(
-        res, molecule0, basis0, classes0, fit->aux, h0, fit->b, fit->l.data(), solution0,
-        cas0.ncore, cas0.ncas, static_cast<std::int32_t>(r)));
+    const fb::mcscf::GradientTerms g = FBF_TRY(
+        fb::mcscf::df_gradient(res, sampler.molecule(), sampler.basis(), sampler.classes(), fit.aux,
+                               sampler.core_hamiltonian(), fit.b, fit.l.data(), solution0,
+                               cas0.ncore, cas0.ncas, static_cast<std::int32_t>(r)));
     casscf_gradient.push_back(g.total);
-  }
-  if (coupling && !qd) {
-    return fb::err_config("{}: the coupling mode needs two roots or more", sys.name);
   }
   // The pairs P < Q, and in the coupling mode each pair of roots' analytic
   // total d_IJ = <I|dJ/dR> (use_etfs = false), over the reference's own CI
@@ -1199,39 +876,29 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   if (coupling) {
     for (const auto &[bra, ket] : pairs) {
       nacs.push_back(FBF_TRY(fb::mcscf::df_nac(
-          res, molecule0, basis0, classes0, fit->aux, h0, fit->b, fit->l.data(), solution0,
-          cas0.ncore, cas0.ncas, static_cast<std::int32_t>(bra), static_cast<std::int32_t>(ket))));
+          res, sampler.molecule(), sampler.basis(), sampler.classes(), fit.aux,
+          sampler.core_hamiltonian(), fit.b, fit.l.data(), solution0, cas0.ncore, cas0.ncas,
+          static_cast<std::int32_t>(bra), static_cast<std::int32_t>(ket))));
     }
   }
   const auto ncore = static_cast<std::size_t>(cas0.ncore);
   const auto ncas = static_cast<std::size_t>(cas0.ncas);
-  const std::size_t nocc = ncore + ncas;
-  // The PC cut at every coupling (QD) or of the root (one state).
-  const auto dropped_of = [&](const fb::Nevpt2Output &nev) {
-    std::vector<std::array<std::int64_t, 8>> dropped;
-    if (qd) {
-      for (const fb::nevpt2::PcClassEnergies &c : nev.pc_qd_couplings) {
-        dropped.push_back(c.dropped);
-      }
-    } else if (nev.pc_roots[0]) {
-      dropped.push_back(nev.pc_roots[0]->dropped);
-    }
-    return dropped;
-  };
-  const std::vector<std::array<std::int64_t, 8>> dropped0 = dropped_of(nev0);
-
-  Point at0;
-  at0.casscf = cas0.energies;
+  // The PC cut at every coupling (QD) or of the root (one state), for the
+  // file: the sampler checks every point's against it.
+  std::vector<std::array<std::int64_t, 8>> dropped0;
   if (qd) {
-    at0.sc = nev0.qd_energies;
-    at0.pc = nev0.pc_qd_energies;
-  } else {
-    at0.sc = {cas0.energies[0] + nev0.roots[0].total};
-    at0.pc = {cas0.energies[0] + nev0.pc_roots[0]->total};
+    for (const fb::nevpt2::PcClassEnergies &c : nev0.pc_qd_couplings) {
+      dropped0.push_back(c.dropped);
+    }
+  } else if (nev0.pc_roots[0]) {
+    dropped0.push_back(nev0.pc_roots[0]->dropped);
   }
-  at0.gradient_norm = cas0.gradient_norm;
-  at0.core_gap = smallest_gap(std::span{cas0.mo_energies}.subspan(0, ncore));
-  at0.virtual_gap = smallest_gap(std::span{cas0.mo_energies}.subspan(nocc));
+
+  const fb::nevpt2::ChainPoint &ref0 = sampler.reference();
+  Point at0;
+  at0.at = ref0;
+  at0.sc = ref0.sc;
+  at0.pc = ref0.pc;
 
   // The reference against the file the case came from.
   fb::json agreement;
@@ -1247,7 +914,7 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
         const auto e_cas = entry.at("casscf_energies").get<std::vector<double>>();
         const auto e_sc = entry.at("eigenvalues").get<std::vector<double>>();
         for (std::size_t r = 0; r < n; ++r) {
-          casscf_miss = std::max(casscf_miss, std::abs(e_cas[r] - at0.casscf[r]));
+          casscf_miss = std::max(casscf_miss, std::abs(e_cas[r] - at0.at.casscf[r]));
           sc_miss = std::max(sc_miss, std::abs(e_sc[r] - at0.sc[r]));
         }
         for (const fb::json &p : qd_doc.at("pc").at("cases")) {
@@ -1260,7 +927,7 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
         }
       } else {
         const fb::json &e = entry.at("energies");
-        casscf_miss = std::abs(e.at("casscf").get<double>() - at0.casscf[0]);
+        casscf_miss = std::abs(e.at("casscf").get<double>() - at0.at.casscf[0]);
         sc_miss = std::abs(e.at("sc").get<double>() - at0.sc[0]);
         pc_miss = std::abs(e.at("pc").get<double>() - at0.pc[0]);
       }
@@ -1286,130 +953,32 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
                agreement["sc"].get<double>(),
                pc ? std::format(" pc {:.1e}", agreement["pc"].get<double>()) : "");
 
-  // What every displaced point starts from.
-  const CarriedOrbitalsStep carried{
-      .c = FBF_TRY(download(res, cas0.c.data(), cas0.c.num_elements())),
-      .mo_energies = cas0.mo_energies,
-      .n_alpha = rhf.n_alpha,
-      .n_beta = rhf.n_beta,
-  };
   Point worst; // the worst guard values over every point
-  worst.core_gap = at0.core_gap;
-  worst.virtual_gap = at0.virtual_gap;
+  worst.at.core_gap = at0.at.core_gap;
+  worst.at.virtual_gap = at0.at.virtual_gap;
   std::size_t points = 0;
+  // A point from the reference's orbitals, or from @p from's: the sampler's
+  // CASSCF guard, then H_eff's eigenstates matched by u_K and guarded.
   const auto point = [&](std::span<const double> displacement,
-                         const CarriedOrbitalsStep &start) -> fb::Result<Point> {
-    std::vector<fb::Atom> atoms = sys.atoms;
-    for (std::size_t a = 0; a < natom; ++a) {
-      atoms[a].position = {atoms[a].position.x + displacement[3 * a],
-                           atoms[a].position.y + displacement[(3 * a) + 1],
-                           atoms[a].position.z + displacement[(3 * a) + 2]};
-    }
-    std::optional<Chain> chain;
-    FBF_TRY(converge(atoms, start, chain));
-    const fb::CasscfOutput &cas = *chain->get<fb::CasscfOutput>();
-    const fb::Nevpt2Output &nev = *chain->get<fb::Nevpt2Output>();
-    const fb::BasisSet &basis = chain->get<fb::BasisSetOutput>()->basis;
+                         const fb::nevpt2::ChainPoint *from) -> fb::Result<Point> {
     Point p;
-    p.gradient_norm = cas.gradient_norm;
-    if (cas.gradient_norm >= casscf.conv_tol_grad) {
-      return fb::err_numerical("{}: a displaced CASSCF stopped at ||g|| {:.2e}", sys.name,
-                               cas.gradient_norm);
-    }
-    // The roots, matched by their overlaps with the reference's.
-    const fb::mcscf::Solution solution = FBF_TRY(solution_of(res, basis, cas));
-    const std::vector<double> s = FBF_TRY(fb::mcscf::state_overlaps(
-        res, basis0, solution0, basis, solution, cas0.ncore, cas0.ncas, cas0.nelecas, 1));
-    std::vector<std::size_t> pi(n);
-    std::vector<double> signs(n);
-    std::vector<bool> taken(n, false);
-    for (std::size_t i = 0; i < n; ++i) {
-      std::size_t best = 0;
-      for (std::size_t j = 1; j < n; ++j) {
-        if (std::abs(s[(i * n) + j]) > std::abs(s[(i * n) + best])) {
-          best = j;
-        }
-      }
-      if (taken[best]) {
-        return fb::err_numerical("{}: reference root {} matches no displaced root alone", sys.name,
-                                 i);
-      }
-      taken[best] = true;
-      pi[i] = best;
-      signs[i] = s[(i * n) + best] < 0.0 ? -1.0 : 1.0;
-      p.ci = std::max(p.ci, 1.0 - std::abs(s[(i * n) + best]));
-      p.casscf.push_back(cas.energies[best]);
-    }
-    // The overlaps and H_eff in the reference's root basis.
-    p.s.assign(n * n, 0.0);
-    for (std::size_t i = 0; i < n; ++i) {
-      for (std::size_t j = 0; j < n; ++j) {
-        p.s[(i * n) + j] = signs[j] * s[(i * n) + pi[j]];
-      }
-    }
-    const auto carried_into = [&](std::span<const double> heff) {
-      std::vector<double> out(n * n);
-      for (std::size_t i = 0; i < n; ++i) {
-        for (std::size_t j = 0; j < n; ++j) {
-          out[(i * n) + j] = signs[i] * signs[j] * heff[(pi[i] * n) + pi[j]];
-        }
-      }
-      return out;
-    };
+    p.at = from == nullptr ? FBF_TRY(sampler.at(displacement))
+                           : FBF_TRY(sampler.at(displacement, *from));
     if (qd) {
-      p.sc_heff = carried_into(nev.qd_heff);
-      if (pc && nev.pc_qd_heff.size() == n * n) {
-        p.pc_heff = carried_into(nev.pc_qd_heff);
-      }
-    }
-    p.c = FBF_TRY(download(res, cas.c.data(), cas.c.num_elements()));
-    p.mo_energies = cas.mo_energies;
-    p.subspace = FBF_TRY(subspace_miss(res, basis0, cas0.c, basis, cas.c, ncore, ncas));
-    if (p.ci >= kCiTol || p.subspace >= kSubspaceTol) {
-      return fb::err_numerical("{}: a displaced CASSCF's CI overlap off 1 by {:.2e}, its active "
-                               "space by {:.2e}",
-                               sys.name, p.ci, p.subspace);
-    }
-    if (qd) {
-      if (nev.qd_energies.size() != n) {
-        return fb::err_numerical("{}: no SC-QD-NEVPT2 at a displaced point", sys.name);
-      }
-      p.sc = FBF_TRY(matched_states(nev.qd_energies, nev.qd_vectors, nev0.qd_vectors, pi, signs,
-                                    p.sc_vectors, p.sc_vectors_matched));
+      p.sc = FBF_TRY(matched_states(p.at.sc, p.at.sc_vectors, nev0.qd_vectors, p.sc_vectors,
+                                    p.sc_vectors_matched));
       if (pc) {
-        if (nev.pc_qd_energies.size() != n) {
-          return fb::err_numerical("{}: PC-QD-NEVPT2 refused at a displaced point: {}", sys.name,
-                                   nev.pc_qd_refusal);
-        }
-        p.pc = FBF_TRY(matched_states(nev.pc_qd_energies, nev.pc_qd_vectors, nev0.pc_qd_vectors, pi,
-                                      signs, p.pc_vectors, p.pc_vectors_matched));
+        p.pc = FBF_TRY(matched_states(p.at.pc, p.at.pc_vectors, nev0.pc_qd_vectors, p.pc_vectors,
+                                      p.pc_vectors_matched));
       }
     } else {
-      if (!nev.pc_roots[0]) {
-        return fb::err_numerical("{}: PC refused at a displaced point: {}", sys.name,
-                                 nev.pc_refusals[0]);
-      }
-      p.sc = {cas.energies[0] + nev.roots[0].total};
-      p.pc = {cas.energies[0] + nev.pc_roots[0]->total};
+      p.sc = p.at.sc;
+      p.pc = p.at.pc;
     }
     if (std::max(p.sc_vectors, p.pc_vectors) >= kCiTol) {
       return fb::err_numerical("{}: a displaced H_eff eigenvector's overlap off 1 by {:.2e}",
                                sys.name, std::max(p.sc_vectors, p.pc_vectors));
     }
-    // PC's QD couplings are taken over the displaced roots' order: compare the
-    // cut as a multiset, which a permutation of the roots leaves alone.
-    if (pc) {
-      auto dropped = dropped_of(nev);
-      auto expected = dropped0;
-      std::ranges::sort(dropped);
-      std::ranges::sort(expected);
-      if (dropped != expected) {
-        return fb::err_numerical("{}: PC cuts other modes at a displaced point: a rank change",
-                                 sys.name);
-      }
-    }
-    p.core_gap = smallest_gap(std::span{cas.mo_energies}.subspan(0, ncore));
-    p.virtual_gap = smallest_gap(std::span{cas.mo_energies}.subspan(nocc));
     ++points;
     return p;
   };
@@ -1435,13 +1004,13 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
       double overlap = 0.0;
       for (std::size_t i = 0; i < n; ++i) {
         const double rp = r0[(big_p * n) + i];
-        ref_part += rp * r0[(big_q * n) + i] * p.casscf[i];
+        ref_part += rp * r0[(big_q * n) + i] * p.at.casscf[i];
         for (std::size_t j = 0; j < n; ++j) {
           const double rq = r0[(big_q * n) + j];
-          const double off = heff[(i * n) + j] - (i == j ? p.casscf[i] : 0.0);
+          const double off = heff[(i * n) + j] - (i == j ? p.at.casscf[i] : 0.0);
           pt2_part += rp * off * rq;
           whole += rp * heff[(i * n) + j] * rq;
-          overlap += rp * r[(big_q * n) + j] * p.s[(i * n) + j];
+          overlap += rp * r[(big_q * n) + j] * p.at.s[(i * n) + j];
         }
       }
       h_reference.push_back(ref_part);
@@ -1457,7 +1026,7 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   const auto observe = [&](const Point &p) {
     std::vector<std::vector<double>> out;
     if (!coupling) {
-      out.push_back(p.casscf);
+      out.push_back(p.at.casscf);
       out.push_back(p.sc);
       if (pc) {
         out.push_back(p.pc);
@@ -1466,12 +1035,12 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
     }
     std::vector<double> roots;
     for (const auto &[i, j] : pairs) {
-      roots.push_back(p.s[(i * n) + j]);
+      roots.push_back(p.at.s[(i * n) + j]);
     }
     out.push_back(std::move(roots));
-    coupling_terms(p, nev0.qd_vectors, p.sc_heff, p.sc_vectors_matched, out);
+    coupling_terms(p, nev0.qd_vectors, p.at.sc_heff, p.sc_vectors_matched, out);
     if (pc) {
-      coupling_terms(p, nev0.pc_qd_vectors, p.pc_heff, p.pc_vectors_matched, out);
+      coupling_terms(p, nev0.pc_qd_vectors, p.at.pc_heff, p.pc_vectors_matched, out);
     }
     return out;
   };
@@ -1511,14 +1080,8 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   fb::json noise_json;
   if (coupling) {
     Point at_ref;
-    at_ref.casscf = cas0.energies;
-    at_ref.s.assign(n * n, 0.0);
-    for (std::size_t i = 0; i < n; ++i) {
-      at_ref.s[(i * n) + i] = 1.0;
-    }
-    at_ref.sc_heff = nev0.qd_heff;
+    at_ref.at = ref0;
     at_ref.sc_vectors_matched = nev0.qd_vectors;
-    at_ref.pc_heff = nev0.pc_qd_heff;
     at_ref.pc_vectors_matched = nev0.pc_qd_vectors;
     const std::vector<std::vector<double>> baseline = observe(at_ref);
     std::vector<double> measured(families.size(), 0.0);
@@ -1528,14 +1091,8 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
       for (std::size_t x = 0; x < dim; ++x) {
         dr[x] = steps[0] * u[x];
       }
-      const Point away = FBF_TRY(point(dr, carried));
-      const CarriedOrbitalsStep restart{
-          .c = away.c,
-          .mo_energies = away.mo_energies,
-          .n_alpha = rhf.n_alpha,
-          .n_beta = rhf.n_beta,
-      };
-      const Point again = FBF_TRY(point(origin, restart));
+      const Point away = FBF_TRY(point(dr, nullptr));
+      const Point again = FBF_TRY(point(origin, &away.at));
       const std::vector<std::vector<double>> values = observe(again);
       for (std::size_t f = 0; f < families.size(); ++f) {
         for (std::size_t i = 0; i < values[f].size(); ++i) {
@@ -1579,17 +1136,17 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
           for (std::size_t x = 0; x < dim; ++x) {
             dr[x] = sign * steps[si] * components[c][x];
           }
-          Point p = FBF_TRY(point(dr, carried));
-          if (coupling && p.gradient_norm >= kPolishTarget) {
+          Point p = FBF_TRY(point(dr, nullptr));
+          if (coupling && p.at.gradient_norm >= kPolishTarget) {
             std::println("{}: component {} step {} side {}: polished to ||g|| {:.1e} only",
-                         sys.name, c, si, sign, p.gradient_norm);
+                         sys.name, c, si, sign, p.at.gradient_norm);
           }
           const double h2 = steps[si] * steps[si];
           for (std::size_t r = 0; r < n; ++r) {
             const double predicted =
-                at0.casscf[r] + std::inner_product(casscf_gradient[r].begin(),
-                                                   casscf_gradient[r].end(), dr.begin(), 0.0);
-            p.prediction = std::max(p.prediction, std::abs(p.casscf[r] - predicted) / h2);
+                at0.at.casscf[r] + std::inner_product(casscf_gradient[r].begin(),
+                                                      casscf_gradient[r].end(), dr.begin(), 0.0);
+            p.prediction = std::max(p.prediction, std::abs(p.at.casscf[r] - predicted) / h2);
           }
           if (p.prediction >= kPredictionBound) {
             return fb::err_numerical("{}: a displaced CASSCF {:.3f} h^2 off the first-order "
@@ -1597,16 +1154,16 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
                                      sys.name, p.prediction);
           }
           worst.prediction = std::max(worst.prediction, p.prediction);
-          worst.subspace = std::max(worst.subspace, p.subspace);
-          worst.ci = std::max(worst.ci, p.ci);
+          worst.at.subspace = std::max(worst.at.subspace, p.at.subspace);
+          worst.at.ci = std::max(worst.at.ci, p.at.ci);
           worst.sc_vectors = std::max(worst.sc_vectors, p.sc_vectors);
           worst.pc_vectors = std::max(worst.pc_vectors, p.pc_vectors);
-          worst.gradient_norm = std::max(worst.gradient_norm, p.gradient_norm);
-          worst.core_gap = std::min(worst.core_gap, p.core_gap);
-          worst.virtual_gap = std::min(worst.virtual_gap, p.virtual_gap);
+          worst.at.gradient_norm = std::max(worst.at.gradient_norm, p.at.gradient_norm);
+          worst.at.core_gap = std::min(worst.at.core_gap, p.at.core_gap);
+          worst.at.virtual_gap = std::min(worst.at.virtual_gap, p.at.virtual_gap);
           const std::size_t side = sign < 0.0 ? 0 : 1;
           const std::vector<std::vector<double>> values = observe(p);
-          fb::json energies{{"gradient_norm", p.gradient_norm}};
+          fb::json energies{{"gradient_norm", p.at.gradient_norm}};
           for (std::size_t f = 0; f < run.size(); ++f) {
             if (run[f].values.empty()) {
               run[f].values.assign(values[f].size(),
@@ -1672,11 +1229,11 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   doc["steps"] = std::vector<double>(steps.begin(), steps.end());
   doc["energy_noise"] = noise;
   fb::json reference{
-      {"casscf_energies", at0.casscf},
+      {"casscf_energies", at0.at.casscf},
       {"sc_energies", at0.sc},
-      {"gradient_norm", at0.gradient_norm},
+      {"gradient_norm", at0.at.gradient_norm},
       {"casscf_gradient", fb::json::array()},
-      {"inactive_gaps", {{"core", at0.core_gap}, {"virtual", at0.virtual_gap}}},
+      {"inactive_gaps", {{"core", at0.at.core_gap}, {"virtual", at0.at.virtual_gap}}},
       {"agreement", agreement},
   };
   for (const std::vector<double> &g : casscf_gradient) {
@@ -1709,7 +1266,7 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   if (coupling) {
     std::vector<double> root_gaps;
     for (std::size_t k = 1; k < n; ++k) {
-      root_gaps.push_back(at0.casscf[k] - at0.casscf[k - 1]);
+      root_gaps.push_back(at0.at.casscf[k] - at0.at.casscf[k - 1]);
     }
     reference["casscf_gaps"] = root_gaps;
     reference["sc_heff"] = nev0.qd_heff;
@@ -1754,24 +1311,24 @@ fb::Result<fb::json> run_case(fb::NodeResources &node, const System &sys,
   }
   fb::json guard{
       {"prediction", worst.prediction},
-      {"subspace", worst.subspace},
-      {"ci", worst.ci},
+      {"subspace", worst.at.subspace},
+      {"ci", worst.at.ci},
       {"sc_vectors", worst.sc_vectors},
-      {"gradient_norm", worst.gradient_norm},
-      {"inactive_gap", {{"core", worst.core_gap}, {"virtual", worst.virtual_gap}}},
+      {"gradient_norm", worst.at.gradient_norm},
+      {"inactive_gap", {{"core", worst.at.core_gap}, {"virtual", worst.at.virtual_gap}}},
       {"points", points},
   };
   if (pc) {
     guard["pc_vectors"] = worst.pc_vectors;
   }
   if (coupling) {
-    guard["polish_passes"] = polish_passes;
+    guard["polish_passes"] = sampler.polish_passes();
   }
   doc["guard"] = guard;
   std::println("{}: {} points, worst prediction {:.3f}, subspace {:.1e}, CI {:.1e}, u_K {:.1e} / "
                "{:.1e}, |g| {:.1e} ({:.0f} s)",
-               sys.name, points, worst.prediction, worst.subspace, worst.ci, worst.sc_vectors,
-               worst.pc_vectors, worst.gradient_norm,
+               sys.name, points, worst.prediction, worst.at.subspace, worst.at.ci, worst.sc_vectors,
+               worst.pc_vectors, worst.at.gradient_norm,
                std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
   return doc;
 }

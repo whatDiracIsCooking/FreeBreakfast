@@ -11,7 +11,10 @@ References for the QD-NEVPT2 derivative coupling d_PQ = ⟨Ψ_P|∇Ψ_Q⟩ (Park
   h_PQ (its reference and PT2 parts apart) and of the zeroth-order coupling
   d^NEV + d^CAS, through the tree's own DF-SA-CASSCF and QD-NEVPT2. Written
   by `free-breakfast-qd-nevpt2-gradient --coupling`
-  (`tools/qd_nevpt2_gradient/`).
+  (`tools/qd_nevpt2_gradient/`). `test/gtest/nevpt2_numerical_heff_gpu.cpp`
+  checks that tool's library's in-process ∇H_eff (#783) against
+  `h2co_skew_ccpvdz_sa3`'s `{sc,pc}_h`, within twice the committed error bar,
+  each pair up to the sign of its two eigenvectors.
 
 ## `brute_force/` — the brute-force first-order wave functions (#744)
 

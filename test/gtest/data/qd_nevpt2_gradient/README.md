@@ -3,7 +3,12 @@
 Numerical nuclear gradients of this tree's SC- and PC-QD-NEVPT2 energies
 E_K (every eigenstate K of the symmetrized H_eff), and of each DF-SA-CASSCF
 root's energy, written by `free-breakfast-qd-nevpt2-gradient`
-(`tools/qd_nevpt2_gradient/main.cpp`). No file here is hand-edited.
+(`tools/qd_nevpt2_gradient/main.cpp`, over the chain, guard and Richardson of
+its module library `free_breakfast.tools.qd_nevpt2_gradient`). No file here
+is hand-edited. `test/gtest/nevpt2_numerical_heff_gpu.cpp` checks that
+library's in-process ∇H_eff (#783) against `h6_631g_sa2` and
+`h2co_skew_ccpvdz_sa3`: each g_K = R_Kᵀ(∇H_eff)R_K within twice the committed
+error bar of E_K's difference.
 
 No other program has a QD-NEVPT2 energy, and the oracle has to differentiate
 the same functional the analytic gradient does: the same B, the core and
