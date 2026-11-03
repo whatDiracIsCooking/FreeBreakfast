@@ -628,6 +628,17 @@ release_attach_client() {
 require_running() {
   command -v docker >/dev/null 2>&1 || return 0
   [ -n "$(container_ids || true)" ] && return 0
+  # An unreachable daemon also lists no containers. Say which, or "start it"
+  # sends you to `up`, which fails the same way -- the usual case being a
+  # login from before you were added to the docker group.
+  if ! docker info >/dev/null 2>&1; then
+    echo "error: cannot reach the docker daemon as $(id -un)." >&2
+    if getent group docker | cut -d: -f4 | tr ',' '\n' | grep -qx "$(id -un)"; then
+      echo "       you are in the docker group, but not in this login: log in again" >&2
+      echo "       (or \`newgrp docker\` for this shell)" >&2
+    fi
+    exit 1
+  fi
   if [ -n "$(container_ids --stopped || true)" ]; then
     echo "error: the ${VARIANT:-active} container for $WORKSPACE exists, but is stopped." >&2
   else
