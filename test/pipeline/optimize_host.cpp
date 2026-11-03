@@ -1,10 +1,13 @@
-// Host-only cases for the Optimize step's QD state following:
-// qd_state_overlap, which matches the last geometry's CASSCF roots to this
-// one's by their overlaps and carries u_K across in that matched basis. It
-// follows the state through a root swap and a sign flip, and refuses,
-// Numerical, when the matched overlap drops below kQdStateOverlapFloor (the
-// state lost at a crossing) or the roots do not match one to one. Nothing
-// is run, so nothing touches a device.
+// Host-only cases for the Optimize step's state following:
+// normalized_overlaps, the root overlaps each over its row's norm; match_roots,
+// which matches the last geometry's CASSCF roots to this one's by their
+// overlaps, follows a state-averaged root through a root swap and refuses,
+// Numerical, a followed root whose normalized overlap drops below
+// kStateOverlapFloor; and qd_state_overlap, which carries u_K across in that
+// matched basis, follows the QD state through a root swap and a sign flip,
+// and refuses when its overlap drops below the floor (the state lost at a
+// crossing) or the roots do not match one to one. Nothing is run, so
+// nothing touches a device.
 
 #include <gtest/gtest.h>
 
@@ -61,7 +64,7 @@ TEST(PipelineOptimize, AQdStateIsFollowedThroughARootSwap) {
 // its surface.
 TEST(PipelineOptimize, AQdStateBelowTheOverlapFloorIsRefusedAsNumerical) {
   const std::array<double, 2> last = {1.0, 0.0};
-  const double floor = fb::kQdStateOverlapFloor;
+  const double floor = fb::kStateOverlapFloor;
   const std::array<double, 2> at = {floor, std::sqrt(1.0 - (floor * floor))};
   const auto kept = fb::qd_state_overlap(kSameRoots, last, at);
   ASSERT_TRUE(kept.has_value()) << kept.error().message;
@@ -111,6 +114,86 @@ TEST(PipelineOptimize, QdStateOverlapSizesThatDoNotAgreeAreInvalidConfig) {
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
   }
+}
+
+// A state-averaged root followed through a swap of the CASSCF roots, under
+// the overlaps' common decay with the step (every element scaled by 0.7):
+// the last root 1 is this geometry's root 0, its overlap normalized by its
+// row, and root 0 is root 1 with its phase flipped.
+TEST(PipelineOptimize, ARootIsFollowedThroughARootSwap) {
+  constexpr double kDecay = 0.7;
+  const std::array<double, 4> swapped = {kDecay * 0.06, kDecay * -0.98, kDecay * 0.97,
+                                         kDecay * 0.05};
+  const std::array<std::int32_t, 1> followed = {1};
+  const auto match = fb::match_roots(swapped, followed);
+  ASSERT_TRUE(match.has_value()) << match.error().message;
+  ASSERT_EQ(match->size(), 2U);
+  EXPECT_EQ((*match)[1].root, 0);
+  EXPECT_NEAR((*match)[1].overlap, 0.97 / std::hypot(0.97, 0.05), 1e-15);
+  EXPECT_EQ((*match)[0].root, 1);
+  EXPECT_NEAR((*match)[0].overlap, -0.98 / std::hypot(0.06, 0.98), 1e-15);
+}
+
+// The normalized overlaps match_roots matches over, and a pair check reads a
+// block of: each row over its 2-norm, the common decay gone, a row of zeros
+// refused.
+TEST(PipelineOptimize, NormalizedOverlapsDivideEachRowByItsNorm) {
+  constexpr double kDecay = 0.5;
+  const std::array<double, 4> decayed = {kDecay * 0.6, kDecay * 0.8, kDecay * -0.8, kDecay * 0.6};
+  const auto s = fb::normalized_overlaps(decayed);
+  ASSERT_TRUE(s.has_value()) << s.error().message;
+  const std::array<double, 4> want = {0.6, 0.8, -0.8, 0.6};
+  for (std::size_t k = 0; k < want.size(); ++k) {
+    EXPECT_NEAR((*s)[k], want[k], 1e-15) << k;
+  }
+  const std::array<double, 4> zero_row = {0.0, 0.0, 0.0, 1.0};
+  const auto refused = fb::normalized_overlaps(zero_row);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::Numerical) << refused.error().message;
+}
+
+// The refusal: a followed root turned by 20 degrees (cos 20 = 0.940) is
+// kept; one turned by 30 (cos 30 = 0.866) is Numerical, naming the root, its
+// match and the overlap, though the roots still match one to one and are
+// matched when nothing is followed.
+TEST(PipelineOptimize, ARootBelowTheOverlapFloorIsRefusedAsNumerical) {
+  const std::array<std::int32_t, 1> root_zero = {0};
+  const double a = 20.0 * std::numbers::pi / 180.0;
+  const std::array<double, 4> twenty = {std::cos(a), std::sin(a), -std::sin(a), std::cos(a)};
+  const auto kept = fb::match_roots(twenty, root_zero);
+  ASSERT_TRUE(kept.has_value()) << kept.error().message;
+  EXPECT_EQ((*kept)[0].root, 0);
+  EXPECT_NEAR((*kept)[0].overlap, std::cos(a), 1e-15);
+  EXPECT_GE((*kept)[0].overlap, fb::kStateOverlapFloor);
+
+  // A 30 degree turn: cos 30 = 0.866.
+  const double c = std::cos(std::numbers::pi / 6.0);
+  const double s = std::sin(std::numbers::pi / 6.0);
+  const std::array<double, 4> turned_roots = {c, s, -s, c};
+  ASSERT_TRUE(fb::match_roots(turned_roots).has_value());
+  const auto lost = fb::match_roots(turned_roots, root_zero);
+  ASSERT_FALSE(lost.has_value());
+  EXPECT_EQ(lost.error().kind, fb::ErrorKind::Numerical) << lost.error().message;
+  EXPECT_NE(lost.error().message.find("match_roots: the last geometry's CASSCF root 0 has "
+                                      "overlap 0.866025 with its match, root 0, below 0.9"),
+            std::string::npos)
+      << lost.error().message;
+}
+
+// Sizes that are no n x n, and a followed root that is not one of the n,
+// are InvalidConfig.
+TEST(PipelineOptimize, MatchRootsSizesAndRootsOutOfRangeAreInvalidConfig) {
+  const std::array<double, 3> three = {1.0, 0.0, 0.0};
+  const auto not_square = fb::match_roots(three);
+  ASSERT_FALSE(not_square.has_value());
+  EXPECT_EQ(not_square.error().kind, fb::ErrorKind::InvalidConfig);
+  const auto empty = fb::match_roots(std::span<const double>{});
+  ASSERT_FALSE(empty.has_value());
+  EXPECT_EQ(empty.error().kind, fb::ErrorKind::InvalidConfig);
+  const std::array<std::int32_t, 1> past = {2};
+  const auto refused = fb::match_roots(kSameRoots, past);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().kind, fb::ErrorKind::InvalidConfig) << refused.error().message;
 }
 
 } // namespace
