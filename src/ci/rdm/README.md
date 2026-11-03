@@ -108,8 +108,9 @@ syrk's, and γ = ½ (D_Iᵀ c_J + D_Jᵀ c_I) by two gemms; since
 average, and `rdm12`'s assembly kernel writes Γ unchanged. In the symmetric
 layout the same √2 bookkeeping holds pairwise: Σ over the triangle of
 √2 D^I_K · √2 D^J_K is the sum over K and its mirror when both vectors are
-swap-symmetric. The private copies in `../../mcscf/` (`relaxed_hessian`'s and
-`third_derivative`'s, by polarization of `rdm12`) are not yet switched to it.
+swap-symmetric. `../../mcscf/`'s
+`relaxed_hessian` and `third_derivative` sum it over the roots at their
+weights.
 
 **Tables once, vectors as often as needed.** `ci::Rdm::create` borrows the
 link tables of the two `ci::DeviceStringSet`s, the copy `ci::Sigma` reads

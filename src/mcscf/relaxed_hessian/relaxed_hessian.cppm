@@ -277,14 +277,13 @@ private:
   int32_t swap_parity_;
   // create's mixing: per pair r < s, lexicographic; empty for every pair.
   std::vector<bool> mixing_;
-  // H'(x)'s sigma; the CI blocks b = H' c, delta and c +- delta (dim x nroots
-  // each); conjugate gradients' three vectors; the roots' overlaps; kappa,
-  // then the gradient's antisymmetric matrix; the packed gradient; and the
-  // RDMs of c +- delta.
+  // H'(x)'s sigma; the CI blocks b = H' c and delta (dim x nroots each);
+  // conjugate gradients' three vectors; the roots' overlaps; kappa, then the
+  // gradient's antisymmetric matrix; the packed gradient; and the transition
+  // RDMs of (c, delta), their sum then one root's.
   ci::Sigma response_sigma_;
   Buffers::device<double> ci_b_;
   Buffers::device<double> ci_delta_;
-  Buffers::device<double> ci_pm_;
   Buffers::device<double> cg_vectors_;
   Buffers::device<double> ci_overlaps_;
   Buffers::device<double> response_matrix_;

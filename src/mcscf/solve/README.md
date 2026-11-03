@@ -319,7 +319,7 @@ once per macro iteration.
 **The subspace allocates nothing per iteration.** Q, H̃ Q beside gₘ,
 diag(H), the residual, the correction, the step pair (dx, H̃ dx), and the
 projected problem are buffers of the solve's, sized once for
-`kAhMaxSubspace` columns, and so are the response's CI blocks (b, δ, c ± δ),
+`kAhMaxSubspace` columns, and so are the response's CI blocks (b, δ),
 its three CG vectors and its RDMs. diag(H) is copied once per macro
 iteration (the response's diagonal is not built: diag(H) preconditions
 well enough), and the preconditioner is a kernel of this

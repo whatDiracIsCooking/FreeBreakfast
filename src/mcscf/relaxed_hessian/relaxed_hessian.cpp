@@ -201,8 +201,7 @@ RelaxedHessian::RelaxedHessian(response::Hessian &hessian, ci::Sigma &sigma, ci:
       response_tolerance_(response_tolerance), swap_parity_(swap_parity),
       mixing_(std::move(mixing)), response_sigma_(std::move(response_sigma)),
       ci_b_(dim * weights_.size(), res.device()), ci_delta_(dim * weights_.size(), res.device()),
-      ci_pm_(2 * dim * weights_.size(), res.device()), cg_vectors_(3 * dim, res.device()),
-      ci_overlaps_(weights_.size(), res.device()),
+      cg_vectors_(3 * dim, res.device()), ci_overlaps_(weights_.size(), res.device()),
       response_matrix_(ints_.nmo * ints_.nmo, res.device()),
       response_packed_(std::max<size_t>(static_cast<size_t>(n_pairs_), 1), res.device()),
       response_gamma_(2 * ints_.ncas * ints_.ncas, res.device()),
@@ -365,41 +364,34 @@ Status RelaxedHessian::transition_rdms(DeviceResources &res, const double *const
                                        std::span<double> gamma_t, std::span<double> gamma2_t) {
   const wwr::wwrblasHandle_t blas = res.blas().get();
   const wwr::wwrStream_t stream = res.stream();
-  const size_t n = ints_.ncas;
-  const auto dim32 = static_cast<int32_t>(dim_);
-  const auto nroots = static_cast<int32_t>(weights_.size());
-  const size_t ci_block = dim_ * weights_.size();
+  const size_t nn = ints_.ncas * ints_.ncas;
+  const size_t nn2 = nn * nn;
   const double *const ci_c = roots_->vectors.data();
 
-  // gamma_T and Gamma_T: half the difference of the RDMs of c + delta and
-  // c - delta (Gamma_T's half again, for the 1/2 of the two-body energy).
-  double *const plus = ci_pm_.data();
-  double *const minus = plus + ci_block;
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, dim32,
-                                                nroots, &kOne<double>, ci_c, dim32, &kOne<double>,
-                                                delta, dim32, plus, dim32)));
-  FBF_TRY(gpu_status(wwr::geam<double, int32_t>(blas, wwr::WWRBLAS_OP_N, wwr::WWRBLAS_OP_N, dim32,
-                                                nroots, &kOne<double>, ci_c, dim32,
-                                                &kNegOne<double>, delta, dim32, minus, dim32)));
-  FBF_TRY(rdm_->rdm12(res, weights_, plus, response_gamma_.data(), response_gamma2_.data()));
-  FBF_TRY(rdm_->rdm12(res, weights_, minus, response_gamma_.data() + (n * n),
-                      response_gamma2_.data() + (n * n * n * n)));
-  std::vector<double> g1(2 * n * n);
-  std::vector<double> g2(2 * n * n * n * n);
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(g1.data(), response_gamma_.data(), g1.size() * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(
-      gpu_status(wwr::wwrMemcpyAsync(g2.data(), response_gamma2_.data(), g2.size() * sizeof(double),
-                                     wwr::wwrMemcpyDeviceToHost, stream)));
-  FBF_TRY(res.sync());
-  for (size_t i = 0; i < gamma_t.size(); ++i) {
-    gamma_t[i] = 0.5 * (g1[i] - g1[i + gamma_t.size()]);
+  // gamma_T = sum_r w_r 2 T(c_r, delta_r) and Gamma_T = sum_r w_r T(c_r,
+  // delta_r) (its half for the 1/2 of the two-body energy), T the symmetrized
+  // transition RDMs: each root's into the second halves, summed into the
+  // first.
+  double *const g1 = response_gamma_.data();
+  double *const g2 = response_gamma2_.data();
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(g1, 0, sizeof(double) * nn, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemsetAsync(g2, 0, sizeof(double) * nn2, stream)));
+  for (size_t r = 0; r < weights_.size(); ++r) {
+    if (weights_[r] == 0.0) {
+      continue;
+    }
+    FBF_TRY(rdm_->trans_rdm12(res, ci_c + (r * dim_), delta + (r * dim_), g1 + nn, g2 + nn2));
+    const double w1 = 2.0 * weights_[r];
+    FBF_TRY(gpu_status(
+        wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(nn), &w1, g1 + nn, 1, g1, 1)));
+    FBF_TRY(gpu_status(wwr::axpy<double, int32_t>(blas, static_cast<int32_t>(nn2), &weights_[r],
+                                                  g2 + nn2, 1, g2, 1)));
   }
-  for (size_t i = 0; i < gamma2_t.size(); ++i) {
-    gamma2_t[i] = 0.25 * (g2[i] - g2[i + gamma2_t.size()]);
-  }
-  return {};
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma_t.data(), g1, nn * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  FBF_TRY(gpu_status(wwr::wwrMemcpyAsync(gamma2_t.data(), g2, nn2 * sizeof(double),
+                                         wwr::wwrMemcpyDeviceToHost, stream)));
+  return res.sync();
 }
 
 Status RelaxedHessian::add_coupling(DeviceResources &res, std::span<const double> gamma_t,
