@@ -6,6 +6,7 @@ add_subdirectory(rdm)
 add_subdirectory(energy)
 add_subdirectory(gradient)
 add_subdirectory(nac)
+add_subdirectory(intersection)
 
 # The aggregate: one import for the NEVPT2 layer.
 free_breakfast_add_cxx_module_library(
@@ -20,4 +21,5 @@ free_breakfast_add_cxx_module_library(
   free_breakfast::nevpt2::energy
   free_breakfast::nevpt2::gradient
   free_breakfast::nevpt2::nac
+  free_breakfast::nevpt2::intersection
 )

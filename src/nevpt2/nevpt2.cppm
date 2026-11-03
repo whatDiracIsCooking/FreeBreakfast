@@ -11,3 +11,4 @@ export import free_breakfast.nevpt2.rdm;
 export import free_breakfast.nevpt2.energy;
 export import free_breakfast.nevpt2.gradient;
 export import free_breakfast.nevpt2.nac;
+export import free_breakfast.nevpt2.intersection;
