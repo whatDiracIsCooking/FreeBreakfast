@@ -671,6 +671,28 @@ qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const double> w, int32_t batch);
 
+/// @brief G(W) at each of several symmetric weight matrices @p w at once:
+/// the W form above at every W, sharing what does not depend on W. One
+/// qd_setup; one set of the adjoints' forward arrays and RDMs, the reverse
+/// pass walked per W; the CASSCF integrals, the state-averaged Fock and the
+/// CI-relaxed Hessian built once, and every W's right-hand sides solved
+/// together by one mcscf::zvectors (Schur), each column's true residual,
+/// from one more product, held to the solve's 1e-10; then the gate and the
+/// derivative passes per W. One W is the single W form's path. Each result
+/// equals that W's single call to the Z-vector solves' convergence.
+///
+/// The arguments are the W form's with @p w a list of n^2 matrices.
+///
+/// @return One gradient per W, in order; InvalidConfig for an empty list;
+///         the W form's errors, of the first W that has one; or Numerical,
+///         naming the column, when a column's true residual is above 1e-10.
+[[nodiscard]] Result<std::vector<QdScGradient>>
+qd_sc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+               std::span<const std::vector<double>> w, int32_t batch);
+
 /// @brief Terms folded into an interstate coupling's Lagrangian (Park 2020
 /// Eqs. 51-52): what lets qd_sc_coupling / qd_pc_coupling solve one Z-vector
 /// for h_PQ and another quantity's response together. Each is added as it
@@ -787,6 +809,19 @@ qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &b
                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
                std::span<const double> w, int32_t batch);
+
+/// @brief qd_sc_gradient's several-W form over qd_pc_adjoint: G(W) at each
+/// of @p w, sharing the same work. The arguments are its.
+///
+/// @return One gradient per W, in order, each with the elements; a refused
+///         class's Numerical error; qd_sc_gradient's several-W form's other
+///         errors, named for nevpt2::qd_pc_gradient.
+[[nodiscard]] Result<std::vector<QdPcGradient>>
+qd_pc_gradient(DeviceResources &res, const Molecule &molecule, const BasisSet &basis,
+               std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+               const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+               const mcscf::Solution &solution, int32_t ncore, int32_t ncas,
+               std::span<const std::vector<double>> w, int32_t batch);
 
 /// @brief The PC-QD-NEVPT2 interstate coupling between QD states @p p and
 /// @p q (PC's H_eff eigenvalues ascending), h_PQ = R_P^T (dH_eff/dR) R_Q:

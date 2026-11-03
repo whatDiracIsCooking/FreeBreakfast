@@ -140,13 +140,12 @@ double gap_sensitivity(const std::span<const double> a, const std::span<const do
 
 // One code path for SC (@p pc false) and PC: H_eff over qd_inputs and the
 // method's effective Hamiltonian, R, then the W form at the pair's three W's.
-Result<QdIntersection>
-qd_intersection(DeviceResources &res, const std::string_view who, const bool pc,
-                const Molecule &molecule, const BasisSet &basis,
-                const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
-                const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
-                const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-                const int32_t p, const int32_t q, const int32_t batch) {
+Result<QdIntersection> qd_intersection(
+    DeviceResources &res, const std::string_view who, const bool pc, const Molecule &molecule,
+    const BasisSet &basis, const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
+    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
+    const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas, const int32_t p,
+    const int32_t q, const int32_t batch, const QdIntersectionOptions &options) {
   const size_t nroots = solution.roots.energies.size();
   for (const int32_t state : {p, q}) {
     if (state < 0 || static_cast<size_t>(state) >= nroots) {
@@ -196,9 +195,32 @@ qd_intersection(DeviceResources &res, const std::string_view who, const bool pc,
                                               ncore, ncas, w, batch)),
                        pairs);
   };
-  WFormPart gp = FBF_TRY(part("u_P u_P^T", pair_w(u_p, u_p)));
-  WFormPart gq = FBF_TRY(part("u_Q u_Q^T", pair_w(u_q, u_q)));
-  WFormPart hpq = FBF_TRY(part("W^PQ", pair_w(u_p, u_q)));
+  constexpr std::array<std::string_view, 3> kWhich{"u_P u_P^T", "u_Q u_Q^T", "W^PQ"};
+  const std::array<std::vector<double>, 3> ws{pair_w(u_p, u_p), pair_w(u_q, u_q), pair_w(u_p, u_q)};
+  std::vector<WFormPart> parts;
+  if (options.shared) {
+    // One several-W call: its Z-vector's columns are checked there too.
+    const auto take = [&](auto gs) -> Status {
+      for (size_t k = 0; k < gs.size(); ++k) {
+        parts.push_back(FBF_TRY(w_form_part(res, who, kWhich[k], std::move(gs[k]), pairs)));
+      }
+      return {};
+    };
+    if (pc) {
+      FBF_TRY(take(FBF_TRY(qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
+                                          ncore, ncas, ws, batch))));
+    } else {
+      FBF_TRY(take(FBF_TRY(qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution,
+                                          ncore, ncas, ws, batch))));
+    }
+  } else {
+    for (size_t k = 0; k < ws.size(); ++k) {
+      parts.push_back(FBF_TRY(part(kWhich[k], ws[k])));
+    }
+  }
+  WFormPart &gp = parts[0];
+  WFormPart &gq = parts[1];
+  WFormPart &hpq = parts[2];
 
   // The CI rows of the Z-vector system are dL/dc_r over 2 w_r, so z^c_r
   // pairs with root r's Davidson residual at 2 w_r (README.md).
@@ -226,9 +248,10 @@ qd_sc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSe
                    const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                    const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-                   const int32_t p, const int32_t q, const int32_t batch) {
+                   const int32_t p, const int32_t q, const int32_t batch,
+                   const QdIntersectionOptions &options) {
   return qd_intersection(res, "nevpt2::qd_sc_intersection", false, molecule, basis, classes, aux, h,
-                         b, l, solution, ncore, ncas, p, q, batch);
+                         b, l, solution, ncore, ncas, p, q, batch, options);
 }
 
 Result<QdIntersection>
@@ -236,9 +259,10 @@ qd_pc_intersection(DeviceResources &res, const Molecule &molecule, const BasisSe
                    const std::span<const PrimitivePairClass> classes, const BasisSet &aux,
                    const SphericalMatrixAO &h, const Buffers::device<double> &b, const double *l,
                    const mcscf::Solution &solution, const int32_t ncore, const int32_t ncas,
-                   const int32_t p, const int32_t q, const int32_t batch) {
+                   const int32_t p, const int32_t q, const int32_t batch,
+                   const QdIntersectionOptions &options) {
   return qd_intersection(res, "nevpt2::qd_pc_intersection", true, molecule, basis, classes, aux, h,
-                         b, l, solution, ncore, ncas, p, q, batch);
+                         b, l, solution, ncore, ncas, p, q, batch, options);
 }
 
 } // namespace free_breakfast::nevpt2

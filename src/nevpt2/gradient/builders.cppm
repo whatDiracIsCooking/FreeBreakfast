@@ -8,7 +8,7 @@
 /// An internal partition (`module`, not `export module`): gradient.cpp and
 /// qd.cpp import it, nothing reaches an importer of
 /// free_breakfast.nevpt2.gradient. It only declares; every definition is
-/// gradient.cpp's but with_qd_inputs, qd.cpp's. See docs/style.md,
+/// gradient.cpp's but with_qd_inputs and qd_adjoints, qd.cpp's. See docs/style.md,
 /// "Module-private code".
 
 module free_breakfast.nevpt2.gradient:builders;
@@ -22,7 +22,7 @@ import free_breakfast.recipes.einsum;
 import free_breakfast.ci.strings;
 import free_breakfast.nevpt2.density_fitting; // MoBlocks
 import free_breakfast.nevpt2.energy;          // EnergyInputs, EnergyBars
-import free_breakfast.nevpt2.gradient;        // ScAdjoint
+import free_breakfast.nevpt2.gradient;        // ScAdjoint, QdScAdjoint
 
 namespace free_breakfast::nevpt2 {
 
@@ -155,6 +155,18 @@ with_qd_inputs(DeviceResources &res, std::string_view who, const ci::DeviceStrin
                const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
                std::span<const double> weights, const double *vectors,
                const std::function<Status(const MoBlocks &, std::span<const EnergyInputs>)> &use);
+
+/// @brief qd_sc_adjoint (@p pc null) or qd_pc_adjoint at each of the k
+/// matrices @p ws holds (k n^2 doubles, W_k at [k n^2, (k + 1) n^2)), over
+/// one set of forward arrays and RDMs: one QdScAdjoint per W, in order. PC's
+/// elements, the same at every W, go to *@p pc and each result's elements
+/// is empty. qd.cpp's, for the stacked QD Lagrangian in lagrangian.cpp.
+Result<std::vector<QdScAdjoint>>
+qd_adjoints(DeviceResources &res, std::string_view who, const ci::DeviceStringSet &alpha,
+            const ci::DeviceStringSet &beta, int32_t naux, int32_t nao, int32_t nmo,
+            const double *b, const double *c, const double *h, int32_t ncore, int32_t ncas,
+            std::span<const double> weights, const double *vectors, std::span<const double> ws,
+            int32_t batch, std::vector<PcClassEnergies> *pc);
 
 /// @brief Where a class walk adds its bars: @p bar's fields, and Λ at
 /// @p lambda.

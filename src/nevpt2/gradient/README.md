@@ -87,6 +87,8 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
         heff_gap     the smallest |λ_K − λ_L| of H_eff, L ≠ K
     qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, w, batch)
         -> QdScGradient  G(W), linear in W, the state's at u_K u_Kᵀ; heff_gap infinite
+    qd_sc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, ws, batch)
+        -> std::vector<QdScGradient>  G(W) at each of the list ws, one shared solve (below)
     qd_sc_coupling(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q,
                    batch, fold = {})
         -> QdScGradient  h_PQ = R_Pᵀ (∇H_eff) R_Q, G(W^PQ); heff_gap |E_Q − E_P|
@@ -96,6 +98,8 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
                          empty), plus elements (PcClassEnergies, qd_pc_energy's)
     qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, w, batch)
         -> QdPcGradient  PC's G(W), linear in W, the state's at u_K u_Kᵀ; heff_gap infinite
+    qd_pc_gradient(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, ws, batch)
+        -> std::vector<QdPcGradient>  PC's G(W) at each of the list ws, one shared solve
     qd_pc_coupling(res, molecule, basis, classes, aux, h, b, l, solution, ncore, ncas, p, q,
                    batch, fold = {})
         -> QdPcGradient  PC's h_PQ = R_Pᵀ (∇H_eff) R_Q, G(W^PQ); heff_gap |E_Q − E_P|
@@ -673,6 +677,42 @@ h_PQ, `lagrangian` at W^PQ with PC's eigenvalues and R, `heff_gap`
 with `qd_pc_energy`'s error, before any adjoint is built, as it refuses the
 gradient; P = Q, a state not one of the roots', and a pair within
 `mcscf::kRootGapFloor` are SC's refusals, named `nevpt2::qd_pc_coupling`.
+
+### Several W's at once
+
+`qd_sc_gradient(…, ws, batch)` and `qd_pc_gradient(…, ws, batch)` (#787)
+take a list of k symmetric W's (`std::span<const std::vector<double>>`, each
+n² row-major) and return one G(W) per W, in order: what
+`nevpt2::qd_*_intersection` takes at u_P u_Pᵀ, u_Q u_Qᵀ and W^PQ. They share
+everything that does not depend on W:
+
+- `qd_setup` (the weights and the active strings), once;
+- the adjoint's forward arrays: the shared builders, every ordered pair's
+  RDMs (dm3 by `nevpt2::rdms`) and γ_SA's builders, once, the reverse pass
+  (the class walk at H̄ = W, the RDMs' adjoints, the builders backwards)
+  per W over them. The forward arrays are only read, so each W's adjoint is
+  the one-W call's;
+- `casscf_integrals`, the state-averaged Fock, and the CI-relaxed Hessian
+  (H₀'s sigma, `response::Hessian`, `mcscf::RelaxedHessian`), once;
+- one `mcscf::zvectors` (Schur) over the k columns of right-hand sides
+  (orbital g^ρ + ζ · g + A, CI ȳ_r / 2 w_r, and t), in place of k
+  `mcscf::zvector` solves. Each column's true residual, from one more
+  product (`ZVectors::residuals`), must be at or below the solve's 1e-10,
+  or the call is `Numerical` naming the column: the block conjugate
+  gradients stop on their recurrence (#786, and `mcscf::df_intersection`'s
+  check, #791).
+
+Per W, as the one-W form: z^c and Φ^SA, τ split into ζ and t, ζ's terms,
+the gate on the W's own column, and the derivative passes. One W in the list
+is the one-W form's path exactly (`mcscf::zvector`, not `zvectors`), which
+is what the one-W form calls. The first W with an error returns it.
+
+**The derivative passes stay one per W.** Stacking them, so the three-center
+and metric derivative contractions run once over several density sets,
+would need a multi-density derivative kernel: #773 (PR #776) measured one
+`geri3` kernel at ~50 ms of each ~57 ms `df_gradient` call, so a stacked
+pass that still launches that kernel per density set buys nothing. A
+multi-density FelizJueves kernel is out of scope here.
 
 ## Not done
 

@@ -145,9 +145,11 @@ struct QdRun {
   std::optional<fb::SphericalMatrixAO> h;
 };
 
-QdRun qd_run(const std::string &name) {
+// The run of a case entry in qd_nevpt2.json's form: name, atoms
+// ([symbol, [x, y, z]] in bohr), basis, aux_basis.name, ncas, nelecas and
+// weights.
+QdRun qd_run_of(const fb::json &entry) {
   QdRun run{.node = std::make_unique<fb::NodeResources>()};
-  const fb::json &entry = qd_case(name);
   EXPECT_EQ(entry.at("aux_basis").at("name").get<std::string>(), kDfAuxBasis);
   const fb::test::ScratchDir dir("nevpt2_qd_intersection");
   std::string xyz =
@@ -226,6 +228,10 @@ QdRun qd_run(const std::string &name) {
   return run;
 }
 
+QdRun qd_run(const std::string &name) {
+  return qd_run_of(qd_case(name));
+}
+
 // The registry's products the calls take, by reference into the run.
 struct Inputs {
   const fb::Molecule &molecule;
@@ -243,13 +249,14 @@ Inputs inputs(QdRun &run) {
           .h = run.h ? *run.h : run.calc->get<fb::CoreHamiltonianOutput>()->h};
 }
 
-fb::Result<nevpt2::QdIntersection> intersection_of(QdRun &run, const fb::mcscf::Solution &solution,
-                                                   const std::int32_t p, const std::int32_t q,
-                                                   const bool pc) {
+fb::Result<nevpt2::QdIntersection>
+intersection_of(QdRun &run, const fb::mcscf::Solution &solution, const std::int32_t p,
+                const std::int32_t q, const bool pc,
+                const nevpt2::QdIntersectionOptions &options = {}) {
   const Inputs in = inputs(run);
   const auto call = pc ? &nevpt2::qd_pc_intersection : &nevpt2::qd_sc_intersection;
   return call(run.node->device(0), in.molecule, in.basis, in.classes, in.df.aux, in.h, in.df.b,
-              in.df.l.data(), solution, run.ncore, run.ncas, p, q, 0);
+              in.df.l.data(), solution, run.ncore, run.ncas, p, q, 0, options);
 }
 
 // What the test reads off one W-form call: G(W), the largest element of
@@ -367,6 +374,70 @@ std::optional<std::array<WForm, 3>> w_forms(QdRun &run, std::span<const double> 
   return std::array<WForm, 3>{std::move(*gp), std::move(*gq), std::move(*hpq)};
 }
 
+// The same three W's in one several-W call (#787's shared path): one set of
+// forward arrays, one Hessian, one zvectors solve of the three columns.
+std::optional<std::array<WForm, 3>> shared_w_forms(QdRun &run, std::span<const double> u_p,
+                                                   std::span<const double> u_q, const bool pc) {
+  const Inputs in = inputs(run);
+  fb::DeviceResources &res = run.node->device(0);
+  const std::array<std::vector<double>, 3> ws{pair_w(u_p, u_p), pair_w(u_q, u_q), pair_w(u_p, u_q)};
+  const auto fields = [&](const auto &g) -> std::optional<std::array<WForm, 3>> {
+    EXPECT_TRUE(g.has_value()) << g.error().message;
+    if (!g.has_value()) {
+      return std::nullopt;
+    }
+    EXPECT_EQ(g->size(), 3U);
+    if (g->size() != 3) {
+      return std::nullopt;
+    }
+    return std::array<WForm, 3>{w_form_fields(res, (*g)[0]), w_form_fields(res, (*g)[1]),
+                                w_form_fields(res, (*g)[2])};
+  };
+  if (pc) {
+    return fields(nevpt2::qd_pc_gradient(res, in.molecule, in.basis, in.classes, in.df.aux, in.h,
+                                         in.df.b, in.df.l.data(), *run.solution, run.ncore,
+                                         run.ncas, ws, 0));
+  }
+  return fields(nevpt2::qd_sc_gradient(res, in.molecule, in.basis, in.classes, in.df.aux, in.h,
+                                       in.df.b, in.df.l.data(), *run.solution, run.ncore, run.ncas,
+                                       ws, 0));
+}
+
+// The shared path's three vectors and two sensitivities against #784's
+// three W-form calls at the same u's: independently converged solves, so
+// kSolveTolerance of the larger side's largest summand (PC's s_c
+// kPcCiTolerance). Each worst ratio folded into @p worst (g_P, g_Q, h_PQ,
+// s_o, s_c).
+void expect_shared(const std::array<WForm, 3> &shared, const std::array<WForm, 3> &refs,
+                   const bool pc, const std::string &label, std::array<double, 5> &worst) {
+  constexpr std::array<std::string_view, 3> kNames{"g_P", "g_Q", "h_PQ"};
+  for (std::size_t k = 0; k < 3; ++k) {
+    const double diff = max_diff(shared[k].total, refs[k].total);
+    const double scale = std::max(shared[k].summand, refs[k].summand);
+    EXPECT_LE(diff, kSolveTolerance * scale) << label << " shared " << kNames[k];
+    worst[k] = std::max(worst[k], diff / scale);
+    std::cout << std::format("[ nevpt2   ] qd intersection {} {} shared against three calls: "
+                             "{:.2e}, largest summand {:.3e}, relative {:.2e} (shared: {} "
+                             "products, true residual {:.2e})\n",
+                             label, kNames[k], diff, scale, diff / scale, shared[k].iterations,
+                             shared[k].residual);
+  }
+  const auto [so, sc] = sensitivities(shared[0], shared[1], shared[2]);
+  const auto [so_ref, sc_ref] = sensitivities(refs[0], refs[1], refs[2]);
+  for (const auto &[ours, def, slot, name] : {std::tuple{so, so_ref, std::size_t{3}, "s_o"},
+                                              std::tuple{sc, sc_ref, std::size_t{4}, "s_c"}}) {
+    const double diff = std::abs(ours.value - def.value);
+    const double scale = std::max(ours.scale, def.scale);
+    const double bar = pc && slot == 4 ? kPcCiTolerance : kSolveTolerance;
+    EXPECT_LE(diff, bar * scale) << label << " shared " << name;
+    worst[slot] = std::max(worst[slot], diff / scale);
+    std::cout << std::format("[ nevpt2   ] qd intersection {} {} shared {:.10e} against three "
+                             "calls {:.10e}, diff {:.2e}, largest norm summed {:.3e}, relative "
+                             "{:.2e}\n",
+                             label, name, ours.value, def.value, diff, scale, diff / scale);
+  }
+}
+
 // The result's three vectors and two sensitivities against the W-form calls
 // at its own u's (kSolveTolerance; PC's s_c kPcCiTolerance), each worst
 // ratio folded into @p worst (g_P, g_Q, h_PQ, s_o, s_c).
@@ -422,6 +493,7 @@ TEST_P(Nevpt2QdIntersectionWForms, MatchesWForms) {
   ASSERT_TRUE(run.solution.has_value());
   const std::size_t n = run.solution->roots.energies.size();
   std::array<double, 5> worst{};
+  std::array<double, 5> shared_worst{};
   for (std::size_t p = 0; p < n; ++p) {
     for (std::size_t q = p + 1; q < n; ++q) {
       const std::string label = std::format("{} {} ({}, {})", c.pc ? "PC" : "SC", c.name, p, q);
@@ -433,6 +505,23 @@ TEST_P(Nevpt2QdIntersectionWForms, MatchesWForms) {
                                 std::span(x->eigenvectors).subspan(q * n, n), c.pc);
       ASSERT_TRUE(refs.has_value()) << label;
       expect_matches(*x, *refs, c.pc, label, worst);
+      // #787: the shared path at the same u's against the three calls.
+      const auto shared = shared_w_forms(run, std::span(x->eigenvectors).subspan(p * n, n),
+                                         std::span(x->eigenvectors).subspan(q * n, n), c.pc);
+      ASSERT_TRUE(shared.has_value()) << label;
+      expect_shared(*shared, *refs, c.pc, label, shared_worst);
+      // The intersection's non-default path, once per case, against the same
+      // calls: its own H_eff and R, which a gap this size fixes to round-off.
+      if (p == 0 && q == 1) {
+        const nevpt2::QdIntersectionOptions other{.shared =
+                                                      !nevpt2::QdIntersectionOptions{}.shared};
+        const std::string other_label = std::format("{} shared = {}", label, other.shared);
+        const auto y = intersection_of(run, *run.solution, 0, 1, c.pc, other);
+        ASSERT_TRUE(y.has_value()) << other_label << ": " << y.error().message;
+        std::array<double, 5> other_worst{};
+        expect_matches(*y, *refs, c.pc, other_label, other_worst);
+        print_worst(other_label, other_worst);
+      }
       std::cout << std::format("[ nevpt2   ] qd intersection {}: heff_gap {:.6e}, root_gap {:.6e}, "
                                "s_o {:.6e}, s_c {:.6e}\n",
                                label, x->heff_gap, x->root_gap, x->gap_sensitivity_orbital,
@@ -440,6 +529,8 @@ TEST_P(Nevpt2QdIntersectionWForms, MatchesWForms) {
     }
   }
   print_worst(std::format("{} {}", c.pc ? "PC" : "SC", c.name), worst);
+  print_worst(std::format("{} {} shared against three calls", c.pc ? "PC" : "SC", c.name),
+              shared_worst);
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdIntersectionWForms,
@@ -829,6 +920,12 @@ TEST(Nevpt2QdIntersection, DegeneratePair) {
     std::array<double, 5> worst{};
     expect_matches(*x, *refs, pc, label, worst);
     print_worst(label, worst);
+    // #787: the shared path at the same u's against the three calls.
+    const auto shared = shared_w_forms(run, u_p, u_q, pc);
+    ASSERT_TRUE(shared.has_value()) << label;
+    std::array<double, 5> shared_worst{};
+    expect_shared(*shared, *refs, pc, label, shared_worst);
+    print_worst(label + " shared against three calls", shared_worst);
 
     // Rotated within the pair: separate W-form calls at the rotated u's.
     const double c = std::cos(kPairAngle);
@@ -968,6 +1065,69 @@ TEST(Nevpt2QdIntersection, Refuses) {
   }
   std::cout << std::format("[ nevpt2   ] qd pc intersection refuses root 1 zero: {}\n",
                            got.error().message);
+}
+
+// ---- Timing (#787) -----------------------------------------------------------
+
+// Not a check: the wall time of both paths, which set
+// QdIntersectionOptions::shared's default (README.md "Sharing the three
+// calls"). Skipped unless FBF_QD_INTERSECTION_TIMING is set, and run alone
+// on a held card. Per case and scheme, one warm-up call of each path, then
+// kTimingRepeats calls of each, alternating, pair (0, 1). The cases:
+// h2co_skew_ccpvdz_sa3, and ethylene SA2-CAS(2,2)/cc-pVDZ at
+// data/casscf_meci/'s start geometry and weights. #787 asked for #785's
+// ethylene SA3-CAS(2,2), but this tree's SA3 CASSCF from RHF orbitals did
+// not converge at the MECI geometry (200 macro iterations, |g| 3.0e-1), the
+// start (macro iteration 34, the augmented Hessian's lowest root with no
+// gradient component) or planar ethylene (200, |g| 6.3e-2); SA2 at the MECI
+// is degenerate in its CASSCF roots, which root_pair_multipliers refuses.
+// The size, which sets the cost, is the same; the third root is not.
+TEST(Nevpt2QdIntersection, Timing) {
+  FBF_REQUIRE_GPU();
+  if (std::getenv("FBF_QD_INTERSECTION_TIMING") == nullptr) {
+    GTEST_SKIP() << "a measurement, not a check: set FBF_QD_INTERSECTION_TIMING to run it";
+  }
+  constexpr std::int32_t kTimingRepeats = 3;
+  const fb::json &meci = reference("casscf_meci", "casscf_meci.json");
+  fb::json ethylene{{"name", "c2h4_ccpvdz_sa2"},
+                    {"basis", meci.at("basis")},
+                    {"aux_basis", {{"name", meci.at("aux_basis").at("name")}}},
+                    {"ncas", meci.at("ncas")},
+                    {"nelecas", meci.at("nelecas")},
+                    {"weights", meci.at("weights")},
+                    {"atoms", fb::json::array()}};
+  for (const fb::json &atom : meci.at("start").at("atoms")) {
+    ethylene["atoms"].push_back(fb::json::array({atom.at("symbol"), atom.at("coord")}));
+  }
+  for (const auto &[label, entry] : {std::pair<std::string_view, const fb::json *>{
+                                         "h2co_skew_ccpvdz_sa3", &qd_case("h2co_skew_ccpvdz_sa3")},
+                                     std::pair<std::string_view, const fb::json *>{
+                                         "ethylene SA2-CAS(2,2)/cc-pVDZ", &ethylene}}) {
+    QdRun run = qd_run_of(*entry);
+    ASSERT_TRUE(run.solution.has_value()) << label;
+    for (const bool pc : {false, true}) {
+      std::array<std::vector<double>, 2> seconds;
+      for (std::int32_t rep = -1; rep < kTimingRepeats; ++rep) {
+        for (const bool shared : {false, true}) {
+          const auto start = std::chrono::steady_clock::now();
+          const auto x = intersection_of(run, *run.solution, 0, 1, pc, {.shared = shared});
+          const std::chrono::duration<double> took = std::chrono::steady_clock::now() - start;
+          ASSERT_TRUE(x.has_value()) << label << ": " << x.error().message;
+          if (rep >= 0) {
+            seconds[shared ? 1 : 0].push_back(took.count());
+          }
+        }
+      }
+      const auto summary = [](const std::vector<double> &t) {
+        return std::format("min {:.3f} s, mean {:.3f} s", std::ranges::min(t),
+                           std::accumulate(t.begin(), t.end(), 0.0) /
+                               static_cast<double>(t.size()));
+      };
+      std::cout << std::format("[ nevpt2   ] qd intersection timing {} {} (0, 1): three calls {}; "
+                               "shared {}\n",
+                               pc ? "PC" : "SC", label, summary(seconds[0]), summary(seconds[1]));
+    }
+  }
 }
 
 } // namespace
