@@ -2089,20 +2089,36 @@ const QdState &qd_state(const std::string &name) {
   return states.emplace(name, std::move(q)).first->second;
 }
 
-// qd_sc_energy's element totals at @p s, its roots s.vector at @p weights:
-// n², [M n + N].
+// qd_sc_energy's (qd_pc_energy's, with @p pc) element totals at @p s, its
+// roots s.vector at @p weights: n², [M n + N]. A point PC refuses (a
+// Numerical error: a moved state outside PC's domain, as #729 found within
+// the ladders' reach) gives none, printed, so that its rungs' differences
+// are NaN and no ratio run reads them; any other error fails.
 std::vector<double> qd_totals(fb::DeviceResources &res, const State &s,
-                              std::span<const double> weights) {
+                              std::span<const double> weights, const bool pc = false) {
   const DeviceState d = upload_state(res, s);
-  const auto got =
-      nevpt2::qd_sc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
-                           d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(), 0);
-  EXPECT_TRUE(got.has_value()) << got.error().message;
   std::vector<double> totals;
-  if (got.has_value()) {
-    for (const nevpt2::ClassEnergies &e : *got) {
-      totals.push_back(e.total);
+  const auto take = [&](const auto &got) {
+    if (pc && !got.has_value() && got.error().kind == fb::ErrorKind::Numerical) {
+      std::cout << std::format("[ nevpt2   ] qd pc refused a moved point: {}\n",
+                               got.error().message);
+      return;
     }
+    EXPECT_TRUE(got.has_value()) << got.error().message;
+    if (got.has_value()) {
+      for (const auto &e : *got) {
+        totals.push_back(e.total);
+      }
+    }
+  };
+  if (pc) {
+    take(nevpt2::qd_pc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                              d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(),
+                              0));
+  } else {
+    take(nevpt2::qd_sc_energy(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                              d.c.data(), d.h.data(), s.ncore, s.ncas, weights, d.vector.data(),
+                              0));
   }
   return totals;
 }
@@ -2112,35 +2128,43 @@ double weighted(std::span<const double> w, std::span<const double> totals) {
   return totals.size() == w.size() ? dot(w, totals) : std::nan("");
 }
 
-// qd_sc_adjoint at @p s along @p w, on the host: HostAdjoint's arrays (y
-// every root's), its total E[W].
+// qd_sc_adjoint (qd_pc_adjoint, with @p pc) at @p s along @p w, on the
+// host: HostAdjoint's arrays (y every root's), its total E[W].
 fb::Result<HostAdjoint> qd_adjoint_of(fb::DeviceResources &res, const State &s,
-                                      std::span<const double> weights, std::span<const double> w) {
+                                      std::span<const double> weights, std::span<const double> w,
+                                      const bool pc = false) {
   const DeviceState d = upload_state(res, s);
-  const auto got = nevpt2::qd_sc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao,
-                                         d.b.data(), d.c.data(), d.h.data(), s.ncore, s.ncas,
-                                         weights, d.vector.data(), w, 0);
-  if (!got.has_value()) {
-    return std::unexpected(got.error());
+  const auto host = [&](const auto &got) -> fb::Result<HostAdjoint> {
+    if (!got.has_value()) {
+      return std::unexpected(got.error());
+    }
+    std::vector<double> totals;
+    for (const auto &e : got->elements) {
+      totals.push_back(e.total);
+    }
+    const auto nmo = static_cast<std::size_t>(s.nao);
+    return HostAdjoint{
+        .total = weighted(w, totals),
+        .h_bar = download(res, got->h_bar.data(), nmo * nmo),
+        .lambda = download(res, got->lambda.data(), static_cast<std::size_t>(s.naux) * nmo * nmo),
+        .y = download(res, got->y.data(), s.vector.size()),
+        .x = download(res, got->x.data(), nmo * nmo),
+        .a = download(res, got->a.data(), nmo * nmo),
+        .epsilon = download(res, got->epsilon.data(), nmo)};
+  };
+  if (pc) {
+    return host(nevpt2::qd_pc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                                      d.c.data(), d.h.data(), s.ncore, s.ncas, weights,
+                                      d.vector.data(), w, 0));
   }
-  std::vector<double> totals;
-  for (const nevpt2::ClassEnergies &e : got->elements) {
-    totals.push_back(e.total);
-  }
-  const auto nmo = static_cast<std::size_t>(s.nao);
-  return HostAdjoint{
-      .total = weighted(w, totals),
-      .h_bar = download(res, got->h_bar.data(), nmo * nmo),
-      .lambda = download(res, got->lambda.data(), static_cast<std::size_t>(s.naux) * nmo * nmo),
-      .y = download(res, got->y.data(), s.vector.size()),
-      .x = download(res, got->x.data(), nmo * nmo),
-      .a = download(res, got->a.data(), nmo * nmo),
-      .epsilon = download(res, got->epsilon.data(), nmo)};
+  return host(nevpt2::qd_sc_adjoint(res, *d.strings, *d.strings, s.naux, s.nao, s.nao, d.b.data(),
+                                    d.c.data(), d.h.data(), s.ncore, s.ncas, weights,
+                                    d.vector.data(), w, 0));
 }
 
 HostAdjoint qd_adjoint(fb::DeviceResources &res, const State &s, std::span<const double> weights,
-                       std::span<const double> w) {
-  auto got = qd_adjoint_of(res, s, weights, w);
+                       std::span<const double> w, const bool pc = false) {
+  auto got = qd_adjoint_of(res, s, weights, w, pc);
   EXPECT_TRUE(got.has_value()) << got.error().message;
   return got.has_value() ? std::move(*got) : HostAdjoint{};
 }
@@ -2286,11 +2310,12 @@ const std::map<std::string, std::string, std::less<>> kQdSmooth{
 // ci_direction's at c_r (in its spin and symmetry sector, ⊥ c_r), against
 // <d_r, y_r>; each where kQdSmooth lists it. And ε against the CASSCF's
 // mo_energies; H_eff's eigenvalues are printed beside the goldens'.
-class Nevpt2QdAdjoint : public ::testing::TestWithParam<std::string> {};
-
-TEST_P(Nevpt2QdAdjoint, AdjointsMatchLadders) {
-  FBF_REQUIRE_GPU();
-  const std::string &name = GetParam();
+// @p smooth_set is kQdSmooth, or kQdPcSmooth with @p pc (qd_pc_energy's
+// and qd_pc_adjoint's in place of SC's).
+void expect_qd_ladders(const std::string &name,
+                       const std::map<std::string, std::string, std::less<>> &smooth_set,
+                       const bool pc) {
+  const std::string_view kind = pc ? "qd pc" : "qd";
   const QdState &q = qd_state(name);
   const State &s = q.s;
   ASSERT_FALSE(s.b.empty());
@@ -2298,14 +2323,14 @@ TEST_P(Nevpt2QdAdjoint, AdjointsMatchLadders) {
   const std::size_t n = q.weights.size();
   const std::size_t ndet = s.vector.size() / n;
   const auto nmo = static_cast<std::size_t>(s.nao);
-  const std::vector<double> totals = qd_totals(res, s, q.weights);
+  const std::vector<double> totals = qd_totals(res, s, q.weights, pc);
   ASSERT_EQ(totals.size(), n * n);
 
   const auto [eigen, values] = eigen_seed(q, totals);
   const std::array<std::pair<std::string_view, std::vector<double>>, 2> seeds{
       {{"eigen", eigen}, {"random", random_seed(n)}}};
-  const auto smooth = kQdSmooth.find(name);
-  ASSERT_NE(smooth, kQdSmooth.end()) << name;
+  const auto smooth = smooth_set.find(name);
+  ASSERT_NE(smooth, smooth_set.end()) << name;
   const auto laddered = [&](const std::string_view seed, const std::string_view path) {
     return smooth->second == "all" ||
            std::format(" {} ", smooth->second).find(std::format(" {}:{} ", seed, path)) !=
@@ -2313,7 +2338,7 @@ TEST_P(Nevpt2QdAdjoint, AdjointsMatchLadders) {
   };
   std::vector<HostAdjoint> adj;
   for (const auto &[seed, w] : seeds) {
-    adj.push_back(qd_adjoint(res, s, q.weights, w));
+    adj.push_back(qd_adjoint(res, s, q.weights, w, pc));
     ASSERT_EQ(adj.back().y.size(), s.vector.size()) << seed;
     EXPECT_NEAR(adj.back().total, weighted(w, totals), kSameEnergyTolerance) << seed;
   }
@@ -2328,12 +2353,21 @@ TEST_P(Nevpt2QdAdjoint, AdjointsMatchLadders) {
     EXPECT_NEAR(adj[0].epsilon[p], q.mo_energies[p], kQdEpsilonTolerance) << "orbital " << p;
     epsilon_worst = std::max(epsilon_worst, std::abs(adj[0].epsilon[p] - q.mo_energies[p]));
   }
-  const auto want = reference_case("qd_nevpt2", "qd_nevpt2.json", name)
-                        .at("eigenvalues")
-                        .get<std::vector<double>>();
-  std::cout << std::format("[ nevpt2   ] qd {}: H_eff eigenvalues {::.10f}, goldens' {::.10f}; ε "
+  std::vector<double> want;
+  if (pc) {
+    for (const fb::json &entry : reference("qd_nevpt2", "qd_nevpt2.json").at("pc").at("cases")) {
+      if (entry.at("name").get<std::string>() == name) {
+        want = entry.at("eigenvalues").get<std::vector<double>>();
+      }
+    }
+  } else {
+    want = reference_case("qd_nevpt2", "qd_nevpt2.json", name)
+               .at("eigenvalues")
+               .get<std::vector<double>>();
+  }
+  std::cout << std::format("[ nevpt2   ] {} {}: H_eff eigenvalues {::.10f}, goldens' {::.10f}; ε "
                            "from mo_energies {:.2e}\n",
-                           name, values, want, epsilon_worst);
+                           kind, name, values, want, epsilon_worst);
 
   // Each path's forwards are evaluated once, both seeds reading them.
   const auto ladders = [&](const std::string &path,
@@ -2343,18 +2377,18 @@ TEST_P(Nevpt2QdAdjoint, AdjointsMatchLadders) {
     State moved = s;
     for (std::size_t k = 0; k < seeds.size(); ++k) {
       if (!laddered(seeds[k].first, path)) {
-        std::cout << std::format("[ nevpt2   ] qd {} {} {}: not laddered, not smooth at the "
-                                 "ladder's scale (kQdSmooth)\n",
-                                 name, seeds[k].first, path);
+        std::cout << std::format("[ nevpt2   ] {} {} {} {}: not laddered, not smooth at the "
+                                 "ladder's scale\n",
+                                 kind, name, seeds[k].first, path);
         continue;
       }
       expect_ladder(
-          std::format("qd {} {} {}", name, seeds[k].first, path),
+          std::format("{} {} {} {}", kind, name, seeds[k].first, path),
           [&](const double t) {
             auto it = forwards.find(t);
             if (it == forwards.end()) {
               move(t, moved);
-              it = forwards.emplace(t, qd_totals(res, moved, q.weights)).first;
+              it = forwards.emplace(t, qd_totals(res, moved, q.weights, pc)).first;
             }
             return weighted(seeds[k].second, it->second);
           },
@@ -2402,6 +2436,13 @@ TEST_P(Nevpt2QdAdjoint, AdjointsMatchLadders) {
           return dot(d, std::span<const double>(a.y).subspan(r * ndet, ndet));
         });
   }
+}
+
+class Nevpt2QdAdjoint : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2QdAdjoint, AdjointsMatchLadders) {
+  FBF_REQUIRE_GPU();
+  expect_qd_ladders(GetParam(), kQdSmooth, false);
 }
 
 INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdAdjoint,
@@ -2497,6 +2538,153 @@ TEST(Nevpt2Qd, RefusesBadInputs) {
   const auto a = adjoint_at(equal, short_w);
   ASSERT_FALSE(a.has_value());
   EXPECT_EQ(a.error().kind, fb::ErrorKind::InvalidConfig) << a.error().message;
+}
+
+// ---- PC-QD-NEVPT2: qd_pc_energy and qd_pc_adjoint -----------------------
+//
+// expect_qd_ladders with PC's elements in place of SC's, on #671's three
+// cases: E[W] at the eigenvector seed (u_K of PC's own symmetrized H_eff)
+// and the random W, along h, B, C and each c_r, every input rebuilt at each
+// point. PC's finish drops the restricted inverse's rank-projector terms,
+// exact only when S_N's dropped modes annihilate |N⟩; the c_r ladders move
+// real states along real directions, and are the check of that (#703's
+// random RDM tangents cannot be).
+//
+// Which ladders are asserted, as kQdSmooth. Measured over 24 runs on the
+// RTX 3080: every path at both seeds finds its ratio run on these cases,
+// unlike SC-QD's (kQdSmooth), but three eigen-seed c_r ladders sit at E[W]'s
+// round-off. Their slopes are small (h6_631g_sa2 c_0 8.1e-6; h8_ring c_0
+// 1.4e-4, c_2 1.3e-4: u_K u_Kᵀ nearly cancels there) and their misses
+// change sign from run to run, |R - predicted| <= 2.7e-12 (h6) and
+// <= 1.8e-11 (h8_ring), the forwards' own run-to-run spread over 2t at the
+// finest rung (5.6e-17 and 1.6e-15 over 3.9e-5) and the same absolute miss
+// the random seed's ladders along the same c_r have at their larger slopes.
+// So they miss 1e-7 relative in 15, 1 and 3 runs of 24 (to 3.4e-7, 1.3e-7,
+// 1.2e-7) and are not run; the same c_r at the random seed is, every root
+// on every case. Of the rest the worst is 7.9e-8 (h8_ring eigen c_1), every
+// other under 6.2e-8. State 1's PC is refused at the coarse rungs along h,
+// B, C and c_1 on h2co_skew_ccpvdz_sa3 and along c_1 on h8_ring_sto3g_sa3
+// (Sijr's, Sr's or Srs's λ + Δ not positive, out to t = 1.25e-3), as #729
+// found within the ladders' reach; those rungs are NaN (qd_totals) and the
+// ratio run is read below them.
+const std::map<std::string, std::string, std::less<>> kQdPcSmooth{
+    {"h2co_skew_ccpvdz_sa3", "all"},
+    {"h6_631g_sa2",
+     "eigen:h eigen:B eigen:C eigen:c_1 random:h random:B random:C random:c_0 random:c_1"},
+    {"h8_ring_sto3g_sa3", "eigen:h eigen:B eigen:C eigen:c_1 random:h random:B random:C "
+                          "random:c_0 random:c_1 random:c_2"}};
+
+class Nevpt2QdPcAdjoint : public ::testing::TestWithParam<std::string> {};
+
+TEST_P(Nevpt2QdPcAdjoint, AdjointsMatchLadders) {
+  FBF_REQUIRE_GPU();
+  expect_qd_ladders(GetParam(), kQdPcSmooth, true);
+}
+
+INSTANTIATE_TEST_SUITE_P(Cases, Nevpt2QdPcAdjoint,
+                         ::testing::Values("h2co_skew_ccpvdz_sa3", "h6_631g_sa2",
+                                           "h8_ring_sto3g_sa3"),
+                         [](const auto &info) { return info.param; });
+
+// The one-root call at weight 1 and W = 1 is pc_adjoint at the state, to
+// pc_adjoint's own run-to-run spread: each array within kQdPcOneRootEps of
+// its largest element's machine epsilon, the energy within
+// kSameEnergyTolerance. Not bitwise: pc_adjoint is not bitwise against
+// itself (its walk's and the einsums' atomics), and over 38 runs on the
+// RTX 3080 two of its calls came out up to 6841 ε apart (y; A 5106, Λ and
+// h̄ 4369, X 972, ε 7.0), and the one-root call against it up to 5772 (y; A
+// 4507, Λ and h̄ 3868, X 839, ε 4.7). The bound is that floor with room,
+// about 2.4 times it: the floor grew from 5659 at 13 runs to 6841 at 38.
+constexpr double kQdPcOneRootEps = 16384.0;
+
+TEST(Nevpt2QdPc, OneRootIsPcAdjoint) {
+  FBF_REQUIRE_GPU();
+  const State &s = state();
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const auto pc = pc_adjoint_of(res, s);
+  ASSERT_TRUE(pc.has_value()) << pc.error().message;
+  const auto again = pc_adjoint_of(res, s);
+  ASSERT_TRUE(again.has_value()) << again.error().message;
+  const std::array<double, 1> w{1.0};
+  const auto qd = qd_adjoint_of(res, s, kOneRoot, w, true);
+  ASSERT_TRUE(qd.has_value()) << qd.error().message;
+  ASSERT_EQ(qd->y.size(), pc->y.size());
+  // max |a - b| in units of b's largest magnitude's machine epsilon.
+  const auto worst = [](std::span<const double> a, std::span<const double> b) {
+    double out = 0.0;
+    double largest = 0.0;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      out = std::max(out, std::abs(a[i] - b[i]));
+      largest = std::max(largest, std::abs(b[i]));
+    }
+    return out / (std::numeric_limits<double>::epsilon() * largest);
+  };
+  for (const auto &[name, other] :
+       {std::pair{"pc_adjoint again", &*again}, std::pair{"qd pc", &*qd}}) {
+    const std::array<std::pair<const char *, double>, 6> apart{
+        {{"h_bar", worst(other->h_bar, pc->h_bar)},
+         {"lambda", worst(other->lambda, pc->lambda)},
+         {"y", worst(other->y, pc->y)},
+         {"x", worst(other->x, pc->x)},
+         {"a", worst(other->a, pc->a)},
+         {"epsilon", worst(other->epsilon, pc->epsilon)}}};
+    for (const auto &[field, difference] : apart) {
+      EXPECT_LE(difference, kQdPcOneRootEps) << name << ": " << field;
+      std::cout << std::format("[ nevpt2   ] pc one root, {} {}: apart by {:.3e} eps max\n", name,
+                               field, difference);
+    }
+    EXPECT_NEAR(other->total, pc->total, kSameEnergyTolerance) << name;
+    std::cout << std::format("[ nevpt2   ] pc one root, {} energy: apart by {:.3e}\n", name,
+                             std::abs(other->total - pc->total));
+  }
+}
+
+// A class PC refuses is refused by qd_pc_adjoint with qd_pc_energy's error,
+// kind and message, never a matrix with the class summed in as zero. On
+// h8_ring_sto3g_sa3, two states, after Nevpt2PcGradient's: root 1's vector
+// zero, whose RDMs and so Sr's metric are zero ("state 1: ... no positive
+// eigenvalue"); and every virtual orbital energy lowered by 1000 Eh through
+// h (shifted_h), so that Sr's denominator λ + ε_r is negative ("not
+// positive").
+TEST(Nevpt2QdPc, RefusesWhatTheEnergyRefuses) {
+  FBF_REQUIRE_GPU();
+  const QdState &q = qd_state("h8_ring_sto3g_sa3");
+  const State &s = q.s;
+  ASSERT_FALSE(s.b.empty());
+  fb::DeviceResources res(0);
+  const std::size_t n = q.weights.size();
+  const std::vector<double> w = random_seed(n);
+  const auto refused = [&](const State &at, const std::string_view what,
+                           const std::string_view says) {
+    const DeviceState d = upload_state(res, at);
+    const auto energy = nevpt2::qd_pc_energy(res, *d.strings, *d.strings, at.naux, at.nao, at.nao,
+                                             d.b.data(), d.c.data(), d.h.data(), at.ncore, at.ncas,
+                                             q.weights, d.vector.data(), 0);
+    ASSERT_FALSE(energy.has_value()) << what;
+    const auto adj = qd_adjoint_of(res, at, q.weights, w, true);
+    ASSERT_FALSE(adj.has_value()) << what;
+    EXPECT_EQ(adj.error().kind, fb::ErrorKind::Numerical) << what;
+    EXPECT_EQ(adj.error().kind, energy.error().kind) << what;
+    EXPECT_EQ(adj.error().message, energy.error().message) << what;
+    EXPECT_NE(adj.error().message.find("Sr"), std::string::npos) << adj.error().message;
+    EXPECT_NE(adj.error().message.find(says), std::string::npos) << adj.error().message;
+    std::cout << std::format("[ nevpt2   ] qd pc refuses {}: {}\n", what, adj.error().message);
+  };
+
+  std::vector<std::size_t> virtuals;
+  for (auto p = static_cast<std::size_t>(s.ncore + s.ncas); p < static_cast<std::size_t>(s.nao);
+       ++p) {
+    virtuals.push_back(p);
+  }
+  State low = s;
+  low.h = shifted_h(s, virtuals, -1000.0);
+  refused(low, "virtuals at -1000 Eh", "not positive");
+
+  State zero = s;
+  const std::size_t ndet = s.vector.size() / n;
+  std::fill_n(zero.vector.begin() + static_cast<std::ptrdiff_t>(ndet), ndet, 0.0);
+  refused(zero, "root 1 zero", "no positive eigenvalue");
 }
 
 } // namespace

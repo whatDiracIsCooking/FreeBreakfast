@@ -54,6 +54,11 @@ energies' reverse pass. Link `free_breakfast::nevpt2::gradient`.
                   batch)
         -> QdScAdjoint   elements, then ScAdjoint's arrays of E[W] = Σ_MN W_MN H_MN,
                          y every root's (root r's at r ndet), epsilon the SA Fock's
+    qd_pc_energy(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, batch)
+        -> std::vector<PcClassEnergies>   the PC-QD H_eff's n² correlation elements
+    qd_pc_adjoint(res, alpha, beta, naux, nao, nmo, b, c, h, ncore, ncas, weights, vectors, w,
+                  batch)
+        -> QdPcAdjoint   elements (PcClassEnergies), then QdScAdjoint's arrays
 
 `lagrangian_gradient`, `sc_gradient` and `pc_gradient` take
 `mcscf::df_gradient`'s arguments (`solution` a
@@ -279,6 +284,43 @@ allocates; two scratch f3s (n⁶ each) in the forward; and ȳ over every root
 plus three scratch vectors. The shared arrays' own dm2, dm3, f3ca and f3ac
 (and their bars) are allocated, unused, as `zeroed_arrays` gives every
 caller.
+
+## PC-QD-NEVPT2: the functional E[W] and its adjoint
+
+`qd_pc_energy` and `qd_pc_adjoint` are their SC-QD namesakes with
+`pc_effective_hamiltonian` and `pc_effective_hamiltonian_adjoint` (#703)
+in place of `sc_effective_hamiltonian` and its adjoint, as `pc_adjoint` is
+`sc_adjoint`'s (#713). The functional's inputs (the shared builders over
+the SA Fock, every pair's RDMs, f3 on the diagonal) and the whole reverse
+pass around the walk are one function in `qd.cpp` that both walks feed:
+each adds onto the same `EnergyBars` and hands every transition pair's
+dm1, dm2 and dm3 bars to the same callback, which takes them through the
+traces' adjoint and the bra/ket `rdms_adjoint` onto ȳ_bra and ȳ_ket. PC
+hands them over after its walk, all at once in row-major pair order,
+where SC hands them over pair at a time; the callback is the same.
+Element [M n + N] is ⟨M|V|Ψ_N⁽¹⁾⟩ per class over ket N's own solve, so
+the matrix is not symmetric, and W need not be either.
+
+**The dropped rank-projector terms.** PC's finish (design doc Eq.
+qd-pcdot) differentiates the restricted inverse (K_N + Δ S_N)⁺ as if S_N's
+kept span were fixed. That is exact when b_{M←N} lies in S_N's kept span,
+which holds when S_N's dropped modes annihilate |N⟩, so at eigenstates.
+#703's ladders move the RDMs along random tangents that carry no
+eigenstate structure, so they cannot test it; the ladders here along each
+c_r, real states moved along a real direction, are its check.
+
+**Refusals.** A class `pc_effective_hamiltonian` refuses (no positive
+eigenvalue of S_N, no gap at the cut, λ + Δ not positive) is refused by
+`qd_pc_adjoint` with that error, kind and message naming the class and
+the state, before any bar is read: never a matrix with the class summed
+in as zero. PC's A is the one-root kind: its inactive blocks are not zero
+in general, and vanish on a degenerate pair (#564's one-root measurement;
+not tested here at n > 1), so `zc_multipliers` takes it as it takes
+`pc_adjoint`'s.
+
+**Memory.** SC-QD's (above), plus what `pc_effective_hamiltonian_adjoint`
+holds: every ket's solve per class and the n² − n transitions' metric
+bars until the walk ends (`nevpt2.energy`'s README, "PC-QD").
 
 ## The nuclear gradient
 
@@ -595,15 +637,46 @@ once per process.
     (both entry points), and a W not n² long, each `InvalidConfig`.
   - Each case is about a second, its SA-CASSCF included.
 
+- PC-QD-NEVPT2 (`qd_pc_energy`, `qd_pc_adjoint`), on #671's three cases
+  (`h2co_skew_ccpvdz_sa3`, `h6_631g_sa2`, `h8_ring_sto3g_sa3`), the same
+  SA-CASSCFs:
+  - `Nevpt2QdPcAdjoint.AdjointsMatchLadders`: the SC-QD ladders above
+    (`expect_qd_ladders`) with PC's elements, the eigenvector seed u_K of
+    PC's own symmetrized H_eff; H_eff's eigenvalues are printed beside the
+    `pc` goldens'. The c_r ladders are the check of the dropped
+    rank-projector terms. Measured over 24 runs on the RTX 3080, every path
+    at both seeds finds its ratio run, and every one is asserted
+    (`kQdPcSmooth`) but three eigen-seed c_r ladders at E[W]'s round-off:
+    `h6_631g_sa2` c_0 and `h8_ring_sto3g_sa3` c_0 and c_2, slopes 8.1e-6 to
+    1.4e-4, missing by ≤ 2.7e-12 and ≤ 1.8e-11 absolute with the sign
+    changing run to run, the forwards' own spread over 2t at the finest
+    rung and the random seed's absolute miss along the same c_r; so 1e-7
+    relative fails in 15, 1 and 3 runs of 24. The same c_r at the random
+    seed is asserted on every root of every case. The rest miss by at most
+    7.9e-8 (`h8_ring_sto3g_sa3` eigen c_1). State 1's PC is refused at the
+    coarse rungs on `h2co_skew_ccpvdz_sa3` (h, B, C, c_1) and
+    `h8_ring_sto3g_sa3` (c_1), λ + Δ not positive out to t = 1.25e-3, as
+    #729 found; those rungs are NaN and the run is read below them.
+  - `Nevpt2QdPc.OneRootIsPcAdjoint` (`h2o_ccpvdz`): one root, weight 1,
+    W = 1 against `pc_adjoint`: the energy to 1e-12, every array within
+    16384 ε of its largest element. Over 38 runs two `pc_adjoint` calls came
+    6841 ε apart (y), the one-root call 5772 ε from it; the bound is about
+    2.4 times that floor.
+  - `Nevpt2QdPc.RefusesWhatTheEnergyRefuses` (`h8_ring_sto3g_sa3`): root 1's
+    vector zero ("state 1: Sr's metric has no positive eigenvalue") and the
+    virtuals lowered 1000 Eh through h ("state 0: Sr has a denominator …
+    not positive"): `qd_pc_adjoint` returns `qd_pc_energy`'s error, kind and
+    message.
+
 ## Files
 
 | File | Role |
 |------|------|
-| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
+| `gradient.cppm` | Module interface: `sc_energy`, `sc_adjoint`, `ScAdjoint`; `pc_energy`, `pc_adjoint`, `PcAdjoint`; `qd_sc_energy`, `qd_sc_adjoint`, `QdScAdjoint`; `qd_pc_energy`, `qd_pc_adjoint`, `QdPcAdjoint`; `zc_multipliers`, `ZcMultipliers`, `zc_adjoint`, `ZcAdjoint`; `lagrangian_gradient`, `sc_gradient`, `ScGradient`, `pc_gradient`, `PcGradient` |
 | `operands.cppm` | Internal partition `:operands`: the column-major einsum operands and contractions, zeroed buffers, block adds, host copies, and the count and weight checks the units share |
 | `builders.cppm` | Internal partition `:builders`: `ScArrays`, the builders as einsum terms, their forward and reverse runs, `shared_arrays` and `builders_adjoint`, declared for `gradient.cpp` (which defines them) and `qd.cpp` |
 | `gradient.cpp` | The builders as einsum terms, forward and backwards, around the SC or PC class walk, and the source term's half-transform |
-| `qd.cpp` | `qd_sc_energy` and `qd_sc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
+| `qd.cpp` | `qd_sc_energy`, `qd_pc_energy`, `qd_sc_adjoint` and `qd_pc_adjoint`: every pair's RDMs over the shared builders, γ_SA, and the reverse pass through `sc_effective_hamiltonian_adjoint` or `pc_effective_hamiltonian_adjoint`, the transition and one-vector `rdms_adjoint` and `builders_adjoint` |
 | `zc.cpp` | z^c's divisions and the degenerate-pair rule; Φ = ⟨z^c, f⟩ and its adjoints over B whole in the MO basis |
 | `lagrangian.cpp` | `lagrangian_gradient`, `sc_gradient` and `pc_gradient`: the Z-vector over the CI-relaxed Hessian, the X^L gate (the Lagrangian Fock and the stencil of its derivative along Z), and the one `df_gradient` pass |
 | `CMakeLists.txt` | The module `free_breakfast.nevpt2.gradient` |

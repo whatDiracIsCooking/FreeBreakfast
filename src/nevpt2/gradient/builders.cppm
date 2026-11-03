@@ -1,5 +1,5 @@
 /// @file
-/// @brief What the one-root functionals (gradient.cpp) and the SC-QD one
+/// @brief What the one-root functionals (gradient.cpp) and the QD ones
 /// (qd.cpp) share: the arrays the builders write and read, the builders as
 /// einsum terms, their forward and reverse runs, and the reverse pass from
 /// the class walk's bars to h_bar, Lambda, X, A and epsilon around an RDM
@@ -34,7 +34,7 @@ Result<size_t> rdm_budget();
 /// class_energies' EnergyInputs and the intermediates, each packed
 /// column-major (the RDMs row-major). The adjoint holds a second one for the
 /// bars, the same field by field, of which only what takes a bar is
-/// allocated. One root's own RDMs in dm1 ... f3ac; in the SC-QD functional,
+/// allocated. One root's own RDMs in dm1 ... f3ac; in the QD functionals,
 /// dm1 is gamma_SA, which the shared builders read, and dm2 ... f3ac are not
 /// used (each pair's RDMs are qd.cpp's own).
 struct ScArrays {
@@ -148,7 +148,7 @@ Result<ScArrays> shared_arrays(DeviceResources &res, std::string_view who,
 /// @p lambda.
 EnergyBars energy_bars(ScArrays &bar, double *lambda);
 
-/// @brief The reverse pass after a class walk (SC's, PC's or the SC-QD
+/// @brief The reverse pass after a class walk (SC's, PC's or a QD
 /// matrix's) has added its bars onto @p bar and @p lambda_raw: the shared
 /// builders backwards onto the MO blocks, B_cc, B_vv's diagonal and bar.dm1;
 /// then @p rdm_adjoint, which takes the RDMs' bars (bar.dm1's among them)
